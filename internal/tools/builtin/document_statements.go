@@ -111,6 +111,11 @@ const (
 	edgeMethodConsolidator = "consolidator"
 )
 
+// edgeOriginMethodAttr names, on a statement a sync carried, the method it was
+// made by where it came from. Provenance, not a qualifier: the vocabulary gate
+// does not check it.
+const edgeOriginMethodAttr = "origin_method"
+
 // Bounds on what a caller may attach to one statement.
 const (
 	edgeEvidenceDefaultMax = 32
@@ -336,6 +341,13 @@ type edgeWrite struct {
 	proposeIfInvalid bool
 }
 
+// gateAuthored reports a principal's own link_chunks: the one write the
+// vocabulary refuses rather than annotates, and the one that asserts a statement
+// awaiting review.
+func (w edgeWrite) gateAuthored() bool {
+	return w.authored && w.method == edgeMethodManual
+}
+
 // edgeWriteResult is what a write reports.
 type edgeWriteResult struct {
 	ID              string   `json:"id"`
@@ -388,54 +400,12 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 			return out, &r, nil
 		}
 	}
-	if w.validAt != nil && w.invalidAt != nil && *w.invalidAt <= *w.validAt {
-		r := errValidation("invalid_at must be after valid_at", "Leave invalid_at unset for a relation that still holds.")
-		return out, &r, nil
+	env, refuse := d.checkEnvelope(ctx, key, &w)
+	if refuse != nil {
+		return out, refuse, nil
 	}
-	if w.confidence != nil && (*w.confidence < 0 || *w.confidence > 1) {
-		r := errValidation("confidence must be between 0 and 1", "Leave confidence unset when you have no estimate.")
-		return out, &r, nil
-	}
-	var attrs []byte
-	if len(w.attributes) > 0 {
-		b, err := json.Marshal(w.attributes)
-		if err != nil || len(b) > edgeAttributesMaxBytes {
-			r := errValidation(fmt.Sprintf("attributes must be a JSON object of at most %d bytes", edgeAttributesMaxBytes), "Keep attributes to the relation's qualifiers.")
-			return out, &r, nil
-		}
-		attrs = b
-	}
-
-	// Only a principal's own link_chunks is refused on a vocabulary violation. A
-	// bulk path — import_md, import_canvas, sync — carries relations someone else
-	// wrote, and refusing one would drop it from an otherwise faithful copy; it is
-	// kept, annotated ontology_valid=false (RFC FO decision, 2026-10-29). w.authored
-	// still means "the caller's own authority" for the reserved-kind rule.
-	gateAuthored := w.authored && w.method == edgeMethodManual
-	gate := d.gateRelation(ctx, key, w.kind, w.from, w.to, gateAuthored)
-	if gateAuthored && gate.Refuse != nil {
-		return out, gate.Refuse, nil
-	}
-	agate := d.gateAttributes(ctx, w.kind, w.attributes, gateAuthored)
-	if gateAuthored && agate.Refuse != nil {
-		return out, agate.Refuse, nil
-	}
-	gate.Valid = gate.Valid && agate.Valid
-	gate.Warnings = append(gate.Warnings, agate.Warnings...)
+	gate, attrs, confidence := env.gate, env.attrs, env.confidence
 	out.OntologyValid, out.Warnings = gate.Valid, gate.Warnings
-	confidence := w.confidence
-	if !gate.Valid {
-		// annotate mode (D8): kept, marked, and sorted behind a clean proposal.
-		if attrs == nil {
-			w.attributes = map[string]any{}
-		}
-		w.attributes["ontology_valid"] = false
-		attrs, _ = json.Marshal(w.attributes)
-		capped := edgeProposalConfidenceCap
-		if confidence == nil || *confidence > capped {
-			confidence = &capped
-		}
-	}
 
 	evidence, refuse, err := d.checkEvidence(ctx, key, mscope, w.evidence)
 	if err != nil || refuse != nil {
@@ -483,7 +453,7 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 		// import, canvas — carries someone else's judgement and adds its evidence to
 		// the proposal; clearing the review queue is not something holding write
 		// should be able to do.
-		if status == edgeStatusAsserted && existing.Status != edgeStatusAsserted && gateAuthored {
+		if status == edgeStatusAsserted && existing.Status != edgeStatusAsserted && w.gateAuthored() {
 			if err := d.exec(ctx, key, `UPDATE chunk_edges SET status = ?, actor = ? WHERE id = ?`, edgeStatusAsserted, nullIfEmpty(actor), existing.ID); err != nil {
 				return out, nil, err
 			}
@@ -543,6 +513,118 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 	}
 	out.EvidenceWritten, out.EvidenceCapped = written, capped
 	return out, nil, nil
+}
+
+// edgeEnvelope is a statement's envelope as a write stores it: the attributes as
+// JSON (nil for none), the confidence after any annotation cap, and the
+// vocabulary gate's verdict.
+type edgeEnvelope struct {
+	attrs      []byte
+	confidence *float64
+	gate       relationGate
+}
+
+// checkEnvelope validates w's validity, confidence and attributes and runs the
+// vocabulary gate over the relation. A refusal comes back as *tools.Result. It
+// may add the ontology_valid annotation to w.attributes.
+func (d *Document) checkEnvelope(ctx context.Context, key sqlmem.ScopeKey, w *edgeWrite) (edgeEnvelope, *tools.Result) {
+	var env edgeEnvelope
+	if w.validAt != nil && w.invalidAt != nil && *w.invalidAt <= *w.validAt {
+		r := errValidation("invalid_at must be after valid_at", "Leave invalid_at unset for a relation that still holds.")
+		return env, &r
+	}
+	if w.confidence != nil && (*w.confidence < 0 || *w.confidence > 1) {
+		r := errValidation("confidence must be between 0 and 1", "Leave confidence unset when you have no estimate.")
+		return env, &r
+	}
+	if len(w.attributes) > 0 {
+		b, err := json.Marshal(w.attributes)
+		if err != nil || len(b) > edgeAttributesMaxBytes {
+			r := errValidation(fmt.Sprintf("attributes must be a JSON object of at most %d bytes", edgeAttributesMaxBytes), "Keep attributes to the relation's qualifiers.")
+			return env, &r
+		}
+		env.attrs = b
+	}
+
+	// Only a principal's own link_chunks is refused on a vocabulary violation. A
+	// bulk path — import_md, import_canvas, sync — carries relations someone else
+	// wrote, and refusing one would drop it from an otherwise faithful copy; it is
+	// kept, annotated ontology_valid=false (RFC FO decision, 2026-10-29). w.authored
+	// still means "the caller's own authority" for the reserved-kind rule.
+	gateAuthored := w.gateAuthored()
+	gate := d.gateRelation(ctx, key, w.kind, w.from, w.to, gateAuthored)
+	if gateAuthored && gate.Refuse != nil {
+		return env, gate.Refuse
+	}
+	agate := d.gateAttributes(ctx, w.kind, withoutOriginMethod(w.attributes), gateAuthored)
+	if gateAuthored && agate.Refuse != nil {
+		return env, agate.Refuse
+	}
+	gate.Valid = gate.Valid && agate.Valid
+	gate.Warnings = append(gate.Warnings, agate.Warnings...)
+	env.gate, env.confidence = gate, w.confidence
+	if !gate.Valid {
+		// annotate mode (D8): kept, marked, and sorted behind a clean proposal.
+		if env.attrs == nil {
+			w.attributes = map[string]any{}
+		}
+		w.attributes["ontology_valid"] = false
+		env.attrs, _ = json.Marshal(w.attributes)
+		capped := edgeProposalConfidenceCap
+		if env.confidence == nil || *env.confidence > capped {
+			env.confidence = &capped
+		}
+	}
+	return env, nil
+}
+
+// withoutOriginMethod returns attributes less origin_method, for the vocabulary
+// gate: a kind that declares qualifiers would otherwise refuse (or annotate) every
+// statement a sync carried.
+func withoutOriginMethod(attributes map[string]any) map[string]any {
+	if _, ok := attributes[edgeOriginMethodAttr]; !ok {
+		return attributes
+	}
+	out := make(map[string]any, len(attributes))
+	for k, v := range attributes {
+		if k != edgeOriginMethodAttr {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// resyncStatement brings a statement a pull wrote to the envelope w carries: the
+// checks and the vocabulary annotation a fresh write would apply, then one UPDATE
+// of confidence, invalid_at and attributes when any differs. Only an asserted
+// statement with method sync is touched — one written here keeps its writer's
+// claim — and valid_at and the discriminator are its key, so they never change.
+// Evidence is not touched.
+func (d *Document) resyncStatement(ctx context.Context, key sqlmem.ScopeKey, id string, w edgeWrite) (bool, *tools.Result, error) {
+	env, refuse := d.checkEnvelope(ctx, key, &w)
+	if refuse != nil {
+		return false, refuse, nil
+	}
+	s, err := d.statementByID(ctx, key, id)
+	if err != nil || s == nil || s.Method != edgeMethodSync || s.Status != edgeStatusAsserted {
+		return false, nil, err
+	}
+	var have []byte
+	if len(s.Attributes) > 0 {
+		have, _ = json.Marshal(s.Attributes)
+	}
+	if sameConfidence(s.Confidence, env.confidence) && sameInstant(s.InvalidAt, w.invalidAt) && string(have) == string(env.attrs) {
+		return false, nil, nil
+	}
+	var attrs any
+	if env.attrs != nil {
+		attrs = string(env.attrs)
+	}
+	if err := d.exec(ctx, key, `UPDATE chunk_edges SET confidence = ?, invalid_at = ?, attributes = ? WHERE id = ? AND method = ?`,
+		env.confidence, w.invalidAt, attrs, id, edgeMethodSync); err != nil {
+		return false, nil, err
+	}
+	return true, nil, nil
 }
 
 // checkedEvidence is an evidence row that passed checkEvidence, with its span

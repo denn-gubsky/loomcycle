@@ -22,6 +22,37 @@ deleted: a chunk or link that exists only on the receiving side stays. An
 overwritten body is kept in that chunk's `history`. Facts a judge marked
 unsupported are not copied.
 
+## Links and their evidence
+
+A link travels with its `confidence`, `valid_at` / `invalid_at` and
+`attributes`. Only asserted links travel: a proposal is one side's review
+state, and a link a judge refuted or an operator rejected stays where it is.
+
+- **Pull.** A pulled link is asserted here with method `sync`; the method it
+  was made by on the peer is kept in `attributes.origin_method` (for a link the
+  peer itself pulled, the method it was first made by).
+- **Evidence** is matched by the cited chunk's `natural_key` and its quote is
+  checked again against this side's text, as `link_chunks` checks it. A row
+  that cannot be checked here is dropped and counted in `evidence_dropped`: a
+  quote from an unkeyed chunk, a chat turn or another scope, a key this side
+  does not hold or may not read, or a quote that does not occur in this side's
+  text. Evidence already recorded is not added twice.
+- **A link pulled before** is updated in place when the peer's copy changed:
+  its `confidence`, `invalid_at` and `attributes` follow the peer, a value the
+  peer cleared is cleared, and its evidence is kept (counted in
+  `edges_updated`). `valid_at` is part of a link's identity, so a peer link
+  with another `valid_at` arrives as a second link beside the first.
+- **A link written here** (by you, an import or a rule) keeps its own
+  confidence, validity and attributes; only evidence it lacks is added. A
+  difference is counted in `edges_envelope_kept`.
+- **Push** sends the same envelope and the evidence the peer can check: a
+  quote from a keyed chunk of this document whose text the peer now holds.
+  The peer checks every quote again. A pushed link arrives on the peer with
+  the peer's own `manual` method, its method here in
+  `attributes.origin_method`. The peer has no way to change an existing
+  link's envelope, so a push adds only the evidence a peer link lacks and
+  counts an envelope that differs in `edges_envelope_kept`.
+
 ## Arguments
 
 - `document_id` (or `id`), or `path` — one is required: the LOCAL document, as
@@ -40,6 +71,8 @@ excluded_unkeyed, excluded_withheld}` — counts of keyed chunks. `excluded_unke
 counts the sending side's chunks that could not be carried.
 `edges_skipped_rejected` counts the peer's links a pull left out because an
 operator rejected that relation here; a sync never undoes a rejection.
+Three more counts appear only when they are not zero: `edges_updated`,
+`edges_envelope_kept` and `evidence_dropped` (see Links and their evidence).
 
 ## Errors
 

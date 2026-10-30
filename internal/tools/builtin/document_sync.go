@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -228,17 +230,61 @@ type syncChunk struct {
 	withheld bool
 }
 
-// edgeKey identifies a manual cross-reference edge portably (both endpoints by
-// natural_key). Auto [[name]]-link edges are excluded — each side regenerates
-// them from chunk bodies, so syncing them would duplicate.
-type edgeKey struct{ fromNK, toNK, kind string }
+// edgeKey identifies a manual statement portably: both endpoints by
+// natural_key, plus the rest of a statement's unique key — its valid_at (0 when
+// undated) and its discriminating qualifier — so two dated statements of one
+// triple are two keys, as they are two rows. Auto [[name]]-link edges are
+// excluded — each side regenerates them from chunk bodies, so syncing them would
+// duplicate.
+type edgeKey struct {
+	fromNK, toNK, kind string
+	validAt            int64
+	disc               string
+}
 
-// sideSnapshot is one document's keyed chunks + manual edges + a count of the
-// unkeyed (non-root) chunks that cannot be reconciled. rejected (local side only)
-// holds the relations an operator rejected here: a pull never re-creates one.
+// relation is the key of the triple alone. A rejection is a tombstone for the
+// relation at any valid_at, so it is looked up by this.
+func (k edgeKey) relation() edgeKey {
+	return edgeKey{fromNK: k.fromNK, toNK: k.toNK, kind: k.kind}
+}
+
+// syncEdge is one live asserted statement as a sync carries it. valid_at is in
+// its key; the rest of its envelope is here. Its evidence names each cited chunk
+// by natural_key, the only name that means the same thing on both sides.
+type syncEdge struct {
+	id         string // side-local
+	method     string // "" from a peer that predates statements
+	confidence *float64
+	validAt    *int64
+	invalidAt  *int64
+	attributes map[string]any
+	evidence   []syncEvidence
+}
+
+// syncEvidence is one evidence row. chunkNK is "" for a row the other side can
+// never check: an unkeyed chunk, a chat turn, another scope.
+type syncEvidence struct {
+	chunkNK string
+	quote   string
+}
+
+// hasEvidence reports whether the statement already records this citation.
+func (e syncEdge) hasEvidence(ev syncEvidence) bool {
+	for _, have := range e.evidence {
+		if have.chunkNK != "" && have.chunkNK == ev.chunkNK && have.quote == ev.quote {
+			return true
+		}
+	}
+	return false
+}
+
+// sideSnapshot is one document's keyed chunks + manual statements + a count of
+// the unkeyed (non-root) chunks that cannot be reconciled. rejected (local side
+// only) holds the relations (edgeKey.relation) an operator rejected here: a pull
+// never re-creates one.
 type sideSnapshot struct {
 	chunks   map[string]syncChunk
-	edges    map[edgeKey]bool
+	edges    map[edgeKey]syncEdge
 	rejected map[edgeKey]bool
 	unkeyed  int
 }
@@ -253,7 +299,7 @@ func (d *Document) loadLocalSnapshot(ctx context.Context, key sqlmem.ScopeKey, m
 	for _, kc := range keyed {
 		idToNK[kc.ID] = kc.NaturalKey
 	}
-	snap := &sideSnapshot{chunks: make(map[string]syncChunk, len(keyed)), edges: map[edgeKey]bool{}, rejected: map[edgeKey]bool{}}
+	snap := &sideSnapshot{chunks: make(map[string]syncChunk, len(keyed)), edges: map[edgeKey]syncEdge{}, rejected: map[edgeKey]bool{}}
 	for _, kc := range keyed {
 		row, ok, rerr := d.getChunkRow(ctx, key, kc.ID)
 		if rerr != nil {
@@ -280,27 +326,32 @@ func (d *Document) loadLocalSnapshot(ctx context.Context, key sqlmem.ScopeKey, m
 	}
 	// Live statements are what this side carries; rejected ones (at any valid_at)
 	// are read too, as the relations a pull must not bring back.
-	rows, err := d.query(ctx, key, `SELECT from_id, to_id, kind, auto, CASE WHEN e.status = '`+edgeStatusRejected+`' THEN 1 ELSE 0 END FROM chunk_edges e
-		WHERE (from_id IN (SELECT id FROM chunks WHERE document_id = ?) OR to_id IN (SELECT id FROM chunks WHERE document_id = ?))
+	rows, err := d.query(ctx, key, `SELECT `+statementCols+` FROM chunk_edges e
+		WHERE (e.from_id IN (SELECT id FROM chunks WHERE document_id = ?) OR e.to_id IN (SELECT id FROM chunks WHERE document_id = ?))
 		  AND (e.status = '`+edgeStatusRejected+`' OR (e.status = '`+edgeStatusAsserted+`' AND `+edgeLiveClause+`))`, docID, docID)
 	if err != nil {
 		return nil, err
 	}
+	live := map[edgeKey]statementRow{}
 	for _, r := range rows.Rows {
-		if asInt(r[3]) == 1 || isReservedEdgeKind(asStr(r[2])) {
+		st := scanStatement(r)
+		if st.Auto || isReservedEdgeKind(st.Kind) {
 			continue // auto [[name]] edge or a runtime kind — re-derived, not synced
 		}
-		fromNK, ok1 := idToNK[asStr(r[0])]
-		toNK, ok2 := idToNK[asStr(r[1])]
+		fromNK, ok1 := idToNK[st.FromID]
+		toNK, ok2 := idToNK[st.ToID]
 		if !ok1 || !ok2 {
 			continue
 		}
-		ek := edgeKey{fromNK: fromNK, toNK: toNK, kind: asStr(r[2])}
-		if asInt(r[4]) == 1 {
-			snap.rejected[ek] = true
+		ek := edgeKey{fromNK: fromNK, toNK: toNK, kind: st.Kind, validAt: instantOrZero(st.ValidAt), disc: st.Discriminator}
+		if st.Status == edgeStatusRejected {
+			snap.rejected[ek.relation()] = true
 		} else {
-			snap.edges[ek] = true
+			live[ek] = st
 		}
+	}
+	if err := d.loadLocalEdges(ctx, key, idToNK, live, snap); err != nil {
+		return nil, err
 	}
 	total, err := d.documentChunkCount(ctx, key, docID)
 	if err != nil {
@@ -311,6 +362,74 @@ func (d *Document) loadLocalSnapshot(ctx context.Context, key sqlmem.ScopeKey, m
 		snap.unkeyed = 0
 	}
 	return snap, nil
+}
+
+// localEdgeBatch bounds the ids bound into one evidence or natural-key lookup,
+// well under SQLite's variable limit.
+const localEdgeBatch = 500
+
+// loadLocalEdges fills snap.edges from the live statements, with the evidence
+// the caller may read — a row citing a document it cannot read is withheld here
+// as on every other reader, so a push never sends it to the peer.
+func (d *Document) loadLocalEdges(ctx context.Context, key sqlmem.ScopeKey, idToNK map[string]string, live map[edgeKey]statementRow, snap *sideSnapshot) error {
+	ids := make([]string, 0, len(live))
+	for _, st := range live {
+		ids = append(ids, st.ID)
+	}
+	ev := map[string][]edgeEvidenceRow{}
+	for start := 0; start < len(ids); start += localEdgeBatch {
+		batch, _, err := d.readableEvidenceFor(ctx, key, ids[start:min(start+localEdgeBatch, len(ids))], 0)
+		if err != nil {
+			return err
+		}
+		for id, rows := range batch {
+			ev[id] = rows
+		}
+	}
+	var outside []string
+	for _, rows := range ev {
+		for _, r := range rows {
+			if _, ok := idToNK[r.ChunkID]; r.ChunkID != "" && !ok {
+				outside = append(outside, r.ChunkID)
+			}
+		}
+	}
+	nkOf, err := d.naturalKeysOf(ctx, key, outside)
+	if err != nil {
+		return err
+	}
+	for id, nk := range idToNK {
+		nkOf[id] = nk
+	}
+	for ek, st := range live {
+		e := syncEdge{id: st.ID, method: st.Method, confidence: st.Confidence, validAt: st.ValidAt, invalidAt: st.InvalidAt, attributes: st.Attributes}
+		for _, r := range ev[st.ID] {
+			e.evidence = append(e.evidence, syncEvidence{chunkNK: nkOf[r.ChunkID], quote: r.Quote})
+		}
+		snap.edges[ek] = e
+	}
+	return nil
+}
+
+// naturalKeysOf maps chunk ids to their natural keys; an unkeyed chunk is absent.
+func (d *Document) naturalKeysOf(ctx context.Context, key sqlmem.ScopeKey, chunkIDs []string) (map[string]string, error) {
+	out := map[string]string{}
+	for start := 0; start < len(chunkIDs); start += localEdgeBatch {
+		batch := chunkIDs[start:min(start+localEdgeBatch, len(chunkIDs))]
+		args := make([]any, len(batch))
+		for i, id := range batch {
+			args[i] = id
+		}
+		res, err := d.query(ctx, key, `SELECT chunk_id, natural_key FROM chunk_memory_meta
+			WHERE chunk_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")+`) AND natural_key IS NOT NULL AND natural_key <> ''`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range res.Rows {
+			out[asStr(r[0])] = asStr(r[1])
+		}
+	}
+	return out, nil
 }
 
 // loadRemoteSnapshot reads the peer document's keyed structure over the client.
@@ -333,7 +452,7 @@ func (d *Document) loadRemoteSnapshot(ctx context.Context, client *docremote.Cli
 			idToNK[f.ID] = f.Entity.NaturalKey
 		}
 	}
-	snap := &sideSnapshot{chunks: make(map[string]syncChunk, len(facts)), edges: map[edgeKey]bool{}}
+	snap := &sideSnapshot{chunks: make(map[string]syncChunk, len(facts)), edges: map[edgeKey]syncEdge{}}
 	for _, f := range facts {
 		nk := f.Entity.NaturalKey
 		if nk == "" {
@@ -390,15 +509,64 @@ func (d *Document) loadRemoteSnapshot(ctx context.Context, client *docremote.Cli
 		}
 		after = ge.NextCursor
 	}
+	// An evidence chunk outside this document is named by asking the peer for it,
+	// once per chunk. One the peer will not show reads as unkeyed: dropping a
+	// citation is the safe side of not knowing what it cites.
+	outsideNK := map[string]string{}
+	nkOf := func(chunkID string) string {
+		if nk, ok := idToNK[chunkID]; ok {
+			return nk
+		}
+		if nk, ok := outsideNK[chunkID]; ok {
+			return nk
+		}
+		var gc struct {
+			Entity struct {
+				NaturalKey string `json:"natural_key"`
+			} `json:"entity"`
+		}
+		if raw, err := client.Do(ctx, map[string]any{"op": "get_chunk", "id": chunkID, "scope": scope}); err == nil {
+			_ = json.Unmarshal(raw, &gc)
+		}
+		outsideNK[chunkID] = gc.Entity.NaturalKey
+		return gc.Entity.NaturalKey
+	}
 	for _, e := range remoteEdges {
 		if e.Auto || isReservedEdgeKind(e.Kind) || (e.Status != "" && e.Status != edgeStatusAsserted) {
 			continue
 		}
 		fromNK, ok1 := idToNK[e.FromID]
 		toNK, ok2 := idToNK[e.ToID]
-		if ok1 && ok2 {
-			snap.edges[edgeKey{fromNK: fromNK, toNK: toNK, kind: e.Kind}] = true
+		if !ok1 || !ok2 {
+			continue
 		}
+		evidence := e.Evidence
+		if e.EvidenceCount > len(evidence) && e.ID != "" {
+			// get_edges previews a few rows per statement; get_edge has them all.
+			raw, err := client.Do(ctx, map[string]any{"op": "get_edge", "id": e.ID, "scope": scope})
+			if err != nil {
+				return nil, fmt.Errorf("fetch remote statement %s: %w", e.ID, err)
+			}
+			var one struct {
+				Statement struct {
+					Evidence []edgeEvidenceRow `json:"evidence"`
+				} `json:"statement"`
+			}
+			_ = json.Unmarshal(raw, &one)
+			evidence = one.Statement.Evidence
+		}
+		se := syncEdge{id: e.ID, method: e.Method, confidence: e.Confidence, validAt: e.ValidAt, invalidAt: e.InvalidAt, attributes: e.Attributes}
+		for _, r := range evidence {
+			ev := syncEvidence{quote: r.Quote}
+			if r.ChunkID != "" {
+				ev.chunkNK = nkOf(r.ChunkID)
+			}
+			se.evidence = append(se.evidence, ev)
+		}
+		// The discriminator as THIS side's vocabulary reads the attributes, so both
+		// snapshots key a statement the way this side's store does.
+		ek := edgeKey{fromNK: fromNK, toNK: toNK, kind: e.Kind, validAt: instantOrZero(e.ValidAt), disc: d.discriminatorFor(ctx, e.Kind, e.Attributes)}
+		snap.edges[ek] = se
 	}
 	rawAll, err := client.Do(ctx, map[string]any{"op": "query_chunks", "document_id": docID, "scope": scope, "limit": 10000})
 	if err != nil {
@@ -436,7 +604,29 @@ type sideWriter interface {
 	// (update_chunk snapshots history only when the body field is present).
 	updateKeyed(ctx context.Context, id string, sc syncChunk, revision int, includeBody bool) error
 	move(ctx context.Context, id, parentID string, position int) error
-	ensureEdge(ctx context.Context, fromID, toID, kind string) error
+	// carryEdge writes one source statement on this side: a new statement with
+	// its envelope and the evidence this side can check or, onto the statement
+	// this side already holds under the same key, the evidence it lacks and —
+	// where this side's ops allow — the envelope.
+	carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry, error)
+}
+
+// edgeCarryIn is one statement a reconcile carries onto the writer's side.
+type edgeCarryIn struct {
+	fromID, toID, kind string
+	src                syncEdge
+	// have is the writer side's statement under the same key; nil for none.
+	have *syncEdge
+	// evidence is the source's chunk evidence the writer side lacks.
+	evidence []syncEvidence
+	// idByNK maps natural keys of the reconciled document to the writer side's ids.
+	idByNK map[string]string
+}
+
+// edgeCarry is what carrying one statement did.
+type edgeCarry struct {
+	added, updated, kept bool
+	evidenceDropped      int
 }
 
 // localWriter applies a reconcile to the local document store.
@@ -517,29 +707,90 @@ func (w localWriter) move(ctx context.Context, id, parentID string, position int
 
 // remoteEdge is one statement of a peer's get_edges page, as sync reads it.
 type remoteEdge struct {
-	FromID string `json:"from_id"`
-	ToID   string `json:"to_id"`
-	Kind   string `json:"kind"`
-	Auto   bool   `json:"auto"`
-	Status string `json:"status"`
+	ID            string            `json:"id"`
+	FromID        string            `json:"from_id"`
+	ToID          string            `json:"to_id"`
+	Kind          string            `json:"kind"`
+	Auto          bool              `json:"auto"`
+	Status        string            `json:"status"`
+	Method        string            `json:"method"`
+	Confidence    *float64          `json:"confidence"`
+	ValidAt       *int64            `json:"valid_at"`
+	InvalidAt     *int64            `json:"invalid_at"`
+	Attributes    map[string]any    `json:"attributes"`
+	Evidence      []edgeEvidenceRow `json:"evidence"`
+	EvidenceCount int               `json:"evidence_count"`
 }
 
-func (w localWriter) ensureEdge(ctx context.Context, fromID, toID, kind string) error {
-	res, err := w.d.linkChunks(ctx, w.key, w.mscope, docInput{FromID: fromID, ToID: toID, Kind: kind, edgeMethod: edgeMethodSync})
+// carryEdge on a pull. The statement is written with method sync, whoever runs
+// the pull. Evidence is re-pointed to this side's chunk by natural key and checked
+// as link_chunks checks it; a row that fails is dropped and counted, never sent
+// on to refuse the whole statement.
+func (w localWriter) carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry, error) {
+	var out edgeCarry
+	attrs := carriedAttributes(in.src)
+	if in.have != nil {
+		if in.have.method == edgeMethodSync {
+			updated, refuse, err := w.d.resyncStatement(ctx, w.key, in.have.id, edgeWrite{
+				from: in.fromID, to: in.toID, kind: in.kind, method: edgeMethodSync,
+				confidence: in.src.confidence, validAt: in.src.validAt, invalidAt: in.src.invalidAt, attributes: attrs,
+			})
+			if err != nil {
+				return out, err
+			}
+			if refuse != nil {
+				return out, fmt.Errorf("%s", refuse.Text)
+			}
+			out.updated = updated
+		} else {
+			out.kept = envelopeDiffers(in.src, attrs, *in.have)
+		}
+	}
+	evidence := make([]edgeEvidenceIn, 0, len(in.evidence))
+	for _, ev := range in.evidence {
+		id, err := w.d.chunkIDByNaturalKey(ctx, w.key, ev.chunkNK)
+		if err != nil {
+			return out, err
+		}
+		cand := edgeEvidenceIn{ChunkID: id, Quote: ev.quote}
+		if id != "" {
+			_, refuse, err := w.d.checkEvidence(ctx, w.key, w.mscope, []edgeEvidenceIn{cand})
+			if err != nil {
+				return out, err
+			}
+			if refuse == nil {
+				evidence = append(evidence, cand)
+				continue
+			}
+		}
+		out.evidenceDropped++
+	}
+	if in.have != nil && len(evidence) == 0 {
+		return out, nil
+	}
+	res, err := w.d.linkChunks(ctx, w.key, w.mscope, docInput{
+		FromID: in.fromID, ToID: in.toID, Kind: in.kind, edgeMethod: edgeMethodSync,
+		Confidence: in.src.confidence, ValidAt: in.src.validAt, InvalidAt: in.src.invalidAt,
+		Attributes: attrs, Evidence: evidence,
+	})
 	if err != nil {
-		return err
+		return out, err
 	}
 	if res.IsError {
-		return fmt.Errorf("%s", res.Text)
+		return out, fmt.Errorf("%s", res.Text)
 	}
-	return nil
+	out.added = in.have == nil
+	return out, nil
 }
 
 // remoteWriter applies a reconcile to the peer document over the client.
+// source is the local snapshot being pushed: its bodies are what the peer holds
+// once pass 1 ran, so a quote is checked against them before it is sent.
 type remoteWriter struct {
 	client *docremote.Client
 	docID  string
 	scope  string
+	source map[string]syncChunk
 }
 
 func (w remoteWriter) createKeyed(ctx context.Context, sc syncChunk) (string, error) {
@@ -592,9 +843,52 @@ func (w remoteWriter) move(ctx context.Context, id, parentID string, position in
 	return err
 }
 
-func (w remoteWriter) ensureEdge(ctx context.Context, fromID, toID, kind string) error {
-	_, err := w.client.Do(ctx, map[string]any{"op": "link_chunks", "from_id": fromID, "to_id": toID, "kind": kind, "scope": w.scope})
-	return err
+// carryEdge on a push, through the peer's own link_chunks — there is no other
+// op for it, and none that changes an existing statement's envelope. So the peer
+// stamps its own method (manual), the method here travels in
+// attributes.origin_method, and an envelope that differs on an existing peer
+// statement is left and counted as kept. Evidence is sent only from a keyed chunk
+// of this document whose pushed text holds the quote; the peer checks it again.
+func (w remoteWriter) carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry, error) {
+	var out edgeCarry
+	attrs := carriedAttributes(in.src)
+	if in.have != nil {
+		out.kept = envelopeDiffers(in.src, attrs, *in.have)
+	}
+	evidence := []map[string]any{}
+	for _, ev := range in.evidence {
+		id, onPeer := in.idByNK[ev.chunkNK]
+		sc, inDoc := w.source[ev.chunkNK]
+		if !onPeer || !inDoc || sc.withheld || !strings.Contains(sc.body, ev.quote) {
+			out.evidenceDropped++
+			continue
+		}
+		evidence = append(evidence, map[string]any{"chunk_id": id, "quote": ev.quote})
+	}
+	if in.have != nil && len(evidence) == 0 {
+		return out, nil
+	}
+	payload := map[string]any{"op": "link_chunks", "from_id": in.fromID, "to_id": in.toID, "kind": in.kind, "scope": w.scope}
+	if in.src.confidence != nil {
+		payload["confidence"] = *in.src.confidence
+	}
+	if in.src.validAt != nil {
+		payload["valid_at"] = *in.src.validAt
+	}
+	if in.src.invalidAt != nil {
+		payload["invalid_at"] = *in.src.invalidAt
+	}
+	if len(attrs) > 0 {
+		payload["attributes"] = attrs
+	}
+	if len(evidence) > 0 {
+		payload["evidence"] = evidence
+	}
+	if _, err := w.client.Do(ctx, payload); err != nil {
+		return out, err
+	}
+	out.added = in.have == nil
+	return out, nil
 }
 
 // ---- the direction-agnostic reconcile ----
@@ -604,6 +898,11 @@ type reconcileCounts struct {
 	// edgesSkippedRejected: source relations the writer's side rejected — left
 	// rejected, never re-linked (a pull must not undo an operator's ruling).
 	edgesSkippedRejected int
+	// edgesUpdated: statements a pull wrote before whose envelope followed the
+	// peer's. edgesEnvelopeKept: statements whose envelope differs from the
+	// source's and was left — written here, or on a peer a push cannot change.
+	// evidenceDropped: source evidence the writer's side could not check.
+	edgesUpdated, edgesEnvelopeKept, evidenceDropped int
 }
 
 // applyReconcile reconciles `source` INTO the writer's side, using `target` as
@@ -684,12 +983,13 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 		c.reparented++
 	}
 
-	// Pass 3 — manual edges, additive (both endpoints must be keyed + present).
-	for ek := range source.edges {
-		if target.edges[ek] {
-			continue
-		}
-		if target.rejected[ek] {
+	// Pass 3 — manual statements, additive (both endpoints must be keyed +
+	// present). A statement the target already holds is carried too: it may lack
+	// evidence the source has, or hold an envelope the source changed.
+	for _, ek := range sortedEdgeKeys(source.edges) {
+		se := source.edges[ek]
+		have, exists := target.edges[ek]
+		if !exists && target.rejected[ek.relation()] {
 			c.edgesSkippedRejected++
 			continue
 		}
@@ -698,12 +998,125 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 		if !ok1 || !ok2 {
 			continue
 		}
-		if err := w.ensureEdge(ctx, fromID, toID, ek.kind); err != nil {
+		in := edgeCarryIn{fromID: fromID, toID: toID, kind: ek.kind, src: se, idByNK: idByNK}
+		if exists {
+			in.have = &have
+		}
+		for _, ev := range se.evidence {
+			switch {
+			case ev.chunkNK == "":
+				c.evidenceDropped++ // nothing names it on the other side
+			case exists && have.hasEvidence(ev):
+			default:
+				in.evidence = append(in.evidence, ev)
+			}
+		}
+		r, err := w.carryEdge(ctx, in)
+		if err != nil {
 			return c, fmt.Errorf("edge %s->%s: %w", ek.fromNK, ek.toNK, err)
 		}
-		c.edgesAdded++
+		c.evidenceDropped += r.evidenceDropped
+		if r.added {
+			c.edgesAdded++
+		}
+		if r.updated {
+			c.edgesUpdated++
+		}
+		if r.kept {
+			c.edgesEnvelopeKept++
+		}
 	}
 	return c, nil
+}
+
+// carriedAttributes is the attributes a statement arrives with on the other
+// side: its own, less the statement layer's bookkeeping (each side's gate
+// annotates for itself), plus origin_method — the method it was made by, which
+// the receiving side's server-stamped method cannot say. A statement that was
+// itself synced passes on the method it was first made by.
+func carriedAttributes(se syncEdge) map[string]any {
+	out := map[string]any{}
+	for k, v := range se.attributes {
+		if !statementLayerAttributes[k] && k != edgeOriginMethodAttr {
+			out[k] = v
+		}
+	}
+	origin := se.method
+	if origin == edgeMethodSync {
+		if m, _ := se.attributes[edgeOriginMethodAttr].(string); m != "" {
+			origin = m
+		}
+	}
+	if originMethodForm.MatchString(origin) {
+		out[edgeOriginMethodAttr] = origin
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// originMethodForm is what a method looks like — manual, import, rule:<name> —
+// and bounds what a peer can write here under that name. A peer that reports
+// anything else (or nothing, predating statements) carries no origin_method.
+var originMethodForm = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}(:[a-z0-9_./-]{1,64})?$`)
+
+// envelopeDiffers reports whether the writer side's statement holds another
+// envelope than the source would carry: confidence, invalid_at or attributes.
+// origin_method is provenance, not envelope — a statement written here has none
+// — so it is not compared. A statement its own side annotated as outside the
+// vocabulary had its confidence capped there, so the source's is compared
+// capped the same way.
+func envelopeDiffers(src syncEdge, attrs map[string]any, have syncEdge) bool {
+	envelopeOf := func(m map[string]any) string {
+		out := map[string]any{}
+		for k, v := range m {
+			if !statementLayerAttributes[k] && k != edgeOriginMethodAttr {
+				out[k] = v
+			}
+		}
+		b, _ := json.Marshal(out)
+		return string(b)
+	}
+	want := src.confidence
+	if v, _ := have.attributes["ontology_valid"].(bool); have.attributes["ontology_valid"] != nil && !v {
+		capped := edgeProposalConfidenceCap
+		if want == nil || *want > capped {
+			want = &capped
+		}
+	}
+	return !sameConfidence(want, have.confidence) || !sameInstant(src.invalidAt, have.invalidAt) || envelopeOf(attrs) != envelopeOf(have.attributes)
+}
+
+func sortedEdgeKeys(m map[edgeKey]syncEdge) []edgeKey {
+	out := make([]edgeKey, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.fromNK != b.fromNK {
+			return a.fromNK < b.fromNK
+		}
+		if a.toNK != b.toNK {
+			return a.toNK < b.toNK
+		}
+		if a.kind != b.kind {
+			return a.kind < b.kind
+		}
+		if a.validAt != b.validAt {
+			return a.validAt < b.validAt
+		}
+		return a.disc < b.disc
+	})
+	return out
+}
+
+func instantOrZero(t *int64) int64 {
+	if t == nil {
+		return 0
+	}
+	return *t
 }
 
 // syncPull copies the peer document's keyed structure into the local document.
@@ -734,7 +1147,7 @@ func (d *Document) syncPush(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if err != nil {
 		return errFrom("sync push: "+err.Error(), err), nil
 	}
-	w := remoteWriter{client: b.client, docID: b.remoteDocID, scope: b.scope}
+	w := remoteWriter{client: b.client, docID: b.remoteDocID, scope: b.scope, source: source.chunks}
 	c, err := applyReconcile(ctx, w, source, target)
 	if err != nil {
 		return errFrom("sync push: "+err.Error(), err), nil
@@ -746,7 +1159,7 @@ func (d *Document) syncPush(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 // unkeyed count — the chunks the reconcile could not carry (remote's for pull,
 // local's for push).
 func reconcileReport(direction string, b *remoteBinding, excludedUnkeyed int, c reconcileCounts) map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"direction":              direction,
 		"source":                 b.source,
 		"remote_ref":             b.ref,
@@ -761,6 +1174,14 @@ func reconcileReport(direction string, b *remoteBinding, excludedUnkeyed int, c 
 		"excluded_unkeyed":       excludedUnkeyed,
 		"excluded_withheld":      c.excludedWithheld,
 	}
+	// Only when not zero, so a document whose statements carry nothing reports
+	// exactly what it did before statements carried an envelope.
+	for k, n := range map[string]int{"edges_updated": c.edgesUpdated, "edges_envelope_kept": c.edgesEnvelopeKept, "evidence_dropped": c.evidenceDropped} {
+		if n > 0 {
+			out[k] = n
+		}
+	}
+	return out
 }
 
 // contentDiffers reports whether a source keyed chunk's content — body, title,
@@ -795,6 +1216,14 @@ func putKnownValidity(payload map[string]any, sc syncChunk) {
 	if sc.invalidAtKnown {
 		payload["invalid_at"] = sc.invalidAt
 	}
+}
+
+// sameConfidence compares two optional confidences: both unset, or both set and equal.
+func sameConfidence(a, b *float64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 // sameInstant compares two optional instants: both unset, or both set and equal.
@@ -877,12 +1306,12 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 
 	edgesOnlyLocal, edgesOnlyRemote := 0, 0
 	for ek := range local.edges {
-		if !remote.edges[ek] {
+		if _, ok := remote.edges[ek]; !ok {
 			edgesOnlyLocal++
 		}
 	}
 	for ek := range remote.edges {
-		if !local.edges[ek] && !local.rejected[ek] {
+		if _, ok := local.edges[ek]; !ok && !local.rejected[ek.relation()] {
 			edgesOnlyRemote++
 		}
 	}
