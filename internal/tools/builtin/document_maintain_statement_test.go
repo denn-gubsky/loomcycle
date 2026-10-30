@@ -549,3 +549,110 @@ func TestMaintainStatement_LostRaceNamesStatementChanged(t *testing.T) {
 		}
 	})
 }
+
+// A statement an operator ruled on (judged_by operator, e.g. accepted from the
+// review queue) is a human decision: from a run it takes only verify and flag,
+// whatever method wrote it. The operator plane may still maintain it.
+func TestMaintainStatement_OperatorRulingTakesOnlyVerifyAndFlagFromARun(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		f := newMaintFixture(t, d, ctx)
+		id := f.seed(t, f.a, f.b, "cites", "rule:citation", edgeStatusProposed, 0, f.quoteInA)
+		other := f.seed(t, f.a, f.b, "cites", "rule:citation", edgeStatusAsserted, 5, f.quoteInA)
+		if _, r := docExec(t, d, operatorCtx(ctx), fmt.Sprintf(`{"op":"accept_statement","scope":"user","id":%q}`, id)); r.IsError {
+			t.Fatalf("accept: %s", r.Text)
+		}
+		if s := f.row(t, id); s.JudgedBy != "operator" || s.Status != edgeStatusAsserted {
+			t.Fatalf("after accept: %+v", s)
+		}
+		ev := f.evidence(t, id)[0].id
+		for _, c := range []struct{ action, extra string }{
+			{"expire", `,"reason":"r"`},
+			{"demote", `,"reason":"r"`},
+			{"merge", `,"survivor_id":"` + other + `"`},
+			{"stale_evidence", `,"evidence_id":"` + ev + `"`},
+			{"relocate_evidence", `,"evidence_id":"` + ev + `","chunk_id":"` + f.b + `"`},
+		} {
+			_, r := f.maintain(t, f.run, id, c.action, c.extra+`,"method":"rule:maintain"`)
+			wantRefusal(t, "a run's "+c.action+" of an operator-accepted statement", r, "statement_operator_ruled")
+		}
+		if s := f.row(t, id); s.Status != edgeStatusAsserted || s.ExpiredAt != nil {
+			t.Errorf("a refused action undid the operator's ruling: %+v", s)
+		}
+		if e := f.evidence(t, id); len(e) != 1 || e[0].stale || e[0].chunk != f.a {
+			t.Errorf("a refused action changed the ruled statement's evidence: %+v", e)
+		}
+		for _, action := range []string{"verify", "flag"} {
+			if _, r := f.maintain(t, f.run, id, action, `,"reason":"r","method":"rule:maintain"`); r.IsError {
+				t.Errorf("a run's %s of an operator-accepted statement: %s", action, r.Text)
+			}
+		}
+		if _, r := f.maintain(t, operatorCtx(ctx), id, "demote", `,"reason":"operator reconsidered"`); r.IsError {
+			t.Errorf("the operator's demote of its own ruling: %s", r.Text)
+		}
+	})
+}
+
+// A merge keeps the merged statement's standing: evidence from an asserted
+// statement never moves onto a proposal, where it would be hidden from readers.
+func TestMaintainStatement_MergeRefusesASurvivorOfAnotherStatus(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		f := newMaintFixture(t, d, ctx)
+		id := f.seed(t, f.a, f.b, "cites", "rule:citation", edgeStatusAsserted, 1, f.quoteOnlyA)
+		proposal := f.seed(t, f.a, f.b, "cites", "rule:citation", edgeStatusProposed, 2)
+		_, r := f.maintain(t, f.run, id, "merge", `,"survivor_id":"`+proposal+`","method":"rule:maintain"`)
+		wantRefusal(t, "merge of an asserted statement into a proposal", r, "survivor_mismatch")
+		if s := f.row(t, id); s.ExpiredAt != nil || len(f.evidence(t, proposal)) != 0 {
+			t.Errorf("a refused merge changed something: %+v", s)
+		}
+	})
+}
+
+// expire, demote and merge change what is live, so they need link — the verb of
+// accepting, rejecting and unlinking — on both ends' documents (and the
+// survivor's); verify, flag and the evidence actions need only propose.
+func TestMaintainStatement_RetiringNeedsLinkOnBothEnds(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	open := tenantDocCtx(base, nil)
+	s := seedACLDocs(t, d, open)
+	key, _, _ := d.resolveScope(open, "tenant")
+	link := func(validAt int) string {
+		out, res := docExec(t, d, open, fmt.Sprintf(`{"op":"link_chunks","scope":"tenant","from_id":%q,"to_id":%q,"kind":"cites","valid_at":%d,
+			"evidence":[{"chunk_id":%q,"quote":"savepoint nesting public"}]}`, s.publicChunk, s.secretChunk, validAt, s.publicChunk))
+		if res.IsError {
+			t.Fatal(res.Text)
+		}
+		if err := d.exec(open, key, `UPDATE chunk_edges SET method = 'rule:citation' WHERE id = ?`, out["id"]); err != nil {
+			t.Fatal(err)
+		}
+		return out["id"].(string)
+	}
+	id, survivor := link(1), link(2)
+	noLink := statementMethodRun(tenantDocCtx(base, aclSet(t,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"link"}, Resources: []string{"document:tenant:/kb/secret/**"}})), "rule")
+	call := func(action, extra string) tools.Result {
+		_, res := docExec(t, d, noLink, `{"op":"maintain_statement","scope":"tenant","id":"`+id+`","action":"`+action+`","method":"rule:maintain"`+extra+`}`)
+		return res
+	}
+	for _, c := range []struct{ action, extra string }{
+		{"expire", `,"reason":"r"`},
+		{"demote", `,"reason":"r"`},
+		{"merge", `,"survivor_id":"` + survivor + `"`},
+	} {
+		refusedByACL(t, c.action+" without link on an end", call(c.action, c.extra))
+	}
+	var row statementRow
+	if got, err := d.statementByID(open, key, id); err != nil || got == nil {
+		t.Fatal(err)
+	} else {
+		row = *got
+	}
+	if row.ExpiredAt != nil || row.Status != edgeStatusAsserted {
+		t.Errorf("a refused action changed the statement: %+v", row)
+	}
+	for _, action := range []string{"verify", "flag"} {
+		if r := call(action, `,"reason":"r"`); r.IsError {
+			t.Errorf("%s needs only propose, refused: %s", action, r.Text)
+		}
+	}
+}

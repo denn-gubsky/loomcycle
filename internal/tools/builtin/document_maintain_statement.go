@@ -13,8 +13,12 @@ package builtin
 //
 // Who may call it: a code agent holding a statement_methods grant (its writes
 // carry the method it stamps), and the operator plane. A statement a person
-// wrote (method manual) takes only verify and flag from anyone: what a person
-// asserted is not a pass's to undo.
+// wrote (method manual) takes only verify and flag from anyone, and one an
+// operator ruled on (judged_by operator) only verify and flag from a run: what
+// a person asserted or decided is not a pass's to undo. The ACL asks propose
+// for every action, and link on both ends for the actions that change what is
+// live (expire, demote, merge) — link is the verb of accepting, rejecting and
+// unlinking, which those actions undo or stand in for.
 //
 // Every write is compare-and-set on the statement as it was read — its status
 // and that it is still live (and, for flag, its attributes) — so of two
@@ -38,7 +42,7 @@ import (
 const maintainOp = "maintain_statement"
 
 // maintainActions is every action, and whether it applies to a statement a
-// person wrote.
+// person wrote or an operator ruled on.
 var maintainActions = map[string]bool{
 	"verify":            true,
 	"flag":              true,
@@ -48,6 +52,10 @@ var maintainActions = map[string]bool{
 	"stale_evidence":    false,
 	"relocate_evidence": false,
 }
+
+// maintainLinkActions change what readers see as live, so they need link on
+// the statement's ends, not only propose.
+var maintainLinkActions = map[string]bool{"expire": true, "demote": true, "merge": true}
 
 // errMaintainChanged rolls back a merge whose statement (or survivor) changed
 // after it was read.
@@ -97,6 +105,18 @@ func (d *Document) applyMaintenance(ctx context.Context, key sqlmem.ScopeKey, ms
 	case s.Method == edgeMethodManual && !maintainActions[in.Action]:
 		return errBusiness(maintainOp+": statement_manual: a person wrote this statement, so only verify and flag apply to it",
 			"Flag it for review (action flag) and say why in reason."), nil
+	case s.JudgedBy == "operator" && !maintainActions[in.Action] && !authorIsOperatorPlane(ctx):
+		return errBusiness(maintainOp+": statement_operator_ruled: an operator ruled on this statement, so from a run only verify and flag apply to it",
+			"Flag it for review (action flag) and say why in reason."), nil
+	}
+	if maintainLinkActions[in.Action] {
+		refused, err := d.linkOnEnds(ctx, key, s)
+		if err != nil {
+			return errFrom(maintainOp+": access control: "+err.Error(), err), nil
+		}
+		if refused != nil {
+			return *refused, nil
+		}
 	}
 	reason := strings.TrimSpace(in.Reason)
 	judge := in.edgeMethod
@@ -180,6 +200,22 @@ func (d *Document) applyMaintenance(ctx context.Context, key sqlmem.ScopeKey, ms
 	}
 	d.publishEdgeChange(ctx, key, mscope, maintainOp, s.ID, s.FromID, s.ToID, s.Kind, published)
 	return jsonResult(out)
+}
+
+// linkOnEnds asks link on the documents of both of s's ends, as link_chunks
+// asks it of from_id and to_id. A merge survivor has the same ends (checked
+// before anything moves), so this covers it too. No access-control set: allowed.
+func (d *Document) linkOnEnds(ctx context.Context, key sqlmem.ScopeKey, s *statementRow) (*tools.Result, error) {
+	a := d.newDocACL(ctx, key)
+	if a == nil {
+		return nil, nil
+	}
+	for _, id := range []string{s.FromID, s.ToID} {
+		if r, err := a.chunk(ctx, maintainOp, "link", id); r != nil || err != nil {
+			return r, err
+		}
+	}
+	return nil, nil
 }
 
 // flagStatement sets attributes.needs_review (and needs_review_reason) for a
@@ -295,9 +331,11 @@ func (d *Document) mergeStatement(ctx context.Context, key sqlmem.ScopeKey, s *s
 	switch {
 	case sv == nil:
 		return refuse(errNotFound(maintainOp+": no such statement: "+in.SurvivorID, "Pass survivor_id from op=list_statements or op=get_edges."))
+	// The same status too: evidence moved from an asserted statement onto a
+	// proposal would be hidden from every reader that skips proposals.
 	case sv.ID == s.ID || sv.FromID != s.FromID || sv.ToID != s.ToID || sv.Kind != s.Kind ||
-		sv.ExpiredAt != nil || sv.Status == edgeStatusRejected:
-		return refuse(errValidation(maintainOp+": survivor_mismatch: a merge keeps another live statement of the same from_id, to_id and kind",
+		sv.ExpiredAt != nil || sv.Status != s.Status:
+		return refuse(errValidation(maintainOp+": survivor_mismatch: a merge keeps another live statement of the same from_id, to_id, kind and status",
 			"Pass a live statement of the same relation as survivor_id, or expire this one instead."))
 	}
 	err = d.withSqlTxn(ctx, key, func(tx string) error {
