@@ -117,8 +117,24 @@ uses `EXECUTE`, the scope refuses Memory SQL until that object is dropped;
 `DROP` statements stay allowed.
 
 On sqlite this check is complete, because sqlite cannot build SQL from
-strings. On PostgreSQL a follow-up moves the document tables to a role that
-Memory's SQL does not log in as, so the engine enforces the boundary itself.
+strings. On PostgreSQL the engine enforces the boundary as well. Each scope has
+a second schema and login role for the Document tool's tables (`sqlmem_d_…` /
+`sqlmem_dr_…`, beside the agent's `sqlmem_s_…` / `sqlmem_r_…`):
+- the agent's role has no `USAGE` on that schema, so even an unchecked
+  statement is refused with *permission denied*;
+- the Document role's `search_path` holds only its own schema, so nothing an
+  agent creates in its schema can stand in for a document table or function.
+
+A scope created before this split keeps its document tables in the agent's
+schema. The Document tool's first use of the scope moves them:
+1. It brings the tables to the current shape where they are.
+2. It creates fresh tables on the document plane.
+3. It copies the rows, read as the agent's role and written as the Document
+   role, then drops the old tables.
+
+Triggers, rules, row policies, views and extra columns an agent attached to the
+old tables are logged and dropped, and none of them runs as the Document role.
+A snapshot restored from any version takes the same path.
 
 ## Storage tiers — SQL Memory follows the main backend
 
@@ -303,8 +319,14 @@ is defense-in-depth):
     runs agent SQL**, so its authority is unreachable from a statement.
 - `sql_query` additionally runs in a **read-only transaction**, so any write the
   validator missed (e.g. `SELECT … INTO`) fails at the engine.
-- The schema-size quota uses a `pg_total_relation_size` sweep over the scope
-  schema before a write.
+- The **Document tool's tables live on a plane of their own**: a second schema
+  and `LOGIN` role per scope (`sqlmem_d_…` / `sqlmem_dr_…`), with `USAGE` only on
+  that schema and a `search_path` of that schema alone. The agent's role has no
+  `USAGE` on it, so an agent cannot read chunks past the Document tool's access
+  rules or accept its own proposed statement, whatever SQL it writes. See *The
+  Document tool's tables are off limits* above.
+- The schema-size quota uses a `pg_total_relation_size` sweep over the scope's
+  schemas (both planes) before a write.
 - Per-scope role passwords are derived `HMAC(aux-admin-password, role-name)` (so
   every replica computes the same value without coordination); the agent has no
   network path to the aux DB regardless.
@@ -363,8 +385,9 @@ Requirements / notes:
   (`HMAC(admin-password, role-name)`), so the runtime can authenticate as each
   scope role. A passwordless DSN (trust / peer / cert) is refused at startup.
 - **`pg_hba.conf` must let the per-scope roles connect.** The runtime opens a
-  dedicated connection authenticated as each scope's `LOGIN` role
-  (`sqlmem_r_…`); the same host/auth rule that admits the admin role generally
+  dedicated connection authenticated as each scope's `LOGIN` roles
+  (`sqlmem_r_…`, and `sqlmem_dr_…` for the Document tool's tables); the same
+  host/auth rule that admits the admin role generally
   covers them (e.g. `host loomcycle_sqlmem all <runtime-cidr> scram-sha-256`).
   This is what makes the scope role the agent's `session_user` — the property
   the cross-scope isolation rests on.
@@ -384,7 +407,14 @@ Requirements / notes:
   completion (schema + role). Durable `agent`/`user` scopes persist (one schema +
   role each) — GC for abandoned durable scopes is a Phase 3 item; today an
   operator reclaims one by `DROP SCHEMA … CASCADE; DROP ROLE …` for the unused
-  scope (its name is `sqlmem_s_…` / `sqlmem_r_…`).
+  scope (its names are `sqlmem_s_…` / `sqlmem_r_…`, plus `sqlmem_d_…` /
+  `sqlmem_dr_…` when it held documents).
+- **Upgrading to the release with the document plane:** upgrade every replica
+  together. A replica still on an older release writes documents into the
+  agent's schema; once a newer replica has moved a scope, a table such an old
+  replica recreates there is discarded, with a warning, the next time the scope
+  is moved. A scope that holds documents needs two roles, so allow for twice
+  the roles in any role-count limit.
 - **Backups:** SQL Memory is included in the runtime JSON snapshot — see
   *Snapshot integration* below. A database-level backup of the aux DB / the
   sqlmem root is still recommended for large datasets (the snapshot is built
