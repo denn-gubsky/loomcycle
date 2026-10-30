@@ -812,3 +812,93 @@ func TestKBLinker_RejudgingAnUnchangedCorpusProposesNothing(t *testing.T) {
 		t.Errorf("rejudge_unchanged = %v, want 3 (the person's statement is not counted)", n)
 	}
 }
+
+// subjectFixture: the target document stands for a subject (its root c-root is the
+// subject), merged into doc-surv whose root is v-root. Three statements touch it:
+//   - st-mach (rule:terms, x1 → c-root): moves to v-root, then expires;
+//   - st-person (manual, x2 → c-root): flagged, nothing else;
+//   - st-inner (rule:citation, c1 → x1): does not touch the subject itself, and is
+//     checked as any statement is (verified).
+func subjectFixture() *kbFixture {
+	f := maintainFixture()
+	f.docTypes["doc-surv"] = "subject"
+	f.roots["doc-surv"] = "v-root"
+	f.others["v-root"] = kbChunk{ID: "v-root", DocumentID: "doc-surv", Type: "subject", Body: ""}
+	mach := &kbStatement{ID: "st-mach", From: "x1", To: "c-root", Kind: "uses_term", Status: "proposed", Method: "rule:terms",
+		CreatedAt: 1, ValidAt: 1704067200000000000, Evidence: []*kbEvidence{{ID: "st-mach-ev1", ChunkID: "x1", Quote: "material incidents"}}}
+	person := &kbStatement{ID: "st-person", From: "x2", To: "c-root", Kind: "uses_term", Status: "proposed", Method: "manual",
+		CreatedAt: 1, Evidence: []*kbEvidence{{ID: "st-person-ev1", ChunkID: "x2", Quote: "incident report"}}}
+	inner := citeStatement("st-inner", "c1", "x1", "report a material incident")
+	f.statements = []*kbStatement{mach, person, inner}
+	return f
+}
+
+// TestKBLinker_SubjectMergeMovesEveryStatementToTheSurvivor: in subject mode with
+// merged_into, a machine statement with the subject as an end is filed again with the
+// survivor in its place (same kind, evidence and date, revision_of the original) and
+// then expired; a person's is flagged; a statement that does not end at the subject is
+// only checked.
+func TestKBLinker_SubjectMergeMovesEveryStatementToTheSurvivor(t *testing.T) {
+	f := subjectFixture()
+
+	rep, _ := runLinker(t, f, `{"mode":"subject","document_id":"doc-target","merged_into":"doc-surv","write":"propose"}`)
+
+	got := proposals(f)
+	if len(got) != 1 {
+		t.Fatalf("proposals = %v, want st-mach moved", got)
+	}
+	p := got[0]
+	attrs, _ := p["attributes"].(map[string]any)
+	ev, _ := p["evidence"].([]any)
+	if p["from_id"] != "x1" || p["to_id"] != "v-root" || p["kind"] != "uses_term" || attrs["revision_of"] != "st-mach" ||
+		len(ev) != 1 || ev[0].(map[string]any)["quote"] != "material incidents" {
+		t.Errorf("proposal = %v, want x1 uses_term v-root with st-mach's evidence, revision_of st-mach", p)
+	}
+	if v, _ := p["valid_at"].(float64); int64(v) != 1704067200000000000 {
+		t.Errorf("valid_at = %v, want the original's", p["valid_at"])
+	}
+	for id, want := range map[string]string{"st-mach": "expire", "st-person": "flag", "st-inner": "verify"} {
+		if got := actionsOf(f, id); got != want {
+			t.Errorf("%s actions = %q, want %q", id, got, want)
+		}
+	}
+	for counter, want := range map[string]float64{"merge_touched": 2, "merge_repointed": 1} {
+		if n := layerCount(t, rep, "L6", counter); n != want {
+			t.Errorf("%s = %v, want %v", counter, n, want)
+		}
+	}
+	noViolations(t, f)
+}
+
+// TestKBLinker_SubjectModeWithoutAMergeOnlyChecks: subject mode without merged_into is
+// the maintenance checks over the statements touching the subject, nothing moved.
+func TestKBLinker_SubjectModeWithoutAMergeOnlyChecks(t *testing.T) {
+	f := subjectFixture()
+
+	runLinker(t, f, `{"mode":"subject","document_id":"doc-target","write":"propose"}`)
+
+	if got := proposals(f); len(got) != 0 {
+		t.Errorf("proposals = %v, want none", got)
+	}
+	for _, id := range []string{"st-mach", "st-person", "st-inner"} {
+		if strings.Contains(actionsOf(f, id), "expire") {
+			t.Errorf("%s was expired without a merge", id)
+		}
+	}
+}
+
+// TestKBLinker_MergedIntoOutsideSubjectModeIsRefused: merged_into means nothing to the
+// other modes, and the subject cannot be merged into itself.
+func TestKBLinker_MergedIntoOutsideSubjectModeIsRefused(t *testing.T) {
+	for _, in := range []string{
+		`{"mode":"maintain","document_id":"doc-target","merged_into":"doc-surv"}`,
+		`{"mode":"subject","document_id":"doc-target","merged_into":"doc-target"}`,
+		`{"mode":"subject","document_id":"doc-target","layers":["L2"]}`,
+	} {
+		f := subjectFixture()
+		rep, _ := runLinker(t, f, in)
+		if rep["status"] != "refused" || len(f.calls) != 0 {
+			t.Errorf("%s: status %v after %d calls, want refused before any", in, rep["status"], len(f.calls))
+		}
+	}
+}

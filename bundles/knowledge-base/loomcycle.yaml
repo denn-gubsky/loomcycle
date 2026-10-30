@@ -218,7 +218,8 @@ agents:
       var MODE_LAYERS = {
         document: ["L0", "L1", "L2", "L3", "L6"],
         drain: ["L0", "L1", "L2", "L3", "L6"],
-        maintain: ["L6"]
+        maintain: ["L6"],
+        subject: ["L6"]
       };
       var LAYER_ORDER = ["L0", "L1", "L2", "L3", "L4", "L6"];
 
@@ -256,13 +257,15 @@ agents:
         terms_scheme: true, as_of: true, max_writes: true, max_statements: true, max_messages: true,
         corpus_paths: true, exclude_document_types: true, candidate_floor: true,
         max_candidates_per_chunk: true, max_verdict_calls: true, max_chars: true,
-        min_body_chars: true, relations: true, include_quotes: true, rejudge: true
+        min_body_chars: true, relations: true, include_quotes: true, rejudge: true, merged_into: true
       };
 
-      var USAGE = "Pass a JSON object: {\"mode\": document|drain|maintain (default document), " +
-        "\"document_id\" or \"path\" (not in drain), optional scope (user|agent|tenant), " +
+      var USAGE = "Pass a JSON object: {\"mode\": document|drain|maintain|subject (default document), " +
+        "\"document_id\" or \"path\" (not in drain; in subject mode, the subject's document), " +
+        "optional scope (user|agent|tenant), " +
         "layers [\"L0\",\"L1\",\"L2\",\"L3\",\"L4\",\"L6\"], write (report|propose, default report), " +
         "terms_scheme, as_of (unix nanoseconds), max_writes, max_statements, max_messages, " +
+        "rejudge (L6), merged_into (subject mode: the surviving subject's document id), " +
         "and for L4: corpus_paths [\"/…\"], exclude_document_types, candidate_floor, " +
         "max_candidates_per_chunk, max_verdict_calls, max_chars, min_body_chars, " +
         "relations [{name, meaning, domain?, range?}], include_quotes}.";
@@ -343,7 +346,7 @@ agents:
         o.mode = DEFAULTS.mode;
         if (v.mode !== undefined) {
           if (typeof v.mode !== "string" || !hasOwn(MODE_LAYERS, v.mode)) {
-            return { error: "mode must be document, drain or maintain" };
+            return { error: "mode must be document, drain, maintain or subject" };
           }
           o.mode = v.mode;
         }
@@ -451,6 +454,13 @@ agents:
           if (rel.error) { return rel; }
           o.relations = rel.value;
         }
+        if (v.merged_into !== undefined) {
+          if (o.mode !== "subject") { return { error: "merged_into is read only by subject mode" }; }
+          if (!isID(v.merged_into) || v.merged_into === o.document_id) {
+            return { error: "merged_into must be the surviving subject's document id, not the subject's own" };
+          }
+          o.merged_into = v.merged_into;
+        }
         o.rejudge = false;
         if (v.rejudge !== undefined) {
           if (typeof v.rejudge !== "boolean") { return { error: "rejudge must be true or false" }; }
@@ -465,7 +475,7 @@ agents:
         if (list === undefined) {
           var def = MODE_LAYERS[o.mode];
           for (var i = 0; i < def.length; i++) { out[def[i]] = true; }
-          if (o.corpus_paths !== null && o.mode !== "maintain") { out.L4 = true; }
+          if (o.corpus_paths !== null && o.mode !== "maintain" && o.mode !== "subject") { out.L4 = true; }
           return { value: out };
         }
         if (!isArray(list) || list.length === 0 || list.length > LAYER_ORDER.length) {
@@ -479,8 +489,8 @@ agents:
           if (out[l] === true) { return { error: "layers: " + l + " is named twice" }; }
           out[l] = true;
         }
-        if (o.mode === "maintain" && (list.length !== 1 || out.L6 !== true)) {
-          return { error: "maintain runs the L6 layer only" };
+        if ((o.mode === "maintain" || o.mode === "subject") && (list.length !== 1 || out.L6 !== true)) {
+          return { error: o.mode + " runs the L6 layer only" };
         }
         return { value: out };
       }
@@ -1867,6 +1877,7 @@ agents:
           successor_copies_expired: 0, rename_refused: 0, all_stale_already_proposed: 0,
           rejudged_same: 0, rejudged_different: 0, rejudged_none: 0, rejudge_unchanged: 0,
           rejudge_kind_unknown: 0, rejudge_failed: 0, rejudge_budget: 0,
+          merge_touched: 0, merge_repointed: 0, merge_refused: 0,
           checks: { endpoints: 0, kind: 0, validity: 0, evidence: 0, redundancy: 0, semantics: 0, passed: 0 },
           actions: {}
         }));
@@ -1905,6 +1916,7 @@ agents:
           var rev = isPlainObject(todo[c].attributes) ? todo[c].attributes.revision_of : "";
           if (isID(rev)) { (st.copiesOf[rev] = st.copiesOf[rev] || []).push(todo[c]); }
         }
+        if (st.opts.merged_into) { repointMerged(st, L, doc, todo); }
         var passed = [];
         for (var j = 0; j < todo.length; j++) {
           if (st.settledNow[todo[j].id] === true) { continue; }
@@ -2085,6 +2097,38 @@ agents:
           return "acted";
         }
         return "pass";
+      }
+
+      // repointMerged is subject mode's merge: the subject (the root of the document
+      // the pass is about) was merged into another, so every statement with the
+      // subject as an end is filed again with the survivor in its place — same kind,
+      // same evidence, revision_of the original — and then expired. A person's
+      // statement, or one an operator ruled on, is flagged for them instead. A
+      // statement that would join the survivor to itself is only expired.
+      function repointMerged(st, L, doc, todo) {
+        var C = L.counts;
+        if (!doc.root) { return; }
+        var surv = resolveDocument(st, { document_id: st.opts.merged_into });
+        if (!surv.root) { throw new Error("merged_into names a document without a root"); }
+        for (var i = 0; i < todo.length; i++) {
+          var s = todo[i];
+          if (s.from_id !== doc.root && s.to_id !== doc.root) { continue; }
+          C.merge_touched++;
+          if (!mayRetire(s)) {
+            if (act(st, L, s, "flag", { reason: "the subject was merged into another" }).ok) { st.settledNow[s.id] = true; }
+            continue;
+          }
+          var from = s.from_id === doc.root ? surv.root : s.from_id;
+          var to = s.to_id === doc.root ? surv.root : s.to_id;
+          if (from !== to) {
+            var p = { op: "propose_statement", from_id: from, to_id: to, kind: s.kind, evidence: storedEvidence(s),
+                      attributes: { revision_of: s.id }, method: METHOD.maintain };
+            if (typeof s.valid_at === "number" && s.valid_at > 0) { p.valid_at = s.valid_at; }
+            if (!propose(st, L, p).ok) { C.merge_refused++; continue; }
+            C.merge_repointed++;
+          }
+          if (act(st, L, s, "expire", { reason: "the subject was merged into another" }).ok) { st.settledNow[s.id] = true; }
+        }
       }
 
       // rejudge is check 6, run only with rejudge: true, on a model-made statement

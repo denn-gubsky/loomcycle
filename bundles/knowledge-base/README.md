@@ -160,6 +160,7 @@ These rules always hold:
 | `document` (default) | `document_id` or `path` | L0, L1, L2, L3, L6 (+ L4 with `corpus_paths`) |
 | `maintain` | `document_id` or `path` | L6 |
 | `drain` | the `documents/ingested` queue, up to `max_messages` | L0, L1, L2, L3, L6 per message |
+| `subject` | the subject's document (`document_id` or `path`), whose root is the subject | L6 |
 
 | `write` | does |
 |---|---|
@@ -176,6 +177,13 @@ These rules always hold:
   covers the whole document.
 
 Drain runs at user scope only: the queue the bundle declares is user-scoped.
+
+**Subject** checks every statement touching a subject, for a curator to run after
+changing one. With `merged_into` (the surviving subject's document id), each
+statement with the subject as an end is filed again with the survivor in its
+place (same kind, evidence and date, `attributes.revision_of` the original) and
+then expired; a person's statement, or one an operator ruled on, is flagged
+instead. The other statements touching the subject get the ordinary checks.
 
 To link documents on import, add an opt-in schedule. Import latency is then the
 schedule's interval:
@@ -209,7 +217,7 @@ curl -sX POST localhost:8080/v1/runs \
 
 | field | default | meaning |
 |---|---|---|
-| `mode` | `document` | `document`, `maintain` or `drain` |
+| `mode` | `document` | `document`, `maintain`, `drain` or `subject` |
 | `document_id` or `path` | exactly one (none in drain) | the document |
 | `scope` | `user` | `user`, `agent` or `tenant` (drain: `user`) |
 | `layers` | per mode | any of `L0`, `L1`, `L2`, `L3`, `L4`, `L6`; `maintain` takes `L6` only |
@@ -222,6 +230,7 @@ curl -sX POST localhost:8080/v1/runs \
 | `corpus_paths` | — | L4 only: where its candidates come from |
 | `exclude_document_types`, `candidate_floor`, `max_candidates_per_chunk`, `max_verdict_calls`, `max_chars`, `min_body_chars`, `relations`, `include_quotes` | as before | L4 only. `min_body_chars` also bounds which passages L3 reads; `max_verdict_calls` and `relations` also bound and name what L6's `rejudge` asks |
 | `rejudge` | `false` | L6 check 6: judge a model-made statement again when its text changed |
+| `merged_into` | — | subject mode: the document of the subject this one was merged into |
 
 An unknown field or an out-of-range value refuses the run with
 `{"status":"refused","reason":…}`, before any tool call or lease.
