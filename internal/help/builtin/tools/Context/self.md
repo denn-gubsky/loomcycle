@@ -65,6 +65,10 @@ Present when they apply:
 - `context_distill_declined` — `{mode, reason, message?}` when an attempt to
   compact did nothing. **If it is present, calling `compact` again will not
   help**; report the reason instead.
+- `statement_methods` — `rule`, `extractor` or both: the methods you may
+  stamp on the relations you write (`method: rule:<name>`). Only a code agent
+  is ever granted them; absent means every relation you write is stamped
+  manual.
 - `self_names` — the names the end-user declared for themselves.
 - `principal` — the credential this run acts under: `tenant_id`, `subject`,
   `scopes`, `is_admin`, `legacy`, `token_def_id`, `token_suffix`. Never the
