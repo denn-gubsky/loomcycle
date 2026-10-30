@@ -1115,6 +1115,11 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 			return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
 		}
 	}
+	// On the merged result: a fork may move a code-js agent to a model while
+	// its parent's statement_methods ride along unsent.
+	if err := config.ValidateStatementMethods(base.Provider, base.StatementMethods); err != nil {
+		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+	}
 	return base, nil
 }
 
@@ -1518,6 +1523,12 @@ type mergedDef struct {
 	// the author's own grant by ceilGitRemote, and a fork that does not send
 	// it keeps its parent's.
 	GitRemote []string `json:"git_remote,omitempty"`
+	// StatementMethods is which methods a code-js agent may stamp on the
+	// relations it writes (config.AgentDef.StatementMethods). Absent and []
+	// both mean none. Authority, not content: excluded from content_sha256,
+	// held by ceilStatementMethods, and a fork that does not send it keeps
+	// its parent's.
+	StatementMethods []string `json:"statement_methods,omitempty"`
 	// The *_def_scopes capability gates (F40) — the substrate-def slice of the
 	// F14 closure. Without these a runtime-authored meta-agent (one that
 	// forks/promotes/schedules other agents) comes back default-deny and can't
@@ -1755,6 +1766,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.GitRemote != nil {
 		d.GitRemote = ov.GitRemote
 	}
+	if ov.StatementMethods != nil {
+		d.StatementMethods = ov.StatementMethods
+	}
 	// Interruption: any non-zero field signals the operator set the block
 	// (Enabled true, or kinds/max_pending supplied). A fork that wants to
 	// DISABLE an inherited interruption block is an edge the create path
@@ -1843,6 +1857,7 @@ var unhashedCapabilityTags = []string{
 	"schedule_def_scopes",
 	"shell_credentials", // RFC EW: absent and [] differ, and the stored JSON keeps them apart
 	"skills",            // the skills: pattern allowlist is authority, not content
+	"statement_methods", // which relation methods a code-js agent may stamp: authority, not content
 	"system_prompt_base",
 	"volume_def_scopes",
 	"volumes",
@@ -1954,6 +1969,9 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		// RFC FB: a fork of a static agent keeps its Git network grant; it is
 		// authority the operator gave, not something the fork asks for.
 		GitRemote: s.GitRemote,
+		// A fork of a static code-js agent keeps the methods the operator let
+		// it stamp.
+		StatementMethods: s.StatementMethods,
 		// F40: a static meta-agent bootstrapped into the substrate keeps its
 		// capability gates, so a fork of it inherits them.
 		AgentDefScopes:         s.AgentDefScopes,

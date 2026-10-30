@@ -433,6 +433,10 @@ type SubstrateAgentDef struct {
 	// would lose its network grant. Absent and [] both mean none, so a plain
 	// omitempty list is enough here.
 	GitRemote []string `json:"git_remote,omitempty"`
+	// StatementMethods mirrors config.AgentDef.StatementMethods. Kept in sync
+	// with builtin.mergedDef: dropped on the read, a stored code-js agent
+	// would stamp every relation it writes manual.
+	StatementMethods []string `json:"statement_methods,omitempty"`
 	// F40: the *_def_scopes capability gates — the substrate-def slice of the
 	// F14 closure, so a runtime-authored meta-agent's fork/schedule/etc.
 	// authority survives the round-trip instead of defaulting to deny. The
@@ -538,6 +542,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		CryptoScopes:           def.CryptoScopes,
 		ShellCredentials:       def.ShellCredentials,
 		GitRemote:              def.GitRemote,
+		StatementMethods:       def.StatementMethods,
 		Interruption:           def.Interruption,
 		AgentDefScopes:         def.AgentDefScopes,
 		ScheduleDefScopes:      def.ScheduleDefScopes,
@@ -610,6 +615,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		CryptoScopes:          s.CryptoScopes,
 		ShellCredentials:      s.ShellCredentials,
 		GitRemote:             s.GitRemote,
+		StatementMethods:      s.StatementMethods,
 		Interruption:          s.Interruption,
 		// F40: surface the capability gates to the policy layer so a
 		// runtime-authored meta-agent's AgentDef/Schedule/etc. scopes apply.

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -144,6 +145,11 @@ type Memory struct {
 	// dangerous statement shapes; redaction is defence for incidental
 	// secret-bearing literals in agent SQL).
 	Redactor *redact.Redactor
+
+	// docGuardChecked is the set of SQL scopes whose views, triggers, rules and
+	// functions were found not to reach a document table (memory_sql_doc_guard.go).
+	// It lives on the tool, beside the SqlMem it describes, so it cannot outlive it.
+	docGuardChecked sync.Map
 }
 
 // backend resolves the memrank.Backend the data ops route through,
@@ -911,6 +917,9 @@ func (m *Memory) execSqlQuery(ctx context.Context, in memoryInput) (tools.Result
 		return memErr(fmt.Sprintf("sql_query: %s", aerr), aerr), nil
 	}
 	key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(ctx), Scope: scope, ScopeID: scopeID}
+	if r, refused := m.guardDocumentTables(ctx, "sql_query", scope, scopeID, key, in.Statement); refused {
+		return r, nil
+	}
 	txnID := currentSqlTxnID(ctx, scope, scopeID)
 	start := time.Now()
 	var res *sqlmem.QueryResult
@@ -954,6 +963,9 @@ func (m *Memory) execSqlExec(ctx context.Context, in memoryInput) (tools.Result,
 	// Per-agent quota override wins over the manager default when > 0.
 	quota := tools.PolicyOf(ctx).SqlMem.QuotaBytes
 	key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(ctx), Scope: scope, ScopeID: scopeID}
+	if r, refused := m.guardDocumentTables(ctx, "sql_exec", scope, scopeID, key, in.Statement); refused {
+		return r, nil
+	}
 	txnID := currentSqlTxnID(ctx, scope, scopeID)
 	start := time.Now()
 	var res *sqlmem.ExecResult

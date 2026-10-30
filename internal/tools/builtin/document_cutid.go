@@ -71,6 +71,9 @@ func refuseCutIDs(in docInput) (tools.Result, bool) {
 		{"supersedes_id", []string{in.SupersedesID}},
 		{"about", []string{in.About}},
 		{"seed_ids", in.SeedIDs},
+		{"survivor_id", []string{in.SurvivorID}},
+		{"evidence_id", []string{in.EvidenceID}},
+		{"chunk_id", []string{in.ChunkID}},
 	}
 	for _, f := range fields {
 		for _, v := range f.vals {

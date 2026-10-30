@@ -2406,6 +2406,7 @@ components:
             - accept_statement
             - reject_statement
             - list_statements
+            - maintain_statement
             - resolve_anchor
             - lease
             - release

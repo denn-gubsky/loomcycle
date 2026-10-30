@@ -193,10 +193,12 @@ func TestExtractCitations_NoGrammarMeansNoHits(t *testing.T) {
 	}
 }
 
-// TestExtractCitations_UnreadableWorkIsFlaggedNotLeaked: a cited work held by a document
-// the caller may not read resolves to {unreadable: true} — no id — and the citing
-// document the caller may not read is refused outright.
-func TestExtractCitations_UnreadableWorkIsFlaggedNotLeaked(t *testing.T) {
+// TestExtractCitations_AnUnreadableWorkReadsAsUnresolved: a cited work held by a
+// document the caller may not read answers exactly as a work the scope does not hold.
+// Anything more — an id, or a flag — tells a confined reader that the work exists,
+// the oracle resolve_anchor closed for the same caller. The citing document the caller
+// may not read is refused outright.
+func TestExtractCitations_AnUnreadableWorkReadsAsUnresolved(t *testing.T) {
 	d, base, _ := documentFixture(t)
 	ctx := installTenantOntology(t, d, base, citationsOntologyMD, memrank.OntologyConfirmedStatus)
 	b, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "tenant", "markdown": penalEdition1, "reimport": true, "work_key": "act:Penal"})
@@ -215,11 +217,26 @@ func TestExtractCitations_UnreadableWorkIsFlaggedNotLeaked(t *testing.T) {
 	eff := aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/secret/**"}})
 	denied := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.ACL = eff })
 
-	got := extractVia(t, d, denied, map[string]any{"scope": "tenant", "document_id": citing})
-	if len(got.Hits) != 2 || got.Hits[0].Resolved != (citationResolution{Unreadable: true}) {
-		t.Errorf("a citation of an unreadable work = %#v", got.Hits)
+	// Raw JSON, not the decoded struct: a field the struct does not know would still
+	// reach the caller.
+	_, res := docExec(t, d, denied, `{"op":"extract_citations","scope":"tenant","document_id":"`+citing+`"}`)
+	if res.IsError {
+		t.Fatalf("extract_citations: %s", res.Text)
 	}
-	_, res := docExec(t, d, denied, `{"op":"extract_citations","scope":"tenant","document_id":"`+penal+`"}`)
+	var raw struct {
+		Hits []struct {
+			Quote    string          `json:"quote"`
+			Resolved json.RawMessage `json:"resolved"`
+		} `json:"hits"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &raw); err != nil {
+		t.Fatal(err)
+	}
+	// Hit 0 cites the Penal Act (held, unreadable); hit 1 the Civil Act (not held).
+	if len(raw.Hits) != 2 || string(raw.Hits[0].Resolved) != string(raw.Hits[1].Resolved) {
+		t.Errorf("an unreadable work answered differently from an absent one: %s", res.Text)
+	}
+	_, res = docExec(t, d, denied, `{"op":"extract_citations","scope":"tenant","document_id":"`+penal+`"}`)
 	refusedByACL(t, "extract_citations on an unreadable document", res)
 }
 

@@ -34,6 +34,13 @@ the result — add `LIMIT`/`WHERE` or page with `OFFSET`.
 
 ## Errors
 
+- `sql_query: document_tables_reserved: ...` — the statement names a table the
+  Document tool keeps in the same database (`documents`, `chunks`,
+  `chunk_edges`, `chunk_edge_evidence`, `chunk_tags`, …), for reading or for
+  writing; or, on PostgreSQL, it creates a function or calls one that runs a
+  query given as text. Use the Document tool's ops for documents, chunks and
+  statements, and give your own tables and columns other names. If it names a
+  view, trigger or function of this scope, drop that object first.
 - `Memory tool: this agent has no sql_scopes configured ...` or `sql scope
   "tenant" not in this agent's sql_scopes [...]` — not granted. Retrying is
   pointless; only the operator can grant it.

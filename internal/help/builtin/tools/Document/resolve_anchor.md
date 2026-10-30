@@ -8,7 +8,8 @@ anchor it had when first imported (a renumbered part is still found by it). It
 answers with the version of the part in force at `as_of`, so a citation to a
 past edition resolves to the text that was in force then.
 
-When the scope does not hold the work, `found` is false. With
+When the scope does not hold the work — or holds it in a document you may not
+read — `found` is false. With
 `create_placeholder: true` an empty document is filed for it instead: link
 citations to its root, and its backlinks are the list of works still to import.
 Importing the work (`import_md` with `reimport: true` and the same `work_key`)
@@ -22,6 +23,11 @@ fills that placeholder in.
 - `create_placeholder` — file a placeholder when the work is not held.
 - `scope` — `user` (default), `agent` or `tenant`.
 
+A heading path can name two parts after a renumbering: the part now under that
+heading, and an older part whose FIRST anchor it was (Article 2 renumbered to
+Article 3 still carries `article-2` as its first anchor). The part now under the
+heading wins; pass `as_of` before the renumbering to reach the other.
+
 ## Returns
 
 `{work_key, found, document_id?, root_chunk_id?, placeholder?, chunk_id?}`.
@@ -30,8 +36,9 @@ fills that placeholder in.
 ## Errors
 
 - `resolve_anchor: missing required field: work_key`.
-- A permission error when the work is held in a document the caller may not
-  read.
+- With `create_placeholder`: a permission error when the work is held in a
+  document the caller may not read (the key is taken, so no placeholder can be
+  filed), or when the caller may not write the whole scope.
 
 ## Examples
 

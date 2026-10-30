@@ -42,10 +42,11 @@ as of now. Pass `as_of` (e.g. the work's publication date) when that matters.
   - `char_start`/`char_end` are character offsets into the chunk's text, the
     unit statement evidence uses.
   - `groups` holds the pattern's named groups that matched.
-  - `resolved` is `{document_id?, chunk_id?, exact, placeholder, unreadable?}`.
+  - `resolved` is `{document_id?, chunk_id?, exact, placeholder}`.
     `exact` is true when the cited part was found; with only `document_id`, the
-    citation reached the work but not the part. `unreadable` means the work is
-    held by a document the caller may not read.
+    citation reached the work but not the part. With neither, the work is not one
+    you can read here: either the scope does not hold it or you may not read the
+    document that does.
 - `truncated` — more citations matched than `limit`.
 
 ## Errors
