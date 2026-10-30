@@ -41,7 +41,9 @@ state, and a link a judge refuted or an operator rejected stays where it is.
   its `confidence`, `invalid_at` and `attributes` follow the peer, a value the
   peer cleared is cleared, and its evidence is kept (counted in
   `edges_updated`). `valid_at` is part of a link's identity, so a peer link
-  with another `valid_at` arrives as a second link beside the first.
+  with another `valid_at` arrives as a second link beside the first. Once an
+  operator here accepts a pulled link, it keeps its envelope like a link
+  written here, counted in `edges_envelope_kept`.
 - **A link written here** (by you, an import or a rule) keeps its own
   confidence, validity and attributes; only evidence it lacks is added. A
   difference is counted in `edges_envelope_kept`.

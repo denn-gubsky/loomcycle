@@ -62,7 +62,7 @@ while keeping the old version, write the correction under a NEW key and then
   subject to a different one, is reported as `relation_conflicts`, never
   removed. An upsert with `about_ids` replaces the relation the fact stated
   before, and retiring or deleting the fact ends it — unless another fact
-  still states it.
+  still states it, or an operator accepted it.
 - `method` — with `relation`: how the relation was found, `rule:<name>` or
   `extractor:<name>`, recorded on it in place of the memory pass's own method.
   Only an agent granted that kind of method may send it (`method_not_granted`
