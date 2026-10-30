@@ -217,3 +217,23 @@ func TestMemorySQLGuard_CoversEveryDocumentTable(t *testing.T) {
 		}
 	})
 }
+
+// A scope found clean is remembered by the Memory tool that checked it, never
+// process-wide: a scope restored with a planted view is checked again by the
+// tool serving it. (The process-wide cache this replaced was keyed by the
+// manager's address, which a later manager can reuse.)
+func TestMemorySQLGuard_CleanScopeIsRememberedPerTool(t *testing.T) {
+	guardBothTiers(t, func(t *testing.T, d *Document, m *Memory, ctx context.Context) {
+		stmtDoc(t, d, ctx, "Remembered")
+		mustMemSQL(t, m, ctx, "sql_query", `SELECT 1`)
+		key, _, _ := d.resolveScope(ctx, "user")
+		if _, err := d.SqlMem.Exec(ctx, key, `CREATE VIEW leak AS SELECT * FROM chunk_edges`, nil, 0); err != nil {
+			t.Fatal(err)
+		}
+		fresh := &Memory{Store: d.Store, SqlMem: d.SqlMem}
+		text, isErr := memSQL(t, fresh, ctx, "sql_query", `SELECT 1`)
+		if !isErr || !strings.Contains(text, "leak") {
+			t.Fatalf("a fresh tool over the same scope: error=%v %s; want refused naming the planted view", isErr, text)
+		}
+	})
+}

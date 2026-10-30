@@ -302,16 +302,13 @@ func pgEscapeStringEnd(s string, i int) int {
 // which no name check can see through.
 var pgDynamicSQLRe = regexp.MustCompile(`(?i)\bexecute\b`)
 
-// memorySQLScopeChecked remembers the scopes whose views, triggers and rules
-// were found clean. Nothing made through Memory SQL afterwards can name a
-// document table, so one check per scope per process is enough.
-var memorySQLScopeChecked sync.Map
-
-// plantedDocumentObject names a view, trigger or rule in the scope whose
-// definition names a document table, or "" when there is none.
-func plantedDocumentObject(ctx context.Context, m *sqlmem.Manager, key sqlmem.ScopeKey) (string, error) {
-	ck := fmt.Sprintf("%p\x1f%s\x1f%s\x1f%s", m, key.Tenant, key.Scope, key.ScopeID)
-	if _, ok := memorySQLScopeChecked.Load(ck); ok {
+// plantedDocumentObject names a view, trigger, rule or function in the scope
+// that reaches a document table, or "" when there is none. A scope found clean
+// is remembered in checked: nothing made through Memory SQL afterwards can
+// name a document table, so one check per scope is enough.
+func plantedDocumentObject(ctx context.Context, m *sqlmem.Manager, checked *sync.Map, key sqlmem.ScopeKey) (string, error) {
+	ck := key.Tenant + "\x1f" + key.Scope + "\x1f" + key.ScopeID
+	if _, ok := checked.Load(ck); ok {
 		return "", nil
 	}
 	postgres := m.Tier() == "postgres"
@@ -338,7 +335,7 @@ func plantedDocumentObject(ctx context.Context, m *sqlmem.Manager, key sqlmem.Sc
 			return fmt.Sprintf("%v %v", row[0], row[1]), nil
 		}
 	}
-	memorySQLScopeChecked.Store(ck, true)
+	checked.Store(ck, true)
 	return "", nil
 }
 
@@ -351,7 +348,7 @@ var leadingDropRe = regexp.MustCompile(`(?i)^\s*drop\b`)
 func (m *Memory) guardDocumentTables(ctx context.Context, op, scope, scopeID string, key sqlmem.ScopeKey, stmt string) (tools.Result, bool) {
 	why := refuseDocumentTables(stmt, m.SqlMem.Tier() == "postgres")
 	if why == "" && !leadingDropRe.MatchString(stmt) {
-		obj, err := plantedDocumentObject(ctx, m.SqlMem, key)
+		obj, err := plantedDocumentObject(ctx, m.SqlMem, &m.docGuardChecked, key)
 		if err != nil {
 			m.auditSql(ctx, op, scope, scopeID, stmt, 0, 0, err)
 			return errFrom(fmt.Sprintf("%s: %s", op, err), err), true

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -144,6 +145,11 @@ type Memory struct {
 	// dangerous statement shapes; redaction is defence for incidental
 	// secret-bearing literals in agent SQL).
 	Redactor *redact.Redactor
+
+	// docGuardChecked is the set of SQL scopes whose views, triggers, rules and
+	// functions were found not to reach a document table (memory_sql_doc_guard.go).
+	// It lives on the tool, beside the SqlMem it describes, so it cannot outlive it.
+	docGuardChecked sync.Map
 }
 
 // backend resolves the memrank.Backend the data ops route through,
