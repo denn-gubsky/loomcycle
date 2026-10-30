@@ -85,7 +85,9 @@ type classifyCandidate struct {
 }
 
 type classifyStep struct {
-	Step       string              `json:"step"`
+	Step string `json:"step"`
+	// Method is which model answered the model step: decision or chat.
+	Method     string              `json:"method,omitempty"`
 	Candidates []classifyCandidate `json:"candidates"`
 	Chosen     string              `json:"chosen,omitempty"`
 	Neighbours int                 `json:"neighbours,omitempty"`
@@ -220,6 +222,26 @@ func (d *Document) classify(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		}
 	}
 	handSet := cd.rootType != "" && (cd.record == nil || !strings.EqualFold(cd.record.Applied, cd.rootType))
+
+	// Step 3 — the model, only where the rules and the vote left the class open (and
+	// never over a type set by hand, which nothing here would change). Its answer is
+	// always a proposal.
+	if chosen == nil && !handSet {
+		model := d.classifyModel(ctx, read, classes, rules, cd, concepts)
+		out.Steps = append(out.Steps, model.step)
+		if model.class != "" {
+			chosen = model.candidate
+			out.Class, out.Fields = chosen.Class, identityGroups(classes[strings.ToLower(chosen.Class)], chosen.Groups)
+			if k, ok := memrank.IdentityKey(classes[strings.ToLower(chosen.Class)], out.Fields, cd.title); ok {
+				out.WorkKey = k
+			}
+			out.Result = "proposed"
+		}
+		if len(concepts) == 0 && len(model.concepts) > 0 {
+			concepts = model.concepts
+			out.Concepts = concepts
+		}
+	}
 	if handSet {
 		out.Warnings = append(out.Warnings, "the document's type "+cd.rootType+" was set by hand; classify does not replace it")
 		out.Result, live = "kept", false
@@ -542,4 +564,66 @@ func phraseIn(low, text, phrase string) string {
 func lastRune(s string) rune {
 	r := []rune(s)
 	return r[len(r)-1]
+}
+
+type classifyModelResult struct {
+	step      classifyStep
+	class     string
+	candidate *classifyCandidate
+	concepts  []classifyConcept
+}
+
+// classifyModel is step 3: memory.classifier, asked about the classes the rules left
+// open (or every document class when none matched) and, when the vote found none, the
+// concepts in force.
+func (d *Document) classifyModel(ctx context.Context, read OntologyRead, classes map[string]memrank.OntologyTerm,
+	rules []classifyCandidate, cd classifyDoc, voted []classifyConcept) classifyModelResult {
+	out := classifyModelResult{step: classifyStep{Step: "model", Candidates: []classifyCandidate{}}}
+	if d.Classifier == nil {
+		out.step.Reason = "no classifier model is configured"
+		return out
+	}
+	req := memrank.ClassifyRequest{Title: cd.title, Text: cd.text}
+	if len(rules) > 1 {
+		for _, r := range rules {
+			req.Classes = append(req.Classes, memrank.ClassifyOption{Name: r.Class})
+		}
+	} else {
+		for _, c := range classes {
+			if !strings.EqualFold(c.Name, memrank.DocumentClassRoot) {
+				req.Classes = append(req.Classes, memrank.ClassifyOption{Name: c.Name})
+			}
+		}
+		sort.Slice(req.Classes, func(i, j int) bool { return req.Classes[i].Name < req.Classes[j].Name })
+	}
+	byName := map[string]memrank.OntologyConcept{}
+	if len(voted) == 0 {
+		for _, s := range read.Schemes {
+			for _, c := range s.Concepts {
+				if _, dup := byName[strings.ToLower(c.Name)]; dup {
+					continue // an ambiguous name cannot be told apart in an answer
+				}
+				byName[strings.ToLower(c.Name)] = c
+				req.Concepts = append(req.Concepts, memrank.ClassifyOption{Name: c.Name, Meaning: c.Meaning})
+			}
+		}
+	}
+	v := d.Classifier.Classify(ctx, req)
+	out.step.Method, out.step.Reason = v.Method, v.Reason
+	if v.Class != "" {
+		cand := classifyCandidate{Class: v.Class, Quote: v.Quote, Share: v.Probability}
+		for _, r := range rules {
+			if strings.EqualFold(r.Class, v.Class) {
+				cand.Groups, cand.From = r.Groups, r.From
+			}
+		}
+		out.step.Candidates = append(out.step.Candidates, cand)
+		out.step.Chosen, out.class, out.candidate = v.Class, v.Class, &cand
+	}
+	for _, name := range v.Concepts {
+		if c, ok := byName[strings.ToLower(name)]; ok {
+			out.concepts = append(out.concepts, classifyConcept{Concept: c.Name, Tag: c.Tag, Kind: "subject", ChunkID: c.ChunkID})
+		}
+	}
+	return out
 }

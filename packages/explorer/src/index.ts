@@ -30,6 +30,16 @@ export type {
   CanvasDoc,
   Principal,
   AssistantContext,
+  ClassifyWrite,
+  ClassifyResult,
+  ClassifyCandidate,
+  ClassifyStep,
+  ClassifyIssuer,
+  ClassifyConcept,
+  ClassifyStatement,
+  ClassifyAnswer,
+  AcceptClassificationAnswer,
+  ClassificationRecord,
 } from "./types";
 
 // A stop on the document trail — the argument shape of DocumentViewer's

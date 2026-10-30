@@ -2824,8 +2824,8 @@ models:
 
 | where an alias is used | kind it must have |
 |---|---|
-| an agent's `model:`, a tier candidate, the listwise memory reranker, the unit generator | `chat` |
-| the `decision:` block, a memory reranker with `kind: decision` | `decision` |
+| an agent's `model:`, a tier candidate, the listwise memory reranker, the unit generator, `memory.classifier.chat` | `chat` |
+| the `decision:` block, a memory reranker with `kind: decision`, `memory.classifier.decision` | `decision` |
 | `memory.embedder.model` | `embedder` |
 | `transcription.stt.model` (§9h) | `transcriber` — the tag is required here; an untagged alias is refused |
 | `speech.voices.<language>.model` (§9i) | `synthesizer` — the tag is required here; an untagged alias is refused |

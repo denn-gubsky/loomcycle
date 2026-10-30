@@ -371,3 +371,44 @@ describe("RFC FN statement ops → wire mapping", () => {
     );
   });
 });
+
+// RFC FO classification ops ride the same /v1/_document passthrough.
+describe("RFC FO classification ops → wire mapping", () => {
+  it("documentClassify sends document_id + the write mode", async () => {
+    const s = stubClient();
+    const dl = dataLayerFromClient(s.client);
+    await dl.documentClassify!("doc1", "report", "tenant", BROWSE);
+    await dl.documentClassify!("doc1", "propose", "user");
+    expect(s.document).toHaveBeenNthCalledWith(
+      1,
+      { op: "classify", document_id: "doc1", write: "report", scope: "tenant" },
+      BROWSE,
+    );
+    expect(s.document).toHaveBeenNthCalledWith(
+      2,
+      { op: "classify", document_id: "doc1", write: "propose", scope: "user" },
+      undefined,
+    );
+  });
+
+  it("documentAcceptClassification sends the document_id", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).documentAcceptClassification!("doc1", "tenant", BROWSE);
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "accept_classification", document_id: "doc1", scope: "tenant" },
+      BROWSE,
+    );
+  });
+
+  it("nothing pending rejects with the runtime's error", async () => {
+    const s = stubClient();
+    s.document.mockRejectedValueOnce(
+      Object.assign(new Error("accept_classification: nothing_pending: the document has no pending classification"), {
+        name: "SubstrateToolRefusedError",
+      }),
+    );
+    await expect(
+      dataLayerFromClient(s.client).documentAcceptClassification!("doc1", "user"),
+    ).rejects.toThrow("nothing_pending");
+  });
+});

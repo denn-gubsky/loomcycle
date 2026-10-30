@@ -7984,6 +7984,140 @@ button.doc-ref-target.external {
   cursor: pointer;
 }
 
+/* RFC FO — the classification surface between the document toolbar and the
+   chunk split: the Classify panel (a report, then Apply), the pending block
+   (Accept) and the notice an acceptance leaves. */
+.doc-classify {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--lc-text-sm);
+}
+.doc-classify button {
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: var(--lc-text-xs);
+}
+.doc-classify button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.doc-classify button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.doc-classify button.doc-classify-dismiss {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--fg-soft);
+  padding: 0 4px;
+}
+.doc-classify-pending,
+.doc-classify-notice,
+.doc-classify-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.doc-classify-pending {
+  border-left: 3px solid var(--running);
+  padding-left: 8px;
+}
+.doc-classify-label {
+  color: var(--running);
+  font-weight: 600;
+}
+.doc-classify-head h4 {
+  margin: 0;
+  font-size: var(--lc-text-sm);
+  color: var(--fg-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.doc-classify-result {
+  font-size: var(--lc-text-xs);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  color: var(--fg-soft);
+}
+.doc-classify-result.classified {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.doc-classify-result.proposed {
+  color: var(--running);
+  border-color: var(--running);
+}
+.doc-classify-hint {
+  color: var(--fg-muted);
+  font-size: var(--lc-text-xs);
+}
+.doc-classify-err {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  color: var(--failed);
+  font-size: var(--lc-text-xs);
+}
+.doc-classify-warn {
+  color: var(--running);
+  font-size: var(--lc-text-xs);
+}
+.doc-classify-rows {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 4px 0 0;
+}
+.doc-classify-rows dt {
+  color: var(--fg-soft);
+  font-size: var(--lc-text-xs);
+}
+.doc-classify-rows dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.doc-classify-mono {
+  font-family: var(--lc-font-mono, monospace);
+  font-size: var(--lc-text-xs);
+}
+.doc-classify-item + .doc-classify-item::before {
+  content: " · ";
+  color: var(--fg-muted);
+}
+.doc-classify-steps,
+.doc-classify-warnings {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.doc-classify-step {
+  font-weight: 600;
+}
+.doc-classify-candidates summary {
+  cursor: pointer;
+  color: var(--fg-soft);
+  font-size: var(--lc-text-xs);
+}
+.doc-classify-candidates ul {
+  margin: 2px 0 4px;
+  padding-left: 16px;
+}
+.doc-classify-candidates li {
+  overflow-wrap: anywhere;
+}
+.doc-classify-actions {
+  display: flex;
+  gap: 6px;
+}
+
 /* ---- document trail: the breadcrumb back through followed references ---- */
 .doc-trail {
   display: flex;

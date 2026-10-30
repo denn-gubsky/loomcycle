@@ -423,3 +423,97 @@ func TestAcceptClassification_AForgedRecordAcceptsNothing(t *testing.T) {
 		}
 	}
 }
+
+type stubClassifier struct {
+	verdict memrank.ClassifyVerdict
+	asked   []memrank.ClassifyRequest
+}
+
+func (s *stubClassifier) Classify(_ context.Context, req memrank.ClassifyRequest) memrank.ClassifyVerdict {
+	s.asked = append(s.asked, req)
+	return s.verdict
+}
+
+func modelStep(a classifyAnswer) *classifyStep {
+	for i := range a.Steps {
+		if a.Steps[i].Step == "model" {
+			return &a.Steps[i]
+		}
+	}
+	return nil
+}
+
+// TestClassify_TheModelSettlesWhatTheStepsLeaveOpen: no rule matched and nothing voted,
+// so the model is asked about every document class but the root, and its answer — and
+// the concept it names — is a PROPOSAL, never applied.
+func TestClassify_TheModelSettlesWhatTheStepsLeaveOpen(t *testing.T) {
+	f := newClassifyFixture(t, memrank.OntologyConfirmedStatus, false)
+	stub := &stubClassifier{verdict: memrank.ClassifyVerdict{Method: memrank.ClassifyMethodChat, Class: "Order", Quote: "Розпорядження", Concepts: []string{"Risk Management"}}}
+	f.d.Classifier = stub
+	docID, root := f.doc("tenant", "Розпорядження 5", "/kb/x/5", "", [2]string{"Пункт 1", "управління ризиками"})
+	a := f.classify(f.ctx, "tenant", docID, nil)
+	if a.Result != "proposed" || a.Live || a.Class != "Order" || f.docType("tenant", docID) != "" {
+		t.Fatalf("a model verdict was applied, or lost: %+v", a)
+	}
+	step := modelStep(a)
+	if step == nil || step.Method != "chat" || step.Chosen != "Order" {
+		t.Fatalf("model step = %+v", step)
+	}
+	if len(stub.asked) != 1 {
+		t.Fatalf("asked %d times", len(stub.asked))
+	}
+	var offered []string
+	for _, c := range stub.asked[0].Classes {
+		offered = append(offered, c.Name)
+	}
+	if strings.Join(offered, ",") != "Code,Law,NormativeAct,Order" {
+		t.Errorf("offered classes = %v (the root class must not be one)", offered)
+	}
+	if len(stub.asked[0].Concepts) != 1 || !strings.Contains(stub.asked[0].Text, "управління ризиками") {
+		t.Errorf("request = %+v", stub.asked[0])
+	}
+	if len(a.Concepts) != 1 || len(a.Statements) != 1 || a.Statements[0].Status != edgeStatusProposed {
+		t.Errorf("the model's concept was not proposed: concepts %+v, statements %+v", a.Concepts, a.Statements)
+	}
+	if rec := pendingOf(t, f.root("tenant", root)); rec.Proposed != "Order" {
+		t.Errorf("record = %+v", rec)
+	}
+}
+
+// TestClassify_TheModelIsAskedOnlyWhereTheStepsLeaveItOpen: a unique rule match and a
+// hand-set type ask nothing; an ambiguous match offers the model only the tied classes,
+// and the chosen one keeps the identity fields its pattern filled.
+func TestClassify_TheModelIsAskedOnlyWhereTheStepsLeaveItOpen(t *testing.T) {
+	f := newClassifyFixture(t, memrank.OntologyConfirmedStatus, false)
+	stub := &stubClassifier{verdict: memrank.ClassifyVerdict{Method: memrank.ClassifyMethodDecision, Class: "Code", Probability: 0.9}}
+	f.d.Classifier = stub
+	unique, _ := f.doc("user", "Закон України № 11-I", "/kb/u", "")
+	if a := f.classify(f.ctx, "user", unique, nil); !a.Live || modelStep(a) != nil {
+		t.Errorf("a unique rule match asked the model: %+v", a)
+	}
+	handSet, _ := f.doc("user", "Розпорядження 9", "/kb/h", "Order")
+	if a := f.classify(f.ctx, "user", handSet, nil); a.Result != "kept" || modelStep(a) != nil {
+		t.Errorf("a hand-set type asked the model: %+v", a)
+	}
+	if len(stub.asked) != 0 {
+		t.Fatalf("asked %d times", len(stub.asked))
+	}
+	tied, _ := f.doc("user", "Закон України № 12-I", "/kb/t", "", [2]string{"Кодекс України про працю", "текст"})
+	a := f.classify(f.ctx, "user", tied, nil)
+	if len(stub.asked) != 1 || len(stub.asked[0].Classes) != 2 {
+		t.Fatalf("an ambiguous match offered %+v", stub.asked)
+	}
+	if a.Class != "Code" || a.Live || a.Result != "proposed" || a.Fields["number"] != "12-I" || a.WorkKey != "code:12-i" {
+		t.Errorf("answer = %+v", a)
+	}
+}
+
+// TestClassify_WithoutAClassifierTheModelStepSaysSo.
+func TestClassify_WithoutAClassifierTheModelStepSaysSo(t *testing.T) {
+	f := newClassifyFixture(t, memrank.OntologyConfirmedStatus, false)
+	docID, _ := f.doc("user", "Розпорядження 5", "/kb/x", "")
+	a := f.classify(f.ctx, "user", docID, nil)
+	if step := modelStep(a); step == nil || !strings.Contains(step.Reason, "no classifier") || a.Result != "unclassified" {
+		t.Errorf("answer = %+v", a)
+	}
+}
