@@ -1355,10 +1355,11 @@ func (d *Document) listStatements(ctx context.Context, key sqlmem.ScopeKey, in d
 const (
 	statementOrderCreated  = "created"
 	statementOrderVerified = "verified"
-	// listStatementsMaxPathDocs bounds the documents an under_path may name. Each
-	// is bound twice (either end), and SQLite refuses a statement with more than
-	// 32766 variables.
-	listStatementsMaxPathDocs = 10000
+	// listStatementsMaxDocs bounds each document list list_statements binds: the
+	// documents an under_path names, and a confined reader's readable endpoint
+	// documents. Each list is bound twice (one per end), and SQLite refuses a
+	// statement with more than 32766 variables: 4 x 7500 leaves room for the rest.
+	listStatementsMaxDocs = 7500
 	// statementMethodPrefixMax bounds method_prefix; a method is a short label.
 	statementMethodPrefixMax = 256
 )
@@ -1380,6 +1381,26 @@ func (d *Document) statementSelection(ctx context.Context, key sqlmem.ScopeKey, 
 			return true, nil
 		}
 		return acl.readable(ctx, docID)
+	}
+	if limited {
+		// Withhold in the query, before LIMIT: rows dropped after it would shrink
+		// the page and leave truncated / next_cursor standing on rows the reader
+		// cannot see — telling it hidden statements match its filter. The list is
+		// an allowlist of readable documents, as search sends, so no id of a denied
+		// document reaches the store and no refusal counts one. An end whose chunk
+		// is gone has no document and stays visible, as the listing filter has it.
+		docs, err := d.readableEndpointDocuments(ctx, key, acl)
+		if err != nil {
+			return nil, nil, false, nil, err
+		}
+		if len(docs) > listStatementsMaxDocs {
+			r := errBusiness(fmt.Sprintf("list_statements: relations here touch %d documents you may read, more than %d", len(docs), listStatementsMaxDocs),
+				"Select by document_id or under_path.")
+			return nil, nil, false, &r, nil
+		}
+		ph := placeholders(len(docs))
+		where = append(where, "(cf.document_id IS NULL OR cf.document_id IN ("+ph+")) AND (ct.document_id IS NULL OR ct.document_id IN ("+ph+"))")
+		args = append(append(args, docs...), docs...)
 	}
 	if in.DocumentID != "" {
 		ok, err := readable(in.DocumentID)
@@ -1436,8 +1457,8 @@ func (d *Document) statementSelection(ctx context.Context, key sqlmem.ScopeKey, 
 		if len(docs) == 0 {
 			return nil, nil, true, nil, nil
 		}
-		if len(docs) > listStatementsMaxPathDocs {
-			r := errValidation(fmt.Sprintf("list_statements: under_path names %d documents, more than %d", len(docs), listStatementsMaxPathDocs),
+		if len(docs) > listStatementsMaxDocs {
+			r := errValidation(fmt.Sprintf("list_statements: under_path names %d documents, more than %d", len(docs), listStatementsMaxDocs),
 				"Narrow under_path, or select by document_id.")
 			return nil, nil, false, &r, nil
 		}
@@ -1446,6 +1467,36 @@ func (d *Document) statementSelection(ctx context.Context, key sqlmem.ScopeKey, 
 		args = append(append(args, docs...), docs...)
 	}
 	return where, args, false, nil, nil
+}
+
+// readableEndpointDocuments lists, in pages under the store's row cap, the
+// documents holding an end of some statement that the caller may read.
+func (d *Document) readableEndpointDocuments(ctx context.Context, key sqlmem.ScopeKey, acl *docACL) ([]any, error) {
+	var docs []any
+	after := ""
+	for {
+		res, err := d.query(ctx, key, `SELECT DISTINCT c.document_id FROM chunks c
+			WHERE c.document_id > ? AND (c.id IN (SELECT from_id FROM chunk_edges) OR c.id IN (SELECT to_id FROM chunk_edges))
+			ORDER BY c.document_id LIMIT ?`, after, searchFilterPage)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range res.Rows {
+			id := asStr(r[0])
+			ok, err := acl.readable(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				docs = append(docs, id)
+			}
+			after = id
+		}
+		// Truncated: the store's row cap cut the page short of searchFilterPage.
+		if len(res.Rows) == 0 || (!res.Truncated && len(res.Rows) < searchFilterPage) {
+			return docs, nil
+		}
+	}
 }
 
 // statementCursor is list_statements' paging position. It names the order that

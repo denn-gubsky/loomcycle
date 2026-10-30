@@ -396,3 +396,63 @@ func TestListStatements_FilterOnAnUnreadableDocumentFindsNothing(t *testing.T) {
 		}
 	})
 }
+
+// Rows a confined reader may not see are withheld before the page is cut: a page
+// of limit N holds N visible rows when that many exist, and truncated /
+// next_cursor follow only visible rows — so a filter cannot tell the reader that
+// hidden statements matching it exist past the last one it sees.
+func TestListStatements_HiddenRowsNeverShapeThePage(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		open := tenantDocCtx(base, nil)
+		s := seedACLDocs(t, d, open)
+		link := func(to, kind string, createdAt int64) string {
+			out, r := docExec(t, d, open, `{"op":"link_chunks","scope":"tenant","from_id":"`+s.publicChunk+`","to_id":"`+to+`","kind":"`+kind+`"}`)
+			if r.IsError {
+				t.Fatal(r.Text)
+			}
+			id := out["id"].(string)
+			stmtSQL(t, d, open, "tenant", `UPDATE chunk_edges SET created_at = ?, method = ? WHERE id = ?`, createdAt, "rule:x", id)
+			return id
+		}
+		// Newest first: visible, hidden, visible, hidden, visible, hidden.
+		v1 := link(s.publicChunk, "cites", 60)
+		link(s.secretChunk, "cites", 50)
+		v2 := link(s.publicChunk, "implements", 40)
+		link(s.secretChunk, "implements", 30)
+		v3 := link(s.publicChunk, "defines", 20)
+		link(s.secretChunk, "defines", 10)
+		denied := tenantDocCtx(base, aclSet(t,
+			authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},
+			authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
+
+		// Only hidden rows lie past the last visible one: no page marker.
+		_, out := listStmts(t, d, denied, `{"op":"list_statements","scope":"tenant","status":"asserted","method_prefix":"rule:","limit":3}`)
+		if l, _ := out["statements"].([]any); len(l) != 3 {
+			t.Fatalf("limit 3: want 3 visible rows, got %v", out)
+		}
+		for _, k := range []string{"truncated", "next_cursor"} {
+			if _, ok := out[k]; ok {
+				t.Errorf("limit 3: %s set though only hidden rows remain: %v", k, out)
+			}
+		}
+		// Full pages of visible rows, in order, across the hidden ones.
+		after := ""
+		var pages [][]string
+		for i := 0; i < 5; i++ {
+			body := `{"op":"list_statements","scope":"tenant","status":"asserted","method_prefix":"rule:","limit":2`
+			if after != "" {
+				body += `,"after":"` + after + `"`
+			}
+			ids, out := listStmts(t, d, denied, body+"}")
+			pages = append(pages, ids)
+			next, ok := out["next_cursor"].(string)
+			if !ok {
+				break
+			}
+			after = next
+		}
+		if len(pages) != 2 || strings.Join(pages[0], ",") != v1+","+v2 || strings.Join(pages[1], ",") != v3 {
+			t.Errorf("limit 2 pages: got %v, want [[%s %s] [%s]]", pages, v1, v2, v3)
+		}
+	})
+}
