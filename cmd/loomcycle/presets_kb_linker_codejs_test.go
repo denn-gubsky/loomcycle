@@ -71,7 +71,7 @@ var kbOpContracts = []kbOpContract{
 	{Tool: "Document", Op: "maintain_statement", OnMain: false,
 		Request:  `{id, action: verify|expire|demote|merge|stale_evidence|relocate_evidence|flag, reason?, survivor_id?, evidence_id?, chunk_id?, method, scope}`,
 		Response: `{id, action, ok: true}`,
-		Assumes:  `R2: any non-error answer is success; demote is sent only for an asserted statement; only a manual statement or one an operator accepted (judged_by operator) is limited to verify or flag (import/sync/canvas statements may be expired, demoted and merged — owner decision 2026-10-30); merge needs a survivor of the same status; expire/demote/merge need the link verb on the endpoints' documents (R2 as built)`},
+		Assumes:  `R2: any non-error answer is success; demote is sent only for an asserted statement; only a manual statement or one an operator ruled on (operator_ruled_at set) is limited to verify or flag (import/sync/canvas statements may be expired, demoted and merged — owner decision 2026-10-30); merge needs a survivor of the same status; expire/demote/merge need the link verb on the endpoints' documents (R2 as built)`},
 	{Tool: "Document", Op: "describe_ontology", OnMain: false,
 		Request:  `{scope} (scope ignored)`,
 		Response: `{exists, status, confirmed, version, sections, partial?, classes, relations: [{name, source: base|tenant|reserved, discriminator?, renamed_from?, auto_assert?, …}], grammars, schemes: [{name, concepts: [{name, alt?, chunk_id, tag, …}]}]}`,
@@ -126,7 +126,7 @@ type kbEvidence struct {
 
 type kbStatement struct {
 	ID, From, To, Kind, Status, Method, Discriminator string
-	JudgedBy                                          string
+	OperatorRuledAt                                   int64
 	CreatedAt, ValidAt                                int64
 	Auto, Expired, Verified                           bool
 	Attributes                                        map[string]any
@@ -624,8 +624,8 @@ func (f *kbFixture) statementJSON(s *kbStatement, previewCap int) map[string]any
 	out := map[string]any{"id": s.ID, "from_id": s.From, "to_id": s.To, "kind": s.Kind, "status": s.Status,
 		"method": s.Method, "auto": s.Auto, "created_at": s.CreatedAt, "evidence": ev, "evidence_count": len(s.Evidence),
 		"from_document_id": f.docOf(s.From), "to_document_id": f.docOf(s.To)}
-	if s.JudgedBy != "" {
-		out["judged_by"] = s.JudgedBy
+	if s.OperatorRuledAt > 0 {
+		out["operator_ruled_at"] = s.OperatorRuledAt
 	}
 	if s.ValidAt != 0 {
 		out["valid_at"] = s.ValidAt
@@ -697,7 +697,7 @@ func (f *kbFixture) answerMaintain(in map[string]any) (tools.Result, error) {
 	// R2: only verify and flag apply to a person's own statement, or to one an
 	// operator accepted; the import, sync and canvas paths' statements are
 	// maintained like a rule's.
-	if (s.Method == "manual" || s.JudgedBy == "operator") && action != "verify" && action != "flag" {
+	if (s.Method == "manual" || s.OperatorRuledAt > 0) && action != "verify" && action != "flag" {
 		f.violate("maintain_statement %s on %s, a statement a person wrote (method %q)", action, id, s.Method)
 		return kbErr("maintain_statement: only verify and flag apply to a statement a person wrote")
 	}
@@ -721,6 +721,10 @@ func (f *kbFixture) answerMaintain(in map[string]any) (tools.Result, error) {
 		}
 		s.Expired = true
 	case "demote":
+		if reason == "" {
+			f.violate("demote of %s without a reason", id)
+			return kbErr("maintain_statement: reason is required")
+		}
 		if s.Status != "asserted" {
 			f.violate("demote of %s, which is %s", id, s.Status)
 		}

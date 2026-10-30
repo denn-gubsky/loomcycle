@@ -225,7 +225,8 @@ agents:
       // Anything else counts as "other": the report never carries error text.
       var REFUSALS = ["kind_reserved", "kind_not_declared", "domain_range_violation",
         "characteristic_violation", "qualifier_violation", "statement_rejected",
-        "statement_asserted", "not_a_proposal", "statement_changed",
+        "statement_asserted", "not_a_proposal", "statement_changed", "statement_manual",
+        "statement_operator_ruled", "statement_not_asserted", "statement_expired", "survivor_mismatch",
         "evidence_quote_not_found", "method_not_granted", "permission"];
 
       var INGEST_REASONS = { created: true, imported: true, reimported: true };
@@ -1755,11 +1756,11 @@ agents:
 
       // The statements L6 may expire, demote, move and merge: rule and extractor
       // writes, and those the import, sync and canvas paths wrote. A person's own
-      // (manual), one an operator accepted, or a method this body does not know,
+      // (manual), one an operator ruled on, or a method this body does not know,
       // is only verified or flagged.
       var RETIRABLE_METHODS = { "import": true, sync: true, canvas: true };
       function mayRetire(s) {
-        if (s.judged_by === "operator") { return false; }
+        if (typeof s.operator_ruled_at === "number" && s.operator_ruled_at > 0) { return false; }
         return /^(rule|extractor):/.test(s.method) || RETIRABLE_METHODS[s.method] === true;
       }
 

@@ -354,7 +354,7 @@ func TestKBLinker_DuplicatesUnderARemovedDiscriminatorMerge(t *testing.T) {
 func TestKBLinker_OperatorAcceptedStatementIsOnlyVerifiedOrFlagged(t *testing.T) {
 	f := maintainFixture()
 	accepted := citeStatement("st-accepted", "c1", "x-deleted")
-	accepted.JudgedBy = "operator"
+	accepted.OperatorRuledAt = 1700000000000000000
 	twin := citeStatement("st-twin", "c1", "x-deleted")
 	twin.Kind = "amends"
 	f.statements = []*kbStatement{accepted, twin}

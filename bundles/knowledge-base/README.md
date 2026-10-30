@@ -79,7 +79,7 @@ If every check passes, the statement is verified.
 
 These rules always hold:
 - A statement a person wrote (`manual`, or a method the linker does not know),
-  or one an operator accepted, is only ever **verified or flagged**. Statements written by `rule:`,
+  or one an operator ruled on, is only ever **verified or flagged**. Statements written by `rule:`,
   `extractor:`, import, sync and canvas are all maintained the same way.
 - A statement the runtime wrote (the edition chain's `supersedes`, the
   consolidator's links, `[[name]]` links) and any reserved kind are **not
