@@ -2,7 +2,8 @@
 
 The links agent. `kb/linker` builds and maintains the relations (statements)
 between a document's passages and the rest of the store, using only rules the
-tenant's ontology declares. Every model-judged relation stays report-only.
+tenant's ontology declares. A model-judged relation is only ever proposed, and
+only of the kinds the bundle lets the relate layer write (`elaborates`).
 
 | agent | provider | tools | role |
 |---|---|---|---|
@@ -39,7 +40,7 @@ One pass covers one document. The layers run in this order:
 | **L1 anchors** | each live part's anchor and stable id | nothing. It reports parts without an anchor, duplicate anchors (`…~2`, by id) and parts without a stable id |
 | **L2 cite** | the citations the document class's `@citation_grammar` finds | one statement per citation, from the citing passage to the cited part, `method: rule:citation`. A citation to a held work whose part is missing points at the work's root; one to an unheld work gets a placeholder. The grammar's `kind` is used only when the ontology declares it and it is not reserved; otherwise the statement is `cites` |
 | **L3 terms** | the concepts of the scheme named by `terms_scheme`: their name and alternative labels | `uses_term` from each passage to each concept it mentions, `method: rule:terms`; or `defines`, `method: rule:definitions`, for a term a definitions passage defines (see below). Matches are exact or case-folded with whitespace collapsed, on word boundaries, and the longest match wins. **Tenant scope only**, because concepts live there; at user or agent scope the matches are counted and nothing is written |
-| **L4 relate** | semantic neighbours from `related`, judged by `kb/verdict` | **nothing, ever.** It runs only when `corpus_paths` is given or `L4` is listed, and its findings go in the report |
+| **L4 relate** | semantic neighbours from `related`, judged by `kb/verdict` | in `propose` mode, `elaborates` only: one proposal per passage and target document, with both quotes as evidence, by `extractor:relate`. Every other kind stays in the report. It runs only when `corpus_paths` is given or `L4` is listed |
 | **L6 maintain** | every live statement with an end in the document, or with evidence citing it | see below |
 
 L2 and L3 need a confirmed ontology with relation kinds. Without one they skip
@@ -66,6 +67,27 @@ opening quote. So in "1) договір — угода …" the passage defines 
   instead, counted as `defines_not_declared`.
 - Terms are matched in the passage's body, so a term that appears only in a
   chunk title is not seen.
+
+### L4: what a relation proposal needs
+
+A verdict becomes a proposal only when all of these hold:
+- its kind is one the bundle lets L4 write (`relate_propose_kinds`, `elaborates`
+  today) and the tenant's ontology declares it. The other kinds are judged and
+  reported, never written (`propose_kind_off`, `propose_kind_not_declared`);
+- both quotes occur verbatim, the passage's in the passage and the candidate's
+  in the candidate. There is no confidence floor: on a real corpus, confidence
+  did not separate right verdicts from wrong ones;
+- neither quote lies in a paragraph the document's class marks with
+  `@boilerplate` (`quotes_in_boilerplate`). Those paragraphs are also left out
+  of what the verdict is shown; a passage with too little left is skipped, and
+  a candidate with nothing left is not sent;
+- it is the best-supported finding for its passage and target document: the
+  highest confidence, then the candidate's rank. The others are counted
+  (`propose_capped`) and stay in the report's `findings`.
+
+A proposal is always `proposed`, by `extractor:relate`, with the verdict's
+confidence and both quotes as evidence. An operator's rejection stands: the
+runtime refuses to file a rejected relation again.
 
 ### L6: maintaining what exists
 

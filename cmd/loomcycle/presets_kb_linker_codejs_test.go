@@ -123,6 +123,9 @@ type kbChunk struct {
 	// Definitional is what the runtime says of a passage in a definitions
 	// section (the class's @definitions); reads carry it only when true.
 	Definitional bool
+	// Boilerplate is what the runtime says of the body's paragraphs its class's
+	// @boilerplate matches: rune spans, carried only when there are any.
+	Boilerplate [][2]int
 }
 
 type kbEvidence struct {
@@ -382,6 +385,9 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 		out := map[string]any{"id": c.ID, "document_id": c.DocumentID, "type": c.Type, "title": c.Title, "body": c.Body}
 		if c.Definitional {
 			out["definitional"] = true
+		}
+		if len(c.Boilerplate) > 0 {
+			out["boilerplate"] = c.Boilerplate
 		}
 		return okResult(out)
 	case "related":

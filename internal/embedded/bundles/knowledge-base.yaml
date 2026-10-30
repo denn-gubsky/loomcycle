@@ -191,7 +191,11 @@ agents:
         min_term_chars: 2,
         max_term_evidence: 3,
         max_report_ids: 50,
-        max_successor_hops: 8
+        max_successor_hops: 8,
+        // The relate layer's per-kind switch: the kinds a propose pass may file from a
+        // verdict. On MTB only elaborates held up when read by hand (2026-10-30); the
+        // other kinds stay measured, in the report, and are never written.
+        relate_propose_kinds: ["elaborates"]
       };
 
       var DEFAULTS = {
@@ -218,7 +222,8 @@ agents:
       };
       var LAYER_ORDER = ["L0", "L1", "L2", "L3", "L4", "L6"];
 
-      var METHOD = { citation: "rule:citation", terms: "rule:terms", definitions: "rule:definitions", maintain: "rule:maintain" };
+      var METHOD = { citation: "rule:citation", terms: "rule:terms", definitions: "rule:definitions", maintain: "rule:maintain",
+                     relate: "extractor:relate" };
 
       // Statements the runtime writes for itself: the edition chain, the consolidator's
       // links, [[name]] links. Maintaining them would, for one, expire every
@@ -520,8 +525,11 @@ agents:
         return { value: out };
       }
 
+      // L4 reads it to know which kinds it may file, in report mode too, so what a
+      // report says it would propose is what a propose pass files.
       function needsOntology(opts) {
-        return opts.layers.L0 === true || opts.layers.L2 === true || opts.layers.L3 === true || opts.layers.L6 === true;
+        return opts.layers.L0 === true || opts.layers.L2 === true || opts.layers.L3 === true || opts.layers.L4 === true ||
+               opts.layers.L6 === true;
       }
 
       // ------------------------------------------------------------------ state
@@ -887,7 +895,8 @@ agents:
           if (c && typeof c.body === "string") {
             out = { ok: true, body: c.body,
                     type: typeof c.type === "string" ? c.type : "",
-                    document_id: typeof c.document_id === "string" ? c.document_id : "" };
+                    document_id: typeof c.document_id === "string" ? c.document_id : "",
+                    boilerplate: boilerplateRanges(c.body, c.boilerplate) };
           }
         } catch (e) {
           if (isStop(e)) { throw e; }
@@ -1397,7 +1406,8 @@ agents:
 
       // layerRelate is the relate pass: for each claim-bearing chunk, candidates from
       // the corpus by meaning, one verdict call, a declared kind with two quotes that
-      // occur, or nothing. It never writes, whatever the run's write mode.
+      // occur, or nothing. A propose pass files the findings of the kinds the bundle
+      // lets it write and the ontology declares; a report pass counts them.
       function layerRelate(st, doc) {
         var vocab = loadVocabulary(st.opts);
         st.l4 = newRelateState(st.opts, vocab);
@@ -1424,9 +1434,14 @@ agents:
             skipChunk(R, "chunks_skipped_short");
             continue;
           }
+          var seen = visibleText(b);
+          if (seen.trim().length < st.opts.min_body_chars) {
+            skipChunk(R, "chunks_skipped_boilerplate");
+            continue;
+          }
           var cands = findCandidates(st, doc.id, c.id);
           if (cands.length === 0) { R.counts.chunks_without_candidates++; continue; }
-          judge(st, c.id, b.body, cands);
+          judge(st, c.id, b, cands);
         }
       }
 
@@ -1477,7 +1492,14 @@ agents:
             verdicts_out_of_vocabulary: 0,
             verdicts_kind: kinds,
             quotes_rejected: 0,
-            parse_errors: 0
+            quotes_in_boilerplate: 0,
+            chunks_skipped_boilerplate: 0,
+            candidates_boilerplate: 0,
+            parse_errors: 0,
+            // What a propose pass did with the findings (report mode: would_propose).
+            would_propose: 0, proposed: 0, asserted: 0, evidence_added: 0, unchanged: 0,
+            already_asserted: 0, refused: 0,
+            propose_kind_off: 0, propose_kind_not_declared: 0, propose_capped: 0
           },
           findings: []
         };
@@ -1568,21 +1590,24 @@ agents:
             if (!dt.ok) { R.counts.candidates_unreadable++; continue; }
             if (R.excluded[dt.type] === true) { R.counts.candidates_excluded_type++; continue; }
           }
-          kept.push({ id: h.chunk_id, document_id: b.document_id, body: b.body });
+          if (visibleText(b).trim() === "") { R.counts.candidates_boilerplate++; continue; }
+          kept.push({ id: h.chunk_id, document_id: b.document_id, body: b.body, boilerplate: b.boilerplate });
         }
         return kept;
       }
 
       // judge spends ONE verdict call on one chunk and its candidates. Every
       // candidate sent ends in exactly one bucket: a finding of some kind, none, or
-      // a rejected quote — so the three always sum to candidates_sent.
-      function judge(st, chunkID, body, cands) {
+      // a rejected quote — so the three always sum to candidates_sent. In a propose
+      // pass the findings it may file are filed after the reply is read, at most one
+      // per target document.
+      function judge(st, chunkID, passage, cands) {
         var R = st.l4;
         R.counts.verdict_calls++;
         R.counts.candidates_sent += cands.length;
         var out;
         try {
-          out = Agent.spawn({ name: CONFIG.verdict_agent, prompt: verdictPrompt(st, body, cands) });
+          out = Agent.spawn({ name: CONFIG.verdict_agent, prompt: verdictPrompt(st, visibleText(passage), cands) });
         } catch (e) {
           R.counts.verdict_failures++;
           R.counts.verdicts_none += cands.length;
@@ -1594,7 +1619,7 @@ agents:
           R.counts.verdicts_none += cands.length;
           return;
         }
-        var answered = {};
+        var answered = {}, best = {}, order = [];
         for (var i = 0; i < arr.length; i++) {
           var e = arr[i];
           var idx = (e && typeof e === "object") ? Math.floor(Number(e.candidate)) : NaN;
@@ -1603,33 +1628,83 @@ agents:
             continue;
           }
           answered[idx] = true;
-          applyVerdict(st, chunkID, body, cands[idx - 1], e);
+          var f = applyVerdict(st, chunkID, passage, cands[idx - 1], e);
+          if (f === null || !mayFile(st, f.kind)) { continue; }
+          // One proposal per passage and target act: the verdict's confidence decides,
+          // then the candidate's rank. The others stay in the report's findings.
+          var key = f.to_document_id;
+          if (!hasOwn(best, key)) {
+            order.push(key);
+            best[key] = { f: f, rank: idx };
+          } else {
+            R.counts.propose_capped++;
+            if (f.confidence > best[key].f.confidence) { best[key] = { f: f, rank: idx }; }
+          }
         }
         // A candidate the reply left out is an abstention.
         for (var n = 1; n <= cands.length; n++) {
           if (answered[n] !== true) { R.counts.verdicts_none++; }
         }
+        for (var k = 0; k < order.length; k++) { fileFinding(st, passage, cands[best[order[k]].rank - 1], best[order[k]].f); }
       }
 
-      function applyVerdict(st, chunkID, body, cand, e) {
+      // mayFile is the relate layer's per-kind switch, then the ontology: a kind is
+      // filed only when the bundle lets L4 write it AND the tenant declares it.
+      function mayFile(st, kind) {
+        var R = st.l4;
+        if (CONFIG.relate_propose_kinds.indexOf(kind) < 0) { R.counts.propose_kind_off++; return false; }
+        if (!st.onto || !st.onto.usable || st.onto.writable[kind] !== true) {
+          R.counts.propose_kind_not_declared++;
+          return false;
+        }
+        return true;
+      }
+
+      // fileFinding proposes one finding with both of its quotes as evidence, each in
+      // the chunk it was found in. A verdict is a model's word: it is always
+      // proposed, never asserted, and an operator's rejection stands against it.
+      function fileFinding(st, passage, cand, f) {
+        var fromSpan = runeSpan(passage.body, f.quote_from_span[0], f.quote_from_span[1]);
+        var toSpan = runeSpan(cand.body, f.quote_to_span[0], f.quote_to_span[1]);
+        var ev = [
+          { chunk_id: f.from_chunk_id, quote: passage.body.slice(f.quote_from_span[0], f.quote_from_span[1]),
+            char_start: fromSpan[0], char_end: fromSpan[1] },
+          { chunk_id: f.to_chunk_id, quote: cand.body.slice(f.quote_to_span[0], f.quote_to_span[1]),
+            char_start: toSpan[0], char_end: toSpan[1] }
+        ];
+        var forward = f.direction === "this_to_candidate";
+        propose(st, { counts: st.l4.counts }, {
+          op: "propose_statement",
+          from_id: forward ? f.from_chunk_id : f.to_chunk_id,
+          to_id: forward ? f.to_chunk_id : f.from_chunk_id,
+          kind: f.kind, evidence: ev, confidence: f.confidence, method: METHOD.relate
+        });
+      }
+
+      // applyVerdict checks one reply entry and records it as a finding; it returns
+      // the finding, or null when the entry is none, malformed or unquotable.
+      function applyVerdict(st, chunkID, passage, cand, e) {
         var R = st.l4;
         var kind = (typeof e.kind === "string") ? e.kind.toLowerCase().trim() : "";
-        if (kind === "" || kind === "none" || kind === "unclear") { R.counts.verdicts_none++; return; }
+        if (kind === "" || kind === "none" || kind === "unclear") { R.counts.verdicts_none++; return null; }
         if (!hasOwn(R.isKind, kind)) {
           R.counts.verdicts_out_of_vocabulary++;
           R.counts.verdicts_none++;
-          return;
+          return null;
         }
         var conf = e.confidence;
         if (typeof e.direction !== "string" || DIRECTIONS[e.direction] !== true ||
             typeof conf !== "number" || !isFinite(conf) || conf < 0 || conf > 1) {
           R.counts.parse_errors++;
           R.counts.verdicts_none++;
-          return;
+          return null;
         }
-        var from = quoteSpan(body, e.quote_from);
+        var from = quoteSpan(passage.body, e.quote_from);
         var to = quoteSpan(cand.body, e.quote_to);
-        if (from === null || to === null) { R.counts.quotes_rejected++; return; }
+        if (from === null || to === null) { R.counts.quotes_rejected++; return null; }
+        from = outsideBoilerplate(passage, e.quote_from, from);
+        to = outsideBoilerplate(cand, e.quote_to, to);
+        if (from === null || to === null) { R.counts.quotes_in_boilerplate++; return null; }
         R.counts.verdicts_kind[kind]++;
         var f = {
           from_chunk_id: chunkID,
@@ -1641,11 +1716,14 @@ agents:
           quote_from_span: from,
           quote_to_span: to
         };
+        var shown = { from_chunk_id: f.from_chunk_id, to_chunk_id: f.to_chunk_id, to_document_id: f.to_document_id,
+                      kind: kind, direction: f.direction, confidence: conf, quote_from_span: from, quote_to_span: to };
         if (st.opts.include_quotes) {
-          f.quote_from = e.quote_from;
-          f.quote_to = e.quote_to;
+          shown.quote_from = e.quote_from;
+          shown.quote_to = e.quote_to;
         }
-        R.findings.push(f);
+        R.findings.push(shown);
+        return f;
       }
 
       // quoteSpan is the quote check: the quote must occur VERBATIM in the full text
@@ -1656,6 +1734,62 @@ agents:
         var at = text.indexOf(quote);
         if (at < 0) { return null; }
         return [at, at + quote.length];
+      }
+
+      // outsideBoilerplate returns an occurrence of quote that lies outside every
+      // boilerplate paragraph of the chunk (starting from the one found), or null.
+      // The verdict never saw those paragraphs, so a quote from one is no evidence.
+      function outsideBoilerplate(chunk, quote, span) {
+        var ranges = chunk.boilerplate || [];
+        var at = span[0];
+        while (at >= 0) {
+          var end = at + quote.length, hit = false;
+          for (var i = 0; i < ranges.length; i++) {
+            if (at < ranges[i][1] && end > ranges[i][0]) { hit = true; break; }
+          }
+          if (!hit) { return [at, end]; }
+          at = chunk.body.indexOf(quote, at + 1);
+        }
+        return null;
+      }
+
+      // boilerplateRanges converts the rune spans get_chunk reports into UTF-16
+      // ranges of body, the unit JS strings index in; malformed pairs are dropped.
+      function boilerplateRanges(body, spans) {
+        var out = [];
+        if (!isArray(spans)) { return out; }
+        for (var i = 0; i < spans.length; i++) {
+          var p = spans[i];
+          if (!isArray(p) || !isSpan(p[0], p[1])) { continue; }
+          var a = utf16Index(body, p[0]), b = utf16Index(body, p[1]);
+          if (a >= 0 && b >= a) { out.push([a, b]); }
+        }
+        return out;
+      }
+
+      // utf16Index is the UTF-16 offset of rune index n in s; -1 past the end.
+      function utf16Index(s, n) {
+        var k = 0;
+        for (var r = 0; r < n; r++) {
+          if (k >= s.length) { return -1; }
+          var c = s.charCodeAt(k);
+          k += (c >= 0xD800 && c <= 0xDBFF && k + 1 < s.length) ? 2 : 1;
+        }
+        return k;
+      }
+
+      // visibleText is the chunk's body without its boilerplate paragraphs: what a
+      // verdict is shown and what a passage's length is judged by.
+      function visibleText(chunk) {
+        var ranges = chunk.boilerplate || [];
+        if (ranges.length === 0) { return chunk.body; }
+        var out = "", at = 0;
+        for (var i = 0; i < ranges.length; i++) {
+          if (ranges[i][0] < at) { continue; }
+          out += chunk.body.slice(at, ranges[i][0]);
+          at = ranges[i][1];
+        }
+        return out + chunk.body.slice(at);
       }
 
       // verdictPrompt frames every text as DATA between delimiters, restates the
@@ -1676,7 +1810,7 @@ agents:
         }
         var parts = [];
         for (var j = 0; j < cands.length; j++) {
-          parts.push("[" + (j + 1) + "]\n" + dataText(cands[j].body, st.opts.max_chars));
+          parts.push("[" + (j + 1) + "]\n" + dataText(visibleText(cands[j]), st.opts.max_chars));
         }
         return "Relation kinds you may use (\"the passage <kind> the candidate\"):\n" +
                kinds.join("\n") + "\n\n" +
@@ -2406,8 +2540,10 @@ agents:
         if (!R) { return { status: "not_reached" }; }
         return {
           status: "run",
-          // The relate layer is measured before it may write anything.
-          write: "report",
+          // A propose pass files only the kinds relate_propose_kinds lists; every
+          // finding, filed or not, stays in the report.
+          write: st.opts.write,
+          propose_kinds: CONFIG.relate_propose_kinds,
           vocabulary_source: R.vocab.source,
           vocabulary: kindNames(R),
           counts: R.counts,
