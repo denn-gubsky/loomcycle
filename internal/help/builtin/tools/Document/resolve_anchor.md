@@ -3,8 +3,10 @@ name: Document/resolve_anchor
 description: "Document op=resolve_anchor — find a work by its key (e.g. law:ua/2297-vi) and a part of it by anchor, as of a date; optionally file a placeholder for a work not held yet."
 ---
 `resolve_anchor` turns a citation into a chunk: the work by its key, the part by
-its anchor — the part's heading path such as `article-12/paragraph-3`, or the
-anchor it had when first imported (a renumbered part is still found by it). It
+its anchor — the part's heading path such as `article-12/paragraph-3`, what the
+anchor grammar of the work's class makes of it (`annex-2/point-3`; see
+`Document/describe_ontology`), or the anchor it had when first imported (a
+renumbered part is still found by it). It
 answers with the version of the part in force at `as_of`, so a citation to a
 past edition resolves to the text that was in force then.
 
