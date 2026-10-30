@@ -35,6 +35,7 @@ One pass covers one document. The layers run in this order:
 
 | layer | reads | writes (`propose` mode) |
 |---|---|---|
+| **L0 classify** | the runtime's `classify` op on the document: the ontology's class rules (`@title_pattern`, `@identifier_pattern`), its Instances, and the neighbours' classes | in `propose` mode the op writes: exactly one class matched by its own rule is applied (type, identity fields, so the work key, and an `issued_by` an adopted instance can take); anything else is proposed for an operator, and a type set by hand is kept. `report` mode asks with `write: report`. The linker never accepts a proposal: that is an operator's act |
 | **L1 anchors** | each live part's anchor and stable id | nothing. It reports parts without an anchor, duplicate anchors (`…~2`, by id) and parts without a stable id |
 | **L2 cite** | the citations the document class's `@citation_grammar` finds | one statement per citation, from the citing passage to the cited part, `method: rule:citation`. A citation to a held work whose part is missing points at the work's root; one to an unheld work gets a placeholder. The grammar's `kind` is used only when the ontology declares it and it is not reserved; otherwise the statement is `cites` |
 | **L3 terms** | the concepts of the scheme named by `terms_scheme`: their name and alternative labels | `uses_term` from each passage to each concept it mentions, `method: rule:terms`; or `defines`, `method: rule:definitions`, for a term a definitions passage defines (see below). Matches are exact or case-folded with whitespace collapsed, on word boundaries, and the longest match wins. **Tenant scope only**, because concepts live there; at user or agent scope the matches are counted and nothing is written |
@@ -42,8 +43,9 @@ One pass covers one document. The layers run in this order:
 | **L6 maintain** | every live statement with an end in the document, or with evidence citing it | see below |
 
 L2 and L3 need a confirmed ontology with relation kinds. Without one they skip
-and the report says why. L1 and L4 never need it. L6 still runs, without its kind
-and redundancy checks.
+and the report says why. L0 needs a confirmed ontology, with or without relation
+kinds. L1 and L4 never need it. L6 still runs, without its kind and redundancy
+checks.
 
 `defines` is a seed kind. `uses_term` is not: declare it in the ontology's
 Relations section (`### uses_term`). Until then, L3 files only `defines`, and
@@ -108,9 +110,9 @@ These rules always hold:
 
 | `mode` | over | layers by default |
 |---|---|---|
-| `document` (default) | `document_id` or `path` | L1, L2, L3, L6 (+ L4 with `corpus_paths`) |
+| `document` (default) | `document_id` or `path` | L0, L1, L2, L3, L6 (+ L4 with `corpus_paths`) |
 | `maintain` | `document_id` or `path` | L6 |
-| `drain` | the `documents/ingested` queue, up to `max_messages` | L1, L2, L3, L6 per message |
+| `drain` | the `documents/ingested` queue, up to `max_messages` | L0, L1, L2, L3, L6 per message |
 
 | `write` | does |
 |---|---|
@@ -163,7 +165,7 @@ curl -sX POST localhost:8080/v1/runs \
 | `mode` | `document` | `document`, `maintain` or `drain` |
 | `document_id` or `path` | exactly one (none in drain) | the document |
 | `scope` | `user` | `user`, `agent` or `tenant` (drain: `user`) |
-| `layers` | per mode | any of `L1`, `L2`, `L3`, `L4`, `L6`; `maintain` takes `L6` only |
+| `layers` | per mode | any of `L0`, `L1`, `L2`, `L3`, `L4`, `L6`; `maintain` takes `L6` only |
 | `write` | `report` | `report` or `propose` |
 | `terms_scheme` | none (L3 skips) | the concept scheme L3 matches |
 | `as_of` | each part's own date | unix nanoseconds; citations resolve as of it |

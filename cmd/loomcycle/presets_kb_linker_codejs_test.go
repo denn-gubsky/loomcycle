@@ -70,6 +70,10 @@ var kbOpContracts = []kbOpContract{
 		Request:  `{id, action: verify|expire|demote|merge|stale_evidence|relocate_evidence|flag, reason?, survivor_id?, evidence_id?, chunk_id?, method, scope}`,
 		Response: `{id, action, ok: true}`,
 		Assumes:  `R2: any non-error answer is success; demote is sent only for an asserted statement; only a manual statement or one an operator ruled on (operator_ruled_at set) is limited to verify or flag (import/sync/canvas statements may be expired, demoted and merged — owner decision 2026-10-30); merge needs a survivor of the same status; expire/demote/merge need the link verb on the endpoints' documents (R2 as built)`},
+	{Tool: "Document", Op: "classify",
+		Request:  `{document_id, write: report|propose, scope}`,
+		Response: `{document_id, write, result: classified|proposed|kept|unclassified, class?, live, work_key?, fields?, issued_by: [{instance, quote, subject_chunk_id?}], concepts: [{concept, tag, kind?, chunk_id?, share}], steps: [{step, candidates, chosen?, neighbours?, reason?}], statements?, warnings?}`,
+		Assumes:  `FO P5a (#2273): write report writes nothing; a refusal (permission, an unconfirmed ontology) is an error naming its reason; accept_classification is operator-only and never called`},
 	{Tool: "Document", Op: "describe_ontology",
 		Request:  `{scope} (scope ignored)`,
 		Response: `{exists, status, confirmed, version, sections, partial?, classes, relations: [{name, source: base|tenant|reserved, discriminator?, renamed_from?, auto_assert?, …}], grammars, schemes: [{name, concepts: [{name, alt?, chunk_id, tag, …}]}]}`,
@@ -102,7 +106,9 @@ var kbOpContracts = []kbOpContract{
 var kbReadOps = map[string]bool{
 	"get_document": true, "query_chunks": true, "get_chunk": true, "related": true,
 	"describe_ontology": true, "extract_citations": true, "list_statements": true, "get_edge": true,
-	"resolve_anchor": true,
+	// Reads unless asked to write: resolve_anchor with create_placeholder, and
+	// classify with write other than report (assertNoWrites checks both).
+	"resolve_anchor": true, "classify": true,
 }
 
 // kbWriteOps is every Document op that changes the store or holds a scope.
@@ -179,6 +185,10 @@ type kbFixture struct {
 	// placeholderRefusal, when set, is the error resolve_anchor answers a
 	// create_placeholder with — a caller that may not write the whole scope.
 	placeholderRefusal string
+	// classified, when set, is classify's answer (merged over an unclassified
+	// one); classifyRefusal, when set, is the error it answers a propose with.
+	classified      map[string]any
+	classifyRefusal string
 	// supersedes maps a superseded chunk to the chunk that superseded it.
 	supersedes map[string]string
 	// statements is the statement store; autoAssert the kinds the runtime
@@ -385,6 +395,16 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 		if !f.omitFilterEcho && (in["under_paths"] != nil || in["exclude_document_ids"] != nil) {
 			out["filter"] = map[string]any{"applied": map[string]any{"under_paths": in["under_paths"],
 				"exclude_document_ids": in["exclude_document_ids"]}, "matched_chunks": 10, "matched_documents": 2, "inverted": false}
+		}
+		return okResult(out)
+	case "classify":
+		if in["write"] != "report" && f.classifyRefusal != "" {
+			return kbErr(f.classifyRefusal)
+		}
+		out := map[string]any{"document_id": in["document_id"], "write": in["write"], "result": "unclassified",
+			"live": false, "issued_by": []any{}, "concepts": []any{}, "steps": []any{}}
+		for k, v := range f.classified {
+			out[k] = v
 		}
 		return okResult(out)
 	case "describe_ontology":
@@ -1315,6 +1335,9 @@ func assertNoWrites(t *testing.T, f *kbFixture, rep map[string]any) {
 		if c.Op == "resolve_anchor" && c.Input["create_placeholder"] == true {
 			t.Errorf("a report-mode pass asked resolve_anchor to file a placeholder: %v", c.Input)
 		}
+		if c.Op == "classify" && c.Input["write"] != "report" {
+			t.Errorf("a report-mode pass asked classify to write: %v", c.Input)
+		}
 	}
 	if n := len(f.callsOf("Channel", "ack")); n != 0 {
 		t.Errorf("a report-mode pass acked %d queue messages", n)
@@ -1346,7 +1369,7 @@ func TestKBLinker_BadInputIsRefusedBeforeAnyCall(t *testing.T) {
 		"L4 without corpus":   {`{"document_id":"doc-target","layers":["L4"]}`, "corpus_paths"},
 		"corpus without L4":   {`{"document_id":"doc-target","layers":["L2"],"corpus_paths":["/laws"]}`, "only by the L4 layer"},
 		"unknown layer":       {`{"document_id":"doc-target","layers":["L5"]}`, "layers[0]"},
-		"propose, bad layer":  {`{"document_id":"doc-target","write":"propose","layers":["L0"]}`, "layers[0]"},
+		"propose, bad layer":  {`{"document_id":"doc-target","write":"propose","layers":["L7"]}`, "layers[0]"},
 		"layer twice":         {`{"document_id":"doc-target","layers":["L2","L2"]}`, "named twice"},
 		"maintain plus L2":    {`{"mode":"maintain","document_id":"doc-target","layers":["L2","L6"]}`, "L6 layer only"},
 		"drain with document": {`{"mode":"drain","document_id":"doc-target"}`, "neither document_id nor path"},

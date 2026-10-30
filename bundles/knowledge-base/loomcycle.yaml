@@ -6,6 +6,9 @@
 #
 #   kb/linker   — a DETERMINISTIC code-js agent. It owns the pass and every
 #                 write. Per document, in order:
+#                   L0 classify — the document's class, work key and issuer by
+#                                 the ontology's rules (the runtime's classify op:
+#                                 one class by rule is applied, the rest proposed);
 #                   L1 anchors  — reports parts without an anchor, duplicate
 #                                 anchors and parts without a stable id;
 #                   L2 cite     — the citations the document class's grammar
@@ -119,6 +122,9 @@ agents:
       // One run is one pass: a document (mode document), the statements touching a
       // document (mode maintain), or the documents the ingest queue names (mode drain).
       // Each layer is one function:
+      //   L0 classify — the runtime's classify op on the document: its class, work key
+      //                 and issuer by the ontology's rules. Report mode asks for the
+      //                 answer only; propose mode lets the op apply or propose it.
       //   L1 anchors  — reports parts without an anchor, duplicate anchors, and parts
       //                 without a stable id. Writes nothing.
       //   L2 cite     — the citations the document's class grammar finds, proposed as
@@ -206,11 +212,11 @@ agents:
       // The layers each mode runs when the input names none. L4 joins them when the
       // input gives corpus_paths, which only L4 reads.
       var MODE_LAYERS = {
-        document: ["L1", "L2", "L3", "L6"],
-        drain: ["L1", "L2", "L3", "L6"],
+        document: ["L0", "L1", "L2", "L3", "L6"],
+        drain: ["L0", "L1", "L2", "L3", "L6"],
         maintain: ["L6"]
       };
-      var LAYER_ORDER = ["L1", "L2", "L3", "L4", "L6"];
+      var LAYER_ORDER = ["L0", "L1", "L2", "L3", "L4", "L6"];
 
       var METHOD = { citation: "rule:citation", terms: "rule:terms", definitions: "rule:definitions", maintain: "rule:maintain" };
 
@@ -250,7 +256,7 @@ agents:
 
       var USAGE = "Pass a JSON object: {\"mode\": document|drain|maintain (default document), " +
         "\"document_id\" or \"path\" (not in drain), optional scope (user|agent|tenant), " +
-        "layers [\"L1\",\"L2\",\"L3\",\"L4\",\"L6\"], write (report|propose, default report), " +
+        "layers [\"L0\",\"L1\",\"L2\",\"L3\",\"L4\",\"L6\"], write (report|propose, default report), " +
         "terms_scheme, as_of (unix nanoseconds), max_writes, max_statements, max_messages, " +
         "and for L4: corpus_paths [\"/…\"], exclude_document_types, candidate_floor, " +
         "max_candidates_per_chunk, max_verdict_calls, max_chars, min_body_chars, " +
@@ -452,12 +458,12 @@ agents:
           return { value: out };
         }
         if (!isArray(list) || list.length === 0 || list.length > LAYER_ORDER.length) {
-          return { error: "layers must be a non-empty list of L1, L2, L3, L4, L6" };
+          return { error: "layers must be a non-empty list of L0, L1, L2, L3, L4, L6" };
         }
         for (var j = 0; j < list.length; j++) {
           var l = list[j];
           if (typeof l !== "string" || LAYER_ORDER.indexOf(l) < 0) {
-            return { error: "layers[" + j + "] must be one of L1, L2, L3, L4, L6" };
+            return { error: "layers[" + j + "] must be one of L0, L1, L2, L3, L4, L6" };
           }
           if (out[l] === true) { return { error: "layers: " + l + " is named twice" }; }
           out[l] = true;
@@ -515,7 +521,7 @@ agents:
       }
 
       function needsOntology(opts) {
-        return opts.layers.L2 === true || opts.layers.L3 === true || opts.layers.L6 === true;
+        return opts.layers.L0 === true || opts.layers.L2 === true || opts.layers.L3 === true || opts.layers.L6 === true;
       }
 
       // ------------------------------------------------------------------ state
@@ -529,8 +535,8 @@ agents:
           lease: { taken: false, acquired: false, held: false, lost: false, held_by: "", renewals: 0, renewed_at: 0, released: null },
           onto: null,
           planned_writes: 0,
-          writes: { propose_statement: 0, maintain_statement: 0, resolve_anchor: 0 },
-          would_write: { propose_statement: 0, maintain_statement: 0, resolve_anchor: 0 },
+          writes: { classify: 0, propose_statement: 0, maintain_statement: 0, resolve_anchor: 0 },
+          would_write: { classify: 0, propose_statement: 0, maintain_statement: 0, resolve_anchor: 0 },
           refusals: {},
           bodies: {},     // chunk id -> {ok, body, type, document_id}
           docTypes: {},   // document id -> {ok, type}
@@ -711,6 +717,8 @@ agents:
         var doc = resolveDocument(st, ref);
         st.documents.push(doc.id);
         if (changed !== null) { changed = ownParts(st, doc, changed); }
+        // First: an applied class decides the citation grammar L2 reads.
+        if (st.opts.layers.L0 === true) { layerClassify(st, doc); }
         if (st.opts.layers.L1 === true) { layerAnchors(st, doc); }
         if (st.opts.layers.L2 === true) { layerCite(st, doc, changed); }
         if (st.opts.layers.L3 === true) { layerTerms(st, doc, changed); }
@@ -956,6 +964,57 @@ agents:
           o.check_kind = !o.partial;
         }
         return o;
+      }
+
+      // ----------------------------------------------------------- L0 classify
+
+      // layerClassify asks the runtime's classify op what the document is. The op
+      // owns every rule: one class matched by its own pattern is applied (the type,
+      // the identity fields, an issuer it can name), anything less certain is filed
+      // as a proposal for an operator, and a type set by hand is kept. Report mode
+      // asks for the answer without writing; propose mode is one counted write.
+      // Accepting a proposal is an operator's act, never the linker's.
+      function layerClassify(st, doc) {
+        var L = layerRec(st, "L0", function () {
+          return { classified: 0, proposed: 0, kept: 0, unclassified: 0, live: 0,
+                   statements: 0, issuers: 0, concepts: 0, warnings: 0, unknown_result: 0 };
+        });
+        // Classes need a confirmed ontology, not relation kinds.
+        if (!st.onto.exists || !st.onto.confirmed) {
+          skipLayer(L, st.onto.reason !== "" ? st.onto.reason : "the ontology is not confirmed");
+          return;
+        }
+        var args = { op: "classify", document_id: doc.id };
+        var r;
+        if (st.opts.write === "propose") {
+          args.write = "propose";
+          var w = write(st, "classify", args);
+          if (!w.ok) { return; }
+          r = w.result;
+        } else {
+          args.write = "report";
+          try {
+            r = call(st, args);
+          } catch (e) {
+            if (isStop(e)) { throw e; }
+            skipLayer(L, "classify failed: " + refusalReason(e));
+            return;
+          }
+          if (isPlainObject(r) && (r.result === "classified" || r.result === "proposed")) { st.would_write.classify++; }
+        }
+        if (!isPlainObject(r)) { r = {}; }
+        L.ran++;
+        var C = L.counts;
+        if (r.result === "classified" || r.result === "proposed" || r.result === "kept" || r.result === "unclassified") {
+          C[r.result]++;
+        } else {
+          C.unknown_result++;
+        }
+        if (r.live === true) { C.live++; }
+        C.statements += isArray(r.statements) ? r.statements.length : 0;
+        C.issuers += isArray(r.issued_by) ? r.issued_by.length : 0;
+        C.concepts += isArray(r.concepts) ? r.concepts.length : 0;
+        C.warnings += isArray(r.warnings) ? r.warnings.length : 0;
       }
 
       // ------------------------------------------------------------- L1 anchors
