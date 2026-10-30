@@ -111,6 +111,9 @@ var docACLOps = map[string]docACLRule{
 	// resolve: it asks read on the document it finds (and write on the path of a
 	// placeholder it files) itself.
 	"resolve_anchor": {verb: "read", target: docACLListing},
+	// describe_ontology reads the tenant's ontology document whatever the call's
+	// scope: it asks read on that document itself.
+	"describe_ontology": {verb: "read", target: docACLListing},
 	// extract_citations reads the document or chunk it names; resolving a citation
 	// asks read on the cited work through resolve_anchor.
 	"extract_citations": {verb: "read", target: docACLChunkOrDocument},
