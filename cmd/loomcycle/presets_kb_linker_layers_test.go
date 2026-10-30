@@ -270,6 +270,51 @@ func TestKBLinker_UnheldWorkGetsAPlaceholderTarget(t *testing.T) {
 	}
 }
 
+// TestKBLinker_DocumentCitingItsOwnWorkIsSelf: an act names itself (an import
+// header's "Resolution No 311" inside resolution 311), and the grammar resolves
+// that to the document being linked. It is a self-hit in both modes: never a
+// statement from the act to its own root, and never a resolve_anchor call.
+func TestKBLinker_DocumentCitingItsOwnWorkIsSelf(t *testing.T) {
+	for _, mode := range []string{"report", "propose"} {
+		t.Run(mode, func(t *testing.T) {
+			f := kbBaseFixture()
+			f.ontology = kbOntology()
+			f.heldWorks["act:self"] = "c-root"
+			f.heldWorks["law:held"] = "held-root"
+			f.citations = []map[string]any{
+				kbCiteHit("report a material incident", map[string]any{"work_key": "act:self",
+					"resolved": map[string]any{"document_id": "doc-target", "exact": false, "placeholder": false}}),
+				kbCiteHit("to the regulator", map[string]any{"work_key": "law:held",
+					"resolved": map[string]any{"document_id": "doc-of-law:held", "exact": false, "placeholder": false}}),
+			}
+
+			rep, _ := runLinker(t, f, `{"document_id":"doc-target","write":"`+mode+`","layers":["L2"]}`)
+
+			if n := layerCount(t, rep, "L2", "hits_self"); n != 1 {
+				t.Errorf("hits_self = %v, want 1", n)
+			}
+			if n := layerCount(t, rep, "L2", "targets_work_root"); n != 1 {
+				t.Errorf("targets_work_root = %v, want 1 (the other work only)", n)
+			}
+			for _, c := range f.callsOf("Document", "resolve_anchor") {
+				if c.Input["work_key"] == "act:self" {
+					t.Errorf("resolve_anchor was asked for the document's own work: %v", c.Input)
+				}
+			}
+			if mode == "report" {
+				if n := layerCount(t, rep, "L2", "would_propose"); n != 1 {
+					t.Errorf("would_propose = %v, want 1", n)
+				}
+				return
+			}
+			got := proposals(f)
+			if len(got) != 1 || got[0]["to_id"] != "held-root" {
+				t.Errorf("proposals = %v, want only c1 → the held work's root", got)
+			}
+		})
+	}
+}
+
 // TestKBLinker_RefusedPlaceholderIsUnresolvedNotAFailure: a caller that may not
 // write the whole scope is refused every placeholder, held or not, in the same
 // words. Each such citation is unresolved, and a pass that met only those still
