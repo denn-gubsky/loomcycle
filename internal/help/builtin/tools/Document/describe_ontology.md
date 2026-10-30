@@ -38,7 +38,10 @@ relations, grammars, schemes, issues?}`:
     inherited.
   - `definitions` is a pattern (RE2 syntax) over chunk titles. In a document of
     the class, a chunk whose title matches it, and every chunk under that one, is
-    where the document defines its terms rather than uses them.
+    where the document defines its terms rather than uses them. `get_chunk` and
+    `query_chunks` mark such chunks `definitional: true`, so you need not run
+    the pattern yourself (the root chunk, the document's own title, is never
+    marked).
 - `relations` — each relation kind in force, with its `source` (`seed`,
   `reserved` or `tenant`), `parent`, `inverse`, `domain`, `range`, its
   characteristics, `qualifiers`, `discriminator`, `dated`, `walk`, `auto_assert`

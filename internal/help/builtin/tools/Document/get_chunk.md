@@ -19,6 +19,10 @@ right before `update_chunk` so the revision you pass is current.
 `parent_id`, `type`, `status`, `fields`, `tags`, and `asset: {media_type,
 size}` for an image chunk (the bytes are served separately).
 
+`definitional: true` marks a chunk in a definitions passage: its document's
+class (in a confirmed ontology) declares `@definitions`, and the chunk's title
+or an ancestor's below the root matches it. Absent otherwise.
+
 A fact also carries `entity`: `retired` (always present; true once a
 `supersede_chunk` retired it), and when set `valid_at`, `invalid_at`,
 `observed_at`, `created_at`, `expired_at`, `class`, `origin`, `natural_key`,

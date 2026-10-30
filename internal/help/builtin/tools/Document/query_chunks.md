@@ -43,8 +43,9 @@ All optional; with none you get the first 100 chunks of the scope.
 
 With filters: `{chunks: [{id, document_id, parent_id, title, type, status,
 position, revision, valid_at, invalid_at}], type_expanded_to?}`, ordered by document, parent,
-position. Empty fields are omitted. Fetch a body with
-`{"op":"get_chunk","id":...}`.
+position. Empty fields are omitted. A row carries `definitional: true` when
+the chunk is in a definitions passage, as `get_chunk` reports it (the `sql`
+form does not compute it). Fetch a body with `{"op":"get_chunk","id":...}`.
 
 With `sql`: `{columns: [...], rows: [[...], ...], truncated}`. `truncated:
 true` means the server's row cap cut the result.
