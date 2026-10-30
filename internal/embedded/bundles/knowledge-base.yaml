@@ -282,6 +282,7 @@ agents:
         try {
           if (needsOntology(st.opts)) { st.onto = loadOntology(st); }
           if (st.opts.mode === "drain") { drainPass(st); } else { documentPass(st); }
+          failIfEveryWriteRefused(st);
         } catch (e) {
           if (isStop(e)) {
             if (e.stop === "budget") {
@@ -610,6 +611,34 @@ agents:
         }
         st.writes[op]++;
         return { ok: true, dry: false, result: isPlainObject(r) ? r : {} };
+      }
+
+      // The refusals a re-run meets by design: the relation is already accepted, or
+      // an operator rejected it.
+      var EXPECTED_REFUSALS = { statement_asserted: true, statement_rejected: true };
+
+      // failIfEveryWriteRefused fails a pass when no write went through and the
+      // runtime refused at least one for another reason — a missing grant, an
+      // undeclared kind. That is a fault in the configuration, and "complete"
+      // would hide it.
+      function failIfEveryWriteRefused(st) {
+        var ok = 0, refused = 0, top = "", topN = 0, byCode = {};
+        for (var op in st.writes) {
+          if (hasOwn(st.writes, op)) { ok += st.writes[op]; }
+        }
+        for (var op2 in st.refusals) {
+          if (!hasOwn(st.refusals, op2)) { continue; }
+          for (var code in st.refusals[op2]) {
+            if (!hasOwn(st.refusals[op2], code) || EXPECTED_REFUSALS[code] === true) { continue; }
+            var n = st.refusals[op2][code];
+            refused += n;
+            byCode[code] = (byCode[code] || 0) + n;
+            if (byCode[code] > topN) { topN = byCode[code]; top = code; }
+          }
+        }
+        if (ok > 0 || refused === 0) { return; }
+        setStatus(st, "failed");
+        st.failure = "every write was refused (" + refused + ", most often " + top + ")";
       }
 
       function refusalReason(e) {
@@ -1720,11 +1749,15 @@ agents:
         }
       }
 
-      function isMachineMethod(method) { return /^(rule|extractor):/.test(method); }
+      // The statements L6 may expire, demote, move and merge: rule and extractor
+      // writes, and those the import, sync and canvas paths wrote. A person's own
+      // (manual), or a method this body does not know, is only verified or flagged.
+      var RETIRABLE_METHODS = { "import": true, sync: true, canvas: true };
+      function mayRetire(method) { return /^(rule|extractor):/.test(method) || RETIRABLE_METHODS[method] === true; }
 
       function checkStatement(st, L, s) {
         var C = L.counts;
-        var person = !isMachineMethod(s.method);
+        var person = !mayRetire(s.method);
         var ev = s.evidence;
         for (var i = 0; i < ev.length; i++) {
           if (isPlainObject(ev[i]) && !ev[i].chunk_id && ev[i].natural_key) { C.endpoints_cross_scope_unchecked++; break; }
@@ -1784,7 +1817,7 @@ agents:
       // act is the one path to maintain_statement. The guard below holds the
       // person-authored rule even if a check above forgets it.
       function act(st, L, s, action, extra) {
-        if (!isMachineMethod(s.method) && action !== "verify" && action !== "flag") {
+        if (!mayRetire(s.method) && action !== "verify" && action !== "flag") {
           throw new Error("refusing " + action + " on a statement a person wrote");
         }
         var args = { op: "maintain_statement", id: s.id, action: action, method: METHOD.maintain };
@@ -1878,8 +1911,13 @@ agents:
           var span = runeSpan(b.body, at, at + row.quote.length);
           ev.push({ chunk_id: map[row.chunk_id], quote: row.quote, char_start: span[0], char_end: span[1] });
         }
-        return { op: "propose_statement", from_id: from, to_id: to, kind: s.kind, evidence: ev,
-                 attributes: { revision_of: s.id }, method: METHOD.maintain };
+        var p = { op: "propose_statement", from_id: from, to_id: to, kind: s.kind, evidence: ev,
+                  attributes: { revision_of: s.id }, method: METHOD.maintain };
+        // The date the fact took effect does not move with its text. The old
+        // statement's confidence is a verdict on text no one has re-checked, so the
+        // successor starts without one.
+        if (typeof s.valid_at === "number" && s.valid_at > 0) { p.valid_at = s.valid_at; }
+        return p;
       }
 
       function storedEvidence(s) {
@@ -1989,7 +2027,7 @@ agents:
           out.push(grp[0]);
           for (var x = 1; x < grp.length; x++) {
             L.counts.checks.redundancy++;
-            if (isMachineMethod(grp[x].method)) {
+            if (mayRetire(grp[x].method)) {
               act(st, L, grp[x], "merge", { survivor_id: grp[0].id });
             } else {
               act(st, L, grp[x], "flag", { reason: "duplicate of an older live statement" });

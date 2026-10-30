@@ -49,9 +49,10 @@ func citeStatement(id, from, to string, quotes ...string) *kbStatement {
 }
 
 // TestKBLinker_PersonStatementIsOnlyVerifiedOrFlagged: whatever check a person's
-// statement fails, the pass only flags it, and a healthy one is verified — never
-// expired, demoted, re-pointed, staled or moved. The machine-made twin of the
-// first case is expired, so the flag is the person rule and not a dead check.
+// own statement (method manual) fails, the pass only flags it, and a healthy one
+// is verified — never expired, demoted, re-pointed, staled or moved. The
+// machine-made twin of the first case is expired, so the flag is the person rule
+// and not a dead check.
 func TestKBLinker_PersonStatementIsOnlyVerifiedOrFlagged(t *testing.T) {
 	f := maintainFixture()
 	f.chunks = append(f.chunks,
@@ -63,7 +64,7 @@ func TestKBLinker_PersonStatementIsOnlyVerifiedOrFlagged(t *testing.T) {
 	kind := citeStatement("m-kind", "c1", "x1", "report a material incident")
 	kind.Method, kind.Kind = "manual", "obsolete_kind"
 	sup := citeStatement("m-sup", "c-v1", "x1", "keep a register")
-	sup.Method = "import"
+	sup.Method = "manual"
 	stale := citeStatement("m-stale", "c1", "x2", "a sentence no part says")
 	stale.Method = "manual"
 	ok := citeStatement("m-ok", "c1", "x1", "within 24 hours")
@@ -229,8 +230,58 @@ func TestKBLinker_SupersededEndpointExpiresAndMovesOnlyWhenQuotesSurvive(t *test
 			t.Errorf("%s maintain = %v, want expire \"endpoint superseded\"", id, calls)
 		}
 	}
+	if _, ok := p["valid_at"]; ok {
+		t.Errorf("successor proposal carries valid_at %v, but the original had none", p["valid_at"])
+	}
 	if n := layerCount(t, rep, "L6", "successor_quotes_gone"); n != 1 {
 		t.Errorf("successor_quotes_gone = %v, want 1", n)
+	}
+	noViolations(t, f)
+}
+
+// TestKBLinker_ImportedStatementsAreMaintainedLikeMachineOnes: a statement the
+// import, sync or canvas path wrote is expired, demoted and moved like the
+// linker's own (owner decision 2026-10-30); only a person's own is left to flag.
+// A moved statement keeps the date its fact took effect, but not the old
+// statement's confidence.
+func TestKBLinker_ImportedStatementsAreMaintainedLikeMachineOnes(t *testing.T) {
+	f := maintainFixture()
+	f.chunks = append(f.chunks,
+		kbChunk{ID: "c-a1", DocumentID: "doc-target", Type: "section", Body: "Article 9. The operator shall keep a register of incidents.", InvalidAt: 50, Anchor: "art-9", StableID: "art-9"},
+		kbChunk{ID: "c-a2", DocumentID: "doc-target", Type: "section", Body: "Article 9. The operator shall keep a register of incidents online.", Anchor: "art-9", StableID: "art-9"})
+	f.supersedes["c-a1"] = "c-a2"
+	imp := citeStatement("st-import", "c1", "x-deleted")
+	imp.Method = "import"
+	syn := citeStatement("st-sync", "c1", "x1", "a sentence no part says", "nor this one either")
+	syn.Method = "sync"
+	can := citeStatement("st-canvas", "c-a1", "x1", "keep a register of incidents")
+	can.Method, can.ValidAt = "canvas", 1704067200000000000
+	f.statements = []*kbStatement{imp, syn, can}
+
+	runLinker(t, f, maintainInput)
+
+	if got := actionsOf(f, "st-import"); got != "expire" {
+		t.Errorf("st-import actions = %q, want expire", got)
+	}
+	if got := actionsOf(f, "st-sync"); got != "stale_evidence,stale_evidence,demote" {
+		t.Errorf("st-sync actions = %q, want both rows staled then a demote", got)
+	}
+	if got := actionsOf(f, "st-canvas"); got != "expire" {
+		t.Errorf("st-canvas actions = %q, want expire after the move", got)
+	}
+	got := proposals(f)
+	if len(got) != 1 {
+		t.Fatalf("proposals = %v, want st-canvas moved to its successor", got)
+	}
+	p := got[0]
+	if p["from_id"] != "c-a2" || p["method"] != "rule:maintain" {
+		t.Errorf("successor proposal = %v, want from c-a2 by rule:maintain", p)
+	}
+	if v, _ := p["valid_at"].(float64); int64(v) != 1704067200000000000 {
+		t.Errorf("successor valid_at = %v, want the original's 1704067200000000000", p["valid_at"])
+	}
+	if _, ok := p["confidence"]; ok {
+		t.Errorf("successor proposal carries confidence %v; it starts unjudged", p["confidence"])
 	}
 	noViolations(t, f)
 }
