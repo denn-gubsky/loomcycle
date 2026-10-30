@@ -89,8 +89,14 @@ func (c *Classifier) Classify(ctx context.Context, req memory.ClassifyRequest) m
 		return memory.ClassifyVerdict{Reason: "no classifier model is configured"}
 	}
 	v := c.ask(ctx, req)
-	if setAside.Reason != "" && v.Class == "" {
-		v.Reason = setAside.Reason + "; " + v.Reason
+	// Say why the decision model's answer was set aside even when the chat model then
+	// answered: an operator tuning the thresholds needs to see how often it happens.
+	if setAside.Reason != "" {
+		if v.Reason == "" {
+			v.Reason = setAside.Reason + "; the chat model answered"
+		} else {
+			v.Reason = setAside.Reason + "; " + v.Reason
+		}
 	}
 	return v
 }

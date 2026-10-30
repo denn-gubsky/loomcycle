@@ -91,6 +91,9 @@ func TestClassifier_AnUnsureDecisionAsksTheChatModel(t *testing.T) {
 		if v.Method != memory.ClassifyMethodChat || v.Class != "Order" || chat.called != 1 {
 			t.Errorf("%s: verdict = %+v", name, v)
 		}
+		if !strings.Contains(v.Reason, "unsure") || !strings.Contains(v.Reason, "chat model answered") {
+			t.Errorf("%s: the set-aside decision is not reported: %q", name, v.Reason)
+		}
 		if len(v.Concepts) != 1 || v.Concepts[0] != "Risk Management" {
 			t.Errorf("%s: an un-offered concept survived: %v", name, v.Concepts)
 		}
