@@ -51,7 +51,7 @@ var kbOpContracts = []kbOpContract{
 		Response: `{id, document_id, type, title, body, definitional?, boilerplate?: [[start, end]]}`,
 		Assumes:  `boilerplate lists the rune spans of the paragraphs the document class's @boilerplate matches, absent when none (Phase C)`},
 	{Tool: "Document", Op: "related",
-		Request:  `{id, limit, under_paths, exclude_document_ids, scope}`,
+		Request:  `{id, limit, under_paths, exclude_document_ids, document_ids?, scope}`,
 		Response: `{related: [{chunk_id, document_id, type, score}], filter: {applied, …}}`},
 	{Tool: "Document", Op: "resolve_anchor",
 		Request:  `{work_key, anchor?, as_of?, create_placeholder?, scope}`,
@@ -64,6 +64,10 @@ var kbOpContracts = []kbOpContract{
 		Request:  `{document_id | evidence_document_id | under_path, status: asserted|proposed, order?: verified, include_retired?, limit, after?, scope}`,
 		Response: `{statements: [{id, from_id, to_id, kind, status, method, auto, created_at, valid_at?, expired_at?, discriminator?, from_document_id, to_document_id, evidence: [≤3], evidence_count}], next_cursor?}`,
 		Assumes:  `R3: status stays single-valued (one call per status); retired rows are excluded unless include_retired, and carry expired_at (unix nanoseconds) when included; under_path matches either end's document at or under the path; order verified is least recently verified first; next_cursor is absent on the last page`},
+	{Tool: "Document", Op: "import_md",
+		Request:  `{markdown, path, scope}`,
+		Response: `{document_id, root_chunk_id, chunks_created, skipped, image_chunks}`,
+		Assumes:  `creates a new document named at path (headings become chunks); sent only by L5 for its report, after get_document has found the path free`},
 	{Tool: "Document", Op: "set_path",
 		Request:  `{id, path, scope}`,
 		Response: `{document_id, path}`,
@@ -123,7 +127,7 @@ var kbReadOps = map[string]bool{
 // kbWriteOps is every Document op that changes the store or holds a scope.
 var kbWriteOps = map[string]bool{
 	"propose_statement": true, "maintain_statement": true, "lease": true, "release": true,
-	"unlink_chunks": true, "set_path": true,
+	"unlink_chunks": true, "set_path": true, "import_md": true,
 }
 
 type kbChunk struct {
@@ -170,6 +174,8 @@ type kbFixture struct {
 	docID, docPath, rootID string
 	// docPaths names the other documents in the Path tree, for under_path.
 	docPaths map[string]string
+	// importedMD is every markdown import_md was sent.
+	importedMD []string
 	// chunks is the target document, in query_chunks order (root included).
 	chunks []kbChunk
 	// others are chunks of other documents, reachable through get_chunk.
@@ -432,6 +438,17 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 		if f.related[id] == nil {
 			out["related"] = []any{}
 		}
+		if docs, ok := in["document_ids"].([]any); ok {
+			keep := []map[string]any{}
+			for _, h := range f.related[id] {
+				for _, d := range docs {
+					if h["document_id"] == d {
+						keep = append(keep, h)
+					}
+				}
+			}
+			out["related"] = keep
+		}
 		if !f.omitFilterEcho && (in["under_paths"] != nil || in["exclude_document_ids"] != nil) {
 			out["filter"] = map[string]any{"applied": map[string]any{"under_paths": in["under_paths"],
 				"exclude_document_ids": in["exclude_document_ids"]}, "matched_chunks": 10, "matched_documents": 2, "inverted": false}
@@ -481,6 +498,11 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 		return okResult(map[string]any{"statement": f.statementJSON(s, 0)})
 	case "maintain_statement":
 		return f.answerMaintain(in)
+	case "import_md":
+		path, _ := in["path"].(string)
+		f.importedMD = append(f.importedMD, in["markdown"].(string))
+		f.docPaths["doc-report"] = path
+		return okResult(map[string]any{"document_id": "doc-report", "root_chunk_id": "r-report", "chunks_created": 1})
 	case "set_path":
 		path, _ := in["path"].(string)
 		f.docPaths[id] = path
@@ -1461,7 +1483,7 @@ func TestKBLinker_BadInputIsRefusedBeforeAnyCall(t *testing.T) {
 		"unknown mode":        {`{"document_id":"doc-target","mode":"wander"}`, "mode must be"},
 		"L4 without corpus":   {`{"document_id":"doc-target","layers":["L4"]}`, "corpus_paths"},
 		"corpus without L4":   {`{"document_id":"doc-target","layers":["L2"],"corpus_paths":["/laws"]}`, "only by the L4 layer"},
-		"unknown layer":       {`{"document_id":"doc-target","layers":["L5"]}`, "layers[0]"},
+		"unknown layer":       {`{"document_id":"doc-target","layers":["L7"]}`, "layers[0]"},
 		"propose, bad layer":  {`{"document_id":"doc-target","write":"propose","layers":["L7"]}`, "layers[0]"},
 		"layer twice":         {`{"document_id":"doc-target","layers":["L2","L2"]}`, "named twice"},
 		"maintain plus L2":    {`{"mode":"maintain","document_id":"doc-target","layers":["L2","L6"]}`, "L6 layer only"},

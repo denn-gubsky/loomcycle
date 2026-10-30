@@ -41,6 +41,7 @@ One pass covers one document. The layers run in this order:
 | **L2 cite** | the citations the document class's `@citation_grammar` finds | one statement per citation, from the citing passage to the cited part, `method: rule:citation`. A citation to a held work whose part is missing points at the work's root; one to an unheld work gets a placeholder. The grammar's `kind` is used only when the ontology declares it and it is not reserved; otherwise the statement is `cites` |
 | **L3 terms** | the concepts of the scheme named by `terms_scheme`: their name and alternative labels | `uses_term` from each passage to each concept it mentions, `method: rule:terms`; or `defines`, `method: rule:definitions`, for a term a definitions passage defines (see below). Matches are exact or case-folded with whitespace collapsed, on word boundaries, and the longest match wins. **Tenant scope only**, because concepts live there; at user or agent scope the matches are counted and nothing is written |
 | **L4 relate** | semantic neighbours from `related`, judged by `kb/verdict` | in `propose` mode, `elaborates` only: one proposal per passage and target document, with both quotes as evidence, by `extractor:relate`. Every other kind stays in the report. It runs only when `corpus_paths` is given or `L4` is listed |
+| **L5 check-against** | each passage's norms under `check_against`: first the parts of the works it already cites, then the closest by meaning, up to `max_norms` (12); one `kb/verdict` call per passage | **a report document, no statements**: `<report_root>/<title>-<date>` (default root `/reports/check-against`), each finding (`addresses`, `complies_with`, `possible_gap`, `possible_conflict`) with both quotes, under a *not a legal opinion* banner. It runs only when `check_against` is given or `L5` is listed |
 | **L6 maintain** | every live statement with an end in the document, or with evidence citing it | see below |
 
 L2 and L3 need a confirmed ontology with relation kinds. Without one they skip
@@ -100,6 +101,17 @@ A verdict becomes a proposal only when all of these hold:
 A proposal is always `proposed`, by `extractor:relate`, with the verdict's
 confidence and both quotes as evidence. An operator's rejection stands: the
 runtime refuses to file a rejected relation again.
+
+### L5: check-against
+
+`{"document_id": …, "check_against": ["/board/regulatory-external"]}` compares
+each passage of an internal document with the norms it answers to. A finding
+needs both quotes verbatim and outside boilerplate, like an L4 one. The findings
+are written to a report document, one section per passage that has any, and the
+document opens with a banner: the findings are a model's, checked only for their
+quotes, and **not a legal opinion**. Nothing is filed in the statement graph. A
+report pass compares and counts, and writes no document. A report name already
+taken that day gets `-2`, `-3`, ….
 
 ### L6: maintaining what exists
 
@@ -275,6 +287,8 @@ curl -sX POST localhost:8080/v1/runs \
 | `merged_into` | — | subject mode: the document of the subject this one was merged into |
 | `purge` | `false` | sweep mode, with `write: propose`: delete what the purge report lists |
 | `file` | — | `{"root": "/…"}`, with L0: file a document whose class is in force under `<root>/<Class>/` |
+| `check_against` | — | L5: the Path-tree paths of the norms a passage is compared with |
+| `max_norms`, `report_root` | `12`, `/reports/check-against` | L5 only: norms per passage (1–20); where the report documents go |
 | `purge_after_days` | `180` | sweep mode: how long a statement stays retired before a purge may delete it (1–3650) |
 
 An unknown field or an out-of-range value refuses the run with
@@ -330,7 +344,8 @@ agents:
 
 ## Cost
 
-The linker makes no model call except in L4 and in L6's `rejudge`. L4 spends one
+The linker makes no model call except in L4, L5 and L6's `rejudge`. L4 spends one
 `kb/verdict` call per claim-bearing passage that has candidates, capped by
-`max_verdict_calls`, and runs only when asked for; `rejudge` spends one per
-changed statement, under the same cap. Nothing is scheduled unless you add a schedule.
+`max_verdict_calls`, and runs only when asked for; L5 spends one per passage
+that has norms, and `rejudge` one per changed statement, each under the same
+cap. Nothing is scheduled unless you add a schedule.
