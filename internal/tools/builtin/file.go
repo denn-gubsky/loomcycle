@@ -104,6 +104,10 @@ func (f *File) InputSchema() json.RawMessage {
 			"doc_path":      {"type": "string", "description": "import: where to name the document in the Path tree, e.g. /board/2026/minutes."},
 			"scope":         {"type": "string", "enum": ["agent", "user", "tenant"], "description": "import: the document store. Default user."},
 			"tags":          {"type": "array", "items": {"type": "string"}, "description": "import: tags for the document, besides the source/... and untrusted tags it always gets."},
+			"reimport":      {"type": "boolean", "description": "import: the file is a NEW EDITION of the work named by work_key, reconciled onto the document holding it part by part (as Document import_md with reimport): unchanged and moved parts keep their ids and links, changed ones are superseded at edition_date, nothing is deleted. Needs work_key."},
+			"work_key":      {"type": "string", "description": "import with reimport: the work's key, e.g. law:ua/2297-vi — the document holding it, or the one the first edition creates."},
+			"edition_date":  {"type": "integer", "description": "import with reimport: when the new edition came into force (unix nanos; default now). Not earlier than the edition in force."},
+			"amending_document_id": {"type": "string", "description": "import with reimport: the document of the same scope that made the edition — the amending act. Each part the edition renumbered or moved gets an amends statement from its root. You must be able to read and link it."},
 			"source":        {"type": "object", "description": "import: where the document came from, kept on it as a link back. Pass the item's web link (a SharePoint file's webUrl, an email's webLink), never a download or upload link. Default: for a downloaded file, its URL without the query.", "properties": {
 				"url":   {"type": "string", "description": "An http(s) link, at most 2048 bytes. Any signature or token in its query is masked before it is stored."},
 				"kind":  {"type": "string", "enum": ["sharepoint", "email", "attachment", "web", "other"], "description": "What kind of place it is. Default other. The document is also tagged source/<kind>."},
@@ -148,6 +152,12 @@ type fileInput struct {
 	Source  ImportSource `json:"source"`
 	// Headings is structure the runtime adds to the file on import.
 	Headings []ImportHeading `json:"headings"`
+	// A reimport: the file is a new edition of a held work, passed to
+	// import_md's reimport as is.
+	Reimport           bool   `json:"reimport"`
+	WorkKey            string `json:"work_key"`
+	EditionDate        *int64 `json:"edition_date"`
+	AmendingDocumentID string `json:"amending_document_id"`
 }
 
 func (f *File) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {

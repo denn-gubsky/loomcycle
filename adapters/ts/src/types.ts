@@ -362,6 +362,16 @@ export type RunFileInput = {
    *  in its numbering imports as sections. The file is not changed, so the
    *  document keeps the record of where it came from. */
   headings?: RunFileImportHeading[];
+  /** import: the file is a new edition of the work named by `work_key`,
+   *  reconciled onto the document holding it part by part. */
+  reimport?: boolean;
+  /** import with reimport: the work's key. */
+  work_key?: string;
+  /** import with reimport: when the edition came into force (unix nanos). */
+  edition_date?: number;
+  /** import with reimport: the document that made the edition (the amending
+   *  act); each renumbered part gets an `amends` statement from it. */
+  amending_document_id?: string;
 };
 
 /** import's `source`: the item's web link (a SharePoint `webUrl`, an email's

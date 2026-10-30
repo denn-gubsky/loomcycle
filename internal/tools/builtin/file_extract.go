@@ -344,7 +344,7 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	// Import writes a Document as import_md would, so the run must hold
 	// Document and Document's hooks judge it. The scope's own grants are
 	// checked by the Document tool itself, below.
-	if res, ok := fileDocumentGrant(ctx, scope, in.DocPath); !ok {
+	if res, ok := fileDocumentGrant(ctx, scope, in.DocPath, in.Reimport); !ok {
 		return res, nil
 	}
 	vfs, rel, res, ok := openRef(ctx, r, false)
@@ -394,7 +394,7 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	md = withRootHeading(md, in.Title, fileTitle(titleName))
 	md = hoistExtractedImages(md)
 
-	call, _ := json.Marshal(map[string]any{"op": "import_md", "scope": scope, "markdown": md, "path": in.DocPath})
+	call, _ := json.Marshal(importMDCall(in, scope, md))
 	ictx := withImportProvenance(withVolumeImageFields(withVolumeAssetReader(ctx, readExtractedImage), extractedImageFields), prov)
 	out, err := f.Docs.Execute(ictx, call)
 	if err != nil {
@@ -430,6 +430,17 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	if unrecordedInbox {
 		result["provenance_note"] = importNoRecordNote
 	}
+	if in.Reimport {
+		// A new edition reports what it reconciled, not chunks made.
+		for _, k := range []string{"chunks", "image_chunks", "skipped"} {
+			delete(result, k)
+		}
+		for _, k := range []string{"reimport", "edition_date", "work_key", "changed_chunk_ids", "not_announced"} {
+			if v, ok := imported[k]; ok {
+				result[k] = v
+			}
+		}
+	}
 	tagCall, _ := json.Marshal(map[string]any{"op": "add_tags", "scope": scope, "document_id": docID, "tags": tags})
 	tres, err := f.Docs.Execute(ctx, tagCall)
 	switch {
@@ -443,6 +454,25 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 		result["tags"] = t["tags"]
 	}
 	return okJSON(result)
+}
+
+// importMDCall is the Document import_md call an import makes. A reimport's
+// fields pass through unchanged: import_md checks them.
+func importMDCall(in fileInput, scope, md string) map[string]any {
+	call := map[string]any{"op": "import_md", "scope": scope, "markdown": md, "path": in.DocPath}
+	if in.Reimport {
+		call["reimport"] = true
+	}
+	if in.WorkKey != "" {
+		call["work_key"] = in.WorkKey
+	}
+	if in.EditionDate != nil {
+		call["edition_date"] = *in.EditionDate
+	}
+	if in.AmendingDocumentID != "" {
+		call["amending_document_id"] = in.AmendingDocumentID
+	}
+	return call
 }
 
 // importFileProvenance is what an import of the file at rel records on the
@@ -486,7 +516,7 @@ func importFileProvenance(ctx context.Context, r dataRef, rel, digest string) (p
 // fileDocumentGrant refuses an import the run could not make with the
 // Document tool: outside a run, without Document in its tools, or when
 // Document's pre-hooks deny the equivalent import_md.
-func fileDocumentGrant(ctx context.Context, scope, docPath string) (tools.Result, bool) {
+func fileDocumentGrant(ctx context.Context, scope, docPath string, reimport bool) (tools.Result, bool) {
 	if tools.IsSubstrateOperator(ctx) && tools.RunID(ctx) == "" {
 		return errPermission("import is not available outside a run", "Use the Document tool's import_md."), false
 	}
@@ -496,6 +526,9 @@ func fileDocumentGrant(ctx context.Context, scope, docPath string) (tools.Result
 	in := map[string]any{"op": "import_md", "scope": scope, "via": FileToolName}
 	if docPath != "" {
 		in["path"] = docPath
+	}
+	if reimport {
+		in["reimport"] = true
 	}
 	b, _ := json.Marshal(in)
 	if res, ok := tools.HookPreCheck(ctx, "Document", b); !ok {
