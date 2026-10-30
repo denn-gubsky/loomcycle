@@ -116,6 +116,39 @@ const (
 // does not check it.
 const edgeOriginMethodAttr = "origin_method"
 
+// madeByAPerson reports whether a person wrote s: the test behind every rule
+// that keeps a pass from undoing a person's statement. A pull writes every
+// statement it carries with method sync, so a synced statement is judged by its
+// origin_method, and judged a person's unless that names a machine method. It
+// fails closed: an origin of manual, none at all (a pull from before
+// origin_method was carried), or anything this build does not know reads as a
+// person's.
+func madeByAPerson(s *statementRow) bool {
+	switch s.Method {
+	case edgeMethodManual:
+		return true
+	case edgeMethodSync:
+		origin, _ := s.Attributes[edgeOriginMethodAttr].(string)
+		return !machineMethod(origin)
+	}
+	return false
+}
+
+// machineMethod reports whether m names a method code stamps rather than a
+// person: a code agent's rule:<name> / extractor:<name>, or one of the
+// runtime's own. sync is not one — it says how a statement arrived, not who
+// made it.
+func machineMethod(m string) bool {
+	if prefix, name, ok := strings.Cut(m, ":"); ok {
+		return (prefix == "rule" || prefix == "extractor") && statementMethodName.MatchString(name)
+	}
+	switch m {
+	case edgeMethodImport, edgeMethodCanvas, edgeMethodWikilink, edgeMethodRuntime, edgeMethodConsolidator, edgeMethodOntology:
+		return true
+	}
+	return false
+}
+
 // Bounds on what a caller may attach to one statement.
 const (
 	edgeEvidenceDefaultMax = 32

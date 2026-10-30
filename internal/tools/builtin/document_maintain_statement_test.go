@@ -220,13 +220,16 @@ func TestMaintainStatement_ManualStatementTakesOnlyVerifyAndFlag(t *testing.T) {
 	})
 }
 
-// Only manual is limited: a statement that import or sync wrote is expired and
-// demoted like a rule's.
+// Only a person's statement is limited: one that import wrote, or that a sync
+// carried from a machine, is expired and demoted like a rule's.
 func TestMaintainStatement_ImportAndSyncStatementsAreMaintainable(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
 	f := newMaintFixture(t, d, ctx)
-	for i, method := range []string{edgeMethodImport, edgeMethodSync} {
-		id := f.seed(t, f.a, f.b, "cites", method, edgeStatusAsserted, int64(i+1), f.quoteInA)
+	seeded := map[string]string{
+		edgeMethodImport:    f.seed(t, f.a, f.b, "cites", edgeMethodImport, edgeStatusAsserted, 1, f.quoteInA),
+		"sync of an import": f.seedSynced(t, edgeMethodImport, 2),
+	}
+	for method, id := range seeded {
 		if _, r := f.maintain(t, f.run, id, "demote", `,"reason":"recheck","method":"rule:maintain"`); r.IsError {
 			t.Errorf("demote of a %s statement: %s", method, r.Text)
 		}
@@ -716,4 +719,129 @@ func TestMigrateEdgeStatements_BackfillsOperatorRuledAt(t *testing.T) {
 			}
 		}
 	})
+}
+
+// seedSynced writes a statement as a pull leaves it: method sync, and the
+// peer's method in attributes.origin_method (origin "" writes none, as a pull
+// before origin_method did).
+func (f maintFixture) seedSynced(t *testing.T, origin string, validAt int64) string {
+	t.Helper()
+	key, mscope, err := f.d.resolveScope(f.ctx, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := edgeWrite{from: f.a, to: f.b, kind: "cites", method: edgeMethodSync, status: edgeStatusAsserted, validAt: &validAt,
+		evidence: []edgeEvidenceIn{{ChunkID: f.a, Quote: f.quoteInA}}}
+	if origin != "" {
+		w.attributes = map[string]any{edgeOriginMethodAttr: origin}
+	}
+	res, refuse, err := f.d.writeStatement(f.ctx, key, mscope, w)
+	if err != nil || refuse != nil {
+		t.Fatalf("seed synced %q: %v %v", origin, err, refuse)
+	}
+	if s := f.row(t, res.ID); s.Method != edgeMethodSync {
+		t.Fatalf("seeded statement has method %q, want sync", s.Method)
+	}
+	return res.ID
+}
+
+// A person's statement that crossed a sync is still a person's: written here
+// with method sync, it keeps the manual rule whether the peer said manual or —
+// a pull from before origin_method was carried — said nothing. A run holding a
+// rule grant (and link on both ends: no access-control set) may only verify
+// and flag it, and so may the operator plane.
+func TestMaintainStatement_SyncedPersonsStatementTakesOnlyVerifyAndFlag(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		f := newMaintFixture(t, d, ctx)
+		other := f.seed(t, f.a, f.b, "cites", "rule:citation", edgeStatusAsserted, 999, f.quoteInA)
+		var validAt int64
+		for _, origin := range []string{edgeMethodManual, ""} {
+			// A statement per action and caller, so each refusal is its own: one
+			// action let through would otherwise read as the next one's
+			// statement_expired.
+			for _, c := range []struct{ action, extra string }{
+				{"expire", `,"reason":"r"`},
+				{"demote", `,"reason":"r"`},
+				{"merge", `,"survivor_id":"` + other + `"`},
+			} {
+				for name, ctx := range map[string]context.Context{"run": f.run, "operator": operatorCtx(ctx)} {
+					validAt++
+					id := f.seedSynced(t, origin, validAt)
+					extra := c.extra
+					if name == "run" {
+						extra += `,"method":"rule:maintain"`
+					}
+					what := fmt.Sprintf("%s %s on a synced statement of origin %q", name, c.action, origin)
+					_, r := f.maintain(t, ctx, id, c.action, extra)
+					wantRefusal(t, what, r, "statement_manual")
+					if s := f.row(t, id); s.Status != edgeStatusAsserted || s.ExpiredAt != nil || s.JudgedAt != nil {
+						t.Errorf("%s: the refused action changed the statement: %+v", what, s)
+					}
+					if e := f.evidence(t, id); len(e) != 1 {
+						t.Errorf("%s: the refused action moved the statement's evidence: %+v", what, e)
+					}
+				}
+			}
+			validAt++
+			id := f.seedSynced(t, origin, validAt)
+			for _, action := range []string{"verify", "flag"} {
+				if _, r := f.maintain(t, f.run, id, action, `,"reason":"check this","method":"rule:maintain"`); r.IsError {
+					t.Errorf("origin %q: %s: %s", origin, action, r.Text)
+				}
+			}
+		}
+	})
+}
+
+// The positive control: a synced statement a machine made where it came from is
+// maintained like that machine's own.
+func TestMaintainStatement_SyncedMachineStatementIsMaintainable(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		f := newMaintFixture(t, d, ctx)
+		id := f.seedSynced(t, "rule:x", 1)
+		if _, r := f.maintain(t, f.run, id, "expire", `,"reason":"gone","method":"rule:maintain"`); r.IsError {
+			t.Fatalf("expire of a synced rule statement: %s", r.Text)
+		}
+		if s := f.row(t, id); s.ExpiredAt == nil || s.JudgedBy != "rule:maintain" {
+			t.Errorf("after expire: %+v", s)
+		}
+	})
+}
+
+// madeByAPerson fails closed: only an origin naming a machine method lifts the
+// manual rule from a synced statement.
+func TestMadeByAPerson_SyncedIsAPersonsUnlessAMachineMadeIt(t *testing.T) {
+	synced := func(attrs map[string]any) *statementRow {
+		return &statementRow{Method: edgeMethodSync, Attributes: attrs}
+	}
+	origin := func(v any) *statementRow { return synced(map[string]any{edgeOriginMethodAttr: v}) }
+	for name, c := range map[string]struct {
+		s    *statementRow
+		want bool
+	}{
+		"manual":              {&statementRow{Method: edgeMethodManual}, true},
+		"rule":                {&statementRow{Method: "rule:citation"}, false},
+		"import":              {&statementRow{Method: edgeMethodImport}, false},
+		"sync, no attributes": {synced(nil), true},
+		"sync, other attrs":   {synced(map[string]any{"page": 3}), true},
+		"sync, empty origin":  {origin(""), true},
+		"sync, manual":        {origin(edgeMethodManual), true},
+		"sync, sync":          {origin(edgeMethodSync), true},
+		"sync, unknown":       {origin("person"), true},
+		"sync, not a string":  {origin(7), true},
+		"sync, rule: alone":   {origin("rule:"), true},
+		"sync, other prefix":  {origin("manual:x"), true},
+		"sync, rule":          {origin("rule:x"), false},
+		"sync, extractor":     {origin("extractor:citations"), false},
+		"sync, import":        {origin(edgeMethodImport), false},
+		"sync, canvas":        {origin(edgeMethodCanvas), false},
+		"sync, wikilink":      {origin(edgeMethodWikilink), false},
+		"sync, runtime":       {origin(edgeMethodRuntime), false},
+		"sync, consolidator":  {origin(edgeMethodConsolidator), false},
+		"sync, ontology":      {origin(edgeMethodOntology), false},
+	} {
+		if got := madeByAPerson(c.s); got != c.want {
+			t.Errorf("%s: madeByAPerson = %v, want %v", name, got, c.want)
+		}
+	}
 }

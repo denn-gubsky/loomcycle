@@ -1135,7 +1135,7 @@ func (d *Document) supersedePart(ctx context.Context, key sqlmem.ScopeKey, mscop
 //
 // A statement whose evidence quoting a superseded part still occurs in that part's
 // new text is COPIED (attributes.revision_of naming the original); so is a
-// statement with no evidence there, and a manual one, unconditionally — a person's
+// statement with no evidence there, and a person's one (madeByAPerson), unconditionally — a person's
 // link is not something a text change can disprove. So is one an operator ruled
 // on (operator_ruled_at, or rejected — only an operator rejects): the ruling is a
 // person's decision, and a machine reimport — which a run may make — must not
@@ -1227,7 +1227,7 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 			}
 		}
 		ruled := s.OperatorRuledAt != nil || s.Status == edgeStatusRejected
-		if !holds && s.Method != edgeMethodManual && !ruled {
+		if !holds && !madeByAPerson(&s) && !ruled {
 			for _, end := range []string{s.FromID, s.ToID} {
 				if _, ours := remap[end]; !ours {
 					continue
