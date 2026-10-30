@@ -229,7 +229,8 @@ func TestKBLinker_DrainAcksEachMessageOnlyAfterItsPass(t *testing.T) {
 }
 
 // TestKBLinker_DrainStopsUnackedWhenTheBudgetRunsOut: a pass cut by the write
-// budget did not finish, so its message is left for the next drain.
+// budget did not finish, so its message is left for the next drain. The budget
+// is two: L0's classify, then one of the two citations.
 func TestKBLinker_DrainStopsUnackedWhenTheBudgetRunsOut(t *testing.T) {
 	f := kbBaseFixture()
 	f.ontology = kbOntology()
@@ -239,7 +240,7 @@ func TestKBLinker_DrainStopsUnackedWhenTheBudgetRunsOut(t *testing.T) {
 	}
 	f.queue = []kbMessage{{ID: "msg-1", Value: map[string]any{"document_id": "doc-target", "reason": "created"}}}
 
-	rep, _ := runLinker(t, f, `{"mode":"drain","write":"propose","max_writes":1}`)
+	rep, _ := runLinker(t, f, `{"mode":"drain","write":"propose","max_writes":2}`)
 
 	if n := len(f.callsOf("Document", "propose_statement")); n != 1 {
 		t.Errorf("proposals = %d, want 1 — the budget caps writes", n)
