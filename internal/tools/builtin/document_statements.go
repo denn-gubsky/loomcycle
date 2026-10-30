@@ -45,6 +45,11 @@ import (
 // found when checking it. Only the verdict withholds — a writer unsure of a link
 // is not a refutation of it — and an operator's accept can clear a refuting
 // verdict without erasing what the writer said.
+//
+// operator_ruled_at marks a statement an operator ruled on (accept_statement,
+// reject_statement). It is its own column, written only by that ruling and by no
+// run path, because judged_by is rewritten by every later judge: a guard on it
+// would let a run's judge_fact lift the protection a ruling gives.
 const chunkEdgesColumns = `
 		id TEXT NOT NULL, from_id TEXT NOT NULL, to_id TEXT NOT NULL, kind TEXT NOT NULL,
 		created_at BIGINT NOT NULL, auto INTEGER NOT NULL DEFAULT 0,
@@ -53,6 +58,7 @@ const chunkEdgesColumns = `
 		expired_at BIGINT, verified_at BIGINT, actor TEXT, run_id TEXT,
 		ontology_version INTEGER, discriminator TEXT NOT NULL DEFAULT '', attributes TEXT,
 		judged_at BIGINT, judge_reason TEXT, judged_by TEXT, verdict_confidence DOUBLE PRECISION,
+		operator_ruled_at BIGINT,
 		PRIMARY KEY (id)`
 
 // preStatementEdgeColumns is the whole chunk_edges of a scope created before
@@ -194,6 +200,24 @@ func (d *Document) migrateEdgeStatements(ctx context.Context, key sqlmem.ScopeKe
 			} {
 				if err := d.execTxn(ctx, txnID, s); err != nil {
 					return fmt.Errorf("add chunk_edges.verdict_confidence: %w", err)
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	if !rebuild && !cols["operator_ruled_at"] {
+		// Before the mark, a ruling was recognisable only by judged_by — and only
+		// until a later judge rewrote it, so what still says operator is what is
+		// marked. A rebuilt table has no rulings and is created with the column.
+		if err := d.withSqlTxn(ctx, key, func(txnID string) error {
+			for _, s := range []string{
+				`ALTER TABLE chunk_edges ADD COLUMN operator_ruled_at BIGINT`,
+				`UPDATE chunk_edges SET operator_ruled_at = COALESCE(judged_at, created_at) WHERE judged_by = 'operator'`,
+			} {
+				if err := d.execTxn(ctx, txnID, s); err != nil {
+					return fmt.Errorf("add chunk_edges.operator_ruled_at: %w", err)
 				}
 			}
 			return nil
@@ -762,15 +786,16 @@ type statementRow struct {
 	// writer's own. Only the verdict withholds.
 	VerdictConfidence *float64 `json:"verdict_confidence,omitempty"`
 	CreatedAt         int64    `json:"created_at"`
+	OperatorRuledAt   *int64   `json:"operator_ruled_at,omitempty"`
 }
 
 // statementCols is the SELECT list scanStatement reads, aliased on `e`.
 const statementCols = `e.id, e.from_id, e.to_id, e.kind, e.auto, e.status, e.method, e.confidence,
 	e.valid_at, e.invalid_at, e.expired_at, e.verified_at, e.actor, e.run_id, e.ontology_version,
 	e.discriminator, e.attributes, e.judged_at, e.judge_reason, e.judged_by, e.created_at,
-	e.verdict_confidence`
+	e.verdict_confidence, e.operator_ruled_at`
 
-const statementColCount = 22
+const statementColCount = 23
 
 func scanStatement(r []any) statementRow {
 	s := statementRow{
@@ -786,6 +811,7 @@ func scanStatement(r []any) statementRow {
 	}
 	s.CreatedAt, _ = asInt64(r[20])
 	s.VerdictConfidence = asFloat64Ptr(r[21])
+	s.OperatorRuledAt = asInt64Ptr(r[22])
 	if s.Status == "" {
 		s.Status = edgeStatusAsserted
 	}
@@ -994,7 +1020,7 @@ func (d *Document) statementJSON(ctx context.Context, s statementRow, ends map[s
 	if s.VerdictConfidence != nil {
 		e["verdict_confidence"] = *s.VerdictConfidence
 	}
-	for k, v := range map[string]*int64{"valid_at": s.ValidAt, "invalid_at": s.InvalidAt, "expired_at": s.ExpiredAt, "verified_at": s.VerifiedAt, "judged_at": s.JudgedAt, "ontology_version": s.OntologyVersion} {
+	for k, v := range map[string]*int64{"valid_at": s.ValidAt, "invalid_at": s.InvalidAt, "expired_at": s.ExpiredAt, "verified_at": s.VerifiedAt, "judged_at": s.JudgedAt, "ontology_version": s.OntologyVersion, "operator_ruled_at": s.OperatorRuledAt} {
 		if v != nil {
 			e[k] = *v
 		}
@@ -1213,7 +1239,9 @@ func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, msc
 	}
 	now := time.Now().UnixNano()
 	reason := nullIfEmpty(strings.TrimSpace(in.Reason))
-	set, args := `status = ?, judged_at = ?, judge_reason = ?, judged_by = ?`, []any{status, now, reason, "operator"}
+	// operator_ruled_at is set by every ruling, whatever else it records: it is
+	// what tells a run's maintenance this statement is a human decision.
+	set, args := `status = ?, operator_ruled_at = ?, judged_at = ?, judge_reason = ?, judged_by = ?`, []any{status, now, now, reason, "operator"}
 	if accept {
 		refuting := s.VerdictConfidence != nil && *s.VerdictConfidence < withholdBelowConfidence
 		switch {
@@ -1225,7 +1253,7 @@ func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, msc
 		default:
 			// A judge's standing verdict on the proposal is kept: accepting it adds
 			// nothing the verdict does not already say.
-			set, args = `status = ?`, []any{status}
+			set, args = `status = ?, operator_ruled_at = ?`, []any{status, now}
 		}
 	}
 	args = append(args, in.ID, s.Status)
