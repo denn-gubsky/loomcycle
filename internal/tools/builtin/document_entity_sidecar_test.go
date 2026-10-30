@@ -45,7 +45,7 @@ func sidecarInsert(t *testing.T, d *Document, ctx context.Context, chunkID, natu
 	stmt := d.SqlMem.Rebind(
 		`INSERT INTO chunk_memory_meta (chunk_id, valid_at, created_at, class, origin, natural_key)
 		 VALUES (?, ?, ?, ?, ?, ?)`)
-	_, err := d.SqlMem.Exec(ctx, sidecarScope(t, d, ctx), stmt,
+	_, err := d.docSQL().Exec(ctx, sidecarScope(t, d, ctx), stmt,
 		[]any{chunkID, int64(1), int64(1), "derived", "consolidator", nk}, 0)
 	return err
 }
@@ -55,7 +55,7 @@ func sidecarInsert(t *testing.T, d *Document, ctx context.Context, chunkID, natu
 // untouched by a cascade that walks real chunks.
 func sidecarRowsFor(t *testing.T, d *Document, ctx context.Context, chunkID string) int {
 	t.Helper()
-	res, err := d.SqlMem.Query(ctx, sidecarScope(t, d, ctx),
+	res, err := d.docSQL().Query(ctx, sidecarScope(t, d, ctx),
 		d.SqlMem.Rebind(`SELECT count(*) FROM chunk_memory_meta WHERE chunk_id = ?`), []any{chunkID})
 	if err != nil {
 		t.Fatalf("count for %s: %v", chunkID, err)
@@ -65,7 +65,7 @@ func sidecarRowsFor(t *testing.T, d *Document, ctx context.Context, chunkID stri
 
 func sidecarCount(t *testing.T, d *Document, ctx context.Context) int {
 	t.Helper()
-	res, err := d.SqlMem.Query(ctx, sidecarScope(t, d, ctx), `SELECT count(*) FROM chunk_memory_meta`, nil)
+	res, err := d.docSQL().Query(ctx, sidecarScope(t, d, ctx), `SELECT count(*) FROM chunk_memory_meta`, nil)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestSidecar_PostgresTierParity(t *testing.T) {
 	}
 
 	// The reverse-edge index, in its postgres form.
-	res, err := mgr.Query(ctx, sidecarScope(t, d, ctx),
+	res, err := mgr.DocPlane().Query(ctx, sidecarScope(t, d, ctx),
 		`SELECT indexname FROM pg_indexes WHERE indexname = 'chunk_edges_to_kind'`, nil)
 	if err != nil {
 		t.Fatalf("postgres index probe: %v", err)

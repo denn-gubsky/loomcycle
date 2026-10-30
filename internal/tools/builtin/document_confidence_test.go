@@ -109,7 +109,7 @@ func TestConfidence_WidensAPreExistingRealColumn(t *testing.T) {
 		t.Fatalf("create_document: %s", r.Text)
 	}
 	key := sidecarScope(t, d, ctx)
-	if _, err := mgr.Exec(context.Background(), key,
+	if _, err := mgr.DocPlane().Exec(context.Background(), key,
 		`ALTER TABLE chunk_memory_meta ALTER COLUMN confidence TYPE REAL`, nil, 0); err != nil {
 		t.Fatalf("stage the old column type: %v", err)
 	}
@@ -184,7 +184,7 @@ func assertConfidenceRoundTrip(t *testing.T, d *Document, ctx context.Context, w
 
 func confidenceColumnType(t *testing.T, mgr *sqlmem.Manager, key sqlmem.ScopeKey) string {
 	t.Helper()
-	res, err := mgr.Query(context.Background(), key,
+	res, err := mgr.DocPlane().Query(context.Background(), key,
 		`SELECT data_type FROM information_schema.columns
 		  WHERE table_schema = current_schema()
 		    AND table_name = 'chunk_memory_meta' AND column_name = 'confidence'`, nil)

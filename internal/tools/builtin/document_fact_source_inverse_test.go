@@ -64,7 +64,7 @@ func TestListFacts_SourceRunIDIsTheINVERSEOfARecalledFactsPointer(t *testing.T) 
 		}
 		// The run id is not a tool argument — it is stamped from the caller's
 		// identity — so set it directly to model two different conversations.
-		if _, err := d.SqlMem.Exec(ctx, mustDocScopeKey(t, "tnt", store.MemoryScopeUser, "u1"),
+		if _, err := d.docSQL().Exec(ctx, mustDocScopeKey(t, "tnt", store.MemoryScopeUser, "u1"),
 			d.SqlMem.Rebind(`UPDATE chunk_memory_meta SET run_id = ? WHERE natural_key = ?`),
 			[]any{f.run, f.key}, 0); err != nil {
 			t.Fatalf("stamp run for %s: %v", f.key, err)

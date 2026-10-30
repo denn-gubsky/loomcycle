@@ -47,10 +47,10 @@ func (d *Document) FactChunksByNaturalKey(ctx context.Context, tenantID string,
 	// otherwise report a read error for a scope that is simply empty. Probed with
 	// the leading-SELECT the rest of this package uses: validator-safe (a leading
 	// PRAGMA is denied) and tier-portable.
-	if _, perr := d.SqlMem.Query(ctx, key, `SELECT natural_key FROM chunk_memory_meta WHERE 1=0`, nil); perr != nil {
+	if _, perr := d.docSQL().Query(ctx, key, `SELECT natural_key FROM chunk_memory_meta WHERE 1=0`, nil); perr != nil {
 		return map[string]string{}, nil
 	}
-	res, err := d.SqlMem.Query(ctx, key,
+	res, err := d.docSQL().Query(ctx, key,
 		`SELECT m.natural_key, c.id FROM chunk_memory_meta m `+
 			`JOIN chunks c ON c.id = m.chunk_id `+
 			`WHERE c.type = 'fact' AND m.natural_key IS NOT NULL`, nil)

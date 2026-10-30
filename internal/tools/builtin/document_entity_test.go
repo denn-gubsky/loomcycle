@@ -134,7 +134,7 @@ func TestSupersedeChunk_RetiresWithoutDeleting(t *testing.T) {
 		t.Fatalf("the superseded chunk must remain queryable: %s", r.Text)
 	}
 	// Both end-timestamps closed.
-	res, err := d.SqlMem.Query(ctx, sidecarScope(t, d, ctx),
+	res, err := d.docSQL().Query(ctx, sidecarScope(t, d, ctx),
 		d.SqlMem.Rebind(`SELECT invalid_at, expired_at FROM chunk_memory_meta WHERE chunk_id = ?`), []any{oldID})
 	if err != nil {
 		t.Fatalf("meta: %v", err)
@@ -184,7 +184,7 @@ func TestSupersedeChunk_RefusesNonsense(t *testing.T) {
 		}
 	}
 	// Nothing was retired by any of those refusals.
-	res, _ := d.SqlMem.Query(ctx, sidecarScope(t, d, ctx),
+	res, _ := d.docSQL().Query(ctx, sidecarScope(t, d, ctx),
 		d.SqlMem.Rebind(`SELECT count(*) FROM chunk_memory_meta WHERE invalid_at IS NOT NULL`), nil)
 	if n := scanCount(res.Rows); n != 0 {
 		t.Errorf("a refused supersede retired %d chunk(s) anyway", n)
@@ -203,7 +203,7 @@ func TestEntityWrite_OriginIsServerStamped(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("upsert: %s", r.Text)
 	}
-	res, err := d.SqlMem.Query(ctx, sidecarScope(t, d, ctx),
+	res, err := d.docSQL().Query(ctx, sidecarScope(t, d, ctx),
 		d.SqlMem.Rebind(`SELECT origin FROM chunk_memory_meta WHERE chunk_id = ?`), []any{asStr(out["id"])})
 	if err != nil {
 		t.Fatalf("meta: %v", err)
@@ -308,7 +308,7 @@ func TestSupersedeChunk_RefusesAForkedCorrectionChain(t *testing.T) {
 			"cannot tell what to supersede instead: %s", b, r.Text)
 	}
 	// Exactly one chunk supersedes it.
-	res, err := d.SqlMem.Query(ctx, sidecarScope(t, d, ctx),
+	res, err := d.docSQL().Query(ctx, sidecarScope(t, d, ctx),
 		d.SqlMem.Rebind(`SELECT from_id FROM chunk_edges WHERE to_id = ? AND kind = 'supersedes'`), []any{old})
 	if err != nil {
 		t.Fatal(err)

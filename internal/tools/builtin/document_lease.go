@@ -164,9 +164,9 @@ func (d *Document) releaseDocumentLease(ctx context.Context, key sqlmem.ScopeKey
 
 // execCount is exec that also reports the affected row count.
 func (d *Document) execCount(ctx context.Context, key sqlmem.ScopeKey, stmt string, args ...any) (int64, error) {
-	res, err := d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(stmt), args, 0)
+	res, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(stmt), args, 0)
 	if schemaMissing(err) && d.reensureSchema(ctx, key) == nil {
-		res, err = d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(stmt), args, 0)
+		res, err = d.docSQL().Exec(ctx, key, d.docSQL().Rebind(stmt), args, 0)
 	}
 	if err != nil || res == nil {
 		return 0, err

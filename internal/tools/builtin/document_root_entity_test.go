@@ -27,7 +27,7 @@ func TestCreateDocument_RootBecomesTheEntityWhenNamed(t *testing.T) {
 
 	// The sidecar is what makes a chunk an entity — without it the root is an
 	// ordinary container and the fact surfaces cannot see it.
-	res, err := d.SqlMem.Query(ctx, sidecarScope(t, d, ctx),
+	res, err := d.docSQL().Query(ctx, sidecarScope(t, d, ctx),
 		d.SqlMem.Rebind(`SELECT coalesce(natural_key,''), coalesce(subject,''), coalesce(origin,'')
 		                   FROM chunk_memory_meta WHERE chunk_id = ?`), []any{root})
 	if err != nil {
@@ -71,7 +71,7 @@ func TestCreateDocument_AnOrdinaryRootIsNotAnEntity(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("create_document: %s", r.Text)
 	}
-	res, err := d.SqlMem.Query(ctx, sidecarScope(t, d, ctx),
+	res, err := d.docSQL().Query(ctx, sidecarScope(t, d, ctx),
 		d.SqlMem.Rebind(`SELECT count(*) FROM chunk_memory_meta WHERE chunk_id = ?`),
 		[]any{asStr(out["root_chunk_id"])})
 	if err != nil {
@@ -95,7 +95,7 @@ func TestCreateDocument_HalfThePairIsNotAnEntity(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("create_document: %s", r.Text)
 	}
-	res, err := d.SqlMem.Query(ctx, sidecarScope(t, d, ctx),
+	res, err := d.docSQL().Query(ctx, sidecarScope(t, d, ctx),
 		d.SqlMem.Rebind(`SELECT count(*) FROM chunk_memory_meta WHERE chunk_id = ?`),
 		[]any{asStr(out["root_chunk_id"])})
 	if err != nil {

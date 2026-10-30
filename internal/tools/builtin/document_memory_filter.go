@@ -102,11 +102,11 @@ func appliedDocumentFilter(ap searchFilterApplied) memrank.DocumentFilter {
 // creates nothing: ScopeExists never provisions, and the probe goes to the
 // Manager directly, not through query(), whose missing-table retry re-provisions.
 func (d *Document) documentTablesAbsent(ctx context.Context, key sqlmem.ScopeKey) (bool, error) {
-	ok, err := d.SqlMem.ScopeExists(ctx, key)
+	ok, err := d.docSQL().ScopeExists(ctx, key)
 	if err != nil || !ok {
 		return !ok, err
 	}
-	_, err = d.SqlMem.Query(ctx, key, "SELECT count(*) FROM chunks WHERE 1=0", nil)
+	_, err = d.docSQL().Query(ctx, key, "SELECT count(*) FROM chunks WHERE 1=0", nil)
 	if schemaMissing(err) {
 		return true, nil
 	}

@@ -62,7 +62,7 @@ func TestUpsertChunk_FromPendingStampsTheServersProvenance(t *testing.T) {
 
 	// The SIDECAR: the two halves of one record must agree, or a fact's provenance
 	// depends on which half a reader consults.
-	res, err := d.SqlMem.Query(ctx, sk,
+	res, err := d.docSQL().Query(ctx, sk,
 		d.SqlMem.Rebind(`SELECT coalesce(origin,''), coalesce(session_id,''), coalesce(run_id,'')
 		                   FROM chunk_memory_meta WHERE chunk_id = ?`), []any{id})
 	if err != nil || len(res.Rows) == 0 {

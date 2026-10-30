@@ -505,14 +505,14 @@ func assertMemoryDocumentFilterCore(t *testing.T, d *Document, ctx context.Conte
 	}
 
 	// Provisioned by an agent's own SQL, but holding no document tables.
-	if _, err := d.SqlMem.Exec(ctx, agentKey, "CREATE TABLE scratch (x INTEGER)", nil, 0); err != nil {
+	if _, err := d.docSQL().Exec(ctx, agentKey, "CREATE TABLE scratch (x INTEGER)", nil, 0); err != nil {
 		t.Fatal(err)
 	}
 	res, err = d.ResolveDocumentFilter(ctx, "search", store.MemoryScopeAgent, agent, excl)
 	if err != nil || res.MatchedChunks != 0 {
 		t.Fatalf("scope without document tables: %+v, %v — want no match", res, err)
 	}
-	if _, err := d.SqlMem.Query(ctx, agentKey, "SELECT count(*) FROM chunks WHERE 1=0", nil); !schemaMissing(err) {
+	if _, err := d.docSQL().Query(ctx, agentKey, "SELECT count(*) FROM chunks WHERE 1=0", nil); !schemaMissing(err) {
 		t.Errorf("resolving created the document tables (probe err = %v)", err)
 	}
 

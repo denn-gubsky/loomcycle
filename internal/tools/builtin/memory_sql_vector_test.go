@@ -138,7 +138,7 @@ func TestMemorySQL_EmbedDirectiveRoundTrip(t *testing.T) {
 func dropAllSqlmemScopes(t *testing.T, raw *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
-	if rows, err := raw.QueryContext(ctx, `SELECT nspname FROM pg_namespace WHERE nspname LIKE 'sqlmem\_s\_%'`); err == nil {
+	if rows, err := raw.QueryContext(ctx, `SELECT nspname FROM pg_namespace WHERE (nspname LIKE 'sqlmem\_s\_%' OR nspname LIKE 'sqlmem\_d\_%')`); err == nil {
 		var names []string
 		for rows.Next() {
 			var n string
@@ -151,7 +151,7 @@ func dropAllSqlmemScopes(t *testing.T, raw *sql.DB) {
 			_, _ = raw.ExecContext(ctx, `DROP SCHEMA IF EXISTS "`+n+`" CASCADE`)
 		}
 	}
-	if rr, err := raw.QueryContext(ctx, `SELECT rolname FROM pg_roles WHERE rolname LIKE 'sqlmem\_r\_%'`); err == nil {
+	if rr, err := raw.QueryContext(ctx, `SELECT rolname FROM pg_roles WHERE (rolname LIKE 'sqlmem\_r\_%' OR rolname LIKE 'sqlmem\_dr\_%')`); err == nil {
 		var names []string
 		for rr.Next() {
 			var n string

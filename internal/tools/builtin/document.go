@@ -971,8 +971,13 @@ func direntTenant(ctx context.Context) string { return tools.RunIdentity(ctx).Te
 // ad-hoc in a dozen places (the Memory tool's placement helpers, Context, the HTTP
 // describe handler) and they all share one Manager pointer, so a per-struct cache
 // would miss every one of them.
+// docSQL is the SQL Memory plane the document tables live on. On postgres it is
+// a schema and login role of its own, which an agent's SQL cannot reach (see
+// sqlmem.Manager.DocPlane); on sqlite it is the scope's one file.
+func (d *Document) docSQL() *sqlmem.Manager { return d.SqlMem.DocPlane() }
+
 func (d *Document) ensureSchema(ctx context.Context, key sqlmem.ScopeKey) error {
-	return d.SqlMem.EnsureOnce(key, func() error { return d.provisionSchema(provisioning(ctx), key) })
+	return d.docSQL().EnsureOnce(key, func() error { return d.provisionSchema(provisioning(ctx), key) })
 }
 
 // provisioningCtxKey marks a context as already inside schema provisioning.
@@ -1001,7 +1006,7 @@ func (d *Document) reensureSchema(ctx context.Context, key sqlmem.ScopeKey) erro
 	if isProvisioning(ctx) {
 		return errAlreadyProvisioning
 	}
-	d.SqlMem.ForgetEnsured(key)
+	d.docSQL().ForgetEnsured(key)
 	return d.ensureSchema(ctx, key)
 }
 
@@ -1010,8 +1015,33 @@ func (d *Document) reensureSchema(ctx context.Context, key sqlmem.ScopeKey) erro
 var errAlreadyProvisioning = errors.New("document: already provisioning")
 
 func (d *Document) provisionSchema(ctx context.Context, key sqlmem.ScopeKey) error {
+	// A scope created before the document tables had a plane of their own keeps
+	// them on the agent plane. They are brought to the current shape where they
+	// are first, so every migration's backfill runs on the old rows, then the
+	// rows move into the fresh tables provisioned on the document plane.
+	held, err := d.docSQL().AgentPlaneTables(ctx, key, documentTableNames)
+	if err != nil {
+		return err
+	}
+	if len(held) > 0 {
+		if err := d.provisionTables(ctx, key.AgentPlane()); err != nil {
+			return err
+		}
+	}
+	if err := d.provisionTables(ctx, key); err != nil {
+		return err
+	}
+	if len(held) == 0 {
+		return nil
+	}
+	return d.docSQL().AdoptAgentTables(ctx, key, documentTableNames)
+}
+
+// provisionTables creates the document tables on the key's plane and runs every
+// migration on them.
+func (d *Document) provisionTables(ctx context.Context, key sqlmem.ScopeKey) error {
 	for _, ddl := range docSchemaDDL {
-		if _, err := d.SqlMem.Exec(ctx, key, ddl, nil, 0); err != nil {
+		if _, err := d.docSQL().Exec(ctx, key, ddl, nil, 0); err != nil {
 			return err
 		}
 	}
@@ -1021,13 +1051,13 @@ func (d *Document) provisionSchema(ctx context.Context, key sqlmem.ScopeKey) err
 	// docSchemaDDL. Bytes are bound/scanned as []byte; base64 exists only on the
 	// wire (set_asset payload / export_md data-URL), decoded before storage.
 	binType := "BLOB"
-	if d.SqlMem.Tier() == "postgres" {
+	if d.docSQL().Tier() == "postgres" {
 		binType = "BYTEA"
 	}
 	assetDDL := `CREATE TABLE IF NOT EXISTS chunk_assets (
 		chunk_id TEXT PRIMARY KEY, media_type TEXT NOT NULL, bytes ` + binType + ` NOT NULL,
 		size BIGINT NOT NULL, created_at BIGINT NOT NULL)`
-	if _, err := d.SqlMem.Exec(ctx, key, assetDDL, nil, 0); err != nil {
+	if _, err := d.docSQL().Exec(ctx, key, assetDDL, nil, 0); err != nil {
 		return err
 	}
 	if err := d.migrateConfidencePrecision(ctx, key); err != nil {
@@ -1098,7 +1128,7 @@ func (d *Document) provisionSchema(ctx context.Context, key sqlmem.ScopeKey) err
 // being a lock on the hot path. The catalog read is one round trip among the ~9 DDL
 // statements already issued here.
 func (d *Document) migrateConfidencePrecision(ctx context.Context, key sqlmem.ScopeKey) error {
-	if d.SqlMem.Tier() != "postgres" {
+	if d.docSQL().Tier() != "postgres" {
 		return nil
 	}
 	res, err := d.query(ctx, key,
@@ -1113,7 +1143,7 @@ func (d *Document) migrateConfidencePrecision(ctx context.Context, key sqlmem.Sc
 	if !strings.EqualFold(asStr(res.Rows[0][0]), "real") {
 		return nil // already double precision
 	}
-	_, err = d.SqlMem.Exec(ctx, key,
+	_, err = d.docSQL().Exec(ctx, key,
 		`ALTER TABLE chunk_memory_meta ALTER COLUMN confidence TYPE DOUBLE PRECISION`, nil, 0)
 	return err
 }
@@ -1319,7 +1349,7 @@ func (d *Document) documentsHasColumn(ctx context.Context, key sqlmem.ScopeKey, 
 // re-provisions. Going through the retry path here is what makes the migrations
 // call themselves. The raw call has no retry and no recursion.
 func (d *Document) tableHasColumn(ctx context.Context, key sqlmem.ScopeKey, table, col string) bool {
-	_, err := d.SqlMem.Query(ctx, key, d.SqlMem.Rebind(`SELECT `+col+` FROM `+table+` WHERE 1=0`), nil)
+	_, err := d.docSQL().Query(ctx, key, d.docSQL().Rebind(`SELECT `+col+` FROM `+table+` WHERE 1=0`), nil)
 	return err == nil
 }
 
@@ -1706,17 +1736,17 @@ func schemaMissing(err error) bool {
 // escape hatch does NOT go through these (it calls the Manager directly with
 // the model's dialect-native SQL).
 func (d *Document) exec(ctx context.Context, key sqlmem.ScopeKey, stmt string, args ...any) error {
-	_, err := d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(stmt), args, 0)
+	_, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(stmt), args, 0)
 	if schemaMissing(err) && d.reensureSchema(ctx, key) == nil {
-		_, err = d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(stmt), args, 0)
+		_, err = d.docSQL().Exec(ctx, key, d.docSQL().Rebind(stmt), args, 0)
 	}
 	return err
 }
 
 func (d *Document) query(ctx context.Context, key sqlmem.ScopeKey, stmt string, args ...any) (*sqlmem.QueryResult, error) {
-	res, err := d.SqlMem.Query(ctx, key, d.SqlMem.Rebind(stmt), args)
+	res, err := d.docSQL().Query(ctx, key, d.docSQL().Rebind(stmt), args)
 	if schemaMissing(err) && d.reensureSchema(ctx, key) == nil {
-		return d.SqlMem.Query(ctx, key, d.SqlMem.Rebind(stmt), args)
+		return d.docSQL().Query(ctx, key, d.docSQL().Rebind(stmt), args)
 	}
 	return res, err
 }
@@ -1731,27 +1761,27 @@ func (d *Document) query(ctx context.Context, key sqlmem.ScopeKey, stmt string, 
 // would be visible, so SQL-first is least-bad).
 func (d *Document) withSqlTxn(ctx context.Context, key sqlmem.ScopeKey, fn func(txnID string) error) error {
 	txnID := "doc-tx:" + newDocID()
-	if _, err := d.SqlMem.BeginTxn(ctx, txnID, tools.RunIdentity(ctx).RootRunID, key); err != nil {
+	if _, err := d.docSQL().BeginTxn(ctx, txnID, tools.RunIdentity(ctx).RootRunID, key); err != nil {
 		return err
 	}
 	if err := fn(txnID); err != nil {
-		_, _ = d.SqlMem.RollbackTxn(txnID)
+		_, _ = d.docSQL().RollbackTxn(txnID)
 		return err
 	}
-	if _, err := d.SqlMem.CommitTxn(txnID); err != nil {
-		_, _ = d.SqlMem.RollbackTxn(txnID)
+	if _, err := d.docSQL().CommitTxn(txnID); err != nil {
+		_, _ = d.docSQL().RollbackTxn(txnID)
 		return err
 	}
 	return nil
 }
 
 func (d *Document) execTxn(ctx context.Context, txnID, stmt string, args ...any) error {
-	_, err := d.SqlMem.ExecTxn(ctx, txnID, d.SqlMem.Rebind(stmt), args, 0)
+	_, err := d.docSQL().ExecTxn(ctx, txnID, d.docSQL().Rebind(stmt), args, 0)
 	return err
 }
 
 func (d *Document) queryTxn(ctx context.Context, txnID, stmt string, args ...any) (*sqlmem.QueryResult, error) {
-	return d.SqlMem.QueryTxn(ctx, txnID, d.SqlMem.Rebind(stmt), args)
+	return d.docSQL().QueryTxn(ctx, txnID, d.docSQL().Rebind(stmt), args)
 }
 
 // chunkRow is the SQL-side chunk record (body/fields come from Memory).
@@ -1913,7 +1943,7 @@ func (d *Document) SetChunkStatus(ctx context.Context, scope, chunkID, status st
 		return fmt.Errorf("no such chunk: %s", chunkID)
 	}
 	now := time.Now().UnixNano()
-	res, err := d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(`UPDATE chunks SET status = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`), []any{nullIfEmpty(status), now, chunkID, row.Revision}, 0)
+	res, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(`UPDATE chunks SET status = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`), []any{nullIfEmpty(status), now, chunkID, row.Revision}, 0)
 	if err != nil {
 		return err
 	}
@@ -3152,7 +3182,7 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	// fix for the silent lost-update: the read-check above is advisory; THIS is
 	// the real gate).
 	now := time.Now().UnixNano()
-	bumped, err := d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(`UPDATE chunks SET revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`), []any{now, in.ID, *in.Revision}, 0)
+	bumped, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(`UPDATE chunks SET revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`), []any{now, in.ID, *in.Revision}, 0)
 	if err != nil {
 		return errFrom("update_chunk: "+err.Error(), err), nil
 	}
@@ -4588,7 +4618,7 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 		// Raw escape hatch: pass the model's SQL straight to the Manager (NO
 		// Rebind — the model uses the tier's native placeholders; rebinding
 		// could corrupt a `?` inside a string literal). Validator-gated.
-		res, err := d.SqlMem.Query(ctx, key, in.SQL, nil)
+		res, err := d.docSQL().Query(ctx, key, in.SQL, nil)
 		if err != nil {
 			return docRawSQLFail("query_chunks: "+err.Error(), err), nil
 		}
