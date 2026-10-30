@@ -54,7 +54,8 @@ For each statement, the first check that fails decides the outcome:
    - A kind no longer declared: demote it to `proposed`.
 3. **Validity.** An end replaced by a newer edition: expire it. When every quote
    the statement had on the old part is still in the new one, the statement is
-   first proposed again on the successor (`attributes.revision_of`).
+   first proposed again on the successor (`attributes.revision_of`). The new
+   proposal keeps the original's `valid_at`, but not its confidence.
 4. **Evidence.**
    - A quote no longer in its chunk but present in the live part with the same
      stable id: the evidence moves to that part.
@@ -66,8 +67,9 @@ For each statement, the first check that fails decides the outcome:
 If every check passes, the statement is verified.
 
 These rules always hold:
-- A statement a person wrote (any method other than `rule:` or `extractor:`) is
-  only ever **verified or flagged**.
+- A statement a person wrote (`manual`, or a method the linker does not know) is
+  only ever **verified or flagged**. Statements written by `rule:`,
+  `extractor:`, import, sync and canvas are all maintained the same way.
 - A statement the runtime wrote (the edition chain's `supersedes`, the
   consolidator's links, `[[name]]` links) and any reserved kind are **not
   touched**.
@@ -155,7 +157,10 @@ The run's final output is one JSON object:
   - `complete`;
   - `budget_stopped`;
   - `busy`;
-  - `failed` (`failure` says why);
+  - `failed` (`failure` says why). This includes a pass in which no write went
+    through and at least one was refused for a reason other than "already
+    accepted" or "rejected". Such a refusal usually means a configuration fault,
+    such as a missing method grant.
   - `refused`.
 - `ontology_version`: the version the pass ran under. `ontology` shows whether
   it was usable and why not.

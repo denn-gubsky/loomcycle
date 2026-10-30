@@ -161,6 +161,45 @@ func TestKBLinker_ReRunOverAnAcceptedCitationIsNotARefusal(t *testing.T) {
 	noViolations(t, f)
 }
 
+// TestKBLinker_PassWhoseEveryWriteIsRefusedFails: when the runtime refuses every
+// write a pass makes, that is a configuration fault (here a missing method
+// grant), and the pass fails rather than report complete. A relation that is
+// already accepted or was rejected is the expected answer on a re-run, so a pass
+// that met only those stays complete.
+func TestKBLinker_PassWhoseEveryWriteIsRefusedFails(t *testing.T) {
+	hits := func() []map[string]any {
+		return []map[string]any{
+			kbCiteHit("report a material incident", map[string]any{"resolved": resolvedTo("x1")}),
+			kbCiteHit("to the regulator", map[string]any{"resolved": resolvedTo("x2")}),
+		}
+	}
+	t.Run("not granted", func(t *testing.T) {
+		f := kbBaseFixture()
+		f.ontology = kbOntology()
+		f.refuseKind["cites"] = "propose_statement: method_not_granted: this agent may not stamp rule:citation"
+		f.citations = hits()
+		rep, _ := runLinker(t, f, `{"document_id":"doc-target","write":"propose","layers":["L2"]}`)
+		if rep["status"] != "failed" {
+			t.Errorf("status = %v, want failed", rep["status"])
+		}
+		if fail, _ := rep["failure"].(string); !strings.Contains(fail, "method_not_granted") {
+			t.Errorf("failure = %q, want it to name method_not_granted", fail)
+		}
+	})
+	t.Run("only accepted or rejected relations", func(t *testing.T) {
+		f := kbBaseFixture()
+		f.ontology = kbOntology()
+		f.statements = append(f.statements,
+			&kbStatement{ID: "st-held", From: "c1", To: "x1", Kind: "cites", Status: "asserted", Method: "manual"},
+			&kbStatement{ID: "st-no", From: "c1", To: "x2", Kind: "cites", Status: "rejected", Method: "rule:citation"})
+		f.citations = hits()
+		rep, _ := runLinker(t, f, `{"document_id":"doc-target","write":"propose","layers":["L2"]}`)
+		if rep["status"] != "complete" {
+			t.Errorf("status = %v (failure %v), want complete", rep["status"], rep["failure"])
+		}
+	})
+}
+
 // TestKBLinker_UnreadableCitationIsSkipped: a citation to a work held where the
 // caller may not read it is neither resolved again nor proposed. The control hit
 // proves the proposing path is live.

@@ -71,7 +71,7 @@ var kbOpContracts = []kbOpContract{
 	{Tool: "Document", Op: "maintain_statement", OnMain: false,
 		Request:  `{id, action: verify|expire|demote|merge|stale_evidence|relocate_evidence|flag, reason?, survivor_id?, evidence_id?, chunk_id?, method, scope}`,
 		Response: `{id, action, ok: true}`,
-		Assumes:  `R2: any non-error answer is success; demote is sent only for an asserted statement; a statement whose method is not rule:/extractor: is sent verify or flag only`},
+		Assumes:  `R2: any non-error answer is success; demote is sent only for an asserted statement; only a manual statement is limited to verify or flag (import/sync/canvas statements may be expired, demoted and merged — owner decision 2026-10-30)`},
 	{Tool: "Document", Op: "describe_ontology", OnMain: false,
 		Request:  `{scope} (scope ignored)`,
 		Response: `{exists, status, confirmed, version, sections, partial?, classes, relations: [{name, source: base|tenant|reserved, discriminator?, renamed_from?, auto_assert?, …}], grammars, schemes: [{name, concepts: [{name, alt?, chunk_id, tag, …}]}]}`,
@@ -684,8 +684,9 @@ func (f *kbFixture) answerMaintain(in map[string]any) (tools.Result, error) {
 	if s == nil {
 		return kbErr("maintain_statement: no such statement: " + id)
 	}
-	machine := strings.HasPrefix(s.Method, "rule:") || strings.HasPrefix(s.Method, "extractor:")
-	if !machine && action != "verify" && action != "flag" {
+	// R2: only verify and flag apply to a person's own statement; the import,
+	// sync and canvas paths' statements are maintained like a rule's.
+	if s.Method == "manual" && action != "verify" && action != "flag" {
 		f.violate("maintain_statement %s on %s, a statement a person wrote (method %q)", action, id, s.Method)
 		return kbErr("maintain_statement: only verify and flag apply to a statement a person wrote")
 	}
