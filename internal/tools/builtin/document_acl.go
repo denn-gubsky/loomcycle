@@ -114,6 +114,10 @@ var docACLOps = map[string]docACLRule{
 	// describe_ontology reads the tenant's ontology document whatever the call's
 	// scope: it asks read on that document itself.
 	"describe_ontology": {verb: "read", target: docACLListing},
+	// A lease guards a pass over the whole scope and changes no content: it asks
+	// propose, the verb a statement-maintaining driver already needs there.
+	"lease":             {verb: "propose", target: docACLScope},
+	"release":           {verb: "propose", target: docACLScope},
 	"query_chunks":      {verb: "read", target: docACLScope},
 	"add_tags":          {verb: "write", target: docACLChunkOrDocument},
 	"remove_tags":       {verb: "write", target: docACLChunkOrDocument},

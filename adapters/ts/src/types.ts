@@ -3908,6 +3908,8 @@ export type DocumentToolInput = {
     | "reject_statement"
     | "list_statements"
     | "resolve_anchor"
+    | "lease"
+    | "release"
     | "describe_ontology"
     | "query_chunks"
     | "add_tags"
@@ -4085,8 +4087,10 @@ export type DocumentToolInput = {
    *  subject-homed fact store is as wide as the tenant's entity count, so page the
    *  directory with `path op=ls` and pass each page's ids as `document_ids`. */
   limit?: number;
-  /** define/list_types: the type name. */
+  /** define/list_types: the type name. lease / release: the lease's name. */
   name?: string;
+  /** lease: how long to hold it, in milliseconds (default 60000, max one hour). */
+  ttl_ms?: number;
   /** export_md: embed round-trippable chunk metadata + edges as HTML comments
    *  (default true server-side). false = clean human-facing Markdown. */
   include_metadata?: boolean;

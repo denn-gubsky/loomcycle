@@ -114,7 +114,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","propose_entity","propose_subject","judge_fact","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","verbatim_answer","verification_stats","remember","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","get_edge","propose_statement","accept_statement","reject_statement","list_statements","resolve_anchor","describe_ontology","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions","set_remote","sync","diff_remote"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","propose_entity","propose_subject","judge_fact","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","verbatim_answer","verification_stats","remember","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","get_edge","propose_statement","accept_statement","reject_statement","list_statements","resolve_anchor","lease","release","describe_ontology","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions","set_remote","sync","diff_remote"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). ONE scope per call — a search, graph_recall or list_facts reads ONLY the scope you name, so a user-scope search never returns tenant chunks and vice versa; consult both by making two calls. agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk), or a statement id (get_edge, unlink_chunks, accept/reject_statement, judge_fact; propose_statement: the statement a competing proposal revises)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -201,7 +201,8 @@ const documentInputSchema = `{
 		"tag_prefix":  {"type": "string", "description": "query_chunks / search / related: return chunks whose tag equals this OR is nested under it (prefix + '/'), e.g. tag_prefix=area matches area and area/sub."},
 		"sql":         {"type": "string", "description": "query_chunks: raw read-only SELECT against the chunk tables (escape hatch; validator-gated)."},
 		"limit":       {"type": "integer", "description": "The most rows to return. The default depends on the op (graph_recall: 50 chunks); each op's help article gives its own."},
-		"name":        {"type": "string", "description": "define/list_types: the type name."},
+		"name":        {"type": "string", "description": "define/list_types: the type name. lease / release: the lease's name, e.g. linker (1–64 of a-z 0-9 _ . : / -)."},
+		"ttl_ms":      {"type": "integer", "description": "lease: how long to hold it, in milliseconds (default 60000, capped at one hour). The lease expires on its own; the holder re-leases to extend it."},
 		"include_metadata": {"type": "boolean", "description": "export_md: embed round-trippable chunk metadata + edges as HTML comments (default true). false = clean human-facing Markdown."},
 		"markdown":    {"type": "string", "description": "import_md: an export_md-shaped Markdown document (headings = hierarchy; <!-- loom: ... --> metadata; <!-- loom-edges: ... --> trailer). Omit document_id to create a new document; pass document_id (+ optional parent_id) to import under an existing chunk."},
 		"canvas":      {"type": "object", "description": "import_canvas: a JSON Canvas v1.0 object ({\"nodes\":[...],\"edges\":[...]}) — e.g. the contents of an Obsidian .canvas file. Each node becomes a chunk (positioned via its x/y/width/height); each edge becomes a link. Pass title/path to name the new document."},
@@ -433,6 +434,8 @@ type docInput struct {
 	SQL                string   `json:"sql"`
 	Limit              int      `json:"limit"`
 	Name               string   `json:"name"`
+	// TTLMs is the lease op's hold duration in milliseconds (0 = default).
+	TTLMs int `json:"ttl_ms"`
 	// IncludeMetadata gates export_md's round-trip comments (default true when
 	// omitted; a pointer so an explicit `false` is distinguishable from unset).
 	IncludeMetadata *bool `json:"include_metadata"`
@@ -573,6 +576,8 @@ var docSchemaDDL = []string{
 	`CREATE TABLE IF NOT EXISTS chunk_layout (
 		chunk_id TEXT PRIMARY KEY, x INTEGER NOT NULL, y INTEGER NOT NULL,
 		width INTEGER NOT NULL, height INTEGER NOT NULL, color TEXT)`,
+	// document_leases: a named lease on this scope (document_lease.go).
+	documentLeasesDDL,
 }
 
 // maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
@@ -703,6 +708,10 @@ func (d *Document) dispatch(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		return d.listStatements(ctx, key, in)
 	case "resolve_anchor":
 		return d.resolveAnchor(ctx, key, mscope, in)
+	case "lease":
+		return d.leaseOp(ctx, key, in)
+	case "release":
+		return d.releaseOp(ctx, key, in)
 	case "describe_ontology":
 		// Reads the TENANT ontology whatever `scope` says, as propose_entity files there.
 		return d.describeOntology(ctx)
