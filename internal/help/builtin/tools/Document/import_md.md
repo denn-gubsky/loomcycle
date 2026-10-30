@@ -89,8 +89,10 @@ instead of recreated. Text is matched first, then headings:
   closes at `edition_date` (it is still what the work said before) and a new one
   opens there, joined by `supersedes`. Links follow it where their evidence still
   holds; the others stay on the old version, marked `proposed` for re-checking.
-  Inline `[[name]]` links are not carried: the new version links what its own
-  text names;
+  A link a person made, or one an operator accepted or rejected, always follows,
+  keeping the operator's ruling: a new edition never re-opens a ruling. Inline
+  `[[name]]` links are not carried: the new version links what its own text
+  names;
 - a part the edition no longer has closes; nothing is deleted;
 - a new part opens at `edition_date`;
 - the document's title and the text under its `#` heading (a preamble) are
