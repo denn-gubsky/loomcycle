@@ -4019,6 +4019,22 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 		}
 		filter = set
 	}
+	// With no filter, the chunks a confined reader may not read are withheld from
+	// the search itself, before it cuts at topK (resolveSearchACL); a filter's
+	// own allowlist already holds only readable chunks.
+	var aclList *searchACLList
+	if filter == nil {
+		list, err := d.resolveSearchACL(ctx, key)
+		if err != nil {
+			return docFail("search: access control: ", err), nil
+		}
+		// Nothing readable: answer as a filter that matched nothing does, without
+		// embedding the query.
+		if list != nil && list.none {
+			return jsonResult(map[string]any{"chunks": []map[string]any{}})
+		}
+		aclList = list
+	}
 	// THE MEMORY SEARCH PIPELINE, NOT A SECOND ONE. This op used to run a vector
 	// query of its own, so a chunk whose words matched the question but whose
 	// embedding did not — a name, a code, an error string — was unreachable here
@@ -4042,6 +4058,9 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	}
 	if filter != nil {
 		sq.IDs, sq.ExcludeIDs = filter.ids, filter.excludeIDs
+	}
+	if aclList != nil {
+		sq.IDs, sq.ExcludeIDs = aclList.ids, aclList.excludeIDs
 	}
 	res, err := d.searchBackend().Search(ctx, mscope, docMemScopeID(mscope, key), sq, memrank.DefaultRankConfig(), memrank.DedupConfig{})
 	if err != nil {

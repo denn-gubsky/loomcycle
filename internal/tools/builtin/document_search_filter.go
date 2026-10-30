@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -207,7 +208,7 @@ func (d *Document) resolveSearchFilter(ctx context.Context, key sqlmem.ScopeKey,
 	// would depend on them. So no id of a denied document reaches the store, and
 	// no count, refusal or `inverted` bit moves when a denied document changes.
 	// The listing post-filter still runs on the answer, unchanged; a filter-free
-	// search is not narrowed here at all (that pre-filter is a separate change).
+	// search is narrowed by resolveSearchACL instead.
 	acl := d.newDocACL(ctx, key)
 	limited, err := acl.limitsReading(ctx)
 	if err != nil {
@@ -359,6 +360,107 @@ func (d *Document) resolveSearchFilter(ctx context.Context, key sqlmem.ScopeKey,
 	set.excludeIDs = complement
 	set.echo.Inverted = true
 	return set, nil, nil
+}
+
+// searchACLList is what a filter-free search sends the store for a caller whose
+// access-control set hides part of the scope: ids (allow) or excludeIDs (deny),
+// or none when the caller may read no chunk at all.
+type searchACLList struct {
+	ids, excludeIDs []string
+	none            bool
+}
+
+// errSearchACLTooWide stops collecting a list that has passed the cap.
+var errSearchACLTooWide = errors.New("search access-control list over the cap")
+
+// resolveSearchACL withholds, BEFORE the search cuts its answer at limit, the
+// chunks of the documents the caller may not read. Dropped after the cut, as the
+// listing filter drops them, they shorten the page — a reader denied part of the
+// scope gets fewer hits while more readable ones exist, which tells it hidden
+// documents outrank them — and they take the expansion's frontier places. Sent
+// as a list every leg applies before its LIMIT, the search ranks only what the
+// caller may read: the answer, rank_score included, is the one it would get if
+// the hidden documents did not exist.
+//
+// The list is the smaller side, read from names alone. A rule can only single a
+// document out by a Path-tree name, so every document filed nowhere shares the
+// bare scope's verdict. When that verdict is "readable", the hidden documents are
+// all named ones and travel as a denylist (typically a few denied subtrees);
+// when it is "unreadable", the readable ones are all named and travel as an
+// allowlist. Neither needs a scan of the scope's chunks.
+//
+// nil: send nothing. The caller is not limited, or nothing it may not read
+// exists — a plain search then, byte-identical to one with no set. nil too when
+// the list would pass the operator's cap: the search then runs unnarrowed and the
+// listing filter drops the hidden hits afterwards, so the page can come back
+// short. That is the bound, accepted rather than refusing a call that names no
+// filter; a filter_too_wide refusal here would be new to a caller who asked for
+// nothing but a search.
+func (d *Document) resolveSearchACL(ctx context.Context, key sqlmem.ScopeKey) (*searchACLList, error) {
+	acl := d.newDocACL(ctx, key)
+	limited, err := acl.limitsReading(ctx)
+	if err != nil || !limited {
+		return nil, err
+	}
+	// Limited, and no rule names part of the scope: the bare scope is denied, so
+	// is every document in it.
+	if !acl.pathSensitive {
+		return &searchACLList{none: true}, nil
+	}
+	unnamedReadable, err := acl.readable(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := acl.namesOf(ctx, ""); err != nil { // loads every name in the scope
+		return nil, err
+	}
+	// The named documents whose verdict differs from the bare scope's: the hidden
+	// ones when the bare scope is readable, the readable ones when it is not.
+	var docs []string
+	for id := range acl.paths {
+		ok, err := acl.readable(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if ok != unnamedReadable {
+			docs = append(docs, id)
+		}
+	}
+	if len(docs) == 0 {
+		if unnamedReadable {
+			return nil, nil
+		}
+		return &searchACLList{none: true}, nil
+	}
+	sort.Strings(docs)
+	maxIDs := d.searchFilterMaxIDs()
+	var chunks []string
+	err = d.eachChunkOfDocuments(ctx, key, docs, "", nil, func(chunkID, _ string) error {
+		if len(chunks) == maxIDs {
+			return errSearchACLTooWide
+		}
+		chunks = append(chunks, chunkID)
+		return nil
+	})
+	if errors.Is(err, errSearchACLTooWide) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(chunks)
+	switch {
+	case unnamedReadable:
+		if len(chunks) == 0 {
+			return nil, nil // the hidden documents hold no chunk to keep out
+		}
+		return &searchACLList{excludeIDs: chunks}, nil
+	case len(chunks) == 0:
+		// An empty allowlist would mean "every chunk" to the store.
+		return &searchACLList{none: true}, nil
+	default:
+		return &searchACLList{ids: chunks}, nil
+	}
 }
 
 // filterTooWide refuses a filter whose id list is over the cap — the smaller of
