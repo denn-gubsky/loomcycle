@@ -29,12 +29,17 @@ const (
 // Model is one configured reranker. Safe for concurrent use: every field is set
 // at boot, before the server serves, and only read afterwards.
 type Model struct {
-	provider      providers.Provider
-	providerID    string
-	model         string
-	timeout       time.Duration
-	effort        string
-	contextTokens int
+	// MaxOutputTokens bounds the reply when set; 0 is the rerank's measured 256.
+	// Another caller of Complete (the document classifier) needs more: a quoted
+	// Cyrillic passage plus a list of concept names runs past 256 tokens, and a
+	// reply cut off mid-object is dropped.
+	MaxOutputTokens int
+	provider        providers.Provider
+	providerID      string
+	model           string
+	timeout         time.Duration
+	effort          string
+	contextTokens   int
 
 	// A RERANK IS A CHAT CALL ON ITS PROVIDER'S LANE. Each one is a ~6,000-token
 	// prompt, and they arrive per SEARCH: a fan-out of agents, each searching
@@ -114,7 +119,7 @@ func (m *Model) Complete(ctx context.Context, prompt string) (string, error) {
 	zero := 0.0
 	req := providers.Request{
 		Model:            m.model,
-		MaxTokens:        maxOutputTokens,
+		MaxTokens:        m.maxTokens(),
 		Temperature:      &zero, // the ranking should be a function of the candidates, not of a draw
 		Effort:           m.effort,
 		MaxContextTokens: m.contextTokens,
@@ -187,4 +192,11 @@ func deadlineAware(callCtx context.Context, err error) error {
 		return fmt.Errorf("%v: %w", err, context.DeadlineExceeded)
 	}
 	return err
+}
+
+func (m *Model) maxTokens() int {
+	if m.MaxOutputTokens > 0 {
+		return m.MaxOutputTokens
+	}
+	return maxOutputTokens
 }

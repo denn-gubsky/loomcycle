@@ -241,6 +241,16 @@ func (d *Document) classify(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			concepts = model.concepts
 			out.Concepts = concepts
 		}
+	} else if len(concepts) == 0 && d.Classifier != nil {
+		// The class is decided (by rule, or by hand), but what the document is ABOUT is
+		// not: the vote needs classified neighbours, and the model's class question
+		// above never ran. Ask the model for the concepts alone; they are proposals.
+		cs, step := d.classifyConcepts(ctx, read, cd)
+		out.Steps = append(out.Steps, step)
+		if len(cs) > 0 {
+			concepts = cs
+			out.Concepts = concepts
+		}
 	}
 	if handSet {
 		out.Warnings = append(out.Warnings, "the document's type "+cd.rootType+" was set by hand; classify does not replace it")
@@ -438,6 +448,24 @@ func classifyRules(classes map[string]memrank.OntologyTerm, cd classifyDoc) []cl
 		}
 		out = append(out, *cand)
 	}
+	// A match on the title (or the import's source title) outranks one on a section
+	// title: a document's sections are often headed by another kind's name
+	// (a Regulation's chapter "Порядок …", a Policy's "Порядок …"), and counting them
+	// beside the title made a tie of nearly every internal document. Sections speak
+	// only when the title says nothing.
+	titled := false
+	for _, c := range out {
+		titled = titled || c.From != "section"
+	}
+	if titled {
+		filtered := out[:0]
+		for _, c := range out {
+			if c.From != "section" {
+				filtered = append(filtered, c)
+			}
+		}
+		out = filtered
+	}
 	// Drop an ancestor of another match.
 	var kept []classifyCandidate
 	for i, a := range out {
@@ -626,4 +654,34 @@ func (d *Document) classifyModel(ctx context.Context, read OntologyRead, classes
 		}
 	}
 	return out
+}
+
+// classifyConcepts asks memory.classifier which in-force concepts a document is
+// about, when its class is already decided. A "model" step with no chosen class.
+func (d *Document) classifyConcepts(ctx context.Context, read OntologyRead, cd classifyDoc) ([]classifyConcept, classifyStep) {
+	step := classifyStep{Step: "model", Candidates: []classifyCandidate{}}
+	byName := map[string]memrank.OntologyConcept{}
+	req := memrank.ClassifyRequest{Title: cd.title, Text: cd.text, ConceptsOnly: true}
+	for _, s := range read.Schemes {
+		for _, c := range s.Concepts {
+			if _, dup := byName[strings.ToLower(c.Name)]; dup {
+				continue
+			}
+			byName[strings.ToLower(c.Name)] = c
+			req.Concepts = append(req.Concepts, memrank.ClassifyOption{Name: c.Name, Meaning: c.Meaning})
+		}
+	}
+	if len(req.Concepts) == 0 {
+		step.Reason = "no concept scheme is in force"
+		return nil, step
+	}
+	v := d.Classifier.Classify(ctx, req)
+	step.Method, step.Reason = v.Method, v.Reason
+	var out []classifyConcept
+	for _, name := range v.Concepts {
+		if c, ok := byName[strings.ToLower(name)]; ok {
+			out = append(out, classifyConcept{Concept: c.Name, Tag: c.Tag, Kind: "subject", ChunkID: c.ChunkID})
+		}
+	}
+	return out, step
 }

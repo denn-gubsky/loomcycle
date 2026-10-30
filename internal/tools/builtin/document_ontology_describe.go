@@ -158,7 +158,7 @@ func describeOntologyRead(read OntologyRead) ontologyDescription {
 			}
 		}
 		for use, directive := range map[string]string{"anchor": "anchor_grammar", "citation": "citation_grammar"} {
-			if g := dc.Directives[directive]; g != "" {
+			for _, g := range memrank.GrammarNames(dc.Directives[directive]) {
 				if usedAs[g] == nil {
 					usedAs[g] = map[string]bool{}
 				}

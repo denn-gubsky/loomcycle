@@ -253,3 +253,35 @@ func TestMatchCitations_OverlapGoesToTheEarlierStart(t *testing.T) {
 		t.Errorf("hits = %v, want %v", keys, want)
 	}
 }
+
+// TestExtractCitations_AClassAppliesEachOfItsGrammars: a class naming two citation
+// grammars gets the hits of both, in text order, and a grammar it names that does
+// not exist is reported without stopping the other.
+func TestExtractCitations_AClassAppliesEachOfItsGrammars(t *testing.T) {
+	md := "# Tenant Ontology\n\n## Classes\n@section classes\n\n### Document\n- `title` text\n\n" +
+		"#### Law\n@citation_grammar act-cite, code-cite, missing-grammar\n\n" +
+		"##### grammar:act-cite\npattern: the (?P<act>[A-Z][a-z]+) Act\nresolve: work_key=act:{act}\n\n" +
+		"##### grammar:code-cite\npattern: the (?P<code>[A-Z][a-z]+) Code\nresolve: work_key=code:{code}\n"
+	d, base, _ := documentFixture(t)
+	ctx := installTenantOntology(t, d, base, md, memrank.OntologyConfirmedStatus)
+	docID, _ := typedDocWithBody(t, d, ctx, "user", "Law", "Під the Civil Code and the Penal Act.")
+	got := extractVia(t, d, ctx, map[string]any{"scope": "user", "document_id": docID})
+	if got.Grammar["name"] != "act-cite, code-cite" {
+		t.Errorf("grammar = %v", got.Grammar)
+	}
+	if got.GrammarIssue == "" {
+		t.Error("the missing grammar was not reported")
+	}
+	if len(got.Hits) != 2 || got.Hits[0].WorkKey != "code:Civil" || got.Hits[1].WorkKey != "act:Penal" {
+		t.Errorf("hits = %#v", got.Hits)
+	}
+	desc := describeOntologyVia(t, d, ctx)
+	for _, g := range desc.Grammars {
+		if !reflect.DeepEqual(g.UsedAs, []string{"citation"}) {
+			t.Errorf("grammar %s used_as %v", g.Name, g.UsedAs)
+		}
+	}
+	if len(desc.Grammars) != 2 {
+		t.Errorf("described grammars = %#v", desc.Grammars)
+	}
+}

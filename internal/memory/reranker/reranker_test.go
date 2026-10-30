@@ -173,3 +173,18 @@ func TestModel_AParentCancellationIsNotATimeout(t *testing.T) {
 		t.Errorf("reason = %q, want %q for a cancelled caller", rep.Reason, memory.RerankCallFailed)
 	}
 }
+
+// TestModel_AnOutputBudgetOverridesTheRerankDefault — a caller that needs a longer
+// reply (the document classifier's quoted JSON) sets MaxOutputTokens; unset, the
+// rerank keeps its measured 256.
+func TestModel_AnOutputBudgetOverridesTheRerankDefault(t *testing.T) {
+	p := &stubProvider{events: textReply("{}")}
+	m := New(p, config.RerankerConfig{Provider: "stub", Model: "m"})
+	if _, err := m.Complete(context.Background(), "prompt"); err != nil || p.req.MaxTokens != maxOutputTokens {
+		t.Fatalf("default budget = %d, %v", p.req.MaxTokens, err)
+	}
+	m.MaxOutputTokens = 1024
+	if _, err := m.Complete(context.Background(), "prompt"); err != nil || p.req.MaxTokens != 1024 {
+		t.Errorf("set budget = %d, %v", p.req.MaxTokens, err)
+	}
+}

@@ -21,6 +21,9 @@ type ClassifyRequest struct {
 	Text     string
 	Classes  []ClassifyOption
 	Concepts []ClassifyOption
+	// ConceptsOnly asks for the concepts alone: the document's class is already
+	// decided, and Classes is ignored.
+	ConceptsOnly bool
 }
 
 // Classify verdict methods.

@@ -18,6 +18,12 @@ import (
 // operator pointed one of its models at its own endpoint without naming a key.
 const classifierKeyEnvName = "LOOMCYCLE_CLASSIFIER_API_KEY"
 
+// classifierMaxOutputTokens bounds the chat model's reply: one JSON object with a
+// class, a quote under 200 characters and a few concept names. The rerank's 256
+// cut Ukrainian replies off mid-object on MTB (2026-10-30), and a cut reply is
+// dropped, so the budget leaves room to spare.
+const classifierMaxOutputTokens = 1024
+
 // Classifier constructs the classifier cfg.Memory.Classifier declares, or nil when
 // none is declared. Each model is resolved exactly as the reranker's of its kind and
 // takes that kind's lane on its provider: the decision model the decision lane, the
@@ -64,9 +70,11 @@ func Classifier(cfg *config.Config, sched *concurrency.CallScheduler) (*classifi
 		}
 		// The listwise reranker's model is a one-prompt chat call at temperature 0 with a
 		// timeout, a context window and usage reporting — exactly what the chat step needs.
-		chat = reranker.New(lanegate.WrapWithFloor(provider, p, sched), config.RerankerConfig{
+		cm := reranker.New(lanegate.WrapWithFloor(provider, p, sched), config.RerankerConfig{
 			Provider: provider, Model: model, TimeoutMs: m.TimeoutMs, Effort: m.Effort, ContextTokens: m.ContextTokens,
 		})
+		cm.MaxOutputTokens = classifierMaxOutputTokens
+		chat = cm
 	}
 	return classifier.New(dec, decModel, decTimeout, chat, cc.EffectiveMinProbability(), cc.EffectiveMinMargin()), nil
 }

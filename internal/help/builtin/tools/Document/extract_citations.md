@@ -8,7 +8,9 @@ part. It is read-only: it never files a placeholder for a work the scope does
 not hold. Do that with `resolve_anchor` and `create_placeholder: true`.
 
 The grammar is the `@citation_grammar` the document's class declares or
-inherits, under a confirmed ontology. A grammar's `resolve:` line fills in each
+inherits, under a confirmed ontology. A class may name several grammars
+(`@citation_grammar nbu-resolution, law-ua`): each is applied, and where two
+match the same text the earlier match wins. A grammar's `resolve:` line fills in each
 citation:
 - `work_key=` is the cited work's key;
 - `anchor=` is the cited part;
@@ -35,7 +37,8 @@ as of now. Pass `as_of` (e.g. the work's publication date) when that matters.
 `{document_id, grammar, grammar_issue?, hits, truncated?}`:
 
 - `grammar` — `{name, class}`, or `null` when the class declares no citation
-  grammar (then `hits` is `[]`).
+  grammar (then `hits` is `[]`). With several grammars `name` lists them,
+  comma-separated.
 - `grammar_issue` — the class names a grammar that cannot be used, and why.
 - `hits` — each `{chunk_id, quote, char_start, char_end, groups?, work_key?,
   anchor?, kind?, resolved}`:

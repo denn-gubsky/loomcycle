@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Section kinds a root child of the ontology document may declare.
@@ -389,9 +390,13 @@ func ParseClassBody(body string) ClassDecl {
 				d.Definitions = dir.Value
 			}
 		case "anchor_grammar":
-			d.AnchorGrammar = firstWord(dir.Value)
+			if names := GrammarNames(dir.Value); len(names) > 0 {
+				d.AnchorGrammar = names[0]
+			}
 		case "citation_grammar":
-			d.CitationGrammar = firstWord(dir.Value)
+			// A class may cite several kinds of work (laws and regulator acts), and a
+			// grammar has one resolve line, so the directive takes a list.
+			d.CitationGrammar = strings.Join(GrammarNames(dir.Value), ", ")
 		case "exclude":
 			for _, v := range strings.Split(dir.Value, ",") {
 				if v = strings.TrimSpace(v); v != "" {
@@ -412,6 +417,21 @@ func ParseClassBody(body string) ClassDecl {
 		}
 	}
 	return d
+}
+
+// GrammarNames splits a grammar directive's value into names: separated by commas or
+// spaces, empty and repeated names dropped, order kept. An @anchor_grammar takes the
+// first; an @citation_grammar may name several.
+func GrammarNames(s string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, f := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {
+		if !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func firstWord(s string) string {
