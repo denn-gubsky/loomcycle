@@ -39,6 +39,12 @@ import (
 //
 // confidence is DOUBLE PRECISION for the reason chunk_memory_meta's is: postgres
 // REAL is float4 and would read 0.9 back as 0.8999999761581421.
+//
+// Two confidences, because they are two claims: `confidence` is what the writer
+// said of its own relation, `verdict_confidence` what a judge (or an operator)
+// found when checking it. Only the verdict withholds — a writer unsure of a link
+// is not a refutation of it — and an operator's accept can clear a refuting
+// verdict without erasing what the writer said.
 const chunkEdgesColumns = `
 		id TEXT NOT NULL, from_id TEXT NOT NULL, to_id TEXT NOT NULL, kind TEXT NOT NULL,
 		created_at BIGINT NOT NULL, auto INTEGER NOT NULL DEFAULT 0,
@@ -46,8 +52,12 @@ const chunkEdgesColumns = `
 		confidence DOUBLE PRECISION, valid_at BIGINT, invalid_at BIGINT,
 		expired_at BIGINT, verified_at BIGINT, actor TEXT, run_id TEXT,
 		ontology_version INTEGER, discriminator TEXT NOT NULL DEFAULT '', attributes TEXT,
-		judged_at BIGINT, judge_reason TEXT, judged_by TEXT,
+		judged_at BIGINT, judge_reason TEXT, judged_by TEXT, verdict_confidence DOUBLE PRECISION,
 		PRIMARY KEY (id)`
+
+// preStatementEdgeColumns is the whole chunk_edges of a scope created before
+// statements. A table holding any other column is not that table.
+var preStatementEdgeColumns = map[string]bool{"from_id": true, "to_id": true, "kind": true, "created_at": true, "auto": true}
 
 // chunkEdgeEvidenceColumns: exactly one of the three source forms is set — a chunk
 // of this scope, a chat turn (session_id + event_seq), or another scope by
@@ -130,8 +140,21 @@ func edgeEvidenceMax() int {
 // otherwise — which is byte-identical for every reader that ignores the new fields.
 //
 // One transaction, so a crash leaves either the old table or the new one.
+//
+// The rebuild drops every statement column, so it runs only on a POSITIVE reading
+// of the table's columns: a probe that failed (a lock, a dropped connection) is an
+// error here, never "the column is missing" — which is how a transient fault would
+// otherwise rewrite every statement as a fresh, evidence-less assertion.
 func (d *Document) migrateEdgeStatements(ctx context.Context, key sqlmem.ScopeKey) error {
-	if !d.tableHasColumn(ctx, key, "chunk_edges", "discriminator") {
+	cols, err := d.tableColumns(ctx, key, "chunk_edges")
+	if err != nil {
+		return fmt.Errorf("probe chunk_edges: %w", err)
+	}
+	rebuild, err := edgeTableNeedsRebuild(cols)
+	if err != nil {
+		return err
+	}
+	if rebuild {
 		idExpr := `lower(hex(randomblob(16)))`
 		if d.SqlMem.Tier() == "postgres" {
 			idExpr = `md5(random()::text || clock_timestamp()::text || from_id || to_id || kind)`
@@ -160,6 +183,23 @@ func (d *Document) migrateEdgeStatements(ctx context.Context, key sqlmem.ScopeKe
 		}); err != nil {
 			return err
 		}
+	} else if !cols["verdict_confidence"] {
+		// A scope already in the statement shape from before the two confidences
+		// were split. A verdict was the last writer of `confidence` exactly when
+		// verified_at is set (only judge_fact stamps it), so that is the value moved.
+		if err := d.withSqlTxn(ctx, key, func(txnID string) error {
+			for _, s := range []string{
+				`ALTER TABLE chunk_edges ADD COLUMN verdict_confidence DOUBLE PRECISION`,
+				`UPDATE chunk_edges SET verdict_confidence = confidence WHERE verified_at IS NOT NULL`,
+			} {
+				if err := d.execTxn(ctx, txnID, s); err != nil {
+					return fmt.Errorf("add chunk_edges.verdict_confidence: %w", err)
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
 	}
 	for _, s := range chunkEdgeIndexes {
 		if _, err := d.SqlMem.Exec(ctx, key, s, nil, 0); err != nil {
@@ -167,6 +207,52 @@ func (d *Document) migrateEdgeStatements(ctx context.Context, key sqlmem.ScopeKe
 		}
 	}
 	return nil
+}
+
+// tableColumns lists a table's columns from the catalog, so a success is a
+// complete answer and a failure is only a failure. Not `SELECT * … WHERE 1=0`:
+// postgres caches that statement's plan, and once the rebuild changes the table
+// the cached plan's result type no longer matches — the probe itself would fail.
+// Aggregated into one row, so the operator's row cap cannot clip the listing.
+func (d *Document) tableColumns(ctx context.Context, key sqlmem.ScopeKey, table string) (map[string]bool, error) {
+	stmt := `SELECT group_concat(name, ',') FROM pragma_table_info(?)`
+	if d.SqlMem.Tier() == "postgres" {
+		stmt = `SELECT string_agg(column_name, ',') FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ?`
+	}
+	res, err := d.query(ctx, key, stmt, table)
+	if err != nil {
+		return nil, err
+	}
+	if len(res.Rows) != 1 || res.Truncated {
+		return nil, fmt.Errorf("column listing of %s came back as %d rows", table, len(res.Rows))
+	}
+	cols := map[string]bool{}
+	for _, c := range strings.Split(asStr(res.Rows[0][0]), ",") {
+		if c = strings.ToLower(strings.TrimSpace(c)); c != "" {
+			cols[c] = true
+		}
+	}
+	return cols, nil
+}
+
+// edgeTableNeedsRebuild reads a chunk_edges column listing: true for the
+// pre-statement table, false for one already in the statement shape, and an error
+// for anything between — a listing it cannot place is not a table to rebuild.
+func edgeTableNeedsRebuild(cols map[string]bool) (bool, error) {
+	if cols["discriminator"] {
+		return false, nil
+	}
+	for c := range preStatementEdgeColumns {
+		if !cols[c] {
+			return false, fmt.Errorf("chunk_edges has no %s column; refusing to rebuild a table this build does not recognise", c)
+		}
+	}
+	for c := range cols {
+		if !preStatementEdgeColumns[c] {
+			return false, fmt.Errorf("chunk_edges has statement column %s but no discriminator; refusing to rebuild over a partly migrated table", c)
+		}
+	}
+	return true, nil
 }
 
 // deleteEdgesWhere removes the edges matching cond and their evidence. Every path
@@ -282,6 +368,10 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 		r := errValidation("invalid_at must be after valid_at", "Leave invalid_at unset for a relation that still holds.")
 		return out, &r, nil
 	}
+	if w.confidence != nil && (*w.confidence < 0 || *w.confidence > 1) {
+		r := errValidation("confidence must be between 0 and 1", "Leave confidence unset when you have no estimate.")
+		return out, &r, nil
+	}
 	var attrs []byte
 	if len(w.attributes) > 0 {
 		b, err := json.Marshal(w.attributes)
@@ -355,9 +445,21 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 				"Do not re-propose it. An operator can accept it from the review queue if it was rejected in error.")
 			return out, &r, nil
 		}
+		// A proposal is filed for review; it may not add to a relation that already
+		// holds. Evidence on an asserted statement is live data, and the propose verb
+		// is narrower than link (a principal holding only read + propose).
+		if status == edgeStatusProposed && existing.Status == edgeStatusAsserted {
+			r := errBusiness("statement_asserted: this relation is already asserted (id "+existing.ID+"), so a proposal cannot add to it",
+				"Leave it, or propose a correction beside it by passing id.")
+			return out, &r, nil
+		}
 		out.ID, out.Status = existing.ID, existing.Status
-		// An authored link of a proposed (or rejected, by an operator) statement asserts it.
-		if status == edgeStatusAsserted && existing.Status != edgeStatusAsserted {
+		// Only an authored link_chunks asserts a statement that awaits review (or, by
+		// an operator, one rejected). A machine write — a fact's relation, sync,
+		// import, canvas — carries someone else's judgement and adds its evidence to
+		// the proposal; clearing the review queue is not something holding write
+		// should be able to do.
+		if status == edgeStatusAsserted && existing.Status != edgeStatusAsserted && gateAuthored {
 			if err := d.exec(ctx, key, `UPDATE chunk_edges SET status = ?, actor = ? WHERE id = ?`, edgeStatusAsserted, nullIfEmpty(actor), existing.ID); err != nil {
 				return out, nil, err
 			}
@@ -656,15 +758,19 @@ type statementRow struct {
 	JudgedAt        *int64         `json:"judged_at,omitempty"`
 	JudgeReason     string         `json:"judge_reason,omitempty"`
 	JudgedBy        string         `json:"judged_by,omitempty"`
-	CreatedAt       int64          `json:"created_at"`
+	// VerdictConfidence is the judge's (or operator's) finding; Confidence the
+	// writer's own. Only the verdict withholds.
+	VerdictConfidence *float64 `json:"verdict_confidence,omitempty"`
+	CreatedAt         int64    `json:"created_at"`
 }
 
 // statementCols is the SELECT list scanStatement reads, aliased on `e`.
 const statementCols = `e.id, e.from_id, e.to_id, e.kind, e.auto, e.status, e.method, e.confidence,
 	e.valid_at, e.invalid_at, e.expired_at, e.verified_at, e.actor, e.run_id, e.ontology_version,
-	e.discriminator, e.attributes, e.judged_at, e.judge_reason, e.judged_by, e.created_at`
+	e.discriminator, e.attributes, e.judged_at, e.judge_reason, e.judged_by, e.created_at,
+	e.verdict_confidence`
 
-const statementColCount = 21
+const statementColCount = 22
 
 func scanStatement(r []any) statementRow {
 	s := statementRow{
@@ -679,6 +785,7 @@ func scanStatement(r []any) statementRow {
 		_ = json.Unmarshal([]byte(a), &s.Attributes)
 	}
 	s.CreatedAt, _ = asInt64(r[20])
+	s.VerdictConfidence = asFloat64Ptr(r[21])
 	if s.Status == "" {
 		s.Status = edgeStatusAsserted
 	}
@@ -762,10 +869,40 @@ func (d *Document) evidenceFor(ctx context.Context, key sqlmem.ScopeKey, edgeIDs
 	return rows, counts, nil
 }
 
+// readableEvidenceFor is evidenceFor as the caller may read it: rows citing a
+// document its access-control set cannot read are withheld, and each count is of
+// the rows left — a count that included them would tell the caller a source it
+// cannot see exists. Without a reading limit it is evidenceFor unchanged.
+func (d *Document) readableEvidenceFor(ctx context.Context, key sqlmem.ScopeKey, edgeIDs []string, limit int) (map[string][]edgeEvidenceRow, map[string]int, error) {
+	limits, err := d.newDocACL(ctx, key).limitsReading(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !limits {
+		return d.evidenceFor(ctx, key, edgeIDs, limit)
+	}
+	ev, _, err := d.evidenceFor(ctx, key, edgeIDs, 0)
+	if err == nil {
+		ev, err = d.withholdUnreadableEvidence(ctx, key, ev)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	counts := make(map[string]int, len(ev))
+	for id, rows := range ev {
+		counts[id] = len(rows)
+		if limit > 0 && len(rows) > limit {
+			ev[id] = rows[:limit]
+		}
+	}
+	return ev, counts, nil
+}
+
 // statementVisibility is the withholding a reader applies to statements, the edge
 // analogue of the fact surfaces' rule: a rejected statement, an unsupported
-// verdict (confidence below the floor) and a retired one are withheld unless asked
-// for — never deleted. NULL confidence (never judged) stays visible.
+// verdict (verdict_confidence below the floor) and a retired one are withheld
+// unless asked for — never deleted. NULL (never judged) stays visible, and the
+// writer's own confidence never withholds.
 type statementVisibility struct {
 	includeProposed bool
 	includeRefuted  bool
@@ -782,7 +919,7 @@ func (v statementVisibility) clause() (string, []any) {
 	}
 	if !v.includeRefuted {
 		parts = append(parts, "e.status <> '"+edgeStatusRejected+"'")
-		parts = append(parts, withholdClause("e.confidence", false))
+		parts = append(parts, withholdClause("e.verdict_confidence", false))
 	}
 	if !v.includeRetired {
 		parts = append(parts, "e.expired_at IS NULL")
@@ -854,6 +991,9 @@ func (d *Document) statementJSON(ctx context.Context, s statementRow, ends map[s
 	if s.Confidence != nil {
 		e["confidence"] = *s.Confidence
 	}
+	if s.VerdictConfidence != nil {
+		e["verdict_confidence"] = *s.VerdictConfidence
+	}
 	for k, v := range map[string]*int64{"valid_at": s.ValidAt, "invalid_at": s.InvalidAt, "expired_at": s.ExpiredAt, "verified_at": s.VerifiedAt, "judged_at": s.JudgedAt, "ontology_version": s.OntologyVersion} {
 		if v != nil {
 			e[k] = *v
@@ -897,7 +1037,9 @@ func (d *Document) linkChunks(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		from: in.FromID, to: in.ToID, kind: in.Kind, method: method, status: edgeStatusAsserted,
 		authored: true, confidence: in.Confidence, validAt: in.ValidAt, invalidAt: in.InvalidAt,
 		attributes: in.Attributes, evidence: in.Evidence,
-		overrideRejected: authorIsOperatorPlane(ctx),
+		// An operator's own link may re-assert a rejection; sync and canvas carry
+		// another document's relations and never override one, whoever runs them.
+		overrideRejected: method == edgeMethodManual && authorIsOperatorPlane(ctx),
 	})
 	if err != nil {
 		return errFrom("link_chunks: "+err.Error(), err), nil
@@ -970,13 +1112,23 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 		if base == nil {
 			return errNotFound("propose_statement: no such statement: "+in.ID, "Omit id to propose a new statement."), nil
 		}
+		if base.Status == edgeStatusRejected {
+			return errBusiness("propose_statement: statement_rejected: that relation was rejected by an operator ("+base.JudgeReason+"), so it is not revised",
+				"Do not re-propose it. An operator can accept it from the review queue if it was rejected in error."), nil
+		}
 		w.from, w.to, w.kind, w.revisionOf = base.FromID, base.ToID, base.Kind, base.ID
 		if in.Kind != "" {
 			w.kind = in.Kind
 		}
 	}
-	if w.confidence != nil && (*w.confidence < 0 || *w.confidence > 1) {
-		return errValidation("propose_statement: confidence must be between 0 and 1", ""), nil
+	// A rejection is a tombstone for the relation, not for one valid_at of it: a
+	// proposal that differs only in its date (or rides in as a revision) would
+	// otherwise re-file what an operator already refused, as often as asked.
+	if reason, rejected, err := d.rejectedRelation(ctx, key, w.from, w.to, w.kind, d.discriminatorFor(ctx, w.kind, w.attributes)); err != nil {
+		return errFrom("propose_statement: "+err.Error(), err), nil
+	} else if rejected {
+		return errBusiness("propose_statement: statement_rejected: this relation was rejected by an operator ("+reason+")",
+			"Do not re-propose it. An operator can accept it from the review queue if it was rejected in error."), nil
 	}
 	if len(w.evidence) > 0 && d.autoAssertKind(ctx, w.kind) && strings.HasPrefix(in.edgeMethod, "rule:") {
 		allChunks := true
@@ -1004,9 +1156,26 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 	return jsonResult(res)
 }
 
+// rejectedRelation reports a rejected statement of (from, to, kind,
+// discriminator) at any valid_at, with its reason.
+func (d *Document) rejectedRelation(ctx context.Context, key sqlmem.ScopeKey, from, to, kind, disc string) (string, bool, error) {
+	res, err := d.query(ctx, key, `SELECT COALESCE(judge_reason, '') FROM chunk_edges
+		WHERE from_id = ? AND to_id = ? AND kind = ? AND discriminator = ? AND status = ? LIMIT 1`,
+		from, to, kind, disc, edgeStatusRejected)
+	if err != nil || len(res.Rows) == 0 {
+		return "", false, err
+	}
+	return asStr(res.Rows[0][0]), true, nil
+}
+
 // reviewStatement is accept_statement / reject_statement: the operator's ruling on
 // a proposal. Not reachable from inside a run — an agent's Document grant must not
 // let a model accept its own proposals (the RFC CA posture for ontology proposals).
+//
+// A ruling is on a proposal (accept or reject) or on a rejection (accept — it was
+// rejected in error); an asserted statement is not a ruling's to change. The
+// UPDATE is conditional on the status read, so of two operators ruling at once
+// the second is refused rather than silently replacing the first one's ruling.
 func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, accept bool) (tools.Result, error) {
 	op := "reject_statement"
 	status := edgeStatusRejected
@@ -1030,10 +1199,41 @@ func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, msc
 	if s == nil {
 		return errNotFound(op+": no such statement: "+in.ID, "List proposals with op=list_statements."), nil
 	}
+	if s.Status != edgeStatusProposed && !(accept && s.Status == edgeStatusRejected) {
+		msg := op + ": not_a_proposal: the statement is " + s.Status + ", so there is nothing to rule on"
+		hint := "Rule on proposals from op=list_statements. To withdraw a relation that holds, judge it unsupported (judge_fact) or remove it (unlink_chunks)."
+		if s.Auto {
+			// Its body re-creates it on every write, so the body is where it goes.
+			msg += " — it comes from a [[name]] link in its source chunk's body"
+			hint = "Edit the [[name]] link out of the body (update_chunk) to remove it."
+		}
+		return errBusiness(msg, hint), nil
+	}
 	now := time.Now().UnixNano()
-	if err := d.exec(ctx, key, `UPDATE chunk_edges SET status = ?, judged_at = ?, judge_reason = ?, judged_by = ? WHERE id = ?`,
-		status, now, nullIfEmpty(strings.TrimSpace(in.Reason)), "operator", in.ID); err != nil {
+	reason := nullIfEmpty(strings.TrimSpace(in.Reason))
+	set, args := `status = ?, judged_at = ?, judge_reason = ?, judged_by = ?`, []any{status, now, reason, "operator"}
+	if accept {
+		refuting := s.VerdictConfidence != nil && *s.VerdictConfidence < withholdBelowConfidence
+		switch {
+		case refuting:
+			// The operator overrules the judge: an accepted statement is visible.
+			set += `, verdict_confidence = NULL`
+		case s.Status == edgeStatusRejected || s.JudgedAt == nil:
+			// The triplet held the rejection being reversed, or nothing.
+		default:
+			// A judge's standing verdict on the proposal is kept: accepting it adds
+			// nothing the verdict does not already say.
+			set, args = `status = ?`, []any{status}
+		}
+	}
+	args = append(args, in.ID, s.Status)
+	ruled, err := d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(`UPDATE chunk_edges SET `+set+` WHERE id = ? AND status = ?`), args, 0)
+	if err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
+	}
+	if ruled.RowsAffected == 0 {
+		return errBusiness(op+": statement_changed: the statement was ruled on or changed while this ruling was made",
+			"Reload it (op=get_edge) and rule again if it still needs it."), nil
 	}
 	d.publishEdgeChange(ctx, key, mscope, op, in.ID, s.FromID, s.ToID, s.Kind, status)
 	return jsonResult(map[string]any{"id": in.ID, "status": status})
@@ -1056,10 +1256,7 @@ func (d *Document) getEdge(ctx context.Context, key sqlmem.ScopeKey, in docInput
 	}
 	r := res.Rows[0]
 	s := scanStatement(r)
-	ev, counts, err := d.evidenceFor(ctx, key, []string{s.ID}, 0)
-	if err == nil {
-		ev, err = d.withholdUnreadableEvidence(ctx, key, ev)
-	}
+	ev, counts, err := d.readableEvidenceFor(ctx, key, []string{s.ID}, 0)
 	if err != nil {
 		return errFrom("get_edge: "+err.Error(), err), nil
 	}
@@ -1128,10 +1325,7 @@ func (d *Document) renderStatementPage(ctx context.Context, key sqlmem.ScopeKey,
 		stmts[i] = scanStatement(r)
 		ids[i] = stmts[i].ID
 	}
-	ev, counts, err := d.evidenceFor(ctx, key, ids, edgeEvidencePreview)
-	if err == nil {
-		ev, err = d.withholdUnreadableEvidence(ctx, key, ev)
-	}
+	ev, counts, err := d.readableEvidenceFor(ctx, key, ids, edgeEvidencePreview)
 	if err != nil {
 		return errFrom(err.Error(), err), nil
 	}
@@ -1157,17 +1351,20 @@ func (d *Document) renderStatementPage(ctx context.Context, key sqlmem.ScopeKey,
 func (d *Document) judgeEdge(ctx context.Context, key sqlmem.ScopeKey, s *statementRow, verdict string, confidence float64, reason string) (tools.Result, error) {
 	judgedBy := judgedByForVerdict(ctx)
 	if verdict != "unclear" && !(judgedBy == "operator" && verdict != "mistyped") {
-		_, counts, err := d.evidenceFor(ctx, key, []string{s.ID}, 1)
+		// Only evidence this scope verified counts: a reference into another scope
+		// is kept as written, never checked, so it is no ground for a verdict.
+		res, err := d.query(ctx, key, `SELECT COUNT(*) FROM chunk_edge_evidence
+			WHERE edge_id = ? AND (chunk_id IS NOT NULL OR session_id IS NOT NULL)`, s.ID)
 		if err != nil {
 			return errFrom("judge_fact: "+err.Error(), err), nil
 		}
-		if counts[s.ID] == 0 {
-			return errBusiness("judge_fact: that statement records no evidence, so there is nothing to check it against. "+
+		if len(res.Rows) == 0 || asInt(res.Rows[0][0]) == 0 {
+			return errBusiness("judge_fact: that statement records no evidence verified in this scope, so there is nothing to check it against. "+
 				"An operator may still vouch for it from the console — a run may not", ""), nil
 		}
 	}
 	now := time.Now().UnixNano()
-	if err := d.exec(ctx, key, `UPDATE chunk_edges SET confidence = ?, judged_at = ?, judge_reason = ?, judged_by = ?, verified_at = ? WHERE id = ?`,
+	if err := d.exec(ctx, key, `UPDATE chunk_edges SET verdict_confidence = ?, judged_at = ?, judge_reason = ?, judged_by = ?, verified_at = ? WHERE id = ?`,
 		confidence, now, reason, judgedBy, now, s.ID); err != nil {
 		return errFrom("judge_fact: "+err.Error(), err), nil
 	}

@@ -17,7 +17,8 @@ one document, so you can see the document's link graph in one call. **It takes
   undated relation always matches.
 - `include_proposed` — include relations proposed for review (default true).
 - `include_refuted` — also include rejected relations and ones judged
-  unsupported (withheld by default, never deleted).
+  unsupported (withheld by default, never deleted). A writer's low
+  `confidence` never withholds a relation; only a verdict does.
 - `include_retired` — also include retired relations.
 - `limit` — page size (default 500, at most 5000). `after` — the
   `next_cursor` of the previous page.
@@ -30,9 +31,10 @@ one document, so you can see the document's link graph in one call. **It takes
 `to_id`, `kind`, `auto` (true = made by a `[[name]]` link in a body), `status`
 (`asserted` or `proposed`), `method` (how it was made), `created_at`, the
 endpoints' `from_title` / `from_type` / `from_status` / `from_document_id` and
-`to_…` twins, and when present `confidence`, `valid_at`, `invalid_at`,
-`attributes`, `actor`, a verdict (`judged_at`, `judge_reason`, `judged_by`),
-and up to three `evidence` rows with `evidence_count`. `truncated: true` with a
+`to_…` twins, and when present `confidence` (the writer's own), `valid_at`,
+`invalid_at`, `attributes`, `actor`, a verdict (`verdict_confidence`,
+`judged_at`, `judge_reason`, `judged_by`), and up to three `evidence` rows with
+`evidence_count` — both counting only the evidence you may read. `truncated: true` with a
 `next_cursor` means there is another page.
 
 ## Errors

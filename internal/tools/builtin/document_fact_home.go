@@ -270,7 +270,8 @@ func (d *Document) collectHomingSubjects(ctx context.Context, key sqlmem.ScopeKe
 		here[id] = localChunk{asStr(row[1]), asStr(row[2]), asStr(row[3]), asStr(row[4]), asStr(row[5])}
 	}
 
-	eres, err := d.query(ctx, key, `SELECT from_id, to_id FROM chunk_edges WHERE kind = ?`, aboutEdgeKind)
+	// Live `about` statements only: one an operator refuted does not place a fact.
+	eres, err := d.query(ctx, key, `SELECT e.from_id, e.to_id FROM chunk_edges e WHERE e.kind = ? AND `+edgeLiveClause, aboutEdgeKind)
 	if err != nil {
 		return nil, 0, err
 	}

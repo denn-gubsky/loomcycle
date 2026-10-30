@@ -114,7 +114,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","propose_entity","propose_subject","judge_fact","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","verbatim_answer","verification_stats","remember","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","get_edge","propose_statement","accept_statement","reject_statement","list_statements","resolve_anchor","describe_ontology","extract_citations","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions","set_remote","sync","diff_remote"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","propose_entity","propose_subject","judge_fact","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","verbatim_answer","verification_stats","remember","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","get_edge","propose_statement","accept_statement","reject_statement","list_statements","resolve_anchor","lease","release","describe_ontology","extract_citations","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions","set_remote","sync","diff_remote"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). ONE scope per call — a search, graph_recall or list_facts reads ONLY the scope you name, so a user-scope search never returns tenant chunks and vice versa; consult both by making two calls. agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk), or a statement id (get_edge, unlink_chunks, accept/reject_statement, judge_fact; propose_statement: the statement a competing proposal revises)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -127,7 +127,7 @@ const documentInputSchema = `{
 		"parent_id":   {"type": "string", "description": "create_chunk: the parent chunk. Omit it to add the chunk under the document's title (the root chunk)."},
 		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent. Empty moves the chunk directly under the document's title (the root chunk)."},
 		"after_id":    {"type": "string", "description": "create_chunk: insert the new chunk immediately AFTER this sibling (same parent; shifts later siblings). Overrides parent_id/position."},
-		"direction":   {"type": "string", "enum": ["up","down","pull","push","out","in","both"], "description": "get_edges: out (statements leaving the document), in (arriving) or both (default). reorder_chunk: move the chunk up or down within its current level. sync: pull (default) copies the peer document's keyed chunks into this one; push writes this document's keyed chunks up to the peer (reconciled by natural_key, carrying body/tags/hierarchy/manual-links; the losing side keeps the overwritten body in its history)."},
+		"direction":   {"type": "string", "enum": ["up","down","pull","push","out","in","both"], "description": "get_edges: out (statements leaving the document), in (arriving) or both (default). graph_recall: follow relations out of (out), into (in) or both ways from (both, default) each chunk. reorder_chunk: move the chunk up or down within its current level. sync: pull (default) copies the peer document's keyed chunks into this one; push writes this document's keyed chunks up to the peer (reconciled by natural_key, carrying body/tags/hierarchy/manual-links; the losing side keeps the overwritten body in its history)."},
 		"type":        {"type": "string", "description": "Optional supertag-like chunk type. list_facts (browse the scope's facts — chunks that carry entity metadata — newest first, metadata only, no bodies): return only facts of this type. On list_facts, query_chunks, search and related the filter INCLUDES SUBTYPES — asking for a general type also returns the more specific kinds of it, so filter by the broadest type that still answers your question. The response reports type_expanded_to when this widened the filter."},
 		"types":       {"type": "array", "items": {"type": "string"}, "description": "search / related: return only chunks of any of these types, each including its subtypes (with type, the union of both)."},
 		"body":        {"type": "string", "description": "Markdown body."},
@@ -141,7 +141,7 @@ const documentInputSchema = `{
 		"include_retired": {"type": "boolean", "description": "graph_recall / list_facts: also return facts that have been superseded, and on graph_recall chunks whose own valid_at/invalid_at put them out of force now. Off by default, so you get only what is currently true. get_edges / backlinks: also return retired statements."},
 		"text":        {"type": "string", "description": "remember: the statement to store, as ONE self-contained sentence. It is stored verbatim AND becomes its own source span, so what you type is both the fact and the evidence for it — write what you mean recorded, not an instruction about it."},
 		"min_score":   {"type": "number", "description": "verbatim_answer: how close a match must be before it can be quoted as an answer (default 0.6). Cosine scale is a property of the embedding model, so tune this against your own — the response always reports the actual score, including when it refuses."},
-		"include_refuted": {"type": "boolean", "description": "list_facts / graph_recall: also return facts a judge marked unsupported. They are withheld by default and never deleted, so this is how you read what was refused and why (each carries judge_reason). get_edges / backlinks: also return statements that were rejected or judged unsupported."},
+		"include_refuted": {"type": "boolean", "description": "list_facts / graph_recall: also return facts a judge marked unsupported. They are withheld by default and never deleted, so this is how you read what was refused and why (each carries judge_reason). graph_recall also follows relations a judge marked unsupported, never one an operator rejected. get_edges / backlinks: also return statements that were rejected or judged unsupported."},
 		"about":       {"type": "string", "description": "list_facts: the facts about ONE SUBJECT — pass the subject's entity chunk id (a subject document's root_chunk_id, from get_document). Returns the facts filed under it AND the facts filed elsewhere that reference it, because a fact about two things lives in one of their documents and points at the other: filtering by document alone would lose it from the second subject entirely."},
 		"claims_only": {"type": "boolean", "description": "list_facts: return only CLAIMS, dropping the entity identity nodes (the subject a fact is about — 'Ollama', 'the user'). A claim carries a sentence and can carry a source span; an identity node is a name and never can, so a listing meant for reading or for verification coverage wants this on. Off by default because the default listing is every chunk carrying entity metadata, which is what document sync reconciles."},
 		"verdict":      {"type": "string", "enum": ["supported","unclear","unsupported","mistyped"], "description": "judge_fact: whether the fact's recorded source span supports it. supported = the span carries the claim; unclear = it partly does; unsupported = it does not; mistyped = the span DOES support the claim but it is filed under a type the ontology does not say it is (the fix is to retype it, not to drop it, so it stays visible). The confidence each maps to is set by the server, and an unsupported fact stops being returned by the fact surfaces without being deleted."},
@@ -173,17 +173,17 @@ const documentInputSchema = `{
 		"to_revision":   {"type": "integer", "description": "diff: the later revision to compare (from history)."},
 		"from_id":     {"type": "string"},
 		"to_id":       {"type": "string"},
-		"kind":        {"type": "string", "description": "link/unlink_chunks / propose_statement: the relation kind (cites, based_on, defines, implements, related, …). Kinds the runtime writes are refused: about, supersedes, references, mentions, derived_from, supported_by. get_edges / backlinks / list_statements: return only this kind."},
-		"kinds":       {"type": "array", "items": {"type": "string"}, "description": "get_edges / backlinks / list_statements: return only these relation kinds (with kind, the union)."},
+		"kind":        {"type": "string", "description": "link/unlink_chunks / propose_statement: the relation kind (cites, based_on, defines, implements, related, …). Kinds the runtime writes are refused: about, supersedes, references, mentions, derived_from, supported_by. get_edges / backlinks / list_statements: return only this kind. graph_recall / related (related_to): follow only this kind."},
+		"kinds":       {"type": "array", "items": {"type": "string"}, "description": "get_edges / backlinks / list_statements: return only these relation kinds (with kind, the union). graph_recall / related (related_to): follow only these kinds."},
 		"attributes":  {"type": "object", "description": "link_chunks / propose_statement: the relation's qualifiers (e.g. aspect, coverage), at most 4 KB of JSON."},
 		"evidence":    {"type": "array", "description": "link_chunks / propose_statement: the text that supports the relation. Each item names ONE source — chunk_id (a chunk of this scope), session_id + event_seq (a chat turn), or scope + natural_key (another scope) — and the verbatim quote. A quote that does not occur in its chunk or turn is refused.", "items": {"type": "object", "properties": {"chunk_id": {"type": "string"}, "session_id": {"type": "string"}, "event_seq": {"type": "integer"}, "scope": {"type": "string", "enum": ["agent","user","tenant"]}, "natural_key": {"type": "string"}, "quote": {"type": "string"}, "char_start": {"type": "integer"}, "char_end": {"type": "integer"}}, "required": ["quote"]}},
-		"include_proposed": {"type": "boolean", "description": "get_edges (default true) / backlinks (default false): include statements proposed for review and not yet accepted."},
+		"include_proposed": {"type": "boolean", "description": "get_edges (default true) / backlinks (default false): include statements proposed for review and not yet accepted. graph_recall (default false): also follow them."},
 		"after":       {"type": "string", "description": "get_edges / backlinks / list_statements: continue a truncated listing — pass the next_cursor from the previous page."},
-		"walk":        {"type": "string", "enum": ["declared","all"], "description": "graph_recall: which relations to follow. declared (the default where the tenant declares relation kinds) follows the kinds declared for walking — citations, definitions, what implements what — and never mentions or about; all follows every relation. An explicit kind / kinds overrides it."},
-		"decay":       {"type": "number", "description": "graph_recall with budget_chars: each hop may spend at most decay^hop of the budget, so far hops cannot crowd out near ones. 0 < decay <= 1; default 0.7 for a declared walk, else 1 (no decay)."},
+		"walk":        {"type": "string", "enum": ["declared","all"], "description": "graph_recall: which relations to follow. declared (the default where the tenant declares relation kinds) follows the kinds declared for walking — citations, definitions, what implements what — and never mentions or about; all follows every relation. An explicit kind / kinds overrides it; any other value is refused."},
+		"decay":       {"type": "number", "description": "graph_recall with budget_chars: each hop may spend at most decay^hop of the budget, so far hops cannot crowd out near ones. 0 < decay <= 1; default 0.7 for a declared walk, else 1 (no decay). Refused without budget_chars."},
 		"include_hierarchy": {"type": "string", "enum": ["up","down","both","none"], "description": "graph_recall: also step along the document tree — up to a chunk's parent (part_of), down to its children (has_part). Default none."},
-		"expand":      {"type": "object", "description": "search: after ranking, add the chunks the top hits are related to — one hop, within a budget — each marked expanded_via {kind, from_chunk_id, quote}. Use it when a passage depends on what it cites or defines.", "properties": {"kinds": {"type": "array", "items": {"type": "string"}}, "hops": {"type": "integer", "enum": [1]}, "budget_chars": {"type": "integer"}}},
-		"related_to":  {"type": "string", "description": "related: a chunk id whose neighbours BY RELATION (citations, definitions, …) to return as linked, beside — or, without id, instead of — the neighbours by meaning. Needs no embedder."},
+		"expand":      {"type": "object", "description": "search: after ranking, add the chunks the top hits are related to — one hop, within a budget — each marked expanded_via {kind, from_chunk_id, quote}. Use it when a passage depends on what it cites or defines. The search's filter arguments apply to the added chunks too.", "properties": {"kinds": {"type": "array", "items": {"type": "string"}}, "hops": {"type": "integer", "enum": [1]}, "budget_chars": {"type": "integer"}}},
+		"related_to":  {"type": "string", "description": "related: a chunk id whose neighbours BY RELATION (citations, definitions, …) to return as linked, beside — or, without id, instead of — the neighbours by meaning. Needs no embedder. The filter arguments (under_path, type, …) narrow it too."},
 		"reimport":    {"type": "boolean", "description": "import_md: the markdown is a NEW EDITION of the document named by document_id or work_key. Parts are matched by their heading path: unchanged parts keep their ids and links, changed ones are superseded (the old one closes at edition_date), removed ones close, new ones open at edition_date. Nothing is deleted."},
 		"edition_date": {"type": "integer", "description": "import_md with reimport: when the new edition came into force (unix nanos; default now)."},
 		"work_key":    {"type": "string", "description": "import_md with reimport / resolve_anchor: the work's key, e.g. law:ua/2297-vi — the document holding it, or (import) the one the first edition creates."},
@@ -201,7 +201,8 @@ const documentInputSchema = `{
 		"tag_prefix":  {"type": "string", "description": "query_chunks / search / related: return chunks whose tag equals this OR is nested under it (prefix + '/'), e.g. tag_prefix=area matches area and area/sub."},
 		"sql":         {"type": "string", "description": "query_chunks: raw read-only SELECT against the chunk tables (escape hatch; validator-gated)."},
 		"limit":       {"type": "integer", "description": "The most rows to return. The default depends on the op (graph_recall: 50 chunks); each op's help article gives its own."},
-		"name":        {"type": "string", "description": "define/list_types: the type name."},
+		"name":        {"type": "string", "description": "define/list_types: the type name. lease / release: the lease's name, e.g. linker (1–64 of a-z 0-9 _ . : / -)."},
+		"ttl_ms":      {"type": "integer", "description": "lease: how long to hold it, in milliseconds (default 60000, capped at one hour). The lease expires on its own; the holder re-leases to extend it."},
 		"include_metadata": {"type": "boolean", "description": "export_md: embed round-trippable chunk metadata + edges as HTML comments (default true). false = clean human-facing Markdown."},
 		"markdown":    {"type": "string", "description": "import_md: an export_md-shaped Markdown document (headings = hierarchy; <!-- loom: ... --> metadata; <!-- loom-edges: ... --> trailer). Omit document_id to create a new document; pass document_id (+ optional parent_id) to import under an existing chunk."},
 		"canvas":      {"type": "object", "description": "import_canvas: a JSON Canvas v1.0 object ({\"nodes\":[...],\"edges\":[...]}) — e.g. the contents of an Obsidian .canvas file. Each node becomes a chunk (positioned via its x/y/width/height); each edge becomes a link. Pass title/path to name the new document."},
@@ -433,6 +434,8 @@ type docInput struct {
 	SQL                string   `json:"sql"`
 	Limit              int      `json:"limit"`
 	Name               string   `json:"name"`
+	// TTLMs is the lease op's hold duration in milliseconds (0 = default).
+	TTLMs int `json:"ttl_ms"`
 	// IncludeMetadata gates export_md's round-trip comments (default true when
 	// omitted; a pointer so an explicit `false` is distinguishable from unset).
 	IncludeMetadata *bool `json:"include_metadata"`
@@ -573,6 +576,8 @@ var docSchemaDDL = []string{
 	`CREATE TABLE IF NOT EXISTS chunk_layout (
 		chunk_id TEXT PRIMARY KEY, x INTEGER NOT NULL, y INTEGER NOT NULL,
 		width INTEGER NOT NULL, height INTEGER NOT NULL, color TEXT)`,
+	// document_leases: a named lease on this scope (document_lease.go).
+	documentLeasesDDL,
 }
 
 // maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
@@ -703,6 +708,10 @@ func (d *Document) dispatch(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		return d.listStatements(ctx, key, in)
 	case "resolve_anchor":
 		return d.resolveAnchor(ctx, key, mscope, in)
+	case "lease":
+		return d.leaseOp(ctx, key, in)
+	case "release":
+		return d.releaseOp(ctx, key, in)
 	case "describe_ontology":
 		// Reads the TENANT ontology whatever `scope` says, as propose_entity files there.
 		return d.describeOntology(ctx)
@@ -3548,11 +3557,8 @@ LIMIT ?`, args...)
 		stmts[i] = scanStatement(r)
 		ids[i] = stmts[i].ID
 	}
-	ev, counts, err := d.evidenceFor(ctx, key, ids, edgeEvidencePreview)
+	ev, counts, err := d.readableEvidenceFor(ctx, key, ids, edgeEvidencePreview)
 	if err != nil {
-		return errFrom(op+": "+err.Error(), err), nil
-	}
-	if ev, err = d.withholdUnreadableEvidence(ctx, key, ev); err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}
 	edges := make([]map[string]any, 0, len(rows))
@@ -3926,7 +3932,7 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	// reading the first element must get the best match, not whatever order the
 	// metadata query returned. Expanded rows follow the ranked ones, unranked and
 	// marked, in the same list so the access-control filter reads them too.
-	expanded, expandTruncated, err := d.expandHits(ctx, key, in, out)
+	expanded, expandTruncated, err := d.expandHits(ctx, key, in, out, filter)
 	if err != nil {
 		return errFrom("search: expand: "+err.Error(), err), nil
 	}
@@ -3964,43 +3970,17 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	if in.ID == "" && in.RelatedTo == "" {
 		return errValidation("related: missing required field: id", "Pass `id`, the chunk to find neighbours of (by meaning), or `related_to` (by relation)."), nil
 	}
-	// related_to: the neighbours by relation, beside (or instead of) the ones by
-	// meaning. Needs no embedder.
-	var linked []map[string]any
-	if in.RelatedTo != "" {
-		limit := 10
-		if in.Limit > 0 {
-			limit = min(in.Limit, 50)
-		}
-		var err error
-		if linked, err = d.relatedByRelation(ctx, key, in, limit); err != nil {
-			return errFrom("related: related_to: "+err.Error(), err), nil
-		}
-		if in.ID == "" {
-			return jsonResult(map[string]any{"linked": linked})
-		}
-	}
 	// Semantic neighbours need both a vector index and something to turn the query
-	// body into a vector. No embedder → there is no vector plane to search.
-	if d.Embedder == nil {
-		return errBusiness("related: requires a configured embedder / vector memory", "Semantic neighbours are not available on this server; use op=backlinks or op=query_chunks instead."), nil
+	// body into a vector. No embedder → there is no vector plane to search, and
+	// without related_to nothing else to answer with.
+	const noEmbedderHint = "Semantic neighbours are not available on this server; use op=backlinks or op=query_chunks instead."
+	if d.Embedder == nil && in.RelatedTo == "" {
+		return errBusiness("related: requires a configured embedder / vector memory", noEmbedderHint), nil
 	}
-	topK := 10
-	if in.Limit > 0 {
-		topK = in.Limit
-	}
-	if topK > 50 {
-		topK = 50
-	}
-	// The same structural filter as search, applied to the one vector leg related
-	// runs. withFilter adds the echo to every answer once a filter was named.
-	sf := store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}
-	withFilter := func(m map[string]any) map[string]any {
-		if linked != nil {
-			m["linked"] = linked
-		}
-		return m
-	}
+	// The same structural filter as search, resolved once and applied to both
+	// halves: the vector leg and the neighbours by relation. withFilter adds the
+	// echo, and the relation half, to every answer.
+	var filter *searchFilterSet
 	if hasSearchFilter(in) {
 		set, refusal, err := d.resolveSearchFilter(ctx, key, "related", in)
 		if err != nil {
@@ -4009,17 +3989,51 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 		if refusal != nil {
 			return *refusal, nil
 		}
-		withFilter = func(m map[string]any) map[string]any {
-			m["filter"] = set.echo
-			if linked != nil {
-				m["linked"] = linked
-			}
-			return m
+		filter = set
+	}
+	var linked []map[string]any
+	withFilter := func(m map[string]any) map[string]any {
+		if filter != nil {
+			m["filter"] = filter.echo
 		}
-		if set.echo.MatchedChunks == 0 {
+		if linked != nil {
+			m["linked"] = linked
+		}
+		return m
+	}
+	// related_to: the neighbours by relation, beside (or instead of) the ones by
+	// meaning. Needs no embedder.
+	if in.RelatedTo != "" {
+		limit := 10
+		if in.Limit > 0 {
+			limit = min(in.Limit, 50)
+		}
+		var err error
+		if linked, err = d.relatedByRelation(ctx, key, in, limit, filter); err != nil {
+			return errFrom("related: related_to: "+err.Error(), err), nil
+		}
+		if in.ID == "" {
+			return jsonResult(withFilter(map[string]any{}))
+		}
+		// Both were asked for and only the relation half can be answered: give it,
+		// and say why the other is missing, rather than throw it away.
+		if d.Embedder == nil {
+			return jsonResult(withFilter(map[string]any{"note": "related: no embedder is configured, so only the neighbours by relation (linked) are returned. " + noEmbedderHint}))
+		}
+	}
+	topK := 10
+	if in.Limit > 0 {
+		topK = in.Limit
+	}
+	if topK > 50 {
+		topK = 50
+	}
+	sf := store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}
+	if filter != nil {
+		if filter.echo.MatchedChunks == 0 {
 			return jsonResult(withFilter(map[string]any{"related": []map[string]any{}}))
 		}
-		sf.IDs, sf.ExcludeIDs = set.ids, set.excludeIDs
+		sf.IDs, sf.ExcludeIDs = filter.ids, filter.excludeIDs
 	}
 	// The query text is the chunk's own body. An empty or media body has nothing
 	// to embed — the same predicate embedBody skips on write — so it has no
@@ -4126,7 +4140,10 @@ func (d *Document) unlinkedMentions(ctx context.Context, key sqlmem.ScopeKey, ms
 	}
 	// The already-linked set: every chunk that already references the target
 	// (manual OR [[name]] edge — both live in chunk_edges as from→to). A mention
-	// from a chunk that already links is not "unlinked".
+	// from a chunk that already links is not "unlinked". Every status counts on
+	// purpose: a proposal is already awaiting review, and a rejected or refuted
+	// relation was considered and refused — suggesting it again invites a link
+	// that would be refused, or, from an operator, would undo the ruling.
 	linked := map[string]bool{}
 	lres, err := d.query(ctx, key, `SELECT from_id FROM chunk_edges WHERE to_id = ?`, in.ID)
 	if err != nil {
@@ -5377,8 +5394,10 @@ func (d *Document) exportCanvas(ctx context.Context, key sqlmem.ScopeKey, mscope
 
 	// Within-document edges whose BOTH endpoints are content nodes. The SQL
 	// restricts to this document; the nodeSet check then drops any edge touching
-	// the root (the one in-document chunk that is not a node).
-	eres, err := d.query(ctx, key, `SELECT from_id, to_id, kind FROM chunk_edges WHERE from_id IN (SELECT id FROM chunks WHERE document_id = ?) AND to_id IN (SELECT id FROM chunks WHERE document_id = ?) ORDER BY from_id, to_id, kind`, docID, docID)
+	// the root (the one in-document chunk that is not a node). Live statements
+	// only: a canvas edge has no status, and import_canvas asserts every edge, so a
+	// proposal or a rejection drawn here would come back asserted.
+	eres, err := d.query(ctx, key, `SELECT e.from_id, e.to_id, e.kind FROM chunk_edges e WHERE e.from_id IN (SELECT id FROM chunks WHERE document_id = ?) AND e.to_id IN (SELECT id FROM chunks WHERE document_id = ?) AND `+edgeLiveClause+` ORDER BY e.from_id, e.to_id, e.kind`, docID, docID)
 	if err != nil {
 		return errFrom("export_canvas: edges: "+err.Error(), err), nil
 	}

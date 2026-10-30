@@ -117,6 +117,10 @@ var docACLOps = map[string]docACLRule{
 	// extract_citations reads the document or chunk it names; resolving a citation
 	// asks read on the cited work through resolve_anchor.
 	"extract_citations": {verb: "read", target: docACLChunkOrDocument},
+	// A lease guards a pass over the whole scope and changes no content: it asks
+	// propose, the verb a statement-maintaining driver already needs there.
+	"lease":             {verb: "propose", target: docACLScope},
+	"release":           {verb: "propose", target: docACLScope},
 	"query_chunks":      {verb: "read", target: docACLScope},
 	"add_tags":          {verb: "write", target: docACLChunkOrDocument},
 	"remove_tags":       {verb: "write", target: docACLChunkOrDocument},

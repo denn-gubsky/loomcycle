@@ -39,7 +39,8 @@ hops: a two-step question needs `hops: 2`, a three-step one `hops: 4`.**
   `["cites", "defines", "implements"]`. The best way to keep a walk on topic.
 - `walk` — `declared` follows the relation kinds the tenant declared for
   walking (the default where any are declared), `all` follows every relation
-  (the default otherwise). `kinds` overrides it.
+  (the default otherwise). `kinds` overrides it; any other value is refused,
+  with or without `kinds`.
 - `direction` — `out` (relations leaving a chunk), `in` (arriving) or `both`
   (default).
 - `include_hierarchy` — also step along the document tree: `up` to a chunk's
@@ -49,9 +50,11 @@ hops: a two-step question needs `hops: 2`, a three-step one `hops: 4`.**
   accepted (default false).
 - `decay` — with `budget_chars`, each hop may spend at most `decay`^hop of the
   budget, so far hops cannot crowd out near ones. 0 < decay ≤ 1; default 0.7 for
-  a `declared` walk, else 1.
+  a `declared` walk, else 1. Refused without `budget_chars`.
 - `include_retired` — `true` turns the time filter off entirely.
-- `include_refuted` — `true` also returns facts a judge marked `unsupported`.
+- `include_refuted` — `true` also returns facts a judge marked `unsupported`,
+  and follows relations a judge marked unsupported. A relation an operator
+  rejected is never followed.
 - `document_id` — only start from chunks in this document (the walk may still
   leave it).
 - `scope` — `user` (default), `agent` or `tenant`. One scope per call: to
@@ -84,9 +87,10 @@ the chunk's own dates. A fact that also has dates of its own reports those as
 its text could not be read, or `body_chars` left it out.
 
 `seeded_by` is `ids`, `semantic` or `title`. `walk` (`kinds`, `declared` or
-`all`) and `decay` are reported when the walk was narrowed, and
+`all`) is reported when the walk was narrowed or named, and
 `kind_expanded_to` when a kind widened to its declared sub-kinds. With `budget_chars` you also get
-`budget_chars`, `chars_used` (titles plus bodies) and `backfilled`.
+`budget_chars`, `chars_used` (titles plus bodies) and `backfilled`, and `decay`
+when it is below 1.
 `truncated: true` means some chunks were cut by a limit.
 
 ## Errors
@@ -98,6 +102,9 @@ its text could not be read, or `body_chars` left it out.
   several calls.
 - `graph_recall: body_chars must be 0..4000 (got N)` — read a whole body with
   `get_chunk` instead.
+- `graph_recall: decay needs budget_chars ...` — pass a budget, or drop `decay`.
+- `graph_recall: walk must be declared or all` / `direction must be out, in or
+  both` / `include_hierarchy must be up, down, both or none`.
 - An empty `chunks` list with `seeds: 0` means nothing matched the query in
   this scope. With `seeded_by: "title"` the query must appear as a whole word in
   a fact's title; try `seed_ids` from `search` instead.
