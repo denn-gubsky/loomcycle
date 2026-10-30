@@ -77,6 +77,41 @@ agents:
     sql_quota_bytes: 52428800     # optional per-agent override of the global quota
 ```
 
+## The Document tool's tables are off limits
+
+The Document tool keeps its tables in the same per-scope database: `documents`,
+`chunks`, `chunk_edges`, `chunk_edge_evidence`, `chunk_tags`, `document_leases`,
+and the rest. `sql_query` and `sql_exec` refuse any statement that names one of
+them, for reads and for writes, with `document_tables_reserved`. Otherwise an
+agent holding `sql_scopes`, which is every agent with `Memory` by default, could
+do two things:
+- mark its own proposed statement asserted, which only an operator may do;
+- read chunks past the Document tool's access rules.
+
+Read and change documents through the Document tool, and give your own tables
+and columns other names.
+
+The check reads every identifier in each quoting form. On sqlite it also reads a
+`'string'` in a table position, since sqlite accepts `FROM 'chunks'`.
+
+On PostgreSQL the guard also refuses statements that could build a table name
+out of strings:
+- `CREATE FUNCTION` and `CREATE PROCEDURE`;
+- calls to the core functions that run a query given as text: `query_to_xml`,
+  `table_to_xml`, `schema_to_xml` and their kin, `ts_stat` and `ts_rewrite`;
+- `set_config`;
+- `U&"…"` escapes.
+
+A view, trigger, rule or (PostgreSQL) function made before this check existed
+can still reach a document table. So before Memory SQL first runs on a scope,
+these objects are checked. If one names a document table, or a function body
+uses `EXECUTE`, the scope refuses Memory SQL until that object is dropped;
+`DROP` statements stay allowed.
+
+On sqlite this check is complete, because sqlite cannot build SQL from
+strings. On PostgreSQL a follow-up moves the document tables to a role that
+Memory's SQL does not log in as, so the engine enforces the boundary itself.
+
 ## Storage tiers — SQL Memory follows the main backend
 
 | Main `storage.backend` | SQL Memory tier | Isolation |

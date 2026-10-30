@@ -911,6 +911,9 @@ func (m *Memory) execSqlQuery(ctx context.Context, in memoryInput) (tools.Result
 		return memErr(fmt.Sprintf("sql_query: %s", aerr), aerr), nil
 	}
 	key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(ctx), Scope: scope, ScopeID: scopeID}
+	if r, refused := m.guardDocumentTables(ctx, "sql_query", scope, scopeID, key, in.Statement); refused {
+		return r, nil
+	}
 	txnID := currentSqlTxnID(ctx, scope, scopeID)
 	start := time.Now()
 	var res *sqlmem.QueryResult
@@ -954,6 +957,9 @@ func (m *Memory) execSqlExec(ctx context.Context, in memoryInput) (tools.Result,
 	// Per-agent quota override wins over the manager default when > 0.
 	quota := tools.PolicyOf(ctx).SqlMem.QuotaBytes
 	key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(ctx), Scope: scope, ScopeID: scopeID}
+	if r, refused := m.guardDocumentTables(ctx, "sql_exec", scope, scopeID, key, in.Statement); refused {
+		return r, nil
+	}
 	txnID := currentSqlTxnID(ctx, scope, scopeID)
 	start := time.Now()
 	var res *sqlmem.ExecResult
