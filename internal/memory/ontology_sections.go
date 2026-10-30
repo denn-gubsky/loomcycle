@@ -74,7 +74,7 @@ var knownDirectives = map[string]bool{
 	// classes
 	"memory_scope": true, "identity": true, "identifier_pattern": true,
 	"title_pattern": true, "anchor_grammar": true, "citation_grammar": true,
-	"exclude": true, "renamed_from": true,
+	"exclude": true, "renamed_from": true, "definitions": true,
 	// relations
 	"inverse": true, "domain": true, "range": true, "symmetric": true,
 	"asymmetric": true, "irreflexive": true, "transitive": true,
@@ -351,6 +351,7 @@ type ClassDecl struct {
 	TitlePattern      string
 	AnchorGrammar     string
 	CitationGrammar   string
+	Definitions       string
 	Exclude           []string
 	RenamedFrom       string
 	Issues            []string
@@ -374,15 +375,18 @@ func ParseClassBody(body string) ClassDecl {
 			// section is the section reader's; version is informational on the root.
 		case "identity":
 			d.TitleIdentity = true
-		case "identifier_pattern", "title_pattern":
+		case "identifier_pattern", "title_pattern", "definitions":
 			if _, issue := compileOntologyPattern(dir.Value); issue != "" {
 				d.Issues = append(d.Issues, "@"+dir.Name+" "+issue+"; ignored")
 				continue
 			}
-			if dir.Name == "identifier_pattern" {
+			switch dir.Name {
+			case "identifier_pattern":
 				d.IdentifierPattern = dir.Value
-			} else {
+			case "title_pattern":
 				d.TitlePattern = dir.Value
+			default:
+				d.Definitions = dir.Value
 			}
 		case "anchor_grammar":
 			d.AnchorGrammar = firstWord(dir.Value)

@@ -3572,6 +3572,8 @@ export interface OntologyTerm {
   title_pattern?: string;
   anchor_grammar?: string;
   citation_grammar?: string;
+  /** Pattern over chunk titles marking a document's definitions passages. */
+  definitions?: string;
   exclude?: string[];
   renamed_from?: string;
   /** Class directives taken from the nearest declaring ancestor. */

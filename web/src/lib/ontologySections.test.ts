@@ -29,11 +29,12 @@ describe("classDirectiveNotes", () => {
       name: "Law",
       source: "tenant",
       citation_grammar: "law-ua-v2",
-      inherited_directives: { identifier_pattern: "(?P<n>\\d+)" },
+      inherited_directives: { identifier_pattern: "(?P<n>\\d+)", definitions: "^Article 1\\b" },
       inherited_title_identity: true,
     });
     expect(notes).toContain("citations: law-ua-v2");
     expect(notes).toContain("identifier pattern: (?P<n>\\d+) (inherited)");
+    expect(notes).toContain("definitions: ^Article 1\\b (inherited)");
     expect(notes).toContain("title is its identity (inherited)");
   });
   it("is empty for a plain class", () => {

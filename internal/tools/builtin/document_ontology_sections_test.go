@@ -13,7 +13,7 @@ import (
 const sectionedOntologyMD = "# Tenant Ontology\n@version 4\n\n" +
 	"## Classes\n@section classes\n\n" +
 	"### Document\n- `title` text @required\n- `identifier` text @identity\n- `issued` date\n\n" +
-	"#### NormativeAct\n@identifier_pattern (?P<number>\\d+-[IVX]+)\n@citation_grammar law-ua\n\n" +
+	"#### NormativeAct\n@identifier_pattern (?P<number>\\d+-[IVX]+)\n@citation_grammar law-ua\n@definitions (?i)^Стаття 1\\b|визначення термінів\n\n" +
 	"##### grammar:law-ua\npattern: Закон України № ?(?P<number>\\d+-[IVX]+)\nresolve: work_key=law:{number}\n\n" +
 	"##### Law\n\n" +
 	"### Provision\n@anchor_grammar akn-ua\n@identiy\n- `anchor` anchor @identity\n\n" +

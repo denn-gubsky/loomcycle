@@ -149,7 +149,7 @@ func describeOntologyRead(read OntologyRead) ontologyDescription {
 			dc.Kind = "document"
 		}
 		dc.Fields = append(append([]memrank.FieldSpec{}, c.InheritedSpecs...), c.FieldSpecs...)
-		for _, name := range []string{"identifier_pattern", "title_pattern", "anchor_grammar", "citation_grammar", "exclude"} {
+		for _, name := range memrank.InheritableDirectives() {
 			if v := memrank.EffectiveDirective(c, name); v != "" {
 				if dc.Directives == nil {
 					dc.Directives = map[string]string{}

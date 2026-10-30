@@ -2836,9 +2836,11 @@ func (d *Document) getChunk(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	// RFC BV: when the chunk is a fact (has a chunk_memory_meta sidecar), surface
 	// the bi-temporal / provenance block so the memory view reads it typed —
 	// without it, a fact and a plain chunk are indistinguishable on read.
+	isFact := false
 	if meta, ok, merr := d.readChunkMeta(ctx, key, in.ID); merr != nil {
 		return errFrom("get_chunk: entity: "+merr.Error(), merr), nil
 	} else if ok {
+		isFact = true
 		resp["entity"] = chunkMetaToJSON(meta)
 		// A KEYED chunk is what sync carries, so it always names both ends of its
 		// own interval — null when unset. That lets a syncing peer tell "undated
@@ -2850,6 +2852,20 @@ func (d *Document) getChunk(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 					resp[k] = nil
 				}
 			}
+		}
+	}
+	// RFC FP R8: a fact is never a definitions passage, so its read skips the lookup.
+	// Only an explicit get_chunk computes the flag: create_chunk, update_chunk and
+	// set_asset answer through this function too, and the lookup would put the
+	// ontology read — and, right after an edit to the ontology itself, a full rebuild
+	// of it — on every chunk write.
+	if !isFact && in.Op == "get_chunk" {
+		defs, derr := d.definitionalChunks(ctx, key, []chunkRow{row})
+		if derr != nil {
+			return errFrom("get_chunk: definitional: "+derr.Error(), derr), nil
+		}
+		if defs[row.ID] {
+			resp["definitional"] = true
 		}
 	}
 	return jsonResult(resp)
@@ -4628,9 +4644,18 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 	if err != nil {
 		return errFrom("query_chunks: "+err.Error(), err), nil
 	}
-	chunks := make([]map[string]any, 0, len(res.Rows))
+	rows := make([]chunkRow, 0, len(res.Rows))
 	for _, r := range res.Rows {
-		row := scanChunkRow(res.Columns, r)
+		rows = append(rows, scanChunkRow(res.Columns, r))
+	}
+	// RFC FP R8, computed for the whole page at once: at most two queries, not one
+	// per chunk.
+	defs, derr := d.definitionalChunks(ctx, key, rows)
+	if derr != nil {
+		return errFrom("query_chunks: definitional: "+derr.Error(), derr), nil
+	}
+	chunks := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
 		// Structured query returns the SQL row (no bodies — keeps it light;
 		// fetch a body with get_chunk).
 		m := map[string]any{"id": row.ID, "document_id": row.DocumentID, "title": row.Title, "position": row.Position, "revision": row.Revision}
@@ -4644,6 +4669,9 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 			m["status"] = row.Status
 		}
 		putValidity(m, row.ValidAt, row.InvalidAt)
+		if defs[row.ID] {
+			m["definitional"] = true
+		}
 		chunks = append(chunks, m)
 	}
 	out := map[string]any{"chunks": chunks}
