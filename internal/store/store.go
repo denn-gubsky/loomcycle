@@ -876,6 +876,8 @@ const (
 	UsagePurposeUnitGeneration = "unit_generation"
 	// Describing a Document's image with a vision model.
 	UsagePurposeImageDescription = "image_description"
+	// Document op=classify's model step (memory.classifier).
+	UsagePurposeClassify = "classify"
 	// An embedder call: memory and document writes, search queries, re-embeds
 	// and the /v1/embeddings gateway. Carries the characters sent, and the
 	// tokens when the provider reported them.
@@ -907,6 +909,7 @@ var usagePurposeClass = map[string]string{
 	UsagePurposeRecap:            UsageClassBackground,
 	UsagePurposeUnitGeneration:   UsageClassBackground,
 	UsagePurposeImageDescription: UsageClassBackground,
+	UsagePurposeClassify:         UsageClassBackground,
 	UsagePurposeEmbedding:        UsageClassBackground,
 }
 

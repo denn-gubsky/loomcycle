@@ -615,6 +615,10 @@ type MemoryConfig struct {
 	// an error, because a rerank only reorders what search already found.
 	Reranker RerankerConfig `yaml:"reranker"`
 
+	// Classifier is what Document op=classify asks when its rules and neighbourhood
+	// vote leave a document undecided (see ClassifierConfig). Unset, it asks nothing.
+	Classifier ClassifierConfig `yaml:"classifier"`
+
 	// UnitGenerator is the model that writes Document derived search units, and
 	// the Path subtrees marked for them (see UnitGeneratorConfig). Unset, no units
 	// are ever generated.
@@ -9709,6 +9713,9 @@ func validate(c *Config) error {
 		}
 	}
 	if err := c.Memory.UnitGenerator.validate(c); err != nil {
+		return err
+	}
+	if err := c.Memory.Classifier.validate(c); err != nil {
 		return err
 	}
 	if err := c.Memory.FullText.validate(); err != nil {
