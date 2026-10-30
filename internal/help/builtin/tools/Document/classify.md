@@ -1,9 +1,9 @@
 ---
 name: Document/classify
-description: "Document op=classify — say what a document is from the confirmed ontology: its class and work key by the classes' patterns, its issuer, and its neighbours' classes and concepts. One class matching by rule is applied; the rest is proposed."
+description: "Document op=classify — say what a document is from the confirmed ontology: its class and work key by the classes' patterns, its issuer, its neighbours' classes and concepts, and, where those leave it open, a classifier model. One class matching by rule is applied; the rest is proposed."
 ---
-`classify` says what a document is, from the tenant's confirmed ontology and
-without a model. Two steps, each reported in `steps`:
+`classify` says what a document is, from the tenant's confirmed ontology. Up to
+three steps, each reported in `steps`:
 
 1. **Rules.** Each document class's `@title_pattern` is matched against the
    document's title, its import source title and its first section titles. A
@@ -18,6 +18,13 @@ without a model. Two steps, each reported in `steps`:
    carry a declared class. It reports how many of them agree on a class, and
    which concepts at least half of them share. It needs a configured embedder;
    without one this step abstains and says so.
+3. **Model.** Only when the first two steps leave the class open, and only if
+   the operator configured a classifier model. A decision model is asked first:
+   it chooses among the classes (just the tied ones after an ambiguous match)
+   and says yes or no per concept. A chat model is asked when there is no
+   decision model or it was unsure. The chat model must quote the document, or
+   its answer is dropped. The step's `method` says which model answered. A model
+   answer is always a proposal, never applied.
 
 A draft ontology classifies nothing.
 
@@ -31,8 +38,8 @@ With `write: "propose"` (the default):
 - **Anything else** (several classes matched, or only the vote decided) is a
   proposal. It waits in the root's `classification` field until an operator
   runs `accept_classification`.
-- **Concepts** from the vote, and an issuer beside a proposed class, are always
-  proposals.
+- **Concepts** from the vote or the model, and an issuer beside a proposed
+  class, are always proposals.
 - **In the tenant scope**, proposals are filed as proposed statements (`subject`,
   `classified_as`, `issued_by`) from the root chunk, so they also appear in
   `list_statements`. In a user or agent scope no statement can reach a concept
@@ -63,9 +70,11 @@ concepts, steps, statements?, warnings?}`:
 - `issued_by` — each `{instance, quote, subject_chunk_id?}`.
   `subject_chunk_id` is set only in the tenant scope, for an adopted instance.
 - `concepts` — each `{concept, tag, kind?, chunk_id?, share}`.
-- `steps` — `[{step: "rules"|"vote", candidates, chosen?, neighbours?,
-  reason?}]`. A rule candidate carries the `quote` it matched and where
-  (`from`), a vote candidate its `votes` and `share`.
+- `steps` — `[{step: "rules"|"vote"|"model", method?, candidates, chosen?,
+  neighbours?, reason?}]`. A rule candidate carries the `quote` it matched and
+  where (`from`), a vote candidate its `votes` and `share`, and a model
+  candidate the decision model's probability (`share`) or the chat model's
+  `quote`.
 - `statements` — the statements written, each `{id, status, created, ...}`.
 
 ## Errors
