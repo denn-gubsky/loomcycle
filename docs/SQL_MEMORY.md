@@ -91,8 +91,15 @@ do two things:
 Read and change documents through the Document tool, and give your own tables
 and columns other names.
 
-The check reads every identifier in each quoting form. On sqlite it also reads a
-`'string'` in a table position, since sqlite accepts `FROM 'chunks'`.
+The check reads the statement as tokens, with comments dropped, so a comment
+cannot split a name or a call. It reads every identifier in each quoting form.
+On sqlite it also reads every `'string'`, since sqlite accepts
+`FROM 'chunks'`; a value spelled exactly like a document table is refused too.
+
+The check also reserves:
+- Document's indexes, since dropping one would let duplicates in;
+- the statistics catalogs (`pg_stats` and kin, `sqlite_stat1` …), which hold
+  sampled values of the document tables' columns.
 
 On PostgreSQL the guard also refuses statements that could build a table name
 out of strings:

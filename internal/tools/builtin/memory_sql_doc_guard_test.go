@@ -67,6 +67,7 @@ func TestMemorySQLGuard_DocumentTablesAreRefused(t *testing.T) {
 			{"sql_query", "SELECT * FROM -- a comment\n documents"},
 			{"sql_query", `WITH x AS (SELECT id FROM documents) SELECT * FROM x`},
 			{"sql_query", `SELECT id FROM notes WHERE id IN (SELECT 1 FROM chunk_edge_evidence)`},
+			{"sql_exec", `DROP INDEX chunks_stable_id`},
 		}
 		if postgres {
 			cases = append(cases, []struct{ op, stmt string }{
@@ -80,6 +81,10 @@ func TestMemorySQLGuard_DocumentTablesAreRefused(t *testing.T) {
 				{"sql_query", `SELECT E'\'' AS a, id FROM notes, chunks`},
 				{"sql_query", `SELECT $q$ text $q$ AS a, id FROM chunks`},
 				{"sql_query", `SELECT 1 /* outer /* nested */ still a comment */ FROM chunks`},
+				{"sql_exec", `/* lead */ CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$`},
+				{"sql_query", `SELECT query_to_xml/**/('select 1', true, false, '')`},
+				{"sql_query", `SELECT pg_catalog . ts_stat ('select 1')`},
+				{"sql_query", `SELECT most_common_vals FROM pg_stats`},
 			}...)
 		} else {
 			cases = append(cases, []struct{ op, stmt string }{
@@ -92,6 +97,9 @@ func TestMemorySQLGuard_DocumentTablesAreRefused(t *testing.T) {
 				{"sql_exec", `UPDATE 'chunk_edges' SET status = 'asserted'`},
 				{"sql_exec", `INSERT INTO 'chunk_edges' (id) VALUES ('x')`},
 				{"sql_exec", `CREATE TRIGGER tr AFTER INSERT ON notes BEGIN UPDATE chunk_edges SET status = 'asserted'; END`},
+				{"sql_query", `SELECT * FROM (SELECT 1 WHERE 1), 'chunks'`},
+				{"sql_query", `SELECT * FROM notes LEFT OUTER JOIN 'chunk_edges' ON 1`},
+				{"sql_query", `SELECT * FROM sqlite_stat1`},
 			}...)
 		}
 		for _, c := range cases {
@@ -109,21 +117,20 @@ func TestMemorySQLGuard_DocumentTablesAreRefused(t *testing.T) {
 	})
 }
 
-// An agent's own tables work as before, including values and columns that are
-// not in a table position.
+// An agent's own tables work as before, beside the document tables.
 func TestMemorySQLGuard_AgentTablesStillWork(t *testing.T) {
 	guardBothTiers(t, func(t *testing.T, d *Document, m *Memory, ctx context.Context) {
 		stmtDoc(t, d, ctx, "Beside")
 		for _, s := range []string{
 			`CREATE TABLE notes (id INT, kind TEXT, body TEXT)`,
-			`INSERT INTO notes VALUES (1, 'documents', 'chunks')`,
-			`UPDATE notes SET kind = 'chunk_edges' WHERE id = 1`,
+			`INSERT INTO notes VALUES (1, 'document', 'a chunk of text')`,
+			`UPDATE notes SET kind = 'edges' WHERE id = 1`,
 			`CREATE VIEW recent AS SELECT * FROM notes`,
 			`CREATE INDEX notes_kind ON notes (kind)`,
 		} {
 			mustMemSQL(t, m, ctx, "sql_exec", s)
 		}
-		mustMemSQL(t, m, ctx, "sql_query", `SELECT * FROM recent WHERE kind IN ('chunks', 'documents', 'chunk_edges')`)
+		mustMemSQL(t, m, ctx, "sql_query", `SELECT * FROM recent WHERE kind IN ('edges', 'document') -- chunks`)
 		mustMemSQL(t, m, ctx, "sql_exec", `DROP VIEW recent`)
 		mustMemSQL(t, m, ctx, "sql_exec", `DROP TABLE notes`)
 		// The Document tool's own raw read is untouched.
@@ -162,8 +169,8 @@ func TestMemorySQLGuard_PlantedObjectBlocksUntilDropped(t *testing.T) {
 	})
 }
 
-// The reserved set covers every table a fully migrated document scope has, so a
-// table a later migration adds cannot slip past the guard.
+// The reserved set covers every table and index a fully migrated document scope
+// has, so one a later migration adds cannot slip past the guard.
 func TestMemorySQLGuard_CoversEveryDocumentTable(t *testing.T) {
 	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
 		key, _, _ := d.resolveScope(ctx, "user")
@@ -185,6 +192,24 @@ func TestMemorySQLGuard_CoversEveryDocumentTable(t *testing.T) {
 			name, _ := row[0].(string)
 			if !documentTables[strings.ToLower(name)] {
 				t.Errorf("document table %q is not in the reserved set: add it to docSchemaDDL or documentTableExtras", name)
+			}
+		}
+		// sqlite's own autoindexes cannot be dropped, so they need no name.
+		q = `SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_autoindex_%'`
+		if d.SqlMem.Tier() == "postgres" {
+			q = `SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()`
+		}
+		res, err = d.SqlMem.Query(ctx, key, q, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Rows) < 10 {
+			t.Fatalf("the scope has %d indexes; the catalog query found too few to check", len(res.Rows))
+		}
+		for _, row := range res.Rows {
+			name, _ := row[0].(string)
+			if !documentTables[strings.ToLower(name)] {
+				t.Errorf("document index %q is not in the reserved set: create it in docSchemaDDL or add it to documentIndexExtras", name)
 			}
 		}
 	})
