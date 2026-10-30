@@ -14,7 +14,9 @@ chunk, and `backlinks` when you want the chunks that already link to it.
   `related_to` is given.
 - `related_to` — a chunk whose neighbours BY RELATION (what it cites, what
   cites it, what defines it, …) to return as `linked`. Needs no embedder; with
-  `id` too, both answers come back. `kind` / `kinds` narrow it.
+  `id` too, both answers come back (on a server with no embedder, `linked` and a
+  `note` saying why `related` is missing). `kind` / `kinds` narrow the relations
+  it follows; the filter arguments below narrow `linked` as they do `related`.
 - `limit` — at most this many, default 10, capped at 50. The chunk itself is
   never included.
 - `scope` — `user` (default), `agent` or `tenant`. See
@@ -73,7 +75,7 @@ in that part of the tree is relevant. A call with no filter has no `filter` key.
 `{related: [{chunk_id, score, title, type, document_id}]}`, closest first,
 plus `filter` when you passed one. With `related_to`, `linked: [{chunk_id,
 via_kind, via_quote?, title, type, document_id}]` — the relation's kind and its
-first evidence quote.
+first evidence quote. `related_to` alone returns `{linked}` (and `filter`).
 A chunk whose body is empty — a section heading with only children — or is a
 mermaid or image form has nothing to compare, and returns `{related: []}`.
 
@@ -81,8 +83,8 @@ mermaid or image form has nothing to compare, and returns `{related: []}`.
 
 - `related: missing required field: id` — pass `id`, `related_to`, or both.
 - `related: requires a configured embedder / vector memory` — this server
-  cannot compare meaning; retrying is pointless. Use `backlinks` or
-  `unlinked_mentions` instead.
+  cannot compare meaning; retrying is pointless. Use `related_to`, `backlinks`
+  or `unlinked_mentions` instead.
 - `related: body: ...` / `related: embed: ...` — a storage or embedding
   failure; a retry may work.
 - `related: filter_too_wide: ...` — as for `search`: narrow the filter.

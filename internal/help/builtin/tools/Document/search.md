@@ -44,7 +44,8 @@ as the user store, search both, in two calls.
   five hits are related to (one hop), e.g. the article a clause cites or the
   term it is defined by. Without `kinds` it follows the tenant's declared walk
   kinds, or every relation except `about` and `mentions`. Budget default 2000
-  characters (titles and quotes).
+  characters (titles and quotes). The filter arguments apply to the added
+  chunks too: an expansion never brings back a chunk the filter keeps out.
 - `as_of` — only chunks whose stated validity contains this moment (unix
   nanoseconds); a chunk with no stated validity always matches.
 
@@ -100,7 +101,8 @@ With `expand`, the chunks it added follow the ranked hits in the same list,
 without scores, each with `expanded_via: {kind, from_chunk_id, quote?}` — the
 relation, the hit it came from, and that relation's evidence. The response
 then also carries `expanded` (how many) and `expand_truncated` when the budget
-cut some.
+cut some. Both count only chunks you may read and the filter allows; the others
+are left out before the budget is spent.
 
 The order is the same as `Memory op=search` over the same scope with prefix
 `doc.chunk:` on the server's own memory — the two run one search. (An agent

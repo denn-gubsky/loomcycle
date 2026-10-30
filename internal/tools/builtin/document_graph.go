@@ -205,6 +205,12 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 		if !(*in.Decay > 0 && *in.Decay <= 1) {
 			return errValidation(fmt.Sprintf("graph_recall: decay must be in (0, 1] (got %v)", *in.Decay), ""), nil
 		}
+		// decay shares out budget_chars; without a budget it would be accepted,
+		// echoed, and change nothing.
+		if in.BudgetChars <= 0 {
+			return errValidation("graph_recall: decay needs budget_chars — it caps each hop's share of the content budget, so without one it has nothing to cap",
+				"Pass budget_chars with decay, or drop decay."), nil
+		}
 		decay = *in.Decay
 	}
 	bodies := newGraphBodies(d, key, in.BodyChars)
@@ -390,9 +396,10 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 	// who asked for kinds, or got the declared set, sees which it was.
 	if walk.mode != "all" || in.Walk != "" {
 		payload["walk"] = walk.mode
-		if decay < 1 {
-			payload["decay"] = decay
-		}
+	}
+	// decay is reported when it shaped the answer: below 1, over a budget.
+	if decay < 1 && budget > 0 {
+		payload["decay"] = decay
 	}
 	if len(walk.expandedTo) > 0 {
 		payload["kind_expanded_to"] = walk.expandedTo
@@ -770,18 +777,19 @@ func (d *Document) graphWalkSpec(ctx context.Context, in docInput) (graphWalk, e
 	default:
 		return w, fmt.Errorf("include_hierarchy must be up, down, both or none")
 	}
+	// walk is checked before kinds override it, so a misspelt value is refused
+	// rather than silently ignored whenever kinds are named too.
+	switch in.Walk {
+	case "", "declared", "all":
+	default:
+		return w, fmt.Errorf("walk must be declared or all")
+	}
 	if c, a, exp := d.kindFilter(ctx, in); c != "" {
 		w.kindCond, w.kindArgs, w.expandedTo, w.mode = c, a, exp, "kinds"
-	} else {
-		switch in.Walk {
-		case "", "declared":
-			if kinds := d.walkKinds(ctx); kinds != nil {
-				c, a, exp := d.kindFilter(ctx, docInput{Kinds: kinds})
-				w.kindCond, w.kindArgs, w.expandedTo, w.mode = c, a, exp, "declared"
-			}
-		case "all":
-		default:
-			return w, fmt.Errorf("walk must be declared or all")
+	} else if in.Walk != "all" {
+		if kinds := d.walkKinds(ctx); kinds != nil {
+			c, a, exp := d.kindFilter(ctx, docInput{Kinds: kinds})
+			w.kindCond, w.kindArgs, w.expandedTo, w.mode = c, a, exp, "declared"
 		}
 	}
 	// A statement is walked only while a reader would be shown it: proposals stay
@@ -802,6 +810,12 @@ func (d *Document) graphWalkSpec(ctx context.Context, in docInput) (graphWalk, e
 		vis.asOf = &at
 	}
 	w.edgeCond, w.edgeArgs = vis.clause()
+	// include_refuted asks for facts and relations a JUDGE found unsupported. A
+	// rejected statement is an operator's ruling that the relation is wrong, a
+	// different axis, so no flag walks it.
+	if in.IncludeRefuted {
+		w.edgeCond += " AND e.status <> '" + edgeStatusRejected + "'"
+	}
 	return w, nil
 }
 
