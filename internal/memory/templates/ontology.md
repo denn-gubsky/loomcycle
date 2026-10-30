@@ -65,6 +65,11 @@ field part of the thing's identity, and a bare `@identity` line means "its title
 is its identity" — two chunks with the same identity are refused. Document classes
 describe documents; they are never listed to the agents as entity types.
 
+A document class can say where its documents define their terms:
+`@definitions (?i)^definitions\b` marks every part whose title matches the pattern,
+and everything under it, as a definitions passage, so a link from there reads as
+"defines" rather than "uses". A subclass inherits it.
+
 **Relation kinds.** A `@section relations` heading names the kinds of link agents
 may record between two things. Declaring one — even an empty one — switches on the
 standard kinds (`cites`, `based_on`, `amends`, `implements`, `related`, …) for every

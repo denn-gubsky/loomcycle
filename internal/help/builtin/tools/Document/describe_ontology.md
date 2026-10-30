@@ -34,7 +34,11 @@ relations, grammars, schemes, issues?}`:
   - `kind` is `document` for a document class, `chunk` otherwise.
   - `fields` is the complete typed field set, inherited fields first.
   - `directives` holds `identifier_pattern`, `title_pattern`, `anchor_grammar`,
-    `citation_grammar` and `exclude`, each as declared or else inherited.
+    `citation_grammar`, `definitions` and `exclude`, each as declared or else
+    inherited.
+  - `definitions` is a pattern (RE2 syntax) over chunk titles. In a document of
+    the class, a chunk whose title matches it, and every chunk under that one, is
+    where the document defines its terms rather than uses them.
 - `relations` — each relation kind in force, with its `source` (`seed`,
   `reserved` or `tenant`), `parent`, `inverse`, `domain`, `range`, its
   characteristics, `qualifiers`, `discriminator`, `dated`, `walk`, `auto_assert`
@@ -59,5 +63,5 @@ relations, grammars, schemes, issues?}`:
 ```
 
 ```json result
-{"exists": true, "document_id": "0b6f1e2a9c4d4e7f8a1b2c3d4e5f6a7b", "status": "confirmed", "confirmed": true, "version": 14, "sections": ["classes", "relations"], "classes": [{"name": "Law", "parent": "Document", "source": "tenant", "kind": "document", "fields": [{"name": "title", "type": "text", "required": true}], "directives": {"anchor_grammar": "law-part", "citation_grammar": "law-ua"}}], "relations": [{"name": "amends", "inverse": "amended_by", "domain": ["Law"], "range": ["Law"], "dated": true, "source": "tenant"}], "grammars": [{"name": "law-ua", "class": "Law", "patterns": ["Закон(?:у)? України № ?(?P<number>\\d+-[IVX]+)"], "resolve": "work_key=law:{number}", "used_as": ["citation"]}], "schemes": []}
+{"exists": true, "document_id": "0b6f1e2a9c4d4e7f8a1b2c3d4e5f6a7b", "status": "confirmed", "confirmed": true, "version": 14, "sections": ["classes", "relations"], "classes": [{"name": "Law", "parent": "Document", "source": "tenant", "kind": "document", "fields": [{"name": "title", "type": "text", "required": true}], "directives": {"anchor_grammar": "law-part", "citation_grammar": "law-ua", "definitions": "(?i)визначення термінів"}}], "relations": [{"name": "amends", "inverse": "amended_by", "domain": ["Law"], "range": ["Law"], "dated": true, "source": "tenant"}], "grammars": [{"name": "law-ua", "class": "Law", "patterns": ["Закон(?:у)? України № ?(?P<number>\\d+-[IVX]+)"], "resolve": "work_key=law:{number}", "used_as": ["citation"]}], "schemes": []}
 ```
