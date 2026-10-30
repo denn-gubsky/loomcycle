@@ -2531,14 +2531,24 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   Document Assistant agent + its four skills — no skills directory, no
   `LOOMCYCLE_SKILLS_ROOT`. A bundle may also ship pure *declarations* rather
   than agents — `system-channels` is one.
-- **`knowledge-base`** (opt-in, a prototype) ships `kb/linker`, a `code-js`
-  pass that proposes relations between one document's passages and a corpus,
-  and the tool-less `kb/verdict` judge it calls. It is **report-only**: it
-  writes nothing to the store, refuses any other mode, and covers one layer
-  (semantic relations between passages, from five built-in kinds or the
-  caller's list; the tenant ontology is not read yet). It needs
-  `LOOMCYCLE_CODE_AGENTS_ENABLED=1`, SQL Memory, an embedder on the Postgres
-  vector tier, and a `low` tier. Input, report and limits:
+- **`knowledge-base`** (opt-in) ships the links agent. `kb/linker` is a
+  `code-js` pass that builds and maintains statements between a document's
+  passages and the rest of the store, from rules the tenant ontology
+  declares. Its layers:
+  - anchors (report);
+  - citations from the class grammar;
+  - a concept scheme's terms;
+  - semantic relations judged by the tool-less `kb/verdict` (always
+    report-only);
+  - upkeep of the statements already there: verify, expire, demote, merge,
+    re-point or flag; a person's statement is only verified or flagged, and
+    nothing is deleted.
+
+  It runs on one document, or drains the `documents/ingested` queue. `write:
+  report` (the default) only counts, while `write: propose` takes a scope
+  lease and writes. It needs `LOOMCYCLE_CODE_AGENTS_ENABLED=1`, SQL Memory and
+  a confirmed ontology; the semantic layer also needs an embedder on the
+  Postgres vector tier and a `low` tier. Input, report and limits:
   [`bundles/knowledge-base/README.md`](../bundles/knowledge-base/README.md).
 
 ### A Starter that fans out over a document
