@@ -2537,7 +2537,8 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   declares. Its layers:
   - anchors (report);
   - citations from the class grammar;
-  - a concept scheme's terms;
+  - a concept scheme's terms, as `uses_term`, or `defines` in a definitions
+    passage;
   - semantic relations judged by the tool-less `kb/verdict` (always
     report-only);
   - upkeep of the statements already there: verify, expire, demote, merge,
