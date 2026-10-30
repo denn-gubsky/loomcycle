@@ -478,6 +478,9 @@ func ExpandDescendants(names []string, parentOf map[string]string, maxDepth int)
 	return append(expanded, added...), added
 }
 
+// relationFactTemplate is the extractor's JSON shape for a fact that names a relation.
+const relationFactTemplate = `{"text": "...", "class": "...", "type": "...", "subject": "...", "also_about": ["..."], "relation": "<kind>"}`
+
 // RenderRelations composes the extraction prompt's relation block: the TENANT's own
 // kinds only (declared or adopted), never the seed or the reserved kinds — the prompt
 // grows only by what the operator chose (RFC FO decision 10d.2). "" when the tenant
@@ -498,7 +501,12 @@ func RenderRelations(effective []OntologyRelation) string {
 	b.WriteString("\n# Relation kinds\n\n" +
 		"When you record how two things are related, name the relation with one of these kinds. " +
 		"If none of them fits, describe the relation in the sentence instead of inventing a kind. " +
-		"Give the kind as the fact's `relation`, with the other thing in `also_about`.\n\n")
+		"Give the kind as the fact's `relation`, with the other thing in `also_about`.\n" +
+		// The extractor copies its JSON template field for field and does not emit a
+		// field the template lacks (the bundle measured this for also_about). The
+		// bundle's static template has no `relation`, because it renders for every
+		// tenant, so the shape is given here, only when there are kinds to name.
+		"A fact that states one: " + relationFactTemplate + "\n\n")
 	for _, r := range tenant {
 		b.WriteString("- **" + r.Name + "**")
 		if r.Symmetric {
