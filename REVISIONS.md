@@ -8,6 +8,31 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.128.3
+
+*Two fixes to the `knowledge-base` bundle's links agent (`kb/linker`), found by running it on real regulatory acts. When a new edition of a document supersedes a cited passage, the agent now re-reads the successor passage with the citation grammar. A citation still made there moves to it; one no longer made is expired. Before, a citation moved only if every quote survived exactly, so citations that survived partly, or only had their lines reflowed, were dropped and proposed again for review. A re-run that changes nothing now reports nothing proposed.*
+
+A patch on the v1.128 line: #2287, #2288.
+- `@loomcycle/client` stays at 1.128.0 and the Python adapter at 1.126.0. No API change.
+
+### A new edition's citations are re-read by the grammar (#2288)
+
+When a re-import supersedes the part a citation statement (`rule:citation`) quoted, the maintain pass calls `extract_citations` on the successor part:
+- **A hit there still cites the statement's work with the same kind:** the statement is filed on the successor with the hit's own quotes, and marked as a revision of the old one. A hit naming a different part of the same act is left for the next citation pass.
+- **No hit does:** the statement is expired without a successor, and so is the copy the re-import made of it. A copy carrying an operator's ruling is flagged instead.
+- **If the grammar can't be read:** the quote rule below applies.
+
+Other statements still move only if every quote survives, since one surviving quote cannot vouch for what the passage now says. A quote that survives with different line breaks or spacing is now found, and the successor quotes the new text. New report counters: `successor_citation_gone`, `successor_copies_expired`, `successor_quotes_loose`.
+
+### A re-run that changes nothing counts as unchanged (#2287)
+
+Filing a citation that already exists, with evidence already held, writes nothing (`created: false, evidence_written: 0`). The report still counted it as proposed, and its quotes as evidence added. It now counts it in a new `unchanged` counter, so a re-run over unchanged text reports nothing proposed.
+
+### Upgrade notes
+
+- **No migration and no config change.** Both fixes are in the embedded `knowledge-base` bundle; a deployment that layers its own copy of the bundle keeps that copy.
+- **Images:** this patch is built in full (`force_full`), so the plain `loomcycle` image is published at 1.128.3.
+
 ## What's in v1.128.2
 
 *A part's anchor can now say which scope it sits in. An NBU resolution, the act it approves and each annex all number their points from 1, so anchors collided as `point-1`, `point-1~2`, `point-1~4`, and a citation of «пункт 1 Положення» found the resolution's point 1. An ontology grammar now declares `scope:` and `anchor:` lines, and a part is keyed by its scopes and its own number: `resolution/point-1`, `point-57`, `chapter-2`, `annex-2/point-3`. The `knowledge-base` links agent no longer proposes a citation from an act to its own work.*
