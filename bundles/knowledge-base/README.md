@@ -9,23 +9,15 @@ tenant's ontology declares. Every model-judged relation stays report-only.
 | `kb/linker` | `code-js` | `Document`, `Agent`, `Channel` (subscribe `documents/ingested` only) | the deterministic driver: owns the pass, every check and every write |
 | `kb/verdict` | your `low` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one bounded relation verdict per call, for L4 only |
 
-## Status: coded against runtime ops not yet on main
+## What it needs
 
-The writing path calls ops that are still being built:
-- the `statement_methods` grant and the `method` field on statement writes;
-- `maintain_statement`;
-- the `list_statements` filters;
-- `describe_ontology`;
-- `extract_citations`;
-- the document `lease` / `release`.
-
-Until they ship:
-- a `report` run of L1 (anchors) and L4 (relate) works on today's runtime;
-- every other layer skips with a reason, or fails on the op it needs;
-- a `propose` run fails at its lease.
-
-The `statement_methods: [rule, extractor]` grant is a marked comment in the yaml.
-Config load rejects the field until the runtime knows it.
+- `LOOMCYCLE_CODE_AGENTS_ENABLED=1` and SQL Memory.
+- The `statement_methods: [rule, extractor]` grant, which the bundle declares.
+  It lets the linker stamp `rule:*` and `extractor:*` methods on its
+  statements and hold the linker lease. Without it, a `propose` run fails at
+  its lease.
+- For L4 (relate): an embedder on the Postgres vector tier, and a `low` tier
+  for `kb/verdict`.
 
 Under `LOOMCYCLE_ACL=enforce`, the access rules of whoever starts the linker must
 allow these verbs on the documents it works on:

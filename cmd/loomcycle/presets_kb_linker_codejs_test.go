@@ -22,16 +22,14 @@ import (
 // the pass claims is asserted on the observed calls and the actual report, not
 // on the source text. Hermetic: no provider, database or network.
 //
-// Several ops the body calls are not on main yet (the statement-maintenance,
-// ontology, citation and lease ops). The fixture answers them with the shapes
-// agreed for them, and kbOpContracts below is the ONE list of those shapes: when
-// the real ops merge, check each row against them and correct the fixture and
-// the body together.
+// kbOpContracts below is the ONE list of the shapes the fixture answers. When an
+// op's shape changes, correct the row, the fixture and the body together.
+// presets_kb_linker_realops_test.go runs a maintain pass against the real
+// Document tool, so a row the fixture got wrong fails there.
 
 // kbOpContract is one request/response shape the fixture encodes.
 type kbOpContract struct {
 	Tool, Op string
-	OnMain   bool // the op exists on main today; false = coded against the agreed contract
 	Request  string
 	Response string
 	Assumes  string // what the fixture assumes beyond the agreed text, if anything
@@ -40,61 +38,61 @@ type kbOpContract struct {
 // kbOpContracts is every op the linker body issues, with the shape the fixture
 // answers. TestKBLinker_EveryOpTheBodyNamesHasAContract keeps it complete.
 var kbOpContracts = []kbOpContract{
-	{Tool: "Document", Op: "get_document", OnMain: true,
+	{Tool: "Document", Op: "get_document",
 		Request:  `{id | path, scope}`,
 		Response: `{document_id, root_chunk_id, type, title}`,
 		Assumes:  `a document the scope does not hold fails with "no such document" in the error text`},
-	{Tool: "Document", Op: "query_chunks", OnMain: true,
+	{Tool: "Document", Op: "query_chunks",
 		Request:  `{document_id, limit, scope} | {sql, scope}`,
 		Response: `{chunks: [{id, document_id, type, title, valid_at?, invalid_at?}]} | {columns, rows, truncated}`,
 		Assumes:  `the filter form lists every chunk of the document, superseded ones included, with invalid_at; the chunks table has anchor and stable_id columns`},
-	{Tool: "Document", Op: "get_chunk", OnMain: true,
+	{Tool: "Document", Op: "get_chunk",
 		Request:  `{id, scope}`,
 		Response: `{id, document_id, type, title, body}`},
-	{Tool: "Document", Op: "related", OnMain: true,
+	{Tool: "Document", Op: "related",
 		Request:  `{id, limit, under_paths, exclude_document_ids, scope}`,
 		Response: `{related: [{chunk_id, document_id, type, score}], filter: {applied, …}}`},
-	{Tool: "Document", Op: "resolve_anchor", OnMain: true,
+	{Tool: "Document", Op: "resolve_anchor",
 		Request:  `{work_key, anchor?, as_of?, create_placeholder?, scope}`,
 		Response: `{work_key, found, document_id?, root_chunk_id?, placeholder?, chunk_id?}`},
-	{Tool: "Document", Op: "propose_statement", OnMain: true,
+	{Tool: "Document", Op: "propose_statement",
 		Request:  `{from_id, to_id, kind, evidence: [{chunk_id, quote, char_start?, char_end?}], attributes?, method, scope}`,
 		Response: `{id, status: proposed|asserted, created, evidence_written, ontology_valid}`,
 		Assumes:  `method (R1) is accepted as "rule:<name>"; char_start/char_end are runes; a refusal names its code (kind_reserved, kind_not_declared, statement_rejected, statement_asserted, evidence_quote_not_found, method_not_granted, …) in the error text; a proposal over an asserted triple is refused statement_asserted, over a rejected one statement_rejected (#2246)`},
-	{Tool: "Document", Op: "list_statements", OnMain: false,
+	{Tool: "Document", Op: "list_statements",
 		Request:  `{document_id | evidence_document_id, status: asserted|proposed, limit, after?, scope}`,
 		Response: `{statements: [{id, from_id, to_id, kind, status, method, auto, created_at, valid_at?, discriminator?, from_document_id, to_document_id, evidence: [≤3], evidence_count}], next_cursor?}`,
 		Assumes:  `R3: status stays single-valued (one call per status); retired rows are excluded unless include_retired; next_cursor is absent on the last page`},
-	{Tool: "Document", Op: "get_edge", OnMain: true,
+	{Tool: "Document", Op: "get_edge",
 		Request:  `{id, scope}`,
 		Response: `{statement: {id, from_id, to_id, kind, status, method, auto, created_at, valid_at?, attributes?, evidence: [{id, chunk_id? | scope+natural_key? | session_id?, quote, char_start?, char_end?, stale?}]}}`},
-	{Tool: "Document", Op: "maintain_statement", OnMain: false,
+	{Tool: "Document", Op: "maintain_statement",
 		Request:  `{id, action: verify|expire|demote|merge|stale_evidence|relocate_evidence|flag, reason?, survivor_id?, evidence_id?, chunk_id?, method, scope}`,
 		Response: `{id, action, ok: true}`,
 		Assumes:  `R2: any non-error answer is success; demote is sent only for an asserted statement; only a manual statement or one an operator ruled on (operator_ruled_at set) is limited to verify or flag (import/sync/canvas statements may be expired, demoted and merged — owner decision 2026-10-30); merge needs a survivor of the same status; expire/demote/merge need the link verb on the endpoints' documents (R2 as built)`},
-	{Tool: "Document", Op: "describe_ontology", OnMain: false,
+	{Tool: "Document", Op: "describe_ontology",
 		Request:  `{scope} (scope ignored)`,
 		Response: `{exists, status, confirmed, version, sections, partial?, classes, relations: [{name, source: base|tenant|reserved, discriminator?, renamed_from?, auto_assert?, …}], grammars, schemes: [{name, concepts: [{name, alt?, chunk_id, tag, …}]}]}`,
 		Assumes:  `R4: the seed source string is "base" (the agreed text said "seed"; the body treats every source but "reserved" as writable, so either works); reserved kinds are listed; renamed_from is one string`},
-	{Tool: "Document", Op: "extract_citations", OnMain: false,
+	{Tool: "Document", Op: "extract_citations",
 		Request:  `{document_id | id, limit, as_of?, scope}`,
 		Response: `{document_id, grammar: {name, class} | null, grammar_issue?, hits: [{chunk_id, quote, char_start, char_end, groups?, work_key?, anchor?, kind?, resolved: {document_id?, chunk_id?, exact, placeholder}}], truncated?}`,
 		Assumes:  `R5: grammar is an object or null (the agreed text said a name); no cursor, so a truncated document listing is re-read part by part with {id}; offsets are runes`},
-	{Tool: "Document", Op: "lease", OnMain: false,
+	{Tool: "Document", Op: "lease",
 		Request:  `{name: "linker", ttl_ms, scope}`,
 		Response: `{name, acquired, expires_at, held_by?}`,
-		Assumes:  `R6: the holder re-taking its own lease extends it (renewal); until R1 the op refuses a run with a permission error`},
-	{Tool: "Document", Op: "release", OnMain: false,
+		Assumes:  `R6: the holder re-taking its own lease extends it (renewal); a run without a statement_methods grant is refused with a permission error`},
+	{Tool: "Document", Op: "release",
 		Request:  `{name: "linker", scope}`,
 		Response: `{name, released}`},
-	{Tool: "Channel", Op: "await", OnMain: true,
+	{Tool: "Channel", Op: "await",
 		Request:  `{channels: ["documents/ingested"], mode: "any", max_messages: 1, wait_ms: 0, from_cursor?}`,
 		Response: `{satisfied, timed_out, mode, fired, results: {"documents/ingested": {messages: [{id, value, published_at}], next_cursor}}, total_messages}`,
 		Assumes:  `await reads from the committed cursor without committing (subscribe would commit on read)`},
-	{Tool: "Channel", Op: "ack", OnMain: true,
+	{Tool: "Channel", Op: "ack",
 		Request:  `{channel: "documents/ingested", cursor}`,
 		Response: `{ok: true}`},
-	{Tool: "Agent", Op: "spawn", OnMain: true,
+	{Tool: "Agent", Op: "spawn",
 		Request:  `{name: "kb/verdict", prompt}`,
 		Response: `the sub-agent's reply text`},
 }
@@ -185,7 +183,11 @@ type kbFixture struct {
 	statements []*kbStatement
 	autoAssert map[string]bool
 	refuseKind map[string]string
-	nextID     int
+	// statementsPage, when set, caps a list_statements page below the limit
+	// asked for, as a page may be, so a test crosses pages without hundreds of
+	// statements (each one is a tool call the code-js replay repeats).
+	statementsPage int
+	nextID         int
 
 	// failOps makes every call of a Document op fail with the given text.
 	failOps map[string]string
@@ -646,6 +648,9 @@ func (f *kbFixture) answerList(in map[string]any) (tools.Result, error) {
 	limit := 500
 	if l, ok := in["limit"].(float64); ok && l > 0 {
 		limit = int(l)
+	}
+	if f.statementsPage > 0 {
+		limit = min(limit, f.statementsPage)
 	}
 	start := 0
 	if after, _ := in["after"].(string); after != "" {

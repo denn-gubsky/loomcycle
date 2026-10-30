@@ -30,15 +30,12 @@
 # nothing) and `propose` (writes statements through propose_statement and
 # maintains them through maintain_statement). Run `report` first, always.
 #
-# STATUS: RFC FP PHASE B, CODED AGAINST RUNTIME OPS NOT YET ON MAIN. The writing
-# path needs, from the RFC FP §13 amendment: R1 (the `statement_methods` grant
-# and the `method` field), R2 (`maintain_statement`), R3 (the `list_statements`
-# filters), R4 (`describe_ontology`), R5 (`extract_citations`) and R6 (the
-# named document lease). Until they ship, a `report` run of the anchor and relate
-# layers works on today's runtime, and every other layer reports why it skipped
-# or fails on the op it needs. Not built here: classification (L0),
-# check-against (L5), the semantic layer's writes (L4 stays report-only), L6's
-# re-judging and its subject and sweep modes, hard deletion of any kind.
+# STATUS: RFC FP PHASE B. The writing path uses the runtime's
+# `statement_methods` grant and `method` field, `maintain_statement`, the
+# `list_statements` filters, `describe_ontology`, `extract_citations` and the
+# named document lease. Not built here: classification (L0), check-against (L5),
+# the semantic layer's writes (L4 stays report-only), L6's re-judging and its
+# subject and sweep modes, hard deletion of any kind.
 #
 # WHY THE ORCHESTRATION IS CODE. Every invariant this pass keeps — a kind from the
 # declared list or nothing, a quote that occurs or no write, a person's link only
@@ -99,11 +96,9 @@ agents:
     # The ingest queue only, and only to read and ack it. No publish grant.
     channels:
       subscribe: [documents/ingested]
-    # PENDING (RFC FP §13 R1): the grant that lets this code agent stamp
-    # rule:/extractor: methods on its statements and hold the linker lease.
-    # Config load rejects the field until the runtime knows it; add it here
-    # when R1 merges:
-    #   statement_methods: [rule, extractor]
+    # The methods this code agent may stamp on its statements. The same grant
+    # lets it hold the linker lease.
+    statement_methods: [rule, extractor]
     # Deny-all skills (the runtime auto-adds Skill otherwise) and no Context (the
     # runtime auto-adds it otherwise). Neither is called.
     skills: [-*]

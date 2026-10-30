@@ -9,7 +9,7 @@ import (
 
 // The citation, term and anchor layers of kb/linker, run through the real loop
 // against the fixture store (presets_kb_linker_codejs_test.go). Every shape the
-// fixture answers for an op not yet on main is listed in kbOpContracts.
+// fixture answers is listed in kbOpContracts.
 
 // kbOntology is a confirmed tenant ontology: two writable seed kinds, a tenant
 // kind the runtime auto-asserts, a reserved kind, and one concept scheme.

@@ -394,7 +394,8 @@ func TestKBLinker_DuplicateOfAnotherStatusIsFlaggedNotMerged(t *testing.T) {
 // either status, over every page, each once.
 func TestKBLinker_SelectionCoversEndsAndEvidenceAcrossPages(t *testing.T) {
 	f := maintainFixture()
-	// amends declares a discriminator here, so the 205 statements below that
+	f.statementsPage = 4 // 9 asserted statements span three pages
+	// amends declares a discriminator here, so the 9 statements below that
 	// differ only by it are distinct relations, not duplicates to merge.
 	for _, r := range f.ontology["relations"].([]any) {
 		if r.(map[string]any)["name"] == "amends" {
@@ -404,7 +405,7 @@ func TestKBLinker_SelectionCoversEndsAndEvidenceAcrossPages(t *testing.T) {
 	f.chunks = append(f.chunks, kbChunk{ID: "c-cited", DocumentID: "doc-target", Type: "section", Body: kbBodySelf})
 	f.docTypes["doc-other"] = "act"
 	f.others["o1"] = kbChunk{ID: "o1", DocumentID: "doc-other", Type: "section", Body: kbBodyGloss}
-	for i := 0; i < 205; i++ {
+	for i := 0; i < 9; i++ {
 		f.statements = append(f.statements, citeStatement(fmt.Sprintf("st-%03d", i), "c1", "x1", "report a material incident"))
 		f.statements[i].Discriminator = fmt.Sprintf("d%d", i) // distinct, so none merges
 		f.statements[i].Kind = "amends"
@@ -419,8 +420,8 @@ func TestKBLinker_SelectionCoversEndsAndEvidenceAcrossPages(t *testing.T) {
 
 	rep, _ := runLinker(t, f, `{"mode":"maintain","document_id":"doc-target","write":"propose","max_writes":1000}`)
 
-	if n := layerCount(t, rep, "L6", "statements"); n != 207 {
-		t.Errorf("statements = %v, want 207 (205 paged + one by evidence + one proposed, the expired one excluded)", n)
+	if n := layerCount(t, rep, "L6", "statements"); n != 11 {
+		t.Errorf("statements = %v, want 11 (9 paged + one by evidence + one proposed, the expired one excluded)", n)
 	}
 	if got := actionsOf(f, "st-ev"); got != "verify" {
 		t.Errorf("st-ev actions = %q, want verify — selected through its evidence", got)
@@ -434,8 +435,8 @@ func TestKBLinker_SelectionCoversEndsAndEvidenceAcrossPages(t *testing.T) {
 			verified++
 		}
 	}
-	if verified != 207 {
-		t.Errorf("verified %d, want 207 — each statement exactly once", verified)
+	if verified != 11 {
+		t.Errorf("verified %d, want 11 — each statement exactly once", verified)
 	}
 }
 
