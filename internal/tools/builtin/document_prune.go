@@ -86,6 +86,10 @@ func (d *Document) cascadeDeleteChunks(ctx context.Context, key sqlmem.ScopeKey,
 		// rolling back work the next sweep would repeat. The operation is idempotent,
 		// so a retry costs nothing.
 		if err := d.withSqlTxn(ctx, key, func(txnID string) error {
+			// As delete_chunk: a relation recorded from a pruned fact ends with it.
+			if err := d.expireUnsupportedRelations(ctx, key, txnID, "", `{col} = ?`, id); err != nil {
+				return err
+			}
 			// THE TABLE SET MATCHES delete_chunk's, and it has to stay matched. This
 			// file's own header says a prune that reimplemented the delete would drift
 			// from delete_chunk — and it had: chunk_tags, chunk_revisions and

@@ -2484,6 +2484,9 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		if err := d.snapshotDerivedQuotes(ctx, txnID, `{col} IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
 			return err
 		}
+		if err := d.expireUnsupportedRelations(ctx, key, txnID, "", `{col} IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
+			return err
+		}
 		if err := d.deleteEdgesWhere(ctx, key, txnID, `from_id IN (SELECT id FROM chunks WHERE document_id = ?) OR to_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID, docID); err != nil {
 			return err
 		}
@@ -3238,6 +3241,9 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			// id list twice.
 			edgeArgs := append(append([]any(nil), args...), args...)
 			if err := d.snapshotDerivedQuotes(ctx, txnID, `{col} IN (`+marks+`)`, args...); err != nil {
+				return err
+			}
+			if err := d.expireUnsupportedRelations(ctx, key, txnID, "", `{col} IN (`+marks+`)`, args...); err != nil {
 				return err
 			}
 			if err := d.deleteEdgesWhere(ctx, key, txnID,
