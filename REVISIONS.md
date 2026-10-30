@@ -8,6 +8,44 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.128.2
+
+*A part's anchor can now say which scope it sits in. An NBU resolution, the act it approves and each annex all number their points from 1, so anchors collided as `point-1`, `point-1~2`, `point-1~4`, and a citation of «пункт 1 Положення» found the resolution's point 1. An ontology grammar now declares `scope:` and `anchor:` lines, and a part is keyed by its scopes and its own number: `resolution/point-1`, `point-57`, `chapter-2`, `annex-2/point-3`. The `knowledge-base` links agent no longer proposes a citation from an act to its own work.*
+
+A patch on the v1.128 line: #2284, #2285.
+- `@loomcycle/client` stays at 1.128.0 and the Python adapter at 1.126.0. The ontology's `describe_ontology` output gains optional `scopes` / `anchors` on a grammar.
+
+### Scoped part anchors (#2285)
+
+A grammar chunk (`grammar:<name>` in the ontology's classes section) may carry two new kinds of line besides `pattern:` / `resolve:`:
+
+```text
+##### grammar:nbu-act
+scope: ^Постанова$ => resolution
+scope: ^Додаток(?:\s+(?P<n>\d+))?(?:\s|$) => annex-{n} | annex
+anchor: ^(?P<n>\d{1,3})\.\s.*[…;:,.]$ => point-{n}
+anchor: ^(?P<n>\d{1,2})\.\s => chapter-{n}
+```
+
+- **Line format.** A line reads `<RE2> => <alternative> | <alternative>`, split on the last ` => `. A match uses the first alternative whose `{group}`s all took part; one without groups always qualifies.
+- **Scope headings.** A heading a `scope:` line keys is a scope, never a leaf.
+- **Leaf.** A part's leaf is the deepest heading below its innermost scope that an `anchor:` line keys. Legacy `pattern:` lines with `resolve: anchor=` are tried after the `anchor:` lines.
+- **The anchor** is the scope segments, outer to inner, then the leaf. A scope heading's own part is keyed by its scopes alone. A part with no leaf keeps its heading-path anchor, as before.
+- **Validity.** A malformed rule line disables its grammar with an issue, like a bad pattern. An anchors-only grammar named as a citation grammar is reported, not silently empty.
+- **Unchanged grammars.** One with neither kind of line behaves exactly as before.
+
+Anchors are assigned once and then kept, so a document anchored under an older grammar keeps its anchors. Re-import it to re-key it.
+
+### The links agent: an act citing its own work (#2284)
+
+`kb/linker` (the `knowledge-base` bundle) now counts a citation that resolves to the linked document's own work as `hits_self` and proposes nothing for it. Before, an act's import header or its own title produced an act → own-root citation.
+
+### Upgrade notes
+
+- **No migration and no config change.**
+- **Ontology authors:** a grammar line starting `scope:` or `anchor:` used to be ignored and is now parsed; a malformed one disables the grammar.
+- **Images:** this patch is built in full (`force_full`), so the plain `loomcycle` image is published at 1.128.2.
+
 ## What's in v1.128.1
 
 *A first `classify` pass over 231 real regulatory documents found five defects. Law citations never resolved. A class could carry one citation grammar only. A section title tied with the title's own match. Documents classified by rule got no concepts. And the chat classifier's replies were cut off. All five are fixed. `File op=import` can now also **drop** a heading the file already has, so a PDF extract imports by its sections rather than by its pages.*
