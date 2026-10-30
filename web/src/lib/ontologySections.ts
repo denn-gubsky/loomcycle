@@ -35,6 +35,7 @@ export function classDirectiveNotes(t: OntologyTerm): string[] {
     title_pattern: t.title_pattern,
     anchor_grammar: t.anchor_grammar,
     citation_grammar: t.citation_grammar,
+    definitions: t.definitions,
     exclude: t.exclude?.join(", "),
   };
   const labels: Record<string, string> = {
@@ -42,6 +43,7 @@ export function classDirectiveNotes(t: OntologyTerm): string[] {
     title_pattern: "title pattern",
     anchor_grammar: "anchors",
     citation_grammar: "citations",
+    definitions: "definitions",
     exclude: "excludes",
   };
   for (const key of Object.keys(labels)) {
