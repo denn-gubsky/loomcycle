@@ -80,6 +80,29 @@ and the scope must be one your Document grants allow.
 - `headings` — headings to add, by line number: `{line, level, as}` with
   `as` `heading` (plus `lines` for a wrapped title) or `marker` (plus
   `title`, one line, at most 300 characters). See above.
+- `reimport` — the file is a new edition of the work named by `work_key`; see
+  "A new edition" below.
+- `work_key` — with `reimport`: the work's key, e.g. `law:ua/2297-vi`.
+- `edition_date` — with `reimport`: when the edition came into force (unix
+  nanoseconds; default now).
+- `amending_document_id` — with `reimport`: the document of the same scope
+  that made the edition, such as the amending act.
+
+## A new edition
+
+With `reimport: true` and the work's `work_key`, the file is reconciled onto
+the document holding that key part by part, exactly as the Document tool's
+`import_md` with `reimport` does (its help article has the rules): unchanged and
+moved parts keep their ids and links, changed parts are superseded at
+`edition_date`, removed parts close, and nothing is deleted. When no document
+holds the key yet, the file is imported as its first edition. With
+`amending_document_id`, each part the edition renumbered gets an `amends`
+statement from that document. The scope's `documents/ingested` channel is told
+the document was `reimported`.
+
+A reimport reads the file's headings and text; pictures are not attached to
+the parts it changes. `doc_path` and `source` are used only by a first edition. The document still gets the
+`untrusted` and `source/…` tags.
 
 ## Returns
 
@@ -89,6 +112,11 @@ that stayed links, and `skipped_images` says why for the first of them.
 `provenance` is what the document records of where it came from;
 `get_document` shows it too. `provenance_note` is there only when the file was
 changed after it was captured.
+
+A reimport returns `{document_id, root_chunk_id, reimport, edition_date,
+work_key, changed_chunk_ids, source, provenance_note, tags}` instead of the
+chunk counts: `reimport` is `import_md`'s report of what the edition changed,
+and `not_announced` says why the scope was not told, when it was not.
 
 ## Errors
 

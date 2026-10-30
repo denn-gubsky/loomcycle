@@ -40,6 +40,12 @@ as the user store, search both, in two calls.
 - `tag` — only chunks carrying exactly this tag.
 - `tag_prefix` — only chunks whose tag is this one or nested under it
   (`prefix/…`).
+- `concept` — only chunks about this concept of the tenant ontology's concept
+  schemes, or about a concept narrower than it. Name it by its chunk id, its
+  name, or its tag (`<scheme>/<path>`, e.g. `topics/risk-management`). A name
+  two concepts share is refused with their tags; pass one of those.
+- `concept_prefix` — the same, for every concept whose tag is this path or lies
+  under it, e.g. `topics` for a whole scheme.
 - `expand` — `{kinds?, budget_chars?}`: after ranking, add the chunks the top
   five hits are related to (one hop), e.g. the article a clause cites or the
   term it is defined by. Without `kinds` it follows the tenant's declared walk
@@ -69,7 +75,8 @@ With a filter, the response also carries `filter`, what it resolved to:
 ```text
 filter: {
   applied: {under_paths, exclude_under_paths, document_ids, exclude_document_ids,
-            types, statuses, tag, tag_prefix, as_of},   (only what you passed)
+            types, statuses, tag, tag_prefix, concept, concept_prefix,
+            concept_matched_by, as_of},   (only what you passed)
   matched_documents: 14,     documents with at least one matching chunk
   matched_chunks: 312,       chunks the search could return
   type_expanded_to: [...],   present when a type was widened to its subtypes
@@ -79,6 +86,15 @@ filter: {
 
 When access-control rules keep you from reading part of the scope, the filter
 covers only what you may read, and so do the counts.
+
+How a concept matches depends on the scope, and `concept_matched_by` says
+which. In the `tenant` scope, where the concepts are, a chunk matches when it
+has a `subject` relation (or a narrower kind, such as `primary_topic`) to a
+concept of the set; a proposed, rejected, refuted or retired relation does not
+count, and a tag alone does not either (`"statement"`). In a `user` or `agent`
+scope a relation cannot reach a concept, so a chunk matches when it carries the
+concept's tag or a tag under it (`"tag"`). A concept the ontology does not
+declare, or one you may not read, matches nothing.
 
 `matched_chunks: 0` means the filter itself matched nothing — check the path,
 type or status — as opposed to an empty result with matches, which means nothing
@@ -133,6 +149,10 @@ caption (and its description, once one exists).
   scope that it cannot be sent to the search; the message gives
   `matched_chunks`, `scope_chunks` and the limit. Narrow it with `type`,
   `status` or a tag, or search a smaller subtree.
+- `search: concept "…" names N concepts: …` — the name is shared; pass one of
+  the listed tags as `concept`.
+- `search: concept_too_wide: ...` — the concept covers more concepts than one
+  search can be sent; name a narrower one.
 
 ## Examples
 

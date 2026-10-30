@@ -198,6 +198,7 @@ const documentInputSchema = `{
 		"reimport":    {"type": "boolean", "description": "import_md: the markdown is a NEW EDITION of the document named by document_id or work_key. Parts are matched by their text, then their heading path: unchanged parts keep their ids and links, a part whose text moved under another heading keeps them too, changed ones are superseded (the old one closes at edition_date), removed ones close, new ones open at edition_date. Nothing is deleted."},
 		"edition_date": {"type": "integer", "description": "import_md with reimport: when the new edition came into force (unix nanos; default now). Not earlier than the edition in force."},
 		"work_key":    {"type": "string", "description": "import_md with reimport / resolve_anchor: the work's key, e.g. law:ua/2297-vi — the document holding it, or (import) the one the first edition creates."},
+		"amending_document_id": {"type": "string", "description": "import_md with reimport and work_key: the document of this scope that made the edition — the amending act. Each part the edition renumbered or moved gets an amends statement from its root, mod_type renumbering, dated edition_date. You must be able to read and link it."},
 		"anchor":      {"type": "string", "description": "resolve_anchor: a part of the work, by its anchor (its heading path, e.g. article-12/paragraph-3) or the anchor it first had."},
 		"create_placeholder": {"type": "boolean", "description": "resolve_anchor: file a placeholder document for a work this scope does not hold yet, so citations of it have a target; importing the work later fills it in."},
 		"media_type":  {"type": "string", "description": "set_asset: the image MIME type (image/png, image/jpeg, image/gif, image/webp)."},
@@ -210,6 +211,8 @@ const documentInputSchema = `{
 		"tags":        {"type": "array", "items": {"type": "string"}, "description": "The chunk's or document's tags. create_chunk/update_chunk/upsert_chunk/create_document replace-set the whole tag set (omit to leave unchanged; [] to clear). add_tags/remove_tags take the tags to add/remove incrementally. Nested tags use a slash: area/sub/topic."},
 		"tag":         {"type": "string", "description": "query_chunks / query_documents / search / related: return only chunks/documents carrying exactly this tag."},
 		"tag_prefix":  {"type": "string", "description": "query_chunks / search / related: return chunks whose tag equals this OR is nested under it (prefix + '/'), e.g. tag_prefix=area matches area and area/sub."},
+		"concept":        {"type": "string", "description": "search / related: return only chunks about this concept of the tenant ontology's concept schemes, or about any concept narrower than it. Name it by its chunk id, its name, or its tag (<scheme>/<path>, e.g. topics/risk-management); a name two concepts share is refused, so pass the tag. In the tenant scope a chunk matches by its subject relation to the concept; in a user or agent scope, by carrying the concept's tag (or a tag under it). The echo's concept_matched_by says which."},
+		"concept_prefix": {"type": "string", "description": "search / related: like concept, for every concept whose tag is this path or lies under it, e.g. concept_prefix=topics covers the whole topics scheme."},
 		"sql":         {"type": "string", "description": "query_chunks: raw read-only SELECT against the chunk tables (escape hatch; validator-gated)."},
 		"limit":       {"type": "integer", "description": "The most rows to return. The default depends on the op (graph_recall: 50 chunks); each op's help article gives its own."},
 		"name":        {"type": "string", "description": "define/list_types: the type name. lease / release: the lease's name, e.g. linker (1–64 of a-z 0-9 _ . : / -)."},
@@ -337,6 +340,9 @@ type docInput struct {
 	WorkKey           string `json:"work_key,omitempty"`
 	Anchor            string `json:"anchor,omitempty"`
 	CreatePlaceholder bool   `json:"create_placeholder,omitempty"`
+	// AmendingDocumentID names the document that made a reimported edition: the
+	// source of the `amends` statement each moved part gets.
+	AmendingDocumentID string `json:"amending_document_id,omitempty"`
 	// Method is the method a code-js run names for the statement it writes
 	// (rule:<name> | extractor:<name>), checked against its agent's
 	// statement_methods grant by stampStatementMethod, which copies it into
@@ -454,13 +460,16 @@ type docInput struct {
 	// that query_chunks already takes (see document_search_filter.go). Plural
 	// twins rather than string-or-list unions: the singular fields are plain
 	// strings shared by every op, and a union type is a schema shape some
-	// providers' function declarations reject.
+	// providers' function declarations reject. Concept / ConceptPrefix are named
+	// apart from Subject, which is upsert_chunk's entity input.
 	UnderPaths         []string `json:"under_paths"`
 	ExcludeUnderPath   string   `json:"exclude_under_path"`
 	ExcludeUnderPaths  []string `json:"exclude_under_paths"`
 	ExcludeDocumentIDs []string `json:"exclude_document_ids"`
 	Types              []string `json:"types"`
 	Statuses           []string `json:"statuses"`
+	Concept            string   `json:"concept"`
+	ConceptPrefix      string   `json:"concept_prefix"`
 	SQL                string   `json:"sql"`
 	Limit              int      `json:"limit"`
 	Name               string   `json:"name"`
@@ -5149,6 +5158,10 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	chunks, edges := parseLoomMarkdown(in.Markdown)
 	if len(chunks) == 0 {
 		return errValidation("import_md: no headings found — a document needs at least one '# Heading'", ""), nil
+	}
+	if in.AmendingDocumentID != "" && (!in.Reimport || strings.TrimSpace(in.WorkKey) == "") {
+		return errValidation("import_md: amending_document_id needs reimport with work_key — it names what made a new edition of a work. Nothing was imported.",
+			"Pass reimport: true and the work's work_key, or omit amending_document_id."), nil
 	}
 	if in.Reimport {
 		return d.reimportMD(ctx, key, mscope, in, chunks, edges)
