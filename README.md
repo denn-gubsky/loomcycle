@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.128.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.129.0.</em>
 </p>
 
 <p align="center">
@@ -201,22 +201,21 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.128.0) makes a relation a statement with evidence and
-governs it with a sectioned ontology. A link records how it was made, its status
-and its verbatim evidence, waits for review when an agent proposes it, and is
-followed by kind in retrieval; a new edition of a law or contract is reconciled
-onto the work it amends part by part. The tenant ontology gains typed document
-classes with identity keys, relation kinds, concept schemes and instances, and
-`classify` says what a document is from it — by pattern, by its neighbours, and
-by a classifier model where those leave it open. A `knowledge-base` bundle
-ships a code-js links agent that builds and maintains statements by rule. See
+The most recent line (v1.129.0) finishes the `knowledge-base` links agent. It
+proposes `elaborates` relations a model judged, skipping the boilerplate
+paragraphs the tenant's ontology names with `@boilerplate`. It re-judges a
+model-made statement whose text changed, moves a merged subject's statements to
+the survivor, and compares a document with its norms into a report. It sweeps a
+subtree to keep statements checked, with a purge only on request. The Web UI's
+ontology page shows the ontology one section per tab. See
 [`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.127.0 finished the sign-in gates: passkeys as a second factor and
-as a password-less gate, SCIM 2.0 provisioning from an identity provider, and a
-strict-mode switch that accepts a person's API token only from a gate, plus a
-`loomboard` preset for app sign-in and model speed and budgets on the Usage
-pages. See [`REVISIONS.md`](REVISIONS.md).
+Before it, v1.128.0 made a relation a statement with evidence, governed by a
+sectioned ontology. That ontology has typed document classes with identity
+keys, relation kinds, concept schemes and instances, and `classify` says what a
+document is from it. Its patch releases added scoped part anchors for
+regulatory acts and a page-aware File import. See
+[`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
 recordings into timed transcripts through a whisper server, and Teams captions
