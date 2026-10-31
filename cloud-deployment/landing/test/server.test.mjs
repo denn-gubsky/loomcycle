@@ -955,11 +955,31 @@ describe("shared-tenant mode (LANDING_TENANT)", () => {
   }
   const websiteInvite = (tenant, login) => fake.addInvite(tenant, { login, email: login, return_to: RETURN_TO });
 
-  test("signup keeps the per-visitor limit of 10 an hour", async () => {
+  test("one identity's re-signups hit its own cap of 3 a day and cost the tenant's budget only once", async () => {
     await ownShared("shared-visitor-" + rnd(3), async (inst) => {
       const email = newEmail();
-      for (let i = 0; i < 10; i++) assert.equal((await call(inst, "POST", "/api/signup", { email, body: {} })).status, 200);
+      // one new invite, then two that replace it
+      for (let i = 0; i < 3; i++) assert.equal((await call(inst, "POST", "/api/signup", { email, body: {} })).status, 200, `signup ${i}`);
+      const m = mark();
+      const capped = await call(inst, "POST", "/api/signup", { email, body: {} });
+      assert.equal(capped.status, 429);
+      assert.deepEqual(capped.json, { error: "rate_limited" });
+      assert.equal(since(m).length, 0);
+      // the replacements gave their tenant slots back: 19 other identities
+      // still fit in the tenant's 20, and the next one does not
+      for (let i = 0; i < 19; i++) {
+        const r = await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} });
+        assert.equal(r.status, 200, `identity ${i}: ${r.text}`);
+      }
+      assert.deepEqual((await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} })).json, { error: "signup_limit" });
+    });
+  });
+  test("a capped identity leaves the tenant's budget to a second identity", async () => {
+    await ownShared("shared-second-" + rnd(3), async (inst) => {
+      const email = newEmail();
+      for (let i = 0; i < 4; i++) await call(inst, "POST", "/api/signup", { email, body: {} });
       assert.equal((await call(inst, "POST", "/api/signup", { email, body: {} })).status, 429);
+      assert.equal((await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} })).status, 200);
     });
   });
   test("the shared tenant's daily invite budget caps signups at 20; refusals do not spend it", async () => {

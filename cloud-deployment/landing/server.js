@@ -378,6 +378,10 @@ const signupLimit = limiter(10, HOUR);          // per source address AND per ve
 const inviteLimit = limiter(20, 24 * HOUR);     // invites issued per tenant per day
 const refusedInviteLimit = limiter(10, 24 * HOUR); // "address can't be invited" answers per verified e-mail per day
 const MAX_PENDING_INVITES = 50;                 // live invites per tenant (counted upstream)
+// Shared mode only: new signups into the one shared tenant per day, and
+// signups per verified e-mail per day (kept well below the tenant's figure).
+const sharedTenantLimit = limiter(20, 24 * HOUR);
+const sharedIdLimit = limiter(3, 24 * HOUR);
 
 // clientSource is the address the per-source signup limit counts. The landing
 // already trusts its proxy (`trust proxy`), and Cloudflare's edge sets
@@ -571,21 +575,26 @@ app.post("/api/signup", accountRoute(async (req, res, p) => {
   // or a stale invite already revoked — keeps them spent.
   const relIp = signupLimit.take("ip:" + clientSource(req));
   const relId = relIp && signupLimit.take("id:" + p.subject);
-  if (!relIp || !relId) {
+  // Shared mode: every signup lands in one tenant, whose daily budget all
+  // visitors share. So one visitor first meets a small daily cap of their own,
+  // spent like the hourly slots above — re-signing up cannot drain the shared
+  // budget and lock everyone else out.
+  const relDay = !relId ? null : SHARED ? sharedIdLimit.take(p.subject) : () => {};
+  if (!relIp || !relId || !relDay) {
     if (relIp) relIp();
+    if (relId) relId();
     return res.status(429).json({ error: "rate_limited" });
   }
-  // In shared mode every signup lands in one tenant, so the tenant's daily
-  // invite budget applies as it does to a team's invites. It is reserved here,
-  // before the first await, and given back unless an invite was created: a
-  // refusal creates nothing, and the visitor's own limits above already bound
-  // how often they can be asked for.
-  const relTenant = SHARED ? inviteLimit.take(p.tenant) : () => {};
+  // The tenant's daily budget (its own, apart from the team-invite budget) is
+  // reserved here, before the first await, and given back unless the signup
+  // created an invite that did not just replace the visitor's own: a refusal
+  // creates nothing, and a replacement adds no one to the approval queue.
+  const relTenant = SHARED ? sharedTenantLimit.take(p.tenant) : () => {};
   if (!relTenant) {
-    relIp(); relId();
+    relIp(); relId(); relDay();
     return res.status(429).json({ error: "signup_limit" });
   }
-  const ctx = { wrote: false, created: false };
+  const ctx = { wrote: false, created: false, replaced: false };
   let spent = true;
   try {
     spent = await withTenantLock(p.tenant, () => signup(res, p, ctx));
@@ -593,8 +602,8 @@ app.post("/api/signup", accountRoute(async (req, res, p) => {
     spent = ctx.wrote || !(e instanceof UpstreamFailure ? runtimeFault(e.up) : true);
     throw e;
   } finally {
-    if (!spent) { relIp(); relId(); }
-    if (!ctx.created) relTenant();
+    if (!spent) { relIp(); relId(); relDay(); }
+    if (!ctx.created || ctx.replaced) relTenant();
   }
 }));
 
@@ -684,7 +693,7 @@ async function sharedSignup(res, p, ctx) {
   }
   // A live invite this website issued earlier for the same e-mail (its link
   // was only ever in the visitor's address bar) is replaced.
-  await revokeLive(p.tenant, mine, wrote, invites);
+  await revokeLive(p.tenant, mine, () => { wrote(); ctx.replaced = true; }, invites);
   const up = await manage("POST", gatePath("invites"), {
     body: { tenant: p.tenant, login, email: login, return_to: SIGNUP_RETURN_TO },
   });
