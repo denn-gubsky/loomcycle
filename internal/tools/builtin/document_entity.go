@@ -80,6 +80,19 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if err != nil {
 		return errFrom("upsert_chunk: lookup: "+err.Error(), err), nil
 	}
+	// Re-typing a subject through its key is checked before anything is written and
+	// announced after. A type with a subject was already held to the entity types above.
+	var retype *subjectRetype
+	if existing != "" && in.Type != "" {
+		rt, refused, rerr := d.checkSubjectRetype(ctx, key, "upsert_chunk", existing, in.Type, strings.TrimSpace(in.Subject) != "")
+		if rerr != nil {
+			return errFrom("upsert_chunk: "+rerr.Error(), rerr), nil
+		}
+		if refused != nil {
+			return *refused, nil
+		}
+		retype = rt
+	}
 
 	// upsert_chunk IS the fact-tier write op — every write through it gets a
 	// sidecar row — so it is the right place to decide that this chunk's body row
@@ -149,6 +162,9 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	}
 	out := map[string]any{"id": existing, "natural_key": in.NaturalKey, "created": false}
 	d.afterFactUpsert(ctx, key, mscope, existing, in, src, out)
+	if why := d.announceRetype(ctx, key, mscope, retype); why != "" {
+		out["not_announced"] = why
+	}
 	return okJSON(out)
 }
 

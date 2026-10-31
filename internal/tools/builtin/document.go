@@ -2595,6 +2595,12 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	if err != nil {
 		return docFail("delete_document: ", err), nil
 	}
+	// Whether this document is a subject is read now: once deleted, nothing records
+	// which key it held, and other scopes' evidence still names that key.
+	subject, isSubject, err := d.subjectRootOf(ctx, key, docID, true)
+	if err != nil {
+		return errFrom("delete_document: "+err.Error(), err), nil
+	}
 	// The SQL side runs in ONE transaction: enumerate the chunk ids (for the
 	// Memory-body cleanup below), then delete edges (BOTH directions — so an
 	// INCOMING cross-document edge from another doc no longer dangles), then
@@ -2685,7 +2691,15 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 			}
 		}
 	}
-	return jsonResult(map[string]any{"deleted": true, "document_id": docID, "n_chunks_deleted": n})
+	out := map[string]any{"deleted": true, "document_id": docID, "n_chunks_deleted": n}
+	if isSubject {
+		if why := d.publishSubjectEvent(ctx, key, mscope, subjectEvent{
+			Op: "removed", NaturalKey: subject.NaturalKey, DocumentID: subject.DocumentID, RootChunkID: subject.RootChunkID,
+		}); why != "" {
+			out["not_announced"] = why
+		}
+	}
+	return jsonResult(out)
 }
 
 // --- ops: chunk lifecycle ---
@@ -3185,6 +3199,19 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if r := emptyIntervalRefusal("update_chunk", effValid, effInvalid); r != nil {
 		return *r, nil
 	}
+	// A subject's new type is checked here too, before the revision moves; it is
+	// announced once the update has been written.
+	var retype *subjectRetype
+	if _, has := present["type"]; has {
+		rt, refused, rerr := d.checkSubjectRetype(ctx, key, "update_chunk", in.ID, in.Type, false)
+		if rerr != nil {
+			return errFrom("update_chunk: "+rerr.Error(), rerr), nil
+		}
+		if refused != nil {
+			return *refused, nil
+		}
+		retype = rt
+	}
 	// Claim the update ATOMICALLY first: the guarded bump only matches if the
 	// revision is still what we read. If a concurrent writer raced us, it
 	// matches 0 rows → conflict, and we bail BEFORE clobbering the body (the
@@ -3309,7 +3336,11 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		d.reindexSubtree(ctx, key, mscope, row.DocumentID, in.ID)
 	}
 	d.publishChange(ctx, mscope, docMemScopeID(mscope, key), row.DocumentID, "update_chunk", in.ID)
-	return d.getChunk(ctx, key, mscope, docInput{ID: in.ID})
+	res, err := d.getChunk(ctx, key, mscope, docInput{ID: in.ID})
+	if err != nil {
+		return res, err
+	}
+	return withNotAnnounced(res, d.announceRetype(ctx, key, mscope, retype)), nil
 }
 
 func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
