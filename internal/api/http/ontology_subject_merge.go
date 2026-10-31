@@ -74,7 +74,7 @@ func writeSubjectMergeError(w http.ResponseWriter, err error) {
 // admin, or a tenant operator in its own tenant, never a token held to the run
 // plane. The tenant is the caller's own unless an admin names another.
 func (s *Server) MergeSubjects(ctx context.Context, req connector.MergeSubjectsRequest) (connector.MergeSubjectsResult, error) {
-	if !subjectMergeOperator(ctx) {
+	if !subjectOperator(ctx) {
 		return connector.MergeSubjectsResult{}, connector.WithMessage(connector.ErrSubjectMergeForbidden,
 			"merging subjects is for an admin or a tenant operator")
 	}
@@ -89,10 +89,11 @@ func (s *Server) MergeSubjects(ctx context.Context, req connector.MergeSubjectsR
 	return res, err
 }
 
-// subjectMergeOperator reports whether the caller may merge subjects: an admin
-// or a tenant operator (substrate:tenant, which an admin's scope implies), not
-// a token held to the run plane. Open mode has no principal and is an operator.
-func subjectMergeOperator(ctx context.Context) bool {
+// subjectOperator reports whether the caller may make an operator's decision
+// about a tenant subject (merge two, bind one to a user): an admin or a tenant
+// operator (substrate:tenant, which an admin's scope implies), not a token held
+// to the run plane. Open mode has no principal and is an operator.
+func subjectOperator(ctx context.Context) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !ok {
 		return true
