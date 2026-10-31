@@ -1575,6 +1575,52 @@ class LoomcycleClient:
             "notes": list(resp.notes),
         }
 
+    async def merge_subjects(
+        self, duplicate: str, survivor: str, *, tenant: str = ""
+    ) -> Mapping[str, Any]:
+        """Fold one subject of the tenant ontology (*duplicate*) into
+        another (*survivor*), each named by its document id or natural key
+        (``person:ada-lovelace``). Mirrors
+        ``POST /v1/_ontology/subjects/merge``.
+
+        In one transaction the duplicate's facts move under the survivor,
+        every statement about the duplicate is copied onto the survivor
+        (the original expired as merged, never deleted), and the
+        duplicate stays as a retired document recording where it went
+        (``fields.merged_into``, status ``merged``). A ``merged`` event
+        then goes to the tenant's memory/subjects channel, unless the
+        caller's access-control rules hide part of the tenant's
+        documents — ``not_announced`` then says why.
+
+        For an admin or a tenant operator only; *tenant* is honored only
+        for an admin token. A refusal raises the error class its gRPC code
+        maps to, with the merge code (``same_subject``, ``not_a_subject``,
+        ``subject_not_in_scope``, ``already_merged``, ``forbidden``) on its
+        ``.reason``."""
+        req = pb.MergeSubjectsRequest(duplicate=duplicate, survivor=survivor, tenant=tenant)
+        try:
+            resp = await self._stub.MergeSubjects(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+
+        def ref(r: Any) -> Mapping[str, Any]:
+            return {
+                "document_id": r.document_id,
+                "root_chunk_id": r.root_chunk_id,
+                "natural_key": r.natural_key,
+            }
+
+        return {
+            "tenant": resp.tenant,
+            "duplicate": ref(resp.duplicate),
+            "survivor": ref(resp.survivor),
+            "facts_moved": resp.facts_moved,
+            "statements_repointed": resp.statements_repointed,
+            "statements_retired": resp.statements_retired,
+            "statements_left": resp.statements_left,
+            "not_announced": resp.not_announced,
+        }
+
     async def compact_run(self, run_id: str, *, reason: str = "") -> Mapping[str, Any]:
         """Summarize a parked run's context (mirror of the HTTP
         ``POST /v1/runs/{run_id}/compact`` + the ``compact_run`` MCP

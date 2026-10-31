@@ -2195,6 +2195,33 @@ export interface ErasureResult {
   notes: string[];
 }
 
+/** One subject of the tenant ontology: its document, the document's root chunk
+ *  (the subject node) and its natural key. */
+export interface SubjectRef {
+  document_id: string;
+  root_chunk_id: string;
+  natural_key: string;
+}
+
+/** Result of {@link LoomcycleClient.mergeSubjects}. */
+export interface MergeSubjectsResult {
+  tenant: string;
+  duplicate: SubjectRef;
+  survivor: SubjectRef;
+  /** Chunks moved from the duplicate's document under the survivor. */
+  facts_moved: number;
+  /** Statements copied onto the survivor, each original expired as merged. */
+  statements_repointed: number;
+  /** Statements only expired: they would join the survivor to itself, or the
+   *  survivor already holds them. */
+  statements_retired: number;
+  /** Statements left on the duplicate (an end the caller may not link, or a
+   *  matching statement on the survivor that was retired). */
+  statements_left: number;
+  /** Why the merge was not announced on memory/subjects; absent when it was. */
+  not_announced?: string;
+}
+
 export interface CompactRunResult {
   run_id: string;
   compacted: boolean;
