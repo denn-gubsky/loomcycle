@@ -320,6 +320,11 @@ func baseToolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: rawJSON(ontologyToolSchema),
 		},
 		{
+			Name:        "review",
+			Description: reviewToolDescription,
+			InputSchema: rawJSON(reviewToolSchema),
+		},
+		{
 			Name: "retention_override",
 			Description: "Store the runs of ONE no-trace agent for a limited time, so it can be debugged. " +
 				"An agent whose retention is \"none\" stores nothing it says, so there is no transcript to read when it misbehaves. " +

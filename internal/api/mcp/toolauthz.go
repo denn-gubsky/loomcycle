@@ -59,6 +59,12 @@ var tenantConfinableTools = map[string]bool{
 	// by name (toolRequiredScope): which subject survives is the operator's
 	// call, not a member's.
 	"ontology": true,
+	// review: the statement review queue and bulk rulings. The connector takes
+	// the tenant from the PRINCIPAL for anyone but an admin and asks each
+	// statement whether the caller may rule on it (an operator's write, or a
+	// member's access-control `review` grant). No scope by name: a member
+	// holding `review` on a path must reach it, as it reaches the HTTP routes.
+	"review": true,
 	// Run lifecycle — tenant flows via the run identity (applyPrincipal on
 	// the wire identity lands in RFC AG Phase 1).
 	"spawn_run":   true,

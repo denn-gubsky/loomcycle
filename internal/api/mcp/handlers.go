@@ -61,7 +61,9 @@ var handlersByName = map[string]toolHandler{
 	"retention_override": handleRetentionOverride,
 	// Operator actions on the tenant ontology: merge_subjects, bind_principal
 	// (ontology.go).
-	"ontology":  handleOntology,
+	"ontology": handleOntology,
+	// The statement review queue, bulk rulings and their undo (review.go).
+	"review":    handleReview,
 	"list_runs": handleListRuns,
 	// Removes a run tree and what is stored about it (delete_run_tree.go).
 	"delete_run_tree": handleDeleteRunTree,
