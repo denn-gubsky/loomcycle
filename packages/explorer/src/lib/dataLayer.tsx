@@ -20,6 +20,7 @@ import type {
 } from "../types";
 import type { DocSummary, DocumentMeta } from "./colorScheme";
 import type { AssetFetch } from "./createClient";
+import { entityTypeNames } from "./subjectType";
 
 // ChunkPatch is the subset of chunk fields update_chunk accepts. `fields` is
 // unknown (arbitrary typed JSON the chunk carries); a blank/absent value leaves
@@ -251,6 +252,10 @@ export interface ExplorerDataLayer {
     scope: DocScope,
     browse?: BrowseScope,
   ): Promise<AcceptClassificationAnswer>;
+  // documentEntityTypes lists the entity types in force for the tenant (from
+  // describe_ontology), for re-typing a subject. Optional: without it the viewer
+  // offers no change-type action.
+  documentEntityTypes?(scope: DocScope, browse?: BrowseScope): Promise<string[]>;
   // documentAssetObjectUrl fetches an image chunk's bytes (RFC BO) WITH auth and
   // returns a blob object-URL for an <img src> — a bare <img src=/v1/...> can't
   // carry a bearer header. The CALLER must URL.revokeObjectURL when done. Absent
@@ -540,6 +545,10 @@ export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetF
         { op: "classify", document_id: documentId, write, scope } as unknown as DocumentToolInput,
         browse,
       ) as Promise<ClassifyAnswer>,
+    documentEntityTypes: (scope, browse) =>
+      client
+        .document({ op: "describe_ontology", scope } as unknown as DocumentToolInput, browse)
+        .then(entityTypeNames),
     documentAcceptClassification: (documentId, scope, browse) =>
       client.document(
         { op: "accept_classification", document_id: documentId, scope } as unknown as DocumentToolInput,

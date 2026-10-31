@@ -412,3 +412,20 @@ describe("RFC FO classification ops → wire mapping", () => {
     ).rejects.toThrow("nothing_pending");
   });
 });
+
+// Re-typing a subject offers the entity types describe_ontology reports in force.
+describe("documentEntityTypes → wire mapping", () => {
+  it("asks describe_ontology and keeps its chunk classes", async () => {
+    const s = stubClient();
+    s.document.mockResolvedValueOnce({
+      classes: [
+        { name: "person", kind: "chunk" },
+        { name: "statute", kind: "document" },
+        { name: "Post", kind: "chunk" },
+      ],
+    });
+    const types = await dataLayerFromClient(s.client).documentEntityTypes!("tenant", BROWSE);
+    expect(s.document).toHaveBeenCalledWith({ op: "describe_ontology", scope: "tenant" }, BROWSE);
+    expect(types).toEqual(["person", "Post"]);
+  });
+});

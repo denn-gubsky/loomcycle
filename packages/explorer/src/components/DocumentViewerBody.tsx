@@ -13,6 +13,7 @@ import { useExplorerData } from "../lib/dataLayer";
 import { loadDocumentEdges } from "../lib/edgePages";
 import { landingChunk, type DocLocation } from "../lib/docTrail";
 import { chunkAncestors } from "../lib/chunkAncestry";
+import { isSubjectRoot } from "../lib/subjectType";
 import {
   docColor,
   effectiveScheme,
@@ -25,6 +26,7 @@ import DocumentChunkTree, {
   type ChunkNode,
 } from "./DocumentChunkTree";
 import ChunkEditorModal from "./ChunkEditorModal";
+import SubjectTypeModal from "./SubjectTypeModal";
 import Classification from "./Classification";
 import ColorSchemeEditor from "./ColorSchemeEditor";
 import IdCopy from "./IdCopy";
@@ -122,6 +124,7 @@ export default function DocumentViewerBody({
   const [imageErr, setImageErr] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null); // hidden upload input (RFC BO)
   const [editing, setEditing] = useState<ChunkDetail | null>(null);
+  const [retyping, setRetyping] = useState<ChunkDetail | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false); // RFC BS chunk history modal
   const [confirmDelete, setConfirmDelete] = useState(false); // RFC BP delete confirm
   const [err, setErr] = useState<string | null>(null);
@@ -867,6 +870,17 @@ export default function DocumentViewerBody({
                     >
                       edit
                     </button>
+                    {/* A subject's kind, picked from the types in force rather than typed
+                        free-hand in the editor, which would accept any word. */}
+                    {data.documentEntityTypes && isSubjectRoot(selectedDetail) && (
+                      <button
+                        type="button"
+                        onClick={() => setRetyping(selectedDetail)}
+                        title="Change this subject's type to another type in force"
+                      >
+                        change type
+                      </button>
+                    )}
                     {/* RFC BS — read-only edit history (revisions + version view + diff). */}
                     <button
                       type="button"
@@ -994,6 +1008,15 @@ export default function DocumentViewerBody({
           scope={scope}
           browse={browse}
           onClose={() => setEditing(null)}
+          onSaved={refresh}
+        />
+      )}
+      {retyping && (
+        <SubjectTypeModal
+          chunk={retyping}
+          scope={scope}
+          browse={browse}
+          onClose={() => setRetyping(null)}
           onSaved={refresh}
         />
       )}
