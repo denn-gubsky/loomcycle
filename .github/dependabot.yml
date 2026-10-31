@@ -13,7 +13,9 @@
 #   upstream changelog and pass the escape suite, so it comes in its own group.
 # - @loomcycle/* packages and denngubsky/* images are this repo's own; a
 #   consumer or compose file moves to a new release by hand, in step with the
-#   release, not weekly.
+#   release, not weekly. ghcr.io/denn-gubsky/loomboard (the hosted board in
+#   cloud-deployment) is loomboard's: the deploy script moves it to each
+#   loomboard release.
 # - deploy/truenas/catalog/templates holds a Jinja template, not plain YAML,
 #   and examples/ compose files are illustrations; neither is scanned.
 # - The golang base images track the Go line CI builds with (ci.yml,
@@ -166,7 +168,6 @@ updates:
     directories:
       - /
       - /cloud-deployment/landing
-      - /cloud-deployment/loomboard
       - /deploy/bridges
       - /deploy/builder
       - /deploy/builder/session
@@ -196,6 +197,7 @@ updates:
       prefix: "chore(deps)"
     ignore:
       - dependency-name: "denngubsky/*"
+      - dependency-name: "ghcr.io/denn-gubsky/*"
       # See the header: a Postgres major needs a data migration.
       - dependency-name: "postgres"
         update-types: ["version-update:semver-major"]

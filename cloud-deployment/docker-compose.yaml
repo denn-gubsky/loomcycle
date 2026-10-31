@@ -321,16 +321,29 @@ services:
         condition: service_healthy
 
   # ── Hosted loomboard browser app — board.loomcycle.cloud ──
-  #    Serves the standalone SPA (connect-handoff allowlist baked in) + proxies
-  #    /v1/* to the runtime. Tunnel route: board.loomcycle.cloud → loomboard:8080.
+  #    The image loomboard publishes on each release (its docker/README.md): the
+  #    standalone SPA, plus a proxy that sends /v1/* and the OAuth metadata to
+  #    the runtime. The upstream is fixed here; the app's x-loomcycle-target
+  #    header is dropped, so it is never an open relay. Pulled from GHCR, not
+  #    Docker Hub, whose anonymous pulls rate-limit this host. LOOMBOARD_VERSION
+  #    is a loomboard release (X.Y.Z, no v); the deploy script moves it.
+  #    Tunnel route: board.loomcycle.cloud → http://loomboard:8080.
   loomboard:
-    build:
-      context: ./loomboard
-      args:
-        LOOMBOARD_REF: ${LOOMBOARD_REF:-v0.3.1}   # a loomboard release tag
-        CONNECT_ORIGINS: https://loomcycle.cloud
+    image: ghcr.io/denn-gubsky/loomboard:${LOOMBOARD_VERSION:-0.4.0}
     restart: unless-stopped
     networks: [loomnet]
+    environment:
+      LOOMCYCLE_UPSTREAM: http://tailscale:8787   # loomcycle lives in the tailscale netns
+      # Pages that may hand the board a bearer by postMessage: the landing's
+      # token vault (cloud-web, "Open in loomboard"). Read at start; an entry
+      # that is not a bare origin stops the container with the reason.
+      LOOMBOARD_CONNECT_ORIGINS: https://loomcycle.cloud
+    # It writes nothing and needs no privilege.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    # Health: the image's own HEALTHCHECK (/healthz).
     depends_on:
       tailscale:
         condition: service_healthy
