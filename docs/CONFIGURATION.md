@@ -2555,8 +2555,9 @@ base — and built-in agents — **without a source checkout**. Two kinds:
     model-made statement whose text changed. A person's statement is only
     verified or flagged.
 
-  It runs on one document, drains the `documents/ingested` queue, checks one
-  subject's statements, or sweeps a Path subtree least recently verified
+  It runs on one document, drains the `documents/ingested` queue (user scope)
+  or the `memory/subjects` queue of adopted, merged, re-typed, removed and
+  erased subjects (tenant scope), checks one subject's statements, or sweeps a Path subtree least recently verified
   first. A sweep reports the expired statements a purge may delete and deletes
   them only with `purge: true`; a rejected statement is never purged. `write:
   report` (the default) only counts, while `write: propose` takes a scope

@@ -7,7 +7,7 @@ only of the kinds the bundle lets the relate layer write (`elaborates`).
 
 | agent | provider | tools | role |
 |---|---|---|---|
-| `kb/linker` | `code-js` | `Document`, `Agent`, `Channel` (subscribe `documents/ingested` only) | the deterministic driver: owns the pass, every check and every write |
+| `kb/linker` | `code-js` | `Document`, `Agent`, `Channel` (subscribe `documents/ingested` and `memory/subjects` only) | the deterministic driver: owns the pass, every check and every write |
 | `kb/verdict` | your `low` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one bounded relation verdict per call, for L4 only |
 
 ## What it needs
@@ -183,7 +183,7 @@ These rules always hold:
 |---|---|---|
 | `document` (default) | `document_id` or `path` | L0, L1, L2, L3, L6 (+ L4 with `corpus_paths`) |
 | `maintain` | `document_id` or `path` | L6 |
-| `drain` | the `documents/ingested` queue, up to `max_messages` | L0, L1, L2, L3, L6 per message |
+| `drain` | at `scope: user`, the `documents/ingested` queue; at `scope: tenant`, the `memory/subjects` queue; up to `max_messages` | L0, L1, L2, L3, L6 per document message; L6 per subject message |
 | `subject` | the subject's document (`document_id` or `path`), whose root is the subject | L6 |
 | `sweep` | the statements with an end under `path` (a Path subtree) | L6, then the purge report |
 
@@ -201,7 +201,24 @@ These rules always hold:
 - A `reimported` message runs L2 and L3 on its changed parts only. L6 still
   covers the whole document.
 
-Drain runs at user scope only: the queue the bundle declares is user-scoped.
+Each queue is declared at one scope and names that scope's documents, so the
+scope picks the queue:
+- `scope: user` drains `documents/ingested`, the documents a user's imports
+  created or changed.
+- `scope: tenant` drains `memory/subjects`, the subjects the runtime announces
+  when one is adopted, merged, re-typed, removed or erased. Adopted subjects live
+  in the tenant scope. Each message is one subject pass (L6 only):
+
+| `op` | the pass |
+|---|---|
+| `adopted`, `retyped`, `erased` | checks the statements touching the subject |
+| `merged` | re-points what remains on the duplicate to the survivor (`surviving_document_id`), then checks the survivor |
+| `removed` | nothing: the scope's statements went with the document (`nothing_to_check`) |
+
+A subject message is trusted for its ids only; the pass re-reads the subject and
+its statements under the linker's own grants. `scope: tenant` needs the tenant
+grants on `kb/linker` (see [Scope](#scope) below). `scope: agent` drains nothing and is
+refused.
 
 **Subject** checks every statement touching a subject, for a curator to run after
 changing one. With `merged_into` (the surviving subject's document id), each
@@ -224,6 +241,14 @@ scheduled_runs:
     prompt:
       - role: user
         content: [ { type: trusted-text, text: '{"mode":"drain","write":"propose"}' } ]
+  kb-linker-subjects:                 # the subject queue: needs the tenant grants
+    agent: kb/linker
+    schedule: "*/10 * * * *"
+    concurrency_policy: forbid
+    enabled: true
+    prompt:
+      - role: user
+        content: [ { type: trusted-text, text: '{"mode":"drain","scope":"tenant","write":"propose"}' } ]
 ```
 
 **Sweep** checks the statements with an end under `path`, asserted ones first,
@@ -273,7 +298,7 @@ curl -sX POST localhost:8080/v1/runs \
 |---|---|---|
 | `mode` | `document` | `document`, `maintain`, `drain`, `subject` or `sweep` |
 | `document_id` or `path` | exactly one (none in drain; sweep takes `path` only) | the document; for a sweep, the subtree |
-| `scope` | `user` | `user`, `agent` or `tenant` (drain: `user`) |
+| `scope` | `user` | `user`, `agent` or `tenant` (drain: `user` for documents, `tenant` for subjects) |
 | `layers` | per mode | any of `L0`, `L1`, `L2`, `L3`, `L4`, `L5`, `L6`; `maintain` takes `L6` only |
 | `write` | `report` | `report` or `propose` |
 | `terms_scheme` | none (L3 skips) | the concept scheme L3 matches |
@@ -322,8 +347,9 @@ The run's final output is one JSON object:
   - L4 keeps its findings and spans in UTF-16 units (`span_unit`).
 - `writes`, `would_write`: per op. `refusals`: per op and refusal code.
 - `budget`: the caps and what was spent.
-- `queue` and `messages` (drain only): each message's outcome and whether it
-  was acked.
+- `queue` and `messages` (drain only): the queue read, and each message's
+  outcome and whether it was acked. A document message carries its `reason`, a
+  subject message its `op`.
 
 Every evidence span the pass sends is in code points (`evidence_span_unit:
 "rune"`). The report carries ids, counts and fixed reason strings, never store

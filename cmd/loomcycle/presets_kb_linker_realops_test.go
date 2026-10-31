@@ -10,6 +10,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -513,5 +514,98 @@ func TestKBLinker_FilingAgainstTheRealDocumentTool(t *testing.T) {
 	}
 	if at("/inbox/a") != law {
 		t.Error("filing moved the law off the name it was created with")
+	}
+}
+
+// TestKBLinker_SubjectDrainAgainstTheRealChannelTool: the crossing between the
+// runtime's publish and the linker's read. The runtime writes a subject event at
+// (tenant, memory/subjects, scope tenant, scope_id ""); the real Channel tool, given
+// the channel as the bundle declares it, must read it there, and the drain's ack
+// must commit the tenant queue's cursor. The publish below is the runtime's call,
+// field for field.
+func TestKBLinker_SubjectDrainAgainstTheRealChannelTool(t *testing.T) {
+	d, ctx := realDocument(t)
+	cfg := knowledgeBaseConfig(t)
+	agent := cfg.Agents["kb/linker"]
+	defs := map[string]tools.ChannelDef{}
+	for name, c := range cfg.Channels {
+		defs[name] = tools.ChannelDef{Name: name, Scope: c.Scope, DefaultTTL: c.DefaultTTL, MaxMessages: c.MaxMessages, Semantic: c.Semantic}
+	}
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user", "tenant"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"user", "tenant"}}
+		rp.Channel = tools.ChannelPolicyValue{Subscribe: agent.Channels.Subscribe, Channels: defs}
+	})
+	subject := realDoc(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Ada Lovelace"}`)["document_id"].(string)
+
+	payload, _ := json.Marshal(map[string]any{"op": "adopted", "subject_natural_key": "person:ada-lovelace",
+		"document_id": subject, "timestamp": 1})
+	if _, err := (&channels.StorePublisher{Store: d.Store, Bus: d.Bus}).Write(ctx, channels.WriteRequest{
+		Channel: "memory/subjects", TenantID: "tnt", Scope: store.MemoryScopeTenant, ScopeID: "",
+		Payload: payload, PublishedBy: "u1", MaxMessages: 256,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	set := []tools.Tool{d, &kbFakeAgent{f: newKBFixture()}, &builtin.Channel{Store: d.Store, Bus: d.Bus}}
+	res, err := loop.Run(ctx, loop.RunOptions{
+		Provider:   codejs.New(codejs.Config{CodeRoot: t.TempDir(), RunTimeout: codejs.DefaultRunTimeout}),
+		Model:      "code-js",
+		AgentName:  "kb/linker",
+		CodeBody:   agent.Code,
+		Tools:      set,
+		Dispatcher: tools.NewDispatcher(set),
+		Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text",
+			Text: `{"mode":"drain","scope":"tenant","write":"propose"}`}}}},
+	})
+	if err != nil {
+		t.Fatalf("loop.Run: %v", err)
+	}
+	var rep map[string]any
+	if err := json.Unmarshal([]byte(res.FinalText), &rep); err != nil {
+		t.Fatalf("report: %v\n%s", err, res.FinalText)
+	}
+	if rep["status"] != "complete" {
+		t.Fatalf("status = %v, failure %v\n%s", rep["status"], rep["failure"], res.FinalText)
+	}
+	msgs, _ := rep["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %v, want the one subject event read", rep["messages"])
+	}
+	if m := msgs[0].(map[string]any); m["op"] != "adopted" || m["document_id"] != subject || m["outcome"] != "complete" || m["acked"] != true {
+		t.Errorf("message = %v, want the adoption passed and acked", m)
+	}
+	cur, err := d.Store.ChannelCommittedCursor(ctx, "tnt", "memory/subjects", store.MemoryScopeTenant, "")
+	if err != nil || cur == "" {
+		t.Errorf("tenant queue cursor = %q, %v — the ack did not commit it", cur, err)
+	}
+}
+
+// TestKBLinker_NoAgentCanPublishASubjectEvent: memory/subjects is written by the
+// runtime only. An agent granted publish on it is still refused by the real
+// Channel tool, so it cannot forge a merge that would have the linker re-point a
+// subject's statements onto another.
+func TestKBLinker_NoAgentCanPublishASubjectEvent(t *testing.T) {
+	d, ctx := realDocument(t)
+	cfg := knowledgeBaseConfig(t)
+	c := cfg.Channels["memory/subjects"]
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{Publish: []string{"memory/subjects"}, Channels: map[string]tools.ChannelDef{
+			"memory/subjects": {Name: "memory/subjects", Scope: c.Scope, MaxMessages: c.MaxMessages, Semantic: c.Semantic, Publisher: c.Publisher},
+		}}
+	})
+	res, err := (&builtin.Channel{Store: d.Store, Bus: d.Bus}).Execute(ctx, json.RawMessage(
+		`{"op":"publish","channel":"memory/subjects","value":{"op":"merged","document_id":"a","surviving_document_id":"b"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatalf("an agent published a subject event: %s", res.Text)
+	}
+	msgs, _ := d.Store.SnapshotReadChannelMessages(ctx)
+	for _, m := range msgs {
+		if m.Channel == "memory/subjects" {
+			t.Errorf("a message landed: %+v", m)
+		}
 	}
 }
