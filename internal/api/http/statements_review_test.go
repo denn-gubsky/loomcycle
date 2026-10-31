@@ -200,3 +200,21 @@ func TestStatementReviewAPI_ATenantOperatorReviewsItsOwnTenant(t *testing.T) {
 		t.Errorf("a tenant operator naming another tenant: %+v %v, want its own tenant's queue", res, err)
 	}
 }
+
+// A ruling body's time bounds take a number or text, as the queue's query does:
+// a JavaScript client sends a nanosecond created_at as a string.
+func TestStatementReviewAPI_RuleFilterTakesTimeBoundsAsNumberOrText(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	seedReviewQueue(t, s, mi)
+	op := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: mi.Tenant, Subject: "ops", Scopes: []string{auth.ScopeTenant}})
+	hourAgo := time.Now().Add(-time.Hour)
+	for _, bound := range []any{hourAgo.UnixNano(), fmt.Sprint(hourAgo.UnixNano()), hourAgo.UTC().Format(time.RFC3339)} {
+		code, out := s.postReview(t, op, "/v1/_statements/rule", map[string]any{"action": "accept", "filter": map[string]any{"created_after": bound}})
+		if code != http.StatusOK || out["matched"] != float64(2) {
+			t.Errorf("created_after %v = %d %v, want both proposals matched", bound, code, out)
+		}
+	}
+	if code, out := s.postReview(t, op, "/v1/_statements/rule", map[string]any{"action": "accept", "filter": map[string]any{"created_after": "soon"}}); code != http.StatusBadRequest {
+		t.Errorf("an unreadable bound = %d %v, want 400", code, out)
+	}
+}

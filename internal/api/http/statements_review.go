@@ -123,11 +123,23 @@ func optionalBool(q url.Values, name string) (bool, error) {
 // connector.RuleStatementsRequest. An admin may focus another tenant with
 // ?tenant= (or the body's tenant).
 func (s *Server) handleStatementRule(w http.ResponseWriter, r *http.Request) {
-	var req connector.RuleStatementsRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, statementRuleBodyMax)).Decode(&req); err != nil {
+	var body struct {
+		connector.RuleStatementsRequest
+		Filter *ruleBodyFilter `json:"filter,omitempty"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, statementRuleBodyMax)).Decode(&body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body",
 			`expected {"action": "accept|reject", "ids": [...] | "filter": {...}, "reason", "dry_run", "expect_count", "max"}`)
 		return
+	}
+	req := body.RuleStatementsRequest
+	if body.Filter != nil {
+		f, err := body.Filter.resolve()
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		req.Filter = &f
 	}
 	if req.Tenant == "" {
 		req.Tenant = r.URL.Query().Get("tenant")
@@ -138,6 +150,39 @@ func (s *Server) handleStatementRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// ruleBodyFilter is a ruling body's filter: the queue filter, with the two
+// time bounds taken as a number or as text (unix nanoseconds, or RFC 3339), as
+// the queue's query takes them. A JavaScript client cannot send a nanosecond
+// created_at as an exact number.
+type ruleBodyFilter struct {
+	connector.ReviewQueueFilter
+	CreatedBefore json.RawMessage `json:"created_before,omitempty"`
+	CreatedAfter  json.RawMessage `json:"created_after,omitempty"`
+}
+
+func (f *ruleBodyFilter) resolve() (connector.ReviewQueueFilter, error) {
+	out := f.ReviewQueueFilter
+	for _, t := range []struct {
+		name string
+		raw  json.RawMessage
+		dst  **int64
+	}{{"created_before", f.CreatedBefore, &out.CreatedBefore}, {"created_after", f.CreatedAfter, &out.CreatedAfter}} {
+		if len(t.raw) == 0 || string(t.raw) == "null" {
+			continue
+		}
+		var text string
+		if json.Unmarshal(t.raw, &text) != nil {
+			text = string(t.raw)
+		}
+		n, err := connector.ParseReviewInstant(text)
+		if err != nil {
+			return out, errors.New("filter." + t.name + ": " + err.Error())
+		}
+		*t.dst = &n
+	}
+	return out, nil
 }
 
 // handleStatementRevert serves POST /v1/_statements/revert {ruling_id}.
