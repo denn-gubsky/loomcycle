@@ -609,3 +609,74 @@ func TestKBLinker_NoAgentCanPublishASubjectEvent(t *testing.T) {
 		}
 	}
 }
+
+// TestKBLinker_MergeDrainAgainstTheRealMerge: the crossing between the operator's
+// merge and the linker's drain. A real merge publishes `merged` on the tenant's
+// memory/subjects; the linker, draining that queue through the real Channel tool,
+// confirms the merge against the duplicate's own root (fields.merged_into = the
+// survivor) and runs its subject pass rather than reporting merge_unconfirmed. A
+// merge that announced before recording merged_into, or recorded it under another
+// name, fails here and nowhere else.
+func TestKBLinker_MergeDrainAgainstTheRealMerge(t *testing.T) {
+	d, ctx := realDocument(t)
+	cfg := knowledgeBaseConfig(t)
+	agent := cfg.Agents["kb/linker"]
+	defs := map[string]tools.ChannelDef{}
+	for name, c := range cfg.Channels {
+		defs[name] = tools.ChannelDef{Name: name, Scope: c.Scope, DefaultTTL: c.DefaultTTL, MaxMessages: c.MaxMessages, Semantic: c.Semantic}
+	}
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user", "tenant"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"user", "tenant"}}
+		rp.Channel = tools.ChannelPolicyValue{Subscribe: agent.Channels.Subscribe, Channels: defs}
+	})
+	subject := func(title, slug, key string) map[string]any {
+		return realDoc(t, d, ctx, fmt.Sprintf(`{"op":"create_document","scope":"tenant","title":%q,"path":"/facts/%s","type":"person","subject":%q,"natural_key":%q}`,
+			title, slug, title, key))
+	}
+	dup := subject("Ada King", "ada-king", "person:ada-king")
+	surv := subject("Ada Lovelace", "ada-lovelace", "person:ada-lovelace")
+	report := realDoc(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Report","path":"/kb/report"}`)["document_id"].(string)
+	cite := realDoc(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"tenant","document_id":%q,"title":"Summary","body":"Ada King wrote the notes."}`, report))["id"].(string)
+	realDoc(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"tenant","from_id":%q,"to_id":%q,"kind":"cites"}`, cite, dup["root_chunk_id"]))
+
+	// The operator plane: no run, the tenant's grants.
+	op := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "tnt"})
+	op = tools.UpdateRunPolicy(op, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
+	})
+	res, err := d.MergeSubjects(op, "tenant", dup["document_id"].(string), surv["document_id"].(string))
+	if err != nil || res.NotAnnounced != "" {
+		t.Fatalf("merge: %+v %v", res, err)
+	}
+
+	set := []tools.Tool{d, &kbFakeAgent{f: newKBFixture()}, &builtin.Channel{Store: d.Store, Bus: d.Bus}}
+	run, err := loop.Run(ctx, loop.RunOptions{
+		Provider:   codejs.New(codejs.Config{CodeRoot: t.TempDir(), RunTimeout: codejs.DefaultRunTimeout}),
+		Model:      "code-js",
+		AgentName:  "kb/linker",
+		CodeBody:   agent.Code,
+		Tools:      set,
+		Dispatcher: tools.NewDispatcher(set),
+		Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text",
+			Text: `{"mode":"drain","scope":"tenant","write":"propose"}`}}}},
+	})
+	if err != nil {
+		t.Fatalf("loop.Run: %v", err)
+	}
+	var rep map[string]any
+	if err := json.Unmarshal([]byte(run.FinalText), &rep); err != nil {
+		t.Fatalf("report: %v\n%s", err, run.FinalText)
+	}
+	if rep["status"] != "complete" {
+		t.Fatalf("status = %v, failure %v\n%s", rep["status"], rep["failure"], run.FinalText)
+	}
+	msgs, _ := rep["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %v, want the one merge read", rep["messages"])
+	}
+	if m := msgs[0].(map[string]any); m["op"] != "merged" || m["document_id"] != dup["document_id"] || m["outcome"] != "complete" || m["acked"] != true {
+		t.Errorf("message = %v, want the merge confirmed, passed and acked", m)
+	}
+}

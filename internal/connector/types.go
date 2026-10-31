@@ -1267,3 +1267,46 @@ type RetentionOverrideResult struct {
 	Overrides []RetentionOverride `json:"overrides"`
 	Cleared   bool                `json:"cleared,omitempty"`
 }
+
+// MergeSubjectsRequest names two subjects of the tenant ontology, each by its
+// document id or its natural key (person:ada-lovelace). Both must be subjects
+// of the same scope: the tenant's, where subjects are adopted.
+//
+// Tenant is whose ontology it is. Only an admin may name one; for anyone else
+// it is the caller's own tenant.
+type MergeSubjectsRequest struct {
+	Tenant    string `json:"tenant,omitempty"`
+	Duplicate string `json:"duplicate"`
+	Survivor  string `json:"survivor"`
+}
+
+// SubjectRef identifies one subject: its document, the document's root chunk
+// (the subject node) and its natural key.
+type SubjectRef struct {
+	DocumentID  string `json:"document_id"`
+	RootChunkID string `json:"root_chunk_id"`
+	NaturalKey  string `json:"natural_key"`
+}
+
+// MergeSubjectsResult reports one merge.
+//
+// FactsMoved counts the chunks that moved from the duplicate's document under
+// the survivor. StatementsRepointed counts the statements copied onto the
+// survivor (each original expired, judge_reason "merged");
+// StatementsRetired those only expired, because the copy would join the
+// survivor to itself or the survivor already holds the same statement;
+// StatementsLeft those left on the duplicate untouched, because the caller may
+// not link their other end or the survivor's matching statement was retired —
+// the links agent's pass on the `merged` event re-points what remains.
+type MergeSubjectsResult struct {
+	Tenant              string     `json:"tenant"`
+	Duplicate           SubjectRef `json:"duplicate"`
+	Survivor            SubjectRef `json:"survivor"`
+	FactsMoved          int        `json:"facts_moved"`
+	StatementsRepointed int        `json:"statements_repointed"`
+	StatementsRetired   int        `json:"statements_retired"`
+	StatementsLeft      int        `json:"statements_left"`
+	// NotAnnounced says why the merge was not published on memory/subjects;
+	// "" when it was.
+	NotAnnounced string `json:"not_announced,omitempty"`
+}

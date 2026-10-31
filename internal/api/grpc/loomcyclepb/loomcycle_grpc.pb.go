@@ -69,6 +69,7 @@ const (
 	Loomcycle_UsageReport_FullMethodName         = "/loomcycle.v1.Loomcycle/UsageReport"
 	Loomcycle_TokenLimit_FullMethodName          = "/loomcycle.v1.Loomcycle/TokenLimit"
 	Loomcycle_RetentionOverride_FullMethodName   = "/loomcycle.v1.Loomcycle/RetentionOverride"
+	Loomcycle_MergeSubjects_FullMethodName       = "/loomcycle.v1.Loomcycle/MergeSubjects"
 	Loomcycle_Decide_FullMethodName              = "/loomcycle.v1.Loomcycle/Decide"
 	Loomcycle_ListDecisionModels_FullMethodName  = "/loomcycle.v1.Loomcycle/ListDecisionModels"
 	Loomcycle_Health_FullMethodName              = "/loomcycle.v1.Loomcycle/Health"
@@ -341,6 +342,23 @@ type LoomcycleClient interface {
 	//
 	// Mirrors GET/PUT/DELETE /v1/_retention/overrides.
 	RetentionOverride(ctx context.Context, in *RetentionOverrideRequest, opts ...grpc.CallOption) (*RetentionOverrideResponse, error)
+	// MergeSubjects folds one tenant ontology subject (duplicate) into another
+	// (survivor), each named by document id or natural key, in one transaction:
+	// the duplicate's facts move under the survivor, its statements are copied
+	// onto the survivor (the originals expired as merged), and the duplicate
+	// stays, retired, naming the survivor (fields.merged_into, status merged).
+	// A `merged` event then goes to the tenant's memory/subjects channel unless
+	// the caller's access-control rules hide part of the scope from reading
+	// (not_announced says why).
+	//
+	// Operator-only: an admin (any tenant, via `tenant`) or a tenant operator
+	// for its own, holding write on both documents (PERMISSION_DENIED
+	// otherwise). A refusal carries a google.rpc.ErrorInfo whose reason is the
+	// code HTTP returns (same_subject, not_a_subject, subject_not_in_scope,
+	// already_merged, ...).
+	//
+	// Mirrors POST /v1/_ontology/subjects/merge.
+	MergeSubjects(ctx context.Context, in *MergeSubjectsRequest, opts ...grpc.CallOption) (*MergeSubjectsResponse, error)
 	// Decide asks a decision model typed questions (choice / noul / score)
 	// about a piece of state and returns each answer as the model gave it. It
 	// is a judgement with probabilities, not generated text, and it needs no
@@ -1014,6 +1032,16 @@ func (c *loomcycleClient) RetentionOverride(ctx context.Context, in *RetentionOv
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RetentionOverrideResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_RetentionOverride_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) MergeSubjects(ctx context.Context, in *MergeSubjectsRequest, opts ...grpc.CallOption) (*MergeSubjectsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MergeSubjectsResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_MergeSubjects_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1749,6 +1777,23 @@ type LoomcycleServer interface {
 	//
 	// Mirrors GET/PUT/DELETE /v1/_retention/overrides.
 	RetentionOverride(context.Context, *RetentionOverrideRequest) (*RetentionOverrideResponse, error)
+	// MergeSubjects folds one tenant ontology subject (duplicate) into another
+	// (survivor), each named by document id or natural key, in one transaction:
+	// the duplicate's facts move under the survivor, its statements are copied
+	// onto the survivor (the originals expired as merged), and the duplicate
+	// stays, retired, naming the survivor (fields.merged_into, status merged).
+	// A `merged` event then goes to the tenant's memory/subjects channel unless
+	// the caller's access-control rules hide part of the scope from reading
+	// (not_announced says why).
+	//
+	// Operator-only: an admin (any tenant, via `tenant`) or a tenant operator
+	// for its own, holding write on both documents (PERMISSION_DENIED
+	// otherwise). A refusal carries a google.rpc.ErrorInfo whose reason is the
+	// code HTTP returns (same_subject, not_a_subject, subject_not_in_scope,
+	// already_merged, ...).
+	//
+	// Mirrors POST /v1/_ontology/subjects/merge.
+	MergeSubjects(context.Context, *MergeSubjectsRequest) (*MergeSubjectsResponse, error)
 	// Decide asks a decision model typed questions (choice / noul / score)
 	// about a piece of state and returns each answer as the model gave it. It
 	// is a judgement with probabilities, not generated text, and it needs no
@@ -2174,6 +2219,9 @@ func (UnimplementedLoomcycleServer) TokenLimit(context.Context, *TokenLimitReque
 }
 func (UnimplementedLoomcycleServer) RetentionOverride(context.Context, *RetentionOverrideRequest) (*RetentionOverrideResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RetentionOverride not implemented")
+}
+func (UnimplementedLoomcycleServer) MergeSubjects(context.Context, *MergeSubjectsRequest) (*MergeSubjectsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method MergeSubjects not implemented")
 }
 func (UnimplementedLoomcycleServer) Decide(context.Context, *DecideRequest) (*DecideResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Decide not implemented")
@@ -2872,6 +2920,24 @@ func _Loomcycle_RetentionOverride_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).RetentionOverride(ctx, req.(*RetentionOverrideRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_MergeSubjects_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MergeSubjectsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).MergeSubjects(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_MergeSubjects_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).MergeSubjects(ctx, req.(*MergeSubjectsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3883,6 +3949,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RetentionOverride",
 			Handler:    _Loomcycle_RetentionOverride_Handler,
+		},
+		{
+			MethodName: "MergeSubjects",
+			Handler:    _Loomcycle_MergeSubjects_Handler,
 		},
 		{
 			MethodName: "Decide",

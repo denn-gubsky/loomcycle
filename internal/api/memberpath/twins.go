@@ -68,6 +68,8 @@ var twins = map[string][]Twin{
 	"DirectoryTenants": {{Method: http.MethodGet, Path: "/v1/_tenants"}},
 	"ErasureReport":    {{Method: http.MethodGet, Path: "/v1/_erasure"}},
 	"ErasureExecute":   {{Method: http.MethodPost, Path: "/v1/_erasure"}},
+	// The tenant ontology.
+	"MergeSubjects": {{Method: http.MethodPost, Path: "/v1/_ontology/subjects/merge"}},
 	// Runtime admin.
 	"PauseRuntime":    {{Method: http.MethodPost, Path: "/v1/_pause"}},
 	"ResumeRuntime":   {{Method: http.MethodPost, Path: "/v1/_resume"}},

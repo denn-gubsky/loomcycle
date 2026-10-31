@@ -68,6 +68,7 @@ import type {
   DirectoryUser,
   ErasureReport,
   ErasureResult,
+  MergeSubjectsResult,
   Agent,
   AgentEvent,
   AgentList,
@@ -999,6 +1000,39 @@ export class LoomcycleClient {
       ? `?tenant=${encodeURIComponent(opts.tenant)}`
       : "";
     return postJSON<ErasureResult>(this.ctx, `/v1/_erasure${q}`, body, opts);
+  }
+
+  /**
+   * Fold one subject of the tenant ontology (`duplicate`) into another
+   * (`survivor`), each named by its document id or natural key
+   * (`person:ada-lovelace`). Mirrors POST /v1/_ontology/subjects/merge.
+   *
+   * In one transaction the duplicate's facts move under the survivor, every
+   * statement about the duplicate is copied onto the survivor (the original
+   * expired as merged, never deleted), and the duplicate stays as a retired
+   * document recording where it went (`fields.merged_into`, status `merged`).
+   * A `merged` event then goes to the tenant's memory/subjects channel, unless
+   * the caller's access-control rules hide part of the tenant's documents —
+   * `not_announced` then says why.
+   *
+   * For an admin or a tenant operator only. `tenant` is honored only for an
+   * admin token. A refusal throws with the server's code: `same_subject`,
+   * `not_a_subject`, `subject_not_in_scope`, `already_merged`, `forbidden`.
+   */
+  async mergeSubjects(
+    duplicate: string,
+    survivor: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<MergeSubjectsResult> {
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return postJSON<MergeSubjectsResult>(
+      this.ctx,
+      `/v1/_ontology/subjects/merge${q}`,
+      { duplicate, survivor },
+      opts,
+    );
   }
 
   async compactRun(

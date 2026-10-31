@@ -52,6 +52,10 @@ func CarvedOut(method, path string) bool {
 		return true
 	case path == "/v1/_erasure":
 		return true
+	// Folding one ontology subject into another re-points every statement about
+	// it, tenant-wide: the operator's decision.
+	case path == "/v1/_ontology/subjects/merge":
+		return true
 	case path == "/v1/_limits" && (method == http.MethodPut || method == http.MethodDelete):
 		return true
 	// RFC EY: who may do what is the operator's to write and to read; a

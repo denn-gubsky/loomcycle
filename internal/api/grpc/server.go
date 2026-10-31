@@ -1050,6 +1050,11 @@ var grpcConsumerScopes = map[string]string{
 	// member path, so a member is refused here too; the connector checks the
 	// caller again.
 	"RetentionOverride": auth.ScopeTenant,
+	// RFC FR P2: folding one ontology subject into another, as POST
+	// /v1/_ontology/subjects/merge gates it. Its route is carved out of the
+	// member path, so a member is refused here too; the connector checks the
+	// caller again.
+	"MergeSubjects": auth.ScopeTenant,
 
 	// RFC BL P5 erasure. ScopeTenant, mirroring the HTTP gate: answering a
 	// data-subject request is the tenant operator's job, and both RPCs confine

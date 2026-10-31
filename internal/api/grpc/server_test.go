@@ -751,6 +751,10 @@ type mockConnector struct {
 	retentionRes connector.RetentionOverrideResult
 	retentionErr error
 
+	mergeReq connector.MergeSubjectsRequest
+	mergeRes connector.MergeSubjectsResult
+	mergeErr error
+
 	dirTenant      atomic.Value
 	erasureTenant  atomic.Value
 	erasureSubject atomic.Value
@@ -1281,4 +1285,11 @@ func (m *mockConnector) DeleteConfiguredRun(context.Context, string) error { ret
 func (m *mockConnector) RetentionOverride(_ context.Context, req connector.RetentionOverrideRequest) (connector.RetentionOverrideResult, error) {
 	m.retentionReq = req
 	return m.retentionRes, m.retentionErr
+}
+
+// MergeSubjects records the request and answers with the configured result
+// (connector.Connector).
+func (m *mockConnector) MergeSubjects(_ context.Context, req connector.MergeSubjectsRequest) (connector.MergeSubjectsResult, error) {
+	m.mergeReq = req
+	return m.mergeRes, m.mergeErr
 }

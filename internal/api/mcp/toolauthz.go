@@ -53,6 +53,12 @@ var tenantConfinableTools = map[string]bool{
 	// its own tenant's agents. It also needs substrate:tenant by name
 	// (toolRequiredScope): a member must not switch storage back on.
 	"retention_override": true,
+	// ontology: merge_subjects folds one subject into another in the
+	// connector, which takes the tenant from the PRINCIPAL for anyone but an
+	// admin and checks write on both documents. It also needs substrate:tenant
+	// by name (toolRequiredScope): which subject survives is the operator's
+	// call, not a member's.
+	"ontology": true,
 	// Run lifecycle — tenant flows via the run identity (applyPrincipal on
 	// the wire identity lands in RFC AG Phase 1).
 	"spawn_run":   true,
@@ -226,6 +232,9 @@ var toolRequiredScope = map[string]string{
 	// members: a member who could decrypt with them could read whatever the
 	// tenant sealed.
 	"crypto": auth.ScopeTenant,
+	// Folding one ontology subject into another, which POST
+	// /v1/_ontology/subjects/merge keeps from a tenant's members.
+	"ontology": auth.ScopeTenant,
 	// Starting a run, and every write on a run's state.
 	"spawn_run":            auth.ScopeRunsCreate,
 	"spawn_runs":           auth.ScopeRunsCreate,
