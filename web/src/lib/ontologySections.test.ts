@@ -5,6 +5,9 @@ import {
   instanceStateLabel,
   classDirectiveNotes,
   factsUnderOlderVocabulary,
+  ontologyHealthFindings,
+  ontologyTabs,
+  pickOntologyTab,
   relationSummary,
   typedFieldLabel,
 } from "./ontologySections";
@@ -113,5 +116,104 @@ describe("instanceStateLabel", () => {
     expect(instanceStateLabel({ name: "a", state: "error", note: "no @a class" })).toBe(
       "not adopted: no @a class",
     );
+  });
+});
+
+// The smallest response the server sends for a provisioned, section-less ontology.
+function flat(extra: Partial<OntologyResponse> = {}): OntologyResponse {
+  return {
+    tenant: "t",
+    path: "/memory/ontology",
+    status: "confirmed",
+    confirmed: true,
+    provisioned: true,
+    terms: [],
+    effective: [{ name: "person", source: "seed" }],
+    ...extra,
+  } as OntologyResponse;
+}
+
+describe("ontologyTabs", () => {
+  it("gives a section-less ontology only its classes", () => {
+    expect(ontologyTabs(flat()).map((t) => t.id)).toEqual(["classes"]);
+  });
+
+  it("adds a tab per section the server reported, in document order", () => {
+    const tabs = ontologyTabs(
+      flat({
+        sections: ["classes", "relations", "schemes", "instances"],
+        document_classes: [{ name: "Law", source: "tenant" }],
+        relations: [],
+        schemes: [{ name: "doc-kind", concepts: [] }],
+        instances: { instances: [{ name: "Board", state: "unchanged" }], adopted: 0, linked: 0, renamed: 0, statements: 0 },
+        grammars: [{ name: "nbu-act" }],
+      } as Partial<OntologyResponse>),
+    );
+    expect(tabs.map((t) => t.id)).toEqual([
+      "classes",
+      "document-classes",
+      "relations",
+      "schemes",
+      "instances",
+      "grammars",
+    ]);
+    expect(tabs.find((t) => t.id === "instances")?.count).toBe(1);
+  });
+
+  it("keeps a declared but empty Relations section, which still holds the standard kinds", () => {
+    expect(ontologyTabs(flat({ relations: [] })).map((t) => t.id)).toContain("relations");
+  });
+
+  it("warns on a disabled grammar and on a scheme concept missing its tag", () => {
+    const tabs = ontologyTabs(
+      flat({
+        grammars: [{ name: "ok" }, { name: "bad", issue: "pattern does not compile" }],
+        schemes: [{ name: "s", concepts: [] }],
+        scheme_mirror_stale: ["s/a"],
+      } as Partial<OntologyResponse>),
+    );
+    expect(tabs.find((t) => t.id === "grammars")?.warn).toBe(true);
+    expect(tabs.find((t) => t.id === "schemes")?.warn).toBe(true);
+    expect(tabs.find((t) => t.id === "classes")?.warn).toBe(false);
+  });
+
+  it("shows Health only when it has a finding", () => {
+    expect(ontologyTabs(flat()).some((t) => t.id === "health")).toBe(false);
+    const tabs = ontologyTabs(flat({ undeclared_types: [{ type: "memo", count: 3 }] }));
+    expect(tabs.find((t) => t.id === "health")).toMatchObject({ count: 1, warn: true });
+  });
+});
+
+describe("ontologyHealthFindings", () => {
+  it("counts each kind of finding once", () => {
+    const r = flat({
+      ontology_version: 5,
+      undeclared_types: [
+        { type: "memo", count: 3 },
+        { type: "note", count: 1 },
+      ],
+      fact_versions: [
+        { version: 4, count: 10 },
+        { version: 0, count: 2 },
+      ],
+      undated_statements: 7,
+    });
+    expect(ontologyHealthFindings(r)).toBe(3);
+  });
+
+  it("finds nothing when every fact is on the current vocabulary", () => {
+    expect(ontologyHealthFindings(flat({ ontology_version: 5, fact_versions: [{ version: 5, count: 9 }] }))).toBe(0);
+  });
+});
+
+describe("pickOntologyTab", () => {
+  const tabs = ontologyTabs(flat({ relations: [] }));
+  it("opens the tab the URL names when the ontology has it", () => {
+    expect(pickOntologyTab("relations", tabs)).toBe("relations");
+  });
+  it("falls back to classes for an absent or unknown tab", () => {
+    expect(pickOntologyTab(null, tabs)).toBe("classes");
+    expect(pickOntologyTab("schemes", tabs)).toBe("classes");
+    expect(pickOntologyTab("nonsense", tabs)).toBe("classes");
   });
 });

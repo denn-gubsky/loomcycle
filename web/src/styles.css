@@ -6292,6 +6292,21 @@ a.login-btn {
 }
 /* The evidence a curator filed with its proposal. Monospace + scrollable: it is
    quoted material (counts, example facts), not prose the panel wrote. */
+/* The ontology page's section tabs: seven can be shown, so they wrap on a
+   narrow screen instead of pushing the page sideways. */
+.ontology-tabs {
+  flex-wrap: wrap;
+  margin-top: var(--lc-space-2);
+}
+.ontology-tab-body {
+  margin-top: var(--lc-space-2);
+}
+/* A grammar's rules as written: `=>` must read as typed, not as a font's
+   arrow ligature, or an operator copies a character the parser rejects. */
+.ontology-rules {
+  font-variant-ligatures: none;
+  max-height: none;
+}
 .ontology-evidence {
   margin: var(--lc-space-1) 0;
   padding: var(--lc-space-1);
