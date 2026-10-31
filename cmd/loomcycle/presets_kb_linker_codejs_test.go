@@ -48,7 +48,8 @@ var kbOpContracts = []kbOpContract{
 		Assumes:  `the filter form lists every chunk of the document, superseded ones included, with invalid_at; definitional is true on a passage of a definitions section and absent otherwise (never false, never on the sql form); the chunks table has anchor and stable_id columns`},
 	{Tool: "Document", Op: "get_chunk",
 		Request:  `{id, scope}`,
-		Response: `{id, document_id, type, title, body}`},
+		Response: `{id, document_id, type, title, body, definitional?, boilerplate?: [[start, end]]}`,
+		Assumes:  `boilerplate lists the rune spans of the paragraphs the document class's @boilerplate matches, absent when none (Phase C)`},
 	{Tool: "Document", Op: "related",
 		Request:  `{id, limit, under_paths, exclude_document_ids, scope}`,
 		Response: `{related: [{chunk_id, document_id, type, score}], filter: {applied, …}}`},
@@ -56,7 +57,7 @@ var kbOpContracts = []kbOpContract{
 		Request:  `{work_key, anchor?, as_of?, create_placeholder?, scope}`,
 		Response: `{work_key, found, document_id?, root_chunk_id?, placeholder?, chunk_id?}`},
 	{Tool: "Document", Op: "propose_statement",
-		Request:  `{from_id, to_id, kind, evidence: [{chunk_id, quote, char_start?, char_end?}], attributes?, method, scope}`,
+		Request:  `{from_id, to_id, kind, evidence: [{chunk_id, quote, char_start?, char_end?}], attributes?, confidence?, method, scope} | {id, kind, evidence, confidence?, method, scope}`,
 		Response: `{id, status: proposed|asserted, created, evidence_written, ontology_valid}`,
 		Assumes:  `method (R1) is accepted as "rule:<name>"; char_start/char_end are runes; a refusal names its code (kind_reserved, kind_not_declared, statement_rejected, statement_asserted, evidence_quote_not_found, method_not_granted, …) in the error text; a proposal over an asserted triple is refused statement_asserted, over a rejected one statement_rejected (#2246)`},
 	{Tool: "Document", Op: "list_statements",
@@ -65,7 +66,7 @@ var kbOpContracts = []kbOpContract{
 		Assumes:  `R3: status stays single-valued (one call per status); retired rows are excluded unless include_retired; next_cursor is absent on the last page`},
 	{Tool: "Document", Op: "get_edge",
 		Request:  `{id, scope}`,
-		Response: `{statement: {id, from_id, to_id, kind, status, method, auto, created_at, valid_at?, attributes?, evidence: [{id, chunk_id? | scope+natural_key? | session_id?, quote, char_start?, char_end?, stale?}]}}`},
+		Response: `{statement: {id, from_id, to_id, kind, status, method, auto, created_at, valid_at?, verified_at?, operator_ruled_at?, attributes?, evidence: [{id, chunk_id? | scope+natural_key? | session_id?, quote, char_start?, char_end?, stale?}]}}`},
 	{Tool: "Document", Op: "maintain_statement",
 		Request:  `{id, action: verify|expire|demote|merge|stale_evidence|relocate_evidence|flag, reason?, survivor_id?, evidence_id?, chunk_id?, method, scope}`,
 		Response: `{id, action, ok: true}`,
@@ -123,6 +124,12 @@ type kbChunk struct {
 	// Definitional is what the runtime says of a passage in a definitions
 	// section (the class's @definitions); reads carry it only when true.
 	Definitional bool
+	// Boilerplate is what the runtime says of the body's paragraphs its class's
+	// @boilerplate matches: rune spans, carried only when there are any.
+	Boilerplate [][2]int
+	// RevisedAt is when the body was last written (chunk_revisions), 0 for never
+	// since the fixture began.
+	RevisedAt int64
 }
 
 type kbEvidence struct {
@@ -134,7 +141,7 @@ type kbEvidence struct {
 type kbStatement struct {
 	ID, From, To, Kind, Status, Method, Discriminator string
 	OperatorRuledAt                                   int64
-	CreatedAt, ValidAt                                int64
+	CreatedAt, ValidAt, VerifiedAt                    int64
 	Auto, Expired, Verified                           bool
 	Attributes                                        map[string]any
 	Evidence                                          []*kbEvidence
@@ -383,6 +390,9 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 		if c.Definitional {
 			out["definitional"] = true
 		}
+		if len(c.Boilerplate) > 0 {
+			out["boilerplate"] = c.Boilerplate
+		}
 		return okResult(out)
 	case "related":
 		if f.relatedFails[id] {
@@ -470,6 +480,7 @@ var (
 	kbSQLChunkMeta    = regexp.MustCompile(`^SELECT id, document_id, COALESCE\(anchor, ''\), COALESCE\(stable_id, ''\), COALESCE\(invalid_at, 0\) FROM chunks WHERE id IN \(((?:'[^']*'(?:, )?)+)\)$`)
 	kbSQLSupersededBy = regexp.MustCompile(`^SELECT from_id FROM chunk_edges WHERE kind = 'supersedes' AND to_id = '([^']*)' ORDER BY from_id$`)
 	kbSQLSameKey      = regexp.MustCompile(`^SELECT id FROM chunks WHERE document_id = '([^']*)' AND (anchor|stable_id) = '((?:[^']|'')*)' AND id <> '([^']*)' AND invalid_at IS NULL ORDER BY id$`)
+	kbSQLRevisedAt    = regexp.MustCompile(`^SELECT chunk_id, MAX\(created_at\) FROM chunk_revisions WHERE chunk_id IN \(((?:'[^']*'(?:, )?)+)\) GROUP BY chunk_id$`)
 	kbSQLLiteral      = regexp.MustCompile(`'([^']*)'`)
 )
 
@@ -493,6 +504,16 @@ func (f *kbFixture) answerSQL(sql string) (tools.Result, error) {
 		for _, c := range all {
 			if want[c.ID] {
 				rows = append(rows, []any{c.ID, c.DocumentID, c.Anchor, c.StableID, c.InvalidAt})
+			}
+		}
+	case kbSQLRevisedAt.MatchString(sql):
+		want := map[string]bool{}
+		for _, lit := range kbSQLLiteral.FindAllStringSubmatch(kbSQLRevisedAt.FindStringSubmatch(sql)[1], -1) {
+			want[lit[1]] = true
+		}
+		for _, c := range all {
+			if want[c.ID] && c.RevisedAt > 0 {
+				rows = append(rows, []any{c.ID, c.RevisedAt})
 			}
 		}
 	case kbSQLSupersededBy.MatchString(sql):
@@ -673,6 +694,9 @@ func (f *kbFixture) statementJSON(s *kbStatement, previewCap int) map[string]any
 	}
 	if s.ValidAt != 0 {
 		out["valid_at"] = s.ValidAt
+	}
+	if s.VerifiedAt != 0 {
+		out["verified_at"] = s.VerifiedAt
 	}
 	if s.Discriminator != "" {
 		out["discriminator"] = s.Discriminator

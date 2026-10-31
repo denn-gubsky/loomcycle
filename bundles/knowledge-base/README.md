@@ -2,7 +2,8 @@
 
 The links agent. `kb/linker` builds and maintains the relations (statements)
 between a document's passages and the rest of the store, using only rules the
-tenant's ontology declares. Every model-judged relation stays report-only.
+tenant's ontology declares. A model-judged relation is only ever proposed, and
+only of the kinds the bundle lets the relate layer write (`elaborates`).
 
 | agent | provider | tools | role |
 |---|---|---|---|
@@ -39,7 +40,7 @@ One pass covers one document. The layers run in this order:
 | **L1 anchors** | each live part's anchor and stable id | nothing. It reports parts without an anchor, duplicate anchors (`…~2`, by id) and parts without a stable id |
 | **L2 cite** | the citations the document class's `@citation_grammar` finds | one statement per citation, from the citing passage to the cited part, `method: rule:citation`. A citation to a held work whose part is missing points at the work's root; one to an unheld work gets a placeholder. The grammar's `kind` is used only when the ontology declares it and it is not reserved; otherwise the statement is `cites` |
 | **L3 terms** | the concepts of the scheme named by `terms_scheme`: their name and alternative labels | `uses_term` from each passage to each concept it mentions, `method: rule:terms`; or `defines`, `method: rule:definitions`, for a term a definitions passage defines (see below). Matches are exact or case-folded with whitespace collapsed, on word boundaries, and the longest match wins. **Tenant scope only**, because concepts live there; at user or agent scope the matches are counted and nothing is written |
-| **L4 relate** | semantic neighbours from `related`, judged by `kb/verdict` | **nothing, ever.** It runs only when `corpus_paths` is given or `L4` is listed, and its findings go in the report |
+| **L4 relate** | semantic neighbours from `related`, judged by `kb/verdict` | in `propose` mode, `elaborates` only: one proposal per passage and target document, with both quotes as evidence, by `extractor:relate`. Every other kind stays in the report. It runs only when `corpus_paths` is given or `L4` is listed |
 | **L6 maintain** | every live statement with an end in the document, or with evidence citing it | see below |
 
 L2 and L3 need a confirmed ontology with relation kinds. Without one they skip
@@ -66,6 +67,27 @@ opening quote. So in "1) договір — угода …" the passage defines 
   instead, counted as `defines_not_declared`.
 - Terms are matched in the passage's body, so a term that appears only in a
   chunk title is not seen.
+
+### L4: what a relation proposal needs
+
+A verdict becomes a proposal only when all of these hold:
+- its kind is one the bundle lets L4 write (`relate_propose_kinds`, `elaborates`
+  today) and the tenant's ontology declares it. The other kinds are judged and
+  reported, never written (`propose_kind_off`, `propose_kind_not_declared`);
+- both quotes occur verbatim, the passage's in the passage and the candidate's
+  in the candidate. There is no confidence floor: on a real corpus, confidence
+  did not separate right verdicts from wrong ones;
+- neither quote lies in a paragraph the document's class marks with
+  `@boilerplate` (`quotes_in_boilerplate`). Those paragraphs are also left out
+  of what the verdict is shown; a passage with too little left is skipped, and
+  a candidate with nothing left is not sent;
+- it is the best-supported finding for its passage and target document: the
+  highest confidence, then the candidate's rank. The others are counted
+  (`propose_capped`) and stay in the report's `findings`.
+
+A proposal is always `proposed`, by `extractor:relate`, with the verdict's
+confidence and both quotes as evidence. An operator's rejection stands: the
+runtime refuses to file a rejected relation again.
 
 ### L6: maintaining what exists
 
@@ -100,6 +122,19 @@ For each statement, the first check that fails decides the outcome:
 5. **Redundancy.** Statements left identical once a kind dropped its
    discriminator are merged into the oldest of the same status. A duplicate of
    another status is flagged.
+6. **Semantics** (only with `rejudge: true`). A model-made statement
+   (`extractor:*`) that passed 1–5, of a kind the relate vocabulary knows, is
+   judged again by `kb/verdict` when its passage's or its target's body was
+   rewritten since it was last verified (or filed). Nothing that did not change
+   costs a model call.
+   - The same kind, same direction, with quotes that occur: verified.
+   - A kind the relate layer may file: proposed as a revision of it
+     (`propose_statement` with its `id`), and the statement is flagged.
+   - Anything else (none, an unquotable answer, a kind L4 may not file):
+     flagged.
+
+   A second opinion never expires or demotes a statement: a person decides. A
+   person's statement, or one an operator ruled on, is never re-judged.
 
 If every check passes, the statement is verified.
 
@@ -125,6 +160,7 @@ These rules always hold:
 | `document` (default) | `document_id` or `path` | L0, L1, L2, L3, L6 (+ L4 with `corpus_paths`) |
 | `maintain` | `document_id` or `path` | L6 |
 | `drain` | the `documents/ingested` queue, up to `max_messages` | L0, L1, L2, L3, L6 per message |
+| `subject` | the subject's document (`document_id` or `path`), whose root is the subject | L6 |
 
 | `write` | does |
 |---|---|
@@ -141,6 +177,13 @@ These rules always hold:
   covers the whole document.
 
 Drain runs at user scope only: the queue the bundle declares is user-scoped.
+
+**Subject** checks every statement touching a subject, for a curator to run after
+changing one. With `merged_into` (the surviving subject's document id), each
+statement with the subject as an end is filed again with the survivor in its
+place (same kind, evidence and date, `attributes.revision_of` the original) and
+then expired; a person's statement, or one an operator ruled on, is flagged
+instead. The other statements touching the subject get the ordinary checks.
 
 To link documents on import, add an opt-in schedule. Import latency is then the
 schedule's interval:
@@ -174,7 +217,7 @@ curl -sX POST localhost:8080/v1/runs \
 
 | field | default | meaning |
 |---|---|---|
-| `mode` | `document` | `document`, `maintain` or `drain` |
+| `mode` | `document` | `document`, `maintain`, `drain` or `subject` |
 | `document_id` or `path` | exactly one (none in drain) | the document |
 | `scope` | `user` | `user`, `agent` or `tenant` (drain: `user`) |
 | `layers` | per mode | any of `L0`, `L1`, `L2`, `L3`, `L4`, `L6`; `maintain` takes `L6` only |
@@ -185,7 +228,9 @@ curl -sX POST localhost:8080/v1/runs \
 | `max_statements` | `500` | cap on statements L6 checks per document (1–5000) |
 | `max_messages` | `10` | messages a drain processes (1–100) |
 | `corpus_paths` | — | L4 only: where its candidates come from |
-| `exclude_document_types`, `candidate_floor`, `max_candidates_per_chunk`, `max_verdict_calls`, `max_chars`, `min_body_chars`, `relations`, `include_quotes` | as before | L4 only. `min_body_chars` also bounds which passages L3 reads |
+| `exclude_document_types`, `candidate_floor`, `max_candidates_per_chunk`, `max_verdict_calls`, `max_chars`, `min_body_chars`, `relations`, `include_quotes` | as before | L4 only. `min_body_chars` also bounds which passages L3 reads; `max_verdict_calls` and `relations` also bound and name what L6's `rejudge` asks |
+| `rejudge` | `false` | L6 check 6: judge a model-made statement again when its text changed |
+| `merged_into` | — | subject mode: the document of the subject this one was merged into |
 
 An unknown field or an out-of-range value refuses the run with
 `{"status":"refused","reason":…}`, before any tool call or lease.
@@ -240,6 +285,7 @@ agents:
 
 ## Cost
 
-The linker makes no model call except in L4. L4 spends one `kb/verdict` call per
-claim-bearing passage that has candidates, capped by `max_verdict_calls`, and
-runs only when asked for. Nothing is scheduled unless you add a schedule.
+The linker makes no model call except in L4 and in L6's `rejudge`. L4 spends one
+`kb/verdict` call per claim-bearing passage that has candidates, capped by
+`max_verdict_calls`, and runs only when asked for; `rejudge` spends one per
+changed statement, under the same cap. Nothing is scheduled unless you add a schedule.

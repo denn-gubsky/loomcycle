@@ -162,6 +162,13 @@ func (d *Document) definitionalChunks(ctx context.Context, key sqlmem.ScopeKey, 
 // effective @definitions pattern; nil when the ontology is a draft, unreadable, or no
 // document class has one. The read is the shared cached one and is not mutated.
 func (d *Document) definitionsPatterns(ctx context.Context) map[string]string {
+	return d.classPatterns(ctx, "definitions")
+}
+
+// classPatterns maps each confirmed document class (lower-cased name) to its effective
+// value of the pattern directive name; nil when the ontology is a draft, unreadable, or
+// no document class has one.
+func (d *Document) classPatterns(ctx context.Context, name string) map[string]string {
 	read, ok := d.tenantOntologyRead(ctx)
 	if !ok || !read.Confirmed {
 		return nil
@@ -171,7 +178,7 @@ func (d *Document) definitionsPatterns(ctx context.Context) map[string]string {
 		if !c.IsDocumentClass {
 			continue
 		}
-		if p := memrank.EffectiveDirective(c, "definitions"); p != "" {
+		if p := memrank.EffectiveDirective(c, name); p != "" {
 			if out == nil {
 				out = map[string]string{}
 			}

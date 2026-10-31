@@ -70,6 +70,13 @@ A document class can say where its documents define their terms:
 and everything under it, as a definitions passage, so a link from there reads as
 "defines" rather than "uses". A subclass inherits it.
 
+A document class can also name its boilerplate: `@boilerplate (?i)^набирає чинності`
+marks every paragraph the pattern matches as text no relation is drawn from — an
+amendment instruction, an effective-date clause, a review or ownership line. Write
+one `@boilerplate` line per kind; they are joined as alternatives. A pattern
+matches anywhere in a paragraph, so anchor it with `^` to match how one starts. A
+subclass inherits it.
+
 **Relation kinds.** A `@section relations` heading names the kinds of link agents
 may record between two things. Declaring one — even an empty one — switches on the
 standard kinds (`cites`, `based_on`, `amends`, `implements`, `related`, …) for every

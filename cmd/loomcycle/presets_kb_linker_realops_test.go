@@ -64,7 +64,13 @@ func realDoc(t *testing.T, d *builtin.Document, ctx context.Context, body string
 // complete.
 func runRealLinker(t *testing.T, d *builtin.Document, ctx context.Context, input string) map[string]any {
 	t.Helper()
-	f := newKBFixture()
+	return runRealLinkerWith(t, d, ctx, input, newKBFixture())
+}
+
+// runRealLinkerWith is runRealLinker with f standing in for the verdict agent and the
+// queue, so a test can script the verdict and count the model calls.
+func runRealLinkerWith(t *testing.T, d *builtin.Document, ctx context.Context, input string, f *kbFixture) map[string]any {
+	t.Helper()
 	agent := knowledgeBaseConfig(t).Agents["kb/linker"]
 	set := []tools.Tool{d, &kbFakeAgent{f: f}, &kbFakeChannel{f: f}}
 	res, err := loop.Run(ctx, loop.RunOptions{
@@ -359,5 +365,56 @@ func TestKBLinker_NewEditionCitationsAgainstTheRealDocumentTool(t *testing.T) {
 		if live[k] != v {
 			t.Errorf("%s cites %+v, want %+v", k, live[k], v)
 		}
+	}
+}
+
+// TestKBLinker_RejudgeAgainstTheRealDocumentTool: check 6 reads when a statement was
+// filed or last verified (get_edge) and when its ends' bodies were last written (the
+// chunk_revisions log) from the real tool. A statement whose text did not change since
+// costs no model call; once its target is edited, the verdict is asked again, and a
+// relation it no longer finds is flagged for a person, not expired.
+func TestKBLinker_RejudgeAgainstTheRealDocumentTool(t *testing.T) {
+	d, ctx := realDocument(t)
+	target := realDoc(t, d, ctx, `{"op":"create_document","scope":"user","title":"Target"}`)["document_id"].(string)
+	law := realDoc(t, d, ctx, `{"op":"create_document","scope":"user","title":"Law"}`)["document_id"].(string)
+	c1 := realDoc(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"user","document_id":%q,"title":"Clause 1","body":%q}`, target, kbBodyClaim))["id"].(string)
+	x1 := realDoc(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"user","document_id":%q,"title":"Article 1","body":%q}`, law, kbBodyLaw))["id"].(string)
+	st := realDoc(t, d, ctx, fmt.Sprintf(`{"op":"propose_statement","scope":"user","from_id":%q,"to_id":%q,"kind":"elaborates","method":"extractor:relate","confidence":0.7,"evidence":[{"chunk_id":%q,"quote":"report a material incident"},{"chunk_id":%q,"quote":"in any case within 72 hours"}]}`,
+		c1, x1, c1, x1))["id"].(string)
+	in := fmt.Sprintf(`{"mode":"maintain","document_id":%q,"write":"propose","rejudge":true}`, target)
+	none := `[{"candidate": 1, "kind": "none"}]`
+
+	// Filed after both ends were written, and verified by this pass: nothing changed
+	// since, so no model call.
+	g := newKBFixture()
+	g.defaultVerdict = none
+	rep := runRealLinkerWith(t, d, ctx, in, g)
+	if n := len(g.callsOf("Agent", "")); n != 0 {
+		t.Errorf("unchanged: verdict calls = %d, want 0", n)
+	}
+	if n := layerCount(t, rep, "L6", "rejudge_unchanged"); n != 1 {
+		t.Errorf("unchanged: rejudge_unchanged = %v, want 1", n)
+	}
+	if e := realDoc(t, d, ctx, fmt.Sprintf(`{"op":"get_edge","scope":"user","id":%q}`, st))["statement"].(map[string]any); e["verified_at"] == nil {
+		t.Fatalf("statement = %v, want verified by the first pass", e)
+	}
+
+	// The target's body is rewritten (its quote kept): judged again, and flagged.
+	got := realDoc(t, d, ctx, fmt.Sprintf(`{"op":"get_chunk","scope":"user","id":%q}`, x1))
+	realDoc(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"user","id":%q,"revision":%v,"body":%q}`,
+		x1, got["revision"], kbBodyLaw+" Records are kept for five years."))
+	h := newKBFixture()
+	h.defaultVerdict = none
+	rep = runRealLinkerWith(t, d, ctx, in, h)
+	if n := len(h.callsOf("Agent", "")); n != 1 {
+		t.Errorf("changed: verdict calls = %d, want 1", n)
+	}
+	if n := layerCount(t, rep, "L6", "rejudged_none"); n != 1 {
+		t.Errorf("changed: rejudged_none = %v, want 1", n)
+	}
+	e := realDoc(t, d, ctx, fmt.Sprintf(`{"op":"get_edge","scope":"user","id":%q}`, st))["statement"].(map[string]any)
+	attrs, _ := e["attributes"].(map[string]any)
+	if attrs["needs_review"] != true || e["expired_at"] != nil {
+		t.Errorf("statement = %v, want flagged for review and still live", e)
 	}
 }

@@ -75,7 +75,7 @@ var knownDirectives = map[string]bool{
 	// classes
 	"memory_scope": true, "identity": true, "identifier_pattern": true,
 	"title_pattern": true, "anchor_grammar": true, "citation_grammar": true,
-	"exclude": true, "renamed_from": true, "definitions": true,
+	"exclude": true, "renamed_from": true, "definitions": true, "boilerplate": true,
 	// relations
 	"inverse": true, "domain": true, "range": true, "symmetric": true,
 	"asymmetric": true, "irreflexive": true, "transitive": true,
@@ -353,6 +353,7 @@ type ClassDecl struct {
 	AnchorGrammar     string
 	CitationGrammar   string
 	Definitions       string
+	Boilerplate       string
 	Exclude           []string
 	RenamedFrom       string
 	Issues            []string
@@ -389,6 +390,18 @@ func ParseClassBody(body string) ClassDecl {
 			default:
 				d.Definitions = dir.Value
 			}
+		case "boilerplate":
+			// One pattern per line, any number of lines: a tenant names its kinds of
+			// boilerplate one at a time and they are joined as alternatives. A line
+			// that does not compile is reported and dropped; the others stand.
+			if _, issue := compileOntologyPattern(dir.Value); issue != "" {
+				d.Issues = append(d.Issues, "@boilerplate "+issue+"; ignored")
+				continue
+			}
+			if d.Boilerplate != "" {
+				d.Boilerplate += "|"
+			}
+			d.Boilerplate += "(?:" + dir.Value + ")"
 		case "anchor_grammar":
 			if names := GrammarNames(dir.Value); len(names) > 0 {
 				d.AnchorGrammar = names[0]
