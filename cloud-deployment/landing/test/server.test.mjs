@@ -35,6 +35,9 @@ function fakeRuntime() {
     port: 0, recover: true, log: [], codes: [], tenants: new Map(), logins: new Map(),
     // inject: (req) => {status, body} | undefined — a one-off upstream answer.
     inject: null, linkOrigin: null, delayMs: 0,
+    // version is what the unauthenticated GET /healthz reports (null = the
+    // route answers 500); healthzHits counts those reads, kept out of `log`.
+    version: "1.129.1", healthzHits: 0,
   };
   const T = (id) => {
     if (!f.tenants.has(id)) f.tenants.set(id, { booted: false, users: new Map(), ids: new Map(), invites: new Map() });
@@ -88,6 +91,12 @@ function fakeRuntime() {
       const u = new URL(req.url, "http://x");
       const segs = u.pathname.split("/").slice(1).map(decodeURIComponent);
       let body = null; try { body = raw ? JSON.parse(raw) : null; } catch { body = "<invalid>"; }
+      if (u.pathname === "/healthz" && req.method === "GET") {
+        f.healthzHits++;
+        if (req.headers.authorization) return err(res, 400, "healthz_needs_no_bearer");
+        if (f.version === null) return err(res, 500, "internal");
+        return send(res, 200, { ok: true, version: f.version });
+      }
       const rec = { method: req.method, rawPath: req.url, path: u.pathname, segs, query: Object.fromEntries(u.searchParams), body, auth: req.headers.authorization || "" };
       f.log.push(rec);
       if (u.pathname === "/v1/_operatortokendef" && req.method === "POST") {
@@ -948,9 +957,9 @@ describe("shared-tenant mode (LANDING_TENANT)", () => {
   });
   // The cap tests each get their own landing and tenant: the limits are in the
   // landing's memory and the pending count is the tenant's.
-  async function ownShared(tenant, fn) {
+  async function ownShared(tenant, fn, env = {}) {
     const inst = await startLanding({ LOOMCYCLE_URL: `http://127.0.0.1:${fake.port}`, MINT_DEV_ALLOW_UNVERIFIED: "1", APP_ORIGIN: ORIGIN,
-      LANDING_TENANT: tenant, LOOMCYCLE_AUTH_MANAGE_TOKEN: MANAGE, AUTH_GATE: GATE, APP_URL: `http://127.0.0.1:${fake.port}`, SIGNUP_RETURN_TO: RETURN_TO });
+      LANDING_TENANT: tenant, LOOMCYCLE_AUTH_MANAGE_TOKEN: MANAGE, AUTH_GATE: GATE, APP_URL: `http://127.0.0.1:${fake.port}`, SIGNUP_RETURN_TO: RETURN_TO, ...env });
     try { await fn(inst); } finally { inst.child.kill("SIGKILL"); }
   }
   const websiteInvite = (tenant, login) => fake.addInvite(tenant, { login, email: login, return_to: RETURN_TO });
@@ -973,6 +982,85 @@ describe("shared-tenant mode (LANDING_TENANT)", () => {
       }
       assert.deepEqual((await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} })).json, { error: "signup_limit" });
     });
+  });
+  // The runtime must be new enough to hold sign-ups pending: an older one
+  // ignores new_user.status and would admit every sign-up as an active member.
+  test("signup is allowed only from a runtime at or above LANDING_MIN_RUNTIME_VERSION", async () => {
+    const table = [
+      ["1.129.1", true], ["v1.129.1", true], ["1.129.2", true], ["1.129.10", true], ["1.130.0", true], ["2.0.0", true],
+      ["1.129.1+build.7", true], ["1.1000.0", true],
+      ["1.99.0", false], ["1.129.0", false], ["v1.128.9", false], ["1.129.1-rc.1", false], ["0.999.999", false],
+      ["devel", false], ["unknown", false], ["docker", false], ["", false], ["1.129", false], [7, false], [null, false],
+    ];
+    await ownShared("shared-version-" + rnd(3), async (inst) => {
+      try {
+        for (const [version, allowed] of table) {
+          fake.version = version === null ? undefined : version;
+          const m = mark();
+          const r = await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} });
+          if (allowed) {
+            assert.equal(r.status, 200, `${JSON.stringify(version)}: ${r.text}`);
+          } else {
+            assert.equal(r.status, 503, `${JSON.stringify(version)}: ${r.text}`);
+            assert.deepEqual(r.json, { error: "approval_unavailable" });
+            assert.equal(mutations(m).length, 0, `${JSON.stringify(version)}: nothing written`);
+          }
+        }
+      } finally { fake.version = "1.129.1"; }
+    });
+  });
+  test("a configured minimum is honoured, and a refusal spends no limit and is logged once", async () => {
+    await ownShared("shared-min-" + rnd(3), async (inst) => {
+      const email = newEmail(), ip = "203.0.113.90";
+      // 12 refusals for one visitor from one address: none is a 429, so the
+      // runtime's refusal gave every slot back
+      for (let i = 0; i < 12; i++) {
+        const r = await call(inst, "POST", "/api/signup", { email, ip, body: {} });
+        assert.equal(r.status, 503, r.text);
+      }
+      await new Promise((r) => setTimeout(r, 50));
+      assert.equal(inst.logs().split("\n").filter((l) => l.includes("signup refused: runtime version")).length, 1, inst.logs());
+      assert.match(inst.logs(), /runtime >= 1\.130\.0/);
+      fake.version = "1.130.0";
+      try {
+        assert.equal((await call(inst, "POST", "/api/signup", { email, ip, body: {} })).status, 200);
+      } finally { fake.version = "1.129.1"; }
+    }, { LANDING_MIN_RUNTIME_VERSION: "1.130.0" });
+  });
+  test("an unreachable or failing /healthz refuses signup with nothing written", async () => {
+    fake.version = null;
+    try {
+      const m = mark();
+      const r = await call(shared, "POST", "/api/signup", { email: newEmail(), body: {} });
+      assert.equal(r.status, 502);
+      assert.deepEqual(r.json, { error: "runtime_unreachable" });
+      assert.equal(since(m).length, 0);
+    } finally { fake.version = "1.129.1"; }
+  });
+  test("the version is read before each signup, and at startup", async () => {
+    const before = fake.healthzHits;
+    await ownShared("shared-hits-" + rnd(3), async (inst) => {
+      await new Promise((r) => setTimeout(r, 100));
+      const atBoot = fake.healthzHits - before;
+      assert.ok(atBoot >= 1, "read at startup");
+      await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} });
+      await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} });
+      assert.equal(fake.healthzHits - before - atBoot, 2);
+    });
+  });
+  test("a LANDING_MIN_RUNTIME_VERSION that is not a version refuses to boot", async () => {
+    for (const bad of ["latest", "1.129", "x1.2.3"]) {
+      const r = await bootExit({ LOOMCYCLE_URL: `http://127.0.0.1:${fake.port}`, MINT_DEV_ALLOW_UNVERIFIED: "1",
+        LANDING_TENANT: SHARED, LANDING_MIN_RUNTIME_VERSION: bad });
+      assert.notEqual(r.code, 0, bad);
+      assert.match(r.logs, /LANDING_MIN_RUNTIME_VERSION must be/);
+    }
+  });
+  test("per-person mode never reads the runtime version", async () => {
+    const before = fake.healthzHits;
+    const r = await call(on, "POST", "/api/signup", { email: newEmail(), body: {} });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(fake.healthzHits, before);
   });
   test("a capped identity leaves the tenant's budget to a second identity", async () => {
     await ownShared("shared-second-" + rnd(3), async (inst) => {

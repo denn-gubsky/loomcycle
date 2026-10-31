@@ -1943,6 +1943,7 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
       case 'rate_limited': return 'Too many attempts — wait a while and try again.';
       case 'invite_limit': return 'Your invite limit for today is used up. Try again tomorrow.';
       case 'signup_limit': return 'Too many requests for access right now. Try again later.';
+      case 'approval_unavailable': return 'Sign-ups are paused until the runtime is updated. Try again later.';
       case 'too_many_pending': return 'Too many invites are still pending. Revoke some first.';
       case 'target_beyond_floor': return ctx === 'self'
         ? 'Password recovery for owners is turned off on this deployment. Change your password in the app (/ui/account).'

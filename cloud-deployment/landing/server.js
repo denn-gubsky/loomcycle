@@ -34,8 +34,10 @@
 // access, and a tenant operator approves the new user in the app), while
 // /api/team/* and /api/mint answer 404: in a tenant everyone shares, a website
 // team console would let any visitor manage every member, and minting needs the
-// admin token this mode does not hold. Without LANDING_TENANT the landing keeps
-// the per-person tenants described above.
+// admin token this mode does not hold. Signup also refuses unless the runtime's
+// /healthz version is at least LANDING_MIN_RUNTIME_VERSION, the first release
+// that holds a sign-up pending (runtimeHoldsSignups). Without LANDING_TENANT
+// the landing keeps the per-person tenants described above.
 
 import express from "express";
 import { createRemoteJWKSet, jwtVerify } from "jose";
@@ -62,6 +64,24 @@ const SIGNUP_RETURN_TO = process.env.SIGNUP_RETURN_TO || "https://loomcycle.clou
 // Shared-tenant mode: non-empty = every visitor signs up into this one tenant.
 const SHARED_TENANT = (process.env.LANDING_TENANT || "").trim();
 const SHARED = SHARED_TENANT !== "";
+// The oldest runtime that holds a website sign-up pending until an operator
+// approves it (the gate's new_user.status: pending). See runtimeHoldsSignups.
+const MIN_RUNTIME_VERSION = (process.env.LANDING_MIN_RUNTIME_VERSION || "1.129.1").trim();
+
+// parseVersion reads a release version as /healthz reports it ("1.129.1",
+// "v1.129.1", "1.130.0-rc.1"); anything else ("devel", "unknown", "") is null.
+function parseVersion(s) {
+  const m = /^v?(\d{1,9})\.(\d{1,9})\.(\d{1,9})(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.exec(String(s || "").trim());
+  return m ? { core: [+m[1], +m[2], +m[3]], pre: !!m[4] } : null;
+}
+// versionAtLeast compares like semver: numerically per part, and a prerelease
+// sorts below its release. An unparseable version is never enough.
+function versionAtLeast(v, min) {
+  const a = parseVersion(v), b = parseVersion(min);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) if (a.core[i] !== b.core[i]) return a.core[i] > b.core[i];
+  return !a.pre || b.pre;
+}
 
 // Fail fast on misconfiguration. The admin token only mints, and shared mode
 // never mints, so only per-person mode needs it.
@@ -73,6 +93,10 @@ if (!SHARED && !ADMIN_TOKEN) {
 // tenant id rule.
 if (SHARED && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(SHARED_TENANT)) {
   console.error("FATAL: LANDING_TENANT must be a loomcycle tenant id (letters, digits, - and _)");
+  process.exit(1);
+}
+if (SHARED && !parseVersion(MIN_RUNTIME_VERSION)) {
+  console.error("FATAL: LANDING_MIN_RUNTIME_VERSION must be a release version such as 1.129.1");
   process.exit(1);
 }
 // The gate name goes into every upstream path, so it gets loomcycle's own gate
@@ -432,6 +456,35 @@ async function manage(method, path, { query, body } = {}) {
   return { status: r.status, json };
 }
 
+// runtimeHoldsSignups reports whether the runtime is new enough to hold a
+// website sign-up pending: "ok", "unreachable", or "too_old" (below
+// MIN_RUNTIME_VERSION, or a version it cannot read). It matters because an
+// older runtime does not refuse the gate's new_user.status: pending — it
+// ignores it — and with the shared tenant's tenant-reach floor every sign-up
+// would then be an active member nobody approved. So shared-mode signup checks
+// this first and fails closed. A refusal is logged once per version seen, not
+// once per request.
+let lastRefusedVersion = null;
+async function runtimeHoldsSignups() {
+  let version;
+  try {
+    const r = await fetch(RUNTIME_URL + "/healthz", {
+      headers: { Accept: "application/json" }, redirect: "manual", signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    });
+    if (!r.ok) return "unreachable";
+    version = (await r.json())?.version;
+  } catch {
+    return "unreachable";
+  }
+  if (versionAtLeast(version, MIN_RUNTIME_VERSION)) { lastRefusedVersion = null; return "ok"; }
+  const seen = typeof version === "string" ? version.slice(0, 64) : "(none)";
+  if (seen !== lastRefusedVersion) {
+    lastRefusedVersion = seen;
+    logWarn(`signup refused: runtime version ${JSON.stringify(seen)} is below LANDING_MIN_RUNTIME_VERSION ${MIN_RUNTIME_VERSION} or unreadable; it cannot hold sign-ups for approval`);
+  }
+  return "too_old";
+}
+
 // sendUpstreamError answers a failed upstream call with a whitelisted code, or
 // an opaque 502. Only the status and the code are logged, never the body.
 function sendUpstreamError(res, label, up) {
@@ -593,6 +646,18 @@ app.post("/api/signup", accountRoute(async (req, res, p) => {
   if (!relTenant) {
     relIp(); relId(); relDay();
     return res.status(429).json({ error: "signup_limit" });
+  }
+  // Shared mode admits nobody unless the runtime will hold them for approval
+  // (runtimeHoldsSignups). Checked after the slots are reserved, so the
+  // limits bound these reads too, and every slot comes back on a refusal:
+  // the visitor did not cause it.
+  if (SHARED) {
+    const held = await runtimeHoldsSignups();
+    if (held !== "ok") {
+      relIp(); relId(); relDay(); relTenant();
+      if (held === "unreachable") return res.status(502).json({ error: "runtime_unreachable" });
+      return res.status(503).json({ error: "approval_unavailable" });
+    }
   }
   const ctx = { wrote: false, created: false, replaced: false };
   let spent = true;
@@ -895,5 +960,12 @@ app.listen(PORT, (err) => {
   console.log(`landing listening on :${PORT} → runtime ${RUNTIME_URL}` +
     (DEV_ALLOW_UNVERIFIED ? " [DEV: Access verification DISABLED]" : ` [CF Access aud=${ACCESS_AUD ? "set" : "unset"}]`) +
     (MANAGE_TOKEN ? ` [accounts: gate ${AUTH_GATE}, app ${APP_URL}]` : " [accounts: off — LOOMCYCLE_AUTH_MANAGE_TOKEN unset]") +
-    (SHARED ? ` [shared tenant ${SHARED_TENANT}: no team console, no minting]` : ""));
+    (SHARED ? ` [shared tenant ${SHARED_TENANT}: no team console, no minting; runtime >= ${MIN_RUNTIME_VERSION}]` : ""));
+  // Say at boot, not only at the first signup, when the runtime cannot hold
+  // sign-ups for approval. The landing still serves the site; signup refuses.
+  if (SHARED) {
+    runtimeHoldsSignups().then((held) => {
+      if (held === "unreachable") logWarn("startup: runtime /healthz unreachable; shared-mode signup refuses until it answers");
+    }, () => {});
+  }
 });
