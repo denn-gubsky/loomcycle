@@ -4499,3 +4499,174 @@ export function authzSimulate(
 ): Promise<{ results: AuthzSimulateResult[] | null; missing_acls?: string[] | null }> {
   return postJSONBody("/v1/_authz/simulate", body, tenant);
 }
+
+// ---- Statement review (GET /v1/_statements/review, POST /v1/_statements/rule
+// and /revert) ----
+//
+// The same shapes as @loomcycle/client's ReviewQueueFilter / RuleStatementsResult;
+// the Web UI keeps its own copy because it pins an older client.
+
+/** Narrows the review queue and selects what a bulk ruling rules. Every field is
+ *  optional and they combine with AND. The time bounds are text (RFC 3339, or unix
+ *  nanoseconds as a decimal string): a nanosecond created_at does not fit a JS
+ *  number exactly. */
+export interface ReviewFilter {
+  status?: string;
+  kind?: string;
+  kinds?: string[];
+  /** A prefix of the method, e.g. `rule:` or `rule:citation`. */
+  method?: string;
+  actor?: string;
+  document_id?: string;
+  under_path?: string;
+  from_document_id?: string;
+  to_document_id?: string;
+  from_under_path?: string;
+  to_under_path?: string;
+  min_confidence?: number;
+  created_before?: string;
+  created_after?: string;
+  has_judge_verdict?: boolean;
+  judge_verdict?: string;
+}
+
+/** One row of the queue's summary: kind × method × from-path prefix × verdict. */
+export interface ReviewGroupCount {
+  kind: string;
+  method: string;
+  /** The from-document's Path name, first two segments; "" when filed nowhere. */
+  from_path_prefix: string;
+  /** attributes.judge.verdict; "" when none. */
+  judge_verdict: string;
+  count: number;
+}
+
+/** A queue row as list_statements renders it: the statement envelope, both
+ *  ends' titles and documents, and up to three evidence rows. */
+export interface ReviewStatement {
+  id: string;
+  from_id: string;
+  to_id: string;
+  kind: string;
+  status?: string;
+  method?: string;
+  actor?: string;
+  confidence?: number;
+  created_at?: number;
+  from_title?: string;
+  to_title?: string;
+  from_document_id?: string;
+  to_document_id?: string;
+  attributes?: Record<string, unknown>;
+  evidence?: { id: string; quote: string; chunk_id?: string; stale?: boolean }[];
+  evidence_count?: number;
+}
+
+export interface ReviewQueueResponse {
+  tenant: string;
+  scope: string;
+  statements: ReviewStatement[] | null;
+  truncated?: boolean;
+  next_cursor?: string;
+  summary?: ReviewGroupCount[] | null;
+  total?: number;
+}
+
+export interface RulingItem {
+  id: string;
+  status?: string;
+  error?: string;
+  message?: string;
+}
+
+export interface RuleStatementsResponse {
+  tenant: string;
+  scope: string;
+  action: "accept" | "reject";
+  dry_run: boolean;
+  ruling_id?: string;
+  /** What the selection matches that the caller may read; a real call's
+   *  expect_count must repeat it. */
+  matched: number;
+  /** The part this call considers: at most `max` (1000), first in queue order. */
+  selected: number;
+  /** Of `selected`, the ones the caller may not rule on — counted, never named. */
+  skipped: number;
+  to_rule: number;
+  ruled: number;
+  failed: number;
+  sample?: ReviewStatement[] | null;
+  breakdown: { kind: string; method: string; count: number }[] | null;
+  items?: RulingItem[] | null;
+}
+
+export interface RevertRulingResponse {
+  tenant: string;
+  scope: string;
+  ruling_id: string;
+  action: string;
+  reverted: number;
+  /** Left as they were: something changed them since the ruling. */
+  changed: number;
+  skipped: number;
+  items: RulingItem[] | null;
+}
+
+export type ReviewScope = "tenant" | "user";
+
+export interface RuleStatementsRequest {
+  action: "accept" | "reject";
+  ids?: string[];
+  filter?: ReviewFilter;
+  reason?: string;
+  dry_run: boolean;
+  expect_count?: number;
+  max?: number;
+  scope?: ReviewScope;
+}
+
+// reviewQueueQuery is the queue's query string: each filter field as a
+// parameter (kinds comma-joined), then the paging and summary options.
+export function reviewQueueQuery(
+  filter: ReviewFilter,
+  opts: { summarize?: boolean; limit?: number; after?: string; scope?: ReviewScope; tenant?: string } = {},
+): string {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(filter)) {
+    if (v === undefined || v === "" || (Array.isArray(v) && v.length === 0)) continue;
+    q.set(k, Array.isArray(v) ? v.join(",") : String(v));
+  }
+  if (opts.summarize) q.set("summarize", "true");
+  if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+  if (opts.after) q.set("after", opts.after);
+  if (opts.scope && opts.scope !== "tenant") q.set("scope", opts.scope);
+  if (opts.tenant) q.set("tenant", opts.tenant);
+  const s = q.toString();
+  return s ? `?${s}` : "";
+}
+
+/** The review queue, or with `summarize` its counts. A caller who may not review
+ *  gets a 403 (`forbidden`). */
+export function listReviewQueue(
+  filter: ReviewFilter,
+  opts: { summarize?: boolean; limit?: number; after?: string; scope?: ReviewScope; tenant?: string } = {},
+): Promise<ReviewQueueResponse> {
+  return jsonFetch<ReviewQueueResponse>(`/v1/_statements/review${reviewQueueQuery(filter, opts)}`);
+}
+
+/** A bulk ruling, or its dry run (`dry_run: true`). A real call must carry the
+ *  dry run's `matched` as `expect_count`; a queue that changed in between is
+ *  refused with 409 `queue_changed` and nothing is ruled. */
+export function ruleStatements(req: RuleStatementsRequest, tenant?: string): Promise<RuleStatementsResponse> {
+  return postJSONBody<RuleStatementsResponse>("/v1/_statements/rule", req, tenant);
+}
+
+/** Undoes a bulk ruling: each statement it ruled and nothing changed since goes
+ *  back to its earlier status. */
+export function revertRuling(rulingId: string, scope?: ReviewScope, tenant?: string): Promise<RevertRulingResponse> {
+  return postJSONBody<RevertRulingResponse>(
+    "/v1/_statements/revert",
+    { ruling_id: rulingId, ...(scope && scope !== "tenant" ? { scope } : {}) },
+    tenant,
+  );
+}
