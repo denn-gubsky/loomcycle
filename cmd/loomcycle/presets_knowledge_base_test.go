@@ -56,16 +56,21 @@ func TestKnowledgeBaseBundle_Validates(t *testing.T) {
 			t.Errorf("kb/linker grants %q — it reaches documents, spawns a judge and reads its queue, nothing more", denied)
 		}
 	}
-	// The Channel grant is the ingest queue, read-only: the linker acks what it
+	// The Channel grant is the two queues, read-only: the linker acks what it
 	// processed and publishes nothing anywhere.
 	if len(linker.Channels.Publish) != 0 {
-		t.Errorf("kb/linker may publish to %v — it only reads its queue", linker.Channels.Publish)
+		t.Errorf("kb/linker may publish to %v — it only reads its queues", linker.Channels.Publish)
 	}
-	if strings.Join(linker.Channels.Subscribe, ",") != "documents/ingested" {
-		t.Errorf("kb/linker subscribes to %v, want exactly [documents/ingested]", linker.Channels.Subscribe)
+	if strings.Join(linker.Channels.Subscribe, ",") != "documents/ingested,memory/subjects" {
+		t.Errorf("kb/linker subscribes to %v, want exactly [documents/ingested memory/subjects]", linker.Channels.Subscribe)
 	}
 	if ch, ok := cfg.Channels["documents/ingested"]; !ok || ch.Scope != "user" {
-		t.Errorf("the bundle must declare documents/ingested at user scope (the scope drain refuses to leave); got %+v declared=%v", ch, ok)
+		t.Errorf("the bundle must declare documents/ingested at user scope (a user drain reads it there); got %+v declared=%v", ch, ok)
+	}
+	// The subject queue is where the runtime publishes: the tenant scope, and only
+	// the runtime — an agent's forged merge would re-point a subject's statements.
+	if ch, ok := cfg.Channels["memory/subjects"]; !ok || ch.Scope != "tenant" || ch.Publisher != "system" {
+		t.Errorf("the bundle must declare memory/subjects at tenant scope, publisher system; got %+v declared=%v", ch, ok)
 	}
 	for _, tool := range linker.Tools {
 		if strings.HasPrefix(tool, "mcp__") {
