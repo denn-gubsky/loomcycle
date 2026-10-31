@@ -1420,6 +1420,21 @@ type ListReviewQueueResult struct {
 	Total      int                `json:"total,omitempty"`
 }
 
+// MarshalJSON writes summary and total whenever the page is a summary (Summary
+// non-nil), zeros included: an empty queue's summary is {summary: [], total: 0},
+// not a page with neither, which reads as rows that were not summarized.
+func (r ListReviewQueueResult) MarshalJSON() ([]byte, error) {
+	type plain ListReviewQueueResult
+	if r.Summary == nil {
+		return json.Marshal(plain(r))
+	}
+	return json.Marshal(struct {
+		plain
+		Summary []ReviewQueueGroup `json:"summary"`
+		Total   int                `json:"total"`
+	}{plain(r), r.Summary, r.Total})
+}
+
 // RuleStatementsRequest is one bulk ruling. Name the statements by IDs or by
 // Filter (the queue's), not both.
 //

@@ -218,3 +218,17 @@ func TestStatementReviewAPI_RuleFilterTakesTimeBoundsAsNumberOrText(t *testing.T
 		t.Errorf("an unreadable bound = %d %v, want 400", code, out)
 	}
 }
+
+// A summary of an empty queue still says so: summary [] and total 0, rather
+// than a page with neither, which reads as "not summarized".
+func TestStatementReviewAPI_SummaryOfAnEmptyQueueCarriesItsZeroCounts(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	op := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: mi.Tenant, Subject: "ops", Scopes: []string{auth.ScopeTenant}})
+	code, out := s.getQueue(t, op, "summarize=true")
+	if code != http.StatusOK || out["total"] != float64(0) || fmt.Sprint(out["summary"]) != "[]" {
+		t.Errorf("empty summary = %d %v, want summary [] and total 0", code, out)
+	}
+	if _, out := s.getQueue(t, op, ""); out["summary"] != nil || out["total"] != nil {
+		t.Errorf("a page of rows carries summary fields: %v", out)
+	}
+}
