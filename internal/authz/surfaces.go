@@ -243,6 +243,13 @@ func HTTPSurface(method, path string) (Surface, bool) {
 			return typeLevel("write", "document"), true
 		}
 		return typeLevel("read", "document"), true
+	// The review queue, a bulk ruling and its undo all ask read: a reviewer
+	// must read what it rules on. `review` is held only by grant on a path and
+	// in no baseline, so asking it here would refuse every member in enforce
+	// mode before its grant is looked at; the connector asks it (or an
+	// operator's write) of each statement's from-document instead.
+	case name == "statements":
+		return typeLevel("read", "document"), true
 	case name == "volumes":
 		return typeLevel("read", "volume"), true
 	case name == "crypto":

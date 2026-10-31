@@ -200,6 +200,40 @@ type Connector interface {
 	// the MCP `ontology` tool (op bind_principal).
 	BindSubjectPrincipal(ctx context.Context, req BindSubjectPrincipalRequest) (BindSubjectPrincipalResult, error)
 
+	// ListReviewQueue lists a document scope's statements awaiting review
+	// (status proposed unless the filter names another), narrowed by the queue
+	// filters, or with req.Summarize their counts grouped by kind × method ×
+	// the from-document's path prefix × judge verdict. Rows the caller may not
+	// read are left out, never counted. Open to an admin, a tenant operator and
+	// a non-isolated member; refused to an isolated user and to a token held to
+	// the run plane. Reachable via GET /v1/_statements/review, the gRPC
+	// ListReviewQueue RPC and the MCP `review` tool (op queue).
+	ListReviewQueue(ctx context.Context, req ListReviewQueueRequest) (ListReviewQueueResult, error)
+
+	// RuleStatements accepts or rejects proposed statements in bulk, by ids or
+	// by a queue filter, at most 1000 per call. A dry run (the default) counts
+	// and samples; the real call needs ExpectCount equal to the current match
+	// count, rules each statement as accept_statement / reject_statement would,
+	// records the ruling (ruled_by bulk:<ruling id>) and is audited. One failure
+	// does not stop the rest.
+	//
+	// Who may rule: an admin or a tenant operator (holding write on each
+	// statement's from-document), or a member holding the ACL `review` grant on
+	// it. A statement the caller may not rule on is skipped and only counted.
+	// Errors wrap the ErrStatementReview* sentinels; StatementReviewCode names
+	// them. Reachable via POST /v1/_statements/rule, the gRPC RuleStatements
+	// RPC and the MCP `review` tool (op rule).
+	RuleStatements(ctx context.Context, req RuleStatementsRequest) (RuleStatementsResult, error)
+
+	// RevertRuling returns each statement a bulk ruling ruled to the status it
+	// had before, when nothing has changed it since (no new evidence, no
+	// maintenance, no later ruling); a rejection's tombstone is lifted. Changed
+	// statements are reported and left. Audited. Same authority as
+	// RuleStatements, asked of each statement. Reachable via POST
+	// /v1/_statements/revert, the gRPC RevertRuling RPC and the MCP `review`
+	// tool (op revert).
+	RevertRuling(ctx context.Context, req RevertRulingRequest) (RevertRulingResult, error)
+
 	// ReplaySession copies a SOURCE session's transcript into a NEW session bound
 	// to a (possibly different) target agent, so that agent continues from the
 	// same context — mirrors POST /v1/sessions/{id}/replay. Provider-specific

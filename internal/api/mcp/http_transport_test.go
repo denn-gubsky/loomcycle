@@ -782,3 +782,15 @@ func (m *httpMockConnector) MergeSubjects(context.Context, connector.MergeSubjec
 func (m *httpMockConnector) BindSubjectPrincipal(context.Context, connector.BindSubjectPrincipalRequest) (connector.BindSubjectPrincipalResult, error) {
 	return connector.BindSubjectPrincipalResult{}, nil
 }
+
+func (m *httpMockConnector) ListReviewQueue(context.Context, connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {
+	return connector.ListReviewQueueResult{}, nil
+}
+
+func (m *httpMockConnector) RuleStatements(context.Context, connector.RuleStatementsRequest) (connector.RuleStatementsResult, error) {
+	return connector.RuleStatementsResult{}, nil
+}
+
+func (m *httpMockConnector) RevertRuling(context.Context, connector.RevertRulingRequest) (connector.RevertRulingResult, error) {
+	return connector.RevertRulingResult{}, nil
+}
