@@ -347,6 +347,8 @@ type LoomcycleClient interface {
 	// the duplicate's facts move under the survivor, its statements are copied
 	// onto the survivor (the originals expired as merged), and the duplicate
 	// stays, retired, naming the survivor (fields.merged_into, status merged).
+	// A user the duplicate is bound to is bound to the survivor instead
+	// (FAILED_PRECONDITION principal_conflict when the survivor names another).
 	// A `merged` event then goes to the tenant's memory/subjects channel unless
 	// the caller's access-control rules hide part of the scope from reading
 	// (not_announced says why).
@@ -355,7 +357,7 @@ type LoomcycleClient interface {
 	// for its own, holding write on both documents (PERMISSION_DENIED
 	// otherwise). A refusal carries a google.rpc.ErrorInfo whose reason is the
 	// code HTTP returns (same_subject, not_a_subject, subject_not_in_scope,
-	// already_merged, ...).
+	// already_merged, principal_conflict, ...).
 	//
 	// Mirrors POST /v1/_ontology/subjects/merge.
 	MergeSubjects(ctx context.Context, in *MergeSubjectsRequest, opts ...grpc.CallOption) (*MergeSubjectsResponse, error)
@@ -1782,6 +1784,8 @@ type LoomcycleServer interface {
 	// the duplicate's facts move under the survivor, its statements are copied
 	// onto the survivor (the originals expired as merged), and the duplicate
 	// stays, retired, naming the survivor (fields.merged_into, status merged).
+	// A user the duplicate is bound to is bound to the survivor instead
+	// (FAILED_PRECONDITION principal_conflict when the survivor names another).
 	// A `merged` event then goes to the tenant's memory/subjects channel unless
 	// the caller's access-control rules hide part of the scope from reading
 	// (not_announced says why).
@@ -1790,7 +1794,7 @@ type LoomcycleServer interface {
 	// for its own, holding write on both documents (PERMISSION_DENIED
 	// otherwise). A refusal carries a google.rpc.ErrorInfo whose reason is the
 	// code HTTP returns (same_subject, not_a_subject, subject_not_in_scope,
-	// already_merged, ...).
+	// already_merged, principal_conflict, ...).
 	//
 	// Mirrors POST /v1/_ontology/subjects/merge.
 	MergeSubjects(context.Context, *MergeSubjectsRequest) (*MergeSubjectsResponse, error)

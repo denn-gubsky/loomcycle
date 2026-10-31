@@ -56,7 +56,8 @@ func mergeSubjectsErrToStatus(err error) error {
 		code = codes.PermissionDenied
 	case errors.Is(err, connector.ErrSubjectMergeNotInScope):
 		code = codes.NotFound
-	case errors.Is(err, connector.ErrSubjectMergeAlreadyMerged), errors.Is(err, connector.ErrSubjectMergeConflict):
+	case errors.Is(err, connector.ErrSubjectMergeAlreadyMerged), errors.Is(err, connector.ErrSubjectMergeConflict),
+		errors.Is(err, connector.ErrSubjectMergePrincipalConflict):
 		code = codes.FailedPrecondition
 	case errors.Is(err, connector.ErrSubjectMergeUnavailable):
 		code = codes.Unavailable

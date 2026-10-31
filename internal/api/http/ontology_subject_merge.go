@@ -55,7 +55,8 @@ func writeSubjectMergeError(w http.ResponseWriter, err error) {
 		status = http.StatusForbidden
 	case errors.Is(err, connector.ErrSubjectMergeNotInScope):
 		status = http.StatusNotFound
-	case errors.Is(err, connector.ErrSubjectMergeAlreadyMerged), errors.Is(err, connector.ErrSubjectMergeConflict):
+	case errors.Is(err, connector.ErrSubjectMergeAlreadyMerged), errors.Is(err, connector.ErrSubjectMergeConflict),
+		errors.Is(err, connector.ErrSubjectMergePrincipalConflict):
 		status = http.StatusConflict
 	case errors.Is(err, connector.ErrSubjectMergeUnavailable):
 		status = http.StatusServiceUnavailable

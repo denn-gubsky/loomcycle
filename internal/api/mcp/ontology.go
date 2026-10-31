@@ -15,11 +15,12 @@ const ontologyToolDescription = "Operator actions on the tenant ontology. " +
 	"Name each by its document id or its natural key; both must be subjects of the tenant scope. " +
 	"In one transaction the duplicate's facts move under the survivor (their keys unchanged), every statement about the duplicate is copied onto the survivor and the original expired as merged (kept for as-of reads, never deleted), " +
 	"and the duplicate stays as a retired document that keeps its key and path and records where it went (fields.merged_into, status merged). " +
+	"A user the duplicate is bound to is bound to the survivor instead; if the survivor is bound to a different user the merge is refused (principal_conflict). " +
 	"A `merged` event then goes to the tenant's memory/subjects channel for the links agent, unless your access-control rules hide part of the tenant's documents from you; not_announced then says why. " +
 	"Returns {tenant, duplicate, survivor, facts_moved, statements_repointed, statements_retired, statements_left, not_announced}. " +
 	"It cannot be undone by another call: choose the survivor with care. " +
 	"For an admin or a tenant operator only, holding write on both documents. The tenant is your own unless you are an admin and pass another. " +
-	"A refusal is {code, error}: same_subject, not_a_subject, subject_not_in_scope, already_merged, forbidden, merge_conflict. " +
+	"A refusal is {code, error}: same_subject, not_a_subject, subject_not_in_scope, already_merged, principal_conflict, forbidden, merge_conflict. " +
 	"Do NOT use it to rename a subject or change its type — edit the subject's document with the document tool."
 
 // ontologyToolSchema is the `ontology` tool's input schema.

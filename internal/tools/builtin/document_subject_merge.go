@@ -17,7 +17,10 @@ package builtin
 //   - the duplicate's root stays, keeps its natural key and its path, and
 //     records where the subject went: fields.merged_into and status `merged`.
 //     A reference by natural key from another scope still resolves, to a root
-//     that names the survivor.
+//     that names the survivor;
+//   - a user the duplicate is bound to (fields.principal) is bound to the
+//     survivor instead, so erasing that person finds the subject that now holds
+//     its facts. Survivor bound to someone else: the merge is refused.
 //
 // It is NOT a Document tool op. Which of two subjects survives is an operator
 // decision, and the operator plane (HTTP, gRPC, the MCP `ontology` tool) is the
@@ -30,6 +33,13 @@ package builtin
 // transaction; a failed transaction restores the previous fields. "Already
 // merged" is judged on the SQL status, the transaction's commit point, so an
 // interrupted attempt can be re-run.
+//
+// The principal binding is in the same plane and moves the same way, before the
+// transaction: the survivor is bound first and the duplicate unbound in its
+// merged_into write, so the person is bound to one of the two at every moment and
+// a failed transaction restores both. All of it runs under the scope's binding
+// lease (as a bind and an erasure's clear do), so none of those can land between
+// the check and the move.
 
 import (
 	"context"
@@ -116,40 +126,89 @@ func (d *Document) MergeSubjects(ctx context.Context, scope, duplicate, survivor
 		}
 	}
 
+	// The binding moves with the subject: see the file note. Held to the end, so
+	// the bindings read here are the ones the merge leaves.
+	releaseBindings, err := d.holdBindingLease(ctx, key, subjectPrincipalLease, operatorSubjectLeaseWait)
+	if err != nil {
+		return out, connector.WithMessage(connector.ErrSubjectMergeConflict,
+			"a subject binding in this scope is being written; nothing was merged, so retry")
+	}
+	defer releaseBindings()
+	dupPrincipal, err := d.subjectPrincipal(ctx, key, mscope, dup.RootChunkID)
+	if err != nil {
+		return out, err
+	}
+	survPrincipal, err := d.subjectPrincipal(ctx, key, mscope, surv.RootChunkID)
+	if err != nil {
+		return out, err
+	}
+	if dupPrincipal != "" && survPrincipal != "" && dupPrincipal != survPrincipal {
+		return out, connector.WithMessage(connector.ErrSubjectMergePrincipalConflict,
+			dup.NaturalKey+" and "+surv.NaturalKey+" are bound to different users; nothing was merged. "+
+				"Clear one of the two bindings first, if they really are one person")
+	}
+
 	plans, left, err := d.planMergeStatements(ctx, key, acl, dup.RootChunkID, surv.RootChunkID)
 	if err != nil {
 		return out, err
 	}
 	out.StatementsLeft = left
 
-	// merged_into before the transaction: see the file note.
+	bindSurvivor := dupPrincipal != "" && survPrincipal == ""
+	if bindSurvivor {
+		if err := d.setSubjectPrincipal(ctx, key, mscope, surv.RootChunkID, dupPrincipal); err != nil {
+			return out, fmt.Errorf("merge_subjects: binding the survivor: %w", err)
+		}
+	}
+	// undo puts the survivor's binding back as it was, after a failure.
+	undo := func(err error) error {
+		if !bindSurvivor {
+			return err
+		}
+		if rerr := d.setSubjectPrincipal(ctx, key, mscope, surv.RootChunkID, ""); rerr != nil {
+			return fmt.Errorf("%w (and restoring the survivor's binding failed: %v)", err, rerr)
+		}
+		return err
+	}
+
+	// merged_into (and the duplicate's binding gone) before the transaction: see the
+	// file note. Read and written as the binding path, under the duplicate's own
+	// lease: an agent's write cannot slip in between and put the binding back.
+	releaseDup, err := d.holdSubjectLease(ctx, key, dup.RootChunkID, operatorSubjectLeaseWait)
+	if err != nil {
+		return out, undo(connector.WithMessage(connector.ErrSubjectMergeConflict,
+			dup.NaturalKey+" is being written; nothing was merged, so retry"))
+	}
+	defer releaseDup()
+	bctx := withPrincipalBindingWrite(ctx)
 	prior, err := d.readBody(ctx, mscope, key, dup.RootChunkID)
 	if err != nil {
-		return out, err
+		return out, undo(err)
 	}
 	// Raw values, so every other field goes back byte for byte: a decode to
 	// interface{} would round a nanosecond timestamp through float64.
 	fields := map[string]json.RawMessage{}
 	if len(prior.Fields) > 0 {
 		if err := json.Unmarshal(prior.Fields, &fields); err != nil {
-			return out, fmt.Errorf("merge_subjects: the duplicate's fields are not an object: %w", err)
+			return out, undo(fmt.Errorf("merge_subjects: the duplicate's fields are not an object: %w", err))
 		}
 	}
 	if fields == nil { // a stored `null`
 		fields = map[string]json.RawMessage{}
 	}
 	fields[subjectMergedIntoField], _ = json.Marshal(surv.DocumentID)
+	delete(fields, subjectPrincipalField)
 	fb, _ := json.Marshal(fields)
-	if err := d.writeBody(ctx, mscope, key, dup.RootChunkID, dup.typ, prior.Body, fb); err != nil {
-		return out, err
+	if err := d.writeBody(bctx, mscope, key, dup.RootChunkID, dup.typ, prior.Body, fb); err != nil {
+		return out, undo(err)
 	}
 
 	moved, top, err := d.applySubjectMerge(ctx, key, dup, surv, plans)
 	if err != nil {
-		if rerr := d.writeBody(ctx, mscope, key, dup.RootChunkID, dup.typ, prior.Body, prior.Fields); rerr != nil {
+		if rerr := d.writeBody(bctx, mscope, key, dup.RootChunkID, dup.typ, prior.Body, prior.Fields); rerr != nil {
 			err = fmt.Errorf("%w (and restoring the duplicate's fields failed: %v)", err, rerr)
 		}
-		return out, err
+		return out, undo(err)
 	}
 	out.FactsMoved = moved
 	for _, p := range plans {

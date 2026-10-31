@@ -344,6 +344,11 @@ var (
 	ErrSubjectMergeConflict = errors.New("connector: a subject changed during the merge")
 	// ErrSubjectMergeUnavailable — this deployment has no SQL Memory.
 	ErrSubjectMergeUnavailable = errors.New("connector: subject merges need SQL Memory")
+	// ErrSubjectMergePrincipalConflict — the duplicate and the survivor are
+	// bound to different users (fields.principal). A merge moves the
+	// duplicate's binding to the survivor, and a subject names one person, so
+	// one of the two bindings must be cleared first.
+	ErrSubjectMergePrincipalConflict = errors.New("connector: the subjects are bound to different users")
 )
 
 // SubjectMergeCode is the stable wire code for a merge refusal: the HTTP
@@ -362,6 +367,7 @@ func SubjectMergeCode(err error) string {
 		{ErrSubjectMergeAlreadyMerged, "already_merged"},
 		{ErrSubjectMergeConflict, "merge_conflict"},
 		{ErrSubjectMergeUnavailable, "unavailable"},
+		{ErrSubjectMergePrincipalConflict, "principal_conflict"},
 	} {
 		if errors.Is(err, c.sentinel) {
 			return c.code
