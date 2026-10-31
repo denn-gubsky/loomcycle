@@ -1172,6 +1172,9 @@ func (d *Document) statementJSON(ctx context.Context, s statementRow, ends map[s
 // linkChunks asserts a relation: a statement with status asserted, method manual
 // (or the internal path's own), and any evidence the caller supplies.
 func (d *Document) linkChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	if r := refuseRuntimeAttributes("link_chunks", in.Attributes); r != nil {
+		return *r, nil
+	}
 	method := in.edgeMethod
 	if method == "" {
 		method = edgeMethodManual
@@ -1242,6 +1245,9 @@ func (d *Document) unlinkChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 // vocabulary marks @auto_assert, made by a rule, with every quote resolved to an
 // existing chunk, is written asserted.
 func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	if r := refuseRuntimeAttributes("propose_statement", in.Attributes); r != nil {
+		return *r, nil
+	}
 	w := edgeWrite{
 		from: in.FromID, to: in.ToID, kind: in.Kind, method: edgeMethodManual, status: edgeStatusProposed,
 		confidence: in.Confidence, validAt: in.ValidAt, invalidAt: in.InvalidAt,
@@ -1956,7 +1962,9 @@ func (d *Document) importEdges(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			if e.env.Status == edgeStatusProposed {
 				w.status, w.authored = edgeStatusProposed, false
 			}
-			w.confidence, w.validAt, w.invalidAt, w.attributes = e.env.Confidence, e.env.ValidAt, e.env.InvalidAt, e.env.Attributes
+			// The importer's own write: it cannot vouch for a verdict or a routing
+			// the trailer claims.
+			w.confidence, w.validAt, w.invalidAt, w.attributes = e.env.Confidence, e.env.ValidAt, e.env.InvalidAt, withoutRuntimeAttributes(e.env.Attributes)
 			for _, ev := range e.env.Evidence {
 				if ev.ChunkID != "" {
 					if mapped, ok := oldToNew[ev.ChunkID]; ok {
