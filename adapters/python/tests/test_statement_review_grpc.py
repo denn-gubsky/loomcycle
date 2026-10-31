@@ -1,5 +1,5 @@
-"""Statement review over gRPC: list_review_queue, rule_statements and
-revert_ruling send their arguments, return the result as a mapping, and a
+"""Statement review over gRPC: list_review_queue, rule_statements,
+revert_ruling and apply_review_policy send their arguments, return the result as a mapping, and a
 refusal carries the code on ``.reason``."""
 
 import datetime
@@ -72,6 +72,21 @@ class _Stub:
                                 selector=pb.RulingSelector(has_filter=True, filter=pb.ReviewQueueFilter(kind_exact="cites"), max=50),
                                 matched=3, ruled=2, failed=1, created_at=7, reverted=True, reverted_at=9, reverted_by="v1"),
             ],
+        )
+
+
+class _PolicyStub:
+    def __init__(self):
+        self.req = None
+
+    async def ApplyReviewPolicy(self, req, metadata=None):
+        self.req = req
+        return pb.ApplyReviewPolicyResponse(
+            tenant="acme", scope="tenant", dry_run=not req.HasField("dry_run") or req.dry_run, source="review", version=7,
+            ruling_id="r2", matched=3, accept=2, judge=1, to_rule=2, ruled=2, marked=1,
+            rules=[pb.PolicyRuleCount(rule=1, action="accept", text="accept kind:cites", count=2)],
+            sample_json=[b'{"id":"s1","review_rule":1}'],
+            items=[pb.RulingItem(id="s1", status="asserted")],
         )
 
 
@@ -184,3 +199,18 @@ async def test_scope_id_and_the_exact_selectors_reach_the_request():
     assert stub.req.scope_id == "bob" and stub.req.filter.from_unfiled
     got = await _client(stub).revert_ruling("r1", scope="user", scope_id="bob")
     assert stub.req.scope_id == "bob" and got["revert_id"] == "v1"
+
+
+@pytest.mark.asyncio
+async def test_apply_review_policy_is_a_dry_run_of_the_whole_queue_unless_told_otherwise():
+    stub = _PolicyStub()
+    got = await _client(stub).apply_review_policy()
+    assert not stub.req.HasField("filter") and not stub.req.HasField("dry_run") and not stub.req.HasField("expect_count")
+    assert got["dry_run"] is True and got["rules"] == [{"rule": 1, "action": "accept", "text": "accept kind:cites", "count": 2}]
+
+    got = await _client(stub).apply_review_policy(filter={"kind": "cites"}, dry_run=False, expect_count=3, max=100, scope="user", scope_id="bob", tenant="globex")
+    assert (stub.req.filter.kind, stub.req.max, stub.req.tenant, stub.req.scope_id) == ("cites", 100, "globex", "bob")
+    assert stub.req.HasField("dry_run") and not stub.req.dry_run and stub.req.expect_count == 3
+    assert (got["ruling_id"], got["ruled"], got["marked"], got["source"], got["version"]) == ("r2", 2, 1, "review", 7)
+    assert got["sample"] == [{"id": "s1", "review_rule": 1}]
+    assert got["items"] == [{"id": "s1", "status": "asserted", "error": "", "message": ""}]

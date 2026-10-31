@@ -1,5 +1,5 @@
-// Statement review: GET /v1/_statements/review, POST /v1/_statements/rule and
-// POST /v1/_statements/revert.
+// Statement review: GET /v1/_statements/review, POST /v1/_statements/rule,
+// POST /v1/_statements/revert and POST /v1/_statements/apply_policy.
 import { describe, expect, it } from "vitest";
 
 import { LoomcycleError } from "../src/index.js";
@@ -122,5 +122,34 @@ describe("scope_id and the exact selectors", () => {
     const rev = await client.revertRuling("r1", { scope: "user", scopeId: "bob" });
     expect(rev.revert_id).toBe("v1");
     expect(JSON.parse(fetchMock.mock.calls[2]![1]!.body as string)).toEqual({ ruling_id: "r1", scope: "user", scope_id: "bob" });
+  });
+});
+
+describe("applyReviewPolicy", () => {
+  const dry = { tenant: "acme", scope: "tenant", dry_run: true, source: "review", version: 7, matched: 3, skipped: 0, accept: 2, reject: 0,
+    judge: 1, human: 0, to_rule: 2, deferred: 0, ruled: 0, failed: 0, marked: 0,
+    rules: [{ rule: 1, action: "accept", text: "accept kind:cites", count: 2 }, { rule: 2, action: "judge", text: "judge kind:elaborates", count: 1 }],
+    sample: [{ id: "s1", review_rule: 1, review_action: "accept" }] };
+
+  it("POSTs a dry run of the whole queue by default, then the application with its count", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse(dry),
+      jsonResponse({ ...dry, dry_run: false, ruling_id: "r2", ruled: 2, marked: 1, items: [{ id: "s1", status: "asserted" }] }),
+    ]);
+    const d = await client.applyReviewPolicy();
+    expect(d.rules[0]!.count).toBe(2);
+    const r = await client.applyReviewPolicy({ filter: { kind: "cites" }, dryRun: false, expectCount: d.matched, max: 100, scope: "user", scopeId: "bob", tenant: "globex" });
+    expect(r.ruling_id).toBe("r2");
+    expect(r.marked).toBe(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe(`${base}/v1/_statements/apply_policy`);
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({});
+    expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toEqual({ filter: { kind: "cites" }, dry_run: false, expect_count: 3, max: 100, scope: "user", scope_id: "bob", tenant: "globex" });
+  });
+
+  it("throws forbidden for a member", async () => {
+    const { client } = makeClient([jsonResponse({ code: "forbidden", error: "applying the review policy is for an admin or a tenant operator" }, 403)]);
+    const err = await client.applyReviewPolicy().catch((e: unknown) => e);
+    expect((err as LoomcycleError).status).toBe(403);
+    expect((err as LoomcycleError).code).toBe("forbidden");
   });
 });

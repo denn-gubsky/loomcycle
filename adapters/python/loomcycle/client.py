@@ -1900,6 +1900,73 @@ class LoomcycleClient:
             ],
         }
 
+    async def apply_review_policy(
+        self,
+        *,
+        filter: Mapping[str, Any] | None = None,
+        dry_run: bool = True,
+        expect_count: int | None = None,
+        max: int = 0,
+        scope: str = "",
+        scope_id: str = "",
+        tenant: str = "",
+    ) -> Mapping[str, Any]:
+        """Run the tenant's review policy (the ontology's Review section, or
+        the policy ``@auto_assert`` implies) over the proposals already in
+        the queue, narrowed by *filter* (the queue's keys; its ``status``,
+        if any, must be ``proposed``; ``None`` is the whole queue). Mirrors
+        ``POST /v1/_statements/apply_policy``.
+
+        A DRY RUN unless ``dry_run=False``: it returns ``matched``, what the
+        policy would ``accept``, ``reject``, route to the ``judge`` or leave
+        for a person (``human``), the count per rule in ``rules`` and a
+        ``sample``. To apply, call again with ``dry_run=False`` and
+        *expect_count* set to the dry run's ``matched``: at most *max*
+        (default and ceiling 1000) accepts and rejects are ruled as one
+        ruling (``ruling_id``, undone by :meth:`revert_ruling`), each
+        statement recording ``ruled_by: policy:<rule>@<ontology version>``;
+        the rest are ``deferred``.
+
+        For an admin or a tenant operator only: a member is refused
+        (``.reason == "forbidden"``) even holding ``review``. Other refusals:
+        ``invalid_request`` (no policy in force, or the Review section has
+        issues), ``queue_changed``, ``unavailable``. *scope_id* names another
+        subject's user scope with ``scope="user"``, as for
+        :meth:`rule_statements`."""
+        req = pb.ApplyReviewPolicyRequest(tenant=tenant, scope=scope, scope_id=scope_id, max=max)
+        if filter is not None:
+            req.filter.CopyFrom(_review_filter_pb(filter))
+        if not dry_run:
+            req.dry_run = False
+        if expect_count is not None:
+            req.expect_count = expect_count
+        try:
+            resp = await self._stub.ApplyReviewPolicy(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "scope": resp.scope,
+            "dry_run": resp.dry_run,
+            "source": resp.source,
+            "version": resp.version,
+            "ruling_id": resp.ruling_id,
+            "matched": resp.matched,
+            "skipped": resp.skipped,
+            "accept": resp.accept,
+            "reject": resp.reject,
+            "judge": resp.judge,
+            "human": resp.human,
+            "to_rule": resp.to_rule,
+            "deferred": resp.deferred,
+            "ruled": resp.ruled,
+            "failed": resp.failed,
+            "marked": resp.marked,
+            "rules": [{"rule": r.rule, "action": r.action, "text": r.text, "count": r.count} for r in resp.rules],
+            "sample": [json.loads(s) for s in resp.sample_json],
+            "items": [_ruling_item(i) for i in resp.items],
+        }
+
     async def compact_run(self, run_id: str, *, reason: str = "") -> Mapping[str, Any]:
         """Summarize a parked run's context (mirror of the HTTP
         ``POST /v1/runs/{run_id}/compact`` + the ``compact_run`` MCP
