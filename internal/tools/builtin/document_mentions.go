@@ -118,20 +118,51 @@ func (d *Document) mentionedIn(ctx context.Context, key sqlmem.ScopeKey, subject
 	return out, nil
 }
 
+// subjectEvent is one message on a scope's `memory/subjects` channel: a subject
+// changed identity (RFC FR §2). The ids are what a consumer acts on — it selects
+// statements by document — and it trusts nothing else in the payload.
+type subjectEvent struct {
+	Op                  string // adopted (merged, retyped, removed, erased: later phases)
+	NaturalKey          string
+	DocumentID          string
+	RootChunkID         string
+	SurvivingKey        string // merged only
+	SurvivingDocumentID string // merged only
+	OldType, NewType    string // retyped only
+}
+
 // publishSubjectEvent tells the scope's `memory/subjects` channel that a subject
-// changed identity — adopted into the registry today; merged, re-typed or erased
-// once those operations exist — so whatever indexes relations by subject (a links
-// agent) can re-point or expire them rather than poll for it. surviving is the key
-// a merged subject now lives under ("" otherwise).
-func (d *Document) publishSubjectEvent(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op, naturalKey, surviving string) {
-	if d.Bus == nil || naturalKey == "" {
-		return
+// changed identity, so whatever indexes relations by subject (a links agent) can
+// re-point or expire them rather than poll for it. It is called after the write
+// that changed the subject has committed.
+//
+// Everyone on the scope's channel reads the event, and it names the subject. So,
+// as for documents/ingested, it is published only when the caller's access-control
+// rules hide no part of the scope from reading. Returns why nothing was published,
+// or "" (also when there is no bus: a tool built without one publishes nothing).
+func (d *Document) publishSubjectEvent(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, ev subjectEvent) string {
+	if d.Bus == nil || ev.NaturalKey == "" {
+		return ""
 	}
-	ev := map[string]any{"op": op, "subject_natural_key": naturalKey, "timestamp": time.Now().UnixNano()}
-	if surviving != "" {
-		ev["surviving_key"] = surviving
+	if limited, err := d.newDocACL(ctx, key).limitsReading(ctx); err != nil || limited {
+		return "memory/subjects was not published: the caller's access-control rules hide part of this scope from reading, so the event could name this subject to subscribers who may not read it"
 	}
-	payload, _ := json.Marshal(ev)
+	if ev.DocumentID == "" && ev.RootChunkID != "" {
+		if res, err := d.query(ctx, key, `SELECT document_id FROM chunks WHERE id = ?`, ev.RootChunkID); err == nil && len(res.Rows) > 0 {
+			ev.DocumentID = asStr(res.Rows[0][0])
+		}
+	}
+	msg := map[string]any{"op": ev.Op, "subject_natural_key": ev.NaturalKey, "timestamp": time.Now().UnixNano()}
+	for k, v := range map[string]string{
+		"document_id": ev.DocumentID, "root_chunk_id": ev.RootChunkID,
+		"surviving_key": ev.SurvivingKey, "surviving_document_id": ev.SurvivingDocumentID,
+		"old_type": ev.OldType, "new_type": ev.NewType,
+	} {
+		if v != "" {
+			msg[k] = v
+		}
+	}
+	payload, _ := json.Marshal(msg)
 	w := d.Writer
 	if w == nil {
 		w = &channels.StorePublisher{Store: d.Store, Bus: d.Bus}
@@ -145,4 +176,5 @@ func (d *Document) publishSubjectEvent(ctx context.Context, key sqlmem.ScopeKey,
 		PublishedBy: tools.RunIdentity(ctx).UserID,
 		MaxMessages: 256,
 	})
+	return ""
 }

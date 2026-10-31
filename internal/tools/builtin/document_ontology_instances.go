@@ -59,6 +59,9 @@ type InstanceReport struct {
 	// kept, never erased.
 	Orphaned []string `json:"orphaned,omitempty"`
 	Errors   []string `json:"errors,omitempty"`
+	// NotAnnounced says why the adoptions were not announced on memory/subjects; empty
+	// when they were (or when nothing was adopted).
+	NotAnnounced string `json:"not_announced,omitempty"`
 }
 
 // AdoptInstances adopts the run's tenant's ontology instances into its entity registry.
@@ -132,7 +135,9 @@ func (d *Document) AdoptInstances(ctx context.Context, dryRun bool) (InstanceRep
 			roots[strings.ToLower(inst.Name)] = root
 			st.State = "adopted"
 			rep.Adopted++
-			d.publishSubjectEvent(ctx, key, mscope, "adopted", st.Key, "")
+			if why := d.publishSubjectEvent(ctx, key, mscope, subjectEvent{Op: "adopted", NaturalKey: st.Key, RootChunkID: root}); why != "" {
+				rep.NotAnnounced = why
+			}
 		}
 		if !dryRun && !trusted {
 			if err := d.setInstanceRegistryKey(ctx, key, mscope, inst.ChunkID, st.Key); err != nil {
