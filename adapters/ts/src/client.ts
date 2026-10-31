@@ -69,6 +69,7 @@ import type {
   ErasureReport,
   ErasureResult,
   MergeSubjectsResult,
+  BindSubjectPrincipalResult,
   Agent,
   AgentEvent,
   AgentList,
@@ -1013,11 +1014,14 @@ export class LoomcycleClient {
    * document recording where it went (`fields.merged_into`, status `merged`).
    * A `merged` event then goes to the tenant's memory/subjects channel, unless
    * the caller's access-control rules hide part of the tenant's documents —
-   * `not_announced` then says why.
+   * `not_announced` then says why. A user the duplicate is bound to is bound to
+   * the survivor instead; a survivor bound to a different user refuses the
+   * merge (`principal_conflict`).
    *
    * For an admin or a tenant operator only. `tenant` is honored only for an
    * admin token. A refusal throws with the server's code: `same_subject`,
-   * `not_a_subject`, `subject_not_in_scope`, `already_merged`, `forbidden`.
+   * `not_a_subject`, `subject_not_in_scope`, `already_merged`,
+   * `principal_conflict`, `forbidden`.
    */
   async mergeSubjects(
     duplicate: string,
@@ -1031,6 +1035,38 @@ export class LoomcycleClient {
       this.ctx,
       `/v1/_ontology/subjects/merge${q}`,
       { duplicate, survivor },
+      opts,
+    );
+  }
+
+  /**
+   * Bind a subject of the tenant ontology to the user it stands for, or clear
+   * the binding with `principal: ""`. `subject` is the subject's document id,
+   * root chunk id or natural key; `principal` a user's subject id, registered
+   * in the tenant (any status). Mirrors POST /v1/_ontology/subjects/principal.
+   *
+   * Erasing that user then finds the subject: the erasure reports it, clears
+   * the binding and announces `erased`; the subject itself is never deleted.
+   * One user per subject (clear before rebinding) and one subject per user.
+   *
+   * For an admin or a tenant operator only. `tenant` is honored only for an
+   * admin token. A refusal throws with the server's code: `subject_not_found`,
+   * `not_a_subject`, `binding_conflict` (naming the subject that holds the
+   * binding), `principal_not_found`, `forbidden`, `invalid_request`,
+   * `unavailable`.
+   */
+  async bindSubjectPrincipal(
+    subject: string,
+    principal: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<BindSubjectPrincipalResult> {
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return postJSON<BindSubjectPrincipalResult>(
+      this.ctx,
+      `/v1/_ontology/subjects/principal${q}`,
+      { subject, principal },
       opts,
     );
   }

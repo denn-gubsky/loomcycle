@@ -1506,9 +1506,14 @@ class LoomcycleClient:
         tiers separated by what they guarantee (RFC BL P5). Read-only.
 
         Returns ``{tenant, subject, tier1_covered, tier2_uncovered,
-        tier3_residue, access, notes, errors}``. ``access`` names what an
+        tier3_residue, access, bound_subjects, bound_subjects_withheld,
+        notes, errors}``. ``access`` names what an
         erasure would remove from the subject's authority:
-        ``{groups, lists, tokens: [{def_id, name}]}``. A key's PRESENCE in a tier's
+        ``{groups, lists, tokens: [{def_id, name}]}``. ``bound_subjects``
+        lists the tenant ontology subjects bound to this principal
+        (``[{document_id, natural_key, path}]``), which an erasure unbinds
+        and keeps; ``bound_subjects_withheld`` counts the ones your
+        access-control rules hide from reading. A key's PRESENCE in a tier's
         ``counts`` means the plane was examined; its value is the row
         count. Absence means NOT examined — a different statement from
         zero.
@@ -1531,6 +1536,8 @@ class LoomcycleClient:
             "tier2_uncovered": _erasure_tier(resp.tier2_uncovered),
             "tier3_residue": _erasure_residue(resp.tier3_residue),
             "access": _erasure_access(resp.access),
+            "bound_subjects": _erasure_bound_subjects(resp.bound_subjects),
+            "bound_subjects_withheld": resp.bound_subjects_withheld,
             "notes": list(resp.notes),
             "errors": list(resp.errors),
         }
@@ -1557,7 +1564,13 @@ class LoomcycleClient:
         groups and lists removed in ``access.groups`` / ``access.lists``.
 
         The usage/cost ledger is retained by design (accounting
-        records) and is reported under ``retained``."""
+        records) and is reported under ``retained``.
+
+        Ontology subjects bound to the principal are unbound, never
+        deleted, and listed in ``bound_subjects`` (the ones you may not
+        read only counted in ``bound_subjects_withheld``); an ``erased``
+        event is announced for each, and ``not_announced`` says why it
+        was not."""
         req = pb.ErasureExecuteRequest(subject=subject, dry_run=dry_run, confirm=confirm)
         try:
             resp = await self._stub.ErasureExecute(req, metadata=self._auth_metadata())
@@ -1571,6 +1584,9 @@ class LoomcycleClient:
             "retained": dict(resp.retained),
             "residue": _erasure_residue(resp.residue),
             "access": _erasure_access(resp.access),
+            "bound_subjects": _erasure_bound_subjects(resp.bound_subjects),
+            "bound_subjects_withheld": resp.bound_subjects_withheld,
+            "not_announced": resp.not_announced,
             "errors": list(resp.errors),
             "notes": list(resp.notes),
         }
@@ -1592,11 +1608,15 @@ class LoomcycleClient:
         caller's access-control rules hide part of the tenant's
         documents — ``not_announced`` then says why.
 
+        A user the duplicate is bound to is bound to the survivor
+        instead; a survivor bound to a different user refuses the merge
+        (``principal_conflict``).
+
         For an admin or a tenant operator only; *tenant* is honored only
         for an admin token. A refusal raises the error class its gRPC code
         maps to, with the merge code (``same_subject``, ``not_a_subject``,
-        ``subject_not_in_scope``, ``already_merged``, ``forbidden``) on its
-        ``.reason``."""
+        ``subject_not_in_scope``, ``already_merged``, ``principal_conflict``,
+        ``forbidden``) on its ``.reason``."""
         req = pb.MergeSubjectsRequest(duplicate=duplicate, survivor=survivor, tenant=tenant)
         try:
             resp = await self._stub.MergeSubjects(req, metadata=self._auth_metadata())
@@ -1619,6 +1639,43 @@ class LoomcycleClient:
             "statements_retired": resp.statements_retired,
             "statements_left": resp.statements_left,
             "not_announced": resp.not_announced,
+        }
+
+    async def bind_subject_principal(
+        self, subject: str, principal: str, *, tenant: str = ""
+    ) -> Mapping[str, Any]:
+        """Bind a subject of the tenant ontology to the user it stands for,
+        or clear the binding with ``principal=""``. *subject* is the
+        subject's document id, root chunk id or natural key; *principal* a
+        user's subject id, registered in the tenant (any status). Mirrors
+        ``POST /v1/_ontology/subjects/principal``.
+
+        Erasing that user then finds the subject: the erasure reports it,
+        clears the binding and announces ``erased``; the subject itself is
+        never deleted. One user per subject (clear before rebinding) and
+        one subject per user.
+
+        Returns ``{tenant, document_id, root_chunk_id, natural_key, path,
+        principal, previous, changed}``. For an admin or a tenant operator
+        only; *tenant* is honored only for an admin token. A refusal raises
+        the error class its gRPC code maps to, with the code
+        (``subject_not_found``, ``not_a_subject``, ``binding_conflict``,
+        ``principal_not_found``, ``forbidden``, ``invalid_request``,
+        ``unavailable``) on its ``.reason``."""
+        req = pb.BindSubjectPrincipalRequest(subject=subject, principal=principal, tenant=tenant)
+        try:
+            resp = await self._stub.BindSubjectPrincipal(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "document_id": resp.document_id,
+            "root_chunk_id": resp.root_chunk_id,
+            "natural_key": resp.natural_key,
+            "path": resp.path,
+            "principal": resp.principal,
+            "previous": resp.previous,
+            "changed": resp.changed,
         }
 
     async def compact_run(self, run_id: str, *, reason: str = "") -> Mapping[str, Any]:
@@ -3593,6 +3650,16 @@ def _erasure_access(a: Any) -> Mapping[str, Any]:
         "lists": list(a.lists),
         "tokens": [{"def_id": t.def_id, "name": t.name} for t in a.tokens],
     }
+
+
+def _erasure_bound_subjects(subjects: Any) -> List[Mapping[str, Any]]:
+    """Flatten the ontology subjects bound to an erased principal: each
+    named by document id, natural key and path. Ones the caller may not
+    read are not in the list; the response counts them separately."""
+    return [
+        {"document_id": b.document_id, "natural_key": b.natural_key, "path": b.path}
+        for b in subjects
+    ]
 
 
 def _directory_user(u: Any) -> Mapping[str, Any]:
