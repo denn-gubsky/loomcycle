@@ -18,6 +18,7 @@ package builtin
 // scope. That is an operator action (binding, erasure) and never a run's hot path.
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -124,60 +125,156 @@ func (d *Document) subjectPrincipal(ctx context.Context, key sqlmem.ScopeKey, ms
 	return principalOf(cb.Fields), nil
 }
 
-// holdSubjectPrincipal runs before a write replaces chunkID's fields with fields. On a
-// subject root it keeps the stored binding — added back when the write omits it, so a
-// caller rewriting a subject's fields without knowing of the binding does not clear it
-// — and refuses a write that names a DIFFERENT principal (or null). Repeating the
-// stored value is allowed, so an agent's read-modify-write of the fields still works.
-// Any other chunk may carry a field of that name freely: it binds nothing.
-func (d *Document) holdSubjectPrincipal(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op, chunkID string, fields json.RawMessage) (json.RawMessage, *tools.Result, error) {
-	if len(fields) == 0 || isPrincipalBindingWrite(ctx) {
-		return fields, nil, nil
-	}
-	s, found, err := d.subjectRootOf(ctx, key, chunkID, false)
-	if err != nil || !found {
-		return fields, nil, err
-	}
-	stored, err := d.subjectPrincipal(ctx, key, mscope, chunkID)
-	if err != nil {
-		return nil, nil, err
-	}
-	refuse := func() (json.RawMessage, *tools.Result, error) {
-		r := errPermission(principalBindingCode+": "+op+": chunk "+chunkID+" is the subject "+s.NaturalKey+
-			", and its `"+subjectPrincipalField+"` field binds it to a user account. Only an operator sets or "+
-			"clears that binding. Nothing was written.",
-			"Resend the write without the `"+subjectPrincipalField+"` field (the stored binding is kept), or ask "+
-				"an operator to bind or unbind the subject.")
-		return nil, &r, nil
-	}
+// principalChange reports whether a write of fields would set the principal to
+// something other than stored. An absent field changes nothing (the stored binding is
+// kept, see keepStoredPrincipal); null or "" asks for no binding; anything that is not
+// a string, or fields that are not an object while a binding is stored, is a change.
+func principalChange(stored string, fields json.RawMessage) bool {
 	var m map[string]json.RawMessage
 	if json.Unmarshal(fields, &m) != nil {
-		// Fields that are not an object replace the whole blob, binding included.
-		if stored != "" {
-			return refuse()
-		}
-		return fields, nil, nil
-	}
-	if m == nil { // null: no fields, so the binding is all that is kept
-		m = map[string]json.RawMessage{}
+		return stored != ""
 	}
 	raw, present := m[subjectPrincipalField]
 	if !present {
-		if stored == "" {
-			return fields, nil, nil
-		}
-		m[subjectPrincipalField], _ = json.Marshal(stored)
-		out, merr := json.Marshal(m)
-		return out, nil, merr
+		return false
 	}
 	var asked string
 	if string(raw) != "null" && json.Unmarshal(raw, &asked) != nil {
-		return refuse()
+		return true
 	}
-	if strings.TrimSpace(asked) != stored {
-		return refuse()
+	return strings.TrimSpace(asked) != stored
+}
+
+// holdPrincipalField refuses an agent write whose fields would set, change or clear
+// the `principal` field, on ANY chunk: chunkID names the chunk being rewritten, or is
+// "" for one being created. Guarding only subject roots would leave a promotion path —
+// a chunk carrying the field becomes a subject later (homing, adoption, a root gaining
+// a key) and erasure trusts a binding no operator wrote. Reserved everywhere, every
+// value in the store is one BindSubjectPrincipal wrote. Repeating the stored value
+// passes, so an agent's read-modify-write of a subject's fields still works.
+//
+// This is the refusal the caller reads. What a write actually stores is decided again
+// at the write, under the subject's lease (keepStoredPrincipal), because the value read
+// here may be stale by then.
+func (d *Document) holdPrincipalField(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op, chunkID string, fields json.RawMessage) (*tools.Result, error) {
+	if len(fields) == 0 || isPrincipalBindingWrite(ctx) {
+		return nil, nil
 	}
-	return fields, nil, nil
+	var stored string
+	// An object without the field changes nothing, whatever is stored: no read.
+	if chunkID != "" && (bytes.Contains(fields, []byte(`"`+subjectPrincipalField+`"`)) || bytes.TrimSpace(fields)[0] != '{') {
+		var err error
+		if stored, err = d.subjectPrincipal(ctx, key, mscope, chunkID); err != nil {
+			return nil, err
+		}
+	}
+	if !principalChange(stored, fields) {
+		return nil, nil
+	}
+	r := errPermission(principalBindingCode+": "+op+": the `"+subjectPrincipalField+"` field is reserved: on a "+
+		"subject it binds the subject to a user account, and only an operator sets or clears that binding. "+
+		"Nothing was written.",
+		"Resend the write without the `"+subjectPrincipalField+"` field (a stored binding is kept), or ask an "+
+			"operator to bind or unbind the subject.")
+	return &r, nil
+}
+
+// keepStoredPrincipal runs at every body write (putBody) that is not the operator
+// binding path, and makes the written fields carry exactly the stored principal: kept
+// when the write omits it, restored when it names another. holdPrincipalField already
+// refused an agent's change; this closes the race behind it. A write reads the fields
+// (to keep the half it did not send, or to repeat the binding) and writes later, so an
+// operator clear landing in between — an erasure — would be undone by the stale copy
+// and re-bind the erased person. On a subject root the stored value is read and the
+// body written under the subject's lease, which the binding path also holds.
+//
+// Elsewhere no binding can be stored (the field is reserved), so a write without the
+// field is passed through without a read. The returned release must be called after
+// the write.
+func (d *Document) keepStoredPrincipal(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, chunkID string, fields json.RawMessage) (json.RawMessage, func(), error) {
+	noop := func() {}
+	if isPrincipalBindingWrite(ctx) {
+		return fields, noop, nil
+	}
+	isRoot, err := d.isSubjectRootChunk(ctx, key, chunkID)
+	if err != nil {
+		return nil, noop, err
+	}
+	if !isRoot && !bytes.Contains(fields, []byte(`"`+subjectPrincipalField+`"`)) {
+		return fields, noop, nil
+	}
+	release := noop
+	if isRoot {
+		if release, err = d.holdSubjectLease(ctx, key, chunkID); err != nil {
+			return nil, noop, err
+		}
+	}
+	stored, err := d.subjectPrincipal(ctx, key, mscope, chunkID)
+	if err != nil {
+		release()
+		return nil, noop, err
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(fields, &m) != nil || m == nil {
+		if stored == "" {
+			return fields, release, nil
+		}
+		m = map[string]json.RawMessage{}
+	}
+	if stored == "" {
+		if _, ok := m[subjectPrincipalField]; !ok {
+			return fields, release, nil
+		}
+		delete(m, subjectPrincipalField)
+	} else {
+		m[subjectPrincipalField], _ = json.Marshal(stored)
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		release()
+		return nil, noop, err
+	}
+	return out, release, nil
+}
+
+// isSubjectRootChunk reports whether chunkID is a subject root: its document's root,
+// carrying a natural key. Point lookups only, since every body write asks.
+func (d *Document) isSubjectRootChunk(ctx context.Context, key sqlmem.ScopeKey, chunkID string) (bool, error) {
+	res, err := d.query(ctx, key, `SELECT 1 FROM chunks c
+		  JOIN documents doc ON doc.id = c.document_id AND doc.root_chunk_id = c.id
+		  JOIN chunk_memory_meta m ON m.chunk_id = c.id
+		 WHERE c.id = ? AND coalesce(m.natural_key, '') <> '' LIMIT 1`, chunkID)
+	if err != nil {
+		return false, err
+	}
+	return len(res.Rows) > 0, nil
+}
+
+// errSubjectBusy: the subject's binding is being written; the write may be retried.
+var errSubjectBusy = errors.New("this subject's binding is being written by an operator; retry the write")
+
+// holdSubjectLease takes the subject's own lease, which serialises the binding path
+// with every other body write on that subject root. It waits briefly: both sides hold
+// it only for one read and one write.
+func (d *Document) holdSubjectLease(ctx context.Context, key sqlmem.ScopeKey, rootChunkID string) (func(), error) {
+	name, owner := "principal:"+rootChunkID, randomLeaseOwner()
+	for try := 0; ; try++ {
+		lease, err := d.acquireDocumentLease(ctx, key, name, owner, time.Now(), 30*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		if lease.Acquired {
+			return func() { _, _ = d.releaseDocumentLease(context.WithoutCancel(ctx), key, name, owner) }, nil
+		}
+		if try == 20 {
+			return nil, errSubjectBusy
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
 }
 
 // resolveSubjectRef finds a subject by document id, root chunk id or natural key.
@@ -298,6 +395,11 @@ func (d *Document) BindTenantSubjectPrincipal(ctx context.Context, subjectRef, p
 // update_chunk, so the revision moves as for any edit. It skips the operator-only guard:
 // callers are the operator paths in this package (binding, erasure, a subject merge).
 func (d *Document) setSubjectPrincipal(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, rootChunkID, principal string) error {
+	release, err := d.holdSubjectLease(ctx, key, rootChunkID)
+	if err != nil {
+		return err
+	}
+	defer release()
 	cb, err := d.readBody(ctx, mscope, key, rootChunkID)
 	if err != nil {
 		return err
@@ -406,7 +508,8 @@ func (d *Document) ClearTenantSubjectBindings(ctx context.Context, principal str
 	var cleared []SubjectBinding
 	for _, b := range bound {
 		if err := d.setSubjectPrincipal(ctx, key, mscope, b.RootChunkID, ""); err != nil {
-			return cleared, fmt.Errorf("subject %s: %w", b.NaturalKey, err)
+			// The subject is not named: an erasure's errors reach its audit record.
+			return cleared, err
 		}
 		b.Previous, b.Principal, b.Changed = b.Principal, "", true
 		cleared = append(cleared, b)

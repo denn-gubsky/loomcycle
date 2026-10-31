@@ -124,30 +124,94 @@ func TestSubjectPrincipal_AgentFieldWritesKeepTheBinding(t *testing.T) {
 	}
 }
 
-// TestSubjectPrincipal_NonSubjectChunksCarryTheFieldFreely.
+// TestSubjectPrincipal_ReservedOnEveryChunkForAgentWrites.
 //
-// Only a subject root's field binds anything; on a plain document root or a keyed fact
-// under a subject a field of the same name is just data.
-func TestSubjectPrincipal_NonSubjectChunksCarryTheFieldFreely(t *testing.T) {
+// Guarding only subject roots left a promotion path: an agent sets the field on a
+// chunk that is not a subject yet, the chunk later becomes one (homing, adoption, a
+// root gaining a key), and erasure trusts a binding no operator wrote — which also
+// blocks the operator from binding the real subject. So no agent write puts the field
+// on ANY chunk: every value in the store is one the operator path wrote.
+func TestSubjectPrincipal_ReservedOnEveryChunkForAgentWrites(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
 	docID, root := newSubject(t, d, ctx, "user", "Ada", "person", "person:ada")
 	plain, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Notes"}`)
 	if r.IsError {
 		t.Fatalf("create_document: %s", r.Text)
 	}
-	fact, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+root+`",
-		"title":"Ada owns the repo","natural_key":"fact:ada-repo","type":"fact","subject":"Ada","fields":{"principal":"u-x"}}`)
-	if r.IsError {
-		t.Fatalf("upsert fact with the field: %s", r.Text)
+	plainRoot := plain["root_chunk_id"].(string)
+	refused := func(name string, r tools.Result) {
+		t.Helper()
+		if !r.IsError || !strings.HasPrefix(r.Text, "principal_binding_operator_only:") {
+			t.Errorf("%s: got %v %q, want a principal_binding_operator_only refusal", name, r.IsError, r.Text)
+		}
 	}
-	if r := updateFields(t, d, ctx, "user", plain["root_chunk_id"].(string), `{"principal":"u-x"}`); r.IsError {
-		t.Errorf("plain document root: %s", r.Text)
+	_, r = docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+root+`",
+		"title":"Ada owns the repo","natural_key":"person:ada-planted","type":"person","subject":"Ada P","fields":{"principal":"u-x"}}`)
+	refused("upsert of a new keyed chunk", r)
+	_, r = docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","title":"note","fields":{"principal":"u-x"}}`)
+	refused("create_chunk", r)
+	refused("update_chunk on a plain document root", updateFields(t, d, ctx, "user", plainRoot, `{"principal":"u-x"}`))
+	_, r = docExec(t, d, ctx, `{"op":"import_md","scope":"user","path":"/notes/planted",
+		"markdown":"# Planted\n<!-- loom: {\"fields\":{\"principal\":\"u-x\"}} -->\n\nbody\n## Child\n<!-- loom: {\"fields\":{\"principal\":\"u-y\"}} -->\n\nchild\n"}`)
+	refused("import_md", r)
+
+	// A field that is absent, null or empty sets nothing and passes.
+	if r := updateFields(t, d, ctx, "user", plainRoot, `{"principal":null,"color":"blue"}`); r.IsError {
+		t.Errorf("null principal on a plain root: %s", r.Text)
 	}
-	if r := updateFields(t, d, ctx, "user", fact["id"].(string), `{"principal":"u-y"}`); r.IsError {
-		t.Errorf("keyed fact: %s", r.Text)
+	if f, _ := subjectFields(t, d, ctx, "user", plainRoot); f["principal"] != nil {
+		t.Errorf("plain root fields = %v, want no principal", f)
 	}
-	if _, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","natural_key":"fact:ada-repo","title":"Ada owns the repo","fields":{"principal":"u-z"}}`); r.IsError {
-		t.Errorf("re-upsert keyed fact: %s", r.Text)
+	key, mscope, err := d.resolveScope(ctx, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"u-x", "u-y"} {
+		if bound, err := d.SubjectsBoundTo(ctx, key, mscope, p); err != nil || len(bound) != 0 {
+			t.Errorf("subjects bound to %s = %+v, %v; want none", p, bound, err)
+		}
+	}
+	// The operator can still bind the real subject.
+	if _, err := bindInUser(t, d, ctx, "person:ada", "u-x"); err != nil {
+		t.Errorf("operator bind after refused plants: %v", err)
+	}
+}
+
+// TestSubjectPrincipal_StaleAgentWriteCannotRestoreAClearedBinding.
+//
+// An agent write reads the fields (to keep the half it did not send, or to carry the
+// binding) and writes later. An operator clear — an erasure — landing in between must
+// not be undone by the write: after an erasure that would re-bind the erased person.
+// Driven deterministically by handing the write path the fields as they were read
+// before the clear.
+func TestSubjectPrincipal_StaleAgentWriteCannotRestoreAClearedBinding(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	_, root := newSubject(t, d, ctx, "user", "Ada", "person", "person:ada")
+	key, mscope, err := d.resolveScope(ctx, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bindInUser(t, d, ctx, root, "u-ada"); err != nil {
+		t.Fatal(err)
+	}
+	stale := json.RawMessage(`{"principal":"u-ada","size":"l"}`)
+	if _, err := bindInUser(t, d, ctx, root, ""); err != nil { // the erasure's clear
+		t.Fatal(err)
+	}
+	if err := d.updateChunkForUpsert(ctx, key, mscope, root, docInput{Fields: stale}); err != nil {
+		t.Fatalf("upsert write: %v", err)
+	}
+	if f, _ := subjectFields(t, d, ctx, "user", root); f["principal"] != nil || f["size"] != "l" {
+		t.Errorf("after a stale upsert write fields = %v, want size kept and no binding", f)
+	}
+	if err := d.writeBody(ctx, mscope, key, root, "person", "edited", stale); err != nil {
+		t.Fatalf("body write: %v", err)
+	}
+	if f, _ := subjectFields(t, d, ctx, "user", root); f["principal"] != nil {
+		t.Errorf("after a stale body write fields = %v, want no binding", f)
+	}
+	if bound, _ := d.SubjectsBoundTo(ctx, key, mscope, "u-ada"); len(bound) != 0 {
+		t.Errorf("the cleared binding came back: %+v", bound)
 	}
 }
 

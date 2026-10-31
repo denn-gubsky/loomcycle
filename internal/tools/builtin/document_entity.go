@@ -93,16 +93,16 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 		retype = rt
 	}
-	// A subject's binding to a user account is the operator's (see update_chunk).
-	if existing != "" && len(in.Fields) > 0 {
-		held, refused, herr := d.holdSubjectPrincipal(ctx, key, mscope, "upsert_chunk", existing, in.Fields)
+	// The `principal` field is the operator's (see update_chunk); a new chunk is held
+	// to it by create_chunk.
+	if existing != "" {
+		refused, herr := d.holdPrincipalField(ctx, key, mscope, "upsert_chunk", existing, in.Fields)
 		if herr != nil {
 			return errFrom("upsert_chunk: "+herr.Error(), herr), nil
 		}
 		if refused != nil {
 			return *refused, nil
 		}
-		in.Fields = held
 	}
 
 	// upsert_chunk IS the fact-tier write op — every write through it gets a
