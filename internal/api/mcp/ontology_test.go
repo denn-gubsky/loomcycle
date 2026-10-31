@@ -75,3 +75,48 @@ func TestOntologyTool_IsOperatorOnly(t *testing.T) {
 		}
 	}
 }
+
+// ontology op=bind_principal hands its arguments to the connector as they are. A
+// refusal comes back as {code, error}; a call that leaves principal out never
+// reaches the connector, because an empty principal clears a binding; and "" is
+// passed through as the clear it asks for.
+func TestOntologyTool_BindPrincipalDelegatesToTheConnector(t *testing.T) {
+	mc := &mockConnector{bindRes: connector.BindSubjectPrincipalResult{Tenant: "acme", NaturalKey: "person:ada", Principal: "u-ada", Changed: true}}
+	env := &handlerEnv{connector: mc}
+	call := func(args string) *loommcp.CallToolResult {
+		t.Helper()
+		res, err := handleOntology(context.Background(), env, json.RawMessage(args))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+
+	res := call(`{"op":"bind_principal","subject":"person:ada","principal":"u-ada","tenant":"globex"}`)
+	if res.IsError {
+		t.Fatalf("bind: %s", res.Content[0].Text)
+	}
+	if got := mc.bindReq; got.Subject != "person:ada" || got.Principal != "u-ada" || got.Tenant != "globex" {
+		t.Errorf("connector got %+v", got)
+	}
+	var out connector.BindSubjectPrincipalResult
+	if err := json.Unmarshal([]byte(res.Content[0].Text), &out); err != nil || out.Principal != "u-ada" || !out.Changed {
+		t.Errorf("result = %s (%v)", res.Content[0].Text, err)
+	}
+
+	mc.bindReq = connector.BindSubjectPrincipalRequest{}
+	if res := call(`{"op":"bind_principal","subject":"person:ada"}`); !res.IsError || mc.bindReq.Subject != "" {
+		t.Errorf("a call without principal reached the connector: is_error=%v req=%+v", res.IsError, mc.bindReq)
+	}
+	if res := call(`{"op":"bind_principal","subject":"person:ada","principal":""}`); res.IsError || mc.bindReq.Subject != "person:ada" || mc.bindReq.Principal != "" {
+		t.Errorf("a clear did not reach the connector: is_error=%v req=%+v", res.IsError, mc.bindReq)
+	}
+
+	mc.bindErr = connector.WithMessage(connector.ErrSubjectBindConflict, `principal "u-ada" is already bound to subject person:ada-king`)
+	res = call(`{"op":"bind_principal","subject":"a","principal":"u-ada"}`)
+	var refusal struct{ Code, Error string }
+	if !res.IsError || json.Unmarshal([]byte(res.Content[0].Text), &refusal) != nil ||
+		refusal.Code != "binding_conflict" || !strings.Contains(refusal.Error, "person:ada-king") {
+		t.Errorf("a refusal was not surfaced with its code: %+v", res)
+	}
+}
