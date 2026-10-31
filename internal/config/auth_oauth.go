@@ -104,8 +104,9 @@ type AuthOAuthGate struct {
 
 func hasOAuthKeys(g AuthGateConfig) bool {
 	o := g.AuthGateOAuthConfig
+	// allow_any_account is not here: the OIDC google preset takes it too.
 	return o.BaseURL != "" || o.AuthURL != "" || o.TokenURL != "" || o.UserinfoURL != "" || o.Claims != nil ||
-		len(o.AllowedOrgs) > 0 || o.RequireOrg || o.AllowAnyAccount || o.TrustEmail != nil
+		len(o.AllowedOrgs) > 0 || o.RequireOrg || o.TrustEmail != nil
 }
 
 // resolveOAuthGate validates one kind: oauth gate.

@@ -519,6 +519,9 @@ func resolveAuth(c *Config) error {
 		var oidc *AuthOIDCGate
 		var oauth *AuthOAuthGate
 		var idm *AuthIdentityMap
+		if g.AllowAnyAccount && kind != AuthGateKindOAuth && kind != AuthGateKindOIDC {
+			return fmt.Errorf("auth.gates.%s.allow_any_account applies only to kind: oauth and kind: oidc (preset: google)", name)
+		}
 		if kind != AuthGateKindOAuth && hasOAuthKeys(g) {
 			return fmt.Errorf("auth.gates.%s: base_url, auth_url, token_url, userinfo_url, claims, allowed_orgs and "+
 				"require_org apply only to kind: oauth", name)
@@ -545,6 +548,13 @@ func resolveAuth(c *Config) error {
 			}
 			if idm, err = resolveIdentityMap(name, g.IdentityMap, p.NewUserFloor(), g.Trusted); err != nil {
 				return err
+			}
+			// Every Google account can reach this gate, so a stranger's first
+			// sign-in may make at most an account that waits for approval.
+			if oidc.AnyAccount && idm.Provision == ProvisionAuto && idm.NewUser.Status != UserStatusPending {
+				return fmt.Errorf("auth.gates.%s.allow_any_account: with provision: auto, new users must wait for approval "+
+					"(identity_map.new_user.status: pending, or auth.lifecycle.new_user.status: pending); "+
+					"or use provision: known to admit only users an operator made", name)
 			}
 		}
 		var ext *AuthExternalGate

@@ -1753,7 +1753,22 @@ auth:
 ```
 
 - **Redirect URI.** Register exactly `<LOOMCYCLE_PUBLIC_URL>/v1/_auth/complete/<gate>` at the provider. `LOOMCYCLE_PUBLIC_URL` is required.
-- **Presets.** `google` (issuer fixed, `allowed_domains` required: the `hd` claim, never the e-mail's domain), `entra` (`allowed_tids`: one GUID uses that tenant's issuer; several use the `organizations` endpoint and each token's own issuer), `cognito` (`issuer: https://cognito-idp.<region>.amazonaws.com/<pool>`; `token_use` must be `id`), `okta`, `keycloak`, `identity-center`, `auth0` (each needs `issuer`), `generic` (`issuer`, optional `discovery_url`). Other keys: `scopes` (default `openid email profile`), `token_auth: basic|post`, `allowed_return_to` (absolute URLs a login may return to, matched exactly; a `/ui` path is always allowed), `trusted`.
+- **Presets.** `google` (issuer fixed, `allowed_domains` required: the `hd` claim, never the e-mail's domain; or `allow_any_account: true`, see below), `entra` (`allowed_tids`: one GUID uses that tenant's issuer; several use the `organizations` endpoint and each token's own issuer), `cognito` (`issuer: https://cognito-idp.<region>.amazonaws.com/<pool>`; `token_use` must be `id`), `okta`, `keycloak`, `identity-center`, `auth0` (each needs `issuer`), `generic` (`issuer`, optional `discovery_url`). Other keys: `scopes` (default `openid email profile`), `token_auth: basic|post`, `allowed_return_to` (absolute URLs a login may return to, matched exactly; a `/ui` path is always allowed), `trusted`.
+- **Personal Google accounts (`allow_any_account`).** A personal `@gmail.com` account has no `hd` claim, so `allowed_domains` never admits it. `allow_any_account: true` (preset `google` only, never together with `allowed_domains`) admits every Google account with a verified e-mail. Because anyone in the world can then reach the gate, it loads only when a stranger's first sign-in can at most wait for approval: `provision: known`, or `provision: auto` with new users `pending` (`identity_map.new_user.status: pending`, or the same in `auth.lifecycle.new_user`). Google through any other preset (an `issuer` or `discovery_url` on `accounts.google.com`) is refused, so the `google` preset's rule cannot be bypassed.
+
+  ```yaml
+  google:
+    kind: oidc
+    preset: google
+    client_id: 1234.apps.googleusercontent.com
+    client_secret_env: LOOMCYCLE_GATE_GOOGLE_SECRET
+    allow_any_account: true
+    trusted: true                                   # needed for new_user.access_mode: tenant
+    identity_map:
+      tenant: acme
+      provision: auto
+      new_user: { access_mode: tenant, status: pending }
+  ```
 - **Checks.** Code flow with PKCE S256 only; `state` bound to a ten-minute `__Host-lc_login` cookie (`lc_login` over plain HTTP) and a single-use server row; `nonce`; `iss`/`aud`/`azp`; `exp` and `iat` within 5 minutes; asymmetric signature algorithms only; the key by `kid`, refetched on rotation at most once a minute. Starting a login is throttled to 30 per client source per 10 minutes.
 - **Identity map.** The subject is always `<gate>:<sub>` — never the e-mail. An identity lands in the configured tenant or, with `tenant_claim`, in the tenant `allowed_tenants` maps its claim to; anything else is refused, never the shared tenant. `provision: known` admits only users an operator created (subject `<gate>:<sub>`); `auto` creates them at `auth.lifecycle.new_user` (the floor, which may not be tenant reach). A gate's `identity_map.new_user` may go beyond the floor (tenant reach, more groups, `active` over a `pending` floor) and its `groups` block may sync groups only with `trusted: true`.
 - **Group sync.** `identity_map.groups: {claim: groups, provision: true, map: {hr-admins: admins}}` adds and removes the user's memberships, at every login, in the groups whose `external_id` is `<gate>:<provider name>` only; local groups and other gates' groups are never touched. Audited `auth_groups_synced`.
