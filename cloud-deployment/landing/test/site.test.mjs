@@ -81,6 +81,23 @@ test("the read-only vault offers no mint and no paste when accounts are on", () 
   assert.ok(block.includes("data-mint") && block.includes("data-add-mode") && block.includes("data-add>"));
 });
 
+test("shared mode has its own block and the vault (with its loomboard handoff) can be hidden whole", () => {
+  for (const sel of ["data-shared-only", "data-request-access", "data-open-app-shared", "data-shared-status",
+    "data-shared-tenant", 'href="https://board.loomcycle.cloud"']) {
+    assert.ok(html.includes(sel), `missing ${sel}`);
+  }
+  assert.match(html, /role="status" aria-live="polite" data-shared-status/);
+  // applyMode() hides [data-vault-section] in shared mode; the token rows (where
+  // the "loomboard →" handoff buttons are rendered) and mint/paste live inside it.
+  const start = html.indexOf("<div data-vault-section>");
+  assert.ok(start > 0);
+  const block = html.slice(start, html.indexOf("<!-- pane 4"));
+  assert.ok(block.includes('id="token-rows"') && block.includes("data-mint") && block.includes("data-add-mode"));
+  // the shared block offers no team console
+  const shared = html.slice(html.indexOf("<div class=\"acct\" data-shared-only"), start);
+  assert.doesNotMatch(shared, /data-manage-team/);
+});
+
 test("the signup redirect replaces history rather than pushing the invite link", () => {
   assert.match(html, /location\.replace\(res\.json\.redirect\)/);
   assert.doesNotMatch(html, /location\.(href|assign)\s*[=(]\s*res\.json\.(redirect|url)/);
