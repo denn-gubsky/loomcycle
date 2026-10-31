@@ -21,7 +21,7 @@ import (
 // transport reaches erasure through here (MCP and gRPC via the connector
 // methods below), so the access-control hooks are wired once for all of them.
 func (s *Server) erasureService() *erasure.Service {
-	return &erasure.Service{
+	svc := &erasure.Service{
 		Store: s.store, SqlMem: s.sqlMem,
 		ACLStatic: func() *authz.Static {
 			if c := s.cfg(); c != nil {
@@ -46,6 +46,8 @@ func (s *Server) erasureService() *erasure.Service {
 			return retired, err
 		},
 	}
+	s.wireErasureSubjects(svc)
+	return svc
 }
 
 // resolveErasureTenant applies the tenant rule both erasure routes share.

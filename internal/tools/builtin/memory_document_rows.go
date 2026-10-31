@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -51,6 +52,14 @@ func (m *Memory) refuseDocumentRowRemoval(ctx context.Context, op string, scope 
 	if !strings.HasPrefix(key, memrank.DocumentChunkKeyPrefix) {
 		return tools.Result{}, false
 	}
+	// A subject root re-asserted through upsert_chunk carries provenance and passes
+	// as a fact below, so removing its row would clear its operator-set binding.
+	if bound, err := m.isBoundSubjectBody(ctx, scope, scopeID, key); err != nil {
+		return errFrom(op+": could not read "+key+": "+err.Error(), err), true
+	} else if bound {
+		return errPermission(principalBindingCode+": "+op+": "+key+" is the body of a subject bound to a user "+
+			"account, and only an operator clears that binding", docNamespaceHint), true
+	}
 	prose, err := m.isProseChunkBody(ctx, scope, scopeID, key)
 	if err != nil {
 		// Fail closed: the row cannot be classified, so it is not removed.
@@ -83,6 +92,25 @@ func DocumentRowRemovalRefusal(ctx context.Context, st store.Store, tenantID str
 	// run, so the identity carries only the tenant the route resolved.
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: tenantID})
 	return (&Memory{Store: st}).refuseDocumentRowRemoval(ctx, op, scope, scopeID, key)
+}
+
+// isBoundSubjectBody reports whether key is a chunk body whose fields carry the
+// operator-set `principal`. A missing row is not one.
+func (m *Memory) isBoundSubjectBody(ctx context.Context, scope store.MemoryScope, scopeID, key string) (bool, error) {
+	if m.Store == nil {
+		return false, nil
+	}
+	entry, err := m.Store.MemoryGet(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, key)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return false, nil
+		}
+		return false, err
+	}
+	var cb chunkBody
+	_ = json.Unmarshal(entry.Value, &cb)
+	return principalOf(cb.Fields) != "", nil
 }
 
 // isProseChunkBody reports whether key is a chunk body row with no provenance.

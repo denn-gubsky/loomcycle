@@ -1526,6 +1526,13 @@ func (d *Document) putBody(ctx context.Context, mscope store.MemoryScope, key sq
 		prov.SourceSessionID = prev.SourceSessionID
 		prov.SourceRunID = prev.SourceRunID
 	}
+	// The stored `principal` binding wins over whatever the write carries; see
+	// keepStoredPrincipal. Held until the body is written.
+	fields, release, err := d.keepStoredPrincipal(ctx, key, mscope, chunkID, fields)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if stamped != nil {
 		fields = setProvenanceField(fields, stamped)
 	} else {
@@ -2714,6 +2721,13 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if r := emptyIntervalRefusal("create_chunk", in.ValidAt, in.InvalidAt); r != nil {
 		return *r, nil
 	}
+	// The `principal` field is the operator's; a new chunk never carries one.
+	if refused, err := d.holdPrincipalField(ctx, key, mscope, "create_chunk", "", in.Fields); err != nil || refused != nil {
+		if err != nil {
+			return errFrom("create_chunk: "+err.Error(), err), nil
+		}
+		return *refused, nil
+	}
 	// RFC BP — after_id inserts the new chunk immediately after an existing
 	// sibling: adopt that sibling's parent, and insert-and-shift the later
 	// siblings by +1 (in one txn) so the new chunk lands at afterPos+1 with no
@@ -3211,6 +3225,17 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			return *refused, nil
 		}
 		retype = rt
+	}
+	// The `principal` field is the operator's (it binds a subject to a user account):
+	// a change to it is refused here, before the revision moves.
+	if _, has := present["fields"]; has {
+		refused, herr := d.holdPrincipalField(ctx, key, mscope, "update_chunk", in.ID, in.Fields)
+		if herr != nil {
+			return errFrom("update_chunk: "+herr.Error(), herr), nil
+		}
+		if refused != nil {
+			return *refused, nil
+		}
 	}
 	// Claim the update ATOMICALLY first: the guarded bump only matches if the
 	// revision is still what we read. If a concurrent writer raced us, it
@@ -5379,6 +5404,16 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			imageChunks++
 		} else {
 			skip("an image the store refused (type or size)")
+		}
+	}
+	// Every chunk below is new, so none may carry the operator's `principal` field.
+	// Refused before anything is written, rather than part-way through.
+	for _, c := range chunks {
+		if refused, err := d.holdPrincipalField(ctx, key, mscope, "import_md", "", c.fields); err != nil || refused != nil {
+			if err != nil {
+				return errFrom("import_md: "+err.Error(), err), nil
+			}
+			return *refused, nil
 		}
 	}
 	// A volume image is read just before its chunk is created and attached,

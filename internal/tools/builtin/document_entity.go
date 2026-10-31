@@ -93,6 +93,17 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 		retype = rt
 	}
+	// The `principal` field is the operator's (see update_chunk); a new chunk is held
+	// to it by create_chunk.
+	if existing != "" {
+		refused, herr := d.holdPrincipalField(ctx, key, mscope, "upsert_chunk", existing, in.Fields)
+		if herr != nil {
+			return errFrom("upsert_chunk: "+herr.Error(), herr), nil
+		}
+		if refused != nil {
+			return *refused, nil
+		}
+	}
 
 	// upsert_chunk IS the fact-tier write op — every write through it gets a
 	// sidecar row — so it is the right place to decide that this chunk's body row
