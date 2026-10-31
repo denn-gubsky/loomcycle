@@ -161,6 +161,16 @@ The low-level primitives (`runStreaming({interactive:true})` + `sendRunInput` + 
 
 Both need a tenant operator or admin token; `tenant` is an admin's focus.
 
+### Statement review
+
+| Method | Returns | Notes |
+|---|---|---|
+| `listReviewQueue({ filter?, summarize?, limit?, after?, order?, scope?, tenant? })` | `Promise<ReviewQueueResult>` | The scope's proposed relations, narrowed by `filter` (`method` prefix, `kind(s)`, `actor`, `from_/to_document_id`, `from_/to_under_path`, `min_confidence`, `created_before/after`, `has_judge_verdict`, `judge_verdict`), newest first; `summarize: true` returns counts by kind × method × from-path prefix × judge verdict instead (`GET /v1/_statements/review`). |
+| `ruleStatements(action, { ids } \| { filter }, { reason?, dryRun?, expectCount?, max?, scope?, tenant? })` | `Promise<RuleStatementsResult>` | Accept or reject up to 1000 statements at once (`POST /v1/_statements/rule`). A dry run unless `dryRun: false`; the real call needs `expectCount` = the dry run's `matched` (`queue_changed` otherwise). `reason` is required to reject. Each statement records `ruled_by: bulk:<ruling_id>`. |
+| `revertRuling(rulingId, { scope?, tenant? })` | `Promise<RevertRulingResult>` | Undo a bulk ruling where nothing changed the statements since (`POST /v1/_statements/revert`); changed ones are listed and left. |
+
+An admin, a tenant operator, or a member holding the access-control action `review` on the statements' from-documents may rule; what the caller may not rule on is skipped and counted. Pass `created_before` / `created_after` as text (RFC 3339, or unix nanoseconds as a decimal string): a nanosecond `created_at` does not fit a JS number. Refusals throw with `code`: `invalid_request`, `forbidden`, `queue_changed`, `ruling_not_found`, `unavailable`.
+
 ### Pause / Resume / State (v0.8.17 / v0.8.18)
 
 | Method | Returns | Notes |
