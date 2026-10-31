@@ -716,7 +716,7 @@ func (b *boot) startStoreSweepers() {
 	if cfg.Env.ChannelsSweepInterval > 0 && storeIface != nil {
 		// Idle document change feeds are swept on the same singleton, at most
 		// hourly: the sweep reads every channel's stats, and a feed lives a
-		// week, so a minute's resolution buys nothing.
+		// day, so a minute's resolution buys nothing.
 		var lastFeedSweep time.Time
 		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.ChannelsSweepInterval, advisoryLock, coord.LockKeyChannelsSweeper, "channels",
 			func(ctx context.Context) {

@@ -232,7 +232,7 @@ matches better. Paths follow the Path tool's rules
 Every chunk create, update or delete publishes `{op, chunk_id, timestamp,
 actor}` on the channel `documents/<document_id>/chunks`, so a live viewer can
 follow edits without polling. The feed is kept while the document is edited:
-`delete_document` purges it, and a feed with no event for a week is purged.
+`delete_document` purges it, and a feed with no event for a day is purged.
 `list_channels` does not list these feeds.
 
 ## Requirements

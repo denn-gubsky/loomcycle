@@ -6327,10 +6327,10 @@ func IsDocumentFeedChannel(name string) bool {
 }
 
 // DocumentFeedIdleTTL is how long a document's change feed is kept after its
-// last event. The feed is for a viewer following edits live, so a week of
-// quiet means nobody is following; a deleted document's feed (one whose
-// delete did not purge it) also goes this way.
-const DocumentFeedIdleTTL = 7 * 24 * time.Hour
+// last event. The feed is for a viewer following edits live, and nothing reads
+// its history, so a day of quiet means nobody is following; a deleted
+// document's feed (one whose delete did not purge it) also goes this way.
+const DocumentFeedIdleTTL = 24 * time.Hour
 
 // SweepDocumentFeeds purges every document change feed whose newest event is
 // older than idle, across all tenants, and returns how many it purged. It

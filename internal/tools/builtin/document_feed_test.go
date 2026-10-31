@@ -111,7 +111,7 @@ func TestSweepDocumentFeeds_PurgesOnlyIdleFeeds(t *testing.T) {
 		t.Fatal("a recent feed was purged")
 	}
 
-	// A week and a day later every feed is idle, in every tenant.
+	// Past the idle period every feed is idle, in every tenant.
 	n, err := SweepDocumentFeeds(ctx, st, DocumentFeedIdleTTL, time.Now().Add(DocumentFeedIdleTTL+24*time.Hour))
 	if err != nil || n != 2 {
 		t.Fatalf("idle feeds: purged %d (%v), want 2", n, err)

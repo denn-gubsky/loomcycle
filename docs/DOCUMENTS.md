@@ -144,7 +144,7 @@ the Memory tool keeps them behind the Document tool's checks:
   `delete_chunk` publish `{op, chunk_id, timestamp, actor}` to the
   `documents/<id>/chunks` channel, so a watcher (or a co-authoring UI) sees
   edits live. The feed is the document's own: `delete_document` purges it, and
-  the channel sweeper purges any feed with no event for a week. Channel
+  the channel sweeper purges any feed with no event for a day. Channel
   listings tag it `source: "document"`; the Web UI's Channels page shows the
   feeds only under its **documents** chip, and the MCP `list_channels` tool and
   gRPC `ListChannels` leave them out.
