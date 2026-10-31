@@ -1220,6 +1220,20 @@ message ErasureReportResponse {
   repeated string errors = 7;
   // access names what an erasure would remove from the subject's authority.
   ErasureAccess access = 8;
+  // bound_subjects are the tenant's subjects bound to this principal (a
+  // subject root's fields.principal): an erasure unbinds them and keeps them.
+  // bound_subjects_withheld counts the ones the caller's access-control rules
+  // hide from reading, which are counted and never named.
+  repeated ErasureBoundSubject bound_subjects = 9;
+  int32 bound_subjects_withheld = 10;
+}
+
+// ErasureBoundSubject names one tenant subject bound to the erased principal:
+// its document, natural key and first Path-tree name.
+message ErasureBoundSubject {
+  string document_id = 1;
+  string natural_key = 2;
+  string path = 3;
 }
 
 // ErasureToken names one bearer token by its def id and name — never the
@@ -1262,6 +1276,14 @@ message ErasureExecuteResponse {
   repeated string notes = 8;
   // access names what the erasure removed, or a dry run would.
   ErasureAccess access = 9;
+  // bound_subjects are the subjects unbound (or, in a dry run, that would
+  // be), named as in ErasureReportResponse; bound_subjects_withheld counts the
+  // ones the caller may not read.
+  repeated ErasureBoundSubject bound_subjects = 10;
+  int32 bound_subjects_withheld = 11;
+  // not_announced says why `erased` was not published on memory/subjects for
+  // the unbound subjects; empty when it was, or when there was none.
+  string not_announced = 12;
 }
 
 message CompactRunRequest {

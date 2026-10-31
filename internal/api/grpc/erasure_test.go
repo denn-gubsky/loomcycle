@@ -108,3 +108,34 @@ func TestErasure_CarriesTheAccessField(t *testing.T) {
 	}
 	check("execute", res.GetAccess())
 }
+
+// TestErasure_CarriesTheBoundSubjects: the subjects bound to the erased principal
+// reach a gRPC caller as they reach an HTTP one — named when readable, the rest only
+// counted — and an execute says why `erased` was not announced.
+func TestErasure_CarriesTheBoundSubjects(t *testing.T) {
+	bound := []erasure.BoundSubject{{DocumentID: "d1", NaturalKey: "person:ada", Path: "/facts/ada", RootChunkID: "r1", Readable: true}}
+	mc := &mockConnector{
+		erasureReport: erasure.Report{BoundSubjects: bound, BoundSubjectsWithheld: 2},
+		erasureResult: erasure.Result{BoundSubjects: bound, BoundSubjectsWithheld: 2, NotAnnounced: "why"},
+	}
+	srv := &Server{connector: mc}
+	check := func(what string, got []*loomcyclepb.ErasureBoundSubject, withheld int32) {
+		t.Helper()
+		if len(got) != 1 || got[0].GetDocumentId() != "d1" || got[0].GetNaturalKey() != "person:ada" || got[0].GetPath() != "/facts/ada" || withheld != 2 {
+			t.Errorf("%s bound_subjects = %v withheld %d", what, got, withheld)
+		}
+	}
+	rep, err := srv.ErasureReport(context.Background(), &loomcyclepb.ErasureReportRequest{Subject: "u-ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("report", rep.GetBoundSubjects(), rep.GetBoundSubjectsWithheld())
+	res, err := srv.ErasureExecute(context.Background(), &loomcyclepb.ErasureExecuteRequest{Subject: "u-ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("execute", res.GetBoundSubjects(), res.GetBoundSubjectsWithheld())
+	if res.GetNotAnnounced() != "why" {
+		t.Errorf("execute not_announced = %q", res.GetNotAnnounced())
+	}
+}
