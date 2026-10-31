@@ -8,6 +8,31 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.132.0
+
+*The `knowledge-base` links agent can drain tenant-scope imports: a deployment whose documents live in the tenant scope can link what it imports on a schedule. The `google` sign-in preset can admit personal Google accounts, behind an approval queue.*
+
+The v1.132 line: #2323 and #2324.
+- `@loomcycle/client` stays at 1.131.0; no adapter change.
+- No migration.
+- **Behaviour changes:**
+  - `documents/ingested` is `publisher: system` in the `knowledge-base` bundle: an agent can no longer publish to it through the Channel tool (#2324).
+  - A Google sign-in configured through any OIDC preset other than `google` (an `issuer` or `discovery_url` on `accounts.google.com`) now fails the config load; use `preset: google` (#2323).
+
+### kb/linker drains tenant imports (#2324)
+
+- **New drain input `queue: documents | subjects`.** `{"mode":"drain","scope":"tenant","queue":"documents"}` drains the tenant scope's `documents/ingested` and runs the document layers (L0–L3, L6). Defaults are unchanged: a user drain reads `documents/ingested`, a tenant drain `memory/subjects`. `queue` outside drain mode, user + subjects, an unknown value and agent scope are refused.
+- **Payload:** `documents/ingested` and `memory/subjects` messages now carry `scope`, the scope they were published at.
+- **The deployment declares the queue's scope.** The bundle keeps `documents/ingested` at `scope: user`. A tenant deployment re-declares it in its own config layer (`channels: { documents/ingested: { scope: tenant } }`), which deep-merges over the bundle's declaration.
+- **Guard:** a documents drain that reads a well-formed message of another scope stops there, unacked, with `scope_mismatch`, and the failure text names the fix. A message with a scope the runtime never publishes at is acked as malformed.
+- The bundle README shows a daily tenant ingest schedule.
+
+### Google sign-in for personal accounts (#2323)
+
+- **`allow_any_account: true` on `preset: google`** admits every Google account with a verified e-mail, with no `hd` (Workspace domain) check. It can't be combined with `allowed_domains`.
+- **Guarded:** the gate loads only when a stranger's first sign-in waits for approval: `provision: known`, or `provision: auto` with new users `pending`. Otherwise the load fails, naming the fix.
+- No `hd` hint is sent with any-account.
+
 ## What's in v1.131.1
 
 *Two fixes: the links agent's subject drain no longer stops on several events about a deleted subject, and the Web UI's Users console acts in the tenant it lists.*

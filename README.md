@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.131.1.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.132.0.</em>
 </p>
 
 <p align="center">
@@ -201,17 +201,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.131.0) completes subject change events. Re-typing,
-deleting, merging and erasing a subject each announce it on `memory/subjects`,
-an operator can merge two subjects and bind a subject to the user it stands
-for on every transport, and erasing that user reports and unbinds the subject.
-User ids accept sign-in gate subjects such as `cloud:<id>`. Its patch release
-fixed the links agent's subject drain and the Users console's tenant. See
+The most recent line (v1.132.0) lets the `knowledge-base` links agent drain
+tenant-scope imports, so a deployment whose documents live in the tenant scope
+can link what it imports on a schedule, and lets the `google` sign-in preset
+admit personal Google accounts behind an approval queue. See
 [`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.130.0 announced an adopted subject on the tenant's
-`memory/subjects` channel and let the `knowledge-base` links agent drain it,
-and a password gate could hold website sign-ups for approval. See
+Before it, v1.131.0 completed subject change events: re-typing, deleting,
+merging and erasing a subject each announce it on `memory/subjects`, and an
+operator can merge two subjects and bind a subject to a user. See
 [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
