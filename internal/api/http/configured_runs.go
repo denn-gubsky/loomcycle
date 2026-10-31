@@ -157,8 +157,8 @@ func (s *Server) createConfiguredRunCore(ctx context.Context, req runDraft) (con
 	if req.Agent == "" {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusBadRequest, "invalid_draft", "agent is required")
 	}
-	if req.UserID != "" && !validIdent(req.UserID) {
-		return connector.ConfiguredRun{}, draftRefusal(http.StatusBadRequest, "invalid_draft", "user_id must match [A-Za-z0-9_-]{1,128}")
+	if req.UserID != "" && !connector.UserIDAllowed(principalSubject(ctx), req.UserID) {
+		return connector.ConfiguredRun{}, draftRefusal(http.StatusBadRequest, "invalid_draft", "%s", connector.UserIDRule)
 	}
 	if req.AgentID != "" && !validIdent(req.AgentID) {
 		return connector.ConfiguredRun{}, draftRefusal(http.StatusBadRequest, "invalid_draft", "agent_id must match [A-Za-z0-9_-]{1,128}")

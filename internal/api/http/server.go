@@ -3003,8 +3003,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 	}
 	// ---- Validation phase ----
-	if in.UserID != "" && !validIdent(in.UserID) {
-		return fmt.Errorf("%w: user_id must match [A-Za-z0-9_-]{1,128}", runner.ErrInvalidArgument)
+	if in.UserID != "" && !connector.UserIDAllowed(principalSubject(ctx), in.UserID) {
+		return fmt.Errorf("%w: %s", runner.ErrInvalidArgument, connector.UserIDRule)
 	}
 	if in.AgentID != "" && !validIdent(in.AgentID) {
 		return fmt.Errorf("%w: agent_id must match [A-Za-z0-9_-]{1,128}", runner.ErrInvalidArgument)
@@ -5526,7 +5526,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	// The request's own shape, with this route's 400 bodies. Everything that
 	// needs the agent, the session or a slot is RunOnce's.
-	if msg, ok := s.runsShapeError(req); !ok {
+	if msg, ok := s.runsShapeError(req, principalSubject(r.Context())); !ok {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
 	}
@@ -5567,7 +5567,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 // runsShapeError checks what a POST /v1/runs request can be refused for on its
 // own, before anything is looked up, in the order and words the route has
 // always used.
-func (s *Server) runsShapeError(req runRequest) (string, bool) {
+func (s *Server) runsShapeError(req runRequest, own string) (string, bool) {
 	if err := req.ToolChoice.Validate(); err != nil {
 		return err.Error(), false
 	}
@@ -5594,8 +5594,8 @@ func (s *Server) runsShapeError(req runRequest) (string, bool) {
 		return msg, false
 	}
 	// user_id / agent_id are used as URL path segments and registry keys.
-	if req.UserID != "" && !validIdent(req.UserID) {
-		return `user_id must match [A-Za-z0-9_-]{1,128}`, false
+	if req.UserID != "" && !connector.UserIDAllowed(own, req.UserID) {
+		return connector.UserIDRule, false
 	}
 	if req.AgentID != "" && !validIdent(req.AgentID) {
 		return `agent_id must match [A-Za-z0-9_-]{1,128}`, false
@@ -8556,8 +8556,8 @@ const userAgentsListMax = 100
 // parseUserAgentsFilter for the filters.
 func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("user_id")
-	if !validIdent(userID) {
-		http.Error(w, `user_id must match [A-Za-z0-9_-]{1,128}`, http.StatusBadRequest)
+	if !connector.ValidUserID(userID) {
+		http.Error(w, connector.UserIDRule, http.StatusBadRequest)
 		return
 	}
 	if s.store == nil {
@@ -9486,8 +9486,8 @@ func (s *Server) handleListUserInterrupts(w http.ResponseWriter, r *http.Request
 		return
 	}
 	userID := r.PathValue("user_id")
-	if !validIdent(userID) {
-		http.Error(w, "user_id must match [A-Za-z0-9_-]{1,128}", http.StatusBadRequest)
+	if !connector.ValidUserID(userID) {
+		http.Error(w, connector.UserIDRule, http.StatusBadRequest)
 		return
 	}
 	statusFilter := r.URL.Query().Get("status")
@@ -10230,7 +10230,8 @@ func (s *Server) withHookRun(ctx context.Context, ident hooks.Identity) context.
 // LOOMCYCLE_AUTH_TOKEN keeps working via the principal-resolution
 // fallback until an admin-scoped OperatorTokenDef exists.
 
-// validIdent reports whether s is a valid user_id or agent_id. Charset
+// validIdent reports whether s is a valid agent_id, run_id or other runtime
+// id (a user id is connector.ValidUserID, which also takes gate subjects). Charset
 // matches the spec: [A-Za-z0-9_-] with length 1..128. Used to refuse
 // malformed input at the HTTP boundary so SQL queries and registry
 // keys stay sane (no embedded slashes that could confuse URL routing,

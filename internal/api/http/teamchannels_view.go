@@ -178,8 +178,8 @@ func teamChannelKeyspace(ctx context.Context, d teamChannelDecl, userID string) 
 	if d.def.Scope != "user" {
 		return store.MemoryScopeTenant, "", nil
 	}
-	if userID != "" && !validIdent(userID) {
-		return "", "", &connector.TeamChannelError{Kind: connector.ErrTeamChannelUserRequired, Msg: "user_id must match [A-Za-z0-9_-]{1,128}"}
+	if userID != "" && !connector.UserIDAllowed(principalSubject(ctx), userID) {
+		return "", "", &connector.TeamChannelError{Kind: connector.ErrTeamChannelUserRequired, Msg: connector.UserIDRule}
 	}
 	if userID == "" {
 		if p, ok := auth.PrincipalFromContext(ctx); ok {

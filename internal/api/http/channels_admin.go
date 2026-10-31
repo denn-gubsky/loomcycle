@@ -329,8 +329,8 @@ func (s *Server) handleAdminChannelBroadcast(w http.ResponseWriter, r *http.Requ
 // are unrestricted.
 func (s *Server) userChannelScopeID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	userID := r.PathValue("user_id")
-	if !validIdent(userID) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_user_id", `user_id must match [A-Za-z0-9_-]{1,128}`)
+	if !connector.ValidUserID(userID) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_user_id", connector.UserIDRule)
 		return "", false
 	}
 	if !requirePrincipalOwnsPathUser(r.Context(), userID) {

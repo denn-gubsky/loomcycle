@@ -183,7 +183,8 @@ func TestRuns_RejectsInvalidIdent(t *testing.T) {
 	for _, badField := range []string{
 		`"user_id":"has space"`,
 		`"agent_id":"has/slash"`,
-		`"user_id":"` + strings.Repeat("a", 200) + `"`,
+		`"user_id":"` + strings.Repeat("a", 321) + `"`,
+		`"user_id":"has/slash"`,
 	} {
 		body := `{"agent":"default",` + badField + `,"segments":[{"role":"user","content":[{"type":"trusted-text","text":"x"}]}]}`
 		resp, _ := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(body))

@@ -112,3 +112,29 @@ func TestListUserAgents_RefusesUnknownOrConflictingFilters(t *testing.T) {
 		}
 	}
 }
+
+// A sign-in gate's user is "<gate>:<provider id>"; ListUserAgents refused it
+// as a malformed user id. '/' stays refused.
+func TestListUserAgents_GateSubjectListsItsRuns(t *testing.T) {
+	client, _, st, cleanup := startTestServer(t, "")
+	defer cleanup()
+	ctx := context.Background()
+	const subject = "pocketid:2f7d3d17-82dd-43c7-bb3c-678a8aff8860"
+	sess, err := st.CreateSession(ctx, "", "default", subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_gate", UserID: subject}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.ListUserAgents(ctx, &loomcyclepb.ListUserAgentsRequest{UserId: subject})
+	if err != nil {
+		t.Fatalf("ListUserAgents(%q): %v", subject, err)
+	}
+	if got := agentIDsOf(resp.GetAgents()); !slices.Equal(got, []string{"a_gate"}) {
+		t.Errorf("ListUserAgents(%q) = %v, want [a_gate]", subject, got)
+	}
+	if _, err := client.ListUserAgents(ctx, &loomcyclepb.ListUserAgentsRequest{UserId: "a/b"}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("ListUserAgents(a/b) = %v, want InvalidArgument", err)
+	}
+}
