@@ -516,9 +516,10 @@ async function signupState(p) {
 // the visitor's own: only this owner's verified identity can ask the landing
 // for an invite into this tenant, and its link was shown only in their browser.
 // onWrite is called before each revoke, so a caller can tell that this request
-// already changed state upstream.
-async function revokeLive(tenant, pred, onWrite = () => {}) {
-  for (const inv of await tenantInvites(tenant)) {
+// already changed state upstream. A caller that already read the invite list
+// passes it as `invites`.
+async function revokeLive(tenant, pred, onWrite = () => {}, invites = null) {
+  for (const inv of invites || await tenantInvites(tenant)) {
     if (inv.state !== "live" || !pred(inv) || !INVITE_ID_RE.test(inv.invite_id)) continue;
     onWrite();
     const up = await manage("DELETE", gatePath("invites", inv.invite_id), { query: { tenant } });
@@ -574,7 +575,17 @@ app.post("/api/signup", accountRoute(async (req, res, p) => {
     if (relIp) relIp();
     return res.status(429).json({ error: "rate_limited" });
   }
-  const ctx = { wrote: false };
+  // In shared mode every signup lands in one tenant, so the tenant's daily
+  // invite budget applies as it does to a team's invites. It is reserved here,
+  // before the first await, and given back unless an invite was created: a
+  // refusal creates nothing, and the visitor's own limits above already bound
+  // how often they can be asked for.
+  const relTenant = SHARED ? inviteLimit.take(p.tenant) : () => {};
+  if (!relTenant) {
+    relIp(); relId();
+    return res.status(429).json({ error: "signup_limit" });
+  }
+  const ctx = { wrote: false, created: false };
   let spent = true;
   try {
     spent = await withTenantLock(p.tenant, () => signup(res, p, ctx));
@@ -583,6 +594,7 @@ app.post("/api/signup", accountRoute(async (req, res, p) => {
     throw e;
   } finally {
     if (!spent) { relIp(); relId(); }
+    if (!ctx.created) relTenant();
   }
 }));
 
@@ -657,14 +669,26 @@ async function sharedSignup(res, p, ctx) {
       message: "This address already has an account here. Ask an operator to set its password, then sign in at the app." });
     return true;
   }
+  // The website's own live invites: return_to tells them apart from an
+  // operator's, which are neither counted nor revoked here.
+  const invites = await tenantInvites(p.tenant);
+  const website = (inv) => inv.state === "live" && !inv.subject && !inv.bootstrap && inv.return_to === SIGNUP_RETURN_TO;
+  const mine = (inv) => website(inv) && loginOf(inv.login || "") === login;
+  // Every visitor's invite waits in the same tenant, so the per-tenant
+  // pending cap applies; the visitor's own stale invite is replaced below and
+  // does not count. Counted and created under the tenant lock (the caller), so
+  // concurrent signups cannot overshoot it.
+  if (invites.filter((inv) => website(inv) && !mine(inv)).length >= MAX_PENDING_INVITES) {
+    res.status(429).json({ error: "signup_limit" });
+    return true;
+  }
   // A live invite this website issued earlier for the same e-mail (its link
-  // was only ever in the visitor's address bar) is replaced. return_to tells
-  // the website's invites apart from an operator's, which are left alone.
-  await revokeLive(p.tenant, (inv) => !inv.subject && !inv.bootstrap && inv.return_to === SIGNUP_RETURN_TO &&
-    loginOf(inv.login || "") === login, wrote);
+  // was only ever in the visitor's address bar) is replaced.
+  await revokeLive(p.tenant, mine, wrote, invites);
   const up = await manage("POST", gatePath("invites"), {
     body: { tenant: p.tenant, login, email: login, return_to: SIGNUP_RETURN_TO },
   });
+  if (up.status === 201) ctx.created = true;
   if (up.status !== 201) {
     if (up.json?.code === "login_taken") {
       res.status(409).json({ error: "already_signed_up", signed_up: true, app: APP_URL + "/ui/login" });

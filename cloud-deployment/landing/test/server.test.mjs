@@ -946,10 +946,71 @@ describe("shared-tenant mode (LANDING_TENANT)", () => {
       assert.equal(since(before).length, 0, `${m} ${p}`);
     }
   });
+  // The cap tests each get their own landing and tenant: the limits are in the
+  // landing's memory and the pending count is the tenant's.
+  async function ownShared(tenant, fn) {
+    const inst = await startLanding({ LOOMCYCLE_URL: `http://127.0.0.1:${fake.port}`, MINT_DEV_ALLOW_UNVERIFIED: "1", APP_ORIGIN: ORIGIN,
+      LANDING_TENANT: tenant, LOOMCYCLE_AUTH_MANAGE_TOKEN: MANAGE, AUTH_GATE: GATE, APP_URL: `http://127.0.0.1:${fake.port}`, SIGNUP_RETURN_TO: RETURN_TO });
+    try { await fn(inst); } finally { inst.child.kill("SIGKILL"); }
+  }
+  const websiteInvite = (tenant, login) => fake.addInvite(tenant, { login, email: login, return_to: RETURN_TO });
+
   test("signup keeps the per-visitor limit of 10 an hour", async () => {
-    const email = newEmail();
-    for (let i = 0; i < 10; i++) assert.equal((await call(shared, "POST", "/api/signup", { email, body: {} })).status, 200);
-    assert.equal((await call(shared, "POST", "/api/signup", { email, body: {} })).status, 429);
+    await ownShared("shared-visitor-" + rnd(3), async (inst) => {
+      const email = newEmail();
+      for (let i = 0; i < 10; i++) assert.equal((await call(inst, "POST", "/api/signup", { email, body: {} })).status, 200);
+      assert.equal((await call(inst, "POST", "/api/signup", { email, body: {} })).status, 429);
+    });
+  });
+  test("the shared tenant's daily invite budget caps signups at 20; refusals do not spend it", async () => {
+    const tenant = "shared-day-" + rnd(3);
+    await ownShared(tenant, async (inst) => {
+      // refusals create nothing, so they cost the tenant's budget nothing
+      for (let i = 0; i < 3; i++) {
+        const email = newEmail();
+        fake.addUser(tenant, email, "isolated");
+        assert.equal((await call(inst, "POST", "/api/signup", { email, body: {} })).json.error, "account_exists");
+      }
+      for (let i = 0; i < 20; i++) {
+        const r = await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} });
+        assert.equal(r.status, 200, `signup ${i}: ${r.text}`);
+      }
+      const m = mark();
+      const r = await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} });
+      assert.equal(r.status, 429);
+      assert.deepEqual(r.json, { error: "signup_limit" });
+      assert.equal(since(m).length, 0, "refused before reaching the runtime");
+    });
+  });
+  test("the shared tenant's pending cap: 50 live website invites refuse a new visitor, not the one replacing their own", async () => {
+    const tenant = "shared-pending-" + rnd(3);
+    await ownShared(tenant, async (inst) => {
+      for (let i = 0; i < 49; i++) websiteInvite(tenant, `w${i}-${rnd(3)}@example.com`);
+      // an operator's invites (another return_to) do not count
+      for (let i = 0; i < 5; i++) fake.addInvite(tenant, { login: `op${i}@example.com`, return_to: "" });
+      const a = newEmail();
+      assert.equal((await call(inst, "POST", "/api/signup", { email: a, body: {} })).status, 200); // the 50th
+      const m = mark();
+      const b = await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} });
+      assert.equal(b.status, 429);
+      assert.deepEqual(b.json, { error: "signup_limit" });
+      assert.equal(mutations(m).length, 0);
+      // a re-signup replaces its own invite, so it is not over the cap
+      assert.equal((await call(inst, "POST", "/api/signup", { email: a, body: {} })).status, 200);
+    });
+  });
+  test("concurrent signups cannot overshoot the shared tenant's pending cap", async () => {
+    const tenant = "shared-race-" + rnd(3);
+    await ownShared(tenant, async (inst) => {
+      for (let i = 0; i < 48; i++) websiteInvite(tenant, `r${i}-${rnd(3)}@example.com`);
+      fake.delayMs = 15;
+      try {
+        const rs = await Promise.all(Array.from({ length: 5 }, () => call(inst, "POST", "/api/signup", { email: newEmail(), body: {} })));
+        assert.equal(rs.filter((r) => r.status === 200).length, 2, rs.map((r) => r.status).join(","));
+        assert.ok(rs.filter((r) => r.status !== 200).every((r) => r.json.error === "signup_limit"));
+      } finally { fake.delayMs = 0; }
+      assert.equal([...fake.T(tenant).invites.values()].filter((i) => !i.revoked && !i.redeemed).length, 50);
+    });
   });
 });
 
