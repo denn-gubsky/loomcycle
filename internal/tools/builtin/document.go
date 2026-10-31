@@ -5406,9 +5406,6 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			skip("an image the store refused (type or size)")
 		}
 	}
-	// A volume image is read just before its chunk is created and attached,
-	// so the import holds one image's bytes at a time (a file named again
-	// later is kept until its last use); see newVolumeImageLoader for the caps.
 	// Every chunk below is new, so none may carry the operator's `principal` field.
 	// Refused before anything is written, rather than part-way through.
 	for _, c := range chunks {
@@ -5419,6 +5416,9 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			return *refused, nil
 		}
 	}
+	// A volume image is read just before its chunk is created and attached,
+	// so the import holds one image's bytes at a time (a file named again
+	// later is kept until its last use); see newVolumeImageLoader for the caps.
 	images := newVolumeImageLoader(chunks)
 	load := func(c *mdChunk) {
 		if c.assetRef == "" {
