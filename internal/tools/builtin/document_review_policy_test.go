@@ -637,3 +637,20 @@ func TestApplyReviewPolicy_AutoAssertImpliesThePolicy(t *testing.T) {
 		t.Errorf("cites = %v", e)
 	}
 }
+
+// A correction filed beside a statement (id) is never ruled by the policy, as
+// @auto_assert never asserted one: accepting it would set a second live
+// statement beside the one it revises.
+func TestReviewPolicy_ACorrectionIsNeverRuled(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	f := newPolicyFixture(t, d, base, reviewOntologyMD)
+	orig := f.citation("cites")
+	if orig["status"] != edgeStatusAsserted {
+		t.Fatalf("filed = %v", orig)
+	}
+	out, res := docExec(t, d, f.run, fmt.Sprintf(`{"op":"propose_statement","scope":"tenant","id":%q,"method":"rule:citation","confidence":0.9,
+		"evidence":[{"chunk_id":%q,"quote":"cites the Act of 2015"}]}`, orig["id"], f.one))
+	if res.IsError || out["status"] != edgeStatusProposed || out["ruled_by"] != nil {
+		t.Errorf("a correction = %v %s, want proposed and unruled", out, res.Text)
+	}
+}
