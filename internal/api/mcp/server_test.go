@@ -35,6 +35,10 @@ type mockConnector struct {
 	retentionRes connector.RetentionOverrideResult
 	retentionErr error
 
+	mergeReq connector.MergeSubjectsRequest
+	mergeRes connector.MergeSubjectsResult
+	mergeErr error
+
 	dirTenant atomic.Value
 	// identityTool, when set, answers Identity calls as the server would
 	// (the builtin, on the ctx the handler stamped); identityTenant records
@@ -1973,4 +1977,11 @@ func logLine(t *testing.T, logs, msg string) string {
 		t.Fatalf("want exactly one log line containing %q, got %d; logs:\n%s", msg, len(hits), logs)
 	}
 	return hits[0]
+}
+
+// MergeSubjects records the request and answers with the configured result
+// (connector.Connector).
+func (m *mockConnector) MergeSubjects(_ context.Context, req connector.MergeSubjectsRequest) (connector.MergeSubjectsResult, error) {
+	m.mergeReq = req
+	return m.mergeRes, m.mergeErr
 }

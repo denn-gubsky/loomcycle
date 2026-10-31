@@ -774,3 +774,7 @@ func (m *httpMockConnector) DeleteConfiguredRun(context.Context, string) error {
 func (m *httpMockConnector) RetentionOverride(context.Context, connector.RetentionOverrideRequest) (connector.RetentionOverrideResult, error) {
 	return connector.RetentionOverrideResult{}, nil
 }
+
+func (m *httpMockConnector) MergeSubjects(context.Context, connector.MergeSubjectsRequest) (connector.MergeSubjectsResult, error) {
+	return connector.MergeSubjectsResult{}, nil
+}

@@ -104,7 +104,7 @@ func TestSurfaces_EveryMappedPairIsInTheCatalog(t *testing.T) {
 		{"POST", "/v1/_pause"}, {"GET", "/v1/_state"}, {"GET", "/v1/_metrics/summary"}, {"GET", "/v1/_resident"},
 		{"POST", "/v1/_resident/x/close"}, {"GET", "/v1/_runnable-agents"}, {"GET", "/v1/_library/skills"},
 		{"GET", "/v1/_library/mcp-servers"}, {"POST", "/v1/_history"}, {"POST", "/v1/_evaluation"},
-		{"GET", "/v1/_ontology"}, {"POST", "/v1/_ontology/adopt"}, {"POST", "/v1/_webhooks/x/test"},
+		{"GET", "/v1/_ontology"}, {"POST", "/v1/_ontology/adopt"}, {"POST", "/v1/_ontology/subjects/merge"}, {"POST", "/v1/_webhooks/x/test"},
 		{"GET", "/v1/_groups"}, {"POST", "/v1/_acldef"}, {"GET", "/v1/_acldef/names"},
 	}
 	for _, r := range routes {

@@ -565,3 +565,7 @@ func (m *parityMock) DeleteConfiguredRun(context.Context, string) error { return
 func (m *parityMock) RetentionOverride(context.Context, connector.RetentionOverrideRequest) (connector.RetentionOverrideResult, error) {
 	return connector.RetentionOverrideResult{}, nil
 }
+
+func (m *parityMock) MergeSubjects(context.Context, connector.MergeSubjectsRequest) (connector.MergeSubjectsResult, error) {
+	return connector.MergeSubjectsResult{}, nil
+}

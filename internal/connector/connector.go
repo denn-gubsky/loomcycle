@@ -165,6 +165,23 @@ type Connector interface {
 	// retention_override tool.
 	RetentionOverride(ctx context.Context, req RetentionOverrideRequest) (RetentionOverrideResult, error)
 
+	// MergeSubjects folds one tenant ontology subject (the duplicate) into
+	// another (the survivor) in one transaction: the duplicate's facts move
+	// under the survivor, its statements are re-pointed (each copied with the
+	// survivor in its place and the original expired), and the duplicate
+	// stays as a retired root recording where it went (fields.merged_into,
+	// status merged). After the commit it announces `merged` on the scope's
+	// memory/subjects channel, unless the caller's access-control rules hide
+	// part of the scope from reading (then NotAnnounced says why).
+	//
+	// Operator-only on every transport: an admin (for any tenant, via
+	// req.Tenant) or a tenant operator for its own, holding write on both
+	// documents. The check is made here as well as at each transport's gate.
+	// Errors wrap the ErrSubjectMerge* sentinels; SubjectMergeCode names
+	// them. Reachable via POST /v1/_ontology/subjects/merge, the gRPC
+	// MergeSubjects RPC and the MCP `ontology` tool (op merge_subjects).
+	MergeSubjects(ctx context.Context, req MergeSubjectsRequest) (MergeSubjectsResult, error)
+
 	// ReplaySession copies a SOURCE session's transcript into a NEW session bound
 	// to a (possibly different) target agent, so that agent continues from the
 	// same context — mirrors POST /v1/sessions/{id}/replay. Provider-specific
