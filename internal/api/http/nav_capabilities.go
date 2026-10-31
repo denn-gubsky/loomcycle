@@ -72,6 +72,10 @@ var navSurfaces = []navSurface{
 	{ID: "limits", Method: "GET", Path: "/v1/_limits"},
 	{ID: "routing", Method: "GET", Path: "/v1/_routing"},
 	{ID: "ontology", Method: "GET", Path: "/v1/_ontology"},
+	// The statement review queue (RFC FS P1). Its route admits a member too
+	// (who may rule only where an ACL grants review), so a member who can
+	// read documents sees the page; its rulings are refused without a grant.
+	{ID: "review", Method: "GET", Path: "/v1/_statements/review"},
 	{ID: "retention", Method: "GET", Path: "/v1/_retention"},
 	{ID: "erasure", Method: "GET", Path: "/v1/_erasure"},
 	{ID: "presets", Method: "GET", Path: "/v1/_presets"},
