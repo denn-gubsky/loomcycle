@@ -2070,6 +2070,38 @@ channels:
 	}
 }
 
+// TestChannelScope_TenantLoadsFromYaml: a yaml channel may be tenant-scoped, the
+// scope the runtime publishes its tenant-scope events under (memory/subjects); an
+// unknown scope is still refused.
+func TestChannelScope_TenantLoadsFromYaml(t *testing.T) {
+	tmp := t.TempDir()
+	write := func(scope string) string {
+		p := filepath.Join(tmp, scope+".yaml")
+		if err := os.WriteFile(p, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+channels:
+  memory/subjects:
+    scope: `+scope+`
+    semantic: queue
+`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	cfg, err := Load(write("tenant"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Channels["memory/subjects"].Scope != "tenant" {
+		t.Errorf("scope = %q, want tenant", cfg.Channels["memory/subjects"].Scope)
+	}
+	if _, err := Load(write("galaxy")); err == nil || !strings.Contains(err.Error(), "unknown scope") {
+		t.Errorf("an unknown scope loaded: %v", err)
+	}
+}
+
 // TestMemoryEntries_LoadFromYaml — v0.11.5 memory.entries pre-seeded
 // memory rows. Verifies the yaml block parses with mixed value types
 // (string / object / number) and the embed:true flag round-trips.

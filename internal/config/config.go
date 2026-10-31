@@ -7915,6 +7915,11 @@ var validChannelScopes = map[string]bool{
 	"agent":  true,
 	"user":   true,
 	"global": true,
+	// One queue shared by the whole tenant (scope_id ""), isolated from other
+	// tenants by the store's tenant column. The runtime publishes tenant-scope
+	// events there (memory/subjects), so a bundle has to be able to declare one;
+	// every reader (the Channel tool, schedules, team subscriptions) handles it.
+	"tenant": true,
 }
 
 // validChannelSemantics is informational at the storage level (the
@@ -9495,7 +9500,7 @@ func validate(c *Config) error {
 			return fmt.Errorf("channels.%s: the %q prefix is reserved for a team's own channels, which a team declares in its definition under local.channels", name, teamspec.ChannelPrefix)
 		}
 		if !validChannelScopes[ch.Scope] {
-			return fmt.Errorf("channels.%s: unknown scope %q (want one of: agent, user, global)", name, ch.Scope)
+			return fmt.Errorf("channels.%s: unknown scope %q (want one of: agent, user, tenant, global)", name, ch.Scope)
 		}
 		if ch.DefaultTTL < 0 {
 			return fmt.Errorf("channels.%s: default_ttl must be >= 0", name)

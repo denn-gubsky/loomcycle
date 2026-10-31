@@ -29,9 +29,11 @@
 #                 quotes, or none". Used by L4 only.
 #
 # MODES. `document` (one document, the default), `maintain` (L6 only, over one
-# document's statements), `drain` (the documents the `documents/ingested`
-# queue names, one message at a time, each acked only after its pass),
-# `subject` (L6 over a subject's statements; `merged_into` moves them) and
+# document's statements), `drain` (one message at a time, each acked only
+# after its pass: at `scope: user` the documents the `documents/ingested` queue
+# names; at `scope: tenant` the subjects the `memory/subjects` queue names, each
+# an L6 subject pass), `subject` (L6 over a subject's statements;
+# `merged_into` moves them) and
 # `sweep` (L6 over a Path subtree, least recently verified first, then the
 # purge report; `purge: true` deletes). WRITE
 # MODES: `report` (the default — reads only, counts what it would write, acks
@@ -90,6 +92,16 @@ channels:
     scope: user
     max_messages: 256
     semantic: queue
+  # The runtime publishes {op, subject_natural_key, document_id, root_chunk_id,
+  # surviving_key?, surviving_document_id?, old_type?, new_type?} here when a
+  # subject is adopted, merged, re-typed, removed or erased. Tenant-scoped,
+  # because adopted subjects live in the tenant scope; kb/linker drains it with
+  # {"mode":"drain","scope":"tenant"}.
+  memory/subjects:
+    description: "Subjects adopted, merged, re-typed, removed or erased — the links agent's subject queue."
+    scope: tenant
+    max_messages: 256
+    semantic: queue
 
 agents:
   kb/linker:
@@ -101,9 +113,10 @@ agents:
     # goes through one function that report mode turns into a count) and by a
     # test that runs the pass and records every op it issues.
     tools: [Document, Agent, Channel]
-    # The ingest queue only, and only to read and ack it. No publish grant.
+    # The ingest and subject queues only, and only to read and ack them. No
+    # publish grant.
     channels:
-      subscribe: [documents/ingested]
+      subscribe: [documents/ingested, memory/subjects]
     # The methods this code agent may stamp on its statements. The same grant
     # lets it hold the linker lease.
     statement_methods: [rule, extractor]
@@ -186,6 +199,7 @@ agents:
         // never outlives it.
         lease_renew_every: 50,
         ingest_channel: "documents/ingested",
+        subject_channel: "memory/subjects",
         citations_limit: 1000,
         statements_page: 200,
         sql_batch: 100,
@@ -248,6 +262,7 @@ agents:
         "evidence_quote_not_found", "method_not_granted", "permission"];
 
       var INGEST_REASONS = { created: true, imported: true, reimported: true };
+      var SUBJECT_OPS = { adopted: true, merged: true, retyped: true, removed: true, erased: true };
 
       // The five relate-layer kinds, used when the caller names none.
       var DEFAULT_RELATIONS = [
@@ -271,6 +286,7 @@ agents:
 
       var USAGE = "Pass a JSON object: {\"mode\": document|drain|maintain|subject|sweep (default document), " +
         "\"document_id\" or \"path\" (not in drain; in subject mode, the subject's document), " +
+        "in drain: scope user reads documents/ingested, scope tenant reads memory/subjects (L6 only), " +
         "optional scope (user|agent|tenant), " +
         "layers [\"L0\",\"L1\",\"L2\",\"L3\",\"L4\",\"L6\"], write (report|propose, default report), " +
         "terms_scheme, as_of (unix nanoseconds), max_writes, max_statements, max_messages, " +
@@ -397,11 +413,12 @@ agents:
           }
           o.scope = v.scope;
         }
-        // The ingest channel this bundle declares is user-scoped, so its messages
-        // name user-scope documents. Draining it at another scope would look every
-        // one of them up in the wrong store and skip it as missing.
-        if (o.mode === "drain" && o.scope !== "user") {
-          return { error: "drain reads the user-scoped ingest channel, so its scope must be user" };
+        // Each queue is declared at one scope and names that scope's documents: the
+        // ingest queue is user-scoped, the subject queue tenant-scoped (adopted
+        // subjects live there). Draining a queue at another scope would look every
+        // message up in the wrong store and skip it as missing.
+        if (o.mode === "drain" && o.scope === "agent") {
+          return { error: "drain reads documents/ingested at scope user or memory/subjects at scope tenant; scope agent has neither" };
         }
         o.corpus_paths = null;
         if (v.corpus_paths !== undefined) {
@@ -538,8 +555,10 @@ agents:
 
       function parseLayers(list, o) {
         var out = {};
+        // A subject message is answered with a subject pass, which is L6 alone.
+        var subjectDrain = o.mode === "drain" && o.scope === "tenant";
         if (list === undefined) {
-          var def = MODE_LAYERS[o.mode];
+          var def = subjectDrain ? MODE_LAYERS.subject : MODE_LAYERS[o.mode];
           for (var i = 0; i < def.length; i++) { out[def[i]] = true; }
           var docMode = o.mode !== "maintain" && o.mode !== "subject" && o.mode !== "sweep";
           if (o.corpus_paths !== null && docMode) { out.L4 = true; }
@@ -559,6 +578,9 @@ agents:
         }
         if ((o.mode === "maintain" || o.mode === "subject" || o.mode === "sweep") && (list.length !== 1 || out.L6 !== true)) {
           return { error: o.mode + " runs the L6 layer only" };
+        }
+        if (subjectDrain && (list.length !== 1 || out.L6 !== true)) {
+          return { error: "drain at scope tenant reads the subject queue, whose passes run the L6 layer only" };
         }
         return { value: out };
       }
@@ -819,38 +841,46 @@ agents:
         if (st.opts.layers.L6 === true) { layerMaintain(st, doc); }
       }
 
-      // drainPass works through the ingest queue one message at a time. await reads
-      // from the committed cursor without committing, so a message is consumed only
-      // by the ack that follows its recorded pass. An ack commits everything before
-      // it, so a message whose pass failed stops the drain: acking a later one would
+      // drainPass works through a queue one message at a time: the ingest queue at
+      // user scope, the subject queue at tenant scope. await reads from the
+      // committed cursor without committing, so a message is consumed only by the
+      // ack that follows its recorded pass. An ack commits everything before it, so
+      // a message whose pass failed stops the drain: acking a later one would
       // silently consume it.
       function drainPass(st) {
-        var Q = { channel: CONFIG.ingest_channel, read: 0, acked: 0, empty: false, max_messages: st.opts.max_messages,
+        var subjects = st.opts.scope === "tenant";
+        var channel = subjects ? CONFIG.subject_channel : CONFIG.ingest_channel;
+        var Q = { channel: channel, read: 0, acked: 0, empty: false, max_messages: st.opts.max_messages,
                   ack: st.opts.write === "propose" ? "after each pass" : "never in report mode" };
         st.queue = Q;
         var cursor = "";
         for (var n = 0; n < st.opts.max_messages; n++) {
-          var args = { channels: [CONFIG.ingest_channel], mode: "any", max_messages: 1, wait_ms: 0 };
+          var args = { channels: [channel], mode: "any", max_messages: 1, wait_ms: 0 };
           // Report mode never acks, so it walks the queue with its own cursor.
           if (cursor !== "") { args.from_cursor = cursor; }
           st.tool_calls++;
           var res = Channel.await(args);
-          var slot = (isPlainObject(res) && isPlainObject(res.results)) ? res.results[CONFIG.ingest_channel] : null;
+          var slot = (isPlainObject(res) && isPlainObject(res.results)) ? res.results[channel] : null;
           var msgs = (isPlainObject(slot) && isArray(slot.messages)) ? slot.messages : [];
           if (msgs.length === 0) { Q.empty = true; return; }
           var next = slot.next_cursor;
           if (typeof next !== "string" || next === "" || next === cursor) {
-            throw new Error("the ingest queue answered a message without a new cursor");
+            throw new Error("the " + channel + " queue answered a message without a new cursor");
           }
           cursor = next;
           Q.read++;
           var msg = msgs[0];
-          var rec = { message_id: (isPlainObject(msg) && isID(msg.id)) ? msg.id : "", document_id: "",
-                      reason: "", outcome: "", acked: false };
+          var value = isPlainObject(msg) ? msg.value : null;
+          var rec = { message_id: (isPlainObject(msg) && isID(msg.id)) ? msg.id : "", document_id: "", outcome: "", acked: false };
+          if (subjects) { rec.op = ""; } else { rec.reason = ""; }
           st.messages.push(rec);
-          var m = ingestMessage(isPlainObject(msg) ? msg.value : null);
+          var m = subjects ? subjectMessage(value) : ingestMessage(value);
           if (m === null) {
             rec.outcome = "malformed";
+          } else if (subjects) {
+            rec.document_id = m.document_id;
+            rec.op = m.op;
+            rec.outcome = runSubjectMessage(st, rec, m);
           } else {
             rec.document_id = m.document_id;
             rec.reason = m.reason;
@@ -860,7 +890,7 @@ agents:
           // ever process; a failed or stopped pass threw past this line.
           if (st.opts.write === "propose") {
             st.tool_calls++;
-            Channel.ack({ channel: CONFIG.ingest_channel, cursor: cursor });
+            Channel.ack({ channel: channel, cursor: cursor });
             rec.acked = true;
             Q.acked++;
           }
@@ -876,6 +906,49 @@ agents:
           throw e;
         }
         return "complete";
+      }
+
+      // runSubjectMessage answers one subject message with a subject pass (L6 over
+      // the statements touching the subject):
+      //   - adopted, retyped, erased: checks 1–5 on the subject's statements;
+      //   - merged: the merge re-pointed this scope's statements in its own
+      //     transaction, so the pass re-points what remains on the duplicate, then
+      //     checks the survivor;
+      //   - removed: the scope's statements went with the document, so there is
+      //     nothing left here to check.
+      // The payload is trusted for ids only; every pass re-reads under its grants.
+      function runSubjectMessage(st, rec, m) {
+        if (m.op === "removed") { return "nothing_to_check"; }
+        try {
+          if (m.op === "merged") {
+            st.opts.merged_into = m.surviving_document_id;
+            try {
+              passDocument(st, { document_id: m.document_id }, null);
+            } catch (e) {
+              // A duplicate already gone leaves the survivor to check.
+              if (!(e && e.missing === true)) { throw e; }
+            } finally {
+              st.opts.merged_into = null;
+            }
+            passDocument(st, { document_id: m.surviving_document_id }, null);
+          } else {
+            passDocument(st, { document_id: m.document_id }, null);
+          }
+        } catch (e) {
+          if (e && e.missing === true) { return "document_missing"; }
+          rec.outcome = isStop(e) ? (e.stop === "budget" ? "budget_stopped" : "lease_lost") : "failed";
+          throw e;
+        }
+        return "complete";
+      }
+
+      // subjectMessage validates one subject-queue payload; anything malformed is
+      // skipped, as for the ingest queue. A merge must name the survivor.
+      function subjectMessage(v) {
+        if (typeof v === "string") { v = parseJSONOrNull(v); }
+        if (!isPlainObject(v) || !isID(v.document_id) || typeof v.op !== "string" || SUBJECT_OPS[v.op] !== true) { return null; }
+        if (v.op === "merged" && (!isID(v.surviving_document_id) || v.surviving_document_id === v.document_id)) { return null; }
+        return { op: v.op, document_id: v.document_id, surviving_document_id: v.op === "merged" ? v.surviving_document_id : "" };
       }
 
       // ingestMessage validates one queue payload. Anything malformed is skipped
