@@ -3212,6 +3212,18 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 		retype = rt
 	}
+	// A subject's binding to a user account is the operator's: the write keeps it, and
+	// a change to it is refused here, before the revision moves.
+	if _, has := present["fields"]; has {
+		held, refused, herr := d.holdSubjectPrincipal(ctx, key, mscope, "update_chunk", in.ID, in.Fields)
+		if herr != nil {
+			return errFrom("update_chunk: "+herr.Error(), herr), nil
+		}
+		if refused != nil {
+			return *refused, nil
+		}
+		in.Fields = held
+	}
 	// Claim the update ATOMICALLY first: the guarded bump only matches if the
 	// revision is still what we read. If a concurrent writer raced us, it
 	// matches 0 rows → conflict, and we bail BEFORE clobbering the body (the
