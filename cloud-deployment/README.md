@@ -83,7 +83,9 @@ compose network `loomnet`:
    sent; loomcycle holds the new user pending until an operator approves it),
    `/api/team/*` and `/api/mint` (job 3) answer `404`, and the landing runs
    without `LOOMCYCLE_ADMIN_TOKEN`. Limits add 3 signups/day per e-mail, and the
-   tenant's 20/day and 50 pending apply to signups.
+   tenant's 20/day and 50 pending apply to signups. Signup refuses
+   (`503 approval_unavailable`) while the runtime's `/healthz` version is below
+   `LANDING_MIN_RUNTIME_VERSION`: an older runtime cannot hold sign-ups pending.
 
 > **Why a Node backend and not a Caddy header-inject:** a raw reverse-proxy that
 > injects the admin bearer onto `/v1/_operatortokendef` would forward the client's

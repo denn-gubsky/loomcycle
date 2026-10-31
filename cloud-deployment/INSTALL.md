@@ -267,11 +267,14 @@ who gets in: the Access policy (who may ask at all) and the operator's approval
 in this mode; operators manage people in the app's **Users** console, and API
 tokens are made in the app (`/ui` → Tokens).
 
-1. **Runtime** — a release that has the password gate's pending-approval
-   change (`new_user.status: pending` on a password gate). Deploy that runtime
-   **with or before** this repo's `config/loomcycle.yaml`: an older runtime
-   ignores the `status` key without a word, and website sign-ups would then come
-   up active with tenant-wide reach.
+1. **Runtime** — the release after v1.129.0, which has the password gate's
+   pending-approval change (`new_user.status: pending` on a password gate).
+   Deploy that runtime **with or before** this repo's `config/loomcycle.yaml`:
+   an older runtime ignores the `status` key without a word and would admit
+   every sign-up unapproved. The landing guards this too: shared-mode signup
+   answers `503 approval_unavailable` while the runtime's `/healthz` version is
+   below `LANDING_MIN_RUNTIME_VERSION` (compose default `1.129.1`; set it in
+   `.env.insecure` if the release number differs).
 2. **The landing's `auth:manage` token** — mint it as in step 2 below and put it in
    `.env.secure` as `LOOMCYCLE_AUTH_MANAGE_TOKEN`. Without it **Request access**
    answers "Accounts are not enabled".
@@ -734,6 +737,7 @@ volumes:
 | `app.loomcycle.cloud` → 502 / 1033 | The tunnel route must target `http://loomcycle-edge:8787` (or the older `http://tailscale:8787`; never `loomcycle:…`); confirm `cloudflared` is `running`, attached to the `edge` network, and the hostname exists in the dashboard. |
 | landing status strip grey / config "not published" | `LOOMCYCLE_PUBLIC_CONFIG=1` must be set (it is by default); confirm the landing can reach `tailscale:8787` (`make logs S=landing`). |
 | `landing` exits at boot: `FATAL: CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD required` | Set both in `.env.insecure` from the Access app (Phase 4), or `MINT_DEV_ALLOW_UNVERIFIED=1` for local testing only. `FATAL: LOOMCYCLE_ADMIN_TOKEN is required` → `LANDING_TENANT` is empty (per-person mode, which mints): set the token in `.env.secure`, or set `LANDING_TENANT` back. `FATAL: LANDING_TENANT must be …` → it is not a tenant id (letters, digits, `-`, `_`). |
+| **Request access** → `Sign-ups are paused until the runtime is updated` (`503 approval_unavailable`); landing log `signup refused: runtime version … below LANDING_MIN_RUNTIME_VERSION` | The runtime is older than the first release that holds sign-ups for approval, or reports no release version (`devel`/`unknown` from a local build). Upgrade the runtime; lower `LANDING_MIN_RUNTIME_VERSION` only if that release really has the pending status. |
 | **Request access** → `Too many requests for access right now` (`429 signup_limit`) | The shared tenant reached its 20 new invites for the day or 50 live website invites. Approve or remove pending users and revoke stale invites in the app, or wait a day. |
 | **Create token** → `not signed in` (401) | The Access cookie isn't present — the `/api` Access app is missing/misconfigured, or you didn't complete the Google login. Verify the app protects `loomcycle.cloud` path `api` and `CF_ACCESS_AUD` matches. |
 | **Create token** → `502 upstream …` | The landing reached loomcycle but the mint failed: `LOOMCYCLE_ADMIN_TOKEN` isn't a valid admin bearer (must equal `LOOMCYCLE_AUTH_TOKEN`), or the runtime is down. Check `make logs S=landing`. |
