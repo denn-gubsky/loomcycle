@@ -581,6 +581,89 @@ func TestKBLinker_SubjectDrainAgainstTheRealChannelTool(t *testing.T) {
 	}
 }
 
+// TestKBLinker_SubjectDrainOutlivesDeletedSubjects: a drain that reads several
+// events about subjects already deleted acks every one and completes. Each pass
+// asks for the subject's document, and the dispatcher refuses a call that has
+// failed twice with the same arguments — with text that is not "no such
+// document". Asking again for a document already found missing turned the third
+// event about it into a failed pass, which stops the drain there without acking
+// (the next run gets past it, as the guard counts per run). This is the sequence an
+// operator produced on a live deployment: adopt two subjects, re-type one, merge
+// it into the other, erase the user bound to the survivor, delete both.
+func TestKBLinker_SubjectDrainOutlivesDeletedSubjects(t *testing.T) {
+	d, ctx := realDocument(t)
+	cfg := knowledgeBaseConfig(t)
+	agent := cfg.Agents["kb/linker"]
+	defs := map[string]tools.ChannelDef{}
+	for name, c := range cfg.Channels {
+		defs[name] = tools.ChannelDef{Name: name, Scope: c.Scope, DefaultTTL: c.DefaultTTL, MaxMessages: c.MaxMessages, Semantic: c.Semantic}
+	}
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user", "tenant"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"user", "tenant"}}
+		rp.Channel = tools.ChannelPolicyValue{Subscribe: agent.Channels.Subscribe, Channels: defs}
+	})
+	a := realDoc(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Org A"}`)["document_id"].(string)
+	b := realDoc(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Org B"}`)["document_id"].(string)
+	pub := &channels.StorePublisher{Store: d.Store, Bus: d.Bus}
+	events := []map[string]any{
+		{"op": "adopted", "document_id": a},
+		{"op": "adopted", "document_id": b},
+		{"op": "retyped", "document_id": a, "old_type": "organization", "new_type": "project"},
+		{"op": "merged", "document_id": a, "surviving_document_id": b},
+		{"op": "erased", "document_id": b},
+		{"op": "removed", "document_id": b},
+		{"op": "removed", "document_id": a},
+	}
+	for i, ev := range events {
+		ev["timestamp"] = i + 1
+		payload, _ := json.Marshal(ev)
+		if _, err := pub.Write(ctx, channels.WriteRequest{
+			Channel: "memory/subjects", TenantID: "tnt", Scope: store.MemoryScopeTenant, ScopeID: "",
+			Payload: payload, PublishedBy: "u1", MaxMessages: 256,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{a, b} {
+		realDoc(t, d, ctx, fmt.Sprintf(`{"op":"delete_document","scope":"tenant","id":%q}`, id))
+	}
+
+	set := []tools.Tool{d, &kbFakeAgent{f: newKBFixture()}, &builtin.Channel{Store: d.Store, Bus: d.Bus}}
+	res, err := loop.Run(ctx, loop.RunOptions{
+		Provider:   codejs.New(codejs.Config{CodeRoot: t.TempDir(), RunTimeout: codejs.DefaultRunTimeout}),
+		Model:      "code-js",
+		AgentName:  "kb/linker",
+		CodeBody:   agent.Code,
+		Tools:      set,
+		Dispatcher: tools.NewDispatcher(set),
+		Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text",
+			Text: `{"mode":"drain","scope":"tenant","write":"propose"}`}}}},
+	})
+	if err != nil {
+		t.Fatalf("loop.Run: %v", err)
+	}
+	var rep map[string]any
+	if err := json.Unmarshal([]byte(res.FinalText), &rep); err != nil {
+		t.Fatalf("report: %v\n%s", err, res.FinalText)
+	}
+	if rep["status"] != "complete" {
+		t.Fatalf("status = %v, failure %v\n%s", rep["status"], rep["failure"], res.FinalText)
+	}
+	want := []string{"document_missing", "document_missing", "document_missing", "merge_unconfirmed",
+		"document_missing", "nothing_to_check", "nothing_to_check"}
+	msgs, _ := rep["messages"].([]any)
+	if len(msgs) != len(want) {
+		t.Fatalf("messages = %v, want all %d events read", rep["messages"], len(want))
+	}
+	for i, raw := range msgs {
+		m := raw.(map[string]any)
+		if m["outcome"] != want[i] || m["acked"] != true {
+			t.Errorf("message %d (%v) = %v / acked %v, want %s and acked", i, m["op"], m["outcome"], m["acked"], want[i])
+		}
+	}
+}
+
 // TestKBLinker_NoAgentCanPublishASubjectEvent: memory/subjects is written by the
 // runtime only. An agent granted publish on it is still refused by the real
 // Channel tool, so it cannot forge a merge that would have the linker re-point a

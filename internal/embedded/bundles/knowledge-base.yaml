@@ -657,6 +657,7 @@ agents:
           bodies: {},     // chunk id -> {ok, body, type, document_id}
           docTypes: {},   // document id -> {ok, type}
           chunkLists: {}, // document id -> {rows, truncated}
+          missingDocs: {}, // document id -> true once get_document said it is gone
           meta: {},       // chunk id -> {document_id, anchor, stable_id, invalid_at}, null when gone
           layers: {},
           l4: null,
@@ -994,15 +995,25 @@ agents:
 
       // resolveDocument names the document and its root. A document that cannot be
       // read stops the pass: there is nothing to link.
+      // A document id found missing is remembered for the rest of the run: an id
+      // never comes back (a path can be filled again, so it is asked each time). A
+      // drain can read several events about one deleted subject, and the dispatcher
+      // refuses a call that already failed twice with the same arguments, with text
+      // that is not "no such document". Asking again turned the third event into a
+      // failed pass, which stops that drain early on the message.
       function resolveDocument(st, ref) {
         var args = { op: "get_document" };
         if (ref.document_id) { args.id = ref.document_id; } else { args.path = ref.path; }
+        if (ref.document_id && st.missingDocs[ref.document_id] === true) { throw new MissingDocument(); }
         var d;
         try {
           d = call(st, args);
         } catch (e) {
           if (isStop(e)) { throw e; }
-          if (/no such document/.test(errText(e))) { throw new MissingDocument(); }
+          if (/no such document/.test(errText(e))) {
+            if (ref.document_id) { st.missingDocs[ref.document_id] = true; }
+            throw new MissingDocument();
+          }
           throw e;
         }
         if (!d || !isID(d.document_id)) {
