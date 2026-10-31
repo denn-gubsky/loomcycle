@@ -152,7 +152,8 @@ func (d *Document) publishSubjectEvent(ctx context.Context, key sqlmem.ScopeKey,
 			ev.DocumentID = asStr(res.Rows[0][0])
 		}
 	}
-	msg := map[string]any{"op": ev.Op, "subject_natural_key": ev.NaturalKey, "timestamp": time.Now().UnixNano()}
+	// The scope it is published at, as on documents/ingested.
+	msg := map[string]any{"op": ev.Op, "subject_natural_key": ev.NaturalKey, "scope": string(mscope), "timestamp": time.Now().UnixNano()}
 	for k, v := range map[string]string{
 		"document_id": ev.DocumentID, "root_chunk_id": ev.RootChunkID,
 		"surviving_key": ev.SurvivingKey, "surviving_document_id": ev.SurvivingDocumentID,
