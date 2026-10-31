@@ -36,6 +36,28 @@ export function documentProposals(edges: DocEdge[], documentId: string): DocEdge
   return edges.filter((e) => isProposed(e) && !!e.id && e.from_document_id === documentId);
 }
 
+// ReviewPanel is what the Connections panel needs to offer bulk review.
+export interface ReviewPanel {
+  proposals: DocEdge[];
+  scope: RulingScope;
+  // The edge list stopped at its page cap: proposals past it are not listed.
+  incomplete: boolean;
+  onChanged: () => void;
+}
+
+// reviewPanel decides whether the Connections panel shows bulk review: wherever
+// it can rule (scope), even with nothing listed. Hiding it at zero unmounted it
+// the moment a ruling took the document's last proposal, and with it the
+// ruling's result and its Undo.
+export function reviewPanel(
+  scope: RulingScope | undefined,
+  proposals: DocEdge[],
+  incomplete: boolean,
+  onChanged: () => void,
+): ReviewPanel | undefined {
+  return scope ? { proposals, scope, incomplete, onChanged } : undefined;
+}
+
 export interface DocumentRuling {
   documentId: string;
   action: RulingAction;

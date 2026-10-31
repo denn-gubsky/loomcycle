@@ -2,13 +2,12 @@ import { useEffect, useState } from "react";
 import type {
   Backlink,
   BrowseScope,
-  DocEdge,
   DocScope,
   RelatedChunk,
   UnlinkedMention,
 } from "../types";
 import { useExplorerData } from "../lib/dataLayer";
-import type { RulingScope } from "../lib/ruling";
+import type { ReviewPanel } from "../lib/bulkReview";
 import ChunkTarget from "./ChunkTarget";
 import ProposalReview from "./ProposalReview";
 import { StatementMeta } from "./Statement";
@@ -28,13 +27,7 @@ import { StatementMeta } from "./Statement";
 // With `review` (RFC FS), the panel also lists the document's own proposals —
 // whichever chunk is selected — with row selection and bulk Accept / Reject.
 // The host passes it only when its data layer can rule in bulk.
-export interface ConnectionsReview {
-  // The proposals filed from this document (documentProposals).
-  proposals: DocEdge[];
-  scope: RulingScope;
-  // A ruling or an undo changed statements: refetch the edges.
-  onChanged: () => void;
-}
+export type ConnectionsReview = ReviewPanel;
 
 export interface ConnectionsProps {
   documentId: string;
@@ -149,6 +142,7 @@ export default function Connections({
             <ProposalReview
               documentId={documentId}
               proposals={review.proposals}
+              incomplete={review.incomplete}
               scope={review.scope}
               browse={browse}
               onChanged={review.onChanged}

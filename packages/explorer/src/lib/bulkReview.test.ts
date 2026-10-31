@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LoomcycleClient } from "@loomcycle/client";
 import type { DocEdge } from "../types";
-import { bulkReviewScope, documentProposals, reviewScopeFor, ruleDocumentProposals, rulingNote } from "./bulkReview";
+import { bulkReviewScope, documentProposals, reviewPanel, reviewScopeFor, ruleDocumentProposals, rulingNote } from "./bulkReview";
 import { jsonPostFromConnection, RequestError } from "./createClient";
 import { dataLayerFromClient, ExplorerDataProvider, type DocRulingAnswer, type ExplorerDataLayer } from "./dataLayer";
 import type { RulingRequest } from "./ruling";
@@ -55,6 +55,12 @@ describe("where bulk review is offered", () => {
   it("offers no bulk action when the data layer has no bulk ruling", () => {
     expect(bulkReviewScope({}, "tenant")).toBeUndefined();
     expect(bulkReviewScope({ documentRuleStatements: vi.fn() }, "tenant")).toBe("tenant");
+  });
+
+  it("keeps the panel once the document's last proposal is ruled, so its result and Undo stay", () => {
+    const changed = () => {};
+    expect(reviewPanel("tenant", [], false, changed)).toEqual({ proposals: [], scope: "tenant", incomplete: false, onChanged: changed });
+    expect(reviewPanel(undefined, [edge()], false, changed)).toBeUndefined();
   });
 
   it("takes the document's own proposals from its edges", () => {
@@ -184,6 +190,21 @@ describe("ProposalReview", () => {
     expect(out).toContain("Reject all…");
     expect(out).toContain("Accept selected (0)");
     expect(out).toContain("Law 2297-VI");
+  });
+
+  it("disables the all-of-the-document actions when none is listed and the list is complete", () => {
+    const out = render([]);
+    expect(out).toContain("Proposals from this document (0)");
+    expect(out).toMatch(/<button type="button" disabled="">Accept all from this document<\/button>/);
+    const cut = renderToStaticMarkup(
+      createElement(ExplorerDataProvider, {
+        value: {} as ExplorerDataLayer,
+        children: createElement(ProposalReview, {
+          documentId: "d1", proposals: [], incomplete: true, scope: "tenant", onChanged: () => {}, onSelectChunk: () => {},
+        }),
+      }),
+    );
+    expect(cut).toMatch(/<button type="button">Accept all from this document<\/button>/);
   });
 
   it("confirms with the dry run's count and sample before ruling", () => {

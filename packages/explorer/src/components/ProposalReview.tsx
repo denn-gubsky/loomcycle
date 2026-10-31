@@ -15,6 +15,9 @@ import { StatementMeta } from "./Statement";
 export interface ProposalReviewProps {
   documentId: string;
   proposals: DocEdge[];
+  // The document's edge list stopped at its page cap, so proposals past it are
+  // not listed here (the "all" actions still reach them).
+  incomplete?: boolean;
   scope: RulingScope;
   browse?: BrowseScope;
   // Called after a ruling or an undo changed statements: the host refetches.
@@ -42,6 +45,7 @@ interface Result {
 export default function ProposalReview({
   documentId,
   proposals,
+  incomplete,
   scope,
   browse,
   onChanged,
@@ -124,6 +128,8 @@ export default function ProposalReview({
       return next;
     });
   const allPicked = proposals.length > 0 && picked.length === proposals.length;
+  // Nothing listed and nothing past the list: no "all" to rule.
+  const noneToRule = proposals.length === 0 && !incomplete;
 
   return (
     <div className="doc-conn-group doc-bulk">
@@ -145,10 +151,10 @@ export default function ProposalReview({
         <button type="button" className="danger" disabled={busy || picked.length === 0} onClick={() => begin("reject", false)}>
           Reject selected…
         </button>
-        <button type="button" disabled={busy} onClick={() => begin("accept", true)}>
+        <button type="button" disabled={busy || noneToRule} onClick={() => begin("accept", true)}>
           Accept all from this document
         </button>
-        <button type="button" className="danger" disabled={busy} onClick={() => begin("reject", true)}>
+        <button type="button" className="danger" disabled={busy || noneToRule} onClick={() => begin("reject", true)}>
           Reject all…
         </button>
       </div>
