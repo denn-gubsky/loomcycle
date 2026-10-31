@@ -218,8 +218,11 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 		s.recordAccountFailure(ctx, pw, id)
 		return refuse()
 	}
+	// A pending user signs in too: its session reaches only the
+	// awaiting-approval page (passwordSessionPrincipal). Any other status
+	// (disabled) is refused like a wrong password.
 	user, err := s.store.UserGet(ctx, id.TenantID, id.Subject)
-	if err != nil || user.Status != "active" {
+	if err != nil || (user.Status != "active" && user.Status != store.UserStatusPending) {
 		if err != nil && !isNotFound(err) {
 			return store.UserIdentityRow{}, nil, err
 		}
@@ -461,9 +464,10 @@ func (s *Server) passwordSessionBinding(ctx context.Context, ident sessionIdenti
 
 // passwordSessionPrincipal re-resolves a password-gate session: the gate is
 // still configured, the password is the one the session was made from, and the
-// user is still active. The principal is the user's own — the scopes its
-// access_mode grants a delegated token, its ACL set — never more.
-func (s *Server) passwordSessionPrincipal(ctx context.Context, row store.UISessionRow, bound func(string) bool) (auth.Principal, bool, bool) {
+// user is active or pending. The principal is the user's own — the scopes its
+// access_mode grants a delegated token, its ACL set — never more; a pending
+// user's holds nothing and sets *pending (pendingSessionPrincipal).
+func (s *Server) passwordSessionPrincipal(ctx context.Context, row store.UISessionRow, bound func(string) bool, pending *bool) (auth.Principal, bool, bool) {
 	if _, ok := s.passwordGateNamed(row.Gate); !ok {
 		return auth.Principal{}, false, true
 	}
@@ -474,7 +478,17 @@ func (s *Server) passwordSessionPrincipal(ctx context.Context, row store.UISessi
 	if !bound(cred.PHC) {
 		return auth.Principal{}, false, true
 	}
-	return s.activeUserSessionPrincipal(ctx, row.TenantID, row.Subject)
+	u, err := s.store.UserGet(ctx, row.TenantID, row.Subject)
+	if err != nil {
+		return auth.Principal{}, false, isNotFound(err)
+	}
+	switch u.Status {
+	case "active":
+		return s.userSessionPrincipal(ctx, u)
+	case store.UserStatusPending:
+		return pendingSessionPrincipal(u, pending)
+	}
+	return auth.Principal{}, false, true
 }
 
 // activeUserSessionPrincipal is the principal of a session a person gate made
@@ -906,8 +920,8 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 		Credential: store.UserCredentialRow{TenantID: inv.TenantID, Subject: subject, Kind: store.CredentialKindPassword, PHC: phc, PepperKID: kid, UpdatedAt: now},
 	}
 	if inv.Subject == "" {
-		red.User = &store.UserRow{TenantID: inv.TenantID, Subject: subject, AccessMode: inv.AccessMode, Status: "active",
-			CreatedAt: now, CreatedBy: "invite:" + inv.InviteID}
+		red.User = &store.UserRow{TenantID: inv.TenantID, Subject: subject, AccessMode: inv.AccessMode,
+			Status: redeemedUserStatus(g, inv), CreatedAt: now, CreatedBy: "invite:" + inv.InviteID}
 	}
 	if inv.Bootstrap && red.User != nil {
 		// A tenant's first owner is its operator (owner decision, Q6): the
@@ -942,6 +956,17 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"redirect": redirectAfter(g, inv.ReturnTo), "login": login, "recovery_codes": recovery})
+}
+
+// redeemedUserStatus is the status a NEW user an invite creates starts with.
+// Only a website's (auth:manage) invite on a gate with new_user.status:
+// pending makes it pending: an operator's or an admin's own invite is the
+// approval, and a tenant's bootstrap owner is the one who approves the rest.
+func redeemedUserStatus(g PasswordGateSettings, inv store.AuthInviteRow) string {
+	if g.NewUserStatus == store.UserStatusPending && inv.IssuedByManager && !inv.Bootstrap {
+		return store.UserStatusPending
+	}
+	return "active"
 }
 
 // joinInviteGroups adds a new user to the gate's floor groups that exist in

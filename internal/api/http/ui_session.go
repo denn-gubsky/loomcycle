@@ -677,14 +677,15 @@ func sessionExpiresAt(row store.UISessionRow, policy config.AuthPolicy) time.Tim
 // ok is false when it no longer authenticates as the same credential;
 // definitive is false when that could not be decided (a store error), so the
 // session is kept for the next request. pending is set for a user awaiting
-// approval (identity gates only).
+// approval (identity and password gates).
 func (s *Server) sessionCredentialPrincipal(ctx context.Context, id []byte, row store.UISessionRow) (p auth.Principal, pending, ok, definitive bool) {
 	p, ok, definitive = s.sessionCredentialPrincipalOf(ctx, id, row, &pending)
 	return p, pending, ok, definitive
 }
 
 // sessionCredentialPrincipalOf is the per-kind resolution. Only the identity
-// case sets *pending; the other kinds keep their three-value returns.
+// and password cases set *pending; the other kinds keep their three-value
+// returns.
 func (s *Server) sessionCredentialPrincipalOf(ctx context.Context, id []byte, row store.UISessionRow, pending *bool) (p auth.Principal, ok, definitive bool) {
 	h, err := s.hasher()
 	if err != nil {
@@ -740,7 +741,7 @@ func (s *Server) boundCredentialPrincipal(ctx context.Context, row store.UISessi
 		}
 		return auth.Principal{}, false, true
 	case credKindPassword:
-		return s.passwordSessionPrincipal(ctx, row, bound)
+		return s.passwordSessionPrincipal(ctx, row, bound, pending)
 	case credKindIdentity:
 		return s.identitySessionPrincipal(ctx, row, bound, pending)
 	case credKindPasskey:

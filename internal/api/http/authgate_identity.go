@@ -455,12 +455,20 @@ func (s *Server) identitySessionPrincipal(ctx context.Context, row store.UISessi
 	case "active":
 		return s.userSessionPrincipal(ctx, u)
 	case store.UserStatusPending:
-		eff, err := authz.Compile(authz.Input{Subject: authz.Subject{TenantID: u.TenantID, ID: u.Subject}, Now: time.Now()})
-		if err != nil {
-			return auth.Principal{}, false, false
-		}
-		*pending = true
-		return auth.Principal{TenantID: u.TenantID, Subject: u.Subject, Scopes: []string{}, Effective: eff}, true, true
+		return pendingSessionPrincipal(u, pending)
 	}
 	return auth.Principal{}, false, true
+}
+
+// pendingSessionPrincipal is the session principal of a user awaiting
+// approval, for every gate that signs one in (identity and password): no
+// scope and an empty ACL set, so every access question is NoMatch, and
+// *pending set so the middleware admits it to GET /v1/_me alone.
+func pendingSessionPrincipal(u store.UserRow, pending *bool) (auth.Principal, bool, bool) {
+	eff, err := authz.Compile(authz.Input{Subject: authz.Subject{TenantID: u.TenantID, ID: u.Subject}, Now: time.Now()})
+	if err != nil {
+		return auth.Principal{}, false, false
+	}
+	*pending = true
+	return auth.Principal{TenantID: u.TenantID, Subject: u.Subject, Scopes: []string{}, Effective: eff}, true, true
 }
