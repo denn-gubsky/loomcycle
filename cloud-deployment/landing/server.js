@@ -27,6 +27,15 @@
 //    always derived from the verified Access identity, never the request. See
 //    ../AUTH-INTEGRATION.md. Without the token those routes answer 503 and the
 //    site keeps its token-vault flow.
+//
+// Shared-tenant mode (LANDING_TENANT set, 2026-10-31): everyone joins ONE
+// tenant, named by the operator in LANDING_TENANT and never by a request.
+// /api/signup issues a plain new-user invite into it (the gate's floor decides
+// access, and a tenant operator approves the new user in the app), while
+// /api/team/* and /api/mint answer 404: in a tenant everyone shares, a website
+// team console would let any visitor manage every member, and minting needs the
+// admin token this mode does not hold. Without LANDING_TENANT the landing keeps
+// the per-person tenants described above.
 
 import express from "express";
 import { createRemoteJWKSet, jwtVerify } from "jose";
@@ -50,10 +59,20 @@ const MANAGE_TOKEN = process.env.LOOMCYCLE_AUTH_MANAGE_TOKEN || "";
 const AUTH_GATE = process.env.AUTH_GATE || "cloud";
 const APP_URL = (process.env.APP_URL || "https://app.loomcycle.cloud").replace(/\/+$/, "");
 const SIGNUP_RETURN_TO = process.env.SIGNUP_RETURN_TO || "https://loomcycle.cloud/?welcome=1";
+// Shared-tenant mode: non-empty = every visitor signs up into this one tenant.
+const SHARED_TENANT = (process.env.LANDING_TENANT || "").trim();
+const SHARED = SHARED_TENANT !== "";
 
-// Fail fast on misconfiguration.
-if (!ADMIN_TOKEN) {
-  console.error("FATAL: LOOMCYCLE_ADMIN_TOKEN is required");
+// Fail fast on misconfiguration. The admin token only mints, and shared mode
+// never mints, so only per-person mode needs it.
+if (!SHARED && !ADMIN_TOKEN) {
+  console.error("FATAL: LOOMCYCLE_ADMIN_TOKEN is required (unless LANDING_TENANT selects shared-tenant mode)");
+  process.exit(1);
+}
+// The tenant goes into every upstream request, so it gets loomcycle's own
+// tenant id rule.
+if (SHARED && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(SHARED_TENANT)) {
+  console.error("FATAL: LANDING_TENANT must be a loomcycle tenant id (letters, digits, - and _)");
   process.exit(1);
 }
 // The gate name goes into every upstream path, so it gets loomcycle's own gate
@@ -117,9 +136,13 @@ function cookie(req, name) {
 
 // Deterministic (tenant, subject) from the verified email, so a visitor always
 // lands in — and re-mints into — the same isolated tenant. Hash-based so two
-// different emails can never collide onto one tenant.
+// different emails can never collide onto one tenant. In shared mode the tenant
+// is the operator's LANDING_TENANT; `subject` is then only the verified e-mail
+// the rate limits key on, not a loomcycle subject (the runtime makes one when
+// the invite is redeemed).
 function principalFor(email) {
   const e = email.trim().toLowerCase();
+  if (SHARED) return { tenant: SHARED_TENANT, subject: e };
   return { tenant: TENANT_PREFIX + createHash("sha256").update(e).digest("hex").slice(0, 12), subject: e };
 }
 
@@ -147,7 +170,15 @@ app.get("/api/whoami", async (req, res) => {
   }
   const p = principalFor(id.email);
   if (wantsHTML) return res.redirect("/?signedin=1");
-  const out = { authenticated: true, email: id.email, tenant: p.tenant, subject: p.subject, auth_gate: !!MANAGE_TOKEN };
+  if (SHARED) {
+    // No signed_up here: an auth:manage token cannot find a user by login
+    // without reading every user's identities, so the page offers both
+    // "Request access" and "Open app", and /api/signup answers for itself.
+    const out = { authenticated: true, email: id.email, mode: "shared", tenant: SHARED_TENANT, auth_gate: !!MANAGE_TOKEN };
+    if (MANAGE_TOKEN) out.app = APP_URL + "/ui/login";
+    return res.json(out);
+  }
+  const out = { authenticated: true, email: id.email, mode: "owner", tenant: p.tenant, subject: p.subject, auth_gate: !!MANAGE_TOKEN };
   if (MANAGE_TOKEN) {
     out.app = APP_URL + "/ui/login";
     // null = the runtime could not say; the page then offers both actions and
@@ -162,6 +193,10 @@ app.get("/api/whoami", async (req, res) => {
   }
   res.json(out);
 });
+
+// Shared mode has no website team console and no minting (see the header):
+// both answer the same 404 an unknown route would, before any identity check.
+if (SHARED) app.use(["/api/mint", "/api/team"], (_req, res) => notFound(res));
 
 // POST /api/mint {name} — mint a substrate:tenant token for the authenticated
 // visitor's derived tenant. The admin token + the scope/tenant are enforced HERE;
@@ -555,6 +590,7 @@ app.post("/api/signup", accountRoute(async (req, res, p) => {
 // cannot race another). It returns whether the request spends the visitor's
 // rate-limit slots; ctx.wrote records an upstream state change on the way.
 async function signup(res, p, ctx) {
+  if (SHARED) return sharedSignup(res, p, ctx);
   const st = await signupState(p);
   const wrote = () => { ctx.wrote = true; };
   let body;
@@ -587,6 +623,51 @@ async function signup(res, p, ctx) {
       logWarn(`account upstream signup: ${up.status} address unavailable`);
       res.status(409).json({ error: "cannot_sign_up", app: APP_URL + "/ui/login",
         message: "This address can't be used to create a workspace. If it already has an account, sign in at the app." });
+    } else {
+      sendUpstreamError(res, "signup", up);
+    }
+    return ctx.wrote || !runtimeFault(up);
+  }
+  const link = checkedLink(up.json, "/ui/invite#");
+  if (!link) {
+    logWarn("account upstream signup: link outside APP_URL");
+    res.status(502).json({ error: "link_mismatch" });
+    return true; // the invite was created upstream
+  }
+  res.json({ redirect: link.url, expires_at: link.expires_at });
+  return true;
+}
+
+// sharedSignup is signup in shared mode: a new-user invite into the one shared
+// tenant, its login pinned to the verified e-mail. It names no subject, access
+// mode or groups, so the gate's provisioning floor decides what the new user
+// gets, and loomcycle holds a user made by this credential's invite pending
+// until a tenant operator approves it. A login already taken at the gate (in
+// any tenant: logins are unique per gate) is a visitor who signed up before.
+async function sharedSignup(res, p, ctx) {
+  const login = loginOf(p.subject);
+  const wrote = () => { ctx.wrote = true; };
+  // A user whose subject is this e-mail predates the website (the shared
+  // tenant was populated by hand). A fresh invite would make a second,
+  // duplicate account and take the login the operator attaches to the first,
+  // so the visitor is sent to an operator instead. One users read, no matter
+  // how many there are.
+  if ((await tenantUsers(p.tenant)).some((u) => loginOf(u.user_id) === login)) {
+    res.status(409).json({ error: "account_exists", app: APP_URL + "/ui/login",
+      message: "This address already has an account here. Ask an operator to set its password, then sign in at the app." });
+    return true;
+  }
+  // A live invite this website issued earlier for the same e-mail (its link
+  // was only ever in the visitor's address bar) is replaced. return_to tells
+  // the website's invites apart from an operator's, which are left alone.
+  await revokeLive(p.tenant, (inv) => !inv.subject && !inv.bootstrap && inv.return_to === SIGNUP_RETURN_TO &&
+    loginOf(inv.login || "") === login, wrote);
+  const up = await manage("POST", gatePath("invites"), {
+    body: { tenant: p.tenant, login, email: login, return_to: SIGNUP_RETURN_TO },
+  });
+  if (up.status !== 201) {
+    if (up.json?.code === "login_taken") {
+      res.status(409).json({ error: "already_signed_up", signed_up: true, app: APP_URL + "/ui/login" });
     } else {
       sendUpstreamError(res, "signup", up);
     }
@@ -780,5 +861,6 @@ app.listen(PORT, (err) => {
   }
   console.log(`landing listening on :${PORT} → runtime ${RUNTIME_URL}` +
     (DEV_ALLOW_UNVERIFIED ? " [DEV: Access verification DISABLED]" : ` [CF Access aud=${ACCESS_AUD ? "set" : "unset"}]`) +
-    (MANAGE_TOKEN ? ` [accounts: gate ${AUTH_GATE}, app ${APP_URL}]` : " [accounts: off — LOOMCYCLE_AUTH_MANAGE_TOKEN unset]"));
+    (MANAGE_TOKEN ? ` [accounts: gate ${AUTH_GATE}, app ${APP_URL}]` : " [accounts: off — LOOMCYCLE_AUTH_MANAGE_TOKEN unset]") +
+    (SHARED ? ` [shared tenant ${SHARED_TENANT}: no team console, no minting]` : ""));
 });
