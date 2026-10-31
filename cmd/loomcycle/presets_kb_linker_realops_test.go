@@ -693,6 +693,35 @@ func TestKBLinker_NoAgentCanPublishASubjectEvent(t *testing.T) {
 	}
 }
 
+// TestKBLinker_NoAgentCanPublishAnIngestEvent: documents/ingested is written by
+// the runtime only. An agent granted publish on it is still refused by the real
+// Channel tool, so it cannot plant a message a drain would act on — one naming a
+// document, or one naming a scope that stops the drain.
+func TestKBLinker_NoAgentCanPublishAnIngestEvent(t *testing.T) {
+	d, ctx := realDocument(t)
+	cfg := knowledgeBaseConfig(t)
+	c := cfg.Channels["documents/ingested"]
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{Publish: []string{"documents/ingested"}, Channels: map[string]tools.ChannelDef{
+			"documents/ingested": {Name: "documents/ingested", Scope: c.Scope, MaxMessages: c.MaxMessages, Semantic: c.Semantic, Publisher: c.Publisher},
+		}}
+	})
+	res, err := (&builtin.Channel{Store: d.Store, Bus: d.Bus}).Execute(ctx, json.RawMessage(
+		`{"op":"publish","channel":"documents/ingested","value":{"document_id":"a","reason":"created","scope":"tenant"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatalf("an agent published an ingest event: %s", res.Text)
+	}
+	msgs, _ := d.Store.SnapshotReadChannelMessages(ctx)
+	for _, m := range msgs {
+		if m.Channel == "documents/ingested" {
+			t.Errorf("a message landed: %+v", m)
+		}
+	}
+}
+
 // TestKBLinker_MergeDrainAgainstTheRealMerge: the crossing between the operator's
 // merge and the linker's drain. A real merge publishes `merged` on the tenant's
 // memory/subjects; the linker, draining that queue through the real Channel tool,

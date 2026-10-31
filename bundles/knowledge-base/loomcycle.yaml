@@ -30,9 +30,11 @@
 #
 # MODES. `document` (one document, the default), `maintain` (L6 only, over one
 # document's statements), `drain` (one message at a time, each acked only
-# after its pass: at `scope: user` the documents the `documents/ingested` queue
-# names; at `scope: tenant` the subjects the `memory/subjects` queue names, each
-# an L6 subject pass), `subject` (L6 over a subject's statements;
+# after its pass: `queue: documents` the documents the `documents/ingested`
+# queue names, at `scope: user` or `scope: tenant`; `queue: subjects` the
+# subjects the `memory/subjects` queue names, at `scope: tenant` only, each an
+# L6 subject pass; the queue defaults to documents at user scope and subjects at
+# tenant scope), `subject` (L6 over a subject's statements;
 # `merged_into` moves them) and
 # `sweep` (L6 over a Path subtree, least recently verified first, then the
 # purge report; `purge: true` deletes). WRITE
@@ -83,16 +85,23 @@
 # provider or model on the agent.
 
 channels:
-  # The runtime publishes {document_id, reason, changed_chunk_ids?} here when a
-  # document is created, imported or reimported, in the document's own scope.
-  # Declared user-scoped so a user's drain reads that user's documents; kb/linker
-  # drains it at user scope only.
+  # The runtime publishes {document_id, reason, scope, changed_chunk_ids?} here
+  # when a document is created, imported or reimported, in the document's own
+  # scope. Declared user-scoped so a user's drain reads that user's documents. A
+  # deployment whose documents live in the tenant scope re-declares it in its own
+  # layer (channels: {documents/ingested: {scope: tenant}}) and drains it with
+  # {"mode":"drain","scope":"tenant","queue":"documents"}. A drain stops at a
+  # message whose `scope` is not its own, leaving it unacked: with `publisher:
+  # system` only the runtime writes here, so that can only be a misdeclared
+  # channel. `publisher: system` also keeps an agent from naming a document the
+  # links agent would then work on.
   documents/ingested:
     description: "Documents created, imported or reimported — the links agent's work queue."
     scope: user
+    publisher: system
     max_messages: 256
     semantic: queue
-  # The runtime publishes {op, subject_natural_key, document_id, root_chunk_id,
+  # The runtime publishes {op, subject_natural_key, scope, document_id, root_chunk_id,
   # surviving_key?, surviving_document_id?, old_type?, new_type?} here when a
   # subject is adopted, merged, re-typed, removed or erased. Tenant-scoped,
   # because adopted subjects live in the tenant scope; kb/linker drains it with
@@ -138,7 +147,7 @@ agents:
       // kb/linker — the links pass over one document, or over the ingest queue.
       //
       // One run is one pass: a document (mode document), the statements touching a
-      // document (mode maintain), or the documents the ingest queue names (mode drain).
+      // document (mode maintain), or the documents or subjects a queue names (mode drain).
       // Each layer is one function:
       //   L0 classify — the runtime's classify op on the document: its class, work key
       //                 and issuer by the ontology's rules. Report mode asks for the
@@ -172,7 +181,8 @@ agents:
       //     extractor:) is only ever verified or flagged; a statement the runtime
       //     itself wrote is not touched at all; nothing is ever hard-deleted.
       //   * a queue message is acked only after its pass is recorded in the report,
-      //     and a failed pass stops the drain with its message unacked.
+      //     and a failed pass stops the drain with its message unacked. So does an
+      //     ingest message that names another scope than the drain's.
       //   * the report carries ids, counts and fixed reason strings, never store
       //     text; L4 quote text appears only when the input asks for it.
       //
@@ -283,12 +293,14 @@ agents:
         corpus_paths: true, exclude_document_types: true, candidate_floor: true,
         max_candidates_per_chunk: true, max_verdict_calls: true, max_chars: true,
         min_body_chars: true, relations: true, include_quotes: true, rejudge: true, merged_into: true,
-        purge: true, purge_after_days: true, file: true, check_against: true, max_norms: true, report_root: true
+        purge: true, purge_after_days: true, file: true, check_against: true, max_norms: true, report_root: true,
+        queue: true
       };
 
       var USAGE = "Pass a JSON object: {\"mode\": document|drain|maintain|subject|sweep (default document), " +
         "\"document_id\" or \"path\" (not in drain; in subject mode, the subject's document), " +
-        "in drain: scope user reads documents/ingested, scope tenant reads memory/subjects (L6 only), " +
+        "in drain: queue (documents|subjects; default documents at scope user, subjects at scope tenant): " +
+        "documents reads documents/ingested at scope user or tenant, subjects reads memory/subjects at scope tenant (L6 only), " +
         "optional scope (user|agent|tenant), " +
         "layers [\"L0\",\"L1\",\"L2\",\"L3\",\"L4\",\"L6\"], write (report|propose, default report), " +
         "terms_scheme, as_of (unix nanoseconds), max_writes, max_statements, max_messages, " +
@@ -415,12 +427,28 @@ agents:
           }
           o.scope = v.scope;
         }
-        // Each queue is declared at one scope and names that scope's documents: the
-        // ingest queue is user-scoped, the subject queue tenant-scoped (adopted
-        // subjects live there). Draining a queue at another scope would look every
-        // message up in the wrong store and skip it as missing.
-        if (o.mode === "drain" && o.scope === "agent") {
-          return { error: "drain reads documents/ingested at scope user or memory/subjects at scope tenant; scope agent has neither" };
+        // Each queue is declared at one scope and names that scope's documents. The
+        // subject queue is tenant-scoped (adopted subjects live there). The ingest
+        // queue is user-scoped in this bundle, and a deployment whose documents live
+        // in the tenant scope re-declares it there. The scope picks the queue unless
+        // the input names one, so an existing input reads what it always read.
+        if (v.queue !== undefined && o.mode !== "drain") {
+          return { error: "queue is read only by drain mode" };
+        }
+        if (o.mode === "drain") {
+          if (o.scope === "agent") {
+            return { error: "drain reads documents/ingested at scope user or tenant, or memory/subjects at scope tenant; scope agent has neither" };
+          }
+          o.queue = o.scope === "tenant" ? "subjects" : "documents";
+          if (v.queue !== undefined) {
+            if (v.queue !== "documents" && v.queue !== "subjects") {
+              return { error: "queue must be documents or subjects" };
+            }
+            if (v.queue === "subjects" && o.scope !== "tenant") {
+              return { error: "memory/subjects is declared at scope tenant; drain the subject queue with scope tenant" };
+            }
+            o.queue = v.queue;
+          }
         }
         o.corpus_paths = null;
         if (v.corpus_paths !== undefined) {
@@ -557,8 +585,9 @@ agents:
 
       function parseLayers(list, o) {
         var out = {};
-        // A subject message is answered with a subject pass, which is L6 alone.
-        var subjectDrain = o.mode === "drain" && o.scope === "tenant";
+        // A subject message is answered with a subject pass, which is L6 alone. A
+        // documents drain runs the document layers at either scope.
+        var subjectDrain = o.mode === "drain" && o.queue === "subjects";
         if (list === undefined) {
           var def = subjectDrain ? MODE_LAYERS.subject : MODE_LAYERS[o.mode];
           for (var i = 0; i < def.length; i++) { out[def[i]] = true; }
@@ -582,7 +611,7 @@ agents:
           return { error: o.mode + " runs the L6 layer only" };
         }
         if (subjectDrain && (list.length !== 1 || out.L6 !== true)) {
-          return { error: "drain at scope tenant reads the subject queue, whose passes run the L6 layer only" };
+          return { error: "a drain of the subject queue runs the L6 layer only" };
         }
         return { value: out };
       }
@@ -844,14 +873,15 @@ agents:
         if (st.opts.layers.L6 === true) { layerMaintain(st, doc); }
       }
 
-      // drainPass works through a queue one message at a time: the ingest queue at
-      // user scope, the subject queue at tenant scope. await reads from the
+      // drainPass works through a queue one message at a time: the ingest queue
+      // (queue documents, at user or tenant scope) or the subject queue (queue
+      // subjects, at tenant scope). await reads from the
       // committed cursor without committing, so a message is consumed only by the
       // ack that follows its recorded pass. An ack commits everything before it, so
       // a message whose pass failed stops the drain: acking a later one would
       // silently consume it.
       function drainPass(st) {
-        var subjects = st.opts.scope === "tenant";
+        var subjects = st.opts.queue === "subjects";
         var channel = subjects ? CONFIG.subject_channel : CONFIG.ingest_channel;
         var Q = { channel: channel, read: 0, acked: 0, empty: false, max_messages: st.opts.max_messages,
                   ack: st.opts.write === "propose" ? "after each pass" : "never in report mode" };
@@ -878,6 +908,17 @@ agents:
           if (subjects) { rec.op = ""; } else { rec.reason = ""; }
           st.messages.push(rec);
           var m = subjects ? subjectMessage(value) : ingestMessage(value);
+          if (m !== null && !subjects && m.scope !== "" && m.scope !== st.opts.scope) {
+            // Only the runtime writes this queue, so a message of another scope means
+            // the deployment declares the channel at another scope than this drain's:
+            // its documents are missing here, and acking them as such would consume
+            // them. Stop before the pass, with the message unacked, and name the fix.
+            rec.document_id = m.document_id;
+            rec.reason = m.reason;
+            rec.outcome = "scope_mismatch";
+            throw new Error(channel + " here holds " + m.scope + "-scope messages, so the deployment declares it at scope " +
+              m.scope + "; declare the channel at scope " + st.opts.scope + " in the deployment's config to drain it there");
+          }
           if (m === null) {
             rec.outcome = "malformed";
           } else if (subjects) {
@@ -974,7 +1015,10 @@ agents:
       }
 
       // ingestMessage validates one queue payload. Anything malformed is skipped
-      // rather than retried forever: no later pass could read it either.
+      // rather than retried forever: no later pass could read it either. scope is
+      // the scope the runtime published at, "" on a message from before it said so
+      // (processed as before). A scope the runtime never publishes at is malformed
+      // too: stopping on it would let one bad message block the queue for good.
       function ingestMessage(v) {
         if (typeof v === "string") { v = parseJSONOrNull(v); }
         if (!isPlainObject(v) || !isID(v.document_id)) { return null; }
@@ -988,7 +1032,12 @@ agents:
         }
         // A reimport that names no parts is read whole.
         if (reason === "reimported" && changed === null) { reason = "unknown"; }
-        return { document_id: v.document_id, reason: reason, changed: changed };
+        var scope = "";
+        if (v.scope !== undefined) {
+          if (v.scope !== "user" && v.scope !== "agent" && v.scope !== "tenant") { return null; }
+          scope = v.scope;
+        }
+        return { document_id: v.document_id, reason: reason, changed: changed, scope: scope };
       }
 
       // ---------------------------------------------------------------- document

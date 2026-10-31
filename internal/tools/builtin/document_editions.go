@@ -1337,6 +1337,11 @@ func firstNonEmpty(a, b string) string {
 // not read it. The caller's rules are the only ones known here, so this is the
 // best available proxy for "readable scope-wide". Returns why nothing was
 // published, or "".
+//
+// The payload names the scope it is published at. A consumer reads the channel at
+// the scope its deployment declares, which can differ from the document's; without
+// the scope it would look every document up in its own store, find none, and
+// consume another scope's queue as "missing".
 func (d *Document) publishIngested(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID, reason string, changed []string) string {
 	if d.Bus == nil {
 		return ""
@@ -1344,7 +1349,7 @@ func (d *Document) publishIngested(ctx context.Context, key sqlmem.ScopeKey, msc
 	if limited, err := d.newDocACL(ctx, key).limitsReading(ctx); err != nil || limited {
 		return "documents/ingested was not published: the caller's access-control rules hide part of this scope from reading, so the event could name this document to subscribers who may not read it"
 	}
-	ev := map[string]any{"document_id": docID, "reason": reason, "timestamp": time.Now().UnixNano()}
+	ev := map[string]any{"document_id": docID, "reason": reason, "scope": string(mscope), "timestamp": time.Now().UnixNano()}
 	if len(changed) > 0 {
 		ev["changed_chunk_ids"] = changed
 	}

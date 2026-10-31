@@ -7952,6 +7952,11 @@ var eventDrivenSystemChannels = map[string]bool{
 	// agent can forge one: a forged merge would have the links agent re-point a
 	// subject's statements onto another.
 	"memory/subjects": true,
+	// The Document tool's ingest events (a document created, imported or
+	// reimported), in the document's scope. System-published so no agent can
+	// plant one: the links agent would work on the document it names, and one
+	// naming another scope stops its drain.
+	"documents/ingested": true,
 
 	// RESERVED, NOT PUBLISHED. Nothing in the runtime writes these: a sweep of
 	// every SystemPublisher call site finds only the two above. They stay in
