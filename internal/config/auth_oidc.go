@@ -70,6 +70,11 @@ type AuthOIDCGate struct {
 	DiscoveryURL string
 	// AllowedDomains (google) are the hd values admitted.
 	AllowedDomains []string
+	// AnyAccount (google, allow_any_account) admits every Google account,
+	// personal ones included, in place of AllowedDomains. The gate's
+	// identity_map must then hold new users for approval or admit only users
+	// an operator made (checked where the identity map is resolved).
+	AnyAccount bool
 	// AllowedTIDs (entra) are the Entra tenant ids admitted.
 	AllowedTIDs []string
 	Scopes      []string
@@ -103,6 +108,12 @@ func providerURL(where, v string) (string, error) {
 		return "", fmt.Errorf("%s: %q must be https (http only on loopback)", where, v)
 	}
 	return strings.TrimSpace(v), nil
+}
+
+// isGoogleURL reports whether u is on Google's sign-in host.
+func isGoogleURL(u string) bool {
+	p, err := url.Parse(u)
+	return err == nil && strings.EqualFold(strings.TrimSuffix(p.Hostname(), "."), "accounts.google.com")
 }
 
 // resolveOIDCGate validates one kind: oidc gate.
@@ -176,6 +187,9 @@ func resolveOIDCGate(c *Config, name string, g AuthGateConfig) (*AuthOIDCGate, e
 	if len(g.AllowedDomains) > 0 && o.Preset != OIDCPresetGoogle {
 		return nil, fmt.Errorf("%s.allowed_domains: applies to preset: google only", where)
 	}
+	if g.AllowAnyAccount && o.Preset != OIDCPresetGoogle {
+		return nil, fmt.Errorf("%s.allow_any_account: applies to preset: google (and kind: oauth) only", where)
+	}
 	if len(g.AllowedTIDs) > 0 && o.Preset != OIDCPresetEntra {
 		return nil, fmt.Errorf("%s.allowed_tids: applies to preset: entra only", where)
 	}
@@ -186,9 +200,16 @@ func resolveOIDCGate(c *Config, name string, g AuthGateConfig) (*AuthOIDCGate, e
 			return nil, fmt.Errorf("%s.issuer: preset google uses %s", where, GoogleIssuer)
 		}
 		o.Issuer = GoogleIssuer
-		if len(g.AllowedDomains) == 0 {
-			// Without a Workspace domain any Google account signs in.
-			return nil, fmt.Errorf("%s.allowed_domains: required for preset google (the Workspace domains whose hd claim is admitted)", where)
+		o.AnyAccount = g.AllowAnyAccount
+		if o.AnyAccount && len(g.AllowedDomains) > 0 {
+			return nil, fmt.Errorf("%s: allow_any_account and allowed_domains exclude each other "+
+				"(allowed_domains admits only those Workspace domains)", where)
+		}
+		if len(g.AllowedDomains) == 0 && !o.AnyAccount {
+			// Without a Workspace domain any Google account signs in, so
+			// that takes saying so.
+			return nil, fmt.Errorf("%s.allowed_domains: required for preset google (the Workspace domains whose hd claim is admitted), "+
+				"or allow_any_account: true to admit every Google account, personal ones included, on purpose", where)
 		}
 		for _, d := range g.AllowedDomains {
 			d = strings.ToLower(strings.TrimSpace(d))
@@ -244,6 +265,12 @@ func resolveOIDCGate(c *Config, name string, g AuthGateConfig) (*AuthOIDCGate, e
 	}
 	if o.DiscoveryURL == "" {
 		o.DiscoveryURL = strings.TrimRight(o.Issuer, "/") + "/.well-known/openid-configuration"
+	}
+	// Google through any other preset would skip the google preset's own
+	// rule (allowed_domains, or an explicit allow_any_account) and admit
+	// every Google account in the world.
+	if o.Preset != OIDCPresetGoogle && (isGoogleURL(o.Issuer) || isGoogleURL(o.DiscoveryURL)) {
+		return nil, fmt.Errorf("%s: Google is the google preset's (preset: google, with allowed_domains or allow_any_account)", where)
 	}
 	return o, nil
 }

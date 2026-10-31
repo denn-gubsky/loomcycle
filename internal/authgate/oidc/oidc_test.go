@@ -227,6 +227,36 @@ func TestComplete_GoogleRequiresHDAndVerifiedEmail(t *testing.T) {
 	}
 }
 
+// allow_any_account admits a personal Google account (no hd claim) whose
+// e-mail is verified; an unverified address is still refused, and no hd hint
+// narrows Google's account chooser.
+func TestComplete_GoogleAnyAccountAdmitsPersonalVerifiedAccounts(t *testing.T) {
+	anyGate := func(p *oidctest.Provider) *Gate {
+		p.Set(func(p *oidctest.Provider) { p.Issuer = config.GoogleIssuer })
+		cfg := generic(p)
+		cfg.Preset, cfg.Issuer, cfg.AnyAccount = config.OIDCPresetGoogle, config.GoogleIssuer, true
+		return New("google", cfg, p.Server.Client())
+	}
+	p := newProvider(t)
+	p.Claims = map[string]any{"sub": "g-1", "email": "someone@gmail.com", "email_verified": true}
+	g := anyGate(p)
+	r, ls := login(t, g, false)
+	if _, err := g.Complete(context.Background(), r, ls); err != nil {
+		t.Fatalf("personal account: %v", err)
+	}
+	if p.LastAuthorize.Has("hd") {
+		t.Errorf("hd hint sent with allow_any_account: %v", p.LastAuthorize)
+	}
+
+	p = newProvider(t)
+	p.Claims = map[string]any{"sub": "g-2", "email": "someone@gmail.com", "email_verified": false}
+	g = anyGate(p)
+	r, ls = login(t, g, false)
+	if _, err := g.Complete(context.Background(), r, ls); !errors.Is(err, authgate.ErrInvalidCredential) {
+		t.Fatalf("unverified e-mail: err = %v", err)
+	}
+}
+
 // RFC FA §8: Entra's tid is checked against the allowlist, and with several
 // tenants the issuer must be the token's own tenant's.
 func TestComplete_EntraEnforcesTIDAndTemplatedIssuer(t *testing.T) {

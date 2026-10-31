@@ -329,9 +329,10 @@ func (g *Gate) presetChecks(c jwtverify.Claims) error {
 	case config.OIDCPresetGoogle:
 		// Workspace membership is the hd claim, never the e-mail's domain
 		// (a personal account can carry any address), and the address must
-		// be verified.
+		// be verified. allow_any_account admits every account, so no hd is
+		// asked for; the address must still be verified.
 		hd, _ := c.String("hd")
-		if !slices.Contains(g.cfg.AllowedDomains, strings.ToLower(hd)) {
+		if !g.cfg.AnyAccount && !slices.Contains(g.cfg.AllowedDomains, strings.ToLower(hd)) {
 			return invalid("hd %q is not an allowed domain", hd)
 		}
 		if !c.Bool("email_verified") {
