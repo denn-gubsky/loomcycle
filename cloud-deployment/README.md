@@ -11,6 +11,8 @@ server** (static site + self-serve token minting), and a Cloudflare tunnel — o
 > **Step-by-step setup lives in [`INSTALL.md`](INSTALL.md).** This file is the map.
 >
 > **In progress:** sign-in moves from landing-minted tokens to loomcycle's password gate, managed by the landing through the `auth:manage` API. The landing and site side (phases 2–3) is built and switches on with `LOOMCYCLE_AUTH_MANAGE_TOKEN`; see [`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md).
+>
+> **Shared tenant (2026-10-31):** with `LANDING_TENANT` set (compose default `loomcycle-dev`) everyone signs up into that one tenant and waits for an operator's approval in the app; the website has no team console and mints nothing. See [`AUTH-INTEGRATION.md` → Shared tenant](AUTH-INTEGRATION.md#shared-tenant-2026-10-31).
 
 ## Architecture
 
@@ -76,6 +78,13 @@ compose network `loomnet`:
    runtime) and `node smoke.mjs` (add `SMOKE_RUNTIME_URL` + `SMOKE_MANAGE_TOKEN`
    to drive a real runtime). Design and status: [`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md).
 
+   **Shared-tenant mode** (`LANDING_TENANT` set): `POST /api/signup` invites the
+   visitor into that one tenant at the gate's floor (no access mode or groups
+   sent; loomcycle holds the new user pending until an operator approves it),
+   `/api/team/*` and `/api/mint` (job 3) answer `404`, and the landing runs
+   without `LOOMCYCLE_ADMIN_TOKEN`. Limits add 3 signups/day per e-mail, and the
+   tenant's 20/day and 50 pending apply to signups.
+
 > **Why a Node backend and not a Caddy header-inject:** a raw reverse-proxy that
 > injects the admin bearer onto `/v1/_operatortokendef` would forward the client's
 > body verbatim — a visitor could POST `{scopes:["substrate:admin"]}` and mint an
@@ -123,7 +132,8 @@ file is kept in step with the TrueNAS deployment, which shares the Ollama host.
   most sensitive component after loomcycle itself. Once accounts are on it also
   holds `LOOMCYCLE_AUTH_MANAGE_TOKEN`, which reaches user records in every tenant
   (and, with `manager_may_recover_owners`, can reset any owner's password); the
-  admin token leaves the landing in phase 5.
+  admin token leaves the landing in phase 5. In shared-tenant mode the landing
+  needs only the `auth:manage` token, and the gate has owner recovery off.
 - **loomcycle stays bearer-authed** (`LOOMCYCLE_AUTH_TOKEN`); the marketing landing
   is public but its `/api/*` is Access-gated. Consider Access over
   `app.loomcycle.cloud` too for defense-in-depth.

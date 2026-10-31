@@ -112,7 +112,7 @@ any tailnet device: `tailscale status | grep -i ollama-host`. You'll put it in
 
 3. Cloudflare auto-creates the proxied DNS records for the tunnel.
 
-4. **Cloudflare Access — gate the mint route (required for self-serve minting).**
+4. **Cloudflare Access — gate `/api` (required: the website's sign-in and signup).** In shared-tenant mode the Access policy decides who may request access at all.
    Zero Trust → **Access → Applications → Add → Self-hosted**:
    - Application domain: `loomcycle.cloud`, **Path: `api`** (protects `/api/*` — the
      marketing page at `/` stays public).
@@ -154,8 +154,8 @@ Create **`.env.secure`** (there is no committed template — repo policy forbids
 # ── loomcycle core ──
 LOOMCYCLE_AUTH_TOKEN=REPLACE_ME              # openssl rand -hex 32
 LOOMCYCLE_OPERATOR_TOKEN_PEPPER=REPLACE_ME   # openssl rand -hex 32
-LOOMCYCLE_ADMIN_TOKEN=SAME_AS_AUTH_TOKEN     # the landing mints with this; set = LOOMCYCLE_AUTH_TOKEN
-# LOOMCYCLE_AUTH_MANAGE_TOKEN=               # accounts on the password gate — see "Enabling accounts" below; unset = off
+# LOOMCYCLE_ADMIN_TOKEN=SAME_AS_AUTH_TOKEN   # per-person mode only (LANDING_TENANT empty): the landing mints with it
+LOOMCYCLE_AUTH_MANAGE_TOKEN=REPLACE_ME       # the landing's auth:manage token — see "Enabling accounts" below
 # LOOMCYCLE_SECRET_KEY=REPLACE_ME            # optional (encrypted tenant credentials); openssl rand -base64 32
 # ── Postgres (this password MUST equal the one in the two DSNs) ──
 POSTGRES_PASSWORD=REPLACE_ME_STRONG
@@ -177,7 +177,10 @@ BRAVE_API_KEY=                               # optional paid search fallback
 ```
 
 Notes:
-- **`LOOMCYCLE_ADMIN_TOKEN` = `LOOMCYCLE_AUTH_TOKEN`** (the super-admin bearer). Do
+- **`LOOMCYCLE_ADMIN_TOKEN`** is needed only if you run the landing in per-person
+  mode (`LANDING_TENANT=` empty), where it mints tokens. The default shared-tenant
+  mode never mints, so leave it out and the landing holds no admin credential.
+  When you do set it, it is `LOOMCYCLE_AUTH_TOKEN` (the super-admin bearer). Do
   NOT mint a dedicated `substrate:admin` token for it — that disables the
   `LOOMCYCLE_AUTH_TOKEN` login (no-lockout gate).
 - The DSN host is **`postgres`** (the compose service) — don't change it.
@@ -236,12 +239,15 @@ make ps          # all services `running`/`healthy`; loomcycle-migrate `exited (
 5. **Public**: `curl -s https://app.loomcycle.cloud/healthz`; `curl -s https://loomcycle.cloud/healthz`
    and `https://loomcycle.cloud/v1/config` (the landing's inner-link proxy → live status strip
    on the page). Then browse `https://app.loomcycle.cloud/ui` and sign in with `LOOMCYCLE_AUTH_TOKEN`.
-6. **Mint flow** (the self-serve path): open `https://loomcycle.cloud`, click **Sign in
-   with Google** → Cloudflare Access → Google → back to the landing signed in; **Create
-   token** → a real `substrate:tenant` token is shown once and vaulted. Confirm server-side:
-   `curl -s -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" https://app.loomcycle.cloud/v1/_operatortokendef/names`
-   lists the new token under its derived `t_…` tenant. (A `curl` to `/api/mint` WITHOUT an
-   Access cookie must return `401`.)
+6. **Request-access flow** (the self-serve path, shared-tenant mode): open
+   `https://loomcycle.cloud`, click **Sign in with Google** → Cloudflare Access →
+   Google → back to the landing signed in; **Request access** → the app's invite page →
+   choose a password → back on `loomcycle.cloud/?welcome=1`. Signing in now shows the
+   awaiting-approval page until a `loomcycle-dev` operator approves the new user in the
+   app's **Users** console. (A `curl` to `/api/signup` WITHOUT an Access cookie must
+   return `401`; `/api/mint` and `/api/team` return `404` in this mode.)
+   In per-person mode (`LANDING_TENANT=` empty) the old flow applies instead: **Create
+   token** mints a `substrate:tenant` token for the derived `t_…` tenant.
 7. **Functional**: run a `chat/medium` agent that uses WebSearch (proves SearXNG),
    a `dev/exec` run (proves the builder sidecar via `mcp__sandbox__*` — e.g.
    `{"commands":["uname -a"]}`), and a Document op (proves SQL Memory + pgvector).
@@ -249,6 +255,46 @@ make ps          # all services `running`/`healthy`; loomcycle-migrate `exited (
 ---
 
 ## Enabling accounts (password gate; optional until phase 5)
+
+### Shared tenant (the default since 2026-10-31)
+
+Everyone who signs up on the website joins one tenant, `loomcycle-dev`
+(`LANDING_TENANT`, set by compose). A visitor who passed Cloudflare Access gets an
+invite into it with their e-mail as the login, chooses a password on the app, and
+then waits as a **pending** user until an operator approves them. Two things decide
+who gets in: the Access policy (who may ask at all) and the operator's approval
+(who may use the workspace). There is no website team console and no token vault
+in this mode; operators manage people in the app's **Users** console, and API
+tokens are made in the app (`/ui` → Tokens).
+
+1. **Runtime** — a release that has the password gate's pending-approval
+   change (`new_user.status: pending` on a password gate). Deploy that runtime
+   **with or before** this repo's `config/loomcycle.yaml`: an older runtime
+   ignores the `status` key without a word, and website sign-ups would then come
+   up active with tenant-wide reach.
+2. **The landing's `auth:manage` token** — mint it as in step 2 below and put it in
+   `.env.secure` as `LOOMCYCLE_AUTH_MANAGE_TOKEN`. Without it **Request access**
+   answers "Accounts are not enabled".
+3. **Drop `LOOMCYCLE_ADMIN_TOKEN` from `.env.secure`** (or leave it; shared mode
+   never reads it). The landing then holds only the `auth:manage` token.
+4. **Existing `loomcycle-dev` users** keep their subjects. Give each a password from
+   the app (an operator's own invite or reset), not through the website: if one of
+   them presses **Request access** while their subject is their e-mail, the landing
+   answers "This address already has an account here" instead of making a
+   duplicate account.
+5. `make up`, then the manual pass in Phase 7 step 6 above.
+
+Limits in this mode (landing memory): 10 sign-ups an hour per source address and
+per e-mail, 3 a day per e-mail, 20 new invites a day for the whole tenant (an
+invite that only replaces the visitor's own earlier one is not counted), and 50
+live website invites at a time.
+
+To go back to per-person tenants, set `LANDING_TENANT=` (empty) in
+`.env.insecure`, put `LOOMCYCLE_ADMIN_TOKEN` back, and set the gate's
+`manager_may_recover_owners: true` again (the owner signup attaches a password to
+the owner, which needs it). The rest of this section describes that mode.
+
+### Per-person tenants (`LANDING_TENANT` empty)
 
 The landing can move sign-in from minted tokens to loomcycle's password gate
 ([`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md)): **Create your workspace** sends a
@@ -687,7 +733,8 @@ volumes:
 | Web UI sign-in on `app.loomcycle.cloud` sets `lc_session` (not `__Host-lc_session`) and the log warns about plain HTTP; in strict mode it fails with `insecure_transport` | The tunnel rewrites the Host header, so loomcycle can't tell the request came through HTTPS. Remove `httpHostHeader` from the tunnel's route. |
 | `app.loomcycle.cloud` → 502 / 1033 | The tunnel route must target `http://loomcycle-edge:8787` (or the older `http://tailscale:8787`; never `loomcycle:…`); confirm `cloudflared` is `running`, attached to the `edge` network, and the hostname exists in the dashboard. |
 | landing status strip grey / config "not published" | `LOOMCYCLE_PUBLIC_CONFIG=1` must be set (it is by default); confirm the landing can reach `tailscale:8787` (`make logs S=landing`). |
-| `landing` exits at boot: `FATAL: CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD required` | Set both in `.env.insecure` from the Access app (Phase 4), or `MINT_DEV_ALLOW_UNVERIFIED=1` for local testing only. `FATAL: LOOMCYCLE_ADMIN_TOKEN required` → set it in `.env.secure`. |
+| `landing` exits at boot: `FATAL: CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD required` | Set both in `.env.insecure` from the Access app (Phase 4), or `MINT_DEV_ALLOW_UNVERIFIED=1` for local testing only. `FATAL: LOOMCYCLE_ADMIN_TOKEN is required` → `LANDING_TENANT` is empty (per-person mode, which mints): set the token in `.env.secure`, or set `LANDING_TENANT` back. `FATAL: LANDING_TENANT must be …` → it is not a tenant id (letters, digits, `-`, `_`). |
+| **Request access** → `Too many requests for access right now` (`429 signup_limit`) | The shared tenant reached its 20 new invites for the day or 50 live website invites. Approve or remove pending users and revoke stale invites in the app, or wait a day. |
 | **Create token** → `not signed in` (401) | The Access cookie isn't present — the `/api` Access app is missing/misconfigured, or you didn't complete the Google login. Verify the app protects `loomcycle.cloud` path `api` and `CF_ACCESS_AUD` matches. |
 | **Create token** → `502 upstream …` | The landing reached loomcycle but the mint failed: `LOOMCYCLE_ADMIN_TOKEN` isn't a valid admin bearer (must equal `LOOMCYCLE_AUTH_TOKEN`), or the runtime is down. Check `make logs S=landing`. |
 | **Create your workspace** → `Accounts are not enabled` (`503 auth_gate_not_configured`) | `LOOMCYCLE_AUTH_MANAGE_TOKEN` isn't reaching the landing — set it in `.env.secure` and `make up`. |
