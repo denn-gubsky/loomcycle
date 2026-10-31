@@ -6315,8 +6315,9 @@ const (
 
 // IsDocumentFeedChannel reports whether name is a document's change feed. One
 // exists for every document ever edited, none is declared, and only a viewer
-// that knows the document reads it, so channel listings leave them out rather
-// than show hundreds of undeclared rows. documents/ingested is not one.
+// that knows the document reads it, so channel listings tag them apart from
+// orphans rather than show hundreds of undeclared rows. documents/ingested is
+// not one.
 func IsDocumentFeedChannel(name string) bool {
 	if !strings.HasPrefix(name, documentFeedPrefix) || !strings.HasSuffix(name, documentFeedSuffix) {
 		return false
