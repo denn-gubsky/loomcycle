@@ -949,7 +949,7 @@ agents:
   - **Exclusive passes:** a named document `lease` (and `release`), so two passes of one kind never work a scope at once.
   - **Auto-assert:** a `rule:` proposal of a kind the tenant's vocabulary marks auto-asserting, with every quote in a chunk, is asserted directly.
 
-  An `extractor:` proposal is never auto-asserted: a model found it, so a person reviews it.
+  An `extractor:` proposal is never auto-asserted: a model found it, so a person reviews it — unless the tenant's review policy (the ontology's Review section; see [DOCUMENTS.md](DOCUMENTS.md#review-policies)) says otherwise. With a Review section, the policy decides every proposal and `@auto_assert` does not apply.
 - **Fork narrows, never widens.** A definition authored from inside a run may list only methods its author's run may stamp; a fork may list only what the version it forks already holds, even when the author holds more. The grant is what lets a body's writes skip review, so the operator decides which bodies hold it.
 - **Not per-run overridable**, and a sub-agent holds only its own definition's grant.
 - **Authority, not content.** Not part of `content_sha256`: granting or narrowing it does not change the agent's content hash.

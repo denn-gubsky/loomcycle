@@ -40,11 +40,17 @@ to propose a correction instead, which is filed beside the original (its
 
 ## Returns
 
-`{id, status, created, evidence_written, ontology_valid, warnings?}`.
+`{id, status, created, evidence_written, ontology_valid, warnings?, ruled_by?,
+ruling_id?, review_route?}`.
 `status` is `proposed` — except for a `rule:` statement of a kind the tenant's
 vocabulary marks auto-asserting, with every quote in a chunk: that is
 `asserted`, and over a relation that already holds it adds its evidence. A
 correction proposed with `id` always stays `proposed`.
+When the tenant ontology has a review policy (its Review section), the policy
+decides instead: `asserted` or `rejected` with `ruled_by: policy:<rule>@<version>`
+and the `ruling_id` it is recorded under, or `proposed`, with `review_route:
+judge` when it is left for the judge. A policy's rejection is a verdict on
+this proposal only: proposing the relation again files it again.
 `ontology_valid: false` with `warnings` means the relation does not fit the
 tenant's declared vocabulary (each warning starts with its code:
 `kind_not_declared`, `domain_range_violation`, `characteristic_violation`,
@@ -62,6 +68,8 @@ already holds as much evidence as it keeps.
 - `statement_rejected` — an operator already rejected this relation (at any
   `valid_at`), or the statement passed as `id` is a rejected one; do not propose
   it again.
+- `attribute_reserved` — `attributes` names `judge`, `review_route` or
+  `classified_by`, which only the runtime writes; leave them out.
 - `statement_asserted` — the relation already holds; propose a correction with
   `id`, or leave it.
 - `confidence must be between 0 and 1`. `invalid_at must be after valid_at`.

@@ -579,7 +579,7 @@ propose_statement ──▶ proposed ──accept_statement──▶ asserted �
 
 - **asserted** is live: every reader shows and follows it.
 - **proposed** is filed for review. It shows in `get_edges` and the review queue, but `backlinks` and `graph_recall` leave it out unless asked (`include_proposed`).
-- **rejected** is kept, never deleted, as the record that the relation was considered and refused. It is withheld from every reader, and the same relation is refused (`statement_rejected`) if anyone proposes or links it again, at any `valid_at`. Only an operator's own `link_chunks` can re-assert it.
+- **rejected** is kept, never deleted, as the record that the relation was considered and refused. It is withheld from every reader. A person's rejection (`reject_statement`, a bulk ruling) is a tombstone: the same relation is refused (`statement_rejected`) if anyone proposes or links it again, at any `valid_at`, and only an operator's own `link_chunks` can re-assert it. A review policy's rejection is not: see [review policies](#review-policies).
 
 An asserted statement is never *rejected*. It leaves the live set in one of three ways: `unlink_chunks` deletes it with its evidence; `judge_fact` with the statement's id and `verdict: unsupported` keeps it but withholds it; `maintain_statement action: expire` retires it (readable with `include_retired`). A `[[name]]` relation is removed by editing the link out of the body, because the body re-creates it on every write.
 
@@ -624,7 +624,8 @@ The quote must be verbatim. For a chunk or a chat turn the server finds it in th
 
 - proposing a relation that is already proposed adds the new evidence to it;
 - a relation that already holds is refused (`statement_asserted`); pass its `id` to propose a correction instead, filed beside it with `attributes.revision_of` naming the original, which stays as it is;
-- a `rule:` statement of a kind the vocabulary marks auto-asserting, with every quote in a chunk, is asserted directly. A correction proposed with `id` always stays proposed.
+- a `rule:` statement of a kind the vocabulary marks auto-asserting, with every quote in a chunk, is asserted directly. A correction proposed with `id` always stays proposed. With a Review section in the ontology, its policy decides instead (see [review policies](#review-policies)).
+- `attributes` may not name `judge`, `review_route` or `classified_by` (`attribute_reserved`): those are the runtime's own record of a judge's verdict, the policy's routing and how classify found a statement. `link_chunks` refuses them too, and `import_md` drops them from what it copies.
 
 ```json
 {"op": "propose_statement", "scope": "tenant",
@@ -722,7 +723,7 @@ curl -sS -X POST localhost:8080/v1/_statements/rule -H "Authorization: Bearer $T
 # {"ruling_id": "6f2c…", "ruled": 1000, "failed": 0, "items": [...], ...}
 ```
 
-**Undo.** `POST /v1/_statements/revert {ruling_id}` returns each statement that ruling ruled to the status it had before (a proposal goes back to `proposed`, with its earlier ruling fields), but only while nothing has changed it since: no new or moved evidence, no maintenance (`maintain_statement`), no judge, no later ruling. A rejected statement's tombstone goes with it, so the relation can be proposed again. Statements that changed are listed with `error: changed` and left as they are. Each revert writes a `statement_ruling_revert` audit record. An unknown ruling is `ruling_not_found` (404).
+**Undo.** `POST /v1/_statements/revert {ruling_id}` (a bulk ruling's, or a [review policy's](#review-policies)) returns each statement that ruling ruled to the status it had before (a proposal goes back to `proposed`, with its earlier ruling fields), but only while nothing has changed it since: no new or moved evidence, no maintenance (`maintain_statement`), no judge, no later ruling. A rejected statement's tombstone goes with it, so the relation can be proposed again. Statements that changed are listed with `error: changed` and left as they are. Each revert writes a `statement_ruling_revert` audit record. An unknown ruling is `ruling_not_found` (404).
 
 **Finding a ruling again.** `GET /v1/_statements/rulings` lists the scope's bulk rulings and their reverts, newest first (`limit`, default 20, at most 100; `after` is the previous page's `next_cursor`), so an undo does not depend on keeping the ruling's answer. Each entry: `id`, `action` (`accept`, `reject`, or `revert` for a revert), `ruled_by`, `actor` (the subject that made the call), `reason`, `selector` (the `filter`, or `ids_count` — never the ids, so no statement is named; `reverts` on a revert), `matched` / `ruled` / `failed` / `skipped` (on a revert, `ruled` is what it reverted and `failed` what had changed), `created_at`, and `reverted` with `reverted_at` and `reverted_by` (the latest revert's id, itself an entry). An operator sees every ruling of the scope; a member only the ones it made. A revert answers its own `revert_id`, and is not itself undone.
 
@@ -736,6 +737,59 @@ Each summary group carries `filter`: the summary's own filter narrowed by the gr
 **Another subject's user documents.** With `scope=user`, every review route (queue, rule, revert, rulings) takes `scope_id`, the subject whose user documents to act on — the subject picker's choice. Only an admin, or a tenant operator within its own tenant, may name another subject; a member naming anyone but itself is refused `forbidden`, and so is a tenant operator that also names another `tenant`. The ruling is recorded as the caller's own (`actor`, `ruled_by`), and its audit record names the scope's subject (`ruling_scope_id`). `scope_id` with the tenant scope is `invalid_request`.
 
 The same operations, over the same rules: the gRPC `ListReviewQueue`, `RuleStatements`, `RevertRuling` and `ListRulings` RPCs (a statement travels as its JSON; see [GRPC.md](GRPC.md)), the MCP `review` tool (ops `queue`, `rule`, `revert`, `rulings`; see [MCP_SERVER.md](MCP_SERVER.md)), and the clients' `listReviewQueue()` / `ruleStatements()` / `revertRuling()` / `listRulings()` (TypeScript) and `list_review_queue()` / `rule_statements()` / `revert_ruling()` / `list_rulings()` (Python). Refusals carry the same code everywhere: `invalid_request`, `forbidden`, `queue_changed`, `ruling_not_found`, `unavailable`.
+
+### Review policies
+
+Most proposals follow rules an operator would apply by hand: a citation a rule matched, with its quote found in the text, is right. A review policy writes those rules down, in the tenant ontology, so they version and confirm with the vocabulary they rule on. It is a root chunk of the ontology document whose first line is `@section review` (conventionally titled Review); each list item in its body is one rule.
+
+```markdown
+## Review
+@section review
+judge_floor: 0.85
+
+- accept kind:cites,repeals method:rule:citation when quotes:resolved self:false target:held|placeholder
+- accept kind:subject method:classify when rule:matched
+- reject kind:elaborates method:extractor:relate when confidence<0.6
+- judge  kind:elaborates,uses_term floor:0.9 mode:recommend
+- human  *
+```
+
+This is MTB's first policy plus two illustrative rules: the rule-made citations and repeals between two documents, with their quotes found, need no person; classify's rule-matched subject tags neither; everything else waits for a person.
+
+**Grammar.** `<action> <selectors> [when <conditions>] [options]`.
+- **Actions:** `accept`, `reject`, `judge` (leave it for the judge agent, marking it `attributes.review_route: judge`), `human` (leave it for a person).
+- **Selectors:** `kind:a,b` (the kinds, exactly: a sub-kind is not included, so name it), `method:<m>` (exact, or a prefix ending in `*`, as `rule:*`), or `*` (every proposal). A rule names at least one.
+- **Conditions**, all of which must hold: `quotes:resolved` (it has evidence, and every quote is in a chunk and not stale); `self:true|false` (both ends in one document, or not); `target:held|placeholder|subject|concept` (the to-end is a document the scope holds, a placeholder filed for a cited work not yet held, a subject node, or a concept of the ontology's schemes); `rule:matched` (a rule made it, not a model: a `rule:` method, or classify's class rules, instance patterns or neighbour vote, recorded as `attributes.classified_by`); `confidence<x`, `<=x`, `>x`, `>=x` (the writer's own confidence). A fact that cannot be known (an end whose chunk is gone, no confidence) meets no condition that asks it.
+- **Options** of `judge`: `floor:<0..1>` (the verdict confidence the judge needs to rule; the section's `judge_floor`, default 0.85, otherwise) and `mode:rule|recommend`.
+- `# comment` ends a line; prose, the `@section` line and examples in a code block are not read.
+
+**Order and failure.** The first rule that matches decides; a proposal no rule matches waits for a person. A rule the runtime cannot read, an empty section, a bad `judge_floor` or a chunk under the section leaves the **whole** policy unapplied — every proposal waits for a person — and is reported by `describe_ontology` in `issues`, beside the parsed policy (`review`). A draft ontology governs nothing.
+
+**`@auto_assert`.** Without a Review section a kind's `@auto_assert` works as it always has, and is shorthand for `accept kind:<kind> method:rule:* when quotes:resolved`; `describe_ontology` shows that implied policy. With a Review section, the section is the whole policy and `@auto_assert` does not apply (reported as an issue): write the rule there.
+
+**When it runs.**
+- **As a proposal is filed** (`propose_statement`, `classify`): `accept` and `reject` rule it as an operator's accept or reject would, with the rule as the reason, and the statement records `ruled_by: policy:<rule>@<ontology version>` (`judged_by: policy`); `judge` and `human` leave it proposed. The answer carries `ruled_by`, `ruling_id` or `review_route`. A correction (`id`) is never ruled by the policy.
+- **On demand over the queue**: `POST /v1/_statements/apply_policy`, below.
+
+**A policy's ruling is not a person's.** It sets no `operator_ruled_at`, so a statement the policy accepted stays a code agent's to maintain, as an auto-asserted one is. **A policy rejection is a verdict on that proposal, not a tombstone on the relation:** a later proposal or link of the same relation reopens it as a proposal, and the policy evaluates it again — rejected again if it still matches, decided anew if its facts changed. Only a person's rejection refuses the relation.
+
+**Undo.** The policy's rulings at filing are recorded as one ruling per run (and per ontology version and action), so `revert_ruling` with that ruling id undoes what the policy ruled on a run's proposals together; `get_edge` names the ruling (`ruling_id`) of a policy-ruled statement. As for a bulk ruling, only statements nothing changed since are restored. Revert after changing the policy: a proposal filed again is ruled again.
+
+**Applying it to the queue.** `POST /v1/_statements/apply_policy` takes `{filter?, dry_run?, expect_count?, max?}` (the queue's filters; `filter.status`, if set, must be `proposed`).
+- **Dry run by default:** `matched` (the proposals the filter selects that you may read), `skipped`, what the policy would do (`accept`, `reject`, `judge`, `human`), the count per rule in `rules` (rule `0` is no rule matched), `to_rule`, `deferred` and a `sample` of 20 with each one's `review_rule` and `review_action`. Nothing changes.
+- **The real call** is `dry_run: false` with `expect_count` equal to the dry run's `matched` (`queue_changed` otherwise). It rules at most `max` (default and ceiling 1000) accepts and rejects in the queue's order, newest first, as ONE ruling (`ruling_id`, undone by `POST /v1/_statements/revert`), and sets or clears the judge routing of the rest (`marked`). One call evaluates at most 10,000 proposals; narrow a larger selection with the filter.
+- **Who:** an admin or a tenant operator, holding `write` on each statement's from-document and `link` on both ends. A member is refused (`forbidden`) even holding `review`: the policy is the operator's decision. Each real call writes one `statement_policy_ruling` audit record.
+- `invalid_request` when no policy is in force (no confirmed ontology) or the Review section has issues.
+
+```bash
+curl -sS -X POST localhost:8080/v1/_statements/apply_policy -H "Authorization: Bearer $TOKEN" -d '{"filter":{"from_under_path":"/board"}}'
+# {"source": "review", "version": 14, "matched": 1393, "accept": 1393, "to_rule": 1000, "deferred": 393, "rules": [...], "dry_run": true, ...}
+curl -sS -X POST localhost:8080/v1/_statements/apply_policy -H "Authorization: Bearer $TOKEN" \
+  -d '{"filter":{"from_under_path":"/board"},"dry_run":false,"expect_count":1393}'
+# {"ruling_id": "9d1e…", "ruled": 1000, "deferred": 393, ...}
+```
+
+The same operation: the gRPC `ApplyReviewPolicy` RPC, the MCP `review` tool's `op: apply_policy`, `applyReviewPolicy()` (TypeScript) and `apply_review_policy()` (Python).
 
 ### Code agents that maintain relations
 
