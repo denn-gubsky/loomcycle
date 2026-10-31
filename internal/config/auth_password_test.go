@@ -146,3 +146,29 @@ func TestResolveAuth_PasswordGateNewUserStatus(t *testing.T) {
 		t.Fatalf("status on a token gate: %v", err)
 	}
 }
+
+// A gate key this version does not know fails the load instead of being
+// dropped: a config written for a newer runtime (new_user.status: pending on
+// a runtime that cannot hold anyone for approval) must not start fail-open.
+// Keys of the gate kinds inlined into the entry (OAuth, external, device)
+// are still known.
+func TestLoad_UnknownGateKeysFailTheLoad(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SECRET_KEY", "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
+	t.Setenv("LOOMCYCLE_PUBLIC_URL", "https://lc.example")
+	for name, gate := range map[string]string{
+		"gate level":     "kind: password\n      require_approval: true",
+		"new_user block": "kind: password\n      new_user: { access_mode: isolated, approval: pending }",
+	} {
+		_, err := loadYAMLString(t, "auth:\n  gates:\n    local:\n      "+gate+"\n")
+		if err == nil || !strings.Contains(err.Error(), "unknown key") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	_, err := loadYAMLString(t, "auth:\n  gates:\n    gh:\n      kind: oauth\n      preset: github\n      client_id: x\n      client_secret_env: LOOMCYCLE_GATE_GH_SECRET\n      allow_any_account: true\n")
+	if err != nil && strings.Contains(err.Error(), "unknown key") {
+		t.Fatalf("an inlined OAuth key was refused: %v", err)
+	}
+	if _, err := loadYAMLString(t, "auth:\n  gates:\n    local:\n      kind: password\n      new_user: { access_mode: isolated, status: pending }\n"); err != nil {
+		t.Fatalf("known keys refused: %v", err)
+	}
+}
