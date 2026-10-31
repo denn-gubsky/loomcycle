@@ -285,8 +285,12 @@ services:
     mem_limit: 2g
 
   # ── Landing (Node) — serves cloud-web/, proxies public /v1 reads (inner links),
-  #    and mints substrate:tenant tokens behind Cloudflare Access (admin token
-  #    held server-side). See landing/server.js. ──
+  #    and, behind Cloudflare Access, signs visitors up on loomcycle's password
+  #    gate. With LANDING_TENANT set (the default) everyone requests access to
+  #    that one shared tenant and an operator approves them in the app; there is
+  #    no website team console and no token minting. Set LANDING_TENANT empty for
+  #    the older per-person tenants, which also mint tokens with the admin
+  #    bearer. See landing/server.js and AUTH-INTEGRATION.md. ──
   landing:
     build: ./landing
     restart: unless-stopped
@@ -294,15 +298,21 @@ services:
     environment:
       PORT: "8080"
       LOOMCYCLE_URL: http://tailscale:8787      # loomcycle lives in the tailscale netns
-      LOOMCYCLE_ADMIN_TOKEN: ${LOOMCYCLE_ADMIN_TOKEN}   # secret — the admin bearer that mints
+      # Shared-tenant mode: the one tenant every website sign-up joins. Empty =
+      # per-person tenants (t_<hash of the e-mail>).
+      LANDING_TENANT: ${LANDING_TENANT:-loomcycle-dev}
+      # Only per-person mode mints, so only it needs the admin bearer; shared
+      # mode never uses it and boots without it. Leave it unset there: the
+      # landing then holds no credential beyond the auth:manage token.
+      LOOMCYCLE_ADMIN_TOKEN: ${LOOMCYCLE_ADMIN_TOKEN:-}   # secret — the admin bearer that mints (per-person mode only)
       CF_ACCESS_TEAM_DOMAIN: ${CF_ACCESS_TEAM_DOMAIN:-}
       CF_ACCESS_AUD: ${CF_ACCESS_AUD:-}
       MINT_SCOPES: ${MINT_SCOPES:-substrate:tenant,runs:create}
       MINT_TENANT_PREFIX: ${MINT_TENANT_PREFIX:-t_}
       APP_ORIGIN: ${LANDING_ORIGIN:-https://loomcycle.cloud}   # CSRF origin check
       # Accounts on loomcycle's password gate (AUTH-INTEGRATION.md). Unset token =
-      # off: the /api/signup + /api/team/* routes answer 503 and the site keeps
-      # the token vault. Needs a runtime with the password gate (phase 1).
+      # off: /api/signup answers 503 (and in per-person mode /api/team/* too,
+      # with the site falling back to the token vault). Shared mode needs it.
       LOOMCYCLE_AUTH_MANAGE_TOKEN: ${LOOMCYCLE_AUTH_MANAGE_TOKEN:-}   # secret — an auth:manage operator token
       AUTH_GATE: ${LANDING_AUTH_GATE:-cloud}                                   # the password gate's name in config/loomcycle.yaml
       APP_URL: ${LANDING_APP_URL:-https://app.loomcycle.cloud}                 # = the runtime's LOOMCYCLE_PUBLIC_URL
