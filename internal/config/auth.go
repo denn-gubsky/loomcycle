@@ -187,6 +187,13 @@ type AuthGateNewUserConfig struct {
 	// Groups, when given (even empty), replaces the default [everyone,
 	// new-users].
 	Groups *[]string `yaml:"groups,omitempty"`
+	// Status is what a user created by a website's (auth:manage) invite
+	// starts as: active (default) or pending, which signs in to the
+	// awaiting-approval page and nothing else until an operator approves it.
+	// A tenant operator's or an admin's own invite is that approval, and a
+	// tenant's bootstrap owner must be able to approve others, so both stay
+	// active.
+	Status string `yaml:"status,omitempty"`
 }
 
 // AuthGate is a validated gate: what the login page lists.
@@ -229,6 +236,9 @@ type AuthPasswordGate struct {
 	// likewise.
 	NewUserAccessMode string
 	NewUserGroups     []string
+	// NewUserStatus is the status a website's invite creates a user with:
+	// "active" or "pending" (never "").
+	NewUserStatus string
 }
 
 // AuthPolicy is the resolved `auth:` block. Its zero value is token mode with
@@ -656,13 +666,13 @@ func resolveAuth(c *Config) error {
 func hasPasswordOnlyKeys(g AuthGateConfig) bool {
 	return g.RequireMFA != nil || g.ManagerMayRecoverOwners || g.Invites != (AuthGateInvitesConfig{}) ||
 		g.Resets != (AuthGateResetsConfig{}) || g.Password != (AuthGatePasswordConfig{}) ||
-		g.NewUser.AccessMode != "" || g.NewUser.Groups != nil
+		g.NewUser != (AuthGateNewUserConfig{})
 }
 
 func hasPasswordKeys(g AuthGateConfig) bool {
 	return g.Trusted || g.RequireMFA != nil || g.ManagerMayRecoverOwners || g.Invites != (AuthGateInvitesConfig{}) ||
 		g.Resets != (AuthGateResetsConfig{}) || len(g.AllowedReturnTo) > 0 || g.Password != (AuthGatePasswordConfig{}) ||
-		g.NewUser.AccessMode != "" || g.NewUser.Groups != nil
+		g.NewUser != (AuthGateNewUserConfig{})
 }
 
 // resolvePasswordGate validates one kind: password gate. A password gate
@@ -738,6 +748,14 @@ func resolvePasswordGate(c *Config, name string, g AuthGateConfig, strict bool) 
 		// of tenant reach on an untrusted gate would hand it to every invitee
 		// of a website's credential.
 		return nil, fmt.Errorf("%s.new_user.access_mode: tenant needs trusted: true", where)
+	}
+	switch st := strings.TrimSpace(g.NewUser.Status); st {
+	case "", "active":
+		pw.NewUserStatus = "active"
+	case "pending":
+		pw.NewUserStatus = st
+	default:
+		return nil, fmt.Errorf("%s.new_user.status: %q (want active or pending)", where, st)
 	}
 	if g.NewUser.Groups != nil {
 		pw.NewUserGroups = []string{}

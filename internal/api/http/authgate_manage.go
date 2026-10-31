@@ -62,6 +62,10 @@ type PasswordGateSettings struct {
 	// deployment default (DefaultFloor).
 	NewUserAccessMode string
 	NewUserGroups     []string
+	// NewUserStatus is the status a website's (auth:manage) invite creates a
+	// user with: "pending" holds the person at the approval queue until an
+	// operator approves them. "" or "active" creates them active.
+	NewUserStatus string
 }
 
 // floorPolicy is a provisioning floor: an access mode and the groups every
@@ -144,7 +148,7 @@ func PasswordGatesFromConfig(cfg *config.Config) (*PasswordGates, error) {
 			Name: g.Name, Trusted: p.Trusted, RequireMFA: p.RequireMFA, ManagerMayRecoverOwners: p.ManagerMayRecoverOwners,
 			InviteDefaultTTL: p.InviteDefaultTTL, InviteMaxTTL: p.InviteMaxTTL, ResetTTL: p.ResetTTL,
 			AllowedReturnTo: p.AllowedReturnTo, Throttle: password.Throttle{MaxFailures: p.MaxFailures, Lockout: p.Lockout},
-			NewUserAccessMode: p.NewUserAccessMode, NewUserGroups: p.NewUserGroups,
+			NewUserAccessMode: p.NewUserAccessMode, NewUserGroups: p.NewUserGroups, NewUserStatus: p.NewUserStatus,
 		})
 		if p.DenylistFile != "" {
 			b, err := os.ReadFile(p.DenylistFile)
