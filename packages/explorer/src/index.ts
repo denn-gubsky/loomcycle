@@ -47,13 +47,22 @@ export type {
 export type { DocLocation } from "./lib/docTrail";
 
 // Connection → client factory (the default data-source path).
-export { createLoomcycleClient, assetFetchFromConnection } from "./lib/createClient";
-export type { Connection, AssetFetch } from "./lib/createClient";
+export { createLoomcycleClient, assetFetchFromConnection, jsonPostFromConnection, RequestError } from "./lib/createClient";
+export type { Connection, AssetFetch, JsonPost } from "./lib/createClient";
 
 // The data-layer seam: inject a custom implementation, or build one from a
 // @loomcycle/client instance.
 export { dataLayerFromClient } from "./lib/dataLayer";
-export type { ExplorerDataLayer, ChunkPatch, DocEdgesPage, PathLsPage, PathLsResult } from "./lib/dataLayer";
+export type {
+  ExplorerDataLayer,
+  ChunkPatch,
+  DocEdgesPage,
+  PathLsPage,
+  PathLsResult,
+  DocRulingFilter,
+  DocRulingAnswer,
+  DocRevertAnswer,
+} from "./lib/dataLayer";
 export { loadDocumentEdges, EDGE_PAGE_CAP } from "./lib/edgePages";
 
 // RFC FS — a bulk ruling on proposed statements, run as every surface runs it

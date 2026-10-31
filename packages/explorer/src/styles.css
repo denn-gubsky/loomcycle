@@ -1700,3 +1700,64 @@
   margin-bottom: 16px;
   overflow-x: auto;
 }
+
+/* RFC FS — bulk review of a document's proposals in the Connections panel. */
+.loomcycle-explorer .doc-bulk {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--border);
+}
+.loomcycle-explorer .doc-bulk-bar,
+.loomcycle-explorer .doc-bulk-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-explorer .doc-bulk button,
+.loomcycle-explorer .doc-bulk-result button {
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-explorer .doc-bulk button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.loomcycle-explorer .doc-bulk button.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.loomcycle-explorer .doc-bulk button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.loomcycle-explorer .doc-bulk-confirm p {
+  margin: 0;
+  flex-basis: 100%;
+}
+.loomcycle-explorer .doc-bulk-warn {
+  color: var(--running);
+}
+.loomcycle-explorer .doc-bulk-sample {
+  flex-basis: 100%;
+  margin: 0;
+  padding-left: 16px;
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .doc-bulk-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+  font-size: var(--lc-text-xs);
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .doc-bulk .doc-conn-row input[type="checkbox"] {
+  margin: 0 4px 0 0;
+}

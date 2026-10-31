@@ -19,7 +19,8 @@ import type {
   UnlinkedMention,
 } from "../types";
 import type { DocSummary, DocumentMeta } from "./colorScheme";
-import type { AssetFetch } from "./createClient";
+import type { AssetFetch, JsonPost } from "./createClient";
+import type { RulingCounts, RulingRequest } from "./ruling";
 import { entityTypeNames } from "./subjectType";
 
 // ChunkPatch is the subset of chunk fields update_chunk accepts. `fields` is
@@ -34,6 +35,26 @@ export interface ChunkPatch {
   // tags (RFC BS) replace-set the chunk's whole tag set when present ([] clears);
   // the editor always sends the parsed set, so it is authoritative for what shows.
   tags?: string[];
+}
+
+// DocRulingFilter is the review queue filter a document's bulk ruling sends:
+// the statements filed from that document.
+export interface DocRulingFilter {
+  from_document_id: string;
+}
+
+// DocRulingAnswer is a bulk ruling's answer (POST /v1/_statements/rule): the
+// counts runRuling reads, and on a dry run a sample and a breakdown.
+export interface DocRulingAnswer extends RulingCounts {
+  sample?: DocEdge[] | null;
+  breakdown?: { kind: string; method: string; count: number }[] | null;
+}
+
+// DocRevertAnswer is a ruling's undo (POST /v1/_statements/revert).
+export interface DocRevertAnswer {
+  ruling_id: string;
+  reverted: number;
+  changed: number;
 }
 
 // PathLsPage selects one page of an `ls`: `limit` bounds it (the runtime clamps
@@ -230,6 +251,28 @@ export interface ExplorerDataLayer {
     browse?: BrowseScope,
     opts?: { status?: StatementStatus; kind?: string; limit?: number; after?: string },
   ): Promise<{ statements: DocEdge[]; truncated?: boolean; next_cursor?: string }>;
+  // RFC FS bulk rulings. Optional, like the single rulings: without
+  // documentRuleStatements the Connections panel offers no bulk Accept / Reject,
+  // and without documentRevertRuling no undo of one.
+  //
+  // documentRuleStatements is POST /v1/_statements/rule: a dry run unless
+  // `dry_run` is false, and a real call must carry the dry run's `matched` as
+  // `expect_count` (runRuling does both). `req.scope` is the review scope —
+  // tenant, or the caller's OWN user scope: the review routes take no
+  // browse-by-subject, so a host must not offer it for another subject's
+  // documents. `browse.tenant` is an admin's tenant focus. A refusal rejects
+  // with an error carrying the server's `code` (queue_changed, forbidden, …).
+  documentRuleStatements?(
+    req: RulingRequest<DocRulingFilter>,
+    browse?: BrowseScope,
+  ): Promise<DocRulingAnswer>;
+  // documentRevertRuling is POST /v1/_statements/revert: each statement the
+  // ruling ruled and nothing changed since goes back to its earlier status.
+  documentRevertRuling?(
+    rulingId: string,
+    scope: "tenant" | "user",
+    browse?: BrowseScope,
+  ): Promise<DocRevertAnswer>;
   // RFC FO classification ops. Optional, like the statement rulings: without
   // documentClassify the viewer offers no Classify action, and without
   // documentAcceptClassification a pending classification is not shown.
@@ -359,8 +402,16 @@ const DOCUMENT_PATH_PAGE_LIMIT = 5000;
 // the SDK serializes it to ?scope_id= / ?tenant= (empty/undefined → the caller's
 // own subject, byte-identical to the pre-RFC-AS behaviour). Responses are
 // op-varying `unknown`, cast to the kept shapes the components consume.
-export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetFetch): ExplorerDataLayer {
+//
+// jsonPost (the connection path) reaches the RFC FS review routes when the
+// client has no method for them; see reviewOps.
+export function dataLayerFromClient(
+  client: LoomcycleClient,
+  assetFetch?: AssetFetch,
+  jsonPost?: JsonPost,
+): ExplorerDataLayer {
   return {
+    ...reviewOps(client, jsonPost),
     pathLs: (path, scope, recursive, browse, page) =>
       client.path(
         {
@@ -663,6 +714,50 @@ export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetF
         }
       : {}),
   };
+}
+
+// ReviewClient is the part of a newer @loomcycle/client this package reads when
+// present: the review methods arrived after the client version it pins.
+interface ReviewClient {
+  ruleStatements?: (
+    action: "accept" | "reject",
+    select: { ids: string[] } | { filter: DocRulingFilter },
+    opts: { reason?: string; dryRun?: boolean; expectCount?: number; max?: number; scope?: "tenant" | "user"; tenant?: string },
+  ) => Promise<DocRulingAnswer>;
+  revertRuling?: (rulingId: string, opts: { scope?: "tenant" | "user"; tenant?: string }) => Promise<DocRevertAnswer>;
+}
+
+// reviewOps is the bulk ruling and its undo: through the client's own methods
+// when it has them, else a JSON POST over the connection, else absent — and
+// absent means the viewer offers no bulk action.
+function reviewOps(
+  client: LoomcycleClient,
+  jsonPost?: JsonPost,
+): Pick<ExplorerDataLayer, "documentRuleStatements" | "documentRevertRuling"> {
+  const c = client as unknown as ReviewClient;
+  const tenantQuery = (browse?: BrowseScope) => (browse?.tenant ? `?tenant=${encodeURIComponent(browse.tenant)}` : "");
+  const out: Pick<ExplorerDataLayer, "documentRuleStatements" | "documentRevertRuling"> = {};
+  if (typeof c.ruleStatements === "function") {
+    out.documentRuleStatements = (req, browse) =>
+      c.ruleStatements!(req.action, req.ids ? { ids: req.ids } : { filter: req.filter! }, {
+        reason: req.reason,
+        dryRun: req.dry_run,
+        expectCount: req.expect_count,
+        max: req.max,
+        scope: req.scope,
+        tenant: browse?.tenant,
+      });
+  } else if (jsonPost) {
+    out.documentRuleStatements = (req, browse) =>
+      jsonPost(`/v1/_statements/rule${tenantQuery(browse)}`, req) as Promise<DocRulingAnswer>;
+  }
+  if (typeof c.revertRuling === "function") {
+    out.documentRevertRuling = (rulingId, scope, browse) => c.revertRuling!(rulingId, { scope, tenant: browse?.tenant });
+  } else if (jsonPost) {
+    out.documentRevertRuling = (rulingId, scope, browse) =>
+      jsonPost(`/v1/_statements/revert${tenantQuery(browse)}`, { ruling_id: rulingId, scope }) as Promise<DocRevertAnswer>;
+  }
+  return out;
 }
 
 // The data layer reaches the components through context — no module-global
