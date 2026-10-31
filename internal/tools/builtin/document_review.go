@@ -267,8 +267,12 @@ func reviewFilterArgs(f connector.ReviewQueueFilter) map[string]any {
 }
 
 // reviewInvalid / reviewForbidden wrap a refusal onto its sentinel.
-func reviewInvalid(msg string) error   { return connector.WithMessage(connector.ErrStatementReviewInvalid, msg) }
-func reviewForbidden(msg string) error { return connector.WithMessage(connector.ErrStatementReviewForbidden, msg) }
+func reviewInvalid(msg string) error {
+	return connector.WithMessage(connector.ErrStatementReviewInvalid, msg)
+}
+func reviewForbidden(msg string) error {
+	return connector.WithMessage(connector.ErrStatementReviewForbidden, msg)
+}
 
 // reviewToolRefusal maps a refusal the Document returned onto the sentinels: a
 // permission refusal is forbidden, any other is the request's fault.
@@ -307,11 +311,11 @@ func (d *Document) ListReviewQueue(ctx context.Context, scope string, req connec
 		return out, reviewToolRefusal(res)
 	}
 	var body struct {
-		Statements []json.RawMessage             `json:"statements"`
-		Truncated  bool                          `json:"truncated"`
-		NextCursor string                        `json:"next_cursor"`
+		Statements []json.RawMessage            `json:"statements"`
+		Truncated  bool                         `json:"truncated"`
+		NextCursor string                       `json:"next_cursor"`
 		Summary    []connector.ReviewQueueGroup `json:"summary"`
-		Total      int                           `json:"total"`
+		Total      int                          `json:"total"`
 	}
 	if err := json.Unmarshal([]byte(res.Text), &body); err != nil {
 		return out, fmt.Errorf("list_statements: decoding the page: %w", err)

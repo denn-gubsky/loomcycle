@@ -39,8 +39,8 @@ func reviewOperatorCtx(base context.Context, eff *authz.Effective) context.Conte
 
 // reviewCorpus is a tenant with three documents and the proposals between them.
 type reviewCorpus struct {
-	board1, board2, notes             string // documents
-	b1, b2, n1                        string // one chunk in each
+	board1, board2, notes              string // documents
+	b1, b2, n1                         string // one chunk in each
 	cites, repeals, elaborates, judged string // statement ids
 }
 
