@@ -8,6 +8,44 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.130.0
+
+*Adopting a subject now announces it on the tenant's `memory/subjects` channel, and the `knowledge-base` links agent drains that queue: one subject pass per event (RFC FR Phases 0 and 1).*
+
+*A password gate can hold website sign-ups for an operator's approval. An unknown key under a sign-in gate now fails the config load.*
+
+The v1.130 line: #2307 to #2310.
+- `@loomcycle/client` stays at 1.129.0 and the Python adapter at 1.126.0: no adapter change.
+- No migration.
+- **Behaviour change:** a misspelt or stale key under `auth.gates.<name>` or its `new_user` block now stops the config from loading (#2307). Run `loomcycle validate` over your config before upgrading.
+
+### Subject events (#2309)
+
+Accepting a subject proposal (`POST /v1/_ontology/proposals`) or confirming ontology instances (`POST /v1/_ontology`) adopts a subject. Both now publish on the scope's `memory/subjects` channel. Before this release the operator routes built their document handle with no channel bus, so the event never fired.
+- The message carries the subject's `document_id` and `root_chunk_id` beside its natural key.
+- As for `documents/ingested`, the event is published only when the caller's access rules hide no part of the scope from reading. When it is withheld, the response says why: `not_announced` on a proposal accept, `instance_adoption.not_announced` on a confirm.
+
+### Tenant-scoped yaml channels and the subject drain (#2310)
+
+- **`channels.<name>.scope: tenant`** is accepted in yaml: one queue and cursor per tenant. Until now only runtime channel rows could be tenant-scoped.
+- **The `knowledge-base` bundle** declares `memory/subjects` (tenant scope, queue, `publisher: system`) and grants `kb/linker` subscribe on it. The Channel tool refuses an agent's publish there, even with a publish grant.
+- **`kb/linker {"mode": "drain", "scope": "tenant"}`** drains `memory/subjects`. Each message is one subject pass, acked after the pass is recorded. `scope: user` drains `documents/ingested` as before.
+  - `adopted`, `retyped`, `erased`: checks the statements touching the subject.
+  - `merged`: re-points what remains on the duplicate to the survivor, then checks the survivor. It acts only when the duplicate's own root records the merge (`fields.merged_into`); otherwise the message is `merge_unconfirmed` and moves nothing.
+  - `removed`: nothing to check.
+- Only adoption publishes today. Merge, re-type, removal and erasure events come in later phases.
+
+### Password gate: sign-ups that wait for approval (#2307)
+
+- **`new_user.status: active|pending`** on a password gate (default `active`). A new user created by a website's (`auth:manage`) invite starts `pending`.
+  - These stay active: users from an operator's or an admin's own invite, a tenant's bootstrap owner, and existing users getting an attach invite.
+- **A pending user signs in with its password** and reaches `GET /v1/_me` only, the same as a pending user from an identity gate. A disabled user is still refused.
+- **Strict gate keys:** an unknown key in an `auth.gates` entry or its `new_user` block fails the load and names the keys the block takes. The keys of the inlined OAuth, external and device gate kinds stay known.
+
+### loomcycle.cloud (#2308)
+
+The cloud deployment moves to one shared tenant: people sign up on the website, an operator approves each one, and members get tenant-wide reach. This is deployment configuration in `cloud-deployment/`; the runtime change it needs is #2307.
+
 ## What's in v1.129.0
 
 *The `knowledge-base` bundle's links agent (`kb/linker`) finishes its build (RFC FP Phases C and D):*

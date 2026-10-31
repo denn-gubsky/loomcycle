@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.129.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.130.0.</em>
 </p>
 
 <p align="center">
@@ -201,20 +201,17 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.129.0) finishes the `knowledge-base` links agent. It
-proposes `elaborates` relations a model judged, skipping the boilerplate
-paragraphs the tenant's ontology names with `@boilerplate`. It re-judges a
-model-made statement whose text changed, moves a merged subject's statements to
-the survivor, and compares a document with its norms into a report. It sweeps a
-subtree to keep statements checked, with a purge only on request. The Web UI's
-ontology page shows the ontology one section per tab. See
-[`REVISIONS.md`](REVISIONS.md).
+The most recent line (v1.130.0) announces subject changes. Adopting a subject
+in the tenant ontology publishes on the tenant's `memory/subjects` channel, and
+the `knowledge-base` links agent drains that queue, one subject pass per event.
+Yaml channels may now be tenant-scoped. A password gate can hold website
+sign-ups for an operator's approval, and an unknown key under a sign-in gate
+now fails the config load. See [`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.128.0 made a relation a statement with evidence, governed by a
-sectioned ontology. That ontology has typed document classes with identity
-keys, relation kinds, concept schemes and instances, and `classify` says what a
-document is from it. Its patch releases added scoped part anchors for
-regulatory acts and a page-aware File import. See
+Before it, v1.129.0 finished the `knowledge-base` links agent: model-judged
+`elaborates` relations, `@boilerplate` paragraphs in the ontology, re-judging
+changed statements, norm comparison reports and subtree sweeps. The Web UI's
+ontology page shows the ontology one section per tab. See
 [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
