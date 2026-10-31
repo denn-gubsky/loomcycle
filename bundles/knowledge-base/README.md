@@ -36,11 +36,12 @@ One pass covers one document. The layers run in this order:
 
 | layer | reads | writes (`propose` mode) |
 |---|---|---|
-| **L0 classify** | the runtime's `classify` op on the document: the ontology's class rules (`@title_pattern`, `@identifier_pattern`), its Instances, and the neighbours' classes | in `propose` mode the op writes: exactly one class matched by its own rule is applied (type, identity fields, so the work key, and an `issued_by` an adopted instance can take); anything else is proposed for an operator, and a type set by hand is kept. `report` mode asks with `write: report`. The linker never accepts a proposal: that is an operator's act |
+| **L0 classify** | the runtime's `classify` op on the document: the ontology's class rules (`@title_pattern`, `@identifier_pattern`), its Instances, and the neighbours' classes | in `propose` mode the op writes: exactly one class matched by its own rule is applied (type, identity fields, so the work key, and an `issued_by` an adopted instance can take); anything else is proposed for an operator, and a type set by hand is kept. `report` mode asks with `write: report`. The linker never accepts a proposal: that is an operator's act. With `file: {root}` a class in force also files the document: it gets a name at `<root>/<Class>/<title>` |
 | **L1 anchors** | each live part's anchor and stable id | nothing. It reports parts without an anchor, duplicate anchors (`…~2`, by id) and parts without a stable id |
 | **L2 cite** | the citations the document class's `@citation_grammar` finds | one statement per citation, from the citing passage to the cited part, `method: rule:citation`. A citation to a held work whose part is missing points at the work's root; one to an unheld work gets a placeholder. The grammar's `kind` is used only when the ontology declares it and it is not reserved; otherwise the statement is `cites` |
 | **L3 terms** | the concepts of the scheme named by `terms_scheme`: their name and alternative labels | `uses_term` from each passage to each concept it mentions, `method: rule:terms`; or `defines`, `method: rule:definitions`, for a term a definitions passage defines (see below). Matches are exact or case-folded with whitespace collapsed, on word boundaries, and the longest match wins. **Tenant scope only**, because concepts live there; at user or agent scope the matches are counted and nothing is written |
 | **L4 relate** | semantic neighbours from `related`, judged by `kb/verdict` | in `propose` mode, `elaborates` only: one proposal per passage and target document, with both quotes as evidence, by `extractor:relate`. Every other kind stays in the report. It runs only when `corpus_paths` is given or `L4` is listed |
+| **L5 check-against** | each passage's norms under `check_against`: first the parts of the works it already cites, then the closest by meaning, up to `max_norms` (12); one `kb/verdict` call per passage | **a report document, no statements**: `<report_root>/<title>-<date>` (default root `/reports/check-against`), each finding (`addresses`, `complies_with`, `possible_gap`, `possible_conflict`) with both quotes, under a *not a legal opinion* banner. It runs only when `check_against` is given or `L5` is listed |
 | **L6 maintain** | every live statement with an end in the document, or with evidence citing it | see below |
 
 L2 and L3 need a confirmed ontology with relation kinds. Without one they skip
@@ -51,6 +52,18 @@ checks.
 `defines` is a seed kind. `uses_term` is not: declare it in the ontology's
 Relations section (`### uses_term`). Until then, L3 files only `defines`, and
 counts its other matches as `hits_no_kind`.
+
+### L0: filing
+
+With `file: {"root": "/board/by-class"}`, a document whose class is in force gets
+a name in its class's home, `/board/by-class/<Class>/<title>` (the title reduced
+to letters, digits, `.`, `_` and `-`; the document id when nothing is left).
+Filing **adds** a name through `set_path`: the document keeps every name it
+had, so a folder tree you arranged is never moved, and `Path rm` takes the added
+name away. A name another document already holds is left to it: the document's
+id is appended to its own. Without `file`, nothing is filed. The report says
+which class a document was filed under (`layers.L0.filing`), never the path,
+which carries the title.
 
 ### L3: which passage defines a term
 
@@ -88,6 +101,17 @@ A verdict becomes a proposal only when all of these hold:
 A proposal is always `proposed`, by `extractor:relate`, with the verdict's
 confidence and both quotes as evidence. An operator's rejection stands: the
 runtime refuses to file a rejected relation again.
+
+### L5: check-against
+
+`{"document_id": …, "check_against": ["/board/regulatory-external"]}` compares
+each passage of an internal document with the norms it answers to. A finding
+needs both quotes verbatim and outside boilerplate, like an L4 one. The findings
+are written to a report document, one section per passage that has any, and the
+document opens with a banner: the findings are a model's, checked only for their
+quotes, and **not a legal opinion**. Nothing is filed in the statement graph. A
+report pass compares and counts, and writes no document. A report name already
+taken that day gets `-2`, `-3`, ….
 
 ### L6: maintaining what exists
 
@@ -161,6 +185,7 @@ These rules always hold:
 | `maintain` | `document_id` or `path` | L6 |
 | `drain` | the `documents/ingested` queue, up to `max_messages` | L0, L1, L2, L3, L6 per message |
 | `subject` | the subject's document (`document_id` or `path`), whose root is the subject | L6 |
+| `sweep` | the statements with an end under `path` (a Path subtree) | L6, then the purge report |
 
 | `write` | does |
 |---|---|
@@ -201,6 +226,35 @@ scheduled_runs:
         content: [ { type: trusted-text, text: '{"mode":"drain","write":"propose"}' } ]
 ```
 
+**Sweep** checks the statements with an end under `path`, asserted ones first,
+each least recently verified first, up to `max_statements`; `sweep.exhausted`
+says whether it reached the end. What it verifies moves to the back of the
+order, so repeated sweeps work through a large subtree without a cursor to
+carry. A statement already flagged for a person is passed over
+(`skipped_flagged`) until they rule.
+
+Every sweep then reports, under `purge`, the retired statements a purge may
+delete: expired, made by code, retired more than `purge_after_days` ago (default
+180). It deletes them only when the run says `purge: true` (with `write:
+propose`); never from a schedule you did not write that way. A purge never
+deletes a person's statement, one an operator ruled on, or a **rejected** one: a
+rejection is what keeps the linker from proposing that relation again.
+
+A sweep schedule is not installed by the bundle. To add one:
+
+```yaml
+scheduled_runs:
+  kb-linker-sweep:
+    agent: kb/linker
+    schedule: "0 3 * * *"             # nightly
+    user_id: me
+    concurrency_policy: forbid
+    enabled: true
+    prompt:
+      - role: user
+        content: [ { type: trusted-text, text: '{"mode":"sweep","path":"/docs","scope":"user","write":"propose","max_statements":500}' } ]
+```
+
 ## Use
 
 ```bash
@@ -217,8 +271,8 @@ curl -sX POST localhost:8080/v1/runs \
 
 | field | default | meaning |
 |---|---|---|
-| `mode` | `document` | `document`, `maintain`, `drain` or `subject` |
-| `document_id` or `path` | exactly one (none in drain) | the document |
+| `mode` | `document` | `document`, `maintain`, `drain`, `subject` or `sweep` |
+| `document_id` or `path` | exactly one (none in drain; sweep takes `path` only) | the document; for a sweep, the subtree |
 | `scope` | `user` | `user`, `agent` or `tenant` (drain: `user`) |
 | `layers` | per mode | any of `L0`, `L1`, `L2`, `L3`, `L4`, `L6`; `maintain` takes `L6` only |
 | `write` | `report` | `report` or `propose` |
@@ -231,6 +285,11 @@ curl -sX POST localhost:8080/v1/runs \
 | `exclude_document_types`, `candidate_floor`, `max_candidates_per_chunk`, `max_verdict_calls`, `max_chars`, `min_body_chars`, `relations`, `include_quotes` | as before | L4 only. `min_body_chars` also bounds which passages L3 reads; `max_verdict_calls` and `relations` also bound and name what L6's `rejudge` asks |
 | `rejudge` | `false` | L6 check 6: judge a model-made statement again when its text changed |
 | `merged_into` | — | subject mode: the document of the subject this one was merged into |
+| `purge` | `false` | sweep mode, with `write: propose`: delete what the purge report lists |
+| `file` | — | `{"root": "/…"}`, with L0: file a document whose class is in force under `<root>/<Class>/` |
+| `check_against` | — | L5: the Path-tree paths of the norms a passage is compared with |
+| `max_norms`, `report_root` | `12`, `/reports/check-against` | L5 only: norms per passage (1–20); where the report documents go |
+| `purge_after_days` | `180` | sweep mode: how long a statement stays retired before a purge may delete it (1–3650) |
 
 An unknown field or an out-of-range value refuses the run with
 `{"status":"refused","reason":…}`, before any tool call or lease.
@@ -285,7 +344,8 @@ agents:
 
 ## Cost
 
-The linker makes no model call except in L4 and in L6's `rejudge`. L4 spends one
+The linker makes no model call except in L4, L5 and L6's `rejudge`. L4 spends one
 `kb/verdict` call per claim-bearing passage that has candidates, capped by
-`max_verdict_calls`, and runs only when asked for; `rejudge` spends one per
-changed statement, under the same cap. Nothing is scheduled unless you add a schedule.
+`max_verdict_calls`, and runs only when asked for; L5 spends one per passage
+that has norms, and `rejudge` one per changed statement, each under the same
+cap. Nothing is scheduled unless you add a schedule.

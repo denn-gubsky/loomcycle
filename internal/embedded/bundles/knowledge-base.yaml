@@ -30,17 +30,20 @@
 #
 # MODES. `document` (one document, the default), `maintain` (L6 only, over one
 # document's statements), `drain` (the documents the `documents/ingested`
-# queue names, one message at a time, each acked only after its pass). WRITE
+# queue names, one message at a time, each acked only after its pass),
+# `subject` (L6 over a subject's statements; `merged_into` moves them) and
+# `sweep` (L6 over a Path subtree, least recently verified first, then the
+# purge report; `purge: true` deletes). WRITE
 # MODES: `report` (the default — reads only, counts what it would write, acks
 # nothing) and `propose` (writes statements through propose_statement and
 # maintains them through maintain_statement). Run `report` first, always.
 #
-# STATUS: RFC FP PHASE B. The writing path uses the runtime's
+# STATUS: RFC FP PHASE D. The writing path uses the runtime's
 # `statement_methods` grant and `method` field, `maintain_statement`, the
-# `list_statements` filters, `describe_ontology`, `extract_citations` and the
-# named document lease. Not built here: classification (L0), check-against (L5),
-# the semantic layer's writes (L4 stays report-only), L6's re-judging and its
-# subject and sweep modes, hard deletion of any kind.
+# `list_statements` filters, `describe_ontology`, `extract_citations`, `classify`
+# and the named document lease. L4 files `elaborates` only; L5 writes a report
+# document and no statements; the only hard deletion is a sweep's purge, on
+# request. Not built here: L3 mentions of instances and registry names.
 #
 # WHY THE ORCHESTRATION IS CODE. Every invariant this pass keeps — a kind from the
 # declared list or nothing, a quote that occurs or no write, a person's link only
@@ -210,7 +213,11 @@ agents:
         include_quotes: false,
         max_writes: 500,
         max_statements: 500,
-        max_messages: 10
+        max_messages: 10,
+        // Retired statements younger than this are never purged.
+        purge_after_days: 180,
+        max_norms: 12,
+        report_root: "/reports/check-against"
       };
 
       // The layers each mode runs when the input names none. L4 joins them when the
@@ -219,9 +226,10 @@ agents:
         document: ["L0", "L1", "L2", "L3", "L6"],
         drain: ["L0", "L1", "L2", "L3", "L6"],
         maintain: ["L6"],
-        subject: ["L6"]
+        subject: ["L6"],
+        sweep: ["L6"]
       };
-      var LAYER_ORDER = ["L0", "L1", "L2", "L3", "L4", "L6"];
+      var LAYER_ORDER = ["L0", "L1", "L2", "L3", "L4", "L5", "L6"];
 
       var METHOD = { citation: "rule:citation", terms: "rule:terms", definitions: "rule:definitions", maintain: "rule:maintain",
                      relate: "extractor:relate" };
@@ -257,15 +265,18 @@ agents:
         terms_scheme: true, as_of: true, max_writes: true, max_statements: true, max_messages: true,
         corpus_paths: true, exclude_document_types: true, candidate_floor: true,
         max_candidates_per_chunk: true, max_verdict_calls: true, max_chars: true,
-        min_body_chars: true, relations: true, include_quotes: true, rejudge: true, merged_into: true
+        min_body_chars: true, relations: true, include_quotes: true, rejudge: true, merged_into: true,
+        purge: true, purge_after_days: true, file: true, check_against: true, max_norms: true, report_root: true
       };
 
-      var USAGE = "Pass a JSON object: {\"mode\": document|drain|maintain|subject (default document), " +
+      var USAGE = "Pass a JSON object: {\"mode\": document|drain|maintain|subject|sweep (default document), " +
         "\"document_id\" or \"path\" (not in drain; in subject mode, the subject's document), " +
         "optional scope (user|agent|tenant), " +
         "layers [\"L0\",\"L1\",\"L2\",\"L3\",\"L4\",\"L6\"], write (report|propose, default report), " +
         "terms_scheme, as_of (unix nanoseconds), max_writes, max_statements, max_messages, " +
         "rejudge (L6), merged_into (subject mode: the surviving subject's document id), " +
+        "purge, purge_after_days (sweep mode; path names the subtree), file {root} (L0), " +
+        "check_against [\"/…\"], max_norms, report_root (L5), " +
         "and for L4: corpus_paths [\"/…\"], exclude_document_types, candidate_floor, " +
         "max_candidates_per_chunk, max_verdict_calls, max_chars, min_body_chars, " +
         "relations [{name, meaning, domain?, range?}], include_quotes}.";
@@ -294,7 +305,7 @@ agents:
         }
         try {
           if (needsOntology(st.opts)) { st.onto = loadOntology(st); }
-          if (st.opts.mode === "drain") { drainPass(st); } else { documentPass(st); }
+          if (st.opts.mode === "drain") { drainPass(st); } else if (st.opts.mode === "sweep") { sweepPass(st); } else { documentPass(st); }
           failIfEveryWriteRefused(st);
         } catch (e) {
           if (isStop(e)) {
@@ -346,7 +357,7 @@ agents:
         o.mode = DEFAULTS.mode;
         if (v.mode !== undefined) {
           if (typeof v.mode !== "string" || !hasOwn(MODE_LAYERS, v.mode)) {
-            return { error: "mode must be document, drain, maintain or subject" };
+            return { error: "mode must be document, drain, maintain, subject or sweep" };
           }
           o.mode = v.mode;
         }
@@ -362,6 +373,11 @@ agents:
           if (hasID || hasPath) {
             return { error: "drain takes its documents from the ingest queue; pass neither document_id nor path" };
           }
+        } else if (o.mode === "sweep") {
+          if (hasID || !hasPath || !isPath(v.path)) {
+            return { error: "sweep takes path: the Path-tree subtree whose statements it checks, and no document_id" };
+          }
+          o.path = v.path;
         } else {
           if (hasID === hasPath) {
             return { error: "pass exactly one of document_id or path" };
@@ -397,9 +413,35 @@ agents:
           }
           o.corpus_paths = v.corpus_paths.slice();
         }
+        o.check_against = null;
+        if (v.check_against !== undefined) {
+          if (!isArray(v.check_against) || v.check_against.length === 0 || v.check_against.length > CONFIG.max_corpus_paths) {
+            return { error: "check_against must be a list of 1 to " + CONFIG.max_corpus_paths + " absolute paths" };
+          }
+          for (var ci = 0; ci < v.check_against.length; ci++) {
+            if (!isPath(v.check_against[ci])) { return { error: "check_against[" + ci + "] must be an absolute path starting with /" }; }
+          }
+          o.check_against = v.check_against.slice();
+        }
         var lay = parseLayers(v.layers, o);
         if (lay.error) { return lay; }
         o.layers = lay.value;
+        if (o.layers.L5 === true && o.check_against === null) {
+          return { error: "the L5 layer needs check_against: the Path-tree paths of the norms to compare with" };
+        }
+        if (o.layers.L5 !== true && o.check_against !== null) {
+          return { error: "check_against is read only by the L5 layer, which this run does not include" };
+        }
+        if (o.layers.L5 !== true && (v.max_norms !== undefined || v.report_root !== undefined)) {
+          return { error: "max_norms and report_root are read only by the L5 layer" };
+        }
+        o.report_root = DEFAULTS.report_root;
+        if (v.report_root !== undefined) {
+          if (!isPath(v.report_root) || !/^(\/[A-Za-z0-9._-]+)+\/?$/.test(v.report_root)) {
+            return { error: "report_root must be an absolute path of letters, digits, '.', '_' and '-'" };
+          }
+          o.report_root = v.report_root.replace(/\/+$/, "");
+        }
         if (o.layers.L4 === true && o.corpus_paths === null) {
           return { error: "the L4 layer needs corpus_paths: the Path-tree paths its candidates come from" };
         }
@@ -438,6 +480,8 @@ agents:
         o.max_chars = n.value;
         if ((n = numberField(v, "min_body_chars", DEFAULTS.min_body_chars, 0, 10000, true)).error) { return n; }
         o.min_body_chars = n.value;
+        if ((n = numberField(v, "max_norms", DEFAULTS.max_norms, 1, 20, true)).error) { return n; }
+        o.max_norms = n.value;
         if ((n = numberField(v, "max_writes", DEFAULTS.max_writes, 1, 5000, true)).error) { return n; }
         o.max_writes = n.value;
         if ((n = numberField(v, "max_statements", DEFAULTS.max_statements, 1, 5000, true)).error) { return n; }
@@ -461,6 +505,28 @@ agents:
           }
           o.merged_into = v.merged_into;
         }
+        if (v.file !== undefined) {
+          if (!isPlainObject(v.file) || !isPath(v.file.root) || !/^(\/[A-Za-z0-9._-]+)+\/?$/.test(v.file.root)) {
+            return { error: "file must be {\"root\": \"/a/path\"}: the folder the class homes go under" };
+          }
+          for (var fk in v.file) {
+            if (hasOwn(v.file, fk) && fk !== "root") { return { error: "file takes root only" }; }
+          }
+          if (o.layers.L0 !== true) { return { error: "file needs the L0 layer, which decides the class" }; }
+          o.file = { root: v.file.root };
+        }
+        o.purge = false;
+        if (v.purge !== undefined) {
+          if (typeof v.purge !== "boolean") { return { error: "purge must be true or false" }; }
+          if (o.mode !== "sweep") { return { error: "purge is read only by sweep mode" }; }
+          if (v.purge && o.write !== "propose") { return { error: "purge deletes, so it needs write: propose" }; }
+          o.purge = v.purge;
+        }
+        if (v.purge_after_days !== undefined && o.mode !== "sweep") {
+          return { error: "purge_after_days is read only by sweep mode" };
+        }
+        if ((n = numberField(v, "purge_after_days", DEFAULTS.purge_after_days, 1, 3650, true)).error) { return n; }
+        o.purge_after_days = n.value;
         o.rejudge = false;
         if (v.rejudge !== undefined) {
           if (typeof v.rejudge !== "boolean") { return { error: "rejudge must be true or false" }; }
@@ -475,21 +541,23 @@ agents:
         if (list === undefined) {
           var def = MODE_LAYERS[o.mode];
           for (var i = 0; i < def.length; i++) { out[def[i]] = true; }
-          if (o.corpus_paths !== null && o.mode !== "maintain" && o.mode !== "subject") { out.L4 = true; }
+          var docMode = o.mode !== "maintain" && o.mode !== "subject" && o.mode !== "sweep";
+          if (o.corpus_paths !== null && docMode) { out.L4 = true; }
+          if (o.check_against !== null && docMode) { out.L5 = true; }
           return { value: out };
         }
         if (!isArray(list) || list.length === 0 || list.length > LAYER_ORDER.length) {
-          return { error: "layers must be a non-empty list of L0, L1, L2, L3, L4, L6" };
+          return { error: "layers must be a non-empty list of L0, L1, L2, L3, L4, L5, L6" };
         }
         for (var j = 0; j < list.length; j++) {
           var l = list[j];
           if (typeof l !== "string" || LAYER_ORDER.indexOf(l) < 0) {
-            return { error: "layers[" + j + "] must be one of L0, L1, L2, L3, L4, L6" };
+            return { error: "layers[" + j + "] must be one of L0, L1, L2, L3, L4, L5, L6" };
           }
           if (out[l] === true) { return { error: "layers: " + l + " is named twice" }; }
           out[l] = true;
         }
-        if ((o.mode === "maintain" || o.mode === "subject") && (list.length !== 1 || out.L6 !== true)) {
+        if ((o.mode === "maintain" || o.mode === "subject" || o.mode === "sweep") && (list.length !== 1 || out.L6 !== true)) {
           return { error: o.mode + " runs the L6 layer only" };
         }
         return { value: out };
@@ -747,6 +815,7 @@ agents:
         if (st.opts.layers.L2 === true) { layerCite(st, doc, changed); }
         if (st.opts.layers.L3 === true) { layerTerms(st, doc, changed); }
         if (st.opts.layers.L4 === true) { layerRelate(st, doc); }
+        if (st.opts.layers.L5 === true) { layerCheck(st, doc); }
         if (st.opts.layers.L6 === true) { layerMaintain(st, doc); }
       }
 
@@ -845,7 +914,8 @@ agents:
         if (!d || !isID(d.document_id)) {
           throw new Error("get_document answered without a document_id");
         }
-        return { id: d.document_id, root: isID(d.root_chunk_id) ? d.root_chunk_id : "" };
+        return { id: d.document_id, root: isID(d.root_chunk_id) ? d.root_chunk_id : "",
+                 title: typeof d.title === "string" ? d.title : "" };
       }
 
       // listChunks is the document's chunk rows, read once per pass.
@@ -910,6 +980,7 @@ agents:
           var c = call(st, { op: "get_chunk", id: id });
           if (c && typeof c.body === "string") {
             out = { ok: true, body: c.body,
+                    title: typeof c.title === "string" ? c.title : "",
                     type: typeof c.type === "string" ? c.type : "",
                     document_id: typeof c.document_id === "string" ? c.document_id : "",
                     boilerplate: boilerplateRanges(c.body, c.boilerplate) };
@@ -1040,6 +1111,53 @@ agents:
         C.issuers += isArray(r.issued_by) ? r.issued_by.length : 0;
         C.concepts += isArray(r.concepts) ? r.concepts.length : 0;
         C.warnings += isArray(r.warnings) ? r.warnings.length : 0;
+        // A class in force (or, in a report, one the op would apply) files the
+        // document — only when the run asks to.
+        var applies = r.live === true || (st.opts.write !== "propose" && r.result === "classified");
+        if (st.opts.file && applies && typeof r.class === "string" && r.class !== "") { fileDocument(st, L, doc, r.class); }
+      }
+
+      // fileDocument gives the document a name in its class's home, <root>/<Class>/<title>,
+      // through set_path. It ADDS a name: the document keeps every name it had, so an
+      // operator's own tree is never moved, and the added one can be removed with
+      // Path rm. A name another document holds is never taken (set_path would take
+      // it): the document's id is appended instead. The report says what was done
+      // and for which class, never the path, which carries the document's title.
+      function fileDocument(st, L, doc, cls) {
+        var seg = pathSegment(cls);
+        if (seg === "") { L.filing = { status: "skipped", reason: "the class name makes no path segment" }; return; }
+        var name = pathSegment(doc.title);
+        if (name === "") { name = doc.id; }
+        var path = st.opts.file.root.replace(/\/+$/, "") + "/" + seg + "/" + name;
+        var holder = documentAtPath(st, path);
+        if (holder === null) { L.filing = { status: "skipped", reason: "the class home could not be read" }; return; }
+        if (holder === doc.id) { L.filing = { status: "already_filed", class: seg }; return; }
+        if (holder !== "") { path += "-" + doc.id.slice(0, 8); }
+        var w = write(st, "set_path", { op: "set_path", id: doc.id, path: path });
+        L.filing = { status: w.dry ? "would_file" : (w.ok ? "filed" : "refused"), class: seg, suffixed: holder !== "" };
+      }
+
+      // documentAtPath is the id of the document named at path, "" when nothing holds
+      // the name, "-" when something other than a document does (a name set_path
+      // would take from it), null when the lookup failed for another reason.
+      function documentAtPath(st, path) {
+        try {
+          var d = call(st, { op: "get_document", path: path });
+          return (d && isID(d.document_id)) ? d.document_id : null;
+        } catch (e) {
+          if (isStop(e)) { throw e; }
+          var t = errText(e);
+          if (/no such path/.test(t)) { return ""; }
+          if (/is an? [a-z_]+, not a document/.test(t)) { return "-"; }
+          return null;
+        }
+      }
+
+      // pathSegment makes a Path-tree segment ([A-Za-z0-9._-]) of a name: other
+      // characters become a dash; "" when too little is left.
+      function pathSegment(s) {
+        var t = String(s || "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^[-.]+|[-.]+$/g, "");
+        return t.length < 2 ? "" : t.slice(0, 120);
       }
 
       // ------------------------------------------------------------- L1 anchors
@@ -1845,6 +1963,214 @@ agents:
                "\"quote_from\": \"...\", \"quote_to\": \"...\", \"confidence\": 0.7}]";
       }
 
+      // ------------------------------------------------------ L5 check-against
+
+      // The check-against kinds: how a passage of the document stands to a norm.
+      var CHECK_RELATIONS = [
+        { name: "addresses", meaning: "deals with what the candidate requires, without saying whether it meets it" },
+        { name: "complies_with", meaning: "states a rule or practice that meets what the candidate requires" },
+        { name: "possible_gap", meaning: "is about what the candidate requires but leaves out, or falls short of, part of it" },
+        { name: "possible_conflict", meaning: "would, if followed, break what the candidate requires" }
+      ];
+
+      // layerCheck compares each passage of the document with the norms under
+      // check_against: first the parts of the works the passage already cites (its
+      // statements, one hop), then the closest by meaning, up to max_norms. One
+      // kb/verdict call per passage; a finding needs both quotes, verbatim and
+      // outside boilerplate. The findings go into a report document, marked as not a
+      // legal opinion; no statement is filed from them.
+      function layerCheck(st, doc) {
+        var K = st.l5 = {
+          counts: { sections_seen: 0, sections_skipped: 0, sections_without_norms: 0, norms_sent: 0,
+                    norms_from_citations: 0, verdict_calls: 0, verdict_failures: 0, parse_errors: 0,
+                    verdicts_none: 0, quotes_rejected: 0, quotes_in_boilerplate: 0, findings: 0,
+                    verdicts_kind: { addresses: 0, complies_with: 0, possible_gap: 0, possible_conflict: 0 } },
+          vocab: { source: "check", relations: CHECK_RELATIONS },
+          isKind: { addresses: true, complies_with: true, possible_gap: true, possible_conflict: true },
+          sections: [], budget_stopped: false, report: { status: "not_written" }
+        };
+        var cited = citedDocuments(st, doc);
+        var rows = listChunks(st, doc.id).rows;
+        for (var i = 0; i < rows.length; i++) {
+          var c = rows[i];
+          if (K.counts.verdict_calls >= st.opts.max_verdict_calls) { K.budget_stopped = true; setStatus(st, "budget_stopped"); break; }
+          if (c.id === doc.root || c.invalid) { continue; }
+          K.counts.sections_seen++;
+          var b = readChunk(st, c.id);
+          if (!b.ok || visibleText(b).trim().length < st.opts.min_body_chars) { K.counts.sections_skipped++; continue; }
+          var norms = findNorms(st, doc.id, c.id, cited[c.id] || []);
+          if (norms.length === 0) { K.counts.sections_without_norms++; continue; }
+          checkSection(st, c, b, norms);
+        }
+        writeCheckReport(st, doc);
+      }
+
+      // citedDocuments maps each chunk of the document to the other documents its live
+      // statements point at — the works it cites, by any layer.
+      function citedDocuments(st, doc) {
+        var out = {};
+        var statuses = ["asserted", "proposed"];
+        for (var s = 0; s < statuses.length; s++) {
+          var r = call(st, { op: "list_statements", status: statuses[s], document_id: doc.id, limit: CONFIG.statements_page });
+          var list = (r && isArray(r.statements)) ? r.statements : [];
+          for (var i = 0; i < list.length; i++) {
+            var row = list[i];
+            if (!isPlainObject(row) || row.from_document_id !== doc.id || !isID(row.to_document_id) || row.to_document_id === doc.id) { continue; }
+            if (!out[row.from_id]) { out[row.from_id] = []; }
+            if (out[row.from_id].indexOf(row.to_document_id) < 0) { out[row.from_id].push(row.to_document_id); }
+          }
+        }
+        return out;
+      }
+
+      // findNorms is the norm set of one passage: the cited works' parts closest to
+      // it, then the closest under check_against, never the document itself.
+      function findNorms(st, docID, chunkID, citedDocs) {
+        var K = st.l5;
+        var out = [], seen = {};
+        var asks = [];
+        if (citedDocs.length > 0) {
+          asks.push({ op: "related", id: chunkID, limit: CONFIG.related_limit_max, under_paths: st.opts.check_against,
+                      document_ids: citedDocs, exclude_document_ids: [docID], cited: true });
+        }
+        asks.push({ op: "related", id: chunkID, limit: CONFIG.related_limit_max, under_paths: st.opts.check_against,
+                    exclude_document_ids: [docID], cited: false });
+        for (var a = 0; a < asks.length && out.length < st.opts.max_norms; a++) {
+          var fromCitations = asks[a].cited;
+          delete asks[a].cited;
+          var res = call(st, asks[a]);
+          if (!res || !isPlainObject(res.filter)) {
+            throw new Error("the server did not apply the norm filter to related; check-against needs a runtime whose related takes under_paths");
+          }
+          var hits = isArray(res.related) ? res.related : [];
+          for (var i = 0; i < hits.length && out.length < st.opts.max_norms; i++) {
+            var h = hits[i];
+            if (!h || !isID(h.chunk_id) || seen[h.chunk_id] === true || h.document_id === docID) { continue; }
+            if (!fromCitations && (typeof h.score !== "number" || h.score < st.opts.candidate_floor)) { continue; }
+            seen[h.chunk_id] = true;
+            var nb = readChunk(st, h.chunk_id);
+            if (!nb.ok || nb.document_id === docID || visibleText(nb).trim() === "") { continue; }
+            if (fromCitations) { K.counts.norms_from_citations++; }
+            out.push({ id: h.chunk_id, document_id: nb.document_id, body: nb.body, title: nb.title, boilerplate: nb.boilerplate });
+          }
+        }
+        return out;
+      }
+
+      function checkSection(st, c, passage, norms) {
+        var K = st.l5;
+        K.counts.verdict_calls++;
+        K.counts.norms_sent += norms.length;
+        var arr;
+        try {
+          arr = coerceArray(Agent.spawn({ name: CONFIG.verdict_agent, prompt: verdictPrompt(st, K.vocab, visibleText(passage), norms) }));
+        } catch (e) {
+          K.counts.verdict_failures++;
+          return;
+        }
+        if (arr === null) { K.counts.parse_errors++; return; }
+        var sec = { chunk_id: c.id, title: passage.title, findings: [] };
+        var answered = {};
+        for (var i = 0; i < arr.length; i++) {
+          var e = arr[i];
+          var idx = (e && typeof e === "object") ? Math.floor(Number(e.candidate)) : NaN;
+          if (!(idx >= 1 && idx <= norms.length) || answered[idx] === true) { K.counts.parse_errors++; continue; }
+          answered[idx] = true;
+          var kind = (typeof e.kind === "string") ? e.kind.toLowerCase().trim() : "";
+          if (K.isKind[kind] !== true) { K.counts.verdicts_none++; continue; }
+          var conf = e.confidence;
+          if (typeof conf !== "number" || !isFinite(conf) || conf < 0 || conf > 1) { K.counts.parse_errors++; continue; }
+          var norm = norms[idx - 1];
+          var qf = quoteSpan(passage.body, e.quote_from), qt = quoteSpan(norm.body, e.quote_to);
+          if (qf === null || qt === null) { K.counts.quotes_rejected++; continue; }
+          qf = outsideBoilerplate(passage, e.quote_from, qf);
+          qt = outsideBoilerplate(norm, e.quote_to, qt);
+          if (qf === null || qt === null) { K.counts.quotes_in_boilerplate++; continue; }
+          K.counts.verdicts_kind[kind]++;
+          K.counts.findings++;
+          sec.findings.push({ norm_chunk_id: norm.id, norm_document_id: norm.document_id, norm_title: norm.title,
+                              kind: kind, confidence: conf, quote_from_span: qf, quote_to_span: qt,
+                              quote_from: e.quote_from, quote_to: e.quote_to });
+        }
+        if (sec.findings.length > 0) { K.sections.push(sec); }
+      }
+
+      // writeCheckReport writes the findings as a document under report_root, one
+      // section per passage with findings, each finding with the norm it was
+      // compared with and both quotes. Store text is put on one line and kept out of
+      // heading syntax, so a quote can never add a section to the report.
+      function writeCheckReport(st, doc) {
+        var K = st.l5;
+        var day = new Date(Date.now()).toISOString().slice(0, 10);
+        var lines = ["# Check against: " + mdLine(doc.title || doc.id), "",
+          "> Not a legal opinion. These findings were made by a model and checked only for their quotes:",
+          "> each quotes a passage of the document and the norm it was compared with. A person decides what they mean.",
+          "", "Compared with: " + st.opts.check_against.join(", ") + ". Date: " + day + ".", ""];
+        if (K.sections.length === 0) { lines.push("No findings.", ""); }
+        for (var i = 0; i < K.sections.length; i++) {
+          var sec = K.sections[i];
+          lines.push("## " + mdLine(sec.title || sec.chunk_id), "");
+          for (var j = 0; j < sec.findings.length; j++) {
+            var f = sec.findings[j];
+            lines.push("- **" + f.kind + "** — " + mdLine(documentTitle(st, f.norm_document_id)) + " › " +
+                       mdLine(f.norm_title || f.norm_chunk_id) + " (confidence " + f.confidence + ")");
+            lines.push("  - Passage: «" + mdLine(f.quote_from) + "»");
+            lines.push("  - Norm: «" + mdLine(f.quote_to) + "»");
+          }
+          lines.push("");
+        }
+        var base = st.opts.report_root + "/" + (pathSegment(doc.title) || doc.id) + "-" + day;
+        var path = base;
+        for (var n = 2; n <= 20; n++) {
+          var held = documentAtPath(st, path);
+          if (held === "") { break; }
+          if (held === null) { K.report = { status: "skipped", reason: "the report path could not be read" }; return; }
+          path = base + "-" + n;
+        }
+        var w = write(st, "import_md", { op: "import_md", markdown: lines.join("\n"), path: path });
+        if (w.dry) { K.report = { status: "would_write" }; return; }
+        if (!w.ok) { K.report = { status: "refused" }; return; }
+        K.report = { status: "written", document_id: isID(w.result.document_id) ? w.result.document_id : "" };
+      }
+
+      // mdLine puts store text on one line and keeps it from reading as Markdown
+      // structure (a heading, a list item, a quote block) where it is inserted.
+      function mdLine(s) {
+        return String(s || "").replace(/[\r\n\t]+/g, " ").replace(/^[\s#>*+-]+/, "").replace(/[<>]/g, " ").trim();
+      }
+
+      // documentTitle reads a document's title once per pass.
+      function documentTitle(st, docID) {
+        if (!st.docTitles) { st.docTitles = {}; }
+        if (hasOwn(st.docTitles, docID)) { return st.docTitles[docID]; }
+        var t = docID;
+        try {
+          var d = call(st, { op: "get_document", id: docID });
+          if (d && typeof d.title === "string" && d.title !== "") { t = d.title; }
+        } catch (e) {
+          if (isStop(e)) { throw e; }
+        }
+        st.docTitles[docID] = t;
+        return t;
+      }
+
+      function checkReport(st) {
+        var K = st.l5;
+        if (!K) { return { status: "not_reached" }; }
+        var findings = [];
+        for (var i = 0; i < K.sections.length; i++) {
+          for (var j = 0; j < K.sections[i].findings.length; j++) {
+            var f = K.sections[i].findings[j];
+            var r = { chunk_id: K.sections[i].chunk_id, norm_chunk_id: f.norm_chunk_id, norm_document_id: f.norm_document_id,
+                      kind: f.kind, confidence: f.confidence, quote_from_span: f.quote_from_span, quote_to_span: f.quote_to_span };
+            if (st.opts.include_quotes) { r.quote_from = f.quote_from; r.quote_to = f.quote_to; }
+            findings.push(r);
+          }
+        }
+        return { status: "run", counts: K.counts, budget_stopped: K.budget_stopped, report_document: K.report,
+                 span_unit: "utf16", findings: findings };
+      }
+
       // dataText bounds a text for the prompt and breaks any line that would read as
       // one of this prompt's own delimiters.
       function dataText(s, max) {
@@ -1877,13 +2203,13 @@ agents:
           successor_copies_expired: 0, rename_refused: 0, all_stale_already_proposed: 0,
           rejudged_same: 0, rejudged_different: 0, rejudged_none: 0, rejudge_unchanged: 0,
           rejudge_kind_unknown: 0, rejudge_failed: 0, rejudge_budget: 0,
-          merge_touched: 0, merge_repointed: 0, merge_refused: 0,
+          merge_touched: 0, merge_repointed: 0, merge_refused: 0, skipped_flagged: 0,
           checks: { endpoints: 0, kind: 0, validity: 0, evidence: 0, redundancy: 0, semantics: 0, passed: 0 },
           actions: {}
         }));
         L.ran++;
         var C = L.counts;
-        var rows = selectTouched(st, L, doc.id);
+        var rows = doc ? selectTouched(st, L, doc.id) : sweepSelect(st, L);
         var todo = [], autos = [];
         for (var i = 0; i < rows.length; i++) {
           var row = rows[i];
@@ -1897,6 +2223,9 @@ agents:
           if (!isAuto && k !== null && k.source === "reserved") { C.skipped_reserved_kind++; continue; }
           var s = edgeOf(st, row.id);
           if (s === null) { C.unreadable++; continue; }
+          // A sweep passes over a statement already flagged for a person: it stays as
+          // it is until they rule, and checking it again would only flag it again.
+          if (!doc && isPlainObject(s.attributes) && s.attributes.needs_review === true) { C.skipped_flagged++; continue; }
           if (isAuto || s.auto === true) { autos.push(s); } else { todo.push(s); }
         }
         loadMeta(st, statementChunkIDs(todo.concat(autos)));
@@ -1916,7 +2245,7 @@ agents:
           var rev = isPlainObject(todo[c].attributes) ? todo[c].attributes.revision_of : "";
           if (isID(rev)) { (st.copiesOf[rev] = st.copiesOf[rev] || []).push(todo[c]); }
         }
-        if (st.opts.merged_into) { repointMerged(st, L, doc, todo); }
+        if (st.opts.merged_into && doc) { repointMerged(st, L, doc, todo); }
         var passed = [];
         for (var j = 0; j < todo.length; j++) {
           if (st.settledNow[todo[j].id] === true) { continue; }
@@ -1927,6 +2256,96 @@ agents:
           C.checks.passed++;
           if (rejudge(st, L, survivors[n])) { continue; }
           act(st, L, survivors[n], "verify", {});
+        }
+      }
+
+      // sweepPass is the maintenance sweep over a Path subtree: the
+      // statements with an end under it, least recently verified first, within
+      // max_statements. What it verifies moves to the back of the order, so repeated
+      // sweeps — on demand or on the operator's schedule — work through the subtree
+      // without a cursor to carry. Then the purge, reported always and done only
+      // with purge: true.
+      function sweepPass(st) {
+        layerMaintain(st, null);
+        sweepPurge(st, st.layers.L6);
+      }
+
+      // sweepSelect lists the subtree's live statements, asserted ones first (they
+      // are what readers follow), each status least recently verified first.
+      function sweepSelect(st, L) {
+        var out = [], seen = {};
+        L.sweep = { path: st.opts.path, exhausted: true };
+        var statuses = ["asserted", "proposed"];
+        var pages = Math.ceil(st.opts.max_statements / CONFIG.statements_page) + 2;
+        for (var si = 0; si < statuses.length; si++) {
+          var after = "";
+          for (var p = 0; p < pages; p++) {
+            var args = { op: "list_statements", status: statuses[si], under_path: st.opts.path, order: "verified",
+                         limit: CONFIG.statements_page };
+            if (after !== "") { args.after = after; }
+            var r = call(st, args);
+            var list = (r && isArray(r.statements)) ? r.statements : [];
+            for (var i = 0; i < list.length; i++) {
+              var row = list[i];
+              if (!isPlainObject(row) || !isID(row.id) || seen[row.id] === true) { continue; }
+              if (row.expired_at !== undefined && row.expired_at !== null) { continue; }
+              seen[row.id] = true;
+              if (out.length >= st.opts.max_statements) {
+                L.counts.statements_over_cap++;
+                L.sweep.exhausted = false;
+                continue;
+              }
+              out.push(row);
+            }
+            var next = r ? r.next_cursor : "";
+            if (list.length === 0 || typeof next !== "string" || next === "" || next === after) { break; }
+            if (out.length >= st.opts.max_statements) { L.sweep.exhausted = false; break; }
+            after = next;
+          }
+        }
+        return out;
+      }
+
+      // sweepPurge finds the retired statements under the subtree that a purge may
+      // delete — expired, made by code (never a person's, never one an operator
+      // ruled on), retired longer ago than purge_after_days — and deletes them only
+      // when the run says purge: true. A rejected statement is never purged: it is
+      // the operator's ruling that keeps the linker from proposing it again.
+      // Statements the runtime writes for itself are the runtime's to clean up.
+      function sweepPurge(st, L) {
+        var P = { enabled: st.opts.purge === true, after_days: st.opts.purge_after_days,
+                  candidates: 0, purged: 0, kept_person: 0, over_cap: 0 };
+        L.purge = P;
+        var cutoff = Date.now() * 1e6 - st.opts.purge_after_days * 864e11;
+        var statuses = ["proposed", "asserted"], seen = {};
+        var pages = Math.ceil(st.opts.max_statements / CONFIG.statements_page) + 2;
+        for (var si = 0; si < statuses.length; si++) {
+          var after = "";
+          for (var p = 0; p < pages; p++) {
+            var args = { op: "list_statements", status: statuses[si], under_path: st.opts.path, include_retired: true,
+                         limit: CONFIG.statements_page };
+            if (after !== "") { args.after = after; }
+            var r = call(st, args);
+            var list = (r && isArray(r.statements)) ? r.statements : [];
+            for (var i = 0; i < list.length; i++) {
+              var row = list[i];
+              if (!isPlainObject(row) || !isID(row.id) || seen[row.id] === true) { continue; }
+              seen[row.id] = true;
+              if (typeof row.expired_at !== "number" || row.expired_at <= 0 || row.expired_at >= cutoff) { continue; }
+              if (row.auto === true || RUNTIME_METHODS[row.method] === true) { continue; }
+              if (P.candidates >= st.opts.max_statements) { P.over_cap++; continue; }
+              var s = edgeOf(st, row.id);
+              if (s === null) { continue; }
+              if (!mayRetire(s)) { P.kept_person++; continue; }
+              P.candidates++;
+              if (!P.enabled) { continue; }
+              var w = write(st, "unlink_chunks", { op: "unlink_chunks", id: row.id });
+              if (w.ok && !w.dry) { P.purged++; }
+            }
+            var next = r ? r.next_cursor : "";
+            if (list.length === 0 || typeof next !== "string" || next === "" || next === after) { break; }
+            after = next;
+          }
         }
       }
 
@@ -2680,11 +3099,15 @@ agents:
           var name = LAYER_ORDER[i];
           if (st.opts.layers[name] !== true) { continue; }
           if (name === "L4") { out.L4 = relateReport(st); continue; }
+          if (name === "L5") { out.L5 = checkReport(st); continue; }
           var L = st.layers[name];
           if (!L) { out[name] = { status: "not_reached" }; continue; }
           var r = { status: L.ran > 0 ? "run" : "skipped", counts: L.counts };
           if (L.reason !== "") { r.reason = L.reason; }
           if (name === "L1") { r.collisions = L.collisions; r.collisions_truncated = L.collisions_truncated; r.truncated = L.truncated; }
+          if (name === "L0" && L.filing) { r.filing = L.filing; }
+          if (name === "L6" && L.sweep) { r.sweep = L.sweep; }
+          if (name === "L6" && L.purge) { r.purge = L.purge; }
           out[name] = r;
         }
         return out;
