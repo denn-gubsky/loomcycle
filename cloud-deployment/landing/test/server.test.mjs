@@ -35,6 +35,9 @@ function fakeRuntime() {
     port: 0, recover: true, log: [], codes: [], tenants: new Map(), logins: new Map(),
     // inject: (req) => {status, body} | undefined — a one-off upstream answer.
     inject: null, linkOrigin: null, delayMs: 0,
+    // version is what the unauthenticated GET /healthz reports (null = the
+    // route answers 500); healthzHits counts those reads, kept out of `log`.
+    version: "1.130.0", healthzHits: 0,
   };
   const T = (id) => {
     if (!f.tenants.has(id)) f.tenants.set(id, { booted: false, users: new Map(), ids: new Map(), invites: new Map() });
@@ -88,6 +91,12 @@ function fakeRuntime() {
       const u = new URL(req.url, "http://x");
       const segs = u.pathname.split("/").slice(1).map(decodeURIComponent);
       let body = null; try { body = raw ? JSON.parse(raw) : null; } catch { body = "<invalid>"; }
+      if (u.pathname === "/healthz" && req.method === "GET") {
+        f.healthzHits++;
+        if (req.headers.authorization) return err(res, 400, "healthz_needs_no_bearer");
+        if (f.version === null) return err(res, 500, "internal");
+        return send(res, 200, { ok: true, version: f.version });
+      }
       const rec = { method: req.method, rawPath: req.url, path: u.pathname, segs, query: Object.fromEntries(u.searchParams), body, auth: req.headers.authorization || "" };
       f.log.push(rec);
       if (u.pathname === "/v1/_operatortokendef" && req.method === "POST") {
@@ -210,8 +219,23 @@ async function startLanding(env) {
   throw new Error("landing did not come up:\n" + logs);
 }
 
+// bootExit starts a landing that is expected to refuse to boot, and returns its
+// exit code and output.
+async function bootExit(env) {
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: LANDING_DIR, env: { PATH: process.env.PATH, PORT: String(await freePort()), ...env }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  let logs = "";
+  child.stdout.on("data", (d) => (logs += d)); child.stderr.on("data", (d) => (logs += d));
+  const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
+  const code = await new Promise((r) => child.on("exit", (c) => r(c)));
+  clearTimeout(timer);
+  return { code, logs };
+}
+
+const SHARED = "loomcycle-dev";
 const fake = fakeRuntime();
-let on, off, strict;
+let on, off, strict, shared;
 let ipSeq = 0;
 // call makes one request as `email` (a fresh source address each time unless
 // given), same-origin and JSON by default.
@@ -242,9 +266,13 @@ before(async () => {
   // request can produce an identity.
   strict = await startLanding({ ...common, MINT_DEV_ALLOW_UNVERIFIED: "", CF_ACCESS_TEAM_DOMAIN: "team.invalid", CF_ACCESS_AUD: "aud",
     LOOMCYCLE_AUTH_MANAGE_TOKEN: MANAGE, APP_URL: `http://127.0.0.1:${fake.port}` });
+  // Shared-tenant mode, booted WITHOUT the admin token: it never mints.
+  const { LOOMCYCLE_ADMIN_TOKEN: _admin, ...noAdmin } = common;
+  shared = await startLanding({ ...noAdmin, LANDING_TENANT: SHARED, LOOMCYCLE_AUTH_MANAGE_TOKEN: MANAGE, AUTH_GATE: GATE,
+    APP_URL: `http://127.0.0.1:${fake.port}`, SIGNUP_RETURN_TO: RETURN_TO });
 });
 after(() => {
-  for (const i of [on, off, strict]) i?.child.kill("SIGKILL");
+  for (const i of [on, off, strict, shared]) i?.child.kill("SIGKILL");
   fake.server.close();
 });
 
@@ -824,12 +852,282 @@ describe("upstream failures", () => {
   });
 });
 
+// ───────────────────────────── shared-tenant mode ────────────────────────────
+describe("shared-tenant mode (LANDING_TENANT)", () => {
+  const sharedInvites = () => [...fake.T(SHARED).invites.values()];
+
+  test("boots without LOOMCYCLE_ADMIN_TOKEN; per-person mode still refuses to", async () => {
+    assert.ok((await fetch(shared.base + "/_up")).ok);
+    const r = await bootExit({ LOOMCYCLE_URL: `http://127.0.0.1:${fake.port}`, MINT_DEV_ALLOW_UNVERIFIED: "1" });
+    assert.notEqual(r.code, 0);
+    assert.match(r.logs, /LOOMCYCLE_ADMIN_TOKEN is required/);
+  });
+  test("a LANDING_TENANT that is not a tenant id refuses to boot", async () => {
+    for (const bad of ["../x", "a b", "-x", "t/evil"]) {
+      const r = await bootExit({ LOOMCYCLE_URL: `http://127.0.0.1:${fake.port}`, MINT_DEV_ALLOW_UNVERIFIED: "1", LANDING_TENANT: bad });
+      assert.notEqual(r.code, 0, bad);
+      assert.match(r.logs, /LANDING_TENANT must be/);
+    }
+  });
+  test("whoami reports mode shared and the shared tenant, never a derived t_ tenant or subject", async () => {
+    const r = await call(shared, "GET", "/api/whoami", { email: newEmail() });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.mode, "shared");
+    assert.equal(r.json.tenant, SHARED);
+    assert.equal(r.json.auth_gate, true);
+    assert.equal(r.json.app, `http://127.0.0.1:${fake.port}/ui/login`);
+    assert.equal("subject" in r.json, false);
+    assert.doesNotMatch(r.text, /"t_/);
+    assert.equal((await call(on, "GET", "/api/whoami", { email: newEmail() })).json.mode, "owner");
+  });
+  test("signup creates a floor invite into LANDING_TENANT — no subject, access_mode or groups — and redirects to it", async () => {
+    const email = "Shared-" + rnd(4) + "@Example.com", login = email.toLowerCase();
+    const m = mark();
+    // Every field a client could steer with is ignored, the tenant above all.
+    const r = await call(shared, "POST", "/api/signup?tenant=t_evil", { email,
+      body: { tenant: "t_evil", subject: "root", access_mode: "tenant", groups: ["admins"], login: "x@example.com", return_to: "https://evil.test/" } });
+    assert.equal(r.status, 200, r.text);
+    assert.ok(r.json.redirect.startsWith(`http://127.0.0.1:${fake.port}/ui/invite#lci_`));
+    const writes = mutations(m);
+    assert.equal(writes.length, 1, "one write: the invite (no user is created)");
+    assert.equal(writes[0].path, `/v1/_authgate/${GATE}/invites`);
+    assert.deepEqual(writes[0].body, { tenant: SHARED, login, email: login, return_to: RETURN_TO });
+    for (const x of since(m)) {
+      assert.equal(x.auth, `Bearer ${MANAGE}`, "only the manage token goes upstream");
+      assert.equal(x.query.tenant ?? x.body?.tenant, SHARED, `${x.method} ${x.path} names the shared tenant`);
+    }
+    assert.equal(fake.T("t_evil").invites.size, 0);
+    assert.equal(fake.T(tenantOf(email)).invites.size, 0, "no per-person tenant is touched");
+    fake.redeem(r.json.redirect);
+  });
+  test("a visitor who already redeemed gets 409 already_signed_up with the app link", async () => {
+    const email = newEmail();
+    fake.redeem((await call(shared, "POST", "/api/signup", { email, body: {} })).json.redirect);
+    const invites = fake.T(SHARED).invites.size;
+    const r = await call(shared, "POST", "/api/signup", { email: email.toUpperCase(), body: {} });
+    assert.equal(r.status, 409, r.text);
+    assert.deepEqual(r.json, { error: "already_signed_up", signed_up: true, app: `http://127.0.0.1:${fake.port}/ui/login` });
+    assert.equal(fake.T(SHARED).invites.size, invites, "loomcycle refused the invite (login_taken); none was made");
+  });
+  test("a login taken in another tenant reads the same: already signed up", async () => {
+    const email = newEmail();
+    fake.logins.set(email, { tenant: "t_other", subject: "cloud:x" });
+    const r = await call(shared, "POST", "/api/signup", { email, body: {} });
+    assert.equal(r.status, 409);
+    assert.equal(r.json.error, "already_signed_up");
+  });
+  test("a stale invite of the website's is revoked and replaced; an operator's invite for the same login is kept", async () => {
+    const email = newEmail();
+    const operators = fake.addInvite(SHARED, { login: email, email, return_to: "" });
+    const first = await call(shared, "POST", "/api/signup", { email, body: {} });
+    const second = await call(shared, "POST", "/api/signup", { email, body: {} });
+    assert.equal(second.status, 200, second.text);
+    assert.notEqual(second.json.redirect, first.json.redirect);
+    assert.throws(() => fake.redeem(first.json.redirect), /no live invite/);
+    assert.equal(fake.T(SHARED).invites.get(operators).revoked, undefined, "the operator's invite is not the website's to revoke");
+    const mine = sharedInvites().filter((i) => i.login === email && i.return_to === RETURN_TO);
+    assert.equal(mine.filter((i) => i.revoked).length, 1);
+    assert.equal(mine.filter((i) => !i.revoked).length, 1);
+  });
+  test("another visitor's live invite is never revoked", async () => {
+    const a = newEmail(), b = newEmail();
+    const ra = await call(shared, "POST", "/api/signup", { email: a, body: {} });
+    assert.equal((await call(shared, "POST", "/api/signup", { email: b, body: {} })).status, 200);
+    assert.match(fake.redeem(ra.json.redirect), /^cloud:/);
+  });
+  test("an e-mail that is already a hand-made user's subject is sent to an operator, with no invite", async () => {
+    const email = newEmail();
+    fake.addUser(SHARED, email, "tenant");
+    const m = mark();
+    const r = await call(shared, "POST", "/api/signup", { email: email.toUpperCase(), body: {} });
+    assert.equal(r.status, 409, r.text);
+    assert.equal(r.json.error, "account_exists");
+    assert.match(r.json.message, /operator/);
+    assert.equal(mutations(m).length, 0);
+  });
+  test("the team console and minting answer 404 and reach nothing upstream", async () => {
+    for (const [m, p] of [...ROUTES.filter(([, p]) => p.startsWith("/api/team")), ["POST", "/api/mint"], ["GET", "/api/team?tenant=" + SHARED]]) {
+      const before = mark();
+      const r = await call(shared, m, p, { email: newEmail(), body: m === "POST" ? { name: "x", email: "a@example.com" } : undefined });
+      assert.equal(r.status, 404, `${m} ${p}`);
+      assert.deepEqual(r.json, { error: "not_found" });
+      assert.equal(r.cc, "no-store");
+      assert.equal(since(before).length, 0, `${m} ${p}`);
+    }
+  });
+  // The cap tests each get their own landing and tenant: the limits are in the
+  // landing's memory and the pending count is the tenant's.
+  async function ownShared(tenant, fn, env = {}) {
+    const inst = await startLanding({ LOOMCYCLE_URL: `http://127.0.0.1:${fake.port}`, MINT_DEV_ALLOW_UNVERIFIED: "1", APP_ORIGIN: ORIGIN,
+      LANDING_TENANT: tenant, LOOMCYCLE_AUTH_MANAGE_TOKEN: MANAGE, AUTH_GATE: GATE, APP_URL: `http://127.0.0.1:${fake.port}`, SIGNUP_RETURN_TO: RETURN_TO, ...env });
+    try { await fn(inst); } finally { inst.child.kill("SIGKILL"); }
+  }
+  const websiteInvite = (tenant, login) => fake.addInvite(tenant, { login, email: login, return_to: RETURN_TO });
+
+  test("one identity's re-signups hit its own cap of 3 a day and cost the tenant's budget only once", async () => {
+    await ownShared("shared-visitor-" + rnd(3), async (inst) => {
+      const email = newEmail();
+      // one new invite, then two that replace it
+      for (let i = 0; i < 3; i++) assert.equal((await call(inst, "POST", "/api/signup", { email, body: {} })).status, 200, `signup ${i}`);
+      const m = mark();
+      const capped = await call(inst, "POST", "/api/signup", { email, body: {} });
+      assert.equal(capped.status, 429);
+      assert.deepEqual(capped.json, { error: "rate_limited" });
+      assert.equal(since(m).length, 0);
+      // the replacements gave their tenant slots back: 19 other identities
+      // still fit in the tenant's 20, and the next one does not
+      for (let i = 0; i < 19; i++) {
+        const r = await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} });
+        assert.equal(r.status, 200, `identity ${i}: ${r.text}`);
+      }
+      assert.deepEqual((await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} })).json, { error: "signup_limit" });
+    });
+  });
+  // The runtime must be new enough to hold sign-ups pending: an older one
+  // ignores new_user.status and would admit every sign-up as an active member.
+  test("signup is allowed only from a runtime at or above LANDING_MIN_RUNTIME_VERSION", async () => {
+    const table = [
+      ["1.130.0", true], ["v1.130.0", true], ["1.130.1", true], ["1.130.10", true], ["1.131.0", true], ["2.0.0", true],
+      ["1.130.0+build.7", true], ["1.1000.0", true],
+      ["1.99.0", false], ["1.129.1", false], ["1.129.10", false], ["v1.128.9", false], ["1.130.0-rc.1", false], ["0.999.999", false],
+      ["devel", false], ["unknown", false], ["docker", false], ["", false], ["1.129", false], [7, false], [null, false],
+    ];
+    await ownShared("shared-version-" + rnd(3), async (inst) => {
+      try {
+        for (const [version, allowed] of table) {
+          fake.version = version === null ? undefined : version;
+          const m = mark();
+          const r = await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} });
+          if (allowed) {
+            assert.equal(r.status, 200, `${JSON.stringify(version)}: ${r.text}`);
+          } else {
+            assert.equal(r.status, 503, `${JSON.stringify(version)}: ${r.text}`);
+            assert.deepEqual(r.json, { error: "approval_unavailable" });
+            assert.equal(mutations(m).length, 0, `${JSON.stringify(version)}: nothing written`);
+          }
+        }
+      } finally { fake.version = "1.130.0"; }
+    });
+  });
+  test("a configured minimum is honoured, and a refusal spends no limit and is logged once", async () => {
+    await ownShared("shared-min-" + rnd(3), async (inst) => {
+      const email = newEmail(), ip = "203.0.113.90";
+      // 12 refusals for one visitor from one address: none is a 429, so the
+      // runtime's refusal gave every slot back
+      for (let i = 0; i < 12; i++) {
+        const r = await call(inst, "POST", "/api/signup", { email, ip, body: {} });
+        assert.equal(r.status, 503, r.text);
+      }
+      await new Promise((r) => setTimeout(r, 50));
+      assert.equal(inst.logs().split("\n").filter((l) => l.includes("signup refused: runtime version")).length, 1, inst.logs());
+      assert.match(inst.logs(), /runtime >= 1\.131\.0/);
+      fake.version = "1.131.0";
+      try {
+        assert.equal((await call(inst, "POST", "/api/signup", { email, ip, body: {} })).status, 200);
+      } finally { fake.version = "1.130.0"; }
+    }, { LANDING_MIN_RUNTIME_VERSION: "1.131.0" });
+  });
+  test("an unreachable or failing /healthz refuses signup with nothing written", async () => {
+    fake.version = null;
+    try {
+      const m = mark();
+      const r = await call(shared, "POST", "/api/signup", { email: newEmail(), body: {} });
+      assert.equal(r.status, 502);
+      assert.deepEqual(r.json, { error: "runtime_unreachable" });
+      assert.equal(since(m).length, 0);
+    } finally { fake.version = "1.130.0"; }
+  });
+  test("the version is read before each signup, and at startup", async () => {
+    const before = fake.healthzHits;
+    await ownShared("shared-hits-" + rnd(3), async (inst) => {
+      await new Promise((r) => setTimeout(r, 100));
+      const atBoot = fake.healthzHits - before;
+      assert.ok(atBoot >= 1, "read at startup");
+      await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} });
+      await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} });
+      assert.equal(fake.healthzHits - before - atBoot, 2);
+    });
+  });
+  test("a LANDING_MIN_RUNTIME_VERSION that is not a version refuses to boot", async () => {
+    for (const bad of ["latest", "1.129", "x1.2.3"]) {
+      const r = await bootExit({ LOOMCYCLE_URL: `http://127.0.0.1:${fake.port}`, MINT_DEV_ALLOW_UNVERIFIED: "1",
+        LANDING_TENANT: SHARED, LANDING_MIN_RUNTIME_VERSION: bad });
+      assert.notEqual(r.code, 0, bad);
+      assert.match(r.logs, /LANDING_MIN_RUNTIME_VERSION must be/);
+    }
+  });
+  test("per-person mode never reads the runtime version", async () => {
+    const before = fake.healthzHits;
+    const r = await call(on, "POST", "/api/signup", { email: newEmail(), body: {} });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(fake.healthzHits, before);
+  });
+  test("a capped identity leaves the tenant's budget to a second identity", async () => {
+    await ownShared("shared-second-" + rnd(3), async (inst) => {
+      const email = newEmail();
+      for (let i = 0; i < 4; i++) await call(inst, "POST", "/api/signup", { email, body: {} });
+      assert.equal((await call(inst, "POST", "/api/signup", { email, body: {} })).status, 429);
+      assert.equal((await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} })).status, 200);
+    });
+  });
+  test("the shared tenant's daily invite budget caps signups at 20; refusals do not spend it", async () => {
+    const tenant = "shared-day-" + rnd(3);
+    await ownShared(tenant, async (inst) => {
+      // refusals create nothing, so they cost the tenant's budget nothing
+      for (let i = 0; i < 3; i++) {
+        const email = newEmail();
+        fake.addUser(tenant, email, "isolated");
+        assert.equal((await call(inst, "POST", "/api/signup", { email, body: {} })).json.error, "account_exists");
+      }
+      for (let i = 0; i < 20; i++) {
+        const r = await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} });
+        assert.equal(r.status, 200, `signup ${i}: ${r.text}`);
+      }
+      const m = mark();
+      const r = await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} });
+      assert.equal(r.status, 429);
+      assert.deepEqual(r.json, { error: "signup_limit" });
+      assert.equal(since(m).length, 0, "refused before reaching the runtime");
+    });
+  });
+  test("the shared tenant's pending cap: 50 live website invites refuse a new visitor, not the one replacing their own", async () => {
+    const tenant = "shared-pending-" + rnd(3);
+    await ownShared(tenant, async (inst) => {
+      for (let i = 0; i < 49; i++) websiteInvite(tenant, `w${i}-${rnd(3)}@example.com`);
+      // an operator's invites (another return_to) do not count
+      for (let i = 0; i < 5; i++) fake.addInvite(tenant, { login: `op${i}@example.com`, return_to: "" });
+      const a = newEmail();
+      assert.equal((await call(inst, "POST", "/api/signup", { email: a, body: {} })).status, 200); // the 50th
+      const m = mark();
+      const b = await call(inst, "POST", "/api/signup", { email: newEmail(), body: {} });
+      assert.equal(b.status, 429);
+      assert.deepEqual(b.json, { error: "signup_limit" });
+      assert.equal(mutations(m).length, 0);
+      // a re-signup replaces its own invite, so it is not over the cap
+      assert.equal((await call(inst, "POST", "/api/signup", { email: a, body: {} })).status, 200);
+    });
+  });
+  test("concurrent signups cannot overshoot the shared tenant's pending cap", async () => {
+    const tenant = "shared-race-" + rnd(3);
+    await ownShared(tenant, async (inst) => {
+      for (let i = 0; i < 48; i++) websiteInvite(tenant, `r${i}-${rnd(3)}@example.com`);
+      fake.delayMs = 15;
+      try {
+        const rs = await Promise.all(Array.from({ length: 5 }, () => call(inst, "POST", "/api/signup", { email: newEmail(), body: {} })));
+        assert.equal(rs.filter((r) => r.status === 200).length, 2, rs.map((r) => r.status).join(","));
+        assert.ok(rs.filter((r) => r.status !== 200).every((r) => r.json.error === "signup_limit"));
+      } finally { fake.delayMs = 0; }
+      assert.equal([...fake.T(tenant).invites.values()].filter((i) => !i.revoked && !i.redeemed).length, 50);
+    });
+  });
+});
+
 // Runs last (node:test runs top-level suites in order): everything above has
 // issued links and errors, so the landing's whole log is the evidence.
 describe("logging", () => {
   test("the landing's logs carry no invite or reset code, no link and no token", async () => {
     await new Promise((r) => setTimeout(r, 100));
-    const logs = on.logs() + off.logs() + strict.logs();
+    const logs = on.logs() + off.logs() + strict.logs() + shared.logs();
     assert.ok(logs.includes("account upstream"), "the suite produced account log lines to inspect");
     assert.ok(fake.codes.length > 20);
     for (const code of fake.codes) assert.equal(logs.includes(code), false, "a link code reached the log");

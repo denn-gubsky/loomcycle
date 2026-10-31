@@ -1014,7 +1014,21 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
           <p class="fineprint acct-status" role="status" aria-live="polite" data-acct-status></p>
         </div>
 
-        <div>
+        <!-- shared tenant: shown when /api/whoami reports mode "shared". Everyone joins
+             one tenant, so there is no team console and no token vault here; an
+             operator of that tenant approves each new account in the app. -->
+        <div class="acct" data-shared-only hidden>
+          <p>loomcycle.cloud is one shared workspace, <code class="inline-code" data-shared-tenant>loomcycle-dev</code>. Requesting access takes you to <code class="inline-code">app.loomcycle.cloud</code>, where you choose a password — this site never sees it. An operator of the workspace then approves new accounts, and you can sign in once yours is approved.</p>
+          <div class="sheet-actions">
+            <button type="button" class="btn btn-primary" data-request-access>Request access</button>
+            <a class="btn btn-ghost" data-open-app-shared href="https://app.loomcycle.cloud/ui/login">Open app →</a>
+            <a class="btn btn-ghost" href="https://board.loomcycle.cloud" target="_blank" rel="noopener">Open loomboard →</a>
+          </div>
+          <p class="fineprint">Already signed up? Open the app and sign in with your e-mail and password.</p>
+          <p class="fineprint acct-status" role="status" aria-live="polite" data-shared-status></p>
+        </div>
+
+        <div data-vault-section>
           <span class="kicker" data-vault-kicker>Your token vault — this browser only</span>
           <p class="fineprint" data-gate-only hidden style="margin-bottom:var(--half)">Read-only while sign-in moves to passwords: tokens already here still sign in, and new API tokens are made in the app (<code class="inline-code">/ui</code> → Tokens).</p>
           <div class="vault">
@@ -1655,9 +1669,9 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
       r.toggleAttribute('data-done', Number(r.dataset.rail) <= step);
     });
     tag.textContent = 'Step 0' + Math.min(step, 3);
-    title.textContent = (gateOn() && gateTitles[step]) || titles[step];
+    title.textContent = (sharedOn() && sharedTitles[step]) || (gateOn() && gateTitles[step]) || titles[step];
     if (step !== 4) clearLink();
-    if (step === 2) render();
+    if (step === 2 && !sharedOn()) render();
   }
   async function open() {
     lastFocus = document.activeElement;
@@ -1665,7 +1679,7 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
     requestAnimationFrame(() => sheet.setAttribute('data-open', ''));
     const signed = await checkAuth();
     go(signed ? 2 : 1);
-    focusFirst(signed ? ['[data-signup]', '[data-open-app]', '[data-vault-toggle]'] : ['[data-signin]']);
+    focusFirst(signed ? ['[data-request-access]', '[data-signup]', '[data-open-app]', '[data-vault-toggle]'] : ['[data-signin]']);
   }
   function close() {
     sheet.removeAttribute('data-open');
@@ -1858,6 +1872,12 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
      is exactly the token-vault flow above. */
   const gateTitles = { 2: 'Your workspace', 4: 'Your team' };
   function gateOn() { return !!(identity && identity.auth_gate === true); }
+  /* Shared-tenant mode (/api/whoami mode "shared"): everyone joins one tenant.
+     The page offers only "Request access" and "Open app": no team console (a
+     visitor must not manage a tenant everyone shares) and no token vault. */
+  const sharedTitles = { 2: 'Request access' };
+  function sharedOn() { return !!(identity && identity.mode === 'shared'); }
+  const sharedStatus = sheet.querySelector('[data-shared-status]');
   const acctStatus = sheet.querySelector('[data-acct-status]');
   const teamStatus = sheet.querySelector('[data-team-status]');
   function say(el, msg, tone) {
@@ -1866,13 +1886,22 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
   }
 
   function applyMode() {
-    const on = gateOn();
-    sheet.querySelectorAll('[data-legacy-only]').forEach((n) => { n.hidden = on; });
+    const shared = sharedOn();
+    const on = gateOn() && !shared;
+    sheet.querySelectorAll('[data-legacy-only]').forEach((n) => { n.hidden = on || shared; });
     sheet.querySelectorAll('[data-gate-only]').forEach((n) => { n.hidden = !on; });
-    const rails = { 1: 'Identify', 2: on ? 'Workspace' : 'Tenant & token', 3: on ? 'Team' : 'Hand off' };
+    sheet.querySelectorAll('[data-shared-only]').forEach((n) => { n.hidden = !shared; });
+    sheet.querySelector('[data-vault-section]').hidden = shared;
+    const rails = shared ? { 1: 'Identify', 2: 'Request access', 3: 'Approval' }
+      : { 1: 'Identify', 2: on ? 'Workspace' : 'Tenant & token', 3: on ? 'Team' : 'Hand off' };
     sheet.querySelectorAll('[data-rail]').forEach((r) => { r.textContent = rails[r.dataset.rail]; });
     sheet.querySelector('[data-vault-kicker]').textContent = on
       ? 'Your token vault — read-only' : 'Your token vault — this browser only';
+    if (shared) {
+      sheet.querySelector('[data-shared-tenant]').textContent = identity.tenant || 'loomcycle-dev';
+      sheet.querySelector('[data-open-app-shared]').href = identity.app || (APP + '/ui/login');
+      return;
+    }
     if (!on) return;
     const app = identity.app || (APP + '/ui/login');
     sheet.querySelector('[data-open-app]').href = app;
@@ -1913,6 +1942,8 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
     switch (code) {
       case 'rate_limited': return 'Too many attempts — wait a while and try again.';
       case 'invite_limit': return 'Your invite limit for today is used up. Try again tomorrow.';
+      case 'signup_limit': return 'Too many requests for access right now. Try again later.';
+      case 'approval_unavailable': return 'Sign-ups are paused until the runtime is updated. Try again later.';
       case 'too_many_pending': return 'Too many invites are still pending. Revoke some first.';
       case 'target_beyond_floor': return ctx === 'self'
         ? 'Password recovery for owners is turned off on this deployment. Change your password in the app (/ui/account).'
@@ -1949,6 +1980,26 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
       return;
     }
     if (res.status !== 401) say(acctStatus, explain(res), 'error');
+  });
+
+  /* — request access (shared mode): the same redirect as "Create your workspace" — */
+  sheet.querySelector('[data-request-access]').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    say(sharedStatus, 'Preparing your invite…');
+    const res = await api('POST', '/api/signup');
+    if (res.status === 200 && res.json.redirect) {
+      say(sharedStatus, 'Taking you to the app to choose your password…');
+      location.replace(res.json.redirect);
+      return;
+    }
+    btn.disabled = false;
+    if (res.status === 409 && res.json.signed_up) {
+      say(sharedStatus, 'You have already signed up — open the app to sign in. New accounts can sign in once an operator approves them.');
+      focusFirst(['[data-open-app-shared]']);
+      return;
+    }
+    if (res.status !== 401) say(sharedStatus, explain(res), 'error');
   });
 
   /* — the team view — */
@@ -2140,7 +2191,10 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
   const params = new URLSearchParams(location.search);
   if (params.get('welcome') === '1') {
     history.replaceState(null, '', location.pathname);
-    open().then(() => { if (gateOn()) say(acctStatus, 'Your workspace is ready. Welcome to loomcycle.cloud.'); });
+    open().then(() => {
+      if (sharedOn()) say(sharedStatus, 'Your password is set. An operator approves new accounts — sign in at the app once yours is approved.');
+      else if (gateOn()) say(acctStatus, 'Your workspace is ready. Welcome to loomcycle.cloud.');
+    });
   }
 
   /* returning from the Cloudflare Access login → open the console straight to the

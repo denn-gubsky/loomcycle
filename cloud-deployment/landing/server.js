@@ -27,6 +27,17 @@
 //    always derived from the verified Access identity, never the request. See
 //    ../AUTH-INTEGRATION.md. Without the token those routes answer 503 and the
 //    site keeps its token-vault flow.
+//
+// Shared-tenant mode (LANDING_TENANT set, 2026-10-31): everyone joins ONE
+// tenant, named by the operator in LANDING_TENANT and never by a request.
+// /api/signup issues a plain new-user invite into it (the gate's floor decides
+// access, and a tenant operator approves the new user in the app), while
+// /api/team/* and /api/mint answer 404: in a tenant everyone shares, a website
+// team console would let any visitor manage every member, and minting needs the
+// admin token this mode does not hold. Signup also refuses unless the runtime's
+// /healthz version is at least LANDING_MIN_RUNTIME_VERSION, the first release
+// that holds a sign-up pending (runtimeHoldsSignups). Without LANDING_TENANT
+// the landing keeps the per-person tenants described above.
 
 import express from "express";
 import { createRemoteJWKSet, jwtVerify } from "jose";
@@ -50,10 +61,42 @@ const MANAGE_TOKEN = process.env.LOOMCYCLE_AUTH_MANAGE_TOKEN || "";
 const AUTH_GATE = process.env.AUTH_GATE || "cloud";
 const APP_URL = (process.env.APP_URL || "https://app.loomcycle.cloud").replace(/\/+$/, "");
 const SIGNUP_RETURN_TO = process.env.SIGNUP_RETURN_TO || "https://loomcycle.cloud/?welcome=1";
+// Shared-tenant mode: non-empty = every visitor signs up into this one tenant.
+const SHARED_TENANT = (process.env.LANDING_TENANT || "").trim();
+const SHARED = SHARED_TENANT !== "";
+// The oldest runtime that holds a website sign-up pending until an operator
+// approves it (the gate's new_user.status: pending). See runtimeHoldsSignups.
+const MIN_RUNTIME_VERSION = (process.env.LANDING_MIN_RUNTIME_VERSION || "1.130.0").trim();
 
-// Fail fast on misconfiguration.
-if (!ADMIN_TOKEN) {
-  console.error("FATAL: LOOMCYCLE_ADMIN_TOKEN is required");
+// parseVersion reads a release version as /healthz reports it ("1.129.1",
+// "v1.129.1", "1.130.0-rc.1"); anything else ("devel", "unknown", "") is null.
+function parseVersion(s) {
+  const m = /^v?(\d{1,9})\.(\d{1,9})\.(\d{1,9})(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.exec(String(s || "").trim());
+  return m ? { core: [+m[1], +m[2], +m[3]], pre: !!m[4] } : null;
+}
+// versionAtLeast compares like semver: numerically per part, and a prerelease
+// sorts below its release. An unparseable version is never enough.
+function versionAtLeast(v, min) {
+  const a = parseVersion(v), b = parseVersion(min);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) if (a.core[i] !== b.core[i]) return a.core[i] > b.core[i];
+  return !a.pre || b.pre;
+}
+
+// Fail fast on misconfiguration. The admin token only mints, and shared mode
+// never mints, so only per-person mode needs it.
+if (!SHARED && !ADMIN_TOKEN) {
+  console.error("FATAL: LOOMCYCLE_ADMIN_TOKEN is required (unless LANDING_TENANT selects shared-tenant mode)");
+  process.exit(1);
+}
+// The tenant goes into every upstream request, so it gets loomcycle's own
+// tenant id rule.
+if (SHARED && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(SHARED_TENANT)) {
+  console.error("FATAL: LANDING_TENANT must be a loomcycle tenant id (letters, digits, - and _)");
+  process.exit(1);
+}
+if (SHARED && !parseVersion(MIN_RUNTIME_VERSION)) {
+  console.error("FATAL: LANDING_MIN_RUNTIME_VERSION must be a release version such as 1.130.0");
   process.exit(1);
 }
 // The gate name goes into every upstream path, so it gets loomcycle's own gate
@@ -117,9 +160,13 @@ function cookie(req, name) {
 
 // Deterministic (tenant, subject) from the verified email, so a visitor always
 // lands in — and re-mints into — the same isolated tenant. Hash-based so two
-// different emails can never collide onto one tenant.
+// different emails can never collide onto one tenant. In shared mode the tenant
+// is the operator's LANDING_TENANT; `subject` is then only the verified e-mail
+// the rate limits key on, not a loomcycle subject (the runtime makes one when
+// the invite is redeemed).
 function principalFor(email) {
   const e = email.trim().toLowerCase();
+  if (SHARED) return { tenant: SHARED_TENANT, subject: e };
   return { tenant: TENANT_PREFIX + createHash("sha256").update(e).digest("hex").slice(0, 12), subject: e };
 }
 
@@ -147,7 +194,15 @@ app.get("/api/whoami", async (req, res) => {
   }
   const p = principalFor(id.email);
   if (wantsHTML) return res.redirect("/?signedin=1");
-  const out = { authenticated: true, email: id.email, tenant: p.tenant, subject: p.subject, auth_gate: !!MANAGE_TOKEN };
+  if (SHARED) {
+    // No signed_up here: an auth:manage token cannot find a user by login
+    // without reading every user's identities, so the page offers both
+    // "Request access" and "Open app", and /api/signup answers for itself.
+    const out = { authenticated: true, email: id.email, mode: "shared", tenant: SHARED_TENANT, auth_gate: !!MANAGE_TOKEN };
+    if (MANAGE_TOKEN) out.app = APP_URL + "/ui/login";
+    return res.json(out);
+  }
+  const out = { authenticated: true, email: id.email, mode: "owner", tenant: p.tenant, subject: p.subject, auth_gate: !!MANAGE_TOKEN };
   if (MANAGE_TOKEN) {
     out.app = APP_URL + "/ui/login";
     // null = the runtime could not say; the page then offers both actions and
@@ -162,6 +217,10 @@ app.get("/api/whoami", async (req, res) => {
   }
   res.json(out);
 });
+
+// Shared mode has no website team console and no minting (see the header):
+// both answer the same 404 an unknown route would, before any identity check.
+if (SHARED) app.use(["/api/mint", "/api/team"], (_req, res) => notFound(res));
 
 // POST /api/mint {name} — mint a substrate:tenant token for the authenticated
 // visitor's derived tenant. The admin token + the scope/tenant are enforced HERE;
@@ -343,6 +402,10 @@ const signupLimit = limiter(10, HOUR);          // per source address AND per ve
 const inviteLimit = limiter(20, 24 * HOUR);     // invites issued per tenant per day
 const refusedInviteLimit = limiter(10, 24 * HOUR); // "address can't be invited" answers per verified e-mail per day
 const MAX_PENDING_INVITES = 50;                 // live invites per tenant (counted upstream)
+// Shared mode only: new signups into the one shared tenant per day, and
+// signups per verified e-mail per day (kept well below the tenant's figure).
+const sharedTenantLimit = limiter(20, 24 * HOUR);
+const sharedIdLimit = limiter(3, 24 * HOUR);
 
 // clientSource is the address the per-source signup limit counts. The landing
 // already trusts its proxy (`trust proxy`), and Cloudflare's edge sets
@@ -391,6 +454,35 @@ async function manage(method, path, { query, body } = {}) {
   let json = null;
   try { json = text ? JSON.parse(text) : null; } catch {}
   return { status: r.status, json };
+}
+
+// runtimeHoldsSignups reports whether the runtime is new enough to hold a
+// website sign-up pending: "ok", "unreachable", or "too_old" (below
+// MIN_RUNTIME_VERSION, or a version it cannot read). It matters because an
+// older runtime does not refuse the gate's new_user.status: pending — it
+// ignores it — and with the shared tenant's tenant-reach floor every sign-up
+// would then be an active member nobody approved. So shared-mode signup checks
+// this first and fails closed. A refusal is logged once per version seen, not
+// once per request.
+let lastRefusedVersion = null;
+async function runtimeHoldsSignups() {
+  let version;
+  try {
+    const r = await fetch(RUNTIME_URL + "/healthz", {
+      headers: { Accept: "application/json" }, redirect: "manual", signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    });
+    if (!r.ok) return "unreachable";
+    version = (await r.json())?.version;
+  } catch {
+    return "unreachable";
+  }
+  if (versionAtLeast(version, MIN_RUNTIME_VERSION)) { lastRefusedVersion = null; return "ok"; }
+  const seen = typeof version === "string" ? version.slice(0, 64) : "(none)";
+  if (seen !== lastRefusedVersion) {
+    lastRefusedVersion = seen;
+    logWarn(`signup refused: runtime version ${JSON.stringify(seen)} is below LANDING_MIN_RUNTIME_VERSION ${MIN_RUNTIME_VERSION} or unreadable; it cannot hold sign-ups for approval`);
+  }
+  return "too_old";
 }
 
 // sendUpstreamError answers a failed upstream call with a whitelisted code, or
@@ -481,9 +573,10 @@ async function signupState(p) {
 // the visitor's own: only this owner's verified identity can ask the landing
 // for an invite into this tenant, and its link was shown only in their browser.
 // onWrite is called before each revoke, so a caller can tell that this request
-// already changed state upstream.
-async function revokeLive(tenant, pred, onWrite = () => {}) {
-  for (const inv of await tenantInvites(tenant)) {
+// already changed state upstream. A caller that already read the invite list
+// passes it as `invites`.
+async function revokeLive(tenant, pred, onWrite = () => {}, invites = null) {
+  for (const inv of invites || await tenantInvites(tenant)) {
     if (inv.state !== "live" || !pred(inv) || !INVITE_ID_RE.test(inv.invite_id)) continue;
     onWrite();
     const up = await manage("DELETE", gatePath("invites", inv.invite_id), { query: { tenant } });
@@ -535,11 +628,38 @@ app.post("/api/signup", accountRoute(async (req, res, p) => {
   // or a stale invite already revoked — keeps them spent.
   const relIp = signupLimit.take("ip:" + clientSource(req));
   const relId = relIp && signupLimit.take("id:" + p.subject);
-  if (!relIp || !relId) {
+  // Shared mode: every signup lands in one tenant, whose daily budget all
+  // visitors share. So one visitor first meets a small daily cap of their own,
+  // spent like the hourly slots above — re-signing up cannot drain the shared
+  // budget and lock everyone else out.
+  const relDay = !relId ? null : SHARED ? sharedIdLimit.take(p.subject) : () => {};
+  if (!relIp || !relId || !relDay) {
     if (relIp) relIp();
+    if (relId) relId();
     return res.status(429).json({ error: "rate_limited" });
   }
-  const ctx = { wrote: false };
+  // The tenant's daily budget (its own, apart from the team-invite budget) is
+  // reserved here, before the first await, and given back unless the signup
+  // created an invite that did not just replace the visitor's own: a refusal
+  // creates nothing, and a replacement adds no one to the approval queue.
+  const relTenant = SHARED ? sharedTenantLimit.take(p.tenant) : () => {};
+  if (!relTenant) {
+    relIp(); relId(); relDay();
+    return res.status(429).json({ error: "signup_limit" });
+  }
+  // Shared mode admits nobody unless the runtime will hold them for approval
+  // (runtimeHoldsSignups). Checked after the slots are reserved, so the
+  // limits bound these reads too, and every slot comes back on a refusal:
+  // the visitor did not cause it.
+  if (SHARED) {
+    const held = await runtimeHoldsSignups();
+    if (held !== "ok") {
+      relIp(); relId(); relDay(); relTenant();
+      if (held === "unreachable") return res.status(502).json({ error: "runtime_unreachable" });
+      return res.status(503).json({ error: "approval_unavailable" });
+    }
+  }
+  const ctx = { wrote: false, created: false, replaced: false };
   let spent = true;
   try {
     spent = await withTenantLock(p.tenant, () => signup(res, p, ctx));
@@ -547,7 +667,8 @@ app.post("/api/signup", accountRoute(async (req, res, p) => {
     spent = ctx.wrote || !(e instanceof UpstreamFailure ? runtimeFault(e.up) : true);
     throw e;
   } finally {
-    if (!spent) { relIp(); relId(); }
+    if (!spent) { relIp(); relId(); relDay(); }
+    if (!ctx.created || ctx.replaced) relTenant();
   }
 }));
 
@@ -555,6 +676,7 @@ app.post("/api/signup", accountRoute(async (req, res, p) => {
 // cannot race another). It returns whether the request spends the visitor's
 // rate-limit slots; ctx.wrote records an upstream state change on the way.
 async function signup(res, p, ctx) {
+  if (SHARED) return sharedSignup(res, p, ctx);
   const st = await signupState(p);
   const wrote = () => { ctx.wrote = true; };
   let body;
@@ -587,6 +709,63 @@ async function signup(res, p, ctx) {
       logWarn(`account upstream signup: ${up.status} address unavailable`);
       res.status(409).json({ error: "cannot_sign_up", app: APP_URL + "/ui/login",
         message: "This address can't be used to create a workspace. If it already has an account, sign in at the app." });
+    } else {
+      sendUpstreamError(res, "signup", up);
+    }
+    return ctx.wrote || !runtimeFault(up);
+  }
+  const link = checkedLink(up.json, "/ui/invite#");
+  if (!link) {
+    logWarn("account upstream signup: link outside APP_URL");
+    res.status(502).json({ error: "link_mismatch" });
+    return true; // the invite was created upstream
+  }
+  res.json({ redirect: link.url, expires_at: link.expires_at });
+  return true;
+}
+
+// sharedSignup is signup in shared mode: a new-user invite into the one shared
+// tenant, its login pinned to the verified e-mail. It names no subject, access
+// mode or groups, so the gate's provisioning floor decides what the new user
+// gets, and loomcycle holds a user made by this credential's invite pending
+// until a tenant operator approves it. A login already taken at the gate (in
+// any tenant: logins are unique per gate) is a visitor who signed up before.
+async function sharedSignup(res, p, ctx) {
+  const login = loginOf(p.subject);
+  const wrote = () => { ctx.wrote = true; };
+  // A user whose subject is this e-mail predates the website (the shared
+  // tenant was populated by hand). A fresh invite would make a second,
+  // duplicate account and take the login the operator attaches to the first,
+  // so the visitor is sent to an operator instead. One users read, no matter
+  // how many there are.
+  if ((await tenantUsers(p.tenant)).some((u) => loginOf(u.user_id) === login)) {
+    res.status(409).json({ error: "account_exists", app: APP_URL + "/ui/login",
+      message: "This address already has an account here. Ask an operator to set its password, then sign in at the app." });
+    return true;
+  }
+  // The website's own live invites: return_to tells them apart from an
+  // operator's, which are neither counted nor revoked here.
+  const invites = await tenantInvites(p.tenant);
+  const website = (inv) => inv.state === "live" && !inv.subject && !inv.bootstrap && inv.return_to === SIGNUP_RETURN_TO;
+  const mine = (inv) => website(inv) && loginOf(inv.login || "") === login;
+  // Every visitor's invite waits in the same tenant, so the per-tenant
+  // pending cap applies; the visitor's own stale invite is replaced below and
+  // does not count. Counted and created under the tenant lock (the caller), so
+  // concurrent signups cannot overshoot it.
+  if (invites.filter((inv) => website(inv) && !mine(inv)).length >= MAX_PENDING_INVITES) {
+    res.status(429).json({ error: "signup_limit" });
+    return true;
+  }
+  // A live invite this website issued earlier for the same e-mail (its link
+  // was only ever in the visitor's address bar) is replaced.
+  await revokeLive(p.tenant, mine, () => { wrote(); ctx.replaced = true; }, invites);
+  const up = await manage("POST", gatePath("invites"), {
+    body: { tenant: p.tenant, login, email: login, return_to: SIGNUP_RETURN_TO },
+  });
+  if (up.status === 201) ctx.created = true;
+  if (up.status !== 201) {
+    if (up.json?.code === "login_taken") {
+      res.status(409).json({ error: "already_signed_up", signed_up: true, app: APP_URL + "/ui/login" });
     } else {
       sendUpstreamError(res, "signup", up);
     }
@@ -780,5 +959,13 @@ app.listen(PORT, (err) => {
   }
   console.log(`landing listening on :${PORT} → runtime ${RUNTIME_URL}` +
     (DEV_ALLOW_UNVERIFIED ? " [DEV: Access verification DISABLED]" : ` [CF Access aud=${ACCESS_AUD ? "set" : "unset"}]`) +
-    (MANAGE_TOKEN ? ` [accounts: gate ${AUTH_GATE}, app ${APP_URL}]` : " [accounts: off — LOOMCYCLE_AUTH_MANAGE_TOKEN unset]"));
+    (MANAGE_TOKEN ? ` [accounts: gate ${AUTH_GATE}, app ${APP_URL}]` : " [accounts: off — LOOMCYCLE_AUTH_MANAGE_TOKEN unset]") +
+    (SHARED ? ` [shared tenant ${SHARED_TENANT}: no team console, no minting; runtime >= ${MIN_RUNTIME_VERSION}]` : ""));
+  // Say at boot, not only at the first signup, when the runtime cannot hold
+  // sign-ups for approval. The landing still serves the site; signup refuses.
+  if (SHARED) {
+    runtimeHoldsSignups().then((held) => {
+      if (held === "unreachable") logWarn("startup: runtime /healthz unreachable; shared-mode signup refuses until it answers");
+    }, () => {});
+  }
 });
