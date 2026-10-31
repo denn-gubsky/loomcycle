@@ -391,29 +391,40 @@ func (d *Document) gateEntityType(ctx context.Context, in docInput) *tools.Resul
 	if typ == "" || strings.TrimSpace(in.Subject) == "" {
 		return nil // not an entity assertion — nothing the ontology governs
 	}
+	declared, undeclared := d.undeclaredEntityType(ctx, typ)
+	if !undeclared {
+		return nil
+	}
+	return refusal(errValidation("upsert_chunk: "+strconv.Quote(typ)+" is not an entity type this tenant "+
+		"declares, so an assertion typed with it becomes a node nobody can find. Declared: "+
+		strings.Join(declared, ", ")+". Use one of those, drop the type/subject pair to store "+
+		"the claim without an entity node, or propose the type with op=propose_entity and let an "+
+		"operator accept it.", ""))
+}
+
+// undeclaredEntityType reports whether typ is outside the entity types in force for the
+// run's tenant, with the declared names (sorted) for a refusal to list. It is false
+// whenever there is nothing to enforce.
+func (d *Document) undeclaredEntityType(ctx context.Context, typ string) (declared []string, undeclared bool) {
 	tenantTerms, confirmed, hasOntology := d.tenantOntologyState(ctx)
 	// FAILS OPEN, keyed on the DOCUMENT rather than on the term list. The seed is
 	// compiled in, so an empty tenant layer still yields seven types — a gate reading
 	// only that would enforce a vocabulary nobody chose, and every deployment that never
 	// opened the ontology would start refusing writes it accepts today.
 	if !hasOntology {
-		return nil
+		return nil, false
 	}
 	effective := memrank.EffectiveOntology(tenantTerms, confirmed)
 	if len(effective) == 0 {
-		return nil
+		return nil, false
 	}
-	declared := make([]string, 0, len(effective))
+	declared = make([]string, 0, len(effective))
 	for _, t := range effective {
 		if strings.EqualFold(t.Name, typ) {
-			return nil
+			return nil, false
 		}
 		declared = append(declared, t.Name)
 	}
 	sort.Strings(declared)
-	return refusal(errValidation("upsert_chunk: "+strconv.Quote(typ)+" is not an entity type this tenant "+
-		"declares, so an assertion typed with it becomes a node nobody can find. Declared: "+
-		strings.Join(declared, ", ")+". Use one of those, drop the type/subject pair to store "+
-		"the claim without an entity node, or propose the type with op=propose_entity and let an "+
-		"operator accept it.", ""))
+	return declared, true
 }
