@@ -105,6 +105,12 @@ type BoundSubject struct {
 	Readable bool `json:"-"`
 }
 
+// errBoundSubjectsUnread stands in for the error the bound-subject plane returned.
+// That error may name a subject (its key, path or document), and errors are copied into
+// the audit record, which counts bound subjects and never names them; it would also
+// name a subject the caller's rules withhold. So no plane error is passed through.
+var errBoundSubjectsUnread = errors.New("the subjects bound to this principal could not be read")
+
 // subjectBindingsWired reports whether the transport wired the bound-subject plane.
 func (s *Service) subjectBindingsWired() bool {
 	return s.BoundSubjects != nil && s.ClearBoundSubjects != nil && s.AnnounceErased != nil
@@ -539,7 +545,7 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 	}
 	if s.subjectBindingsWired() {
 		if bound, err := s.BoundSubjects(ctx, tenant, subject); err != nil {
-			fail("subject_bindings", err)
+			fail("subject_bindings", errBoundSubjectsUnread)
 		} else {
 			rep.Tier2.set("subject_bindings", int64(len(bound)))
 			rep.BoundSubjects, rep.BoundSubjectsWithheld = nameBound(bound)
@@ -769,8 +775,12 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 			bound, err = s.ClearBoundSubjects(ctx, tenant, subject)
 			unbound = bound
 		}
-		if err != nil {
-			fail("subject_bindings", err)
+		switch {
+		case err != nil && req.DryRun:
+			fail("subject_bindings", errBoundSubjectsUnread)
+		case err != nil:
+			fail("subject_bindings", fmt.Errorf("unbinding stopped after %d subject(s); the rest are "+
+				"still bound to this principal — re-run the erasure", len(bound)))
 		}
 		res.Deleted["subject_bindings"] = len(bound)
 		res.BoundSubjects, res.BoundSubjectsWithheld = nameBound(bound)

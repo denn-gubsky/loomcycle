@@ -3,6 +3,7 @@ package erasure_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -124,5 +125,43 @@ func TestService_UnwiredBoundSubjectsAreNotExamined(t *testing.T) {
 	}
 	if res.BoundSubjects == nil {
 		t.Error("bound_subjects is null on the wire; want []")
+	}
+}
+
+// TestService_FailedUnbindNamesNoSubject: errors are copied into the audit record, which
+// counts bound subjects and never names them, and a subject the caller may not read
+// must not be named by an error either. The count of what was unbound stays right.
+func TestService_FailedUnbindNamesNoSubject(t *testing.T) {
+	s := newSvc(t)
+	pair := boundPair()
+	s.BoundSubjects = func(context.Context, string, string) ([]erasure.BoundSubject, error) {
+		return nil, fmt.Errorf("reading subject %s at %s: disk", pair[1].NaturalKey, pair[1].Path)
+	}
+	s.ClearBoundSubjects = func(context.Context, string, string) ([]erasure.BoundSubject, error) {
+		return pair[:1], fmt.Errorf("subject %s (document %s, %s): revision conflict", pair[1].NaturalKey, pair[1].DocumentID, pair[1].Path)
+	}
+	s.AnnounceErased = func(context.Context, string, []erasure.BoundSubject) string { return "" }
+	ctx := context.Background()
+
+	res, err := s.Execute(ctx, erasure.ExecuteRequest{Tenant: "acme", Subject: "alice", Confirm: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := s.Report(ctx, "acme", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Deleted["subject_bindings"] != 1 {
+		t.Errorf("deleted subject_bindings = %d, want the 1 unbound before the failure", res.Deleted["subject_bindings"])
+	}
+	if len(res.Errors) == 0 || len(rep.Errors) == 0 {
+		t.Fatalf("the failure is not reported: result %v report %v", res.Errors, rep.Errors)
+	}
+	for _, e := range append(append([]string{}, res.Errors...), rep.Errors...) {
+		for _, name := range []string{pair[1].NaturalKey, pair[1].DocumentID, pair[1].Path} {
+			if strings.Contains(e, name) {
+				t.Errorf("error %q names a bound subject (%s)", e, name)
+			}
+		}
 	}
 }
