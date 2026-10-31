@@ -853,6 +853,19 @@ memory:
 
 **Revising the ontology.** Revise the confirmed ontology document in place (edit its sections). Replacing it with a new document gives every concept a new chunk: the statements already filed still point at the old concepts, and the next classify files duplicates against the new ones.
 
+### Merging two subjects
+
+Two tenant subjects that name one entity — `person:ada-king` and `person:ada-lovelace`, adopted from two proposals — split what the tenant knows about it. An operator merges the one that goes (the duplicate) into the one that stays (the survivor): `POST /v1/_ontology/subjects/merge` with `{"duplicate": …, "survivor": …}`, each a subject's document id or natural key. The same merge is the gRPC `MergeSubjects` RPC, the MCP `ontology` tool (`op: merge_subjects`), `mergeSubjects()` in `@loomcycle/client`, `merge_subjects()` in the Python client, and "Merge this subject into another…" on a tenant document's page in the Web UI. It is not a Document tool op: which subject survives is an operator's decision.
+
+In one transaction:
+- the duplicate's chunks (its facts) move under the survivor's root, with their natural keys;
+- every live statement with an end at the duplicate's root is copied with the survivor in its place, keeping its kind, status, method, confidence, validity, ruling and evidence, with `attributes.revision_of` naming the original, and the original is expired with `judge_reason: merged`. A statement between the two subjects, or one the survivor already holds, is only expired. One whose other end the operator may not `link` is left on the duplicate (`statements_left`), as is one whose match on the survivor was retired; the links agent's pass re-points what remains;
+- the duplicate's root keeps its natural key and its path and records where the subject went: `fields.merged_into` (the survivor's document id) and status `merged`. A reference to the old key from another scope still finds it.
+
+Then `merged` goes to the tenant's `memory/subjects` channel with `surviving_key` and `surviving_document_id`, for the knowledge-base bundle's `kb/linker` drain. As for `documents/ingested`, it is not published when the operator's access-control rules hide part of the tenant's documents from reading; the response's `not_announced` says so. The response also reports `facts_moved`, `statements_repointed`, `statements_retired` and `statements_left`.
+
+A merge across types is allowed; the survivor's type stands. It is refused, changing nothing, for the same subject twice (`same_subject`), a document whose root is not a subject (`not_a_subject`), a reference that names no subject of the tenant scope — a subject of another scope among them (`subject_not_in_scope`), and a subject already merged on either side (`already_merged`). It is for an admin (any tenant, with `?tenant=`) or a tenant operator in its own tenant, holding `write` on both documents (`forbidden` otherwise); a member token is refused on every transport. Nothing is deleted, and no call undoes a merge.
+
 ## Caveats
 
 - **SQL Memory required** (`LOOMCYCLE_SQLMEM_ENABLED=1`).

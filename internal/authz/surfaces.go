@@ -239,7 +239,7 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		}
 		return typeLevel("write", "memory"), true
 	case name == "path", name == "document", name == "ontology":
-		if len(rest) >= 2 && (rest[1] == "describe_images" || rest[1] == "reindex" || rest[1] == "derive_units" || rest[1] == "adopt" || rest[1] == "proposals") {
+		if len(rest) >= 2 && (rest[1] == "describe_images" || rest[1] == "reindex" || rest[1] == "derive_units" || rest[1] == "adopt" || rest[1] == "proposals" || rest[1] == "subjects") {
 			return typeLevel("write", "document"), true
 		}
 		return typeLevel("read", "document"), true
@@ -493,6 +493,10 @@ func GRPCSurface(rpc string) (Surface, bool) {
 		return instance("read", "def", "hook/*"), true
 	case "Path", "Document":
 		return typeLevel("read", "document"), true
+	// A merge writes both subjects' documents, as POST /v1/_ontology/subjects/merge
+	// asks; the merge itself asks write on each of the two.
+	case "MergeSubjects":
+		return typeLevel("write", "document"), true
 	case "Memory":
 		return typeLevel("read", "memory"), true
 	case "CredentialDef":

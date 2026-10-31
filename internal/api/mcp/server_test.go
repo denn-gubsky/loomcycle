@@ -35,6 +35,10 @@ type mockConnector struct {
 	retentionRes connector.RetentionOverrideResult
 	retentionErr error
 
+	mergeReq connector.MergeSubjectsRequest
+	mergeRes connector.MergeSubjectsResult
+	mergeErr error
+
 	dirTenant atomic.Value
 	// identityTool, when set, answers Identity calls as the server would
 	// (the builtin, on the ctx the handler stamped); identityTenant records
@@ -514,8 +518,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 66 {
-		t.Errorf("got %d tools, want 66 (+clientdef; +file; +groupdef, +acldef, +aclbinding, +authz; +crypto, +retention_override, +delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the identity (was directory)/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
+	if len(result.Tools) != 67 {
+		t.Errorf("got %d tools, want 67 (+ontology; +clientdef; +file; +groupdef, +acldef, +aclbinding, +authz; +crypto, +retention_override, +delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the identity (was directory)/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -1973,4 +1977,11 @@ func logLine(t *testing.T, logs, msg string) string {
 		t.Fatalf("want exactly one log line containing %q, got %d; logs:\n%s", msg, len(hits), logs)
 	}
 	return hits[0]
+}
+
+// MergeSubjects records the request and answers with the configured result
+// (connector.Connector).
+func (m *mockConnector) MergeSubjects(_ context.Context, req connector.MergeSubjectsRequest) (connector.MergeSubjectsResult, error) {
+	m.mergeReq = req
+	return m.mergeRes, m.mergeErr
 }

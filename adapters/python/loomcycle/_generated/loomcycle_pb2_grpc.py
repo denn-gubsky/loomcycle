@@ -193,6 +193,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.RetentionOverrideRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.RetentionOverrideResponse.FromString,
                 _registered_method=True)
+        self.MergeSubjects = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/MergeSubjects',
+                request_serializer=loomcycle__pb2.MergeSubjectsRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.MergeSubjectsResponse.FromString,
+                _registered_method=True)
         self.Decide = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/Decide',
                 request_serializer=loomcycle__pb2.DecideRequest.SerializeToString,
@@ -818,6 +823,28 @@ class LoomcycleServicer:
         audit record cannot be written is not set (UNAVAILABLE).
 
         Mirrors GET/PUT/DELETE /v1/_retention/overrides.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def MergeSubjects(self, request, context):
+        """MergeSubjects folds one tenant ontology subject (duplicate) into another
+        (survivor), each named by document id or natural key, in one transaction:
+        the duplicate's facts move under the survivor, its statements are copied
+        onto the survivor (the originals expired as merged), and the duplicate
+        stays, retired, naming the survivor (fields.merged_into, status merged).
+        A `merged` event then goes to the tenant's memory/subjects channel unless
+        the caller's access-control rules hide part of the scope from reading
+        (not_announced says why).
+
+        Operator-only: an admin (any tenant, via `tenant`) or a tenant operator
+        for its own, holding write on both documents (PERMISSION_DENIED
+        otherwise). A refusal carries a google.rpc.ErrorInfo whose reason is the
+        code HTTP returns (same_subject, not_a_subject, subject_not_in_scope,
+        already_merged, ...).
+
+        Mirrors POST /v1/_ontology/subjects/merge.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1579,6 +1606,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.RetentionOverride,
                     request_deserializer=loomcycle__pb2.RetentionOverrideRequest.FromString,
                     response_serializer=loomcycle__pb2.RetentionOverrideResponse.SerializeToString,
+            ),
+            'MergeSubjects': grpc.unary_unary_rpc_method_handler(
+                    servicer.MergeSubjects,
+                    request_deserializer=loomcycle__pb2.MergeSubjectsRequest.FromString,
+                    response_serializer=loomcycle__pb2.MergeSubjectsResponse.SerializeToString,
             ),
             'Decide': grpc.unary_unary_rpc_method_handler(
                     servicer.Decide,
@@ -2672,6 +2704,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/RetentionOverride',
             loomcycle__pb2.RetentionOverrideRequest.SerializeToString,
             loomcycle__pb2.RetentionOverrideResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MergeSubjects(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/MergeSubjects',
+            loomcycle__pb2.MergeSubjectsRequest.SerializeToString,
+            loomcycle__pb2.MergeSubjectsResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -317,3 +317,55 @@ type ACLRefusal struct {
 }
 
 func (e *ACLRefusal) Error() string { return e.Code + ": " + e.Msg }
+
+// Merging two ontology subjects (Connector.MergeSubjects). Each is returned
+// wrapped WithMessage, so a transport classifies on the sentinel and shows the
+// caller the exact text; SubjectMergeCode names the sentinel for the wire.
+var (
+	// ErrSubjectMergeInvalid — duplicate or survivor is missing.
+	ErrSubjectMergeInvalid = errors.New("connector: invalid subject merge request")
+	// ErrSubjectMergeForbidden — the caller is not an operator, or its
+	// access-control rules do not let it write one of the two documents.
+	ErrSubjectMergeForbidden = errors.New("connector: subject merge not permitted")
+	// ErrSubjectMergeNotInScope — a reference names no document or natural
+	// key in the merge's scope. A subject of another scope is one: a merge
+	// never crosses scopes.
+	ErrSubjectMergeNotInScope = errors.New("connector: no such subject in the merge's scope")
+	// ErrSubjectMergeSame — both references name the same subject.
+	ErrSubjectMergeSame = errors.New("connector: a subject cannot be merged into itself")
+	// ErrSubjectMergeNotSubject — a reference names a document whose root is
+	// not a subject (it carries no entity natural key).
+	ErrSubjectMergeNotSubject = errors.New("connector: not a subject")
+	// ErrSubjectMergeAlreadyMerged — the duplicate or the survivor was itself
+	// merged away already.
+	ErrSubjectMergeAlreadyMerged = errors.New("connector: subject already merged")
+	// ErrSubjectMergeConflict — one of the subjects or statements changed while
+	// the merge ran; nothing was merged, and a retry decides again.
+	ErrSubjectMergeConflict = errors.New("connector: a subject changed during the merge")
+	// ErrSubjectMergeUnavailable — this deployment has no SQL Memory.
+	ErrSubjectMergeUnavailable = errors.New("connector: subject merges need SQL Memory")
+)
+
+// SubjectMergeCode is the stable wire code for a merge refusal: the HTTP
+// error code, the gRPC ErrorInfo reason and the MCP result's code. "" for an
+// error that is none of the sentinels (an internal failure).
+func SubjectMergeCode(err error) string {
+	for _, c := range []struct {
+		sentinel error
+		code     string
+	}{
+		{ErrSubjectMergeInvalid, "invalid_request"},
+		{ErrSubjectMergeForbidden, "forbidden"},
+		{ErrSubjectMergeNotInScope, "subject_not_in_scope"},
+		{ErrSubjectMergeSame, "same_subject"},
+		{ErrSubjectMergeNotSubject, "not_a_subject"},
+		{ErrSubjectMergeAlreadyMerged, "already_merged"},
+		{ErrSubjectMergeConflict, "merge_conflict"},
+		{ErrSubjectMergeUnavailable, "unavailable"},
+	} {
+		if errors.Is(err, c.sentinel) {
+			return c.code
+		}
+	}
+	return ""
+}
