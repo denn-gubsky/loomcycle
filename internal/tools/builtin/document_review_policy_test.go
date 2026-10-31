@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 )
 
 // The attributes the runtime and the judge write for themselves — a judge's
@@ -78,5 +80,39 @@ func TestImportMD_DropsTheRuntimesStatementAttributes(t *testing.T) {
 		if _, ok := attrs[k]; ok {
 			t.Errorf("the import kept %s: %v", k, attrs)
 		}
+	}
+}
+
+// classifyStatementAttrs reads the attributes of the statements classify wrote
+// from root, by kind.
+func classifyStatementAttrs(t *testing.T, f *classifyFixture, docID, root string) map[string]map[string]any {
+	t.Helper()
+	out := map[string]map[string]any{}
+	for _, e := range edgesOf(t, f.d, f.ctx, `{"op":"get_edges","scope":"tenant","document_id":"`+docID+`"}`) {
+		if e["from_id"] == root && e["method"] == edgeMethodClassify {
+			attrs, _ := e["attributes"].(map[string]any)
+			out[e["kind"].(string)] = attrs
+		}
+	}
+	return out
+}
+
+// classify records on each statement how it found it: a concept the
+// neighbours' vote carries is "vote", one only the model named is "model". A
+// review policy's rule:matched reads it.
+func TestClassify_RecordsHowItFoundEachStatement(t *testing.T) {
+	f := newClassifyFixture(t, memrank.OntologyConfirmedStatus, true)
+	target, root := voteCorpus(f, "tenant")
+	f.classify(f.ctx, "tenant", target, nil)
+	if got := classifyStatementAttrs(t, f, target, root)["subject"]; got[attrClassifiedBy] != classifiedByVote {
+		t.Errorf("a voted concept's attributes = %v, want classified_by vote", got)
+	}
+
+	m := newClassifyFixture(t, memrank.OntologyConfirmedStatus, false)
+	m.d.Classifier = &stubClassifier{verdict: memrank.ClassifyVerdict{Method: memrank.ClassifyMethodChat, Concepts: []string{"Risk Management"}, Quote: "ризиками"}}
+	docID, mroot := m.doc("tenant", "Закон України № 5-I", "/kb/c/5", "", [2]string{"Стаття 1", "управління ризиками"})
+	m.classify(m.ctx, "tenant", docID, nil)
+	if got := classifyStatementAttrs(t, m, docID, mroot)["subject"]; got[attrClassifiedBy] != classifiedByModel {
+		t.Errorf("a model's concept's attributes = %v, want classified_by model", got)
 	}
 }
