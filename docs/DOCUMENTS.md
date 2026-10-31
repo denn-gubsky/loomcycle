@@ -736,9 +736,26 @@ The title and the preamble are updated in place (the earlier text stays readable
 
 **Anchors and `stable_id`.** An anchor is the part's heading path (`article-12/paragraph-3`), or what a class-declared anchor grammar produces. A heading with no letters (a bare `1.2`) adds nothing to the path, so renumbering a list does not re-key everything under it; a repeated heading under one parent becomes `notes~2`. A part keeps its anchor once it has one, so renaming a heading later does not silently re-key what links to it, and a renumbered part is still found by the anchor it first had. Alongside the anchor each part carries a `stable_id`: the identity of the provision itself, which a moved part keeps and a superseding version inherits.
 
+**Anchor grammars.** A class's `@anchor_grammar` names a `grammar:<name>` chunk in the ontology's classes section. Besides `pattern:` / `resolve: anchor=…` (the deepest heading a pattern matches fills `anchor=`), a grammar may carry two line kinds for documents whose parts are numbered from 1 in several places — a resolution's own points, the approved act's points, each annex's points:
+
+- `scope: <regex> => <alt> | <alt> …` — a heading it matches is a scope; its segment prefixes every part inside it;
+- `anchor: <regex> => <alt> | <alt> …` — keys a part by its own heading, or by the nearest heading above it within its scope.
+
+Each alternative is a template; the first whose `{group}`s all took part in the match is used, and one without groups always is. The line splits on its last ` => `. A part's anchor is its scope segments, outer to inner, then its leaf; a scope heading's own part is keyed by the scopes alone, and a part with no leaf inside its innermost scope keeps its heading-path anchor. For example:
+
+```text
+##### grammar:nbu-act
+scope: ^Постанова$ => resolution
+scope: ^Додаток(?:\s+(?P<n>\d+))?(?:\s|$) => annex-{n} | annex
+anchor: ^(?P<n>\d+)\.\s.*…$ => point-{n}
+anchor: ^(?P<n>\d+)\.\s => chapter-{n}
+```
+
+keys the resolution's first point `resolution/point-1`, the approved act's chapter `chapter-1` and its point `point-1`, and point 3 of `Додаток 2` `annex-2/point-3`. Patterns are RE2: `\b` is an ASCII word boundary and never matches after a Cyrillic letter, so end a word with `(?:\s|$)`. Anchors stick once assigned, so after changing an anchor grammar re-import the documents it governs. `Context op=help topic=Document/describe_ontology` has the full grammar format.
+
 **`edition_date`** is when the edition came into force (unix ns; default now). Import editions in date order: an `edition_date` earlier than the edition in force is refused before anything is written.
 
-**Placeholders and `resolve_anchor`.** `resolve_anchor` turns a citation into a chunk: the work by `work_key`, the part by `anchor`, as of `as_of`, so a citation to a past edition resolves to the text in force then. A work the scope does not hold (or holds in a document the caller may not read) answers `found: false`; with `create_placeholder: true` an empty document is filed for it (status `unresolved`). Link citations to the placeholder's root: its backlinks are the list of works still to import, and the first keyed import of that work fills the placeholder in. After a renumbering a heading path can name two parts; the part now under the heading wins, and an `as_of` before the renumbering reaches the other.
+**Placeholders and `resolve_anchor`.** `resolve_anchor` turns a citation into a chunk: the work by `work_key`, the part by `anchor`, as of `as_of`, so a citation to a past edition resolves to the text in force then. Identity keys are held lower-cased; a key that matches none exactly is tried again lower-cased with its spaces collapsed, so `law:2297-VI` finds `law:2297-vi`. A work the scope does not hold (or holds in a document the caller may not read) answers `found: false`; with `create_placeholder: true` an empty document is filed for it (status `unresolved`). Link citations to the placeholder's root: its backlinks are the list of works still to import, and the first keyed import of that work fills the placeholder in. After a renumbering a heading path can name two parts; the part now under the heading wins, and an `as_of` before the renumbering reaches the other.
 
 **Who made the edition.** With `amending_document_id` (the amending act, a document of the same scope) on a reimport by `work_key`, each part the edition renumbered or moved gets one `amends` statement from that document's root, with `attributes: {mod_type: renumbering}`, method `import`, valid from `edition_date`. Untouched, superseded and new parts get none, and running the edition again adds none. The caller must be able to read and link both documents. Where the vocabulary declares relation kinds and does not accept the statement, the edition is still imported and the skip is counted (`amends_skipped`).
 
@@ -809,11 +826,13 @@ Since #2161 (`/loomcycle/rfcs/files-by-reference` D18).
 
 `Document op=classify` says what a document is, from the tenant's confirmed ontology. It runs up to three steps and reports each in `steps`:
 
-1. **Rules (no model).** Each document class's own `@title_pattern` against the title, the import source title and the first section titles (a class with only an `@identifier_pattern`, against the title). The pattern's named groups fill the class's identity fields, so its work key. An issuer is an Instances entry whose name or `@alt` label appears as a whole phrase.
+1. **Rules (no model).** Each document class's own `@title_pattern` against the title, the import source title and the first section titles (a class with only an `@identifier_pattern`, against the title). A match on the title or the source title outranks one on a section title: sections count only when the titles match no class. The pattern's named groups fill the class's identity fields, so its work key. An issuer is an Instances entry whose name or `@alt` label appears as a whole phrase.
 2. **Neighbourhood vote (no model).** The documents most like this one's first section (`related`) in the same Path folder that you may read and that already carry a class: how many agree on a class, and which concepts at least half of them share. Needs an embedder.
-3. **Model (`memory.classifier`)** — only when the first two leave the class open. A decision model first; a chat model when there is none or the decision model is unsure. Its answer is always a proposal.
+3. **Model (`memory.classifier`)** — only when the first two leave the class open. A decision model first; a chat model when there is none or the decision model is unsure. Its answer is always a proposal. When the class is settled (by rule, vote or a type set by hand) but no concepts are, the model is asked about the concepts alone; that step names no class.
 
 **What is written.** Exactly one class matching by rule is applied: the root's type, the identity fields, and `issued_by` to the one named adopted instance. Everything else — an ambiguous match, the vote's or the model's class, every concept — is a proposal, kept in the root's `classification` field and, in the tenant scope, filed as proposed statements (`subject`, `classified_as`, `issued_by`). Outside the tenant scope a proposed concept waits as its tag. A type set by hand is never replaced; `write: "report"` writes nothing. `accept_classification` is the operator's ruling (refused inside a run); it re-checks everything the pending record names, because any writer of the document can edit those fields.
+
+**Citation grammars.** A class's `@citation_grammar` may name several grammars (`@citation_grammar nbu-resolution, law-ua`): `extract_citations` applies each, and where two match the same text the earlier match wins, then the order named. Use one per kind of citation, since a grammar has one `resolve:` line. `@anchor_grammar` takes one name.
 
 **`memory.classifier`** — shaped like `memory.reranker`, no default model:
 
@@ -827,10 +846,12 @@ memory:
 ```
 
 - `decision` needs an Ollama provider (it is asked through the decision driver, as a `kind: decision` reranker is); `effort` and `context_tokens` do not apply to it.
-- `chat` takes `effort`, `context_tokens` and `timeout_ms` like a listwise reranker. Its reply must name a class and concepts from the lists offered and quote the document verbatim; otherwise the verdict is dropped.
+- `chat` takes `effort`, `context_tokens` and `timeout_ms` like a listwise reranker. Its reply must name a class and concepts from the lists offered and quote the document verbatim; otherwise the verdict is dropped. It may answer up to 1024 tokens (a rerank, 256).
 - Either alone is valid. With neither, classify asks no model and reports the document `unclassified` with the reason.
 - Calls take the decision / chat lane of their provider and are charged to the classifying run under the usage purpose `classify`.
 - The thresholds are provisional: they are to be set from a measurement against a labelled corpus.
+
+**Revising the ontology.** Revise the confirmed ontology document in place (edit its sections). Replacing it with a new document gives every concept a new chunk: the statements already filed still point at the old concepts, and the next classify files duplicates against the new ones.
 
 ## Caveats
 

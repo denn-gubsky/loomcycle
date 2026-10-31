@@ -403,7 +403,10 @@ function OntologySectionsDetail({
                   ) : (
                     <span className="settings-muted">
                       {" "}
-                      · {g.patterns?.length ?? 0} pattern(s) → {g.resolve}
+                      · {g.patterns?.length ?? 0} pattern(s)
+                      {g.resolve && <> → {g.resolve}</>}
+                      {(g.scopes?.length ?? 0) > 0 && <> · {g.scopes?.length} scope(s)</>}
+                      {(g.anchors?.length ?? 0) > 0 && <> · {g.anchors?.length} anchor rule(s)</>}
                     </span>
                   )}
                 </li>
