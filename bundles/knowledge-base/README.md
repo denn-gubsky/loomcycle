@@ -274,7 +274,7 @@ curl -sX POST localhost:8080/v1/runs \
 | `mode` | `document` | `document`, `maintain`, `drain`, `subject` or `sweep` |
 | `document_id` or `path` | exactly one (none in drain; sweep takes `path` only) | the document; for a sweep, the subtree |
 | `scope` | `user` | `user`, `agent` or `tenant` (drain: `user`) |
-| `layers` | per mode | any of `L0`, `L1`, `L2`, `L3`, `L4`, `L6`; `maintain` takes `L6` only |
+| `layers` | per mode | any of `L0`, `L1`, `L2`, `L3`, `L4`, `L5`, `L6`; `maintain` takes `L6` only |
 | `write` | `report` | `report` or `propose` |
 | `terms_scheme` | none (L3 skips) | the concept scheme L3 matches |
 | `as_of` | each part's own date | unix nanoseconds; citations resolve as of it |
