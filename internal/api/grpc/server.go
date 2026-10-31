@@ -403,8 +403,8 @@ func (s *Server) CancelAgent(ctx context.Context, req *loomcyclepb.CancelAgentRe
 
 // ListUserAgents mirrors HTTP's GET /v1/users/{user_id}/agents?status=...
 func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAgentsRequest) (*loomcyclepb.ListUserAgentsResponse, error) {
-	if !validIdent(req.GetUserId()) {
-		return nil, status.Error(codes.InvalidArgument, "user_id must match [A-Za-z0-9_-]{1,128}")
+	if !connector.ValidUserID(req.GetUserId()) {
+		return nil, status.Error(codes.InvalidArgument, connector.UserIDRule)
 	}
 	if s.store == nil {
 		return &loomcyclepb.ListUserAgentsResponse{}, nil
@@ -862,7 +862,8 @@ func (s *Server) fillQueuePosition(a *loomcyclepb.Agent) {
 }
 
 // validIdent matches [A-Za-z0-9_-]{1,128} — same charset the HTTP
-// surface accepts for agent_id / user_id. Inlined here rather than
+// surface accepts for agent_id and run ids (a user id is
+// connector.ValidUserID). Inlined here rather than
 // imported from internal/api/http to avoid a back-edge import (HTTP
 // → grpc would create a cycle if the helper lived elsewhere).
 func validIdent(s string) bool {

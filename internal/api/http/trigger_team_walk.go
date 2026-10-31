@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
@@ -31,8 +32,8 @@ func (s *Server) StartTeamWalk(ctx context.Context, in runner.TeamWalkInput) (st
 	}
 	// The user is the one identity field a trigger may take from outside (a
 	// webhook's user_id mapping), so it is held to the rule a run's is.
-	if in.UserID != "" && !validIdent(in.UserID) {
-		return "", fmt.Errorf("%w: user_id must match [A-Za-z0-9_-]{1,128}", runner.ErrInvalidArgument)
+	if in.UserID != "" && !connector.ValidUserID(in.UserID) {
+		return "", fmt.Errorf("%w: %s", runner.ErrInvalidArgument, connector.UserIDRule)
 	}
 	// A trigger is an admission surface: while the runtime is quiescing for a
 	// snapshot it starts nothing, as a triggered agent run does not.
