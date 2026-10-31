@@ -201,11 +201,31 @@ auth:
       # Exact match, query string included: must equal the landing's
       # LANDING_SIGNUP_RETURN_TO, or every signup fails with invalid_return_to.
       allowed_return_to: ["https://loomcycle.cloud/?welcome=1"]
-      # Lets the landing's auth:manage token reset an owner's password and
-      # attach a password to a legacy owner's subject. That makes the token
-      # able to take over any owner's account, which is acceptable here only
-      # because the landing proves the owner's Google identity first.
-      manager_may_recover_owners: true
+      # Shared tenant (2026-10-31): everyone who signs up on the website joins
+      # the one tenant loomcycle-dev (the landing's LANDING_TENANT) and works on
+      # the same material, so a new member gets tenant-wide reach. loomcycle
+      # refuses a floor of tenant reach on an untrusted gate, because the floor
+      # is what every invitee of the website's credential gets unasked; marking
+      # the gate trusted is what accepts that here. It also lets a tenant
+      # operator's own invites grant groups beyond the floor.
+      trusted: true
+      # status: pending is what keeps shared-mode signup from being open: any
+      # Google account that passes Cloudflare Access can ask for an invite, so
+      # a user created by the website's (auth:manage) invite redeems as pending
+      # and reaches nothing but GET /v1/_me until a tenant operator approves it
+      # in the app's Users console. An operator's or admin's own invite, an
+      # attach invite and the tenant bootstrap stay active. The key needs a
+      # runtime with the pending-approval change. An OLDER runtime does not
+      # refuse it: it drops the unknown key silently (checked against main on
+      # 2026-10-31), and website sign-ups would then come up ACTIVE with
+      # tenant reach. Ship this file only in a release that contains that
+      # change.
+      new_user: { access_mode: tenant, status: pending }
+      # Off now that nobody owns a tenant through the website: the landing no
+      # longer resets or attaches owners' passwords, and leaving it on would let
+      # a leaked auth:manage token take over any owner's account. The operator
+      # attaches passwords to loomcycle-dev's existing users by hand.
+      manager_may_recover_owners: false
   # The tunnel reaches loomcycle through cloudflared, so without these every
   # login would look like it came from cloudflared and one attacker's failures
   # would throttle everyone. Trust ONLY cloudflared's fixed address on the
@@ -215,6 +235,23 @@ auth:
   # loomnet, is not trusted, and shares one throttle bucket (never spoofable).
   trusted_proxies: ["10.253.253.2/32"]
   client_ip_header: CF-Connecting-IP
+  # loomboard signs in with loomcycle as its OAuth authorization server
+  # instead of being handed a bearer from the website's token vault, which
+  # shared mode no longer has. It is a public client (PKCE, no secret): the
+  # hosted app, the desktop app's loopback and custom-scheme callbacks, and
+  # the Tauri webview origins it calls from.
+  clients:
+    loomboard:
+      kind: public
+      label: loomboard
+      redirect_uris:
+        - https://board.loomcycle.cloud/auth/callback
+        - http://127.0.0.1/auth/callback
+        - com.loomboard.app:/auth/callback
+      allowed_origins:
+        - https://board.loomcycle.cloud
+        - tauri://localhost
+        - http://tauri.localhost
 
 # ─── Web search ───────────────────────────────────────────────────────
 # SearXNG is wired here, NOT via env — there is no LOOMCYCLE_SEARCH_* var. The
