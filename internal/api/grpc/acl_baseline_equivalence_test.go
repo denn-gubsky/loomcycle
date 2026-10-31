@@ -77,6 +77,10 @@ var baselineWiderThanGateGRPC = map[string]string{
 	// off-run RPCs ask the same type-level question and need substrate:tenant.
 	"isolated-full|read document:*": "the class's in-run reach asks the same question as an off-run RPC the scope gate refuses it",
 	"isolated-full|read memory:*":   "the class's in-run reach asks the same question as an off-run RPC the scope gate refuses it",
+	// MergeSubjects asks write on documents, which an isolated user's own runs
+	// hold on its own documents; the merge is an operator's and needs
+	// substrate:tenant.
+	"isolated-full|write document:*": "the class's in-run reach asks the same question as an off-run RPC the scope gate refuses it",
 	// POST /v1/_history admits an isolated user (runs:read, the handler caps
 	// it to its own scopes); the History RPC requires substrate:tenant. A
 	// gate difference between the transports, reported; the baseline follows
