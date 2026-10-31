@@ -208,6 +208,12 @@ func (d *Document) ruleOnFiling(ctx context.Context, key sqlmem.ScopeKey, mscope
 		if accept {
 			op = "accept_statement"
 		}
+		// The run's ruling may already hold this statement, from a ruling since
+		// reverted or a rejection since reopened: it is proposed again, so that
+		// record no longer describes it.
+		if err := d.exec(ctx, key, `DELETE FROM statement_ruling_items WHERE ruling_id = ? AND edge_id = ?`, rulingID, c.s.ID); err != nil {
+			logStatementReviewFault(ctx, "review policy: a stale ruling record could not be removed", rulingID, err)
+		}
 		item, ok := d.ruleOne(ctx, key, mscope, op, rulingID, pf.ruledBy(rule), accept, pf.reason(rule), c.reviewCandidate)
 		ruled, failed := 0, 1
 		if ok {

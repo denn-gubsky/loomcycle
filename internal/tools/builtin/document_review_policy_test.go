@@ -9,6 +9,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // The attributes the runtime and the judge write for themselves — a judge's
@@ -201,7 +202,9 @@ func TestReviewPolicy_AcceptAtFilingIsARevertableRuling(t *testing.T) {
 			t.Fatalf("filed = %v, want asserted by %s", out, want)
 		}
 		e := f.edge(out["id"].(string))
-		if e["status"] != edgeStatusAsserted || e["ruled_by"] != want || e["ruling_id"] != out["ruling_id"] || e["operator_ruled_at"] == nil {
+		// A policy's ruling is not a person's: judged_by policy, no operator mark.
+		if e["status"] != edgeStatusAsserted || e["ruled_by"] != want || e["ruling_id"] != out["ruling_id"] ||
+			e["operator_ruled_at"] != nil || e["judged_by"] != "policy" {
 			t.Fatalf("statement = %v", e)
 		}
 		// A second acceptance in the same run joins the run's ruling.
@@ -221,10 +224,12 @@ func TestReviewPolicy_AcceptAtFilingIsARevertableRuling(t *testing.T) {
 	})
 }
 
-// At filing, reject rules the proposal rejected with the rule as its reason: a
-// tombstone, as an operator's rejection is, so the proposer does not file it
-// again every run; the revert lifts it.
-func TestReviewPolicy_RejectAtFilingIsATombstone(t *testing.T) {
+// At filing, reject rules the proposal rejected with the rule as its reason —
+// a verdict on that proposal, not an operator's ruling: no operator mark, and
+// no tombstone on the relation. A later proposal of it is filed and evaluated
+// again (here, with a higher confidence, routed to the judge); the revert
+// returns the rejected one to the queue.
+func TestReviewPolicy_ARejectionIsAVerdictNotATombstone(t *testing.T) {
 	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
 		f := newPolicyFixture(t, d, base, reviewOntologyMD)
 		out := f.propose(f.notes, f.two, "elaborates", `,"method":"extractor:relate","confidence":0.4`)
@@ -235,15 +240,61 @@ func TestReviewPolicy_RejectAtFilingIsATombstone(t *testing.T) {
 		if !strings.Contains(e["judge_reason"].(string), "reject kind:elaborates method:extractor:relate when confidence<0.6") {
 			t.Errorf("reason = %v", e["judge_reason"])
 		}
-		_, res := docExec(t, d, f.run, fmt.Sprintf(`{"op":"propose_statement","scope":"tenant","from_id":%q,"to_id":%q,"kind":"elaborates","method":"extractor:relate","confidence":0.4}`, f.notes, f.two))
-		if !res.IsError || !strings.Contains(res.Text, "statement_rejected") {
-			t.Errorf("a policy rejection is no tombstone: %s", res.Text)
+		if e["operator_ruled_at"] != nil || e["judged_by"] != "policy" {
+			t.Errorf("a policy rejection carries an operator's mark: operator_ruled_at %v, judged_by %v", e["operator_ruled_at"], e["judged_by"])
 		}
-		if _, err := d.RevertRuling(f.op, "tenant", connector.RevertRulingRequest{RulingID: out["ruling_id"].(string)}, RuleAsOperator); err != nil {
-			t.Fatal(err)
+		rev, err := d.RevertRuling(f.op, "tenant", connector.RevertRulingRequest{RulingID: out["ruling_id"].(string)}, RuleAsOperator)
+		if err != nil || rev.Reverted != 1 {
+			t.Fatalf("revert = %+v %v", rev, err)
 		}
 		if e := f.edge(out["id"].(string)); e["status"] != edgeStatusProposed {
 			t.Errorf("after the revert %v", e)
+		}
+
+		// Rejected again by the policy in the same run, then filed by a later
+		// run: not refused, but reopened and evaluated again — and, its facts
+		// unchanged, rejected again under the later run's ruling.
+		again := f.propose(f.notes, f.two, "elaborates", `,"method":"extractor:relate","confidence":0.4`)
+		if again["status"] != edgeStatusRejected {
+			t.Fatalf("re-rejected = %v", again)
+		}
+		later, res := docExec(t, d, tools.WithRunID(f.run, "run-later"), fmt.Sprintf(`{"op":"propose_statement","scope":"tenant","from_id":%q,"to_id":%q,"kind":"elaborates","method":"extractor:relate",
+			"evidence":[{"chunk_id":%q,"quote":"elaborate the duty"}]}`, f.notes, f.two, f.notes))
+		if res.IsError {
+			t.Fatalf("a policy rejection refused a later proposal: %s", res.Text)
+		}
+		if later["id"] != again["id"] || later["evidence_written"] != float64(1) || later["status"] != edgeStatusRejected ||
+			later["ruling_id"] == nil || later["ruling_id"] == again["ruling_id"] {
+			t.Errorf("the later proposal = %v, want the same statement reopened and ruled again by the later run (was %v)", later, again)
+		}
+		// Once the facts change — here the policy no longer rejects at that
+		// confidence — the reopened proposal is decided anew.
+		key := mustTenantKey(t, d, f.op)
+		if err := d.exec(f.op, key, `UPDATE chunk_edges SET confidence = 0.8 WHERE id = ?`, again["id"]); err != nil {
+			t.Fatal(err)
+		}
+		last, res := docExec(t, d, tools.WithRunID(f.run, "run-last"), fmt.Sprintf(`{"op":"propose_statement","scope":"tenant","from_id":%q,"to_id":%q,"kind":"elaborates","method":"extractor:relate"}`, f.notes, f.two))
+		if res.IsError || last["status"] != edgeStatusProposed || last["review_route"] != "judge" {
+			t.Errorf("with its facts changed = %v %s, want proposed and routed to the judge", last, res.Text)
+		}
+	})
+}
+
+// An operator's rejection is still a tombstone: the relation is refused when
+// proposed again, whatever the policy would decide.
+func TestReviewPolicy_AnOperatorRejectionIsStillATombstone(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		f := newPolicyFixture(t, d, base, reviewOntologyMD)
+		out := f.propose(f.notes, f.two, "elaborates", `,"method":"extractor:relate","confidence":0.7`)
+		if _, res := docExec(t, d, f.op, fmt.Sprintf(`{"op":"reject_statement","scope":"tenant","id":%q,"reason":"wrong"}`, out["id"])); res.IsError {
+			t.Fatal(res.Text)
+		}
+		if e := f.edge(out["id"].(string)); e["operator_ruled_at"] == nil {
+			t.Errorf("an operator's rejection lost its mark: %v", e)
+		}
+		_, res := docExec(t, d, tools.WithRunID(f.run, "run-later"), fmt.Sprintf(`{"op":"propose_statement","scope":"tenant","from_id":%q,"to_id":%q,"kind":"elaborates","method":"extractor:relate","confidence":0.9}`, f.notes, f.two))
+		if !res.IsError || !strings.Contains(res.Text, "statement_rejected") {
+			t.Errorf("an operator's rejection did not refuse the relation: %s", res.Text)
 		}
 	})
 }
