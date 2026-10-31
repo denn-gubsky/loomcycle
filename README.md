@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.131.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.131.1.</em>
 </p>
 
 <p align="center">
@@ -205,7 +205,8 @@ The most recent line (v1.131.0) completes subject change events. Re-typing,
 deleting, merging and erasing a subject each announce it on `memory/subjects`,
 an operator can merge two subjects and bind a subject to the user it stands
 for on every transport, and erasing that user reports and unbinds the subject.
-User ids accept sign-in gate subjects such as `cloud:<id>`. See
+User ids accept sign-in gate subjects such as `cloud:<id>`. Its patch release
+fixed the links agent's subject drain and the Users console's tenant. See
 [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.130.0 announced an adopted subject on the tenant's
