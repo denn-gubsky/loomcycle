@@ -394,7 +394,7 @@ func TestSubjectPrincipal_MemoryCannotRemoveABoundSubjectsBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &Memory{Store: st, SqlMem: d.SqlMem}
-	r, err := m.Execute(ctx, json.RawMessage(`{"op":"delete","scope":"user","key":"`+chunkBodyKey(root)+`"}`))
+	r, err := m.Execute(grantedTenantCtx(ctx), json.RawMessage(`{"op":"delete","scope":"user","key":"`+chunkBodyKey(root)+`"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
