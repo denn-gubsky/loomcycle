@@ -182,7 +182,7 @@ func Baselines() map[string]ACL {
 				selfTokenRule,
 				{Effect: Deny, Actions: []string{"read", "write", "recall", "browse"}, Resources: []string{"memory:tenant", "memory:global"}},
 				{Effect: Deny, Actions: []string{"read", "write"}, Resources: []string{"sqlmem:tenant"}},
-				{Effect: Deny, Actions: []string{"read", "write", "delete", "link", "browse", "propose"}, Resources: []string{"document:tenant"}},
+				{Effect: Deny, Actions: []string{"read", "write", "delete", "link", "browse", "propose", "review"}, Resources: []string{"document:tenant"}},
 				{Effect: Deny, Actions: []string{"read"}, Resources: []string{"history:tenant", "history:global"}},
 			}},
 		// RFC FA D16: a website's user-management credential. The roster and

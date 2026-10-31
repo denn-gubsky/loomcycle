@@ -100,3 +100,36 @@ func EvaluateSurface(ctx context.Context, eff *Effective, s Surface, legacyAllow
 	}
 	return Evaluate(ctx, eff, s.Action, s.Resource(tenant), legacyAllowed)
 }
+
+// Grants reports whether a rule in eff explicitly ALLOWS action on res,
+// whatever the rollout mode. It is the question for a verb that is only ever
+// held by grant and never by a scope (RFC FS `review` on documents): in compat
+// and shadow mode an unmatched question is decided by the scope gate, which
+// would hand such a verb to every principal the route admits. No set grants
+// nothing.
+func Grants(ctx context.Context, eff *Effective, action string, res Resource) bool {
+	if eff == nil {
+		return false
+	}
+	if res.TenantID == "" {
+		res.TenantID = eff.Subject.TenantID
+	}
+	d := eff.Decide(Request{
+		Subject:  eff.Subject,
+		Action:   action,
+		Resource: res,
+		Context:  Context{Transport: TransportFrom(ctx), Now: time.Now()},
+	})
+	return d.Outcome == Allowed
+}
+
+// GrantsSomewhere reports whether eff could allow action on some instance of
+// typ: an unconditional allow names one, or a conditional rule might. A caller
+// asking for a grant-only verb with none of either holds it nowhere, and is
+// refused as a whole rather than answered item by item.
+func GrantsSomewhere(eff *Effective, typ, action string) bool {
+	if eff == nil {
+		return false
+	}
+	return len(eff.AllowPatterns(typ, action)) > 0 || eff.HasConditionalRules(typ, action)
+}
