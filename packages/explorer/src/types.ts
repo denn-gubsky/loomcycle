@@ -63,6 +63,13 @@ export interface ChunkDetail extends ChunkRow {
   // asset (RFC BO) is present on an image chunk — metadata only; the bytes are
   // fetched from GET /v1/_document/asset/{id} via documentAssetObjectUrl.
   asset?: { media_type: string; size: number };
+  // entity is get_chunk's entity-metadata block, present on a chunk that carries
+  // one. The viewer reads only natural_key: on a document's root chunk it marks the
+  // document as a subject.
+  entity?: { natural_key?: string };
+  // not_announced is set on an update that changed something subscribers are told
+  // about (a subject's type) when the runtime withheld the announcement, and why.
+  not_announced?: string;
 }
 
 // StatementStatus is where a relation stands (RFC FN): an asserted one holds, a
