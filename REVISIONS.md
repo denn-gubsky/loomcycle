@@ -8,6 +8,97 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.129.0
+
+*The `knowledge-base` bundle's links agent (`kb/linker`) finishes its build (RFC FP Phases C and D):*
+- *it proposes `elaborates` relations a model judged, and skips the boilerplate paragraphs a tenant's ontology names with the new `@boilerplate` directive;*
+- *it re-judges a model-made statement whose text changed, and moves a merged subject's statements to the survivor;*
+- *it compares a document with the norms it should follow into a report document;*
+- *it sweeps a subtree to keep statements checked, with a purge only on request, and files a classified document under its class on request.*
+
+*The Web UI's ontology page now shows the ontology one section per tab.*
+
+The v1.129 line: #2290 to #2304.
+- `@loomcycle/client` moves to 1.129.0. It publishes the File import `drop` heading type that the runtime shipped in v1.128.1 (#2281).
+- The Python adapter stays at 1.126.0.
+- No migration.
+
+### The ontology: `@boilerplate` (#2291)
+
+A document class may declare `@boilerplate <RE2 pattern>`, one line per kind of paragraph no relation should be drawn from: an amendment instruction, an effective-date clause, a review or owner line.
+- The lines are joined as alternatives. A line that doesn't compile is reported as an issue and dropped.
+- A subclass inherits the directive, like `@definitions`. `describe_ontology` lists it on the class.
+- `Document op=get_chunk` reports `boilerplate: [[start, end], …]`, the rune spans of the body paragraphs the class's pattern matches.
+  - The runtime evaluates the pattern itself because the linker runs in JavaScript. Its regex reads `(?i)`, `(?P<name>…)` and `\b` over Cyrillic differently from RE2.
+
+### The links agent, Phase C (#2291)
+
+- **The relate layer proposes `elaborates`.** In a propose pass, L4 files a verdict when all of these hold:
+  - its kind is in the bundle's `relate_propose_kinds` (default `["elaborates"]`) and the tenant's ontology declares it;
+  - both quotes occur verbatim, with no confidence floor;
+  - neither quote lies in a `@boilerplate` paragraph (the model isn't shown those paragraphs either);
+  - it is the best-supported finding for its passage and target document.
+
+  It is filed as `proposed` by `extractor:relate`, with both quotes as evidence. Every finding stays in the report, and a report pass counts `would_propose`. On MTB, `elaborates` was the only kind that held up when checked by hand: 17 of 22 kept findings were right, all of them `elaborates`. Every `conflicts_with`, `stricter_than` and `implements` was wrong.
+- **Re-judging (L6, `rejudge: true`).** A statement an extractor made is judged again by `kb/verdict` when either end's body changed since it was last verified. "Changed" is read from the body-change log.
+  - The same kind with quotes that occur is verified.
+  - A kind the relate layer may file is proposed as a revision, and the statement is flagged.
+  - Anything else is flagged.
+
+  A person's statement, or one an operator ruled on, is never re-judged. An unchanged corpus makes no model call.
+- **Subject mode** (`{"mode": "subject"}` with the subject's document) checks every statement touching a subject.
+  - With `merged_into`, each such statement is proposed again with the surviving subject in its place, then expired.
+  - A person's statement, or one an operator ruled on, is flagged instead.
+
+### The links agent, Phase D (#2292)
+
+- **Sweep** (`{"mode": "sweep", "path": "/…"}`) checks the statements with an end under a subtree, least recently verified first, up to `max_statements`. `sweep.exhausted` says whether it reached the end.
+  - Repeated sweeps make progress without a cursor.
+  - A statement already flagged for a person is passed over.
+- **Purge, only on request.** A sweep reports the retired statements a purge may delete: expired, made by code, and retired more than `purge_after_days` ago (default 180).
+  - Only `purge: true` with `write: propose` deletes them.
+  - Never a person's statement, one an operator ruled on, or a rejected one. A rejection is what stops the linker proposing the relation again. This deviates from RFC FP §5 rule (c), which would let an operator purge rejected statements too.
+  - The bundle installs no schedule; its README ships a ScheduleDef example.
+- **Filing** (`file: {"root": "/…"}` with L0) gives a classified document a name at `<root>/<Class>/<title>`.
+  - It adds a name and never moves the document.
+  - A name already held by something else is never taken; the document's id is appended instead.
+- **Check-against (L5, `check_against: ["/…"]`)** compares each passage with up to `max_norms` (12) norms: first the parts of the works the document already cites, then the closest by meaning under the given paths.
+  - Its vocabulary is `addresses`, `complies_with`, `possible_gap` and `possible_conflict`. A finding needs both quotes verbatim and outside boilerplate.
+  - Findings are written to a report document at `<report_root>/<title>-<date>` (default `/reports/check-against`), under a "not a legal opinion" banner.
+  - Nothing is filed in the statement graph.
+
+### Web UI: the ontology page, section by section (#2304)
+
+The **ontology** page showed the entity-types panel from before sectioned ontologies: its help described classes only, and relations, schemes, instances and grammars were appended below the class table. It now leads with the confirm gate (confirmed or draft, version, sections), then suggestions from every section.
+- **Tabs:** classes, document classes, relations, schemes, instances, grammars, and health when it has a finding.
+- Each tab shows a count, and is marked when something needs attention: a disabled grammar, a concept without its tag, or an instance that wasn't adopted.
+- The tab is in the URL (`?section=`).
+- A grammar's `pattern:` / `resolve:` / `scope:` / `anchor:` rules can be expanded.
+- The format help covers `@section`, document classes, grammar chunks, relations, schemes and instances.
+
+### Docs and deployment
+
+- **Docs (#2302, #2303).**
+  - `docs/DOCUMENTS.md` and `docs/TOOLS.md` describe the grammar `scope:` / `anchor:` lines, the classify rules and File import `drop`.
+  - The configuration guide covers the links agent's Phases C and D.
+- **Cloud (#2290).** `cloud-deployment` runs the hosted board from loomboard's published image, `ghcr.io/denn-gubsky/loomboard` at `LOOMBOARD_VERSION`, instead of building it on the host. The deploy script pulls a release, and rolls back to the image already on the host.
+- **Dependencies:** grpc, aws-sdk-go-v2 (and its config and IMDS modules), pdfcpu, react-router-dom and lucide-react (#2293 to #2301).
+
+### Upgrade notes
+
+- **No migration and no config change.**
+- **The links agent's new behaviour is opt-in.** The bundle's default `write` is still `report`. Only these do anything new:
+  - `write: propose` (`elaborates` proposals from L4);
+  - `rejudge: true`;
+  - `mode: subject` or `mode: sweep`;
+  - `purge: true`;
+  - `file`;
+  - `check_against` or L5.
+
+  A deployment that layers its own copy of the bundle keeps that copy.
+- **`@boilerplate` in an ontology needs this release.** An older runtime reports it as an unknown directive and ignores it.
+- **Images:** a minor tag, so the full image set is built.
+
 ## What's in v1.128.3
 
 *Two fixes to the `knowledge-base` bundle's links agent (`kb/linker`), found by running it on real regulatory acts. When a new edition of a document supersedes a cited passage, the agent now re-reads the successor passage with the citation grammar. A citation still made there moves to it; one no longer made is expired. Before, a citation moved only if every quote survived exactly, so citations that survived partly, or only had their lines reflowed, were dropped and proposed again for review. A re-run that changes nothing now reports nothing proposed.*
