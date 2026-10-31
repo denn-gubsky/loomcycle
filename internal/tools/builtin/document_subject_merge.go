@@ -127,11 +127,18 @@ func (d *Document) MergeSubjects(ctx context.Context, scope, duplicate, survivor
 	if err != nil {
 		return out, err
 	}
-	fields := map[string]any{}
+	// Raw values, so every other field goes back byte for byte: a decode to
+	// interface{} would round a nanosecond timestamp through float64.
+	fields := map[string]json.RawMessage{}
 	if len(prior.Fields) > 0 {
-		_ = json.Unmarshal(prior.Fields, &fields)
+		if err := json.Unmarshal(prior.Fields, &fields); err != nil {
+			return out, fmt.Errorf("merge_subjects: the duplicate's fields are not an object: %w", err)
+		}
 	}
-	fields[subjectMergedIntoField] = surv.DocumentID
+	if fields == nil { // a stored `null`
+		fields = map[string]json.RawMessage{}
+	}
+	fields[subjectMergedIntoField], _ = json.Marshal(surv.DocumentID)
 	fb, _ := json.Marshal(fields)
 	if err := d.writeBody(ctx, mscope, key, dup.RootChunkID, dup.typ, prior.Body, fb); err != nil {
 		return out, err

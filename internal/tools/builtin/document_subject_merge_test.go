@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
@@ -320,5 +321,33 @@ func TestMergeSubjects_WithheldWhenReadingIsPartitioned(t *testing.T) {
 	}
 	if evs := f.w.subjectEvents(t); len(evs) != 0 {
 		t.Errorf("announced under a partitioned scope: %v", evs)
+	}
+}
+
+// TestMergeSubjects_KeepsTheDuplicatesOtherFieldsExactly: recording merged_into
+// rewrites the duplicate root's fields, and must give back every other field as it
+// was — a nanosecond timestamp included, which a round trip through float64 would
+// round.
+func TestMergeSubjects_KeepsTheDuplicatesOtherFieldsExactly(t *testing.T) {
+	f := newMergeFixture(t)
+	got, r := docExec(t, f.d, f.ctx, fmt.Sprintf(`{"op":"get_chunk","scope":"tenant","id":%q}`, f.dupRoot))
+	if r.IsError {
+		t.Fatalf("get_chunk: %s", r.Text)
+	}
+	if _, r := docExec(t, f.d, f.ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"revision":%v,
+		"fields":{"seen_at":1761900000000000123,"alias":"A. King"}}`, f.dupRoot, got["revision"])); r.IsError {
+		t.Fatalf("update_chunk: %s", r.Text)
+	}
+	if _, err := f.d.MergeSubjects(f.ctx, "tenant", f.dupDoc, f.survDoc); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	body, err := f.d.readBody(f.ctx, "tenant", mustTenantKey(t, f.d, f.ctx), f.dupRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"seen_at":1761900000000000123`, `"alias":"A. King"`, `"merged_into":"` + f.survDoc + `"`} {
+		if !strings.Contains(string(body.Fields), want) {
+			t.Errorf("fields = %s, want %s", body.Fields, want)
+		}
 	}
 }
