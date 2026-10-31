@@ -52,9 +52,11 @@ export function unlink(subject: string, gate: string, fetchImpl: typeof fetch = 
   return call<void>(fetchImpl, userPath(subject) + "/identities/" + encodeURIComponent(gate), { method: "DELETE" });
 }
 
-/** POST /v1/_users/{subject}/approve (a tenant operator's action). */
-export function approveUser(subject: string, fetchImpl: typeof fetch = fetch) {
-  return call<unknown>(fetchImpl, userPath(subject) + "/approve", { method: "POST" });
+/** POST /v1/_users/{subject}/approve (a tenant operator's action). tenant is
+ * the tenant an admin is managing; omitted, the server uses the caller's own. */
+export function approveUser(subject: string, fetchImpl: typeof fetch = fetch, tenant?: string) {
+  const q = tenant ? "?tenant=" + encodeURIComponent(tenant) : "";
+  return call<unknown>(fetchImpl, userPath(subject) + "/approve" + q, { method: "POST" });
 }
 
 const linkErrorText: Record<string, string> = {
