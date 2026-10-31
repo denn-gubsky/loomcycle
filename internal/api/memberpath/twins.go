@@ -71,6 +71,10 @@ var twins = map[string][]Twin{
 	// The tenant ontology.
 	"MergeSubjects":        {{Method: http.MethodPost, Path: "/v1/_ontology/subjects/merge"}},
 	"BindSubjectPrincipal": {{Method: http.MethodPost, Path: "/v1/_ontology/subjects/principal"}},
+	// Statement review: the queue, bulk rulings and their undo.
+	"ListReviewQueue": {{Method: http.MethodGet, Path: "/v1/_statements/review"}},
+	"RuleStatements":  {{Method: http.MethodPost, Path: "/v1/_statements/rule"}},
+	"RevertRuling":    {{Method: http.MethodPost, Path: "/v1/_statements/revert"}},
 	// Runtime admin.
 	"PauseRuntime":    {{Method: http.MethodPost, Path: "/v1/_pause"}},
 	"ResumeRuntime":   {{Method: http.MethodPost, Path: "/v1/_resume"}},

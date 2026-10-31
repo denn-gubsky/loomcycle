@@ -203,6 +203,21 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.BindSubjectPrincipalRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.BindSubjectPrincipalResponse.FromString,
                 _registered_method=True)
+        self.ListReviewQueue = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ListReviewQueue',
+                request_serializer=loomcycle__pb2.ListReviewQueueRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ListReviewQueueResponse.FromString,
+                _registered_method=True)
+        self.RuleStatements = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/RuleStatements',
+                request_serializer=loomcycle__pb2.RuleStatementsRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.RuleStatementsResponse.FromString,
+                _registered_method=True)
+        self.RevertRuling = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/RevertRuling',
+                request_serializer=loomcycle__pb2.RevertRulingRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.RevertRulingResponse.FromString,
+                _registered_method=True)
         self.Decide = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/Decide',
                 request_serializer=loomcycle__pb2.DecideRequest.SerializeToString,
@@ -872,6 +887,54 @@ class LoomcycleServicer:
         principal_not_found, forbidden, invalid_request, unavailable).
 
         Mirrors POST /v1/_ontology/subjects/principal.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListReviewQueue(self, request, context):
+        """ListReviewQueue lists a document scope's statements awaiting review
+        (proposed unless the filter names another status), narrowed by the queue
+        filters, newest first; or, with summarize, their counts grouped by kind,
+        method, the from-document's path prefix and judge verdict. Rows the
+        caller may not read are left out. Open to an admin, a tenant operator and
+        a member; PERMISSION_DENIED for an isolated user.
+
+        Mirrors GET /v1/_statements/review.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RuleStatements(self, request, context):
+        """RuleStatements accepts or rejects proposed statements in bulk, by ids or
+        by the queue's filter, at most 1000 per call. A dry run (the default)
+        returns the match count, a sample and the kind/method breakdown; the real
+        call needs expect_count equal to the current match count
+        (FAILED_PRECONDITION queue_changed otherwise), rules each statement as a
+        single accept or reject would, with per-item results, and returns the
+        ruling's id for revert. Each statement records ruled_by bulk:<ruling id>.
+
+        An admin or a tenant operator (write on each from-document), or a member
+        holding the access-control action review on the from-document's path;
+        what the caller may not rule on is skipped and counted. A refusal carries
+        a google.rpc.ErrorInfo whose reason is the code HTTP returns
+        (invalid_request, forbidden, queue_changed, unavailable).
+
+        Mirrors POST /v1/_statements/rule.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RevertRuling(self, request, context):
+        """RevertRuling returns each statement a bulk ruling ruled to its status
+        before, when nothing changed it since; a rejection's tombstone is
+        lifted. Changed statements are reported and left (error "changed").
+        Same authority as RuleStatements; NOT_FOUND ruling_not_found for an
+        unknown ruling.
+
+        Mirrors POST /v1/_statements/revert.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1643,6 +1706,21 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.BindSubjectPrincipal,
                     request_deserializer=loomcycle__pb2.BindSubjectPrincipalRequest.FromString,
                     response_serializer=loomcycle__pb2.BindSubjectPrincipalResponse.SerializeToString,
+            ),
+            'ListReviewQueue': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListReviewQueue,
+                    request_deserializer=loomcycle__pb2.ListReviewQueueRequest.FromString,
+                    response_serializer=loomcycle__pb2.ListReviewQueueResponse.SerializeToString,
+            ),
+            'RuleStatements': grpc.unary_unary_rpc_method_handler(
+                    servicer.RuleStatements,
+                    request_deserializer=loomcycle__pb2.RuleStatementsRequest.FromString,
+                    response_serializer=loomcycle__pb2.RuleStatementsResponse.SerializeToString,
+            ),
+            'RevertRuling': grpc.unary_unary_rpc_method_handler(
+                    servicer.RevertRuling,
+                    request_deserializer=loomcycle__pb2.RevertRulingRequest.FromString,
+                    response_serializer=loomcycle__pb2.RevertRulingResponse.SerializeToString,
             ),
             'Decide': grpc.unary_unary_rpc_method_handler(
                     servicer.Decide,
@@ -2790,6 +2868,87 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/BindSubjectPrincipal',
             loomcycle__pb2.BindSubjectPrincipalRequest.SerializeToString,
             loomcycle__pb2.BindSubjectPrincipalResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListReviewQueue(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ListReviewQueue',
+            loomcycle__pb2.ListReviewQueueRequest.SerializeToString,
+            loomcycle__pb2.ListReviewQueueResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RuleStatements(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/RuleStatements',
+            loomcycle__pb2.RuleStatementsRequest.SerializeToString,
+            loomcycle__pb2.RuleStatementsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RevertRuling(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/RevertRuling',
+            loomcycle__pb2.RevertRulingRequest.SerializeToString,
+            loomcycle__pb2.RevertRulingResponse.FromString,
             options,
             channel_credentials,
             insecure,

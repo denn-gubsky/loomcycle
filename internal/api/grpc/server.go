@@ -1056,6 +1056,13 @@ var grpcConsumerScopes = map[string]string{
 	// member path, so a member is refused here too; the connector checks the
 	// caller again.
 	"MergeSubjects": auth.ScopeTenant,
+	// RFC FS: the statement review queue, bulk rulings and their undo, as their
+	// routes gate them. NOT carved out of the member path: a member holding the
+	// access-control action review may rule; the connector decides on each
+	// statement.
+	"ListReviewQueue": auth.ScopeTenant,
+	"RuleStatements":  auth.ScopeTenant,
+	"RevertRuling":    auth.ScopeTenant,
 	// RFC FR P4: binding a subject to a user, as POST
 	// /v1/_ontology/subjects/principal gates it; carved out of the member path
 	// like the merge, and checked again in the connector.

@@ -307,6 +307,42 @@ service Loomcycle {
   // Mirrors POST /v1/_ontology/subjects/principal.
   rpc BindSubjectPrincipal(BindSubjectPrincipalRequest) returns (BindSubjectPrincipalResponse);
 
+  // ListReviewQueue lists a document scope's statements awaiting review
+  // (proposed unless the filter names another status), narrowed by the queue
+  // filters, newest first; or, with summarize, their counts grouped by kind,
+  // method, the from-document's path prefix and judge verdict. Rows the
+  // caller may not read are left out. Open to an admin, a tenant operator and
+  // a member; PERMISSION_DENIED for an isolated user.
+  //
+  // Mirrors GET /v1/_statements/review.
+  rpc ListReviewQueue(ListReviewQueueRequest) returns (ListReviewQueueResponse);
+
+  // RuleStatements accepts or rejects proposed statements in bulk, by ids or
+  // by the queue's filter, at most 1000 per call. A dry run (the default)
+  // returns the match count, a sample and the kind/method breakdown; the real
+  // call needs expect_count equal to the current match count
+  // (FAILED_PRECONDITION queue_changed otherwise), rules each statement as a
+  // single accept or reject would, with per-item results, and returns the
+  // ruling's id for revert. Each statement records ruled_by bulk:<ruling id>.
+  //
+  // An admin or a tenant operator (write on each from-document), or a member
+  // holding the access-control action review on the from-document's path;
+  // what the caller may not rule on is skipped and counted. A refusal carries
+  // a google.rpc.ErrorInfo whose reason is the code HTTP returns
+  // (invalid_request, forbidden, queue_changed, unavailable).
+  //
+  // Mirrors POST /v1/_statements/rule.
+  rpc RuleStatements(RuleStatementsRequest) returns (RuleStatementsResponse);
+
+  // RevertRuling returns each statement a bulk ruling ruled to its status
+  // before, when nothing changed it since; a rejection's tombstone is
+  // lifted. Changed statements are reported and left (error "changed").
+  // Same authority as RuleStatements; NOT_FOUND ruling_not_found for an
+  // unknown ruling.
+  //
+  // Mirrors POST /v1/_statements/revert.
+  rpc RevertRuling(RevertRulingRequest) returns (RevertRulingResponse);
+
   // Decide asks a decision model typed questions (choice / noul / score)
   // about a piece of state and returns each answer as the model gave it. It
   // is a judgement with probabilities, not generated text, and it needs no
@@ -2346,6 +2382,142 @@ message BindSubjectPrincipalResponse {
   string previous = 7;
   // False when the binding was already as asked.
   bool changed = 8;
+}
+
+// ReviewQueueFilter narrows the review queue and selects what a bulk ruling
+// rules. Every field is optional; they combine with AND.
+message ReviewQueueFilter {
+  // The statement status; empty = proposed.
+  string status = 1;
+  string kind = 2;
+  repeated string kinds = 3;
+  // An exact, case-sensitive prefix of the method (rule: or rule:citation).
+  string method = 4;
+  // The writer recorded on the statement: the agent for a run's write, else
+  // the user id.
+  string actor = 5;
+  // Either end in the document, or in a document named at or under the Path.
+  string document_id = 6;
+  string under_path = 7;
+  string from_document_id = 8;
+  string to_document_id = 9;
+  string from_under_path = 10;
+  string to_under_path = 11;
+  // The writer's own confidence, at least this (0..1).
+  optional double min_confidence = 12;
+  // Bounds on created_at, unix nanoseconds.
+  optional int64 created_before = 13;
+  optional int64 created_after = 14;
+  // attributes.judge.verdict: recorded at all, or exactly this.
+  optional bool has_judge_verdict = 15;
+  string judge_verdict = 16;
+}
+
+message ListReviewQueueRequest {
+  // Whose: only an admin may name a tenant.
+  string tenant = 1;
+  // tenant (default) or user (the caller's own).
+  string scope = 2;
+  ReviewQueueFilter filter = 3;
+  bool summarize = 4;
+  // Page size (default 500, at most 5000), a next_cursor, and created
+  // (default) or verified.
+  int32 limit = 5;
+  string after = 6;
+  string order = 7;
+}
+
+// ReviewQueueGroup is one row of the queue's summary.
+message ReviewQueueGroup {
+  string kind = 1;
+  string method = 2;
+  // The from-document's Path name, first two segments; empty when filed
+  // nowhere.
+  string from_path_prefix = 3;
+  // attributes.judge.verdict; empty when none.
+  string judge_verdict = 4;
+  int32 count = 5;
+}
+
+message ListReviewQueueResponse {
+  string tenant = 1;
+  string scope = 2;
+  // Each statement as JSON, the shape GET /v1/_statements/review returns.
+  repeated bytes statements_json = 3;
+  bool truncated = 4;
+  string next_cursor = 5;
+  repeated ReviewQueueGroup summary = 6;
+  int32 total = 7;
+}
+
+message RuleStatementsRequest {
+  string tenant = 1;
+  string scope = 2;
+  // accept or reject.
+  string action = 3;
+  // The statements by id, or by filter (has_filter selects the filter, so
+  // an empty filter — the whole queue — can be named).
+  repeated string ids = 4;
+  ReviewQueueFilter filter = 5;
+  bool has_filter = 6;
+  // Required for reject.
+  string reason = 7;
+  // Unset = a dry run.
+  optional bool dry_run = 8;
+  // The dry run's matched count; required to rule.
+  optional int32 expect_count = 9;
+  // At most this many (default and ceiling 1000).
+  int32 max = 10;
+}
+
+message RulingBreakdown {
+  string kind = 1;
+  string method = 2;
+  int32 count = 3;
+}
+
+// RulingItem is one statement's outcome: the status it was ruled (or
+// reverted) to, or the refusal's code and message.
+message RulingItem {
+  string id = 1;
+  string status = 2;
+  string error = 3;
+  string message = 4;
+}
+
+message RuleStatementsResponse {
+  string tenant = 1;
+  string scope = 2;
+  string action = 3;
+  bool dry_run = 4;
+  string ruling_id = 5;
+  int32 matched = 6;
+  int32 selected = 7;
+  int32 skipped = 8;
+  int32 to_rule = 9;
+  int32 ruled = 10;
+  int32 failed = 11;
+  // A dry run's sample, each statement as JSON.
+  repeated bytes sample_json = 12;
+  repeated RulingBreakdown breakdown = 13;
+  repeated RulingItem items = 14;
+}
+
+message RevertRulingRequest {
+  string tenant = 1;
+  string scope = 2;
+  string ruling_id = 3;
+}
+
+message RevertRulingResponse {
+  string tenant = 1;
+  string scope = 2;
+  string ruling_id = 3;
+  string action = 4;
+  int32 reverted = 5;
+  int32 changed = 6;
+  int32 skipped = 7;
+  repeated RulingItem items = 8;
 }
 
 // ========================
