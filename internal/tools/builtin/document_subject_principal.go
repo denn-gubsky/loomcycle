@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -355,7 +356,7 @@ func (d *Document) BindSubjectPrincipal(ctx context.Context, key sqlmem.ScopeKey
 		if refused, err := acl.document(ctx, "bind_subject_principal", "write", s.DocumentID); err != nil {
 			return SubjectBinding{}, err
 		} else if refused != nil {
-			return SubjectBinding{}, errors.New(refused.Text)
+			return SubjectBinding{}, connector.WithMessage(connector.ErrSubjectBindForbidden, refused.Text)
 		}
 	}
 	owner := randomLeaseOwner()
@@ -364,7 +365,8 @@ func (d *Document) BindSubjectPrincipal(ctx context.Context, key sqlmem.ScopeKey
 		return SubjectBinding{}, err
 	}
 	if !lease.Acquired {
-		return SubjectBinding{}, errors.New("another subject binding is being written in this scope; retry shortly")
+		return SubjectBinding{}, connector.WithMessage(connector.ErrSubjectBindUnavailable,
+			"another subject binding is being written in this scope; retry shortly")
 	}
 	defer func() { _, _ = d.releaseDocumentLease(context.WithoutCancel(ctx), key, subjectPrincipalLease, owner) }()
 
@@ -393,6 +395,9 @@ func (d *Document) BindSubjectPrincipal(ctx context.Context, key sqlmem.ScopeKey
 		}
 	}
 	if err := d.setSubjectPrincipal(ctx, key, mscope, s.RootChunkID, principal); err != nil {
+		if errors.Is(err, errSubjectBusy) {
+			return SubjectBinding{}, connector.WithMessage(connector.ErrSubjectBindUnavailable, err.Error())
+		}
 		return SubjectBinding{}, err
 	}
 	out.Changed = true

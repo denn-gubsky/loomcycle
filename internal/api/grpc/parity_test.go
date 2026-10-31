@@ -569,3 +569,7 @@ func (m *parityMock) RetentionOverride(context.Context, connector.RetentionOverr
 func (m *parityMock) MergeSubjects(context.Context, connector.MergeSubjectsRequest) (connector.MergeSubjectsResult, error) {
 	return connector.MergeSubjectsResult{}, nil
 }
+
+func (m *parityMock) BindSubjectPrincipal(context.Context, connector.BindSubjectPrincipalRequest) (connector.BindSubjectPrincipalResult, error) {
+	return connector.BindSubjectPrincipalResult{}, nil
+}

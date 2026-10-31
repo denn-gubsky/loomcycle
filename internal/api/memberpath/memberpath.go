@@ -56,6 +56,10 @@ func CarvedOut(method, path string) bool {
 	// it, tenant-wide: the operator's decision.
 	case path == "/v1/_ontology/subjects/merge":
 		return true
+	// Binding a subject to a user decides which subject erasing that user finds
+	// and unbinds: the operator's decision.
+	case path == "/v1/_ontology/subjects/principal":
+		return true
 	case path == "/v1/_limits" && (method == http.MethodPut || method == http.MethodDelete):
 		return true
 	// RFC EY: who may do what is the operator's to write and to read; a

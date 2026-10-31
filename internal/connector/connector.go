@@ -182,6 +182,24 @@ type Connector interface {
 	// MergeSubjects RPC and the MCP `ontology` tool (op merge_subjects).
 	MergeSubjects(ctx context.Context, req MergeSubjectsRequest) (MergeSubjectsResult, error)
 
+	// BindSubjectPrincipal binds a tenant ontology subject to the user it
+	// stands for (the subject root's fields.principal), or clears the binding
+	// when req.Principal is "". Erasing that user then finds the subject:
+	// the erasure reports it, clears the binding and announces `erased`.
+	//
+	// One user per subject (a bound subject is refused until cleared) and one
+	// subject per user in the tenant (refused, naming the subject that holds
+	// it). A non-empty principal must be a registered user of the tenant: a
+	// row in its users table, whatever its status.
+	//
+	// Operator-only on every transport, as MergeSubjects: an admin (any
+	// tenant, via req.Tenant) or a tenant operator for its own, holding write
+	// on the subject's document. Errors wrap the ErrSubjectBind* sentinels;
+	// SubjectBindCode names them. Reachable via POST
+	// /v1/_ontology/subjects/principal, the gRPC BindSubjectPrincipal RPC and
+	// the MCP `ontology` tool (op bind_principal).
+	BindSubjectPrincipal(ctx context.Context, req BindSubjectPrincipalRequest) (BindSubjectPrincipalResult, error)
+
 	// ReplaySession copies a SOURCE session's transcript into a NEW session bound
 	// to a (possibly different) target agent, so that agent continues from the
 	// same context — mirrors POST /v1/sessions/{id}/replay. Provider-specific
