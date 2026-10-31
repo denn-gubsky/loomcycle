@@ -403,6 +403,12 @@ type edgeWriteResult struct {
 	EvidenceCapped  bool     `json:"evidence_capped,omitempty"`
 	OntologyValid   bool     `json:"ontology_valid"`
 	Warnings        []string `json:"warnings,omitempty"`
+	// RuledBy and RulingID: the review policy ruled the proposal as it was
+	// filed (policy:<rule>@<ontology version>), recorded under that ruling.
+	// ReviewRoute: the policy left it for the judge.
+	RuledBy     string `json:"ruled_by,omitempty"`
+	RulingID    string `json:"ruling_id,omitempty"`
+	ReviewRoute string `json:"review_route,omitempty"`
 }
 
 // writeStatement is the one write path for a statement: link_chunks,
@@ -1241,9 +1247,11 @@ func (d *Document) unlinkChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 // beside that statement (attributes.revision_of), so a re-verification never
 // writes a duplicate.
 //
-// Auto-assertion is the server's decision, never the caller's: a kind the
-// vocabulary marks @auto_assert, made by a rule, with every quote resolved to an
-// existing chunk, is written asserted.
+// Auto-assertion is the server's decision, never the caller's. With a Review
+// section in the tenant ontology its policy rules the proposal once it is filed
+// (ruleOnFiling). Without one, a kind the vocabulary marks @auto_assert, made by
+// a rule, with every quote resolved to an existing chunk, is written asserted —
+// exactly as before the section existed.
 func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if r := refuseRuntimeAttributes("propose_statement", in.Attributes); r != nil {
 		return *r, nil
@@ -1279,9 +1287,13 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 		return errBusiness("propose_statement: statement_rejected: this relation was rejected by an operator ("+reason+")",
 			"Do not re-propose it. An operator can accept it from the review queue if it was rejected in error."), nil
 	}
+	pf, inForce := d.reviewPolicyInForce(ctx)
+	section := inForce && pf.section
 	// Not for a competing proposal (id): asserting it would set a second live
-	// statement beside the one it revises.
-	if len(w.evidence) > 0 && w.revisionOf == "" && d.autoAssertKind(ctx, w.kind) && strings.HasPrefix(in.edgeMethod, "rule:") {
+	// statement beside the one it revises. Not beside a Review section, which is
+	// the whole policy — nor when the ontology could not be read, which rules
+	// nothing.
+	if inForce && !section && len(w.evidence) > 0 && w.revisionOf == "" && d.autoAssertKind(ctx, w.kind) && strings.HasPrefix(in.edgeMethod, "rule:") {
 		allChunks := true
 		for _, ev := range w.evidence {
 			if ev.ChunkID == "" {
@@ -1304,6 +1316,9 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 		return *refuse, nil
 	}
 	d.publishEdgeChange(ctx, key, mscope, "propose_statement", res.ID, w.from, w.to, w.kind, res.Status)
+	if section && w.revisionOf == "" {
+		res = d.ruleOnFiling(ctx, key, mscope, pf, res)
+	}
 	return jsonResult(res)
 }
 
@@ -1468,6 +1483,12 @@ func (d *Document) getEdge(ctx context.Context, key sqlmem.ScopeKey, in docInput
 	if _, ok := out["evidence"]; !ok {
 		out["evidence"] = []edgeEvidenceRow{}
 		out["evidence_count"] = 0
+	}
+	if strings.HasPrefix(s.RuledBy, "policy:") {
+		// The ruling revert_ruling takes; a bulk ruling's is in ruled_by itself.
+		if id, err := d.policyRulingOf(ctx, key, s.ID); err == nil && id != "" {
+			out["ruling_id"] = id
+		}
 	}
 	return jsonResult(map[string]any{"statement": out})
 }

@@ -251,6 +251,9 @@ func (d *Document) classifyStatement(ctx context.Context, key sqlmem.ScopeKey, m
 		return nil, kind + " not written: " + refuse.Text
 	}
 	d.publishEdgeChange(ctx, key, mscope, "classify", res.ID, from, to, kind, res.Status)
+	if pf, ok := d.reviewPolicyInForce(ctx); ok && pf.section {
+		res = d.ruleOnFiling(ctx, key, mscope, pf, res)
+	}
 	return &res, ""
 }
 

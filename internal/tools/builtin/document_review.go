@@ -811,7 +811,7 @@ func (d *Document) RevertRuling(ctx context.Context, scope string, req connector
 	if err != nil {
 		return out, err
 	}
-	res, err := d.query(ctx, key, `SELECT action FROM statement_rulings WHERE id = ?`, req.RulingID)
+	res, err := d.query(ctx, key, `SELECT action, selector FROM statement_rulings WHERE id = ?`, req.RulingID)
 	if err != nil {
 		return out, err
 	}
@@ -822,6 +822,13 @@ func (d *Document) RevertRuling(ctx context.Context, scope string, req connector
 	if out.Action == rulingActionRevert {
 		return out, reviewInvalid("ruling " + req.RulingID + " is a revert, which is not undone: rule on its statements again")
 	}
+	// A bulk ruling's statements record bulk:<id>; a review policy's record
+	// the rule that ruled each (policy:<rule>@<version>), which revertOne
+	// takes from the statement, its fingerprint proving nothing changed it.
+	ruledBy := "bulk:" + req.RulingID
+	if isPolicyRuling(asStr(res.Rows[0][1])) {
+		ruledBy = ""
+	}
 	items, err := d.query(ctx, key, `SELECT edge_id, prior, fingerprint FROM statement_ruling_items WHERE ruling_id = ? ORDER BY edge_id`, req.RulingID)
 	if err != nil {
 		return out, err
@@ -830,7 +837,6 @@ func (d *Document) RevertRuling(ctx context.Context, scope string, req connector
 		return out, fmt.Errorf("revert_ruling: the store returned fewer of the ruling's statements than it holds")
 	}
 	acl := d.newDocACL(ctx, key)
-	ruledBy := "bulk:" + req.RulingID
 	for _, r := range items.Rows {
 		id, priorText, fp := asStr(r[0]), asStr(r[1]), asStr(r[2])
 		item, outcome, err := d.revertOne(ctx, key, mscope, acl, as, ruledBy, id, priorText, fp)
@@ -1005,7 +1011,9 @@ const (
 	revertSkipped
 )
 
-// revertOne restores one statement of a ruling, or says why not.
+// revertOne restores one statement of a ruling, or says why not. ruledBy is
+// what the ruling recorded on it; "" for a review policy's ruling, whose
+// statements each record their own rule.
 func (d *Document) revertOne(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, acl *docACL, as RulingAuthority, ruledBy, id, priorText, fp string) (connector.RulingItem, revertOutcome, error) {
 	item := connector.RulingItem{ID: id}
 	changed := func(msg string) (connector.RulingItem, revertOutcome, error) {
@@ -1037,7 +1045,10 @@ func (d *Document) revertOne(ctx context.Context, key sqlmem.ScopeKey, mscope st
 	if ok, err := d.mayRule(ctx, acl, as, fromDoc, toDoc); err != nil || !ok {
 		return item, revertSkipped, err
 	}
-	if s.RuledBy != ruledBy {
+	if ruledBy == "" && strings.HasPrefix(s.RuledBy, "policy:") {
+		ruledBy = s.RuledBy
+	}
+	if s.RuledBy != ruledBy || ruledBy == "" {
 		return changed("ruled again since (" + s.RuledBy + ")")
 	}
 	now, err := d.statementFingerprint(ctx, key, id)
