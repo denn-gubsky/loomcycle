@@ -53,8 +53,8 @@ const statementRulingItemsDDL = `CREATE TABLE IF NOT EXISTS statement_ruling_ite
 		PRIMARY KEY (ruling_id, edge_id))`
 
 const (
-	// ReviewRulingMax is the most statements one bulk ruling rules (D6).
-	ReviewRulingMax = 1000
+	// reviewRulingMax is the most statements one bulk ruling rules.
+	reviewRulingMax = 1000
 	// reviewSampleSize is how many statements a dry run shows.
 	reviewSampleSize = 20
 	// reviewFieldMax bounds the free-text filters (actor, judge_verdict) and
@@ -485,10 +485,10 @@ func (d *Document) RuleStatements(ctx context.Context, scope string, req connect
 	}
 	max := req.Max
 	switch {
-	case max < 0 || max > ReviewRulingMax:
-		return out, reviewInvalid(fmt.Sprintf("max must be between 1 and %d", ReviewRulingMax))
+	case max < 0 || max > reviewRulingMax:
+		return out, reviewInvalid(fmt.Sprintf("max must be between 1 and %d", reviewRulingMax))
 	case max == 0:
-		max = ReviewRulingMax
+		max = reviewRulingMax
 	}
 	switch {
 	case len(req.IDs) > 0 && req.Filter != nil:

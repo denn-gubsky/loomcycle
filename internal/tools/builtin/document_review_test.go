@@ -340,21 +340,21 @@ func TestRuleStatements_EachStatementRecordsTheBulkRuling(t *testing.T) {
 func TestRuleStatements_RefusesMoreThanOneThousand(t *testing.T) {
 	d, base, _ := documentFixture(t)
 	op := reviewOperatorCtx(base, nil)
-	ids := make([]string, ReviewRulingMax+1)
+	ids := make([]string, reviewRulingMax+1)
 	for i := range ids {
 		ids[i] = fmt.Sprintf("%032x", i)
 	}
 	for _, req := range []connector.RuleStatementsRequest{
 		{Action: "accept", IDs: ids},
-		{Action: "accept", Filter: &connector.ReviewQueueFilter{}, Max: ReviewRulingMax + 1},
+		{Action: "accept", Filter: &connector.ReviewQueueFilter{}, Max: reviewRulingMax + 1},
 	} {
 		if _, err := d.RuleStatements(op, "tenant", req, RuleAsOperator); connector.StatementReviewCode(err) != "invalid_request" {
 			t.Errorf("%d ids, max %d: %v, want invalid_request", len(req.IDs), req.Max, err)
 		}
 	}
 	// Exactly the cap is fine.
-	if _, err := d.RuleStatements(op, "tenant", connector.RuleStatementsRequest{Action: "accept", IDs: ids[:ReviewRulingMax]}, RuleAsOperator); err != nil {
-		t.Errorf("%d ids: %v", ReviewRulingMax, err)
+	if _, err := d.RuleStatements(op, "tenant", connector.RuleStatementsRequest{Action: "accept", IDs: ids[:reviewRulingMax]}, RuleAsOperator); err != nil {
+		t.Errorf("%d ids: %v", reviewRulingMax, err)
 	}
 }
 
