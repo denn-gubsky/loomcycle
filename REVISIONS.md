@@ -8,6 +8,20 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.131.1
+
+*Two fixes: the links agent's subject drain no longer stops on several events about a deleted subject, and the Web UI's Users console acts in the tenant it lists.*
+
+The v1.131.1 line: #2320 and #2321.
+- `@loomcycle/client` stays at 1.131.0; no adapter change.
+- No migration.
+- A patch tag builds only `loomcycle-browser`. This release is also built in full (a `force_full` dispatch), so `denngubsky/loomcycle:1.131.1` and the binaries are published.
+
+### Fixes
+
+- **kb/linker subject drain (#2321).** A tenant drain stopped and reported `failed` when it read three or more events about one subject whose document had been deleted, the normal sequence when an operator merges or re-types a subject and then deletes it. Each pass asked for the missing document again, and the third identical failing call was refused. The linker now remembers, for the rest of the run, a document id found missing, and every such event is answered `document_missing` and acked. Found on MTB during the RFC FR end-to-end check.
+- **Web UI Users console (#2320).** With a tenant chosen in the topbar, an admin's approve, edit, register and delete acted in the admin's own tenant, so approving a listed sign-up answered "no such user in this tenant". Every row action and the create form now send the tenant the list was read from. A tenant operator, with no focus, is unchanged.
+
 ## What's in v1.131.0
 
 *Subject change events are complete (RFC FR Phases 2 to 4): re-typing, deleting, merging and erasing a subject each announce it on `memory/subjects`. An operator can merge two subjects and bind a subject to the user it stands for, on every transport.*
