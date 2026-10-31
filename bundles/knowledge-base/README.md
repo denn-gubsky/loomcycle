@@ -207,7 +207,10 @@ scope picks the queue:
   created or changed.
 - `scope: tenant` drains `memory/subjects`, the subjects the runtime announces
   when one is adopted, merged, re-typed, removed or erased. Adopted subjects live
-  in the tenant scope. Each message is one subject pass (L6 only):
+  in the tenant scope; a merge is an operator's `POST /v1/_ontology/subjects/merge`
+  (or its gRPC, MCP and client twins), which has already re-pointed the scope's
+  statements by the time the message arrives. Each message is one subject pass
+  (L6 only):
 
 | `op` | the pass |
 |---|---|
