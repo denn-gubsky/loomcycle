@@ -170,12 +170,13 @@ func principalChange(stored string, fields json.RawMessage) bool {
 // at the write, under the subject's lease (keepStoredPrincipal), because the value read
 // here may be stale by then.
 func (d *Document) holdPrincipalField(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op, chunkID string, fields json.RawMessage) (*tools.Result, error) {
-	if len(fields) == 0 || isPrincipalBindingWrite(ctx) {
+	trimmed := bytes.TrimSpace(fields)
+	if len(trimmed) == 0 || isPrincipalBindingWrite(ctx) {
 		return nil, nil
 	}
 	var stored string
 	// An object without the field changes nothing, whatever is stored: no read.
-	if chunkID != "" && (bytes.Contains(fields, []byte(`"`+subjectPrincipalField+`"`)) || bytes.TrimSpace(fields)[0] != '{') {
+	if chunkID != "" && (bytes.Contains(fields, []byte(`"`+subjectPrincipalField+`"`)) || trimmed[0] != '{') {
 		var err error
 		if stored, err = d.subjectPrincipal(ctx, key, mscope, chunkID); err != nil {
 			return nil, err
