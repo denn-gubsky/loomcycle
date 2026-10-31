@@ -279,6 +279,8 @@ export type {
   ErasureTier,
   MergeSubjectsResult,
   SubjectRef,
+  BindSubjectPrincipalResult,
+  ErasureBoundSubject,
   ErasureTokenRef,
   CancelTurnResult,
   ReviewRunResult,

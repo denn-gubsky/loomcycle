@@ -4274,6 +4274,9 @@ func (s *Server) routes() *http.ServeMux {
 	// caller's own tenant, gated with the routes above and carved out of the
 	// member path; the connector checks the caller again for gRPC and MCP.
 	mux.Handle("POST /v1/_ontology/subjects/merge", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologySubjectMerge))))
+	// RFC FR P4: bind a subject to the user it stands for, or clear it. Gated and
+	// carved out as the merge is; the connector checks the caller again.
+	mux.Handle("POST /v1/_ontology/subjects/principal", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologySubjectPrincipal))))
 	// RFC BK P3: resident interactive sub-agent visibility + operator control.
 	// GET lists (tenant-scoped); POST close/cancel act on one (tenant-gated).
 	// Per-replica (the resident registry is in-process). Scope-gated in

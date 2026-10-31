@@ -152,6 +152,15 @@ The low-level primitives (`runStreaming({interactive:true})` + `sendRunInput` + 
 | `getConfig(opts?)` | `Promise<ConfigResponse>` | v1.38.0 — instance configuration: build identity, the feature matrix, and the live provider/model/search cascade with `active`/`selected`. `view` names the disclosure level (`public` / `authenticated` / `admin`). Also readable with **no bearer** against a deployment running `LOOMCYCLE_PUBLIC_CONFIG=1`, which serves the narrower `public` view — the landing-page case. |
 | `listUsers()` | `Promise<ListUsersResponse>` | Admin: known users with running-count summary. |
 
+### Ontology subjects
+
+| Method | Returns | Notes |
+|---|---|---|
+| `mergeSubjects(duplicate, survivor, { tenant? })` | `Promise<MergeSubjectsResult>` | Fold one tenant ontology subject into another, each a document id or natural key (`POST /v1/_ontology/subjects/merge`): facts move, statements are copied onto the survivor (originals expired as merged), the duplicate stays retired with `fields.merged_into`, and a user the duplicate is bound to is bound to the survivor. Refusals throw with `code`: `same_subject`, `not_a_subject`, `subject_not_in_scope`, `already_merged`, `principal_conflict`, `forbidden`. |
+| `bindSubjectPrincipal(subject, principal, { tenant? })` | `Promise<BindSubjectPrincipalResult>` | Bind a subject to the user it stands for, or clear it with `principal: ""` (`POST /v1/_ontology/subjects/principal`). The user must be registered in the tenant (any status). Erasing that user then lists the subject in the erasure report's `bound_subjects`, unbinds it and keeps it. Refusals throw with `code`: `subject_not_found`, `not_a_subject`, `binding_conflict`, `principal_not_found`, `forbidden`, `invalid_request`, `unavailable`. |
+
+Both need a tenant operator or admin token; `tenant` is an admin's focus.
+
 ### Pause / Resume / State (v0.8.17 / v0.8.18)
 
 | Method | Returns | Notes |

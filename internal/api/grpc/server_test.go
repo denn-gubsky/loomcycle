@@ -755,6 +755,10 @@ type mockConnector struct {
 	mergeRes connector.MergeSubjectsResult
 	mergeErr error
 
+	bindReq connector.BindSubjectPrincipalRequest
+	bindRes connector.BindSubjectPrincipalResult
+	bindErr error
+
 	dirTenant      atomic.Value
 	erasureTenant  atomic.Value
 	erasureSubject atomic.Value
@@ -1292,4 +1296,11 @@ func (m *mockConnector) RetentionOverride(_ context.Context, req connector.Reten
 func (m *mockConnector) MergeSubjects(_ context.Context, req connector.MergeSubjectsRequest) (connector.MergeSubjectsResult, error) {
 	m.mergeReq = req
 	return m.mergeRes, m.mergeErr
+}
+
+// BindSubjectPrincipal records the request and answers with the configured
+// result (connector.Connector).
+func (m *mockConnector) BindSubjectPrincipal(_ context.Context, req connector.BindSubjectPrincipalRequest) (connector.BindSubjectPrincipalResult, error) {
+	m.bindReq = req
+	return m.bindRes, m.bindErr
 }

@@ -38,88 +38,89 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Loomcycle_Run_FullMethodName                 = "/loomcycle.v1.Loomcycle/Run"
-	Loomcycle_Continue_FullMethodName            = "/loomcycle.v1.Loomcycle/Continue"
-	Loomcycle_SpawnRunBatch_FullMethodName       = "/loomcycle.v1.Loomcycle/SpawnRunBatch"
-	Loomcycle_CompactRun_FullMethodName          = "/loomcycle.v1.Loomcycle/CompactRun"
-	Loomcycle_DeleteRunTree_FullMethodName       = "/loomcycle.v1.Loomcycle/DeleteRunTree"
-	Loomcycle_CreateConfiguredRun_FullMethodName = "/loomcycle.v1.Loomcycle/CreateConfiguredRun"
-	Loomcycle_UpdateConfiguredRun_FullMethodName = "/loomcycle.v1.Loomcycle/UpdateConfiguredRun"
-	Loomcycle_StartConfiguredRun_FullMethodName  = "/loomcycle.v1.Loomcycle/StartConfiguredRun"
-	Loomcycle_DeleteConfiguredRun_FullMethodName = "/loomcycle.v1.Loomcycle/DeleteConfiguredRun"
-	Loomcycle_DirectoryUsers_FullMethodName      = "/loomcycle.v1.Loomcycle/DirectoryUsers"
-	Loomcycle_DirectoryInspect_FullMethodName    = "/loomcycle.v1.Loomcycle/DirectoryInspect"
-	Loomcycle_DirectoryTenants_FullMethodName    = "/loomcycle.v1.Loomcycle/DirectoryTenants"
-	Loomcycle_ErasureReport_FullMethodName       = "/loomcycle.v1.Loomcycle/ErasureReport"
-	Loomcycle_ErasureExecute_FullMethodName      = "/loomcycle.v1.Loomcycle/ErasureExecute"
-	Loomcycle_ReplaySession_FullMethodName       = "/loomcycle.v1.Loomcycle/ReplaySession"
-	Loomcycle_RunInput_FullMethodName            = "/loomcycle.v1.Loomcycle/RunInput"
-	Loomcycle_RetuneRun_FullMethodName           = "/loomcycle.v1.Loomcycle/RetuneRun"
-	Loomcycle_CancelTurn_FullMethodName          = "/loomcycle.v1.Loomcycle/CancelTurn"
-	Loomcycle_ReviewRun_FullMethodName           = "/loomcycle.v1.Loomcycle/ReviewRun"
-	Loomcycle_ResolveInterrupt_FullMethodName    = "/loomcycle.v1.Loomcycle/ResolveInterrupt"
-	Loomcycle_StreamRun_FullMethodName           = "/loomcycle.v1.Loomcycle/StreamRun"
-	Loomcycle_GetTranscript_FullMethodName       = "/loomcycle.v1.Loomcycle/GetTranscript"
-	Loomcycle_GetAgent_FullMethodName            = "/loomcycle.v1.Loomcycle/GetAgent"
-	Loomcycle_GetRun_FullMethodName              = "/loomcycle.v1.Loomcycle/GetRun"
-	Loomcycle_CancelAgent_FullMethodName         = "/loomcycle.v1.Loomcycle/CancelAgent"
-	Loomcycle_ListUserAgents_FullMethodName      = "/loomcycle.v1.Loomcycle/ListUserAgents"
-	Loomcycle_ListWalkRuns_FullMethodName        = "/loomcycle.v1.Loomcycle/ListWalkRuns"
-	Loomcycle_ListChildRuns_FullMethodName       = "/loomcycle.v1.Loomcycle/ListChildRuns"
-	Loomcycle_UsageReport_FullMethodName         = "/loomcycle.v1.Loomcycle/UsageReport"
-	Loomcycle_TokenLimit_FullMethodName          = "/loomcycle.v1.Loomcycle/TokenLimit"
-	Loomcycle_RetentionOverride_FullMethodName   = "/loomcycle.v1.Loomcycle/RetentionOverride"
-	Loomcycle_MergeSubjects_FullMethodName       = "/loomcycle.v1.Loomcycle/MergeSubjects"
-	Loomcycle_Decide_FullMethodName              = "/loomcycle.v1.Loomcycle/Decide"
-	Loomcycle_ListDecisionModels_FullMethodName  = "/loomcycle.v1.Loomcycle/ListDecisionModels"
-	Loomcycle_Health_FullMethodName              = "/loomcycle.v1.Loomcycle/Health"
-	Loomcycle_Config_FullMethodName              = "/loomcycle.v1.Loomcycle/Config"
-	Loomcycle_PauseRuntime_FullMethodName        = "/loomcycle.v1.Loomcycle/PauseRuntime"
-	Loomcycle_ResumeRuntime_FullMethodName       = "/loomcycle.v1.Loomcycle/ResumeRuntime"
-	Loomcycle_GetRuntimeState_FullMethodName     = "/loomcycle.v1.Loomcycle/GetRuntimeState"
-	Loomcycle_ResolveProbe_FullMethodName        = "/loomcycle.v1.Loomcycle/ResolveProbe"
-	Loomcycle_CreateSnapshot_FullMethodName      = "/loomcycle.v1.Loomcycle/CreateSnapshot"
-	Loomcycle_ListSnapshots_FullMethodName       = "/loomcycle.v1.Loomcycle/ListSnapshots"
-	Loomcycle_GetSnapshot_FullMethodName         = "/loomcycle.v1.Loomcycle/GetSnapshot"
-	Loomcycle_ExportSnapshot_FullMethodName      = "/loomcycle.v1.Loomcycle/ExportSnapshot"
-	Loomcycle_RestoreSnapshot_FullMethodName     = "/loomcycle.v1.Loomcycle/RestoreSnapshot"
-	Loomcycle_DeleteSnapshot_FullMethodName      = "/loomcycle.v1.Loomcycle/DeleteSnapshot"
-	Loomcycle_AgentDef_FullMethodName            = "/loomcycle.v1.Loomcycle/AgentDef"
-	Loomcycle_SkillDef_FullMethodName            = "/loomcycle.v1.Loomcycle/SkillDef"
-	Loomcycle_MCPServerDef_FullMethodName        = "/loomcycle.v1.Loomcycle/MCPServerDef"
-	Loomcycle_ScheduleDef_FullMethodName         = "/loomcycle.v1.Loomcycle/ScheduleDef"
-	Loomcycle_A2AServerCardDef_FullMethodName    = "/loomcycle.v1.Loomcycle/A2AServerCardDef"
-	Loomcycle_A2AAgentDef_FullMethodName         = "/loomcycle.v1.Loomcycle/A2AAgentDef"
-	Loomcycle_WebhookDef_FullMethodName          = "/loomcycle.v1.Loomcycle/WebhookDef"
-	Loomcycle_MemoryBackendDef_FullMethodName    = "/loomcycle.v1.Loomcycle/MemoryBackendDef"
-	Loomcycle_DocumentSourceDef_FullMethodName   = "/loomcycle.v1.Loomcycle/DocumentSourceDef"
-	Loomcycle_ClientDef_FullMethodName           = "/loomcycle.v1.Loomcycle/ClientDef"
-	Loomcycle_OperatorTokenDef_FullMethodName    = "/loomcycle.v1.Loomcycle/OperatorTokenDef"
-	Loomcycle_VolumeDef_FullMethodName           = "/loomcycle.v1.Loomcycle/VolumeDef"
-	Loomcycle_TeamDef_FullMethodName             = "/loomcycle.v1.Loomcycle/TeamDef"
-	Loomcycle_HookDef_FullMethodName             = "/loomcycle.v1.Loomcycle/HookDef"
-	Loomcycle_Path_FullMethodName                = "/loomcycle.v1.Loomcycle/Path"
-	Loomcycle_Document_FullMethodName            = "/loomcycle.v1.Loomcycle/Document"
-	Loomcycle_CredentialDef_FullMethodName       = "/loomcycle.v1.Loomcycle/CredentialDef"
-	Loomcycle_Crypto_FullMethodName              = "/loomcycle.v1.Loomcycle/Crypto"
-	Loomcycle_GroupDef_FullMethodName            = "/loomcycle.v1.Loomcycle/GroupDef"
-	Loomcycle_AclDef_FullMethodName              = "/loomcycle.v1.Loomcycle/AclDef"
-	Loomcycle_AclBinding_FullMethodName          = "/loomcycle.v1.Loomcycle/AclBinding"
-	Loomcycle_Authz_FullMethodName               = "/loomcycle.v1.Loomcycle/Authz"
-	Loomcycle_History_FullMethodName             = "/loomcycle.v1.Loomcycle/History"
-	Loomcycle_Evaluation_FullMethodName          = "/loomcycle.v1.Loomcycle/Evaluation"
-	Loomcycle_Memory_FullMethodName              = "/loomcycle.v1.Loomcycle/Memory"
-	Loomcycle_ListChannels_FullMethodName        = "/loomcycle.v1.Loomcycle/ListChannels"
-	Loomcycle_StreamUserRunStates_FullMethodName = "/loomcycle.v1.Loomcycle/StreamUserRunStates"
-	Loomcycle_PublishChannel_FullMethodName      = "/loomcycle.v1.Loomcycle/PublishChannel"
-	Loomcycle_SubscribeChannel_FullMethodName    = "/loomcycle.v1.Loomcycle/SubscribeChannel"
-	Loomcycle_PeekChannel_FullMethodName         = "/loomcycle.v1.Loomcycle/PeekChannel"
-	Loomcycle_AckChannel_FullMethodName          = "/loomcycle.v1.Loomcycle/AckChannel"
-	Loomcycle_ListTeamChannels_FullMethodName    = "/loomcycle.v1.Loomcycle/ListTeamChannels"
-	Loomcycle_PeekTeamChannel_FullMethodName     = "/loomcycle.v1.Loomcycle/PeekTeamChannel"
-	Loomcycle_ReleaseTeamChannel_FullMethodName  = "/loomcycle.v1.Loomcycle/ReleaseTeamChannel"
-	Loomcycle_AwaitChannels_FullMethodName       = "/loomcycle.v1.Loomcycle/AwaitChannels"
-	Loomcycle_BroadcastChannels_FullMethodName   = "/loomcycle.v1.Loomcycle/BroadcastChannels"
+	Loomcycle_Run_FullMethodName                  = "/loomcycle.v1.Loomcycle/Run"
+	Loomcycle_Continue_FullMethodName             = "/loomcycle.v1.Loomcycle/Continue"
+	Loomcycle_SpawnRunBatch_FullMethodName        = "/loomcycle.v1.Loomcycle/SpawnRunBatch"
+	Loomcycle_CompactRun_FullMethodName           = "/loomcycle.v1.Loomcycle/CompactRun"
+	Loomcycle_DeleteRunTree_FullMethodName        = "/loomcycle.v1.Loomcycle/DeleteRunTree"
+	Loomcycle_CreateConfiguredRun_FullMethodName  = "/loomcycle.v1.Loomcycle/CreateConfiguredRun"
+	Loomcycle_UpdateConfiguredRun_FullMethodName  = "/loomcycle.v1.Loomcycle/UpdateConfiguredRun"
+	Loomcycle_StartConfiguredRun_FullMethodName   = "/loomcycle.v1.Loomcycle/StartConfiguredRun"
+	Loomcycle_DeleteConfiguredRun_FullMethodName  = "/loomcycle.v1.Loomcycle/DeleteConfiguredRun"
+	Loomcycle_DirectoryUsers_FullMethodName       = "/loomcycle.v1.Loomcycle/DirectoryUsers"
+	Loomcycle_DirectoryInspect_FullMethodName     = "/loomcycle.v1.Loomcycle/DirectoryInspect"
+	Loomcycle_DirectoryTenants_FullMethodName     = "/loomcycle.v1.Loomcycle/DirectoryTenants"
+	Loomcycle_ErasureReport_FullMethodName        = "/loomcycle.v1.Loomcycle/ErasureReport"
+	Loomcycle_ErasureExecute_FullMethodName       = "/loomcycle.v1.Loomcycle/ErasureExecute"
+	Loomcycle_ReplaySession_FullMethodName        = "/loomcycle.v1.Loomcycle/ReplaySession"
+	Loomcycle_RunInput_FullMethodName             = "/loomcycle.v1.Loomcycle/RunInput"
+	Loomcycle_RetuneRun_FullMethodName            = "/loomcycle.v1.Loomcycle/RetuneRun"
+	Loomcycle_CancelTurn_FullMethodName           = "/loomcycle.v1.Loomcycle/CancelTurn"
+	Loomcycle_ReviewRun_FullMethodName            = "/loomcycle.v1.Loomcycle/ReviewRun"
+	Loomcycle_ResolveInterrupt_FullMethodName     = "/loomcycle.v1.Loomcycle/ResolveInterrupt"
+	Loomcycle_StreamRun_FullMethodName            = "/loomcycle.v1.Loomcycle/StreamRun"
+	Loomcycle_GetTranscript_FullMethodName        = "/loomcycle.v1.Loomcycle/GetTranscript"
+	Loomcycle_GetAgent_FullMethodName             = "/loomcycle.v1.Loomcycle/GetAgent"
+	Loomcycle_GetRun_FullMethodName               = "/loomcycle.v1.Loomcycle/GetRun"
+	Loomcycle_CancelAgent_FullMethodName          = "/loomcycle.v1.Loomcycle/CancelAgent"
+	Loomcycle_ListUserAgents_FullMethodName       = "/loomcycle.v1.Loomcycle/ListUserAgents"
+	Loomcycle_ListWalkRuns_FullMethodName         = "/loomcycle.v1.Loomcycle/ListWalkRuns"
+	Loomcycle_ListChildRuns_FullMethodName        = "/loomcycle.v1.Loomcycle/ListChildRuns"
+	Loomcycle_UsageReport_FullMethodName          = "/loomcycle.v1.Loomcycle/UsageReport"
+	Loomcycle_TokenLimit_FullMethodName           = "/loomcycle.v1.Loomcycle/TokenLimit"
+	Loomcycle_RetentionOverride_FullMethodName    = "/loomcycle.v1.Loomcycle/RetentionOverride"
+	Loomcycle_MergeSubjects_FullMethodName        = "/loomcycle.v1.Loomcycle/MergeSubjects"
+	Loomcycle_BindSubjectPrincipal_FullMethodName = "/loomcycle.v1.Loomcycle/BindSubjectPrincipal"
+	Loomcycle_Decide_FullMethodName               = "/loomcycle.v1.Loomcycle/Decide"
+	Loomcycle_ListDecisionModels_FullMethodName   = "/loomcycle.v1.Loomcycle/ListDecisionModels"
+	Loomcycle_Health_FullMethodName               = "/loomcycle.v1.Loomcycle/Health"
+	Loomcycle_Config_FullMethodName               = "/loomcycle.v1.Loomcycle/Config"
+	Loomcycle_PauseRuntime_FullMethodName         = "/loomcycle.v1.Loomcycle/PauseRuntime"
+	Loomcycle_ResumeRuntime_FullMethodName        = "/loomcycle.v1.Loomcycle/ResumeRuntime"
+	Loomcycle_GetRuntimeState_FullMethodName      = "/loomcycle.v1.Loomcycle/GetRuntimeState"
+	Loomcycle_ResolveProbe_FullMethodName         = "/loomcycle.v1.Loomcycle/ResolveProbe"
+	Loomcycle_CreateSnapshot_FullMethodName       = "/loomcycle.v1.Loomcycle/CreateSnapshot"
+	Loomcycle_ListSnapshots_FullMethodName        = "/loomcycle.v1.Loomcycle/ListSnapshots"
+	Loomcycle_GetSnapshot_FullMethodName          = "/loomcycle.v1.Loomcycle/GetSnapshot"
+	Loomcycle_ExportSnapshot_FullMethodName       = "/loomcycle.v1.Loomcycle/ExportSnapshot"
+	Loomcycle_RestoreSnapshot_FullMethodName      = "/loomcycle.v1.Loomcycle/RestoreSnapshot"
+	Loomcycle_DeleteSnapshot_FullMethodName       = "/loomcycle.v1.Loomcycle/DeleteSnapshot"
+	Loomcycle_AgentDef_FullMethodName             = "/loomcycle.v1.Loomcycle/AgentDef"
+	Loomcycle_SkillDef_FullMethodName             = "/loomcycle.v1.Loomcycle/SkillDef"
+	Loomcycle_MCPServerDef_FullMethodName         = "/loomcycle.v1.Loomcycle/MCPServerDef"
+	Loomcycle_ScheduleDef_FullMethodName          = "/loomcycle.v1.Loomcycle/ScheduleDef"
+	Loomcycle_A2AServerCardDef_FullMethodName     = "/loomcycle.v1.Loomcycle/A2AServerCardDef"
+	Loomcycle_A2AAgentDef_FullMethodName          = "/loomcycle.v1.Loomcycle/A2AAgentDef"
+	Loomcycle_WebhookDef_FullMethodName           = "/loomcycle.v1.Loomcycle/WebhookDef"
+	Loomcycle_MemoryBackendDef_FullMethodName     = "/loomcycle.v1.Loomcycle/MemoryBackendDef"
+	Loomcycle_DocumentSourceDef_FullMethodName    = "/loomcycle.v1.Loomcycle/DocumentSourceDef"
+	Loomcycle_ClientDef_FullMethodName            = "/loomcycle.v1.Loomcycle/ClientDef"
+	Loomcycle_OperatorTokenDef_FullMethodName     = "/loomcycle.v1.Loomcycle/OperatorTokenDef"
+	Loomcycle_VolumeDef_FullMethodName            = "/loomcycle.v1.Loomcycle/VolumeDef"
+	Loomcycle_TeamDef_FullMethodName              = "/loomcycle.v1.Loomcycle/TeamDef"
+	Loomcycle_HookDef_FullMethodName              = "/loomcycle.v1.Loomcycle/HookDef"
+	Loomcycle_Path_FullMethodName                 = "/loomcycle.v1.Loomcycle/Path"
+	Loomcycle_Document_FullMethodName             = "/loomcycle.v1.Loomcycle/Document"
+	Loomcycle_CredentialDef_FullMethodName        = "/loomcycle.v1.Loomcycle/CredentialDef"
+	Loomcycle_Crypto_FullMethodName               = "/loomcycle.v1.Loomcycle/Crypto"
+	Loomcycle_GroupDef_FullMethodName             = "/loomcycle.v1.Loomcycle/GroupDef"
+	Loomcycle_AclDef_FullMethodName               = "/loomcycle.v1.Loomcycle/AclDef"
+	Loomcycle_AclBinding_FullMethodName           = "/loomcycle.v1.Loomcycle/AclBinding"
+	Loomcycle_Authz_FullMethodName                = "/loomcycle.v1.Loomcycle/Authz"
+	Loomcycle_History_FullMethodName              = "/loomcycle.v1.Loomcycle/History"
+	Loomcycle_Evaluation_FullMethodName           = "/loomcycle.v1.Loomcycle/Evaluation"
+	Loomcycle_Memory_FullMethodName               = "/loomcycle.v1.Loomcycle/Memory"
+	Loomcycle_ListChannels_FullMethodName         = "/loomcycle.v1.Loomcycle/ListChannels"
+	Loomcycle_StreamUserRunStates_FullMethodName  = "/loomcycle.v1.Loomcycle/StreamUserRunStates"
+	Loomcycle_PublishChannel_FullMethodName       = "/loomcycle.v1.Loomcycle/PublishChannel"
+	Loomcycle_SubscribeChannel_FullMethodName     = "/loomcycle.v1.Loomcycle/SubscribeChannel"
+	Loomcycle_PeekChannel_FullMethodName          = "/loomcycle.v1.Loomcycle/PeekChannel"
+	Loomcycle_AckChannel_FullMethodName           = "/loomcycle.v1.Loomcycle/AckChannel"
+	Loomcycle_ListTeamChannels_FullMethodName     = "/loomcycle.v1.Loomcycle/ListTeamChannels"
+	Loomcycle_PeekTeamChannel_FullMethodName      = "/loomcycle.v1.Loomcycle/PeekTeamChannel"
+	Loomcycle_ReleaseTeamChannel_FullMethodName   = "/loomcycle.v1.Loomcycle/ReleaseTeamChannel"
+	Loomcycle_AwaitChannels_FullMethodName        = "/loomcycle.v1.Loomcycle/AwaitChannels"
+	Loomcycle_BroadcastChannels_FullMethodName    = "/loomcycle.v1.Loomcycle/BroadcastChannels"
 )
 
 // LoomcycleClient is the client API for Loomcycle service.
@@ -347,6 +348,8 @@ type LoomcycleClient interface {
 	// the duplicate's facts move under the survivor, its statements are copied
 	// onto the survivor (the originals expired as merged), and the duplicate
 	// stays, retired, naming the survivor (fields.merged_into, status merged).
+	// A user the duplicate is bound to is bound to the survivor instead
+	// (FAILED_PRECONDITION principal_conflict when the survivor names another).
 	// A `merged` event then goes to the tenant's memory/subjects channel unless
 	// the caller's access-control rules hide part of the scope from reading
 	// (not_announced says why).
@@ -355,10 +358,25 @@ type LoomcycleClient interface {
 	// for its own, holding write on both documents (PERMISSION_DENIED
 	// otherwise). A refusal carries a google.rpc.ErrorInfo whose reason is the
 	// code HTTP returns (same_subject, not_a_subject, subject_not_in_scope,
-	// already_merged, ...).
+	// already_merged, principal_conflict, ...).
 	//
 	// Mirrors POST /v1/_ontology/subjects/merge.
 	MergeSubjects(ctx context.Context, in *MergeSubjectsRequest, opts ...grpc.CallOption) (*MergeSubjectsResponse, error)
+	// BindSubjectPrincipal binds a tenant ontology subject (named by document
+	// id, root chunk id or natural key) to the user it stands for, or clears
+	// the binding when principal is empty. Erasing that user then finds the
+	// subject: the erasure reports it, clears the binding and announces
+	// `erased`. One user per subject and one subject per user in the tenant;
+	// the principal must be a registered user of the tenant (any status).
+	//
+	// Operator-only, as MergeSubjects: an admin (any tenant, via `tenant`) or
+	// a tenant operator for its own, holding write on the subject's document.
+	// A refusal carries a google.rpc.ErrorInfo whose reason is the code HTTP
+	// returns (subject_not_found, not_a_subject, binding_conflict,
+	// principal_not_found, forbidden, invalid_request, unavailable).
+	//
+	// Mirrors POST /v1/_ontology/subjects/principal.
+	BindSubjectPrincipal(ctx context.Context, in *BindSubjectPrincipalRequest, opts ...grpc.CallOption) (*BindSubjectPrincipalResponse, error)
 	// Decide asks a decision model typed questions (choice / noul / score)
 	// about a piece of state and returns each answer as the model gave it. It
 	// is a judgement with probabilities, not generated text, and it needs no
@@ -1042,6 +1060,16 @@ func (c *loomcycleClient) MergeSubjects(ctx context.Context, in *MergeSubjectsRe
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MergeSubjectsResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_MergeSubjects_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) BindSubjectPrincipal(ctx context.Context, in *BindSubjectPrincipalRequest, opts ...grpc.CallOption) (*BindSubjectPrincipalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BindSubjectPrincipalResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_BindSubjectPrincipal_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1782,6 +1810,8 @@ type LoomcycleServer interface {
 	// the duplicate's facts move under the survivor, its statements are copied
 	// onto the survivor (the originals expired as merged), and the duplicate
 	// stays, retired, naming the survivor (fields.merged_into, status merged).
+	// A user the duplicate is bound to is bound to the survivor instead
+	// (FAILED_PRECONDITION principal_conflict when the survivor names another).
 	// A `merged` event then goes to the tenant's memory/subjects channel unless
 	// the caller's access-control rules hide part of the scope from reading
 	// (not_announced says why).
@@ -1790,10 +1820,25 @@ type LoomcycleServer interface {
 	// for its own, holding write on both documents (PERMISSION_DENIED
 	// otherwise). A refusal carries a google.rpc.ErrorInfo whose reason is the
 	// code HTTP returns (same_subject, not_a_subject, subject_not_in_scope,
-	// already_merged, ...).
+	// already_merged, principal_conflict, ...).
 	//
 	// Mirrors POST /v1/_ontology/subjects/merge.
 	MergeSubjects(context.Context, *MergeSubjectsRequest) (*MergeSubjectsResponse, error)
+	// BindSubjectPrincipal binds a tenant ontology subject (named by document
+	// id, root chunk id or natural key) to the user it stands for, or clears
+	// the binding when principal is empty. Erasing that user then finds the
+	// subject: the erasure reports it, clears the binding and announces
+	// `erased`. One user per subject and one subject per user in the tenant;
+	// the principal must be a registered user of the tenant (any status).
+	//
+	// Operator-only, as MergeSubjects: an admin (any tenant, via `tenant`) or
+	// a tenant operator for its own, holding write on the subject's document.
+	// A refusal carries a google.rpc.ErrorInfo whose reason is the code HTTP
+	// returns (subject_not_found, not_a_subject, binding_conflict,
+	// principal_not_found, forbidden, invalid_request, unavailable).
+	//
+	// Mirrors POST /v1/_ontology/subjects/principal.
+	BindSubjectPrincipal(context.Context, *BindSubjectPrincipalRequest) (*BindSubjectPrincipalResponse, error)
 	// Decide asks a decision model typed questions (choice / noul / score)
 	// about a piece of state and returns each answer as the model gave it. It
 	// is a judgement with probabilities, not generated text, and it needs no
@@ -2222,6 +2267,9 @@ func (UnimplementedLoomcycleServer) RetentionOverride(context.Context, *Retentio
 }
 func (UnimplementedLoomcycleServer) MergeSubjects(context.Context, *MergeSubjectsRequest) (*MergeSubjectsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MergeSubjects not implemented")
+}
+func (UnimplementedLoomcycleServer) BindSubjectPrincipal(context.Context, *BindSubjectPrincipalRequest) (*BindSubjectPrincipalResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BindSubjectPrincipal not implemented")
 }
 func (UnimplementedLoomcycleServer) Decide(context.Context, *DecideRequest) (*DecideResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Decide not implemented")
@@ -2938,6 +2986,24 @@ func _Loomcycle_MergeSubjects_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).MergeSubjects(ctx, req.(*MergeSubjectsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_BindSubjectPrincipal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BindSubjectPrincipalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).BindSubjectPrincipal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_BindSubjectPrincipal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).BindSubjectPrincipal(ctx, req.(*BindSubjectPrincipalRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -3953,6 +4019,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MergeSubjects",
 			Handler:    _Loomcycle_MergeSubjects_Handler,
+		},
+		{
+			MethodName: "BindSubjectPrincipal",
+			Handler:    _Loomcycle_BindSubjectPrincipal_Handler,
 		},
 		{
 			MethodName: "Decide",

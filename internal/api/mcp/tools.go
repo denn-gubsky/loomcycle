@@ -292,6 +292,10 @@ func baseToolDescriptors() []loommcp.ToolDescriptor {
 				"dry run would remove, or what execute did; never a token value. A token holding an " +
 				"operator scope is left and named under retained. Groups and bindings declared in the " +
 				"config file are reported but cannot be erased — they must be removed from the config. " +
+				"Tier 2 also counts the tenant's ontology subjects bound to the user (subject_bindings), named in " +
+				"bound_subjects as {document_id, natural_key, path} (ones you may not read are only counted, in " +
+				"bound_subjects_withheld): execute clears each binding and announces `erased` (not_announced says " +
+				"why it did not), and never deletes the subject — deleting one is your call, with the document tool. " +
 				"IT DEFAULTS TO A DRY RUN: pass dry_run:false AND confirm equal to the subject to actually " +
 				"delete, which is irreversible. " +
 				"IMPORTANT: tier-3 residue is traceable only through the subject's chats, which execute " +

@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -349,5 +351,127 @@ func TestMergeSubjects_KeepsTheDuplicatesOtherFieldsExactly(t *testing.T) {
 		if !strings.Contains(string(body.Fields), want) {
 			t.Errorf("fields = %s, want %s", body.Fields, want)
 		}
+	}
+}
+
+// TestMergeSubjects_MovesThePrincipalBindingToTheSurvivor (RFC FR §3 step 3).
+//
+// The duplicate's facts now live under the survivor, so the person the duplicate was
+// bound to is bound to the survivor: erasing that person finds the subject that holds
+// the facts, and the retired duplicate keeps no binding.
+func TestMergeSubjects_MovesThePrincipalBindingToTheSurvivor(t *testing.T) {
+	f := newMergeFixture(t)
+	if _, err := f.d.BindTenantSubjectPrincipal(f.ctx, f.dupDoc, "u-ada"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.d.MergeSubjects(f.ctx, "tenant", f.dupDoc, f.survDoc); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if _, fields := f.rootFields(t, f.survRoot); fields[subjectPrincipalField] != "u-ada" {
+		t.Errorf("survivor's binding = %v, want u-ada", fields[subjectPrincipalField])
+	}
+	status, fields := f.rootFields(t, f.dupRoot)
+	if fields[subjectPrincipalField] != nil || status != subjectMergedStatus || fields[subjectMergedIntoField] != f.survDoc {
+		t.Errorf("duplicate after the merge: status %q fields %v, want merged into the survivor and unbound", status, fields)
+	}
+	bound, err := f.d.TenantSubjectsBoundTo(f.ctx, "u-ada")
+	if err != nil || len(bound) != 1 || bound[0].DocumentID != f.survDoc {
+		t.Errorf("erasure of u-ada finds %+v (%v), want the survivor only", bound, err)
+	}
+	// A survivor already bound to the same person is not a conflict; an unbound
+	// duplicate leaves the survivor's binding alone.
+	g := newMergeFixture(t)
+	if _, err := g.d.BindTenantSubjectPrincipal(g.ctx, g.survDoc, "u-eve"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.d.MergeSubjects(g.ctx, "tenant", g.dupDoc, g.survDoc); err != nil {
+		t.Fatalf("merge into a bound survivor: %v", err)
+	}
+	if _, fields := g.rootFields(t, g.survRoot); fields[subjectPrincipalField] != "u-eve" {
+		t.Errorf("survivor's own binding = %v, want u-eve kept", fields[subjectPrincipalField])
+	}
+}
+
+// TestMergeSubjects_RefusesWhenBoundToDifferentUsers (RFC FR §3 step 3): a subject
+// names one person, so two subjects bound to different users are not one subject.
+// The refusal comes before anything is written.
+func TestMergeSubjects_RefusesWhenBoundToDifferentUsers(t *testing.T) {
+	f := newMergeFixture(t)
+	for doc, p := range map[string]string{f.dupDoc: "u-ada", f.survDoc: "u-eve"} {
+		if _, err := f.d.BindTenantSubjectPrincipal(f.ctx, doc, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := f.d.MergeSubjects(f.ctx, "tenant", f.dupDoc, f.survDoc)
+	if !errors.Is(err, connector.ErrSubjectMergePrincipalConflict) || connector.SubjectMergeCode(err) != "principal_conflict" {
+		t.Fatalf("err = %v, want principal_conflict", err)
+	}
+	if strings.Contains(err.Error(), "u-ada") || strings.Contains(err.Error(), "u-eve") {
+		t.Errorf("the refusal names a user: %v", err)
+	}
+	status, fields := f.rootFields(t, f.dupRoot)
+	if status == subjectMergedStatus || fields[subjectMergedIntoField] != nil || fields[subjectPrincipalField] != "u-ada" {
+		t.Errorf("a refused merge changed the duplicate: %q %v", status, fields)
+	}
+	if _, fields := f.rootFields(t, f.survRoot); fields[subjectPrincipalField] != "u-eve" {
+		t.Errorf("a refused merge changed the survivor's binding: %v", fields[subjectPrincipalField])
+	}
+	if s := f.statement(t, f.cites); s.ExpiredAt != nil {
+		t.Errorf("a refused merge expired a statement: %+v", s)
+	}
+	if evs := f.w.subjectEvents(t); len(evs) != 0 {
+		t.Errorf("a refused merge announced: %v", evs)
+	}
+}
+
+// revisionBumper is a channel writer that, the first time the survivor's binding is
+// written (its update_chunk change event), moves the duplicate root's revision on, so
+// the merge's transaction finds the duplicate changed and fails at its commit point.
+type revisionBumper struct {
+	recordingWriter
+	d        *Document
+	key      sqlmem.ScopeKey
+	survDoc  string
+	dupRoot  string
+	bumped   bool
+	bumpErrs []error
+}
+
+func (w *revisionBumper) Write(ctx context.Context, req channels.WriteRequest) (channels.WriteResult, error) {
+	if !w.bumped && req.Channel == "documents/"+w.survDoc+"/chunks" && strings.Contains(string(req.Payload), `"update_chunk"`) {
+		w.bumped = true
+		if err := w.d.exec(ctx, w.key, `UPDATE chunks SET revision = revision + 1 WHERE id = ?`, w.dupRoot); err != nil {
+			w.bumpErrs = append(w.bumpErrs, err)
+		}
+	}
+	return w.recordingWriter.Write(ctx, req)
+}
+
+// TestMergeSubjects_FailedTransactionLeavesBothBindings: the binding moves before the
+// transaction, as merged_into is written, so a transaction that fails must put both
+// back — the duplicate still bound, the survivor not.
+func TestMergeSubjects_FailedTransactionLeavesBothBindings(t *testing.T) {
+	f := newMergeFixture(t)
+	if _, err := f.d.BindTenantSubjectPrincipal(f.ctx, f.dupDoc, "u-ada"); err != nil {
+		t.Fatal(err)
+	}
+	w := &revisionBumper{d: f.d, key: mustTenantKey(t, f.d, f.ctx), survDoc: f.survDoc, dupRoot: f.dupRoot}
+	f.d.Writer = w
+	_, err := f.d.MergeSubjects(f.ctx, "tenant", f.dupDoc, f.survDoc)
+	if !w.bumped || len(w.bumpErrs) > 0 {
+		t.Fatalf("the survivor's binding write was not seen (bumped=%v, %v)", w.bumped, w.bumpErrs)
+	}
+	if !errors.Is(err, connector.ErrSubjectMergeConflict) {
+		t.Fatalf("err = %v, want merge_conflict", err)
+	}
+	status, fields := f.rootFields(t, f.dupRoot)
+	if status == subjectMergedStatus || fields[subjectMergedIntoField] != nil || fields[subjectPrincipalField] != "u-ada" {
+		t.Errorf("duplicate after a failed merge: %q %v, want it as it was, bound to u-ada", status, fields)
+	}
+	if _, fields := f.rootFields(t, f.survRoot); fields[subjectPrincipalField] != nil {
+		t.Errorf("survivor after a failed merge is bound to %v, want unbound", fields[subjectPrincipalField])
+	}
+	if bound, err := f.d.TenantSubjectsBoundTo(f.ctx, "u-ada"); err != nil || len(bound) != 1 || bound[0].DocumentID != f.dupDoc {
+		t.Errorf("u-ada is bound to %+v (%v), want the duplicate only", bound, err)
 	}
 }

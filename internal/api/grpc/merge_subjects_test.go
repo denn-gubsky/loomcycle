@@ -42,14 +42,15 @@ func TestMergeSubjects_DelegatesToTheConnector(t *testing.T) {
 	}
 
 	for sentinel, want := range map[error]codes.Code{
-		connector.ErrSubjectMergeInvalid:       codes.InvalidArgument,
-		connector.ErrSubjectMergeSame:          codes.InvalidArgument,
-		connector.ErrSubjectMergeNotSubject:    codes.InvalidArgument,
-		connector.ErrSubjectMergeForbidden:     codes.PermissionDenied,
-		connector.ErrSubjectMergeNotInScope:    codes.NotFound,
-		connector.ErrSubjectMergeAlreadyMerged: codes.FailedPrecondition,
-		connector.ErrSubjectMergeConflict:      codes.FailedPrecondition,
-		connector.ErrSubjectMergeUnavailable:   codes.Unavailable,
+		connector.ErrSubjectMergeInvalid:           codes.InvalidArgument,
+		connector.ErrSubjectMergeSame:              codes.InvalidArgument,
+		connector.ErrSubjectMergeNotSubject:        codes.InvalidArgument,
+		connector.ErrSubjectMergeForbidden:         codes.PermissionDenied,
+		connector.ErrSubjectMergeNotInScope:        codes.NotFound,
+		connector.ErrSubjectMergeAlreadyMerged:     codes.FailedPrecondition,
+		connector.ErrSubjectMergeConflict:          codes.FailedPrecondition,
+		connector.ErrSubjectMergePrincipalConflict: codes.FailedPrecondition,
+		connector.ErrSubjectMergeUnavailable:       codes.Unavailable,
 	} {
 		mc.mergeErr = connector.WithMessage(sentinel, "why")
 		_, err := client.MergeSubjects(context.Background(), &loomcyclepb.MergeSubjectsRequest{Duplicate: "a", Survivor: "b"})

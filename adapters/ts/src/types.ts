@@ -2175,9 +2175,23 @@ export interface ErasureReport {
   tier2_uncovered: ErasureTier;
   tier3_residue: ErasureResidue;
   access: ErasureAccess;
+  /** The tenant ontology subjects bound to this principal, which an erasure
+   *  unbinds and keeps. Absent from a server that predates subject bindings. */
+  bound_subjects?: ErasureBoundSubject[];
+  /** How many more are bound that the caller's access-control rules hide from
+   *  reading: counted, never named. Absent when none. */
+  bound_subjects_withheld?: number;
   notes: string[];
   /** Planes that could not be READ. Non-empty means every count is a lower bound. */
   errors?: string[];
+}
+
+/** A tenant ontology subject bound to an erased principal. */
+export interface ErasureBoundSubject {
+  document_id: string;
+  natural_key: string;
+  /** The document's first Path-tree name; absent when it has none. */
+  path?: string;
 }
 
 /** Result of {@link LoomcycleClient.erasureExecute} (RFC BL P5). */
@@ -2191,6 +2205,13 @@ export interface ErasureResult {
   residue: ErasureResidue;
   /** The groups, lists and member tokens removed (or, in a dry run, that would be). */
   access: ErasureAccess;
+  /** The subjects unbound (or, in a dry run, that would be), as in
+   *  {@link ErasureReport.bound_subjects}. */
+  bound_subjects?: ErasureBoundSubject[];
+  bound_subjects_withheld?: number;
+  /** Why `erased` was not announced for the unbound subjects; absent when it
+   *  was, or when there were none. */
+  not_announced?: string;
   errors?: string[];
   notes: string[];
 }
@@ -2220,6 +2241,22 @@ export interface MergeSubjectsResult {
   statements_left: number;
   /** Why the merge was not announced on memory/subjects; absent when it was. */
   not_announced?: string;
+}
+
+/** Result of {@link LoomcycleClient.bindSubjectPrincipal}. */
+export interface BindSubjectPrincipalResult {
+  tenant: string;
+  document_id: string;
+  root_chunk_id: string;
+  natural_key: string;
+  /** The subject document's first Path-tree name; absent when it has none. */
+  path?: string;
+  /** The binding after the call; "" when it was cleared. */
+  principal: string;
+  /** The binding before the call; absent when there was none. */
+  previous?: string;
+  /** False when the binding was already as asked. */
+  changed: boolean;
 }
 
 export interface CompactRunResult {

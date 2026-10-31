@@ -494,8 +494,9 @@ func GRPCSurface(rpc string) (Surface, bool) {
 	case "Path", "Document":
 		return typeLevel("read", "document"), true
 	// A merge writes both subjects' documents, as POST /v1/_ontology/subjects/merge
-	// asks; the merge itself asks write on each of the two.
-	case "MergeSubjects":
+	// asks; the merge itself asks write on each of the two. A binding writes the
+	// subject's document, as POST /v1/_ontology/subjects/principal asks.
+	case "MergeSubjects", "BindSubjectPrincipal":
 		return typeLevel("write", "document"), true
 	case "Memory":
 		return typeLevel("read", "memory"), true

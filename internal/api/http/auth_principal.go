@@ -1335,10 +1335,11 @@ func requiredScopeFor(method, path string) string {
 	// /v1/_document, which is the point of having them as dedicated ops.
 	// RFC FR P2: /subjects/merge too — and, unlike the others, it is carved out of
 	// the member path (memberpath.CarvedOut): which of two subjects survives is
-	// the operator's decision, not a member's.
+	// the operator's decision, not a member's. RFC FR P4: /subjects/principal
+	// likewise — which person a subject is decides what an erasure finds.
 	case path == "/v1/_ontology" ||
 		path == "/v1/_ontology/proposals" || path == "/v1/_ontology/adopt" ||
-		path == "/v1/_ontology/subjects/merge":
+		path == "/v1/_ontology/subjects/merge" || path == "/v1/_ontology/subjects/principal":
 		return auth.ScopeTenant
 	// RFC AS: the Web UI schedules surface (list-all + per-def state / run-now /
 	// pause / resume). list-all is tenant-scoped (the handler filters substrate

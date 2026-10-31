@@ -344,6 +344,11 @@ var (
 	ErrSubjectMergeConflict = errors.New("connector: a subject changed during the merge")
 	// ErrSubjectMergeUnavailable — this deployment has no SQL Memory.
 	ErrSubjectMergeUnavailable = errors.New("connector: subject merges need SQL Memory")
+	// ErrSubjectMergePrincipalConflict — the duplicate and the survivor are
+	// bound to different users (fields.principal). A merge moves the
+	// duplicate's binding to the survivor, and a subject names one person, so
+	// one of the two bindings must be cleared first.
+	ErrSubjectMergePrincipalConflict = errors.New("connector: the subjects are bound to different users")
 )
 
 // SubjectMergeCode is the stable wire code for a merge refusal: the HTTP
@@ -362,6 +367,55 @@ func SubjectMergeCode(err error) string {
 		{ErrSubjectMergeAlreadyMerged, "already_merged"},
 		{ErrSubjectMergeConflict, "merge_conflict"},
 		{ErrSubjectMergeUnavailable, "unavailable"},
+		{ErrSubjectMergePrincipalConflict, "principal_conflict"},
+	} {
+		if errors.Is(err, c.sentinel) {
+			return c.code
+		}
+	}
+	return ""
+}
+
+// Binding a subject to a user (Connector.BindSubjectPrincipal). Returned
+// wrapped WithMessage, as the merge's are; SubjectBindCode names them.
+var (
+	// ErrSubjectBindInvalid — the subject is missing.
+	ErrSubjectBindInvalid = errors.New("connector: invalid subject binding request")
+	// ErrSubjectBindForbidden — the caller is not an operator, or its
+	// access-control rules do not let it write the subject's document.
+	ErrSubjectBindForbidden = errors.New("connector: subject binding not permitted")
+	// ErrSubjectBindNotFound — the reference names no document, root chunk or
+	// natural key in the tenant scope.
+	ErrSubjectBindNotFound = errors.New("connector: no such subject")
+	// ErrSubjectBindNotSubject — the reference names a document or chunk that
+	// is not a subject (a document whose root carries a natural key).
+	ErrSubjectBindNotSubject = errors.New("connector: not a subject")
+	// ErrSubjectBindConflict — the subject is bound to another user (clear it
+	// first), or the user is bound to another subject, which the message names.
+	ErrSubjectBindConflict = errors.New("connector: the binding conflicts with another")
+	// ErrSubjectBindPrincipalNotFound — the principal is not a registered user
+	// of the tenant.
+	ErrSubjectBindPrincipalNotFound = errors.New("connector: no such user in the tenant")
+	// ErrSubjectBindUnavailable — this deployment has no SQL Memory, or
+	// another binding in the scope is being written (retry).
+	ErrSubjectBindUnavailable = errors.New("connector: subject binding unavailable")
+)
+
+// SubjectBindCode is the stable wire code for a binding refusal: the HTTP
+// error code, the gRPC ErrorInfo reason and the MCP result's code. "" for an
+// error that is none of the sentinels (an internal failure).
+func SubjectBindCode(err error) string {
+	for _, c := range []struct {
+		sentinel error
+		code     string
+	}{
+		{ErrSubjectBindInvalid, "invalid_request"},
+		{ErrSubjectBindForbidden, "forbidden"},
+		{ErrSubjectBindNotFound, "subject_not_found"},
+		{ErrSubjectBindNotSubject, "not_a_subject"},
+		{ErrSubjectBindConflict, "binding_conflict"},
+		{ErrSubjectBindPrincipalNotFound, "principal_not_found"},
+		{ErrSubjectBindUnavailable, "unavailable"},
 	} {
 		if errors.Is(err, c.sentinel) {
 			return c.code

@@ -1,9 +1,9 @@
-// Package subjectmergetest holds the transport parity test of the ontology
-// subject merge (RFC FR P2): the same merge driven through POST
-// /v1/_ontology/subjects/merge, the gRPC MergeSubjects RPC and the MCP
-// `ontology` tool, each behind its real authentication over one real server
-// wired as boot wires it (SQL Memory, a channel bus), must give one answer and
-// leave the store in one state.
+// Package subjectmergetest holds the transport parity tests of the ontology
+// subject operations: the subject merge (RFC FR P2) and the subject's user
+// binding (P4). The same operation driven through its HTTP route, its gRPC RPC
+// and the MCP `ontology` tool, each behind its real authentication over one
+// real server wired as boot wires it (SQL Memory, a channel bus), must give one
+// answer and leave the store in one state.
 //
 // It is a package of its own because it needs all three transports, and the
 // transports' own test packages cannot import each other.
@@ -300,8 +300,14 @@ func (e *env) mcpSession(bearer string) string {
 }
 
 func (e *env) mergeMCP(bearer, dup, surv string) outcome {
-	args, _ := json.Marshal(map[string]string{"op": "merge_subjects", "duplicate": dup, "survivor": surv})
-	reply := e.mcpRPC(bearer, e.mcpSession(bearer), "tools/call", `{"name":"ontology","arguments":`+string(args)+`}`)
+	return e.toolMCP(bearer, "ontology", map[string]string{"op": "merge_subjects", "duplicate": dup, "survivor": surv})
+}
+
+// toolMCP calls one MCP tool in a fresh session and reads its answer as an
+// outcome: a refusal's code is the {code, error} body's.
+func (e *env) toolMCP(bearer, tool string, arguments any) outcome {
+	args, _ := json.Marshal(arguments)
+	reply := e.mcpRPC(bearer, e.mcpSession(bearer), "tools/call", `{"name":"`+tool+`","arguments":`+string(args)+`}`)
 	if reply.Error != nil {
 		o := outcome{raw: reply.Error.Message}
 		if reply.Error.Code == -32001 {

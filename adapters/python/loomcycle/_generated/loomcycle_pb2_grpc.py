@@ -198,6 +198,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.MergeSubjectsRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.MergeSubjectsResponse.FromString,
                 _registered_method=True)
+        self.BindSubjectPrincipal = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/BindSubjectPrincipal',
+                request_serializer=loomcycle__pb2.BindSubjectPrincipalRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.BindSubjectPrincipalResponse.FromString,
+                _registered_method=True)
         self.Decide = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/Decide',
                 request_serializer=loomcycle__pb2.DecideRequest.SerializeToString,
@@ -834,6 +839,8 @@ class LoomcycleServicer:
         the duplicate's facts move under the survivor, its statements are copied
         onto the survivor (the originals expired as merged), and the duplicate
         stays, retired, naming the survivor (fields.merged_into, status merged).
+        A user the duplicate is bound to is bound to the survivor instead
+        (FAILED_PRECONDITION principal_conflict when the survivor names another).
         A `merged` event then goes to the tenant's memory/subjects channel unless
         the caller's access-control rules hide part of the scope from reading
         (not_announced says why).
@@ -842,9 +849,29 @@ class LoomcycleServicer:
         for its own, holding write on both documents (PERMISSION_DENIED
         otherwise). A refusal carries a google.rpc.ErrorInfo whose reason is the
         code HTTP returns (same_subject, not_a_subject, subject_not_in_scope,
-        already_merged, ...).
+        already_merged, principal_conflict, ...).
 
         Mirrors POST /v1/_ontology/subjects/merge.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def BindSubjectPrincipal(self, request, context):
+        """BindSubjectPrincipal binds a tenant ontology subject (named by document
+        id, root chunk id or natural key) to the user it stands for, or clears
+        the binding when principal is empty. Erasing that user then finds the
+        subject: the erasure reports it, clears the binding and announces
+        `erased`. One user per subject and one subject per user in the tenant;
+        the principal must be a registered user of the tenant (any status).
+
+        Operator-only, as MergeSubjects: an admin (any tenant, via `tenant`) or
+        a tenant operator for its own, holding write on the subject's document.
+        A refusal carries a google.rpc.ErrorInfo whose reason is the code HTTP
+        returns (subject_not_found, not_a_subject, binding_conflict,
+        principal_not_found, forbidden, invalid_request, unavailable).
+
+        Mirrors POST /v1/_ontology/subjects/principal.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1611,6 +1638,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.MergeSubjects,
                     request_deserializer=loomcycle__pb2.MergeSubjectsRequest.FromString,
                     response_serializer=loomcycle__pb2.MergeSubjectsResponse.SerializeToString,
+            ),
+            'BindSubjectPrincipal': grpc.unary_unary_rpc_method_handler(
+                    servicer.BindSubjectPrincipal,
+                    request_deserializer=loomcycle__pb2.BindSubjectPrincipalRequest.FromString,
+                    response_serializer=loomcycle__pb2.BindSubjectPrincipalResponse.SerializeToString,
             ),
             'Decide': grpc.unary_unary_rpc_method_handler(
                     servicer.Decide,
@@ -2731,6 +2763,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/MergeSubjects',
             loomcycle__pb2.MergeSubjectsRequest.SerializeToString,
             loomcycle__pb2.MergeSubjectsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def BindSubjectPrincipal(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/BindSubjectPrincipal',
+            loomcycle__pb2.BindSubjectPrincipalRequest.SerializeToString,
+            loomcycle__pb2.BindSubjectPrincipalResponse.FromString,
             options,
             channel_credentials,
             insecure,

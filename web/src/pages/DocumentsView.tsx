@@ -3,6 +3,7 @@ import { DocumentViewer } from "@loomcycle/explorer";
 import { useFocusTenant, usePrincipal, useUserId } from "../components/Layout";
 import DocumentAssistantPanel from "../components/DocumentAssistantPanel";
 import SubjectMergePanel, { canMergeSubjects } from "../components/SubjectMergePanel";
+import SubjectPrincipalPanel from "../components/SubjectPrincipalPanel";
 import type { DocScope } from "../api";
 
 // DocumentsView is the deep-link surface for one document
@@ -50,7 +51,10 @@ export default function DocumentsView() {
   return (
     <div className="documents-page">
       {canMergeSubjects(principal, scope) && (
-        <SubjectMergePanel documentId={documentId} tenant={focusTenant || undefined} />
+        <>
+          <SubjectPrincipalPanel documentId={documentId} tenant={focusTenant || undefined} />
+          <SubjectMergePanel documentId={documentId} tenant={focusTenant || undefined} />
+        </>
       )}
       <DocumentViewer
         documentId={documentId}

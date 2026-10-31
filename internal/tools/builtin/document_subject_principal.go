@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -271,7 +272,13 @@ var errSubjectBusy = errors.New("this subject's binding is being written by an o
 // with every other body write on that subject root. It waits briefly: both sides hold
 // it only for one read and one write.
 func (d *Document) holdSubjectLease(ctx context.Context, key sqlmem.ScopeKey, rootChunkID string, wait time.Duration) (func(), error) {
-	name, owner := principalLeasePrefix+rootChunkID, randomLeaseOwner()
+	return d.holdBindingLease(ctx, key, principalLeasePrefix+rootChunkID, wait)
+}
+
+// holdBindingLease takes one of the binding path's leases (a principalLeasePrefix
+// name), waiting up to wait for a holder to let go. errSubjectBusy when it does not.
+func (d *Document) holdBindingLease(ctx context.Context, key sqlmem.ScopeKey, name string, wait time.Duration) (func(), error) {
+	owner := randomLeaseOwner()
 	deadline := time.Now().Add(wait)
 	for {
 		lease, err := d.acquireDocumentLease(ctx, key, name, owner, time.Now(), 30*time.Second)
@@ -349,7 +356,7 @@ func (d *Document) BindSubjectPrincipal(ctx context.Context, key sqlmem.ScopeKey
 		if refused, err := acl.document(ctx, "bind_subject_principal", "write", s.DocumentID); err != nil {
 			return SubjectBinding{}, err
 		} else if refused != nil {
-			return SubjectBinding{}, errors.New(refused.Text)
+			return SubjectBinding{}, connector.WithMessage(connector.ErrSubjectBindForbidden, refused.Text)
 		}
 	}
 	owner := randomLeaseOwner()
@@ -358,7 +365,8 @@ func (d *Document) BindSubjectPrincipal(ctx context.Context, key sqlmem.ScopeKey
 		return SubjectBinding{}, err
 	}
 	if !lease.Acquired {
-		return SubjectBinding{}, errors.New("another subject binding is being written in this scope; retry shortly")
+		return SubjectBinding{}, connector.WithMessage(connector.ErrSubjectBindUnavailable,
+			"another subject binding is being written in this scope; retry shortly")
 	}
 	defer func() { _, _ = d.releaseDocumentLease(context.WithoutCancel(ctx), key, subjectPrincipalLease, owner) }()
 
@@ -387,6 +395,9 @@ func (d *Document) BindSubjectPrincipal(ctx context.Context, key sqlmem.ScopeKey
 		}
 	}
 	if err := d.setSubjectPrincipal(ctx, key, mscope, s.RootChunkID, principal); err != nil {
+		if errors.Is(err, errSubjectBusy) {
+			return SubjectBinding{}, connector.WithMessage(connector.ErrSubjectBindUnavailable, err.Error())
+		}
 		return SubjectBinding{}, err
 	}
 	out.Changed = true
@@ -516,6 +527,14 @@ func (d *Document) ClearTenantSubjectBindings(ctx context.Context, principal str
 	if err != nil || !ok {
 		return nil, err
 	}
+	// Under the scope's binding lease, as a bind and a subject merge are: a merge moves
+	// a binding from one subject to another, and a clear that listed the subjects
+	// before the move would unbind the first and leave the erased id on the second.
+	release, err := d.holdBindingLease(ctx, key, subjectPrincipalLease, operatorSubjectLeaseWait)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	bound, err := d.SubjectsBoundTo(ctx, key, mscope, principal)
 	if err != nil {
 		return nil, err

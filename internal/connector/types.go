@@ -1310,3 +1310,29 @@ type MergeSubjectsResult struct {
 	// "" when it was.
 	NotAnnounced string `json:"not_announced,omitempty"`
 }
+
+// BindSubjectPrincipalRequest names one subject of the tenant ontology — by its
+// document id, its root chunk id or its natural key — and the user to bind it
+// to: a subject id of the tenant's users. Principal "" clears the binding.
+//
+// Tenant is whose ontology it is. Only an admin may name one; for anyone else
+// it is the caller's own tenant.
+type BindSubjectPrincipalRequest struct {
+	Tenant    string `json:"tenant,omitempty"`
+	Subject   string `json:"subject"`
+	Principal string `json:"principal"`
+}
+
+// BindSubjectPrincipalResult reports one bind or clear: the subject, its first
+// Path-tree name, the binding after the call (Principal, "" when cleared) and
+// before it (Previous). Changed is false when the binding was already as asked.
+type BindSubjectPrincipalResult struct {
+	Tenant      string `json:"tenant"`
+	DocumentID  string `json:"document_id"`
+	RootChunkID string `json:"root_chunk_id"`
+	NaturalKey  string `json:"natural_key"`
+	Path        string `json:"path,omitempty"`
+	Principal   string `json:"principal"`
+	Previous    string `json:"previous,omitempty"`
+	Changed     bool   `json:"changed"`
+}

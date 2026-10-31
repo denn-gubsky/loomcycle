@@ -778,3 +778,7 @@ func (m *httpMockConnector) RetentionOverride(context.Context, connector.Retenti
 func (m *httpMockConnector) MergeSubjects(context.Context, connector.MergeSubjectsRequest) (connector.MergeSubjectsResult, error) {
 	return connector.MergeSubjectsResult{}, nil
 }
+
+func (m *httpMockConnector) BindSubjectPrincipal(context.Context, connector.BindSubjectPrincipalRequest) (connector.BindSubjectPrincipalResult, error) {
+	return connector.BindSubjectPrincipalResult{}, nil
+}

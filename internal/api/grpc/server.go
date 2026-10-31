@@ -1056,6 +1056,10 @@ var grpcConsumerScopes = map[string]string{
 	// member path, so a member is refused here too; the connector checks the
 	// caller again.
 	"MergeSubjects": auth.ScopeTenant,
+	// RFC FR P4: binding a subject to a user, as POST
+	// /v1/_ontology/subjects/principal gates it; carved out of the member path
+	// like the merge, and checked again in the connector.
+	"BindSubjectPrincipal": auth.ScopeTenant,
 
 	// RFC BL P5 erasure. ScopeTenant, mirroring the HTTP gate: answering a
 	// data-subject request is the tenant operator's job, and both RPCs confine
@@ -2492,6 +2496,9 @@ func (s *Server) ErasureReport(ctx context.Context, req *loomcyclepb.ErasureRepo
 		Notes:          rep.Notes,
 		Errors:         rep.Errors,
 		Access:         erasureAccessToProto(rep.Access),
+		BoundSubjects:  erasureBoundSubjectsToProto(rep.BoundSubjects),
+
+		BoundSubjectsWithheld: int32(rep.BoundSubjectsWithheld),
 	}, nil
 }
 
@@ -2534,6 +2541,10 @@ func (s *Server) ErasureExecute(ctx context.Context, req *loomcyclepb.ErasureExe
 		Errors:   res.Errors,
 		Notes:    res.Notes,
 		Access:   erasureAccessToProto(res.Access),
+
+		BoundSubjects:         erasureBoundSubjectsToProto(res.BoundSubjects),
+		BoundSubjectsWithheld: int32(res.BoundSubjectsWithheld),
+		NotAnnounced:          res.NotAnnounced,
 	}, nil
 }
 
@@ -2561,6 +2572,16 @@ func erasureAccessToProto(a erasure.Access) *loomcyclepb.ErasureAccess {
 	out := &loomcyclepb.ErasureAccess{Groups: a.Groups, Lists: a.Lists}
 	for _, t := range a.Tokens {
 		out.Tokens = append(out.Tokens, &loomcyclepb.ErasureToken{DefId: t.DefID, Name: t.Name})
+	}
+	return out
+}
+
+// erasureBoundSubjectsToProto renders the subjects the caller may read; the
+// service has already left the others out of the list and counted them.
+func erasureBoundSubjectsToProto(in []erasure.BoundSubject) []*loomcyclepb.ErasureBoundSubject {
+	out := make([]*loomcyclepb.ErasureBoundSubject, 0, len(in))
+	for _, b := range in {
+		out = append(out, &loomcyclepb.ErasureBoundSubject{DocumentId: b.DocumentID, NaturalKey: b.NaturalKey, Path: b.Path})
 	}
 	return out
 }

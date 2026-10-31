@@ -3858,6 +3858,59 @@ export function mergeSubjects(
   );
 }
 
+// ---- Ontology subject binding (POST /v1/_ontology/subjects/principal) ----
+
+/** What a bind or clear did. principal is the binding after the call ("" when
+ *  cleared), previous the one before it; changed is false when the binding was
+ *  already as asked. */
+export interface BindSubjectPrincipalResult {
+  tenant: string;
+  document_id: string;
+  root_chunk_id: string;
+  natural_key: string;
+  path?: string;
+  principal: string;
+  previous?: string;
+  changed: boolean;
+}
+
+/**
+ * Bind a tenant subject (document id or natural key) to the user it stands
+ * for, or clear the binding with principal "". The server checks the caller,
+ * that the document is a subject and that the user is registered in the tenant.
+ */
+export function bindSubjectPrincipal(
+  subject: string,
+  principal: string,
+  tenant?: string,
+): Promise<BindSubjectPrincipalResult> {
+  const q = tenant ? `?tenant=${encodeURIComponent(tenant)}` : "";
+  return postJSON<BindSubjectPrincipalResult>(
+    `/v1/_ontology/subjects/principal${q}`,
+    JSON.stringify({ subject, principal }),
+  );
+}
+
+/** The user a subject root's fields bind it to; "" when none. */
+export function subjectPrincipalOf(fields: unknown): string {
+  if (!fields || typeof fields !== "object" || Array.isArray(fields)) return "";
+  const p = (fields as Record<string, unknown>).principal;
+  return typeof p === "string" ? p.trim() : "";
+}
+
+/** Reads the binding on a tenant document's root chunk: "" when it has none. */
+export async function loadSubjectPrincipal(documentId: string, tenant?: string): Promise<string> {
+  const browse = tenant ? { tenant } : undefined;
+  const doc = await substratePost<{ root_chunk_id?: string }>(
+    "/v1/_document",
+    { op: "get_document", id: documentId, scope: "tenant" },
+    browse,
+  );
+  if (!doc.root_chunk_id) return "";
+  const root = await documentGetChunk(doc.root_chunk_id, "tenant", browse);
+  return subjectPrincipalOf(root.fields);
+}
+
 // --- RFC AR: secure credential store (POST /v1/_credentialdef) ---
 
 // CredentialScope buckets a stored secret. tenant = shared across the tenant;
