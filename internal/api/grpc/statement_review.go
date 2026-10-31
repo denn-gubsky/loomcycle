@@ -1,6 +1,7 @@
 // statement_review.go — the gRPC twins of GET /v1/_statements/review,
 // POST /v1/_statements/rule, POST /v1/_statements/revert and
-// GET /v1/_statements/rulings (RFC FS P0). The
+// GET /v1/_statements/rulings (RFC FS P0), and of POST
+// /v1/_statements/apply_policy (RFC FS P2). The
 // connector holds the rules — who may review, as whom, in which tenant, and the
 // rulings themselves — so this transport only maps the shapes and the refusals.
 package grpc
@@ -119,6 +120,41 @@ func (s *Server) ListRulings(ctx context.Context, req *loomcyclepb.ListRulingsRe
 			Matched: int32(r.Matched), Ruled: int32(r.Ruled), Failed: int32(r.Failed), Skipped: int32(r.Skipped),
 			CreatedAt: r.CreatedAt, Reverted: r.Reverted, RevertedAt: r.RevertedAt, RevertedBy: r.RevertedBy,
 		})
+	}
+	return out, nil
+}
+
+// ApplyReviewPolicy runs the review policy over the queue.
+func (s *Server) ApplyReviewPolicy(ctx context.Context, req *loomcyclepb.ApplyReviewPolicyRequest) (*loomcyclepb.ApplyReviewPolicyResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "ApplyReviewPolicy requires a connector; this Server was constructed without one")
+	}
+	in := connector.ApplyReviewPolicyRequest{Tenant: req.GetTenant(), Scope: req.GetScope(), ScopeID: req.GetScopeId(), Max: int(req.GetMax())}
+	if req.GetFilter() != nil {
+		f := reviewFilterFromProto(req.GetFilter())
+		in.Filter = &f
+	}
+	if req.DryRun != nil {
+		v := req.GetDryRun()
+		in.DryRun = &v
+	}
+	if req.ExpectCount != nil {
+		v := int(req.GetExpectCount())
+		in.ExpectCount = &v
+	}
+	res, err := s.connector.ApplyReviewPolicy(ctx, in)
+	if err != nil {
+		return nil, statementReviewErrToStatus(err)
+	}
+	out := &loomcyclepb.ApplyReviewPolicyResponse{
+		Tenant: res.Tenant, Scope: res.Scope, DryRun: res.DryRun, Source: res.Source, Version: int32(res.Version), RulingId: res.RulingID,
+		Matched: int32(res.Matched), Skipped: int32(res.Skipped), Accept: int32(res.Accept), Reject: int32(res.Reject),
+		Judge: int32(res.Judge), Human: int32(res.Human), ToRule: int32(res.ToRule), Deferred: int32(res.Deferred),
+		Ruled: int32(res.Ruled), Failed: int32(res.Failed), Marked: int32(res.Marked),
+		SampleJson: rawList(res.Sample), Items: rulingItemsToProto(res.Items),
+	}
+	for _, r := range res.Rules {
+		out.Rules = append(out.Rules, &loomcyclepb.PolicyRuleCount{Rule: int32(r.Rule), Action: r.Action, Text: r.Text, Count: int32(r.Count)})
 	}
 	return out, nil
 }
