@@ -1282,11 +1282,11 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 			if err := d.execTxn(ctx, txn, `INSERT INTO chunk_edges
 				(id, from_id, to_id, kind, created_at, auto, status, method, confidence, valid_at, invalid_at,
 				 actor, run_id, ontology_version, discriminator, attributes,
-				 verified_at, judged_at, judge_reason, judged_by, verdict_confidence, operator_ruled_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 verified_at, judged_at, judge_reason, judged_by, verdict_confidence, operator_ruled_at, ruled_by)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				copyID, from, to, s.Kind, now, auto, s.Status, s.Method, s.Confidence, s.ValidAt, s.InvalidAt,
 				nullIfEmpty(s.Actor), nullIfEmpty(s.RunID), s.OntologyVersion, s.Discriminator, string(ab),
-				s.VerifiedAt, s.JudgedAt, nullIfEmpty(s.JudgeReason), nullIfEmpty(s.JudgedBy), s.VerdictConfidence, s.OperatorRuledAt); err != nil {
+				s.VerifiedAt, s.JudgedAt, nullIfEmpty(s.JudgeReason), nullIfEmpty(s.JudgedBy), s.VerdictConfidence, s.OperatorRuledAt, nullIfEmpty(s.RuledBy)); err != nil {
 				return err
 			}
 			for _, e := range ev[s.ID] {
