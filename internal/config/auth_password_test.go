@@ -123,3 +123,26 @@ func TestResolveAuth_TrustedProxiesAndClientIPHeader(t *testing.T) {
 		}
 	}
 }
+
+// new_user.status decides what a website's invite creates: active by default,
+// pending to hold the person for an operator's approval. Any other value is
+// refused, and the key on a gate that is not a password gate is too.
+func TestResolveAuth_PasswordGateNewUserStatus(t *testing.T) {
+	for in, want := range map[string]string{"": "active", "active": "active", "pending": "pending"} {
+		c := passwordGateConfig("", AuthGateConfig{NewUser: AuthGateNewUserConfig{Status: in}})
+		if err := resolveAuth(c); err != nil {
+			t.Fatalf("status %q: %v", in, err)
+		}
+		if got := c.ResolvedAuth.Gates[0].Password.NewUserStatus; got != want {
+			t.Errorf("status %q resolved to %q, want %q", in, got, want)
+		}
+	}
+	if err := resolveAuth(passwordGateConfig("", AuthGateConfig{NewUser: AuthGateNewUserConfig{Status: "disabled"}})); err == nil ||
+		!strings.Contains(err.Error(), "new_user.status") {
+		t.Fatalf("status disabled: %v", err)
+	}
+	c := &Config{Auth: AuthConfig{Gates: map[string]AuthGateConfig{"paste": {Kind: "token", NewUser: AuthGateNewUserConfig{Status: "pending"}}}}}
+	if err := resolveAuth(c); err == nil || !strings.Contains(err.Error(), "only to kind: password") {
+		t.Fatalf("status on a token gate: %v", err)
+	}
+}

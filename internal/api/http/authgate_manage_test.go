@@ -75,7 +75,11 @@ func testPasswordGates(t *testing.T) *PasswordGates {
 	// lockout without waiting out the backoff between failures.
 	strict3 := gate("strict3", false)
 	strict3.Throttle.MaxFailures = 3
-	pg, err := NewPasswordGates([]PasswordGateSettings{gate("local", false), gate("staff", true), cloud, mfa, strict3}, h, pol, sealer, "https://lc.example/")
+	// queue is loomcycle.cloud's shared-tenant gate: a website's sign-up
+	// lands at tenant reach and waits for an operator's approval.
+	queue := gate("queue", true)
+	queue.NewUserAccessMode, queue.NewUserStatus = "tenant", "pending"
+	pg, err := NewPasswordGates([]PasswordGateSettings{gate("local", false), gate("staff", true), cloud, mfa, strict3, queue}, h, pol, sealer, "https://lc.example/")
 	if err != nil {
 		t.Fatal(err)
 	}
