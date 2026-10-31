@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useUserId } from "../components/Layout";
 import { ontologistRunHref, ontologyEditHref } from "../lib/ontologyEditHref";
 import {
@@ -8,6 +8,8 @@ import {
   conceptSummary,
   instanceStateLabel,
   factsUnderOlderVocabulary,
+  ontologyTabs,
+  pickOntologyTab,
   relationSummary,
   typedFieldLabel,
   type RelationNode,
@@ -23,7 +25,7 @@ import {
 } from "../api";
 
 // The ontology page (/ontology): the tenant ontology's confirm gate and the
-// layered result, section by section. Moved out of SectionPages unchanged.
+// layered result, one section per tab.
 
 // ─── Ontology tree rendering (RFC BZ P4) ─────────────────────────────────────
 
@@ -136,91 +138,6 @@ function OntologyTermTree({
         </li>
       ))}
     </ul>
-  );
-}
-
-// OntologySectionsDetail is the part of the panel a SECTIONED ontology adds (RFC FO):
-// the document classes — kept out of the table above because they never reach an
-// agent's prompt — the grammars, the types in use that nothing declares, and how many
-// facts were written under an older vocabulary. Relations, schemes and instances each
-// have their own block below.
-function OntologySectionsDetail({
-  state,
-  busy,
-  onAdoptRelation,
-}: {
-  state: OntologyResponse;
-  busy: boolean;
-  onAdoptRelation: (name: string) => void;
-}) {
-  const versions = factsUnderOlderVocabulary(state);
-  return (
-    <>
-      <p className="settings-help">
-        Sections: {(state.sections ?? []).map((k) => <code key={k}>{k} </code>)}
-      </p>
-      {(state.document_classes ?? []).length > 0 && (
-        <div className="settings-row">
-          <div>
-            <strong>Document classes</strong>
-            <span className="settings-muted">
-              {" "}
-              — govern a document's type; never listed to agents as entity types.
-            </span>
-            <OntologyTermTree nodes={buildOntologyTree(state.document_classes ?? [])} markSource />
-          </div>
-        </div>
-      )}
-      {(state.grammars ?? []).length > 0 && (
-        <div className="settings-row">
-          <div>
-            <strong>Grammars</strong>
-            <ul className="ontology-tree">
-              {(state.grammars ?? []).map((g) => (
-                <li key={g.name}>
-                  <code>{g.name}</code>
-                  {g.class && <span className="settings-muted"> under {g.class}</span>}
-                  {g.issue ? (
-                    <span className="ontology-warn"> · disabled: {g.issue}</span>
-                  ) : (
-                    <span className="settings-muted">
-                      {" "}
-                      · {g.patterns?.length ?? 0} pattern(s)
-                      {g.resolve && <> → {g.resolve}</>}
-                      {(g.scopes?.length ?? 0) > 0 && <> · {g.scopes?.length} scope(s)</>}
-                      {(g.anchors?.length ?? 0) > 0 && <> · {g.anchors?.length} anchor rule(s)</>}
-                    </span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      )}
-      {(state.undeclared_types ?? []).length > 0 && (
-        <p className="settings-help">
-          <strong>Types in use that no class declares</strong> (tenant scope):{" "}
-          {(state.undeclared_types ?? []).map((t) => (
-            <span key={t.type}>
-              <code>{t.type}</code> <span className="settings-muted">×{t.count}</span>{" "}
-            </span>
-          ))}
-          — declare them as classes, or map an old name with <code>@renamed_from</code>.
-        </p>
-      )}
-      {state.relations !== undefined && (
-        <OntologyRelationsDetail state={state} busy={busy} onAdopt={onAdoptRelation} />
-      )}
-      {state.schemes !== undefined && <OntologySchemesDetail state={state} />}
-      {state.instances !== undefined && <OntologyInstancesDetail state={state} />}
-      {(versions.older > 0 || versions.unknown > 0) && (
-        <p className="settings-help">
-          Facts in the tenant scope: {versions.older} written under an older vocabulary
-          than the current one (version {state.ontology_version}), {versions.unknown} with no
-          recorded version.
-        </p>
-      )}
-    </>
   );
 }
 
@@ -434,22 +351,198 @@ function OntologySchemesDetail({ state }: { state: OntologyResponse }) {
   );
 }
 
-// OntologySection is the operator control for the tenant's entity types.
+// OntologyClassesTab is the classes a run extracts against: what this deployment
+// defines beside what is in force — the gap between the two columns is the only
+// visible evidence that a draft is inert — and the standard types it can adopt.
+function OntologyClassesTab({
+  state,
+  busy,
+  onAdopt,
+}: {
+  state: OntologyResponse;
+  busy: boolean;
+  onAdopt: (name: string) => void;
+}) {
+  const tenantTerms = state.terms ?? [];
+  return (
+    <>
+      {state.confirmed && tenantTerms.length === 0 && (
+        <p className="settings-help">
+          Confirmed, but no classes were found in the document. Each class needs its own
+          heading, with field names in backticks on the bullets beneath it — anything else is
+          skipped, so a differently-formatted document confirms to nothing.
+        </p>
+      )}
+      {/* ADOPT — the standard types this document does not declare. Offered here
+          because the documented way to subclass one is to declare it yourself first,
+          which otherwise means retyping its field names off the column on the right. */}
+      {(state.adoptable ?? []).length > 0 && (
+        <p className="settings-help">
+          <strong>Extend a standard type:</strong> adopting one copies it into your document
+          with its fields, so you can add to it or nest subtypes under it. Your copy then
+          overrides the standard one, wholesale — a field a later loomcycle release adds to it
+          will not reach your copy.
+          <span className="ontology-adopt-row">
+            {(state.adoptable ?? []).map((name) => (
+              <button
+                key={name}
+                type="button"
+                className="ghost-btn"
+                disabled={busy}
+                onClick={() => onAdopt(name)}
+                title={`Copy the standard "${name}" into your document so you can extend or subclass it`}
+              >
+                adopt <code>{name}</code>
+              </button>
+            ))}
+          </span>
+        </p>
+      )}
+      <div className="settings-row">
+        <table className="settings-table ontology-compare">
+          <thead>
+            <tr>
+              <th>this deployment defines</th>
+              <th>in force now</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                {tenantTerms.length === 0 ? (
+                  <span className="settings-muted">none yet</span>
+                ) : (
+                  <OntologyTermTree nodes={buildOntologyTree(tenantTerms)} />
+                )}
+              </td>
+              <td>
+                <OntologyTermTree nodes={buildOntologyTree(state.effective ?? [])} markSource />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+// OntologyDocumentClassesTab: the classes that type a document rather than a fact —
+// kept apart from Classes because they never reach an agent's prompt.
+function OntologyDocumentClassesTab({ state }: { state: OntologyResponse }) {
+  return (
+    <div className="settings-row">
+      <div>
+        <span className="settings-muted">
+          Govern a document's type: its title and identifier patterns, the grammars that read
+          its citations and anchors, and the work key editions share. Never listed to agents
+          as entity types.
+        </span>
+        <OntologyTermTree nodes={buildOntologyTree(state.document_classes ?? [])} markSource />
+      </div>
+    </div>
+  );
+}
+
+// OntologyGrammarsTab lists each grammar with what it does, and its rules on demand:
+// a grammar that misreads a citation is debugged by reading its patterns, and the
+// document view shows them only one chunk at a time.
+function OntologyGrammarsTab({ state }: { state: OntologyResponse }) {
+  return (
+    <div className="settings-row">
+      <div>
+        <span className="settings-muted">
+          Patterns that read citations in a document's text and key its parts. A class uses
+          one by naming it in <code>@citation_grammar</code> or <code>@anchor_grammar</code>; a
+          grammar that cannot be used is disabled and reported, and the class stays in force.
+        </span>
+        <ul className="ontology-tree">
+          {(state.grammars ?? []).map((g) => (
+            <li key={g.name}>
+              <code>{g.name}</code>
+              {g.class && <span className="settings-muted"> under {g.class}</span>}
+              {g.issue ? (
+                <span className="ontology-warn"> · disabled: {g.issue}</span>
+              ) : (
+                <span className="settings-muted">
+                  {" "}
+                  · {g.patterns?.length ?? 0} pattern(s)
+                  {g.resolve && <> → {g.resolve}</>}
+                  {(g.scopes?.length ?? 0) > 0 && <> · {g.scopes?.length} scope(s)</>}
+                  {(g.anchors?.length ?? 0) > 0 && <> · {g.anchors?.length} anchor rule(s)</>}
+                </span>
+              )}
+              {((g.patterns?.length ?? 0) > 0 ||
+                (g.scopes?.length ?? 0) > 0 ||
+                (g.anchors?.length ?? 0) > 0) && (
+                <details className="settings-help">
+                  <summary>rules</summary>
+                  <pre className="ontology-evidence ontology-rules">
+                    {[
+                      ...(g.patterns ?? []).map((x) => `pattern: ${x}`),
+                      ...(g.resolve ? [`resolve: ${g.resolve}`] : []),
+                      ...(g.scopes ?? []).map((r) => `scope: ${r.pattern} => ${r.templates.join(" | ")}`),
+                      ...(g.anchors ?? []).map((r) => `anchor: ${r.pattern} => ${r.templates.join(" | ")}`),
+                    ].join("\n")}
+                  </pre>
+                </details>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+// OntologyHealthTab: what in the tenant's data disagrees with the ontology. Nothing
+// here is an error in the document; each is a gap between the vocabulary and the facts
+// already written under it.
+function OntologyHealthTab({ state }: { state: OntologyResponse }) {
+  const versions = factsUnderOlderVocabulary(state);
+  return (
+    <>
+      {(state.undeclared_types ?? []).length > 0 && (
+        <p className="settings-help">
+          <strong>Types in use that no class declares</strong> (tenant scope):{" "}
+          {(state.undeclared_types ?? []).map((t) => (
+            <span key={t.type}>
+              <code>{t.type}</code> <span className="settings-muted">×{t.count}</span>{" "}
+            </span>
+          ))}
+          — declare them as classes, or map an old name with <code>@renamed_from</code>.
+        </p>
+      )}
+      {(versions.older > 0 || versions.unknown > 0) && (
+        <p className="settings-help">
+          Facts in the tenant scope: {versions.older} written under an older vocabulary than the
+          current one (version {state.ontology_version}), {versions.unknown} with no recorded
+          version.
+        </p>
+      )}
+      {(state.undated_statements ?? 0) > 0 && (
+        <p className="settings-help">
+          {state.undated_statements} statement(s) of a dated relation kind carry no date.
+        </p>
+      )}
+    </>
+  );
+}
+
+// OntologySection is the tenant ontology's page.
 //
-// The failure this exists to prevent is not an error message: it is an operator
-// who edits the ontology document, never learns that editing alone changes
-// nothing, and concludes the feature is broken. So the panel leads with the state
-// of the gate, and shows the tenant's own types NEXT TO the types actually in
-// force — the gap between the two columns is the only visible evidence that a
-// draft is inert.
+// The failure it exists to prevent is not an error message: it is an operator who edits
+// the ontology document, never learns that editing alone changes nothing, and concludes
+// the feature is broken. So the page leads with the state of the gate, then what needs a
+// decision (proposals), then the vocabulary one section per tab, each showing what is in
+// force rather than only what is written.
 //
-// Authoring stays in the Path browser (a Markdown document deserves the document
-// editor); the two things that cannot live there are the gate and the layered
-// result, so those are what this panel is.
+// Authoring stays in the document editor (a Markdown document deserves it); the gate,
+// the layered result and the review of proposals cannot live there, so they are here.
 export default function OntologySection() {
   // The topbar user picker IS the survey scope: facts live per user, so which user the
   // curation run belongs to decides what it can see.
   const pickedUser = useUserId();
+  const [params] = useSearchParams();
   const [state, setState] = useState<OntologyResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -467,142 +560,73 @@ export default function OntologySection() {
     load();
   }, [load]);
 
+  // Every action re-reads the whole state from its response, so the page shows the
+  // effective result rather than an optimistic guess.
+  const act = async (call: () => Promise<OntologyResponse>) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      setState(await call());
+      setErr(null);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   // RFC CA: accept puts the entity in force where it already sits; reject keeps it as a
-  // tombstone so a curator stops re-proposing it. Both re-read the whole state from the
-  // response, so the panel shows the effective result rather than an optimistic guess.
-  const resolveProposal = async (chunkId: string, action: "accept" | "reject") => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      setState(await resolveOntologyProposal(chunkId, action));
-      setErr(null);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+  // tombstone so a curator stops re-proposing it.
+  const resolveProposal = (chunkId: string, action: "accept" | "reject") =>
+    act(() => resolveOntologyProposal(chunkId, action));
+  const adopt = (name: string, section?: "relations") =>
+    act(() => adoptOntologyType(name, undefined, section));
+  const flip = (status: "confirmed" | "draft") => act(() => setOntologyStatus(status));
 
-  const adopt = async (name: string, section?: "relations") => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      setState(await adoptOntologyType(name, undefined, section));
-      setErr(null);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const flip = async (status: "confirmed" | "draft") => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      setState(await setOntologyStatus(status));
-      setErr(null);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const tenantTerms = state?.terms ?? [];
   // Split by status rather than filtering twice at the render site: pending needs a
-  // decision, rejected is a record. Conflating them would put "reject" buttons next to
-  // things already rejected.
+  // decision, rejected is a record.
   const allProposals: OntologyProposal[] = state?.proposals ?? [];
   const pendingProposals = allProposals.filter((p) => p.status === "proposed");
   const rejectedProposals = allProposals.filter((p) => p.status === "rejected");
-  // A status that is neither of the two words the gate accepts — reachable by
-  // editing the document's status field by hand. Called out explicitly, because
-  // this is precisely the state that looks confirmed and behaves as draft.
-  const oddStatus =
-    !!state?.status && state.status !== "confirmed" && state.status !== "draft";
+  // A status that is neither of the two words the gate accepts — reachable by editing
+  // the document's status field by hand. Called out explicitly, because this is
+  // precisely the state that looks confirmed and behaves as draft.
+  const oddStatus = !!state?.status && state.status !== "confirmed" && state.status !== "draft";
+  const tabs = state?.provisioned ? ontologyTabs(state) : [];
+  const tab = pickOntologyTab(params.get("section"), tabs);
+  const path = state?.path ?? "/memory/ontology";
 
   return (
     <div className="settings-panel">
       <h2>Ontology</h2>
       <p className="settings-help">
-        The entity types agents extract against. Every tenant starts from a
-        standard set; the types you define are layered on top — but only once
-        you confirm them below. Until then your edits are stored and inert, so
-        you can draft an ontology without changing what any running agent is
-        told.
+        The tenant&rsquo;s shared vocabulary: the classes agents extract and documents are typed
+        by, the relation kinds that link them, the concept schemes that classify documents, the
+        real organisations and posts the tenant knows, and the grammars that read citations.
+        Every tenant starts from a standard set; yours is layered on top once you confirm it.
+        Until then your edits are stored and inert.
       </p>
 
-      {/* THE EDIT AFFORDANCE, and it is deliberately a button rather than the
-          path in prose. An operator reported being unable to find any way to
-          change the ontology: this panel renders types and offers "Revert to
-          draft", so it reads as the place you edit them, while the only route in
-          was a sentence linking to the Paths browser — a file tree, from which
-          you still had to know which document to open. A labelled action that
-          lands ON the document removes the guess.
-
-          Links by document_id when the API returned one (it is provisioned and
-          the caller may read it); falls back to the Paths browser only when
-          there is no id to address, which is the un-provisioned case the panel
-          already explains below.
-
-          ?scope=tenant IS LOAD-BEARING. The ontology lives at tenant scope, and
-          the viewer folds an absent scope to `user` — so without it this link
-          opened the right document id in the wrong store, the read 422'd, and the
-          operator got "No chunks" and no create buttons. The affordance existed
-          and led nowhere, which is most of why the ontology UI was reported
-          unusable. */}
+      {/* THE EDIT AFFORDANCE: a labelled action that lands ON the document, not a path in
+          prose. ?scope=tenant is load-bearing — the viewer folds an absent scope to
+          `user`, which opened the right id in the wrong store (ontologyEditHref). Falls
+          back to the Paths browser only when there is no id to address. */}
       <p className="settings-help">
         {state?.document_id ? (
           <Link className="settings-action-link" to={ontologyEditHref(state.document_id)}>
             Edit ontology →
           </Link>
         ) : (
-          <Link to="/documents">{state?.path ?? "/memory/ontology"}</Link>
-        )}
-        {" "}
-        <span className="settings-muted-inline">
-          {state?.path ?? "/memory/ontology"} (tenant scope)
-        </span>
+          <Link to="/documents">{path}</Link>
+        )}{" "}
+        <span className="settings-muted-inline">{path} (tenant scope)</span>
       </p>
-
-      {/* The format, stated here rather than left to be inferred from the
-          template. Guessing it was the second half of the same report. */}
-      <details className="settings-help">
-        <summary>How the document is written</summary>
-        <p>
-          Each section is one entity type: the <code>## heading</code> names it,
-          and each <code>- `field`</code> bullet declares a field. Prose around
-          them is documentation and is ignored. Reuse a standard type's name to
-          override its fields.
-        </p>
-        <p>
-          <strong>Nest a heading to make a subclass.</strong> A{" "}
-          <code>### incident</code> under <code>## event</code> is a kind of event:
-          it inherits every field above it and adds its own, and a search for the
-          general type also finds the specific ones. Nest up to four levels. To
-          subclass a <em>standard</em> type, give it a <code>##</code> heading of
-          its own first — that overrides the standard one — then nest beneath your
-          copy. <code>preference</code> and <code>fact</code> are the memory tier's
-          own types and always stay top-level: you may nest types <em>under</em> them,
-          but not them under something else.
-        </p>
-        <p>
-          <strong>In the editor:</strong> select the type you want to extend, then
-          use <strong>+ child</strong> to nest a subtype under it (<strong>+ text</strong>{" "}
-          adds a sibling at the same level instead). Rename it in the dialog that
-          opens — a type's name is its heading — and list its own fields as
-          backticked bullets in the body. Changes take effect on the next run once
-          the document is confirmed.
-        </p>
-      </details>
 
       {err && <div className="settings-error">{err}</div>}
 
       {state && !state.provisioned && (
         <div className="settings-muted">
-          No ontology document — this deployment has no SQL Memory configured, so
-          agents run on the standard types alone.
+          No ontology document — this deployment has no SQL Memory configured, so agents run on
+          the standard types alone.
         </div>
       )}
 
@@ -610,20 +634,18 @@ export default function OntologySection() {
         <>
           <div className="settings-row">
             <span className={state.confirmed ? "settings-flash" : "settings-muted"}>
-              {state.confirmed
-                ? `Confirmed — your ${tenantTerms.length} type(s) are in force.`
-                : `Draft — your ${tenantTerms.length} type(s) are NOT in force.`}
+              {state.confirmed ? "Confirmed — in force" : "Draft — NOT in force"}
+              {state.ontology_version ? ` · version ${state.ontology_version}` : ""}
+              {(state.sections ?? []).length > 0
+                ? ` · sections: ${(state.sections ?? []).join(", ")}`
+                : " · classes only (no @section)"}
             </span>
             {state.confirmed ? (
-              <button type="button" onClick={() => flip("draft")} disabled={busy}>
+              <button type="button" onClick={() => void flip("draft")} disabled={busy}>
                 Revert to draft
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={() => flip("confirmed")}
-                disabled={busy}
-              >
+              <button type="button" onClick={() => void flip("confirmed")} disabled={busy}>
                 Confirm
               </button>
             )}
@@ -637,50 +659,31 @@ export default function OntologySection() {
 
           {oddStatus && (
             <p className="settings-help">
-              The document's status reads <code>{state.status}</code>, which is
-              neither <code>draft</code> nor <code>confirmed</code> — the tenant
-              layer is treated as draft. Use the button above rather than editing
-              the status by hand; only the exact word activates it.
+              The document&rsquo;s status reads <code>{state.status}</code>, which is neither{" "}
+              <code>draft</code> nor <code>confirmed</code> — the tenant layer is treated as
+              draft. Use the button above rather than editing the status by hand; only the exact
+              word activates it.
             </p>
           )}
 
-          {state.confirmed && tenantTerms.length === 0 && (
-            <p className="settings-help">
-              Confirmed, but no types were found in the document. Each type needs
-              its own <code>## name</code> heading, with field names in backticks
-              on the bullets beneath it — anything else is skipped, so a
-              differently-formatted document confirms to nothing. Nest a heading
-              (<code>### name</code>) to make that type a <em>subclass</em> of the
-              one above it.
-            </p>
-          )}
-
-          {/* PROPOSALS — entities in the document that are not in force. Above the
-              table on purpose: they are the only thing here that needs a decision,
-              and a pending decision buried under a type listing is a decision nobody
-              makes. Rejected ones are kept as tombstones (so a curator stops
-              re-proposing them) but folded away, since they compete with live types
-              for attention and never need action. */}
+          {/* PROPOSALS — above the tabs on purpose: they are the only thing here that
+              needs a decision, whichever section they belong to, and a pending decision
+              buried in a tab is a decision nobody makes. */}
           {pendingProposals.length > 0 && (
             <div className="settings-row ontology-proposals">
               <div>
                 <strong>
-                  {pendingProposals.length} suggested type
-                  {pendingProposals.length === 1 ? "" : "s"}
+                  {pendingProposals.length} suggestion{pendingProposals.length === 1 ? "" : "s"}
                 </strong>{" "}
                 <span className="settings-muted">
-                  not in force until you accept — accepting keeps each one exactly where
-                  it sits in the document
+                  not in force until you accept — accepting keeps each one exactly where it sits
+                  in the document
                 </span>
                 {pendingProposals.map((p) => (
                   <div className="ontology-proposal" key={p.chunk_id}>
                     <div>
                       <code>{p.name}</code>
-                      {p.section === "relations" && (
-                        <span className="settings-muted"> relation kind</span>
-                      )}
-                      {p.section === "schemes" && <span className="settings-muted"> concept</span>}
-                      {p.section === "instances" && <span className="settings-muted"> instance</span>}
+                      <span className="settings-muted"> {proposalKind(p)}</span>
                       {p.parent && (
                         <span className="settings-muted">
                           {" "}
@@ -716,37 +719,34 @@ export default function OntologySection() {
             </div>
           )}
 
-          {/* Where suggestions COME FROM. Placed with them rather than at the top of the
-              panel: an operator reading a list of suggestions is the one who wants
-              another pass, and an operator who has never seen one needs to know a pass
-              is a thing they can ask for. A link, not a button — it stages the run in
-              the terminal so the agent and prompt are visible before tokens are spent. */}
+          {/* Where suggestions COME FROM. A link, not a button — it stages the run in the
+              terminal so the agent and prompt are visible before tokens are spent. */}
           <p className="settings-help">
             <Link className="settings-action-link" to={ontologistRunHref(pickedUser)}>
               Review suggestions →
             </Link>{" "}
             <span className="settings-muted">
               stages a pass that reads {pickedUser ? <code>{pickedUser}</code> : "a user"}
-              &rsquo;s stored facts and files suggestions here. It cannot change anything
-              on its own — everything it files waits for you.
+              &rsquo;s stored facts and files suggestions here. It cannot change anything on its
+              own — everything it files waits for you.
             </span>
           </p>
 
           {rejectedProposals.length > 0 && (
             <details className="settings-help">
               <summary>
-                {rejectedProposals.length} rejected type
+                {rejectedProposals.length} rejected suggestion
                 {rejectedProposals.length === 1 ? "" : "s"}
               </summary>
               <p>
-                Kept on purpose: a rejection is a record, so an automated curator can
-                see what you already turned down instead of proposing it again. They are
-                not in force, and they never will be unless you clear the status in the
-                document editor.
+                Kept on purpose: a rejection is a record, so an automated curator can see what you
+                already turned down instead of proposing it again. They are not in force, and
+                never will be unless you clear the status in the document editor.
               </p>
               {rejectedProposals.map((p) => (
                 <div key={p.chunk_id}>
                   <code>{p.name}</code>
+                  <span className="settings-muted"> {proposalKind(p)}</span>
                   {p.parent && (
                     <span className="settings-muted">
                       {" "}
@@ -758,70 +758,100 @@ export default function OntologySection() {
             </details>
           )}
 
-          {/* ADOPT — the standard types this document does not declare. Offered here
-              because the documented way to subclass one is to declare it yourself
-              first, which otherwise means retyping its field names off the column on
-              the right, by hand, correctly. */}
-          {(state.adoptable ?? []).length > 0 && (
-            <p className="settings-help">
-              <strong>Extend a standard type:</strong> adopting one copies it into your
-              document with its fields, so you can add to it or nest subtypes under it.
-              Your copy then overrides the standard one, wholesale — a field a later
-              loomcycle release adds to it will not reach your copy.
-              <span className="ontology-adopt-row">
-                {(state.adoptable ?? []).map((name) => (
-                  <button
-                    key={name}
-                    type="button"
-                    className="ghost-btn"
-                    disabled={busy}
-                    onClick={() => void adopt(name)}
-                    title={`Copy the standard "${name}" into your document so you can extend or subclass it`}
-                  >
-                    adopt <code>{name}</code>
-                  </button>
-                ))}
-              </span>
-            </p>
-          )}
-
-          <div className="settings-row">
-            <table className="settings-table ontology-compare">
-              <thead>
-                <tr>
-                  <th>this deployment defines</th>
-                  <th>in force now</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>
-                    {tenantTerms.length === 0 ? (
-                      <span className="settings-muted">none yet</span>
-                    ) : (
-                      <OntologyTermTree nodes={buildOntologyTree(tenantTerms)} />
-                    )}
-                  </td>
-                  <td>
-                    <OntologyTermTree
-                      nodes={buildOntologyTree(state.effective ?? [])}
-                      markSource
-                    />
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+          {/* The sections, one per tab. The tab is in the URL (?section=) so a link
+              to "the ontology's relations" survives a reload and can be shared. */}
+          <div className="library-subtabs ontology-tabs" role="tablist">
+            {tabs.map((t) => (
+              <Link
+                key={t.id}
+                to={`?section=${t.id}`}
+                role="tab"
+                aria-selected={t.id === tab}
+                className={"library-subtab" + (t.id === tab ? " library-subtab-active" : "")}
+              >
+                {t.label} <span className="library-subtab-count">{t.count}</span>
+                {t.warn && <span className="ontology-warn"> !</span>}
+              </Link>
+            ))}
           </div>
 
-          {(state.sections ?? []).length > 0 && (
-            <OntologySectionsDetail
-              state={state}
-              busy={busy}
-              onAdoptRelation={(name) => void adopt(name, "relations")}
-            />
-          )}
+          <div className="ontology-tab-body">
+            {tab === "classes" && (
+              <OntologyClassesTab state={state} busy={busy} onAdopt={(name) => void adopt(name)} />
+            )}
+            {tab === "document-classes" && <OntologyDocumentClassesTab state={state} />}
+            {tab === "relations" && (
+              <OntologyRelationsDetail
+                state={state}
+                busy={busy}
+                onAdopt={(name) => void adopt(name, "relations")}
+              />
+            )}
+            {tab === "schemes" && <OntologySchemesDetail state={state} />}
+            {tab === "instances" && <OntologyInstancesDetail state={state} />}
+            {tab === "grammars" && <OntologyGrammarsTab state={state} />}
+            {tab === "health" && <OntologyHealthTab state={state} />}
+          </div>
+
+          <OntologyFormatHelp />
         </>
       )}
     </div>
+  );
+}
+
+// proposalKind names what a suggestion would become, so a relation kind is not judged
+// as if it were an entity type.
+function proposalKind(p: OntologyProposal): string {
+  switch (p.section) {
+    case "relations":
+      return "relation kind";
+    case "schemes":
+      return "concept";
+    case "instances":
+      return "instance";
+    default:
+      return "class";
+  }
+}
+
+// OntologyFormatHelp states the document's format rather than leaving it to be inferred
+// from a template — guessing it was half of the report that the ontology was unusable.
+function OntologyFormatHelp() {
+  return (
+    <details className="settings-help">
+      <summary>How the document is written</summary>
+      <p>
+        <strong>Sections.</strong> Each top-level heading may open a section by putting{" "}
+        <code>@section classes</code>, <code>relations</code>, <code>schemes</code> or{" "}
+        <code>instances</code> on its first line. A document with no <code>@section</code> is
+        all classes.
+      </p>
+      <p>
+        <strong>Classes.</strong> A heading names a class and each <code>- `field`</code>{" "}
+        bullet declares a field; prose around them is documentation. Nest a heading to make a
+        subclass: it inherits every field above it, and a search for the general class also
+        finds the specific ones. Reuse a standard type&rsquo;s name to override it.{" "}
+        A class under <code>Document</code> types documents rather than facts, with{" "}
+        <code>@title_pattern</code>, <code>@identifier_pattern</code>,{" "}
+        <code>@citation_grammar</code> and <code>@anchor_grammar</code>.
+      </p>
+      <p>
+        <strong>Grammars</strong> sit in the classes section under a heading{" "}
+        <code>grammar:&lt;name&gt;</code>, one rule per line: <code>pattern:</code> and{" "}
+        <code>resolve:</code> for citations, <code>scope: &lt;pattern&gt; =&gt; &lt;alt&gt; |
+        &lt;alt&gt;</code> and <code>anchor: …</code> to key a document&rsquo;s parts.
+      </p>
+      <p>
+        <strong>Relations</strong> nest as sub-kinds (<em>amends</em> under <em>changes</em>);{" "}
+        <strong>schemes</strong> nest concepts broader to narrower, without inheritance;{" "}
+        <strong>instances</strong> are the real organisations, units and posts, each naming its
+        class with <code>@a &lt;class&gt;</code>, adopted into memory on confirm.
+      </p>
+      <p>
+        Changes take effect on the next run once the document is confirmed. Revise the document
+        in place: a replacement document gives every concept a new id.
+      </p>
+    </details>
   );
 }

@@ -160,3 +160,105 @@ export function instanceStateLabel(s: OntologyInstanceState): string {
       return s.note ? `not adopted: ${s.note}` : "not adopted";
   }
 }
+
+// ─── The page's section tabs ─────────────────────────────────────────────────
+
+export type OntologyTabId =
+  | "classes"
+  | "document-classes"
+  | "relations"
+  | "schemes"
+  | "instances"
+  | "grammars"
+  | "health";
+
+export interface OntologyTab {
+  id: OntologyTabId;
+  label: string;
+  /** What the tab holds, shown beside its label. */
+  count: number;
+  /** Something in it needs the operator: a disabled grammar, a stale concept tag… */
+  warn: boolean;
+}
+
+// ontologyTabs lists the page's tabs for one ontology: Classes always (a section-less
+// document is all classes), every other section only when the document declares it or
+// the server reported it, and Health only when it has a finding. A tab for a section
+// the document lacks would be an empty page that reads as data lost.
+export function ontologyTabs(r: OntologyResponse): OntologyTab[] {
+  const tabs: OntologyTab[] = [];
+  const termWarn = (ts: OntologyTerm[] | undefined) =>
+    (ts ?? []).some((t) => (t.issues ?? []).length > 0 || !!t.name_issue);
+  tabs.push({
+    id: "classes",
+    label: "classes",
+    count: (r.effective ?? []).length,
+    warn: termWarn(r.terms),
+  });
+  if ((r.document_classes ?? []).length > 0) {
+    tabs.push({
+      id: "document-classes",
+      label: "document classes",
+      count: (r.document_classes ?? []).length,
+      warn: termWarn(r.document_classes),
+    });
+  }
+  if (r.relations !== undefined) {
+    tabs.push({
+      id: "relations",
+      label: "relations",
+      count: (r.relations ?? []).length,
+      warn: (r.relations ?? []).some((x) => (x.issues ?? []).length > 0 || !!x.name_issue),
+    });
+  }
+  if (r.schemes !== undefined) {
+    tabs.push({
+      id: "schemes",
+      label: "schemes",
+      count: (r.schemes ?? []).length,
+      warn:
+        (r.scheme_mirror_stale ?? []).length > 0 ||
+        (r.schemes ?? []).some(
+          (s) => (s.issues ?? []).length > 0 || (s.concepts ?? []).some((c) => (c.issues ?? []).length > 0),
+        ),
+    });
+  }
+  if (r.instances !== undefined) {
+    const list = r.instances?.instances ?? [];
+    tabs.push({
+      id: "instances",
+      label: "instances",
+      count: list.length,
+      warn: list.some((i) => i.state === "error"),
+    });
+  }
+  if ((r.grammars ?? []).length > 0) {
+    tabs.push({
+      id: "grammars",
+      label: "grammars",
+      count: (r.grammars ?? []).length,
+      warn: (r.grammars ?? []).some((g) => !!g.issue),
+    });
+  }
+  const findings = ontologyHealthFindings(r);
+  if (findings > 0) tabs.push({ id: "health", label: "health", count: findings, warn: true });
+  return tabs;
+}
+
+// ontologyHealthFindings counts what the Health tab reports: types in use that no class
+// declares, facts written under an older or unknown vocabulary, and undated statements
+// of a dated relation kind. Each kind counts once, however many rows it covers.
+export function ontologyHealthFindings(r: OntologyResponse): number {
+  const v = factsUnderOlderVocabulary(r);
+  return (
+    ((r.undeclared_types ?? []).length > 0 ? 1 : 0) +
+    (v.older > 0 || v.unknown > 0 ? 1 : 0) +
+    ((r.undated_statements ?? 0) > 0 ? 1 : 0)
+  );
+}
+
+// pickOntologyTab resolves the tab a URL asks for against the tabs this ontology has:
+// an unknown or absent one (a link from before a section was removed) opens Classes.
+export function pickOntologyTab(requested: string | null, tabs: OntologyTab[]): OntologyTabId {
+  return tabs.find((t) => t.id === requested)?.id ?? "classes";
+}
