@@ -445,3 +445,42 @@ func TestKBLinker_SubjectDrainActsOnlyOnAConfirmedMerge(t *testing.T) {
 		})
 	}
 }
+
+// TestKBLinker_DrainStopsAtAMessageOfAnotherScope: a message that names its own
+// scope is passed; one that names another scope means the channel is declared at a
+// scope this drain does not run at, so the drain stops there with it unacked
+// rather than consume it as a missing document. The guard is symmetric: a user
+// drain on a deployment that declared the queue tenant-scoped stops the same way.
+func TestKBLinker_DrainStopsAtAMessageOfAnotherScope(t *testing.T) {
+	f := kbBaseFixture()
+	f.queue = []kbMessage{
+		{ID: "msg-1", Value: map[string]any{"document_id": "doc-target", "reason": "created", "scope": "user"}},
+		{ID: "msg-2", Value: map[string]any{"document_id": "doc-target", "reason": "created", "scope": "tenant"}},
+		{ID: "msg-3", Value: map[string]any{"document_id": "doc-target", "reason": "created"}},
+	}
+
+	rep, _ := runLinker(t, f, `{"mode":"drain","write":"propose"}`)
+
+	if rep["status"] != "failed" {
+		t.Fatalf("status = %v, want failed", rep["status"])
+	}
+	if fail, _ := rep["failure"].(string); fail != "documents/ingested here holds tenant-scope messages; declare the channel at scope user to drain it there" {
+		t.Errorf("failure = %q", fail)
+	}
+	if f.committed != 1 {
+		t.Errorf("committed cursor = %d, want 1 (msg-2 stays unconsumed)", f.committed)
+	}
+	msgs := rep["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %v, want the drain stopped at msg-2", msgs)
+	}
+	if m := msgs[0].(map[string]any); m["outcome"] != "complete" || m["acked"] != true {
+		t.Errorf("messages[0] = %v, want its own scope's message passed and acked", m)
+	}
+	if m := msgs[1].(map[string]any); m["outcome"] != "scope_mismatch" || m["acked"] != false || m["document_id"] != "doc-target" {
+		t.Errorf("messages[1] = %v, want scope_mismatch, unacked", m)
+	}
+	if n := len(f.callsOf("Document", "get_document")); n != 1 {
+		t.Errorf("get_document called %d times, want 1 — no pass over another scope's message", n)
+	}
+}

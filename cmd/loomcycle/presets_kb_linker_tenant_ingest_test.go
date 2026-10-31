@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -39,7 +40,7 @@ func runRealDrain(t *testing.T, d *builtin.Document, ctx context.Context, cfg *c
 		CodeBody:   cfg.Agents["kb/linker"].Code,
 		Tools:      set,
 		Dispatcher: tools.NewDispatcher(set),
-		Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: input}}}},
+		Segments:   []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: input}}}},
 	})
 	if err != nil {
 		t.Fatalf("loop.Run: %v", err)
@@ -100,5 +101,64 @@ func TestKBLinker_TenantDocumentDrainAgainstTheRealChannelTool(t *testing.T) {
 	cur, err := d.Store.ChannelCommittedCursor(ctx, "tnt", "documents/ingested", store.MemoryScopeTenant, "")
 	if err != nil || cur == "" {
 		t.Errorf("tenant queue cursor = %q, %v — the ack did not commit it", cur, err)
+	}
+}
+
+// TestKBLinker_TenantDocumentDrainRefusesAnotherScopesQueue: on a deployment that
+// kept the bundle's user declaration, a tenant documents drain reads the run
+// user's USER queue. Every document there is missing from the tenant store, so
+// without a guard the drain acks each one as document_missing and silently
+// consumes another queue's messages. The runtime names its scope on the message;
+// the drain stops at the first one that is not its own, acks nothing, and says
+// how to fix the declaration — and the message is still there for its own drain.
+func TestKBLinker_TenantDocumentDrainRefusesAnotherScopesQueue(t *testing.T) {
+	d, base := realDocument(t)
+	cfg := knowledgeBaseConfig(t)
+	if cfg.Channels["documents/ingested"].Scope != "user" {
+		t.Fatalf("the bundle declares documents/ingested at %q, want user", cfg.Channels["documents/ingested"].Scope)
+	}
+	ctx := tenantDrainCtx(base, cfg)
+	doc := realDoc(t, d, ctx, `{"op":"import_md","scope":"user","path":"/notes/a","markdown":"# Notes\n\nA user's own notes on the incident register."}`)["document_id"].(string)
+
+	rep := runRealDrain(t, d, ctx, cfg, `{"mode":"drain","scope":"tenant","queue":"documents","write":"propose"}`)
+	if rep["status"] != "failed" {
+		t.Fatalf("status = %v, want failed", rep["status"])
+	}
+	if f, _ := rep["failure"].(string); !strings.Contains(f, "holds user-scope messages") || !strings.Contains(f, "declare the channel at scope tenant") {
+		t.Errorf("failure = %q, want it to name the queue's scope and the declaration to fix", f)
+	}
+	msgs, _ := rep["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %v, want the drain stopped at the first message", rep["messages"])
+	}
+	if m := msgs[0].(map[string]any); m["document_id"] != doc || m["outcome"] != "scope_mismatch" || m["acked"] != false {
+		t.Errorf("message = %v, want it refused as scope_mismatch and left unacked", m)
+	}
+	if q, _ := rep["queue"].(map[string]any); q["acked"] != float64(0) {
+		t.Errorf("queue = %v, want nothing acked", q)
+	}
+	if docs, _ := rep["documents"].([]any); len(docs) != 0 {
+		t.Errorf("documents = %v, want no pass over a document of another scope", docs)
+	}
+
+	// The next read from the committed cursor still finds it.
+	res, err := (&builtin.Channel{Store: d.Store, Bus: d.Bus}).Execute(ctx, json.RawMessage(
+		`{"op":"await","channels":["documents/ingested"],"mode":"any","max_messages":1,"wait_ms":0}`))
+	if err != nil || res.IsError {
+		t.Fatalf("await: %v %s", err, res.Text)
+	}
+	var aw struct {
+		Results map[string]struct {
+			Messages []struct {
+				Value map[string]any `json:"value"`
+			} `json:"messages"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &aw); err != nil {
+		t.Fatalf("await result: %v\n%s", err, res.Text)
+	}
+	left := aw.Results["documents/ingested"].Messages
+	if len(left) != 1 || left[0].Value["document_id"] != doc {
+		t.Errorf("the user queue holds %v, want the unacked message for %s", left, doc)
 	}
 }

@@ -904,6 +904,16 @@ agents:
           if (subjects) { rec.op = ""; } else { rec.reason = ""; }
           st.messages.push(rec);
           var m = subjects ? subjectMessage(value) : ingestMessage(value);
+          if (m !== null && !subjects && m.scope !== "" && m.scope !== st.opts.scope) {
+            // The channel is declared at another scope than this drain's, so this is
+            // another scope's queue: its documents are missing here, and acking them as
+            // such would consume them. Stop before the pass, with the message unacked.
+            rec.document_id = m.document_id;
+            rec.reason = m.reason;
+            rec.outcome = "scope_mismatch";
+            throw new Error(channel + " here holds " + m.scope + "-scope messages; declare the channel at scope " +
+              st.opts.scope + " to drain it there");
+          }
           if (m === null) {
             rec.outcome = "malformed";
           } else if (subjects) {
@@ -1000,7 +1010,9 @@ agents:
       }
 
       // ingestMessage validates one queue payload. Anything malformed is skipped
-      // rather than retried forever: no later pass could read it either.
+      // rather than retried forever: no later pass could read it either. scope is
+      // the scope the runtime published at, "" on a message from before it said so
+      // (processed as before); any other value names no scope this drain runs at.
       function ingestMessage(v) {
         if (typeof v === "string") { v = parseJSONOrNull(v); }
         if (!isPlainObject(v) || !isID(v.document_id)) { return null; }
@@ -1014,7 +1026,11 @@ agents:
         }
         // A reimport that names no parts is read whole.
         if (reason === "reimported" && changed === null) { reason = "unknown"; }
-        return { document_id: v.document_id, reason: reason, changed: changed };
+        var scope = "";
+        if (v.scope !== undefined) {
+          scope = (v.scope === "user" || v.scope === "agent" || v.scope === "tenant") ? v.scope : "unknown";
+        }
+        return { document_id: v.document_id, reason: reason, changed: changed, scope: scope };
       }
 
       // ---------------------------------------------------------------- document
