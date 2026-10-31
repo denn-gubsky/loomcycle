@@ -2536,22 +2536,33 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   passages and the rest of the store, from rules the tenant ontology
   declares. Its layers:
   - the document's class, by the ontology's rules (the runtime's `classify`:
-    one class by rule is applied, anything less certain is proposed);
+    one class by rule is applied, anything less certain is proposed); with
+    `file: {root}`, a classified document also gets a name in its class's
+    home;
   - anchors (report);
   - citations from the class grammar;
   - a concept scheme's terms, as `uses_term`, or `defines` in a definitions
     passage;
-  - semantic relations judged by the tool-less `kb/verdict` (always
-    report-only);
+  - semantic relations judged by the tool-less `kb/verdict`: only
+    `elaborates` is proposed, with both quotes verbatim and outside the
+    class's `@boilerplate`; the other kinds stay in the report;
+  - with `check_against`, a comparison of each passage with the norms it
+    answers to, written as a report document (not a legal opinion), never
+    as statements;
   - upkeep of the statements already there: verify, expire, demote, merge,
-    re-point or flag; a person's statement is only verified or flagged, and
-    nothing is deleted.
+    re-point or flag, and with `rejudge: true` a second verdict on a
+    model-made statement whose text changed. A person's statement is only
+    verified or flagged.
 
-  It runs on one document, or drains the `documents/ingested` queue. `write:
+  It runs on one document, drains the `documents/ingested` queue, checks one
+  subject's statements, or sweeps a Path subtree least recently verified
+  first. A sweep reports the expired statements a purge may delete and deletes
+  them only with `purge: true`; a rejected statement is never purged. `write:
   report` (the default) only counts, while `write: propose` takes a scope
-  lease and writes. It needs `LOOMCYCLE_CODE_AGENTS_ENABLED=1`, SQL Memory and
-  a confirmed ontology; the semantic layer also needs an embedder on the
-  Postgres vector tier and a `low` tier. Input, report and limits:
+  lease and writes. The bundle installs no schedule. It needs
+  `LOOMCYCLE_CODE_AGENTS_ENABLED=1`, SQL Memory and a confirmed ontology; the
+  semantic layers also need an embedder on the Postgres vector tier and a
+  `low` tier. Input, report and limits:
   [`bundles/knowledge-base/README.md`](../bundles/knowledge-base/README.md).
 
 ### A Starter that fans out over a document
