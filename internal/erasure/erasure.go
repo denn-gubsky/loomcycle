@@ -76,6 +76,64 @@ type Service struct {
 	// and backplane are its. Either nil = the token plane is not examined.
 	ListTokens   func(ctx context.Context, tenant, subject string) (revocable, kept []store.OperatorTokenDefRow, err error)
 	RetireTokens func(ctx context.Context, tenant, subject string) ([]store.OperatorTokenDefRow, error)
+	// BoundSubjects lists the tenant's subjects (documents in the tenant scope
+	// whose root carries `fields.principal`) bound to the subject.
+	// ClearBoundSubjects removes those bindings and returns the subjects it
+	// cleared (also on error). AnnounceErased publishes `erased` on
+	// memory/subjects for them, once the erasure is done, and returns why it
+	// did not ("" when it did). The transport owns all three: the document
+	// store and the channel bus are its, and the caller's read-access rules
+	// decide whether the event may name a subject. Any nil = the plane is not
+	// examined.
+	BoundSubjects      func(ctx context.Context, tenant, subject string) ([]BoundSubject, error)
+	ClearBoundSubjects func(ctx context.Context, tenant, subject string) ([]BoundSubject, error)
+	AnnounceErased     func(ctx context.Context, tenant string, subjects []BoundSubject) string
+}
+
+// BoundSubject is one tenant subject bound to the erased principal. An erasure
+// clears the binding and keeps the subject: deleting it deletes every
+// statement and fact the tenant holds about that entity, which is the
+// operator's call, not a mechanical erasure.
+type BoundSubject struct {
+	DocumentID string `json:"document_id"`
+	NaturalKey string `json:"natural_key"`
+	Path       string `json:"path,omitempty"`
+	// RootChunkID is what the announcement names; not part of the report.
+	RootChunkID string `json:"-"`
+	// Readable is false when the caller's access-control rules hide the
+	// subject's document from reading: it is then counted, never named.
+	Readable bool `json:"-"`
+}
+
+// subjectBindingsWired reports whether the transport wired the bound-subject plane.
+func (s *Service) subjectBindingsWired() bool {
+	return s.BoundSubjects != nil && s.ClearBoundSubjects != nil && s.AnnounceErased != nil
+}
+
+// nameBound splits subjects into the ones the caller may see named and a count
+// of the rest. The slice is never nil, so the wire carries [] rather than null.
+func nameBound(subjects []BoundSubject) ([]BoundSubject, int) {
+	named := []BoundSubject{}
+	var withheld int
+	for _, b := range subjects {
+		if b.Readable {
+			named = append(named, b)
+		} else {
+			withheld++
+		}
+	}
+	return named, withheld
+}
+
+// retainedBoundSubjects is the Retained entry for bound subjects. It counts and
+// never names them: Retained is copied into the audit record, and the audit
+// log must not carry the subjects the erased person was bound to.
+func retainedBoundSubjects(n int) string {
+	return fmt.Sprintf("%d subject(s) in the tenant's documents were bound to this principal. The "+
+		"binding is cleared (subject_bindings) and the subjects are kept, listed in bound_subjects: an "+
+		"erasure never deletes a subject, because that deletes every statement and fact the tenant holds "+
+		"about it. Deleting one is the operator's call — delete_document on it, which announces the "+
+		"removal on memory/subjects.", n)
 }
 
 // subjectTokens is the subject's bearer-token footprint in one tenant.
@@ -254,13 +312,18 @@ const provenanceBound = 5000
 
 // Report is the wire shape shared by every transport.
 type Report struct {
-	Tenant  string   `json:"tenant"`
-	Subject string   `json:"subject"`
-	Tier1   Tier     `json:"tier1_covered"`
-	Tier2   Tier     `json:"tier2_uncovered"`
-	Tier3   Residue  `json:"tier3_residue"`
-	Access  Access   `json:"access"`
-	Notes   []string `json:"notes"`
+	Tenant  string  `json:"tenant"`
+	Subject string  `json:"subject"`
+	Tier1   Tier    `json:"tier1_covered"`
+	Tier2   Tier    `json:"tier2_uncovered"`
+	Tier3   Residue `json:"tier3_residue"`
+	Access  Access  `json:"access"`
+	// BoundSubjects are the tenant's subjects bound to this principal, which
+	// an erasure unbinds and keeps; BoundSubjectsWithheld counts the ones the
+	// caller's rules hide from reading, which are not named.
+	BoundSubjects         []BoundSubject `json:"bound_subjects"`
+	BoundSubjectsWithheld int            `json:"bound_subjects_withheld,omitempty"`
+	Notes                 []string       `json:"notes"`
 	// Errors names planes that could not be READ. A plane that failed is not a
 	// plane that is empty, and a report unable to distinguish them cannot answer
 	// the question it exists for.
@@ -338,8 +401,15 @@ type Result struct {
 	Retained map[string]string `json:"retained"`
 	Residue  Residue           `json:"residue"`
 	Access   Access            `json:"access"`
-	Errors   []string          `json:"errors,omitempty"`
-	Notes    []string          `json:"notes"`
+	// BoundSubjects are the subjects unbound (or, in a dry run, that would be),
+	// named as in Report.
+	BoundSubjects         []BoundSubject `json:"bound_subjects"`
+	BoundSubjectsWithheld int            `json:"bound_subjects_withheld,omitempty"`
+	// NotAnnounced says why `erased` was not published for the unbound
+	// subjects; empty when it was, or when there was nothing to announce.
+	NotAnnounced string   `json:"not_announced,omitempty"`
+	Errors       []string `json:"errors,omitempty"`
+	Notes        []string `json:"notes"`
 }
 
 const retainedTokenRows = "a revoked token is RETIRED, not deleted: its row (def id, name, " +
@@ -396,11 +466,12 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 		return Report{}, ErrNoSubject
 	}
 	rep := Report{
-		Tenant:  tenant,
-		Subject: subject,
-		Tier1:   Tier{Counts: map[string]int64{}},
-		Tier2:   Tier{Counts: map[string]int64{}},
-		Access:  emptyAccess(),
+		Tenant:        tenant,
+		Subject:       subject,
+		Tier1:         Tier{Counts: map[string]int64{}},
+		Tier2:         Tier{Counts: map[string]int64{}},
+		Access:        emptyAccess(),
+		BoundSubjects: []BoundSubject{},
 	}
 	fail := func(plane string, err error) { rep.Errors = append(rep.Errors, plane+": "+err.Error()) }
 
@@ -463,6 +534,17 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 		for _, n := range []string{acl.storedNote(), acl.configNote()} {
 			if n != "" {
 				aclNotes = append(aclNotes, n)
+			}
+		}
+	}
+	if s.subjectBindingsWired() {
+		if bound, err := s.BoundSubjects(ctx, tenant, subject); err != nil {
+			fail("subject_bindings", err)
+		} else {
+			rep.Tier2.set("subject_bindings", int64(len(bound)))
+			rep.BoundSubjects, rep.BoundSubjectsWithheld = nameBound(bound)
+			if len(bound) > 0 {
+				aclNotes = append(aclNotes, retainedBoundSubjects(len(bound)))
 			}
 		}
 	}
@@ -577,7 +659,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	res := Result{
 		Tenant: tenant, Subject: subject, DryRun: req.DryRun,
 		Deleted: map[string]int{}, Retained: map[string]string{},
-		Access: emptyAccess(),
+		Access: emptyAccess(), BoundSubjects: []BoundSubject{},
 	}
 	for _, plane := range []string{
 		"chats", "memory_rows", "path_entries",
@@ -591,6 +673,9 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	}
 	if s.ListTokens != nil && s.RetireTokens != nil {
 		res.Deleted["operator_tokens"] = 0
+	}
+	if s.subjectBindingsWired() {
+		res.Deleted["subject_bindings"] = 0
 	}
 	fail := func(plane string, err error) { res.Errors = append(res.Errors, plane+": "+err.Error()) }
 
@@ -670,6 +755,27 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 			if changed > 0 && s.ACLChanged != nil {
 				s.ACLChanged(ctx, tenant, subject)
 			}
+		}
+	}
+	// The subjects bound to the principal: unbound, so no row keeps the erased
+	// id, and never deleted. Announced after everything else, below.
+	var unbound []BoundSubject
+	if s.subjectBindingsWired() {
+		var bound []BoundSubject
+		var err error
+		if req.DryRun {
+			bound, err = s.BoundSubjects(ctx, tenant, subject)
+		} else {
+			bound, err = s.ClearBoundSubjects(ctx, tenant, subject)
+			unbound = bound
+		}
+		if err != nil {
+			fail("subject_bindings", err)
+		}
+		res.Deleted["subject_bindings"] = len(bound)
+		res.BoundSubjects, res.BoundSubjectsWithheld = nameBound(bound)
+		if len(bound) > 0 {
+			res.Retained["bound_subjects"] = retainedBoundSubjects(len(bound))
 		}
 	}
 	if creds, err := s.Store.CredentialDefList(ctx, tenant, "user", subject); err != nil {
@@ -790,6 +896,12 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 			}
 			res.Deleted["chats"]++
 		}
+	}
+
+	// After every plane, so the event follows the erasure rather than racing it:
+	// a consumer re-checks the subject against what is left.
+	if len(unbound) > 0 {
+		res.NotAnnounced = s.AnnounceErased(ctx, tenant, unbound)
 	}
 
 	res.Retained["usage_ledger"] = retainedUsageLedger
