@@ -4373,7 +4373,8 @@ button.primary:disabled {
   padding: 2rem;
   border: 1px solid var(--border, #2a2f3a);
   border-radius: 12px;
-  background: var(--panel, #161a22);
+  /* A theme surface, so the card follows the theme its text (--fg) does. */
+  background: var(--bg-soft);
 }
 /* A gate's sign-in form sits inside the card and keeps its column rhythm. */
 .login-card > form {
