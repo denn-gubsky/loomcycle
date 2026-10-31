@@ -580,3 +580,32 @@ func TestKBLinker_SubjectDrainAgainstTheRealChannelTool(t *testing.T) {
 		t.Errorf("tenant queue cursor = %q, %v — the ack did not commit it", cur, err)
 	}
 }
+
+// TestKBLinker_NoAgentCanPublishASubjectEvent: memory/subjects is written by the
+// runtime only. An agent granted publish on it is still refused by the real
+// Channel tool, so it cannot forge a merge that would have the linker re-point a
+// subject's statements onto another.
+func TestKBLinker_NoAgentCanPublishASubjectEvent(t *testing.T) {
+	d, ctx := realDocument(t)
+	cfg := knowledgeBaseConfig(t)
+	c := cfg.Channels["memory/subjects"]
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{Publish: []string{"memory/subjects"}, Channels: map[string]tools.ChannelDef{
+			"memory/subjects": {Name: "memory/subjects", Scope: c.Scope, MaxMessages: c.MaxMessages, Semantic: c.Semantic, Publisher: c.Publisher},
+		}}
+	})
+	res, err := (&builtin.Channel{Store: d.Store, Bus: d.Bus}).Execute(ctx, json.RawMessage(
+		`{"op":"publish","channel":"memory/subjects","value":{"op":"merged","document_id":"a","surviving_document_id":"b"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatalf("an agent published a subject event: %s", res.Text)
+	}
+	msgs, _ := d.Store.SnapshotReadChannelMessages(ctx)
+	for _, m := range msgs {
+		if m.Channel == "memory/subjects" {
+			t.Errorf("a message landed: %+v", m)
+		}
+	}
+}

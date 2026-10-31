@@ -331,6 +331,7 @@ func TestKBLinker_ReportModeDrainWalksTheQueueWithoutAcking(t *testing.T) {
 // Each is acked only after its pass, on the subject queue.
 func TestKBLinker_SubjectDrainRunsOneSubjectPassPerMessage(t *testing.T) {
 	f := subjectFixture()
+	markMerged(f, "c-root", "doc-surv")
 	f.queueChannel = "memory/subjects"
 	f.queue = []kbMessage{
 		{ID: "msg-1", Value: map[string]any{"op": "merged", "subject_natural_key": "person:ada",
@@ -381,6 +382,7 @@ func TestKBLinker_SubjectDrainRunsOneSubjectPassPerMessage(t *testing.T) {
 // queue with its own cursor and consumes nothing, as it does the ingest queue.
 func TestKBLinker_SubjectDrainReportModeWritesNothing(t *testing.T) {
 	f := subjectFixture()
+	markMerged(f, "c-root", "doc-surv")
 	f.queueChannel = "memory/subjects"
 	f.queue = []kbMessage{{ID: "msg-1", Value: map[string]any{"op": "merged",
 		"document_id": "doc-target", "surviving_document_id": "doc-surv"}}}
@@ -393,5 +395,53 @@ func TestKBLinker_SubjectDrainReportModeWritesNothing(t *testing.T) {
 	}
 	if ww := rep["would_write"].(map[string]any); ww["propose_statement"] != float64(1) {
 		t.Errorf("would_write = %v, want the re-point counted", ww)
+	}
+}
+
+// markMerged records on a subject's root that it was merged into survivor, as the
+// merge op writes it before announcing.
+func markMerged(f *kbFixture, root, survivor string) {
+	for i := range f.chunks {
+		if f.chunks[i].ID == root {
+			f.chunks[i].Fields = map[string]any{"merged_into": survivor}
+			return
+		}
+	}
+	c := f.others[root]
+	c.Fields = map[string]any{"merged_into": survivor}
+	f.others[root] = c
+}
+
+// TestKBLinker_SubjectDrainActsOnlyOnAConfirmedMerge: a merge message moves
+// statements only when the duplicate's own record names that survivor. One that
+// does not — a forged message, or a merge since undone — is reported, acked and
+// moves nothing.
+func TestKBLinker_SubjectDrainActsOnlyOnAConfirmedMerge(t *testing.T) {
+	for name, fields := range map[string]map[string]any{
+		"no record":        nil,
+		"another survivor": {"merged_into": "doc-other"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := subjectFixture()
+			if fields != nil {
+				markMerged(f, "c-root", fmt.Sprint(fields["merged_into"]))
+			}
+			f.queueChannel = "memory/subjects"
+			f.queue = []kbMessage{{ID: "msg-1", Value: map[string]any{"op": "merged",
+				"document_id": "doc-target", "surviving_document_id": "doc-surv"}}}
+
+			rep, _ := runLinker(t, f, `{"mode":"drain","scope":"tenant","write":"propose"}`)
+
+			if got := proposals(f); len(got) != 0 {
+				t.Errorf("proposals = %v, want none for an unconfirmed merge", got)
+			}
+			if a := actionsOf(f, "st-mach"); a != "" {
+				t.Errorf("st-mach actions = %q, want untouched", a)
+			}
+			m := rep["messages"].([]any)[0].(map[string]any)
+			if m["outcome"] != "merge_unconfirmed" || m["acked"] != true {
+				t.Errorf("message = %v, want merge_unconfirmed and acked", m)
+			}
+		})
 	}
 }

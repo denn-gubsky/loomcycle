@@ -7947,6 +7947,11 @@ var eventDrivenSystemChannels = map[string]bool{
 	// The channel-hook worker's decision records (internal/channelhooks),
 	// written at tenant scope in the tenant whose definition carries the hook.
 	"_system/channel_hooks/decisions": true,
+	// The Document tool's subject events (adoption, and the merge, re-type, removal
+	// and erasure of a subject), in the subject's scope. System-published so no
+	// agent can forge one: a forged merge would have the links agent re-point a
+	// subject's statements onto another.
+	"memory/subjects": true,
 
 	// RESERVED, NOT PUBLISHED. Nothing in the runtime writes these: a sweep of
 	// every SystemPublisher call site finds only the two above. They stay in

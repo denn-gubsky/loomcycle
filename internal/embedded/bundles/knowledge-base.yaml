@@ -96,10 +96,12 @@ channels:
   # surviving_key?, surviving_document_id?, old_type?, new_type?} here when a
   # subject is adopted, merged, re-typed, removed or erased. Tenant-scoped,
   # because adopted subjects live in the tenant scope; kb/linker drains it with
-  # {"mode":"drain","scope":"tenant"}.
+  # {"mode":"drain","scope":"tenant"}. `publisher: system`: only the runtime
+  # writes it, so no agent can forge a merge that re-points statements.
   memory/subjects:
     description: "Subjects adopted, merged, re-typed, removed or erased — the links agent's subject queue."
     scope: tenant
+    publisher: system
     max_messages: 256
     semantic: queue
 
@@ -913,7 +915,10 @@ agents:
       //   - adopted, retyped, erased: checks 1–5 on the subject's statements;
       //   - merged: the merge re-pointed this scope's statements in its own
       //     transaction, so the pass re-points what remains on the duplicate, then
-      //     checks the survivor;
+      //     checks the survivor — but only when the duplicate's own record says it
+      //     was merged into that survivor (fields.merged_into, which the merge
+      //     writes before it announces). A message alone never moves statements;
+      //     an unconfirmed merge is reported and moves nothing;
       //   - removed: the scope's statements went with the document, so there is
       //     nothing left here to check.
       // The payload is trusted for ids only; every pass re-reads under its grants.
@@ -921,6 +926,7 @@ agents:
         if (m.op === "removed") { return "nothing_to_check"; }
         try {
           if (m.op === "merged") {
+            if (!mergeConfirmed(st, m)) { return "merge_unconfirmed"; }
             st.opts.merged_into = m.surviving_document_id;
             try {
               passDocument(st, { document_id: m.document_id }, null);
@@ -940,6 +946,21 @@ agents:
           throw e;
         }
         return "complete";
+      }
+
+      // mergeConfirmed reads the duplicate's root and reports whether it records the
+      // merge the message announces. A duplicate already gone confirms nothing.
+      function mergeConfirmed(st, m) {
+        var dup;
+        try {
+          dup = resolveDocument(st, { document_id: m.document_id });
+        } catch (e) {
+          if (e && e.missing === true) { return false; }
+          throw e;
+        }
+        if (!dup.root) { return false; }
+        var c = call(st, { op: "get_chunk", id: dup.root });
+        return isPlainObject(c) && isPlainObject(c.fields) && c.fields.merged_into === m.surviving_document_id;
       }
 
       // subjectMessage validates one subject-queue payload; anything malformed is

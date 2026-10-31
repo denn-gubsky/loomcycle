@@ -143,6 +143,8 @@ type kbChunk struct {
 	// RevisedAt is when the body was last written (chunk_revisions), 0 for never
 	// since the fixture began.
 	RevisedAt int64
+	// Fields are the chunk's structured fields, returned by get_chunk when set.
+	Fields map[string]any
 }
 
 type kbEvidence struct {
@@ -432,6 +434,9 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 		}
 		if len(c.Boilerplate) > 0 {
 			out["boilerplate"] = c.Boilerplate
+		}
+		if len(c.Fields) > 0 {
+			out["fields"] = c.Fields
 		}
 		return okResult(out)
 	case "related":
