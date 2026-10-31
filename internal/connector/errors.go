@@ -423,3 +423,45 @@ func SubjectBindCode(err error) string {
 	}
 	return ""
 }
+
+// Reviewing statements in bulk (Connector.ListReviewQueue, RuleStatements,
+// RevertRuling). Each is returned wrapped WithMessage; StatementReviewCode
+// names the sentinel for the wire.
+var (
+	// ErrStatementReviewInvalid — a malformed request: an unknown action, a
+	// reject without a reason, max over 1000, neither ids nor a filter, a real
+	// call without expect_count, or a filter the queue refuses.
+	ErrStatementReviewInvalid = errors.New("connector: invalid statement review request")
+	// ErrStatementReviewForbidden — the caller may not review here: an
+	// isolated user, a token held to the run plane, or a member holding the
+	// `review` grant nowhere.
+	ErrStatementReviewForbidden = errors.New("connector: statement review not permitted")
+	// ErrStatementReviewQueueChanged — expect_count is not the current match
+	// count: the queue changed since the dry run, and nothing was ruled.
+	ErrStatementReviewQueueChanged = errors.New("connector: the review queue changed")
+	// ErrStatementReviewRulingNotFound — no bulk ruling of that id in the scope.
+	ErrStatementReviewRulingNotFound = errors.New("connector: no such ruling")
+	// ErrStatementReviewUnavailable — this deployment has no SQL Memory.
+	ErrStatementReviewUnavailable = errors.New("connector: statement review needs SQL Memory")
+)
+
+// StatementReviewCode is the stable wire code for a review refusal: the HTTP
+// error code, the gRPC ErrorInfo reason and the MCP result's code. "" for an
+// error that is none of the sentinels (an internal failure).
+func StatementReviewCode(err error) string {
+	for _, c := range []struct {
+		sentinel error
+		code     string
+	}{
+		{ErrStatementReviewInvalid, "invalid_request"},
+		{ErrStatementReviewForbidden, "forbidden"},
+		{ErrStatementReviewQueueChanged, "queue_changed"},
+		{ErrStatementReviewRulingNotFound, "ruling_not_found"},
+		{ErrStatementReviewUnavailable, "unavailable"},
+	} {
+		if errors.Is(err, c.sentinel) {
+			return c.code
+		}
+	}
+	return ""
+}

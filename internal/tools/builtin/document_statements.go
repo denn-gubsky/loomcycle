@@ -1472,10 +1472,6 @@ func (d *Document) getEdge(ctx context.Context, key sqlmem.ScopeKey, in docInput
 // (order verified). A retired statement — expired, or already ended — is left
 // out unless include_retired asks for it.
 func (d *Document) listStatements(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
-	status := in.Status
-	if status == "" {
-		status = edgeStatusProposed
-	}
 	limit := edgeGetEdgesDefault
 	if in.Limit > 0 {
 		limit = min(in.Limit, edgeGetEdgesMax)
@@ -1487,30 +1483,19 @@ func (d *Document) listStatements(ctx context.Context, key sqlmem.ScopeKey, in d
 	if order != statementOrderCreated && order != statementOrderVerified {
 		return errValidation("list_statements: order must be created or verified", "Omit order for newest first."), nil
 	}
-	where := []string{"e.status = ?"}
-	args := []any{status}
-	if kc, ka, _ := d.kindFilter(ctx, in); kc != "" {
-		where = append(where, kc)
-		args = append(args, ka...)
-	}
-	if !in.IncludeRetired {
-		// One-sided on purpose: a statement dated to take effect later is not
-		// retired, and a proposal for a coming edition belongs in the queue.
-		where = append(where, "e.expired_at IS NULL AND (e.invalid_at IS NULL OR e.invalid_at > ?)")
-		args = append(args, time.Now().UnixNano())
-	}
-	sel, selArgs, none, refusal, err := d.statementSelection(ctx, key, in)
+	where, args, none, refusal, err := d.statementQueueWhere(ctx, key, in)
 	if err != nil {
 		return errFrom("list_statements: "+err.Error(), err), nil
 	}
 	if refusal != nil {
 		return *refusal, nil
 	}
+	if in.Summarize {
+		return d.summarizeStatements(ctx, key, where, args, none)
+	}
 	if none {
 		return jsonResult(map[string]any{"statements": []any{}})
 	}
-	where = append(where, sel...)
-	args = append(args, selArgs...)
 	if in.After != "" {
 		c, ok := decodeStatementCursor(in.After)
 		if !ok || c.Order != order {
@@ -1544,6 +1529,35 @@ func (d *Document) listStatements(ctx context.Context, key sqlmem.ScopeKey, in d
 		}
 		return c.encode()
 	})
+}
+
+// statementQueueWhere is the review queue's selection on alias e (cf and ct its
+// endpoint chunks): statements of one status (default proposed), narrowed by
+// the kinds, retirement and every selection filter. list_statements and a bulk
+// ruling select through it, so what a reviewer listed is what a ruling rules.
+// none reports a filter that can match nothing the caller may read.
+func (d *Document) statementQueueWhere(ctx context.Context, key sqlmem.ScopeKey, in docInput) (where []string, args []any, none bool, refusal *tools.Result, err error) {
+	status := in.Status
+	if status == "" {
+		status = edgeStatusProposed
+	}
+	where = []string{"e.status = ?"}
+	args = []any{status}
+	if kc, ka, _ := d.kindFilter(ctx, in); kc != "" {
+		where = append(where, kc)
+		args = append(args, ka...)
+	}
+	if !in.IncludeRetired {
+		// One-sided on purpose: a statement dated to take effect later is not
+		// retired, and a proposal for a coming edition belongs in the queue.
+		where = append(where, "e.expired_at IS NULL AND (e.invalid_at IS NULL OR e.invalid_at > ?)")
+		args = append(args, time.Now().UnixNano())
+	}
+	sel, selArgs, none, refusal, err := d.statementSelection(ctx, key, in)
+	if err != nil || refusal != nil || none {
+		return nil, nil, none, refusal, err
+	}
+	return append(where, sel...), append(args, selArgs...), false, nil, nil
 }
 
 const (
@@ -1624,43 +1638,54 @@ func (d *Document) statementSelection(ctx context.Context, key sqlmem.ScopeKey, 
 		args = append(args, utf8.RuneCountInString(in.MethodPrefix), in.MethodPrefix)
 	}
 	if in.UnderPath != "" {
-		canonical, perr := normalizePath(in.UnderPath)
-		if perr != nil {
-			r := errValidation("list_statements: "+perr.Error(), docPathFix)
-			return nil, nil, false, &r, nil
-		}
-		ids, err := d.documentsAtOrUnder(ctx, key, canonical)
-		if err != nil {
-			return nil, nil, false, nil, err
-		}
-		docs := make([]any, 0, len(ids))
-		seen := map[string]bool{}
-		for _, id := range ids {
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-			ok, err := readable(id)
-			if err != nil {
-				return nil, nil, false, nil, err
-			}
-			if ok {
-				docs = append(docs, id)
-			}
-		}
-		if len(docs) == 0 {
-			return nil, nil, true, nil, nil
-		}
-		if len(docs) > listStatementsMaxDocs {
-			r := errValidation(fmt.Sprintf("list_statements: under_path names %d documents, more than %d", len(docs), listStatementsMaxDocs),
-				"Narrow under_path, or select by document_id.")
-			return nil, nil, false, &r, nil
+		docs, none, refusal, err := d.readableDocsUnder(ctx, key, "under_path", in.UnderPath, readable)
+		if err != nil || refusal != nil || none {
+			return nil, nil, none, refusal, err
 		}
 		ph := placeholders(len(docs))
 		where = append(where, "(cf.document_id IN ("+ph+") OR ct.document_id IN ("+ph+"))")
 		args = append(append(args, docs...), docs...)
 	}
-	return where, args, false, nil, nil
+	return d.reviewSelection(ctx, key, in, where, args, readable)
+}
+
+// readableDocsUnder lists the documents named at or under path that the caller
+// may read, for a selection filter (field names it in a refusal). none: the
+// filter selects nothing the caller may read.
+func (d *Document) readableDocsUnder(ctx context.Context, key sqlmem.ScopeKey, field, path string, readable func(string) (bool, error)) (docs []any, none bool, refusal *tools.Result, err error) {
+	canonical, perr := normalizePath(path)
+	if perr != nil {
+		r := errValidation("list_statements: "+perr.Error(), docPathFix)
+		return nil, false, &r, nil
+	}
+	ids, err := d.documentsAtOrUnder(ctx, key, canonical)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	docs = make([]any, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		ok, err := readable(id)
+		if err != nil {
+			return nil, false, nil, err
+		}
+		if ok {
+			docs = append(docs, id)
+		}
+	}
+	if len(docs) == 0 {
+		return nil, true, nil, nil
+	}
+	if len(docs) > listStatementsMaxDocs {
+		r := errValidation(fmt.Sprintf("list_statements: %s names %d documents, more than %d", field, len(docs), listStatementsMaxDocs),
+			"Narrow "+field+", or select by document_id.")
+		return nil, false, &r, nil
+	}
+	return docs, false, nil, nil
 }
 
 // readableEndpointDocuments lists, in pages under the store's row cap, the

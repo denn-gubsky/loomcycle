@@ -2,6 +2,8 @@ package connector
 
 import (
 	"encoding/json"
+	"errors"
+	"strconv"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -1335,4 +1337,186 @@ type BindSubjectPrincipalResult struct {
 	Principal   string `json:"principal"`
 	Previous    string `json:"previous,omitempty"`
 	Changed     bool   `json:"changed"`
+}
+
+// ReviewQueueFilter narrows the review queue (ListReviewQueue) and selects
+// what a bulk ruling rules (RuleStatementsRequest.Filter). Every field is
+// optional and they combine with AND; the zero value is every proposal of the
+// scope. A filter never shows more than the caller may read.
+type ReviewQueueFilter struct {
+	// Status is the statement status to list; "" = proposed.
+	Status string `json:"status,omitempty"`
+	// Kind / Kinds: the relation kinds (their union).
+	Kind  string   `json:"kind,omitempty"`
+	Kinds []string `json:"kinds,omitempty"`
+	// Method is an exact, case-sensitive prefix of the statement's method
+	// (rule: or rule:citation).
+	Method string `json:"method,omitempty"`
+	// Actor is the writer recorded on the statement: the agent's name for a
+	// run's write, else the user id.
+	Actor string `json:"actor,omitempty"`
+	// DocumentID / UnderPath: either end in the document, or in a document
+	// named at or under the Path.
+	DocumentID string `json:"document_id,omitempty"`
+	UnderPath  string `json:"under_path,omitempty"`
+	// The same per end.
+	FromDocumentID string `json:"from_document_id,omitempty"`
+	ToDocumentID   string `json:"to_document_id,omitempty"`
+	FromUnderPath  string `json:"from_under_path,omitempty"`
+	ToUnderPath    string `json:"to_under_path,omitempty"`
+	// MinConfidence keeps statements whose writer's confidence is at least
+	// this (0..1); one with none is left out.
+	MinConfidence *float64 `json:"min_confidence,omitempty"`
+	// CreatedBefore / CreatedAfter bound created_at, in unix nanoseconds.
+	CreatedBefore *int64 `json:"created_before,omitempty"`
+	CreatedAfter  *int64 `json:"created_after,omitempty"`
+	// HasJudgeVerdict / JudgeVerdict select on attributes.judge.verdict, a
+	// judge's recorded verdict (accept, reject, unsure).
+	HasJudgeVerdict *bool  `json:"has_judge_verdict,omitempty"`
+	JudgeVerdict    string `json:"judge_verdict,omitempty"`
+}
+
+// ListReviewQueueRequest asks for one page of the review queue, or its
+// grouped counts.
+//
+// Scope is the document scope: tenant (the default) or user (the caller's
+// own). Tenant is whose: only an admin may name one; for anyone else it is the
+// caller's own.
+type ListReviewQueueRequest struct {
+	Tenant    string            `json:"tenant,omitempty"`
+	Scope     string            `json:"scope,omitempty"`
+	Filter    ReviewQueueFilter `json:"filter"`
+	Summarize bool              `json:"summarize,omitempty"`
+	// Limit (default 500, at most 5000), After (a NextCursor) and Order
+	// (created, the default, newest first; or verified) page the rows.
+	Limit int    `json:"limit,omitempty"`
+	After string `json:"after,omitempty"`
+	Order string `json:"order,omitempty"`
+}
+
+// ReviewQueueGroup is one row of the queue's summary.
+type ReviewQueueGroup struct {
+	Kind   string `json:"kind"`
+	Method string `json:"method"`
+	// FromPathPrefix is the first two segments of the from-document's Path
+	// name (/board/regulatory-external); "" for a document filed nowhere.
+	FromPathPrefix string `json:"from_path_prefix"`
+	// JudgeVerdict is attributes.judge.verdict; "" when none was recorded.
+	JudgeVerdict string `json:"judge_verdict"`
+	Count        int    `json:"count"`
+}
+
+// ListReviewQueueResult is one page of the queue: each statement as
+// list_statements renders it (its envelope, both ends' titles and documents,
+// up to three evidence rows). With Summarize, Statements is empty and Summary
+// and Total carry the counts.
+type ListReviewQueueResult struct {
+	Tenant     string             `json:"tenant"`
+	Scope      string             `json:"scope"`
+	Statements []json.RawMessage  `json:"statements"`
+	Truncated  bool               `json:"truncated,omitempty"`
+	NextCursor string             `json:"next_cursor,omitempty"`
+	Summary    []ReviewQueueGroup `json:"summary,omitempty"`
+	Total      int                `json:"total,omitempty"`
+}
+
+// RuleStatementsRequest is one bulk ruling. Name the statements by IDs or by
+// Filter (the queue's), not both.
+//
+// DryRun defaults to true: nil is a dry run. A real call needs ExpectCount,
+// the Matched count of the dry run it follows. Max bounds how many one call
+// rules (default and ceiling 1000); a match larger than Max rules the first
+// Max in the queue's order (newest first), and the rest stay for the next call.
+// Reason is required for reject.
+type RuleStatementsRequest struct {
+	Tenant      string             `json:"tenant,omitempty"`
+	Scope       string             `json:"scope,omitempty"`
+	Action      string             `json:"action"`
+	IDs         []string           `json:"ids,omitempty"`
+	Filter      *ReviewQueueFilter `json:"filter,omitempty"`
+	Reason      string             `json:"reason,omitempty"`
+	DryRun      *bool              `json:"dry_run,omitempty"`
+	ExpectCount *int               `json:"expect_count,omitempty"`
+	Max         int                `json:"max,omitempty"`
+}
+
+// RulingBreakdown counts what a ruling rules by kind and method.
+type RulingBreakdown struct {
+	Kind   string `json:"kind"`
+	Method string `json:"method"`
+	Count  int    `json:"count"`
+}
+
+// RulingItem is one statement's outcome: the status it was ruled to, or the
+// refusal's code (not_found, not_a_proposal, statement_changed, failed) and
+// message. Statements the caller may not rule on never appear.
+type RulingItem struct {
+	ID      string `json:"id"`
+	Status  string `json:"status,omitempty"`
+	Error   string `json:"error,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// RuleStatementsResult reports a bulk ruling, dry or real.
+//
+// Matched is every statement the ids or the filter select that the caller may
+// read: the number ExpectCount must repeat. Selected is the part of it this
+// call considers (at most Max), Skipped those of it the caller may not rule on
+// (counted, never named), ToRule the rest. A dry run carries a Sample (up to
+// 20 statements, as the queue renders them) and the Breakdown of ToRule; a
+// real call carries RulingID, Ruled, Failed, Items and the Breakdown of what
+// it ruled.
+type RuleStatementsResult struct {
+	Tenant    string            `json:"tenant"`
+	Scope     string            `json:"scope"`
+	Action    string            `json:"action"`
+	DryRun    bool              `json:"dry_run"`
+	RulingID  string            `json:"ruling_id,omitempty"`
+	Matched   int               `json:"matched"`
+	Selected  int               `json:"selected"`
+	Skipped   int               `json:"skipped"`
+	ToRule    int               `json:"to_rule"`
+	Ruled     int               `json:"ruled"`
+	Failed    int               `json:"failed"`
+	Sample    []json.RawMessage `json:"sample,omitempty"`
+	Breakdown []RulingBreakdown `json:"breakdown"`
+	Items     []RulingItem      `json:"items,omitempty"`
+}
+
+// RevertRulingRequest undoes one bulk ruling, named by the RulingID its
+// RuleStatements call returned.
+type RevertRulingRequest struct {
+	Tenant   string `json:"tenant,omitempty"`
+	Scope    string `json:"scope,omitempty"`
+	RulingID string `json:"ruling_id"`
+}
+
+// RevertRulingResult reports a revert. Reverted statements went back to the
+// status they had before the ruling; Changed ones were left because something
+// changed them since (each in Items with error "changed"); Skipped ones the
+// caller may not rule on (counted, never named).
+type RevertRulingResult struct {
+	Tenant   string       `json:"tenant"`
+	Scope    string       `json:"scope"`
+	RulingID string       `json:"ruling_id"`
+	Action   string       `json:"action"`
+	Reverted int          `json:"reverted"`
+	Changed  int          `json:"changed"`
+	Skipped  int          `json:"skipped"`
+	Items    []RulingItem `json:"items"`
+}
+
+// ParseReviewInstant reads a review queue time bound given as text: unix
+// nanoseconds (what a statement's created_at reads) or an RFC 3339 timestamp.
+// The text transports (the HTTP query, the MCP tool) share it, so both take the
+// same forms.
+func ParseReviewInstant(v string) (int64, error) {
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return n, nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, v)
+	if err != nil {
+		return 0, errors.New("want unix nanoseconds or an RFC 3339 timestamp")
+	}
+	return t.UnixNano(), nil
 }

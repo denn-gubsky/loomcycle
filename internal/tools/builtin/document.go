@@ -193,6 +193,17 @@ const documentInputSchema = `{
 		"evidence_document_id": {"type": "string", "description": "list_statements: only statements with an evidence row quoting a chunk of this document."},
 		"method_prefix": {"type": "string", "description": "list_statements: only statements whose method starts with exactly this text (e.g. rule: or rule:cite); case-sensitive, no wildcards."},
 		"order":       {"type": "string", "enum": ["created","verified"], "description": "list_statements: created (default) is newest first; verified is least recently verified first, never-verified ones before any."},
+		"from_document_id": {"type": "string", "description": "list_statements: only statements whose FROM end is in this document."},
+		"to_document_id":   {"type": "string", "description": "list_statements: only statements whose TO end is in this document."},
+		"from_under_path":  {"type": "string", "description": "list_statements: only statements whose FROM end is in a document named at or under this Path."},
+		"to_under_path":    {"type": "string", "description": "list_statements: only statements whose TO end is in a document named at or under this Path."},
+		"actor":            {"type": "string", "description": "list_statements: only statements written by this actor: the agent that wrote it in a run, else the user."},
+		"min_confidence":   {"type": "number", "description": "list_statements: only statements whose writer's own confidence is at least this (0..1); one with no confidence is left out."},
+		"created_before":   {"type": "integer", "description": "list_statements: only statements created before this instant (unix nanoseconds, as created_at reads)."},
+		"created_after":    {"type": "integer", "description": "list_statements: only statements created after this instant (unix nanoseconds)."},
+		"has_judge_verdict": {"type": "boolean", "description": "list_statements: true keeps only statements a judge recorded a verdict on (attributes.judge), false only those with none."},
+		"judge_verdict":    {"type": "string", "description": "list_statements: only statements whose recorded judge verdict (attributes.judge.verdict) is exactly this, e.g. accept, reject or unsure."},
+		"summarize":        {"type": "boolean", "description": "list_statements: instead of the statements, return counts grouped by kind, method, the FROM document's path prefix (its first two segments) and judge verdict, plus the total. The filters apply; after, limit and order are ignored."},
 		"walk":        {"type": "string", "enum": ["declared","all"], "description": "graph_recall: which relations to follow. declared (the default where the tenant declares relation kinds) follows the kinds declared for walking — citations, definitions, what implements what — and never mentions or about; all follows every relation. An explicit kind / kinds overrides it; any other value is refused."},
 		"decay":       {"type": "number", "description": "graph_recall with budget_chars: each hop may spend at most decay^hop of the budget, so far hops cannot crowd out near ones. 0 < decay <= 1; default 0.7 for a declared walk, else 1 (no decay). Refused without budget_chars."},
 		"include_hierarchy": {"type": "string", "enum": ["up","down","both","none"], "description": "graph_recall: also step along the document tree — up to a chunk's parent (part_of), down to its children (has_part). Default none."},
@@ -326,6 +337,20 @@ type docInput struct {
 	EvidenceDocumentID string `json:"evidence_document_id,omitempty"`
 	MethodPrefix       string `json:"method_prefix,omitempty"`
 	Order              string `json:"order,omitempty"`
+	// The review queue's filters (document_review.go): each end's document or
+	// subtree, the writer, its confidence, when it was filed, and a judge's
+	// recorded verdict; summarize returns grouped counts instead of rows.
+	FromDocumentID  string   `json:"from_document_id,omitempty"`
+	ToDocumentID    string   `json:"to_document_id,omitempty"`
+	FromUnderPath   string   `json:"from_under_path,omitempty"`
+	ToUnderPath     string   `json:"to_under_path,omitempty"`
+	Actor           string   `json:"actor,omitempty"`
+	MinConfidence   *float64 `json:"min_confidence,omitempty"`
+	CreatedBefore   *int64   `json:"created_before,omitempty"`
+	CreatedAfter    *int64   `json:"created_after,omitempty"`
+	HasJudgeVerdict *bool    `json:"has_judge_verdict,omitempty"`
+	JudgeVerdict    string   `json:"judge_verdict,omitempty"`
+	Summarize       bool     `json:"summarize,omitempty"`
 	// Kind-aware retrieval (RFC FN P4). graph_recall: walk (declared | all),
 	// decay (per-hop share of the content budget), include_hierarchy (up | down |
 	// both | none). search: expand (one hop over relations from the top hits).
@@ -624,6 +649,10 @@ var docSchemaDDL = []string{
 		width INTEGER NOT NULL, height INTEGER NOT NULL, color TEXT)`,
 	// document_leases: a named lease on this scope (document_lease.go).
 	documentLeasesDDL,
+	// statement_rulings / statement_ruling_items: each bulk ruling and what it
+	// changed, so it can be undone together (document_review.go).
+	statementRulingsDDL,
+	statementRulingItemsDDL,
 }
 
 // maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
