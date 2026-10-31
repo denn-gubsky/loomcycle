@@ -87,7 +87,18 @@ type ontologyDescription struct {
 	Grammars  []describedGrammar         `json:"grammars"`
 	Schemes   []memrank.OntologyScheme   `json:"schemes"`
 	Instances []describedInstance        `json:"instances"`
-	Issues    []string                   `json:"issues,omitempty"`
+	// Review is the review policy in force: the Review section's, or — without
+	// one — the policy @auto_assert implies. Absent when neither is.
+	Review *describedReview `json:"review,omitempty"`
+	Issues []string         `json:"issues,omitempty"`
+}
+
+// describedReview is the review policy as the runtime applies it. Applied is
+// false when the Review section has issues: then no rule applies and every
+// proposal waits for a person.
+type describedReview struct {
+	memrank.ReviewPolicy
+	Applied bool `json:"applied"`
 }
 
 // describeOntology answers op=describe_ontology for the caller's tenant. The call's
@@ -183,6 +194,7 @@ func describeOntologyRead(read OntologyRead) ontologyDescription {
 		out.Grammars = append(out.Grammars, dg)
 	}
 	out.Schemes = append(out.Schemes, read.Schemes...)
+	describeReview(read, &out)
 	if hasSection(read.Sections, memrank.SectionInstances) {
 		// Matched as adoption matches them: case-insensitively, against the classes in
 		// force, reported under the declared spelling.
@@ -281,5 +293,38 @@ func (d *Document) describeInstanceSubjects(ctx context.Context, key sqlmem.Scop
 			}
 		}
 		di.RegistryKey, di.SubjectChunkID = subjectKey, s.chunk
+	}
+}
+
+// describeReview adds the review policy in force to a confirmed ontology's
+// description, and its issues to the document's: a Review section that does not
+// parse is reported here, like any other directive error, and applies nothing.
+func describeReview(read OntologyRead, out *ontologyDescription) {
+	var autoAssert []string
+	for _, r := range out.Relations {
+		if r.AutoAssert {
+			autoAssert = append(autoAssert, r.Name)
+		}
+	}
+	if read.Review == nil {
+		if len(autoAssert) > 0 {
+			p := memrank.ImpliedReviewPolicy(autoAssert)
+			out.Review = &describedReview{ReviewPolicy: p, Applied: true}
+		}
+		return
+	}
+	p := *read.Review
+	out.Review = &describedReview{ReviewPolicy: p, Applied: p.Applied()}
+	for _, iss := range p.Issues {
+		out.Issues = append(out.Issues, "Review: "+iss)
+	}
+	if !p.Applied() {
+		out.Issues = append(out.Issues, "Review: the policy is not applied — every proposal waits for a person until it is fixed")
+	}
+	if len(autoAssert) > 0 {
+		// The section is the whole policy: a kind's @auto_assert beside it
+		// would be a second, hidden rule list.
+		out.Issues = append(out.Issues, "Review: @auto_assert on "+strings.Join(autoAssert, ", ")+
+			" is not applied — the Review section is the policy; write accept kind:<kind> method:rule:* when quotes:resolved there")
 	}
 }

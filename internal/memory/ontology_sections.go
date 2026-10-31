@@ -10,6 +10,7 @@ package memory
 //	@section relations   nesting is sub-kinding (amends ⊂ changes)
 //	@section schemes     nesting is SKOS broader/narrower, no inheritance
 //	@section instances   nesting is a declared relation between real things
+//	@section review      the review policy: its list items are rules (ontology_review.go)
 //
 // ONE document, one editor, one confirm gate, rather than a document per concern: a
 // relation whose domain names a class renamed in another document is drift this project
@@ -39,7 +40,7 @@ const (
 
 // SectionKinds lists the recognised section kinds in document order.
 func SectionKinds() []string {
-	return []string{SectionClasses, SectionRelations, SectionSchemes, SectionInstances}
+	return []string{SectionClasses, SectionRelations, SectionSchemes, SectionInstances, SectionReview}
 }
 
 func isSectionKind(s string) bool {
