@@ -144,20 +144,21 @@ func entityTypeOfKey(naturalKey string) string {
 }
 
 // AdoptSubjectProposal mints the tenant entity a proposal stands for, and returns the
-// document it created. The proposal chunk is the caller's to remove afterwards.
+// document it created and, when the adoption was not announced on memory/subjects,
+// why. The proposal chunk is the caller's to remove afterwards.
 //
 // ⚠️ THE SHAPE MUST MATCH WHAT THE CONSOLIDATOR WOULD HAVE WRITTEN — a `/facts/<slug>`
 // document whose ROOT chunk is the entity node, carrying type + subject + natural_key.
 // A bare chunk would look adopted and then collide: `natural_key` is UNIQUE per scope,
 // so the next pass's create_document for the same subject fails, the subject resolves
 // to nothing, and its facts land with no edge to it. That failure shipped once already.
-func (d *Document) AdoptSubjectProposal(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, f SubjectProposalFields, evidence string) (string, error) {
+func (d *Document) AdoptSubjectProposal(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, f SubjectProposalFields, evidence string) (docID, notAnnounced string, err error) {
 	slug := strings.TrimSpace(f.PathSlug)
 	if slug == "" {
 		slug = strings.TrimPrefix(f.NaturalKey, entityTypeOfKey(f.NaturalKey)+":")
 	}
 	if slug == "" {
-		return "", fmt.Errorf("the proposal records no path for the subject")
+		return "", "", fmt.Errorf("the proposal records no path for the subject")
 	}
 	// THE BODY CARRIES THE CONSEQUENCE, because the consequence is otherwise invisible.
 	// Adoption shares this subject from now ON; it does not reach back for the facts
@@ -173,10 +174,10 @@ func (d *Document) AdoptSubjectProposal(ctx context.Context, key sqlmem.ScopeKey
 		Type: f.EntityType, Subject: f.Subject, NaturalKey: f.NaturalKey, Body: body,
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if res.IsError {
-		return "", fmt.Errorf("%s", res.Text)
+		return "", "", fmt.Errorf("%s", res.Text)
 	}
 	var out struct {
 		DocumentID  string `json:"document_id"`
@@ -190,8 +191,10 @@ func (d *Document) AdoptSubjectProposal(ctx context.Context, key sqlmem.ScopeKey
 	if out.RootChunkID != "" {
 		_ = d.writeBody(ctx, mscope, key, out.RootChunkID, f.EntityType, body, nil)
 	}
-	d.publishSubjectEvent(ctx, key, mscope, "adopted", f.NaturalKey, "")
-	return out.DocumentID, nil
+	why := d.publishSubjectEvent(ctx, key, mscope, subjectEvent{
+		Op: "adopted", NaturalKey: f.NaturalKey, DocumentID: out.DocumentID, RootChunkID: out.RootChunkID,
+	})
+	return out.DocumentID, why, nil
 }
 
 // SubjectProposal reports whether an ontology chunk is a subject proposal, and returns
@@ -215,10 +218,10 @@ func (d *Document) SubjectProposal(ctx context.Context, scope, chunkID string) (
 
 // AdoptSubjectProposalInScope is AdoptSubjectProposal with the scope resolved by name,
 // for the operator plane which addresses scopes as strings.
-func (d *Document) AdoptSubjectProposalInScope(ctx context.Context, scope string, f SubjectProposalFields, evidence string) (string, error) {
+func (d *Document) AdoptSubjectProposalInScope(ctx context.Context, scope string, f SubjectProposalFields, evidence string) (docID, notAnnounced string, err error) {
 	key, mscope, err := d.resolveScope(ctx, scope)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	return d.AdoptSubjectProposal(ctx, key, mscope, f, evidence)
 }

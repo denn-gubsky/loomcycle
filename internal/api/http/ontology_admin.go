@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -142,6 +143,11 @@ type ontologyResponse struct {
 	Instances *builtin.InstanceReport `json:"instances,omitempty"`
 	// InstanceAdoption reports what adoption did, on the confirm that ran it.
 	InstanceAdoption *builtin.InstanceReport `json:"instance_adoption,omitempty"`
+
+	// NotAnnounced says why accepting a subject proposal was not announced on
+	// memory/subjects (the caller's access-control rules hide part of the scope from
+	// reading); set only on the accept that adopted it.
+	NotAnnounced string `json:"not_announced,omitempty"`
 }
 
 // ontologyTenant is the tenant every ontology route reads and writes: an admin's
@@ -210,7 +216,7 @@ func (s *Server) handleOntologySetStatus(w http.ResponseWriter, r *http.Request)
 	mi := memInject{Tenant: tenant}
 	s.ensureOntologyDoc(r.Context(), mi)
 
-	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	doc := s.ontologyDocument()
 	dctx := s.ontologyDocCtx(r.Context(), mi)
 
 	// The gate is the ROOT chunk's status, so the write needs the root's id and its
@@ -310,7 +316,7 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 	mi := memInject{Tenant: tenant}
 	terms, confirmed, notes := s.tenantOntologyTerms(ctx, mi)
 
-	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	doc := s.ontologyDocument()
 	dctx := s.ontologyDocCtx(ctx, mi)
 	sectioned := false
 	var relRead builtin.OntologyRead
@@ -426,6 +432,19 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 		}
 	}
 	return resp, nil
+}
+
+// ontologyDocument is the Document the operator-plane ontology routes act through.
+// It carries the channel bus and writer the run path's Document tool has: adopting a
+// subject (accepting a proposal, confirming instances) announces it on
+// memory/subjects, and without them the announcement was silently skipped — the
+// operator plane is the only place adoption happens.
+func (s *Server) ontologyDocument() *builtin.Document {
+	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem, Bus: s.channelBus}
+	if w, ok := s.systemPublisher.(channels.Writer); ok {
+		doc.Writer = w
+	}
+	return doc
 }
 
 // ontologyDocCtx stamps the tenant identity plus the tenant-scope grants the

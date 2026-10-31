@@ -153,7 +153,7 @@ func TestAdoptSubjectProposal_MintsTheEntityTheConsolidatorWouldHaveWritten(t *t
 	if f.NaturalKey != "person:dave" || f.PathSlug != "dave" {
 		t.Fatalf("the proposal lost the identity the proposer recorded: %+v", f)
 	}
-	docID, err := d.AdoptSubjectProposalInScope(grantedTenantCtx(ctx), "tenant", f, evidence)
+	docID, _, err := d.AdoptSubjectProposalInScope(grantedTenantCtx(ctx), "tenant", f, evidence)
 	if err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestAdoptSubjectProposal_DoesNotBackfillFactsFromOtherScopes(t *testing.T) 
 		}
 	}
 	_, f, evidence := d.SubjectProposal(grantedTenantCtx(ctx), "tenant", chunkID)
-	if _, err := d.AdoptSubjectProposalInScope(grantedTenantCtx(ctx), "tenant", f, evidence); err != nil {
+	if _, _, err := d.AdoptSubjectProposalInScope(grantedTenantCtx(ctx), "tenant", f, evidence); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
 

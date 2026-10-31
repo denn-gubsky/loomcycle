@@ -65,7 +65,7 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 	}
 	mi := memInject{Tenant: tenant}
 	s.ensureOntologyDoc(r.Context(), mi)
-	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	doc := s.ontologyDocument()
 	dctx := s.ontologyDocCtx(r.Context(), mi)
 
 	read, err := doc.OntologyTermsFromTree(dctx, "tenant", meminject.OntologyPath)
@@ -106,13 +106,18 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 	// the entity and removes the suggestion; the minted entity carries the evidence.
 	if action == "accept" {
 		if isSubject, f, evidence := doc.SubjectProposal(dctx, "tenant", chunkID); isSubject {
-			docID, aerr := s.adoptSubjectProposal(dctx, doc, f, evidence, chunkID)
+			notAnnounced, aerr := s.adoptSubjectProposal(dctx, doc, f, evidence, chunkID)
 			if aerr != nil {
 				writeJSONError(w, http.StatusInternalServerError, "adopt_failed", aerr.Error())
 				return
 			}
-			_ = docID
-			s.writeOntologyState(w, r.Context(), tenant)
+			resp, err := s.ontologyState(r.Context(), tenant)
+			if err != nil {
+				writeJSONError(w, http.StatusServiceUnavailable, "ontology_unavailable", err.Error())
+				return
+			}
+			resp.NotAnnounced = notAnnounced
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 	}
@@ -160,7 +165,7 @@ func (s *Server) handleOntologyAdopt(w http.ResponseWriter, r *http.Request) {
 	}
 	mi := memInject{Tenant: tenant}
 	s.ensureOntologyDoc(r.Context(), mi)
-	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	doc := s.ontologyDocument()
 	dctx := s.ontologyDocCtx(r.Context(), mi)
 
 	switch strings.ToLower(strings.TrimSpace(body.Section)) {
@@ -409,8 +414,8 @@ func (s *Server) writeOntologyState(w http.ResponseWriter, ctx context.Context, 
 // loses the suggestion on any fault and the operator has nothing left to act on —
 // they would have to wait for the consolidator to meet the subject again to get the
 // proposal back.
-func (s *Server) adoptSubjectProposal(dctx context.Context, doc *builtin.Document, f builtin.SubjectProposalFields, evidence, chunkID string) (string, error) {
-	docID, err := doc.AdoptSubjectProposalInScope(dctx, "tenant", f, evidence)
+func (s *Server) adoptSubjectProposal(dctx context.Context, doc *builtin.Document, f builtin.SubjectProposalFields, evidence, chunkID string) (notAnnounced string, err error) {
+	_, notAnnounced, err = doc.AdoptSubjectProposalInScope(dctx, "tenant", f, evidence)
 	if err != nil {
 		return "", err
 	}
@@ -418,5 +423,5 @@ func (s *Server) adoptSubjectProposal(dctx context.Context, doc *builtin.Documen
 	// left behind is a duplicate suggestion, not a broken adoption, and propose_subject
 	// reports it as already-seen rather than filing it twice.
 	_ = doc.DeleteOntologyChunk(dctx, "tenant", chunkID)
-	return docID, nil
+	return notAnnounced, nil
 }
