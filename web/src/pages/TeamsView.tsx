@@ -417,7 +417,7 @@ export default function TeamsView() {
               onClick={() => void onDelete()}
               disabled={saving || deleting || loadingDef || !reach.byName}
               title={reach.byName ? "Delete this team (all versions)" : reach.notice}
-              style={{ fontSize: "0.8em", padding: "0.15rem 0.5rem", color: "var(--error, #e03131)" }}
+              style={{ fontSize: "0.8em", padding: "0.15rem 0.5rem", color: "var(--failed)" }}
             >
               {deleting ? "Deleting…" : "Delete"}
             </button>
@@ -479,7 +479,7 @@ export default function TeamsView() {
       />
 
       {editorErr && (
-        <div style={{ color: "var(--error, #e03131)", whiteSpace: "pre-wrap", flex: "0 0 auto", fontSize: "0.85em" }}>
+        <div style={{ color: "var(--failed)", whiteSpace: "pre-wrap", flex: "0 0 auto", fontSize: "0.85em" }}>
           {editorErr}
         </div>
       )}
@@ -535,12 +535,12 @@ export default function TeamsView() {
         </label>
       </div>
       {diagErr && (
-        <div style={{ color: "var(--error, #e03131)", marginTop: "0.5rem", flex: "0 0 auto", whiteSpace: "pre-wrap" }}>
+        <div style={{ color: "var(--failed)", marginTop: "0.5rem", flex: "0 0 auto", whiteSpace: "pre-wrap" }}>
           {diagErr}
         </div>
       )}
       {renderErr && (
-        <div style={{ color: "var(--error, #e03131)", marginTop: "0.5rem", flex: "0 0 auto" }}>
+        <div style={{ color: "var(--failed)", marginTop: "0.5rem", flex: "0 0 auto" }}>
           Diagram render failed: {renderErr}
         </div>
       )}
@@ -560,7 +560,7 @@ export default function TeamsView() {
             // with securityLevel:"strict" (mermaid's bundled DOMPurify).
             style={{
               padding: "0.75rem",
-              border: "1px solid var(--lc-border, rgba(127,127,127,0.3))",
+              border: "1px solid var(--border)",
               borderRadius: 8,
               background: "var(--lc-surface, transparent)",
             }}
@@ -578,7 +578,7 @@ export default function TeamsView() {
                   marginTop: "0.5rem",
                   background: "rgba(127,127,127,0.12)",
                   color: "inherit",
-                  border: "1px solid var(--lc-border, rgba(127,127,127,0.3))",
+                  border: "1px solid var(--border)",
                   borderRadius: 6,
                   padding: "0.75rem",
                   overflowX: "auto",
@@ -622,7 +622,7 @@ export default function TeamsView() {
         </button>
       </div>
 
-      {err && <div style={{ color: "var(--error, #e03131)", flex: "0 0 auto" }}>Failed to load teams: {err}</div>}
+      {err && <div style={{ color: "var(--failed)", flex: "0 0 auto" }}>Failed to load teams: {err}</div>}
 
       <div style={{ flex: 1, minHeight: 0, display: "flex", gap: "1.5rem", alignItems: "stretch" }}>
         {/* Team list */}

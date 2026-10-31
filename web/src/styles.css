@@ -1349,7 +1349,7 @@ textarea::placeholder {
   background: var(--bg-soft, #1f2937);
 }
 .reembed-realrun {
-  background: var(--success-soft, #064e3b);
+  background: var(--lc-accent-soft);
 }
 .reembed-summary code {
   font-family: var(--mono);
@@ -1392,7 +1392,7 @@ textarea::placeholder {
   cursor: wait;
 }
 .meta-failed {
-  color: var(--err, #f87171);
+  color: var(--failed);
 }
 .entry-detail {
   padding: 12px;
@@ -3291,7 +3291,7 @@ button.primary:disabled {
 }
 .def-tool-caret {
   font-size: 9px;
-  color: var(--muted);
+  color: var(--fg-soft);
 }
 .def-tool-detail {
   padding-left: 16px;
@@ -3300,7 +3300,7 @@ button.primary:disabled {
 }
 .def-tool-desc {
   font-size: 12px;
-  color: var(--muted);
+  color: var(--fg-soft);
   margin-bottom: 4px;
 }
 .def-tool-name {
@@ -3308,7 +3308,7 @@ button.primary:disabled {
 }
 .def-tool-empty {
   font-size: 12px;
-  color: var(--muted);
+  color: var(--fg-soft);
   font-style: italic;
   padding: 4px 0;
 }
@@ -3437,8 +3437,8 @@ button.primary:disabled {
   letter-spacing: 0.04em;
   padding: 1px 6px;
   border-radius: 8px;
-  color: var(--warn, #b8860b);
-  border: 1px solid var(--warn, #b8860b);
+  color: var(--lc-running);
+  border: 1px solid var(--lc-running);
 }
 .channel-row {
   display: flex;
@@ -3967,7 +3967,7 @@ button.primary:disabled {
 .capture-disabled-badge {
   margin-bottom: 12px;
   padding: 8px 12px;
-  border: 1px solid var(--warn, #b8860b);
+  border: 1px solid var(--lc-running);
   border-radius: 4px;
   background: rgba(200, 150, 50, 0.1);
   color: var(--fg);
@@ -4373,7 +4373,8 @@ button.primary:disabled {
   padding: 2rem;
   border: 1px solid var(--border, #2a2f3a);
   border-radius: 12px;
-  background: var(--panel, #161a22);
+  /* A theme surface, so the card follows the theme its text (--fg) does. */
+  background: var(--bg-soft);
 }
 /* A gate's sign-in form sits inside the card and keeps its column rhythm. */
 .login-card > form {
@@ -4716,7 +4717,7 @@ a.login-btn {
 /* Zero running sessions: mute the badge so it doesn't read as a live count. */
 .run-col-collapsed-badge[data-empty="1"] {
   background: transparent;
-  color: var(--muted);
+  color: var(--fg-soft);
   border-color: var(--border);
 }
 .run-col-collapsed-vtext {
@@ -4724,7 +4725,7 @@ a.login-btn {
   text-orientation: mixed;
   font-size: 11px;
   letter-spacing: 0.04em;
-  color: var(--muted);
+  color: var(--fg-soft);
 }
 
 /* Interactive-sessions switcher — a collapsible list at the top of the run
@@ -4855,8 +4856,8 @@ a.login-btn {
   text-transform: lowercase;
   letter-spacing: 0.03em;
   background: rgba(230, 168, 84, 0.15);
-  color: var(--warn, #e6a854);
-  border: 1px solid var(--warn, #e6a854);
+  color: var(--lc-running);
+  border: 1px solid var(--lc-running);
   justify-self: start;
 }
 .run-form-advanced {
@@ -4864,7 +4865,7 @@ a.login-btn {
 }
 .run-form-advanced summary {
   cursor: pointer;
-  color: var(--muted, #9aa);
+  color: var(--fg-soft);
   font-size: 13px;
   padding: 4px 0;
 }
@@ -4890,7 +4891,7 @@ a.login-btn {
 }
 .live-run-agentid {
   font-size: 12px;
-  color: var(--muted, #9aa);
+  color: var(--fg-soft);
 }
 /* Run metrics strip under the live-run header (RunMetricsBar): the serving
    provider/model, ▲ input / ▼ output, tokens per second, and the context
@@ -5234,7 +5235,7 @@ a.login-btn {
 .run-tab {
   background: transparent;
   border: 1px solid var(--border, #2a2a32);
-  color: var(--muted, #9aa);
+  color: var(--fg-soft);
   padding: 4px 12px;
   border-radius: 4px;
   cursor: pointer;
@@ -5303,7 +5304,7 @@ a.login-btn {
   font-weight: 600;
 }
 .ensemble-cell-index {
-  color: var(--muted, #9aa);
+  color: var(--fg-soft);
 }
 
 /* orchestrator */
