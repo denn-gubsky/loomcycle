@@ -301,6 +301,12 @@ services:
       # Shared-tenant mode: the one tenant every website sign-up joins. Empty =
       # per-person tenants (t_<hash of the e-mail>).
       LANDING_TENANT: ${LANDING_TENANT:-loomcycle-dev}
+      # The first runtime release that holds a website sign-up pending for an
+      # operator's approval. Shared-mode signup refuses (503
+      # approval_unavailable) while the runtime's /healthz version is below it:
+      # an older runtime ignores the gate's new_user.status and would admit
+      # every sign-up unapproved.
+      LANDING_MIN_RUNTIME_VERSION: ${LANDING_MIN_RUNTIME_VERSION:-1.129.1}
       # Only per-person mode mints, so only it needs the admin bearer; shared
       # mode never uses it and boots without it. Leave it unset there: the
       # landing then holds no credential beyond the auth:manage token.

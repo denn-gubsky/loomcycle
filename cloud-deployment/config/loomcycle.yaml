@@ -214,12 +214,13 @@ auth:
       # a user created by the website's (auth:manage) invite redeems as pending
       # and reaches nothing but GET /v1/_me until a tenant operator approves it
       # in the app's Users console. An operator's or admin's own invite, an
-      # attach invite and the tenant bootstrap stay active. The key needs a
-      # runtime with the pending-approval change. An OLDER runtime does not
-      # refuse it: it drops the unknown key silently (checked against main on
-      # 2026-10-31), and website sign-ups would then come up ACTIVE with
-      # tenant reach. Ship this file only in a release that contains that
-      # change.
+      # attach invite and the tenant bootstrap stay active.
+      # DEPLOY THIS FILE ONLY ON A RUNTIME THAT HAS THE PENDING STATUS: the
+      # release after v1.129.0. An older runtime does not refuse the key, it
+      # ignores it, and would admit every sign-up unapproved as an active
+      # member with tenant-wide reach. As a second lock the landing refuses
+      # shared-mode signup while the runtime's /healthz version is below
+      # LANDING_MIN_RUNTIME_VERSION (compose).
       new_user: { access_mode: tenant, status: pending }
       # Off now that nobody owns a tenant through the website: the landing no
       # longer resets or attaches owners' passwords, and leaving it on would let
