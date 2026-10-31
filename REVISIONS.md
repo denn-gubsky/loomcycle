@@ -8,6 +8,54 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.131.0
+
+*Subject change events are complete (RFC FR Phases 2 to 4): re-typing, deleting, merging and erasing a subject each announce it on `memory/subjects`. An operator can merge two subjects and bind a subject to the user it stands for, on every transport.*
+
+*User ids accept sign-in gate subjects such as `cloud:<id>` or `pocketid:<uuid>`. The Web UI takes every colour from the theme.*
+
+The v1.131 line: #2312 to #2318.
+- `@loomcycle/client` moves to 1.131.0, with `mergeSubjects()`, `bindSubjectPrincipal()` and the erasure report's bound-subject fields.
+- The Python adapter source gains `merge_subjects()` and `bind_subject_principal()`; it publishes on its own `python-v*` tag.
+- No migration. The gRPC additions are additive.
+- **Behaviour changes:**
+  - Re-typing a subject root to a type that isn't an entity type in force is refused when the tenant has an ontology document (#2312). Before, any word was accepted.
+  - No agent can set or change a chunk's `fields.principal`; only the operator binding path writes it (#2315).
+
+### Re-type and removal events (#2312)
+
+- `update_chunk` with `type`, or `upsert_chunk` on a key the scope holds, that changes a subject root's type publishes `retyped` with `old_type` and `new_type`. The natural key is kept.
+- `delete_document` on a subject publishes `removed`.
+- As for adoption, an event is withheld when the caller's access rules hide part of the scope from reading, and the result says why in `not_announced`.
+- The Web UI explorer gains **change type** on a subject, listing the entity types in force.
+
+### Merging two subjects (#2314)
+
+One operator merge, `connector.MergeSubjects`, on HTTP `POST /v1/_ontology/subjects/merge`, gRPC `MergeSubjects`, MCP `ontology` `op: merge_subjects`, both clients and the Web UI ("Merge this subject into another…").
+- In one transaction, the duplicate's facts move under the survivor, and each live statement on the duplicate is copied onto the survivor (`attributes.revision_of` names the original) and the original expired.
+- A statement the caller may not `link` is left for the links agent (`statements_left`).
+- The duplicate's root keeps its key and path, gains `fields.merged_into` and status `merged`, and `merged` is published with `surviving_key` and `surviving_document_id`.
+- Refusals carry stable codes on every transport: `same_subject`, `not_a_subject`, `subject_not_in_scope`, `already_merged`, `forbidden`, `merge_conflict`, `principal_conflict`.
+- The caller must be an admin or a tenant operator in its own tenant, with write on both documents.
+
+### Binding a subject to a user, and erasure (#2315, #2318)
+
+- A subject root may carry `fields.principal`, a user of the tenant. It is set through one operator path: HTTP `POST /v1/_ontology/subjects/principal`, gRPC `BindSubjectPrincipal`, MCP `ontology` `op: bind_principal`, both clients and the Web UI ("Bind to a user…"). An empty principal clears it.
+  - The user must have a row in the tenant's `users` table, in any status.
+  - Refusals: `subject_not_found`, `not_a_subject`, `binding_conflict`, `principal_not_found`, `forbidden`, `unavailable`.
+- Agents can't set or change the field on any chunk; every body write keeps the stored binding.
+- **Erasure** reports `bound_subjects` (and tier 2 counts `subject_bindings`). A real run clears each binding, publishes `erased` (with no principal id), and deletes no subject; deleting one stays the operator's call. gRPC gains `ErasureBoundSubject`, `bound_subjects`, `bound_subjects_withheld` and `not_announced`.
+- **A merge carries the binding:** a bound duplicate's binding moves to the survivor; a survivor bound to someone else refuses the merge with `principal_conflict`.
+
+### User ids from sign-in gates (#2317)
+
+A user id may now hold `:` `.` `@` `|` as well as letters, digits, `_` and `-`, up to 320 characters, so a gate user (`cloud:<id>`, `pocketid:<uuid>`, `auth0|…`) can list its runs and inbox and start runs naming itself. `/` stays refused in a path; a caller naming its own subject in a request body is always accepted. Operator token names still refuse `:`.
+
+### Fixes
+
+- **Web UI colours (#2313):** the sign-in, invite, reset, pending and device card rendered dark text on a dark card in the light theme. Seven colour tokens no theme defined now name the theme's own tokens, and a test fails on any `var(--x)` nothing declares.
+- **Tests (#2316):** a squash had dropped one of two files from the classified-tools list; main CI is green again.
+
 ## What's in v1.130.0
 
 *Adopting a subject now announces it on the tenant's `memory/subjects` channel, and the `knowledge-base` links agent drains that queue: one subject pass per event (RFC FR Phases 0 and 1).*

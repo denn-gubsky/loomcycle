@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.130.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.131.0.</em>
 </p>
 
 <p align="center">
@@ -201,17 +201,16 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.130.0) announces subject changes. Adopting a subject
-in the tenant ontology publishes on the tenant's `memory/subjects` channel, and
-the `knowledge-base` links agent drains that queue, one subject pass per event.
-Yaml channels may now be tenant-scoped. A password gate can hold website
-sign-ups for an operator's approval, and an unknown key under a sign-in gate
-now fails the config load. See [`REVISIONS.md`](REVISIONS.md).
+The most recent line (v1.131.0) completes subject change events. Re-typing,
+deleting, merging and erasing a subject each announce it on `memory/subjects`,
+an operator can merge two subjects and bind a subject to the user it stands
+for on every transport, and erasing that user reports and unbinds the subject.
+User ids accept sign-in gate subjects such as `cloud:<id>`. See
+[`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.129.0 finished the `knowledge-base` links agent: model-judged
-`elaborates` relations, `@boilerplate` paragraphs in the ontology, re-judging
-changed statements, norm comparison reports and subtree sweeps. The Web UI's
-ontology page shows the ontology one section per tab. See
+Before it, v1.130.0 announced an adopted subject on the tenant's
+`memory/subjects` channel and let the `knowledge-base` links agent drain it,
+and a password gate could hold website sign-ups for approval. See
 [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
