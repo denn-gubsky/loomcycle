@@ -291,6 +291,22 @@ service Loomcycle {
   // Mirrors POST /v1/_ontology/subjects/merge.
   rpc MergeSubjects(MergeSubjectsRequest) returns (MergeSubjectsResponse);
 
+  // BindSubjectPrincipal binds a tenant ontology subject (named by document
+  // id, root chunk id or natural key) to the user it stands for, or clears
+  // the binding when principal is empty. Erasing that user then finds the
+  // subject: the erasure reports it, clears the binding and announces
+  // `erased`. One user per subject and one subject per user in the tenant;
+  // the principal must be a registered user of the tenant (any status).
+  //
+  // Operator-only, as MergeSubjects: an admin (any tenant, via `tenant`) or
+  // a tenant operator for its own, holding write on the subject's document.
+  // A refusal carries a google.rpc.ErrorInfo whose reason is the code HTTP
+  // returns (subject_not_found, not_a_subject, binding_conflict,
+  // principal_not_found, forbidden, invalid_request, unavailable).
+  //
+  // Mirrors POST /v1/_ontology/subjects/principal.
+  rpc BindSubjectPrincipal(BindSubjectPrincipalRequest) returns (BindSubjectPrincipalResponse);
+
   // Decide asks a decision model typed questions (choice / noul / score)
   // about a piece of state and returns each answer as the model gave it. It
   // is a judgement with probabilities, not generated text, and it needs no
@@ -2284,6 +2300,30 @@ message MergeSubjectsResponse {
   int32 statements_left = 7;
   // Why the merge was not announced on memory/subjects; empty when it was.
   string not_announced = 8;
+}
+
+message BindSubjectPrincipalRequest {
+  // The subject's document id, root chunk id or natural key.
+  string subject = 1;
+  // A user's subject id in the tenant; empty clears the binding.
+  string principal = 2;
+  // Whose ontology. Only an admin may name a tenant; for anyone else it is
+  // the caller's own.
+  string tenant = 3;
+}
+
+message BindSubjectPrincipalResponse {
+  string tenant = 1;
+  string document_id = 2;
+  string root_chunk_id = 3;
+  string natural_key = 4;
+  // The document's first Path-tree name; empty when it has none.
+  string path = 5;
+  // The binding after the call (empty: cleared) and before it.
+  string principal = 6;
+  string previous = 7;
+  // False when the binding was already as asked.
+  bool changed = 8;
 }
 
 // ========================

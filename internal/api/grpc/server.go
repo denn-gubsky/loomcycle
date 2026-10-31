@@ -1055,6 +1055,10 @@ var grpcConsumerScopes = map[string]string{
 	// member path, so a member is refused here too; the connector checks the
 	// caller again.
 	"MergeSubjects": auth.ScopeTenant,
+	// RFC FR P4: binding a subject to a user, as POST
+	// /v1/_ontology/subjects/principal gates it; carved out of the member path
+	// like the merge, and checked again in the connector.
+	"BindSubjectPrincipal": auth.ScopeTenant,
 
 	// RFC BL P5 erasure. ScopeTenant, mirroring the HTTP gate: answering a
 	// data-subject request is the tenant operator's job, and both RPCs confine
