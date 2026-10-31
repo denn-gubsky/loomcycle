@@ -101,7 +101,7 @@ export default function UsersView() {
       {err && <div className="settings-error">{err}</div>}
       {access.err && <div className="settings-muted">groups and bindings unavailable: {access.err}</div>}
 
-      <CreateUserForm onCreated={fetchUsers} />
+      <CreateUserForm tenant={focusTenant || undefined} onCreated={fetchUsers} />
 
       {users && users.length > 0 && (
         <table className="settings-table">
@@ -118,7 +118,7 @@ export default function UsersView() {
           </thead>
           <tbody>
             {users.map((u) => (
-              <UserRow key={u.user_id} user={u} access={access.snap} onChanged={fetchUsers} />
+              <UserRow key={u.user_id} user={u} tenant={focusTenant || undefined} access={access.snap} onChanged={fetchUsers} />
             ))}
           </tbody>
         </table>
@@ -131,9 +131,9 @@ export default function UsersView() {
   );
 }
 
-// CreateUserForm registers a first-class user in the caller's own tenant (the
-// tenant is server-derived; never sent).
-function CreateUserForm({ onCreated }: { onCreated: () => Promise<void> }) {
+// CreateUserForm registers a first-class user. tenant is the admin's topbar
+// focus; a tenant operator's own tenant is server-derived and sends none.
+function CreateUserForm({ tenant, onCreated }: { tenant?: string; onCreated: () => Promise<void> }) {
   const [subject, setSubject] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [accessMode, setAccessMode] = useState<(typeof ACCESS_MODES)[number]>("tenant");
@@ -155,7 +155,7 @@ function CreateUserForm({ onCreated }: { onCreated: () => Promise<void> }) {
         display_name: displayName.trim() || undefined,
         access_mode: accessMode,
       };
-      await createUser(body);
+      await createUser(body, tenant);
       setSubject("");
       setDisplayName("");
       setAccessMode("tenant");
@@ -203,10 +203,15 @@ function CreateUserForm({ onCreated }: { onCreated: () => Promise<void> }) {
 // affordance (a subject seen only in runs), plus an expandable token panel.
 function UserRow({
   user,
+  tenant,
   access,
   onChanged,
 }: {
   user: UserSummary;
+  // The tenant the list was read from (an admin's topbar focus): every action
+  // on the row must address the same tenant, or an admin's acts land in its
+  // own tenant and answer "no such user".
+  tenant?: string;
   access: AccessSnapshot | null;
   onChanged: () => Promise<void>;
 }) {
@@ -234,7 +239,7 @@ function UserRow({
       // status is not sent back.
       const body: UpdateUserBody = { display_name: displayName, access_mode: accessMode };
       if (status !== user.status) body.status = status;
-      await updateUser(user.user_id, body);
+      await updateUser(user.user_id, body, tenant);
       setEditing(false);
       await onChanged();
     } catch (e) {
@@ -247,7 +252,7 @@ function UserRow({
   const approve = async () => {
     setBusy(true);
     setErr("");
-    const r = await approveUser(user.user_id);
+    const r = await approveUser(user.user_id, fetch, tenant);
     if (!r.ok) setErr(r.message);
     else await onChanged();
     setBusy(false);
@@ -257,7 +262,7 @@ function UserRow({
     setBusy(true);
     setErr("");
     try {
-      await createUser({ subject: user.user_id, access_mode: "tenant" });
+      await createUser({ subject: user.user_id, access_mode: "tenant" }, tenant);
       await onChanged();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -273,7 +278,7 @@ function UserRow({
     setBusy(true);
     setErr("");
     try {
-      await deleteUser(user.user_id);
+      await deleteUser(user.user_id, tenant);
       await onChanged();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));

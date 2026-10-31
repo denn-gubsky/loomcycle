@@ -1,18 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { approveUser, linkErrorMessage, listIdentities, startLink, unlink } from "./identityLinks";
+import {
+  approveUser,
+  linkErrorMessage,
+  listIdentities,
+  startLink,
+  unlink,
+} from "./identityLinks";
 
 function recorder(status: number, body: unknown) {
   const calls: { url: string; init?: RequestInit }[] = [];
   const impl = (async (url: string, init?: RequestInit) => {
     calls.push({ url, init });
-    return new Response(status === 204 ? null : JSON.stringify(body), { status });
+    return new Response(status === 204 ? null : JSON.stringify(body), {
+      status,
+    });
   }) as unknown as typeof fetch;
   return { calls, impl };
 }
 
 describe("identity links", () => {
   it("lists, links, unlinks and approves on the user's routes", async () => {
-    const list = recorder(200, { subject: "google:1", identities: [{ gate: "google", external_subject: "1" }] });
+    const list = recorder(200, {
+      subject: "google:1",
+      identities: [{ gate: "google", external_subject: "1" }],
+    });
     const r = await listIdentities("google:1", list.impl);
     expect(r.ok && r.data.identities[0].gate).toBe("google");
     expect(list.calls[0].url).toBe("/v1/_users/google%3A1/identities");
@@ -30,10 +41,23 @@ describe("identity links", () => {
     const ap = recorder(200, {});
     expect((await approveUser("p1", ap.impl)).ok).toBe(true);
     expect(ap.calls[0].url).toBe("/v1/_users/p1/approve");
+
+    // An admin approving in another tenant names it, as the user list it read
+    // from did; without it the server looks in the admin's own tenant.
+    const apT = recorder(200, {});
+    expect((await approveUser("cloud:zl", apT.impl, "loomcycle-dev")).ok).toBe(
+      true,
+    );
+    expect(apT.calls[0].url).toBe(
+      "/v1/_users/cloud%3Azl/approve?tenant=loomcycle-dev",
+    );
   });
 
   it("reports the server's refusal code", async () => {
-    const refused = recorder(403, { code: "reauth_required", error: "sign in again first" });
+    const refused = recorder(403, {
+      code: "reauth_required",
+      error: "sign in again first",
+    });
     const r = await startLink("alice", "entra", refused.impl);
     expect(r.ok).toBe(false);
     if (!r.ok) {

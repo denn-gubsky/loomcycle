@@ -77,8 +77,11 @@ export interface CreateUserBody {
   status?: string; // default "active" server-side
 }
 
-export function createUser(body: CreateUserBody): Promise<UserRecord> {
-  return jsonFetch<UserRecord>("/v1/_users", {
+// tenant: the tenant an admin is managing (the topbar focus). Omitted, the
+// server uses the caller's own tenant — right for a tenant operator, wrong for
+// an admin looking at another tenant's users.
+export function createUser(body: CreateUserBody, tenant?: string): Promise<UserRecord> {
+  return jsonFetch<UserRecord>(withTenant("/v1/_users", tenant), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -92,8 +95,8 @@ export interface UpdateUserBody {
   status?: string;
 }
 
-export function updateUser(subject: string, body: UpdateUserBody): Promise<UserRecord> {
-  return jsonFetch<UserRecord>(`/v1/_users/${encodeURIComponent(subject)}`, {
+export function updateUser(subject: string, body: UpdateUserBody, tenant?: string): Promise<UserRecord> {
+  return jsonFetch<UserRecord>(withTenant(`/v1/_users/${encodeURIComponent(subject)}`, tenant), {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -102,8 +105,8 @@ export function updateUser(subject: string, body: UpdateUserBody): Promise<UserR
 
 // deleteUser removes the identity row (204 No Content). Owned data is left
 // intact — deleting the record is not erasure. Raw fetch (empty body).
-export async function deleteUser(subject: string): Promise<void> {
-  const resp = await fetch(baseURL + `/v1/_users/${encodeURIComponent(subject)}`, {
+export async function deleteUser(subject: string, tenant?: string): Promise<void> {
+  const resp = await fetch(baseURL + withTenant(`/v1/_users/${encodeURIComponent(subject)}`, tenant), {
     method: "DELETE",
     credentials: "same-origin",
   });
