@@ -101,3 +101,37 @@ func TestListChannels_StatsAreEachTenantsOwn(t *testing.T) {
 		}
 	}
 }
+
+// A document's change feed lists as source "document", not as an orphan; a
+// stray undeclared channel is still an orphan, and documents/ingested is no
+// feed. Agents (MCP) and n8n (gRPC) get the listing without the feeds.
+func TestListChannels_DocumentFeedsAreTaggedNotOrphans(t *testing.T) {
+	srv, st := channelHooksFixture(t, true)
+	feed := "documents/0101a323877fa6c3c57ab25245bac110/chunks"
+	for _, name := range []string{feed, "stray", "documents/ingested"} {
+		if _, _, err := st.ChannelPublish(context.Background(), store.ChannelMessage{
+			Channel: name, Scope: store.MemoryScopeTenant, TenantID: "acme", Payload: []byte(`{}`),
+		}, 100); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resp, err := srv.ListChannels(tenantCtx("acme"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{feed: connector.ChannelSourceDocument, "stray": "orphan", "documents/ingested": "orphan"} {
+		ch, ok := findChannel(t, resp, name)
+		if !ok || ch.Source != want {
+			t.Errorf("%s: listed %v with source %q, want %q", name, ok, ch.Source, want)
+		}
+	}
+	trimmed := connector.WithoutDocumentFeeds(resp.Channels)
+	if len(trimmed) != len(resp.Channels)-1 {
+		t.Fatalf("WithoutDocumentFeeds kept %d of %d, want one fewer", len(trimmed), len(resp.Channels))
+	}
+	for _, c := range trimmed {
+		if c.Name == feed {
+			t.Error("WithoutDocumentFeeds kept the document's feed")
+		}
+	}
+}

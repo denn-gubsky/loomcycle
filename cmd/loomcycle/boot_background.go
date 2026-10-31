@@ -714,6 +714,10 @@ func (b *boot) startStoreSweepers() {
 
 	// Channel tool TTL sweeper (v0.8.4). Same shape as MemorySweeper.
 	if cfg.Env.ChannelsSweepInterval > 0 && storeIface != nil {
+		// Idle document change feeds are swept on the same singleton, at most
+		// hourly: the sweep reads every channel's stats, and a feed lives a
+		// week, so a minute's resolution buys nothing.
+		var lastFeedSweep time.Time
 		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.ChannelsSweepInterval, advisoryLock, coord.LockKeyChannelsSweeper, "channels",
 			func(ctx context.Context) {
 				swept, err := storeIface.ChannelSweepExpired(ctx)
@@ -723,6 +727,15 @@ func (b *boot) startStoreSweepers() {
 				}
 				if swept > 0 {
 					slog.Info("channels sweep: deleted expired rows", "rows", swept)
+				}
+				if now := time.Now(); now.Sub(lastFeedSweep) >= time.Hour {
+					lastFeedSweep = now
+					purged, err := builtin.SweepDocumentFeeds(ctx, storeIface, builtin.DocumentFeedIdleTTL, now)
+					if err != nil {
+						slog.Error("channels sweep: document feeds", "err", err)
+					} else if purged > 0 {
+						slog.Info("channels sweep: purged idle document feeds", "feeds", purged)
+					}
 				}
 			})
 		slog.Info("channels: sweeper enabled", "interval", cfg.Env.ChannelsSweepInterval)

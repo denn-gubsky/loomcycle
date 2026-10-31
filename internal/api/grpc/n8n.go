@@ -27,6 +27,9 @@ func (s *Server) ListChannels(ctx context.Context, _ *loomcyclepb.ListChannelsRe
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+	// n8n picks a channel to publish to or await; a document's change feed is
+	// neither, and there is one per document ever edited.
+	resp.Channels = connector.WithoutDocumentFeeds(resp.Channels)
 	out := &loomcyclepb.ListChannelsResponse{
 		Channels: make([]*loomcyclepb.ChannelDescriptor, 0, len(resp.Channels)),
 	}

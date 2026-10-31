@@ -737,8 +737,25 @@ type ChannelDescriptor struct {
 	// v0.11.5: discriminator between yaml-declared (static, immutable)
 	// and runtime-declared (substrate-persisted, CRUD-mutable) rows.
 	// "yaml" | "runtime" | "orphan" (no declaration, only orphan
-	// messages on the underlying tables).
+	// messages on the underlying tables) | "document" (a document's change
+	// feed, documents/<document_id>/chunks: undeclared by design).
 	Source string `json:"source,omitempty"`
+}
+
+// ChannelSourceDocument tags a document's change feed in a channel listing.
+// Agents (MCP) and n8n (gRPC) are never shown these; the Web UI hides them
+// unless asked.
+const ChannelSourceDocument = "document"
+
+// WithoutDocumentFeeds drops the document change feeds from a listing.
+func WithoutDocumentFeeds(chs []ChannelDescriptor) []ChannelDescriptor {
+	out := chs[:0:0]
+	for _, c := range chs {
+		if c.Source != ChannelSourceDocument {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // ListChannelsResponse is the response shape for Connector.ListChannels.

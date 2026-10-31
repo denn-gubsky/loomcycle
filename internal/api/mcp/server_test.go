@@ -1362,6 +1362,8 @@ func TestServer_ListChannels_DispatchesToConnector(t *testing.T) {
 		listChannelsResp: connector.ListChannelsResponse{
 			Channels: []connector.ChannelDescriptor{
 				{Name: "alpha", MessageCount: 5},
+				// A document's change feed is never shown to an agent.
+				{Name: "documents/0101a323877fa6c3c57ab25245bac110/chunks", MessageCount: 3, Source: connector.ChannelSourceDocument},
 				{Name: "beta", MessageCount: 0},
 			},
 		},
@@ -1380,7 +1382,7 @@ func TestServer_ListChannels_DispatchesToConnector(t *testing.T) {
 	if err := json.Unmarshal([]byte(callRes.Content[0].Text), &inner); err != nil {
 		t.Fatalf("unmarshal inner: %v", err)
 	}
-	if len(inner.Channels) != 2 || inner.Channels[0].Name != "alpha" {
+	if len(inner.Channels) != 2 || inner.Channels[0].Name != "alpha" || inner.Channels[1].Name != "beta" {
 		t.Errorf("inner = %+v", inner)
 	}
 }
