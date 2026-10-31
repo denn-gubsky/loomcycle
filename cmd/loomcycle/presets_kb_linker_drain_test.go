@@ -464,7 +464,8 @@ func TestKBLinker_DrainStopsAtAMessageOfAnotherScope(t *testing.T) {
 	if rep["status"] != "failed" {
 		t.Fatalf("status = %v, want failed", rep["status"])
 	}
-	if fail, _ := rep["failure"].(string); fail != "documents/ingested here holds tenant-scope messages; declare the channel at scope user to drain it there" {
+	if fail, _ := rep["failure"].(string); fail != "documents/ingested here holds tenant-scope messages, so the deployment declares it at scope tenant; "+
+		"declare the channel at scope user in the deployment's config to drain it there" {
 		t.Errorf("failure = %q", fail)
 	}
 	if f.committed != 1 {
@@ -482,5 +483,37 @@ func TestKBLinker_DrainStopsAtAMessageOfAnotherScope(t *testing.T) {
 	}
 	if n := len(f.callsOf("Document", "get_document")); n != 1 {
 		t.Errorf("get_document called %d times, want 1 — no pass over another scope's message", n)
+	}
+}
+
+// TestKBLinker_DrainAcksAMessageWithABogusScopeAsMalformed: a scope that is not
+// one the runtime publishes at cannot come from the runtime, so it is a malformed
+// message, acked and reported as such like any other bad payload. Stopping on it
+// would let one bogus message hold every later message on the queue forever.
+func TestKBLinker_DrainAcksAMessageWithABogusScopeAsMalformed(t *testing.T) {
+	f := kbBaseFixture()
+	f.queue = []kbMessage{
+		{ID: "msg-1", Value: map[string]any{"document_id": "doc-target", "reason": "created", "scope": "galaxy"}},
+		{ID: "msg-2", Value: map[string]any{"document_id": "doc-target", "reason": "created", "scope": 7}},
+		{ID: "msg-3", Value: map[string]any{"document_id": "doc-target", "reason": "created", "scope": "user"}},
+	}
+
+	rep, _ := runLinker(t, f, `{"mode":"drain","write":"propose"}`)
+
+	if rep["status"] != "complete" {
+		t.Fatalf("status = %v (failure %v), want complete", rep["status"], rep["failure"])
+	}
+	if f.committed != 3 {
+		t.Errorf("committed cursor = %d, want 3 (every message consumed)", f.committed)
+	}
+	msgs := rep["messages"].([]any)
+	want := []string{"malformed", "malformed", "complete"}
+	if len(msgs) != len(want) {
+		t.Fatalf("messages = %v, want %d", msgs, len(want))
+	}
+	for i, w := range want {
+		if m := msgs[i].(map[string]any); m["outcome"] != w || m["acked"] != true {
+			t.Errorf("messages[%d] = %v, want %s and acked", i, m, w)
+		}
 	}
 }

@@ -90,11 +90,15 @@ channels:
   # scope. Declared user-scoped so a user's drain reads that user's documents. A
   # deployment whose documents live in the tenant scope re-declares it in its own
   # layer (channels: {documents/ingested: {scope: tenant}}) and drains it with
-  # {"mode":"drain","scope":"tenant","queue":"documents"}. A drain refuses a
-  # message whose `scope` is not its own, leaving it unacked.
+  # {"mode":"drain","scope":"tenant","queue":"documents"}. A drain stops at a
+  # message whose `scope` is not its own, leaving it unacked: with `publisher:
+  # system` only the runtime writes here, so that can only be a misdeclared
+  # channel. `publisher: system` also keeps an agent from naming a document the
+  # links agent would then work on.
   documents/ingested:
     description: "Documents created, imported or reimported — the links agent's work queue."
     scope: user
+    publisher: system
     max_messages: 256
     semantic: queue
   # The runtime publishes {op, subject_natural_key, scope, document_id, root_chunk_id,
@@ -905,14 +909,15 @@ agents:
           st.messages.push(rec);
           var m = subjects ? subjectMessage(value) : ingestMessage(value);
           if (m !== null && !subjects && m.scope !== "" && m.scope !== st.opts.scope) {
-            // The channel is declared at another scope than this drain's, so this is
-            // another scope's queue: its documents are missing here, and acking them as
-            // such would consume them. Stop before the pass, with the message unacked.
+            // Only the runtime writes this queue, so a message of another scope means
+            // the deployment declares the channel at another scope than this drain's:
+            // its documents are missing here, and acking them as such would consume
+            // them. Stop before the pass, with the message unacked, and name the fix.
             rec.document_id = m.document_id;
             rec.reason = m.reason;
             rec.outcome = "scope_mismatch";
-            throw new Error(channel + " here holds " + m.scope + "-scope messages; declare the channel at scope " +
-              st.opts.scope + " to drain it there");
+            throw new Error(channel + " here holds " + m.scope + "-scope messages, so the deployment declares it at scope " +
+              m.scope + "; declare the channel at scope " + st.opts.scope + " in the deployment's config to drain it there");
           }
           if (m === null) {
             rec.outcome = "malformed";
@@ -1012,7 +1017,8 @@ agents:
       // ingestMessage validates one queue payload. Anything malformed is skipped
       // rather than retried forever: no later pass could read it either. scope is
       // the scope the runtime published at, "" on a message from before it said so
-      // (processed as before); any other value names no scope this drain runs at.
+      // (processed as before). A scope the runtime never publishes at is malformed
+      // too: stopping on it would let one bad message block the queue for good.
       function ingestMessage(v) {
         if (typeof v === "string") { v = parseJSONOrNull(v); }
         if (!isPlainObject(v) || !isID(v.document_id)) { return null; }
@@ -1028,7 +1034,8 @@ agents:
         if (reason === "reimported" && changed === null) { reason = "unknown"; }
         var scope = "";
         if (v.scope !== undefined) {
-          scope = (v.scope === "user" || v.scope === "agent" || v.scope === "tenant") ? v.scope : "unknown";
+          if (v.scope !== "user" && v.scope !== "agent" && v.scope !== "tenant") { return null; }
+          scope = v.scope;
         }
         return { document_id: v.document_id, reason: reason, changed: changed, scope: scope };
       }

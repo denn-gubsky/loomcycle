@@ -64,8 +64,10 @@ func TestKnowledgeBaseBundle_Validates(t *testing.T) {
 	if strings.Join(linker.Channels.Subscribe, ",") != "documents/ingested,memory/subjects" {
 		t.Errorf("kb/linker subscribes to %v, want exactly [documents/ingested memory/subjects]", linker.Channels.Subscribe)
 	}
-	if ch, ok := cfg.Channels["documents/ingested"]; !ok || ch.Scope != "user" {
-		t.Errorf("the bundle must declare documents/ingested at user scope (a user drain reads it there); got %+v declared=%v", ch, ok)
+	// Only the runtime writes the ingest queue: an agent's message would name a
+	// document for the linker to work on, or a scope that stops its drain.
+	if ch, ok := cfg.Channels["documents/ingested"]; !ok || ch.Scope != "user" || ch.Publisher != "system" {
+		t.Errorf("the bundle must declare documents/ingested at user scope (a user drain reads it there), publisher system; got %+v declared=%v", ch, ok)
 	}
 	// The subject queue is where the runtime publishes: the tenant scope, and only
 	// the runtime — an agent's forged merge would re-point a subject's statements.
@@ -239,16 +241,18 @@ func knowledgeBaseTenantIngestConfig(t *testing.T) *config.Config {
 // TestKnowledgeBaseBundle_DeploymentRedeclaresIngestAtTenantScope: the bundle keeps
 // documents/ingested user-scoped, so a tenant deployment re-declares it in its own
 // layer. The override must deep-merge over the bundle: the scope changes and the
-// queue's bound, semantic and description stay the bundle's, or the one-line
-// override would silently drop the 256-message cap and the queue semantic.
+// queue's bound, semantic, publisher and description stay the bundle's, or the
+// one-line override would silently drop the 256-message cap, the queue semantic
+// and the rule that only the runtime writes the queue.
 func TestKnowledgeBaseBundle_DeploymentRedeclaresIngestAtTenantScope(t *testing.T) {
 	bundle := knowledgeBaseConfig(t).Channels["documents/ingested"]
 	got, ok := knowledgeBaseTenantIngestConfig(t).Channels["documents/ingested"]
 	if !ok || got.Scope != "tenant" {
 		t.Fatalf("documents/ingested = %+v (declared %v), want scope tenant", got, ok)
 	}
-	if got.MaxMessages != bundle.MaxMessages || got.Semantic != bundle.Semantic || got.Description != bundle.Description {
-		t.Errorf("override = %+v, want the bundle's max_messages %d, semantic %q and description kept",
+	if got.MaxMessages != bundle.MaxMessages || got.Semantic != bundle.Semantic || got.Description != bundle.Description ||
+		got.Publisher != "system" {
+		t.Errorf("override = %+v, want the bundle's max_messages %d, semantic %q, publisher system and description kept",
 			got, bundle.MaxMessages, bundle.Semantic)
 	}
 	// The override is validated like any declaration: a misspelt scope is fatal.
