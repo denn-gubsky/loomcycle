@@ -10,25 +10,27 @@ import {
   type ReviewStatement,
   type RuleStatementsResponse,
 } from "../api";
-import { ApiError } from "../lib/apiError";
 import {
   chunkCount,
+  RULING_CHUNK,
+  runRuling,
+  undoRulings,
+  type ConfirmReason,
+  type RulingProgress,
+  type RulingSelection,
+} from "@loomcycle/explorer";
+import { ApiError } from "../lib/apiError";
+import {
   filtersFromSearch,
   groupLabel,
   groupsFromSummary,
   judgeOf,
   reviewKey,
   reviewScopeFromSearch,
-  RULING_CHUNK,
   rulingSummary,
-  runRuling,
   searchFromFilters,
-  undoRulings,
   undoSummary,
-  type ConfirmReason,
   type ReviewGroup,
-  type RulingProgress,
-  type RulingSelection,
 } from "../lib/review";
 
 // The Review page (/review): the scope's proposed statements, grouped as the
@@ -277,7 +279,7 @@ export function UndoToast({ toast, onUndo, onClose }: { toast: ToastState; onUnd
 
 interface RuleTarget {
   label: string;
-  selection: Omit<RulingSelection, "action" | "reason">;
+  selection: Omit<RulingSelection<ReviewFilter>, "action" | "reason">;
   groupCount?: number;
   // Ask the reviewer to confirm the dry run (every bulk action). A row ruled
   // from the keyboard skips it.
