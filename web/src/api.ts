@@ -3819,6 +3819,45 @@ export function setOntologyStatus(
   );
 }
 
+// ---- Ontology subject merge (POST /v1/_ontology/subjects/merge) ----
+
+/** One subject of the tenant ontology: its document, root chunk and key. */
+export interface SubjectRef {
+  document_id: string;
+  root_chunk_id: string;
+  natural_key: string;
+}
+
+/** What a merge did. statements_left stays on the duplicate for the links
+ *  agent (an end the operator may not link, or a retired match on the
+ *  survivor); not_announced says why memory/subjects heard nothing. */
+export interface MergeSubjectsResult {
+  tenant: string;
+  duplicate: SubjectRef;
+  survivor: SubjectRef;
+  facts_moved: number;
+  statements_repointed: number;
+  statements_retired: number;
+  statements_left: number;
+  not_announced?: string;
+}
+
+/**
+ * Fold one tenant subject into another, each named by document id or natural
+ * key. The duplicate stays as a retired document naming the survivor.
+ */
+export function mergeSubjects(
+  duplicate: string,
+  survivor: string,
+  tenant?: string,
+): Promise<MergeSubjectsResult> {
+  const q = tenant ? `?tenant=${encodeURIComponent(tenant)}` : "";
+  return postJSON<MergeSubjectsResult>(
+    `/v1/_ontology/subjects/merge${q}`,
+    JSON.stringify({ duplicate, survivor }),
+  );
+}
+
 // --- RFC AR: secure credential store (POST /v1/_credentialdef) ---
 
 // CredentialScope buckets a stored secret. tenant = shared across the tenant;

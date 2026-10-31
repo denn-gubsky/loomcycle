@@ -5682,6 +5682,20 @@ a.login-btn {
   display: flex;
   flex-direction: column;
 }
+.subject-merge {
+  margin: 0 0 8px;
+}
+.subject-merge-row {
+  display: flex;
+  gap: 8px;
+}
+.subject-merge-row input {
+  flex: 1;
+  min-width: 0;
+}
+.subject-merge-result {
+  margin-top: 6px;
+}
 
 .doc-viewer {
   flex: 1;
