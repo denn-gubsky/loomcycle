@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -434,5 +435,51 @@ func TestSubjectPrincipal_AgentLeaseCannotBlockAnErasure(t *testing.T) {
 	}
 	if _, err := d.BindTenantSubjectPrincipal(ctx, "person:ada", "u-eve"); err != nil {
 		t.Errorf("operator bind while an agent holds leases: %v", err)
+	}
+}
+
+// TestSubjectErasure_ClearWaitsForABindingInFlight.
+//
+// A subject merge moves a binding from the duplicate to the survivor under the scope's
+// binding lease. An erasure clear that listed the subjects before the move would unbind
+// the duplicate and leave the erased id on the survivor, so the clear takes the same
+// lease: while another binding write holds it, nothing is unbound.
+func TestSubjectErasure_ClearWaitsForABindingInFlight(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := grantedTenantCtx(base)
+	_, root := newSubject(t, d, ctx, "tenant", "Ada", "person", "person:ada")
+	if _, err := d.BindTenantSubjectPrincipal(ctx, "person:ada", "u-ada"); err != nil {
+		t.Fatal(err)
+	}
+	key := mustTenantKey(t, d, ctx)
+	release, err := d.holdBindingLease(ctx, key, subjectPrincipalLease, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := d.ClearTenantSubjectBindings(ctx, "u-ada")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		release()
+		t.Fatalf("the clear did not wait for the binding write in flight (err %v)", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if f, _ := subjectFields(t, d, ctx, "tenant", root); f["principal"] != "u-ada" {
+		t.Errorf("unbound while another binding write held the lease: %v", f["principal"])
+	}
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("clear after the lease was released: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the clear never finished")
+	}
+	if f, _ := subjectFields(t, d, ctx, "tenant", root); f["principal"] != nil {
+		t.Errorf("binding after the clear = %v", f["principal"])
 	}
 }
