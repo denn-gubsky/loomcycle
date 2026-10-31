@@ -368,7 +368,8 @@ func TestUserChannelPublish_RefusesInvalidUserID(t *testing.T) {
 	srv, _, cleanup := channelCRUDFixture(t)
 	defer cleanup()
 
-	req := authedRequest("POST", "/v1/users/alice@bob/channels/inbox/publish", strings.NewReader(`{"payload":{}}`))
+	// A space is outside the user-id rule ("alice@bob" is a valid gate-style id).
+	req := authedRequest("POST", "/v1/users/alice%20bob/channels/inbox/publish", strings.NewReader(`{"payload":{}}`))
 	rec := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(rec, req)
 
