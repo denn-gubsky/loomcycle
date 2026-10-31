@@ -14,6 +14,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -261,5 +263,73 @@ func TestStatementReviewAPI_QueueTakesTheExactSelectorsAndGroupsCarryTheirFilter
 		if code, rows := s.getQueue(t, op, q.Encode()); code != http.StatusOK || float64(len(rows["statements"].([]any))) != m["count"] {
 			t.Errorf("group %v: its filter as a query = %d %v", m, code, rows)
 		}
+	}
+}
+
+// installReviewPolicy writes a confirmed tenant ontology whose Review section
+// is rules, as an operator's ontology surface would.
+func installReviewPolicy(t *testing.T, s *Server, mi memInject, rules string) {
+	t.Helper()
+	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	ctx := tools.WithSubstrateOperator(withTenantDocGrants(s.docToolCtx(context.Background(), mi)))
+	call := func(body string) map[string]any {
+		res, err := doc.Execute(ctx, json.RawMessage(body))
+		if err != nil || res.IsError {
+			t.Fatalf("%s: %v %s", body, err, res.Text)
+		}
+		var out map[string]any
+		_ = json.Unmarshal([]byte(res.Text), &out)
+		return out
+	}
+	md, _ := json.Marshal("# Tenant Ontology\n\n## Review\n@section review\n" + rules)
+	out := call(`{"op":"import_md","scope":"tenant","markdown":` + string(md) + `}`)
+	path, _ := json.Marshal(meminject.OntologyPath)
+	call(fmt.Sprintf(`{"op":"set_path","scope":"tenant","id":%q,"path":%s}`, out["document_id"], path))
+	root := out["root_chunk_id"].(string)
+	g := call(fmt.Sprintf(`{"op":"get_chunk","scope":"tenant","id":%q}`, root))
+	call(fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"status":"confirmed","revision":%d}`, root, int(g["revision"].(float64))))
+}
+
+// apply_policy over HTTP: an operator's dry run and real call, the real one
+// audited once; a member is refused even holding review; without a confirmed
+// ontology there is no policy to apply.
+func TestStatementReviewAPI_ApplyPolicyIsAnOperatorsAuditedAct(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	sink := &recordingSink{}
+	s.SetStatementReviewAudit(sink)
+	seedReviewQueue(t, s, mi)
+	op := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: mi.Tenant, Subject: "ops", Scopes: []string{auth.ScopeTenant}})
+	apply := func(ctx context.Context, body map[string]any) (int, map[string]any) {
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/v1/_statements/apply_policy", strings.NewReader(string(b))).WithContext(ctx)
+		rec := httptest.NewRecorder()
+		s.handleStatementApplyPolicy(rec, req)
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+	if code, out := apply(op, map[string]any{}); code != http.StatusBadRequest || out["code"] != "invalid_request" {
+		t.Errorf("without an ontology = %d %v, want 400 invalid_request", code, out)
+	}
+	installReviewPolicy(t, s, mi, "- accept kind:cites when self:false\n- human *\n")
+
+	reviewer := reviewMember(t, mi.Tenant, authz.Rule{Effect: authz.Allow, Actions: []string{"review"}, Resources: []string{"document:tenant:/**"}})
+	if code, out := apply(reviewer, map[string]any{}); code != http.StatusForbidden || out["code"] != "forbidden" {
+		t.Errorf("a reviewer = %d %v, want 403 forbidden", code, out)
+	}
+	code, dry := apply(op, map[string]any{"filter": map[string]any{"created_after": "2000-01-01T00:00:00Z"}})
+	if code != http.StatusOK || dry["dry_run"] != true || dry["matched"] != float64(2) || dry["accept"] != float64(2) || dry["source"] != "review" || len(sink.events) != 0 {
+		t.Fatalf("dry run = %d %v (%d audit records)", code, dry, len(sink.events))
+	}
+	code, out := apply(op, map[string]any{"dry_run": false, "expect_count": 2})
+	if code != http.StatusOK || out["ruled"] != float64(2) || out["ruling_id"] == "" {
+		t.Fatalf("apply = %d %v", code, out)
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("audit records = %d, want one", len(sink.events))
+	}
+	if ev := sink.events[0]; ev.Action != "statement_policy_ruling" || ev.RulingID != out["ruling_id"] || ev.RulingAction != "policy" ||
+		ev.ActorSubject != "ops" || ev.RulingCounts["ruled"] != 2 || ev.RulingCounts["version"] == 0 {
+		t.Errorf("audit record = %+v", ev)
 	}
 }
