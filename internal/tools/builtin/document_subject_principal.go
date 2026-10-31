@@ -40,9 +40,22 @@ const subjectPrincipalField = "principal"
 // their code.
 const principalBindingCode = "principal_binding_operator_only"
 
+// principalLeasePrefix names the leases subject bindings serialise on. The Document
+// lease op refuses it (documentLeaseInput), so no caller can hold one and stall a
+// bind, a clear or an erasure; Memory SQL cannot name the lease table at all.
+const principalLeasePrefix = "principal:"
+
 // subjectPrincipalLease serialises bindings in one scope, so two concurrent binds
 // cannot both pass the one-subject-per-principal check.
-const subjectPrincipalLease = "subject-principal-binding"
+const subjectPrincipalLease = principalLeasePrefix + "binding"
+
+// How long a subject lease is waited for. A holder keeps it for one read and one
+// write, so a wait is short; the operator path waits longer, since an erasure that
+// gives up leaves a binding in place.
+const (
+	agentSubjectLeaseWait    = 500 * time.Millisecond
+	operatorSubjectLeaseWait = 5 * time.Second
+)
 
 // principalBindingWriteKey marks a context as the operator binding path. Unexported, so
 // no caller outside this package — and no tool input — can set it.
@@ -205,7 +218,7 @@ func (d *Document) keepStoredPrincipal(ctx context.Context, key sqlmem.ScopeKey,
 	}
 	release := noop
 	if isRoot {
-		if release, err = d.holdSubjectLease(ctx, key, chunkID); err != nil {
+		if release, err = d.holdSubjectLease(ctx, key, chunkID, agentSubjectLeaseWait); err != nil {
 			return nil, noop, err
 		}
 	}
@@ -256,9 +269,10 @@ var errSubjectBusy = errors.New("this subject's binding is being written by an o
 // holdSubjectLease takes the subject's own lease, which serialises the binding path
 // with every other body write on that subject root. It waits briefly: both sides hold
 // it only for one read and one write.
-func (d *Document) holdSubjectLease(ctx context.Context, key sqlmem.ScopeKey, rootChunkID string) (func(), error) {
-	name, owner := "principal:"+rootChunkID, randomLeaseOwner()
-	for try := 0; ; try++ {
+func (d *Document) holdSubjectLease(ctx context.Context, key sqlmem.ScopeKey, rootChunkID string, wait time.Duration) (func(), error) {
+	name, owner := principalLeasePrefix+rootChunkID, randomLeaseOwner()
+	deadline := time.Now().Add(wait)
+	for {
 		lease, err := d.acquireDocumentLease(ctx, key, name, owner, time.Now(), 30*time.Second)
 		if err != nil {
 			return nil, err
@@ -266,7 +280,7 @@ func (d *Document) holdSubjectLease(ctx context.Context, key sqlmem.ScopeKey, ro
 		if lease.Acquired {
 			return func() { _, _ = d.releaseDocumentLease(context.WithoutCancel(ctx), key, name, owner) }, nil
 		}
-		if try == 20 {
+		if time.Now().After(deadline) {
 			return nil, errSubjectBusy
 		}
 		select {
@@ -395,7 +409,7 @@ func (d *Document) BindTenantSubjectPrincipal(ctx context.Context, subjectRef, p
 // update_chunk, so the revision moves as for any edit. It skips the operator-only guard:
 // callers are the operator paths in this package (binding, erasure, a subject merge).
 func (d *Document) setSubjectPrincipal(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, rootChunkID, principal string) error {
-	release, err := d.holdSubjectLease(ctx, key, rootChunkID)
+	release, err := d.holdSubjectLease(ctx, key, rootChunkID, operatorSubjectLeaseWait)
 	if err != nil {
 		return err
 	}
@@ -506,13 +520,20 @@ func (d *Document) ClearTenantSubjectBindings(ctx context.Context, principal str
 		return nil, err
 	}
 	var cleared []SubjectBinding
+	var failed int
 	for _, b := range bound {
+		// One subject that cannot be unbound (its lease busy past the wait, a store
+		// fault) does not stop the rest.
 		if err := d.setSubjectPrincipal(ctx, key, mscope, b.RootChunkID, ""); err != nil {
-			// The subject is not named: an erasure's errors reach its audit record.
-			return cleared, err
+			failed++
+			continue
 		}
 		b.Previous, b.Principal, b.Changed = b.Principal, "", true
 		cleared = append(cleared, b)
+	}
+	if failed > 0 {
+		// Counted, not named: an erasure's errors reach its audit record.
+		return cleared, fmt.Errorf("%d of %d bound subject(s) could not be unbound", failed, len(bound))
 	}
 	return cleared, nil
 }

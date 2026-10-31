@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -107,6 +108,13 @@ func documentLeaseInput(op string, ctx context.Context, in docInput) (string, *t
 	}
 	if !documentLeaseNameRE.MatchString(name) {
 		r := errValidation(op+": name must be 1–64 characters of a-z 0-9 _ . : / -", "")
+		return "", &r
+	}
+	// The runtime serialises subject bindings on these names; a caller holding one
+	// could stall every bind, clear and erasure in the scope.
+	if strings.HasPrefix(name, principalLeasePrefix) {
+		r := errValidation(op+": names starting with "+strconv.Quote(principalLeasePrefix)+" are reserved for the runtime",
+			"Choose another name, e.g. \"linker\".")
 		return "", &r
 	}
 	return name, nil

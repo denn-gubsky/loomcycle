@@ -779,7 +779,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 		case err != nil && req.DryRun:
 			fail("subject_bindings", errBoundSubjectsUnread)
 		case err != nil:
-			fail("subject_bindings", fmt.Errorf("unbinding stopped after %d subject(s); the rest are "+
+			fail("subject_bindings", fmt.Errorf("%d subject(s) were unbound; others could not be and are "+
 				"still bound to this principal — re-run the erasure", len(bound)))
 		}
 		res.Deleted["subject_bindings"] = len(bound)

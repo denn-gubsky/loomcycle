@@ -378,3 +378,61 @@ func TestSubjectErasure_WithheldAndUnnamedForAReadingLimitedCaller(t *testing.T)
 		t.Errorf("events = %v", evs)
 	}
 }
+
+// TestSubjectPrincipal_MemoryCannotRemoveABoundSubjectsBody.
+//
+// The Memory tool removes a fact's body row by key, and a subject root re-asserted
+// through upsert_chunk carries provenance, so it reads as a fact. Removing it would
+// clear the binding by the back door — an erasure would then miss the subject.
+func TestSubjectPrincipal_MemoryCannotRemoveABoundSubjectsBody(t *testing.T) {
+	d, ctx, st := documentFixture(t)
+	_, root := newSubject(t, d, ctx, "user", "Ada", "person", "person:ada")
+	if _, r := docExec(t, d, ctx, `{"op":"upsert_chunk","scope":"user","natural_key":"person:ada","title":"Ada","body":"Ada, a mathematician."}`); r.IsError {
+		t.Fatalf("re-assert the subject: %s", r.Text)
+	}
+	if _, err := bindInUser(t, d, ctx, root, "u-ada"); err != nil {
+		t.Fatal(err)
+	}
+	m := &Memory{Store: st, SqlMem: d.SqlMem}
+	r, err := m.Execute(ctx, json.RawMessage(`{"op":"delete","scope":"user","key":"`+chunkBodyKey(root)+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.IsError || !strings.HasPrefix(r.Text, "principal_binding_operator_only:") {
+		t.Errorf("Memory delete of a bound subject's body: got %v %q, want a principal_binding_operator_only refusal", r.IsError, r.Text)
+	}
+	if f, _ := subjectFields(t, d, ctx, "user", root); f["principal"] != "u-ada" {
+		t.Errorf("binding after the delete = %v", f["principal"])
+	}
+}
+
+// TestSubjectPrincipal_AgentLeaseCannotBlockAnErasure.
+//
+// The binding path serialises on a lease in the scope's lease table, which the
+// Document lease op also writes. An agent holding that name would make every bind,
+// clear and erasure wait out and fail; erasure must not be blockable by an agent. So
+// the names are reserved, and an agent holding any other lease changes nothing.
+func TestSubjectPrincipal_AgentLeaseCannotBlockAnErasure(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := grantedTenantCtx(base)
+	_, root := newSubject(t, d, ctx, "tenant", "Ada", "person", "person:ada")
+	if _, err := d.BindTenantSubjectPrincipal(ctx, "person:ada", "u-ada"); err != nil {
+		t.Fatal(err)
+	}
+	agent := tools.WithRunID(tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.StatementMethods = []string{"linker"}
+	}), "run-agent")
+	for _, name := range []string{"principal:" + root, "principal:binding", "linker"} {
+		_, r := docExec(t, d, agent, `{"op":"lease","scope":"tenant","name":"`+name+`","ttl_ms":600000}`)
+		if reserved := strings.HasPrefix(name, "principal:"); reserved != r.IsError {
+			t.Errorf("lease %s: error=%v %q, want refused only for a reserved name", name, r.IsError, r.Text)
+		}
+	}
+	cleared, err := d.ClearTenantSubjectBindings(ctx, "u-ada")
+	if err != nil || len(cleared) != 1 {
+		t.Fatalf("erasure clear while an agent holds leases = %+v, %v; want the subject unbound", cleared, err)
+	}
+	if _, err := d.BindTenantSubjectPrincipal(ctx, "person:ada", "u-eve"); err != nil {
+		t.Errorf("operator bind while an agent holds leases: %v", err)
+	}
+}
