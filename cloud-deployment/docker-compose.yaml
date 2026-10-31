@@ -306,7 +306,7 @@ services:
       # approval_unavailable) while the runtime's /healthz version is below it:
       # an older runtime ignores the gate's new_user.status and would admit
       # every sign-up unapproved.
-      LANDING_MIN_RUNTIME_VERSION: ${LANDING_MIN_RUNTIME_VERSION:-1.129.1}
+      LANDING_MIN_RUNTIME_VERSION: ${LANDING_MIN_RUNTIME_VERSION:-1.130.0}
       # Only per-person mode mints, so only it needs the admin bearer; shared
       # mode never uses it and boots without it. Leave it unset there: the
       # landing then holds no credential beyond the auth:manage token.

@@ -267,13 +267,13 @@ who gets in: the Access policy (who may ask at all) and the operator's approval
 in this mode; operators manage people in the app's **Users** console, and API
 tokens are made in the app (`/ui` → Tokens).
 
-1. **Runtime** — the release after v1.129.0, which has the password gate's
+1. **Runtime** — v1.130.0 or later, which has the password gate's
    pending-approval change (`new_user.status: pending` on a password gate).
    Deploy that runtime **with or before** this repo's `config/loomcycle.yaml`:
    an older runtime ignores the `status` key without a word and would admit
    every sign-up unapproved. The landing guards this too: shared-mode signup
    answers `503 approval_unavailable` while the runtime's `/healthz` version is
-   below `LANDING_MIN_RUNTIME_VERSION` (compose default `1.129.1`; set it in
+   below `LANDING_MIN_RUNTIME_VERSION` (compose default `1.130.0`; set it in
    `.env.insecure` if the release number differs).
 2. **The landing's `auth:manage` token** — mint it as in step 2 below and put it in
    `.env.secure` as `LOOMCYCLE_AUTH_MANAGE_TOKEN`. Without it **Request access**

@@ -216,7 +216,7 @@ auth:
       # in the app's Users console. An operator's or admin's own invite, an
       # attach invite and the tenant bootstrap stay active.
       # DEPLOY THIS FILE ONLY ON A RUNTIME THAT HAS THE PENDING STATUS: the
-      # release after v1.129.0. An older runtime does not refuse the key, it
+      # v1.130.0 or later. An older runtime does not refuse the key, it
       # ignores it, and would admit every sign-up unapproved as an active
       # member with tenant-wide reach. As a second lock the landing refuses
       # shared-mode signup while the runtime's /healthz version is below

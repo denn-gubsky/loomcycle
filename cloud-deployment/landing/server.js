@@ -66,7 +66,7 @@ const SHARED_TENANT = (process.env.LANDING_TENANT || "").trim();
 const SHARED = SHARED_TENANT !== "";
 // The oldest runtime that holds a website sign-up pending until an operator
 // approves it (the gate's new_user.status: pending). See runtimeHoldsSignups.
-const MIN_RUNTIME_VERSION = (process.env.LANDING_MIN_RUNTIME_VERSION || "1.129.1").trim();
+const MIN_RUNTIME_VERSION = (process.env.LANDING_MIN_RUNTIME_VERSION || "1.130.0").trim();
 
 // parseVersion reads a release version as /healthz reports it ("1.129.1",
 // "v1.129.1", "1.130.0-rc.1"); anything else ("devel", "unknown", "") is null.
@@ -96,7 +96,7 @@ if (SHARED && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(SHARED_TENANT)) {
   process.exit(1);
 }
 if (SHARED && !parseVersion(MIN_RUNTIME_VERSION)) {
-  console.error("FATAL: LANDING_MIN_RUNTIME_VERSION must be a release version such as 1.129.1");
+  console.error("FATAL: LANDING_MIN_RUNTIME_VERSION must be a release version such as 1.130.0");
   process.exit(1);
 }
 // The gate name goes into every upstream path, so it gets loomcycle's own gate

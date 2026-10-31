@@ -37,7 +37,7 @@ function fakeRuntime() {
     inject: null, linkOrigin: null, delayMs: 0,
     // version is what the unauthenticated GET /healthz reports (null = the
     // route answers 500); healthzHits counts those reads, kept out of `log`.
-    version: "1.129.1", healthzHits: 0,
+    version: "1.130.0", healthzHits: 0,
   };
   const T = (id) => {
     if (!f.tenants.has(id)) f.tenants.set(id, { booted: false, users: new Map(), ids: new Map(), invites: new Map() });
@@ -987,9 +987,9 @@ describe("shared-tenant mode (LANDING_TENANT)", () => {
   // ignores new_user.status and would admit every sign-up as an active member.
   test("signup is allowed only from a runtime at or above LANDING_MIN_RUNTIME_VERSION", async () => {
     const table = [
-      ["1.129.1", true], ["v1.129.1", true], ["1.129.2", true], ["1.129.10", true], ["1.130.0", true], ["2.0.0", true],
-      ["1.129.1+build.7", true], ["1.1000.0", true],
-      ["1.99.0", false], ["1.129.0", false], ["v1.128.9", false], ["1.129.1-rc.1", false], ["0.999.999", false],
+      ["1.130.0", true], ["v1.130.0", true], ["1.130.1", true], ["1.130.10", true], ["1.131.0", true], ["2.0.0", true],
+      ["1.130.0+build.7", true], ["1.1000.0", true],
+      ["1.99.0", false], ["1.129.1", false], ["1.129.10", false], ["v1.128.9", false], ["1.130.0-rc.1", false], ["0.999.999", false],
       ["devel", false], ["unknown", false], ["docker", false], ["", false], ["1.129", false], [7, false], [null, false],
     ];
     await ownShared("shared-version-" + rnd(3), async (inst) => {
@@ -1006,7 +1006,7 @@ describe("shared-tenant mode (LANDING_TENANT)", () => {
             assert.equal(mutations(m).length, 0, `${JSON.stringify(version)}: nothing written`);
           }
         }
-      } finally { fake.version = "1.129.1"; }
+      } finally { fake.version = "1.130.0"; }
     });
   });
   test("a configured minimum is honoured, and a refusal spends no limit and is logged once", async () => {
@@ -1020,12 +1020,12 @@ describe("shared-tenant mode (LANDING_TENANT)", () => {
       }
       await new Promise((r) => setTimeout(r, 50));
       assert.equal(inst.logs().split("\n").filter((l) => l.includes("signup refused: runtime version")).length, 1, inst.logs());
-      assert.match(inst.logs(), /runtime >= 1\.130\.0/);
-      fake.version = "1.130.0";
+      assert.match(inst.logs(), /runtime >= 1\.131\.0/);
+      fake.version = "1.131.0";
       try {
         assert.equal((await call(inst, "POST", "/api/signup", { email, ip, body: {} })).status, 200);
-      } finally { fake.version = "1.129.1"; }
-    }, { LANDING_MIN_RUNTIME_VERSION: "1.130.0" });
+      } finally { fake.version = "1.130.0"; }
+    }, { LANDING_MIN_RUNTIME_VERSION: "1.131.0" });
   });
   test("an unreachable or failing /healthz refuses signup with nothing written", async () => {
     fake.version = null;
@@ -1035,7 +1035,7 @@ describe("shared-tenant mode (LANDING_TENANT)", () => {
       assert.equal(r.status, 502);
       assert.deepEqual(r.json, { error: "runtime_unreachable" });
       assert.equal(since(m).length, 0);
-    } finally { fake.version = "1.129.1"; }
+    } finally { fake.version = "1.130.0"; }
   });
   test("the version is read before each signup, and at startup", async () => {
     const before = fake.healthzHits;
