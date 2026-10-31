@@ -3601,7 +3601,17 @@ export interface OntologyGrammar {
   class?: string;
   patterns?: string[];
   resolve?: string;
+  /** The `scope:` lines: a heading they match prefixes every part inside it. */
+  scopes?: OntologyGrammarRule[];
+  /** The `anchor:` lines: they key a part by its heading within its scope. */
+  anchors?: OntologyGrammarRule[];
   issue?: string;
+}
+
+/** One `scope:` or `anchor:` line: `<pattern> => <template> | <template> …`. */
+export interface OntologyGrammarRule {
+  pattern: string;
+  templates: string[];
 }
 
 /** An entity present in the ontology document but NOT in force (RFC CA). */
