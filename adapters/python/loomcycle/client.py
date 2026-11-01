@@ -1687,6 +1687,7 @@ class LoomcycleClient:
         after: str = "",
         order: str = "",
         scope: str = "",
+        scope_id: str = "",
         tenant: str = "",
     ) -> Mapping[str, Any]:
         """The statement review queue: a scope's proposed relations (or
@@ -1701,14 +1702,19 @@ class LoomcycleClient:
         ``from_under_path``, ``to_under_path``, ``min_confidence``,
         ``created_before`` / ``created_after`` (unix nanoseconds, or a
         timezone-aware ``datetime``), ``has_judge_verdict``,
-        ``judge_verdict``. *scope* is ``tenant`` (default) or ``user``;
-        *tenant* is honored only for an admin token.
+        ``judge_verdict``, and the exact ``method_exact``, ``kind_exact``,
+        ``from_path_prefix``, ``from_unfiled``. *scope* is ``tenant``
+        (default) or ``user``; with ``user``, *scope_id* names whose user
+        documents (an admin or a tenant operator may name another subject of
+        its tenant, a member only itself). *tenant* is honored only for an
+        admin token.
 
         Returns ``{tenant, scope, statements, truncated, next_cursor}``,
         each statement a mapping as ``list_statements`` renders it, plus
-        ``summary`` and ``total`` with *summarize*."""
+        ``summary`` and ``total`` with *summarize*; each summary group
+        carries ``filter``, which selects exactly that group."""
         req = pb.ListReviewQueueRequest(
-            tenant=tenant, scope=scope, filter=_review_filter_pb(filter),
+            tenant=tenant, scope=scope, scope_id=scope_id, filter=_review_filter_pb(filter),
             summarize=summarize, limit=limit, after=after, order=order,
         )
         try:
@@ -1730,6 +1736,7 @@ class LoomcycleClient:
                     "from_path_prefix": g.from_path_prefix,
                     "judge_verdict": g.judge_verdict,
                     "count": g.count,
+                    "filter": _review_filter_dict(g.filter),
                 }
                 for g in resp.summary
             ]
@@ -1747,6 +1754,7 @@ class LoomcycleClient:
         expect_count: int | None = None,
         max: int = 0,
         scope: str = "",
+        scope_id: str = "",
         tenant: str = "",
     ) -> Mapping[str, Any]:
         """Accept or reject proposed statements in bulk (*action* ``accept``
@@ -1773,7 +1781,7 @@ class LoomcycleClient:
         if (ids is None) == (filter is None):
             raise ValueError("rule_statements: pass ids or filter, not both and not neither")
         req = pb.RuleStatementsRequest(
-            tenant=tenant, scope=scope, action=action, ids=list(ids or []),
+            tenant=tenant, scope=scope, scope_id=scope_id, action=action, ids=list(ids or []),
             reason=reason, max=max,
         )
         if filter is not None:
@@ -1805,7 +1813,7 @@ class LoomcycleClient:
         }
 
     async def revert_ruling(
-        self, ruling_id: str, *, scope: str = "", tenant: str = ""
+        self, ruling_id: str, *, scope: str = "", scope_id: str = "", tenant: str = ""
     ) -> Mapping[str, Any]:
         """Undo a bulk ruling: each statement it ruled goes back to its
         status before, if nothing changed it since (no new evidence, no
@@ -1816,8 +1824,9 @@ class LoomcycleClient:
         an unknown ruling raises with ``.reason == "ruling_not_found"``.
 
         Returns ``{tenant, scope, ruling_id, action, reverted, changed,
-        skipped, items}``."""
-        req = pb.RevertRulingRequest(tenant=tenant, scope=scope, ruling_id=ruling_id)
+        skipped, items, revert_id}``; ``revert_id`` is the revert's own
+        record in :meth:`list_rulings`."""
+        req = pb.RevertRulingRequest(tenant=tenant, scope=scope, scope_id=scope_id, ruling_id=ruling_id)
         try:
             resp = await self._stub.RevertRuling(req, metadata=self._auth_metadata())
         except grpc.aio.AioRpcError as e:
@@ -1831,6 +1840,64 @@ class LoomcycleClient:
             "changed": resp.changed,
             "skipped": resp.skipped,
             "items": [_ruling_item(i) for i in resp.items],
+            "revert_id": resp.revert_id,
+        }
+
+    async def list_rulings(
+        self,
+        *,
+        limit: int = 0,
+        after: str = "",
+        scope: str = "",
+        scope_id: str = "",
+        tenant: str = "",
+    ) -> Mapping[str, Any]:
+        """The scope's bulk rulings and their reverts, newest first (*limit*
+        default 20, at most 100; *after* = the previous page's
+        ``next_cursor``), so an undo can be found after the ruling's own
+        answer is gone. An operator sees every ruling, a member only its
+        own. Mirrors ``GET /v1/_statements/rulings``.
+
+        Returns ``{tenant, scope, rulings, next_cursor}``; each ruling is
+        ``{id, action, ruled_by, actor, reason, selector, matched, ruled,
+        failed, skipped, created_at, reverted, reverted_at, reverted_by}``,
+        its ``selector`` ``{filter, ids_count, max, reverts}`` — the filter
+        (``None`` when it named ids), or how many ids, never the ids. A
+        revert is a record of its own (action ``revert``, ``selector.reverts``
+        the ruling it undid)."""
+        req = pb.ListRulingsRequest(tenant=tenant, scope=scope, scope_id=scope_id, limit=limit, after=after)
+        try:
+            resp = await self._stub.ListRulings(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "scope": resp.scope,
+            "next_cursor": resp.next_cursor,
+            "rulings": [
+                {
+                    "id": r.id,
+                    "action": r.action,
+                    "ruled_by": r.ruled_by,
+                    "actor": r.actor,
+                    "reason": r.reason,
+                    "selector": {
+                        "filter": _review_filter_dict(r.selector.filter) if r.selector.has_filter else None,
+                        "ids_count": r.selector.ids_count,
+                        "max": r.selector.max,
+                        "reverts": r.selector.reverts,
+                    },
+                    "matched": r.matched,
+                    "ruled": r.ruled,
+                    "failed": r.failed,
+                    "skipped": r.skipped,
+                    "created_at": r.created_at,
+                    "reverted": r.reverted,
+                    "reverted_at": r.reverted_at,
+                    "reverted_by": r.reverted_by,
+                }
+                for r in resp.rulings
+            ],
         }
 
     async def compact_run(self, run_id: str, *, reason: str = "") -> Mapping[str, Any]:
@@ -3599,7 +3666,7 @@ def _ts_to_iso(ts) -> str:
 _REVIEW_FILTER_TEXT = (
     "status", "kind", "method", "actor", "document_id", "under_path",
     "from_document_id", "to_document_id", "from_under_path", "to_under_path",
-    "judge_verdict",
+    "judge_verdict", "method_exact", "kind_exact", "from_path_prefix",
 )
 
 
@@ -3625,9 +3692,26 @@ def _review_filter_pb(f: Mapping[str, Any] | None) -> Any:
             setattr(msg, key, int(value))
         elif key == "has_judge_verdict":
             msg.has_judge_verdict = bool(value)
+        elif key == "from_unfiled":
+            msg.from_unfiled = bool(value)
         else:
             raise ValueError(f"review filter: unknown key {key!r}")
     return msg
+
+
+def _review_filter_dict(msg: Any) -> dict[str, Any]:
+    """A ReviewQueueFilter message as the mapping :func:`_review_filter_pb`
+    takes, set fields only, so a summary group's filter can be passed back
+    as it is."""
+    out: dict[str, Any] = {k: getattr(msg, k) for k in _REVIEW_FILTER_TEXT if getattr(msg, k)}
+    if msg.kinds:
+        out["kinds"] = list(msg.kinds)
+    for key in ("min_confidence", "created_before", "created_after", "has_judge_verdict"):
+        if msg.HasField(key):
+            out[key] = getattr(msg, key)
+    if msg.from_unfiled:
+        out["from_unfiled"] = True
+    return out
 
 
 def _ruling_item(i: Any) -> Mapping[str, Any]:

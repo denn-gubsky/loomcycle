@@ -73,6 +73,7 @@ import type {
   ReviewQueueResult,
   RuleStatementsResult,
   RevertRulingResult,
+  ListRulingsResult,
   BindSubjectPrincipalResult,
   Agent,
   AgentEvent,
@@ -1081,7 +1082,10 @@ export class LoomcycleClient {
    * `summarize: true` their counts by kind, method, from-path prefix and
    * judge verdict. Rows the caller may not read are left out. Mirrors
    * GET /v1/_statements/review. `scope` is `tenant` (default) or `user`;
-   * `tenant` is honored only for an admin token.
+   * `tenant` is honored only for an admin token. With `scope: "user"`,
+   * `scopeId` names whose user documents: an admin or a tenant operator may
+   * name another subject of its tenant, a member only itself. Each summary
+   * group carries `filter`, which selects exactly that group.
    */
   async listReviewQueue(opts?: {
     filter?: ReviewQueueFilter;
@@ -1090,6 +1094,7 @@ export class LoomcycleClient {
     after?: string;
     order?: "created" | "verified";
     scope?: "tenant" | "user";
+    scopeId?: string;
     tenant?: string;
     signal?: AbortSignal;
   }): Promise<ReviewQueueResult> {
@@ -1104,6 +1109,7 @@ export class LoomcycleClient {
     if (opts?.after) params.set("after", opts.after);
     if (opts?.order) params.set("order", opts.order);
     if (opts?.scope) params.set("scope", opts.scope);
+    if (opts?.scopeId) params.set("scope_id", opts.scopeId);
     if (opts?.tenant !== undefined) params.set("tenant", opts.tenant);
     const q = params.toString() ? `?${params.toString()}` : "";
     return jsonFetch<ReviewQueueResult>(this.ctx, `/v1/_statements/review${q}`, opts);
@@ -1135,6 +1141,7 @@ export class LoomcycleClient {
       expectCount?: number;
       max?: number;
       scope?: "tenant" | "user";
+      scopeId?: string;
       tenant?: string;
       signal?: AbortSignal;
     },
@@ -1145,6 +1152,7 @@ export class LoomcycleClient {
     if (opts?.expectCount !== undefined) body.expect_count = opts.expectCount;
     if (opts?.max !== undefined) body.max = opts.max;
     if (opts?.scope !== undefined) body.scope = opts.scope;
+    if (opts?.scopeId !== undefined) body.scope_id = opts.scopeId;
     if (opts?.tenant !== undefined) body.tenant = opts.tenant;
     return postJSON<RuleStatementsResult>(this.ctx, "/v1/_statements/rule", body, opts);
   }
@@ -1159,12 +1167,39 @@ export class LoomcycleClient {
    */
   async revertRuling(
     rulingId: string,
-    opts?: { scope?: "tenant" | "user"; tenant?: string; signal?: AbortSignal },
+    opts?: { scope?: "tenant" | "user"; scopeId?: string; tenant?: string; signal?: AbortSignal },
   ): Promise<RevertRulingResult> {
     const body: Record<string, unknown> = { ruling_id: rulingId };
     if (opts?.scope !== undefined) body.scope = opts.scope;
+    if (opts?.scopeId !== undefined) body.scope_id = opts.scopeId;
     if (opts?.tenant !== undefined) body.tenant = opts.tenant;
     return postJSON<RevertRulingResult>(this.ctx, "/v1/_statements/revert", body, opts);
+  }
+
+  /**
+   * The scope's bulk rulings and their reverts, newest first (`limit`
+   * default 20, at most 100; `after` = the previous page's `next_cursor`),
+   * so an undo can be found after the ruling's own answer is gone. An
+   * operator sees every ruling, a member only its own; each names what it
+   * selected as the filter or a count of ids, never the ids. Mirrors
+   * GET /v1/_statements/rulings.
+   */
+  async listRulings(opts?: {
+    limit?: number;
+    after?: string;
+    scope?: "tenant" | "user";
+    scopeId?: string;
+    tenant?: string;
+    signal?: AbortSignal;
+  }): Promise<ListRulingsResult> {
+    const params = new URLSearchParams();
+    if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts?.after) params.set("after", opts.after);
+    if (opts?.scope) params.set("scope", opts.scope);
+    if (opts?.scopeId) params.set("scope_id", opts.scopeId);
+    if (opts?.tenant !== undefined) params.set("tenant", opts.tenant);
+    const q = params.toString() ? `?${params.toString()}` : "";
+    return jsonFetch<ListRulingsResult>(this.ctx, `/v1/_statements/rulings${q}`, opts);
   }
 
   async compactRun(

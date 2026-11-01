@@ -88,3 +88,39 @@ describe("revertRuling", () => {
     expect((err as LoomcycleError).code).toBe("ruling_not_found");
   });
 });
+
+describe("listRulings", () => {
+  it("GETs a page of rulings with its cursor, scope and subject", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ tenant: "acme", scope: "user", next_cursor: "n1", rulings: [
+        { id: "r1", action: "accept", ruled_by: "operator:ops", actor: "ops", selector: { ids_count: 3 }, matched: 3, ruled: 3, failed: 0, skipped: 0,
+          created_at: 1, reverted: true, reverted_at: 2, reverted_by: "v1" },
+      ] }),
+    ]);
+    const res = await client.listRulings({ limit: 5, after: "c", scope: "user", scopeId: "bob" });
+    expect(res.rulings[0]!.selector.ids_count).toBe(3);
+    expect(res.rulings[0]!.reverted_by).toBe("v1");
+    expect(res.next_cursor).toBe("n1");
+    expect(fetchMock.mock.calls[0]![0]).toBe(`${base}/v1/_statements/rulings?limit=5&after=c&scope=user&scope_id=bob`);
+  });
+});
+
+describe("scope_id and the exact selectors", () => {
+  it("names another subject's user scope on the queue, a ruling and a revert", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ tenant: "acme", scope: "user", statements: [] }),
+      jsonResponse({ tenant: "acme", scope: "user", action: "accept", dry_run: true, matched: 0, selected: 0, skipped: 0, to_rule: 0, ruled: 0, failed: 0, breakdown: [] }),
+      jsonResponse({ tenant: "acme", scope: "user", ruling_id: "r1", action: "accept", reverted: 0, changed: 0, skipped: 0, items: [], revert_id: "v1" }),
+    ]);
+    await client.listReviewQueue({ scope: "user", scopeId: "bob", filter: { method_exact: "rule:citation", from_unfiled: true } });
+    const url = new URL(fetchMock.mock.calls[0]![0] as string);
+    expect(Object.fromEntries(url.searchParams)).toEqual({ method_exact: "rule:citation", from_unfiled: "true", scope: "user", scope_id: "bob" });
+    await client.ruleStatements("accept", { filter: { kind_exact: "cites", from_path_prefix: "/board/reg" } }, { scope: "user", scopeId: "bob" });
+    expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toEqual({
+      action: "accept", filter: { kind_exact: "cites", from_path_prefix: "/board/reg" }, scope: "user", scope_id: "bob",
+    });
+    const rev = await client.revertRuling("r1", { scope: "user", scopeId: "bob" });
+    expect(rev.revert_id).toBe("v1");
+    expect(JSON.parse(fetchMock.mock.calls[2]![1]!.body as string)).toEqual({ ruling_id: "r1", scope: "user", scope_id: "bob" });
+  });
+});

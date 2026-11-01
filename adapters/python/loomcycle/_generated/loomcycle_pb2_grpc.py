@@ -218,6 +218,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.RevertRulingRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.RevertRulingResponse.FromString,
                 _registered_method=True)
+        self.ListRulings = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ListRulings',
+                request_serializer=loomcycle__pb2.ListRulingsRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ListRulingsResponse.FromString,
+                _registered_method=True)
         self.Decide = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/Decide',
                 request_serializer=loomcycle__pb2.DecideRequest.SerializeToString,
@@ -935,6 +940,25 @@ class LoomcycleServicer:
         unknown ruling.
 
         Mirrors POST /v1/_statements/revert.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListRulings(self, request, context):
+        """ListRulings pages a document scope's bulk rulings and their reverts,
+        newest first (limit 20 by default, at most 100), so an undo can be found
+        after the ruling's own answer is gone. An operator sees every ruling of
+        the scope; a member only its own. Each names what it selected as the
+        filter, or as a count of ids, never the ids. Same callers as
+        ListReviewQueue.
+
+        Every review RPC takes scope_id with scope "user": an admin, or a tenant
+        operator within its own tenant, may name another subject's user scope;
+        a member naming another, or a tenant operator naming another tenant, is
+        PERMISSION_DENIED forbidden.
+
+        Mirrors GET /v1/_statements/rulings.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1721,6 +1745,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.RevertRuling,
                     request_deserializer=loomcycle__pb2.RevertRulingRequest.FromString,
                     response_serializer=loomcycle__pb2.RevertRulingResponse.SerializeToString,
+            ),
+            'ListRulings': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListRulings,
+                    request_deserializer=loomcycle__pb2.ListRulingsRequest.FromString,
+                    response_serializer=loomcycle__pb2.ListRulingsResponse.SerializeToString,
             ),
             'Decide': grpc.unary_unary_rpc_method_handler(
                     servicer.Decide,
@@ -2949,6 +2978,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/RevertRuling',
             loomcycle__pb2.RevertRulingRequest.SerializeToString,
             loomcycle__pb2.RevertRulingResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListRulings(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ListRulings',
+            loomcycle__pb2.ListRulingsRequest.SerializeToString,
+            loomcycle__pb2.ListRulingsResponse.FromString,
             options,
             channel_credentials,
             insecure,

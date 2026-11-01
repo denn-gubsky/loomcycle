@@ -37,7 +37,9 @@ class _Stub:
             scope="tenant",
             statements_json=[b'{"id":"s1","kind":"cites"}'],
             next_cursor="c1",
-            summary=[pb.ReviewQueueGroup(kind="cites", method="rule:citation", from_path_prefix="/board/reg", count=3)],
+            summary=[pb.ReviewQueueGroup(kind="cites", method="rule:citation", from_path_prefix="/board/reg", count=3,
+                                         filter=pb.ReviewQueueFilter(kind_exact="cites", method_exact="rule:citation",
+                                                                     from_path_prefix="/board/reg", has_judge_verdict=False))],
             total=3,
         )
 
@@ -56,6 +58,20 @@ class _Stub:
         return pb.RevertRulingResponse(
             tenant="acme", scope="tenant", ruling_id=req.ruling_id, action="accept", reverted=1, changed=1,
             items=[pb.RulingItem(id="s1", status="proposed"), pb.RulingItem(id="s2", error="changed", message="m")],
+            revert_id="v1",
+        )
+
+    async def ListRulings(self, req, metadata=None):
+        self.req = req
+        return pb.ListRulingsResponse(
+            tenant="acme", scope="user", next_cursor="n1",
+            rulings=[
+                pb.RulingRecord(id="v1", action="revert", ruled_by="operator:ops", actor="ops",
+                                selector=pb.RulingSelector(reverts="r1"), matched=2, ruled=2, created_at=9),
+                pb.RulingRecord(id="r1", action="accept", ruled_by="operator:ops", actor="ops", reason="ok",
+                                selector=pb.RulingSelector(has_filter=True, filter=pb.ReviewQueueFilter(kind_exact="cites"), max=50),
+                                matched=3, ruled=2, failed=1, created_at=7, reverted=True, reverted_at=9, reverted_by="v1"),
+            ],
         )
 
 
@@ -80,7 +96,9 @@ async def test_list_review_queue_sends_the_filter_and_decodes_the_statements():
     assert f.HasField("has_judge_verdict") and not f.has_judge_verdict
     assert (stub.req.summarize, stub.req.limit, stub.req.tenant) == (True, 50, "globex")
     assert got["statements"] == [{"id": "s1", "kind": "cites"}]
-    assert got["summary"] == [{"kind": "cites", "method": "rule:citation", "from_path_prefix": "/board/reg", "judge_verdict": "", "count": 3}]
+    assert got["summary"] == [{"kind": "cites", "method": "rule:citation", "from_path_prefix": "/board/reg", "judge_verdict": "", "count": 3,
+                               "filter": {"kind_exact": "cites", "method_exact": "rule:citation", "from_path_prefix": "/board/reg",
+                                          "has_judge_verdict": False}}]
     assert got["total"] == 3 and got["next_cursor"] == "c1"
 
 
@@ -141,3 +159,28 @@ async def test_a_refusal_carries_the_review_code_as_reason():
         await _client(_Refusing()).rule_statements("accept", filter={}, dry_run=False, expect_count=2)
     assert ei.value.reason == "queue_changed"
     assert "3 statements" in str(ei.value)
+
+
+@pytest.mark.asyncio
+async def test_list_rulings_sends_the_page_and_names_ids_only_by_count():
+    stub = _Stub()
+    got = await _client(stub).list_rulings(limit=5, after="c", scope="user", scope_id="bob", tenant="globex")
+    assert (stub.req.limit, stub.req.after, stub.req.scope, stub.req.scope_id, stub.req.tenant) == (5, "c", "user", "bob", "globex")
+    assert got["next_cursor"] == "n1"
+    revert, ruling = got["rulings"]
+    assert revert["action"] == "revert" and revert["selector"] == {"filter": None, "ids_count": 0, "max": 0, "reverts": "r1"}
+    assert ruling["selector"]["filter"] == {"kind_exact": "cites"} and ruling["selector"]["max"] == 50
+    assert (ruling["reverted"], ruling["reverted_by"], ruling["failed"]) == (True, "v1", 1)
+
+
+@pytest.mark.asyncio
+async def test_scope_id_and_the_exact_selectors_reach_the_request():
+    stub = _Stub()
+    group = {"kind_exact": "cites", "method_exact": "rule:citation", "from_unfiled": True, "has_judge_verdict": False}
+    await _client(stub).list_review_queue(filter=group, scope="user", scope_id="bob")
+    f = stub.req.filter
+    assert (stub.req.scope_id, f.kind_exact, f.method_exact, f.from_unfiled) == ("bob", "cites", "rule:citation", True)
+    await _client(stub).rule_statements("accept", filter=group, scope="user", scope_id="bob")
+    assert stub.req.scope_id == "bob" and stub.req.filter.from_unfiled
+    got = await _client(stub).revert_ruling("r1", scope="user", scope_id="bob")
+    assert stub.req.scope_id == "bob" and got["revert_id"] == "v1"
