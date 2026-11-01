@@ -9,6 +9,8 @@ only of the kinds the bundle lets the relate layer write (`elaborates`).
 |---|---|---|---|
 | `kb/linker` | `code-js` | `Document`, `Agent`, `Channel` (subscribe `documents/ingested` and `memory/subjects` only) | the deterministic driver: owns the pass, every check and every write |
 | `kb/verdict` | your `low` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one bounded relation verdict per call, for L4 only |
+| `kb/judge` | `code-js` | `Document`, `Agent`; `statement_methods: [judge]` | rules on the proposals the review policy routes to the judge (see [The judge](#the-judge)) |
+| `kb/judge-verdict` | your `middle` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one verdict per proposal: accept, reject or unsure, a confidence and one sentence |
 
 ## What it needs
 
@@ -411,6 +413,74 @@ Every evidence span the pass sends is in code points (`evidence_span_unit:
 "rune"`). The report carries ids, counts and fixed reason strings, never store
 text. L4 quote text appears only with `include_quotes: true`.
 
+## The judge
+
+The tenant's review policy (the ontology's Review section, see
+[DOCUMENTS.md](../../docs/DOCUMENTS.md#review-policies)) can leave a kind for
+a judge instead of a person: `judge kind:elaborates floor:0.9`. `kb/judge` is
+that judge. Per routed proposal with no verdict yet, newest first, it reads what
+a reviewer would see — both ends' documents and passages, the evidence quotes
+read back from the chunks they cite (never the proposal's own copy), the kind's
+meaning, domain and range — asks `kb/judge-verdict` once, and hands the verdicts
+to the Document op `judge_statements`. The runtime decides what each does:
+
+- it **rules** (asserts or rejects, `ruled_by: judge:<run id>`, no operator
+  mark) only a proposal the policy routes to the judge, at or above that rule's
+  floor (`floor:`, else the section's `judge_floor`, default 0.85), in `rule`
+  mode, where the run may write;
+- below the floor, `unsure`, `mode:recommend` or not routed, it only **records**
+  the verdict (`attributes.judge`) and the proposal waits for a person;
+- it never touches a statement an operator ruled on, and judges a statement once;
+- every ruling of the run is **one ruling**: `revert_ruling` undoes the run;
+- a random share of each run's acceptances (`judge_audit`, default 0.1, at least
+  one) is marked `audited: pending` for a person to confirm (`accept_statement`)
+  or overturn (`reject_statement`). List them with `status: asserted` and
+  `judge_audit: pending` in the review queue.
+
+Input (the run prompt, a JSON object, parsed strictly):
+
+| field | default | |
+|---|---|---|
+| `scope` | `user` | `user`, `agent` or `tenant` (tenant needs the grants under [Scope](#scope), on `kb/judge`) |
+| `write` | `rule` | `rule`, `recommend` (record verdicts, rule nothing) or `report` (no write at all; `would` counts the verdicts) |
+| `max_judgements` | 50 | proposals considered (1–1000) |
+| `max_verdict_calls` | 50 | model calls (0–1000); reaching either bound ends the pass `budget_stopped`, its verdicts recorded |
+| `filter` | — | narrows the routed queue: `kind`, `method_prefix`, `document_id`, `from_document_id`, `to_document_id`, `under_path`, `from_under_path`, `to_under_path`; `routed: false` widens it to proposals the policy did not route, which are only ever recorded as recommendations |
+
+The report carries ids and counts only: `considered`, `verdict_calls`,
+`parse_errors`, `skipped`, then `judged`, `ruled`, `accepted`, `rejected`,
+`escalated` (below the floor, unsure, not permitted), `recommended`, `refused`
+(by code), `audit_marked` with `audit_ids`, `escalated_ids` and `ruling_id`.
+
+Run a `report` pass first on a new deployment, as for the linker. Then schedule
+it after the linker's drains, so what a drain proposed in the night is judged
+before the morning's review:
+
+```yaml
+agents:
+  kb/judge:
+    memory_scopes: [tenant]           # a tenant pass, as for the linker
+    sql_scopes: [tenant]
+scheduled_runs:
+  kb-judge:
+    agent: kb/judge
+    schedule: "0 5 * * *"             # daily, after the 03:00 ingest drain
+    concurrency_policy: forbid        # one judge run at a time
+    enabled: true
+    prompt:
+      - role: user
+        content: [ { type: trusted-text, text: '{"scope":"tenant","write":"rule","max_judgements":200,"max_verdict_calls":200}' } ]
+```
+
+Or as a runtime schedule, over MCP `scheduledef` (or `POST /v1/_scheduledef`):
+
+```json
+{"op": "create", "name": "kb-judge",
+ "overlay": {"agent": "kb/judge", "schedule": "0 5 * * *", "concurrency_policy": "forbid", "enabled": true,
+   "prompt": [{"role": "user", "content": [{"type": "trusted-text",
+     "text": "{\"scope\":\"tenant\",\"write\":\"rule\",\"max_judgements\":200,\"max_verdict_calls\":200}"}]}]}}
+```
+
 ## Scope
 
 `scope: user` works with the bundle as shipped. A tenant pass (which L3 needs
@@ -430,4 +500,6 @@ The linker makes no model call except in L4, L5 and L6's `rejudge`. L4 spends on
 `kb/verdict` call per claim-bearing passage that has candidates, capped by
 `max_verdict_calls`, and runs only when asked for; L5 spends one per passage
 that has norms, and `rejudge` one per changed statement, each under the same
-cap. Nothing is scheduled unless you add a schedule.
+cap. `kb/judge` spends one `kb/judge-verdict` call (tier `middle`) per proposal
+it judges, capped by `max_verdict_calls`. Nothing is scheduled unless you add a
+schedule.
