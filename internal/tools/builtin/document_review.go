@@ -774,13 +774,21 @@ type rulingPrior struct {
 	JudgeReason       string   `json:"judge_reason,omitempty"`
 	JudgedBy          string   `json:"judged_by,omitempty"`
 	VerdictConfidence *float64 `json:"verdict_confidence,omitempty"`
+	// Attributes are a judge's acceptance's, which a person's confirmation or
+	// overturn marks (attributes.judge.audited): the revert puts them back.
+	// Absent for any other statement, whose attributes a ruling never writes.
+	Attributes map[string]any `json:"attributes,omitempty"`
 }
 
 func rulingPriorOf(s *statementRow) string {
-	b, _ := json.Marshal(rulingPrior{
+	p := rulingPrior{
 		Status: s.Status, OperatorRuledAt: s.OperatorRuledAt, RuledBy: s.RuledBy, JudgedAt: s.JudgedAt,
 		JudgeReason: s.JudgeReason, JudgedBy: s.JudgedBy, VerdictConfidence: s.VerdictConfidence,
-	})
+	}
+	if judgeAcceptance(s) {
+		p.Attributes = s.Attributes
+	}
+	b, _ := json.Marshal(p)
 	return string(b)
 }
 
@@ -1084,11 +1092,18 @@ func (d *Document) revertOne(ctx context.Context, key sqlmem.ScopeKey, mscope st
 	if err := json.Unmarshal([]byte(priorText), &prior); err != nil || prior.Status == "" {
 		return changed("the ruling's record of it cannot be read")
 	}
-	upd, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(`UPDATE chunk_edges SET status = ?, operator_ruled_at = ?, ruled_by = ?,
-		judged_at = ?, judge_reason = ?, judged_by = ?, verdict_confidence = ?
-		WHERE id = ? AND status = ? AND ruled_by = ?`), []any{prior.Status, prior.OperatorRuledAt, nullIfEmpty(prior.RuledBy),
-		prior.JudgedAt, nullIfEmpty(prior.JudgeReason), nullIfEmpty(prior.JudgedBy), prior.VerdictConfidence,
-		id, s.Status, ruledBy}, 0)
+	set := `status = ?, operator_ruled_at = ?, ruled_by = ?, judged_at = ?, judge_reason = ?, judged_by = ?, verdict_confidence = ?`
+	args := []any{prior.Status, prior.OperatorRuledAt, nullIfEmpty(prior.RuledBy),
+		prior.JudgedAt, nullIfEmpty(prior.JudgeReason), nullIfEmpty(prior.JudgedBy), prior.VerdictConfidence}
+	if prior.Attributes != nil {
+		arg, err := attributesArg(prior.Attributes)
+		if err != nil {
+			return item, 0, err
+		}
+		set, args = set+`, attributes = ?`, append(args, arg)
+	}
+	upd, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(`UPDATE chunk_edges SET `+set+`
+		WHERE id = ? AND status = ? AND ruled_by = ?`), append(args, id, s.Status, ruledBy), 0)
 	if err != nil {
 		return item, 0, err
 	}

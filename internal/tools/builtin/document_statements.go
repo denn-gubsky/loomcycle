@@ -1474,7 +1474,12 @@ func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		r := errNotFound(op+": no such statement: "+id, "List proposals with op=list_statements.")
 		return rulingOutcome{code: rulingNotFound, refusal: &r}, nil
 	}
-	if s.Status != edgeStatusProposed && !(accept && s.Status == edgeStatusRejected) {
+	// A judge's acceptance is a person's to settle: accept confirms it, reject
+	// overturns it (the audit of the judge's acceptances). Only a person's
+	// ruling does; a machine's never rules on what is asserted.
+	_, machine := machineRuler(ruledBy)
+	audit := judgeAcceptance(s) && !machine
+	if s.Status != edgeStatusProposed && !(accept && s.Status == edgeStatusRejected) && !audit {
 		msg := op + ": not_a_proposal: the statement is " + s.Status + ", so there is nothing to rule on"
 		hint := "Rule on proposals from op=list_statements. To withdraw a relation that holds, judge it unsupported (judge_fact) or remove it (unlink_chunks)."
 		if s.Auto {
@@ -1513,8 +1518,22 @@ func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			set, args = `status = ?, operator_ruled_at = ?, ruled_by = ?`, []any{status, ruledAt, ruledBy}
 		}
 	}
+	where := `id = ? AND status = ?`
+	if audit {
+		// The outcome goes on the verdict, for the audit to count; the
+		// ruling is conditional on the acceptance still being the judge's.
+		arg, err := auditedAttributes(s, accept, ruledBy, now)
+		if err != nil {
+			return rulingOutcome{}, err
+		}
+		set, args = set+`, attributes = ?`, append(args, arg)
+		where += ` AND ruled_by = ?`
+	}
 	args = append(args, id, s.Status)
-	ruled, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(`UPDATE chunk_edges SET `+set+` WHERE id = ? AND status = ?`), args, 0)
+	if audit {
+		args = append(args, s.RuledBy)
+	}
+	ruled, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(`UPDATE chunk_edges SET `+set+` WHERE `+where), args, 0)
 	if err != nil {
 		return rulingOutcome{}, err
 	}
@@ -1525,6 +1544,34 @@ func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	}
 	d.publishEdgeChange(ctx, key, mscope, op, id, s.FromID, s.ToID, s.Kind, status)
 	return rulingOutcome{status: status, prior: s}, nil
+}
+
+// judgeAcceptance reports a statement a judge asserted (ruled_by judge:<run>):
+// the one asserted statement a person's ruling may still settle.
+func judgeAcceptance(s *statementRow) bool {
+	return s.Status == edgeStatusAsserted && strings.HasPrefix(s.RuledBy, "judge:")
+}
+
+// auditedAttributes is s's attributes with the judge's verdict marked settled
+// by a person: audited confirmed (accept) or overturned (reject), by whom and
+// when.
+func auditedAttributes(s *statementRow, accept bool, ruledBy string, now int64) (any, error) {
+	attrs := make(map[string]any, len(s.Attributes)+1)
+	for k, v := range s.Attributes {
+		attrs[k] = v
+	}
+	rec := map[string]any{}
+	if old, ok := s.Attributes[attrJudge].(map[string]any); ok {
+		for k, v := range old {
+			rec[k] = v
+		}
+	}
+	rec["audited"], rec["audited_by"], rec["audited_at"] = judgeAuditOverturned, ruledBy, now
+	if accept {
+		rec["audited"] = judgeAuditConfirmed
+	}
+	attrs[attrJudge] = rec
+	return attributesArg(attrs)
 }
 
 // getEdge returns one statement with all its evidence.
