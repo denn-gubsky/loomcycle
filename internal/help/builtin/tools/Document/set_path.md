@@ -10,8 +10,8 @@ path is harmless.
 
 ## Arguments
 
-- `id` (required) — the **document** id. `document_id` is accepted in its
-  place.
+- `id` (required) — the **document** id.
+- `document_id` — accepted in place of `id`.
 - `path` (required) — the new name, absolute, e.g. `/docs/launch-plan`. Not
   `/`. If the path already names something else, that resource loses the name
   to this document.

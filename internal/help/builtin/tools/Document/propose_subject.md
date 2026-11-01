@@ -12,8 +12,8 @@ facts already point at.
 
 ## Arguments
 
-- `subject` (required) — the subject's name, e.g. `Dave Kim`. `title` is
-  accepted in its place.
+- `subject` (required) — the subject's name, e.g. `Dave Kim`.
+- `title` — accepted in place of `subject`.
 - `natural_key` (required) — its identity, `<type>:<slug>`, e.g.
   `person:dave-kim`. The part before `:` becomes its entity type.
 - `path` — the name segment the adopted subject gets under `/facts/`, e.g.

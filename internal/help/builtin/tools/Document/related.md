@@ -15,8 +15,12 @@ chunk, and `backlinks` when you want the chunks that already link to it.
 - `related_to` — a chunk whose neighbours BY RELATION (what it cites, what
   cites it, what defines it, …) to return as `linked`. Needs no embedder; with
   `id` too, both answers come back (on a server with no embedder, `linked` and a
-  `note` saying why `related` is missing). `kind` / `kinds` narrow the relations
-  it follows; the filter arguments below narrow `linked` as they do `related`.
+  `note` saying why `related` is missing). The filter arguments below narrow
+  `linked` as they do `related`.
+- `kind` / `kinds` — with `related_to`: follow only these relation kinds (each
+  with the narrower kinds the tenant declares under it). Without them it
+  follows the tenant's declared walk kinds, or every kind when none are
+  declared. They do not change the neighbours by meaning.
 - `limit` — at most this many, default 10, capped at 50. The chunk itself is
   never included.
 - `scope` — `user` (default), `agent` or `tenant`. See

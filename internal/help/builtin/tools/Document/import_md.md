@@ -16,9 +16,9 @@ existing one.** A new document always gets a Path-tree name.
 - `markdown` (required) — the Markdown. It needs at least one `#`–`######`
   heading. Headings inside fenced code blocks are left as text.
 - `document_id` — import into this existing document. Omitted: create a new
-  document whose root chunk is the FIRST heading (its text is the title; the
-  `title` argument is not used). Every later heading, even another `#`, goes
-  under that root.
+  document whose root chunk is the FIRST heading (its text is the title; this
+  op takes no `title`, and a call that passes one is refused). Every later
+  heading, even another `#`, goes under that root.
 - `parent_id` — with `document_id`: import under this chunk. Default: under
   the document's root chunk.
 - `path` — new document only: its Path-tree name, e.g. `/docs/launch`.
