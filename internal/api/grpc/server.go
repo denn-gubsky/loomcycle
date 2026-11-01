@@ -1063,6 +1063,7 @@ var grpcConsumerScopes = map[string]string{
 	"ListReviewQueue": auth.ScopeTenant,
 	"RuleStatements":  auth.ScopeTenant,
 	"RevertRuling":    auth.ScopeTenant,
+	"ListRulings":     auth.ScopeTenant,
 	// RFC FR P4: binding a subject to a user, as POST
 	// /v1/_ontology/subjects/principal gates it; carved out of the member path
 	// like the merge, and checked again in the connector.

@@ -1,5 +1,6 @@
 // statement_review.go — the gRPC twins of GET /v1/_statements/review,
-// POST /v1/_statements/rule and POST /v1/_statements/revert (RFC FS P0). The
+// POST /v1/_statements/rule, POST /v1/_statements/revert and
+// GET /v1/_statements/rulings (RFC FS P0). The
 // connector holds the rules — who may review, as whom, in which tenant, and the
 // rulings themselves — so this transport only maps the shapes and the refusals.
 package grpc
@@ -23,7 +24,7 @@ func (s *Server) ListReviewQueue(ctx context.Context, req *loomcyclepb.ListRevie
 		return nil, status.Error(codes.Unimplemented, "ListReviewQueue requires a connector; this Server was constructed without one")
 	}
 	res, err := s.connector.ListReviewQueue(ctx, connector.ListReviewQueueRequest{
-		Tenant: req.GetTenant(), Scope: req.GetScope(), Filter: reviewFilterFromProto(req.GetFilter()),
+		Tenant: req.GetTenant(), Scope: req.GetScope(), ScopeID: req.GetScopeId(), Filter: reviewFilterFromProto(req.GetFilter()),
 		Summarize: req.GetSummarize(), Limit: int(req.GetLimit()), After: req.GetAfter(), Order: req.GetOrder(),
 	})
 	if err != nil {
@@ -36,6 +37,7 @@ func (s *Server) ListReviewQueue(ctx context.Context, req *loomcyclepb.ListRevie
 	for _, g := range res.Summary {
 		out.Summary = append(out.Summary, &loomcyclepb.ReviewQueueGroup{
 			Kind: g.Kind, Method: g.Method, FromPathPrefix: g.FromPathPrefix, JudgeVerdict: g.JudgeVerdict, Count: int32(g.Count),
+			Filter: reviewFilterToProto(g.Filter),
 		})
 	}
 	return out, nil
@@ -47,7 +49,7 @@ func (s *Server) RuleStatements(ctx context.Context, req *loomcyclepb.RuleStatem
 		return nil, status.Error(codes.Unimplemented, "RuleStatements requires a connector; this Server was constructed without one")
 	}
 	in := connector.RuleStatementsRequest{
-		Tenant: req.GetTenant(), Scope: req.GetScope(), Action: req.GetAction(), IDs: req.GetIds(),
+		Tenant: req.GetTenant(), Scope: req.GetScope(), ScopeID: req.GetScopeId(), Action: req.GetAction(), IDs: req.GetIds(),
 		Reason: req.GetReason(), Max: int(req.GetMax()),
 	}
 	if req.GetHasFilter() {
@@ -83,7 +85,7 @@ func (s *Server) RevertRuling(ctx context.Context, req *loomcyclepb.RevertRuling
 		return nil, status.Error(codes.Unimplemented, "RevertRuling requires a connector; this Server was constructed without one")
 	}
 	res, err := s.connector.RevertRuling(ctx, connector.RevertRulingRequest{
-		Tenant: req.GetTenant(), Scope: req.GetScope(), RulingID: req.GetRulingId(),
+		Tenant: req.GetTenant(), Scope: req.GetScope(), ScopeID: req.GetScopeId(), RulingID: req.GetRulingId(),
 	})
 	if err != nil {
 		return nil, statementReviewErrToStatus(err)
@@ -91,8 +93,34 @@ func (s *Server) RevertRuling(ctx context.Context, req *loomcyclepb.RevertRuling
 	return &loomcyclepb.RevertRulingResponse{
 		Tenant: res.Tenant, Scope: res.Scope, RulingId: res.RulingID, Action: res.Action,
 		Reverted: int32(res.Reverted), Changed: int32(res.Changed), Skipped: int32(res.Skipped),
-		Items: rulingItemsToProto(res.Items),
+		Items: rulingItemsToProto(res.Items), RevertId: res.RevertID,
 	}, nil
+}
+
+// ListRulings pages the scope's bulk rulings and their reverts, newest first.
+func (s *Server) ListRulings(ctx context.Context, req *loomcyclepb.ListRulingsRequest) (*loomcyclepb.ListRulingsResponse, error) {
+	if s.connector == nil {
+		return nil, status.Error(codes.Unimplemented, "ListRulings requires a connector; this Server was constructed without one")
+	}
+	res, err := s.connector.ListRulings(ctx, connector.ListRulingsRequest{
+		Tenant: req.GetTenant(), Scope: req.GetScope(), ScopeID: req.GetScopeId(), Limit: int(req.GetLimit()), After: req.GetAfter(),
+	})
+	if err != nil {
+		return nil, statementReviewErrToStatus(err)
+	}
+	out := &loomcyclepb.ListRulingsResponse{Tenant: res.Tenant, Scope: res.Scope, NextCursor: res.NextCursor}
+	for _, r := range res.Rulings {
+		sel := &loomcyclepb.RulingSelector{
+			Filter: reviewFilterToProto(r.Selector.Filter), HasFilter: r.Selector.Filter != nil,
+			IdsCount: int32(r.Selector.IDsCount), Max: int32(r.Selector.Max), Reverts: r.Selector.Reverts,
+		}
+		out.Rulings = append(out.Rulings, &loomcyclepb.RulingRecord{
+			Id: r.ID, Action: r.Action, RuledBy: r.RuledBy, Actor: r.Actor, Reason: r.Reason, Selector: sel,
+			Matched: int32(r.Matched), Ruled: int32(r.Ruled), Failed: int32(r.Failed), Skipped: int32(r.Skipped),
+			CreatedAt: r.CreatedAt, Reverted: r.Reverted, RevertedAt: r.RevertedAt, RevertedBy: r.RevertedBy,
+		})
+	}
+	return out, nil
 }
 
 func reviewFilterFromProto(f *loomcyclepb.ReviewQueueFilter) connector.ReviewQueueFilter {
@@ -101,6 +129,7 @@ func reviewFilterFromProto(f *loomcyclepb.ReviewQueueFilter) connector.ReviewQue
 		DocumentID: f.GetDocumentId(), UnderPath: f.GetUnderPath(),
 		FromDocumentID: f.GetFromDocumentId(), ToDocumentID: f.GetToDocumentId(),
 		FromUnderPath: f.GetFromUnderPath(), ToUnderPath: f.GetToUnderPath(), JudgeVerdict: f.GetJudgeVerdict(),
+		MethodExact: f.GetMethodExact(), KindExact: f.GetKindExact(), FromPathPrefix: f.GetFromPathPrefix(), FromUnfiled: f.GetFromUnfiled(),
 	}
 	if f != nil && f.MinConfidence != nil {
 		v := f.GetMinConfidence()
@@ -119,6 +148,21 @@ func reviewFilterFromProto(f *loomcyclepb.ReviewQueueFilter) connector.ReviewQue
 		out.HasJudgeVerdict = &v
 	}
 	return out
+}
+
+// reviewFilterToProto is reviewFilterFromProto's inverse; nil for nil.
+func reviewFilterToProto(f *connector.ReviewQueueFilter) *loomcyclepb.ReviewQueueFilter {
+	if f == nil {
+		return nil
+	}
+	return &loomcyclepb.ReviewQueueFilter{
+		Status: f.Status, Kind: f.Kind, Kinds: f.Kinds, Method: f.Method, Actor: f.Actor,
+		DocumentId: f.DocumentID, UnderPath: f.UnderPath, FromDocumentId: f.FromDocumentID, ToDocumentId: f.ToDocumentID,
+		FromUnderPath: f.FromUnderPath, ToUnderPath: f.ToUnderPath, MinConfidence: f.MinConfidence,
+		CreatedBefore: f.CreatedBefore, CreatedAfter: f.CreatedAfter, HasJudgeVerdict: f.HasJudgeVerdict,
+		JudgeVerdict: f.JudgeVerdict, MethodExact: f.MethodExact, KindExact: f.KindExact,
+		FromPathPrefix: f.FromPathPrefix, FromUnfiled: f.FromUnfiled,
+	}
 }
 
 func rawList(in []json.RawMessage) [][]byte {

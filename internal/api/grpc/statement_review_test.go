@@ -113,7 +113,7 @@ func TestStatementReview_MembersReachTheConnector(t *testing.T) {
 	as := func(scopes []string, r auth.Restrictions) context.Context {
 		return auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "s", Scopes: scopes, Restrictions: r})
 	}
-	for _, rpc := range []string{"ListReviewQueue", "RuleStatements", "RevertRuling"} {
+	for _, rpc := range []string{"ListReviewQueue", "RuleStatements", "RevertRuling", "ListRulings"} {
 		method := grpcMethodPrefix + rpc
 		if got := requiredScopeForRPC(method); got != auth.ScopeTenant {
 			t.Fatalf("%s: required scope = %q, want %q", rpc, got, auth.ScopeTenant)
@@ -132,5 +132,67 @@ func TestStatementReview_MembersReachTheConnector(t *testing.T) {
 				t.Errorf("%s %s: enforceScope = %v, want allowed=%v", rpc, what, err, tc.want)
 			}
 		}
+	}
+}
+
+// ListRulings, the exact selectors, a group's filter and scope_id cross the
+// RPCs field for field.
+func TestStatementReview_RulingsSelectorsAndScopeIDCrossTheWire(t *testing.T) {
+	verdict := false
+	group := &connector.ReviewQueueFilter{KindExact: "cites", MethodExact: "rule:citation", FromUnfiled: true, HasJudgeVerdict: &verdict}
+	mc := &mockConnector{
+		reviewQueueRes: connector.ListReviewQueueResult{Summary: []connector.ReviewQueueGroup{{Kind: "cites", Count: 2, Filter: group}}},
+		revertRes:      connector.RevertRulingResult{RevertID: "v1"},
+		rulingsRes: connector.ListRulingsResult{Tenant: "acme", Scope: "user", NextCursor: "n1", Rulings: []connector.RulingRecord{
+			{ID: "v1", Action: "revert", RuledBy: "operator:ops", Actor: "ops", Selector: connector.RulingSelector{Reverts: "r1"}, Matched: 2, Ruled: 2, CreatedAt: 9},
+			{ID: "r1", Action: "accept", RuledBy: "operator:ops", Actor: "ops", Reason: "ok", Selector: connector.RulingSelector{Filter: group, Max: 50},
+				Matched: 3, Ruled: 2, Failed: 1, Skipped: 4, CreatedAt: 7, Reverted: true, RevertedAt: 9, RevertedBy: "v1"},
+		}},
+	}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+	ctx := context.Background()
+
+	q, err := client.ListReviewQueue(ctx, &loomcyclepb.ListReviewQueueRequest{Scope: "user", ScopeId: "bob", Summarize: true,
+		Filter: &loomcyclepb.ReviewQueueFilter{MethodExact: "rule:citation", KindExact: "cites", FromPathPrefix: "/board/reg"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := mc.reviewQueueReq; r.ScopeID != "bob" || r.Filter.MethodExact != "rule:citation" || r.Filter.KindExact != "cites" || r.Filter.FromPathPrefix != "/board/reg" {
+		t.Errorf("connector got %+v", r)
+	}
+	if g := q.GetSummary()[0].GetFilter(); g.GetKindExact() != "cites" || g.GetMethodExact() != "rule:citation" || !g.GetFromUnfiled() ||
+		g.HasJudgeVerdict == nil || g.GetHasJudgeVerdict() {
+		t.Errorf("group filter = %+v", g)
+	}
+	if _, err := client.RuleStatements(ctx, &loomcyclepb.RuleStatementsRequest{Action: "accept", Scope: "user", ScopeId: "bob", HasFilter: true,
+		Filter: &loomcyclepb.ReviewQueueFilter{FromUnfiled: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if r := mc.ruleReq; r.ScopeID != "bob" || r.Filter == nil || !r.Filter.FromUnfiled {
+		t.Errorf("connector got %+v", r)
+	}
+	v, err := client.RevertRuling(ctx, &loomcyclepb.RevertRulingRequest{RulingId: "r1", Scope: "user", ScopeId: "bob"})
+	if err != nil || mc.revertReq.ScopeID != "bob" || v.GetRevertId() != "v1" {
+		t.Errorf("revert = %+v %v (connector got %+v)", v, err, mc.revertReq)
+	}
+	l, err := client.ListRulings(ctx, &loomcyclepb.ListRulingsRequest{Tenant: "globex", Scope: "user", ScopeId: "bob", Limit: 2, After: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := mc.rulingsReq; r.Tenant != "globex" || r.Scope != "user" || r.ScopeID != "bob" || r.Limit != 2 || r.After != "c" {
+		t.Errorf("connector got %+v", r)
+	}
+	if l.GetNextCursor() != "n1" || len(l.GetRulings()) != 2 {
+		t.Fatalf("rulings = %+v", l)
+	}
+	rev, ruling := l.GetRulings()[0], l.GetRulings()[1]
+	if rev.GetAction() != "revert" || rev.GetSelector().GetReverts() != "r1" || rev.GetSelector().GetHasFilter() || rev.GetCreatedAt() != 9 {
+		t.Errorf("revert record = %+v", rev)
+	}
+	if ruling.GetReason() != "ok" || !ruling.GetSelector().GetHasFilter() || ruling.GetSelector().GetFilter().GetKindExact() != "cites" ||
+		ruling.GetSelector().GetMax() != 50 || ruling.GetFailed() != 1 || ruling.GetSkipped() != 4 || !ruling.GetReverted() ||
+		ruling.GetRevertedAt() != 9 || ruling.GetRevertedBy() != "v1" || ruling.GetActor() != "ops" || ruling.GetRuledBy() != "operator:ops" {
+		t.Errorf("ruling record = %+v", ruling)
 	}
 }

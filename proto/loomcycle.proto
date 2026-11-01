@@ -343,6 +343,21 @@ service Loomcycle {
   // Mirrors POST /v1/_statements/revert.
   rpc RevertRuling(RevertRulingRequest) returns (RevertRulingResponse);
 
+  // ListRulings pages a document scope's bulk rulings and their reverts,
+  // newest first (limit 20 by default, at most 100), so an undo can be found
+  // after the ruling's own answer is gone. An operator sees every ruling of
+  // the scope; a member only its own. Each names what it selected as the
+  // filter, or as a count of ids, never the ids. Same callers as
+  // ListReviewQueue.
+  //
+  // Every review RPC takes scope_id with scope "user": an admin, or a tenant
+  // operator within its own tenant, may name another subject's user scope;
+  // a member naming another, or a tenant operator naming another tenant, is
+  // PERMISSION_DENIED forbidden.
+  //
+  // Mirrors GET /v1/_statements/rulings.
+  rpc ListRulings(ListRulingsRequest) returns (ListRulingsResponse);
+
   // Decide asks a decision model typed questions (choice / noul / score)
   // about a piece of state and returns each answer as the model gave it. It
   // is a judgement with probabilities, not generated text, and it needs no
@@ -2411,12 +2426,20 @@ message ReviewQueueFilter {
   // attributes.judge.verdict: recorded at all, or exactly this.
   optional bool has_judge_verdict = 15;
   string judge_verdict = 16;
+  // The method / the kind exactly as stored: no prefix, no sub-kinds.
+  string method_exact = 17;
+  string kind_exact = 18;
+  // The from-document's path prefix exactly as the summary computes it (the
+  // first two segments of its first Path name in sort order); or, with
+  // from_unfiled, a from-document filed nowhere (the summary's empty prefix).
+  string from_path_prefix = 19;
+  bool from_unfiled = 20;
 }
 
 message ListReviewQueueRequest {
   // Whose: only an admin may name a tenant.
   string tenant = 1;
-  // tenant (default) or user (the caller's own).
+  // tenant (default) or user (the caller's own, or scope_id's).
   string scope = 2;
   ReviewQueueFilter filter = 3;
   bool summarize = 4;
@@ -2425,6 +2448,9 @@ message ListReviewQueueRequest {
   int32 limit = 5;
   string after = 6;
   string order = 7;
+  // With scope "user": whose. An admin or a tenant operator may name
+  // another subject of its tenant; a member only itself.
+  string scope_id = 8;
 }
 
 // ReviewQueueGroup is one row of the queue's summary.
@@ -2437,6 +2463,9 @@ message ReviewQueueGroup {
   // attributes.judge.verdict; empty when none.
   string judge_verdict = 4;
   int32 count = 5;
+  // The filter that selects exactly this group: the summary's own filter
+  // narrowed by the group's keys. Pass it to RuleStatements as it is.
+  ReviewQueueFilter filter = 6;
 }
 
 message ListReviewQueueResponse {
@@ -2468,6 +2497,8 @@ message RuleStatementsRequest {
   optional int32 expect_count = 9;
   // At most this many (default and ceiling 1000).
   int32 max = 10;
+  // As ListReviewQueueRequest.scope_id.
+  string scope_id = 11;
 }
 
 message RulingBreakdown {
@@ -2507,6 +2538,8 @@ message RevertRulingRequest {
   string tenant = 1;
   string scope = 2;
   string ruling_id = 3;
+  // As ListReviewQueueRequest.scope_id.
+  string scope_id = 4;
 }
 
 message RevertRulingResponse {
@@ -2518,6 +2551,57 @@ message RevertRulingResponse {
   int32 changed = 6;
   int32 skipped = 7;
   repeated RulingItem items = 8;
+  // The revert's own record in ListRulings (action "revert").
+  string revert_id = 9;
+}
+
+message ListRulingsRequest {
+  string tenant = 1;
+  string scope = 2;
+  // As ListReviewQueueRequest.scope_id.
+  string scope_id = 3;
+  // Page size (default 20, at most 100) and the previous page's next_cursor.
+  int32 limit = 4;
+  string after = 5;
+}
+
+// RulingSelector is what a ruling selected: the queue filter (has_filter),
+// or how many statement ids it named; on a revert, the ruling it undid.
+message RulingSelector {
+  ReviewQueueFilter filter = 1;
+  bool has_filter = 2;
+  int32 ids_count = 3;
+  int32 max = 4;
+  string reverts = 5;
+}
+
+// RulingRecord is one bulk ruling (action accept or reject) or one revert of
+// one (action revert: ruled counts what it reverted, failed what had changed).
+message RulingRecord {
+  string id = 1;
+  string action = 2;
+  string ruled_by = 3;
+  // The subject that made the call.
+  string actor = 4;
+  string reason = 5;
+  RulingSelector selector = 6;
+  int32 matched = 7;
+  int32 ruled = 8;
+  int32 failed = 9;
+  int32 skipped = 10;
+  // Unix nanoseconds.
+  int64 created_at = 11;
+  // Undone since: when, and by which revert (a record of this listing).
+  bool reverted = 12;
+  int64 reverted_at = 13;
+  string reverted_by = 14;
+}
+
+message ListRulingsResponse {
+  string tenant = 1;
+  string scope = 2;
+  repeated RulingRecord rulings = 3;
+  string next_cursor = 4;
 }
 
 // ========================

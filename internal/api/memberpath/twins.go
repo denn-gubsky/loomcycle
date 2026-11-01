@@ -75,6 +75,7 @@ var twins = map[string][]Twin{
 	"ListReviewQueue": {{Method: http.MethodGet, Path: "/v1/_statements/review"}},
 	"RuleStatements":  {{Method: http.MethodPost, Path: "/v1/_statements/rule"}},
 	"RevertRuling":    {{Method: http.MethodPost, Path: "/v1/_statements/revert"}},
+	"ListRulings":     {{Method: http.MethodGet, Path: "/v1/_statements/rulings"}},
 	// Runtime admin.
 	"PauseRuntime":    {{Method: http.MethodPost, Path: "/v1/_pause"}},
 	"ResumeRuntime":   {{Method: http.MethodPost, Path: "/v1/_resume"}},

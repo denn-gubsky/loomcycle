@@ -74,6 +74,7 @@ const (
 	Loomcycle_ListReviewQueue_FullMethodName      = "/loomcycle.v1.Loomcycle/ListReviewQueue"
 	Loomcycle_RuleStatements_FullMethodName       = "/loomcycle.v1.Loomcycle/RuleStatements"
 	Loomcycle_RevertRuling_FullMethodName         = "/loomcycle.v1.Loomcycle/RevertRuling"
+	Loomcycle_ListRulings_FullMethodName          = "/loomcycle.v1.Loomcycle/ListRulings"
 	Loomcycle_Decide_FullMethodName               = "/loomcycle.v1.Loomcycle/Decide"
 	Loomcycle_ListDecisionModels_FullMethodName   = "/loomcycle.v1.Loomcycle/ListDecisionModels"
 	Loomcycle_Health_FullMethodName               = "/loomcycle.v1.Loomcycle/Health"
@@ -413,6 +414,20 @@ type LoomcycleClient interface {
 	//
 	// Mirrors POST /v1/_statements/revert.
 	RevertRuling(ctx context.Context, in *RevertRulingRequest, opts ...grpc.CallOption) (*RevertRulingResponse, error)
+	// ListRulings pages a document scope's bulk rulings and their reverts,
+	// newest first (limit 20 by default, at most 100), so an undo can be found
+	// after the ruling's own answer is gone. An operator sees every ruling of
+	// the scope; a member only its own. Each names what it selected as the
+	// filter, or as a count of ids, never the ids. Same callers as
+	// ListReviewQueue.
+	//
+	// Every review RPC takes scope_id with scope "user": an admin, or a tenant
+	// operator within its own tenant, may name another subject's user scope;
+	// a member naming another, or a tenant operator naming another tenant, is
+	// PERMISSION_DENIED forbidden.
+	//
+	// Mirrors GET /v1/_statements/rulings.
+	ListRulings(ctx context.Context, in *ListRulingsRequest, opts ...grpc.CallOption) (*ListRulingsResponse, error)
 	// Decide asks a decision model typed questions (choice / noul / score)
 	// about a piece of state and returns each answer as the model gave it. It
 	// is a judgement with probabilities, not generated text, and it needs no
@@ -1136,6 +1151,16 @@ func (c *loomcycleClient) RevertRuling(ctx context.Context, in *RevertRulingRequ
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RevertRulingResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_RevertRuling_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ListRulings(ctx context.Context, in *ListRulingsRequest, opts ...grpc.CallOption) (*ListRulingsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRulingsResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ListRulings_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1938,6 +1963,20 @@ type LoomcycleServer interface {
 	//
 	// Mirrors POST /v1/_statements/revert.
 	RevertRuling(context.Context, *RevertRulingRequest) (*RevertRulingResponse, error)
+	// ListRulings pages a document scope's bulk rulings and their reverts,
+	// newest first (limit 20 by default, at most 100), so an undo can be found
+	// after the ruling's own answer is gone. An operator sees every ruling of
+	// the scope; a member only its own. Each names what it selected as the
+	// filter, or as a count of ids, never the ids. Same callers as
+	// ListReviewQueue.
+	//
+	// Every review RPC takes scope_id with scope "user": an admin, or a tenant
+	// operator within its own tenant, may name another subject's user scope;
+	// a member naming another, or a tenant operator naming another tenant, is
+	// PERMISSION_DENIED forbidden.
+	//
+	// Mirrors GET /v1/_statements/rulings.
+	ListRulings(context.Context, *ListRulingsRequest) (*ListRulingsResponse, error)
 	// Decide asks a decision model typed questions (choice / noul / score)
 	// about a piece of state and returns each answer as the model gave it. It
 	// is a judgement with probabilities, not generated text, and it needs no
@@ -2378,6 +2417,9 @@ func (UnimplementedLoomcycleServer) RuleStatements(context.Context, *RuleStateme
 }
 func (UnimplementedLoomcycleServer) RevertRuling(context.Context, *RevertRulingRequest) (*RevertRulingResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevertRuling not implemented")
+}
+func (UnimplementedLoomcycleServer) ListRulings(context.Context, *ListRulingsRequest) (*ListRulingsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRulings not implemented")
 }
 func (UnimplementedLoomcycleServer) Decide(context.Context, *DecideRequest) (*DecideResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Decide not implemented")
@@ -3166,6 +3208,24 @@ func _Loomcycle_RevertRuling_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).RevertRuling(ctx, req.(*RevertRulingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ListRulings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRulingsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ListRulings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ListRulings_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ListRulings(ctx, req.(*ListRulingsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -4197,6 +4257,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RevertRuling",
 			Handler:    _Loomcycle_RevertRuling_Handler,
+		},
+		{
+			MethodName: "ListRulings",
+			Handler:    _Loomcycle_ListRulings_Handler,
 		},
 		{
 			MethodName: "Decide",

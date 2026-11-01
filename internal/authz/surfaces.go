@@ -507,7 +507,7 @@ func GRPCSurface(rpc string) (Surface, bool) {
 		return typeLevel("write", "document"), true
 	// The review queue, a bulk ruling and its undo ask read, as their routes
 	// (/v1/_statements/*); the connector asks review or write per statement.
-	case "ListReviewQueue", "RuleStatements", "RevertRuling":
+	case "ListReviewQueue", "RuleStatements", "RevertRuling", "ListRulings":
 		return typeLevel("read", "document"), true
 	case "Memory":
 		return typeLevel("read", "memory"), true
