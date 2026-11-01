@@ -14,8 +14,8 @@ run can open (the default `user` needs a user id; otherwise pass `agent`).
 
 ## Arguments
 
-- `name` (required) — the proposed type's name, e.g. `vehicle`. `title` is
-  accepted in its place.
+- `name` (required) — the proposed type's name, e.g. `vehicle`.
+- `title` — accepted in place of `name`.
 - `parent` — an entity type that is already IN FORCE, by name, that this one is
   a kind of. Omit for a new top-level type. With `section: relations`, a
   relation kind the tenant declares, that this one is a narrower kind of.

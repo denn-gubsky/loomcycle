@@ -16,9 +16,9 @@ existing one.** A new document always gets a Path-tree name.
 - `markdown` (required) — the Markdown. It needs at least one `#`–`######`
   heading. Headings inside fenced code blocks are left as text.
 - `document_id` — import into this existing document. Omitted: create a new
-  document whose root chunk is the FIRST heading (its text is the title; the
-  `title` argument is not used). Every later heading, even another `#`, goes
-  under that root.
+  document whose root chunk is the FIRST heading (its text is the title; this
+  op takes no `title`, and a call that passes one is refused). Every later
+  heading, even another `#`, goes under that root.
 - `parent_id` — with `document_id`: import under this chunk. Default: under
   the document's root chunk.
 - `path` — new document only: its Path-tree name, e.g. `/docs/launch`.
@@ -115,9 +115,12 @@ line (a part's period comes from `edition_date`), and pictures: an image part
 arrives as its caption text, without the image. Add those afterwards with
 `link_chunks`, `update_chunk` and `set_asset`.
 
-The response adds `reimport: {unchanged, superseded, moved, closed, created,
-statements_copied, statements_proposed}` and `changed_chunk_ids` (the new,
-superseding and moved parts, and the root when its title or text changed).
+A reimport answers `{document_id, root_chunk_id, edition_date, reimport:
+{unchanged, superseded, moved, closed, created, statements_copied,
+statements_proposed}, work_key?, changed_chunk_ids?, not_announced?}` —
+`changed_chunk_ids` are the new, superseding and moved parts, and the root when
+its title or text changed: the parts to re-read for citations
+(`extract_citations` with `id`) and to re-check relations on.
 
 ### Who made the edition: `amending_document_id`
 
@@ -139,11 +142,16 @@ zero.
 ## Returns
 
 `{document_id, root_chunk_id, chunks_created, image_chunks, skipped,
-skipped_images}`, plus `provenance` for an import that names a source and
-`not_announced` when the import was not published to the scope's
-`documents/ingested` channel (your access-control rules hide part of the scope
-from reading, so the event could name the document to readers who may not see
-it) —
+skipped_images, edges_skipped?}`, plus `provenance` for an import that names a
+source. `edges_skipped` counts `loom-edges` lines that could not be recreated.
+
+Every import is announced on the scope's `documents/ingested` channel as
+`{document_id, reason, scope, timestamp, changed_chunk_ids?}` — `reason` is
+`imported`, or `reimported` for a new edition (with its changed parts) — which
+is what a links pass subscribes to. `not_announced` in the result means it was
+not published: your access-control rules hide part of the scope from reading,
+so the event could name the document to readers who may not see it.
+In the plain import result,
 `skipped` counts the pictures that stayed links and
 `skipped_images` says why for the first of them. For an import into an existing
 document, `root_chunk_id` is the chunk you imported under. The new document's
@@ -192,6 +200,19 @@ Import an email's body, linked back to the message:
 
 ```json
 {"op": "import_md", "path": "/mail/2026/board-minutes", "source_url": "https://outlook.office365.com/owa/?ItemID=AAMkAGI2&exvsurl=1&viewmodel=ReadMessageItem", "source_kind": "email", "source_title": "Board minutes, 21 October", "markdown": "# Board minutes, 21 October\n\nThe budget was approved."}
+```
+
+A new edition of a law, made by an amending act this scope holds, in force
+from 1 March 2026:
+
+```json
+{"op": "import_md", "scope": "tenant", "reimport": true, "work_key": "law:ua/2297-vi", "edition_date": 1772323200000000000, "amending_document_id": "3e4f5a6b7c8d49e0a1b2c3d4e5f60718", "markdown": "# On the protection of personal data\n\n## Article 1\n\nTerms.\n\n## Article 2\n\nThe new article.\n\n## Article 3\n\nScope of the law."}
+```
+
+```json result
+{"document_id": "0c1d2e3f4a5b4c6d8e9f0a1b2c3d4e5f", "root_chunk_id": "c7d2e4f6a8b04c1d9e3f5a7b9c1d3e5f", "edition_date": 1772323200000000000, "work_key": "law:ua/2297-vi",
+ "reimport": {"unchanged": 1, "superseded": 0, "moved": 1, "closed": 0, "created": 1, "statements_copied": 0, "statements_proposed": 0, "amends_written": 1},
+ "changed_chunk_ids": ["9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "5e1f0c2a9b8d4e7f8a6b5c4d3e2f1a0b"]}
 ```
 
 Set a chunk's type and status on the way in:

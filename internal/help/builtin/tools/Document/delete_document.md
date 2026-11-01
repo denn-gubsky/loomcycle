@@ -19,6 +19,15 @@ part of a document, use `delete_chunk`; to correct a fact, use
 `{deleted: true, document_id, n_chunks_deleted}`. `n_chunks_deleted` counts the
 root too. A `document_id` that matched nothing returns `n_chunks_deleted: 0`.
 
+Deleting a **subject** (a document whose root chunk carries a `natural_key`)
+publishes `removed` on the scope's `memory/subjects` channel, with the key, so
+whatever indexes relations by subject can retire the ones that named it — other
+scopes' evidence can still name that key. When your access-control rules hide
+part of the scope the event is not published, and the result carries
+`not_announced` saying why. The document's change feed
+(`documents/<document_id>/chunks`) is purged with it. Facts elsewhere that were
+derived from its text keep their quotes.
+
 ## Errors
 
 - `delete_document: missing required field: document_id (or id, or path)`.

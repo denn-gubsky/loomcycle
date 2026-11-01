@@ -46,12 +46,18 @@ as the user store, search both, in two calls.
   two concepts share is refused with their tags; pass one of those.
 - `concept_prefix` — the same, for every concept whose tag is this path or lies
   under it, e.g. `topics` for a whole scheme.
-- `expand` — `{kinds?, budget_chars?}`: after ranking, add the chunks the top
-  five hits are related to (one hop), e.g. the article a clause cites or the
-  term it is defined by. Without `kinds` it follows the tenant's declared walk
-  kinds, or every relation except `about` and `mentions`. Budget default 2000
-  characters (titles and quotes). The filter arguments apply to the added
-  chunks too: an expansion never brings back a chunk the filter keeps out.
+- `expand` — `{kinds?, hops?, budget_chars?}`: after ranking, add the chunks
+  the top five hits are related to (one hop, in either direction), e.g. the
+  article a clause cites or the term it is defined by. `kinds` names the
+  relation kinds to follow (each with its narrower kinds); without it the
+  expansion follows the tenant's declared walk kinds, or every relation except
+  `about` and `mentions` when none are declared. `hops` may only be `1`: for a
+  longer walk use `graph_recall`. `budget_chars` (default 2000, at most 8000)
+  caps the characters the added rows spend on titles and quotes. Only asserted
+  relations in force are followed (at `as_of` when you pass it), and only from
+  hits you may read. The filter arguments apply to the added chunks too: an
+  expansion never brings back a chunk the filter keeps out. Pass `expand: {}`
+  for the defaults.
 - `as_of` — only chunks whose stated validity contains this moment (unix
   nanoseconds); a chunk with no stated validity always matches.
 
@@ -104,8 +110,9 @@ in that part of the tree is relevant. A call with no filter has no `filter` key.
 
 ## Returns
 
-`{chunks: [{chunk_id, score, rank_score, title, type, document_id}]}`, best
-match first. `rank_score` is what the search's order used — the meaning and
+`{chunks: [{chunk_id, score, rank_score, title, type, document_id, valid_at?,
+invalid_at?}]}`, best match first. `valid_at` / `invalid_at` are the chunk's own
+stated validity, when it has one. `rank_score` is what the search's order used — the meaning and
 word matches combined. `score` is the raw strength of the match that first found
 the chunk: the meaning similarity, or, for a chunk found by its words alone, a
 word-match weight on a different scale. So a chunk found by its words can have a
@@ -155,6 +162,9 @@ caption (and its description, once one exists).
   the listed tags as `concept`.
 - `search: concept_too_wide: ...` — the concept covers more concepts than one
   search can be sent; name a narrower one.
+- `search: expand.hops must be 1 ...` — expansion is one hop; walk further with
+  `graph_recall`.
+- `search: expand.budget_chars must be 0..8000`.
 
 ## Examples
 
@@ -188,3 +198,24 @@ The same question against the tenant's shared documents:
 ```json
 {"op": "search", "query": "how do we roll back a failed database migration", "scope": "tenant", "limit": 5}
 ```
+
+A question whose answer depends on what the best clauses cite or implement:
+the norms in force on 1 January 2026, about one concept, with the provisions
+they rely on added after the ranked hits:
+
+```json
+{"op": "search", "query": "who approves an outsourcing contract", "scope": "tenant", "under_path": "/norms", "concept": "topics/risk-management/outsourcing", "as_of": 1767225600000000000, "limit": 5, "expand": {"kinds": ["cites", "implements", "defines"], "budget_chars": 3000}}
+```
+
+```json result
+{"chunks": [
+  {"chunk_id": "5e1f0c2a9b8d4e7f8a6b5c4d3e2f1a0b", "score": 0.77, "rank_score": 0.031, "title": "Point 14", "type": "norm.clause", "document_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90", "valid_at": 1735689600000000000},
+  {"chunk_id": "9c8b7a6f5e4d43c2b1a0f9e8d7c6b5a4", "title": "Article 41", "type": "law.article", "document_id": "0c1d2e3f4a5b4c6d8e9f0a1b2c3d4e5f",
+   "expanded_via": {"kind": "implements", "from_chunk_id": "5e1f0c2a9b8d4e7f8a6b5c4d3e2f1a0b", "quote": "pursuant to Article 41 of the Law"}}],
+ "expanded": 1,
+ "filter": {"applied": {"under_paths": ["/norms"], "concept": "topics/risk-management/outsourcing", "concept_matched_by": "statement", "as_of": 1767225600000000000},
+  "matched_documents": 6, "matched_chunks": 140, "inverted": false}}
+```
+
+Read the added chunk with `get_chunk`, and the relation's full evidence with
+`get_edge` (find its id with `backlinks` on the added chunk).

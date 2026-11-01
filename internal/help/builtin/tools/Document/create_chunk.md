@@ -22,7 +22,9 @@ instead.
 - `position` — explicit position among the siblings (0 = first). Nothing is
   shifted, so two siblings can share a position; prefer `after_id`.
 - `type`, `status` — free-form labels, filterable with `query_chunks`.
-- `fields` — a JSON object of structured fields.
+- `fields` — a JSON object of structured fields. The key `principal` is
+  reserved for an operator (it binds a subject to a user account); a chunk
+  carrying it is refused.
 - `tags` — the chunk's tags, e.g. `["area/sub", "urgent"]`.
 - `valid_at`, `invalid_at` — the period the chunk's content is true, in unix
   nanoseconds: from `valid_at` (inclusive) to `invalid_at` (exclusive); leave
@@ -43,6 +45,8 @@ valid_at?, invalid_at?}`. Keep
 ## Errors
 
 - `create_chunk: missing required field: document_id` / `... title`.
+- `principal_binding_operator_only: create_chunk: ...` — drop `principal`
+  from `fields`.
 - `create_chunk: document "..." not found in this scope ...` — a mistyped
   `document_id`, or the document lives in another scope. Copy the id
   `create_document` returned and pass the same `scope`.

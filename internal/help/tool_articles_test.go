@@ -2,6 +2,7 @@ package help
 
 import (
 	"bytes"
+	"context"
 	"log"
 	"os"
 	"path/filepath"
@@ -224,4 +225,33 @@ func anyContains(xs []string, sub string) bool {
 		}
 	}
 	return false
+}
+
+// The knowledge-base guide is reached the ways an agent asks for it: its name,
+// the words it would use instead, and a text query for a subject change, on the
+// substring path a server without an embedder answers with.
+func TestKnowledgeBaseGuide_ReachableByNameAliasAndQuery(t *testing.T) {
+	set, err := LoadSet("")
+	if err != nil {
+		t.Fatalf("LoadSet: %v", err)
+	}
+	for _, q := range []string{"knowledge-base", "kb", "Knowledge", "ontology", "statements", "relations"} {
+		if got, ok := set.Get(q); !ok || got.Name != "knowledge-base" {
+			t.Errorf("Get(%q) = %v, %v; want knowledge-base", q, got, ok)
+		}
+	}
+	if !contains(set.IndexNames(), "knowledge-base") {
+		t.Error("the topic index does not list knowledge-base")
+	}
+	res, err := QueryIndex(context.Background(), set, nil, nil, "retyped merged erased subject", 5)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	found := false
+	for _, r := range res.Results {
+		found = found || r.TopicSlug == "knowledge-base"
+	}
+	if !found {
+		t.Errorf("query for subject changes did not reach knowledge-base: %+v", res.Results)
+	}
 }

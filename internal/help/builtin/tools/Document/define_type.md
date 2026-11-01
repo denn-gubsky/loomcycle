@@ -10,6 +10,12 @@ validator**: a chunk's `type` does not have to be defined first, and a chunk's
 
 Defining a name that already exists in the same place replaces it.
 
+It is not the tenant ontology. The classes, relation kinds and concepts that
+DO govern writes — the entity types `upsert_chunk` accepts with `subject`,
+the relation kinds a tenant with a Relations section checks — come from the
+ontology: read them with `describe_ontology`, and suggest new ones with
+`propose_entity`.
+
 ## Arguments
 
 - `name` (required) — the type name, e.g. `task`. Use the exact string you

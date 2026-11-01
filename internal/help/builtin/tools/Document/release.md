@@ -20,7 +20,8 @@ pass, the failing ones included.
 ## Errors
 
 - `release: missing required field: name`.
-- A permission error for a caller that may not hold a lease.
+- `release: a scope lease is held only by a statement-maintaining driver or
+  the operator`.
 
 ## Examples
 

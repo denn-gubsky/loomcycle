@@ -52,6 +52,28 @@ as of now. Pass `as_of` (e.g. the work's publication date) when that matters.
     document that does.
 - `truncated` — more citations matched than `limit`.
 
+## From a citation to a statement
+
+A hit is not yet a relation: nothing is written until you file it. For each
+hit whose `resolved.chunk_id` is set (or `resolved.document_id`, citing the
+work as a whole — then use that document's `root_chunk_id`), file it with
+`propose_statement`: `from_id` is the hit's `chunk_id`, `to_id` the resolved
+chunk, `kind` the hit's `kind` (or `cites` when it has none), and the
+evidence is the hit itself — `{chunk_id, quote, char_start, char_end}` copied
+from the hit, so the quote is found where it was read. A hit that resolved to
+nothing names a work the scope does not hold: `resolve_anchor` with its
+`work_key` and `create_placeholder: true` files a placeholder to point at, or
+leave it until the work is imported. Check `get_edges` (or `backlinks` on the
+target) first: proposing a relation that is already proposed only adds
+evidence, and one already asserted is refused with `statement_asserted`.
+
+For the first hit of the example below, once the cited article is held:
+
+```json
+{"op": "propose_statement", "scope": "tenant", "from_id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "to_id": "0d1e2f3a4b5c4d6e8f9a0b1c2d3e4f5a", "kind": "amends",
+ "evidence": [{"chunk_id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "quote": "Закону України № 2297-VI", "char_start": 41, "char_end": 65}]}
+```
+
 ## Errors
 
 - `extract_citations: pass exactly one of document_id … or id …`.
@@ -66,4 +88,10 @@ as of now. Pass `as_of` (e.g. the work's publication date) when that matters.
 
 ```json result
 {"document_id": "b4407b522dc11495d3de371311db17f0", "grammar": {"name": "law-ua", "class": "Law"}, "hits": [{"chunk_id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "quote": "Закону України № 2297-VI", "char_start": 41, "char_end": 65, "groups": {"number": "2297-VI"}, "work_key": "law:2297-VI", "kind": "amends", "resolved": {"document_id": "0c1d2e3f4a5b4c6d8e9f0a1b2c3d4e5f", "exact": false, "placeholder": false}}]}
+```
+
+One clause, resolved against the cited work as it stood on 1 January 2025:
+
+```json
+{"op": "extract_citations", "id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "as_of": 1735689600000000000, "scope": "tenant"}
 ```

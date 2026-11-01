@@ -15,8 +15,12 @@ chunk, and `backlinks` when you want the chunks that already link to it.
 - `related_to` — a chunk whose neighbours BY RELATION (what it cites, what
   cites it, what defines it, …) to return as `linked`. Needs no embedder; with
   `id` too, both answers come back (on a server with no embedder, `linked` and a
-  `note` saying why `related` is missing). `kind` / `kinds` narrow the relations
-  it follows; the filter arguments below narrow `linked` as they do `related`.
+  `note` saying why `related` is missing). The filter arguments below narrow
+  `linked` as they do `related`.
+- `kind` / `kinds` — with `related_to`: follow only these relation kinds (each
+  with the narrower kinds the tenant declares under it). Without them it
+  follows the tenant's declared walk kinds, or every kind when none are
+  declared. They do not change the neighbours by meaning.
 - `limit` — at most this many, default 10, capped at 50. The chunk itself is
   never included.
 - `scope` — `user` (default), `agent` or `tenant`. See
@@ -90,8 +94,8 @@ in that part of the tree is relevant. A call with no filter has no `filter` key.
 
 ## Returns
 
-`{related: [{chunk_id, score, title, type, document_id}]}`, closest first,
-plus `filter` when you passed one. With `related_to`, `linked: [{chunk_id,
+`{related: [{chunk_id, score, title, type, document_id, valid_at?,
+invalid_at?}]}`, closest first, plus `filter` when you passed one. With `related_to`, `linked: [{chunk_id,
 via_kind, via_quote?, title, type, document_id}]` — the relation's kind and its
 first evidence quote. `related_to` alone returns `{linked}` (and `filter`).
 A chunk whose body is empty — a section heading with only children — or is a
@@ -126,4 +130,17 @@ Earlier decisions like the passage under review, never from the passport itself:
 
 ```json
 {"op": "related", "id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "scope": "tenant", "under_path": "/qg/decisions", "status": "active", "exclude_document_ids": ["b4407b522dc11495d3de371311db17f0"]}
+```
+
+What a clause cites or implements, beside what reads like it — the graph's
+answer and the embedding's in one call, both limited to the norms:
+
+```json
+{"op": "related", "id": "5e1f0c2a9b8d4e7f8a6b5c4d3e2f1a0b", "related_to": "5e1f0c2a9b8d4e7f8a6b5c4d3e2f1a0b", "kinds": ["cites", "implements"], "scope": "tenant", "under_path": "/norms", "limit": 5}
+```
+
+```json result
+{"related": [{"chunk_id": "7b6a5f4e3d2c41b0a9f8e7d6c5b4a3f2", "score": 0.74, "title": "Point 15", "type": "norm.clause", "document_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90"}],
+ "linked": [{"chunk_id": "9c8b7a6f5e4d43c2b1a0f9e8d7c6b5a4", "via_kind": "implements", "via_quote": "pursuant to Article 41 of the Law", "title": "Article 41", "type": "law.article", "document_id": "0c1d2e3f4a5b4c6d8e9f0a1b2c3d4e5f"}],
+ "filter": {"applied": {"under_paths": ["/norms"]}, "matched_documents": 6, "matched_chunks": 140, "inverted": false}}
 ```

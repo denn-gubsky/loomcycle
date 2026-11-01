@@ -12,6 +12,28 @@ governs nothing, so it describes the standard classes and nothing else, and it
 lists relation kinds only when a confirmed ontology has a Relations section and
 instances only when it has an Instances section.
 
+Read it **first** when you are about to write into a knowledge base you do not
+know, and use what it names rather than inventing your own:
+
+- `classes` — the `type` to give a document's root or a chunk, and, with
+  `subject`, the entity types `upsert_chunk` accepts. A class's `fields` are the
+  ones to fill; its `@identity` fields build the `natural_key` for you.
+- `relations` — the `kind` to pass to `link_chunks` and `propose_statement`,
+  with the classes each end must be (`domain`, `range`), its `qualifiers` (the
+  `attributes` it accepts) and whether it is `dated` (give it `valid_at`).
+  `walk: true` kinds are the ones `graph_recall` and `search` `expand` follow by
+  default.
+- `schemes` — the concepts to filter `search` and `related` by (`concept`,
+  `concept_prefix`, by `tag`), and, in the tenant scope, the targets of a
+  `subject` relation.
+- `instances` — the real organisations, units and posts the tenant knows. Write
+  a statement about one at its `subject_chunk_id`; never create a second
+  subject for it.
+
+Missing something? Suggest it with `propose_entity` (a class, a relation kind
+with `section: relations`, a concept with `section: schemes`, an instance with
+`section: instances`). An agent never edits the ontology document itself.
+
 ## Arguments
 
 - `scope` — ignored: the ontology is always the tenant's.

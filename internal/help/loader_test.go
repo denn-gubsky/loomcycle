@@ -44,6 +44,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"input-webhooks",
 		"installation",
 		"interruption",
+		"knowledge-base",
 		"llm-gateway",
 		"loomcycle",
 		"memory-consolidation",

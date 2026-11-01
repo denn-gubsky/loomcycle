@@ -12,8 +12,8 @@ facts already point at.
 
 ## Arguments
 
-- `subject` (required) — the subject's name, e.g. `Dave Kim`. `title` is
-  accepted in its place.
+- `subject` (required) — the subject's name, e.g. `Dave Kim`.
+- `title` — accepted in place of `subject`.
 - `natural_key` (required) — its identity, `<type>:<slug>`, e.g.
   `person:dave-kim`. The part before `:` becomes its entity type.
 - `path` — the name segment the adopted subject gets under `/facts/`, e.g.
@@ -21,6 +21,12 @@ facts already point at.
   `<type>:` prefix.
 - `body` — evidence for the operator, at most 4000 bytes.
 - `scope` — see above.
+
+When an operator adopts it, the tenant gains a subject document at
+`/facts/<path>` whose root chunk carries your `natural_key`, `type` (the key's
+prefix) and `subject`, and an `adopted` event is published on the tenant's
+`memory/subjects` channel. Adoption shares what is learned from then on; facts
+already filed in a user or agent scope stay there.
 
 ## Returns
 

@@ -229,6 +229,28 @@ func TestArgumentCheck_RefusesTheMeasuredCrossOperationCalls(t *testing.T) {
 	}
 }
 
+// The other side of the sibling check: an argument the op's handler reads, and
+// its article describes, passes. Each of these was refused because the article
+// named it in prose but not as an Arguments bullet, while a sibling's bullet
+// claimed it — related's kind filter for related_to, and the aliases
+// propose_entity, propose_subject and set_path accept in place of the canonical
+// name.
+func TestArgumentCheck_AcceptsArgumentsTheOpReads(t *testing.T) {
+	set := bundledHelp(t)
+	d := tools.NewDispatcher([]tools.Tool{&Document{}, &Context{Help: set}})
+	for _, call := range []string{
+		`{"op":"related","related_to":"c1","kinds":["cites","defines"]}`,
+		`{"op":"related","related_to":"c1","kind":"implements"}`,
+		`{"op":"propose_entity","title":"vehicle"}`,
+		`{"op":"propose_subject","title":"Dave Kim","natural_key":"person:dave-kim"}`,
+		`{"op":"set_path","document_id":"d1","path":"/docs/plan"}`,
+	} {
+		if msg, refused := d.ArgumentRefusal("Document", json.RawMessage(call)); refused {
+			t.Errorf("a call the op handles was refused: %s\n%s", call, msg)
+		}
+	}
+}
+
 // Every argument an operation article lists is one the tool's schema declares.
 // The dispatcher refuses a call using another op's argument based on these
 // lists, so a misspelt or stale name here would make the documentation lie

@@ -103,6 +103,7 @@ when it is below 1.
 - `graph_recall: body_chars must be 0..4000 (got N)` — read a whole body with
   `get_chunk` instead.
 - `graph_recall: decay needs budget_chars ...` — pass a budget, or drop `decay`.
+- `graph_recall: decay must be in (0, 1] (got N)`.
 - `graph_recall: walk must be declared or all` / `direction must be out, in or
   both` / `include_hierarchy must be up, down, both or none`.
 - An empty `chunks` list with `seeds: 0` means nothing matched the query in
@@ -147,6 +148,14 @@ What was true about a subject on 1 March, walking out from its chunk:
 
 ```json
 {"op": "graph_recall", "seed_ids": ["2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f"], "hops": 1, "as_of": 1772323200000000000}
+```
+
+Follow a clause's citations two hops out — what it implements, and what that
+cites — with the section each lands in, on a budget that keeps near hops
+first:
+
+```json
+{"op": "graph_recall", "seed_ids": ["5e1f0c2a9b8d4e7f8a6b5c4d3e2f1a0b"], "kinds": ["implements", "cites", "defines"], "direction": "out", "hops": 2, "include_hierarchy": "up", "budget_chars": 4000, "decay": 0.6, "scope": "tenant"}
 ```
 
 The same walk over the tenant's shared facts (a separate call):

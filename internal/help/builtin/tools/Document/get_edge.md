@@ -17,7 +17,12 @@ made, its validity, verdict and qualifiers, and **all** of its evidence —
 
 `{statement: {id, from_id, to_id, kind, status, method, created_at,
 from_title, from_document_id, to_title, to_document_id, evidence: [...],
-evidence_count, ...}}`. Each evidence row has its `quote` and its source —
+evidence_count, ...}}`, plus the envelope fields `get_edges` describes when
+they are set (`confidence`, `valid_at`, `invalid_at`, `attributes`, `actor`,
+`verified_at`, `expired_at`, the verdict, `operator_ruled_at`). Unlike
+`get_edges`, it reads a statement of any status, a rejected or retired one
+too. Each evidence row has its `id` (what `maintain_statement` takes as
+`evidence_id`), its `quote` and its source —
 `chunk_id`, `session_id` + `event_seq`, or `scope` + `natural_key` — and
 `char_start` / `char_end` where the quote sits. `stale: true` marks a quote
 that no longer occurs in its source. Evidence citing a document you may not

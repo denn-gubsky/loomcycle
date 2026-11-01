@@ -4,7 +4,9 @@ description: "Document op=accept_statement — an operator accepts a proposed re
 ---
 `accept_statement` turns a proposed relation into an asserted one, or reverses
 a rejection made in error. It is the operator's ruling and is refused inside an
-agent run: a model cannot accept its own proposals. Operators reach it from the
+agent run: a model cannot accept its own proposals. An agent that wants a
+proposal accepted leaves it in the queue (`list_statements`), with evidence a
+reviewer can check. Operators reach it from the
 review queue in the console, or from an operator session over the API.
 
 An accepted relation is shown to every reader. If a judge had found it

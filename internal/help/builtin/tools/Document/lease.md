@@ -33,10 +33,29 @@ names the current holder and `expires_at` says when its lease runs out.
 
 - `lease: missing required field: name`.
 - `lease: name must be 1–64 characters of a-z 0-9 _ . : / -`.
-- A permission error for a caller that may not hold a lease.
+- `lease: names starting with "principal:" are reserved for the runtime` —
+  pick another name.
+- `lease: ttl_ms must not be negative` — omit it for the default.
+- `lease: a scope lease is held only by a statement-maintaining driver or the
+  operator` — a model-driven agent does not take leases.
 
 ## Examples
 
 ```json
 {"op": "lease", "name": "linker", "ttl_ms": 300000}
+```
+
+```json result
+{"name": "linker", "acquired": true, "expires_at": 1772409900000000000}
+```
+
+The same lease on the tenant scope, found held by another pass — stop without
+writing, and try again after `expires_at`:
+
+```json
+{"op": "lease", "name": "linker", "scope": "tenant"}
+```
+
+```json result
+{"name": "linker", "acquired": false, "expires_at": 1772409660000000000, "held_by": "run-9f2c"}
 ```
