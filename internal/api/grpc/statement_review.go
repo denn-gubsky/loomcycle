@@ -115,6 +115,9 @@ func (s *Server) ListRulings(ctx context.Context, req *loomcyclepb.ListRulingsRe
 			Filter: reviewFilterToProto(r.Selector.Filter), HasFilter: r.Selector.Filter != nil,
 			IdsCount: int32(r.Selector.IDsCount), Max: int32(r.Selector.Max), Reverts: r.Selector.Reverts,
 		}
+		if p := r.Selector.Policy; p != nil {
+			sel.Policy = &loomcyclepb.RulingPolicy{Version: int32(p.Version), Source: p.Source, RunId: p.RunID}
+		}
 		out.Rulings = append(out.Rulings, &loomcyclepb.RulingRecord{
 			Id: r.ID, Action: r.Action, RuledBy: r.RuledBy, Actor: r.Actor, Reason: r.Reason, Selector: sel,
 			Matched: int32(r.Matched), Ruled: int32(r.Ruled), Failed: int32(r.Failed), Skipped: int32(r.Skipped),

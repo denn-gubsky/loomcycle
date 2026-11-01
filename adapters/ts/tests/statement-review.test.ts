@@ -146,6 +146,17 @@ describe("applyReviewPolicy", () => {
     expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toEqual({ filter: { kind: "cites" }, dry_run: false, expect_count: 3, max: 100, scope: "user", scope_id: "bob", tenant: "globex" });
   });
 
+  it("lists the application with the policy it applied", async () => {
+    const { client } = makeClient([
+      jsonResponse({ tenant: "acme", scope: "tenant", rulings: [
+        { id: "r2", action: "policy", ruled_by: "operator:ops", selector: { policy: { version: 7, source: "review" } }, matched: 3, ruled: 2, failed: 0, skipped: 0,
+          created_at: 1, reverted: false },
+      ] }),
+    ]);
+    const res = await client.listRulings();
+    expect(res.rulings[0]!.selector.policy).toEqual({ version: 7, source: "review" });
+  });
+
   it("throws forbidden for a member", async () => {
     const { client } = makeClient([jsonResponse({ code: "forbidden", error: "applying the review policy is for an admin or a tenant operator" }, 403)]);
     const err = await client.applyReviewPolicy().catch((e: unknown) => e);

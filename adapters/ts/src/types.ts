@@ -2389,6 +2389,10 @@ export interface RulingSelector {
   ids_count?: number;
   max?: number;
   reverts?: string;
+  /** Set on a review policy's ruling: the ontology version it was read at,
+   *  its source (`review` / `auto_assert`; absent for a ruling made as a
+   *  run's proposals were filed) and that run. */
+  policy?: { version: number; source?: string; run_id?: string };
 }
 
 /** One bulk ruling (`accept` / `reject`) or one revert of one (`revert`:

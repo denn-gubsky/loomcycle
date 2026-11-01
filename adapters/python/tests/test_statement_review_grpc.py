@@ -71,6 +71,8 @@ class _Stub:
                 pb.RulingRecord(id="r1", action="accept", ruled_by="operator:ops", actor="ops", reason="ok",
                                 selector=pb.RulingSelector(has_filter=True, filter=pb.ReviewQueueFilter(kind_exact="cites"), max=50),
                                 matched=3, ruled=2, failed=1, created_at=7, reverted=True, reverted_at=9, reverted_by="v1"),
+                pb.RulingRecord(id="p1", action="policy", ruled_by="operator:ops",
+                                selector=pb.RulingSelector(policy=pb.RulingPolicy(version=14, source="review")), matched=6, ruled=3),
             ],
         )
 
@@ -182,8 +184,9 @@ async def test_list_rulings_sends_the_page_and_names_ids_only_by_count():
     got = await _client(stub).list_rulings(limit=5, after="c", scope="user", scope_id="bob", tenant="globex")
     assert (stub.req.limit, stub.req.after, stub.req.scope, stub.req.scope_id, stub.req.tenant) == (5, "c", "user", "bob", "globex")
     assert got["next_cursor"] == "n1"
-    revert, ruling = got["rulings"]
-    assert revert["action"] == "revert" and revert["selector"] == {"filter": None, "ids_count": 0, "max": 0, "reverts": "r1"}
+    revert, ruling, policy = got["rulings"]
+    assert policy["action"] == "policy" and policy["selector"]["policy"] == {"version": 14, "source": "review", "run_id": ""}
+    assert revert["action"] == "revert" and revert["selector"] == {"filter": None, "ids_count": 0, "max": 0, "reverts": "r1", "policy": None}
     assert ruling["selector"]["filter"] == {"kind_exact": "cites"} and ruling["selector"]["max"] == 50
     assert (ruling["reverted"], ruling["reverted_by"], ruling["failed"]) == (True, "v1", 1)
 

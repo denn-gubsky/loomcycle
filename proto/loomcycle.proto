@@ -2591,6 +2591,17 @@ message RulingSelector {
   int32 ids_count = 3;
   int32 max = 4;
   string reverts = 5;
+  // Set on a review policy's ruling.
+  RulingPolicy policy = 6;
+}
+
+// RulingPolicy names the review policy a ruling applied: the ontology version,
+// its source (review or auto_assert; empty for a ruling made as a run's
+// proposals were filed) and that run.
+message RulingPolicy {
+  int32 version = 1;
+  string source = 2;
+  string run_id = 3;
 }
 
 // RulingRecord is one bulk ruling (action accept or reject) or one revert of

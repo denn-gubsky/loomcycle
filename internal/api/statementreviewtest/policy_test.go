@@ -196,3 +196,44 @@ func TestApplyReviewPolicy_SameRefusalsOnEveryTransport(t *testing.T) {
 		t.Errorf("a refused call changed the store: %v, was %v", after, before)
 	}
 }
+
+// TestApplyReviewPolicy_TheApplicationListsAlikeOnEveryTransport: after an
+// application, the rulings listing names it the same way on every transport:
+// action policy, the policy's source and version, its counts.
+func TestApplyReviewPolicy_TheApplicationListsAlikeOnEveryTransport(t *testing.T) {
+	e := newEnv(t)
+	e.installPolicy(reviewRules)
+	dry := e.applyHTTP(operator, map[string]any{})
+	real := e.applyHTTP(operator, map[string]any{"dry_run": false, "expect_count": dry.result["matched"]})
+	if !real.ok {
+		t.Fatalf("application refused: %s %s", real.code, real.raw)
+	}
+	var first map[string]any
+	for _, c := range calls {
+		o := c.do(e, operator, "rulings", map[string]any{})
+		if !o.ok {
+			t.Fatalf("%s: rulings refused: %s %s", c.name, o.code, o.raw)
+		}
+		var got map[string]any
+		for _, r := range o.result["rulings"].([]any) {
+			if m := r.(map[string]any); m["id"] == real.result["ruling_id"] {
+				sel := m["selector"].(map[string]any)
+				got = map[string]any{"action": m["action"], "matched": m["matched"], "ruled": m["ruled"], "policy": sel["policy"]}
+			}
+		}
+		if got == nil {
+			t.Fatalf("%s: the application is not listed: %s", c.name, o.raw)
+		}
+		if first == nil {
+			first = got
+			p, _ := got["policy"].(map[string]any)
+			if got["action"] != "policy" || got["ruled"] != float64(2) || p["source"] != "review" || p["version"] == nil {
+				t.Errorf("%s: listed as %v", c.name, got)
+			}
+			continue
+		}
+		if !reflect.DeepEqual(got, first) {
+			t.Errorf("%s lists it as %v, http %v", c.name, got, first)
+		}
+	}
+}

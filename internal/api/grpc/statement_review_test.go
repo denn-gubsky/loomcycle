@@ -236,3 +236,28 @@ func TestStatementReview_ApplyReviewPolicyDelegatesToTheConnector(t *testing.T) 
 		t.Errorf("a refusal = %v", err)
 	}
 }
+
+// A review policy's ruling lists with the policy it applied.
+func TestStatementReview_APolicyRulingListsItsPolicy(t *testing.T) {
+	mc := &mockConnector{rulingsRes: connector.ListRulingsResult{Rulings: []connector.RulingRecord{
+		{ID: "p1", Action: "policy", Selector: connector.RulingSelector{Policy: &connector.RulingPolicy{Version: 14, Source: "review"}}},
+		{ID: "p2", Action: "accept", Selector: connector.RulingSelector{Policy: &connector.RulingPolicy{Version: 14, RunID: "run-1"}}},
+		{ID: "b1", Action: "accept"},
+	}}}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+	resp, err := client.ListRulings(context.Background(), &loomcyclepb.ListRulingsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := resp.GetRulings()
+	if p := r[0].GetSelector().GetPolicy(); p.GetVersion() != 14 || p.GetSource() != "review" || p.GetRunId() != "" {
+		t.Errorf("the application's policy = %+v", p)
+	}
+	if p := r[1].GetSelector().GetPolicy(); p.GetVersion() != 14 || p.GetRunId() != "run-1" {
+		t.Errorf("the filing ruling's policy = %+v", p)
+	}
+	if r[2].GetSelector().GetPolicy() != nil {
+		t.Errorf("a bulk ruling carries a policy: %+v", r[2].GetSelector())
+	}
+}

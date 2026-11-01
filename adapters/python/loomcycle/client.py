@@ -1861,10 +1861,11 @@ class LoomcycleClient:
         Returns ``{tenant, scope, rulings, next_cursor}``; each ruling is
         ``{id, action, ruled_by, actor, reason, selector, matched, ruled,
         failed, skipped, created_at, reverted, reverted_at, reverted_by}``,
-        its ``selector`` ``{filter, ids_count, max, reverts}`` — the filter
-        (``None`` when it named ids), or how many ids, never the ids. A
+        its ``selector`` ``{filter, ids_count, max, reverts, policy}`` — the
+        filter (``None`` when it named ids), or how many ids, never the ids. A
         revert is a record of its own (action ``revert``, ``selector.reverts``
-        the ruling it undid)."""
+        the ruling it undid). A review policy's ruling carries ``policy``
+        ``{version, source, run_id}`` (``None`` on any other)."""
         req = pb.ListRulingsRequest(tenant=tenant, scope=scope, scope_id=scope_id, limit=limit, after=after)
         try:
             resp = await self._stub.ListRulings(req, metadata=self._auth_metadata())
@@ -1886,6 +1887,15 @@ class LoomcycleClient:
                         "ids_count": r.selector.ids_count,
                         "max": r.selector.max,
                         "reverts": r.selector.reverts,
+                        "policy": (
+                            {
+                                "version": r.selector.policy.version,
+                                "source": r.selector.policy.source,
+                                "run_id": r.selector.policy.run_id,
+                            }
+                            if r.selector.HasField("policy")
+                            else None
+                        ),
                     },
                     "matched": r.matched,
                     "ruled": r.ruled,
