@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -133,6 +134,12 @@ type policyFixture struct {
 func newPolicyFixture(t *testing.T, d *Document, base context.Context, md string) *policyFixture {
 	t.Helper()
 	installTenantOntology(t, d, base, md, memrank.OntologyConfirmedStatus)
+	return newPolicyFixtureOn(t, d, base)
+}
+
+// newPolicyFixtureOn is newPolicyFixture over the ontology already installed.
+func newPolicyFixtureOn(t *testing.T, d *Document, base context.Context) *policyFixture {
+	t.Helper()
 	f := &policyFixture{t: t, d: d, op: reviewOperatorCtx(base, nil), run: reviewWriterCtx(base)}
 	mk := func(path string, bodies ...string) []string {
 		out, res := docExec(t, d, f.op, fmt.Sprintf(`{"op":"create_document","scope":"tenant","title":%q,"path":%q}`, path, path))
@@ -380,4 +387,202 @@ func TestReviewPolicy_AutoAssertRulesExactlyAsBefore(t *testing.T) {
 			t.Errorf("rulings recorded without a Review section: %v %v", res, err)
 		}
 	})
+}
+
+// queueBeforePolicy is a fixture whose ontology (md) is a draft while six
+// proposals are filed — so no policy rules them — and then confirmed. It
+// returns the proposals by name.
+func queueBeforePolicy(t *testing.T, d *Document, base context.Context, md string) (*policyFixture, map[string]string) {
+	t.Helper()
+	ctx := installTenantOntology(t, d, base, md, memrank.OntologyDraftStatus)
+	f := newPolicyFixtureOn(t, d, base)
+	ids := map[string]string{
+		"cites":   f.citation("cites")["id"].(string),
+		"repeals": f.propose(f.one, f.two, "repeals", fmt.Sprintf(`,"method":"rule:citation","evidence":[{"chunk_id":%q,"quote":"cites the Act"}]`, f.one))["id"].(string),
+		"low":     f.propose(f.notes, f.two, "elaborates", `,"method":"extractor:relate","confidence":0.4`)["id"].(string),
+		"judge":   f.propose(f.notes, f.one, "elaborates", `,"method":"extractor:relate","confidence":0.7`)["id"].(string),
+		"defines": f.propose(f.notes, f.two, "defines", `,"method":"rule:terms"`)["id"].(string),
+		"self":    f.propose(f.one, f.oneB, "cites", fmt.Sprintf(`,"method":"rule:citation","evidence":[{"chunk_id":%q,"quote":"cites the Act"}]`, f.one))["id"].(string),
+	}
+	for name, id := range ids {
+		if s := f.edge(id)["status"]; s != edgeStatusProposed {
+			t.Fatalf("%s filed %v under a draft", name, s)
+		}
+	}
+	read, _ := d.tenantOntologyRead(ctx)
+	g, _ := docExec(t, d, ctx, `{"op":"get_chunk","scope":"tenant","id":"`+read.RootChunkID+`"}`)
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"status":%q,"revision":%d}`,
+		read.RootChunkID, memrank.OntologyConfirmedStatus, int(g["revision"].(float64)))); r.IsError {
+		t.Fatalf("confirm: %s", r.Text)
+	}
+	return f, ids
+}
+
+func (f *policyFixture) statuses(ids map[string]string) map[string]string {
+	out := map[string]string{}
+	for name, id := range ids {
+		e := f.edge(id)
+		by, _ := e["ruled_by"].(string)
+		if kind, _, ok := strings.Cut(by, "@"); ok {
+			by = kind
+		}
+		attrs, _ := e["attributes"].(map[string]any)
+		route, _ := attrs[attrReviewRoute].(string)
+		out[name] = fmt.Sprint(e["status"], "|", by, "|", route)
+	}
+	return out
+}
+
+// apply_review_policy over a queue filed before the policy: the dry run counts
+// what each rule decides and rules nothing; the real call rules the accepts
+// and rejects as one ruling (each recording its rule), routes the judge's; the
+// revert returns the ruled ones to the queue.
+func TestApplyReviewPolicy_DryRunRuleAndRevertAgainstTheStore(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		f, ids := queueBeforePolicy(t, d, base, reviewOntologyMD)
+		before := f.statuses(ids)
+		dry, err := d.ApplyReviewPolicy(f.op, "tenant", connector.ApplyReviewPolicyRequest{}, RuleAsOperator)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !dry.DryRun || dry.Source != "review" || dry.Matched != 6 || dry.Accept != 2 || dry.Reject != 1 || dry.Judge != 1 || dry.Human != 2 ||
+			dry.ToRule != 3 || dry.RulingID != "" || len(dry.Sample) != 3 {
+			t.Fatalf("dry run = %+v", dry)
+		}
+		var rules []string
+		for _, r := range dry.Rules {
+			rules = append(rules, fmt.Sprint(r.Rule, r.Action, r.Count))
+		}
+		if strings.Join(rules, " ") != "1accept2 3reject1 4judge1 5human2" {
+			t.Errorf("rules = %v", rules)
+		}
+		if after := f.statuses(ids); fmt.Sprint(after) != fmt.Sprint(before) {
+			t.Fatalf("the dry run changed the store: %v", after)
+		}
+
+		no := false
+		six := 6
+		real, err := d.ApplyReviewPolicy(f.op, "tenant", connector.ApplyReviewPolicyRequest{DryRun: &no, ExpectCount: &six}, RuleAsOperator)
+		if err != nil || real.Ruled != 3 || real.Failed != 0 || real.Marked != 1 || real.RulingID == "" {
+			t.Fatalf("apply = %+v %v", real, err)
+		}
+		want := map[string]string{
+			"cites": "asserted|policy:1|", "repeals": "asserted|policy:1|", "low": "rejected|policy:3|",
+			"judge": "proposed||judge", "defines": "proposed||", "self": "proposed||",
+		}
+		if got := f.statuses(ids); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("after the application %v, want %v", got, want)
+		}
+		if e := f.edge(ids["cites"]); e["ruling_id"] != real.RulingID {
+			t.Errorf("get_edge names ruling %v, want %s", e["ruling_id"], real.RulingID)
+		}
+
+		rev, err := d.RevertRuling(f.op, "tenant", connector.RevertRulingRequest{RulingID: real.RulingID}, RuleAsOperator)
+		if err != nil || rev.Reverted != 3 || rev.Action != "policy" {
+			t.Fatalf("revert = %+v %v", rev, err)
+		}
+		want["cites"], want["repeals"], want["low"] = "proposed||", "proposed||", "proposed||"
+		if got := f.statuses(ids); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("after the revert %v, want %v", got, want)
+		}
+	})
+}
+
+// The real call is refused, ruling nothing, when the queue changed since the
+// dry run; max rules the first in queue order and defers the rest.
+func TestApplyReviewPolicy_ExpectCountAndMax(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	f, ids := queueBeforePolicy(t, d, base, reviewOntologyMD)
+	no, five, six := false, 5, 6
+	_, err := d.ApplyReviewPolicy(f.op, "tenant", connector.ApplyReviewPolicyRequest{DryRun: &no, ExpectCount: &five}, RuleAsOperator)
+	if !errors.Is(err, connector.ErrStatementReviewQueueChanged) {
+		t.Fatalf("a stale expect_count: %v", err)
+	}
+	res, err := d.ApplyReviewPolicy(f.op, "tenant", connector.ApplyReviewPolicyRequest{DryRun: &no, ExpectCount: &six, Max: 1}, RuleAsOperator)
+	if err != nil || res.ToRule != 1 || res.Deferred != 2 || res.Ruled != 1 {
+		t.Fatalf("max 1 = %+v %v", res, err)
+	}
+	ruled := 0
+	for _, s := range f.statuses(ids) {
+		if strings.Contains(s, "policy:") {
+			ruled++
+		}
+	}
+	if ruled != 1 {
+		t.Errorf("max 1 ruled %d", ruled)
+	}
+}
+
+// Refusals: a reviewer (a member with the review grant) may not apply the
+// policy; a filter on another status, a Review section with issues and a draft
+// ontology rule nothing.
+func TestApplyReviewPolicy_Refusals(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	f, _ := queueBeforePolicy(t, d, base, reviewOntologyMD)
+	if _, err := d.ApplyReviewPolicy(f.op, "tenant", connector.ApplyReviewPolicyRequest{}, RuleAsReviewer); !errors.Is(err, connector.ErrStatementReviewForbidden) {
+		t.Errorf("a reviewer: %v", err)
+	}
+	if _, err := d.ApplyReviewPolicy(f.run, "tenant", connector.ApplyReviewPolicyRequest{}, RuleAsOperator); !errors.Is(err, connector.ErrStatementReviewForbidden) {
+		t.Errorf("inside a run: %v", err)
+	}
+	asserted := &connector.ReviewQueueFilter{Status: edgeStatusAsserted}
+	if _, err := d.ApplyReviewPolicy(f.op, "tenant", connector.ApplyReviewPolicyRequest{Filter: asserted}, RuleAsOperator); !errors.Is(err, connector.ErrStatementReviewInvalid) {
+		t.Errorf("filter.status asserted: %v", err)
+	}
+	no := false
+	if _, err := d.ApplyReviewPolicy(f.op, "tenant", connector.ApplyReviewPolicyRequest{DryRun: &no}, RuleAsOperator); !errors.Is(err, connector.ErrStatementReviewInvalid) {
+		t.Errorf("no expect_count: %v", err)
+	}
+
+	bd, bbase, _ := documentFixture(t)
+	broken := strings.Replace(reviewOntologyMD, "- human  *", "- human  * when", 1)
+	bf, _ := queueBeforePolicy(t, bd, bbase, broken)
+	if _, err := bd.ApplyReviewPolicy(bf.op, "tenant", connector.ApplyReviewPolicyRequest{}, RuleAsOperator); !errors.Is(err, connector.ErrStatementReviewInvalid) ||
+		!strings.Contains(err.Error(), "has issues") {
+		t.Errorf("a broken Review section: %v", err)
+	}
+
+	dd, dbase, _ := documentFixture(t)
+	installTenantOntology(t, dd, dbase, reviewOntologyMD, memrank.OntologyDraftStatus)
+	df := newPolicyFixtureOn(t, dd, dbase)
+	if _, err := dd.ApplyReviewPolicy(df.op, "tenant", connector.ApplyReviewPolicyRequest{}, RuleAsOperator); !errors.Is(err, connector.ErrStatementReviewInvalid) {
+		t.Errorf("a draft ontology: %v", err)
+	}
+}
+
+// Without a Review section the policy applied is the one @auto_assert implies:
+// a rule-made proposal of an @auto_assert kind filed before the kind was marked
+// is accepted, everything else left.
+func TestApplyReviewPolicy_AutoAssertImpliesThePolicy(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	md := strings.Replace(relationsOntologyMD, "@auto_assert\n", "", 1)
+	ctx := installTenantOntology(t, d, base, md, memrank.OntologyConfirmedStatus)
+	f := newPolicyFixtureOn(t, d, base)
+	quote := fmt.Sprintf(`,"method":"rule:l2","evidence":[{"chunk_id":%q,"quote":"cites the Act"}]`, f.one)
+	sup := f.propose(f.one, f.two, "supervises", quote)
+	other := f.propose(f.one, f.two, "cites", quote)
+	// Mark the kind auto-asserting: the section's chunk is edited in place.
+	read, _ := d.tenantOntologyRead(ctx)
+	var chunk string
+	for _, r := range read.Relations {
+		if r.Name == "supervises" {
+			chunk = r.ChunkID
+		}
+	}
+	g, _ := docExec(t, d, ctx, `{"op":"get_chunk","scope":"tenant","id":"`+chunk+`"}`)
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"body":%q,"revision":%d}`,
+		chunk, g["body"].(string)+"\n@auto_assert\n", int(g["revision"].(float64)))); r.IsError {
+		t.Fatal(r.Text)
+	}
+	no, two := false, 2
+	res, err := d.ApplyReviewPolicy(f.op, "tenant", connector.ApplyReviewPolicyRequest{DryRun: &no, ExpectCount: &two}, RuleAsOperator)
+	if err != nil || res.Source != "auto_assert" || res.Ruled != 1 || res.Human != 1 {
+		t.Fatalf("apply = %+v %v", res, err)
+	}
+	if e := f.edge(sup["id"].(string)); e["status"] != edgeStatusAsserted || !strings.HasPrefix(e["ruled_by"].(string), "policy:1@") {
+		t.Errorf("supervises = %v", e)
+	}
+	if e := f.edge(other["id"].(string)); e["status"] != edgeStatusProposed {
+		t.Errorf("cites = %v", e)
+	}
 }

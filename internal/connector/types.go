@@ -1621,6 +1621,67 @@ type RevertRulingResult struct {
 	RevertID string `json:"revert_id,omitempty"`
 }
 
+// ApplyReviewPolicyRequest runs the tenant's review policy over the queue.
+// Filter narrows the proposals it considers (nil = every proposal of the
+// scope; its status, if any, must be proposed). DryRun defaults to true; a
+// real call needs ExpectCount, the dry run's Matched. Max bounds how many
+// statements one call rules (default and ceiling 1000): the first Max the
+// policy accepts or rejects, in the queue's order (newest first).
+type ApplyReviewPolicyRequest struct {
+	Tenant      string             `json:"tenant,omitempty"`
+	Scope       string             `json:"scope,omitempty"`
+	ScopeID     string             `json:"scope_id,omitempty"` // as ListReviewQueueRequest.ScopeID
+	Filter      *ReviewQueueFilter `json:"filter,omitempty"`
+	DryRun      *bool              `json:"dry_run,omitempty"`
+	ExpectCount *int               `json:"expect_count,omitempty"`
+	Max         int                `json:"max,omitempty"`
+}
+
+// PolicyRuleCount is how many proposals one rule of the policy decided. Rule
+// 0 is no rule: the proposals none matched (and corrections, which the
+// policy never rules), which wait for a person.
+type PolicyRuleCount struct {
+	Rule   int    `json:"rule"`
+	Action string `json:"action"`
+	Text   string `json:"text,omitempty"`
+	Count  int    `json:"count"`
+}
+
+// ApplyReviewPolicyResult reports a policy application, dry or real.
+//
+// Source says where the policy comes from (review: the ontology's Review
+// section; auto_assert: the one @auto_assert implies) and Version the
+// ontology version it was read at. Matched is every proposal the filter
+// selects that the caller may read (what ExpectCount repeats); Skipped those
+// of it the caller may not rule on. Accept, Reject, Judge and Human count
+// what the policy decides for the rest; ToRule is the accepts and rejects this
+// call rules (at most Max) and Deferred the ones left for the next call. A
+// dry run carries a Sample (up to 20 of ToRule, each with review_rule and
+// review_action); a real call carries RulingID, Ruled, Failed, Items and
+// Marked (proposals whose judge routing it changed).
+type ApplyReviewPolicyResult struct {
+	Tenant   string            `json:"tenant"`
+	Scope    string            `json:"scope"`
+	DryRun   bool              `json:"dry_run"`
+	Source   string            `json:"source"`
+	Version  int               `json:"version"`
+	RulingID string            `json:"ruling_id,omitempty"`
+	Matched  int               `json:"matched"`
+	Skipped  int               `json:"skipped"`
+	Accept   int               `json:"accept"`
+	Reject   int               `json:"reject"`
+	Judge    int               `json:"judge"`
+	Human    int               `json:"human"`
+	ToRule   int               `json:"to_rule"`
+	Deferred int               `json:"deferred"`
+	Ruled    int               `json:"ruled"`
+	Failed   int               `json:"failed"`
+	Marked   int               `json:"marked"`
+	Rules    []PolicyRuleCount `json:"rules"`
+	Sample   []json.RawMessage `json:"sample,omitempty"`
+	Items    []RulingItem      `json:"items,omitempty"`
+}
+
 // ParseReviewInstant reads a review queue time bound given as text: unix
 // nanoseconds (what a statement's created_at reads) or an RFC 3339 timestamp.
 // The text transports (the HTTP query, the MCP tool) share it, so both take the

@@ -27,10 +27,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -305,4 +307,251 @@ func (d *Document) policyRulingOf(ctx context.Context, key sqlmem.ScopeKey, edge
 		return "", err
 	}
 	return asStr(res.Rows[0][0]), nil
+}
+
+const (
+	// reviewPolicyScanMax is the most proposals one policy application
+	// evaluates; a larger selection is refused, to be narrowed by its filter.
+	reviewPolicyScanMax = 10000
+	// reviewPolicyPage is how many it reads at a time.
+	reviewPolicyPage = 1000
+)
+
+// policyDecision is what the policy decided for one candidate.
+type policyDecision struct {
+	c      policyCandidate
+	rule   memrank.ReviewRule
+	action string
+}
+
+// ApplyReviewPolicy runs the policy in force over the queue: see
+// connector.Connector.ApplyReviewPolicy. scope is tenant or user; as is the
+// authority the connector decided, and only an operator applies the policy.
+func (d *Document) ApplyReviewPolicy(ctx context.Context, scope string, req connector.ApplyReviewPolicyRequest, as RulingAuthority) (connector.ApplyReviewPolicyResult, error) {
+	out := connector.ApplyReviewPolicyResult{Scope: scope, DryRun: req.DryRun == nil || *req.DryRun, Rules: []connector.PolicyRuleCount{}}
+	if as != RuleAsOperator {
+		return out, reviewForbidden("applying the review policy is the operator's act; a reviewer rules with rule_statements")
+	}
+	max := req.Max
+	switch {
+	case max < 0 || max > reviewRulingMax:
+		return out, reviewInvalid(fmt.Sprintf("max must be between 1 and %d", reviewRulingMax))
+	case max == 0:
+		max = reviewRulingMax
+	}
+	var filter connector.ReviewQueueFilter
+	if req.Filter != nil {
+		filter = *req.Filter
+	}
+	if filter.Status != "" && filter.Status != edgeStatusProposed {
+		return out, reviewInvalid("the policy rules proposals: filter.status must be proposed, or left out")
+	}
+	filter.Status = edgeStatusProposed
+	if !out.DryRun && req.ExpectCount == nil {
+		return out, reviewInvalid("expect_count is required to rule: pass the matched count of the dry run")
+	}
+	key, mscope, err := d.reviewOp(ctx, scope)
+	if err != nil {
+		return out, err
+	}
+	pf, ok := d.reviewPolicyInForce(ctx)
+	if !ok {
+		return out, reviewInvalid("no review policy is in force: the tenant ontology is not confirmed, or could not be read")
+	}
+	out.Source, out.Version = pf.policy.Source, pf.version
+	if !pf.policy.Applied() {
+		return out, reviewInvalid("the Review section has issues, so the policy rules nothing until they are fixed (describe_ontology lists them): " +
+			strings.Join(pf.policy.Issues, "; "))
+	}
+	matched, cands, err := d.selectPolicyCandidates(ctx, key, pf, filter)
+	if err != nil {
+		return out, err
+	}
+	out.Matched = matched
+	acl := d.newDocACL(ctx, key)
+	counts := map[int]*connector.PolicyRuleCount{}
+	var toRule []policyDecision
+	var routes []policyDecision
+	for _, c := range cands {
+		ok, err := d.mayRule(ctx, acl, as, c.ends["from_document_id"], c.ends["to_document_id"])
+		if err != nil {
+			return out, err
+		}
+		if !ok {
+			out.Skipped++
+			continue
+		}
+		rule, action := pf.decide(c)
+		n := counts[rule.Index]
+		if n == nil {
+			n = &connector.PolicyRuleCount{Rule: rule.Index, Action: action, Text: rule.Text}
+			counts[rule.Index] = n
+		}
+		n.Count++
+		switch action {
+		case memrank.ReviewAccept, memrank.ReviewReject:
+			if action == memrank.ReviewAccept {
+				out.Accept++
+			} else {
+				out.Reject++
+			}
+			if len(toRule) < max {
+				toRule = append(toRule, policyDecision{c, rule, action})
+			} else {
+				out.Deferred++
+			}
+		case memrank.ReviewJudge:
+			out.Judge++
+			routes = append(routes, policyDecision{c, rule, action})
+		default:
+			out.Human++
+			routes = append(routes, policyDecision{c, rule, action})
+		}
+	}
+	out.ToRule = len(toRule)
+	for _, n := range counts {
+		out.Rules = append(out.Rules, *n)
+	}
+	sort.Slice(out.Rules, func(i, j int) bool {
+		// Rule order, and no rule (0) last.
+		a, b := out.Rules[i].Rule, out.Rules[j].Rule
+		return (a != 0 && (b == 0 || a < b))
+	})
+	if out.DryRun {
+		return out, d.policySample(ctx, key, toRule, &out)
+	}
+	if *req.ExpectCount != matched {
+		return out, connector.WithMessage(connector.ErrStatementReviewQueueChanged,
+			fmt.Sprintf("the selection now matches %d proposals, not the %d expected; nothing was ruled — run the dry run again", matched, *req.ExpectCount))
+	}
+	if len(toRule) > 0 {
+		if err := d.applyPolicyRulings(ctx, key, mscope, pf, req, toRule, &out); err != nil {
+			return out, err
+		}
+	}
+	for _, r := range routes {
+		route := ""
+		if r.action == memrank.ReviewJudge {
+			route = reviewRouteJudge
+		}
+		changed, err := d.routeProposal(ctx, key, r.c.s, route)
+		if err != nil {
+			logStatementReviewFault(ctx, "review policy: a proposal's judge routing could not be written", out.RulingID, err)
+			continue
+		}
+		if changed {
+			out.Marked++
+		}
+	}
+	return out, nil
+}
+
+// selectPolicyCandidates reads the proposals the filter selects, as the queue
+// lists them (newest first) and with what the rules ask, and counts them.
+func (d *Document) selectPolicyCandidates(ctx context.Context, key sqlmem.ScopeKey, pf policyInForce, filter connector.ReviewQueueFilter) (int, []policyCandidate, error) {
+	// Field by field, never through JSON: see reviewFilterInput.
+	in := reviewFilterInput(filter)
+	where, args, none, refusal, err := d.statementQueueWhere(ctx, key, in)
+	if err != nil {
+		return 0, nil, err
+	}
+	if refusal != nil {
+		return 0, nil, reviewInvalid(refusal.Text)
+	}
+	if none {
+		return 0, nil, nil
+	}
+	cond := strings.Join(where, " AND ")
+	res, err := d.query(ctx, key, `SELECT COUNT(*) FROM chunk_edges e LEFT JOIN chunks cf ON cf.id = e.from_id LEFT JOIN chunks ct ON ct.id = e.to_id WHERE `+cond, args...)
+	if err != nil {
+		return 0, nil, err
+	}
+	matched := 0
+	if len(res.Rows) == 1 {
+		matched = asInt(res.Rows[0][0])
+	}
+	if matched > reviewPolicyScanMax {
+		return 0, nil, reviewInvalid(fmt.Sprintf("the selection matches %d proposals, more than the %d one call evaluates; narrow the filter (kind, method, from_under_path, created_before)",
+			matched, reviewPolicyScanMax))
+	}
+	var cands []policyCandidate
+	for offset := 0; offset < matched; {
+		res, err := d.query(ctx, key, policyCandidateSelect+` WHERE `+cond+` ORDER BY e.created_at DESC, e.id DESC LIMIT ? OFFSET ?`,
+			append(append([]any{}, args...), reviewPolicyPage, offset)...)
+		if err != nil {
+			return 0, nil, err
+		}
+		for _, r := range res.Rows {
+			cands = append(cands, pf.candidate(r))
+		}
+		offset += len(res.Rows)
+		// Truncated: the store's row cap cut the page short; the next one follows.
+		if len(res.Rows) == 0 || (!res.Truncated && len(res.Rows) < reviewPolicyPage) {
+			break
+		}
+	}
+	return matched, cands, nil
+}
+
+// policySample fills a dry run's sample: up to reviewSampleSize of what it would
+// rule, each as the queue renders it, with the rule and action that decided it.
+func (d *Document) policySample(ctx context.Context, key sqlmem.ScopeKey, toRule []policyDecision, out *connector.ApplyReviewPolicyResult) error {
+	sample := toRule[:min(len(toRule), reviewSampleSize)]
+	ids := make([]string, len(sample))
+	for i, p := range sample {
+		ids[i] = p.c.s.ID
+	}
+	ev, counts, err := d.readableEvidenceFor(ctx, key, ids, edgeEvidencePreview)
+	if err != nil {
+		return err
+	}
+	for _, p := range sample {
+		m := d.statementJSON(ctx, p.c.s, p.c.ends, ev[p.c.s.ID], counts[p.c.s.ID], false)
+		m["review_rule"], m["review_action"] = p.rule.Index, p.action
+		b, _ := json.Marshal(m)
+		out.Sample = append(out.Sample, b)
+	}
+	return nil
+}
+
+// applyPolicyRulings rules toRule as one ruling, each statement through ruleOne
+// (applyRuling) with its own rule's ruled_by and reason.
+func (d *Document) applyPolicyRulings(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, pf policyInForce,
+	req connector.ApplyReviewPolicyRequest, toRule []policyDecision, out *connector.ApplyReviewPolicyResult) error {
+	rulingID := newDocID()
+	selector, _ := json.Marshal(struct {
+		Policy map[string]any               `json:"policy"`
+		Filter *connector.ReviewQueueFilter `json:"filter,omitempty"`
+		Max    int                          `json:"max,omitempty"`
+	}{map[string]any{"version": pf.version, "source": pf.policy.Source}, req.Filter, req.Max})
+	// Recorded before anything is ruled, so a statement carrying a policy's
+	// ruled_by always has a ruling to be undone with.
+	if err := d.exec(ctx, key, `INSERT INTO statement_rulings
+		(id, action, ruled_by, actor, reason, selector, matched, ruled, failed, skipped, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
+		rulingID, "policy", operatorRuler(ctx), nullIfEmpty(tools.RunIdentity(ctx).UserID),
+		fmt.Sprintf("the review policy (ontology version %d)", pf.version), string(selector), out.Matched, out.Skipped,
+		time.Now().UnixNano()); err != nil {
+		return err
+	}
+	out.RulingID = rulingID
+	out.Items = make([]connector.RulingItem, 0, len(toRule))
+	for _, p := range toRule {
+		accept := p.action == memrank.ReviewAccept
+		op := "reject_statement"
+		if accept {
+			op = "accept_statement"
+		}
+		item, ok := d.ruleOne(ctx, key, mscope, op, rulingID, pf.ruledBy(p.rule), accept, pf.reason(p.rule), p.c.reviewCandidate)
+		out.Items = append(out.Items, item)
+		if ok {
+			out.Ruled++
+		} else {
+			out.Failed++
+		}
+	}
+	if err := d.exec(ctx, key, `UPDATE statement_rulings SET ruled = ?, failed = ? WHERE id = ?`, out.Ruled, out.Failed, rulingID); err != nil {
+		logStatementReviewFault(ctx, "statement ruling counts not recorded", rulingID, err)
+	}
+	return nil
 }
