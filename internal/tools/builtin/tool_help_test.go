@@ -244,6 +244,11 @@ func TestArgumentCheck_AcceptsArgumentsTheOpReads(t *testing.T) {
 		`{"op":"propose_entity","title":"vehicle"}`,
 		`{"op":"propose_subject","title":"Dave Kim","natural_key":"person:dave-kim"}`,
 		`{"op":"set_path","document_id":"d1","path":"/docs/plan"}`,
+		// The three paged statement listings each take after: one listing it as
+		// its own bullet must not make it the others' stray.
+		`{"op":"get_edges","document_id":"d1","after":"cur"}`,
+		`{"op":"backlinks","id":"c1","after":"cur"}`,
+		`{"op":"list_statements","after":"cur"}`,
 	} {
 		if msg, refused := d.ArgumentRefusal("Document", json.RawMessage(call)); refused {
 			t.Errorf("a call the op handles was refused: %s\n%s", call, msg)

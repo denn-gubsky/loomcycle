@@ -21,8 +21,8 @@ one document, so you can see the document's link graph in one call. **It takes
   unsupported (withheld by default, never deleted). A writer's low
   `confidence` never withholds a relation; only a verdict does.
 - `include_retired` — also include retired relations.
-- `limit` — page size (default 500, at most 5000). `after` — the
-  `next_cursor` of the previous page.
+- `limit` — page size (default 500, at most 5000).
+- `after` — the `next_cursor` of the previous page.
 - `scope` — `user` (default), `agent` or `tenant`. See
   `{"op":"help","topic":"scopes"}`.
 
