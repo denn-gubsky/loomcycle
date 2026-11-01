@@ -31,6 +31,11 @@ type navSurface struct {
 	// admin or legacy (the same rule aclEnter applies), so the page needs
 	// that role as well as the route.
 	Operator bool
+	// Reviewer marks a page for those who rule on the tenant's statements:
+	// an operator, or a member holding the access-control review grant on
+	// some document path. Its route admits any member, who without the grant
+	// could only read a queue it may not rule on.
+	Reviewer bool
 }
 
 // navSurfaces is the one table. A page with no row falls back to the UI's
@@ -72,10 +77,9 @@ var navSurfaces = []navSurface{
 	{ID: "limits", Method: "GET", Path: "/v1/_limits"},
 	{ID: "routing", Method: "GET", Path: "/v1/_routing"},
 	{ID: "ontology", Method: "GET", Path: "/v1/_ontology"},
-	// The statement review queue (RFC FS P1). Its route admits a member too
-	// (who may rule only where an ACL grants review), so a member who can
-	// read documents sees the page; its rulings are refused without a grant.
-	{ID: "review", Method: "GET", Path: "/v1/_statements/review"},
+	// The statement review queue. Its route admits a member too, but only an
+	// operator or a member granted review somewhere sees the page.
+	{ID: "review", Method: "GET", Path: "/v1/_statements/review", Reviewer: true},
 	{ID: "retention", Method: "GET", Path: "/v1/_retention"},
 	{ID: "erasure", Method: "GET", Path: "/v1/_erasure"},
 	{ID: "presets", Method: "GET", Path: "/v1/_presets"},
@@ -110,6 +114,7 @@ func openModeEffective() whoamiEffective {
 // transport, so the ACL is asked under the mode a request would face.
 func navEffective(ctx context.Context, p auth.Principal) whoamiEffective {
 	operator := p.Legacy || auth.HasScope(p.Scopes, auth.ScopeTenant)
+	reviewer := operator || authz.GrantsSomewhere(p.Effective, "document", "review")
 	subject := p.Subject
 	if subject == "" {
 		subject = "_"
@@ -117,7 +122,7 @@ func navEffective(ctx context.Context, p auth.Principal) whoamiEffective {
 	out := make(map[string]bool, len(navSurfaces))
 	for _, ns := range navSurfaces {
 		path := strings.ReplaceAll(ns.Path, "{subject}", subject)
-		out[ns.ID] = (!ns.Operator || operator) && routeGatesAdmit(ctx, p, ns.Method, path)
+		out[ns.ID] = (!ns.Operator || operator) && (!ns.Reviewer || reviewer) && routeGatesAdmit(ctx, p, ns.Method, path)
 	}
 	return whoamiEffective{Surfaces: out}
 }

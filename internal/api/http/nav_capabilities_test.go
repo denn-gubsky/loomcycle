@@ -104,6 +104,13 @@ func operatorHeld(srv *Server, bearer string) bool {
 	return ok && (p.Legacy || auth.HasScope(p.Scopes, auth.ScopeTenant))
 }
 
+// reviewerHeld is an operator, or a principal granted review on some
+// document path.
+func reviewerHeld(srv *Server, bearer string) bool {
+	p, ok := srv.resolvePrincipal(context.Background(), bearer)
+	return operatorHeld(srv, bearer) || (ok && authz.GrantsSomewhere(p.Effective, "document", "review"))
+}
+
 // For every principal class and every page, the summary says exactly what
 // a request to the page's primary route would be told by the route gates
 // (and, for a page that administers the tenant, by the handler's
@@ -126,9 +133,9 @@ func TestWhoamiEffective_MatchesTheRouteGatesForEveryClass(t *testing.T) {
 				if len(got) != len(navSurfaces) {
 					t.Errorf("%s: %d surfaces, the table has %d", c.name, len(got), len(navSurfaces))
 				}
-				op := operatorHeld(srv, c.bearer)
+				op, rv := operatorHeld(srv, c.bearer), reviewerHeld(srv, c.bearer)
 				for _, ns := range navSurfaces {
-					want := gateAdmits(t, srv, c.bearer, ns, c.subject) && (!ns.Operator || op)
+					want := gateAdmits(t, srv, c.bearer, ns, c.subject) && (!ns.Operator || op) && (!ns.Reviewer || rv)
 					if got[ns.ID] != want {
 						t.Errorf("%s: %s (%s %s) = %v, the route gates say %v", c.name, ns.ID, ns.Method, ns.Path, got[ns.ID], want)
 					}
@@ -149,11 +156,17 @@ func TestWhoamiEffective_PinsTheClassDifferences(t *testing.T) {
 	for id, want := range map[string]bool{
 		"run": true, "runs": true, "my-credentials": true, "channels": true, "library": true,
 		"snapshots": false, "activity": false, "users": false, "credentials": false, "tokens": false,
-		"groups": false, "policies": false, "bindings": false, "simulator": false,
+		"groups": false, "policies": false, "bindings": false, "simulator": false, "review": false,
 	} {
 		if member[id] != want {
 			t.Errorf("member without an ACL: %s = %v, want %v", id, member[id], want)
 		}
+	}
+	// The review queue's route admits the member; the page is for reviewers.
+	putACL(t, st, "board-review", `[{"effect":"allow","actions":["review"],"resources":["document:tenant:/board/**"]}]`)
+	bind(t, st, "board-review", "user", "dev")
+	if !navSurfacesOf(t, url, freeBearer)["review"] {
+		t.Error("member granted review under /board does not see the review page")
 	}
 	bind(t, st, "no-channels", "user", "dev")
 	if navSurfacesOf(t, url, freeBearer)["channels"] {
@@ -161,7 +174,7 @@ func TestWhoamiEffective_PinsTheClassDifferences(t *testing.T) {
 	}
 
 	op := navSurfacesOf(t, url, "tok-nav-op")
-	if !op["policies"] || !op["groups"] || !op["bindings"] || !op["simulator"] || !op["users"] || !op["credentials"] || op["tokens"] || op["snapshots"] {
+	if !op["policies"] || !op["groups"] || !op["bindings"] || !op["simulator"] || !op["users"] || !op["credentials"] || !op["review"] || op["tokens"] || op["snapshots"] {
 		t.Errorf("tenant operator: %v", op)
 	}
 	bind(t, st, "no-acl-reads", "user", "op2")
