@@ -4528,6 +4528,9 @@ export interface ReviewFilter {
   created_after?: string;
   has_judge_verdict?: boolean;
   judge_verdict?: string;
+  /** The judge's acceptances by their audit state; pair with status
+   *  (asserted for pending and confirmed, rejected for overturned). */
+  judge_audit?: string;
   /** The method / the kind exactly as stored (no prefix, no sub-kinds). */
   method_exact?: string;
   kind_exact?: string;
@@ -4735,6 +4738,34 @@ export interface ListRulingsResponse {
 
 /** The scope's bulk rulings and their reverts, newest first. An operator sees
  *  every ruling of the scope; a member only its own. */
+/** One kind's line of the judge's agreement report: its acceptances, the
+ *  sample marked for audit, and what people made of it. agreement is
+ *  confirmed / (confirmed + overturned), absent until one is settled. */
+export interface JudgeAgreementCounts {
+  kind: string;
+  accepted: number;
+  sampled: number;
+  pending: number;
+  confirmed: number;
+  overturned: number;
+  agreement?: number;
+}
+
+export interface JudgeAgreementResponse {
+  tenant: string;
+  scope: ReviewScope;
+  kinds: JudgeAgreementCounts[];
+  total: JudgeAgreementCounts;
+}
+
+/** GET /v1/_statements/agreement — the judge's agreement report (an operator's). */
+export function getJudgeAgreement(opts: ReviewWhere = {}): Promise<JudgeAgreementResponse> {
+  const q = new URLSearchParams();
+  reviewWhereQuery(q, opts);
+  const s = q.toString();
+  return jsonFetch<JudgeAgreementResponse>(`/v1/_statements/agreement${s ? `?${s}` : ""}`);
+}
+
 export function listRulings(opts: { limit?: number; after?: string } & ReviewWhere = {}): Promise<ListRulingsResponse> {
   const q = new URLSearchParams();
   if (opts.limit !== undefined) q.set("limit", String(opts.limit));

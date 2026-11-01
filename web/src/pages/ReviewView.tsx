@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useFocusTenant, usePrincipal, useUserId } from "../components/Layout";
 import {
+  getJudgeAgreement,
   listReviewQueue,
   listRulings,
   revertRuling,
   ruleStatements,
+  type JudgeAgreementResponse,
   type ReviewFilter,
   type ReviewScope,
   type ReviewStatement,
@@ -23,11 +25,14 @@ import {
 } from "@loomcycle/explorer";
 import { ApiError } from "../lib/apiError";
 import {
+  auditFilter,
+  auditOf,
   canUndo,
   filtersFromSearch,
   groupLabel,
   groupsFromSummary,
   judgeOf,
+  percent,
   reviewKey,
   reviewScopeFromSearch,
   reviewScopeId,
@@ -93,11 +98,14 @@ export interface ReviewRowsProps {
   expanded: ReadonlySet<string>;
   onToggleSelect?: (id: string) => void;
   onFocus?: (id: string) => void;
+  /** Rule on one row: on a judge's acceptance awaiting audit, accept
+   *  confirms it and reject overturns it. */
+  onRuleOne?: (action: "accept" | "reject", s: ReviewStatement) => void;
 }
 
 // ReviewRows is the queue as a table: what links, how, how sure, what a judge
 // said, and the evidence beside it.
-export function ReviewRows({ rows, scope, focusId, selected, expanded, onToggleSelect, onFocus }: ReviewRowsProps) {
+export function ReviewRows({ rows, scope, focusId, selected, expanded, onToggleSelect, onFocus, onRuleOne }: ReviewRowsProps) {
   if (rows.length === 0) return <p className="settings-muted">No proposals here.</p>;
   return (
     <table className="settings-table review-table">
@@ -116,6 +124,7 @@ export function ReviewRows({ rows, scope, focusId, selected, expanded, onToggleS
       <tbody>
         {rows.map((s) => {
           const judge = judgeOf(s);
+          const audit = auditOf(s);
           const open = expanded.has(s.id);
           const quotes = s.evidence ?? [];
           const more = Math.max(0, (s.evidence_count ?? quotes.length) - quotes.length);
@@ -159,6 +168,32 @@ export function ReviewRows({ rows, scope, focusId, selected, expanded, onToggleS
                   </span>
                 ) : (
                   <span className="settings-muted-inline">—</span>
+                )}
+                {audit && <span className={`review-audit ${audit}`}> audit: {audit}</span>}
+                {audit === "pending" && s.status === "asserted" && onRuleOne && (
+                  <span className="review-audit-actions">
+                    <button
+                      type="button"
+                      title="The judge was right: keep it, as a person's ruling"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRuleOne("accept", s);
+                      }}
+                    >
+                      Confirm
+                    </button>
+                    <button
+                      type="button"
+                      className="danger"
+                      title="The judge was wrong: reject it, with a reason"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRuleOne("reject", s);
+                      }}
+                    >
+                      Overturn…
+                    </button>
+                  </span>
                 )}
                 {judge?.rationale && open && <div className="review-rationale">{judge.rationale}</div>}
               </td>
@@ -474,6 +509,19 @@ export default function ReviewView() {
     void loadRulings();
   }, [loadRulings, reload]);
 
+  // The judge's agreement report: an operator's, so a member's 403 just
+  // leaves it out.
+  const [agreement, setAgreement] = useState<JudgeAgreementResponse | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getJudgeAgreement({ scope, scopeId, tenant })
+      .then((r) => !cancelled && setAgreement(r))
+      .catch(() => !cancelled && setAgreement(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [scope, scopeId, tenant, reload]);
+
   const loadRows = useCallback(
     async (f: ReviewFilter, after?: string): Promise<RowsState> => {
       try {
@@ -665,7 +713,15 @@ export default function ReviewView() {
     expanded,
     onToggleSelect: (id: string) => setSelected((cur) => toggle(cur, id)),
     onFocus: (id: string) => setFocusId(id),
+    onRuleOne: (action: "accept" | "reject", s: ReviewStatement) =>
+      startRuling(action, {
+        label: `the judge's acceptance ${s.from_title || s.from_id} ${s.kind} ${s.to_title || s.to_id}`,
+        selection: { ids: [s.id] },
+        confirm: false,
+      }),
   };
+  const auditing = filter.judge_audit === "pending";
+  const pendingAudit = agreement?.total.pending ?? 0;
   const total = summary?.total ?? 0;
   const selectedIds = [...selected];
   // A ruling names at most RULING_CHUNK statements by id; more is a filter's job.
@@ -730,6 +786,22 @@ export default function ReviewView() {
           </select>
         </label>
         <label className="review-filter">
+          <span>judge audit</span>
+          <select
+            value={draft.judge_audit ?? ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "pending" || v === "confirmed" || v === "overturned") setDraft({ ...draft, ...auditFilter(v) });
+              else setDraft({ ...draft, judge_audit: undefined, status: undefined });
+            }}
+          >
+            <option value="">any</option>
+            <option value="pending">awaiting audit</option>
+            <option value="confirmed">confirmed</option>
+            <option value="overturned">overturned</option>
+          </select>
+        </label>
+        <label className="review-filter">
           <span>scope</span>
           <select value={scope} onChange={(e) => setParam("scope", e.target.value === "user" ? "user" : undefined)}>
             <option value="tenant">tenant</option>
@@ -746,6 +818,21 @@ export default function ReviewView() {
 
       {loadErr !== undefined && <div className="settings-error">{errText(loadErr)}</div>}
 
+      {pendingAudit > 0 && !auditing && (
+        <p className="review-audit-chip">
+          <button type="button" onClick={() => applyFilter(auditFilter("pending"))}>
+            {pendingAudit.toLocaleString("en-US")} of the judge&rsquo;s acceptance{pendingAudit === 1 ? "" : "s"} await
+            {pendingAudit === 1 ? "s" : ""} your audit
+          </button>
+        </p>
+      )}
+      {auditing && (
+        <p className="settings-help">
+          The judge&rsquo;s acceptances sampled for audit. Confirm one the judge got right; overturn one it got
+          wrong. Each answer counts toward the judge&rsquo;s agreement rate below.
+        </p>
+      )}
+
       <div className="review-toolbar">
         <span className="settings-muted">
           {summary ? `${total.toLocaleString("en-US")} proposal${total === 1 ? "" : "s"} match` : "counting…"}
@@ -755,7 +842,7 @@ export default function ReviewView() {
           disabled={total === 0}
           onClick={() => startRuling("accept", { label: "all matching", selection: { filter }, confirm: true })}
         >
-          Accept all matching
+          {auditing ? "Confirm all matching" : "Accept all matching"}
         </button>
         <button
           type="button"
@@ -763,7 +850,7 @@ export default function ReviewView() {
           disabled={total === 0}
           onClick={() => startRuling("reject", { label: "all matching", selection: { filter }, confirm: true })}
         >
-          Reject all matching…
+          {auditing ? "Overturn all matching…" : "Reject all matching…"}
         </button>
         <span className="review-toolbar-sep" />
         <span className="settings-muted">
@@ -857,6 +944,8 @@ export default function ReviewView() {
         onMore={rulings.next ? () => void loadRulings(rulings.next) : undefined}
       />
 
+      {agreement && <JudgeAgreement report={agreement} onAudit={() => applyFilter(auditFilter("pending"))} />}
+
       {dialog && (
         <RuleDialog
           state={dialog}
@@ -874,6 +963,61 @@ export default function ReviewView() {
       )}
       {toast && <UndoToast toast={toast} onUndo={() => void undo()} onClose={() => setToast(null)} />}
     </div>
+  );
+}
+
+// JudgeAgreement is the judge's agreement report: per kind, the judge's
+// acceptances, the sample marked for audit, and how often people agreed. Only
+// the sample counts toward the rate; an acceptance someone settled unprompted
+// was picked because they doubted it.
+export function JudgeAgreement({ report, onAudit }: { report: JudgeAgreementResponse; onAudit?: () => void }) {
+  return (
+    <section className="review-agreement">
+      <h3>Judge agreement</h3>
+      {report.total.accepted === 0 ? (
+        <p className="settings-muted">The judge has accepted nothing in this scope yet.</p>
+      ) : (
+        <>
+          <p className="settings-help">
+            How often a person confirmed the judge&rsquo;s acceptances sampled for audit.
+            {report.total.pending > 0 && onAudit && (
+              <>
+                {" "}
+                <button type="button" onClick={onAudit}>
+                  Audit the {report.total.pending.toLocaleString("en-US")} pending
+                </button>
+              </>
+            )}
+          </p>
+          <table className="settings-table">
+            <thead>
+              <tr>
+                <th>kind</th>
+                <th>accepted</th>
+                <th>sampled</th>
+                <th>pending</th>
+                <th>confirmed</th>
+                <th>overturned</th>
+                <th>agreement</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...report.kinds, report.total].map((c) => (
+                <tr key={c.kind || "(total)"} className={c === report.total ? "review-agreement-total" : undefined}>
+                  <td>{c === report.total ? <strong>all kinds</strong> : <code>{c.kind}</code>}</td>
+                  <td>{c.accepted}</td>
+                  <td>{c.sampled}</td>
+                  <td>{c.pending}</td>
+                  <td>{c.confirmed}</td>
+                  <td>{c.overturned}</td>
+                  <td>{percent(c.agreement)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </section>
   );
 }
 

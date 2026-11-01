@@ -8897,6 +8897,31 @@ button.doc-ref-target.external {
 .review-judge.unsure {
   color: var(--lc-running);
 }
+.review-audit {
+  font-size: var(--lc-text-xs);
+  font-family: var(--lc-font-mono);
+  color: var(--lc-text-muted);
+}
+.review-audit.pending {
+  color: var(--lc-running);
+}
+.review-audit.overturned {
+  color: var(--lc-failed);
+}
+.review-audit-actions {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 6px;
+}
+.review-audit-chip {
+  margin: 8px 0;
+}
+.review-agreement {
+  margin-top: 24px;
+}
+.review-agreement-total td {
+  border-top: 1px solid var(--lc-rule);
+}
 .review-rationale {
   font-size: var(--lc-text-xs);
   color: var(--lc-text-muted);
