@@ -313,8 +313,12 @@ func (e *env) queueGRPC(bearer string, summarize bool) outcome {
 	if summarize {
 		var groups []map[string]any
 		for _, g := range resp.GetSummary() {
-			groups = append(groups, map[string]any{"kind": g.GetKind(), "method": g.GetMethod(), "from_path_prefix": g.GetFromPathPrefix(),
-				"judge_verdict": g.GetJudgeVerdict(), "count": g.GetCount()})
+			group := map[string]any{"kind": g.GetKind(), "method": g.GetMethod(), "from_path_prefix": g.GetFromPathPrefix(),
+				"judge_verdict": g.GetJudgeVerdict(), "count": g.GetCount()}
+			if g.GetFilter() != nil {
+				group["filter"] = filterMap(g.GetFilter())
+			}
+			groups = append(groups, group)
 		}
 		m["summary"], m["total"] = groups, resp.GetTotal()
 	}
@@ -374,7 +378,41 @@ func (e *env) revertGRPC(bearer, rulingID string) outcome {
 	}
 	return grpcOutcome(nil, map[string]any{"tenant": resp.GetTenant(), "scope": resp.GetScope(), "ruling_id": resp.GetRulingId(),
 		"action": resp.GetAction(), "reverted": resp.GetReverted(), "changed": resp.GetChanged(), "skipped": resp.GetSkipped(),
-		"items": items(resp.GetItems())})
+		"items": items(resp.GetItems()), "revert_id": resp.GetRevertId()})
+}
+
+// filterMap is a proto filter in the JSON shape the other transports return
+// (connector.ReviewQueueFilter: every field omitted when unset).
+func filterMap(f *loomcyclepb.ReviewQueueFilter) map[string]any {
+	m := map[string]any{}
+	for k, v := range map[string]string{"status": f.GetStatus(), "kind": f.GetKind(), "method": f.GetMethod(), "actor": f.GetActor(),
+		"document_id": f.GetDocumentId(), "under_path": f.GetUnderPath(), "from_document_id": f.GetFromDocumentId(),
+		"to_document_id": f.GetToDocumentId(), "from_under_path": f.GetFromUnderPath(), "to_under_path": f.GetToUnderPath(),
+		"judge_verdict": f.GetJudgeVerdict(), "method_exact": f.GetMethodExact(), "kind_exact": f.GetKindExact(),
+		"from_path_prefix": f.GetFromPathPrefix()} {
+		if v != "" {
+			m[k] = v
+		}
+	}
+	if len(f.GetKinds()) > 0 {
+		m["kinds"] = f.GetKinds()
+	}
+	if f.MinConfidence != nil {
+		m["min_confidence"] = f.GetMinConfidence()
+	}
+	if f.CreatedBefore != nil {
+		m["created_before"] = f.GetCreatedBefore()
+	}
+	if f.CreatedAfter != nil {
+		m["created_after"] = f.GetCreatedAfter()
+	}
+	if f.HasJudgeVerdict != nil {
+		m["has_judge_verdict"] = f.GetHasJudgeVerdict()
+	}
+	if f.GetFromUnfiled() {
+		m["from_unfiled"] = true
+	}
+	return m
 }
 
 type rpcReply struct {
@@ -464,7 +502,7 @@ func (e *env) normalized(r map[string]any) map[string]any {
 	out := map[string]any{}
 	for k, v := range r {
 		switch k {
-		case "ruling_id":
+		case "ruling_id", "revert_id":
 			out[k] = v != ""
 		case "items":
 			var its []string
