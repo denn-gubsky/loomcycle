@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.132.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.133.0.</em>
 </p>
 
 <p align="center">
@@ -201,16 +201,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.132.0) lets the `knowledge-base` links agent drain
-tenant-scope imports, so a deployment whose documents live in the tenant scope
-can link what it imports on a schedule, and lets the `google` sign-in preset
-admit personal Google accounts behind an approval queue. See
+The most recent line (v1.133.0) makes proposed relations reviewable in bulk:
+a filtered, summarized review queue, dry-run-first bulk rulings with one audit
+record and one undo each, and a `review` access action to delegate part of the
+tree. The Document help gains a `knowledge-base` guide. See
 [`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.131.0 completed subject change events: re-typing, deleting,
-merging and erasing a subject each announce it on `memory/subjects`, and an
-operator can merge two subjects and bind a subject to a user. See
-[`REVISIONS.md`](REVISIONS.md).
+Before it, v1.132.0 let the `knowledge-base` links agent drain tenant-scope
+imports on a schedule, and kept document change feeds out of channel lists.
+See [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
 recordings into timed transcripts through a whisper server, and Teams captions

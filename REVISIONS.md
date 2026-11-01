@@ -8,6 +8,29 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.133.0
+
+*Proposed relations can be reviewed in bulk: a filtered, summarized review queue, dry-run-first bulk rulings with one audit record and one undo each, and a new access-control action `review` that lets an operator delegate review of part of the tree (RFC FS Phase 0). The Document tool's help gains a `knowledge-base` guide.*
+
+The v1.133 line: #2327 and #2329.
+- `@loomcycle/client` and the Python adapter move to 1.133.0, with the review methods.
+- No repo migration. Each SQL Memory scope gains a `chunk_edges.ruled_by` column and the `statement_rulings` / `statement_ruling_items` tables on first use.
+- **Behaviour change:** five Document calls the help described but the argument check refused now pass: `related` with `kind` / `kinds`, `propose_entity` / `propose_subject` with their `title` alias, and `set_path` with `document_id` (#2329).
+
+### Bulk statement review (#2327)
+
+- **The queue:** `list_statements` and `GET /v1/_statements/review` gain filters (`from_document_id` / `to_document_id`, `from_under_path` / `to_under_path`, `actor`, `min_confidence`, `created_before` / `created_after`, `has_judge_verdict` / `judge_verdict`), and `summarize: true` counts the queue by kind × method × path prefix × judge verdict.
+- **Bulk ruling:** `POST /v1/_statements/rule` `{action, ids | filter, reason, dry_run, expect_count, max}`. It is a dry run by default. A real call must name the dry run's `expect_count`, else `queue_changed` (409) and nothing is ruled. At most 1000 per call. Each statement is ruled through the same code as `accept_statement` / `reject_statement`; a reject needs a reason.
+- **Provenance and audit:** statements gain `ruled_by` (`bulk:<ruling id>` or `operator:<subject>`); each ruling is kept in the scope and audited as one `statement_ruling` record.
+- **Undo:** `POST /v1/_statements/revert {ruling_id}` restores each statement that hasn't changed since; changed ones are listed and left. `GET /v1/_statements/rulings` lists past rulings.
+- **Who may rule:** an admin, or a tenant operator in its own tenant (`write` on the from-document, `link` on both ends); a non-isolated member only where an access rule grants the new document action **`review`**. Isolated users, agent-restricted tokens and runs are refused.
+- **Every transport:** gRPC `ListReviewQueue` / `RuleStatements` / `RevertRuling` / `ListRulings`, the MCP `review` tool (ops `queue`, `rule`, `revert`, `rulings`), and the TS and Python clients.
+
+### Document help (#2329)
+
+- A new `knowledge-base` help topic (aliases `kb`, `knowledge`, `ontology`, `statements`, `relations`): how documents, facts, subjects and statements fit together, who rules on what, citations into relations, retrieving along relations, editions and subject change events, with five checked call sequences.
+- The knowledge-base op articles are completed against the handlers, and the `Document` article indexes all 60 ops.
+
 ## What's in v1.132.0
 
 *The `knowledge-base` links agent can drain tenant-scope imports: a deployment whose documents live in the tenant scope can link what it imports on a schedule. The `google` sign-in preset can admit personal Google accounts, behind an approval queue.*
