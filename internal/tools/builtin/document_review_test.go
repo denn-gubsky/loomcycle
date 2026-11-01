@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -420,6 +421,42 @@ func TestRuleStatements_ReviewerRulesOnlyWhereGrantedAndNeverNamesTheRest(t *tes
 	none := reviewOperatorCtx(base, aclSet(t, readAll))
 	if dry := ruleDry(t, d, none, connector.RuleStatementsRequest{Action: "accept", IDs: []string{c.elaborates}}, RuleAsReviewer); dry.ToRule != 0 || dry.Skipped != 1 {
 		t.Errorf("a member without review: %+v", dry)
+	}
+}
+
+// A member's single accept_statement / reject_statement on a tenant statement
+// asks what its bulk ruling asks: the review grant on the from-document. Link
+// and write alone, which the ruling also needs, no longer suffice. An
+// operator's single ruling is unchanged.
+func TestReviewStatement_AMemberNeedsTheReviewGrant(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	c := seedReviewCorpus(t, d, base)
+	readAll := authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}}
+	member := auth.Principal{TenantID: "tnt", Subject: "m1", Scopes: []string{auth.ScopeUser}}
+	asMember := func(eff *authz.Effective) context.Context {
+		return auth.WithPrincipal(reviewOperatorCtx(base, eff), member)
+	}
+
+	noGrant := asMember(aclSet(t, readAll))
+	if out, res := docExec(t, d, noGrant, `{"op":"accept_statement","scope":"tenant","id":"`+c.cites+`"}`); !res.IsError || !strings.Contains(res.Text, "review") {
+		t.Errorf("a member without review accepted %s: %v %s", c.cites, out, res.Text)
+	}
+	if _, res := docExec(t, d, noGrant, `{"op":"accept_statement","scope":"tenant","id":"no-such-statement"}`); !res.IsError || !strings.Contains(res.Text, "review") {
+		t.Errorf("an unknown id = %s, want the same refusal as a statement it may not rule on", res.Text)
+	}
+
+	reviewer := asMember(aclSet(t, readAll,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"review"}, Resources: []string{"document:tenant:/board/**"}}))
+	if out, res := docExec(t, d, reviewer, `{"op":"accept_statement","scope":"tenant","id":"`+c.cites+`"}`); res.IsError || out["status"] != edgeStatusAsserted {
+		t.Errorf("a member granted review under /board: %v %s", out, res.Text)
+	}
+	if _, res := docExec(t, d, reviewer, `{"op":"reject_statement","scope":"tenant","id":"`+c.elaborates+`","reason":"not here"}`); !res.IsError {
+		t.Errorf("a member ruled on %s, from /kb, outside its grant", c.elaborates)
+	}
+
+	op := auth.WithPrincipal(reviewOperatorCtx(base, aclSet(t, readAll)), auth.Principal{TenantID: "tnt", Subject: "op", Scopes: []string{auth.ScopeTenant}})
+	if out, res := docExec(t, d, op, `{"op":"reject_statement","scope":"tenant","id":"`+c.elaborates+`","reason":"wrong"}`); res.IsError || out["status"] != edgeStatusRejected {
+		t.Errorf("a tenant operator without a review grant: %v %s", out, res.Text)
 	}
 }
 
