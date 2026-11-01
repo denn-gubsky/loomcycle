@@ -686,6 +686,17 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errValidation("invalid input JSON: "+err.Error(), "Resend the call as one JSON object matching the Document input schema."), nil
 	}
+	return d.executeInput(ctx, in, raw)
+}
+
+// executeInput is Execute after the input is decoded: every gate, then the op.
+// An in-process caller that builds its input in Go (the review queue) enters
+// here, so it passes the same gates without a JSON round trip, which would let
+// any field it set reach every other field's use.
+func (d *Document) executeInput(ctx context.Context, in docInput, raw json.RawMessage) (tools.Result, error) {
+	if d.Store == nil || d.SqlMem == nil {
+		return errBusiness("Document tool: not configured — requires the Store backend and SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)", "An operator must enable SQL Memory on this server; until then the Document tool cannot run."), nil
+	}
 	// Before any lookup: a cut id is refused on its syntax alone.
 	if r, cut := refuseCutIDs(in); cut {
 		return r, nil

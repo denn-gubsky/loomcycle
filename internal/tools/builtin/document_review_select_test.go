@@ -310,3 +310,21 @@ func TestListReviewQueue_PathSelectorsIgnoreDocumentsTheCallerMayNotRead(t *test
 		t.Errorf("hidden documents changed the answer:\n before %v\n after  %v", before, after)
 	}
 }
+
+// TestListReviewQueue_LimitIsBounded: the queue's limit is checked where the
+// request enters, not left to list_statements to clamp, so a request's number
+// never sizes anything on its way to the op.
+func TestListReviewQueue_LimitIsBounded(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		seedSelectCorpus(t, d, base)
+		op := reviewOperatorCtx(base, nil)
+		for _, bad := range []int{-1, edgeGetEdgesMax + 1} {
+			if _, err := d.ListReviewQueue(op, "tenant", connector.ListReviewQueueRequest{Limit: bad}); connector.StatementReviewCode(err) != "invalid_request" {
+				t.Errorf("limit %d: %v, want invalid_request", bad, err)
+			}
+		}
+		if _, err := d.ListReviewQueue(op, "tenant", connector.ListReviewQueueRequest{Limit: edgeGetEdgesMax}); err != nil {
+			t.Errorf("limit at the bound: %v", err)
+		}
+	})
+}

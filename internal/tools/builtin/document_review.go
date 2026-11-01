@@ -329,47 +329,33 @@ func pathPrefix(names []string) string {
 	return "/" + strings.Join(segs, "/")
 }
 
-// reviewFilterArgs is a queue filter as list_statements' input.
-func reviewFilterArgs(f connector.ReviewQueueFilter) map[string]any {
-	m := map[string]any{"op": "list_statements"}
-	set := func(k, v string) {
-		if v != "" {
-			m[k] = v
-		}
+// reviewFilterInput is a queue filter as list_statements' input, built field by
+// field rather than through JSON: a JSON round trip would carry each request
+// value into every input field, the raw-SQL escape hatch among them.
+func reviewFilterInput(f connector.ReviewQueueFilter) docInput {
+	return docInput{
+		Op:              "list_statements",
+		Status:          f.Status,
+		Kind:            f.Kind,
+		Kinds:           f.Kinds,
+		MethodPrefix:    f.Method,
+		Actor:           f.Actor,
+		DocumentID:      f.DocumentID,
+		UnderPath:       f.UnderPath,
+		FromDocumentID:  f.FromDocumentID,
+		ToDocumentID:    f.ToDocumentID,
+		FromUnderPath:   f.FromUnderPath,
+		ToUnderPath:     f.ToUnderPath,
+		JudgeVerdict:    f.JudgeVerdict,
+		MethodExact:     f.MethodExact,
+		KindExact:       f.KindExact,
+		FromPathPrefix:  f.FromPathPrefix,
+		FromUnfiled:     f.FromUnfiled,
+		MinConfidence:   f.MinConfidence,
+		CreatedBefore:   f.CreatedBefore,
+		CreatedAfter:    f.CreatedAfter,
+		HasJudgeVerdict: f.HasJudgeVerdict,
 	}
-	set("status", f.Status)
-	set("kind", f.Kind)
-	set("method_prefix", f.Method)
-	set("actor", f.Actor)
-	set("document_id", f.DocumentID)
-	set("under_path", f.UnderPath)
-	set("from_document_id", f.FromDocumentID)
-	set("to_document_id", f.ToDocumentID)
-	set("from_under_path", f.FromUnderPath)
-	set("to_under_path", f.ToUnderPath)
-	set("judge_verdict", f.JudgeVerdict)
-	set("method_exact", f.MethodExact)
-	set("kind_exact", f.KindExact)
-	set("from_path_prefix", f.FromPathPrefix)
-	if f.FromUnfiled {
-		m["from_unfiled"] = true
-	}
-	if len(f.Kinds) > 0 {
-		m["kinds"] = f.Kinds
-	}
-	if f.MinConfidence != nil {
-		m["min_confidence"] = *f.MinConfidence
-	}
-	if f.CreatedBefore != nil {
-		m["created_before"] = *f.CreatedBefore
-	}
-	if f.CreatedAfter != nil {
-		m["created_after"] = *f.CreatedAfter
-	}
-	if f.HasJudgeVerdict != nil {
-		m["has_judge_verdict"] = *f.HasJudgeVerdict
-	}
-	return m
 }
 
 // reviewInvalid / reviewForbidden wrap a refusal onto its sentinel.
@@ -390,26 +376,20 @@ func reviewToolRefusal(r tools.Result) error {
 }
 
 // ListReviewQueue is the review queue for the connector: list_statements with
-// the queue's filters, through Execute, so every gate and the read filter of a
-// direct call apply. scope is tenant or user.
+// the queue's filters, through Execute's gates, so every gate and the read
+// filter of a direct call apply. scope is tenant or user.
 func (d *Document) ListReviewQueue(ctx context.Context, scope string, req connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {
 	out := connector.ListReviewQueueResult{Scope: scope, Statements: []json.RawMessage{}}
-	args := reviewFilterArgs(req.Filter)
-	args["scope"] = scope
-	if req.Summarize {
-		args["summarize"] = true
+	if req.Limit < 0 || req.Limit > edgeGetEdgesMax {
+		return out, reviewInvalid(fmt.Sprintf("limit is at most %d (0 for the default)", edgeGetEdgesMax))
 	}
-	if req.Limit > 0 {
-		args["limit"] = req.Limit
-	}
-	if req.After != "" {
-		args["after"] = req.After
-	}
-	if req.Order != "" {
-		args["order"] = req.Order
-	}
-	raw, _ := json.Marshal(args)
-	res, err := d.Execute(ctx, raw)
+	in := reviewFilterInput(req.Filter)
+	in.Scope = scope
+	in.Summarize = req.Summarize
+	in.Limit = req.Limit
+	in.After = req.After
+	in.Order = req.Order
+	res, err := d.executeInput(ctx, in, nil)
 	if err != nil {
 		return out, err
 	}
@@ -530,11 +510,7 @@ func (d *Document) selectForRuling(ctx context.Context, key sqlmem.ScopeKey, req
 		}
 		return len(picked), picked, missing, nil
 	}
-	var in docInput
-	raw, _ := json.Marshal(reviewFilterArgs(*req.Filter))
-	if err := json.Unmarshal(raw, &in); err != nil {
-		return 0, nil, nil, reviewInvalid("filter: " + err.Error())
-	}
+	in := reviewFilterInput(*req.Filter)
 	where, args, none, refusal, err := d.statementQueueWhere(ctx, key, in)
 	if err != nil {
 		return 0, nil, nil, err
