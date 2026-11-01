@@ -107,10 +107,16 @@ skills:
       2. Pick a clear `kind` verb the operator will recognize: `cites`,
          `promotes`, `targets`, `depends_on`, `implements`. Reuse existing kinds in
          the document rather than inventing near-duplicates.
-         Kinds the runtime writes itself (`references`, `supersedes`, `mentions`,
-         `derived_from`, `supported_by`) are refused.
-      3. Link: `Document op=link_chunks from_id=<a> to_id=<b> kind="cites"`
-         (idempotent — re-linking the same triple is a no-op).
+         Kinds the runtime writes itself (`about`, `references`, `supersedes`,
+         `mentions`, `derived_from`, `supported_by`) are refused.
+      3. Link: `Document op=link_chunks from_id=<a> to_id=<b> kind="cites"`.
+         The link is live (asserted) at once, so link only what the operator
+         asked for; to suggest a relation for them to review, use
+         `Document op=propose_statement` instead. Linking the same pair with the
+         same kind again does not make a second link: it adds the new evidence
+         to the existing one, and asserts it if it was awaiting review. A
+         different `valid_at` records a second statement of the relation, for
+         another period, so pass `valid_at` only when the relation has a date.
          When the relation comes from text, pass the sentence as `evidence`:
          `evidence=[{chunk_id: <a>, quote: "<exact words>"}]` — a reviewer reads it.
       4. Remove a stale edge with `op=unlink_chunks from_id=<a> to_id=<b> kind="…"`.

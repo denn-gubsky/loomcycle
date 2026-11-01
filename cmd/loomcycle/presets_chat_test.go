@@ -100,8 +100,8 @@ func TestChatBundle_PromptsDoNotHandWriteAToolList(t *testing.T) {
 // THIS TEST PREVIOUSLY ASSERTED THE OPPOSITE EMPHASIS, and a live transcript
 // disproved it. It required the prompt to point at `Document graph_recall` for
 // "what do we know about X", on the reasoning that following relations beats matching
-// words. In practice graph_recall walks out from facts carrying entity metadata, so
-// on a store without those it returns `seeds: 0` — and an agent sent there first
+// words. In practice graph_recall, seeded from a bare query, found no starting chunk
+// on that store and returned `seeds: 0` — and an agent sent there first
 // concluded there was nothing remembered, then spent four calls guessing argument
 // names ("missing required field: op", "missing required field: scope", "missing
 // required field: query") before stumbling onto `Memory op=recall`. The relation
