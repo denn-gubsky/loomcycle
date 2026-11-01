@@ -128,8 +128,10 @@ read.
 - Conditions, after `when`: `quotes:resolved` (it has evidence, and every
   quote is in a chunk and not stale), `self:true|false` (both ends in one
   document), `target:held|placeholder|subject|concept` (what the to-end is),
-  `rule:matched` (a rule made it, not a model), `confidence<x`, `<=x`, `>x`,
-  `>=x` (the writer's own confidence; a statement with none meets no bound).
+  `rule:matched` (a rule made it: a `rule:` method, or classify's class rules
+  or instance patterns — not the neighbours' vote, not a model),
+  `confidence<x`, `<=x`, `>x`, `>=x` (the writer's own confidence; a
+  statement with none meets no bound).
 - `judge` options: `floor:<0..1>` and `mode:rule|recommend`.
 
 ## Grammar lines

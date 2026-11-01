@@ -100,9 +100,8 @@ export const NAV_ITEMS: NavItem[] = [
   // (isTenantConfinedDefPath), /v1/_limits, /v1/_routing, /v1/_retention and
   // /v1/_erasure.
   { id: "ontology", to: "/ontology", label: "ontology", Icon: Network, vis: "tenant" },
-  // The statement review queue (RFC FS). The server's answer decides: its route
-  // admits operators and members, and a member rules only where an access-control
-  // list grants review.
+  // The statement review queue (RFC FS). The server's answer decides: it shows
+  // the page to an operator, or to a member an access-control list grants review.
   { id: "review", to: "/review", label: "review", Icon: ListChecks, vis: "tenant" },
   { id: "integrations", to: "/integrations/webhooks", label: "integrations", Icon: Plug, vis: "tenant", match: "/integrations" },
   { id: "channels", to: "/channels", label: "channels", Icon: Radio, vis: "tenant" },

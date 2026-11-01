@@ -1421,6 +1421,16 @@ func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, msc
 	if !accept && strings.TrimSpace(in.Reason) == "" {
 		return errValidation(op+": reason is required", "Say why, so the proposer never re-proposes it and a later reader knows."), nil
 	}
+	if mscope == store.MemoryScopeTenant && rulesAsMember(ctx) {
+		ok, err := d.memberMayReview(ctx, key, in.ID)
+		if err != nil {
+			return errFrom(op+": "+err.Error(), err), nil
+		}
+		if !ok {
+			return errPermission(op+": a member rules on the tenant's statements only where an access-control rule grants it review on the statement's document",
+				"Leave it proposed for an operator, or ask one for the review grant on its path."), nil
+		}
+	}
 	r, err := d.applyRuling(ctx, key, mscope, op, in.ID, accept, in.Reason, operatorRuler(ctx))
 	if err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
@@ -1429,6 +1439,31 @@ func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, msc
 		return *r.refusal, nil
 	}
 	return jsonResult(map[string]any{"id": in.ID, "status": r.status})
+}
+
+// rulesAsMember reports a ruling by a tenant member rather than an operator:
+// a principal that is neither the legacy operator nor holds substrate:tenant
+// (an admin does). No principal (open mode) is the operator. The review
+// routes classify their caller the same way (api/http reviewer).
+func rulesAsMember(ctx context.Context) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	return ok && !p.Legacy && !auth.HasScope(p.Scopes, auth.ScopeTenant)
+}
+
+// memberMayReview asks a member's single ruling what a bulk ruling asks of
+// each statement it rules as a reviewer: the review grant on the statement's
+// from-document. A statement that does not exist is asked about the scope as
+// a whole, so the refusal does not tell a member which ids exist.
+func (d *Document) memberMayReview(ctx context.Context, key sqlmem.ScopeKey, id string) (bool, error) {
+	res, err := d.query(ctx, key, `SELECT cf.document_id FROM chunk_edges e LEFT JOIN chunks cf ON cf.id = e.from_id WHERE e.id = ?`, id)
+	if err != nil {
+		return false, err
+	}
+	fromDoc := ""
+	if len(res.Rows) == 1 {
+		fromDoc = asStr(res.Rows[0][0])
+	}
+	return d.mayRule(ctx, d.newDocACL(ctx, key), RuleAsReviewer, fromDoc, "")
 }
 
 // operatorRuler is ruled_by for an operator's own ruling: operator:<subject>,

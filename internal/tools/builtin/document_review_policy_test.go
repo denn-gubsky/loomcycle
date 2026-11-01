@@ -339,19 +339,20 @@ func TestReviewPolicy_MTBFirstPolicy(t *testing.T) {
 	}
 }
 
-// MTB's first policy over classify: a subject tag the neighbours' vote carries
-// is accepted, one only the model named stays proposed.
-func TestReviewPolicy_ClassifiesRuleMatchedSubjectTags(t *testing.T) {
+// MTB's first policy over classify: rule:matched admits only what classify's
+// rules found. A subject tag the neighbours' vote carries is not a rule's, so
+// it stays proposed for a person, as does one only the model named.
+func TestReviewPolicy_LeavesVotedSubjectTagsForReview(t *testing.T) {
 	md := classifyOntologyMD + "\n## Review\n@section review\n- accept kind:subject method:classify when rule:matched\n- human *\n"
 	f := newClassifyFixture(t, memrank.OntologyConfirmedStatus, true)
 	f.ctx = operatorCtx(installTenantOntology(t, f.d, f.ctx, md, memrank.OntologyConfirmedStatus))
 	target, root := voteCorpus(f, "tenant")
 	a := f.classify(f.ctx, "tenant", target, nil)
-	if len(a.Statements) != 1 || a.Statements[0].Status != edgeStatusAsserted || !strings.HasPrefix(a.Statements[0].RuledBy, "policy:1@") {
-		t.Fatalf("a voted subject tag = %+v", a.Statements)
+	if len(a.Statements) != 1 || a.Statements[0].Status != edgeStatusProposed || a.Statements[0].RuledBy != "" {
+		t.Fatalf("a voted subject tag = %+v, want proposed and unruled", a.Statements)
 	}
-	if rec := pendingOf(t, f.root("tenant", root)); len(rec.Statements) != 0 {
-		t.Errorf("an accepted tag is still pending: %+v", rec)
+	if rec := pendingOf(t, f.root("tenant", root)); len(rec.Statements) != 1 {
+		t.Errorf("a voted tag is not pending for review: %+v", rec)
 	}
 
 	m := newClassifyFixture(t, memrank.OntologyConfirmedStatus, false)

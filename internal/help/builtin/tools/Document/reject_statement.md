@@ -7,7 +7,8 @@ as a record that it was considered and refused: it is withheld from every
 reader, and the same relation is refused when anyone proposes it again, at any
 `valid_at`, or links it again at the same `valid_at` (`statement_rejected`).
 Like `accept_statement`, it is the operator's ruling and is refused inside an
-agent run. An agent that thinks a relation is wrong proposes a correction
+agent run; in the tenant scope a member also needs the `review` grant on the
+statement's from-document. An agent that thinks a relation is wrong proposes a correction
 (`propose_statement` with `id`), or, if it maintains statements, flags it
 (`maintain_statement` `action: flag`).
 
