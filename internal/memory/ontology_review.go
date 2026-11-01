@@ -12,6 +12,7 @@ package memory
 //	## Review
 //	@section review
 //	judge_floor: 0.85
+//	judge_audit: 0.1
 //	- accept kind:cites,repeals method:rule:citation when quotes:resolved self:false target:held|placeholder
 //	- reject kind:elaborates method:extractor:relate when confidence<0.6
 //	- judge  kind:elaborates,uses_term floor:0.9 mode:recommend
@@ -56,6 +57,10 @@ const (
 // neither the section nor the rule names one.
 const DefaultJudgeFloor = 0.85
 
+// DefaultJudgeAudit is the share of a judge run's acceptances marked for a
+// person's audit when the section names none.
+const DefaultJudgeAudit = 0.1
+
 // Judge modes: rule above the floor, or only record a recommendation.
 const (
 	JudgeModeRule      = "rule"
@@ -80,6 +85,11 @@ type ReviewPolicy struct {
 	Rules  []ReviewRule `json:"rules"`
 	// JudgeFloor is the section's judge_floor, else DefaultJudgeFloor.
 	JudgeFloor float64 `json:"judge_floor"`
+	// JudgeAudit is the section's judge_audit, else DefaultJudgeAudit: the
+	// share of each judge run's acceptances marked for a person's audit (at
+	// least one when the run accepted anything). Never 0: the sample is one
+	// of the guards that let the judge rule.
+	JudgeAudit float64 `json:"judge_audit"`
 	// Issues are the section's errors. Any issue leaves the whole policy
 	// unapplied: every proposal waits for a person.
 	Issues []string `json:"issues,omitempty"`
@@ -210,11 +220,13 @@ func (p ReviewPolicy) EffectiveFloor(r ReviewRule) float64 {
 }
 
 // ParseReviewSection reads the Review section's body: every list item is a
-// rule, a `judge_floor: <x>` line sets the judge's default floor, and the rest
+// rule, a `judge_floor: <x>` line sets the judge's default floor, a
+// `judge_audit: <x>` line the share of its acceptances sampled for audit
+// (0 < x <= 1), and the rest
 // (the @section line, prose, examples in a code block or fence) is not read.
 func ParseReviewSection(body string) ReviewPolicy {
-	p := ReviewPolicy{Source: ReviewSourceSection, Rules: []ReviewRule{}, JudgeFloor: DefaultJudgeFloor}
-	inFence, floorSet := false, false
+	p := ReviewPolicy{Source: ReviewSourceSection, Rules: []ReviewRule{}, JudgeFloor: DefaultJudgeFloor, JudgeAudit: DefaultJudgeAudit}
+	inFence, floorSet, auditSet := false, false, false
 	for _, line := range strings.Split(body, "\n") {
 		t := strings.TrimSpace(line)
 		if strings.HasPrefix(t, "```") {
@@ -235,6 +247,21 @@ func ParseReviewSection(body string) ReviewPolicy {
 				p.JudgeFloor = f
 			}
 			floorSet = true
+			continue
+		}
+		if k, v, ok := strings.Cut(t, ":"); ok && strings.EqualFold(strings.TrimSpace(k), "judge_audit") {
+			f, err := parseUnitFloat(stripReviewComment(v))
+			switch {
+			case auditSet:
+				p.Issues = append(p.Issues, "judge_audit is set twice")
+			case err != nil:
+				p.Issues = append(p.Issues, "judge_audit: "+err.Error())
+			case f == 0:
+				p.Issues = append(p.Issues, "judge_audit: 0 turns the audit of the judge's acceptances off; it is required while the judge rules (use mode:recommend on the judge rules instead)")
+			default:
+				p.JudgeAudit = f
+			}
+			auditSet = true
 			continue
 		}
 		if !strings.HasPrefix(t, "- ") && !strings.HasPrefix(t, "* ") {
@@ -440,7 +467,7 @@ func parseReviewBound(s string) (ReviewBound, error) {
 func ImpliedReviewPolicy(autoAssertKinds []string) ReviewPolicy {
 	kinds := append([]string(nil), autoAssertKinds...)
 	sort.Strings(kinds)
-	p := ReviewPolicy{Source: ReviewSourceAutoAssert, Rules: []ReviewRule{}, JudgeFloor: DefaultJudgeFloor}
+	p := ReviewPolicy{Source: ReviewSourceAutoAssert, Rules: []ReviewRule{}, JudgeFloor: DefaultJudgeFloor, JudgeAudit: DefaultJudgeAudit}
 	for i, k := range kinds {
 		p.Rules = append(p.Rules, ReviewRule{
 			Index: i + 1, Text: "accept kind:" + k + " method:rule:* when quotes:resolved",

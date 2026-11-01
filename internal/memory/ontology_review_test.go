@@ -129,6 +129,9 @@ func TestParseReviewSection_FailsClosed(t *testing.T) {
 		"no rules":       "@section review\nOnly prose.\n",
 		"bad floor":      "judge_floor: 2\n- accept kind:cites\n",
 		"floor twice":    "judge_floor: 0.5\njudge_floor: 0.6\n- accept kind:cites\n",
+		"audit off":      "judge_audit: 0\n- accept kind:cites\n",
+		"audit over 1":   "judge_audit: 1.5\n- accept kind:cites\n",
+		"audit twice":    "judge_audit: 0.1\njudge_audit: 0.2\n- accept kind:cites\n",
 	} {
 		p := ParseReviewSection(body)
 		if p.Applied() || len(p.Issues) == 0 {
@@ -223,5 +226,23 @@ func TestImpliedReviewPolicy_IsTheAutoAssertCheck(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// judge_audit is the share of a judge run's acceptances marked for a person's
+// audit: 0.1 unless the section says otherwise, and never 0 — the sampled
+// audit is one of the guards that let the judge rule at all.
+func TestParseReviewSection_JudgeAuditRate(t *testing.T) {
+	if p := ParseReviewSection("- judge kind:cites\n"); !p.Applied() || p.JudgeAudit != DefaultJudgeAudit || DefaultJudgeAudit != 0.1 {
+		t.Errorf("default audit = %v (applied %v), want %v", p.JudgeAudit, p.Applied(), DefaultJudgeAudit)
+	}
+	if p := ParseReviewSection("judge_audit: 0.25\n- judge kind:cites\n"); !p.Applied() || p.JudgeAudit != 0.25 {
+		t.Errorf("audit = %v issues %v, want 0.25", p.JudgeAudit, p.Issues)
+	}
+	if p := ParseReviewSection("judge_audit: 1\n- judge kind:cites\n"); !p.Applied() || p.JudgeAudit != 1 {
+		t.Errorf("audit = %v issues %v, want 1", p.JudgeAudit, p.Issues)
+	}
+	if p := ImpliedReviewPolicy([]string{"cites"}); p.JudgeAudit != DefaultJudgeAudit {
+		t.Errorf("implied policy audit = %v, want the default", p.JudgeAudit)
 	}
 }

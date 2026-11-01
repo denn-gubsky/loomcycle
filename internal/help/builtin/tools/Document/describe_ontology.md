@@ -92,7 +92,7 @@ relations, grammars, schemes, instances, review?, issues?}`:
     tenant scope and read on the subject's document). Absent does not prove the
     instance is unadopted; do not create a subject for it.
 - `review` — the review policy in force: which proposed statements need no
-  person. `{source, rules, judge_floor, applied, issues?}`.
+  person. `{source, rules, judge_floor, judge_audit, applied, issues?}`.
   - `source` is `review` for the ontology's Review section, or `auto_assert`
     when there is none and relation kinds are marked `@auto_assert` (each such
     kind is then the rule `accept kind:<kind> method:rule:* when
@@ -108,7 +108,10 @@ relations, grammars, schemes, instances, review?, issues?}`:
 
 The Review section is a root chunk whose first line is `@section review`. Each
 list item in its body is one rule; a `judge_floor: <0..1>` line sets the
-confidence a judge's verdict needs to rule (default 0.85). Prose is not read.
+confidence a judge's verdict needs to rule (default 0.85), and a
+`judge_audit: <0..1>` line the share of each judge run's acceptances marked
+for a person's audit (default 0.1, at least one; 0 is refused). Prose is not
+read.
 
 ```text
 - accept kind:cites,repeals method:rule:citation when quotes:resolved self:false target:held|placeholder
