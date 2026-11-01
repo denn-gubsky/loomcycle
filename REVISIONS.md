@@ -12,12 +12,13 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 *The `knowledge-base` links agent can drain tenant-scope imports: a deployment whose documents live in the tenant scope can link what it imports on a schedule. The `google` sign-in preset can admit personal Google accounts, behind an approval queue.*
 
-The v1.132 line: #2323 and #2324.
+The v1.132 line: #2323 to #2325.
 - `@loomcycle/client` stays at 1.131.0; no adapter change.
 - No migration.
 - **Behaviour changes:**
   - `documents/ingested` is `publisher: system` in the `knowledge-base` bundle: an agent can no longer publish to it through the Channel tool (#2324).
   - A Google sign-in configured through any OIDC preset other than `google` (an `issuer` or `discovery_url` on `accounts.google.com`) now fails the config load; use `preset: google` (#2323).
+  - Channel listings tag a document's change feed `source: "document"`, not `"orphan"`, and MCP `list_channels` and gRPC `ListChannels` leave the feeds out (#2325).
 
 ### kb/linker drains tenant imports (#2324)
 
@@ -26,6 +27,13 @@ The v1.132 line: #2323 and #2324.
 - **The deployment declares the queue's scope.** The bundle keeps `documents/ingested` at `scope: user`. A tenant deployment re-declares it in its own config layer (`channels: { documents/ingested: { scope: tenant } }`), which deep-merges over the bundle's declaration.
 - **Guard:** a documents drain that reads a well-formed message of another scope stops there, unacked, with `scope_mismatch`, and the failure text names the fix. A message with a scope the runtime never publishes at is acked as malformed.
 - The bundle README shows a daily tenant ingest schedule.
+
+### Document change feeds stop flooding the channel list (#2325)
+
+Every document ever edited has a change feed, `documents/<document_id>/chunks`, and none is declared, so channel listings showed each as an orphan: on a deployment with a corpus, nearly every row of the Web UI's Channels page.
+- Listings tag a feed `source: "document"`. The Web UI hides the feeds from every chip, `all` included, and shows them under a new **documents** chip. MCP `list_channels` and gRPC `ListChannels` leave them out.
+- `delete_document` purges the document's feed.
+- The channel sweeper purges, at most hourly, any feed with no event for 24 hours. This also clears the feeds deleted documents left behind before this release.
 
 ### Google sign-in for personal accounts (#2323)
 
