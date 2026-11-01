@@ -1402,6 +1402,14 @@ type ReviewQueueFilter struct {
 	// Filter uses them, so it selects exactly the group.
 	FromPathPrefix string `json:"from_path_prefix,omitempty"`
 	FromUnfiled    bool   `json:"from_unfiled,omitempty"`
+	// ReviewRoute "judge": the proposals the review policy left for the judge
+	// agent (attributes.review_route).
+	ReviewRoute string `json:"review_route,omitempty"`
+	// JudgeAudit: a judge's acceptances in this audit state
+	// (attributes.judge.audited: pending, confirmed or overturned). A pending
+	// or confirmed one is asserted and an overturned one rejected, so pair it
+	// with Status.
+	JudgeAudit string `json:"judge_audit,omitempty"`
 }
 
 // ListReviewQueueRequest asks for one page of the review queue, or its

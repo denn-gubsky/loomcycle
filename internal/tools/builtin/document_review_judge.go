@@ -453,6 +453,14 @@ func judgeRulingRun(selector string) string {
 	return sel.Judge.RunID
 }
 
+// reviewRouteExpr reads attributes.review_route on alias e, NULL when unset.
+func (d *Document) reviewRouteExpr() string {
+	if d.docSQL().Tier() == "postgres" {
+		return `NULLIF((CASE WHEN e.attributes IS NULL OR e.attributes = '' THEN NULL ELSE (e.attributes::jsonb ->> 'review_route') END), '')`
+	}
+	return `NULLIF((CASE WHEN json_valid(e.attributes) THEN json_extract(e.attributes, '$.review_route') END), '')`
+}
+
 // judgeAuditExpr reads attributes.judge.audited on alias e, NULL when unset.
 func (d *Document) judgeAuditExpr() string {
 	if d.docSQL().Tier() == "postgres" {
