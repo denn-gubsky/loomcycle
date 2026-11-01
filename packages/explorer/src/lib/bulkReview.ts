@@ -2,19 +2,18 @@
 // The sequence is runRuling's (dry run first, expect_count, chunks); what is
 // here is which documents it is offered for and what it selects.
 
-import type { BrowseScope, DocEdge, DocScope, Principal } from "../types";
+import type { BrowseScope, DocEdge, DocScope } from "../types";
 import type { DocRulingAnswer, DocRulingFilter, ExplorerDataLayer } from "./dataLayer";
 import { isProposed } from "./statement";
 import { runRuling, type RulingAction, type RulingHooks, type RulingOutcome, type RulingScope } from "./ruling";
 
 // reviewScopeFor is the review scope a document's bulk ruling acts in, or
-// undefined where the review routes cannot reach the document: an agent-scope
-// document, or another subject's user scope (the routes rule only in the
-// caller's own user scope, whatever the viewer is browsing).
-export function reviewScopeFor(scope: DocScope, browse?: BrowseScope, principal?: Principal): RulingScope | undefined {
-  if (scope === "tenant") return "tenant";
-  if (scope === "user" && (!browse?.scopeId || browse.scopeId === principal?.subject)) return "user";
-  return undefined;
+// undefined for an agent-scope document, which the review routes do not reach.
+// A user document is reviewed in the scope of the subject being browsed
+// (ruleDocumentProposals sends it as scope_id); the runtime decides whether
+// the caller may name that subject.
+export function reviewScopeFor(scope: DocScope): RulingScope | undefined {
+  return scope === "tenant" || scope === "user" ? scope : undefined;
 }
 
 // bulkReviewScope is where the document viewer offers bulk review: the review
@@ -24,10 +23,8 @@ export function reviewScopeFor(scope: DocScope, browse?: BrowseScope, principal?
 export function bulkReviewScope(
   data: Pick<ExplorerDataLayer, "documentRuleStatements">,
   scope: DocScope,
-  browse?: BrowseScope,
-  principal?: Principal,
 ): RulingScope | undefined {
-  return data.documentRuleStatements ? reviewScopeFor(scope, browse, principal) : undefined;
+  return data.documentRuleStatements ? reviewScopeFor(scope) : undefined;
 }
 
 // documentProposals is the document's own proposals among its edges: those
@@ -87,6 +84,9 @@ export function ruleDocumentProposals(
       ...(r.ids && r.ids.length > 0 ? { ids: r.ids } : { filter: { from_document_id: r.documentId } }),
       ...(r.reason ? { reason: r.reason } : {}),
       scope: r.scope,
+      // The browsed subject's user documents: the review routes take it as
+      // scope_id, as the document reads take it as browse.scopeId.
+      ...(r.scope === "user" && r.browse?.scopeId ? { scopeId: r.browse.scopeId } : {}),
     },
     hooks,
   );

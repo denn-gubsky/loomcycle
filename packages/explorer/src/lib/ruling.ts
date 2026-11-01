@@ -34,6 +34,8 @@ export interface RulingRequest<F> {
   expect_count?: number;
   max?: number;
   scope?: RulingScope;
+  /** Whose user scope (with scope user): another subject's, for an operator. */
+  scope_id?: string;
 }
 
 /** The counts of a rule call's answer that the sequence reads. */
@@ -62,6 +64,9 @@ export interface RulingSelection<F> {
   filter?: F;
   reason?: string;
   scope?: RulingScope;
+  /** Whose user documents, with scope user: the subject a viewer is browsing.
+   *  Every call of the ruling carries it. */
+  scopeId?: string;
 }
 
 /** Why a reviewer is asked to confirm: the first dry run, a dry run after the
@@ -127,6 +132,7 @@ export async function runRuling<F, R extends RulingCounts>(
     ...(sel.ids ? { ids: sel.ids } : { filter: sel.filter ?? ({} as F) }),
     ...(sel.reason ? { reason: sel.reason } : {}),
     ...(sel.scope && sel.scope !== "tenant" ? { scope: sel.scope } : {}),
+    ...(sel.scope === "user" && sel.scopeId ? { scope_id: sel.scopeId } : {}),
   };
   const out: RulingOutcome = { rulingIds: [], ruled: 0, failed: 0, skipped: 0, total: 0, cancelled: false, failures: [] };
   const dryRun = async () => {

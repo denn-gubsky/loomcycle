@@ -320,11 +320,7 @@ export default function DocumentViewerBody({
   // RFC FS — bulk review of this document's proposals in the Connections panel:
   // offered when the data layer can rule in bulk and the review routes reach
   // this document's scope (reviewPanel).
-  const reviewScope = useMemo(
-    () => bulkReviewScope(data, scope, browse, principal),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [data, scope, browse, principal?.subject],
-  );
+  const reviewScope = useMemo(() => bulkReviewScope(data, scope), [data, scope]);
   const proposals = useMemo(() => documentProposals(edges, documentId), [edges, documentId]);
   const onReviewChanged = useCallback(() => setEdgesReload((n) => n + 1), []);
   const review = useMemo(

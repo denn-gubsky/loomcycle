@@ -257,17 +257,18 @@ export interface ExplorerDataLayer {
   //
   // documentRuleStatements is POST /v1/_statements/rule: a dry run unless
   // `dry_run` is false, and a real call must carry the dry run's `matched` as
-  // `expect_count` (runRuling does both). `req.scope` is the review scope —
-  // tenant, or the caller's OWN user scope: the review routes take no
-  // browse-by-subject, so a host must not offer it for another subject's
-  // documents. `browse.tenant` is an admin's tenant focus. A refusal rejects
-  // with an error carrying the server's `code` (queue_changed, forbidden, …).
+  // `expect_count` (runRuling does both). `req.scope` is the review scope, and
+  // with the user scope `req.scope_id` the subject whose documents (an
+  // operator may name another; a member is refused). `browse.tenant` is an
+  // admin's tenant focus. A refusal rejects with an error carrying the
+  // server's `code` (queue_changed, forbidden, …).
   documentRuleStatements?(
     req: RulingRequest<DocRulingFilter>,
     browse?: BrowseScope,
   ): Promise<DocRulingAnswer>;
   // documentRevertRuling is POST /v1/_statements/revert: each statement the
   // ruling ruled and nothing changed since goes back to its earlier status.
+  // With the user scope, browse.scopeId names the subject, as for the ruling.
   documentRevertRuling?(
     rulingId: string,
     scope: "tenant" | "user",
@@ -722,9 +723,20 @@ interface ReviewClient {
   ruleStatements?: (
     action: "accept" | "reject",
     select: { ids: string[] } | { filter: DocRulingFilter },
-    opts: { reason?: string; dryRun?: boolean; expectCount?: number; max?: number; scope?: "tenant" | "user"; tenant?: string },
+    opts: {
+      reason?: string;
+      dryRun?: boolean;
+      expectCount?: number;
+      max?: number;
+      scope?: "tenant" | "user";
+      scopeId?: string;
+      tenant?: string;
+    },
   ) => Promise<DocRulingAnswer>;
-  revertRuling?: (rulingId: string, opts: { scope?: "tenant" | "user"; tenant?: string }) => Promise<DocRevertAnswer>;
+  revertRuling?: (
+    rulingId: string,
+    opts: { scope?: "tenant" | "user"; scopeId?: string; tenant?: string },
+  ) => Promise<DocRevertAnswer>;
 }
 
 // reviewOps is the bulk ruling and its undo: through the client's own methods
@@ -745,17 +757,28 @@ function reviewOps(
         expectCount: req.expect_count,
         max: req.max,
         scope: req.scope,
+        scopeId: req.scope_id,
         tenant: browse?.tenant,
       });
   } else if (jsonPost) {
     out.documentRuleStatements = (req, browse) =>
       jsonPost(`/v1/_statements/rule${tenantQuery(browse)}`, req) as Promise<DocRulingAnswer>;
   }
+  // The subject whose user documents a revert acts on, as its ruling did.
+  const scopeIdOf = (scope: "tenant" | "user", browse?: BrowseScope) =>
+    scope === "user" && browse?.scopeId ? browse.scopeId : undefined;
   if (typeof c.revertRuling === "function") {
-    out.documentRevertRuling = (rulingId, scope, browse) => c.revertRuling!(rulingId, { scope, tenant: browse?.tenant });
-  } else if (jsonPost) {
     out.documentRevertRuling = (rulingId, scope, browse) =>
-      jsonPost(`/v1/_statements/revert${tenantQuery(browse)}`, { ruling_id: rulingId, scope }) as Promise<DocRevertAnswer>;
+      c.revertRuling!(rulingId, { scope, scopeId: scopeIdOf(scope, browse), tenant: browse?.tenant });
+  } else if (jsonPost) {
+    out.documentRevertRuling = (rulingId, scope, browse) => {
+      const scopeId = scopeIdOf(scope, browse);
+      return jsonPost(`/v1/_statements/revert${tenantQuery(browse)}`, {
+        ruling_id: rulingId,
+        scope,
+        ...(scopeId ? { scope_id: scopeId } : {}),
+      }) as Promise<DocRevertAnswer>;
+    };
   }
   return out;
 }

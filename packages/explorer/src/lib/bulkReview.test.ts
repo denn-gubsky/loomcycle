@@ -42,14 +42,10 @@ function rulingLayer(size: number) {
 }
 
 describe("where bulk review is offered", () => {
-  it("offers it for tenant documents and the viewer's own user documents only", () => {
-    const me = { subject: "ada" };
-    expect(reviewScopeFor("tenant", { scopeId: "bob" }, me)).toBe("tenant");
-    expect(reviewScopeFor("user", undefined, me)).toBe("user");
-    expect(reviewScopeFor("user", { scopeId: "ada" }, me)).toBe("user");
-    // The review routes rule in the caller's own user scope, not the one browsed.
-    expect(reviewScopeFor("user", { scopeId: "bob" }, me)).toBeUndefined();
-    expect(reviewScopeFor("agent", undefined, me)).toBeUndefined();
+  it("offers it for tenant and user documents, not agent ones", () => {
+    expect(reviewScopeFor("tenant")).toBe("tenant");
+    expect(reviewScopeFor("user")).toBe("user");
+    expect(reviewScopeFor("agent")).toBeUndefined();
   });
 
   it("offers no bulk action when the data layer has no bulk ruling", () => {
@@ -104,6 +100,17 @@ describe("ruling on a document's proposals", () => {
     expect(calls[1]).toMatchObject({ ids: ["s1", "s4"], dry_run: false, expect_count: 2 });
   });
 
+  it("rules in the browsed subject's user scope, on every call", async () => {
+    const { calls, data } = rulingLayer(1200);
+    await ruleDocumentProposals(data, { documentId: "d1", action: "accept", scope: "user", browse: { scopeId: "bob" } });
+    expect(calls.length).toBe(4);
+    for (const c of calls) expect(c.scope_id).toBe("bob");
+    // A tenant document has no subject to name.
+    const t = rulingLayer(1);
+    await ruleDocumentProposals(t.data, { documentId: "d1", action: "accept", scope: "tenant", browse: { scopeId: "bob" } });
+    for (const c of t.calls) expect(c).not.toHaveProperty("scope_id");
+  });
+
   it("refuses without a bulk ruling in the data layer", async () => {
     await expect(ruleDocumentProposals({} as ExplorerDataLayer, { documentId: "d1", action: "accept", scope: "tenant" })).rejects.toThrow(
       /cannot rule in bulk/,
@@ -128,6 +135,11 @@ describe("the default data layer's bulk ruling", () => {
     expect(post).toHaveBeenCalledWith("/v1/_statements/rule?tenant=globex", req);
     await dl.documentRevertRuling!("r1", "user");
     expect(post).toHaveBeenLastCalledWith("/v1/_statements/revert", { ruling_id: "r1", scope: "user" });
+    // Another subject's user documents: the revert names it, as the ruling did.
+    await dl.documentRevertRuling!("r2", "user", { scopeId: "bob" });
+    expect(post).toHaveBeenLastCalledWith("/v1/_statements/revert", { ruling_id: "r2", scope: "user", scope_id: "bob" });
+    await dl.documentRevertRuling!("r3", "tenant", { scopeId: "bob" });
+    expect(post).toHaveBeenLastCalledWith("/v1/_statements/revert", { ruling_id: "r3", scope: "tenant" });
   });
 
   it("uses a newer client's own review methods when it has them", async () => {
@@ -137,14 +149,14 @@ describe("the default data layer's bulk ruling", () => {
     const post = vi.fn();
     const dl = dataLayerFromClient(client, undefined, post);
     await dl.documentRuleStatements!(
-      { action: "reject", ids: ["s1"], reason: "no", dry_run: false, expect_count: 1, scope: "tenant" },
+      { action: "reject", ids: ["s1"], reason: "no", dry_run: false, expect_count: 1, scope: "user", scope_id: "bob" },
       { tenant: "globex" },
     );
     expect(ruleStatements).toHaveBeenCalledWith("reject", { ids: ["s1"] }, {
-      reason: "no", dryRun: false, expectCount: 1, max: undefined, scope: "tenant", tenant: "globex",
+      reason: "no", dryRun: false, expectCount: 1, max: undefined, scope: "user", scopeId: "bob", tenant: "globex",
     });
-    await dl.documentRevertRuling!("r1", "tenant", { tenant: "globex" });
-    expect(revertRuling).toHaveBeenCalledWith("r1", { scope: "tenant", tenant: "globex" });
+    await dl.documentRevertRuling!("r1", "user", { tenant: "globex", scopeId: "bob" });
+    expect(revertRuling).toHaveBeenCalledWith("r1", { scope: "user", scopeId: "bob", tenant: "globex" });
     expect(post).not.toHaveBeenCalled();
   });
 });
