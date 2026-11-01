@@ -1,6 +1,6 @@
 ---
 name: Document
-description: "Document tool — chunked-graph documents (a tree of chunks with types, fields, tags, edges and Markdown bodies) plus a bi-temporal fact tier on the same chunks. The index of all 47 operations."
+description: "Document tool — chunked-graph documents (a tree of chunks with types, fields, tags, edges and Markdown bodies) plus a bi-temporal fact tier on the same chunks. The index of all 60 operations."
 ---
 The `Document` tool stores **chunked-graph documents**. A document is not one
 Markdown blob: it is a tree of **chunks**. Each chunk has its own id, a parent
@@ -14,6 +14,12 @@ The same chunks also carry the **fact tier**: a chunk written with
 `upsert_chunk` (or `remember`) gets fact metadata — a stable `natural_key`,
 timestamps, a source quote, a confidence — and the fact operations read,
 correct, verify and walk those facts.
+
+Used as a **knowledge base** — source documents, facts about subjects,
+relations between parts with the quotes that show them, and a tenant
+ontology — read the guide first: `{"op":"help","topic":"knowledge-base"}`. It
+explains how the pieces fit, who rules on what, and walks through whole call
+sequences.
 
 ## When to use it — and when not
 
@@ -72,20 +78,45 @@ and examples, as `Document/<op>` — for example
 | `move_chunk` | give a chunk a new parent and/or position | `id` |
 | `reorder_chunk` | move a chunk one place up or down among its siblings | `id`, `direction` |
 
-**Edges, tags, types**
+**Relations (statements)**
+
+Every edge is a statement: an id, a status (`proposed`, `asserted`,
+`rejected`), how it was made, and the quotes that support it.
 
 | op | What it does | Required besides `op` |
 |---|---|---|
-| `link_chunks` | add a typed edge between two chunks | `from_id`, `to_id`, `kind` |
-| `unlink_chunks` | remove that edge | `from_id`, `to_id`, `kind` |
-| `get_edges` | the edges touching a document, with each end's title/type/status | `document_id` |
-| `backlinks` | the chunks that link TO a chunk (manual and `[[name]]` links) | `id` |
+| `link_chunks` | assert a typed relation between two chunks, with optional evidence | `from_id`, `to_id`, `kind` |
+| `propose_statement` | file a relation for review; nothing live changes until an operator accepts it | `from_id`, `to_id`, `kind` (or `id` to revise one) |
+| `unlink_chunks` | remove a relation and its evidence | `id`, or `from_id`, `to_id`, `kind` |
+| `get_edges` | the relations touching a document, with each end's title/type/status | `document_id` |
+| `get_edge` | one relation with all its evidence | `id` |
+| `backlinks` | the relations arriving at one chunk (manual and `[[name]]` links) | `id` |
 | `unlinked_mentions` | chunks that mention a chunk's title but do not link to it | `id` |
+| `list_statements` | the review queue: relations of one status across the scope | — |
+| `accept_statement` / `reject_statement` | an operator's ruling on a proposal; refused inside a run | `id` (+ `reason` to reject) |
+| `maintain_statement` | upkeep by a code agent granted statement methods: verify, expire, demote, merge, re-point evidence, flag | `id`, `action` |
+
+**Tags, types**
+
+| op | What it does | Required besides `op` |
+|---|---|---|
 | `add_tags` | add tags to a chunk (`id`) or a document (`document_id`) | `tags` |
 | `remove_tags` | remove tags from a chunk or a document | `tags` |
 | `list_tags` | distinct tags with counts for a chunk, a document, or the scope | — |
 | `define_type` | declare a chunk type and its fields | `name` |
 | `list_types` | the declared chunk types | — |
+
+**Citations, works and the ontology**
+
+| op | What it does | Required besides `op` |
+|---|---|---|
+| `describe_ontology` | the tenant ontology in force: classes, relation kinds, concept schemes, instances | — |
+| `extract_citations` | find and resolve the citations in a document's or a chunk's text; read-only | `document_id` or `id` |
+| `resolve_anchor` | find a work by its key and a part of it by anchor, as of a date; optionally file a placeholder | `work_key` |
+| `classify` | say what a document is from the ontology; applies a single rule match, proposes the rest | `document_id`, `id` or `path` |
+| `accept_classification` | an operator accepts a document's pending classification; refused inside a run | `document_id`, `id` or `path` |
+| `propose_entity` | suggest a class, relation kind, concept or instance for the tenant ontology | `name` |
+| `propose_subject` | suggest a new shared subject for the tenant | `subject`, `natural_key` |
 
 **Finding things**
 
@@ -108,7 +139,7 @@ and examples, as `Document/<op>` — for example
 | op | What it does | Required besides `op` |
 |---|---|---|
 | `export_md` | render a document as Markdown | `document_id`, `id` or `path` |
-| `import_md` | build a document (or a subtree) from Markdown | `markdown` |
+| `import_md` | build a document (or a subtree) from Markdown; `reimport: true` reconciles a new edition | `markdown` |
 | `export_canvas` | render a document as a JSON Canvas spatial graph | `document_id`, `id` or `path` |
 | `import_canvas` | build a new document from a JSON Canvas | `canvas` |
 | `set_asset` | attach image bytes to a chunk, making it an image chunk | `id`, `media_type`, `data` |
@@ -144,10 +175,15 @@ credential of that name`, and nothing is sent.
 | `graph_recall` | recall facts by following edges, optionally as of a past moment; chunks that are not facts carry the start of their text | `seed_ids` or `query` |
 | `remember` | store a sentence a person told you as a self-citing fact | `text` |
 | `verbatim_answer` | answer a lookup question with one verified fact, quoted exactly | `query` |
-| `judge_fact` | record whether a fact's source quote supports it | `id` or `natural_key`, `verdict`, `reason` |
+| `judge_fact` | record whether a fact's (or a relation's) evidence supports it | `id` or `natural_key`, `verdict`, `reason` |
 | `verification_stats` | how much of the scope's fact store is quoted and verified | — |
-| `propose_entity` | suggest a new entity type (or, with `section`, a relation kind, a concept or an instance) for the tenant ontology | `name` |
-| `propose_subject` | suggest a new shared subject for the tenant | `subject`, `natural_key` |
+
+**Passes over a scope**
+
+| op | What it does | Required besides `op` |
+|---|---|---|
+| `lease` | take a named, expiring lease so only one pass of a kind works on the scope | `name` |
+| `release` | end a lease this run holds | `name` |
 
 ## Scopes
 
@@ -231,7 +267,11 @@ matches better. Paths follow the Path tool's rules
 
 Every chunk create, update or delete publishes `{op, chunk_id, timestamp,
 actor}` on the channel `documents/<document_id>/chunks`, so a live viewer can
-follow edits without polling. The feed is kept while the document is edited:
+follow edits without polling; a relation written or ruled on publishes `{op,
+edge_id, kind, status, actor}` there for both ends' documents. Imports are
+announced on the scope's `documents/ingested` channel, and subject changes
+(`adopted`, `merged`, `retyped`, `removed`, `erased`) on `memory/subjects` —
+see `{"op":"help","topic":"knowledge-base"}`. The feed is kept while the document is edited:
 `delete_document` purges it, and a feed with no event for a day is purged.
 `list_channels` does not list these feeds.
 
