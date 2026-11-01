@@ -12,16 +12,18 @@ import (
 // handler.
 const reviewToolDescription = "Review proposed document relations (statements) in bulk, for a whole scope at once. " +
 	"op=queue lists the statements awaiting review (status proposed unless filter.status names another), newest first, each with both ends' titles and documents and up to three evidence quotes; " +
-	"filter narrows it (kind, kinds, method — an exact prefix such as rule: or rule:citation —, actor, document_id, under_path, from_document_id, to_document_id, from_under_path, to_under_path, min_confidence, created_before, created_after, has_judge_verdict, judge_verdict). " +
-	"With summarize: true it returns counts grouped by kind, method, the from-document's path prefix and judge verdict instead, plus the total: start there to see what the queue holds. " +
+	"filter narrows it (kind, kinds, method — an exact prefix such as rule: or rule:citation —, actor, document_id, under_path, from_document_id, to_document_id, from_under_path, to_under_path, min_confidence, created_before, created_after, has_judge_verdict, judge_verdict, and the exact method_exact, kind_exact, from_path_prefix, from_unfiled). " +
+	"With summarize: true it returns counts grouped by kind, method, the from-document's path prefix and judge verdict instead, plus the total: start there to see what the queue holds. Each group carries filter, which selects exactly that group: pass it to op=rule as it is. " +
 	"Returns {tenant, scope, statements, truncated, next_cursor} or {summary, total}. " +
 	"op=rule accepts or rejects many statements at once (action accept|reject), named by ids or by the queue's filter, at most 1000 per call (max). " +
 	"It is a DRY RUN unless dry_run is false: the dry run returns matched (the count), a sample of 20 and the kind/method breakdown. " +
 	"To rule, call again with dry_run false and expect_count equal to the dry run's matched; if the queue changed in between it is refused (queue_changed) and nothing is ruled. " +
 	"reason is required to reject. Each statement is ruled as accept_statement / reject_statement would rule it, with a result per statement; one failure does not stop the rest. " +
 	"Returns {ruling_id, matched, selected, skipped, to_rule, ruled, failed, items, breakdown}; statements you may not rule on are skipped and only counted. " +
-	"op=revert {ruling_id} returns each statement of that ruling to its status before, if nothing changed it since (no new evidence, no maintenance, no later ruling); a rejected one is no longer refused when proposed again. Changed ones are listed and left. " +
+	"op=revert {ruling_id} returns each statement of that ruling to its status before, if nothing changed it since (no new evidence, no maintenance, no later ruling); a rejected one is no longer refused when proposed again. Changed ones are listed and left; returns revert_id. " +
+	"op=rulings lists the scope's bulk rulings and reverts, newest first (limit default 20, at most 100; after = next_cursor): id, action, ruled_by, actor, reason, selector (filter, or ids_count), counts, created_at, and reverted / reverted_by. An operator sees them all, a member only its own. Use it to find a ruling_id to revert. " +
 	"For an admin or a tenant operator (holding write on each statement's from-document), or a member holding the access-control action review on the from-document's path. The tenant is your own unless you are an admin and pass another. " +
+	"With scope user, scope_id names whose user documents: an admin or a tenant operator may name another subject of its tenant; a member only itself. " +
 	"A refusal is {code, error}: invalid_request, forbidden, queue_changed, ruling_not_found, unavailable. " +
 	"Do NOT use it to rule on one statement you are looking at — use the document tool's accept_statement / reject_statement."
 
@@ -30,8 +32,9 @@ const reviewToolSchema = `{
 	"type": "object",
 	"required": ["op"],
 	"properties": {
-		"op":     {"type": "string", "enum": ["queue", "rule", "revert"], "description": "queue (list or summarize), rule (accept or reject in bulk), revert (undo a ruling)."},
-		"scope":  {"type": "string", "enum": ["tenant", "user"], "description": "The document scope: tenant (default) or your own user scope."},
+		"op":     {"type": "string", "enum": ["queue", "rule", "revert", "rulings"], "description": "queue (list or summarize), rule (accept or reject in bulk), revert (undo a ruling), rulings (list past rulings)."},
+		"scope":  {"type": "string", "enum": ["tenant", "user"], "description": "The document scope: tenant (default) or a user scope (your own, or scope_id's)."},
+		"scope_id": {"type": "string", "description": "With scope user: whose user documents. An operator may name another subject of its tenant; a member only itself."},
 		"tenant": {"type": "string", "description": "Admin only: whose documents. Ignored for anyone else, who always reviews their own tenant."},
 		"filter": {"type": "object", "description": "queue / rule: which statements. Every field optional; they combine with AND. An empty filter on rule is the whole queue.", "properties": {
 			"status":            {"type": "string", "description": "Statement status (default proposed)."},
@@ -49,11 +52,15 @@ const reviewToolSchema = `{
 			"created_before":    {"type": "string", "description": "Unix nanoseconds or an RFC 3339 timestamp."},
 			"created_after":     {"type": "string", "description": "Unix nanoseconds or an RFC 3339 timestamp."},
 			"has_judge_verdict": {"type": "boolean", "description": "A judge's verdict is recorded (attributes.judge), or not."},
-			"judge_verdict":     {"type": "string", "description": "The recorded verdict is exactly this: accept, reject or unsure."}
+			"judge_verdict":     {"type": "string", "description": "The recorded verdict is exactly this: accept, reject or unsure."},
+			"method_exact":      {"type": "string", "description": "The method is exactly this (rule:citation, not rule:citation_title)."},
+			"kind_exact":        {"type": "string", "description": "The kind is exactly this, never widened to its declared sub-kinds."},
+			"from_path_prefix":  {"type": "string", "description": "The from-document's path prefix is exactly this, as summarize groups it."},
+			"from_unfiled":      {"type": "boolean", "description": "The from-document is filed under no Path name (summarize's empty prefix)."}
 		}},
 		"summarize":    {"type": "boolean", "description": "queue: counts by kind, method, path prefix and judge verdict instead of rows."},
-		"limit":        {"type": "integer", "description": "queue: page size (default 500, at most 5000)."},
-		"after":        {"type": "string", "description": "queue: the next_cursor of the previous page."},
+		"limit":        {"type": "integer", "description": "queue: page size (default 500, at most 5000). rulings: default 20, at most 100."},
+		"after":        {"type": "string", "description": "queue / rulings: the next_cursor of the previous page."},
 		"order":        {"type": "string", "enum": ["created", "verified"], "description": "queue: created (default, newest first) or verified (least recently verified first)."},
 		"action":       {"type": "string", "enum": ["accept", "reject"], "description": "rule: accept or reject."},
 		"ids":          {"type": "array", "items": {"type": "string"}, "description": "rule: the statement ids, instead of a filter."},
@@ -98,6 +105,7 @@ func handleReview(ctx context.Context, env *handlerEnv, args json.RawMessage) (*
 	var p struct {
 		Op          string            `json:"op"`
 		Scope       string            `json:"scope"`
+		ScopeID     string            `json:"scope_id"`
 		Tenant      string            `json:"tenant"`
 		Filter      *reviewToolFilter `json:"filter"`
 		Summarize   bool              `json:"summarize"`
@@ -127,7 +135,7 @@ func handleReview(ctx context.Context, env *handlerEnv, args json.RawMessage) (*
 	}
 	switch p.Op {
 	case "queue":
-		req := connector.ListReviewQueueRequest{Tenant: p.Tenant, Scope: p.Scope, Summarize: p.Summarize, Limit: p.Limit, After: p.After, Order: p.Order}
+		req := connector.ListReviewQueueRequest{Tenant: p.Tenant, Scope: p.Scope, ScopeID: p.ScopeID, Summarize: p.Summarize, Limit: p.Limit, After: p.After, Order: p.Order}
 		if filter != nil {
 			req.Filter = *filter
 		}
@@ -138,7 +146,7 @@ func handleReview(ctx context.Context, env *handlerEnv, args json.RawMessage) (*
 		return toolResultJSON(res), nil
 	case "rule":
 		res, err := env.connector.RuleStatements(ctx, connector.RuleStatementsRequest{
-			Tenant: p.Tenant, Scope: p.Scope, Action: p.Action, IDs: p.IDs, Filter: filter, Reason: p.Reason,
+			Tenant: p.Tenant, Scope: p.Scope, ScopeID: p.ScopeID, Action: p.Action, IDs: p.IDs, Filter: filter, Reason: p.Reason,
 			DryRun: p.DryRun, ExpectCount: p.ExpectCount, Max: p.Max,
 		})
 		if err != nil {
@@ -146,13 +154,19 @@ func handleReview(ctx context.Context, env *handlerEnv, args json.RawMessage) (*
 		}
 		return toolResultJSON(res), nil
 	case "revert":
-		res, err := env.connector.RevertRuling(ctx, connector.RevertRulingRequest{Tenant: p.Tenant, Scope: p.Scope, RulingID: p.RulingID})
+		res, err := env.connector.RevertRuling(ctx, connector.RevertRulingRequest{Tenant: p.Tenant, Scope: p.Scope, ScopeID: p.ScopeID, RulingID: p.RulingID})
+		if err != nil {
+			return reviewRefusal(p.Op, err), nil
+		}
+		return toolResultJSON(res), nil
+	case "rulings":
+		res, err := env.connector.ListRulings(ctx, connector.ListRulingsRequest{Tenant: p.Tenant, Scope: p.Scope, ScopeID: p.ScopeID, Limit: p.Limit, After: p.After})
 		if err != nil {
 			return reviewRefusal(p.Op, err), nil
 		}
 		return toolResultJSON(res), nil
 	}
-	return toolErrValidation(`review: unknown op "`+p.Op+`" (must be queue, rule or revert)`, "pass op queue, rule or revert"), nil
+	return toolErrValidation(`review: unknown op "`+p.Op+`" (must be queue, rule, revert or rulings)`, "pass op queue, rule, revert or rulings"), nil
 }
 
 // reviewRefusal renders a refusal as the HTTP error body's {code, error}, so a

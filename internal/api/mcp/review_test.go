@@ -97,3 +97,37 @@ func TestReviewTool_MembersMayCallItIsolatedUsersMayNot(t *testing.T) {
 		}
 	}
 }
+
+// op rulings, the exact selectors and scope_id reach the connector as given.
+func TestReviewTool_RulingsSelectorsAndScopeIDReachTheConnector(t *testing.T) {
+	mc := &mockConnector{rulingsRes: connector.ListRulingsResult{Tenant: "acme", Scope: "user", NextCursor: "n1",
+		Rulings: []connector.RulingRecord{{ID: "r1", Action: "accept", Selector: connector.RulingSelector{IDsCount: 3}}}}}
+	env := &handlerEnv{connector: mc}
+	call := func(args string) *loommcp.CallToolResult {
+		t.Helper()
+		res, err := handleReview(context.Background(), env, json.RawMessage(args))
+		if err != nil || res.IsError {
+			t.Fatalf("%s: %v %+v", args, err, res)
+		}
+		return res
+	}
+	res := call(`{"op":"rulings","scope":"user","scope_id":"bob","tenant":"globex","limit":5,"after":"c"}`)
+	if r := mc.rulingsReq; r.Scope != "user" || r.ScopeID != "bob" || r.Tenant != "globex" || r.Limit != 5 || r.After != "c" {
+		t.Errorf("connector got %+v", r)
+	}
+	if text := res.Content[0].Text; !strings.Contains(text, `"ids_count":3`) || !strings.Contains(text, `"next_cursor":"n1"`) {
+		t.Errorf("rulings = %s", text)
+	}
+	call(`{"op":"queue","scope":"user","scope_id":"bob","filter":{"method_exact":"rule:citation","kind_exact":"cites","from_path_prefix":"/board/reg"}}`)
+	if q := mc.reviewQueueReq; q.ScopeID != "bob" || q.Filter.MethodExact != "rule:citation" || q.Filter.KindExact != "cites" || q.Filter.FromPathPrefix != "/board/reg" {
+		t.Errorf("connector got %+v", q)
+	}
+	call(`{"op":"rule","action":"accept","scope":"user","scope_id":"bob","filter":{"from_unfiled":true}}`)
+	if r := mc.ruleReq; r.ScopeID != "bob" || r.Filter == nil || !r.Filter.FromUnfiled {
+		t.Errorf("connector got %+v", r)
+	}
+	call(`{"op":"revert","ruling_id":"r1","scope":"user","scope_id":"bob"}`)
+	if mc.revertReq.ScopeID != "bob" {
+		t.Errorf("connector got %+v", mc.revertReq)
+	}
+}
