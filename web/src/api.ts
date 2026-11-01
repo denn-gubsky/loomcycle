@@ -1855,7 +1855,8 @@ export interface ChannelDescriptor {
   // v0.11.5: "yaml" (operator yaml, immutable from UI),
   // "runtime" (substrate, CRUD-mutable), "orphan" (no declaration —
   // just persisted messages from a removed/renamed channel).
-  source?: "yaml" | "runtime" | "orphan" | string;
+  // "document": a document's change feed (documents/<id>/chunks), hidden by default.
+  source?: "yaml" | "runtime" | "orphan" | "document" | string;
 }
 
 export interface ListChannelsResponse {

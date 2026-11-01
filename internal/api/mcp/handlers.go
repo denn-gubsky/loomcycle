@@ -1109,6 +1109,9 @@ func handleListChannels(ctx context.Context, env *handlerEnv, _ json.RawMessage)
 	if err != nil {
 		return toolErrFrom("list_channels", err), nil
 	}
+	// A document's change feed is no channel an agent publishes to or awaits,
+	// and there is one per document ever edited.
+	resp.Channels = connector.WithoutDocumentFeeds(resp.Channels)
 	return toolResultJSON(resp), nil
 }
 

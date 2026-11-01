@@ -13,6 +13,7 @@ import {
   releaseChannel,
 } from "../api";
 import Splitter from "../components/Splitter";
+import { filterChannels, type FilterKind } from "../lib/channelFilter";
 import ChannelEditModal from "../components/ChannelEditModal";
 
 // ChannelsView is the v0.9.x Introspection surface for operator-
@@ -152,23 +153,6 @@ export default function ChannelsView() {
   );
 }
 
-// v0.11.12 — extend the filter axis to include `runtime` and `orphan`
-// source-tag filters. v0.11.5 added the channels CRUD substrate with
-// every row carrying a `source: "yaml" | "runtime" | "orphan"` tag,
-// but the filter row only had scope-based chips. Operators wanting to
-// see "just the runtime-created channels" had to scan visually for
-// the source chip on each row. The new chips filter by c.source
-// directly.
-type FilterKind =
-  | "all"
-  | "system"
-  | "global"
-  | "user"
-  | "agent"
-  | "yaml"
-  | "runtime"
-  | "orphan";
-
 function FilterChips({
   current,
   onChange,
@@ -187,6 +171,8 @@ function FilterChips({
     { kind: "yaml", label: "yaml" },
     { kind: "runtime", label: "runtime" },
     { kind: "orphan", label: "orphan" },
+    // document change feeds: hidden from every other chip
+    { kind: "documents", label: "documents" },
   ];
   return (
     <div className="filter-chips">
@@ -204,22 +190,6 @@ function FilterChips({
       ))}
     </div>
   );
-}
-
-// sourceFilters is the closed set of source-tag filter values; the
-// rest fall through to scope-based filtering. Keep in sync with the
-// FilterKind type + the chip set above.
-const sourceFilters: Record<string, boolean> = {
-  yaml: true,
-  runtime: true,
-  orphan: true,
-};
-
-function filterChannels(channels: ChannelDescriptor[], f: FilterKind): ChannelDescriptor[] {
-  if (f === "all") return channels;
-  if (f === "system") return channels.filter((c) => c.name.startsWith("_system/"));
-  if (sourceFilters[f]) return channels.filter((c) => c.source === f);
-  return channels.filter((c) => c.scope === f);
 }
 
 function ChannelsList({

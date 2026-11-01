@@ -2698,6 +2698,12 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 			}
 		}
 	}
+	// The document's change feed goes with it: nothing can follow a document
+	// that no longer exists. Best-effort, like the dirent cleanup above; the
+	// idle-feed sweep (SweepDocumentFeeds) catches a purge that failed.
+	if _, perr := d.Store.ChannelPurge(ctx, tools.RunIdentity(ctx).TenantID, documentFeedPrefix+docID+documentFeedSuffix, ""); perr != nil {
+		slog.WarnContext(ctx, "delete_document: purge change feed", "document_id", docID, "err", perr)
+	}
 	out := map[string]any{"deleted": true, "document_id": docID, "n_chunks_deleted": n}
 	if isSubject {
 		if why := d.publishSubjectEvent(ctx, key, mscope, subjectEvent{
@@ -6300,6 +6306,57 @@ func (d *Document) publishChange(ctx context.Context, mscope store.MemoryScope, 
 	d.publishEdgeEvent(ctx, mscope, scopeID, documentID, map[string]any{"op": op, "chunk_id": chunkID, "actor": tools.RunIdentity(ctx).UserID})
 }
 
+// documentFeedPrefix and documentFeedSuffix frame a document's change feed,
+// documents/<document_id>/chunks.
+const (
+	documentFeedPrefix = "documents/"
+	documentFeedSuffix = "/chunks"
+)
+
+// IsDocumentFeedChannel reports whether name is a document's change feed. One
+// exists for every document ever edited, none is declared, and only a viewer
+// that knows the document reads it, so channel listings tag them apart from
+// orphans rather than show hundreds of undeclared rows. documents/ingested is
+// not one.
+func IsDocumentFeedChannel(name string) bool {
+	if !strings.HasPrefix(name, documentFeedPrefix) || !strings.HasSuffix(name, documentFeedSuffix) {
+		return false
+	}
+	id := name[len(documentFeedPrefix) : len(name)-len(documentFeedSuffix)]
+	return id != "" && !strings.Contains(id, "/")
+}
+
+// DocumentFeedIdleTTL is how long a document's change feed is kept after its
+// last event. The feed is for a viewer following edits live, and nothing reads
+// its history, so a day of quiet means nobody is following; a deleted
+// document's feed (one whose delete did not purge it) also goes this way.
+const DocumentFeedIdleTTL = 24 * time.Hour
+
+// SweepDocumentFeeds purges every document change feed whose newest event is
+// older than idle, across all tenants, and returns how many it purged. It
+// reads only channel stats, never the documents, so it cannot tell a deleted
+// document from a quiet one, and need not: a quiet feed's events have no
+// reader. A feed whose purge fails is left for the next sweep.
+func SweepDocumentFeeds(ctx context.Context, st store.Store, idle time.Duration, now time.Time) (int, error) {
+	stats, err := st.ChannelStats(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("document feed sweep: %w", err)
+	}
+	cutoff := now.Add(-idle)
+	purged := 0
+	for _, s := range stats {
+		if !IsDocumentFeedChannel(s.Channel) || s.NewestVisibleAt.IsZero() || s.NewestVisibleAt.After(cutoff) {
+			continue
+		}
+		if _, err := st.ChannelPurge(ctx, s.TenantID, s.Channel, ""); err != nil {
+			slog.WarnContext(ctx, "document feed sweep: purge", "channel", s.Channel, "tenant", s.TenantID, "err", err)
+			continue
+		}
+		purged++
+	}
+	return purged, nil
+}
+
 // publishEdgeEvent writes one event to a document's change channel; the
 // timestamp is stamped here.
 func (d *Document) publishEdgeEvent(ctx context.Context, mscope store.MemoryScope, scopeID, documentID string, event map[string]any) {
@@ -6316,7 +6373,7 @@ func (d *Document) publishEdgeEvent(ctx context.Context, mscope store.MemoryScop
 	// subscriber/declared channel must never fail a chunk mutation. The Web UI
 	// subscriber arrives in a later phase.
 	_, _ = w.Write(ctx, channels.WriteRequest{
-		Channel:     "documents/" + documentID + "/chunks",
+		Channel:     documentFeedPrefix + documentID + documentFeedSuffix,
 		TenantID:    tools.RunIdentity(ctx).TenantID, // RFC N: authoritative run tenant
 		Scope:       mscope,
 		ScopeID:     scopeID,

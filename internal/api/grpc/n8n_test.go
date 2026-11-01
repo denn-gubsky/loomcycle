@@ -53,6 +53,8 @@ func TestGrpcListChannels_HappyPath(t *testing.T) {
 		listChannelsResp: connector.ListChannelsResponse{
 			Channels: []connector.ChannelDescriptor{
 				{Name: "alpha", MessageCount: 3, OldestVisibleAt: "2026-05-20T00:00:00Z"},
+				// A document's change feed is no channel n8n can use.
+				{Name: "documents/0101a323877fa6c3c57ab25245bac110/chunks", MessageCount: 2, Source: connector.ChannelSourceDocument},
 				{Name: "beta", MessageCount: 0},
 			},
 		},

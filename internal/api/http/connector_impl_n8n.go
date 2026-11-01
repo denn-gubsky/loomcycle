@@ -15,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamspec"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // ListChannels returns the operator-declared channels joined with
@@ -126,7 +127,14 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 			continue
 		}
 		orphans[name] = true
-		desc := connector.ChannelDescriptor{Name: name, Source: "orphan"}
+		// A document's change feed is the Document tool's own record, not an
+		// orphan: one per document ever edited, never declared. Tagged so a
+		// listing can leave hundreds of them out of its default view.
+		source := "orphan"
+		if builtin.IsDocumentFeedChannel(name) {
+			source = connector.ChannelSourceDocument
+		}
+		desc := connector.ChannelDescriptor{Name: name, Source: source}
 		if all {
 			st, _ = ix.acrossTenants(name)
 		}
