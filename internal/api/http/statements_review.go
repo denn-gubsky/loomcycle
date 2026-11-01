@@ -72,7 +72,7 @@ func reviewFilterFromQuery(q url.Values) (connector.ReviewQueueFilter, error) {
 		FromDocumentID: q.Get("from_document_id"), ToDocumentID: q.Get("to_document_id"),
 		FromUnderPath: q.Get("from_under_path"), ToUnderPath: q.Get("to_under_path"),
 		JudgeVerdict: q.Get("judge_verdict"), MethodExact: q.Get("method_exact"), KindExact: q.Get("kind_exact"),
-		FromPathPrefix: q.Get("from_path_prefix"),
+		FromPathPrefix: q.Get("from_path_prefix"), ReviewRoute: q.Get("review_route"), JudgeAudit: q.Get("judge_audit"),
 	}
 	for _, v := range q["kinds"] {
 		for _, k := range strings.Split(v, ",") {

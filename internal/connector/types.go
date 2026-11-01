@@ -1577,6 +1577,16 @@ type RulingSelector struct {
 	// Policy is a review policy's ruling: as its proposals were filed (one
 	// per run, with RunID) or applied over the queue (action policy).
 	Policy *RulingPolicy `json:"policy,omitempty"`
+	// Judge is a judge run's ruling (action judge): every verdict of that run
+	// that ruled.
+	Judge *RulingJudge `json:"judge,omitempty"`
+}
+
+// RulingJudge names the judge run a ruling holds the rulings of, and the
+// agent that ran it.
+type RulingJudge struct {
+	RunID string `json:"run_id"`
+	Agent string `json:"agent,omitempty"`
 }
 
 // RulingPolicy names the review policy a ruling applied: the ontology
@@ -1593,8 +1603,10 @@ type RulingPolicy struct {
 // RulingRecord is one bulk ruling, or one revert of one, as the scope
 // recorded it.
 //
-// Action is accept or reject for a ruling, revert for a revert. RuledBy is
-// who ruled (operator:<subject>), Actor the subject that made the call.
+// Action is accept or reject for a ruling, policy for a review policy's
+// application, judge for a judge run's rulings, revert for a revert. RuledBy
+// is who ruled (operator:<subject>, judge:<run>), Actor the subject that made
+// the call.
 // Matched, Ruled, Failed and Skipped are the ruling's counts; on a revert,
 // Ruled counts the statements it reverted, Failed those changed since and
 // left. Reverted marks a ruling undone since: RevertedAt when and RevertedBy
