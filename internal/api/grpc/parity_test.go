@@ -585,3 +585,7 @@ func (m *parityMock) RuleStatements(context.Context, connector.RuleStatementsReq
 func (m *parityMock) RevertRuling(context.Context, connector.RevertRulingRequest) (connector.RevertRulingResult, error) {
 	return connector.RevertRulingResult{}, nil
 }
+
+func (m *parityMock) ListRulings(context.Context, connector.ListRulingsRequest) (connector.ListRulingsResult, error) {
+	return connector.ListRulingsResult{}, nil
+}

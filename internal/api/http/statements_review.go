@@ -1,9 +1,9 @@
 package http
 
 // statements_review.go — the statement review queue, bulk rulings and their
-// undo (RFC FS P0): GET /v1/_statements/review, POST /v1/_statements/rule and
-// POST /v1/_statements/revert, and the shared connector methods every
-// transport's review goes through.
+// undo (RFC FS P0): GET /v1/_statements/review, POST /v1/_statements/rule,
+// POST /v1/_statements/revert and GET /v1/_statements/rulings, and the shared
+// connector methods every transport's review goes through.
 //
 // The queue and the rulings live in the Document (builtin.ListReviewQueue,
 // RuleStatements, RevertRuling). What lives here is who may review, as whom,
@@ -24,6 +24,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -41,7 +42,7 @@ func (s *Server) SetStatementReviewAudit(sink audit.Sink) { s.reviewAudit = sink
 func (s *Server) handleStatementReviewQueue(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	req := connector.ListReviewQueueRequest{
-		Tenant: q.Get("tenant"), Scope: q.Get("scope"), After: q.Get("after"), Order: q.Get("order"),
+		Tenant: q.Get("tenant"), Scope: q.Get("scope"), ScopeID: q.Get("scope_id"), After: q.Get("after"), Order: q.Get("order"),
 	}
 	var err error
 	if req.Filter, err = reviewFilterFromQuery(q); err == nil {
@@ -69,7 +70,8 @@ func reviewFilterFromQuery(q url.Values) (connector.ReviewQueueFilter, error) {
 		DocumentID: q.Get("document_id"), UnderPath: q.Get("under_path"),
 		FromDocumentID: q.Get("from_document_id"), ToDocumentID: q.Get("to_document_id"),
 		FromUnderPath: q.Get("from_under_path"), ToUnderPath: q.Get("to_under_path"),
-		JudgeVerdict: q.Get("judge_verdict"),
+		JudgeVerdict: q.Get("judge_verdict"), MethodExact: q.Get("method_exact"), KindExact: q.Get("kind_exact"),
+		FromPathPrefix: q.Get("from_path_prefix"),
 	}
 	for _, v := range q["kinds"] {
 		for _, k := range strings.Split(v, ",") {
@@ -104,7 +106,9 @@ func reviewFilterFromQuery(q url.Values) (connector.ReviewQueueFilter, error) {
 		}
 		f.HasJudgeVerdict = &b
 	}
-	return f, nil
+	var err error
+	f.FromUnfiled, err = optionalBool(q, "from_unfiled")
+	return f, err
 }
 
 func optionalBool(q url.Values, name string) (bool, error) {
@@ -143,6 +147,9 @@ func (s *Server) handleStatementRule(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Tenant == "" {
 		req.Tenant = r.URL.Query().Get("tenant")
+	}
+	if req.ScopeID == "" {
+		req.ScopeID = r.URL.Query().Get("scope_id")
 	}
 	res, err := s.RuleStatements(r.Context(), req)
 	if err != nil {
@@ -195,7 +202,32 @@ func (s *Server) handleStatementRevert(w http.ResponseWriter, r *http.Request) {
 	if req.Tenant == "" {
 		req.Tenant = r.URL.Query().Get("tenant")
 	}
+	if req.ScopeID == "" {
+		req.ScopeID = r.URL.Query().Get("scope_id")
+	}
 	res, err := s.RevertRuling(r.Context(), req)
+	if err != nil {
+		writeStatementReviewError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// handleStatementRulings serves GET /v1/_statements/rulings: the scope's bulk
+// rulings and reverts, newest first (?scope, ?scope_id, ?tenant, ?limit,
+// ?after).
+func (s *Server) handleStatementRulings(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	req := connector.ListRulingsRequest{Tenant: q.Get("tenant"), Scope: q.Get("scope"), ScopeID: q.Get("scope_id"), After: q.Get("after")}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", "limit must be a whole number")
+			return
+		}
+		req.Limit = n
+	}
+	res, err := s.ListRulings(r.Context(), req)
 	if err != nil {
 		writeStatementReviewError(w, err)
 		return
@@ -273,14 +305,55 @@ func reviewRuler(ctx context.Context) (builtin.RulingAuthority, *auth.Principal,
 }
 
 // reviewCtx is the ctx a review runs under: the off-run Document ctx of
-// POST /v1/_document (the principal's own subject; an admin's tenant focus).
-func (s *Server) reviewCtx(ctx context.Context, tenant string) (context.Context, string) {
-	return substrateBrowseCtx(ctx, "", tenant), s.adminFocusedTenant(ctx, tenant)
+// POST /v1/_document (the principal's own subject; an admin's tenant focus),
+// on scopeID's user scope when one is named, and the tenant it acts in.
+//
+// Naming another subject is an operator's: as is RuleAsOperator (an admin, a
+// tenant operator, open mode), and a member is refused, since the review
+// routes are open to members and a member's `review` grant is on its tenant's
+// paths, not on another member's own documents. A tenant operator names
+// subjects of its own tenant only: one that also names another tenant is
+// refused, not silently focused back, so a request never reaches a subject
+// other than the one it named. The ruling is recorded as the caller's own
+// (WithRulingActor), whoever's scope it acts on.
+func (s *Server) reviewCtx(ctx context.Context, as builtin.RulingAuthority, tenant, scope, scopeID string) (context.Context, string, error) {
+	own := tools.RunIdentity(substrateAdminUserCtx(ctx)).UserID
+	scopeID = strings.TrimSpace(scopeID)
+	switch {
+	case scopeID == "":
+	case scope != "user":
+		return nil, "", connector.WithMessage(connector.ErrStatementReviewInvalid, `scope_id names a subject's user scope: pass scope "user" with it`)
+	case len(scopeID) > 256:
+		return nil, "", connector.WithMessage(connector.ErrStatementReviewInvalid, "scope_id is longer than 256 bytes")
+	case scopeID == own:
+	case as != builtin.RuleAsOperator:
+		return nil, "", connector.WithMessage(connector.ErrStatementReviewForbidden,
+			"reviewing another subject's documents is for an operator; a member reviews its own user scope and its tenant's")
+	default:
+		p, ok := auth.PrincipalFromContext(ctx)
+		admin := !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin)
+		if t := strings.TrimSpace(tenant); !admin && t != "" && t != p.TenantID {
+			return nil, "", connector.WithMessage(connector.ErrStatementReviewForbidden,
+				"a tenant operator names subjects of its own tenant only")
+		}
+	}
+	dctx := builtin.WithRulingActor(substrateBrowseCtx(ctx, scopeID, tenant), own)
+	return dctx, s.adminFocusedTenant(ctx, tenant), nil
+}
+
+// reviewScopeID is whose user scope a review acted on, for its audit record:
+// "" for the tenant scope.
+func reviewScopeID(dctx context.Context, scope string) string {
+	if scope != "user" {
+		return ""
+	}
+	return tools.RunIdentity(dctx).UserID
 }
 
 // ListReviewQueue implements connector.Connector.
 func (s *Server) ListReviewQueue(ctx context.Context, req connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {
-	if _, _, err := reviewer(ctx); err != nil {
+	as, _, err := reviewer(ctx)
+	if err != nil {
 		return connector.ListReviewQueueResult{}, err
 	}
 	scope, err := reviewScope(req.Scope)
@@ -291,8 +364,34 @@ func (s *Server) ListReviewQueue(ctx context.Context, req connector.ListReviewQu
 		return connector.ListReviewQueueResult{}, connector.WithMessage(connector.ErrStatementReviewUnavailable,
 			"the review queue needs SQL Memory; none is configured")
 	}
-	dctx, tenant := s.reviewCtx(ctx, req.Tenant)
+	dctx, tenant, err := s.reviewCtx(ctx, as, req.Tenant, scope, req.ScopeID)
+	if err != nil {
+		return connector.ListReviewQueueResult{}, err
+	}
 	res, err := s.ontologyDocument().ListReviewQueue(dctx, scope, req)
+	res.Tenant = tenant
+	return res, err
+}
+
+// ListRulings implements connector.Connector.
+func (s *Server) ListRulings(ctx context.Context, req connector.ListRulingsRequest) (connector.ListRulingsResult, error) {
+	as, _, err := reviewer(ctx)
+	if err != nil {
+		return connector.ListRulingsResult{}, err
+	}
+	scope, err := reviewScope(req.Scope)
+	if err != nil {
+		return connector.ListRulingsResult{}, err
+	}
+	if s.store == nil || s.sqlMem == nil {
+		return connector.ListRulingsResult{}, connector.WithMessage(connector.ErrStatementReviewUnavailable,
+			"listing rulings needs SQL Memory; none is configured")
+	}
+	dctx, tenant, err := s.reviewCtx(ctx, as, req.Tenant, scope, req.ScopeID)
+	if err != nil {
+		return connector.ListRulingsResult{}, err
+	}
+	res, err := s.ontologyDocument().ListRulings(dctx, scope, req, as)
 	res.Tenant = tenant
 	return res, err
 }
@@ -311,11 +410,15 @@ func (s *Server) RuleStatements(ctx context.Context, req connector.RuleStatement
 		return connector.RuleStatementsResult{}, connector.WithMessage(connector.ErrStatementReviewUnavailable,
 			"ruling on statements needs SQL Memory; none is configured")
 	}
-	dctx, tenant := s.reviewCtx(ctx, req.Tenant)
+	dctx, tenant, err := s.reviewCtx(ctx, as, req.Tenant, scope, req.ScopeID)
+	if err != nil {
+		return connector.RuleStatementsResult{}, err
+	}
 	res, err := s.ontologyDocument().RuleStatements(dctx, scope, req, as)
 	res.Tenant = tenant
 	if err == nil && !res.DryRun {
 		ev := s.reviewEvent(p, "statement_ruling", tenant, scope, res.RulingID)
+		ev.RulingScopeID = reviewScopeID(dctx, scope)
 		ev.RulingAction, ev.RulingIDs, ev.RulingReason = req.Action, req.IDs, strings.TrimSpace(req.Reason)
 		if req.Filter != nil {
 			ev.RulingFilter, _ = json.Marshal(req.Filter)
@@ -340,11 +443,15 @@ func (s *Server) RevertRuling(ctx context.Context, req connector.RevertRulingReq
 		return connector.RevertRulingResult{}, connector.WithMessage(connector.ErrStatementReviewUnavailable,
 			"reverting a ruling needs SQL Memory; none is configured")
 	}
-	dctx, tenant := s.reviewCtx(ctx, req.Tenant)
+	dctx, tenant, err := s.reviewCtx(ctx, as, req.Tenant, scope, req.ScopeID)
+	if err != nil {
+		return connector.RevertRulingResult{}, err
+	}
 	res, err := s.ontologyDocument().RevertRuling(dctx, scope, req, as)
 	res.Tenant = tenant
 	if err == nil {
 		ev := s.reviewEvent(p, "statement_ruling_revert", tenant, scope, req.RulingID)
+		ev.RulingScopeID = reviewScopeID(dctx, scope)
 		ev.RulingAction = res.Action
 		ev.RulingCounts = map[string]int{"reverted": res.Reverted, "changed": res.Changed, "skipped": res.Skipped}
 		s.recordReview(ctx, ev)

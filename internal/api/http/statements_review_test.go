@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -230,5 +231,35 @@ func TestStatementReviewAPI_SummaryOfAnEmptyQueueCarriesItsZeroCounts(t *testing
 	}
 	if _, out := s.getQueue(t, op, ""); out["summary"] != nil || out["total"] != nil {
 		t.Errorf("a page of rows carries summary fields: %v", out)
+	}
+}
+
+// The exact selectors come from the query too, and each summary group comes
+// back with the filter that selects it, which the query form takes as is.
+func TestStatementReviewAPI_QueueTakesTheExactSelectorsAndGroupsCarryTheirFilter(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	seed := seedReviewQueue(t, s, mi)
+	op := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: mi.Tenant, Subject: "ops", Scopes: []string{auth.ScopeTenant}})
+	code, out := s.getQueue(t, op, "from_path_prefix=/board/reg&kind_exact=cites&method_exact=manual")
+	if code != http.StatusOK || len(out["statements"].([]any)) != 1 || !strings.Contains(fmt.Sprint(out["statements"]), seed.board) {
+		t.Errorf("exact selectors = %d %v, want the /board proposal", code, out)
+	}
+	if code, out := s.getQueue(t, op, "from_unfiled=true"); code != http.StatusOK || len(out["statements"].([]any)) != 0 {
+		t.Errorf("from_unfiled = %d %v, want none: both from-documents are filed", code, out)
+	}
+	if code, out := s.getQueue(t, op, "from_unfiled=maybe"); code != http.StatusBadRequest {
+		t.Errorf("from_unfiled=maybe = %d %v, want 400", code, out)
+	}
+	_, out = s.getQueue(t, op, "summarize=true")
+	for _, g := range out["summary"].([]any) {
+		m := g.(map[string]any)
+		f, _ := m["filter"].(map[string]any)
+		q := url.Values{}
+		for k, v := range f {
+			q.Set(k, fmt.Sprint(v))
+		}
+		if code, rows := s.getQueue(t, op, q.Encode()); code != http.StatusOK || float64(len(rows["statements"].([]any))) != m["count"] {
+			t.Errorf("group %v: its filter as a query = %d %v", m, code, rows)
+		}
 	}
 }

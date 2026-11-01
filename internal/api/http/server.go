@@ -4286,6 +4286,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("GET /v1/_statements/review", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleStatementReviewQueue))))
 	mux.Handle("POST /v1/_statements/rule", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleStatementRule))))
 	mux.Handle("POST /v1/_statements/revert", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleStatementRevert))))
+	mux.Handle("GET /v1/_statements/rulings", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleStatementRulings))))
 	// RFC BK P3: resident interactive sub-agent visibility + operator control.
 	// GET lists (tenant-scoped); POST close/cancel act on one (tenant-gated).
 	// Per-replica (the resident registry is in-process). Scope-gated in

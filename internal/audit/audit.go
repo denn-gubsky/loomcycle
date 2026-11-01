@@ -169,6 +169,9 @@ type Event struct {
 	RulingID     string `json:"ruling_id,omitempty"`
 	RulingAction string `json:"ruling_action,omitempty"` // accept | reject
 	RulingScope  string `json:"ruling_scope,omitempty"`  // tenant | user
+	// RulingScopeID is whose user scope (scope user): the subject whose
+	// documents were ruled on, which an operator may name.
+	RulingScopeID string `json:"ruling_scope_id,omitempty"`
 	// RulingFilter is the queue filter a ruling selected by; RulingIDs the
 	// statement ids it named instead.
 	RulingFilter json.RawMessage `json:"ruling_filter,omitempty"`

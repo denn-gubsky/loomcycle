@@ -761,6 +761,8 @@ type mockConnector struct {
 	ruleRes        connector.RuleStatementsResult
 	revertReq      connector.RevertRulingRequest
 	revertRes      connector.RevertRulingResult
+	rulingsReq     connector.ListRulingsRequest
+	rulingsRes     connector.ListRulingsResult
 	reviewErr      error
 
 	bindReq connector.BindSubjectPrincipalRequest
@@ -1328,4 +1330,9 @@ func (m *mockConnector) RuleStatements(_ context.Context, req connector.RuleStat
 func (m *mockConnector) RevertRuling(_ context.Context, req connector.RevertRulingRequest) (connector.RevertRulingResult, error) {
 	m.revertReq = req
 	return m.revertRes, m.reviewErr
+}
+
+func (m *mockConnector) ListRulings(_ context.Context, req connector.ListRulingsRequest) (connector.ListRulingsResult, error) {
+	m.rulingsReq = req
+	return m.rulingsRes, m.reviewErr
 }

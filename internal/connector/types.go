@@ -1394,8 +1394,12 @@ type ReviewQueueFilter struct {
 // own). Tenant is whose: only an admin may name one; for anyone else it is the
 // caller's own.
 type ListReviewQueueRequest struct {
-	Tenant    string            `json:"tenant,omitempty"`
-	Scope     string            `json:"scope,omitempty"`
+	Tenant string `json:"tenant,omitempty"`
+	Scope  string `json:"scope,omitempty"`
+	// ScopeID names whose user scope (scope user only): an admin, or a
+	// tenant operator within its own tenant, may name another subject; a
+	// member only itself. "" is the caller's own.
+	ScopeID   string            `json:"scope_id,omitempty"`
 	Filter    ReviewQueueFilter `json:"filter"`
 	Summarize bool              `json:"summarize,omitempty"`
 	// Limit (default 500, at most 5000), After (a NextCursor) and Order
@@ -1462,6 +1466,7 @@ func (r ListReviewQueueResult) MarshalJSON() ([]byte, error) {
 type RuleStatementsRequest struct {
 	Tenant      string             `json:"tenant,omitempty"`
 	Scope       string             `json:"scope,omitempty"`
+	ScopeID     string             `json:"scope_id,omitempty"` // as ListReviewQueueRequest.ScopeID
 	Action      string             `json:"action"`
 	IDs         []string           `json:"ids,omitempty"`
 	Filter      *ReviewQueueFilter `json:"filter,omitempty"`
@@ -1519,6 +1524,7 @@ type RuleStatementsResult struct {
 type RevertRulingRequest struct {
 	Tenant   string `json:"tenant,omitempty"`
 	Scope    string `json:"scope,omitempty"`
+	ScopeID  string `json:"scope_id,omitempty"` // as ListReviewQueueRequest.ScopeID
 	RulingID string `json:"ruling_id"`
 }
 

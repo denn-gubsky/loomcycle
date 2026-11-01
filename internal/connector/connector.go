@@ -234,6 +234,21 @@ type Connector interface {
 	// tool (op revert).
 	RevertRuling(ctx context.Context, req RevertRulingRequest) (RevertRulingResult, error)
 
+	// ListRulings pages a document scope's bulk rulings and their reverts,
+	// newest first (limit 20 by default, at most 100), so an undo can be found
+	// after the ruling's own answer is gone. An operator sees every ruling of
+	// the scope; a member only the ones it made. Each carries its action,
+	// who ruled, the reason, the counts and what it selected — the filter, or
+	// how many ids, never the ids. Same callers as ListReviewQueue. Reachable
+	// via GET /v1/_statements/rulings, the gRPC ListRulings RPC and the MCP
+	// `review` tool (op rulings).
+	//
+	// Every review call takes ScopeID with scope user: an admin, or a tenant
+	// operator within its own tenant, may name another subject's user scope;
+	// a member naming another, or a tenant operator naming another tenant,
+	// is refused (forbidden).
+	ListRulings(ctx context.Context, req ListRulingsRequest) (ListRulingsResult, error)
+
 	// ReplaySession copies a SOURCE session's transcript into a NEW session bound
 	// to a (possibly different) target agent, so that agent continues from the
 	// same context — mirrors POST /v1/sessions/{id}/replay. Provider-specific
