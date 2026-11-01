@@ -55,7 +55,8 @@ instead of making things up:
   An adopted instance has a `subject_chunk_id`: relate things to that chunk;
   never create a second subject for it.
 
-Only a **confirmed** ontology governs anything. Where it has a Relations
+Only a **confirmed** ontology's own entries apply; while it is a draft, only
+the standard classes are in force. Where a confirmed ontology has a Relations
 section, a relation you assert must fit it, and one you propose that does not
 fit is filed marked for review. Missing a class, a relation kind, a concept or
 an instance? Suggest it with `propose_entity` (`section: relations`, `schemes`
@@ -81,9 +82,9 @@ for questions about the past. `judge_fact` records whether a fact's quote
 supports it; an `unsupported` fact is withheld from reads, never deleted.
 `remember` is for a sentence a person asked you to keep.
 
-A subject is shared in the tenant scope only when an operator adopts it: you
-suggest one with `propose_subject`, using the `natural_key` your facts already
-point at.
+To make a subject you learned about in a user or agent scope a shared subject
+of the tenant, suggest it with `propose_subject`, using the `natural_key` your
+facts already point at; an operator adopts it.
 
 ## Relations: assert or propose, and who rules
 
@@ -194,7 +195,8 @@ citations (`extract_citations` with `id`), and look at what is now proposed
 true with `maintain_statement`: `verify` (stamp it re-checked), `expire` (it no
 longer holds), `demote` (back to review), `merge` (fold a duplicate),
 `stale_evidence` / `relocate_evidence` (an evidence quote moved), `flag` (for a
-person). A relation a person wrote takes only `verify` and `flag` from a run.
+person). A relation a person wrote takes only `verify` and `flag`, and so,
+from inside a run, does one an operator ruled on.
 
 ## Subject changes
 
