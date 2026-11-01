@@ -47,6 +47,8 @@ type mockConnector struct {
 	revertRes      connector.RevertRulingResult
 	rulingsReq     connector.ListRulingsRequest
 	rulingsRes     connector.ListRulingsResult
+	applyReq       connector.ApplyReviewPolicyRequest
+	applyRes       connector.ApplyReviewPolicyResult
 	reviewErr      error
 
 	bindReq connector.BindSubjectPrincipalRequest
@@ -2029,4 +2031,9 @@ func (m *mockConnector) RevertRuling(_ context.Context, req connector.RevertRuli
 func (m *mockConnector) ListRulings(_ context.Context, req connector.ListRulingsRequest) (connector.ListRulingsResult, error) {
 	m.rulingsReq = req
 	return m.rulingsRes, m.reviewErr
+}
+
+func (m *mockConnector) ApplyReviewPolicy(_ context.Context, req connector.ApplyReviewPolicyRequest) (connector.ApplyReviewPolicyResult, error) {
+	m.applyReq = req
+	return m.applyRes, m.reviewErr
 }

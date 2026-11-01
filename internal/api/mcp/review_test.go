@@ -59,6 +59,18 @@ func TestReviewTool_DelegatesEachOpToTheConnector(t *testing.T) {
 		t.Errorf("revert: %+v %+v", res, mc.revertReq)
 	}
 
+	mc.applyRes = connector.ApplyReviewPolicyResult{RulingID: "r2", Ruled: 3, Source: "review"}
+	res = call(`{"op":"apply_policy","tenant":"globex","scope":"user","scope_id":"u1","filter":{"kind":"cites","created_after":"2026-10-31T00:00:00Z"},"dry_run":false,"expect_count":3,"max":5}`)
+	if a := mc.applyReq; res.IsError || a.Tenant != "globex" || a.ScopeID != "u1" || a.Filter == nil || a.Filter.Kind != "cites" || a.Filter.CreatedAfter == nil ||
+		a.DryRun == nil || *a.DryRun || a.ExpectCount == nil || *a.ExpectCount != 3 || a.Max != 5 || !strings.Contains(res.Content[0].Text, `"ruling_id":"r2"`) {
+		t.Errorf("apply_policy: %+v, connector got %+v", res, a)
+	}
+	// No filter and no dry_run: the whole queue, a dry run.
+	call(`{"op":"apply_policy"}`)
+	if mc.applyReq.Filter != nil || mc.applyReq.DryRun != nil {
+		t.Errorf("a bare apply_policy reached the connector as %+v", mc.applyReq)
+	}
+
 	mc.reviewQueueReq = connector.ListReviewQueueRequest{}
 	if res := call(`{"op":"queue","filter":{"created_after":"yesterday"}}`); !res.IsError || mc.reviewQueueReq.Summarize {
 		t.Errorf("a bad time bound: %+v", res)

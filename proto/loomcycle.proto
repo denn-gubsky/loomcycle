@@ -358,6 +358,24 @@ service Loomcycle {
   // Mirrors GET /v1/_statements/rulings.
   rpc ListRulings(ListRulingsRequest) returns (ListRulingsResponse);
 
+  // ApplyReviewPolicy runs the tenant's review policy (the ontology's Review
+  // section, or the policy @auto_assert implies) over the proposals already
+  // in the queue, narrowed by an optional queue filter (status, if set, must
+  // be proposed). A dry run (the default) counts what each rule decides and
+  // samples what it would rule; the real call needs expect_count equal to the
+  // current match count (FAILED_PRECONDITION queue_changed otherwise), rules
+  // at most max (1000) accepts and rejects as ONE ruling — each statement
+  // recording ruled_by policy:<rule>@<ontology version>, undone together by
+  // RevertRuling — and routes the judge's proposals.
+  //
+  // An admin or a tenant operator only (write on each from-document); a
+  // member is refused (PERMISSION_DENIED forbidden) even holding the
+  // access-control action review. INVALID_ARGUMENT invalid_request when no
+  // policy is in force or the Review section has issues.
+  //
+  // Mirrors POST /v1/_statements/apply_policy.
+  rpc ApplyReviewPolicy(ApplyReviewPolicyRequest) returns (ApplyReviewPolicyResponse);
+
   // Decide asks a decision model typed questions (choice / noul / score)
   // about a piece of state and returns each answer as the model gave it. It
   // is a judgement with probabilities, not generated text, and it needs no
@@ -2573,6 +2591,17 @@ message RulingSelector {
   int32 ids_count = 3;
   int32 max = 4;
   string reverts = 5;
+  // Set on a review policy's ruling.
+  RulingPolicy policy = 6;
+}
+
+// RulingPolicy names the review policy a ruling applied: the ontology version,
+// its source (review or auto_assert; empty for a ruling made as a run's
+// proposals were filed) and that run.
+message RulingPolicy {
+  int32 version = 1;
+  string source = 2;
+  string run_id = 3;
 }
 
 // RulingRecord is one bulk ruling (action accept or reject) or one revert of
@@ -2602,6 +2631,60 @@ message ListRulingsResponse {
   string scope = 2;
   repeated RulingRecord rulings = 3;
   string next_cursor = 4;
+}
+
+message ApplyReviewPolicyRequest {
+  string tenant = 1;
+  // tenant (default) or user (the caller's own).
+  string scope = 2;
+  // Narrows the proposals considered; unset = every proposal of the scope.
+  ReviewQueueFilter filter = 3;
+  // Unset = a dry run.
+  optional bool dry_run = 4;
+  // The dry run's matched count; required to rule.
+  optional int32 expect_count = 5;
+  // At most this many accepts and rejects (default and ceiling 1000).
+  int32 max = 6;
+  // With scope "user": another subject's user scope, as for the other
+  // review RPCs.
+  string scope_id = 7;
+}
+
+// PolicyRuleCount is how many proposals one rule decided; rule 0 is none
+// matched (they wait for a person).
+message PolicyRuleCount {
+  int32 rule = 1;
+  string action = 2;
+  string text = 3;
+  int32 count = 4;
+}
+
+message ApplyReviewPolicyResponse {
+  string tenant = 1;
+  string scope = 2;
+  bool dry_run = 3;
+  // review (the Review section) or auto_assert (the policy it implies).
+  string source = 4;
+  // The ontology version the policy was read at.
+  int32 version = 5;
+  string ruling_id = 6;
+  int32 matched = 7;
+  int32 skipped = 8;
+  int32 accept = 9;
+  int32 reject = 10;
+  int32 judge = 11;
+  int32 human = 12;
+  int32 to_rule = 13;
+  int32 deferred = 14;
+  int32 ruled = 15;
+  int32 failed = 16;
+  // Proposals whose judge routing the call set or cleared.
+  int32 marked = 17;
+  repeated PolicyRuleCount rules = 18;
+  // A dry run's sample, each statement as JSON with review_rule and
+  // review_action.
+  repeated bytes sample_json = 19;
+  repeated RulingItem items = 20;
 }
 
 // ========================

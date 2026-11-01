@@ -223,6 +223,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.ListRulingsRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.ListRulingsResponse.FromString,
                 _registered_method=True)
+        self.ApplyReviewPolicy = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ApplyReviewPolicy',
+                request_serializer=loomcycle__pb2.ApplyReviewPolicyRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.ApplyReviewPolicyResponse.FromString,
+                _registered_method=True)
         self.Decide = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/Decide',
                 request_serializer=loomcycle__pb2.DecideRequest.SerializeToString,
@@ -959,6 +964,28 @@ class LoomcycleServicer:
         PERMISSION_DENIED forbidden.
 
         Mirrors GET /v1/_statements/rulings.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ApplyReviewPolicy(self, request, context):
+        """ApplyReviewPolicy runs the tenant's review policy (the ontology's Review
+        section, or the policy @auto_assert implies) over the proposals already
+        in the queue, narrowed by an optional queue filter (status, if set, must
+        be proposed). A dry run (the default) counts what each rule decides and
+        samples what it would rule; the real call needs expect_count equal to the
+        current match count (FAILED_PRECONDITION queue_changed otherwise), rules
+        at most max (1000) accepts and rejects as ONE ruling — each statement
+        recording ruled_by policy:<rule>@<ontology version>, undone together by
+        RevertRuling — and routes the judge's proposals.
+
+        An admin or a tenant operator only (write on each from-document); a
+        member is refused (PERMISSION_DENIED forbidden) even holding the
+        access-control action review. INVALID_ARGUMENT invalid_request when no
+        policy is in force or the Review section has issues.
+
+        Mirrors POST /v1/_statements/apply_policy.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1750,6 +1777,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.ListRulings,
                     request_deserializer=loomcycle__pb2.ListRulingsRequest.FromString,
                     response_serializer=loomcycle__pb2.ListRulingsResponse.SerializeToString,
+            ),
+            'ApplyReviewPolicy': grpc.unary_unary_rpc_method_handler(
+                    servicer.ApplyReviewPolicy,
+                    request_deserializer=loomcycle__pb2.ApplyReviewPolicyRequest.FromString,
+                    response_serializer=loomcycle__pb2.ApplyReviewPolicyResponse.SerializeToString,
             ),
             'Decide': grpc.unary_unary_rpc_method_handler(
                     servicer.Decide,
@@ -3005,6 +3037,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/ListRulings',
             loomcycle__pb2.ListRulingsRequest.SerializeToString,
             loomcycle__pb2.ListRulingsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ApplyReviewPolicy(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ApplyReviewPolicy',
+            loomcycle__pb2.ApplyReviewPolicyRequest.SerializeToString,
+            loomcycle__pb2.ApplyReviewPolicyResponse.FromString,
             options,
             channel_credentials,
             insecure,

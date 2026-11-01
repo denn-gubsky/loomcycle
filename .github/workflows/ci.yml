@@ -748,6 +748,13 @@ jobs:
       - name: Install @loomcycle/explorer deps
         working-directory: packages/explorer
         run: npm ci
+      # The package's own tests were never run here. They include the bulk
+      # ruling sequence the Review page and the Connections panel share (dry run
+      # first, expect_count, chunks of 1000), which the web build compiles but
+      # does not test.
+      - name: Test @loomcycle/explorer
+        working-directory: packages/explorer
+        run: npm run typecheck && npm test
       # @loomcycle/memory-view (RFC BV) is consumed from SOURCE via a Vite alias
       # the same way — install its deps before the web steps
       # (packages/memory-view/node_modules is gitignored → absent on checkout).

@@ -51,6 +51,14 @@ const (
 	// classifyField is the root field that holds a document's classification.
 	classifyField = "classification"
 
+	// How classify found a statement, recorded on it as attributes.classified_by:
+	// its class rules or an instance pattern (rules), the neighbours' own
+	// asserted statements (vote), or the model (model). A review policy's
+	// rule:matched asks it — the first two are rules, the last is not.
+	classifiedByRules = "rules"
+	classifiedByVote  = "vote"
+	classifiedByModel = "model"
+
 	classifySections     = 5    // first sections read for rules and as the vote's seed
 	classifyBodyChars    = 2000 // of the first sections' text searched for an issuer
 	classifyNeighbours   = 20   // related hits the vote looks at
@@ -189,6 +197,7 @@ func (d *Document) classify(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if verr != nil {
 		return errFrom("classify: vote: "+verr.Error(), verr), nil
 	}
+	conceptsBy := classifiedByVote
 	out.Steps = append(out.Steps, ruleStep, vote)
 	out.Concepts = concepts
 
@@ -238,7 +247,7 @@ func (d *Document) classify(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			out.Result = "proposed"
 		}
 		if len(concepts) == 0 && len(model.concepts) > 0 {
-			concepts = model.concepts
+			concepts, conceptsBy = model.concepts, classifiedByModel
 			out.Concepts = concepts
 		}
 	} else if len(concepts) == 0 && d.Classifier != nil {
@@ -248,7 +257,7 @@ func (d *Document) classify(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		cs, step := d.classifyConcepts(ctx, read, cd)
 		out.Steps = append(out.Steps, step)
 		if len(cs) > 0 {
-			concepts = cs
+			concepts, conceptsBy = cs, classifiedByModel
 			out.Concepts = concepts
 		}
 	}
@@ -292,11 +301,11 @@ func (d *Document) classify(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			if live {
 				status = edgeStatusAsserted
 			}
-			res, warn := d.classifyStatement(ctx, key, mscope, acl, rootDoc, cd.rootID, issuers[0].SubjectChunkID, "issued_by", status, issuers[0].Quote)
+			res, warn := d.classifyStatement(ctx, key, mscope, acl, rootDoc, cd.rootID, issuers[0].SubjectChunkID, "issued_by", status, issuers[0].Quote, classifiedByRules)
 			out.addStatement(res, warn, &rec)
 		}
 		for _, c := range concepts {
-			res, warn := d.classifyStatement(ctx, key, mscope, acl, rootDoc, cd.rootID, c.ChunkID, c.Kind, edgeStatusProposed, "")
+			res, warn := d.classifyStatement(ctx, key, mscope, acl, rootDoc, cd.rootID, c.ChunkID, c.Kind, edgeStatusProposed, "", conceptsBy)
 			out.addStatement(res, warn, &rec)
 		}
 	} else {

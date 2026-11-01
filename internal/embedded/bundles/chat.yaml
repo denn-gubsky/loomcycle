@@ -123,11 +123,15 @@ agents:
         Start there for "what do I know about X" — both `scope` and `query` are
         required. Searching document TEXT rather than facts is
         `Memory op=search scope=user prefix="doc.chunk:" query="..."`.
-      - `Document graph_recall` is the SECOND step, never the first. It walks
-        relations out from facts that already carry entity metadata, so on a
-        store without them it returns `seeds: 0` and tells you nothing. Use it
-        to expand a fact recall already found. `as_of` answers as of a past
-        moment, recovering a fact since corrected.
+      - `Document graph_recall` is the SECOND step, never the first: it
+        follows relations outward from chunks a search already found, for a
+        question that needs a chain of facts. Pass those as `seed_ids` (from
+        `Memory op=recall` or `Document op=search`). Given only a `query`, it
+        seeds from chunk text when the server has an embedder and from fact
+        titles as a whole word when it does not, so `seeds: 0` means nothing
+        matched, not that nothing is known: search first. A hop is one
+        relation, so fact → subject → fact is `hops: 2`. `as_of` answers as of
+        a past moment, recovering a fact since corrected.
 
       ## Style
       - Be concise and concrete; lead with the answer, then the reasoning.
@@ -226,11 +230,15 @@ agents:
         Start there for "what do I know about X" — both `scope` and `query` are
         required. Searching document TEXT rather than facts is
         `Memory op=search scope=user prefix="doc.chunk:" query="..."`.
-      - `Document graph_recall` is the SECOND step, never the first. It walks
-        relations out from facts that already carry entity metadata, so on a
-        store without them it returns `seeds: 0` and tells you nothing. Use it
-        to expand a fact recall already found. `as_of` answers as of a past
-        moment, recovering a fact since corrected.
+      - `Document graph_recall` is the SECOND step, never the first: it
+        follows relations outward from chunks a search already found, for a
+        question that needs a chain of facts. Pass those as `seed_ids` (from
+        `Memory op=recall` or `Document op=search`). Given only a `query`, it
+        seeds from chunk text when the server has an embedder and from fact
+        titles as a whole word when it does not, so `seeds: 0` means nothing
+        matched, not that nothing is known: search first. A hop is one
+        relation, so fact → subject → fact is `hops: 2`. `as_of` answers as of
+        a past moment, recovering a fact since corrected.
 
       ## Style
       - Be concise and concrete; lead with the answer, then the reasoning.
@@ -304,11 +312,15 @@ agents:
         Start there for "what do I know about X" — both `scope` and `query` are
         required. Searching document TEXT rather than facts is
         `Memory op=search scope=user prefix="doc.chunk:" query="..."`.
-      - `Document graph_recall` is the SECOND step, never the first. It walks
-        relations out from facts that already carry entity metadata, so on a
-        store without them it returns `seeds: 0` and tells you nothing. Use it
-        to expand a fact recall already found. `as_of` answers as of a past
-        moment, recovering a fact since corrected.
+      - `Document graph_recall` is the SECOND step, never the first: it
+        follows relations outward from chunks a search already found, for a
+        question that needs a chain of facts. Pass those as `seed_ids` (from
+        `Memory op=recall` or `Document op=search`). Given only a `query`, it
+        seeds from chunk text when the server has an embedder and from fact
+        titles as a whole word when it does not, so `seeds: 0` means nothing
+        matched, not that nothing is known: search first. A hop is one
+        relation, so fact → subject → fact is `hops: 2`. `as_of` answers as of
+        a past moment, recovering a fact since corrected.
 
       ## Style
       - Be concise and concrete; lead with the answer, then the reasoning.

@@ -46,3 +46,47 @@ export function assetFetchFromConnection(c: Connection): AssetFetch {
     return doFetch(c.baseUrl + path, { headers });
   };
 }
+
+/** JsonPost POSTs a JSON body to a relative loomcycle path and returns the parsed
+ *  answer; a refusal rejects with an Error carrying the HTTP `status` and the
+ *  server's `code` (e.g. `queue_changed`), its message the server's `error`. It
+ *  reaches routes the pinned @loomcycle/client may not have a method for yet
+ *  (RFC FS: POST /v1/_statements/rule and /revert), over the same transport. */
+export type JsonPost = (path: string, body: unknown) => Promise<unknown>;
+
+/** RequestError is a JsonPost refusal. */
+export class RequestError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = "RequestError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/** Build the JsonPost from a Connection — the same auth transport as the JSON
+ *  client and the asset fetch. */
+export function jsonPostFromConnection(c: Connection): JsonPost {
+  const impl = c.fetch;
+  const doFetch: typeof fetch = (input, init) => (impl ? impl(input, init) : fetch(input, init));
+  return async (path, body) => {
+    const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
+    if (c.token) headers.Authorization = `Bearer ${c.token}`;
+    const resp = await doFetch(c.baseUrl + path, { method: "POST", headers, body: JSON.stringify(body) });
+    const text = await resp.text();
+    let parsed: unknown = undefined;
+    try {
+      parsed = text ? JSON.parse(text) : undefined;
+    } catch {
+      // not JSON: the status line is the message below
+    }
+    if (!resp.ok) {
+      const o = parsed && typeof parsed === "object" ? (parsed as { error?: unknown; code?: unknown }) : {};
+      const msg = typeof o.error === "string" && o.error ? o.error : `${resp.status} ${resp.statusText}`.trim();
+      throw new RequestError(msg, resp.status, typeof o.code === "string" ? o.code : undefined);
+    }
+    return parsed;
+  };
+}

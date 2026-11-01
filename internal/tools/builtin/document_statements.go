@@ -403,6 +403,12 @@ type edgeWriteResult struct {
 	EvidenceCapped  bool     `json:"evidence_capped,omitempty"`
 	OntologyValid   bool     `json:"ontology_valid"`
 	Warnings        []string `json:"warnings,omitempty"`
+	// RuledBy and RulingID: the review policy ruled the proposal as it was
+	// filed (policy:<rule>@<ontology version>), recorded under that ruling.
+	// ReviewRoute: the policy left it for the judge.
+	RuledBy     string `json:"ruled_by,omitempty"`
+	RulingID    string `json:"ruling_id,omitempty"`
+	ReviewRoute string `json:"review_route,omitempty"`
 }
 
 // writeStatement is the one write path for a statement: link_chunks,
@@ -480,6 +486,16 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 	}
 
 	if existing != nil && w.revisionOf == "" {
+		if policyRejected(existing) {
+			// A policy's rejection is a verdict on that proposal, not a tombstone
+			// on the relation: a later write of it reopens it as a proposal, which
+			// the policy then evaluates again.
+			if err := d.exec(ctx, key, `UPDATE chunk_edges SET status = ?, ruled_by = NULL, judged_at = NULL, judge_reason = NULL, judged_by = NULL
+				WHERE id = ? AND status = ? AND ruled_by = ?`, edgeStatusProposed, existing.ID, edgeStatusRejected, existing.RuledBy); err != nil {
+				return out, nil, err
+			}
+			existing.Status = edgeStatusProposed
+		}
 		if existing.Status == edgeStatusRejected && !w.overrideRejected {
 			r := errBusiness("statement_rejected: this relation was rejected by an operator ("+existing.JudgeReason+")",
 				"Do not re-propose it. An operator can accept it from the review queue if it was rejected in error.")
@@ -1172,6 +1188,9 @@ func (d *Document) statementJSON(ctx context.Context, s statementRow, ends map[s
 // linkChunks asserts a relation: a statement with status asserted, method manual
 // (or the internal path's own), and any evidence the caller supplies.
 func (d *Document) linkChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	if r := refuseRuntimeAttributes("link_chunks", in.Attributes); r != nil {
+		return *r, nil
+	}
 	method := in.edgeMethod
 	if method == "" {
 		method = edgeMethodManual
@@ -1238,10 +1257,15 @@ func (d *Document) unlinkChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 // beside that statement (attributes.revision_of), so a re-verification never
 // writes a duplicate.
 //
-// Auto-assertion is the server's decision, never the caller's: a kind the
-// vocabulary marks @auto_assert, made by a rule, with every quote resolved to an
-// existing chunk, is written asserted.
+// Auto-assertion is the server's decision, never the caller's. With a Review
+// section in the tenant ontology its policy rules the proposal once it is filed
+// (ruleOnFiling). Without one, a kind the vocabulary marks @auto_assert, made by
+// a rule, with every quote resolved to an existing chunk, is written asserted —
+// exactly as before the section existed.
 func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	if r := refuseRuntimeAttributes("propose_statement", in.Attributes); r != nil {
+		return *r, nil
+	}
 	w := edgeWrite{
 		from: in.FromID, to: in.ToID, kind: in.Kind, method: edgeMethodManual, status: edgeStatusProposed,
 		confidence: in.Confidence, validAt: in.ValidAt, invalidAt: in.InvalidAt,
@@ -1255,7 +1279,7 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 		if base == nil {
 			return errNotFound("propose_statement: no such statement: "+in.ID, "Omit id to propose a new statement."), nil
 		}
-		if base.Status == edgeStatusRejected {
+		if base.Status == edgeStatusRejected && !policyRejected(base) {
 			return errBusiness("propose_statement: statement_rejected: that relation was rejected by an operator ("+base.JudgeReason+"), so it is not revised",
 				"Do not re-propose it. An operator can accept it from the review queue if it was rejected in error."), nil
 		}
@@ -1273,9 +1297,13 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 		return errBusiness("propose_statement: statement_rejected: this relation was rejected by an operator ("+reason+")",
 			"Do not re-propose it. An operator can accept it from the review queue if it was rejected in error."), nil
 	}
+	pf, inForce := d.reviewPolicyInForce(ctx)
+	section := inForce && pf.section
 	// Not for a competing proposal (id): asserting it would set a second live
-	// statement beside the one it revises.
-	if len(w.evidence) > 0 && w.revisionOf == "" && d.autoAssertKind(ctx, w.kind) && strings.HasPrefix(in.edgeMethod, "rule:") {
+	// statement beside the one it revises. Not beside a Review section, which is
+	// the whole policy — nor when the ontology could not be read, which rules
+	// nothing.
+	if inForce && !section && len(w.evidence) > 0 && w.revisionOf == "" && d.autoAssertKind(ctx, w.kind) && strings.HasPrefix(in.edgeMethod, "rule:") {
 		allChunks := true
 		for _, ev := range w.evidence {
 			if ev.ChunkID == "" {
@@ -1298,19 +1326,31 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 		return *refuse, nil
 	}
 	d.publishEdgeChange(ctx, key, mscope, "propose_statement", res.ID, w.from, w.to, w.kind, res.Status)
+	if section && w.revisionOf == "" {
+		res = d.ruleOnFiling(ctx, key, mscope, pf, res)
+	}
 	return jsonResult(res)
 }
 
 // rejectedRelation reports a rejected statement of (from, to, kind,
-// discriminator) at any valid_at, with its reason.
+// discriminator) at any valid_at, with its reason. Only a person's rejection
+// (an operator's, a bulk ruling's) is a tombstone; a review policy's is a
+// verdict on one proposal, and does not refuse the relation.
 func (d *Document) rejectedRelation(ctx context.Context, key sqlmem.ScopeKey, from, to, kind, disc string) (string, bool, error) {
 	res, err := d.query(ctx, key, `SELECT COALESCE(judge_reason, '') FROM chunk_edges
-		WHERE from_id = ? AND to_id = ? AND kind = ? AND discriminator = ? AND status = ? LIMIT 1`,
+		WHERE from_id = ? AND to_id = ? AND kind = ? AND discriminator = ? AND status = ?
+		  AND COALESCE(ruled_by, '') NOT LIKE 'policy:%' LIMIT 1`,
 		from, to, kind, disc, edgeStatusRejected)
 	if err != nil || len(res.Rows) == 0 {
 		return "", false, err
 	}
 	return asStr(res.Rows[0][0]), true, nil
+}
+
+// policyRejected reports a statement a review policy rejected: a verdict on
+// that proposal, which a later write of the relation reopens.
+func policyRejected(s *statementRow) bool {
+	return s.Status == edgeStatusRejected && strings.HasPrefix(s.RuledBy, "policy:")
 }
 
 // reviewStatement is accept_statement / reject_statement: the operator's ruling on
@@ -1402,9 +1442,17 @@ func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	}
 	now := time.Now().UnixNano()
 	reasonArg := nullIfEmpty(strings.TrimSpace(reason))
-	// operator_ruled_at is set by every ruling, whatever else it records: it is
-	// what tells a run's maintenance this statement is a human decision.
-	set, args := `status = ?, operator_ruled_at = ?, ruled_by = ?, judged_at = ?, judge_reason = ?, judged_by = ?`, []any{status, now, ruledBy, now, reasonArg, "operator"}
+	// operator_ruled_at is set by every person's ruling, whatever else it
+	// records: it is what tells a run's maintenance this statement is a human
+	// decision. A review policy's ruling (ruled_by policy:<rule>@<version>) is
+	// not one: it is judged_by policy and leaves operator_ruled_at unset, so its
+	// rejection is no tombstone and its acceptance stays a run's to maintain.
+	var ruledAt any = now
+	judgedBy := "operator"
+	if strings.HasPrefix(ruledBy, "policy:") {
+		ruledAt, judgedBy = nil, "policy"
+	}
+	set, args := `status = ?, operator_ruled_at = ?, ruled_by = ?, judged_at = ?, judge_reason = ?, judged_by = ?`, []any{status, ruledAt, ruledBy, now, reasonArg, judgedBy}
 	if accept {
 		refuting := s.VerdictConfidence != nil && *s.VerdictConfidence < withholdBelowConfidence
 		switch {
@@ -1416,7 +1464,7 @@ func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		default:
 			// A judge's standing verdict on the proposal is kept: accepting it adds
 			// nothing the verdict does not already say.
-			set, args = `status = ?, operator_ruled_at = ?, ruled_by = ?`, []any{status, now, ruledBy}
+			set, args = `status = ?, operator_ruled_at = ?, ruled_by = ?`, []any{status, ruledAt, ruledBy}
 		}
 	}
 	args = append(args, id, s.Status)
@@ -1462,6 +1510,12 @@ func (d *Document) getEdge(ctx context.Context, key sqlmem.ScopeKey, in docInput
 	if _, ok := out["evidence"]; !ok {
 		out["evidence"] = []edgeEvidenceRow{}
 		out["evidence_count"] = 0
+	}
+	if strings.HasPrefix(s.RuledBy, "policy:") {
+		// The ruling revert_ruling takes; a bulk ruling's is in ruled_by itself.
+		if id, err := d.policyRulingOf(ctx, key, s.ID); err == nil && id != "" {
+			out["ruling_id"] = id
+		}
 	}
 	return jsonResult(map[string]any{"statement": out})
 }
@@ -1956,7 +2010,9 @@ func (d *Document) importEdges(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			if e.env.Status == edgeStatusProposed {
 				w.status, w.authored = edgeStatusProposed, false
 			}
-			w.confidence, w.validAt, w.invalidAt, w.attributes = e.env.Confidence, e.env.ValidAt, e.env.InvalidAt, e.env.Attributes
+			// The importer's own write: it cannot vouch for a verdict or a routing
+			// the trailer claims.
+			w.confidence, w.validAt, w.invalidAt, w.attributes = e.env.Confidence, e.env.ValidAt, e.env.InvalidAt, withoutRuntimeAttributes(e.env.Attributes)
 			for _, ev := range e.env.Evidence {
 				if ev.ChunkID != "" {
 					if mapped, ok := oldToNew[ev.ChunkID]; ok {

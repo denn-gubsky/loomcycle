@@ -104,7 +104,7 @@ func TestSurfaces_EveryMappedPairIsInTheCatalog(t *testing.T) {
 		{"POST", "/v1/_pause"}, {"GET", "/v1/_state"}, {"GET", "/v1/_metrics/summary"}, {"GET", "/v1/_resident"},
 		{"POST", "/v1/_resident/x/close"}, {"GET", "/v1/_runnable-agents"}, {"GET", "/v1/_library/skills"},
 		{"GET", "/v1/_library/mcp-servers"}, {"POST", "/v1/_history"}, {"POST", "/v1/_evaluation"},
-		{"GET", "/v1/_ontology"}, {"POST", "/v1/_ontology/adopt"}, {"POST", "/v1/_ontology/subjects/merge"}, {"POST", "/v1/_ontology/subjects/principal"}, {"GET", "/v1/_statements/review"}, {"POST", "/v1/_statements/rule"}, {"POST", "/v1/_statements/revert"}, {"GET", "/v1/_statements/rulings"}, {"POST", "/v1/_webhooks/x/test"},
+		{"GET", "/v1/_ontology"}, {"POST", "/v1/_ontology/adopt"}, {"POST", "/v1/_ontology/subjects/merge"}, {"POST", "/v1/_ontology/subjects/principal"}, {"GET", "/v1/_statements/review"}, {"POST", "/v1/_statements/rule"}, {"POST", "/v1/_statements/revert"}, {"GET", "/v1/_statements/rulings"}, {"POST", "/v1/_statements/apply_policy"}, {"POST", "/v1/_webhooks/x/test"},
 		{"GET", "/v1/_groups"}, {"POST", "/v1/_acldef"}, {"GET", "/v1/_acldef/names"},
 	}
 	for _, r := range routes {
@@ -122,7 +122,7 @@ func TestSurfaces_EveryMappedPairIsInTheCatalog(t *testing.T) {
 			}
 		}
 	}
-	for _, rpc := range []string{"Run", "Continue", "StreamRun", "DeleteRunTree", "Decide", "PublishChannel", "AgentDef", "Memory", "OperatorTokenDef", "RestoreSnapshot", "UsageReport", "DirectoryTenants", "History", "Crypto", "TeamDef", "VolumeDef", "AwaitChannels", "GroupDef", "AclDef", "AclBinding", "MergeSubjects", "BindSubjectPrincipal", "ListReviewQueue", "RuleStatements", "RevertRuling", "ListRulings"} {
+	for _, rpc := range []string{"Run", "Continue", "StreamRun", "DeleteRunTree", "Decide", "PublishChannel", "AgentDef", "Memory", "OperatorTokenDef", "RestoreSnapshot", "UsageReport", "DirectoryTenants", "History", "Crypto", "TeamDef", "VolumeDef", "AwaitChannels", "GroupDef", "AclDef", "AclBinding", "MergeSubjects", "BindSubjectPrincipal", "ListReviewQueue", "RuleStatements", "RevertRuling", "ListRulings", "ApplyReviewPolicy"} {
 		s, ok := GRPCSurface(rpc)
 		if !ok || !ValidVerb(s.Type, s.Action) {
 			t.Errorf("GRPCSurface(%s) = %+v, %v", rpc, s, ok)

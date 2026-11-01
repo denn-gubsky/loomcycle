@@ -41,7 +41,7 @@ with `section: relations`, a concept with `section: schemes`, an instance with
 ## Returns
 
 `{exists, document_id?, status, confirmed, version, sections, partial?, classes,
-relations, grammars, schemes, instances, issues?}`:
+relations, grammars, schemes, instances, review?, issues?}`:
 
 - `exists` — false when the tenant has no ontology document, so only the standard
   classes apply.
@@ -91,6 +91,43 @@ relations, grammars, schemes, instances, issues?}`:
     adoption trusts, and when the caller may not read the subject (it needs the
     tenant scope and read on the subject's document). Absent does not prove the
     instance is unadopted; do not create a subject for it.
+- `review` — the review policy in force: which proposed statements need no
+  person. `{source, rules, judge_floor, applied, issues?}`.
+  - `source` is `review` for the ontology's Review section, or `auto_assert`
+    when there is none and relation kinds are marked `@auto_assert` (each such
+    kind is then the rule `accept kind:<kind> method:rule:* when
+    quotes:resolved`). Absent when neither applies.
+  - `rules` in order, each `{index, text, action, any?, kinds?, method?,
+    quotes_resolved?, self?, targets?, confidence?, rule_matched?, floor?,
+    mode?}`. The first rule that matches a proposal decides it; a proposal no
+    rule matches waits for a person.
+  - `applied` is false when the section has issues: then no rule applies and
+    every proposal waits for a person. The issues are also in `issues`.
+
+## Review rules
+
+The Review section is a root chunk whose first line is `@section review`. Each
+list item in its body is one rule; a `judge_floor: <0..1>` line sets the
+confidence a judge's verdict needs to rule (default 0.85). Prose is not read.
+
+```text
+- accept kind:cites,repeals method:rule:citation when quotes:resolved self:false target:held|placeholder
+- accept kind:subject method:classify when rule:matched
+- reject kind:elaborates method:extractor:relate when confidence<0.6
+- judge  kind:elaborates,uses_term floor:0.9 mode:recommend
+- human  *
+```
+
+- Actions: `accept`, `reject`, `judge` (leave it for the judge agent), `human`
+  (leave it for a person).
+- Selectors: `kind:<a,b>` (exact kinds), `method:<m>` (exact, or a prefix
+  ending in `*`, as `rule:*`), or `*` for every proposal.
+- Conditions, after `when`: `quotes:resolved` (it has evidence, and every
+  quote is in a chunk and not stale), `self:true|false` (both ends in one
+  document), `target:held|placeholder|subject|concept` (what the to-end is),
+  `rule:matched` (a rule made it, not a model), `confidence<x`, `<=x`, `>x`,
+  `>=x` (the writer's own confidence; a statement with none meets no bound).
+- `judge` options: `floor:<0..1>` and `mode:rule|recommend`.
 
 ## Grammar lines
 

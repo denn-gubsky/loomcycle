@@ -1861,10 +1861,11 @@ class LoomcycleClient:
         Returns ``{tenant, scope, rulings, next_cursor}``; each ruling is
         ``{id, action, ruled_by, actor, reason, selector, matched, ruled,
         failed, skipped, created_at, reverted, reverted_at, reverted_by}``,
-        its ``selector`` ``{filter, ids_count, max, reverts}`` — the filter
-        (``None`` when it named ids), or how many ids, never the ids. A
+        its ``selector`` ``{filter, ids_count, max, reverts, policy}`` — the
+        filter (``None`` when it named ids), or how many ids, never the ids. A
         revert is a record of its own (action ``revert``, ``selector.reverts``
-        the ruling it undid)."""
+        the ruling it undid). A review policy's ruling carries ``policy``
+        ``{version, source, run_id}`` (``None`` on any other)."""
         req = pb.ListRulingsRequest(tenant=tenant, scope=scope, scope_id=scope_id, limit=limit, after=after)
         try:
             resp = await self._stub.ListRulings(req, metadata=self._auth_metadata())
@@ -1886,6 +1887,15 @@ class LoomcycleClient:
                         "ids_count": r.selector.ids_count,
                         "max": r.selector.max,
                         "reverts": r.selector.reverts,
+                        "policy": (
+                            {
+                                "version": r.selector.policy.version,
+                                "source": r.selector.policy.source,
+                                "run_id": r.selector.policy.run_id,
+                            }
+                            if r.selector.HasField("policy")
+                            else None
+                        ),
                     },
                     "matched": r.matched,
                     "ruled": r.ruled,
@@ -1898,6 +1908,73 @@ class LoomcycleClient:
                 }
                 for r in resp.rulings
             ],
+        }
+
+    async def apply_review_policy(
+        self,
+        *,
+        filter: Mapping[str, Any] | None = None,
+        dry_run: bool = True,
+        expect_count: int | None = None,
+        max: int = 0,
+        scope: str = "",
+        scope_id: str = "",
+        tenant: str = "",
+    ) -> Mapping[str, Any]:
+        """Run the tenant's review policy (the ontology's Review section, or
+        the policy ``@auto_assert`` implies) over the proposals already in
+        the queue, narrowed by *filter* (the queue's keys; its ``status``,
+        if any, must be ``proposed``; ``None`` is the whole queue). Mirrors
+        ``POST /v1/_statements/apply_policy``.
+
+        A DRY RUN unless ``dry_run=False``: it returns ``matched``, what the
+        policy would ``accept``, ``reject``, route to the ``judge`` or leave
+        for a person (``human``), the count per rule in ``rules`` and a
+        ``sample``. To apply, call again with ``dry_run=False`` and
+        *expect_count* set to the dry run's ``matched``: at most *max*
+        (default and ceiling 1000) accepts and rejects are ruled as one
+        ruling (``ruling_id``, undone by :meth:`revert_ruling`), each
+        statement recording ``ruled_by: policy:<rule>@<ontology version>``;
+        the rest are ``deferred``.
+
+        For an admin or a tenant operator only: a member is refused
+        (``.reason == "forbidden"``) even holding ``review``. Other refusals:
+        ``invalid_request`` (no policy in force, or the Review section has
+        issues), ``queue_changed``, ``unavailable``. *scope_id* names another
+        subject's user scope with ``scope="user"``, as for
+        :meth:`rule_statements`."""
+        req = pb.ApplyReviewPolicyRequest(tenant=tenant, scope=scope, scope_id=scope_id, max=max)
+        if filter is not None:
+            req.filter.CopyFrom(_review_filter_pb(filter))
+        if not dry_run:
+            req.dry_run = False
+        if expect_count is not None:
+            req.expect_count = expect_count
+        try:
+            resp = await self._stub.ApplyReviewPolicy(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "scope": resp.scope,
+            "dry_run": resp.dry_run,
+            "source": resp.source,
+            "version": resp.version,
+            "ruling_id": resp.ruling_id,
+            "matched": resp.matched,
+            "skipped": resp.skipped,
+            "accept": resp.accept,
+            "reject": resp.reject,
+            "judge": resp.judge,
+            "human": resp.human,
+            "to_rule": resp.to_rule,
+            "deferred": resp.deferred,
+            "ruled": resp.ruled,
+            "failed": resp.failed,
+            "marked": resp.marked,
+            "rules": [{"rule": r.rule, "action": r.action, "text": r.text, "count": r.count} for r in resp.rules],
+            "sample": [json.loads(s) for s in resp.sample_json],
+            "items": [_ruling_item(i) for i in resp.items],
         }
 
     async def compact_run(self, run_id: str, *, reason: str = "") -> Mapping[str, Any]:
