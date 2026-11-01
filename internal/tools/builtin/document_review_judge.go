@@ -317,6 +317,19 @@ func (d *Document) judgeOne(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if outcome != judgeOutcomeRuled {
 		return item, "", nil
 	}
+	// Re-read: the candidate predates the verdict just recorded, and a policy
+	// application may have re-routed it meanwhile.
+	fresh, err := d.statementByID(ctx, key, s.ID)
+	if err != nil {
+		return item, "", err
+	}
+	if fresh == nil {
+		return refuse(rulingNotFound, "no such statement: "+j.ID)
+	}
+	if route, _ := fresh.Attributes[attrReviewRoute].(string); route != reviewRouteJudge || fresh.Status != edgeStatusProposed {
+		item.Outcome, item.Error, item.Message = judgeOutcomeFailed, rulingChanged, "the statement was re-routed or ruled while it was judged; it waits for a person"
+		return item, "", nil
+	}
 	rulingID, err := d.judgeRuling(ctx, key, run)
 	if err != nil {
 		logStatementReviewFault(ctx, "judge: the ruling could not be recorded; the verdict waits for a person", "", err)
@@ -332,14 +345,6 @@ func (d *Document) judgeOne(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	// was reverted: that record no longer describes it.
 	if err := d.exec(ctx, key, `DELETE FROM statement_ruling_items WHERE ruling_id = ? AND edge_id = ?`, rulingID, s.ID); err != nil {
 		logStatementReviewFault(ctx, "judge: a stale ruling record could not be removed", rulingID, err)
-	}
-	// Re-read: the candidate predates the verdict just recorded.
-	fresh, err := d.statementByID(ctx, key, s.ID)
-	if err != nil {
-		return item, "", err
-	}
-	if fresh == nil {
-		return refuse(rulingNotFound, "no such statement: "+j.ID)
 	}
 	ruled, ok := d.ruleOne(ctx, key, mscope, op, rulingID, "judge:"+run, accept, judgeReason(j), reviewCandidate{s: *fresh, ends: c.ends})
 	if !ok {
