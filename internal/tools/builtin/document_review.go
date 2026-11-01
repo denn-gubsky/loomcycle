@@ -150,6 +150,22 @@ func (d *Document) reviewSelection(ctx context.Context, key sqlmem.ScopeKey, in 
 		where = append(where, d.judgeVerdictExpr()+" = ?")
 		args = append(args, in.JudgeVerdict)
 	}
+	switch in.ReviewRoute {
+	case "":
+	case reviewRouteJudge:
+		where = append(where, d.reviewRouteExpr()+" = ?")
+		args = append(args, in.ReviewRoute)
+	default:
+		return refuse("review_route must be judge", "")
+	}
+	switch in.JudgeAudit {
+	case "":
+	case judgeAuditPending, judgeAuditConfirmed, judgeAuditOverturned:
+		where = append(where, d.judgeAuditExpr()+" = ?")
+		args = append(args, in.JudgeAudit)
+	default:
+		return refuse("judge_audit must be pending, confirmed or overturned", "")
+	}
 	for _, ex := range []struct{ field, v, col string }{{"method_exact", in.MethodExact, "e.method"}, {"kind_exact", in.KindExact, "e.kind"}} {
 		if ex.v == "" {
 			continue
@@ -355,6 +371,8 @@ func reviewFilterInput(f connector.ReviewQueueFilter) docInput {
 		CreatedBefore:   f.CreatedBefore,
 		CreatedAfter:    f.CreatedAfter,
 		HasJudgeVerdict: f.HasJudgeVerdict,
+		ReviewRoute:     f.ReviewRoute,
+		JudgeAudit:      f.JudgeAudit,
 	}
 }
 
@@ -756,13 +774,21 @@ type rulingPrior struct {
 	JudgeReason       string   `json:"judge_reason,omitempty"`
 	JudgedBy          string   `json:"judged_by,omitempty"`
 	VerdictConfidence *float64 `json:"verdict_confidence,omitempty"`
+	// Attributes are a judge's acceptance's, which a person's confirmation or
+	// overturn marks (attributes.judge.audited): the revert puts them back.
+	// Absent for any other statement, whose attributes a ruling never writes.
+	Attributes map[string]any `json:"attributes,omitempty"`
 }
 
 func rulingPriorOf(s *statementRow) string {
-	b, _ := json.Marshal(rulingPrior{
+	p := rulingPrior{
 		Status: s.Status, OperatorRuledAt: s.OperatorRuledAt, RuledBy: s.RuledBy, JudgedAt: s.JudgedAt,
 		JudgeReason: s.JudgeReason, JudgedBy: s.JudgedBy, VerdictConfidence: s.VerdictConfidence,
-	})
+	}
+	if judgeAcceptance(s) {
+		p.Attributes = s.Attributes
+	}
+	b, _ := json.Marshal(p)
 	return string(b)
 }
 
@@ -828,6 +854,9 @@ func (d *Document) RevertRuling(ctx context.Context, scope string, req connector
 	ruledBy := "bulk:" + req.RulingID
 	if isPolicyRuling(asStr(res.Rows[0][1])) {
 		ruledBy = ""
+	} else if run := judgeRulingRun(asStr(res.Rows[0][1])); out.Action == rulingActionJudge && run != "" {
+		// A judge run's statements each record judge:<run>.
+		ruledBy = "judge:" + run
 	}
 	items, err := d.query(ctx, key, `SELECT edge_id, prior, fingerprint FROM statement_ruling_items WHERE ruling_id = ? ORDER BY edge_id`, req.RulingID)
 	if err != nil {
@@ -951,7 +980,8 @@ const (
 )
 
 // rulingSelectorOf reads a ruling's stored selector for the listing: the ids
-// only as a count, and a review policy's ruling with the policy it applied.
+// only as a count, a review policy's ruling with the policy it applied, and a
+// judge run's with that run.
 func rulingSelectorOf(text string) connector.RulingSelector {
 	var sel struct {
 		IDs     []string                     `json:"ids"`
@@ -959,9 +989,10 @@ func rulingSelectorOf(text string) connector.RulingSelector {
 		Max     int                          `json:"max"`
 		Reverts string                       `json:"reverts"`
 		Policy  *connector.RulingPolicy      `json:"policy"`
+		Judge   *connector.RulingJudge       `json:"judge"`
 	}
 	_ = json.Unmarshal([]byte(text), &sel)
-	return connector.RulingSelector{Filter: sel.Filter, IDsCount: len(sel.IDs), Max: sel.Max, Reverts: sel.Reverts, Policy: sel.Policy}
+	return connector.RulingSelector{Filter: sel.Filter, IDsCount: len(sel.IDs), Max: sel.Max, Reverts: sel.Reverts, Policy: sel.Policy, Judge: sel.Judge}
 }
 
 // rulingCursor is ListRulings' paging position: the last row's
@@ -1063,11 +1094,18 @@ func (d *Document) revertOne(ctx context.Context, key sqlmem.ScopeKey, mscope st
 	if err := json.Unmarshal([]byte(priorText), &prior); err != nil || prior.Status == "" {
 		return changed("the ruling's record of it cannot be read")
 	}
-	upd, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(`UPDATE chunk_edges SET status = ?, operator_ruled_at = ?, ruled_by = ?,
-		judged_at = ?, judge_reason = ?, judged_by = ?, verdict_confidence = ?
-		WHERE id = ? AND status = ? AND ruled_by = ?`), []any{prior.Status, prior.OperatorRuledAt, nullIfEmpty(prior.RuledBy),
-		prior.JudgedAt, nullIfEmpty(prior.JudgeReason), nullIfEmpty(prior.JudgedBy), prior.VerdictConfidence,
-		id, s.Status, ruledBy}, 0)
+	set := `status = ?, operator_ruled_at = ?, ruled_by = ?, judged_at = ?, judge_reason = ?, judged_by = ?, verdict_confidence = ?`
+	args := []any{prior.Status, prior.OperatorRuledAt, nullIfEmpty(prior.RuledBy),
+		prior.JudgedAt, nullIfEmpty(prior.JudgeReason), nullIfEmpty(prior.JudgedBy), prior.VerdictConfidence}
+	if prior.Attributes != nil {
+		arg, err := attributesArg(prior.Attributes)
+		if err != nil {
+			return item, 0, err
+		}
+		set, args = set+`, attributes = ?`, append(args, arg)
+	}
+	upd, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(`UPDATE chunk_edges SET `+set+`
+		WHERE id = ? AND status = ? AND ruled_by = ?`), append(args, id, s.Status, ruledBy), 0)
 	if err != nil {
 		return item, 0, err
 	}

@@ -122,6 +122,13 @@ func (e *env) callGRPC(bearer, op string, args map[string]any) outcome {
 				}
 				sel["policy"] = pm
 			}
+			if j := r.GetSelector().GetJudge(); j != nil {
+				jm := map[string]any{"run_id": j.GetRunId()}
+				if j.GetAgent() != "" {
+					jm["agent"] = j.GetAgent()
+				}
+				sel["judge"] = jm
+			}
 			m["selector"] = sel
 			rulings = append(rulings, m)
 		}

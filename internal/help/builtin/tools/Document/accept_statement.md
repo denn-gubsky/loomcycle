@@ -9,6 +9,11 @@ proposal accepted leaves it in the queue (`list_statements`), with evidence a
 reviewer can check. Operators reach it from the
 review queue in the console, or from an operator session over the API.
 
+Accepting a judge agent's acceptance (`ruled_by: judge:<run>`) **confirms** it:
+it stays asserted, becomes a person's ruling, and the verdict records
+`audited: confirmed` — how the sample of the judge's acceptances marked
+`audited: pending` is cleared.
+
 An accepted relation is shown to every reader. If a judge had found it
 unsupported, accepting overrules that verdict and records the operator as the
 one who judged it; a supporting verdict is kept as it was.
@@ -27,7 +32,7 @@ one who judged it; a supporting verdict is kept as it was.
 
 - Refused with a permission error inside a run.
 - `no such statement` — check the id and the scope.
-- `not_a_proposal` — the relation is already asserted.
+- `not_a_proposal` — the relation is already asserted, by anyone but a judge.
 - `statement_changed` — someone ruled on it while you did; reload it and rule
   again if it still needs it.
 

@@ -73,6 +73,8 @@ class _Stub:
                                 matched=3, ruled=2, failed=1, created_at=7, reverted=True, reverted_at=9, reverted_by="v1"),
                 pb.RulingRecord(id="p1", action="policy", ruled_by="operator:ops",
                                 selector=pb.RulingSelector(policy=pb.RulingPolicy(version=14, source="review")), matched=6, ruled=3),
+                pb.RulingRecord(id="j1", action="judge", ruled_by="judge:run-7",
+                                selector=pb.RulingSelector(judge=pb.RulingJudge(run_id="run-7", agent="kb/judge")), matched=4, ruled=4),
             ],
         )
 
@@ -184,9 +186,11 @@ async def test_list_rulings_sends_the_page_and_names_ids_only_by_count():
     got = await _client(stub).list_rulings(limit=5, after="c", scope="user", scope_id="bob", tenant="globex")
     assert (stub.req.limit, stub.req.after, stub.req.scope, stub.req.scope_id, stub.req.tenant) == (5, "c", "user", "bob", "globex")
     assert got["next_cursor"] == "n1"
-    revert, ruling, policy = got["rulings"]
+    revert, ruling, policy, judge = got["rulings"]
     assert policy["action"] == "policy" and policy["selector"]["policy"] == {"version": 14, "source": "review", "run_id": ""}
-    assert revert["action"] == "revert" and revert["selector"] == {"filter": None, "ids_count": 0, "max": 0, "reverts": "r1", "policy": None}
+    assert policy["selector"]["judge"] is None
+    assert judge["action"] == "judge" and judge["selector"]["judge"] == {"run_id": "run-7", "agent": "kb/judge"}
+    assert revert["action"] == "revert" and revert["selector"] == {"filter": None, "ids_count": 0, "max": 0, "reverts": "r1", "policy": None, "judge": None}
     assert ruling["selector"]["filter"] == {"kind_exact": "cites"} and ruling["selector"]["max"] == 50
     assert (ruling["reverted"], ruling["reverted_by"], ruling["failed"]) == (True, "v1", 1)
 
@@ -217,3 +221,12 @@ async def test_apply_review_policy_is_a_dry_run_of_the_whole_queue_unless_told_o
     assert (got["ruling_id"], got["ruled"], got["marked"], got["source"], got["version"]) == ("r2", 2, 1, "review", 7)
     assert got["sample"] == [{"id": "s1", "review_rule": 1}]
     assert got["items"] == [{"id": "s1", "status": "asserted", "error": "", "message": ""}]
+
+
+@pytest.mark.asyncio
+async def test_the_judge_queue_and_audit_filters_reach_the_request():
+    stub = _Stub()
+    await _client(stub).list_review_queue(filter={"review_route": "judge"})
+    assert stub.req.filter.review_route == "judge"
+    await _client(stub).rule_statements("accept", filter={"status": "asserted", "judge_audit": "pending"})
+    assert (stub.req.filter.status, stub.req.filter.judge_audit) == ("asserted", "pending")

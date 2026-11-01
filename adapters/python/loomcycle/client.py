@@ -1702,8 +1702,11 @@ class LoomcycleClient:
         ``from_under_path``, ``to_under_path``, ``min_confidence``,
         ``created_before`` / ``created_after`` (unix nanoseconds, or a
         timezone-aware ``datetime``), ``has_judge_verdict``,
-        ``judge_verdict``, and the exact ``method_exact``, ``kind_exact``,
-        ``from_path_prefix``, ``from_unfiled``. *scope* is ``tenant``
+        ``judge_verdict``, the exact ``method_exact``, ``kind_exact``,
+        ``from_path_prefix``, ``from_unfiled``, and ``review_route``
+        (``judge``: the proposals the review policy left for the judge) /
+        ``judge_audit`` (``pending`` / ``confirmed`` / ``overturned``: a
+        judge's acceptances in that audit state, with ``status``). *scope* is ``tenant``
         (default) or ``user``; with ``user``, *scope_id* names whose user
         documents (an admin or a tenant operator may name another subject of
         its tenant, a member only itself). *tenant* is honored only for an
@@ -1861,11 +1864,12 @@ class LoomcycleClient:
         Returns ``{tenant, scope, rulings, next_cursor}``; each ruling is
         ``{id, action, ruled_by, actor, reason, selector, matched, ruled,
         failed, skipped, created_at, reverted, reverted_at, reverted_by}``,
-        its ``selector`` ``{filter, ids_count, max, reverts, policy}`` — the
+        its ``selector`` ``{filter, ids_count, max, reverts, policy, judge}`` — the
         filter (``None`` when it named ids), or how many ids, never the ids. A
         revert is a record of its own (action ``revert``, ``selector.reverts``
         the ruling it undid). A review policy's ruling carries ``policy``
-        ``{version, source, run_id}`` (``None`` on any other)."""
+        ``{version, source, run_id}`` and a judge run's (action ``judge``)
+        ``judge`` ``{run_id, agent}`` (each ``None`` on any other)."""
         req = pb.ListRulingsRequest(tenant=tenant, scope=scope, scope_id=scope_id, limit=limit, after=after)
         try:
             resp = await self._stub.ListRulings(req, metadata=self._auth_metadata())
@@ -1894,6 +1898,11 @@ class LoomcycleClient:
                                 "run_id": r.selector.policy.run_id,
                             }
                             if r.selector.HasField("policy")
+                            else None
+                        ),
+                        "judge": (
+                            {"run_id": r.selector.judge.run_id, "agent": r.selector.judge.agent}
+                            if r.selector.HasField("judge")
                             else None
                         ),
                     },
@@ -3744,6 +3753,7 @@ _REVIEW_FILTER_TEXT = (
     "status", "kind", "method", "actor", "document_id", "under_path",
     "from_document_id", "to_document_id", "from_under_path", "to_under_path",
     "judge_verdict", "method_exact", "kind_exact", "from_path_prefix",
+    "review_route", "judge_audit",
 )
 
 

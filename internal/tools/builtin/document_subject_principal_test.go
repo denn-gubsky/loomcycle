@@ -421,7 +421,7 @@ func TestSubjectPrincipal_AgentLeaseCannotBlockAnErasure(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := tools.WithRunID(tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
-		rp.StatementMethods = []string{"linker"}
+		rp.StatementMethods = []string{"rule"}
 	}), "run-agent")
 	for _, name := range []string{"principal:" + root, "principal:binding", "linker"} {
 		_, r := docExec(t, d, agent, `{"op":"lease","scope":"tenant","name":"`+name+`","ttl_ms":600000}`)

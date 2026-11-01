@@ -210,7 +210,7 @@ func TestKnowledgeBaseBundle_ComposesWithTheDefaultStack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the default preset stack plus memory and knowledge-base must load + validate cleanly: %v", err)
 	}
-	for _, name := range []string{"kb/linker", "kb/verdict", "doc/manager", "memory/consolidator"} {
+	for _, name := range []string{"kb/linker", "kb/verdict", "kb/judge", "kb/judge-verdict", "doc/manager", "memory/consolidator"} {
 		if _, ok := cfg.Agents[name]; !ok {
 			t.Errorf("%s missing from the full stack; agents=%v", name, agentNames(cfg))
 		}

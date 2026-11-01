@@ -389,7 +389,7 @@ func filterMap(f *loomcyclepb.ReviewQueueFilter) map[string]any {
 		"document_id": f.GetDocumentId(), "under_path": f.GetUnderPath(), "from_document_id": f.GetFromDocumentId(),
 		"to_document_id": f.GetToDocumentId(), "from_under_path": f.GetFromUnderPath(), "to_under_path": f.GetToUnderPath(),
 		"judge_verdict": f.GetJudgeVerdict(), "method_exact": f.GetMethodExact(), "kind_exact": f.GetKindExact(),
-		"from_path_prefix": f.GetFromPathPrefix()} {
+		"from_path_prefix": f.GetFromPathPrefix(), "review_route": f.GetReviewRoute(), "judge_audit": f.GetJudgeAudit()} {
 		if v != "" {
 			m[k] = v
 		}
