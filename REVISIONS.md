@@ -8,6 +8,36 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.134.0
+
+*Statement review is complete (RFC FS Phase 4 and the owner's answers): an operator-only judge agreement report counts how the sampled human audit of the judge's acceptances came out, and the Review page works through that sample. A tenant member's single ruling now needs the `review` grant, as a bulk ruling does, and a concept tag decided by the neighbours' vote no longer counts as rule-matched.*
+
+The v1.134 line: #2335 to #2337.
+- `@loomcycle/client` and the Python adapter move to 1.134.0 to keep lockstep; neither API changes.
+- No repo migration, no wire breakage. One new HTTP route, `GET /v1/_statements/agreement`.
+- **Behaviour changes** (#2335):
+  - A tenant member's single `accept_statement` / `reject_statement` in the tenant scope now needs the `review` grant on the statement's from-document, as a bulk ruling does. An unknown id gets the same refusal. Operators, admins, the legacy token, open mode and a member's own user scope are unchanged.
+  - A concept tag that `classify` decided by the neighbours' vote is no longer `rule:matched`. So a Review policy line such as `accept kind:subject method:classify when rule:matched` no longer auto-accepts concept tags: they come only from the vote or the model, and each now waits for a person, or for the judge if the policy routes it there. Classify statements from instance patterns (e.g. `issued_by`) are still rule-matched.
+  - `/v1/_me` offers the Review nav entry only to operators and to members holding `review` somewhere.
+
+### The judge agreement report (#2337)
+
+- **`GET /v1/_statements/agreement`** (`?scope`, `?scope_id`, `?tenant`, as the queue). Per kind and in `total`: `accepted` (every judge acceptance), `sampled`, `pending`, `confirmed`, `overturned`, and `agreement` = confirmed ÷ (confirmed + overturned), absent until one is settled.
+- Only the audit sample counts. An acceptance a person settled unprompted is not in the rate, since it was picked because someone doubted it.
+- **Operator only.** A member is refused `forbidden`, as the counts span documents it may not read.
+- A person settling a sampled acceptance now records `attributes.judge.sampled: true`, so a settled sample can be told from an ad-hoc confirmation. A revert removes it with the rest of the ruling.
+
+### The Review page audits the judge (#2337)
+
+- A **judge audit** filter (awaiting audit / confirmed / overturned) and a chip counting the acceptances awaiting audit.
+- **Confirm** and **Overturn…** on each sampled acceptance; with the filter on, the bulk buttons become "Confirm all matching" / "Overturn all matching…". Overturning asks for a reason.
+- A **Judge agreement** table, left out for a member.
+
+### Document docs (#2336)
+
+- `docs/DOCUMENTS.md` corrects three claims: when a rejected relation's tombstone refuses `link_chunks`, the `search` `expand` limits (`hops` 1, `budget_chars` default 2000, max 8000), and how `kind` / `kinds` narrow `related` with `related_to`.
+- `after` has its own argument bullet in the `get_edges`, `backlinks` and `list_statements` help.
+
 ## What's in v1.133.0
 
 *Proposed relations can be reviewed in bulk (RFC FS Phases 0–3): a filtered, summarized review queue, dry-run-first bulk rulings with one audit record and one undo each, a new access-control action `review`, a Review page in the Web UI, review policies, rules in the tenant ontology that rule proposals as they are filed, and a judge agent that rules on the proposals a policy routes to it, with a sampled human audit. The Document tool's help gains a `knowledge-base` guide.*
