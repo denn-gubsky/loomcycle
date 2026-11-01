@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { RulingOutcome } from "@loomcycle/explorer";
 import type { ReviewGroupCount } from "../api";
 import {
+  auditFilter,
+  auditOf,
   canUndo,
   filtersFromSearch,
   groupsFromSummary,
   judgeOf,
+  percent,
   reviewKey,
   reviewScopeFromSearch,
   reviewScopeId,
@@ -162,5 +165,30 @@ describe("what a ruling and its undo report", () => {
       "1,980 statements came back to review; 20 changed since and were left as ruled; 1 ruling could not be undone.",
     );
     expect(undoSummary({ reverted: 1, changed: 0, errors: [] })).toBe("1 statement came back to review.");
+  });
+});
+
+describe("the judge audit", () => {
+  it("reads the audit state off the verdict", () => {
+    const s = (judge: unknown) => ({ id: "s", from_id: "a", to_id: "b", kind: "cites", attributes: { judge } });
+    expect(auditOf(s({ verdict: "accept", audited: "pending" }))).toBe("pending");
+    expect(auditOf(s({ verdict: "accept", audited: "bogus" }))).toBeUndefined();
+    expect(auditOf(s({ verdict: "accept" }))).toBeUndefined();
+  });
+
+  it("filters each audit state with the status its statements have", () => {
+    expect(auditFilter("pending")).toEqual({ status: "asserted", judge_audit: "pending" });
+    expect(auditFilter("confirmed")).toEqual({ status: "asserted", judge_audit: "confirmed" });
+    expect(auditFilter("overturned")).toEqual({ status: "rejected", judge_audit: "overturned" });
+  });
+
+  it("carries judge_audit through the URL", () => {
+    const f = filtersFromSearch(searchFromFilters(auditFilter("pending")));
+    expect(f).toEqual({ status: "asserted", judge_audit: "pending" });
+  });
+
+  it("renders a rate as a percent, and none as a dash", () => {
+    expect(percent(0.5)).toBe("50%");
+    expect(percent(undefined)).toBe("—");
   });
 });

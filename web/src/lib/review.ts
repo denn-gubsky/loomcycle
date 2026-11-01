@@ -23,6 +23,7 @@ const TEXT_KEYS = [
   "created_after",
   "created_before",
   "judge_verdict",
+  "judge_audit",
   "method_exact",
   "kind_exact",
   "from_path_prefix",
@@ -161,6 +162,27 @@ export function judgeOf(s: ReviewStatement): { verdict: string; confidence?: num
     ...(typeof o.confidence === "number" ? { confidence: o.confidence } : {}),
     ...(typeof o.rationale === "string" && o.rationale ? { rationale: o.rationale } : {}),
   };
+}
+
+// auditOf reads a judge's acceptance's audit state (attributes.judge.audited):
+// pending while it waits for a person, confirmed or overturned once settled.
+export function auditOf(s: ReviewStatement): "pending" | "confirmed" | "overturned" | undefined {
+  const j = s.attributes?.judge;
+  if (!j || typeof j !== "object") return undefined;
+  const a = (j as Record<string, unknown>).audited;
+  return a === "pending" || a === "confirmed" || a === "overturned" ? a : undefined;
+}
+
+// auditFilter is the queue filter for the judge's acceptances in one audit
+// state. The queue lists proposals by default, and an acceptance is asserted
+// (a confirmed one too, now a person's) or, overturned, rejected.
+export function auditFilter(state: "pending" | "confirmed" | "overturned"): ReviewFilter {
+  return { status: state === "overturned" ? "rejected" : "asserted", judge_audit: state };
+}
+
+// percent renders a 0..1 rate, or a dash when there is none yet.
+export function percent(rate: number | undefined): string {
+  return typeof rate === "number" ? `${Math.round(rate * 100)}%` : "—";
 }
 
 // ---- keyboard --------------------------------------------------------------

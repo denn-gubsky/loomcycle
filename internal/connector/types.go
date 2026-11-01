@@ -1637,6 +1637,40 @@ type ListRulingsResult struct {
 	NextCursor string         `json:"next_cursor,omitempty"`
 }
 
+// JudgeAgreementRequest asks how often a person agreed with the judge agent's
+// acceptances (RFC FS P4). ScopeID names whose user scope (scope user) as
+// ListReviewQueueRequest.ScopeID does.
+type JudgeAgreementRequest struct {
+	Tenant  string `json:"tenant,omitempty"`
+	Scope   string `json:"scope,omitempty"`
+	ScopeID string `json:"scope_id,omitempty"`
+}
+
+// JudgeAgreementCounts is the judge's acceptances of one kind, or of all
+// (Kind ""). Accepted counts every acceptance, still the judge's or settled by
+// a person; Sampled those marked for audit, of which Pending await a person,
+// Confirmed a person accepted and Overturned a person rejected. Only the
+// sample counts toward Agreement (Confirmed / (Confirmed + Overturned), absent
+// until one is settled): an acceptance a person settled unprompted was picked
+// because someone doubted it, so it would skew the rate.
+type JudgeAgreementCounts struct {
+	Kind       string   `json:"kind"`
+	Accepted   int      `json:"accepted"`
+	Sampled    int      `json:"sampled"`
+	Pending    int      `json:"pending"`
+	Confirmed  int      `json:"confirmed"`
+	Overturned int      `json:"overturned"`
+	Agreement  *float64 `json:"agreement,omitempty"`
+}
+
+// JudgeAgreementResult is the agreement report: per kind, and Total over all.
+type JudgeAgreementResult struct {
+	Tenant string                 `json:"tenant"`
+	Scope  string                 `json:"scope"`
+	Kinds  []JudgeAgreementCounts `json:"kinds"`
+	Total  JudgeAgreementCounts   `json:"total"`
+}
+
 // RevertRulingResult reports a revert. Reverted statements went back to the
 // status they had before the ruling; Changed ones were left because something
 // changed them since (each in Items with error "changed"); Skipped ones the
