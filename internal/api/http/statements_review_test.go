@@ -312,6 +312,14 @@ func TestStatementReviewAPI_ApplyPolicyIsAnOperatorsAuditedAct(t *testing.T) {
 		t.Errorf("without an ontology = %d %v, want 400 invalid_request", code, out)
 	}
 	installReviewPolicy(t, s, mi, "- accept kind:cites when self:false\n- human *\n")
+	// scope_id is read as for every review request: with the tenant scope it
+	// is refused, and a tenant operator may not name another tenant's subject.
+	if code, out := apply(op, map[string]any{"scope_id": "bob"}); code != http.StatusBadRequest || out["code"] != "invalid_request" {
+		t.Errorf("scope_id on the tenant scope = %d %v, want 400", code, out)
+	}
+	if code, out := apply(op, map[string]any{"scope": "user", "scope_id": "bob", "tenant": "globex"}); code != http.StatusForbidden || out["code"] != "forbidden" {
+		t.Errorf("another tenant's subject = %d %v, want 403", code, out)
+	}
 
 	reviewer := reviewMember(t, mi.Tenant, authz.Rule{Effect: authz.Allow, Actions: []string{"review"}, Resources: []string{"document:tenant:/**"}})
 	if code, out := apply(reviewer, map[string]any{}); code != http.StatusForbidden || out["code"] != "forbidden" {
