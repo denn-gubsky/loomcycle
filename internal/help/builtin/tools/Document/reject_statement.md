@@ -4,9 +4,12 @@ description: "Document op=reject_statement — an operator rejects a proposed re
 ---
 `reject_statement` marks a proposed relation rejected. It is kept, not deleted,
 as a record that it was considered and refused: it is withheld from every
-reader, and the same relation is refused if anyone proposes or links it again,
-at any `valid_at`. Like `accept_statement`, it is the operator's ruling and is
-refused inside an agent run.
+reader, and the same relation is refused when anyone proposes it again, at any
+`valid_at`, or links it again at the same `valid_at` (`statement_rejected`).
+Like `accept_statement`, it is the operator's ruling and is refused inside an
+agent run. An agent that thinks a relation is wrong proposes a correction
+(`propose_statement` with `id`), or, if it maintains statements, flags it
+(`maintain_statement` `action: flag`).
 
 It rules on proposals only. To withdraw a relation that is already asserted,
 judge it unsupported with `judge_fact` (kept, withheld) or remove it with
@@ -27,7 +30,9 @@ removed by editing the link out of the body.
 
 - Refused with a permission error inside a run.
 - `reason is required`.
-- `not_a_proposal` — the relation is asserted or already rejected.
+- `not_a_proposal` — the relation is asserted or already rejected. One made by
+  a `[[name]]` link says so: edit the link out of its source chunk's body.
+- `no such statement` — check the id and the scope.
 - `statement_changed` — someone ruled on it while you did; reload it.
 
 ## Examples
