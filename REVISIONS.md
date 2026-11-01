@@ -8,6 +8,54 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.133.0
+
+*Proposed relations can be reviewed in bulk (RFC FS Phases 0–3): a filtered, summarized review queue, dry-run-first bulk rulings with one audit record and one undo each, a new access-control action `review`, a Review page in the Web UI, review policies, rules in the tenant ontology that rule proposals as they are filed, and a judge agent that rules on the proposals a policy routes to it, with a sampled human audit. The Document tool's help gains a `knowledge-base` guide.*
+
+The v1.133 line: #2327 to #2334.
+- `@loomcycle/client` and the Python adapter move to 1.133.0, with the review methods.
+- No repo migration. Each SQL Memory scope gains a `chunk_edges.ruled_by` column and the `statement_rulings` / `statement_ruling_items` tables on first use.
+- **Behaviour changes:**
+  - `propose_statement` and `link_chunks` refuse the runtime's own attributes `judge`, `review_route` and `classified_by` (`attribute_reserved`), and `import_md` drops them (#2332).
+  - Five Document calls the help described but the argument check refused now pass: `related` with `kind` / `kinds`, `propose_entity` / `propose_subject` with their `title` alias, and `set_path` with `document_id` (#2329).
+- An ontology without a Review section files proposals exactly as before.
+
+### Bulk statement review (#2327)
+
+- **The queue:** `list_statements` and `GET /v1/_statements/review` gain filters (`from_document_id` / `to_document_id`, `from_under_path` / `to_under_path`, `actor`, `min_confidence`, `created_before` / `created_after`, `has_judge_verdict` / `judge_verdict`), and `summarize: true` counts the queue by kind × method × path prefix × judge verdict.
+- **Bulk ruling:** `POST /v1/_statements/rule` `{action, ids | filter, reason, dry_run, expect_count, max}`. It is a dry run by default. A real call must name the dry run's `expect_count`, else `queue_changed` (409) and nothing is ruled. At most 1000 per call. Each statement is ruled through the same code as `accept_statement` / `reject_statement`; a reject needs a reason.
+- **Provenance and audit:** statements gain `ruled_by` (`bulk:<ruling id>` or `operator:<subject>`); each ruling is kept in the scope and audited as one `statement_ruling` record.
+- **Undo:** `POST /v1/_statements/revert {ruling_id}` restores each statement that hasn't changed since; changed ones are listed and left. `GET /v1/_statements/rulings` lists past rulings.
+- **Who may rule:** an admin, or a tenant operator in its own tenant (`write` on the from-document, `link` on both ends); a non-isolated member only where an access rule grants the new document action **`review`**. Isolated users, agent-restricted tokens and runs are refused.
+- **Every transport:** gRPC `ListReviewQueue` / `RuleStatements` / `RevertRuling` / `ListRulings`, the MCP `review` tool (ops `queue`, `rule`, `revert`, `rulings`), and the TS and Python clients.
+
+### The Review page (#2331)
+
+- **`/ui/review`** (a "review" entry in the knowledge menu): the scope's proposals grouped by the queue summary, filters in the URL, select rows, a group or everything matching, then Accept or Reject (with a reason). Every action runs the dry run first and confirms the count; over 1,000 matches it rules in chunks. Each ruling offers Undo, and a Recent rulings list shows past ones.
+- **The document viewer's Connections panel** gains bulk Accept/Reject on the proposals filed from the open document.
+- A member without a `review` grant sees what grants it.
+
+### Review policies (#2332)
+
+- **A Review section in the tenant ontology** (`@section review`): ordered rules, first match wins, e.g. `accept kind:cites method:rule:citation when quotes:resolved self:false target:held|placeholder`, `reject … when confidence<0.6`, `judge …`, `human *`. Actions `accept | reject | judge | human`; conditions on quotes, self-links, the target, `rule:matched` and confidence. One unreadable rule leaves the whole policy unapplied (every proposal waits for a person), and `describe_ontology` reports it.
+- **At filing** (`propose_statement`, `classify`) an accept or reject is ruled with `ruled_by: policy:<rule>@<ontology version>`, one ruling per run that `revert_ruling` undoes. A policy rejection is a verdict, not a tombstone: a later proposal of the relation is evaluated again. An operator's rejection still refuses it.
+- **On demand:** `POST /v1/_statements/apply_policy` (gRPC `ApplyReviewPolicy`, MCP `review` op `apply_policy`, TS `applyReviewPolicy()`, Python `apply_review_policy()`) applies the policy to the waiting queue: dry run first, at most 1,000 rulings per call as one undoable ruling, operators only, audited as `statement_policy_ruling`.
+- Without a Review section, `@auto_assert` works as before.
+
+### The judge (#2334)
+
+- **`kb/judge`** (knowledge-base bundle, code-js) reads the proposals a policy routes to the judge (`judge kind:… floor:…`), shows a tenant-model verdict agent `kb/judge-verdict` (tier `middle`) each one with its evidence read back from the cited chunks as untrusted data, and records the verdicts through the new Document op **`judge_statements`**.
+- The op, not the agent, decides what a verdict may do. It rules only on a proposal the policy routes to the judge now, at or above the rule's floor (`floor:`, else the section's `judge_floor`, default 0.85), where the run may rule as an operator would. Below the floor, unsure, or in `recommend` mode the verdict is recorded on `attributes.judge` and the proposal waits for a person. Each statement is judged once; each run is one ruling that `revert_ruling` undoes.
+- Only an agent whose definition lists `judge` in `statement_methods` (code-js only) may call it. A judge rejection is a verdict, not a tombstone.
+- **Sampled audit:** each run marks a share of its acceptances `attributes.judge.audited: pending` (`judge_audit` in the Review section, default 0.1, at least one per run; `0` is refused). A person confirms with an accept or overturns with a reject.
+- The queue gains the filters `review_route` and `judge_audit` on every transport, and `ListRulings` names a judge run's ruling.
+
+### Document help and prompts (#2329, #2330)
+
+- A new `knowledge-base` help topic (aliases `kb`, `knowledge`, `ontology`, `statements`, `relations`): how documents, facts, subjects and statements fit together, who rules on what, citations into relations, retrieving along relations, editions and subject change events, with five checked call sequences.
+- The knowledge-base op articles are completed against the handlers, and the `Document` article indexes all 60 ops.
+- The `chat` agents' `graph_recall` note and the document agent's edge-linking skill describe what the tool does now (#2330).
+
 ## What's in v1.132.0
 
 *The `knowledge-base` links agent can drain tenant-scope imports: a deployment whose documents live in the tenant scope can link what it imports on a schedule. The `google` sign-in preset can admit personal Google accounts, behind an approval queue.*
