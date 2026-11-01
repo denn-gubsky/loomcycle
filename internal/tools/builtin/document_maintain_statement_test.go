@@ -845,3 +845,22 @@ func TestMadeByAPerson_SyncedIsAPersonsUnlessAMachineMadeIt(t *testing.T) {
 		}
 	}
 }
+
+// The judge grant rules on routed proposals and nothing else: a run holding
+// only statement_methods [judge] is no statement maintainer, holds no lease
+// and stamps no method.
+func TestMaintainStatement_TheJudgeGrantAloneMaintainsNothing(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		f := newMaintFixture(t, d, ctx)
+		id := f.seed(t, f.a, f.b, "cites", "rule:citation", edgeStatusProposed, 0, f.quoteInA)
+		judge := tools.UpdateRunPolicy(tools.WithRunID(ctx, "run-judge"), func(rp *tools.RunPolicy) { rp.StatementMethods = []string{"judge"} })
+		_, r := f.maintain(t, judge, id, "verify", ``)
+		wantRefusal(t, "a run holding only the judge grant", r, "permission")
+		_, r = f.maintain(t, judge, id, "verify", `,"method":"judge:x"`)
+		wantRefusal(t, "a judge: method", r, "method_not_granted")
+		_, r = docExec(t, d, judge, `{"op":"lease","scope":"user","name":"linker"}`)
+		if !r.IsError || !strings.Contains(r.Text, "lease is held only by") {
+			t.Errorf("lease under the judge grant = %q; want a permission refusal", r.Text)
+		}
+	})
+}
