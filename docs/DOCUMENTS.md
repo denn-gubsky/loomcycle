@@ -647,7 +647,7 @@ The quote must be verbatim. For a chunk or a chat turn the server finds it in th
 | `link` | `link_chunks`, `unlink_chunks`, `accept_statement`, `reject_statement`; also `maintain_statement` `expire` / `demote` / `merge` (on both ends) |
 | `propose` | `propose_statement`, every `maintain_statement` action, `lease`, `release` |
 | `read` | `get_edges`, `get_edge`, `list_statements`, `backlinks` |
-| `review` | a member's bulk ruling and its revert ([below](#reviewing-proposals-in-bulk)), on the statement's from-document. Held only by a rule that names it: no member baseline grants it, and it implies nothing else |
+| `review` | a member's ruling on a tenant statement, single (`accept_statement` / `reject_statement`) or bulk, and a bulk ruling's revert ([below](#reviewing-proposals-in-bulk)), on the statement's from-document. Held only by a rule that names it: no member baseline grants it, and it implies nothing else |
 
 A principal holding only `read` and `propose` can file proposals but cannot add evidence to a relation that already holds: evidence on an asserted statement is live data.
 
@@ -731,7 +731,7 @@ Each summary group carries `filter`: the summary's own filter narrowed by the gr
 
 **Who may rule.**
 - An admin (any tenant, with `?tenant=` or the body's `tenant`) or a tenant operator in its own tenant. Each statement also needs `write` on its from-document and `link` on both ends (the single ruling's question).
-- A member holding the access-control action `review` on the from-document's path, e.g. `{"effect":"allow","actions":["review"],"resources":["document:tenant:/board/**"]}`. `review` is in no member baseline and implies nothing else: the member also needs `read` to see the queue rows. A member with no `review` grant anywhere is refused (`forbidden`, 403); one ruling across paths rules where it holds `review` and only counts the rest.
+- A member holding the access-control action `review` on the from-document's path, e.g. `{"effect":"allow","actions":["review"],"resources":["document:tenant:/board/**"]}`. `review` is in no member baseline and implies nothing else: the member also needs `read` to see the queue rows. A member with no `review` grant anywhere is refused (`forbidden`, 403); one ruling across paths rules where it holds `review` and only counts the rest. A member's single `accept_statement` / `reject_statement` on a tenant statement asks the same grant. The console's Review page is shown only to an operator or a member holding `review` somewhere.
 - An isolated user and a token limited to certain agents are refused, and no ruling is reachable from inside a run.
 
 **Another subject's user documents.** With `scope=user`, every review route (queue, rule, revert, rulings) takes `scope_id`, the subject whose user documents to act on — the subject picker's choice. Only an admin, or a tenant operator within its own tenant, may name another subject; a member naming anyone but itself is refused `forbidden`, and so is a tenant operator that also names another `tenant`. The ruling is recorded as the caller's own (`actor`, `ruled_by`), and its audit record names the scope's subject (`ruling_scope_id`). `scope_id` with the tenant scope is `invalid_request`.
