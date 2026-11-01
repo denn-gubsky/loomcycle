@@ -319,6 +319,13 @@ func reviewRuler(ctx context.Context) (builtin.RulingAuthority, *auth.Principal,
 func (s *Server) reviewCtx(ctx context.Context, as builtin.RulingAuthority, tenant, scope, scopeID string) (context.Context, string, error) {
 	own := tools.RunIdentity(substrateAdminUserCtx(ctx)).UserID
 	scopeID = strings.TrimSpace(scopeID)
+	// A subject id names a scope, and a scope names files (a SQLite database
+	// per scope) and agent code paths below: no subject this server issues
+	// holds a path separator or "..", so a scope_id that does is refused here
+	// rather than trusted to every sanitiser downstream.
+	if strings.Contains(scopeID, "..") || strings.ContainsAny(scopeID, "/\\\x00") {
+		return nil, "", connector.WithMessage(connector.ErrStatementReviewInvalid, "scope_id is not a subject id: it may not contain a path separator or \"..\"")
+	}
 	switch {
 	case scopeID == "":
 	case scope != "user":

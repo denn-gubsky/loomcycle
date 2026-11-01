@@ -176,3 +176,27 @@ func TestStatementReviewAPI_ScopeIDNeedsTheUserScope(t *testing.T) {
 		t.Errorf("scope_id with the tenant scope: %v, want invalid_request", err)
 	}
 }
+
+// TestStatementReviewAPI_ScopeIDIsNeverAPath: a scope_id names a subject, and a
+// subject's scope names files below (a SQLite database per scope). One that
+// holds a path separator or ".." is refused before it reaches any of them, on
+// every review route, an operator's request included.
+func TestStatementReviewAPI_ScopeIDIsNeverAPath(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	op := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: mi.Tenant, Subject: "ops", Scopes: []string{auth.ScopeTenant}})
+	for _, bad := range []string{"../alice", "alice/..", "a/b", `a\b`, "..", "a\x00b"} {
+		if _, err := s.ListReviewQueue(op, connector.ListReviewQueueRequest{Scope: "user", ScopeID: bad}); connector.StatementReviewCode(err) != "invalid_request" {
+			t.Errorf("queue scope_id %q: %v, want invalid_request", bad, err)
+		}
+		if _, err := s.RuleStatements(op, connector.RuleStatementsRequest{Scope: "user", ScopeID: bad, Action: "accept", IDs: []string{"x"}}); connector.StatementReviewCode(err) != "invalid_request" {
+			t.Errorf("rule scope_id %q: %v, want invalid_request", bad, err)
+		}
+		if _, err := s.ListRulings(op, connector.ListRulingsRequest{Scope: "user", ScopeID: bad}); connector.StatementReviewCode(err) != "invalid_request" {
+			t.Errorf("rulings scope_id %q: %v, want invalid_request", bad, err)
+		}
+	}
+	// A subject id as this server issues them still names a scope.
+	if _, err := s.ListReviewQueue(op, connector.ListReviewQueueRequest{Scope: "user", ScopeID: "google:a.b@example.com"}); err != nil {
+		t.Errorf("an ordinary subject id was refused: %v", err)
+	}
+}
