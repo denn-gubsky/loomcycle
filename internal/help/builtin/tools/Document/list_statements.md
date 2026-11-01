@@ -40,6 +40,11 @@ much is waiting and where, before you page through any of it.
 - `judge_verdict` — only relations whose recorded judge verdict is exactly this
   (`accept`, `reject` or `unsure`). `has_judge_verdict` — `true` keeps only
   relations a judge recorded a verdict on, `false` only those with none.
+- `review_route` — `judge`: only the proposals the review policy routed to the
+  judge agent.
+- `judge_audit` — `pending`, `confirmed` or `overturned`: only a judge's
+  acceptances in that audit state. A pending or confirmed one is asserted and
+  an overturned one rejected, so pass `status` with it.
 - `include_retired` — also list relations that have expired or whose
   `invalid_at` has passed. Off by default. A relation dated to take effect
   later is listed either way.

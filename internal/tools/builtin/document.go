@@ -208,6 +208,8 @@ const documentInputSchema = `{
 		"kind_exact":       {"type": "string", "description": "list_statements: only statements of exactly this kind; unlike kind, never widened to the kind's declared sub-kinds."},
 		"from_path_prefix": {"type": "string", "description": "list_statements: only statements whose FROM document's path prefix is exactly this, as summarize computes it: the first two segments of the document's first Path name in sort order (/board/regulatory-external)."},
 		"from_unfiled":     {"type": "boolean", "description": "list_statements: true keeps only statements whose FROM document is filed under no Path name (or is gone): summarize's empty from_path_prefix."},
+		"review_route":     {"type": "string", "enum": ["judge"], "description": "list_statements: only proposals the review policy routed to the judge (attributes.review_route)."},
+		"judge_audit":      {"type": "string", "enum": ["pending","confirmed","overturned"], "description": "list_statements: only a judge's acceptances in this audit state (attributes.judge.audited); pending ones are asserted, so pass status asserted (an overturned one is rejected)."},
 		"walk":        {"type": "string", "enum": ["declared","all"], "description": "graph_recall: which relations to follow. declared (the default where the tenant declares relation kinds) follows the kinds declared for walking — citations, definitions, what implements what — and never mentions or about; all follows every relation. An explicit kind / kinds overrides it; any other value is refused."},
 		"decay":       {"type": "number", "description": "graph_recall with budget_chars: each hop may spend at most decay^hop of the budget, so far hops cannot crowd out near ones. 0 < decay <= 1; default 0.7 for a declared walk, else 1 (no decay). Refused without budget_chars."},
 		"include_hierarchy": {"type": "string", "enum": ["up","down","both","none"], "description": "graph_recall: also step along the document tree — up to a chunk's parent (part_of), down to its children (has_part). Default none."},
@@ -363,6 +365,11 @@ type docInput struct {
 	KindExact      string `json:"kind_exact,omitempty"`
 	FromPathPrefix string `json:"from_path_prefix,omitempty"`
 	FromUnfiled    bool   `json:"from_unfiled,omitempty"`
+	// ReviewRoute selects the proposals the review policy routed (review_route
+	// judge); JudgeAudit a judge's acceptances by their audit state (pending,
+	// confirmed, overturned).
+	ReviewRoute string `json:"review_route,omitempty"`
+	JudgeAudit  string `json:"judge_audit,omitempty"`
 	// Kind-aware retrieval (RFC FN P4). graph_recall: walk (declared | all),
 	// decay (per-hop share of the content budget), include_hierarchy (up | down |
 	// both | none). search: expand (one hop over relations from the top hits).

@@ -418,3 +418,61 @@ func TestJudgeStatements_AuditRateOneSamplesEveryAcceptance(t *testing.T) {
 		}
 	}
 }
+
+// The queue selects the proposals the policy routed to the judge
+// (review_route), and the judge's acceptances sampled for audit (judge_audit,
+// asked of asserted statements), on list_statements and the review queue.
+func TestReviewQueue_SelectsByRoutingAndAudit(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		md := strings.Replace(judgeOntologyMD, "judge_floor: 0.85\n", "judge_floor: 0.85\njudge_audit: 1\n", 1)
+		f := newPolicyFixture(t, d, base, md)
+		routed := f.propose(f.one, f.notes, "elaborates", `,"method":"extractor:relate"`)["id"].(string)
+		human := f.propose(f.one, f.two, "governs", `,"method":"extractor:relate"`)["id"].(string)
+		ids := func(body string) []string {
+			t.Helper()
+			var out []string
+			for _, e := range edgesOfKey(t, d, f.op, body, "statements") {
+				out = append(out, e["id"].(string))
+			}
+			return out
+		}
+		if got := ids(`{"op":"list_statements","scope":"tenant","review_route":"judge"}`); len(got) != 1 || got[0] != routed {
+			t.Errorf("review_route judge = %v, want [%s] (not %s)", got, routed, human)
+		}
+		q, err := d.ListReviewQueue(f.op, "tenant", connector.ListReviewQueueRequest{Filter: connector.ReviewQueueFilter{ReviewRoute: "judge"}})
+		if err != nil || len(q.Statements) != 1 {
+			t.Errorf("the review queue by routing = %d statements, %v", len(q.Statements), err)
+		}
+		if _, r := judge(t, d, judgeRunCtx(base, nil), "", judgement(routed, "accept", 0.95)); r.IsError {
+			t.Fatal(r.Text)
+		}
+		if got := ids(`{"op":"list_statements","scope":"tenant","status":"asserted","judge_audit":"pending"}`); len(got) != 1 || got[0] != routed {
+			t.Errorf("judge_audit pending = %v, want [%s]", got, routed)
+		}
+		if got := ids(`{"op":"list_statements","scope":"tenant","status":"asserted","judge_audit":"confirmed"}`); len(got) != 0 {
+			t.Errorf("judge_audit confirmed = %v, want none yet", got)
+		}
+		q, err = d.ListReviewQueue(f.op, "tenant", connector.ListReviewQueueRequest{Filter: connector.ReviewQueueFilter{Status: "asserted", JudgeAudit: "pending"}})
+		if err != nil || len(q.Statements) != 1 {
+			t.Errorf("the review queue by audit = %d statements, %v", len(q.Statements), err)
+		}
+		if _, r := docExec(t, d, f.op, `{"op":"list_statements","scope":"tenant","judge_audit":"maybe"}`); !r.IsError {
+			t.Errorf("an unknown judge_audit value was accepted")
+		}
+	})
+}
+
+// edgesOfKey runs a listing op and returns the rows under field.
+func edgesOfKey(t *testing.T, d *Document, ctx context.Context, body, field string) []map[string]any {
+	t.Helper()
+	out, r := docExec(t, d, ctx, body)
+	if r.IsError {
+		t.Fatalf("%s: %s", body, r.Text)
+	}
+	raw, _ := out[field].([]any)
+	res := make([]map[string]any, 0, len(raw))
+	for _, e := range raw {
+		res = append(res, e.(map[string]any))
+	}
+	return res
+}

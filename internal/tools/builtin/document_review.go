@@ -150,6 +150,22 @@ func (d *Document) reviewSelection(ctx context.Context, key sqlmem.ScopeKey, in 
 		where = append(where, d.judgeVerdictExpr()+" = ?")
 		args = append(args, in.JudgeVerdict)
 	}
+	switch in.ReviewRoute {
+	case "":
+	case reviewRouteJudge:
+		where = append(where, d.reviewRouteExpr()+" = ?")
+		args = append(args, in.ReviewRoute)
+	default:
+		return refuse("review_route must be judge", "")
+	}
+	switch in.JudgeAudit {
+	case "":
+	case judgeAuditPending, judgeAuditConfirmed, judgeAuditOverturned:
+		where = append(where, d.judgeAuditExpr()+" = ?")
+		args = append(args, in.JudgeAudit)
+	default:
+		return refuse("judge_audit must be pending, confirmed or overturned", "")
+	}
 	for _, ex := range []struct{ field, v, col string }{{"method_exact", in.MethodExact, "e.method"}, {"kind_exact", in.KindExact, "e.kind"}} {
 		if ex.v == "" {
 			continue
@@ -355,6 +371,8 @@ func reviewFilterInput(f connector.ReviewQueueFilter) docInput {
 		CreatedBefore:   f.CreatedBefore,
 		CreatedAfter:    f.CreatedAfter,
 		HasJudgeVerdict: f.HasJudgeVerdict,
+		ReviewRoute:     f.ReviewRoute,
+		JudgeAudit:      f.JudgeAudit,
 	}
 }
 
