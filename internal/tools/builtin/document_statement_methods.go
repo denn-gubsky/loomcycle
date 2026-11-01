@@ -32,12 +32,14 @@ var statementMethodOps = map[string]bool{
 // and can never carry a sentence.
 var statementMethodName = regexp.MustCompile(`^[a-z0-9_./-]{1,64}$`)
 
-// HasStatementMethodGrant reports whether the caller holds any statement_methods
-// grant — a run of a code-js agent whose definition lists rule or extractor.
-// The operator plane holds none. Ops reserved for the code that maintains
-// statements gate on it.
+// HasStatementMethodGrant reports whether the caller holds a statement_methods
+// grant that stamps a method — a run of a code-js agent whose definition lists
+// rule or extractor. The operator plane holds none. Ops reserved for the code
+// that maintains statements gate on it. The judge grant is not one: a judge
+// records verdicts on the proposals routed to it, and maintains nothing.
 func HasStatementMethodGrant(ctx context.Context) bool {
-	return len(tools.PolicyOf(ctx).StatementMethods) > 0
+	sm := tools.PolicyOf(ctx).StatementMethods
+	return contains(sm, "rule") || contains(sm, "extractor")
 }
 
 // stampStatementMethod turns the wire `method` into the method the op stamps
