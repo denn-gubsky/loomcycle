@@ -476,3 +476,75 @@ func edgesOfKey(t *testing.T, d *Document, ctx context.Context, body, field stri
 	}
 	return res
 }
+
+// A person settles a judge's acceptance through the ordinary rulings: accept
+// confirms it (it stays asserted, now a person's: operator mark, ruled_by
+// operator) and reject overturns it (rejected, a person's tombstone). The
+// outcome is recorded on the verdict (attributes.judge.audited confirmed or
+// overturned, with who and when), so the audit sample can be counted. A bulk
+// confirmation reverts to the pending sample. Nothing else that is asserted
+// becomes rulable.
+func TestJudgeAudit_APersonConfirmsOrOverturnsAnAcceptance(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		md := strings.Replace(judgeOntologyMD, "judge_floor: 0.85\n", "judge_floor: 0.85\njudge_audit: 1\n", 1)
+		f := newPolicyFixture(t, d, base, md)
+		a := f.propose(f.one, f.notes, "elaborates", `,"method":"extractor:relate"`)["id"].(string)
+		b := f.propose(f.oneB, f.notes, "elaborates", `,"method":"extractor:relate"`)["id"].(string)
+		c := f.propose(f.two, f.notes, "elaborates", `,"method":"extractor:relate"`)["id"].(string)
+		if _, r := judge(t, d, judgeRunCtx(base, nil), "", judgement(a, "accept", 0.95), judgement(b, "accept", 0.95), judgement(c, "accept", 0.95)); r.IsError {
+			t.Fatal(r.Text)
+		}
+		// A machine never settles one: not a policy, not another judge run.
+		key, mscope, err := d.resolveScope(f.op, "tenant")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, by := range []string{"judge:run-judge-2", "policy:1@3"} {
+			if r, err := d.applyRuling(f.op, key, mscope, "reject_statement", a, false, "machine", by); err != nil || r.code != rulingNotProposal {
+				t.Errorf("%s ruling on a judge's acceptance = %+v %v, want not_a_proposal", by, r, err)
+			}
+		}
+		op := operatorCtx(f.op)
+		if _, r := docExec(t, d, op, fmt.Sprintf(`{"op":"accept_statement","scope":"tenant","id":%q}`, a)); r.IsError {
+			t.Fatalf("confirm: %s", r.Text)
+		}
+		if _, r := docExec(t, d, op, fmt.Sprintf(`{"op":"reject_statement","scope":"tenant","id":%q,"reason":"the quote is about another article"}`, b)); r.IsError {
+			t.Fatalf("overturn: %s", r.Text)
+		}
+		ea, eb := f.edge(a), f.edge(b)
+		if ea["status"] != edgeStatusAsserted || ea["operator_ruled_at"] == nil || !strings.HasPrefix(ea["ruled_by"].(string), "operator") ||
+			judgeAttr(ea)["audited"] != judgeAuditConfirmed || judgeAttr(ea)["audited_by"] == nil || judgeAttr(ea)["audited_at"] == nil {
+			t.Errorf("confirmed = %v", ea)
+		}
+		if eb["status"] != edgeStatusRejected || eb["operator_ruled_at"] == nil || eb["judged_by"] != "operator" || judgeAttr(eb)["audited"] != judgeAuditOverturned {
+			t.Errorf("overturned = %v", eb)
+		}
+		again := fmt.Sprintf(`{"op":"propose_statement","scope":"tenant","from_id":%q,"to_id":%q,"kind":"elaborates","method":"extractor:relate"}`, f.oneB, f.notes)
+		if _, r := docExec(t, d, f.run, again); !r.IsError || !strings.Contains(r.Text, "statement_rejected") {
+			t.Errorf("an overturned acceptance is a person's rejection, a tombstone: %s", r.Text)
+		}
+
+		// The pending sample, confirmed in bulk, and the confirmation undone.
+		req := connector.RuleStatementsRequest{Action: "accept", Filter: &connector.ReviewQueueFilter{Status: edgeStatusAsserted, JudgeAudit: judgeAuditPending}}
+		res := ruleReal(t, d, op, req, RuleAsOperator)
+		if res.Ruled != 1 || judgeAttr(f.edge(c))["audited"] != judgeAuditConfirmed {
+			t.Fatalf("bulk confirmation = %+v, statement %v", res, f.edge(c))
+		}
+		rev, err := d.RevertRuling(op, "tenant", connector.RevertRulingRequest{RulingID: res.RulingID}, RuleAsOperator)
+		if err != nil || rev.Reverted != 1 {
+			t.Fatalf("revert = %+v %v", rev, err)
+		}
+		if ec := f.edge(c); ec["ruled_by"] != "judge:run-judge" || ec["operator_ruled_at"] != nil || judgeAttr(ec)["audited"] != judgeAuditPending {
+			t.Errorf("after the revert %v, want the judge's pending acceptance back", ec)
+		}
+
+		// An assertion no judge made is not a ruling's to change.
+		linked, r := docExec(t, d, f.op, fmt.Sprintf(`{"op":"link_chunks","scope":"tenant","from_id":%q,"to_id":%q,"kind":"elaborates"}`, f.two, f.one))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		if _, r := docExec(t, d, op, fmt.Sprintf(`{"op":"reject_statement","scope":"tenant","id":%q,"reason":"no"}`, linked["id"])); !r.IsError || !strings.Contains(r.Text, "not_a_proposal") {
+			t.Errorf("rejecting an assertion no judge made: %s", r.Text)
+		}
+	})
+}
