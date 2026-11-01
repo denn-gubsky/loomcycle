@@ -1557,7 +1557,7 @@ func (d *Document) getEdge(ctx context.Context, key sqlmem.ScopeKey, in docInput
 		out["evidence"] = []edgeEvidenceRow{}
 		out["evidence_count"] = 0
 	}
-	if strings.HasPrefix(s.RuledBy, "policy:") {
+	if _, machine := machineRuler(s.RuledBy); machine {
 		// The ruling revert_ruling takes; a bulk ruling's is in ruled_by itself.
 		if id, err := d.policyRulingOf(ctx, key, s.ID); err == nil && id != "" {
 			out["ruling_id"] = id
