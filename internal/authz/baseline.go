@@ -69,6 +69,9 @@ var memberMCPTools = []string{
 	"memory", "channel", "channeldef", "path", "document", "history", "decision",
 	"evaluation", "context", "interruption_resolve", "publish_channel", "subscribe_channel",
 	"peek_channel", "ack_channel", "stream_user_run_states", "identity", "erasure", "file",
+	// review: reaching the tool is not ruling; each statement asks the
+	// member's `review` grant, which no member baseline holds.
+	"review",
 }
 
 // tenantMCPTools is what it admits a tenant operator to: every
@@ -182,7 +185,7 @@ func Baselines() map[string]ACL {
 				selfTokenRule,
 				{Effect: Deny, Actions: []string{"read", "write", "recall", "browse"}, Resources: []string{"memory:tenant", "memory:global"}},
 				{Effect: Deny, Actions: []string{"read", "write"}, Resources: []string{"sqlmem:tenant"}},
-				{Effect: Deny, Actions: []string{"read", "write", "delete", "link", "browse", "propose"}, Resources: []string{"document:tenant"}},
+				{Effect: Deny, Actions: []string{"read", "write", "delete", "link", "browse", "propose", "review"}, Resources: []string{"document:tenant"}},
 				{Effect: Deny, Actions: []string{"read"}, Resources: []string{"history:tenant", "history:global"}},
 			}},
 		// RFC FA D16: a website's user-management credential. The roster and

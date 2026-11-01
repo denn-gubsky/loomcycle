@@ -9287,6 +9287,1471 @@ func (x *BindSubjectPrincipalResponse) GetChanged() bool {
 	return false
 }
 
+// ReviewQueueFilter narrows the review queue and selects what a bulk ruling
+// rules. Every field is optional; they combine with AND.
+type ReviewQueueFilter struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The statement status; empty = proposed.
+	Status string   `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	Kind   string   `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Kinds  []string `protobuf:"bytes,3,rep,name=kinds,proto3" json:"kinds,omitempty"`
+	// An exact, case-sensitive prefix of the method (rule: or rule:citation).
+	Method string `protobuf:"bytes,4,opt,name=method,proto3" json:"method,omitempty"`
+	// The writer recorded on the statement: the agent for a run's write, else
+	// the user id.
+	Actor string `protobuf:"bytes,5,opt,name=actor,proto3" json:"actor,omitempty"`
+	// Either end in the document, or in a document named at or under the Path.
+	DocumentId     string `protobuf:"bytes,6,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"`
+	UnderPath      string `protobuf:"bytes,7,opt,name=under_path,json=underPath,proto3" json:"under_path,omitempty"`
+	FromDocumentId string `protobuf:"bytes,8,opt,name=from_document_id,json=fromDocumentId,proto3" json:"from_document_id,omitempty"`
+	ToDocumentId   string `protobuf:"bytes,9,opt,name=to_document_id,json=toDocumentId,proto3" json:"to_document_id,omitempty"`
+	FromUnderPath  string `protobuf:"bytes,10,opt,name=from_under_path,json=fromUnderPath,proto3" json:"from_under_path,omitempty"`
+	ToUnderPath    string `protobuf:"bytes,11,opt,name=to_under_path,json=toUnderPath,proto3" json:"to_under_path,omitempty"`
+	// The writer's own confidence, at least this (0..1).
+	MinConfidence *float64 `protobuf:"fixed64,12,opt,name=min_confidence,json=minConfidence,proto3,oneof" json:"min_confidence,omitempty"`
+	// Bounds on created_at, unix nanoseconds.
+	CreatedBefore *int64 `protobuf:"varint,13,opt,name=created_before,json=createdBefore,proto3,oneof" json:"created_before,omitempty"`
+	CreatedAfter  *int64 `protobuf:"varint,14,opt,name=created_after,json=createdAfter,proto3,oneof" json:"created_after,omitempty"`
+	// attributes.judge.verdict: recorded at all, or exactly this.
+	HasJudgeVerdict *bool  `protobuf:"varint,15,opt,name=has_judge_verdict,json=hasJudgeVerdict,proto3,oneof" json:"has_judge_verdict,omitempty"`
+	JudgeVerdict    string `protobuf:"bytes,16,opt,name=judge_verdict,json=judgeVerdict,proto3" json:"judge_verdict,omitempty"`
+	// The method / the kind exactly as stored: no prefix, no sub-kinds.
+	MethodExact string `protobuf:"bytes,17,opt,name=method_exact,json=methodExact,proto3" json:"method_exact,omitempty"`
+	KindExact   string `protobuf:"bytes,18,opt,name=kind_exact,json=kindExact,proto3" json:"kind_exact,omitempty"`
+	// The from-document's path prefix exactly as the summary computes it (the
+	// first two segments of its first Path name in sort order); or, with
+	// from_unfiled, a from-document filed nowhere (the summary's empty prefix).
+	FromPathPrefix string `protobuf:"bytes,19,opt,name=from_path_prefix,json=fromPathPrefix,proto3" json:"from_path_prefix,omitempty"`
+	FromUnfiled    bool   `protobuf:"varint,20,opt,name=from_unfiled,json=fromUnfiled,proto3" json:"from_unfiled,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ReviewQueueFilter) Reset() {
+	*x = ReviewQueueFilter{}
+	mi := &file_loomcycle_proto_msgTypes[109]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReviewQueueFilter) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReviewQueueFilter) ProtoMessage() {}
+
+func (x *ReviewQueueFilter) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[109]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReviewQueueFilter.ProtoReflect.Descriptor instead.
+func (*ReviewQueueFilter) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{109}
+}
+
+func (x *ReviewQueueFilter) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ReviewQueueFilter) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *ReviewQueueFilter) GetKinds() []string {
+	if x != nil {
+		return x.Kinds
+	}
+	return nil
+}
+
+func (x *ReviewQueueFilter) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *ReviewQueueFilter) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *ReviewQueueFilter) GetDocumentId() string {
+	if x != nil {
+		return x.DocumentId
+	}
+	return ""
+}
+
+func (x *ReviewQueueFilter) GetUnderPath() string {
+	if x != nil {
+		return x.UnderPath
+	}
+	return ""
+}
+
+func (x *ReviewQueueFilter) GetFromDocumentId() string {
+	if x != nil {
+		return x.FromDocumentId
+	}
+	return ""
+}
+
+func (x *ReviewQueueFilter) GetToDocumentId() string {
+	if x != nil {
+		return x.ToDocumentId
+	}
+	return ""
+}
+
+func (x *ReviewQueueFilter) GetFromUnderPath() string {
+	if x != nil {
+		return x.FromUnderPath
+	}
+	return ""
+}
+
+func (x *ReviewQueueFilter) GetToUnderPath() string {
+	if x != nil {
+		return x.ToUnderPath
+	}
+	return ""
+}
+
+func (x *ReviewQueueFilter) GetMinConfidence() float64 {
+	if x != nil && x.MinConfidence != nil {
+		return *x.MinConfidence
+	}
+	return 0
+}
+
+func (x *ReviewQueueFilter) GetCreatedBefore() int64 {
+	if x != nil && x.CreatedBefore != nil {
+		return *x.CreatedBefore
+	}
+	return 0
+}
+
+func (x *ReviewQueueFilter) GetCreatedAfter() int64 {
+	if x != nil && x.CreatedAfter != nil {
+		return *x.CreatedAfter
+	}
+	return 0
+}
+
+func (x *ReviewQueueFilter) GetHasJudgeVerdict() bool {
+	if x != nil && x.HasJudgeVerdict != nil {
+		return *x.HasJudgeVerdict
+	}
+	return false
+}
+
+func (x *ReviewQueueFilter) GetJudgeVerdict() string {
+	if x != nil {
+		return x.JudgeVerdict
+	}
+	return ""
+}
+
+func (x *ReviewQueueFilter) GetMethodExact() string {
+	if x != nil {
+		return x.MethodExact
+	}
+	return ""
+}
+
+func (x *ReviewQueueFilter) GetKindExact() string {
+	if x != nil {
+		return x.KindExact
+	}
+	return ""
+}
+
+func (x *ReviewQueueFilter) GetFromPathPrefix() string {
+	if x != nil {
+		return x.FromPathPrefix
+	}
+	return ""
+}
+
+func (x *ReviewQueueFilter) GetFromUnfiled() bool {
+	if x != nil {
+		return x.FromUnfiled
+	}
+	return false
+}
+
+type ListReviewQueueRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Whose: only an admin may name a tenant.
+	Tenant string `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	// tenant (default) or user (the caller's own, or scope_id's).
+	Scope     string             `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	Filter    *ReviewQueueFilter `protobuf:"bytes,3,opt,name=filter,proto3" json:"filter,omitempty"`
+	Summarize bool               `protobuf:"varint,4,opt,name=summarize,proto3" json:"summarize,omitempty"`
+	// Page size (default 500, at most 5000), a next_cursor, and created
+	// (default) or verified.
+	Limit int32  `protobuf:"varint,5,opt,name=limit,proto3" json:"limit,omitempty"`
+	After string `protobuf:"bytes,6,opt,name=after,proto3" json:"after,omitempty"`
+	Order string `protobuf:"bytes,7,opt,name=order,proto3" json:"order,omitempty"`
+	// With scope "user": whose. An admin or a tenant operator may name
+	// another subject of its tenant; a member only itself.
+	ScopeId       string `protobuf:"bytes,8,opt,name=scope_id,json=scopeId,proto3" json:"scope_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListReviewQueueRequest) Reset() {
+	*x = ListReviewQueueRequest{}
+	mi := &file_loomcycle_proto_msgTypes[110]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListReviewQueueRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListReviewQueueRequest) ProtoMessage() {}
+
+func (x *ListReviewQueueRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[110]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListReviewQueueRequest.ProtoReflect.Descriptor instead.
+func (*ListReviewQueueRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{110}
+}
+
+func (x *ListReviewQueueRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *ListReviewQueueRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *ListReviewQueueRequest) GetFilter() *ReviewQueueFilter {
+	if x != nil {
+		return x.Filter
+	}
+	return nil
+}
+
+func (x *ListReviewQueueRequest) GetSummarize() bool {
+	if x != nil {
+		return x.Summarize
+	}
+	return false
+}
+
+func (x *ListReviewQueueRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *ListReviewQueueRequest) GetAfter() string {
+	if x != nil {
+		return x.After
+	}
+	return ""
+}
+
+func (x *ListReviewQueueRequest) GetOrder() string {
+	if x != nil {
+		return x.Order
+	}
+	return ""
+}
+
+func (x *ListReviewQueueRequest) GetScopeId() string {
+	if x != nil {
+		return x.ScopeId
+	}
+	return ""
+}
+
+// ReviewQueueGroup is one row of the queue's summary.
+type ReviewQueueGroup struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Kind   string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	Method string                 `protobuf:"bytes,2,opt,name=method,proto3" json:"method,omitempty"`
+	// The from-document's Path name, first two segments; empty when filed
+	// nowhere.
+	FromPathPrefix string `protobuf:"bytes,3,opt,name=from_path_prefix,json=fromPathPrefix,proto3" json:"from_path_prefix,omitempty"`
+	// attributes.judge.verdict; empty when none.
+	JudgeVerdict string `protobuf:"bytes,4,opt,name=judge_verdict,json=judgeVerdict,proto3" json:"judge_verdict,omitempty"`
+	Count        int32  `protobuf:"varint,5,opt,name=count,proto3" json:"count,omitempty"`
+	// The filter that selects exactly this group: the summary's own filter
+	// narrowed by the group's keys. Pass it to RuleStatements as it is.
+	Filter        *ReviewQueueFilter `protobuf:"bytes,6,opt,name=filter,proto3" json:"filter,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReviewQueueGroup) Reset() {
+	*x = ReviewQueueGroup{}
+	mi := &file_loomcycle_proto_msgTypes[111]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReviewQueueGroup) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReviewQueueGroup) ProtoMessage() {}
+
+func (x *ReviewQueueGroup) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[111]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReviewQueueGroup.ProtoReflect.Descriptor instead.
+func (*ReviewQueueGroup) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{111}
+}
+
+func (x *ReviewQueueGroup) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *ReviewQueueGroup) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *ReviewQueueGroup) GetFromPathPrefix() string {
+	if x != nil {
+		return x.FromPathPrefix
+	}
+	return ""
+}
+
+func (x *ReviewQueueGroup) GetJudgeVerdict() string {
+	if x != nil {
+		return x.JudgeVerdict
+	}
+	return ""
+}
+
+func (x *ReviewQueueGroup) GetCount() int32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+func (x *ReviewQueueGroup) GetFilter() *ReviewQueueFilter {
+	if x != nil {
+		return x.Filter
+	}
+	return nil
+}
+
+type ListReviewQueueResponse struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Tenant string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	Scope  string                 `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	// Each statement as JSON, the shape GET /v1/_statements/review returns.
+	StatementsJson [][]byte            `protobuf:"bytes,3,rep,name=statements_json,json=statementsJson,proto3" json:"statements_json,omitempty"`
+	Truncated      bool                `protobuf:"varint,4,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	NextCursor     string              `protobuf:"bytes,5,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	Summary        []*ReviewQueueGroup `protobuf:"bytes,6,rep,name=summary,proto3" json:"summary,omitempty"`
+	Total          int32               `protobuf:"varint,7,opt,name=total,proto3" json:"total,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ListReviewQueueResponse) Reset() {
+	*x = ListReviewQueueResponse{}
+	mi := &file_loomcycle_proto_msgTypes[112]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListReviewQueueResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListReviewQueueResponse) ProtoMessage() {}
+
+func (x *ListReviewQueueResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[112]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListReviewQueueResponse.ProtoReflect.Descriptor instead.
+func (*ListReviewQueueResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{112}
+}
+
+func (x *ListReviewQueueResponse) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *ListReviewQueueResponse) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *ListReviewQueueResponse) GetStatementsJson() [][]byte {
+	if x != nil {
+		return x.StatementsJson
+	}
+	return nil
+}
+
+func (x *ListReviewQueueResponse) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+func (x *ListReviewQueueResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+func (x *ListReviewQueueResponse) GetSummary() []*ReviewQueueGroup {
+	if x != nil {
+		return x.Summary
+	}
+	return nil
+}
+
+func (x *ListReviewQueueResponse) GetTotal() int32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+type RuleStatementsRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Tenant string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	Scope  string                 `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	// accept or reject.
+	Action string `protobuf:"bytes,3,opt,name=action,proto3" json:"action,omitempty"`
+	// The statements by id, or by filter (has_filter selects the filter, so
+	// an empty filter — the whole queue — can be named).
+	Ids       []string           `protobuf:"bytes,4,rep,name=ids,proto3" json:"ids,omitempty"`
+	Filter    *ReviewQueueFilter `protobuf:"bytes,5,opt,name=filter,proto3" json:"filter,omitempty"`
+	HasFilter bool               `protobuf:"varint,6,opt,name=has_filter,json=hasFilter,proto3" json:"has_filter,omitempty"`
+	// Required for reject.
+	Reason string `protobuf:"bytes,7,opt,name=reason,proto3" json:"reason,omitempty"`
+	// Unset = a dry run.
+	DryRun *bool `protobuf:"varint,8,opt,name=dry_run,json=dryRun,proto3,oneof" json:"dry_run,omitempty"`
+	// The dry run's matched count; required to rule.
+	ExpectCount *int32 `protobuf:"varint,9,opt,name=expect_count,json=expectCount,proto3,oneof" json:"expect_count,omitempty"`
+	// At most this many (default and ceiling 1000).
+	Max int32 `protobuf:"varint,10,opt,name=max,proto3" json:"max,omitempty"`
+	// As ListReviewQueueRequest.scope_id.
+	ScopeId       string `protobuf:"bytes,11,opt,name=scope_id,json=scopeId,proto3" json:"scope_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RuleStatementsRequest) Reset() {
+	*x = RuleStatementsRequest{}
+	mi := &file_loomcycle_proto_msgTypes[113]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuleStatementsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuleStatementsRequest) ProtoMessage() {}
+
+func (x *RuleStatementsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[113]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuleStatementsRequest.ProtoReflect.Descriptor instead.
+func (*RuleStatementsRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{113}
+}
+
+func (x *RuleStatementsRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *RuleStatementsRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *RuleStatementsRequest) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *RuleStatementsRequest) GetIds() []string {
+	if x != nil {
+		return x.Ids
+	}
+	return nil
+}
+
+func (x *RuleStatementsRequest) GetFilter() *ReviewQueueFilter {
+	if x != nil {
+		return x.Filter
+	}
+	return nil
+}
+
+func (x *RuleStatementsRequest) GetHasFilter() bool {
+	if x != nil {
+		return x.HasFilter
+	}
+	return false
+}
+
+func (x *RuleStatementsRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *RuleStatementsRequest) GetDryRun() bool {
+	if x != nil && x.DryRun != nil {
+		return *x.DryRun
+	}
+	return false
+}
+
+func (x *RuleStatementsRequest) GetExpectCount() int32 {
+	if x != nil && x.ExpectCount != nil {
+		return *x.ExpectCount
+	}
+	return 0
+}
+
+func (x *RuleStatementsRequest) GetMax() int32 {
+	if x != nil {
+		return x.Max
+	}
+	return 0
+}
+
+func (x *RuleStatementsRequest) GetScopeId() string {
+	if x != nil {
+		return x.ScopeId
+	}
+	return ""
+}
+
+type RulingBreakdown struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	Method        string                 `protobuf:"bytes,2,opt,name=method,proto3" json:"method,omitempty"`
+	Count         int32                  `protobuf:"varint,3,opt,name=count,proto3" json:"count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RulingBreakdown) Reset() {
+	*x = RulingBreakdown{}
+	mi := &file_loomcycle_proto_msgTypes[114]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RulingBreakdown) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RulingBreakdown) ProtoMessage() {}
+
+func (x *RulingBreakdown) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[114]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RulingBreakdown.ProtoReflect.Descriptor instead.
+func (*RulingBreakdown) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{114}
+}
+
+func (x *RulingBreakdown) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *RulingBreakdown) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *RulingBreakdown) GetCount() int32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+// RulingItem is one statement's outcome: the status it was ruled (or
+// reverted) to, or the refusal's code and message.
+type RulingItem struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	Message       string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RulingItem) Reset() {
+	*x = RulingItem{}
+	mi := &file_loomcycle_proto_msgTypes[115]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RulingItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RulingItem) ProtoMessage() {}
+
+func (x *RulingItem) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[115]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RulingItem.ProtoReflect.Descriptor instead.
+func (*RulingItem) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{115}
+}
+
+func (x *RulingItem) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *RulingItem) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *RulingItem) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *RulingItem) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type RuleStatementsResponse struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Tenant   string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	Scope    string                 `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	Action   string                 `protobuf:"bytes,3,opt,name=action,proto3" json:"action,omitempty"`
+	DryRun   bool                   `protobuf:"varint,4,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
+	RulingId string                 `protobuf:"bytes,5,opt,name=ruling_id,json=rulingId,proto3" json:"ruling_id,omitempty"`
+	Matched  int32                  `protobuf:"varint,6,opt,name=matched,proto3" json:"matched,omitempty"`
+	Selected int32                  `protobuf:"varint,7,opt,name=selected,proto3" json:"selected,omitempty"`
+	Skipped  int32                  `protobuf:"varint,8,opt,name=skipped,proto3" json:"skipped,omitempty"`
+	ToRule   int32                  `protobuf:"varint,9,opt,name=to_rule,json=toRule,proto3" json:"to_rule,omitempty"`
+	Ruled    int32                  `protobuf:"varint,10,opt,name=ruled,proto3" json:"ruled,omitempty"`
+	Failed   int32                  `protobuf:"varint,11,opt,name=failed,proto3" json:"failed,omitempty"`
+	// A dry run's sample, each statement as JSON.
+	SampleJson    [][]byte           `protobuf:"bytes,12,rep,name=sample_json,json=sampleJson,proto3" json:"sample_json,omitempty"`
+	Breakdown     []*RulingBreakdown `protobuf:"bytes,13,rep,name=breakdown,proto3" json:"breakdown,omitempty"`
+	Items         []*RulingItem      `protobuf:"bytes,14,rep,name=items,proto3" json:"items,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RuleStatementsResponse) Reset() {
+	*x = RuleStatementsResponse{}
+	mi := &file_loomcycle_proto_msgTypes[116]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuleStatementsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuleStatementsResponse) ProtoMessage() {}
+
+func (x *RuleStatementsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[116]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuleStatementsResponse.ProtoReflect.Descriptor instead.
+func (*RuleStatementsResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{116}
+}
+
+func (x *RuleStatementsResponse) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *RuleStatementsResponse) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *RuleStatementsResponse) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *RuleStatementsResponse) GetDryRun() bool {
+	if x != nil {
+		return x.DryRun
+	}
+	return false
+}
+
+func (x *RuleStatementsResponse) GetRulingId() string {
+	if x != nil {
+		return x.RulingId
+	}
+	return ""
+}
+
+func (x *RuleStatementsResponse) GetMatched() int32 {
+	if x != nil {
+		return x.Matched
+	}
+	return 0
+}
+
+func (x *RuleStatementsResponse) GetSelected() int32 {
+	if x != nil {
+		return x.Selected
+	}
+	return 0
+}
+
+func (x *RuleStatementsResponse) GetSkipped() int32 {
+	if x != nil {
+		return x.Skipped
+	}
+	return 0
+}
+
+func (x *RuleStatementsResponse) GetToRule() int32 {
+	if x != nil {
+		return x.ToRule
+	}
+	return 0
+}
+
+func (x *RuleStatementsResponse) GetRuled() int32 {
+	if x != nil {
+		return x.Ruled
+	}
+	return 0
+}
+
+func (x *RuleStatementsResponse) GetFailed() int32 {
+	if x != nil {
+		return x.Failed
+	}
+	return 0
+}
+
+func (x *RuleStatementsResponse) GetSampleJson() [][]byte {
+	if x != nil {
+		return x.SampleJson
+	}
+	return nil
+}
+
+func (x *RuleStatementsResponse) GetBreakdown() []*RulingBreakdown {
+	if x != nil {
+		return x.Breakdown
+	}
+	return nil
+}
+
+func (x *RuleStatementsResponse) GetItems() []*RulingItem {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+type RevertRulingRequest struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Tenant   string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	Scope    string                 `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	RulingId string                 `protobuf:"bytes,3,opt,name=ruling_id,json=rulingId,proto3" json:"ruling_id,omitempty"`
+	// As ListReviewQueueRequest.scope_id.
+	ScopeId       string `protobuf:"bytes,4,opt,name=scope_id,json=scopeId,proto3" json:"scope_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevertRulingRequest) Reset() {
+	*x = RevertRulingRequest{}
+	mi := &file_loomcycle_proto_msgTypes[117]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevertRulingRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevertRulingRequest) ProtoMessage() {}
+
+func (x *RevertRulingRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[117]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevertRulingRequest.ProtoReflect.Descriptor instead.
+func (*RevertRulingRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{117}
+}
+
+func (x *RevertRulingRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *RevertRulingRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *RevertRulingRequest) GetRulingId() string {
+	if x != nil {
+		return x.RulingId
+	}
+	return ""
+}
+
+func (x *RevertRulingRequest) GetScopeId() string {
+	if x != nil {
+		return x.ScopeId
+	}
+	return ""
+}
+
+type RevertRulingResponse struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Tenant   string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	Scope    string                 `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	RulingId string                 `protobuf:"bytes,3,opt,name=ruling_id,json=rulingId,proto3" json:"ruling_id,omitempty"`
+	Action   string                 `protobuf:"bytes,4,opt,name=action,proto3" json:"action,omitempty"`
+	Reverted int32                  `protobuf:"varint,5,opt,name=reverted,proto3" json:"reverted,omitempty"`
+	Changed  int32                  `protobuf:"varint,6,opt,name=changed,proto3" json:"changed,omitempty"`
+	Skipped  int32                  `protobuf:"varint,7,opt,name=skipped,proto3" json:"skipped,omitempty"`
+	Items    []*RulingItem          `protobuf:"bytes,8,rep,name=items,proto3" json:"items,omitempty"`
+	// The revert's own record in ListRulings (action "revert").
+	RevertId      string `protobuf:"bytes,9,opt,name=revert_id,json=revertId,proto3" json:"revert_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevertRulingResponse) Reset() {
+	*x = RevertRulingResponse{}
+	mi := &file_loomcycle_proto_msgTypes[118]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevertRulingResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevertRulingResponse) ProtoMessage() {}
+
+func (x *RevertRulingResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[118]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevertRulingResponse.ProtoReflect.Descriptor instead.
+func (*RevertRulingResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{118}
+}
+
+func (x *RevertRulingResponse) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *RevertRulingResponse) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *RevertRulingResponse) GetRulingId() string {
+	if x != nil {
+		return x.RulingId
+	}
+	return ""
+}
+
+func (x *RevertRulingResponse) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *RevertRulingResponse) GetReverted() int32 {
+	if x != nil {
+		return x.Reverted
+	}
+	return 0
+}
+
+func (x *RevertRulingResponse) GetChanged() int32 {
+	if x != nil {
+		return x.Changed
+	}
+	return 0
+}
+
+func (x *RevertRulingResponse) GetSkipped() int32 {
+	if x != nil {
+		return x.Skipped
+	}
+	return 0
+}
+
+func (x *RevertRulingResponse) GetItems() []*RulingItem {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *RevertRulingResponse) GetRevertId() string {
+	if x != nil {
+		return x.RevertId
+	}
+	return ""
+}
+
+type ListRulingsRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Tenant string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	Scope  string                 `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	// As ListReviewQueueRequest.scope_id.
+	ScopeId string `protobuf:"bytes,3,opt,name=scope_id,json=scopeId,proto3" json:"scope_id,omitempty"`
+	// Page size (default 20, at most 100) and the previous page's next_cursor.
+	Limit         int32  `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
+	After         string `protobuf:"bytes,5,opt,name=after,proto3" json:"after,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListRulingsRequest) Reset() {
+	*x = ListRulingsRequest{}
+	mi := &file_loomcycle_proto_msgTypes[119]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRulingsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRulingsRequest) ProtoMessage() {}
+
+func (x *ListRulingsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[119]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRulingsRequest.ProtoReflect.Descriptor instead.
+func (*ListRulingsRequest) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{119}
+}
+
+func (x *ListRulingsRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *ListRulingsRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *ListRulingsRequest) GetScopeId() string {
+	if x != nil {
+		return x.ScopeId
+	}
+	return ""
+}
+
+func (x *ListRulingsRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *ListRulingsRequest) GetAfter() string {
+	if x != nil {
+		return x.After
+	}
+	return ""
+}
+
+// RulingSelector is what a ruling selected: the queue filter (has_filter),
+// or how many statement ids it named; on a revert, the ruling it undid.
+type RulingSelector struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Filter        *ReviewQueueFilter     `protobuf:"bytes,1,opt,name=filter,proto3" json:"filter,omitempty"`
+	HasFilter     bool                   `protobuf:"varint,2,opt,name=has_filter,json=hasFilter,proto3" json:"has_filter,omitempty"`
+	IdsCount      int32                  `protobuf:"varint,3,opt,name=ids_count,json=idsCount,proto3" json:"ids_count,omitempty"`
+	Max           int32                  `protobuf:"varint,4,opt,name=max,proto3" json:"max,omitempty"`
+	Reverts       string                 `protobuf:"bytes,5,opt,name=reverts,proto3" json:"reverts,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RulingSelector) Reset() {
+	*x = RulingSelector{}
+	mi := &file_loomcycle_proto_msgTypes[120]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RulingSelector) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RulingSelector) ProtoMessage() {}
+
+func (x *RulingSelector) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[120]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RulingSelector.ProtoReflect.Descriptor instead.
+func (*RulingSelector) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{120}
+}
+
+func (x *RulingSelector) GetFilter() *ReviewQueueFilter {
+	if x != nil {
+		return x.Filter
+	}
+	return nil
+}
+
+func (x *RulingSelector) GetHasFilter() bool {
+	if x != nil {
+		return x.HasFilter
+	}
+	return false
+}
+
+func (x *RulingSelector) GetIdsCount() int32 {
+	if x != nil {
+		return x.IdsCount
+	}
+	return 0
+}
+
+func (x *RulingSelector) GetMax() int32 {
+	if x != nil {
+		return x.Max
+	}
+	return 0
+}
+
+func (x *RulingSelector) GetReverts() string {
+	if x != nil {
+		return x.Reverts
+	}
+	return ""
+}
+
+// RulingRecord is one bulk ruling (action accept or reject) or one revert of
+// one (action revert: ruled counts what it reverted, failed what had changed).
+type RulingRecord struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Id      string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Action  string                 `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
+	RuledBy string                 `protobuf:"bytes,3,opt,name=ruled_by,json=ruledBy,proto3" json:"ruled_by,omitempty"`
+	// The subject that made the call.
+	Actor    string          `protobuf:"bytes,4,opt,name=actor,proto3" json:"actor,omitempty"`
+	Reason   string          `protobuf:"bytes,5,opt,name=reason,proto3" json:"reason,omitempty"`
+	Selector *RulingSelector `protobuf:"bytes,6,opt,name=selector,proto3" json:"selector,omitempty"`
+	Matched  int32           `protobuf:"varint,7,opt,name=matched,proto3" json:"matched,omitempty"`
+	Ruled    int32           `protobuf:"varint,8,opt,name=ruled,proto3" json:"ruled,omitempty"`
+	Failed   int32           `protobuf:"varint,9,opt,name=failed,proto3" json:"failed,omitempty"`
+	Skipped  int32           `protobuf:"varint,10,opt,name=skipped,proto3" json:"skipped,omitempty"`
+	// Unix nanoseconds.
+	CreatedAt int64 `protobuf:"varint,11,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	// Undone since: when, and by which revert (a record of this listing).
+	Reverted      bool   `protobuf:"varint,12,opt,name=reverted,proto3" json:"reverted,omitempty"`
+	RevertedAt    int64  `protobuf:"varint,13,opt,name=reverted_at,json=revertedAt,proto3" json:"reverted_at,omitempty"`
+	RevertedBy    string `protobuf:"bytes,14,opt,name=reverted_by,json=revertedBy,proto3" json:"reverted_by,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RulingRecord) Reset() {
+	*x = RulingRecord{}
+	mi := &file_loomcycle_proto_msgTypes[121]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RulingRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RulingRecord) ProtoMessage() {}
+
+func (x *RulingRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[121]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RulingRecord.ProtoReflect.Descriptor instead.
+func (*RulingRecord) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{121}
+}
+
+func (x *RulingRecord) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *RulingRecord) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *RulingRecord) GetRuledBy() string {
+	if x != nil {
+		return x.RuledBy
+	}
+	return ""
+}
+
+func (x *RulingRecord) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *RulingRecord) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *RulingRecord) GetSelector() *RulingSelector {
+	if x != nil {
+		return x.Selector
+	}
+	return nil
+}
+
+func (x *RulingRecord) GetMatched() int32 {
+	if x != nil {
+		return x.Matched
+	}
+	return 0
+}
+
+func (x *RulingRecord) GetRuled() int32 {
+	if x != nil {
+		return x.Ruled
+	}
+	return 0
+}
+
+func (x *RulingRecord) GetFailed() int32 {
+	if x != nil {
+		return x.Failed
+	}
+	return 0
+}
+
+func (x *RulingRecord) GetSkipped() int32 {
+	if x != nil {
+		return x.Skipped
+	}
+	return 0
+}
+
+func (x *RulingRecord) GetCreatedAt() int64 {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return 0
+}
+
+func (x *RulingRecord) GetReverted() bool {
+	if x != nil {
+		return x.Reverted
+	}
+	return false
+}
+
+func (x *RulingRecord) GetRevertedAt() int64 {
+	if x != nil {
+		return x.RevertedAt
+	}
+	return 0
+}
+
+func (x *RulingRecord) GetRevertedBy() string {
+	if x != nil {
+		return x.RevertedBy
+	}
+	return ""
+}
+
+type ListRulingsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tenant        string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	Scope         string                 `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	Rulings       []*RulingRecord        `protobuf:"bytes,3,rep,name=rulings,proto3" json:"rulings,omitempty"`
+	NextCursor    string                 `protobuf:"bytes,4,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListRulingsResponse) Reset() {
+	*x = ListRulingsResponse{}
+	mi := &file_loomcycle_proto_msgTypes[122]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListRulingsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListRulingsResponse) ProtoMessage() {}
+
+func (x *ListRulingsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_loomcycle_proto_msgTypes[122]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListRulingsResponse.ProtoReflect.Descriptor instead.
+func (*ListRulingsResponse) Descriptor() ([]byte, []int) {
+	return file_loomcycle_proto_rawDescGZIP(), []int{122}
+}
+
+func (x *ListRulingsResponse) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *ListRulingsResponse) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *ListRulingsResponse) GetRulings() []*RulingRecord {
+	if x != nil {
+		return x.Rulings
+	}
+	return nil
+}
+
+func (x *ListRulingsResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
 type ConfigRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -9295,7 +10760,7 @@ type ConfigRequest struct {
 
 func (x *ConfigRequest) Reset() {
 	*x = ConfigRequest{}
-	mi := &file_loomcycle_proto_msgTypes[109]
+	mi := &file_loomcycle_proto_msgTypes[123]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9307,7 +10772,7 @@ func (x *ConfigRequest) String() string {
 func (*ConfigRequest) ProtoMessage() {}
 
 func (x *ConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[109]
+	mi := &file_loomcycle_proto_msgTypes[123]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9320,7 +10785,7 @@ func (x *ConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigRequest.ProtoReflect.Descriptor instead.
 func (*ConfigRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{109}
+	return file_loomcycle_proto_rawDescGZIP(), []int{123}
 }
 
 // ConfigResponse carries the report as raw JSON rather than a typed message.
@@ -9345,7 +10810,7 @@ type ConfigResponse struct {
 
 func (x *ConfigResponse) Reset() {
 	*x = ConfigResponse{}
-	mi := &file_loomcycle_proto_msgTypes[110]
+	mi := &file_loomcycle_proto_msgTypes[124]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9357,7 +10822,7 @@ func (x *ConfigResponse) String() string {
 func (*ConfigResponse) ProtoMessage() {}
 
 func (x *ConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[110]
+	mi := &file_loomcycle_proto_msgTypes[124]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9370,7 +10835,7 @@ func (x *ConfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigResponse.ProtoReflect.Descriptor instead.
 func (*ConfigResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{110}
+	return file_loomcycle_proto_rawDescGZIP(), []int{124}
 }
 
 func (x *ConfigResponse) GetConfigJson() []byte {
@@ -9388,7 +10853,7 @@ type HealthRequest struct {
 
 func (x *HealthRequest) Reset() {
 	*x = HealthRequest{}
-	mi := &file_loomcycle_proto_msgTypes[111]
+	mi := &file_loomcycle_proto_msgTypes[125]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9400,7 +10865,7 @@ func (x *HealthRequest) String() string {
 func (*HealthRequest) ProtoMessage() {}
 
 func (x *HealthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[111]
+	mi := &file_loomcycle_proto_msgTypes[125]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9413,7 +10878,7 @@ func (x *HealthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthRequest.ProtoReflect.Descriptor instead.
 func (*HealthRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{111}
+	return file_loomcycle_proto_rawDescGZIP(), []int{125}
 }
 
 type HealthResponse struct {
@@ -9429,7 +10894,7 @@ type HealthResponse struct {
 
 func (x *HealthResponse) Reset() {
 	*x = HealthResponse{}
-	mi := &file_loomcycle_proto_msgTypes[112]
+	mi := &file_loomcycle_proto_msgTypes[126]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9441,7 +10906,7 @@ func (x *HealthResponse) String() string {
 func (*HealthResponse) ProtoMessage() {}
 
 func (x *HealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[112]
+	mi := &file_loomcycle_proto_msgTypes[126]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9454,7 +10919,7 @@ func (x *HealthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
 func (*HealthResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{112}
+	return file_loomcycle_proto_rawDescGZIP(), []int{126}
 }
 
 func (x *HealthResponse) GetOk() bool {
@@ -9501,7 +10966,7 @@ type PauseRuntimeRequest struct {
 
 func (x *PauseRuntimeRequest) Reset() {
 	*x = PauseRuntimeRequest{}
-	mi := &file_loomcycle_proto_msgTypes[113]
+	mi := &file_loomcycle_proto_msgTypes[127]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9513,7 +10978,7 @@ func (x *PauseRuntimeRequest) String() string {
 func (*PauseRuntimeRequest) ProtoMessage() {}
 
 func (x *PauseRuntimeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[113]
+	mi := &file_loomcycle_proto_msgTypes[127]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9526,7 +10991,7 @@ func (x *PauseRuntimeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseRuntimeRequest.ProtoReflect.Descriptor instead.
 func (*PauseRuntimeRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{113}
+	return file_loomcycle_proto_rawDescGZIP(), []int{127}
 }
 
 func (x *PauseRuntimeRequest) GetTimeoutMs() int64 {
@@ -9554,7 +11019,7 @@ type PauseRuntimeResponse struct {
 
 func (x *PauseRuntimeResponse) Reset() {
 	*x = PauseRuntimeResponse{}
-	mi := &file_loomcycle_proto_msgTypes[114]
+	mi := &file_loomcycle_proto_msgTypes[128]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9566,7 +11031,7 @@ func (x *PauseRuntimeResponse) String() string {
 func (*PauseRuntimeResponse) ProtoMessage() {}
 
 func (x *PauseRuntimeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[114]
+	mi := &file_loomcycle_proto_msgTypes[128]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9579,7 +11044,7 @@ func (x *PauseRuntimeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseRuntimeResponse.ProtoReflect.Descriptor instead.
 func (*PauseRuntimeResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{114}
+	return file_loomcycle_proto_rawDescGZIP(), []int{128}
 }
 
 func (x *PauseRuntimeResponse) GetStatus() string {
@@ -9632,7 +11097,7 @@ type ResumeRuntimeRequest struct {
 
 func (x *ResumeRuntimeRequest) Reset() {
 	*x = ResumeRuntimeRequest{}
-	mi := &file_loomcycle_proto_msgTypes[115]
+	mi := &file_loomcycle_proto_msgTypes[129]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9644,7 +11109,7 @@ func (x *ResumeRuntimeRequest) String() string {
 func (*ResumeRuntimeRequest) ProtoMessage() {}
 
 func (x *ResumeRuntimeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[115]
+	mi := &file_loomcycle_proto_msgTypes[129]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9657,7 +11122,7 @@ func (x *ResumeRuntimeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeRuntimeRequest.ProtoReflect.Descriptor instead.
 func (*ResumeRuntimeRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{115}
+	return file_loomcycle_proto_rawDescGZIP(), []int{129}
 }
 
 type ResumeRuntimeResponse struct {
@@ -9671,7 +11136,7 @@ type ResumeRuntimeResponse struct {
 
 func (x *ResumeRuntimeResponse) Reset() {
 	*x = ResumeRuntimeResponse{}
-	mi := &file_loomcycle_proto_msgTypes[116]
+	mi := &file_loomcycle_proto_msgTypes[130]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9683,7 +11148,7 @@ func (x *ResumeRuntimeResponse) String() string {
 func (*ResumeRuntimeResponse) ProtoMessage() {}
 
 func (x *ResumeRuntimeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[116]
+	mi := &file_loomcycle_proto_msgTypes[130]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9696,7 +11161,7 @@ func (x *ResumeRuntimeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeRuntimeResponse.ProtoReflect.Descriptor instead.
 func (*ResumeRuntimeResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{116}
+	return file_loomcycle_proto_rawDescGZIP(), []int{130}
 }
 
 func (x *ResumeRuntimeResponse) GetStatus() string {
@@ -9728,7 +11193,7 @@ type GetRuntimeStateRequest struct {
 
 func (x *GetRuntimeStateRequest) Reset() {
 	*x = GetRuntimeStateRequest{}
-	mi := &file_loomcycle_proto_msgTypes[117]
+	mi := &file_loomcycle_proto_msgTypes[131]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9740,7 +11205,7 @@ func (x *GetRuntimeStateRequest) String() string {
 func (*GetRuntimeStateRequest) ProtoMessage() {}
 
 func (x *GetRuntimeStateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[117]
+	mi := &file_loomcycle_proto_msgTypes[131]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9753,7 +11218,7 @@ func (x *GetRuntimeStateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRuntimeStateRequest.ProtoReflect.Descriptor instead.
 func (*GetRuntimeStateRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{117}
+	return file_loomcycle_proto_rawDescGZIP(), []int{131}
 }
 
 type RuntimeStateResponse struct {
@@ -9768,7 +11233,7 @@ type RuntimeStateResponse struct {
 
 func (x *RuntimeStateResponse) Reset() {
 	*x = RuntimeStateResponse{}
-	mi := &file_loomcycle_proto_msgTypes[118]
+	mi := &file_loomcycle_proto_msgTypes[132]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9780,7 +11245,7 @@ func (x *RuntimeStateResponse) String() string {
 func (*RuntimeStateResponse) ProtoMessage() {}
 
 func (x *RuntimeStateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[118]
+	mi := &file_loomcycle_proto_msgTypes[132]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9793,7 +11258,7 @@ func (x *RuntimeStateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeStateResponse.ProtoReflect.Descriptor instead.
 func (*RuntimeStateResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{118}
+	return file_loomcycle_proto_rawDescGZIP(), []int{132}
 }
 
 func (x *RuntimeStateResponse) GetStatus() string {
@@ -9832,7 +11297,7 @@ type ResolveProbeRequest struct {
 
 func (x *ResolveProbeRequest) Reset() {
 	*x = ResolveProbeRequest{}
-	mi := &file_loomcycle_proto_msgTypes[119]
+	mi := &file_loomcycle_proto_msgTypes[133]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9844,7 +11309,7 @@ func (x *ResolveProbeRequest) String() string {
 func (*ResolveProbeRequest) ProtoMessage() {}
 
 func (x *ResolveProbeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[119]
+	mi := &file_loomcycle_proto_msgTypes[133]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9857,7 +11322,7 @@ func (x *ResolveProbeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveProbeRequest.ProtoReflect.Descriptor instead.
 func (*ResolveProbeRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{119}
+	return file_loomcycle_proto_rawDescGZIP(), []int{133}
 }
 
 // ResolverMatrixResponse mirrors the GET /v1/_resolver wire shape —
@@ -9872,7 +11337,7 @@ type ResolverMatrixResponse struct {
 
 func (x *ResolverMatrixResponse) Reset() {
 	*x = ResolverMatrixResponse{}
-	mi := &file_loomcycle_proto_msgTypes[120]
+	mi := &file_loomcycle_proto_msgTypes[134]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9884,7 +11349,7 @@ func (x *ResolverMatrixResponse) String() string {
 func (*ResolverMatrixResponse) ProtoMessage() {}
 
 func (x *ResolverMatrixResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[120]
+	mi := &file_loomcycle_proto_msgTypes[134]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9897,7 +11362,7 @@ func (x *ResolverMatrixResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolverMatrixResponse.ProtoReflect.Descriptor instead.
 func (*ResolverMatrixResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{120}
+	return file_loomcycle_proto_rawDescGZIP(), []int{134}
 }
 
 func (x *ResolverMatrixResponse) GetGeneratedAt() *timestamppb.Timestamp {
@@ -9927,7 +11392,7 @@ type ResolverProviderAvailability struct {
 
 func (x *ResolverProviderAvailability) Reset() {
 	*x = ResolverProviderAvailability{}
-	mi := &file_loomcycle_proto_msgTypes[121]
+	mi := &file_loomcycle_proto_msgTypes[135]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9939,7 +11404,7 @@ func (x *ResolverProviderAvailability) String() string {
 func (*ResolverProviderAvailability) ProtoMessage() {}
 
 func (x *ResolverProviderAvailability) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[121]
+	mi := &file_loomcycle_proto_msgTypes[135]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9952,7 +11417,7 @@ func (x *ResolverProviderAvailability) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolverProviderAvailability.ProtoReflect.Descriptor instead.
 func (*ResolverProviderAvailability) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{121}
+	return file_loomcycle_proto_rawDescGZIP(), []int{135}
 }
 
 func (x *ResolverProviderAvailability) GetExcluded() bool {
@@ -10000,7 +11465,7 @@ type ResolverModelStatus struct {
 
 func (x *ResolverModelStatus) Reset() {
 	*x = ResolverModelStatus{}
-	mi := &file_loomcycle_proto_msgTypes[122]
+	mi := &file_loomcycle_proto_msgTypes[136]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10012,7 +11477,7 @@ func (x *ResolverModelStatus) String() string {
 func (*ResolverModelStatus) ProtoMessage() {}
 
 func (x *ResolverModelStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[122]
+	mi := &file_loomcycle_proto_msgTypes[136]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10025,7 +11490,7 @@ func (x *ResolverModelStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolverModelStatus.ProtoReflect.Descriptor instead.
 func (*ResolverModelStatus) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{122}
+	return file_loomcycle_proto_rawDescGZIP(), []int{136}
 }
 
 func (x *ResolverModelStatus) GetListed() bool {
@@ -10055,7 +11520,7 @@ type CreateSnapshotRequest struct {
 
 func (x *CreateSnapshotRequest) Reset() {
 	*x = CreateSnapshotRequest{}
-	mi := &file_loomcycle_proto_msgTypes[123]
+	mi := &file_loomcycle_proto_msgTypes[137]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10067,7 +11532,7 @@ func (x *CreateSnapshotRequest) String() string {
 func (*CreateSnapshotRequest) ProtoMessage() {}
 
 func (x *CreateSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[123]
+	mi := &file_loomcycle_proto_msgTypes[137]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10080,7 +11545,7 @@ func (x *CreateSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*CreateSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{123}
+	return file_loomcycle_proto_rawDescGZIP(), []int{137}
 }
 
 func (x *CreateSnapshotRequest) GetIncludeHistory() bool {
@@ -10136,7 +11601,7 @@ type SnapshotDescriptor struct {
 
 func (x *SnapshotDescriptor) Reset() {
 	*x = SnapshotDescriptor{}
-	mi := &file_loomcycle_proto_msgTypes[124]
+	mi := &file_loomcycle_proto_msgTypes[138]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10148,7 +11613,7 @@ func (x *SnapshotDescriptor) String() string {
 func (*SnapshotDescriptor) ProtoMessage() {}
 
 func (x *SnapshotDescriptor) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[124]
+	mi := &file_loomcycle_proto_msgTypes[138]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10161,7 +11626,7 @@ func (x *SnapshotDescriptor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotDescriptor.ProtoReflect.Descriptor instead.
 func (*SnapshotDescriptor) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{124}
+	return file_loomcycle_proto_rawDescGZIP(), []int{138}
 }
 
 func (x *SnapshotDescriptor) GetSnapshotId() string {
@@ -10228,7 +11693,7 @@ type ListSnapshotsRequest struct {
 
 func (x *ListSnapshotsRequest) Reset() {
 	*x = ListSnapshotsRequest{}
-	mi := &file_loomcycle_proto_msgTypes[125]
+	mi := &file_loomcycle_proto_msgTypes[139]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10240,7 +11705,7 @@ func (x *ListSnapshotsRequest) String() string {
 func (*ListSnapshotsRequest) ProtoMessage() {}
 
 func (x *ListSnapshotsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[125]
+	mi := &file_loomcycle_proto_msgTypes[139]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10253,7 +11718,7 @@ func (x *ListSnapshotsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSnapshotsRequest.ProtoReflect.Descriptor instead.
 func (*ListSnapshotsRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{125}
+	return file_loomcycle_proto_rawDescGZIP(), []int{139}
 }
 
 type ListSnapshotsResponse struct {
@@ -10265,7 +11730,7 @@ type ListSnapshotsResponse struct {
 
 func (x *ListSnapshotsResponse) Reset() {
 	*x = ListSnapshotsResponse{}
-	mi := &file_loomcycle_proto_msgTypes[126]
+	mi := &file_loomcycle_proto_msgTypes[140]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10277,7 +11742,7 @@ func (x *ListSnapshotsResponse) String() string {
 func (*ListSnapshotsResponse) ProtoMessage() {}
 
 func (x *ListSnapshotsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[126]
+	mi := &file_loomcycle_proto_msgTypes[140]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10290,7 +11755,7 @@ func (x *ListSnapshotsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSnapshotsResponse.ProtoReflect.Descriptor instead.
 func (*ListSnapshotsResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{126}
+	return file_loomcycle_proto_rawDescGZIP(), []int{140}
 }
 
 func (x *ListSnapshotsResponse) GetSnapshots() []*SnapshotDescriptor {
@@ -10309,7 +11774,7 @@ type GetSnapshotRequest struct {
 
 func (x *GetSnapshotRequest) Reset() {
 	*x = GetSnapshotRequest{}
-	mi := &file_loomcycle_proto_msgTypes[127]
+	mi := &file_loomcycle_proto_msgTypes[141]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10321,7 +11786,7 @@ func (x *GetSnapshotRequest) String() string {
 func (*GetSnapshotRequest) ProtoMessage() {}
 
 func (x *GetSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[127]
+	mi := &file_loomcycle_proto_msgTypes[141]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10334,7 +11799,7 @@ func (x *GetSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*GetSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{127}
+	return file_loomcycle_proto_rawDescGZIP(), []int{141}
 }
 
 func (x *GetSnapshotRequest) GetSnapshotId() string {
@@ -10362,7 +11827,7 @@ type SnapshotEnvelope struct {
 
 func (x *SnapshotEnvelope) Reset() {
 	*x = SnapshotEnvelope{}
-	mi := &file_loomcycle_proto_msgTypes[128]
+	mi := &file_loomcycle_proto_msgTypes[142]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10374,7 +11839,7 @@ func (x *SnapshotEnvelope) String() string {
 func (*SnapshotEnvelope) ProtoMessage() {}
 
 func (x *SnapshotEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[128]
+	mi := &file_loomcycle_proto_msgTypes[142]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10387,7 +11852,7 @@ func (x *SnapshotEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotEnvelope.ProtoReflect.Descriptor instead.
 func (*SnapshotEnvelope) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{128}
+	return file_loomcycle_proto_rawDescGZIP(), []int{142}
 }
 
 func (x *SnapshotEnvelope) GetSnapshotId() string {
@@ -10441,7 +11906,7 @@ type ExportSnapshotRequest struct {
 
 func (x *ExportSnapshotRequest) Reset() {
 	*x = ExportSnapshotRequest{}
-	mi := &file_loomcycle_proto_msgTypes[129]
+	mi := &file_loomcycle_proto_msgTypes[143]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10453,7 +11918,7 @@ func (x *ExportSnapshotRequest) String() string {
 func (*ExportSnapshotRequest) ProtoMessage() {}
 
 func (x *ExportSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[129]
+	mi := &file_loomcycle_proto_msgTypes[143]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10466,7 +11931,7 @@ func (x *ExportSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*ExportSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{129}
+	return file_loomcycle_proto_rawDescGZIP(), []int{143}
 }
 
 func (x *ExportSnapshotRequest) GetSnapshotId() string {
@@ -10492,7 +11957,7 @@ type ExportSnapshotResponse struct {
 
 func (x *ExportSnapshotResponse) Reset() {
 	*x = ExportSnapshotResponse{}
-	mi := &file_loomcycle_proto_msgTypes[130]
+	mi := &file_loomcycle_proto_msgTypes[144]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10504,7 +11969,7 @@ func (x *ExportSnapshotResponse) String() string {
 func (*ExportSnapshotResponse) ProtoMessage() {}
 
 func (x *ExportSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[130]
+	mi := &file_loomcycle_proto_msgTypes[144]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10517,7 +11982,7 @@ func (x *ExportSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*ExportSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{130}
+	return file_loomcycle_proto_rawDescGZIP(), []int{144}
 }
 
 func (x *ExportSnapshotResponse) GetSnapshotId() string {
@@ -10570,7 +12035,7 @@ type RestoreSnapshotRequest struct {
 
 func (x *RestoreSnapshotRequest) Reset() {
 	*x = RestoreSnapshotRequest{}
-	mi := &file_loomcycle_proto_msgTypes[131]
+	mi := &file_loomcycle_proto_msgTypes[145]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10582,7 +12047,7 @@ func (x *RestoreSnapshotRequest) String() string {
 func (*RestoreSnapshotRequest) ProtoMessage() {}
 
 func (x *RestoreSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[131]
+	mi := &file_loomcycle_proto_msgTypes[145]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10595,7 +12060,7 @@ func (x *RestoreSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*RestoreSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{131}
+	return file_loomcycle_proto_rawDescGZIP(), []int{145}
 }
 
 func (x *RestoreSnapshotRequest) GetSnapshotId() string {
@@ -10655,7 +12120,7 @@ type RestoreSnapshotResponse struct {
 
 func (x *RestoreSnapshotResponse) Reset() {
 	*x = RestoreSnapshotResponse{}
-	mi := &file_loomcycle_proto_msgTypes[132]
+	mi := &file_loomcycle_proto_msgTypes[146]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10667,7 +12132,7 @@ func (x *RestoreSnapshotResponse) String() string {
 func (*RestoreSnapshotResponse) ProtoMessage() {}
 
 func (x *RestoreSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[132]
+	mi := &file_loomcycle_proto_msgTypes[146]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10680,7 +12145,7 @@ func (x *RestoreSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*RestoreSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{132}
+	return file_loomcycle_proto_rawDescGZIP(), []int{146}
 }
 
 func (x *RestoreSnapshotResponse) GetAgentDefsRestored() int32 {
@@ -10790,7 +12255,7 @@ type DeleteSnapshotRequest struct {
 
 func (x *DeleteSnapshotRequest) Reset() {
 	*x = DeleteSnapshotRequest{}
-	mi := &file_loomcycle_proto_msgTypes[133]
+	mi := &file_loomcycle_proto_msgTypes[147]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10802,7 +12267,7 @@ func (x *DeleteSnapshotRequest) String() string {
 func (*DeleteSnapshotRequest) ProtoMessage() {}
 
 func (x *DeleteSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[133]
+	mi := &file_loomcycle_proto_msgTypes[147]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10815,7 +12280,7 @@ func (x *DeleteSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*DeleteSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{133}
+	return file_loomcycle_proto_rawDescGZIP(), []int{147}
 }
 
 func (x *DeleteSnapshotRequest) GetSnapshotId() string {
@@ -10837,7 +12302,7 @@ type DeleteSnapshotResponse struct {
 
 func (x *DeleteSnapshotResponse) Reset() {
 	*x = DeleteSnapshotResponse{}
-	mi := &file_loomcycle_proto_msgTypes[134]
+	mi := &file_loomcycle_proto_msgTypes[148]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10849,7 +12314,7 @@ func (x *DeleteSnapshotResponse) String() string {
 func (*DeleteSnapshotResponse) ProtoMessage() {}
 
 func (x *DeleteSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[134]
+	mi := &file_loomcycle_proto_msgTypes[148]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10862,7 +12327,7 @@ func (x *DeleteSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*DeleteSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{134}
+	return file_loomcycle_proto_rawDescGZIP(), []int{148}
 }
 
 func (x *DeleteSnapshotResponse) GetDeleted() bool {
@@ -10891,7 +12356,7 @@ type SubstrateRequest struct {
 
 func (x *SubstrateRequest) Reset() {
 	*x = SubstrateRequest{}
-	mi := &file_loomcycle_proto_msgTypes[135]
+	mi := &file_loomcycle_proto_msgTypes[149]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10903,7 +12368,7 @@ func (x *SubstrateRequest) String() string {
 func (*SubstrateRequest) ProtoMessage() {}
 
 func (x *SubstrateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[135]
+	mi := &file_loomcycle_proto_msgTypes[149]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10916,7 +12381,7 @@ func (x *SubstrateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubstrateRequest.ProtoReflect.Descriptor instead.
 func (*SubstrateRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{135}
+	return file_loomcycle_proto_rawDescGZIP(), []int{149}
 }
 
 func (x *SubstrateRequest) GetInputJson() []byte {
@@ -10947,7 +12412,7 @@ type SubstrateResponse struct {
 
 func (x *SubstrateResponse) Reset() {
 	*x = SubstrateResponse{}
-	mi := &file_loomcycle_proto_msgTypes[136]
+	mi := &file_loomcycle_proto_msgTypes[150]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10959,7 +12424,7 @@ func (x *SubstrateResponse) String() string {
 func (*SubstrateResponse) ProtoMessage() {}
 
 func (x *SubstrateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[136]
+	mi := &file_loomcycle_proto_msgTypes[150]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10972,7 +12437,7 @@ func (x *SubstrateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubstrateResponse.ProtoReflect.Descriptor instead.
 func (*SubstrateResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{136}
+	return file_loomcycle_proto_rawDescGZIP(), []int{150}
 }
 
 func (x *SubstrateResponse) GetOutputJson() []byte {
@@ -11006,7 +12471,7 @@ type ListChannelsRequest struct {
 
 func (x *ListChannelsRequest) Reset() {
 	*x = ListChannelsRequest{}
-	mi := &file_loomcycle_proto_msgTypes[137]
+	mi := &file_loomcycle_proto_msgTypes[151]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11018,7 +12483,7 @@ func (x *ListChannelsRequest) String() string {
 func (*ListChannelsRequest) ProtoMessage() {}
 
 func (x *ListChannelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[137]
+	mi := &file_loomcycle_proto_msgTypes[151]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11031,7 +12496,7 @@ func (x *ListChannelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListChannelsRequest.ProtoReflect.Descriptor instead.
 func (*ListChannelsRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{137}
+	return file_loomcycle_proto_rawDescGZIP(), []int{151}
 }
 
 type ListChannelsResponse struct {
@@ -11043,7 +12508,7 @@ type ListChannelsResponse struct {
 
 func (x *ListChannelsResponse) Reset() {
 	*x = ListChannelsResponse{}
-	mi := &file_loomcycle_proto_msgTypes[138]
+	mi := &file_loomcycle_proto_msgTypes[152]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11055,7 +12520,7 @@ func (x *ListChannelsResponse) String() string {
 func (*ListChannelsResponse) ProtoMessage() {}
 
 func (x *ListChannelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[138]
+	mi := &file_loomcycle_proto_msgTypes[152]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11068,7 +12533,7 @@ func (x *ListChannelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListChannelsResponse.ProtoReflect.Descriptor instead.
 func (*ListChannelsResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{138}
+	return file_loomcycle_proto_rawDescGZIP(), []int{152}
 }
 
 func (x *ListChannelsResponse) GetChannels() []*ChannelDescriptor {
@@ -11103,7 +12568,7 @@ type ChannelDescriptor struct {
 
 func (x *ChannelDescriptor) Reset() {
 	*x = ChannelDescriptor{}
-	mi := &file_loomcycle_proto_msgTypes[139]
+	mi := &file_loomcycle_proto_msgTypes[153]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11115,7 +12580,7 @@ func (x *ChannelDescriptor) String() string {
 func (*ChannelDescriptor) ProtoMessage() {}
 
 func (x *ChannelDescriptor) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[139]
+	mi := &file_loomcycle_proto_msgTypes[153]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11128,7 +12593,7 @@ func (x *ChannelDescriptor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelDescriptor.ProtoReflect.Descriptor instead.
 func (*ChannelDescriptor) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{139}
+	return file_loomcycle_proto_rawDescGZIP(), []int{153}
 }
 
 func (x *ChannelDescriptor) GetName() string {
@@ -11272,7 +12737,7 @@ type StreamUserRunStatesRequest struct {
 
 func (x *StreamUserRunStatesRequest) Reset() {
 	*x = StreamUserRunStatesRequest{}
-	mi := &file_loomcycle_proto_msgTypes[140]
+	mi := &file_loomcycle_proto_msgTypes[154]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11284,7 +12749,7 @@ func (x *StreamUserRunStatesRequest) String() string {
 func (*StreamUserRunStatesRequest) ProtoMessage() {}
 
 func (x *StreamUserRunStatesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[140]
+	mi := &file_loomcycle_proto_msgTypes[154]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11297,7 +12762,7 @@ func (x *StreamUserRunStatesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamUserRunStatesRequest.ProtoReflect.Descriptor instead.
 func (*StreamUserRunStatesRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{140}
+	return file_loomcycle_proto_rawDescGZIP(), []int{154}
 }
 
 func (x *StreamUserRunStatesRequest) GetUserId() string {
@@ -11373,7 +12838,7 @@ type RunStateEvent struct {
 
 func (x *RunStateEvent) Reset() {
 	*x = RunStateEvent{}
-	mi := &file_loomcycle_proto_msgTypes[141]
+	mi := &file_loomcycle_proto_msgTypes[155]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11385,7 +12850,7 @@ func (x *RunStateEvent) String() string {
 func (*RunStateEvent) ProtoMessage() {}
 
 func (x *RunStateEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[141]
+	mi := &file_loomcycle_proto_msgTypes[155]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11398,7 +12863,7 @@ func (x *RunStateEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunStateEvent.ProtoReflect.Descriptor instead.
 func (*RunStateEvent) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{141}
+	return file_loomcycle_proto_rawDescGZIP(), []int{155}
 }
 
 func (x *RunStateEvent) GetRunId() string {
@@ -11542,7 +13007,7 @@ type ParentContext struct {
 
 func (x *ParentContext) Reset() {
 	*x = ParentContext{}
-	mi := &file_loomcycle_proto_msgTypes[142]
+	mi := &file_loomcycle_proto_msgTypes[156]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11554,7 +13019,7 @@ func (x *ParentContext) String() string {
 func (*ParentContext) ProtoMessage() {}
 
 func (x *ParentContext) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[142]
+	mi := &file_loomcycle_proto_msgTypes[156]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11567,7 +13032,7 @@ func (x *ParentContext) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ParentContext.ProtoReflect.Descriptor instead.
 func (*ParentContext) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{142}
+	return file_loomcycle_proto_rawDescGZIP(), []int{156}
 }
 
 func (x *ParentContext) GetRootAgentRunId() string {
@@ -11664,7 +13129,7 @@ type PublishChannelRequest struct {
 
 func (x *PublishChannelRequest) Reset() {
 	*x = PublishChannelRequest{}
-	mi := &file_loomcycle_proto_msgTypes[143]
+	mi := &file_loomcycle_proto_msgTypes[157]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11676,7 +13141,7 @@ func (x *PublishChannelRequest) String() string {
 func (*PublishChannelRequest) ProtoMessage() {}
 
 func (x *PublishChannelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[143]
+	mi := &file_loomcycle_proto_msgTypes[157]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11689,7 +13154,7 @@ func (x *PublishChannelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublishChannelRequest.ProtoReflect.Descriptor instead.
 func (*PublishChannelRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{143}
+	return file_loomcycle_proto_rawDescGZIP(), []int{157}
 }
 
 func (x *PublishChannelRequest) GetChannel() string {
@@ -11742,7 +13207,7 @@ type PublishChannelResponse struct {
 
 func (x *PublishChannelResponse) Reset() {
 	*x = PublishChannelResponse{}
-	mi := &file_loomcycle_proto_msgTypes[144]
+	mi := &file_loomcycle_proto_msgTypes[158]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11754,7 +13219,7 @@ func (x *PublishChannelResponse) String() string {
 func (*PublishChannelResponse) ProtoMessage() {}
 
 func (x *PublishChannelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[144]
+	mi := &file_loomcycle_proto_msgTypes[158]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11767,7 +13232,7 @@ func (x *PublishChannelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublishChannelResponse.ProtoReflect.Descriptor instead.
 func (*PublishChannelResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{144}
+	return file_loomcycle_proto_rawDescGZIP(), []int{158}
 }
 
 func (x *PublishChannelResponse) GetMsgId() string {
@@ -11833,7 +13298,7 @@ type SubscribeChannelRequest struct {
 
 func (x *SubscribeChannelRequest) Reset() {
 	*x = SubscribeChannelRequest{}
-	mi := &file_loomcycle_proto_msgTypes[145]
+	mi := &file_loomcycle_proto_msgTypes[159]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11845,7 +13310,7 @@ func (x *SubscribeChannelRequest) String() string {
 func (*SubscribeChannelRequest) ProtoMessage() {}
 
 func (x *SubscribeChannelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[145]
+	mi := &file_loomcycle_proto_msgTypes[159]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11858,7 +13323,7 @@ func (x *SubscribeChannelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeChannelRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeChannelRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{145}
+	return file_loomcycle_proto_rawDescGZIP(), []int{159}
 }
 
 func (x *SubscribeChannelRequest) GetChannel() string {
@@ -11914,7 +13379,7 @@ type SubscribeChannelResponse struct {
 
 func (x *SubscribeChannelResponse) Reset() {
 	*x = SubscribeChannelResponse{}
-	mi := &file_loomcycle_proto_msgTypes[146]
+	mi := &file_loomcycle_proto_msgTypes[160]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11926,7 +13391,7 @@ func (x *SubscribeChannelResponse) String() string {
 func (*SubscribeChannelResponse) ProtoMessage() {}
 
 func (x *SubscribeChannelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[146]
+	mi := &file_loomcycle_proto_msgTypes[160]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11939,7 +13404,7 @@ func (x *SubscribeChannelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeChannelResponse.ProtoReflect.Descriptor instead.
 func (*SubscribeChannelResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{146}
+	return file_loomcycle_proto_rawDescGZIP(), []int{160}
 }
 
 func (x *SubscribeChannelResponse) GetChannel() string {
@@ -11976,7 +13441,7 @@ type ChannelMessage struct {
 
 func (x *ChannelMessage) Reset() {
 	*x = ChannelMessage{}
-	mi := &file_loomcycle_proto_msgTypes[147]
+	mi := &file_loomcycle_proto_msgTypes[161]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11988,7 +13453,7 @@ func (x *ChannelMessage) String() string {
 func (*ChannelMessage) ProtoMessage() {}
 
 func (x *ChannelMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[147]
+	mi := &file_loomcycle_proto_msgTypes[161]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12001,7 +13466,7 @@ func (x *ChannelMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelMessage.ProtoReflect.Descriptor instead.
 func (*ChannelMessage) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{147}
+	return file_loomcycle_proto_rawDescGZIP(), []int{161}
 }
 
 func (x *ChannelMessage) GetId() string {
@@ -12038,7 +13503,7 @@ type PeekChannelRequest struct {
 
 func (x *PeekChannelRequest) Reset() {
 	*x = PeekChannelRequest{}
-	mi := &file_loomcycle_proto_msgTypes[148]
+	mi := &file_loomcycle_proto_msgTypes[162]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12050,7 +13515,7 @@ func (x *PeekChannelRequest) String() string {
 func (*PeekChannelRequest) ProtoMessage() {}
 
 func (x *PeekChannelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[148]
+	mi := &file_loomcycle_proto_msgTypes[162]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12063,7 +13528,7 @@ func (x *PeekChannelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeekChannelRequest.ProtoReflect.Descriptor instead.
 func (*PeekChannelRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{148}
+	return file_loomcycle_proto_rawDescGZIP(), []int{162}
 }
 
 func (x *PeekChannelRequest) GetChannel() string {
@@ -12111,7 +13576,7 @@ type PeekChannelResponse struct {
 
 func (x *PeekChannelResponse) Reset() {
 	*x = PeekChannelResponse{}
-	mi := &file_loomcycle_proto_msgTypes[149]
+	mi := &file_loomcycle_proto_msgTypes[163]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12123,7 +13588,7 @@ func (x *PeekChannelResponse) String() string {
 func (*PeekChannelResponse) ProtoMessage() {}
 
 func (x *PeekChannelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[149]
+	mi := &file_loomcycle_proto_msgTypes[163]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12136,7 +13601,7 @@ func (x *PeekChannelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeekChannelResponse.ProtoReflect.Descriptor instead.
 func (*PeekChannelResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{149}
+	return file_loomcycle_proto_rawDescGZIP(), []int{163}
 }
 
 func (x *PeekChannelResponse) GetChannel() string {
@@ -12164,7 +13629,7 @@ type ListTeamChannelsRequest struct {
 
 func (x *ListTeamChannelsRequest) Reset() {
 	*x = ListTeamChannelsRequest{}
-	mi := &file_loomcycle_proto_msgTypes[150]
+	mi := &file_loomcycle_proto_msgTypes[164]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12176,7 +13641,7 @@ func (x *ListTeamChannelsRequest) String() string {
 func (*ListTeamChannelsRequest) ProtoMessage() {}
 
 func (x *ListTeamChannelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[150]
+	mi := &file_loomcycle_proto_msgTypes[164]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12189,7 +13654,7 @@ func (x *ListTeamChannelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTeamChannelsRequest.ProtoReflect.Descriptor instead.
 func (*ListTeamChannelsRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{150}
+	return file_loomcycle_proto_rawDescGZIP(), []int{164}
 }
 
 func (x *ListTeamChannelsRequest) GetTeam() string {
@@ -12234,7 +13699,7 @@ type TeamChannelDescriptor struct {
 
 func (x *TeamChannelDescriptor) Reset() {
 	*x = TeamChannelDescriptor{}
-	mi := &file_loomcycle_proto_msgTypes[151]
+	mi := &file_loomcycle_proto_msgTypes[165]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12246,7 +13711,7 @@ func (x *TeamChannelDescriptor) String() string {
 func (*TeamChannelDescriptor) ProtoMessage() {}
 
 func (x *TeamChannelDescriptor) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[151]
+	mi := &file_loomcycle_proto_msgTypes[165]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12259,7 +13724,7 @@ func (x *TeamChannelDescriptor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TeamChannelDescriptor.ProtoReflect.Descriptor instead.
 func (*TeamChannelDescriptor) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{151}
+	return file_loomcycle_proto_rawDescGZIP(), []int{165}
 }
 
 func (x *TeamChannelDescriptor) GetName() string {
@@ -12370,7 +13835,7 @@ type ListTeamChannelsResponse struct {
 
 func (x *ListTeamChannelsResponse) Reset() {
 	*x = ListTeamChannelsResponse{}
-	mi := &file_loomcycle_proto_msgTypes[152]
+	mi := &file_loomcycle_proto_msgTypes[166]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12382,7 +13847,7 @@ func (x *ListTeamChannelsResponse) String() string {
 func (*ListTeamChannelsResponse) ProtoMessage() {}
 
 func (x *ListTeamChannelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[152]
+	mi := &file_loomcycle_proto_msgTypes[166]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12395,7 +13860,7 @@ func (x *ListTeamChannelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTeamChannelsResponse.ProtoReflect.Descriptor instead.
 func (*ListTeamChannelsResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{152}
+	return file_loomcycle_proto_rawDescGZIP(), []int{166}
 }
 
 func (x *ListTeamChannelsResponse) GetTeam() string {
@@ -12427,7 +13892,7 @@ type PeekTeamChannelRequest struct {
 
 func (x *PeekTeamChannelRequest) Reset() {
 	*x = PeekTeamChannelRequest{}
-	mi := &file_loomcycle_proto_msgTypes[153]
+	mi := &file_loomcycle_proto_msgTypes[167]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12439,7 +13904,7 @@ func (x *PeekTeamChannelRequest) String() string {
 func (*PeekTeamChannelRequest) ProtoMessage() {}
 
 func (x *PeekTeamChannelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[153]
+	mi := &file_loomcycle_proto_msgTypes[167]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12452,7 +13917,7 @@ func (x *PeekTeamChannelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeekTeamChannelRequest.ProtoReflect.Descriptor instead.
 func (*PeekTeamChannelRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{153}
+	return file_loomcycle_proto_rawDescGZIP(), []int{167}
 }
 
 func (x *PeekTeamChannelRequest) GetTeam() string {
@@ -12510,7 +13975,7 @@ type PeekTeamChannelResponse struct {
 
 func (x *PeekTeamChannelResponse) Reset() {
 	*x = PeekTeamChannelResponse{}
-	mi := &file_loomcycle_proto_msgTypes[154]
+	mi := &file_loomcycle_proto_msgTypes[168]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12522,7 +13987,7 @@ func (x *PeekTeamChannelResponse) String() string {
 func (*PeekTeamChannelResponse) ProtoMessage() {}
 
 func (x *PeekTeamChannelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[154]
+	mi := &file_loomcycle_proto_msgTypes[168]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12535,7 +14000,7 @@ func (x *PeekTeamChannelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeekTeamChannelResponse.ProtoReflect.Descriptor instead.
 func (*PeekTeamChannelResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{154}
+	return file_loomcycle_proto_rawDescGZIP(), []int{168}
 }
 
 func (x *PeekTeamChannelResponse) GetTeam() string {
@@ -12589,7 +14054,7 @@ type ReleaseTeamChannelRequest struct {
 
 func (x *ReleaseTeamChannelRequest) Reset() {
 	*x = ReleaseTeamChannelRequest{}
-	mi := &file_loomcycle_proto_msgTypes[155]
+	mi := &file_loomcycle_proto_msgTypes[169]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12601,7 +14066,7 @@ func (x *ReleaseTeamChannelRequest) String() string {
 func (*ReleaseTeamChannelRequest) ProtoMessage() {}
 
 func (x *ReleaseTeamChannelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[155]
+	mi := &file_loomcycle_proto_msgTypes[169]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12614,7 +14079,7 @@ func (x *ReleaseTeamChannelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseTeamChannelRequest.ProtoReflect.Descriptor instead.
 func (*ReleaseTeamChannelRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{155}
+	return file_loomcycle_proto_rawDescGZIP(), []int{169}
 }
 
 func (x *ReleaseTeamChannelRequest) GetTeam() string {
@@ -12665,7 +14130,7 @@ type ReleaseTeamChannelResponse struct {
 
 func (x *ReleaseTeamChannelResponse) Reset() {
 	*x = ReleaseTeamChannelResponse{}
-	mi := &file_loomcycle_proto_msgTypes[156]
+	mi := &file_loomcycle_proto_msgTypes[170]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12677,7 +14142,7 @@ func (x *ReleaseTeamChannelResponse) String() string {
 func (*ReleaseTeamChannelResponse) ProtoMessage() {}
 
 func (x *ReleaseTeamChannelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[156]
+	mi := &file_loomcycle_proto_msgTypes[170]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12690,7 +14155,7 @@ func (x *ReleaseTeamChannelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseTeamChannelResponse.ProtoReflect.Descriptor instead.
 func (*ReleaseTeamChannelResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{156}
+	return file_loomcycle_proto_rawDescGZIP(), []int{170}
 }
 
 func (x *ReleaseTeamChannelResponse) GetTeam() string {
@@ -12740,7 +14205,7 @@ type AckChannelRequest struct {
 
 func (x *AckChannelRequest) Reset() {
 	*x = AckChannelRequest{}
-	mi := &file_loomcycle_proto_msgTypes[157]
+	mi := &file_loomcycle_proto_msgTypes[171]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12752,7 +14217,7 @@ func (x *AckChannelRequest) String() string {
 func (*AckChannelRequest) ProtoMessage() {}
 
 func (x *AckChannelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[157]
+	mi := &file_loomcycle_proto_msgTypes[171]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12765,7 +14230,7 @@ func (x *AckChannelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AckChannelRequest.ProtoReflect.Descriptor instead.
 func (*AckChannelRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{157}
+	return file_loomcycle_proto_rawDescGZIP(), []int{171}
 }
 
 func (x *AckChannelRequest) GetChannel() string {
@@ -12805,7 +14270,7 @@ type AckChannelResponse struct {
 
 func (x *AckChannelResponse) Reset() {
 	*x = AckChannelResponse{}
-	mi := &file_loomcycle_proto_msgTypes[158]
+	mi := &file_loomcycle_proto_msgTypes[172]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12817,7 +14282,7 @@ func (x *AckChannelResponse) String() string {
 func (*AckChannelResponse) ProtoMessage() {}
 
 func (x *AckChannelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[158]
+	mi := &file_loomcycle_proto_msgTypes[172]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12830,7 +14295,7 @@ func (x *AckChannelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AckChannelResponse.ProtoReflect.Descriptor instead.
 func (*AckChannelResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{158}
+	return file_loomcycle_proto_rawDescGZIP(), []int{172}
 }
 
 func (x *AckChannelResponse) GetOk() bool {
@@ -12858,7 +14323,7 @@ type AwaitChannelsRequest struct {
 
 func (x *AwaitChannelsRequest) Reset() {
 	*x = AwaitChannelsRequest{}
-	mi := &file_loomcycle_proto_msgTypes[159]
+	mi := &file_loomcycle_proto_msgTypes[173]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12870,7 +14335,7 @@ func (x *AwaitChannelsRequest) String() string {
 func (*AwaitChannelsRequest) ProtoMessage() {}
 
 func (x *AwaitChannelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[159]
+	mi := &file_loomcycle_proto_msgTypes[173]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12883,7 +14348,7 @@ func (x *AwaitChannelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AwaitChannelsRequest.ProtoReflect.Descriptor instead.
 func (*AwaitChannelsRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{159}
+	return file_loomcycle_proto_rawDescGZIP(), []int{173}
 }
 
 func (x *AwaitChannelsRequest) GetChannels() []string {
@@ -12953,7 +14418,7 @@ type AwaitChannelEntry struct {
 
 func (x *AwaitChannelEntry) Reset() {
 	*x = AwaitChannelEntry{}
-	mi := &file_loomcycle_proto_msgTypes[160]
+	mi := &file_loomcycle_proto_msgTypes[174]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12965,7 +14430,7 @@ func (x *AwaitChannelEntry) String() string {
 func (*AwaitChannelEntry) ProtoMessage() {}
 
 func (x *AwaitChannelEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[160]
+	mi := &file_loomcycle_proto_msgTypes[174]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12978,7 +14443,7 @@ func (x *AwaitChannelEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AwaitChannelEntry.ProtoReflect.Descriptor instead.
 func (*AwaitChannelEntry) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{160}
+	return file_loomcycle_proto_rawDescGZIP(), []int{174}
 }
 
 func (x *AwaitChannelEntry) GetMessages() []*ChannelMessage {
@@ -13009,7 +14474,7 @@ type AwaitChannelsResponse struct {
 
 func (x *AwaitChannelsResponse) Reset() {
 	*x = AwaitChannelsResponse{}
-	mi := &file_loomcycle_proto_msgTypes[161]
+	mi := &file_loomcycle_proto_msgTypes[175]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13021,7 +14486,7 @@ func (x *AwaitChannelsResponse) String() string {
 func (*AwaitChannelsResponse) ProtoMessage() {}
 
 func (x *AwaitChannelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[161]
+	mi := &file_loomcycle_proto_msgTypes[175]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13034,7 +14499,7 @@ func (x *AwaitChannelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AwaitChannelsResponse.ProtoReflect.Descriptor instead.
 func (*AwaitChannelsResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{161}
+	return file_loomcycle_proto_rawDescGZIP(), []int{175}
 }
 
 func (x *AwaitChannelsResponse) GetSatisfied() bool {
@@ -13093,7 +14558,7 @@ type BroadcastChannelsRequest struct {
 
 func (x *BroadcastChannelsRequest) Reset() {
 	*x = BroadcastChannelsRequest{}
-	mi := &file_loomcycle_proto_msgTypes[162]
+	mi := &file_loomcycle_proto_msgTypes[176]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13105,7 +14570,7 @@ func (x *BroadcastChannelsRequest) String() string {
 func (*BroadcastChannelsRequest) ProtoMessage() {}
 
 func (x *BroadcastChannelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[162]
+	mi := &file_loomcycle_proto_msgTypes[176]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13118,7 +14583,7 @@ func (x *BroadcastChannelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BroadcastChannelsRequest.ProtoReflect.Descriptor instead.
 func (*BroadcastChannelsRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{162}
+	return file_loomcycle_proto_rawDescGZIP(), []int{176}
 }
 
 func (x *BroadcastChannelsRequest) GetChannels() []string {
@@ -13173,7 +14638,7 @@ type BroadcastChannelEntry struct {
 
 func (x *BroadcastChannelEntry) Reset() {
 	*x = BroadcastChannelEntry{}
-	mi := &file_loomcycle_proto_msgTypes[163]
+	mi := &file_loomcycle_proto_msgTypes[177]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13185,7 +14650,7 @@ func (x *BroadcastChannelEntry) String() string {
 func (*BroadcastChannelEntry) ProtoMessage() {}
 
 func (x *BroadcastChannelEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[163]
+	mi := &file_loomcycle_proto_msgTypes[177]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13198,7 +14663,7 @@ func (x *BroadcastChannelEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BroadcastChannelEntry.ProtoReflect.Descriptor instead.
 func (*BroadcastChannelEntry) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{163}
+	return file_loomcycle_proto_rawDescGZIP(), []int{177}
 }
 
 func (x *BroadcastChannelEntry) GetChannel() string {
@@ -13261,7 +14726,7 @@ type BroadcastChannelsResponse struct {
 
 func (x *BroadcastChannelsResponse) Reset() {
 	*x = BroadcastChannelsResponse{}
-	mi := &file_loomcycle_proto_msgTypes[164]
+	mi := &file_loomcycle_proto_msgTypes[178]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13273,7 +14738,7 @@ func (x *BroadcastChannelsResponse) String() string {
 func (*BroadcastChannelsResponse) ProtoMessage() {}
 
 func (x *BroadcastChannelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[164]
+	mi := &file_loomcycle_proto_msgTypes[178]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13286,7 +14751,7 @@ func (x *BroadcastChannelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BroadcastChannelsResponse.ProtoReflect.Descriptor instead.
 func (*BroadcastChannelsResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{164}
+	return file_loomcycle_proto_rawDescGZIP(), []int{178}
 }
 
 func (x *BroadcastChannelsResponse) GetPublished() int32 {
@@ -13330,7 +14795,7 @@ type DecideRequest struct {
 
 func (x *DecideRequest) Reset() {
 	*x = DecideRequest{}
-	mi := &file_loomcycle_proto_msgTypes[165]
+	mi := &file_loomcycle_proto_msgTypes[179]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13342,7 +14807,7 @@ func (x *DecideRequest) String() string {
 func (*DecideRequest) ProtoMessage() {}
 
 func (x *DecideRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[165]
+	mi := &file_loomcycle_proto_msgTypes[179]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13355,7 +14820,7 @@ func (x *DecideRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecideRequest.ProtoReflect.Descriptor instead.
 func (*DecideRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{165}
+	return file_loomcycle_proto_rawDescGZIP(), []int{179}
 }
 
 func (x *DecideRequest) GetModel() string {
@@ -13396,7 +14861,7 @@ type DecisionQuestion struct {
 
 func (x *DecisionQuestion) Reset() {
 	*x = DecisionQuestion{}
-	mi := &file_loomcycle_proto_msgTypes[166]
+	mi := &file_loomcycle_proto_msgTypes[180]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13408,7 +14873,7 @@ func (x *DecisionQuestion) String() string {
 func (*DecisionQuestion) ProtoMessage() {}
 
 func (x *DecisionQuestion) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[166]
+	mi := &file_loomcycle_proto_msgTypes[180]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13421,7 +14886,7 @@ func (x *DecisionQuestion) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecisionQuestion.ProtoReflect.Descriptor instead.
 func (*DecisionQuestion) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{166}
+	return file_loomcycle_proto_rawDescGZIP(), []int{180}
 }
 
 func (x *DecisionQuestion) GetType() string {
@@ -13465,7 +14930,7 @@ type DecideResponse struct {
 
 func (x *DecideResponse) Reset() {
 	*x = DecideResponse{}
-	mi := &file_loomcycle_proto_msgTypes[167]
+	mi := &file_loomcycle_proto_msgTypes[181]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13477,7 +14942,7 @@ func (x *DecideResponse) String() string {
 func (*DecideResponse) ProtoMessage() {}
 
 func (x *DecideResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[167]
+	mi := &file_loomcycle_proto_msgTypes[181]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13490,7 +14955,7 @@ func (x *DecideResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecideResponse.ProtoReflect.Descriptor instead.
 func (*DecideResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{167}
+	return file_loomcycle_proto_rawDescGZIP(), []int{181}
 }
 
 func (x *DecideResponse) GetModel() string {
@@ -13538,7 +15003,7 @@ type DecisionUsage struct {
 
 func (x *DecisionUsage) Reset() {
 	*x = DecisionUsage{}
-	mi := &file_loomcycle_proto_msgTypes[168]
+	mi := &file_loomcycle_proto_msgTypes[182]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13550,7 +15015,7 @@ func (x *DecisionUsage) String() string {
 func (*DecisionUsage) ProtoMessage() {}
 
 func (x *DecisionUsage) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[168]
+	mi := &file_loomcycle_proto_msgTypes[182]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13563,7 +15028,7 @@ func (x *DecisionUsage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecisionUsage.ProtoReflect.Descriptor instead.
 func (*DecisionUsage) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{168}
+	return file_loomcycle_proto_rawDescGZIP(), []int{182}
 }
 
 func (x *DecisionUsage) GetInputTokens() int64 {
@@ -13588,7 +15053,7 @@ type ListDecisionModelsRequest struct {
 
 func (x *ListDecisionModelsRequest) Reset() {
 	*x = ListDecisionModelsRequest{}
-	mi := &file_loomcycle_proto_msgTypes[169]
+	mi := &file_loomcycle_proto_msgTypes[183]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13600,7 +15065,7 @@ func (x *ListDecisionModelsRequest) String() string {
 func (*ListDecisionModelsRequest) ProtoMessage() {}
 
 func (x *ListDecisionModelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[169]
+	mi := &file_loomcycle_proto_msgTypes[183]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13613,7 +15078,7 @@ func (x *ListDecisionModelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDecisionModelsRequest.ProtoReflect.Descriptor instead.
 func (*ListDecisionModelsRequest) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{169}
+	return file_loomcycle_proto_rawDescGZIP(), []int{183}
 }
 
 type ListDecisionModelsResponse struct {
@@ -13627,7 +15092,7 @@ type ListDecisionModelsResponse struct {
 
 func (x *ListDecisionModelsResponse) Reset() {
 	*x = ListDecisionModelsResponse{}
-	mi := &file_loomcycle_proto_msgTypes[170]
+	mi := &file_loomcycle_proto_msgTypes[184]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13639,7 +15104,7 @@ func (x *ListDecisionModelsResponse) String() string {
 func (*ListDecisionModelsResponse) ProtoMessage() {}
 
 func (x *ListDecisionModelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[170]
+	mi := &file_loomcycle_proto_msgTypes[184]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13652,7 +15117,7 @@ func (x *ListDecisionModelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDecisionModelsResponse.ProtoReflect.Descriptor instead.
 func (*ListDecisionModelsResponse) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{170}
+	return file_loomcycle_proto_rawDescGZIP(), []int{184}
 }
 
 func (x *ListDecisionModelsResponse) GetDefaultModel() string {
@@ -13683,7 +15148,7 @@ type DecisionModel struct {
 
 func (x *DecisionModel) Reset() {
 	*x = DecisionModel{}
-	mi := &file_loomcycle_proto_msgTypes[171]
+	mi := &file_loomcycle_proto_msgTypes[185]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13695,7 +15160,7 @@ func (x *DecisionModel) String() string {
 func (*DecisionModel) ProtoMessage() {}
 
 func (x *DecisionModel) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[171]
+	mi := &file_loomcycle_proto_msgTypes[185]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13708,7 +15173,7 @@ func (x *DecisionModel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecisionModel.ProtoReflect.Descriptor instead.
 func (*DecisionModel) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{171}
+	return file_loomcycle_proto_rawDescGZIP(), []int{185}
 }
 
 func (x *DecisionModel) GetName() string {
@@ -13751,7 +15216,7 @@ type DecisionLimits struct {
 
 func (x *DecisionLimits) Reset() {
 	*x = DecisionLimits{}
-	mi := &file_loomcycle_proto_msgTypes[172]
+	mi := &file_loomcycle_proto_msgTypes[186]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13763,7 +15228,7 @@ func (x *DecisionLimits) String() string {
 func (*DecisionLimits) ProtoMessage() {}
 
 func (x *DecisionLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_loomcycle_proto_msgTypes[172]
+	mi := &file_loomcycle_proto_msgTypes[186]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13776,7 +15241,7 @@ func (x *DecisionLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecisionLimits.ProtoReflect.Descriptor instead.
 func (*DecisionLimits) Descriptor() ([]byte, []int) {
-	return file_loomcycle_proto_rawDescGZIP(), []int{172}
+	return file_loomcycle_proto_rawDescGZIP(), []int{186}
 }
 
 func (x *DecisionLimits) GetMaxQuestions() int32 {
@@ -14688,7 +16153,158 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x04path\x18\x05 \x01(\tR\x04path\x12\x1c\n" +
 	"\tprincipal\x18\x06 \x01(\tR\tprincipal\x12\x1a\n" +
 	"\bprevious\x18\a \x01(\tR\bprevious\x12\x18\n" +
-	"\achanged\x18\b \x01(\bR\achanged\"\x0f\n" +
+	"\achanged\x18\b \x01(\bR\achanged\"\x94\x06\n" +
+	"\x11ReviewQueueFilter\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x14\n" +
+	"\x05kinds\x18\x03 \x03(\tR\x05kinds\x12\x16\n" +
+	"\x06method\x18\x04 \x01(\tR\x06method\x12\x14\n" +
+	"\x05actor\x18\x05 \x01(\tR\x05actor\x12\x1f\n" +
+	"\vdocument_id\x18\x06 \x01(\tR\n" +
+	"documentId\x12\x1d\n" +
+	"\n" +
+	"under_path\x18\a \x01(\tR\tunderPath\x12(\n" +
+	"\x10from_document_id\x18\b \x01(\tR\x0efromDocumentId\x12$\n" +
+	"\x0eto_document_id\x18\t \x01(\tR\ftoDocumentId\x12&\n" +
+	"\x0ffrom_under_path\x18\n" +
+	" \x01(\tR\rfromUnderPath\x12\"\n" +
+	"\rto_under_path\x18\v \x01(\tR\vtoUnderPath\x12*\n" +
+	"\x0emin_confidence\x18\f \x01(\x01H\x00R\rminConfidence\x88\x01\x01\x12*\n" +
+	"\x0ecreated_before\x18\r \x01(\x03H\x01R\rcreatedBefore\x88\x01\x01\x12(\n" +
+	"\rcreated_after\x18\x0e \x01(\x03H\x02R\fcreatedAfter\x88\x01\x01\x12/\n" +
+	"\x11has_judge_verdict\x18\x0f \x01(\bH\x03R\x0fhasJudgeVerdict\x88\x01\x01\x12#\n" +
+	"\rjudge_verdict\x18\x10 \x01(\tR\fjudgeVerdict\x12!\n" +
+	"\fmethod_exact\x18\x11 \x01(\tR\vmethodExact\x12\x1d\n" +
+	"\n" +
+	"kind_exact\x18\x12 \x01(\tR\tkindExact\x12(\n" +
+	"\x10from_path_prefix\x18\x13 \x01(\tR\x0efromPathPrefix\x12!\n" +
+	"\ffrom_unfiled\x18\x14 \x01(\bR\vfromUnfiledB\x11\n" +
+	"\x0f_min_confidenceB\x11\n" +
+	"\x0f_created_beforeB\x10\n" +
+	"\x0e_created_afterB\x14\n" +
+	"\x12_has_judge_verdict\"\xfa\x01\n" +
+	"\x16ListReviewQueueRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\x127\n" +
+	"\x06filter\x18\x03 \x01(\v2\x1f.loomcycle.v1.ReviewQueueFilterR\x06filter\x12\x1c\n" +
+	"\tsummarize\x18\x04 \x01(\bR\tsummarize\x12\x14\n" +
+	"\x05limit\x18\x05 \x01(\x05R\x05limit\x12\x14\n" +
+	"\x05after\x18\x06 \x01(\tR\x05after\x12\x14\n" +
+	"\x05order\x18\a \x01(\tR\x05order\x12\x19\n" +
+	"\bscope_id\x18\b \x01(\tR\ascopeId\"\xdc\x01\n" +
+	"\x10ReviewQueueGroup\x12\x12\n" +
+	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x16\n" +
+	"\x06method\x18\x02 \x01(\tR\x06method\x12(\n" +
+	"\x10from_path_prefix\x18\x03 \x01(\tR\x0efromPathPrefix\x12#\n" +
+	"\rjudge_verdict\x18\x04 \x01(\tR\fjudgeVerdict\x12\x14\n" +
+	"\x05count\x18\x05 \x01(\x05R\x05count\x127\n" +
+	"\x06filter\x18\x06 \x01(\v2\x1f.loomcycle.v1.ReviewQueueFilterR\x06filter\"\xff\x01\n" +
+	"\x17ListReviewQueueResponse\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\x12'\n" +
+	"\x0fstatements_json\x18\x03 \x03(\fR\x0estatementsJson\x12\x1c\n" +
+	"\ttruncated\x18\x04 \x01(\bR\ttruncated\x12\x1f\n" +
+	"\vnext_cursor\x18\x05 \x01(\tR\n" +
+	"nextCursor\x128\n" +
+	"\asummary\x18\x06 \x03(\v2\x1e.loomcycle.v1.ReviewQueueGroupR\asummary\x12\x14\n" +
+	"\x05total\x18\a \x01(\x05R\x05total\"\xef\x02\n" +
+	"\x15RuleStatementsRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\x12\x16\n" +
+	"\x06action\x18\x03 \x01(\tR\x06action\x12\x10\n" +
+	"\x03ids\x18\x04 \x03(\tR\x03ids\x127\n" +
+	"\x06filter\x18\x05 \x01(\v2\x1f.loomcycle.v1.ReviewQueueFilterR\x06filter\x12\x1d\n" +
+	"\n" +
+	"has_filter\x18\x06 \x01(\bR\thasFilter\x12\x16\n" +
+	"\x06reason\x18\a \x01(\tR\x06reason\x12\x1c\n" +
+	"\adry_run\x18\b \x01(\bH\x00R\x06dryRun\x88\x01\x01\x12&\n" +
+	"\fexpect_count\x18\t \x01(\x05H\x01R\vexpectCount\x88\x01\x01\x12\x10\n" +
+	"\x03max\x18\n" +
+	" \x01(\x05R\x03max\x12\x19\n" +
+	"\bscope_id\x18\v \x01(\tR\ascopeIdB\n" +
+	"\n" +
+	"\b_dry_runB\x0f\n" +
+	"\r_expect_count\"S\n" +
+	"\x0fRulingBreakdown\x12\x12\n" +
+	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x16\n" +
+	"\x06method\x18\x02 \x01(\tR\x06method\x12\x14\n" +
+	"\x05count\x18\x03 \x01(\x05R\x05count\"d\n" +
+	"\n" +
+	"RulingItem\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\x12\x18\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage\"\xb9\x03\n" +
+	"\x16RuleStatementsResponse\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\x12\x16\n" +
+	"\x06action\x18\x03 \x01(\tR\x06action\x12\x17\n" +
+	"\adry_run\x18\x04 \x01(\bR\x06dryRun\x12\x1b\n" +
+	"\truling_id\x18\x05 \x01(\tR\brulingId\x12\x18\n" +
+	"\amatched\x18\x06 \x01(\x05R\amatched\x12\x1a\n" +
+	"\bselected\x18\a \x01(\x05R\bselected\x12\x18\n" +
+	"\askipped\x18\b \x01(\x05R\askipped\x12\x17\n" +
+	"\ato_rule\x18\t \x01(\x05R\x06toRule\x12\x14\n" +
+	"\x05ruled\x18\n" +
+	" \x01(\x05R\x05ruled\x12\x16\n" +
+	"\x06failed\x18\v \x01(\x05R\x06failed\x12\x1f\n" +
+	"\vsample_json\x18\f \x03(\fR\n" +
+	"sampleJson\x12;\n" +
+	"\tbreakdown\x18\r \x03(\v2\x1d.loomcycle.v1.RulingBreakdownR\tbreakdown\x12.\n" +
+	"\x05items\x18\x0e \x03(\v2\x18.loomcycle.v1.RulingItemR\x05items\"{\n" +
+	"\x13RevertRulingRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\x12\x1b\n" +
+	"\truling_id\x18\x03 \x01(\tR\brulingId\x12\x19\n" +
+	"\bscope_id\x18\x04 \x01(\tR\ascopeId\"\x96\x02\n" +
+	"\x14RevertRulingResponse\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\x12\x1b\n" +
+	"\truling_id\x18\x03 \x01(\tR\brulingId\x12\x16\n" +
+	"\x06action\x18\x04 \x01(\tR\x06action\x12\x1a\n" +
+	"\breverted\x18\x05 \x01(\x05R\breverted\x12\x18\n" +
+	"\achanged\x18\x06 \x01(\x05R\achanged\x12\x18\n" +
+	"\askipped\x18\a \x01(\x05R\askipped\x12.\n" +
+	"\x05items\x18\b \x03(\v2\x18.loomcycle.v1.RulingItemR\x05items\x12\x1b\n" +
+	"\trevert_id\x18\t \x01(\tR\brevertId\"\x89\x01\n" +
+	"\x12ListRulingsRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\x12\x19\n" +
+	"\bscope_id\x18\x03 \x01(\tR\ascopeId\x12\x14\n" +
+	"\x05limit\x18\x04 \x01(\x05R\x05limit\x12\x14\n" +
+	"\x05after\x18\x05 \x01(\tR\x05after\"\xb1\x01\n" +
+	"\x0eRulingSelector\x127\n" +
+	"\x06filter\x18\x01 \x01(\v2\x1f.loomcycle.v1.ReviewQueueFilterR\x06filter\x12\x1d\n" +
+	"\n" +
+	"has_filter\x18\x02 \x01(\bR\thasFilter\x12\x1b\n" +
+	"\tids_count\x18\x03 \x01(\x05R\bidsCount\x12\x10\n" +
+	"\x03max\x18\x04 \x01(\x05R\x03max\x12\x18\n" +
+	"\areverts\x18\x05 \x01(\tR\areverts\"\x98\x03\n" +
+	"\fRulingRecord\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
+	"\x06action\x18\x02 \x01(\tR\x06action\x12\x19\n" +
+	"\bruled_by\x18\x03 \x01(\tR\aruledBy\x12\x14\n" +
+	"\x05actor\x18\x04 \x01(\tR\x05actor\x12\x16\n" +
+	"\x06reason\x18\x05 \x01(\tR\x06reason\x128\n" +
+	"\bselector\x18\x06 \x01(\v2\x1c.loomcycle.v1.RulingSelectorR\bselector\x12\x18\n" +
+	"\amatched\x18\a \x01(\x05R\amatched\x12\x14\n" +
+	"\x05ruled\x18\b \x01(\x05R\x05ruled\x12\x16\n" +
+	"\x06failed\x18\t \x01(\x05R\x06failed\x12\x18\n" +
+	"\askipped\x18\n" +
+	" \x01(\x05R\askipped\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\v \x01(\x03R\tcreatedAt\x12\x1a\n" +
+	"\breverted\x18\f \x01(\bR\breverted\x12\x1f\n" +
+	"\vreverted_at\x18\r \x01(\x03R\n" +
+	"revertedAt\x12\x1f\n" +
+	"\vreverted_by\x18\x0e \x01(\tR\n" +
+	"revertedBy\"\x9a\x01\n" +
+	"\x13ListRulingsResponse\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x14\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\x124\n" +
+	"\arulings\x18\x03 \x03(\v2\x1a.loomcycle.v1.RulingRecordR\arulings\x12\x1f\n" +
+	"\vnext_cursor\x18\x04 \x01(\tR\n" +
+	"nextCursor\"\x0f\n" +
 	"\rConfigRequest\"1\n" +
 	"\x0eConfigResponse\x12\x1f\n" +
 	"\vconfig_json\x18\x01 \x01(\fR\n" +
@@ -15077,7 +16693,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\vmin_options\x18\x02 \x01(\x05R\n" +
 	"minOptions\x12\x1f\n" +
 	"\vmax_options\x18\x03 \x01(\x05R\n" +
-	"maxOptions2\xf06\n" +
+	"maxOptions2\xd89\n" +
 	"\tLoomcycle\x126\n" +
 	"\x03Run\x12\x18.loomcycle.v1.RunRequest\x1a\x13.loomcycle.v1.Event0\x01\x12@\n" +
 	"\bContinue\x12\x1d.loomcycle.v1.ContinueRequest\x1a\x13.loomcycle.v1.Event0\x01\x12P\n" +
@@ -15114,7 +16730,11 @@ const file_loomcycle_proto_rawDesc = "" +
 	"TokenLimit\x12\x1f.loomcycle.v1.TokenLimitRequest\x1a .loomcycle.v1.TokenLimitResponse\x12d\n" +
 	"\x11RetentionOverride\x12&.loomcycle.v1.RetentionOverrideRequest\x1a'.loomcycle.v1.RetentionOverrideResponse\x12X\n" +
 	"\rMergeSubjects\x12\".loomcycle.v1.MergeSubjectsRequest\x1a#.loomcycle.v1.MergeSubjectsResponse\x12m\n" +
-	"\x14BindSubjectPrincipal\x12).loomcycle.v1.BindSubjectPrincipalRequest\x1a*.loomcycle.v1.BindSubjectPrincipalResponse\x12C\n" +
+	"\x14BindSubjectPrincipal\x12).loomcycle.v1.BindSubjectPrincipalRequest\x1a*.loomcycle.v1.BindSubjectPrincipalResponse\x12^\n" +
+	"\x0fListReviewQueue\x12$.loomcycle.v1.ListReviewQueueRequest\x1a%.loomcycle.v1.ListReviewQueueResponse\x12[\n" +
+	"\x0eRuleStatements\x12#.loomcycle.v1.RuleStatementsRequest\x1a$.loomcycle.v1.RuleStatementsResponse\x12U\n" +
+	"\fRevertRuling\x12!.loomcycle.v1.RevertRulingRequest\x1a\".loomcycle.v1.RevertRulingResponse\x12R\n" +
+	"\vListRulings\x12 .loomcycle.v1.ListRulingsRequest\x1a!.loomcycle.v1.ListRulingsResponse\x12C\n" +
 	"\x06Decide\x12\x1b.loomcycle.v1.DecideRequest\x1a\x1c.loomcycle.v1.DecideResponse\x12g\n" +
 	"\x12ListDecisionModels\x12'.loomcycle.v1.ListDecisionModelsRequest\x1a(.loomcycle.v1.ListDecisionModelsResponse\x12C\n" +
 	"\x06Health\x12\x1b.loomcycle.v1.HealthRequest\x1a\x1c.loomcycle.v1.HealthResponse\x12C\n" +
@@ -15182,7 +16802,7 @@ func file_loomcycle_proto_rawDescGZIP() []byte {
 	return file_loomcycle_proto_rawDescData
 }
 
-var file_loomcycle_proto_msgTypes = make([]protoimpl.MessageInfo, 188)
+var file_loomcycle_proto_msgTypes = make([]protoimpl.MessageInfo, 202)
 var file_loomcycle_proto_goTypes = []any{
 	(*RunRequest)(nil),                   // 0: loomcycle.v1.RunRequest
 	(*ContinueRequest)(nil),              // 1: loomcycle.v1.ContinueRequest
@@ -15293,107 +16913,121 @@ var file_loomcycle_proto_goTypes = []any{
 	(*MergeSubjectsResponse)(nil),        // 106: loomcycle.v1.MergeSubjectsResponse
 	(*BindSubjectPrincipalRequest)(nil),  // 107: loomcycle.v1.BindSubjectPrincipalRequest
 	(*BindSubjectPrincipalResponse)(nil), // 108: loomcycle.v1.BindSubjectPrincipalResponse
-	(*ConfigRequest)(nil),                // 109: loomcycle.v1.ConfigRequest
-	(*ConfigResponse)(nil),               // 110: loomcycle.v1.ConfigResponse
-	(*HealthRequest)(nil),                // 111: loomcycle.v1.HealthRequest
-	(*HealthResponse)(nil),               // 112: loomcycle.v1.HealthResponse
-	(*PauseRuntimeRequest)(nil),          // 113: loomcycle.v1.PauseRuntimeRequest
-	(*PauseRuntimeResponse)(nil),         // 114: loomcycle.v1.PauseRuntimeResponse
-	(*ResumeRuntimeRequest)(nil),         // 115: loomcycle.v1.ResumeRuntimeRequest
-	(*ResumeRuntimeResponse)(nil),        // 116: loomcycle.v1.ResumeRuntimeResponse
-	(*GetRuntimeStateRequest)(nil),       // 117: loomcycle.v1.GetRuntimeStateRequest
-	(*RuntimeStateResponse)(nil),         // 118: loomcycle.v1.RuntimeStateResponse
-	(*ResolveProbeRequest)(nil),          // 119: loomcycle.v1.ResolveProbeRequest
-	(*ResolverMatrixResponse)(nil),       // 120: loomcycle.v1.ResolverMatrixResponse
-	(*ResolverProviderAvailability)(nil), // 121: loomcycle.v1.ResolverProviderAvailability
-	(*ResolverModelStatus)(nil),          // 122: loomcycle.v1.ResolverModelStatus
-	(*CreateSnapshotRequest)(nil),        // 123: loomcycle.v1.CreateSnapshotRequest
-	(*SnapshotDescriptor)(nil),           // 124: loomcycle.v1.SnapshotDescriptor
-	(*ListSnapshotsRequest)(nil),         // 125: loomcycle.v1.ListSnapshotsRequest
-	(*ListSnapshotsResponse)(nil),        // 126: loomcycle.v1.ListSnapshotsResponse
-	(*GetSnapshotRequest)(nil),           // 127: loomcycle.v1.GetSnapshotRequest
-	(*SnapshotEnvelope)(nil),             // 128: loomcycle.v1.SnapshotEnvelope
-	(*ExportSnapshotRequest)(nil),        // 129: loomcycle.v1.ExportSnapshotRequest
-	(*ExportSnapshotResponse)(nil),       // 130: loomcycle.v1.ExportSnapshotResponse
-	(*RestoreSnapshotRequest)(nil),       // 131: loomcycle.v1.RestoreSnapshotRequest
-	(*RestoreSnapshotResponse)(nil),      // 132: loomcycle.v1.RestoreSnapshotResponse
-	(*DeleteSnapshotRequest)(nil),        // 133: loomcycle.v1.DeleteSnapshotRequest
-	(*DeleteSnapshotResponse)(nil),       // 134: loomcycle.v1.DeleteSnapshotResponse
-	(*SubstrateRequest)(nil),             // 135: loomcycle.v1.SubstrateRequest
-	(*SubstrateResponse)(nil),            // 136: loomcycle.v1.SubstrateResponse
-	(*ListChannelsRequest)(nil),          // 137: loomcycle.v1.ListChannelsRequest
-	(*ListChannelsResponse)(nil),         // 138: loomcycle.v1.ListChannelsResponse
-	(*ChannelDescriptor)(nil),            // 139: loomcycle.v1.ChannelDescriptor
-	(*StreamUserRunStatesRequest)(nil),   // 140: loomcycle.v1.StreamUserRunStatesRequest
-	(*RunStateEvent)(nil),                // 141: loomcycle.v1.RunStateEvent
-	(*ParentContext)(nil),                // 142: loomcycle.v1.ParentContext
-	(*PublishChannelRequest)(nil),        // 143: loomcycle.v1.PublishChannelRequest
-	(*PublishChannelResponse)(nil),       // 144: loomcycle.v1.PublishChannelResponse
-	(*SubscribeChannelRequest)(nil),      // 145: loomcycle.v1.SubscribeChannelRequest
-	(*SubscribeChannelResponse)(nil),     // 146: loomcycle.v1.SubscribeChannelResponse
-	(*ChannelMessage)(nil),               // 147: loomcycle.v1.ChannelMessage
-	(*PeekChannelRequest)(nil),           // 148: loomcycle.v1.PeekChannelRequest
-	(*PeekChannelResponse)(nil),          // 149: loomcycle.v1.PeekChannelResponse
-	(*ListTeamChannelsRequest)(nil),      // 150: loomcycle.v1.ListTeamChannelsRequest
-	(*TeamChannelDescriptor)(nil),        // 151: loomcycle.v1.TeamChannelDescriptor
-	(*ListTeamChannelsResponse)(nil),     // 152: loomcycle.v1.ListTeamChannelsResponse
-	(*PeekTeamChannelRequest)(nil),       // 153: loomcycle.v1.PeekTeamChannelRequest
-	(*PeekTeamChannelResponse)(nil),      // 154: loomcycle.v1.PeekTeamChannelResponse
-	(*ReleaseTeamChannelRequest)(nil),    // 155: loomcycle.v1.ReleaseTeamChannelRequest
-	(*ReleaseTeamChannelResponse)(nil),   // 156: loomcycle.v1.ReleaseTeamChannelResponse
-	(*AckChannelRequest)(nil),            // 157: loomcycle.v1.AckChannelRequest
-	(*AckChannelResponse)(nil),           // 158: loomcycle.v1.AckChannelResponse
-	(*AwaitChannelsRequest)(nil),         // 159: loomcycle.v1.AwaitChannelsRequest
-	(*AwaitChannelEntry)(nil),            // 160: loomcycle.v1.AwaitChannelEntry
-	(*AwaitChannelsResponse)(nil),        // 161: loomcycle.v1.AwaitChannelsResponse
-	(*BroadcastChannelsRequest)(nil),     // 162: loomcycle.v1.BroadcastChannelsRequest
-	(*BroadcastChannelEntry)(nil),        // 163: loomcycle.v1.BroadcastChannelEntry
-	(*BroadcastChannelsResponse)(nil),    // 164: loomcycle.v1.BroadcastChannelsResponse
-	(*DecideRequest)(nil),                // 165: loomcycle.v1.DecideRequest
-	(*DecisionQuestion)(nil),             // 166: loomcycle.v1.DecisionQuestion
-	(*DecideResponse)(nil),               // 167: loomcycle.v1.DecideResponse
-	(*DecisionUsage)(nil),                // 168: loomcycle.v1.DecisionUsage
-	(*ListDecisionModelsRequest)(nil),    // 169: loomcycle.v1.ListDecisionModelsRequest
-	(*ListDecisionModelsResponse)(nil),   // 170: loomcycle.v1.ListDecisionModelsResponse
-	(*DecisionModel)(nil),                // 171: loomcycle.v1.DecisionModel
-	(*DecisionLimits)(nil),               // 172: loomcycle.v1.DecisionLimits
-	nil,                                  // 173: loomcycle.v1.RunRequest.UserCredentialsEntry
-	nil,                                  // 174: loomcycle.v1.ContinueRequest.UserCredentialsEntry
-	nil,                                  // 175: loomcycle.v1.DirectoryInspectResponse.MemoryEntry
-	nil,                                  // 176: loomcycle.v1.ErasureTier.CountsEntry
-	nil,                                  // 177: loomcycle.v1.ErasureExecuteResponse.DeletedEntry
-	nil,                                  // 178: loomcycle.v1.ErasureExecuteResponse.RetainedEntry
-	nil,                                  // 179: loomcycle.v1.DeleteRunTreeResult.CountsEntry
-	nil,                                  // 180: loomcycle.v1.DeleteRunTreeResult.KeptEntry
-	nil,                                  // 181: loomcycle.v1.StartConfiguredRunRequest.UserCredentialsEntry
-	nil,                                  // 182: loomcycle.v1.ResolverMatrixResponse.ProvidersEntry
-	nil,                                  // 183: loomcycle.v1.ResolverProviderAvailability.ModelsEntry
-	nil,                                  // 184: loomcycle.v1.RestoreSnapshotResponse.RestoredEntry
-	nil,                                  // 185: loomcycle.v1.AwaitChannelsResponse.ResultsEntry
-	nil,                                  // 186: loomcycle.v1.DecideRequest.QuestionsEntry
-	nil,                                  // 187: loomcycle.v1.DecideResponse.AnswersEntry
-	(*timestamppb.Timestamp)(nil),        // 188: google.protobuf.Timestamp
+	(*ReviewQueueFilter)(nil),            // 109: loomcycle.v1.ReviewQueueFilter
+	(*ListReviewQueueRequest)(nil),       // 110: loomcycle.v1.ListReviewQueueRequest
+	(*ReviewQueueGroup)(nil),             // 111: loomcycle.v1.ReviewQueueGroup
+	(*ListReviewQueueResponse)(nil),      // 112: loomcycle.v1.ListReviewQueueResponse
+	(*RuleStatementsRequest)(nil),        // 113: loomcycle.v1.RuleStatementsRequest
+	(*RulingBreakdown)(nil),              // 114: loomcycle.v1.RulingBreakdown
+	(*RulingItem)(nil),                   // 115: loomcycle.v1.RulingItem
+	(*RuleStatementsResponse)(nil),       // 116: loomcycle.v1.RuleStatementsResponse
+	(*RevertRulingRequest)(nil),          // 117: loomcycle.v1.RevertRulingRequest
+	(*RevertRulingResponse)(nil),         // 118: loomcycle.v1.RevertRulingResponse
+	(*ListRulingsRequest)(nil),           // 119: loomcycle.v1.ListRulingsRequest
+	(*RulingSelector)(nil),               // 120: loomcycle.v1.RulingSelector
+	(*RulingRecord)(nil),                 // 121: loomcycle.v1.RulingRecord
+	(*ListRulingsResponse)(nil),          // 122: loomcycle.v1.ListRulingsResponse
+	(*ConfigRequest)(nil),                // 123: loomcycle.v1.ConfigRequest
+	(*ConfigResponse)(nil),               // 124: loomcycle.v1.ConfigResponse
+	(*HealthRequest)(nil),                // 125: loomcycle.v1.HealthRequest
+	(*HealthResponse)(nil),               // 126: loomcycle.v1.HealthResponse
+	(*PauseRuntimeRequest)(nil),          // 127: loomcycle.v1.PauseRuntimeRequest
+	(*PauseRuntimeResponse)(nil),         // 128: loomcycle.v1.PauseRuntimeResponse
+	(*ResumeRuntimeRequest)(nil),         // 129: loomcycle.v1.ResumeRuntimeRequest
+	(*ResumeRuntimeResponse)(nil),        // 130: loomcycle.v1.ResumeRuntimeResponse
+	(*GetRuntimeStateRequest)(nil),       // 131: loomcycle.v1.GetRuntimeStateRequest
+	(*RuntimeStateResponse)(nil),         // 132: loomcycle.v1.RuntimeStateResponse
+	(*ResolveProbeRequest)(nil),          // 133: loomcycle.v1.ResolveProbeRequest
+	(*ResolverMatrixResponse)(nil),       // 134: loomcycle.v1.ResolverMatrixResponse
+	(*ResolverProviderAvailability)(nil), // 135: loomcycle.v1.ResolverProviderAvailability
+	(*ResolverModelStatus)(nil),          // 136: loomcycle.v1.ResolverModelStatus
+	(*CreateSnapshotRequest)(nil),        // 137: loomcycle.v1.CreateSnapshotRequest
+	(*SnapshotDescriptor)(nil),           // 138: loomcycle.v1.SnapshotDescriptor
+	(*ListSnapshotsRequest)(nil),         // 139: loomcycle.v1.ListSnapshotsRequest
+	(*ListSnapshotsResponse)(nil),        // 140: loomcycle.v1.ListSnapshotsResponse
+	(*GetSnapshotRequest)(nil),           // 141: loomcycle.v1.GetSnapshotRequest
+	(*SnapshotEnvelope)(nil),             // 142: loomcycle.v1.SnapshotEnvelope
+	(*ExportSnapshotRequest)(nil),        // 143: loomcycle.v1.ExportSnapshotRequest
+	(*ExportSnapshotResponse)(nil),       // 144: loomcycle.v1.ExportSnapshotResponse
+	(*RestoreSnapshotRequest)(nil),       // 145: loomcycle.v1.RestoreSnapshotRequest
+	(*RestoreSnapshotResponse)(nil),      // 146: loomcycle.v1.RestoreSnapshotResponse
+	(*DeleteSnapshotRequest)(nil),        // 147: loomcycle.v1.DeleteSnapshotRequest
+	(*DeleteSnapshotResponse)(nil),       // 148: loomcycle.v1.DeleteSnapshotResponse
+	(*SubstrateRequest)(nil),             // 149: loomcycle.v1.SubstrateRequest
+	(*SubstrateResponse)(nil),            // 150: loomcycle.v1.SubstrateResponse
+	(*ListChannelsRequest)(nil),          // 151: loomcycle.v1.ListChannelsRequest
+	(*ListChannelsResponse)(nil),         // 152: loomcycle.v1.ListChannelsResponse
+	(*ChannelDescriptor)(nil),            // 153: loomcycle.v1.ChannelDescriptor
+	(*StreamUserRunStatesRequest)(nil),   // 154: loomcycle.v1.StreamUserRunStatesRequest
+	(*RunStateEvent)(nil),                // 155: loomcycle.v1.RunStateEvent
+	(*ParentContext)(nil),                // 156: loomcycle.v1.ParentContext
+	(*PublishChannelRequest)(nil),        // 157: loomcycle.v1.PublishChannelRequest
+	(*PublishChannelResponse)(nil),       // 158: loomcycle.v1.PublishChannelResponse
+	(*SubscribeChannelRequest)(nil),      // 159: loomcycle.v1.SubscribeChannelRequest
+	(*SubscribeChannelResponse)(nil),     // 160: loomcycle.v1.SubscribeChannelResponse
+	(*ChannelMessage)(nil),               // 161: loomcycle.v1.ChannelMessage
+	(*PeekChannelRequest)(nil),           // 162: loomcycle.v1.PeekChannelRequest
+	(*PeekChannelResponse)(nil),          // 163: loomcycle.v1.PeekChannelResponse
+	(*ListTeamChannelsRequest)(nil),      // 164: loomcycle.v1.ListTeamChannelsRequest
+	(*TeamChannelDescriptor)(nil),        // 165: loomcycle.v1.TeamChannelDescriptor
+	(*ListTeamChannelsResponse)(nil),     // 166: loomcycle.v1.ListTeamChannelsResponse
+	(*PeekTeamChannelRequest)(nil),       // 167: loomcycle.v1.PeekTeamChannelRequest
+	(*PeekTeamChannelResponse)(nil),      // 168: loomcycle.v1.PeekTeamChannelResponse
+	(*ReleaseTeamChannelRequest)(nil),    // 169: loomcycle.v1.ReleaseTeamChannelRequest
+	(*ReleaseTeamChannelResponse)(nil),   // 170: loomcycle.v1.ReleaseTeamChannelResponse
+	(*AckChannelRequest)(nil),            // 171: loomcycle.v1.AckChannelRequest
+	(*AckChannelResponse)(nil),           // 172: loomcycle.v1.AckChannelResponse
+	(*AwaitChannelsRequest)(nil),         // 173: loomcycle.v1.AwaitChannelsRequest
+	(*AwaitChannelEntry)(nil),            // 174: loomcycle.v1.AwaitChannelEntry
+	(*AwaitChannelsResponse)(nil),        // 175: loomcycle.v1.AwaitChannelsResponse
+	(*BroadcastChannelsRequest)(nil),     // 176: loomcycle.v1.BroadcastChannelsRequest
+	(*BroadcastChannelEntry)(nil),        // 177: loomcycle.v1.BroadcastChannelEntry
+	(*BroadcastChannelsResponse)(nil),    // 178: loomcycle.v1.BroadcastChannelsResponse
+	(*DecideRequest)(nil),                // 179: loomcycle.v1.DecideRequest
+	(*DecisionQuestion)(nil),             // 180: loomcycle.v1.DecisionQuestion
+	(*DecideResponse)(nil),               // 181: loomcycle.v1.DecideResponse
+	(*DecisionUsage)(nil),                // 182: loomcycle.v1.DecisionUsage
+	(*ListDecisionModelsRequest)(nil),    // 183: loomcycle.v1.ListDecisionModelsRequest
+	(*ListDecisionModelsResponse)(nil),   // 184: loomcycle.v1.ListDecisionModelsResponse
+	(*DecisionModel)(nil),                // 185: loomcycle.v1.DecisionModel
+	(*DecisionLimits)(nil),               // 186: loomcycle.v1.DecisionLimits
+	nil,                                  // 187: loomcycle.v1.RunRequest.UserCredentialsEntry
+	nil,                                  // 188: loomcycle.v1.ContinueRequest.UserCredentialsEntry
+	nil,                                  // 189: loomcycle.v1.DirectoryInspectResponse.MemoryEntry
+	nil,                                  // 190: loomcycle.v1.ErasureTier.CountsEntry
+	nil,                                  // 191: loomcycle.v1.ErasureExecuteResponse.DeletedEntry
+	nil,                                  // 192: loomcycle.v1.ErasureExecuteResponse.RetainedEntry
+	nil,                                  // 193: loomcycle.v1.DeleteRunTreeResult.CountsEntry
+	nil,                                  // 194: loomcycle.v1.DeleteRunTreeResult.KeptEntry
+	nil,                                  // 195: loomcycle.v1.StartConfiguredRunRequest.UserCredentialsEntry
+	nil,                                  // 196: loomcycle.v1.ResolverMatrixResponse.ProvidersEntry
+	nil,                                  // 197: loomcycle.v1.ResolverProviderAvailability.ModelsEntry
+	nil,                                  // 198: loomcycle.v1.RestoreSnapshotResponse.RestoredEntry
+	nil,                                  // 199: loomcycle.v1.AwaitChannelsResponse.ResultsEntry
+	nil,                                  // 200: loomcycle.v1.DecideRequest.QuestionsEntry
+	nil,                                  // 201: loomcycle.v1.DecideResponse.AnswersEntry
+	(*timestamppb.Timestamp)(nil),        // 202: google.protobuf.Timestamp
 }
 var file_loomcycle_proto_depIdxs = []int32{
 	55,  // 0: loomcycle.v1.RunRequest.segments:type_name -> loomcycle.v1.PromptSegment
 	54,  // 1: loomcycle.v1.RunRequest.allowed_hosts:type_name -> loomcycle.v1.HostAllowlist
-	173, // 2: loomcycle.v1.RunRequest.user_credentials:type_name -> loomcycle.v1.RunRequest.UserCredentialsEntry
+	187, // 2: loomcycle.v1.RunRequest.user_credentials:type_name -> loomcycle.v1.RunRequest.UserCredentialsEntry
 	5,   // 3: loomcycle.v1.RunRequest.sampling:type_name -> loomcycle.v1.Sampling
 	8,   // 4: loomcycle.v1.RunRequest.compaction:type_name -> loomcycle.v1.Compaction
 	4,   // 5: loomcycle.v1.RunRequest.interruption:type_name -> loomcycle.v1.Interruption
 	3,   // 6: loomcycle.v1.RunRequest.context:type_name -> loomcycle.v1.Context
-	142, // 7: loomcycle.v1.RunRequest.parent_context:type_name -> loomcycle.v1.ParentContext
+	156, // 7: loomcycle.v1.RunRequest.parent_context:type_name -> loomcycle.v1.ParentContext
 	6,   // 8: loomcycle.v1.RunRequest.tool_choice:type_name -> loomcycle.v1.ToolChoice
 	7,   // 9: loomcycle.v1.RunRequest.output_format:type_name -> loomcycle.v1.OutputFormat
 	2,   // 10: loomcycle.v1.RunRequest.routing:type_name -> loomcycle.v1.RunRouting
 	55,  // 11: loomcycle.v1.ContinueRequest.segments:type_name -> loomcycle.v1.PromptSegment
 	54,  // 12: loomcycle.v1.ContinueRequest.allowed_hosts:type_name -> loomcycle.v1.HostAllowlist
-	174, // 13: loomcycle.v1.ContinueRequest.user_credentials:type_name -> loomcycle.v1.ContinueRequest.UserCredentialsEntry
+	188, // 13: loomcycle.v1.ContinueRequest.user_credentials:type_name -> loomcycle.v1.ContinueRequest.UserCredentialsEntry
 	5,   // 14: loomcycle.v1.ContinueRequest.sampling:type_name -> loomcycle.v1.Sampling
 	8,   // 15: loomcycle.v1.ContinueRequest.compaction:type_name -> loomcycle.v1.Compaction
 	4,   // 16: loomcycle.v1.ContinueRequest.interruption:type_name -> loomcycle.v1.Interruption
 	3,   // 17: loomcycle.v1.ContinueRequest.context:type_name -> loomcycle.v1.Context
-	142, // 18: loomcycle.v1.ContinueRequest.parent_context:type_name -> loomcycle.v1.ParentContext
+	156, // 18: loomcycle.v1.ContinueRequest.parent_context:type_name -> loomcycle.v1.ParentContext
 	6,   // 19: loomcycle.v1.ContinueRequest.tool_choice:type_name -> loomcycle.v1.ToolChoice
 	7,   // 20: loomcycle.v1.ContinueRequest.output_format:type_name -> loomcycle.v1.OutputFormat
 	2,   // 21: loomcycle.v1.ContinueRequest.routing:type_name -> loomcycle.v1.RunRouting
@@ -15402,26 +17036,26 @@ var file_loomcycle_proto_depIdxs = []int32{
 	10,  // 24: loomcycle.v1.BatchSpawnResult.results:type_name -> loomcycle.v1.SpawnResult
 	13,  // 25: loomcycle.v1.DirectoryUsersResponse.users:type_name -> loomcycle.v1.DirectoryUser
 	13,  // 26: loomcycle.v1.DirectoryInspectResponse.activity:type_name -> loomcycle.v1.DirectoryUser
-	175, // 27: loomcycle.v1.DirectoryInspectResponse.memory:type_name -> loomcycle.v1.DirectoryInspectResponse.MemoryEntry
+	189, // 27: loomcycle.v1.DirectoryInspectResponse.memory:type_name -> loomcycle.v1.DirectoryInspectResponse.MemoryEntry
 	16,  // 28: loomcycle.v1.DirectoryInspectResponse.budget:type_name -> loomcycle.v1.DirectoryBudget
 	17,  // 29: loomcycle.v1.DirectoryInspectResponse.usage:type_name -> loomcycle.v1.DirectoryUsage
 	20,  // 30: loomcycle.v1.DirectoryTenantsResponse.tenants:type_name -> loomcycle.v1.DirectoryTenant
-	176, // 31: loomcycle.v1.ErasureTier.counts:type_name -> loomcycle.v1.ErasureTier.CountsEntry
+	190, // 31: loomcycle.v1.ErasureTier.counts:type_name -> loomcycle.v1.ErasureTier.CountsEntry
 	23,  // 32: loomcycle.v1.ErasureReportResponse.tier1_covered:type_name -> loomcycle.v1.ErasureTier
 	23,  // 33: loomcycle.v1.ErasureReportResponse.tier2_uncovered:type_name -> loomcycle.v1.ErasureTier
 	24,  // 34: loomcycle.v1.ErasureReportResponse.tier3_residue:type_name -> loomcycle.v1.ErasureResidue
 	28,  // 35: loomcycle.v1.ErasureReportResponse.access:type_name -> loomcycle.v1.ErasureAccess
 	26,  // 36: loomcycle.v1.ErasureReportResponse.bound_subjects:type_name -> loomcycle.v1.ErasureBoundSubject
 	27,  // 37: loomcycle.v1.ErasureAccess.tokens:type_name -> loomcycle.v1.ErasureToken
-	177, // 38: loomcycle.v1.ErasureExecuteResponse.deleted:type_name -> loomcycle.v1.ErasureExecuteResponse.DeletedEntry
-	178, // 39: loomcycle.v1.ErasureExecuteResponse.retained:type_name -> loomcycle.v1.ErasureExecuteResponse.RetainedEntry
+	191, // 38: loomcycle.v1.ErasureExecuteResponse.deleted:type_name -> loomcycle.v1.ErasureExecuteResponse.DeletedEntry
+	192, // 39: loomcycle.v1.ErasureExecuteResponse.retained:type_name -> loomcycle.v1.ErasureExecuteResponse.RetainedEntry
 	24,  // 40: loomcycle.v1.ErasureExecuteResponse.residue:type_name -> loomcycle.v1.ErasureResidue
 	28,  // 41: loomcycle.v1.ErasureExecuteResponse.access:type_name -> loomcycle.v1.ErasureAccess
 	26,  // 42: loomcycle.v1.ErasureExecuteResponse.bound_subjects:type_name -> loomcycle.v1.ErasureBoundSubject
-	179, // 43: loomcycle.v1.DeleteRunTreeResult.counts:type_name -> loomcycle.v1.DeleteRunTreeResult.CountsEntry
-	180, // 44: loomcycle.v1.DeleteRunTreeResult.kept:type_name -> loomcycle.v1.DeleteRunTreeResult.KeptEntry
+	193, // 43: loomcycle.v1.DeleteRunTreeResult.counts:type_name -> loomcycle.v1.DeleteRunTreeResult.CountsEntry
+	194, // 44: loomcycle.v1.DeleteRunTreeResult.kept:type_name -> loomcycle.v1.DeleteRunTreeResult.KeptEntry
 	35,  // 45: loomcycle.v1.DeleteRunTreeResult.not_reached:type_name -> loomcycle.v1.RunTreeNotReached
-	181, // 46: loomcycle.v1.StartConfiguredRunRequest.user_credentials:type_name -> loomcycle.v1.StartConfiguredRunRequest.UserCredentialsEntry
+	195, // 46: loomcycle.v1.StartConfiguredRunRequest.user_credentials:type_name -> loomcycle.v1.StartConfiguredRunRequest.UserCredentialsEntry
 	4,   // 47: loomcycle.v1.RunInputRequest.interruption:type_name -> loomcycle.v1.Interruption
 	6,   // 48: loomcycle.v1.RunInputRequest.tool_choice:type_name -> loomcycle.v1.ToolChoice
 	7,   // 49: loomcycle.v1.RunInputRequest.output_format:type_name -> loomcycle.v1.OutputFormat
@@ -15453,12 +17087,12 @@ var file_loomcycle_proto_depIdxs = []int32{
 	77,  // 75: loomcycle.v1.ErrorInfo.call_format:type_name -> loomcycle.v1.CallFormat
 	78,  // 76: loomcycle.v1.CallFormat.reference:type_name -> loomcycle.v1.CallRef
 	81,  // 77: loomcycle.v1.Transcript.events:type_name -> loomcycle.v1.TranscriptEvent
-	188, // 78: loomcycle.v1.TranscriptEvent.ts:type_name -> google.protobuf.Timestamp
-	188, // 79: loomcycle.v1.Agent.started_at:type_name -> google.protobuf.Timestamp
-	188, // 80: loomcycle.v1.Agent.completed_at:type_name -> google.protobuf.Timestamp
+	202, // 78: loomcycle.v1.TranscriptEvent.ts:type_name -> google.protobuf.Timestamp
+	202, // 79: loomcycle.v1.Agent.started_at:type_name -> google.protobuf.Timestamp
+	202, // 80: loomcycle.v1.Agent.completed_at:type_name -> google.protobuf.Timestamp
 	85,  // 81: loomcycle.v1.Agent.usage:type_name -> loomcycle.v1.AgentUsage
-	188, // 82: loomcycle.v1.Agent.last_heartbeat_at:type_name -> google.protobuf.Timestamp
-	142, // 83: loomcycle.v1.Agent.parent_context:type_name -> loomcycle.v1.ParentContext
+	202, // 82: loomcycle.v1.Agent.last_heartbeat_at:type_name -> google.protobuf.Timestamp
+	156, // 83: loomcycle.v1.Agent.parent_context:type_name -> loomcycle.v1.ParentContext
 	84,  // 84: loomcycle.v1.ListUserAgentsResponse.agents:type_name -> loomcycle.v1.Agent
 	84,  // 85: loomcycle.v1.ListWalkRunsResponse.agents:type_name -> loomcycle.v1.Agent
 	84,  // 86: loomcycle.v1.ListChildRunsResponse.agents:type_name -> loomcycle.v1.Agent
@@ -15468,207 +17102,225 @@ var file_loomcycle_proto_depIdxs = []int32{
 	102, // 90: loomcycle.v1.RetentionOverrideResponse.overrides:type_name -> loomcycle.v1.RetentionOverrideEntry
 	105, // 91: loomcycle.v1.MergeSubjectsResponse.duplicate:type_name -> loomcycle.v1.SubjectRef
 	105, // 92: loomcycle.v1.MergeSubjectsResponse.survivor:type_name -> loomcycle.v1.SubjectRef
-	188, // 93: loomcycle.v1.RuntimeStateResponse.paused_at:type_name -> google.protobuf.Timestamp
-	188, // 94: loomcycle.v1.ResolverMatrixResponse.generated_at:type_name -> google.protobuf.Timestamp
-	182, // 95: loomcycle.v1.ResolverMatrixResponse.providers:type_name -> loomcycle.v1.ResolverMatrixResponse.ProvidersEntry
-	183, // 96: loomcycle.v1.ResolverProviderAvailability.models:type_name -> loomcycle.v1.ResolverProviderAvailability.ModelsEntry
-	188, // 97: loomcycle.v1.ResolverProviderAvailability.last_check:type_name -> google.protobuf.Timestamp
-	188, // 98: loomcycle.v1.CreateSnapshotRequest.since_ts:type_name -> google.protobuf.Timestamp
-	188, // 99: loomcycle.v1.SnapshotDescriptor.created_at:type_name -> google.protobuf.Timestamp
-	188, // 100: loomcycle.v1.SnapshotDescriptor.since_ts:type_name -> google.protobuf.Timestamp
-	124, // 101: loomcycle.v1.ListSnapshotsResponse.snapshots:type_name -> loomcycle.v1.SnapshotDescriptor
-	188, // 102: loomcycle.v1.SnapshotEnvelope.created_at:type_name -> google.protobuf.Timestamp
-	184, // 103: loomcycle.v1.RestoreSnapshotResponse.restored:type_name -> loomcycle.v1.RestoreSnapshotResponse.RestoredEntry
-	76,  // 104: loomcycle.v1.SubstrateResponse.error_info:type_name -> loomcycle.v1.ErrorInfo
-	139, // 105: loomcycle.v1.ListChannelsResponse.channels:type_name -> loomcycle.v1.ChannelDescriptor
-	142, // 106: loomcycle.v1.RunStateEvent.parent_context:type_name -> loomcycle.v1.ParentContext
-	147, // 107: loomcycle.v1.SubscribeChannelResponse.messages:type_name -> loomcycle.v1.ChannelMessage
-	147, // 108: loomcycle.v1.PeekChannelResponse.messages:type_name -> loomcycle.v1.ChannelMessage
-	151, // 109: loomcycle.v1.ListTeamChannelsResponse.channels:type_name -> loomcycle.v1.TeamChannelDescriptor
-	147, // 110: loomcycle.v1.PeekTeamChannelResponse.messages:type_name -> loomcycle.v1.ChannelMessage
-	147, // 111: loomcycle.v1.AwaitChannelEntry.messages:type_name -> loomcycle.v1.ChannelMessage
-	185, // 112: loomcycle.v1.AwaitChannelsResponse.results:type_name -> loomcycle.v1.AwaitChannelsResponse.ResultsEntry
-	163, // 113: loomcycle.v1.BroadcastChannelsResponse.results:type_name -> loomcycle.v1.BroadcastChannelEntry
-	186, // 114: loomcycle.v1.DecideRequest.questions:type_name -> loomcycle.v1.DecideRequest.QuestionsEntry
-	187, // 115: loomcycle.v1.DecideResponse.answers:type_name -> loomcycle.v1.DecideResponse.AnswersEntry
-	168, // 116: loomcycle.v1.DecideResponse.usage:type_name -> loomcycle.v1.DecisionUsage
-	171, // 117: loomcycle.v1.ListDecisionModelsResponse.models:type_name -> loomcycle.v1.DecisionModel
-	172, // 118: loomcycle.v1.DecisionModel.limits:type_name -> loomcycle.v1.DecisionLimits
-	121, // 119: loomcycle.v1.ResolverMatrixResponse.ProvidersEntry.value:type_name -> loomcycle.v1.ResolverProviderAvailability
-	122, // 120: loomcycle.v1.ResolverProviderAvailability.ModelsEntry.value:type_name -> loomcycle.v1.ResolverModelStatus
-	160, // 121: loomcycle.v1.AwaitChannelsResponse.ResultsEntry.value:type_name -> loomcycle.v1.AwaitChannelEntry
-	166, // 122: loomcycle.v1.DecideRequest.QuestionsEntry.value:type_name -> loomcycle.v1.DecisionQuestion
-	0,   // 123: loomcycle.v1.Loomcycle.Run:input_type -> loomcycle.v1.RunRequest
-	1,   // 124: loomcycle.v1.Loomcycle.Continue:input_type -> loomcycle.v1.ContinueRequest
-	9,   // 125: loomcycle.v1.Loomcycle.SpawnRunBatch:input_type -> loomcycle.v1.BatchSpawnRequest
-	31,  // 126: loomcycle.v1.Loomcycle.CompactRun:input_type -> loomcycle.v1.CompactRunRequest
-	33,  // 127: loomcycle.v1.Loomcycle.DeleteRunTree:input_type -> loomcycle.v1.DeleteRunTreeRequest
-	0,   // 128: loomcycle.v1.Loomcycle.CreateConfiguredRun:input_type -> loomcycle.v1.RunRequest
-	37,  // 129: loomcycle.v1.Loomcycle.UpdateConfiguredRun:input_type -> loomcycle.v1.UpdateConfiguredRunRequest
-	38,  // 130: loomcycle.v1.Loomcycle.StartConfiguredRun:input_type -> loomcycle.v1.StartConfiguredRunRequest
-	39,  // 131: loomcycle.v1.Loomcycle.DeleteConfiguredRun:input_type -> loomcycle.v1.DeleteConfiguredRunRequest
-	12,  // 132: loomcycle.v1.Loomcycle.DirectoryUsers:input_type -> loomcycle.v1.DirectoryUsersRequest
-	15,  // 133: loomcycle.v1.Loomcycle.DirectoryInspect:input_type -> loomcycle.v1.DirectoryInspectRequest
-	19,  // 134: loomcycle.v1.Loomcycle.DirectoryTenants:input_type -> loomcycle.v1.DirectoryTenantsRequest
-	22,  // 135: loomcycle.v1.Loomcycle.ErasureReport:input_type -> loomcycle.v1.ErasureReportRequest
-	29,  // 136: loomcycle.v1.Loomcycle.ErasureExecute:input_type -> loomcycle.v1.ErasureExecuteRequest
-	41,  // 137: loomcycle.v1.Loomcycle.ReplaySession:input_type -> loomcycle.v1.ReplaySessionRequest
-	43,  // 138: loomcycle.v1.Loomcycle.RunInput:input_type -> loomcycle.v1.RunInputRequest
-	44,  // 139: loomcycle.v1.Loomcycle.RetuneRun:input_type -> loomcycle.v1.RetuneRunRequest
-	47,  // 140: loomcycle.v1.Loomcycle.CancelTurn:input_type -> loomcycle.v1.CancelTurnRequest
-	49,  // 141: loomcycle.v1.Loomcycle.ReviewRun:input_type -> loomcycle.v1.ReviewRunRequest
-	51,  // 142: loomcycle.v1.Loomcycle.ResolveInterrupt:input_type -> loomcycle.v1.ResolveInterruptRequest
-	53,  // 143: loomcycle.v1.Loomcycle.StreamRun:input_type -> loomcycle.v1.StreamRunRequest
-	79,  // 144: loomcycle.v1.Loomcycle.GetTranscript:input_type -> loomcycle.v1.GetTranscriptRequest
-	82,  // 145: loomcycle.v1.Loomcycle.GetAgent:input_type -> loomcycle.v1.GetAgentRequest
-	83,  // 146: loomcycle.v1.Loomcycle.GetRun:input_type -> loomcycle.v1.GetRunRequest
-	86,  // 147: loomcycle.v1.Loomcycle.CancelAgent:input_type -> loomcycle.v1.CancelAgentRequest
-	88,  // 148: loomcycle.v1.Loomcycle.ListUserAgents:input_type -> loomcycle.v1.ListUserAgentsRequest
-	90,  // 149: loomcycle.v1.Loomcycle.ListWalkRuns:input_type -> loomcycle.v1.ListWalkRunsRequest
-	92,  // 150: loomcycle.v1.Loomcycle.ListChildRuns:input_type -> loomcycle.v1.ListChildRunsRequest
-	94,  // 151: loomcycle.v1.Loomcycle.UsageReport:input_type -> loomcycle.v1.UsageReportRequest
-	98,  // 152: loomcycle.v1.Loomcycle.TokenLimit:input_type -> loomcycle.v1.TokenLimitRequest
-	101, // 153: loomcycle.v1.Loomcycle.RetentionOverride:input_type -> loomcycle.v1.RetentionOverrideRequest
-	104, // 154: loomcycle.v1.Loomcycle.MergeSubjects:input_type -> loomcycle.v1.MergeSubjectsRequest
-	107, // 155: loomcycle.v1.Loomcycle.BindSubjectPrincipal:input_type -> loomcycle.v1.BindSubjectPrincipalRequest
-	165, // 156: loomcycle.v1.Loomcycle.Decide:input_type -> loomcycle.v1.DecideRequest
-	169, // 157: loomcycle.v1.Loomcycle.ListDecisionModels:input_type -> loomcycle.v1.ListDecisionModelsRequest
-	111, // 158: loomcycle.v1.Loomcycle.Health:input_type -> loomcycle.v1.HealthRequest
-	109, // 159: loomcycle.v1.Loomcycle.Config:input_type -> loomcycle.v1.ConfigRequest
-	113, // 160: loomcycle.v1.Loomcycle.PauseRuntime:input_type -> loomcycle.v1.PauseRuntimeRequest
-	115, // 161: loomcycle.v1.Loomcycle.ResumeRuntime:input_type -> loomcycle.v1.ResumeRuntimeRequest
-	117, // 162: loomcycle.v1.Loomcycle.GetRuntimeState:input_type -> loomcycle.v1.GetRuntimeStateRequest
-	119, // 163: loomcycle.v1.Loomcycle.ResolveProbe:input_type -> loomcycle.v1.ResolveProbeRequest
-	123, // 164: loomcycle.v1.Loomcycle.CreateSnapshot:input_type -> loomcycle.v1.CreateSnapshotRequest
-	125, // 165: loomcycle.v1.Loomcycle.ListSnapshots:input_type -> loomcycle.v1.ListSnapshotsRequest
-	127, // 166: loomcycle.v1.Loomcycle.GetSnapshot:input_type -> loomcycle.v1.GetSnapshotRequest
-	129, // 167: loomcycle.v1.Loomcycle.ExportSnapshot:input_type -> loomcycle.v1.ExportSnapshotRequest
-	131, // 168: loomcycle.v1.Loomcycle.RestoreSnapshot:input_type -> loomcycle.v1.RestoreSnapshotRequest
-	133, // 169: loomcycle.v1.Loomcycle.DeleteSnapshot:input_type -> loomcycle.v1.DeleteSnapshotRequest
-	135, // 170: loomcycle.v1.Loomcycle.AgentDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 171: loomcycle.v1.Loomcycle.SkillDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 172: loomcycle.v1.Loomcycle.MCPServerDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 173: loomcycle.v1.Loomcycle.ScheduleDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 174: loomcycle.v1.Loomcycle.A2AServerCardDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 175: loomcycle.v1.Loomcycle.A2AAgentDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 176: loomcycle.v1.Loomcycle.WebhookDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 177: loomcycle.v1.Loomcycle.MemoryBackendDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 178: loomcycle.v1.Loomcycle.DocumentSourceDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 179: loomcycle.v1.Loomcycle.ClientDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 180: loomcycle.v1.Loomcycle.OperatorTokenDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 181: loomcycle.v1.Loomcycle.VolumeDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 182: loomcycle.v1.Loomcycle.TeamDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 183: loomcycle.v1.Loomcycle.HookDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 184: loomcycle.v1.Loomcycle.Path:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 185: loomcycle.v1.Loomcycle.Document:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 186: loomcycle.v1.Loomcycle.CredentialDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 187: loomcycle.v1.Loomcycle.Crypto:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 188: loomcycle.v1.Loomcycle.GroupDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 189: loomcycle.v1.Loomcycle.AclDef:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 190: loomcycle.v1.Loomcycle.AclBinding:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 191: loomcycle.v1.Loomcycle.Authz:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 192: loomcycle.v1.Loomcycle.History:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 193: loomcycle.v1.Loomcycle.Evaluation:input_type -> loomcycle.v1.SubstrateRequest
-	135, // 194: loomcycle.v1.Loomcycle.Memory:input_type -> loomcycle.v1.SubstrateRequest
-	137, // 195: loomcycle.v1.Loomcycle.ListChannels:input_type -> loomcycle.v1.ListChannelsRequest
-	140, // 196: loomcycle.v1.Loomcycle.StreamUserRunStates:input_type -> loomcycle.v1.StreamUserRunStatesRequest
-	143, // 197: loomcycle.v1.Loomcycle.PublishChannel:input_type -> loomcycle.v1.PublishChannelRequest
-	145, // 198: loomcycle.v1.Loomcycle.SubscribeChannel:input_type -> loomcycle.v1.SubscribeChannelRequest
-	148, // 199: loomcycle.v1.Loomcycle.PeekChannel:input_type -> loomcycle.v1.PeekChannelRequest
-	157, // 200: loomcycle.v1.Loomcycle.AckChannel:input_type -> loomcycle.v1.AckChannelRequest
-	150, // 201: loomcycle.v1.Loomcycle.ListTeamChannels:input_type -> loomcycle.v1.ListTeamChannelsRequest
-	153, // 202: loomcycle.v1.Loomcycle.PeekTeamChannel:input_type -> loomcycle.v1.PeekTeamChannelRequest
-	155, // 203: loomcycle.v1.Loomcycle.ReleaseTeamChannel:input_type -> loomcycle.v1.ReleaseTeamChannelRequest
-	159, // 204: loomcycle.v1.Loomcycle.AwaitChannels:input_type -> loomcycle.v1.AwaitChannelsRequest
-	162, // 205: loomcycle.v1.Loomcycle.BroadcastChannels:input_type -> loomcycle.v1.BroadcastChannelsRequest
-	57,  // 206: loomcycle.v1.Loomcycle.Run:output_type -> loomcycle.v1.Event
-	57,  // 207: loomcycle.v1.Loomcycle.Continue:output_type -> loomcycle.v1.Event
-	11,  // 208: loomcycle.v1.Loomcycle.SpawnRunBatch:output_type -> loomcycle.v1.BatchSpawnResult
-	32,  // 209: loomcycle.v1.Loomcycle.CompactRun:output_type -> loomcycle.v1.CompactRunResult
-	34,  // 210: loomcycle.v1.Loomcycle.DeleteRunTree:output_type -> loomcycle.v1.DeleteRunTreeResult
-	36,  // 211: loomcycle.v1.Loomcycle.CreateConfiguredRun:output_type -> loomcycle.v1.ConfiguredRun
-	36,  // 212: loomcycle.v1.Loomcycle.UpdateConfiguredRun:output_type -> loomcycle.v1.ConfiguredRun
-	57,  // 213: loomcycle.v1.Loomcycle.StartConfiguredRun:output_type -> loomcycle.v1.Event
-	40,  // 214: loomcycle.v1.Loomcycle.DeleteConfiguredRun:output_type -> loomcycle.v1.DeleteConfiguredRunResponse
-	14,  // 215: loomcycle.v1.Loomcycle.DirectoryUsers:output_type -> loomcycle.v1.DirectoryUsersResponse
-	18,  // 216: loomcycle.v1.Loomcycle.DirectoryInspect:output_type -> loomcycle.v1.DirectoryInspectResponse
-	21,  // 217: loomcycle.v1.Loomcycle.DirectoryTenants:output_type -> loomcycle.v1.DirectoryTenantsResponse
-	25,  // 218: loomcycle.v1.Loomcycle.ErasureReport:output_type -> loomcycle.v1.ErasureReportResponse
-	30,  // 219: loomcycle.v1.Loomcycle.ErasureExecute:output_type -> loomcycle.v1.ErasureExecuteResponse
-	42,  // 220: loomcycle.v1.Loomcycle.ReplaySession:output_type -> loomcycle.v1.ReplaySessionResult
-	46,  // 221: loomcycle.v1.Loomcycle.RunInput:output_type -> loomcycle.v1.RunInputResponse
-	45,  // 222: loomcycle.v1.Loomcycle.RetuneRun:output_type -> loomcycle.v1.RetuneRunResponse
-	48,  // 223: loomcycle.v1.Loomcycle.CancelTurn:output_type -> loomcycle.v1.CancelTurnResponse
-	50,  // 224: loomcycle.v1.Loomcycle.ReviewRun:output_type -> loomcycle.v1.ReviewRunResponse
-	52,  // 225: loomcycle.v1.Loomcycle.ResolveInterrupt:output_type -> loomcycle.v1.ResolveInterruptResponse
-	57,  // 226: loomcycle.v1.Loomcycle.StreamRun:output_type -> loomcycle.v1.Event
-	80,  // 227: loomcycle.v1.Loomcycle.GetTranscript:output_type -> loomcycle.v1.Transcript
-	84,  // 228: loomcycle.v1.Loomcycle.GetAgent:output_type -> loomcycle.v1.Agent
-	84,  // 229: loomcycle.v1.Loomcycle.GetRun:output_type -> loomcycle.v1.Agent
-	87,  // 230: loomcycle.v1.Loomcycle.CancelAgent:output_type -> loomcycle.v1.CancelAgentResponse
-	89,  // 231: loomcycle.v1.Loomcycle.ListUserAgents:output_type -> loomcycle.v1.ListUserAgentsResponse
-	91,  // 232: loomcycle.v1.Loomcycle.ListWalkRuns:output_type -> loomcycle.v1.ListWalkRunsResponse
-	93,  // 233: loomcycle.v1.Loomcycle.ListChildRuns:output_type -> loomcycle.v1.ListChildRunsResponse
-	97,  // 234: loomcycle.v1.Loomcycle.UsageReport:output_type -> loomcycle.v1.UsageReportResponse
-	100, // 235: loomcycle.v1.Loomcycle.TokenLimit:output_type -> loomcycle.v1.TokenLimitResponse
-	103, // 236: loomcycle.v1.Loomcycle.RetentionOverride:output_type -> loomcycle.v1.RetentionOverrideResponse
-	106, // 237: loomcycle.v1.Loomcycle.MergeSubjects:output_type -> loomcycle.v1.MergeSubjectsResponse
-	108, // 238: loomcycle.v1.Loomcycle.BindSubjectPrincipal:output_type -> loomcycle.v1.BindSubjectPrincipalResponse
-	167, // 239: loomcycle.v1.Loomcycle.Decide:output_type -> loomcycle.v1.DecideResponse
-	170, // 240: loomcycle.v1.Loomcycle.ListDecisionModels:output_type -> loomcycle.v1.ListDecisionModelsResponse
-	112, // 241: loomcycle.v1.Loomcycle.Health:output_type -> loomcycle.v1.HealthResponse
-	110, // 242: loomcycle.v1.Loomcycle.Config:output_type -> loomcycle.v1.ConfigResponse
-	114, // 243: loomcycle.v1.Loomcycle.PauseRuntime:output_type -> loomcycle.v1.PauseRuntimeResponse
-	116, // 244: loomcycle.v1.Loomcycle.ResumeRuntime:output_type -> loomcycle.v1.ResumeRuntimeResponse
-	118, // 245: loomcycle.v1.Loomcycle.GetRuntimeState:output_type -> loomcycle.v1.RuntimeStateResponse
-	120, // 246: loomcycle.v1.Loomcycle.ResolveProbe:output_type -> loomcycle.v1.ResolverMatrixResponse
-	124, // 247: loomcycle.v1.Loomcycle.CreateSnapshot:output_type -> loomcycle.v1.SnapshotDescriptor
-	126, // 248: loomcycle.v1.Loomcycle.ListSnapshots:output_type -> loomcycle.v1.ListSnapshotsResponse
-	128, // 249: loomcycle.v1.Loomcycle.GetSnapshot:output_type -> loomcycle.v1.SnapshotEnvelope
-	130, // 250: loomcycle.v1.Loomcycle.ExportSnapshot:output_type -> loomcycle.v1.ExportSnapshotResponse
-	132, // 251: loomcycle.v1.Loomcycle.RestoreSnapshot:output_type -> loomcycle.v1.RestoreSnapshotResponse
-	134, // 252: loomcycle.v1.Loomcycle.DeleteSnapshot:output_type -> loomcycle.v1.DeleteSnapshotResponse
-	136, // 253: loomcycle.v1.Loomcycle.AgentDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 254: loomcycle.v1.Loomcycle.SkillDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 255: loomcycle.v1.Loomcycle.MCPServerDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 256: loomcycle.v1.Loomcycle.ScheduleDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 257: loomcycle.v1.Loomcycle.A2AServerCardDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 258: loomcycle.v1.Loomcycle.A2AAgentDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 259: loomcycle.v1.Loomcycle.WebhookDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 260: loomcycle.v1.Loomcycle.MemoryBackendDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 261: loomcycle.v1.Loomcycle.DocumentSourceDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 262: loomcycle.v1.Loomcycle.ClientDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 263: loomcycle.v1.Loomcycle.OperatorTokenDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 264: loomcycle.v1.Loomcycle.VolumeDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 265: loomcycle.v1.Loomcycle.TeamDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 266: loomcycle.v1.Loomcycle.HookDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 267: loomcycle.v1.Loomcycle.Path:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 268: loomcycle.v1.Loomcycle.Document:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 269: loomcycle.v1.Loomcycle.CredentialDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 270: loomcycle.v1.Loomcycle.Crypto:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 271: loomcycle.v1.Loomcycle.GroupDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 272: loomcycle.v1.Loomcycle.AclDef:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 273: loomcycle.v1.Loomcycle.AclBinding:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 274: loomcycle.v1.Loomcycle.Authz:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 275: loomcycle.v1.Loomcycle.History:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 276: loomcycle.v1.Loomcycle.Evaluation:output_type -> loomcycle.v1.SubstrateResponse
-	136, // 277: loomcycle.v1.Loomcycle.Memory:output_type -> loomcycle.v1.SubstrateResponse
-	138, // 278: loomcycle.v1.Loomcycle.ListChannels:output_type -> loomcycle.v1.ListChannelsResponse
-	141, // 279: loomcycle.v1.Loomcycle.StreamUserRunStates:output_type -> loomcycle.v1.RunStateEvent
-	144, // 280: loomcycle.v1.Loomcycle.PublishChannel:output_type -> loomcycle.v1.PublishChannelResponse
-	146, // 281: loomcycle.v1.Loomcycle.SubscribeChannel:output_type -> loomcycle.v1.SubscribeChannelResponse
-	149, // 282: loomcycle.v1.Loomcycle.PeekChannel:output_type -> loomcycle.v1.PeekChannelResponse
-	158, // 283: loomcycle.v1.Loomcycle.AckChannel:output_type -> loomcycle.v1.AckChannelResponse
-	152, // 284: loomcycle.v1.Loomcycle.ListTeamChannels:output_type -> loomcycle.v1.ListTeamChannelsResponse
-	154, // 285: loomcycle.v1.Loomcycle.PeekTeamChannel:output_type -> loomcycle.v1.PeekTeamChannelResponse
-	156, // 286: loomcycle.v1.Loomcycle.ReleaseTeamChannel:output_type -> loomcycle.v1.ReleaseTeamChannelResponse
-	161, // 287: loomcycle.v1.Loomcycle.AwaitChannels:output_type -> loomcycle.v1.AwaitChannelsResponse
-	164, // 288: loomcycle.v1.Loomcycle.BroadcastChannels:output_type -> loomcycle.v1.BroadcastChannelsResponse
-	206, // [206:289] is the sub-list for method output_type
-	123, // [123:206] is the sub-list for method input_type
-	123, // [123:123] is the sub-list for extension type_name
-	123, // [123:123] is the sub-list for extension extendee
-	0,   // [0:123] is the sub-list for field type_name
+	109, // 93: loomcycle.v1.ListReviewQueueRequest.filter:type_name -> loomcycle.v1.ReviewQueueFilter
+	109, // 94: loomcycle.v1.ReviewQueueGroup.filter:type_name -> loomcycle.v1.ReviewQueueFilter
+	111, // 95: loomcycle.v1.ListReviewQueueResponse.summary:type_name -> loomcycle.v1.ReviewQueueGroup
+	109, // 96: loomcycle.v1.RuleStatementsRequest.filter:type_name -> loomcycle.v1.ReviewQueueFilter
+	114, // 97: loomcycle.v1.RuleStatementsResponse.breakdown:type_name -> loomcycle.v1.RulingBreakdown
+	115, // 98: loomcycle.v1.RuleStatementsResponse.items:type_name -> loomcycle.v1.RulingItem
+	115, // 99: loomcycle.v1.RevertRulingResponse.items:type_name -> loomcycle.v1.RulingItem
+	109, // 100: loomcycle.v1.RulingSelector.filter:type_name -> loomcycle.v1.ReviewQueueFilter
+	120, // 101: loomcycle.v1.RulingRecord.selector:type_name -> loomcycle.v1.RulingSelector
+	121, // 102: loomcycle.v1.ListRulingsResponse.rulings:type_name -> loomcycle.v1.RulingRecord
+	202, // 103: loomcycle.v1.RuntimeStateResponse.paused_at:type_name -> google.protobuf.Timestamp
+	202, // 104: loomcycle.v1.ResolverMatrixResponse.generated_at:type_name -> google.protobuf.Timestamp
+	196, // 105: loomcycle.v1.ResolverMatrixResponse.providers:type_name -> loomcycle.v1.ResolverMatrixResponse.ProvidersEntry
+	197, // 106: loomcycle.v1.ResolverProviderAvailability.models:type_name -> loomcycle.v1.ResolverProviderAvailability.ModelsEntry
+	202, // 107: loomcycle.v1.ResolverProviderAvailability.last_check:type_name -> google.protobuf.Timestamp
+	202, // 108: loomcycle.v1.CreateSnapshotRequest.since_ts:type_name -> google.protobuf.Timestamp
+	202, // 109: loomcycle.v1.SnapshotDescriptor.created_at:type_name -> google.protobuf.Timestamp
+	202, // 110: loomcycle.v1.SnapshotDescriptor.since_ts:type_name -> google.protobuf.Timestamp
+	138, // 111: loomcycle.v1.ListSnapshotsResponse.snapshots:type_name -> loomcycle.v1.SnapshotDescriptor
+	202, // 112: loomcycle.v1.SnapshotEnvelope.created_at:type_name -> google.protobuf.Timestamp
+	198, // 113: loomcycle.v1.RestoreSnapshotResponse.restored:type_name -> loomcycle.v1.RestoreSnapshotResponse.RestoredEntry
+	76,  // 114: loomcycle.v1.SubstrateResponse.error_info:type_name -> loomcycle.v1.ErrorInfo
+	153, // 115: loomcycle.v1.ListChannelsResponse.channels:type_name -> loomcycle.v1.ChannelDescriptor
+	156, // 116: loomcycle.v1.RunStateEvent.parent_context:type_name -> loomcycle.v1.ParentContext
+	161, // 117: loomcycle.v1.SubscribeChannelResponse.messages:type_name -> loomcycle.v1.ChannelMessage
+	161, // 118: loomcycle.v1.PeekChannelResponse.messages:type_name -> loomcycle.v1.ChannelMessage
+	165, // 119: loomcycle.v1.ListTeamChannelsResponse.channels:type_name -> loomcycle.v1.TeamChannelDescriptor
+	161, // 120: loomcycle.v1.PeekTeamChannelResponse.messages:type_name -> loomcycle.v1.ChannelMessage
+	161, // 121: loomcycle.v1.AwaitChannelEntry.messages:type_name -> loomcycle.v1.ChannelMessage
+	199, // 122: loomcycle.v1.AwaitChannelsResponse.results:type_name -> loomcycle.v1.AwaitChannelsResponse.ResultsEntry
+	177, // 123: loomcycle.v1.BroadcastChannelsResponse.results:type_name -> loomcycle.v1.BroadcastChannelEntry
+	200, // 124: loomcycle.v1.DecideRequest.questions:type_name -> loomcycle.v1.DecideRequest.QuestionsEntry
+	201, // 125: loomcycle.v1.DecideResponse.answers:type_name -> loomcycle.v1.DecideResponse.AnswersEntry
+	182, // 126: loomcycle.v1.DecideResponse.usage:type_name -> loomcycle.v1.DecisionUsage
+	185, // 127: loomcycle.v1.ListDecisionModelsResponse.models:type_name -> loomcycle.v1.DecisionModel
+	186, // 128: loomcycle.v1.DecisionModel.limits:type_name -> loomcycle.v1.DecisionLimits
+	135, // 129: loomcycle.v1.ResolverMatrixResponse.ProvidersEntry.value:type_name -> loomcycle.v1.ResolverProviderAvailability
+	136, // 130: loomcycle.v1.ResolverProviderAvailability.ModelsEntry.value:type_name -> loomcycle.v1.ResolverModelStatus
+	174, // 131: loomcycle.v1.AwaitChannelsResponse.ResultsEntry.value:type_name -> loomcycle.v1.AwaitChannelEntry
+	180, // 132: loomcycle.v1.DecideRequest.QuestionsEntry.value:type_name -> loomcycle.v1.DecisionQuestion
+	0,   // 133: loomcycle.v1.Loomcycle.Run:input_type -> loomcycle.v1.RunRequest
+	1,   // 134: loomcycle.v1.Loomcycle.Continue:input_type -> loomcycle.v1.ContinueRequest
+	9,   // 135: loomcycle.v1.Loomcycle.SpawnRunBatch:input_type -> loomcycle.v1.BatchSpawnRequest
+	31,  // 136: loomcycle.v1.Loomcycle.CompactRun:input_type -> loomcycle.v1.CompactRunRequest
+	33,  // 137: loomcycle.v1.Loomcycle.DeleteRunTree:input_type -> loomcycle.v1.DeleteRunTreeRequest
+	0,   // 138: loomcycle.v1.Loomcycle.CreateConfiguredRun:input_type -> loomcycle.v1.RunRequest
+	37,  // 139: loomcycle.v1.Loomcycle.UpdateConfiguredRun:input_type -> loomcycle.v1.UpdateConfiguredRunRequest
+	38,  // 140: loomcycle.v1.Loomcycle.StartConfiguredRun:input_type -> loomcycle.v1.StartConfiguredRunRequest
+	39,  // 141: loomcycle.v1.Loomcycle.DeleteConfiguredRun:input_type -> loomcycle.v1.DeleteConfiguredRunRequest
+	12,  // 142: loomcycle.v1.Loomcycle.DirectoryUsers:input_type -> loomcycle.v1.DirectoryUsersRequest
+	15,  // 143: loomcycle.v1.Loomcycle.DirectoryInspect:input_type -> loomcycle.v1.DirectoryInspectRequest
+	19,  // 144: loomcycle.v1.Loomcycle.DirectoryTenants:input_type -> loomcycle.v1.DirectoryTenantsRequest
+	22,  // 145: loomcycle.v1.Loomcycle.ErasureReport:input_type -> loomcycle.v1.ErasureReportRequest
+	29,  // 146: loomcycle.v1.Loomcycle.ErasureExecute:input_type -> loomcycle.v1.ErasureExecuteRequest
+	41,  // 147: loomcycle.v1.Loomcycle.ReplaySession:input_type -> loomcycle.v1.ReplaySessionRequest
+	43,  // 148: loomcycle.v1.Loomcycle.RunInput:input_type -> loomcycle.v1.RunInputRequest
+	44,  // 149: loomcycle.v1.Loomcycle.RetuneRun:input_type -> loomcycle.v1.RetuneRunRequest
+	47,  // 150: loomcycle.v1.Loomcycle.CancelTurn:input_type -> loomcycle.v1.CancelTurnRequest
+	49,  // 151: loomcycle.v1.Loomcycle.ReviewRun:input_type -> loomcycle.v1.ReviewRunRequest
+	51,  // 152: loomcycle.v1.Loomcycle.ResolveInterrupt:input_type -> loomcycle.v1.ResolveInterruptRequest
+	53,  // 153: loomcycle.v1.Loomcycle.StreamRun:input_type -> loomcycle.v1.StreamRunRequest
+	79,  // 154: loomcycle.v1.Loomcycle.GetTranscript:input_type -> loomcycle.v1.GetTranscriptRequest
+	82,  // 155: loomcycle.v1.Loomcycle.GetAgent:input_type -> loomcycle.v1.GetAgentRequest
+	83,  // 156: loomcycle.v1.Loomcycle.GetRun:input_type -> loomcycle.v1.GetRunRequest
+	86,  // 157: loomcycle.v1.Loomcycle.CancelAgent:input_type -> loomcycle.v1.CancelAgentRequest
+	88,  // 158: loomcycle.v1.Loomcycle.ListUserAgents:input_type -> loomcycle.v1.ListUserAgentsRequest
+	90,  // 159: loomcycle.v1.Loomcycle.ListWalkRuns:input_type -> loomcycle.v1.ListWalkRunsRequest
+	92,  // 160: loomcycle.v1.Loomcycle.ListChildRuns:input_type -> loomcycle.v1.ListChildRunsRequest
+	94,  // 161: loomcycle.v1.Loomcycle.UsageReport:input_type -> loomcycle.v1.UsageReportRequest
+	98,  // 162: loomcycle.v1.Loomcycle.TokenLimit:input_type -> loomcycle.v1.TokenLimitRequest
+	101, // 163: loomcycle.v1.Loomcycle.RetentionOverride:input_type -> loomcycle.v1.RetentionOverrideRequest
+	104, // 164: loomcycle.v1.Loomcycle.MergeSubjects:input_type -> loomcycle.v1.MergeSubjectsRequest
+	107, // 165: loomcycle.v1.Loomcycle.BindSubjectPrincipal:input_type -> loomcycle.v1.BindSubjectPrincipalRequest
+	110, // 166: loomcycle.v1.Loomcycle.ListReviewQueue:input_type -> loomcycle.v1.ListReviewQueueRequest
+	113, // 167: loomcycle.v1.Loomcycle.RuleStatements:input_type -> loomcycle.v1.RuleStatementsRequest
+	117, // 168: loomcycle.v1.Loomcycle.RevertRuling:input_type -> loomcycle.v1.RevertRulingRequest
+	119, // 169: loomcycle.v1.Loomcycle.ListRulings:input_type -> loomcycle.v1.ListRulingsRequest
+	179, // 170: loomcycle.v1.Loomcycle.Decide:input_type -> loomcycle.v1.DecideRequest
+	183, // 171: loomcycle.v1.Loomcycle.ListDecisionModels:input_type -> loomcycle.v1.ListDecisionModelsRequest
+	125, // 172: loomcycle.v1.Loomcycle.Health:input_type -> loomcycle.v1.HealthRequest
+	123, // 173: loomcycle.v1.Loomcycle.Config:input_type -> loomcycle.v1.ConfigRequest
+	127, // 174: loomcycle.v1.Loomcycle.PauseRuntime:input_type -> loomcycle.v1.PauseRuntimeRequest
+	129, // 175: loomcycle.v1.Loomcycle.ResumeRuntime:input_type -> loomcycle.v1.ResumeRuntimeRequest
+	131, // 176: loomcycle.v1.Loomcycle.GetRuntimeState:input_type -> loomcycle.v1.GetRuntimeStateRequest
+	133, // 177: loomcycle.v1.Loomcycle.ResolveProbe:input_type -> loomcycle.v1.ResolveProbeRequest
+	137, // 178: loomcycle.v1.Loomcycle.CreateSnapshot:input_type -> loomcycle.v1.CreateSnapshotRequest
+	139, // 179: loomcycle.v1.Loomcycle.ListSnapshots:input_type -> loomcycle.v1.ListSnapshotsRequest
+	141, // 180: loomcycle.v1.Loomcycle.GetSnapshot:input_type -> loomcycle.v1.GetSnapshotRequest
+	143, // 181: loomcycle.v1.Loomcycle.ExportSnapshot:input_type -> loomcycle.v1.ExportSnapshotRequest
+	145, // 182: loomcycle.v1.Loomcycle.RestoreSnapshot:input_type -> loomcycle.v1.RestoreSnapshotRequest
+	147, // 183: loomcycle.v1.Loomcycle.DeleteSnapshot:input_type -> loomcycle.v1.DeleteSnapshotRequest
+	149, // 184: loomcycle.v1.Loomcycle.AgentDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 185: loomcycle.v1.Loomcycle.SkillDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 186: loomcycle.v1.Loomcycle.MCPServerDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 187: loomcycle.v1.Loomcycle.ScheduleDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 188: loomcycle.v1.Loomcycle.A2AServerCardDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 189: loomcycle.v1.Loomcycle.A2AAgentDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 190: loomcycle.v1.Loomcycle.WebhookDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 191: loomcycle.v1.Loomcycle.MemoryBackendDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 192: loomcycle.v1.Loomcycle.DocumentSourceDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 193: loomcycle.v1.Loomcycle.ClientDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 194: loomcycle.v1.Loomcycle.OperatorTokenDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 195: loomcycle.v1.Loomcycle.VolumeDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 196: loomcycle.v1.Loomcycle.TeamDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 197: loomcycle.v1.Loomcycle.HookDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 198: loomcycle.v1.Loomcycle.Path:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 199: loomcycle.v1.Loomcycle.Document:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 200: loomcycle.v1.Loomcycle.CredentialDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 201: loomcycle.v1.Loomcycle.Crypto:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 202: loomcycle.v1.Loomcycle.GroupDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 203: loomcycle.v1.Loomcycle.AclDef:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 204: loomcycle.v1.Loomcycle.AclBinding:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 205: loomcycle.v1.Loomcycle.Authz:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 206: loomcycle.v1.Loomcycle.History:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 207: loomcycle.v1.Loomcycle.Evaluation:input_type -> loomcycle.v1.SubstrateRequest
+	149, // 208: loomcycle.v1.Loomcycle.Memory:input_type -> loomcycle.v1.SubstrateRequest
+	151, // 209: loomcycle.v1.Loomcycle.ListChannels:input_type -> loomcycle.v1.ListChannelsRequest
+	154, // 210: loomcycle.v1.Loomcycle.StreamUserRunStates:input_type -> loomcycle.v1.StreamUserRunStatesRequest
+	157, // 211: loomcycle.v1.Loomcycle.PublishChannel:input_type -> loomcycle.v1.PublishChannelRequest
+	159, // 212: loomcycle.v1.Loomcycle.SubscribeChannel:input_type -> loomcycle.v1.SubscribeChannelRequest
+	162, // 213: loomcycle.v1.Loomcycle.PeekChannel:input_type -> loomcycle.v1.PeekChannelRequest
+	171, // 214: loomcycle.v1.Loomcycle.AckChannel:input_type -> loomcycle.v1.AckChannelRequest
+	164, // 215: loomcycle.v1.Loomcycle.ListTeamChannels:input_type -> loomcycle.v1.ListTeamChannelsRequest
+	167, // 216: loomcycle.v1.Loomcycle.PeekTeamChannel:input_type -> loomcycle.v1.PeekTeamChannelRequest
+	169, // 217: loomcycle.v1.Loomcycle.ReleaseTeamChannel:input_type -> loomcycle.v1.ReleaseTeamChannelRequest
+	173, // 218: loomcycle.v1.Loomcycle.AwaitChannels:input_type -> loomcycle.v1.AwaitChannelsRequest
+	176, // 219: loomcycle.v1.Loomcycle.BroadcastChannels:input_type -> loomcycle.v1.BroadcastChannelsRequest
+	57,  // 220: loomcycle.v1.Loomcycle.Run:output_type -> loomcycle.v1.Event
+	57,  // 221: loomcycle.v1.Loomcycle.Continue:output_type -> loomcycle.v1.Event
+	11,  // 222: loomcycle.v1.Loomcycle.SpawnRunBatch:output_type -> loomcycle.v1.BatchSpawnResult
+	32,  // 223: loomcycle.v1.Loomcycle.CompactRun:output_type -> loomcycle.v1.CompactRunResult
+	34,  // 224: loomcycle.v1.Loomcycle.DeleteRunTree:output_type -> loomcycle.v1.DeleteRunTreeResult
+	36,  // 225: loomcycle.v1.Loomcycle.CreateConfiguredRun:output_type -> loomcycle.v1.ConfiguredRun
+	36,  // 226: loomcycle.v1.Loomcycle.UpdateConfiguredRun:output_type -> loomcycle.v1.ConfiguredRun
+	57,  // 227: loomcycle.v1.Loomcycle.StartConfiguredRun:output_type -> loomcycle.v1.Event
+	40,  // 228: loomcycle.v1.Loomcycle.DeleteConfiguredRun:output_type -> loomcycle.v1.DeleteConfiguredRunResponse
+	14,  // 229: loomcycle.v1.Loomcycle.DirectoryUsers:output_type -> loomcycle.v1.DirectoryUsersResponse
+	18,  // 230: loomcycle.v1.Loomcycle.DirectoryInspect:output_type -> loomcycle.v1.DirectoryInspectResponse
+	21,  // 231: loomcycle.v1.Loomcycle.DirectoryTenants:output_type -> loomcycle.v1.DirectoryTenantsResponse
+	25,  // 232: loomcycle.v1.Loomcycle.ErasureReport:output_type -> loomcycle.v1.ErasureReportResponse
+	30,  // 233: loomcycle.v1.Loomcycle.ErasureExecute:output_type -> loomcycle.v1.ErasureExecuteResponse
+	42,  // 234: loomcycle.v1.Loomcycle.ReplaySession:output_type -> loomcycle.v1.ReplaySessionResult
+	46,  // 235: loomcycle.v1.Loomcycle.RunInput:output_type -> loomcycle.v1.RunInputResponse
+	45,  // 236: loomcycle.v1.Loomcycle.RetuneRun:output_type -> loomcycle.v1.RetuneRunResponse
+	48,  // 237: loomcycle.v1.Loomcycle.CancelTurn:output_type -> loomcycle.v1.CancelTurnResponse
+	50,  // 238: loomcycle.v1.Loomcycle.ReviewRun:output_type -> loomcycle.v1.ReviewRunResponse
+	52,  // 239: loomcycle.v1.Loomcycle.ResolveInterrupt:output_type -> loomcycle.v1.ResolveInterruptResponse
+	57,  // 240: loomcycle.v1.Loomcycle.StreamRun:output_type -> loomcycle.v1.Event
+	80,  // 241: loomcycle.v1.Loomcycle.GetTranscript:output_type -> loomcycle.v1.Transcript
+	84,  // 242: loomcycle.v1.Loomcycle.GetAgent:output_type -> loomcycle.v1.Agent
+	84,  // 243: loomcycle.v1.Loomcycle.GetRun:output_type -> loomcycle.v1.Agent
+	87,  // 244: loomcycle.v1.Loomcycle.CancelAgent:output_type -> loomcycle.v1.CancelAgentResponse
+	89,  // 245: loomcycle.v1.Loomcycle.ListUserAgents:output_type -> loomcycle.v1.ListUserAgentsResponse
+	91,  // 246: loomcycle.v1.Loomcycle.ListWalkRuns:output_type -> loomcycle.v1.ListWalkRunsResponse
+	93,  // 247: loomcycle.v1.Loomcycle.ListChildRuns:output_type -> loomcycle.v1.ListChildRunsResponse
+	97,  // 248: loomcycle.v1.Loomcycle.UsageReport:output_type -> loomcycle.v1.UsageReportResponse
+	100, // 249: loomcycle.v1.Loomcycle.TokenLimit:output_type -> loomcycle.v1.TokenLimitResponse
+	103, // 250: loomcycle.v1.Loomcycle.RetentionOverride:output_type -> loomcycle.v1.RetentionOverrideResponse
+	106, // 251: loomcycle.v1.Loomcycle.MergeSubjects:output_type -> loomcycle.v1.MergeSubjectsResponse
+	108, // 252: loomcycle.v1.Loomcycle.BindSubjectPrincipal:output_type -> loomcycle.v1.BindSubjectPrincipalResponse
+	112, // 253: loomcycle.v1.Loomcycle.ListReviewQueue:output_type -> loomcycle.v1.ListReviewQueueResponse
+	116, // 254: loomcycle.v1.Loomcycle.RuleStatements:output_type -> loomcycle.v1.RuleStatementsResponse
+	118, // 255: loomcycle.v1.Loomcycle.RevertRuling:output_type -> loomcycle.v1.RevertRulingResponse
+	122, // 256: loomcycle.v1.Loomcycle.ListRulings:output_type -> loomcycle.v1.ListRulingsResponse
+	181, // 257: loomcycle.v1.Loomcycle.Decide:output_type -> loomcycle.v1.DecideResponse
+	184, // 258: loomcycle.v1.Loomcycle.ListDecisionModels:output_type -> loomcycle.v1.ListDecisionModelsResponse
+	126, // 259: loomcycle.v1.Loomcycle.Health:output_type -> loomcycle.v1.HealthResponse
+	124, // 260: loomcycle.v1.Loomcycle.Config:output_type -> loomcycle.v1.ConfigResponse
+	128, // 261: loomcycle.v1.Loomcycle.PauseRuntime:output_type -> loomcycle.v1.PauseRuntimeResponse
+	130, // 262: loomcycle.v1.Loomcycle.ResumeRuntime:output_type -> loomcycle.v1.ResumeRuntimeResponse
+	132, // 263: loomcycle.v1.Loomcycle.GetRuntimeState:output_type -> loomcycle.v1.RuntimeStateResponse
+	134, // 264: loomcycle.v1.Loomcycle.ResolveProbe:output_type -> loomcycle.v1.ResolverMatrixResponse
+	138, // 265: loomcycle.v1.Loomcycle.CreateSnapshot:output_type -> loomcycle.v1.SnapshotDescriptor
+	140, // 266: loomcycle.v1.Loomcycle.ListSnapshots:output_type -> loomcycle.v1.ListSnapshotsResponse
+	142, // 267: loomcycle.v1.Loomcycle.GetSnapshot:output_type -> loomcycle.v1.SnapshotEnvelope
+	144, // 268: loomcycle.v1.Loomcycle.ExportSnapshot:output_type -> loomcycle.v1.ExportSnapshotResponse
+	146, // 269: loomcycle.v1.Loomcycle.RestoreSnapshot:output_type -> loomcycle.v1.RestoreSnapshotResponse
+	148, // 270: loomcycle.v1.Loomcycle.DeleteSnapshot:output_type -> loomcycle.v1.DeleteSnapshotResponse
+	150, // 271: loomcycle.v1.Loomcycle.AgentDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 272: loomcycle.v1.Loomcycle.SkillDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 273: loomcycle.v1.Loomcycle.MCPServerDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 274: loomcycle.v1.Loomcycle.ScheduleDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 275: loomcycle.v1.Loomcycle.A2AServerCardDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 276: loomcycle.v1.Loomcycle.A2AAgentDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 277: loomcycle.v1.Loomcycle.WebhookDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 278: loomcycle.v1.Loomcycle.MemoryBackendDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 279: loomcycle.v1.Loomcycle.DocumentSourceDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 280: loomcycle.v1.Loomcycle.ClientDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 281: loomcycle.v1.Loomcycle.OperatorTokenDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 282: loomcycle.v1.Loomcycle.VolumeDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 283: loomcycle.v1.Loomcycle.TeamDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 284: loomcycle.v1.Loomcycle.HookDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 285: loomcycle.v1.Loomcycle.Path:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 286: loomcycle.v1.Loomcycle.Document:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 287: loomcycle.v1.Loomcycle.CredentialDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 288: loomcycle.v1.Loomcycle.Crypto:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 289: loomcycle.v1.Loomcycle.GroupDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 290: loomcycle.v1.Loomcycle.AclDef:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 291: loomcycle.v1.Loomcycle.AclBinding:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 292: loomcycle.v1.Loomcycle.Authz:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 293: loomcycle.v1.Loomcycle.History:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 294: loomcycle.v1.Loomcycle.Evaluation:output_type -> loomcycle.v1.SubstrateResponse
+	150, // 295: loomcycle.v1.Loomcycle.Memory:output_type -> loomcycle.v1.SubstrateResponse
+	152, // 296: loomcycle.v1.Loomcycle.ListChannels:output_type -> loomcycle.v1.ListChannelsResponse
+	155, // 297: loomcycle.v1.Loomcycle.StreamUserRunStates:output_type -> loomcycle.v1.RunStateEvent
+	158, // 298: loomcycle.v1.Loomcycle.PublishChannel:output_type -> loomcycle.v1.PublishChannelResponse
+	160, // 299: loomcycle.v1.Loomcycle.SubscribeChannel:output_type -> loomcycle.v1.SubscribeChannelResponse
+	163, // 300: loomcycle.v1.Loomcycle.PeekChannel:output_type -> loomcycle.v1.PeekChannelResponse
+	172, // 301: loomcycle.v1.Loomcycle.AckChannel:output_type -> loomcycle.v1.AckChannelResponse
+	166, // 302: loomcycle.v1.Loomcycle.ListTeamChannels:output_type -> loomcycle.v1.ListTeamChannelsResponse
+	168, // 303: loomcycle.v1.Loomcycle.PeekTeamChannel:output_type -> loomcycle.v1.PeekTeamChannelResponse
+	170, // 304: loomcycle.v1.Loomcycle.ReleaseTeamChannel:output_type -> loomcycle.v1.ReleaseTeamChannelResponse
+	175, // 305: loomcycle.v1.Loomcycle.AwaitChannels:output_type -> loomcycle.v1.AwaitChannelsResponse
+	178, // 306: loomcycle.v1.Loomcycle.BroadcastChannels:output_type -> loomcycle.v1.BroadcastChannelsResponse
+	220, // [220:307] is the sub-list for method output_type
+	133, // [133:220] is the sub-list for method input_type
+	133, // [133:133] is the sub-list for extension type_name
+	133, // [133:133] is the sub-list for extension extendee
+	0,   // [0:133] is the sub-list for field type_name
 }
 
 func init() { file_loomcycle_proto_init() }
@@ -15691,13 +17343,15 @@ func file_loomcycle_proto_init() {
 	file_loomcycle_proto_msgTypes[76].OneofWrappers = []any{}
 	file_loomcycle_proto_msgTypes[98].OneofWrappers = []any{}
 	file_loomcycle_proto_msgTypes[99].OneofWrappers = []any{}
+	file_loomcycle_proto_msgTypes[109].OneofWrappers = []any{}
+	file_loomcycle_proto_msgTypes[113].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_loomcycle_proto_rawDesc), len(file_loomcycle_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   188,
+			NumMessages:   202,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

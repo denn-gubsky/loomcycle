@@ -187,6 +187,9 @@ func (b *boot) wireAuth() {
 	// server knows nothing durable was written.
 	if cfg.Env.AuditLogPath != "" {
 		srv.SetRunDeleteAudit(tokenAudit)
+		// Bulk statement rulings and their reverts (RFC FS): who ruled on
+		// what, as a unit. Nil with no file, as above.
+		srv.SetStatementReviewAudit(tokenAudit)
 		// An operator changing a no-trace agent's mode, its hooks, or a
 		// HookDef it runs. Nil with no file, as above: the process log line
 		// is the record then.

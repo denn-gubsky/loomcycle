@@ -1678,6 +1678,228 @@ class LoomcycleClient:
             "changed": resp.changed,
         }
 
+    async def list_review_queue(
+        self,
+        *,
+        filter: Mapping[str, Any] | None = None,
+        summarize: bool = False,
+        limit: int = 0,
+        after: str = "",
+        order: str = "",
+        scope: str = "",
+        scope_id: str = "",
+        tenant: str = "",
+    ) -> Mapping[str, Any]:
+        """The statement review queue: a scope's proposed relations (or
+        another ``filter["status"]``), narrowed by *filter*, newest first;
+        or, with *summarize*, their counts grouped by kind, method, the
+        from-document's path prefix and judge verdict. Rows the caller may
+        not read are left out. Mirrors ``GET /v1/_statements/review``.
+
+        *filter* keys: ``status``, ``kind``, ``kinds``, ``method`` (an
+        exact prefix such as ``rule:``), ``actor``, ``document_id``,
+        ``under_path``, ``from_document_id``, ``to_document_id``,
+        ``from_under_path``, ``to_under_path``, ``min_confidence``,
+        ``created_before`` / ``created_after`` (unix nanoseconds, or a
+        timezone-aware ``datetime``), ``has_judge_verdict``,
+        ``judge_verdict``, and the exact ``method_exact``, ``kind_exact``,
+        ``from_path_prefix``, ``from_unfiled``. *scope* is ``tenant``
+        (default) or ``user``; with ``user``, *scope_id* names whose user
+        documents (an admin or a tenant operator may name another subject of
+        its tenant, a member only itself). *tenant* is honored only for an
+        admin token.
+
+        Returns ``{tenant, scope, statements, truncated, next_cursor}``,
+        each statement a mapping as ``list_statements`` renders it, plus
+        ``summary`` and ``total`` with *summarize*; each summary group
+        carries ``filter``, which selects exactly that group."""
+        req = pb.ListReviewQueueRequest(
+            tenant=tenant, scope=scope, scope_id=scope_id, filter=_review_filter_pb(filter),
+            summarize=summarize, limit=limit, after=after, order=order,
+        )
+        try:
+            resp = await self._stub.ListReviewQueue(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        out: dict[str, Any] = {
+            "tenant": resp.tenant,
+            "scope": resp.scope,
+            "statements": [json.loads(s) for s in resp.statements_json],
+            "truncated": resp.truncated,
+            "next_cursor": resp.next_cursor,
+        }
+        if summarize:
+            out["summary"] = [
+                {
+                    "kind": g.kind,
+                    "method": g.method,
+                    "from_path_prefix": g.from_path_prefix,
+                    "judge_verdict": g.judge_verdict,
+                    "count": g.count,
+                    "filter": _review_filter_dict(g.filter),
+                }
+                for g in resp.summary
+            ]
+            out["total"] = resp.total
+        return out
+
+    async def rule_statements(
+        self,
+        action: str,
+        *,
+        ids: Sequence[str] | None = None,
+        filter: Mapping[str, Any] | None = None,
+        reason: str = "",
+        dry_run: bool = True,
+        expect_count: int | None = None,
+        max: int = 0,
+        scope: str = "",
+        scope_id: str = "",
+        tenant: str = "",
+    ) -> Mapping[str, Any]:
+        """Accept or reject proposed statements in bulk (*action* ``accept``
+        or ``reject``), named by *ids* or by the queue's *filter* (an empty
+        mapping is the whole queue), at most 1000 per call (*max*). Mirrors
+        ``POST /v1/_statements/rule``.
+
+        A DRY RUN unless ``dry_run=False``: it returns ``matched``, a
+        ``sample`` of 20 and the kind/method ``breakdown``. To rule, call
+        again with ``dry_run=False`` and *expect_count* set to the dry
+        run's ``matched``; a queue that changed in between is refused
+        (``queue_changed``) and nothing is ruled. *reason* is required to
+        reject. Each statement is ruled as ``accept_statement`` /
+        ``reject_statement`` would, with a result per statement in
+        ``items``, and records ``ruled_by: bulk:<ruling_id>``.
+
+        For an admin or a tenant operator (write on each from-document),
+        or a member holding the access-control action ``review`` on the
+        from-document's path; what the caller may not rule on is skipped
+        and counted in ``skipped``. A refusal raises the error class its
+        gRPC code maps to, with the code (``invalid_request``,
+        ``forbidden``, ``queue_changed``, ``unavailable``) on its
+        ``.reason``."""
+        if (ids is None) == (filter is None):
+            raise ValueError("rule_statements: pass ids or filter, not both and not neither")
+        req = pb.RuleStatementsRequest(
+            tenant=tenant, scope=scope, scope_id=scope_id, action=action, ids=list(ids or []),
+            reason=reason, max=max,
+        )
+        if filter is not None:
+            req.has_filter = True
+            req.filter.CopyFrom(_review_filter_pb(filter))
+        if not dry_run:
+            req.dry_run = False
+        if expect_count is not None:
+            req.expect_count = expect_count
+        try:
+            resp = await self._stub.RuleStatements(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "scope": resp.scope,
+            "action": resp.action,
+            "dry_run": resp.dry_run,
+            "ruling_id": resp.ruling_id,
+            "matched": resp.matched,
+            "selected": resp.selected,
+            "skipped": resp.skipped,
+            "to_rule": resp.to_rule,
+            "ruled": resp.ruled,
+            "failed": resp.failed,
+            "sample": [json.loads(s) for s in resp.sample_json],
+            "breakdown": [{"kind": b.kind, "method": b.method, "count": b.count} for b in resp.breakdown],
+            "items": [_ruling_item(i) for i in resp.items],
+        }
+
+    async def revert_ruling(
+        self, ruling_id: str, *, scope: str = "", scope_id: str = "", tenant: str = ""
+    ) -> Mapping[str, Any]:
+        """Undo a bulk ruling: each statement it ruled goes back to its
+        status before, if nothing changed it since (no new evidence, no
+        maintenance, no later ruling); a rejected one is no longer refused
+        when proposed again. Changed ones are listed in ``items`` with
+        error ``changed`` and left. Same authority as
+        :meth:`rule_statements`. Mirrors ``POST /v1/_statements/revert``;
+        an unknown ruling raises with ``.reason == "ruling_not_found"``.
+
+        Returns ``{tenant, scope, ruling_id, action, reverted, changed,
+        skipped, items, revert_id}``; ``revert_id`` is the revert's own
+        record in :meth:`list_rulings`."""
+        req = pb.RevertRulingRequest(tenant=tenant, scope=scope, scope_id=scope_id, ruling_id=ruling_id)
+        try:
+            resp = await self._stub.RevertRuling(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "scope": resp.scope,
+            "ruling_id": resp.ruling_id,
+            "action": resp.action,
+            "reverted": resp.reverted,
+            "changed": resp.changed,
+            "skipped": resp.skipped,
+            "items": [_ruling_item(i) for i in resp.items],
+            "revert_id": resp.revert_id,
+        }
+
+    async def list_rulings(
+        self,
+        *,
+        limit: int = 0,
+        after: str = "",
+        scope: str = "",
+        scope_id: str = "",
+        tenant: str = "",
+    ) -> Mapping[str, Any]:
+        """The scope's bulk rulings and their reverts, newest first (*limit*
+        default 20, at most 100; *after* = the previous page's
+        ``next_cursor``), so an undo can be found after the ruling's own
+        answer is gone. An operator sees every ruling, a member only its
+        own. Mirrors ``GET /v1/_statements/rulings``.
+
+        Returns ``{tenant, scope, rulings, next_cursor}``; each ruling is
+        ``{id, action, ruled_by, actor, reason, selector, matched, ruled,
+        failed, skipped, created_at, reverted, reverted_at, reverted_by}``,
+        its ``selector`` ``{filter, ids_count, max, reverts}`` — the filter
+        (``None`` when it named ids), or how many ids, never the ids. A
+        revert is a record of its own (action ``revert``, ``selector.reverts``
+        the ruling it undid)."""
+        req = pb.ListRulingsRequest(tenant=tenant, scope=scope, scope_id=scope_id, limit=limit, after=after)
+        try:
+            resp = await self._stub.ListRulings(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "tenant": resp.tenant,
+            "scope": resp.scope,
+            "next_cursor": resp.next_cursor,
+            "rulings": [
+                {
+                    "id": r.id,
+                    "action": r.action,
+                    "ruled_by": r.ruled_by,
+                    "actor": r.actor,
+                    "reason": r.reason,
+                    "selector": {
+                        "filter": _review_filter_dict(r.selector.filter) if r.selector.has_filter else None,
+                        "ids_count": r.selector.ids_count,
+                        "max": r.selector.max,
+                        "reverts": r.selector.reverts,
+                    },
+                    "matched": r.matched,
+                    "ruled": r.ruled,
+                    "failed": r.failed,
+                    "skipped": r.skipped,
+                    "created_at": r.created_at,
+                    "reverted": r.reverted,
+                    "reverted_at": r.reverted_at,
+                    "reverted_by": r.reverted_by,
+                }
+                for r in resp.rulings
+            ],
+        }
+
     async def compact_run(self, run_id: str, *, reason: str = "") -> Mapping[str, Any]:
         """Summarize a parked run's context (mirror of the HTTP
         ``POST /v1/runs/{run_id}/compact`` + the ``compact_run`` MCP
@@ -3439,6 +3661,61 @@ def _ts_to_iso(ts) -> str:
     if ts.seconds == 0 and ts.nanos == 0:
         return ""
     return ts.ToJsonString()
+
+
+_REVIEW_FILTER_TEXT = (
+    "status", "kind", "method", "actor", "document_id", "under_path",
+    "from_document_id", "to_document_id", "from_under_path", "to_under_path",
+    "judge_verdict", "method_exact", "kind_exact", "from_path_prefix",
+)
+
+
+def _review_filter_pb(f: Mapping[str, Any] | None) -> Any:
+    """A review queue filter mapping as the ReviewQueueFilter message. An
+    unknown key is refused rather than dropped: a filter that silently lost
+    a key would select, and rule on, more than the caller meant."""
+    msg = pb.ReviewQueueFilter()
+    for key, value in (f or {}).items():
+        if value is None:
+            continue
+        if key in _REVIEW_FILTER_TEXT:
+            setattr(msg, key, value)
+        elif key == "kinds":
+            msg.kinds.extend(value)
+        elif key == "min_confidence":
+            msg.min_confidence = float(value)
+        elif key in ("created_before", "created_after"):
+            if isinstance(value, datetime.datetime):
+                if value.tzinfo is None:
+                    raise ValueError(f"review filter {key}: pass a timezone-aware datetime")
+                value = int(value.timestamp()) * 1_000_000_000 + value.microsecond * 1_000
+            setattr(msg, key, int(value))
+        elif key == "has_judge_verdict":
+            msg.has_judge_verdict = bool(value)
+        elif key == "from_unfiled":
+            msg.from_unfiled = bool(value)
+        else:
+            raise ValueError(f"review filter: unknown key {key!r}")
+    return msg
+
+
+def _review_filter_dict(msg: Any) -> dict[str, Any]:
+    """A ReviewQueueFilter message as the mapping :func:`_review_filter_pb`
+    takes, set fields only, so a summary group's filter can be passed back
+    as it is."""
+    out: dict[str, Any] = {k: getattr(msg, k) for k in _REVIEW_FILTER_TEXT if getattr(msg, k)}
+    if msg.kinds:
+        out["kinds"] = list(msg.kinds)
+    for key in ("min_confidence", "created_before", "created_after", "has_judge_verdict"):
+        if msg.HasField(key):
+            out[key] = getattr(msg, key)
+    if msg.from_unfiled:
+        out["from_unfiled"] = True
+    return out
+
+
+def _ruling_item(i: Any) -> Mapping[str, Any]:
+    return {"id": i.id, "status": i.status, "error": i.error, "message": i.message}
 
 
 def _raise_from_grpc(err: grpc.aio.AioRpcError) -> "None":

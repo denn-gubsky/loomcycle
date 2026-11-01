@@ -39,6 +39,16 @@ type mockConnector struct {
 	mergeRes connector.MergeSubjectsResult
 	mergeErr error
 
+	reviewQueueReq connector.ListReviewQueueRequest
+	reviewQueueRes connector.ListReviewQueueResult
+	ruleReq        connector.RuleStatementsRequest
+	ruleRes        connector.RuleStatementsResult
+	revertReq      connector.RevertRulingRequest
+	revertRes      connector.RevertRulingResult
+	rulingsReq     connector.ListRulingsRequest
+	rulingsRes     connector.ListRulingsResult
+	reviewErr      error
+
 	bindReq connector.BindSubjectPrincipalRequest
 	bindRes connector.BindSubjectPrincipalResult
 	bindErr error
@@ -522,8 +532,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 67 {
-		t.Errorf("got %d tools, want 67 (+ontology; +clientdef; +file; +groupdef, +acldef, +aclbinding, +authz; +crypto, +retention_override, +delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the identity (was directory)/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
+	if len(result.Tools) != 68 {
+		t.Errorf("got %d tools, want 68 (+review; +ontology; +clientdef; +file; +groupdef, +acldef, +aclbinding, +authz; +crypto, +retention_override, +delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the identity (was directory)/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -1997,4 +2007,26 @@ func (m *mockConnector) MergeSubjects(_ context.Context, req connector.MergeSubj
 func (m *mockConnector) BindSubjectPrincipal(_ context.Context, req connector.BindSubjectPrincipalRequest) (connector.BindSubjectPrincipalResult, error) {
 	m.bindReq = req
 	return m.bindRes, m.bindErr
+}
+
+// ListReviewQueue, RuleStatements and RevertRuling record the request and answer
+// with the configured result (connector.Connector).
+func (m *mockConnector) ListReviewQueue(_ context.Context, req connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {
+	m.reviewQueueReq = req
+	return m.reviewQueueRes, m.reviewErr
+}
+
+func (m *mockConnector) RuleStatements(_ context.Context, req connector.RuleStatementsRequest) (connector.RuleStatementsResult, error) {
+	m.ruleReq = req
+	return m.ruleRes, m.reviewErr
+}
+
+func (m *mockConnector) RevertRuling(_ context.Context, req connector.RevertRulingRequest) (connector.RevertRulingResult, error) {
+	m.revertReq = req
+	return m.revertRes, m.reviewErr
+}
+
+func (m *mockConnector) ListRulings(_ context.Context, req connector.ListRulingsRequest) (connector.ListRulingsResult, error) {
+	m.rulingsReq = req
+	return m.rulingsRes, m.reviewErr
 }

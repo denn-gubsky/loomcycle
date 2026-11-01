@@ -160,6 +160,27 @@ type Event struct {
 	AuthGroupsRemoved    []string `json:"auth_groups_removed,omitempty"`
 	AuthTargetAccessMode string   `json:"auth_target_access_mode,omitempty"`
 
+	// --- Statement review (Action = "statement_ruling" |
+	// "statement_ruling_revert") ---
+	//
+	// One record per bulk ruling and per revert: who ruled, on what selection,
+	// with what reason and outcome. The statements themselves carry
+	// ruled_by bulk:<RulingID>. The tenant travels in TargetTenant.
+	RulingID     string `json:"ruling_id,omitempty"`
+	RulingAction string `json:"ruling_action,omitempty"` // accept | reject
+	RulingScope  string `json:"ruling_scope,omitempty"`  // tenant | user
+	// RulingScopeID is whose user scope (scope user): the subject whose
+	// documents were ruled on, which an operator may name.
+	RulingScopeID string `json:"ruling_scope_id,omitempty"`
+	// RulingFilter is the queue filter a ruling selected by; RulingIDs the
+	// statement ids it named instead.
+	RulingFilter json.RawMessage `json:"ruling_filter,omitempty"`
+	RulingIDs    []string        `json:"ruling_ids,omitempty"`
+	RulingReason string          `json:"ruling_reason,omitempty"`
+	// RulingCounts is matched / skipped / ruled / failed for a ruling, and
+	// reverted / changed / skipped for a revert.
+	RulingCounts map[string]int `json:"ruling_counts,omitempty"`
+
 	// --- Directory lookup (Action = "identity_lookup") ---
 	//
 	// A run, or a session on the MCP server, reading what the directory holds

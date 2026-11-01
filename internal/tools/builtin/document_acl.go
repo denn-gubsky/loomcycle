@@ -219,25 +219,75 @@ func (a *docACL) scope(ctx context.Context, op, verb, scope string) *tools.Resul
 // namesOf returns the Path-tree names of a document in this scope.
 func (a *docACL) namesOf(ctx context.Context, docID string) ([]string, error) {
 	if a.paths == nil {
-		rows, err := a.d.Store.DirentListUnder(ctx, direntTenant(ctx), a.key.Scope, direntScopeID(a.key), "/")
+		paths, err := a.d.documentNames(ctx, a.key)
 		if err != nil {
 			return nil, err
 		}
-		a.paths = map[string][]string{}
-		for _, r := range rows {
-			if r.Kind != "document" {
-				continue
-			}
-			var ref struct {
-				DocumentID string `json:"document_id"`
-			}
-			_ = json.Unmarshal(r.ResourceRef, &ref)
-			if ref.DocumentID != "" {
-				a.paths[ref.DocumentID] = append(a.paths[ref.DocumentID], r.ParentPath+r.Name)
-			}
-		}
+		a.paths = paths
 	}
 	return a.paths[docID], nil
+}
+
+// documentNames maps each document of the scope to its Path-tree names.
+func (d *Document) documentNames(ctx context.Context, key sqlmem.ScopeKey) (map[string][]string, error) {
+	rows, err := d.Store.DirentListUnder(ctx, direntTenant(ctx), key.Scope, direntScopeID(key), "/")
+	if err != nil {
+		return nil, err
+	}
+	paths := map[string][]string{}
+	for _, r := range rows {
+		if r.Kind != "document" {
+			continue
+		}
+		var ref struct {
+			DocumentID string `json:"document_id"`
+		}
+		_ = json.Unmarshal(r.ResourceRef, &ref)
+		if ref.DocumentID != "" {
+			paths[ref.DocumentID] = append(paths[ref.DocumentID], r.ParentPath+r.Name)
+		}
+	}
+	return paths, nil
+}
+
+// permits is readable's question for any verb: whether the set allows verb on
+// the document at every name it is filed under (its whole scope when it is
+// filed nowhere, or docID is ""), without a log line per document. A nil set
+// permits everything, as everywhere on this tool.
+func (a *docACL) permits(ctx context.Context, verb, docID string) (bool, error) {
+	if a == nil {
+		return true, nil
+	}
+	return a.everyName(ctx, docID, func(res authz.Resource) bool { return tools.ACLFilterAllows(ctx, a.eff, verb, res) })
+}
+
+// grants is permits for a verb held only by grant (review): a rule must ALLOW
+// it at every name, whatever the rollout mode, and a nil set grants nothing.
+func (a *docACL) grants(ctx context.Context, verb, docID string) (bool, error) {
+	if a == nil {
+		return false, nil
+	}
+	return a.everyName(ctx, docID, func(res authz.Resource) bool { return authz.Grants(ctx, a.eff, verb, res) })
+}
+
+// everyName asks allows about the document at each of its names.
+func (a *docACL) everyName(ctx context.Context, docID string, allows func(authz.Resource) bool) (bool, error) {
+	names := []string{""}
+	if a.pathSensitive && docID != "" {
+		n, err := a.namesOf(ctx, docID)
+		if err != nil {
+			return false, err
+		}
+		if len(n) > 0 {
+			names = n
+		}
+	}
+	for _, p := range names {
+		if !allows(a.resource(p)) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // document asks verb about a document at every name it is filed under.

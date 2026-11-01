@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 )
 
 // A caller's own confidence never hides a statement — only a verdict does — and
@@ -126,4 +128,31 @@ func TestReviewStatement_RulesOnlyOnAProposalOrARejection(t *testing.T) {
 			t.Errorf("rejecting a wikilink: want a refusal pointing at the body, got %s", r.Text)
 		}
 	})
+}
+
+// A ruling names who made it: operator:<subject> from the authenticated
+// principal, or the bare operator when there is none (open mode).
+func TestReviewStatement_RecordsWhoRuled(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	_, a, b, c := stmtDoc(t, d, ctx, "ruler")
+	propose := func(to string) string {
+		p, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"propose_statement","scope":"user","from_id":%q,"to_id":%q,"kind":"cites"}`, a, to))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		return p["id"].(string)
+	}
+	byAda, open := propose(b), propose(c)
+	ada := auth.WithPrincipal(operatorCtx(ctx), auth.Principal{TenantID: "tnt", Subject: "ada", Scopes: []string{auth.ScopeTenant}})
+	if _, r := docExec(t, d, ada, `{"op":"reject_statement","scope":"user","id":"`+byAda+`","reason":"wrong article"}`); r.IsError {
+		t.Fatal(r.Text)
+	}
+	if _, r := docExec(t, d, operatorCtx(ctx), `{"op":"accept_statement","scope":"user","id":"`+open+`"}`); r.IsError {
+		t.Fatal(r.Text)
+	}
+	for id, want := range map[string]string{byAda: "operator:ada", open: "operator"} {
+		if s := integrityEdge(t, d, ctx, "user", id); s["ruled_by"] != want || s["judged_by"] != "operator" {
+			t.Errorf("%s: ruled_by = %v (judged_by %v), want %s", id, s["ruled_by"], s["judged_by"], want)
+		}
+	}
 }

@@ -29,6 +29,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -50,6 +51,11 @@ import (
 // reject_statement). It is its own column, written only by that ruling and by no
 // run path, because judged_by is rewritten by every later judge: a guard on it
 // would let a run's judge_fact lift the protection a ruling gives.
+//
+// ruled_by names who made the last ruling: operator:<subject> for a single
+// accept/reject, bulk:<ruling id> for a bulk ruling (document_review.go). Written
+// only by a ruling and its revert, like operator_ruled_at, so a bulk ruling's
+// statements can be found and undone together.
 const chunkEdgesColumns = `
 		id TEXT NOT NULL, from_id TEXT NOT NULL, to_id TEXT NOT NULL, kind TEXT NOT NULL,
 		created_at BIGINT NOT NULL, auto INTEGER NOT NULL DEFAULT 0,
@@ -58,7 +64,7 @@ const chunkEdgesColumns = `
 		expired_at BIGINT, verified_at BIGINT, actor TEXT, run_id TEXT,
 		ontology_version INTEGER, discriminator TEXT NOT NULL DEFAULT '', attributes TEXT,
 		judged_at BIGINT, judge_reason TEXT, judged_by TEXT, verdict_confidence DOUBLE PRECISION,
-		operator_ruled_at BIGINT,
+		operator_ruled_at BIGINT, ruled_by TEXT,
 		PRIMARY KEY (id)`
 
 // preStatementEdgeColumns is the whole chunk_edges of a scope created before
@@ -261,6 +267,13 @@ func (d *Document) migrateEdgeStatements(ctx context.Context, key sqlmem.ScopeKe
 			return nil
 		}); err != nil {
 			return err
+		}
+	}
+	if !rebuild && !cols["ruled_by"] {
+		// Rulings made before the column say only judged_by = 'operator', with no
+		// subject: left NULL rather than guessed.
+		if err := d.exec(ctx, key, `ALTER TABLE chunk_edges ADD COLUMN ruled_by TEXT`); err != nil {
+			return fmt.Errorf("add chunk_edges.ruled_by: %w", err)
 		}
 	}
 	for _, s := range chunkEdgeIndexes {
@@ -889,15 +902,16 @@ type statementRow struct {
 	VerdictConfidence *float64 `json:"verdict_confidence,omitempty"`
 	CreatedAt         int64    `json:"created_at"`
 	OperatorRuledAt   *int64   `json:"operator_ruled_at,omitempty"`
+	RuledBy           string   `json:"ruled_by,omitempty"`
 }
 
 // statementCols is the SELECT list scanStatement reads, aliased on `e`.
 const statementCols = `e.id, e.from_id, e.to_id, e.kind, e.auto, e.status, e.method, e.confidence,
 	e.valid_at, e.invalid_at, e.expired_at, e.verified_at, e.actor, e.run_id, e.ontology_version,
 	e.discriminator, e.attributes, e.judged_at, e.judge_reason, e.judged_by, e.created_at,
-	e.verdict_confidence, e.operator_ruled_at`
+	e.verdict_confidence, e.operator_ruled_at, e.ruled_by`
 
-const statementColCount = 23
+const statementColCount = 24
 
 func scanStatement(r []any) statementRow {
 	s := statementRow{
@@ -914,6 +928,7 @@ func scanStatement(r []any) statementRow {
 	s.CreatedAt, _ = asInt64(r[20])
 	s.VerdictConfidence = asFloat64Ptr(r[21])
 	s.OperatorRuledAt = asInt64Ptr(r[22])
+	s.RuledBy = asStr(r[23])
 	if s.Status == "" {
 		s.Status = edgeStatusAsserted
 	}
@@ -1127,7 +1142,7 @@ func (d *Document) statementJSON(ctx context.Context, s statementRow, ends map[s
 			e[k] = *v
 		}
 	}
-	for k, v := range map[string]string{"actor": s.Actor, "run_id": s.RunID, "discriminator": s.Discriminator, "judge_reason": s.JudgeReason, "judged_by": s.JudgedBy} {
+	for k, v := range map[string]string{"actor": s.Actor, "run_id": s.RunID, "discriminator": s.Discriminator, "judge_reason": s.JudgeReason, "judged_by": s.JudgedBy, "ruled_by": s.RuledBy} {
 		if v != "" {
 			e[k] = v
 		}
@@ -1308,9 +1323,8 @@ func (d *Document) rejectedRelation(ctx context.Context, key sqlmem.ScopeKey, fr
 // the second is refused rather than silently replacing the first one's ruling.
 func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, accept bool) (tools.Result, error) {
 	op := "reject_statement"
-	status := edgeStatusRejected
 	if accept {
-		op, status = "accept_statement", edgeStatusAsserted
+		op = "accept_statement"
 	}
 	if !authorIsOperatorPlane(ctx) {
 		return errPermission(op+": only an operator rules on a proposed statement, from the review queue — not an agent inside a run",
@@ -1322,12 +1336,58 @@ func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, msc
 	if !accept && strings.TrimSpace(in.Reason) == "" {
 		return errValidation(op+": reason is required", "Say why, so the proposer never re-proposes it and a later reader knows."), nil
 	}
-	s, err := d.statementByID(ctx, key, in.ID)
+	r, err := d.applyRuling(ctx, key, mscope, op, in.ID, accept, in.Reason, operatorRuler(ctx))
 	if err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}
+	if r.refusal != nil {
+		return *r.refusal, nil
+	}
+	return jsonResult(map[string]any{"id": in.ID, "status": r.status})
+}
+
+// operatorRuler is ruled_by for an operator's own ruling: operator:<subject>,
+// from the authenticated principal — never the wire — or bare "operator" when
+// there is none to name (open mode, the legacy token).
+func operatorRuler(ctx context.Context) string {
+	if p, ok := auth.PrincipalFromContext(ctx); ok && p.Subject != "" {
+		return "operator:" + p.Subject
+	}
+	return "operator"
+}
+
+// Refusal codes of one ruling, shared by the single and the bulk path.
+const (
+	rulingNotFound    = "not_found"
+	rulingNotProposal = "not_a_proposal"
+	rulingChanged     = "statement_changed"
+)
+
+// rulingOutcome is one ruling: the status it set, the statement as it was read
+// before (what a revert restores), or the refusal and its code.
+type rulingOutcome struct {
+	status  string
+	prior   *statementRow
+	code    string
+	refusal *tools.Result
+}
+
+// applyRuling rules on one statement: the checks and the write accept_statement
+// and reject_statement make, for both them and a bulk ruling, so the two cannot
+// differ. The caller has checked who may rule and that a reject has a reason;
+// ruledBy is recorded as who did.
+func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op, id string, accept bool, reason, ruledBy string) (rulingOutcome, error) {
+	status := edgeStatusRejected
+	if accept {
+		status = edgeStatusAsserted
+	}
+	s, err := d.statementByID(ctx, key, id)
+	if err != nil {
+		return rulingOutcome{}, err
+	}
 	if s == nil {
-		return errNotFound(op+": no such statement: "+in.ID, "List proposals with op=list_statements."), nil
+		r := errNotFound(op+": no such statement: "+id, "List proposals with op=list_statements.")
+		return rulingOutcome{code: rulingNotFound, refusal: &r}, nil
 	}
 	if s.Status != edgeStatusProposed && !(accept && s.Status == edgeStatusRejected) {
 		msg := op + ": not_a_proposal: the statement is " + s.Status + ", so there is nothing to rule on"
@@ -1337,13 +1397,14 @@ func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, msc
 			msg += " — it comes from a [[name]] link in its source chunk's body"
 			hint = "Edit the [[name]] link out of the body (update_chunk) to remove it."
 		}
-		return errBusiness(msg, hint), nil
+		r := errBusiness(msg, hint)
+		return rulingOutcome{code: rulingNotProposal, refusal: &r}, nil
 	}
 	now := time.Now().UnixNano()
-	reason := nullIfEmpty(strings.TrimSpace(in.Reason))
+	reasonArg := nullIfEmpty(strings.TrimSpace(reason))
 	// operator_ruled_at is set by every ruling, whatever else it records: it is
 	// what tells a run's maintenance this statement is a human decision.
-	set, args := `status = ?, operator_ruled_at = ?, judged_at = ?, judge_reason = ?, judged_by = ?`, []any{status, now, now, reason, "operator"}
+	set, args := `status = ?, operator_ruled_at = ?, ruled_by = ?, judged_at = ?, judge_reason = ?, judged_by = ?`, []any{status, now, ruledBy, now, reasonArg, "operator"}
 	if accept {
 		refuting := s.VerdictConfidence != nil && *s.VerdictConfidence < withholdBelowConfidence
 		switch {
@@ -1355,20 +1416,21 @@ func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, msc
 		default:
 			// A judge's standing verdict on the proposal is kept: accepting it adds
 			// nothing the verdict does not already say.
-			set, args = `status = ?, operator_ruled_at = ?`, []any{status, now}
+			set, args = `status = ?, operator_ruled_at = ?, ruled_by = ?`, []any{status, now, ruledBy}
 		}
 	}
-	args = append(args, in.ID, s.Status)
+	args = append(args, id, s.Status)
 	ruled, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(`UPDATE chunk_edges SET `+set+` WHERE id = ? AND status = ?`), args, 0)
 	if err != nil {
-		return errFrom(op+": "+err.Error(), err), nil
+		return rulingOutcome{}, err
 	}
 	if ruled.RowsAffected == 0 {
-		return errBusiness(op+": statement_changed: the statement was ruled on or changed while this ruling was made",
-			"Reload it (op=get_edge) and rule again if it still needs it."), nil
+		r := errBusiness(op+": statement_changed: the statement was ruled on or changed while this ruling was made",
+			"Reload it (op=get_edge) and rule again if it still needs it.")
+		return rulingOutcome{code: rulingChanged, refusal: &r}, nil
 	}
-	d.publishEdgeChange(ctx, key, mscope, op, in.ID, s.FromID, s.ToID, s.Kind, status)
-	return jsonResult(map[string]any{"id": in.ID, "status": status})
+	d.publishEdgeChange(ctx, key, mscope, op, id, s.FromID, s.ToID, s.Kind, status)
+	return rulingOutcome{status: status, prior: s}, nil
 }
 
 // getEdge returns one statement with all its evidence.
@@ -1410,10 +1472,6 @@ func (d *Document) getEdge(ctx context.Context, key sqlmem.ScopeKey, in docInput
 // (order verified). A retired statement — expired, or already ended — is left
 // out unless include_retired asks for it.
 func (d *Document) listStatements(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
-	status := in.Status
-	if status == "" {
-		status = edgeStatusProposed
-	}
 	limit := edgeGetEdgesDefault
 	if in.Limit > 0 {
 		limit = min(in.Limit, edgeGetEdgesMax)
@@ -1425,30 +1483,19 @@ func (d *Document) listStatements(ctx context.Context, key sqlmem.ScopeKey, in d
 	if order != statementOrderCreated && order != statementOrderVerified {
 		return errValidation("list_statements: order must be created or verified", "Omit order for newest first."), nil
 	}
-	where := []string{"e.status = ?"}
-	args := []any{status}
-	if kc, ka, _ := d.kindFilter(ctx, in); kc != "" {
-		where = append(where, kc)
-		args = append(args, ka...)
-	}
-	if !in.IncludeRetired {
-		// One-sided on purpose: a statement dated to take effect later is not
-		// retired, and a proposal for a coming edition belongs in the queue.
-		where = append(where, "e.expired_at IS NULL AND (e.invalid_at IS NULL OR e.invalid_at > ?)")
-		args = append(args, time.Now().UnixNano())
-	}
-	sel, selArgs, none, refusal, err := d.statementSelection(ctx, key, in)
+	where, args, none, refusal, err := d.statementQueueWhere(ctx, key, in)
 	if err != nil {
 		return errFrom("list_statements: "+err.Error(), err), nil
 	}
 	if refusal != nil {
 		return *refusal, nil
 	}
+	if in.Summarize {
+		return d.summarizeStatements(ctx, key, where, args, none)
+	}
 	if none {
 		return jsonResult(map[string]any{"statements": []any{}})
 	}
-	where = append(where, sel...)
-	args = append(args, selArgs...)
 	if in.After != "" {
 		c, ok := decodeStatementCursor(in.After)
 		if !ok || c.Order != order {
@@ -1482,6 +1529,35 @@ func (d *Document) listStatements(ctx context.Context, key sqlmem.ScopeKey, in d
 		}
 		return c.encode()
 	})
+}
+
+// statementQueueWhere is the review queue's selection on alias e (cf and ct its
+// endpoint chunks): statements of one status (default proposed), narrowed by
+// the kinds, retirement and every selection filter. list_statements and a bulk
+// ruling select through it, so what a reviewer listed is what a ruling rules.
+// none reports a filter that can match nothing the caller may read.
+func (d *Document) statementQueueWhere(ctx context.Context, key sqlmem.ScopeKey, in docInput) (where []string, args []any, none bool, refusal *tools.Result, err error) {
+	status := in.Status
+	if status == "" {
+		status = edgeStatusProposed
+	}
+	where = []string{"e.status = ?"}
+	args = []any{status}
+	if kc, ka, _ := d.kindFilter(ctx, in); kc != "" {
+		where = append(where, kc)
+		args = append(args, ka...)
+	}
+	if !in.IncludeRetired {
+		// One-sided on purpose: a statement dated to take effect later is not
+		// retired, and a proposal for a coming edition belongs in the queue.
+		where = append(where, "e.expired_at IS NULL AND (e.invalid_at IS NULL OR e.invalid_at > ?)")
+		args = append(args, time.Now().UnixNano())
+	}
+	sel, selArgs, none, refusal, err := d.statementSelection(ctx, key, in)
+	if err != nil || refusal != nil || none {
+		return nil, nil, none, refusal, err
+	}
+	return append(where, sel...), append(args, selArgs...), false, nil, nil
 }
 
 const (
@@ -1562,43 +1638,54 @@ func (d *Document) statementSelection(ctx context.Context, key sqlmem.ScopeKey, 
 		args = append(args, utf8.RuneCountInString(in.MethodPrefix), in.MethodPrefix)
 	}
 	if in.UnderPath != "" {
-		canonical, perr := normalizePath(in.UnderPath)
-		if perr != nil {
-			r := errValidation("list_statements: "+perr.Error(), docPathFix)
-			return nil, nil, false, &r, nil
-		}
-		ids, err := d.documentsAtOrUnder(ctx, key, canonical)
-		if err != nil {
-			return nil, nil, false, nil, err
-		}
-		docs := make([]any, 0, len(ids))
-		seen := map[string]bool{}
-		for _, id := range ids {
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-			ok, err := readable(id)
-			if err != nil {
-				return nil, nil, false, nil, err
-			}
-			if ok {
-				docs = append(docs, id)
-			}
-		}
-		if len(docs) == 0 {
-			return nil, nil, true, nil, nil
-		}
-		if len(docs) > listStatementsMaxDocs {
-			r := errValidation(fmt.Sprintf("list_statements: under_path names %d documents, more than %d", len(docs), listStatementsMaxDocs),
-				"Narrow under_path, or select by document_id.")
-			return nil, nil, false, &r, nil
+		docs, none, refusal, err := d.readableDocsUnder(ctx, key, "under_path", in.UnderPath, readable)
+		if err != nil || refusal != nil || none {
+			return nil, nil, none, refusal, err
 		}
 		ph := placeholders(len(docs))
 		where = append(where, "(cf.document_id IN ("+ph+") OR ct.document_id IN ("+ph+"))")
 		args = append(append(args, docs...), docs...)
 	}
-	return where, args, false, nil, nil
+	return d.reviewSelection(ctx, key, in, where, args, readable)
+}
+
+// readableDocsUnder lists the documents named at or under path that the caller
+// may read, for a selection filter (field names it in a refusal). none: the
+// filter selects nothing the caller may read.
+func (d *Document) readableDocsUnder(ctx context.Context, key sqlmem.ScopeKey, field, path string, readable func(string) (bool, error)) (docs []any, none bool, refusal *tools.Result, err error) {
+	canonical, perr := normalizePath(path)
+	if perr != nil {
+		r := errValidation("list_statements: "+perr.Error(), docPathFix)
+		return nil, false, &r, nil
+	}
+	ids, err := d.documentsAtOrUnder(ctx, key, canonical)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	docs = make([]any, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		ok, err := readable(id)
+		if err != nil {
+			return nil, false, nil, err
+		}
+		if ok {
+			docs = append(docs, id)
+		}
+	}
+	if len(docs) == 0 {
+		return nil, true, nil, nil
+	}
+	if len(docs) > listStatementsMaxDocs {
+		r := errValidation(fmt.Sprintf("list_statements: %s names %d documents, more than %d", field, len(docs), listStatementsMaxDocs),
+			"Narrow "+field+", or select by document_id.")
+		return nil, false, &r, nil
+	}
+	return docs, false, nil, nil
 }
 
 // readableEndpointDocuments lists, in pages under the store's row cap, the

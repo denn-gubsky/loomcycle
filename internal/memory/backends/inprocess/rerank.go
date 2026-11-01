@@ -38,10 +38,13 @@ func (b *Backend) rerankPool(ctx context.Context, tenant string, at func(string)
 	if n < 2 {
 		return pool, memory.RerankReport{Reason: memory.RerankTooFewCandidates}
 	}
-	texts := make([]string, n)
+	// Sized by the pool, not by n: n is the caller's candidate count, already
+	// clamped to the pool above, and an allocation should not read its size
+	// from a value a request can set.
+	texts := make([]string, 0, len(pool))
 	for i := 0; i < n; i++ {
 		scope, scopeID := at(pool[i].Key)
-		texts[i] = b.candidateText(ctx, tenant, scope, scopeID, pool[i])
+		texts = append(texts, b.candidateText(ctx, tenant, scope, scopeID, pool[i]))
 	}
 	order, rep := b.reranker.Rank(ctx, q.QueryText, texts, q.Rerank.EffectiveMaxChars())
 	if !rep.Applied {

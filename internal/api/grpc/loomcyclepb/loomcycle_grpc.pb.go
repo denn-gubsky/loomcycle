@@ -71,6 +71,10 @@ const (
 	Loomcycle_RetentionOverride_FullMethodName    = "/loomcycle.v1.Loomcycle/RetentionOverride"
 	Loomcycle_MergeSubjects_FullMethodName        = "/loomcycle.v1.Loomcycle/MergeSubjects"
 	Loomcycle_BindSubjectPrincipal_FullMethodName = "/loomcycle.v1.Loomcycle/BindSubjectPrincipal"
+	Loomcycle_ListReviewQueue_FullMethodName      = "/loomcycle.v1.Loomcycle/ListReviewQueue"
+	Loomcycle_RuleStatements_FullMethodName       = "/loomcycle.v1.Loomcycle/RuleStatements"
+	Loomcycle_RevertRuling_FullMethodName         = "/loomcycle.v1.Loomcycle/RevertRuling"
+	Loomcycle_ListRulings_FullMethodName          = "/loomcycle.v1.Loomcycle/ListRulings"
 	Loomcycle_Decide_FullMethodName               = "/loomcycle.v1.Loomcycle/Decide"
 	Loomcycle_ListDecisionModels_FullMethodName   = "/loomcycle.v1.Loomcycle/ListDecisionModels"
 	Loomcycle_Health_FullMethodName               = "/loomcycle.v1.Loomcycle/Health"
@@ -377,6 +381,53 @@ type LoomcycleClient interface {
 	//
 	// Mirrors POST /v1/_ontology/subjects/principal.
 	BindSubjectPrincipal(ctx context.Context, in *BindSubjectPrincipalRequest, opts ...grpc.CallOption) (*BindSubjectPrincipalResponse, error)
+	// ListReviewQueue lists a document scope's statements awaiting review
+	// (proposed unless the filter names another status), narrowed by the queue
+	// filters, newest first; or, with summarize, their counts grouped by kind,
+	// method, the from-document's path prefix and judge verdict. Rows the
+	// caller may not read are left out. Open to an admin, a tenant operator and
+	// a member; PERMISSION_DENIED for an isolated user.
+	//
+	// Mirrors GET /v1/_statements/review.
+	ListReviewQueue(ctx context.Context, in *ListReviewQueueRequest, opts ...grpc.CallOption) (*ListReviewQueueResponse, error)
+	// RuleStatements accepts or rejects proposed statements in bulk, by ids or
+	// by the queue's filter, at most 1000 per call. A dry run (the default)
+	// returns the match count, a sample and the kind/method breakdown; the real
+	// call needs expect_count equal to the current match count
+	// (FAILED_PRECONDITION queue_changed otherwise), rules each statement as a
+	// single accept or reject would, with per-item results, and returns the
+	// ruling's id for revert. Each statement records ruled_by bulk:<ruling id>.
+	//
+	// An admin or a tenant operator (write on each from-document), or a member
+	// holding the access-control action review on the from-document's path;
+	// what the caller may not rule on is skipped and counted. A refusal carries
+	// a google.rpc.ErrorInfo whose reason is the code HTTP returns
+	// (invalid_request, forbidden, queue_changed, unavailable).
+	//
+	// Mirrors POST /v1/_statements/rule.
+	RuleStatements(ctx context.Context, in *RuleStatementsRequest, opts ...grpc.CallOption) (*RuleStatementsResponse, error)
+	// RevertRuling returns each statement a bulk ruling ruled to its status
+	// before, when nothing changed it since; a rejection's tombstone is
+	// lifted. Changed statements are reported and left (error "changed").
+	// Same authority as RuleStatements; NOT_FOUND ruling_not_found for an
+	// unknown ruling.
+	//
+	// Mirrors POST /v1/_statements/revert.
+	RevertRuling(ctx context.Context, in *RevertRulingRequest, opts ...grpc.CallOption) (*RevertRulingResponse, error)
+	// ListRulings pages a document scope's bulk rulings and their reverts,
+	// newest first (limit 20 by default, at most 100), so an undo can be found
+	// after the ruling's own answer is gone. An operator sees every ruling of
+	// the scope; a member only its own. Each names what it selected as the
+	// filter, or as a count of ids, never the ids. Same callers as
+	// ListReviewQueue.
+	//
+	// Every review RPC takes scope_id with scope "user": an admin, or a tenant
+	// operator within its own tenant, may name another subject's user scope;
+	// a member naming another, or a tenant operator naming another tenant, is
+	// PERMISSION_DENIED forbidden.
+	//
+	// Mirrors GET /v1/_statements/rulings.
+	ListRulings(ctx context.Context, in *ListRulingsRequest, opts ...grpc.CallOption) (*ListRulingsResponse, error)
 	// Decide asks a decision model typed questions (choice / noul / score)
 	// about a piece of state and returns each answer as the model gave it. It
 	// is a judgement with probabilities, not generated text, and it needs no
@@ -1070,6 +1121,46 @@ func (c *loomcycleClient) BindSubjectPrincipal(ctx context.Context, in *BindSubj
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BindSubjectPrincipalResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_BindSubjectPrincipal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ListReviewQueue(ctx context.Context, in *ListReviewQueueRequest, opts ...grpc.CallOption) (*ListReviewQueueResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListReviewQueueResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ListReviewQueue_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) RuleStatements(ctx context.Context, in *RuleStatementsRequest, opts ...grpc.CallOption) (*RuleStatementsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RuleStatementsResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_RuleStatements_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) RevertRuling(ctx context.Context, in *RevertRulingRequest, opts ...grpc.CallOption) (*RevertRulingResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RevertRulingResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_RevertRuling_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ListRulings(ctx context.Context, in *ListRulingsRequest, opts ...grpc.CallOption) (*ListRulingsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListRulingsResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ListRulings_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1839,6 +1930,53 @@ type LoomcycleServer interface {
 	//
 	// Mirrors POST /v1/_ontology/subjects/principal.
 	BindSubjectPrincipal(context.Context, *BindSubjectPrincipalRequest) (*BindSubjectPrincipalResponse, error)
+	// ListReviewQueue lists a document scope's statements awaiting review
+	// (proposed unless the filter names another status), narrowed by the queue
+	// filters, newest first; or, with summarize, their counts grouped by kind,
+	// method, the from-document's path prefix and judge verdict. Rows the
+	// caller may not read are left out. Open to an admin, a tenant operator and
+	// a member; PERMISSION_DENIED for an isolated user.
+	//
+	// Mirrors GET /v1/_statements/review.
+	ListReviewQueue(context.Context, *ListReviewQueueRequest) (*ListReviewQueueResponse, error)
+	// RuleStatements accepts or rejects proposed statements in bulk, by ids or
+	// by the queue's filter, at most 1000 per call. A dry run (the default)
+	// returns the match count, a sample and the kind/method breakdown; the real
+	// call needs expect_count equal to the current match count
+	// (FAILED_PRECONDITION queue_changed otherwise), rules each statement as a
+	// single accept or reject would, with per-item results, and returns the
+	// ruling's id for revert. Each statement records ruled_by bulk:<ruling id>.
+	//
+	// An admin or a tenant operator (write on each from-document), or a member
+	// holding the access-control action review on the from-document's path;
+	// what the caller may not rule on is skipped and counted. A refusal carries
+	// a google.rpc.ErrorInfo whose reason is the code HTTP returns
+	// (invalid_request, forbidden, queue_changed, unavailable).
+	//
+	// Mirrors POST /v1/_statements/rule.
+	RuleStatements(context.Context, *RuleStatementsRequest) (*RuleStatementsResponse, error)
+	// RevertRuling returns each statement a bulk ruling ruled to its status
+	// before, when nothing changed it since; a rejection's tombstone is
+	// lifted. Changed statements are reported and left (error "changed").
+	// Same authority as RuleStatements; NOT_FOUND ruling_not_found for an
+	// unknown ruling.
+	//
+	// Mirrors POST /v1/_statements/revert.
+	RevertRuling(context.Context, *RevertRulingRequest) (*RevertRulingResponse, error)
+	// ListRulings pages a document scope's bulk rulings and their reverts,
+	// newest first (limit 20 by default, at most 100), so an undo can be found
+	// after the ruling's own answer is gone. An operator sees every ruling of
+	// the scope; a member only its own. Each names what it selected as the
+	// filter, or as a count of ids, never the ids. Same callers as
+	// ListReviewQueue.
+	//
+	// Every review RPC takes scope_id with scope "user": an admin, or a tenant
+	// operator within its own tenant, may name another subject's user scope;
+	// a member naming another, or a tenant operator naming another tenant, is
+	// PERMISSION_DENIED forbidden.
+	//
+	// Mirrors GET /v1/_statements/rulings.
+	ListRulings(context.Context, *ListRulingsRequest) (*ListRulingsResponse, error)
 	// Decide asks a decision model typed questions (choice / noul / score)
 	// about a piece of state and returns each answer as the model gave it. It
 	// is a judgement with probabilities, not generated text, and it needs no
@@ -2270,6 +2408,18 @@ func (UnimplementedLoomcycleServer) MergeSubjects(context.Context, *MergeSubject
 }
 func (UnimplementedLoomcycleServer) BindSubjectPrincipal(context.Context, *BindSubjectPrincipalRequest) (*BindSubjectPrincipalResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BindSubjectPrincipal not implemented")
+}
+func (UnimplementedLoomcycleServer) ListReviewQueue(context.Context, *ListReviewQueueRequest) (*ListReviewQueueResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListReviewQueue not implemented")
+}
+func (UnimplementedLoomcycleServer) RuleStatements(context.Context, *RuleStatementsRequest) (*RuleStatementsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RuleStatements not implemented")
+}
+func (UnimplementedLoomcycleServer) RevertRuling(context.Context, *RevertRulingRequest) (*RevertRulingResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevertRuling not implemented")
+}
+func (UnimplementedLoomcycleServer) ListRulings(context.Context, *ListRulingsRequest) (*ListRulingsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListRulings not implemented")
 }
 func (UnimplementedLoomcycleServer) Decide(context.Context, *DecideRequest) (*DecideResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Decide not implemented")
@@ -3004,6 +3154,78 @@ func _Loomcycle_BindSubjectPrincipal_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).BindSubjectPrincipal(ctx, req.(*BindSubjectPrincipalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ListReviewQueue_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListReviewQueueRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ListReviewQueue(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ListReviewQueue_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ListReviewQueue(ctx, req.(*ListReviewQueueRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_RuleStatements_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RuleStatementsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).RuleStatements(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_RuleStatements_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).RuleStatements(ctx, req.(*RuleStatementsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_RevertRuling_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevertRulingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).RevertRuling(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_RevertRuling_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).RevertRuling(ctx, req.(*RevertRulingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ListRulings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListRulingsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ListRulings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ListRulings_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ListRulings(ctx, req.(*ListRulingsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -4023,6 +4245,22 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "BindSubjectPrincipal",
 			Handler:    _Loomcycle_BindSubjectPrincipal_Handler,
+		},
+		{
+			MethodName: "ListReviewQueue",
+			Handler:    _Loomcycle_ListReviewQueue_Handler,
+		},
+		{
+			MethodName: "RuleStatements",
+			Handler:    _Loomcycle_RuleStatements_Handler,
+		},
+		{
+			MethodName: "RevertRuling",
+			Handler:    _Loomcycle_RevertRuling_Handler,
+		},
+		{
+			MethodName: "ListRulings",
+			Handler:    _Loomcycle_ListRulings_Handler,
 		},
 		{
 			MethodName: "Decide",

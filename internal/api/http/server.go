@@ -136,6 +136,9 @@ type Server struct {
 	// tokenAudit records delegated user-token mints and revocations
 	// (SetTokenAudit); nil = not recorded.
 	tokenAudit audit.Sink
+	// reviewAudit records bulk statement rulings and their reverts
+	// (SetStatementReviewAudit); nil = logged only.
+	reviewAudit audit.Sink
 	// pwGates holds the configured password gates (RFC FA P2,
 	// SetPasswordGates); empty = no password gate.
 	pwGates passwordGatesHolder
@@ -4277,6 +4280,13 @@ func (s *Server) routes() *http.ServeMux {
 	// RFC FR P4: bind a subject to the user it stands for, or clear it. Gated and
 	// carved out as the merge is; the connector checks the caller again.
 	mux.Handle("POST /v1/_ontology/subjects/principal", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologySubjectPrincipal))))
+	// RFC FS P0: the statement review queue, bulk rulings and their undo.
+	// ScopeTenant and open to the member path; the connector decides who may
+	// rule on each statement (an operator, or a member holding `review`).
+	mux.Handle("GET /v1/_statements/review", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleStatementReviewQueue))))
+	mux.Handle("POST /v1/_statements/rule", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleStatementRule))))
+	mux.Handle("POST /v1/_statements/revert", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleStatementRevert))))
+	mux.Handle("GET /v1/_statements/rulings", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleStatementRulings))))
 	// RFC BK P3: resident interactive sub-agent visibility + operator control.
 	// GET lists (tenant-scoped); POST close/cancel act on one (tenant-gated).
 	// Per-replica (the resident registry is in-process). Scope-gated in

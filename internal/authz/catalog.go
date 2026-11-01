@@ -81,7 +81,9 @@ var catalog = []TypeSpec{
 	scopedType("sqlmem", ':', sqlScopes, "read", "write"),
 	// propose files a relation for review without changing anything live (RFC FN
 	// propose_statement), so every baseline grants it wherever it grants read.
-	scopedType("document", ':', documentScopes, "read", "write", "delete", "link", "browse", "propose"),
+	// review rules on proposed relations in bulk (RFC FS): held by grant on a
+	// path, never implied by another verb, and in no member baseline.
+	scopedType("document", ':', documentScopes, "read", "write", "delete", "link", "browse", "propose", "review"),
 	enumType("history", historyScopes, "read"),
 	globType("channel", "publish", "subscribe", "ack", "await", "broadcast", "manage"),
 	scopedType("def", '/', defFamilies, "author", "retire", "read", "manage"),

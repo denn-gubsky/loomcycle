@@ -1341,6 +1341,14 @@ func requiredScopeFor(method, path string) string {
 		path == "/v1/_ontology/proposals" || path == "/v1/_ontology/adopt" ||
 		path == "/v1/_ontology/subjects/merge" || path == "/v1/_ontology/subjects/principal":
 		return auth.ScopeTenant
+	// RFC FS: the statement review queue, bulk rulings and their undo.
+	// ScopeTenant, and NOT carved out of the member path: a member holding the
+	// ACL `review` grant on a path may rule there. Who may rule on what is the
+	// connector's question (an operator, or a member with `review` on each
+	// statement's from-document), asked of every transport alike.
+	case path == "/v1/_statements/review" || path == "/v1/_statements/rule" || path == "/v1/_statements/revert" ||
+		path == "/v1/_statements/rulings":
+		return auth.ScopeTenant
 	// RFC AS: the Web UI schedules surface (list-all + per-def state / run-now /
 	// pause / resume). list-all is tenant-scoped (the handler filters substrate
 	// schedules to the caller's tenant; operator-global static crons stay

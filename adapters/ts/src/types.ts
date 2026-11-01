@@ -2259,6 +2259,169 @@ export interface BindSubjectPrincipalResult {
   changed: boolean;
 }
 
+/** Narrows the statement review queue and selects what a bulk ruling rules
+ *  ({@link LoomcycleClient.listReviewQueue}, {@link LoomcycleClient.ruleStatements}).
+ *  Every field is optional; they combine with AND. A filter never shows more
+ *  than the caller may read. */
+export interface ReviewQueueFilter {
+  /** Statement status; default `proposed`. */
+  status?: string;
+  kind?: string;
+  kinds?: string[];
+  /** Exact, case-sensitive prefix of the method (`rule:`, `rule:citation`). */
+  method?: string;
+  /** The writer recorded on the statement: the agent for a run's write, else the user. */
+  actor?: string;
+  /** Either end in this document / under this Path. */
+  document_id?: string;
+  under_path?: string;
+  from_document_id?: string;
+  to_document_id?: string;
+  from_under_path?: string;
+  to_under_path?: string;
+  /** The writer's own confidence is at least this (0..1). */
+  min_confidence?: number;
+  /** Bounds on created_at: an RFC 3339 timestamp, or unix nanoseconds as a
+   *  decimal string (a statement's `created_at` exceeds a JS number's exact
+   *  range, so pass it as text). */
+  created_before?: string;
+  created_after?: string;
+  /** A judge's verdict is recorded (`attributes.judge`), or not / is exactly this. */
+  has_judge_verdict?: boolean;
+  judge_verdict?: string;
+  /** The method / the kind exactly as stored: no prefix match, no widening
+   *  to a kind's declared sub-kinds. */
+  method_exact?: string;
+  kind_exact?: string;
+  /** The from-document's path prefix exactly as the summary computes it
+   *  (first two segments of its first Path name in sort order). */
+  from_path_prefix?: string;
+  /** The from-document is filed under no Path name (the summary's "" prefix). */
+  from_unfiled?: boolean;
+}
+
+/** One row of the review queue's summary. */
+export interface ReviewQueueGroup {
+  kind: string;
+  method: string;
+  /** The from-document's Path name, first two segments; "" when filed nowhere. */
+  from_path_prefix: string;
+  /** `attributes.judge.verdict`; "" when none. */
+  judge_verdict: string;
+  count: number;
+  /** The filter that selects exactly this group: pass it to
+   *  {@link LoomcycleClient.ruleStatements} or `listReviewQueue` as it is. */
+  filter?: ReviewQueueFilter;
+}
+
+/** Result of {@link LoomcycleClient.listReviewQueue}. `statements` are as
+ *  `list_statements` renders them (envelope, both ends' titles and documents,
+ *  up to three evidence rows); with `summarize` it is empty and `summary` /
+ *  `total` carry the counts. */
+export interface ReviewQueueResult {
+  tenant: string;
+  scope: string;
+  statements: Array<Record<string, unknown>>;
+  truncated?: boolean;
+  next_cursor?: string;
+  summary?: ReviewQueueGroup[];
+  total?: number;
+}
+
+/** Counts of what a ruling rules, by kind and method. */
+export interface RulingBreakdown {
+  kind: string;
+  method: string;
+  count: number;
+}
+
+/** One statement's outcome in a ruling or a revert: the status it was ruled
+ *  (or reverted) to, or the refusal's code (`not_found`, `not_a_proposal`,
+ *  `statement_changed`, `failed`, `changed`) and message. */
+export interface RulingItem {
+  id: string;
+  status?: string;
+  error?: string;
+  message?: string;
+}
+
+/** Result of {@link LoomcycleClient.ruleStatements}. `matched` is what
+ *  `expect_count` must repeat; `skipped` counts statements the caller may not
+ *  rule on, never named. A dry run carries `sample` and `breakdown`; a real
+ *  call `ruling_id`, `ruled`, `failed` and `items`. */
+export interface RuleStatementsResult {
+  tenant: string;
+  scope: string;
+  action: "accept" | "reject";
+  dry_run: boolean;
+  ruling_id?: string;
+  matched: number;
+  selected: number;
+  skipped: number;
+  to_rule: number;
+  ruled: number;
+  failed: number;
+  sample?: Array<Record<string, unknown>>;
+  breakdown: RulingBreakdown[];
+  items?: RulingItem[];
+}
+
+/** Result of {@link LoomcycleClient.revertRuling}. */
+export interface RevertRulingResult {
+  tenant: string;
+  scope: string;
+  ruling_id: string;
+  action: string;
+  reverted: number;
+  /** Left because something changed them since the ruling (each in `items`
+   *  with error `changed`). */
+  changed: number;
+  skipped: number;
+  items: RulingItem[];
+  /** The revert's own record in {@link LoomcycleClient.listRulings}. */
+  revert_id?: string;
+}
+
+/** What a ruling selected: the queue filter, or how many ids it named
+ *  (never the ids); on a revert, the ruling it undid. */
+export interface RulingSelector {
+  filter?: ReviewQueueFilter;
+  ids_count?: number;
+  max?: number;
+  reverts?: string;
+}
+
+/** One bulk ruling (`accept` / `reject`) or one revert of one (`revert`:
+ *  `ruled` counts what it reverted, `failed` what had changed since). */
+export interface RulingRecord {
+  id: string;
+  action: string;
+  ruled_by: string;
+  /** The subject that made the call. */
+  actor?: string;
+  reason?: string;
+  selector: RulingSelector;
+  matched: number;
+  ruled: number;
+  failed: number;
+  skipped: number;
+  /** Unix nanoseconds; beyond a JS number's exact range, so compare loosely. */
+  created_at: number;
+  reverted: boolean;
+  reverted_at?: number;
+  /** The id of the (latest) revert, itself a record of the listing. */
+  reverted_by?: string;
+}
+
+/** Result of {@link LoomcycleClient.listRulings}: newest first. An operator
+ *  sees every ruling of the scope; a member only its own. */
+export interface ListRulingsResult {
+  tenant: string;
+  scope: string;
+  rulings: RulingRecord[];
+  next_cursor?: string;
+}
+
 export interface CompactRunResult {
   run_id: string;
   compacted: boolean;

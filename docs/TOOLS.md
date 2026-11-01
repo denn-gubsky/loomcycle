@@ -118,6 +118,7 @@ When the caller is bound to access-control rules (`LOOMCYCLE_ACL`, see [CONFIGUR
 | `write` | `create_document`, `import_md`, `import_canvas` (the name the new document is about to get), `create_chunk`, `update_chunk`, `move_chunk` (both parents), `reorder_chunk`, `set_path` (the document and the new name), `add_tags`, `remove_tags`, `define_type`, `set_asset`, `judge_fact`, `supersede_chunk`, `set_remote`, `sync` |
 | `delete` | `delete_document`, `delete_chunk` |
 | `link` | `link_chunks`, `unlink_chunks` (both ends) |
+| `review` | not a tool op: a member's bulk ruling on proposed relations and its revert (`POST /v1/_statements/rule` / `revert` and their twins), asked of each statement's from-document; held only by a rule naming it ([DOCUMENTS.md](DOCUMENTS.md#reviewing-proposals-in-bulk)) |
 
 An op that reaches a scope's documents without naming them first — `list_facts`, `graph_recall`, `verbatim_answer`, `verification_stats`, `query_chunks`, `backlinks`, `related`, `unlinked_mentions` (read); `upsert_chunk`, `remember` (write); `propose_entity`, `propose_subject` (write, tenant scope) — asks about every document of the scope at once, so it is refused when any rule denies part of the scope or carries a condition only a document can answer. `across_scopes` also asks `read` of the other scopes it reads. `query_documents`, `documents_summary` and `search` leave out the documents the caller may not read instead of refusing (a listing is a search). An op the table does not know asks every verb of the whole scope.
 

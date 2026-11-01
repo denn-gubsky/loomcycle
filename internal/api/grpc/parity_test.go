@@ -573,3 +573,19 @@ func (m *parityMock) MergeSubjects(context.Context, connector.MergeSubjectsReque
 func (m *parityMock) BindSubjectPrincipal(context.Context, connector.BindSubjectPrincipalRequest) (connector.BindSubjectPrincipalResult, error) {
 	return connector.BindSubjectPrincipalResult{}, nil
 }
+
+func (m *parityMock) ListReviewQueue(context.Context, connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {
+	return connector.ListReviewQueueResult{}, nil
+}
+
+func (m *parityMock) RuleStatements(context.Context, connector.RuleStatementsRequest) (connector.RuleStatementsResult, error) {
+	return connector.RuleStatementsResult{}, nil
+}
+
+func (m *parityMock) RevertRuling(context.Context, connector.RevertRulingRequest) (connector.RevertRulingResult, error) {
+	return connector.RevertRulingResult{}, nil
+}
+
+func (m *parityMock) ListRulings(context.Context, connector.ListRulingsRequest) (connector.ListRulingsResult, error) {
+	return connector.ListRulingsResult{}, nil
+}

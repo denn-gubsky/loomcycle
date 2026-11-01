@@ -161,6 +161,19 @@ The low-level primitives (`runStreaming({interactive:true})` + `sendRunInput` + 
 
 Both need a tenant operator or admin token; `tenant` is an admin's focus.
 
+### Statement review
+
+| Method | Returns | Notes |
+|---|---|---|
+| `listReviewQueue({ filter?, summarize?, limit?, after?, order?, scope?, scopeId?, tenant? })` | `Promise<ReviewQueueResult>` | The scope's proposed relations, narrowed by `filter` (`method` prefix, `kind(s)`, `actor`, `from_/to_document_id`, `from_/to_under_path`, `min_confidence`, `created_before/after`, `has_judge_verdict`, `judge_verdict`), newest first; `summarize: true` returns counts by kind × method × from-path prefix × judge verdict instead (`GET /v1/_statements/review`). |
+| `ruleStatements(action, { ids } \| { filter }, { reason?, dryRun?, expectCount?, max?, scope?, scopeId?, tenant? })` | `Promise<RuleStatementsResult>` | Accept or reject up to 1000 statements at once (`POST /v1/_statements/rule`). A dry run unless `dryRun: false`; the real call needs `expectCount` = the dry run's `matched` (`queue_changed` otherwise). `reason` is required to reject. Each statement records `ruled_by: bulk:<ruling_id>`. |
+| `revertRuling(rulingId, { scope?, scopeId?, tenant? })` | `Promise<RevertRulingResult>` | Undo a bulk ruling where nothing changed the statements since (`POST /v1/_statements/revert`); changed ones are listed and left. Returns `revert_id`. |
+| `listRulings({ limit?, after?, scope?, scopeId?, tenant? })` | `Promise<ListRulingsResult>` | The scope's bulk rulings and reverts, newest first (`GET /v1/_statements/rulings`; limit 20 by default, at most 100): action, who, reason, counts, the selector (filter, or an ids count — never the ids), and `reverted` / `reverted_by`. An operator sees all, a member its own. |
+
+The filter also takes the exact selectors `method_exact`, `kind_exact`, `from_path_prefix` and `from_unfiled`, and each summary group carries the `filter` that selects exactly it. Every method takes `scopeId` with `scope: "user"`: an admin or a tenant operator may name another subject of its tenant, a member only itself.
+
+An admin, a tenant operator, or a member holding the access-control action `review` on the statements' from-documents may rule; what the caller may not rule on is skipped and counted. Pass `created_before` / `created_after` as text (RFC 3339, or unix nanoseconds as a decimal string): a nanosecond `created_at` does not fit a JS number. Refusals throw with `code`: `invalid_request`, `forbidden`, `queue_changed`, `ruling_not_found`, `unavailable`.
+
 ### Pause / Resume / State (v0.8.17 / v0.8.18)
 
 | Method | Returns | Notes |

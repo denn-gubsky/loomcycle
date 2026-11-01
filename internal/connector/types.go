@@ -2,6 +2,8 @@ package connector
 
 import (
 	"encoding/json"
+	"errors"
+	"strconv"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -1352,4 +1354,284 @@ type BindSubjectPrincipalResult struct {
 	Principal   string `json:"principal"`
 	Previous    string `json:"previous,omitempty"`
 	Changed     bool   `json:"changed"`
+}
+
+// ReviewQueueFilter narrows the review queue (ListReviewQueue) and selects
+// what a bulk ruling rules (RuleStatementsRequest.Filter). Every field is
+// optional and they combine with AND; the zero value is every proposal of the
+// scope. A filter never shows more than the caller may read.
+type ReviewQueueFilter struct {
+	// Status is the statement status to list; "" = proposed.
+	Status string `json:"status,omitempty"`
+	// Kind / Kinds: the relation kinds (their union).
+	Kind  string   `json:"kind,omitempty"`
+	Kinds []string `json:"kinds,omitempty"`
+	// Method is an exact, case-sensitive prefix of the statement's method
+	// (rule: or rule:citation).
+	Method string `json:"method,omitempty"`
+	// Actor is the writer recorded on the statement: the agent's name for a
+	// run's write, else the user id.
+	Actor string `json:"actor,omitempty"`
+	// DocumentID / UnderPath: either end in the document, or in a document
+	// named at or under the Path.
+	DocumentID string `json:"document_id,omitempty"`
+	UnderPath  string `json:"under_path,omitempty"`
+	// The same per end.
+	FromDocumentID string `json:"from_document_id,omitempty"`
+	ToDocumentID   string `json:"to_document_id,omitempty"`
+	FromUnderPath  string `json:"from_under_path,omitempty"`
+	ToUnderPath    string `json:"to_under_path,omitempty"`
+	// MinConfidence keeps statements whose writer's confidence is at least
+	// this (0..1); one with none is left out.
+	MinConfidence *float64 `json:"min_confidence,omitempty"`
+	// CreatedBefore / CreatedAfter bound created_at, in unix nanoseconds.
+	CreatedBefore *int64 `json:"created_before,omitempty"`
+	CreatedAfter  *int64 `json:"created_after,omitempty"`
+	// HasJudgeVerdict / JudgeVerdict select on attributes.judge.verdict, a
+	// judge's recorded verdict (accept, reject, unsure).
+	HasJudgeVerdict *bool  `json:"has_judge_verdict,omitempty"`
+	JudgeVerdict    string `json:"judge_verdict,omitempty"`
+	// MethodExact / KindExact: the method / the kind exactly as stored — no
+	// prefix match, and no widening to a kind's declared sub-kinds.
+	MethodExact string `json:"method_exact,omitempty"`
+	KindExact   string `json:"kind_exact,omitempty"`
+	// FromPathPrefix: the from-document's path prefix exactly, computed as the
+	// summary computes it (the first two segments of the document's first
+	// Path name in sort order). FromUnfiled: the from-document is filed under
+	// no Path name, or is gone (the summary's empty prefix). A summary group's
+	// Filter uses them, so it selects exactly the group.
+	FromPathPrefix string `json:"from_path_prefix,omitempty"`
+	FromUnfiled    bool   `json:"from_unfiled,omitempty"`
+}
+
+// ListReviewQueueRequest asks for one page of the review queue, or its
+// grouped counts.
+//
+// Scope is the document scope: tenant (the default) or user (the caller's
+// own). Tenant is whose: only an admin may name one; for anyone else it is the
+// caller's own.
+type ListReviewQueueRequest struct {
+	Tenant string `json:"tenant,omitempty"`
+	Scope  string `json:"scope,omitempty"`
+	// ScopeID names whose user scope (scope user only): an admin, or a
+	// tenant operator within its own tenant, may name another subject; a
+	// member only itself. "" is the caller's own.
+	ScopeID   string            `json:"scope_id,omitempty"`
+	Filter    ReviewQueueFilter `json:"filter"`
+	Summarize bool              `json:"summarize,omitempty"`
+	// Limit (default 500, at most 5000), After (a NextCursor) and Order
+	// (created, the default, newest first; or verified) page the rows.
+	Limit int    `json:"limit,omitempty"`
+	After string `json:"after,omitempty"`
+	Order string `json:"order,omitempty"`
+}
+
+// ReviewQueueGroup is one row of the queue's summary.
+type ReviewQueueGroup struct {
+	Kind   string `json:"kind"`
+	Method string `json:"method"`
+	// FromPathPrefix is the first two segments of the from-document's Path
+	// name (/board/regulatory-external); "" for a document filed nowhere.
+	FromPathPrefix string `json:"from_path_prefix"`
+	// JudgeVerdict is attributes.judge.verdict; "" when none was recorded.
+	JudgeVerdict string `json:"judge_verdict"`
+	Count        int    `json:"count"`
+	// Filter selects exactly this group's statements: the queue's filter the
+	// summary was asked with, narrowed by the group's kind_exact, method_exact,
+	// from_path_prefix (or from_unfiled) and judge verdict (or
+	// has_judge_verdict false). Pass it to a bulk ruling as it is.
+	Filter *ReviewQueueFilter `json:"filter,omitempty"`
+}
+
+// ListReviewQueueResult is one page of the queue: each statement as
+// list_statements renders it (its envelope, both ends' titles and documents,
+// up to three evidence rows). With Summarize, Statements is empty and Summary
+// and Total carry the counts.
+type ListReviewQueueResult struct {
+	Tenant     string             `json:"tenant"`
+	Scope      string             `json:"scope"`
+	Statements []json.RawMessage  `json:"statements"`
+	Truncated  bool               `json:"truncated,omitempty"`
+	NextCursor string             `json:"next_cursor,omitempty"`
+	Summary    []ReviewQueueGroup `json:"summary,omitempty"`
+	Total      int                `json:"total,omitempty"`
+}
+
+// MarshalJSON writes summary and total whenever the page is a summary (Summary
+// non-nil), zeros included: an empty queue's summary is {summary: [], total: 0},
+// not a page with neither, which reads as rows that were not summarized.
+func (r ListReviewQueueResult) MarshalJSON() ([]byte, error) {
+	type plain ListReviewQueueResult
+	if r.Summary == nil {
+		return json.Marshal(plain(r))
+	}
+	return json.Marshal(struct {
+		plain
+		Summary []ReviewQueueGroup `json:"summary"`
+		Total   int                `json:"total"`
+	}{plain(r), r.Summary, r.Total})
+}
+
+// RuleStatementsRequest is one bulk ruling. Name the statements by IDs or by
+// Filter (the queue's), not both.
+//
+// DryRun defaults to true: nil is a dry run. A real call needs ExpectCount,
+// the Matched count of the dry run it follows. Max bounds how many one call
+// rules (default and ceiling 1000); a match larger than Max rules the first
+// Max in the queue's order (newest first), and the rest stay for the next call.
+// Reason is required for reject.
+type RuleStatementsRequest struct {
+	Tenant      string             `json:"tenant,omitempty"`
+	Scope       string             `json:"scope,omitempty"`
+	ScopeID     string             `json:"scope_id,omitempty"` // as ListReviewQueueRequest.ScopeID
+	Action      string             `json:"action"`
+	IDs         []string           `json:"ids,omitempty"`
+	Filter      *ReviewQueueFilter `json:"filter,omitempty"`
+	Reason      string             `json:"reason,omitempty"`
+	DryRun      *bool              `json:"dry_run,omitempty"`
+	ExpectCount *int               `json:"expect_count,omitempty"`
+	Max         int                `json:"max,omitempty"`
+}
+
+// RulingBreakdown counts what a ruling rules by kind and method.
+type RulingBreakdown struct {
+	Kind   string `json:"kind"`
+	Method string `json:"method"`
+	Count  int    `json:"count"`
+}
+
+// RulingItem is one statement's outcome: the status it was ruled to, or the
+// refusal's code (not_found, not_a_proposal, statement_changed, failed) and
+// message. Statements the caller may not rule on never appear.
+type RulingItem struct {
+	ID      string `json:"id"`
+	Status  string `json:"status,omitempty"`
+	Error   string `json:"error,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// RuleStatementsResult reports a bulk ruling, dry or real.
+//
+// Matched is every statement the ids or the filter select that the caller may
+// read: the number ExpectCount must repeat. Selected is the part of it this
+// call considers (at most Max), Skipped those of it the caller may not rule on
+// (counted, never named), ToRule the rest. A dry run carries a Sample (up to
+// 20 statements, as the queue renders them) and the Breakdown of ToRule; a
+// real call carries RulingID, Ruled, Failed, Items and the Breakdown of what
+// it ruled.
+type RuleStatementsResult struct {
+	Tenant    string            `json:"tenant"`
+	Scope     string            `json:"scope"`
+	Action    string            `json:"action"`
+	DryRun    bool              `json:"dry_run"`
+	RulingID  string            `json:"ruling_id,omitempty"`
+	Matched   int               `json:"matched"`
+	Selected  int               `json:"selected"`
+	Skipped   int               `json:"skipped"`
+	ToRule    int               `json:"to_rule"`
+	Ruled     int               `json:"ruled"`
+	Failed    int               `json:"failed"`
+	Sample    []json.RawMessage `json:"sample,omitempty"`
+	Breakdown []RulingBreakdown `json:"breakdown"`
+	Items     []RulingItem      `json:"items,omitempty"`
+}
+
+// RevertRulingRequest undoes one bulk ruling, named by the RulingID its
+// RuleStatements call returned.
+type RevertRulingRequest struct {
+	Tenant   string `json:"tenant,omitempty"`
+	Scope    string `json:"scope,omitempty"`
+	ScopeID  string `json:"scope_id,omitempty"` // as ListReviewQueueRequest.ScopeID
+	RulingID string `json:"ruling_id"`
+}
+
+// ListRulingsRequest asks for one page of a document scope's bulk rulings,
+// newest first. Limit is the page size (default 20, at most 100); After is the
+// NextCursor of the previous page. ScopeID names whose user scope (scope user)
+// as ListReviewQueueRequest.ScopeID does.
+type ListRulingsRequest struct {
+	Tenant  string `json:"tenant,omitempty"`
+	Scope   string `json:"scope,omitempty"`
+	ScopeID string `json:"scope_id,omitempty"`
+	Limit   int    `json:"limit,omitempty"`
+	After   string `json:"after,omitempty"`
+}
+
+// RulingSelector is what a ruling selected: the queue filter, or how many
+// statement ids it named (never the ids: a ruling's statements are not listed
+// here). Max is the ruling's max, when one was passed. Reverts, on a revert,
+// is the ruling it undid.
+type RulingSelector struct {
+	Filter   *ReviewQueueFilter `json:"filter,omitempty"`
+	IDsCount int                `json:"ids_count,omitempty"`
+	Max      int                `json:"max,omitempty"`
+	Reverts  string             `json:"reverts,omitempty"`
+}
+
+// RulingRecord is one bulk ruling, or one revert of one, as the scope
+// recorded it.
+//
+// Action is accept or reject for a ruling, revert for a revert. RuledBy is
+// who ruled (operator:<subject>), Actor the subject that made the call.
+// Matched, Ruled, Failed and Skipped are the ruling's counts; on a revert,
+// Ruled counts the statements it reverted, Failed those changed since and
+// left. Reverted marks a ruling undone since: RevertedAt when and RevertedBy
+// the id of the (latest) revert, itself a record of this listing.
+type RulingRecord struct {
+	ID         string         `json:"id"`
+	Action     string         `json:"action"`
+	RuledBy    string         `json:"ruled_by"`
+	Actor      string         `json:"actor,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
+	Selector   RulingSelector `json:"selector"`
+	Matched    int            `json:"matched"`
+	Ruled      int            `json:"ruled"`
+	Failed     int            `json:"failed"`
+	Skipped    int            `json:"skipped"`
+	CreatedAt  int64          `json:"created_at"`
+	Reverted   bool           `json:"reverted"`
+	RevertedAt int64          `json:"reverted_at,omitempty"`
+	RevertedBy string         `json:"reverted_by,omitempty"`
+}
+
+// ListRulingsResult is one page of a scope's rulings, newest first. An
+// operator sees every ruling of the scope; a member only the ones it made.
+type ListRulingsResult struct {
+	Tenant     string         `json:"tenant"`
+	Scope      string         `json:"scope"`
+	Rulings    []RulingRecord `json:"rulings"`
+	NextCursor string         `json:"next_cursor,omitempty"`
+}
+
+// RevertRulingResult reports a revert. Reverted statements went back to the
+// status they had before the ruling; Changed ones were left because something
+// changed them since (each in Items with error "changed"); Skipped ones the
+// caller may not rule on (counted, never named).
+type RevertRulingResult struct {
+	Tenant   string       `json:"tenant"`
+	Scope    string       `json:"scope"`
+	RulingID string       `json:"ruling_id"`
+	Action   string       `json:"action"`
+	Reverted int          `json:"reverted"`
+	Changed  int          `json:"changed"`
+	Skipped  int          `json:"skipped"`
+	Items    []RulingItem `json:"items"`
+	// RevertID is the revert's own record (ListRulings, action revert); ""
+	// when it could not be recorded.
+	RevertID string `json:"revert_id,omitempty"`
+}
+
+// ParseReviewInstant reads a review queue time bound given as text: unix
+// nanoseconds (what a statement's created_at reads) or an RFC 3339 timestamp.
+// The text transports (the HTTP query, the MCP tool) share it, so both take the
+// same forms.
+func ParseReviewInstant(v string) (int64, error) {
+	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return n, nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, v)
+	if err != nil {
+		return 0, errors.New("want unix nanoseconds or an RFC 3339 timestamp")
+	}
+	return t.UnixNano(), nil
 }

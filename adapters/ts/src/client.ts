@@ -69,6 +69,11 @@ import type {
   ErasureReport,
   ErasureResult,
   MergeSubjectsResult,
+  ReviewQueueFilter,
+  ReviewQueueResult,
+  RuleStatementsResult,
+  RevertRulingResult,
+  ListRulingsResult,
   BindSubjectPrincipalResult,
   Agent,
   AgentEvent,
@@ -1069,6 +1074,132 @@ export class LoomcycleClient {
       { subject, principal },
       opts,
     );
+  }
+
+  /**
+   * The statement review queue: a scope's proposed relations (or another
+   * `filter.status`), narrowed by `filter`, newest first, or with
+   * `summarize: true` their counts by kind, method, from-path prefix and
+   * judge verdict. Rows the caller may not read are left out. Mirrors
+   * GET /v1/_statements/review. `scope` is `tenant` (default) or `user`;
+   * `tenant` is honored only for an admin token. With `scope: "user"`,
+   * `scopeId` names whose user documents: an admin or a tenant operator may
+   * name another subject of its tenant, a member only itself. Each summary
+   * group carries `filter`, which selects exactly that group.
+   */
+  async listReviewQueue(opts?: {
+    filter?: ReviewQueueFilter;
+    summarize?: boolean;
+    limit?: number;
+    after?: string;
+    order?: "created" | "verified";
+    scope?: "tenant" | "user";
+    scopeId?: string;
+    tenant?: string;
+    signal?: AbortSignal;
+  }): Promise<ReviewQueueResult> {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(opts?.filter ?? {})) {
+      if (v === undefined) continue;
+      if (Array.isArray(v)) params.set(k, v.join(","));
+      else params.set(k, String(v));
+    }
+    if (opts?.summarize) params.set("summarize", "true");
+    if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts?.after) params.set("after", opts.after);
+    if (opts?.order) params.set("order", opts.order);
+    if (opts?.scope) params.set("scope", opts.scope);
+    if (opts?.scopeId) params.set("scope_id", opts.scopeId);
+    if (opts?.tenant !== undefined) params.set("tenant", opts.tenant);
+    const q = params.toString() ? `?${params.toString()}` : "";
+    return jsonFetch<ReviewQueueResult>(this.ctx, `/v1/_statements/review${q}`, opts);
+  }
+
+  /**
+   * Accept or reject proposed statements in bulk, named by `ids` or by the
+   * queue's `filter`, at most 1000 per call (`max`). A DRY RUN unless
+   * `dryRun: false`: it returns `matched`, a sample of 20 and the kind/method
+   * breakdown. To rule, call again with `dryRun: false` and `expectCount` set
+   * to the dry run's `matched`; a queue that changed in between is refused
+   * (`queue_changed`) and nothing is ruled. `reason` is required to reject.
+   * Each statement is ruled as `accept_statement` / `reject_statement` would,
+   * with a result per statement, and records `ruled_by: bulk:<ruling_id>`.
+   * Mirrors POST /v1/_statements/rule.
+   *
+   * For an admin or a tenant operator (write on each from-document), or a
+   * member holding the access-control action `review` on the from-document's
+   * path; what the caller may not rule on is skipped and counted. A refusal
+   * throws with the server's code: `invalid_request`, `forbidden`,
+   * `queue_changed`, `unavailable`.
+   */
+  async ruleStatements(
+    action: "accept" | "reject",
+    select: { ids: string[] } | { filter: ReviewQueueFilter },
+    opts?: {
+      reason?: string;
+      dryRun?: boolean;
+      expectCount?: number;
+      max?: number;
+      scope?: "tenant" | "user";
+      scopeId?: string;
+      tenant?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<RuleStatementsResult> {
+    const body: Record<string, unknown> = { action, ...select };
+    if (opts?.reason !== undefined) body.reason = opts.reason;
+    if (opts?.dryRun !== undefined) body.dry_run = opts.dryRun;
+    if (opts?.expectCount !== undefined) body.expect_count = opts.expectCount;
+    if (opts?.max !== undefined) body.max = opts.max;
+    if (opts?.scope !== undefined) body.scope = opts.scope;
+    if (opts?.scopeId !== undefined) body.scope_id = opts.scopeId;
+    if (opts?.tenant !== undefined) body.tenant = opts.tenant;
+    return postJSON<RuleStatementsResult>(this.ctx, "/v1/_statements/rule", body, opts);
+  }
+
+  /**
+   * Undo a bulk ruling: each statement it ruled goes back to its status
+   * before, if nothing changed it since (no new evidence, no maintenance, no
+   * later ruling); a rejected one is no longer refused when proposed again.
+   * Changed ones are listed and left. Same authority as
+   * {@link ruleStatements}. Mirrors POST /v1/_statements/revert; an unknown
+   * ruling throws `ruling_not_found`.
+   */
+  async revertRuling(
+    rulingId: string,
+    opts?: { scope?: "tenant" | "user"; scopeId?: string; tenant?: string; signal?: AbortSignal },
+  ): Promise<RevertRulingResult> {
+    const body: Record<string, unknown> = { ruling_id: rulingId };
+    if (opts?.scope !== undefined) body.scope = opts.scope;
+    if (opts?.scopeId !== undefined) body.scope_id = opts.scopeId;
+    if (opts?.tenant !== undefined) body.tenant = opts.tenant;
+    return postJSON<RevertRulingResult>(this.ctx, "/v1/_statements/revert", body, opts);
+  }
+
+  /**
+   * The scope's bulk rulings and their reverts, newest first (`limit`
+   * default 20, at most 100; `after` = the previous page's `next_cursor`),
+   * so an undo can be found after the ruling's own answer is gone. An
+   * operator sees every ruling, a member only its own; each names what it
+   * selected as the filter or a count of ids, never the ids. Mirrors
+   * GET /v1/_statements/rulings.
+   */
+  async listRulings(opts?: {
+    limit?: number;
+    after?: string;
+    scope?: "tenant" | "user";
+    scopeId?: string;
+    tenant?: string;
+    signal?: AbortSignal;
+  }): Promise<ListRulingsResult> {
+    const params = new URLSearchParams();
+    if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts?.after) params.set("after", opts.after);
+    if (opts?.scope) params.set("scope", opts.scope);
+    if (opts?.scopeId) params.set("scope_id", opts.scopeId);
+    if (opts?.tenant !== undefined) params.set("tenant", opts.tenant);
+    const q = params.toString() ? `?${params.toString()}` : "";
+    return jsonFetch<ListRulingsResult>(this.ctx, `/v1/_statements/rulings${q}`, opts);
   }
 
   async compactRun(

@@ -755,6 +755,16 @@ type mockConnector struct {
 	mergeRes connector.MergeSubjectsResult
 	mergeErr error
 
+	reviewQueueReq connector.ListReviewQueueRequest
+	reviewQueueRes connector.ListReviewQueueResult
+	ruleReq        connector.RuleStatementsRequest
+	ruleRes        connector.RuleStatementsResult
+	revertReq      connector.RevertRulingRequest
+	revertRes      connector.RevertRulingResult
+	rulingsReq     connector.ListRulingsRequest
+	rulingsRes     connector.ListRulingsResult
+	reviewErr      error
+
 	bindReq connector.BindSubjectPrincipalRequest
 	bindRes connector.BindSubjectPrincipalResult
 	bindErr error
@@ -1303,4 +1313,26 @@ func (m *mockConnector) MergeSubjects(_ context.Context, req connector.MergeSubj
 func (m *mockConnector) BindSubjectPrincipal(_ context.Context, req connector.BindSubjectPrincipalRequest) (connector.BindSubjectPrincipalResult, error) {
 	m.bindReq = req
 	return m.bindRes, m.bindErr
+}
+
+// ListReviewQueue, RuleStatements and RevertRuling record the request and answer
+// with the configured result (connector.Connector).
+func (m *mockConnector) ListReviewQueue(_ context.Context, req connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {
+	m.reviewQueueReq = req
+	return m.reviewQueueRes, m.reviewErr
+}
+
+func (m *mockConnector) RuleStatements(_ context.Context, req connector.RuleStatementsRequest) (connector.RuleStatementsResult, error) {
+	m.ruleReq = req
+	return m.ruleRes, m.reviewErr
+}
+
+func (m *mockConnector) RevertRuling(_ context.Context, req connector.RevertRulingRequest) (connector.RevertRulingResult, error) {
+	m.revertReq = req
+	return m.revertRes, m.reviewErr
+}
+
+func (m *mockConnector) ListRulings(_ context.Context, req connector.ListRulingsRequest) (connector.ListRulingsResult, error) {
+	m.rulingsReq = req
+	return m.rulingsRes, m.reviewErr
 }
