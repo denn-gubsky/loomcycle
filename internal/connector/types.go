@@ -1566,6 +1566,20 @@ type RulingSelector struct {
 	IDsCount int                `json:"ids_count,omitempty"`
 	Max      int                `json:"max,omitempty"`
 	Reverts  string             `json:"reverts,omitempty"`
+	// Policy is a review policy's ruling: as its proposals were filed (one
+	// per run, with RunID) or applied over the queue (action policy).
+	Policy *RulingPolicy `json:"policy,omitempty"`
+}
+
+// RulingPolicy names the review policy a ruling applied: the ontology
+// version it was read at, where it came from (review: the ontology's Review
+// section; auto_assert: the policy @auto_assert implies; empty for a ruling
+// made as proposals were filed, which only a Review section does) and, for a
+// ruling made as a run filed its proposals, that run.
+type RulingPolicy struct {
+	Version int    `json:"version"`
+	Source  string `json:"source,omitempty"`
+	RunID   string `json:"run_id,omitempty"`
 }
 
 // RulingRecord is one bulk ruling, or one revert of one, as the scope

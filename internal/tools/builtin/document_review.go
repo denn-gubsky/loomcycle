@@ -951,16 +951,17 @@ const (
 )
 
 // rulingSelectorOf reads a ruling's stored selector for the listing: the ids
-// only as a count.
+// only as a count, and a review policy's ruling with the policy it applied.
 func rulingSelectorOf(text string) connector.RulingSelector {
 	var sel struct {
 		IDs     []string                     `json:"ids"`
 		Filter  *connector.ReviewQueueFilter `json:"filter"`
 		Max     int                          `json:"max"`
 		Reverts string                       `json:"reverts"`
+		Policy  *connector.RulingPolicy      `json:"policy"`
 	}
 	_ = json.Unmarshal([]byte(text), &sel)
-	return connector.RulingSelector{Filter: sel.Filter, IDsCount: len(sel.IDs), Max: sel.Max, Reverts: sel.Reverts}
+	return connector.RulingSelector{Filter: sel.Filter, IDsCount: len(sel.IDs), Max: sel.Max, Reverts: sel.Reverts, Policy: sel.Policy}
 }
 
 // rulingCursor is ListRulings' paging position: the last row's

@@ -254,7 +254,7 @@ func (d *Document) filingRuling(ctx context.Context, key sqlmem.ScopeKey, pf pol
 	err := d.exec(ctx, key, `INSERT INTO statement_rulings
 		(id, action, ruled_by, actor, reason, selector, matched, ruled, failed, skipped, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?)`,
-		id, action, "policy@"+strconv.Itoa(pf.version), nullIfEmpty(tools.RunIdentity(ctx).UserID),
+		id, action, "policy@"+strconv.Itoa(pf.version), nullIfEmpty(rulingActor(ctx)),
 		"the review policy, as each proposal was filed", string(selector), time.Now().UnixNano())
 	if err != nil {
 		// Another proposal of this run made it first.
@@ -535,7 +535,7 @@ func (d *Document) applyPolicyRulings(ctx context.Context, key sqlmem.ScopeKey, 
 	if err := d.exec(ctx, key, `INSERT INTO statement_rulings
 		(id, action, ruled_by, actor, reason, selector, matched, ruled, failed, skipped, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
-		rulingID, "policy", operatorRuler(ctx), nullIfEmpty(tools.RunIdentity(ctx).UserID),
+		rulingID, "policy", operatorRuler(ctx), nullIfEmpty(rulingActor(ctx)),
 		fmt.Sprintf("the review policy (ontology version %d)", pf.version), string(selector), out.Matched, out.Skipped,
 		time.Now().UnixNano()); err != nil {
 		return err

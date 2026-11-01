@@ -654,3 +654,42 @@ func TestReviewPolicy_ACorrectionIsNeverRuled(t *testing.T) {
 		t.Errorf("a correction = %v %s, want proposed and unruled", out, res.Text)
 	}
 }
+
+// A policy's rulings show in the rulings listing with the policy they applied:
+// the run's filing ruling (its action, the run, the ontology version) and an
+// application over the queue (action policy, its source and counts), each
+// recorded as made by the ruling actor.
+func TestListRulings_ShowsThePolicysRulings(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	f, _ := queueBeforePolicy(t, d, base, reviewOntologyMD)
+	// Filed again under the confirmed policy, the queued repeals is accepted.
+	filed := f.citation("repeals")
+	if filed["status"] != edgeStatusAsserted {
+		t.Fatalf("filed = %v", filed)
+	}
+	op := WithRulingActor(f.op, "ops")
+	no, five := false, 5
+	applied, err := d.ApplyReviewPolicy(op, "tenant", connector.ApplyReviewPolicyRequest{DryRun: &no, ExpectCount: &five}, RuleAsOperator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := d.ListRulings(op, "tenant", connector.ListRulingsRequest{}, RuleAsOperator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]connector.RulingRecord{}
+	for _, r := range list.Rulings {
+		byID[r.ID] = r
+	}
+	pf, _ := d.reviewPolicyInForce(f.op)
+	fr, ok := byID[filed["ruling_id"].(string)]
+	if !ok || fr.Action != "accept" || fr.Selector.Policy == nil || fr.Selector.Policy.RunID != "run-linker" ||
+		fr.Selector.Policy.Version != pf.version || fr.Matched != 1 || fr.Ruled != 1 || fr.RuledBy != fmt.Sprintf("policy@%d", pf.version) {
+		t.Errorf("the filing ruling = %+v (policy %+v)", fr, fr.Selector.Policy)
+	}
+	ar, ok := byID[applied.RulingID]
+	if !ok || ar.Action != "policy" || ar.Actor != "ops" || ar.Selector.Policy == nil || ar.Selector.Policy.Source != "review" ||
+		ar.Selector.Policy.Version != pf.version || ar.Ruled != applied.Ruled || ar.Matched != 5 {
+		t.Errorf("the application = %+v (policy %+v)", ar, ar.Selector.Policy)
+	}
+}
