@@ -108,6 +108,9 @@ var docACLOps = map[string]docACLRule{
 	"accept_statement":   {verb: "link", target: docACLStatement},
 	"reject_statement":   {verb: "link", target: docACLStatement},
 	"list_statements":    {verb: "read", target: docACLListing, filter: docListStatements},
+	// judge_statements names many statements: it asks read of each one's ends
+	// itself, and to rule, what an operator's ruling asks (write and link).
+	"judge_statements": {verb: "read", target: docACLListing},
 	// maintain_statement: the statement's ends, a merge survivor's, and the
 	// chunk an evidence row is relocated to.
 	"maintain_statement": {verb: "propose", target: docACLMaintain},

@@ -828,6 +828,9 @@ func (d *Document) RevertRuling(ctx context.Context, scope string, req connector
 	ruledBy := "bulk:" + req.RulingID
 	if isPolicyRuling(asStr(res.Rows[0][1])) {
 		ruledBy = ""
+	} else if run := judgeRulingRun(asStr(res.Rows[0][1])); out.Action == rulingActionJudge && run != "" {
+		// A judge run's statements each record judge:<run>.
+		ruledBy = "judge:" + run
 	}
 	items, err := d.query(ctx, key, `SELECT edge_id, prior, fingerprint FROM statement_ruling_items WHERE ruling_id = ? ORDER BY edge_id`, req.RulingID)
 	if err != nil {

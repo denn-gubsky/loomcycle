@@ -4194,6 +4194,7 @@ export type DocumentToolInput = {
     | "accept_statement"
     | "reject_statement"
     | "list_statements"
+    | "judge_statements"
     | "maintain_statement"
     | "resolve_anchor"
     | "lease"
@@ -4429,8 +4430,17 @@ export type DocumentToolInput = {
   /** lease: how long to hold it, in milliseconds (default 60000, max one hour). */
   ttl_ms?: number;
   /** classify: "propose" (default) applies an unambiguous rule match and files the
-   *  rest for review; "report" writes nothing. */
-  write?: "propose" | "report";
+   *  rest for review; "report" writes nothing. judge_statements: "rule"
+   *  (default) or "recommend". */
+  write?: "propose" | "report" | "rule" | "recommend";
+  /** judge_statements (a judge agent's run only): the verdicts to record. */
+  judgements?: Array<{
+    id: string;
+    verdict: "accept" | "reject" | "unsure";
+    confidence: number;
+    rationale: string;
+    verdict_run_id?: string;
+  }>;
   /** export_md: embed round-trippable chunk metadata + edges as HTML comments
    *  (default true server-side). false = clean human-facing Markdown. */
   include_metadata?: boolean;
