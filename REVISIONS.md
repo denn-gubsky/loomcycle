@@ -10,9 +10,9 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 ## What's in v1.133.0
 
-*Proposed relations can be reviewed in bulk (RFC FS Phases 0–2): a filtered, summarized review queue, dry-run-first bulk rulings with one audit record and one undo each, a new access-control action `review`, a Review page in the Web UI, and review policies, rules in the tenant ontology that rule proposals as they are filed. The Document tool's help gains a `knowledge-base` guide.*
+*Proposed relations can be reviewed in bulk (RFC FS Phases 0–3): a filtered, summarized review queue, dry-run-first bulk rulings with one audit record and one undo each, a new access-control action `review`, a Review page in the Web UI, review policies, rules in the tenant ontology that rule proposals as they are filed, and a judge agent that rules on the proposals a policy routes to it, with a sampled human audit. The Document tool's help gains a `knowledge-base` guide.*
 
-The v1.133 line: #2327 to #2332.
+The v1.133 line: #2327 to #2334.
 - `@loomcycle/client` and the Python adapter move to 1.133.0, with the review methods.
 - No repo migration. Each SQL Memory scope gains a `chunk_edges.ruled_by` column and the `statement_rulings` / `statement_ruling_items` tables on first use.
 - **Behaviour changes:**
@@ -41,6 +41,14 @@ The v1.133 line: #2327 to #2332.
 - **At filing** (`propose_statement`, `classify`) an accept or reject is ruled with `ruled_by: policy:<rule>@<ontology version>`, one ruling per run that `revert_ruling` undoes. A policy rejection is a verdict, not a tombstone: a later proposal of the relation is evaluated again. An operator's rejection still refuses it.
 - **On demand:** `POST /v1/_statements/apply_policy` (gRPC `ApplyReviewPolicy`, MCP `review` op `apply_policy`, TS `applyReviewPolicy()`, Python `apply_review_policy()`) applies the policy to the waiting queue: dry run first, at most 1,000 rulings per call as one undoable ruling, operators only, audited as `statement_policy_ruling`.
 - Without a Review section, `@auto_assert` works as before.
+
+### The judge (#2334)
+
+- **`kb/judge`** (knowledge-base bundle, code-js) reads the proposals a policy routes to the judge (`judge kind:… floor:…`), shows a tenant-model verdict agent `kb/judge-verdict` (tier `middle`) each one with its evidence read back from the cited chunks as untrusted data, and records the verdicts through the new Document op **`judge_statements`**.
+- The op, not the agent, decides what a verdict may do. It rules only on a proposal the policy routes to the judge now, at or above the rule's floor (`floor:`, else the section's `judge_floor`, default 0.85), where the run may rule as an operator would. Below the floor, unsure, or in `recommend` mode the verdict is recorded on `attributes.judge` and the proposal waits for a person. Each statement is judged once; each run is one ruling that `revert_ruling` undoes.
+- Only an agent whose definition lists `judge` in `statement_methods` (code-js only) may call it. A judge rejection is a verdict, not a tombstone.
+- **Sampled audit:** each run marks a share of its acceptances `attributes.judge.audited: pending` (`judge_audit` in the Review section, default 0.1, at least one per run; `0` is refused). A person confirms with an accept or overturns with a reject.
+- The queue gains the filters `review_route` and `judge_audit` on every transport, and `ListRulings` names a judge run's ruling.
 
 ### Document help and prompts (#2329, #2330)
 

@@ -204,8 +204,9 @@ remain the main direction.
 The most recent line (v1.133.0) makes proposed relations reviewable in bulk:
 a filtered, summarized review queue, dry-run-first bulk rulings with one audit
 record and one undo each, a `review` access action, a Review page in the Web UI,
-and review policies in the tenant ontology that rule proposals as they are
-filed. The Document help gains a `knowledge-base` guide. See
+review policies in the tenant ontology that rule proposals as they are filed,
+and a judge agent for the proposals a policy routes to it, with a sampled human
+audit. The Document help gains a `knowledge-base` guide. See
 [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.132.0 let the `knowledge-base` links agent drain tenant-scope
