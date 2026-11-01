@@ -47,14 +47,41 @@ export type {
 export type { DocLocation } from "./lib/docTrail";
 
 // Connection → client factory (the default data-source path).
-export { createLoomcycleClient, assetFetchFromConnection } from "./lib/createClient";
-export type { Connection, AssetFetch } from "./lib/createClient";
+export { createLoomcycleClient, assetFetchFromConnection, jsonPostFromConnection, RequestError } from "./lib/createClient";
+export type { Connection, AssetFetch, JsonPost } from "./lib/createClient";
 
 // The data-layer seam: inject a custom implementation, or build one from a
 // @loomcycle/client instance.
 export { dataLayerFromClient } from "./lib/dataLayer";
-export type { ExplorerDataLayer, ChunkPatch, DocEdgesPage, PathLsPage, PathLsResult } from "./lib/dataLayer";
+export type {
+  ExplorerDataLayer,
+  ChunkPatch,
+  DocEdgesPage,
+  PathLsPage,
+  PathLsResult,
+  DocRulingFilter,
+  DocRulingAnswer,
+  DocRevertAnswer,
+} from "./lib/dataLayer";
 export { loadDocumentEdges, EDGE_PAGE_CAP } from "./lib/edgePages";
+
+// RFC FS — a bulk ruling on proposed statements, run as every surface runs it
+// (dry run first, expect_count, chunks of 1000), and its undo.
+export { runRuling, undoRulings, isQueueChanged, chunkCount, RULING_CHUNK, QUEUE_CHANGED_RETRIES } from "./lib/ruling";
+export type {
+  RulingAction,
+  RulingScope,
+  RulingItem,
+  RulingRequest,
+  RulingCounts,
+  RulingApi,
+  RulingSelection,
+  ConfirmReason,
+  RulingProgress,
+  RulingOutcome,
+  RulingHooks,
+  UndoOutcome,
+} from "./lib/ruling";
 
 // RFC BN per-document color schemes: the metadata shapes the data layer produces
 // (documents_summary / get_document) + the palette resolvers, for a host that

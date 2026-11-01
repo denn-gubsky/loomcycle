@@ -1,6 +1,11 @@
 import { useMemo, type ReactNode } from "react";
 import type { LoomcycleClient } from "@loomcycle/client";
-import { createLoomcycleClient, assetFetchFromConnection, type Connection } from "../lib/createClient";
+import {
+  createLoomcycleClient,
+  assetFetchFromConnection,
+  jsonPostFromConnection,
+  type Connection,
+} from "../lib/createClient";
 import {
   ExplorerDataProvider,
   dataLayerFromClient,
@@ -33,6 +38,7 @@ export function useResolvedDataLayer(src: ExplorerDataSource): ExplorerDataLayer
       return dataLayerFromClient(
         createLoomcycleClient(connection),
         assetFetchFromConnection(connection), // RFC BO — binary image-asset GET
+        jsonPostFromConnection(connection), // RFC FS — the review routes
       );
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps

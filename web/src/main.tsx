@@ -17,6 +17,7 @@ import MemoryView from "./pages/MemoryView";
 import InterruptInbox from "./pages/InterruptInbox";
 import SnapshotsView from "./pages/SnapshotsView";
 import AuditView from "./pages/AuditView";
+import ReviewView from "./pages/ReviewView";
 import AccessView from "./pages/AccessView";
 import ActivityMonitor from "./pages/ActivityMonitor";
 import LibraryView from "./pages/LibraryView";
@@ -109,6 +110,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="documents" element={<PathTreeView />} />
           <Route path="paths" element={<Navigate to="/documents" replace />} />
           <Route path="documents/:documentId" element={<DocumentsView />} />
+          <Route path="review" element={<ReviewView />} />
           <Route path="channels" element={<ChannelsView />} />
           <Route path="schedules" element={<SchedulesView />} />
           <Route path="memory" element={<MemoryView />} />

@@ -7,7 +7,9 @@ import type {
   UnlinkedMention,
 } from "../types";
 import { useExplorerData } from "../lib/dataLayer";
+import type { ReviewPanel } from "../lib/bulkReview";
 import ChunkTarget from "./ChunkTarget";
+import ProposalReview from "./ProposalReview";
 import { StatementMeta } from "./Statement";
 
 // Connections is the RFC BS per-chunk connection surface, a collapsible companion
@@ -21,6 +23,12 @@ import { StatementMeta } from "./Statement";
 // Every target is clickable: a same-document one selects in place (onSelectChunk),
 // a cross-document one (↗) opens that document at the chunk (onOpenDocument) —
 // the same rule CrossReferences uses, through the same ChunkTarget.
+//
+// With `review` (RFC FS), the panel also lists the document's own proposals —
+// whichever chunk is selected — with row selection and bulk Accept / Reject.
+// The host passes it only when its data layer can rule in bulk.
+export type ConnectionsReview = ReviewPanel;
+
 export interface ConnectionsProps {
   documentId: string;
   selectedId?: string;
@@ -31,6 +39,7 @@ export interface ConnectionsProps {
   // Bumped by the host when the document's edges changed (an operator ruled on a
   // proposal) so an open panel refetches its backlinks.
   refreshKey?: number;
+  review?: ConnectionsReview;
 }
 
 const RELATED_LIMIT = 8;
@@ -51,6 +60,7 @@ export default function Connections({
   onSelectChunk,
   onOpenDocument,
   refreshKey,
+  review,
 }: ConnectionsProps) {
   const data = useExplorerData();
   const [open, setOpen] = useState(false);
@@ -128,6 +138,18 @@ export default function Connections({
       </button>
       {open && (
         <div className="doc-conn-body">
+          {review && (
+            <ProposalReview
+              documentId={documentId}
+              proposals={review.proposals}
+              incomplete={review.incomplete}
+              scope={review.scope}
+              browse={browse}
+              onChanged={review.onChanged}
+              onSelectChunk={onSelectChunk}
+              onOpenDocument={onOpenDocument}
+            />
+          )}
           {!selectedId ? (
             <p className="doc-conn-empty">Select a chunk.</p>
           ) : !ready ? (

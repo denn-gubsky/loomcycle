@@ -14,6 +14,7 @@ import { loadDocumentEdges } from "../lib/edgePages";
 import { landingChunk, type DocLocation } from "../lib/docTrail";
 import { chunkAncestors } from "../lib/chunkAncestry";
 import { isSubjectRoot } from "../lib/subjectType";
+import { bulkReviewScope, documentProposals, reviewPanel } from "../lib/bulkReview";
 import {
   docColor,
   effectiveScheme,
@@ -315,6 +316,17 @@ export default function DocumentViewerBody({
       setEdgesReload((n) => n + 1);
     };
   }, [data, scope, browse]);
+
+  // RFC FS — bulk review of this document's proposals in the Connections panel:
+  // offered when the data layer can rule in bulk and the review routes reach
+  // this document's scope (reviewPanel).
+  const reviewScope = useMemo(() => bulkReviewScope(data, scope), [data, scope]);
+  const proposals = useMemo(() => documentProposals(edges, documentId), [edges, documentId]);
+  const onReviewChanged = useCallback(() => setEdgesReload((n) => n + 1), []);
+  const review = useMemo(
+    () => reviewPanel(reviewScope, proposals, edgesIncomplete, onReviewChanged),
+    [reviewScope, proposals, edgesIncomplete, onReviewChanged],
+  );
 
   // Reset selection + view when the document changes.
   useEffect(() => {
@@ -980,6 +992,7 @@ export default function DocumentViewerBody({
                   onSelectChunk={setSelectedId}
                   onOpenDocument={onOpenDocument ? openDocument : undefined}
                   refreshKey={edgesReload}
+                  review={review}
                 />
               </>
             ) : (
