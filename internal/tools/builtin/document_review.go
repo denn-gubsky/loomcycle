@@ -152,12 +152,14 @@ func (d *Document) reviewSelection(ctx context.Context, key sqlmem.ScopeKey, in 
 // judgeVerdictExpr reads attributes.judge.verdict on alias e: NULL when the
 // statement carries none. attributes is JSON text on both tiers; SQLite's
 // json_extract fails on text that is not JSON, so it is asked only of text that
-// is, and a stored "" is no verdict on postgres.
+// is, and a stored "" is no verdict on postgres. A verdict recorded as "" is
+// none too (NULLIF): the summary groups it with the statements carrying none,
+// so has_judge_verdict=false must select it, on either tier.
 func (d *Document) judgeVerdictExpr() string {
 	if d.docSQL().Tier() == "postgres" {
-		return `(CASE WHEN e.attributes IS NULL OR e.attributes = '' THEN NULL ELSE (e.attributes::jsonb -> 'judge' ->> 'verdict') END)`
+		return `NULLIF((CASE WHEN e.attributes IS NULL OR e.attributes = '' THEN NULL ELSE (e.attributes::jsonb -> 'judge' ->> 'verdict') END), '')`
 	}
-	return `(CASE WHEN json_valid(e.attributes) THEN json_extract(e.attributes, '$.judge.verdict') END)`
+	return `NULLIF((CASE WHEN json_valid(e.attributes) THEN json_extract(e.attributes, '$.judge.verdict') END), '')`
 }
 
 // summarizeStatements is list_statements with summarize: the queue's counts
