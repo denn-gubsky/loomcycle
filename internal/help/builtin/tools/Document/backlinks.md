@@ -21,8 +21,8 @@ document, use `get_edges`.
 - `include_proposed` — also list relations proposed for review (default false).
 - `include_refuted` / `include_retired` — also list rejected or refuted / retired
   relations, which are withheld by default.
-- `limit` — at most this many, default 50, capped at 200. `after` — the
-  `next_cursor` of the previous page.
+- `limit` — at most this many, default 50, capped at 200.
+- `after` — the `next_cursor` of the previous page.
 - `scope` — `user` (default), `agent` or `tenant`. See
   `{"op":"help","topic":"scopes"}`.
 

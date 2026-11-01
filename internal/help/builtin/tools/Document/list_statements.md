@@ -52,9 +52,9 @@ much is waiting and where, before you page through any of it.
   Returns). The filters apply; `after`, `limit` and `order` are ignored.
 - `order` — `created` (default): newest first. `verified`: least recently
   verified first, the never-verified ones before any.
-- `limit` — page size (default 500). `after` — the `next_cursor` of the
-  previous page, with the same `order`; a cursor from the other order is
-  refused.
+- `limit` — page size (default 500).
+- `after` — the `next_cursor` of the previous page, with the same `order`; a
+  cursor from the other order is refused.
 - `scope` — `user` (default), `agent` or `tenant`.
 
 Filters combine: a relation is listed only when it passes every one given. A
