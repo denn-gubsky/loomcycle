@@ -172,7 +172,8 @@ func (d *Document) reviewSelection(ctx context.Context, key sqlmem.ScopeKey, in 
 // filed under two names belongs to the prefix of its first name in sort
 // order only, and from_unfiled is the group with no prefix — a from-document
 // filed nowhere, or a from-chunk that is gone. Unfiled is spelled as "not one
-// of the filed documents", so a document with no name needs no listing.
+// of the filed documents the caller may read", so a document with no name
+// needs no listing.
 func (d *Document) fromPathPrefixSelection(ctx context.Context, key sqlmem.ScopeKey, in docInput, where []string, args []any, readable func(string) (bool, error)) ([]string, []any, bool, *tools.Result, error) {
 	refuse := func(msg, fix string) ([]string, []any, bool, *tools.Result, error) {
 		r := errValidation("list_statements: "+msg, fix)
@@ -188,25 +189,27 @@ func (d *Document) fromPathPrefixSelection(ctx context.Context, key sqlmem.Scope
 	if err != nil {
 		return nil, nil, false, nil, err
 	}
+	// Only documents the caller may read are listed, for unfiled too: a
+	// statement from one it may not read is withheld by the selection's own
+	// access filter either way, and a list (or a refusal) that counted them
+	// would tell the caller how many it cannot see.
 	var docs []string
 	for doc, n := range names {
-		switch p := pathPrefix(n); {
-		case p == "":
-		case in.FromUnfiled:
+		p := pathPrefix(n)
+		if p == "" || (!in.FromUnfiled && p != in.FromPathPrefix) {
+			continue
+		}
+		ok, err := readable(doc)
+		if err != nil {
+			return nil, nil, false, nil, err
+		}
+		if ok {
 			docs = append(docs, doc)
-		case p == in.FromPathPrefix:
-			ok, err := readable(doc)
-			if err != nil {
-				return nil, nil, false, nil, err
-			}
-			if ok {
-				docs = append(docs, doc)
-			}
 		}
 	}
 	sort.Strings(docs)
 	if len(docs) > listStatementsMaxDocs || len(args)+len(docs) > reviewBindMax {
-		return refuse(fmt.Sprintf("the from-document path filter names %d documents, more than this call binds", len(docs)),
+		return refuse("the from-document path filter names more documents than one call binds",
 			"Narrow the selection by from_document_id or from_under_path.")
 	}
 	bound := make([]any, len(docs))

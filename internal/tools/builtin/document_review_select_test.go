@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 )
 
@@ -263,5 +265,48 @@ func TestListReviewQueue_KindExactIsNotWidenedToSubKinds(t *testing.T) {
 	}
 	if len(sum.Summary) != 2 {
 		t.Errorf("summary = %+v, want a group per kind", sum.Summary)
+	}
+}
+
+// The exact path selectors list only documents the caller may read: documents
+// it may not read — however many — change neither the rows it selects nor
+// whether it is answered, so the answer tells it nothing of them.
+func TestListReviewQueue_PathSelectorsIgnoreDocumentsTheCallerMayNotRead(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	seedSelectCorpus(t, d, base)
+	reader := reviewOperatorCtx(base, aclSet(t,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/secret/**"}}))
+	filters := []connector.ReviewQueueFilter{{FromUnfiled: true}, {FromPathPrefix: "/board/reg"}, {FromPathPrefix: "/secret/h"}}
+	answer := func() []string {
+		var out []string
+		for _, f := range filters {
+			res, err := d.ListReviewQueue(reader, "tenant", connector.ListReviewQueueRequest{Filter: f, Limit: 5000})
+			ids := []string{}
+			for _, raw := range res.Statements {
+				var s struct {
+					ID string `json:"id"`
+				}
+				_ = json.Unmarshal(raw, &s)
+				ids = append(ids, s.ID)
+			}
+			sort.Strings(ids)
+			out = append(out, fmt.Sprintf("%+v: %v %v", f, ids, err))
+		}
+		return out
+	}
+	before := answer()
+	// More hidden filed documents than one call binds.
+	key, _, err := d.resolveScope(reader, "tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i <= listStatementsMaxDocs; i++ {
+		if _, err := d.registerDocDirent(reader, key, fmt.Sprintf("%032x", i), fmt.Sprintf("/secret/h/d%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := answer(); fmt.Sprint(after) != fmt.Sprint(before) {
+		t.Errorf("hidden documents changed the answer:\n before %v\n after  %v", before, after)
 	}
 }
