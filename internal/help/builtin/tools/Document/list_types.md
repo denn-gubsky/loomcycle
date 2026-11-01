@@ -19,8 +19,10 @@ It lists definitions only. To find which types chunks actually carry, use
 
 ## Returns
 
-`{types: [{name, document_id, fields}]}`, sorted by name. `document_id` is
-`""` for scope-wide types.
+`{types: [{name, document_id, fields}], reserved: [...]}`, sorted by name.
+`document_id` is `""` for scope-wide types. `reserved` lists the structural
+types the runtime itself gives chunks (`root`, `section`, `image`, `mermaid`,
+`canvas`); they are never classes of the ontology.
 
 ## Errors
 

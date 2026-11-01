@@ -96,6 +96,13 @@ concepts, steps, statements?, warnings?}`:
 {"op": "classify", "document_id": "b4407b522dc11495d3de371311db17f0", "scope": "tenant"}
 ```
 
+Ask what a document would be classified as, without writing anything — by
+path, before deciding whether to classify it for real:
+
+```json
+{"op": "classify", "path": "/inbox/2026/nbu-resolution-153", "write": "report", "scope": "tenant"}
+```
+
 ```json result
 {"document_id": "b4407b522dc11495d3de371311db17f0", "write": "propose", "result": "classified", "class": "Law", "live": true, "work_key": "law:2297-vi", "fields": {"number": "2297-VI"}, "issued_by": [{"instance": "Verkhovna Rada", "quote": "Верховна Рада", "subject_chunk_id": "7d1e2f3a4b5c4d6e8f9a0b1c2d3e4f5a"}], "concepts": [], "steps": [{"step": "rules", "candidates": [{"class": "Law", "quote": "Закон України № 2297-VI", "from": "title", "groups": {"number": "2297-VI"}}], "chosen": "Law"}, {"step": "vote", "candidates": [], "reason": "no neighbouring document is classified yet"}], "statements": [{"id": "5e6f7a8b9c0d4e1f2a3b4c5d6e7f8a9b", "status": "asserted", "created": true, "evidence_written": 0, "ontology_valid": true}]}
 ```

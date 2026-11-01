@@ -22,6 +22,12 @@ facts already point at.
 - `body` — evidence for the operator, at most 4000 bytes.
 - `scope` — see above.
 
+When an operator adopts it, the tenant gains a subject document at
+`/facts/<path>` whose root chunk carries your `natural_key`, `type` (the key's
+prefix) and `subject`, and an `adopted` event is published on the tenant's
+`memory/subjects` channel. Adoption shares what is learned from then on; facts
+already filed in a user or agent scope stay there.
+
 ## Returns
 
 `{proposed, chunk_id, natural_key, note}`. If this subject was already
