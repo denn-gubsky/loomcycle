@@ -13,33 +13,38 @@ much is waiting and where, before you page through any of it.
 
 - `status` — `proposed` (default), `asserted` or `rejected`. One status per call.
 - `kind` / `kinds` — only these relation kinds, each widened to the kinds the
-  ontology declares beneath it. `kind_exact` — only exactly this kind, never
-  widened.
+  ontology declares beneath it.
+- `kind_exact` — only exactly this kind, never widened to narrower kinds.
 - `document_id` — only relations with either end in this document.
-  `from_document_id` / `to_document_id` — only relations whose FROM (or TO) end
-  is in this document.
+- `from_document_id` — only relations whose FROM end is in this document.
+- `to_document_id` — only relations whose TO end is in this document.
 - `evidence_document_id` — only relations with an evidence row quoting a chunk
   of this document.
 - `method_prefix` — only relations whose method starts with exactly this text,
   e.g. `rule:` or `extractor:cite`. Case-sensitive; `_` and `%` are ordinary
-  characters. `method_exact` — only this exact method: `rule:cite` does not
-  match `rule:citation`.
+  characters.
+- `method_exact` — only this exact method: `rule:cite` does not match
+  `rule:citation`.
 - `actor` — only relations written by this actor: the agent that wrote it in a
   run, else the user.
 - `under_path` — only relations with either end in a document named at or under
-  this Path-tree path. `from_under_path` / `to_under_path` — the same, for the
-  FROM (or TO) end only.
+  this Path-tree path.
+- `from_under_path` — the same, for the FROM end only.
+- `to_under_path` — the same, for the TO end only.
 - `from_path_prefix` — only relations whose FROM document's path prefix is
   exactly this, as `summarize` groups them: the first two segments of the
   document's first Path name in sort order (e.g. `/board/regulatory-external`).
-  `from_unfiled: true` — only relations whose FROM document has no Path name.
+- `from_unfiled` — `true` keeps only relations whose FROM document has no Path
+  name.
 - `min_confidence` — only relations whose writer's own confidence is at least
   this (0..1); one with no confidence is left out.
-- `created_before` / `created_after` — only relations created before (or after)
-  this instant, in unix nanoseconds as `created_at` reads.
+- `created_before` — only relations created before this instant, in unix
+  nanoseconds as `created_at` reads.
+- `created_after` — only relations created after this instant.
 - `judge_verdict` — only relations whose recorded judge verdict is exactly this
-  (`accept`, `reject` or `unsure`). `has_judge_verdict` — `true` keeps only
-  relations a judge recorded a verdict on, `false` only those with none.
+  (`accept`, `reject` or `unsure`).
+- `has_judge_verdict` — `true` keeps only relations a judge recorded a verdict
+  on, `false` only those with none.
 - `include_retired` — also list relations that have expired or whose
   `invalid_at` has passed. Off by default. A relation dated to take effect
   later is listed either way.
