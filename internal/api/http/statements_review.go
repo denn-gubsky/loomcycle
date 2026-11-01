@@ -2,8 +2,9 @@ package http
 
 // statements_review.go — the statement review queue, bulk rulings and their
 // undo (RFC FS P0): GET /v1/_statements/review, POST /v1/_statements/rule,
-// POST /v1/_statements/revert and GET /v1/_statements/rulings, and the shared
-// connector methods every transport's review goes through.
+// POST /v1/_statements/revert and GET /v1/_statements/rulings; and the review
+// policy applied over the queue (RFC FS P2): POST /v1/_statements/apply_policy.
+// With the shared connector methods every transport's review goes through.
 //
 // The queue and the rulings live in the Document (builtin.ListReviewQueue,
 // RuleStatements, RevertRuling). What lives here is who may review, as whom,
@@ -228,6 +229,39 @@ func (s *Server) handleStatementRulings(w http.ResponseWriter, r *http.Request) 
 		req.Limit = n
 	}
 	res, err := s.ListRulings(r.Context(), req)
+	if err != nil {
+		writeStatementReviewError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// handleStatementApplyPolicy serves POST /v1/_statements/apply_policy; the
+// body is connector.ApplyReviewPolicyRequest, its filter's time bounds taken as
+// for a ruling. An admin may focus another tenant with ?tenant=.
+func (s *Server) handleStatementApplyPolicy(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		connector.ApplyReviewPolicyRequest
+		Filter *ruleBodyFilter `json:"filter,omitempty"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, statementRuleBodyMax)).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_body",
+			`expected {"filter": {...}, "dry_run", "expect_count", "max"}`)
+		return
+	}
+	req := body.ApplyReviewPolicyRequest
+	if body.Filter != nil {
+		f, err := body.Filter.resolve()
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		req.Filter = &f
+	}
+	if req.Tenant == "" {
+		req.Tenant = r.URL.Query().Get("tenant")
+	}
+	res, err := s.ApplyReviewPolicy(r.Context(), req)
 	if err != nil {
 		writeStatementReviewError(w, err)
 		return
@@ -461,6 +495,46 @@ func (s *Server) RevertRuling(ctx context.Context, req connector.RevertRulingReq
 		ev.RulingScopeID = reviewScopeID(dctx, scope)
 		ev.RulingAction = res.Action
 		ev.RulingCounts = map[string]int{"reverted": res.Reverted, "changed": res.Changed, "skipped": res.Skipped}
+		s.recordReview(ctx, ev)
+	}
+	return res, err
+}
+
+// ApplyReviewPolicy implements connector.Connector. Only an operator applies
+// the policy: a member is refused even holding `review`, since the policy is
+// the operator's decision and applying it rules across the whole queue.
+func (s *Server) ApplyReviewPolicy(ctx context.Context, req connector.ApplyReviewPolicyRequest) (connector.ApplyReviewPolicyResult, error) {
+	as, p, err := reviewer(ctx)
+	if err == nil && as != builtin.RuleAsOperator {
+		err = connector.WithMessage(connector.ErrStatementReviewForbidden,
+			"applying the review policy is for an admin or a tenant operator; a reviewer rules with rule_statements")
+	}
+	if err != nil {
+		return connector.ApplyReviewPolicyResult{}, err
+	}
+	scope, err := reviewScope(req.Scope)
+	if err != nil {
+		return connector.ApplyReviewPolicyResult{}, err
+	}
+	if s.store == nil || s.sqlMem == nil {
+		return connector.ApplyReviewPolicyResult{}, connector.WithMessage(connector.ErrStatementReviewUnavailable,
+			"applying the review policy needs SQL Memory; none is configured")
+	}
+	dctx, tenant, err := s.reviewCtx(ctx, as, req.Tenant, scope, req.ScopeID)
+	if err != nil {
+		return connector.ApplyReviewPolicyResult{}, err
+	}
+	res, err := s.ontologyDocument().ApplyReviewPolicy(dctx, scope, req, as)
+	res.Tenant = tenant
+	if err == nil && !res.DryRun {
+		ev := s.reviewEvent(p, "statement_policy_ruling", tenant, scope, res.RulingID)
+		ev.RulingScopeID = reviewScopeID(dctx, scope)
+		ev.RulingAction = "policy"
+		if req.Filter != nil {
+			ev.RulingFilter, _ = json.Marshal(req.Filter)
+		}
+		ev.RulingCounts = map[string]int{"version": res.Version, "matched": res.Matched, "skipped": res.Skipped, "ruled": res.Ruled,
+			"failed": res.Failed, "deferred": res.Deferred, "marked": res.Marked}
 		s.recordReview(ctx, ev)
 	}
 	return res, err

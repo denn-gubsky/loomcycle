@@ -113,7 +113,7 @@ func TestStatementReview_MembersReachTheConnector(t *testing.T) {
 	as := func(scopes []string, r auth.Restrictions) context.Context {
 		return auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "s", Scopes: scopes, Restrictions: r})
 	}
-	for _, rpc := range []string{"ListReviewQueue", "RuleStatements", "RevertRuling", "ListRulings"} {
+	for _, rpc := range []string{"ListReviewQueue", "RuleStatements", "RevertRuling", "ListRulings", "ApplyReviewPolicy"} {
 		method := grpcMethodPrefix + rpc
 		if got := requiredScopeForRPC(method); got != auth.ScopeTenant {
 			t.Fatalf("%s: required scope = %q, want %q", rpc, got, auth.ScopeTenant)
@@ -194,5 +194,70 @@ func TestStatementReview_RulingsSelectorsAndScopeIDCrossTheWire(t *testing.T) {
 		ruling.GetSelector().GetMax() != 50 || ruling.GetFailed() != 1 || ruling.GetSkipped() != 4 || !ruling.GetReverted() ||
 		ruling.GetRevertedAt() != 9 || ruling.GetRevertedBy() != "v1" || ruling.GetActor() != "ops" || ruling.GetRuledBy() != "operator:ops" {
 		t.Errorf("ruling record = %+v", ruling)
+	}
+}
+
+// ApplyReviewPolicy hands its request to the connector — no filter on the wire
+// is no filter, and no dry_run a dry run — and renders the result field for
+// field; a refusal carries the shared code.
+func TestStatementReview_ApplyReviewPolicyDelegatesToTheConnector(t *testing.T) {
+	mc := &mockConnector{applyRes: connector.ApplyReviewPolicyResult{Tenant: "acme", Scope: "tenant", DryRun: false, Source: "review", Version: 7,
+		RulingID: "r9", Matched: 6, Skipped: 1, Accept: 2, Reject: 1, Judge: 1, Human: 1, ToRule: 2, Deferred: 1, Ruled: 2, Marked: 1,
+		Rules:  []connector.PolicyRuleCount{{Rule: 1, Action: "accept", Text: "accept kind:cites", Count: 2}, {Rule: 0, Action: "human", Count: 1}},
+		Sample: []jsonBytes{[]byte(`{"id":"s1","review_rule":1}`)}, Items: []connector.RulingItem{{ID: "s1", Status: "asserted"}}}}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+	ctx := context.Background()
+	if _, err := client.ApplyReviewPolicy(ctx, &loomcyclepb.ApplyReviewPolicyRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if mc.applyReq.Filter != nil || mc.applyReq.DryRun != nil || mc.applyReq.ExpectCount != nil {
+		t.Errorf("a bare call reached the connector as %+v", mc.applyReq)
+	}
+	dry, expect := false, int32(6)
+	r, err := client.ApplyReviewPolicy(ctx, &loomcyclepb.ApplyReviewPolicyRequest{Tenant: "globex", Scope: "user", ScopeId: "u1",
+		Filter: &loomcyclepb.ReviewQueueFilter{Kind: "cites"}, DryRun: &dry, ExpectCount: &expect, Max: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mc.applyReq; got.Tenant != "globex" || got.Scope != "user" || got.ScopeID != "u1" || got.Filter == nil || got.Filter.Kind != "cites" || got.DryRun == nil || *got.DryRun ||
+		got.ExpectCount == nil || *got.ExpectCount != 6 || got.Max != 2 {
+		t.Errorf("connector got %+v", got)
+	}
+	if r.GetRulingId() != "r9" || r.GetSource() != "review" || r.GetVersion() != 7 || r.GetMatched() != 6 || r.GetSkipped() != 1 ||
+		r.GetAccept() != 2 || r.GetReject() != 1 || r.GetJudge() != 1 || r.GetHuman() != 1 || r.GetToRule() != 2 || r.GetDeferred() != 1 ||
+		r.GetRuled() != 2 || r.GetMarked() != 1 || len(r.GetRules()) != 2 || r.GetRules()[0].GetText() != "accept kind:cites" ||
+		len(r.GetSampleJson()) != 1 || r.GetItems()[0].GetStatus() != "asserted" {
+		t.Errorf("response = %+v", r)
+	}
+	mc.reviewErr = connector.WithMessage(connector.ErrStatementReviewForbidden, "operators only")
+	_, err = client.ApplyReviewPolicy(ctx, &loomcyclepb.ApplyReviewPolicyRequest{})
+	if st := status.Convert(err); st.Code() != codes.PermissionDenied {
+		t.Errorf("a refusal = %v", err)
+	}
+}
+
+// A review policy's ruling lists with the policy it applied.
+func TestStatementReview_APolicyRulingListsItsPolicy(t *testing.T) {
+	mc := &mockConnector{rulingsRes: connector.ListRulingsResult{Rulings: []connector.RulingRecord{
+		{ID: "p1", Action: "policy", Selector: connector.RulingSelector{Policy: &connector.RulingPolicy{Version: 14, Source: "review"}}},
+		{ID: "p2", Action: "accept", Selector: connector.RulingSelector{Policy: &connector.RulingPolicy{Version: 14, RunID: "run-1"}}},
+		{ID: "b1", Action: "accept"},
+	}}}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+	resp, err := client.ListRulings(context.Background(), &loomcyclepb.ListRulingsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := resp.GetRulings()
+	if p := r[0].GetSelector().GetPolicy(); p.GetVersion() != 14 || p.GetSource() != "review" || p.GetRunId() != "" {
+		t.Errorf("the application's policy = %+v", p)
+	}
+	if p := r[1].GetSelector().GetPolicy(); p.GetVersion() != 14 || p.GetRunId() != "run-1" {
+		t.Errorf("the filing ruling's policy = %+v", p)
+	}
+	if r[2].GetSelector().GetPolicy() != nil {
+		t.Errorf("a bulk ruling carries a policy: %+v", r[2].GetSelector())
 	}
 }

@@ -798,3 +798,7 @@ func (m *httpMockConnector) RevertRuling(context.Context, connector.RevertRuling
 func (m *httpMockConnector) ListRulings(context.Context, connector.ListRulingsRequest) (connector.ListRulingsResult, error) {
 	return connector.ListRulingsResult{}, nil
 }
+
+func (m *httpMockConnector) ApplyReviewPolicy(context.Context, connector.ApplyReviewPolicyRequest) (connector.ApplyReviewPolicyResult, error) {
+	return connector.ApplyReviewPolicyResult{}, nil
+}

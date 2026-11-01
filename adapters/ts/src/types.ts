@@ -2389,6 +2389,10 @@ export interface RulingSelector {
   ids_count?: number;
   max?: number;
   reverts?: string;
+  /** Set on a review policy's ruling: the ontology version it was read at,
+   *  its source (`review` / `auto_assert`; absent for a ruling made as a
+   *  run's proposals were filed) and that run. */
+  policy?: { version: number; source?: string; run_id?: string };
 }
 
 /** One bulk ruling (`accept` / `reject`) or one revert of one (`revert`:
@@ -2420,6 +2424,48 @@ export interface ListRulingsResult {
   scope: string;
   rulings: RulingRecord[];
   next_cursor?: string;
+}
+
+/** How many proposals one rule of the review policy decided; rule 0 is none
+ *  matched (and corrections, which the policy never rules): they wait for a
+ *  person. */
+export interface PolicyRuleCount {
+  rule: number;
+  action: "accept" | "reject" | "judge" | "human";
+  text?: string;
+  count: number;
+}
+
+/** Result of {@link LoomcycleClient.applyReviewPolicy}. `source` is where the
+ *  policy comes from (`review`: the ontology's Review section; `auto_assert`:
+ *  the one `@auto_assert` implies) and `version` the ontology version it was
+ *  read at. `matched` is what `expect_count` must repeat; `skipped` counts
+ *  proposals the caller may not rule on. `to_rule` is the accepts and rejects
+ *  this call rules, `deferred` those left for the next call; `marked` the
+ *  proposals whose judge routing it changed. A dry run carries `sample` (each
+ *  with `review_rule` and `review_action`); a real call `ruling_id`, `ruled`,
+ *  `failed` and `items`. */
+export interface ApplyReviewPolicyResult {
+  tenant: string;
+  scope: string;
+  dry_run: boolean;
+  source: "review" | "auto_assert";
+  version: number;
+  ruling_id?: string;
+  matched: number;
+  skipped: number;
+  accept: number;
+  reject: number;
+  judge: number;
+  human: number;
+  to_rule: number;
+  deferred: number;
+  ruled: number;
+  failed: number;
+  marked: number;
+  rules: PolicyRuleCount[];
+  sample?: Array<Record<string, unknown>>;
+  items?: RulingItem[];
 }
 
 export interface CompactRunResult {

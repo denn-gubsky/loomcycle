@@ -249,6 +249,23 @@ type Connector interface {
 	// is refused (forbidden).
 	ListRulings(ctx context.Context, req ListRulingsRequest) (ListRulingsResult, error)
 
+	// ApplyReviewPolicy runs the tenant's review policy (the ontology's Review
+	// section, or the policy @auto_assert implies) over the proposals already
+	// in the queue, narrowed by an optional queue filter. A dry run (the
+	// default) counts what each rule would do and samples it; the real call
+	// needs ExpectCount equal to the current match count, rules at most 1000
+	// statements as RuleStatements would, as ONE ruling (each statement
+	// recording ruled_by policy:<rule>@<ontology version>, undone together by
+	// RevertRuling), marks those routed to the judge, and is audited.
+	//
+	// For an admin or a tenant operator only (holding write on each
+	// statement's from-document); a member is refused even with the `review`
+	// grant: applying the policy is the operator's act. Errors wrap the
+	// ErrStatementReview* sentinels. Reachable via POST
+	// /v1/_statements/apply_policy, the gRPC ApplyReviewPolicy RPC and the MCP
+	// `review` tool (op apply_policy).
+	ApplyReviewPolicy(ctx context.Context, req ApplyReviewPolicyRequest) (ApplyReviewPolicyResult, error)
+
 	// ReplaySession copies a SOURCE session's transcript into a NEW session bound
 	// to a (possibly different) target agent, so that agent continues from the
 	// same context — mirrors POST /v1/sessions/{id}/replay. Provider-specific

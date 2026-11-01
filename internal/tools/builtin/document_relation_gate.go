@@ -353,7 +353,57 @@ func (d *Document) gateAttributes(ctx context.Context, kind string, attributes m
 // (the D8 annotation, a revision proposal's original, a synced statement's original
 // method). They share the attributes object with a kind's qualifiers and are never
 // checked against them.
-var statementLayerAttributes = map[string]bool{"ontology_valid": true, "revision_of": true, "origin_method": true}
+var statementLayerAttributes = map[string]bool{"ontology_valid": true, "revision_of": true, "origin_method": true,
+	attrJudge: true, attrReviewRoute: true, attrClassifiedBy: true}
+
+// The attribute keys only the runtime writes: a judge's verdict (judge), the
+// review policy's routing of a proposal to the judge (review_route), and how
+// classify found a statement (classified_by). A writer naming one is refused —
+// a proposer that could set judge would pass "accept what the judge accepted",
+// one that could set review_route would choose its own reviewer — and a copy
+// path that carries another document's statements (import_md) drops them.
+const (
+	attrJudge        = "judge"
+	attrReviewRoute  = "review_route"
+	attrClassifiedBy = "classified_by"
+)
+
+var runtimeStatementAttributes = []string{attrJudge, attrReviewRoute, attrClassifiedBy}
+
+// refuseRuntimeAttributes refuses a writer's attributes that name a key only
+// the runtime writes.
+func refuseRuntimeAttributes(op string, attrs map[string]any) *tools.Result {
+	for _, k := range runtimeStatementAttributes {
+		if _, ok := attrs[k]; ok {
+			r := errValidation(fmt.Sprintf("%s: attribute_reserved: attributes.%s is written only by the runtime", op, k),
+				"Leave "+k+" out of attributes.")
+			return &r
+		}
+	}
+	return nil
+}
+
+// withoutRuntimeAttributes is attrs without the keys only the runtime writes;
+// attrs itself when it has none.
+func withoutRuntimeAttributes(attrs map[string]any) map[string]any {
+	var out map[string]any
+	for _, k := range runtimeStatementAttributes {
+		if _, ok := attrs[k]; !ok {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]any, len(attrs))
+			for kk, v := range attrs {
+				out[kk] = v
+			}
+		}
+		delete(out, k)
+	}
+	if out == nil {
+		return attrs
+	}
+	return out
+}
 
 func qualifierNames(rel memrank.OntologyRelation) string {
 	var out []string

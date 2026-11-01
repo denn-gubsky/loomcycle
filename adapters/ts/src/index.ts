@@ -290,6 +290,8 @@ export type {
   RulingSelector,
   RulingRecord,
   ListRulingsResult,
+  PolicyRuleCount,
+  ApplyReviewPolicyResult,
   ErasureBoundSubject,
   ErasureTokenRef,
   CancelTurnResult,

@@ -1346,8 +1346,10 @@ func requiredScopeFor(method, path string) string {
 	// ACL `review` grant on a path may rule there. Who may rule on what is the
 	// connector's question (an operator, or a member with `review` on each
 	// statement's from-document), asked of every transport alike.
+	// The policy's application (apply_policy) is an operator's alone; the
+	// connector refuses a member, on every transport alike.
 	case path == "/v1/_statements/review" || path == "/v1/_statements/rule" || path == "/v1/_statements/revert" ||
-		path == "/v1/_statements/rulings":
+		path == "/v1/_statements/rulings" || path == "/v1/_statements/apply_policy":
 		return auth.ScopeTenant
 	// RFC AS: the Web UI schedules surface (list-all + per-def state / run-now /
 	// pause / resume). list-all is tenant-scoped (the handler filters substrate

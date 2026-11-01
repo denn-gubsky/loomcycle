@@ -161,13 +161,17 @@ type Event struct {
 	AuthTargetAccessMode string   `json:"auth_target_access_mode,omitempty"`
 
 	// --- Statement review (Action = "statement_ruling" |
-	// "statement_ruling_revert") ---
+	// "statement_ruling_revert" | "statement_policy_ruling") ---
+	//
+	// statement_policy_ruling is the review policy applied over the queue:
+	// RulingAction "policy", RulingCounts carrying the ontology version and
+	// matched / skipped / ruled / failed / deferred / marked.
 	//
 	// One record per bulk ruling and per revert: who ruled, on what selection,
 	// with what reason and outcome. The statements themselves carry
 	// ruled_by bulk:<RulingID>. The tenant travels in TargetTenant.
 	RulingID     string `json:"ruling_id,omitempty"`
-	RulingAction string `json:"ruling_action,omitempty"` // accept | reject
+	RulingAction string `json:"ruling_action,omitempty"` // accept | reject | policy
 	RulingScope  string `json:"ruling_scope,omitempty"`  // tenant | user
 	// RulingScopeID is whose user scope (scope user): the subject whose
 	// documents were ruled on, which an operator may name.

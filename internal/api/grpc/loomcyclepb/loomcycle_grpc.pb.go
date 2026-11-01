@@ -75,6 +75,7 @@ const (
 	Loomcycle_RuleStatements_FullMethodName       = "/loomcycle.v1.Loomcycle/RuleStatements"
 	Loomcycle_RevertRuling_FullMethodName         = "/loomcycle.v1.Loomcycle/RevertRuling"
 	Loomcycle_ListRulings_FullMethodName          = "/loomcycle.v1.Loomcycle/ListRulings"
+	Loomcycle_ApplyReviewPolicy_FullMethodName    = "/loomcycle.v1.Loomcycle/ApplyReviewPolicy"
 	Loomcycle_Decide_FullMethodName               = "/loomcycle.v1.Loomcycle/Decide"
 	Loomcycle_ListDecisionModels_FullMethodName   = "/loomcycle.v1.Loomcycle/ListDecisionModels"
 	Loomcycle_Health_FullMethodName               = "/loomcycle.v1.Loomcycle/Health"
@@ -428,6 +429,23 @@ type LoomcycleClient interface {
 	//
 	// Mirrors GET /v1/_statements/rulings.
 	ListRulings(ctx context.Context, in *ListRulingsRequest, opts ...grpc.CallOption) (*ListRulingsResponse, error)
+	// ApplyReviewPolicy runs the tenant's review policy (the ontology's Review
+	// section, or the policy @auto_assert implies) over the proposals already
+	// in the queue, narrowed by an optional queue filter (status, if set, must
+	// be proposed). A dry run (the default) counts what each rule decides and
+	// samples what it would rule; the real call needs expect_count equal to the
+	// current match count (FAILED_PRECONDITION queue_changed otherwise), rules
+	// at most max (1000) accepts and rejects as ONE ruling — each statement
+	// recording ruled_by policy:<rule>@<ontology version>, undone together by
+	// RevertRuling — and routes the judge's proposals.
+	//
+	// An admin or a tenant operator only (write on each from-document); a
+	// member is refused (PERMISSION_DENIED forbidden) even holding the
+	// access-control action review. INVALID_ARGUMENT invalid_request when no
+	// policy is in force or the Review section has issues.
+	//
+	// Mirrors POST /v1/_statements/apply_policy.
+	ApplyReviewPolicy(ctx context.Context, in *ApplyReviewPolicyRequest, opts ...grpc.CallOption) (*ApplyReviewPolicyResponse, error)
 	// Decide asks a decision model typed questions (choice / noul / score)
 	// about a piece of state and returns each answer as the model gave it. It
 	// is a judgement with probabilities, not generated text, and it needs no
@@ -1161,6 +1179,16 @@ func (c *loomcycleClient) ListRulings(ctx context.Context, in *ListRulingsReques
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListRulingsResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_ListRulings_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ApplyReviewPolicy(ctx context.Context, in *ApplyReviewPolicyRequest, opts ...grpc.CallOption) (*ApplyReviewPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplyReviewPolicyResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ApplyReviewPolicy_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1977,6 +2005,23 @@ type LoomcycleServer interface {
 	//
 	// Mirrors GET /v1/_statements/rulings.
 	ListRulings(context.Context, *ListRulingsRequest) (*ListRulingsResponse, error)
+	// ApplyReviewPolicy runs the tenant's review policy (the ontology's Review
+	// section, or the policy @auto_assert implies) over the proposals already
+	// in the queue, narrowed by an optional queue filter (status, if set, must
+	// be proposed). A dry run (the default) counts what each rule decides and
+	// samples what it would rule; the real call needs expect_count equal to the
+	// current match count (FAILED_PRECONDITION queue_changed otherwise), rules
+	// at most max (1000) accepts and rejects as ONE ruling — each statement
+	// recording ruled_by policy:<rule>@<ontology version>, undone together by
+	// RevertRuling — and routes the judge's proposals.
+	//
+	// An admin or a tenant operator only (write on each from-document); a
+	// member is refused (PERMISSION_DENIED forbidden) even holding the
+	// access-control action review. INVALID_ARGUMENT invalid_request when no
+	// policy is in force or the Review section has issues.
+	//
+	// Mirrors POST /v1/_statements/apply_policy.
+	ApplyReviewPolicy(context.Context, *ApplyReviewPolicyRequest) (*ApplyReviewPolicyResponse, error)
 	// Decide asks a decision model typed questions (choice / noul / score)
 	// about a piece of state and returns each answer as the model gave it. It
 	// is a judgement with probabilities, not generated text, and it needs no
@@ -2420,6 +2465,9 @@ func (UnimplementedLoomcycleServer) RevertRuling(context.Context, *RevertRulingR
 }
 func (UnimplementedLoomcycleServer) ListRulings(context.Context, *ListRulingsRequest) (*ListRulingsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListRulings not implemented")
+}
+func (UnimplementedLoomcycleServer) ApplyReviewPolicy(context.Context, *ApplyReviewPolicyRequest) (*ApplyReviewPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyReviewPolicy not implemented")
 }
 func (UnimplementedLoomcycleServer) Decide(context.Context, *DecideRequest) (*DecideResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Decide not implemented")
@@ -3226,6 +3274,24 @@ func _Loomcycle_ListRulings_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).ListRulings(ctx, req.(*ListRulingsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ApplyReviewPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyReviewPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ApplyReviewPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ApplyReviewPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ApplyReviewPolicy(ctx, req.(*ApplyReviewPolicyRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -4261,6 +4327,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListRulings",
 			Handler:    _Loomcycle_ListRulings_Handler,
+		},
+		{
+			MethodName: "ApplyReviewPolicy",
+			Handler:    _Loomcycle_ApplyReviewPolicy_Handler,
 		},
 		{
 			MethodName: "Decide",

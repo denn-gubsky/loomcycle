@@ -78,8 +78,16 @@ func seedReviewCorpus(t *testing.T, d *Document, base context.Context) reviewCor
 		"evidence":[{"chunk_id":%q,"quote":"cites the Act of 2015"}]}`, c.b1, c.b2, c.b1))
 	c.repeals = propose(fmt.Sprintf(`{"op":"propose_statement","scope":"tenant","from_id":%q,"to_id":%q,"kind":"repeals","method":"rule:citation","confidence":0.8}`, c.b1, c.b2))
 	c.elaborates = propose(fmt.Sprintf(`{"op":"propose_statement","scope":"tenant","from_id":%q,"to_id":%q,"kind":"elaborates","method":"extractor:relate","confidence":0.4}`, c.n1, c.b2))
-	c.judged = propose(fmt.Sprintf(`{"op":"propose_statement","scope":"tenant","from_id":%q,"to_id":%q,"kind":"cites","method":"rule:citation","confidence":0.95,
-		"attributes":{"judge":{"verdict":"accept","confidence":0.97}}}`, c.n1, c.b1))
+	c.judged = propose(fmt.Sprintf(`{"op":"propose_statement","scope":"tenant","from_id":%q,"to_id":%q,"kind":"cites","method":"rule:citation","confidence":0.95}`, c.n1, c.b1))
+	// attributes.judge is the runtime's to write (a writer is refused it), so
+	// the verdict is set in the store, as the judge's own write would.
+	key, _, err := d.resolveScope(op, "tenant")
+	if err == nil {
+		err = d.exec(op, key, `UPDATE chunk_edges SET attributes = ? WHERE id = ?`, `{"judge":{"verdict":"accept","confidence":0.97}}`, c.judged)
+	}
+	if err != nil {
+		t.Fatalf("record the judge's verdict: %v", err)
+	}
 	return c
 }
 

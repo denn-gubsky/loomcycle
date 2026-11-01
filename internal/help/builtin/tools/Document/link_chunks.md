@@ -93,6 +93,8 @@ status, actor}`.
   - `qualifier_violation` — an `attributes` name the kind does not declare, or
     a value outside its declared list.
 - `statement_rejected` — an operator rejected this relation; do not re-link it.
+- `attribute_reserved` — `attributes` names `judge`, `review_route` or
+  `classified_by`, which only the runtime writes; leave them out.
 - A permission error when your access-control rules do not let you link one of
   the two documents.
 

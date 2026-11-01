@@ -76,6 +76,10 @@ var twins = map[string][]Twin{
 	"RuleStatements":  {{Method: http.MethodPost, Path: "/v1/_statements/rule"}},
 	"RevertRuling":    {{Method: http.MethodPost, Path: "/v1/_statements/revert"}},
 	"ListRulings":     {{Method: http.MethodGet, Path: "/v1/_statements/rulings"}},
+	// The review policy applied over the queue: an operator's act, refused to
+	// a member by the connector rather than the gate, so every transport
+	// answers it alike.
+	"ApplyReviewPolicy": {{Method: http.MethodPost, Path: "/v1/_statements/apply_policy"}},
 	// Runtime admin.
 	"PauseRuntime":    {{Method: http.MethodPost, Path: "/v1/_pause"}},
 	"ResumeRuntime":   {{Method: http.MethodPost, Path: "/v1/_resume"}},

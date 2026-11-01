@@ -113,6 +113,15 @@ func (e *env) callGRPC(bearer, op string, args map[string]any) outcome {
 			if r.GetSelector().GetHasFilter() {
 				sel["filter"] = map[string]any{}
 			}
+			if p := r.GetSelector().GetPolicy(); p != nil {
+				pm := map[string]any{"version": p.GetVersion()}
+				for k, v := range map[string]string{"source": p.GetSource(), "run_id": p.GetRunId()} {
+					if v != "" {
+						pm[k] = v
+					}
+				}
+				sel["policy"] = pm
+			}
 			m["selector"] = sel
 			rulings = append(rulings, m)
 		}

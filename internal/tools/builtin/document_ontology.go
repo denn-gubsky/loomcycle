@@ -110,6 +110,9 @@ type OntologyRead struct {
 	// Issues are document-level advisories: a duplicate section, an unknown section kind.
 	// Per-class advisories live on each term's Issues.
 	Issues []string
+	// Review is the Review section's policy (RFC FS P2), nil without such a section.
+	// Issues in it leave the whole policy unapplied.
+	Review *memrank.ReviewPolicy
 	// RootRevision is the ontology root chunk's revision — the ontology_version stamped
 	// on facts and statements written under this vocabulary (RFC FO §3.6).
 	RootRevision int
@@ -482,6 +485,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			walkRelations(kids[c.id], childParent, depth+1)
 		}
 	}
+	var review *memrank.ReviewPolicy
 	for _, c := range kids[rootID] {
 		switch sectionOf[c.id] {
 		case memrank.SectionClasses:
@@ -494,6 +498,17 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			walkSchemes(kids[c.id])
 		case memrank.SectionInstances:
 			walkInstances(kids[c.id], "", "", 1)
+		case memrank.SectionReview:
+			// The rules are the section's own list; a child chunk is not read, and
+			// is reported so a rule written there is not mistaken for one in force.
+			p := memrank.ParseReviewSection(bodyOf(c.id))
+			for _, k := range kids[c.id] {
+				if !memrank.IsInertEntityStatus(k.status) {
+					p.Issues = append(p.Issues, "the Review section's rules are its own list items; the chunk "+
+						strconv.Quote(memrank.TrimOntologyName(k.title))+" under it is not read")
+				}
+			}
+			review = &p
 		default:
 			// No directive: a class, exactly as before sections existed.
 			walk([]ontologyChunk{c}, rootID, "", 1, false)
@@ -504,7 +519,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		Proposals: proposals, DocumentID: docID, RootChunkID: rootID,
 		Sections: sections, Grammars: grammars, Issues: issues, RootRevision: rootRevision,
 		Relations: relations, SectionChunks: sectionChunks, partial: partial,
-		Schemes: schemes, Instances: instances,
+		Schemes: schemes, Instances: instances, Review: review,
 	}, nil
 }
 

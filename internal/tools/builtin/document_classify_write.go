@@ -216,9 +216,9 @@ func (d *Document) classifyIssuerSubject(ctx context.Context, key sqlmem.ScopeKe
 
 // classifyStatement writes one statement from the document's root, asking the caller's
 // rules about both ends first. A refusal is a warning, not a failure: the rest of the
-// classification still stands.
+// classification still stands. by is how classify found it (classifiedBy*).
 func (d *Document) classifyStatement(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, acl *docACL,
-	docID, from, to, kind, status, quote string) (*edgeWriteResult, string) {
+	docID, from, to, kind, status, quote, by string) (*edgeWriteResult, string) {
 	if to == "" || kind == "" {
 		return nil, ""
 	}
@@ -238,9 +238,10 @@ func (d *Document) classifyStatement(ctx context.Context, key sqlmem.ScopeKey, m
 			return nil, kind + " not written: the access-control rules do not allow it"
 		}
 	}
-	w := edgeWrite{from: from, to: to, kind: kind, method: edgeMethodClassify, status: status, proposeIfInvalid: true}
+	w := edgeWrite{from: from, to: to, kind: kind, method: edgeMethodClassify, status: status, proposeIfInvalid: true,
+		attributes: map[string]any{attrClassifiedBy: by}}
 	if quote != "" {
-		w.attributes = map[string]any{"quote": quote}
+		w.attributes["quote"] = quote
 	}
 	res, refuse, err := d.writeStatement(ctx, key, mscope, w)
 	if err != nil {
@@ -250,6 +251,9 @@ func (d *Document) classifyStatement(ctx context.Context, key sqlmem.ScopeKey, m
 		return nil, kind + " not written: " + refuse.Text
 	}
 	d.publishEdgeChange(ctx, key, mscope, "classify", res.ID, from, to, kind, res.Status)
+	if pf, ok := d.reviewPolicyInForce(ctx); ok && pf.section {
+		res = d.ruleOnFiling(ctx, key, mscope, pf, res)
+	}
 	return &res, ""
 }
 

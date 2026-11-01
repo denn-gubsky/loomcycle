@@ -74,6 +74,7 @@ import type {
   RuleStatementsResult,
   RevertRulingResult,
   ListRulingsResult,
+  ApplyReviewPolicyResult,
   BindSubjectPrincipalResult,
   Agent,
   AgentEvent,
@@ -1200,6 +1201,45 @@ export class LoomcycleClient {
     if (opts?.tenant !== undefined) params.set("tenant", opts.tenant);
     const q = params.toString() ? `?${params.toString()}` : "";
     return jsonFetch<ListRulingsResult>(this.ctx, `/v1/_statements/rulings${q}`, opts);
+  }
+
+  /**
+   * Run the tenant's review policy (the ontology's Review section, or the
+   * policy `@auto_assert` implies) over the proposals already in the queue,
+   * narrowed by `filter` (its status, if any, must be `proposed`). A DRY RUN
+   * unless `dryRun: false`: it returns `matched`, what the policy would
+   * accept, reject, route to the judge or leave for a person, the count per
+   * rule and a sample. To apply, call again with `dryRun: false` and
+   * `expectCount` set to the dry run's `matched`: at most `max` (default and
+   * ceiling 1000) accepts and rejects are ruled as one ruling —
+   * {@link revertRuling} undoes it — each statement recording
+   * `ruled_by: policy:<rule>@<ontology version>`; the rest are `deferred`.
+   * Mirrors POST /v1/_statements/apply_policy.
+   *
+   * For an admin or a tenant operator only: a member is refused
+   * (`forbidden`) even holding `review`. A refusal throws with the server's
+   * code: `invalid_request` (no policy in force, or the Review section has
+   * issues), `forbidden`, `queue_changed`, `unavailable`.
+   */
+  async applyReviewPolicy(opts?: {
+    filter?: ReviewQueueFilter;
+    dryRun?: boolean;
+    expectCount?: number;
+    max?: number;
+    scope?: "tenant" | "user";
+    scopeId?: string;
+    tenant?: string;
+    signal?: AbortSignal;
+  }): Promise<ApplyReviewPolicyResult> {
+    const body: Record<string, unknown> = {};
+    if (opts?.filter !== undefined) body.filter = opts.filter;
+    if (opts?.dryRun !== undefined) body.dry_run = opts.dryRun;
+    if (opts?.expectCount !== undefined) body.expect_count = opts.expectCount;
+    if (opts?.max !== undefined) body.max = opts.max;
+    if (opts?.scope !== undefined) body.scope = opts.scope;
+    if (opts?.scopeId !== undefined) body.scope_id = opts.scopeId;
+    if (opts?.tenant !== undefined) body.tenant = opts.tenant;
+    return postJSON<ApplyReviewPolicyResult>(this.ctx, "/v1/_statements/apply_policy", body, opts);
   }
 
   async compactRun(
