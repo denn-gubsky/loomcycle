@@ -146,8 +146,99 @@ func (d *Document) reviewSelection(ctx context.Context, key sqlmem.ScopeKey, in 
 		where = append(where, d.judgeVerdictExpr()+" = ?")
 		args = append(args, in.JudgeVerdict)
 	}
-	return where, args, false, nil, nil
+	for _, ex := range []struct{ field, v, col string }{{"method_exact", in.MethodExact, "e.method"}, {"kind_exact", in.KindExact, "e.kind"}} {
+		if ex.v == "" {
+			continue
+		}
+		if len(ex.v) > reviewFieldMax {
+			return refuse(fmt.Sprintf("%s is longer than %d bytes", ex.field, reviewFieldMax), "")
+		}
+		where = append(where, ex.col+" = ?")
+		args = append(args, ex.v)
+	}
+	if in.FromPathPrefix == "" && !in.FromUnfiled {
+		return where, args, false, nil, nil
+	}
+	return d.fromPathPrefixSelection(ctx, key, in, where, args, readable)
 }
+
+// fromPathPrefixSelection selects by the from-document's path prefix exactly
+// as summarizeStatements groups it (pathPrefix over the same documentNames),
+// so a summary group's filter selects that group and nothing else: a document
+// filed under two names belongs to the prefix of its first name in sort
+// order only, and from_unfiled is the group with no prefix — a from-document
+// filed nowhere, or a from-chunk that is gone. Unfiled is spelled as "not one
+// of the filed documents", so a document with no name needs no listing.
+func (d *Document) fromPathPrefixSelection(ctx context.Context, key sqlmem.ScopeKey, in docInput, where []string, args []any, readable func(string) (bool, error)) ([]string, []any, bool, *tools.Result, error) {
+	refuse := func(msg, fix string) ([]string, []any, bool, *tools.Result, error) {
+		r := errValidation("list_statements: "+msg, fix)
+		return nil, nil, false, &r, nil
+	}
+	switch {
+	case in.FromPathPrefix != "" && in.FromUnfiled:
+		return refuse("from_path_prefix and from_unfiled select different documents", "Pass one of them.")
+	case len(in.FromPathPrefix) > reviewFieldMax:
+		return refuse(fmt.Sprintf("from_path_prefix is longer than %d bytes", reviewFieldMax), "")
+	}
+	names, err := d.documentNames(ctx, key)
+	if err != nil {
+		return nil, nil, false, nil, err
+	}
+	var docs []string
+	for doc, n := range names {
+		switch p := pathPrefix(n); {
+		case p == "":
+		case in.FromUnfiled:
+			docs = append(docs, doc)
+		case p == in.FromPathPrefix:
+			ok, err := readable(doc)
+			if err != nil {
+				return nil, nil, false, nil, err
+			}
+			if ok {
+				docs = append(docs, doc)
+			}
+		}
+	}
+	sort.Strings(docs)
+	if len(docs) > listStatementsMaxDocs || len(args)+len(docs) > reviewBindMax {
+		return refuse(fmt.Sprintf("the from-document path filter names %d documents, more than this call binds", len(docs)),
+			"Narrow the selection by from_document_id or from_under_path.")
+	}
+	bound := make([]any, len(docs))
+	for i, doc := range docs {
+		bound[i] = doc
+	}
+	if in.FromUnfiled {
+		if len(docs) > 0 {
+			where = append(where, "(cf.document_id IS NULL OR cf.document_id NOT IN ("+placeholders(len(docs))+"))")
+			args = append(args, bound...)
+		}
+		return where, args, false, nil, nil
+	}
+	if len(docs) == 0 {
+		return nil, nil, true, nil, nil
+	}
+	return append(where, "cf.document_id IN ("+placeholders(len(docs))+")"), append(args, bound...), false, nil, nil
+}
+
+// summaryGroupFilter is the filter that selects exactly group g of a summary
+// asked with base: base, narrowed by each of the group's keys exactly.
+// Kind and Method in base stay (the group lies inside them) and only narrow.
+func summaryGroupFilter(base connector.ReviewQueueFilter, g connector.ReviewQueueGroup) *connector.ReviewQueueFilter {
+	f := base
+	f.Kinds = append([]string(nil), base.Kinds...)
+	f.KindExact, f.MethodExact = g.Kind, g.Method
+	f.FromPathPrefix, f.FromUnfiled = g.FromPathPrefix, g.FromPathPrefix == ""
+	if g.JudgeVerdict == "" {
+		f.HasJudgeVerdict, f.JudgeVerdict = boolRef(false), ""
+	} else {
+		f.HasJudgeVerdict, f.JudgeVerdict = nil, g.JudgeVerdict
+	}
+	return &f
+}
+
+func boolRef(b bool) *bool { return &b }
 
 // judgeVerdictExpr reads attributes.judge.verdict on alias e: NULL when the
 // statement carries none. attributes is JSON text on both tiers; SQLite's
@@ -250,6 +341,12 @@ func reviewFilterArgs(f connector.ReviewQueueFilter) map[string]any {
 	set("from_under_path", f.FromUnderPath)
 	set("to_under_path", f.ToUnderPath)
 	set("judge_verdict", f.JudgeVerdict)
+	set("method_exact", f.MethodExact)
+	set("kind_exact", f.KindExact)
+	set("from_path_prefix", f.FromPathPrefix)
+	if f.FromUnfiled {
+		m["from_unfiled"] = true
+	}
 	if len(f.Kinds) > 0 {
 		m["kinds"] = f.Kinds
 	}
@@ -330,6 +427,9 @@ func (d *Document) ListReviewQueue(ctx context.Context, scope string, req connec
 		out.Summary, out.Total = body.Summary, body.Total
 		if out.Summary == nil {
 			out.Summary = []connector.ReviewQueueGroup{}
+		}
+		for i := range out.Summary {
+			out.Summary[i].Filter = summaryGroupFilter(req.Filter, out.Summary[i])
 		}
 	}
 	return out, nil

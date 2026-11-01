@@ -204,6 +204,10 @@ const documentInputSchema = `{
 		"has_judge_verdict": {"type": "boolean", "description": "list_statements: true keeps only statements a judge recorded a verdict on (attributes.judge), false only those with none."},
 		"judge_verdict":    {"type": "string", "description": "list_statements: only statements whose recorded judge verdict (attributes.judge.verdict) is exactly this, e.g. accept, reject or unsure."},
 		"summarize":        {"type": "boolean", "description": "list_statements: instead of the statements, return counts grouped by kind, method, the FROM document's path prefix (its first two segments) and judge verdict, plus the total. The filters apply; after, limit and order are ignored."},
+		"method_exact":     {"type": "string", "description": "list_statements: only statements whose method is exactly this (rule:cite, not rule:citation); case-sensitive."},
+		"kind_exact":       {"type": "string", "description": "list_statements: only statements of exactly this kind; unlike kind, never widened to the kind's declared sub-kinds."},
+		"from_path_prefix": {"type": "string", "description": "list_statements: only statements whose FROM document's path prefix is exactly this, as summarize computes it: the first two segments of the document's first Path name in sort order (/board/regulatory-external)."},
+		"from_unfiled":     {"type": "boolean", "description": "list_statements: true keeps only statements whose FROM document is filed under no Path name (or is gone): summarize's empty from_path_prefix."},
 		"walk":        {"type": "string", "enum": ["declared","all"], "description": "graph_recall: which relations to follow. declared (the default where the tenant declares relation kinds) follows the kinds declared for walking — citations, definitions, what implements what — and never mentions or about; all follows every relation. An explicit kind / kinds overrides it; any other value is refused."},
 		"decay":       {"type": "number", "description": "graph_recall with budget_chars: each hop may spend at most decay^hop of the budget, so far hops cannot crowd out near ones. 0 < decay <= 1; default 0.7 for a declared walk, else 1 (no decay). Refused without budget_chars."},
 		"include_hierarchy": {"type": "string", "enum": ["up","down","both","none"], "description": "graph_recall: also step along the document tree — up to a chunk's parent (part_of), down to its children (has_part). Default none."},
@@ -351,6 +355,13 @@ type docInput struct {
 	HasJudgeVerdict *bool    `json:"has_judge_verdict,omitempty"`
 	JudgeVerdict    string   `json:"judge_verdict,omitempty"`
 	Summarize       bool     `json:"summarize,omitempty"`
+	// The exact selectors a summary group is selected by: the method and the
+	// kind as stored (no prefix, no sub-kinds) and the from-document's path
+	// prefix as summarize computes it, or filed nowhere.
+	MethodExact    string `json:"method_exact,omitempty"`
+	KindExact      string `json:"kind_exact,omitempty"`
+	FromPathPrefix string `json:"from_path_prefix,omitempty"`
+	FromUnfiled    bool   `json:"from_unfiled,omitempty"`
 	// Kind-aware retrieval (RFC FN P4). graph_recall: walk (declared | all),
 	// decay (per-hop share of the content budget), include_hierarchy (up | down |
 	// both | none). search: expand (one hop over relations from the top hits).

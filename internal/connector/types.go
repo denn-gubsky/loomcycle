@@ -1374,6 +1374,17 @@ type ReviewQueueFilter struct {
 	// judge's recorded verdict (accept, reject, unsure).
 	HasJudgeVerdict *bool  `json:"has_judge_verdict,omitempty"`
 	JudgeVerdict    string `json:"judge_verdict,omitempty"`
+	// MethodExact / KindExact: the method / the kind exactly as stored — no
+	// prefix match, and no widening to a kind's declared sub-kinds.
+	MethodExact string `json:"method_exact,omitempty"`
+	KindExact   string `json:"kind_exact,omitempty"`
+	// FromPathPrefix: the from-document's path prefix exactly, computed as the
+	// summary computes it (the first two segments of the document's first
+	// Path name in sort order). FromUnfiled: the from-document is filed under
+	// no Path name, or is gone (the summary's empty prefix). A summary group's
+	// Filter uses them, so it selects exactly the group.
+	FromPathPrefix string `json:"from_path_prefix,omitempty"`
+	FromUnfiled    bool   `json:"from_unfiled,omitempty"`
 }
 
 // ListReviewQueueRequest asks for one page of the review queue, or its
@@ -1404,6 +1415,11 @@ type ReviewQueueGroup struct {
 	// JudgeVerdict is attributes.judge.verdict; "" when none was recorded.
 	JudgeVerdict string `json:"judge_verdict"`
 	Count        int    `json:"count"`
+	// Filter selects exactly this group's statements: the queue's filter the
+	// summary was asked with, narrowed by the group's kind_exact, method_exact,
+	// from_path_prefix (or from_unfiled) and judge verdict (or
+	// has_judge_verdict false). Pass it to a bulk ruling as it is.
+	Filter *ReviewQueueFilter `json:"filter,omitempty"`
 }
 
 // ListReviewQueueResult is one page of the queue: each statement as
