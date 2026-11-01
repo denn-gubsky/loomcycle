@@ -10,12 +10,15 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 ## What's in v1.133.0
 
-*Proposed relations can be reviewed in bulk: a filtered, summarized review queue, dry-run-first bulk rulings with one audit record and one undo each, and a new access-control action `review` that lets an operator delegate review of part of the tree (RFC FS Phase 0). The Document tool's help gains a `knowledge-base` guide.*
+*Proposed relations can be reviewed in bulk (RFC FS Phases 0–2): a filtered, summarized review queue, dry-run-first bulk rulings with one audit record and one undo each, a new access-control action `review`, a Review page in the Web UI, and review policies, rules in the tenant ontology that rule proposals as they are filed. The Document tool's help gains a `knowledge-base` guide.*
 
-The v1.133 line: #2327 and #2329.
+The v1.133 line: #2327 to #2332.
 - `@loomcycle/client` and the Python adapter move to 1.133.0, with the review methods.
 - No repo migration. Each SQL Memory scope gains a `chunk_edges.ruled_by` column and the `statement_rulings` / `statement_ruling_items` tables on first use.
-- **Behaviour change:** five Document calls the help described but the argument check refused now pass: `related` with `kind` / `kinds`, `propose_entity` / `propose_subject` with their `title` alias, and `set_path` with `document_id` (#2329).
+- **Behaviour changes:**
+  - `propose_statement` and `link_chunks` refuse the runtime's own attributes `judge`, `review_route` and `classified_by` (`attribute_reserved`), and `import_md` drops them (#2332).
+  - Five Document calls the help described but the argument check refused now pass: `related` with `kind` / `kinds`, `propose_entity` / `propose_subject` with their `title` alias, and `set_path` with `document_id` (#2329).
+- An ontology without a Review section files proposals exactly as before.
 
 ### Bulk statement review (#2327)
 
@@ -26,10 +29,24 @@ The v1.133 line: #2327 and #2329.
 - **Who may rule:** an admin, or a tenant operator in its own tenant (`write` on the from-document, `link` on both ends); a non-isolated member only where an access rule grants the new document action **`review`**. Isolated users, agent-restricted tokens and runs are refused.
 - **Every transport:** gRPC `ListReviewQueue` / `RuleStatements` / `RevertRuling` / `ListRulings`, the MCP `review` tool (ops `queue`, `rule`, `revert`, `rulings`), and the TS and Python clients.
 
-### Document help (#2329)
+### The Review page (#2331)
+
+- **`/ui/review`** (a "review" entry in the knowledge menu): the scope's proposals grouped by the queue summary, filters in the URL, select rows, a group or everything matching, then Accept or Reject (with a reason). Every action runs the dry run first and confirms the count; over 1,000 matches it rules in chunks. Each ruling offers Undo, and a Recent rulings list shows past ones.
+- **The document viewer's Connections panel** gains bulk Accept/Reject on the proposals filed from the open document.
+- A member without a `review` grant sees what grants it.
+
+### Review policies (#2332)
+
+- **A Review section in the tenant ontology** (`@section review`): ordered rules, first match wins, e.g. `accept kind:cites method:rule:citation when quotes:resolved self:false target:held|placeholder`, `reject … when confidence<0.6`, `judge …`, `human *`. Actions `accept | reject | judge | human`; conditions on quotes, self-links, the target, `rule:matched` and confidence. One unreadable rule leaves the whole policy unapplied (every proposal waits for a person), and `describe_ontology` reports it.
+- **At filing** (`propose_statement`, `classify`) an accept or reject is ruled with `ruled_by: policy:<rule>@<ontology version>`, one ruling per run that `revert_ruling` undoes. A policy rejection is a verdict, not a tombstone: a later proposal of the relation is evaluated again. An operator's rejection still refuses it.
+- **On demand:** `POST /v1/_statements/apply_policy` (gRPC `ApplyReviewPolicy`, MCP `review` op `apply_policy`, TS `applyReviewPolicy()`, Python `apply_review_policy()`) applies the policy to the waiting queue: dry run first, at most 1,000 rulings per call as one undoable ruling, operators only, audited as `statement_policy_ruling`.
+- Without a Review section, `@auto_assert` works as before.
+
+### Document help and prompts (#2329, #2330)
 
 - A new `knowledge-base` help topic (aliases `kb`, `knowledge`, `ontology`, `statements`, `relations`): how documents, facts, subjects and statements fit together, who rules on what, citations into relations, retrieving along relations, editions and subject change events, with five checked call sequences.
 - The knowledge-base op articles are completed against the handlers, and the `Document` article indexes all 60 ops.
+- The `chat` agents' `graph_recall` note and the document agent's edge-linking skill describe what the tool does now (#2330).
 
 ## What's in v1.132.0
 
