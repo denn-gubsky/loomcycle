@@ -72,13 +72,45 @@ while keeping the old version, write the correction under a NEW key and then
 Every time field you omit keeps its stored value. The server sets the fact's
 first-seen time itself and records who wrote it; you cannot set either.
 
+Where the tenant's confirmed ontology gives `type` a class with typed fields,
+the write is checked against them: a missing or mistyped field is reported in
+`warnings` (the write still happens), and a class with identity fields records
+the chunk's identity (`identity_key`), which must be unique in the scope.
+
+## Subjects, `principal` and re-typing
+
+A **subject** is a document whose root chunk carries a `natural_key`: the
+node facts are `about`. It is made by `create_document` with `type`, `subject`
+and `natural_key`, by an operator adopting a `propose_subject`, or by the
+memory pass. Three rules hold for a write that lands on one:
+
+- **`principal` is reserved.** In `fields`, on any chunk, `principal` binds a
+  subject to a user account, and only an operator sets or clears it. A write
+  that would set, change or clear it is refused with
+  `principal_binding_operator_only` and nothing is written. Leave the key out
+  of `fields` (the stored binding is kept), or send exactly the value you read.
+- **Re-typing a subject** (a new `type` on its root chunk): once the tenant
+  has an ontology, the new type must be one of its entity types
+  (`describe_ontology` lists them); otherwise it is refused and nothing is
+  written. The `natural_key` is kept: it names the subject, and its
+  prefix records the kind it was first given. A re-type is announced on the
+  scope's `memory/subjects` channel as `retyped` (with `old_type` and
+  `new_type`), so whatever indexes relations by subject can re-check them; when
+  your access-control rules hide part of the scope, it is not announced and the
+  result carries `not_announced` saying why.
+- **A merged subject** has status `merged` and `fields.merged_into` naming the
+  surviving subject's document. An operator merged it; write new facts about the
+  survivor, not about it.
+
 ## Returns
 
 `{id, natural_key, created}` — `created: true` for a new chunk, `false` for an
 update. With `source_chunk_id`, also `derived_from: {statement_id, chunk_id,
 char_start, char_end}`; with `about_ids`, `about_written` and `about_skipped`;
 with `relation`, `relation: {statement_id, kind, status}` or `relation_skipped`,
-and `relation_conflicts`. Call `get_chunk` for the full chunk and its `entity` block.
+and `relation_conflicts`. `identity_key` and `warnings` come from the class
+rules above; `not_announced` from a re-type that was not announced. Call
+`get_chunk` for the full chunk and its `entity` block.
 
 ## Errors
 
@@ -94,6 +126,17 @@ and `relation_conflicts`. Call `get_chunk` for the full chunk and its `entity` b
   may not read or link answers; take the fact from a passage you can link.
 - `upsert_chunk: source_quote is longer than 4000 characters` — quote the
   sentence the fact rests on, not the passage.
+- `principal_binding_operator_only: upsert_chunk: the principal field is
+  reserved ...` — drop `principal` from `fields`.
+- `upsert_chunk: "<type>" is not an entity type this tenant declares, and this
+  chunk is the subject <key> ...` — re-type a subject only to a declared entity
+  type, or `propose_entity` the type first.
+- `identity_collision: chunk <id> already holds the identity <key> ...` —
+  update that chunk instead, or change the identity fields if this is a
+  different thing. A placeholder holding it (a cited work not imported yet) is
+  filled with `import_md` `reimport: true` and its `work_key`.
+- `method_not_granted` — `method` is malformed or outside your agent's grant;
+  omit it.
 
 ## Examples
 
@@ -112,4 +155,22 @@ updates):
 
 ```json
 {"op": "upsert_chunk", "natural_key": "person:ada|works_at|acme", "invalid_at": 1798761600000000000}
+```
+
+A fact taken from a passage of a document, about two subjects, stating the
+relation between them — linked to the passage it came from, to both subjects,
+and filed as a relation with the fact as its evidence:
+
+```json
+{"op": "upsert_chunk", "scope": "tenant", "document_id": "3e4f5a6b7c8d49e0a1b2c3d4e5f60718", "natural_key": "person:ada-lovelace|works_at|organization:acme-bank",
+ "title": "Ada Lovelace works at Acme Bank", "body": "Ada Lovelace works at Acme Bank.", "type": "employment", "subject": "Ada Lovelace",
+ "source_chunk_id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "source_quote": "Ada Lovelace, Head of Risk at Acme Bank",
+ "about_ids": ["2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f", "9a8b7c6d5e4f40312a1b0c9d8e7f6a5b"], "relation": "works_at",
+ "valid_at": 1735689600000000000, "confidence": 0.8}
+```
+
+```json result
+{"id": "6f7a8b9c0d1e42f3a4b5c6d7e8f90a1b", "natural_key": "person:ada-lovelace|works_at|organization:acme-bank", "created": true,
+ "derived_from": {"statement_id": "1a2b3c4d5e6f47a8b9c0d1e2f3a4b5c6", "chunk_id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "char_start": 210, "char_end": 249},
+ "about_written": 2, "about_skipped": 0, "relation": {"statement_id": "7d8e9f0a1b2c43d4e5f6a7b8c9d0e1f2", "kind": "works_at", "status": "asserted"}}
 ```
