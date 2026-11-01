@@ -54,7 +54,7 @@ const (
 	// How classify found a statement, recorded on it as attributes.classified_by:
 	// its class rules or an instance pattern (rules), the neighbours' own
 	// asserted statements (vote), or the model (model). A review policy's
-	// rule:matched asks it — the first two are rules, the last is not.
+	// rule:matched asks it — only the first is a rule.
 	classifiedByRules = "rules"
 	classifiedByVote  = "vote"
 	classifiedByModel = "model"

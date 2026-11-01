@@ -140,8 +140,10 @@ func (pf policyInForce) candidate(r []any) policyCandidate {
 		f.Target = memrank.ReviewTargetHeld
 	}
 	by, _ := s.Attributes[attrClassifiedBy].(string)
+	// The neighbours' vote is not a rule: it follows what the neighbours were
+	// tagged with, so a vote-decided tag waits for a person or the judge.
 	f.RuleMatched = strings.HasPrefix(s.Method, "rule:") ||
-		(s.Method == edgeMethodClassify && (by == classifiedByRules || by == classifiedByVote))
+		(s.Method == edgeMethodClassify && by == classifiedByRules)
 	c.facts = f
 	_, c.revision = s.Attributes["revision_of"]
 	return c
