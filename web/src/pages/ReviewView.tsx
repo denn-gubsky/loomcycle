@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { useFocusTenant } from "../components/Layout";
+import { useFocusTenant, usePrincipal, useUserId } from "../components/Layout";
 import {
   listReviewQueue,
+  listRulings,
   revertRuling,
   ruleStatements,
   type ReviewFilter,
   type ReviewScope,
   type ReviewStatement,
   type RuleStatementsResponse,
+  type RulingRecord,
 } from "../api";
 import {
   chunkCount,
@@ -21,12 +23,15 @@ import {
 } from "@loomcycle/explorer";
 import { ApiError } from "../lib/apiError";
 import {
+  canUndo,
   filtersFromSearch,
   groupLabel,
   groupsFromSummary,
   judgeOf,
   reviewKey,
   reviewScopeFromSearch,
+  reviewScopeId,
+  rulingSelection,
   rulingSummary,
   searchFromFilters,
   undoSummary,
@@ -39,6 +44,8 @@ import {
 // see and who may rule; a member without the `review` grant gets their refusal.
 
 const PAGE = 50;
+// How many earlier rulings the list shows per page.
+const RULINGS_PAGE = 10;
 const QUOTE_CLIP = 160;
 // How many of the dry run's sample of 20 the confirm lists.
 const CONFIRM_SAMPLE = 6;
@@ -188,13 +195,11 @@ export interface RuleConfirmProps {
   action: "accept" | "reject";
   dry: RuleStatementsResponse;
   why: ConfirmReason;
-  // The count the summary showed for a group, to set beside the dry run's.
-  groupCount?: number;
 }
 
 // RuleConfirm is the dry run as the reviewer sees it before anything is ruled:
 // how many match, what they are, and what will be skipped.
-export function RuleConfirm({ action, dry, why, groupCount }: RuleConfirmProps) {
+export function RuleConfirm({ action, dry, why }: RuleConfirmProps) {
   const verb = action === "accept" ? "Accept" : "Reject";
   const chunks = chunkCount(dry.matched);
   const sample = dry.sample ?? [];
@@ -207,13 +212,6 @@ export function RuleConfirm({ action, dry, why, groupCount }: RuleConfirmProps) 
         </strong>
         {chunks > 1 && <> in {chunks} rulings of up to 1,000 each</>}.
       </p>
-      {groupCount !== undefined && groupCount !== dry.matched && (
-        <p className="review-warn">
-          The group lists {groupCount.toLocaleString("en-US")}, but its filter matches{" "}
-          {dry.matched.toLocaleString("en-US")}: a method is matched by prefix, and a document filed
-          under two paths is in both. Check the sample before you confirm.
-        </p>
-      )}
       {dry.skipped > 0 && (
         <p className="settings-muted">
           {dry.skipped.toLocaleString("en-US")} of the first {dry.selected.toLocaleString("en-US")} are not
@@ -253,6 +251,7 @@ export interface ToastState {
   text: string;
   rulingIds: string[];
   scope: ReviewScope;
+  scopeId?: string;
   undoing?: boolean;
   undone?: boolean;
 }
@@ -280,7 +279,6 @@ export function UndoToast({ toast, onUndo, onClose }: { toast: ToastState; onUnd
 interface RuleTarget {
   label: string;
   selection: Omit<RulingSelection<ReviewFilter>, "action" | "reason">;
-  groupCount?: number;
   // Ask the reviewer to confirm the dry run (every bulk action). A row ruled
   // from the keyboard skips it.
   confirm: boolean;
@@ -348,7 +346,7 @@ function RuleDialog({
         {state.step === "counting" && <p className="settings-muted">Counting what matches…</p>}
         {state.step === "confirm" && state.dry && state.why && (
           <>
-            <RuleConfirm action={state.action} dry={state.dry} why={state.why} groupCount={state.target.groupCount} />
+            <RuleConfirm action={state.action} dry={state.dry} why={state.why} />
             <div className="modal-buttons">
               <button type="button" onClick={() => onConfirm(false)}>
                 Cancel
@@ -406,9 +404,14 @@ function isEditing(t: EventTarget | null): boolean {
 export default function ReviewView() {
   const [params, setParams] = useSearchParams();
   const tenant = useFocusTenant() || undefined;
+  const pickedUser = useUserId();
+  const principal = usePrincipal();
   const filter = useMemo(() => filtersFromSearch(params), [params]);
   const scope = reviewScopeFromSearch(params);
   const view = params.get("view") === "list" ? "list" : "groups";
+  // The subject picker's choice, for a user-scope review of someone else's
+  // documents; undefined for the tenant scope and for the viewer's own.
+  const scopeId = reviewScopeId(scope, pickedUser || undefined, principal?.subject);
   const filterKey = searchFromFilters(filter).toString();
 
   const [draft, setDraft] = useState<ReviewFilter>(filter);
@@ -439,7 +442,7 @@ export default function ReviewView() {
   useEffect(() => {
     let cancelled = false;
     setLoadErr(undefined);
-    listReviewQueue(filter, { summarize: true, scope, tenant })
+    listReviewQueue(filter, { summarize: true, scope, scopeId, tenant })
       .then((r) => {
         if (cancelled) return;
         setSummary({ groups: groupsFromSummary(r.summary, filter), total: r.total ?? 0 });
@@ -448,18 +451,39 @@ export default function ReviewView() {
     return () => {
       cancelled = true;
     };
-  }, [filterKey, scope, tenant, reload]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filterKey, scope, scopeId, tenant, reload]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The scope's earlier rulings, newest first, again after each ruling or undo.
+  const [rulings, setRulings] = useState<{ rows: RulingRecord[]; next?: string; error?: string }>({ rows: [] });
+  const [undoingId, setUndoingId] = useState<string | undefined>(undefined);
+  const loadRulings = useCallback(
+    async (after?: string) => {
+      try {
+        const r = await listRulings({ limit: RULINGS_PAGE, after, scope, scopeId, tenant });
+        setRulings((cur) => ({
+          rows: [...(after ? cur.rows : []), ...(r.rulings ?? [])],
+          next: r.next_cursor || undefined,
+        }));
+      } catch (e) {
+        setRulings((cur) => ({ ...cur, error: errText(e) }));
+      }
+    },
+    [scope, scopeId, tenant],
+  );
+  useEffect(() => {
+    void loadRulings();
+  }, [loadRulings, reload]);
 
   const loadRows = useCallback(
     async (f: ReviewFilter, after?: string): Promise<RowsState> => {
       try {
-        const r = await listReviewQueue(f, { limit: PAGE, after, scope, tenant });
+        const r = await listReviewQueue(f, { limit: PAGE, after, scope, scopeId, tenant });
         return { rows: r.statements ?? [], next: r.next_cursor || undefined, loading: false };
       } catch (e) {
         return { rows: [], loading: false, error: errText(e) };
       }
     },
-    [scope, tenant],
+    [scope, scopeId, tenant],
   );
 
   // A group's first page: when it is opened, and again with each new summary.
@@ -486,7 +510,7 @@ export default function ReviewView() {
     return () => {
       cancelled = true;
     };
-  }, [view, filterKey, scope, tenant, reload, loadRows]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [view, filterKey, scope, scopeId, tenant, reload, loadRows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The rows on screen, in screen order: what j/k walk.
   const visible = useMemo<ReviewStatement[]>(() => {
@@ -521,7 +545,7 @@ export default function ReviewView() {
     setDialog({ ...d, step: d.target.confirm ? "counting" : "ruling", error: undefined });
     const out = await runRuling(
       api,
-      { ...d.target.selection, action: d.action, reason: d.reason.trim() || undefined, scope },
+      { ...d.target.selection, action: d.action, reason: d.reason.trim() || undefined, scope, scopeId },
       {
         confirm: d.target.confirm
           ? (dry, why) =>
@@ -538,7 +562,7 @@ export default function ReviewView() {
       setDialog(null);
       if (out.total > 0 || out.rulingIds.length > 0) {
         const failed = out.error !== undefined ? ` Stopped: ${errText(out.error)}` : "";
-        setToast({ text: rulingSummary(d.action, out) + failed, rulingIds: out.rulingIds, scope });
+        setToast({ text: rulingSummary(d.action, out) + failed, rulingIds: out.rulingIds, scope, scopeId });
         setSelected(new Set());
         setReload((n) => n + 1);
       } else if (!out.cancelled) {
@@ -554,8 +578,17 @@ export default function ReviewView() {
     if (!toast) return;
     const t = toast;
     setToast({ ...t, undoing: true });
-    const u = await undoRulings((id) => revertRuling(id, t.scope, tenant), t.rulingIds);
+    const u = await undoRulings((id) => revertRuling(id, { scope: t.scope, scopeId: t.scopeId, tenant }), t.rulingIds);
     setToast({ ...t, undoing: false, undone: true, text: undoSummary(u) });
+    setReload((n) => n + 1);
+  };
+
+  // Undo one earlier ruling from the list.
+  const undoListed = async (r: RulingRecord) => {
+    setUndoingId(r.id);
+    const u = await undoRulings((id) => revertRuling(id, { scope, scopeId, tenant }), [r.id]);
+    setUndoingId(undefined);
+    setToast({ text: undoSummary(u), rulingIds: [], scope, scopeId });
     setReload((n) => n + 1);
   };
 
@@ -641,6 +674,11 @@ export default function ReviewView() {
   return (
     <div className="settings-panel review-page">
       <h2>Review</h2>
+      {scopeId && (
+        <p className="review-warn">
+          Reviewing the user documents of <code>{scopeId}</code> (the subject picker&rsquo;s choice).
+        </p>
+      )}
       <p className="settings-help">
         Proposed statements waiting for a ruling. Accept or reject them by row, by group, or every
         one the filter matches; each bulk ruling is counted first and can be undone while nothing has
@@ -781,7 +819,7 @@ export default function ReviewView() {
           }}
           onRule={(action, g) =>
             g.filter &&
-            startRuling(action, { label: `the group ${groupLabel(g)}`, selection: { filter: g.filter }, groupCount: g.count, confirm: true })
+            startRuling(action, { label: `the group ${groupLabel(g)}`, selection: { filter: g.filter }, confirm: true })
           }
           onSelectAll={(g) =>
             setSelected((cur) => new Set([...cur, ...(groupRows[g.key]?.rows ?? []).map((s) => s.id)]))
@@ -811,10 +849,13 @@ export default function ReviewView() {
         </>
       )}
 
-      <p className="settings-muted review-note">
-        A list of earlier rulings is not offered yet: the runtime keeps each ruling, but has no
-        route that lists them. Undo a ruling from its notice.
-      </p>
+      <RecentRulings
+        rulings={rulings.rows}
+        error={rulings.error}
+        undoingId={undoingId}
+        onUndo={(r) => void undoListed(r)}
+        onMore={rulings.next ? () => void loadRulings(rulings.next) : undefined}
+      />
 
       {dialog && (
         <RuleDialog
@@ -833,6 +874,91 @@ export default function ReviewView() {
       )}
       {toast && <UndoToast toast={toast} onUndo={() => void undo()} onClose={() => setToast(null)} />}
     </div>
+  );
+}
+
+// formatNs renders a unix-nanosecond time. Nanoseconds overflow a JS number's
+// exact range, but a millisecond display does not need them.
+function formatNs(ns: number | undefined): string {
+  if (!ns) return "";
+  return new Date(ns / 1e6).toISOString().replace("T", " ").slice(0, 19);
+}
+
+// RecentRulings is the scope's earlier bulk rulings and their reverts, newest
+// first, each accept or reject with its own Undo until it has been undone.
+export function RecentRulings({
+  rulings,
+  error,
+  undoingId,
+  onUndo,
+  onMore,
+}: {
+  rulings: RulingRecord[];
+  error?: string;
+  undoingId?: string;
+  onUndo?: (r: RulingRecord) => void;
+  onMore?: () => void;
+}) {
+  return (
+    <section className="review-rulings">
+      <h3 className="settings-subhead">Recent rulings</h3>
+      {error && <div className="settings-error">{error}</div>}
+      {rulings.length === 0 ? (
+        <p className="settings-muted">No rulings yet.</p>
+      ) : (
+        <table className="settings-table">
+          <thead>
+            <tr>
+              <th>when</th>
+              <th>ruling</th>
+              <th>by</th>
+              <th>selected</th>
+              <th>ruled</th>
+              <th>reason</th>
+              <th aria-label="undo" />
+            </tr>
+          </thead>
+          <tbody>
+            {rulings.map((r) => (
+              <tr key={r.id} className={`review-ruling ${r.action}${r.reverted ? " reverted" : ""}`} data-ruling={r.id}>
+                <td className="settings-muted-inline">{formatNs(r.created_at)}</td>
+                <td>
+                  <code>{r.action}</code>
+                </td>
+                <td>{r.actor || r.ruled_by}</td>
+                <td className="review-method">{rulingSelection(r)}</td>
+                <td>
+                  {r.ruled.toLocaleString("en-US")}
+                  {r.failed > 0 && (
+                    <span className="settings-muted-inline">
+                      {" "}
+                      ({r.failed.toLocaleString("en-US")} {r.action === "revert" ? "changed" : "failed"})
+                    </span>
+                  )}
+                </td>
+                <td>{r.reason || ""}</td>
+                <td>
+                  {r.reverted ? (
+                    <span className="settings-muted-inline" title={r.reverted_by ? `revert ${r.reverted_by}` : undefined}>
+                      undone {formatNs(r.reverted_at)}
+                    </span>
+                  ) : canUndo(r) ? (
+                    <button type="button" disabled={undoingId !== undefined} onClick={() => onUndo?.(r)}>
+                      {undoingId === r.id ? "Undoing…" : "Undo"}
+                    </button>
+                  ) : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {onMore && (
+        <button type="button" onClick={onMore}>
+          more
+        </button>
+      )}
+    </section>
   );
 }
 
@@ -888,7 +1014,7 @@ export function ReviewGroupList({
                   </button>
                 </>
               ) : (
-                <span className="settings-muted-inline" title="The queue's filters cannot select this group alone">
+                <span className="settings-muted-inline" title="The server sent no filter that selects this group alone">
                   rule from the list view
                 </span>
               )}
@@ -896,8 +1022,8 @@ export function ReviewGroupList({
             {isOpen &&
               (!g.filter ? (
                 <p className="settings-muted">
-                  This group cannot be listed on its own (its documents are filed nowhere, or outside the
-                  filter&rsquo;s path). Switch to the list view to rule its rows.
+                  The server sent no filter for this group, so it cannot be listed or ruled on its own
+                  here. Switch to the list view to rule its rows.
                 </p>
               ) : !st || (st.loading && st.rows.length === 0) ? (
                 <p className="settings-muted">loading…</p>

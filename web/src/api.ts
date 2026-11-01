@@ -4528,6 +4528,13 @@ export interface ReviewFilter {
   created_after?: string;
   has_judge_verdict?: boolean;
   judge_verdict?: string;
+  /** The method / the kind exactly as stored (no prefix, no sub-kinds). */
+  method_exact?: string;
+  kind_exact?: string;
+  /** The from-document's path prefix exactly as the summary computes it. */
+  from_path_prefix?: string;
+  /** The from-document is filed under no Path name (the summary's "" prefix). */
+  from_unfiled?: boolean;
 }
 
 /** One row of the queue's summary: kind × method × from-path prefix × verdict. */
@@ -4539,6 +4546,10 @@ export interface ReviewGroupCount {
   /** attributes.judge.verdict; "" when none. */
   judge_verdict: string;
   count: number;
+  /** The filter that selects exactly this group. Its created_before /
+   *  created_after come back as JSON numbers of nanoseconds, which a JS number
+   *  cannot hold exactly: groupsFromSummary puts the page's own text back. */
+  filter?: ReviewFilter;
 }
 
 /** A queue row as list_statements renders it: the statement envelope, both
@@ -4623,13 +4634,31 @@ export interface RuleStatementsRequest {
   expect_count?: number;
   max?: number;
   scope?: ReviewScope;
+  /** Whose user documents (scope user): another subject's, for an operator. */
+  scope_id?: string;
+}
+
+/** Where a review acts: the tenant scope, or a user scope — the caller's own,
+ *  or with scopeId another subject's (an admin or tenant operator only). */
+export interface ReviewWhere {
+  scope?: ReviewScope;
+  scopeId?: string;
+  tenant?: string;
+}
+
+// reviewWhereQuery adds where a review acts to a query: scope_id only with
+// the user scope (the tenant scope takes none).
+function reviewWhereQuery(q: URLSearchParams, w: ReviewWhere): void {
+  if (w.scope && w.scope !== "tenant") q.set("scope", w.scope);
+  if (w.scope === "user" && w.scopeId) q.set("scope_id", w.scopeId);
+  if (w.tenant) q.set("tenant", w.tenant);
 }
 
 // reviewQueueQuery is the queue's query string: each filter field as a
 // parameter (kinds comma-joined), then the paging and summary options.
 export function reviewQueueQuery(
   filter: ReviewFilter,
-  opts: { summarize?: boolean; limit?: number; after?: string; scope?: ReviewScope; tenant?: string } = {},
+  opts: { summarize?: boolean; limit?: number; after?: string } & ReviewWhere = {},
 ): string {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(filter)) {
@@ -4639,8 +4668,7 @@ export function reviewQueueQuery(
   if (opts.summarize) q.set("summarize", "true");
   if (opts.limit !== undefined) q.set("limit", String(opts.limit));
   if (opts.after) q.set("after", opts.after);
-  if (opts.scope && opts.scope !== "tenant") q.set("scope", opts.scope);
-  if (opts.tenant) q.set("tenant", opts.tenant);
+  reviewWhereQuery(q, opts);
   const s = q.toString();
   return s ? `?${s}` : "";
 }
@@ -4649,7 +4677,7 @@ export function reviewQueueQuery(
  *  gets a 403 (`forbidden`). */
 export function listReviewQueue(
   filter: ReviewFilter,
-  opts: { summarize?: boolean; limit?: number; after?: string; scope?: ReviewScope; tenant?: string } = {},
+  opts: { summarize?: boolean; limit?: number; after?: string } & ReviewWhere = {},
 ): Promise<ReviewQueueResponse> {
   return jsonFetch<ReviewQueueResponse>(`/v1/_statements/review${reviewQueueQuery(filter, opts)}`);
 }
@@ -4663,10 +4691,55 @@ export function ruleStatements(req: RuleStatementsRequest, tenant?: string): Pro
 
 /** Undoes a bulk ruling: each statement it ruled and nothing changed since goes
  *  back to its earlier status. */
-export function revertRuling(rulingId: string, scope?: ReviewScope, tenant?: string): Promise<RevertRulingResponse> {
+export function revertRuling(rulingId: string, where: ReviewWhere = {}): Promise<RevertRulingResponse> {
   return postJSONBody<RevertRulingResponse>(
     "/v1/_statements/revert",
-    { ruling_id: rulingId, ...(scope && scope !== "tenant" ? { scope } : {}) },
-    tenant,
+    {
+      ruling_id: rulingId,
+      ...(where.scope && where.scope !== "tenant" ? { scope: where.scope } : {}),
+      ...(where.scope === "user" && where.scopeId ? { scope_id: where.scopeId } : {}),
+    },
+    where.tenant,
   );
+}
+
+/** One bulk ruling (accept / reject) or one revert of one (action revert:
+ *  `ruled` is what it reverted, `failed` what had changed since). */
+export interface RulingRecord {
+  id: string;
+  action: string;
+  ruled_by: string;
+  /** The subject that made the call. */
+  actor?: string;
+  reason?: string;
+  /** The filter, or how many ids (never the ids); `reverts` on a revert. */
+  selector: { filter?: ReviewFilter; ids_count?: number; max?: number; reverts?: string };
+  matched: number;
+  ruled: number;
+  failed: number;
+  skipped: number;
+  /** Unix nanoseconds (beyond a JS number's exact range: display only). */
+  created_at: number;
+  reverted: boolean;
+  reverted_at?: number;
+  /** The latest revert's id, itself a record of the listing. */
+  reverted_by?: string;
+}
+
+export interface ListRulingsResponse {
+  tenant: string;
+  scope: string;
+  rulings: RulingRecord[] | null;
+  next_cursor?: string;
+}
+
+/** The scope's bulk rulings and their reverts, newest first. An operator sees
+ *  every ruling of the scope; a member only its own. */
+export function listRulings(opts: { limit?: number; after?: string } & ReviewWhere = {}): Promise<ListRulingsResponse> {
+  const q = new URLSearchParams();
+  if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+  if (opts.after) q.set("after", opts.after);
+  reviewWhereQuery(q, opts);
+  const s = q.toString();
+  return jsonFetch<ListRulingsResponse>(`/v1/_statements/rulings${s ? `?${s}` : ""}`);
 }

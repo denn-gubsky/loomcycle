@@ -4,8 +4,10 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   listReviewQueue,
+  listRulings,
   revertRuling,
   ruleStatements,
+  type RulingRecord,
   type ReviewStatement,
   type RuleStatementsResponse,
 } from "../api";
@@ -15,6 +17,7 @@ import {
   noReviewRights,
   ReviewGroupList,
   ReviewNoRights,
+  RecentRulings,
   ReviewRows,
   RuleConfirm,
   UndoToast,
@@ -101,7 +104,11 @@ describe("the queue table", () => {
 
 describe("the groups", () => {
   const summary = [
-    { kind: "cites", method: "rule:citation", from_path_prefix: "/board/regulatory-external", judge_verdict: "", count: 1118 },
+    {
+      kind: "cites", method: "rule:citation", from_path_prefix: "/board/regulatory-external", judge_verdict: "", count: 1118,
+      filter: { kind_exact: "cites", method_exact: "rule:citation", from_path_prefix: "/board/regulatory-external", has_judge_verdict: false },
+    },
+    // An older server's group, sent without its filter.
     { kind: "subject", method: "classify", from_path_prefix: "", judge_verdict: "", count: 239 },
   ];
 
@@ -119,7 +126,7 @@ describe("the groups", () => {
     expect(out).toContain("/board/regulatory-external");
     expect(out).toContain('aria-expanded="false"');
     expect(out).toContain("Accept group");
-    // Filed nowhere: no filter can single it out, so no group action.
+    // No filter from the server: no group action.
     expect(out).toContain("(not filed)");
     expect(out).toContain("rule from the list view");
     expect(out.match(/Accept group/g)).toHaveLength(1);
@@ -161,14 +168,11 @@ describe("the confirm", () => {
     expect(out).toContain("<code>cites</code> by rule:citation: 1,000");
   });
 
-  it("says why it asks again, and when a group's filter matches more than the group", () => {
-    const out = html(createElement(RuleConfirm, { action: "reject", dry: dry({ matched: 1120, skipped: 4 }), why: "queue_changed", groupCount: 1118 }));
+  it("says why it asks again, and what will be skipped", () => {
+    const out = html(createElement(RuleConfirm, { action: "reject", dry: dry({ matched: 1120, skipped: 4 }), why: "queue_changed" }));
     expect(out).toContain("The queue changed since the last count");
     expect(out).toContain("Reject 1,120 statements");
-    expect(out).toContain("The group lists 1,118, but its filter matches");
     expect(out).toContain("4 of the first 1,000 are not");
-    const same = html(createElement(RuleConfirm, { action: "accept", dry: dry({ matched: 1118 }), why: "first", groupCount: 1118 }));
-    expect(same).not.toContain("The group lists");
   });
 });
 
@@ -211,8 +215,57 @@ describe("the review calls", () => {
     await ruleStatements({ action: "accept", filter: { kind: "cites" }, dry_run: false, expect_count: 7 }, "globex");
     expect(f.mock.calls[0][0]).toBe("/v1/_statements/rule?tenant=globex");
     expect(JSON.parse(String(f.mock.calls[0][1]?.body))).toEqual({ action: "accept", filter: { kind: "cites" }, dry_run: false, expect_count: 7 });
-    await revertRuling("r1", "tenant");
+    await revertRuling("r1", { scope: "tenant", scopeId: "bob" });
     expect(f.mock.calls[1][0]).toBe("/v1/_statements/revert");
+    // The tenant scope names no subject.
     expect(JSON.parse(String(f.mock.calls[1][1]?.body))).toEqual({ ruling_id: "r1" });
+  });
+
+  it("names another subject's user scope on the queue, a ruling, its undo and the rulings", async () => {
+    const f = stub({ rulings: [] });
+    await listReviewQueue({}, { scope: "user", scopeId: "bob" });
+    expect(Object.fromEntries(new URL(f.mock.calls[0][0], "http://x").searchParams)).toEqual({ scope: "user", scope_id: "bob" });
+    await revertRuling("r1", { scope: "user", scopeId: "bob", tenant: "globex" });
+    expect(f.mock.calls[1][0]).toBe("/v1/_statements/revert?tenant=globex");
+    expect(JSON.parse(String(f.mock.calls[1][1]?.body))).toEqual({ ruling_id: "r1", scope: "user", scope_id: "bob" });
+    await listRulings({ limit: 10, after: "c1", scope: "user", scopeId: "bob" });
+    const u = new URL(f.mock.calls[2][0], "http://x");
+    expect(u.pathname).toBe("/v1/_statements/rulings");
+    expect(Object.fromEntries(u.searchParams)).toEqual({ limit: "10", after: "c1", scope: "user", scope_id: "bob" });
+    await listRulings({ scope: "tenant", scopeId: "bob" });
+    expect(f.mock.calls[3][0]).toBe("/v1/_statements/rulings");
+  });
+});
+
+describe("the recent rulings", () => {
+  const rec = (over: Partial<RulingRecord> = {}): RulingRecord => ({
+    id: "r1", action: "accept", ruled_by: "operator:ada", actor: "ada", reason: "citations hold",
+    selector: { filter: { kind_exact: "cites" } }, matched: 3, ruled: 3, failed: 0, skipped: 0,
+    created_at: 1793145600000000000, reverted: false, ...over,
+  });
+
+  it("lists each ruling with its selection and an Undo while it can be undone", () => {
+    const out = html(createElement(RecentRulings, { rulings: [rec(), rec({ id: "r2", action: "reject", selector: { ids_count: 2 }, ruled: 2 })] }));
+    expect(out).toContain("Recent rulings");
+    expect(out).toContain("kind_exact=cites");
+    expect(out).toContain("2 picked by hand");
+    expect(out).toContain("citations hold");
+    expect(out.match(/>Undo</g)).toHaveLength(2);
+  });
+
+  it("shows an undone ruling as undone and a revert without an Undo", () => {
+    const out = html(
+      createElement(RecentRulings, {
+        rulings: [
+          rec({ id: "v1", action: "revert", selector: { reverts: "r1aaaaaaaa" }, ruled: 3, failed: 1 }),
+          rec({ reverted: true, reverted_at: 1793145700000000000, reverted_by: "v1" }),
+        ],
+      }),
+    );
+    expect(out).not.toContain(">Undo<");
+    expect(out).toContain("undid r1aaaaaa");
+    expect(out).toContain("1 changed");
+    expect(out).toContain("undone 2026-");
+    expect(out).toContain('class="review-ruling accept reverted"');
   });
 });

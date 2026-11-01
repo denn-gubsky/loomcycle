@@ -8930,8 +8930,11 @@ button.doc-ref-target.external {
   margin: var(--lc-space-1) 0;
   padding-left: var(--lc-space-2);
 }
-.review-note {
-  margin-top: var(--lc-space-2);
+.review-rulings {
+  margin-top: var(--lc-space-3);
+}
+.review-ruling.reverted td {
+  color: var(--lc-text-faint);
 }
 .review-toast {
   position: fixed;

@@ -4,7 +4,7 @@
 // through is @loomcycle/explorer's runRuling, shared with the document viewer.
 
 import type { RulingOutcome, UndoOutcome } from "@loomcycle/explorer";
-import type { ReviewFilter, ReviewGroupCount, ReviewScope, ReviewStatement } from "../api";
+import type { ReviewFilter, ReviewGroupCount, ReviewScope, ReviewStatement, RulingRecord } from "../api";
 
 // ---- filters ↔ URL ---------------------------------------------------------
 
@@ -23,11 +23,20 @@ const TEXT_KEYS = [
   "created_after",
   "created_before",
   "judge_verdict",
+  "method_exact",
+  "kind_exact",
+  "from_path_prefix",
 ] as const;
 
 // Every query parameter the filter owns. searchFromFilters rewrites exactly
 // these and leaves the rest of the URL (a tenant focus, the scope) alone.
-export const FILTER_PARAMS: readonly string[] = [...TEXT_KEYS, "kinds", "min_confidence", "has_judge_verdict"];
+export const FILTER_PARAMS: readonly string[] = [
+  ...TEXT_KEYS,
+  "kinds",
+  "min_confidence",
+  "has_judge_verdict",
+  "from_unfiled",
+];
 
 // filtersFromSearch reads the queue filter off a URL. A malformed number or
 // boolean is dropped rather than guessed at: a review link that lost a bound
@@ -50,6 +59,7 @@ export function filtersFromSearch(p: URLSearchParams): ReviewFilter {
   }
   const judged = p.get("has_judge_verdict");
   if (judged === "true" || judged === "false") f.has_judge_verdict = judged === "true";
+  if (p.get("from_unfiled") === "true") f.from_unfiled = true;
   return f;
 }
 
@@ -65,13 +75,23 @@ export function searchFromFilters(f: ReviewFilter, base?: URLSearchParams): URLS
   if (f.kinds && f.kinds.length > 0) p.set("kinds", f.kinds.join(","));
   if (f.min_confidence !== undefined) p.set("min_confidence", String(f.min_confidence));
   if (f.has_judge_verdict !== undefined) p.set("has_judge_verdict", String(f.has_judge_verdict));
+  if (f.from_unfiled) p.set("from_unfiled", "true");
   return p;
 }
 
 // reviewScopeFromSearch is the document scope a review link names: the tenant
-// (default) or the viewer's own user scope.
+// (default) or a user scope (whose: reviewScopeId).
 export function reviewScopeFromSearch(p: URLSearchParams): ReviewScope {
   return p.get("scope") === "user" ? "user" : "tenant";
+}
+
+// reviewScopeId is the subject whose user documents a user-scope review acts
+// on: the subject picker's choice when it names someone other than the viewer,
+// else none (the viewer's own). The tenant scope names nobody; the runtime
+// refuses scope_id there, and refuses a member naming another subject.
+export function reviewScopeId(scope: ReviewScope, picked: string | undefined, self: string | undefined): string | undefined {
+  if (scope !== "user" || !picked || picked === self) return undefined;
+  return picked;
 }
 
 // ---- groups ----------------------------------------------------------------
@@ -93,7 +113,15 @@ export function groupKey(g: ReviewGroupCount): string {
 }
 
 // groupsFromSummary turns the queue's summary into groups, largest first (the
-// server's order), each with the filter that selects it under `base`.
+// server's order). Each group's filter is the one the server sends with it,
+// which selects exactly the group's count (its exact kind, method, path prefix
+// and verdict, narrowed from the summary's own filter). A group without one —
+// an older server — gets no group action: nothing on this side can rebuild it
+// without risking a wider selection.
+//
+// The server's filter carries the time bounds as nanosecond numbers, which a
+// JS number cannot hold exactly; the page's own bounds (text, as the summary
+// was asked with them) are put back so a ruling's filter is the summary's.
 export function groupsFromSummary(summary: ReviewGroupCount[] | null | undefined, base: ReviewFilter): ReviewGroup[] {
   return (summary ?? []).map((g) => ({
     key: groupKey(g),
@@ -102,47 +130,17 @@ export function groupsFromSummary(summary: ReviewGroupCount[] | null | undefined
     fromPathPrefix: g.from_path_prefix,
     judgeVerdict: g.judge_verdict,
     count: g.count,
-    filter: groupFilter(g, base),
+    filter: g.filter ? withTimeBounds(g.filter, base) : undefined,
   }));
 }
 
-// narrower is the more specific of two prefixes, when one contains the other;
-// undefined when they are unrelated and no single prefix selects both.
-function narrower(a: string | undefined, b: string, sep: string): string | undefined {
-  if (!a) return b;
-  if (b === a || b.startsWith(a.endsWith(sep) ? a : a + sep)) return b;
-  if (a.startsWith(b.endsWith(sep) ? b : b + sep)) return a;
-  return undefined;
-}
-
-// groupFilter is the queue filter for one summary group, narrowed from the
-// page's own filter. It never widens what the page shows: where the group and
-// the page disagree it is undefined, and the group is ruled row by row.
-//
-// The filters can only approximate a group, and the dry run is what shows the
-// difference before anything is ruled:
-//   - method is a prefix, so `rule:cite` also takes `rule:citation`;
-//   - a group's path prefix is its from-document's first Path name, and a
-//     document filed under two names matches from_under_path for either.
-// A group the filters cannot name at all — no method, no kind, or a
-// from-document filed nowhere — has no filter: an empty value is "any", which
-// would rule the whole queue.
-export function groupFilter(g: ReviewGroupCount, base: ReviewFilter): ReviewFilter | undefined {
-  if (!g.kind || !g.method || !g.from_path_prefix) return undefined;
-  if (base.kind && base.kind !== g.kind) return undefined;
-  if (base.judge_verdict && base.judge_verdict !== g.judge_verdict) return undefined;
-  const method = base.method ? (g.method.startsWith(base.method) ? g.method : undefined) : g.method;
-  const path = narrower(base.from_under_path, g.from_path_prefix, "/");
-  if (method === undefined || path === undefined) return undefined;
-  const f: ReviewFilter = { ...base, kind: g.kind, method, from_under_path: path };
-  if (g.judge_verdict) {
-    f.judge_verdict = g.judge_verdict;
-    delete f.has_judge_verdict;
-  } else {
-    if (base.has_judge_verdict === true) return undefined;
-    f.has_judge_verdict = false;
-  }
-  return f;
+function withTimeBounds(f: ReviewFilter, base: ReviewFilter): ReviewFilter {
+  const out: ReviewFilter = { ...f };
+  delete out.created_before;
+  delete out.created_after;
+  if (base.created_before) out.created_before = base.created_before;
+  if (base.created_after) out.created_after = base.created_after;
+  return out;
 }
 
 export function groupLabel(g: Pick<ReviewGroup, "kind" | "method" | "fromPathPrefix" | "judgeVerdict">): string {
@@ -199,6 +197,28 @@ export function reviewKey(e: ReviewKeyEvent, focus: number, rows: number): Revie
       return { type: e.key === "a" ? "accept" : e.key === "r" ? "reject" : "expand", index: focus };
   }
   return null;
+}
+
+// ---- earlier rulings --------------------------------------------------------
+
+// canUndo says whether a listed ruling can be undone from the list: an accept
+// or a reject that ruled something and has not been undone. A revert is not
+// itself undone (the runtime refuses it), and a reverted ruling has nothing
+// left to revert.
+export function canUndo(r: Pick<RulingRecord, "action" | "reverted" | "ruled">): boolean {
+  return (r.action === "accept" || r.action === "reject") && !r.reverted && r.ruled > 0;
+}
+
+// rulingSelection says what a listed ruling selected, in a few words.
+export function rulingSelection(r: Pick<RulingRecord, "action" | "selector">): string {
+  const sel = r.selector ?? {};
+  if (r.action === "revert") return sel.reverts ? `undid ${sel.reverts.slice(0, 8)}` : "undid a ruling";
+  if (sel.ids_count) return `${n(sel.ids_count)} picked by hand`;
+  const f = sel.filter ?? {};
+  const parts = Object.entries(f)
+    .filter(([, v]) => v !== undefined && v !== "" && !(Array.isArray(v) && v.length === 0))
+    .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(",") : String(v)}`);
+  return parts.length > 0 ? parts.join(" ") : "all proposals";
 }
 
 // ---- words -----------------------------------------------------------------

@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { RulingOutcome } from "@loomcycle/explorer";
 import type { ReviewGroupCount } from "../api";
 import {
+  canUndo,
   filtersFromSearch,
-  groupFilter,
   groupsFromSummary,
   judgeOf,
   reviewKey,
   reviewScopeFromSearch,
+  reviewScopeId,
+  rulingSelection,
   rulingSummary,
   searchFromFilters,
   undoSummary,
@@ -21,6 +23,7 @@ describe("filters in the URL", () => {
       from_under_path: "/board/regulatory-external", to_under_path: "/board/internal",
       created_after: "2026-10-01T00:00:00Z", created_before: "1793145600000000000",
       min_confidence: 0.85, has_judge_verdict: true, judge_verdict: "accept",
+      method_exact: "rule:citation", kind_exact: "cites", from_path_prefix: "/board/regulatory-external", from_unfiled: true,
     };
     expect(filtersFromSearch(searchFromFilters(f))).toEqual(f);
   });
@@ -52,36 +55,30 @@ describe("groups from the summary", () => {
     kind: "cites", method: "rule:citation", from_path_prefix: "/board/regulatory-external", judge_verdict: "", count: 1118, ...over,
   });
 
-  it("makes one group per summary row, each with the filter that selects it", () => {
-    const groups = groupsFromSummary([g(), g({ kind: "repeals", count: 34, judge_verdict: "accept" })], { status: "proposed" });
-    expect(groups.map((x) => [x.kind, x.count])).toEqual([["cites", 1118], ["repeals", 34]]);
-    expect(groups[0].filter).toEqual({
-      status: "proposed", kind: "cites", method: "rule:citation",
-      from_under_path: "/board/regulatory-external", has_judge_verdict: false,
-    });
-    expect(groups[1].filter).toEqual({
-      status: "proposed", kind: "repeals", method: "rule:citation",
-      from_under_path: "/board/regulatory-external", judge_verdict: "accept",
-    });
+  it("takes each group's filter from the server, as it is", () => {
+    const exact = { status: "proposed", kind_exact: "cites", method_exact: "rule:citation", from_path_prefix: "/board/regulatory-external", has_judge_verdict: false };
+    const unfiled = { status: "proposed", kind_exact: "subject", method_exact: "classify", from_unfiled: true, judge_verdict: "accept" };
+    const groups = groupsFromSummary(
+      [g({ filter: exact }), g({ kind: "subject", method: "classify", from_path_prefix: "", judge_verdict: "accept", count: 239, filter: unfiled })],
+      { status: "proposed" },
+    );
+    expect(groups.map((x) => [x.kind, x.count])).toEqual([["cites", 1118], ["subject", 239]]);
+    expect(groups[0].filter).toEqual(exact);
+    // Filed nowhere is a group of its own now, with its own exact filter.
+    expect(groups[1].filter).toEqual(unfiled);
     expect(new Set(groups.map((x) => x.key)).size).toBe(2);
   });
 
-  it("keeps the page's narrower path and method, and takes the group's where it is narrower", () => {
-    expect(groupFilter(g(), { from_under_path: "/board/regulatory-external/laws", method: "rule:" })).toMatchObject({
-      from_under_path: "/board/regulatory-external/laws", method: "rule:citation",
-    });
-    expect(groupFilter(g(), { from_under_path: "/board" })).toMatchObject({ from_under_path: "/board/regulatory-external" });
+  it("puts the page's own time bounds back over the server's nanosecond numbers", () => {
+    // 1793145600123456789 is not a JS number: it arrives rounded.
+    const fromServer = { kind_exact: "cites", created_before: 1793145600123456800 as unknown as string, created_after: 1 as unknown as string };
+    const [grp] = groupsFromSummary([g({ filter: fromServer })], { created_before: "1793145600123456789" });
+    expect(grp.filter).toEqual({ kind_exact: "cites", created_before: "1793145600123456789" });
   });
 
-  it("names no filter for a group the queue's filters would widen", () => {
-    // Filed nowhere: an empty from_under_path is "any path", the whole queue.
-    expect(groupFilter(g({ from_path_prefix: "" }), {})).toBeUndefined();
-    expect(groupFilter(g({ method: "" }), {})).toBeUndefined();
-    // A document filed twice can land in a group outside the page's path.
-    expect(groupFilter(g({ from_path_prefix: "/other/place" }), { from_under_path: "/board" })).toBeUndefined();
-    // "/board/regulatory" is not a parent of "/board/regulatory-external".
-    expect(groupFilter(g(), { from_under_path: "/board/regulatory" })).toBeUndefined();
-    expect(groupFilter(g(), { has_judge_verdict: true })).toBeUndefined();
+  it("offers no group action when the server sends no filter", () => {
+    const [grp] = groupsFromSummary([g()], { status: "proposed" });
+    expect(grp.filter).toBeUndefined();
   });
 
   it("reads a judge verdict only when one is recorded", () => {
@@ -89,6 +86,37 @@ describe("groups from the summary", () => {
     expect(
       judgeOf({ id: "s", from_id: "a", to_id: "b", kind: "cites", attributes: { judge: { verdict: "reject", confidence: 0.91, rationale: "amending act" } } }),
     ).toEqual({ verdict: "reject", confidence: 0.91, rationale: "amending act" });
+  });
+});
+
+describe("whose user documents", () => {
+  it("names the picked subject only for a user-scope review of someone else", () => {
+    expect(reviewScopeId("user", "bob", "ada")).toBe("bob");
+    expect(reviewScopeId("user", "ada", "ada")).toBeUndefined();
+    expect(reviewScopeId("user", undefined, "ada")).toBeUndefined();
+    // The tenant scope names nobody: the runtime refuses scope_id there.
+    expect(reviewScopeId("tenant", "bob", "ada")).toBeUndefined();
+  });
+});
+
+describe("earlier rulings", () => {
+  const rec = { action: "accept", reverted: false, ruled: 3 };
+
+  it("offers Undo for an accept or reject not yet undone, never for a revert", () => {
+    expect(canUndo(rec)).toBe(true);
+    expect(canUndo({ ...rec, action: "reject" })).toBe(true);
+    expect(canUndo({ ...rec, reverted: true })).toBe(false);
+    expect(canUndo({ ...rec, action: "revert" })).toBe(false);
+    expect(canUndo({ ...rec, ruled: 0 })).toBe(false);
+  });
+
+  it("says what a ruling selected without naming statements", () => {
+    expect(rulingSelection({ action: "accept", selector: { filter: { kind_exact: "cites", has_judge_verdict: false } } })).toBe(
+      "kind_exact=cites has_judge_verdict=false",
+    );
+    expect(rulingSelection({ action: "reject", selector: { ids_count: 4 } })).toBe("4 picked by hand");
+    expect(rulingSelection({ action: "accept", selector: {} })).toBe("all proposals");
+    expect(rulingSelection({ action: "revert", selector: { reverts: "7e8eb2ec3a2b971c" } })).toBe("undid 7e8eb2ec");
   });
 });
 
