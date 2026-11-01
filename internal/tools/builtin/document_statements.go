@@ -487,11 +487,28 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 
 	if existing != nil && w.revisionOf == "" {
 		if policyRejected(existing) {
-			// A policy's rejection is a verdict on that proposal, not a tombstone
-			// on the relation: a later write of it reopens it as a proposal, which
-			// the policy then evaluates again.
-			if err := d.exec(ctx, key, `UPDATE chunk_edges SET status = ?, ruled_by = NULL, judged_at = NULL, judge_reason = NULL, judged_by = NULL
-				WHERE id = ? AND status = ? AND ruled_by = ?`, edgeStatusProposed, existing.ID, edgeStatusRejected, existing.RuledBy); err != nil {
+			// A policy's or a judge's rejection is a verdict on that proposal, not
+			// a tombstone on the relation: a later write of it reopens it as a
+			// proposal, which the policy then evaluates again. A judge's verdict
+			// (attributes.judge) was on the proposal as it stood, so it goes too:
+			// the reopened one is judged afresh.
+			set, args := `status = ?, ruled_by = NULL, judged_at = NULL, judge_reason = NULL, judged_by = NULL`, []any{edgeStatusProposed}
+			if _, judged := existing.Attributes[attrJudge]; judged {
+				attrs := make(map[string]any, len(existing.Attributes))
+				for k, v := range existing.Attributes {
+					if k != attrJudge {
+						attrs[k] = v
+					}
+				}
+				arg, err := attributesArg(attrs)
+				if err != nil {
+					return out, nil, err
+				}
+				set, args = set+`, attributes = ?`, append(args, arg)
+				existing.Attributes = attrs
+			}
+			if err := d.exec(ctx, key, `UPDATE chunk_edges SET `+set+` WHERE id = ? AND status = ? AND ruled_by = ?`,
+				append(args, existing.ID, edgeStatusRejected, existing.RuledBy)...); err != nil {
 				return out, nil, err
 			}
 			existing.Status = edgeStatusProposed
@@ -1334,12 +1351,12 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 
 // rejectedRelation reports a rejected statement of (from, to, kind,
 // discriminator) at any valid_at, with its reason. Only a person's rejection
-// (an operator's, a bulk ruling's) is a tombstone; a review policy's is a
-// verdict on one proposal, and does not refuse the relation.
+// (an operator's, a bulk ruling's) is a tombstone; a review policy's or a
+// judge's is a verdict on one proposal, and does not refuse the relation.
 func (d *Document) rejectedRelation(ctx context.Context, key sqlmem.ScopeKey, from, to, kind, disc string) (string, bool, error) {
 	res, err := d.query(ctx, key, `SELECT COALESCE(judge_reason, '') FROM chunk_edges
 		WHERE from_id = ? AND to_id = ? AND kind = ? AND discriminator = ? AND status = ?
-		  AND COALESCE(ruled_by, '') NOT LIKE 'policy:%' LIMIT 1`,
+		  AND COALESCE(ruled_by, '') NOT LIKE 'policy:%' AND COALESCE(ruled_by, '') NOT LIKE 'judge:%' LIMIT 1`,
 		from, to, kind, disc, edgeStatusRejected)
 	if err != nil || len(res.Rows) == 0 {
 		return "", false, err
@@ -1347,10 +1364,38 @@ func (d *Document) rejectedRelation(ctx context.Context, key sqlmem.ScopeKey, fr
 	return asStr(res.Rows[0][0]), true, nil
 }
 
-// policyRejected reports a statement a review policy rejected: a verdict on
-// that proposal, which a later write of the relation reopens.
+// attributesArg is a statement's attributes as the column stores them: JSON
+// text, or NULL for none.
+func attributesArg(attrs map[string]any) (any, error) {
+	if len(attrs) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(attrs)
+	if err != nil {
+		return nil, err
+	}
+	return string(b), nil
+}
+
+// policyRejected reports a statement a review policy or a judge rejected: a
+// verdict on that proposal, which a later write of the relation reopens.
 func policyRejected(s *statementRow) bool {
-	return s.Status == edgeStatusRejected && strings.HasPrefix(s.RuledBy, "policy:")
+	_, machine := machineRuler(s.RuledBy)
+	return s.Status == edgeStatusRejected && machine
+}
+
+// machineRuler reports a ruling no person made — a review policy's
+// (policy:<rule>@<version>) or a judge's (judge:<run>) — and the judged_by it
+// records. Such a ruling leaves operator_ruled_at unset: its rejection is no
+// tombstone, and its acceptance stays a run's to maintain.
+func machineRuler(ruledBy string) (string, bool) {
+	switch {
+	case strings.HasPrefix(ruledBy, "policy:"):
+		return "policy", true
+	case strings.HasPrefix(ruledBy, "judge:"):
+		return "judge", true
+	}
+	return "", false
 }
 
 // reviewStatement is accept_statement / reject_statement: the operator's ruling on
@@ -1444,13 +1489,14 @@ func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	reasonArg := nullIfEmpty(strings.TrimSpace(reason))
 	// operator_ruled_at is set by every person's ruling, whatever else it
 	// records: it is what tells a run's maintenance this statement is a human
-	// decision. A review policy's ruling (ruled_by policy:<rule>@<version>) is
-	// not one: it is judged_by policy and leaves operator_ruled_at unset, so its
-	// rejection is no tombstone and its acceptance stays a run's to maintain.
+	// decision. A review policy's ruling (ruled_by policy:<rule>@<version>) or
+	// a judge's (judge:<run>) is not one: it is judged_by policy or judge and
+	// leaves operator_ruled_at unset, so its rejection is no tombstone and its
+	// acceptance stays a run's to maintain.
 	var ruledAt any = now
 	judgedBy := "operator"
-	if strings.HasPrefix(ruledBy, "policy:") {
-		ruledAt, judgedBy = nil, "policy"
+	if machine, ok := machineRuler(ruledBy); ok {
+		ruledAt, judgedBy = nil, machine
 	}
 	set, args := `status = ?, operator_ruled_at = ?, ruled_by = ?, judged_at = ?, judge_reason = ?, judged_by = ?`, []any{status, ruledAt, ruledBy, now, reasonArg, judgedBy}
 	if accept {
