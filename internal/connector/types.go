@@ -1522,6 +1522,64 @@ type RevertRulingRequest struct {
 	RulingID string `json:"ruling_id"`
 }
 
+// ListRulingsRequest asks for one page of a document scope's bulk rulings,
+// newest first. Limit is the page size (default 20, at most 100); After is the
+// NextCursor of the previous page. ScopeID names whose user scope (scope user)
+// as ListReviewQueueRequest.ScopeID does.
+type ListRulingsRequest struct {
+	Tenant  string `json:"tenant,omitempty"`
+	Scope   string `json:"scope,omitempty"`
+	ScopeID string `json:"scope_id,omitempty"`
+	Limit   int    `json:"limit,omitempty"`
+	After   string `json:"after,omitempty"`
+}
+
+// RulingSelector is what a ruling selected: the queue filter, or how many
+// statement ids it named (never the ids: a ruling's statements are not listed
+// here). Max is the ruling's max, when one was passed. Reverts, on a revert,
+// is the ruling it undid.
+type RulingSelector struct {
+	Filter   *ReviewQueueFilter `json:"filter,omitempty"`
+	IDsCount int                `json:"ids_count,omitempty"`
+	Max      int                `json:"max,omitempty"`
+	Reverts  string             `json:"reverts,omitempty"`
+}
+
+// RulingRecord is one bulk ruling, or one revert of one, as the scope
+// recorded it.
+//
+// Action is accept or reject for a ruling, revert for a revert. RuledBy is
+// who ruled (operator:<subject>), Actor the subject that made the call.
+// Matched, Ruled, Failed and Skipped are the ruling's counts; on a revert,
+// Ruled counts the statements it reverted, Failed those changed since and
+// left. Reverted marks a ruling undone since: RevertedAt when and RevertedBy
+// the id of the (latest) revert, itself a record of this listing.
+type RulingRecord struct {
+	ID         string         `json:"id"`
+	Action     string         `json:"action"`
+	RuledBy    string         `json:"ruled_by"`
+	Actor      string         `json:"actor,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
+	Selector   RulingSelector `json:"selector"`
+	Matched    int            `json:"matched"`
+	Ruled      int            `json:"ruled"`
+	Failed     int            `json:"failed"`
+	Skipped    int            `json:"skipped"`
+	CreatedAt  int64          `json:"created_at"`
+	Reverted   bool           `json:"reverted"`
+	RevertedAt int64          `json:"reverted_at,omitempty"`
+	RevertedBy string         `json:"reverted_by,omitempty"`
+}
+
+// ListRulingsResult is one page of a scope's rulings, newest first. An
+// operator sees every ruling of the scope; a member only the ones it made.
+type ListRulingsResult struct {
+	Tenant     string         `json:"tenant"`
+	Scope      string         `json:"scope"`
+	Rulings    []RulingRecord `json:"rulings"`
+	NextCursor string         `json:"next_cursor,omitempty"`
+}
+
 // RevertRulingResult reports a revert. Reverted statements went back to the
 // status they had before the ruling; Changed ones were left because something
 // changed them since (each in Items with error "changed"); Skipped ones the
@@ -1535,6 +1593,9 @@ type RevertRulingResult struct {
 	Changed  int          `json:"changed"`
 	Skipped  int          `json:"skipped"`
 	Items    []RulingItem `json:"items"`
+	// RevertID is the revert's own record (ListRulings, action revert); ""
+	// when it could not be recorded.
+	RevertID string `json:"revert_id,omitempty"`
 }
 
 // ParseReviewInstant reads a review queue time bound given as text: unix

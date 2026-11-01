@@ -23,6 +23,7 @@ package builtin
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -38,12 +39,15 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// statementRulingsDDL holds one row per bulk ruling: what it was, who made it,
-// what it selected and what came of it. reverted_at marks the last revert.
+// statementRulingsDDL holds one row per bulk ruling, and one per revert of one
+// (action revert, selector {"reverts": <ruling id>}): what it was, who made it,
+// what it selected and what came of it. reverted_at and reverted_by mark a
+// ruling's last revert. (reverted_by is in the CREATE itself, with no ALTER:
+// the table has not shipped in a release yet.)
 const statementRulingsDDL = `CREATE TABLE IF NOT EXISTS statement_rulings (
 		id TEXT PRIMARY KEY, action TEXT NOT NULL, ruled_by TEXT NOT NULL, actor TEXT, reason TEXT,
 		selector TEXT NOT NULL, matched INTEGER NOT NULL, ruled INTEGER NOT NULL, failed INTEGER NOT NULL,
-		skipped INTEGER NOT NULL, created_at BIGINT NOT NULL, reverted_at BIGINT)`
+		skipped INTEGER NOT NULL, created_at BIGINT NOT NULL, reverted_at BIGINT, reverted_by TEXT)`
 
 // statementRulingItemsDDL holds, per statement a bulk ruling ruled, the
 // ruling fields as they were before (prior) and a fingerprint of the statement
@@ -673,7 +677,7 @@ func (d *Document) applyBulkRuling(ctx context.Context, key sqlmem.ScopeKey, msc
 	if err := d.exec(ctx, key, `INSERT INTO statement_rulings
 		(id, action, ruled_by, actor, reason, selector, matched, ruled, failed, skipped, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
-		rulingID, req.Action, operatorRuler(ctx), nullIfEmpty(tools.RunIdentity(ctx).UserID), nullIfEmpty(reason),
+		rulingID, req.Action, operatorRuler(ctx), nullIfEmpty(rulingActor(ctx)), nullIfEmpty(reason),
 		string(selector), out.Matched, out.Skipped, time.Now().UnixNano()); err != nil {
 		return out, err
 	}
@@ -836,6 +840,9 @@ func (d *Document) RevertRuling(ctx context.Context, scope string, req connector
 		return out, connector.WithMessage(connector.ErrStatementReviewRulingNotFound, "no bulk ruling "+req.RulingID+" in this scope")
 	}
 	out.Action = asStr(res.Rows[0][0])
+	if out.Action == rulingActionRevert {
+		return out, reviewInvalid("ruling " + req.RulingID + " is a revert, which is not undone: rule on its statements again")
+	}
 	items, err := d.query(ctx, key, `SELECT edge_id, prior, fingerprint FROM statement_ruling_items WHERE ruling_id = ? ORDER BY edge_id`, req.RulingID)
 	if err != nil {
 		return out, err
@@ -862,10 +869,153 @@ func (d *Document) RevertRuling(ctx context.Context, scope string, req connector
 		}
 		out.Items = append(out.Items, item)
 	}
-	if err := d.exec(ctx, key, `UPDATE statement_rulings SET reverted_at = ? WHERE id = ?`, time.Now().UnixNano(), req.RulingID); err != nil {
-		logStatementReviewFault(ctx, "statement ruling revert not marked", req.RulingID, err)
+	d.recordRevert(ctx, key, req.RulingID, len(items.Rows), &out)
+	return out, nil
+}
+
+// rulingActionRevert is a revert's action in statement_rulings.
+const rulingActionRevert = "revert"
+
+// recordRevert records a revert as a row of its own and marks the ruling it
+// undid with it. A failed write is logged, not returned: the statements are
+// reverted either way, and the audit record carries the counts.
+func (d *Document) recordRevert(ctx context.Context, key sqlmem.ScopeKey, rulingID string, considered int, out *connector.RevertRulingResult) {
+	revertID, now := newDocID(), time.Now().UnixNano()
+	selector, _ := json.Marshal(map[string]string{"reverts": rulingID})
+	if err := d.exec(ctx, key, `INSERT INTO statement_rulings
+		(id, action, ruled_by, actor, reason, selector, matched, ruled, failed, skipped, created_at)
+		VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+		revertID, rulingActionRevert, operatorRuler(ctx), nullIfEmpty(rulingActor(ctx)), string(selector),
+		considered, out.Reverted, out.Changed, out.Skipped, now); err != nil {
+		logStatementReviewFault(ctx, "statement ruling revert not recorded", rulingID, err)
+		revertID = ""
+	} else {
+		out.RevertID = revertID
+	}
+	if err := d.exec(ctx, key, `UPDATE statement_rulings SET reverted_at = ?, reverted_by = ? WHERE id = ?`,
+		now, nullIfEmpty(revertID), rulingID); err != nil {
+		logStatementReviewFault(ctx, "statement ruling revert not marked", rulingID, err)
+	}
+}
+
+// ListRulings lists the scope's bulk rulings and reverts, newest first: see
+// connector.Connector.ListRulings. An operator sees each of them; a reviewer
+// only those it made (actor). A ruling's statements are never named: what it
+// selected by id is a count.
+func (d *Document) ListRulings(ctx context.Context, scope string, req connector.ListRulingsRequest, as RulingAuthority) (connector.ListRulingsResult, error) {
+	out := connector.ListRulingsResult{Scope: scope, Rulings: []connector.RulingRecord{}}
+	limit := req.Limit
+	switch {
+	case limit < 0 || limit > rulingsPageMax:
+		return out, reviewInvalid(fmt.Sprintf("limit must be between 1 and %d", rulingsPageMax))
+	case limit == 0:
+		limit = rulingsPageDefault
+	}
+	where, args := []string{"1 = 1"}, []any{}
+	if req.After != "" {
+		c, ok := decodeRulingCursor(req.After)
+		if !ok {
+			return out, reviewInvalid("after is not a cursor this listing returned: pass next_cursor from the previous page")
+		}
+		where = append(where, "(created_at < ? OR (created_at = ? AND id < ?))")
+		args = append(args, c.CreatedAt, c.CreatedAt, c.ID)
+	}
+	key, _, err := d.reviewOp(ctx, scope)
+	if err != nil {
+		return out, err
+	}
+	if as == RuleAsReviewer {
+		actor := rulingActor(ctx)
+		if actor == "" {
+			return out, nil
+		}
+		where = append(where, "actor = ?")
+		args = append(args, actor)
+	}
+	res, err := d.query(ctx, key, `SELECT id, action, ruled_by, actor, reason, selector, matched, ruled, failed, skipped,
+		created_at, reverted_at, reverted_by FROM statement_rulings WHERE `+strings.Join(where, " AND ")+`
+		ORDER BY created_at DESC, id DESC LIMIT ?`, append(args, limit+1)...)
+	if err != nil {
+		return out, err
+	}
+	rows := res.Rows
+	// Truncated: the store's row cap cut the page short; the rest is a page on.
+	if more := len(rows) > limit || res.Truncated; more && len(rows) > 0 {
+		rows = rows[:min(len(rows), limit)]
+		last := rows[len(rows)-1]
+		out.NextCursor = rulingCursor{CreatedAt: asInt64Val(last[10]), ID: asStr(last[0])}.encode()
+	}
+	for _, r := range rows {
+		rec := connector.RulingRecord{
+			ID: asStr(r[0]), Action: asStr(r[1]), RuledBy: asStr(r[2]), Actor: asStr(r[3]), Reason: asStr(r[4]),
+			Selector: rulingSelectorOf(asStr(r[5])), Matched: asInt(r[6]), Ruled: asInt(r[7]), Failed: asInt(r[8]),
+			Skipped: asInt(r[9]), CreatedAt: asInt64Val(r[10]), RevertedBy: asStr(r[12]),
+		}
+		if r[11] != nil {
+			rec.Reverted, rec.RevertedAt = true, asInt64Val(r[11])
+		}
+		out.Rulings = append(out.Rulings, rec)
 	}
 	return out, nil
+}
+
+const (
+	// rulingsPageDefault / rulingsPageMax size a page of ListRulings.
+	rulingsPageDefault = 20
+	rulingsPageMax     = 100
+)
+
+// rulingSelectorOf reads a ruling's stored selector for the listing: the ids
+// only as a count.
+func rulingSelectorOf(text string) connector.RulingSelector {
+	var sel struct {
+		IDs     []string                     `json:"ids"`
+		Filter  *connector.ReviewQueueFilter `json:"filter"`
+		Max     int                          `json:"max"`
+		Reverts string                       `json:"reverts"`
+	}
+	_ = json.Unmarshal([]byte(text), &sel)
+	return connector.RulingSelector{Filter: sel.Filter, IDsCount: len(sel.IDs), Max: sel.Max, Reverts: sel.Reverts}
+}
+
+// rulingCursor is ListRulings' paging position: the last row's
+// (created_at, id).
+type rulingCursor struct {
+	CreatedAt int64  `json:"c"`
+	ID        string `json:"i"`
+}
+
+func (c rulingCursor) encode() string {
+	b, _ := json.Marshal(c)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func decodeRulingCursor(s string) (rulingCursor, bool) {
+	var c rulingCursor
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil || json.Unmarshal(b, &c) != nil || c.ID == "" || len(c.ID) > reviewFieldMax {
+		return c, false
+	}
+	return c, true
+}
+
+// rulingActorKey carries the subject making a ruling (WithRulingActor).
+type rulingActorKey struct{}
+
+// WithRulingActor records who makes a ruling, for a ctx whose run identity
+// names another subject: an operator ruling on a member's user scope acts as
+// itself, and its ruling is recorded as its own.
+func WithRulingActor(ctx context.Context, subject string) context.Context {
+	return context.WithValue(ctx, rulingActorKey{}, subject)
+}
+
+// rulingActor is the subject a ruling, a revert or a listing is made by:
+// WithRulingActor's, else the run identity's user.
+func rulingActor(ctx context.Context) string {
+	if v, ok := ctx.Value(rulingActorKey{}).(string); ok {
+		return v
+	}
+	return tools.RunIdentity(ctx).UserID
 }
 
 type revertOutcome int
