@@ -2298,6 +2298,12 @@ export interface ReviewQueueFilter {
   from_path_prefix?: string;
   /** The from-document is filed under no Path name (the summary's "" prefix). */
   from_unfiled?: boolean;
+  /** `judge`: the proposals the review policy left for the judge agent. */
+  review_route?: "judge";
+  /** A judge's acceptances in this audit state (attributes.judge.audited);
+   *  pair it with `status` (asserted for pending or confirmed, rejected for
+   *  overturned). */
+  judge_audit?: "pending" | "confirmed" | "overturned";
 }
 
 /** One row of the review queue's summary. */
@@ -2393,6 +2399,8 @@ export interface RulingSelector {
    *  its source (`review` / `auto_assert`; absent for a ruling made as a
    *  run's proposals were filed) and that run. */
   policy?: { version: number; source?: string; run_id?: string };
+  /** Set on a judge run's ruling (action `judge`): that run and its agent. */
+  judge?: { run_id: string; agent?: string };
 }
 
 /** One bulk ruling (`accept` / `reject`) or one revert of one (`revert`:

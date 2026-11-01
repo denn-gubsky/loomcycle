@@ -2452,6 +2452,12 @@ message ReviewQueueFilter {
   // from_unfiled, a from-document filed nowhere (the summary's empty prefix).
   string from_path_prefix = 19;
   bool from_unfiled = 20;
+  // attributes.review_route: "judge" selects the proposals the review policy
+  // left for the judge agent.
+  string review_route = 21;
+  // attributes.judge.audited: a judge's acceptances in this audit state
+  // (pending, confirmed, overturned); pair it with status.
+  string judge_audit = 22;
 }
 
 message ListReviewQueueRequest {
@@ -2593,6 +2599,14 @@ message RulingSelector {
   string reverts = 5;
   // Set on a review policy's ruling.
   RulingPolicy policy = 6;
+  // Set on a judge run's ruling (action judge).
+  RulingJudge judge = 7;
+}
+
+// RulingJudge names the judge run whose rulings a ruling holds, and its agent.
+message RulingJudge {
+  string run_id = 1;
+  string agent = 2;
 }
 
 // RulingPolicy names the review policy a ruling applied: the ontology version,

@@ -12,7 +12,7 @@ import (
 // handler.
 const reviewToolDescription = "Review proposed document relations (statements) in bulk, for a whole scope at once. " +
 	"op=queue lists the statements awaiting review (status proposed unless filter.status names another), newest first, each with both ends' titles and documents and up to three evidence quotes; " +
-	"filter narrows it (kind, kinds, method — an exact prefix such as rule: or rule:citation —, actor, document_id, under_path, from_document_id, to_document_id, from_under_path, to_under_path, min_confidence, created_before, created_after, has_judge_verdict, judge_verdict, and the exact method_exact, kind_exact, from_path_prefix, from_unfiled). " +
+	"filter narrows it (kind, kinds, method — an exact prefix such as rule: or rule:citation —, actor, document_id, under_path, from_document_id, to_document_id, from_under_path, to_under_path, min_confidence, created_before, created_after, has_judge_verdict, judge_verdict, the exact method_exact, kind_exact, from_path_prefix, from_unfiled, and review_route / judge_audit for the judge's queue and its audit sample). " +
 	"With summarize: true it returns counts grouped by kind, method, the from-document's path prefix and judge verdict instead, plus the total: start there to see what the queue holds. Each group carries filter, which selects exactly that group: pass it to op=rule as it is. " +
 	"Returns {tenant, scope, statements, truncated, next_cursor} or {summary, total}. " +
 	"op=rule accepts or rejects many statements at once (action accept|reject), named by ids or by the queue's filter, at most 1000 per call (max). " +
@@ -60,7 +60,9 @@ const reviewToolSchema = `{
 			"method_exact":      {"type": "string", "description": "The method is exactly this (rule:citation, not rule:citation_title)."},
 			"kind_exact":        {"type": "string", "description": "The kind is exactly this, never widened to its declared sub-kinds."},
 			"from_path_prefix":  {"type": "string", "description": "The from-document's path prefix is exactly this, as summarize groups it."},
-			"from_unfiled":      {"type": "boolean", "description": "The from-document is filed under no Path name (summarize's empty prefix)."}
+			"from_unfiled":      {"type": "boolean", "description": "The from-document is filed under no Path name (summarize's empty prefix)."},
+			"review_route":      {"type": "string", "enum": ["judge"], "description": "The proposals the review policy left for the judge agent."},
+			"judge_audit":       {"type": "string", "enum": ["pending", "confirmed", "overturned"], "description": "A judge's acceptances in this audit state; pair it with status (asserted for pending or confirmed, rejected for overturned)."}
 		}},
 		"summarize":    {"type": "boolean", "description": "queue: counts by kind, method, path prefix and judge verdict instead of rows."},
 		"limit":        {"type": "integer", "description": "queue: page size (default 500, at most 5000). rulings: default 20, at most 100."},

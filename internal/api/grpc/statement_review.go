@@ -118,6 +118,9 @@ func (s *Server) ListRulings(ctx context.Context, req *loomcyclepb.ListRulingsRe
 		if p := r.Selector.Policy; p != nil {
 			sel.Policy = &loomcyclepb.RulingPolicy{Version: int32(p.Version), Source: p.Source, RunId: p.RunID}
 		}
+		if j := r.Selector.Judge; j != nil {
+			sel.Judge = &loomcyclepb.RulingJudge{RunId: j.RunID, Agent: j.Agent}
+		}
 		out.Rulings = append(out.Rulings, &loomcyclepb.RulingRecord{
 			Id: r.ID, Action: r.Action, RuledBy: r.RuledBy, Actor: r.Actor, Reason: r.Reason, Selector: sel,
 			Matched: int32(r.Matched), Ruled: int32(r.Ruled), Failed: int32(r.Failed), Skipped: int32(r.Skipped),
@@ -169,6 +172,7 @@ func reviewFilterFromProto(f *loomcyclepb.ReviewQueueFilter) connector.ReviewQue
 		FromDocumentID: f.GetFromDocumentId(), ToDocumentID: f.GetToDocumentId(),
 		FromUnderPath: f.GetFromUnderPath(), ToUnderPath: f.GetToUnderPath(), JudgeVerdict: f.GetJudgeVerdict(),
 		MethodExact: f.GetMethodExact(), KindExact: f.GetKindExact(), FromPathPrefix: f.GetFromPathPrefix(), FromUnfiled: f.GetFromUnfiled(),
+		ReviewRoute: f.GetReviewRoute(), JudgeAudit: f.GetJudgeAudit(),
 	}
 	if f != nil && f.MinConfidence != nil {
 		v := f.GetMinConfidence()
@@ -200,7 +204,7 @@ func reviewFilterToProto(f *connector.ReviewQueueFilter) *loomcyclepb.ReviewQueu
 		FromUnderPath: f.FromUnderPath, ToUnderPath: f.ToUnderPath, MinConfidence: f.MinConfidence,
 		CreatedBefore: f.CreatedBefore, CreatedAfter: f.CreatedAfter, HasJudgeVerdict: f.HasJudgeVerdict,
 		JudgeVerdict: f.JudgeVerdict, MethodExact: f.MethodExact, KindExact: f.KindExact,
-		FromPathPrefix: f.FromPathPrefix, FromUnfiled: f.FromUnfiled,
+		FromPathPrefix: f.FromPathPrefix, FromUnfiled: f.FromUnfiled, ReviewRoute: f.ReviewRoute, JudgeAudit: f.JudgeAudit,
 	}
 }
 

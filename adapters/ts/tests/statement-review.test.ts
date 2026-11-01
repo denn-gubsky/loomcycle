@@ -157,6 +157,25 @@ describe("applyReviewPolicy", () => {
     expect(res.rulings[0]!.selector.policy).toEqual({ version: 7, source: "review" });
   });
 
+  it("lists a judge run's ruling with that run", async () => {
+    const { client } = makeClient([
+      jsonResponse({ tenant: "acme", scope: "tenant", rulings: [
+        { id: "j1", action: "judge", ruled_by: "judge:run-7", selector: { judge: { run_id: "run-7", agent: "kb/judge" } }, matched: 4, ruled: 4, failed: 0, skipped: 0,
+          created_at: 1, reverted: false },
+      ] }),
+    ]);
+    const res = await client.listRulings();
+    expect(res.rulings[0]!.selector.judge).toEqual({ run_id: "run-7", agent: "kb/judge" });
+  });
+
+  it("sends the judge's queue and audit filters", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ tenant: "acme", scope: "tenant", statements: [] })]);
+    await client.listReviewQueue({ filter: { status: "asserted", review_route: "judge", judge_audit: "pending" } });
+    const url = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(url.searchParams.get("review_route")).toBe("judge");
+    expect(url.searchParams.get("judge_audit")).toBe("pending");
+  });
+
   it("throws forbidden for a member", async () => {
     const { client } = makeClient([jsonResponse({ code: "forbidden", error: "applying the review policy is for an admin or a tenant operator" }, 403)]);
     const err = await client.applyReviewPolicy().catch((e: unknown) => e);
