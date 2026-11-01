@@ -2256,7 +2256,11 @@ type AgentDef struct {
 	// relations it writes: "rule" (code found it) and/or "extractor" (a
 	// model it drives found it). A run then names its method per write
 	// (method: rule:<name>); without the grant every relation it writes is
-	// stamped manual, as a person's would be.
+	// stamped manual, as a person's would be. "judge" is the third value and
+	// stamps nothing: it lets the run record verdicts on the proposals the
+	// review policy routes to the judge, and rule on them above the floor
+	// (Document op=judge_statements). It does not, alone, make the agent a
+	// statement maintainer (maintain_statement, the document lease).
 	//
 	// Honoured only for `provider: code-js`, because only a code-js body is
 	// code: a model-driven agent declaring it is refused at load and at
@@ -8078,7 +8082,7 @@ func ValidateGitRemote(ops []string) error {
 const CodeJSProvider = "code-js"
 
 // ValidateStatementMethods refuses a statement_methods list holding a value
-// other than "rule" or "extractor", a duplicate, or any value on an agent
+// other than "rule", "extractor" or "judge", a duplicate, or any value on an agent
 // whose provider is not code-js. One function for every place a definition is
 // authored — operator yaml and the AgentDef create/fork overlay — so a grant
 // refused at boot is not quietly kept by a runtime write. provider is the
@@ -8086,8 +8090,8 @@ const CodeJSProvider = "code-js"
 func ValidateStatementMethods(provider string, methods []string) error {
 	seen := map[string]bool{}
 	for i, m := range methods {
-		if m != "rule" && m != "extractor" {
-			return fmt.Errorf("statement_methods[%d]: unknown method %q (want rule, extractor, or both)", i, m)
+		if m != "rule" && m != "extractor" && m != "judge" {
+			return fmt.Errorf("statement_methods[%d]: unknown method %q (want rule, extractor and/or judge)", i, m)
 		}
 		if seen[m] {
 			return fmt.Errorf("statement_methods[%d]: %q is listed twice", i, m)

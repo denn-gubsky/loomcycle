@@ -2298,6 +2298,12 @@ export interface ReviewQueueFilter {
   from_path_prefix?: string;
   /** The from-document is filed under no Path name (the summary's "" prefix). */
   from_unfiled?: boolean;
+  /** `judge`: the proposals the review policy left for the judge agent. */
+  review_route?: "judge";
+  /** A judge's acceptances in this audit state (attributes.judge.audited);
+   *  pair it with `status` (asserted for pending or confirmed, rejected for
+   *  overturned). */
+  judge_audit?: "pending" | "confirmed" | "overturned";
 }
 
 /** One row of the review queue's summary. */
@@ -2393,6 +2399,8 @@ export interface RulingSelector {
    *  its source (`review` / `auto_assert`; absent for a ruling made as a
    *  run's proposals were filed) and that run. */
   policy?: { version: number; source?: string; run_id?: string };
+  /** Set on a judge run's ruling (action `judge`): that run and its agent. */
+  judge?: { run_id: string; agent?: string };
 }
 
 /** One bulk ruling (`accept` / `reject`) or one revert of one (`revert`:
@@ -4194,6 +4202,7 @@ export type DocumentToolInput = {
     | "accept_statement"
     | "reject_statement"
     | "list_statements"
+    | "judge_statements"
     | "maintain_statement"
     | "resolve_anchor"
     | "lease"
@@ -4429,8 +4438,17 @@ export type DocumentToolInput = {
   /** lease: how long to hold it, in milliseconds (default 60000, max one hour). */
   ttl_ms?: number;
   /** classify: "propose" (default) applies an unambiguous rule match and files the
-   *  rest for review; "report" writes nothing. */
-  write?: "propose" | "report";
+   *  rest for review; "report" writes nothing. judge_statements: "rule"
+   *  (default) or "recommend". */
+  write?: "propose" | "report" | "rule" | "recommend";
+  /** judge_statements (a judge agent's run only): the verdicts to record. */
+  judgements?: Array<{
+    id: string;
+    verdict: "accept" | "reject" | "unsure";
+    confidence: number;
+    rationale: string;
+    verdict_run_id?: string;
+  }>;
   /** export_md: embed round-trippable chunk metadata + edges as HTML comments
    *  (default true server-side). false = clean human-facing Markdown. */
   include_metadata?: boolean;

@@ -11,7 +11,10 @@ agent run. An agent that thinks a relation is wrong proposes a correction
 (`propose_statement` with `id`), or, if it maintains statements, flags it
 (`maintain_statement` `action: flag`).
 
-It rules on proposals only. To withdraw a relation that is already asserted,
+It rules on proposals, and on one asserted relation: a judge agent's acceptance
+(`ruled_by: judge:<run>`), which rejecting **overturns** — it becomes a person's
+rejection, and the verdict records `audited: overturned`. To withdraw any other
+relation that is already asserted,
 judge it unsupported with `judge_fact` (kept, withheld) or remove it with
 `unlink_chunks`. A relation made by a `[[name]]` link in a chunk body is
 removed by editing the link out of the body.
@@ -30,8 +33,9 @@ removed by editing the link out of the body.
 
 - Refused with a permission error inside a run.
 - `reason is required`.
-- `not_a_proposal` — the relation is asserted or already rejected. One made by
-  a `[[name]]` link says so: edit the link out of its source chunk's body.
+- `not_a_proposal` — the relation is already rejected, or asserted by anyone
+  but a judge. One made by a `[[name]]` link says so: edit the link out of its
+  source chunk's body.
 - `no such statement` — check the id and the scope.
 - `statement_changed` — someone ruled on it while you did; reload it.
 
