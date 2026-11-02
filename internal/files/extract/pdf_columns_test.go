@@ -84,8 +84,10 @@ func TestExtractPDF_BorderlessTableEndsAtACellOverTwoColumns(t *testing.T) {
 	}
 }
 
-// A form of labels and values: two columns, a value that wraps.
-func TestExtractPDF_LabelValueFormIsTwoColumns(t *testing.T) {
+// A form of labels and values without borders has two columns, which is
+// too few to tell from two columns of prose: it stays text, read as it was
+// before columns were looked for.
+func TestExtractPDF_BorderlessLabelValueFormStaysText(t *testing.T) {
 	data := pdftest.Doc{Pages: []pdftest.Page{{Lines: []pdftest.Line{
 		{Text: "Ініціатор", X: 40, Y: 760, Size: 10}, {Text: "Департамент HR", X: 200, Y: 760, Size: 10},
 		{Text: "Дата", X: 40, Y: 746, Size: 10}, {Text: "02.11.2026", X: 200, Y: 746, Size: 10},
@@ -97,8 +99,27 @@ func TestExtractPDF_LabelValueFormIsTwoColumns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "| Ініціатор | Департамент HR |\n| --- | --- |\n| Дата | 02.11.2026 |\n" +
-		"| Підстава | Протокол Правління №111 |\n|   | та рішення №150 |\n| Сума | 120 000 грн |"
+	want := "## Page 1\n\nІніціатор Департамент HR\nДата 02.11.2026\nПідстава Протокол Правління №111\nта рішення №150\nСума 120 000 грн"
+	if !strings.Contains(s.md.String(), want) || rep.Tables != 0 || len(rep.Notes) != 0 {
+		t.Errorf("want\n%s\nin\n%s\nreport %+v", want, s.md.String(), rep)
+	}
+}
+
+// A borderless table of three columns is read as a table: the risk table
+// of a passport, with a cell that wraps.
+func TestExtractPDF_BorderlessThreeColumnTableIsATable(t *testing.T) {
+	data := pdftest.Doc{Pages: []pdftest.Page{{Lines: []pdftest.Line{
+		{Text: "Ризик", X: 40, Y: 760, Size: 10}, {Text: "Ймовірність", X: 200, Y: 760, Size: 10}, {Text: "Вплив", X: 320, Y: 760, Size: 10},
+		{Text: "Відтік кадрів", X: 40, Y: 746, Size: 10}, {Text: "Середня", X: 200, Y: 746, Size: 10}, {Text: "Високий", X: 320, Y: 746, Size: 10},
+		{Text: "Затримка", X: 40, Y: 732, Size: 10}, {Text: "Низька", X: 200, Y: 732, Size: 10}, {Text: "Помірний", X: 320, Y: 732, Size: 10},
+		{Text: "впровадження", X: 40, Y: 718, Size: 10},
+	}}}}.Bytes()
+	s, rep, err := extractPDF(t, data, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "| Ризик | Ймовірність | Вплив |\n| --- | --- | --- |\n| Відтік кадрів | Середня | Високий |\n" +
+		"| Затримка | Низька | Помірний |\n| впровадження |   |   |"
 	if !strings.Contains(s.md.String(), want) || rep.Tables != 1 {
 		t.Errorf("want\n%s\nin\n%s\nreport %+v", want, s.md.String(), rep)
 	}
@@ -142,24 +163,25 @@ func TestExtractPDF_WideGapsThatDoNotLineUpStayProse(t *testing.T) {
 	}
 }
 
-// Two columns of prose side by side are read as a two-column table: their
-// lines line up like a table's, and nothing on the page says otherwise.
-// Each line of each column stays whole in its cell, so the columns' text
-// no longer runs together as it does read as plain lines.
-func TestExtractPDF_ProseInTwoColumnsKeepsItsColumnsApart(t *testing.T) {
+// Two columns of prose side by side line up like a two-column table, and
+// nothing on the page tells them apart: they stay prose, each line of the
+// page read across both columns as before columns were looked for.
+func TestExtractPDF_ProseInTwoColumnsStaysProse(t *testing.T) {
 	var lines []pdftest.Line
+	var want []string
 	for i := range 5 {
 		y := 760 - float64(i)*12
 		lines = append(lines,
 			pdftest.Line{Text: "ліва колонка рядок " + itoa(i+1), X: 40, Y: y, Size: 10},
 			pdftest.Line{Text: "права колонка рядок " + itoa(i+1), X: 300, Y: y, Size: 10})
+		want = append(want, "ліва колонка рядок "+itoa(i+1)+" права колонка рядок "+itoa(i+1))
 	}
 	s, rep, err := extractPDF(t, pdftest.Doc{Pages: []pdftest.Page{{Lines: lines}}}.Bytes(), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(s.md.String(), "| ліва колонка рядок 3 | права колонка рядок 3 |") || rep.Tables != 1 {
-		t.Errorf("tables %d:\n%s", rep.Tables, s.md.String())
+	if md := s.md.String(); !strings.HasSuffix(md, "## Page 1\n\n"+strings.Join(want, "\n")) || rep.Tables != 0 || len(rep.Notes) != 0 {
+		t.Errorf("tables %d notes %q:\n%s", rep.Tables, rep.Notes, md)
 	}
 }
 
@@ -172,9 +194,9 @@ func TestExtractPDF_RuledAndAlignedTablesOnOnePage(t *testing.T) {
 			{Text: "А1", X: 43, Y: 746, Size: 10}, {Text: "А2", X: 143, Y: 746, Size: 10},
 			{Text: "А3", X: 43, Y: 726, Size: 10}, {Text: "А4", X: 143, Y: 726, Size: 10},
 			{Text: "Між таблицями", X: 40, Y: 690, Size: 10},
-			{Text: "Б1", X: 40, Y: 660, Size: 10}, {Text: "Б2", X: 140, Y: 660, Size: 10},
-			{Text: "Б3", X: 40, Y: 648, Size: 10}, {Text: "Б4", X: 140, Y: 648, Size: 10},
-			{Text: "Б5", X: 40, Y: 636, Size: 10}, {Text: "Б6", X: 140, Y: 636, Size: 10},
+			{Text: "Б1", X: 40, Y: 660, Size: 10}, {Text: "Б2", X: 140, Y: 660, Size: 10}, {Text: "Б3", X: 240, Y: 660, Size: 10},
+			{Text: "Б4", X: 40, Y: 648, Size: 10}, {Text: "Б5", X: 140, Y: 648, Size: 10}, {Text: "Б6", X: 240, Y: 648, Size: 10},
+			{Text: "Б7", X: 40, Y: 636, Size: 10}, {Text: "Б8", X: 140, Y: 636, Size: 10}, {Text: "Б9", X: 240, Y: 636, Size: 10},
 			{Text: "Висновок", X: 40, Y: 600, Size: 10},
 		},
 	}}}.Bytes()
@@ -184,7 +206,7 @@ func TestExtractPDF_RuledAndAlignedTablesOnOnePage(t *testing.T) {
 	}
 	md := s.md.String()
 	last := -1
-	for _, w := range []string{"| А1 | А2 |", "| А3 | А4 |", "Між таблицями", "| Б1 | Б2 |", "| Б5 | Б6 |", "Висновок"} {
+	for _, w := range []string{"| А1 | А2 |", "| А3 | А4 |", "Між таблицями", "| Б1 | Б2 | Б3 |", "| Б7 | Б8 | Б9 |", "Висновок"} {
 		i := strings.Index(md, w)
 		if i <= last {
 			t.Fatalf("%q missing or out of order in\n%s", w, md)

@@ -32,6 +32,12 @@ const (
 	// colMinLines is how many lines of a table must each start cells at two
 	// or more of its columns.
 	colMinLines = 3
+	// colMinColumns is how many columns a table read from aligned text must
+	// have. Two columns of prose side by side, as in a newsletter or a
+	// paper, line up exactly like a two-column table and nothing on the page
+	// tells them apart, so they must stay prose; a table drawn with borders
+	// (P1) needs only two.
+	colMinColumns = 3
 	// colTol is how close, in points, two cells must start to be in one
 	// column.
 	colTol = 2.0
@@ -231,7 +237,7 @@ func alignedTables(rows []pdfLine, budget *gridBudget) ([]colRegion, bool) {
 				return nil, false
 			}
 			cols = columnStarts(lines[i:to])
-			if len(cols) < 2 || len(cols) > maxPDFTableCols {
+			if len(cols) < colMinColumns || len(cols) > maxPDFTableCols {
 				cols = nil
 				break
 			}

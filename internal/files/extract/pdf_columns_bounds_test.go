@@ -15,10 +15,12 @@ import (
 //   - a hanging list indent: the number's end to its text, 6 to 8 pt.
 //
 // A column gap is at least one font size (and three median word spaces);
-// three lines must share two column starts, which line up within 2 pt.
+// three lines must share two column starts, which line up within 2 pt; and
+// a table has three columns or more, since two columns of prose (a
+// newsletter, a paper) line up just as a two-column table does.
 func TestColumnThresholds_AreTheMeasuredOnes(t *testing.T) {
-	if colGapSizes != 1.0 || colGapMedians != 3.0 || colMinLines != 3 || colTol != 2.0 {
-		t.Fatalf("thresholds changed: gap %g sizes, %g medians, %d lines, %g pt", colGapSizes, colGapMedians, colMinLines, colTol)
+	if colGapSizes != 1.0 || colGapMedians != 3.0 || colMinLines != 3 || colTol != 2.0 || colMinColumns != 3 {
+		t.Fatalf("thresholds changed: gap %g sizes, %g medians, %d lines, %g pt, %d columns", colGapSizes, colGapMedians, colMinLines, colTol, colMinColumns)
 	}
 }
 
@@ -65,7 +67,7 @@ func alignedRows(n, cols int) []pdfLine {
 // However many lines share its columns, a table is at most
 // maxPDFTableRows lines; the lines past it start another table.
 func TestAlignedTables_ARegionIsAtMostMaxRows(t *testing.T) {
-	regions, ok := alignedTables(alignedRows(maxPDFTableRows+500, 3), &gridBudget{left: maxPDFGridWork})
+	regions, ok := alignedTables(alignedRows(maxPDFTableRows+500, colMinColumns), &gridBudget{left: maxPDFGridWork})
 	if !ok || len(regions) != 2 {
 		t.Fatalf("ok %v, regions %d, want 2", ok, len(regions))
 	}
