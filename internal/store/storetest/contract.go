@@ -253,6 +253,7 @@ func Run(t *testing.T, factory Factory) {
 		{"WebhookCountsConcurrentAddsLoseNothing", testWebhookCountsConcurrentAddsLoseNothing},
 		{"MemoryEmbedCascadesOnDelete", testMemoryEmbedCascadesOnDelete},
 		{"MemoryEmbedListMissing", testMemoryEmbedListMissing},
+		{"MemoryEmbedListVectors", testMemoryEmbedListVectors},
 		{"MemorySearchFilterExcludesPrefix", testMemorySearchFilterExcludesPrefix},
 		{"MemorySearchImportOriginIsDocumentClass", testMemorySearchImportOriginIsDocumentClass},
 		{"MemoryEmbedDelete", testMemoryEmbedDelete},
@@ -18169,5 +18170,80 @@ func testMigrateTenantDocumentRowsIdempotentAndReportsStrays(t *testing.T, s sto
 	}
 	if again.Moved != 0 || again.Conflicts != 0 || again.Strays != 1 {
 		t.Errorf("second call = %+v, want nothing moved and the stray reported again", again)
+	}
+}
+
+// testMemoryEmbedListVectors pins the bulk vector read the document projection
+// pass (RFC FQ P2) fits and places from: prefixed, keyset-paged on key, live rows
+// only, tenant- and scope-confined, each row carrying its producer and vector.
+func testMemoryEmbedListVectors(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if !s.SupportsVectors() {
+		if _, err := s.MemoryEmbedListVectors(ctx, "", store.MemoryScopeUser, "vecs", "doc.chunk:", "", 10); !errors.Is(err, store.ErrVectorUnsupported) {
+			t.Errorf("MemoryEmbedListVectors on a backend without vectors: got %v, want ErrVectorUnsupported", err)
+		}
+		return
+	}
+	const sid = "vecs"
+	v, _ := json.Marshal("prose")
+	put := func(tenant, scopeID, key string, vec []float32, model string) {
+		t.Helper()
+		if err := s.MemorySet(ctx, tenant, store.MemoryScopeUser, scopeID, key, v, 0); err != nil {
+			t.Fatalf("MemorySet %s: %v", key, err)
+		}
+		if err := s.MemoryEmbedSet(ctx, tenant, store.MemoryScopeUser, scopeID, key, store.MemoryEmbedding{
+			Provider: "test", Model: model, Dimension: len(vec), Vector: vec, EmbedText: key, CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("MemoryEmbedSet %s: %v", key, err)
+		}
+	}
+	put("t1", sid, "doc.chunk:a", floats32(1, 0, 0, 0), "m1")
+	put("t1", sid, "doc.chunk:b", floats32(0, 1, 0, 0), "m2")
+	put("t1", sid, "doc.chunk:c", floats32(0, 0, 1, 0), "m1")
+	put("t1", sid, "memory/fact/x", floats32(0, 0, 0, 1), "m1") // outside the prefix
+	put("t2", sid, "doc.chunk:z", floats32(1, 1, 0, 0), "m1")   // another tenant
+	put("t1", "other", "doc.chunk:y", floats32(1, 1, 1, 0), "m1")
+	put("t1", sid, "doc.chunk:d", floats32(0.5, 0.5, 0, 0), "m1")
+	if err := s.MemorySupersede(ctx, "t1", store.MemoryScopeUser, sid, "doc.chunk:d"); err != nil {
+		t.Fatalf("MemorySupersede: %v", err)
+	}
+
+	keys := func(rows []store.MemoryEmbedRow) []string {
+		out := make([]string, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, r.Key)
+		}
+		return out
+	}
+	got, err := s.MemoryEmbedListVectors(ctx, "t1", store.MemoryScopeUser, sid, "doc.chunk:", "", 100)
+	if err != nil {
+		t.Fatalf("MemoryEmbedListVectors: %v", err)
+	}
+	if want := []string{"doc.chunk:a", "doc.chunk:b", "doc.chunk:c"}; !reflect.DeepEqual(keys(got), want) {
+		t.Fatalf("rows = %v, want %v in key order (the fact row is outside the prefix, the "+
+			"superseded row is not live, the others are another tenant's or scope's)", keys(got), want)
+	}
+	if r := got[1]; r.Provider != "test" || r.Model != "m2" || r.Dimension != 4 ||
+		!reflect.DeepEqual(r.Vector, floats32(0, 1, 0, 0)) || r.CreatedAt.IsZero() {
+		t.Errorf("row b = %+v, want provider test, model m2, the stored vector and its write time", r)
+	}
+	page, err := s.MemoryEmbedListVectors(ctx, "t1", store.MemoryScopeUser, sid, "doc.chunk:", "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(keys(page), []string{"doc.chunk:a", "doc.chunk:b"}) {
+		t.Errorf("limit 2 = %v", keys(page))
+	}
+	rest, err := s.MemoryEmbedListVectors(ctx, "t1", store.MemoryScopeUser, sid, "doc.chunk:", "doc.chunk:b", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(keys(rest), []string{"doc.chunk:c"}) {
+		t.Errorf("after doc.chunk:b = %v, want just c — the cursor is exclusive", keys(rest))
+	}
+	if wide, err := s.MemoryEmbedListVectors(ctx, "t1", store.MemoryScopeUser, sid, "doc.chunk:", "", 5000); err != nil {
+		t.Fatal(err)
+	} else if len(wide) != 3 {
+		t.Errorf("limit 5000 returned %d rows, want 3 (clamped, not reset)", len(wide))
 	}
 }

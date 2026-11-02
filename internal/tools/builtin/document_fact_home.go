@@ -542,6 +542,7 @@ func (d *Document) deletePlaceholderRoot(ctx context.Context, txnID, chunkID str
 		`DELETE FROM chunk_memory_meta WHERE chunk_id = ?`,
 		`DELETE FROM chunk_revisions WHERE chunk_id = ?`,
 		`DELETE FROM chunk_layout WHERE chunk_id = ?`,
+		`DELETE FROM chunk_projection WHERE chunk_id = ?`,
 		`DELETE FROM chunks WHERE id = ?`,
 	} {
 		args := []any{chunkID}

@@ -39,9 +39,10 @@ import (
 // a scope from before the split until the Document tool's first use moves it.
 
 // documentTableExtras are names Document creates outside docSchemaDDL:
-// chunk_assets, whose DDL is built per tier (BLOB or BYTEA) in ensureSchema, and
-// the table migrateEdgeStatements builds and renames into chunk_edges.
-var documentTableExtras = []string{"chunk_assets", "chunk_edges_statements"}
+// chunk_assets and chunk_projection_basis, whose DDL is built per tier (BLOB or
+// BYTEA) in ensureSchema, and the table migrateEdgeStatements builds and renames
+// into chunk_edges.
+var documentTableExtras = []string{"chunk_assets", "chunk_projection_basis", "chunk_edges_statements"}
 
 // documentIndexExtras are the indexes Document's migrations create outside
 // docSchemaDDL. Dropping one would let duplicates in or slow every document op.

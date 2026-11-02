@@ -533,6 +533,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL
+            label: LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL
+            description: 'Document projection sweeper cadence (a Go duration, e.g. 1h): places each document chunk on its scope''s 3D map by meaning (memory.projection). A positive value also turns the projection on; 0 keeps it on with no sweeper. Default unset = memory.projection decides (off unless enabled). (example: 1h)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_SQLMEM_ENABLED
             label: LOOMCYCLE_SQLMEM_ENABLED
             description: 'A per-scope SQL database the runtime hosts as a third Memory facet (agents query arbitrary SQL via the Memory tool''s sql_* ops). It also BACKS the Document primitive (RFC AK) — the chunk-structure tables live here, so **Documents and the Web UI Document viewer/assistant require this enabled.** Default OFF. (example: 1)'

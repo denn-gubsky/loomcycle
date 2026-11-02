@@ -60,6 +60,9 @@ as the user store, search both, in two calls.
   for the defaults.
 - `as_of` — only chunks whose stated validity contains this moment (unix
   nanoseconds); a chunk with no stated validity always matches.
+- `with_projection` — `true` also returns `query_xyz`: your query placed
+  on the scope's 3D map of chunks by meaning, the map `graph_snapshot`'s
+  `projection` block draws. Absent when the server keeps no map for the scope.
 
 ## Aiming the search
 
@@ -120,6 +123,9 @@ low `score` and still rank first. How high is "good" depends on the embedding
 model, so compare within one result rather than to a fixed number. When the
 response says `reranked: true`, the order is the reranker's and `rank_score` no
 longer describes it.
+With `with_projection` and a map, the response also carries `query_xyz: [x,
+y, z]` (4 decimals), on the same axes as the `projection` block of
+`graph_snapshot`.
 Bodies are not included: read a hit with `{"op":"get_chunk","id":<chunk_id>}`.
 
 With `expand`, the chunks it added follow the ranked hits in the same list,

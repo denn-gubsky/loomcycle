@@ -575,4 +575,9 @@ type SearchResult struct {
 	// Scopes is index-aligned with Entries when the query carried a Documents
 	// leg: the scope each entry was found in. Nil for a single-scope search.
 	Scopes []store.MemoryScope
+
+	// QueryVector is the embedded query, for a caller that places it on a map of
+	// the same vectors (Document op=search with_projection). Only a backend that
+	// embeds in-process has it; nil otherwise. Never serialized.
+	QueryVector []float32
 }

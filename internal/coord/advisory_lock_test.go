@@ -48,6 +48,16 @@ func TestLockKeyConstants_MatchInitFnv(t *testing.T) {
 	if LockKeyReplicasSweeper != fnvKey("replicas_sweeper") {
 		t.Errorf("LockKeyReplicasSweeper drift")
 	}
+	if LockKeyProjectionSweeper != fnvKey("projection_sweeper") {
+		t.Errorf("LockKeyProjectionSweeper drift")
+	}
+	// Its own key: sharing one makes each subsystem's tick starve the other's.
+	for name, k := range map[string]int64{"deadlink_gc": LockKeyDeadLinkGC, "memory_sweeper": LockKeyMemorySweeper,
+		"retention_sweeper": LockKeyRetentionSweeper} {
+		if LockKeyProjectionSweeper == k {
+			t.Errorf("LockKeyProjectionSweeper shares %s's key", name)
+		}
+	}
 }
 
 // ---- Postgres-gated tests ----

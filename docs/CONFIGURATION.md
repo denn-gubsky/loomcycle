@@ -3048,6 +3048,41 @@ memory:
 
 Languages Postgres does not ship (for example Ukrainian, via a hunspell dictionary), the `unaccent` extension, the role that must own the table, and forcing a rebuild after an in-place configuration change: see [DOCUMENTS.md, "The word leg's language — `memory.fulltext`"](DOCUMENTS.md#the-word-legs-language--memoryfulltext).
 
+## 9k. Document projection — the 3D chunk map (`memory.projection`)
+
+Places each document chunk on its scope's 3D map by meaning: the chunk's
+stored embedding projected on the scope's top three principal components.
+`graph_snapshot` serves the coordinates as its `projection` block and
+`search` with `with_projection` places the query on the same map. The vectors
+never leave the server; only three coordinates per chunk do.
+
+```yaml
+memory:
+  projection:
+    enabled: true        # default false: nothing runs, nothing is read
+    interval: 1h         # background sweeper cadence; empty or 0 = no sweeper
+    refit_after: 168h    # a basis this old is refitted ...
+    refit_min_new: 500   # ... once this many chunks were placed since its fit
+    sample_max: 20000    # vectors a fit samples (also capped at 64 MB of them)
+```
+
+- **Off by default.** Off, `graph_snapshot` returns the empty block, `search`
+  leaves `query_xyz` out, the sweeper does not start and
+  `POST /v1/_document/project` answers 409.
+- **`LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL`** (a Go duration, e.g. `1h`)
+  overrides `interval`; a positive value also turns the projection on, so the
+  env alone is enough. `0` keeps it on with no sweeper.
+- **Needs** SQL Memory, a vector index (Postgres with pgvector) and
+  `memory.embedder`. On plain sqlite there are no vectors to place: the block
+  stays empty and the operator pass reports `unsupported`.
+- **The sweeper** runs on one replica at a time and walks every scope with
+  document chunk vectors. It makes no model call. Each pass places at most
+  5000 chunks and fits at most once.
+- **Validation.** A duration that does not parse, or a negative count, fails
+  config load.
+
+The operator pass and the response: [DOCUMENTS.md, "Projection — the 3D map"](DOCUMENTS.md#projection--the-3d-map).
+
 ## 10. Cross-references
 
 - [`loomcycle.example.yaml`](../loomcycle.example.yaml) — the repo-root reference yaml. All six user_tiers wired, inline comments on every section. Copy-paste and edit.

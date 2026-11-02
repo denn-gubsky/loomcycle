@@ -326,13 +326,14 @@ func (d *Document) graphSnapshot(ctx context.Context, key sqlmem.ScopeKey, mscop
 		out["dirents"] = sec
 	}
 	if req.include["projection"] {
-		// P0 ships the block's shape only: no layout is computed yet, so every
-		// chunk on the page is missing one.
-		missing := make([]int, len(chunks))
-		for i := range missing {
-			missing[i] = i
+		// In the chunks section's order (reading order), not the order rows were read.
+		cs, _ := out["chunks"].(map[string]any)
+		ids, _ := cs["ids"].([]string)
+		sec, err := d.snapshotProjection(ctx, key, ids)
+		if err != nil {
+			return errFrom(op+": "+err.Error(), err), nil
 		}
-		out["projection"] = map[string]any{"model": "", "basis_version": 0, "xyz": []float64{}, "missing": missing}
+		out["projection"] = sec
 	}
 	out["codes"] = map[string]any{
 		"types": codeTypes.values(), "statuses": codeStatuses.values(), "kinds": codeKinds.values(),

@@ -248,6 +248,35 @@ func (v *vectorStore) MemoryEmbedListByModel(ctx context.Context, _ string, scop
 	return nil, errors.New("MemoryEmbedListByModel not implemented in fake")
 }
 
+// MemoryEmbedListVectors pages the fake's rows by key, like the store does. The
+// fake ignores the tenant, as its other methods do.
+func (v *vectorStore) MemoryEmbedListVectors(_ context.Context, _ string, scope store.MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]store.MemoryEmbedRow, error) {
+	if !v.enabled {
+		return nil, store.ErrVectorUnsupported
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	limit = min(limit, 1000)
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	head := vsKey(scope, scopeID, "")
+	var out []store.MemoryEmbedRow
+	for k, e := range v.embeds {
+		key, ok := strings.CutPrefix(k, head)
+		if !ok || !strings.HasPrefix(key, keyPrefix) || key <= afterKey {
+			continue
+		}
+		out = append(out, store.MemoryEmbedRow{Key: key, Provider: e.Provider, Model: e.Model,
+			Dimension: e.Dimension, Vector: e.Vector, CreatedAt: e.CreatedAt})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (v *vectorStore) MemoryEmbedStats(ctx context.Context, _ string, scope store.MemoryScope) (store.MemoryEmbedStats, error) {
 	return store.MemoryEmbedStats{}, errors.New("MemoryEmbedStats not implemented in fake")
 }

@@ -3537,6 +3537,18 @@ type MemoryVectorStore interface {
 	// under the query, and so the cursor is meaningful.
 	MemoryEmbedListMissing(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]MemoryEntry, error)
 
+	// MemoryEmbedListVectors returns the stored vectors of live rows under a key
+	// prefix, keyset-paged on key (only key > afterKey; "" = from the start) and
+	// ordered by key. limit <= 0 is 200; above 1000 it is clamped to 1000.
+	//
+	// It is the ONE reader of raw vectors in bulk, and it exists for the document
+	// projection pass (RFC FQ P2), which fits a 3-component basis over a scope's
+	// chunk vectors and places each chunk on it. No tool and no route reaches it:
+	// the pass calls it in-process and lets only three coordinates per chunk out.
+	//
+	// ErrVectorUnsupported on a backend with no vector plane, like its siblings.
+	MemoryEmbedListVectors(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]MemoryEmbedRow, error)
+
 	// MemoryEmbedStats returns per-(provider, model) row counts and
 	// total embedding bytes for the given scope. Drives the v0.9.0
 	// PR 4 admin endpoint `/v1/_memory/embed_stats`. ErrVectorUnsupported
@@ -5416,6 +5428,18 @@ type MemoryEmbedding struct {
 	Vector    []float32 `json:"-"` // not JSON-serialised here; snapshot uses its own base64 path
 	EmbedText string    `json:"embed_text"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// MemoryEmbedRow is one stored vector as MemoryEmbedListVectors returns it.
+// CreatedAt is the embedding's own write time: a consumer that derived something
+// from the vector compares it to tell a re-embedded row from an unchanged one.
+type MemoryEmbedRow struct {
+	Key       string
+	Provider  string
+	Model     string
+	Dimension int
+	Vector    []float32
+	CreatedAt time.Time
 }
 
 // MemorySearchEntry is one result row of MemoryEmbedSearch. It

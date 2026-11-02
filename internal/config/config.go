@@ -627,6 +627,10 @@ type MemoryConfig struct {
 	// FullText sets the language of the Postgres word leg of a search (see
 	// FullTextConfig).
 	FullText FullTextConfig `yaml:"fulltext"`
+
+	// Projection is the 3D layout of document chunks by meaning (see
+	// ProjectionConfig). Off unless enabled.
+	Projection ProjectionConfig `yaml:"projection"`
 }
 
 // RerankerConfig is the memory.reranker block. The rerank is one model call over
@@ -5006,6 +5010,12 @@ type Env struct {
 	// Env: LOOMCYCLE_DEADLINK_GC_DRY_RUN=1.
 	DeadLinkGCDryRun bool
 
+	// DocumentProjectionInterval is LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL, raw:
+	// a Go duration that overrides memory.projection.interval ("0" stops the
+	// sweeper; a positive value also enables the projection). Resolved and
+	// validated by Config.DocumentProjection / validate.
+	DocumentProjectionInterval string
+
 	// ProvisionIdentityDocs creates the tenant-root and user-root Documents when a
 	// principal is ESTABLISHED — at token mint, and at boot for config-declared
 	// principals — instead of only on the first run that references them.
@@ -6001,6 +6011,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		}
 	}
 	cfg.Env.DeadLinkGCDryRun = os.Getenv("LOOMCYCLE_DEADLINK_GC_DRY_RUN") == "1"
+	cfg.Env.DocumentProjectionInterval = os.Getenv("LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL")
 	cfg.Env.MemorySweepInterval = 15 * time.Minute
 	if v := os.Getenv("LOOMCYCLE_MEMORY_SWEEP_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -9738,6 +9749,9 @@ func validate(c *Config) error {
 		return err
 	}
 	if err := c.Memory.FullText.validate(); err != nil {
+		return err
+	}
+	if _, err := c.Memory.Projection.resolve(c.Env.DocumentProjectionInterval); err != nil {
 		return err
 	}
 	if err := c.Decision.validate(c); err != nil {

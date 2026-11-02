@@ -106,6 +106,7 @@ func (d *Document) cascadeDeleteChunks(ctx context.Context, key sqlmem.ScopeKey,
 				`DELETE FROM chunk_memory_meta WHERE chunk_id = ?`,
 				`DELETE FROM chunk_revisions WHERE chunk_id = ?`,
 				`DELETE FROM chunk_layout WHERE chunk_id = ?`,
+				`DELETE FROM chunk_projection WHERE chunk_id = ?`,
 				`DELETE FROM chunks WHERE id = ?`,
 			} {
 				args := []any{id}

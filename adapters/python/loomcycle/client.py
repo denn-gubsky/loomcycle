@@ -1144,7 +1144,12 @@ class LoomcycleClient:
         it is absent. ``include`` picks the sections; ``under_path``,
         ``document_ids``, ``chunk_ids``, ``types``, ``statuses``, ``tag`` and
         ``tag_prefix`` select documents; ``page_documents`` and ``edge_budget``
-        bound a page. Documents the caller may not read are left out.
+        bound a page. Documents the caller may not read are left out. With
+        ``include`` naming ``"projection"``, the ``projection`` block places
+        each chunk on the scope's 3D map by meaning (``xyz``, one triple per
+        chunk, ``missing`` for chunks not yet placed; ``basis_version`` 0 =
+        no map). ``op="search"`` with ``with_projection=True`` adds the
+        query's own ``query_xyz`` on that map.
 
         ``op="graph_recall"`` rows carry, for chunks that are not facts, the
         first 600 characters of their body as ``body`` (``body_truncated`` when
