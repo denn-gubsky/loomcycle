@@ -655,6 +655,7 @@ function PathExplorerBody({
       reloadToken: navReload,
       maximized,
       onToggleMaximize: () => setMaximized((m) => !m),
+      subject: principal?.subject,
     }),
     [
       scope,
@@ -665,6 +666,7 @@ function PathExplorerBody({
       onNavigatorSelect,
       navReload,
       maximized,
+      principal?.subject,
     ],
   );
   const focusForView = focus && view && focus.documentId === view.documentId ? focus : undefined;

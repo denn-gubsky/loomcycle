@@ -6,8 +6,10 @@ import { chunkRgb, rgbHex } from "../lib/colors";
 import type { BrowseScope, DocScope } from "../types";
 
 // SearchPanel sits under the map. "names" matches titles and paths among the
-// loaded stars as you type; "meaning" asks the runtime's Document search
-// (hybrid full-text + vector) and places each hit on its star. Clicking a row
+// loaded stars as you type; "content" asks the runtime's Document search
+// (hybrid full-text + vector over chunk bodies) and, in the meaning view, also
+// where the query itself lands; "memory" searches the scope's memory (facts,
+// notes and document chunks) and places the chunk-backed hits. Clicking a row
 // flies there and opens it; ticking rows selects several at once, and the map
 // draws the union of their links.
 
@@ -22,7 +24,7 @@ export interface ResultRow {
   color: string;
 }
 
-type Mode = "names" | "meaning";
+type Mode = "names" | "content" | "memory";
 
 export default function SearchPanel(props: {
   model: UniverseModel;
@@ -37,8 +39,30 @@ export default function SearchPanel(props: {
   onChecked: (next: ReadonlySet<number>) => void;
   onPick: (row: ResultRow) => void;
   onFrame: (stars: number[]) => void;
+  /** Ask content search for the query's projected point (the meaning view). */
+  withProjection: boolean;
+  onQueryPoint: (xyz: [number, number, number] | null) => void;
+  /** The memory scope id to search (the subject, for user scope); undefined =
+   *  no memory mode (agent scope, or a data layer without memory search). */
+  memoryScopeId?: string;
 }) {
-  const { model: m, version, data, scope, browse, underPath, results, onResults, checked, onChecked, onPick, onFrame } = props;
+  const {
+    model: m,
+    version,
+    data,
+    scope,
+    browse,
+    underPath,
+    results,
+    onResults,
+    checked,
+    onChecked,
+    onPick,
+    onFrame,
+    withProjection,
+    onQueryPoint,
+    memoryScopeId,
+  } = props;
   const [mode, setMode] = useState<Mode>("names");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -69,27 +93,44 @@ export default function SearchPanel(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, query, version]);
 
-  const runMeaning = async (e?: FormEvent) => {
+  const offMap = (chunkId: string, title: string, documentTitle: string, score: number): ResultRow => ({
+    chunk: -1,
+    chunkId,
+    title,
+    documentTitle,
+    score,
+    color: "#888888",
+  });
+
+  const runSearch = async (e?: FormEvent) => {
     e?.preventDefault();
-    if (mode !== "meaning" || !data || query.trim().length < 2) return;
+    if (mode === "names" || !data || query.trim().length < 2) return;
     const my = ++seq.current;
     setBusy(true);
     setErr(null);
     try {
-      const hits = await data.search(query.trim(), scope, { topK: 30, underPath }, browse);
+      if (mode === "memory") {
+        if (!data.memorySearch || memoryScopeId === undefined) return;
+        const hits = await data.memorySearch(query.trim(), scope, memoryScopeId, { topK: 30 });
+        if (my !== seq.current) return;
+        onQueryPoint(null);
+        onResults(
+          hits.map((h) => {
+            const c = h.chunkId ? m.chunkIndex.get(h.chunkId) : undefined;
+            if (c !== undefined) return row(c, h.score);
+            return offMap(h.chunkId ?? h.key, h.title || h.key, h.document ?? h.kind, h.score);
+          }),
+        );
+        return;
+      }
+      const ans = await data.search(query.trim(), scope, { topK: 30, underPath, withProjection }, browse);
       if (my !== seq.current) return;
+      onQueryPoint(ans.queryXyz ?? null);
       onResults(
-        hits.map((h) => {
+        ans.hits.map((h) => {
           const c = m.chunkIndex.get(h.chunk_id);
           if (c !== undefined) return row(c, h.score);
-          return {
-            chunk: -1,
-            chunkId: h.chunk_id,
-            title: h.title || h.chunk_id,
-            documentTitle: "",
-            score: h.score,
-            color: "#888888",
-          };
+          return offMap(h.chunk_id, h.title || h.chunk_id, "", h.score);
         }),
       );
     } catch (x) {
@@ -109,18 +150,32 @@ export default function SearchPanel(props: {
   const onMap = results.filter((r) => r.chunk >= 0);
   return (
     <div className="lu-search">
-      <form className="lu-search-bar" onSubmit={runMeaning}>
-        <select value={mode} onChange={(e) => setMode(e.target.value as Mode)} title="Search by name, or by meaning">
+      <form className="lu-search-bar" onSubmit={runSearch}>
+        <select
+          value={mode}
+          onChange={(e) => {
+            setMode(e.target.value as Mode);
+            onQueryPoint(null);
+          }}
+          title="Search by name, by content, or the scope's memory"
+        >
           <option value="names">names</option>
-          <option value="meaning">meaning</option>
+          <option value="content">content</option>
+          {data?.memorySearch && memoryScopeId !== undefined && <option value="memory">memory</option>}
         </select>
         <input
           type="search"
           value={query}
-          placeholder={mode === "names" ? "Find a document or heading…" : "Describe what you are looking for, Enter"}
+          placeholder={
+            mode === "names"
+              ? "Find a document or heading…"
+              : mode === "content"
+                ? "Describe what you are looking for, Enter"
+                : "Ask the scope's memory, Enter"
+          }
           onChange={(e) => setQuery(e.target.value)}
         />
-        {mode === "meaning" && (
+        {mode !== "names" && (
           <button type="submit" disabled={busy || query.trim().length < 2}>
             {busy ? "…" : "search"}
           </button>
@@ -140,6 +195,7 @@ export default function SearchPanel(props: {
             setQuery("");
             onResults([]);
             onChecked(new Set());
+            onQueryPoint(null);
           }}
         >
           clear
@@ -165,7 +221,7 @@ export default function SearchPanel(props: {
                 )}
                 {r.path && <code className="lu-result-path">{r.path}</code>}
               </button>
-              {mode === "meaning" && <span className="lu-result-score">{r.score.toFixed(2)}</span>}
+              {mode !== "names" && <span className="lu-result-score">{r.score.toFixed(2)}</span>}
             </li>
           ))}
         </ul>
