@@ -147,9 +147,13 @@ export function transferBlocked(op: TransferOp, res: TransferResult, dropDanglin
   return (res.counts?.documents ?? 0) === 0 && !(res.to_finish?.length ?? 0);
 }
 
+// trimSlash drops trailing slashes, keeping a lone "/". A loop, not /\/+$/: that
+// regex backtracks polynomially on a long run of slashes not at the end.
 function trimSlash(p: string): string {
   const t = p.trim();
-  return t.length > 1 ? t.replace(/\/+$/, "") : t;
+  let end = t.length;
+  while (end > 1 && t[end - 1] === "/") end--;
+  return t.slice(0, end);
 }
 
 function plural(n: number, one: string, many = one + "s"): string {

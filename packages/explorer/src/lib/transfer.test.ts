@@ -45,6 +45,15 @@ describe("transferInput", () => {
     expect(transferInput({ ...base, to: "/kb/proj/" }).path_map).toEqual({ "/proj": "/kb/proj" });
   });
 
+  it("trailing slashes are trimmed, a lone / is kept, and a long run of slashes is cheap", () => {
+    expect(transferInput({ ...base, from: "/proj///", to: "/kb//" }).path_map).toEqual({ "/proj": "/kb" });
+    expect(transferInput({ ...base, from: "/", to: "/kb" }).path_map).toEqual({ "/": "/kb" });
+    const many = "/" + "/".repeat(100000) + "x";
+    const start = Date.now();
+    transferInput({ ...base, from: many, to: "/kb" });
+    expect(Date.now() - start).toBeLessThan(1000);
+  });
+
   it("a document is named by id", () => {
     const input = transferInput({ ...base, underPath: undefined, documentId: "d1", from: "/proj/plan", to: "/proj/plan" });
     expect(input.document_ids).toEqual(["d1"]);
