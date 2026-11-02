@@ -221,7 +221,8 @@ Live SSE tails of what changed in the caller's tenant's memory and documents —
 | Method | Returns | Notes |
 |---|---|---|
 | `streamMemoryChanges(opts?)` | `AsyncIterable<ChangeFeedFrame>` | `memory.set` / `memory.delete` / `memory.scope_deleted`. Mirrors `GET /v1/_memory/changes`. |
-| `streamDocumentChanges(opts?)` | `AsyncIterable<ChangeFeedFrame>` | `document.chunk.updated` / `document.chunk.deleted`, naming the `chunk_id`. Mirrors `GET /v1/_document/changes`. |
+| `streamDocumentChanges(opts?)` | `AsyncIterable<ChangeFeedFrame>` | `document.chunk.updated` / `document.chunk.deleted` / `document.edges.changed`, naming the `chunk_id` and `document_id`. Mirrors `GET /v1/_document/changes`. |
+| `documentFeed({scope, scopeId?, tenant?, signal?})` | `AsyncIterable<DocumentFeedFrame>` | RFC FV — the reader's feed, open to a tenant member: one scope (`user` / `tenant`), only documents the caller can list, `{type, chunk_id, document_id, at}` with no cursor (a reconnect is a resync). Mirrors `GET /v1/_document/feed`. |
 
 Each change is a **value-free coordinate** (`seq`, `type`, `scope`, `scope_id`, `key` or `chunk_id`, `at`): it says *what* changed, and you pull the current value through the data API. The first item is always `{ kind: "feed", payload: { enabled, since, embedder? } }`, then one `{ kind: "change", payload: MemoryChange }` per change, oldest first.
 

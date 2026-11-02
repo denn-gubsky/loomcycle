@@ -372,6 +372,69 @@ const open = await client.document({
 });
 ```
 
+## Watching documents change — the reader feed (RFC FV)
+
+A view of a scope's documents (a list, a map) can stay current without
+reloading on a timer: `GET /v1/_document/feed` streams, as SSE, a frame each
+time a document the caller can list changes.
+
+**Why a second feed.** `GET /v1/_document/changes` is the operator's
+tenant-wide feed, and it stays the operator's: it names every chunk the tenant
+writes, and its `seq` cursor counts, by its gaps, writes to documents a member
+may not list. The reader feed shows one scope, only documents the caller may
+read, and has no cursor.
+
+```
+GET /v1/_document/feed?scope=user|tenant[&scope_id=…][&tenant=…]
+```
+
+- **Who.** Gated like `POST /v1/_document`: a tenant member may open it, and
+  `scope`, `scope_id` and `tenant` resolve exactly as there (from the
+  principal; `tenant` is an admin's focus). `scope: tenant` needs the tenant
+  scope's memory and SQL grants. `scope: agent` is refused (`400`): agent
+  scopes are private to their runs.
+- **Frames.**
+  - `event: feed`, first: `{enabled, embedder}`. `enabled: false` means the
+    server captures no changes (`LOOMCYCLE_MEMORY_CHANGES_ENABLED` unset); the
+    stream idles, so reload on a timer instead.
+  - `event: change`: `{type, chunk_id, document_id, at}`, with `type` one of
+    `document.chunk.updated`, `document.chunk.deleted`,
+    `document.edges.changed` (a statement written, ruled on or removed — one
+    per endpoint document; `chunk_id` is the endpoint in that document).
+    Changes of one type to one document within one server poll arrive as one.
+    Value-free: refetch the document, e.g. with `graph_snapshot document_ids`.
+  - `event: error`: `store_unavailable` is non-fatal (the server retries);
+    `access_unavailable` means the caller's access could not be re-checked and
+    the stream is closed.
+- **No cursor.** The stream starts at the current head and never sends a
+  `seq`. After any disconnect, reload the view and open a new stream.
+- **Access per frame.** A document must be readable under the rule
+  `graph_snapshot` and `search` apply. Answers are cached per stream for at
+  most 30 s, so a revoked grant stops frames within that window. A frame for a
+  document that no longer exists is sent only when nothing the caller holds
+  restricts reading the scope; otherwise it is dropped and the client
+  reconciles on its next reload.
+- **Limits.** At most `LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS` (default 4; `0` =
+  unlimited) concurrent streams per principal on a replica; the next is
+  refused with `429 too_many_streams`.
+- **Transports.** HTTP SSE only. TS: `client.documentFeed({scope, scopeId?,
+  tenant?, signal})`, an async iterator of `{kind: "feed" | "change" |
+  "error", payload}`.
+
+```ts
+for await (const f of client.documentFeed({ scope: "tenant", signal })) {
+  if (f.kind === "feed" && !f.payload.enabled) startPolling();
+  if (f.kind === "change") refetch(f.payload.document_id);
+}
+```
+
+What the feed knows comes from the write: every write and delete of a chunk
+body records its document (a deletion could not be placed afterwards — the
+chunk row is gone), and the statement paths record `document.edges.changed`.
+Moving a chunk between documents without rewriting its body, edges written
+by a chunk body's inline `[[links]]`, and edges removed by deleting a chunk
+are not announced to the far document; a reload picks them up.
+
 ## Search: indexing, re-indexing and reranking
 
 How a question finds a chunk: what text each chunk is indexed under, how that index stays true as the tree changes, what `Document op=search` runs, and the optional model rerank on top.
