@@ -288,6 +288,24 @@ func parseXML(ctx context.Context, data []byte) (*node, error) {
 // element collects its text in a builder of its own, so a part of many
 // small elements costs time in proportion to its size.
 func parseXMLCapped(ctx context.Context, data []byte, textCap int) (*node, error) {
+	return parseXMLTree(ctx, data, textCap, false)
+}
+
+// textNode names the pseudo-element that holds one run of character data in
+// a tree parsed with parseXMLMixed. No XML element name starts with "#".
+const textNode = "#text"
+
+// parseXMLMixed parses a part whose text and elements interleave (ODF:
+// <text:p>a<text:s/>b<text:span>c</text:span></text:p>). Each run of
+// character data becomes a textNode child in document order, where the plain
+// tree would join it into the parent's text apart from its siblings. Same
+// decoder and caps as parseXML; text pseudo-nodes count toward the element
+// cap.
+func parseXMLMixed(ctx context.Context, data []byte) (*node, error) {
+	return parseXMLTree(ctx, data, maxXMLText, true)
+}
+
+func parseXMLTree(ctx context.Context, data []byte, textCap int, mixed bool) (*node, error) {
 	d := xml.NewDecoder(bytes.NewReader(data))
 	d.Strict = true
 	type frame struct {
@@ -297,6 +315,21 @@ func parseXMLCapped(ctx context.Context, data []byte, textCap int) (*node, error
 	root := &node{}
 	stack := []*frame{{n: root}}
 	count, kept := 0, 0
+	// flush ends a run of text in mixed mode: the decoder may hand one run
+	// over in pieces (CDATA sections), gathered in the frame's builder so a
+	// run of many pieces costs time in proportion to its size.
+	flush := func(f *frame) error {
+		if !mixed || f.text.Len() == 0 {
+			return nil
+		}
+		count++
+		if count > maxXMLNodes {
+			return refusedf("an XML part holds more than %d elements", maxXMLNodes)
+		}
+		f.n.kids = append(f.n.kids, &node{name: textNode, text: f.text.String()})
+		f.text.Reset()
+		return nil
+	}
 	for i := 0; ; i++ {
 		if i%4096 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -313,6 +346,9 @@ func parseXMLCapped(ctx context.Context, data []byte, textCap int) (*node, error
 		cur := stack[len(stack)-1]
 		switch t := tok.(type) {
 		case xml.StartElement:
+			if err := flush(cur); err != nil {
+				return nil, err
+			}
 			count++
 			if count > maxXMLNodes {
 				return nil, refusedf("an XML part holds more than %d elements", maxXMLNodes)
@@ -327,7 +363,13 @@ func parseXMLCapped(ctx context.Context, data []byte, textCap int) (*node, error
 			if len(stack) == 1 {
 				return nil, errors.New("extract: malformed XML: unbalanced end element")
 			}
-			cur.n.text = cur.text.String()
+			if mixed {
+				if err := flush(cur); err != nil {
+					return nil, err
+				}
+			} else {
+				cur.n.text = cur.text.String()
+			}
 			stack = stack[:len(stack)-1]
 		case xml.CharData:
 			if len(stack) > 1 {
