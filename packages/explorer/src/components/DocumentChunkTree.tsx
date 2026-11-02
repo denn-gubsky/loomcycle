@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ChunkRow } from "../types";
-import { chunkColor, effectiveScheme, tintStyle, type ColorScheme } from "../lib/colorScheme";
+import { chunkRowStyle, effectiveScheme, type ColorScheme } from "../lib/colorScheme";
 import IdCopy from "./IdCopy";
 
 // DocumentChunkTree renders a document's chunk hierarchy (RFC AK), built from
@@ -58,6 +58,10 @@ export interface DocumentChunkTreeProps {
   // (falls back to the default palette). Unset → neutral rows (prior behavior).
   colorEnabled?: boolean;
   scheme?: ColorScheme;
+  // The document's own colour (docColor of its type + status). Its row at the
+  // top of the tree wears it, and a chunk with no status colour of its own a
+  // lighter wash of it (chunkRowStyle). Unset → status colours only.
+  documentColor?: string;
   // RFC BN P4: chunk ids that have at least one cross-reference edge — those
   // tiles get a 🔗 badge. Unset → no badges.
   linkedIds?: Set<string>;
@@ -69,6 +73,7 @@ export default function DocumentChunkTree({
   onSelect,
   colorEnabled,
   scheme,
+  documentColor,
   linkedIds,
 }: DocumentChunkTreeProps) {
   const [expanded, setExpanded] = useState<Map<string, boolean>>(() => new Map());
@@ -119,6 +124,8 @@ export default function DocumentChunkTree({
           selectedId={selectedId}
           onSelect={onSelect}
           tintScheme={tintScheme}
+          documentColor={documentColor}
+          isRoot
           linkedIds={linkedIds}
         />
       ))}
@@ -149,14 +156,27 @@ interface NodeProps {
   selectedId?: string;
   onSelect: (node: ChunkNode) => void;
   tintScheme: ColorScheme | null;
+  documentColor?: string;
+  // A top-level node: the document's root chunk, i.e. the document itself.
+  isRoot?: boolean;
   linkedIds?: Set<string>;
 }
 
-function ChunkTreeNode({ node, expanded, toggle, selectedId, onSelect, tintScheme, linkedIds }: NodeProps) {
+function ChunkTreeNode({
+  node,
+  expanded,
+  toggle,
+  selectedId,
+  onSelect,
+  tintScheme,
+  documentColor,
+  isRoot = false,
+  linkedIds,
+}: NodeProps) {
   const hasChildren = node.children.length > 0;
   const isOpen = expanded.get(node.row.id) !== false; // default-expanded
   const isSelected = selectedId === node.row.id;
-  const rowStyle = tintScheme ? tintStyle(chunkColor(node.row.status, tintScheme)) : undefined;
+  const rowStyle = chunkRowStyle({ status: node.row.status, isRoot, documentColor, scheme: tintScheme });
   const hasLink = linkedIds?.has(node.row.id);
   return (
     <li className={`node chunk-node ${isSelected ? "selected" : ""}`}>
@@ -209,6 +229,7 @@ function ChunkTreeNode({ node, expanded, toggle, selectedId, onSelect, tintSchem
               selectedId={selectedId}
               onSelect={onSelect}
               tintScheme={tintScheme}
+              documentColor={documentColor}
               linkedIds={linkedIds}
             />
           ))}

@@ -98,8 +98,11 @@ export {
   effectiveScheme,
   docColor,
   chunkColor,
+  chunkInheritsDocColor,
+  chunkRowStyle,
   hexToTint,
   tintStyle,
+  washStyle,
 } from "./lib/colorScheme";
 
 // The shared data-source contract (connection | client | dataLayer), for hosts
