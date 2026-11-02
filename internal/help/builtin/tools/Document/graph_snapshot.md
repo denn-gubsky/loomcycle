@@ -31,6 +31,9 @@ holds whole documents; page on with `after` until `page.next_cursor` is absent.
   `list_statements` page with).
 - `edge_budget` — the most relations one page returns: default 50000, at most
   200000.
+- `include_proposed` — also return relations proposed for review and not yet
+  accepted (default false: only live ones). Their `status_code` says
+  `proposed`.
 
 Filters combine with AND. Documents come in id order.
 

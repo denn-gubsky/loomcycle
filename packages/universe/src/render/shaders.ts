@@ -173,7 +173,9 @@ void main() {
 
 // Typed links of the selection: colour by kind, weight by how many edges merged
 // into the line, and a bright band flowing from source to target (direction).
-// Proposed statements draw dashed and flow slower.
+// Proposed statements draw dashed and flow slower. A line's strength is its
+// statements' confidence (WebGL lines are one pixel wide, so it is opacity);
+// a statement past its invalid_at is drawn grey and faint, and does not flow.
 export const linkVertex = /* glsl */ `
 attribute float aT;
 attribute float aLen;
@@ -182,15 +184,21 @@ uniform float uMorph;
 attribute vec3 aColor;
 attribute float aWeight;
 attribute float aProposed;
+attribute float aStrength;
+attribute float aExpired;
 varying float vS;
 varying vec3 vColor;
 varying float vWeight;
 varying float vProposed;
+varying float vStrength;
+varying float vExpired;
 void main() {
   vS = aT * aLen;
   vColor = aColor;
   vWeight = aWeight;
   vProposed = aProposed;
+  vStrength = aStrength;
+  vExpired = aExpired;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(mix(position, aPos2, uMorph), 1.0);
 }
 `;
@@ -203,11 +211,15 @@ varying float vS;
 varying vec3 vColor;
 varying float vWeight;
 varying float vProposed;
+varying float vStrength;
+varying float vExpired;
 void main() {
   if (vProposed > 0.5 && fract(vS * 1.5) > 0.55) discard;
   float speed = vProposed > 0.5 ? 0.35 : 0.8;
-  float band = smoothstep(0.75, 1.0, fract(vS * 0.35 - uTime * speed)) * uFlow;
+  float band = smoothstep(0.75, 1.0, fract(vS * 0.35 - uTime * speed)) * uFlow * (1.0 - vExpired);
   float a = clamp(0.45 + 0.18 * log2(vWeight) + band * 0.6, 0.0, 1.0);
-  gl_FragColor = uLight > 0.5 ? vec4(vColor * 0.75, a) : vec4(vColor * a, a);
+  a *= (0.35 + 0.65 * vStrength) * (1.0 - 0.6 * vExpired);
+  vec3 c = mix(vColor, vec3(dot(vColor, vec3(0.299, 0.587, 0.114))), vExpired);
+  gl_FragColor = uLight > 0.5 ? vec4(c * 0.75, a) : vec4(c * a, a);
 }
 `;

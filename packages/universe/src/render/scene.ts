@@ -620,6 +620,8 @@ export class UniverseScene {
     const col = new Float32Array(n * 6);
     const w = new Float32Array(n * 2);
     const prop = new Float32Array(n * 2);
+    const strength = new Float32Array(n * 2);
+    const expired = new Float32Array(n * 2);
     drawn.forEach((x, i) => {
       p.set(this.posA.subarray(x.a * 3, x.a * 3 + 3), i * 6);
       p.set(this.posA.subarray(x.b * 3, x.b * 3 + 3), i * 6 + 3);
@@ -635,6 +637,8 @@ export class UniverseScene {
       col.set(rgb, i * 6 + 3);
       w[i * 2] = w[i * 2 + 1] = x.count;
       prop[i * 2] = prop[i * 2 + 1] = x.proposed ? 1 : 0;
+      strength[i * 2] = strength[i * 2 + 1] = x.confidence;
+      expired[i * 2] = expired[i * 2 + 1] = x.expired ? 1 : 0;
     });
     const g = new BufferGeometry();
     g.setAttribute("position", new BufferAttribute(p, 3));
@@ -644,6 +648,8 @@ export class UniverseScene {
     g.setAttribute("aColor", new BufferAttribute(col, 3));
     g.setAttribute("aWeight", new BufferAttribute(w, 1));
     g.setAttribute("aProposed", new BufferAttribute(prop, 1));
+    g.setAttribute("aStrength", new BufferAttribute(strength, 1));
+    g.setAttribute("aExpired", new BufferAttribute(expired, 1));
     this.replace("links", new LineSegments(g, this.linkMat));
   }
 

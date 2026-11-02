@@ -4325,8 +4325,9 @@ export type DocumentToolInput = {
    *  names ONE source (chunk_id; session_id + event_seq; or scope + natural_key)
    *  and the verbatim quote, which the server checks against that source. */
   evidence?: DocumentEdgeEvidence[];
-  /** get_edges (default true) / backlinks (default false): include relations
-   *  proposed for review. graph_recall (default false): also follow them. */
+  /** get_edges (default true) / backlinks (default false) / graph_snapshot
+   *  (default false): include relations proposed for review. graph_recall
+   *  (default false): also follow them. */
   include_proposed?: boolean;
   /** get_edges / backlinks / graph_recall / list_facts: also return what has been
    *  retired (superseded relations and facts). list_statements: also list

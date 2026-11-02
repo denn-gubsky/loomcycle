@@ -19,6 +19,8 @@ export interface ModelEdge {
   status: string;
   method: string;
   confidence: number | null;
+  /** When the statement stops holding (the runtime's unit), null = open. */
+  invalidAt: number | null;
   auto: boolean;
 }
 
@@ -237,43 +239,14 @@ export function addPage(m: UniverseModel, page: GraphSnapshot): UniverseModel {
   }
   const pe = page.edges;
   if (pe) {
-    const ext = new Map<number, { id: string; document_id: string }>();
-    for (const x of pe.external ?? []) ext.set(x.idx, x);
     const seen = new Set(m.edges.map((e) => e.id));
-    const end = (idx: number): { id: string; docId: string } | null => {
-      if (idx >= 0) {
-        if (!pc || idx >= pc.ids.length) return null;
-        const di = pc.document_idx[idx];
-        return { id: pc.ids[idx], docId: pd?.ids[di] ?? "" };
-      }
-      const x = ext.get(idx);
-      return x ? { id: x.id, docId: x.document_id } : null;
-    };
-    for (let i = 0; i < pe.from_idx.length; i++) {
-      const a = end(pe.from_idx[i]);
-      const b = end(pe.to_idx[i]);
-      if (!a || !b) continue;
-      const kind = code(c.kinds, pe.kind_code[i]);
-      const id = pe.ids?.[i] ?? `${a.id}>${b.id}:${kind}`;
+    for (const e of pageEdges(page)) {
       // An edge between two pages arrives with both: once from its source's
       // page, once as a backlink into its target's.
-      if (seen.has(id)) continue;
-      seen.add(id);
-      addUnique(m.kinds, kind);
-      m.edges.push({
-        id,
-        from: -1,
-        to: -1,
-        fromId: a.id,
-        toId: b.id,
-        fromDocId: a.docId,
-        toDocId: b.docId,
-        kind,
-        status: code(c.statuses, pe.status_code?.[i]) || "asserted",
-        method: code(c.methods, pe.method_code?.[i]),
-        confidence: at(pe.confidence, i, null),
-        auto: at(pe.auto, i, false),
-      });
+      if (seen.has(e.id)) continue;
+      seen.add(e.id);
+      addUnique(m.kinds, e.kind);
+      m.edges.push(e);
     }
     if (pe.truncated) m.edgesTruncated = true;
   }
@@ -285,6 +258,72 @@ export function addPage(m: UniverseModel, page: GraphSnapshot): UniverseModel {
   const dd = page.dirents;
   if (dd) {
     for (let i = 0; i < dd.paths.length; i++) if (dd.kinds[i] === "directory") m.dirs.add(dd.paths[i]);
+  }
+  m.version++;
+  return m;
+}
+
+// pageEdges decodes a page's edge columns into model edges with unresolved
+// endpoints (-1); the caller resolves them against its chunk index.
+function pageEdges(page: GraphSnapshot): ModelEdge[] {
+  const pe = page.edges;
+  if (!pe) return [];
+  const c = page.codes ?? {};
+  const pc = page.chunks;
+  const pd = page.documents;
+  const ext = new Map<number, { id: string; document_id: string }>();
+  for (const x of pe.external ?? []) ext.set(x.idx, x);
+  const end = (idx: number): { id: string; docId: string } | null => {
+    if (idx >= 0) {
+      if (!pc || idx >= pc.ids.length) return null;
+      const di = pc.document_idx[idx];
+      return { id: pc.ids[idx], docId: pd?.ids[di] ?? "" };
+    }
+    const x = ext.get(idx);
+    return x ? { id: x.id, docId: x.document_id } : null;
+  };
+  const out: ModelEdge[] = [];
+  for (let i = 0; i < pe.from_idx.length; i++) {
+    const a = end(pe.from_idx[i]);
+    const b = end(pe.to_idx[i]);
+    if (!a || !b) continue;
+    const kind = code(c.kinds, pe.kind_code[i]);
+    out.push({
+      id: pe.ids?.[i] ?? `${a.id}>${b.id}:${kind}`,
+      from: -1,
+      to: -1,
+      fromId: a.id,
+      toId: b.id,
+      fromDocId: a.docId,
+      toDocId: b.docId,
+      kind,
+      status: code(c.statuses, pe.status_code?.[i]) || "asserted",
+      method: code(c.methods, pe.method_code?.[i]),
+      confidence: at(pe.confidence, i, null),
+      invalidAt: at(pe.invalid_at, i, null),
+      auto: at(pe.auto, i, false),
+    });
+  }
+  return out;
+}
+
+/**
+ * refreshEdges replaces every edge touching the given documents with the edges
+ * a fresh snapshot page of exactly those documents carries. Such a page holds
+ * all of them: the links out of its documents and the backlinks into them. So
+ * a link just proposed appears, an accepted one changes status in place, and a
+ * rejected or deleted one (which the snapshot no longer returns) goes.
+ */
+export function refreshEdges(m: UniverseModel, page: GraphSnapshot, docIds: ReadonlySet<string>): UniverseModel {
+  m.edges = m.edges.filter((e) => !docIds.has(e.fromDocId) && !docIds.has(e.toDocId));
+  const seen = new Set(m.edges.map((e) => e.id));
+  for (const e of pageEdges(page)) {
+    if (seen.has(e.id)) continue;
+    seen.add(e.id);
+    addUnique(m.kinds, e.kind);
+    e.from = m.chunkIndex.get(e.fromId) ?? -1;
+    e.to = m.chunkIndex.get(e.toId) ?? -1;
+    m.edges.push(e);
   }
   m.version++;
   return m;

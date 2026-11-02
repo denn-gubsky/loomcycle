@@ -192,7 +192,8 @@ document. It carries titles and metadata, never bodies.
     document's tree comes depth-first in reading order, so `parent_idx`
     (`-1` = root) always points at an earlier row.
   - `edges`: the live relations (the default visibility: no proposed,
-    rejected, refuted or retired ones) with an end on the page, each once:
+    rejected, refuted or retired ones; `include_proposed: true` adds the
+    proposed ones) with an end on the page, each once:
     `ids, from_idx, to_idx, kind_code, auto, created_at, status_code,
     method_code, confidence, valid_at, invalid_at`. An end on another page is
     a negative index naming an `external` entry `{idx, id, document_id}`.

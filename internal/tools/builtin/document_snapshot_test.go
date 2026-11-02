@@ -732,3 +732,24 @@ func TestGraphSnapshot_RefusesWhatItCannotAnswer(t *testing.T) {
 		t.Errorf("page_documents over the maximum: %d documents, want the one", s.Page.Documents)
 	}
 }
+
+// A proposed statement is withheld from the snapshot unless asked for — the
+// reader who draws links (and reviews them) asks; every other caller keeps the
+// asserted-only view it has always had.
+func TestGraphSnapshot_ProposedStatementsOnlyWhenAsked(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	_, root, a := snapDoc(t, d, ctx, "user", "/kb/one", "One")
+	snapLink(t, d, ctx, "user", a, root)
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"propose_statement","scope":"user","from_id":%q,"to_id":%q,"kind":"related"}`, root, a)); r.IsError {
+		t.Fatalf("propose_statement: %s", r.Text)
+	}
+	for _, c := range []struct {
+		extra string
+		want  int
+	}{{``, 1}, {`,"include_proposed":false`, 1}, {`,"include_proposed":true`, 2}} {
+		s, _ := graphSnap(t, d, ctx, `{"op":"graph_snapshot","scope":"user"`+c.extra+`}`)
+		if len(s.Edges.IDs) != c.want {
+			t.Errorf("graph_snapshot%s: %d edges, want %d", c.extra, len(s.Edges.IDs), c.want)
+		}
+	}
+}

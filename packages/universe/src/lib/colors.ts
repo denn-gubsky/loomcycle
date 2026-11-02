@@ -1,6 +1,7 @@
 import { DEFAULT_SCHEME, chunkColor, docColor, effectiveScheme } from "@loomcycle/explorer";
 import { fnv1a } from "./hash";
 import type { UniverseModel } from "./model";
+import { toMs } from "./time";
 
 // Star colours come from the document colour scheme (RFC BN, the explorer's
 // resolvers): a document star by its type + status, a chunk by its status. A
@@ -83,8 +84,6 @@ export function rgbHex([r, g, b]: RGB): string {
  *  1 = changed just now, decaying with a one-day time constant. 0 = unknown. */
 export function recency(updatedAt: number, nowMs: number): number {
   if (!updatedAt || updatedAt <= 0) return 0;
-  const ms =
-    updatedAt > 1e17 ? updatedAt / 1e6 : updatedAt > 1e14 ? updatedAt / 1e3 : updatedAt > 1e11 ? updatedAt : updatedAt * 1e3;
-  const age = Math.max(0, nowMs - ms);
+  const age = Math.max(0, nowMs - toMs(updatedAt));
   return Math.exp(-age / 86_400_000);
 }
