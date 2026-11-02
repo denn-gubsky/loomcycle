@@ -45,3 +45,69 @@ func TestAlignedTables_ManyMisalignedLinesStayInBudget(t *testing.T) {
 		t.Errorf("took %s", d)
 	}
 }
+
+// alignedRows is n lines of cols cells each, every cell starting at the same
+// x on every line: one table as far as alignment goes.
+func alignedRows(n, cols int) []pdfLine {
+	rows := make([]pdfLine, n)
+	for i := range n {
+		y := 1e6 - float64(i)*12
+		runs := make([]pdfRun, cols)
+		for c := range cols {
+			x := 40 + float64(c)*40
+			runs[c] = pdfRun{x: x, endX: x + 12, y: y, size: 10, text: "яя", upright: true, seq: c}
+		}
+		rows[i] = pdfLine{y: y, size: 10, runs: runs}
+	}
+	return rows
+}
+
+// However many lines share its columns, a table is at most
+// maxPDFTableRows lines; the lines past it start another table.
+func TestAlignedTables_ARegionIsAtMostMaxRows(t *testing.T) {
+	regions, ok := alignedTables(alignedRows(maxPDFTableRows+500, 3), &gridBudget{left: maxPDFGridWork})
+	if !ok || len(regions) != 2 {
+		t.Fatalf("ok %v, regions %d, want 2", ok, len(regions))
+	}
+	for _, g := range regions {
+		if g.to-g.from > maxPDFTableRows {
+			t.Errorf("region of %d lines, over %d", g.to-g.from, maxPDFTableRows)
+		}
+	}
+}
+
+// More columns than a table may have is not a table.
+func TestAlignedTables_TooManyColumnsIsNotATable(t *testing.T) {
+	regions, ok := alignedTables(alignedRows(10, maxPDFTableCols+1), &gridBudget{left: maxPDFGridWork})
+	if !ok || len(regions) != 0 {
+		t.Errorf("ok %v, regions %d", ok, len(regions))
+	}
+}
+
+// Writing a table's cells is charged to the page's budget, as finding it
+// is: a budget that covers the search but not the cells reads the text as
+// text, and says so.
+func TestFlowBlocks_ReadingCellsIsChargedToTheBudget(t *testing.T) {
+	rows := alignedRows(1000, maxPDFTableCols)
+	var runs []pdfRun
+	for _, r := range rows {
+		runs = append(runs, r.runs...)
+	}
+	// What the search alone costs.
+	search := &gridBudget{left: maxPDFGridWork}
+	search.spend(len(runs))
+	if _, ok := alignedTables(pdfLines(runs), search); !ok {
+		t.Fatal("the search ran out of budget")
+	}
+	spent := maxPDFGridWork - search.left
+	// Enough for the search, not for writing 1000 rows of 64 cells.
+	blocks, ok := flowBlocks(runs, &gridBudget{left: spent + 1000})
+	if ok || len(blocks) != 1 || blocks[0].table != nil {
+		t.Errorf("ok %v, %d blocks (table %v): the cells were written past the budget", ok, len(blocks), len(blocks) > 0 && blocks[0].table != nil)
+	}
+	// With the whole budget the table is read, within the caps.
+	blocks, ok = flowBlocks(runs, &gridBudget{left: maxPDFGridWork})
+	if !ok || len(blocks) != 1 || len(blocks[0].table) != 1000 || len(blocks[0].table[0]) != maxPDFTableCols {
+		t.Errorf("ok %v, blocks %d", ok, len(blocks))
+	}
+}

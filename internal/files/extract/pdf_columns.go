@@ -245,10 +245,12 @@ func alignedTables(rows []pdfLine, budget *gridBudget) ([]colRegion, bool) {
 			to = end
 		}
 		if cols != nil && to-i >= colMinLines && sharing(lines[i:to], cols) >= colMinLines {
-			// Empty lines at the end are not the table's.
+			// Empty lines at the end are not the table's, and a table is at
+			// most maxPDFTableRows lines: the lines past it start another.
 			for to > i && lines[to-1].empty {
 				to--
 			}
+			to = min(to, i+maxPDFTableRows)
 			out = append(out, colRegion{from: i, to: to, cols: cols})
 			i = to
 			continue
@@ -258,11 +260,16 @@ func alignedTables(rows []pdfLine, budget *gridBudget) ([]colRegion, bool) {
 	return out, true
 }
 
-// read writes a region's lines as table rows, each run in its column.
-func (g colRegion) read(rows []pdfLine) ([][]string, int) {
+// read writes a region's lines as table rows, each run in its column. Each
+// line is charged to the page's budget for its cells and its runs; ok is
+// false when the budget ran out.
+func (g colRegion) read(rows []pdfLine, budget *gridBudget) ([][]string, int, bool) {
 	var out [][]string
 	nchars := 0
 	for _, l := range rows[g.from:g.to] {
+		if !budget.spend(len(g.cols) + 2*len(l.runs)) {
+			return nil, 0, false
+		}
 		parts := make([][]pdfRun, len(g.cols))
 		for _, r := range l.runs {
 			k := max(columnOf(g.cols, r.x), 0)
@@ -282,7 +289,7 @@ func (g colRegion) read(rows []pdfLine) ([][]string, int) {
 			out = append(out, row)
 		}
 	}
-	return out, nchars
+	return out, nchars, true
 }
 
 // flowBlocks reads text no border put in a table: as text, with the tables
@@ -311,7 +318,10 @@ func flowBlocks(runs []pdfRun, budget *gridBudget) ([]pdfBlock, bool) {
 	}
 	last := 0
 	for _, g := range regions {
-		cells, nchars := g.read(rows)
+		cells, nchars, ok := g.read(rows, budget)
+		if !ok {
+			return []pdfBlock{textBlock(assembleLines(rows))}, false
+		}
 		if len(cells) == 0 {
 			continue // no text to put in a table: its lines stay text
 		}
