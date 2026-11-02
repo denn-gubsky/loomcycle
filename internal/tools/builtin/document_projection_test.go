@@ -120,6 +120,7 @@ type projSnap struct {
 	ids          []string
 	model        string
 	basisVersion int
+	method       string
 	xyz          []float64
 	rawXYZ       json.RawMessage
 	missing      []int
@@ -149,6 +150,7 @@ func snapProjection(t *testing.T, d *Document, ctx context.Context) projSnap {
 		Projection struct {
 			Model        string          `json:"model"`
 			BasisVersion int             `json:"basis_version"`
+			Method       string          `json:"method"`
 			XYZ          json.RawMessage `json:"xyz"`
 			Missing      []int           `json:"missing"`
 		} `json:"projection"`
@@ -156,7 +158,7 @@ func snapProjection(t *testing.T, d *Document, ctx context.Context) projSnap {
 	if err := json.Unmarshal([]byte(text), &raw); err != nil {
 		t.Fatalf("decode %s: %v", text, err)
 	}
-	s := projSnap{ids: raw.Chunks.IDs, model: raw.Projection.Model, basisVersion: raw.Projection.BasisVersion,
+	s := projSnap{ids: raw.Chunks.IDs, model: raw.Projection.Model, basisVersion: raw.Projection.BasisVersion, method: raw.Projection.Method,
 		rawXYZ: raw.Projection.XYZ, missing: raw.Projection.Missing}
 	if err := json.Unmarshal(raw.Projection.XYZ, &s.xyz); err != nil {
 		t.Fatalf("decode xyz: %v", err)
@@ -179,8 +181,8 @@ func TestProjection_StableAcrossTwoPassesOnUnchangedData(t *testing.T) {
 			t.Fatalf("first pass = %+v, want a fit (v1) and 24 chunks placed", first)
 		}
 		s1 := snapProjection(t, d, ctx)
-		if s1.basisVersion != 1 || s1.model != "fake/m1" || len(s1.missing) != 1 {
-			t.Fatalf("snapshot = %+v, want v1 with only the bodyless root missing", s1)
+		if s1.basisVersion != 1 || s1.model != "fake/m1" || s1.method != "pca" || len(s1.missing) != 1 {
+			t.Fatalf("snapshot = %+v, want a pca v1 with only the bodyless root missing", s1)
 		}
 
 		second := project(t, d, ctx, ProjectionOptions{})
@@ -532,13 +534,27 @@ func TestProjectScopeKey_PlacesOnlyScopesWithVectors(t *testing.T) {
 	}
 }
 
-// insertProjectionRow writes a coordinate directly, for the delete tests: they
-// check the cascade, not the pass.
+// insertProjectionRow writes a coordinate and a UMAP anchor directly, for the
+// delete tests: they check the cascade, not the pass.
 func insertProjectionRow(t *testing.T, d *Document, ctx context.Context, chunkID string) {
 	t.Helper()
 	if err := d.exec(ctx, sidecarScope(t, d, ctx), `INSERT INTO chunk_projection (chunk_id, model, basis_version, x, y, z, updated_at)
 		VALUES (?, 'fake/m1', 1, 1.5, 2.5, 3.5, 1)`, chunkID); err != nil {
 		t.Fatalf("insert projection row: %v", err)
+	}
+	if err := d.exec(ctx, sidecarScope(t, d, ctx), `INSERT INTO chunk_projection_anchor (model, version, chunk_id, x, y, z)
+		VALUES ('fake/m1', 1, ?, 1.5, 2.5, 3.5)`, chunkID); err != nil {
+		t.Fatalf("insert anchor row: %v", err)
+	}
+}
+
+// assertProjectionRows checks a chunk's coordinate rows and anchor rows.
+func assertProjectionRows(t *testing.T, d *Document, ctx context.Context, chunkID string, want int) {
+	t.Helper()
+	for _, tbl := range []string{"chunk_projection", "chunk_projection_anchor"} {
+		if n := chunkRowsIn(t, d, ctx, tbl, chunkID); n != want {
+			t.Errorf("%s rows for %s = %d, want %d", tbl, chunkID, n, want)
+		}
 	}
 }
 
@@ -556,9 +572,7 @@ func TestProjection_DeleteChunkDropsItsSubtreesRows(t *testing.T) {
 		t.Fatalf("delete_chunk: %s", r.Text)
 	}
 	for id, want := range map[string]int{part: 0, child: 0, other: 1} {
-		if n := chunkRowsIn(t, d, ctx, "chunk_projection", id); n != want {
-			t.Errorf("chunk_projection rows for %s = %d, want %d", id, n, want)
-		}
+		assertProjectionRows(t, d, ctx, id, want)
 	}
 }
 
@@ -573,9 +587,7 @@ func TestProjection_DeleteDocumentDropsItsRows(t *testing.T) {
 		t.Fatalf("delete_document: %s", r.Text)
 	}
 	for id, want := range map[string]int{root: 0, part: 0, keep: 1} {
-		if n := chunkRowsIn(t, d, ctx, "chunk_projection", id); n != want {
-			t.Errorf("chunk_projection rows for %s = %d, want %d", id, n, want)
-		}
+		assertProjectionRows(t, d, ctx, id, want)
 	}
 }
 
@@ -601,9 +613,7 @@ func TestProjection_PruneDropsTheRetiredChunksRow(t *testing.T) {
 	if n := chunkRowsIn(t, d, ctx, "chunks", id); n != 0 {
 		t.Fatalf("the chunk survived the prune — the test proves nothing")
 	}
-	if n := chunkRowsIn(t, d, ctx, "chunk_projection", id); n != 0 {
-		t.Errorf("chunk_projection still holds %d row(s) for the pruned chunk", n)
-	}
+	assertProjectionRows(t, d, ctx, id, 0)
 }
 
 // TestGraphSnapshot_ProjectionFollowsTheChunksSectionOrder — xyz is aligned with the
@@ -661,7 +671,5 @@ func TestProjection_SubjectHomingDropsThePlaceholderRootsRow(t *testing.T) {
 	if rep.DocumentsAdopted != 1 {
 		t.Fatalf("report = %+v, want the stray document adopted", rep)
 	}
-	if n := chunkRowsIn(t, d, ctx, "chunk_projection", stray); n != 0 {
-		t.Errorf("chunk_projection still holds %d row(s) for the dropped placeholder root", n)
-	}
+	assertProjectionRows(t, d, ctx, stray, 0)
 }

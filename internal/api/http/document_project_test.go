@@ -131,6 +131,29 @@ func TestDocumentProject_ReportsUnsupportedWithoutVectors(t *testing.T) {
 	}
 }
 
+// TestDocumentProject_MethodFitsTheOtherMethodSideBySide — method=umap fits the
+// scope with UMAP although the deployment is configured for PCA, and the next call
+// without it fits PCA again; an unknown method is refused before anything runs.
+func TestDocumentProject_MethodFitsTheOtherMethodSideBySide(t *testing.T) {
+	srv, doc, ctx := projectFixture(t, true)
+	if code, rep := callProject(t, srv, "&dry_run=false"); code != http.StatusOK || rep.Method != "pca" || rep.BasisVersion != 1 {
+		t.Fatalf("configured call = %d %+v, want a pca v1", code, rep)
+	}
+	if code, rep := callProject(t, srv, "&dry_run=false&method=umap"); code != http.StatusOK || rep.Method != "umap" ||
+		!rep.Refitted || rep.BasisVersion != 2 || rep.Placed != 6 {
+		t.Fatalf("method=umap = %d %+v, want a umap v2 refit placing all 6", code, rep)
+	}
+	if v := basisVersionOf(t, doc, ctx); v != 2 {
+		t.Fatalf("the snapshot serves v%d, want the umap v2", v)
+	}
+	if code, rep := callProject(t, srv, "&dry_run=false"); code != http.StatusOK || rep.Method != "pca" || rep.BasisVersion != 3 {
+		t.Fatalf("call without method after a umap fit = %d %+v, want a pca v3 refit", code, rep)
+	}
+	if code, _ := callProject(t, srv, "&dry_run=false&method=tsne"); code != http.StatusBadRequest {
+		t.Fatalf("method=tsne = %d, want 400", code)
+	}
+}
+
 func TestDocumentProject_RefusesABadScope(t *testing.T) {
 	srv, _, _ := projectFixture(t, true)
 	rec := httptest.NewRecorder()

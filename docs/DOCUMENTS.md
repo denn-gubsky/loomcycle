@@ -218,9 +218,28 @@ document. It carries titles and metadata, never bodies.
 
 #### Projection — the 3D map
 
-Each chunk's stored embedding is placed on the scope's top three principal
-components, so a viewer can draw chunks that mean similar things near each
+Each chunk gets a place on its scope's 3D map, fitted from the chunks' stored
+embeddings, so a viewer can draw chunks that mean similar things near each
 other. The vectors never leave the server; only the three coordinates do.
+
+There are two ways to fit the map, chosen by the operator
+(`memory.projection.method`, default `pca`). The snapshot's `projection` block
+names the one in use as `method`.
+
+- **`pca`** places each chunk on the scope's top three principal components:
+  exact, instant, and a new chunk is placed by a formula. On a real scope
+  those three axes hold little of the variance, so a document's chunks tend
+  to scatter across the map.
+- **`umap`** keeps neighbourhoods: a chunk's nearest chunks in meaning stay
+  near it on the map, so a document's chunks stay together (measured on 137
+  project documents: 83% of a chunk's ten nearest chunks on the map were its
+  own document's, against 14% with PCA). Its basis is a sample of the scope's
+  chunks (at most `umap_sample_max`, default 10,000) laid out by UMAP; every
+  other chunk, and a chunk written later, is placed at the weighted mean of
+  its 15 nearest sample chunks, without refitting. A refit starts from the
+  previous map and is aligned to it, so the arrangement does not reshuffle.
+
+The rules below hold for both.
 
 - **The basis.** Per scope and per embedder model. A pass fits it from a
   uniform sample of the scope's chunk vectors (at most `sample_max`, and at
@@ -228,12 +247,13 @@ other. The vectors never leave the server; only the three coordinates do.
   later pass places only what is new or re-embedded, on the same basis, so
   the map does not move under a viewer.
 - **Refits.** A new basis version is fitted when there is none, when an
-  operator forces one, or when the current one is older than `refit_after`
-  AND `refit_min_new` chunks were placed since it was fitted. A refit's axes
-  are turned to point the way the previous basis's did, so the map keeps its
-  orientation, and every chunk is re-placed on it. Coordinates of an older
-  version, or of another embedder model, are never served: those chunks count
-  as missing until they are re-placed.
+  operator forces one, when the current one was fitted with the other method,
+  or when the current one is older than `refit_after` AND `refit_min_new`
+  chunks were placed since it was fitted. A refit keeps the map's orientation
+  (PCA turns its axes to point the way the previous basis's did; UMAP aligns
+  its layout to the previous one), and every chunk is re-placed on it.
+  Coordinates of an older version, or of another embedder model, are never
+  served: those chunks count as missing until they are re-placed.
 - **Two passes at once.** The sweeper and the operator route (or two
   replicas) may refit or place one scope at the same moment. The database's
   keys decide: the first refit to save a basis version wins, and the other
@@ -244,7 +264,10 @@ other. The vectors never leave the server; only the three coordinates do.
   and fits at most once.
 - **`search` with `with_projection: true`** adds `query_xyz: [x, y, z]`, the
   query's own place on the map, from the query embedding the search makes
-  anyway. Absent when the scope has no map.
+  anyway. On a UMAP map, which has no formula for a new point, the query is
+  placed among the search's own hits that have a place (only hits you may
+  read, so it never points at documents you cannot see). Absent when the
+  scope has no map, or when no hit has a place.
 - **Off by default.** It runs only where the operator enabled
   `memory.projection` (see [CONFIGURATION.md §9k](CONFIGURATION.md#9k-document-projection--the-3d-chunk-map-memoryprojection)).
   Off, on a store with no vector index, or without an embedder, the block is
@@ -265,13 +288,15 @@ interval. To build or refresh one scope now:
 | `dry_run` | `true` (default) reports without writing |
 | `refit` | `true` fits a new basis even when the current one is fresh |
 | `limit` | the most chunks to place in this call (default 5000) |
+| `method` | `pca` \| `umap`: fit with this method instead of the configured one, to compare the two maps of one scope; the next pass under the configured method refits it back |
 
-The response is `{scope, dry_run, model, basis_version, placed, refitted,
-raced, skipped, unsupported, more}`; call again while `more` is true. `raced:
-true` means another pass saved a new basis first and this one placed on it.
-`unsupported: true` means the store has no vector index. The route is
+The response is `{scope, dry_run, model, basis_version, method, placed,
+refitted, raced, skipped, unsupported, more}`; call again while `more` is true.
+`raced: true` means another pass saved a new basis first and this one placed
+on it. `unsupported: true` means the store has no vector index. The route is
 operator-admin, like the re-index, answers 409 while `memory.projection` is
-off, and makes no model call.
+off, and makes no model call. A UMAP fit of a large scope takes seconds to a
+minute; the call returns when it is done.
 
 ### Integrity — deletes are atomic, edges never dangle
 

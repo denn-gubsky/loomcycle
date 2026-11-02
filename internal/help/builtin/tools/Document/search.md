@@ -124,8 +124,9 @@ model, so compare within one result rather than to a fixed number. When the
 response says `reranked: true`, the order is the reranker's and `rank_score` no
 longer describes it.
 With `with_projection` and a map, the response also carries `query_xyz: [x,
-y, z]` (4 decimals), on the same axes as the `projection` block of
-`graph_snapshot`.
+y, z]` (4 decimals), on the same map as the `projection` block of
+`graph_snapshot`. On a `umap` map the query is placed among its own hits, so
+it is absent when no hit has a place yet.
 Bodies are not included: read a hit with `{"op":"get_chunk","id":<chunk_id>}`.
 
 With `expand`, the chunks it added follow the ranked hits in the same list,
