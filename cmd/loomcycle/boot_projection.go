@@ -71,7 +71,7 @@ func projectionSweep(ctx context.Context, doc *builtin.Document, mgr *sqlmem.Man
 		if rep.Placed > 0 || rep.Refitted {
 			slog.InfoContext(ctx, "document projection: placed chunks", "tenant", sk.Tenant, "scope", sk.Scope,
 				"scope_id", sk.ScopeID, "model", rep.Model, "basis_version", rep.BasisVersion,
-				"placed", rep.Placed, "refitted", rep.Refitted, "more", rep.More)
+				"placed", rep.Placed, "refitted", rep.Refitted, "raced", rep.Raced, "more", rep.More)
 		}
 	}
 }

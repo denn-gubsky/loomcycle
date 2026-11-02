@@ -22,9 +22,12 @@ import (
 //	refit    — true | false (default): fit a new basis even when the current one is fresh
 //	limit    — the most chunks to place in this call (default 5000)
 //
-// Responds {scope, dry_run, model, basis_version, placed, refitted, skipped,
-// unsupported, more}; re-invoke while `more` is true. It reads stored vectors and
-// makes no model call. 409 while memory.projection is off.
+// Responds {scope, dry_run, model, basis_version, placed, refitted, raced, skipped,
+// unsupported, more}; re-invoke while `more` is true. `raced` means the call set
+// out to refit but another pass over the scope (the sweeper, another call, another
+// replica) saved that basis first: `refitted` is then false and the chunks were
+// placed on the basis that pass saved. It reads stored vectors and makes no model
+// call. 409 while memory.projection is off.
 func (s *Server) handleDocumentProject(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil || s.sqlMem == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "sqlmem_unavailable",
