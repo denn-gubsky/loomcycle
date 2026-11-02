@@ -434,7 +434,8 @@ func (d *Document) snapshotPage(ctx context.Context, key sqlmem.ScopeKey, req sn
 	after := req.after
 	var docs []snapshotDoc
 	for {
-		w, a := where, append([]any{}, args...)
+		// A document mid-move into this scope is drawn in its source until it lands.
+		w, a := where+" AND "+notMoving, append([]any{}, args...)
 		if after != "" {
 			w += " AND id > ?"
 			a = append(a, after)

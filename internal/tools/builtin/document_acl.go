@@ -87,6 +87,7 @@ var docACLOps = map[string]docACLRule{
 	"delete_document":    {verb: "delete", target: docACLDocument},
 	"set_path":           {verb: "write", target: docACLSetPath},
 	"copy_documents":     {verb: "read", target: docACLListing}, // asks per document as it plans: read on each source, write on each target name
+	"move_documents":     {verb: "read", target: docACLListing}, // asks per document as it plans: read and write on each source, write on each target name
 	"judge_fact":         {verb: "write", target: docACLJudge},
 	"propose_entity":     {verb: "write", target: docACLTenantScope},
 	"propose_subject":    {verb: "write", target: docACLTenantScope},

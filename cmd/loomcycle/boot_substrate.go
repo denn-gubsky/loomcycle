@@ -197,6 +197,8 @@ func (b *boot) wireAuth() {
 		hookDefTool.Audit = tokenAudit
 		// A run's or an MCP session's lookup of another person or a group.
 		b.identityTool.Audit = tokenAudit
+		// Each move of documents between scopes (RFC FT).
+		b.documentTool.Audit = tokenAudit
 	}
 	graceSecs := 0
 	if v := os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS"); v != "" {

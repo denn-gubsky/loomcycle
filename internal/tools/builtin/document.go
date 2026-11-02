@@ -18,6 +18,7 @@ import (
 
 	"github.com/pmezard/go-difflib/difflib"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -48,6 +49,9 @@ type Document struct {
 	// Writer writes the change feed through the channel writer; nil writes
 	// straight to Store (a tool built for a unit test).
 	Writer channels.Writer
+	// Audit records each move_documents (RFC FT §5): who moved which documents
+	// from which scope to which. nil: the process log line is the record.
+	Audit audit.Sink
 	// MaxAssetBytes caps the DECODED size of an image asset (set_asset); 0 = a
 	// conservative built-in default. The wire (base64) payload is bounded
 	// separately by the /v1/_document request-body cap. RFC BO.
@@ -111,7 +115,7 @@ func (d *Document) UsageHint() string {
 }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/graph_snapshot (a whole scope's documents, chunk trees, relations and Path names as columns, paged by whole documents — for drawing or syncing a scope, not for reading text)/delete_document/set_path, copy_documents (copy a set of documents into another scope — to_scope — or the same scope under path_map names, with their history, tags, images and the relations between them; a dry run unless dry_run is false), create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), the fact tier — upsert_chunk (write a fact by natural_key)/supersede_chunk (correct one without deleting it)/list_facts/graph_recall (recall across relations, optionally as of a past instant)/remember (store a statement a PERSON supplied as a fact that cites ITSELF — the text becomes both the claim and its source span, filed as evidential; additive only, and never a way to delete)/verbatim_answer (answer a LOOKUP question with a stored fact quoted verbatim plus the source span it was verified against, and NO generated text — returns an answer only when one verified fact clearly matches, and explains itself when it declines)/verification_stats (how much of this scope's fact store carries a span and a verdict)/judge_fact (record whether a fact is supported by the source span recorded on it — an unsupported fact is withheld from list_facts and graph_recall rather than deleted, and stays readable with include_refuted)/propose_entity (suggest an entity type for the tenant ontology; inert until an operator accepts it), link_chunks/unlink_chunks/get_edges (the relations touching a document — each a statement with its status, provenance and evidence quotes, enriched with its endpoints' titles/types/statuses)/get_edge (one relation with all its evidence)/propose_statement (suggest a relation for review; nothing live changes until an operator accepts it)/list_statements (the review queue)/accept_statement/reject_statement (an operator's ruling; refused inside a run)/judge_statements (record a judge's verdicts on proposals and rule on those the review policy routes to the judge, at or above its floor; only for a code agent granted the judge statement method)/maintain_statement (upkeep of a statement by a code agent granted statement methods, or an operator: verify, expire, demote, merge, mark or re-point an evidence row, flag; never asserts or deletes)/resolve_anchor (find a work by its key and a part of it by anchor, as of a date)/describe_ontology (the tenant ontology in force, parsed: classes with their effective directives and fields, relation kinds, grammars, concept schemes, instances with the subject each was adopted as)/extract_citations (apply the document class's citation grammar to a document's or a chunk's text and resolve each citation it finds; read-only)/classify (say what a document is from the confirmed ontology — its class and work key by the classes' patterns, its issuer, the classes and concepts of its neighbours, and, where those leave it open, the operator's classifier model; one class matching by rule is applied, the rest proposed; write:report writes nothing)/accept_classification (an operator's ruling on a document's pending classification; refused inside a run)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), search (search chunk BODIES for free text, by meaning and, where the server has a word index, by the words too — the entry point when you do not know which document holds the answer; returns chunk_id + title/type/document_id, so no key format to learn; aim it — and related — at part of the scope with under_path(s), exclude_under_path(s), document_ids, exclude_document_ids, type(s), status(es), tag, tag_prefix or as_of, applied before ranking), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown; reimport:true reconciles a new edition onto the held one part by part), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas), set_remote (bind this document to a peer loomcycle declared in the operator's document_sources — pass source + remote_ref)/sync (reconcile the bound peer document's keyed chunks with this one by natural_key — carrying body, tags, hierarchy (each chunk under its keyed parent, at its sibling position) and manual links — direction:pull (default) copies the peer's chunks in, direction:push writes this document's chunks up to the peer)/diff_remote (dry-run: what a sync would change — keyed chunks only_local/only_remote/diverged/retagged/reparented, without touching either side). Scope is agent, user (the default) or tenant (tenant needs the operator's grant); documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/graph_snapshot (a whole scope's documents, chunk trees, relations and Path names as columns, paged by whole documents — for drawing or syncing a scope, not for reading text)/delete_document/set_path, copy_documents (copy a set of documents into another scope — to_scope — or the same scope under path_map names, with their history, tags, images and the relations between them; a dry run unless dry_run is false)/move_documents (move a set of documents into another scope keeping every id, removing them from this one; a dry run unless dry_run is false, which then needs expect_count), create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), the fact tier — upsert_chunk (write a fact by natural_key)/supersede_chunk (correct one without deleting it)/list_facts/graph_recall (recall across relations, optionally as of a past instant)/remember (store a statement a PERSON supplied as a fact that cites ITSELF — the text becomes both the claim and its source span, filed as evidential; additive only, and never a way to delete)/verbatim_answer (answer a LOOKUP question with a stored fact quoted verbatim plus the source span it was verified against, and NO generated text — returns an answer only when one verified fact clearly matches, and explains itself when it declines)/verification_stats (how much of this scope's fact store carries a span and a verdict)/judge_fact (record whether a fact is supported by the source span recorded on it — an unsupported fact is withheld from list_facts and graph_recall rather than deleted, and stays readable with include_refuted)/propose_entity (suggest an entity type for the tenant ontology; inert until an operator accepts it), link_chunks/unlink_chunks/get_edges (the relations touching a document — each a statement with its status, provenance and evidence quotes, enriched with its endpoints' titles/types/statuses)/get_edge (one relation with all its evidence)/propose_statement (suggest a relation for review; nothing live changes until an operator accepts it)/list_statements (the review queue)/accept_statement/reject_statement (an operator's ruling; refused inside a run)/judge_statements (record a judge's verdicts on proposals and rule on those the review policy routes to the judge, at or above its floor; only for a code agent granted the judge statement method)/maintain_statement (upkeep of a statement by a code agent granted statement methods, or an operator: verify, expire, demote, merge, mark or re-point an evidence row, flag; never asserts or deletes)/resolve_anchor (find a work by its key and a part of it by anchor, as of a date)/describe_ontology (the tenant ontology in force, parsed: classes with their effective directives and fields, relation kinds, grammars, concept schemes, instances with the subject each was adopted as)/extract_citations (apply the document class's citation grammar to a document's or a chunk's text and resolve each citation it finds; read-only)/classify (say what a document is from the confirmed ontology — its class and work key by the classes' patterns, its issuer, the classes and concepts of its neighbours, and, where those leave it open, the operator's classifier model; one class matching by rule is applied, the rest proposed; write:report writes nothing)/accept_classification (an operator's ruling on a document's pending classification; refused inside a run)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), search (search chunk BODIES for free text, by meaning and, where the server has a word index, by the words too — the entry point when you do not know which document holds the answer; returns chunk_id + title/type/document_id, so no key format to learn; aim it — and related — at part of the scope with under_path(s), exclude_under_path(s), document_ids, exclude_document_ids, type(s), status(es), tag, tag_prefix or as_of, applied before ranking), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown; reimport:true reconciles a new edition onto the held one part by part), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas), set_remote (bind this document to a peer loomcycle declared in the operator's document_sources — pass source + remote_ref)/sync (reconcile the bound peer document's keyed chunks with this one by natural_key — carrying body, tags, hierarchy (each chunk under its keyed parent, at its sibling position) and manual links — direction:pull (default) copies the peer's chunks in, direction:push writes this document's chunks up to the peer)/diff_remote (dry-run: what a sync would change — keyed chunks only_local/only_remote/diverged/retagged/reparented, without touching either side). Scope is agent, user (the default) or tenant (tenant needs the operator's grant); documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -121,7 +125,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","graph_snapshot","delete_document","set_path","copy_documents","create_chunk","propose_entity","propose_subject","judge_fact","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","verbatim_answer","verification_stats","remember","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","get_edge","propose_statement","accept_statement","reject_statement","list_statements","judge_statements","maintain_statement","resolve_anchor","lease","release","describe_ontology","extract_citations","classify","accept_classification","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions","set_remote","sync","diff_remote"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","graph_snapshot","delete_document","set_path","copy_documents","move_documents","create_chunk","propose_entity","propose_subject","judge_fact","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","verbatim_answer","verification_stats","remember","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","get_edge","propose_statement","accept_statement","reject_statement","list_statements","judge_statements","maintain_statement","resolve_anchor","lease","release","describe_ontology","extract_citations","classify","accept_classification","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions","set_remote","sync","diff_remote"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). ONE scope per call — a search, graph_recall or list_facts reads ONLY the scope you name, so a user-scope search never returns tenant chunks and vice versa; consult both by making two calls. agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk), or a statement id (get_edge, unlink_chunks, accept/reject_statement, maintain_statement, judge_fact; propose_statement: the statement a competing proposal revises)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -232,9 +236,11 @@ const documentInputSchema = `{
 		"filename":    {"type": "string", "description": "set_asset: an optional original filename (metadata only)."},
 		"under_path":  {"type": "string", "description": "query_chunks / query_documents / documents_summary / graph_snapshot: restrict to documents at/under this Path-tree path. search / related: return only chunks of documents named at or under it — applied before ranking, so the best matches come from that part of the tree. list_statements: only statements with either end in a document named at or under it."},
 		"under_paths": {"type": "array", "items": {"type": "string"}, "description": "search / related: return only chunks of documents named at or under ANY of these Path-tree paths (with under_path, the union of both)."},
-		"to_scope":    {"type": "string", "enum": ["agent","user","tenant"], "description": "copy_documents: the scope the copies go to (scope names the one they come from). The same scope as scope is a duplicate, and needs path_map."},
-		"path_map":    {"type": "object", "additionalProperties": {"type": "string"}, "description": "copy_documents: Path prefixes to rewrite on the way, from → to, e.g. {\"/loomcycle\": \"/kb/loomcycle\"}; the longest matching prefix wins, and a name no prefix matches is kept as it is."},
-		"dry_run":     {"type": "boolean", "description": "copy_documents: true (the default) checks the whole set and reports what would be copied, refused and left behind, writing nothing; false copies."},
+		"to_scope":    {"type": "string", "enum": ["agent","user","tenant"], "description": "copy_documents / move_documents: the scope the documents go to (scope names the one they come from). A copy into the same scope is a duplicate, and needs path_map; a move into the same scope is refused (use the Path tool's mv)."},
+		"path_map":    {"type": "object", "additionalProperties": {"type": "string"}, "description": "copy_documents / move_documents: Path prefixes to rewrite on the way, from → to, e.g. {\"/loomcycle\": \"/kb/loomcycle\"}; the longest matching prefix wins, and a name no prefix matches is kept as it is."},
+		"dry_run":     {"type": "boolean", "description": "copy_documents / move_documents: true (the default) checks the whole set and reports what would be copied or moved, refused and left behind, writing nothing; false does it."},
+		"dangling":    {"type": "string", "enum": ["refuse","drop"], "description": "move_documents: a relation between a moved document and one outside the set cannot cross scopes. refuse (the default) refuses the move and lists them; drop moves the set and deletes those relations with the source."},
+		"expect_count": {"type": "integer", "description": "move_documents: required with dry_run false — counts.documents from the dry run. The move is refused when the set no longer matches."},
 		"exclude_under_path":  {"type": "string", "description": "search / related: never return chunks of documents named at or under this Path-tree path."},
 		"exclude_under_paths": {"type": "array", "items": {"type": "string"}, "description": "search / related: never return chunks of documents named at or under any of these Path-tree paths."},
 		"tags":        {"type": "array", "items": {"type": "string"}, "description": "The chunk's or document's tags. create_chunk/update_chunk/upsert_chunk/create_document replace-set the whole tag set (omit to leave unchanged; [] to clear). add_tags/remove_tags take the tags to add/remove incrementally. Nested tags use a slash: area/sub/topic."},
@@ -270,11 +276,15 @@ type docInput struct {
 	Title       string   `json:"title"`
 	DocumentID  string   `json:"document_id"`
 	DocumentIDs []string `json:"document_ids"`
-	// copy_documents (RFC FT): the scope the copies go to, name prefixes to
-	// rewrite on the way, and whether to only report (the default).
+	// copy_documents / move_documents (RFC FT): the scope the documents go to,
+	// name prefixes to rewrite on the way, and whether to only report (the
+	// default). A move also takes what to do with relations leaving the set and
+	// the count its dry run reported.
 	ToScope     string            `json:"to_scope,omitempty"`
 	PathMap     map[string]string `json:"path_map,omitempty"`
 	DryRun      *bool             `json:"dry_run,omitempty"`
+	Dangling    string            `json:"dangling,omitempty"`
+	ExpectCount *int              `json:"expect_count,omitempty"`
 	ParentID    string            `json:"parent_id"`
 	NewParentID string            `json:"new_parent_id"`
 	// AfterID (create_chunk, RFC BP) inserts the new chunk immediately after this
@@ -701,6 +711,9 @@ var docSchemaDDL = []string{
 	chunkProjectionDDL,
 	// document_leases: a named lease on this scope (document_lease.go).
 	documentLeasesDDL,
+	// document_moves: the documents a move into this scope has not finished
+	// (document_move.go).
+	documentMovesDDL,
 	// statement_rulings / statement_ruling_items: each bulk ruling and what it
 	// changed, so it can be undone together (document_review.go).
 	statementRulingsDDL,
@@ -801,6 +814,8 @@ func (d *Document) dispatch(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		return d.setPath(ctx, key, in)
 	case "copy_documents":
 		return d.copyDocuments(ctx, key, mscope, in)
+	case "move_documents":
+		return d.moveDocuments(ctx, key, mscope, in)
 	case "judge_fact":
 		return d.judgeFact(ctx, key, mscope, in)
 	case "propose_entity":
@@ -2711,6 +2726,33 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	if err != nil {
 		return errFrom("delete_document: "+err.Error(), err), nil
 	}
+	n, txErr := d.removeDocument(ctx, key, mscope, docID)
+	if txErr != nil {
+		return errFrom("delete_document: "+txErr.Error(), txErr), nil
+	}
+	// The document's change feed goes with it: nothing can follow a document
+	// that no longer exists. Best-effort, like removeDocument's name cleanup; the
+	// idle-feed sweep (SweepDocumentFeeds) catches a purge that failed.
+	if _, perr := d.Store.ChannelPurge(ctx, tools.RunIdentity(ctx).TenantID, documentFeedPrefix+docID+documentFeedSuffix, ""); perr != nil {
+		slog.WarnContext(ctx, "delete_document: purge change feed", "document_id", docID, "err", perr)
+	}
+	out := map[string]any{"deleted": true, "document_id": docID, "n_chunks_deleted": n}
+	if isSubject {
+		if why := d.publishSubjectEvent(ctx, key, mscope, subjectEvent{
+			Op: "removed", NaturalKey: subject.NaturalKey, DocumentID: subject.DocumentID, RootChunkID: subject.RootChunkID,
+		}); why != "" {
+			out["not_announced"] = why
+		}
+	}
+	return jsonResult(out)
+}
+
+// removeDocument deletes a document from one scope: its SQL rows in one
+// transaction, then its bodies, derived units and Path names. It is everything
+// delete_document clears except the document's change feed, which a move keeps:
+// the document lives on, under the same id, in another scope. It returns the
+// number of chunks removed.
+func (d *Document) removeDocument(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID string) (int, error) {
 	// The SQL side runs in ONE transaction: enumerate the chunk ids (for the
 	// Memory-body cleanup below), then delete edges (BOTH directions — so an
 	// INCOMING cross-document edge from another doc no longer dangles), then
@@ -2778,7 +2820,7 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		return d.execTxn(ctx, txnID, `DELETE FROM documents WHERE id = ?`, docID)
 	})
 	if txErr != nil {
-		return errFrom("delete_document: "+txErr.Error(), txErr), nil
+		return 0, txErr
 	}
 	// Bodies AFTER commit (separate store; best-effort — an orphaned body is
 	// invisible dead k/v, never reachable once its chunk row is gone).
@@ -2786,7 +2828,6 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		_, _ = d.deleteBody(ctx, docID, direntTenant(ctx), mscope, docMemScopeID(mscope, key), id)
 		d.deleteUnitsOf(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), id)
 	}
-	n := len(ids)
 	// Drop any Path-tree dirent(s) pointing at this document — best-effort, by
 	// document_id (works whether the caller addressed by id or path, so a
 	// delete-by-id never leaves a dangling name). Scans the scope's document
@@ -2805,21 +2846,7 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 			}
 		}
 	}
-	// The document's change feed goes with it: nothing can follow a document
-	// that no longer exists. Best-effort, like the dirent cleanup above; the
-	// idle-feed sweep (SweepDocumentFeeds) catches a purge that failed.
-	if _, perr := d.Store.ChannelPurge(ctx, tools.RunIdentity(ctx).TenantID, documentFeedPrefix+docID+documentFeedSuffix, ""); perr != nil {
-		slog.WarnContext(ctx, "delete_document: purge change feed", "document_id", docID, "err", perr)
-	}
-	out := map[string]any{"deleted": true, "document_id": docID, "n_chunks_deleted": n}
-	if isSubject {
-		if why := d.publishSubjectEvent(ctx, key, mscope, subjectEvent{
-			Op: "removed", NaturalKey: subject.NaturalKey, DocumentID: subject.DocumentID, RootChunkID: subject.RootChunkID,
-		}); why != "" {
-			out["not_announced"] = why
-		}
-	}
-	return jsonResult(out)
+	return len(ids), nil
 }
 
 // --- ops: chunk lifecycle ---
@@ -6322,7 +6349,8 @@ func (d *Document) queryDocuments(ctx context.Context, key sqlmem.ScopeKey, in d
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
-	where := "1=1"
+	// A document mid-move into this scope is listed in its source until it lands.
+	where := notMoving
 	args := []any{}
 	if in.UnderPath != "" {
 		docIDs, err := d.documentsUnderPath(ctx, key, in.UnderPath)
