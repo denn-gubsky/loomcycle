@@ -235,6 +235,22 @@ func TestExtractODT_RepeatedCellsAndRowsAreCapped(t *testing.T) {
 	}
 }
 
+func TestExtractODT_RepeatedTextIsCappedInBytes(t *testing.T) {
+	// One cell of 1 MiB repeated across 64 columns and 1000 rows would
+	// render to 64 GiB; it stops at the table's byte budget instead.
+	big := strings.Repeat("x", 1<<20)
+	body := `<table:table><table:table-row table:number-rows-repeated="1000">` +
+		`<table:table-cell table:number-columns-repeated="64"><text:p>` + big + `</text:p></table:table-cell></table:table-row></table:table>`
+	data := odtZip(t, odtType, entry{name: "content.xml", data: []byte(odtContent("", body))})
+	s, rep := run(t, ODT{}, data, Options{Name: "t.odt"})
+	if n := s.md.Len(); n > maxODTTableBytes+(1<<20) {
+		t.Errorf("output = %d bytes, want at most about %d", n, maxODTTableBytes)
+	}
+	if !strings.Contains(strings.Join(rep.Notes, "; "), "a table was cut at") {
+		t.Errorf("notes = %q", rep.Notes)
+	}
+}
+
 func TestExtractODT_RefusesWhatIsNotAPlainTextDocument(t *testing.T) {
 	content := entry{name: "content.xml", data: []byte(odtContent("", `<text:p>x</text:p>`))}
 	for name, data := range map[string][]byte{

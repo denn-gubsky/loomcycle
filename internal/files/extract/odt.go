@@ -29,6 +29,11 @@ const (
 	maxODTColumns = 64
 	// maxODTSpaces caps the spaces one text:s stands for.
 	maxODTSpaces = 64
+	// maxODTTableBytes caps the text one table may expand to. Repeating a
+	// cell and its row multiplies its text, so the caps on columns and rows
+	// alone would let a small part render to gigabytes before the output
+	// limit sees any of it.
+	maxODTTableBytes = 16 << 20
 )
 
 func (ODT) Match(mediaType, name string) bool {
@@ -130,6 +135,9 @@ func (ODT) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, op
 	if o.cutRows {
 		rep.note("only the first %d rows of a table were read", opts.maxRows())
 	}
+	if o.cutTable {
+		rep.note("a table was cut at %d bytes of text", maxODTTableBytes)
+	}
 	rep.finish(o.w)
 	return rep, nil
 }
@@ -189,6 +197,7 @@ type odt struct {
 	space      bool
 	cutColumns bool
 	cutRows    bool
+	cutTable   bool
 	lastList   bool
 	started    bool
 }
@@ -633,21 +642,27 @@ func (o *odt) table(t *node) (string, error) {
 	// editor pads a table with a million empty rows, which end the table
 	// rather than count against its cap.
 	pending := 0
+	size := 0 // the text the rows hold so far, separators included
 	add := func(row []string, n int) bool {
 		if allEmpty(row) {
 			pending = min(pending+n, maxRows)
 			return true
 		}
+		cost := rowBytes(row)
 		for range pending + n {
 			if len(rows) >= maxRows {
 				o.cutRows = true
 				return false
 			}
 			if pending > 0 {
-				rows, pending = append(rows, nil), pending-1
+				rows, pending, size = append(rows, nil), pending-1, size+maxODTColumns*4
 				continue
 			}
-			rows = append(rows, row)
+			if size+cost > maxODTTableBytes {
+				o.cutTable = true
+				return false
+			}
+			rows, size = append(rows, row), size+cost
 		}
 		return true
 	}
@@ -704,16 +719,31 @@ func (o *odt) row(tr *node) ([]string, error) {
 		cells = cells[:len(cells)-1]
 	}
 	var row []string
+	size := 0
 	for _, c := range cells {
 		for range c.repeat {
 			if len(row) == maxODTColumns {
 				o.cutColumns = true
 				return row, nil
 			}
+			if size += len(c.text) + 3; size > maxODTTableBytes {
+				o.cutTable = true
+				return row, nil
+			}
 			row = append(row, c.text)
 		}
 	}
 	return row, nil
+}
+
+// rowBytes is what a row adds to a rendered table: its text and the
+// " | " around each cell.
+func rowBytes(row []string) int {
+	n := 2
+	for _, c := range row {
+		n += len(c) + 3
+	}
+	return n
 }
 
 // cell renders a table cell's paragraphs (a nested table's included) on
