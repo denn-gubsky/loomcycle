@@ -89,6 +89,7 @@ type copyPlan struct {
 	bodyFailures     int
 	nameFailures     []map[string]any
 	statementsFailed int
+	statementError   string // the first statement write's error, for the caller
 }
 
 func (p *copyPlan) refuse(docID, code, detail string) {
@@ -432,7 +433,9 @@ func (d *Document) writeCopy(ctx context.Context, p *copyPlan) {
 	var done []*copyDoc
 	for _, doc := range p.docs {
 		if err := d.copyDocumentRows(ctx, p, doc); err != nil {
-			slog.WarnContext(ctx, "copy_documents: rows of a document failed", "document_id", doc.id, "err", err)
+			// The error goes back to the caller in the refusal's detail, not to
+			// the log: it can quote row values.
+			slog.WarnContext(ctx, "copy_documents: rows of a document failed", "document_id", doc.id)
 			p.refuse(doc.id, copyWriteFailed, err.Error())
 			for _, c := range doc.chunks {
 				delete(p.chunkMap, c)
@@ -692,7 +695,10 @@ func (d *Document) copyStatements(ctx context.Context, p *copyPlan) {
 			}
 		}
 		if err != nil {
-			slog.WarnContext(ctx, "copy_documents: statement", "statement_id", id, "err", err)
+			slog.WarnContext(ctx, "copy_documents: statement failed", "statement_id", id)
+			if p.statementError == "" {
+				p.statementError = err.Error()
+			}
 			p.statementsFailed++
 			continue
 		}
@@ -751,6 +757,9 @@ func copyResult(p *copyPlan, dryRun bool) map[string]any {
 	}
 	if p.statementsFailed > 0 {
 		out["statements_failed"] = p.statementsFailed
+	}
+	if p.statementError != "" {
+		out["statement_error"] = p.statementError
 	}
 	return out
 }

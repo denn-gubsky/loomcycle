@@ -47,12 +47,12 @@ It writes nothing. Run it first.
  counts: {documents, chunks, statements, revisions, assets, units?},
  refused: [{document_id, code, detail?}],
  dangling: [{statement_id, kind, from, to, outside}], dangling_count,
- body_failures?, name_failures?, statements_failed?}
+ body_failures?, name_failures?, statements_failed?, statement_error?}
 ```
 
 `new_id` appears only on a real copy, and `units` only after one. `outside`
 says which part of a dangling relation lies outside the set: `from`, `to` or
-`evidence`. The lists are capped at 200 entries; `dangling_count` and
+`evidence`. `statement_error` is the first failed statement's error. The lists are capped at 200 entries; `dangling_count` and
 `refused_count` stay exact.
 
 A refused document is not copied, and the rest of the set goes ahead. The
