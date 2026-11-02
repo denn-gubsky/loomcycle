@@ -2383,6 +2383,7 @@ components:
             - graph_snapshot
             - delete_document
             - set_path
+            - copy_documents
             - create_chunk
             - propose_entity
             - propose_subject
@@ -2456,6 +2457,12 @@ components:
         markdown: { type: string, description: "import_md source." }
         media_type: { type: string }
         data: { type: string, description: "set_asset image bytes, base64." }
+        to_scope: { type: string, enum: [agent, user, tenant], description: "copy_documents: the scope the copies go to." }
+        document_ids: { type: array, items: { type: string }, description: "copy_documents / documents_summary / search: documents by id." }
+        under_path: { type: string }
+        under_paths: { type: array, items: { type: string } }
+        path_map: { type: object, additionalProperties: { type: string }, description: "copy_documents: Path prefixes to rewrite, from → to; the longest wins." }
+        dry_run: { type: boolean, description: "copy_documents: true (the default) reports without writing." }
     PathToolInput:
       type: object
       additionalProperties: true
