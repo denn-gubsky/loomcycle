@@ -262,3 +262,54 @@ describe("document", () => {
     ).rejects.toBeInstanceOf(InvalidArgumentError);
   });
 });
+
+describe("copyDocuments / moveDocuments", () => {
+  it("copyDocuments posts copy_documents with the set and target verbatim", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ scope: "user", to_scope: "tenant", dry_run: true, documents: [], counts: { documents: 0 }, refused: [], dangling: [], dangling_count: 0 }),
+    ]);
+    const res = await client.copyDocuments({ to_scope: "tenant", under_path: "/proj", path_map: { "/proj": "/kb/proj" } });
+    expect(res.dry_run).toBe(true);
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body).toEqual({ op: "copy_documents", to_scope: "tenant", under_path: "/proj", path_map: { "/proj": "/kb/proj" } });
+    expect(fetchMock.mock.calls[0]![0]).toBe("http://test-loomcycle:8787/v1/_document");
+  });
+
+  it("moveDocuments posts move_documents with expect_count and dangling, and types the answer", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        scope: "user", to_scope: "tenant", dry_run: false,
+        documents: [{ id: "d1", paths: ["/kb/proj/plan"] }],
+        counts: { documents: 1, chunks: 3 }, refused: [], dangling: [], dangling_count: 0,
+        moved: ["d1"], dropped: 0,
+      }),
+    ]);
+    const res = await client.moveDocuments(
+      { scope: "user", to_scope: "tenant", document_ids: ["d1"], dangling: "drop", dry_run: false, expect_count: 1 },
+      { tenant: "acme" },
+    );
+    expect(res.moved).toEqual(["d1"]);
+    expect(res.documents[0]!.new_id).toBeUndefined();
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_document?tenant=acme");
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body).toEqual({
+      op: "move_documents", scope: "user", to_scope: "tenant", document_ids: ["d1"],
+      dangling: "drop", dry_run: false, expect_count: 1,
+    });
+  });
+
+  it("a refused move raises SubstrateToolRefusedError", async () => {
+    const body = JSON.stringify({
+      code: "tool_refused",
+      tool: "Document",
+      error: "move_documents: expect_count is required with dry_run false",
+    });
+    const { client } = makeClient([
+      () => new Response(body, { status: 422, headers: { "Content-Type": "application/json" } }),
+    ]);
+    await expect(client.moveDocuments({ to_scope: "tenant", under_path: "/proj", dry_run: false })).rejects.toBeInstanceOf(
+      SubstrateToolRefusedError,
+    );
+  });
+});

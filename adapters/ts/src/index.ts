@@ -158,6 +158,7 @@
  *     // Path VFS + chunked-graph Documents on the wire (v1.4.0 — RFC AL / RFC AK)
  *     path(input): Promise<PathToolResponse>                      // resolve/ls/stat/mkdir/mv/rm
  *     document(input): Promise<DocumentToolResponse>              // 13 ops; needs SQL Memory
+ *     copyDocuments(input) / moveDocuments(input): Promise<DocumentTransferResult> // RFC FT, dry run by default
  *
  *     // History — browse/search/annotate past chats (RFC BE; tenant-confined)
  *     history(input): Promise<HistoryToolResponse>                // list/get/search/rename/annotate/pin/archive/recap/resume
@@ -454,6 +455,10 @@ export type {
   DocumentToolInput,
   DocumentEdgeEvidence,
   DocumentToolResponse,
+  DocumentCopyInput,
+  DocumentMoveInput,
+  DocumentTransferEntry,
+  DocumentTransferResult,
   DocumentSearchFilter,
   DocumentSearchHit,
   DocumentSearchResult,

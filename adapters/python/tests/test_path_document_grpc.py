@@ -99,3 +99,60 @@ async def test_document_refusal_raises_with_tool():
     with pytest.raises(SubstrateToolRefusedError) as exc:
         await client.document({"op": "create_document", "title": "x"})
     assert exc.value.tool == "Document"
+
+
+@pytest.mark.asyncio
+async def test_copy_documents_sends_only_the_arguments_given():
+    client = _make_client()
+    fake, captured = _async_returning(
+        pb.SubstrateResponse(output_json=json.dumps({"dry_run": True, "documents": []}).encode(), is_error=False)
+    )
+    client._stub.Document = fake  # type: ignore[attr-defined]
+
+    result = await client.copy_documents(to_scope="tenant", under_path="/proj", path_map={"/proj": "/kb/proj"})
+    assert result["dry_run"] is True
+    assert json.loads(captured["req"].input_json) == {
+        "op": "copy_documents",
+        "to_scope": "tenant",
+        "dry_run": True,
+        "under_path": "/proj",
+        "path_map": {"/proj": "/kb/proj"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_move_documents_carries_expect_count_and_dangling():
+    client = _make_client()
+    fake, captured = _async_returning(
+        pb.SubstrateResponse(output_json=json.dumps({"dry_run": False, "moved": ["d1"]}).encode(), is_error=False)
+    )
+    client._stub.Document = fake  # type: ignore[attr-defined]
+
+    result = await client.move_documents(
+        to_scope="tenant", scope="user", document_ids=["d1"], dangling="drop", dry_run=False, expect_count=1
+    )
+    assert result["moved"] == ["d1"]
+    assert json.loads(captured["req"].input_json) == {
+        "op": "move_documents",
+        "to_scope": "tenant",
+        "scope": "user",
+        "dry_run": False,
+        "document_ids": ["d1"],
+        "dangling": "drop",
+        "expect_count": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_move_documents_refusal_raises():
+    client = _make_client()
+    fake, _ = _async_returning(
+        pb.SubstrateResponse(
+            output_json=b"move_documents: expect_count is required with dry_run false", is_error=True
+        )
+    )
+    client._stub.Document = fake  # type: ignore[attr-defined]
+
+    with pytest.raises(SubstrateToolRefusedError):
+        await client.move_documents(to_scope="tenant", under_path="/proj", dry_run=False)
+

@@ -1162,6 +1162,67 @@ class LoomcycleClient:
         ``chunk_invalid_at``."""
         return await self._dispatch_substrate("Document", input)
 
+    async def copy_documents(
+        self,
+        *,
+        to_scope: str,
+        scope: Optional[str] = None,
+        document_ids: Optional[Sequence[str]] = None,
+        under_path: Optional[str] = None,
+        under_paths: Optional[Sequence[str]] = None,
+        path_map: Optional[Mapping[str, str]] = None,
+        dry_run: bool = True,
+    ) -> Mapping[str, Any]:
+        """Copy a set of documents into another scope (``document`` op
+        ``copy_documents``, RFC FT). The copies get new ids and carry their
+        history, tags, images and the relations between them; a relation to a
+        document outside the set stays in the source and is listed under
+        ``dangling``. ``document_ids``, ``under_path`` and ``under_paths``
+        combine (at most 500 documents); ``path_map`` rewrites name prefixes,
+        the longest match winning. A dry run unless ``dry_run=False``.
+
+        Returns ``{scope, to_scope, dry_run, documents: [{id, new_id?, paths}],
+        counts, refused, dangling, dangling_count, ...}``."""
+        body = _transfer_body(
+            "copy_documents", to_scope, scope, document_ids, under_path, under_paths, path_map, dry_run
+        )
+        return await self.document(body)
+
+    async def move_documents(
+        self,
+        *,
+        to_scope: str,
+        scope: Optional[str] = None,
+        document_ids: Optional[Sequence[str]] = None,
+        under_path: Optional[str] = None,
+        under_paths: Optional[Sequence[str]] = None,
+        path_map: Optional[Mapping[str, str]] = None,
+        dangling: Optional[str] = None,
+        dry_run: bool = True,
+        expect_count: Optional[int] = None,
+    ) -> Mapping[str, Any]:
+        """Move a set of documents into another scope, keeping every id
+        (``document`` op ``move_documents``, RFC FT). The source is removed only
+        once the target is checked, and an interrupted move finishes when the
+        same call runs again. A dry run unless ``dry_run=False``, which then
+        needs ``expect_count``: the dry run's ``counts["documents"]``. A
+        relation between a moved document and one outside the set refuses the
+        move unless ``dangling="drop"``. ``to_scope`` must differ from
+        ``scope``.
+
+        Returns the copy's answer without ``new_id``, plus ``moved`` (the ids
+        now in ``to_scope``), ``unfinished``, ``dropped``, ``blocked_by`` and,
+        on a dry run, ``to_finish``. A refused call raises
+        :class:`SubstrateToolRefusedError`."""
+        body = _transfer_body(
+            "move_documents", to_scope, scope, document_ids, under_path, under_paths, path_map, dry_run
+        )
+        if dangling is not None:
+            body["dangling"] = dangling
+        if expect_count is not None:
+            body["expect_count"] = expect_count
+        return await self.document(body)
+
     async def credential_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
         """Invoke the CredentialDef tool — the RFC AR secure credential store
         (RFC CN gRPC/Python parity). Op-discriminated: ``create`` / ``get`` /
@@ -4122,3 +4183,29 @@ def _optional_overrides(**kwargs: Any) -> dict[str, Any]:
     the old claim that removing it would silently disable the feature.
     """
     return {k: v for k, v in kwargs.items() if v is not None}
+
+
+def _transfer_body(
+    op: str,
+    to_scope: str,
+    scope: Optional[str],
+    document_ids: Optional[Sequence[str]],
+    under_path: Optional[str],
+    under_paths: Optional[Sequence[str]],
+    path_map: Optional[Mapping[str, str]],
+    dry_run: bool,
+) -> dict[str, Any]:
+    """The Document input shared by copy_documents and move_documents: only
+    the arguments given, so the server's defaults apply to the rest."""
+    body: dict[str, Any] = {"op": op, "to_scope": to_scope, "dry_run": dry_run}
+    if scope is not None:
+        body["scope"] = scope
+    if document_ids is not None:
+        body["document_ids"] = list(document_ids)
+    if under_path is not None:
+        body["under_path"] = under_path
+    if under_paths is not None:
+        body["under_paths"] = list(under_paths)
+    if path_map is not None:
+        body["path_map"] = dict(path_map)
+    return body

@@ -245,6 +245,9 @@ import type {
   PathToolResponse,
   DocumentToolInput,
   DocumentToolResponse,
+  DocumentCopyInput,
+  DocumentMoveInput,
+  DocumentTransferResult,
   HistoryToolInput,
   HistoryToolResponse,
   EvaluationSubmitInput,
@@ -3944,6 +3947,39 @@ export class LoomcycleClient {
       signal: opts?.signal,
       query: browseQuery(opts),
     });
+  }
+
+  /** Copy a set of documents into another scope (the Document tool's
+   *  `copy_documents`, RFC FT). The copies get new ids and carry their history,
+   *  tags, images and the relations between them; a relation to a document
+   *  outside the set stays in the source and is listed under `dangling`. A dry
+   *  run unless `dry_run: false` — run it first. `opts` as on
+   *  {@link LoomcycleClient.document}. */
+  async copyDocuments(
+    input: DocumentCopyInput,
+    opts?: { signal?: AbortSignal; scopeId?: string; tenant?: string },
+  ): Promise<DocumentTransferResult> {
+    return (await this.document(
+      { op: "copy_documents", ...input } as DocumentToolInput,
+      opts,
+    )) as DocumentTransferResult;
+  }
+
+  /** Move a set of documents into another scope, keeping every id (the
+   *  Document tool's `move_documents`, RFC FT). The source is removed only once
+   *  the target is checked; an interrupted move finishes when the same call
+   *  runs again. A dry run unless `dry_run: false`, which then needs
+   *  `expect_count` from the dry run. A relation leaving the set refuses the
+   *  move unless `dangling: "drop"`. `opts` as on
+   *  {@link LoomcycleClient.document}. */
+  async moveDocuments(
+    input: DocumentMoveInput,
+    opts?: { signal?: AbortSignal; scopeId?: string; tenant?: string },
+  ): Promise<DocumentTransferResult> {
+    return (await this.document(
+      { op: "move_documents", ...input } as DocumentToolInput,
+      opts,
+    )) as DocumentTransferResult;
   }
 
   /** Build the URL of an image chunk's asset (RFC BO) — `GET
