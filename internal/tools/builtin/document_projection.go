@@ -229,7 +229,7 @@ func (d *Document) projectPass(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			// What a refit would do is re-place every chunk; fitting to count that
 			// would be work a dry run exists to avoid.
 			rep.BasisVersion = next
-			return d.placeChunks(ctx, key, list, first, model, &storedBasis{version: next, fittedAt: now}, true, now, limit, rep)
+			return d.placeChunks(ctx, key, list, first, model, &storedBasis{version: next, fittedAt: now}, now, limit, rep)
 		}
 		sample, err := d.projectionSample(list, first, model, settings.SampleMax)
 		if err != nil {
@@ -257,7 +257,7 @@ func (d *Document) projectPass(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 	}
 	rep.BasisVersion = basis.version
-	return d.placeChunks(ctx, key, list, first, model, basis, refit, now, limit, rep)
+	return d.placeChunks(ctx, key, list, first, model, basis, now, limit, rep)
 }
 
 // projectionSample streams the scope's vectors of model into a reservoir. The
@@ -299,13 +299,13 @@ func (d *Document) projectionSample(list func(string) ([]store.MemoryEmbedRow, e
 // coordinate on basis: a chunk with no row, a row of another model or an older
 // basis, or a row older than its chunk's current vector (the body was re-embedded).
 //
-// updated_at says WHEN a row's position became news, which is what a refit counts:
-// a row placed because its vector is new is stamped now; one placed only because
-// the basis moved (every row of a refit, and the rows a refit's place limit left
-// to later passes) is stamped with the basis's fit time, so it never counts as new
-// content toward the next refit.
+// updated_at says whether a row's position is news, which is what a refit counts:
+// a row whose vector was written after the basis was fitted (a new chunk, a
+// re-embedded one) is stamped now; any other (every row of a fit, and the rows a
+// fit's place limit left to later passes) is stamped with the fit time, so it never
+// counts as new content toward the next refit.
 func (d *Document) placeChunks(ctx context.Context, key sqlmem.ScopeKey, list func(string) ([]store.MemoryEmbedRow, error),
-	first []store.MemoryEmbedRow, model string, basis *storedBasis, refitRun bool, now int64, limit int,
+	first []store.MemoryEmbedRow, model string, basis *storedBasis, now int64, limit int,
 	rep ProjectionReport) (ProjectionReport, error) {
 	page := first
 	for {
@@ -348,9 +348,9 @@ func (d *Document) placeChunks(ctx context.Context, key sqlmem.ScopeKey, list fu
 				rep.More = true
 				return rep, d.writeProjection(ctx, key, batch, writeFor(rep))
 			}
-			stamp := now
-			if refitRun || (has && h.model == model && h.updatedAt >= embeddedAt) {
-				stamp = basis.fittedAt
+			stamp := basis.fittedAt
+			if embeddedAt > basis.fittedAt {
+				stamp = now
 			}
 			row := placedRow{chunkID: id, updatedAt: stamp}
 			if !rep.DryRun {

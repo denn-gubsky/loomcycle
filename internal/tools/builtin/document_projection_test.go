@@ -325,6 +325,24 @@ func TestProjection_RefitsOnlyWhenStaleAndEnoughNewChunks(t *testing.T) {
 	}
 }
 
+// TestProjection_CatchUpAfterACutFitIsNotNewContent — chunks a fit's place limit
+// left for later passes were in the scope when the basis was fitted, so placing
+// them later must not count toward refit_min_new.
+func TestProjection_CatchUpAfterACutFitIsNotNewContent(t *testing.T) {
+	d, vs, ctx := projectionFixture(t)
+	d.Cfg = projectionOn(func(p *config.ProjectionConfig) { p.RefitAfter = "1ns"; p.RefitMinNew = 3 })
+	projDoc(t, d, vs, ctx, "Map", synthVectors(10, 12))
+	if rep := project(t, d, ctx, ProjectionOptions{PlaceLimit: 4}); rep.BasisVersion != 1 || rep.Placed != 4 || !rep.More {
+		t.Fatalf("cut fit = %+v", rep)
+	}
+	if rep := project(t, d, ctx, ProjectionOptions{}); rep.Refitted || rep.Placed != 6 {
+		t.Fatalf("catch-up = %+v, want the other 6 placed on v1", rep)
+	}
+	if rep := project(t, d, ctx, ProjectionOptions{}); rep.Refitted {
+		t.Fatalf("refitted after a catch-up with no new chunk: %+v", rep)
+	}
+}
+
 // TestProjection_PlaceLimitBoundsAPass — a pass places at most place_limit chunks,
 // says more remain, and the next pass picks up where it stopped.
 func TestProjection_PlaceLimitBoundsAPass(t *testing.T) {
