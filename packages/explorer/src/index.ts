@@ -101,3 +101,4 @@ export {
 // The shared data-source contract (connection | client | dataLayer), for hosts
 // typing their own wrappers.
 export type { ExplorerDataSource } from "./components/ExplorerRoot";
+export type { NavigatorMode } from "./lib/navigator";
