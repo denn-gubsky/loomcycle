@@ -607,6 +607,9 @@ type Server struct {
 	// aclResolver is the RFC EY groups + compiled-set resolver; nil leaves
 	// every gate on the scope answer alone.
 	aclResolver *aclres.Resolver
+	// documentFeeds counts each principal's open GET /v1/_document/feed
+	// streams (RFC FV, LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS).
+	documentFeeds documentFeedStreams
 	// tokenCache is the RFC L per-replica auth-token resolution cache.
 	// Nil = disabled (direct lookup per request). Wired via
 	// EnableTokenCache from main.go with LOOMCYCLE_AUTH_CACHE_TTL_SECONDS.
@@ -4707,6 +4710,9 @@ func (s *Server) routes() *http.ServeMux {
 	// LOOMCYCLE_MEMORY_CHANGES_ENABLED).
 	mux.Handle("GET /v1/_memory/changes", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryChanges))))
 	mux.Handle("GET /v1/_document/changes", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDocumentChanges))))
+	// RFC FV — the reader's document feed: member-accessible, gated and scoped
+	// like POST /v1/_document, only changes to documents the caller can list.
+	mux.Handle("GET /v1/_document/feed", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDocumentFeed))))
 	mux.Handle("POST /v1/_memory/backfill_embeddings", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryBackfillEmbeddings))))
 	mux.Handle("POST /v1/_memory/backfill_traces", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryBackfillTraces))))
 	// RFC BU phase 4b — generate vision descriptions for image chunks that have

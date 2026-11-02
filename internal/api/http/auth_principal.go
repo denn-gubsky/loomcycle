@@ -1832,6 +1832,10 @@ func isTenantConfinedDefPath(path string) bool {
 		// tools (resolve scope from the operator-trust ctx + tenant-stamp via
 		// RunIdentity). Same posture as _volumedef: ScopeTenant, no /names.
 		"/v1/_path", "/v1/_document",
+		// RFC FV — the reader's document feed: the same posture as /v1/_document
+		// (ScopeTenant, member-accessible, scope resolved from the principal).
+		// Unlike /v1/_document/changes above it is NOT carved out of member access.
+		"/v1/_document/feed",
 		// RFC BE History tool was here (ScopeTenant); RFC BY moved it to the
 		// member-read gate (memberReadable → runs:read) so a delegated USER token
 		// can read its OWN chats. The handler caps a member to [self, user]
