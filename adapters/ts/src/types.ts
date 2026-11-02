@@ -4183,6 +4183,7 @@ export type DocumentToolInput = {
     | "get_document"
     | "documents_summary"
     | "query_documents"
+    | "graph_snapshot"
     | "delete_document"
     | "set_path"
     | "create_chunk"
