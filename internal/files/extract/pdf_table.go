@@ -247,10 +247,8 @@ func (p *pdfPage) blocks() ([]pdfBlock, bool) {
 		if inTable[i] {
 			continue
 		}
-		k := 0
-		for k < len(tables) && tables[k].mid > runCentreY(r) {
-			k++
-		}
+		cy := runCentreY(r)
+		k := sort.Search(len(tables), func(k int) bool { return tables[k].mid <= cy })
 		flow[k] = append(flow[k], r)
 	}
 	var out []pdfBlock
@@ -295,7 +293,7 @@ func findTables(rules []pdfRule, runs []pdfRun) ([]pdfTable, bool) {
 	if len(hs) < 3 || len(vs) < 3 {
 		return nil, true
 	}
-	// vs is sorted by position: the vertical rules an horizontal one may
+	// vs is sorted by position: the vertical rules a horizontal one may
 	// cross are a range of it.
 	parent := make([]int, len(hs)+len(vs))
 	for i := range parent {
