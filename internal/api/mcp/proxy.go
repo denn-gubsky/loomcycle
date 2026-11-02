@@ -156,6 +156,14 @@ var longRunTools = map[string]bool{
 	// default header timeout) and op=import builds a Document. A retry would
 	// extract twice (a second .md) or import a second copy of the document.
 	"file": true,
+	// document op=copy_documents / move_documents re-embed every part they
+	// write and can run for many minutes (a 318-document move took ~20), and
+	// import_md builds a whole document. Under the header timeout the client
+	// gave up at 60 s, the server cancelled the move with the request, and the
+	// reconnect retry started it over. Every other document op is a quick
+	// read or write, which a hung upstream now leaves waiting rather than
+	// failing at 60 s — the price of not cutting a move off.
+	"document": true,
 }
 
 // newProxyTransport builds the thin client's HTTP transport. headerTimeout=0
