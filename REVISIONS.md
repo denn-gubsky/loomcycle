@@ -8,6 +8,89 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.135.0
+
+*A document scope drawn as a 3D star map (RFC FQ P0–P4, RFC FV): a paged, access-filtered `graph_snapshot` of a whole scope; a server-side map of chunk embeddings (PCA, or UMAP) whose vectors never leave the runtime; the `@loomcycle/universe` navigator in the document explorer, with link review and authoring, saved views and live updates from a new member-safe document change feed. Also `copy_documents` between scopes (RFC FT P0), an ODT reader and Markdown tables recovered from PDFs (RFC FU).*
+
+The v1.135 line: #2339 to #2355.
+- `@loomcycle/client` moves to 1.135.0 with `documentFeed` and the `graph_snapshot` types; the Python adapter to 1.135.0 (docstrings only).
+- **Migrations:**
+  - Postgres 0128 adds an expression index on `dirents` (document id → Path names).
+  - Postgres 0129 adds `memory_changes.document_id`.
+  - Each SQL Memory scope gains `chunk_projection`, `chunk_projection_basis` and `chunk_projection_anchor` on first use.
+- **New routes:** `POST /v1/_document/project` (admin) and `GET /v1/_document/feed` (member-accessible).
+- **New config:**
+  - `memory.projection {enabled, interval, refit_after, refit_min_new, sample_max, method, umap_sample_max}`, off by default.
+  - `LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL`.
+  - `LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS` (default 4).
+- **New npm packages and versions:** `@loomcycle/universe` 0.1.0 → 0.2.0, `@loomcycle/explorer` 0.11.0 → 0.12.0, `@loomcycle/loomboard` 0.2.0.
+- **Additive changes to existing surfaces:**
+  - The operator change feed `GET /v1/_document/changes` now carries `document_id` on its frames and a new type, `document.edges.changed`. Subscribers already ignore types they do not know.
+  - `update_chunk`, `move_chunk`, `reorder_chunk` and `set_path` now appear on both feeds.
+- No wire breakage.
+
+### A scope in one call: `graph_snapshot` (#2339, #2341)
+
+- **`Document op=graph_snapshot`** returns documents, every chunk tree, the relations between chunks, Path names and fact flags as columns (parallel arrays plus code tables).
+- **Paging:** paged by whole documents with `after`, so a constellation never splits.
+- **Filters:** `under_path`, `document_ids`, `chunk_ids`, types, statuses, tags and `as_of`. `include` picks the sections. `include_proposed` (#2348) adds relations awaiting review.
+- **Access:** answered like a listing. A document the caller may not list is left out before the page is cut, with its chunks, the relations into it and its names, so page sizes and cursors never reveal it.
+- **Cost:** a page reads its own documents' Path names through a new reverse index (migration 0128).
+
+### The map by meaning: projection (#2342, #2350, #2354)
+
+- **Vectors stay in the runtime.** Each chunk's stored embedding is placed in 3D, in SQL Memory, and only three coordinates travel: `graph_snapshot include: projection`, and `search with_projection` → `query_xyz`.
+- **PCA by default:** an exact basis, so a new chunk is placed without a refit. Refits are sign-aligned so the map keeps its orientation.
+- **UMAP** (`memory.projection.method: umap`, RFC FQ §11):
+  - Stdlib Go, fitted on a sample of at most 10,000 chunks; the rest are placed by a k-NN weighted mean of the sample.
+  - A refit is warm-started and Procrustes-aligned to the previous map.
+  - On 137 real project documents a chunk's map neighbours come from its own document 83% of the time with UMAP, against 14% with PCA (`/loomcycle/docs/universe-umap-measurement`).
+- **Who runs it:** a singleton sweeper (off by default) and `POST /v1/_document/project` (admin, dry run by default, `refit`, `method`, `limit`). Postgres + pgvector only.
+- **Concurrent refits** of one scope no longer fail: the database's keys decide, and a refit that loses reports `raced: true` and places its chunks on the winner's basis (#2350).
+
+### The star map: `@loomcycle/universe` (#2340, #2344, #2348, #2351, #2353)
+
+- **In the explorer:** a `tree | stars` toggle in the document explorer; the tree stays the default.
+  - Documents are constellations of chunk stars, and Path directories are formations.
+  - Level of detail is by size on screen.
+  - Selection syncs both ways with the document viewer.
+  - Small, state-encoded animations; reduced motion freezes them.
+- **Meaning view:** the stars glide from where the Path tree files them to where their content puts them. Search has three modes (names, content, memory), and a content search marks where the query lands.
+- **Links:**
+  - Opacity follows a relation's confidence, and an expired one is grey.
+  - A Links panel lists the selection's relations.
+  - **link** proposes (or asserts) a new relation between two stars.
+  - A proposed one can be accepted or rejected from the map.
+- **Saved views:** a views menu saves the mode, filters, camera and selection as a `type=view` document. The boards package lists such views and hands them to its host (`onOpenUniverse`), and explorer 0.12's `navigator` prop opens the stars navigator for it.
+- **Live** (#2353): the map follows the document change feed and re-reads exactly the changed documents, in place, without moving the camera.
+
+### A member-safe document change feed (RFC FV, #2352, #2355)
+
+- **`GET /v1/_document/feed?scope=user|tenant`** streams a change to any document the caller can list, in the scope it names: `document.chunk.updated`, `document.chunk.deleted`, `document.edges.changed`. It is coalesced per poll and carries no values.
+- **No cursor:** a reconnect is a resync, so no `seq` reveals how much was written elsewhere.
+- **Re-authenticated** every 30 s: a revoked or expired credential ends the stream. Access is checked per frame, with a 30 s cache.
+- **Capped** at 4 streams per principal (`LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS`).
+- **Off with capture:** it needs `LOOMCYCLE_MEMORY_CHANGES_ENABLED`, like the operator feed. When capture is off the opening frame says `enabled: false`.
+- **What it captures:**
+  - Every chunk-body write and delete records its document at write time (migration 0129); a census test holds new writers to it.
+  - Statement writes add `document.edges.changed`.
+  - Retitles, moves, reorders and `set_path` add `document.chunk.updated` (#2355).
+- TS: `client.documentFeed({scope, scopeId?, tenant?, signal})`.
+
+### Copy documents between scopes (RFC FT P0, #2343)
+
+- **`Document op=copy_documents`** copies a set of documents (`document_ids`, `under_path(s)`, at most 500) into `to_scope` on the server, with their history, tags, images, Path names (rewritten by `path_map`) and the relations between them.
+- Relations leaving the set are listed as `dangling`. The tenant ontology, subject documents and fact holders are refused by name, as are name and key collisions.
+- A dry run by default.
+
+### Tables that survive File extract (RFC FU, #2346, #2347, #2349)
+
+- **ODT** documents are read into Markdown like DOCX: headings, lists, tables, images and notes. An ODF zip is recognised by its `mimetype` entry.
+- **PDF tables:**
+  - A PDF table with drawn borders becomes a Markdown table.
+  - One without borders is recovered from 3 or more aligned columns. Two aligned columns stay text, because they look exactly like two-column prose.
+- The work spent on a page is bounded, since the input is untrusted.
+
 ## What's in v1.134.0
 
 *Statement review is complete (RFC FS Phase 4 and the owner's answers): an operator-only judge agreement report counts how the sampled human audit of the judge's acceptances came out, and the Review page works through that sample. A tenant member's single ruling now needs the `review` grant, as a bulk ruling does, and a concept tag decided by the neighbours' vote no longer counts as rule-matched.*
