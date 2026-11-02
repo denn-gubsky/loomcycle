@@ -63,16 +63,20 @@ void main() {
   vSeed = aSeed;
   vec4 mv = modelViewMatrix * vec4(mix(position, aPos2, uMorph), 1.0);
   float sprite = vRays > 0.5 ? 3.4 : (vFormation > 0.5 ? 2.0 : 1.0);
-  float px = aSize * uSizeScale / max(0.0001, -mv.z);
+  // The meaning view spreads every chunk through a larger cloud with no
+  // constellations to read them by, so its stars grow as the morph arrives.
+  float px = aSize * (1.0 + 1.4 * uMorph) * uSizeScale / max(0.0001, -mv.z);
   // A floor per kind keeps far formations and document stars findable.
-  float floorPx = vFormation > 0.5 ? 10.0 : (bit(aFlags, 1.0) > 0.5 ? 3.2 : 1.8);
+  float floorPx = vFormation > 0.5 ? 10.0 : (bit(aFlags, 1.0) > 0.5 ? 3.2 : 1.8 + 1.2 * uMorph);
   float size = clamp(px * vTwinkle, floorPx, 44.0) * sprite;
   gl_PointSize = vis > 0.002 ? size * uPixelRatio : 0.0;
   vSprite = 1.0 / sprite;
   vAlpha = vis * (dead > 0.5 ? 0.45 : 1.0) * (dim > 0.5 ? 0.22 : 1.0);
   vec3 c = aColor * (0.85 + 0.3 * aRecency);
   if (dead > 0.5) c = mix(vec3(dot(aColor, vec3(0.3, 0.59, 0.11))), aColor, 0.25) * vec3(1.0, 0.82, 0.82);
-  if (uLight > 0.5) c *= 0.72;
+  // On a light sky a star is ink, not light: darken it enough that the pale
+  // neutral palette (chunks with no status colour) still reads on white.
+  if (uLight > 0.5) c *= 0.5;
   vColor = c;
   gl_Position = projectionMatrix * mv;
 }
