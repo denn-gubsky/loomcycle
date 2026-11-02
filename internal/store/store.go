@@ -4131,6 +4131,10 @@ type DirentStore interface {
 	DirentGet(ctx context.Context, tenantID, scope, scopeID, parentPath, name string) (DirentRow, error)
 	DirentList(ctx context.Context, tenantID, scope, scopeID, parentPath string) ([]DirentRow, error)
 	DirentListUnder(ctx context.Context, tenantID, scope, scopeID, prefix string) ([]DirentRow, error)
+	// DirentListByDocuments is the reverse lookup: the `document` dirents that
+	// name any of documentIDs in one tree (a document may have several names).
+	// Backed by the dirents_document_id expression index.
+	DirentListByDocuments(ctx context.Context, tenantID, scope, scopeID string, documentIDs []string) ([]DirentRow, error)
 	DirentDelete(ctx context.Context, tenantID, scope, scopeID, parentPath, name string) (bool, error)
 	DirentDeleteUnder(ctx context.Context, tenantID, scope, scopeID, prefix string) (int, error)
 	DirentMove(ctx context.Context, tenantID, scope, scopeID, fromParent, fromName, toParent, toName string) (bool, error)

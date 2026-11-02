@@ -612,6 +612,7 @@ func Run(t *testing.T, factory Factory) {
 		{"DirentCreateAndGet", testDirentCreateAndGet},
 		{"DirentListOneLevel", testDirentListOneLevel},
 		{"DirentListUnderRecursive", testDirentListUnderRecursive},
+		{"DirentListByDocumentsIsTheReverseLookup", testDirentListByDocumentsIsTheReverseLookup},
 		{"DirentUnderTreatsUnderscoreLiterally", testDirentUnderTreatsUnderscoreLiterally},
 		{"DirentDeleteAndDeleteUnder", testDirentDeleteAndDeleteUnder},
 		{"DirentMoveCascade", testDirentMoveCascade},
@@ -15346,6 +15347,63 @@ func testDirentListUnderRecursive(t *testing.T, s store.Store) {
 	// a (parent /docs/) + b (parent /docs/a/); NOT docs itself (parent /), NOT other.
 	if len(got) != 2 {
 		t.Fatalf("recursive list of /docs/ = %+v, want 2 (a, b)", names(got))
+	}
+}
+
+// testDirentListByDocumentsIsTheReverseLookup: a document's names come back
+// from its id — every name, however many — and only the names of the asked
+// documents in the asked tree: not another document's, not a directory whose
+// ref happens to carry a document_id, not the same id in another tenant or
+// subject's tree, and they follow a move. More ids than one IN batch exercises
+// the batching.
+func testDirentListByDocumentsIsTheReverseLookup(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	mk := func(tenant, scopeID, parent, name, kind, docID string) {
+		t.Helper()
+		if _, err := s.DirentCreate(ctx, mkDirent(tenant, "user", scopeID, parent, name, kind, `{"document_id":"`+docID+`"}`)); err != nil {
+			t.Fatalf("create %s%s: %v", parent, name, err)
+		}
+	}
+	mk("acme", "u1", "/docs/", "plan", "document", "D1")
+	mk("acme", "u1", "/archive/", "plan-old", "document", "D1")
+	mk("acme", "u1", "/docs/", "notes", "document", "D2")
+	mk("acme", "u1", "/docs/", "other", "document", "D3")
+	mk("acme", "u1", "/", "decoy", "directory", "D1")
+	mk("acme", "u2", "/docs/", "plan", "document", "D1")
+	mk("other", "u1", "/docs/", "plan", "document", "D1")
+
+	got, err := s.DirentListByDocuments(ctx, "acme", "user", "u1", []string{"D1", "D2", "missing"})
+	if err != nil {
+		t.Fatalf("by documents: %v", err)
+	}
+	var full []string
+	for _, r := range got {
+		full = append(full, r.ParentPath+r.Name)
+	}
+	want := []string{"/archive/plan-old", "/docs/notes", "/docs/plan"}
+	if fmt.Sprint(full) != fmt.Sprint(want) {
+		t.Fatalf("names of D1, D2 = %v, want %v", full, want)
+	}
+
+	if _, err := s.DirentMove(ctx, "acme", "user", "u1", "/docs/", "plan", "/kb/", "plan"); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	got, err = s.DirentListByDocuments(ctx, "acme", "user", "u1", []string{"D1"})
+	if err != nil || len(got) != 2 || got[1].ParentPath != "/kb/" {
+		t.Fatalf("after move = %+v, %v; want /archive/plan-old and /kb/plan", got, err)
+	}
+
+	var many []string
+	for i := 0; i < 1203; i++ {
+		many = append(many, fmt.Sprintf("X%04d", i))
+	}
+	many = append(many, "D3")
+	got, err = s.DirentListByDocuments(ctx, "acme", "user", "u1", many)
+	if err != nil || len(got) != 1 || got[0].Name != "other" {
+		t.Fatalf("D3 among 1204 ids = %+v, %v; want /docs/other", got, err)
+	}
+	if got, err := s.DirentListByDocuments(ctx, "acme", "user", "u1", nil); err != nil || len(got) != 0 {
+		t.Fatalf("no ids = %+v, %v; want none", got, err)
 	}
 }
 

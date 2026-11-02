@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -114,6 +115,56 @@ func DirentListUnder(ctx context.Context, q Querier, tenantID, scope, scopeID, p
 		return nil, err
 	}
 	return collectDirents(d, rows)
+}
+
+// direntDocumentID is the document a dirent names, as an SQL expression over
+// resource_ref. It must be spelled exactly as the dirents_document_id index is
+// (migration 0128 / the sqlite schema), or the planner cannot use the index.
+func direntDocumentID(d Dialect) string {
+	if d == Postgres {
+		return `(resource_ref->>'document_id')`
+	}
+	return `json_extract(resource_ref, '$.document_id')`
+}
+
+// DirentByDocumentsQuery is DirentListByDocuments' statement for n ids, with
+// `?` placeholders (tenant, scope, scope_id, then the ids). Exported so the
+// backends' plan tests EXPLAIN the very text the store runs.
+func DirentByDocumentsQuery(d Dialect, n int) string {
+	marks := strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
+	return direntSelect(d) + `
+		 WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND kind = 'document'
+		   AND ` + direntDocumentID(d) + ` IN (` + marks + `)
+		 ORDER BY parent_path, name`
+}
+
+// direntByDocumentsBatch bounds one IN list.
+const direntByDocumentsBatch = 500
+
+// DirentListByDocuments returns the document dirents naming any of documentIDs
+// in one (tenant, scope, scope_id) tree: the reverse of a dirent, which names a
+// document while a document does not know its names. Indexed, so it costs the
+// names asked for rather than the whole tree. Ordered by parent_path, name.
+func DirentListByDocuments(ctx context.Context, q Querier, tenantID, scope, scopeID string, documentIDs []string) ([]store.DirentRow, error) {
+	d := q.Dialect()
+	var out []store.DirentRow
+	for start := 0; start < len(documentIDs); start += direntByDocumentsBatch {
+		ids := documentIDs[start:min(start+direntByDocumentsBatch, len(documentIDs))]
+		args := []any{tenantID, scope, scopeID}
+		for _, id := range ids {
+			args = append(args, id)
+		}
+		rows, err := q.Query(ctx, DirentByDocumentsQuery(d, len(ids)), args...)
+		if err != nil {
+			return nil, err
+		}
+		batch, err := collectDirents(d, rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, batch...)
+	}
+	return out, nil
 }
 
 func DirentDelete(ctx context.Context, q Querier, tenantID, scope, scopeID, parentPath, name string) (bool, error) {
