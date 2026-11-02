@@ -63,6 +63,8 @@ const MAX_LABELS = 300;
 const FADE_S = 0.3;
 const IDLE_FRAME_MS = 1000 / 30;
 const LOD_EVERY_MS = 120;
+const LABEL_CELL_W = 24;
+const LABEL_CELL_H = 7;
 
 interface LabelItem {
   star: number;
@@ -590,7 +592,7 @@ export class UniverseScene {
       const r = m.doc.root[di];
       if (r < 0) continue;
       const px = this.projectedPx(l.docCenter[di * 3], l.docCenter[di * 3 + 1], l.docCenter[di * 3 + 2], l.docRadius[di], ppu);
-      if (px >= 10) cand.push({ star: r, text: trim(m.doc.title[di] || m.doc.id[di]), cls: "lu-label--doc", dy: 0, pri: px });
+      if (px >= 14) cand.push({ star: r, text: trim(m.doc.title[di] || m.doc.id[di]), cls: "lu-label--doc", dy: 0, pri: px });
       if (lod.docExpanded[di] && px >= 220) {
         const start = m.doc.chunkStart[di];
         for (let c = start; c < start + m.doc.chunkCount[di]; c++) {
@@ -622,11 +624,30 @@ export class UniverseScene {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
     const v = new Vector3();
+    // Labels arrive in priority order (selection first); one that would overlap
+    // a label already placed this frame is skipped, so a crowded formation shows
+    // its largest names legibly instead of a pile of text. Occupancy is a coarse
+    // grid of LABEL_CELL_W × LABEL_CELL_H cells.
+    const taken = new Set<number>();
+    const cols = Math.ceil(w / LABEL_CELL_W) + 1;
     let i = 0;
     for (const lab of this.labels) {
       const s = lab.star;
       v.set(this.pos[s * 3], this.pos[s * 3 + 1] + lab.dy, this.pos[s * 3 + 2]).project(this.camera);
       if (v.z > 1 || v.x < -1.1 || v.x > 1.1 || v.y < -1.1 || v.y > 1.1) continue;
+      const x = ((v.x + 1) / 2) * w;
+      const y = ((1 - v.y) / 2) * h;
+      // Formation titles are centred above their point; the rest start 8px right.
+      const left = lab.cls === "lu-label--formation" ? x - lab.text.length * 3 : x + 8;
+      const top = lab.cls === "lu-label--formation" ? y - 14 : y + 2;
+      const c0 = Math.max(0, Math.floor(left / LABEL_CELL_W));
+      const c1 = Math.max(0, Math.floor((left + lab.text.length * 6 + 4) / LABEL_CELL_W));
+      const r0 = Math.max(0, Math.floor(top / LABEL_CELL_H));
+      const r1 = Math.max(0, Math.floor((top + 12) / LABEL_CELL_H));
+      let free = true;
+      for (let r = r0; r <= r1 && free; r++) for (let c = c0; c <= c1; c++) if (taken.has(r * cols + c)) free = false;
+      if (!free && lab.cls !== "lu-label--selected") continue;
+      for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) taken.add(r * cols + c);
       let el = this.labelPool[i];
       if (!el) {
         el = document.createElement("span");
@@ -636,7 +657,7 @@ export class UniverseScene {
       if (el.textContent !== lab.text) el.textContent = lab.text;
       const cls = `lu-label ${lab.cls}`;
       if (el.className !== cls) el.className = cls;
-      el.style.transform = `translate(${((v.x + 1) / 2) * w}px, ${((1 - v.y) / 2) * h}px)`;
+      el.style.transform = `translate(${x}px, ${y}px)`;
       el.style.display = "";
       i++;
     }
