@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.135.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.136.0.</em>
 </p>
 
 <p align="center">
@@ -201,19 +201,18 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.135.0) draws a document scope as a 3D star map: a
-paged, access-filtered `graph_snapshot` of every document, chunk tree,
-relation and Path name; a server-side map of chunk embeddings (PCA, or UMAP)
-whose vectors never leave the runtime; the `@loomcycle/universe` navigator in
-the Web UI's document explorer, with link review and authoring, saved views
-and live updates from a new member-safe document change feed
-(`GET /v1/_document/feed`). It also adds `copy_documents` between scopes, an
-ODT reader, and Markdown tables recovered from PDFs. See
+The most recent line (v1.136.0) moves documents between scopes with their
+ids: `move_documents` keeps every document, chunk and relation id, removes the
+source only once the target is checked, and finishes an interrupted move when
+the same call runs again. The Web UI's document explorer gains **copy / move
+to…**, which shows the dry run before anything is written, and the TS and
+Python adapters gain typed copy and move helpers. See
 [`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.134.0 completed statement review: a judge agreement report and a
-judge audit on the Review page, and a member's single ruling now needs the
-`review` grant. See [`REVISIONS.md`](REVISIONS.md).
+Before it, v1.135.0 drew a document scope as a 3D star map: a paged,
+access-filtered `graph_snapshot`, a server-side map of chunk embeddings, the
+`@loomcycle/universe` navigator, a member-safe document change feed, and
+`copy_documents` between scopes. See [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
 recordings into timed transcripts through a whisper server, and Teams captions

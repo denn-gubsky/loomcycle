@@ -8,6 +8,50 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.136.0
+
+*Documents move between scopes with their ids (RFC FT P1–P2). `move_documents` keeps every document, chunk and relation id. It removes the source only once the target is checked, and the same call again finishes an interrupted move. The Path explorer gains **copy / move to…**, which always shows the dry run first, and both adapters gain typed copy and move helpers.*
+
+The v1.136 line: #2357 to #2359.
+- `@loomcycle/client` moves to 1.136.0 with `copyDocuments` / `moveDocuments` and their types. The Python adapter moves to 1.136.0 with `copy_documents` / `move_documents`.
+- **Migrations:** none in the store. Each SQL Memory scope gains a `document_moves` table on first use.
+- **New npm package version:** `@loomcycle/explorer` 0.12.0 → 0.13.0.
+- **New audit action:** `document_move`, written when `LOOMCYCLE_AUDIT_LOG_PATH` is set.
+- **Additive changes to existing surfaces:**
+  - The Document tool's input gains `dangling` and `expect_count` (move only).
+  - `documents/ingested` gains the reason `moved`. The knowledge-base links agent now labels `copied` and `moved` by name; it processed them before as `unknown`.
+- No wire breakage.
+
+### Move documents between scopes (RFC FT P1, #2357)
+
+- **`Document op=move_documents`** takes the same set, `to_scope` and `path_map` as `copy_documents` and carries the same rows. It **keeps every id**: documents, chunks, relations and their evidence. A reference to any of them still resolves, now in `to_scope`. A move within one scope is refused; that is `Path mv`.
+- **Relations leaving the set** refuse the move. The dry run lists them with `blocked_by: "dangling_relations"`. `dangling: "drop"` deletes them with the source.
+- **Confirmation:** a dry run by default. A real move needs `expect_count`, the dry run's `counts.documents`, and moves nothing if the set has changed.
+- **Refused:** an id the target already holds (`id_collision`), and a call while another pass holds a lease on the source scope. Under access control a move also needs write on each source document.
+- **The order:**
+  1. Each document's target rows go in one transaction with a marker row in `document_moves`.
+  2. Each target is checked against its source: chunk, revision and asset counts, and no failed body or relation write.
+  3. The source is removed as `delete_document` removes it, except the change feed, which follows the id.
+  4. The target is named last, so a Path name never resolves in both scopes.
+- **Resuming:** the same call again finishes an interrupted move from any step. A document that fails its check is reported under `unfinished` and keeps its source.
+- **While a move is unfinished,** `query_documents` and `graph_snapshot` in the target leave the document out. Memory search is not filtered.
+
+### Copy / move from the Web UI and the SDKs (RFC FT P2, #2359)
+
+- **Path explorer** (`@loomcycle/explorer` 0.13.0): a selected document or folder has **copy / move to…**. The dialog:
+  - takes copy or move, the target scope and a new path, which becomes the `path_map`;
+  - always runs the dry run first and shows the counts, refusals and relations leaving the set;
+  - offers "copy N documents" / "move N documents" only for the inputs it checked;
+  - for a move, sends `expect_count`, and is blocked by a leaving relation until "drop relations to documents outside the set" is ticked.
+- **Hosts:** the explorer data layer's `documentsTransfer` is optional. A host with its own data layer without it does not see the action.
+- **TS:** `client.copyDocuments(input, opts?)` and `client.moveDocuments(input, opts?)`, typed `DocumentCopyInput` / `DocumentMoveInput` → `DocumentTransferResult`.
+- **Python:** `copy_documents(...)` and `move_documents(...)`, keyword-only.
+
+### loomcycle.cloud: the meaning view, with UMAP (#2358)
+
+- The cloud deployment's config turns on `memory.projection` with `method: umap`, so the star map's meaning view works there.
+- Deployment config only: the projection stays off by default everywhere else.
+
 ## What's in v1.135.0
 
 *A document scope drawn as a 3D star map (RFC FQ P0–P4, RFC FV): a paged, access-filtered `graph_snapshot` of a whole scope; a server-side map of chunk embeddings (PCA, or UMAP) whose vectors never leave the runtime; the `@loomcycle/universe` navigator in the document explorer, with link review and authoring, saved views and live updates from a new member-safe document change feed. Also `copy_documents` between scopes (RFC FT P0), an ODT reader and Markdown tables recovered from PDFs (RFC FU).*
