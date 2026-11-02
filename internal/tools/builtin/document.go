@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -4832,13 +4833,23 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 		args = append(args, *in.AsOf, *in.AsOf)
 	}
 	args = append(args, limit)
-	res, err := d.query(ctx, key, `SELECT `+chunkSelectCols+` FROM chunks WHERE `+where+` ORDER BY document_id, parent_id, position LIMIT ?`, args...)
+	// updated_at is selected here rather than added to chunkSelectCols: that list
+	// feeds every chunk read, and only this op's rows carry it (RFC FQ — a client
+	// diffing a scope against a snapshot asks what changed since).
+	res, err := d.query(ctx, key, `SELECT `+chunkSelectCols+`, updated_at FROM chunks WHERE `+where+` ORDER BY document_id, parent_id, position LIMIT ?`, args...)
 	if err != nil {
 		return errFrom("query_chunks: "+err.Error(), err), nil
 	}
 	rows := make([]chunkRow, 0, len(res.Rows))
+	updatedAt := make([]int, 0, len(res.Rows))
+	updatedCol := slices.Index(res.Columns, "updated_at")
 	for _, r := range res.Rows {
 		rows = append(rows, scanChunkRow(res.Columns, r))
+		if updatedCol >= 0 && updatedCol < len(r) {
+			updatedAt = append(updatedAt, asInt(r[updatedCol]))
+		} else {
+			updatedAt = append(updatedAt, 0)
+		}
 	}
 	// RFC FP R8, computed for the whole page at once: at most two queries, not one
 	// per chunk.
@@ -4847,10 +4858,10 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 		return errFrom("query_chunks: definitional: "+derr.Error(), derr), nil
 	}
 	chunks := make([]map[string]any, 0, len(rows))
-	for _, row := range rows {
+	for i, row := range rows {
 		// Structured query returns the SQL row (no bodies — keeps it light;
 		// fetch a body with get_chunk).
-		m := map[string]any{"id": row.ID, "document_id": row.DocumentID, "title": row.Title, "position": row.Position, "revision": row.Revision}
+		m := map[string]any{"id": row.ID, "document_id": row.DocumentID, "title": row.Title, "position": row.Position, "revision": row.Revision, "updated_at": updatedAt[i]}
 		if row.ParentID != "" {
 			m["parent_id"] = row.ParentID
 		}
