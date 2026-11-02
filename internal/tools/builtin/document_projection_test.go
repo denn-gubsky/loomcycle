@@ -486,6 +486,34 @@ func TestSearch_WithProjectionReturnsQueryXYZ(t *testing.T) {
 	}
 }
 
+// TestProjectScopeKey_PlacesOnlyScopesWithVectors — the sweeper's entry: a scope
+// holding chunk vectors is placed, one without any is answered without its SQL
+// being provisioned.
+func TestProjectScopeKey_PlacesOnlyScopesWithVectors(t *testing.T) {
+	d, vs, ctx := projectionFixture(t)
+	projDoc(t, d, vs, ctx, "Map", synthVectors(6, 11))
+	key := sidecarScope(t, d, ctx)
+	rep, err := d.ProjectScopeKey(context.Background(), key, store.MemoryScopeUser, ProjectionOptions{})
+	if err != nil || rep.Placed != 6 || rep.BasisVersion != 1 {
+		t.Fatalf("ProjectScopeKey = %+v, %v; want 6 placed on v1", rep, err)
+	}
+
+	empty := key
+	empty.ScopeID = "nobody"
+	before, err := d.SqlMem.ListScopes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err = d.ProjectScopeKey(context.Background(), empty, store.MemoryScopeUser, ProjectionOptions{})
+	if err != nil || rep.Placed != 0 || rep.BasisVersion != 0 {
+		t.Fatalf("ProjectScopeKey on an empty scope = %+v, %v", rep, err)
+	}
+	after, _ := d.SqlMem.ListScopes(context.Background())
+	if len(after) != len(before) {
+		t.Fatalf("a scope with no vectors was provisioned: %d scopes before, %d after", len(before), len(after))
+	}
+}
+
 // insertProjectionRow writes a coordinate directly, for the delete tests: they
 // check the cascade, not the pass.
 func insertProjectionRow(t *testing.T, d *Document, ctx context.Context, chunkID string) {
