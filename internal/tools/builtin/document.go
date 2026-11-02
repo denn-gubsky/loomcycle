@@ -699,6 +699,10 @@ var docSchemaDDL = []string{
 	// chunk_projection_basis, holds binary columns and is built per tier in
 	// provisionTables.
 	chunkProjectionDDL,
+	// chunk_projection_anchor: a UMAP map's sample, the basis new chunks are
+	// placed among (RFC FQ §11); same file.
+	chunkProjectionAnchorDDL,
+	chunkProjectionAnchorIndexDDL,
 	// document_leases: a named lease on this scope (document_lease.go).
 	documentLeasesDDL,
 	// statement_rulings / statement_ruling_items: each bulk ruling and what it
@@ -1161,6 +1165,9 @@ func (d *Document) provisionTables(ctx context.Context, key sqlmem.ScopeKey) err
 		return err
 	}
 	if _, err := d.docSQL().Exec(ctx, key, chunkProjectionBasisDDL(binType), nil, 0); err != nil {
+		return err
+	}
+	if err := d.migrateProjectionMethod(ctx, key); err != nil {
 		return err
 	}
 	if err := d.migrateConfidencePrecision(ctx, key); err != nil {
@@ -2770,6 +2777,9 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_projection WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
 			return err
 		}
+		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_projection_anchor WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
+			return err
+		}
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunks WHERE document_id = ?`, docID); err != nil {
 			return err
 		}
@@ -3575,9 +3585,10 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			// sidecar row reachable only through the path that was missed is an orphan
 			// nothing can see. chunk_revisions is the body-change log (RFC BS Phase
 			// 3a), chunk_layout the canvas row and chunk_projection the map
-			// coordinate (RFC FQ P2) — all orphan the same way.
+			// coordinate (RFC FQ P2), chunk_projection_anchor a UMAP map's sample
+			// point (§11) — all orphan the same way.
 			for _, tbl := range []string{"chunk_assets", "chunk_tags", "chunk_memory_meta",
-				"chunk_revisions", "chunk_layout", "chunk_projection"} {
+				"chunk_revisions", "chunk_layout", "chunk_projection", "chunk_projection_anchor"} {
 				if err := d.execTxn(ctx, txnID,
 					`DELETE FROM `+tbl+` WHERE chunk_id IN (`+marks+`)`, args...); err != nil {
 					return err
@@ -4350,7 +4361,11 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	if in.WithProjection {
 		// The query embedding search already made: no new provider call. A backend
 		// that embeds out of process returns none, and the key stays absent.
-		xyz, ok, err := d.queryProjection(ctx, key, res.QueryVector)
+		hits := make([]projectionHit, 0, len(ids))
+		for _, cid := range ids {
+			hits = append(hits, projectionHit{chunkID: cid, score: scores[cid]})
+		}
+		xyz, ok, err := d.queryProjection(ctx, key, res.QueryVector, hits)
 		if err != nil {
 			return errFrom("search: projection: "+err.Error(), err), nil
 		}

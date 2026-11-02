@@ -4702,15 +4702,18 @@ export type GraphSnapshot = {
     document_ids: string[];
   };
   /** Only with `include` naming `projection`: each chunk's place on the
-   *  scope's 3D map by meaning (its embedding on the scope's three principal
-   *  axes). `model` is the embedder ("<provider>/<model>"); `basis_version` 0
-   *  means no map yet, with `xyz` empty and every chunk missing. Otherwise
-   *  `xyz` is one x, y, z triple per chunk in `chunks.ids` order (4 decimals),
-   *  and a chunk with no place on the current map is 0, 0, 0 with its position
-   *  in `missing`. */
+   *  scope's 3D map by meaning. `method` says how the map was fitted: `pca`
+   *  (the embedding on the scope's three principal axes) or `umap` (a layout
+   *  that keeps each chunk's nearest neighbours near it, so a document's
+   *  chunks stay together); absent while the projection is off. `model` is
+   *  the embedder ("<provider>/<model>"); `basis_version` 0 means no map yet,
+   *  with `xyz` empty and every chunk missing. Otherwise `xyz` is one x, y, z
+   *  triple per chunk in `chunks.ids` order (4 decimals), and a chunk with no
+   *  place on the current map is 0, 0, 0 with its position in `missing`. */
   projection?: {
     model: string;
     basis_version: number;
+    method?: "pca" | "umap";
     xyz: number[];
     missing: number[];
   };

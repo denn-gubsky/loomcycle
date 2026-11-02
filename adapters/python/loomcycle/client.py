@@ -1148,8 +1148,9 @@ class LoomcycleClient:
         ``include`` naming ``"projection"``, the ``projection`` block places
         each chunk on the scope's 3D map by meaning (``xyz``, one triple per
         chunk, ``missing`` for chunks not yet placed; ``basis_version`` 0 =
-        no map). ``op="search"`` with ``with_projection=True`` adds the
-        query's own ``query_xyz`` on that map.
+        no map; ``method`` ``"pca"`` or ``"umap"``, how the map was fitted).
+        ``op="search"`` with ``with_projection=True`` adds the query's own
+        ``query_xyz`` on that map.
 
         ``op="graph_recall"`` rows carry, for chunks that are not facts, the
         first 600 characters of their body as ``body`` (``body_truncated`` when
