@@ -12,6 +12,10 @@ export function syntheticSnapshot(opts: {
   dirs?: string[];
   seed?: number;
   idPrefix?: string;
+  /** Add a projection block: chunks clustered by a topic their document
+   *  is assigned (not by its directory, so the two views disagree), with
+   *  every `missingEvery`-th chunk unplaced. */
+  projection?: { basisVersion?: number; model?: string; topics?: number; missingEvery?: number };
 }): GraphSnapshot {
   const rnd = mulberry32(opts.seed ?? 1);
   const dirs = opts.dirs ?? ["/a", "/a/x", "/a/y", "/b", "/b/z", "/c"];
@@ -58,7 +62,27 @@ export function syntheticSnapshot(opts: {
     kind.push(d % 2);
     eids.push(`e${d}`);
   }
+  let projection: GraphSnapshot["projection"];
+  if (opts.projection) {
+    const topics = opts.projection.topics ?? 6;
+    const centres = Array.from({ length: topics }, () => [rnd() * 2 - 1, rnd() * 2 - 1, rnd() * 2 - 1]);
+    const xyz: number[] = [];
+    const missing: number[] = [];
+    for (let i = 0; i < ids.length; i++) {
+      const c = centres[(docIdx[i] * 7) % topics];
+      const s = parentIdx[i] < 0 ? 0.05 : 0.18;
+      xyz.push(c[0] + (rnd() - 0.5) * s, c[1] + (rnd() - 0.5) * s, c[2] + (rnd() - 0.5) * s);
+      if (opts.projection.missingEvery && i % opts.projection.missingEvery === opts.projection.missingEvery - 1) missing.push(i);
+    }
+    projection = {
+      model: opts.projection.model ?? "test/embed",
+      basis_version: opts.projection.basisVersion ?? 1,
+      xyz,
+      missing,
+    };
+  }
   return {
+    projection,
     page: { documents: opts.docs },
     codes: { types: ["document", "section"], statuses: ["draft", "done"], kinds: ["references", "related"] },
     documents: {

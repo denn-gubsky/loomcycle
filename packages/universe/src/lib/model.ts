@@ -54,8 +54,13 @@ export interface UniverseModel {
     invalidAt: (number | null)[];
     isFact: boolean[];
     retired: boolean[];
+    /** Projected xyz from the runtime's embedding basis, NaN while missing. */
+    proj: number[];
   };
   edges: ModelEdge[];
+  /** The embedding projection the pages carried: the embedder model and basis
+   *  version (0 = none built yet), and how many chunks have coordinates. */
+  projection: { model: string; basisVersion: number; placed: number; mixedBasis: boolean };
   /** Directory paths the snapshot named (so empty-but-real folders exist). */
   dirs: Set<string>;
   edgesTruncated: boolean;
@@ -97,8 +102,10 @@ export function emptyModel(): UniverseModel {
       invalidAt: [],
       isFact: [],
       retired: [],
+      proj: [],
     },
     edges: [],
+    projection: { model: "", basisVersion: 0, placed: 0, mixedBasis: false },
     dirs: new Set(),
     edgesTruncated: false,
     kinds: [],
@@ -189,6 +196,7 @@ export function addPage(m: UniverseModel, page: GraphSnapshot): UniverseModel {
       m.chunk.invalidAt.push(at(pc.invalid_at, i, null));
       m.chunk.isFact.push(at(pc.is_fact, i, false));
       m.chunk.retired.push(at(pc.fact_retired, i, false));
+      m.chunk.proj.push(NaN, NaN, NaN);
       m.doc.chunkCount[di]++;
       if (parent < 0 && m.doc.root[di] < 0) m.doc.root[di] = ci;
     }
@@ -201,6 +209,30 @@ export function addPage(m: UniverseModel, page: GraphSnapshot): UniverseModel {
       if (di < 0) continue;
       const ri = m.chunkIndex.get(pd.root_chunk_ids[i]);
       if (ri !== undefined) m.doc.root[di] = ri;
+    }
+  }
+  // The projection block holds one triple per chunk of the page, in page order;
+  // `missing` names the chunks without one (not placed yet, or another model).
+  const pp = page.projection;
+  if (pp && pc && pp.basis_version > 0) {
+    if (m.projection.basisVersion === 0) {
+      m.projection.model = pp.model;
+      m.projection.basisVersion = pp.basis_version;
+    } else if (m.projection.basisVersion !== pp.basis_version || m.projection.model !== pp.model) {
+      // A refit landed between two pages: these coordinates are in another
+      // frame. The caller reloads; until then the page's chunks stay unplaced.
+      m.projection.mixedBasis = true;
+    }
+    if (!m.projection.mixedBasis) {
+      const missing = new Set(pp.missing ?? []);
+      for (let i = 0; i < pc.ids.length; i++) {
+        const ci = chunkMap[i];
+        if (ci < 0 || missing.has(i) || pp.xyz.length < i * 3 + 3) continue;
+        m.chunk.proj[ci * 3] = pp.xyz[i * 3];
+        m.chunk.proj[ci * 3 + 1] = pp.xyz[i * 3 + 1];
+        m.chunk.proj[ci * 3 + 2] = pp.xyz[i * 3 + 2];
+        m.projection.placed++;
+      }
     }
   }
   const pe = page.edges;

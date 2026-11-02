@@ -24,10 +24,12 @@ import { unit } from "../lib/hash";
 import { chunkRgb, kindRgb, recency, type RGB } from "../lib/colors";
 import type { Layout } from "../lib/layout";
 import { computeLod, drawnLinks, starVisible, type Lod } from "../lib/lod";
+import type { ProjectionFrame } from "../lib/projection";
 import type { ModelEdge, UniverseModel } from "../lib/model";
 import {
   FLAG_DEAD,
   FLAG_DIM,
+  FLAG_FACT,
   FLAG_FORMATION,
   FLAG_HIT,
   FLAG_RAYS,
@@ -64,6 +66,11 @@ const FADE_S = 0.3;
 const IDLE_FRAME_MS = 1000 / 30;
 const LOD_EVERY_MS = 120;
 const LABEL_CELL_W = 24;
+const MORPH_MS = 1000;
+
+/** Which positions the stars take: their place in the Path tree, or their
+ *  place in the embedding space. */
+export type UniverseMode = "structure" | "meaning";
 const LABEL_CELL_H = 7;
 
 interface LabelItem {
@@ -99,7 +106,20 @@ export class UniverseScene {
   private readonly treeMat: ShaderMaterial;
   private readonly linkMat: ShaderMaterial;
 
+  // pos is where the stars are NOW (picking, labels, framing read it); it is
+  // posA (structure), posB (meaning) or a blend while the views morph.
   private pos = new Float32Array(0);
+  private posA = new Float32Array(0);
+  private posB = new Float32Array(0);
+  private placedB = new Uint8Array(0);
+  private frameB: ProjectionFrame | null = null;
+  private mode: UniverseMode = "structure";
+  private morph = 0;
+  private morphFrom = 0;
+  private morphTo = 0;
+  private morphStart = 0;
+  private marker: [number, number, number] | null = null;
+  private readonly markerEl: HTMLDivElement;
   private vis = new Float32Array(0);
   private flags = new Float32Array(0);
   private size = new Float32Array(0);
@@ -139,6 +159,11 @@ export class UniverseScene {
     this.labelLayer = document.createElement("div");
     this.labelLayer.className = "lu-labels";
     container.appendChild(this.labelLayer);
+    this.markerEl = document.createElement("div");
+    this.markerEl.className = "lu-marker";
+    this.markerEl.textContent = "query";
+    this.markerEl.style.display = "none";
+    this.labelLayer.appendChild(this.markerEl);
 
     this.controls = new CameraControls(this.camera, canvas);
     this.controls.dollyToCursor = true;
@@ -158,6 +183,7 @@ export class UniverseScene {
       uLight: { value: 0 },
       uOpacity: { value: 0.34 },
       uFlow: { value: 1 },
+      uMorph: { value: 0 },
     });
     this.starMat = new ShaderMaterial({
       uniforms: uniforms(),
@@ -195,9 +221,10 @@ export class UniverseScene {
 
   // ---- public API --------------------------------------------------------
 
-  /** setData (re)builds every buffer for a new model + layout. The camera is
-   *  framed on the whole sky the first time only. */
-  setData(model: UniverseModel, layout: Layout): void {
+  /** setData (re)builds every buffer for a new model + layout, with the
+   *  meaning view's frame when the scope has a projection. The camera is framed
+   *  on the whole sky the first time only. */
+  setData(model: UniverseModel, layout: Layout, frameB: ProjectionFrame | null = null): void {
     // Frame the sky the first time a model has stars (a model is filled in
     // place page by page, so "first call" is not enough).
     const first = model.chunkCount > 0 && this.framed !== model;
@@ -235,6 +262,7 @@ export class UniverseScene {
         f |= FLAG_RAYS;
         rootRgb[model.chunk.doc[c]] = rgb;
       }
+      if (model.chunk.isFact[c]) f |= FLAG_FACT;
       flags[c] = f;
     }
     for (let d = 0; d < nd; d++) {
@@ -259,7 +287,22 @@ export class UniverseScene {
       size[n + d] = Math.max(0.6, dir.radius * 0.3);
       flags[n + d] = FLAG_FORMATION;
     }
-    this.pos = pos;
+    this.posA = pos;
+    this.frameB = frameB;
+    this.placedB = new Uint8Array(S);
+    const posB = new Float32Array(pos);
+    if (frameB) {
+      for (let c = 0; c < n; c++) {
+        if (!frameB.placed[c]) continue;
+        this.placedB[c] = 1;
+        posB[c * 3] = frameB.pos[c * 3];
+        posB[c * 3 + 1] = frameB.pos[c * 3 + 1];
+        posB[c * 3 + 2] = frameB.pos[c * 3 + 2];
+      }
+    }
+    this.posB = posB;
+    this.pos = new Float32Array(S * 3);
+    this.blendCpu();
     this.size = size;
     this.baseFlags = flags;
     this.flags = new Float32Array(flags);
@@ -273,6 +316,7 @@ export class UniverseScene {
 
     const g = new BufferGeometry();
     g.setAttribute("position", new BufferAttribute(pos, 3));
+    g.setAttribute("aPos2", new BufferAttribute(posB, 3));
     g.setAttribute("aColor", new BufferAttribute(color, 3));
     g.setAttribute("aSize", new BufferAttribute(this.size, 1));
     g.setAttribute("aSeed", new BufferAttribute(seed, 1));
@@ -286,6 +330,7 @@ export class UniverseScene {
     let segs = 0;
     for (let c = 0; c < n; c++) if (model.chunk.parent[c] >= 0) segs++;
     const tp = new Float32Array(segs * 6);
+    const tp2 = new Float32Array(segs * 6);
     const tc = new Float32Array(segs * 6);
     const tv = new Float32Array(segs * 6);
     const child = new Int32Array(segs);
@@ -295,6 +340,8 @@ export class UniverseScene {
       if (p < 0) continue;
       tp.set(layout.chunkPos.subarray(p * 3, p * 3 + 3), s * 6);
       tp.set(layout.chunkPos.subarray(c * 3, c * 3 + 3), s * 6 + 3);
+      tp2.set(posB.subarray(p * 3, p * 3 + 3), s * 6);
+      tp2.set(posB.subarray(c * 3, c * 3 + 3), s * 6 + 3);
       tc.set(color.subarray(c * 3, c * 3 + 3), s * 6);
       tc.set(color.subarray(c * 3, c * 3 + 3), s * 6 + 3);
       child[s] = c;
@@ -303,14 +350,15 @@ export class UniverseScene {
     this.treeChild = child;
     const tg = new BufferGeometry();
     tg.setAttribute("position", new BufferAttribute(tp, 3));
+    tg.setAttribute("aPos2", new BufferAttribute(tp2, 3));
     tg.setAttribute("aColor", new BufferAttribute(tc, 3));
     tg.setAttribute("aVis", new BufferAttribute(tv, 3));
     tg.boundingSphere = new Sphere(new Vector3(), layout.radius * 2 + 10);
     this.replace("tree", new LineSegments(tg, this.treeMat));
 
-    this.camera.far = Math.max(1000, layout.radius * 60);
+    this.camera.far = Math.max(1000, Math.max(layout.radius, frameB?.radius ?? 0) * 60);
     this.camera.updateProjectionMatrix();
-    this.controls.maxDistance = Math.max(50, layout.radius * 14);
+    this.controls.maxDistance = Math.max(50, Math.max(layout.radius, frameB?.radius ?? 0) * 14);
     if (first) this.home(false);
     this.lodDirty = true;
     this.updateLod(true);
@@ -331,6 +379,25 @@ export class UniverseScene {
     this.hits = hits;
     this.applyFlags();
     this.updateLod(true);
+  }
+
+  /** setMode morphs the stars to the other view over a second, then frames it. */
+  setMode(mode: UniverseMode): void {
+    if (mode === this.mode) return;
+    this.mode = mode;
+    this.morphFrom = this.morph;
+    this.morphTo = mode === "meaning" ? 1 : 0;
+    this.morphStart = performance.now();
+    this.lod = null;
+    this.updateLod(true);
+    this.home();
+  }
+
+  /** setMarker shows the search query's own place in the meaning view (scene
+   *  coordinates), or hides it. */
+  setMarker(xyz: [number, number, number] | null): void {
+    this.marker = xyz;
+    this.dirty = true;
   }
 
   setAnimate(on: boolean): void {
@@ -381,7 +448,7 @@ export class UniverseScene {
   }
 
   home(transition = true): void {
-    const r = this.layout ? this.layout.radius : 10;
+    const r = this.mode === "meaning" && this.frameB ? this.frameB.radius * 1.05 : this.layout ? this.layout.radius : 10;
     void this.controls.fitToSphere(new Sphere(new Vector3(), Math.max(2, r)), transition);
   }
 
@@ -429,7 +496,10 @@ export class UniverseScene {
       return new Sphere(new Vector3(...d.center), Math.max(1, d.radius));
     }
     const di = m.chunk.doc[star];
-    const center = new Vector3(this.pos[star * 3], this.pos[star * 3 + 1], this.pos[star * 3 + 2]);
+    // Frame where the star is going, not where a morph has it right now.
+    const target = this.mode === "meaning" ? this.posB : this.posA;
+    const center = new Vector3(target[star * 3], target[star * 3 + 1], target[star * 3 + 2]);
+    if (this.mode === "meaning") return new Sphere(center, m.doc.root[di] === star ? 6 : 3);
     if (m.doc.root[di] === star) return new Sphere(center, Math.max(1.2, l.docRadius[di]));
     return new Sphere(center, 1.4);
   }
@@ -474,14 +544,23 @@ export class UniverseScene {
     this.lodDirty = false;
     const cam = this.camera.position;
     const view = { cam: [cam.x, cam.y, cam.z] as [number, number, number], pxPerUnit: this.pxPerUnit() };
-    const next = computeLod(m, l, view, this.lod, this.pinnedDocs());
+    // The meaning view has no formations to collapse: every placed chunk is
+    // its own star, and a link is drawn between the chunks themselves.
+    const meaning = this.mode === "meaning";
+    const next: Lod = meaning
+      ? {
+          dirCollapsed: new Uint8Array(l.dirs.length),
+          dirTop: new Int32Array(l.dirs.length).fill(-1),
+          docExpanded: new Uint8Array(m.docCount).fill(1),
+        }
+      : computeLod(m, l, view, this.lod, this.pinnedDocs());
     this.lod = next;
     const clock = now / 1000;
     const vis = this.vis;
     const visible: number[] = [];
     let changed = false;
     for (let s = 0; s < this.starCount; s++) {
-      const target = starVisible(m, l, next, s) ? 1 : 0;
+      const target = (meaning ? s < m.chunkCount && this.placedB[s] === 1 : starVisible(m, l, next, s)) ? 1 : 0;
       if (target) visible.push(s);
       const to = vis[s * 3 + 1];
       if (to === target) continue;
@@ -530,18 +609,24 @@ export class UniverseScene {
       this.replace("links", null);
       return;
     }
-    const drawn = drawnLinks(m, l, this.lod, this.overlay);
+    const drawn = drawnLinks(m, l, this.lod, this.overlay).filter(
+      (x) => this.mode !== "meaning" || (this.placedB[x.a] === 1 && this.placedB[x.b] === 1),
+    );
     const n = drawn.length;
     const p = new Float32Array(n * 6);
+    const p2 = new Float32Array(n * 6);
     const t = new Float32Array(n * 2);
     const len = new Float32Array(n * 2);
     const col = new Float32Array(n * 6);
     const w = new Float32Array(n * 2);
     const prop = new Float32Array(n * 2);
     drawn.forEach((x, i) => {
-      p.set(this.pos.subarray(x.a * 3, x.a * 3 + 3), i * 6);
-      p.set(this.pos.subarray(x.b * 3, x.b * 3 + 3), i * 6 + 3);
-      const L = Math.hypot(p[i * 6] - p[i * 6 + 3], p[i * 6 + 1] - p[i * 6 + 4], p[i * 6 + 2] - p[i * 6 + 5]);
+      p.set(this.posA.subarray(x.a * 3, x.a * 3 + 3), i * 6);
+      p.set(this.posA.subarray(x.b * 3, x.b * 3 + 3), i * 6 + 3);
+      p2.set(this.posB.subarray(x.a * 3, x.a * 3 + 3), i * 6);
+      p2.set(this.posB.subarray(x.b * 3, x.b * 3 + 3), i * 6 + 3);
+      const q = this.mode === "meaning" ? p2 : p;
+      const L = Math.hypot(q[i * 6] - q[i * 6 + 3], q[i * 6 + 1] - q[i * 6 + 4], q[i * 6 + 2] - q[i * 6 + 5]);
       t[i * 2] = 0;
       t[i * 2 + 1] = 1;
       len[i * 2] = len[i * 2 + 1] = L;
@@ -553,6 +638,7 @@ export class UniverseScene {
     });
     const g = new BufferGeometry();
     g.setAttribute("position", new BufferAttribute(p, 3));
+    g.setAttribute("aPos2", new BufferAttribute(p2, 3));
     g.setAttribute("aT", new BufferAttribute(t, 1));
     g.setAttribute("aLen", new BufferAttribute(len, 1));
     g.setAttribute("aColor", new BufferAttribute(col, 3));
@@ -577,7 +663,22 @@ export class UniverseScene {
     if (!m || !l || !lod) return;
     const cand: (LabelItem & { pri: number })[] = [];
     const n = m.chunkCount;
-    for (let d = 1; d < l.dirs.length; d++) {
+    if (this.mode === "meaning") {
+      // No formations here: documents and, close up, their sections, ranked
+      // by how near they are (a nominal 4-unit radius on screen).
+      for (let di = 0; di < m.docCount; di++) {
+        const r = m.doc.root[di];
+        if (r < 0 || !this.placedB[r]) continue;
+        const px = this.projectedPx(this.posB[r * 3], this.posB[r * 3 + 1], this.posB[r * 3 + 2], 4, ppu);
+        if (px >= 14) cand.push({ star: r, text: trim(m.doc.title[di] || m.doc.id[di]), cls: "lu-label--doc", dy: 0, pri: px });
+      }
+      for (let c = 0; c < n; c++) {
+        if (!this.placedB[c] || m.chunk.depth[c] === 0 || m.chunk.depth[c] > 2 || !m.chunk.title[c]) continue;
+        const px = this.projectedPx(this.posB[c * 3], this.posB[c * 3 + 1], this.posB[c * 3 + 2], 4, ppu);
+        if (px >= 120) cand.push({ star: c, text: trim(m.chunk.title[c]), cls: "lu-label--chunk", dy: 0, pri: px / 3 });
+      }
+    }
+    for (let d = 1; d < l.dirs.length && this.mode === "structure"; d++) {
       const dir = l.dirs[d];
       if (lod.dirTop[d] === d) {
         const px = this.projectedPx(dir.center[0], dir.center[1], dir.center[2], dir.radius, ppu);
@@ -587,7 +688,7 @@ export class UniverseScene {
         if (px > 30 && px < 1400) cand.push({ star: n + d, text: dir.path, cls: "lu-label--formation", dy: dir.radius * 0.92, pri: 15 + px / 20 });
       }
     }
-    for (let di = 0; di < m.docCount; di++) {
+    for (let di = 0; di < m.docCount && this.mode === "structure"; di++) {
       if (lod.dirTop[l.docDir[di]] >= 0) continue;
       const r = m.doc.root[di];
       if (r < 0) continue;
@@ -662,6 +763,28 @@ export class UniverseScene {
       i++;
     }
     for (; i < this.labelPool.length; i++) this.labelPool[i].style.display = "none";
+    // The query marker belongs to the meaning view only.
+    const mk = this.marker;
+    if (mk && this.morph > 0.5) {
+      v.set(mk[0], mk[1], mk[2]).project(this.camera);
+      if (v.z <= 1) {
+        this.markerEl.style.transform = `translate(${((v.x + 1) / 2) * w}px, ${((1 - v.y) / 2) * h}px)`;
+        this.markerEl.style.display = "";
+        return;
+      }
+    }
+    this.markerEl.style.display = "none";
+  }
+
+  // blendCpu sets the CPU positions to the current morph between the views.
+  private blendCpu() {
+    const a = this.posA;
+    const b = this.posB;
+    const t = this.morph;
+    const out = this.pos;
+    if (t <= 0) out.set(a);
+    else if (t >= 1) out.set(b);
+    else for (let i = 0; i < out.length; i++) out[i] = a[i] + (b[i] - a[i]) * t;
   }
 
   private pick(x: number, y: number): number {
@@ -778,8 +901,16 @@ export class UniverseScene {
     // or not, so the idle frame cap does not slow the twinkle down.
     if (animating) this.time += Math.min(0.1, delta);
     const fading = nowMs < this.fadeUntil;
+    let morphing = false;
+    if (this.morph !== this.morphTo) {
+      const t = Math.min(1, (nowMs - this.morphStart) / MORPH_MS);
+      const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+      this.morph = t >= 1 ? this.morphTo : this.morphFrom + (this.morphTo - this.morphFrom) * ease;
+      this.blendCpu();
+      morphing = true;
+    }
     if (this.lodDirty) this.updateLod(!moved);
-    const urgent = this.dirty || moved || fading;
+    const urgent = this.dirty || moved || fading || morphing;
     if (!urgent) {
       if (!animating || nowMs - this.lastFrame < IDLE_FRAME_MS) {
         this.handleHover();
@@ -792,6 +923,7 @@ export class UniverseScene {
       mat.uniforms.uClock.value = nowMs / 1000;
       mat.uniforms.uSizeScale.value = ppu;
       mat.uniforms.uFlow.value = animating ? 1 : 0;
+      mat.uniforms.uMorph.value = this.morph;
     }
     this.renderer.render(this.scene, this.camera);
     this.placeLabels();
