@@ -1,7 +1,9 @@
 package inbox_test
 
 import (
+	"archive/zip"
 	"bytes"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,6 +76,65 @@ func TestInbox_OfficeFileIsTypedByItsExtension(t *testing.T) {
 	res := inbox.Capture(r.Ctx, inbox.Item{Name: "minutes.docx", MediaType: "application/octet-stream", Origin: "o"}, zip)
 	if !strings.Contains(res.Record.MediaType, "wordprocessingml") {
 		t.Errorf("media type = %q", res.Record.MediaType)
+	}
+}
+
+// odfPackage is the head of an OpenDocument file: a stored "mimetype" entry
+// first, as the format requires, then a deflated part. LibreOffice writes
+// the entry's sizes in its header (sized); a streaming writer, Go's
+// included, puts them in a descriptor after the data.
+func odfPackage(t *testing.T, mimetype string, sized bool) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	zw := zip.NewWriter(&b)
+	if sized {
+		w, err := zw.CreateRaw(&zip.FileHeader{Name: "mimetype", Method: zip.Store,
+			CRC32: crc32.ChecksumIEEE([]byte(mimetype)), CompressedSize64: uint64(len(mimetype)), UncompressedSize64: uint64(len(mimetype))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(mimetype))
+	} else {
+		w, err := zw.CreateHeader(&zip.FileHeader{Name: "mimetype", Method: zip.Store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(mimetype))
+	}
+	w, _ := zw.Create("content.xml")
+	_, _ = w.Write([]byte("<office:document-content/>"))
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// An OpenDocument file is typed by the type it declares inside, so a mail
+// attachment with no extension, or the wrong one, still reads as what it is.
+func TestInbox_OpenDocumentIsTypedByItsMimetypeEntry(t *testing.T) {
+	r := inboxtest.New(t, "root-1", inbox.Service{})
+	for _, sized := range []bool{true, false} {
+		odt := odfPackage(t, "application/vnd.oasis.opendocument.text", sized)
+		for _, name := range []string{"pasport", "pasport.docx", "pasport.odt"} {
+			res := inbox.Capture(r.Ctx, inbox.Item{Name: name, MediaType: "application/octet-stream", Origin: "o"}, odt)
+			if res.Record.MediaType != "application/vnd.oasis.opendocument.text" {
+				t.Errorf("sized=%v %s: media type = %q", sized, name, res.Record.MediaType)
+			}
+		}
+		if mt := inbox.Sniff("", odfPackage(t, "application/vnd.oasis.opendocument.spreadsheet", sized), "a"); mt != "application/vnd.oasis.opendocument.spreadsheet" {
+			t.Errorf("sized=%v Sniff(ods) = %q", sized, mt)
+		}
+	}
+	// A zip whose first entry is not an ODF mimetype stays a zip, and a
+	// mimetype entry naming another kind of type is not believed.
+	other := odfPackage(t, "text/html", true)
+	if mt := inbox.Sniff("", other, "a"); mt != "application/zip" {
+		t.Errorf("Sniff(other) = %q", mt)
+	}
+	// Named .odt with no mimetype entry: the extension decides.
+	plain := append([]byte("PK\x03\x04"), bytes.Repeat([]byte{0}, 100)...)
+	if mt := inbox.Sniff("", plain, "a.odt"); mt != "application/vnd.oasis.opendocument.text" {
+		t.Errorf("Sniff(a.odt) = %q", mt)
 	}
 }
 
