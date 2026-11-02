@@ -4187,6 +4187,7 @@ export type DocumentToolInput = {
     | "delete_document"
     | "set_path"
     | "copy_documents"
+    | "move_documents"
     | "create_chunk"
     | "upsert_chunk"
     | "get_chunk"
@@ -4402,14 +4403,24 @@ export type DocumentToolInput = {
   /** search / related: never chunks of documents named at or under these paths. */
   exclude_under_paths?: string[];
   /** documents_summary: the documents to summarize. search / related: return
-   *  only chunks of these documents. copy_documents: the documents to copy. */
+   *  only chunks of these documents. copy_documents / move_documents: the
+   *  documents to copy or move. */
   document_ids?: string[];
-  /** copy_documents: the scope the copies go to (`scope` is where they are). */
+  /** copy_documents / move_documents: the scope the documents go to (`scope`
+   *  is where they are). */
   to_scope?: "agent" | "user" | "tenant";
-  /** copy_documents: Path prefixes to rewrite, from → to; the longest wins. */
+  /** copy_documents / move_documents: Path prefixes to rewrite, from → to;
+   *  the longest wins. */
   path_map?: Record<string, string>;
-  /** copy_documents: true (the default) reports without writing. */
+  /** copy_documents / move_documents: true (the default) reports without
+   *  writing. */
   dry_run?: boolean;
+  /** move_documents: relations leaving the set refuse the move (`refuse`, the
+   *  default) or are deleted with the source (`drop`). */
+  dangling?: "refuse" | "drop";
+  /** move_documents: required with `dry_run: false` — the dry run's
+   *  `counts.documents`. */
+  expect_count?: number;
   /** search / related: never chunks of these documents (e.g. the document under
    *  review, so its own text is not found as evidence for itself). */
   exclude_document_ids?: string[];

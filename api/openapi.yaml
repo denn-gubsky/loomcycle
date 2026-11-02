@@ -2384,6 +2384,7 @@ components:
             - delete_document
             - set_path
             - copy_documents
+            - move_documents
             - create_chunk
             - propose_entity
             - propose_subject
@@ -2457,12 +2458,14 @@ components:
         markdown: { type: string, description: "import_md source." }
         media_type: { type: string }
         data: { type: string, description: "set_asset image bytes, base64." }
-        to_scope: { type: string, enum: [agent, user, tenant], description: "copy_documents: the scope the copies go to." }
-        document_ids: { type: array, items: { type: string }, description: "copy_documents / documents_summary / search: documents by id." }
+        to_scope: { type: string, enum: [agent, user, tenant], description: "copy_documents / move_documents: the scope the documents go to." }
+        document_ids: { type: array, items: { type: string }, description: "copy_documents / move_documents / documents_summary / search: documents by id." }
         under_path: { type: string }
         under_paths: { type: array, items: { type: string } }
-        path_map: { type: object, additionalProperties: { type: string }, description: "copy_documents: Path prefixes to rewrite, from → to; the longest wins." }
-        dry_run: { type: boolean, description: "copy_documents: true (the default) reports without writing." }
+        path_map: { type: object, additionalProperties: { type: string }, description: "copy_documents / move_documents: Path prefixes to rewrite, from → to; the longest wins." }
+        dry_run: { type: boolean, description: "copy_documents / move_documents: true (the default) reports without writing." }
+        dangling: { type: string, enum: [refuse, drop], description: "move_documents: relations leaving the set refuse the move (refuse, the default) or are deleted with the source (drop)." }
+        expect_count: { type: integer, description: "move_documents: required with dry_run false — the dry run's counts.documents." }
     PathToolInput:
       type: object
       additionalProperties: true

@@ -185,6 +185,18 @@ type Event struct {
 	// reverted / changed / skipped for a revert.
 	RulingCounts map[string]int `json:"ruling_counts,omitempty"`
 
+	// --- Document move (Action = "document_move") ---
+	//
+	// One record per move_documents call that wrote: which documents went
+	// from which scope to which, and the counts. Ids only, never content. The
+	// caller travels in the Actor fields, the tenant in TargetTenant.
+	MoveFromScope   string         `json:"move_from_scope,omitempty"`
+	MoveFromScopeID string         `json:"move_from_scope_id,omitempty"`
+	MoveToScope     string         `json:"move_to_scope,omitempty"`
+	MoveToScopeID   string         `json:"move_to_scope_id,omitempty"`
+	MoveDocumentIDs []string       `json:"move_document_ids,omitempty"`
+	MoveCounts      map[string]int `json:"move_counts,omitempty"`
+
 	// --- Directory lookup (Action = "identity_lookup") ---
 	//
 	// A run, or a session on the MCP server, reading what the directory holds

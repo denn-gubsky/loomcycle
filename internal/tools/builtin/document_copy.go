@@ -61,6 +61,8 @@ const (
 	copyPathCollision = "path_collision"
 	copyKeyCollision  = "key_collision"
 	copyWriteFailed   = "write_failed"
+	// move_documents only.
+	moveIDCollision = "id_collision"
 )
 
 // copyDoc is one document of the set, as planned.
@@ -71,10 +73,17 @@ type copyDoc struct {
 	targets []string // the names it gets in the target scope
 	newID   string
 	chunks  []string // its chunk ids, source side
+	// resumed: a move's target already holds this document's rows, written by
+	// an earlier call of the same move that did not finish.
+	resumed bool
 }
 
 // copyPlan is a call's set after every check.
 type copyPlan struct {
+	// move: the plan is move_documents' — ids are kept, the target rows carry
+	// the unfinished-move marker, and nothing is named or announced until the
+	// source is gone (document_move.go).
+	move             bool
 	src, dst         sqlmem.ScopeKey
 	srcMem, dstMem   store.MemoryScope
 	docs             []*copyDoc // the members: what will be copied
@@ -90,6 +99,23 @@ type copyPlan struct {
 	nameFailures     []map[string]any
 	statementsFailed int
 	statementError   string // the first statement write's error, for the caller
+	// failedDocs: a member whose body or statement write failed this call, and
+	// why. A move keeps such a document's source (document_move.go).
+	failedDocs map[string]string
+	// unfinished: a move's members whose target is written but which are not
+	// moved yet; the same call again finishes them.
+	unfinished []map[string]any
+}
+
+func (p *copyPlan) unfinish(docID, code, detail string) {
+	p.unfinished = append(p.unfinished, map[string]any{"document_id": docID, "code": code, "detail": detail})
+}
+
+// failDoc records why a member is short in the target, keeping the first reason.
+func (p *copyPlan) failDoc(docID, why string) {
+	if p.failedDocs != nil && p.failedDocs[docID] == "" {
+		p.failedDocs[docID] = why
+	}
 }
 
 func (p *copyPlan) refuse(docID, code, detail string) {
@@ -124,7 +150,7 @@ func (d *Document) copyDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 		return errValidation(op+": a copy into the same scope needs a path_map",
 			"Every copy would take a name its original already holds. Pass path_map, e.g. {\"/docs\": \"/docs-copy\"}."), nil
 	}
-	ids, refused := d.copySet(ctx, src, op, in)
+	ids, refused := d.copySet(ctx, src, op, in, false)
 	if refused != nil {
 		return *refused, nil
 	}
@@ -144,8 +170,9 @@ func (d *Document) copyDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 }
 
 // copySet resolves the call's set: document_ids, under_path and under_paths,
-// their union, each document once, in the order named.
-func (d *Document) copySet(ctx context.Context, src sqlmem.ScopeKey, op string, in docInput) ([]string, *tools.Result) {
+// their union, each document once, in the order named. allowEmpty: a move with
+// unfinished work to complete may name nothing more.
+func (d *Document) copySet(ctx context.Context, src sqlmem.ScopeKey, op string, in docInput, allowEmpty bool) ([]string, *tools.Result) {
 	var ids []string
 	seen := map[string]bool{}
 	add := func(id string) {
@@ -173,7 +200,7 @@ func (d *Document) copySet(ctx context.Context, src sqlmem.ScopeKey, op string, 
 			add(id)
 		}
 	}
-	if len(ids) == 0 {
+	if len(ids) == 0 && !allowEmpty {
 		r := errValidation(op+": no documents named: pass document_ids, under_path or under_paths (a path with no documents under it names none)",
 			"List the scope's documents with op=query_documents or the Path tool's ls, then pass their ids or the subtree.")
 		return nil, &r
@@ -235,6 +262,26 @@ func (d *Document) planCopy(ctx context.Context, p *copyPlan, op string, ids []s
 				p.refuse(id, copyForbidden, "read on the source document is not allowed")
 				continue
 			}
+			// A move removes the source, so it needs write there too.
+			if p.move {
+				if r, err := srcACL.document(ctx, op, "write", id); err != nil {
+					return err
+				} else if r != nil {
+					p.refuse(id, copyForbidden, "write on the source document is not allowed")
+					continue
+				}
+			}
+		}
+		if p.move {
+			resumed, collides, err := d.moveTargetHolds(ctx, p, id)
+			if err != nil {
+				return err
+			}
+			if collides {
+				p.refuse(id, moveIDCollision, "scope "+p.dst.Scope+" already holds a document with this id")
+				continue
+			}
+			doc.resumed = resumed
 		}
 		sourceNames := doc.names
 		if len(sourceNames) == 0 {
@@ -260,7 +307,13 @@ func (d *Document) planCopy(ctx context.Context, p *copyPlan, op string, ids []s
 				break
 			}
 			parent, name, _ := splitPath(canonical)
-			if _, gerr := d.Store.DirentGet(ctx, direntTenant(ctx), p.dst.Scope, direntScopeID(p.dst), parent, name); gerr == nil {
+			if row, gerr := d.Store.DirentGet(ctx, direntTenant(ctx), p.dst.Scope, direntScopeID(p.dst), parent, name); gerr == nil {
+				// A move that stopped after naming its target already holds the
+				// name, for the same document: that is its own work.
+				if p.move && doc.resumed && direntDocumentID(row) == id {
+					doc.targets = append(doc.targets, canonical)
+					continue
+				}
 				p.refuse(id, copyPathCollision, "target name "+canonical+" already names something in scope "+p.dst.Scope)
 				ok = false
 				break
@@ -282,11 +335,14 @@ func (d *Document) planCopy(ctx context.Context, p *copyPlan, op string, ids []s
 		if !ok {
 			continue
 		}
-		if code, detail, err := d.copyKeyCollision(ctx, p, id); err != nil {
-			return err
-		} else if code != "" {
-			p.refuse(id, code, detail)
-			continue
+		// A resumed move's own rows hold its keys already.
+		if !doc.resumed {
+			if code, detail, err := d.copyKeyCollision(ctx, p, id); err != nil {
+				return err
+			} else if code != "" {
+				p.refuse(id, code, detail)
+				continue
+			}
 		}
 		for _, t := range doc.targets {
 			claimed[t] = id
@@ -435,7 +491,7 @@ func (d *Document) writeCopy(ctx context.Context, p *copyPlan) {
 		if err := d.copyDocumentRows(ctx, p, doc); err != nil {
 			// The error goes back to the caller in the refusal's detail, not to
 			// the log: it can quote row values.
-			slog.WarnContext(ctx, "copy_documents: rows of a document failed", "document_id", doc.id)
+			slog.WarnContext(ctx, "document copy: rows of a document failed", "document_id", doc.id, "move", p.move)
 			p.refuse(doc.id, copyWriteFailed, err.Error())
 			for _, c := range doc.chunks {
 				delete(p.chunkMap, c)
@@ -443,9 +499,12 @@ func (d *Document) writeCopy(ctx context.Context, p *copyPlan) {
 			continue
 		}
 		d.copyDocumentBodies(ctx, p, doc)
-		for _, t := range doc.targets {
-			if _, err := d.registerDocDirent(ctx, p.dst, doc.newID, t); err != nil {
-				p.nameFailures = append(p.nameFailures, map[string]any{"document_id": doc.newID, "path": t, "error": err.Error()})
+		// A move names its target only once the source is gone.
+		if !p.move {
+			for _, t := range doc.targets {
+				if _, err := d.registerDocDirent(ctx, p.dst, doc.newID, t); err != nil {
+					p.nameFailures = append(p.nameFailures, map[string]any{"document_id": doc.newID, "path": t, "error": err.Error()})
+				}
 			}
 		}
 		done = append(done, doc)
@@ -453,18 +512,36 @@ func (d *Document) writeCopy(ctx context.Context, p *copyPlan) {
 	p.docs = done
 	p.counts["documents"] = len(done)
 	d.copyStatements(ctx, p)
-	for _, doc := range done {
-		d.publishIngested(ctx, p.dst, p.dstMem, doc.newID, "copied", nil)
+	if !p.move {
+		for _, doc := range done {
+			d.publishIngested(ctx, p.dst, p.dstMem, doc.newID, "copied", nil)
+		}
 	}
 }
 
 // copyDocumentRows writes one document's SQL rows into the target in one
 // transaction, under new ids.
 func (d *Document) copyDocumentRows(ctx context.Context, p *copyPlan, doc *copyDoc) error {
-	doc.newID = newDocID()
 	local := map[string]string{}
-	for _, c := range doc.chunks {
-		local[c] = newDocID()
+	if p.move {
+		// A move keeps every id (RFC FT D1).
+		doc.newID = doc.id
+		for _, c := range doc.chunks {
+			local[c] = c
+		}
+	} else {
+		doc.newID = newDocID()
+		for _, c := range doc.chunks {
+			local[c] = newDocID()
+		}
+	}
+	if doc.resumed {
+		// The rows went in, with the marker, in one transaction of an earlier
+		// call: they are complete.
+		for k, v := range local {
+			p.chunkMap[k] = v
+		}
+		return nil
 	}
 	docRemap := func(v any) any { return remapID(v, map[string]string{doc.id: doc.newID}) }
 	chunkRemap := func(v any) any { return remapID(v, local) }
@@ -491,6 +568,9 @@ func (d *Document) copyDocumentRows(ctx context.Context, p *copyPlan, doc *copyD
 		}
 		inserts = append(inserts, rows...)
 		written[t.name] = len(rows)
+	}
+	if p.move {
+		inserts = append(inserts, moveMarkerInsert(p, doc))
 	}
 	if err := d.withSqlTxn(ctx, p.dst, func(txnID string) error {
 		return execInserts(ctx, d, txnID, inserts)
@@ -619,10 +699,11 @@ func (d *Document) copyDocumentBodies(ctx context.Context, p *copyPlan, doc *cop
 			value = nil // a chunk with no body row (a bare root) gets none
 		default:
 			p.bodyFailures++
+			p.failDoc(doc.id, "a body could not be read")
 			slog.WarnContext(ctx, "copy_documents: read body", "chunk_id", c, "err", err)
 			continue
 		}
-		if c == root {
+		if c == root && !p.move {
 			cb.Fields = setJSONField(cb.Fields, "copied_from", map[string]any{"scope": p.src.Scope, "document_id": doc.id})
 			value, _ = json.Marshal(cb)
 		}
@@ -636,6 +717,7 @@ func (d *Document) copyDocumentBodies(ctx context.Context, p *copyPlan, doc *cop
 			}
 			if err != nil {
 				p.bodyFailures++
+				p.failDoc(doc.id, "a body could not be written")
 				slog.WarnContext(ctx, "copy_documents: write body", "chunk_id", nc, "err", err)
 				continue
 			}
@@ -668,7 +750,16 @@ func (d *Document) copyDocumentBodies(ctx context.Context, p *copyPlan, doc *cop
 func (d *Document) copyStatements(ctx context.Context, p *copyPlan) {
 	written := 0
 	for _, id := range p.statements {
-		edgeMap := map[string]string{id: newDocID()}
+		newEdge, newEvidence := newDocID(), func(any) any { return newDocID() }
+		if p.move {
+			// Kept ids; a statement an earlier call of the same move wrote is done.
+			newEdge, newEvidence = id, func(v any) any { return v }
+			if res, err := d.query(ctx, p.dst, `SELECT 1 FROM chunk_edges WHERE id = ?`, id); err == nil && len(res.Rows) > 0 {
+				written++
+				continue
+			}
+		}
+		edgeMap := map[string]string{id: newEdge}
 		edgeRemap := func(v any) any { return remapID(v, edgeMap) }
 		chunkRemap := func(v any) any { return remapID(v, p.chunkMap) }
 		// Both ends must have been written: a member whose rows failed took its
@@ -678,8 +769,14 @@ func (d *Document) copyStatements(ctx context.Context, p *copyPlan) {
 			p.statementsFailed++
 			continue
 		}
-		if p.chunkMap[asStr(res.Rows[0][0])] == "" || p.chunkMap[asStr(res.Rows[0][1])] == "" {
+		from, to := asStr(res.Rows[0][0]), asStr(res.Rows[0][1])
+		failEnds := func() {
+			p.failDoc(p.chunkDoc[from], "a relation could not be written")
+			p.failDoc(p.chunkDoc[to], "a relation could not be written")
+		}
+		if p.chunkMap[from] == "" || p.chunkMap[to] == "" {
 			p.statementsFailed++
+			failEnds()
 			continue
 		}
 		edge, err := d.readTableRows(ctx, p.src, p.dst, copyTable{"chunk_edges", `id = ?`, "id",
@@ -687,7 +784,7 @@ func (d *Document) copyStatements(ctx context.Context, p *copyPlan) {
 		if err == nil {
 			var evidence []copyInsert
 			evidence, err = d.readTableRows(ctx, p.src, p.dst, copyTable{"chunk_edge_evidence", `edge_id = ?`, "id",
-				map[string]func(any) any{"id": func(any) any { return newDocID() }, "edge_id": edgeRemap, "chunk_id": chunkRemap}}, id)
+				map[string]func(any) any{"id": newEvidence, "edge_id": edgeRemap, "chunk_id": chunkRemap}}, id)
 			if err == nil {
 				err = d.withSqlTxn(ctx, p.dst, func(txnID string) error {
 					return execInserts(ctx, d, txnID, append(edge, evidence...))
@@ -695,11 +792,12 @@ func (d *Document) copyStatements(ctx context.Context, p *copyPlan) {
 			}
 		}
 		if err != nil {
-			slog.WarnContext(ctx, "copy_documents: statement failed", "statement_id", id)
+			slog.WarnContext(ctx, "document copy: statement failed", "statement_id", id, "move", p.move)
 			if p.statementError == "" {
 				p.statementError = err.Error()
 			}
 			p.statementsFailed++
+			failEnds()
 			continue
 		}
 		written++
@@ -712,8 +810,11 @@ func copyResult(p *copyPlan, dryRun bool) map[string]any {
 	docs := make([]map[string]any, 0, len(p.docs))
 	for _, doc := range p.docs {
 		e := map[string]any{"id": doc.id, "paths": doc.targets}
-		if doc.newID != "" {
+		if doc.newID != "" && !p.move {
 			e["new_id"] = doc.newID
+		}
+		if doc.resumed {
+			e["resumed"] = true
 		}
 		docs = append(docs, e)
 	}
@@ -760,6 +861,9 @@ func copyResult(p *copyPlan, dryRun bool) map[string]any {
 	}
 	if p.statementError != "" {
 		out["statement_error"] = p.statementError
+	}
+	if len(p.unfinished) > 0 {
+		out["unfinished"] = p.unfinished
 	}
 	return out
 }
