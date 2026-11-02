@@ -80,6 +80,8 @@ type Options struct {
 	limits       *zipLimits
 	pdfMaxPages  int
 	pdfMaxDecode int64
+	// pdfGridWork overrides the PDF table search's work budget, for tests.
+	pdfGridWork int
 }
 
 // DefaultMaxRows is the row cap when Options.MaxRows is zero.

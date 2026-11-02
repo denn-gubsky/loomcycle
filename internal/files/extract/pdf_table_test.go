@@ -320,3 +320,77 @@ func TestExtractPDF_ChromeTableBecomesMarkdownTable(t *testing.T) {
 		t.Errorf("report = %+v", rep)
 	}
 }
+
+// A content stream of path operators that are never painted holds no more
+// path points than the page budget: painting frees a path, but the count is
+// the page's, so a stream of moves cannot grow memory without bound.
+func TestPDFPath_PagePointBudgetBoundsWhatIsHeld(t *testing.T) {
+	p := &pdfPage{}
+	var pa pdfPath
+	for range maxPDFPagePathPoints + 1000 {
+		pa.moveTo(p, pdfPoint{})
+	}
+	if len(pa.subs) != maxPDFPagePathPoints || !p.rulesOver {
+		t.Errorf("held %d subpaths (budget %d), over = %v", len(pa.subs), maxPDFPagePathPoints, p.rulesOver)
+	}
+	pa.reset()
+	pa.rect(p, identity(), 0, 0, 1, 1)
+	pa.lineTo(p, pdfPoint{})
+	if len(pa.subs) != 0 {
+		t.Errorf("a path past the page budget still grew: %d subpaths", len(pa.subs))
+	}
+}
+
+// The same through the extractor: a page that builds more path points than
+// the budget, even in paths it never paints, is read as text and noted.
+func TestExtractPDF_ManyPathMovesSkipTheTableSearch(t *testing.T) {
+	page := passportPage(true)
+	page.Paths = strings.Repeat("0 0 m ", maxPDFPagePathPoints) + "n\n" + page.Paths
+	s, rep, err := extractPDF(t, pdftest.Doc{Pages: []pdftest.Page{page}}.Bytes(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Tables != 0 || !hasNote(rep, "tables were not looked for on page 1") {
+		t.Errorf("tables %d, notes %q:\n%s", rep.Tables, rep.Notes, s.md.String())
+	}
+}
+
+// More grids on a page than the search takes: no table is read, and the
+// page is noted.
+func TestExtractPDF_ManyGridsSkipTheTableSearch(t *testing.T) {
+	var paths strings.Builder
+	var lines []pdftest.Line
+	for i := range maxPDFPageGrids + 1 {
+		x, top := 20+float64(i%25)*60, 20+float64(i/25+1)*40
+		paths.WriteString(grid(x, top, []float64{20, 20}, []float64{10, 10}, nil))
+		lines = append(lines,
+			pdftest.Line{Text: "ab", X: x + 2, Y: top - 7, Size: 4},
+			pdftest.Line{Text: "cd", X: x + 22, Y: top - 17, Size: 4})
+	}
+	s, rep, err := extractPDF(t, pdftest.Doc{Pages: []pdftest.Page{{Paths: paths.String(), Lines: lines}}}.Bytes(), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Tables != 0 || strings.Contains(s.md.String(), "| --- |") || !hasNote(rep, "tables were not looked for on page 1") {
+		t.Errorf("tables %d, notes %q", rep.Tables, rep.Notes)
+	}
+}
+
+// Reading the text into a grid's cells is charged to the same work budget
+// as joining its lines: when it runs out, no table is read.
+func TestExtractPDF_GridWorkBudgetCoversReadingCells(t *testing.T) {
+	data := pdftest.Doc{Pages: []pdftest.Page{passportPage(true)}}.Bytes()
+	// Joining the passport's lines into its grid costs 71 units and reading
+	// its runs and cells brings the page to 115: 90 is enough for the first
+	// and not the second.
+	_, rep, err := extractPDF(t, data, Options{pdfGridWork: 90})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Tables != 0 || !hasNote(rep, "tables were not looked for on page 1") {
+		t.Errorf("tables %d, notes %q", rep.Tables, rep.Notes)
+	}
+	if _, rep, _ := extractPDF(t, data, Options{}); rep.Tables != 1 {
+		t.Errorf("the default budget reads the table: %+v", rep)
+	}
+}

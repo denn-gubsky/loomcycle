@@ -88,7 +88,7 @@ func (PDF) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, op
 		return rep, err
 	}
 	w := newWriter(ctx, sink, opts)
-	e := &pdfExtract{xr: xr, w: w, rep: &rep, maxDecode: maxDecode, seen: map[int]bool{}, fonts: map[int]*pdfFont{}}
+	e := &pdfExtract{xr: xr, w: w, rep: &rep, maxDecode: maxDecode, seen: map[int]bool{}, fonts: map[int]*pdfFont{}, gridWork: opts.pdfGridWork}
 	err = e.run(opts)
 	rep.finish(w)
 	e.notes()
@@ -194,6 +194,7 @@ type pdfExtract struct {
 	repeated      int
 	tables        int   // tables recovered from drawn borders
 	busyPages     []int // pages drawing too many lines to look for tables
+	gridWork      int   // the table search's work budget per page; 0 = maxPDFGridWork
 }
 
 func (o Options) pdfPageCap() int {
@@ -279,7 +280,7 @@ func (e *pdfExtract) notes() {
 		}
 	}
 	if len(e.busyPages) > 0 {
-		e.rep.note("tables were not looked for on %s: too many lines are drawn there", pagesPhrase(e.busyPages))
+		e.rep.note("tables were not looked for on %s: the lines drawn there are too many to read", pagesPhrase(e.busyPages))
 	}
 }
 
@@ -453,8 +454,9 @@ type pdfPage struct {
 	// space: the borders a table is read from. rulesOver marks a page that
 	// drew more than maxPDFPageRules of them (or of path segments), where
 	// no table is looked for.
-	rules     []pdfRule
-	rulesOver bool
+	rules      []pdfRule
+	rulesOver  bool
+	pathPoints int // path points built on the page, against maxPDFPagePathPoints
 }
 
 type gstate struct {
@@ -558,7 +560,7 @@ func (p *pdfPage) run(content []byte, res types.Dict, ctm mat, depth int) error 
 		// rules a table's borders are drawn with.
 		case "m":
 			if len(args) >= 2 {
-				path.moveTo(gs.ctm.apply(num(len(args)-2), num(len(args)-1)))
+				path.moveTo(p, gs.ctm.apply(num(len(args)-2), num(len(args)-1)))
 			}
 		case "l":
 			if len(args) >= 2 {

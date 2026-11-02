@@ -18,9 +18,16 @@ import (
 // guesses nothing from the gaps between words.
 
 const (
-	// maxPDFPageRules caps the lines (and path points) one page may draw
-	// before tables are no longer looked for on it.
+	// maxPDFPageRules caps the lines one page may draw before tables are no
+	// longer looked for on it.
 	maxPDFPageRules = 20000
+	// maxPDFPagePathPoints caps the path points (every m, l, curve end and
+	// re) one page may build, however many times its paths are painted:
+	// a page of millions of path operators must not grow memory without
+	// bound. Past it no more lines are kept and no tables are looked for.
+	maxPDFPagePathPoints = 200_000
+	// maxPDFPageGrids caps the grids one page is checked for.
+	maxPDFPageGrids = 500
 	// ruleThin is how thin a filled box must be, in points, to be a line.
 	ruleThin = 2.0
 	// ruleTol is how close, in points, two lines must be to be one border.
@@ -28,8 +35,10 @@ const (
 	// maxPDFTableCols and maxPDFTableRows bound one table's grid.
 	maxPDFTableCols = 64
 	maxPDFTableRows = 2000
-	// maxPDFGridChecks bounds the work of joining borders into grids.
-	maxPDFGridChecks = 4_000_000
+	// maxPDFGridWork bounds the work of joining borders into grids and
+	// reading the text inside them: crossings checked, rules sorted onto
+	// edges, overlaps compared, runs and cells visited.
+	maxPDFGridWork = 4_000_000
 )
 
 type pdfPoint struct{ x, y float64 }
@@ -49,7 +58,6 @@ type pdfRule struct {
 // pdfPath is the path under construction, its points already in page space.
 type pdfPath struct {
 	subs []pdfSubpath
-	n    int
 }
 
 type pdfSubpath struct {
@@ -61,25 +69,31 @@ type pdfSubpath struct {
 	curved   bool
 }
 
-func (pa *pdfPath) full(p *pdfPage) bool {
-	if pa.n >= maxPDFPageRules {
+// full charges n path points to the page and reports whether the page is
+// past its budget, in which case the point is not kept. The count is the
+// page's, not the path's: painting a path frees it, but does not refund it.
+func (p *pdfPage) full(n int) bool {
+	if p.pathPoints+n > maxPDFPagePathPoints {
 		p.rulesOver = true
 		return true
 	}
-	pa.n++
+	p.pathPoints += n
 	return false
 }
 
-func (pa *pdfPath) moveTo(pt pdfPoint) {
+func (pa *pdfPath) moveTo(p *pdfPage, pt pdfPoint) {
+	if p.full(1) {
+		return
+	}
 	pa.subs = append(pa.subs, pdfSubpath{pts: []pdfPoint{pt}})
 }
 
 func (pa *pdfPath) to(p *pdfPage, pt pdfPoint, straight bool) {
 	if len(pa.subs) == 0 {
-		pa.moveTo(pt)
+		pa.moveTo(p, pt)
 		return
 	}
-	if pa.full(p) {
+	if p.full(1) {
 		return
 	}
 	s := &pa.subs[len(pa.subs)-1]
@@ -96,7 +110,7 @@ func (pa *pdfPath) lineTo(p *pdfPage, pt pdfPoint) { pa.to(p, pt, true) }
 func (pa *pdfPath) curveTo(p *pdfPage, pt pdfPoint) { pa.to(p, pt, false) }
 
 func (pa *pdfPath) rect(p *pdfPage, ctm mat, x, y, w, h float64) {
-	if pa.full(p) {
+	if p.full(4) {
 		return
 	}
 	pa.subs = append(pa.subs, pdfSubpath{
@@ -113,7 +127,7 @@ func (pa *pdfPath) close() {
 }
 
 func (pa *pdfPath) reset() {
-	pa.subs, pa.n = nil, 0
+	pa.subs = nil
 }
 
 // paint turns the path into rules as it is filled or stroked, then ends it.
@@ -226,7 +240,7 @@ func (p *pdfPage) blocks() ([]pdfBlock, bool) {
 	var tables []pdfTable
 	if !p.rulesOver && len(p.rules) > 0 {
 		var ok bool
-		if tables, ok = findTables(p.rules, p.runs); !ok {
+		if tables, ok = findTables(p.rules, p.runs, p.e.gridWork); !ok {
 			p.rulesOver = true
 		}
 	}
@@ -278,9 +292,23 @@ type pdfTable struct {
 	runs             []int // indexes of the page's runs it holds
 }
 
+// gridBudget is the work findTables may still do on one page.
+type gridBudget struct{ left int }
+
+// spend charges n units and reports whether the budget still holds.
+func (b *gridBudget) spend(n int) bool {
+	b.left -= n
+	return b.left >= 0
+}
+
 // findTables joins the page's rules into grids and reads the text inside
-// each. ok is false when the rules were too many to join within the bound.
-func findTables(rules []pdfRule, runs []pdfRun) ([]pdfTable, bool) {
+// each. ok is false when the page's lines are too many, or too dense, to
+// read within work (maxPDFGridWork when zero): then no table is returned.
+func findTables(rules []pdfRule, runs []pdfRun, work int) ([]pdfTable, bool) {
+	if work <= 0 {
+		work = maxPDFGridWork
+	}
+	budget := &gridBudget{left: work}
 	var hs, vs []pdfRule
 	for _, r := range rules {
 		if r.vertical {
@@ -307,11 +335,10 @@ func findTables(rules []pdfRule, runs []pdfRun) ([]pdfTable, bool) {
 		}
 		return i
 	}
-	checks := 0
 	for i, h := range hs {
 		lo := sort.Search(len(vs), func(k int) bool { return vs[k].pos >= h.lo-ruleTol })
 		for k := lo; k < len(vs) && vs[k].pos <= h.hi+ruleTol; k++ {
-			if checks++; checks > maxPDFGridChecks {
+			if !budget.spend(1) {
 				return nil, false
 			}
 			v := vs[k]
@@ -340,9 +367,19 @@ func findTables(rules []pdfRule, runs []pdfRun) ([]pdfTable, bool) {
 	}
 	var grids []*pdfGrid
 	for _, c := range order {
-		if g := comps[c].grid(); g != nil {
+		g, ok := comps[c].grid(budget)
+		if !ok {
+			return nil, false
+		}
+		if g != nil {
+			if len(grids) == maxPDFPageGrids {
+				return nil, false
+			}
 			grids = append(grids, g)
 		}
+	}
+	if !budget.spend(len(grids) * len(grids)) {
+		return nil, false
 	}
 	// A grid that overlaps another (a table drawn inside a cell of another)
 	// is left to the smaller of the two: the larger one's text stays text.
@@ -360,6 +397,9 @@ func findTables(rules []pdfRule, runs []pdfRun) ([]pdfTable, bool) {
 		}
 	}
 	// The runs by height, so each grid looks only at the runs level with it.
+	if !budget.spend(len(runs)) {
+		return nil, false
+	}
 	byY := make([]int, len(runs))
 	for i := range byY {
 		byY[i] = i
@@ -369,6 +409,10 @@ func findTables(rules []pdfRule, runs []pdfRun) ([]pdfTable, bool) {
 	for _, g := range keep {
 		lo := sort.Search(len(byY), func(k int) bool { return runCentreY(runs[byY[k]]) > g.bottom() })
 		hi := sort.Search(len(byY), func(k int) bool { return runCentreY(runs[byY[k]]) >= g.top() })
+		// Each grid pays for the runs level with it and for its cells.
+		if !budget.spend(hi - lo + (len(g.xs)-1)*(len(g.ys)-1)) {
+			return nil, false
+		}
 		cand := append([]int(nil), byY[lo:hi]...)
 		sort.Ints(cand) // page order, as the runs were drawn
 		if t, ok := g.read(runs, cand); ok {
@@ -429,17 +473,26 @@ type pdfGrid struct {
 	vAt, hAt [][]pdfRule
 }
 
-func (s *ruleSet) grid() *pdfGrid {
+// grid reads the rule set as a grid, or nil when it is not one. ok is false
+// when the budget ran out.
+func (s *ruleSet) grid(budget *gridBudget) (*pdfGrid, bool) {
+	if !budget.spend(len(s.vs) + len(s.hs)) {
+		return nil, false
+	}
 	xs := edges(s.vs)
 	ys := edges(s.hs)
 	if len(xs) < 3 || len(ys) < 3 || len(xs)-1 > maxPDFTableCols || len(ys)-1 > maxPDFTableRows {
-		return nil
+		return nil, true
+	}
+	// Sorting the rules onto their edges costs a pass over the edges each.
+	if !budget.spend(len(s.vs)*len(xs) + len(s.hs)*len(ys)) {
+		return nil, false
 	}
 	// Rows read top to bottom: page y grows upwards.
 	for i, j := 0, len(ys)-1; i < j; i, j = i+1, j-1 {
 		ys[i], ys[j] = ys[j], ys[i]
 	}
-	return &pdfGrid{xs: xs, ys: ys, vAt: along(s.vs, xs), hAt: along(s.hs, ys)}
+	return &pdfGrid{xs: xs, ys: ys, vAt: along(s.vs, xs), hAt: along(s.hs, ys)}, true
 }
 
 // along groups rules by the edge (of edgePos) each runs along.
