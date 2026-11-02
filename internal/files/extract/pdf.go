@@ -88,7 +88,7 @@ func (PDF) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, op
 		return rep, err
 	}
 	w := newWriter(ctx, sink, opts)
-	e := &pdfExtract{xr: xr, w: w, rep: &rep, maxDecode: maxDecode, seen: map[int]bool{}, fonts: map[int]*pdfFont{}}
+	e := &pdfExtract{xr: xr, w: w, rep: &rep, maxDecode: maxDecode, seen: map[int]bool{}, fonts: map[int]*pdfFont{}, gridWork: opts.pdfGridWork}
 	err = e.run(opts)
 	rep.finish(w)
 	e.notes()
@@ -192,6 +192,9 @@ type pdfExtract struct {
 	skippedImages int // pictures stored as pixels, not JPEG or JPEG 2000
 	inlineImages  int
 	repeated      int
+	tables        int   // tables recovered from drawn borders
+	busyPages     []int // pages drawing too many lines to look for tables
+	gridWork      int   // the table search's work budget per page; 0 = maxPDFGridWork
 }
 
 func (o Options) pdfPageCap() int {
@@ -268,6 +271,17 @@ func (e *pdfExtract) notes() {
 	if e.repeated > 0 {
 		e.rep.note("%d images repeated on later pages were kept once", e.repeated)
 	}
+	if e.tables > 0 {
+		e.rep.Tables = e.tables
+		if e.tables == 1 {
+			e.rep.note("1 table was recovered from the borders drawn on the page; its rows and columns are read from the layout")
+		} else {
+			e.rep.note("%d tables were recovered from the borders drawn on the pages; their rows and columns are read from the layout", e.tables)
+		}
+	}
+	if len(e.busyPages) > 0 {
+		e.rep.note("tables were not looked for on %s: the lines drawn there are too many to read", pagesPhrase(e.busyPages))
+	}
 }
 
 // pagesPhrase is "page 3" or "pages 1, 3–5".
@@ -340,8 +354,14 @@ func (e *pdfExtract) page(n int) (string, error) {
 		e.unmappedPages = append(e.unmappedPages, n)
 	}
 
-	text, cut := p.text()
-	chars := utf8.RuneCountInString(strings.Join(strings.Fields(text), ""))
+	blocks, cut := p.blocks()
+	if p.rulesOver {
+		e.busyPages = append(e.busyPages, n)
+	}
+	chars := 0
+	for _, b := range blocks {
+		chars += b.chars()
+	}
 	e.textChars += chars
 	e.rep.PageYields = append(e.rep.PageYields, PageYield{Page: n, Chars: chars, Unread: unread})
 	// A page whose content could not be read is not a scan: it is listed
@@ -352,8 +372,13 @@ func (e *pdfExtract) page(n int) (string, error) {
 	if cut {
 		e.cutPages = append(e.cutPages, n)
 	}
-	if t := pdfParagraphs(text); t != "" {
-		parts = append(parts, t)
+	for _, b := range blocks {
+		if b.table != nil {
+			e.tables++
+		}
+		if md := b.markdown(); md != "" {
+			parts = append(parts, md)
+		}
 	}
 	parts = append(parts, p.images...)
 	return strings.Join(parts, "\n\n"), nil
@@ -405,6 +430,9 @@ type pdfRun struct {
 	x, y, endX, size float64
 	text             string
 	seq              int
+	// upright is text drawn left to right with its glyphs standing up on
+	// the page: the only text a table read from the page's borders takes.
+	upright bool
 }
 
 type textState struct {
@@ -421,6 +449,14 @@ type pdfPage struct {
 	unmapped bool
 	images   []string
 	forms    int
+
+	// rules are the horizontal and vertical lines the page draws, in page
+	// space: the borders a table is read from. rulesOver marks a page that
+	// drew more than maxPDFPageRules of them (or of path segments), where
+	// no table is looked for.
+	rules      []pdfRule
+	rulesOver  bool
+	pathPoints int // path points built on the page, against maxPDFPagePathPoints
 }
 
 type gstate struct {
@@ -433,6 +469,7 @@ func (p *pdfPage) run(content []byte, res types.Dict, ctm mat, depth int) error 
 	gs := gstate{ctm: ctm, ts: textState{scale: 1}}
 	var stack []gstate
 	var tm, tlm mat
+	var path pdfPath
 	fonts := p.resourceDict(res, "Font")
 	xobjects := p.resourceDict(res, "XObject")
 	var err error
@@ -518,6 +555,42 @@ func (p *pdfPage) run(content []byte, res types.Dict, ctm mat, depth int) error 
 			}
 		case "BI":
 			p.e.inlineImages++
+
+		// Paths: only their straight, axis-aligned lines are kept, as the
+		// rules a table's borders are drawn with.
+		case "m":
+			if len(args) >= 2 {
+				path.moveTo(p, gs.ctm.apply(num(len(args)-2), num(len(args)-1)))
+			}
+		case "l":
+			if len(args) >= 2 {
+				path.lineTo(p, gs.ctm.apply(num(len(args)-2), num(len(args)-1)))
+			}
+		case "c", "v", "y":
+			if len(args) >= 2 {
+				path.curveTo(p, gs.ctm.apply(num(len(args)-2), num(len(args)-1)))
+			}
+		case "re":
+			if len(args) >= 4 {
+				x, y, w, h := num(len(args)-4), num(len(args)-3), num(len(args)-2), num(len(args)-1)
+				path.rect(p, gs.ctm, x, y, w, h)
+			}
+		case "h":
+			path.close()
+		case "S":
+			path.paint(p, false, true)
+		case "s":
+			path.close()
+			path.paint(p, false, true)
+		case "f", "F", "f*":
+			path.paint(p, true, false)
+		case "B", "B*":
+			path.paint(p, true, true)
+		case "b", "b*":
+			path.close()
+			path.paint(p, true, true)
+		case "n":
+			path.reset()
 		}
 		return err == nil
 	})
@@ -562,6 +635,7 @@ func (p *pdfPage) show(gs *gstate, tm mat, items []pdfVal) mat {
 	trm := tm.mul(gs.ctm)
 	x, y := trm[4], trm[5]
 	size := math.Abs(ts.size) * math.Hypot(trm[2], trm[3])
+	upright := trm[0] > 0 && trm[3] > 0 && math.Abs(trm[1]) <= 0.01*trm[0] && math.Abs(trm[2]) <= 0.01*trm[3]
 	var b strings.Builder
 	advance := func(tx float64) {
 		tm = mat{1, 0, 0, 1, tx, 0}.mul(tm)
@@ -574,6 +648,19 @@ func (p *pdfPage) show(gs *gstate, tm mat, items []pdfVal) mat {
 			// break the producer drew by moving rather than by a space.
 			if it.num < -180 && b.Len() > 0 && !strings.HasSuffix(b.String(), " ") {
 				b.WriteByte(' ')
+			}
+			// A jump of an em or more is a producer moving to another
+			// column inside one TJ array: the text after it is a run of
+			// its own, so a table's borders can place each part. The space
+			// written above keeps the line's text what it was.
+			if it.num <= -1000 && upright && b.Len() > 0 {
+				end := tm.mul(gs.ctm)
+				p.add(pdfRun{x: x, y: y, endX: end[4], size: size, text: b.String(), upright: upright})
+				b.Reset()
+				advance(tx)
+				next := tm.mul(gs.ctm)
+				x, y = next[4], next[5]
+				continue
 			}
 			advance(tx)
 		case tokStr:
@@ -598,7 +685,7 @@ func (p *pdfPage) show(gs *gstate, tm mat, items []pdfVal) mat {
 	}
 	if s := b.String(); s != "" {
 		end := tm.mul(gs.ctm)
-		p.add(pdfRun{x: x, y: y, endX: end[4], size: size, text: s})
+		p.add(pdfRun{x: x, y: y, endX: end[4], size: size, text: s, upright: upright})
 	}
 	return tm
 }
@@ -722,14 +809,14 @@ func (p *pdfPage) image(sd *types.StreamDict, nr int) error {
 	return nil
 }
 
-// text assembles the page's runs into lines: runs on one baseline form a
-// row, read left to right; rows go top to bottom, and a gap of more than
-// about two lines starts a new paragraph.
-func (p *pdfPage) text() (string, bool) {
-	if len(p.runs) == 0 {
-		return "", p.cut
+// assemble puts runs into lines: runs on one baseline form a row, read left
+// to right; rows go top to bottom, and a gap of more than about two lines
+// starts a new paragraph.
+func assemble(in []pdfRun) string {
+	if len(in) == 0 {
+		return ""
 	}
-	runs := append([]pdfRun(nil), p.runs...)
+	runs := append([]pdfRun(nil), in...)
 	sort.SliceStable(runs, func(i, j int) bool { return runs[i].y > runs[j].y })
 	type row struct {
 		y, size float64
@@ -781,5 +868,5 @@ func (p *pdfPage) text() (string, bool) {
 		}
 		b.WriteString(l)
 	}
-	return b.String(), p.cut
+	return b.String()
 }

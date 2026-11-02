@@ -73,6 +73,12 @@ type Line struct {
 	// Kern draws the spaces between words as TJ position adjustments
 	// instead of space glyphs, as some producers do.
 	Kern bool
+	// Jump, when set, draws each tab in Text as a TJ adjustment of Jump
+	// thousandths of an em: a producer moving to the next column inside
+	// one TJ array.
+	Jump float64
+	// Rotate draws the line turned a quarter turn, reading upwards.
+	Rotate bool
 }
 
 // Image is a picture drawn on a page.
@@ -86,10 +92,23 @@ type Image struct {
 	X, Y, Width, Height float64
 }
 
-// Page is one page: its lines and pictures.
+// Page is one page: its lines and pictures, and Paths, content operators
+// (see Rect and Stroke) drawn before them.
 type Page struct {
 	Lines  []Line
 	Images []Image
+	Paths  string
+}
+
+// Rect is a filled rectangle at (x, y), w wide and h high: a border drawn
+// as a thin box, as Chrome and Word draw table borders.
+func Rect(x, y, w, h float64) string {
+	return fmt.Sprintf("%g %g %g %g re f\n", x, y, w, h)
+}
+
+// Stroke is a line from (x1, y1) to (x2, y2), stroked.
+func Stroke(x1, y1, x2, y2 float64) string {
+	return fmt.Sprintf("%g %g m %g %g l S\n", x1, y1, x2, y2)
 }
 
 // Doc is a document of pages, A4 portrait.
@@ -138,8 +157,13 @@ func (d Doc) Bytes() []byte {
 			xobjects[name] = w.Add(body)
 			fmt.Fprintf(&c, "q %g 0 0 %g %g %g cm /%s Do Q\n", img.Width, img.Height, img.X, img.Y, name)
 		}
+		c.WriteString(p.Paths)
 		for _, l := range p.Lines {
-			fmt.Fprintf(&c, "BT\n/F1 %g Tf\n1 0 0 1 %g %g Tm\n%s TJ\nET\n", l.Size, l.X, l.Y, tj(l, cids))
+			m := "1 0 0 1"
+			if l.Rotate {
+				m = "0 1 -1 0"
+			}
+			fmt.Fprintf(&c, "BT\n/F1 %g Tf\n%s %g %g Tm\n%s TJ\nET\n", l.Size, m, l.X, l.Y, tj(l, cids))
 		}
 		content := w.Add(Stream("/Filter /FlateDecode", Flate([]byte(c.String()))))
 		var xo strings.Builder
@@ -167,6 +191,10 @@ func tj(l Line, cids map[rune]int) string {
 	for _, r := range l.Text {
 		if r == ' ' && l.Kern {
 			b.WriteString("> -300 <")
+			continue
+		}
+		if r == '\t' && l.Jump != 0 {
+			fmt.Fprintf(&b, "> %g <", -l.Jump)
 			continue
 		}
 		fmt.Fprintf(&b, "%04X", cids[r])
