@@ -4722,6 +4722,9 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("POST /v1/_memory/home_facts", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryHomeFacts))))
 	mux.Handle("POST /v1/_document/describe_images", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDescribeImages))))
 	mux.Handle("POST /v1/_document/reindex", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDocumentReindex))))
+	// RFC FQ P2: run the document projection pass over one scope now. Operator-admin
+	// like the re-index (the /v1/_* catch-all): it rewrites a tenant's map.
+	mux.Handle("POST /v1/_document/project", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDocumentProject))))
 	mux.Handle("POST /v1/_document/derive_units", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeriveUnits))))
 	// v0.8.17 Snapshot capture (PR 2). Bearer-authed; same posture
 	// as /v1/_resolver. The full runtime-state JSON envelope; see

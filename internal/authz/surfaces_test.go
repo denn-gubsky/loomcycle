@@ -62,6 +62,7 @@ func TestHTTPSurface_RepresentativeRoutes(t *testing.T) {
 		{"POST", "/v1/_memory/repair-tenant", instance("manage", "runtime", "tenants"), true},
 		{"POST", "/v1/_document", typeLevel("read", "document"), true},
 		{"POST", "/v1/_document/reindex", typeLevel("write", "document"), true},
+		{"POST", "/v1/_document/project", typeLevel("write", "document"), true},
 		{"PUT", "/v1/_limits", instance("manage", "runtime", "limits"), true},
 		{"GET", "/v1/_limits", instance("read", "runtime", "limits"), true},
 		{"POST", "/v1/_users", instance("manage", "principal", "user:*"), true},
