@@ -2,6 +2,8 @@ import { createContext, useContext } from "react";
 import type { DocumentToolInput, LoomcycleClient } from "@loomcycle/client";
 import type { BrowseScope, DocScope, GraphSnapshot, GraphSnapshotInput, SearchHit } from "../types";
 import { parseUniverseView, viewFields, viewPath, type SavedUniverseView, type UniverseViewState } from "./views";
+import { feedOverConnection, type FeedFrame } from "./feed";
+import type { Connection } from "./createClient";
 
 // UniverseDataLayer is the narrow contract the star map needs from the runtime:
 // the paged scope snapshot, semantic search, and (optionally) the statement
@@ -43,6 +45,11 @@ export interface UniverseDataLayer {
   getView?(scope: DocScope, documentId: string, browse?: BrowseScope): Promise<SavedUniverseView | null>;
   saveView?(scope: DocScope, title: string, state: UniverseViewState, browse?: BrowseScope): Promise<SavedUniverseView>;
   deleteView?(scope: DocScope, documentId: string, browse?: BrowseScope): Promise<void>;
+  /** The member-safe document change feed (GET /v1/_document/feed): frames
+   *  for documents the caller can list, in one scope. Optional; without it
+   *  (or with the feed off) the map reloads when the tab comes back after a
+   *  while instead. */
+  documentFeed?(scope: DocScope, browse: BrowseScope | undefined, signal: AbortSignal): AsyncIterable<FeedFrame>;
 }
 
 export interface LinkWrite {
@@ -81,7 +88,42 @@ export interface MemoryHit {
   document?: string;
 }
 
-export function dataLayerFromClient(client: LoomcycleClient): UniverseDataLayer {
+/** A client's own documentFeed (newer @loomcycle/client), when it has one. */
+interface FeedingClient {
+  documentFeed(opts: {
+    scope: "user" | "tenant";
+    scopeId?: string;
+    tenant?: string;
+    signal?: AbortSignal;
+  }): AsyncIterable<{ kind: string; payload: Record<string, unknown> }>;
+}
+
+async function* feedOverClient(
+  client: FeedingClient,
+  scope: DocScope,
+  browse: BrowseScope | undefined,
+  signal: AbortSignal,
+): AsyncIterable<FeedFrame> {
+  if (scope === "agent") return;
+  for await (const f of client.documentFeed({ scope, scopeId: browse?.scopeId, tenant: browse?.tenant, signal })) {
+    const p = f.payload;
+    if (f.kind === "feed") yield { kind: "feed", enabled: p.enabled === true };
+    else if (f.kind === "error") yield { kind: "error", code: String(p.code ?? ""), message: String(p.error ?? "") };
+    else if (f.kind === "change" && typeof p.document_id === "string")
+      yield { kind: "change", type: String(p.type), documentId: p.document_id, chunkId: String(p.chunk_id ?? "") };
+  }
+}
+
+/** dataLayerFromClient builds the default data layer. With the host's
+ *  connection the change feed is read over it (any client version); with a
+ *  client alone, through the client's documentFeed when it has one. */
+export function dataLayerFromClient(client: LoomcycleClient, connection?: Connection): UniverseDataLayer {
+  const feeding = client as unknown as Partial<FeedingClient>;
+  const documentFeed: UniverseDataLayer["documentFeed"] = connection
+    ? (scope, browse, signal) => feedOverConnection(connection, scope, browse, signal)
+    : typeof feeding.documentFeed === "function"
+      ? (scope, browse, signal) => feedOverClient(feeding as FeedingClient, scope, browse, signal)
+      : undefined;
   const doc = (input: Record<string, unknown>, browse?: BrowseScope, signal?: AbortSignal) =>
     client.document(input as unknown as DocumentToolInput, {
       signal,
@@ -89,6 +131,7 @@ export function dataLayerFromClient(client: LoomcycleClient): UniverseDataLayer 
       tenant: browse?.tenant,
     });
   return {
+    documentFeed,
     graphSnapshot: (input, browse, signal) =>
       doc({ op: "graph_snapshot", ...input }, browse, signal) as unknown as Promise<GraphSnapshot>,
     search: async (query, scope, opts, browse, signal) => {

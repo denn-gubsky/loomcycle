@@ -336,3 +336,143 @@ export function homeDir(m: UniverseModel, di: number): string {
   const cut = p.lastIndexOf("/");
   return cut <= 0 ? "/" : p.slice(0, cut);
 }
+
+/**
+ * modelToPage writes the model's kept documents back out as one snapshot page,
+ * the inverse of addPage: their chunk trees, their facts and projected points,
+ * the directories, and every edge neither of whose ends lies in a dropped
+ * document (an end outside the page becomes an `external` entry, as the
+ * runtime sends it). Used to splice a few re-read documents into a loaded sky.
+ */
+export function modelToPage(m: UniverseModel, keep: (doc: number) => boolean): GraphSnapshot {
+  const types: string[] = [];
+  const statuses: string[] = [];
+  const kinds: string[] = [];
+  const methods: string[] = [];
+  const intern = (t: string[], v: string) => {
+    if (!v) return -1;
+    const i = t.indexOf(v);
+    return i >= 0 ? i : t.push(v) - 1;
+  };
+  const docs: number[] = [];
+  for (let d = 0; d < m.docCount; d++) if (keep(d)) docs.push(d);
+  const pageDoc = new Map<number, number>();
+  docs.forEach((d, i) => pageDoc.set(d, i));
+
+  const cIds: string[] = [];
+  const cDoc: number[] = [];
+  const cParent: number[] = [];
+  const cPos: number[] = [];
+  const cType: number[] = [];
+  const cStatus: number[] = [];
+  const cTitle: string[] = [];
+  const cInvalid: (number | null)[] = [];
+  const cUpdated: number[] = [];
+  const cFact: boolean[] = [];
+  const cRetired: boolean[] = [];
+  const xyz: number[] = [];
+  const missing: number[] = [];
+  const pageChunk = new Map<number, number>();
+  for (const d of docs) {
+    const start = m.doc.chunkStart[d];
+    for (let c = start; c >= 0 && c < start + m.doc.chunkCount[d]; c++) {
+      const i = cIds.length;
+      pageChunk.set(c, i);
+      cIds.push(m.chunk.id[c]);
+      cDoc.push(pageDoc.get(d)!);
+      const p = m.chunk.parent[c];
+      cParent.push(p >= 0 ? (pageChunk.get(p) ?? -1) : -1);
+      cPos.push(m.chunk.position[c]);
+      cType.push(intern(types, m.chunk.type[c]));
+      cStatus.push(intern(statuses, m.chunk.status[c]));
+      cTitle.push(m.chunk.title[c]);
+      cInvalid.push(m.chunk.invalidAt[c]);
+      cUpdated.push(m.chunk.updatedAt[c]);
+      cFact.push(m.chunk.isFact[c]);
+      cRetired.push(m.chunk.retired[c]);
+      const x = m.chunk.proj[c * 3];
+      if (Number.isNaN(x)) {
+        missing.push(i);
+        xyz.push(0, 0, 0);
+      } else xyz.push(x, m.chunk.proj[c * 3 + 1], m.chunk.proj[c * 3 + 2]);
+    }
+  }
+
+  const keptDocIds = new Set(docs.map((d) => m.doc.id[d]));
+  const loadedDocIds = new Set(m.doc.id);
+  const external: { idx: number; id: string; document_id: string }[] = [];
+  const end = (chunk: number, id: string, docId: string) => {
+    const i = chunk >= 0 ? pageChunk.get(chunk) : undefined;
+    if (i !== undefined) return i;
+    const idx = -(external.length + 1);
+    external.push({ idx, id, document_id: docId });
+    return idx;
+  };
+  // An edge stays when each end is in a kept document or in one the sky never
+  // loaded; an end in a dropped document drops it (the re-read page brings it).
+  const stays = (docId: string) => keptDocIds.has(docId) || !loadedDocIds.has(docId);
+  const e = m.edges.filter((x) => stays(x.fromDocId) && stays(x.toDocId));
+  const edges = {
+    ids: e.map((x) => x.id),
+    from_idx: e.map((x) => end(x.from, x.fromId, x.fromDocId)),
+    to_idx: e.map((x) => end(x.to, x.toId, x.toDocId)),
+    kind_code: e.map((x) => intern(kinds, x.kind)),
+    status_code: e.map((x) => intern(statuses, x.status)),
+    method_code: e.map((x) => intern(methods, x.method)),
+    confidence: e.map((x) => x.confidence),
+    invalid_at: e.map((x) => x.invalidAt),
+    auto: e.map((x) => x.auto),
+    external,
+    truncated: m.edgesTruncated,
+  };
+
+  const page: GraphSnapshot = {
+    page: { documents: docs.length },
+    codes: { types, statuses, kinds, methods },
+    documents: {
+      ids: docs.map((d) => m.doc.id[d]),
+      titles: docs.map((d) => m.doc.title[d]),
+      root_chunk_ids: docs.map((d) => (m.doc.root[d] >= 0 ? m.chunk.id[m.doc.root[d]] : "")),
+      type_code: docs.map((d) => intern(types, m.doc.type[d])),
+      status_code: docs.map((d) => intern(statuses, m.doc.status[d])),
+      updated_at: docs.map((d) => m.doc.updatedAt[d]),
+      color_enabled: docs.map((d) => m.doc.colorEnabled[d]),
+      color_scheme: docs.map((d) => m.doc.scheme[d]),
+      paths: docs.map((d) => m.doc.paths[d]),
+    },
+    chunks: {
+      ids: cIds,
+      document_idx: cDoc,
+      parent_idx: cParent,
+      position: cPos,
+      type_code: cType,
+      status_code: cStatus,
+      titles: cTitle,
+      invalid_at: cInvalid,
+      updated_at: cUpdated,
+      is_fact: cFact,
+      fact_retired: cRetired,
+    },
+    edges,
+    dirents: { paths: [...m.dirs], kinds: [...m.dirs].map(() => "directory"), document_idx: [...m.dirs].map(() => -1) },
+  };
+  if (m.projection.basisVersion > 0)
+    page.projection = { model: m.projection.model, basis_version: m.projection.basisVersion, xyz, missing };
+  return page;
+}
+
+/**
+ * spliceDocuments replaces the given documents with a fresh snapshot page of
+ * them, in place: the model object keeps its identity (the scene frames the
+ * camera once per model, so a live update never moves it), its version bumps,
+ * and the rest of the sky is unchanged. A document the page no longer holds
+ * (deleted, or now outside the filters) goes; one the sky did not have arrives.
+ */
+export function spliceDocuments(m: UniverseModel, page: GraphSnapshot, docIds: ReadonlySet<string>): UniverseModel {
+  const fresh = emptyModel();
+  addPage(fresh, modelToPage(m, (d) => !docIds.has(m.doc.id[d])));
+  addPage(fresh, page);
+  fresh.version = m.version + 1;
+  Object.assign(m, fresh);
+  return m;
+}

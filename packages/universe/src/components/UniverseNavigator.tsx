@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LoomcycleClient } from "@loomcycle/client";
 import { createLoomcycleClient, type Connection } from "../lib/createClient";
 import { dataLayerFromClient, type UniverseDataLayer } from "../lib/dataLayer";
-import { addPage, emptyModel, refreshEdges, type ModelEdge, type UniverseModel } from "../lib/model";
+import { addPage, emptyModel, refreshEdges, spliceDocuments, type ModelEdge, type UniverseModel } from "../lib/model";
 import { computeLayout, type Layout } from "../lib/layout";
 import { projectionFrame, toFrame } from "../lib/projection";
 import { adjacencyOf, neighbourhood } from "../lib/lod";
@@ -50,6 +50,13 @@ export interface UniverseNavigatorProps extends UniverseDataSource {
 }
 
 const PAGE_DOCUMENTS = 500;
+// Live updates: changes arriving within this window are re-read together.
+const LIVE_BATCH_MS = 400;
+// Without the feed, coming back to the tab after this long reloads the sky.
+const STALE_AFTER_MS = 60_000;
+// After a clean end of the feed (a server restart, a network drop), resync.
+const FEED_RESYNC_MS = 5_000;
+const SNAPSHOT_INCLUDE = ["documents", "chunks", "edges", "dirents", "facts", "projection"] as const;
 const PUBLISH_EVERY_MS = 1500;
 const ANIMATE_KEY = "loomcycle.universe.animate";
 
@@ -66,7 +73,7 @@ export function useUniverseDataLayer(src: UniverseDataSource): UniverseDataLayer
   return useMemo<UniverseDataLayer | null>(() => {
     if (dataLayer) return dataLayer;
     if (client) return dataLayerFromClient(client);
-    if (connection) return dataLayerFromClient(createLoomcycleClient(connection));
+    if (connection) return dataLayerFromClient(createLoomcycleClient(connection), connection);
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataLayer, client, connection?.baseUrl, connection?.token, connection?.fetch]);
@@ -89,8 +96,12 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
   const [loading, setLoading] = useState<{ docs: number; done: boolean; error?: string }>({ docs: 0, done: false });
   const [glError, setGlError] = useState<string | null>(null);
   const [selected, setSelected] = useState<number[]>([]);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   const [results, setResults] = useState<ResultRow[]>([]);
   const [checked, setChecked] = useState<ReadonlySet<number>>(() => new Set());
+  const checkedRef = useRef(checked);
+  checkedRef.current = checked;
   const [depth, setDepth] = useState(1);
   const [dimOthers, setDimOthers] = useState(true);
   const [animate, setAnimate] = useState(readAnimate);
@@ -122,6 +133,12 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
   const loadSeqRef = useRef(0);
   loadSeqRef.current = loadSeq;
   const pendingView = useRef<{ state: UniverseViewState; afterSeq: number } | null>(null);
+  // Live updates (the member-safe change feed): "live" while frames flow,
+  // "off" when the server captures no changes or the host offers no feed.
+  const [live, setLive] = useState<"live" | "off">("off");
+  const [resync, setResync] = useState(0);
+  const loadedAt = useRef(0);
+  const loadDone = useRef(false);
 
   const browseKey = `${browse?.scopeId ?? ""}|${browse?.tenant ?? ""}`;
 
@@ -208,6 +225,7 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
     setChecked(new Set());
     setVersion((v) => v + 1);
     setLoading({ docs: 0, done: false });
+    loadDone.current = false;
     let lastPublish = 0;
     (async () => {
       let cursor: string | undefined;
@@ -215,7 +233,7 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
         const page = await data.graphSnapshot(
           {
             scope,
-            include: ["documents", "chunks", "edges", "dirents", "facts", "projection"],
+            include: [...SNAPSHOT_INCLUDE],
             page_documents: PAGE_DOCUMENTS,
             // Proposed links draw dashed and can be ruled on from the map.
             include_proposed: true,
@@ -242,7 +260,11 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
           // A refit moved the frame mid-load: load once more in one frame.
           setRefitReload((n) => (n < 1 ? n + 1 : n));
         }
-        if (!cursor) setLoadSeq((n) => n + 1);
+        if (!cursor) {
+          setLoadSeq((n) => n + 1);
+          loadDone.current = true;
+          loadedAt.current = Date.now();
+        }
         if (!cursor) {
           if (!typeFilter && !statusFilter)
             setChoices({
@@ -259,7 +281,7 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
     return () => ac.abort();
     // browse by its primitives (browseKey) so an inline object does not reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, scope, browseKey, underPath, reloadToken, typeFilter, statusFilter, refitReload]);
+  }, [data, scope, browseKey, underPath, reloadToken, typeFilter, statusFilter, refitReload, resync]);
 
   const layout = useMemo<Layout>(() => computeLayout(modelRef.current), [version]);
   const adjacency = useMemo(() => adjacencyOf(modelRef.current), [version]);
@@ -423,6 +445,106 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
     await data.reviewLink({ scope, id: edge.id, verdict, reason }, browse);
     await refreshDocs([...new Set([edge.fromDocId, edge.toDocId])].filter(Boolean));
   };
+
+  // ---- live updates ----
+  // The feed opens with each load (it starts at the head, so nothing written
+  // during the load is missed); changes queue until the load is done, then the
+  // documents they name are re-read and spliced in place, coalesced.
+  useEffect(() => {
+    if (!data?.documentFeed || scope === "agent") {
+      setLive("off");
+      return;
+    }
+    const ac = new AbortController();
+    const pending = new Set<string>();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let fatal = false;
+    const flush = async () => {
+      timer = undefined;
+      if (!loadDone.current) {
+        timer = setTimeout(flush, LIVE_BATCH_MS);
+        return;
+      }
+      const ids = [...pending];
+      pending.clear();
+      for (let i = 0; i < ids.length && !ac.signal.aborted; i += 500) {
+        const batch = ids.slice(i, i + 500);
+        const page = await data.graphSnapshot(
+          {
+            scope,
+            document_ids: batch,
+            include: [...SNAPSHOT_INCLUDE],
+            include_proposed: true,
+            under_path: underPath,
+            types: typeFilter ? [typeFilter] : undefined,
+            statuses: statusFilter ? [statusFilter] : undefined,
+            page_documents: batch.length,
+          },
+          browse,
+          ac.signal,
+        );
+        if (ac.signal.aborted) return;
+        const m = modelRef.current;
+        // Stars are chunk indexes, which a splice renumbers: carry the
+        // selection, the checked hits and the result list across by id.
+        const idOf = (c: number) => (c >= 0 && c < m.chunkCount ? m.chunk.id[c] : "");
+        const selIds = selectedRef.current.map(idOf);
+        const checkedIds = [...checkedRef.current].map(idOf);
+        spliceDocuments(m, page, new Set(batch));
+        const back = (id: string) => (id ? (m.chunkIndex.get(id) ?? -1) : -1);
+        setSelected(selIds.map(back).filter((c) => c >= 0));
+        setChecked(new Set(checkedIds.map(back).filter((c) => c >= 0)));
+        setResults((rs) => rs.map((r) => ({ ...r, chunk: back(r.chunkId) })));
+        setLinkFrom(null);
+        setLinkTo(null);
+        setHover(null);
+        if (m.projection.mixedBasis) setRefitReload((n) => n + 1);
+        setVersion((v) => v + 1);
+      }
+    };
+    (async () => {
+      for await (const f of data.documentFeed!(scope, browse, ac.signal)) {
+        if (f.kind === "feed") setLive(f.enabled ? "live" : "off");
+        else if (f.kind === "change") {
+          pending.add(f.documentId);
+          if (!timer) timer = setTimeout(() => void flush().catch(() => setResync((n) => n + 1)), LIVE_BATCH_MS);
+        } else if (f.code !== "store_unavailable") {
+          // Refused (an old runtime without the route, a revoked credential):
+          // stop, and fall back to reloading on return to the tab.
+          fatal = true;
+          setLive("off");
+          return;
+        }
+      }
+      // A clean end (the server restarted, the network dropped): no cursor to
+      // resume from, so reload the sky and open a new stream.
+      if (!ac.signal.aborted && !fatal) setTimeout(() => setResync((n) => n + 1), FEED_RESYNC_MS);
+    })().catch(() => {
+      if (!ac.signal.aborted) setLive("off");
+    });
+    return () => {
+      ac.abort();
+      if (timer) clearTimeout(timer);
+    };
+    // The feed restarts with every load (the same keys as the load effect).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, scope, browseKey, underPath, reloadToken, typeFilter, statusFilter, refitReload, resync]);
+
+  // Without live updates, a reader coming back to the tab after a while gets a
+  // fresh sky rather than a stale one.
+  useEffect(() => {
+    if (live === "live") return;
+    const onBack = () => {
+      if (document.visibilityState === "visible" && loadDone.current && Date.now() - loadedAt.current > STALE_AFTER_MS)
+        setResync((n) => n + 1);
+    };
+    document.addEventListener("visibilitychange", onBack);
+    window.addEventListener("focus", onBack);
+    return () => {
+      document.removeEventListener("visibilitychange", onBack);
+      window.removeEventListener("focus", onBack);
+    };
+  }, [live]);
 
   // ---- saved views ----
   const currentView = (): UniverseViewState => {
@@ -649,6 +771,8 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
             ? "load failed"
             : loading.done
               ? `${m.docCount} documents · ${m.chunkCount} chunks${m.edgesTruncated ? " · links capped" : ""}${
+                  live === "live" ? " · live" : ""
+                }${
                   effectiveMode === "meaning" ? ` · ${m.projection.placed} placed` : ""
                 }`
               : `loading… ${loading.docs} documents`}
