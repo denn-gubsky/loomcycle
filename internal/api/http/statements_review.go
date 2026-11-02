@@ -2,8 +2,9 @@ package http
 
 // statements_review.go — the statement review queue, bulk rulings and their
 // undo (RFC FS P0): GET /v1/_statements/review, POST /v1/_statements/rule,
-// POST /v1/_statements/revert and GET /v1/_statements/rulings; and the review
-// policy applied over the queue (RFC FS P2): POST /v1/_statements/apply_policy.
+// POST /v1/_statements/revert and GET /v1/_statements/rulings; the review
+// policy applied over the queue (RFC FS P2): POST /v1/_statements/apply_policy;
+// and the judge's agreement report (RFC FS P4): GET /v1/_statements/agreement.
 // With the shared connector methods every transport's review goes through.
 //
 // The queue and the rulings live in the Document (builtin.ListReviewQueue,
@@ -236,6 +237,19 @@ func (s *Server) handleStatementRulings(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, res)
 }
 
+// handleStatementAgreement serves GET /v1/_statements/agreement: per kind, the
+// judge agent's acceptances and what people made of the audit sample (?scope,
+// ?scope_id, ?tenant).
+func (s *Server) handleStatementAgreement(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	res, err := s.JudgeAgreement(r.Context(), connector.JudgeAgreementRequest{Tenant: q.Get("tenant"), Scope: q.Get("scope"), ScopeID: q.Get("scope_id")})
+	if err != nil {
+		writeStatementReviewError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 // handleStatementApplyPolicy serves POST /v1/_statements/apply_policy; the
 // body is connector.ApplyReviewPolicyRequest, its filter's time bounds taken as
 // for a ruling. An admin may focus another tenant with ?tenant=.
@@ -433,6 +447,34 @@ func (s *Server) ListRulings(ctx context.Context, req connector.ListRulingsReque
 		return connector.ListRulingsResult{}, err
 	}
 	res, err := s.ontologyDocument().ListRulings(dctx, scope, req, as)
+	res.Tenant = tenant
+	return res, err
+}
+
+// JudgeAgreement is the judge's agreement report. It is an operator's: how
+// well the judge does is a question about the tenant's policy, and its counts
+// span documents a member may not read.
+func (s *Server) JudgeAgreement(ctx context.Context, req connector.JudgeAgreementRequest) (connector.JudgeAgreementResult, error) {
+	as, _, err := reviewer(ctx)
+	if err == nil && as != builtin.RuleAsOperator {
+		err = connector.WithMessage(connector.ErrStatementReviewForbidden, "the judge's agreement report is for an operator")
+	}
+	if err != nil {
+		return connector.JudgeAgreementResult{}, err
+	}
+	scope, err := reviewScope(req.Scope)
+	if err != nil {
+		return connector.JudgeAgreementResult{}, err
+	}
+	if s.store == nil || s.sqlMem == nil {
+		return connector.JudgeAgreementResult{}, connector.WithMessage(connector.ErrStatementReviewUnavailable,
+			"the agreement report needs SQL Memory; none is configured")
+	}
+	dctx, tenant, err := s.reviewCtx(ctx, as, req.Tenant, scope, req.ScopeID)
+	if err != nil {
+		return connector.JudgeAgreementResult{}, err
+	}
+	res, err := s.ontologyDocument().JudgeAgreement(dctx, scope)
 	res.Tenant = tenant
 	return res, err
 }

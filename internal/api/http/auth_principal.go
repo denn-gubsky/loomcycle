@@ -1349,7 +1349,7 @@ func requiredScopeFor(method, path string) string {
 	// The policy's application (apply_policy) is an operator's alone; the
 	// connector refuses a member, on every transport alike.
 	case path == "/v1/_statements/review" || path == "/v1/_statements/rule" || path == "/v1/_statements/revert" ||
-		path == "/v1/_statements/rulings" || path == "/v1/_statements/apply_policy":
+		path == "/v1/_statements/rulings" || path == "/v1/_statements/apply_policy" || path == "/v1/_statements/agreement":
 		return auth.ScopeTenant
 	// RFC AS: the Web UI schedules surface (list-all + per-def state / run-now /
 	// pause / resume). list-all is tenant-scoped (the handler filters substrate

@@ -125,3 +125,28 @@ func TestJudge_RoutingAuditAndRulingAlikeOnEveryTransport(t *testing.T) {
 		}
 	}
 }
+
+// GET /v1/_statements/agreement counts the judge's acceptances and the audit
+// sample a person settled. It is an operator's: a member is refused.
+func TestJudge_AgreementReportOverHTTP(t *testing.T) {
+	e := newEnv(t)
+	e.installPolicy("judge_audit: 1\n- judge kind:elaborates\n- human *\n")
+	if real := e.applyHTTP(operator, map[string]any{"dry_run": false, "expect_count": e.applyHTTP(operator, map[string]any{}).result["matched"]}); !real.ok {
+		t.Fatalf("application refused: %s %s", real.code, real.raw)
+	}
+	e.judgeRun("run-judge-agree", fmt.Sprintf(`[{"id":%q,"verdict":"accept","confidence":0.95,"rationale":"the quotes show it"}]`, e.elaborates))
+	if o := e.ruleHTTP(operator, map[string]any{"action": "reject", "ids": []string{e.elaborates}, "reason": "another article", "dry_run": false, "expect_count": 1}); !o.ok || o.result["ruled"] != float64(1) {
+		t.Fatalf("overturn refused: %s %s", o.code, o.raw)
+	}
+	o := httpOutcome(e.do(http.MethodGet, "/v1/_statements/agreement", operator, "", nil))
+	if !o.ok {
+		t.Fatalf("agreement refused: %s %s", o.code, o.raw)
+	}
+	total, _ := o.result["total"].(map[string]any)
+	if total["accepted"] != float64(1) || total["sampled"] != float64(1) || total["overturned"] != float64(1) || total["agreement"] != float64(0) {
+		t.Errorf("total = %v, want one sampled acceptance, overturned, agreement 0", total)
+	}
+	if m := httpOutcome(e.do(http.MethodGet, "/v1/_statements/agreement", member, "", nil)); m.ok || m.code != "forbidden" {
+		t.Errorf("a member read the agreement report: ok=%v code %q (%s)", m.ok, m.code, m.raw)
+	}
+}

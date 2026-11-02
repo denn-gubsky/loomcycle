@@ -4290,6 +4290,9 @@ func (s *Server) routes() *http.ServeMux {
 	// RFC FS P2: the review policy applied over the queue. The same gate; the
 	// connector admits only an operator.
 	mux.Handle("POST /v1/_statements/apply_policy", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleStatementApplyPolicy))))
+	// RFC FS P4: the judge's agreement report. The same gate; the handler
+	// admits only an operator.
+	mux.Handle("GET /v1/_statements/agreement", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleStatementAgreement))))
 	// RFC BK P3: resident interactive sub-agent visibility + operator control.
 	// GET lists (tenant-scoped); POST close/cancel act on one (tenant-gated).
 	// Per-replica (the resident registry is in-process). Scope-gated in

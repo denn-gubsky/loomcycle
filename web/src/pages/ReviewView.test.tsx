@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  getJudgeAgreement,
   listReviewQueue,
   listRulings,
   revertRuling,
@@ -14,6 +15,7 @@ import {
 import { ApiError } from "../lib/apiError";
 import { groupsFromSummary } from "../lib/review";
 import {
+  JudgeAgreement,
   noReviewRights,
   ReviewGroupList,
   ReviewNoRights,
@@ -85,6 +87,21 @@ describe("the queue table", () => {
     expect(open).toContain("an amending act, not the law");
     expect(open).toContain(`${"x".repeat(200)}”`);
     expect(open).toContain('href="/documents/d2?scope=user"');
+  });
+
+  it("offers Confirm and Overturn on a judge's acceptance awaiting audit, and only there", () => {
+    const pending = row({ status: "asserted", attributes: { judge: { verdict: "accept", confidence: 0.95, audited: "pending" } } });
+    const settled = row({ id: "s2", status: "asserted", attributes: { judge: { verdict: "accept", audited: "confirmed" } } });
+    const props = { scope: "tenant" as const, selected: none, expanded: none, onRuleOne: () => {} };
+    const out = html(createElement(ReviewRows, { rows: [pending], ...props }));
+    expect(out).toContain('class="review-audit pending"');
+    expect(out).toContain(">Confirm<");
+    expect(out).toContain(">Overturn…<");
+    const done = html(createElement(ReviewRows, { rows: [settled], ...props }));
+    expect(done).toContain("audit: confirmed");
+    expect(done).not.toContain(">Confirm<");
+    // A proposal is ruled with the page's own accept / reject, not as an audit.
+    expect(html(createElement(ReviewRows, { rows: [row()], ...props }))).not.toContain("review-audit");
   });
 
   it("marks the focused and the selected rows", () => {
@@ -234,6 +251,45 @@ describe("the review calls", () => {
     expect(Object.fromEntries(u.searchParams)).toEqual({ limit: "10", after: "c1", scope: "user", scope_id: "bob" });
     await listRulings({ scope: "tenant", scopeId: "bob" });
     expect(f.mock.calls[3][0]).toBe("/v1/_statements/rulings");
+  });
+});
+
+describe("the judge's agreement report", () => {
+  const counts = (kind: string, over = {}) => ({ kind, accepted: 0, sampled: 0, pending: 0, confirmed: 0, overturned: 0, ...over });
+
+  it("lists each kind and the total, with the rate over the settled sample", () => {
+    const out = html(
+      createElement(JudgeAgreement, {
+        report: {
+          tenant: "acme",
+          scope: "tenant",
+          kinds: [counts("elaborates", { accepted: 12, sampled: 4, pending: 1, confirmed: 2, overturned: 1, agreement: 2 / 3 }), counts("repeals", { accepted: 3 })],
+          total: counts("", { accepted: 15, sampled: 4, pending: 1, confirmed: 2, overturned: 1, agreement: 2 / 3 }),
+        },
+        onAudit: () => {},
+      }),
+    );
+    expect(out).toContain("<code>elaborates</code>");
+    expect(out).toContain("67%");
+    expect(out).toContain("all kinds");
+    expect(out).toContain("Audit the 1 pending");
+    // No settled sample yet: no rate, not 0%.
+    expect(out).toMatch(/<code>repeals<\/code><\/td><td>3<\/td><td>0<\/td><td>0<\/td><td>0<\/td><td>0<\/td><td>—<\/td>/);
+  });
+
+  it("says when the judge has accepted nothing", () => {
+    const out = html(createElement(JudgeAgreement, { report: { tenant: "acme", scope: "tenant", kinds: [], total: counts("") } }));
+    expect(out).toContain("accepted nothing");
+    expect(out).not.toContain("<table");
+  });
+
+  it("asks GET /v1/_statements/agreement where the review acts", async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify({ kinds: [], total: {} }), { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    await getJudgeAgreement({ scope: "user", scopeId: "bob", tenant: "globex" });
+    const u = new URL(String((f.mock.calls[0] as unknown[])[0]), "http://x");
+    expect(u.pathname).toBe("/v1/_statements/agreement");
+    expect(Object.fromEntries(u.searchParams)).toEqual({ scope: "user", scope_id: "bob", tenant: "globex" });
   });
 });
 

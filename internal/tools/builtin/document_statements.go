@@ -1601,6 +1601,11 @@ func auditedAttributes(s *statementRow, accept bool, ruledBy string, now int64) 
 			rec[k] = v
 		}
 	}
+	// The sample was marked pending; a person settling it is what the
+	// agreement report counts, so the mark of having been sampled is kept.
+	if rec["audited"] == judgeAuditPending {
+		rec["sampled"] = true
+	}
 	rec["audited"], rec["audited_by"], rec["audited_at"] = judgeAuditOverturned, ruledBy, now
 	if accept {
 		rec["audited"] = judgeAuditConfirmed
