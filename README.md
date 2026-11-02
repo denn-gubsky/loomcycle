@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.134.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.135.0.</em>
 </p>
 
 <p align="center">
@@ -201,17 +201,19 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.134.0) completes statement review: an operator-only
-judge agreement report counts how often a person's audit of the judge's sampled
-acceptances confirmed it, and the Review page works through that sample. A
-tenant member's single ruling now needs the `review` grant, as a bulk ruling
-does, and a concept tag decided by the neighbours' vote no longer counts as
-rule-matched. See [`REVISIONS.md`](REVISIONS.md).
-
-Before it, v1.133.0 made proposed relations reviewable in bulk: a review queue,
-bulk rulings with undo, a `review` access action, a Review page, review policies
-in the tenant ontology, and a judge agent with a sampled human audit. See
+The most recent line (v1.135.0) draws a document scope as a 3D star map: a
+paged, access-filtered `graph_snapshot` of every document, chunk tree,
+relation and Path name; a server-side map of chunk embeddings (PCA, or UMAP)
+whose vectors never leave the runtime; the `@loomcycle/universe` navigator in
+the Web UI's document explorer, with link review and authoring, saved views
+and live updates from a new member-safe document change feed
+(`GET /v1/_document/feed`). It also adds `copy_documents` between scopes, an
+ODT reader, and Markdown tables recovered from PDFs. See
 [`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.134.0 completed statement review: a judge agreement report and a
+judge audit on the Review page, and a member's single ruling now needs the
+`review` grant. See [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
 recordings into timed transcripts through a whisper server, and Teams captions
