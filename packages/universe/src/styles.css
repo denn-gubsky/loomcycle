@@ -1,0 +1,279 @@
+/* @loomcycle/universe styles. Scoped under `.loomcycle-universe`; colours come
+   from the host's alias tokens (--bg/--fg/--border/--accent, as the explorer and
+   the Web UI define them) with dark fallbacks, so the map themes with its host.
+   The sky itself is a gradient behind a transparent canvas. */
+
+.loomcycle-universe {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  color: var(--fg, #e6e6e6);
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: var(--lc-text-sm, 13px);
+}
+.loomcycle-universe *,
+.loomcycle-universe *::before,
+.loomcycle-universe *::after {
+  box-sizing: border-box;
+}
+.loomcycle-universe-root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.loomcycle-universe .lu-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border, #2a2e3a);
+  flex-wrap: wrap;
+}
+.loomcycle-universe button,
+.loomcycle-universe select,
+.loomcycle-universe input[type="search"] {
+  font: inherit;
+  color: inherit;
+  background: var(--bg-soft, #161922);
+  border: 1px solid var(--border, #2a2e3a);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+.loomcycle-universe button:hover:not(:disabled) {
+  border-color: var(--accent, #56c596);
+}
+.loomcycle-universe button:disabled {
+  opacity: 0.45;
+}
+.loomcycle-universe .lu-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-soft, #9aa0ad);
+}
+.loomcycle-universe .lu-status {
+  margin-left: auto;
+  color: var(--fg-muted, #888);
+  font-size: var(--lc-text-xs, 12px);
+  white-space: nowrap;
+}
+
+.loomcycle-universe .lu-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 240px;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 38%, #141d33 0%, #0a0e1a 55%, #05070d 100%);
+}
+.loomcycle-universe .lu-stage.lu-light {
+  background: radial-gradient(ellipse at 50% 38%, #ffffff 0%, #eef1f6 60%, #e2e7ef 100%);
+}
+.loomcycle-universe .lu-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+.loomcycle-universe .lu-canvas:active {
+  cursor: grabbing;
+}
+
+.loomcycle-universe .lu-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.loomcycle-universe .lu-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  margin: 8px 0 0 8px;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.2;
+  color: rgba(225, 232, 245, 0.78);
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+  will-change: transform;
+}
+.loomcycle-universe .lu-label--dir {
+  color: rgba(190, 205, 235, 0.85);
+  font-weight: 600;
+}
+.loomcycle-universe .lu-label--formation {
+  margin: 0;
+  translate: -50% -100%;
+  color: rgba(160, 175, 210, 0.55);
+  font-family: var(--lc-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+.loomcycle-universe .lu-label--chunk {
+  color: rgba(200, 208, 222, 0.6);
+  font-size: 10px;
+}
+.loomcycle-universe .lu-label--selected {
+  color: #fff;
+  font-weight: 600;
+  font-size: 12px;
+}
+.loomcycle-universe .lu-light .lu-label {
+  color: rgba(30, 36, 48, 0.8);
+  text-shadow: 0 0 3px rgba(255, 255, 255, 0.95);
+}
+.loomcycle-universe .lu-light .lu-label--selected {
+  color: #000;
+}
+
+.loomcycle-universe .lu-tooltip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 9px;
+  pointer-events: none;
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a2e3a);
+  background: color-mix(in srgb, var(--bg-soft, #161922) 92%, transparent);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  font-size: var(--lc-text-xs, 12px);
+}
+.loomcycle-universe .lu-tooltip strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--lc-text-sm, 13px);
+}
+.loomcycle-universe .lu-tooltip span,
+.loomcycle-universe .lu-tooltip code {
+  color: var(--fg-soft, #9aa0ad);
+}
+.loomcycle-universe .lu-chip {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.loomcycle-universe .lu-legend {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: calc(100% - 16px);
+}
+.loomcycle-universe .lu-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--lc-text-xs, 12px);
+  background: color-mix(in srgb, var(--bg-soft, #161922) 85%, transparent);
+}
+.loomcycle-universe .lu-kind i {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+}
+.loomcycle-universe .lu-kind span {
+  color: var(--fg-muted, #888);
+}
+.loomcycle-universe .lu-kind--off {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.loomcycle-universe .lu-notice {
+  position: absolute;
+  inset: auto 12px 12px 12px;
+  z-index: 2;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a2e3a);
+  background: var(--bg-soft, #161922);
+  color: var(--fg-soft, #9aa0ad);
+}
+.loomcycle-universe .lu-notice--error {
+  border-color: var(--failed, #ff5d68);
+}
+
+.loomcycle-universe .lu-search {
+  border-top: 1px solid var(--border, #2a2e3a);
+  display: flex;
+  flex-direction: column;
+  max-height: 40%;
+  min-height: 0;
+}
+.loomcycle-universe .lu-search-bar {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.loomcycle-universe .lu-search-bar input[type="search"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.loomcycle-universe .lu-search-err {
+  padding: 0 8px 6px;
+  color: var(--failed, #ff5d68);
+  font-size: var(--lc-text-xs, 12px);
+}
+.loomcycle-universe .lu-results {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 6px;
+  overflow: auto;
+  min-height: 0;
+}
+.loomcycle-universe .lu-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 4px;
+  border-radius: 6px;
+}
+.loomcycle-universe .lu-result:hover {
+  background: var(--bg-soft, #161922);
+}
+.loomcycle-universe .lu-result > button {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  border: none;
+  background: none;
+  padding: 2px 0;
+  text-align: left;
+  cursor: pointer;
+}
+.loomcycle-universe .lu-result-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.loomcycle-universe .lu-result-doc,
+.loomcycle-universe .lu-result-path,
+.loomcycle-universe .lu-result-score {
+  color: var(--fg-muted, #888);
+  font-size: var(--lc-text-xs, 12px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.loomcycle-universe .lu-result--off {
+  opacity: 0.55;
+}
