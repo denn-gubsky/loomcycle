@@ -36,15 +36,18 @@ const (
 	// share an embedding and so a PCA position), which the attractive force
 	// alone could never pull apart.
 	initJitter = 1e-4
-	// warmLearningRate and a third of the epochs are how a fit that starts from
-	// the previous map refines it (umap-learn's transform uses a quarter of the
-	// rate). Measured on 300 points in 15 clusters, refitting unchanged data from
-	// its own map moved chunks, after alignment, 0.35 of the map's radius at the
-	// full rate and epochs, 0.13 at a quarter of the rate and a third of the
-	// epochs, 0.05 at a tenth; and from a start where a fifth of 600 points
-	// (three whole new clusters among them) were k-NN placed, the last setting
-	// still brought 10-NN agreement from 0.93 back to the cold fit's 1.00.
-	warmLearningRate = 0.1
+	// warmLearningRate and a fifth of the epochs (warmEpochDivisor) are how a
+	// fit that starts from the previous map refines it (umap-learn's transform
+	// uses a quarter of the rate). Refitting unchanged data from its own map
+	// moved chunks, after alignment, 0.35 of the map's radius at the full rate
+	// and epochs (300 points, 15 clusters). Over 12 random corpora each, a tenth
+	// of the rate and a third of the epochs gave a worst case of 0.127 on 60
+	// points in 4 clusters (0.081 on 300 in 15); a twentieth and a fifth gave
+	// 0.070 (0.044). From a start where a fifth of 600 points (three whole new
+	// clusters among them) were k-NN placed, the gentle refinement still brought
+	// 10-NN agreement from 0.93 to 0.96–1.00.
+	warmLearningRate = 0.05
+	warmEpochDivisor = 5
 	// initPCASampleMax bounds the points the cold start's PCA axes are fitted on.
 	initPCASampleMax = 2000
 )
@@ -55,7 +58,7 @@ type UMAPOptions struct {
 	NNeighbors int
 	// MinDist is how tightly neighbours may pack on the map (default 0.1).
 	MinDist float64
-	// Epochs overrides the SGD length; 0 = by sample size (see Epochs), a third
+	// Epochs overrides the SGD length; 0 = by sample size (see Epochs), a fifth
 	// of that for a warm start.
 	Epochs int
 	// Seed fixes the negative sampling and the starting jitter.
@@ -139,7 +142,7 @@ func FitUMAP(vectors [][]float32, init [][3]float64, opts UMAPOptions) ([][3]flo
 	if epochs <= 0 {
 		epochs = Epochs(n)
 		if opts.WarmStart {
-			epochs = max(1, epochs/3)
+			epochs = max(1, epochs/warmEpochDivisor)
 		}
 	}
 	a, b := FitAB(opts.MinDist, 1)
