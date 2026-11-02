@@ -7,6 +7,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -169,6 +170,12 @@ type docACL struct {
 	// every document and no name is looked up.
 	pathSensitive bool
 	paths         map[string][]string // document id → its Path-tree names, loaded once
+	// indexed: names come from the reverse lookup (DirentListByDocuments), per
+	// document or primed in batches, instead of one listing of the whole tree.
+	// A caller that asks about a page of a large scope (graph_snapshot) turns it
+	// on; one that asks about most of the scope keeps the single listing.
+	indexed bool
+	byDoc   map[string][]string // indexed mode: document id → names (nil = none), as asked
 }
 
 // newDocACL returns the caller's set for this scope, or nil when there is none.
@@ -220,8 +227,51 @@ func (a *docACL) scope(ctx context.Context, op, verb, scope string) *tools.Resul
 	return nil
 }
 
+// useIndex switches name lookups to the reverse index. Nil-safe.
+func (a *docACL) useIndex() {
+	if a != nil {
+		a.indexed = true
+	}
+}
+
+// primeNames fetches, in one indexed lookup per batch, the names of the given
+// documents not asked about yet, so a page's readability checks cost one query
+// rather than one per document. A no-op unless indexed and path-sensitive (only
+// then is a name ever asked for).
+func (a *docACL) primeNames(ctx context.Context, docIDs []string) error {
+	if a == nil || !a.indexed || !a.pathSensitive {
+		return nil
+	}
+	var missing []string
+	for _, id := range docIDs {
+		if _, known := a.byDoc[id]; !known && id != "" {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	names, err := a.d.namesOfDocuments(ctx, a.key, missing)
+	if err != nil {
+		return err
+	}
+	if a.byDoc == nil {
+		a.byDoc = map[string][]string{}
+	}
+	for _, id := range missing {
+		a.byDoc[id] = names[id]
+	}
+	return nil
+}
+
 // namesOf returns the Path-tree names of a document in this scope.
 func (a *docACL) namesOf(ctx context.Context, docID string) ([]string, error) {
+	if a.indexed {
+		if err := a.primeNames(ctx, []string{docID}); err != nil {
+			return nil, err
+		}
+		return a.byDoc[docID], nil
+	}
 	if a.paths == nil {
 		paths, err := a.d.documentNames(ctx, a.key)
 		if err != nil {
@@ -232,12 +282,18 @@ func (a *docACL) namesOf(ctx context.Context, docID string) ([]string, error) {
 	return a.paths[docID], nil
 }
 
-// documentNames maps each document of the scope to its Path-tree names.
-func (d *Document) documentNames(ctx context.Context, key sqlmem.ScopeKey) (map[string][]string, error) {
-	rows, err := d.Store.DirentListUnder(ctx, direntTenant(ctx), key.Scope, direntScopeID(key), "/")
+// namesOfDocuments maps each of the given documents to its Path-tree names
+// through the reverse index; a document with no name is absent.
+func (d *Document) namesOfDocuments(ctx context.Context, key sqlmem.ScopeKey, docIDs []string) (map[string][]string, error) {
+	rows, err := d.Store.DirentListByDocuments(ctx, direntTenant(ctx), key.Scope, direntScopeID(key), docIDs)
 	if err != nil {
 		return nil, err
 	}
+	return namesByDocument(rows), nil
+}
+
+// namesByDocument groups document dirents by the document they name.
+func namesByDocument(rows []store.DirentRow) map[string][]string {
 	paths := map[string][]string{}
 	for _, r := range rows {
 		if r.Kind != "document" {
@@ -251,7 +307,16 @@ func (d *Document) documentNames(ctx context.Context, key sqlmem.ScopeKey) (map[
 			paths[ref.DocumentID] = append(paths[ref.DocumentID], r.ParentPath+r.Name)
 		}
 	}
-	return paths, nil
+	return paths
+}
+
+// documentNames maps each document of the scope to its Path-tree names.
+func (d *Document) documentNames(ctx context.Context, key sqlmem.ScopeKey) (map[string][]string, error) {
+	rows, err := d.Store.DirentListUnder(ctx, direntTenant(ctx), key.Scope, direntScopeID(key), "/")
+	if err != nil {
+		return nil, err
+	}
+	return namesByDocument(rows), nil
 }
 
 // permits is readable's question for any verb: whether the set allows verb on

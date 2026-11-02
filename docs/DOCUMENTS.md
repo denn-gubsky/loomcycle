@@ -172,10 +172,13 @@ document. It carries titles and metadata, never bodies.
   (`chunks` → `documents`; `edges`, `facts`, `projection` → `chunks`).
 - **Paging.** Documents in id order, `page_documents` (default 200, at most
   1000 — lowered, never refused) per page, always whole documents. Pass
-  `page.next_cursor` back as `cursor` until it is absent. If the SQL Memory
+  `page.next_cursor` back as `after` until it is absent. If the SQL Memory
   row cap (`LOOMCYCLE_SQLMEM_MAX_ROWS`) cuts the chunk read, the page keeps the
   documents it read whole and reports `page.clamped_to`; a single document
   larger than the cap is refused.
+- **Cost.** A page reads its own documents' Path names through a reverse
+  index (document id → names), so its cost follows the page, not the scope's
+  Path tree; only the first page lists the tree, for its `dirents` section.
 - **Shape.** Each section is parallel arrays (position `i` of each describes
   one item). `*_idx` columns are positions in another section of the same
   answer; `*_code` columns are positions in `codes` (`types`, `statuses`,

@@ -26,6 +26,10 @@ func (s *Store) DirentListUnder(ctx context.Context, tenantID, scope, scopeID, p
 	return sqlshared.DirentListUnder(ctx, s.shared(), tenantID, scope, scopeID, prefix)
 }
 
+func (s *Store) DirentListByDocuments(ctx context.Context, tenantID, scope, scopeID string, documentIDs []string) ([]store.DirentRow, error) {
+	return sqlshared.DirentListByDocuments(ctx, s.shared(), tenantID, scope, scopeID, documentIDs)
+}
+
 func (s *Store) DirentDelete(ctx context.Context, tenantID, scope, scopeID, parentPath, name string) (bool, error) {
 	return sqlshared.DirentDelete(ctx, s.shared(), tenantID, scope, scopeID, parentPath, name)
 }

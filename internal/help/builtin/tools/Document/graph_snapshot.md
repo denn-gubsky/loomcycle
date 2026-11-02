@@ -7,7 +7,7 @@ documents, every chunk of each one as a tree, the relations between chunks,
 the Path-tree names, and which chunks are facts. It carries titles and
 metadata, never bodies — it is for drawing or mirroring a scope, not for
 reading text (use `get_chunk`, `export_md` or `search` for that). A page always
-holds whole documents; page on with `cursor` until `page.next_cursor` is absent.
+holds whole documents; page on with `after` until `page.next_cursor` is absent.
 
 ## Arguments
 
@@ -27,7 +27,8 @@ holds whole documents; page on with `cursor` until `page.next_cursor` is absent.
   nanoseconds). Documents and chunks are not filtered by it.
 - `page_documents` — documents per page: default 200, at most 1000 (a larger
   value is lowered, never refused).
-- `cursor` — the previous page's `page.next_cursor`.
+- `after` — the previous page's `page.next_cursor` (the name `get_edges` and
+  `list_statements` page with).
 - `edge_budget` — the most relations one page returns: default 50000, at most
   200000.
 
@@ -69,8 +70,8 @@ cursor are what they would be if it did not exist.
 
 - `graph_snapshot: unknown include ...` / `include "edges" needs "chunks"` —
   fix `include`.
-- `graph_snapshot: cursor is not a cursor this op returned` — pass
-  `page.next_cursor` unchanged, or drop `cursor` to start over.
+- `graph_snapshot: after is not a cursor this op returned` — pass
+  `page.next_cursor` unchanged as `after`, or drop `after` to start over.
 - `graph_snapshot: document ... has more chunks than one SQL Memory query may
   return` — one document is larger than the operator's row cap; read it with
   `export_md`.
@@ -90,5 +91,5 @@ The first page of everything in the tenant scope:
 The next page, documents and chunks only, under `/kb`:
 
 ```json
-{"op": "graph_snapshot", "scope": "tenant", "under_path": "/kb", "include": ["documents", "chunks"], "page_documents": 100, "cursor": "eyJkIjoiYjQ0MDdiNTIyZGMxMTQ5NWQzZGUzNzEzMTFkYjE3ZjAifQ"}
+{"op": "graph_snapshot", "scope": "tenant", "under_path": "/kb", "include": ["documents", "chunks"], "page_documents": 100, "after": "eyJkIjoiYjQ0MDdiNTIyZGMxMTQ5NWQzZGUzNzEzMTFkYjE3ZjAifQ"}
 ```

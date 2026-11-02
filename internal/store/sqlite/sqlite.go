@@ -1412,6 +1412,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at   INTEGER NOT NULL,
 			PRIMARY KEY (tenant_id, scope, scope_id, parent_path, name)
 		)`,
+		// The reverse of a dirent (RFC FQ): which names a document has. An
+		// expression index, so no column and no writer has to keep it current;
+		// sqlshared.direntDocumentID must spell the expression identically.
+		`CREATE INDEX IF NOT EXISTS dirents_document_id ON dirents (tenant_id, scope, scope_id, json_extract(resource_ref, '$.document_id')) WHERE kind = 'document'`,
 		// RFC AH Phase 2b — ephemeral (run-tree-scoped) volumes. SEPARATE
 		// from volume_defs: PK (root_run_id, name), NOT (tenant_id, name) —
 		// two concurrent runs (any tenant) can each own a `work` volume with

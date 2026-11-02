@@ -1140,7 +1140,7 @@ class LoomcycleClient:
 
         ``op="graph_snapshot"`` exports a whole scope's documents, chunk trees,
         relations, Path names and fact flags as parallel columns, paged by
-        whole documents: pass ``page["next_cursor"]`` back as ``cursor`` until
+        whole documents: pass ``page["next_cursor"]`` back as ``after`` until
         it is absent. ``include`` picks the sections; ``under_path``,
         ``document_ids``, ``chunk_ids``, ``types``, ``statuses``, ``tag`` and
         ``tag_prefix`` select documents; ``page_documents`` and ``edge_budget``
