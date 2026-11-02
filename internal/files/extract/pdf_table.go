@@ -204,6 +204,9 @@ func finite(fs ...float64) bool {
 type pdfBlock struct {
 	text  string
 	table [][]string // rendered cells; the first row is the header
+	// aligned marks a table read from text aligned in columns rather than
+	// from drawn borders.
+	aligned bool
 	// nchars counts the text's characters, whitespace excluded.
 	nchars int
 }
@@ -244,8 +247,35 @@ func (p *pdfPage) blocks() ([]pdfBlock, bool) {
 			p.rulesOver = true
 		}
 	}
+	// The text outside the borders' tables is read for columns, under one
+	// work budget for the page; a page whose lines were too many to read is
+	// not, as the report says no tables were looked for there.
+	var flowBudget *gridBudget
+	if !p.rulesOver {
+		work := p.e.gridWork
+		if work <= 0 {
+			work = maxPDFGridWork
+		}
+		flowBudget = &gridBudget{left: work}
+	}
+	flow := func(runs []pdfRun) []pdfBlock {
+		if flowBudget == nil || p.denseText {
+			if t := assemble(runs); t != "" {
+				return []pdfBlock{textBlock(t)}
+			}
+			return nil
+		}
+		bs, ok := flowBlocks(runs, flowBudget)
+		if !ok {
+			p.denseText = true
+		}
+		return bs
+	}
 	if len(tables) == 0 {
-		return []pdfBlock{textBlock(assemble(p.runs))}, p.cut
+		if p.rulesOver {
+			return []pdfBlock{textBlock(assemble(p.runs))}, p.cut
+		}
+		return flow(p.runs), p.cut
 	}
 	sort.SliceStable(tables, func(i, j int) bool { return tables[i].mid > tables[j].mid })
 	inTable := make([]bool, len(p.runs))
@@ -256,20 +286,18 @@ func (p *pdfPage) blocks() ([]pdfBlock, bool) {
 	}
 	// The text between tables: each run goes before the first table whose
 	// middle is below it.
-	flow := make([][]pdfRun, len(tables)+1)
+	between := make([][]pdfRun, len(tables)+1)
 	for i, r := range p.runs {
 		if inTable[i] {
 			continue
 		}
 		cy := runCentreY(r)
 		k := sort.Search(len(tables), func(k int) bool { return tables[k].mid <= cy })
-		flow[k] = append(flow[k], r)
+		between[k] = append(between[k], r)
 	}
 	var out []pdfBlock
-	for k := range flow {
-		if t := assemble(flow[k]); t != "" {
-			out = append(out, textBlock(t))
-		}
+	for k := range between {
+		out = append(out, flow(between[k])...)
 		if k < len(tables) {
 			out = append(out, pdfBlock{table: tables[k].rows, nchars: tables[k].nchars})
 		}

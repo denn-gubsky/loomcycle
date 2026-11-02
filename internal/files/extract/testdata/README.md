@@ -4,8 +4,8 @@ The `*.md` files are goldens: what an extractor writes for the fixture of the
 same name. Regenerate them with `go test ./internal/files/extract -update`.
 The DOCX, XLSX, PPTX and HTML fixtures, and most PDFs, are built in the tests
 (`fixtures_test.go`, `pdf_test.go` and the `pdftest` package), so they are
-reproducible from source. The two Chrome PDFs below are the only ones from a
-real producer.
+reproducible from source. The three Chrome PDFs below are the only ones from
+a real producer.
 
 ## chrome-board.pdf
 
@@ -50,3 +50,26 @@ paragraph after the table whose wide word gaps must stay prose.
 ```
 
 Like `chrome-board.pdf`, it is committed rather than regenerated.
+
+## chrome-borderless.pdf
+
+The same passport table printed the same way (2026-11-02) with no cell
+borders, from `chrome-borderless.html` below: the table is only text aligned
+in columns, read from the gaps between its cells and the column starts its
+lines share. The justified paragraph after it must stay prose.
+
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+      --disable-gpu --no-pdf-header-footer \
+      --print-to-pdf=chrome-borderless.pdf file://$PWD/chrome-borderless.html
+
+```html
+<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;font-size:10pt} table{border-collapse:collapse;width:100%} td,th{padding:3pt;vertical-align:top;text-align:left}</style></head><body>
+<p>Паспорт рішення. Розділ 3. Варіанти.</p>
+<table><tr><th>Варіант</th><th>Суть</th><th>Переваги</th><th>Ризики</th></tr>
+<tr><td>1. Премія лише за екстрарезультат</td><td>Оклад оплачує всю нормальну якісну роботу. Додаткова премія лише за понадплан.</td><td>Проста логіка; чітко відділяє оклад від премії; стримує перетворення базової якості</td><td>Не вирішує поточні проблеми підтримці</td></tr>
+<tr><td>2. Змішана модель</td><td>Частина премії гарантована.</td><td>Передбачуваність</td><td>Розмиває мотивацію</td></tr></table>
+<p style="text-align:justify">Справедливий опис тексту з вирівнюванням по ширині для перевірки того, що широкі пробіли між словами у звичайному абзаці не стають роздільниками колонок таблиці у витягу.</p>
+</body></html>
+```
+
+Like the others, it is committed rather than regenerated.

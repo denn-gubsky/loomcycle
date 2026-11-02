@@ -183,18 +183,20 @@ type pdfExtract struct {
 	seen  map[int]bool     // image objects already kept, by object number
 	fonts map[int]*pdfFont // fonts read, by object number
 
-	lowPages      []int
-	cutPages      []int
-	unreadPages   []int
-	unmappedPages []int
-	textChars     int
-	pagesRead     int
-	skippedImages int // pictures stored as pixels, not JPEG or JPEG 2000
-	inlineImages  int
-	repeated      int
-	tables        int   // tables recovered from drawn borders
-	busyPages     []int // pages drawing too many lines to look for tables
-	gridWork      int   // the table search's work budget per page; 0 = maxPDFGridWork
+	lowPages       []int
+	cutPages       []int
+	unreadPages    []int
+	unmappedPages  []int
+	textChars      int
+	pagesRead      int
+	skippedImages  int // pictures stored as pixels, not JPEG or JPEG 2000
+	inlineImages   int
+	repeated       int
+	tables         int   // tables recovered from drawn borders
+	alignedTables  int   // tables recovered from text aligned in columns
+	denseTextPages []int // pages whose text was too much to read for columns
+	busyPages      []int // pages drawing too many lines to look for tables
+	gridWork       int   // the table search's work budget per page; 0 = maxPDFGridWork
 }
 
 func (o Options) pdfPageCap() int {
@@ -271,8 +273,16 @@ func (e *pdfExtract) notes() {
 	if e.repeated > 0 {
 		e.rep.note("%d images repeated on later pages were kept once", e.repeated)
 	}
+	e.rep.Tables = e.tables + e.alignedTables
+	if e.alignedTables == 1 {
+		e.rep.note("1 table was recovered from text aligned in columns; each of its rows is one line of the page, so a cell that wraps continues in the row below")
+	} else if e.alignedTables > 1 {
+		e.rep.note("%d tables were recovered from text aligned in columns; each of their rows is one line of the page, so a cell that wraps continues in the row below", e.alignedTables)
+	}
+	if len(e.denseTextPages) > 0 {
+		e.rep.note("text aligned in columns was not looked for on %s: there is too much text there to read", pagesPhrase(e.denseTextPages))
+	}
 	if e.tables > 0 {
-		e.rep.Tables = e.tables
 		if e.tables == 1 {
 			e.rep.note("1 table was recovered from the borders drawn on the page; its rows and columns are read from the layout")
 		} else {
@@ -372,8 +382,14 @@ func (e *pdfExtract) page(n int) (string, error) {
 	if cut {
 		e.cutPages = append(e.cutPages, n)
 	}
+	if p.denseText {
+		e.denseTextPages = append(e.denseTextPages, n)
+	}
 	for _, b := range blocks {
-		if b.table != nil {
+		switch {
+		case b.table != nil && b.aligned:
+			e.alignedTables++
+		case b.table != nil:
 			e.tables++
 		}
 		if md := b.markdown(); md != "" {
@@ -457,6 +473,9 @@ type pdfPage struct {
 	rules      []pdfRule
 	rulesOver  bool
 	pathPoints int // path points built on the page, against maxPDFPagePathPoints
+	// denseText marks a page whose text was too much to read for columns
+	// within the work budget: the rest of it is read as text.
+	denseText bool
 }
 
 type gstate struct {
