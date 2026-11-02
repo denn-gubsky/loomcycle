@@ -53,6 +53,14 @@ describe("parseView", () => {
       layout: { kind: "kanban", groupBy: "status" },
     });
   });
+  it("keeps a star-map view's universe kind instead of turning it into a table", () => {
+    const root = {
+      id: "r",
+      title: "Drafts by meaning",
+      fields: { query: { source: "universe", status: "draft" }, layout: { kind: "universe", mode: "meaning" } },
+    } as unknown as ChunkDetail;
+    expect(parseView("d", root).layout.kind).toBe("universe");
+  });
   it("still opens a view with no fields (safe defaults)", () => {
     const root = { id: "r", title: "empty" } as unknown as ChunkDetail;
     expect(parseView("d", root).layout.kind).toBe("table");

@@ -8,7 +8,46 @@ import { BoardLayout } from "./layouts";
 // the chosen layout. Load state / errors are surfaced inline; a runtime refusal
 // (e.g. SQL Memory not enabled) arrives as a 422 message, shown as a soft hint
 // rather than a crash. It also forwards failures to the host's onError.
-export default function BoardView({
+export default function BoardView(props: {
+  view: SavedView;
+  scope: BoardScope;
+  onError?: (e: unknown) => void;
+  onOpenUniverse?: (view: SavedView, scope: BoardScope) => void;
+}) {
+  // A star-map view has no rows to query: it is handed to the host.
+  if (props.view.layout.kind === "universe") return <UniverseHandoff {...props} />;
+  return <QueriedBoard {...props} />;
+}
+
+function UniverseHandoff({
+  view,
+  scope,
+  onOpenUniverse,
+}: {
+  view: SavedView;
+  scope: BoardScope;
+  onOpenUniverse?: (view: SavedView, scope: BoardScope) => void;
+}) {
+  return (
+    <div className="board-view">
+      <div className="board-view-head">
+        <span className="board-view-title">{view.title}</span>
+        <span className="board-view-kind">star map</span>
+      </div>
+      <div className="board-universe">
+        {onOpenUniverse ? (
+          <button type="button" className="btn-primary" onClick={() => onOpenUniverse(view, scope)}>
+            Open in the star map
+          </button>
+        ) : (
+          <span>A star-map view: open it from the star map's views menu in the document explorer.</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function QueriedBoard({
   view,
   scope,
   onError,
