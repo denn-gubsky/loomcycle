@@ -2,7 +2,6 @@ package extract
 
 import (
 	"testing"
-	"time"
 )
 
 // The thresholds that tell a column gap from a word space, and the numbers
@@ -26,7 +25,9 @@ func TestColumnThresholds_AreTheMeasuredOnes(t *testing.T) {
 
 // Lines whose wide gaps never line up are each tried as a table's start;
 // the work is charged to the page's budget, so a page of thousands of them
-// stops early instead of taking time quadratic in its lines.
+// stops early instead of taking time quadratic in its lines. Judged by the
+// budget, not a wall clock, which a race build on a busy machine would make
+// flaky.
 func TestAlignedTables_ManyMisalignedLinesStayInBudget(t *testing.T) {
 	var rows []pdfLine
 	for i := range 20000 {
@@ -38,13 +39,10 @@ func TestAlignedTables_ManyMisalignedLinesStayInBudget(t *testing.T) {
 			{x: 200 + 2*off, endX: 230 + 2*off, y: y, size: 10, text: "вв", upright: true},
 		}})
 	}
-	start := time.Now()
-	_, ok := alignedTables(rows, &gridBudget{left: maxPDFGridWork})
-	if ok {
-		t.Error("the budget held for 20000 misaligned lines")
-	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Errorf("took %s", d)
+	budget := &gridBudget{left: maxPDFGridWork}
+	_, ok := alignedTables(rows, budget)
+	if ok || budget.left >= 0 {
+		t.Errorf("ok %v, budget left %d: the search did not stop at the budget for 20000 misaligned lines", ok, budget.left)
 	}
 }
 
