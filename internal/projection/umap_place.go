@@ -62,27 +62,39 @@ func (a *Anchors) Place(vectors [][]float32, nNeighbors, workers int) (xyz [][3]
 	}
 	k := min(nNeighbors, len(a.pos))
 	graph := cosineKNN(normalized(q), a.unit, k, false, workers)
+	pos := make([][3]float64, k)
 	for r, row := range graph {
-		// Here the point is not among its neighbours, so all k count toward the
-		// membership target, where the fit counts the point itself as one.
-		sigma, rho := smoothKNN(row.dist, k, 0)
-		var sw float64
-		var p [3]float64
+		pos = pos[:len(row.idx)]
 		for c, j := range row.idx {
-			w := membership(row.dist[c], sigma, rho)
-			sw += w
-			for ax := range 3 {
-				p[ax] += w * a.pos[j][ax]
-			}
+			pos[c] = a.pos[j]
 		}
-		if sw > 0 {
-			for ax := range 3 {
-				p[ax] /= sw
-			}
-		}
-		xyz[at[r]], ok[at[r]] = p, true
+		xyz[at[r]], ok[at[r]] = PlaceAmong(row.dist, pos), true
 	}
 	return xyz, ok
+}
+
+// PlaceAmong is the membership-weighted mean of pos: the places of a point's
+// nearest neighbours, at cosine distances dist (nearest first). It is Place for
+// a caller that found the neighbours itself. With no neighbours it is the origin.
+func PlaceAmong(dist []float32, pos [][3]float64) [3]float64 {
+	// The point is not among its neighbours, so all of them count toward the
+	// membership target, where the fit counts the point itself as one.
+	sigma, rho := smoothKNN(dist, len(dist), 0)
+	var sw float64
+	var p [3]float64
+	for c := range dist {
+		w := membership(dist[c], sigma, rho)
+		sw += w
+		for ax := range 3 {
+			p[ax] += w * pos[c][ax]
+		}
+	}
+	if sw > 0 {
+		for ax := range 3 {
+			p[ax] /= sw
+		}
+	}
+	return p
 }
 
 // Similarity is x ↦ Scale·(x − From)·R + To: a rotation (or reflection),

@@ -33,12 +33,29 @@ type ProjectionConfig struct {
 	// SampleMax caps the vectors a fit reads (a deterministic uniform reservoir
 	// sample). Default 20000.
 	SampleMax int `yaml:"sample_max"`
+	// Method is how a scope's map is fitted (RFC FQ §11): "pca" (the default)
+	// keeps the three directions of largest variance — exact, instant, and a new
+	// chunk is placed by a formula; "umap" keeps neighbourhoods, so a document's
+	// chunks stay together on the map, for a heavier fit (seconds to a minute at
+	// 10,000 chunks, off the request path). A scope whose map was fitted with the
+	// other method is refitted on its next pass.
+	Method string `yaml:"method"`
+	// UMAPSampleMax caps the chunks a UMAP fit lays out — its k-NN graph costs
+	// the square of it — and the rest are placed among them. Default 10000.
+	UMAPSampleMax int `yaml:"umap_sample_max"`
 }
 
 const (
 	projectionDefaultRefitAfter  = 7 * 24 * time.Hour
 	projectionDefaultRefitMinNew = 500
 	projectionDefaultSampleMax   = 20000
+	projectionDefaultUMAPSample  = 10000
+)
+
+// Projection methods: memory.projection.method.
+const (
+	ProjectionMethodPCA  = "pca"
+	ProjectionMethodUMAP = "umap"
 )
 
 // ProjectionSettings is ProjectionConfig resolved: env applied, defaults
@@ -49,6 +66,9 @@ type ProjectionSettings struct {
 	RefitAfter  time.Duration
 	RefitMinNew int
 	SampleMax   int
+	// Method is ProjectionMethodPCA or ProjectionMethodUMAP.
+	Method        string
+	UMAPSampleMax int
 }
 
 func parseProjectionDuration(field, v string) (time.Duration, error) {
@@ -101,6 +121,21 @@ func (p ProjectionConfig) resolve(envInterval string) (ProjectionSettings, error
 	s.SampleMax = p.SampleMax
 	if s.SampleMax == 0 {
 		s.SampleMax = projectionDefaultSampleMax
+	}
+	switch m := strings.TrimSpace(p.Method); m {
+	case "", ProjectionMethodPCA:
+		s.Method = ProjectionMethodPCA
+	case ProjectionMethodUMAP:
+		s.Method = m
+	default:
+		return s, fmt.Errorf("memory.projection.method: %q is not %s or %s", p.Method, ProjectionMethodPCA, ProjectionMethodUMAP)
+	}
+	if p.UMAPSampleMax < 0 {
+		return s, fmt.Errorf("memory.projection.umap_sample_max: %d is negative", p.UMAPSampleMax)
+	}
+	s.UMAPSampleMax = p.UMAPSampleMax
+	if s.UMAPSampleMax == 0 {
+		s.UMAPSampleMax = projectionDefaultUMAPSample
 	}
 	return s, nil
 }

@@ -218,6 +218,7 @@ type Reservoir struct {
 	max  int
 	seen int
 	rows [][]float32
+	keys []string // parallel to rows, filled by OfferKeyed
 	rng  *rand.Rand
 }
 
@@ -228,22 +229,31 @@ func NewReservoir(max int) *Reservoir {
 
 // Offer considers v for the sample (Algorithm R). v is kept by reference; the
 // caller must not modify it afterwards.
-func (r *Reservoir) Offer(v []float32) {
+func (r *Reservoir) Offer(v []float32) { r.OfferKeyed("", v) }
+
+// OfferKeyed is Offer for a vector with an identity the caller needs back with
+// the sample (a UMAP fit stores its sample's chunk ids). The draws are Offer's,
+// so a stream gives the same sample either way.
+func (r *Reservoir) OfferKeyed(key string, v []float32) {
 	r.seen++
 	if r.max <= 0 {
 		return
 	}
 	if len(r.rows) < r.max {
 		r.rows = append(r.rows, v)
+		r.keys = append(r.keys, key)
 		return
 	}
 	if j := r.rng.IntN(r.seen); j < r.max {
 		r.rows[j] = v
+		r.keys[j] = key
 	}
 }
 
-// Sample is the vectors kept; Seen how many were offered.
+// Sample is the vectors kept; Keys their keys, index for index; Seen how many
+// were offered.
 func (r *Reservoir) Sample() [][]float32 { return r.rows }
+func (r *Reservoir) Keys() []string      { return r.keys }
 func (r *Reservoir) Seen() int           { return r.seen }
 
 // EncodeFloat32s is v as float32 little-endian bytes.
