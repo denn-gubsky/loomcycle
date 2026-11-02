@@ -62,9 +62,12 @@ and a `*_code` column a position in a `codes` list (`-1` = none).
   `truncated: true` means `edge_budget` was reached.
 - `dirents` — first page only: `paths, kinds, document_idx, document_ids` —
   the directories and document names at or under `under_path`.
-- `projection` — each chunk's place on the scope's 3D map by meaning (its
-  embedding on the scope's three principal axes): `{model, basis_version, xyz,
-  missing}`. `xyz` is one `x, y, z` triple per chunk on the page, in chunk
+- `projection` — each chunk's place on the scope's 3D map by meaning:
+  `{model, basis_version, method, xyz, missing}`. `method` is how the map was
+  fitted: `pca` (the embedding on the scope's three principal axes) or `umap`
+  (a layout that keeps each chunk's nearest chunks near it, so a document's
+  chunks stay together; distances between far-apart groups mean little).
+  `xyz` is one `x, y, z` triple per chunk on the page, in chunk
   order, rounded to 4 decimals; a chunk with no place on the current map yet
   is `0, 0, 0` and its index is in `missing`. `basis_version: 0` means no map
   yet: `xyz` is empty and every chunk is missing. The server builds the map in

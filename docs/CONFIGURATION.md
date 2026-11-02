@@ -3050,11 +3050,11 @@ Languages Postgres does not ship (for example Ukrainian, via a hunspell dictiona
 
 ## 9k. Document projection — the 3D chunk map (`memory.projection`)
 
-Places each document chunk on its scope's 3D map by meaning: the chunk's
-stored embedding projected on the scope's top three principal components.
-`graph_snapshot` serves the coordinates as its `projection` block and
-`search` with `with_projection` places the query on the same map. The vectors
-never leave the server; only three coordinates per chunk do.
+Places each document chunk on its scope's 3D map by meaning, fitted from the
+chunks' stored embeddings. `graph_snapshot` serves the coordinates as its
+`projection` block and `search` with `with_projection` places the query on the
+same map. The vectors never leave the server; only three coordinates per chunk
+do.
 
 ```yaml
 memory:
@@ -3063,8 +3063,32 @@ memory:
     interval: 1h         # background sweeper cadence; empty or 0 = no sweeper
     refit_after: 168h    # a basis this old is refitted ...
     refit_min_new: 500   # ... once this many chunks were placed since its fit
-    sample_max: 20000    # vectors a fit samples (also capped at 64 MB of them)
+    sample_max: 20000    # vectors a PCA fit samples (also capped at 64 MB of them)
+    method: pca          # pca (default) | umap — how a scope's map is fitted
+    umap_sample_max: 10000  # chunks a UMAP fit lays out; the rest are placed among them
 ```
+
+**Which method.** Both draw the same map from the same rows; they differ in
+what they keep.
+
+- **`pca`** places each chunk on the scope's top three principal components.
+  It is exact and instant, and a new chunk is placed by a formula. On a real
+  scope those three components hold little of the variance, so a document's
+  chunks tend to scatter: on 137 project documents (2,697 chunks, `bge-m3`),
+  only 14% of a chunk's ten nearest chunks on the map came from its own
+  document, against 78% in the embedding space.
+- **`umap`** keeps neighbourhoods instead: on the same corpus 83% of those
+  neighbours were the chunk's own document's. The cost is a heavier fit — at
+  the 10,000-chunk sample cap and 1,024 dimensions about 45 CPU-seconds, most
+  of it an exact nearest-neighbour graph that runs across all cores — always
+  off the request path (the sweeper, or the operator pass, which returns when
+  the fit is done). New chunks between fits are placed among the sample's
+  chunks without refitting, and a refit starts from the previous map and is
+  aligned to it, so the arrangement does not reshuffle.
+
+Changing `method` refits each scope on its next pass. The operator pass takes
+`method=` to fit one scope with the other method for comparison; the next pass
+under the configured method refits it back.
 
 - **Off by default.** Off, `graph_snapshot` returns the empty block, `search`
   leaves `query_xyz` out, the sweeper does not start and
@@ -3078,8 +3102,8 @@ memory:
 - **The sweeper** runs on one replica at a time and walks every scope with
   document chunk vectors. It makes no model call. Each pass places at most
   5000 chunks and fits at most once.
-- **Validation.** A duration that does not parse, or a negative count, fails
-  config load.
+- **Validation.** A duration that does not parse, a negative count, or a
+  `method` other than `pca` or `umap` fails config load.
 
 The operator pass and the response: [DOCUMENTS.md, "Projection — the 3D map"](DOCUMENTS.md#projection--the-3d-map).
 
