@@ -802,7 +802,9 @@ func (d *Document) dispatch(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	case "delete_document":
 		return d.deleteDocument(ctx, key, mscope, in)
 	case "set_path":
-		return d.setPath(ctx, key, in)
+		res, err := d.setPath(ctx, key, in)
+		d.announceChange(ctx, key, mscope, in.ID, "", res, err)
+		return res, err
 	case "copy_documents":
 		return d.copyDocuments(ctx, key, mscope, in)
 	case "judge_fact":
@@ -818,13 +820,19 @@ func (d *Document) dispatch(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	case "get_chunk":
 		return d.getChunk(ctx, key, mscope, in)
 	case "update_chunk":
-		return d.updateChunk(ctx, key, mscope, in, raw)
+		res, err := d.updateChunk(ctx, key, mscope, in, raw)
+		d.announceChange(ctx, key, mscope, "", in.ID, res, err)
+		return res, err
 	case "delete_chunk":
 		return d.deleteChunk(ctx, key, mscope, in)
 	case "move_chunk":
-		return d.moveChunk(ctx, key, in)
+		res, err := d.moveChunk(ctx, key, in)
+		d.announceChange(ctx, key, mscope, "", in.ID, res, err)
+		return res, err
 	case "reorder_chunk":
-		return d.reorderChunk(ctx, key, mscope, in)
+		res, err := d.reorderChunk(ctx, key, mscope, in)
+		d.announceChange(ctx, key, mscope, "", in.ID, res, err)
+		return res, err
 	case "upsert_chunk":
 		return d.upsertChunkOp(ctx, key, mscope, in, raw)
 	case "supersede_chunk":

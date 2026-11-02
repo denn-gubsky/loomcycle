@@ -6,6 +6,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // RFC FV §1–§2: what the Document tool tells the change feed.
@@ -123,4 +124,36 @@ func (d *Document) recordEdgesChanged(ctx context.Context, key sqlmem.ScopeKey, 
 			DocumentID: docID,
 		})
 	}
+}
+
+// announceChange appends a document.chunk.updated row for an op that changed a
+// chunk or a document without rewriting a chunk body — a retitle, a new status
+// or type, a move, a reorder, a new Path name. No keyed write happens, so the
+// decorator sees nothing; a viewer that labels by title, colours by status and
+// files by path would otherwise never hear of it. chunkID may be "" (a change
+// to the document as a whole); docID "" is read from the chunk. Only after the
+// op succeeded; best-effort; nothing when capture is off. An op that also
+// rewrote a body announces twice, which the reader feed coalesces.
+func (d *Document) announceChange(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID, chunkID string, res tools.Result, err error) {
+	if err != nil || res.IsError {
+		return
+	}
+	rec, ok := d.Store.(documentChangeRecorder)
+	if !ok {
+		return
+	}
+	if docID == "" && chunkID != "" {
+		docID = d.chunkDocumentID(ctx, key, chunkID)
+	}
+	if docID == "" {
+		return
+	}
+	rec.RecordDocumentChange(ctx, store.MemoryChange{
+		TenantID:   direntTenant(ctx),
+		Type:       store.DocumentChangeUpdated,
+		Scope:      mscope,
+		ScopeID:    docMemScopeID(mscope, key),
+		ChunkID:    chunkID,
+		DocumentID: docID,
+	})
 }

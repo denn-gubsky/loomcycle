@@ -156,3 +156,65 @@ func TestDocumentChangeFeed_NothingIsAppendedWithCaptureOff(t *testing.T) {
 		t.Errorf("capture off wrote %d change rows (err %v), want none", len(rows), err)
 	}
 }
+
+// TestDocumentChangeFeed_MetadataChangesAreAnnounced: an op that changes a
+// chunk or a document without rewriting a chunk body (a retitle, a status, a
+// move, a reorder, a new Path name) writes no keyed row for the decorator to
+// see, so the Document tool announces it itself — a viewer that labels by title
+// and colours by status would otherwise never hear of it.
+func TestDocumentChangeFeed_MetadataChangesAreAnnounced(t *testing.T) {
+	d, ctx, c := captureFixture(t)
+	s := seedCopyDocs(t, d, ctx)
+	sibling := asStr(copyExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+s.planDoc+`","title":"Sibling","body":"x"}`)["id"])
+	rev := func(id string) int {
+		out, r := docExec(t, d, ctx, `{"op":"get_chunk","scope":"user","id":"`+id+`"}`)
+		if r.IsError {
+			t.Fatalf("get_chunk: %s", r.Text)
+		}
+		return int(out["revision"].(float64))
+	}
+	for _, step := range []struct {
+		name  string
+		body  func() string // built when the step runs: a revision moves
+		chunk string
+	}{
+		{"retitle", func() string {
+			return fmt.Sprintf(`{"op":"update_chunk","scope":"user","id":%q,"revision":%d,"title":"Renamed"}`, s.planChunk, rev(s.planChunk))
+		}, s.planChunk},
+		{"status", func() string {
+			return fmt.Sprintf(`{"op":"update_chunk","scope":"user","id":%q,"revision":%d,"status":"done"}`, s.planChunk, rev(s.planChunk))
+		}, s.planChunk},
+		{"move", func() string {
+			return fmt.Sprintf(`{"op":"move_chunk","scope":"user","id":%q,"new_parent_id":%q}`, s.planChunk, sibling)
+		}, s.planChunk},
+		{"reorder", func() string {
+			return fmt.Sprintf(`{"op":"reorder_chunk","scope":"user","id":%q,"direction":"up"}`, sibling)
+		}, sibling},
+		{"set_path", func() string {
+			return fmt.Sprintf(`{"op":"set_path","scope":"user","id":%q,"path":"/kb/moved-plan"}`, s.planDoc)
+		}, ""},
+	} {
+		head, _ := c.MemoryChangesHead(context.Background(), "tnt")
+		if _, r := docExec(t, d, ctx, step.body()); r.IsError {
+			t.Fatalf("%s: %s", step.name, r.Text)
+		}
+		rows, _ := c.GetMemoryChangesSince(context.Background(), "tnt", head, 100)
+		found := false
+		for _, r := range rows {
+			if r.Type == store.DocumentChangeUpdated && r.DocumentID == s.planDoc && (step.chunk == "" || r.ChunkID == step.chunk) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: no document.chunk.updated row for the plan (got %+v)", step.name, rows)
+		}
+	}
+	// A failed op announces nothing.
+	head, _ := c.MemoryChangesHead(context.Background(), "tnt")
+	if _, r := docExec(t, d, ctx, `{"op":"update_chunk","scope":"user","id":"`+s.planChunk+`","revision":1,"title":"stale"}`); !r.IsError {
+		t.Fatal("a stale revision was accepted")
+	}
+	if rows, _ := c.GetMemoryChangesSince(context.Background(), "tnt", head, 100); len(rows) != 0 {
+		t.Errorf("a refused update wrote %d change rows, want none", len(rows))
+	}
+}

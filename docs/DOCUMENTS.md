@@ -469,10 +469,14 @@ for await (const f of client.documentFeed({ scope: "tenant", signal })) {
 
 What the feed knows comes from the write: every write and delete of a chunk
 body records its document (a deletion could not be placed afterwards — the
-chunk row is gone), and the statement paths record `document.edges.changed`.
-Moving a chunk between documents without rewriting its body, edges written
-by a chunk body's inline `[[links]]`, and edges removed by deleting a chunk
-are not announced to the far document; a reload picks them up.
+chunk row is gone), the statement paths record `document.edges.changed`, and
+the ops that change a chunk or a document without rewriting a body —
+`update_chunk` (title, type, status, fields), `move_chunk`, `reorder_chunk`
+and `set_path` — record `document.chunk.updated` themselves (`chunk_id` empty
+for `set_path`). Moving a chunk between documents without rewriting its body,
+renaming or removing a document's name with the `Path` tool, edges written by
+a chunk body's inline `[[links]]`, and edges removed by deleting a chunk are
+not announced to the far document; a reload picks them up.
 
 ## Search: indexing, re-indexing and reranking
 
