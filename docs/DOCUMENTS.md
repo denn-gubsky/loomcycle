@@ -36,7 +36,7 @@ One tool, `Document`, gated by per-agent `tools: [Document]`. 15 ops:
 
 | group | ops |
 |-------|-----|
-| Document lifecycle | `create_document` (optional `path:` → a Path dirent), `get_document` (by `id` or `path`), `delete_document` |
+| Document lifecycle | `create_document` (optional `path:` → a Path dirent), `get_document` (by `id` or `path`), `delete_document`, `copy_documents` (into another scope) |
 | Chunk lifecycle | `create_chunk`, `get_chunk`, `update_chunk`, `delete_chunk`, `move_chunk` |
 | Edges | `link_chunks`, `unlink_chunks` |
 | Query | `query_chunks` |
@@ -229,6 +229,54 @@ The delete paths were hardened so a cascade can't leave orphans (PR #540):
   transaction, so they're deleted **after** a successful commit (best-effort —
   an orphaned body is invisible dead K/V, an orphaned *row* would be visible,
   so SQL-first is the least-bad ordering).
+
+### Copying documents between scopes (`copy_documents`)
+
+A document lives in one scope (agent, user or tenant), and every one of its
+rows is keyed by that scope. `copy_documents` copies a set of documents
+(`document_ids`, `under_path`, `under_paths`; at most 500) from `scope` into
+`to_scope` on the server.
+
+**Why on the server.** `export_md` + `import_md` from the client would mint new
+ids, keep only the current bodies, drop every relation between two of the
+documents, and pass every body through the caller. Copying the rows keeps all
+of it.
+
+**What it carries.** Everything `delete_document` clears:
+- the document row, its chunks and their tags, revisions, canvas layout and
+  image bytes;
+- the document's tags and types;
+- each chunk's body (with its import provenance) and derived units, indexed
+  again in the target by the deployment's embedder;
+- the Path names, rewritten by `path_map` (longest prefix wins);
+- the statements between members of the set, with their evidence.
+
+Each table is read with `SELECT *`, so a column a later migration adds travels
+without the op naming it.
+
+**What stays behind.**
+- A statement with one end, or one evidence quote, outside the set stays in the
+  source and is listed under `dangling`.
+- The tenant ontology, subject documents and documents holding facts are refused
+  by name. Facts and subjects have an identity (their natural key) that a copy
+  between scopes would split.
+- A target name already taken is refused (`path_collision`), and so is a work
+  key or identity key the target already holds (`key_collision`). Each refusal
+  names its document, and the rest of the set goes ahead.
+
+**Safety.**
+- It is a **dry run unless `dry_run: false`**.
+- The target scope goes through the same gate as any call's `scope`: tenant
+  needs both grants.
+- Under access control, the op needs read on each source document and write on
+  each target name.
+- A copy gets new ids, and its root records `copied_from: {scope, document_id}`.
+- One document's rows go into the target in one transaction, read in full
+  before it opens: a SQLite scope has one connection.
+- Each copy is announced on `documents/ingested` with reason `copied`.
+
+`move_documents`, which keeps ids and removes the source, is RFC FT's next
+phase.
 
 ## Off-run: every transport (v1.4.0)
 
