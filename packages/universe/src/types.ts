@@ -29,6 +29,8 @@ export interface GraphSnapshotInput {
   /** The previous page's `page.next_cursor` (the op pages on `after`, as get_edges does). */
   after?: string;
   edge_budget?: number;
+  /** Also return relations proposed for review (default false). */
+  include_proposed?: boolean;
 }
 
 export interface SnapshotExternal {

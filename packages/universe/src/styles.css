@@ -431,14 +431,14 @@
   opacity: 0.7;
 }
 
-/* Link authoring: the hint while choosing a target, then the dialog. */
+/* Link authoring: the hint while choosing a target, then the dialog (top
+   left, clear of the links panel on the right). */
 .loomcycle-universe .lu-hint,
 .loomcycle-universe .lu-dialog {
   position: absolute;
-  left: 50%;
+  left: 8px;
   top: 8px;
-  z-index: 3;
-  transform: translateX(-50%);
+  z-index: 4;
   border-radius: 8px;
   border: 1px solid var(--border, #2a2e3a);
   background: color-mix(in srgb, var(--bg-soft, #161922) 96%, transparent);

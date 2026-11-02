@@ -204,6 +204,8 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
             scope,
             include: ["documents", "chunks", "edges", "dirents", "facts", "projection"],
             page_documents: PAGE_DOCUMENTS,
+            // Proposed links draw dashed and can be ruled on from the map.
+            include_proposed: true,
             under_path: underPath,
             types: typeFilter ? [typeFilter] : undefined,
             statuses: statusFilter ? [statusFilter] : undefined,
@@ -373,7 +375,13 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
     async (docIds: string[]) => {
       if (!data) return;
       const page = await data.graphSnapshot(
-        { scope, document_ids: docIds, include: ["documents", "chunks", "edges"], page_documents: docIds.length },
+        {
+          scope,
+          document_ids: docIds,
+          include: ["documents", "chunks", "edges"],
+          include_proposed: true,
+          page_documents: docIds.length,
+        },
         browse,
       );
       refreshEdges(modelRef.current, page, new Set(docIds));
@@ -410,6 +418,11 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
 
   const pickResult = (r: ResultRow) => {
     if (r.chunk < 0) return;
+    // Choosing a link's target: a search hit is as good as a click on its star.
+    if (linkFrom !== null) {
+      if (r.chunk !== linkFrom) setLinkTo(r.chunk);
+      return;
+    }
     setSelected([r.chunk]);
     sceneRef.current?.flyTo(r.chunk);
     emit(r.chunk);
@@ -570,7 +583,7 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
           </div>
         )}
         {linkFrom !== null && linkTo === null && (
-          <div className="lu-hint">Pick the star to link to · Esc cancels</div>
+          <div className="lu-hint">Pick the star to link to (on the map or in the search results) · Esc cancels</div>
         )}
         {linkFrom !== null && linkTo !== null && (
           <LinkDialog
