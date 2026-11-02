@@ -81,6 +81,12 @@ func (d *Document) PruneRetiredChunks(ctx context.Context, key sqlmem.ScopeKey, 
 func (d *Document) cascadeDeleteChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, ids []string) (int, error) {
 	pruned := 0
 	for _, id := range ids {
+		// The chunk's document, read while its row still exists, for the change
+		// feed (RFC FV §1). Only when capture is on: otherwise nobody reads it.
+		docID := ""
+		if d.capturesChanges() {
+			docID = d.chunkDocumentID(ctx, key, id)
+		}
 		// One transaction per chunk rather than one for the batch: a fault partway
 		// through leaves the chunks already pruned consistently gone, instead of
 		// rolling back work the next sweep would repeat. The operation is idempotent,
@@ -135,7 +141,7 @@ func (d *Document) cascadeDeleteChunks(ctx context.Context, key sqlmem.ScopeKey,
 		// invisible, since no read returns it and no sweeper reaps it. A test on the
 		// real path caught it; a unit test on the SQL half alone would not have.
 		for _, tenant := range bodyTenantsFor(key.Tenant) {
-			if removed, _ := d.Store.MemoryDelete(ctx, tenant, mscope, docMemScopeID(mscope, key), chunkBodyKey(id)); removed {
+			if removed, _ := d.deleteBody(ctx, docID, tenant, mscope, docMemScopeID(mscope, key), id); removed {
 				d.deleteUnitsOf(ctx, tenant, mscope, docMemScopeID(mscope, key), id) // its units live beside it
 				break
 			}

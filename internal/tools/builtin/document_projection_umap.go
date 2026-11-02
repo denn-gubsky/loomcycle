@@ -126,7 +126,7 @@ func (d *Document) refitUMAP(ctx context.Context, key sqlmem.ScopeKey, list func
 		// replica) read the same basis and saved version next first. Its fit
 		// stands, whatever its method; this one is dropped and the chunks go on
 		// the latest basis.
-		rep.Refitted = false
+		rep.Refitted, rep.Raced = false, true
 		if basis, err = d.loadBasis(ctx, key, model); err != nil {
 			return rep, err
 		}

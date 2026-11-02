@@ -36,7 +36,10 @@ export interface ViewQuery {
   limit?: number;
 }
 
-export type LayoutKind = "table" | "cards" | "kanban" | "list";
+/** "universe" is a star-map view saved by @loomcycle/universe in the same
+ *  `type=view` primitive: boards lists it but does not draw it, and hands it to
+ *  the host (`onOpenUniverse`) that can show stars. */
+export type LayoutKind = "table" | "cards" | "kanban" | "list" | "universe";
 
 /** The single-valued axis a kanban buckets by. Tags are multi-valued (a row
  *  lands in several columns at once), so tag-grouping is a later add. */

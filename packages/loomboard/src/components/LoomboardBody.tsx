@@ -16,9 +16,11 @@ type Mode = "empty" | "view" | "editor";
 export default function LoomboardBody({
   defaultScope = "user",
   onError,
+  onOpenUniverse,
 }: {
   defaultScope?: BoardScope;
   onError?: (e: unknown) => void;
+  onOpenUniverse?: (view: SavedView, scope: BoardScope) => void;
 }) {
   const data = useLoomboardData();
   const [scope, setScope] = useState<BoardScope>(defaultScope);
@@ -79,9 +81,13 @@ export default function LoomboardBody({
         </div>
         {mode === "view" && active && (
           <div className="loomboard-actions">
-            <button type="button" className="btn-ghost" onClick={() => setMode("editor")}>
-              Edit
-            </button>
+            {/* A star-map view is edited where it is drawn; the board editor
+                would overwrite its settings with a board's. */}
+            {active.layout.kind !== "universe" && (
+              <button type="button" className="btn-ghost" onClick={() => setMode("editor")}>
+                Edit
+              </button>
+            )}
             <button type="button" className="btn-ghost danger" onClick={onDelete}>
               Delete
             </button>
@@ -115,7 +121,7 @@ export default function LoomboardBody({
               onError={onError}
             />
           ) : active ? (
-            <BoardView view={active} scope={scope} onError={onError} />
+            <BoardView view={active} scope={scope} onError={onError} onOpenUniverse={onOpenUniverse} />
           ) : (
             <div className="loomboard-placeholder">
               Select a view, or create one with <strong>+ New</strong>.

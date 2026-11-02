@@ -1,6 +1,7 @@
 import { createContext, useContext } from "react";
 import type { DocumentToolInput, LoomcycleClient } from "@loomcycle/client";
 import type { BrowseScope, DocScope, GraphSnapshot, GraphSnapshotInput, SearchHit } from "../types";
+import { parseUniverseView, viewFields, viewPath, type SavedUniverseView, type UniverseViewState } from "./views";
 
 // UniverseDataLayer is the narrow contract the star map needs from the runtime:
 // the paged scope snapshot, semantic search, and (optionally) the statement
@@ -36,6 +37,12 @@ export interface UniverseDataLayer {
   /** Rule on a proposed link (accept_statement / reject_statement). A
    *  rejection needs a reason. Optional; without it proposals are read-only. */
   reviewLink?(req: LinkReview, browse?: BrowseScope): Promise<StatementResult>;
+  /** Saved universe views (type=view documents of layout kind "universe").
+   *  Optional, as a set: without them the map offers no views menu. */
+  listViews?(scope: DocScope, browse?: BrowseScope): Promise<SavedUniverseView[]>;
+  getView?(scope: DocScope, documentId: string, browse?: BrowseScope): Promise<SavedUniverseView | null>;
+  saveView?(scope: DocScope, title: string, state: UniverseViewState, browse?: BrowseScope): Promise<SavedUniverseView>;
+  deleteView?(scope: DocScope, documentId: string, browse?: BrowseScope): Promise<void>;
 }
 
 export interface LinkWrite {
@@ -116,6 +123,38 @@ export function dataLayerFromClient(client: LoomcycleClient): UniverseDataLayer 
         },
         browse,
       ) as unknown as Promise<StatementResult>,
+    listViews: async (scope, browse) => {
+      const res = (await doc({ op: "query_documents", scope, type: "view", limit: 200 }, browse)) as unknown as {
+        documents?: { document_id: string; root_chunk_id: string }[];
+      };
+      // A view's kind lives in its root's fields, which the listing does not
+      // carry: read each root (views are few) and keep the universe ones.
+      const roots = await Promise.all(
+        (res.documents ?? []).map(async (d) => {
+          const root = (await doc({ op: "get_chunk", scope, id: d.root_chunk_id }, browse)) as unknown as ViewRoot;
+          return parseUniverseView(d.document_id, root);
+        }),
+      );
+      return roots.filter((v): v is SavedUniverseView => v !== null);
+    },
+    getView: async (scope, documentId, browse) => {
+      const d = (await doc({ op: "get_document", scope, id: documentId }, browse)) as unknown as { root_chunk_id: string };
+      const root = (await doc({ op: "get_chunk", scope, id: d.root_chunk_id }, browse)) as unknown as ViewRoot;
+      return parseUniverseView(documentId, root);
+    },
+    saveView: async (scope, title, state, browse) => {
+      const created = (await doc(
+        { op: "create_document", scope, title, type: "view", path: viewPath(title) },
+        browse,
+      )) as unknown as { document_id: string; root_chunk_id: string };
+      // create_document seeds an empty root at revision 1, as the boards
+      // package relies on; the view's settings go into its fields.
+      await doc({ op: "update_chunk", scope, id: created.root_chunk_id, revision: 1, fields: viewFields(state) }, browse);
+      return { documentId: created.document_id, rootChunkId: created.root_chunk_id, title, revision: 2, state };
+    },
+    deleteView: async (scope, documentId, browse) => {
+      await doc({ op: "delete_document", scope, id: documentId }, browse);
+    },
     reviewLink: (req, browse) =>
       doc(
         {
@@ -127,6 +166,13 @@ export function dataLayerFromClient(client: LoomcycleClient): UniverseDataLayer 
         browse,
       ) as unknown as Promise<StatementResult>,
   };
+}
+
+interface ViewRoot {
+  id: string;
+  title?: string;
+  revision?: number;
+  fields?: unknown;
 }
 
 const Ctx = createContext<UniverseDataLayer | null>(null);

@@ -107,6 +107,10 @@ export interface PathExplorerProps extends ExplorerDataSource {
   // star map). Provide it to show a `tree | stars` switch in the toolbar; the
   // tree stays the default. Omit → tree only, and nothing else is loaded.
   renderNavigator?: (ctx: NavigatorContext) => ReactNode;
+  // Ask for a navigator: when set, and whenever it changes, the explorer
+  // switches to it and remembers the choice as the toggle does. A host opening
+  // a saved star-map view passes "stars". Ignored without renderNavigator.
+  navigator?: NavigatorMode;
 
   // ---- Errors. Called on a tree-load failure (in addition to the inline
   // banner). The component NEVER redirects on 401 — the host owns the auth flow.
@@ -123,6 +127,7 @@ export default function PathExplorer(props: PathExplorerProps) {
     principal,
     renderAssistant,
     renderNavigator,
+    navigator,
     onError,
   } = props;
   const resolved = useResolvedDataLayer(props);
@@ -136,6 +141,7 @@ export default function PathExplorer(props: PathExplorerProps) {
         principal={principal}
         renderAssistant={renderAssistant}
         renderNavigator={renderNavigator}
+        navigator={navigator}
         onError={onError}
       />
     </ExplorerRoot>
@@ -167,6 +173,7 @@ function PathExplorerBody({
   principal,
   renderAssistant,
   renderNavigator,
+  navigator: navigatorProp,
   onError,
 }: PathExplorerBodyProps) {
   const data: ExplorerDataLayer = useExplorerData();
@@ -267,6 +274,11 @@ function PathExplorerBody({
   }, []);
   const [maximized, setMaximized] = useState(false);
   const [navReload, setNavReload] = useState(0);
+  useEffect(() => {
+    if (renderNavigator && navigatorProp) setNavMode(navigatorProp);
+    // Only a change of the request switches; a reader's later toggle stands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigatorProp]);
   // The chunk the viewer is on (reported by it), and a pending request to move
   // it (a star picked inside the open document, or the landing chunk of one
   // being opened).

@@ -397,3 +397,12 @@
 .loomcycle-loomboard .splitter.dragging {
   user-select: none;
 }
+
+/* A star-map view (layout kind "universe") is handed to the host, not drawn. */
+.loomcycle-loomboard .board-universe {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 16px;
+  color: var(--lb-dim);
+}

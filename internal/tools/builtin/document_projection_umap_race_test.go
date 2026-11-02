@@ -42,8 +42,8 @@ func TestUMAPProjection_ALosingRefitPlacesOnTheWinnersBasis(t *testing.T) {
 		if err != nil {
 			t.Fatalf("losing refit: %v", err)
 		}
-		if rep.Refitted || rep.BasisVersion != 2 || rep.Method != "umap" {
-			t.Fatalf("losing refit = %+v, want not refitted, on the winner's umap v2", rep)
+		if rep.Refitted || !rep.Raced || rep.BasisVersion != 2 || rep.Method != "umap" {
+			t.Fatalf("losing refit = %+v, want raced (not refitted), on the winner's umap v2", rep)
 		}
 		if n := countRows(t, d, ctx, `SELECT COUNT(*) FROM chunk_projection_basis WHERE version = 2`); n != 1 {
 			t.Fatalf("basis rows for v2 = %d, want the winner's alone", n)

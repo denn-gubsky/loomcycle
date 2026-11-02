@@ -27,10 +27,13 @@ import (
 //	           of the other method is refitted, so the next pass under the configured
 //	           method (the sweeper's, or a call without method) fits that one again.
 //
-// Responds {scope, dry_run, model, basis_version, method, placed, refitted, skipped,
-// unsupported, more}; re-invoke while `more` is true. It reads stored vectors and
-// makes no model call; a UMAP fit takes seconds to a minute at 10,000 chunks, and
-// the call returns when it is done. 409 while memory.projection is off.
+// Responds {scope, dry_run, model, basis_version, method, placed, refitted, raced,
+// skipped, unsupported, more}; re-invoke while `more` is true. `raced` means the
+// call set out to refit but another pass over the scope (the sweeper, another call,
+// another replica) saved that basis first: `refitted` is then false and the chunks
+// were placed on the basis that pass saved. It reads stored vectors and makes no
+// model call; a UMAP fit takes seconds to a minute at 10,000 chunks, and the call
+// returns when it is done. 409 while memory.projection is off.
 func (s *Server) handleDocumentProject(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil || s.sqlMem == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "sqlmem_unavailable",

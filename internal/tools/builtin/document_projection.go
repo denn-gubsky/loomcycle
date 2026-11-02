@@ -135,6 +135,10 @@ type ProjectionReport struct {
 	Placed int `json:"placed"`
 	// Refitted is true when the pass fitted a new basis (or would).
 	Refitted bool `json:"refitted"`
+	// Raced is true when the pass set out to refit but another pass over the same
+	// scope saved that basis version first: this pass fitted nothing and placed the
+	// chunks on the basis it found. Refitted is false then.
+	Raced bool `json:"raced"`
 	// Skipped vectors needed nothing: already placed, another model's, another
 	// dimension, or a body whose chunk is gone.
 	Skipped int `json:"skipped"`
@@ -304,8 +308,22 @@ func (d *Document) projectPass(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			return rep, err
 		}
 		basis = &storedBasis{Basis: fitted, version: next, fittedAt: now}
-		if err := d.saveBasis(ctx, key, model, basis); err != nil {
+		saved, err := d.saveBasis(ctx, key, model, basis)
+		if err != nil {
 			return rep, err
+		}
+		if !saved {
+			// Another pass over this scope (the sweeper, an operator call, another
+			// replica) read the same basis and saved version `next` first. Its fit
+			// stands; this one is dropped, and the chunks go on whatever basis is
+			// now the latest — the winner's, or a later one.
+			rep.Refitted, rep.Raced = false, true
+			if basis, err = d.loadBasis(ctx, key, model); err != nil {
+				return rep, err
+			}
+			if basis == nil {
+				return rep, fmt.Errorf("chunk_projection_basis %s: version %d was taken but no basis is stored", model, next)
+			}
 		}
 	}
 	rep.BasisVersion, rep.Method = basis.version, basis.methodName()
@@ -453,8 +471,17 @@ type placedRow struct {
 }
 
 // writeProjection replaces the batch's rows in one transaction, so a reader never
-// sees a chunk between its old row and its new one. Portable upsert: delete, then
-// insert, as the rest of this schema does.
+// sees a chunk between its old row and its new one.
+//
+// An ON CONFLICT upsert, not this schema's usual delete-then-insert: two passes
+// over one scope (the sweeper and the operator route, or two replicas) can place
+// the same chunks at once, and on postgres the second one's delete sees nothing
+// of the first one's uncommitted rows, so its insert failed on the chunk_id key.
+// The upsert waits for that row and updates it instead; the form is the same on
+// both tiers. It never moves a row of the same model back to an older basis, so a
+// slow pass cannot punch holes in a map a newer refit has already placed. Every
+// pass writes in vector-key order, so two upserts lock shared rows in the same
+// order and cannot deadlock.
 func (d *Document) writeProjection(ctx context.Context, key sqlmem.ScopeKey, rows []placedRow, w projectionWrite) error {
 	if w.dryRun || len(rows) == 0 {
 		return nil
@@ -462,14 +489,6 @@ func (d *Document) writeProjection(ctx context.Context, key sqlmem.ScopeKey, row
 	return d.withSqlTxn(ctx, key, func(txnID string) error {
 		for start := 0; start < len(rows); start += projectionInsertBatch {
 			part := rows[start:min(start+projectionInsertBatch, len(rows))]
-			ids := make([]string, len(part))
-			for i, r := range part {
-				ids[i] = r.chunkID
-			}
-			ph, args := inPlaceholders(ids)
-			if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_projection WHERE chunk_id IN (`+ph+`)`, args...); err != nil {
-				return err
-			}
 			values := make([]string, len(part))
 			ins := make([]any, 0, 7*len(part))
 			for i, r := range part {
@@ -477,7 +496,10 @@ func (d *Document) writeProjection(ctx context.Context, key sqlmem.ScopeKey, row
 				ins = append(ins, r.chunkID, w.model, w.version, r.xyz[0], r.xyz[1], r.xyz[2], r.updatedAt)
 			}
 			if err := d.execTxn(ctx, txnID, `INSERT INTO chunk_projection (chunk_id, model, basis_version, x, y, z, updated_at) VALUES `+
-				strings.Join(values, ", "), ins...); err != nil {
+				strings.Join(values, ", ")+` ON CONFLICT (chunk_id) DO UPDATE SET model = excluded.model,
+				basis_version = excluded.basis_version, x = excluded.x, y = excluded.y, z = excluded.z, updated_at = excluded.updated_at
+				WHERE chunk_projection.model <> excluded.model OR chunk_projection.basis_version <= excluded.basis_version`,
+				ins...); err != nil {
 				return err
 			}
 		}
@@ -547,20 +569,32 @@ func (d *Document) latestBasisVersion(ctx context.Context, key sqlmem.ScopeKey, 
 // before it: that one is kept for one refit (its rows still name it until they are
 // re-placed), anything older is no basis any row can need — UMAP anchors of a
 // pruned version included.
-func (d *Document) saveBasis(ctx context.Context, key sqlmem.ScopeKey, model string, b *storedBasis) error {
+//
+// It reports false, having written nothing, when (model, b.version) is already
+// stored: another pass read the same basis and saved the next version first. The
+// primary key is the arbiter — on both tiers and across replicas, with no lock —
+// and ON CONFLICT DO NOTHING turns the loser's key violation into a zero-row
+// insert. Allocating the version in the same transaction would not help: under
+// read committed both passes still read the same max.
+func (d *Document) saveBasis(ctx context.Context, key sqlmem.ScopeKey, model string, b *storedBasis) (bool, error) {
 	comps := make([]float32, 0, projection.Components*b.Dimension)
 	for k := range projection.Components {
 		comps = append(comps, b.Components[k]...)
 	}
 	ev := fmt.Sprintf("[%s,%s,%s]", fmtFloat(b.ExplainedVariance[0]), fmtFloat(b.ExplainedVariance[1]), fmtFloat(b.ExplainedVariance[2]))
-	return d.withSqlTxn(ctx, key, func(txnID string) error {
-		if err := d.execTxn(ctx, txnID, `INSERT INTO chunk_projection_basis
-			(model, version, dimension, mean, components, explained_variance, sample_n, fitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			model, b.version, b.Dimension, projection.EncodeFloat32s(b.Mean), projection.EncodeFloat32s(comps), ev, b.SampleN, b.fittedAt); err != nil {
+	saved := false
+	err := d.withSqlTxn(ctx, key, func(txnID string) error {
+		res, err := d.docSQL().ExecTxn(ctx, txnID, d.docSQL().Rebind(`INSERT INTO chunk_projection_basis
+			(model, version, dimension, mean, components, explained_variance, sample_n, fitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (model, version) DO NOTHING`),
+			[]any{model, b.version, b.Dimension, projection.EncodeFloat32s(b.Mean), projection.EncodeFloat32s(comps), ev, b.SampleN, b.fittedAt}, 0)
+		if err != nil || res.RowsAffected == 0 {
 			return err
 		}
+		saved = true
 		return d.pruneBases(ctx, txnID, model, b.version)
 	})
+	return saved && err == nil, err
 }
 
 // pruneBases drops model's basis rows and anchors older than the version before

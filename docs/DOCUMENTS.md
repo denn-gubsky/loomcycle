@@ -251,11 +251,15 @@ The rules below hold for both.
   or when the current one is older than `refit_after` AND `refit_min_new`
   chunks were placed since it was fitted. A refit keeps the map's orientation
   (PCA turns its axes to point the way the previous basis's did; UMAP aligns
-  its layout to the previous one), and every chunk is re-placed on it. When
-  two passes refit one scope at once, the first to save the new version wins
-  and the other places the chunks on it. Coordinates of an older
-  version, or of another embedder model, are never served: those chunks count
-  as missing until they are re-placed.
+  its layout to the previous one), and every chunk is re-placed on it.
+  Coordinates of an older version, or of another embedder model, are never
+  served: those chunks count as missing until they are re-placed.
+- **Two passes at once.** The sweeper and the operator route (or two
+  replicas) may refit or place one scope at the same moment. The database's
+  keys decide: the first refit to save a basis version wins, and the other
+  discards its fit and places on the winner's basis (reported as
+  `raced: true`, `refitted: false`); a placement never moves a chunk back to
+  an older basis.
 - **Bounds.** A pass places at most 5000 chunks (the operator route's `limit`)
   and fits at most once.
 - **`search` with `with_projection: true`** adds `query_xyz: [x, y, z]`, the
@@ -287,8 +291,9 @@ interval. To build or refresh one scope now:
 | `method` | `pca` \| `umap`: fit with this method instead of the configured one, to compare the two maps of one scope; the next pass under the configured method refits it back |
 
 The response is `{scope, dry_run, model, basis_version, method, placed,
-refitted, skipped, unsupported, more}`; call again while `more` is true.
-`unsupported: true` means the store has no vector index. The route is
+refitted, raced, skipped, unsupported, more}`; call again while `more` is true.
+`raced: true` means another pass saved a new basis first and this one placed
+on it. `unsupported: true` means the store has no vector index. The route is
 operator-admin, like the re-index, answers 409 while `memory.projection` is
 off, and makes no model call. A UMAP fit of a large scope takes seconds to a
 minute; the call returns when it is done.
@@ -398,6 +403,76 @@ const open = await client.document({
   document_id: doc.document_id, type: "decision", status: "open",
 });
 ```
+
+## Watching documents change — the reader feed (RFC FV)
+
+A view of a scope's documents (a list, a map) can stay current without
+reloading on a timer: `GET /v1/_document/feed` streams, as SSE, a frame each
+time a document the caller can list changes.
+
+**Why a second feed.** `GET /v1/_document/changes` is the operator's
+tenant-wide feed, and it stays the operator's: it names every chunk the tenant
+writes, and its `seq` cursor counts, by its gaps, writes to documents a member
+may not list. The reader feed shows one scope, only documents the caller may
+read, and has no cursor.
+
+```
+GET /v1/_document/feed?scope=user|tenant[&scope_id=…][&tenant=…]
+```
+
+- **Who.** Gated like `POST /v1/_document`: a tenant member may open it, and
+  `scope`, `scope_id` and `tenant` resolve exactly as there (from the
+  principal; `tenant` is an admin's focus). `scope: tenant` needs the tenant
+  scope's memory and SQL grants. `scope: agent` is refused (`400`): agent
+  scopes are private to their runs.
+- **Frames.**
+  - `event: feed`, first: `{enabled}`. `enabled: false` means the server
+    captures no changes (`LOOMCYCLE_MEMORY_CHANGES_ENABLED` unset); the stream
+    idles, so reload on a timer instead. (The operator feed's embedder health
+    is not sent: it is the deployment's infrastructure state.)
+  - `event: change`: `{type, chunk_id, document_id, at}`, with `type` one of
+    `document.chunk.updated`, `document.chunk.deleted`,
+    `document.edges.changed` (a statement written, ruled on or removed — one
+    per endpoint document; `chunk_id` is the endpoint in that document).
+    Changes of one type to one document within one server poll arrive as one.
+    Value-free: refetch the document, e.g. with `graph_snapshot document_ids`.
+  - `event: error`: `store_unavailable` is non-fatal (the server retries).
+    These close the stream: `access_unavailable` (the caller's access could
+    not be re-checked), `credential_revoked` (the credential no longer
+    authenticates or is no longer admitted to the route) and
+    `credential_expired` (the token's lifetime ended).
+- **No cursor.** The stream starts at the current head and never sends a
+  `seq`. After any disconnect, reload the view and open a new stream.
+- **Re-authenticated.** Every 30 s the stream authenticates its request again
+  exactly as a new request is (a revoked, retired or expired token, a disabled
+  or unapproved user, or lost route access ends it) and re-reads the caller's
+  rules; a token with a fixed end ends the stream at that instant.
+- **Access per frame.** A document must be readable under the rule
+  `graph_snapshot` and `search` apply. Answers are cached per stream for at
+  most 30 s, so a revoked grant stops frames within that window. A frame for a
+  document that no longer exists is sent only when nothing the caller holds
+  restricts reading the scope; otherwise it is dropped and the client
+  reconciles on its next reload.
+- **Limits.** At most `LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS` (default 4; `0` =
+  unlimited) concurrent streams per principal on a replica; the next is
+  refused with `429 too_many_streams`.
+- **Transports.** HTTP SSE only. TS: `client.documentFeed({scope, scopeId?,
+  tenant?, signal})`, an async iterator of `{kind: "feed" | "change" |
+  "error", payload}`.
+
+```ts
+for await (const f of client.documentFeed({ scope: "tenant", signal })) {
+  if (f.kind === "feed" && !f.payload.enabled) startPolling();
+  if (f.kind === "change") refetch(f.payload.document_id);
+}
+```
+
+What the feed knows comes from the write: every write and delete of a chunk
+body records its document (a deletion could not be placed afterwards — the
+chunk row is gone), and the statement paths record `document.edges.changed`.
+Moving a chunk between documents without rewriting its body, edges written
+by a chunk body's inline `[[links]]`, and edges removed by deleting a chunk
+are not announced to the far document; a reload picks them up.
 
 ## Search: indexing, re-indexing and reranking
 

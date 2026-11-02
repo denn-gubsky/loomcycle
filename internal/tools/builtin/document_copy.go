@@ -630,9 +630,9 @@ func (d *Document) copyDocumentBodies(ctx context.Context, p *copyPlan, doc *cop
 			newKey := chunkBodyKey(nc)
 			prov, perr := d.Store.MemoryProvenanceGet(ctx, tenant, p.srcMem, srcID, key)
 			if perr == nil && (prov.Origin != "" || prov.Class != "" || prov.SourceSessionID != "" || prov.SourceRunID != "") {
-				err = d.Store.MemorySetProvenance(ctx, tenant, p.dstMem, dstID, newKey, value, 0, prov)
+				err = d.Store.MemorySetProvenance(store.WithChangeDocument(ctx, doc.newID), tenant, p.dstMem, dstID, newKey, value, 0, prov)
 			} else {
-				err = d.Store.MemorySet(ctx, tenant, p.dstMem, dstID, newKey, value, 0)
+				err = d.Store.MemorySet(store.WithChangeDocument(ctx, doc.newID), tenant, p.dstMem, dstID, newKey, value, 0)
 			}
 			if err != nil {
 				p.bodyFailures++

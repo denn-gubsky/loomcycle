@@ -90,9 +90,9 @@ definitions).
 
 ## Change feed — react to changes instead of polling
 
-When the change-data-capture feed is enabled (`LOOMCYCLE_MEMORY_CHANGES_ENABLED=1`), loomcycle emits a **value-free** change event on every memory/document write — the coordinate of *what* changed (`{seq, type, tenant, scope, scope_id, key|chunk_id, at}`), not the value. A consumer reads the current value via the data API above. Off by default: when off there is zero overhead and no table growth.
+When the change-data-capture feed is enabled (`LOOMCYCLE_MEMORY_CHANGES_ENABLED=1`), loomcycle emits a **value-free** change event on every memory/document write — the coordinate of *what* changed (`{seq, type, tenant, scope, scope_id, key|chunk_id, document_id, at}`), not the value. A document change names its `document_id` (absent when the writer could not say, and on rows written before the field existed); statement changes arrive as `document.edges.changed`, one per endpoint document. A consumer reads the current value via the data API above. Off by default: when off there is zero overhead and no table growth.
 
-**Subscribe (pull, SSE).** `GET /v1/_memory/changes?since=<seq>` and `GET /v1/_document/changes?since=<seq>` stream events as they happen; `seq` is a monotonic cursor to resume from. `substrate:tenant` scope; each stream is your own tenant's changes only (not member-accessible — the feed is operator observability).
+**Subscribe (pull, SSE).** `GET /v1/_memory/changes?since=<seq>` and `GET /v1/_document/changes?since=<seq>` stream events as they happen; `seq` is a monotonic cursor to resume from. `substrate:tenant` scope; each stream is your own tenant's changes only (not member-accessible — the feed is operator observability). A tenant member watches documents through `GET /v1/_document/feed?scope=user|tenant` instead: one scope, only documents the caller can list, no cursor (see [DOCUMENTS.md](DOCUMENTS.md#watching-documents-change--the-reader-feed-rfc-fv)).
 
 Each stream carries three SSE event names; ignore any other name a newer server adds:
 
@@ -123,6 +123,7 @@ Each POST carries `X-Loomcycle-Signature: hex(hmac-sha256(secret, body))` — ve
 - `LOOMCYCLE_MEMORY_CHANGES_ENABLED=1` — turn the feed on.
 - `LOOMCYCLE_MEMORY_CHANGES_RETENTION_HOURS` — how long change rows are kept (default 24).
 - `LOOMCYCLE_CHANGE_SUB_INTERVAL_MS` — push delivery poll interval (default 5000).
+- `LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS` — concurrent `GET /v1/_document/feed` streams per principal on a replica (default 4; `0` = unlimited).
 
 ## loomcycle → loomcycle, and the gRPC/Python twin
 

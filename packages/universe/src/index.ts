@@ -13,6 +13,9 @@ export { dataLayerFromClient } from "./lib/dataLayer";
 export { createLoomcycleClient } from "./lib/createClient";
 export type { Connection } from "./lib/createClient";
 export type { LinkReview, LinkWrite, StatementResult, UniverseDataLayer } from "./lib/dataLayer";
+export { parseUniverseView, viewFields, UNIVERSE_LAYOUT_KIND } from "./lib/views";
+export type { SavedUniverseView, UniverseViewState } from "./lib/views";
+export type { CameraPose } from "./render/scene";
 
 export type {
   BrowseScope,
