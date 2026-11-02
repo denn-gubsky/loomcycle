@@ -16,9 +16,9 @@ import (
 
 func (s *Store) AppendMemoryChange(ctx context.Context, c store.MemoryChange) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO memory_changes(tenant_id, change_type, scope, scope_id, key, chunk_id, at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		c.TenantID, string(c.Type), string(c.Scope), c.ScopeID, c.Key, c.ChunkID, time.Now().UnixNano(),
+		`INSERT INTO memory_changes(tenant_id, change_type, scope, scope_id, key, chunk_id, document_id, at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.TenantID, string(c.Type), string(c.Scope), c.ScopeID, c.Key, c.ChunkID, c.DocumentID, time.Now().UnixNano(),
 	)
 	return err
 }
@@ -28,10 +28,16 @@ func (s *Store) GetMemoryChangesSince(ctx context.Context, tenantID string, afte
 		limit = 500
 	}
 	return s.queryMemoryChanges(ctx,
-		`SELECT seq, tenant_id, change_type, scope, scope_id, key, chunk_id, at
+		`SELECT seq, tenant_id, change_type, scope, scope_id, key, chunk_id, document_id, at
 		 FROM memory_changes WHERE tenant_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`,
 		tenantID, afterSeq, limit,
 	)
+}
+
+func (s *Store) MemoryChangesHead(ctx context.Context, tenantID string) (int64, error) {
+	var seq int64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM memory_changes WHERE tenant_id = ?`, tenantID).Scan(&seq)
+	return seq, err
 }
 
 func (s *Store) GetMemoryChangesSinceAllTenants(ctx context.Context, afterSeq int64, limit int) ([]store.MemoryChange, error) {
@@ -39,7 +45,7 @@ func (s *Store) GetMemoryChangesSinceAllTenants(ctx context.Context, afterSeq in
 		limit = 500
 	}
 	return s.queryMemoryChanges(ctx,
-		`SELECT seq, tenant_id, change_type, scope, scope_id, key, chunk_id, at
+		`SELECT seq, tenant_id, change_type, scope, scope_id, key, chunk_id, document_id, at
 		 FROM memory_changes WHERE seq > ? ORDER BY seq ASC LIMIT ?`,
 		afterSeq, limit,
 	)
@@ -60,7 +66,7 @@ func (s *Store) queryMemoryChanges(ctx context.Context, query string, args ...an
 			sc string
 			at int64
 		)
-		if err := rows.Scan(&c.Seq, &c.TenantID, &ct, &sc, &c.ScopeID, &c.Key, &c.ChunkID, &at); err != nil {
+		if err := rows.Scan(&c.Seq, &c.TenantID, &ct, &sc, &c.ScopeID, &c.Key, &c.ChunkID, &c.DocumentID, &at); err != nil {
 			return nil, err
 		}
 		c.Type = store.MemoryChangeType(ct)

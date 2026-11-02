@@ -18,9 +18,9 @@ func (s *Store) AppendMemoryChange(ctx context.Context, c store.MemoryChange) er
 	// absorbs transient connection-pool errors rather than surfacing a gap.
 	return retryOnTransientConn(ctx, func() error {
 		_, err := s.pool.Exec(ctx,
-			`INSERT INTO memory_changes(tenant_id, change_type, scope, scope_id, key, chunk_id)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
-			c.TenantID, string(c.Type), string(c.Scope), c.ScopeID, c.Key, c.ChunkID,
+			`INSERT INTO memory_changes(tenant_id, change_type, scope, scope_id, key, chunk_id, document_id)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			c.TenantID, string(c.Type), string(c.Scope), c.ScopeID, c.Key, c.ChunkID, c.DocumentID,
 		)
 		return err
 	})
@@ -31,10 +31,16 @@ func (s *Store) GetMemoryChangesSince(ctx context.Context, tenantID string, afte
 		limit = 500
 	}
 	return s.queryMemoryChanges(ctx,
-		`SELECT seq, tenant_id, change_type, scope, scope_id, key, chunk_id, at
+		`SELECT seq, tenant_id, change_type, scope, scope_id, key, chunk_id, document_id, at
 		 FROM memory_changes WHERE tenant_id = $1 AND seq > $2 ORDER BY seq ASC LIMIT $3`,
 		tenantID, afterSeq, limit,
 	)
+}
+
+func (s *Store) MemoryChangesHead(ctx context.Context, tenantID string) (int64, error) {
+	var seq int64
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(MAX(seq), 0) FROM memory_changes WHERE tenant_id = $1`, tenantID).Scan(&seq)
+	return seq, err
 }
 
 func (s *Store) GetMemoryChangesSinceAllTenants(ctx context.Context, afterSeq int64, limit int) ([]store.MemoryChange, error) {
@@ -42,7 +48,7 @@ func (s *Store) GetMemoryChangesSinceAllTenants(ctx context.Context, afterSeq in
 		limit = 500
 	}
 	return s.queryMemoryChanges(ctx,
-		`SELECT seq, tenant_id, change_type, scope, scope_id, key, chunk_id, at
+		`SELECT seq, tenant_id, change_type, scope, scope_id, key, chunk_id, document_id, at
 		 FROM memory_changes WHERE seq > $1 ORDER BY seq ASC LIMIT $2`,
 		afterSeq, limit,
 	)
@@ -62,7 +68,7 @@ func (s *Store) queryMemoryChanges(ctx context.Context, query string, args ...an
 			ct string
 			sc string
 		)
-		if err := rows.Scan(&c.Seq, &c.TenantID, &ct, &sc, &c.ScopeID, &c.Key, &c.ChunkID, &c.At); err != nil {
+		if err := rows.Scan(&c.Seq, &c.TenantID, &ct, &sc, &c.ScopeID, &c.Key, &c.ChunkID, &c.DocumentID, &c.At); err != nil {
 			return nil, err
 		}
 		c.Type = store.MemoryChangeType(ct)

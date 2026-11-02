@@ -125,6 +125,9 @@ func (c *Store) emitKey(ctx context.Context, tenantID string, scope store.Memory
 	ch := store.MemoryChange{TenantID: tenantID, Scope: scope, ScopeID: scopeID}
 	if chunkID, ok := strings.CutPrefix(key, docChunkPrefix); ok {
 		ch.ChunkID = chunkID
+		// Only a chunk body's row carries the document: a plain memory write made
+		// under a stamped ctx is not a change to that document.
+		ch.DocumentID = store.ChangeDocumentFrom(ctx)
 		if isDelete {
 			ch.Type = store.DocumentChangeDeleted
 		} else {
@@ -138,6 +141,15 @@ func (c *Store) emitKey(ctx context.Context, tenantID string, scope store.Memory
 			ch.Type = store.MemoryChangeSet
 		}
 	}
+	c.emit(ctx, ch)
+}
+
+// RecordDocumentChange appends a document change no keyed write produces — a
+// statement written or removed (RFC FV §2) — with the same best-effort contract
+// as a write's own row. It exists on this decorator and nowhere else, so a
+// caller that type-asserts for it appends rows exactly when capture is on, and a
+// deployment with the feed off still writes nothing to the table.
+func (c *Store) RecordDocumentChange(ctx context.Context, ch store.MemoryChange) {
 	c.emit(ctx, ch)
 }
 

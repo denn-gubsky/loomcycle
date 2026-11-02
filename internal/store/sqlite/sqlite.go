@@ -1881,6 +1881,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE auth_removals ADD COLUMN stage TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE auth_removals ADD COLUMN prior_status TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE scim_users ADD COLUMN reactivated_at INTEGER`,
+		// The document a change row belongs to, stamped at write time (RFC FV);
+		// '' for every row before. Mirrors postgres 0129.
+		`ALTER TABLE memory_changes ADD COLUMN document_id TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {

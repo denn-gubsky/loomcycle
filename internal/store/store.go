@@ -716,6 +716,11 @@ const (
 	MemoryChangeScopeDeleted MemoryChangeType = "memory.scope_deleted"
 	DocumentChangeUpdated    MemoryChangeType = "document.chunk.updated"
 	DocumentChangeDeleted    MemoryChangeType = "document.chunk.deleted"
+	// DocumentEdgesChanged is a statement (a chunk_edges row in SQL Memory)
+	// written, ruled on or removed (RFC FV §2). Links are not memory keys, so the
+	// CDC decorator never sees them: the Document tool appends this row itself,
+	// one per endpoint document, and only through a store that captures changes.
+	DocumentEdgesChanged MemoryChangeType = "document.edges.changed"
 )
 
 // MemoryChange is one row in the change-data-capture feed (RFC CD Part C),
@@ -726,15 +731,40 @@ const (
 // as run events / GetRunEventsSince). ChunkID is set for document.* changes
 // (derived from the reserved doc.chunk:<id> key); Key is set for plain memory
 // changes.
+//
+// DocumentID is the document a document.* change belongs to, stamped when the
+// write happened (RFC FV §1) — never resolved when the row is read, because by
+// then a deleted chunk's row is gone, and a deletion is the change a reader
+// most needs placed. "" when the writer did not say (a non-document caller, an
+// orphan body, every row written before the column existed).
 type MemoryChange struct {
-	Seq      int64            `json:"seq"`
-	TenantID string           `json:"tenant,omitempty"`
-	Type     MemoryChangeType `json:"type"`
-	Scope    MemoryScope      `json:"scope"`
-	ScopeID  string           `json:"scope_id"`
-	Key      string           `json:"key,omitempty"`
-	ChunkID  string           `json:"chunk_id,omitempty"`
-	At       time.Time        `json:"at"`
+	Seq        int64            `json:"seq"`
+	TenantID   string           `json:"tenant,omitempty"`
+	Type       MemoryChangeType `json:"type"`
+	Scope      MemoryScope      `json:"scope"`
+	ScopeID    string           `json:"scope_id"`
+	Key        string           `json:"key,omitempty"`
+	ChunkID    string           `json:"chunk_id,omitempty"`
+	DocumentID string           `json:"document_id,omitempty"`
+	At         time.Time        `json:"at"`
+}
+
+// changeDocumentKey carries the document a write belongs to (RFC FV §1).
+type changeDocumentKey struct{}
+
+// WithChangeDocument returns ctx naming docID as the document the chunk-body
+// write made under it belongs to. The CDC decorator copies it onto the change
+// row; nothing else reads it, and a plain store ignores it. Stamp it AT the
+// write, not around a whole operation: a ctx that reaches a write to another
+// document would file that change under the wrong one.
+func WithChangeDocument(ctx context.Context, docID string) context.Context {
+	return context.WithValue(ctx, changeDocumentKey{}, docID)
+}
+
+// ChangeDocumentFrom returns the document WithChangeDocument put on ctx, or "".
+func ChangeDocumentFrom(ctx context.Context) string {
+	id, _ := ctx.Value(changeDocumentKey{}).(string)
+	return id
 }
 
 // Usage is one run's aggregated token accounting, computed by the loop and
@@ -3260,6 +3290,11 @@ type MemoryChangeStore interface {
 	// oldest first, capped at limit — the SSE cursor read. Tenant-scoped: a
 	// caller only ever sees its OWN tenant's changes.
 	GetMemoryChangesSince(ctx context.Context, tenantID string, afterSeq int64, limit int) ([]MemoryChange, error)
+
+	// MemoryChangesHead returns the highest Seq among a tenant's change rows, 0
+	// when it has none: where a stream that starts NOW begins (RFC FV §3),
+	// without reading the rows before it.
+	MemoryChangesHead(ctx context.Context, tenantID string) (int64, error)
 
 	// GetMemoryChangesSinceAllTenants is GetMemoryChangesSince across EVERY
 	// tenant, the operator layer included, in one seq order. Each row carries

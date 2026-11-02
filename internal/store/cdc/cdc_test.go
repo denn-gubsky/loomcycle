@@ -149,3 +149,47 @@ func TestCDC_FailedAppendIsLoggedAsError(t *testing.T) {
 		}
 	}
 }
+
+// TestCDC_StampedDocumentRidesOnlyChunkBodyRows pins RFC FV §1: the document a
+// write's ctx names lands on the change row of a chunk-body write and delete,
+// and never on a plain memory row made under the same ctx.
+func TestCDC_StampedDocumentRidesOnlyChunkBodyRows(t *testing.T) {
+	c, cleanup := newCDC(t)
+	defer cleanup()
+	ctx := store.WithChangeDocument(context.Background(), "DOC1")
+
+	if err := c.MemorySet(ctx, "acme", store.MemoryScopeUser, "u1", "doc.chunk:CID", json.RawMessage(`"body"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.MemoryDelete(ctx, "acme", store.MemoryScopeUser, "u1", "doc.chunk:CID"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.MemorySet(ctx, "acme", store.MemoryScopeUser, "u1", "k1", json.RawMessage(`1`), 0); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := c.GetMemoryChangesSince(context.Background(), "acme", 0, 100)
+	if err != nil || len(changes) != 3 {
+		t.Fatalf("changes = %+v (err %v), want 3", changes, err)
+	}
+	for i, want := range []string{"DOC1", "DOC1", ""} {
+		if changes[i].DocumentID != want {
+			t.Errorf("change[%d] %s document_id = %q, want %q", i, changes[i].Type, changes[i].DocumentID, want)
+		}
+	}
+}
+
+// TestCDC_RecordDocumentChangeAppendsTheRow pins that the edges change the
+// Document tool hands the decorator is appended as given.
+func TestCDC_RecordDocumentChangeAppendsTheRow(t *testing.T) {
+	c, cleanup := newCDC(t)
+	defer cleanup()
+	c.RecordDocumentChange(context.Background(), store.MemoryChange{TenantID: "acme", Type: store.DocumentEdgesChanged,
+		Scope: store.MemoryScopeUser, ScopeID: "u1", ChunkID: "CID", DocumentID: "DOC1"})
+	changes, err := c.GetMemoryChangesSince(context.Background(), "acme", 0, 100)
+	if err != nil || len(changes) != 1 {
+		t.Fatalf("changes = %+v (err %v), want 1", changes, err)
+	}
+	if got := changes[0]; got.Type != store.DocumentEdgesChanged || got.ChunkID != "CID" || got.DocumentID != "DOC1" {
+		t.Errorf("row = %+v, want document.edges.changed CID of DOC1", got)
+	}
+}
