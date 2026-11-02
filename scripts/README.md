@@ -24,7 +24,7 @@ for every option.
   `lint`) is reported as `skip`, not a failure.
 - Without `--keep-going` the run stops at the first failing package; with it,
   every package runs and the exit status is non-zero if any failed.
-- `web/` compiles `packages/{library,explorer,memory-view,def-fields}` from
+- `web/` compiles `packages/{library,explorer,memory-view,def-fields,universe}` from
   source, so those need `install` before `web/` can be checked on its own.
 - `build` on `web/` writes into `internal/webui/dist/` without clearing old
   assets; to build the binary's embedded UI, keep using `make build-ui`.

@@ -56,7 +56,7 @@ if [ "$(has '^test/runtime/')" = true ]; then runtime=true; fi
 
 echo "go=$go"
 echo "runtime=$runtime"
-echo "web=$(has '^(web|packages/(library|explorer|memory-view|def-fields))/')"
+echo "web=$(has '^(web|packages/(library|explorer|memory-view|def-fields|universe))/')"
 echo "ts=$(has '^adapters/ts/')"
 echo "python=$(has '^adapters/python/')"
 echo "bridges=$(has '^(packages/bridge-[^/]+|deploy/bridges)/')"

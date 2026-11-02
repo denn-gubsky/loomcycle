@@ -35,6 +35,13 @@ const memoryViewStyles = path.resolve(webRoot, "../packages/memory-view/src/styl
 // styles-key-first ordering rationale as above.
 const defFieldsSrc = path.resolve(webRoot, "../packages/def-fields/src/index.ts");
 const defFieldsStyles = path.resolve(webRoot, "../packages/def-fields/src/styles.css");
+// @loomcycle/universe (RFC FQ) — the star-map navigator, consumed from SOURCE
+// the same way and loaded lazily (PathTreeView), so three.js lands in its own
+// chunk fetched only when a reader flips the explorer to `stars`. Its classes
+// are scoped (`.loomcycle-universe`), so the lazy wrapper imports its styles.
+// three / camera-controls resolve from packages/universe/node_modules.
+const universeSrc = path.resolve(webRoot, "../packages/universe/src/index.ts");
+const universeStyles = path.resolve(webRoot, "../packages/universe/src/styles.css");
 
 // loomcycle UI build configuration.
 //
@@ -62,6 +69,8 @@ export default defineConfig({
       "@loomcycle/memory-view": memoryViewSrc,
       "@loomcycle/def-fields/styles.css": defFieldsStyles,
       "@loomcycle/def-fields": defFieldsSrc,
+      "@loomcycle/universe/styles.css": universeStyles,
+      "@loomcycle/universe": universeSrc,
     },
     // We consume @loomcycle/library from SOURCE, which imports `react` /
     // `react-dom` (and the JSX runtime). Because the package has its OWN

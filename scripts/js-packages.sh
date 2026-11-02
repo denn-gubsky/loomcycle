@@ -37,7 +37,7 @@ Options:
 
 A package without the script is reported as "skip", not a failure.
 build/test/typecheck/lint need node_modules: run `install` first. web/ also
-compiles packages/{library,explorer,memory-view,def-fields} from source, so
+compiles packages/{library,explorer,memory-view,def-fields,universe} from source, so
 install those before checking web/ alone.
 
 Exit status: 0 if every selected package passed or skipped, 1 if any failed,
