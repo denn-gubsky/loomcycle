@@ -104,6 +104,18 @@ memory:
     kind: decision
     model: decide
     timeout_ms: 120000        # covers the decision model reloading after a chat model evicts it
+  # The 3D star map's "meaning" view (RFC FQ): each document chunk placed by
+  # its embedding, vectors never leaving the runtime. UMAP keeps a document's
+  # chunks together (measured 0.83 vs PCA's 0.14 document neighbour agreement
+  # on the project's own docs); a fit samples at most 10,000 chunks and runs
+  # off the request path. The sweeper places new chunks every hour and refits a
+  # map at most weekly (refit_after 7d AND refit_min_new 500); its first pass is
+  # one interval after boot — POST /v1/_document/project (admin) builds a
+  # scope's map at once.
+  projection:
+    enabled: true
+    interval: 1h
+    method: umap
 
 # ─── Decision models (a change here needs a restart) ──────────────────
 decision:
