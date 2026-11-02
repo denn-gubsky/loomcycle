@@ -1997,14 +1997,18 @@ func (d *Document) judgeEdge(ctx context.Context, key sqlmem.ScopeKey, s *statem
 		confidence, now, reason, judgedBy, now, s.ID); err != nil {
 		return errFrom("judge_fact: "+err.Error(), err), nil
 	}
+	// A verdict can withhold the statement or bring it back: a drawn relation changes.
+	d.recordEdgesChanged(ctx, key, store.MemoryScope(key.Scope), s.FromID, s.ToID)
 	return jsonResult(map[string]any{
 		"edge_id": s.ID, "verdict": verdict, "confidence": confidence,
 		"judged_at": now, "withheld": confidence < withholdBelowConfidence,
 	})
 }
 
-// publishEdgeChange tells both endpoint documents' change channels.
+// publishEdgeChange tells both endpoint documents' change channels, and the
+// change feed (RFC FV §2) when capture is on.
 func (d *Document) publishEdgeChange(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op, edgeID, from, to, kind, status string) {
+	d.recordEdgesChanged(ctx, key, mscope, from, to)
 	if d.Bus == nil {
 		return
 	}

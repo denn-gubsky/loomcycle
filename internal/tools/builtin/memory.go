@@ -2820,7 +2820,10 @@ func (m *Memory) execDelete(ctx context.Context, scope store.MemoryScope, scopeI
 	if res, refused := m.deleteRefusal(ctx, "delete", scope, scopeID, in.Key); refused {
 		return res, nil
 	}
-	deleted, err := m.backend(ctx).Delete(ctx, scope, scopeID, in.Key)
+	// A consolidated fact's body row is the one chunk body deletable by key; the
+	// change feed files its removal under the fact's document (RFC FV §1).
+	bodyCtx := (&Document{Store: m.Store, SqlMem: m.SqlMem}).ChunkBodyChangeCtx(ctx, tools.RunIdentity(ctx).TenantID, scope, scopeID, in.Key)
+	deleted, err := m.backend(ctx).Delete(bodyCtx, scope, scopeID, in.Key)
 	if err != nil {
 		return errFrom(fmt.Sprintf("delete: %s", err), err), nil
 	}

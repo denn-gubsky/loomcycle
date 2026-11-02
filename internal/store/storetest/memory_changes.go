@@ -85,13 +85,40 @@ func testMemoryChangesFeed(t *testing.T, s store.Store) {
 		t.Errorf("all-tenant feed with limit 2 returned %d rows", len(capped))
 	}
 
+	// RFC FV: the document a change belongs to round-trips on both the tenant and
+	// the all-tenant read, an unstamped row reads back "", and the head is the
+	// tenant's own newest seq (0 for a tenant with no rows).
+	must(s.AppendMemoryChange(ctx, store.MemoryChange{TenantID: "acme", Type: store.DocumentEdgesChanged, Scope: store.MemoryScopeUser, ScopeID: "u1", ChunkID: "E1", DocumentID: "DOC1"}))
+	stamped, err := s.GetMemoryChangesSince(ctx, "acme", acme[1].Seq, 100)
+	if err != nil || len(stamped) != 1 {
+		t.Fatalf("stamped read = %+v (err %v), want one row", stamped, err)
+	}
+	if got := stamped[0]; got.DocumentID != "DOC1" || got.Type != store.DocumentEdgesChanged || got.ChunkID != "E1" {
+		t.Errorf("stamped row = %+v, want document.edges.changed chunk E1 of DOC1", got)
+	}
+	if all, _ := s.GetMemoryChangesSinceAllTenants(ctx, stamped[0].Seq-1, 100); len(all) != 1 || all[0].DocumentID != "DOC1" {
+		t.Errorf("all-tenant read of the stamped row = %+v, want document_id DOC1", all)
+	}
+	if acme[1].DocumentID != "" {
+		t.Errorf("unstamped row reads document_id %q, want \"\"", acme[1].DocumentID)
+	}
+	if head, err := s.MemoryChangesHead(ctx, "acme"); err != nil || head != stamped[0].Seq {
+		t.Errorf("acme head = %d (err %v), want its newest seq %d", head, err, stamped[0].Seq)
+	}
+	if head, err := s.MemoryChangesHead(ctx, "globex"); err != nil || head != glob[0].Seq {
+		t.Errorf("globex head = %d (err %v), want its own newest seq %d, not acme's", head, err, glob[0].Seq)
+	}
+	if head, err := s.MemoryChangesHead(ctx, "nobody"); err != nil || head != 0 {
+		t.Errorf("head of a tenant with no rows = %d (err %v), want 0", head, err)
+	}
+
 	// Prune removes rows older than a future cutoff (all of them).
 	n, err := s.PruneMemoryChanges(ctx, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("PruneMemoryChanges: %v", err)
 	}
-	if n < 3 {
-		t.Errorf("pruned %d, want >= 3", n)
+	if n < 4 {
+		t.Errorf("pruned %d, want >= 4", n)
 	}
 	if left, _ := s.GetMemoryChangesSince(ctx, "acme", 0, 100); len(left) != 0 {
 		t.Errorf("after prune acme has %d rows, want 0", len(left))

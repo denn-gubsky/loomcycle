@@ -252,5 +252,5 @@ func (s *Server) drainMemoryChanges(ctx context.Context, stream *sse, tenantID s
 }
 
 func isDocumentChange(t store.MemoryChangeType) bool {
-	return t == store.DocumentChangeUpdated || t == store.DocumentChangeDeleted
+	return t == store.DocumentChangeUpdated || t == store.DocumentChangeDeleted || t == store.DocumentEdgesChanged
 }

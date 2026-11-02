@@ -8023,7 +8023,10 @@ export type MemoryChangeType =
   | "memory.delete"
   | "memory.scope_deleted"
   | "document.chunk.updated"
-  | "document.chunk.deleted";
+  | "document.chunk.deleted"
+  /** A statement (a link between chunks) was written, ruled on or removed —
+   *  one per endpoint document (RFC FV). */
+  | "document.edges.changed";
 
 /** The memory scope a change landed in. `global` is listed because the
  *  runtime's scope enum has it and the feed passes the written scope through
@@ -8049,6 +8052,10 @@ export interface MemoryChange {
   scope_id: string;
   key?: string;
   chunk_id?: string;
+  /** The document a `document.*` change belongs to, recorded when the write
+   *  happened (RFC FV). Absent on a row whose writer did not say, and on rows
+   *  from a runtime older than the field. */
+  document_id?: string;
   /** RFC3339 time of the write. */
   at: string;
 }
@@ -8124,6 +8131,64 @@ export interface StreamChangesOptions {
    *  be a non-negative integer — the client throws rather than send a value
    *  the server would silently read as `0` and replay everything. */
   since?: number;
+  /** Abort to close the stream; the iterator then throws an `AbortError`. */
+  signal?: AbortSignal;
+}
+
+// ---- The reader's document feed (RFC FV) ----
+
+/** The change types {@link LoomcycleClient.documentFeed} carries. */
+export type DocumentFeedChangeType =
+  | "document.chunk.updated"
+  | "document.chunk.deleted"
+  | "document.edges.changed";
+
+/** One reader-feed change: a document the caller can list changed. NO cursor
+ *  — the reader feed never sends a seq, and a reconnect is a resync. Several
+ *  changes of one type to one document inside one server poll arrive as one,
+ *  naming the latest chunk. Value-free: refetch the document (e.g. through
+ *  `document({op:"graph_snapshot", document_ids:[…]})`). */
+export interface DocumentFeedChange {
+  type: DocumentFeedChangeType;
+  /** The chunk changed; for `document.edges.changed`, the statement's endpoint
+   *  in this document. */
+  chunk_id: string;
+  document_id: string;
+  /** RFC3339 time of the write. */
+  at: string;
+}
+
+/** The reader feed's opening frame (`event: feed`). Only `enabled`: no
+ *  cursor, and no embedder health (that is the operator feed's). */
+export interface DocumentFeedStatus {
+  /** `false` when the server does not capture changes
+   *  (`LOOMCYCLE_MEMORY_CHANGES_ENABLED` unset): the stream stays open and NO
+   *  change will arrive — fall back to reloading on a timer. */
+  enabled: boolean;
+}
+
+/** Yielded by {@link LoomcycleClient.documentFeed}: `{ kind: "feed" }` first,
+ *  then one `{ kind: "change" }` per change. An `error` item with code
+ *  `store_unavailable` is non-fatal (the server retries). These end the
+ *  stream: `access_unavailable` (the caller's access could not be re-checked),
+ *  `credential_revoked` (the credential no longer authenticates or is no longer
+ *  admitted) and `credential_expired` (the token's lifetime ended) — reload,
+ *  and reconnect with a valid credential. */
+export type DocumentFeedFrame =
+  | { kind: "feed"; payload: DocumentFeedStatus }
+  | { kind: "change"; payload: DocumentFeedChange }
+  | { kind: "error"; payload: ChangeFeedError };
+
+/** Options for {@link LoomcycleClient.documentFeed}. */
+export interface DocumentFeedOptions {
+  /** The scope to watch. `agent` is not served: agent scopes are private to
+   *  their runs. */
+  scope: "user" | "tenant";
+  /** RFC AS browse override: watch another subject's user scope you may see
+   *  (sent as `?scope_id=`). */
+  scopeId?: string;
+  /** An admin's tenant focus (sent as `?tenant=`); ignored for anyone else. */
+  tenant?: string;
   /** Abort to close the stream; the iterator then throws an `AbortError`. */
   signal?: AbortSignal;
 }

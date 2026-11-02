@@ -4985,6 +4985,13 @@ type Env struct {
 	// Env: LOOMCYCLE_MEMORY_MAX_VALUE_BYTES.
 	MemoryMaxValueBytes int
 
+	// DocumentFeedMaxStreams caps the concurrent GET /v1/_document/feed streams
+	// one principal may hold on a replica (RFC FV): each stream polls the change
+	// table, so the cap bounds what one principal can make the database do.
+	// Default 4; 0 (or any value ≤ 0) = unlimited.
+	// Env: LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS.
+	DocumentFeedMaxStreams int
+
 	// MemoryMaxScopeBytes is the default per-(scope, scope_id) byte
 	// cap. Per-agent yaml `memory_quota_bytes` overrides this.
 	// Default 1048576 (1 MB). Set to 0 to disable.
@@ -5988,6 +5995,12 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 			} else {
 				cfg.Env.MemoryMaxValueBytes = n
 			}
+		}
+	}
+	cfg.Env.DocumentFeedMaxStreams = 4
+	if v := os.Getenv("LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Env.DocumentFeedMaxStreams = max(n, 0)
 		}
 	}
 	cfg.Env.MemoryMaxScopeBytes = 1024 * 1024
