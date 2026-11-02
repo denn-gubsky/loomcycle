@@ -248,6 +248,9 @@ export interface NavigatorContext {
   // The navigator may take the whole explorer (hiding the document pane).
   maximized: boolean;
   onToggleMaximize: () => void;
+  // The signed-in principal's subject (absent in open mode): what a navigator
+  // that searches the caller's own memory needs when `browse` names no one.
+  subject?: string;
 }
 
 // ---- RFC FO P5 — classify / accept_classification ----
