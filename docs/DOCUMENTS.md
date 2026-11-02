@@ -394,20 +394,27 @@ GET /v1/_document/feed?scope=user|tenant[&scope_id=…][&tenant=…]
   scope's memory and SQL grants. `scope: agent` is refused (`400`): agent
   scopes are private to their runs.
 - **Frames.**
-  - `event: feed`, first: `{enabled, embedder}`. `enabled: false` means the
-    server captures no changes (`LOOMCYCLE_MEMORY_CHANGES_ENABLED` unset); the
-    stream idles, so reload on a timer instead.
+  - `event: feed`, first: `{enabled}`. `enabled: false` means the server
+    captures no changes (`LOOMCYCLE_MEMORY_CHANGES_ENABLED` unset); the stream
+    idles, so reload on a timer instead. (The operator feed's embedder health
+    is not sent: it is the deployment's infrastructure state.)
   - `event: change`: `{type, chunk_id, document_id, at}`, with `type` one of
     `document.chunk.updated`, `document.chunk.deleted`,
     `document.edges.changed` (a statement written, ruled on or removed — one
     per endpoint document; `chunk_id` is the endpoint in that document).
     Changes of one type to one document within one server poll arrive as one.
     Value-free: refetch the document, e.g. with `graph_snapshot document_ids`.
-  - `event: error`: `store_unavailable` is non-fatal (the server retries);
-    `access_unavailable` means the caller's access could not be re-checked and
-    the stream is closed.
+  - `event: error`: `store_unavailable` is non-fatal (the server retries).
+    These close the stream: `access_unavailable` (the caller's access could
+    not be re-checked), `credential_revoked` (the credential no longer
+    authenticates or is no longer admitted to the route) and
+    `credential_expired` (the token's lifetime ended).
 - **No cursor.** The stream starts at the current head and never sends a
   `seq`. After any disconnect, reload the view and open a new stream.
+- **Re-authenticated.** Every 30 s the stream authenticates its request again
+  exactly as a new request is (a revoked, retired or expired token, a disabled
+  or unapproved user, or lost route access ends it) and re-reads the caller's
+  rules; a token with a fixed end ends the stream at that instant.
 - **Access per frame.** A document must be readable under the rule
   `graph_snapshot` and `search` apply. Answers are cached per stream for at
   most 30 s, so a revoked grant stops frames within that window. A frame for a

@@ -241,7 +241,7 @@ describe("streamDocumentChanges", () => {
 // them: the feed frame without `since`, change frames with no `seq`.
 describe("documentFeed", () => {
   const READER_FEED =
-    'event: feed\ndata: {"enabled":true,"embedder":{"state":"ok","calls":1,"failures":0}}\n\n';
+    'event: feed\ndata: {"enabled":true}\n\n';
   const UPDATED =
     'event: change\ndata: {"type":"document.chunk.updated","chunk_id":"c1","document_id":"d1","at":"2026-11-02T10:00:00Z"}\n\n';
   const EDGES =
@@ -269,7 +269,7 @@ describe("documentFeed", () => {
     expect(frames.map((f) => f.kind)).toEqual(["feed", "change", "change", "error"]);
     expect(frames[0]).toEqual({
       kind: "feed",
-      payload: { enabled: true, embedder: { state: "ok", calls: 1, failures: 0 } },
+      payload: { enabled: true },
     });
     expect(frames[1]).toEqual({
       kind: "change",

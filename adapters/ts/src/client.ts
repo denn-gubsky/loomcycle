@@ -4952,9 +4952,11 @@ export class LoomcycleClient {
    *  - There is NO cursor and no resume: the stream starts now. After any
    *    disconnect, reload your view and open a new stream.
    *  - A `{ kind: "error" }` with code `store_unavailable` is non-fatal;
-   *    `access_unavailable` means the server could not re-check your access
-   *    and closed the stream — reload and reconnect.
-   *  - A revoked grant stops that document's changes within 30 s.
+   *    `access_unavailable`, `credential_revoked` and `credential_expired`
+   *    close the stream — reload and reconnect with a valid credential.
+   *  - The server re-authenticates the stream every 30 s: a revoked grant
+   *    stops that document's changes, and a revoked token ends the stream,
+   *    within that window; a token's expiry ends it on time.
    *  - At most a few streams per principal (`LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS`,
    *    default 4); one more is refused with a 429 — a `BackpressureError` with
    *    code `too_many_streams`, not retryable until you close a stream.

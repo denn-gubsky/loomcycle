@@ -8158,21 +8158,22 @@ export interface DocumentFeedChange {
   at: string;
 }
 
-/** The reader feed's opening frame (`event: feed`) — the operator feed's,
- *  without `since`. */
+/** The reader feed's opening frame (`event: feed`). Only `enabled`: no
+ *  cursor, and no embedder health (that is the operator feed's). */
 export interface DocumentFeedStatus {
   /** `false` when the server does not capture changes
    *  (`LOOMCYCLE_MEMORY_CHANGES_ENABLED` unset): the stream stays open and NO
    *  change will arrive — fall back to reloading on a timer. */
   enabled: boolean;
-  embedder?: EmbedderHealth;
 }
 
 /** Yielded by {@link LoomcycleClient.documentFeed}: `{ kind: "feed" }` first,
  *  then one `{ kind: "change" }` per change. An `error` item with code
- *  `store_unavailable` is non-fatal (the server retries); `access_unavailable`
- *  means the server could not re-check the caller's access and closed the
- *  stream — reload and reconnect. */
+ *  `store_unavailable` is non-fatal (the server retries). These end the
+ *  stream: `access_unavailable` (the caller's access could not be re-checked),
+ *  `credential_revoked` (the credential no longer authenticates or is no longer
+ *  admitted) and `credential_expired` (the token's lifetime ended) — reload,
+ *  and reconnect with a valid credential. */
 export type DocumentFeedFrame =
   | { kind: "feed"; payload: DocumentFeedStatus }
   | { kind: "change"; payload: DocumentFeedChange }
