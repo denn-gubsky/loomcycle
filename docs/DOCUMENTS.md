@@ -233,6 +233,12 @@ other. The vectors never leave the server; only the three coordinates do.
   orientation, and every chunk is re-placed on it. Coordinates of an older
   version, or of another embedder model, are never served: those chunks count
   as missing until they are re-placed.
+- **Two passes at once.** The sweeper and the operator route (or two
+  replicas) may refit or place one scope at the same moment. The database's
+  keys decide: the first refit to save a basis version wins, and the other
+  discards its fit and places on the winner's basis (reported as
+  `raced: true`, `refitted: false`); a placement never moves a chunk back to
+  an older basis.
 - **Bounds.** A pass places at most 5000 chunks (the operator route's `limit`)
   and fits at most once.
 - **`search` with `with_projection: true`** adds `query_xyz: [x, y, z]`, the
@@ -260,10 +266,11 @@ interval. To build or refresh one scope now:
 | `limit` | the most chunks to place in this call (default 5000) |
 
 The response is `{scope, dry_run, model, basis_version, placed, refitted,
-skipped, unsupported, more}`; call again while `more` is true. `unsupported:
-true` means the store has no vector index. The route is operator-admin, like
-the re-index, answers 409 while `memory.projection` is off, and makes no model
-call.
+raced, skipped, unsupported, more}`; call again while `more` is true. `raced:
+true` means another pass saved a new basis first and this one placed on it.
+`unsupported: true` means the store has no vector index. The route is
+operator-admin, like the re-index, answers 409 while `memory.projection` is
+off, and makes no model call.
 
 ### Integrity — deletes are atomic, edges never dangle
 
