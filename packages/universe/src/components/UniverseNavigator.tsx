@@ -2,20 +2,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LoomcycleClient } from "@loomcycle/client";
 import { createLoomcycleClient, type Connection } from "../lib/createClient";
 import { dataLayerFromClient, type UniverseDataLayer } from "../lib/dataLayer";
-import { addPage, emptyModel, type UniverseModel } from "../lib/model";
+import { addPage, emptyModel, refreshEdges, type ModelEdge, type UniverseModel } from "../lib/model";
 import { computeLayout, type Layout } from "../lib/layout";
 import { projectionFrame, toFrame } from "../lib/projection";
 import { adjacencyOf, neighbourhood } from "../lib/lod";
 import { chunkRgb, kindHex, rgbHex } from "../lib/colors";
 import { UniverseScene, type UniverseMode } from "../render/scene";
 import SearchPanel, { type ResultRow } from "./SearchPanel";
+import { LinkDialog, LinksPanel } from "./Links";
 import type { BrowseScope, DocScope, UniverseSelection } from "../types";
 
 // UniverseNavigator is the star map as a navigator: it loads a scope's
 // snapshot page by page, draws it, and reports the document (and chunk) the
 // reader picks. It is what @loomcycle/explorer's `renderNavigator` slot hosts,
-// and it also stands alone (<UniverseView>). It reads nothing and writes
-// nothing beyond the snapshot and search ops.
+// and it also stands alone (<UniverseView>). It reads the snapshot and search
+// ops; its only writes are links (propose / assert) and rulings on proposed
+// ones, and only when the data layer offers them.
 
 export interface UniverseDataSource {
   connection?: Connection;
@@ -102,6 +104,11 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
   // What we last reported, so the host echoing it back is not a new navigation.
   const emitted = useRef<string>("");
   const pendingHost = useRef<UniverseSelection | undefined>(undefined);
+  // Link authoring: armed on a source star, the next star picked is the target.
+  const [linkFrom, setLinkFrom] = useState<number | null>(null);
+  const [linkTo, setLinkTo] = useState<number | null>(null);
+  const linkFromRef = useRef<number | null>(null);
+  linkFromRef.current = linkFrom;
 
   const browseKey = `${browse?.scopeId ?? ""}|${browse?.tenant ?? ""}`;
 
@@ -130,6 +137,11 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
         onHover: (star, x, y) => setHover(star >= 0 ? { star, x, y } : null),
         onPick: (star, additive) => {
           const m = modelRef.current;
+          const from = linkFromRef.current;
+          if (from !== null) {
+            if (star < m.chunkCount && star !== from) setLinkTo(star);
+            return;
+          }
           if (star >= m.chunkCount) {
             sceneRef.current?.flyTo(star);
             return;
@@ -177,6 +189,8 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
     const m = emptyModel();
     modelRef.current = m;
     setSelected([]);
+    setLinkFrom(null);
+    setLinkTo(null);
     setResults([]);
     setChecked(new Set());
     setVersion((v) => v + 1);
@@ -324,6 +338,70 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
     sceneRef.current?.setHits(results.map((r) => r.chunk).filter((c) => c >= 0));
   }, [results, layout]);
 
+  // The chunks a selected star stands for: a document's root is the whole
+  // document, as it is for the links drawn.
+  const selectedChunks = useMemo(() => {
+    const m = modelRef.current;
+    const out = new Set<number>();
+    for (const s of focusStars.seeds) {
+      const di = m.chunk.doc[s];
+      if (m.doc.root[di] === s) {
+        const start = m.doc.chunkStart[di];
+        for (let c = start; c < start + m.doc.chunkCount[di]; c++) out.add(c);
+      } else out.add(s);
+    }
+    return out;
+    // version: the model mutates in place between pages.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusStars.seeds, version]);
+
+  useEffect(() => {
+    if (linkFrom === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setLinkFrom(null);
+        setLinkTo(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [linkFrom]);
+
+  // After a write, re-read the links of the documents it touched (one snapshot
+  // page of exactly those documents holds every link into and out of them).
+  const refreshDocs = useCallback(
+    async (docIds: string[]) => {
+      if (!data) return;
+      const page = await data.graphSnapshot(
+        { scope, document_ids: docIds, include: ["documents", "chunks", "edges"], page_documents: docIds.length },
+        browse,
+      );
+      refreshEdges(modelRef.current, page, new Set(docIds));
+      setVersion((v) => v + 1);
+    },
+    // browse by its primitives (browseKey).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data, scope, browseKey],
+  );
+
+  const writeLink = async (kind: string, mode: "propose" | "assert") => {
+    const m = modelRef.current;
+    if (!data?.writeLink || linkFrom === null || linkTo === null) return;
+    await data.writeLink({ scope, fromId: m.chunk.id[linkFrom], toId: m.chunk.id[linkTo], kind, mode }, browse);
+    const docs = [...new Set([m.doc.id[m.chunk.doc[linkFrom]], m.doc.id[m.chunk.doc[linkTo]]])];
+    const from = linkFrom;
+    setLinkFrom(null);
+    setLinkTo(null);
+    await refreshDocs(docs);
+    setSelected([from]);
+  };
+
+  const reviewLink = async (edge: ModelEdge, verdict: "accept" | "reject", reason?: string) => {
+    if (!data?.reviewLink) return;
+    await data.reviewLink({ scope, id: edge.id, verdict, reason }, browse);
+    await refreshDocs([...new Set([edge.fromDocId, edge.toDocId])].filter(Boolean));
+  };
+
   // ---- toolbar actions ----
   const frameSelection = () => {
     const stars = focusStars.seeds.length ? focusStars.seeds : results.map((r) => r.chunk).filter((c) => c >= 0);
@@ -384,6 +462,29 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
         <button type="button" onClick={frameSelection} title="Frame the selection (or the search results)">
           ⤢
         </button>
+        {data?.writeLink && (
+          <button
+            type="button"
+            aria-pressed={linkFrom !== null}
+            className={linkFrom !== null ? "active" : undefined}
+            disabled={linkFrom === null && selected.length !== 1}
+            onClick={() => {
+              if (linkFrom !== null) {
+                setLinkFrom(null);
+                setLinkTo(null);
+              } else if (selected.length === 1) setLinkFrom(selected[0]);
+            }}
+            title={
+              linkFrom !== null
+                ? "Cancel the new link (Esc)"
+                : selected.length === 1
+                  ? "Link the selected star to another: pick the target next"
+                  : "Select one star to link from"
+            }
+          >
+            link
+          </button>
+        )}
         <label className="lu-field" title="How many hops of links to draw around the selection">
           depth
           <select value={depth} onChange={(e) => setDepth(Number(e.target.value))}>
@@ -467,6 +568,35 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
               </button>
             ))}
           </div>
+        )}
+        {linkFrom !== null && linkTo === null && (
+          <div className="lu-hint">Pick the star to link to · Esc cancels</div>
+        )}
+        {linkFrom !== null && linkTo !== null && (
+          <LinkDialog
+            model={m}
+            from={linkFrom}
+            to={linkTo}
+            onCancel={() => {
+              setLinkFrom(null);
+              setLinkTo(null);
+            }}
+            onSubmit={writeLink}
+          />
+        )}
+        {focusStars.seeds.length > 0 && (
+          <LinksPanel
+            model={m}
+            edges={focusStars.edges}
+            selectedChunks={selectedChunks}
+            canReview={!!data?.reviewLink}
+            onJump={(c) => {
+              setSelected([c]);
+              sceneRef.current?.flyTo(c);
+              emit(c);
+            }}
+            onReview={reviewLink}
+          />
         )}
         {hover && <Tooltip model={m} layout={layout} hover={hover} />}
       </div>

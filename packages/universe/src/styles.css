@@ -323,3 +323,172 @@
     radial-gradient(circle at 8px 50%, var(--accent, #2f9e6f) 0 4px, transparent 5px),
     color-mix(in srgb, #fff 75%, transparent);
 }
+
+/* The selection's links (P4): a list of what the lines on the map are, with a
+   ruling on each proposed one. Top right, so the legend keeps the bottom left. */
+.loomcycle-universe .lu-links {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 2;
+  width: min(340px, calc(100% - 16px));
+  max-height: calc(100% - 16px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a2e3a);
+  background: color-mix(in srgb, var(--bg-soft, #161922) 94%, transparent);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.3);
+  font-size: var(--lc-text-xs, 12px);
+}
+.loomcycle-universe .lu-links__head {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font-weight: 600;
+}
+.loomcycle-universe .lu-links__head span,
+.loomcycle-universe .lu-links__more {
+  opacity: 0.6;
+  font-weight: 400;
+}
+.loomcycle-universe .lu-links__body {
+  overflow: auto;
+  padding: 0 8px 8px;
+}
+.loomcycle-universe .lu-links__error,
+.loomcycle-universe .lu-dialog__error {
+  color: var(--danger, #e5484d);
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+.loomcycle-universe .lu-links__kind {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 2px;
+  font-weight: 600;
+}
+.loomcycle-universe .lu-links__kind i {
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+}
+.loomcycle-universe .lu-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  padding: 3px 0;
+  border-top: 1px solid color-mix(in srgb, var(--border, #2a2e3a) 60%, transparent);
+}
+.loomcycle-universe .lu-link--expired {
+  opacity: 0.55;
+}
+.loomcycle-universe .lu-link__target {
+  flex: 1 1 100%;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.loomcycle-universe .lu-link__meta {
+  display: inline-flex;
+  gap: 6px;
+  opacity: 0.8;
+}
+.loomcycle-universe .lu-link__rule,
+.loomcycle-universe .lu-link__reason {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.loomcycle-universe .lu-link__reason {
+  flex: 1 1 100%;
+}
+.loomcycle-universe .lu-link__reason input {
+  flex: 1;
+  min-width: 0;
+}
+.loomcycle-universe .lu-badge {
+  padding: 0 5px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  font-size: 10px;
+  line-height: 15px;
+}
+.loomcycle-universe .lu-badge--proposed {
+  color: var(--warn, #f5a524);
+}
+.loomcycle-universe .lu-badge--asserted {
+  color: var(--ok, #30a46c);
+}
+.loomcycle-universe .lu-badge--expired {
+  opacity: 0.7;
+}
+
+/* Link authoring: the hint while choosing a target, then the dialog. */
+.loomcycle-universe .lu-hint,
+.loomcycle-universe .lu-dialog {
+  position: absolute;
+  left: 50%;
+  top: 8px;
+  z-index: 3;
+  transform: translateX(-50%);
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a2e3a);
+  background: color-mix(in srgb, var(--bg-soft, #161922) 96%, transparent);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  font-size: var(--lc-text-xs, 12px);
+}
+.loomcycle-universe .lu-hint {
+  padding: 5px 10px;
+  pointer-events: none;
+}
+.loomcycle-universe .lu-dialog {
+  width: min(380px, calc(100% - 16px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+}
+.loomcycle-universe .lu-dialog__ends {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.loomcycle-universe .lu-dialog__arrow {
+  opacity: 0.6;
+  font-weight: 400;
+}
+.loomcycle-universe .lu-dialog label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.loomcycle-universe .lu-dialog input:not([type="radio"]) {
+  flex: 1;
+  min-width: 0;
+}
+.loomcycle-universe .lu-dialog fieldset {
+  display: flex;
+  gap: 12px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.loomcycle-universe .lu-dialog__actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.loomcycle-universe .lu-toolbar button.active {
+  border-color: var(--accent, #56c596);
+  color: var(--accent, #56c596);
+}

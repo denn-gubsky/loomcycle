@@ -3,9 +3,10 @@ import type { DocumentToolInput, LoomcycleClient } from "@loomcycle/client";
 import type { BrowseScope, DocScope, GraphSnapshot, GraphSnapshotInput, SearchHit } from "../types";
 
 // UniverseDataLayer is the narrow contract the star map needs from the runtime:
-// the paged scope snapshot, semantic search, and one document's edges when the
-// snapshot's edge budget was cut. Hosts inject the client-backed default
-// (dataLayerFromClient) or their own (a cookie-authed same-origin fetcher).
+// the paged scope snapshot, semantic search, and (optionally) the statement
+// writes behind link authoring and review. Hosts inject the client-backed
+// default (dataLayerFromClient) or their own (a cookie-authed same-origin
+// fetcher). The runtime decides who may write: the map shows its refusal.
 export interface UniverseDataLayer {
   graphSnapshot(input: GraphSnapshotInput, browse?: BrowseScope, signal?: AbortSignal): Promise<GraphSnapshot>;
   /** Document `search` (hybrid text + vector over chunk bodies). With
@@ -28,6 +29,33 @@ export interface UniverseDataLayer {
     opts: { topK?: number },
     signal?: AbortSignal,
   ): Promise<MemoryHit[]>;
+  /** Write a link between two chunks. "propose" lands it for review
+   *  (propose_statement), "assert" sets it at once (link_chunks). Optional;
+   *  without it the map offers no link button. */
+  writeLink?(req: LinkWrite, browse?: BrowseScope): Promise<StatementResult>;
+  /** Rule on a proposed link (accept_statement / reject_statement). A
+   *  rejection needs a reason. Optional; without it proposals are read-only. */
+  reviewLink?(req: LinkReview, browse?: BrowseScope): Promise<StatementResult>;
+}
+
+export interface LinkWrite {
+  scope: DocScope;
+  fromId: string;
+  toId: string;
+  kind: string;
+  mode: "propose" | "assert";
+}
+
+export interface LinkReview {
+  scope: DocScope;
+  id: string;
+  verdict: "accept" | "reject";
+  reason?: string;
+}
+
+export interface StatementResult {
+  id: string;
+  status: string;
 }
 
 export interface SearchAnswer {
@@ -77,6 +105,27 @@ export function dataLayerFromClient(client: LoomcycleClient): UniverseDataLayer 
         document: e.document,
       }));
     },
+    writeLink: (req, browse) =>
+      doc(
+        {
+          op: req.mode === "assert" ? "link_chunks" : "propose_statement",
+          scope: req.scope,
+          from_id: req.fromId,
+          to_id: req.toId,
+          kind: req.kind,
+        },
+        browse,
+      ) as unknown as Promise<StatementResult>,
+    reviewLink: (req, browse) =>
+      doc(
+        {
+          op: req.verdict === "accept" ? "accept_statement" : "reject_statement",
+          scope: req.scope,
+          id: req.id,
+          ...(req.reason ? { reason: req.reason } : {}),
+        },
+        browse,
+      ) as unknown as Promise<StatementResult>,
   };
 }
 

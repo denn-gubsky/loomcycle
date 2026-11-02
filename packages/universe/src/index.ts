@@ -12,7 +12,7 @@ export type { UniverseViewProps } from "./components/UniverseView";
 export { dataLayerFromClient } from "./lib/dataLayer";
 export { createLoomcycleClient } from "./lib/createClient";
 export type { Connection } from "./lib/createClient";
-export type { UniverseDataLayer } from "./lib/dataLayer";
+export type { LinkReview, LinkWrite, StatementResult, UniverseDataLayer } from "./lib/dataLayer";
 
 export type {
   BrowseScope,

@@ -1,5 +1,6 @@
 import type { Layout } from "./layout";
 import type { ModelEdge, UniverseModel } from "./model";
+import { toMs } from "./time";
 
 // Level of detail (research decisions L1–L4). A directory whose formation is
 // small on screen collapses to one star; a document whose constellation is
@@ -113,27 +114,58 @@ export interface DrawnLink {
   count: number;
   /** Any of them proposed (drawn dashed). */
   proposed: boolean;
+  /** Mean confidence of the merged statements that carry one; 1 when none do. */
+  confidence: number;
+  /** Every merged statement has stopped holding (its invalid_at has passed). */
+  expired: boolean;
 }
 
 // drawnLinks maps each edge's endpoints to their representatives and merges
 // the parallel ones, so a hundred links between two far formations draw as one
 // line whose weight says a hundred. A link that folds into a single star (both
 // ends inside one collapsed document or formation) is not drawn.
-export function drawnLinks(m: UniverseModel, l: Layout, lod: Lod, edges: readonly ModelEdge[]): DrawnLink[] {
-  const merged = new Map<string, DrawnLink>();
+export function drawnLinks(
+  m: UniverseModel,
+  l: Layout,
+  lod: Lod,
+  edges: readonly ModelEdge[],
+  nowMs: number = Date.now(),
+): DrawnLink[] {
+  const merged = new Map<string, DrawnLink & { confSum: number; confN: number }>();
   for (const e of edges) {
     if (e.from < 0 || e.to < 0) continue;
     const a = representative(m, l, lod, e.from);
     const b = representative(m, l, lod, e.to);
     if (a === b) continue;
     const key = `${a}|${b}|${e.kind}`;
+    const expired = e.invalidAt !== null && toMs(e.invalidAt) <= nowMs;
     const hit = merged.get(key);
     if (hit) {
       hit.count++;
       if (e.status === "proposed") hit.proposed = true;
-    } else merged.set(key, { a, b, kind: e.kind, count: 1, proposed: e.status === "proposed" });
+      if (!expired) hit.expired = false;
+      if (e.confidence !== null) {
+        hit.confSum += e.confidence;
+        hit.confN++;
+      }
+    } else {
+      merged.set(key, {
+        a,
+        b,
+        kind: e.kind,
+        count: 1,
+        proposed: e.status === "proposed",
+        confidence: 1,
+        expired,
+        confSum: e.confidence ?? 0,
+        confN: e.confidence === null ? 0 : 1,
+      });
+    }
   }
-  return [...merged.values()];
+  return [...merged.values()].map(({ confSum, confN, ...x }) => ({
+    ...x,
+    confidence: confN > 0 ? Math.min(1, Math.max(0, confSum / confN)) : 1,
+  }));
 }
 
 // neighbourhood collects the edges within `depth` hops of the seed chunks. A
