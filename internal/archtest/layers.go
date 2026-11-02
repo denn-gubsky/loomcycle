@@ -106,6 +106,9 @@ var layers = []layer{
 			"internal/netguard",
 			"internal/otel",
 			"internal/procgroup",
+			// The PCA fit + placement of embedding vectors (RFC FQ P2): stdlib
+			// arithmetic. The document pass that reads vectors sits above.
+			"internal/projection",
 			"internal/promptinject",
 			"internal/recipes",
 			"internal/redact",

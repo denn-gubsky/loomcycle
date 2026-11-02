@@ -219,6 +219,7 @@ const documentInputSchema = `{
 		"decay":       {"type": "number", "description": "graph_recall with budget_chars: each hop may spend at most decay^hop of the budget, so far hops cannot crowd out near ones. 0 < decay <= 1; default 0.7 for a declared walk, else 1 (no decay). Refused without budget_chars."},
 		"include_hierarchy": {"type": "string", "enum": ["up","down","both","none"], "description": "graph_recall: also step along the document tree — up to a chunk's parent (part_of), down to its children (has_part). Default none."},
 		"expand":      {"type": "object", "description": "search: after ranking, add the chunks the top hits are related to — one hop, within a budget — each marked expanded_via {kind, from_chunk_id, quote}. Use it when a passage depends on what it cites or defines. The search's filter arguments apply to the added chunks too.", "properties": {"kinds": {"type": "array", "items": {"type": "string"}}, "hops": {"type": "integer", "enum": [1]}, "budget_chars": {"type": "integer"}}},
+		"with_projection": {"type": "boolean", "description": "search: also return query_xyz, the query placed on the scope's 3D map of chunks by meaning (the coordinates graph_snapshot's projection block serves). Absent when the server keeps no map for this scope."},
 		"related_to":  {"type": "string", "description": "related: a chunk id whose neighbours BY RELATION (citations, definitions, …) to return as linked, beside — or, without id, instead of — the neighbours by meaning. Needs no embedder. The filter arguments (under_path, type, …) narrow it too."},
 		"reimport":    {"type": "boolean", "description": "import_md: the markdown is a NEW EDITION of the document named by document_id or work_key. Parts are matched by their text, then their heading path: unchanged parts keep their ids and links, a part whose text moved under another heading keeps them too, changed ones are superseded (the old one closes at edition_date), removed ones close, new ones open at edition_date. Nothing is deleted."},
 		"edition_date": {"type": "integer", "description": "import_md with reimport: when the new edition came into force (unix nanos; default now). Not earlier than the edition in force."},
@@ -392,6 +393,9 @@ type docInput struct {
 	IncludeHierarchy string        `json:"include_hierarchy,omitempty"`
 	Expand           *searchExpand `json:"expand,omitempty"`
 	RelatedTo        string        `json:"related_to,omitempty"`
+	// WithProjection (search): also place the query on the scope's 3D map, as
+	// query_xyz (RFC FQ P2).
+	WithProjection bool `json:"with_projection,omitempty"`
 	// Editions (RFC FN P2). import_md reimport:true reconciles an incoming edition
 	// onto the document named by document_id or work_key, part by part;
 	// edition_date dates the changes. resolve_anchor finds a work and a part of it
@@ -689,6 +693,12 @@ var docSchemaDDL = []string{
 	`CREATE TABLE IF NOT EXISTS chunk_layout (
 		chunk_id TEXT PRIMARY KEY, x INTEGER NOT NULL, y INTEGER NOT NULL,
 		width INTEGER NOT NULL, height INTEGER NOT NULL, color TEXT)`,
+	// chunk_projection — a chunk's place on the scope's 3D map by meaning (RFC FQ
+	// P2): its stored embedding projected on the scope's principal components.
+	// View metadata like chunk_layout; see document_projection.go. Its basis table,
+	// chunk_projection_basis, holds binary columns and is built per tier in
+	// provisionTables.
+	chunkProjectionDDL,
 	// document_leases: a named lease on this scope (document_lease.go).
 	documentLeasesDDL,
 	// statement_rulings / statement_ruling_items: each bulk ruling and what it
@@ -1148,6 +1158,9 @@ func (d *Document) provisionTables(ctx context.Context, key sqlmem.ScopeKey) err
 		chunk_id TEXT PRIMARY KEY, media_type TEXT NOT NULL, bytes ` + binType + ` NOT NULL,
 		size BIGINT NOT NULL, created_at BIGINT NOT NULL)`
 	if _, err := d.docSQL().Exec(ctx, key, assetDDL, nil, 0); err != nil {
+		return err
+	}
+	if _, err := d.docSQL().Exec(ctx, key, chunkProjectionBasisDDL(binType), nil, 0); err != nil {
 		return err
 	}
 	if err := d.migrateConfidencePrecision(ctx, key); err != nil {
@@ -2753,6 +2766,10 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_layout WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
 			return err
 		}
+		// The chunks' map coordinates (RFC FQ P2), for the same reason.
+		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_projection WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
+			return err
+		}
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunks WHERE document_id = ?`, docID); err != nil {
 			return err
 		}
@@ -3557,9 +3574,10 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			// walks by document, this walks the descendant set of one chunk, and a
 			// sidecar row reachable only through the path that was missed is an orphan
 			// nothing can see. chunk_revisions is the body-change log (RFC BS Phase
-			// 3a) and chunk_layout the canvas row — both orphan the same way.
+			// 3a), chunk_layout the canvas row and chunk_projection the map
+			// coordinate (RFC FQ P2) — all orphan the same way.
 			for _, tbl := range []string{"chunk_assets", "chunk_tags", "chunk_memory_meta",
-				"chunk_revisions", "chunk_layout"} {
+				"chunk_revisions", "chunk_layout", "chunk_projection"} {
 				if err := d.execTxn(ctx, txnID,
 					`DELETE FROM `+tbl+` WHERE chunk_id IN (`+marks+`)`, args...); err != nil {
 					return err
@@ -4328,6 +4346,17 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	renderRerank(result, rerank, res.Rerank)
 	if filter != nil {
 		result["filter"] = filter.echo
+	}
+	if in.WithProjection {
+		// The query embedding search already made: no new provider call. A backend
+		// that embeds out of process returns none, and the key stays absent.
+		xyz, ok, err := d.queryProjection(ctx, key, res.QueryVector)
+		if err != nil {
+			return errFrom("search: projection: "+err.Error(), err), nil
+		}
+		if ok {
+			result["query_xyz"] = xyz
+		}
 	}
 	return jsonResult(result)
 }

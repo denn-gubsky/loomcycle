@@ -24,6 +24,7 @@ export default function UniverseNavigatorPane({
       reloadToken={ctx.reloadToken}
       maximized={ctx.maximized}
       onToggleMaximize={ctx.onToggleMaximize}
+      subject={ctx.subject}
     />
   );
 }

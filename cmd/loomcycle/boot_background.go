@@ -712,6 +712,9 @@ func (b *boot) startStoreSweepers() {
 		slog.Warn("deadlink gc: disabled (LOOMCYCLE_DEADLINK_GC_MS=0 or no Store)")
 	}
 
+	// The document projection (RFC FQ P2): off unless memory.projection asks.
+	startProjectionSweeper(bgCtx, cfg, storeIface, sqlMemMgr, b.embedder, advisoryLock)
+
 	// Channel tool TTL sweeper (v0.8.4). Same shape as MemorySweeper.
 	if cfg.Env.ChannelsSweepInterval > 0 && storeIface != nil {
 		// Idle document change feeds are swept on the same singleton, at most

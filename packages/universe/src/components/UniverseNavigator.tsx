@@ -4,9 +4,10 @@ import { createLoomcycleClient, type Connection } from "../lib/createClient";
 import { dataLayerFromClient, type UniverseDataLayer } from "../lib/dataLayer";
 import { addPage, emptyModel, type UniverseModel } from "../lib/model";
 import { computeLayout, type Layout } from "../lib/layout";
+import { projectionFrame, toFrame } from "../lib/projection";
 import { adjacencyOf, neighbourhood } from "../lib/lod";
 import { chunkRgb, kindHex, rgbHex } from "../lib/colors";
-import { UniverseScene } from "../render/scene";
+import { UniverseScene, type UniverseMode } from "../render/scene";
 import SearchPanel, { type ResultRow } from "./SearchPanel";
 import type { BrowseScope, DocScope, UniverseSelection } from "../types";
 
@@ -36,6 +37,9 @@ export interface UniverseNavigatorProps extends UniverseDataSource {
   /** When provided, a maximize toggle is shown and drives this. */
   maximized?: boolean;
   onToggleMaximize?: () => void;
+  /** The signed-in subject, for memory search at user scope when `browse`
+   *  names no other subject. */
+  subject?: string;
 }
 
 const PAGE_DOCUMENTS = 500;
@@ -68,7 +72,7 @@ interface Hover {
 }
 
 export default function UniverseNavigator(props: UniverseNavigatorProps) {
-  const { scope, browse, underPath, selection, onSelect, reloadToken, maximized, onToggleMaximize } = props;
+  const { scope, browse, underPath, selection, onSelect, reloadToken, maximized, onToggleMaximize, subject } = props;
   const data = useUniverseDataLayer(props);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<UniverseScene | null>(null);
@@ -84,6 +88,12 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
   const [animate, setAnimate] = useState(readAnimate);
   const [hiddenKinds, setHiddenKinds] = useState<ReadonlySet<string>>(() => new Set());
   const [hover, setHover] = useState<Hover | null>(null);
+  // The view: stars at their place in the Path tree, or in the embedding space.
+  const [viewMode, setViewMode] = useState<UniverseMode>("structure");
+  const [planar, setPlanar] = useState(false);
+  const [queryXyz, setQueryXyz] = useState<[number, number, number] | null>(null);
+  // Bumped once when a projection refit lands between two pages of a load.
+  const [refitReload, setRefitReload] = useState(0);
   // Server-side filters (the snapshot's `types` / `statuses`); the choices are
   // what the unfiltered sky held, so narrowing never empties the menus.
   const [typeFilter, setTypeFilter] = useState("");
@@ -178,7 +188,7 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
         const page = await data.graphSnapshot(
           {
             scope,
-            include: ["documents", "chunks", "edges", "dirents"],
+            include: ["documents", "chunks", "edges", "dirents", "facts", "projection"],
             page_documents: PAGE_DOCUMENTS,
             under_path: underPath,
             types: typeFilter ? [typeFilter] : undefined,
@@ -199,6 +209,10 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
           setVersion((v) => v + 1);
         }
         setLoading({ docs: m.docCount, done: !cursor });
+        if (!cursor && m.projection.mixedBasis) {
+          // A refit moved the frame mid-load: load once more in one frame.
+          setRefitReload((n) => (n < 1 ? n + 1 : n));
+        }
         if (!cursor) {
           if (!typeFilter && !statusFilter)
             setChoices({
@@ -215,14 +229,32 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
     return () => ac.abort();
     // browse by its primitives (browseKey) so an inline object does not reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, scope, browseKey, underPath, reloadToken, typeFilter, statusFilter]);
+  }, [data, scope, browseKey, underPath, reloadToken, typeFilter, statusFilter, refitReload]);
 
   const layout = useMemo<Layout>(() => computeLayout(modelRef.current), [version]);
   const adjacency = useMemo(() => adjacencyOf(modelRef.current), [version]);
+  const projected = modelRef.current.projection.placed > 0;
+  const frame = useMemo(
+    () => (modelRef.current.projection.placed > 0 ? projectionFrame(modelRef.current, planar) : null),
+    // version: the model mutates in place between pages.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [version, planar],
+  );
 
   useEffect(() => {
-    sceneRef.current?.setData(modelRef.current, layout);
-  }, [layout]);
+    sceneRef.current?.setData(modelRef.current, layout, frame);
+  }, [layout, frame]);
+
+  // No projection (not built, or a runtime without one): the meaning view has
+  // nowhere to put the stars, so the map stays in structure.
+  const effectiveMode: UniverseMode = projected ? viewMode : "structure";
+  useEffect(() => {
+    sceneRef.current?.setMode(effectiveMode);
+  }, [effectiveMode, layout]);
+
+  useEffect(() => {
+    sceneRef.current?.setMarker(effectiveMode === "meaning" && frame && queryXyz ? toFrame(frame, queryXyz) : null);
+  }, [effectiveMode, frame, queryXyz]);
 
   // ---- the host's selection → the map ----
   const resolveHost = useCallback((sel: UniverseSelection | undefined): number => {
@@ -315,6 +347,37 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
   return (
     <div className="loomcycle-universe">
       <div className="lu-toolbar">
+        <div className="lu-switch" role="group" aria-label="View">
+          <button
+            type="button"
+            aria-pressed={effectiveMode === "structure"}
+            className={effectiveMode === "structure" ? "active" : undefined}
+            onClick={() => setViewMode("structure")}
+            title="Stars where the Path tree files them"
+          >
+            structure
+          </button>
+          <button
+            type="button"
+            aria-pressed={effectiveMode === "meaning"}
+            className={effectiveMode === "meaning" ? "active" : undefined}
+            disabled={!projected}
+            onClick={() => setViewMode("meaning")}
+            title={
+              projected
+                ? "Stars where their content places them (the embedding projection)"
+                : "No projection yet: the runtime builds it with POST /v1/_document/project or its projection sweeper"
+            }
+          >
+            meaning
+          </button>
+        </div>
+        {effectiveMode === "meaning" && (
+          <label className="lu-field" title="Drop the third component: a flat map of the first two">
+            <input type="checkbox" checked={planar} onChange={(e) => setPlanar(e.target.checked)} />
+            planar
+          </label>
+        )}
         <button type="button" onClick={() => sceneRef.current?.home()} title="Show the whole sky">
           ⌂
         </button>
@@ -361,7 +424,9 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
           {loading.error
             ? "load failed"
             : loading.done
-              ? `${m.docCount} documents · ${m.chunkCount} chunks${m.edgesTruncated ? " · links capped" : ""}`
+              ? `${m.docCount} documents · ${m.chunkCount} chunks${m.edgesTruncated ? " · links capped" : ""}${
+                  effectiveMode === "meaning" ? ` · ${m.projection.placed} placed` : ""
+                }`
               : `loading… ${loading.docs} documents`}
         </span>
         {onToggleMaximize && (
@@ -418,6 +483,9 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
         onChecked={setChecked}
         onPick={pickResult}
         onFrame={(stars) => sceneRef.current?.frame(stars)}
+        withProjection={projected}
+        onQueryPoint={setQueryXyz}
+        memoryScopeId={scope === "agent" ? undefined : scope === "tenant" ? "" : (browse?.scopeId ?? subject)}
       />
     </div>
   );

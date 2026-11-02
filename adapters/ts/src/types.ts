@@ -4360,6 +4360,9 @@ export type DocumentToolInput = {
   include_hierarchy?: "up" | "down" | "both" | "none";
   /** search: after ranking, add what the top hits are related to (one hop). */
   expand?: { kinds?: string[]; hops?: 1; budget_chars?: number };
+  /** search: also return `query_xyz`, the query placed on the scope's 3D map
+   *  (the axes of graph_snapshot's `projection` block). Absent without a map. */
+  with_projection?: boolean;
   /** related: a chunk whose neighbours BY RELATION to return as `linked`. */
   related_to?: string;
   /** import_md: the markdown is a new edition of document_id / work_key. */
@@ -4596,6 +4599,9 @@ export type DocumentSearchResult = {
   filter?: DocumentSearchFilter;
   reranked?: boolean;
   rerank_reason?: string;
+  /** With `with_projection` and a map for the scope: the query's place on it
+   *  (4 decimals). */
+  query_xyz?: [number, number, number];
 };
 
 /** Response of `document({op:"related"})` — narrow a {@link DocumentToolResponse}
@@ -4694,7 +4700,13 @@ export type GraphSnapshot = {
     /** The document a name points at ("" for a directory), whatever its page. */
     document_ids: string[];
   };
-  /** Not computed yet: every chunk is listed as missing a position. */
+  /** Only with `include` naming `projection`: each chunk's place on the
+   *  scope's 3D map by meaning (its embedding on the scope's three principal
+   *  axes). `model` is the embedder ("<provider>/<model>"); `basis_version` 0
+   *  means no map yet, with `xyz` empty and every chunk missing. Otherwise
+   *  `xyz` is one x, y, z triple per chunk in `chunks.ids` order (4 decimals),
+   *  and a chunk with no place on the current map is 0, 0, 0 with its position
+   *  in `missing`. */
   projection?: {
     model: string;
     basis_version: number;

@@ -966,3 +966,61 @@ func (s *Store) MemoryEmbedListMissing(ctx context.Context, tenantID string, sco
 	}
 	return out, rows.Err()
 }
+
+// MemoryEmbedListVectors returns the stored vectors of live rows under a key
+// prefix, keyset-paged on key. See the Store interface: the document projection
+// pass is its only caller.
+func (s *Store) MemoryEmbedListVectors(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]store.MemoryEmbedRow, error) {
+	if !s.pgvectorEnabled {
+		return nil, store.ErrVectorUnsupported
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	// Joined to memory for the same liveness rule search applies: an expired or
+	// superseded row's vector is not part of what a scope holds.
+	sql := `SELECT me.key, me.provider, me.model, me.dimension, me.embedding::text, me.created_at
+	          FROM memory_embeddings me
+	          JOIN memory m
+	            ON m.tenant_id = me.tenant_id
+	           AND m.scope     = me.scope
+	           AND m.scope_id  = me.scope_id
+	           AND m.key       = me.key
+	         WHERE me.tenant_id = $1 AND me.scope = $2 AND me.scope_id = $3
+	           AND (m.expires_at IS NULL OR m.expires_at > now())
+	           AND m.superseded_at IS NULL`
+	args := []any{tenantID, string(scope), scopeID}
+	if keyPrefix != "" {
+		args = append(args, keyPrefix+"%")
+		sql += ` AND me.key LIKE $` + strconv.Itoa(len(args))
+	}
+	if afterKey != "" {
+		args = append(args, afterKey)
+		sql += ` AND me.key > $` + strconv.Itoa(len(args))
+	}
+	sql += ` ORDER BY me.key LIMIT ` + strconv.Itoa(limit)
+
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("MemoryEmbedListVectors query: %w", err)
+	}
+	defer rows.Close()
+	out := []store.MemoryEmbedRow{}
+	for rows.Next() {
+		var (
+			r       store.MemoryEmbedRow
+			vecText string
+		)
+		if err := rows.Scan(&r.Key, &r.Provider, &r.Model, &r.Dimension, &vecText, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("MemoryEmbedListVectors scan: %w", err)
+		}
+		if r.Vector, err = decodePgvector(vecText); err != nil {
+			return nil, fmt.Errorf("MemoryEmbedListVectors: decode vector %s: %w", r.Key, err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

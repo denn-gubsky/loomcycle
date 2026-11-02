@@ -302,6 +302,9 @@ func TestRequiredScopeFor(t *testing.T) {
 		// takes the /v1/_* operator-admin posture, like /v1/_document/describe_images.
 		// Opening it to tenant operators, as reembed/backfill are, is a deliberate change.
 		{"POST", "/v1/_document/reindex", auth.ScopeAdmin},
+		// The projection pass rewrites a scope's 3D map — operator-admin like the
+		// re-index it sits beside.
+		{"POST", "/v1/_document/project", auth.ScopeAdmin},
 		// Generation spends a model call per chunk on the operator's generator —
 		// operator-admin like the re-index and describe_images.
 		{"POST", "/v1/_document/derive_units", auth.ScopeAdmin},

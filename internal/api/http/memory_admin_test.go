@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -104,6 +105,34 @@ func (v *vectorAdminStore) MemoryEmbedListByModel(ctx context.Context, tenantID 
 
 func (v *vectorAdminStore) MemoryEmbedSearch(ctx context.Context, _ string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	return nil, errors.New("MemoryEmbedSearch not implemented in admin fake")
+}
+
+// MemoryEmbedListVectors pages the fake's rows by key under one tenant, scope and
+// scope id, like the store does.
+func (v *vectorAdminStore) MemoryEmbedListVectors(_ context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]store.MemoryEmbedRow, error) {
+	if !v.supports {
+		return nil, store.ErrVectorUnsupported
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	head := embedKey(tenantID, scope, scopeID, "")
+	var out []store.MemoryEmbedRow
+	for k, e := range v.embeds {
+		key, ok := strings.CutPrefix(k, head)
+		if !ok || !strings.HasPrefix(key, keyPrefix) || key <= afterKey {
+			continue
+		}
+		out = append(out, store.MemoryEmbedRow{Key: key, Provider: e.Provider, Model: e.Model,
+			Dimension: e.Dimension, Vector: e.Vector, CreatedAt: e.CreatedAt})
+	}
+	slices.SortFunc(out, func(a, b store.MemoryEmbedRow) int { return strings.Compare(a.Key, b.Key) })
+	if len(out) > min(limit, 1000) {
+		out = out[:min(limit, 1000)]
+	}
+	return out, nil
 }
 
 func (v *vectorAdminStore) MemoryEmbedStats(ctx context.Context, tenantID string, scope store.MemoryScope) (store.MemoryEmbedStats, error) {

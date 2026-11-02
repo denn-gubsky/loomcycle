@@ -4,7 +4,11 @@
 // when the sky is still).
 //
 // aFlags bits: 1 rays, 2 selected, 4 search hit, 8 dead (retired / invalid),
-// 16 dimmed (outside the focused neighbourhood), 32 formation star.
+// 16 dimmed (outside the focused neighbourhood), 32 formation star, 64 fact.
+//
+// Every buffer carries two positions — `position` (the structure view) and
+// `aPos2` (the meaning view, the embedding projection) — and uMorph blends
+// them, so switching views moves the same stars instead of swapping scenes.
 
 export const FLAG_RAYS = 1;
 export const FLAG_SELECTED = 2;
@@ -12,6 +16,7 @@ export const FLAG_HIT = 4;
 export const FLAG_DEAD = 8;
 export const FLAG_DIM = 16;
 export const FLAG_FORMATION = 32;
+export const FLAG_FACT = 64;
 
 export const starVertex = /* glsl */ `
 attribute vec3 aColor;
@@ -20,6 +25,8 @@ attribute float aSeed;
 attribute float aRecency;
 attribute float aFlags;
 attribute vec3 aVis; // from, to, fade start (uClock seconds)
+attribute vec3 aPos2;
+uniform float uMorph;
 uniform float uTime;
 uniform float uClock;
 uniform float uSizeScale;
@@ -34,6 +41,7 @@ varying float vRays;
 varying float vSelected;
 varying float vHit;
 varying float vFormation;
+varying float vFact;
 
 float bit(float flags, float b) { return mod(floor(flags / b), 2.0); }
 
@@ -46,24 +54,29 @@ void main() {
   vSelected = bit(aFlags, 2.0);
   vHit = bit(aFlags, 4.0);
   vFormation = bit(aFlags, 32.0);
+  vFact = bit(aFlags, 64.0);
   // Twinkle: every star on its own phase; what changed recently sparkles
   // faster and deeper, calming over a day. A dead star does not twinkle.
   float w = mix(0.8, 2.5, aRecency);
   float amp = mix(0.06, 0.25, aRecency) * (1.0 - dead);
   vTwinkle = 1.0 + amp * sin(uTime * w + aSeed * 6.2831853);
   vSeed = aSeed;
-  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  vec4 mv = modelViewMatrix * vec4(mix(position, aPos2, uMorph), 1.0);
   float sprite = vRays > 0.5 ? 3.4 : (vFormation > 0.5 ? 2.0 : 1.0);
-  float px = aSize * uSizeScale / max(0.0001, -mv.z);
+  // The meaning view spreads every chunk through a larger cloud with no
+  // constellations to read them by, so its stars grow as the morph arrives.
+  float px = aSize * (1.0 + 1.4 * uMorph) * uSizeScale / max(0.0001, -mv.z);
   // A floor per kind keeps far formations and document stars findable.
-  float floorPx = vFormation > 0.5 ? 10.0 : (bit(aFlags, 1.0) > 0.5 ? 3.2 : 1.8);
+  float floorPx = vFormation > 0.5 ? 10.0 : (bit(aFlags, 1.0) > 0.5 ? 3.2 : 1.8 + 1.2 * uMorph);
   float size = clamp(px * vTwinkle, floorPx, 44.0) * sprite;
   gl_PointSize = vis > 0.002 ? size * uPixelRatio : 0.0;
   vSprite = 1.0 / sprite;
   vAlpha = vis * (dead > 0.5 ? 0.45 : 1.0) * (dim > 0.5 ? 0.22 : 1.0);
   vec3 c = aColor * (0.85 + 0.3 * aRecency);
   if (dead > 0.5) c = mix(vec3(dot(aColor, vec3(0.3, 0.59, 0.11))), aColor, 0.25) * vec3(1.0, 0.82, 0.82);
-  if (uLight > 0.5) c *= 0.72;
+  // On a light sky a star is ink, not light: darken it enough that the pale
+  // neutral palette (chunks with no status colour) still reads on white.
+  if (uLight > 0.5) c *= 0.5;
   vColor = c;
   gl_Position = projectionMatrix * mv;
 }
@@ -81,6 +94,7 @@ varying float vRays;
 varying float vSelected;
 varying float vHit;
 varying float vFormation;
+varying float vFact;
 
 vec2 rot(vec2 p, float a) { float c = cos(a), s = sin(a); return vec2(c * p.x - s * p.y, s * p.x + c * p.y); }
 
@@ -88,7 +102,8 @@ void main() {
   vec2 uv = gl_PointCoord * 2.0 - 1.0;
   float r = length(uv);
   if (r > 1.0) discard;
-  float d = r / vSprite;
+  // A fact is a diamond, so the memory tier reads apart from document prose.
+  float d = vFact > 0.5 ? (abs(uv.x) + abs(uv.y)) / vSprite : r / vSprite;
   float a;
   if (vFormation > 0.5) {
     // A collapsed formation: a soft nebula glow rather than a hard point.
@@ -129,14 +144,18 @@ void main() {
 export const treeVertex = /* glsl */ `
 attribute vec3 aVis;
 attribute vec3 aColor;
+attribute vec3 aPos2;
 uniform float uClock;
+uniform float uMorph;
 varying float vAlpha;
 varying vec3 vColor;
 void main() {
   float fade = clamp((uClock - aVis.z) / 0.3, 0.0, 1.0);
-  vAlpha = mix(aVis.x, aVis.y, smoothstep(0.0, 1.0, fade));
+  // Containment belongs to the structure view: it fades out on the way to
+  // the meaning view, where a chunk sits by what it says, not where it is.
+  vAlpha = mix(aVis.x, aVis.y, smoothstep(0.0, 1.0, fade)) * (1.0 - smoothstep(0.0, 0.6, uMorph));
   vColor = aColor;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(mix(position, aPos2, uMorph), 1.0);
 }
 `;
 
@@ -158,6 +177,8 @@ void main() {
 export const linkVertex = /* glsl */ `
 attribute float aT;
 attribute float aLen;
+attribute vec3 aPos2;
+uniform float uMorph;
 attribute vec3 aColor;
 attribute float aWeight;
 attribute float aProposed;
@@ -170,7 +191,7 @@ void main() {
   vColor = aColor;
   vWeight = aWeight;
   vProposed = aProposed;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(mix(position, aPos2, uMorph), 1.0);
 }
 `;
 

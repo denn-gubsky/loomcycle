@@ -216,3 +216,55 @@ describe("quick search", () => {
     expect(quickSearch(m, "x")).toHaveLength(0);
   });
 });
+
+describe("projection", () => {
+  it("TestModel_ProjectionPlacesChunksAndLeavesMissingNaN", async () => {
+    const snap = syntheticSnapshot({ docs: 4, chunksPerDoc: 5, projection: { missingEvery: 4 } });
+    const m = model([snap]);
+    expect(m.projection.basisVersion).toBe(1);
+    expect(m.projection.placed).toBe(20 - snap.projection!.missing.length);
+    for (const i of snap.projection!.missing) expect(Number.isNaN(m.chunk.proj[i * 3])).toBe(true);
+    expect(Number.isNaN(m.chunk.proj[0])).toBe(false);
+  });
+
+  it("TestModel_ARefitBetweenPagesIsFlaggedNotMixed", () => {
+    const m = emptyModel();
+    addPage(m, syntheticSnapshot({ docs: 2, chunksPerDoc: 3, idPrefix: "a", projection: { basisVersion: 1 } }));
+    const placed = m.projection.placed;
+    addPage(m, syntheticSnapshot({ docs: 2, chunksPerDoc: 3, idPrefix: "b", projection: { basisVersion: 2 } }));
+    expect(m.projection.mixedBasis).toBe(true);
+    expect(m.projection.placed).toBe(placed);
+  });
+
+  it("TestProjectionFrame_CentresScalesAndFlattens", async () => {
+    const { projectionFrame, toFrame } = await import("./projection");
+    const m = model([syntheticSnapshot({ docs: 30, chunksPerDoc: 6, projection: {} })]);
+    const f = projectionFrame(m, false);
+    let cx = 0;
+    for (let i = 0; i < m.chunkCount; i++) cx += f.pos[i * 3];
+    expect(Math.abs(cx / m.chunkCount)).toBeLessThan(1e-3 * f.radius);
+    // The 98th percentile of the spread lands on the target radius.
+    const d = Array.from({ length: m.chunkCount }, (_, i) => Math.hypot(f.pos[i * 3], f.pos[i * 3 + 1], f.pos[i * 3 + 2])).sort(
+      (a, b) => a - b,
+    );
+    expect(d[Math.floor(d.length * 0.98)]).toBeCloseTo(f.radius, 3);
+    const flat = projectionFrame(m, true);
+    for (let i = 0; i < m.chunkCount; i++) expect(flat.pos[i * 3 + 2]).toBe(0);
+    // The query lands in the same frame as the chunks.
+    const q = toFrame(f, [m.chunk.proj[0], m.chunk.proj[1], m.chunk.proj[2]]);
+    expect(q[0]).toBeCloseTo(f.pos[0], 4);
+  });
+
+  it("TestProjectionFrame_UnplacedChunkSitsByItsRootOrIsHidden", async () => {
+    const { projectionFrame } = await import("./projection");
+    const snap = syntheticSnapshot({ docs: 2, chunksPerDoc: 4, projection: {} });
+    // Chunk 2 of document 0 unplaced (its root is placed); all of document 1 unplaced.
+    snap.projection!.missing = [2, 4, 5, 6, 7];
+    const m = model([snap]);
+    const f = projectionFrame(m, false);
+    const root = m.doc.root[0];
+    expect(f.placed[2]).toBe(1);
+    expect(Math.hypot(f.pos[6] - f.pos[root * 3], f.pos[7] - f.pos[root * 3 + 1], f.pos[8] - f.pos[root * 3 + 2])).toBeLessThan(1.5);
+    for (const i of [4, 5, 6, 7]) expect(f.placed[i]).toBe(0);
+  });
+});

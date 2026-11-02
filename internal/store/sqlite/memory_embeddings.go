@@ -61,3 +61,8 @@ func (s *Store) MemoryEmbedStats(ctx context.Context, tenantID string, scope sto
 func (s *Store) MemoryEmbedListMissing(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]store.MemoryEntry, error) {
 	return nil, store.ErrVectorUnsupported
 }
+
+// MemoryEmbedListVectors — no vectors on the non-vec sqlite tier.
+func (s *Store) MemoryEmbedListVectors(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]store.MemoryEmbedRow, error) {
+	return nil, store.ErrVectorUnsupported
+}

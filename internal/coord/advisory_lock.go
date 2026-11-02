@@ -186,6 +186,11 @@ var (
 	// One replica at a time, so a user is never unbound or erased twice
 	// concurrently.
 	LockKeyAuthLifecycleSweeper int64
+	// LockKeyProjectionSweeper gates the document projection sweeper (RFC FQ
+	// P2), which fits and places every scope's 3D chunk map. One replica at a
+	// time: two concurrent refits of one scope would race for the same basis
+	// version. Its own key, like LockKeyDeadLinkGC, so neither starves the other.
+	LockKeyProjectionSweeper int64
 )
 
 // TeamSubscriptionLockKey derives a team's subscription-sweep key from its
@@ -251,6 +256,7 @@ func init() {
 	LockKeyUISessionSweeper = fnvKey("ui_session_sweeper")
 	LockKeyAuthGateSweeper = fnvKey("auth_gate_sweeper")
 	LockKeyAuthLifecycleSweeper = fnvKey("auth_lifecycle_sweeper")
+	LockKeyProjectionSweeper = fnvKey("projection_sweeper")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.
