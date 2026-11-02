@@ -429,6 +429,7 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		Entries:           deduped,
 		RankScores:        rankScores,
 		QueryEmbeddingDim: len(queryVec),
+		QueryVector:       queryVec,
 		Truncated:         truncated,
 		DedupDropped:      dropped,
 		// This backend renders the selector into SQL (see SearchQuery.Filter), so it
