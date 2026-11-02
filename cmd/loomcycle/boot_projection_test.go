@@ -54,6 +54,11 @@ func TestProjectionSweeper_OffByDefault(t *testing.T) {
 	}{
 		{"no block", &config.Config{}, vs, true, false},
 		{"enabled, no interval", on(""), vs, true, false},
+		{"interval, not enabled", func() *config.Config {
+			c := on("1h")
+			c.Memory.Projection.Enabled = false
+			return c
+		}(), vs, true, false},
 		{"no store", on("1h"), nil, true, false},
 		{"no embedder", on("1h"), vs, false, false},
 		{"no vector index", on("1h"), base, true, false},
