@@ -492,3 +492,68 @@
   border-color: var(--accent, #56c596);
   color: var(--accent, #56c596);
 }
+
+/* Saved views (P4b): a popover under the toolbar's "views" button. */
+.loomcycle-universe .lu-views {
+  position: relative;
+}
+.loomcycle-universe .lu-views__pop {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  z-index: 5;
+  width: 280px;
+  max-height: 320px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a2e3a);
+  background: var(--bg-soft, #161922);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
+  font-size: var(--lc-text-xs, 12px);
+}
+.loomcycle-universe .lu-views__save {
+  display: flex;
+  gap: 4px;
+}
+.loomcycle-universe .lu-views__save input {
+  flex: 1;
+  min-width: 0;
+}
+.loomcycle-universe .lu-views ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.loomcycle-universe .lu-views li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--border, #2a2e3a) 60%, transparent);
+  padding: 2px 0;
+}
+.loomcycle-universe .lu-views__open {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.loomcycle-universe .lu-views__delete {
+  border: 0;
+  background: transparent;
+  opacity: 0.6;
+}
+.loomcycle-universe .lu-views__empty {
+  color: var(--fg-muted, #888);
+}
+.loomcycle-universe .lu-views__error {
+  color: var(--danger, #e5484d);
+  overflow-wrap: anywhere;
+}

@@ -4,7 +4,7 @@ import {
   type LoomboardDataSource,
 } from "./components/LoomboardRoot";
 import LoomboardBody from "./components/LoomboardBody";
-import type { BoardScope } from "./types";
+import type { BoardScope, SavedView } from "./types";
 
 // Loomboard is the standalone, self-styling root for the view layer (RFC BT P1):
 // saved table / cards / kanban / list views over loomcycle Documents. Mount it on
@@ -20,14 +20,18 @@ export interface LoomboardProps extends LoomboardDataSource {
   /** Called on a load / save failure, in addition to the inline banner. NEVER
    *  redirects on 401 — the host owns the auth flow. */
   onError?: (e: unknown) => void;
+  /** Open a star-map view (layout kind "universe", saved by
+   *  @loomcycle/universe) in the host's star map. Without it such a view shows
+   *  only a note saying where to open it. */
+  onOpenUniverse?: (view: SavedView, scope: BoardScope) => void;
 }
 
 export default function Loomboard(props: LoomboardProps) {
-  const { theme, defaultScope, onError } = props;
+  const { theme, defaultScope, onError, onOpenUniverse } = props;
   const resolved = useResolvedDataLayer(props);
   return (
     <LoomboardRoot theme={theme} dataLayer={resolved}>
-      <LoomboardBody defaultScope={defaultScope} onError={onError} />
+      <LoomboardBody defaultScope={defaultScope} onError={onError} onOpenUniverse={onOpenUniverse} />
     </LoomboardRoot>
   );
 }

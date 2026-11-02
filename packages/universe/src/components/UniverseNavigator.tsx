@@ -10,6 +10,8 @@ import { chunkRgb, kindHex, rgbHex } from "../lib/colors";
 import { UniverseScene, type UniverseMode } from "../render/scene";
 import SearchPanel, { type ResultRow } from "./SearchPanel";
 import { LinkDialog, LinksPanel } from "./Links";
+import ViewsMenu from "./ViewsMenu";
+import type { SavedUniverseView, UniverseViewState } from "../lib/views";
 import type { BrowseScope, DocScope, UniverseSelection } from "../types";
 
 // UniverseNavigator is the star map as a navigator: it loads a scope's
@@ -42,6 +44,9 @@ export interface UniverseNavigatorProps extends UniverseDataSource {
   /** The signed-in subject, for memory search at user scope when `browse`
    *  names no other subject. */
   subject?: string;
+  /** Open on this saved universe view (its document id): mode, filters,
+   *  camera and selection. Applied once per id, after the sky has loaded. */
+  initialView?: string;
 }
 
 const PAGE_DOCUMENTS = 500;
@@ -74,7 +79,8 @@ interface Hover {
 }
 
 export default function UniverseNavigator(props: UniverseNavigatorProps) {
-  const { scope, browse, underPath, selection, onSelect, reloadToken, maximized, onToggleMaximize, subject } = props;
+  const { scope, browse, underPath, selection, onSelect, reloadToken, maximized, onToggleMaximize, subject, initialView } =
+    props;
   const data = useUniverseDataLayer(props);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<UniverseScene | null>(null);
@@ -109,6 +115,13 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
   const [linkTo, setLinkTo] = useState<number | null>(null);
   const linkFromRef = useRef<number | null>(null);
   linkFromRef.current = linkFrom;
+  // Saved views: a view whose filters differ from the sky's waits for the
+  // reload they cause (its camera would otherwise be framed away by the new
+  // sky); loadSeq counts finished loads.
+  const [loadSeq, setLoadSeq] = useState(0);
+  const loadSeqRef = useRef(0);
+  loadSeqRef.current = loadSeq;
+  const pendingView = useRef<{ state: UniverseViewState; afterSeq: number } | null>(null);
 
   const browseKey = `${browse?.scopeId ?? ""}|${browse?.tenant ?? ""}`;
 
@@ -229,6 +242,7 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
           // A refit moved the frame mid-load: load once more in one frame.
           setRefitReload((n) => (n < 1 ? n + 1 : n));
         }
+        if (!cursor) setLoadSeq((n) => n + 1);
         if (!cursor) {
           if (!typeFilter && !statusFilter)
             setChoices({
@@ -410,6 +424,92 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
     await refreshDocs([...new Set([edge.fromDocId, edge.toDocId])].filter(Boolean));
   };
 
+  // ---- saved views ----
+  const currentView = (): UniverseViewState => {
+    const m = modelRef.current;
+    const state: UniverseViewState = {
+      mode: viewMode,
+      planar,
+      depth,
+      focus: dimOthers,
+      hiddenKinds: [...hiddenKinds].sort(),
+    };
+    if (typeFilter) state.type = typeFilter;
+    if (statusFilter) state.status = statusFilter;
+    const cam = sceneRef.current?.getCamera();
+    if (cam) state.camera = cam;
+    const c = selected[0];
+    if (c !== undefined && c < m.chunkCount) {
+      const di = m.chunk.doc[c];
+      state.selection = { documentId: m.doc.id[di] };
+      if (m.doc.root[di] !== c) state.selection.chunkId = m.chunk.id[c];
+    }
+    return state;
+  };
+
+  // The camera and selection of a view, once the sky they refer to is loaded.
+  const landView = useCallback(
+    (state: UniverseViewState) => {
+      if (state.camera) sceneRef.current?.setCamera(state.camera);
+      if (state.selection) {
+        const c = resolveHost(state.selection);
+        if (c >= 0) {
+          setSelected([c]);
+          emit(c);
+          if (!state.camera) sceneRef.current?.flyTo(c);
+        }
+      }
+    },
+    [resolveHost, emit],
+  );
+
+  const applyView = (state: UniverseViewState) => {
+    setViewMode(state.mode);
+    setPlanar(state.planar);
+    setDepth(state.depth);
+    setDimOthers(state.focus);
+    setHiddenKinds(new Set(state.hiddenKinds));
+    const reloads = (state.type ?? "") !== typeFilter || (state.status ?? "") !== statusFilter;
+    setTypeFilter(state.type ?? "");
+    setStatusFilter(state.status ?? "");
+    if (reloads || !loading.done) pendingView.current = { state, afterSeq: loadSeqRef.current };
+    else landView(state);
+  };
+
+  useEffect(() => {
+    const p = pendingView.current;
+    if (!p || loadSeq <= p.afterSeq) return;
+    pendingView.current = null;
+    landView(p.state);
+  }, [loadSeq, landView]);
+
+  // A host asking to open on a saved view (a board's "open in the star map").
+  const appliedInitial = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!data?.getView || !initialView || appliedInitial.current === initialView) return;
+    appliedInitial.current = initialView;
+    data
+      .getView(scope, initialView, browse)
+      .then((v) => {
+        if (v) applyView(v.state);
+      })
+      .catch((e) => setLoading((l) => ({ ...l, error: `saved view: ${e instanceof Error ? e.message : String(e)}` })));
+    // applyView reads the current filters; it must not re-run when they change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, initialView, scope, browseKey]);
+
+  const viewsApi = useMemo(() => {
+    const d = data;
+    if (!d?.listViews || !d.saveView || !d.deleteView) return null;
+    return {
+      load: () => d.listViews!(scope, browse),
+      remove: (v: SavedUniverseView) => d.deleteView!(scope, v.documentId, browse),
+      save: (title: string, state: UniverseViewState) => d.saveView!(scope, title, state, browse),
+    };
+    // browse by its primitives (browseKey).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, scope, browseKey]);
+
   // ---- toolbar actions ----
   const frameSelection = () => {
     const stars = focusStars.seeds.length ? focusStars.seeds : results.map((r) => r.chunk).filter((c) => c >= 0);
@@ -497,6 +597,16 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
           >
             link
           </button>
+        )}
+        {viewsApi && (
+          <ViewsMenu
+            load={viewsApi.load}
+            onOpen={(v) => applyView(v.state)}
+            onSave={async (title) => {
+              await viewsApi.save(title, currentView());
+            }}
+            onDelete={viewsApi.remove}
+          />
         )}
         <label className="lu-field" title="How many hops of links to draw around the selection">
           depth

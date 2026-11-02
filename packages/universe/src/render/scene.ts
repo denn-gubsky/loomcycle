@@ -70,6 +70,11 @@ const MORPH_MS = 1000;
 
 /** Which positions the stars take: their place in the Path tree, or their
  *  place in the embedding space. */
+export interface CameraPose {
+  position: [number, number, number];
+  target: [number, number, number];
+}
+
 export type UniverseMode = "structure" | "meaning";
 const LABEL_CELL_H = 7;
 
@@ -445,6 +450,21 @@ export class UniverseScene {
     if (box.isEmpty()) return;
     const sphere = box.getBoundingSphere(new Sphere());
     void this.controls.fitToSphere(sphere, true);
+  }
+
+  /** The camera as a saved view keeps it: where it is and what it looks at. */
+  getCamera(): CameraPose {
+    const p = this.controls.getPosition(new Vector3());
+    const t = this.controls.getTarget(new Vector3());
+    return { position: [p.x, p.y, p.z], target: [t.x, t.y, t.z] };
+  }
+
+  /** setCamera restores a saved pose (a saved view's camera). */
+  setCamera(pose: CameraPose, transition = true): void {
+    const [px, py, pz] = pose.position;
+    const [tx, ty, tz] = pose.target;
+    void this.controls.setLookAt(px, py, pz, tx, ty, tz, transition);
+    this.dirty = true;
   }
 
   home(transition = true): void {

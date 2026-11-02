@@ -15,7 +15,7 @@ import type {
 // saved view's opaque `fields` defensively, normalizes document/chunk rows into
 // one BoardRow shape, and groups/sorts for the layouts.
 
-const LAYOUT_KINDS: readonly LayoutKind[] = ["table", "cards", "kanban", "list"];
+const LAYOUT_KINDS: readonly LayoutKind[] = ["table", "cards", "kanban", "list", "universe"];
 const GROUP_AXES: readonly GroupAxis[] = ["status", "type"];
 const SORT_FIELDS: readonly SortField[] = ["title", "updated", "position"];
 
