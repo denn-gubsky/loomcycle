@@ -3,12 +3,14 @@ package http
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -29,33 +31,88 @@ import (
 // (RFC FV G6): a grant revoked mid-stream stops frames within this window.
 const documentFeedAccessTTL = 30 * time.Second
 
-// documentFeedPolling is a reader stream's timing and its principal refresh.
+// documentFeedPolling is a reader stream's timing and its credential re-check.
 // Injected so a test can drive the access window without waiting on it.
 type documentFeedPolling struct {
 	changeFeedPolling
 	ttl time.Duration
 	now func() time.Time
-	// resolve re-reads a principal's CURRENT access-control set.
-	resolve func(context.Context, auth.Principal) (auth.Principal, error)
+	// reauth authenticates the stream's request again, as every request is
+	// authenticated, and returns the principal with its CURRENT rules.
+	reauth func(*http.Request) (auth.Principal, error)
+	// expiry is when the request's credential stops being valid (zero: no
+	// fixed end), which the stream does not outlive.
+	expiry func(*http.Request) time.Time
 }
 
+// The ways a re-check ends a stream. Each is sent as an `error` frame code.
+var (
+	errFeedCredentialRevoked = errors.New("credential_revoked")
+	errFeedAccessUnavailable = errors.New("access_unavailable")
+)
+
 func (s *Server) handleDocumentFeed(w http.ResponseWriter, r *http.Request) {
-	s.serveDocumentFeed(w, r, documentFeedPolling{
+	s.serveDocumentFeed(w, r, s.defaultDocumentFeedPolling())
+}
+
+func (s *Server) defaultDocumentFeedPolling() documentFeedPolling {
+	return documentFeedPolling{
 		changeFeedPolling: changeFeedPolling{base: memoryChangesPollInterval, max: memoryChangesMaxBackoff, sleep: sleepCtx},
 		ttl:               documentFeedAccessTTL,
 		now:               time.Now,
-		resolve:           s.currentPrincipal,
-	})
+		reauth:            s.reauthenticateFeed,
+		expiry:            s.credentialExpiry,
+	}
 }
 
-// currentPrincipal is p with its access-control set read again: the rules as
-// they stand now, not as they stood when the stream connected. No resolver
-// wired: access control is not configured, and p is all there is.
-func (s *Server) currentPrincipal(ctx context.Context, p auth.Principal) (auth.Principal, error) {
-	if s.aclResolver == nil {
-		return p, nil
+// reauthenticateFeed is authMiddleware's admission, asked again of a stream's
+// request: the credential still resolves (unrevoked, unexpired, its user
+// active and approved), the route still admits it, and its route question
+// still passes under its CURRENT rules. An ACL set that cannot be read fails
+// closed here, unlike enrichPrincipal's per-request fallback: a stream that
+// cannot re-check its reader stops rather than keep sending.
+func (s *Server) reauthenticateFeed(r *http.Request) (auth.Principal, error) {
+	ctx := r.Context()
+	p, ui, ok := s.authenticateRequest(r)
+	if !ok || (ui != nil && ui.pending) || !RouteAdmits(p, r.Method, r.URL.Path) {
+		return auth.Principal{}, errFeedCredentialRevoked
 	}
-	return s.aclResolver.Resolve(ctx, p)
+	if s.aclResolver != nil {
+		var err error
+		if p, err = s.aclResolver.Resolve(ctx, p); err != nil {
+			return auth.Principal{}, fmt.Errorf("%w: %v", errFeedAccessUnavailable, err)
+		}
+	}
+	if surface, governed := authz.HTTPSurface(r.Method, r.URL.Path); governed {
+		res := authz.EvaluateSurface(ctx, p.Effective, surface, true)
+		if res.Unavailable {
+			return auth.Principal{}, errFeedAccessUnavailable
+		}
+		if s.gateReply(ctx, p, surface, res) != nil {
+			return auth.Principal{}, errFeedCredentialRevoked
+		}
+	}
+	return p, nil
+}
+
+// credentialExpiry is when the request's bearer token stops being valid — its
+// fixed lifetime, or the end of a retirement's grace window — zero for a
+// credential with no fixed end (a session, the legacy token, open mode), whose
+// end the periodic re-check finds instead.
+func (s *Server) credentialExpiry(r *http.Request) time.Time {
+	bearer, ok := extractBearer(r, s.cfg().ResolvedAuth.Strict())
+	if !ok || s.store == nil {
+		return time.Time{}
+	}
+	h, err := s.hasher()
+	if err != nil {
+		return time.Time{}
+	}
+	row, err := s.store.OperatorTokenDefGetByTokenHash(r.Context(), h.Hash(bearer))
+	if err != nil || (row.ExpiresAt.IsZero() && row.RetiredAt.IsZero()) {
+		return time.Time{}
+	}
+	return row.ValidUntil()
 }
 
 func (s *Server) serveDocumentFeed(w http.ResponseWriter, r *http.Request, p documentFeedPolling) {
@@ -97,46 +154,62 @@ func (s *Server) serveDocumentFeed(w http.ResponseWriter, r *http.Request, p doc
 		return
 	}
 
+	// Only a request that carries a principal has a credential to outlive.
+	var deadline time.Time
+	if _, ok := auth.PrincipalFromContext(r.Context()); ok {
+		deadline = p.expiry(r)
+	}
+
 	stream, ok := newSSE(w)
 	if !ok {
 		http.Error(w, "server does not support streaming on this transport", http.StatusInternalServerError)
 		return
 	}
 	stream.start()
-	// The operator feed's opening frame without `since`: a reader holds no cursor.
-	// enabled:false means nothing is captured and the client falls back to reloading.
-	stream.sendRaw("feed", map[string]any{
-		"enabled":  s.changeFeedEnabled(),
-		"embedder": s.embedderHealth(),
-	})
+	// Only whether changes are captured: enabled:false means the client falls
+	// back to reloading. Not `since` (a reader holds no cursor), and not the
+	// operator feed's embedder health — provider, model and failure counts are
+	// the deployment's infrastructure state, not a member's to read.
+	stream.sendRaw("feed", map[string]any{"enabled": s.changeFeedEnabled()})
 	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
 	defer stream.end()
 
-	s.tailDocumentFeed(r.Context(), stream, view, open, cursor, p)
+	s.tailDocumentFeed(r, stream, view, open, cursor, deadline, p)
 }
 
 // tailDocumentFeed polls the change table past cursor, sending what view lets
-// through, until ctx is done. Every ttl it re-reads the caller's rules and opens
-// a fresh view, so no access answer outlives the window. A rule set that can no
-// longer be read, or a scope the caller may no longer open, ends the stream
-// with an `error` frame: it fails closed, and the client's resync re-asks.
-func (s *Server) tailDocumentFeed(ctx context.Context, stream *sse, view *builtin.DocumentFeedView,
-	open func(context.Context) (*builtin.DocumentFeedView, error), cursor int64, p documentFeedPolling) {
+// through, until the request's ctx is done. Every ttl it authenticates the
+// request again and opens a fresh view under the caller's current rules, so no
+// credential or access answer outlives the window, and it ends at deadline
+// (the credential's expiry; zero: none). Each of those ends the stream with an
+// `error` frame — it fails closed, and the client's resync re-asks.
+func (s *Server) tailDocumentFeed(r *http.Request, stream *sse, view *builtin.DocumentFeedView,
+	open func(context.Context) (*builtin.DocumentFeedView, error), cursor int64, deadline time.Time, p documentFeedPolling) {
+	ctx := r.Context()
 	opened := p.now()
 	delay := p.base
 	failures := 0
 	for {
+		if !deadline.IsZero() && !p.now().Before(deadline) {
+			stream.sendRaw("error", map[string]string{
+				"code":  "credential_expired",
+				"error": "the credential this stream was opened with has expired",
+			})
+			return
+		}
 		if p.now().Sub(opened) >= p.ttl {
-			fresh, err := s.reopenDocumentFeed(ctx, open, p)
+			fresh, err := s.reopenDocumentFeed(r, open, p)
 			if ctx.Err() != nil {
 				return
 			}
 			if err != nil {
-				slog.WarnContext(ctx, "document feed: the caller's access could not be re-read; closing the stream", "err", err)
-				stream.sendRaw("error", map[string]string{
-					"code":  "access_unavailable",
-					"error": "the caller's access could not be re-checked; reconnect to resync",
-				})
+				code := errFeedAccessUnavailable.Error()
+				msg := "the caller's access could not be re-checked; reconnect to resync"
+				if errors.Is(err, errFeedCredentialRevoked) {
+					code, msg = errFeedCredentialRevoked.Error(), "the credential this stream was opened with is no longer valid"
+				}
+				slog.WarnContext(ctx, "document feed: the re-check refused the stream; closing it", "code", code, "err", err)
+				stream.sendRaw("error", map[string]string{"code": code, "error": msg})
 				return
 			}
 			view, opened = fresh, p.now()
@@ -166,10 +239,12 @@ func (s *Server) tailDocumentFeed(ctx context.Context, stream *sse, view *builti
 	}
 }
 
-// reopenDocumentFeed opens a view under the caller's CURRENT rules.
-func (s *Server) reopenDocumentFeed(ctx context.Context, open func(context.Context) (*builtin.DocumentFeedView, error), p documentFeedPolling) (*builtin.DocumentFeedView, error) {
-	if pr, ok := auth.PrincipalFromContext(ctx); ok {
-		fresh, err := p.resolve(ctx, pr)
+// reopenDocumentFeed authenticates the stream's request again and opens a view
+// under the result. Open mode (no principal) has no credential to re-check.
+func (s *Server) reopenDocumentFeed(r *http.Request, open func(context.Context) (*builtin.DocumentFeedView, error), p documentFeedPolling) (*builtin.DocumentFeedView, error) {
+	ctx := r.Context()
+	if _, ok := auth.PrincipalFromContext(ctx); ok {
+		fresh, err := p.reauth(r)
 		if err != nil {
 			return nil, err
 		}

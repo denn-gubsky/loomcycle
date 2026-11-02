@@ -145,24 +145,31 @@ func (c *feedClock) Add(d time.Duration) {
 	c.now = c.now.Add(d)
 }
 
-func testFeedPolling(clock *feedClock, resolve func(context.Context, auth.Principal) (auth.Principal, error)) documentFeedPolling {
-	if resolve == nil {
-		resolve = func(_ context.Context, p auth.Principal) (auth.Principal, error) { return p, nil }
+// testFeedPolling is fast polling on clock, re-checking the request's principal
+// through reauth (nil: the principal unchanged) and with no credential expiry.
+func testFeedPolling(clock *feedClock, reauth func(*http.Request) (auth.Principal, error)) documentFeedPolling {
+	if reauth == nil {
+		reauth = func(r *http.Request) (auth.Principal, error) {
+			p, _ := auth.PrincipalFromContext(r.Context())
+			return p, nil
+		}
 	}
 	return documentFeedPolling{
 		changeFeedPolling: changeFeedPolling{base: 5 * time.Millisecond, max: 20 * time.Millisecond, sleep: sleepCtx},
 		ttl:               documentFeedAccessTTL,
 		now:               clock.Now,
-		resolve:           resolve,
+		reauth:            reauth,
+		expiry:            func(*http.Request) time.Time { return time.Time{} },
 	}
 }
 
 // feedStream is one open GET /v1/_document/feed, its frames on a channel.
 type feedStream struct {
-	status int
-	body   string // a refusal's body
-	frames chan feedFrame
-	cancel context.CancelFunc
+	status  int
+	body    string    // a refusal's body
+	opening feedFrame // the `feed` frame
+	frames  chan feedFrame
+	cancel  context.CancelFunc
 }
 
 // openFeed opens the reader feed as p, through a real HTTP server so frames
@@ -170,12 +177,21 @@ type feedStream struct {
 // stream has read its head) or the request was refused.
 func openFeed(t *testing.T, f *feedFixture, p auth.Principal, query string, poll documentFeedPolling) *feedStream {
 	t.Helper()
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return openFeedVia(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.srv.serveDocumentFeed(w, r.WithContext(auth.WithPrincipal(r.Context(), p)), poll)
-	}))
+	}), query, "")
+}
+
+// openFeedVia is openFeed through any handler, sending bearer when set.
+func openFeedVia(t *testing.T, h http.Handler, query, bearer string) *feedStream {
+	t.Helper()
+	ts := httptest.NewServer(h)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { cancel(); ts.Close() })
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/v1/_document/feed?"+query, nil)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -206,10 +222,28 @@ func openFeed(t *testing.T, f *feedFixture, p auth.Principal, query string, poll
 			}
 		}
 	}()
-	if fr := s.next(t); fr.event != "feed" {
-		t.Fatalf("first frame = %+v, want the opening feed frame", fr)
+	if s.opening = s.next(t); s.opening.event != "feed" {
+		t.Fatalf("first frame = %+v, want the opening feed frame", s.opening)
 	}
 	return s
+}
+
+// ended waits for the stream to end and returns the frames sent before it did.
+func (s *feedStream) ended(t *testing.T) []feedFrame {
+	t.Helper()
+	var got []feedFrame
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case fr, ok := <-s.frames:
+			if !ok {
+				return got
+			}
+			got = append(got, fr)
+		case <-deadline:
+			t.Fatalf("the stream did not end within 10s; frames: %+v", got)
+		}
+	}
 }
 
 func (s *feedStream) next(t *testing.T) feedFrame {
@@ -360,7 +394,8 @@ func TestDocumentFeed_RevokedGrantStopsFramesWithinTTL(t *testing.T) {
 	before, after := readerSet(t, "bob"), readerSet(t, "bob", "/kb/d2")
 	var revoked atomic.Bool
 	reread := make(chan struct{}, 16)
-	resolve := func(_ context.Context, p auth.Principal) (auth.Principal, error) {
+	reauth := func(r *http.Request) (auth.Principal, error) {
+		p, _ := auth.PrincipalFromContext(r.Context())
 		if revoked.Load() {
 			p.Effective = after
 		}
@@ -368,7 +403,7 @@ func TestDocumentFeed_RevokedGrantStopsFramesWithinTTL(t *testing.T) {
 		return p, nil
 	}
 	clock := &feedClock{now: time.Now()}
-	s := openFeed(t, f, member("tnt", "bob", before), "scope=tenant", testFeedPolling(clock, resolve))
+	s := openFeed(t, f, member("tnt", "bob", before), "scope=tenant", testFeedPolling(clock, reauth))
 
 	f.touch(t, f.writer, "tenant", d2)
 	if got := s.until(t, d2); len(got) != 0 {
@@ -506,5 +541,101 @@ func TestDocumentFeed_OperatorFeedUnchanged(t *testing.T) {
 		if _, has := m["document_id"]; has {
 			t.Errorf("a memory frame gained a document_id key: %v", m)
 		}
+	}
+}
+
+// tokenFeedFixture is newFeedFixture with bearer auth configured and a member
+// token for bob of tnt; expires is the token's fixed end (zero: none).
+func tokenFeedFixture(t *testing.T, expires time.Time) *feedFixture {
+	t.Helper()
+	f := newFeedFixture(t)
+	cfg := &config.Config{}
+	cfg.Env.AuthToken = "legacy-secret"
+	cfg.Env.OperatorTokenPepper = testTokenPepper
+	f.srv.cfgHolder = config.NewHolder(cfg)
+	if _, err := f.store.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
+		DefID: "def_bob", Name: "bob", TenantID: "tnt", Subject: "bob",
+		TokenHash:     auth.HashToken(testTokenPepper, "bob-token"),
+		AllowedScopes: []string{auth.ScopeRunsCreate},
+		ExpiresAt:     expires,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// openAuthedFeed opens the reader feed through the real auth middleware with
+// bob's bearer and the stream's default credential re-check.
+func openAuthedFeed(t *testing.T, f *feedFixture, clock *feedClock) *feedStream {
+	t.Helper()
+	poll := f.srv.defaultDocumentFeedPolling()
+	poll.changeFeedPolling = changeFeedPolling{base: 5 * time.Millisecond, max: 20 * time.Millisecond, sleep: sleepCtx}
+	poll.now = clock.Now
+	s := openFeedVia(t, f.srv.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.srv.serveDocumentFeed(w, r, poll)
+	})), "scope=user", "bob-token")
+	if s.status != http.StatusOK {
+		t.Fatalf("open: status %d %s", s.status, s.body)
+	}
+	return s
+}
+
+// lastError is the code of the last `error` frame among frames, "" when none.
+func lastError(frames []feedFrame) string {
+	code := ""
+	for _, fr := range frames {
+		if fr.event == "error" {
+			var e struct{ Code string }
+			_ = json.Unmarshal([]byte(fr.data), &e)
+			code = e.Code
+		}
+	}
+	return code
+}
+
+// A token revoked mid-stream ends the stream at the next re-check: the stream
+// re-validates the credential the way every request is authenticated, not
+// only the access-control set it carries.
+func TestDocumentFeed_RevokedTokenEndsTheStream(t *testing.T) {
+	f := tokenFeedFixture(t, time.Time{})
+	clock := &feedClock{now: time.Now()}
+	s := openAuthedFeed(t, f, clock)
+	doc, _ := f.newDoc(t, f.as("tnt", "bob"), "user", "/x")
+	s.until(t, doc)
+
+	if err := f.store.OperatorTokenDefSetRetiredAt(context.Background(), "def_bob", time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	clock.Add(documentFeedAccessTTL + time.Second)
+	frames := s.ended(t)
+	if code := lastError(frames); code != "credential_revoked" {
+		t.Errorf("the stream of a revoked token ended with error %q (frames %+v), want credential_revoked", code, frames)
+	}
+}
+
+// A stream never outlives its token: at the token's expiry it ends.
+func TestDocumentFeed_StreamEndsAtTheTokenExpiry(t *testing.T) {
+	f := tokenFeedFixture(t, time.Now().Add(time.Hour))
+	clock := &feedClock{now: time.Now()}
+	s := openAuthedFeed(t, f, clock)
+	clock.Add(2 * time.Hour)
+	frames := s.ended(t)
+	if code := lastError(frames); code != "credential_expired" {
+		t.Errorf("the stream outlived its token: ended with error %q (frames %+v), want credential_expired", code, frames)
+	}
+}
+
+// The reader's opening frame says only whether changes are captured: the
+// embedder's health (provider, model, failure counts) is operator
+// infrastructure state and stays on the operator feed.
+func TestDocumentFeed_OpeningFrameCarriesNoEmbedderHealth(t *testing.T) {
+	f := newFeedFixture(t)
+	s := openFeed(t, f, member("tnt", "bob", nil), "scope=user", testFeedPolling(&feedClock{now: time.Now()}, nil))
+	var opening map[string]any
+	if err := json.Unmarshal([]byte(s.opening.data), &opening); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := opening["embedder"]; has || len(opening) != 1 || opening["enabled"] != true {
+		t.Errorf("reader opening frame = %s, want exactly {\"enabled\":true}", s.opening.data)
 	}
 }
