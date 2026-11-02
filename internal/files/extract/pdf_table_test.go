@@ -12,8 +12,14 @@ import (
 // grid draws a table's borders the way Chrome and Word do: a thin filled
 // box for every cell edge. Columns start at x with the widths given; rows
 // go down from top with the heights given. open names the vertical edges
-// left out, as {row, edge}: a merged cell.
+// left out, as {row, edge}: cells merged across columns.
 func grid(x, top float64, widths, heights []float64, open map[[2]int]bool) string {
+	return gridSpans(x, top, widths, heights, open, nil)
+}
+
+// gridSpans is grid that also leaves out the horizontal edges openH names,
+// as {edge, column}: cells merged down rows. Edge 0 is the top border.
+func gridSpans(x, top float64, widths, heights []float64, open, openH map[[2]int]bool) string {
 	var b strings.Builder
 	const w = 0.5
 	y := top
@@ -24,8 +30,12 @@ func grid(x, top float64, widths, heights []float64, open map[[2]int]bool) strin
 				b.WriteString(pdftest.Rect(cx-w/2, y-h, w, h))
 			}
 			if c < len(widths) {
-				b.WriteString(pdftest.Rect(cx, y-w/2, widths[c], w))
-				b.WriteString(pdftest.Rect(cx, y-h-w/2, widths[c], w))
+				if !openH[[2]int{r, c}] {
+					b.WriteString(pdftest.Rect(cx, y-w/2, widths[c], w))
+				}
+				if !openH[[2]int{r + 1, c}] {
+					b.WriteString(pdftest.Rect(cx, y-h-w/2, widths[c], w))
+				}
 				cx += widths[c]
 			}
 		}
@@ -53,14 +63,16 @@ func passportPage(withBorders bool) pdftest.Page {
 		{Text: "чітко відділяє", X: 303, Y: 714, Size: 10},
 		{Text: "Не вирішує", X: 443, Y: 726, Size: 10},
 		{Text: "проблеми", X: 443, Y: 714, Size: 10},
-		// Row 2: top 700, 20 high; its last two cells are one.
+		// Row 2: top 700, 40 high; its last two cells are one, whose
+		// second line stands under the last column.
 		{Text: "2. Змішана", X: 43, Y: 686, Size: 10},
 		{Text: "Частина премії", X: 163, Y: 686, Size: 10},
 		{Text: "Передбачуваність і контроль", X: 303, Y: 686, Size: 10},
-		{Text: "Кінець розділу.", X: 40, Y: 650, Size: 10},
+		{Text: "для обох", X: 463, Y: 674, Size: 10},
+		{Text: "Кінець розділу.", X: 40, Y: 630, Size: 10},
 	}}
 	if withBorders {
-		p.Paths = grid(40, 760, []float64{120, 140, 140, 140}, []float64{20, 40, 20}, map[[2]int]bool{{2, 3}: true})
+		p.Paths = grid(40, 760, []float64{120, 140, 140, 140}, []float64{20, 40, 40}, map[[2]int]bool{{2, 3}: true})
 	}
 	return p
 }
@@ -68,7 +80,7 @@ func passportPage(withBorders bool) pdftest.Page {
 const passportTable = "| Варіант | Суть | Переваги | Ризики |\n" +
 	"| --- | --- | --- | --- |\n" +
 	"| 1. Премія лише за екстрарезультат | Оклад оплачує | Проста логіка; чітко відділяє | Не вирішує проблеми |\n" +
-	"| 2. Змішана | Частина премії | Передбачуваність і контроль |   |"
+	"| 2. Змішана | Частина премії | Передбачуваність і контроль для обох |   |"
 
 func TestExtractPDF_RuledTableBecomesMarkdownTable(t *testing.T) {
 	data := pdftest.Doc{Pages: []pdftest.Page{passportPage(true)}}.Bytes()
@@ -83,6 +95,27 @@ func TestExtractPDF_RuledTableBecomesMarkdownTable(t *testing.T) {
 	}
 	if rep.Tables != 1 || !hasNote(rep, "1 table was recovered from the borders") {
 		t.Errorf("report = %+v", rep)
+	}
+}
+
+// A cell merged down two rows holds the text of both: the row below keeps
+// its column, empty.
+func TestExtractPDF_CellMergedDownRowsIsOneCell(t *testing.T) {
+	data := pdftest.Doc{Pages: []pdftest.Page{{
+		Paths: gridSpans(40, 760, []float64{120, 120, 120}, []float64{20, 20, 20}, nil, map[[2]int]bool{{2, 0}: true}),
+		Lines: []pdftest.Line{
+			{Text: "Етап", X: 43, Y: 746, Size: 10}, {Text: "Строк", X: 163, Y: 746, Size: 10}, {Text: "Відповідальний", X: 283, Y: 746, Size: 10},
+			{Text: "Пілот", X: 43, Y: 726, Size: 10}, {Text: "Січень", X: 163, Y: 726, Size: 10}, {Text: "HR", X: 283, Y: 726, Size: 10},
+			{Text: "у двох філіях", X: 43, Y: 706, Size: 10}, {Text: "Лютий", X: 163, Y: 706, Size: 10}, {Text: "Фінанси", X: 283, Y: 706, Size: 10},
+		},
+	}}}.Bytes()
+	s, _, err := extractPDF(t, data, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "| Етап | Строк | Відповідальний |\n| --- | --- | --- |\n| Пілот у двох філіях | Січень | HR |\n|   | Лютий | Фінанси |"
+	if !strings.Contains(s.md.String(), want) {
+		t.Errorf("want\n%s\nin\n%s", want, s.md.String())
 	}
 }
 
