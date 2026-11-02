@@ -1,6 +1,6 @@
 ---
 name: File/extract
-description: "File op=extract — turn a DOCX, XLSX, PPTX, PDF, HTML, CSV, text or image file into Markdown in the inbox, its pictures kept as files, scans and images read by OCR where allowed, and return an excerpt."
+description: "File op=extract — turn a DOCX, ODT, XLSX, PPTX, PDF, HTML, CSV, text or image file into Markdown in the inbox, its pictures kept as files, scans and images read by OCR where allowed, and return an excerpt."
 ---
 `extract` reads a document the runtime kept (or one in a volume you can Read)
 and writes its text as Markdown to `volume:inbox:extracted/<name>.md`. The
@@ -9,6 +9,7 @@ runtime does the reading; the file's bytes never pass through you.
 | Type | What you get |
 |---|---|
 | DOCX | the title as `#`, Word headings one level below it, paragraphs, lists, tables as Markdown tables, pictures in place |
+| ODT | the same as DOCX, for OpenDocument text (LibreOffice, Word's ODT export); deleted tracked changes and comments left out, footnotes marked `[n]` and listed under `## Notes` at the end |
 | XLSX | a `##` section per sheet with one table of its cell values (what the sheet last computed, not formulas), the first `max_rows` rows, then `[+N rows omitted]` |
 | PPTX | `## Slide N — <title>` per slide in presentation order, its text and tables, pictures in place, speaker notes as a quote |
 | PDF | `## Page N` per page, its text read row by row from the top; its JPEG and JPEG 2000 pictures after the text, copied as they are (pictures stored as raw pixels are left out and counted in `notes`) |

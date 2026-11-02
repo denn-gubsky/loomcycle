@@ -137,7 +137,7 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	ex, ok := extract.Default().For(mt, name)
 	if !ok {
 		return errValidation(fmt.Sprintf("extract: cannot extract text from %s (%s)", r.raw, mt),
-			"Extract reads DOCX, XLSX, PPTX, PDF, HTML, CSV and TSV, text, Markdown, VTT and SRT captions, and images; op=transcribe reads audio and video."), nil
+			"Extract reads DOCX, ODT, XLSX, PPTX, PDF, HTML, CSV and TSV, text, Markdown, VTT and SRT captions, and images; op=transcribe reads audio and video."), nil
 	}
 	sum := sha256.New()
 	if _, err := io.Copy(sum, io.NewSectionReader(fh, 0, info.Size())); err != nil {

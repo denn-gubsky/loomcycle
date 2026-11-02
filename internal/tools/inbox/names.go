@@ -93,6 +93,8 @@ var extTypes = map[string]string{
 	".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 	".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 	".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	".odt":  "application/vnd.oasis.opendocument.text",
+	".ott":  "application/vnd.oasis.opendocument.text-template",
 	".doc":  "application/msword",
 	".xls":  "application/vnd.ms-excel",
 	".ppt":  "application/vnd.ms-powerpoint",
@@ -120,6 +122,8 @@ var typeExts = map[string]string{
 	"application/vnd.openxmlformats-officedocument.wordprocessingml.document":   ".docx",
 	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":         ".xlsx",
 	"application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+	"application/vnd.oasis.opendocument.text":                                   ".odt",
+	"application/vnd.oasis.opendocument.text-template":                          ".ott",
 	"application/msword":            ".doc",
 	"application/vnd.ms-excel":      ".xls",
 	"application/vnd.ms-powerpoint": ".ppt",
@@ -156,6 +160,13 @@ func settleMediaType(declared string, head []byte, name string) string {
 		return mt
 	}
 	sniffed := normalizeType(http.DetectContentType(head))
+	if sniffed == "application/zip" {
+		// An OpenDocument file names its own type: it wins over the
+		// extension, which a mail attachment may have lost or got wrong.
+		if mt := odfMimetype(head); mt != "" {
+			return mt
+		}
+	}
 	if byExt, ok := extTypes[strings.ToLower(path.Ext(name))]; ok && (generic(sniffed) || sniffed == "application/zip" || sniffed == "application/x-ole-storage") {
 		return byExt
 	}
@@ -163,6 +174,41 @@ func settleMediaType(declared string, head []byte, name string) string {
 		return extTypes[".docx"]
 	}
 	return sniffed
+}
+
+// odfMimetype reads the type an OpenDocument package declares. The format
+// stores an uncompressed "mimetype" entry first in the zip, so its value
+// sits in the first local file header: "" for any other zip.
+func odfMimetype(head []byte) string {
+	const hdr = 30
+	if len(head) < hdr || !bytes.HasPrefix(head, []byte("PK\x03\x04")) {
+		return ""
+	}
+	le16 := func(i int) int { return int(head[i]) | int(head[i+1])<<8 }
+	flags, method, size := le16(6), le16(8), le16(18)|le16(20)<<16
+	nameLen, extraLen := le16(26), le16(28)
+	if method != 0 || nameLen != len("mimetype") || len(head) < hdr+nameLen || string(head[hdr:hdr+nameLen]) != "mimetype" {
+		return ""
+	}
+	start := hdr + nameLen + extraLen
+	if start >= len(head) {
+		return ""
+	}
+	if size == 0 && flags&0x8 != 0 {
+		// A writer that streams puts the sizes in a descriptor after the
+		// data: the stored value ends where the next record ("PK") starts.
+		if i := bytes.Index(head[start:], []byte("PK")); i > 0 {
+			size = i
+		}
+	}
+	if size <= 0 || size > 100 || len(head) < start+size {
+		return ""
+	}
+	mt := normalizeType(string(head[start : start+size]))
+	if !strings.HasPrefix(mt, "application/vnd.oasis.opendocument.") {
+		return ""
+	}
+	return mt
 }
 
 // Sniff is settleMediaType for a producer that has the head of the bytes but

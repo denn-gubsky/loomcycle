@@ -229,7 +229,7 @@ The reference is relative to the volume root, as every file tool's path is: Read
 | `rm`, `clear` | delete one inbox file, or empty the inbox or one folder of it |
 | `download` | GET a URL into the inbox or a volume, under the HTTP tool's host policy (redirects same host only); credential headers refused |
 | `upload` | PUT/POST a file to a URL, whole or in ranges for an upload session (`Content-Range` chunks of 320 KiB multiples, following `nextExpectedRanges`) |
-| `extract` | turn DOCX, XLSX, PPTX, PDF, HTML, CSV/TSV, VTT/SRT captions, text or an image into Markdown in `extracted/`, pictures kept as files, plus a fenced excerpt; with OCR, scanned pages and images are read by a vision model (`ocr`, `language`, `dry_run`); a recording is handed to `transcribe` |
+| `extract` | turn DOCX, ODT, XLSX, PPTX, PDF, HTML, CSV/TSV, VTT/SRT captions, text or an image into Markdown in `extracted/`, pictures kept as files, plus a fenced excerpt; with OCR, scanned pages and images are read by a vision model (`ocr`, `language`, `dry_run`); a recording is handed to `transcribe` |
 | `transcribe` | turn an audio or video recording into a timed Markdown transcript in `extracted/` with the speech-to-text model (`language`, `vocabulary`, `diarize`, `timestamps`, `to`, `dry_run`) |
 | `import` | build a Document from such Markdown, the pictures `extract` wrote attached as image chunks, recording where it came from (`source`); `headings` adds sections by line number to a file whose structure is only in its numbering, or drops headings it already has (a PDF's `## Page N`) |
 

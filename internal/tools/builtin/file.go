@@ -65,7 +65,7 @@ func (f *File) Description() string {
 		"keep (copy a file out of the inbox into one of your read-write volumes, since the inbox is deleted when the run ends), " +
 		"rm (delete one inbox file), clear (empty the inbox, or one folder of it), " +
 		"download (GET a URL into the inbox, or a volume; needs the HTTP tool and its allowlist), upload (PUT or POST a volume file to a URL, whole or in ranges for an upload session), " +
-		"extract (turn a DOCX, XLSX, PPTX, PDF, HTML, CSV, text or image file into Markdown in the inbox, with its pictures as files, and return an excerpt; " +
+		"extract (turn a DOCX, ODT, XLSX, PPTX, PDF, HTML, CSV, text or image file into Markdown in the inbox, with its pictures as files, and return an excerpt; " +
 		"where your agent is allowed OCR, scanned pages and images are read by the OCR model, and dry_run says what that would cost; a VTT or SRT caption file becomes a timed transcript), " +
 		"transcribe (turn an audio or video recording into a timed Markdown transcript in the inbox with the speech-to-text model, and return an excerpt; dry_run says how many minutes and what it would cost), " +
 		"import (build a Document from such a Markdown file, its pictures attached as image chunks). " +

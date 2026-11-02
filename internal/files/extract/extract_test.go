@@ -191,11 +191,17 @@ func TestRegistry_PicksBySniffedTypeThenExtension(t *testing.T) {
 		{"image/png", "x", "extract.ImageFile"},
 		{"application/pdf", "x.bin", "extract.PDF"},
 		{"", "x.pdf", "extract.PDF"},
+		{"application/zip", "x.odt", "extract.ODT"},
+		{odtType, "x.bin", "extract.ODT"},
+		{"", "x.ott", "extract.ODT"},
 	} {
 		e, ok := g.For(tc.mt, tc.name)
 		if !ok || typeName(e) != tc.want {
 			t.Errorf("For(%q,%q) = %v, want %s", tc.mt, tc.name, e, tc.want)
 		}
+	}
+	if e, ok := g.For("application/zip", "x.zip"); ok {
+		t.Errorf("For(zip, x.zip) = %s, want none", typeName(e))
 	}
 	if _, err := g.Extract(context.Background(), "application/x-msdownload", bytes.NewReader(nil), 0, &memSink{}, Options{Name: "x.exe"}); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("err = %v", err)
@@ -212,6 +218,8 @@ func typeName(e Extractor) string {
 		return "extract.PDF"
 	case PPTX:
 		return "extract.PPTX"
+	case ODT:
+		return "extract.ODT"
 	case HTML:
 		return "extract.HTML"
 	case CSV:
