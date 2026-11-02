@@ -813,54 +813,82 @@ func (p *pdfPage) image(sd *types.StreamDict, nr int) error {
 // to right; rows go top to bottom, and a gap of more than about two lines
 // starts a new paragraph.
 func assemble(in []pdfRun) string {
+	return assembleLines(pdfLines(in))
+}
+
+// pdfLine is one row of a page's text: the runs on one baseline, left to
+// right.
+type pdfLine struct {
+	y, size float64
+	runs    []pdfRun
+}
+
+// pdfLines groups runs into rows, top to bottom, each row's runs sorted left
+// to right.
+func pdfLines(in []pdfRun) []pdfLine {
 	if len(in) == 0 {
-		return ""
+		return nil
 	}
 	runs := append([]pdfRun(nil), in...)
 	sort.SliceStable(runs, func(i, j int) bool { return runs[i].y > runs[j].y })
-	type row struct {
-		y, size float64
-		runs    []pdfRun
-	}
-	var rows []*row
+	var rows []pdfLine
 	for _, r := range runs {
 		if n := len(rows); n > 0 {
-			cur := rows[n-1]
+			cur := &rows[n-1]
 			tol := math.Max(1, 0.4*math.Max(cur.size, r.size))
 			if cur.y-r.y <= tol {
 				cur.runs = append(cur.runs, r)
 				continue
 			}
 		}
-		rows = append(rows, &row{y: r.y, size: r.size, runs: []pdfRun{r}})
+		rows = append(rows, pdfLine{y: r.y, size: r.size, runs: []pdfRun{r}})
 	}
-	var b strings.Builder
-	for i, rw := range rows {
+	for _, rw := range rows {
 		sort.SliceStable(rw.runs, func(a, c int) bool {
 			if rw.runs[a].x != rw.runs[c].x {
 				return rw.runs[a].x < rw.runs[c].x
 			}
 			return rw.runs[a].seq < rw.runs[c].seq
 		})
-		var line strings.Builder
-		for k, r := range rw.runs {
-			if k > 0 {
-				prev := rw.runs[k-1]
-				gap := r.x - prev.endX
-				s := line.String()
-				if gap > 0.2*math.Max(r.size, 1) && !strings.HasSuffix(s, " ") && !strings.HasPrefix(r.text, " ") {
-					line.WriteByte(' ')
-				}
+	}
+	return rows
+}
+
+// paragraphBreak reports whether the gap above row i of rows starts a new
+// paragraph: more than about two lines.
+func paragraphBreak(rows []pdfLine, i int) bool {
+	return rows[i-1].y-rows[i].y > 2*math.Max(rows[i].size, 1)
+}
+
+// lineText is one row's text: its runs left to right, a space where they
+// stand apart, white space collapsed.
+func lineText(runs []pdfRun) string {
+	var line strings.Builder
+	for k, r := range runs {
+		if k > 0 {
+			prev := runs[k-1]
+			gap := r.x - prev.endX
+			s := line.String()
+			if gap > 0.2*math.Max(r.size, 1) && !strings.HasSuffix(s, " ") && !strings.HasPrefix(r.text, " ") {
+				line.WriteByte(' ')
 			}
-			line.WriteString(r.text)
 		}
-		l := strings.Join(strings.Fields(line.String()), " ")
+		line.WriteString(r.text)
+	}
+	return strings.Join(strings.Fields(line.String()), " ")
+}
+
+// assembleLines joins rows into text: one line each, a blank line where a
+// paragraph breaks.
+func assembleLines(rows []pdfLine) string {
+	var b strings.Builder
+	for i, rw := range rows {
+		l := lineText(rw.runs)
 		if l == "" {
 			continue
 		}
 		if i > 0 && b.Len() > 0 {
-			gap := rows[i-1].y - rw.y
-			if gap > 2*math.Max(rw.size, 1) {
+			if paragraphBreak(rows, i) {
 				b.WriteString("\n\n")
 			} else {
 				b.WriteByte('\n')
