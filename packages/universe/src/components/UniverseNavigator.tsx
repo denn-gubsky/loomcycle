@@ -84,6 +84,11 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
   const [animate, setAnimate] = useState(readAnimate);
   const [hiddenKinds, setHiddenKinds] = useState<ReadonlySet<string>>(() => new Set());
   const [hover, setHover] = useState<Hover | null>(null);
+  // Server-side filters (the snapshot's `types` / `statuses`); the choices are
+  // what the unfiltered sky held, so narrowing never empties the menus.
+  const [typeFilter, setTypeFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [choices, setChoices] = useState<{ types: string[]; statuses: string[] }>({ types: [], statuses: [] });
   // What we last reported, so the host echoing it back is not a new navigation.
   const emitted = useRef<string>("");
   const pendingHost = useRef<UniverseSelection | undefined>(undefined);
@@ -176,6 +181,8 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
             include: ["documents", "chunks", "edges", "dirents"],
             page_documents: PAGE_DOCUMENTS,
             under_path: underPath,
+            types: typeFilter ? [typeFilter] : undefined,
+            statuses: statusFilter ? [statusFilter] : undefined,
             cursor,
           },
           browse,
@@ -192,7 +199,14 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
           setVersion((v) => v + 1);
         }
         setLoading({ docs: m.docCount, done: !cursor });
-        if (!cursor) return;
+        if (!cursor) {
+          if (!typeFilter && !statusFilter)
+            setChoices({
+              types: [...new Set(m.doc.type)].filter(Boolean).sort(),
+              statuses: [...new Set(m.doc.status)].filter(Boolean).sort(),
+            });
+          return;
+        }
       }
     })().catch((e) => {
       if (ac.signal.aborted) return;
@@ -201,7 +215,7 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
     return () => ac.abort();
     // browse by its primitives (browseKey) so an inline object does not reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, scope, browseKey, underPath, reloadToken]);
+  }, [data, scope, browseKey, underPath, reloadToken, typeFilter, statusFilter]);
 
   const layout = useMemo<Layout>(() => computeLayout(modelRef.current), [version]);
   const adjacency = useMemo(() => adjacencyOf(modelRef.current), [version]);
@@ -315,6 +329,26 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
             <option value={3}>3</option>
           </select>
         </label>
+        {(choices.types.length > 1 || typeFilter) && (
+          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} title="Only documents of this type">
+            <option value="">all types</option>
+            {choices.types.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        )}
+        {(choices.statuses.length > 1 || statusFilter) && (
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} title="Only documents in this status">
+            <option value="">all statuses</option>
+            {choices.statuses.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        )}
         <label className="lu-field" title="Dim stars outside the selection's neighbourhood">
           <input type="checkbox" checked={dimOthers} onChange={(e) => setDimOthers(e.target.checked)} />
           focus
