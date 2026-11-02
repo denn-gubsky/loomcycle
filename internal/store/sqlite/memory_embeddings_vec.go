@@ -99,3 +99,8 @@ func (s *Store) MemoryEmbedStats(ctx context.Context, tenantID string, scope sto
 func (s *Store) MemoryEmbedListMissing(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]store.MemoryEntry, error) {
 	return nil, errVecImplPending
 }
+
+// MemoryEmbedListVectors — pending on the vec tier with the rest of the family.
+func (s *Store) MemoryEmbedListVectors(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]store.MemoryEmbedRow, error) {
+	return nil, errVecImplPending
+}
