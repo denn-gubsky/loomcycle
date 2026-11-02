@@ -153,7 +153,7 @@ func snapshotAll(t *testing.T, d *Document, ctx context.Context, body string) ([
 	for range 10000 {
 		b := body + "}"
 		if cursor != "" {
-			b = body + `,"cursor":"` + cursor + `"}`
+			b = body + `,"after":"` + cursor + `"}`
 		}
 		s, text := graphSnap(t, d, ctx, b)
 		pages, texts = append(pages, s), append(texts, text)
@@ -318,7 +318,7 @@ func TestGraphSnapshot_PagesAskOnlyTheirOwnNames(t *testing.T) {
 		cursor, pages := first.Page.NextCursor, 1
 		for cursor != "" {
 			counted.under = 0
-			p, _ := graphSnap(t, d, reader, `{"op":"graph_snapshot","scope":"tenant","page_documents":2,"cursor":"`+cursor+`"}`)
+			p, _ := graphSnap(t, d, reader, `{"op":"graph_snapshot","scope":"tenant","page_documents":2,"after":"`+cursor+`"}`)
 			if counted.under != 0 {
 				t.Errorf("page %d listed the whole tree %d times; want names by document only", pages+1, counted.under)
 			}
@@ -720,7 +720,7 @@ func TestGraphSnapshot_RefusesWhatItCannotAnswer(t *testing.T) {
 	for _, body := range []string{
 		`{"op":"graph_snapshot","scope":"user","include":["bodies"]}`,
 		`{"op":"graph_snapshot","scope":"user","include":["documents","edges"]}`,
-		`{"op":"graph_snapshot","scope":"user","cursor":"not-a-cursor"}`,
+		`{"op":"graph_snapshot","scope":"user","after":"not-a-cursor"}`,
 		`{"op":"graph_snapshot","scope":"user","as_of":-1}`,
 	} {
 		_, r := docExec(t, d, ctx, body)

@@ -133,10 +133,10 @@ func parseSnapshotRequest(in docInput) (snapshotRequest, *tools.Result) {
 		req.edgeBudget = snapshotEdgeBudgetDefault
 	}
 	req.edgeBudget = min(req.edgeBudget, snapshotEdgeBudgetMax)
-	if in.Cursor != "" {
-		after, ok := decodeSnapshotCursor(in.Cursor)
+	if in.After != "" {
+		after, ok := decodeSnapshotCursor(in.After)
 		if !ok {
-			return fail("cursor is not a cursor this op returned", "Pass page.next_cursor from the previous page, or omit cursor for the first page.")
+			return fail("after is not a cursor this op returned", "Pass page.next_cursor from the previous page as after, or omit after for the first page.")
 		}
 		req.after = after
 	}

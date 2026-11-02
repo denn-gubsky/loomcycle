@@ -4337,8 +4337,9 @@ export type DocumentToolInput = {
   /** get_edges: out | in | both (default both). reorder_chunk: up | down. sync /
    *  diff_remote: pull (default) | push. */
   direction?: "out" | "in" | "both" | "up" | "down" | "pull" | "push";
-  /** get_edges / backlinks / list_statements: the next_cursor of the previous page
-   *  (list_statements: with the same `order`). */
+  /** get_edges / backlinks / list_statements / graph_snapshot: the next_cursor
+   *  of the previous page (list_statements: with the same `order`;
+   *  graph_snapshot: `page.next_cursor`). */
   after?: string;
   /** list_statements: only relations with an evidence row quoting a chunk of
    *  this document. (`document_id` keeps relations with either end in it.) */
@@ -4412,8 +4413,6 @@ export type DocumentToolInput = {
   /** graph_snapshot: documents per page (default 200, at most 1000 — a larger
    *  value is lowered, never refused). A page always holds whole documents. */
   page_documents?: number;
-  /** graph_snapshot: the previous page's `page.next_cursor`. */
-  cursor?: string;
   /** graph_snapshot: the most relations one page returns (default 50000, at
    *  most 200000); `edges.truncated` says it was reached. */
   edge_budget?: number;
@@ -4618,7 +4617,7 @@ export type GraphSnapshot = {
   page: {
     /** Documents on this page — always whole documents, in id order. */
     documents: number;
-    /** Pass as `cursor` for the next page; absent on the last one. */
+    /** Pass as `after` for the next page; absent on the last one. */
     next_cursor?: string;
     /** Present when the SQL Memory row cap fitted fewer documents than asked. */
     clamped_to?: number;

@@ -131,7 +131,6 @@ const documentInputSchema = `{
 		"chunk_ids":   {"type": "array", "items": {"type": "string"}, "description": "graph_snapshot: only the documents holding these chunks (with document_ids, the union)."},
 		"include":     {"type": "array", "items": {"type": "string", "enum": ["documents","chunks","edges","dirents","facts","projection"]}, "description": "graph_snapshot: the sections to return (default all but projection). chunks needs documents; edges, facts and projection need chunks."},
 		"page_documents": {"type": "integer", "description": "graph_snapshot: documents per page (default 200, at most 1000; a larger value is lowered, never refused). A page always holds whole documents."},
-		"cursor":      {"type": "string", "description": "graph_snapshot: continue from the previous page — pass its page.next_cursor."},
 		"edge_budget": {"type": "integer", "description": "graph_snapshot: the most relations one page returns (default 50000, at most 200000); edges.truncated says it was reached."},
 		"exclude_document_ids": {"type": "array", "items": {"type": "string"}, "description": "search / related: never return chunks of these documents — e.g. the document under review, so its own text is not found as evidence for itself."},
 		"parent":      {"type": "string", "description": "propose_entity: the IN-FORCE entity type this one is a kind of, BY NAME (omit for a new top-level type). Use a name from the entity types listed in your instructions."},
@@ -195,7 +194,7 @@ const documentInputSchema = `{
 		"chunk_id":    {"type": "string", "description": "maintain_statement relocate_evidence: the chunk the evidence's quote is in now."},
 		"evidence":    {"type": "array", "description": "link_chunks / propose_statement: the text that supports the relation. Each item names ONE source — chunk_id (a chunk of this scope), session_id + event_seq (a chat turn), or scope + natural_key (another scope) — and the verbatim quote. A quote that does not occur in its chunk or turn is refused.", "items": {"type": "object", "properties": {"chunk_id": {"type": "string"}, "session_id": {"type": "string"}, "event_seq": {"type": "integer"}, "scope": {"type": "string", "enum": ["agent","user","tenant"]}, "natural_key": {"type": "string"}, "quote": {"type": "string"}, "char_start": {"type": "integer"}, "char_end": {"type": "integer"}}, "required": ["quote"]}},
 		"include_proposed": {"type": "boolean", "description": "get_edges (default true) / backlinks (default false): include statements proposed for review and not yet accepted. graph_recall (default false): also follow them."},
-		"after":       {"type": "string", "description": "get_edges / backlinks / list_statements: continue a truncated listing — pass the next_cursor from the previous page (list_statements: with the same order)."},
+		"after":       {"type": "string", "description": "get_edges / backlinks / list_statements / graph_snapshot: continue a truncated listing — pass the next_cursor from the previous page (list_statements: with the same order; graph_snapshot: page.next_cursor)."},
 		"evidence_document_id": {"type": "string", "description": "list_statements: only statements with an evidence row quoting a chunk of this document."},
 		"method_prefix": {"type": "string", "description": "list_statements: only statements whose method starts with exactly this text (e.g. rule: or rule:cite); case-sensitive, no wildcards."},
 		"order":       {"type": "string", "enum": ["created","verified"], "description": "list_statements: created (default) is newest first; verified is least recently verified first, never-verified ones before any."},
@@ -554,12 +553,11 @@ type docInput struct {
 	SourceKind  string `json:"source_kind,omitempty"`
 	SourceTitle string `json:"source_title,omitempty"`
 	// graph_snapshot (document_snapshot.go): the sections to return, the
-	// documents holding these chunks, the documents per page, the previous
-	// page's next_cursor, and the most relations one page carries.
+	// documents holding these chunks, the documents per page, and the most
+	// relations one page carries. It pages on `after`, as get_edges does.
 	Include       []string `json:"include,omitempty"`
 	ChunkIDs      []string `json:"chunk_ids,omitempty"`
 	PageDocuments int      `json:"page_documents,omitempty"`
-	Cursor        string   `json:"cursor,omitempty"`
 	EdgeBudget    int      `json:"edge_budget,omitempty"`
 }
 
