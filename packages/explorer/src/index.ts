@@ -30,6 +30,8 @@ export type {
   CanvasDoc,
   Principal,
   AssistantContext,
+  NavigatorContext,
+  NavigatorSelection,
   ClassifyWrite,
   ClassifyResult,
   ClassifyCandidate,

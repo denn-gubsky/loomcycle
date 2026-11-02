@@ -87,6 +87,13 @@ export interface DocumentViewerBodyProps {
   // onTitle reports this document's title once its root chunk has loaded, so a
   // host that opened it by id can name it.
   onTitle?: (documentId: string, title: string) => void;
+  // onChunkSelect reports the chunk the reader is on as it changes (undefined =
+  // the document's root), so a host navigator can follow the chunk tree.
+  onChunkSelect?: (chunkId: string | undefined) => void;
+  // focusChunk moves the selection inside the mounted document without a
+  // remount: each new `seq` selects `chunkId` (absent = the root). A host
+  // navigator uses it when the reader picks another chunk of the open document.
+  focusChunk?: { chunkId?: string; seq: number };
 }
 
 // View mode for the selected-chunk pane (not the whole document).
@@ -102,6 +109,8 @@ export default function DocumentViewerBody({
   initialChunkId,
   onOpenDocument,
   onTitle,
+  onChunkSelect,
+  focusChunk,
 }: DocumentViewerBodyProps) {
   const data = useExplorerData();
 
@@ -182,6 +191,14 @@ export default function DocumentViewerBody({
     () => meta?.root_chunk_id ?? chunks.find((c) => !c.parent_id)?.id,
     [meta, chunks],
   );
+  // Report the chunk the reader is on; the root reads as the document itself.
+  const onChunkSelectRef = useRef(onChunkSelect);
+  onChunkSelectRef.current = onChunkSelect;
+  useEffect(() => {
+    if (!selectedId) return;
+    onChunkSelectRef.current?.(selectedId === rootChunkId ? undefined : selectedId);
+  }, [selectedId, rootChunkId]);
+
   const chunkStatuses = useMemo(
     () => [...new Set(chunks.map((c) => c.status).filter((s): s is string => !!s))],
     [chunks],
@@ -327,6 +344,20 @@ export default function DocumentViewerBody({
     () => reviewPanel(reviewScope, proposals, edgesIncomplete, onReviewChanged),
     [reviewScope, proposals, edgesIncomplete, onReviewChanged],
   );
+
+  // A host's focus request for the open document. Declared before the reset
+  // below on purpose: on a document change the reset runs after it and the
+  // landing chunk (initialChunkId) decides instead.
+  const focusSeq = focusChunk?.seq;
+  const focusRef = useRef(focusChunk);
+  focusRef.current = focusChunk;
+  const rootRef = useRef(rootChunkId);
+  rootRef.current = rootChunkId;
+  useEffect(() => {
+    if (focusSeq === undefined) return;
+    const target = focusRef.current?.chunkId ?? rootRef.current;
+    if (target) setSelectedId(target);
+  }, [focusSeq]);
 
   // Reset selection + view when the document changes.
   useEffect(() => {

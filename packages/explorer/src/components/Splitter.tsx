@@ -40,6 +40,9 @@ export interface SplitterProps {
   // expect a specific class; this lets the caller keep those
   // selectors intact).
   className?: string;
+  // Give the left pane the whole width. The right pane stays MOUNTED (hidden),
+  // so whatever it holds keeps its state for when it comes back.
+  hideRight?: boolean;
 }
 
 const HANDLE_WIDTH = 6;
@@ -51,24 +54,33 @@ export default function Splitter({
   minRightWidth = 240,
   storageKey,
   className,
+  hideRight = false,
 }: SplitterProps) {
-  const [leftWidth, setLeftWidth] = useState<number>(() => {
+  const restore = (): number => {
     if (storageKey) {
       const stored = localStorage.getItem(storageKey);
       const n = stored ? parseInt(stored, 10) : NaN;
       if (Number.isFinite(n) && n >= minLeftWidth) return n;
     }
     return defaultLeftWidth;
-  });
+  };
+  const [leftWidth, setLeftWidth] = useState<number>(restore);
+  // A host that switches layouts (the explorer's tree vs. star map) passes a
+  // different key per layout; each remembers its own width.
+  const [widthKey, setWidthKey] = useState(storageKey);
+  if (widthKey !== storageKey) {
+    setWidthKey(storageKey);
+    setLeftWidth(restore());
+  }
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
 
   // Persist on every settled width. Debouncing isn't needed — drag
   // already produces a single final settle via pointerup.
   useEffect(() => {
-    if (!storageKey || dragging) return;
+    if (!storageKey || dragging || widthKey !== storageKey) return;
     localStorage.setItem(storageKey, String(Math.round(leftWidth)));
-  }, [storageKey, leftWidth, dragging]);
+  }, [storageKey, widthKey, leftWidth, dragging]);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
@@ -107,13 +119,14 @@ export default function Splitter({
         // from a wider host (the document viewer is both a full page and a pane
         // inside the Path console) or a since-narrowed window — so CSS clamps it
         // again against the container as it is now.
-        gridTemplateColumns: `min(${leftWidth}px, calc(100% - ${
-          minRightWidth + HANDLE_WIDTH
-        }px)) ${HANDLE_WIDTH}px 1fr`,
+        gridTemplateColumns: hideRight
+          ? "1fr 0 0"
+          : `min(${leftWidth}px, calc(100% - ${minRightWidth + HANDLE_WIDTH}px)) ${HANDLE_WIDTH}px 1fr`,
       }}
     >
       <div className="splitter-pane splitter-left">{children[0]}</div>
       <div
+        hidden={hideRight}
         className="splitter-handle"
         role="separator"
         aria-orientation="vertical"
@@ -123,7 +136,9 @@ export default function Splitter({
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       />
-      <div className="splitter-pane splitter-right">{children[1]}</div>
+      <div className="splitter-pane splitter-right" hidden={hideRight}>
+        {children[1]}
+      </div>
     </div>
   );
 }
