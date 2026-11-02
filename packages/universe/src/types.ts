@@ -26,7 +26,8 @@ export interface GraphSnapshotInput {
   tag_prefix?: string;
   as_of?: number;
   page_documents?: number;
-  cursor?: string;
+  /** The previous page's `page.next_cursor` (the op pages on `after`, as get_edges does). */
+  after?: string;
   edge_budget?: number;
 }
 
@@ -89,7 +90,8 @@ export interface GraphSnapshot {
     external?: SnapshotExternal[];
     truncated?: boolean;
   };
-  dirents?: { paths: string[]; kinds: string[]; document_idx: number[] };
+  /** First page only; `document_ids` names a document on any page. */
+  dirents?: { paths: string[]; kinds: string[]; document_idx: number[]; document_ids?: string[] };
   projection?: { model: string; basis_version: number; xyz: number[]; missing: number[] };
 }
 

@@ -183,7 +183,7 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
             under_path: underPath,
             types: typeFilter ? [typeFilter] : undefined,
             statuses: statusFilter ? [statusFilter] : undefined,
-            cursor,
+            after: cursor,
           },
           browse,
           ac.signal,
