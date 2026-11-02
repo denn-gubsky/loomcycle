@@ -4554,6 +4554,82 @@ export type DocumentToolInput = {
 export type PathToolResponse = unknown;
 export type DocumentToolResponse = unknown;
 
+/** The set and target of {@link LoomcycleClient.copyDocuments} and
+ *  {@link LoomcycleClient.moveDocuments} — the Document tool's copy_documents
+ *  and move_documents, in their wire shape. `document_ids`, `under_path` and
+ *  `under_paths` combine (at most 500 documents). `dry_run` defaults to true:
+ *  the call reports and writes nothing. */
+export interface DocumentCopyInput {
+  /** Where the documents are (default `user`). */
+  scope?: "agent" | "user" | "tenant";
+  /** Where they go. A copy into `scope` itself needs `path_map`. */
+  to_scope: "agent" | "user" | "tenant";
+  document_ids?: string[];
+  under_path?: string;
+  under_paths?: string[];
+  /** Path prefixes to rewrite, from → to; the longest matching prefix wins. */
+  path_map?: Record<string, string>;
+  dry_run?: boolean;
+}
+
+/** {@link DocumentCopyInput} plus what a move adds. A move keeps every id and
+ *  removes the documents from `scope`; `to_scope` must differ from it. */
+export interface DocumentMoveInput extends DocumentCopyInput {
+  /** Relations between a moved document and one outside the set: `refuse`
+   *  (default) refuses the move, `drop` deletes them with the source. */
+  dangling?: "refuse" | "drop";
+  /** Required with `dry_run: false`: the dry run's `counts.documents`. The
+   *  move is refused, and nothing moves, when the set changed since. */
+  expect_count?: number;
+}
+
+/** A document of the set, as the answer reports it. */
+export interface DocumentTransferEntry {
+  id: string;
+  /** A real copy's new id. A move keeps `id`. */
+  new_id?: string;
+  /** The names it has (or would have) in `to_scope`. */
+  paths: string[];
+  /** A move's target an earlier, interrupted call of the same move wrote. */
+  resumed?: boolean;
+}
+
+/** What copyDocuments / moveDocuments answer, dry run or real. Fields a call
+ *  did not produce are absent. */
+export interface DocumentTransferResult {
+  scope: string;
+  to_scope: string;
+  dry_run: boolean;
+  documents: DocumentTransferEntry[];
+  /** documents, chunks, statements, revisions, assets; units after a real call. */
+  counts: Record<string, number>;
+  /** Documents left out, by code: not_found, is_ontology, is_subject,
+   *  holds_facts, forbidden, path_collision, key_collision, write_failed, and
+   *  for a move id_collision. Capped at 200; `refused_count` is exact. */
+  refused: { document_id: string; code: string; detail?: string }[];
+  refused_count?: number;
+  /** Relations with an end (or evidence) outside the set. Capped at 200;
+   *  `dangling_count` is exact. */
+  dangling: { statement_id: string; kind: string; from: string; to: string; outside: string }[];
+  dangling_count: number;
+  /** Move, dry run: `dangling_relations` when the real move would be refused. */
+  blocked_by?: string;
+  /** Move with `dangling: "drop"`: the relations deleted. */
+  dropped?: number;
+  /** Move, dry run: documents an interrupted move took out of `scope`, which
+   *  the real call names in `to_scope`. */
+  to_finish?: string[];
+  /** Move, real: the ids now in `to_scope`. */
+  moved?: string[];
+  /** Move, real: written to `to_scope` but not moved; the source is kept. Run
+   *  the same call again. */
+  unfinished?: { document_id: string; code: string; detail?: string }[];
+  name_failures?: { document_id: string; path: string; error: string }[];
+  body_failures?: number;
+  statements_failed?: number;
+  statement_error?: string;
+}
+
 /** What a filtered `document({op:"search"|"related", …})` call resolved its
  *  structural filter to — present on the response ONLY when a filter argument
  *  was passed (a filter-free response has no `filter` key). */

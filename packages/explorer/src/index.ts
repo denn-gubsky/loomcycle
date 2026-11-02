@@ -66,6 +66,10 @@ export type {
   DocRevertAnswer,
 } from "./lib/dataLayer";
 export { loadDocumentEdges, EDGE_PAGE_CAP } from "./lib/edgePages";
+// Copy / move documents between scopes: the request and answer a data layer's
+// documentsTransfer takes and returns.
+export { transferInput } from "./lib/transfer";
+export type { TransferOp, TransferRequest, TransferResult, TransferRefusal, TransferDangling } from "./lib/transfer";
 
 // RFC FS — a bulk ruling on proposed statements, run as every surface runs it
 // (dry run first, expect_count, chunks of 1000), and its undo.

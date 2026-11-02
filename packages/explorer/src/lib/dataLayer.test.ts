@@ -99,6 +99,27 @@ describe("dataLayerFromClient — @loomcycle/client → wire mapping", () => {
     );
   });
 
+  it("documentsTransfer routes a move to client.document as move_documents", async () => {
+    const s = stubClient();
+    const dl = dataLayerFromClient(s.client);
+    await dl.documentsTransfer!(
+      { op: "move", scope: "user", toScope: "tenant", underPath: "/proj", from: "/proj", to: "/kb", dryRun: false, expectCount: 3 },
+      BROWSE,
+    );
+    expect(s.document).toHaveBeenCalledWith(
+      {
+        op: "move_documents",
+        scope: "user",
+        to_scope: "tenant",
+        dry_run: false,
+        under_path: "/proj",
+        path_map: { "/proj": "/kb" },
+        expect_count: 3,
+      },
+      BROWSE,
+    );
+  });
+
   it("documentQueryChunks caps limit at 1000 and carries document_id", async () => {
     const s = stubClient();
     await dataLayerFromClient(s.client).documentQueryChunks("doc1", "user", BROWSE);

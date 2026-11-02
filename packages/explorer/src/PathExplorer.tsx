@@ -42,6 +42,8 @@ import {
   type Trail,
 } from "./lib/docTrail";
 import DocTrail from "./components/DocTrail";
+import TransferModal from "./components/TransferModal";
+import type { TransferRequest } from "./lib/transfer";
 import Splitter from "./components/Splitter";
 import DocumentViewerBody from "./components/DocumentViewerBody";
 import PathTree, { buildLazyTree, type PathNode } from "./components/PathTree";
@@ -182,6 +184,10 @@ function PathExplorerBody({
   const [internalSelected, setInternalSelected] = useState<string | undefined>(undefined);
   const [err, setErr] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalState | null>(null);
+  // The copy / move dialog: one document by id, or a folder's documents.
+  const [transfer, setTransfer] = useState<
+    { documentId?: string; underPath?: string; fromPath: string } | null
+  >(null);
   // Directories the operator has opened. Collapsed by default: opening one is
   // what lists it, so nothing below the root is fetched until it is wanted.
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
@@ -578,6 +584,37 @@ function PathExplorerBody({
 
   const mutable = selected && (selected.kind === "directory" || selected.kind === "document");
 
+  // Copy or move the selected document, or every document under the selected
+  // folder, into another scope. Hidden when the data layer cannot do it.
+  const canTransfer = !!data.documentsTransfer && !!mutable;
+  const transferSelected = useCallback(() => {
+    if (!selected) return;
+    if (selected.kind === "document") {
+      const id = (selected.resourceRef as { document_id?: string } | undefined)?.document_id;
+      if (!id) {
+        setErr("this document entry has no document_id");
+        return;
+      }
+      setTransfer({ documentId: id, fromPath: selected.fullPath });
+      return;
+    }
+    setTransfer({ underPath: selected.fullPath, fromPath: selected.fullPath });
+  }, [selected]);
+  // After a real copy or move: a move took the selection out of this scope; a
+  // copy into this scope added names under the new path.
+  const transferDone = useCallback(
+    (req: TransferRequest) => {
+      if (req.op === "move") {
+        void invalidate(req.from, { dropSubtree: true }).catch(report);
+        setTrail([]);
+        setSelected(undefined);
+        return;
+      }
+      if (req.toScope === scope) void invalidate(req.to).catch(report);
+    },
+    [invalidate, report, scope, setSelected],
+  );
+
   // The document on screen: the trail's last entry while references are being
   // followed, else the document the tree selection names.
   const view = useMemo<DocLocation | undefined>(() => {
@@ -812,6 +849,11 @@ function PathExplorerBody({
                     <button type="button" onClick={renameSelected}>
                       rename / move
                     </button>
+                    {canTransfer && (
+                      <button type="button" onClick={transferSelected} title="Copy or move to another scope">
+                        copy / move to…
+                      </button>
+                    )}
                     <button type="button" className="danger" onClick={deleteSelected}>
                       delete
                     </button>
@@ -857,6 +899,11 @@ function PathExplorerBody({
                   <button type="button" onClick={renameSelected}>
                     rename / move
                   </button>
+                  {canTransfer && (
+                    <button type="button" onClick={transferSelected} title="Copy or move to another scope">
+                      copy / move to…
+                    </button>
+                  )}
                   <button type="button" className="danger" onClick={deleteSelected}>
                     delete
                   </button>
@@ -875,6 +922,18 @@ function PathExplorerBody({
         </div>
       </Splitter>
       {modal && <PromptModal state={modal} onClose={() => setModal(null)} />}
+      {transfer && (
+        <TransferModal
+          data={data}
+          scope={scope}
+          browse={browse}
+          documentId={transfer.documentId}
+          underPath={transfer.underPath}
+          fromPath={transfer.fromPath}
+          onClose={() => setTransfer(null)}
+          onDone={transferDone}
+        />
+      )}
     </>
   );
 }

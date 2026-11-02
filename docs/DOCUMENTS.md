@@ -1352,6 +1352,17 @@ bundle; register it (see its README) for the Assistant to work — it degrades t
 a hint if absent. (RFC AM: Phase 1 = Path console, Phase 2 = viewer + `export_md`,
 Phase 3 = `import_md` + the agent.)
 
+**Copy / move to another scope.** In the `paths` tab, a selected document or
+folder has **copy / move to…**. The dialog takes copy or move, the target scope
+and the new path (a different path becomes the `path_map`). It always runs the
+dry run first and shows the counts, what is refused and which relations leave
+the set. Only then does it offer "copy N documents" or "move N documents", for
+exactly the inputs it checked. A move passes the dry run's count as
+`expect_count`. A relation leaving the set blocks a move until you tick "drop
+relations to documents outside the set". The adapters have the same calls as
+`copyDocuments` / `moveDocuments` (`@loomcycle/client`) and `copy_documents` /
+`move_documents` (Python).
+
 ## Where it lives
 
 `internal/tools/builtin/document.go` (the tool + the 4-table schema). The

@@ -22,6 +22,7 @@ import type { DocSummary, DocumentMeta } from "./colorScheme";
 import type { AssetFetch, JsonPost } from "./createClient";
 import type { RulingCounts, RulingRequest } from "./ruling";
 import { entityTypeNames } from "./subjectType";
+import { transferInput, type TransferRequest, type TransferResult } from "./transfer";
 
 // ChunkPatch is the subset of chunk fields update_chunk accepts. `fields` is
 // unknown (arbitrary typed JSON the chunk carries); a blank/absent value leaves
@@ -146,6 +147,10 @@ export interface ExplorerDataLayer {
     scope: DocScope,
     browse?: BrowseScope,
   ): Promise<unknown>;
+  // documentsTransfer copies or moves documents into another scope (the
+  // Document tool's copy_documents / move_documents), dry run or real.
+  // Optional: a data layer without it hides the explorer's copy / move action.
+  documentsTransfer?(req: TransferRequest, browse?: BrowseScope): Promise<TransferResult>;
   documentGet(
     id: string,
     scope: DocScope,
@@ -488,6 +493,10 @@ export function dataLayerFromClient(
       }>,
     documentDelete: (id, scope, browse) =>
       client.document({ op: "delete_document", id, scope } as unknown as DocumentToolInput, browse),
+    // copy_documents / move_documents are newer than the pinned SDK type; the
+    // /v1/_document passthrough takes them verbatim.
+    documentsTransfer: (req, browse) =>
+      client.document(transferInput(req) as unknown as DocumentToolInput, browse) as Promise<TransferResult>,
     documentGet: (id, scope, browse) =>
       client.document({ op: "get_document", id, scope } as unknown as DocumentToolInput, browse) as Promise<DocumentMeta>,
     documentsSummary: (opts, scope, browse) =>
