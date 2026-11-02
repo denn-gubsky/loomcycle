@@ -4183,6 +4183,7 @@ export type DocumentToolInput = {
     | "get_document"
     | "documents_summary"
     | "query_documents"
+    | "graph_snapshot"
     | "delete_document"
     | "set_path"
     | "create_chunk"
@@ -4400,6 +4401,22 @@ export type DocumentToolInput = {
   /** search / related: never chunks of these documents (e.g. the document under
    *  review, so its own text is not found as evidence for itself). */
   exclude_document_ids?: string[];
+  /** graph_snapshot: only the documents holding these chunks (with
+   *  `document_ids`, the union). A chunk of a document the caller may not read
+   *  selects nothing, as a missing id does. */
+  chunk_ids?: string[];
+  /** graph_snapshot: the sections to return (default all but `projection`).
+   *  `chunks` needs `documents`; `edges`, `facts` and `projection` need
+   *  `chunks`. */
+  include?: Array<"documents" | "chunks" | "edges" | "dirents" | "facts" | "projection">;
+  /** graph_snapshot: documents per page (default 200, at most 1000 — a larger
+   *  value is lowered, never refused). A page always holds whole documents. */
+  page_documents?: number;
+  /** graph_snapshot: the previous page's `page.next_cursor`. */
+  cursor?: string;
+  /** graph_snapshot: the most relations one page returns (default 50000, at
+   *  most 200000); `edges.truncated` says it was reached. */
+  edge_budget?: number;
   /** search / related: chunk types, each including its ontology subtypes (with
    *  `type`, the union of both). */
   types?: string[];
@@ -4588,6 +4605,96 @@ export type DocumentRelatedResult = {
     invalid_at?: number;
   }>;
   filter?: DocumentSearchFilter;
+};
+
+/** Response of `document({op:"graph_snapshot"})` — narrow a
+ *  {@link DocumentToolResponse} to it. Columnar: every array of a section is
+ *  parallel (position `i` of each describes one item). An `*_idx` column is a
+ *  position in another section of the same response; a `*_code` column is a
+ *  position in the matching `codes` list, `-1` = none. Timestamps are unix
+ *  nanoseconds. Documents the caller may not read are absent, with their
+ *  chunks, the relations into them and their Path names. */
+export type GraphSnapshot = {
+  page: {
+    /** Documents on this page — always whole documents, in id order. */
+    documents: number;
+    /** Pass as `cursor` for the next page; absent on the last one. */
+    next_cursor?: string;
+    /** Present when the SQL Memory row cap fitted fewer documents than asked. */
+    clamped_to?: number;
+  };
+  codes: {
+    types: string[];
+    statuses: string[];
+    kinds: string[];
+    fact_classes: string[];
+    methods: string[];
+  };
+  documents?: {
+    ids: string[];
+    titles: string[];
+    root_chunk_ids: string[];
+    type_code: number[];
+    status_code: number[];
+    created_at: number[];
+    updated_at: number[];
+    color_enabled: boolean[];
+    color_scheme: Array<Record<string, unknown> | null>;
+    /** Every Path name of each document, shortest first. */
+    paths: string[][];
+  };
+  chunks?: {
+    ids: string[];
+    document_idx: number[];
+    /** -1 = a root. Always an earlier position: parents come first. */
+    parent_idx: number[];
+    position: number[];
+    type_code: number[];
+    status_code: number[];
+    titles: string[];
+    valid_at: Array<number | null>;
+    invalid_at: Array<number | null>;
+    updated_at: number[];
+    /** Only with `include` naming `facts`. */
+    is_fact?: boolean[];
+    fact_class_code?: number[];
+    fact_confidence?: Array<number | null>;
+    fact_retired?: boolean[];
+  };
+  edges?: {
+    ids: string[];
+    /** A chunk position, or a negative `external[].idx`. */
+    from_idx: number[];
+    to_idx: number[];
+    kind_code: number[];
+    auto: boolean[];
+    created_at: number[];
+    status_code: number[];
+    method_code: number[];
+    confidence: Array<number | null>;
+    valid_at: Array<number | null>;
+    invalid_at: Array<number | null>;
+    /** Ends on another page (or outside the selection). */
+    external: Array<{ idx: number; id: string; document_id: string }>;
+    /** True when `edge_budget` stopped the list. */
+    truncated: boolean;
+  };
+  /** First page only. */
+  dirents?: {
+    paths: string[];
+    kinds: Array<"directory" | "document">;
+    /** A position in `documents` when the document is on this page, else -1. */
+    document_idx: number[];
+    /** The document a name points at ("" for a directory), whatever its page. */
+    document_ids: string[];
+  };
+  /** Not computed yet: every chunk is listed as missing a position. */
+  projection?: {
+    model: string;
+    basis_version: number;
+    xyz: number[];
+    missing: number[];
+  };
 };
 
 /** Input for {@link LoomcycleClient.history} — the RFC BE History tool

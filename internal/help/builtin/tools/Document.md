@@ -64,6 +64,7 @@ and examples, as `Document/<op>` — for example
 | `get_document` | a document's metadata: title, root chunk, type, status, tags | `id` or `path` |
 | `documents_summary` | title/type/status/colour for many documents in one call | `document_ids` or `under_path` |
 | `query_documents` | list documents filtered by path, type, status or tag | — |
+| `graph_snapshot` | a whole scope's documents, chunk trees, relations and Path names as columns, paged by whole documents | — |
 | `delete_document` | delete a document, every chunk in it, and its path | `id` or `path` |
 | `set_path` | give an existing document a (further) Path-tree name | `id`, `path` |
 

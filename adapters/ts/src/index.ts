@@ -457,6 +457,7 @@ export type {
   DocumentSearchHit,
   DocumentSearchResult,
   DocumentRelatedResult,
+  GraphSnapshot,
   // RFC BE History (browse/search/annotate past chats)
   HistoryToolInput,
   HistoryToolResponse,

@@ -1136,7 +1136,15 @@ class LoomcycleClient:
         on update). ``search``, ``related`` and ``query_chunks`` with ``as_of``
         return only chunks whose period contains the instant; an undated chunk
         always matches. Hits and chunk rows report the two keys only when
-        set.
+        set. ``query_chunks`` rows also carry ``updated_at``.
+
+        ``op="graph_snapshot"`` exports a whole scope's documents, chunk trees,
+        relations, Path names and fact flags as parallel columns, paged by
+        whole documents: pass ``page["next_cursor"]`` back as ``cursor`` until
+        it is absent. ``include`` picks the sections; ``under_path``,
+        ``document_ids``, ``chunk_ids``, ``types``, ``statuses``, ``tag`` and
+        ``tag_prefix`` select documents; ``page_documents`` and ``edge_budget``
+        bound a page. Documents the caller may not read are left out.
 
         ``op="graph_recall"`` rows carry, for chunks that are not facts, the
         first 600 characters of their body as ``body`` (``body_truncated`` when

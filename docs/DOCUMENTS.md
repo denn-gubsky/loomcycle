@@ -124,7 +124,9 @@ the Memory tool keeps them behind the Document tool's checks:
   raw, read-only `SELECT` against the chunk tables, gated by the SQL Memory
   statement validator (no `ATTACH` / `PRAGMA` / multi-statement / writes).
   It also takes `as_of` (below), so the chunks in force on a date can be
-  listed without a semantic query.
+  listed without a semantic query. Each structured row carries the chunk's
+  `updated_at` (unix ns), so a client holding a snapshot can tell what
+  changed since.
 - **Dated content.** Any chunk can carry its own validity period: nullable
   `chunks.valid_at` / `chunks.invalid_at` (unix ns, half-open
   `[valid_at, invalid_at)`, NULL = unbounded on that side), set by
@@ -148,6 +150,63 @@ the Memory tool keeps them behind the Document tool's checks:
   listings tag it `source: "document"`; the Web UI's Channels page shows the
   feeds only under its **documents** chip, and the MCP `list_channels` tool and
   gRPC `ListChannels` leave them out.
+
+### Scope-wide snapshot (`graph_snapshot`)
+
+`graph_snapshot` returns a whole scope's structure — documents, every chunk
+tree, the relations between chunks, Path names and fact flags — in one
+columnar answer, so a viewer can draw or mirror a scope without a call per
+document. It carries titles and metadata, never bodies.
+
+```json
+{"op": "graph_snapshot", "scope": "tenant", "under_path": "/kb", "page_documents": 200}
+```
+
+- **Selection.** `under_path`, `document_ids`, `chunk_ids` (the documents
+  holding those chunks; with `document_ids`, the union), `types` / `type` (the
+  root chunk's type, ontology subtypes included), `statuses` / `status`, and
+  `tag` / `tag_prefix` over the documents' own tags, combined with AND.
+  `as_of` filters the relations only. `include` picks the sections —
+  `documents`, `chunks`, `edges`, `dirents`, `facts`, `projection` (default:
+  all but `projection`); a section whose columns index another needs it
+  (`chunks` → `documents`; `edges`, `facts`, `projection` → `chunks`).
+- **Paging.** Documents in id order, `page_documents` (default 200, at most
+  1000 — lowered, never refused) per page, always whole documents. Pass
+  `page.next_cursor` back as `cursor` until it is absent. If the SQL Memory
+  row cap (`LOOMCYCLE_SQLMEM_MAX_ROWS`) cuts the chunk read, the page keeps the
+  documents it read whole and reports `page.clamped_to`; a single document
+  larger than the cap is refused.
+- **Shape.** Each section is parallel arrays (position `i` of each describes
+  one item). `*_idx` columns are positions in another section of the same
+  answer; `*_code` columns are positions in `codes` (`types`, `statuses`,
+  `kinds`, `fact_classes`, `methods`), `-1` = none.
+  - `documents`: `ids, titles, root_chunk_ids, type_code, status_code,
+    created_at, updated_at, color_enabled, color_scheme, paths` (every Path
+    name, shortest first).
+  - `chunks`: `ids, document_idx, parent_idx, position, type_code,
+    status_code, titles, valid_at, invalid_at, updated_at`, plus `is_fact,
+    fact_class_code, fact_confidence, fact_retired` with `facts`. Each
+    document's tree comes depth-first in reading order, so `parent_idx`
+    (`-1` = root) always points at an earlier row.
+  - `edges`: the live relations (the default visibility: no proposed,
+    rejected, refuted or retired ones) with an end on the page, each once:
+    `ids, from_idx, to_idx, kind_code, auto, created_at, status_code,
+    method_code, confidence, valid_at, invalid_at`. An end on another page is
+    a negative index naming an `external` entry `{idx, id, document_id}`.
+    `edge_budget` (default 50000, at most 200000) caps a page and sets
+    `truncated: true` when reached.
+  - `dirents` (first page only): `paths, kinds, document_idx, document_ids` —
+    directories and document names at or under `under_path`.
+    `document_idx` is `-1` for a directory or a document on another page;
+    `document_ids` names it either way.
+  - `projection`: reserved for 3D positions; not computed yet, so it is
+    `{model: "", basis_version: 0, xyz: [], missing: [every chunk index]}`.
+- **Access.** Asked as `read` on the scope's documents, answered like a
+  listing: a document the caller's access-control rules hide is left out
+  before the page is cut, with its chunks, the relations into it, and its
+  Path names (and any directory that leads only to hidden documents). Page
+  sizes and cursors are exactly what they would be if it did not exist, and a
+  `chunk_ids` entry inside it selects nothing, as a missing id does.
 
 ### Integrity — deletes are atomic, edges never dangle
 

@@ -82,6 +82,7 @@ var docACLOps = map[string]docACLRule{
 	"get_document":       {verb: "read", target: docACLDocument},
 	"documents_summary":  {verb: "read", target: docACLListing, filter: docListDocuments},
 	"query_documents":    {verb: "read", target: docACLListing, filter: docListDocuments},
+	"graph_snapshot":     {verb: "read", target: docACLListing}, // columnar: leaves out the unreadable itself, before it cuts the page
 	"delete_document":    {verb: "delete", target: docACLDocument},
 	"set_path":           {verb: "write", target: docACLSetPath},
 	"judge_fact":         {verb: "write", target: docACLJudge},
