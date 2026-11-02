@@ -133,8 +133,10 @@ func TestExtractPDF_RuledTableKeepsThePageYield(t *testing.T) {
 	if len(ruled.PageYields) != 1 || ruled.PageYields[0] != plain.PageYields[0] {
 		t.Errorf("yields: ruled %+v, plain %+v", ruled.PageYields, plain.PageYields)
 	}
-	if plain.Tables != 0 {
-		t.Errorf("a page with no borders has no tables: %+v", plain)
+	// Without borders the table is read from its aligned columns (P2), not
+	// from borders.
+	if hasNote(plain, "from the borders") {
+		t.Errorf("a page with no borders has a table read from borders: %+v", plain)
 	}
 }
 
