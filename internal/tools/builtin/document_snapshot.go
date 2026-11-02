@@ -62,6 +62,11 @@ type snapshotRequest struct {
 	tag        string
 	tagPrefix  string
 	asOf       *int64
+	// includeProposed adds statements still waiting for review to the edges
+	// (include_proposed; off by default, so the asserted-only view stays the
+	// default). A reader that draws links asks, so it can show them dashed and
+	// rule on them.
+	includeProposed bool
 }
 
 type snapshotCursor struct {
@@ -149,6 +154,7 @@ func parseSnapshotRequest(in docInput) (snapshotRequest, *tools.Result) {
 	req.statuses = snapshotList(in.Status, in.Statuses)
 	req.tag = strings.TrimSpace(in.Tag)
 	req.tagPrefix = strings.TrimSpace(in.TagPrefix)
+	req.includeProposed = in.IncludeProposed != nil && *in.IncludeProposed
 	if in.AsOf != nil {
 		if *in.AsOf <= 0 {
 			return fail("as_of must be a positive instant in unix nanoseconds", "Pass as_of as unix nanoseconds, e.g. 1747180800000000000, or omit it.")
@@ -711,7 +717,7 @@ func (d *Document) snapshotEdges(ctx context.Context, key sqlmem.ScopeKey, req s
 		}
 		ph, phArgs := inPlaceholders(docIDs)
 		base := "(e.from_id IN (SELECT id FROM chunks WHERE document_id IN (" + ph + ")) OR e.to_id IN (SELECT id FROM chunks WHERE document_id IN (" + ph + ")))"
-		vis, visArgs := statementVisibility{asOf: req.asOf}.clause()
+		vis, visArgs := statementVisibility{includeProposed: req.includeProposed, asOf: req.asOf}.clause()
 		after := ""
 	read:
 		for {
