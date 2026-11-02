@@ -11,9 +11,12 @@ import {
 import type {
   AssistantContext,
   BrowseScope,
+  NavigatorContext,
+  NavigatorSelection,
   PathScope,
   Principal,
 } from "./types";
+import { readNavigatorMode, writeNavigatorMode, type NavigatorMode } from "./lib/navigator";
 import { useExplorerData, type ExplorerDataLayer } from "./lib/dataLayer";
 import type { DocSummary } from "./lib/colorScheme";
 import {
@@ -100,14 +103,28 @@ export interface PathExplorerProps extends ExplorerDataSource {
   // DocumentViewer. Provide it to show an "assistant" toggle; omit → none.
   renderAssistant?: (ctx: AssistantContext) => ReactNode;
 
+  // ---- Optional second navigator beside the Path tree (the @loomcycle/universe
+  // star map). Provide it to show a `tree | stars` switch in the toolbar; the
+  // tree stays the default. Omit → tree only, and nothing else is loaded.
+  renderNavigator?: (ctx: NavigatorContext) => ReactNode;
+
   // ---- Errors. Called on a tree-load failure (in addition to the inline
   // banner). The component NEVER redirects on 401 — the host owns the auth flow.
   onError?: (e: unknown) => void;
 }
 
 export default function PathExplorer(props: PathExplorerProps) {
-  const { theme, defaultScope, path, onPathChange, browse, principal, renderAssistant, onError } =
-    props;
+  const {
+    theme,
+    defaultScope,
+    path,
+    onPathChange,
+    browse,
+    principal,
+    renderAssistant,
+    renderNavigator,
+    onError,
+  } = props;
   const resolved = useResolvedDataLayer(props);
   return (
     <ExplorerRoot theme={theme} dataLayer={resolved}>
@@ -118,6 +135,7 @@ export default function PathExplorer(props: PathExplorerProps) {
         browse={browse}
         principal={principal}
         renderAssistant={renderAssistant}
+        renderNavigator={renderNavigator}
         onError={onError}
       />
     </ExplorerRoot>
@@ -148,6 +166,7 @@ function PathExplorerBody({
   browse: browseProp,
   principal,
   renderAssistant,
+  renderNavigator,
   onError,
 }: PathExplorerBodyProps) {
   const data: ExplorerDataLayer = useExplorerData();
@@ -233,6 +252,37 @@ function PathExplorerBody({
   const report = useCallback((e: unknown) => {
     onErrorRef.current?.(e);
   }, []);
+
+  // The navigator slot (renderNavigator): which navigator shows, whether it has
+  // the whole explorer, and what it is told. navReload bumps on every change the
+  // explorer makes to the tree, so the star map reloads with it.
+  const [navMode, setNavModeState] = useState<NavigatorMode>(() =>
+    renderNavigator ? readNavigatorMode(globalThis.localStorage) : "tree",
+  );
+  const starsOn = !!renderNavigator && navMode === "stars";
+  const setNavMode = useCallback((m: NavigatorMode) => {
+    setNavModeState(m);
+    writeNavigatorMode(globalThis.localStorage, m);
+    if (m === "tree") setMaximized(false);
+  }, []);
+  const [maximized, setMaximized] = useState(false);
+  const [navReload, setNavReload] = useState(0);
+  // The chunk the viewer is on (reported by it), and a pending request to move
+  // it (a star picked inside the open document, or the landing chunk of one
+  // being opened).
+  const [liveChunk, setLiveChunk] = useState<
+    { documentId: string; chunkId?: string } | undefined
+  >();
+  const [focus, setFocus] = useState<
+    { documentId: string; chunkId?: string; seq: number } | undefined
+  >();
+  const invalidate = useCallback(
+    (p: string, opts?: { dropSubtree?: boolean }) => {
+      setNavReload((n) => n + 1);
+      return lazy.invalidate(p, opts);
+    },
+    [lazy],
+  );
 
   // RFC BN: per-document type/status + color settings, so PathTree can color +
   // badge document rows. Fetched per listed page (≤ one page of ids per call —
@@ -330,6 +380,7 @@ function PathExplorerBody({
   const refresh = useCallback(async () => {
     setErr(null);
     resetSummaries();
+    setNavReload((n) => n + 1);
     await lazy.refresh(expanded).catch(report);
     if (selectedPath) await lazy.reveal(selectedPath).catch(report);
   }, [lazy, expanded, selectedPath, resetSummaries, report]);
@@ -407,7 +458,7 @@ function PathExplorerBody({
         if (!NAME_RE.test(name)) throw new Error("name may contain only [A-Za-z0-9._-]");
         const p = joinPath(currentDir, name);
         await data.pathMkdir(p, scope, browse);
-        await lazy.invalidate(p).catch(report);
+        await invalidate(p).catch(report);
         setSelected(p);
       },
     });
@@ -427,7 +478,7 @@ function PathExplorerBody({
         const title = v.title.trim() || name;
         const p = joinPath(currentDir, name);
         await data.documentCreate(title, p, scope, browse);
-        await lazy.invalidate(p).catch(report);
+        await invalidate(p).catch(report);
         setSelected(p);
       },
     });
@@ -444,8 +495,8 @@ function PathExplorerBody({
         if (!to.startsWith("/")) throw new Error("path must start with /");
         await data.pathMv(selected.fullPath, to, scope, browse);
         await Promise.all([
-          lazy.invalidate(selected.fullPath, { dropSubtree: true }),
-          lazy.invalidate(to),
+          invalidate(selected.fullPath, { dropSubtree: true }),
+          invalidate(to),
         ]).catch(report);
         setSelected(to);
       },
@@ -467,7 +518,7 @@ function PathExplorerBody({
         onSubmit: async () => {
           if (!id) throw new Error("this document dirent has no document_id");
           await data.documentDelete(id, scope, browse);
-          await lazy.invalidate(selected.fullPath).catch(report);
+          await invalidate(selected.fullPath).catch(report);
           setSelected(undefined);
         },
       });
@@ -506,7 +557,7 @@ function PathExplorerBody({
             await data.documentDelete(id, scope, browse);
           }
           await data.pathRm(target.fullPath, scope, true, browse);
-          await lazy.invalidate(target.fullPath, { dropSubtree: true }).catch(report);
+          await invalidate(target.fullPath, { dropSubtree: true }).catch(report);
           setSelected(undefined);
         },
       });
@@ -568,6 +619,56 @@ function PathExplorerBody({
     [],
   );
 
+  // A pick in the navigator. Another chunk of the open document moves the
+  // viewer in place; another document opens as a fresh navigation — by its Path
+  // name when it has one (so the tree follows), else by id.
+  const onNavigatorSelect = useCallback(
+    (sel: NavigatorSelection & { documentId: string }) => {
+      setFocus((f) => ({
+        documentId: sel.documentId,
+        chunkId: sel.chunkId,
+        seq: (f?.seq ?? 0) + 1,
+      }));
+      if (view?.documentId === sel.documentId) return;
+      if (sel.path) {
+        setSelected(sel.path);
+        return;
+      }
+      navSeq.current++;
+      setTrail([{ documentId: sel.documentId, chunkId: sel.chunkId }]);
+      applySelection(undefined);
+    },
+    [view?.documentId, setSelected, applySelection],
+  );
+
+  const navigatorCtx = useMemo<NavigatorContext>(
+    () => ({
+      scope,
+      browse,
+      selection: {
+        documentId: view?.documentId,
+        chunkId:
+          liveChunk && liveChunk.documentId === view?.documentId ? liveChunk.chunkId : undefined,
+        path: view?.path,
+      },
+      onSelect: onNavigatorSelect,
+      reloadToken: navReload,
+      maximized,
+      onToggleMaximize: () => setMaximized((m) => !m),
+    }),
+    [
+      scope,
+      browse,
+      view?.documentId,
+      view?.path,
+      liveChunk,
+      onNavigatorSelect,
+      navReload,
+      maximized,
+    ],
+  );
+  const focusForView = focus && view && focus.documentId === view.documentId ? focus : undefined;
+
   // rename / delete act on the tree's selected entry, so they are offered only
   // when that entry IS the document on screen (not while its path is unknown, or
   // its directory is still being listed).
@@ -577,11 +678,12 @@ function PathExplorerBody({
   return (
     <>
       <Splitter
-        className="paths-view"
-        defaultLeftWidth={420}
+        className={starsOn ? "paths-view paths-view--stars" : "paths-view"}
+        defaultLeftWidth={starsOn ? 720 : 420}
         minLeftWidth={280}
         minRightWidth={300}
-        storageKey="loomcycle.explorer.split.paths"
+        storageKey={starsOn ? "loomcycle.explorer.split.stars" : "loomcycle.explorer.split.paths"}
+        hideRight={starsOn && maximized}
       >
         <div className="left">
           <div className="paths-toolbar">
@@ -593,52 +695,88 @@ function PathExplorerBody({
                 <option value="tenant">tenant</option>
               </select>
             </label>
+            {renderNavigator && (
+              <div className="paths-nav-switch" role="group" aria-label="Navigator">
+                <button
+                  type="button"
+                  aria-pressed={!starsOn}
+                  className={!starsOn ? "active" : undefined}
+                  onClick={() => setNavMode("tree")}
+                  title="Browse the Path tree"
+                >
+                  tree
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={starsOn}
+                  className={starsOn ? "active" : undefined}
+                  onClick={() => setNavMode("stars")}
+                  title="Browse the scope as a 3D star map"
+                >
+                  stars
+                </button>
+              </div>
+            )}
             <div className="paths-toolbar-actions">
-              <button type="button" onClick={newFolder} title={`New folder in ${currentDirLabel}`}>
-                + folder
-              </button>
-              <button
-                type="button"
-                onClick={newDocument}
-                disabled={!canDocuments}
-                title={
-                  canDocuments
-                    ? `New document in ${currentDirLabel}`
-                    : "Documents are agent/user scope only"
-                }
-              >
-                + document
-              </button>
+              {!starsOn && (
+                <>
+                  <button
+                    type="button"
+                    onClick={newFolder}
+                    title={`New folder in ${currentDirLabel}`}
+                  >
+                    + folder
+                  </button>
+                  <button
+                    type="button"
+                    onClick={newDocument}
+                    disabled={!canDocuments}
+                    title={
+                      canDocuments
+                        ? `New document in ${currentDirLabel}`
+                        : "Documents are agent/user scope only"
+                    }
+                  >
+                    + document
+                  </button>
+                </>
+              )}
               <button type="button" onClick={() => void refresh()} title="Reload the tree">
                 ↻
               </button>
             </div>
           </div>
-          <p className="paths-context">
-            new items → <code>{currentDirLabel}</code>
-            {browse?.scopeId && (
-              <>
-                {" · "}subject <code>{browse.scopeId}</code>
-              </>
-            )}
-            {browse?.tenant && (
-              <>
-                {" · "}tenant <code>{browse.tenant}</code>
-              </>
-            )}
-          </p>
+          {!starsOn && (
+            <p className="paths-context">
+              new items → <code>{currentDirLabel}</code>
+              {browse?.scopeId && (
+                <>
+                  {" · "}subject <code>{browse.scopeId}</code>
+                </>
+              )}
+              {browse?.tenant && (
+                <>
+                  {" · "}tenant <code>{browse.tenant}</code>
+                </>
+              )}
+            </p>
+          )}
           {(err || rootErr) && <div className="paths-err">{err || rootErr}</div>}
-          <PathTree
-            tree={tree}
-            root={dirs.get("")}
-            expanded={expanded}
-            onToggle={toggle}
-            onLoadMore={loadMore}
-            onRetry={retry}
-            selectedPath={selectedPath}
-            onSelect={(n) => setSelected(n.fullPath)}
-            summaries={summaries}
-          />
+          {starsOn && renderNavigator ? (
+            <div className="paths-navigator">{renderNavigator(navigatorCtx)}</div>
+          ) : (
+            <PathTree
+              tree={tree}
+              root={dirs.get("")}
+              expanded={expanded}
+              onToggle={toggle}
+              onLoadMore={loadMore}
+              onRetry={retry}
+              selectedPath={selectedPath}
+              onSelect={(n) => setSelected(n.fullPath)}
+              summaries={summaries}
+            />
+          )}
         </div>
         <div className="right">
           {view ? (
@@ -677,9 +815,11 @@ function PathExplorerBody({
                 browse={browse}
                 principal={principal}
                 renderAssistant={renderAssistant}
-                initialChunkId={view.chunkId}
+                initialChunkId={view.chunkId ?? focusForView?.chunkId}
                 onOpenDocument={openDocument}
                 onTitle={onDocTitle}
+                onChunkSelect={(chunkId) => setLiveChunk({ documentId: view.documentId, chunkId })}
+                focusChunk={focusForView}
               />
             </div>
           ) : selected ? (

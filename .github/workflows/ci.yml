@@ -781,6 +781,16 @@ jobs:
       - name: Test @loomcycle/def-fields
         working-directory: packages/def-fields
         run: npm run typecheck && npm test
+      # @loomcycle/universe (RFC FQ, the explorer's star-map navigator) is
+      # consumed from SOURCE the same way; its three / camera-controls resolve
+      # from its own node_modules. Its tests cover the layout, level of detail
+      # and link merging the web build compiles but does not exercise.
+      - name: Install @loomcycle/universe deps
+        working-directory: packages/universe
+        run: npm ci
+      - name: Test @loomcycle/universe
+        working-directory: packages/universe
+        run: npm run typecheck && npm test
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test

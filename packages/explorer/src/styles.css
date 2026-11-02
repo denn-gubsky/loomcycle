@@ -382,6 +382,35 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* RFC FQ — the tree | stars navigator switch */
+.loomcycle-explorer .paths-nav-switch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.loomcycle-explorer .paths-nav-switch button {
+  padding: 4px 10px;
+  border: none;
+  background: var(--bg);
+  color: var(--fg-soft);
+  cursor: pointer;
+}
+.loomcycle-explorer .paths-nav-switch button + button {
+  border-left: 1px solid var(--border);
+}
+.loomcycle-explorer .paths-nav-switch button.active {
+  background: var(--bg-soft);
+  color: var(--fg);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+/* The star-map navigator (renderNavigator slot) fills the left pane. */
+.loomcycle-explorer .paths-view .left > .paths-navigator {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .loomcycle-explorer .paths-context {
   margin: 0;
   padding: 6px 12px;

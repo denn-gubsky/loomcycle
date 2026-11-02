@@ -86,6 +86,9 @@ build-ui:
 	# package itself and stayed green, while the goreleaser job runs THIS target
 	# and could not resolve the package's react types.
 	cd packages/def-fields && npm ci --silent
+	# @loomcycle/universe (RFC FQ, the star-map navigator) is consumed from SOURCE
+	# the same way; its three / camera-controls resolve from its own node_modules.
+	cd packages/universe && npm ci --silent
 	cd web && npm ci --silent && npm run build
 	touch internal/webui/dist/.gitkeep
 

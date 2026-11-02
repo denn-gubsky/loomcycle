@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { PathExplorer } from "@loomcycle/explorer";
 import { useFocusTenant, usePrincipal, useUserId } from "../components/Layout";
 import DocumentAssistantPanel from "../components/DocumentAssistantPanel";
@@ -38,6 +39,10 @@ const cookieFetch: typeof fetch = async (input, init) => {
   return r;
 };
 
+// The `stars` navigator (RFC FQ): the 3D star map, in its own lazy chunk so
+// three.js is fetched only when a reader flips the explorer to `stars`.
+const UniverseNavigatorPane = lazy(() => import("../components/UniverseNavigatorPane"));
+
 export default function PathTreeView() {
   const principal = usePrincipal();
   const userId = useUserId();
@@ -65,6 +70,11 @@ export default function PathTreeView() {
           onChanged={() => ctx.onChanged?.()}
           onStopped={() => ctx.onChanged?.()}
         />
+      )}
+      renderNavigator={(ctx) => (
+        <Suspense fallback={<div className="empty">Loading the star map…</div>}>
+          <UniverseNavigatorPane ctx={ctx} fetchFn={cookieFetch} />
+        </Suspense>
       )}
     />
   );

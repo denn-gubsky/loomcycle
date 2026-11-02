@@ -84,7 +84,7 @@ jobs:
           cache: true
 
       # make build-ui runs the same installs as ci.yml's web-ui job (npm ci in
-      # packages/{library,explorer,memory-view,def-fields}, which web/ compiles
+      # packages/{library,explorer,memory-view,def-fields,universe}, which web/ compiles
       # from source, then web/) and the same build release.yml embeds; the
       # tool then refuses any bundle the server's own loader would refuse.
       - name: Build and pack

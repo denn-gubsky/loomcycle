@@ -225,6 +225,31 @@ export interface AssistantContext {
   onChanged?: () => void;
 }
 
+// NavigatorSelection is a document, optionally at one of its chunks (absent =
+// the document itself), with its Path name when it has one.
+export interface NavigatorSelection {
+  documentId?: string;
+  chunkId?: string;
+  path?: string;
+}
+
+// NavigatorContext is what PathExplorer's optional renderNavigator slot
+// receives: an alternative way to pick documents beside the Path tree (the
+// 3D star map of @loomcycle/universe). The slot shows the reader's current
+// document + chunk and reports a pick through onSelect; the explorer opens it
+// in the same document viewer the tree uses.
+export interface NavigatorContext {
+  scope: PathScope;
+  browse?: BrowseScope;
+  selection: NavigatorSelection;
+  onSelect: (sel: NavigatorSelection & { documentId: string }) => void;
+  // Bumps on a reload or after a create / rename / delete in the explorer.
+  reloadToken: number;
+  // The navigator may take the whole explorer (hiding the document pane).
+  maximized: boolean;
+  onToggleMaximize: () => void;
+}
+
 // ---- RFC FO P5 — classify / accept_classification ----
 
 // ClassifyWrite: `report` writes nothing; `propose` (the runtime's default)
