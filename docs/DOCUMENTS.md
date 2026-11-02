@@ -202,14 +202,68 @@ document. It carries titles and metadata, never bodies.
     directories and document names at or under `under_path`.
     `document_idx` is `-1` for a directory or a document on another page;
     `document_ids` names it either way.
-  - `projection`: reserved for 3D positions; not computed yet, so it is
-    `{model: "", basis_version: 0, xyz: [], missing: [every chunk index]}`.
+  - `projection`: each chunk's place on the scope's 3D map by meaning —
+    `{model, basis_version, xyz, missing}`. `xyz` is one `x, y, z` triple per
+    chunk, in the `chunks` order, rounded to 4 decimals; a chunk with no place
+    on the current map is `0, 0, 0` and its index is in `missing`. `model` is
+    the embedder (`<provider>/<model>`). `basis_version: 0` means no map yet:
+    `xyz` is `[]` and every chunk is missing. See **Projection** below.
 - **Access.** Asked as `read` on the scope's documents, answered like a
   listing: a document the caller's access-control rules hide is left out
   before the page is cut, with its chunks, the relations into it, and its
   Path names (and any directory that leads only to hidden documents). Page
   sizes and cursors are exactly what they would be if it did not exist, and a
   `chunk_ids` entry inside it selects nothing, as a missing id does.
+
+#### Projection — the 3D map
+
+Each chunk's stored embedding is placed on the scope's top three principal
+components, so a viewer can draw chunks that mean similar things near each
+other. The vectors never leave the server; only the three coordinates do.
+
+- **The basis.** Per scope and per embedder model. A pass fits it from a
+  uniform sample of the scope's chunk vectors (at most `sample_max`, and at
+  most 64 MB of them) and keeps each chunk's coordinates in SQL Memory. A
+  later pass places only what is new or re-embedded, on the same basis, so
+  the map does not move under a viewer.
+- **Refits.** A new basis version is fitted when there is none, when an
+  operator forces one, or when the current one is older than `refit_after`
+  AND `refit_min_new` chunks were placed since it was fitted. A refit's axes
+  are turned to point the way the previous basis's did, so the map keeps its
+  orientation, and every chunk is re-placed on it. Coordinates of an older
+  version, or of another embedder model, are never served: those chunks count
+  as missing until they are re-placed.
+- **Bounds.** A pass places at most 5000 chunks (the operator route's `limit`)
+  and fits at most once.
+- **`search` with `with_projection: true`** adds `query_xyz: [x, y, z]`, the
+  query's own place on the map, from the query embedding the search makes
+  anyway. Absent when the scope has no map.
+- **Off by default.** It runs only where the operator enabled
+  `memory.projection` (see [CONFIGURATION.md §9k](CONFIGURATION.md#9k-document-projection--the-3d-chunk-map-memoryprojection)).
+  Off, on a store with no vector index, or without an embedder, the block is
+  the empty one (`model: ""`) and nothing is read.
+
+A background sweeper keeps the maps current when the operator gives it an
+interval. To build or refresh one scope now:
+
+    # what WOULD happen (the default — writes nothing)
+    curl -X POST -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
+      "http://127.0.0.1:8787/v1/_document/project?scope=user&scope_id=<subject>"
+    # do it
+    curl -X POST ... "…/v1/_document/project?scope=user&scope_id=<subject>&dry_run=false"
+
+| param | meaning |
+|---|---|
+| `scope` | `agent` \| `user` (default) \| `tenant`; `scope_id` / `tenant` choose whose, as for the re-index |
+| `dry_run` | `true` (default) reports without writing |
+| `refit` | `true` fits a new basis even when the current one is fresh |
+| `limit` | the most chunks to place in this call (default 5000) |
+
+The response is `{scope, dry_run, model, basis_version, placed, refitted,
+skipped, unsupported, more}`; call again while `more` is true. `unsupported:
+true` means the store has no vector index. The route is operator-admin, like
+the re-index, answers 409 while `memory.projection` is off, and makes no model
+call.
 
 ### Integrity — deletes are atomic, edges never dangle
 
