@@ -284,7 +284,7 @@ agents:
         "statement_operator_ruled", "statement_not_asserted", "statement_expired", "survivor_mismatch",
         "evidence_quote_not_found", "method_not_granted", "permission"];
 
-      var INGEST_REASONS = { created: true, imported: true, reimported: true };
+      var INGEST_REASONS = { created: true, imported: true, reimported: true, copied: true, moved: true };
       var SUBJECT_OPS = { adopted: true, merged: true, retyped: true, removed: true, erased: true };
 
       // The five relate-layer kinds, used when the caller names none.

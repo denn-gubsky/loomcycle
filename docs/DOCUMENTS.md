@@ -36,7 +36,7 @@ One tool, `Document`, gated by per-agent `tools: [Document]`. 15 ops:
 
 | group | ops |
 |-------|-----|
-| Document lifecycle | `create_document` (optional `path:` → a Path dirent), `get_document` (by `id` or `path`), `delete_document`, `copy_documents` (into another scope) |
+| Document lifecycle | `create_document` (optional `path:` → a Path dirent), `get_document` (by `id` or `path`), `delete_document`, `copy_documents` (into another scope), `move_documents` (into another scope, ids kept) |
 | Chunk lifecycle | `create_chunk`, `get_chunk`, `update_chunk`, `delete_chunk`, `move_chunk` |
 | Edges | `link_chunks`, `unlink_chunks` |
 | Query | `query_chunks` |
@@ -337,8 +337,55 @@ without the op naming it.
   before it opens: a SQLite scope has one connection.
 - Each copy is announced on `documents/ingested` with reason `copied`.
 
-`move_documents`, which keeps ids and removes the source, is RFC FT's next
-phase.
+### Moving documents between scopes (`move_documents`)
+
+`move_documents` takes the same set and `path_map` as `copy_documents` and
+carries the same rows, but **keeps every id** (document, chunks, statements,
+evidence) and removes the documents from `scope`. A reference to any of them
+still resolves, now in `to_scope`. A move into the same scope is refused; that
+is the Path tool's `mv`.
+
+**Relations at the edge of the set.** A relation cannot span two scopes. A
+relation between a moved document and one outside the set refuses the move,
+and the dry run lists it under `dangling` with `blocked_by:
+"dangling_relations"`. `dangling: "drop"` moves the set and deletes those
+relations with the source (`dropped` counts them).
+
+**Refusals.** Those of a copy, plus `id_collision` when `to_scope` already holds
+the id. A live lease on the source scope (a links-agent pass) refuses the whole
+call; retry when it ends. Under access control a move also needs write on each
+source document.
+
+**Confirming.** It is a dry run unless `dry_run: false`, and a real move needs
+`expect_count`, the dry run's `counts.documents`. If the set changed, nothing
+moves.
+
+**The order, and resuming.** The scopes' SQL rows, bodies and Path names are
+separate stores, so a move writes in an order that keeps something whole:
+1. Each document's target rows go in one transaction with a row in the target's
+   `document_moves` table, the unfinished-move marker. Then its bodies, then the
+   relations between members.
+2. Each target is checked against its source: chunk, revision and asset counts,
+   and no failed body or relation write.
+3. The source is removed as `delete_document` removes it, except the change
+   feed, which belongs to the id and carries on.
+4. The target is named, its marker cleared, and it is announced on
+   `documents/ingested` with reason `moved`.
+
+The **same call again resumes** from any step. A target holding this move's own
+marker is its unfinished work, not an `id_collision`; a marker whose source is
+gone only needs step 4, which every move between the same two scopes finishes
+first (a dry run lists them under `to_finish`). A document that could not be
+checked or removed is reported under `unfinished` and keeps its source.
+
+**While a move is unfinished** the target's `query_documents` and
+`graph_snapshot` leave the document out, and it has no Path name in the target
+yet. Memory search is not filtered: for the seconds a move takes, or until an
+interrupted one is resumed, a search reading both scopes can find the document
+in each.
+
+**Audit.** With `LOOMCYCLE_AUDIT_LOG_PATH` set, each real move writes a
+`document_move` record: the caller, both scopes, the ids moved and the counts.
 
 ## Off-run: every transport (v1.4.0)
 

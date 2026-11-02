@@ -323,3 +323,28 @@ func TestMoveDocuments_OnPostgres(t *testing.T) {
 	moveSet(t, d, ctx, `"under_path":"/proj"`)
 	movedDocsLanded(t, d, ctx, s, text)
 }
+
+func TestMoveDocuments_ATargetShortOfItsSourceKeepsTheSource(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	ctx = grantedTenantCtx(ctx)
+	s := seedCopyDocs(t, d, ctx)
+	interruptMove(t, d, ctx, s, "target_written")
+	// The plan's part goes missing from the target between the calls.
+	tkey, _, _ := d.resolveScope(ctx, "tenant")
+	if err := d.exec(ctx, tkey, `DELETE FROM chunks WHERE id = ?`, s.planChunk); err != nil {
+		t.Fatal(err)
+	}
+
+	out := moveSet(t, d, ctx, `"under_path":"/proj"`)
+	unfinished, _ := out["unfinished"].([]any)
+	if len(unfinished) != 1 || unfinished[0].(map[string]any)["document_id"] != s.planDoc ||
+		unfinished[0].(map[string]any)["code"] != moveVerifyFailed {
+		t.Fatalf("the plan's target is short a chunk, so it is not moved: %v", out)
+	}
+	if got := copyExec(t, d, ctx, `{"op":"get_document","scope":"user","id":"`+s.planDoc+`"}`); asStr(got["document_id"]) != s.planDoc {
+		t.Errorf("a document whose target is short keeps its source: %v", got)
+	}
+	if got := cleanExport(t, d, ctx, "user", s.planDoc); !strings.Contains(got, "the second draft of the plan") {
+		t.Errorf("the kept source still holds the part's text: %s", got)
+	}
+}
