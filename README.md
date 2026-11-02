@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.133.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.134.0.</em>
 </p>
 
 <p align="center">
@@ -201,17 +201,17 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.133.0) makes proposed relations reviewable in bulk:
-a filtered, summarized review queue, dry-run-first bulk rulings with one audit
-record and one undo each, a `review` access action, a Review page in the Web UI,
-review policies in the tenant ontology that rule proposals as they are filed,
-and a judge agent for the proposals a policy routes to it, with a sampled human
-audit. The Document help gains a `knowledge-base` guide. See
-[`REVISIONS.md`](REVISIONS.md).
+The most recent line (v1.134.0) completes statement review: an operator-only
+judge agreement report counts how often a person's audit of the judge's sampled
+acceptances confirmed it, and the Review page works through that sample. A
+tenant member's single ruling now needs the `review` grant, as a bulk ruling
+does, and a concept tag decided by the neighbours' vote no longer counts as
+rule-matched. See [`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.132.0 let the `knowledge-base` links agent drain tenant-scope
-imports on a schedule, and kept document change feeds out of channel lists.
-See [`REVISIONS.md`](REVISIONS.md).
+Before it, v1.133.0 made proposed relations reviewable in bulk: a review queue,
+bulk rulings with undo, a `review` access action, a Review page, review policies
+in the tenant ontology, and a judge agent with a sampled human audit. See
+[`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
 recordings into timed transcripts through a whisper server, and Teams captions
