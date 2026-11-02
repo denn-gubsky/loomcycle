@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -270,6 +271,66 @@ func TestGraphSnapshot_MemberSeesOnlyReadableDocuments(t *testing.T) {
 			if strings.Join(texts, "\n") != strings.Join(withHidden[size], "\n") {
 				t.Errorf("page_documents=%d: hidden documents change the answer:\nwith    %v\nwithout %v", size, withHidden[size], texts)
 			}
+		}
+	})
+}
+
+// direntCalls counts the Path-tree reads a call makes: a whole-tree listing
+// (DirentListUnder) against reverse lookups by document.
+type direntCalls struct {
+	store.Store
+	under, byDocs int
+}
+
+func (c *direntCalls) DirentListUnder(ctx context.Context, tenantID, scope, scopeID, prefix string) ([]store.DirentRow, error) {
+	c.under++
+	return c.Store.DirentListUnder(ctx, tenantID, scope, scopeID, prefix)
+}
+
+func (c *direntCalls) DirentListByDocuments(ctx context.Context, tenantID, scope, scopeID string, ids []string) ([]store.DirentRow, error) {
+	c.byDocs++
+	return c.Store.DirentListByDocuments(ctx, tenantID, scope, scopeID, ids)
+}
+
+// A page costs its own documents' names, not the scope's Path tree: under
+// path-scoped access rules (which make every readability answer depend on a
+// document's names) only the first page lists the tree, for its dirents
+// section; every page after reads names through the reverse index alone.
+func TestGraphSnapshot_PagesAskOnlyTheirOwnNames(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		open := tenantDocCtx(base, nil)
+		var docs []string
+		for i := range 6 {
+			doc, _, _ := snapDoc(t, d, open, "tenant", fmt.Sprintf("/kb/d%d", i+1), fmt.Sprintf("Doc %d", i+1))
+			docs = append(docs, doc)
+		}
+		reader := tenantDocCtx(base, aclSet(t,
+			authz.Rule{Effect: authz.Allow, Actions: []string{"read"}, Resources: []string{"document:tenant"}},
+			authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/d2"}}))
+		counted := &direntCalls{Store: d.Store}
+		d.Store = counted
+		defer func() { d.Store = counted.Store }()
+
+		first, _ := graphSnap(t, d, reader, `{"op":"graph_snapshot","scope":"tenant","page_documents":2}`)
+		if counted.under != 1 {
+			t.Errorf("first page listed the tree %d times, want once (its dirents section)", counted.under)
+		}
+		cursor, pages := first.Page.NextCursor, 1
+		for cursor != "" {
+			counted.under = 0
+			p, _ := graphSnap(t, d, reader, `{"op":"graph_snapshot","scope":"tenant","page_documents":2,"cursor":"`+cursor+`"}`)
+			if counted.under != 0 {
+				t.Errorf("page %d listed the whole tree %d times; want names by document only", pages+1, counted.under)
+			}
+			for i, id := range p.Documents.IDs {
+				if len(p.Documents.Paths[i]) != 1 || !strings.HasPrefix(p.Documents.Paths[i][0], "/kb/d") {
+					t.Errorf("page %d: document %s paths = %v", pages+1, id, p.Documents.Paths[i])
+				}
+			}
+			cursor, pages = p.Page.NextCursor, pages+1
+		}
+		if pages != 3 || counted.byDocs == 0 {
+			t.Errorf("%d pages, %d reverse lookups; want 3 pages (5 readable of 6, 2 a page) answered by reverse lookups", pages, counted.byDocs)
 		}
 	})
 }

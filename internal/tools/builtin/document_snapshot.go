@@ -210,6 +210,10 @@ func (d *Document) graphSnapshot(ctx context.Context, key sqlmem.ScopeKey, mscop
 		return *refused, nil
 	}
 	acl := d.newDocACL(ctx, key)
+	// A page is a small part of a possibly large scope: ask names per document
+	// through the reverse index, primed a batch at a time.
+	acl.useIndex()
+	prime := func(ids []string) error { return acl.primeNames(ctx, ids) }
 	limited, err := acl.limitsReading(ctx)
 	if err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
@@ -237,7 +241,7 @@ func (d *Document) graphSnapshot(ctx context.Context, key sqlmem.ScopeKey, mscop
 	var docs []snapshotDoc
 	more := false
 	if !none {
-		docs, more, err = d.snapshotPage(ctx, key, req, where, args, limited, readableDoc)
+		docs, more, err = d.snapshotPage(ctx, key, req, where, args, limited, readableDoc, prime)
 		if err != nil {
 			return errFrom(op+": "+err.Error(), err), nil
 		}
@@ -304,7 +308,7 @@ func (d *Document) graphSnapshot(ctx context.Context, key sqlmem.ScopeKey, mscop
 		out["chunks"] = sec
 	}
 	if req.include["edges"] {
-		sec, err := d.snapshotEdges(ctx, key, req, docs, chunkIdx, readableDoc, &codeKinds, &codeStatuses, &codeMethods)
+		sec, err := d.snapshotEdges(ctx, key, req, docs, chunkIdx, limited, readableDoc, prime, &codeKinds, &codeStatuses, &codeMethods)
 		if err != nil {
 			return errFrom(op+": "+err.Error(), err), nil
 		}
@@ -414,7 +418,7 @@ func (d *Document) snapshotCandidates(ctx context.Context, key sqlmem.ScopeKey, 
 // only readable ones, until it holds one more than the page (which says another
 // page exists) or the candidates run out. The cursor is the last KEPT id, so it
 // never names a hidden document.
-func (d *Document) snapshotPage(ctx context.Context, key sqlmem.ScopeKey, req snapshotRequest, where string, args []any, limited bool, readableDoc func(string) (bool, error)) ([]snapshotDoc, bool, error) {
+func (d *Document) snapshotPage(ctx context.Context, key sqlmem.ScopeKey, req snapshotRequest, where string, args []any, limited bool, readableDoc func(string) (bool, error), prime func([]string) error) ([]snapshotDoc, bool, error) {
 	batch := req.page + 1
 	if limited {
 		// A floor, so a small page among many hidden documents is not a query per row.
@@ -432,6 +436,15 @@ func (d *Document) snapshotPage(ctx context.Context, key sqlmem.ScopeKey, req sn
 		res, err := d.query(ctx, key, `SELECT id, title, root_chunk_id, type, status, created_at, updated_at FROM documents WHERE `+w+` ORDER BY id LIMIT ?`, a...)
 		if err != nil {
 			return nil, false, err
+		}
+		if limited {
+			batchIDs := make([]string, len(res.Rows))
+			for i, r := range res.Rows {
+				batchIDs[i] = asStr(r[0])
+			}
+			if err := prime(batchIDs); err != nil {
+				return nil, false, err
+			}
 		}
 		for _, r := range res.Rows {
 			id := asStr(r[0])
@@ -562,7 +575,13 @@ func snapshotTreeOrder(root string, rows []snapshotChunk) (order []int, parent [
 }
 
 func (d *Document) snapshotDocuments(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docs []snapshotDoc, types, statuses *snapshotCodes) (map[string]any, error) {
-	names, err := d.documentNames(ctx, key)
+	pageIDs := make([]string, len(docs))
+	for i, doc := range docs {
+		pageIDs[i] = doc.id
+	}
+	// The page's names only, through the reverse index: a page costs its own
+	// documents, not the scope's whole Path tree.
+	names, err := d.namesOfDocuments(ctx, key, pageIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -672,7 +691,7 @@ type snapshotExternal struct {
 // under the default visibility, in id order, up to the budget. An end off the
 // page is an `external` entry (a negative index) carrying its document, and the
 // statement is dropped when that document is unreadable or the chunk is gone.
-func (d *Document) snapshotEdges(ctx context.Context, key sqlmem.ScopeKey, req snapshotRequest, docs []snapshotDoc, chunkIdx map[string]int, readableDoc func(string) (bool, error), kinds, statuses, methods *snapshotCodes) (map[string]any, error) {
+func (d *Document) snapshotEdges(ctx context.Context, key sqlmem.ScopeKey, req snapshotRequest, docs []snapshotDoc, chunkIdx map[string]int, limited bool, readableDoc func(string) (bool, error), prime func([]string) error, kinds, statuses, methods *snapshotCodes) (map[string]any, error) {
 	ids := []string{}
 	fromCol, toCol, kindCode := []int{}, []int{}, []int{}
 	auto := []bool{}
@@ -712,6 +731,16 @@ ORDER BY e.id
 LIMIT ?`, a...)
 			if err != nil {
 				return nil, err
+			}
+			if limited {
+				// The off-page ends' documents, a batch at a time.
+				var endDocs []string
+				for _, r := range res.Rows {
+					endDocs = append(endDocs, asStr(r[11]), asStr(r[12]))
+				}
+				if err := prime(endDocs); err != nil {
+					return nil, err
+				}
 			}
 			for _, r := range res.Rows {
 				ends := [2]struct {
