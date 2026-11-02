@@ -4,7 +4,9 @@ import type { UniverseModel } from "./model";
 import { toMs } from "./time";
 
 // Star colours come from the document colour scheme (RFC BN, the explorer's
-// resolvers): a document star by its type + status, a chunk by its status. A
+// resolvers): a document star by its type + status, a chunk by its status, and
+// a chunk with no status colour by its document's colour, lightened, unless the
+// scheme says `chunk.inherit: false` (as the explorer's chunk tree does). A
 // document without colouring enabled still draws with the default scheme, so
 // the sky is never monochrome; a key the scheme lacks falls back to a pale
 // neutral by depth (roots brighter than leaves).
@@ -26,15 +28,31 @@ const NEUTRAL: RGB[] = [
   [0.68, 0.72, 0.8], // leaf
 ];
 
-/** chunkRgb is the colour of chunk c: its document's star colour for a root. */
+/** inheritsDocColor mirrors the explorer's chunkInheritsDocColor: kept here
+ *  because this package builds against the published explorer. */
+export function inheritsDocColor(scheme: Record<string, string>): boolean {
+  const v = String(scheme["chunk.inherit"] ?? "")
+    .trim()
+    .toLowerCase();
+  return !(v === "false" || v === "none" || v === "off" || v === "0");
+}
+
+// How far an inherited colour is lightened toward white: a chunk wears its
+// document's hue, paler than a chunk whose status has a colour of its own.
+const INHERIT_LIGHTEN = 0.35;
+
+/** chunkRgb is the colour of chunk c: its document's star colour for a root;
+ *  otherwise its status colour, else its document's colour, lightened. */
 export function chunkRgb(m: UniverseModel, c: number): RGB {
   const di = m.chunk.doc[c];
   const scheme = m.doc.colorEnabled[di] ? effectiveScheme(m.doc.scheme[di] ?? undefined) : DEFAULT_SCHEME;
-  const isRoot = m.doc.root[di] === c;
-  const hex = isRoot
-    ? (docColor(m.doc.type[di], m.doc.status[di], scheme) ?? chunkColor(m.chunk.status[c], scheme))
-    : chunkColor(m.chunk.status[c], scheme);
-  return hexToRgb(hex) ?? NEUTRAL[Math.min(2, m.chunk.depth[c])];
+  const docHex = docColor(m.doc.type[di], m.doc.status[di], scheme);
+  if (m.doc.root[di] === c) return hexToRgb(docHex ?? chunkColor(m.chunk.status[c], scheme)) ?? NEUTRAL[0];
+  const own = hexToRgb(chunkColor(m.chunk.status[c], scheme));
+  if (own) return own;
+  const inherited = inheritsDocColor(scheme) ? hexToRgb(docHex) : undefined;
+  if (inherited) return inherited.map((x) => x + (1 - x) * INHERIT_LIGHTEN) as RGB;
+  return NEUTRAL[Math.min(2, m.chunk.depth[c])];
 }
 
 // Link colours by kind: the common kinds get fixed hues; any other kind (an
