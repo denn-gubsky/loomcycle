@@ -76,9 +76,11 @@ const TRANSIENT_CODES: ReadonlySet<string> = new Set([
 /** 429 codes that do NOT clear by waiting: the caller has to act first, so
  *  a retry loop on them never ends. `configured_run_cap`: the user already
  *  holds as many configured (not yet started) runs as the operator allows,
- *  and only starting or discarding one makes room. (A hard token budget,
- *  `token_limit_exceeded`, has a class of its own outside BackpressureError.) */
-const CALLER_ACTION_429_CODES: ReadonlySet<string> = new Set(["configured_run_cap"]);
+ *  and only starting or discarding one makes room. `too_many_streams`: the
+ *  principal already holds as many document feed streams as allowed, and only
+ *  closing one makes room. (A hard token budget, `token_limit_exceeded`, has a
+ *  class of its own outside BackpressureError.) */
+const CALLER_ACTION_429_CODES: ReadonlySet<string> = new Set(["configured_run_cap", "too_many_streams"]);
 
 /** Base class for every HTTP 404 the client surfaces. Lets callers
  *  catch any not-found case with a single `instanceof NotFoundError`

@@ -77,6 +77,7 @@
  *     // Memory / document change feeds (RFC CD Part C; SSE; substrate:tenant)
  *     streamMemoryChanges(opts?): AsyncIterable<ChangeFeedFrame>     // feed | change | error (non-fatal); resume with opts.since = last seq
  *     streamDocumentChanges(opts?): AsyncIterable<ChangeFeedFrame>
+ *     documentFeed(opts): AsyncIterable<DocumentFeedFrame>           // RFC FV: member-safe, one scope, no cursor (reconnect = resync)
  *
  *     // Interruption (v0.8.16; decline RFC BH)
  *     listUserInterrupts(userId, opts?): Promise<InterruptListResponse>
@@ -501,6 +502,12 @@ export type {
   MemoryChangeScope,
   MemoryChangeType,
   StreamChangesOptions,
+  // The reader's document feed (RFC FV)
+  DocumentFeedChange,
+  DocumentFeedChangeType,
+  DocumentFeedFrame,
+  DocumentFeedOptions,
+  DocumentFeedStatus,
   // Channel CRUD (v0.9.x)
   AckChannelOptions,
   ChannelAckResult,

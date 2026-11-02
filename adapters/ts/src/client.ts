@@ -51,6 +51,10 @@ import type {
   ChangeFeedStatus,
   MemoryChange,
   StreamChangesOptions,
+  DocumentFeedChange,
+  DocumentFeedFrame,
+  DocumentFeedOptions,
+  DocumentFeedStatus,
   CredentialListResponse,
   CredentialMeta,
   CryptoKeyEncoding,
@@ -4933,6 +4937,42 @@ export class LoomcycleClient {
     yield* this.streamChangeFeed("/v1/_document/changes", opts);
   }
 
+  /** Watch one scope's DOCUMENTS change, as a reader (RFC FV). Mirrors
+   *  `GET /v1/_document/feed?scope=user|tenant[&scope_id=…][&tenant=…]`.
+   *
+   *  Unlike {@link LoomcycleClient.streamDocumentChanges} (the operator's
+   *  tenant-wide feed) this is open to a tenant MEMBER, gated like
+   *  {@link LoomcycleClient.document}: it names only documents the caller can
+   *  list, in the one scope it asked for.
+   *
+   *  - The first item is `{ kind: "feed" }`; `payload.enabled === false` means
+   *    the server captures no changes — reload on a timer instead of waiting.
+   *  - Then one `{ kind: "change" }` per change. Changes of one type to one
+   *    document inside one server poll arrive as one.
+   *  - There is NO cursor and no resume: the stream starts now. After any
+   *    disconnect, reload your view and open a new stream.
+   *  - A `{ kind: "error" }` with code `store_unavailable` is non-fatal;
+   *    `access_unavailable` means the server could not re-check your access
+   *    and closed the stream — reload and reconnect.
+   *  - A revoked grant stops that document's changes within 30 s.
+   *  - At most a few streams per principal (`LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS`,
+   *    default 4); one more is refused with a 429 — a `BackpressureError` with
+   *    code `too_many_streams`, not retryable until you close a stream.
+   *  - Iteration ends when the server closes the stream, or throws an
+   *    `AbortError` when `signal` aborts. */
+  async *documentFeed(opts: DocumentFeedOptions): AsyncIterable<DocumentFeedFrame> {
+    if (opts.scope !== "user" && opts.scope !== "tenant") {
+      throw new Error(
+        `loomcycle: documentFeed scope must be "user" or "tenant", got ${String(opts.scope)}`,
+      );
+    }
+    const q = new URLSearchParams({ scope: opts.scope, ...browseQuery(opts) });
+    for await (const ev of this.streamSSEGet(`/v1/_document/feed?${q.toString()}`, opts.signal)) {
+      const frame = toDocumentFeedFrame(ev as unknown as Record<string, unknown>);
+      if (frame) yield frame;
+    }
+  }
+
   private async *streamChangeFeed(
     path: string,
     opts?: StreamChangesOptions,
@@ -5404,6 +5444,30 @@ function toChangeFeedFrame(
   }
   if (typeof raw.seq === "number" && typeof raw.type === "string") {
     return { kind: "change", payload: raw as unknown as MemoryChange };
+  }
+  return null;
+}
+
+/** toDocumentFeedFrame types one frame of the reader's document feed, or
+ *  returns null for one it does not recognise. `feed` and `error` frames are
+ *  read as on the operator feed; a reader `change` carries no `seq`, so it is
+ *  recognised by its `document_id`. */
+function toDocumentFeedFrame(
+  raw: Record<string, unknown>,
+): DocumentFeedFrame | null {
+  const shared = toChangeFeedFrame(raw);
+  if (shared?.kind === "feed") {
+    const { since: _since, ...status } = shared.payload as unknown as Record<string, unknown>;
+    return { kind: "feed", payload: status as unknown as DocumentFeedStatus };
+  }
+  if (shared?.kind === "error") return shared;
+  if (
+    typeof raw.document_id === "string" &&
+    typeof raw.chunk_id === "string" &&
+    typeof raw.type === "string" &&
+    raw.type.startsWith("document.")
+  ) {
+    return { kind: "change", payload: raw as unknown as DocumentFeedChange };
   }
   return null;
 }

@@ -1,14 +1,17 @@
 // adapters/ts/tests/change-feeds.test.ts — RFC CD Part C memory/document
-// change feeds: streamMemoryChanges + streamDocumentChanges.
+// change feeds: streamMemoryChanges + streamDocumentChanges, and the RFC FV
+// reader's documentFeed.
 
 import { describe, expect, it } from "vitest";
 
 import { errorResponse, makeClient, sseResponse } from "./helpers.js";
 import {
   AuthError,
+  BackpressureError,
   LoomcycleError,
   UnavailableError,
   type ChangeFeedFrame,
+  type DocumentFeedFrame,
 } from "../src/index.js";
 
 // Frames exactly as the runtime writes them: sendRaw("feed", …) carries no
@@ -231,5 +234,105 @@ describe("streamDocumentChanges", () => {
     expect(ch.payload.chunk_id).toBe("ch_abc");
     // The shared "" tenant omits the field rather than sending "".
     expect(ch.payload.tenant).toBeUndefined();
+  });
+});
+
+// RFC FV — the reader's document feed. Frames exactly as the runtime writes
+// them: the feed frame without `since`, change frames with no `seq`.
+describe("documentFeed", () => {
+  const READER_FEED =
+    'event: feed\ndata: {"enabled":true,"embedder":{"state":"ok","calls":1,"failures":0}}\n\n';
+  const UPDATED =
+    'event: change\ndata: {"type":"document.chunk.updated","chunk_id":"c1","document_id":"d1","at":"2026-11-02T10:00:00Z"}\n\n';
+  const EDGES =
+    'event: change\ndata: {"type":"document.edges.changed","chunk_id":"c2","document_id":"d2","at":"2026-11-02T10:00:01Z"}\n\n';
+  const ACCESS =
+    'event: error\ndata: {"code":"access_unavailable","error":"reconnect to resync"}\n\n';
+
+  async function collectFeed(src: AsyncIterable<DocumentFeedFrame>): Promise<DocumentFeedFrame[]> {
+    const out: DocumentFeedFrame[] = [];
+    for await (const f of src) out.push(f);
+    return out;
+  }
+
+  it("GETs /v1/_document/feed with the scope and browse params and yields typed frames", async () => {
+    const { client, fetchMock } = makeClient([sseResponse([READER_FEED, UPDATED, EDGES, ACCESS])]);
+
+    const frames = await collectFeed(
+      client.documentFeed({ scope: "tenant", scopeId: "bob", tenant: "acme" }),
+    );
+
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/_document/feed?scope=tenant&scope_id=bob&tenant=acme",
+    );
+    expect(fetchMock.mock.calls[0]![1]!.method).toBe("GET");
+    expect(frames.map((f) => f.kind)).toEqual(["feed", "change", "change", "error"]);
+    expect(frames[0]).toEqual({
+      kind: "feed",
+      payload: { enabled: true, embedder: { state: "ok", calls: 1, failures: 0 } },
+    });
+    expect(frames[1]).toEqual({
+      kind: "change",
+      payload: {
+        type: "document.chunk.updated",
+        chunk_id: "c1",
+        document_id: "d1",
+        at: "2026-11-02T10:00:00Z",
+      },
+    });
+    const edges = frames[2]!;
+    if (edges.kind !== "change") throw new Error("expected a change frame");
+    expect(edges.payload.type).toBe("document.edges.changed");
+    expect(edges.payload.document_id).toBe("d2");
+    const err = frames[3]!;
+    if (err.kind !== "error") throw new Error("expected an error frame");
+    expect(err.payload.code).toBe("access_unavailable");
+  });
+
+  it("sends only the scope when no browse override is given", async () => {
+    const { client, fetchMock } = makeClient([sseResponse([READER_FEED])]);
+
+    await collectFeed(client.documentFeed({ scope: "user" }));
+
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      "http://test-loomcycle:8787/v1/_document/feed?scope=user",
+    );
+  });
+
+  it("refuses an agent scope before any request", async () => {
+    const { client, fetchMock } = makeClient([]);
+
+    const err = await collectFeed(
+      client.documentFeed({ scope: "agent" as unknown as "user" }),
+    ).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("maps the stream cap's 429 to a BackpressureError that is not retryable", async () => {
+    const { client } = makeClient([
+      errorResponse(429, '{"error":"close one first","code":"too_many_streams"}'),
+    ]);
+
+    const err = await collectFeed(client.documentFeed({ scope: "user" })).catch(
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(BackpressureError);
+    expect((err as BackpressureError).retryable).toBe(false);
+  });
+
+  it("skips an operator-shaped change frame it cannot place", async () => {
+    const { client } = makeClient([
+      sseResponse([
+        READER_FEED,
+        'event: change\ndata: {"seq":5,"type":"memory.set","scope":"user","scope_id":"u1","key":"k","at":"2026-11-02T10:00:00Z"}\n\n',
+      ]),
+    ]);
+
+    const frames = await collectFeed(client.documentFeed({ scope: "user" }));
+
+    expect(frames.map((f) => f.kind)).toEqual(["feed"]);
   });
 });
