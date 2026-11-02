@@ -568,7 +568,12 @@ func (s *Server) handleDeleteMemoryEntry(w http.ResponseWriter, r *http.Request)
 		}
 		return
 	}
-	if _, err := s.store.MemoryDelete(r.Context(), tenantID, store.MemoryScope(scope), adminMemoryStoreScopeID(scope, scopeID), key); err != nil {
+	// A consolidated fact's body row is a chunk body: the change feed files its
+	// removal under the fact's document (RFC FV §1).
+	storeScopeID := adminMemoryStoreScopeID(scope, scopeID)
+	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+	if _, err := s.store.MemoryDelete(doc.ChunkBodyChangeCtx(r.Context(), tenantID, store.MemoryScope(scope), storeScopeID, key),
+		tenantID, store.MemoryScope(scope), storeScopeID, key); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}

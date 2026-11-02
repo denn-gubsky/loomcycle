@@ -1651,11 +1651,13 @@ func (d *Document) putBody(ctx context.Context, mscope store.MemoryScope, key sq
 		fields = carryProvenanceField(fields, stored)
 	}
 	v, _ := json.Marshal(chunkBody{Body: body, Fields: fields})
+	// The change feed files this write under its document (RFC FV §1).
+	docID := d.bodyDocument(ctx, key, chunkID)
 	if prov.Origin == "" && prov.Class == "" && prov.SourceSessionID == "" && prov.SourceRunID == "" {
-		if err := d.Store.MemorySet(ctx, tenant, mscope, scopeID, bodyKey, v, 0); err != nil {
+		if err := d.Store.MemorySet(store.WithChangeDocument(ctx, docID), tenant, mscope, scopeID, bodyKey, v, 0); err != nil {
 			return err
 		}
-	} else if err := d.Store.MemorySetProvenance(ctx, tenant, mscope, scopeID, bodyKey, v, 0, prov); err != nil {
+	} else if err := d.Store.MemorySetProvenance(store.WithChangeDocument(ctx, docID), tenant, mscope, scopeID, bodyKey, v, 0, prov); err != nil {
 		return err
 	}
 	// The body is durable at this point. Embedding is a SEPARATE, best-effort
@@ -2148,7 +2150,7 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	}
 	// bodyOrigin is set only by a server path (import_md stamps an import);
 	// every tool call leaves it empty.
-	if err := d.writeBodyAs(ctx, mscope, key, rootID, "", "", nil, in.bodyOrigin); err != nil {
+	if err := d.writeBodyAs(store.WithChangeDocument(ctx, docID), mscope, key, rootID, "", "", nil, in.bodyOrigin); err != nil {
 		return errFrom("create_document: root body: "+err.Error(), err), nil
 	}
 	// A DOCUMENT'S ROOT CAN BE THE ENTITY ITSELF (RFC CV decision 1). When the
@@ -2178,7 +2180,7 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 			// same constraint delete_chunk works under.
 			_ = d.exec(ctx, key, `DELETE FROM chunks WHERE id = ?`, rootID)
 			_ = d.exec(ctx, key, `DELETE FROM documents WHERE id = ?`, docID)
-			_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), chunkBodyKey(rootID))
+			_, _ = d.deleteBody(ctx, docID, direntTenant(ctx), mscope, docMemScopeID(mscope, key), rootID)
 			return errFrom("create_document: the root's entity metadata could not be written, "+
 				"so nothing was created: "+err.Error(), err), nil
 		}
@@ -2781,7 +2783,7 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	// Bodies AFTER commit (separate store; best-effort — an orphaned body is
 	// invisible dead k/v, never reachable once its chunk row is gone).
 	for _, id := range ids {
-		_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), chunkBodyKey(id))
+		_, _ = d.deleteBody(ctx, docID, direntTenant(ctx), mscope, docMemScopeID(mscope, key), id)
 		d.deleteUnitsOf(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), id)
 	}
 	n := len(ids)
@@ -2955,7 +2957,7 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if insErr != nil {
 		return errFrom("create_chunk: "+insErr.Error(), insErr), nil
 	}
-	if err := d.writeBodyAs(ctx, mscope, key, id, in.Type, in.Body, in.Fields, in.bodyOrigin); err != nil {
+	if err := d.writeBodyAs(store.WithChangeDocument(ctx, in.DocumentID), mscope, key, id, in.Type, in.Body, in.Fields, in.bodyOrigin); err != nil {
 		return errFrom("create_chunk: body: "+err.Error(), err), nil
 	}
 	// Seed the body-change log at revision 1 (RFC BS Phase 3a) — the chunk's body
@@ -3594,7 +3596,7 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	}
 	// Bodies after commit (best-effort; see delete_document).
 	for _, cid := range ids {
-		_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), chunkBodyKey(cid))
+		_, _ = d.deleteBody(ctx, row.DocumentID, direntTenant(ctx), mscope, docMemScopeID(mscope, key), cid)
 		d.deleteUnitsOf(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), cid)
 	}
 	d.publishChange(ctx, mscope, docMemScopeID(mscope, key), row.DocumentID, "delete_chunk", in.ID)
@@ -5578,7 +5580,7 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		}
 		docID = resultField(cd, "document_id")
 		rootID = resultField(cd, "root_chunk_id")
-		if err := d.putBody(ctx, mscope, key, rootID, first.typ, first.body, first.fields, bodyOrigin, stamp); err != nil {
+		if err := d.putBody(store.WithChangeDocument(ctx, docID), mscope, key, rootID, first.typ, first.body, first.fields, bodyOrigin, stamp); err != nil {
 			return errFrom("import_md: root body: "+err.Error(), err), nil
 		}
 		if first.typ != "" || first.status != "" {
