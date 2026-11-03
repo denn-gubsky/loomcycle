@@ -8,6 +8,48 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.138.0
+
+*Agents cite documents as links a client can open: a `Document/citing` help topic and one sentence in the Document and Path tool descriptions teach `[title](loom:doc/<document_id>)` and `[title](loom:chunk/<chunk_id>)`. The document viewer opens on a chunk (`chunkId`), a splitter keeps a chunk's text readable above its links, and the Path tree colours, creates and deletes tenant-scope documents like any other.*
+
+The v1.138 line: #2373 to #2375.
+- `@loomcycle/client` and the Python adapter move to 1.138.0 for lockstep; neither API changes.
+- No migrations, no wire breakage.
+- **New npm package version:** `@loomcycle/explorer` 0.14.0 → 0.16.0, carrying #2373, #2374 and #2375 (to be published on its own `explorer-v0.16.0` tag).
+- **Behaviour changes:**
+  - The Document and Path tool descriptions, which every agent reads, now ask the agent to link a document or chunk it mentions in an answer as a `loom:` link (#2374).
+  - In the tenant scope, deleting a folder in the Path tree now deletes the documents under it, as it already did in the user and agent scopes and as its confirmation says. Before, those documents survived the delete, orphaned (#2373).
+
+### Citing documents as `loom:` links (#2374)
+
+- **The format:** `[title](loom:doc/<document_id>)` for a document and `[title](loom:chunk/<chunk_id>)` for a section, a passage or a fact.
+  - Add `?scope=tenant` or `?scope=agent` when the id is not in the user scope.
+  - A document's root is cited as `doc`.
+- **The rules:**
+  - Ids are copied exactly from Document output, never invented; when unsure, cite by title without a link.
+  - The link goes where the document is mentioned.
+  - Answers only: a document body keeps the `[[title]]` / `[[/path]]` grammar.
+- **Where it is taught:**
+  - A help topic, `citing-documents`, reachable as `Context op=help topic=Document/citing`.
+  - One sentence in the Document and Path tool descriptions, and in the MCP server's `document` and `path` descriptions, so every agent learns it without a system-prompt change.
+
+### The document viewer opens on a chunk (#2374)
+
+- `DocumentViewer` takes `chunkId`: the chunk to open on in place of the root.
+- An id that is not one of the document's chunks (another document's, a deleted one) lands on the root.
+- Changing `chunkId` while the document stays the same moves the selection without reloading. If the reader has followed a reference elsewhere, a new `chunkId` brings them back to the host's document at that chunk.
+- The Web UI's document page reads `?chunk=<chunk_id>`.
+
+### A splitter between a chunk's text and its links (#2375)
+
+- A chunk with many references used to push its own text down to a few lines.
+- The viewer now holds the text above and the References and Connections below, with a draggable handle between them. The links scroll on their own.
+- The links pane's height is remembered per browser (`loomcycle.explorer.doc-links-height`), and neither pane can be dragged off.
+
+### Tenant-scope documents in the Path tree (#2373)
+
+The Path tree skipped the document summaries in the tenant scope, a rule from before tenant-scope documents existed. So their rows had no state colours or type / status badges, **+ document** was disabled there, and a folder delete left the documents behind. All three now work in every scope.
+
 ## What's in v1.137.0
 
 *A document's chunks wear its colour: a chunk with no status colour of its own takes a lighter wash of its document's colour in the explorer's chunk tree, and a paler shade of it on the star map, which also gains **unselect**. The `loomcycle mcp` thin client no longer cuts off a long `copy_documents` or `move_documents` call at 60 s.*
