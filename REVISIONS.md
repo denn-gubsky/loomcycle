@@ -8,6 +8,49 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.139.0
+
+*The Team page edits a definition as highlighted, wrapped YAML or JSON, so an agent's prompt reads as real lines instead of one escaped string. The editor is a new published package, `@loomcycle/code-editor`, which loomboard's canvas is adopting too. A password session's account page shows its sign-in methods again.*
+
+The v1.139 line: #2379, #2380 and #2384, plus dependency bumps #2381 to #2383.
+- `@loomcycle/client` and the Python adapter move to 1.139.0 for lockstep; neither API changes.
+- No migrations, no wire breakage.
+- **New npm package:** `@loomcycle/code-editor` 0.1.0, already published on its own `code-editor-v0.1.0` tag.
+- **Behaviour change:** the Team page opens a definition in YAML. JSON is one click away, and the choice is remembered per browser. The definition is still stored and sent as JSON, so YAML comments are not kept.
+
+### A shared JSON/YAML editor, and the Team page on it (#2380)
+
+- **The problem.** The Team page edited a definition in a plain textarea that neither wrapped nor coloured anything. A team that carries its own agents showed each `system_prompt` as one JSON string of escaped `\n`, hundreds of characters wide.
+- **`@loomcycle/code-editor`** (RFC FW), a published package two surfaces share:
+  - **`CodeEditor`:** CodeMirror 6, with syntax colouring, soft wrap with a hanging indent, folding, search and error marks. It is loaded on first mount, with a plain textarea until then.
+  - **`StructuredEditor`:** the host keeps JSON text, and the operator edits it as JSON or YAML. YAML writes a prompt as a `|-` block with real lines. An edit that does not parse never reaches the host, and switching format from such text is refused, so nothing typed is lost.
+  - **Pure helpers:** `toYaml`, `parseYaml` / `parseJson` (each error has a line and column), and `locate` / `pathAt` for a JSON path in either format.
+  - **YAML is parsed strictly, since pasted text is saved under the operator's authority:**
+    - core schema, so a date stays a string;
+    - no aliases or anchors, so there is no expansion blow-up;
+    - no explicit tags (`!!binary` would become bytes);
+    - no duplicate keys, no `Infinity`;
+    - the root must be a mapping.
+  - **Theming is CSS variables** (`--lc-ce-*`), set on the editor or any ancestor.
+- **The Team page:**
+  - opens in YAML, wraps by default, and can switch to JSON;
+  - Save, Create, Refresh diagram and Check refuse to run while the editor shows a parse error, and name the line;
+  - the editor is lazy-loaded, so the main bundle does not change.
+- **loomboard's TeamDef canvas** is moving its own JSON view onto the same package (RFC FW P1).
+
+### Sign-in methods on a password session's account page (#2379)
+
+- A user signed in through a password gate saw no "Sign-in methods" panel on `/ui/account`, so no "Link <gate>" button for a configured identity provider, although the server allows that link.
+- The panel now renders for a password session too, and still hides the link buttons when no redirect gate is configured.
+
+### CI and dependencies (#2384, #2381 to #2383)
+
+- **#2384:**
+  - CI's change filter now runs the Web UI job for a change under `packages/code-editor`. Before, a change to that package alone skipped its tests.
+  - The package's jsdom is back at 29, the newest major that runs on the job's Node 20; #2381 had moved it to 30.
+  - Dependabot no longer proposes jsdom majors, which need a matching Node bump.
+- **#2382, #2383:** lucide-react and happy-dom in the Web UI.
+
 ## What's in v1.138.1
 
 *classify now proposes concepts for a tenant whose concept vocabulary is larger than 20: it asks the vocabulary down its scheme tree, level by level, instead of in one request.*
