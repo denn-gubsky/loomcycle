@@ -8,6 +8,30 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.139.1
+
+*The knowledge-base judge now rules on the topics `classify` proposes from a model's answer, judging each on the document's opening, where before it skipped them all; and a boot race that could leave the first open-mode warning out of the boot log is gone.*
+
+The v1.139.1 line: #2387, #2386.
+- `@loomcycle/client` and the Python adapter stay at 1.139.0; no adapter change.
+- No migrations, no wire breakage.
+- A patch tag builds only `loomcycle-browser`. This release is also built in full (a `force_full` dispatch), so `denngubsky/loomcycle:1.139.1` and the binaries are published.
+- **Behaviour change:** a review policy that routes `kind:subject method:classify` to the judge now gets verdicts on those proposals. Before, `kb/judge` skipped every one as `no_evidence`.
+
+### The judge rules on a quoteless subject proposal (#2387)
+
+- **The gap.** `classify` files a classifier model's topics as `subject` proposals with no evidence, because a decision model answers yes or no and never quotes. `kb/judge` judged only a proposal with evidence quotes. So a judge rule for classified topics did nothing, and every topic waited for a person.
+- **Now** a `subject` proposal with no evidence is judged on the FROM document's opening: its root and first sections in order, about 2,000 characters, as `classify` read them.
+  - The verdict model is also shown the topic's tag path and its meaning from the ontology.
+  - It is told the claim: the document is about the topic, as one of its subjects.
+  - `kb/judge-verdict` gets one rule for that claim: accept when the opening shows the document deals with the topic, reject when it plainly deals with something else, unsure when the opening is too thin.
+- **Unchanged.** Any other kind without evidence is still skipped (`no_evidence`), as is a subject whose document has no text. What a verdict may do is still the runtime's decision (`judge_statements`).
+
+### The first open-mode warning is logged before the listeners start (#2386)
+
+- **The gap.** In open mode (no auth configured) the boot warning came from a background goroutine. It could log after the listeners started, so a boot log, or a test reading it, could miss it.
+- **Now** the first warning is logged on the boot path, before the listeners start. Only the repeats run in the background, with the same behaviour as before.
+
 ## What's in v1.139.0
 
 *The Team page edits a definition as highlighted, wrapped YAML or JSON, so an agent's prompt reads as real lines instead of one escaped string. The editor is a new published package, `@loomcycle/code-editor`, which loomboard's canvas is adopting too. A password session's account page shows its sign-in methods again.*

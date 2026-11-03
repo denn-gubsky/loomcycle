@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.138.1.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.139.1.</em>
 </p>
 
 <p align="center">
@@ -203,7 +203,9 @@ remain the main direction.
 
 The most recent line (v1.139.0) edits a team definition as highlighted, wrapped
 YAML or JSON, so an agent's prompt reads as real lines, through a new shared
-editor package, `@loomcycle/code-editor`, which loomboard's canvas uses too. See
+editor package, `@loomcycle/code-editor`, which loomboard's canvas uses too. Its
+patch release lets the knowledge-base judge rule on the topics `classify`
+proposes, judging each on the document's opening. See
 [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.138.0 taught every agent to cite a document or a chunk as a
