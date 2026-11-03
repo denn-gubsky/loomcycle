@@ -67,6 +67,13 @@ describe("CodeEditor", () => {
     expect(host!.querySelector(".cm-lineWrapping")).toBeNull();
   });
 
+  it("indents a wrapped line under its own indentation", async () => {
+    await mount({ value: "a:\n    deep: x\nb: y", onChange: () => {}, language: "yaml" });
+    const lines = [...host!.querySelectorAll(".cm-line")] as HTMLElement[];
+    expect(lines[1].style.textIndent).toBe("-4ch");
+    expect(lines[0].style.textIndent).toBe("");
+  });
+
   it("is not editable when read-only", async () => {
     await mount({ value: "x", onChange: () => {}, readOnly: true });
     expect(host!.querySelector(".cm-content")!.getAttribute("contenteditable")).toBe("false");
@@ -77,6 +84,13 @@ describe("CodeEditor", () => {
     await vi.waitFor(() => expect(host!.querySelector(".tok-propertyName")).not.toBeNull());
     expect(host!.querySelector(".tok-string")).not.toBeNull();
     expect(host!.querySelector(".tok-number")).not.toBeNull();
+  });
+
+  it("colours YAML values, not only keys", async () => {
+    await mount({ value: "name: parse\nprompt: |-\n  line one\n", onChange: () => {}, language: "yaml" });
+    await vi.waitFor(() => expect(host!.querySelector(".tok-propertyName")).not.toBeNull());
+    const values = [...host!.querySelectorAll(".tok-string")].map((e) => e.textContent?.trim());
+    expect(values).toEqual(expect.arrayContaining(["parse", "line one"]));
   });
 
   it("marks a diagnostic in the text", async () => {

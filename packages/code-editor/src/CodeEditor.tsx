@@ -138,9 +138,14 @@ export function CodeEditor({
             extensions: [
               basicSetup,
               mods.language.syntaxHighlighting(mods.highlight.classHighlighter),
+              // YAML tags plain scalars and block text as `content`, which
+              // classHighlighter leaves unstyled; colour them as values.
+              mods.language.syntaxHighlighting(
+                mods.highlight.tagHighlighter([{ tag: mods.highlight.tags.content, class: "tok-string" }]),
+              ),
               mods.lint.lintGutter(),
               c.language.of(languageExtension(mods, init.language)),
-              c.wrap.of(init.wrap ? mods.view.EditorView.lineWrapping : []),
+              c.wrap.of(wrapExtensions(mods, !!init.wrap)),
               c.readOnly.of(readOnlyExtensions(mods, !!init.readOnly)),
               init.placeholder ? mods.view.placeholder(init.placeholder) : [],
               init.ariaLabel ? mods.view.EditorView.contentAttributes.of({ "aria-label": init.ariaLabel }) : [],
@@ -187,7 +192,7 @@ export function CodeEditor({
     v.dispatch({
       effects: [
         c.language.reconfigure(languageExtension(cm.current, language)),
-        c.wrap.reconfigure(wrap ? cm.current.view.EditorView.lineWrapping : []),
+        c.wrap.reconfigure(wrapExtensions(cm.current, wrap)),
         c.readOnly.reconfigure(readOnlyExtensions(cm.current, !!readOnly)),
       ],
     });
@@ -279,6 +284,50 @@ function languageExtension(cm: CM, language: EditorLanguage): Extension {
   return [];
 }
 
+// Soft wrap with a hanging indent: a wrapped line continues under its own
+// indentation, so a YAML block or a nested JSON value still reads as one.
+function wrapExtensions(cm: CM, wrap: boolean): Extension {
+  if (!wrap) return [];
+  return [cm.view.EditorView.lineWrapping, hangingIndent(cm)];
+}
+
+const hangingIndentPlugins = new WeakMap<CM, Extension>();
+function hangingIndent(cm: CM): Extension {
+  const cached = hangingIndentPlugins.get(cm);
+  if (cached) return cached;
+  const { Decoration, ViewPlugin } = cm.view;
+  const build = (view: EditorView) => {
+    const marks = [];
+    for (const { from, to } of view.visibleRanges) {
+      for (let pos = from; pos <= to; ) {
+        const line = view.state.doc.lineAt(pos);
+        const indent = /^ */.exec(line.text)![0].length;
+        if (indent > 0) {
+          marks.push(
+            Decoration.line({ attributes: { style: `text-indent: -${indent}ch; padding-left: calc(${indent}ch + 6px)` } }).range(line.from),
+          );
+        }
+        pos = line.to + 1;
+      }
+    }
+    return Decoration.set(marks);
+  };
+  const plugin = ViewPlugin.fromClass(
+    class {
+      decorations;
+      constructor(view: EditorView) {
+        this.decorations = build(view);
+      }
+      update(u: import("@codemirror/view").ViewUpdate) {
+        if (u.docChanged || u.viewportChanged) this.decorations = build(u.view);
+      }
+    },
+    { decorations: (v) => v.decorations },
+  );
+  hangingIndentPlugins.set(cm, plugin);
+  return plugin;
+}
+
 function readOnlyExtensions(cm: CM, readOnly: boolean): Extension {
   return [cm.state.EditorState.readOnly.of(readOnly), cm.view.EditorView.editable.of(!readOnly)];
 }
@@ -289,7 +338,8 @@ function theme(cm: CM): Extension {
   return cm.view.EditorView.theme({
     "&": { height: "100%", backgroundColor: "var(--_ce-bg)", color: "var(--_ce-fg)", fontSize: "var(--_ce-font-size)" },
     "&.cm-focused": { outline: "none" },
-    ".cm-scroller": { fontFamily: "var(--_ce-font)", lineHeight: "1.5" },
+    // No ligatures: a coding font would draw YAML's `|-` as one glyph.
+    ".cm-scroller": { fontFamily: "var(--_ce-font)", lineHeight: "1.5", fontVariantLigatures: "none" },
     ".cm-content": { caretColor: "var(--_ce-fg)" },
     ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--_ce-fg)" },
     ".cm-gutters": { backgroundColor: "var(--_ce-gutter-bg)", color: "var(--_ce-gutter-fg)", borderRight: "1px solid var(--_ce-rule)" },
