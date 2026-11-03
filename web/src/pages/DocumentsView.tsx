@@ -7,7 +7,8 @@ import SubjectPrincipalPanel from "../components/SubjectPrincipalPanel";
 import type { DocScope } from "../api";
 
 // DocumentsView is the deep-link surface for one document
-// (/documents/:documentId?scope=user) — a shareable full-page viewer. It is a
+// (/documents/:documentId?scope=user&chunk=<chunk_id>) — a shareable full-page
+// viewer, opening on `chunk` when given (a loom:chunk/… link). It is a
 // thin wrapper around the standalone <DocumentViewer> from @loomcycle/explorer
 // (RFC AZ); web consumes the package SOURCE via a Vite alias. Scope defaults to
 // `user` (the interop-correct default; see RFC AM §8); pass ?scope=agent for an
@@ -37,6 +38,7 @@ export default function DocumentsView() {
   const rawScope = params.get("scope");
   const scope: DocScope =
     rawScope === "agent" || rawScope === "tenant" ? rawScope : "user";
+  const chunkId = params.get("chunk") || undefined;
   const principal = usePrincipal();
   const userId = useUserId();
   const focusTenant = useFocusTenant();
@@ -58,6 +60,7 @@ export default function DocumentsView() {
       )}
       <DocumentViewer
         documentId={documentId}
+        chunkId={chunkId}
         scope={scope}
         connection={{ baseUrl: "", fetch: cookieFetch }}
         principal={principal ?? undefined}
