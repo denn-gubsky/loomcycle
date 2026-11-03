@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.138.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.138.1.</em>
 </p>
 
 <p align="center">
@@ -205,7 +205,9 @@ The most recent line (v1.138.0) teaches every agent to cite a document or a
 chunk as a `loom:` link a client can open (help topic `Document/citing`), lets
 the document viewer open on a chunk, adds a splitter between a chunk's text and
 its links, and colours, creates and deletes tenant-scope documents in the Path
-tree like any other. See [`REVISIONS.md`](REVISIONS.md).
+tree like any other. Its patch release lets `classify` propose concepts from a
+vocabulary larger than 20, asking it down the scheme tree. See
+[`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.137.0 coloured a document's chunks by its document, added
 **unselect** to the star map, and stopped the thin client cutting off long
