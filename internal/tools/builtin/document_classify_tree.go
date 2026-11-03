@@ -72,7 +72,7 @@ func (d *Document) classifyConceptTree(ctx context.Context, read OntologyRead, c
 		waiting []memrank.OntologyConcept
 	)
 	for depth := 0; len(frontier) > 0 && depth < classifyTreeMaxDepth; depth++ {
-		yes, n, reason := d.askConceptBatches(ctx, cd, frontier, classifyTreeMaxCalls-calls)
+		yes, n, reason := d.askConceptBatches(ctx, cd, frontier, classifyTreeMaxCalls-calls, &step.Method)
 		calls += n
 		if reason != "" {
 			reasons = append(reasons, reason)
@@ -115,9 +115,10 @@ func (d *Document) classifyConceptTree(ctx context.Context, read OntologyRead, c
 }
 
 // askConceptBatches asks about concepts in requests of at most ClassifyMaxConcepts and
-// returns those said yes, the number of calls, and the first reason a call gave. It
+// returns those said yes, the number of calls, and the first reason a call gave; method
+// is set to the first answering model's method. It
 // makes at most budget calls, and none once ctx is done.
-func (d *Document) askConceptBatches(ctx context.Context, cd classifyDoc, concepts []memrank.OntologyConcept, budget int) ([]memrank.OntologyConcept, int, string) {
+func (d *Document) askConceptBatches(ctx context.Context, cd classifyDoc, concepts []memrank.OntologyConcept, budget int, method *string) ([]memrank.OntologyConcept, int, string) {
 	var yes []memrank.OntologyConcept
 	calls, reason := 0, ""
 	for start := 0; start < len(concepts); start += memrank.ClassifyMaxConcepts {
@@ -142,6 +143,9 @@ func (d *Document) askConceptBatches(ctx context.Context, cd classifyDoc, concep
 		}
 		v := d.Classifier.Classify(ctx, req)
 		calls++
+		if *method == "" {
+			*method = v.Method
+		}
 		if reason == "" && v.Reason != "" {
 			reason = v.Reason
 		}

@@ -106,7 +106,7 @@ func TestClassify_ALargeConceptTreeIsAskedLevelByLevel(t *testing.T) {
 	if len(a.Statements) != 2 {
 		t.Errorf("statements = %+v, want one proposed subject statement per concept", a.Statements)
 	}
-	if step := modelStep(a); step == nil || !strings.Contains(step.Reason, "2 calls") {
+	if step := modelStep(a); step == nil || !strings.Contains(step.Reason, "2 calls") || step.Method != memrank.ClassifyMethodDecision {
 		t.Errorf("model step = %+v", step)
 	}
 }
