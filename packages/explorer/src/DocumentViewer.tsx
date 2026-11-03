@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { AssistantContext, BrowseScope, DocScope, Principal } from "./types";
 import {
   ExplorerRoot,
@@ -21,6 +21,11 @@ import DocumentViewerBody from "./components/DocumentViewerBody";
 // breadcrumb back — unless the host takes navigation over with onOpenDocument.
 export interface DocumentViewerProps extends ExplorerDataSource {
   documentId: string;
+  /** The chunk to open on, in place of the document's root: a section a link
+   *  or a search hit named. An id that is not one of the document's chunks
+   *  (another document's, a deleted one) lands on the root. Changing it while
+   *  documentId stays the same moves the selection without reloading. */
+  chunkId?: string;
   scope: DocScope;
   /** Shown until the root chunk's title loads. */
   titleHint?: string;
@@ -61,6 +66,7 @@ export default function DocumentViewer(props: DocumentViewerProps) {
 // has been followed.
 function DocumentViewerHost({
   documentId,
+  chunkId,
   scope,
   titleHint,
   browse,
@@ -70,6 +76,25 @@ function DocumentViewerHost({
 }: DocumentViewerProps) {
   const [trail, setTrail] = useState<Trail>([]);
   const current = trail[trail.length - 1];
+
+  // The host's chunk: the landing chunk on mount, and later changes of it
+  // move the selection in the mounted document (focusChunk), or — when the
+  // reader has followed a reference elsewhere — bring them back to the host's
+  // document at that chunk.
+  const [focus, setFocus] = useState<{ chunkId?: string; seq: number }>();
+  const hostChunk = useRef(chunkId);
+  useEffect(() => {
+    if (chunkId === hostChunk.current) return;
+    hostChunk.current = chunkId;
+    if (trail.length > 0) {
+      // Back to the host's document: the body remounts and lands on chunkId,
+      // so no earlier focus request may be replayed into it.
+      setFocus(undefined);
+      setTrail([]);
+    } else setFocus((f) => ({ chunkId, seq: (f?.seq ?? 0) + 1 }));
+    // trail is read, not watched: only a change of the host's chunk moves here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chunkId]);
 
   const open = useCallback(
     (target: DocLocation, from: DocLocation) => {
@@ -97,7 +122,8 @@ function DocumentViewerHost({
         browse={browse}
         principal={principal}
         renderAssistant={renderAssistant}
-        initialChunkId={current?.chunkId}
+        initialChunkId={current ? current.chunkId : chunkId}
+        focusChunk={current ? undefined : focus}
         onOpenDocument={open}
         onTitle={onTitle}
       />

@@ -255,3 +255,29 @@ func TestKnowledgeBaseGuide_ReachableByNameAliasAndQuery(t *testing.T) {
 		t.Errorf("query for subject changes did not reach knowledge-base: %+v", res.Results)
 	}
 }
+
+// The citing guide is reached the way a tool description points at it
+// (topic Document/citing) and by its own name, although it is not an
+// operation article: every file under tools/Document/ must be a real op.
+func TestCitingGuide_ReachableAsDocumentCiting(t *testing.T) {
+	set, err := LoadSet("")
+	if err != nil {
+		t.Fatalf("LoadSet: %v", err)
+	}
+	for _, q := range []string{"Document/citing", "document/citing", "citing-documents", "citing", "loom-links"} {
+		got, ok := set.Get(q)
+		if !ok || got.Name != "citing-documents" {
+			t.Errorf("Get(%q) = %v, %v; want citing-documents", q, got, ok)
+			continue
+		}
+		if got.IsOpArticle() {
+			t.Errorf("Get(%q) resolved an op article", q)
+		}
+	}
+	got, _ := set.Get("Document/citing")
+	for _, want := range []string{"loom:doc/", "loom:chunk/", "?scope=tenant", "[[", "Never make an id up"} {
+		if !strings.Contains(got.Content, want) {
+			t.Errorf("citing guide does not say %q", want)
+		}
+	}
+}
