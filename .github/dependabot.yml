@@ -132,6 +132,10 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "@vitejs/*"
         update-types: ["version-update:semver-major"]
+      # jsdom 30 needs Node 22, and CI's web-ui job runs Node 20: #2381's
+      # bump failed to load there. Take a jsdom major together with that Node.
+      - dependency-name: "jsdom"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-by-dependency:
         applies-to: version-updates
