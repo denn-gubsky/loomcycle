@@ -201,17 +201,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.138.0) teaches every agent to cite a document or a
-chunk as a `loom:` link a client can open (help topic `Document/citing`), lets
-the document viewer open on a chunk, adds a splitter between a chunk's text and
-its links, and colours, creates and deletes tenant-scope documents in the Path
-tree like any other. Its patch release lets `classify` propose concepts from a
-vocabulary larger than 20, asking it down the scheme tree. See
+The most recent line (v1.139.0) edits a team definition as highlighted, wrapped
+YAML or JSON, so an agent's prompt reads as real lines, through a new shared
+editor package, `@loomcycle/code-editor`, which loomboard's canvas uses too. See
 [`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.137.0 coloured a document's chunks by its document, added
-**unselect** to the star map, and stopped the thin client cutting off long
-document calls. See [`REVISIONS.md`](REVISIONS.md).
+Before it, v1.138.0 taught every agent to cite a document or a chunk as a
+`loom:` link a client can open, let the document viewer open on a chunk, and
+coloured, created and deleted tenant-scope documents in the Path tree like any
+other. See [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
 recordings into timed transcripts through a whisper server, and Teams captions
