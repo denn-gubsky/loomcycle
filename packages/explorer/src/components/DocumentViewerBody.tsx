@@ -213,13 +213,13 @@ export default function DocumentViewerBody({
     }
     return s;
   }, [edges]);
-  const toolbarTint = useMemo(
-    () =>
-      colorEnabled
-        ? tintStyle(docColor(meta?.type, meta?.status, effectiveScheme(meta?.color_scheme)))
-        : undefined,
+  // The document's own colour: the toolbar's tint, the root row's in the chunk
+  // tree, and the wash a chunk without a status colour inherits.
+  const documentColor = useMemo(
+    () => (colorEnabled ? docColor(meta?.type, meta?.status, effectiveScheme(meta?.color_scheme)) : undefined),
     [colorEnabled, meta?.type, meta?.status, meta?.color_scheme],
   );
+  const toolbarTint = useMemo(() => tintStyle(documentColor), [documentColor]);
 
   // Load the chunk list when the document / scope / reload changes. Default the
   // selection to the root chunk.
@@ -820,6 +820,7 @@ export default function DocumentViewerBody({
                 onSelect={onSelect}
                 colorEnabled={colorEnabled}
                 scheme={meta?.color_scheme}
+                documentColor={documentColor}
                 linkedIds={linkedIds}
               />
             )}

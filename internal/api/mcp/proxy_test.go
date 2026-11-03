@@ -562,6 +562,22 @@ func TestProxy_DefaultClientHasStallGuards(t *testing.T) {
 // through. Without the long-run carve-out the header timeout would fire, the
 // reconnect loop would re-POST, and the agent run would execute twice.
 func TestProxy_NoHeaderTimeoutOnSpawnRun(t *testing.T) {
+	assertSlowToolCallNotRetried(t, "spawn_run")
+}
+
+// A Document copy or move re-embeds every part it writes and can take many
+// minutes. Under the header timeout the thin client gave up after 60 s, the
+// server cancelled the move with the request, and a retry started it again:
+// a 318-document move got 13 documents per attempt.
+func TestProxy_NoHeaderTimeoutOnDocument(t *testing.T) {
+	assertSlowToolCallNotRetried(t, "document")
+}
+
+// assertSlowToolCallNotRetried calls tool against an upstream that answers
+// only after the fast-frame header timeout, and requires exactly one upstream
+// call and a result: the tool must ride the no-header-timeout client.
+func assertSlowToolCallNotRetried(t *testing.T, tool string) {
+	t.Helper()
 	var mu sync.Mutex
 	spawnCount := 0
 
@@ -582,7 +598,7 @@ func TestProxy_NoHeaderTimeoutOnSpawnRun(t *testing.T) {
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 			return
 		}
-		if p.Params.Name == "spawn_run" {
+		if p.Params.Name == tool {
 			mu.Lock()
 			spawnCount++
 			mu.Unlock()
@@ -612,14 +628,14 @@ func TestProxy_NoHeaderTimeoutOnSpawnRun(t *testing.T) {
 
 	h.send(initFrame())
 	h.waitResp(1, 2*time.Second)
-	h.send(callFrame(2, "spawn_run"))
+	h.send(callFrame(2, tool))
 	got := h.waitResp(2, 3*time.Second)
 	if got.Error != nil {
-		t.Fatalf("spawn_run should complete on the no-header-timeout client, got: %+v", got.Error)
+		t.Fatalf("%s should complete on the no-header-timeout client, got: %+v", tool, got.Error)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if spawnCount != 1 {
-		t.Fatalf("upstream saw spawn_run %d times, want exactly 1 (a header-timeout retry double-executes the run)", spawnCount)
+		t.Fatalf("upstream saw %s %d times, want exactly 1 (a header-timeout retry executes it again)", tool, spawnCount)
 	}
 }
