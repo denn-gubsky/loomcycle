@@ -791,6 +791,16 @@ jobs:
       - name: Test @loomcycle/universe
         working-directory: packages/universe
         run: npm run typecheck && npm test
+      # @loomcycle/code-editor (RFC FW, the shared JSON/YAML editor) is consumed
+      # from SOURCE the same way. Its tests hold the YAML refusals (aliases,
+      # tags, duplicate keys) that make pasted text safe to save, and mount the
+      # real CodeMirror editor under jsdom.
+      - name: Install @loomcycle/code-editor deps
+        working-directory: packages/code-editor
+        run: npm ci
+      - name: Test @loomcycle/code-editor
+        working-directory: packages/code-editor
+        run: npm run typecheck && npm test
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test

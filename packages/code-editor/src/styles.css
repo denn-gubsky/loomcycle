@@ -1,0 +1,224 @@
+/* @loomcycle/code-editor (RFC FW).
+ *
+ * A host themes the editor with CSS alone, by setting --lc-ce-* variables on
+ * the editor or on any ancestor: --lc-ce-bg, -fg, -gutter-bg, -gutter-fg,
+ * -rule, -active-line, -selection, -match, -error, -font, -font-size and the
+ * syntax colours -key, -string, -number, -bool, -null, -punct, -comment,
+ * -meta. Whatever the host leaves unset falls back to the defaults below
+ * (the private --_ce-* copies), which follow the OS colour scheme; an
+ * ancestor's [data-theme="dark"] / [data-theme="light"] overrides the OS, so
+ * a page with its own theme toggle stays in step. */
+
+:is(.loomcycle-code-editor, .loomcycle-structured-editor) {
+  --_ce-font: var(--lc-ce-font, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  --_ce-font-size: var(--lc-ce-font-size, 12.5px);
+  --_ce-bg: var(--lc-ce-bg, #ffffff);
+  --_ce-fg: var(--lc-ce-fg, #1f2328);
+  --_ce-gutter-bg: var(--lc-ce-gutter-bg, #f6f8fa);
+  --_ce-gutter-fg: var(--lc-ce-gutter-fg, #8c959f);
+  --_ce-rule: var(--lc-ce-rule, #d0d7de);
+  --_ce-active-line: var(--lc-ce-active-line, rgba(140, 149, 159, 0.10));
+  --_ce-selection: var(--lc-ce-selection, rgba(84, 174, 255, 0.30));
+  --_ce-match: var(--lc-ce-match, rgba(84, 174, 255, 0.18));
+  --_ce-error: var(--lc-ce-error, #cf222e);
+  --_ce-key: var(--lc-ce-key, #0550ae);
+  --_ce-string: var(--lc-ce-string, #0a3069);
+  --_ce-number: var(--lc-ce-number, #953800);
+  --_ce-bool: var(--lc-ce-bool, #8250df);
+  --_ce-null: var(--lc-ce-null, #8250df);
+  --_ce-punct: var(--lc-ce-punct, #57606a);
+  --_ce-comment: var(--lc-ce-comment, #6e7781);
+  --_ce-meta: var(--lc-ce-meta, #cf222e);
+}
+
+@media (prefers-color-scheme: dark) {
+  :is(.loomcycle-code-editor, .loomcycle-structured-editor) {
+    --_ce-bg: var(--lc-ce-bg, #0d1117);
+    --_ce-fg: var(--lc-ce-fg, #e6edf3);
+    --_ce-gutter-bg: var(--lc-ce-gutter-bg, #161b22);
+    --_ce-gutter-fg: var(--lc-ce-gutter-fg, #6e7681);
+    --_ce-rule: var(--lc-ce-rule, #30363d);
+    --_ce-active-line: var(--lc-ce-active-line, rgba(110, 118, 129, 0.12));
+    --_ce-selection: var(--lc-ce-selection, rgba(56, 139, 253, 0.35));
+    --_ce-match: var(--lc-ce-match, rgba(56, 139, 253, 0.20));
+    --_ce-error: var(--lc-ce-error, #ff7b72);
+    --_ce-key: var(--lc-ce-key, #79c0ff);
+    --_ce-string: var(--lc-ce-string, #a5d6ff);
+    --_ce-number: var(--lc-ce-number, #ffa657);
+    --_ce-bool: var(--lc-ce-bool, #d2a8ff);
+    --_ce-null: var(--lc-ce-null, #d2a8ff);
+    --_ce-punct: var(--lc-ce-punct, #8b949e);
+    --_ce-comment: var(--lc-ce-comment, #8b949e);
+    --_ce-meta: var(--lc-ce-meta, #ff7b72);
+  }
+}
+
+[data-theme="light"] :is(.loomcycle-code-editor, .loomcycle-structured-editor) {
+  --_ce-bg: var(--lc-ce-bg, #ffffff);
+  --_ce-fg: var(--lc-ce-fg, #1f2328);
+  --_ce-gutter-bg: var(--lc-ce-gutter-bg, #f6f8fa);
+  --_ce-gutter-fg: var(--lc-ce-gutter-fg, #8c959f);
+  --_ce-rule: var(--lc-ce-rule, #d0d7de);
+  --_ce-active-line: var(--lc-ce-active-line, rgba(140, 149, 159, 0.10));
+  --_ce-selection: var(--lc-ce-selection, rgba(84, 174, 255, 0.30));
+  --_ce-match: var(--lc-ce-match, rgba(84, 174, 255, 0.18));
+  --_ce-error: var(--lc-ce-error, #cf222e);
+  --_ce-key: var(--lc-ce-key, #0550ae);
+  --_ce-string: var(--lc-ce-string, #0a3069);
+  --_ce-number: var(--lc-ce-number, #953800);
+  --_ce-bool: var(--lc-ce-bool, #8250df);
+  --_ce-null: var(--lc-ce-null, #8250df);
+  --_ce-punct: var(--lc-ce-punct, #57606a);
+  --_ce-comment: var(--lc-ce-comment, #6e7781);
+  --_ce-meta: var(--lc-ce-meta, #cf222e);
+}
+
+[data-theme="dark"] :is(.loomcycle-code-editor, .loomcycle-structured-editor) {
+  --_ce-bg: var(--lc-ce-bg, #0d1117);
+  --_ce-fg: var(--lc-ce-fg, #e6edf3);
+  --_ce-gutter-bg: var(--lc-ce-gutter-bg, #161b22);
+  --_ce-gutter-fg: var(--lc-ce-gutter-fg, #6e7681);
+  --_ce-rule: var(--lc-ce-rule, #30363d);
+  --_ce-active-line: var(--lc-ce-active-line, rgba(110, 118, 129, 0.12));
+  --_ce-selection: var(--lc-ce-selection, rgba(56, 139, 253, 0.35));
+  --_ce-match: var(--lc-ce-match, rgba(56, 139, 253, 0.20));
+  --_ce-error: var(--lc-ce-error, #ff7b72);
+  --_ce-key: var(--lc-ce-key, #79c0ff);
+  --_ce-string: var(--lc-ce-string, #a5d6ff);
+  --_ce-number: var(--lc-ce-number, #ffa657);
+  --_ce-bool: var(--lc-ce-bool, #d2a8ff);
+  --_ce-null: var(--lc-ce-null, #d2a8ff);
+  --_ce-punct: var(--lc-ce-punct, #8b949e);
+  --_ce-comment: var(--lc-ce-comment, #8b949e);
+  --_ce-meta: var(--lc-ce-meta, #ff7b72);
+}
+
+/* The editor fills its parent; the host sizes the parent. */
+.loomcycle-code-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  border: 1px solid var(--_ce-rule);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--_ce-bg);
+}
+.loomcycle-code-editor .lc-ce-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.loomcycle-code-editor .lc-ce-host > .cm-editor {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Before CodeMirror loads, or if it cannot. */
+.loomcycle-code-editor .lc-ce-plain {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  border: 0;
+  outline: none;
+  padding: 4px 8px;
+  font-family: var(--_ce-font);
+  font-size: var(--_ce-font-size);
+  line-height: 1.5;
+  background: var(--_ce-bg);
+  color: var(--_ce-fg);
+  white-space: pre;
+  overflow: auto;
+}
+.loomcycle-code-editor .lc-ce-plain[data-wrap] {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.loomcycle-code-editor .lc-ce-hint {
+  padding: 2px 8px;
+  font-size: 0.8em;
+  color: var(--_ce-gutter-fg);
+  border-top: 1px solid var(--_ce-rule);
+}
+
+/* Syntax, from @lezer/highlight's classHighlighter. */
+.loomcycle-code-editor .tok-propertyName { color: var(--_ce-key); }
+.loomcycle-code-editor .tok-string,
+.loomcycle-code-editor .tok-string2 { color: var(--_ce-string); }
+.loomcycle-code-editor .tok-number { color: var(--_ce-number); }
+.loomcycle-code-editor .tok-bool,
+.loomcycle-code-editor .tok-atom { color: var(--_ce-bool); }
+.loomcycle-code-editor .tok-null { color: var(--_ce-null); }
+.loomcycle-code-editor .tok-punctuation,
+.loomcycle-code-editor .tok-operator { color: var(--_ce-punct); }
+.loomcycle-code-editor .tok-comment { color: var(--_ce-comment); font-style: italic; }
+.loomcycle-code-editor .tok-meta,
+.loomcycle-code-editor .tok-labelName,
+.loomcycle-code-editor .tok-typeName { color: var(--_ce-meta); }
+.loomcycle-code-editor .tok-invalid { color: var(--_ce-meta); text-decoration: underline wavy; }
+
+/* StructuredEditor: toolbar above, the editor, a parse error below. */
+.loomcycle-structured-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  height: 100%;
+}
+.loomcycle-structured-editor > .loomcycle-code-editor {
+  flex: 1;
+  height: auto;
+}
+.loomcycle-structured-editor .lc-ce-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.85em;
+}
+.loomcycle-structured-editor .lc-ce-formats {
+  display: inline-flex;
+  border: 1px solid var(--_ce-rule);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.loomcycle-structured-editor .lc-ce-format {
+  border: 0;
+  margin: 0;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 0.9em;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  background: transparent;
+  color: inherit;
+  opacity: 0.7;
+}
+.loomcycle-structured-editor .lc-ce-format + .lc-ce-format {
+  border-left: 1px solid var(--_ce-rule);
+}
+.loomcycle-structured-editor .lc-ce-format[aria-pressed="true"] {
+  opacity: 1;
+  font-weight: 600;
+  background: var(--_ce-selection);
+}
+.loomcycle-structured-editor .lc-ce-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.loomcycle-structured-editor .lc-ce-note {
+  opacity: 0.65;
+}
+.loomcycle-structured-editor .lc-ce-toolbar-extra {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+.loomcycle-structured-editor .lc-ce-error {
+  font-size: 0.85em;
+  color: var(--_ce-error);
+  white-space: pre-wrap;
+}

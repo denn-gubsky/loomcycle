@@ -42,6 +42,14 @@ const defFieldsStyles = path.resolve(webRoot, "../packages/def-fields/src/styles
 // three / camera-controls resolve from packages/universe/node_modules.
 const universeSrc = path.resolve(webRoot, "../packages/universe/src/index.ts");
 const universeStyles = path.resolve(webRoot, "../packages/universe/src/styles.css");
+// @loomcycle/code-editor (RFC FW) — the shared JSON/YAML editor, consumed from
+// SOURCE the same way. CodeMirror is imported lazily inside it, so it lands in
+// its own chunk fetched only where an editor mounts; the @codemirror modules
+// and yaml resolve from packages/code-editor/node_modules — one copy, which
+// matters: two copies of @codemirror/state break the editor. Scoped classes
+// (`.loomcycle-code-editor`), so the pages that use it import its styles.
+const codeEditorSrc = path.resolve(webRoot, "../packages/code-editor/src/index.ts");
+const codeEditorStyles = path.resolve(webRoot, "../packages/code-editor/src/styles.css");
 
 // loomcycle UI build configuration.
 //
@@ -71,6 +79,8 @@ export default defineConfig({
       "@loomcycle/def-fields": defFieldsSrc,
       "@loomcycle/universe/styles.css": universeStyles,
       "@loomcycle/universe": universeSrc,
+      "@loomcycle/code-editor/styles.css": codeEditorStyles,
+      "@loomcycle/code-editor": codeEditorSrc,
     },
     // We consume @loomcycle/library from SOURCE, which imports `react` /
     // `react-dom` (and the JSX runtime). Because the package has its OWN

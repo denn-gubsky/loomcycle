@@ -106,6 +106,7 @@ updates:
       - /packages/bridge-slack
       - /packages/bridge-teams
       - /packages/bridge-telegram
+      - /packages/code-editor
       - /packages/def-fields
       - /packages/explorer
       - /packages/library

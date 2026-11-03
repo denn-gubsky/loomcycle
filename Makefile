@@ -89,6 +89,10 @@ build-ui:
 	# @loomcycle/universe (RFC FQ, the star-map navigator) is consumed from SOURCE
 	# the same way; its three / camera-controls resolve from its own node_modules.
 	cd packages/universe && npm ci --silent
+	# @loomcycle/code-editor (RFC FW, the shared JSON/YAML editor) is consumed from
+	# SOURCE the same way; its @codemirror modules and yaml resolve from its own
+	# node_modules.
+	cd packages/code-editor && npm ci --silent
 	cd web && npm ci --silent && npm run build
 	touch internal/webui/dist/.gitkeep
 
