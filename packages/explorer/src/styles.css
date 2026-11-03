@@ -208,6 +208,49 @@
   background: var(--accent);
 }
 
+/* StackSplitter: the same handle on its side, between a chunk's text (top)
+   and its links (bottom), in the document viewer's content column. */
+.loomcycle-explorer .stack-splitter {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+}
+.loomcycle-explorer .stack-splitter.dragging {
+  user-select: none;
+  cursor: row-resize;
+}
+.loomcycle-explorer .stack-splitter > .stack-splitter-pane {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.loomcycle-explorer .stack-splitter > .stack-splitter-handle {
+  cursor: row-resize;
+  position: relative;
+  z-index: 1;
+}
+.loomcycle-explorer .stack-splitter > .stack-splitter-handle::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 2px;
+  height: 2px;
+  background: var(--border);
+  transition: background 80ms ease;
+}
+.loomcycle-explorer .stack-splitter > .stack-splitter-handle:hover::before,
+.loomcycle-explorer .stack-splitter.dragging > .stack-splitter-handle::before {
+  background: var(--accent);
+}
+/* The links side scrolls on its own, as the text does above it. */
+.loomcycle-explorer .doc-links-pane {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
 /* ============================================================
    Modal base (PromptModal + ChunkEditorModal)
    ============================================================ */
