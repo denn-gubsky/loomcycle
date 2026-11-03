@@ -9057,3 +9057,39 @@ button.doc-ref-target.external {
   color: var(--lc-text-muted);
   cursor: pointer;
 }
+
+/* ---- @loomcycle/code-editor (RFC FW) on the Web UI's tokens ----------------
+ * The package themes itself from --lc-ce-* variables; the surfaces follow this
+ * UI's tokens, and the syntax colours follow <html data-theme>, which the
+ * package's own stylesheet reads. */
+.loomcycle-code-editor,
+.loomcycle-structured-editor {
+  --lc-ce-bg: var(--lc-input-bg);
+  --lc-ce-fg: var(--lc-text);
+  --lc-ce-gutter-bg: var(--lc-surface-2);
+  --lc-ce-gutter-fg: var(--lc-text-faint);
+  --lc-ce-rule: var(--lc-rule);
+  --lc-ce-error: var(--lc-failed);
+  --lc-ce-font: var(--lc-font-mono);
+}
+
+/* The Team page's editor fills the pane between its header and the panels. */
+.teams-structured-editor {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+.teams-editor-plain {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  padding: 0.6rem;
+  font-family: var(--mono, monospace);
+  font-size: 0.82em;
+  white-space: pre-wrap;
+  overflow: auto;
+  border: 1px solid var(--lc-rule, #ccc);
+  border-radius: 6px;
+  background: var(--lc-input-bg, transparent);
+  color: var(--lc-text, inherit);
+}

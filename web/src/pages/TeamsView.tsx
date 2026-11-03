@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 import { AGENT_HOOK_EVENTS, HookEventsControl, ToolHooksControl } from "@loomcycle/def-fields";
 import "@loomcycle/def-fields/styles.css";
 import {
@@ -25,6 +25,13 @@ import { WALK, hookTargets, readTeamHooks, writeTeamHooks } from "../lib/teamHoo
 import TeamOwnDefinitionsPanel from "../components/TeamOwnDefinitionsPanel";
 import { TeamCheckPanel } from "../components/TeamCheckPanel";
 import { forkOverlayFor } from "../lib/teamCheck";
+import type { ParseError } from "@loomcycle/code-editor";
+import "@loomcycle/code-editor/styles.css";
+
+// The team editor (RFC FW): JSON or YAML, highlighted and wrapped. Loaded with
+// the page's first editor, so the YAML parser and CodeMirror stay out of the
+// main bundle; until then a plain textarea edits the same JSON.
+const StructuredEditor = lazy(() => import("@loomcycle/code-editor").then((m) => ({ default: m.StructuredEditor })));
 
 // TeamsView — the agent-team board.
 //
@@ -124,6 +131,9 @@ export default function TeamsView() {
   const [loadedDef, setLoadedDef] = useState<unknown>(undefined);
   const [createName, setCreateName] = useState<string>("");
   const [editorErr, setEditorErr] = useState<string>("");
+  // Why the editor's text does not parse, or null. In YAML mode `editorText`
+  // keeps the last value that did, so a save must not go ahead on it.
+  const [textError, setTextError] = useState<ParseError | null>(null);
   const [loadingDef, setLoadingDef] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -271,6 +281,10 @@ export default function TeamsView() {
   // Parse the editor text as JSON; on failure set the editor error and return
   // undefined. The server does the graph syntax check (dry-run / create / fork).
   function parseEditor(): unknown | undefined {
+    if (textError) {
+      setEditorErr(`Fix the editor text first — line ${textError.line}, column ${textError.column}: ${textError.message}`);
+      return undefined;
+    }
     try {
       return JSON.parse(editorText);
     } catch (e) {
@@ -448,26 +462,29 @@ export default function TeamsView() {
         </div>
       )}
 
-      <textarea
-        value={editorText}
-        onChange={(e) => setEditorText(e.target.value)}
-        spellCheck={false}
-        placeholder={loadingDef ? "Loading…" : "Team graph JSON — entry / states / transitions"}
-        style={{
-          flex: 1,
-          minHeight: 0,
-          resize: "none",
-          padding: "0.6rem",
-          fontFamily: "var(--mono, monospace)",
-          fontSize: "0.82em",
-          whiteSpace: "pre",
-          overflow: "auto",
-          border: "1px solid var(--lc-rule, #ccc)",
-          borderRadius: 6,
-          background: "var(--lc-input-bg, transparent)",
-          color: "var(--lc-text, inherit)",
-        }}
-      />
+      <Suspense
+        fallback={
+          <textarea
+            value={editorText}
+            onChange={(e) => setEditorText(e.target.value)}
+            spellCheck={false}
+            aria-label="Team definition"
+            className="teams-editor-plain"
+          />
+        }
+      >
+        <StructuredEditor
+          className="teams-structured-editor"
+          value={editorText}
+          onChange={setEditorText}
+          defaultFormat="yaml"
+          storageKey="loomcycle.teams.editor"
+          onParseError={setTextError}
+          readOnly={loadingDef}
+          ariaLabel="Team definition"
+          placeholder="Team graph — entry / states / transitions"
+        />
+      </Suspense>
 
       <TeamHooksPanel editorText={editorText} setEditorText={setEditorText} disabled={saving || loadingDef} />
       <TeamOwnDefinitionsPanel
