@@ -12,6 +12,12 @@ import (
 // is unusual; the bound only keeps a malformed one from asking without end.
 const classifyTreeMaxDepth = 8
 
+// classifyTreeMaxCalls bounds the model calls one classify makes walking the tree. Each
+// concept is asked at most once, so the walk already costs at most the vocabulary's
+// size over ClassifyMaxConcepts (plus one per level); this caps it outright, so a very
+// large vocabulary costs a known number of calls and says what it left unasked.
+const classifyTreeMaxCalls = 12
+
 // conceptKey identifies a concept across schemes: its scheme and its path. A name alone
 // is not enough, since two schemes (or two branches) may each have a "security".
 func conceptKey(c memrank.OntologyConcept) string {
@@ -66,7 +72,7 @@ func (d *Document) classifyConceptTree(ctx context.Context, read OntologyRead, c
 		waiting []memrank.OntologyConcept
 	)
 	for depth := 0; len(frontier) > 0 && depth < classifyTreeMaxDepth; depth++ {
-		yes, n, reason := d.askConceptBatches(ctx, cd, frontier)
+		yes, n, reason := d.askConceptBatches(ctx, cd, frontier, classifyTreeMaxCalls-calls)
 		calls += n
 		if reason != "" {
 			reasons = append(reasons, reason)
@@ -109,11 +115,18 @@ func (d *Document) classifyConceptTree(ctx context.Context, read OntologyRead, c
 }
 
 // askConceptBatches asks about concepts in requests of at most ClassifyMaxConcepts and
-// returns those said yes, the number of calls, and the first reason a call gave.
-func (d *Document) askConceptBatches(ctx context.Context, cd classifyDoc, concepts []memrank.OntologyConcept) ([]memrank.OntologyConcept, int, string) {
+// returns those said yes, the number of calls, and the first reason a call gave. It
+// makes at most budget calls, and none once ctx is done.
+func (d *Document) askConceptBatches(ctx context.Context, cd classifyDoc, concepts []memrank.OntologyConcept, budget int) ([]memrank.OntologyConcept, int, string) {
 	var yes []memrank.OntologyConcept
 	calls, reason := 0, ""
 	for start := 0; start < len(concepts); start += memrank.ClassifyMaxConcepts {
+		if calls >= budget {
+			return yes, calls, fmt.Sprintf("stopped after %d calls; %d concepts were not asked", classifyTreeMaxCalls, len(concepts)-start)
+		}
+		if err := ctx.Err(); err != nil {
+			return yes, calls, "stopped: " + err.Error()
+		}
 		end := min(start+memrank.ClassifyMaxConcepts, len(concepts))
 		batch := concepts[start:end]
 		// An answer names a concept by name, so a name twice in one request could not be

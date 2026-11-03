@@ -193,3 +193,30 @@ func TestClassify_TheClassIsAskedAloneThenTheTree(t *testing.T) {
 		t.Errorf("steps = %+v; want the class step and the tree step", a.Steps)
 	}
 }
+
+// TestClassify_TheTreeWalkStopsAtItsCallBudget: a vocabulary needing more calls than
+// the budget is asked up to the budget, and the step says what was left unasked.
+func TestClassify_TheTreeWalkStopsAtItsCallBudget(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(strings.SplitN(classifyOntologyMD, "## Schemes", 2)[0])
+	b.WriteString("## Schemes\n@section schemes\n\n### topics\n\n")
+	n := (classifyTreeMaxCalls + 2) * memrank.ClassifyMaxConcepts
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&b, "#### T%04d\n\n", i)
+	}
+	d, base, _ := documentFixture(t)
+	f := &classifyFixture{t: t, d: d, ctx: operatorCtx(installTenantOntology(t, d, base, b.String(), memrank.OntologyConfirmedStatus))}
+	stub := &treeStub{yes: map[string]bool{"T0001": true}}
+	f.d.Classifier = stub
+	docID, _ := f.doc("tenant", "A note", "/kb/n/5", "Order", [2]string{"Part", "text"})
+	a := f.classify(f.ctx, "tenant", docID, nil)
+	if len(stub.asked) != classifyTreeMaxCalls {
+		t.Fatalf("made %d calls, want the budget %d", len(stub.asked), classifyTreeMaxCalls)
+	}
+	if step := modelStep(a); step == nil || !strings.Contains(step.Reason, "were not asked") {
+		t.Errorf("model step = %+v", step)
+	}
+	if got := strings.Join(conceptNames(a.Concepts), ","); got != "T0001" {
+		t.Errorf("concepts = %q", got)
+	}
+}
