@@ -22,6 +22,7 @@ import {
 // passkey the browser is prompted for). Changing the password signs out
 // every other browser of the account. A session from an identity provider or
 // a passkey has no password: it manages its passkeys and linked sign-ins.
+// Both kinds of session may link another sign-in, so both show the panel.
 export default function AccountView() {
   const [info, setInfo] = useState<AccountInfo | null>(null);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
@@ -202,6 +203,7 @@ export default function AccountView() {
         )}
       </section>
 
+      <LinkedSignIns />
       <PasskeySection stepUp={() => ({ current_password: current, otp })} onChanged={load} />
     </div>
   );
