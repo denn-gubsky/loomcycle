@@ -8,6 +8,40 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.137.0
+
+*A document's chunks wear its colour: a chunk with no status colour of its own takes a lighter wash of its document's colour in the explorer's chunk tree, and a paler shade of it on the star map, which also gains **unselect**. The `loomcycle mcp` thin client no longer cuts off a long `copy_documents` or `move_documents` call at 60 s.*
+
+The v1.137 line: #2361 to #2371.
+- `@loomcycle/client` and the Python adapter move to 1.137.0 for lockstep; neither API changes.
+- No migrations, no wire breakage.
+- **New npm package versions:** `@loomcycle/explorer` 0.13.0 → 0.14.0, `@loomcycle/universe` 0.2.0 → 0.3.0 (both already published).
+- **Behaviour change** (#2362): through the thin client, a `document` call against an upstream that has stopped answering now waits instead of failing after 60 s, as `spawn_run`, `teamdef` and `file` calls already did.
+- **Plugin users:** reinstall the Homebrew `loomcycle` to pick up the thin-client fix; the thin client is that binary.
+
+### Chunks wear their document's colour (#2363)
+
+- **Chunk tree** (`@loomcycle/explorer` 0.14.0), when a document's colouring is on:
+  - The document's own row at the top of its chunk tree wears the document's colour, as its Path-tree row does.
+  - A chunk whose status has a colour keeps it.
+  - Any other chunk takes a lighter wash of the document's colour: half the alpha, no left accent. So a status colour still stands out among its neighbours.
+- **Why:** imported corpus chunks, such as the sections of a law or a regulation, carry no status, and a placeholder status would pollute a field search filters on.
+- **Star map** (`@loomcycle/universe` 0.3.0): a chunk star with no status colour takes its document's colour, lifted 35% toward white; a status colour still wins.
+- **Opt-out:** `"chunk.inherit": "false"` (or `none` / `off` / `0`) in a document's colour scheme keeps both the wash and the star shade off for that document.
+- **Unselect:** a toolbar button on the star map, and Esc when no link is being drawn and no field has focus, clears the selection, the checked search hits and a half-drawn link. The open document stays open.
+
+### The thin client and long document calls (#2362)
+
+- `loomcycle mcp --upstream` gave every tool outside its long-run list a 60 s response-header timeout. A `copy_documents` or `move_documents` call re-embeds every part it writes and can run for many minutes.
+- The client gave up at 60 s, the server cancelled the call with the request, and the reconnect retry started it over. A large move made a little progress per attempt.
+- `document` now joins `spawn_run`, `teamdef` and `file` on the client without a header timeout, and with no reconnect retry while a call is in flight.
+
+### Maintenance
+
+- **Docs:** CLAUDE.md's document-store section now names the tenant scope, where the project docs live after their move (#2361).
+- **Test:** a scheduler test whose hourly cron could fire a second time when a run crossed the top of an hour now fires each schedule once (#2371).
+- **Dependencies:** pgx 5.12.0, go-jose 4.1.7, aws-sdk-go-v2 `config` 1.33.13 and `credentials` 1.20.13, lucide-react 1.65.0 (Web UI), jose 6.2.14 (cloud landing), `@types/node` 26.6.6 (TS adapter) (#2364–#2370).
+
 ## What's in v1.136.0
 
 *Documents move between scopes with their ids (RFC FT P1–P2). `move_documents` keeps every document, chunk and relation id. It removes the source only once the target is checked, and the same call again finishes an interrupted move. The Path explorer gains **copy / move to…**, which always shows the dry run first, and both adapters gain typed copy and move helpers.*
