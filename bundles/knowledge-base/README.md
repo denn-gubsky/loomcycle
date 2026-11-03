@@ -422,7 +422,11 @@ that judge. Per routed proposal with no verdict yet, newest first, it reads what
 a reviewer would see — both ends' documents and passages, the evidence quotes
 read back from the chunks they cite (never the proposal's own copy), the kind's
 meaning, domain and range — asks `kb/judge-verdict` once, and hands the verdicts
-to the Document op `judge_statements`. The runtime decides what each does:
+to the Document op `judge_statements`. A `subject` proposal with no quotes (a
+classifier model's, from `classify`) is judged on the document's opening
+instead — its root and first sections, about 2,000 characters — beside what
+the topic means; any other proposal without evidence is skipped
+(`no_evidence`). The runtime decides what each does:
 
 - it **rules** (asserts or rejects, `ruled_by: judge:<run id>`, no operator
   mark) only a proposal the policy routes to the judge, at or above that rule's

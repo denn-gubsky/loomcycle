@@ -90,6 +90,7 @@ type kbJudgeFixture struct {
 	chunks    map[string]map[string]any
 	docs      map[string]map[string]any
 	relations []map[string]any
+	schemes   []map[string]any
 	replies   map[string]string // the verdict agent's reply, by a needle of its prompt
 	reply     string            // the reply when no needle matches
 	ops       []map[string]any  // every Document call
@@ -122,7 +123,7 @@ func (d *kbJudgeFakeDocument) Execute(_ context.Context, raw json.RawMessage) (t
 	id, _ := in["id"].(string)
 	switch in["op"] {
 	case "describe_ontology":
-		return okResult(map[string]any{"exists": true, "confirmed": true, "relations": f.relations})
+		return okResult(map[string]any{"exists": true, "confirmed": true, "relations": f.relations, "schemes": f.schemes})
 	case "list_statements":
 		var rows []map[string]any
 		for _, sid := range f.order {
@@ -139,6 +140,16 @@ func (d *kbJudgeFakeDocument) Execute(_ context.Context, raw json.RawMessage) (t
 			return okResult(c)
 		}
 		return kbErr("get_chunk: no such chunk")
+	case "query_chunks":
+		// The children of parent_id, in a shuffled order: the pass must sort them.
+		var rows []map[string]any
+		for _, c := range f.chunks {
+			if c["parent_id"] == in["parent_id"] && c["document_id"] == in["document_id"] {
+				rows = append(rows, map[string]any{"id": c["id"], "document_id": c["document_id"], "parent_id": c["parent_id"], "title": c["title"], "position": c["position"]})
+			}
+		}
+		sort.Slice(rows, func(i, j int) bool { return rows[i]["position"].(int) > rows[j]["position"].(int) })
+		return okResult(map[string]any{"chunks": rows})
 	case "get_document":
 		if doc, ok := f.docs[in["document_id"].(string)]; ok {
 			return okResult(doc)
@@ -486,3 +497,84 @@ func TestKBJudge_PolicyRoutesTheJudgeRulesAndTheRunReverts(t *testing.T) {
 const kbJudgeOntologyMD = "# Tenant Ontology\n\n" +
 	"## Relations\n@section relations\n\n### elaborates\nExplains in more detail what the other states.\n\n" +
 	"## Review\n@section review\n\n- judge kind:elaborates floor:0.9\n- human *\n"
+
+// newKBJudgeSubjectFixture is one routed subject proposal a classifier model
+// filed: from a document's root to a topic concept of the ontology, with no
+// evidence at all, since the model quotes nothing.
+func newKBJudgeSubjectFixture() *kbJudgeFixture {
+	f := newKBJudgeFixture()
+	f.edges, f.order = map[string]map[string]any{}, nil
+	f.docs["dd"] = map[string]any{"document_id": "dd", "title": "Running on a home server", "type": "Guide"}
+	f.docs["onto"] = map[string]any{"document_id": "onto", "title": "Ontology", "type": "ontology"}
+	f.chunks["root"] = map[string]any{"id": "root", "document_id": "dd", "title": "Running on a home server", "type": "Guide", "body": "ROOTTEXT How to install the runtime as a home-server app."}
+	f.chunks["sec2"] = map[string]any{"id": "sec2", "document_id": "dd", "parent_id": "root", "position": 2, "title": "Upgrading", "body": "SECONDTEXT Pull the new image and restart the app."}
+	f.chunks["sec1"] = map[string]any{"id": "sec1", "document_id": "dd", "parent_id": "root", "position": 1, "title": "Install", "body": "FIRSTTEXT Pick the app in the catalog and set the data volume."}
+	f.chunks["topic"] = map[string]any{"id": "topic", "document_id": "onto", "title": "deployment", "type": "concept", "body": "TOPICMEANING Installing and upgrading the runtime.\n@alt CHUNKDIRECTIVE"}
+	f.schemes = []map[string]any{{"name": "topic", "concepts": []any{
+		map[string]any{"name": "operations", "chunk_id": "ops", "tag": "topic/operations", "meaning": "Running the runtime.", "children": []any{
+			map[string]any{"name": "deployment", "chunk_id": "topic", "tag": "topic/operations/deployment", "meaning": "TOPICMEANING Installing and upgrading the runtime: containers, catalog apps, images."},
+		}},
+	}}}
+	f.edges["sub1"] = map[string]any{"id": "sub1", "from_id": "root", "to_id": "topic", "kind": "subject", "status": "proposed",
+		"method": "classify", "from_document_id": "dd", "to_document_id": "onto", "attributes": map[string]any{"review_route": "judge", "classified_by": "model"}}
+	f.order = []string{"sub1"}
+	return f
+}
+
+// A classifier model's subject proposal carries no quote. It is judged on the
+// document's opening (the root, then its first sections in order) beside what
+// the topic means — not skipped as no_evidence, which left every classified
+// topic waiting for a person.
+func TestKBJudge_ASubjectWithoutQuotesIsJudgedOnTheDocumentsOpening(t *testing.T) {
+	f := newKBJudgeSubjectFixture()
+	rep := runKBJudge(t, f, `{"scope":"tenant","write":"recommend"}`)
+	if rep["status"] != "complete" || rep["verdict_calls"] != float64(1) {
+		t.Fatalf("report = %v, want one verdict call", rep)
+	}
+	if len(f.prompts) != 1 {
+		t.Fatalf("verdict prompts = %d, want 1", len(f.prompts))
+	}
+	p := f.prompts[0]
+	for _, want := range []string{"Claim: the FROM document is about the TO topic", "TOPICMEANING Installing and upgrading",
+		"Running on a home server (Guide)", "deployment (concept)", "Topic: topic/operations/deployment", "[1] the opening of the FROM document:", "ROOTTEXT How to install"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the verdict prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if a, b, c := strings.Index(p, "ROOTTEXT"), strings.Index(p, "FIRSTTEXT"), strings.Index(p, "SECONDTEXT"); !(a >= 0 && a < b && b < c) {
+		t.Errorf("the opening is not the root then the sections in position order (%d, %d, %d):\n%s", a, b, c, p)
+	}
+	if strings.Contains(p, "CHUNKDIRECTIVE") {
+		t.Errorf("the topic's meaning was read from its chunk body, directives and all, not the ontology:\n%s", p)
+	}
+	if strings.Contains(p, "<<") {
+		t.Errorf("an opening is not a quote, yet the prompt marks one:\n%s", p)
+	}
+	sent := kbJudgementsSent(t, f)
+	if len(sent) != 1 || sent[0]["id"] != "sub1" || sent[0]["verdict"] != "accept" {
+		t.Errorf("judgements = %v", sent)
+	}
+}
+
+// The opening stands in for quotes only on a subject claim: another kind with no
+// evidence, and a subject whose document holds no text, are still skipped.
+func TestKBJudge_OnlyASubjectWithTextIsJudgedWithoutQuotes(t *testing.T) {
+	f := newKBJudgeSubjectFixture()
+	f.edges["sub1"]["kind"] = "elaborates"
+	rep := runKBJudge(t, f, `{"scope":"tenant","write":"recommend"}`)
+	if len(f.prompts) != 0 || rep["skipped"].(map[string]any)["no_evidence"] != float64(1) {
+		t.Errorf("an elaborates proposal with no evidence was judged: report %v", rep)
+	}
+
+	f = newKBJudgeSubjectFixture()
+	for _, id := range []string{"root", "sec1", "sec2"} {
+		f.chunks[id]["body"] = "  "
+		if id != "root" {
+			f.chunks[id]["title"] = ""
+		}
+	}
+	rep = runKBJudge(t, f, `{"scope":"tenant","write":"recommend"}`)
+	if len(f.prompts) != 0 || rep["skipped"].(map[string]any)["no_evidence"] != float64(1) {
+		t.Errorf("a subject of a document with no text was judged: report %v", rep)
+	}
+}
