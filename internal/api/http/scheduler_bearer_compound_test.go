@@ -333,12 +333,16 @@ func seedScheduleFork(t *testing.T, st store.Store, defID, userID, agentName str
 	t.Helper()
 	def := map[string]any{
 		"agent": agentName,
-		// schedule cron — picked arbitrarily; we override next_run_at
-		// directly via the store, so the cron value only matters for
-		// the post-fire next_run_at advance.
-		"schedule": "0 * * * *",
+		// next_run_at is set directly via the store, so the cron only
+		// decides the post-fire advance. It fires every second on
+		// purpose: max_fires below must be what stops a second fire.
+		"schedule": "@every 1s",
 		"enabled":  true,
-		"user_id":  userID,
+		// One fire per schedule: the assertions count exactly one call per
+		// user. A cron alone could fire again inside the test window (the
+		// hourly one did, on a run that crossed the hour).
+		"max_fires": 1,
+		"user_id":   userID,
 		"prompt": []map[string]any{
 			{
 				"role": "user",
