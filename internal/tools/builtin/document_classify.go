@@ -238,6 +238,9 @@ func (d *Document) classify(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if chosen == nil && !handSet {
 		model := d.classifyModel(ctx, read, classes, rules, cd, concepts)
 		out.Steps = append(out.Steps, model.step)
+		if model.conceptStep != nil {
+			out.Steps = append(out.Steps, *model.conceptStep)
+		}
 		if model.class != "" {
 			chosen = model.candidate
 			out.Class, out.Fields = chosen.Class, identityGroups(classes[strings.ToLower(chosen.Class)], chosen.Groups)
@@ -608,6 +611,9 @@ type classifyModelResult struct {
 	class     string
 	candidate *classifyCandidate
 	concepts  []classifyConcept
+	// conceptStep is the walk down the concept tree, when the vocabulary was too large
+	// to ask with the class (reported as a step of its own).
+	conceptStep *classifyStep
 }
 
 // classifyModel is step 3: memory.classifier, asked about the classes the rules left
@@ -634,7 +640,10 @@ func (d *Document) classifyModel(ctx context.Context, read OntologyRead, classes
 		sort.Slice(req.Classes, func(i, j int) bool { return req.Classes[i].Name < req.Classes[j].Name })
 	}
 	byName := map[string]memrank.OntologyConcept{}
-	if len(voted) == 0 {
+	// A vocabulary too large for one request is asked separately, down its tree, after
+	// the class question; the class question then goes alone.
+	walkTree := len(voted) == 0 && len(inForceConcepts(read)) > memrank.ClassifyMaxConcepts
+	if len(voted) == 0 && !walkTree {
 		for _, s := range read.Schemes {
 			for _, c := range s.Concepts {
 				if _, dup := byName[strings.ToLower(c.Name)]; dup {
@@ -662,12 +671,19 @@ func (d *Document) classifyModel(ctx context.Context, read OntologyRead, classes
 			out.concepts = append(out.concepts, classifyConcept{Concept: c.Name, Tag: c.Tag, Kind: "subject", ChunkID: c.ChunkID})
 		}
 	}
+	if walkTree {
+		cs, step := d.classifyConceptTree(ctx, read, cd)
+		out.concepts, out.conceptStep = cs, &step
+	}
 	return out
 }
 
 // classifyConcepts asks memory.classifier which in-force concepts a document is
 // about, when its class is already decided. A "model" step with no chosen class.
 func (d *Document) classifyConcepts(ctx context.Context, read OntologyRead, cd classifyDoc) ([]classifyConcept, classifyStep) {
+	if len(inForceConcepts(read)) > memrank.ClassifyMaxConcepts {
+		return d.classifyConceptTree(ctx, read, cd)
+	}
 	step := classifyStep{Step: "model", Candidates: []classifyCandidate{}}
 	byName := map[string]memrank.OntologyConcept{}
 	req := memrank.ClassifyRequest{Title: cd.title, Text: cd.text, ConceptsOnly: true}
