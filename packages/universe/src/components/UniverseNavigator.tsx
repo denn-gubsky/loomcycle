@@ -393,17 +393,32 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusStars.seeds, version]);
 
+  // Unselect: the map's own selection, the checked search hits and a link
+  // being drawn all go, so the whole sky is bright again and no links are
+  // drawn. The host's document stays open; picking a star selects again.
+  const clearSelection = useCallback(() => {
+    setSelected([]);
+    setChecked(new Set());
+    setLinkFrom(null);
+    setLinkTo(null);
+  }, []);
+  const hasSelection = selected.length > 0 || checked.size > 0;
+
+  // Esc first cancels a link being drawn, then clears the selection. Not while
+  // typing in a field (the search box, the link dialog).
   useEffect(() => {
-    if (linkFrom === null) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key !== "Escape") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      if (linkFrom !== null) {
         setLinkFrom(null);
         setLinkTo(null);
-      }
+      } else if (hasSelection) clearSelection();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [linkFrom]);
+  }, [linkFrom, hasSelection, clearSelection]);
 
   // After a write, re-read the links of the documents it touched (one snapshot
   // page of exactly those documents holds every link into and out of them).
@@ -720,6 +735,14 @@ export default function UniverseNavigator(props: UniverseNavigatorProps) {
             link
           </button>
         )}
+        <button
+          type="button"
+          onClick={clearSelection}
+          disabled={!hasSelection}
+          title="Clear the selection and the checked search hits (Esc)"
+        >
+          unselect
+        </button>
         {viewsApi && (
           <ViewsMenu
             load={viewsApi.load}

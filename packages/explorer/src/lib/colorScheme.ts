@@ -11,6 +11,9 @@ import type { CSSProperties } from "react";
 //   doc.<type>.<status>  — a document tile/row by its ROOT chunk's type + status
 //   doc.<type>           — fallback for any status of that document type
 //   chunk.<status>       — a chunk tile by its own status
+//   chunk.inherit        — "false" (or "none" / "off") keeps a chunk without a
+//                          status colour neutral; by default it takes a lighter
+//                          wash of its document's colour
 // Unknown keys are ignored; a missing key → no tint (neutral).
 export type ColorScheme = Record<string, string>;
 
@@ -93,9 +96,21 @@ export function chunkColor(status: string | undefined, scheme: ColorScheme): str
   return s ? scheme[`chunk.${s}`] : undefined;
 }
 
-// hexToTint converts a #rgb / #rrggbb color to an rgba() wash at TINT_ALPHA;
-// undefined for a value it can't parse (→ no tint applied).
-export function hexToTint(hex: string): string | undefined {
+// chunkInheritsDocColor reports whether a chunk with no colour of its own takes
+// its document's colour. Corpus chunks (sections of a law, of a regulation)
+// carry no status, and should not get a placeholder one just to be coloured —
+// status is a meaningful field that search filters on — so by default they wear
+// their document's colour; `chunk.inherit: "false"` turns that off.
+export function chunkInheritsDocColor(scheme: ColorScheme): boolean {
+  const v = String(scheme["chunk.inherit"] ?? "")
+    .trim()
+    .toLowerCase();
+  return !(v === "false" || v === "none" || v === "off" || v === "0");
+}
+
+// hexToTint converts a #rgb / #rrggbb color to an rgba() wash at alpha
+// (TINT_ALPHA by default); undefined for a value it can't parse (→ no tint).
+export function hexToTint(hex: string, alpha: number = TINT_ALPHA): string | undefined {
   const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
   if (!m) return undefined;
   let h = m[1];
@@ -103,7 +118,7 @@ export function hexToTint(hex: string): string | undefined {
   const r = parseInt(h.slice(0, 2), 16);
   const g = parseInt(h.slice(2, 4), 16);
   const b = parseInt(h.slice(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${TINT_ALPHA})`;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 // tintStyle is the inline style for a tinted row/tile: a low-alpha wash
@@ -115,3 +130,29 @@ export function tintStyle(color: string | undefined): CSSProperties | undefined 
   if (!bg) return undefined;
   return { background: bg, borderLeft: `3px solid ${color}` };
 }
+
+// washStyle is the lighter tint a chunk inherits from its document: half the
+// wash and no left accent, so a chunk with a status colour of its own (a
+// passport block's pass / fail) still stands out among its neighbours.
+export function washStyle(color: string | undefined): CSSProperties | undefined {
+  if (!color) return undefined;
+  const bg = hexToTint(color, TINT_ALPHA / 2);
+  return bg ? { background: bg } : undefined;
+}
+
+// chunkRowStyle is a chunk-tree row's tint. The document's own row (its root
+// chunk) wears the document's colour, as its Path-tree row does; any other
+// chunk its status colour (chunk.<status>), else — unless the scheme turns it
+// off — a lighter wash of the document's colour. scheme null = colouring off.
+export function chunkRowStyle(opts: {
+  status: string | undefined;
+  isRoot: boolean;
+  documentColor: string | undefined;
+  scheme: ColorScheme | null;
+}): CSSProperties | undefined {
+  const { status, isRoot, documentColor, scheme } = opts;
+  if (!scheme) return undefined;
+  if (isRoot) return tintStyle(documentColor) ?? tintStyle(chunkColor(status, scheme));
+  return tintStyle(chunkColor(status, scheme)) ?? (chunkInheritsDocColor(scheme) ? washStyle(documentColor) : undefined);
+}
+
