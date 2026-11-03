@@ -33,6 +33,7 @@ import ColorSchemeEditor from "./ColorSchemeEditor";
 import IdCopy from "./IdCopy";
 import Connections from "./Connections";
 import CrossReferences from "./CrossReferences";
+import StackSplitter from "./StackSplitter";
 import DocUnavailable from "./DocUnavailable";
 import HistoryModal from "./HistoryModal";
 import Markdown from "./Markdown";
@@ -973,66 +974,72 @@ export default function DocumentViewerBody({
                     )}
                   </div>
                 </div>
-                <div className="doc-content-body">
-                  {selectedDetail.type === "mermaid" ? (
-                    // RFC BO — a diagram chunk: body IS the Mermaid source.
-                    selectedDetail.body ? (
-                      <>
-                        <MermaidDiagram code={selectedDetail.body} />
-                        {mode === "markdown" && (
-                          <pre className="md-pre doc-mermaid-source">
-                            <code>{selectedDetail.body}</code>
-                          </pre>
-                        )}
-                      </>
+                {/* The chunk's text above, its links below, with a handle between:
+                    many references used to push the text down to a sliver. */}
+                <StackSplitter storageKey="loomcycle.explorer.doc-links-height" className="doc-content-split">
+                  <div className="doc-content-body">
+                    {selectedDetail.type === "mermaid" ? (
+                      // RFC BO — a diagram chunk: body IS the Mermaid source.
+                      selectedDetail.body ? (
+                        <>
+                          <MermaidDiagram code={selectedDetail.body} />
+                          {mode === "markdown" && (
+                            <pre className="md-pre doc-mermaid-source">
+                              <code>{selectedDetail.body}</code>
+                            </pre>
+                          )}
+                        </>
+                      ) : (
+                        <p className="doc-empty-body">(empty diagram)</p>
+                      )
+                    ) : selectedDetail.type === "image" || selectedDetail.asset ? (
+                      // RFC BO — an image chunk: bytes come from the auth'd asset GET.
+                      imageErr ? (
+                        <p className="doc-empty-body">Image failed to load: {imageErr}</p>
+                      ) : imageUrl ? (
+                        <figure className="doc-image">
+                          <img src={imageUrl} alt={imageAlt(selectedDetail)} />
+                          {selectedDetail.body && <figcaption>{selectedDetail.body}</figcaption>}
+                        </figure>
+                      ) : (
+                        <p className="doc-empty-body">Loading image…</p>
+                      )
+                    ) : mode === "markdown" ? (
+                      subtreeMd !== null ? (
+                        <Markdown source={subtreeMd} />
+                      ) : (
+                        <p className="doc-empty-body">Assembling Markdown…</p>
+                      )
+                    ) : selectedDetail.body ? (
+                      <Markdown source={selectedDetail.body} />
                     ) : (
-                      <p className="doc-empty-body">(empty diagram)</p>
-                    )
-                  ) : selectedDetail.type === "image" || selectedDetail.asset ? (
-                    // RFC BO — an image chunk: bytes come from the auth'd asset GET.
-                    imageErr ? (
-                      <p className="doc-empty-body">Image failed to load: {imageErr}</p>
-                    ) : imageUrl ? (
-                      <figure className="doc-image">
-                        <img src={imageUrl} alt={imageAlt(selectedDetail)} />
-                        {selectedDetail.body && <figcaption>{selectedDetail.body}</figcaption>}
-                      </figure>
-                    ) : (
-                      <p className="doc-empty-body">Loading image…</p>
-                    )
-                  ) : mode === "markdown" ? (
-                    subtreeMd !== null ? (
-                      <Markdown source={subtreeMd} />
-                    ) : (
-                      <p className="doc-empty-body">Assembling Markdown…</p>
-                    )
-                  ) : selectedDetail.body ? (
-                    <Markdown source={selectedDetail.body} />
-                  ) : (
-                    <p className="doc-empty-body">(empty chunk)</p>
-                  )}
-                </div>
-                <CrossReferences
-                  edges={edges}
-                  incomplete={edgesIncomplete}
-                  documentId={documentId}
-                  selectedId={selectedId}
-                  onSelectChunk={setSelectedId}
-                  onOpenDocument={onOpenDocument ? openDocument : undefined}
-                  onRuleStatement={ruleStatement}
-                />
-                {/* RFC BS — backlinks / related / unlinked mentions for the selected
-                    chunk, lazily fetched when its section is expanded. */}
-                <Connections
-                  documentId={documentId}
-                  selectedId={selectedId}
-                  scope={scope}
-                  browse={browse}
-                  onSelectChunk={setSelectedId}
-                  onOpenDocument={onOpenDocument ? openDocument : undefined}
-                  refreshKey={edgesReload}
-                  review={review}
-                />
+                      <p className="doc-empty-body">(empty chunk)</p>
+                    )}
+                  </div>
+                  <div className="doc-links-pane">
+                    <CrossReferences
+                      edges={edges}
+                      incomplete={edgesIncomplete}
+                      documentId={documentId}
+                      selectedId={selectedId}
+                      onSelectChunk={setSelectedId}
+                      onOpenDocument={onOpenDocument ? openDocument : undefined}
+                      onRuleStatement={ruleStatement}
+                    />
+                    {/* RFC BS — backlinks / related / unlinked mentions for the selected
+                        chunk, lazily fetched when its section is expanded. */}
+                    <Connections
+                      documentId={documentId}
+                      selectedId={selectedId}
+                      scope={scope}
+                      browse={browse}
+                      onSelectChunk={setSelectedId}
+                      onOpenDocument={onOpenDocument ? openDocument : undefined}
+                      refreshKey={edgesReload}
+                      review={review}
+                    />
+                  </div>
+                </StackSplitter>
               </>
             ) : (
               <div className="empty">

@@ -2357,6 +2357,50 @@ button.primary:disabled {
   background: var(--accent);
 }
 
+/* StackSplitter (@loomcycle/explorer): the same handle on its side, between a
+ * chunk's text (top) and its links (bottom) in the document viewer. The
+ * package's own styles.css carries the scoped twin for external hosts. */
+.stack-splitter {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+}
+.stack-splitter.dragging {
+  user-select: none;
+  cursor: row-resize;
+}
+.stack-splitter > .stack-splitter-pane {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.stack-splitter > .stack-splitter-handle {
+  cursor: row-resize;
+  position: relative;
+  z-index: 1;
+}
+.stack-splitter > .stack-splitter-handle::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 2px;
+  height: 2px;
+  background: var(--border);
+  transition: background 80ms ease;
+}
+.stack-splitter > .stack-splitter-handle:hover::before,
+.stack-splitter.dragging > .stack-splitter-handle::before {
+  background: var(--accent);
+}
+/* The links side scrolls on its own, as the text does above it. */
+.doc-links-pane {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
 /* v0.8.21 Audit view — cross-session paginated event log. */
 .audit-view {
   display: flex;
