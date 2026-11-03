@@ -40,7 +40,8 @@ func (p *Path) Description() string {
 		"Takes `op` and `path`; paths are scoped (agent / user / tenant, default agent) and tenant-isolated, segments are [a-zA-Z0-9._-] and \"..\" is refused. " +
 		"Use this to BROWSE or reorganise — to see what exists under /docs, or to rename something without touching its content. " +
 		"Do NOT use it to read or write the content behind a name: resolve the path, then use the Document tool for a document, Memory for a memory entry, or Read/Write for a file on a volume. " +
-		"`rm` removes the NAME, not the thing it points at, so a document unlinked from the tree still exists and is still reachable by id."
+		"`rm` removes the NAME, not the thing it points at, so a document unlinked from the tree still exists and is still reachable by id." +
+		"When you mention a document in your answer, link it as [title](loom:doc/<document_id>) with the document_id this tool resolved, adding ?scope=tenant or ?scope=agent when it is not in the user scope (help topic Document/citing)."
 }
 
 // pathInputSchema is a package const so the LoomCycle MCP server can source

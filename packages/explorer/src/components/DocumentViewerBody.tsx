@@ -354,9 +354,16 @@ export default function DocumentViewerBody({
   focusRef.current = focusChunk;
   const rootRef = useRef(rootChunkId);
   rootRef.current = rootChunkId;
+  const chunksRef = useRef(chunks);
+  chunksRef.current = chunks;
   useEffect(() => {
     if (focusSeq === undefined) return;
-    const target = focusRef.current?.chunkId ?? rootRef.current;
+    const wanted = focusRef.current?.chunkId;
+    // Once the chunk list is in, an id that is not one of this document's
+    // chunks (another document's, a deleted one) lands on the root rather than
+    // selecting nothing; before it is in, the request is taken as given.
+    const target =
+      chunksRef.current.length > 0 ? landingChunk(chunksRef.current, wanted) : (wanted ?? rootRef.current);
     if (target) setSelectedId(target);
   }, [focusSeq]);
 
