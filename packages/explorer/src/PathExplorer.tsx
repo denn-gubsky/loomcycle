@@ -365,7 +365,6 @@ function PathExplorerBody({
   }, [lazy, selectedPath, report]);
 
   useEffect(() => {
-    if (scope === "tenant") return; // the tree view colors agent|user documents only
     const fresh: string[] = [];
     for (const listing of dirs.values()) {
       for (const id of documentIdsOf(listing.entries)) {
@@ -464,7 +463,6 @@ function PathExplorerBody({
   }, [selected]);
   const currentDirLabel = currentDir || "/";
 
-  const canDocuments = scope !== "tenant"; // Documents are agent|user only.
 
   const newFolder = useCallback(() => {
     setModal({
@@ -543,7 +541,8 @@ function PathExplorerBody({
       return;
     }
     // Directory: cascade-delete contained Documents (so no orphaned content),
-    // then remove the dirent subtree. Documents only exist in agent|user scope.
+    // then remove the dirent subtree — in every scope: a tenant-scope branch
+    // delete used to drop only the names, leaving its documents unreachable.
     // The tree holds only the directories that were opened, so the branch is
     // listed in full here — the confirmation must count, and the delete must
     // reach, every Document under it, not just the ones on screen.
@@ -557,7 +556,7 @@ function PathExplorerBody({
         setErr(`could not list ${target.fullPath} for delete: ${e instanceof Error ? e.message : String(e)}`);
         return;
       }
-      const docIds = scope === "tenant" ? [] : documentIdsOf(subtree);
+      const docIds = documentIdsOf(subtree);
       setModal({
         title: `Delete branch ${target.fullPath}`,
         message:
@@ -781,12 +780,7 @@ function PathExplorerBody({
                   <button
                     type="button"
                     onClick={newDocument}
-                    disabled={!canDocuments}
-                    title={
-                      canDocuments
-                        ? `New document in ${currentDirLabel}`
-                        : "Documents are agent/user scope only"
-                    }
+                    title={`New document in ${currentDirLabel}`}
                   >
                     + document
                   </button>
