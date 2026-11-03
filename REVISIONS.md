@@ -8,6 +8,27 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.138.1
+
+*classify now proposes concepts for a tenant whose concept vocabulary is larger than 20: it asks the vocabulary down its scheme tree, level by level, instead of in one request.*
+
+The v1.138.1 line: #2377.
+- `@loomcycle/client` and the Python adapter stay at 1.138.0; no adapter change.
+- No migrations, no wire breakage.
+- A patch tag builds only `loomcycle-browser`. This release is also built in full (a `force_full` dispatch), so `denngubsky/loomcycle:1.138.1` and the binaries are published.
+- **Behaviour change:** a tenant with more than 20 concepts now gets concept proposals from `classify`. Before, it got none.
+
+### classify asks a large concept tree level by level (#2377)
+
+- **The gap.** `memory.classifier` names at most 20 concepts per call. `classify` sent the tenant's whole vocabulary in one request, so a tenant with more than 20 concepts got no concept proposals at all:
+  - the decision model refused ("asked about 1 to 20 concepts, not 36");
+  - the chat fallback's prompt left the concept list out.
+- **Now**, above 20 concepts, `classify` walks each scheme from the top.
+  - It asks about the top-level concepts, then the children of each one the model says yes to, at most 20 concepts a call and at most 12 calls.
+  - The answer is the most specific yes on each branch: a child said yes stands for its parent, and a parent whose children were all said no is kept itself.
+  - With the class still open, the class question goes alone and the walk follows as a second `model` step.
+- A vocabulary of 20 or fewer is asked exactly as before.
+
 ## What's in v1.138.0
 
 *Agents cite documents as links a client can open: a `Document/citing` help topic and one sentence in the Document and Path tool descriptions teach `[title](loom:doc/<document_id>)` and `[title](loom:chunk/<chunk_id>)`. The document viewer opens on a chunk (`chunkId`), a splitter keeps a chunk's text readable above its links, and the Path tree colours, creates and deletes tenant-scope documents like any other.*
