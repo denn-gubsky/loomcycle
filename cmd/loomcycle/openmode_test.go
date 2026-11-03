@@ -87,22 +87,38 @@ func waitForLine(t *testing.T, r *logRecorder) {
 	}
 }
 
-func TestWarnOpenMode_RepeatsUntilAuthConfigured(t *testing.T) {
+// The first warning is logged before startOpenModeWarning returns: boot calls
+// it before the listeners start, so the warning is in the log ahead of
+// "listening on". A goroutine for it raced a quick shutdown (a flaky
+// TestBoot_OpenModeOnLoopbackAllowed on CI's race job).
+func TestStartOpenModeWarning_FirstWarningBeforeItReturns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rec := &logRecorder{ch: make(chan struct{}, 8)}
+	startOpenModeWarning(ctx, time.Hour, func(context.Context) (bool, error) { return false, nil }, rec.logger())
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.lines) != 1 || !strings.Contains(rec.lines[0], "open mode") {
+		t.Fatalf("lines when startOpenModeWarning returned = %q, want the open-mode warning", rec.lines)
+	}
+}
+
+func TestRepeatOpenModeWarning_RepeatsUntilAuthConfigured(t *testing.T) {
 	var configured atomic.Bool
 	rec := &logRecorder{ch: make(chan struct{}, 8)}
 	done := make(chan struct{})
 	go func() {
-		warnOpenMode(context.Background(), 5*time.Millisecond,
+		repeatOpenModeWarning(context.Background(), 5*time.Millisecond,
 			func(context.Context) (bool, error) { return configured.Load(), nil }, rec.logger())
 		close(done)
 	}()
-	waitForLine(t, rec) // at once
+	waitForLine(t, rec) // on a tick
 	waitForLine(t, rec) // and again
 	configured.Store(true)
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("warnOpenMode kept running after auth was configured")
+		t.Fatal("repeatOpenModeWarning kept running after auth was configured")
 	}
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
@@ -114,26 +130,28 @@ func TestWarnOpenMode_RepeatsUntilAuthConfigured(t *testing.T) {
 	}
 }
 
-func TestWarnOpenMode_ReturnsOnContextDone(t *testing.T) {
+func TestRepeatOpenModeWarning_ReturnsOnContextDone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	rec := &logRecorder{ch: make(chan struct{}, 8)}
 	done := make(chan struct{})
 	go func() {
-		warnOpenMode(ctx, time.Hour, func(context.Context) (bool, error) { return false, nil }, rec.logger())
+		repeatOpenModeWarning(ctx, time.Hour, func(context.Context) (bool, error) { return false, nil }, rec.logger())
 		close(done)
 	}()
-	waitForLine(t, rec)
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("warnOpenMode did not return when its context ended")
+		t.Fatal("repeatOpenModeWarning did not return when its context ended")
 	}
 }
 
-func TestWarnOpenMode_SilentWhenAuthConfigured(t *testing.T) {
+func TestStartOpenModeWarning_SilentWhenAuthConfigured(t *testing.T) {
 	rec := &logRecorder{ch: make(chan struct{}, 8)}
-	warnOpenMode(context.Background(), time.Millisecond, func(context.Context) (bool, error) { return true, nil }, rec.logger())
+	startOpenModeWarning(context.Background(), time.Millisecond, func(context.Context) (bool, error) { return true, nil }, rec.logger())
+	time.Sleep(20 * time.Millisecond)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
 	if len(rec.lines) != 0 {
 		t.Errorf("logged %v with auth configured", rec.lines)
 	}
@@ -141,14 +159,14 @@ func TestWarnOpenMode_SilentWhenAuthConfigured(t *testing.T) {
 
 // A tick whose store read fails says nothing — it does not know the server is
 // open — and does not stop the loop, which warns again once the read works.
-func TestWarnOpenMode_StoreErrorTickNeitherWarnsNorStops(t *testing.T) {
+func TestRepeatOpenModeWarning_StoreErrorTickNeitherWarnsNorStops(t *testing.T) {
 	var calls atomic.Int64
 	rec := &logRecorder{ch: make(chan struct{}, 8)}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		warnOpenMode(ctx, 5*time.Millisecond, func(context.Context) (bool, error) {
+		repeatOpenModeWarning(ctx, 5*time.Millisecond, func(context.Context) (bool, error) {
 			if calls.Add(1) <= 3 {
 				return false, errors.New("store unavailable")
 			}
