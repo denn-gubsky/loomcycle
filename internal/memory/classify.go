@@ -7,6 +7,12 @@ import "context"
 // ontology types, so the Document tool depends on the contract and not on how a model
 // is called.
 
+// ClassifyMaxConcepts is the most concepts one classify request may name. A decision
+// model asks one yes/no per concept and a chat prompt lists each, so the bound keeps a
+// call small; a vocabulary larger than this is asked level by level down its scheme
+// tree (Document op=classify), never in one request.
+const ClassifyMaxConcepts = 20
+
 // ClassifyOption is one class or concept the model may name, with what it means.
 type ClassifyOption struct {
 	Name    string

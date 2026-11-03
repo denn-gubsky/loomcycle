@@ -29,6 +29,11 @@ three steps, each reported in `steps`:
    answer is always a proposal, never applied. When the class is settled (by
    rule, vote or a type already set) but no concepts are, the model is asked
    about the concepts alone; that step names no class.
+   One call names at most 20 concepts. A larger vocabulary is asked down its
+   scheme tree instead, as a step of its own: the top-level concepts first,
+   then the children of each one the model says yes to, at most 12 calls. It
+   answers the most specific yes on each branch: a child said yes stands for
+   its parent, and a parent whose children were all said no is kept itself.
 
 A draft ontology classifies nothing.
 

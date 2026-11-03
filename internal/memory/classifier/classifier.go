@@ -31,7 +31,7 @@ const (
 	maxDecisionOptions = 25
 	// maxConcepts bounds the yes/no questions one call asks, and the concepts a chat
 	// prompt lists; a larger vocabulary is not offered (the verdict says so).
-	maxConcepts = 20
+	maxConcepts = memory.ClassifyMaxConcepts
 	// maxTextChars of the document reach the model.
 	maxTextChars = 4000
 	noneOption   = "none of these"
