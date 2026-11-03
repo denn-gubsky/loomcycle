@@ -34,7 +34,7 @@ func (b *boot) startBackground() {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	b.addCleanup(bgCancel)
 	if !b.bootAuthConfigured {
-		go warnOpenMode(bgCtx, openModeWarnInterval, b.srv.AuthConfiguredErr, slog.Default())
+		startOpenModeWarning(bgCtx, openModeWarnInterval, b.srv.AuthConfiguredErr, slog.Default())
 	}
 
 	// Webhook delivery counters: each replica adds what it counted every

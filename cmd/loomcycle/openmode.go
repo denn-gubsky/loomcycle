@@ -70,27 +70,49 @@ func insecureCookiesWarning(env *config.Env) string {
 		"where anyone on the network path can read them. Use it on a private network (a tailnet, a lab) only"
 }
 
-// warnOpenMode logs the open-mode warning now and every interval after while
-// the server stays in open mode. It returns when ctx ends, or once auth is
-// configured (an admin token minted at runtime): a running server does not move
-// back into open mode. A tick whose store read fails neither warns nor stops.
-func warnOpenMode(ctx context.Context, interval time.Duration, authConfigured func(context.Context) (bool, error), logger *slog.Logger) {
+// startOpenModeWarning logs the open-mode warning now, on the caller's
+// goroutine, and then every interval in the background while the server stays
+// in open mode. The first warning is synchronous so that boot logs it before
+// the listeners start: a boot log that says "listening on" always carries it,
+// which the boot tests rely on. A goroutine for the first warning raced a
+// quick shutdown, and the log could miss it.
+func startOpenModeWarning(ctx context.Context, interval time.Duration, authConfigured func(context.Context) (bool, error), logger *slog.Logger) {
+	if !openModeTick(ctx, authConfigured, logger) {
+		return
+	}
+	go repeatOpenModeWarning(ctx, interval, authConfigured, logger)
+}
+
+// repeatOpenModeWarning logs the warning every interval until ctx ends or auth
+// is configured (an admin token minted at runtime): a running server does not
+// move back into open mode.
+func repeatOpenModeWarning(ctx context.Context, interval time.Duration, authConfigured func(context.Context) (bool, error), logger *slog.Logger) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
-		on, err := authConfigured(ctx)
-		if err == nil && on {
-			return
-		}
-		if err == nil {
-			logger.Warn("open mode — no LOOMCYCLE_AUTH_TOKEN, no config principals and no admin " +
-				"operator token, so every HTTP and gRPC route is unauthenticated (dev only). Set " +
-				"LOOMCYCLE_AUTH_TOKEN, declare a principal, or mint an admin operator token.")
-		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
+		if !openModeTick(ctx, authConfigured, logger) {
+			return
+		}
 	}
+}
+
+// openModeTick logs the warning if the server is in open mode and reports
+// whether to keep warning. A store read that fails neither warns (it does not
+// know the server is open) nor stops the warnings.
+func openModeTick(ctx context.Context, authConfigured func(context.Context) (bool, error), logger *slog.Logger) bool {
+	on, err := authConfigured(ctx)
+	if err == nil && on {
+		return false
+	}
+	if err == nil {
+		logger.Warn("open mode — no LOOMCYCLE_AUTH_TOKEN, no config principals and no admin " +
+			"operator token, so every HTTP and gRPC route is unauthenticated (dev only). Set " +
+			"LOOMCYCLE_AUTH_TOKEN, declare a principal, or mint an admin operator token.")
+	}
+	return true
 }
