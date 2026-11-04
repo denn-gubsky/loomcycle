@@ -4117,6 +4117,18 @@ type Env struct {
 	// operators tune it down to shrink the per-request memory ceiling.
 	// LOOMCYCLE_MAX_REQUEST_BYTES (bytes; <=0 ignored, default kept).
 	MaxRequestBytes int64
+	// SpeechMaxInflight and TranscriptionMaxInflight bound how many engine
+	// requests the audio routes (POST /v1/audio/speech and
+	// /v1/audio/transcriptions) have in flight at once, server-wide, per
+	// direction. A request over the bound waits for a slot while its caller
+	// stays connected rather than being refused: a self-hosted speech engine
+	// serves a few requests at a time, and a client is better served by a slow
+	// answer than by a retry loop. A slot is held for one engine request, so a
+	// long text or recording cut into pieces takes turns with shorter ones.
+	// Default 2 each. LOOMCYCLE_SPEECH_MAX_INFLIGHT,
+	// LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT (<=0 or malformed keeps the default).
+	SpeechMaxInflight        int
+	TranscriptionMaxInflight int
 	// CryptoMaxBytes caps each data argument of a Crypto tool call (RFC EP).
 	// Default 1 MiB. LOOMCYCLE_CRYPTO_MAX_BYTES (bytes; <=0 ignored).
 	CryptoMaxBytes int
@@ -6149,6 +6161,18 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_MAX_REQUEST_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			cfg.Env.MaxRequestBytes = n
+		}
+	}
+	// The audio routes' engine queues. A non-positive value is ignored: zero
+	// slots would park every request for good.
+	cfg.Env.SpeechMaxInflight = AudioMaxInflightDefault
+	cfg.Env.TranscriptionMaxInflight = AudioMaxInflightDefault
+	for name, dst := range map[string]*int{
+		"LOOMCYCLE_SPEECH_MAX_INFLIGHT":        &cfg.Env.SpeechMaxInflight,
+		"LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT": &cfg.Env.TranscriptionMaxInflight,
+	} {
+		if n, err := strconv.Atoi(os.Getenv(name)); err == nil && n > 0 {
+			*dst = n
 		}
 	}
 	// Bashbox in-memory write cap (RFC ES follow-up): a positive override

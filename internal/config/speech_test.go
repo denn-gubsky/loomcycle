@@ -330,3 +330,28 @@ func TestModelKind_SynthesizerIsAKnownKind(t *testing.T) {
 		t.Errorf("err = %v, want the refusal to list synthesizer", err)
 	}
 }
+
+// The audio routes' engine queues default to two slots each; an operator's
+// positive value replaces it, and zero, a negative or a malformed value keeps
+// the default rather than parking every request.
+func TestEnv_AudioMaxInflightDefaultsAndOverrides(t *testing.T) {
+	for _, c := range []struct {
+		speech, stt string
+		want        [2]int
+	}{
+		{"", "", [2]int{AudioMaxInflightDefault, AudioMaxInflightDefault}},
+		{"5", "1", [2]int{5, 1}},
+		{"0", "-3", [2]int{AudioMaxInflightDefault, AudioMaxInflightDefault}},
+		{"many", "2x", [2]int{AudioMaxInflightDefault, AudioMaxInflightDefault}},
+	} {
+		t.Setenv("LOOMCYCLE_SPEECH_MAX_INFLIGHT", c.speech)
+		t.Setenv("LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT", c.stt)
+		cfg, err := loadYAMLString(t, "providers: {}\n")
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if got := [2]int{cfg.Env.SpeechMaxInflight, cfg.Env.TranscriptionMaxInflight}; got != c.want {
+			t.Errorf("speech=%q stt=%q: got %v, want %v", c.speech, c.stt, got, c.want)
+		}
+	}
+}
