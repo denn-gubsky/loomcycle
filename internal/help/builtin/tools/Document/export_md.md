@@ -23,7 +23,8 @@ pass `false` for clean Markdown a person will read.
   line (each key only when set), and at the end
   a `<!-- loom-edges: ... -->` block listing the links that start in this
   document. `false`: no comments, and every `![[...]]` embed in a body is
-  replaced by the embedded chunk's text.
+  replaced by the embedded chunk's text. An embed whose target is missing, or
+  in a document the caller may not read, stays as written.
 - `scope` — `user` (default), `agent` or `tenant`. See
   `{"op":"help","topic":"scopes"}`.
 
