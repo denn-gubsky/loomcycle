@@ -12,6 +12,8 @@ import (
 	"net/http/httptest"
 	"net/textproto"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -528,6 +530,43 @@ func TestRequiredScopeFor_AudioRoutesAreRunsCreate(t *testing.T) {
 		}
 		if isGatewayRoute(p) || runPlaneRoute(method, p) {
 			t.Errorf("%s is on the raw model gateway or the run plane", p)
+		}
+	}
+}
+
+// The spec's speech schemas name exactly the fields the routes read and
+// write: a field added to one and not the other fails here.
+func TestOpenAPISpec_SpeechSchemasMatchTheRoutes(t *testing.T) {
+	jsonNames := func(v any) []string {
+		var out []string
+		rt := reflect.TypeOf(v)
+		for i := range rt.NumField() {
+			if name, _, _ := strings.Cut(rt.Field(i).Tag.Get("json"), ","); name != "" && name != "-" {
+				out = append(out, name)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	props := func(schema map[string]any) []string {
+		keys := specKeys(specMap(schema["properties"]))
+		sort.Strings(keys)
+		return keys
+	}
+	schemas := specSchemas(t)
+	info := specMap(schemas["SpeechInfo"]["properties"])
+	for _, c := range []struct {
+		name string
+		spec []string
+		code []string
+	}{
+		{"SpeechRequest", props(schemas["SpeechRequest"]), jsonNames(speechRequest{})},
+		{"SpeechInfo.speech", props(specMap(info["speech"])), jsonNames(speechDirectionInfo{})},
+		{"SpeechInfo.transcription", props(specMap(info["transcription"])), jsonNames(transcriptionDirectionInfo{})},
+		{"TranscriptionResponse.segments", props(specMap(specMap(specMap(schemas["TranscriptionResponse"]["properties"])["segments"])["items"])), jsonNames(transcriptSegment{})},
+	} {
+		if strings.Join(c.spec, ",") != strings.Join(c.code, ",") {
+			t.Errorf("%s: spec %v, code %v", c.name, c.spec, c.code)
 		}
 	}
 }
