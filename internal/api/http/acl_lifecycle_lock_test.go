@@ -175,3 +175,23 @@ func TestErasure_ADelegateCannotEraseAUserOutOfALockedList(t *testing.T) {
 		t.Errorf("the admin's dry run: %d %s, want 200", code, out)
 	}
 }
+
+// Setting external_id hands a group's membership to an identity provider:
+// its sync and the removal policy then drop members, and local edits are
+// refused. On a group a locked list is bound to, that is a lift.
+func TestACLGroup_ADelegateCannotHandALockedGroupToAnIdentityProvider(t *testing.T) {
+	_, call, st := lockedFixture(t)
+	if code, body := call(delegateBearer, "POST", "/v1/_groups", `{"name":"bound","external_id":"okta:x"}`); code != 403 || !strings.Contains(body, `"acl_denied"`) {
+		t.Errorf("delegate sets external_id on the locked group: %d %s, want 403 acl_denied", code, body)
+	}
+	g, err := st.GroupGet(context.Background(), "acme", "bound")
+	if err != nil || g.ExternalID != "" {
+		t.Errorf("bound after the refused upsert: %+v %v, want no external_id", g, err)
+	}
+	if code, body := call(delegateBearer, "POST", "/v1/_groups", `{"name":"bound","description":"renamed"}`); code != 201 {
+		t.Errorf("delegate edits the description only: %d %s, want 201", code, body)
+	}
+	if code, body := call(delegateBearer, "POST", "/v1/_groups", `{"name":"free","external_id":"okta:y"}`); code != 201 {
+		t.Errorf("delegate creates an IdP group no list is bound to: %d %s, want 201", code, body)
+	}
+}

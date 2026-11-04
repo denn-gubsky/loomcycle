@@ -263,6 +263,27 @@ func (s *Server) aclGroupLists(ctx context.Context, tenant, group string) ([]str
 	return names, nil
 }
 
+// aclGroupHandOver asks the group lock when an upsert would change who
+// manages the group's membership: a new external_id hands it to an identity
+// provider, whose sync and the removal policy then drop members while local
+// edits are refused — leaving the group, by another route. A group that
+// does not exist yet still asks: bindings to a deleted group's name stay.
+func (s *Server) aclGroupHandOver(ctx context.Context, tenant, name, externalID string) *aclReply {
+	current := ""
+	row, err := s.store.GroupGet(ctx, tenant, name)
+	switch {
+	case err == nil:
+		current = row.ExternalID
+	case !isNotFound(err):
+		r := aclFail(http.StatusInternalServerError, "group_get_failed", err.Error())
+		return &r
+	}
+	if externalID == current {
+		return nil
+	}
+	return s.aclGroupLock(ctx, tenant, name)
+}
+
 // aclGroupLock asks the retire question of every list group carries, or
 // returns the refusal; a store fault refuses (fail closed).
 func (s *Server) aclGroupLock(ctx context.Context, tenant, group string) *aclReply {
@@ -407,6 +428,9 @@ func (s *Server) aclGroupPut(ctx context.Context, focus string, req groupRequest
 	}
 	tenant := s.adminFocusedTenant(ctx, focus)
 	if r := s.aclGroupExternal(ctx, tenant, strings.TrimSpace(req.Name)); r != nil {
+		return *r
+	}
+	if r := s.aclGroupHandOver(ctx, tenant, strings.TrimSpace(req.Name), req.ExternalID); r != nil {
 		return *r
 	}
 	row, err := s.store.GroupPut(ctx, store.GroupRow{TenantID: tenant, Name: strings.TrimSpace(req.Name),
