@@ -1025,7 +1025,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 			// The rollout mode is the deployment's, not the principal's: an
 			// open-mode console shows it like any other.
 			"acl_mode":  string(s.aclMode()),
-			"effective": openModeEffective(),
+			"effective": s.withAudioSurfaces(r.Context(), openModeEffective()),
 			"auth":      s.whoamiAuth(r.Context(), true),
 		})
 		return
@@ -1056,7 +1056,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	}
 	// RFC EZ §4: which Web UI pages the principal may reach, asked of the
 	// gates a request to each page's primary route would face.
-	out["effective"] = navEffective(r.Context(), p)
+	out["effective"] = s.withAudioSurfaces(r.Context(), navEffective(r.Context(), p))
 	// RFC FA: how the caller signed in — the mode always, the gate, methods
 	// and session times when a Web UI session authenticated the request.
 	out["auth"] = s.whoamiAuth(r.Context(), false)
@@ -1502,6 +1502,17 @@ func requiredScopeFor(method, path string) string {
 	// the /v1/_* catch-all below would pin both to ScopeAdmin, and a tenant
 	// token would be refused before the handler ran.
 	case path == "/v1/_decide" || path == "/v1/_decide/models":
+		return auth.ScopeRunsCreate
+	// RFC FK P3: read-aloud and transcription, and the info route that says
+	// how to call them. A chat user's call, so the scope that creates a run,
+	// NOT auth.ScopeLLMGateway: unlike the raw model endpoints (isGatewayRoute)
+	// these trust the caller with nothing but text, a recording, and a choice
+	// of language and voice from the operator's list — the engine, provider
+	// and model are the operator's. That is what lets an isolated user use
+	// them. The ACL asks `use gateway:speech` / `use gateway:transcription`
+	// (authz.HTTPSurface), and none is on the run plane, so a token limited to
+	// certain agents is refused.
+	case path == audioSpeechPath || path == audioTranscriptionsPath || path == "/v1/_speech":
 		return auth.ScopeRunsCreate
 	// Everything else under /v1/_* is OPERATOR-admin: token minting
 	// (_operatortokendef), runtime admin (pause/resume/state/snapshots/metrics),

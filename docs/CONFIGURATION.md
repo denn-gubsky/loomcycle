@@ -2977,7 +2977,7 @@ Rows also carry `input_chars`, the characters text-to-speech and embedding calls
 
 ## 9i. Speech — text-to-speech
 
-> **Configuration only in this release.** The block is read and validated, so `loomcycle validate` catches a bad value now; nothing speaks yet. `File op=speak` and the `POST /v1/audio/speech` gateway route arrive in later releases.
+> **Speaks through the gateway.** `POST /v1/audio/speech` reads text aloud outside a run, for a chat client's read-aloud button; `docs/SPEECH.md` covers the route, its gate and the client methods. An agent's `File op=speak` arrives in a later release.
 
 The `speech:` block names the engine that turns text into audio, which model and voice speak each language, the output format and what a run may spend. Absent, speech is off.
 
@@ -3010,9 +3010,11 @@ speech:
 - A voice's `model` must be a `models:` alias tagged `kind: synthesizer` that names its `provider` and a `model` (not a `model_pattern`), on a provider using the `openai` driver. `voice` is the engine's own voice id (speaches and ptts list them at `GET /v1/audio/voices`; Ollama with `ollama show <model>`); it is not checked against the engine at load. `alternates` are the other voices a caller may pick for that language.
 - Voices are per language because no single self-hosted model speaks every language well; the keys are language codes from the same list as `transcription:` (`uk`, `en`, `fr`, …).
 - The runtime asks every engine for WAV and joins the pieces itself, so `wav` needs nothing. `ogg` and `mp3` go through `encode`, which runs without a shell with a scrubbed env like the transcription helpers; `format: ogg` or `mp3` without `encode` **fails config load** naming `speech.encode` — it is never silently written as WAV.
+- **One encoder, one encoded format.** There is one `encode` command, and it may fix its codec (the example forces `libopus`), so the runtime offers `wav` plus `format` and nothing else: a request for the other encoded format is refused naming `speech.encode`, never re-encoded behind your back.
 - `loomcycle validate` fails on an unknown key (in the block, a voice entry or `encode`), a missing `engine`, `openai-speech` with no voices or no `default_language` (or one with no voices entry), an unknown language code, the same language twice, a voice model of another kind or untagged, with no provider, a pattern, or off the `openai` driver, an empty voice id or one with spaces at its ends or control characters, a repeated alternate, an unknown `format`, an `encode` command without `{in}` and `{out}`, a negative number, `max_chars_per_call` above 4096 or above `max_chars_per_run`.
 - **Licences.** A `models:` alias may carry `license: commercial` or `license: noncommercial` (anything else fails load). Nothing refuses a noncommercial model; a speech voice using one adds a load warning naming it, and the Settings panel will show it. The Phonon 40m voices and its multilingual model are CC BY-NC: keep them off a hosted, paid deployment.
 - **Pricing.** A speech engine priced per character uses `pricing.models."<provider>/<model>": { per_million_chars: 15 }` (OpenAI `tts-1`); one priced by output time uses `per_minute`, as speech-to-text does. A self-hosted engine is free unless you set a price. A pair absent from the table is unpriced, which is not the same as free.
+- **Outside a run.** `POST /v1/audio/speech` reads this block as it is: one request may carry `max_chars_per_run` characters and `max_seconds_per_run` of estimated audio, and engine requests wait in a server-wide queue of `LOOMCYCLE_SPEECH_MAX_INFLIGHT` (default 2). The per-agent block below does not apply to it.
 
 **Per agent.** An agent can switch speech off for itself and lower the per-run character cap:
 

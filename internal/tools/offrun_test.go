@@ -57,8 +57,9 @@ func TestMeteredOffRunCall_HasOneStampingSite(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The definition, and the server's run-less decision path.
-	want := []string{"internal/api/http/decide.go", "internal/tools/offrun.go"}
+	// The definition, and the server's admission of a call with no run
+	// (admitOffRunCall), which the decision and the audio routes share.
+	want := []string{"internal/api/http/offrun_call.go", "internal/tools/offrun.go"}
 	if strings.Join(sites, ",") != strings.Join(want, ",") {
 		t.Errorf("WithMeteredOffRunCall appears in %v, want exactly %v", sites, want)
 	}

@@ -58,6 +58,10 @@ var aclUngovernedRoutes = map[string]bool{
 	// The evaluate / explain / simulate questions are answered FOR a subject
 	// and confined to it by the handler; they are not themselves governed.
 	"POST /v1/_authz/evaluation": true, "POST /v1/_authz/evaluations": true, "POST /v1/_authz/explain": true, "POST /v1/_authz/simulate": true,
+	// RFC FK P3: the voice controls' info. The route admits any runs:create
+	// caller; the handler asks each audio route's own question and shows a
+	// direction only to a caller who may use it.
+	"GET /v1/_speech": true,
 }
 
 var muxPatternRe = regexp.MustCompile(`mux\.(?:Handle|HandleFunc)\("([A-Z]+ )?([^"]+)"`)

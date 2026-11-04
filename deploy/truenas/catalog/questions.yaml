@@ -491,6 +491,18 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_SPEECH_MAX_INFLIGHT
+            label: LOOMCYCLE_SPEECH_MAX_INFLIGHT
+            description: 'POST /v1/audio/speech and POST /v1/audio/transcriptions put each engine request through a server-wide queue per direction: a self-hosted speech engine serves only a few requests at a time. A request over the bound WAITS for a slot while its caller stays connected; it is not refused. A long text or recording cut into pieces takes a slot per piece, so it takes turns with shorter requests. Default 2…'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT
+            label: LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT
+            description: '(example: 2)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_SKILLS_ROOT
             label: LOOMCYCLE_SKILLS_ROOT
             description: 'Skill bodies count as operator-authored content and are trusted — they''re loaded with the same trust as inline `system_prompt:`. Do not point this at a directory writable by untrusted users. (example: /srv/loomcycle/skills)'

@@ -45,6 +45,8 @@ tags:
     description: Chunked-graph documents and the Path VFS (op-dispatch).
   - name: decision
     description: Decision models — typed questions about supplied state, answered with probabilities.
+  - name: speech
+    description: Read-aloud and transcription outside a run, on the operator's speech engines.
   - name: crypto
     description: Encrypt, decrypt, sign, verify, MAC and one-time codes with keys the runtime holds.
   - name: oauth
@@ -702,6 +704,204 @@ paths:
               examples:
                 decision_not_configured:
                   value: { code: decision_not_configured, error: this deployment declares no decision models }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/audio/speech:
+    post:
+      tags: [speech]
+      summary: Read text aloud.
+      description: |
+        Speaks `input` (Markdown or plain text) with the operator's speech
+        engine, outside any run. The Markdown is normalised (no "asterisk", no
+        URLs; a code block becomes a short spoken note), the text is cut into
+        pieces of `speech.max_chars_per_call`, each piece is spoken with the
+        language's voice, and the pieces are joined (a 200 ms pause at each
+        paragraph end). `ogg` / `mp3` is encoded by the operator's
+        `speech.encode`, which makes one format: `GET /v1/_speech` lists what
+        this deployment returns.
+
+        The audio is returned whole with a `Content-Length`; nothing is
+        streamed, and a failure part-way returns no audio. A request carries up
+        to `speech.max_chars_per_run` characters. Each engine request is
+        charged to the caller (a `tts` usage row with its characters and
+        seconds); a caller at a hard token budget is refused (429) first.
+
+        Engine requests take turns in a server-wide queue
+        (`LOOMCYCLE_SPEECH_MAX_INFLIGHT`, default 2): a request over the bound
+        **waits** for a slot while the caller stays connected, rather than
+        being refused.
+
+        Requires the `runs:create` scope; access control asks
+        `use gateway:speech`. A token limited to certain agents is refused.
+      operationId: audioSpeech
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SpeechRequest" }
+            examples:
+              ukrainian:
+                value: { input: "Привіт, це перевірка голосу.", language: uk, response_format: wav }
+      responses:
+        "200":
+          description: The audio, whole.
+          headers:
+            X-Loomcycle-Speech-Language: { schema: { type: string }, description: The language spoken. }
+            X-Loomcycle-Speech-Voice: { schema: { type: string }, description: The voice used. }
+            X-Loomcycle-Speech-Seconds: { schema: { type: number }, description: How long the audio lasts, pauses included. }
+            X-Loomcycle-Speech-Chars: { schema: { type: integer }, description: The characters spoken, after normalising. }
+            X-Loomcycle-Speech-Pieces: { schema: { type: integer }, description: How many engine requests the text was cut into. }
+          content:
+            audio/wav: { schema: { type: string, format: binary } }
+            audio/mpeg: { schema: { type: string, format: binary } }
+            audio/ogg: { schema: { type: string, format: binary } }
+        "400":
+          description: |
+            `speech_encode_not_configured` (a format this deployment does not
+            make; the message names `speech.encode`), `unsupported_format`,
+            `unsupported_voice`, `unsupported_language`, `empty_input`,
+            `model_not_allowed` (not a `synthesizer` alias), `bad_request`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                encode:
+                  value: { code: speech_encode_not_configured, error: "the format needs speech.encode: mp3 is encoded from the engine's WAV by speech.encode, which is not set; ask for wav" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413":
+          description: "`input_too_long` (over `speech.max_chars_per_run` or `max_seconds_per_run`), or `request_too_large` (over `LOOMCYCLE_MAX_REQUEST_BYTES`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { description: The caller is at a hard token budget (`token_limit_exceeded`). }
+        "502":
+          description: "`speech_failed`: the engine failed. The detail is in the server log."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "`speech_not_configured`: this deployment has no speech engine."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/audio/transcriptions:
+    post:
+      tags: [speech]
+      summary: Transcribe a recording.
+      description: |
+        Transcribes an uploaded recording with the operator's speech-to-text
+        engine, outside any run: the pass the File tool's `op=transcribe`
+        runs, on the same engine.
+
+        - A **PCM WAV** of any length is cut into pieces the engine takes.
+        - With `transcription.stt.media.command` (ffmpeg) set, any audio or
+          video type is converted to WAV first.
+        - Without it, a type the engine reads whole (webm, mp4/m4a, mp3, ogg,
+          flac) is sent whole when it fits one engine request
+          (`whole_file_max_bytes` in `GET /v1/_speech`); otherwise 413, or 415
+          for a type the engine does not read. Both name the setting.
+
+        An upload is bounded by `LOOMCYCLE_MAX_REQUEST_BYTES` and may last up
+        to `transcription.stt.max_minutes_per_run`. Each engine request is
+        charged to the caller (an `stt` usage row with its seconds). A pass
+        that stops part-way returns no transcript. Engine requests take turns
+        in a queue (`LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT`, default 2) and wait
+        for a slot rather than being refused.
+
+        Requires the `runs:create` scope; access control asks
+        `use gateway:transcription`.
+      operationId: audioTranscriptions
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary, description: The recording. Its part's Content-Type is used as the type when given. }
+                model: { type: string, description: "Omit it; when given it must be this deployment's speech-to-text model." }
+                language: { type: string, description: An ISO 639-1 code. }
+                prompt: { type: string, description: Names and terms the engine should expect. }
+                response_format: { type: string, enum: [json, verbose_json, text], default: json }
+      responses:
+        "200":
+          description: The transcript. `text/plain` with `response_format=text`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TranscriptionResponse" }
+              examples:
+                memo:
+                  value: { text: "привіт світ", language: uk, duration: 90.5 }
+            text/plain: { schema: { type: string } }
+        "400":
+          description: "`unreadable_audio`, `unsupported_response_format`, `unsupported_language`, `bad_prompt`, `model_not_allowed`, `bad_request` (not multipart, no file part)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413":
+          description: "`request_too_large` (over `LOOMCYCLE_MAX_REQUEST_BYTES`), `audio_too_long` (over `max_minutes_per_run`), `audio_too_large` (cannot be sent whole and there is no converter)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "415":
+          description: "`unsupported_media_type`: not a recording, or a type the engine does not read whole and there is no converter."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { description: The caller is at a hard token budget (`token_limit_exceeded`). }
+        "502":
+          description: "`transcription_failed`: the engine failed. The detail is in the server log."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "`transcription_not_configured`, or `transcription_unavailable` (the engine could not be resolved)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /v1/_speech:
+    get:
+      tags: [speech]
+      summary: What a client needs to draw its voice controls.
+      description: |
+        Per direction: whether this caller may use it, the languages and
+        voices, the output formats, the recording types taken, and the caps.
+        A direction whose engine is off, or whose route this caller would be
+        refused (scope, a token limited to certain agents, access control), is
+        `{"enabled": false}` and nothing else. Names no engine URL, provider
+        or model. Requires the `runs:create` scope.
+      operationId: speechInfo
+      responses:
+        "200":
+          description: The two directions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SpeechInfo" }
+              examples:
+                no_converter:
+                  value:
+                    speech:
+                      enabled: true
+                      default_language: uk
+                      languages:
+                        uk: { voices: [ukrainian_tts], default_voice: ukrainian_tts }
+                        en: { voices: [af_heart, am_adam], default_voice: af_heart }
+                      formats: [wav]
+                      max_chars_per_call: 4000
+                      max_chars_per_request: 100000
+                      max_seconds_per_request: 3600
+                    transcription:
+                      enabled: true
+                      default_language: uk
+                      accepts: [audio/wav, audio/webm, audio/mp4, audio/mpeg, audio/ogg, audio/flac, video/mp4, video/webm]
+                      max_upload_bytes: 16777216
+                      max_seconds_per_call: 7200
+                      max_seconds_per_request: 18000
+                      whole_file_max_bytes: 26214400
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   /ui/login-config.json:
@@ -2192,6 +2392,61 @@ components:
               error: { type: string }
             required: [code, tool, error]
   schemas:
+    SpeechRequest:
+      type: object
+      required: [input]
+      properties:
+        input: { type: string, description: Markdown or plain text. }
+        model: { type: string, description: "A `models:` alias of kind `synthesizer`; omitted, the language's." }
+        voice: { type: string, description: "One of the language's voices (`GET /v1/_speech`); omitted, its default." }
+        response_format: { type: string, enum: [wav, mp3, ogg, opus], description: "Omitted, `speech.format`. `opus` is `ogg`." }
+        language: { type: string, description: "A configured language; omitted, the text's script decides, else `speech.default_language`." }
+    TranscriptionResponse:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string }
+        language: { type: string }
+        duration: { type: number, description: The recording's length in seconds. }
+        segments:
+          type: array
+          description: With `response_format=verbose_json`.
+          items:
+            type: object
+            properties:
+              start: { type: number }
+              end: { type: number }
+              text: { type: string }
+              speaker: { type: string }
+    SpeechInfo:
+      type: object
+      properties:
+        speech:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            default_language: { type: string }
+            languages:
+              type: object
+              additionalProperties:
+                type: object
+                properties:
+                  voices: { type: array, items: { type: string } }
+                  default_voice: { type: string }
+            formats: { type: array, items: { type: string }, description: "`wav`, plus the one format `speech.encode` makes." }
+            max_chars_per_call: { type: integer }
+            max_chars_per_request: { type: integer }
+            max_seconds_per_request: { type: number }
+        transcription:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            default_language: { type: string }
+            accepts: { type: array, items: { type: string } }
+            max_upload_bytes: { type: integer }
+            max_seconds_per_call: { type: integer }
+            max_seconds_per_request: { type: integer }
+            whole_file_max_bytes: { type: integer, description: Without a converter, the largest non-WAV file the engine takes whole. }
     Error:
       type: object
       properties:

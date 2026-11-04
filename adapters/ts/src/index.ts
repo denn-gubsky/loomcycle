@@ -743,6 +743,17 @@ export type {
   DecisionScoreAnswer,
   DecisionModel,
   DecisionModelsResponse,
+  // Speech: read-aloud and transcription outside a run (RFC FK P3)
+  SpeechFormat,
+  SpeechOptions,
+  SpeechResult,
+  TranscribeOptions,
+  TranscribeResult,
+  TranscriptSegment,
+  SpeechInfo,
+  SpeechDirectionInfo,
+  SpeechLanguageInfo,
+  TranscriptionDirectionInfo,
   // Access control: groups, rule lists, bindings, decisions (RFC EY / EZ)
   AclMode,
   AclSource,

@@ -363,3 +363,8 @@ func (s *SpeechConfig) UnmarshalYAML(n *yaml.Node) error {
 	type plain SpeechConfig
 	return n.Decode((*plain)(s))
 }
+
+// AudioMaxInflightDefault is how many engine requests each audio route has in
+// flight at once when LOOMCYCLE_SPEECH_MAX_INFLIGHT /
+// LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT is unset.
+const AudioMaxInflightDefault = 2

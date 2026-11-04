@@ -8,12 +8,10 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/decision"
 	"github.com/denn-gubsky/loomcycle/internal/lanegate"
-	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -35,25 +33,8 @@ func (s *Server) decisionTool() *builtin.Decision {
 // `decision` tool. input and the result are the in-run Decision tool's, and
 // the tool itself produces the result.
 //
-// A run's start is what normally holds a model call to its rules; with no run,
-// this function does each by hand, in this order:
-//
-//  1. The caller is the authenticated principal: its tenant and subject. With
-//     no principal (open mode, the stdio MCP server) the call is the
-//     operator's, filed under the shared tenant with no user, as a run started
-//     without a user_id is. Nothing in the request can name another caller.
-//  2. The operator's provider key: whether this caller may spend it is derived
-//     from the principal and stamped EXPLICITLY either way. The driver's check
-//     reads a bit that means "allowed" when nothing stamped it, so a path that
-//     stamped nothing would hand a restricted tenant the operator's key. The
-//     credential resolver is stamped beside it, as at a run start, so a
-//     restricted tenant holding its own key for the provider is still served,
-//     on that key.
-//  3. The budget: a caller at a hard token ceiling is refused before any call
-//     (*connector.TokenLimitError), by the check run admission uses.
-//  4. The bill: the context names who is charged (tools.WithMeteredOffRunCall),
-//     which is what makes RecordRunSideCallUsage write the usage row and count
-//     the tokens, and what lifts the tool's own refusal of a call with no run.
+// The caller is admitted, charged and held to its key and budget rules by
+// admitOffRunCall, as every model call a caller asks for with no run is.
 //
 // It does not wait out a runtime pause, like the LLM gateway and unlike a new
 // run: a pause quiesces RUNS for a snapshot, and this call belongs to none.
@@ -75,62 +56,11 @@ func (s *Server) Decision(ctx context.Context, input json.RawMessage) (connector
 		return connector.ToolResult{Text: res.Text, IsError: res.IsError, ErrorInfo: res.Error}, nil
 	}
 
-	if err := s.refuseAgentlessCall(ctx, "a decision"); err != nil {
+	ctx, release, err := s.admitOffRunCall(ctx, "a decision")
+	if err != nil {
 		return connector.ToolResult{}, err
 	}
-	// A direct decision is a model call a caller asked for, like a run start.
-	if err := s.admitPrincipalRate(ctx); err != nil {
-		return connector.ToolResult{}, err
-	}
-	p, authed := auth.PrincipalFromContext(ctx)
-	var tenant, user string
-	if authed {
-		tenant, user = p.TenantID, p.Subject
-	}
-	// The more restrictive of the principal and any run bit already on ctx: an
-	// OR can only add a restriction.
-	restricted := tools.AuthorOperatorKeyRestricted(ctx, s.cfg().Env.OperatorKeyRestriction)
-
-	if dec := s.limits.Check(tenant, user); !dec.Allowed {
-		return connector.ToolResult{}, &connector.TokenLimitError{Info: *dec.Refusal}
-	}
-
-	// Counted against the caller's per-user cap for as long as the call lasts —
-	// its wait for the decision lane included — like the LLM gateway and
-	// /v1/embeddings. A direct decision takes no run slot, so without this
-	// nothing tied the calls one caller has waiting on a provider to that
-	// caller: the queue bound above is shared by everyone.
-	if s.sem != nil {
-		releaseUser, err := s.sem.ReserveUser(ctx, tenant, user)
-		if err != nil {
-			if concurrency.IsPerUserQuotaExhausted(err) {
-				// Both wrapped: the sentinel is what gRPC and MCP map, the typed
-				// error is what the HTTP 429 body is built from.
-				return connector.ToolResult{}, fmt.Errorf("%w: %w", runner.ErrPerUserQuotaExhausted, err)
-			}
-			return connector.ToolResult{}, fmt.Errorf("%w: %v", runner.ErrInternal, err)
-		}
-		defer releaseUser()
-	}
-	// The decision lane takes turns across (tenant, user), which it reads off
-	// the run identity on ctx. This call is no run — no run id, so it earns no
-	// lease — but it has the same fairness identity as a run would.
-	ctx = providers.WithRunMeta(ctx, providers.RunMeta{TenantID: tenant, UserID: user})
-
-	// The identity the credential resolver looks a tenant's own key up under.
-	// The agent name is cleared: an off-run call belongs to no agent, and a
-	// transport's synthetic one (the MCP operator's) must not match an
-	// agent-scoped credential on one surface and not on the others.
-	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{
-		TenantID:              tenant,
-		UserID:                user,
-		OperatorKeyRestricted: restricted,
-		Isolated:              auth.IsIsolated(p, authed),
-	})
-	ctx = tools.WithAgentName(ctx, "")
-	ctx = providers.WithCredentialResolver(ctx, s.credResolver)
-	ctx = providers.WithOperatorKeyAllowed(ctx, !restricted)
-	ctx = tools.WithMeteredOffRunCall(ctx, tools.MeteredOffRunCallValue{TenantID: tenant, UserID: user})
+	defer release()
 
 	res, err := s.execBuiltin(ctx, tool, input)
 	if err != nil {

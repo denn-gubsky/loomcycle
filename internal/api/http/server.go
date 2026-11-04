@@ -321,6 +321,13 @@ type Server struct {
 	// after construction. Reads run identity from the ctx it's given.
 	credResolver providers.CredentialResolver
 
+	// audioQ are the audio routes' engine queues (audio_queue.go).
+	audioQ audioQueues
+	// stt is the speech-to-text the transcription route runs: the File tool's
+	// own engine and ledger, built once at boot. nil when transcription.stt is
+	// off. cmd/loomcycle sets it with SetSTT before the server serves.
+	stt *builtin.FileSTT
+
 	// credKeyable is the RFC AX Layer-1 metadata-only keyability probe: does
 	// (tenant, agent, user) have its OWN CredentialDef for env-var name? It backs
 	// the credential-aware routing filter built for a restricted run in
@@ -1504,6 +1511,11 @@ func (s *Server) SetWebUIBundle(b *webui.Bundle, st webui.Status) {
 // onto each run's ctx so provider drivers + WebSearch prefer a tenant-supplied
 // key over the operator host key. Nil ⇒ overrides disabled.
 func (s *Server) SetCredentialResolver(r providers.CredentialResolver) { s.credResolver = r }
+
+// SetSTT hands the server the speech-to-text the File tool runs (FileSTT), so
+// POST /v1/audio/transcriptions uses the same engine and ledger. nil leaves
+// the route answering transcription_not_configured.
+func (s *Server) SetSTT(stt *builtin.FileSTT) { s.stt = stt }
 
 // SetCredKeyable wires the RFC AX Layer-1 keyability probe (metadata-only:
 // does (tenant, agent, user) have its OWN CredentialDef for env-var name?). The
@@ -4676,6 +4688,11 @@ func (s *Server) routes() *http.ServeMux {
 	// A decision model asked with no run behind it, and the models it may name.
 	mux.Handle("POST /v1/_decide", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDecide))))
 	mux.Handle("GET /v1/_decide/models", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDecideModels))))
+	// RFC FK P3: read-aloud and transcription outside a run, on the operator's
+	// speech engines, and what a client needs to draw the controls.
+	mux.Handle("POST /v1/audio/speech", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAudioSpeech))))
+	mux.Handle("POST /v1/audio/transcriptions", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAudioTranscriptions))))
+	mux.Handle("GET /v1/_speech", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSpeechInfo))))
 	mux.Handle("POST /v1/_mcp", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMCPHTTP))))
 	mux.Handle("DELETE /v1/_mcp", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMCPHTTP))))
 	// v0.8.0 Memory admin — read-only browsing of stored Memory rows.

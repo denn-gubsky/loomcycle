@@ -301,8 +301,10 @@ var rateCountedIntakes = map[string]string{
 	"RunOnce":             "count",
 	"ReplaySession":       "count",
 	"CreateConfiguredRun": "count",
-	"Decision":            "count",
-	"admitTeamRun":        "count",
+	// A model call made with no run: a decision, a read-aloud, a
+	// transcription. Decision and the audio routes take the rate here.
+	"admitOffRunCall": "count",
+	"admitTeamRun":    "count",
 	// Creates no row, but a message to a parked run starts its next turn.
 	"SteerRun": "count",
 }
