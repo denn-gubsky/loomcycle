@@ -70,6 +70,7 @@ const (
 	oauthRevokeClientMismatch = "client_mismatch"
 	oauthRevokeByApp          = "revoked_by_app"
 	oauthRevokeClientRetired  = "client_retired"
+	oauthRevokeUserDisabled   = "user_disabled"
 )
 
 // hashOAuthSecret is a code's or a refresh token's row key. They are 256-bit
@@ -749,6 +750,16 @@ func (s *Server) revokeAppFamily(ctx context.Context, clientID, familyID, reason
 		}
 	}
 	s.invalidateTokenCache(ctx)
+}
+
+// endSubjectAppSignIns revokes every app sign-in (refresh-token family) of a
+// user being disabled. A re-enable does not restore them: the person signs
+// in to each app again, as disabling means signing everything out. The
+// families' access tokens are the user's own tokens, which the disable
+// retires with the rest.
+func (s *Server) endSubjectAppSignIns(ctx context.Context, tenant, subject string) error {
+	_, err := s.store.OAuthFamilyRevokeSubject(ctx, tenant, subject, oauthRevokeUserDisabled, time.Now().UTC())
+	return err
 }
 
 // retireAppToken retires one access token at once.

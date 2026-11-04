@@ -6,8 +6,9 @@ package http
 // this file does them. A removal is three stages that never skip:
 //
 //	disable — at once, when the removal starts: users.status = disabled, every
-//	          Web UI session ended, every delegated token retired. Nothing is
-//	          deleted; the person can be re-enabled.
+//	          Web UI session and app sign-in ended, every delegated token
+//	          retired. Nothing is deleted; the person can be re-enabled (and
+//	          signs in to each app again).
 //	unbind  — at unbind_due_at: memberships in gate-managed groups (a group
 //	          with an external_id) removed and the user's own ACL bindings
 //	          retired. The login identities stay, so a returning person is
@@ -102,6 +103,9 @@ func (s *Server) startRemovalWith(ctx context.Context, policy lifecycle.Policy, 
 	}
 	if _, err := s.store.UISessionRevokeSubject(ctx, tenant, subject, now); err != nil {
 		return fmt.Errorf("end sessions: %w", err)
+	}
+	if err := s.endSubjectAppSignIns(ctx, tenant, subject); err != nil {
+		return fmt.Errorf("end app sign-ins: %w", err)
 	}
 	if started || u.Status != "disabled" {
 		s.recordLifecycleEvent("auth_user_disabled", tenant, subject, gate, reason, by)

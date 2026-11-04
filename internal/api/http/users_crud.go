@@ -308,8 +308,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	// Disabling a user must revoke its live bearer(s) — the auth path is
 	// token-only and never checks users.status, so a status flip alone would
-	// leave existing tokens working. (Re-enabling does not re-issue tokens; the
-	// operator re-mints.)
+	// leave existing tokens working. Its app sign-ins (refresh families) end
+	// too. (Re-enabling restores neither: the operator re-mints, and the
+	// person signs in to each app again.)
 	if req.Status != nil && *req.Status == "disabled" {
 		ctx := r.Context()
 		// The status write and the end of any SCIM removal's ownership are
@@ -338,6 +339,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		// reported only once it has.
 		_, retireErr := s.retireDelegatedUserTokens(ctx, tenant, subject)
 		_, sessionErr := s.store.UISessionRevokeSubject(ctx, tenant, subject, time.Now().UTC())
+		appErr := s.endSubjectAppSignIns(ctx, tenant, subject)
 		switch {
 		case disableErr != nil:
 			writeJSONError(w, http.StatusInternalServerError, "user_update_failed", disableErr.Error())
@@ -347,6 +349,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		case sessionErr != nil:
 			writeJSONError(w, http.StatusInternalServerError, "session_revoke_failed", sessionErr.Error())
+			return
+		case appErr != nil:
+			writeJSONError(w, http.StatusInternalServerError, "app_sign_in_revoke_failed", appErr.Error())
 			return
 		}
 		req.Status = nil

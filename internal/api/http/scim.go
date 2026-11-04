@@ -963,6 +963,9 @@ func (s *Server) scimRemove(ctx context.Context, c scimCtx, subject string) *sci
 		if err == nil {
 			_, err = s.store.UISessionRevokeSubject(ctx, c.tenant, subject, now)
 		}
+		if err == nil {
+			err = s.endSubjectAppSignIns(ctx, c.tenant, subject)
+		}
 		if err != nil {
 			slog.Error("scim: ending a removed user's credentials failed", "gate", c.g.Name, "err", err)
 			return internal
