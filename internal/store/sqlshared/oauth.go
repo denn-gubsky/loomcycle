@@ -323,6 +323,18 @@ func OAuthTokenRetire(ctx context.Context, db DB, clientID, familyID string, at 
 	return int(n), err
 }
 
+// OAuthTokenRetireEndedSignIns retires the subject's live app access tokens
+// whose family is revoked or gone.
+func OAuthTokenRetireEndedSignIns(ctx context.Context, db DB, tenantID, subject string, at time.Time) (int, error) {
+	t := db.Dialect().TimeArg(at)
+	n, err := db.Exec(ctx, `UPDATE operator_token_defs SET retired_at = ?
+		WHERE tenant_id = ? AND subject = ? AND oauth_client <> '' AND (retired_at IS NULL OR retired_at > ?)
+		AND NOT EXISTS (SELECT 1 FROM oauth_refresh_families f
+			WHERE f.family_id = operator_token_defs.oauth_family AND f.revoked_at IS NULL)`,
+		t, tenantID, subject, t)
+	return int(n), err
+}
+
 // OAuthDeleteExpired removes what can no longer authenticate: codes expired
 // before `before`, families revoked or past their absolute lifetime before it,
 // and those families' refresh tokens.

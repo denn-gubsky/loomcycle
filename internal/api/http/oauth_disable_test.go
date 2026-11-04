@@ -162,3 +162,28 @@ func TestDisable_AnAccessTokenMintedDuringTheDisableDoesNotAuthenticate(t *testi
 		t.Fatal("an access token minted during the disable authenticates again after the re-enable")
 	}
 }
+
+// TestDisable_ARetriedDisableRetiresTheTokensOfAlreadyRevokedSignIns: a
+// disable that revoked the user's app sign-ins and failed before retiring
+// their access tokens is finished by the retry, although the retry finds no
+// family left to revoke.
+func TestDisable_ARetriedDisableRetiresTheTokensOfAlreadyRevokedSignIns(t *testing.T) {
+	f := newAppFixture(t, "tenant")
+	ctx := context.Background()
+	at, _ := f.signIn(t)
+	p, ok := f.s.resolvePrincipal(ctx, at)
+	if !ok {
+		t.Fatal("precondition: the app's access token does not authenticate")
+	}
+	// The first attempt's partial effect.
+	if _, err := f.st.OAuthFamilyRevokeSubject(ctx, "acme", "google:100", oauthRevokeUserDisabled, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.endSubjectAppSignIns(ctx, "acme", "google:100"); err != nil {
+		t.Fatal(err)
+	}
+	row, err := f.st.OperatorTokenDefGet(ctx, p.TokenDefID)
+	if err != nil || row.RetiredAt.IsZero() {
+		t.Fatalf("the access token of an already-revoked sign-in is still live after the retry: %+v, %v", row, err)
+	}
+}

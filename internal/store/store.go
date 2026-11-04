@@ -4638,6 +4638,13 @@ type OAuthStore interface {
 	// returns their ids. A revoked family stays revoked when the user is
 	// re-enabled: the person signs in to the app again.
 	OAuthFamilyRevokeSubject(ctx context.Context, tenantID, subject, reason string, at time.Time) ([]string, error)
+	// OAuthTokenRetireEndedSignIns retires, at `at`, every live access token
+	// of (tenantID, subject) issued through an app sign-in that is no longer
+	// live — its family revoked, whatever the reason, or gone — and returns
+	// how many. It reads the families rather than taking their ids, so a
+	// disable or erasure retried after a partial failure (families revoked,
+	// tokens not yet retired) still finishes.
+	OAuthTokenRetireEndedSignIns(ctx context.Context, tenantID, subject string, at time.Time) (int, error)
 	// OAuthRefreshCreate inserts a refresh token's hash into its family.
 	OAuthRefreshCreate(ctx context.Context, row OAuthRefreshRow) error
 	// OAuthRefreshUse marks a refresh token used and returns it with

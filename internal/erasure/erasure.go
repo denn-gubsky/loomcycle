@@ -78,10 +78,10 @@ type Service struct {
 	RetireTokens func(ctx context.Context, tenant, subject string) ([]store.OperatorTokenDefRow, error)
 	// EndAppSignIns revokes the subject's app sign-ins (OAuth refresh
 	// families) and retires the access tokens issued under them, flushing
-	// the auth cache, before the account's rows are deleted; it returns the
-	// families it revoked. The transport owns it for the cache. nil = the
-	// families are only deleted, with the account.
-	EndAppSignIns func(ctx context.Context, tenant, subject string) ([]string, error)
+	// the auth cache, before the account's rows are deleted. The transport
+	// owns it for the cache. nil = the families are only deleted, with the
+	// account, and their tokens left to RetireTokens.
+	EndAppSignIns func(ctx context.Context, tenant, subject string) error
 	// BoundSubjects lists the tenant's subjects (documents in the tenant scope
 	// whose root carries `fields.principal`) bound to the subject.
 	// ClearBoundSubjects removes those bindings and returns the subjects it
@@ -720,7 +720,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	// so the ones the app sign-ins took with them are still reported.
 	var bindingTokens []string // def ids whose token-kind bindings go
 	tk, tokensExamined, err := s.tokens(ctx, tenant, subject)
-	appFamilies := s.endAccount(ctx, tenant, subject, req.DryRun, &res, fail)
+	appSignInsEnded := s.endAccount(ctx, tenant, subject, req.DryRun, &res, fail)
 	if err != nil {
 		fail("operator_tokens", err)
 	} else if tokensExamined {
@@ -739,7 +739,9 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 			if err != nil {
 				fail("operator_tokens", err)
 			}
-			retired = append(retired, endedWithAppSignIns(tk.active, retired, appFamilies)...)
+			if appSignInsEnded {
+				retired = append(retired, endedWithAppSignIns(tk.active, retired)...)
+			}
 			res.Deleted["operator_tokens"] = len(retired)
 			res.Access.Tokens = tokenRefs(retired)
 			// Only tokens that no longer authenticate lose their bindings: one a
@@ -979,18 +981,19 @@ const retainedIdentityProvider = "the person's account at the external identity 
 // password, TOTP, recovery codes, passkeys, sessions, app sign-ins, device
 // logins, invites and resets, SCIM resources) and the user row, when there
 // is one, becomes a PII-free tombstone (store.UserErase). A dry run counts
-// them instead. It returns the app sign-ins (refresh families) it revoked.
-func (s *Service) endAccount(ctx context.Context, tenant, subject string, dryRun bool, res *Result, fail func(string, error)) []string {
+// them instead. It reports whether EndAppSignIns ended the app sign-ins.
+func (s *Service) endAccount(ctx context.Context, tenant, subject string, dryRun bool, res *Result, fail func(string, error)) bool {
 	var counts map[string]int
-	var families []string
+	var appEnded bool
 	var err error
 	if dryRun {
 		counts, err = s.Store.AuthSubjectCount(ctx, tenant, subject)
 	} else {
 		if s.EndAppSignIns != nil {
-			var aerr error
-			if families, aerr = s.EndAppSignIns(ctx, tenant, subject); aerr != nil {
+			if aerr := s.EndAppSignIns(ctx, tenant, subject); aerr != nil {
 				fail("sign_in_app_access_tokens", aerr)
+			} else {
+				appEnded = true
 			}
 		}
 		counts, err = s.Store.UserErase(ctx, tenant, subject, time.Now().UTC())
@@ -1017,24 +1020,20 @@ func (s *Service) endAccount(ctx context.Context, tenant, subject string, dryRun
 	case !isNotFound(err):
 		fail("auth_removal_record", err)
 	}
-	return families
+	return appEnded
 }
 
-// endedWithAppSignIns is the tokens of active that ended with an app sign-in
-// in families (EndAppSignIns retired them before RetireTokens ran) and are
-// not in retired already.
-func endedWithAppSignIns(active, retired []store.OperatorTokenDefRow, families []string) []store.OperatorTokenDefRow {
-	fam := map[string]bool{}
-	for _, f := range families {
-		fam[f] = true
-	}
+// endedWithAppSignIns is the app access tokens of active (listed before the
+// account ended) that EndAppSignIns retired, so RetireTokens did not: every
+// app sign-in of the subject ended with it, and their tokens with them.
+func endedWithAppSignIns(active, retired []store.OperatorTokenDefRow) []store.OperatorTokenDefRow {
 	seen := map[string]bool{}
 	for _, r := range retired {
 		seen[r.DefID] = true
 	}
 	var out []store.OperatorTokenDefRow
 	for _, r := range active {
-		if r.OAuthFamily != "" && fam[r.OAuthFamily] && !seen[r.DefID] {
+		if r.OAuthClient != "" && !seen[r.DefID] {
 			out = append(out, r)
 		}
 	}

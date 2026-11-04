@@ -957,7 +957,7 @@ func (s *Server) scimRemove(ctx context.Context, c scimCtx, subject string) *sci
 	}
 	if err == nil && rm.Gate == c.g.Name && store.SCIMRemovalReason(rm.Reason) {
 		// App sign-ins before the other tokens: endSubjectAppSignIns says why.
-		_, err := s.endSubjectAppSignIns(ctx, c.tenant, subject)
+		err := s.endSubjectAppSignIns(ctx, c.tenant, subject)
 		if err == nil {
 			var retired []store.OperatorTokenDefRow
 			retired, err = s.retireDelegatedUserTokens(ctx, c.tenant, subject)
