@@ -139,6 +139,10 @@ func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
 			"scope must be one of: agent, user, tenant")
 		return
 	}
+	ctx, ok := s.browseCtx(w, r, scope)
+	if !ok {
+		return
+	}
 	// dry_run defaults TRUE, matching every other sweep here: a bare `curl -X POST`
 	// must not spend a vision call per image.
 	dryRun := true
@@ -156,7 +160,6 @@ func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
 		tier = describeImagesDefaultTier
 	}
 
-	ctx := s.substrateBrowseCtxFn(r)(r.Context())
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem, Embedder: s.embedder}
 
 	assets, err := doc.ListUndescribedAssets(ctx, scope, limit)

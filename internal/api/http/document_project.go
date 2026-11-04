@@ -55,6 +55,10 @@ func (s *Server) handleDocumentProject(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "scope must be one of: agent, user, tenant")
 		return
 	}
+	ctx, ok := s.browseCtx(w, r, scope)
+	if !ok {
+		return
+	}
 	if s.embedder == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "embedder_unavailable",
 			"no embedder is configured (memory.embedder), so there is no model whose vectors to place")
@@ -80,7 +84,6 @@ func (s *Server) handleDocumentProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := s.substrateBrowseCtxFn(r)(r.Context())
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem, Embedder: s.embedder, Cfg: cfg}
 	rep, err := doc.ProjectScope(ctx, scope, opts)
 	if err != nil {

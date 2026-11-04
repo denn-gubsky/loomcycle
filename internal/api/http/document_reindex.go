@@ -56,6 +56,10 @@ func (s *Server) handleDocumentReindex(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "scope must be one of: agent, user, tenant")
 		return
 	}
+	ctx, ok := s.browseCtx(w, r, scope)
+	if !ok {
+		return
+	}
 	dryRun := true
 	if v := q.Get("dry_run"); v != "" {
 		dryRun = v != "false" && v != "0"
@@ -72,7 +76,6 @@ func (s *Server) handleDocumentReindex(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ctx := s.substrateBrowseCtxFn(r)(r.Context())
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem, Embedder: s.embedder}
 	rep, err := doc.ReindexScope(ctx, scope, q.Get("after"), limit, dryRun)
 	if err != nil {

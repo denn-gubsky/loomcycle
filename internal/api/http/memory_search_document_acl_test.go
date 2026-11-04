@@ -139,10 +139,11 @@ func searchAs(t *testing.T, s *Server, p auth.Principal, body string) (int, map[
 }
 
 // limitedCallers are the two kinds of principal the route admits with a set
-// that denies the reports: a tenant member and a tenant operator.
+// that denies the reports: a tenant member and a tenant operator. The member is
+// alice herself: a member reaches only its own user scope (RFC FY Part A).
 func limitedCallers(t *testing.T) map[string]auth.Principal {
 	return map[string]auth.Principal{
-		"member":          {TenantID: "A", Subject: "bob", Scopes: []string{auth.ScopeRunsCreate}, Effective: denyReportsSet(t, "bob")},
+		"member":          {TenantID: "A", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}, Effective: denyReportsSet(t, "alice")},
 		"tenant operator": {TenantID: "A", Subject: "op", Scopes: []string{auth.ScopeTenant}, Effective: denyReportsSet(t, "op")},
 	}
 }
@@ -204,7 +205,7 @@ func TestMemorySearchEndpoint_UnrestrictedCallerAnswerIsUnchanged(t *testing.T) 
 		t.Errorf("the r3 chunk = %v, want it found through its unit", e)
 	}
 
-	unlimited := auth.Principal{TenantID: "A", Subject: "bob", Scopes: []string{auth.ScopeRunsCreate}, Effective: allowDocumentsSet(t, "bob")}
+	unlimited := auth.Principal{TenantID: "A", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}, Effective: allowDocumentsSet(t, "alice")}
 	if _, _, raw := searchAs(t, c.s, unlimited, aclSearchBody); !bytes.Equal(raw, plain) {
 		t.Errorf("a set that denies nothing changed the answer:\n got %s\nwant %s", raw, plain)
 	}

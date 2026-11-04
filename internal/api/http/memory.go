@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -120,7 +121,19 @@ func (s *Server) handleListMemoryScopeIDs(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	if rows == nil {
+	// The list is a roster of the tenant's subjects (or agents): a caller sees
+	// only those it may browse, so it is no way round the key routes'
+	// refusal (RFC FY Part A).
+	if scope != string(store.MemoryScopeTenant) {
+		kept := rows[:0]
+		for _, row := range rows {
+			if _, ok := s.browseSubjectFor(r.Context(), "memory", row.ScopeID, "", scope); ok {
+				kept = append(kept, row)
+			}
+		}
+		rows = kept
+	}
+	if len(rows) == 0 {
 		// JSON-encode an empty array rather than null so the UI can
 		// `.map` without a guard.
 		rows = []store.MemoryScopeIDSummary{}
@@ -146,6 +159,10 @@ func (s *Server) handleListMemoryEntries(w http.ResponseWriter, r *http.Request)
 	}
 	if adminMemoryScopeIDRequired(scope) && strings.TrimSpace(scopeID) == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_scope_id", "scope_id is required")
+		return
+	}
+	browse, ok := s.memoryRouteCtx(w, r, scope, scopeID, "read")
+	if !ok {
 		return
 	}
 	prefix := r.URL.Query().Get("prefix")
@@ -174,7 +191,7 @@ func (s *Server) handleListMemoryEntries(w http.ResponseWriter, r *http.Request)
 	// Document op=search and the memory search leave it out (a listing is a
 	// search). The page can come back shorter than limit; truncated still says
 	// whether the store held more.
-	held, err := s.unreadableDocumentKeys(r, scope, storeScopeID, entries)
+	held, err := s.unreadableDocumentKeys(browse, scope, storeScopeID, entries)
 	if err != nil {
 		slog.Error("memory list access check failed", "scope", scope, "scope_id", storeScopeID, "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal", "list failed")
@@ -243,9 +260,13 @@ func (s *Server) handleGetMemoryEntry(w http.ResponseWriter, r *http.Request) {
 			"scope_id and key are required")
 		return
 	}
+	browse, ok := s.memoryRouteCtx(w, r, scope, scopeID, "read")
+	if !ok {
+		return
+	}
 	// A row of a document the caller may not read is answered as a missing one,
 	// so the refusal does not say the row exists.
-	held, err := s.unreadableDocumentKeys(r, scope, adminMemoryStoreScopeID(scope, scopeID), []store.MemoryEntry{{Key: key}})
+	held, err := s.unreadableDocumentKeys(browse, scope, adminMemoryStoreScopeID(scope, scopeID), []store.MemoryEntry{{Key: key}})
 	if err != nil {
 		slog.Error("memory get access check failed", "scope", scope, "scope_id", scopeID, "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal", "read failed")
@@ -320,20 +341,47 @@ func writeKeyRuleRefusal(w http.ResponseWriter, key string, res tools.Result) bo
 // read because each is a chunk body or derived unit of a document its
 // access-control set denies it reading (builtin.UnreadableDocumentKeys); nil
 // when nothing is held back, which is every caller whose set denies no
-// document. It runs under the identity the memory search checks its hits under,
-// with a super-admin's ?tenant= focus carried as the rows were read in it.
-func (s *Server) unreadableDocumentKeys(r *http.Request, scope, storeScopeID string, entries []store.MemoryEntry) (map[string]bool, error) {
+// document. It runs under browse, the identity memoryRouteCtx resolved for the
+// route — the one the memory search checks its hits under, with a super-admin's
+// ?tenant= focus carried as the rows were read in it.
+func (s *Server) unreadableDocumentKeys(browse context.Context, scope, storeScopeID string, entries []store.MemoryEntry) (map[string]bool, error) {
 	keys := make([]string, len(entries))
 	for i, e := range entries {
 		keys[i] = e.Key
 	}
-	subject := ""
-	if scope != string(store.MemoryScopeTenant) {
-		subject = storeScopeID
-	}
-	ctx := substrateBrowseCtx(r.Context(), subject, strings.TrimSpace(r.URL.Query().Get("tenant")))
-	return builtin.UnreadableDocumentKeys(ctx, &builtin.Document{Store: s.store, SqlMem: s.sqlMem},
+	return builtin.UnreadableDocumentKeys(browse, &builtin.Document{Store: s.store, SqlMem: s.sqlMem},
 		store.MemoryScope(scope), storeScopeID, keys)
+}
+
+// memoryRouteCtx resolves a memory key route's {scope_id} through
+// browseSubjectFor (RFC FY Part A) and asks the instance question the Memory
+// tool asks in a run — verb (read or write) on memory:<scope>, owned by the
+// subject on the user scope — beyond the route's type-level one. It returns
+// the browse ctx, or false after writing the refusal: the opaque not-found
+// for a subject the caller may not browse, the access-control refusal for a
+// verb its rules deny. The tenant scope's {scope_id} is a placeholder the
+// store drops, so it names nobody.
+func (s *Server) memoryRouteCtx(w http.ResponseWriter, r *http.Request, scope, scopeID, verb string) (context.Context, bool) {
+	named := scopeID
+	if scope == string(store.MemoryScopeTenant) {
+		named = ""
+	}
+	b, ok := s.browseSubjectFor(r.Context(), "memory", named, r.URL.Query().Get("tenant"), scope)
+	if !ok {
+		writeBrowseNotFound(w)
+		return nil, false
+	}
+	if p, has := auth.PrincipalFromContext(r.Context()); has {
+		res := authz.Resource{Type: "memory", Name: scope}
+		if scope == string(store.MemoryScopeUser) {
+			res.Owner = scopeID
+		}
+		surface := authz.Surface{Action: verb, Type: "memory", Name: scope}
+		if !s.applyGate(r.Context(), w, p, surface, authz.Evaluate(r.Context(), p.Effective, verb, res, true)) {
+			return nil, false
+		}
+	}
+	return b.apply(r.Context()), true
 }
 
 // validAdminMemoryScope mirrors the closed scope set the runtime
@@ -424,6 +472,9 @@ func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	if (adminMemoryScopeIDRequired(scope) && strings.TrimSpace(scopeID) == "") || strings.TrimSpace(key) == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_path",
 			"scope_id and key are required")
+		return
+	}
+	if _, ok := s.memoryRouteCtx(w, r, scope, scopeID, "write"); !ok {
 		return
 	}
 	if refuseMemberCoreKey(w, r, key) {
@@ -550,6 +601,9 @@ func (s *Server) handleDeleteMemoryEntry(w http.ResponseWriter, r *http.Request)
 	if (adminMemoryScopeIDRequired(scope) && strings.TrimSpace(scopeID) == "") || strings.TrimSpace(key) == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_path",
 			"scope_id and key are required")
+		return
+	}
+	if _, ok := s.memoryRouteCtx(w, r, scope, scopeID, "write"); !ok {
 		return
 	}
 	if refuseMemberCoreKey(w, r, key) {
