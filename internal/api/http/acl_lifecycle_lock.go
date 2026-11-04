@@ -130,13 +130,48 @@ type aclLockedError struct {
 func (e *aclLockedError) Error() string { return aclReplyError(e.reply) }
 func (e *aclLockedError) Unwrap() error { return e.cause }
 
-// lifecycleLockSet is the set the removal policy's own steps are judged by
-// in tenant (lifecycleLockSubject), or nil when no resolver is wired.
-func (s *Server) lifecycleLockSet(ctx context.Context, tenant string) (*authz.Effective, error) {
+// unattendedLocks are the sets a step no operator stands behind (the
+// removal policy's sweeper, a SCIM re-enable) is judged by in a tenant, for
+// one subject: a list either set denies retiring is kept.
+//
+//   - lifecycleLockSubject's: a tenant operator of the tenant, so a list
+//     locked against the tenant's operators (a tenant-wide deny on retiring
+//     it) is locked against the step too — a tenant operator can set a
+//     removal going.
+//   - the removed subject's own: a list the subject is locked into (a deny
+//     bound to the user itself, or to a group it is in) survives its
+//     removal, or a user locked into a list could go dormant and have the
+//     sweeper unbind it. It is compiled as a tenant operator's: the class
+//     only picks the baseline, and that baseline is the one the first set
+//     already uses (a member's would deny retiring every list and lock
+//     everything); what is asked is what the subject's own bindings add.
+//
+// Empty when no resolver is wired.
+type unattendedLocks []*authz.Effective
+
+func (s *Server) unattendedLocks(ctx context.Context, tenant, subject string) (unattendedLocks, error) {
 	if s.aclResolver == nil {
 		return nil, nil
 	}
-	return s.aclResolver.ResolveSubject(ctx, authz.Subject{TenantID: tenant, ID: lifecycleLockSubject, Class: "tenant"})
+	var sets unattendedLocks
+	for _, id := range []string{lifecycleLockSubject, subject} {
+		eff, err := s.aclResolver.ResolveSubject(ctx, authz.Subject{TenantID: tenant, ID: id, Class: "tenant"})
+		if err != nil {
+			return nil, err
+		}
+		sets = append(sets, eff)
+	}
+	return sets, nil
+}
+
+// locked returns the first of names a set denies retiring.
+func (l unattendedLocks) locked(ctx context.Context, names []string) (string, bool) {
+	for _, eff := range l {
+		if surface, _, denied := aclRetireDenied(ctx, eff, names); denied {
+			return strings.TrimPrefix(surface.Name, "acl/"), true
+		}
+	}
+	return "", false
 }
 
 // lockedEraseRecheck is how long a removal's erase stage is deferred when
@@ -144,33 +179,29 @@ func (s *Server) lifecycleLockSet(ctx context.Context, tenant string) (*authz.Ef
 // sweeper, so the next sweep re-checks it.
 const lockedEraseRecheck = time.Hour
 
-// lifecycleEraseLock names a list locked against the tenant's operators
-// (lifecycleLockSet) that subject carries, or "" when none: the removal
-// policy's erase stage has no caller and a tenant operator can set a
-// removal going, so it is judged as unbindSubject's steps are. Erasure is
-// all or nothing, so such a subject is deferred (eraseRemoved) rather than
-// erased around the locked rows; the operator who imposed the lock lifts
-// it or erases the subject itself. A set or list that cannot be read is an
-// error, and the subject is not erased this pass (fail closed). It is asked
-// here, not in ErasureExecute, because open mode also erases with no
-// principal and is the operator.
+// lifecycleEraseLock names a list subject carries that its unattendedLocks
+// hold, or "" when none: the removal policy's erase stage has no caller, so
+// it is judged as unbindSubject's steps are. Erasure is all or nothing, so
+// such a subject is deferred (eraseRemoved) rather than erased around the
+// locked rows; the operator who imposed the lock lifts it or erases the
+// subject itself. A set or list that cannot be read is an error, and the
+// subject is not erased this pass (fail closed). It is asked here, not in
+// ErasureExecute, because open mode also erases with no principal and is
+// the operator.
 func (s *Server) lifecycleEraseLock(ctx context.Context, tenant, subject string) (string, error) {
-	lockSet, err := s.lifecycleLockSet(ctx, tenant)
+	locks, err := s.unattendedLocks(ctx, tenant, subject)
 	if err != nil {
 		return "", fmt.Errorf("access control for the erase stage: %w", err)
 	}
-	if lockSet == nil {
+	if len(locks) == 0 {
 		return "", nil
 	}
 	names, err := s.aclSubjectLists(ctx, tenant, subject)
 	if err != nil {
 		return "", fmt.Errorf("the lists the subject carries: %w", err)
 	}
-	surface, _, denied := aclRetireDenied(ctx, lockSet, names)
-	if !denied {
-		return "", nil
-	}
-	return strings.TrimPrefix(surface.Name, "acl/"), nil
+	list, _ := locks.locked(ctx, names)
+	return list, nil
 }
 
 // aclCallerMayReadLists reports whether the caller passes the list-read gate

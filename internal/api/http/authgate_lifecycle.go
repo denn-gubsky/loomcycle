@@ -27,7 +27,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -115,25 +114,18 @@ func (s *Server) startRemovalWith(ctx context.Context, policy lifecycle.Policy, 
 // operator put the user there, and the user is disabled anyway. It reports
 // whether anything changed.
 //
-// A binding or membership whose list is locked against the tenant's
-// operators (lifecycleLockSet denies retiring it) is kept and logged: the
-// sweeper and a SCIM re-enable act for no principal, and a tenant operator
-// can set them going, so what it may not retire itself they keep too. The
-// paths with a caller ask that caller's lock first
-// (aclSubjectLockForCaller).
+// A binding or membership whose list its unattendedLocks hold (locked
+// against the tenant's operators, or one the subject is locked into) is
+// kept and logged: the sweeper and a SCIM re-enable act for no operator,
+// and a tenant operator can set them going. The paths with a caller ask
+// that caller's lock first (aclSubjectLockForCaller).
 func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allGroups bool) (bool, error) {
 	changed := false
-	lockSet, err := s.lifecycleLockSet(ctx, tenant)
+	locks, err := s.unattendedLocks(ctx, tenant, subject)
 	if err != nil {
 		return false, fmt.Errorf("access control: %w", err)
 	}
-	locked := func(names []string) (string, bool) {
-		if lockSet == nil {
-			return "", false
-		}
-		surface, _, denied := aclRetireDenied(ctx, lockSet, names)
-		return strings.TrimPrefix(surface.Name, "acl/"), denied
-	}
+	locked := func(names []string) (string, bool) { return locks.locked(ctx, names) }
 	groups, err := s.store.GroupsOfSubject(ctx, tenant, subject)
 	if err != nil {
 		return false, err
@@ -156,7 +148,7 @@ func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allG
 			return changed, err
 		}
 		if list, ok := locked(lists); ok {
-			slog.WarnContext(ctx, "auth: kept a membership whose list is locked against the tenant's operators",
+			slog.WarnContext(ctx, "auth: kept a membership whose list is locked",
 				"tenant", tenant, "subject", subject, "group", name, "list", list)
 			continue
 		}
@@ -175,7 +167,7 @@ func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allG
 			continue
 		}
 		if list, ok := locked([]string{b.ACLName}); ok {
-			slog.WarnContext(ctx, "auth: kept a binding whose list is locked against the tenant's operators",
+			slog.WarnContext(ctx, "auth: kept a binding whose list is locked",
 				"tenant", tenant, "subject", subject, "list", list)
 			continue
 		}
@@ -318,7 +310,7 @@ func (s *Server) eraseRemoved(ctx context.Context, r store.AuthRemovalRow, now t
 		if err != nil {
 			return false, err
 		}
-		slog.WarnContext(ctx, "auth: erase stage deferred: the subject carries a list locked against the tenant's operators",
+		slog.WarnContext(ctx, "auth: erase stage deferred: the subject carries a locked list",
 			"tenant", r.TenantID, "subject", r.Subject, "list", list, "recheck_at", now.Add(lockedEraseRecheck))
 		return ok, nil
 	}

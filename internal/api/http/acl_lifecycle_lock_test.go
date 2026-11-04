@@ -371,3 +371,65 @@ func TestUserLifecycle_LockedSubjectsDoNotStarveTheRemovalQueue(t *testing.T) {
 		t.Errorf("a locked subject on a later sweep: %+v %v, want re-checked and deferred again", again, err)
 	}
 }
+
+// A lock bound to the user itself (not tenant-wide) is invisible to the
+// tenant-operator set the removal policy is judged by, so a delegate locked
+// into a list could go dormant and have the sweeper unbind it. The unbind
+// also asks the removed subject's own set: what it may not retire itself
+// survives its removal.
+func TestUserLifecycle_TheUnbindKeepsWhatTheSubjectIsLockedInto(t *testing.T) {
+	srv, call, st := lockedFixture(t)
+	ctx := context.Background()
+	// An identity provider's group, so the unbind would drop the membership.
+	if _, err := st.GroupPut(ctx, store.GroupRow{TenantID: "acme", Name: "bound", ExternalID: "okta:bound"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.startRemovalWith(ctx, lifecycle.Policy{UnbindAfter: time.Millisecond},
+		"acme", "delegate", "", store.RemovalReasonDormant, lifecycleActor); err != nil {
+		t.Fatal(err)
+	}
+	row, err := st.AuthRemovalGet(ctx, "acme", "delegate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.advanceRemoval(ctx, row, time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if row, err := st.AuthRemovalGet(ctx, "acme", "delegate"); err != nil || row.UnboundAt.IsZero() {
+		t.Fatalf("delegate's removal after the unbind stage: %+v %v, want unbound", row, err)
+	}
+	if b, m := liveLocks(t, st, "delegate"); b != 1 || !m {
+		t.Errorf("delegate after the unbind: %d live admin-deny bindings, member of bound %v; want 1 and true", b, m)
+	}
+	if got := aclEvalBash(t, call, delegateBearer); got != "deny" {
+		t.Errorf("after the unbind: delegate's Bash = %q, want deny", got)
+	}
+}
+
+// The erase stage asks the same two sets: a subject locked into a list of
+// its own is deferred, not erased out of it.
+func TestUserLifecycle_TheEraseStageDefersASubjectLockedIntoItsOwnList(t *testing.T) {
+	srv, _, st := lockedFixture(t)
+	srv.SetEraseAudit(&recordingSink{})
+	ctx := context.Background()
+	if err := srv.startRemovalWith(ctx, lifecycle.Policy{UnbindAfter: time.Millisecond, EraseAfter: time.Millisecond},
+		"acme", "delegate", "", store.RemovalReasonDormant, lifecycleActor); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.AuthRemovalMarkUnbound(ctx, "acme", "delegate", time.Now()); err != nil || !ok {
+		t.Fatalf("unbind: %v %v", ok, err)
+	}
+	row, err := st.AuthRemovalGet(ctx, "acme", "delegate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.eraseRemoved(ctx, row, time.Now()); err != nil {
+		t.Fatalf("the erase stage: %v, want it deferred without an error", err)
+	}
+	if row, err := st.AuthRemovalGet(ctx, "acme", "delegate"); err != nil || !row.ErasedAt.IsZero() || !row.EraseDueAt.After(time.Now()) {
+		t.Errorf("delegate's removal after the erase stage: %+v %v, want deferred", row, err)
+	}
+	if b, m := liveLocks(t, st, "delegate"); b != 1 || !m {
+		t.Errorf("delegate after the erase stage: %d live admin-deny bindings, member of bound %v; want 1 and true", b, m)
+	}
+}
