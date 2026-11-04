@@ -229,7 +229,7 @@ func ontologyRetrievalFixture(t *testing.T, confirm bool) (*Document, context.Co
 	// document and flipping its confirm status, which RFC CA's guard reserves for the
 	// operator surfaces — an agent context is refused, correctly. That refusal is what
 	// TestOntologyGuard_* asserts; here it would only be testing the fixture.
-	ctx = tools.WithSubstrateOperator(ctx)
+	ctx = tools.WithCallerTier(ctx, tools.TierOperatorPlane)
 
 	md := "# Tenant Ontology\n\n## event\n- `occurred_at`\n\n### incident\n- `severity`\n\n#### outage\n- `minutes_down`\n\n## person\n- `name`\n"
 	mj, _ := json.Marshal(md)
@@ -674,7 +674,7 @@ func ontologyAgentFixture(t *testing.T) (*Document, context.Context, context.Con
 	d, base, _ := documentFixture(t)
 	base = tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}} })
 	base = tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}} })
-	opCtx := tools.WithSubstrateOperator(base)
+	opCtx := tools.WithCallerTier(base, tools.TierOperatorPlane)
 
 	md := "# Tenant Ontology\n\n## event\n- `occurred_at`\n"
 	mj, _ := json.Marshal(md)

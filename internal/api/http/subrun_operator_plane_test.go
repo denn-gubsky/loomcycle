@@ -32,7 +32,7 @@ import (
 func TestPrepareSubRun_ChildCarriesNoOperatorPlaneAuthority(t *testing.T) {
 	h := newReviewHarness(t)
 	parent := tools.WithRunID(substrateAdminCtx(context.Background()), "r_walk")
-	if !tools.IsSubstrateOperator(parent) || !tools.IsUnauthenticatedOperator(parent) ||
+	if tools.CallerTier(parent) != tools.TierOperatorPlane || !tools.IsUnauthenticatedOperator(parent) ||
 		!tools.OperatorTokenDefPolicy(parent).Admin || len(tools.ScheduleDefPolicy(parent).Scopes) == 0 {
 		t.Fatal("fixture: the operator plane no longer stamps what this test strips; re-derive the fixture")
 	}
@@ -43,8 +43,8 @@ func TestPrepareSubRun_ChildCarriesNoOperatorPlaneAuthority(t *testing.T) {
 	defer prep.cleanup()
 	child := prep.LoopCtx
 
-	if tools.IsSubstrateOperator(child) {
-		t.Error("child is marked as the operator's own substrate call")
+	if tier := tools.CallerTier(child); tier != tools.TierRun {
+		t.Errorf("child's caller tier = %s, want run", tier)
 	}
 	if tools.IsUnauthenticatedOperator(child) {
 		t.Error("child is marked as the unauthenticated operator")

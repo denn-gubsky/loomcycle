@@ -633,7 +633,7 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 		// caller supplied. CreatedByAgentID above is a run's own claim about
 		// itself; this is the runtime's. A team's node prompts are expanded
 		// under this flag, so it must not be assertable by the body it gates.
-		OperatorAuthored: tools.IsSubstrateOperator(ctx),
+		OperatorAuthored: tools.IsOperatorPlane(ctx),
 	}
 	created, err := t.Store.TeamDefCreate(ctx, row)
 	if err != nil {
@@ -724,7 +724,7 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 		// The FORKER's ctx, never the parent row's flag. A fork may rewrite
 		// every node prompt, so inheriting would launder an operator-authored
 		// team into an agent-authored one that kept the authority.
-		OperatorAuthored: tools.IsSubstrateOperator(ctx),
+		OperatorAuthored: tools.IsOperatorPlane(ctx),
 	}
 	created, err := t.Store.TeamDefCreate(ctx, row)
 	if err != nil {

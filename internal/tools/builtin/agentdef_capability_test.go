@@ -27,7 +27,7 @@ import (
 func TestAgentDefTool_ForkInheritsScopeGates(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
-	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
+	ctx = tools.WithCallerTier(tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} }), tools.TierOperatorPlane)
 
 	create := `{"op":"create","name":"gated-agent","promote":true,"overlay":{
 		"system_prompt":"read the chats",
@@ -86,7 +86,7 @@ func TestAgentDefTool_ForkInheritsScopeGates(t *testing.T) {
 func TestAgentDefTool_CreateDoesNotDedupAcrossChangedVolumes(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
-	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
+	ctx = tools.WithCallerTier(tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} }), tools.TierOperatorPlane)
 
 	first := `{"op":"create","name":"vol-agent","promote":true,"overlay":{
 		"system_prompt":"work","tools":["Read"],"volumes":["a"]}}`
@@ -136,7 +136,7 @@ func TestAgentDefTool_CreateDoesNotDedupAcrossChangedVolumes(t *testing.T) {
 func TestAgentDefTool_CreateDoesNotDedupAcrossChangedDefScopes(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
-	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
+	ctx = tools.WithCallerTier(tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} }), tools.TierOperatorPlane)
 
 	base := `{"op":"create","name":"meta","promote":true,"overlay":{
 		"system_prompt":"author","tools":["Read"]%s}}`
@@ -285,7 +285,7 @@ func TestAgentDefTool_CreateWithCapabilityFields_RoundTrips(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
 	// Operator ceiling (the F11 fix provides this on the MCP/HTTP/gRPC paths).
-	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
+	ctx = tools.WithCallerTier(tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} }), tools.TierOperatorPlane)
 
 	overlay := `{"op":"create","name":"complete-agent","promote":true,"overlay":{
 		"system_prompt":"coordinate the loop",

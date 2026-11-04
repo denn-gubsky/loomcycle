@@ -215,8 +215,8 @@ func defCallerIsAdmin(ctx context.Context) bool {
 // the operator, and a prompt-injected one would otherwise free a def's
 // credentials, point a trigger at another tenant or sweep every tenant. The
 // gate is here rather than at each caller so a new caller cannot forget it.
-// It is not tools.IsSubstrateOperator: that marker is on every off-run HTTP
-// call, a tenant operator's included, and absent on the gRPC and MCP planes.
+// It is not tools.IsOperatorPlane: that tier is on a tenant operator's
+// off-run call too, which is not the deployment's operator.
 //
 // It is narrower than "no principal": a run, a sub-agent and a trigger-fired
 // context carry no principal either — in open mode, or for a yaml schedule or
@@ -531,7 +531,7 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 		// run supplies: CreatedByAgentID is whatever the caller says it is, so
 		// deriving authorship from it would let a def grant itself the
 		// authority this gates by naming an operator-looking agent.
-		OperatorAuthored: tools.IsSubstrateOperator(ctx),
+		OperatorAuthored: tools.IsOperatorPlane(ctx),
 		// CreatedByRunID stays empty here — there's no run_id on
 		// RunIdentityValue today; carried via the run ctx separately.
 	}
@@ -735,7 +735,7 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		// body, so inheriting the parent's flag would let an agent launder an
 		// operator-authored def into an agent-authored one that still carries
 		// operator authority.
-		OperatorAuthored: tools.IsSubstrateOperator(ctx),
+		OperatorAuthored: tools.IsOperatorPlane(ctx),
 	}
 	created, err := a.Store.AgentDefCreate(ctx, row)
 	if err != nil {

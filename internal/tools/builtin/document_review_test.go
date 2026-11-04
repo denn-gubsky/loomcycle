@@ -30,12 +30,12 @@ func reviewWriterCtx(base context.Context) context.Context {
 // reviewOperatorCtx is the off-run operator plane on the tenant scope, bound to
 // eff (nil: no set, as open mode has).
 func reviewOperatorCtx(base context.Context, eff *authz.Effective) context.Context {
-	return tools.WithRunPolicy(base, tools.RunPolicy{
+	return tools.WithCallerTier(tools.WithRunPolicy(base, tools.RunPolicy{
 		Tools:  []string{"*"},
 		Memory: tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}},
 		SqlMem: tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}},
 		ACL:    eff,
-	})
+	}), tools.TierOperatorPlane)
 }
 
 // reviewCorpus is a tenant with three documents and the proposals between them.

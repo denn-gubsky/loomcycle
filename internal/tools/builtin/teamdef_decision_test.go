@@ -105,7 +105,7 @@ func TestTeamDefCreate_ADecisionStateMayAskOnlyWhatItsAuthorMay(t *testing.T) {
 // authority: it holds no tool list to be narrowed by.
 func TestTeamDefCreate_TheOperatorMayWriteADecisionState(t *testing.T) {
 	tool := decisionTeamFixture(t)
-	operator := localAuthorCtx("", []string{"any"}, []string{"*"})
+	operator := tools.WithCallerTier(localAuthorCtx("", []string{"any"}, []string{"*"}), tools.TierOperatorPlane)
 	if res := teamOp(t, tool, operator, "create", "gated", gateTeam("deep")); res.IsError {
 		t.Errorf("the operator was refused: %s", res.Text)
 	}
