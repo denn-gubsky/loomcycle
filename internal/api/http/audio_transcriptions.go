@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"mime"
 	"mime/multipart"
@@ -118,7 +119,7 @@ func (s *Server) handleAudioTranscriptions(w http.ResponseWriter, r *http.Reques
 	}
 	plan, err := sttpass.Prepare(ctx, deps, caps, src, form.size, sniffed)
 	if err != nil {
-		writeTranscriptionPrepareError(w, stt.Engine, err)
+		writeTranscriptionPrepareError(ctx, w, stt.Engine, err)
 		return
 	}
 	p := sttpass.Run(ctx, deps, plan, src, opts, caps, []*transcribe.Budget{transcribe.NewBudget(caps)})
@@ -137,7 +138,9 @@ func (s *Server) handleAudioTranscriptions(w http.ResponseWriter, r *http.Reques
 		case errors.Is(fail, providers.ErrOperatorKeyForbidden):
 			writeJSONError(w, http.StatusForbidden, "operator_key_restricted", operatorKeyRestrictedMsg)
 		default:
-			writeJSONError(w, http.StatusBadGateway, transcriptionCodeFailed, "speech-to-text failed: "+fail.Error())
+			// As for read-aloud: the engine's error stays in the log.
+			slog.WarnContext(ctx, "audio: speech-to-text failed", "err", fail, "status", p.Status(), "pieces", len(p.Pieces), "done", p.Done)
+			writeJSONError(w, http.StatusBadGateway, transcriptionCodeFailed, "the speech engine failed; try again later")
 		}
 		return
 	}
@@ -231,7 +234,7 @@ func (s *Server) transcriptionOptions(w http.ResponseWriter, op *config.STTConfi
 	}
 	if f.model != "" && f.model != op.Model {
 		writeJSONError(w, http.StatusBadRequest, audioCodeModelNotAllowed,
-			fmt.Sprintf("model %q is not this deployment's speech-to-text model (%s); omit model", f.model, op.Model))
+			fmt.Sprintf("model %q is not this deployment's speech-to-text model; omit model", f.model))
 		return opts, "", false
 	}
 	if f.language != "" {
@@ -253,10 +256,15 @@ func (s *Server) transcriptionOptions(w http.ResponseWriter, op *config.STTConfi
 	return opts, format, true
 }
 
-func writeTranscriptionPrepareError(w http.ResponseWriter, engine transcribe.STTEngine, err error) {
+// writeTranscriptionPrepareError answers a recording the pass will not take.
+// What the caller can fix is spelled out; what only the operator can (the
+// engine could not be resolved) is logged, since its detail names the
+// provider and model.
+func writeTranscriptionPrepareError(ctx context.Context, w http.ResponseWriter, engine transcribe.STTEngine, err error) {
 	var pe *sttpass.PrepareError
 	if !errors.As(err, &pe) {
-		writeJSONError(w, http.StatusBadGateway, transcriptionCodeFailed, "speech-to-text cannot run: "+err.Error())
+		slog.WarnContext(ctx, "audio: speech-to-text cannot run", "err", err)
+		writeJSONError(w, http.StatusBadGateway, transcriptionCodeFailed, "the speech engine failed; try again later")
 		return
 	}
 	switch pe.Kind {
@@ -266,7 +274,8 @@ func writeTranscriptionPrepareError(w http.ResponseWriter, engine transcribe.STT
 		writeJSONError(w, http.StatusUnsupportedMediaType, transcriptionCodeUnsupported,
 			"the file is not an audio or video recording ("+pe.MediaType+")")
 	case sttpass.EngineUnavailable:
-		writeJSONError(w, http.StatusServiceUnavailable, transcriptionCodeUnavailable, "speech-to-text cannot run: "+pe.Detail)
+		slog.WarnContext(ctx, "audio: speech-to-text engine unavailable", "err", err)
+		writeJSONError(w, http.StatusServiceUnavailable, transcriptionCodeUnavailable, "the speech engine is not available; try again later")
 	default: // NotWhole: no converter, and the engine cannot take it whole.
 		if !engine.Accepts(pe.MediaType) {
 			writeJSONError(w, http.StatusUnsupportedMediaType, transcriptionCodeUnsupported,

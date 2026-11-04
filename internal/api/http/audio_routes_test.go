@@ -54,6 +54,7 @@ type speakingProvider struct {
 	mu    sync.Mutex
 	sent  []providers.SpeechRequest
 	hold  chan struct{}
+	fail  error
 	inEng atomic.Int32
 }
 
@@ -63,6 +64,9 @@ func (p *speakingProvider) SynthesizeSpeech(ctx context.Context, req providers.S
 	p.mu.Unlock()
 	p.inEng.Add(1)
 	defer p.inEng.Add(-1)
+	if p.fail != nil {
+		return providers.SpeechResponse{}, p.fail
+	}
 	if p.hold != nil {
 		select {
 		case <-p.hold:
@@ -238,6 +242,22 @@ func TestAudioSpeech_RefusesBeforeTheEngine(t *testing.T) {
 				t.Errorf("the engine was asked %d times", prov.requests())
 			}
 		})
+	}
+}
+
+// An engine failure is a 502 the caller can retry on; what the engine said
+// (which names its host and model) goes to the log, never to the caller.
+func TestAudioSpeech_EngineFailureNamesNoEngine(t *testing.T) {
+	prov := &speakingProvider{fail: errors.New("openai-speech: POST http://speaches.internal:8000/v1/audio/speech kokoro: 503 busy")}
+	srv, _ := audioServer(t, prov, &hearingEngine{})
+	rec := postAudioJSON(srv, "/v1/audio/speech", `{"input":"Hello."}`)
+	if rec.Code != 502 || errorCode(t, rec.Body.Bytes()) != "speech_failed" {
+		t.Fatalf("got %d %s", rec.Code, rec.Body.String())
+	}
+	for _, leak := range []string{"speaches", "8000", "kokoro", "503"} {
+		if strings.Contains(rec.Body.String(), leak) {
+			t.Errorf("the 502 body names %q: %s", leak, rec.Body.String())
+		}
 	}
 }
 

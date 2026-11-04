@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -135,7 +136,11 @@ func (s *Server) handleAudioSpeech(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, providers.ErrOperatorKeyForbidden):
 			writeJSONError(w, http.StatusForbidden, "operator_key_restricted", operatorKeyRestrictedMsg)
 		default:
-			writeJSONError(w, http.StatusBadGateway, speechCodeFailed, "text-to-speech failed: "+err.Error())
+			// The engine's error can name its provider, model or URL, which a
+			// caller is never shown (GET /v1/_speech names none either). The
+			// operator finds it in the log.
+			slog.WarnContext(ctx, "audio: text-to-speech failed", "err", err, "language", job.Language, "pieces", len(job.Pieces))
+			writeJSONError(w, http.StatusBadGateway, speechCodeFailed, "the speech engine failed; try again later")
 		}
 		return
 	}
