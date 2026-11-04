@@ -10,11 +10,14 @@ import type { CSSProperties } from "react";
 // ColorScheme maps a semantic key to a CSS hex color. Keys:
 //   doc.<type>.<status>  — a document tile/row by its ROOT chunk's type + status
 //   doc.<type>           — fallback for any status of that document type
+//   doc.*.<status>       — fallback for a type the scheme does not name, by status
+//   doc.*                — fallback for a type the scheme does not name, any status
 //   chunk.<status>       — a chunk tile by its own status
 //   chunk.inherit        — "false" (or "none" / "off") keeps a chunk without a
 //                          status colour neutral; by default it takes a lighter
 //                          wash of its document's colour
-// Unknown keys are ignored; a missing key → no tint (neutral).
+// Unknown keys are ignored; a missing key → no tint (neutral). Keys match a type
+// or status ignoring case, so an ontology class type (`Rfc`) finds `doc.rfc.*`.
 export type ColorScheme = Record<string, string>;
 
 // DocSummary is one row of the document `documents_summary` op (Path-tree color).
@@ -56,6 +59,12 @@ export const DEFAULT_SCHEME: ColorScheme = {
   "doc.document.done": "#3aa06a",
   "doc.research.done": "#8a6ad6",
   "doc.publication.draft": "#c99a3a",
+  // Any other type — an ontology class (Guide, Benchmark, …) or one added later —
+  // is coloured by its status alone, so retyping a document never blanks it.
+  "doc.*.draft": "#c99a3a",
+  "doc.*.review": "#6a7bd6",
+  "doc.*.confirmed": "#3a9ad6",
+  "doc.*.done": "#3aa06a",
   "chunk.draft": "#c99a3a",
   "chunk.review": "#6a7bd6",
   "chunk.confirmed": "#3a9ad6",
@@ -76,8 +85,21 @@ export function effectiveScheme(scheme: ColorScheme | undefined): ColorScheme {
   return scheme && Object.keys(scheme).length > 0 ? scheme : DEFAULT_SCHEME;
 }
 
+// lookup reads one scheme key: exactly, else ignoring case. Types are written
+// both ways — the built-in lowercase `rfc` and an ontology's class name `Rfc` —
+// and a document retyped from one to the other must keep its colour.
+function lookup(scheme: ColorScheme, key: string): string | undefined {
+  if (Object.prototype.hasOwnProperty.call(scheme, key) && scheme[key]) return scheme[key];
+  const want = key.toLowerCase();
+  for (const k of Object.keys(scheme)) {
+    if (k.toLowerCase() === want && scheme[k]) return scheme[k];
+  }
+  return undefined;
+}
+
 // docColor resolves a document's raw tile color from its (type,status): tries
-// doc.<type>.<status>, then doc.<type>. Returns undefined for no match.
+// doc.<type>.<status>, then doc.<type>, then the any-type keys doc.*.<status> and
+// doc.*. Returns undefined for no match.
 export function docColor(
   type: string | undefined,
   status: string | undefined,
@@ -85,15 +107,18 @@ export function docColor(
 ): string | undefined {
   const t = type ?? "";
   const s = status ?? "";
-  if (t && s && scheme[`doc.${t}.${s}`]) return scheme[`doc.${t}.${s}`];
-  if (t && scheme[`doc.${t}`]) return scheme[`doc.${t}`];
-  return undefined;
+  return (
+    (t && s ? lookup(scheme, `doc.${t}.${s}`) : undefined) ??
+    (t ? lookup(scheme, `doc.${t}`) : undefined) ??
+    (s ? lookup(scheme, `doc.*.${s}`) : undefined) ??
+    lookup(scheme, "doc.*")
+  );
 }
 
 // chunkColor resolves a chunk tile's raw color from its status (chunk.<status>).
 export function chunkColor(status: string | undefined, scheme: ColorScheme): string | undefined {
   const s = status ?? "";
-  return s ? scheme[`chunk.${s}`] : undefined;
+  return s ? lookup(scheme, `chunk.${s}`) : undefined;
 }
 
 // chunkInheritsDocColor reports whether a chunk with no colour of its own takes
