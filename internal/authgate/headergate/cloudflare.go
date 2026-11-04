@@ -97,7 +97,13 @@ func (c *CloudflareAccess) Verify(ctx context.Context, assertion string) (Identi
 		Subject: strings.TrimSpace(sub),
 		Email:   strings.TrimSpace(email),
 		// Access issues a token only after its identity provider (or its
-		// one-time PIN to that address) authenticated the person.
+		// one-time PIN to that address) authenticated the person. The
+		// address is taken as verified on Access's word alone, so an
+		// identity map keyed on email (subject_claim_immutable) is only as
+		// safe as the least careful identity provider configured in Access:
+		// one that lets a person claim an address they do not hold signs
+		// them in as its owner. Key on sub unless every Access provider
+		// verifies addresses.
 		EmailVerified: strings.TrimSpace(email) != "",
 		Name:          strings.TrimSpace(name),
 		Groups:        claims.Strings("groups"),
