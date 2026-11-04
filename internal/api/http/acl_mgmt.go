@@ -719,6 +719,9 @@ func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) 
 		if len(req.Rules) == 0 {
 			return aclFail(http.StatusBadRequest, "missing_rules", "rules are required")
 		}
+		if r := s.aclNameReserved(ctx, tenant, strings.TrimSpace(req.Name)); r != nil {
+			return *r
+		}
 		row, err := s.store.AclDefPut(ctx, store.AclDefRow{TenantID: tenant, Name: strings.TrimSpace(req.Name), Rules: req.Rules, Description: req.Description, CreatedBy: principalSubject(ctx)})
 		if err != nil {
 			return aclStoreError(err, "acl")
@@ -778,6 +781,65 @@ func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) 
 		// the cases above to it).
 		return aclFail(http.StatusBadRequest, "unknown_op", "op must be one of "+strings.Join(connector.ACLManagementOps(connector.ACLFamilyAclDef), ", "))
 	}
+}
+
+// aclNameReserved refuses a write that would put a list of tenant in force
+// under a name a config-declared list holds, or (for a tenant other than
+// the shared one) a live shared-tenant list holds. The resolver reads the
+// tenant's row first (aclres lookupACL), so such a row would silently
+// replace the operator's list for every binding in the tenant: a tenant
+// operator could lift a deny the deployment declared (re-audit B3). The
+// three write ops share the check because each is an upsert. A live row the
+// tenant already holds stays writable: it is a shadow written before this
+// check, which ReportACLShadows names at boot and resolution keeps until
+// the operator renames it (RFC FY D4). The check and the write are not one
+// transaction; a shared list created between them is the boot report's.
+func (s *Server) aclNameReserved(ctx context.Context, tenant, name string) *aclReply {
+	held, err := s.aclLiveList(ctx, tenant, name)
+	if err != nil {
+		return aclListLookupFault(ctx, tenant, name, err)
+	}
+	if held {
+		return nil
+	}
+	if static := s.aclStatic(); static != nil {
+		if _, declared := static.ACLs[name]; declared {
+			r := aclFail(http.StatusConflict, "acl_name_reserved", fmt.Sprintf("list %q is declared in the server configuration; a stored list of that name would replace it, so choose another name", name))
+			return &r
+		}
+	}
+	if tenant == "" {
+		return nil
+	}
+	shared, err := s.aclLiveList(ctx, "", name)
+	if err != nil {
+		return aclListLookupFault(ctx, "", name, err)
+	}
+	if shared {
+		r := aclFail(http.StatusConflict, "acl_name_reserved", fmt.Sprintf("list %q is a shared list every tenant reads; a list of that name here would replace it, so choose another name", name))
+		return &r
+	}
+	return nil
+}
+
+// aclLiveList reports whether tenant holds a live stored list of name.
+func (s *Server) aclLiveList(ctx context.Context, tenant, name string) (bool, error) {
+	row, err := s.store.AclDefGet(ctx, tenant, name)
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return !row.Retired(), nil
+}
+
+// aclListLookupFault is the refusal for a store fault while checking a
+// name: fail closed, and retryable.
+func aclListLookupFault(ctx context.Context, tenant, name string, err error) *aclReply {
+	slog.ErrorContext(ctx, "authz: list name check failed", "tenant", tenant, "name", name, "err", err)
+	r := aclFail(http.StatusServiceUnavailable, "acl_unavailable", "the list name could not be checked; retry")
+	return &r
 }
 
 // aclListOpSurface is the question an op of POST /v1/_acldef asks of the list

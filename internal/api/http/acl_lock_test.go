@@ -6,6 +6,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -141,5 +142,74 @@ func TestACLGroup_ADelegateCannotLeaveOrDeleteABoundGroup(t *testing.T) {
 				t.Errorf("delegate deletes an unbound group: %d %s, want 200", code, body)
 			}
 		})
+	}
+}
+
+// A tenant-wide config list, for the shadowing tests.
+func withConfigDenyList(name string) func(*config.Config) {
+	return func(c *config.Config) {
+		c.ResolvedACL = &authz.Static{
+			ACLs:     map[string]authz.ACL{name: {Name: name, Rules: []authz.Rule{{Effect: authz.Deny, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}}}}},
+			Bindings: []authz.StaticBinding{{Tenant: "acme", Binding: authz.Binding{ACL: name, SubjectKind: authz.SubjectTenant}}},
+		}
+	}
+}
+
+const harmlessRules = `[{"effect":"allow","actions":["invoke"],"resources":["tool:Read"]}]`
+
+func TestACLDef_ATenantListCannotShadowAConfigList(t *testing.T) {
+	srv, ts, _ := aclMgmtServerWith(t, authz.ModeCompat, withConfigDenyList("corp-yaml"))
+	call := func(bearer, method, path, body string) (int, string) {
+		return bearerCall(t, ts, bearer, method, path, body)
+	}
+	if got := aclEvalBash(t, call, aliceBearer); got != "deny" {
+		t.Fatalf("before: alice's Bash = %q, want deny", got)
+	}
+	for _, op := range []string{"create", "put", "update"} {
+		code, body := call(operatorBearer, "POST", "/v1/_acldef", `{"op":"`+op+`","name":"corp-yaml","rules":`+harmlessRules+`}`)
+		if code != 409 || !strings.Contains(body, `"acl_name_reserved"`) {
+			t.Errorf("operator %s corp-yaml: %d %s, want 409 acl_name_reserved", op, code, body)
+		}
+	}
+	op := aclCaller(t, srv, "acme", "ops", auth.ScopeTenant)
+	res := twinCall(t, srv, op, "acldef", `{"op":"create","name":"corp-yaml","rules":`+harmlessRules+`}`)
+	if !res.IsError || !strings.Contains(res.Text, `"acl_name_reserved"`) || res.ErrorInfo == nil || res.ErrorInfo.Category != tools.CategoryBusiness {
+		t.Errorf("operator creates corp-yaml over the twin: %+v, want a business refusal acl_name_reserved", res)
+	}
+	if got := aclEvalBash(t, call, aliceBearer); got != "deny" {
+		t.Errorf("after: alice's Bash = %q, want deny", got)
+	}
+	if code, body := call(operatorBearer, "POST", "/v1/_acldef", `{"op":"create","name":"corp-local","rules":`+harmlessRules+`}`); code != 201 {
+		t.Errorf("a name nobody holds: %d %s, want 201", code, body)
+	}
+}
+
+// The shared tenant ("") is the one an admin declared in config with no
+// tenant acts in: the legacy admin's unfocused tenant is "default", an empty
+// ?tenant= is no focus, and a minted token always names a tenant.
+func TestACLDef_ATenantListCannotShadowASharedList(t *testing.T) {
+	const rootBearer = "lct_root"
+	_, ts, _ := aclMgmtServerWith(t, authz.ModeCompat, func(c *config.Config) {
+		c.ResolvedPrincipals = []auth.DeclaredPrincipal{{Secret: rootBearer, Principal: auth.Principal{Subject: "root", Scopes: []string{auth.ScopeAdmin}}}}
+	})
+	call := func(bearer, method, path, body string) (int, string) {
+		return bearerCall(t, ts, bearer, method, path, body)
+	}
+	deny := `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]}]`
+	if code, body := call(rootBearer, "POST", "/v1/_acldef", `{"op":"create","name":"shared-deny","rules":`+deny+`}`); code != 201 || !strings.Contains(body, `"name":"shared-deny"`) || strings.Contains(body, `"tenant_id"`) {
+		t.Fatalf("admin creates the shared list: %d %s", code, body)
+	}
+	if code, body := call(rootBearer, "POST", "/v1/_aclbinding?tenant=acme", `{"acl":"shared-deny","subject_kind":"tenant"}`); code != 201 {
+		t.Fatalf("admin binds the shared list tenant-wide in acme: %d %s", code, body)
+	}
+	if got := aclEvalBash(t, call, aliceBearer); got != "deny" {
+		t.Fatalf("before: alice's Bash = %q, want deny", got)
+	}
+	code, body := call(operatorBearer, "POST", "/v1/_acldef", `{"op":"create","name":"shared-deny","rules":`+harmlessRules+`}`)
+	if code != 409 || !strings.Contains(body, `"acl_name_reserved"`) {
+		t.Errorf("operator shadows the shared list: %d %s, want 409 acl_name_reserved", code, body)
+	}
+	if got := aclEvalBash(t, call, aliceBearer); got != "deny" {
+		t.Errorf("after: alice's Bash = %q, want deny", got)
 	}
 }
