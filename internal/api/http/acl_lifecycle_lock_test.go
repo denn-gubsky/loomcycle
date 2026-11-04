@@ -5,7 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -193,5 +195,48 @@ func TestACLGroup_ADelegateCannotHandALockedGroupToAnIdentityProvider(t *testing
 	}
 	if code, body := call(delegateBearer, "POST", "/v1/_groups", `{"name":"free","external_id":"okta:y"}`); code != 201 {
 		t.Errorf("delegate creates an IdP group no list is bound to: %d %s, want 201", code, body)
+	}
+}
+
+// Whether explain adds its list notes is asked without recording: an
+// operator denied reading lists gets no acl_denied audit row per explain.
+func TestAuthzExplain_TheNotesGateRecordsNothing(t *testing.T) {
+	srv, ts, st := aclMgmtServerWith(t, authz.ModeCompat, withConfigDenyList("corp-yaml"))
+	addDelegateOperator(t, st)
+	sink := &lockedSink{}
+	srv.SetTokenAudit(sink)
+	for _, req := range []struct{ path, body string }{
+		{"/v1/_acldef", `{"op":"create","name":"no-list-reads","rules":[{"effect":"deny","actions":["read"],"resources":["def:acl/*"]}]}`},
+		{"/v1/_aclbinding", `{"acl":"no-list-reads","subject_kind":"user","subject_id":"delegate"}`},
+	} {
+		if code, out := bearerCall(t, ts, operatorBearer, "POST", req.path, req.body); code >= 300 {
+			t.Fatalf("%s: %d %s", req.path, code, out)
+		}
+	}
+	before := len(sink.events)
+	code, body := bearerCall(t, ts, delegateBearer, "POST", "/v1/_authz/explain", `{"action":{"name":"invoke"},"resource":{"type":"tool","id":"Bash"}}`)
+	if code != 200 || strings.Contains(body, "shadowed_lists") {
+		t.Fatalf("explain as a delegate denied list reads: %d %s", code, body)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	for _, ev := range sink.events[before:] {
+		if strings.HasPrefix(ev.Action, "acl_") {
+			t.Errorf("explain recorded %s on %s %s; the notes gate must record nothing", ev.Action, ev.AclAction, ev.TargetName)
+		}
+	}
+}
+
+// The shared-tenant branch of the reserved-name check: an admin acting in
+// the shared tenant may not store a list a config list's name either.
+func TestACLDef_ASharedListCannotShadowAConfigList(t *testing.T) {
+	const rootBearer = "lct_root"
+	_, ts, _ := aclMgmtServerWith(t, authz.ModeCompat, func(c *config.Config) {
+		withConfigDenyList("corp-yaml")(c)
+		c.ResolvedPrincipals = []auth.DeclaredPrincipal{{Secret: rootBearer, Principal: auth.Principal{Subject: "root", Scopes: []string{auth.ScopeAdmin}}}}
+	})
+	code, body := bearerCall(t, ts, rootBearer, "POST", "/v1/_acldef", `{"op":"create","name":"corp-yaml","rules":`+harmlessRules+`}`)
+	if code != 409 || !strings.Contains(body, `"acl_name_reserved"`) {
+		t.Errorf("an admin in the shared tenant creates corp-yaml: %d %s, want 409 acl_name_reserved", code, body)
 	}
 }

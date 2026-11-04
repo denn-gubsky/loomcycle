@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // The list lock outside the ACL management routes. Deleting, re-enabling or
@@ -135,4 +136,23 @@ func (s *Server) lifecycleLockSet(ctx context.Context, tenant string) (*authz.Ef
 		return nil, nil
 	}
 	return s.aclResolver.ResolveSubject(ctx, authz.Subject{TenantID: tenant, ID: lifecycleLockSubject, Class: "tenant"})
+}
+
+// aclCallerMayReadLists reports whether the caller passes the list-read gate
+// (the management floor and read def:acl/*) without recording anything: a
+// question asked only to decide what an answer includes is not a request
+// that was refused.
+func (s *Server) aclCallerMayReadLists(ctx context.Context) bool {
+	if tools.RunID(ctx) != "" {
+		return false
+	}
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		return true
+	}
+	if p.Restrictions.RunPlaneOnly() || (!p.Legacy && !auth.HasScope(p.Scopes, auth.ScopeTenant)) {
+		return false
+	}
+	res := authz.EvaluateSurface(ctx, p.Effective, *aclReadLists(), true)
+	return res.Allowed && !res.Unavailable
 }

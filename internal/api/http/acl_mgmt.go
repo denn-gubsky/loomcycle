@@ -1576,7 +1576,7 @@ func (s *Server) authzExplain(ctx context.Context, focus string, req authzEvalua
 	out := map[string]any{"decision": decisionWire(ctx, ex.Decision), "traces": ex.Traces, "missing_acls": ex.Missing, "applied_bindings": ex.Applied, "groups": eff.Subject.Groups}
 	// The notes name lists and where they are stored, which a member could
 	// not otherwise learn: only a caller the list-read gate admits gets them.
-	if s.store != nil && s.aclEnter(ctx, true, aclReadLists()) == nil {
+	if s.store != nil && s.aclCallerMayReadLists(ctx) {
 		s.explainLocks(ctx, eff.Subject.TenantID, tenant, ex.Applied, areq.Resource, out)
 	}
 	return aclOK(out)
