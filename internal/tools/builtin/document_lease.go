@@ -42,8 +42,7 @@ var documentLeaseNameRE = regexp.MustCompile(`^[a-z0-9_.:/-]{1,64}$`)
 // A member, off-run, may lease its own user scope and no other (RFC FY Part B):
 // holding the tenant's linker off for an hour is the operator's call.
 func documentLeaseAllowed(ctx context.Context, key sqlmem.ScopeKey) bool {
-	return authorIsOperatorPlane(ctx) || HasStatementMethodGrant(ctx) ||
-		(tools.IsOffRunPlane(ctx) && callerOwnsUserScope(ctx, key))
+	return callerDecidesIn(ctx, key) || HasStatementMethodGrant(ctx)
 }
 
 // documentLeaseOwner is the holder's identity: the run id when present; off-run

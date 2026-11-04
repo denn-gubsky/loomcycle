@@ -297,6 +297,27 @@ func TestDocumentRulings_AMemberIsRefusedTheOperatorsOps(t *testing.T) {
 			t.Errorf("a member's %s = %d %v, want a refusal naming %q", c.name, code, out, c.want)
 		}
 	}
+	// In its own user scope a member curates as the operator does: it accepts a
+	// classification and maintains a statement there (each answer below is the
+	// op's own, past the ruling gate), and does neither in another subject's.
+	mine := s.mustDocument(t, member, "", `{"op":"create_document","scope":"user","title":"mine","path":"/mine"}`)["document_id"].(string)
+	for _, c := range []struct{ name, query, body string }{
+		{"accept a classification in its own user scope", "", fmt.Sprintf(`{"op":"accept_classification","scope":"user","document_id":%q}`, mine)},
+		{"maintain a statement in its own user scope", "", `{"op":"maintain_statement","scope":"user","id":"nope","action":"verify"}`},
+	} {
+		if code, out := s.postDocument(t, member, c.query, c.body); code == http.StatusOK || strings.Contains(errText(out), "operator") {
+			t.Errorf("a member's %s = %d %v, want past the ruling gate (the op's own refusal)", c.name, code, out)
+		}
+	}
+	for _, c := range []struct{ name, body, want string }{
+		{"accept a classification in another subject's scope", fmt.Sprintf(`{"op":"accept_classification","scope":"user","document_id":%q}`, mine), "only an operator"},
+		{"maintain a statement in another subject's scope", `{"op":"maintain_statement","scope":"user","id":"nope","action":"verify"}`, "only a code agent granted statement_methods, or an operator"},
+	} {
+		code, out := s.postDocument(t, member, "scope_id=alice", c.body)
+		if code == http.StatusOK || !strings.Contains(errText(out), c.want) {
+			t.Errorf("a member's %s = %d %v, want a refusal naming %q", c.name, code, out, c.want)
+		}
+	}
 	// The operator still defines a tenant-wide type, and a member still defines
 	// one in its own user scope.
 	if code, out := s.postDocument(t, op, "", `{"op":"define_type","scope":"tenant","name":"task","fields":{"owner":"who"}}`); code != http.StatusOK {

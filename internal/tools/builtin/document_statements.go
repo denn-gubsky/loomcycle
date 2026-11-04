@@ -1218,7 +1218,7 @@ func (d *Document) linkChunks(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		attributes: in.Attributes, evidence: in.Evidence,
 		// An operator's own link may re-assert a rejection; sync and canvas carry
 		// another document's relations and never override one, whoever runs them.
-		overrideRejected: method == edgeMethodManual && authorIsOperatorPlane(ctx),
+		overrideRejected: method == edgeMethodManual && callerDecidesIn(ctx, key),
 	})
 	if err != nil {
 		return errFrom("link_chunks: "+err.Error(), err), nil
@@ -1418,7 +1418,7 @@ func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, msc
 	// A member rules in its own user scope, and on the tenant's statements where
 	// a rule grants it review (below); another subject's scope, or an agent's,
 	// is the operator's (RFC FY Part B).
-	if !tools.IsOperatorPlane(ctx) && mscope != store.MemoryScopeTenant && !callerOwnsUserScope(ctx, key) {
+	if mscope != store.MemoryScopeTenant && !callerDecidesIn(ctx, key) {
 		return errPermission(op+": a member rules only on statements in its own user scope, or where a rule grants it review on the tenant's",
 			"Leave it proposed for an operator."), nil
 	}
@@ -1455,6 +1455,14 @@ func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, msc
 func rulesAsMember(ctx context.Context) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
 	return ok && !p.Legacy && !auth.HasScope(p.Scopes, auth.ScopeTenant)
+}
+
+// callerDecidesIn reports whether the caller may make the operator's rulings in
+// the scope key names: the operator plane anywhere, and any person on a plane
+// off-run (a member, an isolated user) in its own user scope, which is its own
+// to curate (RFC FY Part B). Never a run.
+func callerDecidesIn(ctx context.Context, key sqlmem.ScopeKey) bool {
+	return tools.IsOperatorPlane(ctx) || (tools.IsOffRunPlane(ctx) && callerOwnsUserScope(ctx, key))
 }
 
 // callerOwnsUserScope reports whether key is the user scope of the principal

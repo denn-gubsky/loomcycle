@@ -15,12 +15,12 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
-// A member's gRPC call is not the operator plane (RFC FY Part B): the
-// Document rulings that decide for the tenant refuse it, as they do over HTTP,
-// while the same calls from a tenant operator pass the gate. Before,
-// every gRPC substrate call held the wildcard tools ceiling, which was the only thing
-// those gates asked.
-func TestSubstrateGRPCCtx_AMemberIsRefusedTheOperatorsDocumentRulings(t *testing.T) {
+// Over gRPC, whose substrate plane holds no tenant memory scope, each caller
+// works in its own user scope, where a member curates as the operator does
+// (RFC FY Part B): accepting a classification there passes the ruling gate for
+// both. The member's refusals elsewhere are the HTTP and MCP tests'; the tier
+// each gRPC caller gets is TestSubstrateGRPCCtx_StampsTheCallersTier.
+func TestSubstrateGRPCCtx_EachCallerRulesInItsOwnUserScope(t *testing.T) {
 	st, err := sqlite.Open(":memory:")
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
@@ -42,9 +42,6 @@ func TestSubstrateGRPCCtx_AMemberIsRefusedTheOperatorsDocumentRulings(t *testing
 
 	op := substrateGRPCUserCtx(auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}))
 	member := substrateGRPCUserCtx(auth.WithPrincipal(context.Background(), grpcTierMember(t, "acme", "bob")))
-	// The gRPC substrate plane holds no tenant memory scope, so each caller
-	// works in its own user scope: accepting a classification is an
-	// operator's ruling even there.
 	accept := func(ctx context.Context) string {
 		out, isErr := call(ctx, `{"op":"create_document","scope":"user","title":"mine","path":"/mine"}`)
 		if isErr {
@@ -57,8 +54,8 @@ func TestSubstrateGRPCCtx_AMemberIsRefusedTheOperatorsDocumentRulings(t *testing
 		text, _ := call(ctx, `{"op":"accept_classification","scope":"user","document_id":"`+created.DocumentID+`"}`)
 		return text
 	}
-	if text := accept(member); !strings.Contains(text, "only an operator") {
-		t.Errorf("a member's call may accept a classification: %s", text)
+	if text := accept(member); strings.Contains(text, "only an operator") {
+		t.Errorf("a member's call was refused a classification in its own user scope: %s", text)
 	}
 	if text, isErr := call(member, `{"op":"lease","scope":"user","name":"linker"}`); isErr {
 		t.Errorf("a member's lease on its own user scope was refused: %s", text)
