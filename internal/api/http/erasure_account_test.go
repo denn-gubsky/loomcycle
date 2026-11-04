@@ -3,8 +3,10 @@ package http
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -141,5 +143,28 @@ func TestErasure_TheTombstoneCannotBeReEnabledDeletedOrRecreated(t *testing.T) {
 	u, err := f.st.UserGet(context.Background(), "acme", "google:100")
 	if err != nil || u.Status != "disabled" || u.DisplayName != "" {
 		t.Fatalf("tombstone after the attempts = %+v, %v", u, err)
+	}
+}
+
+// A principal declared in config with the erased subject still signs in
+// (its bearer lives in the config, which an erasure cannot edit), so the
+// erasure names it, by its config name and never its secret.
+func TestErasure_NamesADeclaredPrincipalOfTheSubject(t *testing.T) {
+	f := newAppFixture(t, "tenant")
+	const secret = "declared-principal-secret-value"
+	f.s.cfg().ResolvedPrincipals = append(f.s.cfg().ResolvedPrincipals,
+		auth.DeclaredPrincipal{Secret: secret, Principal: auth.Principal{TenantID: "acme", Subject: "google:100", TokenDefID: "cfg:ops-bot"}},
+		auth.DeclaredPrincipal{Secret: "other-secret", Principal: auth.Principal{TenantID: "other", Subject: "google:100", TokenDefID: "cfg:elsewhere"}})
+	rep, err := f.s.ErasureReport(context.Background(), "acme", "google:100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := eraseAppUser(t, f, false)
+	note := res.Retained["config_principal"]
+	if !strings.Contains(note, "ops-bot") || strings.Contains(note, "elsewhere") || strings.Contains(note, secret) {
+		t.Fatalf("retained.config_principal = %q, want ops-bot named and nothing else", note)
+	}
+	if !strings.Contains(strings.Join(rep.Notes, "\n"), "ops-bot") {
+		t.Fatalf("report notes = %v, want the declared principal named", rep.Notes)
 	}
 }
