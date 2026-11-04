@@ -226,35 +226,27 @@ func OAuthFamilyRevokeSubject(ctx context.Context, db DB, tenantID, subject, rea
 }
 
 // revokeFamiliesWhere revokes the live families matching where (its
-// placeholders bound by args) and returns their ids.
+// placeholders bound by args) and returns their ids. One UPDATE … RETURNING,
+// not a read then a write in a transaction: on SQLite a deferred transaction
+// that reads first deadlocks ("database table is locked") when it upgrades
+// to write beside a concurrent writer, which a user's disable racing other
+// removals hit.
 func revokeFamiliesWhere(ctx context.Context, db DB, where string, args []any, reason string, at time.Time) ([]string, error) {
-	var ids []string
-	err := db.InTx(ctx, func(tx Querier) error {
-		rows, err := tx.Query(ctx, `SELECT family_id FROM oauth_refresh_families WHERE `+where+` AND revoked_at IS NULL`, args...)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return err
-			}
-			ids = append(ids, id)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `UPDATE oauth_refresh_families SET revoked_at = ?, revoke_reason = ?
-			WHERE `+where+` AND revoked_at IS NULL`, append([]any{tx.Dialect().TimeArg(at), reason}, args...)...)
-		return err
-	})
+	rows, err := db.Query(ctx, `UPDATE oauth_refresh_families SET revoked_at = ?, revoke_reason = ?
+		WHERE `+where+` AND revoked_at IS NULL RETURNING family_id`, append([]any{db.Dialect().TimeArg(at), reason}, args...)...)
 	if err != nil {
 		return nil, err
 	}
-	return ids, nil
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // OAuthRefreshCreate inserts a refresh token's hash.
