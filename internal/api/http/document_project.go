@@ -55,7 +55,9 @@ func (s *Server) handleDocumentProject(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "scope must be one of: agent, user, tenant")
 		return
 	}
-	ctx, ok := s.browseCtx(w, r, scope)
+	// A real pass rewrites the scope's map, and a refit is a long fit on the
+	// operator's compute even in a dry run: both are writes.
+	ctx, ok := s.browseCtx(w, r, scope, !dryRunParam(q.Get("dry_run")) || q.Get("refit") == "true" || q.Get("refit") == "1")
 	if !ok {
 		return
 	}

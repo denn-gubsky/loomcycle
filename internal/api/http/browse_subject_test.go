@@ -101,6 +101,10 @@ func (f *browseFixture) call(t *testing.T, p auth.Principal, method, target, bod
 	mux.HandleFunc("POST /v1/_path", f.srv.handleSubstratePath)
 	mux.HandleFunc("GET /v1/_document/asset/{chunk_id}", f.srv.handleSubstrateDocumentAsset)
 	mux.HandleFunc("POST /v1/_document/project", f.srv.handleDocumentProject)
+	mux.HandleFunc("POST /v1/_document/reindex", f.srv.handleDocumentReindex)
+	mux.HandleFunc("POST /v1/_document/derive_units", f.srv.handleDeriveUnits)
+	mux.HandleFunc("POST /v1/_document/describe_images", f.srv.handleDescribeImages)
+	mux.HandleFunc("GET /v1/_memory/scopes/{scope}", f.srv.handleListMemoryScopeIDs)
 	mux.HandleFunc("GET /v1/_memory/scopes/{scope}/{scope_id}/keys", f.srv.handleListMemoryEntries)
 	mux.HandleFunc("GET /v1/_memory/scopes/{scope}/{scope_id}/keys/{key...}", f.srv.handleGetMemoryEntry)
 	mux.HandleFunc("PUT /v1/_memory/scopes/{scope}/{scope_id}/keys/{key...}", f.srv.handlePutMemoryEntry)
@@ -541,5 +545,95 @@ func TestMemorySearchEndpoint_AMemberCannotSearchAnotherUsersScope(t *testing.T)
 	alice := auth.Principal{TenantID: "A", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}, Effective: memberBaselineSet(t, "A", "alice")}
 	if code, _, raw := searchAs(t, c.s, alice, aclSearchBody); code != http.StatusOK || !strings.Contains(string(raw), "supplier audit") {
 		t.Errorf("alice searching her own scope: %d %s", code, raw)
+	}
+}
+
+// browseNotFound is the body every refused browse answers with.
+const browseNotFound = `{"code":"not_found","error":"not found"}`
+
+func isBrowseRefusal(rec *httptest.ResponseRecorder) bool {
+	return rec.Code == http.StatusNotFound && strings.TrimSpace(rec.Body.String()) == browseNotFound
+}
+
+// The maintenance routes rewrite a scope (and spend the operator's embedder or
+// model): a browse grant reads alice's scope and never runs one of them on it
+// for real. A dry run is a read.
+func TestBrowse_ABrowseGrantRunsNoMaintenanceWriteOnAColleaguesScope(t *testing.T) {
+	f := newBrowseFixture(t)
+	notSelf := false
+	reviewer := member("tnt", "bob", memberBaselineSet(t, "tnt", "bob", authz.Rule{
+		Effect: authz.Allow, Actions: []string{"browse"}, Resources: []string{"document:user"},
+		When: &authz.Condition{OwnerIsSelf: &notSelf},
+	}))
+	for _, route := range []string{"project", "reindex", "derive_units", "describe_images"} {
+		for _, q := range []string{"&dry_run=false", "&dry_run=0"} {
+			if rec := f.call(t, reviewer, "POST", "/v1/_document/"+route+"?scope=user&scope_id=alice"+q, ""); !isBrowseRefusal(rec) {
+				t.Errorf("granted reviewer %s%s on alice's scope: %d %s, want the opaque 404", route, q, rec.Code, rec.Body.String())
+			}
+		}
+		if rec := f.call(t, reviewer, "POST", "/v1/_document/"+route+"?scope=user&scope_id=alice", ""); isBrowseRefusal(rec) {
+			t.Errorf("granted reviewer %s dry run on alice's scope: refused as a write", route)
+		}
+	}
+	if rec := f.call(t, reviewer, "POST", "/v1/_document/project?scope=user&scope_id=alice&refit=true", ""); !isBrowseRefusal(rec) {
+		t.Errorf("granted reviewer refitting alice's projection: %d %s, want the opaque 404", rec.Code, rec.Body.String())
+	}
+	// The operator plane still runs them (whatever the route then answers).
+	op := auth.Principal{TenantID: "tnt", Subject: "op", Scopes: []string{auth.ScopeTenant}}
+	if rec := f.call(t, op, "POST", "/v1/_document/reindex?scope=user&scope_id=alice&dry_run=false", ""); isBrowseRefusal(rec) {
+		t.Errorf("tenant operator reindexing alice's scope: refused")
+	}
+}
+
+// With no scope_id, an off-run scope=agent request used to land in one
+// synthetic agent scope every principal of the tenant shares, so one member
+// read, wrote and deleted what another filed there. A member must name an
+// agent it may run; the operator plane keeps its scope.
+func TestBrowse_AMemberHasNoSharedOffRunAgentScope(t *testing.T) {
+	f := newBrowseFixture(t)
+	carol := member("tnt", "carol", memberBaselineSet(t, "tnt", "carol"))
+	bob := member("tnt", "bob", memberBaselineSet(t, "tnt", "bob"))
+	for _, c := range []browseCase{
+		{"create_document", "POST", "/v1/_document", `{"op":"create_document","scope":"agent","title":"Shared"}`},
+		{"query_documents", "POST", "/v1/_document", `{"op":"query_documents","scope":"agent"}`},
+		{"path ls (default scope)", "POST", "/v1/_path", `{"op":"ls","path":"/"}`},
+		{"path mkdir", "POST", "/v1/_path", `{"op":"mkdir","scope":"agent","path":"/x"}`},
+	} {
+		for name, p := range map[string]auth.Principal{"carol": carol, "bob": bob} {
+			if rec := f.call(t, p, c.method, c.target, c.body); !isBrowseRefusal(rec) {
+				t.Errorf("member %s %s on the shared agent scope: %d %s, want the opaque 404", name, c.name, rec.Code, rec.Body.String())
+			}
+		}
+	}
+	// Document ops on its own user scope reach no agent scope either: the
+	// identity carries no agent name for a member that named none.
+	rec := f.call(t, bob, "POST", "/v1/_document", fmt.Sprintf(`{"op":"get_document","scope":"user","id":%q,"across_scopes":true}`, f.secretDoc))
+	if strings.Contains(rec.Body.String(), browseSecret) {
+		t.Errorf("member reaching through across_scopes: %d %s", rec.Code, rec.Body.String())
+	}
+	op := auth.Principal{TenantID: "tnt", Subject: "op", Scopes: []string{auth.ScopeTenant}}
+	if rec := f.call(t, op, "POST", "/v1/_document", `{"op":"create_document","scope":"agent","title":"Operator notes"}`); rec.Code != http.StatusOK {
+		t.Errorf("tenant operator on its off-run agent scope: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A member with no access-control set (no resolver, or it failed) reaches no
+// agent's scope: the self-only floor, not the run plane's compat answer.
+func TestBrowse_AMemberWithNoSetBrowsesNoAgent(t *testing.T) {
+	f := newBrowseFixture(t)
+	if err := f.store.MemorySet(context.Background(), "tnt", "agent", "helper", "memo", json.RawMessage(`"helper memo"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	bob := member("tnt", "bob", nil)
+	rec := f.call(t, bob, "POST", "/v1/_document?scope_id=helper",
+		fmt.Sprintf(`{"op":"export_md","scope":"agent","document_id":%q,"include_metadata":false}`, f.agentDocs["helper"]))
+	if !isBrowseRefusal(rec) {
+		t.Errorf("member with no set reading helper's document: %d %s, want the opaque 404", rec.Code, rec.Body.String())
+	}
+	if rec := f.call(t, bob, "GET", "/v1/_memory/scopes/agent/helper/keys", ""); !isBrowseRefusal(rec) {
+		t.Errorf("member with no set listing helper's memory: %d %s, want the opaque 404", rec.Code, rec.Body.String())
+	}
+	if rec := f.call(t, bob, "GET", "/v1/_memory/scopes/agent", ""); rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "helper") {
+		t.Errorf("member with no set listing agent scopes: %d %s, want none", rec.Code, rec.Body.String())
 	}
 }

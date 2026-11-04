@@ -139,7 +139,8 @@ func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
 			"scope must be one of: agent, user, tenant")
 		return
 	}
-	ctx, ok := s.browseCtx(w, r, scope)
+	// A real pass writes descriptions with the operator's vision model.
+	ctx, ok := s.browseCtx(w, r, scope, !dryRunParam(r.URL.Query().Get("dry_run")))
 	if !ok {
 		return
 	}

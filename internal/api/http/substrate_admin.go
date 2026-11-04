@@ -653,7 +653,7 @@ func (s *Server) substrateBrowseCtxFn(r *http.Request) func(context.Context) con
 		b, ok := s.browseSubjectFor(ctx, "document", reqScopeID, reqTenant, false)
 		if !ok {
 			p, has := auth.PrincipalFromContext(ctx)
-			b = browseSubject{own: true, isolated: auth.IsIsolated(p, has)}
+			b = browseSubject{own: true, isolated: auth.IsIsolated(p, has), memberPlane: true}
 		}
 		return b.apply(ctx)
 	}
@@ -690,10 +690,11 @@ func (s *Server) browseGuard(r *http.Request, defaultScope string, readsOnly fun
 }
 
 // browseCtx is the browse ctx for a handler that knows the one scope it acts
-// on (a query parameter): false after writing the opaque not-found.
-func (s *Server) browseCtx(w http.ResponseWriter, r *http.Request, scope string) (context.Context, bool) {
+// on (a query parameter), writes saying whether this request may change it:
+// false after writing the opaque not-found.
+func (s *Server) browseCtx(w http.ResponseWriter, r *http.Request, scope string, writes bool) (context.Context, bool) {
 	q := r.URL.Query()
-	b, ok := s.browseSubjectFor(r.Context(), "document", q.Get("scope_id"), q.Get("tenant"), false, scope)
+	b, ok := s.browseSubjectFor(r.Context(), "document", q.Get("scope_id"), q.Get("tenant"), writes, scope)
 	if !ok {
 		writeBrowseNotFound(w)
 		return nil, false

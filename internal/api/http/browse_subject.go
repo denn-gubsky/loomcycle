@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -25,12 +26,16 @@ import (
 //   - member (not isolated): its own subject; another subject's user scope only
 //     when its access-control set ALLOWS `browse <type>:user` with that subject
 //     as the owner (the member baseline allows it for the owner itself only,
-//     so a tenant rule is what widens it); an agent's scope only for an agent
-//     it may run. No set (no resolver, or it could not be read): its own only.
-//     A browse is a READ: a request that may change anything, on a subject
-//     other than the member's own, is refused whatever the rules allow — the
-//     member baseline grants write and delete on every user scope it reaches,
-//     so a browse grant would otherwise become write access;
+//     so a tenant rule is what widens it); an agent's scope only by naming an
+//     agent it may run. No set (no resolver, or it could not be read): its own
+//     user scope only, and no agent's. A browse is a READ: a request that may
+//     change anything, on a subject other than the member's own, is refused
+//     whatever the rules allow — the member baseline grants write and delete on
+//     every user scope it reaches, so a browse grant would otherwise become
+//     write access. A member has no off-run agent scope of its own: the
+//     operator-trust ctx's synthetic agent is one scope every principal of the
+//     tenant shares, so a member that names no agent gets no agent name, and a
+//     scope=agent request from it is refused;
 //   - isolated member: its own subject only, and the isolation bit stays on the
 //     identity, which the tools read to refuse it the tenant keyspace.
 //
@@ -43,10 +48,11 @@ type browseSubject struct {
 	// could use — the operator-trust ctx of the caller itself.
 	own bool
 	// tenantID / userID are the tenant and the subject a scope=user op keys
-	// on; agentName the name a scope=agent op keys on ("" keeps the synthetic
-	// operator name the caller's own ctx carries).
+	// on; agentName the name a scope=agent op keys on. "" keeps the synthetic
+	// operator name the caller's own ctx carries — for the operator plane; a
+	// member gets none (memberPlane).
 	tenantID, userID, agentName string
-	isolated                    bool
+	isolated, memberPlane       bool
 }
 
 // browseSubjectFor resolves the subject (reqScopeID) and tenant (reqTenant) a
@@ -88,8 +94,11 @@ func (s *Server) browseSubjectFor(ctx context.Context, typ, reqScopeID, reqTenan
 
 	// A member: its tenant is its own whatever it names, so ?tenant= alone
 	// changes nothing.
-	b := browseSubject{own: true, isolated: isolated}
+	b := browseSubject{own: true, isolated: isolated, memberPlane: true}
 	if reqScopeID == "" {
+		if slices.Contains(scopes, "agent") {
+			return browseSubject{}, false
+		}
 		return b, true
 	}
 	if writes && reqScopeID != p.Subject {
@@ -106,7 +115,7 @@ func (s *Server) browseSubjectFor(ctx context.Context, typ, reqScopeID, reqTenan
 			return browseSubject{}, false
 		}
 	}
-	b = browseSubject{tenantID: p.TenantID, userID: p.Subject, isolated: isolated}
+	b = browseSubject{tenantID: p.TenantID, userID: p.Subject, isolated: isolated, memberPlane: true}
 	if userOK {
 		b.userID = reqScopeID
 	}
@@ -119,11 +128,11 @@ func (s *Server) browseSubjectFor(ctx context.Context, typ, reqScopeID, reqTenan
 // browseMayRunAgent is the agent-scope browse question: may the member run
 // the agent, as the run plane decides it at a run's intake — the token's own
 // agent list, then `run agent:<name>` under the rollout mode. A member's run
-// of that agent reads and writes the agent's scope anyway, so browsing it adds
-// no reach; with no set in compat mode the run plane admits the run, and so
-// this admits the browse.
+// of that agent reads the agent's scope anyway, so browsing it adds no reach.
+// With no set the answer is no, unlike the run plane's compat answer: a
+// browse with nothing to grant it is self-only (decision D1).
 func (s *Server) browseMayRunAgent(ctx context.Context, p auth.Principal, name string) bool {
-	if !auth.MayStartAgent(p, true, name) {
+	if p.Effective == nil || !auth.MayStartAgent(p, true, name) {
 		return false
 	}
 	res := authz.EvaluateSurface(ctx, p.Effective, authz.Surface{Action: "run", Type: "agent", Name: name}, true)
@@ -132,16 +141,19 @@ func (s *Server) browseMayRunAgent(ctx context.Context, p auth.Principal, name s
 
 // apply builds the ctx the browse runs under: the operator-trust ctx of the
 // caller (substrateAdminUserCtx) with the resolved identity, the isolation bit
-// kept.
+// kept, and for a member no agent name but the one it named.
 func (b browseSubject) apply(ctx context.Context) context.Context {
 	base := substrateAdminUserCtx(ctx)
 	if b.own {
-		if !b.isolated {
-			return base
+		if b.isolated {
+			id := tools.RunIdentity(base)
+			id.Isolated = true
+			base = tools.WithRunIdentity(base, id)
 		}
-		id := tools.RunIdentity(base)
-		id.Isolated = true
-		return tools.WithRunIdentity(base, id)
+		if b.memberPlane {
+			base = tools.WithAgentName(base, "")
+		}
+		return base
 	}
 	ctx = tools.WithRunIdentity(base, tools.RunIdentityValue{
 		UserID:   b.userID,
@@ -149,10 +161,16 @@ func (b browseSubject) apply(ctx context.Context) context.Context {
 		TenantID: b.tenantID,
 		Isolated: b.isolated,
 	})
-	if b.agentName != "" {
+	if b.agentName != "" || b.memberPlane {
 		ctx = tools.WithAgentName(ctx, b.agentName)
 	}
 	return ctx
+}
+
+// dryRunParam reads a maintenance route's dry_run parameter the way each of
+// them does: absent means a dry run, and only "false" or "0" means a real one.
+func dryRunParam(v string) bool {
+	return v != "false" && v != "0"
 }
 
 // errBrowseRefused is a browse browseSubjectFor refused, for a caller that

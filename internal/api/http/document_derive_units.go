@@ -44,7 +44,8 @@ func (s *Server) handleDeriveUnits(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "scope must be one of: agent, user, tenant")
 		return
 	}
-	ctx, ok := s.browseCtx(w, r, scope)
+	// A real pass writes units with the operator's generator.
+	ctx, ok := s.browseCtx(w, r, scope, !dryRunParam(q.Get("dry_run")))
 	if !ok {
 		return
 	}
