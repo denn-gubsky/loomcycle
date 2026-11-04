@@ -212,3 +212,54 @@ func refusedAs(out map[string]any, docID, code string) bool {
 	}
 	return false
 }
+
+// TestMemoryDocRowDelete_AsksTheDocumentACL: a fact's body row is a chunk of a
+// document, so removing it by key through Memory asks that document's delete;
+// and a row of a document the caller may not read is answered as a missing key,
+// as Memory get answers it, and left in place.
+func TestMemoryDocRowDelete_AsksTheDocumentACL(t *testing.T) {
+	d, base, st := documentFixture(t)
+	open := grantedTenantCtx(base)
+	m := &Memory{Store: st, SqlMem: d.SqlMem, DocumentFilters: d}
+	fact := func(path, key, body string) string {
+		doc := copyExec(t, d, open, `{"op":"create_document","scope":"user","title":"`+key+`","path":"`+path+`"}`)
+		f := copyExec(t, d, open, `{"op":"upsert_chunk","scope":"user","document_id":"`+asStr(doc["document_id"])+`","natural_key":"memory/fact/`+key+`","title":"`+key+`","body":"`+body+`","type":"fact","subject":"`+key+`"}`)
+		return asStr(f["id"])
+	}
+	hr := fact("/hr/people", "ada", "Ada is on leave.")
+	secret := fact("/secret/people", "eve", "Eve is on leave.")
+	notes := fact("/notes/x", "bob", "Bob likes tea.")
+	del := func(ctx context.Context, chunk string) tools.Result {
+		t.Helper()
+		r, err := m.Execute(ctx, json.RawMessage(`{"op":"delete","scope":"user","key":"`+chunkBodyKey(chunk)+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	bodyIs := func(chunk, want string) {
+		t.Helper()
+		if got := copyExec(t, d, open, `{"op":"get_chunk","scope":"user","id":"`+chunk+`"}`); got["body"] != want {
+			t.Errorf("the fact body of %s should be untouched: %v", chunk, got["body"])
+		}
+	}
+
+	r := del(withACL(open, aclSet(t, denyRule("delete", "document:user:/hr/**"))), hr)
+	if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryPermission {
+		t.Errorf("Memory delete of a fact body in a delete-denied document: %v %s, want an access-control refusal", r.IsError, r.Text)
+	}
+	bodyIs(hr, "Ada is on leave.")
+
+	noRead := withACL(open, aclSet(t, denyRule("read", "document:user:/secret/**")))
+	missing := del(noRead, "no-such-chunk")
+	r = del(noRead, secret)
+	if r.IsError || r.Text != missing.Text {
+		t.Errorf("Memory delete of a fact body in an unreadable document: %s, want the missing key's answer %s", r.Text, missing.Text)
+	}
+	bodyIs(secret, "Eve is on leave.")
+
+	// The same caller removes a fact body of a document it may delete.
+	if r := del(withACL(open, aclSet(t, denyRule("delete", "document:user:/hr/**"))), notes); r.IsError || !strings.Contains(r.Text, `"deleted":true`) {
+		t.Errorf("deleting a fact body of an allowed document: %s", r.Text)
+	}
+}

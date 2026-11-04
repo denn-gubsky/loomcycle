@@ -58,6 +58,84 @@ func documentReadLimited(ctx context.Context, scope store.MemoryScope, scopeID s
 	return a.limitsReading(ctx)
 }
 
+// documentRowDeleter is the Document tool's side of removing a document row by
+// key: whether the caller may read, and may delete, the document holding a
+// chunk. A consolidated fact's body row is a chunk of a document, so the Memory
+// tool's delete by key is a second door to delete_document's question.
+type documentRowDeleter interface {
+	DocumentChunkRemoval(ctx context.Context, scope store.MemoryScope, scopeID, chunkID string) (readable, deletable bool, err error)
+}
+
+// documentDeleteLimited is documentReadLimited for the delete verb.
+func documentDeleteLimited(ctx context.Context, scope store.MemoryScope, scopeID string) bool {
+	eff := tools.CallerACL(ctx)
+	if eff == nil {
+		return false
+	}
+	a := &docACL{eff: eff, key: sqlmem.ScopeKey{Scope: string(scope), ScopeID: scopeID},
+		pathSensitive: eff.HasInstanceRules("document", string(scope))}
+	return a.pathSensitive || !tools.ACLFilterAllows(ctx, eff, "delete", a.resource(""))
+}
+
+// documentRowDelete is the access-control rule for removing the memory row key
+// of (scope, scopeID). hidden: the row is a chunk body or derived unit of a
+// document the caller may not read, so the removal answers as a missing key's
+// does and removes nothing, as a get answers it (security re-audit 2026-11-04,
+// B7e). denied: the caller may read that document but not delete it. A key
+// outside the document namespace, or a caller whose set limits neither verb,
+// asks nothing. deleter nil (no Document tool) fails closed.
+func documentRowDelete(ctx context.Context, deleter documentRowDeleter, scope store.MemoryScope, scopeID, key string) (hidden, denied bool, err error) {
+	chunkID := documentHitChunkID(key)
+	if chunkID == "" {
+		return false, false, nil
+	}
+	readLimited, err := documentReadLimited(ctx, scope, scopeID)
+	if err != nil {
+		return false, false, err
+	}
+	deleteLimited := documentDeleteLimited(ctx, scope, scopeID)
+	if !readLimited && !deleteLimited {
+		return false, false, nil
+	}
+	readable, deletable := false, false
+	if deleter != nil {
+		if readable, deletable, err = deleter.DocumentChunkRemoval(ctx, scope, scopeID, chunkID); err != nil {
+			return false, false, err
+		}
+	}
+	if readLimited && !readable {
+		return true, false, nil
+	}
+	return false, deleteLimited && !deletable, nil
+}
+
+// DocumentRowDelete is documentRowDelete for the off-run key route
+// (DELETE /v1/_memory/scopes/{scope}/{scope_id}/keys/{key}), which removes the
+// same rows the Memory tool's delete does. docs as for UnreadableDocumentKeys.
+func DocumentRowDelete(ctx context.Context, docs *Document, scope store.MemoryScope, scopeID, key string) (hidden, denied bool, err error) {
+	var deleter documentRowDeleter
+	if docs != nil {
+		deleter = docs
+	}
+	return documentRowDelete(ctx, deleter, scope, scopeID, key)
+}
+
+// documentRowDeleteRefusal is the Memory tool's refusal of a denied removal.
+func documentRowDeleteRefusal(op, key string) tools.Result {
+	return errPermission(op+": the caller's access-control rules do not allow delete on the document holding "+key,
+		"This row belongs to a document the caller may not delete; do not retry it.")
+}
+
+// rowDeleter is the Memory tool's Document side for a removal, or nil.
+// Read at use, as hitReader is.
+func (m *Memory) rowDeleter() documentRowDeleter {
+	deleter, ok := m.DocumentFilters.(documentRowDeleter)
+	if !ok {
+		return nil
+	}
+	return deleter
+}
+
 // hitReader is the Memory tool's Document side, or nil when it has none.
 // Read HERE, at use: boot assigns the resolver before it is fully bound.
 func (m *Memory) hitReader() documentHitReader {
