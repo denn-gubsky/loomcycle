@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
@@ -120,54 +119,6 @@ func TestACLDef_AnOperatorChangesListsThatBindIt_UnlessDeniedAuthoring(t *testin
 	for _, body := range []string{`{"op":"put","name":"delegate-set","rules":` + open + `}`, `{"op":"retire","name":"delegate-set"}`} {
 		if code, out := call(delegateBearer, body); code != 403 || !strings.Contains(out, `"acl_denied"`) {
 			t.Errorf("the delegate lifts its own list against a deny: %s → %d %s, want 403 acl_denied", body, code, out)
-		}
-	}
-}
-
-// A writer that holds only what an ACL delegates to it (an auth gate's
-// token, RFC EY §3.8) may not change a list that shapes its own set: one
-// bound to its subject, its token, a group it is in or its tenant, nor create
-// a name already bound to it. Today the management route is operator-only, so
-// the guard is exercised directly; it is the one the route will run.
-func TestACLListNotSelfBound_RefusesADelegatedWritersOwnLists(t *testing.T) {
-	deny := authz.ACL{Rules: []authz.Rule{{Effect: authz.Deny, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}}}}
-	acls := map[string]authz.ACLVersion{}
-	for _, n := range []string{"by-user", "by-group", "by-token", "by-tenant", "other-user", "unrelated"} {
-		a := deny
-		a.Name = n
-		acls[n] = authz.ACLVersion{ACL: a, Version: 1}
-	}
-	subject := authz.Subject{TenantID: "acme", ID: "gate", Groups: []string{"gates"}, TokenDefID: "def_gate"}
-	eff, err := authz.Compile(authz.Input{Subject: subject, ACLs: acls, Now: time.Now(), Bindings: []authz.Binding{
-		{ACL: "by-user", SubjectKind: authz.SubjectUser, SubjectID: "gate"},
-		{ACL: "by-group", SubjectKind: authz.SubjectGroup, SubjectID: "gates"},
-		{ACL: "by-token", SubjectKind: authz.SubjectToken, SubjectID: "def_gate"},
-		{ACL: "by-tenant", SubjectKind: authz.SubjectTenant},
-		{ACL: "other-user", SubjectKind: authz.SubjectUser, SubjectID: "someone-else"},
-		{ACL: "not-yet", SubjectKind: authz.SubjectUser, SubjectID: "gate"},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	gate := auth.Principal{TenantID: "acme", Subject: "gate", Groups: []string{"gates"}, TokenDefID: "def_gate",
-		Scopes: []string{auth.ScopeRunsCreate}, Effective: eff}
-	for _, name := range []string{"by-user", "by-group", "by-token", "by-tenant", "not-yet"} {
-		if err := aclListNotSelfBound(gate, name); err == nil {
-			t.Errorf("a delegated writer changes %q, which binds it: allowed, want refused", name)
-		}
-	}
-	for _, name := range []string{"other-user", "unrelated", "brand-new"} {
-		if err := aclListNotSelfBound(gate, name); err != nil {
-			t.Errorf("a delegated writer changes %q, which does not bind it: %v", name, err)
-		}
-	}
-	for _, holder := range []auth.Principal{
-		{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}, Effective: eff},
-		{TenantID: "acme", Subject: "root", Scopes: []string{auth.ScopeAdmin}, Effective: eff},
-		{Legacy: true, Effective: eff},
-	} {
-		if err := aclListNotSelfBound(holder, "by-tenant"); err != nil {
-			t.Errorf("%+v holds the tenant's authority and may change by-tenant: %v", holder.Scopes, err)
 		}
 	}
 }

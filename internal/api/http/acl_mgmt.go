@@ -209,45 +209,69 @@ func (s *Server) aclChanged(ctx context.Context, tenant, action, targetName stri
 	}
 }
 
-// aclNoSelfElevation refuses a binding a delegated writer would benefit
-// from: to its own subject, its own token, or a group it is in (RFC EY §10
-// invariant 4, in its practical form). A tenant operator or admin already
-// holds the whole tenant's authority and is exempt; so is a tenant-wide
-// binding, which an operator alone may write.
-func aclNoSelfElevation(ctx context.Context, kind, id string) error {
-	p, ok := auth.PrincipalFromContext(ctx)
-	if !ok || aclWriterHoldsTenant(p) {
-		return nil
-	}
-	switch authz.SubjectKind(kind) {
-	case authz.SubjectUser:
-		if id == p.Subject {
-			return fmt.Errorf("a binding to your own subject")
+// aclRetireLists asks retire def:acl/<name> of each list, the question the
+// documented lock on a list answers (a deny on author/retire def:acl/<name>).
+// A binding, a group and a membership in a group each carry their lists'
+// rules to a principal, so dropping one lifts those rules as surely as
+// retiring the list: the same lock holds it, for a tenant operator too. It
+// replaces the self-elevation guards that exempted every tenant operator
+// and so could never fire behind the management gate (re-audit B2, B15).
+func (s *Server) aclRetireLists(ctx context.Context, names []string) *aclReply {
+	for _, name := range names {
+		if r := s.aclAsk(ctx, authz.Surface{Action: "retire", Type: "def", Name: "acl/" + name}); r != nil {
+			return r
 		}
-	case authz.SubjectToken:
-		if id == p.TokenDefID {
-			return fmt.Errorf("a binding to your own token")
-		}
-	case authz.SubjectGroup:
-		for _, g := range p.Groups {
-			if g == id {
-				return fmt.Errorf("a binding to a group you are in")
-			}
-		}
-	case authz.SubjectTenant:
-		return fmt.Errorf("a tenant-wide binding")
 	}
 	return nil
 }
 
-// aclWriterHoldsTenant reports whether the writer already holds every
-// ACL, group and binding authority in its tenant (RFC EY §3.8): admin, the
-// legacy token and a tenant operator. The self-elevation guards bind the
-// writers that hold only what an ACL delegates to them. An admin who wants a
-// tenant operator unable to lift a list binds it a deny on `author
-// def:acl/<name>`, which the per-op check honours.
-func aclWriterHoldsTenant(p auth.Principal) bool {
-	return p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin) || auth.HasScope(p.Scopes, auth.ScopeTenant)
+// aclGroupLists names, sorted, the lists bound (stored and config-declared,
+// live) to group or to any group that contains it, at any depth: a member
+// that leaves group leaves each of those groups through it, and deleting
+// group takes every member out of them. A binding to a group whose name is
+// not in the graph still counts: the store keeps bindings to a deleted group.
+func (s *Server) aclGroupLists(ctx context.Context, tenant, group string) ([]string, error) {
+	graph, err := s.store.GroupGraph(ctx, tenant)
+	if err != nil {
+		return nil, fmt.Errorf("group graph: %w", err)
+	}
+	static := s.aclStatic()
+	_, staticGraph := static.GroupsOf(tenant, "")
+	holders := map[string]bool{group: true}
+	for _, g := range authz.Closure(authz.MergeGraph(graph, staticGraph), []string{group}) {
+		holders[g] = true
+	}
+	rows, err := s.store.AclBindingList(ctx, tenant, false)
+	if err != nil {
+		return nil, fmt.Errorf("bindings: %w", err)
+	}
+	seen := map[string]bool{}
+	var names []string
+	add := func(kind, id, acl string) {
+		if authz.SubjectKind(kind) == authz.SubjectGroup && holders[id] && !seen[acl] {
+			seen[acl] = true
+			names = append(names, acl)
+		}
+	}
+	for _, row := range rows {
+		add(row.SubjectKind, row.SubjectID, row.ACLName)
+	}
+	for _, b := range static.BindingsIn(tenant) {
+		add(string(b.SubjectKind), b.SubjectID, b.ACL)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// aclGroupLock asks the retire question of every list group carries, or
+// returns the refusal; a store fault refuses (fail closed).
+func (s *Server) aclGroupLock(ctx context.Context, tenant, group string) *aclReply {
+	names, err := s.aclGroupLists(ctx, tenant, group)
+	if err != nil {
+		r := aclFail(http.StatusInternalServerError, "group_lists_failed", err.Error())
+		return &r
+	}
+	return s.aclRetireLists(ctx, names)
 }
 
 func aclStoreError(err error, kind string) aclReply {
@@ -568,6 +592,9 @@ func (s *Server) aclGroupDelete(ctx context.Context, focus, name string) aclRepl
 		return *r
 	}
 	tenant := s.adminFocusedTenant(ctx, focus)
+	if r := s.aclGroupLock(ctx, tenant, name); r != nil {
+		return *r
+	}
 	ok, err := s.store.GroupDelete(ctx, tenant, name)
 	if err != nil {
 		return aclFail(http.StatusInternalServerError, "group_delete_failed", err.Error())
@@ -592,12 +619,6 @@ func (s *Server) aclGroupAddMember(ctx context.Context, focus, name string, req 
 	tenant := s.adminFocusedTenant(ctx, focus)
 	if r := s.aclGroupExternal(ctx, tenant, name); r != nil {
 		return *r
-	}
-	if req.Kind == store.GroupMemberUser {
-		if err := aclNoSelfElevation(ctx, string(authz.SubjectUser), req.ID); err != nil {
-			// Adding yourself to a group is the membership form of self-binding.
-			return aclFail(http.StatusForbidden, "acl_self_elevation", "refused: adding yourself to a group")
-		}
 	}
 	err := s.store.GroupMemberAdd(ctx, store.GroupMemberRow{TenantID: tenant, GroupName: name, MemberKind: req.Kind, MemberID: strings.TrimSpace(req.ID), AddedBy: principalSubject(ctx)})
 	if err != nil {
@@ -642,6 +663,9 @@ func (s *Server) aclGroupRemoveMember(ctx context.Context, focus, name, kind, id
 	}
 	tenant := s.adminFocusedTenant(ctx, focus)
 	if r := s.aclGroupExternal(ctx, tenant, name); r != nil {
+		return *r
+	}
+	if r := s.aclGroupLock(ctx, tenant, name); r != nil {
 		return *r
 	}
 	ok, err := s.store.GroupMemberRemove(ctx, tenant, name, kind, id)
@@ -778,8 +802,7 @@ func aclListOpSurface(op, name string) *authz.Surface {
 	return &authz.Surface{Action: action, Type: "def", Name: "acl/" + name}
 }
 
-// aclListOpCheck asks the op's question of the named list, then refuses a
-// write that would change the writer's own authority. It returns the
+// aclListOpCheck asks the op's question of the named list. It returns the
 // refusal, or nil. No principal (open mode) has no set to ask.
 func (s *Server) aclListOpCheck(ctx context.Context, op, name string) *aclReply {
 	p, ok := auth.PrincipalFromContext(ctx)
@@ -787,41 +810,7 @@ func (s *Server) aclListOpCheck(ctx context.Context, op, name string) *aclReply 
 	if !ok || surface == nil {
 		return nil
 	}
-	if r := s.gateReply(ctx, p, *surface, authz.EvaluateSurface(ctx, p.Effective, *surface, true)); r != nil {
-		return r
-	}
-	if surface.Action == "read" {
-		return nil
-	}
-	if err := aclListNotSelfBound(p, name); err != nil {
-		r := aclFail(http.StatusForbidden, "acl_self_elevation", "refused: "+err.Error()+" would change your own authority")
-		return &r
-	}
-	return nil
-}
-
-// aclListNotSelfBound refuses a delegated writer a write or retire of a list
-// that shapes its own set (RFC EY §10 invariant 4): one bound to its subject,
-// its token, a group it is in or its tenant, which is what the compiled set's
-// applied bindings are, and a name bound to it that no list has yet, which
-// creating would bring into force. Rewriting or retiring such a list could
-// drop the very denies that hold the writer back. Like the binding guard it
-// leaves a writer that holds the tenant's authority alone (§3.8).
-func aclListNotSelfBound(p auth.Principal, name string) error {
-	if aclWriterHoldsTenant(p) || p.Effective == nil {
-		return nil
-	}
-	for _, b := range p.Effective.Applied() {
-		if b.ACL == name {
-			return fmt.Errorf("list %q is bound to you (%s binding); changing it", name, b.SubjectKind)
-		}
-	}
-	for _, missing := range p.Effective.Missing() {
-		if missing == name {
-			return fmt.Errorf("list %q is bound to you and not yet created; creating it", name)
-		}
-	}
-	return nil
+	return s.gateReply(ctx, p, *surface, authz.EvaluateSurface(ctx, p.Effective, *surface, true))
 }
 
 // The config-declared entries the management lists include (RFC EY §9):
@@ -1061,9 +1050,6 @@ func (s *Server) aclBindingCreate(ctx context.Context, focus string, req binding
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
-	if err := aclNoSelfElevation(ctx, req.SubjectKind, req.SubjectID); err != nil {
-		return aclFail(http.StatusForbidden, "acl_self_elevation", "refused: "+err.Error()+" would change your own authority")
-	}
 	tenant := s.adminFocusedTenant(ctx, focus)
 	if r := s.aclBindingTargetCheck(ctx, tenant, req); r != nil {
 		return *r
@@ -1115,6 +1101,16 @@ func (s *Server) aclBindingRetire(ctx context.Context, focus, id string) aclRepl
 		return *r
 	}
 	tenant := s.adminFocusedTenant(ctx, focus)
+	list, found, err := s.aclLiveBindingList(ctx, tenant, id)
+	if err != nil {
+		return aclFail(http.StatusInternalServerError, "acl_binding_retire_failed", err.Error())
+	}
+	if !found {
+		return aclFail(http.StatusNotFound, "acl_binding_not_found", "no live binding of that id")
+	}
+	if r := s.aclRetireLists(ctx, []string{list}); r != nil {
+		return *r
+	}
 	ok, err := s.store.AclBindingRetire(ctx, tenant, id)
 	if err != nil {
 		return aclFail(http.StatusInternalServerError, "acl_binding_retire_failed", err.Error())
@@ -1124,6 +1120,22 @@ func (s *Server) aclBindingRetire(ctx context.Context, focus, id string) aclRepl
 	}
 	s.aclChanged(ctx, tenant, "binding_retired", id)
 	return aclOK(map[string]any{"retired": id})
+}
+
+// aclLiveBindingList is the list a live binding of tenant names. The store
+// has no lookup by id, so the tenant's live bindings are scanned; a tenant
+// holds operator-authored bindings, few enough for that.
+func (s *Server) aclLiveBindingList(ctx context.Context, tenant, id string) (string, bool, error) {
+	rows, err := s.store.AclBindingList(ctx, tenant, false)
+	if err != nil {
+		return "", false, err
+	}
+	for _, row := range rows {
+		if row.BindingID == id {
+			return row.ACLName, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // ---- evaluate / explain / simulate (AuthZEN 1.0 shapes) ----
