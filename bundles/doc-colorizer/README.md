@@ -97,6 +97,11 @@ with one revision retry). Point `subtree` at wherever new documents live.
 - **Root chunk only.** It sets document-level fields on the root chunk (the
   `doc.*` keys). Per-chunk status coloring (`chunk.*`) is carried in the same
   `color_scheme` for the viewer to use; this agent does not recolor child chunks.
+- **Types are matched ignoring case, with a status-only fallback.** The viewer
+  reads `doc.<type>.<status>`, then `doc.<type>`, then `doc.*.<status>` and
+  `doc.*`, each ignoring case — so an ontology class type such as `Rfc` uses the
+  `doc.rfc.*` keys, and a class the scheme does not name (`Guide`, `Benchmark`)
+  is coloured by its status from the `doc.*.<status>` keys.
 - **Determinism.** No `Math.random()` / `Date.now()` feeds a tool input, so the
   run resumes cleanly across restart/replica without
   `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1`.

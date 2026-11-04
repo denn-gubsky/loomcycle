@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chunkInheritsDocColor, chunkRowStyle, docColor, effectiveScheme, tintStyle, washStyle } from "./colorScheme";
+import { chunkColor, chunkInheritsDocColor, chunkRowStyle, docColor, effectiveScheme, tintStyle, washStyle } from "./colorScheme";
 
 // A chunk without a status colour of its own takes a lighter wash of its
 // document's colour (a corpus of documents coloured by kind, whose thousands of
@@ -50,5 +50,35 @@ describe("chunk colour inherits the document's", () => {
       expect(chunkRowStyle({ status: undefined, isRoot: false, documentColor: "#2f6fd6", scheme })).toBeUndefined();
     }
     expect(chunkInheritsDocColor({ ...LAW, "chunk.inherit": "true" })).toBe(true);
+  });
+});
+
+// An ontology retypes documents to class names (`rfc` → `Rfc`, `document` →
+// `Guide`); a document's colour must survive that.
+describe("a retyped document keeps its colour", () => {
+  const STORED = { "doc.rfc.done": "#2f8fbf", "doc.research": "#8a6ad6", "chunk.done": "#3aa06a" };
+
+  it("TestDocColor_AClassTypeMatchesTheLowercaseKey", () => {
+    expect(docColor("Rfc", "done", STORED)).toBe("#2f8fbf");
+    expect(docColor("RESEARCH", undefined, STORED)).toBe("#8a6ad6");
+    expect(chunkColor("Done", STORED)).toBe("#3aa06a");
+  });
+
+  it("TestDocColor_AnExactKeyWinsOverACaseInsensitiveOne", () => {
+    expect(docColor("Rfc", "done", { ...STORED, "doc.Rfc.done": "#111111" })).toBe("#111111");
+  });
+
+  it("TestDocColor_ATypeTheDefaultSchemeDoesNotNameIsColouredByStatus", () => {
+    const scheme = effectiveScheme(undefined);
+    expect(docColor("Guide", "done", scheme)).toBe("#3aa06a");
+    expect(docColor("Benchmark", "draft", scheme)).toBe("#c99a3a");
+    // A named type still takes its own key before the any-type one.
+    expect(docColor("research", "done", scheme)).toBe("#8a6ad6");
+    // No status and no doc.* key: neutral.
+    expect(docColor("Guide", undefined, scheme)).toBeUndefined();
+  });
+
+  it("TestDocColor_AnAnyTypeKeyColoursEveryType", () => {
+    expect(docColor("Anything", undefined, { "doc.*": "#123456" })).toBe("#123456");
   });
 });

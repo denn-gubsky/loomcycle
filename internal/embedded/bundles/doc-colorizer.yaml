@@ -69,6 +69,12 @@ agents:
         "doc.document.done": "#3aa06a",
         "doc.publication": "#c99a3a",
         "doc.publication.done": "#c99a3a",
+        // Any type the scheme does not name (an ontology class such as Guide or
+        // Benchmark) is coloured by its status alone.
+        "doc.*.draft": "#c99a3a",
+        "doc.*.review": "#6a7bd6",
+        "doc.*.confirmed": "#3a9ad6",
+        "doc.*.done": "#3aa06a",
         "chunk.draft": "#c99a3a",
         "chunk.review": "#6a7bd6",
         "chunk.confirmed": "#3a9ad6",
