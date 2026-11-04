@@ -957,18 +957,15 @@ func (s *Server) scimRemove(ctx context.Context, c scimCtx, subject string) *sci
 	}
 	if err == nil && rm.Gate == c.g.Name && store.SCIMRemovalReason(rm.Reason) {
 		// App sign-ins before the other tokens: endSubjectAppSignIns says why.
-		err := s.endSubjectAppSignIns(ctx, c.tenant, subject)
-		if err == nil {
-			var retired []store.OperatorTokenDefRow
-			retired, err = s.retireDelegatedUserTokens(ctx, c.tenant, subject)
-			for _, t := range retired {
-				s.recordTokenAudit(ctx, "retire", t)
-			}
+		// Each step runs whatever the one before answered, so a fault in one
+		// leaves no other credential working.
+		appErr := s.endSubjectAppSignIns(ctx, c.tenant, subject)
+		retired, retireErr := s.retireDelegatedUserTokens(ctx, c.tenant, subject)
+		for _, t := range retired {
+			s.recordTokenAudit(ctx, "retire", t)
 		}
-		if err == nil {
-			_, err = s.store.UISessionRevokeSubject(ctx, c.tenant, subject, now)
-		}
-		if err != nil {
+		_, sessionErr := s.store.UISessionRevokeSubject(ctx, c.tenant, subject, now)
+		if err := errors.Join(appErr, retireErr, sessionErr); err != nil {
 			slog.Error("scim: ending a removed user's credentials failed", "gate", c.g.Name, "err", err)
 			return internal
 		}

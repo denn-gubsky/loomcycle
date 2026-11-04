@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -185,5 +186,40 @@ func TestDisable_ARetriedDisableRetiresTheTokensOfAlreadyRevokedSignIns(t *testi
 	row, err := f.st.OperatorTokenDefGet(ctx, p.TokenDefID)
 	if err != nil || row.RetiredAt.IsZero() {
 		t.Fatalf("the access token of an already-revoked sign-in is still live after the retry: %+v, %v", row, err)
+	}
+}
+
+// failingAppSignInStore fails every app sign-in revoke.
+type failingAppSignInStore struct{ store.Store }
+
+func (failingAppSignInStore) OAuthFamilyRevokeSubject(context.Context, string, string, string, time.Time) ([]string, error) {
+	return nil, errors.New("injected revoke fault")
+}
+
+func (failingAppSignInStore) OAuthTokenRetireEndedSignIns(context.Context, string, string, time.Time) (int, error) {
+	return 0, errors.New("injected retire fault")
+}
+
+// TestRemoval_AFailedAppSignInEndStillRetiresTheOtherCredentials: a fault
+// ending the app sign-ins does not stop the disable from retiring the
+// user's tokens and ending its sessions; the disable reports the fault.
+func TestRemoval_AFailedAppSignInEndStillRetiresTheOtherCredentials(t *testing.T) {
+	f := newAppFixture(t, "tenant")
+	ctx := context.Background()
+	at, _ := f.signIn(t)
+	p, ok := f.s.resolvePrincipal(ctx, at)
+	if !ok {
+		t.Fatal("precondition: the app's access token does not authenticate")
+	}
+	f.s.store = failingAppSignInStore{f.st}
+	if err := f.s.startRemoval(ctx, "acme", "google:100", "", store.RemovalReasonDormant, "test"); err == nil {
+		t.Fatal("the removal hid the app sign-in fault")
+	}
+	row, err := f.st.OperatorTokenDefGet(ctx, p.TokenDefID)
+	if err != nil || row.RetiredAt.IsZero() {
+		t.Fatalf("the user's token outlived a disable whose app sign-in step failed: %+v, %v", row, err)
+	}
+	if code, _ := meOf(t, f.s, f.cookie); code == http.StatusOK {
+		t.Fatal("the user's Web UI session outlived the disable")
 	}
 }
