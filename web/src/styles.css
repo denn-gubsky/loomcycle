@@ -8904,6 +8904,17 @@ button.doc-ref-target.external {
   color: var(--lc-danger);
   border-color: var(--lc-danger);
 }
+/* The ruling dialog renders inside .review-page, so the outline rule above
+   (same specificity, later in the file) turned the modal's filled red button's
+   text red too: red on red. Keep the modal's filled look. */
+.review-modal .modal-buttons button.danger {
+  background: var(--lc-danger);
+  border-color: var(--lc-danger);
+  color: white;
+}
+.review-modal .modal-buttons {
+  margin-top: var(--lc-space-2);
+}
 .review-page button[aria-pressed="true"] {
   border-color: var(--lc-accent);
   color: var(--lc-accent);
