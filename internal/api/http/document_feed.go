@@ -138,7 +138,7 @@ func (s *Server) serveDocumentFeed(w http.ResponseWriter, r *http.Request, p doc
 	// The subject is resolved again on every re-check, under the caller's
 	// current rules: a revoked browse grant ends the stream.
 	open := func(ctx context.Context) (*builtin.DocumentFeedView, error) {
-		b, ok := s.browseSubjectFor(ctx, "document", reqScopeID, reqTenant, scope)
+		b, ok := s.browseSubjectFor(ctx, "document", reqScopeID, reqTenant, false, scope)
 		if !ok {
 			return nil, errBrowseRefused
 		}

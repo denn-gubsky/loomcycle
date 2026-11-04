@@ -159,7 +159,7 @@ func (s *Server) handleSubstrateVolumeDef(w http.ResponseWriter, r *http.Request
 // user-scope tree an agent run for this principal uses (see
 // substrateAdminUserCtx).
 func (s *Server) handleSubstratePath(w http.ResponseWriter, r *http.Request) {
-	s.dispatchSubstrateCtxGuarded(w, r, "Path", s.Path, s.substrateBrowseCtxFn(r), s.browseGuard(r, "agent"))
+	s.dispatchSubstrateCtxGuarded(w, r, "Path", s.Path, s.substrateBrowseCtxFn(r), s.browseGuard(r, "agent", builtin.PathCallReadsOnly))
 }
 
 // handleSubstrateDocument serves POST /v1/_document.
@@ -167,7 +167,7 @@ func (s *Server) handleSubstratePath(w http.ResponseWriter, r *http.Request) {
 // USER-aware ctx so off-run user-scoped documents interoperate with the
 // principal's agent runs (see substrateAdminUserCtx).
 func (s *Server) handleSubstrateDocument(w http.ResponseWriter, r *http.Request) {
-	s.dispatchSubstrateCtxGuarded(w, r, "Document", s.Document, s.substrateBrowseCtxFn(r), s.browseGuard(r, "user"))
+	s.dispatchSubstrateCtxGuarded(w, r, "Document", s.Document, s.substrateBrowseCtxFn(r), s.browseGuard(r, "user", builtin.DocumentCallReadsOnly))
 }
 
 // handleSubstrateDocumentAsset serves GET /v1/_document/asset/{chunk_id} — the
@@ -191,7 +191,7 @@ func (s *Server) handleSubstrateDocumentAsset(w http.ResponseWriter, r *http.Req
 	}
 	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
 	q := r.URL.Query()
-	b, ok := s.browseSubjectFor(r.Context(), "document", q.Get("scope_id"), q.Get("tenant"), cmp.Or(scope, "user"))
+	b, ok := s.browseSubjectFor(r.Context(), "document", q.Get("scope_id"), q.Get("tenant"), false, cmp.Or(scope, "user"))
 	if !ok {
 		http.NotFound(w, r) // the same opaque answer as a missing asset
 		return
@@ -650,7 +650,7 @@ func (s *Server) substrateBrowseCtxFn(r *http.Request) func(context.Context) con
 	reqScopeID := r.URL.Query().Get("scope_id")
 	reqTenant := r.URL.Query().Get("tenant")
 	return func(ctx context.Context) context.Context {
-		b, ok := s.browseSubjectFor(ctx, "document", reqScopeID, reqTenant)
+		b, ok := s.browseSubjectFor(ctx, "document", reqScopeID, reqTenant, false)
 		if !ok {
 			p, has := auth.PrincipalFromContext(ctx)
 			b = browseSubject{own: true, isolated: auth.IsIsolated(p, has)}
@@ -661,8 +661,10 @@ func (s *Server) substrateBrowseCtxFn(r *http.Request) func(context.Context) con
 
 // browseGuard refuses, before the tool runs, a Path or Document request whose
 // ?scope_id= names a subject the caller may not browse on a scope its body
-// touches: `scope` (defaultScope when absent) and copy/move's `to_scope`.
-func (s *Server) browseGuard(r *http.Request, defaultScope string) func(context.Context, []byte) ([]byte, *guardError) {
+// touches — `scope` (defaultScope when absent) and copy/move's `to_scope` — or
+// that a member sends to change another subject's scope: readsOnly is the
+// tool's own read-only classification of the call.
+func (s *Server) browseGuard(r *http.Request, defaultScope string, readsOnly func(json.RawMessage) bool) func(context.Context, []byte) ([]byte, *guardError) {
 	reqScopeID := r.URL.Query().Get("scope_id")
 	reqTenant := r.URL.Query().Get("tenant")
 	return func(_ context.Context, body []byte) ([]byte, *guardError) {
@@ -680,7 +682,7 @@ func (s *Server) browseGuard(r *http.Request, defaultScope string) func(context.
 		if in.ToScope != "" {
 			scopes = append(scopes, in.ToScope)
 		}
-		if _, ok := s.browseSubjectFor(r.Context(), "document", reqScopeID, reqTenant, scopes...); !ok {
+		if _, ok := s.browseSubjectFor(r.Context(), "document", reqScopeID, reqTenant, !readsOnly(body), scopes...); !ok {
 			return nil, &guardError{status: http.StatusNotFound, code: "not_found", msg: "not found"}
 		}
 		return body, nil
@@ -691,7 +693,7 @@ func (s *Server) browseGuard(r *http.Request, defaultScope string) func(context.
 // on (a query parameter): false after writing the opaque not-found.
 func (s *Server) browseCtx(w http.ResponseWriter, r *http.Request, scope string) (context.Context, bool) {
 	q := r.URL.Query()
-	b, ok := s.browseSubjectFor(r.Context(), "document", q.Get("scope_id"), q.Get("tenant"), scope)
+	b, ok := s.browseSubjectFor(r.Context(), "document", q.Get("scope_id"), q.Get("tenant"), false, scope)
 	if !ok {
 		writeBrowseNotFound(w)
 		return nil, false

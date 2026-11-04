@@ -127,7 +127,7 @@ func (s *Server) handleListMemoryScopeIDs(w http.ResponseWriter, r *http.Request
 	if scope != string(store.MemoryScopeTenant) {
 		kept := rows[:0]
 		for _, row := range rows {
-			if _, ok := s.browseSubjectFor(r.Context(), "memory", row.ScopeID, "", scope); ok {
+			if _, ok := s.browseSubjectFor(r.Context(), "memory", row.ScopeID, "", false, scope); ok {
 				kept = append(kept, row)
 			}
 		}
@@ -366,7 +366,7 @@ func (s *Server) memoryRouteCtx(w http.ResponseWriter, r *http.Request, scope, s
 	if scope == string(store.MemoryScopeTenant) {
 		named = ""
 	}
-	b, ok := s.browseSubjectFor(r.Context(), "memory", named, r.URL.Query().Get("tenant"), scope)
+	b, ok := s.browseSubjectFor(r.Context(), "memory", named, r.URL.Query().Get("tenant"), verb != "read", scope)
 	if !ok {
 		writeBrowseNotFound(w)
 		return nil, false

@@ -26,7 +26,11 @@ import (
 //     when its access-control set ALLOWS `browse <type>:user` with that subject
 //     as the owner (the member baseline allows it for the owner itself only,
 //     so a tenant rule is what widens it); an agent's scope only for an agent
-//     it may run. No set (no resolver, or it could not be read): its own only;
+//     it may run. No set (no resolver, or it could not be read): its own only.
+//     A browse is a READ: a request that may change anything, on a subject
+//     other than the member's own, is refused whatever the rules allow — the
+//     member baseline grants write and delete on every user scope it reaches,
+//     so a browse grant would otherwise become write access;
 //   - isolated member: its own subject only, and the isolation bit stays on the
 //     identity, which the tools read to refuse it the tenant keyspace.
 //
@@ -48,12 +52,14 @@ type browseSubject struct {
 // browseSubjectFor resolves the subject (reqScopeID) and tenant (reqTenant) a
 // request names, each "" for none, for a browse of typ ("document" or
 // "memory") touching scopes ("user", "agent", "tenant"; none when the caller
-// cannot say). It reports false when the request must be refused: it names a
-// subject the caller may not browse on one of the scopes it touches, or one it
-// may browse on none of them. A named subject is set only on the planes the
-// caller may browse it on, so a scope the caller could not name in advance
-// still never reaches another subject's data.
-func (s *Server) browseSubjectFor(ctx context.Context, typ, reqScopeID, reqTenant string, scopes ...string) (browseSubject, bool) {
+// cannot say); writes says the request may change something. It reports
+// false when the request must be refused: it names a subject the caller may
+// not browse on one of the scopes it touches, or one it may browse on none of
+// them, or it is a member's write naming a subject other than its own. A named
+// subject is set only on the planes the caller may browse it on, so a scope
+// the caller could not name in advance still never reaches another subject's
+// data.
+func (s *Server) browseSubjectFor(ctx context.Context, typ, reqScopeID, reqTenant string, writes bool, scopes ...string) (browseSubject, bool) {
 	reqScopeID, reqTenant = strings.TrimSpace(reqScopeID), strings.TrimSpace(reqTenant)
 	p, ok := auth.PrincipalFromContext(ctx)
 	isolated := auth.IsIsolated(p, ok)
@@ -85,6 +91,9 @@ func (s *Server) browseSubjectFor(ctx context.Context, typ, reqScopeID, reqTenan
 	b := browseSubject{own: true, isolated: isolated}
 	if reqScopeID == "" {
 		return b, true
+	}
+	if writes && reqScopeID != p.Subject {
+		return browseSubject{}, false
 	}
 	userOK := reqScopeID == p.Subject ||
 		(!isolated && authz.Grants(ctx, p.Effective, "browse", authz.Resource{Type: typ, Name: "user", Owner: reqScopeID}))

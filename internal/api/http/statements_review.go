@@ -395,7 +395,7 @@ func (s *Server) reviewCtx(ctx context.Context, as builtin.RulingAuthority, tena
 	// The rule above is the review routes' own and is stricter for a member
 	// than a browse (no grant widens it); the subject is still resolved by the
 	// one helper every browse uses, so the two cannot drift apart.
-	b, ok := s.browseSubjectFor(ctx, "document", scopeID, tenant, scope)
+	b, ok := s.browseSubjectFor(ctx, "document", scopeID, tenant, false, scope)
 	if !ok {
 		return nil, "", connector.WithMessage(connector.ErrStatementReviewForbidden,
 			"reviewing another subject's documents is for an operator; a member reviews its own user scope and its tenant's")

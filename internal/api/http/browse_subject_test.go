@@ -103,6 +103,8 @@ func (f *browseFixture) call(t *testing.T, p auth.Principal, method, target, bod
 	mux.HandleFunc("POST /v1/_document/project", f.srv.handleDocumentProject)
 	mux.HandleFunc("GET /v1/_memory/scopes/{scope}/{scope_id}/keys", f.srv.handleListMemoryEntries)
 	mux.HandleFunc("GET /v1/_memory/scopes/{scope}/{scope_id}/keys/{key...}", f.srv.handleGetMemoryEntry)
+	mux.HandleFunc("PUT /v1/_memory/scopes/{scope}/{scope_id}/keys/{key...}", f.srv.handlePutMemoryEntry)
+	mux.HandleFunc("DELETE /v1/_memory/scopes/{scope}/{scope_id}/keys/{key...}", f.srv.handleDeleteMemoryEntry)
 	ctx, cancel := context.WithTimeout(auth.WithPrincipal(context.Background(), p), 2*time.Second)
 	defer cancel()
 	req := httptest.NewRequest(method, target, strings.NewReader(body)).WithContext(ctx)
@@ -214,6 +216,46 @@ func TestBrowse_AnExplicitAllowLetsAMemberReadAColleaguesScope(t *testing.T) {
 	}
 	if s := f.feed(t, reviewer, "scope=user&scope_id=alice"); s.status != http.StatusOK {
 		t.Errorf("granted reviewer opening alice's feed: %d %s", s.status, s.body)
+	}
+
+	// A browse is a read: the grant that lets the reviewer read alice's scope
+	// lets it change nothing there, though the member baseline allows it every
+	// write in a scope it reaches.
+	for _, c := range []browseCase{
+		{"memory PUT", "PUT", "/v1/_memory/scopes/user/alice/keys/diary", `{"value":"rewritten by bob"}`},
+		{"memory DELETE", "DELETE", "/v1/_memory/scopes/user/alice/keys/diary", ""},
+		{"update_chunk", "POST", "/v1/_document?scope_id=alice",
+			fmt.Sprintf(`{"op":"update_chunk","scope":"user","id":%q,"revision":1,"body":"rewritten by bob"}`, f.secretChunk)},
+		{"delete_document", "POST", "/v1/_document?scope_id=alice", fmt.Sprintf(`{"op":"delete_document","scope":"user","id":%q}`, f.secretDoc)},
+		{"create_document", "POST", "/v1/_document?scope_id=alice", `{"op":"create_document","scope":"user","title":"Planted"}`},
+		{"copy_documents", "POST", "/v1/_document?scope_id=alice", `{"op":"copy_documents","scope":"user","to_scope":"tenant","under_path":"/secret","dry_run":true}`},
+		{"path mkdir", "POST", "/v1/_path?scope_id=alice", `{"op":"mkdir","scope":"user","path":"/planted"}`},
+		{"path rm", "POST", "/v1/_path?scope_id=alice", `{"op":"rm","scope":"user","path":"/secret/plan"}`},
+	} {
+		if rec := f.call(t, reviewer, c.method, c.target, c.body); rec.Code != http.StatusNotFound {
+			t.Errorf("granted reviewer %s in alice's scope: %d %s, want the opaque 404", c.name, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := f.call(t, reviewer, "POST", "/v1/_document?scope_id=alice", export); !strings.Contains(rec.Body.String(), browseSecret) {
+		t.Errorf("alice's document changed under the refused writes: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := f.call(t, reviewer, "GET", "/v1/_memory/scopes/user/alice/keys/diary", ""); !strings.Contains(rec.Body.String(), "alice diary entry") {
+		t.Errorf("alice's memory changed under the refused writes: %d %s", rec.Code, rec.Body.String())
+	}
+	// The reviewer's own scope is its own to write.
+	if rec := f.call(t, reviewer, "PUT", "/v1/_memory/scopes/user/bob/keys/note", `{"value":"mine"}`); rec.Code != http.StatusOK {
+		t.Errorf("reviewer writing its own memory: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := f.call(t, reviewer, "POST", "/v1/_document?scope_id=bob", `{"op":"create_document","scope":"user","title":"Mine"}`); rec.Code != http.StatusOK {
+		t.Errorf("reviewer writing its own document: %d %s", rec.Code, rec.Body.String())
+	}
+	// The operator plane still writes in any subject's scope of its tenant.
+	op := auth.Principal{TenantID: "tnt", Subject: "op", Scopes: []string{auth.ScopeTenant}}
+	if rec := f.call(t, op, "PUT", "/v1/_memory/scopes/user/alice/keys/op-note", `{"value":"from the operator"}`); rec.Code != http.StatusOK {
+		t.Errorf("tenant operator writing alice's memory: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := f.call(t, op, "POST", "/v1/_document?scope_id=alice", `{"op":"create_document","scope":"user","title":"From the operator"}`); rec.Code != http.StatusOK {
+		t.Errorf("tenant operator writing alice's documents: %d %s", rec.Code, rec.Body.String())
 	}
 
 	if rec := f.call(t, plain, "POST", "/v1/_document?scope_id=alice", export); rec.Code != http.StatusNotFound {
@@ -475,5 +517,29 @@ func TestBrowseSubject_EveryScopeIDReaderGoesThroughTheHelper(t *testing.T) {
 				t.Errorf("%s serves %s %s, which the member path admits: resolve its scope_id through browseSubjectFor", fn, r[0], r[1])
 			}
 		}
+	}
+}
+
+// The memory search names its subject in the body: a member searching alice's
+// user scope (or naming her as the documents_scope subject) is refused, and
+// alice herself, on the same corpus, finds her rows.
+func TestMemorySearchEndpoint_AMemberCannotSearchAnotherUsersScope(t *testing.T) {
+	c := newACLSearchCorpus(t)
+	bob := auth.Principal{TenantID: "A", Subject: "bob", Scopes: []string{auth.ScopeRunsCreate}, Effective: memberBaselineSet(t, "A", "bob")}
+	for _, body := range []string{
+		aclSearchBody,
+		`{"query":"audit","scope":"tenant","top_k":50,"documents_scope":"user","documents_scope_id":"alice"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/_memory/search", strings.NewReader(body)).
+			WithContext(auth.WithPrincipal(context.Background(), bob))
+		rec := httptest.NewRecorder()
+		c.s.handleMemorySearch(rec, req)
+		if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "supplier audit") {
+			t.Errorf("member searching %s: %d %s, want the opaque 404", body, rec.Code, rec.Body.String())
+		}
+	}
+	alice := auth.Principal{TenantID: "A", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}, Effective: memberBaselineSet(t, "A", "alice")}
+	if code, _, raw := searchAs(t, c.s, alice, aclSearchBody); code != http.StatusOK || !strings.Contains(string(raw), "supplier audit") {
+		t.Errorf("alice searching her own scope: %d %s", code, raw)
 	}
 }

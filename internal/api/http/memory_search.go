@@ -470,7 +470,7 @@ func (s *Server) memorySearchFilterCtx(r *http.Request, scope, storeScopeID stri
 	if scope != string(store.MemoryScopeTenant) {
 		subject = storeScopeID
 	}
-	b, ok := s.browseSubjectFor(r.Context(), "memory", subject, "", scope)
+	b, ok := s.browseSubjectFor(r.Context(), "memory", subject, "", false, scope)
 	if !ok {
 		return nil, false
 	}
