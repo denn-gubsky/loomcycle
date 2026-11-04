@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -166,5 +167,37 @@ func TestErasure_NamesADeclaredPrincipalOfTheSubject(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(rep.Notes, "\n"), "ops-bot") {
 		t.Fatalf("report notes = %v, want the declared principal named", rep.Notes)
+	}
+}
+
+// The users list marks a tombstone with erased_at, so a client can tell it
+// from a disabled user and not offer the enable and delete the server
+// refuses; a live user carries no erased_at.
+func TestErasure_TheUsersListMarksTheTombstone(t *testing.T) {
+	f := newAppFixture(t, "tenant")
+	ts := appOpServer(t, f)
+	if err := f.st.UserCreate(context.Background(), store.UserRow{TenantID: "acme", Subject: "bob", AccessMode: "tenant", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	eraseAppUser(t, f, false)
+	code, raw := bearerCall(t, ts, appOpBearer, "GET", "/v1/_users", "")
+	if code != http.StatusOK {
+		t.Fatalf("list = %d %s", code, raw)
+	}
+	var resp struct {
+		Users []map[string]any `json:"users"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]any{}
+	for _, u := range resp.Users {
+		seen[u["user_id"].(string)] = u["erased_at"]
+	}
+	if at, _ := seen["google:100"].(string); at == "" {
+		t.Errorf("the tombstone has no erased_at in the list: %s", raw)
+	}
+	if at, ok := seen["bob"]; !ok || at != nil {
+		t.Errorf("a live user's erased_at = %v (present %v), want absent", at, ok)
 	}
 }

@@ -48,6 +48,18 @@ type wireUserRecord struct {
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
 	CreatedBy   string    `json:"created_by"`
+	// ErasedAt marks an erasure's tombstone: it cannot be re-enabled, changed
+	// or deleted (409 user_erased). Absent for every other user.
+	ErasedAt *time.Time `json:"erased_at,omitempty"`
+}
+
+// wireErasedAt is UserRow.ErasedAt on the wire: nil (omitted) for a live user.
+func wireErasedAt(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	u := t.UTC()
+	return &u
 }
 
 // wireUserStatus is the status a caller may set through the users CRUD:
@@ -67,6 +79,7 @@ func toWireUserRecord(r store.UserRow) wireUserRecord {
 		Status:      r.Status,
 		CreatedAt:   r.CreatedAt,
 		CreatedBy:   r.CreatedBy,
+		ErasedAt:    wireErasedAt(r.ErasedAt),
 	}
 }
 

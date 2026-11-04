@@ -23,6 +23,9 @@ export interface UserSummary {
   display_name?: string;
   access_mode?: string; // "tenant" | "isolated"
   status?: string; // "active" | "disabled"
+  // Set when a subject erasure made the user a tombstone: it cannot be
+  // re-enabled, edited or deleted (the server answers 409 user_erased).
+  erased_at?: string;
 }
 
 export interface ListUsersResponse {
@@ -68,6 +71,7 @@ export interface UserRecord {
   status: string; // "active" | "disabled"
   created_at: string;
   created_by: string;
+  erased_at?: string; // set for an erasure's tombstone
 }
 
 export interface CreateUserBody {

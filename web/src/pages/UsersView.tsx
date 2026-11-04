@@ -216,6 +216,7 @@ function UserRow({
   onChanged: () => Promise<void>;
 }) {
   const registered = user.registered === true;
+  const erased = !!user.erased_at;
   const [editing, setEditing] = useState(false);
   const [showTokens, setShowTokens] = useState(false);
   const [displayName, setDisplayName] = useState(user.display_name ?? "");
@@ -326,8 +327,11 @@ function UserRow({
               ))}
             </select>
           ) : registered ? (
-            <span className={"status-pill " + (user.status === "active" ? "status-ok" : "status-retired")}>
-              {user.status}
+            <span
+              className={"status-pill " + (user.status === "active" ? "status-ok" : "status-retired")}
+              title={erased ? `erased ${user.erased_at}` : undefined}
+            >
+              {erased ? "erased" : user.status}
             </span>
           ) : (
             <span className="settings-muted">—</span>
@@ -358,12 +362,18 @@ function UserRow({
                 <button type="button" className="ghost-btn" title="Manage tokens" onClick={() => setShowTokens((v) => !v)}>
                   <KeyRound size={14} /> tokens
                 </button>
-                <button type="button" className="ghost-btn" title="Edit" onClick={() => setEditing(true)}>
-                  <Pencil size={14} /> edit
-                </button>
-                <button type="button" className="ghost-btn danger" title="Delete" onClick={() => void remove()} disabled={busy}>
-                  <Trash2 size={14} /> delete
-                </button>
+                {/* An erased user is a tombstone the server never re-enables,
+                    edits or deletes: offer none of it. */}
+                {!erased && (
+                  <>
+                    <button type="button" className="ghost-btn" title="Edit" onClick={() => setEditing(true)}>
+                      <Pencil size={14} /> edit
+                    </button>
+                    <button type="button" className="ghost-btn danger" title="Delete" onClick={() => void remove()} disabled={busy}>
+                      <Trash2 size={14} /> delete
+                    </button>
+                  </>
+                )}
               </>
             )
           ) : (
