@@ -154,3 +154,24 @@ func TestUserLifecycle_TheUnbindKeepsWhatIsLockedAgainstOperators(t *testing.T) 
 		t.Errorf("victim's groups after the unbind: %v, want idp-guarded kept and idp-plain left", groups)
 	}
 }
+
+func TestErasure_ADelegateCannotEraseAUserOutOfALockedList(t *testing.T) {
+	srv, call, st := lockedFixture(t)
+	srv.SetEraseAudit(&recordingSink{})
+	for _, subject := range []string{"delegate", "victim"} {
+		for _, body := range []string{`{"subject":"` + subject + `","dry_run":true}`, `{"subject":"` + subject + `","dry_run":false,"confirm":"` + subject + `"}`} {
+			if code, out := call(delegateBearer, "POST", "/v1/_erasure", body); code != 403 {
+				t.Errorf("delegate erases %s: %s → %d %s, want 403", subject, body, code, out)
+			}
+		}
+		if b, m := liveLocks(t, st, subject); b != 1 || !m {
+			t.Errorf("%s after the refused erasure: %d live admin-deny bindings, member of bound %v; want 1 and true", subject, b, m)
+		}
+	}
+	if got := aclEvalBash(t, call, delegateBearer); got != "deny" {
+		t.Errorf("after: delegate's Bash = %q, want deny", got)
+	}
+	if code, out := call(legacyAdminBearer, "POST", "/v1/_erasure?tenant=acme", `{"subject":"victim","dry_run":true}`); code != 200 {
+		t.Errorf("the admin's dry run: %d %s, want 200", code, out)
+	}
+}

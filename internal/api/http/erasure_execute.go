@@ -61,6 +61,14 @@ func (s *Server) handleErasureExecute(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, erasure.ErrConfirmMismatch):
 		writeJSONError(w, http.StatusBadRequest, "confirm_mismatch", err.Error())
 		return
+	case errors.Is(err, erasure.ErrLocked):
+		var locked *aclLockedError
+		if errors.As(err, &locked) {
+			writeACLReply(w, locked.reply)
+			return
+		}
+		writeJSONError(w, http.StatusForbidden, "acl_denied", err.Error())
+		return
 	case errors.Is(err, erasure.ErrAuditUnavailable):
 		writeJSONError(w, http.StatusServiceUnavailable, "audit_unavailable",
 			err.Error()+". Erasure cannot be undone, so it is not performed unless who did it "+
@@ -88,6 +96,12 @@ func (s *Server) ErasureExecute(ctx context.Context, req erasure.ExecuteRequest)
 	svc := s.erasureService()
 	if err := svc.Validate(req); err != nil {
 		return erasure.Result{}, err
+	}
+	// The erasure drops the subject's bindings and memberships: a list the
+	// caller is locked out of retiring refuses it, dry run included (the
+	// preview answers what the real call would). Admin erasure is not held.
+	if refusal := s.aclSubjectLockForCaller(ctx, req.Tenant, req.Subject); refusal != nil {
+		return erasure.Result{}, &aclLockedError{reply: *refusal, cause: erasure.ErrLocked}
 	}
 
 	// AUDIT BEFORE DELETING, and refuse if the record will not write.
