@@ -285,6 +285,44 @@ func TestOIDCLogin_AnUnverifiedEmailSubjectNeverLinks(t *testing.T) {
 	}
 }
 
+// A Keycloak-style gate keyed on a declared preferred_username: a plain
+// username signs in on the operator's declaration, with no e-mail at all,
+// but a username that is an address must be the verified e-mail, so a
+// person cannot set their username to another person's address.
+func TestOIDCLogin_ADeclaredUsernameSubjectSignsInButAnAddressMustBeVerified(t *testing.T) {
+	ctx := context.Background()
+	f := newOIDCFixture(t, config.AuthIdentityMap{Tenant: "acme", SubjectClaim: "preferred_username", Provision: config.ProvisionKnown}, nil)
+	for _, sub := range []string{"idp:alice", "idp:bob@acme.example"} {
+		if err := f.st.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: sub, AccessMode: "isolated", Status: "active", CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.p.Set(func(p *oidctest.Provider) {
+		p.Claims = map[string]any{"sub": "u-1", "preferred_username": "alice"}
+	})
+	rec, _, _ := f.login(t, "")
+	sc := cookieNamed(rec, sessionCookiePlain)
+	if rec.Code != http.StatusSeeOther || sc == nil {
+		t.Fatalf("username subject: %d %q, want a session", rec.Code, rec.Header().Get("Location"))
+	}
+	if code, me := meOf(t, f.s, sc); code != http.StatusOK || me["subject"] != "idp:alice" {
+		t.Fatalf("me = %d %v, want idp:alice", code, me)
+	}
+	f.p.Set(func(p *oidctest.Provider) {
+		p.Claims = map[string]any{"sub": "u-2", "preferred_username": "bob@acme.example", "email": "mallory@acme.example", "email_verified": true}
+	})
+	rec, _, _ = f.login(t, "")
+	if code := loginErrorCode(t, rec); code != "login_failed" || cookieNamed(rec, sessionCookiePlain) != nil {
+		t.Fatalf("address username beside another verified address: %q, want login_failed", code)
+	}
+	if ev := lastEvent(t, f.sink, "auth_login_failed"); !strings.Contains(ev.AuthReason, "subject_unverified") {
+		t.Fatalf("reason = %q, want subject_unverified", ev.AuthReason)
+	}
+	if ids, err := f.st.UserIdentityListSubject(ctx, "acme", "idp:bob@acme.example"); err != nil || len(ids) != 0 {
+		t.Fatalf("the address user was linked: %v %v", ids, err)
+	}
+}
+
 func TestOIDCLogout_SendsTheProvidersEndSessionURL(t *testing.T) {
 	f := newOIDCFixture(t, config.AuthIdentityMap{Tenant: "acme", Provision: config.ProvisionAuto},
 		func(o *config.AuthOIDCGate) { o.EndSession = true })

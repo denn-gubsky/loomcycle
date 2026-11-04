@@ -71,6 +71,9 @@ func TestResolveAuth_ANonImmutableSubjectClaimNeedsADeclaration(t *testing.T) {
 		"oidc generic email declared": func(t *testing.T) *Config {
 			return oidc(t, "generic", "https://idp.example", subject("email", true))
 		},
+		"oidc keycloak preferred_username declared": func(t *testing.T) *Config {
+			return oidc(t, "keycloak", "https://idp.example/realms/acme", subject("preferred_username", true))
+		},
 		"header email declared":   func(t *testing.T) *Config { return header(t, subject("email", true)) },
 		"external email declared": func(t *testing.T) *Config { return external(t, subject("email", true)) },
 	}

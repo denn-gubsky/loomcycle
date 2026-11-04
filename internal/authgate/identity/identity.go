@@ -114,12 +114,17 @@ func Tenant(m *config.AuthIdentityMap, a authgate.Assertion) (string, error) {
 // configured subject claim (sub by default, read from the assertion's own
 // Subject when the gate sent no claims).
 //
-// An address claim (config.SubjectClaimIsAddress) is keyed only when the
-// gate verified that address: EmailVerified is each gate's reading of its
-// provider's verification (an OIDC email_verified, an edge or bridge's own
-// word), and it speaks for the assertion's Email, so the claim must be that
-// address. Every gate kind with an identity map resolves its subject here,
-// before any user is looked up or linked.
+// An address subject is keyed only when the gate verified that address. A
+// subject is an address when its claim is one by definition
+// (config.SubjectClaimIsAddress: email, upn) or when its value is one
+// (holds '@'), so a declared username claim holding "alice" passes on the
+// operator's declaration, while the same claim holding someone's address
+// does not. EmailVerified is each gate's reading of its provider's
+// verification (an OIDC email_verified, an edge or bridge's own word), and
+// it speaks for the assertion's Email, so the subject must be that address.
+// sub is exempt: it is the provider's own id whatever its shape, never a
+// claim a person chooses. Every gate kind with an identity map resolves its
+// subject here, before any user is looked up or linked.
 func Subject(gate string, m *config.AuthIdentityMap, a authgate.Assertion) (string, error) {
 	claim := "sub"
 	if m != nil && m.SubjectClaim != "" {
@@ -136,7 +141,8 @@ func Subject(gate string, m *config.AuthIdentityMap, a authgate.Assertion) (stri
 	if !ok {
 		return "", ErrSubjectInvalid
 	}
-	if config.SubjectClaimIsAddress(claim) && (!a.EmailVerified || !strings.EqualFold(v, a.Email)) {
+	address := config.SubjectClaimIsAddress(claim) || (claim != "sub" && strings.Contains(v, "@"))
+	if address && (!a.EmailVerified || !strings.EqualFold(v, a.Email)) {
 		return "", ErrSubjectUnverified
 	}
 	return gate + ":" + v, nil

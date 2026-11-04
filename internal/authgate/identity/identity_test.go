@@ -123,6 +123,46 @@ func TestSubject_AnAddressClaimIsKeyedOnlyWhenVerified(t *testing.T) {
 	}
 }
 
+// The check follows the VALUE, not a list of claim names: a declared claim
+// that holds a plain username ("alice") is keyed on the declaration alone,
+// while any claim whose value is an address (mail, preferred_username, a
+// custom claim) must be the verified e-mail. email and upn are addresses by
+// definition. sub is the provider's own id, whatever its shape.
+func TestSubject_AnAddressShapedValueMustBeTheVerifiedEmail(t *testing.T) {
+	m := &config.AuthIdentityMap{Tenant: "a"}
+	as := func(claim, v, email string, verified bool) authgate.Assertion {
+		return authgate.Assertion{Subject: "u-1", Email: email, EmailVerified: verified, Claims: map[string]any{"sub": "u-1", claim: v}}
+	}
+	for name, tc := range map[string]struct {
+		claim string
+		a     authgate.Assertion
+		want  string // "" = ErrSubjectUnverified
+	}{
+		"username preferred_username":          {"preferred_username", as("preferred_username", "alice", "", false), "g:alice"},
+		"username unique_name":                 {"unique_name", as("unique_name", "alice", "", false), "g:alice"},
+		"address preferred_username, other":    {"preferred_username", as("preferred_username", "bob@acme.example", "alice@acme.example", true), ""},
+		"address preferred_username, verified": {"preferred_username", as("preferred_username", "alice@acme.example", "alice@acme.example", true), "g:alice@acme.example"},
+		"mail unverified":                      {"mail", as("mail", "alice@acme.example", "alice@acme.example", false), ""},
+		"custom claim address, unverified":     {"work_address", as("work_address", "alice@acme.example", "", false), ""},
+		"mail verified":                        {"mail", as("mail", "alice@acme.example", "alice@acme.example", true), "g:alice@acme.example"},
+		"upn without @, unverified":            {"upn", as("upn", "alice", "", false), ""},
+		"sub that looks like an address":       {"sub", as("sub", "u-1", "", false), "g:u-1"},
+	} {
+		m.SubjectClaim = tc.claim
+		if tc.claim == "sub" {
+			tc.a.Claims["sub"] = "alice@acme.example"
+			tc.want = "g:alice@acme.example"
+		}
+		got, err := Subject("g", m, tc.a)
+		switch {
+		case tc.want == "" && !errors.Is(err, ErrSubjectUnverified):
+			t.Errorf("%s: %q %v, want ErrSubjectUnverified", name, got, err)
+		case tc.want != "" && (err != nil || got != tc.want):
+			t.Errorf("%s: %q %v, want %q", name, got, err, tc.want)
+		}
+	}
+}
+
 func syncMap(provision bool) *config.AuthIdentityMap {
 	return &config.AuthIdentityMap{Tenant: "acme", SyncGroups: true, Trusted: true, GroupsClaim: "groups",
 		GroupsProvision: provision, GroupMap: map[string]string{"hr-admins": "admins"}}

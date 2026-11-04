@@ -388,15 +388,14 @@ func resolveIdentityMap(gate string, m *AuthIdentityMapConfig, floor AuthNewUser
 	return out, nil
 }
 
-// SubjectClaimIsAddress reports whether a subject claim carries an
-// e-mail-shaped address: email, and the directory login names upn,
-// preferred_username and unique_name. A subject keyed on one names whoever
-// the provider says holds that address, so every assertion must also say the
-// address is verified (identity.Subject). A closed list on purpose: an
-// address claim missing from it would be keyed without that check.
+// SubjectClaimIsAddress reports whether a subject claim is an address by
+// definition (email, upn), whatever its value looks like. Any other claim
+// counts as an address when its value is one (identity.Subject reads the
+// value), so a username claim such as preferred_username, or a custom claim,
+// is checked exactly when it holds an address.
 func SubjectClaimIsAddress(claim string) bool {
 	switch claim {
-	case "email", "upn", "preferred_username", "unique_name":
+	case "email", "upn":
 		return true
 	}
 	return false
