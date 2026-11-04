@@ -776,6 +776,20 @@ func (s *Server) endSubjectAppSignIns(ctx context.Context, tenant, subject strin
 	return errors.Join(revokeErr, retireErr)
 }
 
+// endAppSignInsBeforeReEnable ends the app sign-ins of a user about to be
+// re-enabled from disabled. None can be made while the user is disabled, so
+// one live now came from a code exchange that raced the disable: ending it
+// keeps "a re-enable restores no app sign-in" true for that window too. A
+// user who is not disabled (a no-op PATCH, a pending approval) keeps its
+// sign-ins.
+func (s *Server) endAppSignInsBeforeReEnable(ctx context.Context, tenant, subject string) error {
+	u, err := s.store.UserGet(ctx, tenant, subject)
+	if err != nil || u.Status != "disabled" {
+		return nil // a missing user is the handler's to report
+	}
+	return s.endSubjectAppSignIns(ctx, tenant, subject)
+}
+
 // retireAppToken retires one access token at once.
 func (s *Server) retireAppToken(ctx context.Context, defID string) {
 	if err := s.store.OperatorTokenDefSetRetiredAt(ctx, defID, time.Now().UTC()); err != nil {

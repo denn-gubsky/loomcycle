@@ -292,6 +292,10 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		if p, ok := auth.PrincipalFromContext(r.Context()); ok {
 			by = p.Subject
 		}
+		if err := s.endAppSignInsBeforeReEnable(r.Context(), tenant, subject); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "app_sign_in_revoke_failed", err.Error())
+			return
+		}
 		switch err := s.reactivateRemoved(r.Context(), tenant, subject, by); {
 		case err == nil:
 			req.Status = nil

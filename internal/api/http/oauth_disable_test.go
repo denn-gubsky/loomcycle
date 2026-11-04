@@ -223,3 +223,85 @@ func TestRemoval_AFailedAppSignInEndStillRetiresTheOtherCredentials(t *testing.T
 		t.Fatal("the user's Web UI session outlived the disable")
 	}
 }
+
+// seedLiveFamily writes a live app sign-in for (tenant, subject), standing
+// for one a code exchange created while the user was being disabled.
+func seedLiveFamily(t *testing.T, st store.Store, id, tenant, subject string) {
+	t.Helper()
+	now := time.Now().UTC()
+	if err := st.OAuthFamilyCreate(context.Background(), store.OAuthFamilyRow{FamilyID: id, ClientID: "board", TenantID: tenant,
+		Subject: subject, Gate: "google", CreatedAt: now, LastUsedAt: now,
+		IdleExpiresAt: now.Add(time.Hour), AbsoluteExpiresAt: now.Add(24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func familyRevoked(t *testing.T, st store.Store, id string) bool {
+	t.Helper()
+	f, err := st.OAuthFamilyGet(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return !f.RevokedAt.IsZero()
+}
+
+// TestReEnable_EndsAnyAppSignInLeftLive: no app sign-in can be made while a
+// user is disabled, so one live at the re-enable came from a code exchange
+// that raced the disable. Every re-enable path ends it.
+func TestReEnable_EndsAnyAppSignInLeftLive(t *testing.T) {
+	t.Run("operator patch", func(t *testing.T) {
+		f := newAppFixture(t, "tenant")
+		ts := appOpServer(t, f)
+		if code, body := bearerCall(t, ts, appOpBearer, "PATCH", "/v1/_users/google:100", `{"status":"disabled"}`); code != http.StatusOK {
+			t.Fatalf("disable = %d %s", code, body)
+		}
+		seedLiveFamily(t, f.st, "fam-raced", "acme", "google:100")
+		if code, body := bearerCall(t, ts, appOpBearer, "PATCH", "/v1/_users/google:100", `{"status":"active"}`); code != http.StatusOK {
+			t.Fatalf("re-enable = %d %s", code, body)
+		}
+		if !familyRevoked(t, f.st, "fam-raced") {
+			t.Fatal("an app sign-in made during the disable survived the re-enable")
+		}
+	})
+	t.Run("active user keeps them", func(t *testing.T) {
+		f := newAppFixture(t, "tenant")
+		ts := appOpServer(t, f)
+		_, rt := f.signIn(t)
+		if code, body := bearerCall(t, ts, appOpBearer, "PATCH", "/v1/_users/google:100", `{"status":"active"}`); code != http.StatusOK {
+			t.Fatalf("no-op re-enable = %d %s", code, body)
+		}
+		if rec, body := f.refresh(t, rt); rec.Code != http.StatusOK {
+			t.Fatalf("a no-op status patch ended an active user's app sign-in: %d %v", rec.Code, body)
+		}
+	})
+	t.Run("removal reactivate", func(t *testing.T) {
+		f := newAppFixture(t, "tenant")
+		ts := appOpServer(t, f)
+		if err := f.s.startRemoval(context.Background(), "acme", "google:100", "", store.RemovalReasonDormant, "test"); err != nil {
+			t.Fatal(err)
+		}
+		seedLiveFamily(t, f.st, "fam-raced", "acme", "google:100")
+		if code, body := bearerCall(t, ts, appOpBearer, "PATCH", "/v1/_users/google:100", `{"status":"active"}`); code != http.StatusOK {
+			t.Fatalf("re-enable = %d %s", code, body)
+		}
+		if !familyRevoked(t, f.st, "fam-raced") {
+			t.Fatal("an app sign-in made during the removal survived the re-enable")
+		}
+	})
+	t.Run("scim reactivate", func(t *testing.T) {
+		f := newSCIMFixture(t, scimOpts{authoritative: true})
+		id, subject := f.scimUser(t, bSCIMAcme, "alice@acme.test")
+		off := scimPatchBody(t, map[string]any{"op": "replace", "path": "active", "value": false})
+		on := scimPatchBody(t, map[string]any{"op": "replace", "path": "active", "value": true})
+		if code, out := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Users/"+id, off); code != http.StatusOK {
+			t.Fatalf("SCIM disable = %d %v", code, out)
+		}
+		seedLiveFamily(t, f.st, "fam-raced", "acme", subject)
+		if code, out := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Users/"+id, on); code != http.StatusOK {
+			t.Fatalf("SCIM re-enable = %d %v", code, out)
+		}
+		if !familyRevoked(t, f.st, "fam-raced") {
+			t.Fatal("an app sign-in made during the SCIM removal survived the re-enable")
+		}
+	})
+}

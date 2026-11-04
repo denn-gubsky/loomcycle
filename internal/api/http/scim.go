@@ -1020,6 +1020,12 @@ func (s *Server) scimReactivate(ctx context.Context, c scimCtx, subject string) 
 		slog.Error("scim: resetting a user to the floor failed", "gate", c.g.Name, "err", err)
 		return "", internal
 	}
+	// The claim holds the user disabled: an app sign-in live now raced the
+	// disable, and the re-enable must not revive it (endSubjectAppSignIns).
+	if err := s.endSubjectAppSignIns(ctx, c.tenant, subject); err != nil {
+		slog.Error("scim: ending a re-enabled user's app sign-ins failed", "gate", c.g.Name, "err", err)
+		return "", internal
+	}
 	restored, ok, err := s.store.SCIMReactivate(ctx, c.g.Name, c.tenant, subject)
 	switch {
 	case err != nil:
