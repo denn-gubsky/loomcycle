@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -426,5 +427,89 @@ func TestRestore_WithoutUsersAndTokenLimitsSectionsRestoresAsBefore(t *testing.T
 	budgets, _ := dst.TokenLimitsAll(ctx)
 	if len(users) != 0 || len(budgets) != 0 || len(carryFor(t, dst, limits.MonthStart(time.Now()))) != 0 {
 		t.Errorf("an old-format restore wrote users %v, budgets %v", users, budgets)
+	}
+}
+
+// An erasure's tombstone survives a snapshot: restored onto a fresh store it
+// is still erased, so it can be neither re-enabled nor renamed, and the
+// subject id stays reserved.
+func TestRoundTrip_AnErasedUserStaysATombstone(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+
+	if err := src.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "alice", DisplayName: "Alice",
+		AccessMode: "tenant", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	erasedAt := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	if _, err := src.UserErase(ctx, "acme", "alice", erasedAt); err != nil {
+		t.Fatal(err)
+	}
+	raw := mustCapture(t, src)
+	if res := mustRestore(t, dst, raw, RestoreOptions{}); res.UsersRestored != 1 {
+		t.Fatalf("users restored = %d, want 1", res.UsersRestored)
+	}
+	u, err := dst.UserGet(ctx, "acme", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !u.ErasedAt.Equal(erasedAt) || u.Status != "disabled" || u.DisplayName != "" {
+		t.Fatalf("restored tombstone = %+v, want erased at %v, disabled, no name", u, erasedAt)
+	}
+	active := "active"
+	if err := dst.UserUpdate(ctx, "acme", "alice", store.UserPatch{Status: &active}); !errors.Is(err, store.ErrUserErased) {
+		t.Fatalf("re-enabling the restored tombstone = %v, want ErrUserErased", err)
+	}
+}
+
+// A hand-edited snapshot cannot carry a tombstone's personal data back: an
+// erased entry is restored with no display name, disabled.
+func TestRestore_AnErasedEntryIsRestoredWithoutItsName(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+	if err := src.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "alice", AccessMode: "tenant", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.UserErase(ctx, "acme", "alice", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	raw := editSection(t, mustCapture(t, src), "users", func(sec map[string]any) {
+		e := sec["entries"].([]any)[0].(map[string]any)
+		e["display_name"], e["status"] = "Alice Again", "active"
+	})
+	mustRestore(t, dst, raw, RestoreOptions{})
+	if u, err := dst.UserGet(ctx, "acme", "alice"); err != nil || u.DisplayName != "" || u.Status != "disabled" || u.ErasedAt.IsZero() {
+		t.Fatalf("restored erased entry = %+v, %v; want a nameless disabled tombstone", u, err)
+	}
+}
+
+// A snapshot that has the user erased while this instance has it live keeps
+// the live row and says so: an erasure here is the operator's call.
+func TestRestore_AnErasedSnapshotRowOverALiveUserWarns(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	ctx := context.Background()
+	for _, s := range []store.Store{src, dst} {
+		if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "alice", AccessMode: "tenant", Status: "active"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := src.UserErase(ctx, "acme", "alice", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	res := mustRestore(t, dst, mustCapture(t, src), RestoreOptions{})
+	if !strings.Contains(strings.Join(res.Warnings, "\n"), "acme/alice: the snapshot has this user erased") {
+		t.Fatalf("warnings = %v, want the erased snapshot row named", res.Warnings)
+	}
+	if u, _ := dst.UserGet(ctx, "acme", "alice"); !u.ErasedAt.IsZero() || u.Status != "active" {
+		t.Fatalf("the live user changed: %+v", u)
 	}
 }

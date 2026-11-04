@@ -20,6 +20,7 @@ import (
 // *store.ErrConflict{Kind:"user", ID:subject} on a (tenant, subject) PK
 // violation (modernc.org/sqlite surfaces it as "UNIQUE constraint failed").
 func (s *Store) UserCreate(ctx context.Context, row store.UserRow) error {
+	row = row.AsTombstone()
 	if !store.ValidUserAccessMode(row.AccessMode) {
 		return fmt.Errorf("user create: access_mode must be one of tenant|isolated, got %q", row.AccessMode)
 	}
@@ -38,11 +39,11 @@ func (s *Store) UserCreate(ctx context.Context, row store.UserRow) error {
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO users (
-			tenant_id, subject, display_name, access_mode, status, created_at, created_by
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
+			tenant_id, subject, display_name, access_mode, status, created_at, created_by, erased_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		row.TenantID, row.Subject, row.DisplayName, row.AccessMode, row.Status,
-		createdAt.UnixNano(), row.CreatedBy,
+		createdAt.UnixNano(), row.CreatedBy, erasedAtArg(row.ErasedAt),
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
@@ -186,4 +187,12 @@ func (s *Store) UserUpdate(ctx context.Context, tenantID, subject string, patch 
 // removed. Owned data (runs / sessions / memory) has no FK here and stays.
 func (s *Store) UserDelete(ctx context.Context, tenantID, subject string) (bool, error) {
 	return sqlshared.UserDeleteUnbind(ctx, s.shared(), tenantID, subject)
+}
+
+// erasedAtArg binds UserRow.ErasedAt: NULL for a live user.
+func erasedAtArg(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UnixNano()
 }

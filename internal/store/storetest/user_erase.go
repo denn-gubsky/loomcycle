@@ -246,3 +246,31 @@ func testUserErasedTombstoneRefusesEveryWayBack(t *testing.T, s store.Store) {
 		t.Error("a new user took the erased subject id")
 	}
 }
+
+// UserCreate with ErasedAt writes a tombstone — erased_at kept, no display
+// name, disabled — that every guard then holds (a snapshot restore's path).
+func testUserCreateWithErasedAtIsATombstone(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	at := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "alice", DisplayName: "Alice",
+		AccessMode: "tenant", Status: "active", ErasedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	u, err := s.UserGet(ctx, "acme", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !u.ErasedAt.Equal(at) || u.DisplayName != "" || u.Status != "disabled" {
+		t.Fatalf("created tombstone = %+v, want erased at %v, no name, disabled", u, at)
+	}
+	active := "active"
+	if err := s.UserUpdate(ctx, "acme", "alice", store.UserPatch{Status: &active}); !errors.Is(err, store.ErrUserErased) {
+		t.Fatalf("re-enabling the created tombstone = %v, want ErrUserErased", err)
+	}
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "bob", AccessMode: "tenant", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	if u, _ := s.UserGet(ctx, "acme", "bob"); !u.ErasedAt.IsZero() {
+		t.Fatalf("a live user was created erased: %+v", u)
+	}
+}

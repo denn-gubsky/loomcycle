@@ -22,6 +22,7 @@ import (
 // *store.ErrConflict{Kind:"user", ID:subject} on a (tenant, subject) PK
 // violation (Postgres SQLSTATE 23505 = unique_violation).
 func (s *Store) UserCreate(ctx context.Context, row store.UserRow) error {
+	row = row.AsTombstone()
 	if !store.ValidUserAccessMode(row.AccessMode) {
 		return fmt.Errorf("user create: access_mode must be one of tenant|isolated, got %q", row.AccessMode)
 	}
@@ -40,10 +41,10 @@ func (s *Store) UserCreate(ctx context.Context, row store.UserRow) error {
 	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO users (
-			tenant_id, subject, display_name, access_mode, status, created_at, created_by
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+			tenant_id, subject, display_name, access_mode, status, created_at, created_by, erased_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`,
-		row.TenantID, row.Subject, row.DisplayName, row.AccessMode, row.Status, createdAt, row.CreatedBy,
+		row.TenantID, row.Subject, row.DisplayName, row.AccessMode, row.Status, createdAt, row.CreatedBy, erasedAtArg(row.ErasedAt),
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -192,4 +193,12 @@ func (s *Store) UserUpdate(ctx context.Context, tenantID, subject string, patch 
 // removed. Owned data (runs / sessions / memory) has no FK here and stays.
 func (s *Store) UserDelete(ctx context.Context, tenantID, subject string) (bool, error) {
 	return sqlshared.UserDeleteUnbind(ctx, s.shared(), tenantID, subject)
+}
+
+// erasedAtArg binds UserRow.ErasedAt: NULL for a live user.
+func erasedAtArg(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
 }

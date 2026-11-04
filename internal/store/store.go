@@ -1736,6 +1736,17 @@ type UserRow struct {
 	ErasedAt    time.Time
 }
 
+// AsTombstone is row as a tombstone keeps it when ErasedAt is set — no
+// display name, disabled — and row unchanged otherwise. UserCreate applies
+// it, so a row carried in with ErasedAt (a snapshot restore) can never bring
+// a tombstone back to life or its name back.
+func (row UserRow) AsTombstone() UserRow {
+	if !row.ErasedAt.IsZero() {
+		row.DisplayName, row.Status = "", "disabled"
+	}
+	return row
+}
+
 // ErrUserErased: the user is an erasure's tombstone, which no write may
 // re-enable, rename or delete.
 var ErrUserErased = errors.New("store: the user was erased")
@@ -2587,6 +2598,7 @@ type UserStore interface {
 	// PK collision. Stamps CreatedAt to now if the caller left it zero.
 	// Rejects an AccessMode / Status outside the shared enum (so a direct
 	// store caller can't persist a value the wire layer would refuse).
+	// A row with ErasedAt set is written as a tombstone (UserRow.AsTombstone).
 	UserCreate(ctx context.Context, row UserRow) error
 
 	// UserGet returns one identity row by (tenantID, subject). Returns

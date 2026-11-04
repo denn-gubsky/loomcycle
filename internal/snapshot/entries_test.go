@@ -135,7 +135,8 @@ var pinnedEntryKeys = map[string][]string{
 	"SqlMemSection":             {"version", "tier", "scopes", "skipped_scopes"},
 	"CaptureFindingsSection":    {"version", "entries"},
 
-	"UserEntry": {"tenant_id", "subject", "display_name", "access_mode", "status", "created_at", "created_by"},
+	// erased_at marks an erasure's tombstone (a time, no personal data).
+	"UserEntry": {"tenant_id", "subject", "display_name", "access_mode", "status", "created_at", "created_by", "erased_at"},
 	// A bootstrap marker names a tenant, a time and the route that wrote it
 	// ("users", "invite:<gate name>", "backfill"): no login, no credential.
 	"TenantBootstrapEntry": {"tenant_id", "at", "via"},
