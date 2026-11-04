@@ -2,15 +2,15 @@ package http
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authgate/lifecycle"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -247,7 +247,8 @@ func TestACLDef_ASharedListCannotShadowAConfigList(t *testing.T) {
 // The removal policy's erase stage has no caller either, and a delegate can
 // set a removal going. Erasure is all or nothing, so a subject carrying a
 // list locked against the tenant's operators is not erased this pass: the
-// stage is deferred and the binding survives. Another subject is erased.
+// stage is deferred to a later sweep and the binding survives. Another
+// subject is erased.
 func TestUserLifecycle_TheEraseStageDefersASubjectWithALockedList(t *testing.T) {
 	srv, ts, st := aclMgmtServer(t, authz.ModeCompat)
 	srv.SetEraseAudit(&recordingSink{})
@@ -266,8 +267,13 @@ func TestUserLifecycle_TheEraseStageDefersASubjectWithALockedList(t *testing.T) 
 	for _, u := range []struct{ subject, list string }{{"victim", "guard"}, {"other", "plain"}} {
 		admin("POST", "/v1/_users", `{"subject":"`+u.subject+`"}`)
 		admin("POST", "/v1/_aclbinding", `{"acl":"`+u.list+`","subject_kind":"user","subject_id":"`+u.subject+`"}`)
-		if err := srv.startRemoval(ctx, "acme", u.subject, "", store.RemovalReasonOperator, "delegate"); err != nil {
+		if err := srv.startRemovalWith(ctx, lifecycle.Policy{UnbindAfter: time.Millisecond, EraseAfter: time.Millisecond},
+			"acme", u.subject, "", store.RemovalReasonOperator, "delegate"); err != nil {
 			t.Fatal(err)
+		}
+		// The unbind ran (and kept guard): the erase is what is due.
+		if ok, err := st.AuthRemovalMarkUnbound(ctx, "acme", u.subject, time.Now()); err != nil || !ok {
+			t.Fatalf("unbind %s: %v %v", u.subject, ok, err)
 		}
 	}
 	erase := func(subject string) error {
@@ -279,8 +285,11 @@ func TestUserLifecycle_TheEraseStageDefersASubjectWithALockedList(t *testing.T) 
 		_, err = srv.eraseRemoved(ctx, row, time.Now())
 		return err
 	}
-	if err := erase("victim"); !errors.Is(err, erasure.ErrLocked) {
-		t.Errorf("the erase stage on victim: %v, want it deferred with erasure.ErrLocked", err)
+	if err := erase("victim"); err != nil {
+		t.Errorf("the erase stage on victim: %v, want it deferred without an error", err)
+	}
+	if row, err := st.AuthRemovalGet(ctx, "acme", "victim"); err != nil || !row.ErasedAt.IsZero() || row.Stage != "" || !row.EraseDueAt.After(time.Now()) {
+		t.Errorf("victim's removal after the deferral: %+v %v, want not erased, no stage held, erase due later", row, err)
 	}
 	rows, err := st.AclBindingList(ctx, "acme", false)
 	if err != nil {
@@ -295,5 +304,70 @@ func TestUserLifecycle_TheEraseStageDefersASubjectWithALockedList(t *testing.T) 
 	}
 	if err := erase("other"); err != nil {
 		t.Errorf("the erase stage on a subject with no locked list: %v, want it erased", err)
+	}
+}
+
+// A deferred erase must not hold the queue: the sweep reads due removals
+// oldest first in batches, so a batch of subjects that stay locked ahead of
+// an unlocked one would stop every sweep before reaching it. Each deferral
+// moves the subject out of the due set until a later sweep re-checks it.
+func TestUserLifecycle_LockedSubjectsDoNotStarveTheRemovalQueue(t *testing.T) {
+	srv, ts, st := aclMgmtServer(t, authz.ModeCompat)
+	srv.SetEraseAudit(&recordingSink{})
+	ctx := context.Background()
+	admin := func(method, path, body string) {
+		t.Helper()
+		if code, out := bearerCall(t, ts, legacyAdminBearer, method, path+"?tenant=acme", body); code >= 300 {
+			t.Fatalf("admin %s %s: %d %s", method, path, code, out)
+		}
+	}
+	deny := `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]}]`
+	admin("POST", "/v1/_acldef", `{"op":"create","name":"guard","rules":`+deny+`}`)
+	admin("POST", "/v1/_acldef", `{"op":"create","name":"t-lock","rules":[{"effect":"deny","actions":["author","retire"],"resources":["def:acl/guard"]}]}`)
+	admin("POST", "/v1/_aclbinding", `{"acl":"t-lock","subject_kind":"tenant"}`)
+	policy := lifecycle.Policy{UnbindAfter: time.Millisecond, EraseAfter: time.Millisecond}
+	start := time.Now()
+	add := func(subject string, locked bool) {
+		t.Helper()
+		if err := st.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: subject, Status: "active", AccessMode: "isolated", CreatedAt: start}); err != nil {
+			t.Fatal(err)
+		}
+		if locked {
+			if _, err := st.AclBindingPut(ctx, store.AclBindingRow{TenantID: "acme", ACLName: "guard", SubjectKind: "user", SubjectID: subject}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := srv.startRemovalWith(ctx, policy, "acme", subject, "", store.RemovalReasonOperator, "delegate"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// More locked subjects than one sweep batch, all older than the free one.
+	for i := 0; i <= lifecycleBatch; i++ {
+		add(fmt.Sprintf("a-locked-%03d", i), true)
+	}
+	add("z-free", false)
+
+	// A sweep advances each removal by at most one stage: the first reaches
+	// the free subject's unbind past the locked ones' deferred erases, the
+	// second its erase.
+	now := time.Now().Add(time.Minute)
+	srv.AuthLifecycleSweep(ctx, now)
+	if row, err := st.AuthRemovalGet(ctx, "acme", "z-free"); err != nil || row.UnboundAt.IsZero() {
+		t.Fatalf("the unlocked subject behind %d locked ones after one sweep: %+v %v, want it unbound", lifecycleBatch+1, row, err)
+	}
+	srv.AuthLifecycleSweep(ctx, now)
+	if row, err := st.AuthRemovalGet(ctx, "acme", "z-free"); err != nil || row.ErasedAt.IsZero() {
+		t.Fatalf("the unlocked subject after a second sweep: %+v %v, want it erased", row, err)
+	}
+	locked, err := st.AuthRemovalGet(ctx, "acme", "a-locked-000")
+	if err != nil || !locked.ErasedAt.IsZero() || locked.Stage != "" || !locked.EraseDueAt.After(now) {
+		t.Fatalf("a locked subject after the sweep: %+v %v, want deferred: not erased, no stage held, erase due later", locked, err)
+	}
+	// A later sweep re-checks it: still locked, so deferred again, not lost.
+	later := locked.EraseDueAt.Add(time.Minute)
+	srv.AuthLifecycleSweep(ctx, later)
+	again, err := st.AuthRemovalGet(ctx, "acme", "a-locked-000")
+	if err != nil || !again.ErasedAt.IsZero() || !again.EraseDueAt.After(later) {
+		t.Errorf("a locked subject on a later sweep: %+v %v, want re-checked and deferred again", again, err)
 	}
 }

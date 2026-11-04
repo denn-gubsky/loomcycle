@@ -305,8 +305,22 @@ func (s *Server) advanceRemoval(ctx context.Context, r store.AuthRemovalRow, now
 // erase_intent before anything is deleted and refuses when it cannot, so an
 // erasure nobody could audit never happens; the removal then stays due.
 func (s *Server) eraseRemoved(ctx context.Context, r store.AuthRemovalRow, now time.Time) (bool, error) {
-	if err := s.lifecycleEraseLock(ctx, r.TenantID, r.Subject); err != nil {
+	list, err := s.lifecycleEraseLock(ctx, r.TenantID, r.Subject)
+	if err != nil {
 		return false, err
+	}
+	if list != "" {
+		// Deferred, not failed: the erase leaves the due set until the next
+		// sweep re-checks it, so subjects that stay locked never hold the
+		// queue ahead of the ones that can go, and the deferral counts as
+		// this pass's handling of the row.
+		ok, err := s.store.AuthRemovalDeferErase(ctx, r.TenantID, r.Subject, now.Add(lockedEraseRecheck))
+		if err != nil {
+			return false, err
+		}
+		slog.WarnContext(ctx, "auth: erase stage deferred: the subject carries a list locked against the tenant's operators",
+			"tenant", r.TenantID, "subject", r.Subject, "list", list, "recheck_at", now.Add(lockedEraseRecheck))
+		return ok, nil
 	}
 	rep, err := s.ErasureReport(ctx, r.TenantID, r.Subject)
 	if err != nil {
