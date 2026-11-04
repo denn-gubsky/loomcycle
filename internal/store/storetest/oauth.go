@@ -3,6 +3,8 @@ package storetest
 import (
 	"context"
 	"errors"
+	"reflect"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -333,5 +335,43 @@ func testOAuthSubjectDeleteRemovesItsSignIns(t *testing.T, s store.Store) {
 	}
 	if _, err := s.OAuthFamilyGet(ctx, "f-bob"); err != nil {
 		t.Fatalf("another subject's family went: %v", err)
+	}
+}
+
+// OAuthFamilyRevokeSubject ends that subject's live families only, and
+// reports them.
+func testOAuthFamilyRevokeSubjectRevokesOnlyItsLiveFamilies(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	mk := func(id, tenant, subject string) {
+		f := oauthFamily(id, "board")
+		f.TenantID, f.Subject = tenant, subject
+		if err := s.OAuthFamilyCreate(ctx, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("f-a1", "acme", "alice")
+	mk("f-a2", "acme", "alice")
+	mk("f-done", "acme", "alice")
+	mk("f-bob", "acme", "bob")
+	mk("f-other", "other", "alice")
+	if _, err := s.OAuthFamilyRevoke(ctx, "f-done", "earlier", pwgT0); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.OAuthFamilyRevokeSubject(ctx, "acme", "alice", "user_disabled", pwgT0.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(ids)
+	if !reflect.DeepEqual(ids, []string{"f-a1", "f-a2"}) {
+		t.Fatalf("revoked %v, want the subject's live families", ids)
+	}
+	for id, want := range map[string]string{"f-a1": "user_disabled", "f-a2": "user_disabled", "f-done": "earlier", "f-bob": "", "f-other": ""} {
+		f, err := s.OAuthFamilyGet(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.RevokeReason != want || f.RevokedAt.IsZero() != (want == "") {
+			t.Errorf("%s = revoked %v reason %q, want reason %q", id, f.RevokedAt, f.RevokeReason, want)
+		}
 	}
 }

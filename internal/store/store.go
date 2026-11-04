@@ -4621,6 +4621,11 @@ type OAuthStore interface {
 	// OAuthFamilyRevokeClient revokes every live family of clientID and
 	// returns their ids.
 	OAuthFamilyRevokeClient(ctx context.Context, clientID, reason string, at time.Time) ([]string, error)
+	// OAuthFamilyRevokeSubject revokes every live family of (tenantID,
+	// subject) — a disabled user's app sign-ins end with the disable — and
+	// returns their ids. A revoked family stays revoked when the user is
+	// re-enabled: the person signs in to the app again.
+	OAuthFamilyRevokeSubject(ctx context.Context, tenantID, subject, reason string, at time.Time) ([]string, error)
 	// OAuthRefreshCreate inserts a refresh token's hash into its family.
 	OAuthRefreshCreate(ctx context.Context, row OAuthRefreshRow) error
 	// OAuthRefreshUse marks a refresh token used and returns it with

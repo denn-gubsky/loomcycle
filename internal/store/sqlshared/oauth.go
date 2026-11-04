@@ -217,9 +217,20 @@ func OAuthFamilyRevoke(ctx context.Context, db DB, familyID, reason string, at t
 
 // OAuthFamilyRevokeClient revokes every live family of clientID.
 func OAuthFamilyRevokeClient(ctx context.Context, db DB, clientID, reason string, at time.Time) ([]string, error) {
+	return revokeFamiliesWhere(ctx, db, `client_id = ?`, []any{clientID}, reason, at)
+}
+
+// OAuthFamilyRevokeSubject revokes every live family of (tenantID, subject).
+func OAuthFamilyRevokeSubject(ctx context.Context, db DB, tenantID, subject, reason string, at time.Time) ([]string, error) {
+	return revokeFamiliesWhere(ctx, db, `tenant_id = ? AND subject = ?`, []any{tenantID, subject}, reason, at)
+}
+
+// revokeFamiliesWhere revokes the live families matching where (its
+// placeholders bound by args) and returns their ids.
+func revokeFamiliesWhere(ctx context.Context, db DB, where string, args []any, reason string, at time.Time) ([]string, error) {
 	var ids []string
 	err := db.InTx(ctx, func(tx Querier) error {
-		rows, err := tx.Query(ctx, `SELECT family_id FROM oauth_refresh_families WHERE client_id = ? AND revoked_at IS NULL`, clientID)
+		rows, err := tx.Query(ctx, `SELECT family_id FROM oauth_refresh_families WHERE `+where+` AND revoked_at IS NULL`, args...)
 		if err != nil {
 			return err
 		}
@@ -237,7 +248,7 @@ func OAuthFamilyRevokeClient(ctx context.Context, db DB, clientID, reason string
 			return err
 		}
 		_, err = tx.Exec(ctx, `UPDATE oauth_refresh_families SET revoked_at = ?, revoke_reason = ?
-			WHERE client_id = ? AND revoked_at IS NULL`, tx.Dialect().TimeArg(at), reason, clientID)
+			WHERE `+where+` AND revoked_at IS NULL`, append([]any{tx.Dialect().TimeArg(at), reason}, args...)...)
 		return err
 	})
 	if err != nil {
