@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -113,8 +114,26 @@ func (s *Server) startRemovalWith(ctx context.Context, policy lifecycle.Policy, 
 // retires its own ACL bindings. Local groups (no external_id) are left: an
 // operator put the user there, and the user is disabled anyway. It reports
 // whether anything changed.
+//
+// A binding or membership whose list is locked against the tenant's
+// operators (lifecycleLockSet denies retiring it) is kept and logged: the
+// sweeper and a SCIM re-enable act for no principal, and a tenant operator
+// can set them going, so what it may not retire itself they keep too. The
+// paths with a caller ask that caller's lock first
+// (aclSubjectLockForCaller).
 func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allGroups bool) (bool, error) {
 	changed := false
+	lockSet, err := s.lifecycleLockSet(ctx, tenant)
+	if err != nil {
+		return false, fmt.Errorf("access control: %w", err)
+	}
+	locked := func(names []string) (string, bool) {
+		if lockSet == nil {
+			return "", false
+		}
+		surface, _, denied := aclRetireDenied(ctx, lockSet, names)
+		return strings.TrimPrefix(surface.Name, "acl/"), denied
+	}
 	groups, err := s.store.GroupsOfSubject(ctx, tenant, subject)
 	if err != nil {
 		return false, err
@@ -132,6 +151,15 @@ func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allG
 				continue
 			}
 		}
+		lists, err := s.aclGroupLists(ctx, tenant, name)
+		if err != nil {
+			return changed, err
+		}
+		if list, ok := locked(lists); ok {
+			slog.WarnContext(ctx, "auth: kept a membership whose list is locked against the tenant's operators",
+				"tenant", tenant, "subject", subject, "group", name, "list", list)
+			continue
+		}
 		ok, err := s.store.GroupMemberRemove(ctx, tenant, name, store.GroupMemberUser, subject)
 		if err != nil {
 			return changed, err
@@ -144,6 +172,11 @@ func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allG
 	}
 	for _, b := range bindings {
 		if b.SubjectKind != store.GroupMemberUser || b.SubjectID != subject || !b.RetiredAt.IsZero() {
+			continue
+		}
+		if list, ok := locked([]string{b.ACLName}); ok {
+			slog.WarnContext(ctx, "auth: kept a binding whose list is locked against the tenant's operators",
+				"tenant", tenant, "subject", subject, "list", list)
 			continue
 		}
 		ok, err := s.store.AclBindingRetire(ctx, tenant, b.BindingID)
@@ -317,6 +350,11 @@ func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by stri
 	}
 	if r.Stage != "" || !r.ErasedAt.IsZero() {
 		return errRemovalBusy
+	}
+	// The reset drops every binding and membership of the user's own: the
+	// caller's lock on a list holds it.
+	if refusal := s.aclSubjectLockForCaller(ctx, tenant, subject); refusal != nil {
+		return &aclLockedError{reply: *refusal}
 	}
 	if err := s.resetRemovedToFloor(ctx, tenant, subject, by); err != nil {
 		return err
