@@ -31,7 +31,10 @@ families require the `substrate:tenant` scope and are also reachable by a
 `substrate:user` token is confined and refused. The tenant is always derived
 server-side from the token — never from the request. The `?scope_id=` /
 `?tenant=` query params only re-focus a browse WITHIN the caller's authorized
-tenant (an admin may cross tenants).
+tenant (an admin may cross tenants). Naming another subject is the operator's:
+a member may name only itself, or a subject its access-control rules let it
+`browse` (`document:user` / `memory:user` with `owner_is_self: false`), or an
+agent it may run; anything else is `404 not_found`.
 
 ## Generate a client
 
