@@ -394,3 +394,22 @@ func TestAuthzExplain_NamesTheListsThatGovernAGroup(t *testing.T) {
 		t.Errorf("explain on a tool names no governing lists: %d %s", code, body)
 	}
 }
+
+// An admin focused on a tenant asks about that tenant's group, whatever
+// tenant its own set is in (the legacy admin's is "default").
+func TestAuthzExplain_AFocusedAdminSeesTheFocusedTenantsGroupLocks(t *testing.T) {
+	_, ts, _ := aclMgmtServer(t, authz.ModeCompat)
+	op := func(method, path, body string) {
+		t.Helper()
+		if code, out := bearerCall(t, ts, operatorBearer, method, path, body); code >= 300 {
+			t.Fatalf("%s %s: %d %s", method, path, code, out)
+		}
+	}
+	op("POST", "/v1/_acldef", `{"op":"create","name":"lock","rules":`+harmlessRules+`}`)
+	op("POST", "/v1/_groups", `{"name":"bound"}`)
+	op("POST", "/v1/_aclbinding", `{"acl":"lock","subject_kind":"group","subject_id":"bound"}`)
+	code, body := bearerCall(t, ts, legacyAdminBearer, "POST", "/v1/_authz/explain?tenant=acme", `{"action":{"name":"manage"},"resource":{"type":"principal","id":"group:bound"}}`)
+	if code != 200 || !strings.Contains(body, `"governed_by":{"group":"bound","retire":["lock"]}`) {
+		t.Errorf("admin focused on acme explains acme's group: %d %s, want governed_by naming lock", code, body)
+	}
+}

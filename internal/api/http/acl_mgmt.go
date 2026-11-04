@@ -1519,7 +1519,8 @@ func (s *Server) authzExplain(ctx context.Context, focus string, req authzEvalua
 	if r := s.aclEnter(ctx, false, nil); r != nil {
 		return *r
 	}
-	eff, code, msg := s.authzSubjectSet(ctx, s.adminFocusedTenant(ctx, focus), req.Subject)
+	tenant := s.adminFocusedTenant(ctx, focus)
+	eff, code, msg := s.authzSubjectSet(ctx, tenant, req.Subject)
 	if code != 0 {
 		return aclFail(code, "authz_subject", msg)
 	}
@@ -1532,7 +1533,7 @@ func (s *Server) authzExplain(ctx context.Context, focus string, req authzEvalua
 	// The notes name lists and where they are stored, which a member could
 	// not otherwise learn: only a caller the list-read gate admits gets them.
 	if s.store != nil && s.aclEnter(ctx, true, aclReadLists()) == nil {
-		s.explainLocks(ctx, eff.Subject.TenantID, ex.Applied, areq.Resource, out)
+		s.explainLocks(ctx, eff.Subject.TenantID, tenant, ex.Applied, areq.Resource, out)
 	}
 	return aclOK(out)
 }
@@ -1554,8 +1555,10 @@ type aclShadowNote struct {
 // resource a request can name, so it has no such entry; the list it names
 // is the one that governs it. Both are best-effort: a store fault leaves
 // the entry out, never the decision. The caller has passed the list-read
-// gate.
-func (s *Server) explainLocks(ctx context.Context, tenant string, applied []authz.Binding, res authz.Resource, out map[string]any) {
+// gate. subjectTenant is where the explained set's lists resolve; focus is
+// the tenant the request addresses (an admin's ?tenant=), which holds the
+// group — the legacy admin's own set is in "default" whatever it focuses.
+func (s *Server) explainLocks(ctx context.Context, subjectTenant, focus string, applied []authz.Binding, res authz.Resource, out map[string]any) {
 	if static := s.aclStatic(); static != nil {
 		var notes []aclShadowNote
 		seen := map[string]bool{}
@@ -1566,8 +1569,8 @@ func (s *Server) explainLocks(ctx context.Context, tenant string, applied []auth
 			seen[b.ACL] = true
 			// The resolver's order (aclres storedACL): the tenant's row,
 			// then the shared tenant's.
-			order := []string{tenant}
-			if tenant != "" {
+			order := []string{subjectTenant}
+			if subjectTenant != "" {
 				order = append(order, "")
 			}
 			for _, t := range order {
@@ -1590,9 +1593,9 @@ func (s *Server) explainLocks(ctx context.Context, tenant string, applied []auth
 	if res.Type != "principal" || !isGroup || group == "" || strings.Contains(group, "*") {
 		return
 	}
-	names, err := s.aclGroupLists(ctx, tenant, group)
+	names, err := s.aclGroupLists(ctx, focus, group)
 	if err != nil {
-		slog.WarnContext(ctx, "authz: explain could not read the lists that govern a group", "tenant", tenant, "group", group, "err", err)
+		slog.WarnContext(ctx, "authz: explain could not read the lists that govern a group", "tenant", focus, "group", group, "err", err)
 		return
 	}
 	if names == nil {
