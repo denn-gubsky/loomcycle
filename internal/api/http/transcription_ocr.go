@@ -80,6 +80,13 @@ func (l transcriptionLedger) price(c transcribe.Charge) transcribe.Price {
 		perMinute, _, _ := pricing.CostSeconds(c.Provider, c.Model, c.AudioSeconds)
 		cost += perMinute
 	}
+	if ok && c.InputChars > 0 {
+		// A text-to-speech model is billed by the minute it produced or by
+		// the million characters it read (tts-1); as above, the pair lists
+		// one and the other is zero.
+		perChars, _, _ := pricing.CostChars(c.Provider, c.Model, c.InputChars)
+		cost += perChars
+	}
 	return transcribe.Price{Cost: cost, Currency: cur, Priced: ok}
 }
 
@@ -88,7 +95,8 @@ func (l transcriptionLedger) Charge(ctx context.Context, c transcribe.Charge) (t
 	err := l.s.RecordTranscriptionUsage(ctx, TranscriptionUsage{
 		Purpose: c.Purpose, Provider: c.Provider, Model: c.Model,
 		CredentialSource: c.CredentialSource, CredentialScopeID: c.CredentialScopeID,
-		InputTokens: c.InputTokens, OutputTokens: c.OutputTokens, AudioSeconds: c.AudioSeconds,
+		InputTokens: c.InputTokens, OutputTokens: c.OutputTokens,
+		AudioSeconds: c.AudioSeconds, InputChars: c.InputChars,
 		Cost: p.Cost, Currency: p.Currency, Priced: p.Priced,
 	})
 	return p, err
