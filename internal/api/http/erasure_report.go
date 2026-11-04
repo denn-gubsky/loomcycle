@@ -38,6 +38,9 @@ func (s *Server) erasureService() *erasure.Service {
 		// retiring flushes the auth cache on every replica, and each retire is
 		// recorded as a token retire would be.
 		ListTokens: s.erasureSubjectTokens,
+		// The subject's app sign-ins and their access tokens, ended before
+		// the account's rows go (endSubjectAppSignIns says why first).
+		EndAppSignIns: s.endSubjectAppSignIns,
 		RetireTokens: func(ctx context.Context, tenant, subject string) ([]store.OperatorTokenDefRow, error) {
 			retired, err := s.retireDelegatedUserTokens(ctx, tenant, subject)
 			for _, row := range retired {

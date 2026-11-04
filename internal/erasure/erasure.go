@@ -76,6 +76,12 @@ type Service struct {
 	// and backplane are its. Either nil = the token plane is not examined.
 	ListTokens   func(ctx context.Context, tenant, subject string) (revocable, kept []store.OperatorTokenDefRow, err error)
 	RetireTokens func(ctx context.Context, tenant, subject string) ([]store.OperatorTokenDefRow, error)
+	// EndAppSignIns revokes the subject's app sign-ins (OAuth refresh
+	// families) and retires the access tokens issued under them, flushing
+	// the auth cache, before the account's rows are deleted; it returns the
+	// families it revoked. The transport owns it for the cache. nil = the
+	// families are only deleted, with the account.
+	EndAppSignIns func(ctx context.Context, tenant, subject string) ([]string, error)
 	// BoundSubjects lists the tenant's subjects (documents in the tenant scope
 	// whose root carries `fields.principal`) bound to the subject.
 	// ClearBoundSubjects removes those bindings and returns the subjects it
@@ -519,6 +525,13 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 	}
 
 	// ---- tier 2 ----
+	if counts, err := s.Store.AuthSubjectCount(ctx, tenant, subject); err != nil {
+		fail("sign_in", err)
+	} else {
+		for _, f := range store.AuthSubjectFamilies() {
+			rep.Tier2.set(f, int64(counts[f]))
+		}
+	}
 	var aclNotes []string
 	tk, tokensExamined, err := s.tokens(ctx, tenant, subject)
 	if err != nil {
@@ -667,11 +680,11 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 		Deleted: map[string]int{}, Retained: map[string]string{},
 		Access: emptyAccess(), BoundSubjects: []BoundSubject{},
 	}
-	for _, plane := range []string{
+	for _, plane := range append([]string{
 		"chats", "memory_rows", "path_entries",
 		"acl_memberships", "acl_bindings", "acl_token_bindings",
 		"credentials", "token_limits", "usage_carry", "interrupts",
-	} {
+	}, store.AuthSubjectFamilies()...) {
 		res.Deleted[plane] = 0
 	}
 	if s.SqlMem != nil {
@@ -699,8 +712,15 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	// authority rather than its data, and an erasure that faults part-way
 	// should not leave a working bearer or grants standing. A revoked token's
 	// bindings go in the access-control step below.
+	//
+	// The account before the tokens: its app sign-ins end first (their
+	// access tokens with them), then its sign-in rows go and the user
+	// becomes a disabled tombstone, so no gate or app refresh can mint a
+	// token the retirement below would miss. The tokens are listed before,
+	// so the ones the app sign-ins took with them are still reported.
 	var bindingTokens []string // def ids whose token-kind bindings go
 	tk, tokensExamined, err := s.tokens(ctx, tenant, subject)
+	appFamilies := s.endAccount(ctx, tenant, subject, req.DryRun, &res, fail)
 	if err != nil {
 		fail("operator_tokens", err)
 	} else if tokensExamined {
@@ -719,6 +739,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 			if err != nil {
 				fail("operator_tokens", err)
 			}
+			retired = append(retired, endedWithAppSignIns(tk.active, retired, appFamilies)...)
 			res.Deleted["operator_tokens"] = len(retired)
 			res.Access.Tokens = tokenRefs(retired)
 			// Only tokens that no longer authenticate lose their bindings: one a
@@ -939,6 +960,90 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 				"the operation is idempotent.")
 	}
 	return res, nil
+}
+
+// retainedAccountTombstone names the users row an erasure keeps.
+const retainedAccountTombstone = "the user record is kept as a tombstone: its subject id, tenant, " +
+	"access mode, creation time and creator, and when it was erased. The display name is cleared and " +
+	"the account is disabled for good: it cannot sign in, be re-enabled, changed or deleted, and the " +
+	"subject id cannot be registered again. Audit records keep it as their referent."
+
+const retainedRemovalRecord = "the removal policy's record of this user (its gate, reason and stage " +
+	"times) stays: it names the subject id only, and the removal sweeper reads it."
+
+const retainedIdentityProvider = "the person's account at the external identity provider their " +
+	"sign-in identity came from is outside this deployment and is not touched."
+
+// endAccount ends the subject's account: its app sign-ins end through the
+// transport (EndAppSignIns), then every sign-in row goes (identities,
+// password, TOTP, recovery codes, passkeys, sessions, app sign-ins, device
+// logins, invites and resets, SCIM resources) and the user row, when there
+// is one, becomes a PII-free tombstone (store.UserErase). A dry run counts
+// them instead. It returns the app sign-ins (refresh families) it revoked.
+func (s *Service) endAccount(ctx context.Context, tenant, subject string, dryRun bool, res *Result, fail func(string, error)) []string {
+	var counts map[string]int
+	var families []string
+	var err error
+	if dryRun {
+		counts, err = s.Store.AuthSubjectCount(ctx, tenant, subject)
+	} else {
+		if s.EndAppSignIns != nil {
+			var aerr error
+			if families, aerr = s.EndAppSignIns(ctx, tenant, subject); aerr != nil {
+				fail("sign_in_app_access_tokens", aerr)
+			}
+		}
+		counts, err = s.Store.UserErase(ctx, tenant, subject, time.Now().UTC())
+	}
+	if err != nil {
+		fail("sign_in", err)
+	} else {
+		for _, f := range store.AuthSubjectFamilies() {
+			res.Deleted[f] = counts[f]
+		}
+		if counts[store.AuthFamilyIdentities] > 0 {
+			res.Retained["identity_provider_accounts"] = retainedIdentityProvider
+		}
+	}
+	switch _, err := s.Store.UserGet(ctx, tenant, subject); {
+	case err == nil:
+		res.Retained["account_tombstone"] = retainedAccountTombstone
+	case !isNotFound(err):
+		fail("account", err)
+	}
+	switch _, err := s.Store.AuthRemovalGet(ctx, tenant, subject); {
+	case err == nil:
+		res.Retained["auth_removal_record"] = retainedRemovalRecord
+	case !isNotFound(err):
+		fail("auth_removal_record", err)
+	}
+	return families
+}
+
+// endedWithAppSignIns is the tokens of active that ended with an app sign-in
+// in families (EndAppSignIns retired them before RetireTokens ran) and are
+// not in retired already.
+func endedWithAppSignIns(active, retired []store.OperatorTokenDefRow, families []string) []store.OperatorTokenDefRow {
+	fam := map[string]bool{}
+	for _, f := range families {
+		fam[f] = true
+	}
+	seen := map[string]bool{}
+	for _, r := range retired {
+		seen[r.DefID] = true
+	}
+	var out []store.OperatorTokenDefRow
+	for _, r := range active {
+		if r.OAuthFamily != "" && fam[r.OAuthFamily] && !seen[r.DefID] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func isNotFound(err error) bool {
+	var nf *store.ErrNotFound
+	return errors.As(err, &nf)
 }
 
 // subjectSessions lists the subject's chats — the handle tier 3 traces from.

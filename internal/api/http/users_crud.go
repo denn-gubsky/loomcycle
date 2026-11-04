@@ -10,6 +10,7 @@ package http
 // cross-tenant update/delete is an opaque 404, never an existence oracle.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -247,7 +248,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant, caller, ok := s.userCrudTenant(w, r)
-	if !ok {
+	if !ok || s.refuseErasedUser(w, r.Context(), tenant, subject) {
 		return
 	}
 	// RFC FA D16: auth:manage acts only on users at the floor — it may not
@@ -363,6 +364,10 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		Status:      req.Status,
 	}
 	if err := s.store.UserUpdate(r.Context(), tenant, subject, patch); err != nil {
+		if errors.Is(err, store.ErrUserErased) {
+			writeUserErased(w)
+			return
+		}
 		var notFound *store.ErrNotFound
 		if errors.As(err, &notFound) {
 			writeJSONError(w, http.StatusNotFound, "user_not_found", "no such user in this tenant")
@@ -395,7 +400,7 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant, caller, ok := s.userCrudTenant(w, r)
-	if !ok {
+	if !ok || s.refuseErasedUser(w, r.Context(), tenant, subject) {
 		return
 	}
 	if _, ok := s.holdManagerToFloorTarget(w, r.Context(), caller, nil, tenant, subject, "delete", false); !ok {
@@ -418,6 +423,10 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	removed, err := s.store.UserDelete(r.Context(), tenant, subject)
+	if errors.Is(err, store.ErrUserErased) {
+		writeUserErased(w)
+		return
+	}
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "user_delete_failed", err.Error())
 		return
@@ -430,4 +439,22 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	// the row: refresh the cached sets everywhere, and audit it.
 	s.aclChanged(r.Context(), tenant, "user_unbound", subject)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// refuseErasedUser answers 409 user_erased, and reports true, when (tenant,
+// subject) is an erasure's tombstone. The row is kept so the subject id is
+// never registered again (RFC FY D6): re-enabling, renaming or deleting it
+// would undo that. A store fault is left to the handler's own read.
+func (s *Server) refuseErasedUser(w http.ResponseWriter, ctx context.Context, tenant, subject string) bool {
+	u, err := s.store.UserGet(ctx, tenant, subject)
+	if err != nil || u.ErasedAt.IsZero() {
+		return false
+	}
+	writeUserErased(w)
+	return true
+}
+
+func writeUserErased(w http.ResponseWriter) {
+	writeJSONError(w, http.StatusConflict, "user_erased",
+		"this user was erased: the account is kept as a record with no personal data, and cannot be re-enabled, changed or deleted")
 }
