@@ -613,6 +613,15 @@ func resolveAuth(c *Config) error {
 				return err
 			}
 		}
+		if idm != nil {
+			preset := ""
+			if oidc != nil {
+				preset = oidc.Preset
+			}
+			if err := checkSubjectClaim(name, kind, preset, g.IdentityMap); err != nil {
+				return err
+			}
+		}
 		var dev *AuthDeviceGate
 		if kind == AuthGateKindDevice {
 			if dev, err = resolveDeviceGate(c, name, g); err != nil {

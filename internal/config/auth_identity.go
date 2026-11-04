@@ -115,6 +115,10 @@ type AuthIdentityMapConfig struct {
 	// Subject is the claim the subject is built from (default sub). The
 	// subject is always "<gate>:<value>" (D5).
 	Subject string `yaml:"subject,omitempty"`
+	// SubjectClaimImmutable is the operator's word that Subject names a
+	// claim the provider never reassigns to another person. A claim other
+	// than the gate kind's own stable id loads only with it.
+	SubjectClaimImmutable bool `yaml:"subject_claim_immutable,omitempty"`
 	// Groups enables group sync (§3.7b); it needs trusted: true.
 	Groups    *AuthIdentityGroupsConfig `yaml:"groups,omitempty"`
 	Provision string                    `yaml:"provision,omitempty"`
@@ -382,6 +386,80 @@ func resolveIdentityMap(gate string, m *AuthIdentityMapConfig, floor AuthNewUser
 		out.LegacySubjectPrefix = p
 	}
 	return out, nil
+}
+
+// SubjectClaimIsAddress reports whether a subject claim carries an
+// e-mail-shaped address: email, and the directory login names upn,
+// preferred_username and unique_name. A subject keyed on one names whoever
+// the provider says holds that address, so every assertion must also say the
+// address is verified (identity.Subject). A closed list on purpose: an
+// address claim missing from it would be keyed without that check.
+func SubjectClaimIsAddress(claim string) bool {
+	switch claim {
+	case "email", "upn", "preferred_username", "unique_name":
+		return true
+	}
+	return false
+}
+
+// stableSubjectClaims are the claims a gate kind's provider never reassigns
+// to another person: the id the subject is keyed on unasked. declarable is
+// whether an operator may key on another claim by declaring it immutable.
+//
+//   - sub everywhere: OIDC requires it to be unique and never reassigned
+//     within an issuer, and the external, header and AWS IAM gates put their
+//     own stable key there.
+//   - oid on Entra: the directory object id, immutable and the same for the
+//     user across applications (sub there is per application).
+//   - arn on AWS IAM: the gate sets it to the same canonical ARN as sub.
+//     caller_arn and user_id carry the role session name, which the caller
+//     chooses.
+//   - an OAuth gate asserts only the provider's id, a verified e-mail and its
+//     own groups; its login and name are the user's to rename, so its
+//     subject is sub, declared or not.
+func stableSubjectClaims(kind, preset string) (stable []string, declarable bool) {
+	switch {
+	case kind == AuthGateKindOAuth:
+		return []string{defaultSubjectClaim}, false
+	case kind == AuthGateKindOIDC && preset == OIDCPresetEntra:
+		return []string{defaultSubjectClaim, "oid"}, true
+	case kind == AuthGateKindAWSIAM:
+		return []string{defaultSubjectClaim, "arn"}, true
+	}
+	return []string{defaultSubjectClaim}, true
+}
+
+// checkSubjectClaim refuses a subject claim the gate's provider may reassign
+// to another person unless the operator declares it immutable
+// (subject_claim_immutable: true). Keyed on such a claim, a person who gets
+// the provider to put someone else's value in it signs in as them, and is
+// linked to a user an operator created for them in advance. preset is an
+// OIDC gate's preset ("" for other kinds).
+func checkSubjectClaim(gate, kind, preset string, m *AuthIdentityMapConfig) error {
+	if m == nil {
+		return nil
+	}
+	where := "auth.gates." + gate + ".identity_map"
+	claim := strings.TrimSpace(m.Subject)
+	if claim == "" {
+		claim = defaultSubjectClaim
+	}
+	stable, declarable := stableSubjectClaims(kind, preset)
+	ids := strings.Join(stable, " or ")
+	switch {
+	case slices.Contains(stable, claim):
+		if m.SubjectClaimImmutable {
+			return fmt.Errorf("%s.subject_claim_immutable: applies only to a subject claim other than %s, the provider's own id", where, ids)
+		}
+		return nil
+	case !declarable:
+		return fmt.Errorf("%s.subject: an OAuth gate's subject is the provider's immutable id (%s), not %q", where, ids, claim)
+	case !m.SubjectClaimImmutable:
+		return fmt.Errorf("%s.subject: %q is not %s, the provider's own id for this gate: a claim the provider may give "+
+			"to another person (an e-mail, a username) would sign that person in as this one. Key on %s, or set "+
+			"subject_claim_immutable: true if your identity provider never reassigns %s", where, claim, ids, ids, claim)
+	}
+	return nil
 }
 
 func validIdentityTenant(t string) bool {

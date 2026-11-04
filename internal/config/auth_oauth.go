@@ -234,11 +234,8 @@ func resolveOAuthGate(c *Config, name string, g AuthGateConfig) (*AuthOAuthGate,
 	// identity map keyed on them would let a rename land on someone else's
 	// account or tenant. The gate asserts only sub (the immutable id), a
 	// verified e-mail and its own org-filtered groups; the map may use only
-	// those.
+	// those. The subject is checked with every gate's (checkSubjectClaim).
 	m := g.IdentityMap
-	if s := strings.TrimSpace(m.Subject); s != "" && s != "sub" {
-		return nil, fmt.Errorf("%s.identity_map.subject: an OAuth gate's subject is the provider's immutable id (sub), not %q", where, s)
-	}
 	if tc := strings.TrimSpace(m.TenantClaim); tc != "" && tc != EmailDomainClaim {
 		return nil, fmt.Errorf("%s.identity_map.tenant_claim: an OAuth gate picks a tenant only by %s (a verified e-mail), not %q",
 			where, EmailDomainClaim, tc)
