@@ -1720,6 +1720,11 @@ type UserSummary struct {
 // (the subject is sandboxed to its own scope). Status is "active" |
 // "disabled". TenantID "" is the shared/legacy tenant. CreatedBy is the
 // principal subject that registered the row (non-secret; "" in open mode).
+//
+// ErasedAt is set when a subject erasure ended the account (UserErase): the
+// row is then a tombstone, kept so the subject id is never registered again
+// and audit records keep a referent. A tombstone is disabled, carries no
+// display name, and no store write moves it out of that state.
 type UserRow struct {
 	TenantID    string
 	Subject     string
@@ -1728,7 +1733,12 @@ type UserRow struct {
 	Status      string
 	CreatedAt   time.Time
 	CreatedBy   string
+	ErasedAt    time.Time
 }
+
+// ErrUserErased: the user is an erasure's tombstone, which no write may
+// re-enable, rename or delete.
+var ErrUserErased = errors.New("store: the user was erased")
 
 // UserPatch carries the subset of fields UserUpdate can modify. Pointer
 // fields so nil = "leave unchanged"; non-nil = set to the dereferenced value
@@ -2593,7 +2603,8 @@ type UserStore interface {
 	// UserUpdate patches mutable fields on one identity row. Nil patch
 	// fields leave the corresponding column unchanged. Returns
 	// *ErrNotFound{Kind:"user"} when the (tenant, subject) row is absent,
-	// and rejects an AccessMode / Status outside the shared enum.
+	// ErrUserErased for an erasure's tombstone (which no patch changes), and
+	// rejects an AccessMode / Status outside the shared enum.
 	UserUpdate(ctx context.Context, tenantID, subject string, patch UserPatch) error
 
 	// UserDelete hard-deletes one identity row and, in the same transaction,
@@ -2602,7 +2613,8 @@ type UserStore interface {
 	// user of the same subject inherits nothing. It reports whether a row
 	// was removed (false = the row did not exist). The subject's OWNED data
 	// (runs / sessions / memory) has no FK to this table and is left intact
-	// — deleting the identity record is not the erasure surface.
+	// — deleting the identity record is not the erasure surface. An
+	// erasure's tombstone is never deleted: ErrUserErased.
 	UserDelete(ctx context.Context, tenantID, subject string) (bool, error)
 
 	// ListTenants enumerates tenants that have RUN something, with derived

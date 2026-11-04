@@ -150,7 +150,7 @@ func (s *Store) AuthRemovalReactivate(ctx context.Context, seen store.AuthRemova
 	restored := ""
 	err := s.immediateTx(ctx, func(conn *sql.Conn) error {
 		var status string
-		err := conn.QueryRowContext(ctx, `SELECT status FROM users WHERE tenant_id = ? AND subject = ?`, seen.TenantID, seen.Subject).Scan(&status)
+		err := conn.QueryRowContext(ctx, `SELECT `+userStatusRead+` FROM users WHERE tenant_id = ? AND subject = ?`, seen.TenantID, seen.Subject).Scan(&status)
 		if errors.Is(err, sql.ErrNoRows) {
 			return errNoChange
 		}

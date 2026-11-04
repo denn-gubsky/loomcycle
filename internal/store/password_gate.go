@@ -400,7 +400,57 @@ type PasswordGateStore interface {
 	// credentials, TOTP, recovery codes, passkeys, its SCIM resources and
 	// memberships, its invites and resets, and its removal (auth_removals),
 	// and its app sign-ins (oauth codes, refresh families and their refresh
-	// tokens). Called
+	// tokens), its Web UI sessions, device logins it approved and the
+	// WebAuthn ceremonies and identity-link logins it started. Called
 	// when the user is deleted, so a login never outlives its user.
 	AuthSubjectDelete(ctx context.Context, tenantID, subject string) error
+	// AuthSubjectCount counts, per sign-in family (the AuthFamily* names),
+	// the rows UserErase would remove for (tenantID, subject), every family
+	// present, zero included. AuthFamilyAccount counts a users row not yet
+	// erased.
+	AuthSubjectCount(ctx context.Context, tenantID, subject string) (map[string]int, error)
+	// UserErase ends (tenantID, subject)'s account in one transaction: every
+	// row AuthSubjectDelete removes goes, except the removal record
+	// (auth_removals), which the removal policy keeps as its own; and the
+	// users row, when there is one, becomes a tombstone — display name
+	// cleared, status disabled, erased_at set (see UserRow.ErasedAt). It
+	// returns the rows removed per family, as AuthSubjectCount names them;
+	// AuthFamilyAccount is 1 when this call tombstoned the row. Idempotent.
+	UserErase(ctx context.Context, tenantID, subject string, at time.Time) (map[string]int, error)
+}
+
+// The sign-in families of a subject, as AuthSubjectCount and UserErase name
+// them. An erasure reports each one, so the names are part of its report.
+const (
+	AuthFamilyIdentities       = "sign_in_identities"
+	AuthFamilyPasswords        = "sign_in_passwords"
+	AuthFamilyTOTP             = "sign_in_totp"
+	AuthFamilyRecoveryCodes    = "sign_in_recovery_codes"
+	AuthFamilyPasskeys         = "sign_in_passkeys"
+	AuthFamilyPasskeyCeremony  = "sign_in_passkey_ceremonies"
+	AuthFamilyInvites          = "sign_in_invites"
+	AuthFamilyResets           = "sign_in_resets"
+	AuthFamilyLinkLogins       = "sign_in_link_logins"
+	AuthFamilySessions         = "sign_in_sessions"
+	AuthFamilyDeviceLogins     = "sign_in_device_logins"
+	AuthFamilyAppCodes         = "sign_in_app_codes"
+	AuthFamilyAppRefreshTokens = "sign_in_app_refresh_tokens"
+	AuthFamilyAppFamilies      = "sign_in_app_families"
+	AuthFamilySCIMUsers        = "sign_in_scim_users"
+	AuthFamilySCIMMemberships  = "sign_in_scim_memberships"
+	// AuthFamilyAccount is the users row itself: 1 while it is not erased.
+	AuthFamilyAccount = "account"
+)
+
+// AuthSubjectFamilies is every family name AuthSubjectCount and UserErase
+// report, AuthFamilyAccount last. An erasure registers each one before it
+// looks, so "found none" never reads as "never looked".
+func AuthSubjectFamilies() []string {
+	return []string{
+		AuthFamilyIdentities, AuthFamilyPasswords, AuthFamilyTOTP, AuthFamilyRecoveryCodes,
+		AuthFamilyPasskeys, AuthFamilyPasskeyCeremony, AuthFamilyInvites, AuthFamilyResets,
+		AuthFamilyLinkLogins, AuthFamilySessions, AuthFamilyDeviceLogins, AuthFamilyAppCodes,
+		AuthFamilyAppRefreshTokens, AuthFamilyAppFamilies, AuthFamilySCIMMemberships, AuthFamilySCIMUsers,
+		AuthFamilyAccount,
+	}
 }

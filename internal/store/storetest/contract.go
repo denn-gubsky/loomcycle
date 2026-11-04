@@ -544,7 +544,6 @@ func Run(t *testing.T, factory Factory) {
 		{"OAuthTokenRetireRetiresOnlyThatSignIn", testOAuthTokenRetireRetiresOnlyThatSignIn},
 		{"OAuthDeleteExpiredKeepsWhatCanStillAuthenticate", testOAuthDeleteExpiredKeepsWhatCanStillAuthenticate},
 		{"OAuthSubjectDeleteRemovesItsSignIns", testOAuthSubjectDeleteRemovesItsSignIns},
-		{"OAuthFamilyRevokeSubjectRevokesOnlyItsLiveFamilies", testOAuthFamilyRevokeSubjectRevokesOnlyItsLiveFamilies},
 		// RFC FL P0b runtime app clients (client_defs.go).
 		{"ClientDefVersionsAndTheNewestLiveIsActive", testClientDefVersionsAndTheNewestLiveIsActive},
 		{"ClientDefNameBelongsToOneTenant", testClientDefNameBelongsToOneTenant},
@@ -575,6 +574,11 @@ func Run(t *testing.T, factory Factory) {
 		{"AuthThrottleWindowBlockAndExpiry", testAuthThrottleWindowBlockAndExpiry},
 		{"AuthInviteAndResetDeleteExpiredKeepLiveRows", testAuthInviteAndResetDeleteExpiredKeepLiveRows},
 		{"AuthSubjectDeleteRemovesOnlyThatSubjectsRows", testAuthSubjectDeleteRemovesOnlyThatSubjectsRows},
+		// RFC FY Part F: an erasure ends the account.
+		{"UserEraseEndsTheAccountAndOnlyThatSubjects", testUserEraseEndsTheAccountAndOnlyThatSubjects},
+		{"UserEraseWithoutAUserRowRemovesTheRest", testUserEraseWithoutAUserRowRemovesTheRest},
+		{"UserErasedTombstoneRefusesEveryWayBack", testUserErasedTombstoneRefusesEveryWayBack},
+		{"OAuthFamilyRevokeSubjectRevokesOnlyItsLiveFamilies", testOAuthFamilyRevokeSubjectRevokesOnlyItsLiveFamilies},
 		// RFC FA P5 device login + per-tenant gate policy.
 		{"DeviceAuthCreateGetRoundTripAndConflict", testDeviceAuthCreateGetRoundTripAndConflict},
 		{"DeviceAuthPollSlowsDownEarlyPollsOnly", testDeviceAuthPollSlowsDownEarlyPollsOnly},
