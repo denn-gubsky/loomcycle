@@ -55,23 +55,22 @@ import (
 // is static-only). Hooks have their own gate (checkHooks); code_body runs only
 // through the agent's own tools, which the tools ceiling bounds.
 
-// authorIsOperatorPlane reports whether the caller is the operator, acting
-// through an operator surface off-run — the root of authority, not narrowed by
-// an agent's policies. It gates the capability ceiling of a definition and the
-// Document rulings that decide for the tenant (accepting a classification,
-// maintaining or overriding a statement an operator ruled on).
+// authorEscapesCapabilityCeiling reports whether a definition's author is a
+// person on a substrate plane, off-run — the operator or a member RFC CB admits
+// to the authoring routes — rather than a run. The ceiling exists so a model
+// cannot write itself authority it does not hold; no plane stamps a person's
+// volume, crypto, statement-method or decision policies, so judging a member
+// against them would refuse every volume and every decision state.
 //
-// The signal is the caller tier every substrate plane (HTTP, gRPC, MCP) stamps
-// from its principal. It used to be the wildcard tools ceiling ["*"], which
-// those planes stamp for every caller — a tenant member RFC CB admitted to them
-// included — so a member authored definitions unnarrowed and ruled as the
-// operator (RFC FY Part B).
+// It is not "is the operator": what the definition is recorded as
+// (operator_authored) and the Document rulings that decide for the tenant ask
+// tools.IsOperatorPlane (RFC FY Part B).
 //
-// Anything else — a run, a sub-agent, a member, a ctx no plane stamped — is
-// narrowed by the policies on ctx, and a policy that is absent grants nothing,
-// so a non-empty capability field fails closed exactly as the tools ceiling does.
-func authorIsOperatorPlane(ctx context.Context) bool {
-	return tools.IsOperatorPlane(ctx)
+// Anything else — a run, a sub-agent, a ctx no plane stamped — is narrowed by
+// the policies on ctx, and a policy that is absent grants nothing, so a
+// non-empty capability field fails closed exactly as the tools ceiling does.
+func authorEscapesCapabilityCeiling(ctx context.Context) bool {
+	return tools.IsOffRunPlane(ctx)
 }
 
 // checkCapabilityCeiling refuses a definition granting a capability its author
@@ -80,7 +79,7 @@ func authorIsOperatorPlane(ctx context.Context) bool {
 // lineage but never widen it beyond what its author or the version it forks
 // held.
 func (a *AgentDef) checkCapabilityCeiling(ctx context.Context, name string, def mergedDef, base *mergedDef) error {
-	if authorIsOperatorPlane(ctx) {
+	if authorEscapesCapabilityCeiling(ctx) {
 		return nil
 	}
 	held := "this agent's own"

@@ -118,3 +118,14 @@ func TestTeamDefCreate_TheOperatorMayWriteADecisionState(t *testing.T) {
 		t.Errorf("verify = %s (%v), want decision_model_unknown and not runnable", res.Text, err)
 	}
 }
+
+// A member authoring off-run (every substrate plane stamps the wildcard tools
+// ceiling for it) is not narrowed to a Decision tool it holds by name: the
+// ceiling binds runs, not the people RFC CB admits to the planes.
+func TestTeamDefCreate_AMemberOffRunMayWriteADecisionState(t *testing.T) {
+	tool := decisionTeamFixture(t)
+	member := tools.WithCallerTier(localAuthorCtx("", []string{"any"}, []string{"*"}), tools.TierMember)
+	if res := teamOp(t, tool, member, "create", "gated", gateTeam("deep")); res.IsError {
+		t.Errorf("the member was refused: %s", res.Text)
+	}
+}

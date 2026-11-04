@@ -275,17 +275,13 @@ func TestAgentDefCreate_ReviewerEscalationCaseIsRefused(t *testing.T) {
 	}
 }
 
-// The operator plane is told apart by its caller tier outside a run. The
-// wildcard tools ceiling every substrate plane stamps grants nothing by itself:
-// on a run's ctx, or on a member's off-run call, the author is narrowed.
+// A person on a substrate plane is told apart by its caller tier outside a
+// run. The wildcard tools ceiling every plane stamps grants nothing by itself:
+// on a run's ctx the author is narrowed.
 func TestAgentDefCreate_WildcardToolsInsideARunIsStillNarrowed(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
 	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"sql_scopes":["tenant"]}`), "wildcard in a run", "sql_scopes:")
-	// The same author's policies, off-run, on a member's call.
-	member := tools.WithAgentName(tools.WithRunIdentity(context.Background(), tools.RunIdentity(ctx)), "sdlc/meta")
-	member = tools.WithCallerTier(tools.WithRunPolicy(member, tools.PolicyOf(ctx)), tools.TierMember)
-	wantRefused(t, agentDefOp(t, tool, member, "create", "sdlc/new", `{"sql_scopes":["tenant"]}`), "a member's wildcard off-run", "sql_scopes:")
 
 	off := operatorPlane(context.Background())
 	off = tools.UpdateRunPolicy(off, func(rp *tools.RunPolicy) { rp.AgentDef = tools.AgentDefPolicyValue{Scopes: []string{"named:sdlc/**"}} })

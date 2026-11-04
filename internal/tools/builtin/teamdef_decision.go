@@ -92,7 +92,7 @@ func (t *TeamDef) decisionIssues(def teamgraph.Definition) []teamIssue {
 // authoring act by whoever forks, so a state it carries over is judged under
 // the forker's authority like one it adds.
 func (t *TeamDef) decisionAuthorityIssues(ctx context.Context, def teamgraph.Definition) []teamIssue {
-	if authorIsOperatorPlane(ctx) {
+	if authorEscapesCapabilityCeiling(ctx) {
 		return nil
 	}
 	holdsTool := false
