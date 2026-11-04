@@ -245,9 +245,46 @@ func TestACLBoot_ExistingShadowIsReported(t *testing.T) {
 		strings.Contains(logged, "unrelated") || strings.Contains(logged, "gone") {
 		t.Errorf("boot report: %d shadows, log:\n%s\nwant the acme and shared corp-yaml rows only", n, logged)
 	}
-	code, body := bearerCall(t, ts, aliceBearer, "POST", "/v1/_authz/explain", `{"action":{"name":"invoke"},"resource":{"type":"tool","id":"Bash"}}`)
+	code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_authz/explain", `{"action":{"name":"invoke"},"resource":{"type":"tool","id":"Bash"}}`)
 	if code != 200 || !strings.Contains(body, `"shadowed_lists":[{"acl":"corp-yaml","stored_in_tenant":"acme","shadows":"config"}]`) {
 		t.Errorf("explain over a shadowing list: %d %s, want it named under shadowed_lists", code, body)
+	}
+}
+
+// The explain notes name lists and where they are stored; a caller who may
+// not read lists (a member, or an operator denied read def:acl/*) gets the
+// decision without them.
+func TestAuthzExplain_ANonReaderSeesNoShadowOrLockNotes(t *testing.T) {
+	_, ts, st := aclMgmtServerWith(t, authz.ModeCompat, withConfigDenyList("corp-yaml"))
+	addDelegateOperator(t, st)
+	if _, err := st.AclDefPut(context.Background(), store.AclDefRow{TenantID: "acme", Name: "corp-yaml", Rules: []byte(harmlessRules)}); err != nil {
+		t.Fatal(err)
+	}
+	op := func(method, path, body string) {
+		t.Helper()
+		if code, out := bearerCall(t, ts, operatorBearer, method, path, body); code >= 300 {
+			t.Fatalf("%s %s: %d %s", method, path, code, out)
+		}
+	}
+	op("POST", "/v1/_acldef", `{"op":"create","name":"no-list-reads","rules":[{"effect":"deny","actions":["read"],"resources":["def:acl/*"]}]}`)
+	op("POST", "/v1/_aclbinding", `{"acl":"no-list-reads","subject_kind":"user","subject_id":"delegate"}`)
+	op("POST", "/v1/_groups", `{"name":"g"}`)
+	op("POST", "/v1/_aclbinding", `{"acl":"no-list-reads","subject_kind":"group","subject_id":"g"}`)
+	asks := []string{
+		`{"action":{"name":"invoke"},"resource":{"type":"tool","id":"Bash"}}`,
+		`{"action":{"name":"manage"},"resource":{"type":"principal","id":"group:g"}}`,
+	}
+	for _, bearer := range []string{aliceBearer, delegateBearer} {
+		for _, ask := range asks {
+			code, body := bearerCall(t, ts, bearer, "POST", "/v1/_authz/explain", ask)
+			if code != 200 || strings.Contains(body, "shadowed_lists") || strings.Contains(body, "governed_by") || strings.Contains(body, "stored_in_tenant") {
+				t.Errorf("explain as %s, who may not read lists: %d %s, want the decision without lock notes", bearer, code, body)
+			}
+		}
+	}
+	code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_authz/explain", asks[0])
+	if code != 200 || !strings.Contains(body, `"shadowed_lists"`) {
+		t.Errorf("explain as the operator, who may read lists: %d %s, want shadowed_lists", code, body)
 	}
 }
 

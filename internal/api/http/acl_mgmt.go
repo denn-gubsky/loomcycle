@@ -1442,7 +1442,9 @@ func (s *Server) authzExplain(ctx context.Context, focus string, req authzEvalua
 	}
 	ex := eff.Explain(areq)
 	out := map[string]any{"decision": decisionWire(ctx, ex.Decision), "traces": ex.Traces, "missing_acls": ex.Missing, "applied_bindings": ex.Applied, "groups": eff.Subject.Groups}
-	if s.store != nil {
+	// The notes name lists and where they are stored, which a member could
+	// not otherwise learn: only a caller the list-read gate admits gets them.
+	if s.store != nil && s.aclEnter(ctx, true, aclReadLists()) == nil {
 		s.explainLocks(ctx, eff.Subject.TenantID, ex.Applied, areq.Resource, out)
 	}
 	return aclOK(out)
@@ -1464,7 +1466,8 @@ type aclShadowNote struct {
 // guards leaving or deleting it (aclGroupLists). A binding is not a
 // resource a request can name, so it has no such entry; the list it names
 // is the one that governs it. Both are best-effort: a store fault leaves
-// the entry out, never the decision.
+// the entry out, never the decision. The caller has passed the list-read
+// gate.
 func (s *Server) explainLocks(ctx context.Context, tenant string, applied []authz.Binding, res authz.Resource, out map[string]any) {
 	if static := s.aclStatic(); static != nil {
 		var notes []aclShadowNote
@@ -1474,7 +1477,13 @@ func (s *Server) explainLocks(ctx context.Context, tenant string, applied []auth
 				continue
 			}
 			seen[b.ACL] = true
-			for _, t := range []string{tenant, ""} {
+			// The resolver's order (aclres storedACL): the tenant's row,
+			// then the shared tenant's.
+			order := []string{tenant}
+			if tenant != "" {
+				order = append(order, "")
+			}
+			for _, t := range order {
 				live, err := s.aclLiveList(ctx, t, b.ACL)
 				if err != nil {
 					slog.WarnContext(ctx, "authz: explain could not check a list for shadowing", "tenant", t, "name", b.ACL, "err", err)
@@ -1482,9 +1491,6 @@ func (s *Server) explainLocks(ctx context.Context, tenant string, applied []auth
 				}
 				if live {
 					notes = append(notes, aclShadowNote{ACL: b.ACL, StoredInTenant: t, Shadows: aclres.SourceConfig})
-					break
-				}
-				if t == "" {
 					break
 				}
 			}
