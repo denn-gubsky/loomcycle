@@ -842,6 +842,34 @@ func aclListLookupFault(ctx context.Context, tenant, name string, err error) *ac
 	return &r
 }
 
+// ReportACLShadows warns once for every live stored list that shadows a
+// config-declared list of the same name — a tenant's row, or a shared-tenant
+// row, which shadows it in every tenant — and returns how many it found.
+// Resolution keeps the stored list first for now (RFC FY D4), so this is how
+// an operator learns a tenant replaced a guardrail the config declares, and
+// renames the list. Run once at boot; it reads every tenant's lists.
+func (s *Server) ReportACLShadows(ctx context.Context, log *slog.Logger) int {
+	static := s.aclStatic()
+	if s.store == nil || static == nil || len(static.ACLs) == 0 {
+		return 0
+	}
+	snap, err := s.store.SnapshotReadAcl(ctx)
+	if err != nil {
+		log.Warn("authz: stored lists could not be checked for shadowing", "err", err)
+		return 0
+	}
+	n := 0
+	for _, def := range snap.Defs {
+		if _, declared := static.ACLs[def.Name]; !declared || def.Retired() {
+			continue
+		}
+		log.Warn("authz: a stored list shadows the config-declared list of the same name; bindings resolve to the stored one",
+			"tenant", def.TenantID, "name", def.Name)
+		n++
+	}
+	return n
+}
+
 // aclListOpSurface is the question an op of POST /v1/_acldef asks of the list
 // it names: read for a get, retire for a retire, and author for every other op
 // — fail closed, so a write op added to the handler later is checked even if
@@ -1413,7 +1441,71 @@ func (s *Server) authzExplain(ctx context.Context, focus string, req authzEvalua
 		return aclFail(http.StatusBadRequest, "invalid_request", err.Error())
 	}
 	ex := eff.Explain(areq)
-	return aclOK(map[string]any{"decision": decisionWire(ctx, ex.Decision), "traces": ex.Traces, "missing_acls": ex.Missing, "applied_bindings": ex.Applied, "groups": eff.Subject.Groups})
+	out := map[string]any{"decision": decisionWire(ctx, ex.Decision), "traces": ex.Traces, "missing_acls": ex.Missing, "applied_bindings": ex.Applied, "groups": eff.Subject.Groups}
+	if s.store != nil {
+		s.explainLocks(ctx, eff.Subject.TenantID, ex.Applied, areq.Resource, out)
+	}
+	return aclOK(out)
+}
+
+// aclShadowNote names an applied list whose stored row shadows the
+// config-declared list of the same name, and the tenant that row is in
+// ("" for the shared tenant).
+type aclShadowNote struct {
+	ACL            string `json:"acl"`
+	StoredInTenant string `json:"stored_in_tenant"`
+	Shadows        string `json:"shadows"`
+}
+
+// explainLocks adds to an explain answer what the rule trace cannot show:
+// "shadowed_lists", the applied lists a stored row resolves in place of the
+// config-declared one (RFC FY D4 keeps that order for now), and, when the
+// resource is one group, "governed_by": the lists whose retire question
+// guards leaving or deleting it (aclGroupLists). A binding is not a
+// resource a request can name, so it has no such entry; the list it names
+// is the one that governs it. Both are best-effort: a store fault leaves
+// the entry out, never the decision.
+func (s *Server) explainLocks(ctx context.Context, tenant string, applied []authz.Binding, res authz.Resource, out map[string]any) {
+	if static := s.aclStatic(); static != nil {
+		var notes []aclShadowNote
+		seen := map[string]bool{}
+		for _, b := range applied {
+			if _, declared := static.ACLs[b.ACL]; !declared || seen[b.ACL] {
+				continue
+			}
+			seen[b.ACL] = true
+			for _, t := range []string{tenant, ""} {
+				live, err := s.aclLiveList(ctx, t, b.ACL)
+				if err != nil {
+					slog.WarnContext(ctx, "authz: explain could not check a list for shadowing", "tenant", t, "name", b.ACL, "err", err)
+					break
+				}
+				if live {
+					notes = append(notes, aclShadowNote{ACL: b.ACL, StoredInTenant: t, Shadows: aclres.SourceConfig})
+					break
+				}
+				if t == "" {
+					break
+				}
+			}
+		}
+		if len(notes) > 0 {
+			out["shadowed_lists"] = notes
+		}
+	}
+	group, isGroup := strings.CutPrefix(res.Name, "group:")
+	if res.Type != "principal" || !isGroup || group == "" || strings.Contains(group, "*") {
+		return
+	}
+	names, err := s.aclGroupLists(ctx, tenant, group)
+	if err != nil {
+		slog.WarnContext(ctx, "authz: explain could not read the lists that govern a group", "tenant", tenant, "group", group, "err", err)
+		return
+	}
+	if names == nil {
+		names = []string{}
+	}
+	out["governed_by"] = map[string]any{"group": group, "retire": names}
 }
 
 // authzSimulate evaluates against a DRAFT: the stored lists and bindings the

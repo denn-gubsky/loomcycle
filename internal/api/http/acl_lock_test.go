@@ -1,12 +1,16 @@
 package http
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -211,5 +215,68 @@ func TestACLDef_ATenantListCannotShadowASharedList(t *testing.T) {
 	}
 	if got := aclEvalBash(t, call, aliceBearer); got != "deny" {
 		t.Errorf("after: alice's Bash = %q, want deny", got)
+	}
+}
+
+// A tenant list that already shadows a config list (written before create
+// refused the name) keeps resolving first; boot names each one so the
+// operator can rename it, and explain names it beside the decision.
+func TestACLBoot_ExistingShadowIsReported(t *testing.T) {
+	srv, ts, st := aclMgmtServerWith(t, authz.ModeCompat, withConfigDenyList("corp-yaml"))
+	ctx := context.Background()
+	for _, row := range []store.AclDefRow{
+		{TenantID: "acme", Name: "corp-yaml", Rules: []byte(harmlessRules)},
+		{TenantID: "", Name: "corp-yaml", Rules: []byte(harmlessRules)},
+		{TenantID: "acme", Name: "unrelated", Rules: []byte(harmlessRules)},
+		{TenantID: "other", Name: "gone", Rules: []byte(harmlessRules)},
+	} {
+		if _, err := st.AclDefPut(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.AclDefRetire(ctx, "other", "gone"); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	n := srv.ReportACLShadows(ctx, slog.New(slog.NewTextHandler(&buf, nil)))
+	logged := buf.String()
+	if n != 2 || strings.Count(logged, "level=WARN") != 2 ||
+		!strings.Contains(logged, "tenant=acme name=corp-yaml") || !strings.Contains(logged, `tenant="" name=corp-yaml`) ||
+		strings.Contains(logged, "unrelated") || strings.Contains(logged, "gone") {
+		t.Errorf("boot report: %d shadows, log:\n%s\nwant the acme and shared corp-yaml rows only", n, logged)
+	}
+	code, body := bearerCall(t, ts, aliceBearer, "POST", "/v1/_authz/explain", `{"action":{"name":"invoke"},"resource":{"type":"tool","id":"Bash"}}`)
+	if code != 200 || !strings.Contains(body, `"shadowed_lists":[{"acl":"corp-yaml","stored_in_tenant":"acme","shadows":"config"}]`) {
+		t.Errorf("explain over a shadowing list: %d %s, want it named under shadowed_lists", code, body)
+	}
+}
+
+// Explain on a group names the lists whose retire governs leaving or
+// deleting it: those bound to the group and to every group containing it.
+func TestAuthzExplain_NamesTheListsThatGovernAGroup(t *testing.T) {
+	_, ts, _ := aclMgmtServer(t, authz.ModeCompat)
+	op := func(method, path, body string) {
+		t.Helper()
+		if code, out := bearerCall(t, ts, operatorBearer, method, path, body); code >= 300 {
+			t.Fatalf("%s %s: %d %s", method, path, code, out)
+		}
+	}
+	for _, name := range []string{"lock-outer", "lock-inner", "elsewhere"} {
+		op("POST", "/v1/_acldef", `{"op":"create","name":"`+name+`","rules":`+harmlessRules+`}`)
+	}
+	for _, g := range []string{"inner", "outer", "side"} {
+		op("POST", "/v1/_groups", `{"name":"`+g+`"}`)
+	}
+	op("POST", "/v1/_groups/outer/members", `{"kind":"group","id":"inner"}`)
+	op("POST", "/v1/_aclbinding", `{"acl":"lock-inner","subject_kind":"group","subject_id":"inner"}`)
+	op("POST", "/v1/_aclbinding", `{"acl":"lock-outer","subject_kind":"group","subject_id":"outer"}`)
+	op("POST", "/v1/_aclbinding", `{"acl":"elsewhere","subject_kind":"group","subject_id":"side"}`)
+	code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_authz/explain", `{"action":{"name":"manage"},"resource":{"type":"principal","id":"group:inner"}}`)
+	if code != 200 || !strings.Contains(body, `"governed_by":{"group":"inner","retire":["lock-inner","lock-outer"]}`) {
+		t.Errorf("explain manage principal:group:inner: %d %s, want governed_by naming lock-inner and lock-outer", code, body)
+	}
+	code, body = bearerCall(t, ts, operatorBearer, "POST", "/v1/_authz/explain", `{"action":{"name":"invoke"},"resource":{"type":"tool","id":"Bash"}}`)
+	if code != 200 || strings.Contains(body, "governed_by") {
+		t.Errorf("explain on a tool names no governing lists: %d %s", code, body)
 	}
 }
