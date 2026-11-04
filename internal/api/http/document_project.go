@@ -1,12 +1,22 @@
 package http
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
+
+// operatorPlanePrincipal reports whether the caller is on the operator plane:
+// open mode (no principal), the legacy token, an admin, or a tenant operator
+// (auth.HasScope: admin satisfies substrate:tenant).
+func operatorPlanePrincipal(ctx context.Context) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	return !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeTenant)
+}
 
 // handleDocumentProject serves POST /v1/_document/project — run the document
 // projection pass (RFC FQ P2) over one scope now, rather than waiting for the
@@ -35,6 +45,14 @@ import (
 // model call; a UMAP fit takes seconds to a minute at 10,000 chunks, and the call
 // returns when it is done. 409 while memory.projection is off.
 func (s *Server) handleDocumentProject(w http.ResponseWriter, r *http.Request) {
+	// A forced refit is a fit of the whole scope (a UMAP fit runs seconds to a
+	// minute), so it is the operator plane's, whoever the route admits: the
+	// projection without one is what a member may run (RFC FY D7). Asked first,
+	// so the answer does not depend on how this server is configured.
+	if refit := r.URL.Query().Get("refit"); (refit == "true" || refit == "1") && !operatorPlanePrincipal(r.Context()) {
+		writeJSONError(w, http.StatusForbidden, "operator_plane", "a refit of the projection is an operator's; run it without refit")
+		return
+	}
 	if s.store == nil || s.sqlMem == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "sqlmem_unavailable",
 			"projecting documents requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")

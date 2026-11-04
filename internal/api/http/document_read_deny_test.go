@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -88,4 +90,71 @@ func TestMemoryDocRowDelete_OffRunRouteAsksTheDocumentACL(t *testing.T) {
 	if rec := deleteMemoryKey(t, c.s, admin, path); rec.Code != http.StatusNoContent {
 		t.Errorf("an admin with no set removes the fact body: %d %s", rec.Code, rec.Body.String())
 	}
+}
+
+// documentMaintenanceRoutes rewrite a scope's index, map or units, or spend the
+// operator's embedder or model per row.
+var documentMaintenanceRoutes = []string{
+	"/v1/_document/reindex",
+	"/v1/_document/derive_units",
+	"/v1/_document/describe_images",
+	"/v1/_document/project?refit=true&dry_run=false",
+	"/v1/_document/project",
+}
+
+// TestMaintenanceRoutes_AreNotOnTheMemberPath: a tenant member reaches none of
+// the document maintenance routes; the three that only rewrite or spend are
+// carved out of the member path by name, so re-gating /v1/_document/* to the
+// tenant scope later cannot open them; and the projection handler refuses a
+// refit to anyone below the operator plane, which is what keeps a refit an
+// operator's if the projection itself is ever opened to members.
+func TestMaintenanceRoutes_AreNotOnTheMemberPath(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	seedToken(t, st, "lct_member", "acme", "alice", []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}, time.Time{})
+	for _, path := range documentMaintenanceRoutes {
+		if reached, code := runMW(t, s, http.MethodPost, path, "lct_member"); reached || code != http.StatusForbidden {
+			t.Errorf("member POST %s: code=%d reached=%v, want 403 and not reached", path, code, reached)
+		}
+	}
+	for _, path := range documentMaintenanceRoutes[:3] {
+		if !memberpath.CarvedOut(http.MethodPost, path) {
+			t.Errorf("CarvedOut(POST %s) = false, want the operator's", path)
+		}
+	}
+	// The projection without a refit is what a member may run if the route is
+	// opened (decision D7): it is not carved out by name.
+	if memberpath.CarvedOut(http.MethodPost, "/v1/_document/project") {
+		t.Error("CarvedOut(POST /v1/_document/project) = true; only a refit is the operator's")
+	}
+
+	// The handler's own refit check, asked directly (the route gate is above).
+	srv := projectServer(t)
+	member := auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}}
+	operator := auth.Principal{TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeTenant}}
+	for _, c := range []struct {
+		who   auth.Principal
+		query string
+		want  bool // refused with 403
+	}{
+		{member, "?refit=true", true},
+		{member, "?refit=1&dry_run=false", true},
+		{member, "", false},
+		{member, "?refit=false", false},
+		{operator, "?refit=true", false},
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/v1/_document/project"+c.query, nil).
+			WithContext(auth.WithPrincipal(context.Background(), c.who))
+		srv.handleDocumentProject(rec, req)
+		if got := rec.Code == http.StatusForbidden; got != c.want {
+			t.Errorf("%s project%s: %d %s, want refused=%v", c.who.Subject, c.query, rec.Code, rec.Body.String(), c.want)
+		}
+	}
+}
+
+// projectServer has no store, so a call the refit check lets through answers
+// 503 rather than running a pass.
+func projectServer(t *testing.T) *Server {
+	t.Helper()
+	return &Server{cfgHolder: config.NewHolder(&config.Config{})}
 }
