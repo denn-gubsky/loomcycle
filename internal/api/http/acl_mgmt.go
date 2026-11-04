@@ -820,7 +820,9 @@ func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) 
 // tenant already holds stays writable: it is a shadow written before this
 // check, which ReportACLShadows names at boot and resolution keeps until
 // the operator renames it (RFC FY D4). The check and the write are not one
-// transaction; a shared list created between them is the boot report's.
+// transaction; a shared list created between them is named by the next boot
+// or acls reload report (ReportACLShadows), and a binding of the name in
+// the tenant is refused as ambiguous (aclBindingNameAmbiguous).
 func (s *Server) aclNameReserved(ctx context.Context, tenant, name string) *aclReply {
 	held, err := s.aclLiveList(ctx, tenant, name)
 	if err != nil {
@@ -915,15 +917,15 @@ func aclListLookupFault(ctx context.Context, tenant, name string, err error) *ac
 	return &r
 }
 
-// ReportACLShadows warns once for every live stored list that shadows a
-// config-declared list of the same name — a tenant's row, or a shared-tenant
-// row, which shadows it in every tenant — and returns how many it found.
-// Resolution keeps the stored list first for now (RFC FY D4), so this is how
-// an operator learns a tenant replaced a guardrail the config declares, and
-// renames the list. Run once at boot; it reads every tenant's lists.
+// ReportACLShadows warns once for every live stored list that shadows
+// another list of the same name, and returns how many it found: a tenant's
+// or a shared-tenant row over a config-declared list, and a tenant's row
+// over a live shared-tenant list. Resolution keeps the nearer list first for
+// now (RFC FY D4), so this is how an operator learns a guardrail it declared
+// does not reach a tenant, and renames the list. Run at boot and on an acls
+// reload; it reads every tenant's lists.
 func (s *Server) ReportACLShadows(ctx context.Context, log *slog.Logger) int {
-	static := s.aclStatic()
-	if s.store == nil || static == nil || len(static.ACLs) == 0 {
+	if s.store == nil {
 		return 0
 	}
 	snap, err := s.store.SnapshotReadAcl(ctx)
@@ -931,14 +933,32 @@ func (s *Server) ReportACLShadows(ctx context.Context, log *slog.Logger) int {
 		log.Warn("authz: stored lists could not be checked for shadowing", "err", err)
 		return 0
 	}
+	var declared map[string]authz.ACL
+	if static := s.aclStatic(); static != nil {
+		declared = static.ACLs
+	}
+	shared := map[string]bool{}
+	for _, def := range snap.Defs {
+		if def.TenantID == "" && !def.Retired() {
+			shared[def.Name] = true
+		}
+	}
 	n := 0
 	for _, def := range snap.Defs {
-		if _, declared := static.ACLs[def.Name]; !declared || def.Retired() {
+		if def.Retired() {
 			continue
 		}
-		log.Warn("authz: a stored list shadows the config-declared list of the same name; bindings resolve to the stored one",
-			"tenant", def.TenantID, "name", def.Name)
-		n++
+		if _, ok := declared[def.Name]; ok {
+			log.Warn("authz: a stored list shadows the config-declared list of the same name; bindings resolve to the stored one",
+				"tenant", def.TenantID, "name", def.Name)
+			n++
+			continue
+		}
+		if def.TenantID != "" && shared[def.Name] {
+			log.Warn("authz: a tenant's list shadows the shared list of the same name; bindings there resolve to the tenant's",
+				"tenant", def.TenantID, "name", def.Name)
+			n++
+		}
 	}
 	return n
 }

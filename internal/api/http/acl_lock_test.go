@@ -229,6 +229,9 @@ func TestACLBoot_ExistingShadowIsReported(t *testing.T) {
 		{TenantID: "", Name: "corp-yaml", Rules: []byte(harmlessRules)},
 		{TenantID: "acme", Name: "unrelated", Rules: []byte(harmlessRules)},
 		{TenantID: "other", Name: "gone", Rules: []byte(harmlessRules)},
+		// A tenant list named like a live shared one shadows it the same way.
+		{TenantID: "", Name: "team-x", Rules: []byte(harmlessRules)},
+		{TenantID: "other", Name: "team-x", Rules: []byte(harmlessRules)},
 	} {
 		if _, err := st.AclDefPut(ctx, row); err != nil {
 			t.Fatal(err)
@@ -240,10 +243,11 @@ func TestACLBoot_ExistingShadowIsReported(t *testing.T) {
 	var buf bytes.Buffer
 	n := srv.ReportACLShadows(ctx, slog.New(slog.NewTextHandler(&buf, nil)))
 	logged := buf.String()
-	if n != 2 || strings.Count(logged, "level=WARN") != 2 ||
+	if n != 3 || strings.Count(logged, "level=WARN") != 3 ||
 		!strings.Contains(logged, "tenant=acme name=corp-yaml") || !strings.Contains(logged, `tenant="" name=corp-yaml`) ||
+		!strings.Contains(logged, "tenant=other name=team-x") || strings.Contains(logged, `tenant="" name=team-x`) ||
 		strings.Contains(logged, "unrelated") || strings.Contains(logged, "gone") {
-		t.Errorf("boot report: %d shadows, log:\n%s\nwant the acme and shared corp-yaml rows only", n, logged)
+		t.Errorf("boot report: %d shadows, log:\n%s\nwant the acme and shared corp-yaml rows and other's team-x only", n, logged)
 	}
 	code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_authz/explain", `{"action":{"name":"invoke"},"resource":{"type":"tool","id":"Bash"}}`)
 	if code != 200 || !strings.Contains(body, `"shadowed_lists":[{"acl":"corp-yaml","stored_in_tenant":"acme","shadows":"config"}]`) {

@@ -184,12 +184,12 @@ func (s *Server) ReloadConfig(ctx context.Context, dryRun bool) (ReloadResult, e
 	// resolution may name one this reload removed or changed. Local only: a
 	// reload changes this replica's config, not its peers'.
 	s.tokenCache.flush()
-	// A reload can declare a list a stored one already shadows; name each in
-	// the log, as boot does, and count them for the operator who reloaded
+	// A reload can declare a list a stored one already shadows; name each
+	// shadow in the log, as boot does, and count them for the operator who reloaded
 	// (the resolver reads the new lists on its next compile).
 	if changedSet["acls"] {
 		if n := s.ReportACLShadows(ctx, slog.Default()); n > 0 {
-			res.Warnings = append(res.Warnings, fmt.Sprintf("%d stored access-control list(s) shadow a config-declared list of the same name and resolve in its place; the log names each tenant and list", n))
+			res.Warnings = append(res.Warnings, fmt.Sprintf("%d stored access-control list(s) shadow a config-declared or shared list of the same name and resolve in its place; the log names each tenant and list", n))
 		}
 	}
 	return res, nil
