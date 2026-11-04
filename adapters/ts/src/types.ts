@@ -2990,7 +2990,13 @@ export interface WhoamiEffective {
   /** Per Web UI page id (`run`, `runs`, `channels`, `access`, `users`, …),
    *  whether a request to the route the page loads first would pass the
    *  route's scope gate and its access-control question in the current mode.
-   *  Every page is true in open mode. */
+   *  Every page is true in open mode.
+   *
+   *  Two ids are calls rather than pages: `speech` ({@link LoomcycleClient.speech})
+   *  and `transcription` ({@link LoomcycleClient.transcribe}). Each is true
+   *  only when its engine is configured AND the caller would pass its route's
+   *  gates, so a client shows a read-aloud button or a microphone without
+   *  probing. */
   surfaces: Record<string, boolean>;
 }
 
@@ -7787,6 +7793,133 @@ export interface DecisionModelsResponse {
   models: DecisionModel[];
 }
 
+// ---- Speech: read-aloud and transcription outside a run (RFC FK P3) ----
+
+/** The audio a read-aloud can come back as: `wav` always, `mp3` or `ogg` only
+ *  when the deployment encodes to it (see {@link SpeechDirectionInfo.formats}).
+ *  `opus` is accepted as another name for `ogg`. */
+export type SpeechFormat = "wav" | "mp3" | "ogg" | "opus";
+
+/** Options of {@link LoomcycleClient.speech}. */
+export interface SpeechOptions {
+  /** A language code from {@link SpeechDirectionInfo.languages}; omitted, the
+   *  text's script decides, else the deployment's default language. */
+  language?: string;
+  /** One of the language's voices; omitted, its default voice. */
+  voice?: string;
+  /** Omitted, the deployment's own format. Ask only for one listed in
+   *  {@link SpeechDirectionInfo.formats}: another is a 400
+   *  `speech_encode_not_configured`. */
+  format?: SpeechFormat;
+  /** A `models:` alias of kind `synthesizer`; omitted, the language's. */
+  model?: string;
+  signal?: AbortSignal;
+}
+
+/** What {@link LoomcycleClient.speech} returns: the audio, whole. The
+ *  metadata comes from `X-Loomcycle-Speech-*` headers, which a browser can
+ *  read only on a same-origin request (the runtime exposes no CORS headers);
+ *  cross-origin they are undefined. */
+export interface SpeechResult {
+  bytes: Uint8Array;
+  /** `audio/wav`, `audio/mpeg` or `audio/ogg`. */
+  contentType: string;
+  language?: string;
+  voice?: string;
+  /** How long the audio lasts, pauses included. */
+  seconds?: number;
+  /** The characters spoken, after Markdown was normalised. */
+  chars?: number;
+  /** How many engine requests the text was cut into. */
+  pieces?: number;
+}
+
+/** Options of {@link LoomcycleClient.transcribe}. */
+export interface TranscribeOptions {
+  /** The file name sent with the upload; defaults to `recording` with an
+   *  extension from the content type. */
+  filename?: string;
+  /** The recording's type, e.g. `audio/wav` or `audio/webm`; a Blob's own
+   *  type is used when omitted. */
+  contentType?: string;
+  /** An ISO 639-1 code; omitted, the deployment's default or the engine's
+   *  guess. */
+  language?: string;
+  /** Names and terms the engine should expect. */
+  prompt?: string;
+  /** Must be the deployment's speech-to-text model when given; omit it. */
+  model?: string;
+  /** `json` (the default) or `verbose_json`, which adds `segments`. */
+  format?: "json" | "verbose_json";
+  signal?: AbortSignal;
+}
+
+/** One stretch of a transcript, in seconds from the start of the recording. */
+export interface TranscriptSegment {
+  start: number;
+  end: number;
+  text: string;
+  /** Present when the engine labels speakers. */
+  speaker?: string;
+}
+
+/** What {@link LoomcycleClient.transcribe} returns. */
+export interface TranscribeResult {
+  text: string;
+  language?: string;
+  /** The recording's length in seconds. */
+  duration?: number;
+  /** With `format: "verbose_json"`. */
+  segments?: TranscriptSegment[];
+}
+
+/** One language a read-aloud can speak, and the voices a caller may pick. */
+export interface SpeechLanguageInfo {
+  voices: string[];
+  default_voice: string;
+}
+
+/** The read-aloud half of {@link SpeechInfo}. Only `enabled` is present when
+ *  it is off, or when the caller may not use it. */
+export interface SpeechDirectionInfo {
+  enabled: boolean;
+  default_language?: string;
+  languages?: Record<string, SpeechLanguageInfo>;
+  /** `wav`, plus the one encoded format the deployment makes, if any. */
+  formats?: string[];
+  /** The size of each piece sent to the engine (information only). */
+  max_chars_per_call?: number;
+  /** What one request may carry; longer text is a 413 `input_too_long`. */
+  max_chars_per_request?: number;
+  max_seconds_per_request?: number;
+}
+
+/** The transcription half of {@link SpeechInfo}. Only `enabled` is present
+ *  when it is off, or when the caller may not use it. */
+export interface TranscriptionDirectionInfo {
+  enabled: boolean;
+  default_language?: string;
+  /** The recording types the route takes. `audio/wav` always; with a
+   *  converter, `audio/*` and `video/*`; without one, the types the engine
+   *  reads whole. */
+  accepts?: string[];
+  /** The upload limit (LOOMCYCLE_MAX_REQUEST_BYTES). */
+  max_upload_bytes?: number;
+  max_seconds_per_call?: number;
+  /** How long one upload may last; longer is a 413 `audio_too_long`. */
+  max_seconds_per_request?: number;
+  /** Without a converter: the largest non-WAV file the engine takes whole. A
+   *  PCM WAV is cut instead, so it is not bound by this. */
+  whole_file_max_bytes?: number;
+}
+
+/** GET /v1/_speech: what a client needs to draw its voice controls. Names no
+ *  engine URL, provider or model. */
+export interface SpeechInfo {
+  speech: SpeechDirectionInfo;
+  transcription: TranscriptionDirectionInfo;
+}
+
 // ---- Def name enumeration (GET /v1/_<family>def/names) ----
 //
 // One roll-up per declared name in a substrate family. Tenant-scoped
@@ -7929,8 +8062,8 @@ export interface SchedulePauseResult {
 export interface ModelAlias {
   provider: string;
   model: string;
-  /** chat | decision | embedder. Absent for an untagged alias, which is a chat
-   *  model. */
+  /** chat | decision | embedder | transcriber | synthesizer. Absent for an
+   *  untagged alias, which is a chat model. */
   kind?: string;
 }
 

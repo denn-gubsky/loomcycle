@@ -804,6 +804,47 @@ try {
 }
 ```
 
+### Speech: read-aloud and transcription
+
+Read a reply aloud, or turn a recording into text, on the deployment's own speech engines. No run is involved; each engine request is charged to the caller and the caller's hard token budget is checked first. A chat user may call them (the scope is `runs:create`, and access control asks `use gateway:speech` / `use gateway:transcription`); a token limited to certain agents may not.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `speech(input, opts?)` | `Promise<SpeechResult>` | Markdown or plain text → `{bytes, contentType, language?, voice?, seconds?, chars?, pieces?}`. Options: `language`, `voice`, `format`, `model`, `signal`. Mirrors `POST /v1/audio/speech`. |
+| `transcribe(file, opts?)` | `Promise<TranscribeResult>` | A `Blob` or `Uint8Array` → `{text, language?, duration?, segments?}`. Options: `filename`, `contentType`, `language`, `prompt`, `format` (`json` \| `verbose_json`), `signal`. Mirrors `POST /v1/audio/transcriptions`. |
+| `speechInfo()` | `Promise<SpeechInfo>` | Per direction: whether this caller may use it, languages and voices, formats, accepted recording types, caps. Mirrors `GET /v1/_speech`. |
+
+**Whether to show the controls.** `whoami()`'s `effective.surfaces.speech` and `.transcription` are true only when the engine is configured and the caller passes the route's gates, so a client never probes with a request that costs a ledger row.
+
+```ts
+const me = await client.whoami();
+if (me.effective?.surfaces.speech) {
+  const info = await client.speechInfo();
+  const format = info.speech.formats?.includes("ogg") ? "ogg" : "wav";
+  const audio = await client.speech(reply, { format, signal: abort.signal });
+  play(new Blob([audio.bytes], { type: audio.contentType }));
+}
+if (me.effective?.surfaces.transcription) {
+  const { text } = await client.transcribe(wavBlob, { language: "uk" });
+}
+```
+
+- **Pick a format from `speechInfo().speech.formats`.** It is `wav`, plus the one encoded format the deployment makes, if any; it never lists both `mp3` and `ogg`. Any other format is a 400 `speech_encode_not_configured`. `wav` always works.
+- **A recording.** A PCM WAV of any length is cut by the deployment. A browser's own `audio/webm` or `audio/mp4` is taken when `speechInfo().transcription.accepts` lists it, up to `whole_file_max_bytes` when the deployment has no converter. `transcribe` sends `FormData` and sets no `Content-Type`, so the runtime writes the multipart boundary.
+- **Under load a request waits** for the engine rather than being refused. Show progress, and pass `signal` for the user's cancel.
+- **The `seconds` / `language` / `voice` metadata** comes from response headers a browser can read only on a same-origin request; cross-origin they are `undefined`.
+
+| Status | `e.code` | What to do |
+|---|---|---|
+| 400 | `speech_encode_not_configured` / `unsupported_format` | Ask for a format from `speechInfo()`. |
+| 400 | `unsupported_voice` / `unsupported_language` / `empty_input` / `model_not_allowed` / `unreadable_audio` / `unsupported_response_format` | Fix the request; the message names the fault. |
+| 403 | `acl_denied` / `insufficient_scope` / `restricted_token` / `operator_key_restricted` | The caller may not use it. Do not retry. |
+| 413 | `input_too_long` / `audio_too_long` / `audio_too_large` / `request_too_large` | Send it in parts. |
+| 415 | `unsupported_media_type` | Send a PCM WAV. |
+| 429 | `token_limit_exceeded` | The caller is at a hard token budget. |
+| 502 | `speech_failed` / `transcription_failed` | The engine failed; try again later. |
+| 503 | `speech_not_configured` / `transcription_not_configured` / `transcription_unavailable` | The deployment has no such engine, or it is not reachable. |
+
 Two of these have a class of their own: a `prompt_too_large` throws `PromptTooLargeError` and a `token_limit_exceeded` throws `TokenLimitExceededError` (with the budget on `e.scope` / `e.used` / `e.limit`). For the rest, branch on `e.code`, not on the class: the class follows the HTTP status alone.
 
 ### Credentials (RFC AR)

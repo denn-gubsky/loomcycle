@@ -66,6 +66,11 @@ import type {
   DecideRequest,
   DecideResponse,
   DecisionModelsResponse,
+  SpeechOptions,
+  SpeechResult,
+  TranscribeOptions,
+  TranscribeResult,
+  SpeechInfo,
   CredentialScope,
   DirectoryInspection,
   DirectoryTenant,
@@ -1665,6 +1670,101 @@ export class LoomcycleClient {
     signal?: AbortSignal;
   }): Promise<DecisionModelsResponse> {
     return jsonFetch<DecisionModelsResponse>(this.ctx, "/v1/_decide/models", opts);
+  }
+
+  /** Read `input` aloud: Markdown or plain text in, audio out, whole. The
+   *  deployment normalises the Markdown (no "asterisk", no URLs), cuts the
+   *  text, speaks it with the language's voice and joins the pieces. No run
+   *  is involved; each engine request is charged to the caller. Mirrors
+   *  `POST /v1/audio/speech`.
+   *
+   *  Under load a request waits for the engine rather than being refused, so
+   *  show progress and pass `signal` for a cancel. A refusal throws with the
+   *  code on `e.code`: 400 `speech_encode_not_configured` (a format the
+   *  deployment does not make — pick from {@link speechInfo}'s `formats`) /
+   *  `unsupported_voice` / `unsupported_language` / `empty_input` /
+   *  `model_not_allowed`, 403 (scope, access control, a token limited to
+   *  certain agents), 413 `input_too_long`, 429 `token_limit_exceeded`, 502
+   *  `speech_failed`, 503 `speech_not_configured`. */
+  async speech(input: string, opts?: SpeechOptions): Promise<SpeechResult> {
+    const body: Record<string, unknown> = { input };
+    if (opts?.language !== undefined) body.language = opts.language;
+    if (opts?.voice !== undefined) body.voice = opts.voice;
+    if (opts?.format !== undefined) body.response_format = opts.format;
+    if (opts?.model !== undefined) body.model = opts.model;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.ctx.authToken) headers.Authorization = `Bearer ${this.ctx.authToken}`;
+    const resp = await this.ctx.fetchImpl(`${this.ctx.baseUrl}/v1/audio/speech`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: opts?.signal,
+    });
+    if (!resp.ok) {
+      await raiseFromResponse(resp);
+    }
+    const num = (name: string): number | undefined => {
+      const v = resp.headers.get(name);
+      if (v === null || v === "") return undefined;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    return {
+      bytes: new Uint8Array(await resp.arrayBuffer()),
+      contentType: resp.headers.get("Content-Type") ?? "",
+      language: resp.headers.get("X-Loomcycle-Speech-Language") ?? undefined,
+      voice: resp.headers.get("X-Loomcycle-Speech-Voice") ?? undefined,
+      seconds: num("X-Loomcycle-Speech-Seconds"),
+      chars: num("X-Loomcycle-Speech-Chars"),
+      pieces: num("X-Loomcycle-Speech-Pieces"),
+    };
+  }
+
+  /** Transcribe a recording. A PCM WAV of any length is cut by the deployment;
+   *  a browser's own `audio/webm` / `audio/mp4` is taken when the deployment
+   *  converts or its engine reads the type whole (see {@link speechInfo}'s
+   *  `accepts`). No run is involved; each engine request is charged to the
+   *  caller. Mirrors `POST /v1/audio/transcriptions`.
+   *
+   *  The body is `FormData` and no `Content-Type` is set, so the runtime
+   *  writes the multipart boundary. Under load a request waits for the engine
+   *  rather than being refused. A refusal throws with the code on `e.code`:
+   *  400 `unreadable_audio` / `unsupported_language` / `model_not_allowed`,
+   *  403, 413 `request_too_large` / `audio_too_large` / `audio_too_long`, 415
+   *  `unsupported_media_type`, 429 `token_limit_exceeded`, 502
+   *  `transcription_failed`, 503 `transcription_not_configured`. */
+  async transcribe(file: Blob | Uint8Array, opts?: TranscribeOptions): Promise<TranscribeResult> {
+    const type = opts?.contentType ?? (file instanceof Blob ? file.type : "") ?? "";
+    const blob =
+      file instanceof Blob && (opts?.contentType === undefined || opts.contentType === file.type)
+        ? file
+        : new Blob([file as BlobPart], type ? { type } : undefined);
+    const form = new FormData();
+    if (opts?.model !== undefined) form.append("model", opts.model);
+    if (opts?.language !== undefined) form.append("language", opts.language);
+    if (opts?.prompt !== undefined) form.append("prompt", opts.prompt);
+    if (opts?.format !== undefined) form.append("response_format", opts.format);
+    form.append("file", blob, opts?.filename ?? recordingName(type));
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (this.ctx.authToken) headers.Authorization = `Bearer ${this.ctx.authToken}`;
+    const resp = await this.ctx.fetchImpl(`${this.ctx.baseUrl}/v1/audio/transcriptions`, {
+      method: "POST",
+      headers,
+      body: form,
+      signal: opts?.signal,
+    });
+    if (!resp.ok) {
+      await raiseFromResponse(resp);
+    }
+    return (await resp.json()) as TranscribeResult;
+  }
+
+  /** What a client needs to draw its voice controls: per direction, whether
+   *  this caller may use it, the languages and voices, the formats, the types
+   *  a recording may be, and the caps. A direction that is off, or that this
+   *  caller may not use, is `{ enabled: false }`. Mirrors `GET /v1/_speech`. */
+  async speechInfo(opts?: { signal?: AbortSignal }): Promise<SpeechInfo> {
+    return jsonFetch<SpeechInfo>(this.ctx, "/v1/_speech", opts);
   }
 
   /** Read the full event log for a session. Each entry has seq,
@@ -5307,6 +5407,19 @@ export class LoomcycleClient {
 
 /** The file name of an RFC 8187 `filename*=UTF-8''…` Content-Disposition, or
  *  a plain quoted `filename="…"`; undefined when there is neither. */
+/** recordingName names an upload that came without a file name, by its type,
+ *  so the runtime's type guess from the extension agrees with the bytes. */
+function recordingName(type: string): string {
+  const base = type.split(";")[0]!.trim().toLowerCase();
+  const ext: Record<string, string> = {
+    "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav",
+    "audio/webm": ".webm", "video/webm": ".webm",
+    "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "video/mp4": ".mp4",
+    "audio/mpeg": ".mp3", "audio/ogg": ".ogg", "audio/flac": ".flac",
+  };
+  return "recording" + (ext[base] ?? "");
+}
+
 function dispositionFilename(header: string | null): string | undefined {
   if (!header) return undefined;
   const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
