@@ -288,6 +288,83 @@ func TestAuthzExplain_ANonReaderSeesNoShadowOrLockNotes(t *testing.T) {
 	}
 }
 
+// A tenant that created a list before the admin stored a shared list (or
+// the config declared one) of the same name keeps resolving its own, so a
+// binding of the name in that tenant would bind the tenant's rules, not the
+// admin's: it is refused as ambiguous.
+func TestACLBinding_ANameATenantAndASharedListBothHoldIsRefused(t *testing.T) {
+	const rootBearer = "lct_root"
+	srv, ts, _ := aclMgmtServerWith(t, authz.ModeCompat, func(c *config.Config) {
+		c.ResolvedPrincipals = []auth.DeclaredPrincipal{{Secret: rootBearer, Principal: auth.Principal{Subject: "root", Scopes: []string{auth.ScopeAdmin}}}}
+	})
+	deny := `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]}]`
+	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"create","name":"corp","rules":`+harmlessRules+`}`); code != 201 {
+		t.Fatalf("tenant pre-creates corp: %d %s", code, body)
+	}
+	code, body := bearerCall(t, ts, rootBearer, "POST", "/v1/_acldef", `{"op":"create","name":"corp","rules":`+deny+`}`)
+	if code != 201 || !strings.Contains(body, `"shadowed_in_tenants":1`) || strings.Contains(body, "acme") {
+		t.Errorf("admin creates shared corp: %d %s, want 201 with shadowed_in_tenants 1 and no tenant named", code, body)
+	}
+	for _, bearer := range []string{rootBearer, operatorBearer} {
+		path := "/v1/_aclbinding"
+		if bearer == rootBearer {
+			path += "?tenant=acme"
+		}
+		code, body := bearerCall(t, ts, bearer, "POST", path, `{"acl":"corp","subject_kind":"tenant"}`)
+		if code != 409 || !strings.Contains(body, `"acl_name_shadowed"`) {
+			t.Errorf("%s binds corp in acme: %d %s, want 409 acl_name_shadowed", bearer, code, body)
+		}
+	}
+	op := aclCaller(t, srv, "acme", "ops", auth.ScopeTenant)
+	res := twinCall(t, srv, op, "aclbinding", `{"op":"create","acl":"corp","subject_kind":"tenant"}`)
+	if !res.IsError || !strings.Contains(res.Text, `"acl_name_shadowed"`) || res.ErrorInfo == nil || res.ErrorInfo.Category != tools.CategoryBusiness {
+		t.Errorf("binding corp over the twin: %+v, want a business refusal acl_name_shadowed", res)
+	}
+	// A tenant with no list of its own of the name binds the shared one.
+	if code, body := bearerCall(t, ts, rootBearer, "POST", "/v1/_aclbinding?tenant=other", `{"acl":"corp","subject_kind":"tenant"}`); code != 201 {
+		t.Errorf("admin binds shared corp in a tenant without its own: %d %s, want 201", code, body)
+	}
+}
+
+func TestACLBinding_ANameATenantAndTheConfigBothHoldIsRefused(t *testing.T) {
+	_, ts, st := aclMgmtServerWith(t, authz.ModeCompat, func(c *config.Config) {
+		withConfigDenyList("corp")(c)
+		c.ResolvedACL.Bindings = nil
+	})
+	// Written before the config declared the name, as after an upgrade or a
+	// reload that added it.
+	if _, err := st.AclDefPut(context.Background(), store.AclDefRow{TenantID: "acme", Name: "corp", Rules: []byte(harmlessRules)}); err != nil {
+		t.Fatal(err)
+	}
+	code, body := bearerCall(t, ts, legacyAdminBearer, "POST", "/v1/_aclbinding?tenant=acme", `{"acl":"corp","subject_kind":"tenant"}`)
+	if code != 409 || !strings.Contains(body, `"acl_name_shadowed"`) {
+		t.Errorf("admin binds config corp in acme: %d %s, want 409 acl_name_shadowed", code, body)
+	}
+	if code, body := bearerCall(t, ts, legacyAdminBearer, "POST", "/v1/_aclbinding?tenant=other", `{"acl":"corp","subject_kind":"tenant"}`); code != 201 {
+		t.Errorf("admin binds config corp in a tenant without its own: %d %s, want 201", code, body)
+	}
+}
+
+// A reload that declares a list a stored one already shadows reports it,
+// as boot does.
+func TestReloadConfig_ReportsAStoredListShadowingANewConfigList(t *testing.T) {
+	srv, _, st := aclMgmtServer(t, authz.ModeCompat)
+	if _, err := st.AclDefPut(context.Background(), store.AclDefRow{TenantID: "acme", Name: "corp", Rules: []byte(harmlessRules)}); err != nil {
+		t.Fatal(err)
+	}
+	next := *srv.cfg()
+	withConfigDenyList("corp")(&next)
+	next.ACLs = map[string]config.ACLDefConfig{"corp": {Rules: []map[string]any{{"effect": "deny", "actions": []any{"invoke"}, "resources": []any{"tool:Bash"}}}}}
+	srv.SetConfigReloader(func() (*config.Config, error) { return &next, nil })
+	res, err := srv.ReloadConfig(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(res.Warnings, "\n"), "1 stored access-control list(s) shadow") {
+		t.Errorf("reload warnings: %q, want the shadowing list counted", res.Warnings)
+	}
+}
+
 // Explain on a group names the lists whose retire governs leaving or
 // deleting it: those bound to the group and to every group containing it.
 func TestAuthzExplain_NamesTheListsThatGovernAGroup(t *testing.T) {

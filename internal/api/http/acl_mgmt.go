@@ -727,6 +727,9 @@ func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) 
 			return aclStoreError(err, "acl")
 		}
 		s.aclChanged(ctx, tenant, "acl_written", row.Name)
+		if tenant == "" {
+			return s.aclSharedWritten(ctx, row)
+		}
 		return aclCreated(row)
 	case "validate":
 		rules, err := authz.ParseRules(req.Rules)
@@ -820,6 +823,52 @@ func (s *Server) aclNameReserved(ctx context.Context, tenant, name string) *aclR
 		return &r
 	}
 	return nil
+}
+
+// aclSharedWritten answers a write of a shared-tenant list. A tenant that
+// already holds a live list of the name keeps resolving its own (RFC FY D4),
+// so the shared list does not reach it: each such tenant is warned of in
+// the log, and the answer carries only how many there are
+// ("shadowed_in_tenants"), never which — the admin renames, or a binding
+// of the name in such a tenant is refused (acl_name_shadowed). The scan
+// reads every tenant's lists; a shared-list write is an admin's, and rare.
+func (s *Server) aclSharedWritten(ctx context.Context, row store.AclDefRow) aclReply {
+	snap, err := s.store.SnapshotReadAcl(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "authz: tenants holding a shared list's name could not be checked", "name", row.Name, "err", err)
+		return aclCreated(row)
+	}
+	n := 0
+	for _, def := range snap.Defs {
+		if def.TenantID == "" || def.Name != row.Name || def.Retired() {
+			continue
+		}
+		slog.WarnContext(ctx, "authz: a tenant's list shadows the shared list of the same name; bindings there resolve to the tenant's",
+			"tenant", def.TenantID, "name", def.Name)
+		n++
+	}
+	body, err := aclRowWith(row, "shadowed_in_tenants", n)
+	if err != nil {
+		return aclCreated(row)
+	}
+	return aclCreated(body)
+}
+
+// aclRowWith is row's JSON with one more key. The row is kept as raw JSON
+// so its int64 version never passes through a float.
+func aclRowWith(row store.AclDefRow, key string, v any) (map[string]json.RawMessage, error) {
+	raw, err := json.Marshal(row)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	if m[key], err = json.Marshal(v); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 // aclLiveList reports whether tenant holds a live stored list of name.
@@ -1168,7 +1217,8 @@ func (s *Server) aclBindingTargetCheck(ctx context.Context, tenant string, req b
 	if s.aclResolver == nil {
 		return nil
 	}
-	src, err := s.aclResolver.ACLSource(ctx, tenant, strings.TrimSpace(req.ACL))
+	name := strings.TrimSpace(req.ACL)
+	src, err := s.aclResolver.ACLSource(ctx, tenant, name)
 	if err != nil {
 		r := aclFail(http.StatusServiceUnavailable, "acl_unavailable", "the list could not be looked up; retry")
 		return &r
@@ -1177,7 +1227,44 @@ func (s *Server) aclBindingTargetCheck(ctx context.Context, tenant string, req b
 		r := aclFail(http.StatusBadRequest, "acl_binding_invalid", fmt.Sprintf("list %q does not exist (or is retired): a binding to it would match nothing — create the list first", req.ACL))
 		return &r
 	}
-	return nil
+	return s.aclBindingNameAmbiguous(ctx, tenant, name)
+}
+
+// aclBindingNameAmbiguous refuses a binding in tenant to a name that tenant
+// holds as a live list of its own AND a config-declared or shared-tenant
+// list holds too. The binding would resolve to the tenant's list (RFC FY
+// D4), so an admin binding a shared or config guardrail into a tenant that
+// pre-created a list of the name would bind the tenant's own rules instead:
+// create refuses the name in the other order (acl_name_reserved), this
+// refuses it in this one. The way out is renaming one of the lists.
+func (s *Server) aclBindingNameAmbiguous(ctx context.Context, tenant, name string) *aclReply {
+	own, err := s.aclLiveList(ctx, tenant, name)
+	if err != nil {
+		return aclListLookupFault(ctx, tenant, name, err)
+	}
+	if !own {
+		return nil
+	}
+	other := ""
+	if static := s.aclStatic(); static != nil {
+		if _, declared := static.ACLs[name]; declared {
+			other = "the server configuration declares one"
+		}
+	}
+	if other == "" && tenant != "" {
+		shared, err := s.aclLiveList(ctx, "", name)
+		if err != nil {
+			return aclListLookupFault(ctx, "", name, err)
+		}
+		if shared {
+			other = "a shared list has it"
+		}
+	}
+	if other == "" {
+		return nil
+	}
+	r := aclFail(http.StatusConflict, "acl_name_shadowed", fmt.Sprintf("list name %q is ambiguous here: this tenant has its own list of that name and %s, and a binding would resolve to this tenant's; rename one of them", name, other))
+	return &r
 }
 
 func (s *Server) aclBindingRetire(ctx context.Context, focus, id string) aclReply {
