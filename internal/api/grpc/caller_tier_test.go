@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -106,6 +107,17 @@ func TestSubstrateGRPCCtx_StampsTheCallersTier(t *testing.T) {
 			if got := tools.CallerTier(ctx); got != c.want {
 				t.Errorf("%s via %s: tier = %s, want %s", name, plane, got, c.want)
 			}
+		}
+	}
+}
+
+// The erasure RPCs need substrate:tenant and are not on the member path: their
+// HTTP twin /v1/_erasure is carved out, and the member path reads the twin.
+// (Already held on this transport; the MCP tool was the open one.)
+func TestErasureRPCs_AreNotOnTheMemberPath(t *testing.T) {
+	for _, rpc := range []string{"ErasureReport", "ErasureExecute"} {
+		if memberpath.RPC(rpc, auth.ScopeTenant) {
+			t.Errorf("%s is admitted on the member path", rpc)
 		}
 	}
 }
