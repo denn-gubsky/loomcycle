@@ -135,7 +135,7 @@ func TestUserLifecycle_TheUnbindKeepsWhatIsLockedAgainstOperators(t *testing.T) 
 	admin("POST", "/v1/_aclbinding", `{"acl":"guard","subject_kind":"user","subject_id":"victim"}`)
 	admin("POST", "/v1/_aclbinding", `{"acl":"plain","subject_kind":"user","subject_id":"victim"}`)
 
-	if _, err := srv.unbindSubject(ctx, "acme", "victim", false); err != nil {
+	if _, err := srv.unbindSubject(ctx, "acme", "victim", false, true); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := st.AclBindingList(ctx, "acme", false)
@@ -431,5 +431,61 @@ func TestUserLifecycle_TheEraseStageDefersASubjectLockedIntoItsOwnList(t *testin
 	}
 	if b, m := liveLocks(t, st, "delegate"); b != 1 || !m {
 		t.Errorf("delegate after the erase stage: %d live admin-deny bindings, member of bound %v; want 1 and true", b, m)
+	}
+}
+
+// An operator's re-enable is judged by the caller's own lock
+// (aclSubjectLockForCaller), never by the unattended steps' keep: an admin
+// (who is not held by a lock) re-enables at the new-user floor even over a
+// list locked against the tenant's operators, while a delegate the lock
+// holds is refused.
+func TestUserReenable_AnAdminResetsToTheFloorOverATenantLock(t *testing.T) {
+	srv, ts, st := aclMgmtServer(t, authz.ModeCompat)
+	addDelegateOperator(t, st)
+	ctx := context.Background()
+	admin := func(method, path, body string) (int, string) {
+		t.Helper()
+		return bearerCall(t, ts, legacyAdminBearer, method, path+"?tenant=acme", body)
+	}
+	allow := `[{"effect":"allow","actions":["invoke"],"resources":["tool:Bash"]}]`
+	for _, req := range []struct{ path, body string }{
+		{"/v1/_acldef", `{"op":"create","name":"perk","rules":` + allow + `}`},
+		{"/v1/_acldef", `{"op":"create","name":"t-lock","rules":[{"effect":"deny","actions":["author","retire"],"resources":["def:acl/perk"]}]}`},
+		{"/v1/_aclbinding", `{"acl":"t-lock","subject_kind":"tenant"}`},
+		{"/v1/_users", `{"subject":"victim"}`},
+		{"/v1/_aclbinding", `{"acl":"perk","subject_kind":"user","subject_id":"victim"}`},
+	} {
+		if code, out := admin("POST", req.path, req.body); code >= 300 {
+			t.Fatalf("admin %s: %d %s", req.path, code, out)
+		}
+	}
+	if err := srv.startRemoval(ctx, "acme", "victim", "", store.RemovalReasonOperator, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	perk := func() int {
+		t.Helper()
+		rows, err := st.AclBindingList(ctx, "acme", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, b := range rows {
+			if b.ACLName == "perk" && b.SubjectKind == "user" && b.SubjectID == "victim" {
+				n++
+			}
+		}
+		return n
+	}
+	if code, body := bearerCall(t, ts, delegateBearer, "PATCH", "/v1/_users/victim", `{"status":"active"}`); code != 403 || !strings.Contains(body, `"acl_denied"`) {
+		t.Errorf("a delegate re-enables victim over the tenant lock: %d %s, want 403 acl_denied", code, body)
+	}
+	if n := perk(); n != 1 {
+		t.Errorf("victim's perk bindings after the refused re-enable: %d, want 1", n)
+	}
+	if code, body := admin("PATCH", "/v1/_users/victim", `{"status":"active"}`); code != 200 {
+		t.Fatalf("the admin re-enables victim: %d %s, want 200", code, body)
+	}
+	if n := perk(); n != 0 {
+		t.Errorf("victim's perk bindings after the admin's re-enable: %d, want 0 (the new-user floor)", n)
 	}
 }

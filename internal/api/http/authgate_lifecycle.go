@@ -114,16 +114,22 @@ func (s *Server) startRemovalWith(ctx context.Context, policy lifecycle.Policy, 
 // operator put the user there, and the user is disabled anyway. It reports
 // whether anything changed.
 //
-// A binding or membership whose list its unattendedLocks hold (locked
-// against the tenant's operators, or one the subject is locked into) is
-// kept and logged: the sweeper and a SCIM re-enable act for no operator,
-// and a tenant operator can set them going. The paths with a caller ask
-// that caller's lock first (aclSubjectLockForCaller).
-func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allGroups bool) (bool, error) {
+// With unattended set (the sweeper, a SCIM re-enable: no operator stands
+// behind the step, and a tenant operator can set it going), a binding or
+// membership whose list its unattendedLocks hold — locked against the
+// tenant's operators, or one the subject is locked into — is kept and
+// logged. An operator's re-enable passes false: its caller's own lock was
+// asked first (aclSubjectLockForCaller, which refuses a delegate the lock
+// holds), and the caller it let through (an admin, the legacy token, open
+// mode) resets the user to the floor.
+func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allGroups, unattended bool) (bool, error) {
 	changed := false
-	locks, err := s.unattendedLocks(ctx, tenant, subject)
-	if err != nil {
-		return false, fmt.Errorf("access control: %w", err)
+	var locks unattendedLocks
+	if unattended {
+		var err error
+		if locks, err = s.unattendedLocks(ctx, tenant, subject); err != nil {
+			return false, fmt.Errorf("access control: %w", err)
+		}
 	}
 	locked := func(names []string) (string, bool) { return locks.locked(ctx, names) }
 	groups, err := s.store.GroupsOfSubject(ctx, tenant, subject)
@@ -271,7 +277,7 @@ func (s *Server) advanceRemoval(ctx context.Context, r store.AuthRemovalRow, now
 	}
 	switch next {
 	case lifecycle.StageUnbind:
-		changed, err := s.unbindSubject(ctx, r.TenantID, r.Subject, false)
+		changed, err := s.unbindSubject(ctx, r.TenantID, r.Subject, false, true)
 		if changed {
 			s.aclChanged(ctx, r.TenantID, "removal_unbound", r.Subject)
 		}
@@ -385,7 +391,7 @@ func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by stri
 // memberships and bindings go, its access mode drops to the floor, and it
 // joins the floor groups that exist. Its status is the caller's to set.
 func (s *Server) resetRemovedToFloor(ctx context.Context, tenant, subject, by string) error {
-	if err := s.stripRemovedUser(ctx, tenant, subject); err != nil {
+	if err := s.stripRemovedUser(ctx, tenant, subject, false); err != nil {
 		return err
 	}
 	return s.rejoinFloorGroups(ctx, tenant, subject, by)
@@ -395,8 +401,9 @@ func (s *Server) resetRemovedToFloor(ctx context.Context, tenant, subject, by st
 // group membership and binding of the user's own goes and its access mode
 // drops to the floor's (the deployment floor is always isolated, the
 // lowest). It may run before the caller owns the re-enable for good.
-func (s *Server) stripRemovedUser(ctx context.Context, tenant, subject string) error {
-	changed, err := s.unbindSubject(ctx, tenant, subject, true)
+// unattended is unbindSubject's.
+func (s *Server) stripRemovedUser(ctx context.Context, tenant, subject string, unattended bool) error {
+	changed, err := s.unbindSubject(ctx, tenant, subject, true, unattended)
 	if err != nil {
 		return err
 	}
