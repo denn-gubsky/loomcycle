@@ -1,12 +1,14 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/authgate/oidc/oidctest"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -234,6 +236,52 @@ func TestOIDCLogin_RefusedIdentityGetsNoSession(t *testing.T) {
 	rec, _, _ = f.login(t, "")
 	if code := loginErrorCode(t, rec); code != "login_failed" {
 		t.Fatalf("forged token = %q", code)
+	}
+}
+
+// A gate keyed on the e-mail claim (declared immutable by the operator)
+// links a first sign-in to the user an operator made for that address only
+// when the provider says the address is verified. Anyone can get an ID token
+// carrying someone else's address unverified (self-registration, an added
+// secondary address); that token never reaches the pre-created user.
+func TestOIDCLogin_AnUnverifiedEmailSubjectNeverLinks(t *testing.T) {
+	ctx := context.Background()
+	f := newOIDCFixture(t, config.AuthIdentityMap{Tenant: "acme", SubjectClaim: "email", Provision: config.ProvisionKnown}, nil)
+	const subject = "idp:a@acme.example"
+	if err := f.st.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: subject, AccessMode: "isolated", Status: "active", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	for name, verified := range map[string]any{"false": false, "absent": nil, "string false": "false"} {
+		f.p.Set(func(p *oidctest.Provider) {
+			p.Claims = map[string]any{"sub": "attacker-1", "email": "a@acme.example", "name": "Mallory"}
+			if verified != nil {
+				p.Claims["email_verified"] = verified
+			}
+		})
+		rec, _, _ := f.login(t, "")
+		if code := loginErrorCode(t, rec); code != "login_failed" || cookieNamed(rec, sessionCookiePlain) != nil {
+			t.Fatalf("email_verified %s: %q, want login_failed and no session", name, code)
+		}
+		if ev := lastEvent(t, f.sink, "auth_login_failed"); !strings.Contains(ev.AuthReason, "subject_unverified") {
+			t.Fatalf("email_verified %s: reason = %q, want subject_unverified", name, ev.AuthReason)
+		}
+		if ids, err := f.st.UserIdentityListSubject(ctx, "acme", subject); err != nil || len(ids) != 0 {
+			t.Fatalf("email_verified %s: the pre-created user was linked: %v %v", name, ids, err)
+		}
+	}
+	f.p.Set(func(p *oidctest.Provider) {
+		p.Claims = map[string]any{"sub": "u-1", "email": "a@acme.example", "email_verified": true, "name": "Alice"}
+	})
+	rec, _, _ := f.login(t, "")
+	sc := cookieNamed(rec, sessionCookiePlain)
+	if rec.Code != http.StatusSeeOther || sc == nil {
+		t.Fatalf("verified e-mail: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if code, me := meOf(t, f.s, sc); code != http.StatusOK || me["subject"] != subject {
+		t.Fatalf("me = %d %v, want the pre-created %s", code, me, subject)
+	}
+	if ids, err := f.st.UserIdentityListSubject(ctx, "acme", subject); err != nil || len(ids) != 1 || ids[0].ExternalSubject != "u-1" {
+		t.Fatalf("link = %v %v, want the verified identity u-1", ids, err)
 	}
 }
 

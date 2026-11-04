@@ -96,8 +96,13 @@ func (s *Server) resolveAssertion(ctx context.Context, g config.AuthGate, a auth
 	}
 	fresh, err := identity.Resolve(g.Name, m, a)
 	if err != nil {
-		if errors.Is(err, identity.ErrTenantRefused) {
+		switch {
+		case errors.Is(err, identity.ErrTenantRefused):
 			return identity.Target{}, 0, refused("tenant not allowed")
+		case errors.Is(err, identity.ErrSubjectUnverified):
+			// Refused before the identity lookup below, so an unverified
+			// address neither links a user nor signs in through a link.
+			return identity.Target{}, 0, refused("subject_unverified")
 		}
 		return identity.Target{}, 0, refused("no usable subject")
 	}

@@ -83,6 +83,46 @@ func TestSubject_RefusesUnusableValues(t *testing.T) {
 	}
 }
 
+// A subject keyed on an address claim names whoever the provider says holds
+// that address, so it is made only from an address the provider verified:
+// an unverified e-mail (self-registration, a secondary address) would sign
+// its typist in as the address's owner. The verification speaks for the
+// assertion's e-mail, so a login-name claim (upn) is keyed only when it IS
+// that verified address. A non-address claim, and sub, need no e-mail.
+func TestSubject_AnAddressClaimIsKeyedOnlyWhenVerified(t *testing.T) {
+	m := &config.AuthIdentityMap{Tenant: "a", SubjectClaim: "email"}
+	addr := func(claim, v, email string, verified bool) authgate.Assertion {
+		return authgate.Assertion{Subject: "u-1", Email: email, EmailVerified: verified, Claims: map[string]any{"sub": "u-1", claim: v}}
+	}
+	for name, a := range map[string]authgate.Assertion{
+		"email unverified": addr("email", "alice@acme.example", "alice@acme.example", false),
+		"email no flag":    {Subject: "u-1", Claims: map[string]any{"sub": "u-1", "email": "alice@acme.example"}},
+		"email claim only": {Subject: "u-1", EmailVerified: true, Claims: map[string]any{"sub": "u-1", "email": "alice@acme.example"}},
+	} {
+		if _, err := Subject("g", m, a); !errors.Is(err, ErrSubjectUnverified) {
+			t.Errorf("%s: err = %v, want ErrSubjectUnverified", name, err)
+		}
+	}
+	if s, err := Subject("g", m, addr("email", "alice@acme.example", "alice@acme.example", true)); err != nil || s != "g:alice@acme.example" {
+		t.Errorf("verified e-mail: %q %v", s, err)
+	}
+	m.SubjectClaim = "upn"
+	if _, err := Subject("g", m, addr("upn", "alice@acme.example", "mallory@acme.example", true)); !errors.Is(err, ErrSubjectUnverified) {
+		t.Errorf("upn beside another verified address: %v", err)
+	}
+	if s, err := Subject("g", m, addr("upn", "Alice@acme.example", "alice@ACME.example", true)); err != nil || s != "g:Alice@acme.example" {
+		t.Errorf("upn that is the verified address: %q %v", s, err)
+	}
+	m.SubjectClaim = "employee_id"
+	if s, err := Subject("g", m, addr("employee_id", "e-7", "", false)); err != nil || s != "g:e-7" {
+		t.Errorf("a non-address claim: %q %v", s, err)
+	}
+	m.SubjectClaim = "sub"
+	if s, err := Subject("g", m, addr("email", "alice@acme.example", "alice@acme.example", false)); err != nil || s != "g:u-1" {
+		t.Errorf("sub beside an unverified e-mail: %q %v", s, err)
+	}
+}
+
 func syncMap(provision bool) *config.AuthIdentityMap {
 	return &config.AuthIdentityMap{Tenant: "acme", SyncGroups: true, Trusted: true, GroupsClaim: "groups",
 		GroupsProvision: provision, GroupMap: map[string]string{"hr-admins": "admins"}}
