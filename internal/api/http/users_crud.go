@@ -261,7 +261,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant, caller, ok := s.userCrudTenant(w, r)
-	if !ok || s.refuseErasedUser(w, r.Context(), tenant, subject) {
+	if !ok {
 		return
 	}
 	// RFC FA D16: auth:manage acts only on users at the floor — it may not
@@ -288,6 +288,11 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 				"an "+auth.ScopeAuthManage+" token cannot raise a user's access_mode")
 			return
 		}
+	}
+	// After the floor checks, so an auth:manage caller is told about an
+	// erased user only where it may act on that user at all.
+	if s.refuseErasedUser(w, r.Context(), tenant, subject) {
+		return
 	}
 	if req.Status != nil && *req.Status == "active" {
 		cur, err := s.store.UserGet(r.Context(), tenant, subject)
@@ -417,10 +422,13 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant, caller, ok := s.userCrudTenant(w, r)
-	if !ok || s.refuseErasedUser(w, r.Context(), tenant, subject) {
+	if !ok {
 		return
 	}
 	if _, ok := s.holdManagerToFloorTarget(w, r.Context(), caller, nil, tenant, subject, "delete", false); !ok {
+		return
+	}
+	if s.refuseErasedUser(w, r.Context(), tenant, subject) {
 		return
 	}
 	// Fail-safe ordering: retire the user's delegated tokens BEFORE removing the

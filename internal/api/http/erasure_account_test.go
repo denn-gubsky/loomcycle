@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
@@ -199,5 +200,31 @@ func TestErasure_TheUsersListMarksTheTombstone(t *testing.T) {
 	}
 	if at, ok := seen["bob"]; !ok || at != nil {
 		t.Errorf("a live user's erased_at = %v (present %v), want absent", at, ok)
+	}
+}
+
+// An auth:manage caller is held to the floor before anything else: on an
+// erased user above the floor it gets the floor refusal, as on any user
+// above it, not the tombstone's 409. One at the floor gets the 409.
+func TestErasure_AManagerIsHeldToTheFloorBeforeTheTombstone(t *testing.T) {
+	f := newGateFixture(t)
+	ctx := context.Background()
+	f.addUser(t, "acme", "high", "tenant")
+	f.addUser(t, "acme", "low", "isolated")
+	for _, s := range []string{"high", "low"} {
+		if _, err := f.st.UserErase(ctx, "acme", s, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, op := range []struct{ method, path, body string }{
+		{"PATCH", "/v1/_users/high?tenant=acme", `{"status":"active"}`},
+		{"DELETE", "/v1/_users/high?tenant=acme", ""},
+	} {
+		if code, b := f.call(t, bSite, op.method, op.path, op.body); code != http.StatusForbidden || b["code"] != "target_beyond_floor" {
+			t.Errorf("%s %s = %d %v, want 403 target_beyond_floor", op.method, op.path, code, b)
+		}
+	}
+	if code, b := f.call(t, bSite, "PATCH", "/v1/_users/low?tenant=acme", `{"status":"active"}`); code != http.StatusConflict || b["code"] != "user_erased" {
+		t.Errorf("re-enable an erased floor user = %d %v, want 409 user_erased", code, b)
 	}
 }
