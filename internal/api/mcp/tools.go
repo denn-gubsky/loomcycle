@@ -296,6 +296,10 @@ func baseToolDescriptors() []loommcp.ToolDescriptor {
 				"bound_subjects as {document_id, natural_key, path} (ones you may not read are only counted, in " +
 				"bound_subjects_withheld): execute clears each binding and announces `erased` (not_announced says " +
 				"why it did not), and never deletes the subject — deleting one is your call, with the document tool. " +
+				"Tier 2 also counts the subject's account (account) and sign-in rows (sign_in_*: login identities, " +
+				"password and second factors, passkeys, sessions, app sign-ins, device logins, invites and resets): " +
+				"execute ends the app sign-ins and deletes those rows, and keeps the user record as a disabled " +
+				"tombstone with no personal data, which can never sign in, be re-enabled or be registered again. " +
 				"IT DEFAULTS TO A DRY RUN: pass dry_run:false AND confirm equal to the subject to actually " +
 				"delete, which is irreversible. " +
 				"IMPORTANT: tier-3 residue is traceable only through the subject's chats, which execute " +
