@@ -6,10 +6,12 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -136,6 +138,37 @@ func (s *Server) lifecycleLockSet(ctx context.Context, tenant string) (*authz.Ef
 		return nil, nil
 	}
 	return s.aclResolver.ResolveSubject(ctx, authz.Subject{TenantID: tenant, ID: lifecycleLockSubject, Class: "tenant"})
+}
+
+// lifecycleEraseLock defers the removal policy's erase stage for a subject
+// that carries a list locked against the tenant's operators
+// (lifecycleLockSet): the stage has no caller and a tenant operator can set
+// a removal going, so it is judged as unbindSubject's steps are. Erasure is
+// all or nothing, so the subject is not erased this pass rather than erased
+// around the locked rows; the sweeper retries next tick, and the operator
+// who imposed the lock lifts it or erases the subject itself. A set or
+// list that cannot be read defers it too (fail closed). It is asked here,
+// not in ErasureExecute, because open mode also erases with no principal
+// and is the operator.
+func (s *Server) lifecycleEraseLock(ctx context.Context, tenant, subject string) error {
+	lockSet, err := s.lifecycleLockSet(ctx, tenant)
+	if err != nil {
+		return fmt.Errorf("access control for the erase stage: %w", err)
+	}
+	if lockSet == nil {
+		return nil
+	}
+	names, err := s.aclSubjectLists(ctx, tenant, subject)
+	if err != nil {
+		return fmt.Errorf("the lists the subject carries: %w", err)
+	}
+	surface, _, denied := aclRetireDenied(ctx, lockSet, names)
+	if !denied {
+		return nil
+	}
+	slog.WarnContext(ctx, "auth: erase stage deferred: the subject carries a list locked against the tenant's operators",
+		"tenant", tenant, "subject", subject, "list", strings.TrimPrefix(surface.Name, "acl/"))
+	return fmt.Errorf("%w: list %s", erasure.ErrLocked, strings.TrimPrefix(surface.Name, "acl/"))
 }
 
 // aclCallerMayReadLists reports whether the caller passes the list-read gate

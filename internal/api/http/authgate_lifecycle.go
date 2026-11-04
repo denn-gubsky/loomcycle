@@ -305,6 +305,9 @@ func (s *Server) advanceRemoval(ctx context.Context, r store.AuthRemovalRow, now
 // erase_intent before anything is deleted and refuses when it cannot, so an
 // erasure nobody could audit never happens; the removal then stays due.
 func (s *Server) eraseRemoved(ctx context.Context, r store.AuthRemovalRow, now time.Time) (bool, error) {
+	if err := s.lifecycleEraseLock(ctx, r.TenantID, r.Subject); err != nil {
+		return false, err
+	}
 	rep, err := s.ErasureReport(ctx, r.TenantID, r.Subject)
 	if err != nil {
 		return false, fmt.Errorf("erasure report: %w", err)

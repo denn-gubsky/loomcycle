@@ -2,12 +2,15 @@ package http
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -238,5 +241,59 @@ func TestACLDef_ASharedListCannotShadowAConfigList(t *testing.T) {
 	code, body := bearerCall(t, ts, rootBearer, "POST", "/v1/_acldef", `{"op":"create","name":"corp-yaml","rules":`+harmlessRules+`}`)
 	if code != 409 || !strings.Contains(body, `"acl_name_reserved"`) {
 		t.Errorf("an admin in the shared tenant creates corp-yaml: %d %s, want 409 acl_name_reserved", code, body)
+	}
+}
+
+// The removal policy's erase stage has no caller either, and a delegate can
+// set a removal going. Erasure is all or nothing, so a subject carrying a
+// list locked against the tenant's operators is not erased this pass: the
+// stage is deferred and the binding survives. Another subject is erased.
+func TestUserLifecycle_TheEraseStageDefersASubjectWithALockedList(t *testing.T) {
+	srv, ts, st := aclMgmtServer(t, authz.ModeCompat)
+	srv.SetEraseAudit(&recordingSink{})
+	ctx := context.Background()
+	admin := func(method, path, body string) {
+		t.Helper()
+		if code, out := bearerCall(t, ts, legacyAdminBearer, method, path+"?tenant=acme", body); code >= 300 {
+			t.Fatalf("admin %s %s: %d %s", method, path, code, out)
+		}
+	}
+	deny := `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]}]`
+	admin("POST", "/v1/_acldef", `{"op":"create","name":"guard","rules":`+deny+`}`)
+	admin("POST", "/v1/_acldef", `{"op":"create","name":"plain","rules":`+harmlessRules+`}`)
+	admin("POST", "/v1/_acldef", `{"op":"create","name":"t-lock","rules":[{"effect":"deny","actions":["author","retire"],"resources":["def:acl/guard"]}]}`)
+	admin("POST", "/v1/_aclbinding", `{"acl":"t-lock","subject_kind":"tenant"}`)
+	for _, u := range []struct{ subject, list string }{{"victim", "guard"}, {"other", "plain"}} {
+		admin("POST", "/v1/_users", `{"subject":"`+u.subject+`"}`)
+		admin("POST", "/v1/_aclbinding", `{"acl":"`+u.list+`","subject_kind":"user","subject_id":"`+u.subject+`"}`)
+		if err := srv.startRemoval(ctx, "acme", u.subject, "", store.RemovalReasonOperator, "delegate"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	erase := func(subject string) error {
+		t.Helper()
+		row, err := st.AuthRemovalGet(ctx, "acme", subject)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = srv.eraseRemoved(ctx, row, time.Now())
+		return err
+	}
+	if err := erase("victim"); !errors.Is(err, erasure.ErrLocked) {
+		t.Errorf("the erase stage on victim: %v, want it deferred with erasure.ErrLocked", err)
+	}
+	rows, err := st.AclBindingList(ctx, "acme", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := false
+	for _, b := range rows {
+		kept = kept || (b.ACLName == "guard" && b.SubjectID == "victim")
+	}
+	if !kept {
+		t.Error("victim's guard binding is gone after the erase stage; want it kept")
+	}
+	if err := erase("other"); err != nil {
+		t.Errorf("the erase stage on a subject with no locked list: %v, want it erased", err)
 	}
 }
