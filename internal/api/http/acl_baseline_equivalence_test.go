@@ -111,6 +111,11 @@ var baselineWiderThanGateHTTP = map[string]string{
 	// the roster question admits every user under it, so the carve-out is
 	// held by the scope gate.
 	"member-full|read principal:user:x": "the roster question cannot be granted without each user's; the member carve-out holds at the scope gate",
+	// A member writes documents through POST /v1/_document, whose instance
+	// checks ask per document; every route that asks the TYPE-level write
+	// (ontology decisions — RFC FY Part B — and the document maintenance
+	// routes) is an operator's, held at the scope gate (memberpath.CarvedOut).
+	"member-full|write document:*": "a member's document writes are asked per document on /v1/_document; the type-level write routes are operator routes the scope gate refuses it",
 	// The same for an auth:manage credential: it lists the roster but not
 	// GET /v1/_users/{subject} (the per-subject view aggregates usage and
 	// memory), and authManageRoute holds that at the scope gate.

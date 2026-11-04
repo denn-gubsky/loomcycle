@@ -52,6 +52,15 @@ func CarvedOut(method, path string) bool {
 		return true
 	case path == "/v1/_erasure":
 		return true
+	// RFC FY Part B: confirming the ontology, adopting a standard type into it and
+	// ruling on a proposal (/proposals takes accept|reject, it files nothing)
+	// decide the tenant's vocabulary: the operator's. A member proposes through
+	// the Document tool (propose_entity, propose_subject) and reads GET
+	// /v1/_ontology.
+	case path == "/v1/_ontology" && method == http.MethodPost:
+		return true
+	case path == "/v1/_ontology/adopt" || path == "/v1/_ontology/proposals":
+		return true
 	// Folding one ontology subject into another re-points every statement about
 	// it, tenant-wide: the operator's decision.
 	case path == "/v1/_ontology/subjects/merge":
