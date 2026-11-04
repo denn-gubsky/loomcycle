@@ -2,10 +2,12 @@ package transcribe
 
 import "context"
 
-// The ledger purposes of a transcription engine call (token_usage.purpose).
+// The ledger purposes of a transcription or speech engine call
+// (token_usage.purpose).
 const (
 	PurposeOCR = "ocr"
 	PurposeSTT = "stt"
+	PurposeTTS = "tts"
 )
 
 // Charge is one engine call for the usage ledger: what served it, whose key
@@ -20,8 +22,11 @@ type Charge struct {
 	CredentialScopeID string
 	InputTokens       int
 	OutputTokens      int
-	// AudioSeconds is what a speech-to-text call transcribed; 0 for OCR.
+	// AudioSeconds is what a speech-to-text call transcribed or a
+	// text-to-speech call produced; 0 for OCR.
 	AudioSeconds float64
+	// InputChars is the text a text-to-speech call sent; 0 for OCR and STT.
+	InputChars int64
 	// ReportedCost is the provider's own price for the call, which wins over
 	// the pricing table when set.
 	ReportedCost     float64

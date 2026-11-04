@@ -73,3 +73,41 @@ func TestFileSTT_BuiltFromTheOperatorBlock(t *testing.T) {
 		t.Errorf("resolve = %q %q %v", p, m, err)
 	}
 }
+
+// TestTranscriptionLedger_PricesTTSByCharsOrMinute — a text-to-speech request
+// is written as one tts row carrying the characters it sent and the seconds it
+// produced, priced by the pair's per_million_chars or per_minute price.
+func TestTranscriptionLedger_PricesTTSByCharsOrMinute(t *testing.T) {
+	srv, st := newUsageTestServer(t)
+	cfg := srv.cfg()
+	cfg.Pricing = config.PricingConfig{Models: map[string]config.ModelPrice{
+		"openai/tts-1":       {PerMillionChars: 15},
+		"cloud-tts/by-time":  {PerMinute: 0.03},
+		"speech-local/piper": {},
+	}}
+	l := transcriptionLedger{s: srv}
+	ctx := runCtx("run-tts")
+	for _, c := range []struct {
+		charge transcribe.Charge
+		want   float64
+	}{
+		{transcribe.Charge{Purpose: transcribe.PurposeTTS, Provider: "openai", Model: "tts-1", InputChars: 200_000, AudioSeconds: 600}, 3},
+		{transcribe.Charge{Purpose: transcribe.PurposeTTS, Provider: "cloud-tts", Model: "by-time", InputChars: 1000, AudioSeconds: 120}, 0.06},
+		{transcribe.Charge{Purpose: transcribe.PurposeTTS, Provider: "speech-local", Model: "piper", InputChars: 1000, AudioSeconds: 60}, 0},
+	} {
+		p, err := l.Charge(ctx, c.charge)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !p.Priced || math.Abs(p.Cost-c.want) > 1e-9 {
+			t.Errorf("%s/%s: price = %+v, want %v", c.charge.Provider, c.charge.Model, p, c.want)
+		}
+	}
+	rows, err := st.TokenUsageForRun(context.Background(), "run-tts")
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("ledger = %d rows, %v", len(rows), err)
+	}
+	if r := rows[0]; r.Purpose != "tts" || r.InputChars != 200_000 || r.AudioSeconds != 600 || math.Abs(r.Cost-3) > 1e-9 {
+		t.Errorf("row = %+v", r)
+	}
+}
