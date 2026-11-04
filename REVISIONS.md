@@ -8,6 +8,28 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.139.2
+
+*A document keeps its colour when a tenant ontology retypes it to a class name, and a type no colour scheme names is coloured by its status; the Review page's ruling dialog shows its Reject button's label again.*
+
+The v1.139.2 line: #2390, #2389.
+- `@loomcycle/client` and the Python adapter stay at 1.139.0; no adapter change.
+- No migrations, no wire breakage.
+- A patch tag builds only `loomcycle-browser`. This release is also built in full (a `force_full` dispatch), so `denngubsky/loomcycle:1.139.2` and the binaries are published.
+- The Web UI builds `@loomcycle/explorer` from source, so it has the colour fix now; `@loomcycle/universe` gets it with the next explorer publish.
+
+### A retyped document keeps its colour (#2390)
+
+- **The gap.** The viewer finds a document's colour as `doc.<type>.<status>` in its scheme, by exact key. When an ontology retypes documents to its class names (`rfc` → `Rfc`, `document` → `Guide`), the stored `doc.rfc.*` keys stop matching, and a class the scheme never named has no key. The Path tree and the viewer then show those documents uncoloured.
+- **Now** keys match ignoring case (an exact key still wins), and the lookup falls back to any-type keys: `doc.<type>.<status>` → `doc.<type>` → `doc.*.<status>` → `doc.*`.
+  - The explorer's default scheme and the doc/colorizer bundle's gain `doc.*.draft`, `doc.*.review`, `doc.*.confirmed` and `doc.*.done`, so an unnamed type is coloured by its status.
+  - A type the scheme names keeps its own colour.
+
+### The review dialog's Reject button is readable (#2389)
+
+- **The gap.** On the Review page the bulk-ruling dialog's Reject button showed red text on a red background: the page's outline style for danger buttons overrode the dialog's filled one. The dialog's buttons also sat flush against the content above them.
+- **Now** the Reject button is filled red with white text, and the button row has a gap above it.
+
 ## What's in v1.139.1
 
 *The knowledge-base judge now rules on the topics `classify` proposes from a model's answer, judging each on the document's opening, where before it skipped them all; and a boot race that could leave the first open-mode warning out of the boot log is gone.*
