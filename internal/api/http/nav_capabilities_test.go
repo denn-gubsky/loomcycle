@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // The Web UI files that name the pages /v1/_me's capability summary
@@ -120,6 +121,9 @@ func TestWhoamiEffective_MatchesTheRouteGatesForEveryClass(t *testing.T) {
 	for _, mode := range []authz.Mode{authz.ModeCompat, authz.ModeEnforce} {
 		t.Run(string(mode), func(t *testing.T) {
 			srv, url, st, classes := navFixture(t, mode)
+			withAudioEngines(srv)
+			putACL(t, st, "no-voice", `[{"effect":"deny","actions":["use"],"resources":["gateway:transcription"]}]`)
+			bind(t, st, "no-voice", "user", "iso")
 			putACL(t, st, "no-channels", `[{"effect":"deny","actions":["subscribe"],"resources":["channel:*"]}]`)
 			putACL(t, st, "no-acl-reads", `[{"effect":"deny","actions":["read"],"resources":["def:acl/*"]}]`)
 			bind(t, st, "no-channels", "user", "dev")
@@ -130,8 +134,16 @@ func TestWhoamiEffective_MatchesTheRouteGatesForEveryClass(t *testing.T) {
 					addRootToken(t, st)
 				}
 				got := navSurfacesOf(t, url, c.bearer)
-				if len(got) != len(navSurfaces) {
-					t.Errorf("%s: %d surfaces, the table has %d", c.name, len(got), len(navSurfaces))
+				if len(got) != len(navSurfaces)+len(audioSurfacePaths) {
+					t.Errorf("%s: %d surfaces, the table has %d and the audio routes %d", c.name, len(got), len(navSurfaces), len(audioSurfacePaths))
+				}
+				// The audio surfaces, with both engines on, are the audio
+				// routes' own gates.
+				for id, path := range audioSurfacePaths {
+					want := gateAdmits(t, srv, c.bearer, navSurface{ID: id, Method: "POST", Path: path}, c.subject)
+					if got[id] != want {
+						t.Errorf("%s: %s = %v, the route gates of POST %s say %v", c.name, id, got[id], path, want)
+					}
 				}
 				op, rv := operatorHeld(srv, c.bearer), reviewerHeld(srv, c.bearer)
 				for _, ns := range navSurfaces {
@@ -148,7 +160,8 @@ func TestWhoamiEffective_MatchesTheRouteGatesForEveryClass(t *testing.T) {
 // The cells the parity test above does not pin by itself: that the answers
 // differ by class at all, and the four cases the navigation work is for.
 func TestWhoamiEffective_PinsTheClassDifferences(t *testing.T) {
-	_, url, st, _ := navFixture(t, authz.ModeCompat)
+	srv, url, st, _ := navFixture(t, authz.ModeCompat)
+	withAudioEngines(srv)
 	putACL(t, st, "no-channels", `[{"effect":"deny","actions":["subscribe"],"resources":["channel:*"]}]`)
 	putACL(t, st, "no-acl-reads", `[{"effect":"deny","actions":["read"],"resources":["def:acl/*"]}]`)
 
@@ -217,6 +230,7 @@ func addRootToken(t *testing.T, st store.Store) {
 // Open mode (no auth configured) reaches every page.
 func TestWhoamiEffective_OpenModeReachesEverything(t *testing.T) {
 	srv := New(makeBaseConfig(), &stubResolver{}, nil, concurrency.New(8, 8, 5*time.Second), nil)
+	withAudioEngines(srv)
 	rec := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/_me", nil))
 	var me struct {
@@ -228,8 +242,8 @@ func TestWhoamiEffective_OpenModeReachesEverything(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &me); err != nil || !me.OpenMode {
 		t.Fatalf("open-mode whoami: %v %s", err, rec.Body.String())
 	}
-	if len(me.Effective.Surfaces) != len(navSurfaces) {
-		t.Fatalf("open mode: %d surfaces, want %d", len(me.Effective.Surfaces), len(navSurfaces))
+	if len(me.Effective.Surfaces) != len(navSurfaces)+len(audioSurfacePaths) {
+		t.Fatalf("open mode: %d surfaces, want %d", len(me.Effective.Surfaces), len(navSurfaces)+len(audioSurfacePaths))
 	}
 	for id, ok := range me.Effective.Surfaces {
 		if !ok {
@@ -319,4 +333,15 @@ func TestWhoamiEffective_DeclaredByTheTSAdapter(t *testing.T) {
 	if eff == nil || !regexp.MustCompile(`\n\s*surfaces: Record<string, boolean>;`).Match(eff[1]) {
 		t.Fatal("WhoamiEffective has no `surfaces: Record<string, boolean>`")
 	}
+}
+
+// audioSurfacePaths are the /v1/_me surfaces that are calls, not pages, and
+// the route each answers for.
+var audioSurfacePaths = map[string]string{surfaceSpeech: audioSpeechPath, surfaceTranscription: audioTranscriptionsPath}
+
+// withAudioEngines turns both speech engines on, so the audio surfaces
+// answer by their routes' gates alone.
+func withAudioEngines(srv *Server) {
+	withAudio(srv.cfg())
+	srv.SetSTT(&builtin.FileSTT{Config: srv.cfg().Transcription.Resolved(), Engine: &hearingEngine{}, Ledger: transcriptionLedger{s: srv}})
 }

@@ -147,3 +147,20 @@ func routeGatesAdmit(ctx context.Context, p auth.Principal, method, path string)
 	res := authz.EvaluateSurface(ctx, p.Effective, surface, true)
 	return res.Allowed && !res.Unavailable
 }
+
+// The surfaces that are not Web UI pages: calls a client draws controls for
+// (RFC FK P3). Kept out of navSurfaces, whose rows a test holds equal to the
+// UI's page list. Each is true only when its engine is on AND the caller
+// would get past its route's gates, so a client can show a microphone or a
+// read-aloud button without probing with a request that costs a ledger row.
+const (
+	surfaceSpeech        = "speech"
+	surfaceTranscription = "transcription"
+)
+
+// withAudioSurfaces adds the audio routes to a whoami summary.
+func (s *Server) withAudioSurfaces(ctx context.Context, eff whoamiEffective) whoamiEffective {
+	eff.Surfaces[surfaceSpeech] = s.speechEnabled() && s.callerMayUse(ctx, audioSpeechPath)
+	eff.Surfaces[surfaceTranscription] = s.transcriptionEnabled() && s.callerMayUse(ctx, audioTranscriptionsPath)
+	return eff
+}

@@ -53,7 +53,7 @@ var (
 	cryptoScopes     = []string{"tenant", "user", "agent"}
 	evaluationScopes = []string{"self", "siblings", "descendants", "any"}
 	runScopes        = []string{"own", "tenant"}
-	gatewayKinds     = []string{"chat", "embeddings", "decide"}
+	gatewayKinds     = []string{"chat", "embeddings", "decide", "speech", "transcription"}
 	principalKinds   = []string{"user", "group", "token", "scim"}
 	runtimeAreas     = []string{"pause", "snapshot", "limits", "retention", "erasure", "usage", "routing", "events", "config", "tenants", "metrics"}
 	// defFamilies are the definition families a rule may name under `def:`.

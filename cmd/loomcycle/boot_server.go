@@ -181,6 +181,8 @@ func (b *boot) buildServer() {
 	}
 	if fileSTT != nil {
 		b.fileTool.STT = fileSTT
+		// The transcription route (RFC FK P3) runs the same engine and ledger.
+		srv.SetSTT(fileSTT)
 		slog.Info("transcription: speech-to-text enabled", "engine", fileSTT.Config.STT.Engine,
 			"provider", fileSTT.Config.STT.Provider, "model", fileSTT.Config.STT.Model, "media_helper", fileSTT.Config.STT.Media != nil)
 	}

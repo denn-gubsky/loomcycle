@@ -145,6 +145,10 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		return instance("use", "gateway", "chat"), true
 	case path == "/v1/embeddings":
 		return instance("use", "gateway", "embeddings"), true
+	case path == "/v1/audio/speech":
+		return instance("use", "gateway", "speech"), true
+	case path == "/v1/audio/transcriptions":
+		return instance("use", "gateway", "transcription"), true
 	}
 	if !strings.HasPrefix(rest[0], "_") {
 		return Surface{}, false
@@ -152,6 +156,11 @@ func HTTPSurface(method, path string) (Surface, bool) {
 	name := rest[0][1:]
 	switch {
 	case name == "me", name == "openapi.json", name == "openapi.yaml", name == "docs":
+		return Surface{}, false
+	// The voice controls' info (RFC FK P3): its handler asks each audio
+	// route's own question and shows a direction only to a caller who may
+	// use it, so the route itself asks none.
+	case name == "speech":
 		return Surface{}, false
 	case name == "resident":
 		if get {

@@ -129,6 +129,7 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 		}
 		fmt.Fprintln(w)
 	}
+	writeAudioQueueGauges(w, replicaLabels, s)
 	writeLaneGauges(w, replicaLabels, s.callSched.Stats())
 
 	// RFC DT per-(provider, model) throughput — only models this replica has
@@ -509,4 +510,27 @@ func unescapeLabelValue(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+// writeAudioQueueGauges reports the audio routes' engine queues (RFC FK P3):
+// the requests holding a slot and those waiting for one, per direction. A
+// growing wait says the speech host needs more slots or more capacity.
+func writeAudioQueueGauges(w io.Writer, replicaLabels string, s *Server) {
+	speechQ, transQ := s.audioQueues()
+	queues := []struct {
+		direction string
+		q         *engineQueue
+	}{{"speech", speechQ}, {"transcription", transQ}}
+	fmt.Fprintln(w, "# HELP loomcycle_audio_engine_inflight Engine requests the audio routes have in flight (LOOMCYCLE_SPEECH_MAX_INFLIGHT / LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT bound them).")
+	fmt.Fprintln(w, "# TYPE loomcycle_audio_engine_inflight gauge")
+	for _, e := range queues {
+		fmt.Fprintf(w, "loomcycle_audio_engine_inflight%s %d\n", mergeLabels(replicaLabels, map[string]string{"direction": e.direction}), e.q.inflight())
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "# HELP loomcycle_audio_engine_queued Audio route requests waiting for an engine slot.")
+	fmt.Fprintln(w, "# TYPE loomcycle_audio_engine_queued gauge")
+	for _, e := range queues {
+		fmt.Fprintf(w, "loomcycle_audio_engine_queued%s %d\n", mergeLabels(replicaLabels, map[string]string{"direction": e.direction}), e.q.queued())
+	}
+	fmt.Fprintln(w)
 }
