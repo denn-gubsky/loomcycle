@@ -392,6 +392,53 @@ func (e *Effective) decideOwn(req Request) Decision {
 	return Decision{Outcome: NoMatch}
 }
 
+// LiteralDeny reports whether a deny rule that names req's resource by its
+// exact name — a literal selector, never a wildcard, a prefix or a whole
+// scope — matches req's action and condition. It tells a lock someone
+// placed on one named resource from a broad restriction that happens to
+// cover it. The ceiling's rules count too. The tenant floor does not: it
+// names no resource.
+func (e *Effective) LiteralDeny(req Request) bool {
+	if e.ceiling != nil && e.ceiling.LiteralDeny(req) {
+		return true
+	}
+	tr := e.byType[req.Resource.Type]
+	spec, ok := catalogByName[req.Resource.Type]
+	if tr == nil || !ok {
+		return false
+	}
+	for _, r := range tr.deny {
+		if !r.actions[req.Action] || !r.when.holds(&req) {
+			continue
+		}
+		for _, sel := range r.sels {
+			if sel.namesExactly(spec, req.Resource.Name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// RestrictsOnly reports whether the list named acl, as compiled into e,
+// carries at least one deny rule and no allow rule: binding it can only
+// take away. A list e did not compile (not bound to the subject, or
+// missing) restricts nothing.
+func (e *Effective) RestrictsOnly(acl string) bool {
+	deny := false
+	for _, tr := range e.byType {
+		for _, r := range tr.allow {
+			if r.acl == acl {
+				return false
+			}
+		}
+		for _, r := range tr.deny {
+			deny = deny || r.acl == acl
+		}
+	}
+	return deny
+}
+
 // DecideScope answers a question about EVERY instance of one scope of a
 // scoped type at once; Resource.Name is the bare scope (`tenant`). It is what
 // an operation asks when it reaches a scope's instances without naming them

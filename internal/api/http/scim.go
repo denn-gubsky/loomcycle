@@ -1015,7 +1015,7 @@ func (s *Server) scimReactivate(ctx context.Context, c scimCtx, subject string) 
 		return "", refused
 	}
 	// The provisioner is no operator: what is locked stays (unbindSubject).
-	if err := s.stripRemovedUser(ctx, c.tenant, subject, true); err != nil {
+	if err := s.stripRemovedUser(ctx, c.tenant, subject, "gate:"+c.g.Name); err != nil {
 		slog.Error("scim: resetting a user to the floor failed", "gate", c.g.Name, "err", err)
 		return "", internal
 	}
