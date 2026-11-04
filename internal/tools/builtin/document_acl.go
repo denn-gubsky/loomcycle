@@ -86,8 +86,8 @@ var docACLOps = map[string]docACLRule{
 	"graph_snapshot":     {verb: "read", target: docACLListing}, // columnar: leaves out the unreadable itself, before it cuts the page
 	"delete_document":    {verb: "delete", target: docACLDocument},
 	"set_path":           {verb: "write", target: docACLSetPath},
-	"copy_documents":     {verb: "read", target: docACLListing}, // asks per document as it plans: read on each source, write on each target name
-	"move_documents":     {verb: "read", target: docACLListing}, // asks per document as it plans: read and write on each source, write on each target name
+	"copy_documents":     {verb: "read", target: docACLListing}, // asks per document as it plans: read on each source (an unreadable one is left out), write on each target name
+	"move_documents":     {verb: "read", target: docACLListing}, // as copy_documents, plus write and delete on each source, and link on both ends of a relation it drops
 	"judge_fact":         {verb: "write", target: docACLJudge},
 	"propose_entity":     {verb: "write", target: docACLTenantScope},
 	"propose_subject":    {verb: "write", target: docACLTenantScope},

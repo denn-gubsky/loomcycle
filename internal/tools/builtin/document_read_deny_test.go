@@ -89,3 +89,126 @@ func TestAssetGET_AsksTheDocumentsRead(t *testing.T) {
 		t.Fatalf("a missing asset: ok=%v err=%v", okMissing, errMissing)
 	}
 }
+
+// TestMoveDocuments_AsksDelete: a move removes the source, so a caller whose
+// rules deny deleting a document cannot move it away.
+func TestMoveDocuments_AsksDelete(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	open := grantedTenantCtx(base)
+	s := seedCopyDocs(t, d, open)
+	ctx := withACL(open, aclSet(t, denyRule("delete", "document:user:/proj/rfcs/**")))
+
+	dry := copyExec(t, d, ctx, `{"op":"move_documents","scope":"user","to_scope":"tenant","under_path":"/proj"}`)
+	if !refusedAs(dry, s.planDoc, copyForbidden) {
+		t.Errorf("the dry run should refuse the plan, whose deletion the rules deny: %v", dry)
+	}
+	n, _ := json.Marshal(dry["counts"].(map[string]any)["documents"])
+	copyExec(t, d, ctx, `{"op":"move_documents","scope":"user","to_scope":"tenant","under_path":"/proj","dangling":"drop","dry_run":false,"expect_count":`+string(n)+`}`)
+	if got := copyExec(t, d, open, `{"op":"get_document","scope":"user","id":"`+s.planDoc+`"}`); asStr(got["document_id"]) != s.planDoc {
+		t.Errorf("the plan was moved away though deleting it is denied: %v", got)
+	}
+	if _, r := docExec(t, d, open, `{"op":"get_document","scope":"tenant","id":"`+s.planDoc+`"}`); !r.IsError {
+		t.Error("the plan should not be in the tenant scope")
+	}
+}
+
+// TestMoveDocuments_DanglingDropAsksLinkOnBothEnds: dangling:drop deletes the
+// relations that leave the set, which is an unlink: a caller denied link on the
+// far end cannot drop them, and nothing moves.
+func TestMoveDocuments_DanglingDropAsksLinkOnBothEnds(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	open := grantedTenantCtx(base)
+	s := seedCopyDocs(t, d, open)
+	ctx := withACL(open, aclSet(t, denyRule("link", "document:user:/proj/docs/**")))
+	set := `"document_ids":["` + s.planDoc + `"],"dangling":"drop"`
+
+	dry := copyExec(t, d, ctx, `{"op":"move_documents","scope":"user","to_scope":"tenant",`+set+`}`)
+	if dry["blocked_by"] != "forbidden_relations" {
+		t.Errorf("the dry run should say the move is blocked by a relation the caller may not remove: %v", dry)
+	}
+	_, r := docExec(t, d, ctx, `{"op":"move_documents","scope":"user","to_scope":"tenant",`+set+`,"dry_run":false,"expect_count":1}`)
+	if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryPermission {
+		t.Errorf("dropping a relation the caller may not unlink should be refused: %v %s", r.IsError, r.Text)
+	}
+	if got := copyExec(t, d, open, `{"op":"get_document","scope":"user","id":"`+s.planDoc+`"}`); asStr(got["document_id"]) != s.planDoc {
+		t.Errorf("the plan should stay in the user scope: %v", got)
+	}
+	if edges := copyExec(t, d, open, `{"op":"get_edges","scope":"user","document_id":"`+s.guideDoc+`"}`); len(edges["edges"].([]any)) != 1 {
+		t.Errorf("the relation to the guide should still be there: %v", edges)
+	}
+}
+
+// TestCopyMoveDryRun_DoesNotRevealUnreadableDocuments: a document the caller may
+// not read is absent from a copy or move plan, not refused, classified or listed
+// as a relation's far end; and a target name the caller may not write is
+// refused for that, before the target is probed for what holds the name.
+func TestCopyMoveDryRun_DoesNotRevealUnreadableDocuments(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	open := grantedTenantCtx(base)
+	s := seedCopyDocs(t, d, open)
+	// A third hidden document that holds a fact: the old plan classified it
+	// holds_facts before it asked whether the caller may read it.
+	facts := copyExec(t, d, open, `{"op":"create_document","scope":"user","title":"Payroll","path":"/proj/rfcs/payroll"}`)
+	copyExec(t, d, open, `{"op":"upsert_chunk","scope":"user","document_id":"`+asStr(facts["document_id"])+`","natural_key":"memory/fact/pay","title":"Pay","body":"Pay is monthly.","type":"fact","subject":"Payroll"}`)
+	hidden := []string{s.planDoc, s.planChunk, asStr(facts["document_id"])}
+	ctx := withACL(open, aclSet(t, denyRule("read", "document:user:/proj/rfcs/**")))
+
+	for _, call := range []string{
+		`{"op":"copy_documents","scope":"user","to_scope":"tenant","under_path":"/proj"}`,
+		`{"op":"copy_documents","scope":"user","to_scope":"tenant","document_ids":["` + s.planDoc + `","` + s.guideDoc + `","` + asStr(facts["document_id"]) + `"]}`,
+		`{"op":"move_documents","scope":"user","to_scope":"tenant","under_path":"/proj"}`,
+		`{"op":"move_documents","scope":"user","to_scope":"tenant","under_path":"/proj","dangling":"drop"}`,
+	} {
+		out := copyExec(t, d, ctx, call)
+		b, _ := json.Marshal(out)
+		for _, id := range hidden {
+			if strings.Contains(string(b), id) {
+				t.Errorf("%s names %s, which the caller may not read: %s", call, id, b)
+			}
+		}
+		if out["dangling_count"] != float64(0) {
+			t.Errorf("%s counts the relation into the unreadable plan: %s", call, b)
+		}
+		if c := out["counts"].(map[string]any); c["documents"] != float64(1) {
+			t.Errorf("%s: only the guide should be in the plan: %s", call, b)
+		}
+	}
+	// The move would delete the hidden relation with the guide's source: it is
+	// blocked, without saying which relation or document.
+	_, r := docExec(t, d, ctx, `{"op":"move_documents","scope":"user","to_scope":"tenant","under_path":"/proj","dangling":"drop","dry_run":false,"expect_count":1}`)
+	if !r.IsError || strings.Contains(r.Text, s.planChunk) || strings.Contains(r.Text, s.planDoc) {
+		t.Errorf("a move that would delete a relation into an unreadable document should be refused without naming it: %s", r.Text)
+	}
+	if edges := copyExec(t, d, open, `{"op":"get_edges","scope":"user","document_id":"`+s.planDoc+`"}`); len(edges["edges"].([]any)) != 1 {
+		t.Errorf("the hidden relation should survive: %v", edges)
+	}
+}
+
+// TestCopyDocuments_ATargetNameIsAskedBeforeItIsProbed: a target name the
+// caller may not write is refused for that, whatever already holds the name in
+// the target scope, so the refusal says nothing about the target's contents.
+func TestCopyDocuments_ATargetNameIsAskedBeforeItIsProbed(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	open := grantedTenantCtx(base)
+	s := seedCopyDocs(t, d, open)
+	copyExec(t, d, open, `{"op":"create_document","scope":"tenant","title":"Taken","path":"/proj/docs/guide"}`)
+	ctx := withACL(open, aclSet(t, denyRule("write", "document:tenant:/proj/docs/**")))
+	for _, op := range []string{"copy_documents", "move_documents"} {
+		out := copyExec(t, d, ctx, `{"op":"`+op+`","scope":"user","to_scope":"tenant","document_ids":["`+s.guideDoc+`"]}`)
+		if !refusedAs(out, s.guideDoc, copyForbidden) {
+			t.Errorf("%s: a target name the caller may not write is refused as forbidden, before it is probed: %v", op, out)
+		}
+	}
+}
+
+// refusedAs reports whether the plan refused docID with code.
+func refusedAs(out map[string]any, docID, code string) bool {
+	refused, _ := out["refused"].([]any)
+	for _, e := range refused {
+		m, _ := e.(map[string]any)
+		if m["document_id"] == docID && m["code"] == code {
+			return true
+		}
+	}
+	return false
+}

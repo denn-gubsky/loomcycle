@@ -126,6 +126,10 @@ func (d *Document) moveDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 				op, plan.danglingCount),
 				"Run the dry run to list them under dangling, then add the other documents to the set, or pass dangling: \"drop\" to delete those relations with the source."), nil
 		}
+		if plan.relationsForbidden(dangling) {
+			return errPermission(op+": the move would delete relations the caller's access-control rules do not let it remove; nothing was moved",
+				"Move a set whose relations the caller may unlink, or ask an operator to move it."), nil
+		}
 		if *in.ExpectCount != len(plan.docs) {
 			return errBusiness(fmt.Sprintf("%s: the set now holds %d documents to move, not the %d expected; nothing was moved",
 				op, len(plan.docs), *in.ExpectCount), "Run the dry run again and pass its counts.documents."), nil
@@ -139,6 +143,8 @@ func (d *Document) moveDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 		out["dropped"] = plan.danglingCount
 	} else if dangling != "drop" && plan.danglingCount > 0 {
 		out["blocked_by"] = "dangling_relations"
+	} else if plan.relationsForbidden(dangling) {
+		out["blocked_by"] = "forbidden_relations"
 	}
 	if dryRun {
 		if len(pending) > 0 {
@@ -152,6 +158,14 @@ func (d *Document) moveDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 		out["moved"] = finished
 	}
 	return jsonResult(out)
+}
+
+// relationsForbidden reports whether removing the sources would delete a
+// relation the caller may not remove: one into a document it may not read
+// (removed with the source whatever dangling says), or, under dangling:drop,
+// one whose ends it may not link. It says neither which nor how many.
+func (p *copyPlan) relationsForbidden(dangling string) bool {
+	return p.hiddenDangling > 0 || (dangling == "drop" && p.unlinkable > 0)
 }
 
 // withoutFinished drops from ids the documents only waiting to be named: their
