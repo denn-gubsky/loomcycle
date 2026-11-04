@@ -34,7 +34,8 @@ server-side from the token — never from the request. The `?scope_id=` /
 tenant (an admin may cross tenants). Naming another subject is the operator's:
 a member may name only itself, or a subject its access-control rules let it
 `browse` (`document:user` / `memory:user` with `owner_is_self: false`), or an
-agent it may run; anything else is `404 not_found`.
+agent it may run — and only to read there: a member's write to any scope but
+its own is refused. Anything else is `404 not_found`.
 
 ## Generate a client
 
