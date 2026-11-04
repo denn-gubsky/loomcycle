@@ -94,6 +94,10 @@ func (s *Server) startRemovalWith(ctx context.Context, policy lifecycle.Policy, 
 		}
 		return fmt.Errorf("record removal: %w", err)
 	}
+	// App sign-ins before the other tokens: endSubjectAppSignIns says why.
+	if _, err := s.endSubjectAppSignIns(ctx, tenant, subject); err != nil {
+		return fmt.Errorf("end app sign-ins: %w", err)
+	}
 	retired, err := s.retireDelegatedUserTokens(ctx, tenant, subject)
 	for _, row := range retired {
 		s.recordTokenAudit(ctx, "retire", row)
@@ -103,9 +107,6 @@ func (s *Server) startRemovalWith(ctx context.Context, policy lifecycle.Policy, 
 	}
 	if _, err := s.store.UISessionRevokeSubject(ctx, tenant, subject, now); err != nil {
 		return fmt.Errorf("end sessions: %w", err)
-	}
-	if err := s.endSubjectAppSignIns(ctx, tenant, subject); err != nil {
-		return fmt.Errorf("end app sign-ins: %w", err)
 	}
 	if started || u.Status != "disabled" {
 		s.recordLifecycleEvent("auth_user_disabled", tenant, subject, gate, reason, by)

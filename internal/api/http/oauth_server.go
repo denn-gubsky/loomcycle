@@ -752,14 +752,32 @@ func (s *Server) revokeAppFamily(ctx context.Context, clientID, familyID, reason
 	s.invalidateTokenCache(ctx)
 }
 
-// endSubjectAppSignIns revokes every app sign-in (refresh-token family) of a
-// user being disabled. A re-enable does not restore them: the person signs
-// in to each app again, as disabling means signing everything out. The
-// families' access tokens are the user's own tokens, which the disable
-// retires with the rest.
-func (s *Server) endSubjectAppSignIns(ctx context.Context, tenant, subject string) error {
-	_, err := s.store.OAuthFamilyRevokeSubject(ctx, tenant, subject, oauthRevokeUserDisabled, time.Now().UTC())
-	return err
+// endSubjectAppSignIns ends every app sign-in of a user being disabled or
+// erased: each live refresh-token family is revoked and the access tokens
+// issued under it retired, and every replica's token cache is flushed. It
+// returns the revoked families' ids. A re-enable restores none of them: the
+// person signs in to each app again.
+//
+// It runs BEFORE the user's other tokens are retired. A refresh racing the
+// disable then either mints before the revoke, and its token is retired
+// here by family, or reads the family as revoked when it re-reads it after
+// minting (oauthIssue), and retires its own token. Run after the token
+// retirement instead, a refresh that finished in between left an access
+// token that outlived the disable and worked again after a re-enable.
+func (s *Server) endSubjectAppSignIns(ctx context.Context, tenant, subject string) ([]string, error) {
+	now := time.Now().UTC()
+	ids, err := s.store.OAuthFamilyRevokeSubject(ctx, tenant, subject, oauthRevokeUserDisabled, now)
+	for _, id := range ids {
+		fam, gerr := s.store.OAuthFamilyGet(ctx, id)
+		if gerr == nil {
+			_, gerr = s.store.OAuthTokenRetire(ctx, fam.ClientID, id, now)
+		}
+		if gerr != nil && !isNotFound(gerr) {
+			err = errors.Join(err, fmt.Errorf("retire the tokens of app sign-in %s: %w", id, gerr))
+		}
+	}
+	s.invalidateTokenCache(ctx)
+	return ids, err
 }
 
 // retireAppToken retires one access token at once.

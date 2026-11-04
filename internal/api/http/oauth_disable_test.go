@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -92,5 +94,71 @@ func TestSCIMDeprovision_RevokesTheUsersAppSignIns(t *testing.T) {
 	fam, err := f.st.OAuthFamilyGet(ctx, "fam-scim")
 	if err != nil || fam.RevokedAt.IsZero() {
 		t.Fatalf("the deprovisioned user's app sign-in survived: %+v, %v", fam, err)
+	}
+}
+
+// mintRaceStore holds a refresh at its access-token insert — after the
+// refresh found the user active — until the disable under test has retired
+// the user's tokens (its UISessionRevokeSubject), then lets the refresh
+// finish before the disable goes on. That is the interleaving where a token
+// minted from a still-live family lands after the token retirement.
+type mintRaceStore struct {
+	store.Store
+	armed    atomic.Bool
+	minting  chan struct{} // closed when the refresh reaches its insert
+	release  chan struct{} // closed to let it insert
+	refreshd chan struct{} // closed when the refresh has answered
+	once     sync.Once
+}
+
+func (w *mintRaceStore) OperatorTokenDefCreate(ctx context.Context, row store.OperatorTokenDefRow) (store.OperatorTokenDefRow, error) {
+	if w.armed.CompareAndSwap(true, false) {
+		close(w.minting)
+		<-w.release
+	}
+	return w.Store.OperatorTokenDefCreate(ctx, row)
+}
+
+func (w *mintRaceStore) UISessionRevokeSubject(ctx context.Context, tenantID, subject string, at time.Time) (int, error) {
+	w.once.Do(func() {
+		close(w.release)
+		<-w.refreshd
+	})
+	return w.Store.UISessionRevokeSubject(ctx, tenantID, subject, at)
+}
+
+// TestDisable_AnAccessTokenMintedDuringTheDisableDoesNotAuthenticate: a
+// refresh racing the disable must not leave an access token that outlives
+// it — after the disable, and after a re-enable too.
+func TestDisable_AnAccessTokenMintedDuringTheDisableDoesNotAuthenticate(t *testing.T) {
+	f := newAppFixture(t, "tenant")
+	ts := appOpServer(t, f)
+	_, rt := f.signIn(t)
+	w := &mintRaceStore{Store: f.st, minting: make(chan struct{}), release: make(chan struct{}), refreshd: make(chan struct{})}
+	w.armed.Store(true)
+	f.s.store = w
+
+	var raced string
+	go func() {
+		defer close(w.refreshd)
+		if rec, body := f.refresh(t, rt); rec.Code == http.StatusOK {
+			raced, _ = body["access_token"].(string)
+		}
+	}()
+	<-w.minting
+	if code, body := bearerCall(t, ts, appOpBearer, "PATCH", "/v1/_users/google:100", `{"status":"disabled"}`); code != http.StatusOK {
+		t.Fatalf("disable = %d %s", code, body)
+	}
+	if raced == "" {
+		return // the refresh was refused: nothing outlives the disable
+	}
+	if c, _ := f.bearerMe(t, raced); c == http.StatusOK {
+		t.Fatal("an access token minted during the disable authenticates after it")
+	}
+	if code, body := bearerCall(t, ts, appOpBearer, "PATCH", "/v1/_users/google:100", `{"status":"active"}`); code != http.StatusOK {
+		t.Fatalf("re-enable = %d %s", code, body)
+	}
+	if c, _ := f.bearerMe(t, raced); c == http.StatusOK {
+		t.Fatal("an access token minted during the disable authenticates again after the re-enable")
 	}
 }

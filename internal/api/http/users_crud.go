@@ -336,10 +336,11 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		// Revocation always runs, the disable's failure included: the
 		// operator asked for the user's access to end, and an error is
-		// reported only once it has.
+		// reported only once it has. App sign-ins first (see
+		// endSubjectAppSignIns for the race this order closes).
+		_, appErr := s.endSubjectAppSignIns(ctx, tenant, subject)
 		_, retireErr := s.retireDelegatedUserTokens(ctx, tenant, subject)
 		_, sessionErr := s.store.UISessionRevokeSubject(ctx, tenant, subject, time.Now().UTC())
-		appErr := s.endSubjectAppSignIns(ctx, tenant, subject)
 		switch {
 		case disableErr != nil:
 			writeJSONError(w, http.StatusInternalServerError, "user_update_failed", disableErr.Error())
