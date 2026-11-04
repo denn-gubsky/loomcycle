@@ -24,6 +24,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -367,6 +368,29 @@ func TestAudioTranscriptions_BodyOverTheRequestCapIs413(t *testing.T) {
 	res := upload(srv, pcmWAV(8000, 30*time.Second), "memo.wav", "audio/wav", nil)
 	if res.Code != 413 || !strings.Contains(res.Body.String(), "LOOMCYCLE_MAX_REQUEST_BYTES") {
 		t.Errorf("got %d %s", res.Code, res.Body.String())
+	}
+}
+
+// A caller already over a hard token budget is refused with the 429 run
+// admission gives, before either engine is asked.
+func TestAudioRoutes_HardBudgetRefusesBeforeTheEngine(t *testing.T) {
+	prov, eng := &speakingProvider{}, &hearingEngine{}
+	srv, st := audioServer(t, prov, eng)
+	ctx := context.Background()
+	if err := st.TokenLimitPut(ctx, store.TokenLimitRow{Scope: "operator", HardLimit: i64p(0), UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.SeedLimits(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rec := postAudioJSON(srv, "/v1/audio/speech", `{"input":"Hello."}`); rec.Code != 429 || errorCode(t, rec.Body.Bytes()) != "token_limit_exceeded" {
+		t.Errorf("speech: %d %s", rec.Code, rec.Body.String())
+	}
+	if res := upload(srv, pcmWAV(8000, 10*time.Second), "memo.wav", "audio/wav", nil); res.Code != 429 || errorCode(t, res.Body.Bytes()) != "token_limit_exceeded" {
+		t.Errorf("transcription: %d %s", res.Code, res.Body.String())
+	}
+	if prov.requests() != 0 || eng.calls.Load() != 0 {
+		t.Errorf("engines asked: speech %d, transcription %d", prov.requests(), eng.calls.Load())
 	}
 }
 
