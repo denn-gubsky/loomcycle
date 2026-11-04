@@ -180,37 +180,14 @@ func dropUnreadableSearchHits(ctx context.Context, reader documentHitReader, sco
 	if err != nil || keep == nil {
 		return err
 	}
-	n := 0
-	for i, e := range res.Entries {
+	compactSearchHits(res, func(i int, key string) bool {
 		if inScope == nil || inScope(i) {
-			if id := documentHitChunkID(e.Key); id != "" && !keep(id) {
-				continue
+			if id := documentHitChunkID(key); id != "" && !keep(id) {
+				return false
 			}
 		}
-		res.Entries[n] = e
-		if i < len(res.RankScores) {
-			res.RankScores[n] = res.RankScores[i]
-		}
-		if i < len(res.MatchedUnits) {
-			res.MatchedUnits[n] = res.MatchedUnits[i]
-		}
-		// Written at n <= i only, so inScope still reads the unmoved scope of
-		// every later index.
-		if i < len(res.Scopes) {
-			res.Scopes[n] = res.Scopes[i]
-		}
-		n++
-	}
-	res.Entries = res.Entries[:n]
-	if len(res.RankScores) > n {
-		res.RankScores = res.RankScores[:n]
-	}
-	if len(res.MatchedUnits) > n {
-		res.MatchedUnits = res.MatchedUnits[:n]
-	}
-	if len(res.Scopes) > n {
-		res.Scopes = res.Scopes[:n]
-	}
+		return true
+	})
 	return nil
 }
 
@@ -241,4 +218,48 @@ func (m *Memory) dropUnreadableRecallHits(ctx context.Context, scope store.Memor
 	}
 	res.Facts = kept
 	return nil
+}
+
+// DropDocumentHits removes from res every document-plane hit — a chunk body,
+// a fact homed in one, or a derived unit — among the results inScope selects
+// (nil: all of them), for a caller that may read the scope's memory but not
+// its documents.
+func DropDocumentHits(res *memrank.SearchResult, inScope func(int) bool) {
+	compactSearchHits(res, func(i int, key string) bool {
+		return (inScope != nil && !inScope(i)) || documentHitChunkID(key) == ""
+	})
+}
+
+// compactSearchHits keeps the results keep accepts, in order, with their
+// parallel rank scores, matched units and scopes. keep(i) is asked before
+// anything at index i is overwritten, and writes land at n <= i only, so it
+// may read the unmoved scope of every later index.
+func compactSearchHits(res *memrank.SearchResult, keep func(i int, key string) bool) {
+	n := 0
+	for i, e := range res.Entries {
+		if !keep(i, e.Key) {
+			continue
+		}
+		res.Entries[n] = e
+		if i < len(res.RankScores) {
+			res.RankScores[n] = res.RankScores[i]
+		}
+		if i < len(res.MatchedUnits) {
+			res.MatchedUnits[n] = res.MatchedUnits[i]
+		}
+		if i < len(res.Scopes) {
+			res.Scopes[n] = res.Scopes[i]
+		}
+		n++
+	}
+	res.Entries = res.Entries[:n]
+	if len(res.RankScores) > n {
+		res.RankScores = res.RankScores[:n]
+	}
+	if len(res.MatchedUnits) > n {
+		res.MatchedUnits = res.MatchedUnits[:n]
+	}
+	if len(res.Scopes) > n {
+		res.Scopes = res.Scopes[:n]
+	}
 }

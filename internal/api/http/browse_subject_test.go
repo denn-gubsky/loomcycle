@@ -555,6 +555,70 @@ func isBrowseRefusal(rec *httptest.ResponseRecorder) bool {
 	return rec.Code == http.StatusNotFound && strings.TrimSpace(rec.Body.String()) == browseNotFound
 }
 
+// A grant to browse a colleague's MEMORY is not a grant to read her
+// documents: chunk bodies and derived units live in the memory keyspace, and
+// without `browse document:user` on her the memory routes and the search
+// leave them out, and refuse a search of her documents outright.
+func TestBrowse_AMemoryBrowseGrantDoesNotReadDocuments(t *testing.T) {
+	notSelf := false
+	memoryOnly := func(tenant string) auth.Principal {
+		return member(tenant, "bob", memberBaselineSet(t, tenant, "bob", authz.Rule{
+			Effect: authz.Allow, Actions: []string{"browse"}, Resources: []string{"memory:user"},
+			When: &authz.Condition{OwnerIsSelf: &notSelf},
+		}))
+	}
+
+	f := newBrowseFixture(t)
+	if err := f.store.MemorySet(context.Background(), "tnt", "user", "alice", "diary", json.RawMessage(`"alice diary entry"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	bob := memoryOnly("tnt")
+	if rec := f.call(t, bob, "GET", "/v1/_memory/scopes/user/alice/keys/diary", ""); rec.Code != http.StatusOK {
+		t.Errorf("memory-granted reviewer reading alice's plain memory: %d %s", rec.Code, rec.Body.String())
+	}
+	rec := f.call(t, bob, "GET", "/v1/_memory/scopes/user/alice/keys", "")
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), browseSecret) || strings.Contains(rec.Body.String(), f.secretChunk) ||
+		!strings.Contains(rec.Body.String(), "diary") {
+		t.Errorf("memory-granted reviewer listing alice's keys: %d %s, want her memory without her document rows", rec.Code, rec.Body.String())
+	}
+	missing := f.call(t, bob, "GET", "/v1/_memory/scopes/user/alice/keys/doc.chunk:nope", "")
+	got := f.call(t, bob, "GET", "/v1/_memory/scopes/user/alice/keys/doc.chunk:"+f.secretChunk, "")
+	if got.Code != http.StatusNotFound || strings.Contains(got.Body.String(), browseSecret) ||
+		got.Body.String() != strings.ReplaceAll(missing.Body.String(), "doc.chunk:nope", "doc.chunk:"+f.secretChunk) {
+		t.Errorf("memory-granted reviewer reading alice's chunk row: %d %s, want the missing-key 404", got.Code, got.Body.String())
+	}
+
+	c := newACLSearchCorpus(t)
+	search := func(p auth.Principal, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/_memory/search", strings.NewReader(body)).
+			WithContext(auth.WithPrincipal(context.Background(), p))
+		rec := httptest.NewRecorder()
+		c.s.handleMemorySearch(rec, req)
+		return rec
+	}
+	rec = search(memoryOnly("A"), aclSearchBody)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "doc.chunk:") || strings.Contains(rec.Body.String(), "doc.unit:") ||
+		!strings.Contains(rec.Body.String(), "notes/n1") {
+		t.Errorf("memory-granted reviewer searching alice's memory: %d %s, want her notes and no document rows", rec.Code, rec.Body.String())
+	}
+	for _, body := range []string{
+		`{"query":"audit","scope":"tenant","top_k":50,"documents_scope":"user","documents_scope_id":"alice"}`,
+		`{"query":"audit","scope":"user","scope_id":"alice","top_k":50,"under_paths":["/qg"]}`,
+	} {
+		if rec := search(memoryOnly("A"), body); !isBrowseRefusal(rec) {
+			t.Errorf("memory-granted reviewer searching alice's documents %s: %d %s, want the opaque 404", body, rec.Code, rec.Body.String())
+		}
+	}
+	// Granted documents as well, the same search finds her document rows.
+	both := member("A", "bob", memberBaselineSet(t, "A", "bob", authz.Rule{
+		Effect: authz.Allow, Actions: []string{"browse"}, Resources: []string{"memory:user", "document:user"},
+		When: &authz.Condition{OwnerIsSelf: &notSelf},
+	}))
+	if rec := search(both, aclSearchBody); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "doc.chunk:") {
+		t.Errorf("reviewer granted both searching alice: %d %s, want her document rows", rec.Code, rec.Body.String())
+	}
+}
+
 // The maintenance routes rewrite a scope (and spend the operator's embedder or
 // model): a browse grant reads alice's scope and never runs one of them on it
 // for real. A dry run is a read.
@@ -635,5 +699,21 @@ func TestBrowse_AMemberWithNoSetBrowsesNoAgent(t *testing.T) {
 	}
 	if rec := f.call(t, bob, "GET", "/v1/_memory/scopes/agent", ""); rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "helper") {
 		t.Errorf("member with no set listing agent scopes: %d %s, want none", rec.Code, rec.Body.String())
+	}
+}
+
+// The memory search asks the instance question the key routes ask, `read
+// memory:<scope>` owned by the searched subject: a rule denying it refuses
+// the search as it refuses a GET.
+func TestMemorySearchEndpoint_AsksTheInstanceVerb(t *testing.T) {
+	c := newACLSearchCorpus(t)
+	eff := memberBaselineSet(t, "A", "alice", authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"memory:user"}})
+	alice := member("A", "alice", eff)
+	code, _, raw := searchAs(t, c.s, alice, aclSearchBody)
+	if code != http.StatusForbidden || !strings.Contains(string(raw), "acl_denied") {
+		t.Errorf("search under deny read memory:user: %d %s, want 403 acl_denied", code, raw)
+	}
+	if rec := memoryKeyRequest(t, c.s, alice, "/v1/_memory/scopes/user/alice/keys/notes/n1"); rec.Code != http.StatusForbidden {
+		t.Errorf("GET under deny read memory:user: %d %s, want 403", rec.Code, rec.Body.String())
 	}
 }

@@ -186,12 +186,21 @@ func (s *Server) handleListMemoryEntries(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	if !browse.documents {
+		kept := entries[:0]
+		for _, e := range entries {
+			if !builtin.IsDocumentRowKey(e.Key) {
+				kept = append(kept, e)
+			}
+		}
+		entries = kept
+	}
 	// Chunk bodies and their derived units share this keyspace: a document the
 	// caller's access-control set denies it reading is left out of the list, as
 	// Document op=search and the memory search leave it out (a listing is a
 	// search). The page can come back shorter than limit; truncated still says
 	// whether the store held more.
-	held, err := s.unreadableDocumentKeys(browse, scope, storeScopeID, entries)
+	held, err := s.unreadableDocumentKeys(browse.ctx, scope, storeScopeID, entries)
 	if err != nil {
 		slog.Error("memory list access check failed", "scope", scope, "scope_id", storeScopeID, "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal", "list failed")
@@ -266,13 +275,13 @@ func (s *Server) handleGetMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	// A row of a document the caller may not read is answered as a missing one,
 	// so the refusal does not say the row exists.
-	held, err := s.unreadableDocumentKeys(browse, scope, adminMemoryStoreScopeID(scope, scopeID), []store.MemoryEntry{{Key: key}})
+	held, err := s.unreadableDocumentKeys(browse.ctx, scope, adminMemoryStoreScopeID(scope, scopeID), []store.MemoryEntry{{Key: key}})
 	if err != nil {
 		slog.Error("memory get access check failed", "scope", scope, "scope_id", scopeID, "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal", "read failed")
 		return
 	}
-	if held[key] {
+	if held[key] || (!browse.documents && builtin.IsDocumentRowKey(key)) {
 		writeJSONError(w, http.StatusNotFound, "not_found",
 			"no entry at "+scope+"/"+scopeID+"/"+key)
 		return
@@ -353,35 +362,57 @@ func (s *Server) unreadableDocumentKeys(browse context.Context, scope, storeScop
 		store.MemoryScope(scope), storeScopeID, keys)
 }
 
+// memoryBrowse is what a memory key route may reach: the browse ctx, and
+// whether the scope's document rows (chunk bodies, facts homed in them,
+// derived units) are among it.
+type memoryBrowse struct {
+	ctx context.Context
+	// documents: the caller may browse the scope's documents too. A member
+	// granted `browse memory:user` on a colleague, but not `browse
+	// document:user`, reads her memory without her documents' text.
+	documents bool
+}
+
 // memoryRouteCtx resolves a memory key route's {scope_id} through
 // browseSubjectFor (RFC FY Part A) and asks the instance question the Memory
 // tool asks in a run — verb (read or write) on memory:<scope>, owned by the
 // subject on the user scope — beyond the route's type-level one. It returns
-// the browse ctx, or false after writing the refusal: the opaque not-found
-// for a subject the caller may not browse, the access-control refusal for a
-// verb its rules deny. The tenant scope's {scope_id} is a placeholder the
-// store drops, so it names nobody.
-func (s *Server) memoryRouteCtx(w http.ResponseWriter, r *http.Request, scope, scopeID, verb string) (context.Context, bool) {
+// what the route may reach, or false after writing the refusal: the opaque
+// not-found for a subject the caller may not browse, the access-control
+// refusal for a verb its rules deny. The tenant scope's {scope_id} is a
+// placeholder the store drops, so it names nobody.
+func (s *Server) memoryRouteCtx(w http.ResponseWriter, r *http.Request, scope, scopeID, verb string) (memoryBrowse, bool) {
 	named := scopeID
 	if scope == string(store.MemoryScopeTenant) {
 		named = ""
 	}
-	b, ok := s.browseSubjectFor(r.Context(), "memory", named, r.URL.Query().Get("tenant"), verb != "read", scope)
+	tenant := r.URL.Query().Get("tenant")
+	b, ok := s.browseSubjectFor(r.Context(), "memory", named, tenant, verb != "read", scope)
 	if !ok {
 		writeBrowseNotFound(w)
-		return nil, false
+		return memoryBrowse{}, false
 	}
-	if p, has := auth.PrincipalFromContext(r.Context()); has {
-		res := authz.Resource{Type: "memory", Name: scope}
-		if scope == string(store.MemoryScopeUser) {
-			res.Owner = scopeID
-		}
-		surface := authz.Surface{Action: verb, Type: "memory", Name: scope}
-		if !s.applyGate(r.Context(), w, p, surface, authz.Evaluate(r.Context(), p.Effective, verb, res, true)) {
-			return nil, false
-		}
+	if !s.memoryInstanceAllowed(w, r, scope, scopeID, verb) {
+		return memoryBrowse{}, false
 	}
-	return b.apply(r.Context()), true
+	_, documents := s.browseSubjectFor(r.Context(), "document", named, tenant, verb != "read", scope)
+	return memoryBrowse{ctx: b.apply(r.Context()), documents: documents}, true
+}
+
+// memoryInstanceAllowed asks verb of memory:<scope>, owned by scopeID on the
+// user scope, as the Memory tool does in a run; false after writing the
+// refusal. Open mode asks nothing.
+func (s *Server) memoryInstanceAllowed(w http.ResponseWriter, r *http.Request, scope, scopeID, verb string) bool {
+	p, has := auth.PrincipalFromContext(r.Context())
+	if !has {
+		return true
+	}
+	res := authz.Resource{Type: "memory", Name: scope}
+	if scope == string(store.MemoryScopeUser) {
+		res.Owner = scopeID
+	}
+	surface := authz.Surface{Action: verb, Type: "memory", Name: scope}
+	return s.applyGate(r.Context(), w, p, surface, authz.Evaluate(r.Context(), p.Effective, verb, res, true))
 }
 
 // validAdminMemoryScope mirrors the closed scope set the runtime
