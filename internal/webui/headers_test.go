@@ -75,7 +75,7 @@ func TestWebUI_SecurityHeadersOnEveryPage(t *testing.T) {
 			h.h.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
 			hd := rec.Header()
 			csp := hd.Get("Content-Security-Policy")
-			for _, want := range []string{"default-src 'self'", "frame-ancestors 'none'", "object-src 'none'", "base-uri 'self'"} {
+			for _, want := range []string{"default-src 'self'", "frame-ancestors 'none'", "object-src 'none'", "base-uri 'self'", "media-src 'self' blob:"} {
 				if !strings.Contains(csp, want) {
 					t.Errorf("%s GET %s: CSP %q lacks %q", h.name, target, csp, want)
 				}

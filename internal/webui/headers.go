@@ -31,6 +31,8 @@ func SetBaseSecurityHeaders(h http.Header) {
 //     images, which the UI fetches with the session and shows as blob: URLs.
 //     Images from any other origin are refused, so a rendered document or
 //     model output cannot make the browser call out.
+//   - media-src blob:: audio the UI fetches with the session and plays (the
+//     read-aloud and recording work); no media from other origins.
 //   - font-src data:: the bundled fonts, some inlined in the CSS.
 //   - connect-src 'self': every API call and stream is same-origin.
 //   - frame-ancestors 'none': nothing embeds the UI (the cloud console's
@@ -49,6 +51,7 @@ func spaCSP(scriptHashes []string) string {
 		script,
 		"style-src 'self' 'unsafe-inline'",
 		"img-src 'self' data: blob:",
+		"media-src 'self' blob:",
 		"font-src 'self' data:",
 		"connect-src 'self'",
 		"object-src 'none'",
