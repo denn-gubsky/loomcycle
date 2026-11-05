@@ -9233,6 +9233,9 @@ func validate(c *Config) error {
 		return fmt.Errorf("LOOMCYCLE_AUDIT_STORE=0: the store-backed audit stream cannot be turned off " +
 			"while a sign-in gate, auth.mode: strict or a LOOMCYCLE_ACL other than compat is configured")
 	}
+	if err := c.checkAuditKey(); err != nil {
+		return err
+	}
 	// RFC EY §9: validate the acls / groups / acl_bindings blocks with the
 	// engine's own strict parser, so an unenforceable entry fails the load.
 	if err := ResolveACLConfig(c); err != nil {
