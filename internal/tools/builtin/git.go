@@ -1138,17 +1138,22 @@ func (g *Git) record(ev audit.Event) {
 
 // redactURLPath is a URL as it may be logged: host and path, nothing else (a
 // validated URL carries no user, query or fragment, but a failed one might).
-// gitACLResource is the git:<host>/<path> instance a network op asks about:
-// the remote's host and its path, without the leading slash or a trailing
-// .git, so `git:github.com/org/*` covers either spelling of a repository.
+// gitACLResource is the git:<host>/<path> instance a network op asks about,
+// in one canonical spelling of the URL the op dials: the host as
+// gitsource.ValidateURL keys it (lowercase, port when not 443), the path
+// without its leading slash or a trailing .git, all lowercase. rawURL has
+// passed ValidateURL, which refuses a percent-encoding and a `.`, `..` or
+// empty path segment, so no other spelling of the same repository reaches
+// here; a `git:` selector is lowercased when it is parsed, so the match is
+// case-insensitive both ways.
 func gitACLResource(host, rawURL string) authz.Resource {
 	name := host
 	if u, err := url.Parse(rawURL); err == nil {
-		if p := strings.TrimSuffix(strings.Trim(u.Path, "/"), ".git"); p != "" {
+		if p := strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), ".git"); p != "" {
 			name += "/" + p
 		}
 	}
-	return authz.Resource{Type: "git", Name: name}
+	return authz.Resource{Type: "git", Name: strings.ToLower(name)}
 }
 
 func redactURLPath(raw string) string {

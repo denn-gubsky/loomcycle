@@ -515,4 +515,16 @@ func TestGit_ACLDenyOnTheRemoteRefusesBeforeAnyRequest(t *testing.T) {
 	if r := gitACLResource(host, srv.URL+"/acme/app.git"); r.Name != host+"/acme/app" {
 		t.Errorf("resource = %q", r.Name)
 	}
+	// Another spelling of the denied repository is matched or refused, never
+	// let through: a case variant is the same repository, and a dot segment
+	// is refused before the ACL is asked.
+	denied := withRules(authz.Rule{Effect: authz.Deny, Actions: []string{"fetch"}, Resources: []string{"git:" + host + "/Acme/*"}})
+	before := requests
+	wantGitClass(t, g, denied, map[string]any{"op": "ls_remote", "url": srv.URL + "/ACME/App.git"}, "acl_denied")
+	for _, p := range []string{"/other/../acme/app.git", "/./acme/app.git", "//acme/app.git", "/acme//app.git"} {
+		wantGitClass(t, g, denied, map[string]any{"op": "ls_remote", "url": srv.URL + p}, "invalid_argument")
+	}
+	if requests != before {
+		t.Error("a refused spelling reached the server")
+	}
 }

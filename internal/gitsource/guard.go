@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync/atomic"
 
 	"github.com/go-git/go-git/v5/storage/filesystem"
@@ -91,6 +92,16 @@ func ValidateURL(raw string) (host string, err error) {
 	}
 	if u.RawQuery != "" || u.Fragment != "" {
 		return bad("the repository URL must not carry a query or a fragment")
+	}
+	// One spelling per repository: a `.`, `..` or empty path segment names
+	// the same repository another way, so a rule on its canonical path could
+	// be stepped around (RFC FY Part E). Percent-encoding is refused above.
+	if p := strings.TrimPrefix(u.Path, "/"); p != "" {
+		for _, seg := range strings.Split(p, "/") {
+			if seg == "" || seg == "." || seg == ".." {
+				return bad("the repository URL's path must not have an empty, \".\" or \"..\" segment")
+			}
+		}
 	}
 	return hostKey(u), nil
 }
