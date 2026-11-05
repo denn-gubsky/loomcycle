@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
+	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
@@ -183,6 +184,30 @@ func substrateGRPCUserCtx(ctx context.Context) context.Context {
 		// RFC BX P2b defense-in-depth: carry the isolation bit (see substrateGRPCCtx).
 		Isolated: auth.IsIsolated(principal, ok),
 	})
+}
+
+// substrateGRPCDataCtx is substrateGRPCUserCtx for the data RPCs (Path,
+// Document, Memory) with the synthetic agent name kept for the operator plane
+// only (RFC FY Part A). Every caller of these RPCs gets the same synthetic
+// name, so its agent scope is the operator's off-run scope; a member, which
+// cannot name an agent here, gets none, and the tools refuse it scope=agent.
+func substrateGRPCDataCtx(ctx context.Context) context.Context {
+	out := substrateGRPCUserCtx(ctx)
+	if p, ok := auth.PrincipalFromContext(ctx); !memberpath.OperatorPlane(p, ok) {
+		out = tools.WithAgentName(out, "")
+	}
+	return out
+}
+
+// memberAgentScopeRefusal refuses, NotFound, a member's Path, Document or
+// Memory call that touches an agent scope (defaultScope when the input names
+// none): it has no off-run agent scope on this transport, which names no
+// agent. nil for the operator plane and for every other call.
+func memberAgentScopeRefusal(ctx context.Context, req *loomcyclepb.SubstrateRequest, defaultScope string) error {
+	if p, ok := auth.PrincipalFromContext(ctx); memberpath.OperatorPlane(p, ok) || !memberpath.NamesAgentScope(req.GetInputJson(), defaultScope) {
+		return nil
+	}
+	return status.Error(codes.NotFound, "not found")
 }
 
 // v0.8.22 substrate admin RPCs. Mirror of the
@@ -438,7 +463,10 @@ func (s *Server) Path(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*
 	// User-aware ctx: an off-run scope:"user" op keys on the principal's
 	// Subject (= the run user_id), so it interoperates with the principal's
 	// agent runs. See substrateGRPCUserCtx.
-	return s.dispatchSubstrateRPCCtx(ctx, "Path", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	if err := memberAgentScopeRefusal(ctx, req, "agent"); err != nil {
+		return nil, err
+	}
+	return s.dispatchSubstrateRPCCtx(ctx, "Path", req, substrateGRPCDataCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.Path(ctx, in)
 		if err != nil {
 			return connector.ToolResult{}, err
@@ -450,7 +478,10 @@ func (s *Server) Path(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*
 // Document serves the RFC AK Document gRPC RPC. Same shape + tenant-confined
 // posture as Path; requires SQL Memory enabled on the runtime.
 func (s *Server) Document(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPCCtx(ctx, "Document", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	if err := memberAgentScopeRefusal(ctx, req, "user"); err != nil {
+		return nil, err
+	}
+	return s.dispatchSubstrateRPCCtx(ctx, "Document", req, substrateGRPCDataCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.Document(ctx, in)
 		if err != nil {
 			return connector.ToolResult{}, err
@@ -552,7 +583,10 @@ func (s *Server) History(ctx context.Context, req *loomcyclepb.SubstrateRequest)
 // tenant, NEVER the wire. TENANT-CONFINED; the substrateGRPCCtx MemoryPolicy
 // grant confines scopes and leaves SQL ops (no sql_scopes grant) to refuse.
 func (s *Server) Memory(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
-	return s.dispatchSubstrateRPCCtx(ctx, "Memory", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	if err := memberAgentScopeRefusal(ctx, req, ""); err != nil {
+		return nil, err
+	}
+	return s.dispatchSubstrateRPCCtx(ctx, "Memory", req, substrateGRPCDataCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.Memory(ctx, in)
 		if err != nil {
 			return connector.ToolResult{}, err
