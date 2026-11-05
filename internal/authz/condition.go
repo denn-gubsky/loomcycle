@@ -270,9 +270,12 @@ func (cc *compiledCondition) holds(req *Request, deny bool) bool {
 
 // inert reports whether the condition names a fact no surface vouches for —
 // the model or user tier, which a run request names itself. Such a rule is
-// skipped whole, its deny and its allow alike: a rule stored before writes
-// refused it decides what it decided then (nothing), never more (RFC FY Part
-// E).
+// skipped whole, its deny and its allow alike (RFC FY Part E, owner
+// decision). This is not a lifted deny: before this build no surface filled
+// either field, so a stored rule on one never matched and never applied —
+// inert is byte-identical to that. Writes refuse a new one
+// (rule_not_enforceable), and the boot report names every stored or yaml rule
+// that still carries one.
 func (cc *compiledCondition) inert() bool {
 	return len(cc.c.Tier) > 0 || len(cc.c.UserTier) > 0
 }
