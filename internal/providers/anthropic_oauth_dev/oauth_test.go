@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -224,6 +225,34 @@ func TestCallbackServer_ErrorParam(t *testing.T) {
 	res, _ := cs.WaitFor(ctx)
 	if res.Err == nil {
 		t.Error("expected error from access_denied callback")
+	}
+}
+
+// TestCallbackServer_ErrorPageEscapesErrorDescription: the error page echoes
+// the callback's error_description, which any page can set by sending the
+// browser to the local callback URL while a login waits. It must reach the
+// page as text, never as markup.
+func TestCallbackServer_ErrorPageEscapesErrorDescription(t *testing.T) {
+	cs, err := StartCallbackServer(0)
+	if err != nil {
+		t.Fatalf("StartCallbackServer: %v", err)
+	}
+	defer cs.Close()
+	q := url.Values{"error": {"access_denied"}, "error_description": {`<script>alert(1)</script>`}}
+	resp, err := http.Get("http://127.0.0.1:" + intToStr(cs.Port()) + CallbackPath + "?" + q.Encode())
+	if err != nil {
+		t.Fatalf("callback request: %v", err)
+	}
+	defer resp.Body.Close()
+	var body strings.Builder
+	if _, err := io.Copy(&body, resp.Body); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if strings.Contains(body.String(), "<script>alert(1)") {
+		t.Errorf("error_description reached the page as markup:\n%s", body.String())
+	}
+	if !strings.Contains(body.String(), "&lt;script&gt;alert(1)") {
+		t.Errorf("error_description is missing from the page (escaped):\n%s", body.String())
 	}
 }
 
