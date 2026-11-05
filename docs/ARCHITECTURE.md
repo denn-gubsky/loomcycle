@@ -150,6 +150,7 @@ A pull request runs the jobs and the Go tests its change can reach; `main` runs 
 | `ts` | the TypeScript adapter |
 | `python` | the Python adapter |
 | `bridges` | the bridges and their images |
+| `landing` | the loomcycle.cloud landing server (`cloud-deployment/landing`, `cloud-web/`) |
 | `proto` | the generated-stubs check |
 
 `go` is not decided by file extension. Go tests read the TS adapter, the proto, `web/` and the bundles, so a change to one of those concerns Go too.

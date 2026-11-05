@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -98,7 +99,7 @@ func (s *Server) handleAudioSpeech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, release, err := s.admitOffRunCall(r.Context(), "a read-aloud")
+	ctx, release, err := s.admitOffRunCall(r.Context(), "a read-aloud", auth.SurfaceSpeech)
 	if err != nil {
 		writeOffRunAdmissionError(w, err)
 		return

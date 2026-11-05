@@ -6,7 +6,7 @@ A chat client can read a reply aloud and take a spoken message, on the deploymen
 
 The LLM gateway (`/v1/chat/completions`, `/v1/embeddings`) trusts the caller with the provider and model it names, so it is gated by `llm:gateway`, which an isolated (self-signed-up) user does not hold. The speech routes give the caller no such choice: the engines, models and voices are the operator's configuration, and a caller sends only text or a recording and picks a language and a voice from the operator's list. So they are gated as a chat user's call, at `runs:create`, and an isolated user can use them.
 
-They are also not run-plane routes: a token limited to certain agents is refused, because reading aloud is not part of starting or following a run.
+They are also not run-plane routes: reading aloud is not part of starting or following a run, so a token limited to certain agents is refused, **unless it was granted the route's surface** when it was minted. That is how a chat bridge's per-person token transcribes that person's voice notes and voices replies to them, billed to them (see [Who may call them](#who-may-call-them)).
 
 ## The routes
 
@@ -65,8 +65,8 @@ A client should show "working…" rather than time out early, and give the user 
 
 - **Scope:** `runs:create`. A tenant operator and an admin hold it; so do members and isolated users.
 - **Access control:** `use gateway:speech` and `use gateway:transcription`. The member and isolated baselines allow `use gateway:*`; a rule list can deny either one.
-- **Not** a token limited to certain agents (403 `restricted_token`).
-- **Budgets:** a caller already over a hard token budget is refused (429 `token_limit_exceeded`) before the engine is asked.
+- **A token limited to certain agents** only with the surface granted: `"surfaces": ["speech", "transcription"]` beside its `agents` at mint (a per-user token, an operator token, a declared principal, or an external gate's `issued_token.surfaces` ceiling; CONFIGURATION.md, "Granting the speech routes"). Without the grant it gets 403 `restricted_token`. The grant opens only these routes and `GET /v1/_speech`; every other check here still applies.
+- **Budgets:** a caller already over a hard token budget is refused (429 `token_limit_exceeded`) before the engine is asked. Each call also takes one start from the caller's run rate.
 - **Keys:** a tenant's own provider key, and the operator-key restriction, apply as they do for a run (403 `operator_key_restricted`).
 
 ## Whether to show the controls

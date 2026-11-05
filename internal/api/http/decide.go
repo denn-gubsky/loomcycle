@@ -56,7 +56,7 @@ func (s *Server) Decision(ctx context.Context, input json.RawMessage) (connector
 		return connector.ToolResult{Text: res.Text, IsError: res.IsError, ErrorInfo: res.Error}, nil
 	}
 
-	ctx, release, err := s.admitOffRunCall(ctx, "a decision")
+	ctx, release, err := s.admitOffRunCall(ctx, "a decision", "")
 	if err != nil {
 		return connector.ToolResult{}, err
 	}

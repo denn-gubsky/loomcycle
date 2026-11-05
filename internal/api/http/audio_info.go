@@ -14,6 +14,7 @@ import (
 const (
 	audioSpeechPath         = "/v1/audio/speech"
 	audioTranscriptionsPath = "/v1/audio/transcriptions"
+	speechInfoPath          = "/v1/_speech"
 )
 
 // speechInfo is GET /v1/_speech: what a client needs to draw its voice

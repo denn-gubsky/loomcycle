@@ -62,8 +62,12 @@ type AuthExternalGateConfig struct {
 
 // AuthIssuedTokenConfig is the ceiling of the tokens a gate gets issued.
 type AuthIssuedTokenConfig struct {
-	TTL       string   `yaml:"ttl,omitempty"`
-	Agents    []string `yaml:"agents,omitempty"`
+	TTL    string   `yaml:"ttl,omitempty"`
+	Agents []string `yaml:"agents,omitempty"`
+	// Surfaces is the off-run surfaces a token this gate is issued may
+	// carry beside agents (speech, transcription; RFC GA). A gate whose
+	// ceiling names agents and no surfaces gets none.
+	Surfaces  []string `yaml:"surfaces,omitempty"`
 	Overrides []string `yaml:"overrides,omitempty"`
 	Rate      *struct {
 		PerMinute int `yaml:"per_minute"`
@@ -223,6 +227,7 @@ func resolveExternalGate(c *Config, name string, g AuthGateConfig, deployment Au
 		if t.Agents != nil {
 			out.TokenRestrictions.Agents = append([]string(nil), t.Agents...)
 		}
+		out.TokenRestrictions.Surfaces = append([]string(nil), t.Surfaces...)
 		if t.Overrides != nil {
 			out.TokenRestrictions.Overrides = &auth.OverridePolicy{Allow: append([]string(nil), t.Overrides...)}
 		}

@@ -181,7 +181,15 @@ var errDotDotSegment = errors.New(`sqlmem: scope path segment contains ".."`)
 // dsnPragmas mirrors driver_default.go openDB: WAL + foreign-key enforcement
 // + a 5-second busy timeout. SQL Memory uses the SAME pragma posture as the
 // main store so a scope file behaves identically under contention.
-const dsnPragmas = "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)"
+//
+// _defensive=1 turns on SQLITE_DBCONFIG_DEFENSIVE before anything else runs on
+// the connection. A scope file holds the agent's own tables and the Document
+// plane's together, and an agent's SQL runs on this connection: without it a
+// write to sqlite_dbpage rewrites any page of the file (a document statement's
+// status included) and writable_schema edits the schema, neither naming a
+// table the Memory tool's guard could refuse. Reads of sqlite_dbpage are not
+// stopped by it; the guard refuses those by name.
+const dsnPragmas = "?_defensive=1&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)"
 
 // openScopeDB opens (creating the parent dir) the scope database at path
 // with the hardened pragma set. SetMaxOpenConns(1): one writer per scope

@@ -91,7 +91,7 @@ updates:
         update-types: [minor, patch]
 
   # --- npm: every tracked package-lock.json, one entry --------------------
-  # One entry over all 13 directories (each keeps its own lockfile; there is no
+  # One entry over all 15 directories (each keeps its own lockfile; there is no
   # workspace), grouped by dependency name: a bump of one package arrives as ONE
   # pull request touching every directory that uses it, not one per directory.
   # Majors of the dev toolchain are ignored here and taken by hand: they need
@@ -112,6 +112,7 @@ updates:
       - /packages/library
       - /packages/loomboard
       - /packages/memory-view
+      - /packages/universe
       - /cloud-deployment/landing
     schedule:
       interval: weekly
@@ -156,6 +157,8 @@ updates:
         update-types: [minor, patch]
 
   # --- GitHub Actions -----------------------------------------------------
+  # Every `uses:` is pinned to a commit SHA with its release tag in a trailing
+  # comment (RFC FZ Part G); dependabot moves the SHA and the comment together.
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -169,6 +172,9 @@ updates:
         update-types: [minor, patch]
 
   # --- Docker base images: every directory with a tracked Dockerfile ------
+  # Each FROM is pinned as tag@digest (the multi-arch index digest); dependabot
+  # bumps the digest when the tag is republished, and the tag on a new release.
+  # A directory's entry covers every Dockerfile* in it (Dockerfile.browser, …).
   - package-ecosystem: docker
     directories:
       - /

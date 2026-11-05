@@ -96,22 +96,30 @@ func (b *sqliteBackend) exportScope(ctx context.Context, key ScopeKey) (*ScopeDu
 	defer b.release(path)
 
 	dump := &ScopeDump{}
+	shadow, err := shadowTables(ctx, db)
+	if err != nil {
+		return nil, err
+	}
 
 	// Schema DDL: the verbatim CREATE statements. Tables first (type ordering),
 	// then explicit indexes; auto-indexes from PK/UNIQUE have sql IS NULL and are
-	// excluded (the table DDL recreates them). sqlite_% internal objects skipped.
+	// excluded (the table DDL recreates them). sqlite_% internal objects skipped,
+	// and so are a virtual table's shadow tables: its own CREATE makes them again.
 	ddlRows, err := db.QueryContext(ctx,
-		`SELECT sql FROM sqlite_master
+		`SELECT sql, tbl_name FROM sqlite_master
 		   WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
 		   ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END, name`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlmem: read schema: %w", err)
 	}
 	for ddlRows.Next() {
-		var s string
-		if err := ddlRows.Scan(&s); err != nil {
+		var s, tbl string
+		if err := ddlRows.Scan(&s, &tbl); err != nil {
 			ddlRows.Close()
 			return nil, err
+		}
+		if shadow[tbl] {
+			continue
 		}
 		dump.DDL = append(dump.DDL, s)
 	}
@@ -133,6 +141,9 @@ func (b *sqliteBackend) exportScope(ctx context.Context, key ScopeKey) (*ScopeDu
 		if err := tblRows.Scan(&n); err != nil {
 			tblRows.Close()
 			return nil, err
+		}
+		if shadow[n] {
+			continue // the virtual table's own rows rebuild it
 		}
 		tables = append(tables, n)
 	}
@@ -214,9 +225,16 @@ func (b *sqliteBackend) restoreScope(ctx context.Context, key ScopeKey, dump *Sc
 	defer b.release(path)
 
 	for _, stmt := range append(append([]string{}, dump.DDL...), dump.PostDDL...) {
-		if _, err := db.ExecContext(ctx, stmt); err != nil && !isSQLiteAlreadyExists(err) {
+		if _, err := db.ExecContext(ctx, stmt); err != nil && !isSQLiteAlreadyExists(err) && !isSQLiteReservedName(err) {
 			return fmt.Errorf("sqlmem: restore DDL: %w", err)
 		}
+	}
+	// An archive from before export left shadow tables out still carries them.
+	// Their rows are the engine's, rebuilt by loading the virtual table itself, and
+	// a defensive connection refuses writes to them anyway.
+	shadow, err := shadowTables(ctx, db)
+	if err != nil {
+		return err
 	}
 
 	tx, err := db.BeginTx(ctx, nil)
@@ -233,6 +251,9 @@ func (b *sqliteBackend) restoreScope(ctx context.Context, key ScopeKey, dump *Sc
 		return fmt.Errorf("sqlmem: defer FK: %w", err)
 	}
 	for _, t := range dump.Tables {
+		if shadow[t.Name] {
+			continue
+		}
 		empty, err := tableIsEmpty(ctx, tx, t.Name)
 		if err != nil {
 			return err
@@ -249,6 +270,32 @@ func (b *sqliteBackend) restoreScope(ctx context.Context, key ScopeKey, dump *Sc
 	}
 	committed = true
 	return nil
+}
+
+// shadowTables names the scope's shadow tables: those a virtual table (FTS5,
+// R-tree, …) creates and owns. Runtime code, never agent SQL, reads the pragma.
+func shadowTables(ctx context.Context, db *sql.DB) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT name FROM pragma_table_list WHERE schema = 'main' AND type = 'shadow'`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlmem: list shadow tables: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out[n] = true
+	}
+	return out, rows.Err()
+}
+
+// isSQLiteReservedName reports the refusal a defensive connection gives a CREATE
+// of a shadow table's name, which an older archive's DDL carries: the virtual
+// table's own CREATE, replayed before it, has already made that table.
+func isSQLiteReservedName(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "object name reserved for internal use")
 }
 
 // isSQLiteAlreadyExists reports the modernc "table/index already exists" error

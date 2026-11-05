@@ -101,6 +101,49 @@ var documentTables = func() map[string]bool {
 	return set
 }()
 
+// engineTables reach the scope's file beneath its tables, where no document
+// table name appears: sqlite_dbpage reads (and, without defensive mode, writes)
+// raw pages, Document's included; dbstat reports every table's pages; the
+// schema catalogs hold every table's definition. isEngineTable adds the
+// statistics tables and the pragma_* table-valued functions by prefix, which
+// read engine state and every table's shape. On sqlite these are the way
+// around the name check; on postgres none exists, so refusing them there
+// costs nothing.
+var engineTables = map[string]bool{
+	"sqlite_dbpage": true, "sqlite_dbstat": true, "dbstat": true,
+	"sqlite_schema": true, "sqlite_master": true, "sqlite_temp_schema": true, "sqlite_temp_master": true,
+}
+
+func isEngineTable(name string) bool {
+	return engineTables[name] || strings.HasPrefix(name, "sqlite_stat") || strings.HasPrefix(name, "pragma_")
+}
+
+// refuseEngineTables returns the reason a Memory SQL statement is refused for
+// naming one of the engine tables, or "". It reads names exactly as
+// refuseDocumentTables does; a statement the tokenizer cannot read is left to
+// refuseDocumentTables to refuse.
+func refuseEngineTables(stmt string, postgres bool) string {
+	toks, bad := sqlTokens(stmt, postgres)
+	if bad != "" {
+		return ""
+	}
+	for _, t := range toks {
+		name := t.kind == 'w' || t.kind == 'q' || (t.kind == 's' && !postgres)
+		if name && isEngineTable(t.val) {
+			return fmt.Sprintf("%q reads the database file beneath its tables (pages, page statistics, the schema or engine settings): Memory SQL may not use it", t.val)
+		}
+	}
+	return ""
+}
+
+// The hint that goes with each kind of refusal. An agent refused for listing
+// its tables through sqlite_master needs different advice from one that named
+// a document table.
+const (
+	documentTablesHint = "Read and change documents, chunks and statements through the Document tool; keep this agent's own tables under other names."
+	engineTablesHint   = "Memory SQL cannot read the schema catalog, the pragma functions or the file's pages. Keep track of the tables this agent creates (for example in a table of your own), and query those tables by name."
+)
+
 // pgQueryTextFns are the core functions that run a query, or read a table,
 // named by a string the guard cannot see through, and set_config, which could
 // turn standard_conforming_strings off and so move where a literal ends.
@@ -322,7 +365,11 @@ func plantedDocumentObject(ctx context.Context, m *sqlmem.Manager, checked *sync
 		return "", nil
 	}
 	postgres := m.Tier() == "postgres"
-	q := `SELECT type, name, COALESCE(sql, '') FROM sqlite_master WHERE type IN ('view', 'trigger')`
+	// A virtual table is stored as a table with no pages of its own (rootpage 0);
+	// one over sqlite_dbpage or dbstat reads the file's pages directly, so it is
+	// checked like a view.
+	q := `SELECT CASE type WHEN 'table' THEN 'virtual table' ELSE type END, name, COALESCE(sql, '') FROM sqlite_master
+		WHERE type IN ('view', 'trigger') OR (type = 'table' AND rootpage = 0)`
 	if postgres {
 		q = `SELECT 'view', viewname, definition FROM pg_views WHERE schemaname = current_schema()
 			UNION ALL SELECT 'rule', rulename, definition FROM pg_rules WHERE schemaname = current_schema()
@@ -341,7 +388,7 @@ func plantedDocumentObject(ctx context.Context, m *sqlmem.Manager, checked *sync
 			continue
 		}
 		def, _ := row[2].(string)
-		if refuseDocumentTables(def, postgres) != "" || (row[0] == "function" && pgDynamicSQLRe.MatchString(def)) {
+		if refuseDocumentTables(def, postgres) != "" || refuseEngineTables(def, postgres) != "" || (row[0] == "function" && pgDynamicSQLRe.MatchString(def)) {
 			return fmt.Sprintf("%v %v", row[0], row[1]), nil
 		}
 	}
@@ -356,7 +403,11 @@ var leadingDropRe = regexp.MustCompile(`(?i)^\s*drop\b`)
 // planted-object check: it has passed the name check, so it cannot touch a
 // document table, and it is how an agent removes the object the check found.
 func (m *Memory) guardDocumentTables(ctx context.Context, op, scope, scopeID string, key sqlmem.ScopeKey, stmt string) (tools.Result, bool) {
-	why := refuseDocumentTables(stmt, m.SqlMem.Tier() == "postgres")
+	postgres := m.SqlMem.Tier() == "postgres"
+	why, hint := refuseEngineTables(stmt, postgres), engineTablesHint
+	if why == "" {
+		why, hint = refuseDocumentTables(stmt, postgres), documentTablesHint
+	}
 	if why == "" && !leadingDropRe.MatchString(stmt) {
 		obj, err := plantedDocumentObject(ctx, m.SqlMem, &m.docGuardChecked, key)
 		if err != nil {
@@ -364,13 +415,12 @@ func (m *Memory) guardDocumentTables(ctx context.Context, op, scope, scopeID str
 			return errFrom(fmt.Sprintf("%s: %s", op, err), err), true
 		}
 		if obj != "" {
-			why = fmt.Sprintf("this scope's %s reaches a document table; drop it before using Memory SQL here", obj)
+			why = fmt.Sprintf("this scope's %s reaches a document table or the database file beneath the tables; drop it before using Memory SQL here", obj)
 		}
 	}
 	if why == "" {
 		return tools.Result{}, false
 	}
 	m.auditSql(ctx, op, scope, scopeID, stmt, 0, 0, errors.New(why))
-	return errBusiness(op+": document_tables_reserved: "+why,
-		"Read and change documents, chunks and statements through the Document tool; keep this agent's own tables under other names."), true
+	return errBusiness(op+": document_tables_reserved: "+why, hint), true
 }

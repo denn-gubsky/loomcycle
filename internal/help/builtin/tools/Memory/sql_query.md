@@ -40,7 +40,14 @@ the result — add `LIMIT`/`WHERE` or page with `OFFSET`.
   writing; or, on PostgreSQL, it creates a function or calls one that runs a
   query given as text. Use the Document tool's ops for documents, chunks and
   statements, and give your own tables and columns other names. If it names a
-  view, trigger or function of this scope, drop that object first.
+  view, trigger, virtual table or function of this scope, drop that object
+  first.
+- `sql_query: document_tables_reserved: "sqlite_master" reads the database
+  file beneath its tables ...` — the statement names the schema catalog
+  (`sqlite_master` / `sqlite_schema`), the file's pages (`sqlite_dbpage`,
+  `dbstat`), the `sqlite_stat*` tables or a `pragma_*` function, in any quoting,
+  even inside a string. There is no catalog to list your tables from: keep
+  track of the tables you create, for example in a table of your own.
 - `Memory tool: this agent has no sql_scopes configured ...` or `sql scope
   "tenant" not in this agent's sql_scopes [...]` — not granted. Retrying is
   pointless; only the operator can grant it.

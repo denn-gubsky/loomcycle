@@ -136,7 +136,8 @@ no list. To split another package, add its parts to the `go-race` matrix in
 The `changes` job runs this first and every other job is skipped when its part
 of the tree is untouched: `web` for the Web UI and the packages it compiles
 from source, `ts` and `python` for the adapters, `bridges` for the bridge
-packages and their image, `proto` for the proto and its generated stubs,
+packages and their image, `landing` for the cloud landing server and the
+site it serves, `proto` for the proto and its generated stubs,
 `runtime` for the code-js runtime suites. `go` is true when
 `scripts/ci/affected` finds any Go test that can see the change, which
 includes non-Go files that Go tests read (the TS adapter, the proto, `web/`).

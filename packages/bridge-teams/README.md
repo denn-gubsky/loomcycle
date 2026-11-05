@@ -50,6 +50,8 @@ Run loomcycle with authentication on and a persistent store. Then:
 npx @loomcycle/bridge-teams
 ```
 
+The container image is built from this repository's lockfile, which moves the Teams SDK's `@azure/msal-node` to a patched 7.1 release. An `npx` (or `npm install`) of the published package resolves the SDK's own range instead, which still allows msal-node 5.x until the SDK widens it. The advisory concerned is in a sign-in flow the bridge never calls, but prefer the image if you want the patched version.
+
 Or run the container image, `denngubsky/loomcycle-bridge-teams` (also `ghcr.io/denn-gubsky/loomcycle-bridge-teams`), tagged with the package version. It takes the same environment variables. Mount a volume at `/data` and set `BRIDGE_STORE=file:/data/teams.json` to keep each conversation's session across restarts:
 
 ```bash

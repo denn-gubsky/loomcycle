@@ -27,3 +27,27 @@ func TestRestrictionsWithin_AgentsAreTheIntersectionAndNeverEmpty(t *testing.T) 
 		t.Errorf("within an unrestricted minter = %+v (err %v), want unchanged", got, err)
 	}
 }
+
+// RFC GA: a minted record never holds a surface its confined minter does not.
+// A confined record keeps the surfaces both name; an unconfined one, made
+// confined by its minter, gets the minter's; an unconfined minter changes
+// nothing.
+func TestRestrictionsWithin_SurfacesNeverExceedTheMinters(t *testing.T) {
+	minter := Restrictions{Agents: []string{"chat"}, Surfaces: []string{SurfaceTranscription}}
+	got, err := Restrictions{Agents: []string{"chat"}, Surfaces: []string{SurfaceSpeech, SurfaceTranscription}}.Within(minter)
+	if err != nil || !reflect.DeepEqual(got.Surfaces, []string{SurfaceTranscription}) {
+		t.Errorf("confined record = %v (err %v), want [transcription]", got.Surfaces, err)
+	}
+	got, err = Restrictions{}.Within(minter)
+	if err != nil || !reflect.DeepEqual(got.Surfaces, []string{SurfaceTranscription}) || !reflect.DeepEqual(got.Agents, []string{"chat"}) {
+		t.Errorf("unconfined record = %+v (err %v), want the minter's agents and surfaces", got, err)
+	}
+	got, err = Restrictions{Agents: []string{"chat"}, Surfaces: []string{SurfaceSpeech}}.Within(Restrictions{Agents: []string{"chat"}})
+	if err != nil || len(got.Surfaces) != 0 {
+		t.Errorf("a minter with no grant passed one on: %v (err %v)", got.Surfaces, err)
+	}
+	own := Restrictions{Agents: []string{"chat"}, Surfaces: []string{SurfaceSpeech}}
+	if got, err := own.Within(Restrictions{}); err != nil || !reflect.DeepEqual(got, own) {
+		t.Errorf("within an unrestricted minter = %+v (err %v), want unchanged", got, err)
+	}
+}

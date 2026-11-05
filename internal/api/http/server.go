@@ -1345,7 +1345,7 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 func (s *Server) admitTeamRun(ctx context.Context) (context.Context, error) {
 	// A walk starts many agents under one name; an allowlist of agent names
 	// cannot describe it.
-	if err := s.refuseAgentlessCall(ctx, "a team walk"); err != nil {
+	if err := s.refuseAgentlessCall(ctx, "a team walk", ""); err != nil {
 		return nil, err
 	}
 	// A walk records its input and each decision it takes. A no-trace run

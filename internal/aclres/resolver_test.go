@@ -213,7 +213,9 @@ func TestResolveSubject_RecompilesThePrincipalsSetFromItsSubject(t *testing.T) {
 		"member":   member("alice"),
 		"isolated": {TenantID: "acme", Subject: "sandboxed", Scopes: []string{auth.ScopeUser}},
 		"runplane": {TenantID: "acme", Subject: "ci", Scopes: []string{auth.ScopeTenant}, TokenDefID: "def-ci", Restrictions: auth.Restrictions{Agents: []string{"ci"}}},
-		"admin":    {TenantID: "", Subject: "root", Scopes: []string{auth.ScopeAdmin}},
+		"runplane+voice": {TenantID: "acme", Subject: "tg", Scopes: []string{auth.ScopeRunsCreate}, TokenDefID: "def-tg",
+			Restrictions: auth.Restrictions{Agents: []string{"chat"}, Surfaces: []string{auth.SurfaceTranscription, auth.SurfaceSpeech}}},
+		"admin": {TenantID: "", Subject: "root", Scopes: []string{auth.ScopeAdmin}},
 	} {
 		live, err := r.Resolve(ctx, p)
 		if err != nil {
@@ -256,6 +258,10 @@ func TestResolveSubject_RefusesASubjectWithNoKnownClass(t *testing.T) {
 		{TenantID: "acme", ID: "alice"},
 		{TenantID: "acme", ID: "alice", Class: "superuser"},
 		{TenantID: "acme", ID: "alice", Class: "+runplane"},
+		{TenantID: "acme", ID: "alice", Class: "member+runplane:"},
+		{TenantID: "acme", ID: "alice", Class: "member+runplane:chat"},
+		{TenantID: "acme", ID: "alice", Class: "member+runplane:speech,teleport"},
+		{TenantID: "acme", ID: "alice", Class: "member+runplanespeech"},
 		{TenantID: "acme", Class: "member"},
 	} {
 		if eff, err := r.ResolveSubject(context.Background(), subj); err == nil {
@@ -265,5 +271,48 @@ func TestResolveSubject_RefusesASubjectWithNoKnownClass(t *testing.T) {
 	var none *Resolver
 	if _, err := none.ResolveSubject(context.Background(), authz.Subject{ID: "alice", Class: "member"}); err == nil {
 		t.Error("a nil resolver resolved a subject")
+	}
+}
+
+// RFC GA: a token limited to certain agents and granted off-run surfaces is
+// allowed `use` on exactly those gateway kinds and denied the rest; with no
+// grant it is denied every gateway kind, as before. The grant is part of the
+// class key, so two tokens with different grants never share a cached set.
+func TestResolve_RunPlaneTokenIsAllowedOnlyItsGrantedGatewayKinds(t *testing.T) {
+	r := New(newStore(t), authz.ModeCompat, 0)
+	ctx := context.Background()
+	confined := func(surfaces ...string) auth.Principal {
+		p := member("bridge-user")
+		p.Restrictions = auth.Restrictions{Agents: []string{"chat"}, Surfaces: surfaces}
+		return p
+	}
+	cases := []struct {
+		name     string
+		p        auth.Principal
+		speech   authz.Outcome
+		hear     authz.Outcome
+		chat     authz.Outcome
+		classKey string
+	}{
+		{"no grant", confined(), authz.Denied, authz.Denied, authz.Denied, "member+runplane"},
+		{"transcription", confined(auth.SurfaceTranscription), authz.Denied, authz.Allowed, authz.Denied, "member+runplane:transcription"},
+		{"both, in any order", confined(auth.SurfaceTranscription, auth.SurfaceSpeech), authz.Allowed, authz.Allowed, authz.Denied, "member+runplane:speech,transcription"},
+	}
+	for _, c := range cases {
+		if got := ClassKey(c.p); got != c.classKey {
+			t.Errorf("%s: class key %q, want %q", c.name, got, c.classKey)
+		}
+		live, err := r.Resolve(ctx, c.p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, q := range []struct {
+			kind string
+			want authz.Outcome
+		}{{"speech", c.speech}, {"transcription", c.hear}, {"chat", c.chat}, {"embeddings", authz.Denied}, {"decide", authz.Denied}} {
+			if got := decide(live.Effective, "use", "gateway", q.kind); got != q.want {
+				t.Errorf("%s: use gateway:%s = %v, want %v", c.name, q.kind, got, q.want)
+			}
+		}
 	}
 }

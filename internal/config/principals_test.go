@@ -239,6 +239,28 @@ func TestResolvePrincipals_Agents(t *testing.T) {
 	}
 }
 
+// RFC GA: a declared principal limited to agents may be granted surfaces;
+// surfaces without agents fail the load.
+func TestResolvePrincipals_SurfacesNeedAgents(t *testing.T) {
+	list := func(names ...string) *[]string { return &names }
+	t.Setenv("LOOMCYCLE_TOKEN_SURFACES_OK", "lct_surfaces_ok_secret")
+	c := &Config{Principals: map[string]PrincipalDef{
+		"kiosk": {Tenant: "acme", Subject: "kiosk", Scopes: []string{auth.ScopeRunsCreate}, TokenEnv: "LOOMCYCLE_TOKEN_SURFACES_OK",
+			Agents: list("chat"), Surfaces: []string{"speech"}},
+	}}
+	if err := resolvePrincipals(c); err != nil {
+		t.Fatalf("resolvePrincipals: %v", err)
+	}
+	if r := c.ResolvedPrincipals[0].Principal.Restrictions; !r.SurfaceAllowed(auth.SurfaceSpeech) || r.SurfaceAllowed(auth.SurfaceTranscription) {
+		t.Errorf("restrictions = %+v, want speech only", r)
+	}
+	t.Setenv("LOOMCYCLE_TOKEN_SURFACES_BAD", "lct_surfaces_bad_secret")
+	bad := PrincipalDef{Tenant: "acme", Subject: "s", Scopes: []string{auth.ScopeRunsCreate}, TokenEnv: "LOOMCYCLE_TOKEN_SURFACES_BAD", Surfaces: []string{"speech"}}
+	if err := resolvePrincipals(&Config{Principals: map[string]PrincipalDef{"p": bad}}); err == nil || !strings.Contains(err.Error(), "surfaces") {
+		t.Errorf("surfaces without agents: err = %v, want a refusal naming surfaces", err)
+	}
+}
+
 // `overrides:` on a declared principal reads as `none`, a comma-separated
 // scalar or a list, and anything else fails the load.
 func TestPrincipalDef_OverridesYAML(t *testing.T) {

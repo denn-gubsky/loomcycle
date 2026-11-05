@@ -883,3 +883,38 @@ func TestHandleMintUserToken_InheritsTheMintersRestrictions(t *testing.T) {
 		}
 	}
 }
+
+// RFC GA: a bridge mints its users a token limited to its agent and granted
+// the speech surfaces. The grant is stored and resolved; it needs agents; it
+// names known surfaces only; and a confined minter passes on only what it
+// holds itself.
+func TestHandleMintUserToken_SurfacesGrantedBesideAgents(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	ctx := context.Background()
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+
+	resp := mintFor(t, s, acme, "alice", `{"agents":["chat"],"surfaces":["speech","transcription"]}`)
+	if resp.Restrictions == nil || len(resp.Restrictions.Surfaces) != 2 {
+		t.Fatalf("mint answer restrictions = %+v, want both surfaces", resp.Restrictions)
+	}
+	p, ok := s.resolvePrincipal(ctx, resp.Token)
+	if !ok || !p.Restrictions.SurfaceAllowed(auth.SurfaceSpeech) || !p.Restrictions.SurfaceAllowed(auth.SurfaceTranscription) {
+		t.Errorf("resolved principal restrictions = %+v (ok=%v), want both surfaces", p.Restrictions, ok)
+	}
+
+	for _, body := range []string{`{"surfaces":["speech"]}`, `{"agents":["chat"],"surfaces":["chat"]}`, `{"agents":["chat"],"surfaces":"speech"}`} {
+		rec := httptest.NewRecorder()
+		s.handleMintUserToken(rec, bodyReq("POST", "/v1/_users/alice/tokens", body, acme, "subject", "alice"))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status %d, want 400: %s", body, rec.Code, rec.Body.String())
+		}
+	}
+
+	hearing := auth.Principal{TenantID: "acme", Subject: "bridge", Scopes: []string{auth.ScopeTenant},
+		Restrictions: auth.Restrictions{Agents: []string{"chat"}, Surfaces: []string{auth.SurfaceTranscription}}}
+	held := mintFor(t, s, hearing, "alice", `{"agents":["chat"],"surfaces":["speech","transcription"]}`)
+	if p, _ := s.resolvePrincipal(ctx, held.Token); p.Restrictions.SurfaceAllowed(auth.SurfaceSpeech) || !p.Restrictions.SurfaceAllowed(auth.SurfaceTranscription) {
+		t.Errorf("minted by a transcription-only token: %+v, want transcription only", p.Restrictions)
+	}
+}

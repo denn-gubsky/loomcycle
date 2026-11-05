@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
@@ -92,7 +93,7 @@ func (s *Server) handleAudioTranscriptions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	ctx, release, err := s.admitOffRunCall(r.Context(), "a transcription")
+	ctx, release, err := s.admitOffRunCall(r.Context(), "a transcription", auth.SurfaceTranscription)
 	if err != nil {
 		writeOffRunAdmissionError(w, err)
 		return
