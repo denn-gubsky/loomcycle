@@ -99,7 +99,20 @@ On sqlite it also reads every `'string'`, since sqlite accepts
 The check also reserves:
 - Document's indexes, since dropping one would let duplicates in;
 - the statistics catalogs (`pg_stats` and kin, `sqlite_stat1` …), which hold
-  sampled values of the document tables' columns.
+  sampled values of the document tables' columns;
+- the names that reach the database file beneath its tables: `sqlite_dbpage`
+  (raw pages, Document's included), `dbstat` / `sqlite_dbstat`, the schema
+  catalogs `sqlite_schema` / `sqlite_master` / `sqlite_temp_schema` /
+  `sqlite_temp_master`, and every `pragma_*` table-valued function. None of
+  them names a document table, so without this a read of `sqlite_dbpage`
+  returned every chunk's text. They are refused on both tiers; none exists on
+  PostgreSQL. An agent that needs to know its own tables keeps track of what it
+  creates.
+
+On sqlite every scope connection is also opened in SQLite's defensive mode
+(`SQLITE_DBCONFIG_DEFENSIVE`), so the engine itself refuses writes to
+`sqlite_dbpage` and ignores `PRAGMA writable_schema`, whatever the statement
+looks like. Defensive mode does not stop reads; the name check above does.
 
 On PostgreSQL the guard also refuses statements that could build a table name
 out of strings:
