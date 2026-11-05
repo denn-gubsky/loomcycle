@@ -121,7 +121,7 @@ func RunMemoryEvalJudge(args []string, stdout, stderr io.Writer) int {
 
 	if *output != "" {
 		b, _ := json.MarshalIndent(rep, "", "  ")
-		if werr := os.WriteFile(*output, append(b, '\n'), 0o644); werr != nil {
+		if werr := os.WriteFile(*output, append(b, '\n'), 0o600); werr != nil {
 			return failOp(stderr, "memory-eval-judge: write report: %v", werr)
 		}
 		fmt.Fprintf(stdout, "wrote report to %s\n", *output)

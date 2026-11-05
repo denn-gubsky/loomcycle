@@ -295,7 +295,7 @@ func (l *Library) AddOverlay(name string, jsonBody []byte, force bool) (*Recipe,
 			return nil, fmt.Errorf("stat %s: %w", dst, err)
 		}
 	}
-	if err := os.WriteFile(dst, jsonBody, 0o644); err != nil {
+	if err := os.WriteFile(dst, jsonBody, 0o600); err != nil {
 		return nil, fmt.Errorf("write %s: %w", dst, err)
 	}
 	rec.Source = "overlay"

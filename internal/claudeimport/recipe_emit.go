@@ -34,7 +34,7 @@ func WriteEmittedRecipes(report *ImportReport, force bool) ([]string, error) {
 		} else if err != nil && !os.IsNotExist(err) {
 			return written, fmt.Errorf("emit-recipes: stat %s: %w", m.EmitRecipePath, err)
 		}
-		if err := os.WriteFile(m.EmitRecipePath, []byte(m.EmitRecipeJSON), 0o644); err != nil {
+		if err := os.WriteFile(m.EmitRecipePath, []byte(m.EmitRecipeJSON), 0o600); err != nil {
 			return written, fmt.Errorf("emit-recipes: write %s: %w", m.EmitRecipePath, err)
 		}
 		written = append(written, fmt.Sprintf("wrote %s", m.EmitRecipePath))
@@ -106,7 +106,7 @@ func WriteMCPToConfig(report *ImportReport, target string, force bool) ([]string
 		if err != nil {
 			return written, fmt.Errorf("AppendToConfig %s: %w", m.Name, err)
 		}
-		if err := os.WriteFile(target, newContents, 0o644); err != nil {
+		if err := os.WriteFile(target, newContents, 0o600); err != nil {
 			return written, fmt.Errorf("write %s: %w", target, err)
 		}
 		written = append(written, fmt.Sprintf("wrote mcp_servers.%s into %s", m.Name, target))
@@ -216,7 +216,7 @@ func WriteAgentsToConfig(report *ImportReport, target string, force bool) ([]str
 	if err := enc.Close(); err != nil {
 		return written, fmt.Errorf("close marshal %s: %w", target, err)
 	}
-	if err := os.WriteFile(target, buf.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(target, buf.Bytes(), 0o600); err != nil {
 		return written, fmt.Errorf("write %s: %w", target, err)
 	}
 	return written, nil

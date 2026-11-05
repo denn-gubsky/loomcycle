@@ -178,7 +178,7 @@ func openCache(dataDir string) (*os.Root, error) {
 	if dataDir == "" {
 		return nil, refuse(ReasonCacheUnusable, "no data directory is configured")
 	}
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, refuse(ReasonCacheUnusable, "create the data directory: %v", err)
 	}
 	data, err := os.OpenRoot(dataDir)

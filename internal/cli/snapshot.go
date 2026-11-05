@@ -197,7 +197,7 @@ func RunSnapshotsExport(args []string, stdout, stderr io.Writer) int {
 		return failPrintingBody(stderr, url, resp, rc)
 	}
 	if *out != "" {
-		if err := os.WriteFile(*out, resp, 0o644); err != nil {
+		if err := os.WriteFile(*out, resp, 0o600); err != nil {
 			return failOp(stderr, "write %s: %v", *out, err)
 		}
 		fmt.Fprintf(stderr, "wrote %d bytes to %s\n", len(resp), *out)

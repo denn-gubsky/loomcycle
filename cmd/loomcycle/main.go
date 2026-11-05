@@ -559,7 +559,7 @@ func openStore(cfg *config.Config, server bool) (store.Store, func(), error) {
 					"shared replicas heartbeat table). Set storage.backend: postgres " +
 					"+ storage.pg_dsn, or unset LOOMCYCLE_REPLICA_ID for single-replica mode")
 		}
-		if err := os.MkdirAll(cfg.Env.DataDir, 0o755); err != nil {
+		if err := os.MkdirAll(cfg.Env.DataDir, 0o700); err != nil {
 			return nil, nil, fmt.Errorf("data dir: %w", err)
 		}
 		dbPath := filepath.Join(cfg.Env.DataDir, "loomcycle.db")

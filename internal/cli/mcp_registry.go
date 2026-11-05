@@ -242,7 +242,7 @@ func runMCPRegistryAppend(args []string, stdout, stderr io.Writer) int {
 		}
 		return failOp(stderr, "%v", err)
 	}
-	if err := os.WriteFile(*target, out, 0o644); err != nil {
+	if err := os.WriteFile(*target, out, 0o600); err != nil {
 		return failOp(stderr, "write %s: %v", *target, err)
 	}
 	fmt.Fprintf(stdout, "✓ wrote mcp_servers.%s to %s\n", name, *target)
