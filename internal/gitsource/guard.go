@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync/atomic"
 
 	"github.com/go-git/go-git/v5/storage/filesystem"
@@ -91,6 +92,21 @@ func ValidateURL(raw string) (host string, err error) {
 	}
 	if u.RawQuery != "" || u.Fragment != "" {
 		return bad("the repository URL must not carry a query or a fragment")
+	}
+	// One spelling per repository: a `.`, `..` or empty path segment names
+	// the same repository another way, so a rule on its canonical path could
+	// be stepped around (RFC FY Part E). Percent-encoding is refused above.
+	// One trailing slash is the same repository and is let through (the
+	// Git tool's resource strips it too); any other empty segment is not.
+	if p := strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), "/"); p != "" {
+		for _, seg := range strings.Split(p, "/") {
+			// A bare `.git` segment (`org/repo/.git`) is the same repository
+			// as `org/repo` spelled another way; a `.git` suffix on a name
+			// is the usual spelling and stays.
+			if seg == "" || seg == "." || seg == ".." || strings.EqualFold(seg, ".git") {
+				return bad("the repository URL's path must not have an empty, \".\", \"..\" or \".git\" segment")
+			}
+		}
 	}
 	return hostKey(u), nil
 }

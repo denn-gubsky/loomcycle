@@ -1030,7 +1030,7 @@ func (i *Identity) explain(ctx context.Context, c identityCaller, in identityInp
 	}
 	res.TenantID = eff.Subject.TenantID
 	ex := eff.Explain(authz.Request{Subject: eff.Subject, Action: q.Action, Resource: res,
-		Context: authz.Context{Transport: authz.TransportFrom(ctx), Now: time.Now()}})
+		Context: authz.ContextFrom(ctx)})
 	// A list's rules are shown to a caller who may read the list; to anyone
 	// else a trace names the list, the rule's index and its effect only.
 	readable := map[string]bool{}

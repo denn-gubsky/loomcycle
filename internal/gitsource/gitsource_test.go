@@ -1109,3 +1109,29 @@ func TestWriteTree_SubmoduleDirectoriesCountTowardTheFileLimit(t *testing.T) {
 		t.Errorf("at exactly the limit: %v", err)
 	}
 }
+
+// A repository URL has one spelling: a `.`, `..` or empty path segment names
+// the same repository another way and is refused, so a rule on the canonical
+// path cannot be stepped around (RFC FY Part E).
+func TestValidateURL_RefusesNonCanonicalPathSegments(t *testing.T) {
+	for _, raw := range []string{
+		"https://github.com/other/../org/repo.git",
+		"https://github.com/./org/repo.git",
+		"https://github.com//org/repo.git",
+		"https://github.com/org//repo.git",
+		"https://github.com/org/repo//",
+		"https://github.com/org/repo/.git",
+		"https://github.com/org/.GIT/repo",
+	} {
+		if _, err := ValidateURL(raw); !errors.Is(err, ErrInvalidRequest) {
+			t.Errorf("%s: %v, want ErrInvalidRequest", raw, err)
+		}
+	}
+	if host, err := ValidateURL("https://GitHub.com/org/repo.git"); err != nil || host != "github.com" {
+		t.Errorf("canonical URL: %q %v", host, err)
+	}
+	// One trailing slash names the same repository and is let through.
+	if _, err := ValidateURL("https://github.com/org/repo/"); err != nil {
+		t.Errorf("a trailing slash was refused: %v", err)
+	}
+}

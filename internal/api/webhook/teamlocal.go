@@ -43,7 +43,7 @@ func teamWebhookKey(tenant, team, name string) string {
 
 // handleTeam receives one delivery to a team's own webhook.
 func (rec *Receiver) handleTeam(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := rec.withClient(r)
 	tenant, team, name := r.PathValue("tenant"), r.PathValue("team"), r.PathValue("name")
 	display := team + "/" + name
 

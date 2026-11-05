@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -93,7 +94,10 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		// gate admitted the request. The mode and transport ride the ctx so
 		// the instance checks downstream (the run intakes, the MCP per-tool
 		// gate behind /v1/_mcp) evaluate under the same rules.
-		ctx := authz.WithTransport(authz.WithMode(r.Context(), s.aclMode()), "http")
+		ctx := authz.WithTransport(authz.WithMode(r.Context(), s.aclMode()), requestTransport(r, ui != nil))
+		// The client address a source_cidr condition reads (RFC FY Part E):
+		// the peer, or the client a trusted proxy names for it.
+		ctx = authz.WithSourceIP(ctx, net.ParseIP(s.clientSource(r)))
 		r = r.WithContext(ctx)
 		ctx, ok = s.aclGateHTTP(w, r, p)
 		if !ok {
@@ -101,6 +105,19 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(ctx, p)))
 	})
+}
+
+// requestTransport is the transport a `transport` condition reads for an HTTP
+// request: `mcp` for the loomcycle-as-MCP-server endpoint, `webui` for a
+// request a Web UI session cookie authenticated, else `http`.
+func requestTransport(r *http.Request, cookie bool) string {
+	switch {
+	case r.URL.Path == "/v1/_mcp":
+		return "mcp"
+	case cookie:
+		return "webui"
+	}
+	return "http"
 }
 
 // scopeGate is the route's scope gate for an authenticated principal p: the

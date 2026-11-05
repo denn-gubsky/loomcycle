@@ -105,6 +105,9 @@ type channelDef struct {
 // tool uses), so deferred-publish scheduling + Bus.Notify wake-up of
 // long-poll subscribers are identical to the agent path.
 func (s *Server) PublishChannel(ctx context.Context, req connector.ChannelPublishRequest) (connector.ChannelPublishResult, error) {
+	if err := s.connectorAsk(ctx, *channelQuestion("publish", req.Channel)); err != nil {
+		return connector.ChannelPublishResult{}, err
+	}
 	if s.systemPublisher == nil {
 		return connector.ChannelPublishResult{}, connector.ErrSystemPublisherUnwired
 	}
@@ -296,6 +299,9 @@ func (s *Server) ReleaseChannel(ctx context.Context, req connector.ChannelReleas
 // at-least-once semantics, callers PeekChannel + AckChannel explicitly
 // once processing is durable.
 func (s *Server) SubscribeChannel(ctx context.Context, req connector.ChannelSubscribeRequest) (connector.ChannelSubscribeResult, error) {
+	if err := s.connectorAsk(ctx, *channelQuestion("subscribe", req.Channel)); err != nil {
+		return connector.ChannelSubscribeResult{}, err
+	}
 	if req.Channel == "" {
 		return connector.ChannelSubscribeResult{}, fmt.Errorf("subscribe: missing required field: channel")
 	}
@@ -388,6 +394,9 @@ func (s *Server) SubscribeChannel(ctx context.Context, req connector.ChannelSubs
 // so a fresh-bearer caller can replay a channel's full history without
 // disturbing any subscriber's progress.
 func (s *Server) PeekChannel(ctx context.Context, req connector.ChannelPeekRequest) (connector.ChannelPeekResult, error) {
+	if err := s.connectorAsk(ctx, *channelQuestion("peek", req.Channel)); err != nil {
+		return connector.ChannelPeekResult{}, err
+	}
 	if req.Channel == "" {
 		return connector.ChannelPeekResult{}, fmt.Errorf("peek: missing required field: channel")
 	}
@@ -433,6 +442,9 @@ func (s *Server) PeekChannel(ctx context.Context, req connector.ChannelPeekReque
 // Cursor is older than the committed value — the monotonic-cursor
 // invariant is the same on the wire as in the tool.
 func (s *Server) AckChannel(ctx context.Context, req connector.ChannelAckRequest) (connector.ChannelAckResult, error) {
+	if err := s.connectorAsk(ctx, *channelQuestion("ack", req.Channel)); err != nil {
+		return connector.ChannelAckResult{}, err
+	}
 	if req.Channel == "" {
 		return connector.ChannelAckResult{}, fmt.Errorf("ack: missing required field: channel")
 	}
@@ -465,6 +477,9 @@ func (s *Server) AckChannel(ctx context.Context, req connector.ChannelAckRequest
 // SAME systemPublisher as PublishChannel, so deferred-publish scheduling +
 // Bus wake-up of waiting subscribers (or awaiters) are identical.
 func (s *Server) BroadcastChannels(ctx context.Context, req connector.ChannelBroadcastRequest) (connector.ChannelBroadcastResult, error) {
+	if err := s.askChannels(ctx, "broadcast", req.Channels); err != nil {
+		return connector.ChannelBroadcastResult{}, err
+	}
 	if s.systemPublisher == nil {
 		return connector.ChannelBroadcastResult{}, connector.ErrSystemPublisherUnwired
 	}
@@ -559,6 +574,9 @@ func (s *Server) BroadcastChannels(ctx context.Context, req connector.ChannelBro
 // timeout is NOT an error — returns TimedOut:true with whatever partials
 // accumulated.
 func (s *Server) AwaitChannels(ctx context.Context, req connector.ChannelAwaitRequest) (connector.ChannelAwaitResult, error) {
+	if err := s.askChannels(ctx, "await", req.Channels); err != nil {
+		return connector.ChannelAwaitResult{}, err
+	}
 	if len(req.Channels) == 0 {
 		return connector.ChannelAwaitResult{}, fmt.Errorf("await: missing required field: channels")
 	}

@@ -120,3 +120,29 @@ func TestNewService_RefusesAnInconsistentList(t *testing.T) {
 		}
 	}
 }
+
+// TestService_ModelGateRefusesBeforeTheCall — the server's check of the
+// caller's rules on the model is made before the provider is called, with the
+// model the name resolved to, and its refusal is the call's.
+func TestService_ModelGateRefusesBeforeTheCall(t *testing.T) {
+	st, url := serve(t, replyJSON(http.StatusOK, `{"answers":{"q00":{"type":"noul","noul":0.5}}}`))
+	s := newService(t, url)
+	refusal := errors.New("acl_denied: use model:clef")
+	var asked []string
+	s.SetModelGate(func(_ context.Context, model string) error {
+		asked = append(asked, model)
+		if model == "clef" {
+			return refusal
+		}
+		return nil
+	})
+	if _, err := s.Decide(context.Background(), "decide-deep", nil, questionsOf(1)); !errors.Is(err, refusal) || st.calls() != 0 {
+		t.Errorf("err = %v after %d calls, want the gate's refusal and no call", err, st.calls())
+	}
+	if _, err := s.Decide(context.Background(), "decide", nil, questionsOf(1)); err != nil {
+		t.Errorf("an allowed model: %v", err)
+	}
+	if len(asked) != 2 || asked[0] != "clef" || asked[1] != "nimble" {
+		t.Errorf("gate asked %v, want [clef nimble]", asked)
+	}
+}

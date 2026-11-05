@@ -27,7 +27,7 @@ var canDriftQuestions = []struct{ action, typ, id string }{
 	{"mint", "principal", "user:bob"},
 	{"read", "memory", "tenant"},
 	{"read", "document", "tenant:/kb/x"},
-	{"use", "model", "claude-sonnet"},
+	{"use", "gateway", "chat"},
 }
 
 // seedCanDrift gives alice (a member of acme) a group-bound list with an
@@ -158,5 +158,29 @@ func TestContextCan_AgreesWithAuthzEvaluationForTheSameSubject(t *testing.T) {
 				t.Errorf("the transport-conditional question = %s, want allow", httpAnswers[3])
 			}
 		})
+	}
+}
+
+// A question no surface asks is refused by both twins, never answered by one
+// and refused by the other (RFC FY Part E).
+func TestContextCan_RefusesWhatTheEvaluationRouteRefuses(t *testing.T) {
+	srv, ts, st := aclMgmtServer(t, authz.ModeCompat)
+	p, err := srv.aclResolver.Resolve(context.Background(), auth.Principal{TenantID: "acme", Subject: "alice", TokenDefID: "def_alice",
+		Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := authz.WithTransport(authz.WithMode(context.Background(), authz.ModeCompat), "http")
+	run = auth.WithPrincipal(run, p)
+	run = tools.WithRunIdentity(run, tools.RunIdentityValue{TenantID: "acme", UserID: "alice"})
+	run = tools.WithRunID(run, "r_refuse")
+	run = tools.WithRunPolicy(run, tools.RunPolicy{ACL: p.Effective})
+	code, body := bearerCall(t, ts, aliceBearer, "POST", "/v1/_authz/evaluation", `{"action":{"name":"browse"},"resource":{"type":"document","id":"user"}}`)
+	if code != 400 || jsonField(t, body, "code") != "rule_not_enforceable" {
+		t.Errorf("HTTP: %d %s, want rule_not_enforceable", code, body)
+	}
+	out, err := (&builtin.Context{Store: st}).Execute(run, json.RawMessage(`{"op":"can","action":"browse","resource":{"type":"document","id":"user"}}`))
+	if err != nil || !out.IsError || !strings.Contains(out.Text, "browse document is not evaluated by any surface") {
+		t.Errorf("Context op=can: %v %s, want the refusal", err, out.Text)
 	}
 }

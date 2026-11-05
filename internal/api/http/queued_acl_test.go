@@ -100,7 +100,9 @@ func TestQueuedRun_RecordsItsCallersACLOrigin(t *testing.T) {
 	if err := json.Unmarshal(queuedRowInput(t, e.srv, run.ID), &rec); err != nil {
 		t.Fatal(err)
 	}
-	want := aclOriginRecord{TenantID: "acme", Subject: "dev", TokenDefID: "def_worker", Class: "member", Transport: "http"}
+	// SourceIP: the starting request's client, re-stamped on a resume or a
+	// restart (RFC FY Part E); the test server's client is loopback.
+	want := aclOriginRecord{TenantID: "acme", Subject: "dev", TokenDefID: "def_worker", Class: "member", Transport: "http", SourceIP: "127.0.0.1"}
 	if rec.ACLOrigin == nil || *rec.ACLOrigin != want {
 		t.Errorf("queued record acl_origin = %+v, want %+v", rec.ACLOrigin, want)
 	}

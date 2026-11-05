@@ -357,7 +357,7 @@ func (s *Server) effectiveCtxFor(ctx context.Context, run store.Run, eff config.
 		retryAttempts:      s.retryAttemptsForAgent(eff, run.UserTier),
 		startedInteractive: run.Interactive,
 	}
-	providerID, model, _, err := s.resolveAgentDef(ctx, eff, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
+	providerID, model, _, err := s.resolveAgentDef(withReportOnlyResolution(ctx), eff, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
 	if err == nil {
 		out.resolvedProvider, out.resolvedModel = providerID, model
 	}

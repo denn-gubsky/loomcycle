@@ -82,6 +82,15 @@ type AuthConfig struct {
 	// in (Cloudflare: CF-Connecting-IP). Empty: the right-most
 	// X-Forwarded-For entry that is not a trusted proxy.
 	ClientIPHeader string `yaml:"client_ip_header,omitempty"`
+	// GRPCTrustedProxies are the CIDRs of the L7 gRPC proxies in front of the
+	// gRPC listener. Only a call from one of them may name its client, in the
+	// x-forwarded-for metadata; any other peer is the client itself. Kept
+	// apart from TrustedProxies on purpose: an HTTP proxy that overwrites
+	// X-Forwarded-For passes gRPC metadata through untouched, so a client
+	// behind it could name any address. List a proxy here only if it
+	// overwrites x-forwarded-for on every gRPC call. Empty (the default): the
+	// peer is always the client.
+	GRPCTrustedProxies []string `yaml:"grpc_trusted_proxies,omitempty"`
 	// TenantPolicies: tenant → the gates its people must come through
 	// (auth_tenant_policy.go).
 	TenantPolicies map[string]AuthTenantPolicyConfig `yaml:"tenant_policies,omitempty"`
@@ -255,6 +264,8 @@ type AuthPolicy struct {
 	// and auth.client_ip_header (canonical form).
 	TrustedProxies []netip.Prefix
 	ClientIPHeader string
+	// GRPCTrustedProxies is the validated auth.grpc_trusted_proxies.
+	GRPCTrustedProxies []netip.Prefix
 	// Lifecycle is the validated auth.lifecycle.new_user (zero: the
 	// defaults; read it through NewUserFloor).
 	Lifecycle AuthNewUser
@@ -434,16 +445,11 @@ func resolveAuth(c *Config) error {
 	if p.Idle > p.Absolute {
 		return fmt.Errorf("auth.session: idle (%s) is longer than absolute (%s)", p.Idle, p.Absolute)
 	}
-	for _, cidr := range c.Auth.TrustedProxies {
-		pfx, err := netip.ParsePrefix(strings.TrimSpace(cidr))
-		if err != nil {
-			addr, aerr := netip.ParseAddr(strings.TrimSpace(cidr))
-			if aerr != nil {
-				return fmt.Errorf("auth.trusted_proxies: %q is not a CIDR or an address", cidr)
-			}
-			pfx = netip.PrefixFrom(addr, addr.BitLen())
-		}
-		p.TrustedProxies = append(p.TrustedProxies, pfx.Masked())
+	if p.TrustedProxies, err = proxyPrefixes("auth.trusted_proxies", c.Auth.TrustedProxies); err != nil {
+		return err
+	}
+	if p.GRPCTrustedProxies, err = proxyPrefixes("auth.grpc_trusted_proxies", c.Auth.GRPCTrustedProxies); err != nil {
+		return err
 	}
 	if h := strings.TrimSpace(c.Auth.ClientIPHeader); h != "" {
 		if len(p.TrustedProxies) == 0 {
@@ -785,4 +791,21 @@ func resolvePasswordGate(c *Config, name string, g AuthGateConfig, strict bool) 
 		}
 	}
 	return pw, nil
+}
+
+// proxyPrefixes validates a list of proxy CIDRs or bare addresses.
+func proxyPrefixes(key string, list []string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, cidr := range list {
+		pfx, err := netip.ParsePrefix(strings.TrimSpace(cidr))
+		if err != nil {
+			addr, aerr := netip.ParseAddr(strings.TrimSpace(cidr))
+			if aerr != nil {
+				return nil, fmt.Errorf("%s: %q is not a CIDR or an address", key, cidr)
+			}
+			pfx = netip.PrefixFrom(addr, addr.BitLen())
+		}
+		out = append(out, pfx.Masked())
+	}
+	return out, nil
 }

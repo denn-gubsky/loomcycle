@@ -27,14 +27,22 @@ func sourceIP(policy config.AuthPolicy, r *http.Request) string {
 		}
 		return host
 	}
-	trusted := func(a netip.Addr) bool { return authgate.InPrefixes(a, policy.TrustedProxies) }
+	return clientIP(policy.TrustedProxies, policy.ClientIPHeader, peer, r.Header.Values)
+}
+
+// clientIP is sourceIP's rule over any transport: the peer, unless it is in
+// proxies, in which case the client it names in header (one bare address in
+// clientHeader when set, else the right-most X-Forwarded-For hop that is not
+// itself in proxies).
+func clientIP(proxies []netip.Prefix, clientHeader string, peer netip.Addr, header func(name string) []string) string {
+	trusted := func(a netip.Addr) bool { return authgate.InPrefixes(a, proxies) }
 	if !trusted(peer) {
 		return peer.String()
 	}
-	if h := policy.ClientIPHeader; h != "" {
+	if h := clientHeader; h != "" {
 		// One value, a bare address. Anything else (two copies of the
 		// header, a list) is not what the proxy sends, so the peer stands.
-		vals := r.Header.Values(h)
+		vals := header(h)
 		if len(vals) == 1 {
 			if a, err := netip.ParseAddr(strings.TrimSpace(vals[0])); err == nil {
 				return a.Unmap().String()
@@ -42,7 +50,7 @@ func sourceIP(policy config.AuthPolicy, r *http.Request) string {
 		}
 		return peer.String()
 	}
-	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	hops := strings.Split(strings.Join(header("X-Forwarded-For"), ","), ",")
 	for i := len(hops) - 1; i >= 0; i-- {
 		a, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
 		if err != nil {
@@ -54,6 +62,15 @@ func sourceIP(policy config.AuthPolicy, r *http.Request) string {
 		}
 	}
 	return peer.String()
+}
+
+// GRPCClientIP is the client address of a gRPC call: its peer, unless the
+// peer is in auth.grpc_trusted_proxies, in which case the right-most
+// x-forwarded-for hop that is not itself such a proxy. The HTTP list is not
+// consulted: an HTTP proxy that overwrites X-Forwarded-For passes gRPC
+// metadata through, so a client behind it could name any address.
+func (s *Server) GRPCClientIP(peer netip.Addr, header func(name string) []string) net.IP {
+	return net.ParseIP(clientIP(s.cfg().ResolvedAuth.GRPCTrustedProxies, "", peer.Unmap(), header))
 }
 
 // throttleSourceKey is the bucket a client address is throttled in: an IPv4
@@ -98,6 +115,13 @@ func ProxyThrottleWarning(cfg *config.Config) string {
 		"behind a TLS-terminating proxy, but auth.trusted_proxies is not set: sign-in throttling then sees every " +
 		"client as the proxy's address. Set auth.trusted_proxies (and auth.client_ip_header, e.g. CF-Connecting-IP " +
 		"behind a Cloudflare tunnel)"
+}
+
+// RequestClientIP is the client address of an HTTP request served outside
+// authMiddleware (an inbound webhook delivery, an A2A call), under the same
+// auth.trusted_proxies rule, for a source_cidr condition (RFC FY Part E).
+func (s *Server) RequestClientIP(r *http.Request) net.IP {
+	return net.ParseIP(s.clientSource(r))
 }
 
 // clientSource is sourceIP under the live config.

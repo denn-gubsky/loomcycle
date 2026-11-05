@@ -75,6 +75,13 @@ var (
 	// so the wire layer maps it to 403; distinct so the client can render a
 	// "bring your own key" message rather than "upgrade your tier".
 	ErrOperatorKeyRestricted = errors.New("run restricted: no provider the tenant can key")
+
+	// ErrModelNotPermitted is returned by Resolve when the request's
+	// Permitted filter refuses every tier candidate: the caller's
+	// access-control rules allow none of the tier's models. A policy refusal,
+	// like ErrOperatorKeyRestricted; the server reports it as the caller's
+	// access-control refusal.
+	ErrModelNotPermitted = errors.New("no model of the tier is permitted to the caller")
 )
 
 // Decision is the resolver's output: which (provider, model) the loop
@@ -155,6 +162,14 @@ type AgentRequest struct {
 	// bypasses candidate selection, so its restricted-run guarantee lives in the
 	// driver backstop (providers.ErrOperatorKeyForbidden), not here.
 	KeyableProviders map[string]bool
+
+	// Permitted, when set, says whether the caller may use a concrete
+	// (provider, model): a candidate it refuses is passed over as if it were
+	// not configured, and when it refuses every candidate Resolve returns
+	// ErrModelNotPermitted. The server builds it from the caller's
+	// access-control rules (`use model:<model>`). nil = every model. Called
+	// with the resolver's read lock held: it must not call back into it.
+	Permitted func(provider, model string) bool
 
 	// QueueWait, when set, estimates how long the run's first call on a
 	// (provider, model) would wait for its provider (RFC EI P4 queue-aware
@@ -498,6 +513,10 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 	// tenant-keyable provider" (a policy refusal) from a plain availability
 	// outage below.
 	sawKeyable := false
+	// sawPermitted / sawRefused: whether any candidate passed, or failed, the
+	// Permitted filter — to tell the caller's rules refusing every model
+	// from an outage.
+	sawPermitted, sawRefused := false, false
 	// Queue-aware routing: the best candidate passed over so far, kept in case
 	// every available one is over SwitchAfter.
 	var (
@@ -537,6 +556,11 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 				}
 				model = m
 			}
+			if req.Permitted != nil && !req.Permitted(cand.Provider, model) {
+				sawRefused = true
+				continue
+			}
+			sawPermitted = true
 			if r.isAvailableLocked(cand.Provider, model) {
 				dec := Decision{Provider: cand.Provider, Model: model, Effort: req.Effort}
 				if req.Eligible != nil && !req.Eligible(cand.Provider, model) {
@@ -584,6 +608,9 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 	}
 	// RFC AX: a non-nil filter that removed EVERY candidate is a policy refusal
 	// (the tenant can key none of the tier's providers), not a transient outage.
+	if sawRefused && !sawPermitted {
+		return Decision{}, fmt.Errorf("%w: agent %q tier %q", ErrModelNotPermitted, req.Name, req.Tier)
+	}
 	if req.KeyableProviders != nil && !sawKeyable {
 		return Decision{}, fmt.Errorf("%w: agent %q tier %q (none of the tier's providers are tenant-keyable)",
 			ErrOperatorKeyRestricted, req.Name, req.Tier)

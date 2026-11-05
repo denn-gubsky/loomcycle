@@ -178,7 +178,7 @@ func (s *Server) agentContextWindow(ctx context.Context, tenantID, name string) 
 	if !ok {
 		return 0
 	}
-	providerID, _, _, err := s.resolveAgentDef(ctx, def, tenantID, "", name, "", false)
+	providerID, _, _, err := s.resolveAgentDef(withReportOnlyResolution(ctx), def, tenantID, "", name, "", false)
 	if err != nil {
 		return 0
 	}

@@ -397,6 +397,9 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	// The surface a fire arrives on, for an access-control rule's `transport`
 	// condition, evaluated under the def owner's set (RFC EZ §1.5).
 	ctx = authz.WithTransport(ctx, "schedule")
+	// A fire has no client by nature: a source_cidr condition has no address
+	// to match, for a deny or an allow (RFC FY Part E).
+	ctx = authz.WithNoClient(ctx)
 	def, err := unmarshalDef(row.Definition)
 	if err != nil {
 		// No cron to compute the next slot from: park this one an hour out

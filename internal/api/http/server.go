@@ -25,6 +25,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/breakpoints"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
@@ -136,6 +137,9 @@ type Server struct {
 	// tokenAudit records delegated user-token mints and revocations
 	// (SetTokenAudit); nil = not recorded.
 	tokenAudit audit.Sink
+	// aclResolutionFailures counts the requests whose ACL set could not be
+	// read (enrichPrincipal), for loomcycle_acl_resolution_failures_total.
+	aclResolutionFailures atomic.Int64
 	// reviewAudit records bulk statement rulings and their reverts
 	// (SetStatementReviewAudit); nil = logged only.
 	reviewAudit audit.Sink
@@ -1837,7 +1841,7 @@ func (s *Server) resolveAgent(ctx context.Context, tenantID, userID, agentName, 
 func (s *Server) ResolveAgentProvider(ctx context.Context, tenantID, userID, agentName, userTier string) (string, error) {
 	// No run here — this asks where a run WOULD land, so there is no override
 	// to speak for. See the KNOWN GAP note above for the sibling shortcut.
-	providerID, _, _, err := s.resolveAgent(ctx, tenantID, userID, agentName, userTier, false, nil)
+	providerID, _, _, err := s.resolveAgent(withReportOnlyResolution(ctx), tenantID, userID, agentName, userTier, false, nil)
 	return providerID, err
 }
 
@@ -1942,7 +1946,8 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 				req.Eligible = s.acceptsImages
 			}
 		}
-		dec, rerr := s.resolver.Resolve(req)
+		// RFC FY Part E: the caller's rules on the tier and its models.
+		dec, rerr := s.resolveInference(ctx, req)
 		if rerr != nil {
 			return "", "", "", rerr
 		}
@@ -1975,7 +1980,7 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 			return "", "", "", fmt.Errorf("%w: agent %q pins model_pattern %q but resolver is not configured",
 				runner.ErrInvalidArgument, agentName, pattern)
 		}
-		dec, rerr := s.resolver.Resolve(resolve.AgentRequest{
+		dec, rerr := s.resolveInference(ctx, resolve.AgentRequest{
 			Name:            agentName,
 			PinProvider:     providerID,
 			PinModelPattern: pattern,
@@ -1986,10 +1991,92 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 		}
 		return dec.Provider, dec.Model, dec.Effort, nil
 	}
+	if err := s.askPinnedModelUse(ctx, model); err != nil {
+		return "", "", "", err
+	}
 	// Effort still flows through on the pin path — an explicit-pin
 	// agent can declare effort and the driver will translate it
 	// where supported. Empty when not declared.
 	return providerID, model, def.Effort, nil
+}
+
+// askPinnedModelUse asks `use model:<model>` of a pinned agent's model: a pin
+// has no other candidate to fall to, so a deny refuses the run.
+func (s *Server) askPinnedModelUse(ctx context.Context, model string) error {
+	if eff, ask := modelUseACL(ctx); ask {
+		return s.aclAdmitUse(ctx, eff, "model", model)
+	}
+	return nil
+}
+
+// modelUseACL is the set a resolution asks `use tier:` and `use model:` of
+// (RFC FY Part E), and whether to ask at all. Every resolution that leads to
+// a model call asks — a run's start, a sub-run's, a provider fallback's, a
+// resume, a compaction or recap, the gateway, OCR — judged by the caller's
+// set: the run policy's inside a run, else the principal's, else a recorded
+// caller's. A resolution that only reports (the library, a run's effective
+// configuration, a scheduler's placement probe) is marked report-only by its
+// caller and asks nothing; TestModelUse_EveryResolutionIsClassified holds
+// every caller to one of the two. No set (open mode, a background pass with no
+// caller): nothing to ask.
+func modelUseACL(ctx context.Context) (*authz.Effective, bool) {
+	if reportOnlyResolution(ctx) {
+		return nil, false
+	}
+	eff := tools.CallerACL(ctx)
+	if eff == nil {
+		if rc, ok := recordedCallerFrom(ctx); ok {
+			eff = rc.eff
+		}
+	}
+	return eff, eff != nil
+}
+
+type ctxKeyReportOnly struct{}
+
+// withReportOnlyResolution marks ctx for a resolution that only reports where
+// a run would land and starts no model call: it asks no use question.
+func withReportOnlyResolution(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyReportOnly{}, true)
+}
+
+func reportOnlyResolution(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyReportOnly{}).(bool)
+	return v
+}
+
+// resolveInference resolves req for a model call: it asks the caller's `use
+// tier:` of a tier request, passes over each model the caller may not use
+// (resolve.AgentRequest.Permitted), refuses when none is left, and asks `use
+// model:` of a pin's resolved model, which has no other candidate. Every
+// direct resolver call that leads to inference goes through it.
+func (s *Server) resolveInference(ctx context.Context, req resolve.AgentRequest) (resolve.Decision, error) {
+	eff, ask := modelUseACL(ctx)
+	if ask {
+		if req.Tier != "" && req.PinProvider == "" {
+			if err := s.aclAdmitUse(ctx, eff, "tier", req.Tier); err != nil {
+				return resolve.Decision{}, err
+			}
+		}
+		req.Permitted = func(_, model string) bool {
+			return tools.ACLFilterAllows(ctx, eff, "use", authz.Resource{Type: "model", Name: model})
+		}
+	}
+	dec, err := s.resolver.Resolve(req)
+	if errors.Is(err, resolve.ErrModelNotPermitted) {
+		// Asked of the tier's models one by one; the refusal names the
+		// question for the whole type, which is what was refused.
+		return resolve.Decision{}, s.aclAdmitUse(ctx, eff, "model", authz.AnyInstance)
+	}
+	if err != nil {
+		return resolve.Decision{}, err
+	}
+	if ask && req.PinProvider != "" {
+		if err := s.aclAdmitUse(ctx, eff, "model", dec.Model); err != nil {
+			return resolve.Decision{}, err
+		}
+	}
+	return dec, nil
 }
 
 // routesByTier reports whether def resolves through its tier's cascade. A
@@ -3244,6 +3331,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err != nil {
 		return err
 	}
+	// What a condition reads about this run (RFC FY Part E), for the intake
+	// question below and every question the run asks. Each is what the run
+	// is: the request picks interactive, but an interactive run is then what
+	// runs, so a rule on it describes the run truthfully. The tiers the
+	// request names are not stamped: they are the caller's own say
+	// (authz.RunFacts).
+	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: effectiveAgentName, Depth: builtin.AgentDepth(ctx), Interactive: in.Interactive})
 	if err := s.admitPrincipalAgent(ctx, effectiveAgentName); err != nil {
 		return err
 	}
@@ -7649,6 +7743,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	if err := s.aclAdmitSpawn(ctx, parentPolicy.ACL, name); err != nil {
 		return nil, err
 	}
+	// From here ctx prepares the child: a condition reads the child's agent,
+	// depth and interactivity (RFC FY Part E) — a resident child runs
+	// interactive, every other child does not.
+	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: name, Depth: builtin.AgentDepth(ctx), Interactive: interactive})
 	childOwn, _ := s.agentRunPolicy(ctx, def, name, runPolicySource{
 		Volumes:      s.volumePolicyForAgent(ctx, def),
 		Crypto:       cryptoPolicyForAgent(def),
@@ -9214,6 +9312,12 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 			summaryModel = *c.Model
 		}
 	}
+	// The compaction model is a model call of its own (RFC FY Part E).
+	if summaryModel != model {
+		if err := s.askPinnedModelUse(ctx, summaryModel); err != nil {
+			return connector.CompactResult{}, err
+		}
+	}
 	// CompactionSplit (shared with the loop) picks what to summarize vs keep.
 	firstIdx, cut, splitOK := loop.CompactionSplit(msgs, keepLastN, keepFirst)
 	if !splitOK {
@@ -9440,6 +9544,11 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 	if c := agentDef.Compaction; c != nil {
 		if c.Model != nil && *c.Model != "" {
 			summaryModel = *c.Model
+		}
+	}
+	if summaryModel != model {
+		if err := s.askPinnedModelUse(ctx, summaryModel); err != nil {
+			return "", err
 		}
 	}
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource/gitrepo"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -937,6 +938,12 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 	if !hostListed(hosts, host) {
 		return deny("host_not_allowed", "")
 	}
+	// The caller's access-control rules on the remote (RFC FY Part E):
+	// `fetch` or `push` of git:<host>/<path>, after the operator's host lists
+	// and the agent's own grant, which they narrow and never widen.
+	if res := gitACLResource(host, rawURL); !tools.ACLAllowsInstance(ctx, tools.CallerACL(ctx), need, res) {
+		return deny("acl_denied", fmt.Sprintf("the access-control rules of the user who started this run do not allow %s of %s", need, res.Name))
+	}
 
 	// The credential, resolved for this run and this URL only.
 	var username, token string
@@ -1127,6 +1134,27 @@ func (g *Git) record(ev audit.Event) {
 	if err := g.Audit.Record(ev); err != nil {
 		slog.Error("git: audit record failed", "err", err)
 	}
+}
+
+// gitACLResource is the git:<host>/<path> instance a network op asks about,
+// in one canonical spelling of the URL the op dials: the host as
+// gitsource.ValidateURL keys it (lowercase, port when not 443), the path
+// without its leading slash, one trailing slash or a trailing .git, all
+// lowercase. rawURL has passed ValidateURL, which refuses a percent-encoding
+// and a `.`, `..`, bare `.git` or other empty path segment, so no other spelling of the same repository reaches
+// here; a `git:` selector is lowercased when it is parsed, so the match is
+// case-insensitive both ways.
+func gitACLResource(host, rawURL string) authz.Resource {
+	name := strings.ToLower(host)
+	if u, err := url.Parse(rawURL); err == nil {
+		// Lowercase before the suffix is trimmed, so repo.GIT and repo.git
+		// name the same repository; ValidateURL refuses a bare `.git`
+		// segment, so the suffix is only ever a repository name's.
+		if p := strings.TrimSuffix(strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), "/")), ".git"); p != "" {
+			name += "/" + p
+		}
+	}
+	return authz.Resource{Type: "git", Name: name}
 }
 
 // redactURLPath is a URL as it may be logged: host and path, nothing else (a

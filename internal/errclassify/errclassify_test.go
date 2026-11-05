@@ -56,6 +56,7 @@ func TestCategoryOf_ClassifiesEveryKnownSentinel(t *testing.T) {
 		{"provider auth unavailable", providers.ErrAuthUnavailable, tools.CategoryBusiness, false, nil},
 
 		{"operator key restricted", resolve.ErrOperatorKeyRestricted, tools.CategoryPermission, false, nil},
+		{"model not permitted", resolve.ErrModelNotPermitted, tools.CategoryPermission, false, nil},
 		{"operator key forbidden", providers.ErrOperatorKeyForbidden, tools.CategoryPermission, false, nil},
 
 		{"unknown agent (runner)", runner.ErrUnknownAgent, tools.CategoryValidation, false, nil},
@@ -242,6 +243,7 @@ func TestCategoryOf_NoUnclassifiedSentinelDrift(t *testing.T) {
 			"ErrPinUnavailable":        resolve.ErrPinUnavailable,
 			"ErrTierAgentNotAvailable": resolve.ErrTierAgentNotAvailable,
 			"ErrOperatorKeyRestricted": resolve.ErrOperatorKeyRestricted,
+			"ErrModelNotPermitted":     resolve.ErrModelNotPermitted,
 		},
 	}
 

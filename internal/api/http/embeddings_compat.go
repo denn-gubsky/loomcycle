@@ -78,6 +78,16 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusForbidden, "operator_key_restricted", operatorKeyRestrictedMsg)
 		return
 	}
+	// The embedding model is a model call like any other (RFC FY Part E).
+	if err := s.askPinnedModelUse(r.Context(), s.embedder.Model()); err != nil {
+		var denied *errACLDenied
+		if errors.As(err, &denied) {
+			writeACLDenied(w, denied.surface, denied.decision)
+			return
+		}
+		writeJSONError(w, http.StatusForbidden, "acl_denied", err.Error())
+		return
+	}
 
 	// As the chat gateway: a caller at its hard token ceiling is refused here
 	// too. (An embedding call reports no token count, so it is not written to

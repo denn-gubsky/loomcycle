@@ -104,3 +104,16 @@ func TestParseSelector_LiteralIsDetected(t *testing.T) {
 		t.Errorf("scoped literal = %q", s.literal)
 	}
 }
+
+// A git selector is matched case-insensitively: the Git tool asks with the
+// remote lowercased, and a selector written in any case names the same
+// repositories (RFC FY Part E).
+func TestSelector_GitIsCaseInsensitive(t *testing.T) {
+	s, err := parseSelector("git:GitHub.com/Org/*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.matches(catalogByName["git"], "github.com/org/repo") {
+		t.Error("git:GitHub.com/Org/* does not match github.com/org/repo")
+	}
+}

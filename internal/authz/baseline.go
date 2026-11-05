@@ -32,7 +32,16 @@ func allowAll(types ...string) []Rule {
 	var rules []Rule
 	for _, t := range types {
 		spec := catalogByName[t]
-		rules = append(rules, Rule{Effect: Allow, Actions: append([]string(nil), spec.Verbs...), Resources: []string{t + ":*"}})
+		var verbs []string
+		for _, v := range spec.Verbs {
+			if !IsRetired(t, v) {
+				verbs = append(verbs, v)
+			}
+		}
+		if len(verbs) == 0 {
+			continue
+		}
+		rules = append(rules, Rule{Effect: Allow, Actions: verbs, Resources: []string{t + ":*"}})
 	}
 	return rules
 }
@@ -96,9 +105,9 @@ func Baselines() map[string]ACL {
 		BaselineAdmin: {Name: BaselineAdmin, Description: "substrate:admin — every verb on every type",
 			Rules: allowAll(everyType()...)},
 		BaselineTenantOperator: {Name: BaselineTenantOperator, Description: "substrate:tenant — every verb in its own tenant except the operator plane",
-			Rules: append(allowAll("agent", "volume", "tool", "skill", "mcp", "a2a", "client", "localapi", "search",
+			Rules: append(allowAll("agent", "volume", "tool", "skill", "mcp", "a2a", "client", "localapi",
 				"memory", "sqlmem", "document", "history", "channel", "team", "credential", "crypto", "model", "tier",
-				"gateway", "evaluation", "interruption", "run", "transport", "git"),
+				"gateway", "evaluation", "run", "transport", "git"),
 				Rule{Effect: Allow, Actions: []string{"invoke"}, Resources: mcpTools(tenantMCPTools...)},
 				// Every definition family; `manage` (the firing controls)
 				// on schedules only — the webhook test and delivery views
@@ -117,7 +126,7 @@ func Baselines() map[string]ACL {
 				{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:*", "mcp:*", "a2a:*", "client:*", "localapi:*"}},
 				{Effect: Allow, Actions: []string{"invoke"}, Resources: mcpTools(memberMCPTools...)},
 				{Effect: Allow, Actions: []string{"invoke", "read", "author"}, Resources: []string{"skill:*"}},
-				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"search:*", "model:*", "tier:*", "gateway:*", "transport:*"}},
+				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"model:*", "tier:*", "gateway:*", "transport:*"}},
 				{Effect: Allow, Actions: []string{"read", "write", "recall"}, Resources: []string{"memory:user", "memory:agent", "memory:tenant"}},
 				{Effect: Allow, Actions: []string{"browse"}, Resources: []string{"memory:user", "memory:agent"}, When: &Condition{OwnerIsSelf: &self}},
 				{Effect: Allow, Actions: []string{"read", "write"}, Resources: []string{"sqlmem:user", "sqlmem:agent", "sqlmem:tenant"}},
@@ -134,8 +143,7 @@ func Baselines() map[string]ACL {
 				{Effect: Allow, Actions: []string{"run", "read", "cancel", "author"}, Resources: []string{"team:*"}},
 				{Effect: Allow, Actions: []string{"use", "manage"}, Resources: []string{"credential:user:*", "credential:agent:*"}},
 				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"credential:tenant:*"}},
-				{Effect: Allow, Actions: []string{"submit", "read"}, Resources: []string{"evaluation:*"}},
-				{Effect: Allow, Actions: []string{"raise", "resolve"}, Resources: []string{"interruption:*"}},
+				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"evaluation:*"}},
 				// delete: a member token granted runs:delete deletes run trees;
 				// the scope stays the ceiling for one that was not.
 				{Effect: Allow, Actions: []string{"read", "steer", "cancel", "compact", "retune", "review", "delete"}, Resources: []string{"run:own", "run:tenant"}},
@@ -157,7 +165,7 @@ func Baselines() map[string]ACL {
 				// gateway: the decision call (runs:create) is an isolated
 				// user's; the raw model endpoints need llm:gateway granted by
 				// name, which the scope gate holds as the ceiling.
-				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"search:*", "model:*", "tier:*", "gateway:*"}},
+				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"model:*", "tier:*", "gateway:*"}},
 				// The loomcycle-as-MCP-server session an isolated user is let in
 				// for (RFC CN credential self-service), and the self-service
 				// tools its scope gate admits there (userSelfServiceTools in
@@ -180,7 +188,12 @@ func Baselines() map[string]ACL {
 				// keyspace. Writing one stays limited to its own.
 				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"credential:user:*"}},
 				{Effect: Allow, Actions: []string{"manage"}, Resources: []string{"credential:user:*"}, When: &Condition{OwnerIsSelf: &self}},
-				{Effect: Allow, Actions: []string{"submit", "read"}, Resources: []string{"evaluation:self"}},
+				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"evaluation:self"}},
+				// The Git tool's network reach, which it asks per remote now
+				// (RFC FY Part E): an isolated user's run reached it before any
+				// surface asked, and the operator's host lists and the agent's
+				// git_remote grant still bound it.
+				{Effect: Allow, Actions: []string{"fetch", "push"}, Resources: []string{"git:*"}},
 				{Effect: Allow, Actions: []string{"read", "steer", "cancel", "compact", "retune", "review", "delete"}, Resources: []string{"run:own"}},
 				selfTokenRule,
 				{Effect: Deny, Actions: []string{"read", "write", "recall", "browse"}, Resources: []string{"memory:tenant", "memory:global"}},

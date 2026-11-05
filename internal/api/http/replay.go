@@ -227,6 +227,12 @@ func (s *Server) computeReplayCompaction(ctx context.Context, agentDef config.Ag
 			summaryModel = *c.Model
 		}
 	}
+	// The compaction model is a model call of its own (RFC FY Part E).
+	if summaryModel != model {
+		if err := s.askPinnedModelUse(ctx, summaryModel); err != nil {
+			return "", 0, false, false, err
+		}
+	}
 	firstIdx, cut, splitOK := loop.CompactionSplit(msgs, keepLastN, keepFirstCfg)
 	if !splitOK {
 		return "", 0, false, false, nil

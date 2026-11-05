@@ -47,6 +47,10 @@ type Context struct {
 	SourceIP    net.IP
 	Agent       string
 	Depth       int
+	// NoClient: the request has no client by nature (a schedule's fire, a
+	// resumed or crash-recovered run, a maintenance pass), so SourceIP is
+	// absent rather than unknown.
+	NoClient bool
 }
 
 // Request is one question.
@@ -679,7 +683,7 @@ func (r *compiledRule) matches(spec TypeSpec, req *Request) bool {
 	if !hit {
 		return false
 	}
-	return r.when.holds(req)
+	return r.when.holds(req, r.effect == Deny)
 }
 
 // Semantic is the batch evaluation mode, AuthZEN 1.0's
@@ -777,7 +781,7 @@ func (e *Effective) Explain(req Request) Explanation {
 			t.Why = "action not listed"
 		case !(req.Resource.Name == AnyInstance && r.effect == Allow) && !selectorsHit(r.sels, spec, req.Resource.Name):
 			t.Why = "no selector matches the resource"
-		case !r.when.holds(&req):
+		case !r.when.holds(&req, r.effect == Deny):
 			t.Why = "condition does not hold"
 		default:
 			t.Matched = true
