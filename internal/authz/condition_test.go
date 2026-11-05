@@ -66,7 +66,7 @@ func TestCondition_Holds(t *testing.T) {
 		{"over midnight no", Condition{Time: &TimeWindow{Between: []string{"22:00", "06:00"}, TZ: "Europe/Kyiv"}}, false},
 		{"interactive", Condition{Interactive: bptr(true)}, true},
 		{"not interactive", Condition{Interactive: bptr(false)}, false},
-		{"tier", Condition{Tier: []string{"middle"}}, true},
+		{"tier (inert even when it would match)", Condition{Tier: []string{"middle"}}, false},
 		{"user tier no", Condition{UserTier: []string{"free"}}, false},
 		{"cidr yes", Condition{SourceCIDR: []string{"10.0.0.0/8"}}, true},
 		{"cidr no", Condition{SourceCIDR: []string{"192.168.0.0/16"}}, false},
@@ -94,14 +94,14 @@ func TestCondition_UnanswerableFieldsDoNotHold(t *testing.T) {
 		cond     Condition
 		denyHold bool
 	}{
-		"no clock":      {Condition{Time: &TimeWindow{Days: []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}}}, true},
-		"no address":    {Condition{SourceCIDR: []string{"0.0.0.0/0"}}, true},
-		"no transport":  {Condition{Transport: Transports}, true},
-		"no tier":       {Condition{Tier: []string{"high"}}, true},
-		"no user tier":  {Condition{UserTier: []string{"free"}}, true},
-		"no agent":      {Condition{Agent: "*"}, false},
-		"no owner":      {Condition{OwnerIsSelf: bptr(true)}, false},
-		"no subject id": {Condition{OwnerIsSelf: bptr(true)}, false},
+		"no clock":          {Condition{Time: &TimeWindow{Days: []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}}}, true},
+		"no address":        {Condition{SourceCIDR: []string{"0.0.0.0/0"}}, true},
+		"no transport":      {Condition{Transport: Transports}, true},
+		"tier (inert)":      {Condition{Tier: []string{"high"}}, false},
+		"user tier (inert)": {Condition{UserTier: []string{"free"}}, false},
+		"no agent":          {Condition{Agent: "*"}, false},
+		"no owner":          {Condition{OwnerIsSelf: bptr(true)}, false},
+		"no subject id":     {Condition{OwnerIsSelf: bptr(true)}, false},
 	} {
 		cc := compileCondition(&c.cond)
 		if cc.holds(&req, false) {

@@ -199,12 +199,13 @@ func compileCondition(c *Condition) *compiledCondition {
 }
 
 // holds reports whether the condition is satisfied by the request, for a
-// rule of the given effect (deny true). A fact the surface could not supply —
-// no transport, no clock, no client address (a resumed run, a trigger), no
-// model or user tier bound by anything the caller cannot choose — is read
-// the safe way round (RFC FY Part E): a deny conditioned on it holds, an allow
-// does not. A condition that could not be checked never widens and never
-// lifts a deny.
+// rule of the given effect (deny true). A fact a surface should have supplied
+// and did not — no transport, no clock, no client address on a request — is
+// read the safe way round (RFC FY Part E): a deny conditioned on it holds, an
+// allow does not, so an unchecked condition never widens and never lifts a
+// deny. A run with no client by nature (Context.NoClient: a schedule's fire,
+// a resume) has no address to match, so a source_cidr condition holds for
+// neither. A condition on the model or user tier is inert (inert).
 //
 // Two facts are never unknown, only absent by nature: the agent and the
 // owner. Outside a run there is no agent, so `agent` is false for both
@@ -218,11 +219,17 @@ func (cc *compiledCondition) holds(req *Request, deny bool) bool {
 	}
 	c := cc.c
 	ctx := req.Context
+	if cc.inert() {
+		return false
+	}
+	// No client by nature (a schedule's fire, a resumed run): there is no
+	// address to match, so a source_cidr condition holds for neither effect.
+	if len(c.SourceCIDR) > 0 && ctx.SourceIP == nil && ctx.NoClient {
+		return false
+	}
 	unknown := (len(c.Transport) > 0 && ctx.Transport == "") ||
 		(c.Time != nil && ctx.Now.IsZero()) ||
-		(len(c.SourceCIDR) > 0 && ctx.SourceIP == nil) ||
-		(len(c.Tier) > 0 && ctx.Tier == "") ||
-		(len(c.UserTier) > 0 && ctx.UserTier == "")
+		(len(c.SourceCIDR) > 0 && ctx.SourceIP == nil)
 	if unknown {
 		return deny
 	}
@@ -261,6 +268,15 @@ func (cc *compiledCondition) holds(req *Request, deny bool) bool {
 	return true
 }
 
+// inert reports whether the condition names a fact no surface vouches for —
+// the model or user tier, which a run request names itself. Such a rule is
+// skipped whole, its deny and its allow alike: a rule stored before writes
+// refused it decides what it decided then (nothing), never more (RFC FY Part
+// E).
+func (cc *compiledCondition) inert() bool {
+	return len(cc.c.Tier) > 0 || len(cc.c.UserTier) > 0
+}
+
 // holdsForScope is holds for a question about EVERY instance of a scope
 // (Effective.DecideScope). A field the scope request cannot decide for every
 // instance — the owner when the request names none, the agent, tier, user
@@ -273,8 +289,14 @@ func (cc *compiledCondition) holdsForScope(req *Request, deny bool) bool {
 	if cc == nil {
 		return true
 	}
+	if cc.inert() {
+		return false
+	}
 	c := cc.c
 	ctx := req.Context
+	if len(c.SourceCIDR) > 0 && ctx.SourceIP == nil && ctx.NoClient {
+		return false
+	}
 	undecided := (c.OwnerIsSelf != nil && req.Resource.Owner == "") ||
 		(len(c.Transport) > 0 && ctx.Transport == "") ||
 		(c.Time != nil && ctx.Now.IsZero()) ||

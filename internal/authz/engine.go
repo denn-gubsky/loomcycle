@@ -47,6 +47,10 @@ type Context struct {
 	SourceIP    net.IP
 	Agent       string
 	Depth       int
+	// NoClient: the request has no client by nature (a schedule's fire, a
+	// resumed or crash-recovered run, a maintenance pass), so SourceIP is
+	// absent rather than unknown.
+	NoClient bool
 }
 
 // Request is one question.

@@ -187,6 +187,9 @@ var enforcedConditions = map[string]Site{
 // unenforcedConditions: Condition fields no surface can fill with a fact the
 // caller cannot choose; a rule using one is refused at write, and a stored
 // one reads the field as unknown (a deny holds, an allow does not).
+//
+// A stored rule carrying one is inert at evaluation (compiledCondition.inert):
+// skipped whole, as it was before writes refused it.
 var unenforcedConditions = map[string]string{
 	"tier":      "a run request names its own tier",
 	"user_tier": "a run request names its own user tier, and nothing binds one to the principal",

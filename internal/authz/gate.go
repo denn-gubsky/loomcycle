@@ -51,6 +51,20 @@ func WithSourceIP(ctx context.Context, ip net.IP) context.Context {
 	return context.WithValue(ctx, ctxKeySourceIP{}, ip)
 }
 
+type ctxKeyNoClient struct{}
+
+// WithNoClient marks ctx as a request with no client by nature — a
+// schedule's fire, a resumed run — so a source_cidr condition holds for
+// neither effect rather than failing a deny closed. Sub-runs inherit it.
+func WithNoClient(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyNoClient{}, true)
+}
+
+func noClient(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyNoClient{}).(bool)
+	return v
+}
+
 // SourceIPFrom returns the stamped client address, or nil.
 func SourceIPFrom(ctx context.Context) net.IP {
 	ip, _ := ctx.Value(ctxKeySourceIP{}).(net.IP)
@@ -97,6 +111,7 @@ func ContextFrom(ctx context.Context) Context {
 		Transport:   TransportFrom(ctx),
 		Now:         time.Now(),
 		SourceIP:    SourceIPFrom(ctx),
+		NoClient:    noClient(ctx),
 		Agent:       f.Agent,
 		Depth:       f.Depth,
 		Interactive: f.Interactive,
