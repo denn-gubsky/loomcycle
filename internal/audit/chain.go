@@ -195,17 +195,19 @@ func ReadRegistry(ctx context.Context, r ChainReader, keys ChainKeys) (Registry,
 		if err != nil {
 			return reg, op, err
 		}
-		if len(rows) == 0 {
-			break
-		}
 		for _, row := range rows {
 			if row.Seq > op.HeadSeq {
-				break
+				// Appended since the walk (or the rows below were pruned
+				// meanwhile): the verified range is read.
+				return reg, op, nil
 			}
 			if row.Action == ActionChainOpened {
 				reg.Openings[row.Subject]++
 			}
 			after = row.Seq
+		}
+		if len(rows) < verifyPage {
+			break
 		}
 	}
 	return reg, op, nil
