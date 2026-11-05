@@ -236,6 +236,11 @@ func TestErasureExecute_AlwaysReportsRetainedPlanes(t *testing.T) {
 		t.Errorf("a subject with NOTHING stored still got no retained-plane disclosure: %v",
 			res.Retained)
 	}
+	// The audit chain names the subject (sign-ins, token and rule changes,
+	// this erasure's own records) and cannot be erased without breaking it.
+	if why := res.Retained["audit_chain"]; !strings.Contains(why, "audit") {
+		t.Errorf("the erasure does not account for the audit chain: %q", why)
+	}
 }
 
 // TestErasureExecute_ReportsEveryPlaneItConsidered mirrors the report's invariant
