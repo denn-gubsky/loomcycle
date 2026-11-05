@@ -68,7 +68,10 @@ func newBrowseFixture(t *testing.T) *browseFixture {
 	t.Helper()
 	f := &browseFixture{feedFixture: newFeedFixture(t), agentDocs: map[string]string{}}
 	f.srv.tools = []tools.Tool{f.doc, &builtin.Path{Store: f.store}}
-	cfg := &config.Config{}
+	cfg := &config.Config{Agents: map[string]config.AgentDef{
+		"helper":       {Model: "stub-model", SystemPrompt: "helper"},
+		"secret-agent": {Model: "stub-model", SystemPrompt: "secret"},
+	}}
 	cfg.Memory.Projection.Enabled = true
 	f.srv.cfgHolder = config.NewHolder(cfg)
 
@@ -715,5 +718,53 @@ func TestMemorySearchEndpoint_AsksTheInstanceVerb(t *testing.T) {
 	}
 	if rec := memoryKeyRequest(t, c.s, alice, "/v1/_memory/scopes/user/alice/keys/notes/n1"); rec.Code != http.StatusForbidden {
 		t.Errorf("GET under deny read memory:user: %d %s, want 403", rec.Code, rec.Body.String())
+	}
+}
+
+// The off-run planes' synthetic agent names (http-admin, grpc-admin,
+// mcp-operator) are the operator's own agent scopes, and a name that is no
+// agent is nobody's: a member may run neither, whatever `run agent:*` its
+// baseline allows, so it browses neither, and the scope list does not name
+// them to it.
+func TestBrowse_AMemberCannotNameTheOperatorsAgentScope(t *testing.T) {
+	f := newBrowseFixture(t)
+	op := auth.Principal{TenantID: "tnt", Subject: "op", Scopes: []string{auth.ScopeTenant}}
+	if rec := f.call(t, op, "POST", "/v1/_document", `{"op":"create_document","scope":"agent","title":"Operator notes"}`); rec.Code != http.StatusOK {
+		t.Fatalf("operator seeds its agent scope: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, name := range []string{"grpc-admin", "mcp-operator", "not-an-agent"} {
+		if err := f.store.MemorySet(context.Background(), "tnt", "agent", name, "memo", json.RawMessage(`"operator memo"`), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bob := member("tnt", "bob", memberBaselineSet(t, "tnt", "bob"))
+	for _, name := range []string{"http-admin", "grpc-admin", "mcp-operator", "not-an-agent"} {
+		for _, c := range []browseCase{
+			{"query_documents", "POST", "/v1/_document?scope_id=" + name, `{"op":"query_documents","scope":"agent"}`},
+			{"path ls", "POST", "/v1/_path?scope_id=" + name, `{"op":"ls","scope":"agent","path":"/"}`},
+			{"memory keys", "GET", "/v1/_memory/scopes/agent/" + name + "/keys", ""},
+			{"memory key", "GET", "/v1/_memory/scopes/agent/" + name + "/keys/memo", ""},
+		} {
+			if rec := f.call(t, bob, c.method, c.target, c.body); !isBrowseRefusal(rec) {
+				t.Errorf("member %s naming %s: %d %s, want the opaque 404", c.name, name, rec.Code, rec.Body.String())
+			}
+		}
+	}
+	rec := f.call(t, bob, "GET", "/v1/_memory/scopes/agent", "")
+	for _, name := range []string{"http-admin", "grpc-admin", "mcp-operator", "not-an-agent"} {
+		if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"`+name+`"`) {
+			t.Errorf("member lists agent scopes: %d %s, want no %s", rec.Code, rec.Body.String(), name)
+		}
+	}
+	if !strings.Contains(rec.Body.String(), `"helper"`) {
+		t.Errorf("member lists agent scopes: %s, want the agent it may run", rec.Body.String())
+	}
+	// The operator still lists and reads them.
+	if rec := f.call(t, op, "GET", "/v1/_memory/scopes/agent", ""); !strings.Contains(rec.Body.String(), `"http-admin"`) {
+		t.Errorf("operator lists agent scopes: %d %s, want http-admin", rec.Code, rec.Body.String())
+	}
+	if rec := f.call(t, op, "POST", "/v1/_document?scope_id=http-admin", `{"op":"query_documents","scope":"agent"}`); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), "Operator notes") {
+		t.Errorf("operator naming its own agent scope: %d %s", rec.Code, rec.Body.String())
 	}
 }

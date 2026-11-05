@@ -25,8 +25,8 @@ import (
 // distinguish gRPC-admin from HTTP-admin from MCP-direct.
 const (
 	grpcSubstrateAdminAgentID   = "a_grpc-admin"
-	grpcSubstrateAdminUserID    = "grpc-admin"
-	grpcSubstrateAdminAgentName = "grpc-admin"
+	grpcSubstrateAdminUserID    = tools.OffRunOperatorGRPC
+	grpcSubstrateAdminAgentName = tools.OffRunOperatorGRPC
 )
 
 // substrateGRPCCtx stamps the operator-trust ctx for gRPC

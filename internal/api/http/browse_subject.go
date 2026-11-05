@@ -7,8 +7,10 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -70,7 +72,7 @@ func (s *Server) browseSubjectFor(ctx context.Context, typ, reqScopeID, reqTenan
 	p, ok := auth.PrincipalFromContext(ctx)
 	isolated := auth.IsIsolated(p, ok)
 	admin := !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin)
-	operator := admin || auth.HasScope(p.Scopes, auth.ScopeTenant)
+	operator := memberpath.OperatorPlane(p, ok)
 
 	if operator {
 		if reqScopeID == "" && reqTenant == "" {
@@ -104,6 +106,11 @@ func (s *Server) browseSubjectFor(ctx context.Context, typ, reqScopeID, reqTenan
 	if writes && reqScopeID != p.Subject {
 		return browseSubject{}, false
 	}
+	// The planes' synthetic identities are the operator's own off-run scopes
+	// (user and agent alike); no grant names them to a member.
+	if tools.IsOffRunOperatorIdentity(reqScopeID) {
+		return browseSubject{}, false
+	}
 	userOK := reqScopeID == p.Subject ||
 		(!isolated && authz.Grants(ctx, p.Effective, "browse", authz.Resource{Type: typ, Name: "user", Owner: reqScopeID}))
 	agentOK := !isolated && s.browseMayRunAgent(ctx, p, reqScopeID)
@@ -126,17 +133,29 @@ func (s *Server) browseSubjectFor(ctx context.Context, typ, reqScopeID, reqTenan
 }
 
 // browseMayRunAgent is the agent-scope browse question: may the member run
-// the agent, as the run plane decides it at a run's intake — the token's own
-// agent list, then `run agent:<name>` under the rollout mode. A member's run
-// of that agent reads the agent's scope anyway, so browsing it adds no reach.
-// With no set the answer is no, unlike the run plane's compat answer: a
-// browse with nothing to grant it is self-only (decision D1).
+// the agent, as the run plane decides it at a run's intake — an agent of its
+// tenant (static or runtime-defined), the token's own agent list, then `run
+// agent:<name>` under the rollout mode. A member's run of that agent reads the
+// agent's scope anyway, so browsing it adds no reach. A name that is no agent
+// is no agent's scope, whatever `run agent:*` allows — the planes' synthetic
+// operator names among them. With no set the answer is no, unlike the run
+// plane's compat answer: a browse with nothing to grant it is self-only
+// (decision D1).
 func (s *Server) browseMayRunAgent(ctx context.Context, p auth.Principal, name string) bool {
-	if p.Effective == nil || !auth.MayStartAgent(p, true, name) {
+	if p.Effective == nil || tools.IsOffRunOperatorIdentity(name) || !auth.MayStartAgent(p, true, name) {
 		return false
 	}
 	res := authz.EvaluateSurface(ctx, p.Effective, authz.Surface{Action: "run", Type: "agent", Name: name}, true)
-	return res.Allowed && !res.Unavailable
+	if !res.Allowed || res.Unavailable {
+		return false
+	}
+	var found bool
+	if s.store == nil {
+		_, found = lookup.Agent(ctx, nil, s.cfg(), p.TenantID, name)
+	} else {
+		_, found = lookup.Agent(ctx, s.store, s.cfg(), p.TenantID, name)
+	}
+	return found
 }
 
 // apply builds the ctx the browse runs under: the operator-trust ctx of the

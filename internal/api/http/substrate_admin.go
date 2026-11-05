@@ -42,9 +42,9 @@ const (
 	substrateAdminAgentID = "a_http-admin"
 	// substrateAdminUserID is the corresponding user_id. Same
 	// rationale as above.
-	substrateAdminUserID = "http-admin"
+	substrateAdminUserID = tools.OffRunOperatorHTTP
 	// substrateAdminAgentName is the synthetic agent name.
-	substrateAdminAgentName = "http-admin"
+	substrateAdminAgentName = tools.OffRunOperatorHTTP
 )
 
 // handleSubstrateAgentDef serves POST /v1/_agentdef.

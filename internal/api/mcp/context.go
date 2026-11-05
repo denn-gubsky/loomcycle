@@ -28,13 +28,13 @@ const (
 	// use this as the scope_id; Channel ops similarly. Distinct from
 	// realistic user agent names so operator-direct memory doesn't
 	// collide with any production agent's keys.
-	operatorAgentName = "mcp-operator"
+	operatorAgentName = tools.OffRunOperatorMCP
 
 	// operatorUserID + operatorAgentID populate the synthetic
 	// RunIdentityValue for the no-principal (stdio / open-mode) path.
 	// AUTHENTICATED MCP calls use principal.Subject as the UserID
 	// instead — see mcpPrincipalCtx (RFC AG §3.1a).
-	operatorUserID  = "mcp-operator"
+	operatorUserID  = tools.OffRunOperatorMCP
 	operatorAgentID = "a_mcp-operator"
 )
 
