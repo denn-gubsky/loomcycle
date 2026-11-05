@@ -169,11 +169,17 @@ var enforcedConditions = map[string]Site{
 	"time":          Proof("TestEvaluate_TheGateSuppliesTheClockAndTheTransport"),
 	"owner_is_self": Proof("TestDocumentACL_ConditionalDenyFallsBackToEachDocument"),
 	"source_cidr":   Proof("TestACLGate_ASourceCIDRDenyAppliesAtRunIntake"),
-	"user_tier":     Proof("TestACLGate_AUserTierDenyAppliesAtRunIntake"),
 	"interactive":   Proof("TestACLGate_AnInteractiveDenyAppliesAtRunIntake"),
-	"agent":         Proof("TestACLGate_AgentAndTierConditionsReadTheRun"),
-	"tier":          Proof("TestACLGate_AgentAndTierConditionsReadTheRun"),
+	"agent":         Proof("TestACLGate_AnAgentConditionReadsTheRunsAgent"),
 	"depth":         Proof("TestACLGate_ADepthDenyReadsTheSpawnDepth"),
+}
+
+// unenforcedConditions: Condition fields no surface can fill with a fact the
+// caller cannot choose; a rule using one is refused at write, and a stored
+// one reads the field as unknown (a deny holds, an allow does not).
+var unenforcedConditions = map[string]string{
+	"tier":      "a run request names its own tier",
+	"user_tier": "a run request names its own user tier, and nothing binds one to the principal",
 }
 
 // IsEnforced reports whether some surface asks verb of typ.
@@ -231,7 +237,11 @@ type NotEnforceableError struct {
 
 func (e *NotEnforceableError) Error() string {
 	if e.Condition != "" {
-		return fmt.Sprintf("condition %q is not evaluated by any surface", e.Condition)
+		msg := fmt.Sprintf("condition %q is not evaluated by any surface", e.Condition)
+		if r := unenforcedConditions[e.Condition]; r != "" {
+			msg += " (" + r + ")"
+		}
+		return msg
 	}
 	msg := fmt.Sprintf("%s %s is not evaluated by any surface", e.Verb, e.Type)
 	if e.Reason != "" {

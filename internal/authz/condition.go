@@ -81,9 +81,15 @@ func (c *Condition) Validate() error {
 	}
 	if len(c.Tier) > 0 {
 		fields++
+		if contains(c.Tier, "") {
+			return fmt.Errorf("tier: an empty name is not a tier")
+		}
 	}
 	if len(c.UserTier) > 0 {
 		fields++
+		if contains(c.UserTier, "") {
+			return fmt.Errorf("user_tier: an empty name is not a tier")
+		}
 	}
 	if len(c.SourceCIDR) > 0 {
 		fields++
@@ -192,30 +198,50 @@ func compileCondition(c *Condition) *compiledCondition {
 	return cc
 }
 
-// holds reports whether the condition is satisfied by the request. A field
-// the request cannot answer (no clock, no source address, no agent) does
-// not hold: a condition that could not be checked must never read as true.
-func (cc *compiledCondition) holds(req *Request) bool {
+// holds reports whether the condition is satisfied by the request, for a
+// rule of the given effect (deny true). A fact the surface could not supply —
+// no transport, no clock, no client address (a resumed run, a trigger), no
+// model or user tier bound by anything the caller cannot choose — is read
+// the safe way round (RFC FY Part E): a deny conditioned on it holds, an allow
+// does not. A condition that could not be checked never widens and never
+// lifts a deny.
+//
+// Two facts are never unknown, only absent by nature: the agent and the
+// owner. Outside a run there is no agent, so `agent` is false for both
+// effects; a resource with no owner is nobody's own, so `owner_is_self` reads
+// false. The spawn depth and the interactive bit describe what the run is
+// (stamped by the entry points from the run itself); a request outside any
+// run reads as depth 0, not interactive.
+func (cc *compiledCondition) holds(req *Request, deny bool) bool {
 	if cc == nil {
 		return true
 	}
 	c := cc.c
-	if len(c.Transport) > 0 && !contains(c.Transport, req.Context.Transport) {
+	ctx := req.Context
+	unknown := (len(c.Transport) > 0 && ctx.Transport == "") ||
+		(c.Time != nil && ctx.Now.IsZero()) ||
+		(len(c.SourceCIDR) > 0 && ctx.SourceIP == nil) ||
+		(len(c.Tier) > 0 && ctx.Tier == "") ||
+		(len(c.UserTier) > 0 && ctx.UserTier == "")
+	if unknown {
+		return deny
+	}
+	if len(c.Transport) > 0 && !contains(c.Transport, ctx.Transport) {
 		return false
 	}
-	if c.Time != nil && !cc.timeHolds(req.Context.Now) {
+	if c.Time != nil && !cc.timeHolds(ctx.Now) {
 		return false
 	}
-	if c.Interactive != nil && *c.Interactive != req.Context.Interactive {
+	if c.Interactive != nil && *c.Interactive != ctx.Interactive {
 		return false
 	}
-	if len(c.Tier) > 0 && !contains(c.Tier, req.Context.Tier) {
+	if len(c.Tier) > 0 && !contains(c.Tier, ctx.Tier) {
 		return false
 	}
-	if len(c.UserTier) > 0 && !contains(c.UserTier, req.Context.UserTier) {
+	if len(c.UserTier) > 0 && !contains(c.UserTier, ctx.UserTier) {
 		return false
 	}
-	if len(c.SourceCIDR) > 0 && !inAnyPrefix(cc.prefixe, req.Context.SourceIP) {
+	if len(c.SourceCIDR) > 0 && !inAnyPrefix(cc.prefixe, ctx.SourceIP) {
 		return false
 	}
 	if c.OwnerIsSelf != nil {
@@ -225,11 +251,11 @@ func (cc *compiledCondition) holds(req *Request) bool {
 		}
 	}
 	if c.Agent != "" {
-		if req.Context.Agent == "" || !doublestarMatch(cc.agent, strings.Split(req.Context.Agent, "/")) {
+		if ctx.Agent == "" || !doublestarMatch(cc.agent, strings.Split(ctx.Agent, "/")) {
 			return false
 		}
 	}
-	if c.Depth != nil && req.Context.Depth > c.Depth.Max {
+	if c.Depth != nil && ctx.Depth > c.Depth.Max {
 		return false
 	}
 	return true
@@ -260,7 +286,7 @@ func (cc *compiledCondition) holdsForScope(req *Request, deny bool) bool {
 	if undecided {
 		return deny
 	}
-	return cc.holds(req)
+	return cc.holds(req, deny)
 }
 
 func (cc *compiledCondition) timeHolds(now time.Time) bool {

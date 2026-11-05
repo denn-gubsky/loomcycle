@@ -635,9 +635,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	}
 	// What a condition reads about the run, as at its start (RFC FY Part E).
 	// The client address of the request that started it is not recorded, so
-	// a source_cidr rule holds no resumed run (it cannot be checked).
-	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: run.Agent, Depth: s.recordedSpawnDepth(ctx, run),
-		Interactive: run.Interactive, Tier: usageModelTier(agentDef), UserTier: run.UserTier})
+	// a source_cidr condition is unknown here: a deny on it holds for the
+	// resumed run and an allow on it does not (authz fails it closed).
+	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: run.Agent, Depth: s.recordedSpawnDepth(ctx, run), Interactive: run.Interactive})
 
 	// Tools + dispatcher, narrowed by the caller's own allowed_hosts when the
 	// run recorded one (RFC DD Gap 2). Restoring a narrowing can only SUBTRACT:

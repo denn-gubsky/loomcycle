@@ -276,3 +276,28 @@ func TestEvaluate_RunFactsDecideDepthAndInteractiveAllows(t *testing.T) {
 		t.Error("allow interactive:false: want it for a run that is not interactive only")
 	}
 }
+
+// No surface stamps a model or user tier (a run request names its own), so an
+// allow conditioned on one never holds and a deny always does: whatever a
+// caller would assert, the answer is the safe one.
+func TestEvaluate_AnUnboundTierNeverSatisfiesAnAllow(t *testing.T) {
+	acl := ACL{Name: "a", Rules: []Rule{
+		{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}, When: &Condition{UserTier: []string{"pro"}}},
+		{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:Read"}, When: &Condition{Tier: []string{"high"}}},
+		{Effect: Deny, Actions: []string{"invoke"}, Resources: []string{"tool:Grep"}, When: &Condition{UserTier: []string{"free"}}},
+	}}
+	eff, err := Compile(Input{Subject: Subject{TenantID: "t", ID: "u"}, Bindings: []Binding{{ACL: "a", SubjectKind: SubjectTenant}},
+		ACLs: map[string]ACLVersion{"a": {ACL: acl}}, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithRunFacts(WithMode(context.Background(), ModeEnforce), RunFacts{Agent: "worker"})
+	for _, tool := range []string{"Bash", "Read"} {
+		if Evaluate(ctx, eff, "invoke", Resource{Type: "tool", Name: tool}, true).Allowed {
+			t.Errorf("an allow on an unbound tier held for %s", tool)
+		}
+	}
+	if Evaluate(WithMode(ctx, ModeCompat), eff, "invoke", Resource{Type: "tool", Name: "Grep"}, true).Allowed {
+		t.Error("a deny on an unbound user tier did not hold")
+	}
+}

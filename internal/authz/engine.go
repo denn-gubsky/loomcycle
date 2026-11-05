@@ -615,7 +615,7 @@ func (r *compiledRule) matches(spec TypeSpec, req *Request) bool {
 	if !hit {
 		return false
 	}
-	return r.when.holds(req)
+	return r.when.holds(req, r.effect == Deny)
 }
 
 // Semantic is the batch evaluation mode, AuthZEN 1.0's
@@ -713,7 +713,7 @@ func (e *Effective) Explain(req Request) Explanation {
 			t.Why = "action not listed"
 		case !(req.Resource.Name == AnyInstance && r.effect == Allow) && !selectorsHit(r.sels, spec, req.Resource.Name):
 			t.Why = "no selector matches the resource"
-		case !r.when.holds(&req):
+		case !r.when.holds(&req, r.effect == Deny):
 			t.Why = "condition does not hold"
 		default:
 			t.Matched = true

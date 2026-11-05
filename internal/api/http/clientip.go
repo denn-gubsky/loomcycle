@@ -27,6 +27,14 @@ func sourceIP(policy config.AuthPolicy, r *http.Request) string {
 		}
 		return host
 	}
+	return clientIP(policy, peer, r.Header.Values)
+}
+
+// clientIP is sourceIP's rule over any transport: the peer, unless it is a
+// trusted proxy, in which case the client it names in header (one bare
+// address in auth.client_ip_header, else the right-most X-Forwarded-For hop
+// that is not itself a trusted proxy).
+func clientIP(policy config.AuthPolicy, peer netip.Addr, header func(name string) []string) string {
 	trusted := func(a netip.Addr) bool { return authgate.InPrefixes(a, policy.TrustedProxies) }
 	if !trusted(peer) {
 		return peer.String()
@@ -34,7 +42,7 @@ func sourceIP(policy config.AuthPolicy, r *http.Request) string {
 	if h := policy.ClientIPHeader; h != "" {
 		// One value, a bare address. Anything else (two copies of the
 		// header, a list) is not what the proxy sends, so the peer stands.
-		vals := r.Header.Values(h)
+		vals := header(h)
 		if len(vals) == 1 {
 			if a, err := netip.ParseAddr(strings.TrimSpace(vals[0])); err == nil {
 				return a.Unmap().String()
@@ -42,7 +50,7 @@ func sourceIP(policy config.AuthPolicy, r *http.Request) string {
 		}
 		return peer.String()
 	}
-	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	hops := strings.Split(strings.Join(header("X-Forwarded-For"), ","), ",")
 	for i := len(hops) - 1; i >= 0; i-- {
 		a, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
 		if err != nil {
@@ -54,6 +62,13 @@ func sourceIP(policy config.AuthPolicy, r *http.Request) string {
 		}
 	}
 	return peer.String()
+}
+
+// ClientIP is the client address of a request that arrived on another
+// transport (the gRPC listener), under the same auth.trusted_proxies rule as
+// an HTTP request: the peer, or the client a trusted proxy names in header.
+func (s *Server) ClientIP(peer netip.Addr, header func(name string) []string) net.IP {
+	return net.ParseIP(clientIP(s.cfg().ResolvedAuth, peer.Unmap(), header))
 }
 
 // throttleSourceKey is the bucket a client address is throttled in: an IPv4

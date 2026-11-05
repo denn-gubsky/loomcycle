@@ -3,7 +3,9 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -52,15 +54,22 @@ func TestACLGate_ASourceCIDRDenyAppliesAtRunIntake(t *testing.T) {
 	}
 }
 
-// A user_tier deny holds for a run started at that user tier only.
-func TestACLGate_AUserTierDenyAppliesAtRunIntake(t *testing.T) {
+// A run request names its own user tier, so the tier is no fact a rule may
+// rely on: a deny on it is refused at write, and one stored before holds for
+// every run whatever tier the request asserts — asserting another tier does
+// not evade it (an allow on it never holds: TestEvaluate_AnUnboundTierNeverSatisfiesAnAllow).
+func TestACLGate_ARunCannotAssertItsWayPastAUserTierDeny(t *testing.T) {
 	ts, st := aclRunFixtureMode(t, authz.ModeCompat)
-	bindTenantWide(t, st, "no-free", `[{"effect":"deny","actions":["run"],"resources":["agent:worker"],"when":{"user_tier":["free"]}}]`)
-	if code, out := startCondWorker(t, ts, "a_ut_1", ""); code != 200 {
-		t.Fatalf("a run with no user tier was refused: %d %s", code, out)
+	code, out := bearerCall(t, ts, "legacy-admin-secret", "POST", "/v1/_acldef",
+		`{"op":"create","name":"no-free","rules":[{"effect":"deny","actions":["run"],"resources":["agent:worker"],"when":{"user_tier":["free"]}}]}`)
+	if code != 400 || !strings.Contains(out, "rule_not_enforceable") {
+		t.Errorf("a rule on user_tier was written: %d %s", code, out)
 	}
-	if code, out := startCondWorker(t, ts, "a_ut_2", `,"user_tier":"free"`); code != 403 || !strings.Contains(out, "acl_denied") {
-		t.Errorf("a free-tier run: %d %s, want 403 acl_denied", code, out)
+	bindTenantWide(t, st, "no-free", `[{"effect":"deny","actions":["run"],"resources":["agent:worker"],"when":{"user_tier":["free"]}}]`)
+	for i, extra := range []string{`,"user_tier":"pro"`, `,"user_tier":"free"`, ""} {
+		if code, out := startCondWorker(t, ts, fmt.Sprintf("a_ut_%d", i), extra); code != 403 || !strings.Contains(out, "acl_denied") {
+			t.Errorf("request %q: %d %s, want 403 acl_denied", extra, code, out)
+		}
 	}
 }
 
@@ -76,31 +85,23 @@ func TestACLGate_AnInteractiveDenyAppliesAtRunIntake(t *testing.T) {
 	}
 }
 
-// An agent condition and a tier condition read the run's own agent and tier
-// inside the run: Bash is withheld from worker (pinned to a model) and not
-// from a run the rule does not describe.
-func TestACLGate_AgentAndTierConditionsReadTheRun(t *testing.T) {
-	for _, c := range []struct{ name, when string }{
-		{"agent", `{"agent":"worker"}`},
-		{"tier", `{"tier":["pinned"]}`},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			ts, st := aclRunFixtureMode(t, authz.ModeCompat)
-			bindTenantWide(t, st, "other", `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"],"when":`+strings.Replace(strings.Replace(c.when, "worker", "child", 1), "pinned", "high", 1)+`}]`)
-			if code, out := startCondWorker(t, ts, "a_"+c.name+"_1", ""); code != 200 {
-				t.Fatalf("%d %s", code, out)
-			}
-			if evs := runEvents(t, st, "a_"+c.name+"_1"); hasEvent(evs, "capability_inert", `"tool":"Bash"`) {
-				t.Errorf("a deny for another %s withheld Bash", c.name)
-			}
-			bindTenantWide(t, st, "this", `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"],"when":`+c.when+`}]`)
-			if code, out := startCondWorker(t, ts, "a_"+c.name+"_2", ""); code != 200 {
-				t.Fatalf("%d %s", code, out)
-			}
-			if evs := runEvents(t, st, "a_"+c.name+"_2"); !hasEvent(evs, "capability_inert", `"tool":"Bash"`) {
-				t.Errorf("a deny for the run's own %s did not withhold Bash; events: %s", c.name, aclEventTypes(evs))
-			}
-		})
+// An agent condition reads the run's own agent inside the run: Bash is
+// withheld from worker and not from a run the rule does not describe.
+func TestACLGate_AnAgentConditionReadsTheRunsAgent(t *testing.T) {
+	ts, st := aclRunFixtureMode(t, authz.ModeCompat)
+	bindTenantWide(t, st, "other", `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"],"when":{"agent":"child"}}]`)
+	if code, out := startCondWorker(t, ts, "a_agent_1", ""); code != 200 {
+		t.Fatalf("%d %s", code, out)
+	}
+	if evs := runEvents(t, st, "a_agent_1"); hasEvent(evs, "capability_inert", `"tool":"Bash"`) {
+		t.Error("a deny for another agent withheld Bash")
+	}
+	bindTenantWide(t, st, "this", `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"],"when":{"agent":"worker"}}]`)
+	if code, out := startCondWorker(t, ts, "a_agent_2", ""); code != 200 {
+		t.Fatalf("%d %s", code, out)
+	}
+	if evs := runEvents(t, st, "a_agent_2"); !hasEvent(evs, "capability_inert", `"tool":"Bash"`) {
+		t.Errorf("a deny for the run's own agent did not withhold Bash; events: %s", aclEventTypes(evs))
 	}
 }
 
@@ -157,5 +158,26 @@ func TestRequestTransport_NamesMCPAndTheWebUI(t *testing.T) {
 		if got := requestTransport(r, c.cookie); got != c.want {
 			t.Errorf("%s cookie=%v: %q, want %q", c.path, c.cookie, got, c.want)
 		}
+	}
+}
+
+// A resumed run has no recorded client address, so a source_cidr condition is
+// unknown for it: a deny on it holds after the resume as it held at the start
+// (fail closed) — before, the unknown address lifted the deny and the resumed
+// run wrote the scope its caller may not write from anywhere.
+func TestACLGate_ASourceCIDRDenyHoldsForAResumedRun(t *testing.T) {
+	e := keyspaceWriteFixture(t, authz.ModeCompat, `[{"effect":"deny","actions":["write"],"resources":["memory:tenant"],"when":{"source_cidr":["0.0.0.0/0","::/0"]}}]`,
+		[][]providers.Event{
+			toolCallTurn("tu_probe", "Probe", `{}`), endTurn(),
+			toolCallTurn("tu_resumed_set", "Memory", `{"op":"set","scope":"tenant","key":"after-resume","value":"x"}`), endTurn(),
+		})
+	run := e.run(t, "a_keeper_cidr")
+	waitFor(t, "the live probe", func() bool { return len(e.probe.calls()) >= 1 })
+	if live := e.probe.calls()[0]; !slices.Equal(live.Memory.ReadOnlyScopes, []string{"tenant"}) {
+		t.Fatalf("live policy: read-only %v; the deny from every address did not hold at the start", live.Memory.ReadOnlyScopes)
+	}
+	resumeAndFinish(t, e.srv, run)
+	if res := resumedToolResult(t, e.srv, run, "tu_resumed_set"); !strings.Contains(res, "read-only") {
+		t.Errorf("the resumed run wrote the scope a source_cidr deny covers: %s", res)
 	}
 }

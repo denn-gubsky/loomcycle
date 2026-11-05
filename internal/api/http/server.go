@@ -3246,10 +3246,12 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		return err
 	}
 	// What a condition reads about this run (RFC FY Part E), for the intake
-	// question below and every question the run asks; its tier once the
-	// definition is known.
-	runFacts := authz.RunFacts{Agent: effectiveAgentName, Depth: builtin.AgentDepth(ctx), Interactive: in.Interactive, UserTier: in.UserTier}
-	ctx = authz.WithRunFacts(ctx, runFacts)
+	// question below and every question the run asks. Each is what the run
+	// is: the request picks interactive, but an interactive run is then what
+	// runs, so a rule on it describes the run truthfully. The tiers the
+	// request names are not stamped: they are the caller's own say
+	// (authz.RunFacts).
+	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: effectiveAgentName, Depth: builtin.AgentDepth(ctx), Interactive: in.Interactive})
 	if err := s.admitPrincipalAgent(ctx, effectiveAgentName); err != nil {
 		return err
 	}
@@ -3260,8 +3262,6 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if !ok {
 		return &unknownAgentError{agent: effectiveAgentName}
 	}
-	runFacts.Tier = usageModelTier(agentDef)
-	ctx = authz.WithRunFacts(ctx, runFacts)
 	if err := admitAgentOverrides(effectiveAgentName, agentDef, overridesSetIn(&in)); err != nil {
 		return err
 	}
@@ -7650,9 +7650,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	if err := s.aclAdmitSpawn(ctx, parentPolicy.ACL, name); err != nil {
 		return nil, err
 	}
-	// From here ctx prepares the child: a condition reads the child's agent,
-	// depth and tier (RFC FY Part E). A child is never interactive itself.
-	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: name, Depth: builtin.AgentDepth(ctx), Tier: usageModelTier(def), UserTier: tools.RunIdentity(ctx).UserTier})
+	// From here ctx prepares the child: a condition reads the child's agent
+	// and depth (RFC FY Part E). A child is never interactive itself.
+	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: name, Depth: builtin.AgentDepth(ctx)})
 	childOwn, _ := s.agentRunPolicy(ctx, def, name, runPolicySource{
 		Volumes:      s.volumePolicyForAgent(ctx, def),
 		Crypto:       cryptoPolicyForAgent(def),

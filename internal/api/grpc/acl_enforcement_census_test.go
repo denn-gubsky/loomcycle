@@ -3,9 +3,11 @@ package grpc
 import (
 	"context"
 	"net"
+	"net/netip"
 	"sort"
 	"testing"
 
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
@@ -61,5 +63,30 @@ func TestGRPCPeerIP_IsTheConnectionsRemoteAddress(t *testing.T) {
 	}
 	if got := grpcPeerIP(context.Background()); got != nil {
 		t.Errorf("no peer: %v, want nil", got)
+	}
+}
+
+// A peer in auth.trusted_proxies may name its client in the call's metadata,
+// as on HTTP; any other peer is the client whatever its metadata says.
+func TestGRPCCallerIP_ReadsATrustedProxysForwardedAddress(t *testing.T) {
+	trusted := netip.MustParsePrefix("10.0.0.0/8")
+	s := &Server{clientIP: func(p netip.Addr, header func(string) []string) net.IP {
+		if !trusted.Contains(p) {
+			return net.ParseIP(p.String())
+		}
+		if v := header("X-Forwarded-For"); len(v) == 1 {
+			return net.ParseIP(v[0])
+		}
+		return net.ParseIP(p.String())
+	}}
+	call := func(peerIP string) context.Context {
+		ctx := peer.NewContext(context.Background(), &peer.Peer{Addr: &net.TCPAddr{IP: net.ParseIP(peerIP), Port: 1}})
+		return metadata.NewIncomingContext(ctx, metadata.Pairs("x-forwarded-for", "198.51.100.9"))
+	}
+	if got := s.callerIP(call("10.1.2.3")); !got.Equal(net.ParseIP("198.51.100.9")) {
+		t.Errorf("behind a trusted proxy: %v, want the forwarded client", got)
+	}
+	if got := s.callerIP(call("203.0.113.5")); !got.Equal(net.ParseIP("203.0.113.5")) {
+		t.Errorf("an untrusted peer: %v, want the peer itself", got)
 	}
 }

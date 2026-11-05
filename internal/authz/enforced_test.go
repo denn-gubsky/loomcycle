@@ -50,8 +50,14 @@ func TestACLCatalog_EveryPairIsEnforcedSomewhere(t *testing.T) {
 	for i := 0; i < ct.NumField(); i++ {
 		name := conditionJSONName(ct.Field(i))
 		fields[name] = true
-		if !IsConditionEnforced(name) {
-			t.Errorf("condition field %q is filled by no surface", name)
+		_, waiting := unenforcedConditions[name]
+		if IsConditionEnforced(name) == waiting {
+			t.Errorf("condition field %q: enforced=%v unenforced=%v, want exactly one", name, !waiting, waiting)
+		}
+	}
+	for name := range unenforcedConditions {
+		if !fields[name] {
+			t.Errorf("the table names condition %q, which Condition does not have", name)
 		}
 	}
 	for name := range enforcedConditions {

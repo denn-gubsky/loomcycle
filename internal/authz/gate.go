@@ -59,16 +59,21 @@ func SourceIPFrom(ctx context.Context) net.IP {
 
 // RunFacts is what a condition may ask about the run a question is asked in
 // (or, at a run intake, the run about to start): its agent, its spawn depth
-// (0 for a top-level run), whether it is interactive, and the model and user
-// tiers it routes by. The run entry points stamp it; a request outside any
-// run carries none, and reads as a top-level, non-interactive caller with no
-// agent or tier.
+// (0 for a top-level run) and whether it is interactive. Each describes what
+// the run IS — the agent it runs, how many spawns deep it sits, whether an
+// operator is attached — so a caller that chose them chose the run they
+// describe, and a rule on them holds for that run. The run entry points
+// stamp them; a request outside any run carries none, and reads as a
+// top-level, non-interactive caller with no agent.
+//
+// The model and user tiers are deliberately absent: a run request names
+// both (`tier`, `user_tier`), and no principal, token or user row binds a
+// tier the caller cannot choose, so a rule on them would be the caller's own
+// say. They stay unknown, which holds a deny and never an allow.
 type RunFacts struct {
 	Agent       string
 	Depth       int
 	Interactive bool
-	Tier        string
-	UserTier    string
 }
 
 // WithRunFacts stamps the run facts, replacing any a parent run stamped.
@@ -95,8 +100,6 @@ func ContextFrom(ctx context.Context) Context {
 		Agent:       f.Agent,
 		Depth:       f.Depth,
 		Interactive: f.Interactive,
-		Tier:        f.Tier,
-		UserTier:    f.UserTier,
 	}
 }
 
