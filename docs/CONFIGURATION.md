@@ -1747,6 +1747,8 @@ Rules worth knowing:
 
 ### Web UI sign-in — sessions, `auth.mode` and gates (RFC FA)
 
+**Browser security headers.** Every response carries `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`, plus `Strict-Transport-Security: max-age=31536000` when `LOOMCYCLE_PUBLIC_URL` is `https` (no `includeSubDomains`). The Web UI (`/ui`, its assets, and the sign-in, invite, reset and pending pages) is served under `Content-Security-Policy: default-src 'self'; script-src 'self' <hash of each inline script in the shell>; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'` (the hashes are taken from the `index.html` being served, so a UI bundle loaded from disk gets its own). Images from other origins are refused, so a rendered document cannot make the browser call out. `/v1/docs` has its own policy of the same shape; every other route answers with `default-src 'none'; frame-ancestors 'none'`. Nothing may frame loomcycle: a console that signs people in hands the token to a window it opened (`LOOMCYCLE_UI_LOGIN_ORIGINS`), not to a frame.
+
 **Why sessions, not the token in a cookie.** The Web UI used to keep the pasted bearer in its cookie: the browser held the API credential itself, nothing proved who pasted it, and logging out ended nothing on the server. Now a sign-in creates a **server-side session**. The browser holds an opaque, HttpOnly session cookie and never the token; the server stores only the SHA-256 of the session id, so a database read yields no cookie that works. Signing out ends the session on every replica.
 
 ```yaml

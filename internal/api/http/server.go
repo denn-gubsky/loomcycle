@@ -4344,7 +4344,7 @@ func (s *Server) Mux() http.Handler {
 	// The header gates' filter runs before every route (RFC FA P3): it
 	// strips smuggled aliases of a gate's identity header before any
 	// handler can read one.
-	return s.edgeHeaderFilter(s.routes())
+	return s.securityHeaders(s.edgeHeaderFilter(s.routes()))
 }
 
 // routes is the route table Mux serves.
