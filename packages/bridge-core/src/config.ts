@@ -5,6 +5,7 @@
 // than run half-configured.
 
 import { trimTrailingSlashes } from "./text.js";
+import { DEFAULT_VOICE_CONFIG, languageHint, type VoiceConfig } from "./voice.js";
 
 export type AccessMode = "isolated" | "tenant";
 
@@ -34,6 +35,8 @@ export interface SharedConfig {
   port: number;
   /** Local testing only: the platform's request authentication is off. */
   dev: boolean;
+  /** Voice messages (RFC GA), off unless BRIDGE_VOICE=1. */
+  voice: VoiceConfig;
 }
 
 export interface GateConfig {
@@ -99,6 +102,11 @@ export class EnvReader {
     return false;
   }
 
+  /** flag with a default for when it is unset. */
+  flagOr(name: string, def: boolean): boolean {
+    return this.get(name) === undefined ? def : this.flag(name);
+  }
+
   /** A comma list, trimmed, blanks dropped; lower-cased when asked. */
   list(name: string, opts: { lower?: boolean } = {}): string[] {
     const raw = this.get(name);
@@ -159,6 +167,30 @@ export function loadSharedConfig(reader: EnvReader, defaults: { port: number; ga
     store,
     port: reader.int("PORT", defaults.port, 1, 65535),
     dev: reader.flag("BRIDGE_DEV"),
+    voice: loadVoiceConfig(reader),
+  };
+}
+
+/** loadVoiceConfig reads BRIDGE_VOICE and its BRIDGE_VOICE_* settings. Each
+ *  setting is checked even with voice off, so a typo is found before the
+ *  day voice is turned on. */
+export function loadVoiceConfig(reader: EnvReader): VoiceConfig {
+  const d = DEFAULT_VOICE_CONFIG;
+  const label = reader.get("BRIDGE_VOICE_LABEL") ?? d.label;
+  if (label.length > 64) reader.problems.push("BRIDGE_VOICE_LABEL must be at most 64 characters");
+  const rawLanguage = reader.get("BRIDGE_VOICE_LANGUAGE");
+  const language = languageHint(rawLanguage);
+  if (rawLanguage && !language) reader.problems.push("BRIDGE_VOICE_LANGUAGE must be a language code such as en or uk");
+  return {
+    enabled: reader.flag("BRIDGE_VOICE"),
+    untrusted: reader.flagOr("BRIDGE_VOICE_UNTRUSTED", d.untrusted),
+    reply: reader.oneOf("BRIDGE_VOICE_REPLY", ["mirror", "always", "never"] as const, d.reply),
+    maxSeconds: reader.int("BRIDGE_VOICE_MAX_SECONDS", d.maxSeconds, 1, 3600),
+    maxBytes: reader.int("BRIDGE_VOICE_MAX_BYTES", d.maxBytes, 1024, 100 * 1024 * 1024),
+    replyMaxChars: reader.int("BRIDGE_VOICE_REPLY_MAX_CHARS", d.replyMaxChars, 50, 100_000),
+    echo: reader.flagOr("BRIDGE_VOICE_ECHO", d.echo),
+    label,
+    ...(language ? { language } : {}),
   };
 }
 

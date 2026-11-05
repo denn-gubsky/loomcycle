@@ -1,14 +1,19 @@
 // Small text helpers: commands, splitting long replies.
 
-export type Command = "new" | "stop" | "help";
+export type Command = "new" | "stop" | "help" | "voice" | "voice on" | "voice off" | "voice auto";
 
 /** parseCommand recognises the bridge's own commands: the whole message,
- *  case-insensitive. Anything else goes to the agent. */
+ *  case-insensitive, with any run of spaces between words. Anything else goes
+ *  to the agent. */
 export function parseCommand(text: string): Command | undefined {
-  const t = text.trim().toLowerCase();
+  const t = text.trim().toLowerCase().replace(/\s+/g, " ");
   if (t === "/new") return "new";
   if (t === "/stop") return "stop";
   if (t === "/help") return "help";
+  if (t === "/voice") return "voice";
+  if (t === "/voice on") return "voice on";
+  if (t === "/voice off") return "voice off";
+  if (t === "/voice auto") return "voice auto";
   return undefined;
 }
 
@@ -17,6 +22,13 @@ export const HELP_TEXT = [
   "- **/new**: start a new conversation (the agent forgets this one)",
   "- **/stop**: stop the current answer",
   "- **/help**: show this list",
+].join("\n");
+
+/** The /voice lines, added to /help on a bridge that takes voice messages. */
+export const VOICE_HELP_TEXT = [
+  "- **/voice on**: always answer with a voice message as well",
+  "- **/voice off**: answer in text only",
+  "- **/voice auto**: answer a voice message with one (the default)",
 ].join("\n");
 
 /** splitMessage cuts text into pieces of at most max characters, at a line
