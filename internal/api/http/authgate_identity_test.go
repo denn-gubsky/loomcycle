@@ -5,7 +5,9 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/denn-gubsky/loomcycle/internal/authgate"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -296,5 +298,60 @@ func TestProvision_UntrustedGateSyncsNoGroups(t *testing.T) {
 	}
 	if groups, _ := st.GroupList(ctx, "acme"); len(groups) != 0 {
 		t.Fatalf("untrusted gate created groups: %+v", groups)
+	}
+}
+
+// legacyUser declines a user that holds any sign-in of its own, so the list
+// of sign-in kinds must cover every per-user family the store keeps. Read
+// from the store interface rather than restated: a new User<Family>…
+// method (a new way to sign in) fails here until it is a signInKind or is
+// recorded below as not a sign-in.
+func TestSignInKinds_CoverEveryPerUserStoreFamily(t *testing.T) {
+	notSignIn := map[string]string{
+		"TOTP":         "a second factor: it never signs in alone",
+		"RecoveryCode": "the TOTP factor's backup codes",
+	}
+	// The user row itself, not a credential. Erase turns the row into its
+	// tombstone, which no one signs in with.
+	userRow := map[string]bool{"Create": true, "CreateOwner": true, "Delete": true, "Erase": true, "Get": true, "List": true, "Update": true}
+	families := map[string]bool{}
+	for f := range notSignIn {
+		families[f] = true
+	}
+	kinds := map[string]bool{}
+	for _, k := range signInKinds() {
+		if families[k.family] {
+			t.Errorf("%s is both a sign-in kind and recorded as not one", k.family)
+		}
+		kinds[k.family], families[k.family] = true, true
+	}
+	seen := map[string]bool{}
+	st := reflect.TypeOf((*store.Store)(nil)).Elem()
+	for i := 0; i < st.NumMethod(); i++ {
+		name := st.Method(i).Name
+		rest, ok := strings.CutPrefix(name, "User")
+		if !ok || rest == "" || !unicode.IsUpper(rune(rest[0])) || userRow[rest] {
+			continue
+		}
+		fam := ""
+		for f := range families {
+			if strings.HasPrefix(rest, f) && len(f) > len(fam) {
+				fam = f
+			}
+		}
+		if fam == "" {
+			t.Errorf("store.%s belongs to a per-user family nobody classified: add it to signInKinds if a person "+
+				"can sign in with it, or to notSignIn here with why", name)
+			continue
+		}
+		seen[fam] = true
+	}
+	for f := range families {
+		if !seen[f] {
+			t.Errorf("%s names no store method family any more", f)
+		}
+	}
+	if len(kinds) < 3 {
+		t.Fatalf("signInKinds = %v: the census read no kinds, so it proves nothing", kinds)
 	}
 }

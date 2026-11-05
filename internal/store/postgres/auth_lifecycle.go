@@ -277,6 +277,16 @@ func (s *Store) AuthRemovalMarkErased(ctx context.Context, tenantID, subject str
 	return tag.RowsAffected() > 0, nil
 }
 
+// AuthRemovalDeferErase implements store.AuthLifecycleStore.
+func (s *Store) AuthRemovalDeferErase(ctx context.Context, tenantID, subject string, until time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE auth_removals SET erase_due_at = $1, stage = ''
+		WHERE tenant_id = $2 AND subject = $3 AND unbound_at IS NOT NULL AND erased_at IS NULL AND erase_due_at IS NOT NULL`, until.UTC(), tenantID, subject)
+	if err != nil {
+		return false, fmt.Errorf("auth removal defer erase: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // AuthRemovalDelete implements store.AuthLifecycleStore.
 func (s *Store) AuthRemovalDelete(ctx context.Context, tenantID, subject string) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM auth_removals WHERE tenant_id = $1 AND subject = $2`, tenantID, subject)

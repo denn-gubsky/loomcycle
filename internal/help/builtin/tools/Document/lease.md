@@ -10,11 +10,12 @@ consolidation of the same scope.
 
 The lease expires on its own after `ttl_ms`, so a pass that dies never wedges
 the scope. The holder renews it by calling `lease` again with the same name,
-and ends it with `release`. The holder is the run that took it; a caller cannot
-name another holder.
+and ends it with `release`. The holder is the run that took it — outside a
+run, the person who called — and a caller cannot name another holder.
 
 Only the operator, or a driver agent granted statement methods, may hold a
-lease.
+lease; outside a run, a member who is not an operator may lease only its own
+user scope.
 
 ## Arguments
 

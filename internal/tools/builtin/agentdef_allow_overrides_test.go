@@ -69,7 +69,7 @@ func TestAgentDefTool_AllowOverridesSurvivesCreateAndFork(t *testing.T) {
 func TestAgentDefTool_CreateDoesNotDedupAcrossAChangedOverrideLock(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
-	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
+	ctx = tools.WithCallerTier(tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} }), tools.TierOperatorPlane)
 
 	base := `{"op":"create","name":"judge","promote":true,"overlay":{"system_prompt":"judge","tools":["Read"]%s}}`
 	if res, _ := tool.Execute(ctx, json.RawMessage(fmt.Sprintf(base, ""))); res.IsError {

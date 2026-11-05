@@ -168,6 +168,45 @@ func (d *Document) ReadableDocumentChunks(ctx context.Context, scope store.Memor
 	return out, nil
 }
 
+var _ documentRowDeleter = (*Document)(nil)
+
+// DocumentChunkRemoval answers the Memory tool's access-control question for
+// removing a document row by key (memory_document_acl.go): whether the caller on
+// ctx may read, and may delete, the document holding chunkID in the memory scope
+// (scope, scopeID). readable is ReadableDocumentChunks' answer for the one
+// chunk; deletable is delete_document's question of the same document, asked of
+// the whole scope when the chunk has no document row.
+func (d *Document) DocumentChunkRemoval(ctx context.Context, scope store.MemoryScope, scopeID, chunkID string) (readable, deletable bool, err error) {
+	if d == nil || d.Store == nil || d.SqlMem == nil {
+		return false, false, nil
+	}
+	key, mscope, err := d.resolveScope(ctx, string(scope))
+	if err != nil {
+		return false, false, err
+	}
+	if mscope != scope || docMemScopeID(mscope, key) != scopeID {
+		return false, false, fmt.Errorf("document access check: memory scope %s/%q is not document scope %s/%q", scope, scopeID, mscope, docMemScopeID(mscope, key))
+	}
+	acl := d.newDocACL(ctx, key)
+	docID := ""
+	if empty, err := d.documentTablesAbsent(ctx, key); err != nil {
+		return false, false, err
+	} else if !empty {
+		meta, err := d.chunkMetaByIDs(ctx, key, []string{chunkID})
+		if err != nil {
+			return false, false, err
+		}
+		docID = meta[chunkID].documentID
+	}
+	if docID != "" {
+		if readable, err = acl.permits(ctx, "read", docID); err != nil {
+			return false, false, err
+		}
+	}
+	deletable, err = acl.permits(ctx, "delete", docID)
+	return readable, deletable, err
+}
+
 // ResolveDocumentsScope answers the Memory tool's question for a search or
 // recall that also reads the documents of ANOTHER scope (documents_scope): may the
 // run on ctx search the documents of scope, and at which memory scope id do they

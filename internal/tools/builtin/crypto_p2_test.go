@@ -251,7 +251,7 @@ func TestCrypto_ReferencesAreRefusedOutsideTheAgentsAuthority(t *testing.T) {
 	readOnly := tools.UpdateRunPolicy(full, func(rp *tools.RunPolicy) {
 		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", Root: dir, Default: true, ReadOnly: true}}}
 	})
-	operator := tools.WithSubstrateOperator(context.Background())
+	operator := tools.WithCallerTier(context.Background(), tools.TierOperatorPlane)
 	operator = tools.UpdateRunPolicy(tools.WithRunIdentity(operator, tools.RunIdentityValue{TenantID: "tnt"}), func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{Scopes: []string{"tenant"}} })
 
 	for name, c2 := range map[string]struct {

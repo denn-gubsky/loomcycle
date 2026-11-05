@@ -35,7 +35,7 @@ func installTenantOntology(t *testing.T, d *Document, ctx context.Context, md, s
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
 		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant", "user"}}
 	})
-	ctx = tools.WithSubstrateOperator(ctx)
+	ctx = tools.WithCallerTier(ctx, tools.TierOperatorPlane)
 	mj, _ := json.Marshal(md)
 	out, r := docExec(t, d, ctx, `{"op":"import_md","scope":"tenant","markdown":`+string(mj)+`}`)
 	if r.IsError {

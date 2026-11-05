@@ -19,7 +19,7 @@ func gateFixture(t *testing.T) (*Document, context.Context) {
 	d, base, _ := documentFixture(t)
 	base = tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}} })
 	base = tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}} })
-	op := tools.WithSubstrateOperator(base)
+	op := tools.WithCallerTier(base, tools.TierOperatorPlane)
 
 	md := "# Tenant Ontology\n\n## project\n- `status`\n\n### research\n- `question`\n"
 	mj, _ := json.Marshal(md)

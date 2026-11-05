@@ -322,7 +322,7 @@ func (d *Document) classifyWriteRoot(ctx context.Context, key sqlmem.ScopeKey, m
 // the tenant scope the proposed concepts become the root's tags. Not reachable from
 // inside a run, like accept_statement.
 func (d *Document) acceptClassification(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
-	if !authorIsOperatorPlane(ctx) {
+	if !callerDecidesIn(ctx, key) {
 		return errPermission("accept_classification: only an operator accepts a classification — not an agent inside a run",
 			"Leave it pending; an operator reviews it in the console."), nil
 	}

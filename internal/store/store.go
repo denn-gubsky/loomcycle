@@ -6021,7 +6021,7 @@ type AgentDefRow struct {
 	// their yaml, or an off-run call under an operator token — rather than an
 	// agent writing it at runtime.
 	//
-	// Stamped from tools.IsSubstrateOperator(ctx), NOT from CreatedByAgentID:
+	// Stamped from tools.IsOperatorPlane(ctx), NOT from CreatedByAgentID:
 	// a run supplies its own agent id, so a def that claimed authorship by
 	// naming an operator-looking agent would grant itself the authority this
 	// gates.
@@ -6225,7 +6225,7 @@ type TeamDefRow struct {
 	// The AGENT's own flag cannot answer this: the node prompt is the TeamDef's
 	// text, and the two authors are independent.
 	//
-	// Stamped from tools.IsSubstrateOperator(ctx), NOT from CreatedByAgentID:
+	// Stamped from tools.IsOperatorPlane(ctx), NOT from CreatedByAgentID:
 	// a run supplies that itself. Deliberately excluded from ContentSHA256 —
 	// authority, not content — which teamgraph.Sign gets for free by hashing
 	// the definition rather than the row.

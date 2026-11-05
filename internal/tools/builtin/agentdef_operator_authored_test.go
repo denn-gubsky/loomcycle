@@ -13,7 +13,7 @@ import (
 // the fixture's ctx so it keeps the def-authoring policy; only the AUTHORITY
 // differs, which is the axis under test.
 func asOperator(ctx context.Context) context.Context {
-	return tools.WithSubstrateOperator(ctx)
+	return tools.WithCallerTier(ctx, tools.TierOperatorPlane)
 }
 
 // asAgent is the fixture's ctx unchanged — a run authoring a def at runtime,

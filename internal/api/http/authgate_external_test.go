@@ -899,3 +899,28 @@ func TestExternalAssert_ALegacyPrefixNeverTakesAnErasedUser(t *testing.T) {
 		t.Fatalf("the tombstone changed: %+v, %v", u, err)
 	}
 }
+
+// A passkey is a sign-in of its own, like a password: a passkey-only user is
+// a person, so the prefix never hands it to the gate (or to whoever holds the
+// gate's key). The gate gets its own "<gate>:<sub>" user instead.
+func TestExternalAssert_ALegacyPrefixNeverTakesAPasskeyUser(t *testing.T) {
+	ctx := context.Background()
+	m := acmeMap()
+	m.LegacySubjectPrefix = "telegram-"
+	g := newExtGate(t, "telegram", m, config.AuthExternalGate{})
+	f := extFixture(t, g)
+	if err := f.st.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "telegram-4", AccessMode: "isolated", Status: "active", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.UserPasskeyCreate(ctx, store.UserPasskeyRow{CredentialID: []byte("cred-4"), TenantID: "acme", Subject: "telegram-4",
+		UserHandle: []byte("handle-4"), PublicKey: []byte("cose-key"), Discoverable: true, Name: "laptop", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	code, body := f.assert(t, "telegram", g.sign(t, "assert", nil, func(c *jwt.Claims) { c.Subject = "4" }))
+	if code != http.StatusOK || body["subject"] != "telegram:4" {
+		t.Fatalf("passkey user: %d %v, want its own telegram:4 user", code, body)
+	}
+	if ids, err := f.st.UserIdentityListSubject(ctx, "acme", "telegram-4"); err != nil || len(ids) != 0 {
+		t.Fatalf("the passkey user was linked to the gate: %v %v", ids, err)
+	}
+}

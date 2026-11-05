@@ -154,7 +154,7 @@ func withRealOntology(t *testing.T, d *builtin.Document, ctx context.Context, md
 		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant", "user"}}
 		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant", "user"}}
 	})
-	op := tools.WithSubstrateOperator(context.Background())
+	op := tools.WithCallerTier(context.Background(), tools.TierOperatorPlane)
 	op = tools.WithRunIdentity(op, tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: "tnt"})
 	op = tools.WithRunPolicy(op, tools.RunPolicy{
 		Tools:  []string{"*"},

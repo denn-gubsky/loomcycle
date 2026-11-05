@@ -469,7 +469,7 @@ func TestKBJudge_PolicyRoutesTheJudgeRulesAndTheRunReverts(t *testing.T) {
 	if rep["status"] != "complete" || rep["ruled"] != float64(1) || rep["escalated"] != float64(1) || rep["audit_marked"] != float64(1) {
 		t.Fatalf("report = %v, want one ruled (and sampled for audit), one escalated", rep)
 	}
-	op := tools.WithSubstrateOperator(context.Background())
+	op := tools.WithCallerTier(context.Background(), tools.TierOperatorPlane)
 	op = tools.WithRunIdentity(op, tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: "tnt"})
 	op = tools.WithRunPolicy(op, tools.RunPolicy{Tools: []string{"*"},
 		Memory: tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}, SqlMem: tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}})

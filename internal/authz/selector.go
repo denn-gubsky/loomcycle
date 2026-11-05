@@ -174,6 +174,19 @@ func (s selector) matches(spec TypeSpec, name string) bool {
 	return doublestarMatch(s.glob, segs)
 }
 
+// namesExactly reports whether s names exactly the instance name (a literal,
+// in the scope name has), not a pattern or a whole scope that covers it.
+func (s selector) namesExactly(spec TypeSpec, name string) bool {
+	if s.literal == "" || name == AnyInstance {
+		return false
+	}
+	scope, segs := splitName(spec, name)
+	if len(spec.Scopes) > 0 && s.scope != scope {
+		return false
+	}
+	return s.literal == strings.Join(segs, "/")
+}
+
 // doublestarMatch matches a `/`-split pattern against a `/`-split path. `**`
 // matches zero or more segments; every other segment is a single-segment
 // glob. The same matcher the `skills:` allowlist uses (internal/skillmatch),

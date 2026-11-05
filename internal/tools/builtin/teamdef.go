@@ -633,7 +633,12 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 		// caller supplied. CreatedByAgentID above is a run's own claim about
 		// itself; this is the runtime's. A team's node prompts are expanded
 		// under this flag, so it must not be assertable by the body it gates.
-		OperatorAuthored: tools.IsSubstrateOperator(ctx),
+		OperatorAuthored: tools.IsOperatorPlane(ctx),
+	}
+	if in.Promote == nil || *in.Promote {
+		if err := t.memberTeamActivationGuard(ctx, "create", tenantID, in.Name); err != nil {
+			return errResult(err.Error()), nil
+		}
 	}
 	created, err := t.Store.TeamDefCreate(ctx, row)
 	if err != nil {
@@ -724,7 +729,12 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 		// The FORKER's ctx, never the parent row's flag. A fork may rewrite
 		// every node prompt, so inheriting would launder an operator-authored
 		// team into an agent-authored one that kept the authority.
-		OperatorAuthored: tools.IsSubstrateOperator(ctx),
+		OperatorAuthored: tools.IsOperatorPlane(ctx),
+	}
+	if in.Promote != nil && *in.Promote {
+		if err := t.memberTeamActivationGuard(ctx, "fork", tenantID, in.Name); err != nil {
+			return errResult(err.Error()), nil
+		}
 	}
 	created, err := t.Store.TeamDefCreate(ctx, row)
 	if err != nil {
@@ -883,6 +893,9 @@ func (t *TeamDef) execRetire(ctx context.Context, in teamDefInput) (tools.Result
 			return errResult(fmt.Sprintf("retire: %s", err)), nil
 		}
 	}
+	if row.OperatorAuthored && !tools.IsOperatorPlane(ctx) && tools.IsOffRunPlane(ctx) {
+		return errResult(fmt.Sprintf("retire: version %q of %q is an operator's; an operator retires it", row.DefID, row.Name)), nil
+	}
 	if err := t.Store.TeamDefSetRetired(ctx, in.DefID, *in.Retired); err != nil {
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
 	}
@@ -929,6 +942,9 @@ func (t *TeamDef) execDelete(ctx context.Context, in teamDefInput) (tools.Result
 		return errResult("delete: missing required field: name"), nil
 	}
 	tenantID := tools.RunIdentity(ctx).TenantID
+	if err := t.memberTeamActivationGuard(ctx, "delete", tenantID, in.Name); err != nil {
+		return errResult(err.Error()), nil
+	}
 	deleted, err := t.Store.TeamDefDelete(ctx, tenantID, in.Name)
 	if err != nil {
 		return errResult(fmt.Sprintf("delete: %s", err)), nil
@@ -960,6 +976,9 @@ func (t *TeamDef) execPromote(ctx context.Context, in teamDefInput) (tools.Resul
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
 	}
 	ident := tools.RunIdentity(ctx)
+	if err := t.memberTeamActivationGuard(ctx, "promote", ident.TenantID, row.Name); err != nil {
+		return errResult(err.Error()), nil
+	}
 	if err := t.Store.TeamDefSetActive(ctx, ident.TenantID, row.Name, row.DefID, ident.AgentID, t.promoter(ctx)); err != nil {
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
 	}

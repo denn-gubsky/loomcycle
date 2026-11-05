@@ -859,6 +859,11 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	}
 
 	allowedTools := stripPrivilegedTools(req.Tools, s.cfg().Env.MCPAllowPrivilegedTools)
+	// RFC FY Part B: what an AgentDef create is held to, for a non-operator
+	// caller — the member ceiling, and no name a definition holds.
+	if err := builtin.CheckRegisteredAgent(ctx, s.cfg(), s.store, req, allowedTools); err != nil {
+		return connector.AgentDescriptor{}, err
+	}
 
 	def := config.AgentDef{
 		SystemPrompt:     req.SystemPrompt,
