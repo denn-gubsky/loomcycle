@@ -1539,7 +1539,10 @@ func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	// ruling does; a machine's never rules on what is asserted.
 	_, machine := machineRuler(ruledBy)
 	audit := judgeAcceptance(s) && !machine
-	if s.Status != edgeStatusProposed && !(accept && s.Status == edgeStatusRejected) && !audit {
+	// Accepting a rejection reverses it, which is a person's alone: a machine
+	// ruling that chose its candidates before an operator rejected one would
+	// otherwise overturn that rejection when it reaches it (RFC FZ Part C).
+	if s.Status != edgeStatusProposed && !(accept && s.Status == edgeStatusRejected && !machine) && !audit {
 		msg := op + ": not_a_proposal: the statement is " + s.Status + ", so there is nothing to rule on"
 		hint := "Rule on proposals from op=list_statements. To withdraw a relation that holds, judge it unsupported (judge_fact) or remove it (unlink_chunks)."
 		if s.Auto {
@@ -1589,7 +1592,13 @@ func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		set, args = set+`, attributes = ?`, append(args, arg)
 		where += ` AND ruled_by = ?`
 	}
-	args = append(args, id, s.Status)
+	// The status read is the one the write requires, so a ruling made since is
+	// never replaced; a machine's is always a proposal's (checked above).
+	readStatus := s.Status
+	if machine {
+		readStatus = edgeStatusProposed
+	}
+	args = append(args, id, readStatus)
 	if audit {
 		args = append(args, s.RuledBy)
 	}
