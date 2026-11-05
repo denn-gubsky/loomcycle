@@ -30,12 +30,13 @@ jobs:
       ts: ${{ steps.c.outputs.ts }}
       python: ${{ steps.c.outputs.python }}
       bridges: ${{ steps.c.outputs.bridges }}
+      landing: ${{ steps.c.outputs.landing }}
       proto: ${{ steps.c.outputs.proto }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
           check-latest: true
@@ -54,9 +55,9 @@ jobs:
       matrix:
         go-version: ["1.26.x"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go-version }}
           # The runner caches an older patch; take the newest so a stdlib fix lands.
@@ -164,13 +165,13 @@ jobs:
             # Every package a shard above names, or it runs twice.
             without: ./internal/api/http/ ./internal/tools/builtin/ ./cmd/... ./internal/store/... ./internal/snapshot/...
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Two commits: the pull request's merge commit and its first parent,
           # which scripts/ci/select-packages.sh diffs against.
           fetch-depth: 2
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
           # The runner caches an older patch; take the newest so a stdlib fix lands.
@@ -296,7 +297,8 @@ jobs:
       postgres:
         # pgvector image (postgres 16 + pgvector) so the SQL Memory vector-column
         # tests (Phase 3c) run on real pgvector, not only the base store contract.
-        image: pgvector/pgvector:pg16
+        # Pinned by digest; dependabot does not update a workflow service image.
+        image: pgvector/pgvector:pg16@sha256:0dd3149a06e4579a0d70d8fef9945636cd514005e7237deb27f9b67886f8dc4f
         env:
           POSTGRES_USER: loomcycle
           POSTGRES_PASSWORD: loomcycle
@@ -309,11 +311,11 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
           # The runner caches an older patch; take the newest so a stdlib fix lands.
@@ -566,9 +568,9 @@ jobs:
     if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
           # The runner caches an older patch; take the newest so a stdlib fix lands.
@@ -599,8 +601,8 @@ jobs:
       run:
         working-directory: adapters/ts
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "20"
           cache: npm
@@ -624,14 +626,14 @@ jobs:
     if: needs.changes.outputs.go == 'true' || needs.changes.outputs.bridges == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.x"
           # The runner caches an older patch; take the newest so a stdlib fix lands.
           check-latest: true
           cache: true
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "20"
           cache: npm
@@ -649,7 +651,7 @@ jobs:
       # 200 lines.
       - name: Keep the loomcycle log
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: teams-bridge-it-loomcycle-log
           path: ${{ runner.temp }}/teams-bridge-it/loomcycle.log
@@ -665,8 +667,8 @@ jobs:
     if: needs.changes.outputs.bridges == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "20"
           cache: npm
@@ -697,8 +699,8 @@ jobs:
     if: needs.changes.outputs.bridges == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build every platform bridge image
         run: |
           set -euo pipefail
@@ -715,6 +717,27 @@ jobs:
             echo "::endgroup::"
           done
 
+  # The loomcycle.cloud landing server (cloud-deployment/landing): its node:test
+  # suite boots server.js against a fake runtime and checks the static site in
+  # cloud-web/ that it serves. Node 20, the floor its package.json declares.
+  landing:
+    name: Landing server
+    needs: changes
+    if: needs.changes.outputs.landing == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloud-deployment/landing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: cloud-deployment/landing/package-lock.json
+      - run: npm ci
+      - run: npm test
+
   web-ui:
     name: Web UI build
     needs: changes
@@ -724,8 +747,8 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "20"
           cache: npm
@@ -821,13 +844,13 @@ jobs:
     if: needs.changes.outputs.proto == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
           # The runner caches an older patch; take the newest so a stdlib fix lands.
           check-latest: true
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
       # PINNED, and the pin is the whole reason this gate is usable. The Python
@@ -886,8 +909,8 @@ jobs:
       run:
         working-directory: adapters/python
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
       - name: Install (with dev extras)
