@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auditchain"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
 
@@ -21,8 +22,8 @@ func TestSweeper_AuditPruneKeepsEveryChainVerifiable(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	keys := audit.ChainKeys{Current: []byte("retention-test-audit-key-32bytes")}
-	sink, err := audit.NewStoreSink(st, keys)
+	keys := auditchain.ChainKeys{Current: []byte("retention-test-audit-key-32bytes")}
+	sink, err := auditchain.NewStoreSink(st, keys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +63,7 @@ func TestSweeper_AuditPruneKeepsEveryChainVerifiable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reps, err := audit.VerifyAll(ctx, st, keys, tenants)
+	reps, err := auditchain.VerifyAll(ctx, st, keys, tenants)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,8 +85,8 @@ func TestSweeper_AuditPruneRefusesATamperedChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	keys := audit.ChainKeys{Current: []byte("retention-test-audit-key-32bytes")}
-	sink, err := audit.NewStoreSink(st, keys)
+	keys := auditchain.ChainKeys{Current: []byte("retention-test-audit-key-32bytes")}
+	sink, err := auditchain.NewStoreSink(st, keys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +118,7 @@ func TestSweeper_AuditPruneRefusesATamperedChain(t *testing.T) {
 	if rows, _ := st.AuditEventsList(ctx, "globex", 0, 0); len(rows) != 0 {
 		t.Errorf("globex keeps %d rows, want its 2 pruned", len(rows))
 	}
-	if rep, err := audit.Verify(ctx, st, keys, "acme"); err != nil || rep.OK || rep.BreakSeq != 2 {
+	if rep, err := auditchain.Verify(ctx, st, keys, "acme"); err != nil || rep.OK || rep.BreakSeq != 2 {
 		t.Errorf("acme after the sweep: %+v, %v; want the break at 2 still reported", rep, err)
 	}
 }

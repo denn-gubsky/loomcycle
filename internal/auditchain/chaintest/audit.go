@@ -1,4 +1,8 @@
-package storetest
+// Package chaintest is the store-backed audit chain's contract, run against
+// both store backends from their own tests. It lives with the chain rather
+// than in storetest: the chain sits on the store, so storetest importing it
+// would point the layering the wrong way.
+package chaintest
 
 import (
 	"context"
@@ -10,6 +14,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auditchain"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -39,7 +44,7 @@ func RunAudit(t *testing.T, factory ReplicaFactory) {
 	}
 }
 
-var auditTestKeys = audit.ChainKeys{Current: []byte("0123456789abcdef0123456789abcdef")}
+var auditTestKeys = auditchain.ChainKeys{Current: []byte("0123456789abcdef0123456789abcdef")}
 
 // Two replicas appending to the same tenants at once — each through its own
 // handle, so nothing in-process serializes them — must leave one unbroken
@@ -51,7 +56,7 @@ func testAuditEveryReplicaWritesOneChainPerTenant(t *testing.T, a, b store.Store
 	tenants := []string{"t1", "t2", ""}
 	sinks := make([]audit.Sink, 0, 2)
 	for _, s := range []store.Store{a, b} {
-		sink, err := audit.NewStoreSink(s, auditTestKeys)
+		sink, err := auditchain.NewStoreSink(s, auditTestKeys)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -89,7 +94,7 @@ func testAuditEveryReplicaWritesOneChainPerTenant(t *testing.T, a, b store.Store
 			want += 2
 		}
 		for _, s := range []store.Store{a, b} {
-			rep, err := audit.Verify(ctx, s, auditTestKeys, tenant)
+			rep, err := auditchain.Verify(ctx, s, auditTestKeys, tenant)
 			if err != nil {
 				t.Fatalf("verify %q: %v", tenant, err)
 			}
@@ -98,7 +103,7 @@ func testAuditEveryReplicaWritesOneChainPerTenant(t *testing.T, a, b store.Store
 			}
 		}
 	}
-	reg, op, err := audit.ReadRegistry(ctx, b, auditTestKeys)
+	reg, op, err := auditchain.ReadRegistry(ctx, b, auditTestKeys)
 	if err != nil || !op.OK {
 		t.Fatalf("ReadRegistry: %+v, %v", op, err)
 	}
@@ -120,7 +125,7 @@ func testAuditPruneKeepsTheChainVerifiable(t *testing.T, a, b store.Store) {
 	ctx := context.Background()
 	appendAt := func(s store.Store, ts time.Time, subject string) {
 		t.Helper()
-		sink, err := audit.NewStoreSink(s, auditTestKeys)
+		sink, err := auditchain.NewStoreSink(s, auditTestKeys)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -136,12 +141,12 @@ func testAuditPruneKeepsTheChainVerifiable(t *testing.T, a, b store.Store) {
 	for i := 0; i < 3; i++ {
 		appendAt(b, recent.Add(time.Duration(i)*time.Hour), fmt.Sprintf("new-%d", i))
 	}
-	n, err := audit.Prune(ctx, b, auditTestKeys, "t1", time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC))
+	n, err := auditchain.Prune(ctx, b, auditTestKeys, "t1", time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil || n != 4 {
 		t.Fatalf("AuditPrune = %d, %v; want 4 rows removed", n, err)
 	}
 	appendAt(a, recent.Add(24*time.Hour), "after-prune")
-	rep, err := audit.Verify(ctx, a, auditTestKeys, "t1")
+	rep, err := auditchain.Verify(ctx, a, auditTestKeys, "t1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,10 +155,10 @@ func testAuditPruneKeepsTheChainVerifiable(t *testing.T, a, b store.Store) {
 	}
 	// Pruning what is left (every row older than now) leaves an empty chain
 	// whose anchor is its head, and that still verifies.
-	if _, err := audit.Prune(ctx, a, auditTestKeys, "t1", time.Now().Add(time.Hour)); err != nil {
+	if _, err := auditchain.Prune(ctx, a, auditTestKeys, "t1", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	rep, err = audit.Verify(ctx, b, auditTestKeys, "t1")
+	rep, err = auditchain.Verify(ctx, b, auditTestKeys, "t1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,13 +167,13 @@ func testAuditPruneKeepsTheChainVerifiable(t *testing.T, a, b store.Store) {
 	}
 	// Pruning the operator chain carries t1's opening in its signed anchor
 	// state, so t1 is still known to exist with no opening row left.
-	if n, err := audit.Prune(ctx, b, auditTestKeys, "", time.Now().Add(time.Hour)); err != nil || n != 1 {
+	if n, err := auditchain.Prune(ctx, b, auditTestKeys, "", time.Now().Add(time.Hour)); err != nil || n != 1 {
 		t.Fatalf("pruning the operator chain = %d, %v; want its one opening removed", n, err)
 	}
 	if head, err := a.AuditHeadGet(ctx, ""); err != nil || !strings.Contains(head.AnchorState, `"t1":1`) {
 		t.Errorf("operator head after the prune = %+v, %v; want t1's opening in the anchor state", head, err)
 	}
-	if rep, err := audit.Verify(ctx, a, auditTestKeys, "t1"); err != nil || !rep.OK {
+	if rep, err := auditchain.Verify(ctx, a, auditTestKeys, "t1"); err != nil || !rep.OK {
 		t.Errorf("t1 after the operator chain's prune: %+v, %v", rep, err)
 	}
 	// A prune of a tenant with no chain does nothing.
@@ -185,7 +190,7 @@ func testAuditHeadAndListRoundTrip(t *testing.T, a, b store.Store) {
 		t.Fatal("AuditHeadGet on an empty store: want not found")
 	}
 	ts := time.Date(2026, 11, 5, 10, 11, 12, 987654321, time.UTC)
-	row := audit.RowFor(audit.Event{TS: ts, Action: "auth_login", TargetTenant: "t1", ActorSubject: "alice",
+	row := auditchain.RowFor(audit.Event{TS: ts, Action: "auth_login", TargetTenant: "t1", ActorSubject: "alice",
 		TargetSubject: "bob"}, []byte(`{"action":"auth_login"}`))
 	rows, err := a.AuditAppend(ctx, []store.AuditEventRow{row}, auditTestKeys.Seal(), nil)
 	if err != nil || len(rows) != 1 {
@@ -214,7 +219,7 @@ func testAuditHeadAndListRoundTrip(t *testing.T, a, b store.Store) {
 // cover exactly the bytes stored, so the field is stored escaped.
 func testAuditUnsafeTextIsStoredEscapedAndHashed(t *testing.T, a, b store.Store) {
 	ctx := context.Background()
-	sink, err := audit.NewStoreSink(a, auditTestKeys)
+	sink, err := auditchain.NewStoreSink(a, auditTestKeys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +227,7 @@ func testAuditUnsafeTextIsStoredEscapedAndHashed(t *testing.T, a, b store.Store)
 		TargetName: "doc:/a\x00b\xff\\c"}); err != nil {
 		t.Fatalf("an event with NUL and invalid UTF-8 was not recorded: %v", err)
 	}
-	row := audit.RowFor(audit.Event{TS: time.Now(), Action: "acl_denied", ActorTenant: "t1"}, []byte("{\"x\":\"\x00\xfe\"}"))
+	row := auditchain.RowFor(audit.Event{TS: time.Now(), Action: "acl_denied", ActorTenant: "t1"}, []byte("{\"x\":\"\x00\xfe\"}"))
 	if _, err := a.AuditAppend(ctx, []store.AuditEventRow{row}, auditTestKeys.Seal(), nil); err != nil {
 		t.Fatalf("a payload with NUL and invalid UTF-8 was not stored: %v", err)
 	}
@@ -236,7 +241,7 @@ func testAuditUnsafeTextIsStoredEscapedAndHashed(t *testing.T, a, b store.Store)
 	if rows[1].Payload != `{"x":"\x00\xfe"}` {
 		t.Errorf("stored payload %q, want the reversible escapes", rows[1].Payload)
 	}
-	rep, err := audit.Verify(ctx, b, auditTestKeys, "t1")
+	rep, err := auditchain.Verify(ctx, b, auditTestKeys, "t1")
 	if err != nil || !rep.OK || rep.Rows != 2 {
 		t.Errorf("verify = %+v, %v", rep, err)
 	}
@@ -245,11 +250,11 @@ func testAuditUnsafeTextIsStoredEscapedAndHashed(t *testing.T, a, b store.Store)
 // The store side of a prune: inside its transaction it hands the seal the
 // locked head (the previous anchor and its state) and every row it would
 // remove, in order and complete, and a seal error removes nothing. The seal
-// does the verifying (audit.ChainKeys.SealAnchor); this pins that each
+// does the verifying (auditchain.ChainKeys.SealAnchor); this pins that each
 // backend gives it the whole range to verify.
 func testAuditPruneHandsTheSealEveryRowAndAbortsOnItsError(t *testing.T, a, b store.Store) {
 	ctx := context.Background()
-	sink, err := audit.NewStoreSink(a, auditTestKeys)
+	sink, err := auditchain.NewStoreSink(a, auditTestKeys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +295,7 @@ func testAuditPruneHandsTheSealEveryRowAndAbortsOnItsError(t *testing.T, a, b st
 	if fmt.Sprint(seen) != "[[1 2 3] [4 5]]" || fmt.Sprint(anchors) != "[0 3]" {
 		t.Errorf("the seal saw rows %v after anchors %v; want [[1 2 3] [4 5]] after [0 3]", seen, anchors)
 	}
-	if rep, err := audit.Verify(ctx, a, auditTestKeys, "t1"); err != nil || !rep.OK || rep.AnchorSeq != 5 {
+	if rep, err := auditchain.Verify(ctx, a, auditTestKeys, "t1"); err != nil || !rep.OK || rep.AnchorSeq != 5 {
 		t.Errorf("after the batched prune: %+v, %v", rep, err)
 	}
 }

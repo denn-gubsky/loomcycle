@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auditchain"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -50,7 +51,7 @@ func tenantsOf(rows []auditExportRow) map[string]int {
 // needs to re-link the chain.
 func TestAuditExport_IsTenantScopedAndCarvedOutOfMembers(t *testing.T) {
 	_, ts, st := overrideFixture(t)
-	sink, err := audit.NewStoreSink(st, audit.ChainKeys{Current: []byte("export-test-chain-key-32-bytes!!")})
+	sink, err := auditchain.NewStoreSink(st, auditchain.ChainKeys{Current: []byte("export-test-chain-key-32-bytes!!")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +117,7 @@ func TestAuditExport_IsTenantScopedAndCarvedOutOfMembers(t *testing.T) {
 	for _, r := range rows {
 		row := store.AuditEventRow{TenantID: r.Tenant, Seq: r.Seq, TS: time.Unix(0, r.TSNanos).UTC(), Actor: r.Actor,
 			Action: r.Action, Subject: r.Subject, Payload: r.Payload}
-		if r.PrevHash != prev || audit.RowHash(prev, row) != r.Hash || r.MAC == "" {
+		if r.PrevHash != prev || auditchain.RowHash(prev, row) != r.Hash || r.MAC == "" {
 			t.Fatalf("row %d does not re-link from the export: %+v", r.Seq, r)
 		}
 		prev = r.Hash

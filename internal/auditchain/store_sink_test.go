@@ -1,4 +1,4 @@
-package audit_test
+package auditchain_test
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auditchain"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
@@ -45,7 +46,7 @@ func (a *slowAppender) AuditAppend(ctx context.Context, rows []store.AuditEventR
 // state change (a token mint) recorded at the same time.
 func TestStoreSink_AFloodOfFailedSignInsDoesNotBlockATokenMint(t *testing.T) {
 	st := &slowAppender{Store: sinkStore(t), delay: 20 * time.Millisecond}
-	sink, err := audit.NewStoreSink(st, testKeys)
+	sink, err := auditchain.NewStoreSink(st, testKeys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +114,7 @@ func (a *gatedAppender) AuditAppend(ctx context.Context, rows []store.AuditEvent
 // one signed summary row per action once the writer can.
 func TestStoreSink_OverflowIsCountedInADropSummaryRow(t *testing.T) {
 	st := &gatedAppender{Store: sinkStore(t), gate: make(chan struct{})}
-	sink, err := audit.NewStoreSink(st, testKeys)
+	sink, err := auditchain.NewStoreSink(st, testKeys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +148,7 @@ func TestStoreSink_OverflowIsCountedInADropSummaryRow(t *testing.T) {
 		switch r.Action {
 		case "auth_login_failed":
 			stored++
-		case audit.ActionEventsDropped:
+		case auditchain.ActionEventsDropped:
 			var ev audit.Event
 			if err := json.Unmarshal([]byte(r.Payload), &ev); err != nil {
 				t.Fatal(err)
@@ -171,7 +172,7 @@ func TestStoreSink_OverflowIsCountedInADropSummaryRow(t *testing.T) {
 // each tenant's observations in the order they were recorded.
 func TestStoreSink_ObservationsLandInOrderPerTenant(t *testing.T) {
 	st := sinkStore(t)
-	sink, err := audit.NewStoreSink(st, testKeys)
+	sink, err := auditchain.NewStoreSink(st, testKeys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +198,7 @@ func TestStoreSink_ObservationsLandInOrderPerTenant(t *testing.T) {
 				t.Fatalf("%s: row %d (%s) after %s: out of order", tenant, rows[i].Seq, rows[i].Subject, rows[i-1].Subject)
 			}
 		}
-		if rep, err := audit.Verify(ctx, st, testKeys, tenant); err != nil || !rep.OK {
+		if rep, err := auditchain.Verify(ctx, st, testKeys, tenant); err != nil || !rep.OK {
 			t.Errorf("%s: %+v, %v", tenant, rep, err)
 		}
 	}
@@ -226,7 +227,7 @@ func (a *actionGatedAppender) AuditAppend(ctx context.Context, rows []store.Audi
 // high-signal event (a refresh token replayed) is written at once.
 func TestStoreSink_AnUnauthenticatedFloodSuppressesNoAuthenticatedEvent(t *testing.T) {
 	st := &actionGatedAppender{Store: sinkStore(t), action: "auth_login_failed", gate: make(chan struct{})}
-	sink, err := audit.NewStoreSink(st, testKeys)
+	sink, err := auditchain.NewStoreSink(st, testKeys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +274,7 @@ func TestStoreSink_AnUnauthenticatedFloodSuppressesNoAuthenticatedEvent(t *testi
 // chain, naming who sent them.
 func TestStoreSink_ATenantsDropsAreSummarizedInItsOwnChain(t *testing.T) {
 	st := &gatedAppender{Store: sinkStore(t), gate: make(chan struct{})}
-	sink, err := audit.NewStoreSink(st, testKeys)
+	sink, err := auditchain.NewStoreSink(st, testKeys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +294,7 @@ func TestStoreSink_ATenantsDropsAreSummarizedInItsOwnChain(t *testing.T) {
 	}
 	var summary *audit.Event
 	for _, r := range rows {
-		if r.Action == audit.ActionEventsDropped {
+		if r.Action == auditchain.ActionEventsDropped {
 			var ev audit.Event
 			if err := json.Unmarshal([]byte(r.Payload), &ev); err != nil {
 				t.Fatal(err)

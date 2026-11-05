@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auditchain"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
@@ -47,7 +48,7 @@ func auditCmdEnv(t *testing.T) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sink, err := audit.NewStoreSink(st, audit.ChainKeys{Current: key})
+	sink, err := auditchain.NewStoreSink(st, auditchain.ChainKeys{Current: key})
 	if err != nil {
 		t.Fatal(err)
 	}

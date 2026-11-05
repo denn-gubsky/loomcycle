@@ -44,7 +44,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auditchain"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -251,7 +251,7 @@ type Config struct {
 	// Independent of every other family: it is its own knob, and deleting
 	// audit rows never rides on a chats or defs setting.
 	AuditMaxAge time.Duration
-	AuditKeys   *audit.ChainKeys
+	AuditKeys   *auditchain.ChainKeys
 
 	// ExportDir is the directory export+prune writes JSON into: def versions under
 	// <ExportDir>/<day>/<def-type>/, chat sessions under <ExportDir>/chats/<day>/.
@@ -371,7 +371,7 @@ type Sweeper struct {
 	lockKey             int64
 	now                 func() time.Time
 	auditMaxAge         time.Duration
-	auditKeys           *audit.ChainKeys
+	auditKeys           *auditchain.ChainKeys
 }
 
 // New constructs a Sweeper. A nil store means "no persistence" — Run is then a
@@ -462,10 +462,10 @@ func (s *Sweeper) sweepAuditOnce(parent context.Context) (pruned, refused int, e
 		if ctx.Err() != nil {
 			break
 		}
-		n, err := audit.Prune(ctx, s.store, *s.auditKeys, tenant, cutoff)
+		n, err := auditchain.Prune(ctx, s.store, *s.auditKeys, tenant, cutoff)
 		pruned += n
 		switch {
-		case errors.Is(err, audit.ErrChainBroken):
+		case errors.Is(err, auditchain.ErrChainBroken):
 			refused++
 			s.logger.Error("retention: an audit chain does not verify; it is not pruned", "tenant", tenant, "err", err)
 		case err != nil:

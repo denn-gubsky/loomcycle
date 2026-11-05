@@ -9,6 +9,7 @@ import (
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
 	webhookapi "github.com/denn-gubsky/loomcycle/internal/api/webhook"
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auditchain"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -127,7 +128,7 @@ type boot struct {
 	// auditRetentionKeys verify a chain and sign the anchor the retention
 	// sweeper leaves when it prunes it; nil when LOOMCYCLE_AUDIT_RETENTION_DAYS
 	// keeps every row.
-	auditRetentionKeys *audit.ChainKeys
+	auditRetentionKeys *auditchain.ChainKeys
 
 	// The rest of the server build.
 	hookDefTool           *builtin.HookDef

@@ -1,4 +1,4 @@
-package audit_test
+package auditchain_test
 
 import (
 	"context"
@@ -9,11 +9,12 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auditchain"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
 
-var testKeys = audit.ChainKeys{Current: []byte("an-audit-chain-key-of-32-bytes!!")}
+var testKeys = auditchain.ChainKeys{Current: []byte("an-audit-chain-key-of-32-bytes!!")}
 
 // chainFixture is a SQLite store holding one tenant's chain of n rows, plus a
 // raw connection to the same file: the database writer of the threat model.
@@ -25,7 +26,7 @@ func chainFixture(t *testing.T, n int) (*sqlite.Store, *sql.DB) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	sink, err := audit.NewStoreSink(s, testKeys)
+	sink, err := auditchain.NewStoreSink(s, testKeys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,9 +44,9 @@ func chainFixture(t *testing.T, n int) (*sqlite.Store, *sql.DB) {
 	return s, raw
 }
 
-func verify(t *testing.T, s *sqlite.Store, keys audit.ChainKeys) audit.VerifyReport {
+func verify(t *testing.T, s *sqlite.Store, keys auditchain.ChainKeys) auditchain.VerifyReport {
 	t.Helper()
-	rep, err := audit.Verify(context.Background(), s, keys, "t1")
+	rep, err := auditchain.Verify(context.Background(), s, keys, "t1")
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -73,11 +74,11 @@ func rehashFrom(t *testing.T, s *sqlite.Store, db *sql.DB, from int64, forge []b
 	for _, r := range rows {
 		if r.Seq >= from {
 			r.PrevHash = prev
-			r.Hash = audit.RowHash(prev, r)
+			r.Hash = auditchain.RowHash(prev, r)
 			mac := r.MAC
 			if forge != nil {
 				// The forger signs with a key of its own.
-				_, _ = audit.ChainKeys{Current: forge}.Seal()(&r)
+				_, _ = auditchain.ChainKeys{Current: forge}.Seal()(&r)
 				mac = r.MAC
 			}
 			exec(t, db, `UPDATE audit_events SET prev_hash = ?, hash = ?, mac = ? WHERE tenant_id = 't1' AND seq = ?`,
@@ -175,7 +176,7 @@ func TestAudit_ATamperedRowFailsVerification(t *testing.T) {
 		{"the whole chain deleted and a new one begun", func(t *testing.T, s *sqlite.Store, db *sql.DB) {
 			exec(t, db, `DELETE FROM audit_events WHERE tenant_id = 't1'`)
 			exec(t, db, `DELETE FROM audit_heads WHERE tenant_id = 't1'`)
-			sink, err := audit.NewStoreSink(s, testKeys)
+			sink, err := auditchain.NewStoreSink(s, testKeys)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -205,10 +206,10 @@ func TestAudit_ATamperedRowFailsVerification(t *testing.T) {
 func TestAuditVerify_AcceptsTheRotatedOutKey(t *testing.T) {
 	s, _ := chainFixture(t, 3)
 	newKey := []byte("the-rotated-in-audit-key-32bytes")
-	if rep := verify(t, s, audit.ChainKeys{Current: newKey, Previous: testKeys.Current}); !rep.OK {
+	if rep := verify(t, s, auditchain.ChainKeys{Current: newKey, Previous: testKeys.Current}); !rep.OK {
 		t.Errorf("with the old key as previous: %+v", rep)
 	}
-	if rep := verify(t, s, audit.ChainKeys{Current: newKey}); rep.OK {
+	if rep := verify(t, s, auditchain.ChainKeys{Current: newKey}); rep.OK {
 		t.Errorf("with neither key: verifies, %+v", rep)
 	}
 }
@@ -224,11 +225,11 @@ func TestAuditStoreSink_ChainsByTenantAndNeedsAKey(t *testing.T) {
 		{audit.Event{ActorTenant: "acme"}, "acme"},
 		{audit.Event{}, ""},
 	} {
-		if got := audit.ChainTenant(tc.ev); got != tc.want {
+		if got := auditchain.ChainTenant(tc.ev); got != tc.want {
 			t.Errorf("ChainTenant(%+v) = %q, want %q", tc.ev, got, tc.want)
 		}
 	}
-	if _, err := audit.NewStoreSink(&sqlite.Store{}, audit.ChainKeys{}); err == nil {
+	if _, err := auditchain.NewStoreSink(&sqlite.Store{}, auditchain.ChainKeys{}); err == nil {
 		t.Error("NewStoreSink without a key: want an error")
 	}
 	var _ store.AuditStore = (*sqlite.Store)(nil)
@@ -245,11 +246,11 @@ func TestSafeText_EscapesNULAndInvalidUTF8Reversibly(t *testing.T) {
 		"\xe2\x82":           `\xe2\x82`,
 		"ok\x00\xc3\xa9\xc3": `ok\x00é\xc3`,
 	} {
-		got := audit.SafeText(in)
+		got := auditchain.SafeText(in)
 		if got != want {
 			t.Errorf("SafeText(%q) = %q, want %q", in, got, want)
 		}
-		if again := audit.SafeText(got); again != got {
+		if again := auditchain.SafeText(got); again != got {
 			t.Errorf("SafeText is not idempotent on %q: %q", got, again)
 		}
 	}
@@ -263,7 +264,7 @@ func TestAuditVerify_PreviousKeyStopsAtTheRotationPoint(t *testing.T) {
 	newKey := []byte("the-rotated-in-audit-key-32bytes")
 	record := func(key []byte, subject string) {
 		t.Helper()
-		sink, err := audit.NewStoreSink(s, audit.ChainKeys{Current: key})
+		sink, err := auditchain.NewStoreSink(s, auditchain.ChainKeys{Current: key})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -273,7 +274,7 @@ func TestAuditVerify_PreviousKeyStopsAtTheRotationPoint(t *testing.T) {
 	}
 	record(newKey, "after-rotation-1")
 	record(newKey, "after-rotation-2")
-	keys := audit.ChainKeys{Current: newKey, Previous: testKeys.Current}
+	keys := auditchain.ChainKeys{Current: newKey, Previous: testKeys.Current}
 	if rep := verify(t, s, keys); !rep.OK || rep.Rows != 5 {
 		t.Fatalf("rows before and after the rotation: %+v", rep)
 	}
@@ -308,12 +309,12 @@ func (r *interleavingReader) AuditHeadGet(ctx context.Context, tenant string) (s
 // operator chain for the opening before calling it missing.
 func TestAuditVerify_ANewChainOpenedDuringTheWalkVerifies(t *testing.T) {
 	s, _ := chainFixture(t, 2)
-	sink, err := audit.NewStoreSink(s, testKeys)
+	sink, err := auditchain.NewStoreSink(s, testKeys)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := &interleavingReader{Store: s, sink: sink, tenant: "t2"}
-	rep, err := audit.Verify(context.Background(), r, testKeys, "t2")
+	rep, err := auditchain.Verify(context.Background(), r, testKeys, "t2")
 	if err != nil || !r.done {
 		t.Fatalf("Verify: %v (interleaved: %v)", err, r.done)
 	}
@@ -366,7 +367,7 @@ func TestAuditPrune_RefusesAChainThatDoesNotVerify(t *testing.T) {
 		if _, err := pruneForTest(ctx, s, "", time.Now().Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
-		sink, err := audit.NewStoreSink(s, testKeys)
+		sink, err := auditchain.NewStoreSink(s, testKeys)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -394,7 +395,7 @@ func TestAuditVerify_NoAnchorMeansEmptyAnchorFields(t *testing.T) {
 	s, db := chainFixture(t, 2)
 	ctx := context.Background()
 	exec(t, db, `UPDATE audit_heads SET anchor_state = '{"opened":{"ghost":1}}' WHERE tenant_id = ''`)
-	rep, err := audit.Verify(ctx, s, testKeys, "")
+	rep, err := auditchain.Verify(ctx, s, testKeys, "")
 	if err != nil || rep.OK || !strings.Contains(rep.Reason, "anchor") {
 		t.Errorf("an anchor state with no anchor: %+v, %v; want a break naming the anchor", rep, err)
 	}
@@ -409,10 +410,10 @@ func TestAuditVerify_RotationPointSurvivesAPrune(t *testing.T) {
 	s, _ := chainFixture(t, 3)
 	ctx := context.Background()
 	newKey := []byte("the-rotated-in-audit-key-32bytes")
-	keys := audit.ChainKeys{Current: newKey, Previous: testKeys.Current}
+	keys := auditchain.ChainKeys{Current: newKey, Previous: testKeys.Current}
 	record := func(key []byte) {
 		t.Helper()
-		sink, err := audit.NewStoreSink(s, audit.ChainKeys{Current: key})
+		sink, err := auditchain.NewStoreSink(s, auditchain.ChainKeys{Current: key})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -422,11 +423,11 @@ func TestAuditVerify_RotationPointSurvivesAPrune(t *testing.T) {
 	}
 	record(newKey)
 	record(newKey)
-	if n, err := audit.Prune(ctx, s, keys, "t1", time.Now().Add(time.Hour)); err != nil || n != 5 {
+	if n, err := auditchain.Prune(ctx, s, keys, "t1", time.Now().Add(time.Hour)); err != nil || n != 5 {
 		t.Fatalf("prune across the rotation = %d, %v", n, err)
 	}
 	record(testKeys.Current) // a forgery with the rotated-out key
-	rep, err := audit.Verify(ctx, s, keys, "t1")
+	rep, err := auditchain.Verify(ctx, s, keys, "t1")
 	if err != nil || rep.OK || rep.BreakSeq != 6 {
 		t.Errorf("a previous-key row after a pruned rotation point: %+v, %v; want a break at 6", rep, err)
 	}

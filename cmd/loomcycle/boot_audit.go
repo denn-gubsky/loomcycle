@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auditchain"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -25,7 +26,7 @@ func (b *boot) openAudit() {
 	if stream != nil {
 		// Observations (refusals, denials, lookups) go through one queue and
 		// one writer; drain it at shutdown, before the store closes.
-		stream.StartAsync(audit.DefaultQueueCapacity)
+		stream.StartAsync(auditchain.DefaultQueueCapacity)
 		b.addCleanup(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), auditDrainTimeout)
 			defer cancel()
@@ -59,9 +60,9 @@ const auditDrainTimeout = 10 * time.Second
 // fallback to an unsigned chain: the password and device gates refuse the
 // same way, and an unsigned chain would promise an integrity any database
 // writer could undo.
-func openAuditSink(ctx context.Context, cfg *config.Config, st store.Store) (audit.Sink, *audit.StoreSink, []string, error) {
+func openAuditSink(ctx context.Context, cfg *config.Config, st store.Store) (audit.Sink, *auditchain.StoreSink, []string, error) {
 	var sinks []audit.Sink
-	var stream *audit.StoreSink
+	var stream *auditchain.StoreSink
 	var desc []string
 	if cfg.AuditStoreEnabled() {
 		why := "LOOMCYCLE_AUDIT_STORE=1"
@@ -92,7 +93,7 @@ func openAuditSink(ctx context.Context, cfg *config.Config, st store.Store) (aud
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("the store-backed audit stream is on (%s) but the store cannot serve it: %w", why, err)
 		}
-		ss, err := audit.NewStoreSink(st, audit.ChainKeys{Current: cur, Previous: prev})
+		ss, err := auditchain.NewStoreSink(st, auditchain.ChainKeys{Current: cur, Previous: prev})
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -116,7 +117,7 @@ func openAuditSink(ctx context.Context, cfg *config.Config, st store.Store) (aud
 // LOOMCYCLE_AUDIT_RETENTION_DAYS keeps every row. A retention age with no
 // LOOMCYCLE_SECRET_KEY is an error: pruning without signing the anchor would
 // leave a chain that no longer verifies.
-func auditRetentionKeys(cfg *config.Config) (*audit.ChainKeys, error) {
+func auditRetentionKeys(cfg *config.Config) (*auditchain.ChainKeys, error) {
 	if cfg.Env.AuditRetention <= 0 {
 		return nil, nil
 	}
@@ -131,5 +132,5 @@ func auditRetentionKeys(cfg *config.Config) (*audit.ChainKeys, error) {
 	if err != nil {
 		return nil, fmt.Errorf("LOOMCYCLE_SECRET_KEY_PREVIOUS: %w", err)
 	}
-	return &audit.ChainKeys{Current: cur, Previous: prev}, nil
+	return &auditchain.ChainKeys{Current: cur, Previous: prev}, nil
 }

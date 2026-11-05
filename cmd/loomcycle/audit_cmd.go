@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auditchain"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 )
@@ -123,25 +123,25 @@ func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 	defer closeStore()
 
 	ctx := context.Background()
-	keys := audit.ChainKeys{Current: cur, Previous: prev}
-	var reports []audit.VerifyReport
+	keys := auditchain.ChainKeys{Current: cur, Previous: prev}
+	var reports []auditchain.VerifyReport
 	switch {
 	case *all:
 		tenants, err := st.AuditTenants(ctx)
 		if err == nil {
-			reports, err = audit.VerifyAll(ctx, st, keys, tenants)
+			reports, err = auditchain.VerifyAll(ctx, st, keys, tenants)
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "loomcycle: error: reading the audit chains: %v\n", err)
 			return 1
 		}
 	default:
-		rep, err := audit.Verify(ctx, st, keys, tenant)
+		rep, err := auditchain.Verify(ctx, st, keys, tenant)
 		if err != nil {
 			fmt.Fprintf(stderr, "loomcycle: error: reading the audit chain: %v\n", err)
 			return 1
 		}
-		reports = []audit.VerifyReport{rep}
+		reports = []auditchain.VerifyReport{rep}
 	}
 	code := 0
 	for _, rep := range reports {
@@ -160,7 +160,7 @@ func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 		if rep.OK {
 			fmt.Fprintf(stdout, "%s: ok — %d rows verified (anchor %d, head %d)\n", name, rep.Rows, rep.AnchorSeq, rep.HeadSeq)
 		} else {
-			// Reason is built by audit.Verify from row numbers and fixed
+			// Reason is built by auditchain.Verify from row numbers and fixed
 			// text; no stored field is echoed into it.
 			fmt.Fprintf(stdout, "%s: BROKEN at row %d — %s\n", name, rep.BreakSeq, rep.Reason)
 		}

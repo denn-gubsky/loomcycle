@@ -1,4 +1,4 @@
-package audit
+package auditchain
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -98,7 +99,7 @@ type dropTally struct {
 	sources map[string]int
 }
 
-func dropSource(ev Event) string {
+func dropSource(ev audit.Event) string {
 	switch {
 	case ev.SourceAddr != "":
 		return ev.SourceAddr
@@ -110,7 +111,7 @@ func dropSource(ev Event) string {
 
 // obsQueue is one bounded observation queue with its own writer.
 type obsQueue struct {
-	ch      chan Event
+	ch      chan audit.Event
 	done    chan struct{}
 	dropped map[string]*dropTally // chain tenant → tally; guarded by StoreSink.mu
 }
@@ -157,7 +158,7 @@ func (s *StoreSink) StartAsync(capacity int) {
 }
 
 func (s *StoreSink) startQueue(capacity int) *obsQueue {
-	q := &obsQueue{ch: make(chan Event, capacity), done: make(chan struct{}), dropped: map[string]*dropTally{}}
+	q := &obsQueue{ch: make(chan audit.Event, capacity), done: make(chan struct{}), dropped: map[string]*dropTally{}}
 	go s.writer(q)
 	return q
 }
@@ -191,7 +192,7 @@ func (s *StoreSink) Close(ctx context.Context) error {
 // Record appends ev to its tenant's chain: a state change or high-signal
 // event before it returns, an observation through its queue (never waited
 // for; dropped and counted when the queue is full).
-func (s *StoreSink) Record(ev Event) error {
+func (s *StoreSink) Record(ev audit.Event) error {
 	if ev.TS.IsZero() {
 		ev.TS = s.now().UTC()
 	}
@@ -200,13 +201,13 @@ func (s *StoreSink) Record(ev Event) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), syncAppendTimeout)
 	defer cancel()
-	return s.appendEvents(ctx, []Event{ev})
+	return s.appendEvents(ctx, []audit.Event{ev})
 }
 
 // enqueue queues an observation, or counts it dropped when its queue is
 // full. It reports false when the queues are not running, and the caller
 // writes the event itself.
-func (s *StoreSink) enqueue(c eventClass, ev Event) bool {
+func (s *StoreSink) enqueue(c eventClass, ev audit.Event) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.anonymous == nil || s.closed {
@@ -224,7 +225,7 @@ func (s *StoreSink) enqueue(c eventClass, ev Event) bool {
 	return true
 }
 
-func (s *StoreSink) countDropLocked(q *obsQueue, ev Event) {
+func (s *StoreSink) countDropLocked(q *obsQueue, ev audit.Event) {
 	tenant := ChainTenant(ev)
 	t := q.dropped[tenant]
 	if t == nil {
@@ -242,7 +243,7 @@ func (s *StoreSink) countDropLocked(q *obsQueue, ev Event) {
 func (s *StoreSink) writer(q *obsQueue) {
 	defer close(q.done)
 	for ev := range q.ch {
-		batch := []Event{ev}
+		batch := []audit.Event{ev}
 	drain:
 		for len(batch) < writerBatch {
 			select {
@@ -264,8 +265,8 @@ func (s *StoreSink) writer(q *obsQueue) {
 // writeBatch appends a batch of observations, one transaction per tenant in
 // the order each tenant first appears, each tenant's events in queue order.
 // A failed append counts its events as dropped.
-func (s *StoreSink) writeBatch(q *obsQueue, batch []Event) {
-	byTenant := map[string][]Event{}
+func (s *StoreSink) writeBatch(q *obsQueue, batch []audit.Event) {
+	byTenant := map[string][]audit.Event{}
 	var order []string
 	for _, ev := range batch {
 		t := SafeText(ChainTenant(ev))
@@ -303,10 +304,10 @@ func (s *StoreSink) writeDropSummaries(q *obsQueue) {
 	q.dropped = map[string]*dropTally{}
 	s.mu.Unlock()
 	for tenant, t := range tallies {
-		ev := Event{TS: s.now().UTC(), Action: ActionEventsDropped, TargetTenant: tenant,
+		ev := audit.Event{TS: s.now().UTC(), Action: ActionEventsDropped, TargetTenant: tenant,
 			DroppedCounts: t.counts, DroppedSources: topSources(t.sources, dropSourcesShown)}
 		ctx, cancel := context.WithTimeout(context.Background(), writerBatchTimeout)
-		err := s.appendEvents(ctx, []Event{ev})
+		err := s.appendEvents(ctx, []audit.Event{ev})
 		cancel()
 		if err != nil {
 			slog.Error("audit: writing a dropped-observations summary failed", "tenant", tenant, "err", err)
@@ -347,7 +348,7 @@ func topSources(sources map[string]int, n int) map[string]int {
 }
 
 // appendEvents appends events of one tenant's chain in one transaction.
-func (s *StoreSink) appendEvents(ctx context.Context, evs []Event) error {
+func (s *StoreSink) appendEvents(ctx context.Context, evs []audit.Event) error {
 	rows := make([]store.AuditEventRow, 0, len(evs))
 	for _, ev := range evs {
 		payload, err := json.Marshal(ev)
@@ -372,7 +373,7 @@ func (s *StoreSink) appendEvents(ctx context.Context, evs []Event) error {
 
 // openedRow is the operator-chain record that tenant's chain exists.
 func openedRow(tenant string, ts time.Time) (store.AuditEventRow, error) {
-	ev := Event{TS: ts, Action: ActionChainOpened, TargetTenant: tenant}
+	ev := audit.Event{TS: ts, Action: ActionChainOpened, TargetTenant: tenant}
 	payload, err := json.Marshal(ev)
 	if err != nil {
 		return store.AuditEventRow{}, fmt.Errorf("audit: marshal: %w", err)

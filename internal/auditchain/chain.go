@@ -1,6 +1,7 @@
-package audit
-
-// The store-backed audit stream (RFC FZ Part E).
+// Package auditchain is the store-backed audit stream (RFC FZ Part E): the
+// signed per-tenant hash chain, its verification and retention, and the
+// audit.Sink that writes to it. It sits on the store; package audit (the
+// event, the file sink) sits below everything.
 //
 // Every replica appends to one hash chain per tenant in the store:
 //
@@ -28,19 +29,20 @@ package audit
 // transaction. Verification of a tenant first verifies the operator chain —
 // a registry read from an unverified chain could be forged — and then breaks
 // when the operator chain records an opening but the chain has no head
-// ("disappeared") or an empty one, records two
-// (deleted and begun again), or records none while the operator chain is
-// unpruned (the operator chain itself deleted). A head missing or reset while
-// rows remain is a break too: rows past the head are reported.
+// ("disappeared") or an empty one, records two (deleted and begun again), or
+// records none (the operator chain itself deleted). A retention prune of the
+// operator chain carries the openings it removes in its signed anchor, so the
+// check outlives the rows. A head missing or reset while rows remain is a
+// break too: rows past the head are reported.
 //
 // What it cannot show without an outside witness: a database writer who
 // deletes EVERY chain — the operator chain and all tenant chains — leaves an
 // empty audit store that verifies as empty; and one who rolls the tables back
 // to an earlier, genuinely signed state (dropping the newest rows AND
-// restoring an older head). A tenant chain deleted after the operator chain's
-// retention pruned its opening is likewise undetectable. The JSONL mirror
+// restoring an older head). The JSONL mirror
 // (LOOMCYCLE_AUDIT_LOG_PATH) and exports taken with GET /v1/_audit are that
 // witness.
+package auditchain
 
 import (
 	"context"
@@ -57,6 +59,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -626,7 +629,7 @@ func verifyChain(ctx context.Context, r ChainReader, keys ChainKeys, tenant stri
 // ChainTenant is the chain an event belongs to: the tenant it acted on, else
 // the actor's, else the operator chain "". An operator acting on a tenant's
 // users lands in that tenant's chain, where its operator can export it.
-func ChainTenant(ev Event) string {
+func ChainTenant(ev audit.Event) string {
 	if ev.TargetTenant != "" {
 		return ev.TargetTenant
 	}
@@ -634,7 +637,7 @@ func ChainTenant(ev Event) string {
 }
 
 // RowFor is the chain row for ev, before the store numbers and seals it.
-func RowFor(ev Event, payload []byte) store.AuditEventRow {
+func RowFor(ev audit.Event, payload []byte) store.AuditEventRow {
 	actor := ev.ActorSubject
 	if actor == "" && ev.ActorTokenSuffix != "" {
 		actor = "token:…" + ev.ActorTokenSuffix
@@ -655,38 +658,4 @@ func RowFor(ev Event, payload []byte) store.AuditEventRow {
 		Subject:  SafeText(subject),
 		Payload:  SafeText(string(payload)),
 	}
-}
-
-// multiSink records to every sink, and fails if any of them failed.
-type multiSink []Sink
-
-// Combine returns one Sink recording to each non-nil sink given, or nil when
-// there is none. A caller that treats a nil sink as "nothing durable is
-// written" keeps that meaning.
-func Combine(sinks ...Sink) Sink {
-	var out multiSink
-	for _, s := range sinks {
-		if s != nil {
-			out = append(out, s)
-		}
-	}
-	switch len(out) {
-	case 0:
-		return nil
-	case 1:
-		return out[0]
-	}
-	return out
-}
-
-func (m multiSink) Record(ev Event) error {
-	if ev.TS.IsZero() {
-		// One time for every copy, so the mirror and the chain agree.
-		ev.TS = time.Now().UTC()
-	}
-	var errs []error
-	for _, s := range m {
-		errs = append(errs, s.Record(ev))
-	}
-	return errors.Join(errs...)
 }
