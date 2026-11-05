@@ -35,6 +35,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -494,8 +495,14 @@ func (d *Document) resolveOntologyID(ctx context.Context, key sqlmem.ScopeKey) (
 		return "", nil
 	}
 	if err := d.recordRole(ctx, key, roleOntology, atName); err != nil {
-		// Still the answer for this call; the next resolve records it.
-		slog.WarnContext(ctx, "ontology: could not record the ontology document id", "tenant", key.Tenant, "err", err)
+		// Still the answer for this call; the next resolve records it. The log
+		// names the error's class, not its text: the text of a scope-database
+		// error is not something this warning needs to carry.
+		category := "unclassified"
+		if info, ok := errclassify.CategoryOf(err); ok {
+			category = string(info.Category)
+		}
+		slog.WarnContext(ctx, "ontology: could not record the ontology document id", "tenant", key.Tenant, "err_category", category)
 	}
 	return atName, nil
 }
