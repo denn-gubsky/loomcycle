@@ -172,7 +172,8 @@ func (b *boot) wireCredentials() {
 	// a $cred: value or a tenant/user provider-key that a tool later prints would
 	// otherwise land in the persisted transcript unredacted (RFC AV/AR). The
 	// server-global redactor dedups by value, so re-registering is cheap; it
-	// is bounded per tenant, so the tenant the value was resolved for is named.
+	// is bounded, and keeps a value while the run that resolved it is live, so
+	// the sink names the tenant and the run (secretHolder).
 	secrets.set(func() *redact.Redactor {
 		if b.srv == nil {
 			return nil
