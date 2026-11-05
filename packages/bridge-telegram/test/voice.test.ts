@@ -117,9 +117,11 @@ describe("download", () => {
     tg.file = () =>
       new Response(
         new ReadableStream<Uint8Array>({
+          // 100 KB in 100-byte chunks: far past the 1,000-byte cap.
           pull(c) {
             pulled++;
-            c.enqueue(new Uint8Array(100));
+            if (pulled > 1000) c.close();
+            else c.enqueue(new Uint8Array(100));
           },
         }),
         { status: 200 },
@@ -127,7 +129,7 @@ describe("download", () => {
     const err = await caught(() => voicePort(tg).download(vin, 1000, signal()));
     expect(err).toBeInstanceOf(TelegramError);
     expect((err as TelegramError).code).toBe(413);
-    // Cut off just past the cap, not read to the end (the stream has none).
+    // Cut off just past the cap, not read to the end.
     expect(pulled).toBeLessThan(20);
   });
 
