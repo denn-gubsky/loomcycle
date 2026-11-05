@@ -509,6 +509,9 @@ func (s *Server) restoredChannelDefValidator(ctx context.Context) func(json.RawM
 // loop owns, on this replica or another, is left alone.
 func (s *Server) finishRestore(ctx context.Context, result *snapshot.RestoreResult) {
 	s.postRestoreRefresh(ctx, result)
+	// A restore can bring back lists written before this build refused
+	// what no surface enforces; report them as the boot does (RFC FY Part E).
+	go s.ReportUnenforceableACLs(context.WithoutCancel(ctx))
 	r := s.resumePausedRunsReport(context.WithoutCancel(ctx))
 	result.PausedRunsResumed = r.Resumed
 	result.PausedRunsAlreadyLive = r.AlreadyLive

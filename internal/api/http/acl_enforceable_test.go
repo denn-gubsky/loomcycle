@@ -82,24 +82,38 @@ func TestACLDef_ARemovedVerbIsRefusedAndUnlisted(t *testing.T) {
 }
 
 // A list stored before the refusal, or declared in config, is reported at
-// boot and still loads: its other rules hold.
-func TestReportUnenforceableACLs_NamesStoredAndConfiguredLists(t *testing.T) {
+// boot by class and still loads: an unenforced pair, an inert tier rule, a
+// source_cidr deny whose meaning changed, and a transport http rule that no
+// longer covers mcp or webui requests.
+func TestReportUnenforceableACLs_NamesEachClass(t *testing.T) {
 	srv, _, st := aclMgmtServerWith(t, authz.ModeCompat, func(c *config.Config) {
 		c.ResolvedACL = &authz.Static{ACLs: map[string]authz.ACL{"yaml-old": {Name: "yaml-old", Rules: []authz.Rule{
 			{Effect: authz.Deny, Actions: []string{"use"}, Resources: []string{"search:*"}},
 		}}}}
 	})
-	rules := `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]},{"effect":"deny","actions":["recall"],"resources":["memory:user"]}]`
+	rules := `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]},` +
+		`{"effect":"deny","actions":["recall"],"resources":["memory:user"]},` +
+		`{"effect":"deny","actions":["run"],"resources":["agent:*"],"when":{"user_tier":["free"]}},` +
+		`{"effect":"deny","actions":["run"],"resources":["agent:*"],"when":{"source_cidr":["198.51.100.0/24"]}},` +
+		`{"effect":"deny","actions":["run"],"resources":["agent:*"],"when":{"transport":["http"]}},` +
+		`{"effect":"deny","actions":["run"],"resources":["agent:*"],"when":{"transport":["bridge"]}}]`
 	if _, err := st.AclDefPut(context.Background(), store.AclDefRow{TenantID: "acme", Name: "old", Rules: json.RawMessage(rules)}); err != nil {
 		t.Fatal(err)
 	}
 	got := strings.Join(srv.ReportUnenforceableACLs(context.Background()), "\n")
-	for _, want := range []string{"store acme/old#1: recall memory", "config /yaml-old#0: use search"} {
+	for _, want := range []string{
+		"unenforced store acme/old#1: recall memory",
+		"inert store acme/old#2",
+		"source_cidr_enforced store acme/old#3",
+		"transport_http store acme/old#4",
+		`unenforced store acme/old#5: condition "transport"`,
+		"unenforced config /yaml-old#0: use search",
+	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("report %q lacks %q", got, want)
 		}
 	}
-	if strings.Contains(got, "#0: invoke tool") || strings.Contains(got, "acme/old#0") {
-		t.Errorf("an enforced rule was reported: %q", got)
+	if strings.Contains(got, "acme/old#0") || strings.Contains(got, "unenforced store acme/old#2") {
+		t.Errorf("an enforced rule was reported, or an inert one as unenforced: %q", got)
 	}
 }
