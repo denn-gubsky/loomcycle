@@ -138,10 +138,32 @@ func (p *Path) resolveScope(ctx context.Context, requested string) (tenantID, sc
 		}
 		return tenantID, "user", uid, nil
 	case "tenant":
+		// GATED like Document's tenant scope (RFC FY Part C): a tenant name is shared
+		// by every user and agent in the tenant, and renaming one re-points what they
+		// all resolve. Ungated, an agent holding only tools:[Path] could unname any
+		// tenant document. The same two grants a tenant document needs open it.
+		if missing := missingTenantGrants(ctx); missing != "" {
+			return "", "", "", fmt.Errorf("Path: scope=tenant is not granted to this agent — a tenant path is "+
+				"shared by every user and agent in the tenant, so the operator must opt in. Missing on the agent: %s", missing)
+		}
 		return tenantID, "tenant", "", nil
 	default:
 		return "", "", "", fmt.Errorf("Path: unknown scope %q (agent | user | tenant)", requested)
 	}
+}
+
+// missingTenantGrants names the tenant grants ctx's policy lacks, "" when it holds
+// both — the same pair Document's tenant scope requires, so one rule opens the whole
+// tenant scope whichever tool an operator reasons about.
+func missingTenantGrants(ctx context.Context) string {
+	missing := make([]string, 0, 2)
+	if !contains(tools.PolicyOf(ctx).Memory.AllowedScopes, "tenant") {
+		missing = append(missing, "memory_scopes: [tenant]")
+	}
+	if !contains(tools.PolicyOf(ctx).SqlMem.AllowedScopes, "tenant") {
+		missing = append(missing, "sql_scopes: [tenant]")
+	}
+	return strings.Join(missing, " and ")
 }
 
 // pathScopeFailure classifies a resolveScope refusal. Its reasons differ in
@@ -157,6 +179,8 @@ func pathScopeFailure(ctx context.Context, requested string, err error) tools.Re
 	switch {
 	case tools.ConfineIsolatedScope(ctx, store.MemoryScope(requested)) != nil:
 		return errPermission(err.Error(), "Use scope=user or scope=agent; this run may not address the shared tenant scope.")
+	case requested == "tenant" && missingTenantGrants(ctx) != "":
+		return errPermission(err.Error(), "Use scope=user or scope=agent, or ask an operator to grant the tenant scope.")
 	case requested == "agent":
 		return errBusiness(err.Error(), "Use scope=user or scope=tenant instead.")
 	case requested == "user":

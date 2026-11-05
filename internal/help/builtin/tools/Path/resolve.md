@@ -9,7 +9,7 @@ resource's content.
 ## Arguments
 
 - `path` (required) — absolute, e.g. `/docs/launch`.
-- `scope` — `agent` (default), `user` or `tenant`. Only that tree is searched.
+- `scope` — `agent` (default), `user` or `tenant`. `tenant` needs `tenant` in both the agent's `memory_scopes` and `sql_scopes`. Only that tree is searched.
 
 ## Returns
 

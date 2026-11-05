@@ -62,6 +62,11 @@ func TestRun_ToolDescriptionsCarryHelpPointerAndThisRunsScopes(t *testing.T) {
 	// so the description must say so rather than offer it.
 	ctx := tools.WithAgentName(context.Background(), "helper")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: "t1"})
+	// The tenant tree needs both tenant grants, as a tenant document does.
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
+	})
 	if _, err := loop.Run(ctx, loop.RunOptions{
 		Provider:   provider,
 		Model:      "fake-model",

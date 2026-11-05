@@ -10,7 +10,7 @@ content. Moving a directory moves every entry under it in one step.
 
 - `path` (required) — the current path.
 - `to` (required) — the new path. It must not exist yet.
-- `scope` — `agent` (default), `user` or `tenant`. Both paths are in this one
+- `scope` — `agent` (default), `user` or `tenant`. `tenant` needs `tenant` in both the agent's `memory_scopes` and `sql_scopes`. Both paths are in this one
   scope: `mv` cannot carry a name from one scope to another.
 
 ## Returns

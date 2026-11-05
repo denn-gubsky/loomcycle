@@ -10,7 +10,7 @@ example `Document op=delete_document`).
 ## Arguments
 
 - `path` (required).
-- `scope` — `agent` (default), `user` or `tenant`.
+- `scope` — `agent` (default), `user` or `tenant`. `tenant` needs `tenant` in both the agent's `memory_scopes` and `sql_scopes`.
 - `recursive` — required to remove a path that has entries beneath it.
 - `resource_too` — not supported; passing `true` is refused.
 

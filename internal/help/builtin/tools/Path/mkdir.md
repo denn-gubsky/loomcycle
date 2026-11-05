@@ -9,7 +9,7 @@ exist. Use `mkdir` only for a folder that should exist while it is empty.
 ## Arguments
 
 - `path` (required) — the directory to create. Not `/`.
-- `scope` — `agent` (default), `user` or `tenant`.
+- `scope` — `agent` (default), `user` or `tenant`. `tenant` needs `tenant` in both the agent's `memory_scopes` and `sql_scopes`.
 
 ## Returns
 
