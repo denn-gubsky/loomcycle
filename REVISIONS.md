@@ -8,6 +8,85 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.140.0
+
+*A chat client can read a reply aloud and transcribe the microphone: `POST /v1/audio/speech` and `POST /v1/audio/transcriptions` put loomcycle's speech engines behind two routes and three `@loomcycle/client` methods. And a security line closes what the 2026-11-04 re-assessment found on the member plane: a tenant member no longer reads or writes other people's data, decides for the tenant, or escapes an admin's access-control list; every stored access rule is either enforced or refused; an erasure ends the account.*
+
+The v1.140 line: #2392 to #2406.
+- `@loomcycle/client` 1.140.0 adds `speech()`, `transcribe()` and `speechInfo()`, the user record's `erased_at`, and `source_ip` on an access-check context (#2406). The Python adapter moves to 1.140.0 for lockstep; its API does not change.
+- **One migration:** 0130 adds `users.erased_at` (Postgres; SQLite alters the table at boot).
+- **Read the upgrade notes below before upgrading.** Several fixes refuse what used to be allowed, and one can stop a config from loading.
+
+### Upgrade notes
+
+- **A gate whose subject is not the provider's stable id fails to load.** An OIDC, header, external or AWS IAM gate whose `identity_map` builds the subject from a claim other than `sub` (`oid` on Entra, `arn` on AWS IAM) is refused at config load. Set `identity_map.subject_claim_immutable: true` only if that claim can never be changed by the user or reassigned. An address subject (an `email` or `upn` claim, or any value with an `@`) also needs the assertion's e-mail to be verified and equal to it, or the sign-in is refused as `subject_unverified`.
+- **A member naming another subject gets `404`.** `?scope_id=` (and the memory routes' `{scope_id}`) reaches another user's scope only through an explicit `browse memory:user` / `browse document:user` allow, and then read-only; an agent's scope only for an agent the member may run. A member's Path call with no `scope` gets `400 scope_required`.
+- **Members no longer decide for the tenant.** Confirming or adopting the ontology, ruling on its proposals, writing the review policy, defining a tenant-wide type, and ruling on statements outside the member's own user scope are the operator's. A member's agents are held to a ceiling, and a member can no longer fork or promote over an operator's agent or team.
+- **Access rules.** A rule naming something no surface evaluates is refused at write (`400 rule_not_enforceable`). A stored `transport: [http]` rule no longer covers `/v1/_mcp` (now `mcp`) or Web UI requests (now `webui`). A stored `source_cidr` deny now applies. `tier`/`user_tier` conditions are refused at write and stay inert when stored. The boot log names every stored rule whose meaning changed.
+- **List names.** A tenant list may not take a config or shared list's name (`409 acl_name_reserved`); existing shadows are reported at boot.
+- **Path `scope: tenant`** needs the same `memory_scopes` and `sql_scopes` `tenant` grants Document needs, and `/memory/ontology`, `/memory/entities` and `/memory/tenant_root` are the operator's to create, move or remove.
+- **An erased user is a tombstone.** It cannot sign in, be re-enabled, renamed, deleted or created again (`409 user_erased`). Disabling a user now ends its app sign-ins.
+- **Leases** held at upgrade time by the old shared owner `agent:http-admin` expire on their TTL (at most an hour) before an operator can take them.
+
+### Speech for chat clients (#2392, #2393, RFC FK P3)
+
+- **`POST /v1/audio/speech`** takes `{input, model?, voice?, response_format?, language?}` and returns the whole audio. The text's Markdown is normalised, cut, spoken piece by piece, joined with a pause at each paragraph, and encoded by `speech.encode` when the format is not WAV.
+- **`POST /v1/audio/transcriptions`** takes a multipart upload and returns `json`, `verbose_json` or `text`. A PCM WAV is cut into pieces. Without a converter, a type the engine reads whole is sent whole, and other types get `415` or `413` naming `transcription.stt.media.command`.
+- **`GET /v1/_speech`** lists languages, voices, formats, accepted types and caps, never the engine's URL, provider or model. `GET /v1/_me` reports `effective.surfaces.speech` and `.transcription`, true only when the engine is on and the caller passes the route's gates.
+- **Who may call them:** `runs:create`, not `llm:gateway`, so a self-signed-up (isolated) user can. The ACL asks `use gateway:speech` / `use gateway:transcription`. A token limited to certain agents gets `403 restricted_token`.
+- **Cost and load:** each engine request is billed to the caller (one `tts` or `stt` usage row) under the run rate and hard token limits. One queue per direction, sized by `LOOMCYCLE_SPEECH_MAX_INFLIGHT` / `LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT` (default 2), makes a request over the bound wait, not fail. `/metrics` gains `loomcycle_audio_engine_inflight` and `loomcycle_audio_engine_queued`.
+- The speech-to-text pass moved out of the File tool into `internal/transcribe/sttpass`, shared by both; the File tool's behaviour is unchanged. New guide: `docs/SPEECH.md`.
+
+### Docs (#2404)
+
+- `docs/CONFIGURATION.md` names the four caller tiers, what only the operator plane may decide, what `?scope_id=` a member may pass, and the ceiling on agents a member authors.
+
+### A member reaches only its own data (#2397, RFC FY Part A)
+
+- **The hole.** A non-isolated member could name any subject in its tenant with `?scope_id=` and read, overwrite and delete that subject's memory and documents, in compat and enforce mode alike. Members also shared the operator's off-run agent scope on every transport.
+- **Now** one resolver decides the subject on every route that names one. The operator plane is unchanged. A member gets its own subject, another user's scope only through an explicit browse allow (read-only, and a memory grant does not read documents), and an agent's scope only for a real agent it may run. A refusal is the same `404` for every subject. gRPC and MCP give a member no shared agent scope.
+
+### Four caller tiers: a member is not the operator (#2399, RFC FY Part B)
+
+- **The hole.** Every off-run call carried one "operator" marker, so a member could confirm the ontology, write the review policy that accepts its own agents' proposals, rule in other people's scopes, hold the tenant's lease, author agents with operator-grade grants and make them active over an operator's, and erase any subject over MCP.
+- **Now** each transport stamps one of four tiers: operator plane, member, isolated, run (the zero value, so a forgotten stamp fails closed). The ontology, review-policy, ruling and lease gates ask for the operator plane. A member's agents are held to a field-by-field ceiling: operator-grade fields (`statement_methods`, `git_remote`, `*_def_scopes`, tenant and run crypto) must be unset. MCP `erasure` needs `substrate:tenant`.
+
+### The tenant ontology is a recorded identity (#2403, RFC FY Part C)
+
+- **The hole.** The ontology guard found the ontology by its Path name, and Path's tenant scope had no grant check. An agent could move the name to another document; the guard then protected the impostor and every run read it as the vocabulary.
+- **Now** the ontology's id is recorded in the tenant scope and every reader resolves by it. A cluster-singleton boot pass records each tenant still known only by name, without provisioning anything. The three reserved names are the operator's. The guard runs on the effective input, fails closed, and lets an upsert only file a new proposal; every write to a reserved document's root is the operator's. Dirent subtree operations are now case-sensitive on SQLite too.
+
+### An admin's list lock holds (#2396, RFC FY Part D)
+
+- **The hole.** A tenant operator bound by an admin to a self-locking list could escape it: retire the binding, leave or delete the group, or delete and re-create itself. A tenant could also replace a config or shared list by taking its name.
+- **Now** each of those, plus user re-enable, erasure and a group's `external_id`, asks `retire def:acl/<list>` of every list it would drop. The removal sweeper, SCIM and gate group sync keep a deny-only list that is locked (audited `auth_unbind_kept_locked`) and defer the erase (`erase_deferred_locked`). Names are reserved as above, and explain reports `shadowed_lists` and `governed_by`.
+
+### A stored rule is enforced or refused (#2401, #2402, RFC FY Part E)
+
+- **The hole.** Rules on source address, agent, depth, interactivity and tier were never filled; model, tier and git rules were asked nowhere; MCP and gRPC asked weaker questions than HTTP; in compat mode a store fault dropped every deny.
+- **Now** an enforcement table lists what is asked, and every write path refuses the rest. Every gate fills the full condition context, including the client address (HTTP and webhook/A2A through `auth.trusted_proxies`, gRPC through the new `auth.grpc_trusted_proxies`), kept with a run across a resume or restart. `use model:` / `use tier:` are asked wherever a model is resolved, the Git tool asks `fetch`/`push git:<host>/<path>`, MCP and gRPC ask their HTTP twin's question, and a compat-mode read failure keeps the class baseline's denies and is counted (`loomcycle_acl_resolution_failures_total`). `search`, `evaluation` and `interruption` verbs leave the catalog. #2402 marks `browse memory:` / `browse document:` enforced, so an operator can write the allow #2397 needs.
+
+### Erasure ends the account (#2395, RFC FY Part F)
+
+- **The hole.** An erased subject could still sign in by password or OIDC, an app could still refresh, and the sign-in identities were kept. A disabled user's app sign-ins survived a re-enable.
+- **Now** a live erasure deletes every sign-in family in one transaction and keeps the user row as a PII-free tombstone (`erased_at`), reported per family in the erasure report and audit pair. Every disable ends app sign-ins first, and every re-enable ends any left live. A snapshot carries the tombstone.
+
+### Read denies hold everywhere (#2398, RFC FY Part G)
+
+- `export_md` embeds, asset reads and a team walk's section reads ask `read`; a refusal looks like a missing target.
+- `copy_documents` / `move_documents` leave unreadable documents out before counting, a move asks `write` and `delete` of each source and `link` before dropping a relation, and a relation into an unreadable document blocks a move without being listed.
+- Deleting a memory key that is a protected document's fact body is answered as a missing key or refused.
+
+### The sign-in subject is never an unverified claim (#2394, RFC FY Part H)
+
+- **The hole.** A gate could build the subject from an unverified `email` or a renameable username, so anyone who could get the identity provider to assert someone else's address signed in as them. `legacy_subject_prefix` could hand a passkey-only account to a bridge.
+- **Now** see the upgrade notes: a non-stable subject claim needs `subject_claim_immutable: true`, and an address subject needs a verified, matching e-mail. The legacy prefix never takes a user that has any sign-in of its own.
+
+### A top-level run discovers MCP tools with its own credentials (#2400)
+
+- **The bug.** A dynamic MCP server that authenticates `initialize`/`tools/list` with a per-run credential gave a top-level run no tools: the run's `user_credentials` were not yet on the discovery handshake. Whether a run had its tools depended on whether a sub-agent had warmed the pool since the last restart.
+- **Now** a run's bearer and named credentials authenticate its own run-start discovery. A run without the credential still drops the header and logs it, as before.
+
 ## What's in v1.139.2
 
 *A document keeps its colour when a tenant ontology retypes it to a class name, and a type no colour scheme names is coloured by its status; the Review page's ruling dialog shows its Reject button's label again.*
