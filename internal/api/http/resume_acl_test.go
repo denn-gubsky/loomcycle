@@ -429,7 +429,9 @@ func TestRunConfig_ACLOriginNamesTheCallerAndNoSecret(t *testing.T) {
 	if !ok || rec.ACLOrigin == nil {
 		t.Fatalf("no acl_origin recorded: %s", run.RunConfig)
 	}
-	want := aclOriginRecord{TenantID: "acme", Subject: "dev", TokenDefID: "def_worker", Class: "member", Transport: "http"}
+	// SourceIP: the starting request's client, re-stamped on a resume or a
+	// restart (RFC FY Part E); the test server's client is loopback.
+	want := aclOriginRecord{TenantID: "acme", Subject: "dev", TokenDefID: "def_worker", Class: "member", Transport: "http", SourceIP: "127.0.0.1"}
 	if *rec.ACLOrigin != want {
 		t.Errorf("acl_origin = %+v, want %+v", *rec.ACLOrigin, want)
 	}
