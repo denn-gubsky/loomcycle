@@ -304,10 +304,13 @@ func openBrowser(rawURL string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
+		// #nosec G204 -- a fixed opener; rawURL is checked to be http(s) above and passed as one argument
 		cmd = exec.Command("open", rawURL)
 	case "windows":
+		// #nosec G204 -- a fixed opener; rawURL is checked to be http(s) above and passed as one argument
 		cmd = exec.Command("cmd", "/C", "start", "", rawURL)
 	default:
+		// #nosec G204 -- a fixed opener; rawURL is checked to be http(s) above and passed as one argument
 		cmd = exec.Command("xdg-open", rawURL)
 	}
 	return cmd.Start()

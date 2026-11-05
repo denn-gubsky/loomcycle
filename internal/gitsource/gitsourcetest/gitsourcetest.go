@@ -10,7 +10,7 @@ package gitsourcetest
 
 import (
 	"net/http"
-	"net/http/cgi"
+	"net/http/cgi" // #nosec G504 -- serves git http-backend to tests; never linked into the runtime
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -47,6 +47,7 @@ type Repo struct {
 // configuration, and returns its trimmed output.
 func Git(t testing.TB, dir string, args ...string) string {
 	t.Helper()
+	// #nosec G204 -- a test helper that runs git with the test's own arguments
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),

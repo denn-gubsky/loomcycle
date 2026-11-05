@@ -67,7 +67,7 @@ type Client struct {
 // Spawn starts a child process and returns a connected Client. The caller
 // must Close the client to terminate the child.
 func Spawn(cfg Config) (*Client, error) {
-	cmd := exec.Command(cfg.Command, cfg.Args...) //nolint:gosec // command is operator-supplied via YAML
+	cmd := exec.Command(cfg.Command, cfg.Args...) // #nosec G204 -- command is operator-supplied via YAML, run without a shell
 	if len(cfg.Env) > 0 {
 		cmd.Env = append(cmd.Environ(), cfg.Env...)
 	}

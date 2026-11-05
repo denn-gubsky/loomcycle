@@ -102,5 +102,6 @@ func (s *Server) handleOpenAPIDocs(w http.ResponseWriter, r *http.Request) {
 		// Version-pinned vendored assets — safe to cache.
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 	}
+	// #nosec G705 -- data is an embedded, version-pinned Swagger UI asset chosen from the docsAsset allowlist, served with its fixed content type
 	_, _ = w.Write(data)
 }

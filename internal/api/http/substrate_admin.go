@@ -210,6 +210,7 @@ func (s *Server) handleSubstrateDocumentAsset(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.Header().Set("Cache-Control", "private, max-age=300")
 	w.WriteHeader(http.StatusOK)
+	// #nosec G705 -- the stored media type must pass ValidImageMediaType (png/jpeg/gif/webp) and is sent with nosniff, so the bytes are never read as HTML
 	_, _ = w.Write(data)
 }
 
