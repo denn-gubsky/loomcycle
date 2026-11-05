@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // Second review of RFC FY P2: the probes, kept.
@@ -108,5 +109,72 @@ func TestOntologyGuard_AProposalCannotRewriteAnAcceptedEntity(t *testing.T) {
 	}
 	if r := e.doc(t, e.agentCtx, strings.Replace(newProp, `"body":"x"`, `"body":"y"`, 1)); r.IsError {
 		t.Errorf("re-filing an agent's own proposal was refused: %s", r.Text)
+	}
+}
+
+// TestReservedName_APlantBelowTheEntitiesNameIsNotAdopted: the entity document's
+// get-or-create fell back to any document BELOW /memory/entities, so an agent's
+// /memory/entities/mine became the document every placed fact lands in, the reserved
+// name itself was never registered, and the ensure reported created:true.
+func TestReservedName_APlantBelowTheEntitiesNameIsNotAdopted(t *testing.T) {
+	e := newReservedEnv(t)
+	out, r := docExec(t, e.d, e.agentCtx, `{"op":"create_document","scope":"tenant","title":"Mine","path":"/memory/entities/mine"}`)
+	if r.IsError {
+		t.Fatalf("plant: %s", r.Text)
+	}
+	mine, _ := out["document_id"].(string)
+	out, r = docExec(t, e.d, e.agentCtx, `{"op":"create_document","scope":"tenant","title":"Entities","path":"/memory/entities"}`)
+	if r.IsError {
+		t.Fatalf("ensure: %s", r.Text)
+	}
+	got, _ := out["document_id"].(string)
+	if got == mine || got == "" {
+		t.Errorf("the ensure adopted the planted document %s", mine)
+	}
+	if created, _ := out["created"].(bool); !created {
+		t.Errorf("the ensure created the entities document but reported created:%v", out["created"])
+	}
+	if at := e.tenantName(t, "/memory/entities"); at != got {
+		t.Errorf("/memory/entities names %q, the ensure answered %q", at, got)
+	}
+	if r := e.doc(t, e.agentCtx, `{"op":"remember","scope":"tenant","text":"Ada wrote the first program."}`); r.IsError {
+		t.Fatalf("remember: %s", r.Text)
+	}
+	key := mustTenantKey(t, e.d, e.opCtx)
+	res, err := e.d.query(context.Background(), key, `SELECT count(*) FROM chunks WHERE document_id = ?`, mine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := asInt(res.Rows[0][0]); n != 1 {
+		t.Errorf("remember filed into the planted document (it holds %d chunks, want only its root)", n)
+	}
+}
+
+// TestReservedName_CreatesAtAnAncestorAreNotRefused: /memory itself is not a reserved
+// name. Creating a name there takes nothing the runtime finds documents by, so only
+// deletes and moves of an ancestor are judged on the subtree.
+func TestReservedName_CreatesAtAnAncestorAreNotRefused(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := tools.WithRunID(tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
+	}), "r_agent")
+	p := &Path{Store: d.Store}
+	if _, r := pathExec(t, p, ctx, `{"op":"mkdir","scope":"tenant","path":"/memory"}`); r.IsError {
+		t.Errorf("mkdir /memory was refused: %s", r.Text)
+	}
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Notes","path":"/memory/notes"}`)
+	if r.IsError || out["path_warning"] != nil {
+		t.Errorf("create_document under /memory: %s %v", r.Text, out["path_warning"])
+	}
+	// A second tenant tree, so the set does not land on the directory mkdir made.
+	d2, base2, _ := documentFixture(t)
+	m := &Memory{Store: d2.Store, SqlMem: d2.SqlMem, MaxValueBytes: 65536, DefaultQuotaBytes: 1 << 20}
+	mctx := tools.WithRunID(tools.UpdateRunPolicy(base2, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
+	}), "r_agent")
+	res, err := m.Execute(mctx, []byte(`{"op":"set","scope":"tenant","key":"k","value":"x","path":"/memory"}`))
+	if err != nil || res.IsError || strings.Contains(res.Text, "path_warning") {
+		t.Errorf("Memory set at /memory: %v %s", err, res.Text)
 	}
 }

@@ -109,17 +109,14 @@ func (d *Document) entityDocumentID(ctx context.Context, key sqlmem.ScopeKey, ms
 	// The runtime chooses this name, not the caller, so it may give the reserved
 	// /memory/entities in the tenant scope (RFC FY Part C) — and only this name.
 	ctx = context.WithValue(ctx, reservedProvisionKey{}, rememberedFactsPath)
-	// The document AT the name first. documentsUnderPath lists only names below it, so
-	// alone it never found the document this function creates, and every call made a
-	// new one and moved the name onto it.
+	// The document AT the name, and only that one. A fallback to any document BELOW
+	// the name (documentsUnderPath) never found this document — so every call made a
+	// new one — and adopted whatever an agent filed at /memory/entities/<anything> as
+	// the document every placed fact lands in, leaving the reserved name unregistered.
 	if id, err := d.documentAtName(ctx, key, rememberedFactsPath); err != nil {
 		return "", err
 	} else if id != "" {
 		return id, nil
-	}
-	ids, err := d.documentsUnderPath(ctx, key, rememberedFactsPath)
-	if err == nil && len(ids) > 0 {
-		return ids[0], nil
 	}
 	res, cerr := d.createDocument(ctx, key, mscope, docInput{
 		Scope: scope, Title: entitiesDocumentTitle, Path: rememberedFactsPath,

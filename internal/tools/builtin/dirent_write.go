@@ -30,8 +30,8 @@ func (e *reservedNameError) Error() string {
 		"document by it, so only an operator may create, rename or remove it"
 }
 
-// reservedDirentErr is the chokepoint's question: may ctx write the given names (each
-// canonical, with everything below it) in scope?
+// reservedDirentErr is the chokepoint's question for a delete or move: may ctx remove
+// or rename the given names (each canonical, with everything below it) in scope?
 func reservedDirentErr(ctx context.Context, scope string, canonical ...string) error {
 	if scope != "tenant" {
 		return nil
@@ -46,10 +46,12 @@ func reservedDirentErr(ctx context.Context, scope string, canonical ...string) e
 	return nil
 }
 
-// createDirent names a resource at row's path (an upsert).
+// createDirent names a resource at row's path (an upsert). A create takes only its own
+// name, so only that exact name is judged: creating /memory takes nothing the runtime
+// finds a document by, where removing or moving /memory would.
 func createDirent(ctx context.Context, st store.Store, row store.DirentRow) (store.DirentRow, error) {
-	if err := reservedDirentErr(ctx, row.Scope, row.ParentPath+row.Name); err != nil {
-		return store.DirentRow{}, err
+	if row.Scope == "tenant" && reservedNameRefusal(ctx, "", row.Scope, row.ParentPath+row.Name) != nil {
+		return store.DirentRow{}, &reservedNameError{name: row.ParentPath + row.Name}
 	}
 	return st.DirentCreate(ctx, row)
 }
