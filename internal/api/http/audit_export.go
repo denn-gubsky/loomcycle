@@ -2,12 +2,14 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // auditExportRow is one line of GET /v1/_audit: a row of the store-backed
@@ -28,6 +30,22 @@ type auditExportRow struct {
 	MAC      string    `json:"mac"`
 }
 
+// auditExportTrailer is the last line of an export: the chain's signed head
+// and retention anchor as they were when the export began, so an offline
+// check can confirm the rows reach the head (nothing cut off the tail) and
+// that the first row's prev_hash is a pruned anchor, not a gap.
+type auditExportTrailer struct {
+	Trailer     bool   `json:"trailer"`
+	Tenant      string `json:"tenant"`
+	HeadSeq     int64  `json:"head_seq"`
+	HeadHash    string `json:"head_hash"`
+	HeadMAC     string `json:"head_mac"`
+	AnchorSeq   int64  `json:"anchor_seq"`
+	AnchorHash  string `json:"anchor_hash"`
+	AnchorMAC   string `json:"anchor_mac"`
+	AnchorState string `json:"anchor_state,omitempty"`
+}
+
 // auditExportPage is how many rows the export reads at a time.
 const auditExportPage = 500
 
@@ -43,8 +61,10 @@ const auditExportPage = 500
 //
 // since (RFC3339) keeps rows recorded at or after it; after_seq resumes after
 // a row already read. format is jsonl, the only one. Rows are read in pages
-// and streamed; a read failure after the first page ends the stream early
-// (logged) — a reader can tell by the last seq against the head it expects.
+// and streamed up to the head read at the start; the last line is a trailer
+// ({"trailer":true,...}) with that head and the retention anchor, signed, so
+// an offline check can confirm the tail and a pruned first prev_hash. An
+// export cut short by a read failure (logged) has no trailer.
 //
 // Not to be confused with GET /v1/_events: that is the run event log.
 func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +102,17 @@ func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	rows, err := s.store.AuditEventsList(ctx, tenant, after, auditExportPage)
+	// The head first: rows are streamed up to it and it closes the export,
+	// so the trailer describes exactly the rows sent before it.
+	head, err := s.store.AuditHeadGet(ctx, tenant)
+	var nf *store.ErrNotFound
+	if errors.As(err, &nf) {
+		head, err = store.AuditHead{TenantID: tenant}, nil
+	}
+	var rows []store.AuditEventRow
+	if err == nil {
+		rows, err = s.store.AuditEventsList(ctx, tenant, after, auditExportPage)
+	}
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", "reading the audit chain failed")
 		slog.ErrorContext(ctx, "audit export: read failed", "tenant", tenant, "err", err)
@@ -95,6 +125,10 @@ func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 	flusher, _ := w.(http.Flusher)
 	for len(rows) > 0 {
 		for _, row := range rows {
+			if row.Seq > head.Seq {
+				rows = nil // appended after the head was read
+				break
+			}
 			after = row.Seq
 			if !since.IsZero() && row.TS.Before(since) {
 				continue
@@ -110,12 +144,17 @@ func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 		if flusher != nil {
 			flusher.Flush()
 		}
-		if len(rows) < auditExportPage {
-			return
+		if len(rows) < auditExportPage || after >= head.Seq {
+			break
 		}
 		if rows, err = s.store.AuditEventsList(ctx, tenant, after, auditExportPage); err != nil {
+			// No trailer: an export that ends without one was cut short.
 			slog.ErrorContext(ctx, "audit export: read failed mid-stream; the export ends early", "tenant", tenant, "after_seq", after, "err", err)
 			return
 		}
 	}
+	_ = enc.Encode(auditExportTrailer{
+		Trailer: true, Tenant: head.TenantID, HeadSeq: head.Seq, HeadHash: head.Hash, HeadMAC: head.MAC,
+		AnchorSeq: head.AnchorSeq, AnchorHash: head.AnchorHash, AnchorMAC: head.AnchorMAC, AnchorState: head.AnchorState,
+	})
 }

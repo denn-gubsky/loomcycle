@@ -10,21 +10,29 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
-// exportLines decodes a JSONL export body.
+// exportLines decodes a JSONL export body: its rows, and the trailer that
+// must close it.
 func exportLines(t *testing.T, body string) []auditExportRow {
+	rows, _ := exportWithTrailer(t, body)
+	return rows
+}
+
+func exportWithTrailer(t *testing.T, body string) ([]auditExportRow, auditExportTrailer) {
 	t.Helper()
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	var tr auditExportTrailer
+	if len(lines) == 0 || json.Unmarshal([]byte(lines[len(lines)-1]), &tr) != nil || !tr.Trailer {
+		t.Fatalf("the export does not end with a trailer line: %q", body)
+	}
 	var out []auditExportRow
-	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
-		if line == "" {
-			continue
-		}
+	for _, line := range lines[:len(lines)-1] {
 		var r auditExportRow
 		if err := json.Unmarshal([]byte(line), &r); err != nil {
 			t.Fatalf("line %q: %v", line, err)
 		}
 		out = append(out, r)
 	}
-	return out
+	return out, tr
 }
 
 func tenantsOf(rows []auditExportRow) map[string]int {
@@ -87,8 +95,8 @@ func TestAuditExport_IsTenantScopedAndCarvedOutOfMembers(t *testing.T) {
 
 	// since filters by time; an unknown format is refused.
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
-	if code, body := bearerCall(t, ts, opsBearer, "GET", "/v1/_audit?since="+future, ""); code != 200 || strings.TrimSpace(body) != "" {
-		t.Errorf("since=future: %d %q, want 200 and no rows", code, body)
+	if code, body := bearerCall(t, ts, opsBearer, "GET", "/v1/_audit?since="+future, ""); code != 200 || len(exportLines(t, body)) != 0 {
+		t.Errorf("since=future: %d %q, want 200, no rows and the trailer", code, body)
 	}
 	if code, _ := bearerCall(t, ts, opsBearer, "GET", "/v1/_audit?since=yesterday", ""); code != 400 {
 		t.Errorf("since=yesterday: %d, want 400", code)
@@ -97,15 +105,23 @@ func TestAuditExport_IsTenantScopedAndCarvedOutOfMembers(t *testing.T) {
 		t.Errorf("format=csv: %d, want 400", code)
 	}
 
-	// The export re-links offline: each row's hash is H(prev ‖ row), exactly.
+	// The export re-links offline: each row's hash is H(prev ‖ row), exactly,
+	// from the trailer's anchor to the trailer's signed head.
 	_, body = bearerCall(t, ts, opsBearer, "GET", "/v1/_audit", "")
-	prev := ""
-	for _, r := range exportLines(t, body) {
+	rows, tr := exportWithTrailer(t, body)
+	if tr.Tenant != "acme" || tr.HeadSeq != 2 || tr.HeadMAC == "" || tr.AnchorSeq != 0 {
+		t.Fatalf("trailer = %+v, want acme's signed head at 2 and no anchor", tr)
+	}
+	prev := tr.AnchorHash
+	for _, r := range rows {
 		row := store.AuditEventRow{TenantID: r.Tenant, Seq: r.Seq, TS: time.Unix(0, r.TSNanos).UTC(), Actor: r.Actor,
 			Action: r.Action, Subject: r.Subject, Payload: r.Payload}
 		if r.PrevHash != prev || audit.RowHash(prev, row) != r.Hash || r.MAC == "" {
 			t.Fatalf("row %d does not re-link from the export: %+v", r.Seq, r)
 		}
 		prev = r.Hash
+	}
+	if prev != tr.HeadHash {
+		t.Errorf("the last row does not reach the trailer's head")
 	}
 }
