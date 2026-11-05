@@ -383,7 +383,23 @@ func (b *boot) startRunSweepers() {
 	// advisoryLock). OPT-IN (default OFF): destructive (it deletes retired def
 	// versions), unlike the lossless usage rollup. When the mode is
 	// export+prune each version is written to the export dir before deletion.
-	if cfg.Env.RetentionEnabled && storeIface != nil {
+	// The audit stream's retention (RFC FZ Part E) is its own knob and runs on
+	// this sweeper even when the RFC BM families are off; it then gets a
+	// config holding only the audit fields, so no other family's env setting
+	// is picked up behind LOOMCYCLE_RETENTION_ENABLED's back.
+	auditSeal := b.auditAnchorSeal
+	if !cfg.Env.RetentionEnabled && auditSeal != nil && storeIface != nil {
+		rCfg := retention.Config{
+			Interval:        cfg.Env.RetentionInterval,
+			AuditMaxAge:     cfg.Env.AuditRetention,
+			AuditAnchorSeal: auditSeal,
+		}
+		if advisoryLock != nil {
+			rCfg.AdvisoryLock = advisoryLock
+			rCfg.AdvisoryLockKey = coord.LockKeyRetentionSweeper
+		}
+		go retention.New(storeIface, rCfg).Run(bgCtx)
+	} else if cfg.Env.RetentionEnabled && storeIface != nil {
 		rCfg := retention.Config{
 			Interval:      cfg.Env.RetentionInterval,
 			DefsMode:      cfg.Env.RetentionDefsMode,
@@ -407,6 +423,8 @@ func (b *boot) startRunSweepers() {
 			EmptyDossierMaxAge: cfg.Env.RetentionEmptyDossierMaxAge,
 			MemContentMaxAge:   cfg.Env.RetentionMemContentMaxAge,
 			ExportDir:          cfg.Env.RetentionExportDir,
+			AuditMaxAge:        cfg.Env.AuditRetention,
+			AuditAnchorSeal:    auditSeal,
 		}
 		// SQL-Memory scope reclamation needs the manager; nil (SQL Memory off) is
 		// fine — the mem sweep then reclaims base memory + dirents only. Typed-nil

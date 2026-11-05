@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -154,5 +155,21 @@ func TestBoot_SingleOperatorNeedsNoAuditStream(t *testing.T) {
 	res := b.boot(t, "127.0.0.1", map[string]string{"LOOMCYCLE_AUTH_TOKEN": "legacy-test-bearer"})
 	if !res.served || !strings.Contains(res.log, "no audit sink") {
 		t.Errorf("single operator: served=%v; want a served boot with no audit sink\n%s", res.served, res.log)
+	}
+}
+
+// An audit retention age needs the key that signs the anchor a prune leaves;
+// none keeps every row and needs nothing.
+func TestAuditAnchorSeal_RetentionNeedsTheKey(t *testing.T) {
+	if seal, err := auditAnchorSeal(&config.Config{}); seal != nil || err != nil {
+		t.Errorf("no retention: %v, %v; want nothing", seal, err)
+	}
+	cfg := &config.Config{Env: config.Env{AuditRetention: 24 * time.Hour}}
+	if _, err := auditAnchorSeal(cfg); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_SECRET_KEY") {
+		t.Errorf("retention with no key: %v; want an error naming LOOMCYCLE_SECRET_KEY", err)
+	}
+	cfg.Env.SecretKey = testSecretKey()
+	if seal, err := auditAnchorSeal(cfg); seal == nil || err != nil {
+		t.Errorf("retention with a key: %v, %v; want a signer", seal, err)
 	}
 }
