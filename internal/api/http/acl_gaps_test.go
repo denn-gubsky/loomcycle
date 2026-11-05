@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -187,7 +189,7 @@ func TestACLGroups_EffectiveListsTransitiveMembers(t *testing.T) {
 // shadowed as the resolver shadows them: a stored list of the same name wins.
 func TestACLLists_IncludeConfigDeclaredEntries(t *testing.T) {
 	deny := []authz.Rule{{Effect: authz.Deny, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}}}
-	srv, ts, _ := aclMgmtServerWith(t, authz.ModeCompat, func(c *config.Config) {
+	srv, ts, st := aclMgmtServerWith(t, authz.ModeCompat, func(c *config.Config) {
 		c.ResolvedACL = &authz.Static{
 			ACLs: map[string]authz.ACL{
 				"cfg-only": {Name: "cfg-only", Description: "from yaml", Rules: deny},
@@ -197,9 +199,12 @@ func TestACLLists_IncludeConfigDeclaredEntries(t *testing.T) {
 			Bindings: []authz.StaticBinding{{Tenant: "acme", Binding: authz.Binding{ACL: "cfg-only", SubjectKind: authz.SubjectGroup, SubjectID: "cfg-group"}}},
 		}
 	})
+	// A stored list of a config name can no longer be created over the
+	// routes (acl_name_reserved); one written before that refusal is seeded
+	// in the store, as it would sit in an upgraded deployment.
 	rules := `[{"effect":"allow","actions":["invoke"],"resources":["tool:Read"]}]`
-	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"create","name":"shadowed","rules":`+rules+`}`); code != 201 {
-		t.Fatalf("create: %d %s", code, body)
+	if _, err := st.AclDefPut(context.Background(), store.AclDefRow{TenantID: "acme", Name: "shadowed", Rules: []byte(rules)}); err != nil {
+		t.Fatalf("seed the shadowing row: %v", err)
 	}
 	code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"list"}`)
 	if code != 200 || !strings.Contains(body, `"name":"cfg-only"`) || !strings.Contains(body, `"source":"config"`) || strings.Count(body, `"name":"shadowed"`) != 1 {
