@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -1168,6 +1169,8 @@ type authzContextRef struct {
 	UserTier    string `json:"user_tier,omitempty"`
 	Agent       string `json:"agent,omitempty"`
 	Depth       int    `json:"depth,omitempty"`
+	// SourceIP is the client address a source_cidr condition reads.
+	SourceIP string `json:"source_ip,omitempty"`
 }
 
 // unenforcedField names a set field of c that no surface fills, or "".
@@ -1295,6 +1298,11 @@ func authzRequestFrom(eff *authz.Effective, in authzEvaluationRequest, ctx conte
 			c.Transport = in.Context.Transport
 		}
 		c.Interactive, c.Tier, c.UserTier, c.Agent, c.Depth = in.Context.Interactive, in.Context.Tier, in.Context.UserTier, in.Context.Agent, in.Context.Depth
+		if in.Context.SourceIP != "" {
+			if c.SourceIP = net.ParseIP(in.Context.SourceIP); c.SourceIP == nil {
+				return authz.Request{}, fmt.Errorf("context.source_ip %q is not an address", in.Context.SourceIP)
+			}
+		}
 	}
 	return authz.Request{Subject: eff.Subject, Action: in.Action.Name, Resource: authz.Resource{Type: in.Resource.Type, Name: name, TenantID: eff.Subject.TenantID, Owner: in.Resource.Owner}, Context: c}, nil
 }

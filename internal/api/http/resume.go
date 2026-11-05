@@ -633,6 +633,11 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	if aerr != nil {
 		return aerr // not settled: the row goes back to paused for a later pass
 	}
+	// What a condition reads about the run, as at its start (RFC FY Part E).
+	// The client address of the request that started it is not recorded, so
+	// a source_cidr rule holds no resumed run (it cannot be checked).
+	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: run.Agent, Depth: s.recordedSpawnDepth(ctx, run),
+		Interactive: run.Interactive, Tier: usageModelTier(agentDef), UserTier: run.UserTier})
 
 	// Tools + dispatcher, narrowed by the caller's own allowed_hosts when the
 	// run recorded one (RFC DD Gap 2). Restoring a narrowing can only SUBTRACT:
@@ -2455,4 +2460,21 @@ func (s *Server) resumedPolicySource(ctx context.Context, run store.Run, runCfg 
 		// started — an autonomous run that never parked adopts a retune here.
 		Interruption: runCfg.Interruption,
 	}
+}
+
+// recordedSpawnDepth is a run's spawn depth read from its rows: one per
+// ancestor, as the Agent tool counted them when it spawned it. Bounded by
+// the depth cap, so corrupt rows cannot loop. A parent that is not a run row
+// (a team walk) or cannot be read still counts as the hop it is, and ends the
+// walk.
+func (s *Server) recordedSpawnDepth(ctx context.Context, run store.Run) int {
+	d := 0
+	for p := run.ParentRunID; p != "" && d <= builtin.MaxAgentDepth; d++ {
+		parent, err := s.store.GetRun(ctx, p)
+		if err != nil {
+			return d + 1
+		}
+		p = parent.ParentRunID
+	}
+	return d
 }

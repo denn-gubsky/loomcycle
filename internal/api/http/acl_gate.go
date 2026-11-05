@@ -170,6 +170,12 @@ func (s *Server) aclAdmitAgent(ctx context.Context, p auth.Principal, ok bool, a
 	if !ok {
 		return nil // no principal: open mode or a trigger firing under a definition
 	}
+	// The question is about the run this intake starts: an `agent` condition
+	// reads its agent, whichever intake asks (RunOnce stamps the rest).
+	if f, _ := authz.RunFactsFrom(ctx); f.Agent != agent {
+		f.Agent = agent
+		ctx = authz.WithRunFacts(ctx, f)
+	}
 	return s.aclAdmit(ctx, p, authz.Surface{Action: "run", Type: "agent", Name: agent})
 }
 

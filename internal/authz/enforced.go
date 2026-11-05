@@ -168,17 +168,12 @@ var enforcedConditions = map[string]Site{
 	"transport":     Proof("TestEvaluate_TheGateSuppliesTheClockAndTheTransport"),
 	"time":          Proof("TestEvaluate_TheGateSuppliesTheClockAndTheTransport"),
 	"owner_is_self": Proof("TestDocumentACL_ConditionalDenyFallsBackToEachDocument"),
-}
-
-// unenforcedConditions: Condition fields no surface fills yet; a rule using
-// one is refused at write.
-var unenforcedConditions = map[string]string{
-	"interactive": "no surface fills it",
-	"tier":        "no surface fills it",
-	"user_tier":   "no surface fills it",
-	"source_cidr": "no surface fills it",
-	"agent":       "no surface fills it",
-	"depth":       "no surface fills it",
+	"source_cidr":   Proof("TestACLGate_ASourceCIDRDenyAppliesAtRunIntake"),
+	"user_tier":     Proof("TestACLGate_AUserTierDenyAppliesAtRunIntake"),
+	"interactive":   Proof("TestACLGate_AnInteractiveDenyAppliesAtRunIntake"),
+	"agent":         Proof("TestACLGate_AgentAndTierConditionsReadTheRun"),
+	"tier":          Proof("TestACLGate_AgentAndTierConditionsReadTheRun"),
+	"depth":         Proof("TestACLGate_ADepthDenyReadsTheSpawnDepth"),
 }
 
 // IsEnforced reports whether some surface asks verb of typ.

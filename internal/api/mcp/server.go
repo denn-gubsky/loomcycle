@@ -33,6 +33,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -167,6 +168,11 @@ func (s *Server) Serve(ctx context.Context, stdin io.Reader, stdout io.Writer) e
 	// cancel) propagates into in-flight tools/call goroutines.
 	handlerCtx, cancelHandlers := context.WithCancel(ctx)
 	defer cancelHandlers()
+	// What arrives here arrived over MCP: a `transport` condition reads it
+	// (RFC FY Part E). The HTTP transport stamps its own before it gets here.
+	if authz.TransportFrom(handlerCtx) == "" {
+		handlerCtx = authz.WithTransport(handlerCtx, "mcp")
+	}
 
 	for scanner.Scan() {
 		// Copy the line — scanner reuses its buffer on next Scan().

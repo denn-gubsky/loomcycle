@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	nethttp "net/http"
 	"slices"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -960,6 +962,8 @@ func (s *Server) authenticate(ctx context.Context) (context.Context, error) {
 			return nil, status.Error(codes.Unauthenticated, "invalid bearer token")
 		}
 		ctx = authz.WithTransport(authz.WithMode(ctx, s.aclMode), "grpc")
+		// The client address a source_cidr condition reads: the gRPC peer.
+		ctx = authz.WithSourceIP(ctx, grpcPeerIP(ctx))
 		return auth.WithPrincipal(ctx, p), nil
 	}
 	// Legacy-only fallback (no resolver wired — e.g. test harnesses).
@@ -967,6 +971,20 @@ func (s *Server) authenticate(ctx context.Context) (context.Context, error) {
 		return nil, status.Error(codes.Unauthenticated, "invalid bearer token")
 	}
 	return ctx, nil
+}
+
+// grpcPeerIP is the connection's remote address, or nil when the transport
+// has none (an in-process listener).
+func grpcPeerIP(ctx context.Context) net.IP {
+	pr, ok := peer.FromContext(ctx)
+	if !ok || pr.Addr == nil {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(pr.Addr.String())
+	if err != nil {
+		host = pr.Addr.String()
+	}
+	return net.ParseIP(host)
 }
 
 // grpcMethodPrefix is the fully-qualified gRPC service path; every

@@ -25,6 +25,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/breakpoints"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
@@ -3244,6 +3245,11 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err != nil {
 		return err
 	}
+	// What a condition reads about this run (RFC FY Part E), for the intake
+	// question below and every question the run asks; its tier once the
+	// definition is known.
+	runFacts := authz.RunFacts{Agent: effectiveAgentName, Depth: builtin.AgentDepth(ctx), Interactive: in.Interactive, UserTier: in.UserTier}
+	ctx = authz.WithRunFacts(ctx, runFacts)
 	if err := s.admitPrincipalAgent(ctx, effectiveAgentName); err != nil {
 		return err
 	}
@@ -3254,6 +3260,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if !ok {
 		return &unknownAgentError{agent: effectiveAgentName}
 	}
+	runFacts.Tier = usageModelTier(agentDef)
+	ctx = authz.WithRunFacts(ctx, runFacts)
 	if err := admitAgentOverrides(effectiveAgentName, agentDef, overridesSetIn(&in)); err != nil {
 		return err
 	}
@@ -7642,6 +7650,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	if err := s.aclAdmitSpawn(ctx, parentPolicy.ACL, name); err != nil {
 		return nil, err
 	}
+	// From here ctx prepares the child: a condition reads the child's agent,
+	// depth and tier (RFC FY Part E). A child is never interactive itself.
+	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: name, Depth: builtin.AgentDepth(ctx), Tier: usageModelTier(def), UserTier: tools.RunIdentity(ctx).UserTier})
 	childOwn, _ := s.agentRunPolicy(ctx, def, name, runPolicySource{
 		Volumes:      s.volumePolicyForAgent(ctx, def),
 		Crypto:       cryptoPolicyForAgent(def),

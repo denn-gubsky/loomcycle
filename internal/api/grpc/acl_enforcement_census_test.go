@@ -1,8 +1,12 @@
 package grpc
 
 import (
+	"context"
+	"net"
 	"sort"
 	"testing"
+
+	"google.golang.org/grpc/peer"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
@@ -45,5 +49,17 @@ func TestACLEnforcement_RPCsAskWhatTheTableSays(t *testing.T) {
 	sort.Strings(missing)
 	for _, p := range missing {
 		t.Errorf("an RPC asks %q, which the enforcement table does not credit to the RPCs", p)
+	}
+}
+
+// The client address a source_cidr condition reads on gRPC is the
+// connection's peer (RFC FY Part E); with no peer there is none.
+func TestGRPCPeerIP_IsTheConnectionsRemoteAddress(t *testing.T) {
+	ctx := peer.NewContext(context.Background(), &peer.Peer{Addr: &net.TCPAddr{IP: net.ParseIP("198.51.100.7"), Port: 4242}})
+	if got := grpcPeerIP(ctx); !got.Equal(net.ParseIP("198.51.100.7")) {
+		t.Errorf("grpcPeerIP = %v", got)
+	}
+	if got := grpcPeerIP(context.Background()); got != nil {
+		t.Errorf("no peer: %v, want nil", got)
 	}
 }

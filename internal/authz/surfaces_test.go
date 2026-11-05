@@ -249,3 +249,30 @@ func TestEvaluate_TheGateSuppliesTheClockAndTheTransport(t *testing.T) {
 		t.Error("a deny for every day of the week did not hold: the gate supplied no clock")
 	}
 }
+
+// The gate reads the run facts the entry points stamp: an allow bounded by
+// depth or interactivity holds only for a run it describes — before, with no
+// facts read, every run read as top-level and non-interactive, so both
+// allows held at any depth and in an interactive run.
+func TestEvaluate_RunFactsDecideDepthAndInteractiveAllows(t *testing.T) {
+	no := false
+	acl := ACL{Name: "a", Rules: []Rule{
+		{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}, When: &Condition{Depth: &DepthBound{Max: 0}}},
+		{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:Read"}, When: &Condition{Interactive: &no}},
+	}}
+	eff, err := Compile(Input{Subject: Subject{TenantID: "t", ID: "u"}, Bindings: []Binding{{ACL: "a", SubjectKind: SubjectTenant}},
+		ACLs: map[string]ACLVersion{"a": {ACL: acl}}, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask := func(f RunFacts, tool string) bool {
+		ctx := WithRunFacts(WithMode(context.Background(), ModeEnforce), f)
+		return Evaluate(ctx, eff, "invoke", Resource{Type: "tool", Name: tool}, true).Allowed
+	}
+	if !ask(RunFacts{}, "Bash") || ask(RunFacts{Depth: 1}, "Bash") {
+		t.Error("allow depth<=0: want it at depth 0 only")
+	}
+	if !ask(RunFacts{}, "Read") || ask(RunFacts{Interactive: true}, "Read") {
+		t.Error("allow interactive:false: want it for a run that is not interactive only")
+	}
+}

@@ -2,6 +2,7 @@ package authz
 
 import (
 	"context"
+	"net"
 	"time"
 )
 
@@ -11,6 +12,8 @@ import (
 
 type ctxKeyMode struct{}
 type ctxKeyTransport struct{}
+type ctxKeySourceIP struct{}
+type ctxKeyRunFacts struct{}
 
 // WithMode stamps the rollout mode a request is evaluated under.
 func WithMode(ctx context.Context, m Mode) context.Context {
@@ -36,6 +39,65 @@ func WithTransport(ctx context.Context, t string) context.Context {
 func TransportFrom(ctx context.Context) string {
 	t, _ := ctx.Value(ctxKeyTransport{}).(string)
 	return t
+}
+
+// WithSourceIP stamps the client address a request came from: the HTTP peer,
+// or the client a trusted proxy names for it (auth.trusted_proxies), or the
+// gRPC peer. Never the request's own word about itself.
+func WithSourceIP(ctx context.Context, ip net.IP) context.Context {
+	if ip == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeySourceIP{}, ip)
+}
+
+// SourceIPFrom returns the stamped client address, or nil.
+func SourceIPFrom(ctx context.Context) net.IP {
+	ip, _ := ctx.Value(ctxKeySourceIP{}).(net.IP)
+	return ip
+}
+
+// RunFacts is what a condition may ask about the run a question is asked in
+// (or, at a run intake, the run about to start): its agent, its spawn depth
+// (0 for a top-level run), whether it is interactive, and the model and user
+// tiers it routes by. The run entry points stamp it; a request outside any
+// run carries none, and reads as a top-level, non-interactive caller with no
+// agent or tier.
+type RunFacts struct {
+	Agent       string
+	Depth       int
+	Interactive bool
+	Tier        string
+	UserTier    string
+}
+
+// WithRunFacts stamps the run facts, replacing any a parent run stamped.
+func WithRunFacts(ctx context.Context, f RunFacts) context.Context {
+	return context.WithValue(ctx, ctxKeyRunFacts{}, f)
+}
+
+// RunFactsFrom returns the stamped run facts.
+func RunFactsFrom(ctx context.Context) (RunFacts, bool) {
+	f, ok := ctx.Value(ctxKeyRunFacts{}).(RunFacts)
+	return f, ok
+}
+
+// ContextFrom is the condition context of a question asked under ctx: the
+// transport, the client address and the run facts the surfaces stamped, and
+// the clock now. Every gate decides with it, so a condition reads the same
+// facts wherever it is asked.
+func ContextFrom(ctx context.Context) Context {
+	f, _ := RunFactsFrom(ctx)
+	return Context{
+		Transport:   TransportFrom(ctx),
+		Now:         time.Now(),
+		SourceIP:    SourceIPFrom(ctx),
+		Agent:       f.Agent,
+		Depth:       f.Depth,
+		Interactive: f.Interactive,
+		Tier:        f.Tier,
+		UserTier:    f.UserTier,
+	}
 }
 
 // GateResult is what a transport gate does with an evaluation.
@@ -83,7 +145,7 @@ func evaluate(ctx context.Context, eff *Effective, action string, res Resource, 
 		Subject:  eff.Subject,
 		Action:   action,
 		Resource: res,
-		Context:  Context{Transport: TransportFrom(ctx), Now: time.Now()},
+		Context:  ContextFrom(ctx),
 	})
 	out := GateResult{Evaluated: true, Decision: d, Allowed: Resolve(mode, d, legacyAllowed)}
 	if mode == ModeShadow {
@@ -118,7 +180,7 @@ func Grants(ctx context.Context, eff *Effective, action string, res Resource) bo
 		Subject:  eff.Subject,
 		Action:   action,
 		Resource: res,
-		Context:  Context{Transport: TransportFrom(ctx), Now: time.Now()},
+		Context:  ContextFrom(ctx),
 	})
 	return d.Outcome == Allowed
 }
