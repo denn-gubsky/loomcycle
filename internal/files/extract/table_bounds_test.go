@@ -373,3 +373,87 @@ func TestExtractXLSX_ManySheetsAreBoundedTogether(t *testing.T) {
 	}
 	checkDocTableBound(t, s, rep)
 }
+
+// A text box's paragraphs and the text boxes inside it were each read again
+// at every level of nesting, before any table cap applied: 64 KiB of text
+// nested 150 deep became 10 MB, and the reviewer's 622 KB file 22 GiB.
+func TestExtractDOCX_NestedTextBoxesCountOnce(t *testing.T) {
+	text := strings.Repeat("ab ", (64<<10)/3)
+	// Paragraphs nested in one text box.
+	deepP := `<w:r><w:drawing><w:txbxContent>` + strings.Repeat(`<w:p>`, 150) + `<w:r><w:t>` + text + `</w:t></w:r>` +
+		strings.Repeat(`</w:p>`, 150) + `</w:txbxContent></w:drawing></w:r>`
+	// Text boxes nested in text boxes.
+	deepBox := strings.Repeat(`<w:r><w:drawing><w:txbxContent><w:p>`, 40) + `<w:r><w:t>` + text + `</w:t></w:r>` +
+		strings.Repeat(`</w:p></w:txbxContent></w:drawing></w:r>`, 40)
+	for _, box := range []struct{ name, xml string }{{"paragraphs", deepP}, {"boxes", deepBox}} {
+		for _, where := range []string{"body", "cell"} {
+			t.Run(box.name+" in "+where, func(t *testing.T) {
+				body := `<w:p>` + box.xml + `</w:p>`
+				if where == "cell" {
+					body = `<w:tbl><w:tr><w:tc>` + body + `</w:tc></w:tr></w:tbl>`
+				}
+				data := docxWith(t, `<w:document `+nsW+`><w:body>`+body+`</w:body></w:document>`)
+				// In a cell the table cap would drop the multiplied text
+				// after it was built, so the work is measured too.
+				runtime.GC()
+				var before, after runtime.MemStats
+				runtime.ReadMemStats(&before)
+				s, _, err := extractDOCX(t, data, Options{})
+				runtime.ReadMemStats(&after)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n := s.md.Len(); n > 2*len(text) {
+					t.Errorf("wrote %d bytes for %d bytes of text", n, len(text))
+				}
+				if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 32<<20 {
+					t.Errorf("allocated %d MiB for %d bytes of text", alloc>>20, len(text))
+				}
+			})
+		}
+	}
+}
+
+// The title search read every Title-styled paragraph's text, a nested one
+// included in each that held it: blank Title paragraphs nested 150 deep
+// around 1 MiB of spaces read 150 MiB to find no title.
+func TestExtractDOCX_NestedTitleParagraphsAreReadOnce(t *testing.T) {
+	title := `<w:pPr><w:pStyle w:val="Title"/></w:pPr>`
+	body := strings.Repeat(`<w:p>`+title, 150) + `<w:r><w:t xml:space="preserve">` + strings.Repeat(" ", 1<<20) + `</w:t></w:r>` + strings.Repeat(`</w:p>`, 150)
+	styles := `<w:styles ` + nsW + `><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/></w:style></w:styles>`
+	data := docxWith(t, `<w:document `+nsW+`><w:body>`+body+`</w:body></w:document>`,
+		xmlEntry("word/_rels/document.xml.rels", relsXML([3]string{"rId1", "styles", "styles.xml"})),
+		xmlEntry("word/styles.xml", styles))
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	if _, _, err := extractDOCX(t, data, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 64<<20 {
+		t.Errorf("allocated %d MiB to read 1 MiB of blank title", alloc>>20)
+	}
+}
+
+// Speaker notes read every body shape's paragraphs, and a shape nested in a
+// paragraph of another was read again by each shape around it.
+func TestExtractPPTX_NestedNoteShapesCountOnce(t *testing.T) {
+	text := strings.Repeat("ab ", (64<<10)/3)
+	sp := `<p:sp><p:nvSpPr><p:cNvPr id="2" name="s"/><p:cNvSpPr/><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p>`
+	notes := `<p:notes ` + nsP + ` ` + nsA + `><p:cSld><p:spTree>` + strings.Repeat(sp, 40) + `<a:r><a:t>` + text + `</a:t></a:r>` +
+		strings.Repeat(`</a:p></p:txBody></p:sp>`, 40) + `</p:spTree></p:cSld></p:notes>`
+	slide := `<p:sld ` + nsP + ` ` + nsA + ` ` + nsR + `><p:cSld><p:spTree/></p:cSld></p:sld>`
+	data := zipOf(t,
+		xmlEntry("_rels/.rels", relsXML([3]string{"rId1", "officeDocument", "ppt/presentation.xml"})),
+		xmlEntry("ppt/presentation.xml", `<p:presentation `+nsP+` `+nsR+`><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst></p:presentation>`),
+		xmlEntry("ppt/_rels/presentation.xml.rels", relsXML([3]string{"rId2", "slide", "slides/slide1.xml"})),
+		xmlEntry("ppt/slides/slide1.xml", slide),
+		xmlEntry("ppt/slides/_rels/slide1.xml.rels", relsXML([3]string{"rId8", "notesSlide", "../notesSlides/notesSlide1.xml"})),
+		xmlEntry("ppt/notesSlides/notesSlide1.xml", notes),
+	)
+	s, _ := run(t, PPTX{}, data, Options{Name: "n.pptx"})
+	if n := s.md.Len(); n > 3*len(text) { // "> " quoting adds a little
+		t.Errorf("wrote %d bytes for %d bytes of notes", n, len(text))
+	}
+}

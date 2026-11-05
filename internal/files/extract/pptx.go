@@ -219,7 +219,9 @@ func notesQuote(notes *node) string {
 		return ""
 	}
 	var lines []string
-	for _, sp := range tree.all("sp") {
+	// A shape's paragraphs hold any shape nested in them, so only the
+	// outermost shapes are read.
+	for _, sp := range tree.outermost("sp") {
 		if sp.path("nvSpPr", "nvPr", "ph").attr("type") != "body" {
 			continue
 		}

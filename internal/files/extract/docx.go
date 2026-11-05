@@ -71,8 +71,9 @@ func (DOCX) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 		return rep, refusedf("the document has no body")
 	}
 	// A Title-style paragraph names the document: it becomes the "#" heading
-	// and is not repeated below it.
-	for _, p := range body.all("p") {
+	// and is not repeated below it. Only outermost paragraphs are looked at:
+	// a paragraph's text holds those nested in it.
+	for _, p := range body.outermost("p") {
 		if d.paraLevel(p) == levelTitle {
 			if t := strings.TrimSpace(plainText(p)); t != "" {
 				docTitle, d.titlePara = t, p
@@ -378,8 +379,14 @@ func (d *docx) drawing(n *node, out *[]seg) error {
 			*out = append(*out, seg{image: md})
 		}
 	}
-	for _, box := range n.all("txbxContent") {
-		for _, p := range box.all("p") {
+	// A paragraph's text holds every text box and paragraph nested in it,
+	// so only the outermost are read: reading each level again multiplied
+	// the text by the depth.
+	for _, box := range n.outermost("txbxContent") {
+		if err := d.w.ctx.Err(); err != nil {
+			return err
+		}
+		for _, p := range box.outermost("p") {
 			*out = append(*out, seg{text: "\n" + plainText(p)})
 		}
 	}
