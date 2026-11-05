@@ -1850,6 +1850,7 @@ type Store interface {
 	DynamicAgentStore
 	InterruptStore
 	ChannelDefStore
+	AuditStore
 	io.Closer
 }
 

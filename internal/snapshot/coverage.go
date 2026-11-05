@@ -266,6 +266,13 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "not carried: provider-to-group bindings; the target's provider re-provisions them"},
 	"scim_group_members": {Kind: coverNever, Backends: onBoth,
 		Reason: "not carried: the provider's group memberships; the target's provider re-provisions them"},
+	// RFC FZ Part E: the store-backed audit stream. Exported on its own route
+	// (GET /v1/_audit), never carried: its rows are signed under the source's
+	// key, and splicing them into a target's chains would fork them.
+	"audit_events": {Kind: coverNever, Backends: onBoth,
+		Reason: "the source's signed audit chain; exported with GET /v1/_audit, never restored into another deployment's chains"},
+	"audit_heads": {Kind: coverNever, Backends: onBoth,
+		Reason: "the heads and retention anchors of the source's audit chains"},
 	"retention_overrides": {Kind: coverNever, Backends: onBoth,
 		Reason: "a timed decision (24 hours at most) to store one agent's runs on THIS deployment; carrying it would switch storage on somewhere nobody asked for it"},
 

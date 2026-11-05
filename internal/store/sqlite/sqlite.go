@@ -247,6 +247,32 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at INTEGER NOT NULL,
 			PRIMARY KEY (tenant_id, agent)
 		)`,
+		// The store-backed audit stream (RFC FZ Part E): one hash chain per
+		// tenant, and its head (the append lock's row, plus the anchor a
+		// retention prune leaves). ts is unix nanos so the hash reproduces
+		// exactly. Mirrors postgres migration 0131.
+		`CREATE TABLE IF NOT EXISTS audit_events (
+			tenant_id TEXT    NOT NULL,
+			seq       INTEGER NOT NULL,
+			ts        INTEGER NOT NULL,
+			actor     TEXT    NOT NULL DEFAULT '',
+			action    TEXT    NOT NULL,
+			subject   TEXT    NOT NULL DEFAULT '',
+			payload   TEXT    NOT NULL,
+			prev_hash TEXT    NOT NULL DEFAULT '',
+			hash      TEXT    NOT NULL,
+			mac       TEXT    NOT NULL,
+			PRIMARY KEY (tenant_id, seq)
+		)`,
+		`CREATE TABLE IF NOT EXISTS audit_heads (
+			tenant_id   TEXT    PRIMARY KEY,
+			seq         INTEGER NOT NULL DEFAULT 0,
+			hash        TEXT    NOT NULL DEFAULT '',
+			mac         TEXT    NOT NULL DEFAULT '',
+			anchor_seq  INTEGER NOT NULL DEFAULT 0,
+			anchor_hash TEXT    NOT NULL DEFAULT '',
+			anchor_mac  TEXT    NOT NULL DEFAULT ''
+		)`,
 		// Web UI login sessions (RFC FA §5), keyed by the SHA-256 of the cookie
 		// id; every time is unix nanos, revoked_at NULL = live. Mirrors postgres
 		// migration 0110.

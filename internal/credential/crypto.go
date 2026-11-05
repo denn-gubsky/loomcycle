@@ -290,3 +290,24 @@ func DerivePasswordPepper(secretKeyB64 string) ([]byte, error) {
 	}
 	return hkdf.Key(sha256.New, kek, nil, passwordPepperInfo, 32)
 }
+
+// auditChainKeyInfo is the HKDF info for the audit stream's HMAC key. Like
+// the peppers it must never change: every stored audit row's MAC is keyed by
+// it, so a new value would make the whole stored history fail verification.
+const auditChainKeyInfo = "loomcycle/audit-chain/v1"
+
+// DeriveAuditChainKey derives the key the store-backed audit stream signs its
+// hash chain with: HKDF-SHA256(key, info="loomcycle/audit-chain/v1"), parsed
+// exactly as NewSealer parses the master key. A distinct info string keeps it
+// apart from the peppers and the per-tenant credential keys, so a database
+// reader who learns one learns nothing about another. An empty key yields nil.
+func DeriveAuditChainKey(secretKeyB64 string) ([]byte, error) {
+	if strings.TrimSpace(secretKeyB64) == "" {
+		return nil, nil
+	}
+	kek, err := decodeKey(secretKeyB64)
+	if err != nil {
+		return nil, err
+	}
+	return hkdf.Key(sha256.New, kek, nil, auditChainKeyInfo, 32)
+}
