@@ -80,7 +80,7 @@ func TestRedact_DynamicSetIsBounded(t *testing.T) {
 		t.Error("the cap did not keep exactly the most recently registered")
 	}
 	for i := 0; i < 100; i++ {
-		r.RegisterObserved(Holder{Tenant: "t0", User: "u"}, fmt.Sprintf("url-part-%03d", i))
+		r.RegisterObserved(Holder{Tenant: "t0"}, fmt.Sprintf("url-part-%03d", i))
 		r.RegisterOperator(fmt.Sprintf("operator-secret-%03d", i))
 	}
 	if n := observedLen(r, "t0"); n != 4 {
@@ -187,7 +187,7 @@ func TestRedact_JustRegisteredValueIsMaskedImmediately(t *testing.T) {
 	masked(t, r, "full-0-credential")
 	r.RegisterCredential(Holder{Tenant: "late"}, "fresh-credential-value")
 	masked(t, r, "fresh-credential-value")
-	r.RegisterObserved(Holder{Tenant: "late", User: "u"}, "fresh-url-part")
+	r.RegisterObserved(Holder{Tenant: "late"}, "fresh-url-part")
 	masked(t, r, "fresh-url-part")
 }
 

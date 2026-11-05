@@ -57,7 +57,8 @@ type Redactor struct {
 	// Tier A' — runtime-registered exact secret values (RFC AV/AR: resolved
 	// $cred: values + provider-key overrides). Registered as credentials resolve,
 	// so a downstream tool that echoes one is masked in the persisted transcript.
-	// Bounded and owned per tenant; see dynamic.go.
+	// Bounded; a value is kept while a run that registered it is live. See
+	// dynamic.go.
 	dyn dynamicSet
 }
 

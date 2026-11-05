@@ -667,12 +667,20 @@ func (s *secretSink) registerObserved(ctx context.Context, v string) {
 	s.redactor().RegisterObserved(secretHolder(ctx, ri.TenantID), v)
 }
 
-// secretHolder names who holds a registered value: the tenant, the run's
-// user, and the run ids whose liveness pins it — the tree's root (a parent
-// can repeat what a child resolved) and the run itself.
+// secretHolder names who holds a registered value: the tenant and the run ids
+// whose liveness pins it — the tree's root (a parent can repeat what a child
+// resolved), the run itself, and the team walk a member or a member's
+// sub-agent runs in (the walk writes its result after its members end).
 func secretHolder(ctx context.Context, tenantID string) redact.Holder {
 	ri := tools.RunIdentity(ctx)
-	return redact.Holder{Tenant: tenantID, User: ri.UserID, Runs: []string{ri.RootRunID, ri.AgentID}}
+	runs := []string{ri.RootRunID, ri.AgentID}
+	if w, ok := store.WalkTaskFromContext(ctx); ok {
+		runs = append(runs, w.WalkID)
+	}
+	if w, ok := store.WalkLineageFromContext(ctx); ok {
+		runs = append(runs, w.WalkID)
+	}
+	return redact.Holder{Tenant: tenantID, Runs: runs}
 }
 
 // buildProviderMap constructs every ENABLED provider from cfg.Providers via the

@@ -127,7 +127,7 @@ func (f *File) httpHook(ctx context.Context, op, method string, u *url.URL, head
 // passed the host and grant checks, or a redirect it was sent.
 //
 // The redactor is process-wide: what one run registers is masked in every
-// run's transcripts, held in a bounded bucket of the run's tenant and user
+// run's transcripts, held in a bounded bucket of the run's tenant
 // (pinned while the run is live). So a run may register at most
 // fileRegisterLimit values, and
 // only the parts of a URL that carry a credential: an arbitrary string a

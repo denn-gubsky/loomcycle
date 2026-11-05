@@ -43,7 +43,7 @@ type File struct {
 	HTTP *HTTP
 	// RegisterSecret hands the credential parts of a download or upload URL
 	// to the server's redactor as values the run observed (a model chose the
-	// URL), held for the run's tenant and user; a pre-authenticated URL is a
+	// URL), held for the run's tenant; a pre-authenticated URL is a
 	// credential. Late-bound at boot.
 	RegisterSecret func(ctx context.Context, value string)
 	// Docs is the Document tool op=import builds a document through, so its

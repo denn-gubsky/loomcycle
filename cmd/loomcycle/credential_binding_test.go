@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/credential/credentialtest"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -238,5 +240,23 @@ func TestBash_ResolvedCredValueRedactedFromOutput(t *testing.T) {
 				t.Errorf("the resolved value survives redaction: %q", stored)
 			}
 		})
+	}
+}
+
+// TestSecretHolder_PinsToTheWalkAMemberRunsIn: a value a walk's member (or a
+// member's sub-agent) resolves is held by the walk's run id too, so it stays
+// masked until the walk, which writes its result last, is over.
+func TestSecretHolder_PinsToTheWalkAMemberRunsIn(t *testing.T) {
+	base := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "t", AgentID: "agent-m", RootRunID: "root-1"})
+	member := store.WithWalkTask(base, store.WalkTask{WalkID: "walk-1", State: "s"})
+	descendant := store.WithWalkLineage(base, store.WalkTask{WalkID: "walk-2", State: "s"})
+	for name, tc := range map[string]struct {
+		ctx  context.Context
+		want string
+	}{"member": {member, "walk-1"}, "member's sub-agent": {descendant, "walk-2"}} {
+		h := secretHolder(tc.ctx, "t")
+		if !slices.Contains(h.Runs, tc.want) || !slices.Contains(h.Runs, "agent-m") || !slices.Contains(h.Runs, "root-1") {
+			t.Errorf("%s: holder runs %v, want the walk %s beside the run's own ids", name, h.Runs, tc.want)
+		}
 	}
 }

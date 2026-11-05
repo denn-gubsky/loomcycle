@@ -54,8 +54,6 @@ const (
 // that keep it pinned while live.
 type Holder struct {
 	Tenant string
-	// User is carried for the caller's record; buckets are per tenant.
-	User string
 	// Runs are the ids whose liveness pins the value (a run id and an agent
 	// id are both accepted; empty ones are ignored).
 	Runs []string

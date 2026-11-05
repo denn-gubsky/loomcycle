@@ -6961,19 +6961,23 @@ func maskCredentialCreateValue(toolName string, input json.RawMessage) json.RawM
 // the signed-URL tier to what the outbound redact context plugin masks: a
 // pre-signed URL a tool returns must stay usable for the run that holds it,
 // so it is masked only in the stored copy.
-// liveRunIDs answers, from one snapshot of the cancel registry, whether a run
-// id or agent id names a run in flight on this replica.
+func newAtRestRedactor(environ []string) *redact.Redactor {
+	return redact.New(secretEnvValues(environ), true).WithSignedURLParams()
+}
+
+// liveRunIDs answers, from one snapshot, whether a run id or agent id names
+// something in flight on this replica: a run in the cancel registry, or a team
+// walk, which is live in the walk table while its members come and go.
 func (s *Server) liveRunIDs() func(string) bool {
 	live := map[string]bool{}
 	for _, e := range s.cancelReg.ListAll() {
 		live[e.AgentID], live[e.RunID] = true, true
 	}
+	for _, id := range s.walks.runIDs() {
+		live[id] = true
+	}
 	delete(live, "")
 	return func(id string) bool { return live[id] }
-}
-
-func newAtRestRedactor(environ []string) *redact.Redactor {
-	return redact.New(secretEnvValues(environ), true).WithSignedURLParams()
 }
 
 // secretEnvValues extracts the VALUES of secret-classified env vars (by name)
