@@ -152,10 +152,14 @@ var unenforcedPairs = map[pairKey]string{
 	{"client", "invoke"}:    "a client tool is asked as tool:",
 	{"localapi", "invoke"}:  "a LocalAPI tool is asked as tool:",
 	{"memory", "recall"}:    "recall is asked as read",
-	{"memory", "browse"}:    "",
-	{"document", "browse"}:  "",
-	{"team", "author"}:      "a team is authored as def:team/",
-	{"crypto", "manage"}:    "",
+	// browse is asked by the member-browse change (#2397, RFC FY P0), which
+	// D1(b) needs operators to write allows for. Whichever of that change and
+	// this one merges second moves both entries to enforcedPairs, proved by
+	// TestBrowse_AnExplicitAllowLetsAMemberReadAColleaguesScope.
+	{"memory", "browse"}:   "the member-browse change asks it",
+	{"document", "browse"}: "the member-browse change asks it",
+	{"team", "author"}:     "a team is authored as def:team/",
+	{"crypto", "manage"}:   "",
 }
 
 // retiredPairs: removed from the catalog. They stay parseable so a list
