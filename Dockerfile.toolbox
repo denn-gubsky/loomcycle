@@ -24,7 +24,7 @@
 #
 # Published to docker.io/denngubsky/loomcycle-toolbox.
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 # buildx supplies TARGETARCH (amd64 / arm64) automatically when --platform is
 # set (goreleaser passes it per image). GO_VERSION tracks the go-builder stage

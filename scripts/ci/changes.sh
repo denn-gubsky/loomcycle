@@ -18,7 +18,7 @@ set -euo pipefail
 base="${CI_DIFF_BASE:-HEAD^1}"
 head="${CI_DIFF_HEAD:-HEAD}"
 
-keys=(go runtime web ts python bridges proto)
+keys=(go runtime web ts python bridges landing proto)
 
 all() {
   for k in "${keys[@]}"; do echo "$k=true"; done
@@ -60,4 +60,6 @@ echo "web=$(has '^(web|packages/(library|explorer|memory-view|def-fields|univers
 echo "ts=$(has '^adapters/ts/')"
 echo "python=$(has '^adapters/python/')"
 echo "bridges=$(has '^(packages/bridge-[^/]+|deploy/bridges)/')"
+# The landing server's tests also read the static site it serves.
+echo "landing=$(has '^(cloud-deployment/landing|cloud-web)/')"
 echo "proto=$(has '^(proto|internal/api/grpc/loomcyclepb|adapters/python/loomcycle/_generated)/|^(go\.mod|Makefile)$')"
