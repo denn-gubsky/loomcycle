@@ -1,7 +1,7 @@
 // Test doubles: a scripted loomcycle (copied from bridge-core's tests) and a
 // recording fake of Slack's Web API.
 
-import type { AdminClient, Logger, RunClient } from "@loomcycle/bridge-core";
+import type { AdminClient, Logger, RunClient, VoiceClient } from "@loomcycle/bridge-core";
 
 // The loomcycle client's types, read off the core's ports, so this package
 // needs no dependency of its own on @loomcycle/client.
@@ -9,6 +9,21 @@ type RunOptions = Parameters<RunClient["runStreaming"]>[0];
 type ContinueOptions = Parameters<RunClient["continueSession"]>[0];
 type AgentEvent = ReturnType<RunClient["runStreaming"]> extends AsyncIterable<infer E> ? E : never;
 type MintedUserToken = Awaited<ReturnType<AdminClient["mintUserToken"]>>;
+type Whoami = Awaited<ReturnType<VoiceClient["whoami"]>>;
+type SpeechInfo = Awaited<ReturnType<VoiceClient["speechInfo"]>>;
+
+/** What the fake loomcycle's speech routes answer (RFC GA), when a test
+ *  turns them on. */
+export interface FakeSpeech {
+  surfaces: { speech: boolean; transcription: boolean };
+  /** The formats GET /v1/_speech lists. */
+  formats: string[];
+  transcript: string;
+}
+
+export function fakeSpeech(over: Partial<FakeSpeech> = {}): FakeSpeech {
+  return { surfaces: { speech: true, transcription: true }, formats: ["wav", "mp3"], transcript: "what is the weather", ...over };
+}
 
 /** A push-driven async iterable: the test feeds the events a run would stream. */
 export class EventChannel<T> implements AsyncIterable<T> {
@@ -70,6 +85,8 @@ export class FakeLoomcycle {
   /** What runStreaming / continueSession throw when started (admission refusal). */
   startError?: unknown;
   existingUsers = new Set<string>();
+  /** Set to give the client the speech calls. */
+  speech?: FakeSpeech;
   ttlMs = 12 * 3600 * 1000;
   now = () => Date.now();
   private tokenSeq = 0;
@@ -97,7 +114,30 @@ export class FakeLoomcycle {
       this.runs.push({ token, kind, opts, events });
       return events;
     };
+    const sp = this.speech;
+    const voice: Partial<VoiceClient> = sp
+      ? {
+          whoami: async () => {
+            rec("whoami", []);
+            return { effective: { surfaces: { ...sp.surfaces } } } as unknown as Whoami;
+          },
+          speechInfo: async () => {
+            rec("speechInfo", []);
+            return { speech: { enabled: true, default_language: "en", languages: { en: {} }, formats: sp.formats } } as unknown as SpeechInfo;
+          },
+          transcribe: async (file, opts) => {
+            rec("transcribe", [file, opts]);
+            return { text: sp.transcript, language: "en" };
+          },
+          speech: async (input, opts) => {
+            rec("speech", [input, opts]);
+            const contentType = opts?.format === "mp3" ? "audio/mpeg" : opts?.format === "ogg" ? "audio/ogg" : "audio/wav";
+            return { bytes: new Uint8Array([7, 7, 7]), contentType, seconds: 1.5 };
+          },
+        }
+      : {};
     return {
+      ...voice,
       runStreaming: (opts) => start("start", opts),
       continueSession: (opts) => start("continue", opts),
       sendRunInput: async (runId, text) => {
