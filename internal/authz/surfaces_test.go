@@ -77,6 +77,7 @@ func TestHTTPSurface_RepresentativeRoutes(t *testing.T) {
 		{"POST", "/v1/_users/alice/approve", instance("manage", "principal", "user:alice"), true},
 		{"POST", "/v1/_snapshots", instance("manage", "runtime", "snapshot"), true},
 		{"GET", "/v1/_events", instance("read", "runtime", "events"), true},
+		{"GET", "/v1/_audit", instance("read", "runtime", "audit"), true},
 		{"POST", "/v1/_mcp", instance("use", "transport", "mcp"), true},
 		{"POST", "/v1/_decide", instance("use", "gateway", "decide"), true},
 		{"POST", "/v1/audio/speech", instance("use", "gateway", "speech"), true},

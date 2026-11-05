@@ -1425,6 +1425,12 @@ func requiredScopeFor(method, path string) string {
 	// ScopeAdmin also satisfies. Read-only GET.
 	case path == "/v1/_events":
 		return auth.ScopeTenant
+	// RFC FZ Part E: the audit chain export. Each chain is one tenant's;
+	// handleAuditExport confines a tenant operator to its own and lets an
+	// admin name one (none = the operator chain). Operator-only: carved out
+	// of the member path (memberpath.CarvedOut).
+	case path == "/v1/_audit":
+		return auth.ScopeTenant
 	// RFC AV: the usage/cost report. token_usage rows carry tenant_id, so
 	// handleUsageReport tenant-scopes the aggregation (a tenant operator sees
 	// only its own tenant's spend; admin sees all + the ?tenant= focus).

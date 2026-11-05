@@ -277,6 +277,9 @@ func TestRequiredScopeFor(t *testing.T) {
 		// RFC AS: the audit/event log is tenant-reachable (handleListEvents
 		// scopes the result via the event's owning session's tenant).
 		{"GET", "/v1/_events", auth.ScopeTenant},
+		// RFC FZ Part E: the audit chain export; the handler confines a tenant
+		// operator to its own chain.
+		{"GET", "/v1/_audit", auth.ScopeTenant},
 		// The routing view is tenant-reachable; the handler strips infra detail
 		// for a non-admin caller.
 		{"GET", "/v1/_routing", auth.ScopeTenant},
@@ -515,6 +518,7 @@ func TestTenantMemberAccessible(t *testing.T) {
 		{"PUT", "/v1/_limits"}, {"DELETE", "/v1/_limits"}, {"POST", "/v1/_crypto"},
 		{"POST", "/v1/_operatortokendef"}, {"GET", "/v1/_tenants"}, {"POST", "/v1/_pause"},
 		{"POST", "/v1/_memory/repair-tenant"}, {"POST", "/v1/runs"}, {"GET", "/v1/_me"},
+		{"GET", "/v1/_audit"},
 	}
 	for _, c := range closed {
 		if tenantMemberAccessible(c.method, c.path) {
@@ -552,7 +556,7 @@ func TestAuthMiddleware_RFCCBMember(t *testing.T) {
 		{"POST", "/v1/_users"}, {"PATCH", "/v1/_users/alice"}, {"POST", "/v1/_users/alice/tokens"},
 		{"POST", "/v1/_erasure"}, {"PUT", "/v1/_limits"}, {"DELETE", "/v1/_limits"},
 		{"POST", "/v1/_operatortokendef"}, {"POST", "/v1/_pause"},
-		{"GET", "/v1/_tenants"}, {"POST", "/v1/_crypto"},
+		{"GET", "/v1/_tenants"}, {"POST", "/v1/_crypto"}, {"GET", "/v1/_audit"},
 	}
 	for _, c := range refused {
 		reached, code := runMW(t, s, c.method, c.path, "lct_member")

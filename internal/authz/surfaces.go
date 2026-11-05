@@ -350,6 +350,10 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		return instance("read", "runtime", "metrics"), true
 	case name == "events":
 		return instance("read", "runtime", "events"), true
+	case name == "audit":
+		// RFC FZ Part E: the audit chain export, apart from the run event
+		// log so a grant of one does not reach the other.
+		return instance("read", "runtime", "audit"), true
 	case name == "mcp":
 		return instance("use", "transport", "mcp"), true
 	case name == "webhooks":

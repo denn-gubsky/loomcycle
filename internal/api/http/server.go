@@ -4592,6 +4592,9 @@ func (s *Server) routes() *http.ServeMux {
 	// optional type + date-range filter. Drives the Web UI's
 	// /ui/audit page. Bearer-authed admin surface.
 	mux.Handle("GET /v1/_events", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListEvents))))
+	// RFC FZ Part E — the store-backed audit chain as JSONL. Not the run event
+	// log above. ScopeTenant (requiredScopeFor), carved out of the member path.
+	mux.Handle("GET /v1/_audit", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuditExport))))
 	mux.Handle("GET /v1/_usage", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUsageReport))))
 	mux.Handle("GET /v1/_usage/speed", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUsageSpeed))))
 	// RFC BM — the data-retention view. Tenant-readable config; the cross-tenant
