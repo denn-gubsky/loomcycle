@@ -175,12 +175,12 @@ func TestContextCan_RefusesWhatTheEvaluationRouteRefuses(t *testing.T) {
 	run = tools.WithRunIdentity(run, tools.RunIdentityValue{TenantID: "acme", UserID: "alice"})
 	run = tools.WithRunID(run, "r_refuse")
 	run = tools.WithRunPolicy(run, tools.RunPolicy{ACL: p.Effective})
-	code, body := bearerCall(t, ts, aliceBearer, "POST", "/v1/_authz/evaluation", `{"action":{"name":"browse"},"resource":{"type":"document","id":"user"}}`)
+	code, body := bearerCall(t, ts, aliceBearer, "POST", "/v1/_authz/evaluation", `{"action":{"name":"mount"},"resource":{"type":"volume","id":"data"}}`)
 	if code != 400 || jsonField(t, body, "code") != "rule_not_enforceable" {
 		t.Errorf("HTTP: %d %s, want rule_not_enforceable", code, body)
 	}
-	out, err := (&builtin.Context{Store: st}).Execute(run, json.RawMessage(`{"op":"can","action":"browse","resource":{"type":"document","id":"user"}}`))
-	if err != nil || !out.IsError || !strings.Contains(out.Text, "browse document is not evaluated by any surface") {
+	out, err := (&builtin.Context{Store: st}).Execute(run, json.RawMessage(`{"op":"can","action":"mount","resource":{"type":"volume","id":"data"}}`))
+	if err != nil || !out.IsError || !strings.Contains(out.Text, "mount volume is not evaluated by any surface") {
 		t.Errorf("Context op=can: %v %s, want the refusal", err, out.Text)
 	}
 }
