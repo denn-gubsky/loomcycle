@@ -948,12 +948,25 @@ agents:
   - **Upkeep:** the `maintain_statement` op (verify, expire, demote, merge, mark or re-point evidence, flag), which no other agent may call.
   - **Exclusive passes:** a named document `lease` (and `release`), so two passes of one kind never work a scope at once.
   - **Auto-assert:** a `rule:` proposal of a kind the tenant's vocabulary marks auto-asserting, with every quote in a chunk, is asserted directly.
-- **`link` and `remember` (any provider).** In the tenant scope, which every user and agent of the tenant reads, a relation a run chooses is filed as a proposal for review unless the agent holds `link`: its `link_chunks` (method `agent`, the run's agent as actor), the relation an `upsert_chunk` fact states (unless a code agent stamps its granted `rule:` / `extractor:` method), the links an `import_md` trailer or edition (`amends`) and an `import_canvas` write, and the relations `copy_documents` / `move_documents` carry into the tenant scope (their rulings are not carried either). In the user and agent scopes they are asserted. The memory bundle's consolidator holds `link`. A run may call `remember`, which files a fact as something a person said, only with `remember`; without it the call is refused and the run is pointed at `propose_statement` / `upsert_chunk`. A person's off-run call (the operator, a member over HTTP or MCP) needs neither.
+- **`link` and `remember` (any provider).** In the tenant scope, which every user and agent of the tenant reads, a relation a run chooses is filed as a proposal for review unless the agent holds `link`: its `link_chunks` (method `agent`, the run's agent as actor), the relation an `upsert_chunk` fact states (a code agent's granted `rule:` relation holds; an `extractor:` one is always filed for review in the tenant, `link` or not), the links an `import_md` trailer or edition (`amends`) and an `import_canvas` write, and the relations `copy_documents` / `move_documents` carry into the tenant scope (their rulings are not carried either). In the user and agent scopes they are asserted. The memory bundle's consolidator holds `link`. A run may call `remember`, which files a fact as something a person said, only with `remember`; without it the call is refused and the run is pointed at `propose_statement` / `upsert_chunk`. A person's off-run call (the operator, a member over HTTP or MCP) needs neither.
 
   An `extractor:` proposal is never auto-asserted: a model found it, so a person reviews it — unless the tenant's review policy (the ontology's Review section; see [DOCUMENTS.md](DOCUMENTS.md#review-policies)) says otherwise. With a Review section, the policy decides every proposal and `@auto_assert` does not apply.
 - **Fork narrows, never widens.** A definition authored from inside a run may list only methods its author's run may stamp; a fork may list only what the version it forks already holds, even when the author holds more. The grant is what lets a body's writes skip review, so the operator decides which bodies hold it.
 - **Not per-run overridable**, and a sub-agent holds only its own definition's grant.
 - **Authority, not content.** Not part of `content_sha256`: granting or narrowing it does not change the agent's content hash.
+
+**`document_sources.<name>.trust` — what a sync pull files.** A document source (a peer loomcycle a document is bound to with `Document op=set_remote`) declares how a `sync` pull files the statements it carries:
+
+```yaml
+document_sources:
+  hq-docs:
+    config: { base_url: "https://hq.example:8787", api_key_env: LOOMCYCLE_HQ_DOC_KEY }
+    trust: asserted      # default proposed
+```
+
+- **`proposed` (the default, also when unset):** each pulled statement is filed for review here, with `attributes.origin_method: peer:<name>` and the peer's own method and status kept as `peer_method` / `peer_status`. A statement that already holds here is never changed by such a pull: its envelope is kept and the peer's quotes are not added.
+- **`asserted`:** the peer's asserted statements stay asserted (still recorded as `peer:<name>`, never as a person's), and a statement an earlier pull wrote follows the peer's changes.
+- Only the operator plane may declare `asserted` on a runtime `DocumentSourceDef` (an admin, the legacy token, or a tenant operator in its own tenant); a run or a member authors sources as `proposed`, and must say so when it forks a trusted one (the Web UI sends `proposed` for them). Any other value fails config load.
 
 **Unset scope gates.** `memory_scopes` and `evaluation_scopes` used to deny everything when empty. They now resolve, at run time, to what the caller already owns: `memory_scopes` to `user` (plus `tenant` for a non-isolated tenant member) and `evaluation_scopes` to `[submit_self]`. Two yaml-only gates follow the same rule: unset `sql_scopes` resolves to `[user]` and unset `history_scope` to `[user]`. The three `user` defaults need a `user_id` on the run; a run without one gets nothing. `agent_def_scopes` and `volume_def_scopes` are unchanged: empty still denies.
 

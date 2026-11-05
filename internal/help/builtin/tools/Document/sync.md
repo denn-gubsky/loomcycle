@@ -91,7 +91,8 @@ operator rejected that relation here; a sync never undoes a rejection.
 Three more counts appear only when they are not zero: `edges_updated`,
 `edges_envelope_kept` and `evidence_dropped` (see Links and their evidence), and
 `conflicts` with `conflicting_keys` (at most 100) when a key is held by another
-document.
+document, and `edges_skipped_conflict`, the links left out because an end is
+such a key.
 
 ## Errors
 
