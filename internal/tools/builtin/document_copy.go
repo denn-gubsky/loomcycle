@@ -65,6 +65,10 @@ const (
 	moveIDCollision = "id_collision"
 )
 
+// copyTargetForbidden is the detail of a refusal that must not say what in the
+// target scope refused it.
+const copyTargetForbidden = "write on the target is not allowed"
+
 // copyDoc is one document of the set, as planned.
 type copyDoc struct {
 	id      string
@@ -363,7 +367,7 @@ func (d *Document) planCopy(ctx context.Context, p *copyPlan, op string, ids []s
 		}
 		// A resumed move's own rows hold its keys already.
 		if !doc.resumed {
-			if code, detail, err := d.copyKeyCollision(ctx, p, id); err != nil {
+			if code, detail, err := d.copyKeyCollision(ctx, p, dstACL, id); err != nil {
 				return err
 			} else if code != "" {
 				p.refuse(id, code, detail)
@@ -403,7 +407,12 @@ func moveSourceRefusal(ctx context.Context, acl *docACL, op, docID string) (code
 
 // copyKeyCollision refuses a document whose work key or identity key the target
 // already holds: both are unique in a scope, so the copy would fail its insert.
-func (d *Document) copyKeyCollision(ctx context.Context, p *copyPlan, docID string) (string, string, error) {
+//
+// When the holder is a document the caller may not read (dstACL), the refusal is
+// a plain write refusal that names neither the key nor the scope: otherwise a dry
+// run would answer "is this work held there" for a document the caller cannot
+// see, which resolve_anchor deliberately does not.
+func (d *Document) copyKeyCollision(ctx context.Context, p *copyPlan, dstACL *docACL, docID string) (string, string, error) {
 	for _, col := range []string{"work_key", "identity_key"} {
 		res, err := d.query(ctx, p.src, `SELECT DISTINCT `+col+` FROM chunks WHERE document_id = ? AND `+col+` IS NOT NULL AND `+col+` <> ''`, docID)
 		if err != nil {
@@ -414,7 +423,7 @@ func (d *Document) copyKeyCollision(ctx context.Context, p *copyPlan, docID stri
 		}
 		for _, r := range res.Rows {
 			k := asStr(r[0])
-			hit, err := d.query(ctx, p.dst, `SELECT 1 FROM chunks WHERE `+col+` = ? LIMIT 1`, k)
+			hit, err := d.query(ctx, p.dst, `SELECT document_id FROM chunks WHERE `+col+` = ? LIMIT 1`, k)
 			if err != nil {
 				if isNoSuchColumn(err) {
 					break
@@ -422,6 +431,11 @@ func (d *Document) copyKeyCollision(ctx context.Context, p *copyPlan, docID stri
 				return "", "", err
 			}
 			if len(hit.Rows) > 0 {
+				if readable, err := dstACL.permits(ctx, "read", asStr(hit.Rows[0][0])); err != nil {
+					return "", "", err
+				} else if !readable {
+					return copyForbidden, copyTargetForbidden, nil
+				}
 				return copyKeyCollision, fmt.Sprintf("scope %s already holds %s %q", p.dst.Scope, col, k), nil
 			}
 		}

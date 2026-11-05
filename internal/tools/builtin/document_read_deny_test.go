@@ -263,3 +263,35 @@ func TestMemoryDocRowDelete_AsksTheDocumentACL(t *testing.T) {
 		t.Errorf("deleting a fact body of an allowed document: %s", r.Text)
 	}
 }
+
+// TestCopyDocuments_AKeyHeldByAnUnreadableDocumentIsNotNamed: a target scope
+// that already holds the copy's work key in a document the caller may not read
+// answers as a write refusal does, naming neither the key nor the scope, so a
+// dry run cannot probe for a work the caller cannot see (resolve_anchor hides
+// the same). A holder the caller may read is still reported as key_collision.
+func TestCopyDocuments_AKeyHeldByAnUnreadableDocumentIsNotNamed(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	open := grantedTenantCtx(base)
+	work := func(scope, title string) string {
+		t.Helper()
+		b, _ := json.Marshal(map[string]any{"op": "import_md", "scope": scope, "markdown": "# " + title + "\n\n## Article 1\n\nText.\n",
+			"reimport": true, "work_key": "law:secret/1"})
+		out := copyExec(t, d, open, string(b))
+		return asStr(out["document_id"])
+	}
+	mine := work("user", "Mine")
+	copyExec(t, d, open, `{"op":"set_path","scope":"user","id":"`+mine+`","path":"/mine/law"}`)
+	held := work("tenant", "Held")
+	copyExec(t, d, open, `{"op":"set_path","scope":"tenant","id":"`+held+`","path":"/vault/law"}`)
+	call := `{"op":"copy_documents","scope":"user","to_scope":"tenant","document_ids":["` + mine + `"],"path_map":{"/documents":"/copies","/mine":"/copies"}}`
+
+	denied := withACL(open, aclSet(t, denyRule("read", "document:tenant:/vault/**")))
+	out := copyExec(t, d, denied, call)
+	b, _ := json.Marshal(out)
+	if !refusedAs(out, mine, copyForbidden) || strings.Contains(string(b), "law:secret/1") || strings.Contains(string(b), "work_key") {
+		t.Errorf("a key held by an unreadable document should be refused as a write refusal is, naming nothing: %s", b)
+	}
+	if out := copyExec(t, d, open, call); !refusedAs(out, mine, copyKeyCollision) {
+		t.Errorf("a key held by a readable document is a key_collision: %v", out)
+	}
+}
