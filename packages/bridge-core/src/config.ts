@@ -35,8 +35,10 @@ export interface SharedConfig {
   port: number;
   /** Local testing only: the platform's request authentication is off. */
   dev: boolean;
-  /** Voice messages (RFC GA), off unless BRIDGE_VOICE=1. */
-  voice: VoiceConfig;
+  /** Voice messages (RFC GA), off unless BRIDGE_VOICE=1. Optional so a
+   *  config built by hand before voice existed still type-checks: absent is
+   *  voice off. loadSharedConfig always sets it. */
+  voice?: VoiceConfig;
 }
 
 export interface GateConfig {

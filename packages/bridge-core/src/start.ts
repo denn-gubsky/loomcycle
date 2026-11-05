@@ -20,7 +20,7 @@ import { ConversationRouter } from "./router.js";
 import { storeFromSpec, type ConversationStore } from "./store.js";
 import { GateBroker, loadGateKey, type GateKey } from "./gate.js";
 import { TokenBroker, type TokenSource } from "./tokens.js";
-import { VoiceInfoCache, type VoiceConfig, type VoicePort } from "./voice.js";
+import { DEFAULT_VOICE_CONFIG, VoiceInfoCache, type VoiceConfig, type VoicePort } from "./voice.js";
 
 export interface BridgeContext<TRef> {
   config: SharedConfig;
@@ -77,9 +77,10 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     opts.clients ?? ((token) => new LoomcycleClient({ baseUrl: cfg.loomcycleBaseUrl, authToken: token }));
   const store = opts.store ?? storeFromSpec<TRef>(cfg.store);
   const health = new Health(adapter.platform.name, opts.now);
-  const voice = cfg.voice.enabled && adapter.voice ? adapter.voice : undefined;
-  const surfaces = voiceSurfaces(cfg.voice, adapter.voice);
-  if (cfg.voice.enabled && !adapter.voice) {
+  const voiceCfg = cfg.voice ?? DEFAULT_VOICE_CONFIG;
+  const voice = voiceCfg.enabled && adapter.voice ? adapter.voice : undefined;
+  const surfaces = voiceSurfaces(voiceCfg, adapter.voice);
+  if (voiceCfg.enabled && !adapter.voice) {
     log.warn("BRIDGE_VOICE=1, but this platform's bridge does not take voice messages; ignoring it");
   }
 
@@ -142,7 +143,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     now: opts.now,
     stream: opts.stream,
     message: opts.message,
-    ...(voice ? { voice: { port: voice, config: cfg.voice, info: new VoiceInfoCache(opts.now) } } : {}),
+    ...(voice ? { voice: { port: voice, config: voiceCfg, info: new VoiceInfoCache(opts.now) } } : {}),
   };
   const router = new ConversationRouter<TRef>({ idleMinutes: cfg.idleMinutes }, deps);
 
