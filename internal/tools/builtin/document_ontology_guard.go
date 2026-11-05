@@ -253,9 +253,10 @@ func ontologyGuardExemption(op string) string {
 	case "remember":
 		return "writes only the scope's entity document, which the runtime chooses"
 	case "link_chunks", "unlink_chunks", "propose_statement", "accept_statement",
-		"reject_statement", "judge_statements", "maintain_statement",
-		"accept_classification", "extract_citations":
+		"reject_statement", "judge_statements", "maintain_statement", "extract_citations":
 		return "writes statements (edges and their evidence), never a document's chunks"
+	case "accept_classification":
+		return "the operator's ruling only (refused inside a run), which sets the root's type and tags"
 	case "resolve_anchor":
 		return "may file a placeholder for a cited work, which is a new document"
 	case "lease", "release":

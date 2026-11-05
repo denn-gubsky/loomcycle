@@ -88,44 +88,65 @@ func TestReservedName_NoRecordWindowCannotUnseatTheOntology(t *testing.T) {
 	}
 }
 
-// TestDirentWrites_GoThroughTheReservedNameChokepoint is the census: every write of
-// the dirent plane in this package goes through dirent_write.go, where the reserved
-// tenant names are enforced. A new writer calling the store directly would reopen the
-// hole a Memory set was found to have.
+// TestDirentWrites_GoThroughTheReservedNameChokepoint is the census, over all of
+// internal/ and cmd/: every write of the dirent plane goes through dirent_write.go,
+// where the reserved tenant names are enforced, except the store's own implementation
+// and an explicit allowlist of operator-only writers that never reach the tenant scope
+// as an agent. A new writer calling the store directly would reopen the hole a Memory
+// set was found to have.
 func TestDirentWrites_GoThroughTheReservedNameChokepoint(t *testing.T) {
-	writes := map[string]bool{"DirentCreate": true, "DirentDelete": true, "DirentDeleteUnder": true, "DirentMove": true}
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	writes := map[string]bool{"DirentCreate": true, "DirentDelete": true, "DirentDeleteUnder": true,
+		"DirentMove": true, "SnapshotRestoreDirent": true}
+	allowed := map[string]string{
+		"internal/tools/builtin/dirent_write.go": "the chokepoint itself",
+		"internal/retention/sweeper.go":          "the retention sweeper, agent scope only",
+		"internal/erasure/erasure.go":            "subject erasure, user scope only",
+		"internal/snapshot/dirents.go":           "snapshot restore, the operator's",
 	}
 	var offenders []string
 	fset := token.NewFileSet()
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") || name == "dirent_write.go" {
-			continue
-		}
-		src, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		f, err := parser.ParseFile(fset, name, src, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
+	for _, root := range []string{"../../../internal", "../../../cmd"} {
+		err := filepath.WalkDir(root, func(path string, de os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			rel, _ := filepath.Rel("../../..", path)
+			if de.IsDir() {
+				if rel == filepath.Join("internal", "store") || strings.HasPrefix(rel, filepath.Join("internal", "store")+string(filepath.Separator)) {
+					return filepath.SkipDir // the store's own implementation
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			if _, ok := allowed[filepath.ToSlash(rel)]; ok {
+				return nil
+			}
+			f, perr := parser.ParseFile(fset, path, nil, 0)
+			if perr != nil {
+				return perr
+			}
+			ast.Inspect(f, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && writes[sel.Sel.Name] {
+					p := fset.Position(call.Pos())
+					offenders = append(offenders, fmt.Sprintf("%s:%d %s", filepath.ToSlash(rel), p.Line, sel.Sel.Name))
+				}
 				return true
-			}
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && writes[sel.Sel.Name] {
-				offenders = append(offenders, fset.Position(call.Pos()).String()+" "+sel.Sel.Name)
-			}
-			return true
+			})
+			return nil
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	sort.Strings(offenders)
 	if len(offenders) > 0 {
-		t.Errorf("dirent writes outside dirent_write.go (use createDirent / deleteDirent / deleteDirentsUnder / moveDirent):\n%s",
+		t.Errorf("dirent writes outside the chokepoint and the allowlist (use createDirent / deleteDirent / deleteDirentsUnder / moveDirent):\n%s",
 			strings.Join(offenders, "\n"))
 	}
 }
