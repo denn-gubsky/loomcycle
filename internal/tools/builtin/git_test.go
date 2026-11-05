@@ -513,7 +513,7 @@ func TestGit_ACLDenyOnTheRemoteRefusesBeforeAnyRequest(t *testing.T) {
 		t.Error("the allowed call did not reach the server")
 	}
 	// Every spelling of one repository is one resource.
-	for _, p := range []string{"/acme/app", "/acme/app.git", "/acme/app.GIT", "/ACME/APP.Git"} {
+	for _, p := range []string{"/acme/app", "/acme/app.git", "/acme/app.GIT", "/ACME/APP.Git", "/acme/app/", "/acme/app.git/"} {
 		if r := gitACLResource(host, srv.URL+p); r.Name != host+"/acme/app" {
 			t.Errorf("%s: resource = %q, want %s/acme/app", p, r.Name, host)
 		}

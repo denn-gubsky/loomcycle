@@ -1119,7 +1119,7 @@ func TestValidateURL_RefusesNonCanonicalPathSegments(t *testing.T) {
 		"https://github.com/./org/repo.git",
 		"https://github.com//org/repo.git",
 		"https://github.com/org//repo.git",
-		"https://github.com/org/repo/",
+		"https://github.com/org/repo//",
 		"https://github.com/org/repo/.git",
 		"https://github.com/org/.GIT/repo",
 	} {
@@ -1129,5 +1129,9 @@ func TestValidateURL_RefusesNonCanonicalPathSegments(t *testing.T) {
 	}
 	if host, err := ValidateURL("https://GitHub.com/org/repo.git"); err != nil || host != "github.com" {
 		t.Errorf("canonical URL: %q %v", host, err)
+	}
+	// One trailing slash names the same repository and is let through.
+	if _, err := ValidateURL("https://github.com/org/repo/"); err != nil {
+		t.Errorf("a trailing slash was refused: %v", err)
 	}
 }

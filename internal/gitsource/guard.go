@@ -96,7 +96,9 @@ func ValidateURL(raw string) (host string, err error) {
 	// One spelling per repository: a `.`, `..` or empty path segment names
 	// the same repository another way, so a rule on its canonical path could
 	// be stepped around (RFC FY Part E). Percent-encoding is refused above.
-	if p := strings.TrimPrefix(u.Path, "/"); p != "" {
+	// One trailing slash is the same repository and is let through (the
+	// Git tool's resource strips it too); any other empty segment is not.
+	if p := strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), "/"); p != "" {
 		for _, seg := range strings.Split(p, "/") {
 			// A bare `.git` segment (`org/repo/.git`) is the same repository
 			// as `org/repo` spelled another way; a `.git` suffix on a name

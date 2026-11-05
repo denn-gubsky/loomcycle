@@ -1136,14 +1136,12 @@ func (g *Git) record(ev audit.Event) {
 	}
 }
 
-// redactURLPath is a URL as it may be logged: host and path, nothing else (a
-// validated URL carries no user, query or fragment, but a failed one might).
 // gitACLResource is the git:<host>/<path> instance a network op asks about,
 // in one canonical spelling of the URL the op dials: the host as
 // gitsource.ValidateURL keys it (lowercase, port when not 443), the path
-// without its leading slash or a trailing .git, all lowercase. rawURL has
-// passed ValidateURL, which refuses a percent-encoding and a `.`, `..` or
-// empty path segment, so no other spelling of the same repository reaches
+// without its leading slash, one trailing slash or a trailing .git, all
+// lowercase. rawURL has passed ValidateURL, which refuses a percent-encoding
+// and a `.`, `..`, bare `.git` or other empty path segment, so no other spelling of the same repository reaches
 // here; a `git:` selector is lowercased when it is parsed, so the match is
 // case-insensitive both ways.
 func gitACLResource(host, rawURL string) authz.Resource {
@@ -1152,13 +1150,15 @@ func gitACLResource(host, rawURL string) authz.Resource {
 		// Lowercase before the suffix is trimmed, so repo.GIT and repo.git
 		// name the same repository; ValidateURL refuses a bare `.git`
 		// segment, so the suffix is only ever a repository name's.
-		if p := strings.TrimSuffix(strings.ToLower(strings.TrimPrefix(u.Path, "/")), ".git"); p != "" {
+		if p := strings.TrimSuffix(strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), "/")), ".git"); p != "" {
 			name += "/" + p
 		}
 	}
 	return authz.Resource{Type: "git", Name: name}
 }
 
+// redactURLPath is a URL as it may be logged: host and path, nothing else (a
+// validated URL carries no user, query or fragment, but a failed one might).
 func redactURLPath(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
