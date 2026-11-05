@@ -56,7 +56,7 @@ describe("voice messages (RFC GA)", () => {
   let now: number;
   let router: ConversationRouter<FakeRef>;
 
-  function makeRouter(cfg: Partial<VoiceConfig> = {}, port: FakeVoicePort = voicePort, voiceOn = true) {
+  function makeRouter(cfg: Partial<VoiceConfig> = {}, port: FakeVoicePort = voicePort, voiceOn = true, answerEveryVoice = false) {
     const broker = new TokenBroker(lc.client("admin"), {
       agent: "helper",
       tokenName: "test-bridge",
@@ -70,7 +70,7 @@ describe("voice messages (RFC GA)", () => {
     return new ConversationRouter<FakeRef>(
       { idleMinutes: 60 },
       {
-        platform: { name: "test", label: "Test" },
+        platform: { name: "test", label: "Test", ...(answerEveryVoice ? { answerEveryVoice } : {}) },
         capabilities: { streaming: "never", maxMessageChars: 20000 },
         agent: "helper",
         store,
@@ -180,6 +180,17 @@ describe("voice messages (RFC GA)", () => {
     expect(lc.runs).toHaveLength(0);
     // A group stays quiet, as it does for a photo.
     expect(platform.messages()).toEqual([]);
+  });
+
+  it("answers a voice message it does not take in a shared chat only on a platform that must answer every one", async () => {
+    lc.speech!.surfaces = { speech: false, transcription: false };
+    const member = ident("bob", "Bob", "conv-g", "group");
+    await speak(note(), member);
+    expect(platform.messages()).toEqual([]);
+    router = makeRouter({}, voicePort, true, true);
+    await speak(note(), member);
+    expect(platform.messages()).toEqual([VOICE_TEXT.unavailable]);
+    expect(voicePort.downloads).toHaveLength(0);
   });
 
   it("never reads a transcript as a command, and never lets typed text pass for voice", async () => {

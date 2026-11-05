@@ -687,9 +687,9 @@ export class Conversation<TRef> {
   private async handleVoice(speaker: Speaker, voice: VoiceIn, locale: string | undefined): Promise<void> {
     const vc = this.deps.voice;
     // Not taken: a private chat hears why, a shared one stays quiet, as it
-    // does for a photo or a sticker.
+    // does for a photo or a sticker, unless the platform must answer.
     const notTaken = async () => {
-      if (this.rec.scope === "personal") await this.say(VOICE_TEXT.unavailable);
+      if (this.rec.scope === "personal" || this.deps.platform.answerEveryVoice) await this.say(VOICE_TEXT.unavailable);
     };
     if (!vc?.config.enabled || (speaker.trust === "untrusted" && !vc.config.untrusted)) {
       await notTaken();
