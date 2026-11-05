@@ -2966,6 +2966,40 @@ agents:
 	}
 }
 
+// TestLoad_HelperWrapperReachesEveryHelperCommand: LOOMCYCLE_HELPER_WRAPPER is
+// parsed at load (a shell character or a placeholder fails it) and copied onto
+// every configured helper command, so each caller runs its helper confined.
+func TestLoad_HelperWrapperReachesEveryHelperCommand(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+transcription:
+  ocr:
+    engine: vision
+    rasterize: { command: "pdftoppm -r 150 -png {in} {out_prefix}" }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const wrap = "bwrap --ro-bind / / --dev /dev --unshare-net --"
+	t.Setenv("LOOMCYCLE_HELPER_WRAPPER", wrap)
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Transcription.OCR.Rasterize.Wrapper; got != wrap {
+		t.Errorf("rasterize wrapper = %q, want %q", got, wrap)
+	}
+	for _, bad := range []string{"bwrap --ro-bind / / | tee", "bwrap {in} --"} {
+		t.Setenv("LOOMCYCLE_HELPER_WRAPPER", bad)
+		if _, err := Load(yamlPath); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_HELPER_WRAPPER") {
+			t.Errorf("wrapper %q: err = %v, want a load error naming the var", bad, err)
+		}
+	}
+}
+
 // A `tools:` entry may carry that tool's hooks; it becomes the tool's name in
 // Tools and its hooks in ToolHooks, beside the agent's own hooks.
 func TestAgentDef_YAMLToolEntryCarriesItsHooks(t *testing.T) {

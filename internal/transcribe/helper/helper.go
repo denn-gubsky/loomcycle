@@ -15,9 +15,14 @@
 // loomcycle setting or a secret), in its own process group so a timeout kills
 // everything it started, and with its output captured up to a bound.
 //
-// Not a sandbox: like the Bash tool and the Bashbox host fallback, the helper
-// can read any file the loomcycle process can. The fence decides where it
-// starts, not what it reaches.
+// Not a sandbox by itself: like the Bash tool and the Bashbox host fallback,
+// the helper runs as the loomcycle user and can read any file the process
+// can. The fence decides where it starts, not what it reaches. An operator
+// confines it with a wrapper (Spec.Wrapper, LOOMCYCLE_HELPER_WRAPPER: bwrap,
+// systemd-run, firejail), which runs the helper as its argv. ffmpeg is always
+// run with -nostdin and its inputs pinned to the file and pipe protocols
+// (ffmpegDefaults), so a hostile recording cannot open a URL or a nested
+// protocol.
 package helper
 
 import (
@@ -27,6 +32,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -73,6 +79,10 @@ type Spec struct {
 	// *_PASSWORD, *_CREDENTIAL(S), *_DSN) is refused: a helper converts files
 	// and needs none.
 	ExtraEnv []string
+	// Wrapper is the operator's confinement command (see ParseWrapper). When
+	// set, it runs with the helper's resolved program and arguments appended
+	// as further argv elements. Empty runs the helper directly.
+	Wrapper string
 }
 
 // Result is what a started helper produced.
@@ -129,11 +139,27 @@ func Run(ctx context.Context, spec Spec) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("%s: %w", spec.Key, err)
 	}
+	argv = ffmpegDefaults(argv)
 	// Resolved against this process's PATH, which is the PATH the child gets.
 	prog, err := exec.LookPath(argv[0])
 	if err != nil {
 		return Result{}, fmt.Errorf("%s: %q is not installed on this host — use the loomcycle-media image or set %s to a command that exists here: %w",
 			spec.Key, argv[0], spec.Key, ErrNotFound)
+	}
+	args := argv[1:]
+	if spec.Wrapper != "" {
+		wrap, err := ParseWrapper(spec.Wrapper)
+		if err != nil {
+			return Result{}, fmt.Errorf("%s: LOOMCYCLE_HELPER_WRAPPER: %w", spec.Key, err)
+		}
+		wprog, err := exec.LookPath(wrap[0])
+		if err != nil {
+			return Result{}, fmt.Errorf("%s: the helper wrapper %q is not installed on this host: %w", spec.Key, wrap[0], ErrNotFound)
+		}
+		// The helper by its resolved path, so the wrapper runs exactly the
+		// program found here whatever PATH it gives its child.
+		args = append(append(wrap[1:len(wrap):len(wrap)], prog), args...)
+		prog = wprog
 	}
 
 	timeout := spec.Timeout
@@ -148,7 +174,7 @@ func Run(ctx context.Context, spec Spec) (Result, error) {
 	defer cancel()
 
 	stdout, stderr := &cappedBuffer{max: limit}, &cappedBuffer{max: limit}
-	cmd := exec.CommandContext(runCtx, prog, argv[1:]...)
+	cmd := exec.CommandContext(runCtx, prog, args...)
 	cmd.Dir = dir
 	cmd.Env = hostenv.Scrubbed(spec.ExtraEnv)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -179,6 +205,55 @@ func Run(ctx context.Context, spec Spec) (Result, error) {
 		return res, &ExitError{Key: spec.Key, Code: exitErr.ExitCode()}
 	}
 	return res, fmt.Errorf("%s: %w", spec.Key, runErr)
+}
+
+// ParseWrapper splits an operator's wrapper command into argv by the
+// template rules (template.go): no shell, quoting as in a helper template. It
+// may hold no placeholder: what follows it is the helper's own argv, appended
+// whole.
+func ParseWrapper(wrapper string) ([]string, error) {
+	words, err := parseTemplate(wrapper)
+	if err != nil {
+		return nil, err
+	}
+	argv := make([]string, 0, len(words))
+	for _, w := range words {
+		var b strings.Builder
+		for _, seg := range w {
+			if seg.placeholder {
+				return nil, fmt.Errorf("the wrapper may not hold a placeholder ({%s}); the helper's command is appended to it", seg.text)
+			}
+			b.WriteString(seg.text)
+		}
+		argv = append(argv, b.String())
+	}
+	return argv, nil
+}
+
+// ffmpegDefaults adds, to an ffmpeg command line, -nostdin and, before each
+// input, -protocol_whitelist file,pipe. The inputs the runtime passes are
+// files it wrote; the whitelist is inherited by every nested open, so a
+// recording that is really a playlist or a concat list cannot fetch a URL or
+// reach the protocols that re-read other files (concat:, subfile:, data:,
+// http:). An option the operator already wrote is left as it is. Only the
+// template writes "-i": a value may never begin an argument with '-'.
+func ffmpegDefaults(argv []string) []string {
+	if filepath.Base(argv[0]) != "ffmpeg" {
+		return argv
+	}
+	rest := argv[1:]
+	out := append(make([]string, 0, len(argv)+6), argv[0])
+	if !slices.Contains(rest, "-nostdin") {
+		out = append(out, "-nostdin")
+	}
+	pin := !slices.Contains(rest, "-protocol_whitelist")
+	for _, a := range rest {
+		if pin && a == "-i" {
+			out = append(out, "-protocol_whitelist", "file,pipe")
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // workDir fences dir under root. Only root — operator configuration — is

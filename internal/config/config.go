@@ -34,6 +34,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/teamspec"
+	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
 )
 
 // Config is the top-level YAML structure plus env-derived fields.
@@ -4274,6 +4275,11 @@ type Env struct {
 	// that must trust no DNS answer can state it as a flag. Validated by
 	// netguard.ValidatePrivateHostAllowlistMode; an unknown value fails load.
 	HTTPPrivateHostAllowlistMode string
+	// HelperWrapper is LOOMCYCLE_HELPER_WRAPPER: a command (argv words, no
+	// shell, no placeholder) the transcription and speech helpers run under,
+	// e.g. "bwrap --ro-bind / / --dev /dev --unshare-net --". Empty runs them
+	// directly, as the loomcycle user. Parsed at load; see helper.ParseWrapper.
+	HelperWrapper string
 	// MCPAllowPrivateIPs controls whether the MCP-HTTP client may dial
 	// private/loopback/metadata IPs. DEFAULT true (MCP servers are commonly
 	// operator-run on localhost / a private network — incl. loomcycle's own
@@ -6683,6 +6689,10 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// unless `disable_context: true` is set.
 	addContextToolDefaults(cfg)
 
+	// RFC FZ D8: one operator wrapper confines every helper command.
+	cfg.Env.HelperWrapper = strings.TrimSpace(os.Getenv("LOOMCYCLE_HELPER_WRAPPER"))
+	stampHelperWrapper(cfg)
+
 	if err := validate(cfg); err != nil {
 		return nil, err
 	}
@@ -8905,6 +8915,11 @@ func validate(c *Config) error {
 	}
 	if err := netguard.ValidatePrivateHostAllowlistMode(c.Env.HTTPPrivateHostAllowlistMode, c.Env.HTTPPrivateHostAllowlist); err != nil {
 		return fmt.Errorf("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE: %w", err)
+	}
+	if c.Env.HelperWrapper != "" {
+		if _, err := helper.ParseWrapper(c.Env.HelperWrapper); err != nil {
+			return fmt.Errorf("LOOMCYCLE_HELPER_WRAPPER: %w", err)
+		}
 	}
 	if err := netguard.ValidatePrivateHostAllowlist(c.Hooks.PrivateHostAllowlist); err != nil {
 		return fmt.Errorf("hooks.private_host_allowlist (or LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST): %w", err)
