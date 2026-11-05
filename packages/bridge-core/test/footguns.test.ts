@@ -31,6 +31,13 @@ function load(env: Env, gate: boolean): { cfg: SharedConfig; problems: string[] 
 
 const quiet = { info: () => {}, warn: () => {}, error: () => {} };
 
+/** A logger that keeps each line. */
+function recording() {
+  const lines: { level: string; msg: string }[] = [];
+  const at = (level: string) => (msg: string) => void lines.push({ level, msg });
+  return { lines, logger: { info: at("info"), warn: at("warn"), error: at("error") } };
+}
+
 /** A platform adapter that only records the context it is started with. */
 function adapter(extra: Partial<BridgeAdapter<unknown>> = {}): { a: BridgeAdapter<unknown>; ctx: () => BridgeContext<unknown> } {
   let started: BridgeContext<unknown> | undefined;
@@ -186,30 +193,32 @@ describe("a kept revoke ends", () => {
     await bridge.stop();
   });
 
-  it("gives up a revoke loomcycle refuses for good, and keeps one it may yet take", async () => {
+  // loomcycle answers an unknown or already-removed person 204, so a 4xx is
+  // never "nothing to revoke": it is a key, a gate name or a throttle that is
+  // wrong now. Dropping the revoke would fail open; it is retried, and logged
+  // at error every time it stays stuck.
+  it("keeps retrying a revoke loomcycle refuses, logging it as stuck", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
     const { cfg } = load(GATE_ENV, true);
     const revokes = new MemoryRevokeQueue();
     const lc = fakeAuth();
+    const logs = recording();
     const { a, ctx } = adapter();
-    const bridge = createBridge(cfg, a, { logger: quiet, revokes, gateKey: keyFromSecret("s".repeat(40)), gateFetch: lc.fetchFn });
+    const bridge = createBridge(cfg, a, { logger: logs.logger, revokes, gateKey: keyFromSecret("s".repeat(40)), gateFetch: lc.fetchFn });
     await bridge.start();
 
-    lc.state.revokeStatus = 400;
-    await expect(ctx().gate!.revoke("tg:1")).rejects.toMatchObject({ status: 400 });
-    expect(await revokes.list()).toEqual([]);
+    lc.state.revokeStatus = 401;
+    await expect(ctx().gate!.revoke("tg:1")).rejects.toMatchObject({ status: 401 });
+    expect((await revokes.list()).map((p) => p.subject)).toEqual(["tg:1"]);
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+    expect(lc.calls.filter((c) => c.path === "/v1/_auth/revoke").length).toBeGreaterThanOrEqual(2);
+    expect(await revokes.list()).toHaveLength(1);
+    expect(logs.lines.filter((l) => l.level === "error" && l.msg.includes("stuck")).length).toBeGreaterThanOrEqual(2);
 
-    lc.state.revokeStatus = 429; // throttled: worth another try
-    await expect(ctx().gate!.revoke("tg:2")).rejects.toMatchObject({ status: 429 });
-    expect((await revokes.list()).map((p) => p.subject)).toEqual(["tg:2"]);
-
-    // Retried, and refused for good this time: dropped, not retried hourly forever.
-    lc.state.revokeStatus = 403;
-    await vi.advanceTimersByTimeAsync(61_000);
+    // The operator fixes it: the next retry goes through.
+    lc.state.revokeStatus = 0;
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
     expect(await revokes.list()).toEqual([]);
-    const before = lc.calls.length;
-    await vi.advanceTimersByTimeAsync(3 * 3_600_000);
-    expect(lc.calls.length).toBe(before);
     await bridge.stop();
   });
 });
@@ -255,8 +264,9 @@ describe("reconciliation", () => {
     const lc = fakeAuth();
     // Six of six gone: over max(5, 10%). A platform API returning the wrong
     // workspace looks exactly like this.
+    const logs = recording();
     const bridge = createBridge(cfg, adapter({ members: async () => new Set(["zed"]) }).a, {
-      logger: quiet,
+      logger: logs.logger,
       store,
       gateKey: keyFromSecret("s".repeat(40)),
       gateFetch: lc.fetchFn,
@@ -265,6 +275,35 @@ describe("reconciliation", () => {
     await vi.advanceTimersByTimeAsync(FIRST_RUN_BY + 6 * 3_600_000);
     expect(lc.calls.filter((c) => c.path === "/v1/_auth/revoke")).toEqual([]);
     expect(await store.list()).toHaveLength(6);
+    // Every round over the cap says so at error.
+    expect(logs.lines.filter((l) => l.level === "error" && l.msg.includes("cap"))).toHaveLength(2);
+    await bridge.stop();
+
+    // An operator who knows it is a real departure raises the cap deliberately.
+    const { cfg: raised } = load({ ...GATE_ENV, BRIDGE_RECONCILE_MAX_REVOKES: "10" }, true);
+    expect(raised.reconcileMaxRevokes).toBe(10);
+    const applied = createBridge(raised, adapter({ members: async () => new Set(["zed"]) }).a, {
+      logger: quiet,
+      store,
+      gateKey: keyFromSecret("s".repeat(40)),
+      gateFetch: lc.fetchFn,
+    });
+    await applied.start();
+    await vi.advanceTimersByTimeAsync(FIRST_RUN_BY);
+    expect(lc.calls.filter((c) => c.path === "/v1/_auth/revoke")).toHaveLength(6);
+    await applied.stop();
+  });
+
+  it("says that a memory store leaves it nothing to go on after a restart", async () => {
+    const { cfg } = load(GATE_ENV, true);
+    const logs = recording();
+    const bridge = createBridge(cfg, adapter({ members: async () => new Set(["a"]) }).a, {
+      logger: logs.logger,
+      gateKey: keyFromSecret("s".repeat(40)),
+      gateFetch: fakeAuth().fetchFn,
+    });
+    await bridge.start();
+    expect(logs.lines).toContainEqual(expect.objectContaining({ level: "warn", msg: expect.stringContaining("BRIDGE_STORE=file:") }));
     await bridge.stop();
   });
 

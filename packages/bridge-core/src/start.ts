@@ -175,8 +175,8 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     try {
       await gateBroker!.revoke(subject);
     } catch (err) {
-      if (retryable(err)) await keepRevoke(subject);
-      else log.error("loomcycle refused a revoke; it is not retried", { status: statusOf(err) });
+      await keepRevoke(subject);
+      if (stuck(err)) log.error("a revoke is stuck: loomcycle refused it; check the gate's key and name", { status: statusOf(err) });
       throw err;
     }
     await revokes!.delete(subject).catch((err: unknown) => log.warn("a delivered revoke stayed queued", { error: (err as Error)?.name }));
@@ -195,13 +195,12 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
           await revokes.delete(p.subject);
           log.info("a kept revoke reached loomcycle", { attempts: p.attempts });
         } catch (err) {
-          if (!retryable(err)) {
-            await revokes.delete(p.subject);
-            log.error("loomcycle refused a kept revoke; it is dropped", { status: statusOf(err), attempts: p.attempts + 1 });
-            continue;
-          }
           await revokes.put({ ...p, attempts: p.attempts + 1, nextAttemptAt: now() + retryDelayMs(p.attempts + 1) });
-          log.warn("a kept revoke failed again; it is retried later", { status: statusOf(err), attempts: p.attempts + 1 });
+          if (stuck(err)) {
+            log.error("a kept revoke is stuck: loomcycle refused it; check the gate's key and name", { status: statusOf(err), attempts: p.attempts + 1 });
+          } else {
+            log.warn("a kept revoke failed again; it is retried later", { status: statusOf(err), attempts: p.attempts + 1 });
+          }
         }
       }
     } catch (err) {
@@ -241,9 +240,15 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
       );
       const pending = new Set((await revokes!.list()).map((p) => p.subject));
       const gone = [...people].filter((s) => !members.has(s.slice(prefix.length)) && !pending.has(s));
-      const cap = reconcileCap(people.size);
+      const cap = cfg.reconcileMaxRevokes ?? reconcileCap(people.size);
       if (gone.length > cap) {
-        log.warn("reconcile skipped: more people gone than the cap allows", { gone: gone.length, cap, people: people.size });
+        // Never a part of them: a short member list must not drain the users
+        // a round at a time. Said every round until someone looks.
+        log.error("reconcile revoked nobody: more people gone than the cap allows (BRIDGE_RECONCILE_MAX_REVOKES)", {
+          gone: gone.length,
+          cap,
+          people: people.size,
+        });
         return;
       }
       let revoked = 0;
@@ -251,7 +256,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
         try {
           await revoke(subject);
         } catch {
-          continue; // kept for retry, or refused for good; logged by revoke
+          continue; // kept for retry; logged by revoke
         }
         revoked++;
         // Their conversations go too: the person has left the platform, and
@@ -309,6 +314,11 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
       }
       const syncHours = cfg.gateSyncHours ?? DEFAULT_GATE_SYNC_HOURS;
       if (gateBroker && adapter.members && syncHours > 0) {
+        if (opts.store === undefined && cfg.store === "memory") {
+          // Reconciliation acts on the people in the store; a memory store
+          // starts empty after every restart.
+          log.warn("reconcile has nothing to go on after a restart with the memory store: set BRIDGE_STORE=file:<path>", {});
+        }
         // The first round a few minutes after start (jittered, so replicas
         // and restarts do not line up), then on the interval.
         firstSync = setTimeout(() => void reconcile(), 120_000 + Math.floor(Math.random() * 180_000));
@@ -367,9 +377,12 @@ function reconcileCap(people: number): number {
   return Math.max(5, Math.floor(people / 10));
 }
 
-/** retryable: anything but a 4xx refusal, which a retry would only repeat.
- *  A timeout (408) and throttling (429) are worth another try. */
-function retryable(err: unknown): boolean {
+/** stuck: loomcycle refused the revoke (a 4xx other than a timeout or
+ *  throttling). It answers an unknown or already-removed person 204, so a
+ *  refusal is never "nothing to revoke" but a key, a gate name or a server
+ *  setting that is wrong: the revoke is kept and retried, never dropped, and
+ *  the operator is told at error. */
+function stuck(err: unknown): boolean {
   const s = statusOf(err);
-  return s === undefined || s < 400 || s >= 500 || s === 408 || s === 429;
+  return s !== undefined && s >= 400 && s < 500 && s !== 408 && s !== 429;
 }

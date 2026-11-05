@@ -45,6 +45,10 @@ export interface SharedConfig {
    *  0 turns it off; unset (a config built in code) is the default, 6. Only
    *  a platform that can list its members does it. */
   gateSyncHours?: number;
+  /** The most people one reconcile round may revoke
+   *  (BRIDGE_RECONCILE_MAX_REVOKES). Unset: 10% of the people the bridge
+   *  serves, never fewer than five. A round over it revokes nobody. */
+  reconcileMaxRevokes?: number;
 }
 
 export interface GateConfig {
@@ -166,6 +170,9 @@ export function loadSharedConfig(reader: EnvReader, defaults: { port: number; ga
   if (!gate && reader.get("BRIDGE_GATE_SYNC_HOURS")) {
     reader.problems.push("BRIDGE_GATE_SYNC_HOURS applies only to a gate bridge (BRIDGE_GATE)");
   }
+  const maxRevokesRaw = reader.get("BRIDGE_RECONCILE_MAX_REVOKES");
+  if (!gate && maxRevokesRaw) reader.problems.push("BRIDGE_RECONCILE_MAX_REVOKES applies only to a gate bridge (BRIDGE_GATE)");
+  const reconcileMaxRevokes = maxRevokesRaw ? reader.int("BRIDGE_RECONCILE_MAX_REVOKES", 0, 1) : undefined;
   const cfg: SharedConfig = {
     loomcycleBaseUrl,
     loomcycleToken,
@@ -181,6 +188,7 @@ export function loadSharedConfig(reader: EnvReader, defaults: { port: number; ga
     ...(bindHost ? { bindHost } : {}),
     dev,
     gateSyncHours,
+    ...(reconcileMaxRevokes ? { reconcileMaxRevokes } : {}),
   };
   const devProblem = devModeProblem(cfg);
   if (devProblem) reader.problems.push(devProblem);
