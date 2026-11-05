@@ -20,8 +20,9 @@ var _ teamrun.DocumentReader = (*Document)(nil)
 // It runs under ctx's identity through the same scope resolution the Document
 // tool's own ops use, so it can read nothing a {{document:…}} binding in the
 // same walk could not: a path in another user's tree is simply absent from
-// this scope's dirents and reads as not found, and scope "tenant" needs the
-// same memory + SQL Memory grants a tenant document read needs.
+// this scope's dirents and reads as not found, scope "tenant" needs the
+// same memory + SQL Memory grants a tenant document read needs, and a document
+// the caller's access-control set may not read reads as not found too.
 func (d *Document) Sections(ctx context.Context, scope, path string) ([]teamrun.DocumentSection, error) {
 	if d.Store == nil || d.SqlMem == nil {
 		return nil, errors.New("documents are not available on this server (SQL Memory is not enabled)")
@@ -40,6 +41,20 @@ func (d *Document) Sections(ctx context.Context, scope, path string) ([]teamrun.
 	docID, err := d.docIDFromInput(ctx, key, docInput{Path: path})
 	if err != nil {
 		return nil, err
+	}
+	// The read export_md asks of the document, by its names: a walk reads what
+	// the person who started it may read. A refusal is the missing path's
+	// answer, so a walk cannot tell an unreadable document from an absent one.
+	if acl := d.newDocACL(ctx, key); acl != nil {
+		acl.useIndex()
+		readable, err := acl.permits(ctx, "read", docID)
+		if err != nil {
+			return nil, err
+		}
+		if !readable {
+			canonical, _ := normalizePath(path) // docIDFromInput accepted it
+			return nil, docNoSuchPath(canonical)
+		}
 	}
 	dres, err := d.query(ctx, key, `SELECT root_chunk_id FROM documents WHERE id = ? LIMIT 1`, docID)
 	if err != nil {

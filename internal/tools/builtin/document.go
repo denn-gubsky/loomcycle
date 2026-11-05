@@ -2426,8 +2426,7 @@ func (d *Document) docIDFromInput(ctx context.Context, key sqlmem.ScopeKey, in d
 	if err != nil {
 		var nf *store.ErrNotFound
 		if asNotFound(err, &nf) {
-			return "", docClassify(fmt.Errorf("no such path: %s", canonical),
-				errNotFound, "List the scope's documents with op=query_documents, or browse with the Path tool's ls.")
+			return "", docNoSuchPath(canonical)
 		}
 		return "", err
 	}
@@ -4760,6 +4759,13 @@ func (d *Document) resolveLinkTarget(ctx context.Context, key sqlmem.ScopeKey, t
 		}
 	}
 	return "", false
+}
+
+// docNoSuchPath is the answer for a path that names no document in the scope,
+// and for one naming a document the caller may not read (Sections).
+func docNoSuchPath(canonical string) error {
+	return docClassify(fmt.Errorf("no such path: %s", canonical),
+		errNotFound, "List the scope's documents with op=query_documents, or browse with the Path tool's ls.")
 }
 
 // resolveEmbedTarget maps a `![[target]]` embed's inner string to the chunk id
