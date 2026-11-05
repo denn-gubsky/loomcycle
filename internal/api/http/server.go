@@ -1936,6 +1936,18 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 			req.KeyableProviders = s.keyableProvidersFor(ctx, req, tenantID, agentName, userID)
 		}
 		// RFC EI P4: only where a run starts (see queue_routing.go).
+		// RFC FY Part E: the caller's rules say which tiers and models it may
+		// use. The tier is asked whole; a model is passed over for the next
+		// candidate when denied, and the run is refused when none is left.
+		useACL, askUse := modelUseACL(ctx)
+		if askUse {
+			if err := s.aclAdmitUse(ctx, useACL, "tier", def.Tier); err != nil {
+				return "", "", "", err
+			}
+			req.Permitted = func(_, model string) bool {
+				return tools.ACLFilterAllows(ctx, useACL, "use", authz.Resource{Type: "model", Name: model})
+			}
+		}
 		if def.Routing != nil && def.Routing.QueueAware && isRunStart(ctx) {
 			req.QueueWait = s.estimatedQueueWait
 			req.SwitchAfter = def.Routing.SwitchAfter()
@@ -1944,6 +1956,11 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 			}
 		}
 		dec, rerr := s.resolver.Resolve(req)
+		if errors.Is(rerr, resolve.ErrModelNotPermitted) {
+			// Asked of the tier's models one by one; the refusal names the
+			// question for the whole type, which is what was refused.
+			return "", "", "", s.aclAdmitUse(ctx, useACL, "model", authz.AnyInstance)
+		}
 		if rerr != nil {
 			return "", "", "", rerr
 		}
@@ -1985,12 +2002,46 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 		if rerr != nil {
 			return "", "", "", rerr
 		}
+		if err := s.askPinnedModelUse(ctx, dec.Model); err != nil {
+			return "", "", "", err
+		}
 		return dec.Provider, dec.Model, dec.Effort, nil
+	}
+	if err := s.askPinnedModelUse(ctx, model); err != nil {
+		return "", "", "", err
 	}
 	// Effort still flows through on the pin path — an explicit-pin
 	// agent can declare effort and the driver will translate it
 	// where supported. Empty when not declared.
 	return providerID, model, def.Effort, nil
+}
+
+// askPinnedModelUse asks `use model:<model>` of a pinned agent's model: a pin
+// has no other candidate to fall to, so a deny refuses the run.
+func (s *Server) askPinnedModelUse(ctx context.Context, model string) error {
+	if eff, ask := modelUseACL(ctx); ask {
+		return s.aclAdmitUse(ctx, eff, "model", model)
+	}
+	return nil
+}
+
+// modelUseACL is the set a resolution asks `use tier:` and `use model:` of
+// (RFC FY Part E), and whether to ask at all: inside a run (a sub-run's
+// preparation, a provider fallback's re-resolution) the originating caller's
+// set on the run policy; at a run's start the caller's. Elsewhere — the
+// library, a run's effective configuration — a resolution only reports, and
+// asks nothing.
+func modelUseACL(ctx context.Context) (*authz.Effective, bool) {
+	if eff := tools.PolicyOf(ctx).ACL; eff != nil {
+		return eff, true
+	}
+	if !isRunStart(ctx) {
+		return nil, false
+	}
+	// No caller set (open mode, a trigger whose definition records no
+	// owner): nothing to ask, as the run's narrowing asks nothing either.
+	eff := runCallerACL(ctx)
+	return eff, eff != nil
 }
 
 // routesByTier reports whether def resolves through its tier's cascade. A

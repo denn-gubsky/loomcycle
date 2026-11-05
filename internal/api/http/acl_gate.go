@@ -372,6 +372,30 @@ func (s *Server) aclAdmitSpawn(ctx context.Context, eff *authz.Effective, child 
 	return nil
 }
 
+// aclAdmitUse asks `use <typ>:<name>` (a model or a tier) of eff, the set a
+// run's resolution is judged by, as aclAdmitSpawn asks a spawn: a refusal is
+// audited and returned as an *errACLDenied; no set refuses nothing outside
+// enforce mode.
+func (s *Server) aclAdmitUse(ctx context.Context, eff *authz.Effective, typ, name string) error {
+	if name == "" {
+		return nil
+	}
+	surface := authz.Surface{Action: "use", Type: typ, Name: name}
+	res := authz.EvaluateSurface(ctx, eff, surface, true)
+	if authz.ModeFrom(ctx) == authz.ModeShadow && res.Evaluated && !authz.Resolve(authz.ModeEnforce, res.Decision, true) {
+		s.recordRunShadowDivergence(ctx, tools.RunID(ctx), eff, surface, res.Decision)
+	}
+	if res.Unavailable || !res.Allowed {
+		p, _ := auth.PrincipalFromContext(ctx)
+		if eff != nil {
+			p.TenantID, p.Subject = eff.Subject.TenantID, eff.Subject.ID
+		}
+		s.recordACLEvent(ctx, p, "acl_denied", surface, res.Decision)
+		return &errACLDenied{surface: surface, decision: res.Decision}
+	}
+	return nil
+}
+
 // recordShadowNarrowing records, in shadow mode, what enforce would take
 // from run runID's policy p at its start (tools.ShadowACLNarrowing) — one
 // acl_shadow_diverged entry each, the run keeping all of it. It returns ctx

@@ -35,6 +35,52 @@ func TestACLDef_ARuleOnAnUnenforcedPairIsRefused(t *testing.T) {
 	}
 }
 
+// A verb removed from the catalog is refused at write, left out of the
+// catalog listing a rule picker is built from, and a question on it is
+// refused by the simulator rather than answered.
+func TestACLDef_ARemovedVerbIsRefusedAndUnlisted(t *testing.T) {
+	_, ts, _ := aclMgmtServer(t, authz.ModeCompat)
+	for _, rule := range []string{
+		`{"effect":"deny","actions":["use"],"resources":["search:*"]}`,
+		`{"effect":"deny","actions":["submit"],"resources":["evaluation:*"]}`,
+		`{"effect":"deny","actions":["raise"],"resources":["interruption:*"]}`,
+	} {
+		code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"create","name":"gone","rules":[`+rule+`]}`)
+		if code != 400 || jsonField(t, body, "code") != "rule_not_enforceable" {
+			t.Errorf("%s: %d %s, want rule_not_enforceable", rule, code, body)
+		}
+	}
+	_, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"catalog"}`)
+	var cat struct {
+		Types []struct {
+			Type  string   `json:"type"`
+			Verbs []string `json:"verbs"`
+		} `json:"types"`
+	}
+	if err := json.Unmarshal([]byte(body), &cat); err != nil || len(cat.Types) == 0 {
+		t.Fatalf("catalog: %v %s", err, body)
+	}
+	for _, ty := range cat.Types {
+		for _, v := range ty.Verbs {
+			if !authz.IsEnforced(ty.Type, v) {
+				t.Errorf("the catalog lists %s %s, which no surface asks", v, ty.Type)
+			}
+		}
+		if ty.Type == "search" || ty.Type == "interruption" {
+			t.Errorf("the catalog lists the removed type %s", ty.Type)
+		}
+	}
+	code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_authz/evaluation", `{"action":{"name":"use"},"resource":{"type":"search","id":"x"}}`)
+	if code != 400 || jsonField(t, body, "code") != "rule_not_enforceable" {
+		t.Errorf("evaluation of a removed verb: %d %s, want rule_not_enforceable", code, body)
+	}
+	code, body = bearerCall(t, ts, operatorBearer, "POST", "/v1/_authz/simulate",
+		`{"acls":[{"name":"draft","rules":[{"effect":"deny","actions":["browse"],"resources":["memory:user"]}]}],"requests":[{"action":{"name":"read"},"resource":{"type":"run"}}]}`)
+	if code != 400 || jsonField(t, body, "code") != "rule_not_enforceable" {
+		t.Errorf("simulate with an unenforced draft rule: %d %s, want rule_not_enforceable", code, body)
+	}
+}
+
 // A list stored before the refusal, or declared in config, is reported at
 // boot and still loads: its other rules hold.
 func TestReportUnenforceableACLs_NamesStoredAndConfiguredLists(t *testing.T) {

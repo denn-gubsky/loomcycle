@@ -278,6 +278,13 @@ func categoryOf(err error) (tools.ErrorInfo, bool) {
 			Description: "This principal may not use the operator's provider API keys. Retrying will not help — supply the tenant's own provider credential, or ask an operator for the scope that permits it.",
 		}, true
 
+	case errors.Is(err, resolve.ErrModelNotPermitted):
+		return tools.ErrorInfo{
+			Category:    tools.CategoryPermission,
+			Retryable:   false,
+			Description: "The access-control rules of the user who started this run allow none of this agent's models. Retrying will not help — ask an operator for a rule that allows one.",
+		}, true
+
 	case errors.Is(err, runner.ErrAgentNotAllowed):
 		return tools.ErrorInfo{
 			Category:    tools.CategoryPermission,

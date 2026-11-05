@@ -134,6 +134,7 @@ func TestRuleNotEnforceable_NamesThePairOrTheField(t *testing.T) {
 	}{
 		{Rule{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}}, ""},
 		{Rule{Effect: Deny, Actions: []string{"browse"}, Resources: []string{"document:user"}}, "browse document is not evaluated by any surface"},
+		{Rule{Effect: Deny, Actions: []string{"use"}, Resources: []string{"search:*"}}, "use search is not evaluated by any surface (removed from the catalog)"},
 		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:own"}, When: &Condition{Time: &TimeWindow{Days: []string{"mon"}}}}, ""},
 	}
 	for _, c := range cases {
@@ -151,6 +152,25 @@ func TestRuleNotEnforceable_NamesThePairOrTheField(t *testing.T) {
 		}
 		if got != c.want {
 			t.Errorf("%v: %q, want %q", c.rule, got, c.want)
+		}
+	}
+}
+
+// No built-in baseline grants a verb removed from the catalog.
+func TestBaselines_NameNoRetiredVerb(t *testing.T) {
+	for name, a := range Baselines() {
+		for i, r := range a.Rules {
+			for _, sel := range r.Resources {
+				typ, _, err := SplitSelector(sel)
+				if err != nil {
+					continue
+				}
+				for _, v := range r.Actions {
+					if IsRetired(typ, v) {
+						t.Errorf("%s rule %d grants the removed %s %s", name, i, v, typ)
+					}
+				}
+			}
 		}
 	}
 }

@@ -129,43 +129,48 @@ var enforcedPairs = map[pairKey][]Site{
 	{"runtime", "manage"}: {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 
 	{"transport", "use"}: {SiteHTTPRoute},
+
+	{"model", "use"}: {Proof("TestResolveAgentDef_AsksTheCallersUseOfTheTierAndTheModel")},
+	{"tier", "use"}:  {Proof("TestResolveAgentDef_AsksTheCallersUseOfTheTierAndTheModel")},
+	{"git", "fetch"}: {Proof("TestGit_ACLDenyOnTheRemoteRefusesBeforeAnyRequest")},
+	{"git", "push"}:  {Proof("TestGit_ACLDenyOnTheRemoteRefusesBeforeAnyRequest")},
 }
 
 // unenforcedPairs: catalog pairs no surface asks yet. A rule naming one is
 // refused at write; the reason says what the pair is waiting for. Moving a
 // pair to enforcedPairs is the change that wires its site.
 var unenforcedPairs = map[pairKey]string{
-	{"agent", "steer"}:          "a run is steered as run:, never agent:",
-	{"agent", "cancel"}:         "a run is cancelled as run:, never agent:",
-	{"agent", "review"}:         "a run's answer is reviewed as run:, never agent:",
-	{"volume", "provision"}:     "a volume is created as def:volume/",
-	{"volume", "mount"}:         "a volume binding is asked read and write",
-	{"skill", "author"}:         "a skill is authored as def:skill/",
-	{"mcp", "read"}:             "a server's definition is read as def:mcpserver/",
-	{"a2a", "expose"}:           "",
-	{"a2a", "author"}:           "a peer is authored as def:a2a/",
-	{"client", "invoke"}:        "a client tool is asked as tool:",
-	{"localapi", "invoke"}:      "a LocalAPI tool is asked as tool:",
-	{"memory", "recall"}:        "recall is asked as read",
-	{"memory", "browse"}:        "",
-	{"document", "browse"}:      "",
-	{"team", "author"}:          "a team is authored as def:team/",
-	{"crypto", "manage"}:        "",
-	{"model", "use"}:            "",
-	{"tier", "use"}:             "",
-	{"git", "fetch"}:            "",
-	{"git", "push"}:             "",
-	{"search", "use"}:           "",
-	{"evaluation", "submit"}:    "",
-	{"interruption", "raise"}:   "",
-	{"interruption", "resolve"}: "",
+	{"agent", "steer"}:      "a run is steered as run:, never agent:",
+	{"agent", "cancel"}:     "a run is cancelled as run:, never agent:",
+	{"agent", "review"}:     "a run's answer is reviewed as run:, never agent:",
+	{"volume", "provision"}: "a volume is created as def:volume/",
+	{"volume", "mount"}:     "a volume binding is asked read and write",
+	{"skill", "author"}:     "a skill is authored as def:skill/",
+	{"mcp", "read"}:         "a server's definition is read as def:mcpserver/",
+	{"a2a", "expose"}:       "",
+	{"a2a", "author"}:       "a peer is authored as def:a2a/",
+	{"client", "invoke"}:    "a client tool is asked as tool:",
+	{"localapi", "invoke"}:  "a LocalAPI tool is asked as tool:",
+	{"memory", "recall"}:    "recall is asked as read",
+	{"memory", "browse"}:    "",
+	{"document", "browse"}:  "",
+	{"team", "author"}:      "a team is authored as def:team/",
+	{"crypto", "manage"}:    "",
 }
 
 // retiredPairs: removed from the catalog. They stay parseable so a list
 // stored before the removal still loads; every write refuses them, the
 // catalog listing leaves them out, and the boot names the stored rows that
 // still carry them.
-var retiredPairs = map[pairKey]bool{}
+//
+// Removed by owner decision (RFC FY D5): no tool had an asked-for use for
+// them.
+var retiredPairs = map[pairKey]bool{
+	{"search", "use"}:           true,
+	{"evaluation", "submit"}:    true,
+	{"interruption", "raise"}:   true,
+	{"interruption", "resolve"}: true,
+}
 
 // enforcedConditions: the Condition fields (by JSON name) some surface fills
 // in the Context it decides with, and the test that shows it.
