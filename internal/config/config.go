@@ -5601,13 +5601,15 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_PG_DSN"); v != "" {
 		cfg.Storage.PgDSN = v
 	}
+	// The pool sizes are int32: parse at that width so an out-of-range value
+	// is refused like any typo instead of wrapping into another number.
 	if v := os.Getenv("LOOMCYCLE_PG_MAX_OPEN_CONNS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		if n, err := strconv.ParseInt(v, 10, 32); err == nil && n > 0 {
 			cfg.Storage.PgMaxOpenConns = int32(n)
 		}
 	}
 	if v := os.Getenv("LOOMCYCLE_PG_MIN_IDLE_CONNS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+		if n, err := strconv.ParseInt(v, 10, 32); err == nil && n >= 0 {
 			cfg.Storage.PgMinIdleConns = int32(n)
 		}
 	}
