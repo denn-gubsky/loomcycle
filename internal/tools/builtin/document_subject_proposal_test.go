@@ -195,7 +195,7 @@ func TestAdoptSubjectProposal_MintsTheEntityTheConsolidatorWouldHaveWritten(t *t
 func seedTenantOntology(t *testing.T, d *Document, ctx context.Context) {
 	t.Helper()
 	// The ontology's name is reserved to the operator, so the seed runs as the operator.
-	res, err := d.Execute(tools.WithSubstrateOperator(grantedTenantCtx(ctx)), json.RawMessage(`{"op":"create_document","scope":"tenant",
+	res, err := d.Execute(tools.WithCallerTier(grantedTenantCtx(ctx), tools.TierOperatorPlane), json.RawMessage(`{"op":"create_document","scope":"tenant",
 		"title":"Tenant Ontology","path":"`+memory.OntologyPath+`"}`))
 	if err != nil || res.IsError {
 		t.Fatalf("seed ontology: %v %s", err, res.Text)

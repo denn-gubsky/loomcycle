@@ -40,6 +40,7 @@ func Route(required, method, path string) bool {
 //   - budget WRITES (PUT/DELETE /v1/_limits) — cost-control bypass (GET stays open)
 //   - the memory maintenance sweeps (IsMemoryMaintenancePath) — bulk rewrites and
 //     embedder/model spend
+//   - the document maintenance passes (IsDocumentMaintenancePath) — likewise
 func CarvedOut(method, path string) bool {
 	switch {
 	case path == "/v1/_users" && method == http.MethodPost:
@@ -51,6 +52,15 @@ func CarvedOut(method, path string) bool {
 	case strings.HasPrefix(path, "/v1/_authgate/"):
 		return true
 	case path == "/v1/_erasure":
+		return true
+	// RFC FY Part B: confirming the ontology, adopting a standard type into it and
+	// ruling on a proposal (/proposals takes accept|reject, it files nothing)
+	// decide the tenant's vocabulary: the operator's. A member proposes through
+	// the Document tool (propose_entity, propose_subject) and reads GET
+	// /v1/_ontology.
+	case path == "/v1/_ontology" && method == http.MethodPost:
+		return true
+	case path == "/v1/_ontology/adopt" || path == "/v1/_ontology/proposals":
 		return true
 	// Folding one ontology subject into another re-points every statement about
 	// it, tenant-wide: the operator's decision.
@@ -92,6 +102,15 @@ func CarvedOut(method, path string) bool {
 	// memory through the key routes and the search, not these.
 	case IsMemoryMaintenancePath(path):
 		return true
+	// The document maintenance passes re-embed a scope's chunks, generate units
+	// with a model call per chunk, or describe images with a vision call per
+	// image: the operator's, as the memory sweeps are. They sit at
+	// substrate:admin today (the /v1/_* catch-all), so a member is refused
+	// anyway; carving them out keeps it so if /v1/_document/* is ever opened to
+	// the tenant scope. The projection is not listed: without a refit a member
+	// may run it (RFC FY D7), and its handler refuses a member's refit.
+	case IsDocumentMaintenancePath(path):
+		return true
 	// Crypto with the tenant's keys: a member who could decrypt with them could
 	// read whatever the tenant sealed, and sign as the tenant. Operators only.
 	case path == "/v1/_crypto":
@@ -105,6 +124,16 @@ func IsMemoryMaintenancePath(path string) bool {
 	switch path {
 	case "/v1/_memory/reembed", "/v1/_memory/backfill_embeddings", "/v1/_memory/backfill_traces",
 		"/v1/_memory/purge_stale_embeddings", "/v1/_memory/collapse_facts", "/v1/_memory/home_facts":
+		return true
+	}
+	return false
+}
+
+// IsDocumentMaintenancePath matches the document maintenance passes an operator
+// runs over a whole scope.
+func IsDocumentMaintenancePath(path string) bool {
+	switch path {
+	case "/v1/_document/reindex", "/v1/_document/derive_units", "/v1/_document/describe_images":
 		return true
 	}
 	return false

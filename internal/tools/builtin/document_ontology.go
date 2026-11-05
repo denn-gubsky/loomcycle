@@ -235,6 +235,13 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	var sections, issues []string
 	seenKind := map[string]bool{}
 	for _, c := range kids[rootID] {
+		// A proposal or a rejection is never a section, whatever its body declares.
+		// A proposal is the one write the ontology guard lets a non-operator make
+		// here, so read as a section it would let that caller author the review
+		// policy (or any section) just by filing one (RFC FY Part B).
+		if memrank.IsInertEntityStatus(c.status) {
+			continue
+		}
 		body := bodyOf(c.id)
 		if iss := memrank.SectionIssue(body); iss != "" {
 			issues = append(issues, strconv.Quote(memrank.TrimOntologyName(c.title))+": "+iss)

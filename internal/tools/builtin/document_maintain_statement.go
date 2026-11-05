@@ -73,7 +73,7 @@ func maintainChanged() tools.Result {
 
 // maintainStatement is Document op=maintain_statement.
 func (d *Document) maintainStatement(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
-	if !authorIsOperatorPlane(ctx) && !HasStatementMethodGrant(ctx) {
+	if !callerDecidesIn(ctx, key) && !HasStatementMethodGrant(ctx) {
 		return errPermission(maintainOp+": permission: only a code agent granted statement_methods, or an operator, maintains statements",
 			"Propose a correction instead (op=propose_statement with id)."), nil
 	}
@@ -106,7 +106,7 @@ func (d *Document) applyMaintenance(ctx context.Context, key sqlmem.ScopeKey, ms
 	case madeByAPerson(s) && !maintainActions[in.Action]:
 		return errBusiness(maintainOp+": statement_manual: a person wrote this statement, so only verify and flag apply to it",
 			"Flag it for review (action flag) and say why in reason."), nil
-	case s.OperatorRuledAt != nil && !maintainActions[in.Action] && !authorIsOperatorPlane(ctx):
+	case s.OperatorRuledAt != nil && !maintainActions[in.Action] && !callerDecidesIn(ctx, key):
 		return errBusiness(maintainOp+": statement_operator_ruled: an operator ruled on this statement, so from a run only verify and flag apply to it",
 			"Flag it for review (action flag) and say why in reason."), nil
 	}

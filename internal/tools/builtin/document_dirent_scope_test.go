@@ -74,7 +74,7 @@ func TestDocument_TenantPathLookupFindsTheDocument(t *testing.T) {
 		"op": "create_document", "scope": "tenant", "title": "ontology", "path": "/memory/ontology",
 	})
 	// A reserved tenant name: only the operator's off-run call may give it.
-	res, _ := d.Execute(tools.WithSubstrateOperator(ctx), create)
+	res, _ := d.Execute(tools.WithCallerTier(ctx, tools.TierOperatorPlane), create)
 	if res.IsError {
 		t.Fatalf("create_document: %s", res.Text)
 	}

@@ -37,6 +37,20 @@ func TestErasureExecute_AuditRefusalIsUnavailable(t *testing.T) {
 	}
 }
 
+// TestErasureExecute_AnUnevaluableLockIsUnavailable: a lock check that could
+// not run is HTTP's 503 acl_unavailable; over gRPC it is Unavailable, not the
+// PermissionDenied a lock that holds gets.
+func TestErasureExecute_AnUnevaluableLockIsUnavailable(t *testing.T) {
+	for cause, want := range map[error]codes.Code{erasure.ErrACLUnavailable: codes.Unavailable, erasure.ErrLocked: codes.PermissionDenied} {
+		mc := &mockConnector{erasureErr: fmt.Errorf("access control: %w", cause)}
+		srv := &Server{connector: mc}
+		_, err := srv.ErasureExecute(context.Background(), &loomcyclepb.ErasureExecuteRequest{Subject: "alice"})
+		if status.Code(err) != want {
+			t.Errorf("%v: code = %v (%v), want %v", cause, status.Code(err), err, want)
+		}
+	}
+}
+
 // TestErasureExecute_WritesTheEraseAuditPair drives a live erasure over gRPC
 // against the REAL HTTP server as the connector, and asserts the same two
 // records an HTTP erasure writes. Before the audit moved into the connector

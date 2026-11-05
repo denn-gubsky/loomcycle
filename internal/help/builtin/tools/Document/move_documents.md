@@ -67,6 +67,10 @@ reason `moved`, and each move is recorded in the audit log.
 
 - `blocked_by: "dangling_relations"` — a dry run whose real move would be
   refused for the relations listed under `dangling`.
+- `blocked_by: "forbidden_relations"` — a dry run whose real move would delete
+  a relation the caller may not remove: one into a document it may not read,
+  or, with `dangling: "drop"`, one whose ends it may not link. The real move is
+  refused.
 - `dropped` — the relations deleted with `dangling: "drop"`.
 - `to_finish` — a dry run's documents an earlier, interrupted call already
   took out of `scope`; the real call names them.
@@ -80,8 +84,9 @@ A refused document does not move, and the rest of the set goes ahead. The
 refusal codes are those of `copy_documents` (`not_found`, `is_ontology`,
 `reserved_name`, `is_subject`, `holds_facts`, `forbidden`, `path_collision`, `key_collision`,
 `write_failed`), plus `id_collision`: `to_scope` already holds a document with
-that id. Under access control a move needs write on each source document as
-well as read.
+that id. Under access control a move needs write and delete on each source
+document as well as read, and `dangling: "drop"` needs link on both ends of
+each relation it deletes.
 
 ## Errors
 
@@ -93,6 +98,8 @@ well as read.
 - `move_documents: the set now holds N documents to move, not the M expected`.
 - `move_documents: N relations join a document of the set to one outside it`
   — see `dangling`.
+- `move_documents: the move would delete relations the caller's access-control
+  rules do not let it remove` — see `blocked_by: "forbidden_relations"`.
 - `move_documents: scope ... is held by the lease ...` — a pass is working on
   the source scope; retry when it ends.
 - `move_documents: the set holds N documents, at most 500 per call`.

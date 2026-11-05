@@ -57,9 +57,9 @@ func TestReservedName_MemorySetCannotTakeOne(t *testing.T) {
 				t.Errorf("%s names %q after a refused set, want %q", name, got, before)
 			}
 			// The operator's own off-run call may.
-			opCtx := tools.WithSubstrateOperator(tools.UpdateRunPolicy(e.opCtx, func(rp *tools.RunPolicy) {
+			opCtx := tools.WithCallerTier(tools.UpdateRunPolicy(e.opCtx, func(rp *tools.RunPolicy) {
 				rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
-			}))
+			}), tools.TierOperatorPlane)
 			if res, _ := m.Execute(opCtx, json.RawMessage(req)); res.IsError {
 				t.Errorf("the operator's Memory set at %s was refused: %s", name, res.Text)
 			}
@@ -279,7 +279,7 @@ func TestOntology_APlantedRolesTableIsNotTrusted(t *testing.T) {
 					rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
 					rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
 				})
-				opCtx := tools.WithSubstrateOperator(base)
+				opCtx := tools.WithCallerTier(base, tools.TierOperatorPlane)
 				agentCtx := tools.WithRunID(base, "r_agent")
 				md, _ := json.Marshal("# Tenant Ontology\n\n## event\n")
 				out, r := docExec(t, d, opCtx, `{"op":"import_md","scope":"tenant","path":"/memory/ontology","markdown":`+string(md)+`}`)
@@ -335,7 +335,7 @@ func TestOntology_ARolesTablePlantedBeforeAnyDocumentIsNotTrusted(t *testing.T) 
 			rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
 			rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
 		})
-		opCtx := tools.WithSubstrateOperator(base)
+		opCtx := tools.WithCallerTier(base, tools.TierOperatorPlane)
 		agentCtx := tools.WithRunID(base, "r_agent")
 		out, r := docExec(t, d, agentCtx, `{"op":"create_document","scope":"user","title":"Impostor","path":"/drafts/impostor"}`)
 		if r.IsError {

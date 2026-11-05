@@ -468,3 +468,71 @@ func TestDenyPatterns_UnconditionalDeniesOnly(t *testing.T) {
 		t.Errorf("DenyPatterns(volume) = %v", got)
 	}
 }
+
+func TestLiteralDeny_OnlyARuleNamingTheExactInstanceCounts(t *testing.T) {
+	lock := mustACL(t, `{"name":"lock","rules":[{"effect":"deny","actions":["retire"],"resources":["def:acl/guard"]}]}`)
+	wild := mustACL(t, `{"name":"wild","rules":[{"effect":"deny","actions":["retire"],"resources":["def:acl/*","def:*","def:acl/gu*"]}]}`)
+	subj := Subject{TenantID: "acme", ID: "u"}
+	e := compile(t, subj, []Binding{
+		{ACL: "lock", SubjectKind: SubjectUser, SubjectID: "u"},
+		{ACL: "wild", SubjectKind: SubjectUser, SubjectID: "u"},
+	}, lock, wild)
+	req := func(action, name string) Request {
+		return Request{Subject: subj, Action: action, Resource: Resource{Type: "def", Name: name}, Context: Context{Now: testNow}}
+	}
+	for _, c := range []struct {
+		action, name string
+		want         bool
+	}{
+		{"retire", "acl/guard", true},
+		{"retire", "acl/guardian", false}, // only the wildcards cover it
+		{"retire", "agent/guard", false},  // another family
+		{"author", "acl/guard", false},    // another action
+	} {
+		if got := e.LiteralDeny(req(c.action, c.name)); got != c.want {
+			t.Errorf("LiteralDeny(%s def:%s) = %v, want %v", c.action, c.name, got, c.want)
+		}
+		if got, want := e.DeniesUnattended(req(c.action, c.name)), c.action == "retire"; got != want {
+			t.Errorf("DeniesUnattended(%s def:%s) = %v, want %v (patterns count)", c.action, c.name, got, want)
+		}
+		if d := e.Decide(req(c.action, c.name)); c.action == "retire" && c.name != "agent/guard" && d.Outcome != Denied {
+			t.Errorf("Decide(%s def:%s) = %v, want the wildcards to deny it", c.action, c.name, d.Outcome)
+		}
+	}
+}
+
+func TestRestrictsOnly_ADenyListWithNoAllow(t *testing.T) {
+	subj := Subject{TenantID: "acme", ID: "u"}
+	lists := []ACL{
+		mustACL(t, `{"name":"deny-only","rules":[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]}]}`),
+		mustACL(t, `{"name":"mixed","rules":[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]},{"effect":"allow","actions":["run"],"resources":["agent:*"]}]}`),
+		mustACL(t, `{"name":"allow-only","rules":[{"effect":"allow","actions":["invoke"],"resources":["tool:Read"]}]}`),
+	}
+	var bindings []Binding
+	for _, a := range lists {
+		bindings = append(bindings, Binding{ACL: a.Name, SubjectKind: SubjectUser, SubjectID: "u"})
+	}
+	e := compile(t, subj, bindings, lists...)
+	for name, want := range map[string]bool{"deny-only": true, "mixed": false, "allow-only": false, "unbound": false} {
+		if got := e.RestrictsOnly(name); got != want {
+			t.Errorf("RestrictsOnly(%s) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// LiteralDeny is asked for steps no caller stands behind: a condition such a
+// request cannot answer reads as holding, one it answers is decided.
+func TestLiteralDeny_AnUnanswerableConditionHolds(t *testing.T) {
+	lock := mustACL(t, `{"name":"lock","rules":[{"effect":"deny","actions":["retire"],"resources":["def:acl/guard"],"when":{"transport":["http"]}}]}`)
+	subj := Subject{TenantID: "acme", ID: "u"}
+	e := compile(t, subj, []Binding{{ACL: "lock", SubjectKind: SubjectUser, SubjectID: "u"}}, lock)
+	for transport, want := range map[string]bool{"": true, "http": true, "grpc": false} {
+		req := Request{Subject: subj, Action: "retire", Resource: Resource{Type: "def", Name: "acl/guard"}, Context: Context{Transport: transport, Now: testNow}}
+		if got := e.LiteralDeny(req); got != want {
+			t.Errorf("LiteralDeny with transport %q = %v, want %v", transport, got, want)
+		}
+		if got := e.DeniesUnattended(req); got != want {
+			t.Errorf("DeniesUnattended with transport %q = %v, want %v", transport, got, want)
+		}
+	}
+}

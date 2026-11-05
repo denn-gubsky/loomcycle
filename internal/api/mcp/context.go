@@ -80,6 +80,10 @@ func mcpPrincipalCtx(ctx context.Context) context.Context {
 		Isolated: auth.IsIsolated(p, ok),
 	})
 	ctx = tools.WithAgentName(ctx, operatorAgentName)
+	// RFC FY Part B: who is calling, as on the HTTP plane. The policies granted
+	// below are the same for a tenant operator's session and a member's; the
+	// tier is what keeps a member from deciding for the tenant.
+	ctx = tools.WithCallerTier(ctx, tools.TierForPrincipal(p, ok, p.TenantID))
 	return grantOperatorPolicies(ctx, operatorAgentName, auth.HasScope(p.Scopes, auth.ScopeAdmin))
 }
 
@@ -98,6 +102,11 @@ func operatorCtx(ctx context.Context) context.Context {
 	// caller elsewhere): this is the stdio launcher or an open-mode session,
 	// i.e. the operator, so the def tools grant it operator authority.
 	ctx = tools.WithUnauthenticatedOperator(ctx)
+	// The tier is still read from ctx rather than assumed: mcpPrincipalCtx also
+	// routes an authenticated principal with no subject here, and that is not
+	// the operator unless its scopes say so.
+	p, ok := auth.PrincipalFromContext(ctx)
+	ctx = tools.WithCallerTier(ctx, tools.TierForPrincipal(p, ok, p.TenantID))
 	return grantOperatorPolicies(ctx, operatorAgentName, true)
 }
 

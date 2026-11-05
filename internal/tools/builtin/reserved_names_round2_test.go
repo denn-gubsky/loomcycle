@@ -318,10 +318,10 @@ func (f faultyDefaultTenant) DirentGet(ctx context.Context, tenant, scope, scope
 func TestOntology_BootPassTriesEveryRawTenantAfterAnError(t *testing.T) {
 	d, base, _ := documentFixture(t)
 	ctx := tools.WithRunIdentity(base, tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: ""})
-	ctx = tools.WithSubstrateOperator(tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+	ctx = tools.WithCallerTier(tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
 		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
 		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
-	}))
+	}), tools.TierOperatorPlane)
 	md, _ := json.Marshal("# Tenant Ontology\n\n## event\n")
 	out, r := docExec(t, d, ctx, `{"op":"import_md","scope":"tenant","path":"/memory/ontology","markdown":`+string(md)+`}`)
 	if r.IsError {

@@ -15,7 +15,7 @@ import (
 
 func leaseKey(t *testing.T, d *Document, ctx context.Context) context.Context {
 	t.Helper()
-	return tools.WithRunPolicy(ctx, tools.RunPolicy{Tools: []string{"*"}})
+	return tools.WithCallerTier(tools.WithRunPolicy(ctx, tools.RunPolicy{Tools: []string{"*"}}), tools.TierOperatorPlane)
 }
 
 func TestDocumentLease_SecondOwnerFindsItHeld(t *testing.T) {

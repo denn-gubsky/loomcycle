@@ -109,6 +109,24 @@ func testAuthRemovalStagesNeverSkip(t *testing.T, s store.Store) {
 	if len(due) != 1 || due[0].UnboundAt.IsZero() {
 		t.Fatalf("after unbind, due = %+v; want the erase", due)
 	}
+	// A deferred erase leaves the due set until its new time, with its
+	// claimed stage released, and is due again after it.
+	if ok, err := s.AuthRemovalClaimStage(ctx, "acme", "alice", store.RemovalStageErasing); err != nil || !ok {
+		t.Fatalf("claim the erase = %v, %v", ok, err)
+	}
+	until := time.Now().Add(time.Hour)
+	if ok, err := s.AuthRemovalDeferErase(ctx, "acme", "alice", until); err != nil || !ok {
+		t.Fatalf("defer the erase = %v, %v", ok, err)
+	}
+	if due, _ = s.AuthRemovalDue(ctx, time.Now(), 10); len(due) != 0 {
+		t.Fatalf("a deferred erase is still due: %+v", due)
+	}
+	if got, err := s.AuthRemovalGet(ctx, "acme", "alice"); err != nil || got.Stage != "" || !sameInstant(got.EraseDueAt, until) {
+		t.Fatalf("after the deferral = %+v, %v; want no stage held and erase due at %v", got, err, until)
+	}
+	if due, _ = s.AuthRemovalDue(ctx, until.Add(time.Minute), 10); len(due) != 1 {
+		t.Fatalf("a deferred erase past its new time: due = %+v; want it again", due)
+	}
 	if ok, err := s.AuthRemovalMarkErased(ctx, "acme", "alice", time.Now()); err != nil || !ok {
 		t.Fatalf("erase = %v, %v", ok, err)
 	}
@@ -125,6 +143,13 @@ func testAuthRemovalStagesNeverSkip(t *testing.T, s store.Store) {
 	}
 	if due, _ = s.AuthRemovalDue(ctx, time.Now().Add(100*365*24*time.Hour), 10); len(due) != 0 {
 		t.Fatalf("an erase_after: never removal came due: %+v", due)
+	}
+	// Nor can a deferral schedule an erase it never had.
+	if ok, err := s.AuthRemovalDeferErase(ctx, "acme", "bob", time.Now()); err != nil || ok {
+		t.Fatalf("defer an erase_after: never removal = %v, %v; want false", ok, err)
+	}
+	if got, err := s.AuthRemovalGet(ctx, "acme", "bob"); err != nil || !got.EraseDueAt.IsZero() {
+		t.Fatalf("after deferring an erase_after: never removal = %+v, %v; want no erase due", got, err)
 	}
 	// Out-of-order due times are refused.
 	bad := mkRemoval("carol", t0)

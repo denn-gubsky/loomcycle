@@ -130,7 +130,7 @@ func checkRefAllowed(ctx context.Context, r dataRef, write bool) (tools.Result, 
 // reference: via names the asking tool (its hooks see it), and instead is
 // the alternative the refusal offers.
 func checkRefGrant(ctx context.Context, r dataRef, write bool, via, instead string) (tools.Result, bool) {
-	if tools.IsSubstrateOperator(ctx) && tools.RunID(ctx) == "" {
+	if tools.IsOffRunPlane(ctx) {
 		return errPermission("from and to are not available outside a run", instead+"."), false
 	}
 	need := r.refTool(write)

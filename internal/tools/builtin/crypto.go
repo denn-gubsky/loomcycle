@@ -346,7 +346,7 @@ func (c *Crypto) spend(ctx context.Context) (tools.Result, bool) {
 		limit = defaultCryptoMaxOpsPerRun
 	}
 	runID := tools.RunID(ctx)
-	if runID == "" && tools.IsSubstrateOperator(ctx) {
+	if tools.IsOffRunPlane(ctx) {
 		// The operator API: no run, so no run's budget. The token's rate bounds it.
 		return tools.Result{}, true
 	}
@@ -643,7 +643,7 @@ func (c *Crypto) resolveKey(ctx context.Context, ref keyRef, env *cryptoops.Enve
 		userID = ""
 	}
 	agentName := tools.AgentName(ctx)
-	offRun := tools.IsSubstrateOperator(ctx) && tools.RunID(ctx) == ""
+	offRun := tools.IsOffRunPlane(ctx)
 	noScope := func(which string) tools.Result {
 		if offRun {
 			// The operator API: there is no agent and no run whose keys these

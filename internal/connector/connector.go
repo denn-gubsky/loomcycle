@@ -540,8 +540,8 @@ type Connector interface {
 	// ACLManagementOps) and, for an admin, a "tenant" focus; the result
 	// text is the route's JSON body. One implementation serves every
 	// transport, and it holds every gate itself — tenant confinement,
-	// operator-only management, the per-op list check, the self-elevation
-	// guards, audit and cache invalidation — so no transport can reach the
+	// operator-only management, the per-op list check, the list lock on
+	// bindings, groups and memberships, audit and cache invalidation — so no transport can reach the
 	// logic around them. A call made from inside a run is refused: this is
 	// an operator plane, never an agent's tool.
 	GroupDef(ctx context.Context, input json.RawMessage) (ToolResult, error)

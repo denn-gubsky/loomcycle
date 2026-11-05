@@ -237,7 +237,7 @@ func TestOntology_ATenantWithNoRecordAdoptsTheDocumentAtTheName(t *testing.T) {
 			rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
 			rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
 		})
-		opCtx := tools.WithSubstrateOperator(base)
+		opCtx := tools.WithCallerTier(base, tools.TierOperatorPlane)
 		agentCtx := tools.WithRunID(base, "r_agent")
 		md, _ := json.Marshal("# Tenant Ontology\n\n## event\n")
 		out, r := docExec(t, d, opCtx, `{"op":"import_md","scope":"tenant","path":"/memory/ontology","markdown":`+string(md)+`}`)

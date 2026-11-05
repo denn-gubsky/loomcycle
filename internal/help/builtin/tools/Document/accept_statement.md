@@ -12,7 +12,8 @@ review queue in the console, or from an operator session over the API.
 In the tenant scope, a member who is not an operator rules only where an
 access-control rule grants it `review` on the statement's from-document, as
 for a bulk ruling. Without that grant the call is refused, whatever `link` or
-`write` the member holds.
+`write` the member holds. In the `user` scope a member rules only in its own;
+another person's user scope, and the `agent` scope, are the operator's.
 
 Accepting a judge agent's acceptance (`ruled_by: judge:<run>`) **confirms** it:
 it stays asserted, becomes a person's ruling, and the verdict records

@@ -54,12 +54,19 @@ func (s *Server) handleErasureExecute(w http.ResponseWriter, r *http.Request) {
 		Tenant: tenant, Subject: req.Subject, DryRun: dryRun, Confirm: req.Confirm,
 		SourceAddr: r.RemoteAddr,
 	})
+	var locked *aclLockedError
 	switch {
+	case errors.As(err, &locked):
+		writeACLReply(w, locked.reply)
+		return
 	case errors.Is(err, erasure.ErrNoSubject):
 		writeJSONError(w, http.StatusBadRequest, "missing_subject", "subject is required")
 		return
 	case errors.Is(err, erasure.ErrConfirmMismatch):
 		writeJSONError(w, http.StatusBadRequest, "confirm_mismatch", err.Error())
+		return
+	case errors.Is(err, erasure.ErrLocked):
+		writeJSONError(w, http.StatusForbidden, "acl_denied", err.Error())
 		return
 	case errors.Is(err, erasure.ErrAuditUnavailable):
 		writeJSONError(w, http.StatusServiceUnavailable, "audit_unavailable",
@@ -88,6 +95,18 @@ func (s *Server) ErasureExecute(ctx context.Context, req erasure.ExecuteRequest)
 	svc := s.erasureService()
 	if err := svc.Validate(req); err != nil {
 		return erasure.Result{}, err
+	}
+	// The erasure drops the subject's bindings and memberships: a list the
+	// caller is locked out of retiring refuses it, dry run included (the
+	// preview answers what the real call would). Admin erasure is not held.
+	if refusal := s.aclSubjectLockForCaller(ctx, req.Tenant, req.Subject); refusal != nil {
+		// Only a 403 is a lock; a 503 is a check that could not run, which
+		// another transport maps to Unavailable, not to a refusal.
+		cause := erasure.ErrACLUnavailable
+		if refusal.status == http.StatusForbidden {
+			cause = erasure.ErrLocked
+		}
+		return erasure.Result{}, &aclLockedError{reply: *refusal, cause: cause}
 	}
 
 	// AUDIT BEFORE DELETING, and refuse if the record will not write.

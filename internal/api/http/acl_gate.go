@@ -60,6 +60,9 @@ func (s *Server) enrichPrincipal(ctx context.Context, p auth.Principal) auth.Pri
 	out, err := s.aclResolver.Resolve(ctx, p)
 	if err != nil {
 		slog.Error("authz: resolving the set failed", "tenant", p.TenantID, "subject", p.Subject, "mode", s.aclMode(), "err", err)
+		// Recorded, so a check that grants from the caller's own rules refuses
+		// rather than taking the class baseline in their place.
+		p.ACLFault = true
 		return p
 	}
 	return out

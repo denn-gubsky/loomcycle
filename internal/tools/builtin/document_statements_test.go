@@ -47,7 +47,7 @@ func stmtDoc(t *testing.T, d *Document, ctx context.Context, title string) (docI
 }
 
 func operatorCtx(ctx context.Context) context.Context {
-	return tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.Tools = []string{"*"} })
+	return tools.WithCallerTier(tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.Tools = []string{"*"} }), tools.TierOperatorPlane)
 }
 
 func inRunCtx(ctx context.Context) context.Context {

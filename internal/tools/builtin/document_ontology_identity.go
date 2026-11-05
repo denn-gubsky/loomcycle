@@ -164,14 +164,10 @@ func (d *Document) documentRolesMarked(ctx context.Context, key sqlmem.ScopeKey)
 }
 
 // reservedNameWriter reports whether ctx may create, rename or remove a reserved
-// tenant name: the operator's own off-run call. The marker counts only off-run, as
-// in the ontology guard — the spawn boundary strips it, and a run id means an agent
-// reached the call.
-//
-// The ONE place this question is answered, so moving to another caller-tier marker
-// is a one-line change here.
+// tenant name: the operator's own off-run call — never a member, an isolated member or
+// a run (RFC FY Part B's caller tiers). The ONE place this question is answered.
 func reservedNameWriter(ctx context.Context) bool {
-	return tools.IsSubstrateOperator(ctx) && tools.RunID(ctx) == ""
+	return tools.IsOperatorPlane(ctx)
 }
 
 // reservedProvisionKey carries the one reserved name ProvisionReservedDocument is

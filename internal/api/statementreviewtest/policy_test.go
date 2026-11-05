@@ -21,7 +21,7 @@ const reviewRules = "- accept kind:cites,repeals when self:false\n- judge kind:e
 // rules, after the queue was seeded, so the policy has proposals to apply to.
 func (e *env) installPolicy(rules string) {
 	e.t.Helper()
-	ctx := tools.WithSubstrateOperator(e.docCtx())
+	ctx := tools.WithCallerTier(e.docCtx(), tools.TierOperatorPlane)
 	call := func(body string) map[string]any {
 		res, err := e.doc.Execute(ctx, json.RawMessage(body))
 		if err != nil || res.IsError {

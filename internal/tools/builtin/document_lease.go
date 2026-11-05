@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -38,15 +39,25 @@ var documentLeaseNameRE = regexp.MustCompile(`^[a-z0-9_.:/-]{1,64}$`)
 // agent holding statement_methods — the lease exists for the driver that
 // maintains statements, and no model-driven agent should be able to hold a pass
 // off a scope for up to an hour (only a code-js run is ever granted methods).
-func documentLeaseAllowed(ctx context.Context) bool {
-	return authorIsOperatorPlane(ctx) || HasStatementMethodGrant(ctx)
+// A member, off-run, may lease its own user scope and no other (RFC FY Part B):
+// holding the tenant's linker off for an hour is the operator's call.
+func documentLeaseAllowed(ctx context.Context, key sqlmem.ScopeKey) bool {
+	return callerDecidesIn(ctx, key) || HasStatementMethodGrant(ctx)
 }
 
-// documentLeaseOwner is the holder's identity: the run id when present, else the
-// agent name. Never caller-supplied, so one run cannot release another's lease.
+// documentLeaseOwner is the holder's identity: the run id when present; off-run
+// through a substrate plane, the calling principal (principal:<subject>, so one
+// caller can neither release nor extend another's lease, as when every off-run
+// caller shared the plane's synthetic agent name); else the agent name. Never
+// caller-supplied, so one run cannot release another's lease. The principal
+// prefix here names an OWNER; the reserved principal: lease NAMES are the
+// runtime's subject-binding locks, whose owners are random.
 func documentLeaseOwner(ctx context.Context) string {
 	if id := tools.RunID(ctx); id != "" {
 		return id
+	}
+	if p, ok := auth.PrincipalFromContext(ctx); ok && p.Subject != "" && tools.IsOffRunPlane(ctx) {
+		return principalLeasePrefix + p.Subject
 	}
 	if n := tools.AgentName(ctx); n != "" {
 		return "agent:" + n
@@ -62,7 +73,7 @@ type documentLeaseResult struct {
 }
 
 func (d *Document) leaseOp(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
-	name, refuse := documentLeaseInput("lease", ctx, in)
+	name, refuse := documentLeaseInput("lease", ctx, key, in)
 	if refuse != nil {
 		return *refuse, nil
 	}
@@ -84,7 +95,7 @@ func (d *Document) leaseOp(ctx context.Context, key sqlmem.ScopeKey, in docInput
 }
 
 func (d *Document) releaseOp(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
-	name, refuse := documentLeaseInput("release", ctx, in)
+	name, refuse := documentLeaseInput("release", ctx, key, in)
 	if refuse != nil {
 		return *refuse, nil
 	}
@@ -95,8 +106,8 @@ func (d *Document) releaseOp(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	return jsonResult(map[string]any{"name": name, "released": released})
 }
 
-func documentLeaseInput(op string, ctx context.Context, in docInput) (string, *tools.Result) {
-	if !documentLeaseAllowed(ctx) {
+func documentLeaseInput(op string, ctx context.Context, key sqlmem.ScopeKey, in docInput) (string, *tools.Result) {
+	if !documentLeaseAllowed(ctx, key) {
 		r := errPermission(op+": a scope lease is held only by a statement-maintaining driver or the operator",
 			"Run the pass from an agent granted statement_methods, or from the console.")
 		return "", &r
