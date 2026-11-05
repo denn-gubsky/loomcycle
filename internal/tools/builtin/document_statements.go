@@ -115,6 +115,9 @@ const (
 	// edgeMethodConsolidator: a typed relation the memory pass extracted from a
 	// fact (upsert_chunk relation). Never accepted from the wire.
 	edgeMethodConsolidator = "consolidator"
+	// edgeMethodAgent: a run's own link_chunks — a model (or code) made it, never
+	// a person, whatever token started the run. A person's off-run call is manual.
+	edgeMethodAgent = "agent"
 )
 
 // edgeOriginMethodAttr names, on a statement a sync carried, the method it was
@@ -149,7 +152,7 @@ func machineMethod(m string) bool {
 		return (prefix == "rule" || prefix == "extractor") && statementMethodName.MatchString(name)
 	}
 	switch m {
-	case edgeMethodImport, edgeMethodCanvas, edgeMethodWikilink, edgeMethodRuntime, edgeMethodConsolidator, edgeMethodOntology:
+	case edgeMethodImport, edgeMethodCanvas, edgeMethodWikilink, edgeMethodRuntime, edgeMethodConsolidator, edgeMethodOntology, edgeMethodAgent:
 		return true
 	}
 	return false
@@ -391,7 +394,7 @@ type edgeWrite struct {
 // vocabulary refuses rather than annotates, and the one that asserts a statement
 // awaiting review.
 func (w edgeWrite) gateAuthored() bool {
-	return w.authored && w.method == edgeMethodManual
+	return w.authored && (w.method == edgeMethodManual || w.method == edgeMethodAgent)
 }
 
 // edgeWriteResult is what a write reports.
@@ -421,7 +424,7 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 		return out, &r, nil
 	}
 	if w.method != edgeMethodRuntime {
-		if writer, reserved := reservedEdgeKinds[w.kind]; reserved && !(w.kind == aboutEdgeKind && w.authored && (w.method == edgeMethodManual || w.method == edgeMethodImport)) {
+		if writer, reserved := reservedEdgeKinds[w.kind]; reserved && !(w.kind == aboutEdgeKind && w.authored && (w.method == edgeMethodManual || w.method == edgeMethodAgent || w.method == edgeMethodImport)) {
 			r := errValidation(fmt.Sprintf("kind_reserved: %q edges are written only by %s", w.kind, writer),
 				"Use a kind of your own (cites, based_on, defines, implements, related, …).")
 			return out, &r, nil
@@ -1203,23 +1206,46 @@ func (d *Document) statementJSON(ctx context.Context, s statementRow, ends map[s
 // --- ops ---
 
 // linkChunks asserts a relation: a statement with status asserted, method manual
-// (or the internal path's own), and any evidence the caller supplies.
+// for a person's call or agent for a run's (or the internal path's own), and any
+// evidence the caller supplies.
+//
+// A run's link in the tenant scope — read by every user and agent of the tenant —
+// is filed for review instead, unless its agent holds statement_methods: [link]
+// (RFC FZ Part C, D4). A run is any call no transport stamped as a person's
+// (tools.IsOffRunPlane), so a path that forgot to stamp files a proposal.
 func (d *Document) linkChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if r := refuseRuntimeAttributes("link_chunks", in.Attributes); r != nil {
 		return *r, nil
 	}
-	method := in.edgeMethod
+	method, status := in.edgeMethod, edgeStatusAsserted
 	if method == "" {
 		method = edgeMethodManual
+		if !tools.IsOffRunPlane(ctx) {
+			method = edgeMethodAgent
+			if mscope == store.MemoryScopeTenant && !contains(tools.PolicyOf(ctx).StatementMethods, statementLinkGrant) {
+				status = edgeStatusProposed
+			}
+		}
 	}
-	res, refuse, err := d.writeStatement(ctx, key, mscope, edgeWrite{
-		from: in.FromID, to: in.ToID, kind: in.Kind, method: method, status: edgeStatusAsserted,
+	w := edgeWrite{
+		from: in.FromID, to: in.ToID, kind: in.Kind, method: method, status: status,
 		authored: true, confidence: in.Confidence, validAt: in.ValidAt, invalidAt: in.InvalidAt,
 		attributes: in.Attributes, evidence: in.Evidence,
 		// An operator's own link may re-assert a rejection; sync and canvas carry
 		// another document's relations and never override one, whoever runs them.
 		overrideRejected: method == edgeMethodManual && callerDecidesIn(ctx, key),
-	})
+	}
+	if status == edgeStatusProposed {
+		// Filed as propose_statement files it: a person's rejection of the
+		// relation at any valid_at refuses it.
+		if reason, rejected, err := d.rejectedRelation(ctx, key, w.from, w.to, w.kind, d.discriminatorFor(ctx, w.kind, w.attributes)); err != nil {
+			return errFrom("link_chunks: "+err.Error(), err), nil
+		} else if rejected {
+			return errBusiness("link_chunks: statement_rejected: this relation was rejected by an operator ("+reason+")",
+				"Do not re-link it. An operator can accept it from the review queue if it was rejected in error."), nil
+		}
+	}
+	res, refuse, err := d.writeStatement(ctx, key, mscope, w)
 	if err != nil {
 		return errFrom("link_chunks: "+err.Error(), err), nil
 	}
@@ -1228,10 +1254,22 @@ func (d *Document) linkChunks(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		return *refuse, nil
 	}
 	d.publishEdgeChange(ctx, key, mscope, "link_chunks", res.ID, in.FromID, in.ToID, in.Kind, res.Status)
+	if status == edgeStatusProposed {
+		// The tenant's review policy, when one is in force, rules on it as on any
+		// proposal filed (propose_statement).
+		if pf, inForce := d.reviewPolicyInForce(ctx); inForce && pf.section {
+			res = d.ruleOnFiling(ctx, key, mscope, pf, res)
+		}
+	}
 	out := map[string]any{"ok": true, "from_id": in.FromID, "to_id": in.ToID, "kind": in.Kind,
 		"id": res.ID, "status": res.Status, "evidence_written": res.EvidenceWritten}
 	if res.EvidenceCapped {
 		out["evidence_capped"] = true
+	}
+	for k, v := range map[string]string{"ruled_by": res.RuledBy, "ruling_id": res.RulingID, "review_route": res.ReviewRoute} {
+		if v != "" {
+			out[k] = v
+		}
 	}
 	return jsonResult(out)
 }

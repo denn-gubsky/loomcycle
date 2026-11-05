@@ -169,14 +169,21 @@ func nilIfZeroContext(c *config.Context) *config.Context {
 }
 
 // statementMethodsOf is the run's statement_methods grant: its definition's,
-// and only when the definition runs code. Load and AgentDef create/fork refuse
-// the field on any other provider; this keeps a definition that reached a run
-// some other way from claiming a rule: stamp for a model's writes.
+// with the code-only values (rule, extractor, judge) kept only when the
+// definition runs code. Load and AgentDef create/fork refuse them on any other
+// provider; this keeps a definition that reached a run some other way from
+// claiming a rule: stamp for a model's writes.
 func statementMethodsOf(def config.AgentDef) []string {
-	if def.Provider != config.CodeJSProvider {
-		return nil
+	if def.Provider == config.CodeJSProvider {
+		return def.StatementMethods
 	}
-	return def.StatementMethods
+	var out []string
+	for _, m := range def.StatementMethods {
+		if !config.StatementMethodCodeOnly(m) {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // shellCredsOf is a run's shell-credential narrowing: the one given from

@@ -589,10 +589,10 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// can tell a refused clone or push from a broken remote. Always present:
 	// an empty list is the answer "local repository work only".
 	out["git_remote"] = tools.PolicyOf(ctx).GitRemote.Ops()
-	// The statement methods this run may stamp on the relations it writes, so
-	// a code agent can tell before writing whether a rule: stamp is accepted.
-	// Only a code-js run is ever granted one, so a run holding none (every
-	// model agent) is not told about a grant it cannot have.
+	// The statement grants this run holds, so an agent can tell before writing
+	// whether a rule: stamp is accepted, whether its tenant link_chunks is
+	// asserted (link) and whether it may remember. A run holding none is not
+	// told about grants it does not have.
 	if sm := tools.PolicyOf(ctx).StatementMethods; len(sm) > 0 {
 		out["statement_methods"] = sm
 	}

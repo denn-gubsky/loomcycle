@@ -27,6 +27,15 @@ var statementMethodOps = map[string]bool{
 	"upsert_chunk":       true, // its relation statement; its runtime edges keep method runtime
 }
 
+// statementLinkGrant and statementRememberGrant are the statement_methods values
+// that stamp nothing but widen what a run may do: link asserts a run's
+// link_chunks in the tenant scope instead of filing it for review, and remember
+// lets a run file a fact as a person's statement (op=remember).
+const (
+	statementLinkGrant     = "link"
+	statementRememberGrant = "remember"
+)
+
 // statementMethodName is the <name> of rule:<name> / extractor:<name>: short,
 // lower case and path-like, so it reads as an identifier in the review queue
 // and can never carry a sentence.

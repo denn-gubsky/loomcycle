@@ -909,7 +909,8 @@ An asserted statement is never *rejected*. It leaves the live set in one of thre
 
 | method | written by |
 |---|---|
-| `manual` | `link_chunks` and `propose_statement` without a method: a person's (or a model's) own write |
+| `manual` | `link_chunks` by a person outside a run, and `propose_statement` without a method |
+| `agent` | `link_chunks` from inside a run: a model's (or code's) own link, with the run's agent as `actor`. In the tenant scope it is filed as a proposal unless the agent holds `statement_methods: [link]` |
 | `wikilink` | a `[[name]]` link in a chunk body |
 | `import` | `import_md` (its `<!-- loom-edges -->` block, and the `amends` statements of an edition) |
 | `sync` | a link pulled from a peer by `sync` |

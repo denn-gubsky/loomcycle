@@ -59,6 +59,14 @@ const maxRememberChars = 1000
 
 // rememberFact stores a statement as a self-citing evidential fact.
 func (d *Document) rememberFact(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	// A remembered fact is filed as a PERSON's statement — evidential, citing
+	// itself, quotable by verbatim_answer — so a run may file one only when its
+	// agent is granted statement_methods: [remember] (RFC FZ Part C, D5). A
+	// person's own off-run call needs no grant.
+	if !tools.IsOffRunPlane(ctx) && !contains(tools.PolicyOf(ctx).StatementMethods, statementRememberGrant) {
+		return errPermission("remember: this agent may not file a fact as something a person said (its definition's statement_methods does not grant remember); propose what you learned with propose_statement, or record what you derived from a source with upsert_chunk and its source_quote",
+			"Use propose_statement or upsert_chunk instead; an operator grants remember in the agent's statement_methods."), nil
+	}
 	text := strings.TrimSpace(in.Text)
 	if text == "" {
 		return errValidation("remember: missing required field: text (the statement to remember, "+

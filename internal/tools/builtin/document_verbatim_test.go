@@ -129,6 +129,10 @@ func TestVerbatim_QuotesAVerifiedFactWithItsCitation(t *testing.T) {
 	if got, _ := out["chunk_id"].(string); got != id {
 		t.Errorf("chunk_id = %q, want %q", got, id)
 	}
+	// Who the quote is from travels with it: a fact written off-run is the operator's.
+	if got, _ := out["origin"].(string); got != "operator" {
+		t.Errorf("origin = %q, want operator", got)
+	}
 }
 
 // TestVerbatim_RefusesAnUnverifiedFact.

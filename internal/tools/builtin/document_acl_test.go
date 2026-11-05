@@ -28,11 +28,16 @@ func aclSet(t *testing.T, rules ...authz.Rule) *authz.Effective {
 
 // tenantDocCtx is a run granted the tenant document scope, bound to eff (nil:
 // no set, as a run with no principal has).
+//
+// It holds statement_methods: [link], so its tenant link_chunks is asserted as
+// these fixtures expect; a run without it files a proposal
+// (TestLinkChunks_ATenantLinkFromARunIsAProposal).
 func tenantDocCtx(base context.Context, eff *authz.Effective) context.Context {
 	return tools.WithRunPolicy(base, tools.RunPolicy{
-		Memory: tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}},
-		SqlMem: tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}},
-		ACL:    eff,
+		Memory:           tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}},
+		SqlMem:           tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}},
+		ACL:              eff,
+		StatementMethods: []string{statementLinkGrant},
 	})
 }
 
