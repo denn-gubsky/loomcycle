@@ -808,6 +808,10 @@ func (d *Document) executeInput(ctx context.Context, in docInput, raw json.RawMe
 	if refused := d.guardOntologyWrite(ctx, key, in.Op, in); refused != nil {
 		return *refused, nil
 	}
+	// The root of a reserved document is the operator's; same placement and reason.
+	if refused := d.reservedRootRefusal(ctx, key, in); refused != nil {
+		return *refused, nil
+	}
 	res, err := d.dispatch(ctx, key, mscope, in, raw)
 	if err != nil {
 		return res, err

@@ -223,9 +223,6 @@ func (d *Document) reservedTargetRefusal(ctx context.Context, key sqlmem.ScopeKe
 		return reservedNameRefusal(ctx, in.Op, key.Scope, canonical)
 	case "delete_document":
 		return d.reservedHeldRefusal(ctx, key, in)
-	case "update_chunk", "delete_chunk", "move_chunk", "reorder_chunk", "supersede_chunk",
-		"add_tags", "remove_tags", "set_asset":
-		return d.reservedRootRefusal(ctx, key, in)
 	}
 	return nil
 }
@@ -233,28 +230,87 @@ func (d *Document) reservedTargetRefusal(ctx context.Context, key sqlmem.ScopeKe
 // reservedRootRefusal refuses a write to the ROOT of a document that holds a reserved
 // tenant name: its title, status, body, tags and type name and describe the runtime's
 // document, and are the operator's. Chunks under the root stay writable — the memory
-// bundle's consolidator files facts there. Document-level tags (add_tags/remove_tags
-// with document_id alone) are the root's facets too.
+// bundle's consolidator files facts there. Run AFTER applyClassRules, so an upsert is
+// judged on the natural key the handler will use.
+//
+// Census of the dispatch ops that can write an existing chunk or a document as a whole
+// (ontologyWriteOp's list; the rest are read-only or exempt, document_ontology_guard.go):
+//
+//	chunk-addressed, the root by id:  update_chunk delete_chunk move_chunk reorder_chunk
+//	                                  supersede_chunk (id or supersedes_id) add_tags
+//	                                  remove_tags set_asset
+//	the root by natural key:          upsert_chunk
+//	the whole document:               import_md (reimport / document_id / path / work_key),
+//	                                  sync, set_remote, define_type, classify,
+//	                                  add_tags / remove_tags with document_id alone
+//	not here, and why:                create_chunk and import_canvas only add new chunks
+//	                                  (import_canvas always makes a new document);
+//	                                  delete_document and set_path are judged on the names
+//	                                  the document holds or takes (reservedTargetRefusal);
+//	                                  judge_fact rules on a fact, and a root is not one.
 func (d *Document) reservedRootRefusal(ctx context.Context, key sqlmem.ScopeKey, in docInput) *tools.Result {
 	if key.Scope != "tenant" || reservedNameWriter(ctx) {
 		return nil
 	}
 	var docs []string
-	for _, c := range []string{in.ID, in.SupersedesID} {
-		if c = strings.TrimSpace(c); c == "" {
-			continue
+	rootOf := func(chunkID string) error {
+		if chunkID = strings.TrimSpace(chunkID); chunkID == "" {
+			return nil
 		}
-		res, err := d.query(ctx, key, `SELECT id FROM documents WHERE root_chunk_id = ? LIMIT 1`, c)
+		res, err := d.query(ctx, key, `SELECT id FROM documents WHERE root_chunk_id = ? LIMIT 1`, chunkID)
 		if err != nil {
-			r := errFrom(in.Op+": could not check the chunk against the reserved documents, so it was not written: "+err.Error(), err)
-			return &r
+			return err
 		}
 		if len(res.Rows) > 0 && len(res.Rows[0]) > 0 {
 			docs = append(docs, asStr(res.Rows[0][0]))
 		}
+		return nil
 	}
-	if (in.Op == "add_tags" || in.Op == "remove_tags") && strings.TrimSpace(in.ID) == "" && strings.TrimSpace(in.DocumentID) != "" {
-		docs = append(docs, strings.TrimSpace(in.DocumentID))
+	var err error
+	switch in.Op {
+	case "update_chunk", "delete_chunk", "move_chunk", "reorder_chunk", "set_asset":
+		err = rootOf(in.ID)
+	case "supersede_chunk":
+		if err = rootOf(in.ID); err == nil {
+			err = rootOf(in.SupersedesID)
+		}
+	case "add_tags", "remove_tags":
+		if strings.TrimSpace(in.ID) != "" {
+			err = rootOf(in.ID)
+		} else if doc := strings.TrimSpace(in.DocumentID); doc != "" {
+			docs = append(docs, doc)
+		}
+	case "upsert_chunk":
+		if nk := strings.TrimSpace(in.NaturalKey); nk != "" {
+			var existing string
+			if existing, err = d.chunkIDByNaturalKey(ctx, key, nk); err == nil {
+				err = rootOf(existing)
+			}
+		}
+	case "import_md":
+		if strings.TrimSpace(in.DocumentID) != "" || strings.TrimSpace(in.ID) != "" {
+			if id, derr := d.docIDFromInput(ctx, key, docInput{ID: in.ID, DocumentID: in.DocumentID}); derr == nil {
+				docs = append(docs, id)
+			}
+		}
+		if in.Reimport && in.Path != "" {
+			if id, derr := d.docIDFromInput(ctx, key, docInput{Path: in.Path}); derr == nil {
+				docs = append(docs, id)
+			}
+		}
+		if wk := strings.TrimSpace(in.WorkKey); wk != "" {
+			if id, _, _, werr := d.documentByWorkKey(ctx, key, wk); werr == nil && id != "" {
+				docs = append(docs, id)
+			}
+		}
+	case "sync", "set_remote", "define_type", "classify":
+		if id, derr := d.docIDFromInput(ctx, key, in); derr == nil {
+			docs = append(docs, id)
+		}
+	}
+	if err != nil {
+		r := errFrom(in.Op+": could not check the target against the reserved documents, so it was not written: "+err.Error(), err)
+		return &r
 	}
 	for _, doc := range docs {
 		held, err := d.reservedNameHeld(ctx, key, doc)
@@ -263,8 +319,8 @@ func (d *Document) reservedRootRefusal(ctx context.Context, key sqlmem.ScopeKey,
 			return &r
 		}
 		if held != "" {
-			r := errPermission(in.Op+": this is the root of the document at "+held+", a reserved name in the tenant scope: "+
-				"its title, status, body, tags and type are the operator's.",
+			r := errPermission(in.Op+": this writes the document at "+held+", a reserved name in the tenant scope: "+
+				"its root's title, status, body, tags and type, and the document as a whole, are the operator's.",
 				"Write chunks under the root instead (create_chunk with its id as parent_id).")
 			return &r
 		}

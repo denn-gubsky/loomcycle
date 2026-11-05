@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -247,5 +248,53 @@ func TestOntologyGuard_ADerivedNaturalKeyIsCheckedToo(t *testing.T) {
 	got, gr := docExec(t, d, opCtx, `{"op":"get_chunk","scope":"tenant","id":"`+accepted+`"}`)
 	if gr.IsError || got["title"] != "Art. 5" || got["status"] != nil && got["status"] != "" {
 		t.Errorf("the accepted entity changed: %v", got)
+	}
+}
+
+// TestReservedName_EveryRootWriteIsTheOperators: the ops that rewrite a document as a
+// whole (a reimport, a sync from a peer, binding it to one, declaring its types,
+// classifying it) and an upsert whose key names the root all reach the root of a
+// reserved document; each is refused for an agent and allowed to the operator.
+func TestReservedName_EveryRootWriteIsTheOperators(t *testing.T) {
+	md, _ := json.Marshal("# Entities\n\n## planted\nx\n")
+	cases := []struct {
+		name string
+		req  func(doc string) string
+	}{
+		{"import_md reimport by document_id", func(doc string) string {
+			return `{"op":"import_md","scope":"tenant","document_id":"` + doc + `","reimport":true,"markdown":` + string(md) + `}`
+		}},
+		{"import_md reimport by path", func(string) string {
+			return `{"op":"import_md","scope":"tenant","path":"/memory/entities","reimport":true,"markdown":` + string(md) + `}`
+		}},
+		{"upsert_chunk by the root's natural key", func(doc string) string {
+			return `{"op":"upsert_chunk","scope":"tenant","document_id":"` + doc + `","natural_key":"ent:entities-root","title":"Mine","body":"rewritten"}`
+		}},
+		{"sync", func(doc string) string { return `{"op":"sync","scope":"tenant","document_id":"` + doc + `"}` }},
+		{"set_remote", func(doc string) string {
+			return `{"op":"set_remote","scope":"tenant","document_id":"` + doc + `","source":"peer","remote_ref":"/x"}`
+		}},
+		{"define_type", func(doc string) string {
+			return `{"op":"define_type","scope":"tenant","document_id":"` + doc + `","name":"thing","fields":["a"]}`
+		}},
+		{"classify (proposes by default)", func(doc string) string {
+			return `{"op":"classify","scope":"tenant","document_id":"` + doc + `"}`
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newReservedEnv(t)
+			out, r := docExec(t, e.d, e.opCtx, `{"op":"create_document","scope":"tenant","title":"Entities","path":"/memory/entities","natural_key":"ent:entities-root","type":"object","subject":"Entities"}`)
+			if r.IsError {
+				t.Fatalf("entities: %s", r.Text)
+			}
+			doc, _ := out["document_id"].(string)
+			if r := e.doc(t, e.agentCtx, c.req(doc)); !r.IsError || !strings.Contains(r.Text, "reserved name") {
+				t.Errorf("an agent's %s reached the root of a reserved document: %s", c.name, r.Text)
+			}
+			if r := e.doc(t, e.opCtx, c.req(doc)); r.IsError && strings.Contains(r.Text, "reserved name") {
+				t.Errorf("the operator's %s was refused as a reserved-name write: %s", c.name, r.Text)
+			}
+		})
 	}
 }
