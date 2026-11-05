@@ -663,7 +663,6 @@ func TestBrowse_AMemberHasNoSharedOffRunAgentScope(t *testing.T) {
 	for _, c := range []browseCase{
 		{"create_document", "POST", "/v1/_document", `{"op":"create_document","scope":"agent","title":"Shared"}`},
 		{"query_documents", "POST", "/v1/_document", `{"op":"query_documents","scope":"agent"}`},
-		{"path ls (default scope)", "POST", "/v1/_path", `{"op":"ls","path":"/"}`},
 		{"path mkdir", "POST", "/v1/_path", `{"op":"mkdir","scope":"agent","path":"/x"}`},
 	} {
 		for name, p := range map[string]auth.Principal{"carol": carol, "bob": bob} {
@@ -766,5 +765,25 @@ func TestBrowse_AMemberCannotNameTheOperatorsAgentScope(t *testing.T) {
 	if rec := f.call(t, op, "POST", "/v1/_document?scope_id=http-admin", `{"op":"query_documents","scope":"agent"}`); rec.Code != http.StatusOK ||
 		!strings.Contains(rec.Body.String(), "Operator notes") {
 		t.Errorf("operator naming its own agent scope: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A member's Path call without a scope used to default to the agent tree,
+// which a member has none of; it is told to name one instead of getting a bare
+// not-found. The operator plane keeps the agent default.
+func TestBrowse_AMembersPathCallWithoutAScopeIsToldToNameOne(t *testing.T) {
+	f := newBrowseFixture(t)
+	bob := member("tnt", "bob", memberBaselineSet(t, "tnt", "bob"))
+	rec := f.call(t, bob, "POST", "/v1/_path", `{"op":"ls","path":"/"}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"code":"scope_required"`) ||
+		!strings.Contains(rec.Body.String(), "scope user") {
+		t.Errorf("member Path call without scope: %d %s, want 400 scope_required naming scope user", rec.Code, rec.Body.String())
+	}
+	if rec := f.call(t, bob, "POST", "/v1/_path", `{"op":"ls","scope":"user","path":"/"}`); rec.Code != http.StatusOK {
+		t.Errorf("member Path call on its user tree: %d %s", rec.Code, rec.Body.String())
+	}
+	op := auth.Principal{TenantID: "tnt", Subject: "op", Scopes: []string{auth.ScopeTenant}}
+	if rec := f.call(t, op, "POST", "/v1/_path", `{"op":"ls","path":"/"}`); rec.Code != http.StatusOK {
+		t.Errorf("operator Path call without scope: %d %s", rec.Code, rec.Body.String())
 	}
 }

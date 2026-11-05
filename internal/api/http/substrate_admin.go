@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
@@ -675,6 +676,12 @@ func (s *Server) browseGuard(r *http.Request, defaultScope string, readsOnly fun
 		// The body was validated as JSON; a shape this cannot read leaves the
 		// default scope, and the ctx still holds only what the caller may browse.
 		_ = json.Unmarshal(body, &in)
+		// A member has no off-run agent tree, so Path's agent default would
+		// only ever answer it not-found: say what to pass instead.
+		if p, ok := auth.PrincipalFromContext(r.Context()); in.Scope == "" && defaultScope == "agent" && !memberpath.OperatorPlane(p, ok) {
+			return nil, &guardError{status: http.StatusBadRequest, code: "scope_required",
+				msg: "pass scope user (your own tree) or tenant; scope agent needs scope_id naming an agent you may run"}
+		}
 		scopes := []string{in.Scope}
 		if in.Scope == "" {
 			scopes[0] = defaultScope
