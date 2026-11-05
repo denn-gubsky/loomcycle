@@ -27,6 +27,8 @@ func TestSyncPull_NeverWritesOutsideTheBoundDocument(t *testing.T) {
 		pkey, _, _ := pd.resolveScope(pctx, "user")
 		peerV, _ := pd.chunkIDByNaturalKey(pctx, pkey, "nkV")
 		vExec(t, pd, pctx, fmt.Sprintf(`{"op":"move_chunk","id":%q,"new_parent_id":%q,"position":0}`, peerV, parent))
+		// A peer link to the conflicting key cannot be carried, and says so.
+		linkJSON(t, pd, operatorCtx(pctx), fmt.Sprintf(`{"op":"link_chunks","from_id":%q,"to_id":%q,"kind":"cites"}`, parent, peerV))
 
 		// The dry run names it before anything is written.
 		diff, res := docExec(t, d, ctx, fmt.Sprintf(`{"op":"diff_remote","id":%q}`, localDoc))
@@ -49,6 +51,9 @@ func TestSyncPull_NeverWritesOutsideTheBoundDocument(t *testing.T) {
 		}
 		if out["created"] != float64(1) {
 			t.Errorf("pull report = %v, want the rest of the document (nkP) created", out)
+		}
+		if out["edges_skipped_conflict"] != float64(1) {
+			t.Errorf("pull report = %v, want edges_skipped_conflict 1", out)
 		}
 
 		got := map[string]any{}

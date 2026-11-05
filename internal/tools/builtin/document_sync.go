@@ -861,6 +861,13 @@ type remoteWriter struct {
 }
 
 func (w remoteWriter) createKeyed(ctx context.Context, sc syncChunk) (string, error) {
+	// Asked before the write: the peer's upsert_chunk would rewrite a chunk of
+	// another peer document holding the key. A peer that cannot answer (an older
+	// version, or a credential refused the read) falls back to the check after
+	// the write below.
+	if holder, known := w.peerKeyHolder(ctx, sc.nk); known && holder != "" && holder != w.docID {
+		return "", errSyncKeyConflict
+	}
 	raw, err := w.client.Do(ctx, map[string]any{
 		"op": "upsert_chunk", "document_id": w.docID, "scope": w.scope,
 		"natural_key": sc.nk, "title": sc.title, "type": sc.ctype, "status": sc.status, "body": sc.body, "tags": nonNilTags(sc.tags),
@@ -881,6 +888,29 @@ func (w remoteWriter) createKeyed(ctx context.Context, sc syncChunk) (string, er
 		return "", errSyncKeyConflict
 	}
 	return out.ID, nil
+}
+
+// peerKeyHolder asks the peer which of its documents holds natural key nk, through
+// query_chunks' read-only SQL (the one peer op that reads a key across the
+// scope). known is false when the peer did not answer; holder is "" when no chunk
+// holds the key. The key is a local chunk's, quoted as an SQL string literal.
+func (w remoteWriter) peerKeyHolder(ctx context.Context, nk string) (holder string, known bool) {
+	raw, err := w.client.Do(ctx, map[string]any{"op": "query_chunks", "scope": w.scope,
+		"sql": "SELECT c.document_id FROM chunk_memory_meta m JOIN chunks c ON c.id = m.chunk_id WHERE m.natural_key = '" +
+			strings.ReplaceAll(nk, "'", "''") + "'"})
+	if err != nil {
+		return "", false
+	}
+	var out struct {
+		Rows *[][]any `json:"rows"`
+	}
+	if json.Unmarshal(raw, &out) != nil || out.Rows == nil {
+		return "", false
+	}
+	if len(*out.Rows) == 0 || len((*out.Rows)[0]) == 0 {
+		return "", true
+	}
+	return asStr((*out.Rows)[0][0]), true
 }
 
 func (w remoteWriter) updateKeyed(ctx context.Context, id string, sc syncChunk, revision int, includeBody bool) error {
@@ -982,6 +1012,9 @@ type reconcileCounts struct {
 	// conflicts: source keys a chunk of another document on the writer's side
 	// already holds — neither written nor moved (see errSyncKeyConflict).
 	conflicts []string
+	// edgesSkippedConflict: source statements left out because an end is a
+	// conflicting key.
+	edgesSkippedConflict int
 }
 
 // applyReconcile reconciles `source` INTO the writer's side, using `target` as
@@ -1069,6 +1102,11 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 		c.reparented++
 	}
 
+	conflicted := make(map[string]bool, len(c.conflicts))
+	for _, nk := range c.conflicts {
+		conflicted[nk] = true
+	}
+
 	// Pass 3 — manual statements, additive (both endpoints must be keyed +
 	// present). A statement the target already holds is carried too: it may lack
 	// evidence the source has, or hold an envelope the source changed.
@@ -1082,6 +1120,9 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 		fromID, ok1 := idByNK[ek.fromNK]
 		toID, ok2 := idByNK[ek.toNK]
 		if !ok1 || !ok2 {
+			if conflicted[ek.fromNK] || conflicted[ek.toNK] {
+				c.edgesSkippedConflict++
+			}
 			continue
 		}
 		in := edgeCarryIn{fromID: fromID, toID: toID, kind: ek.kind, src: se, idByNK: idByNK}
@@ -1299,7 +1340,8 @@ func reconcileReport(direction string, b *remoteBinding, excludedUnkeyed int, c 
 	}
 	// Only when not zero, so a document whose statements carry nothing reports
 	// exactly what it did before statements carried an envelope.
-	for k, n := range map[string]int{"edges_updated": c.edgesUpdated, "edges_envelope_kept": c.edgesEnvelopeKept, "evidence_dropped": c.evidenceDropped} {
+	for k, n := range map[string]int{"edges_updated": c.edgesUpdated, "edges_envelope_kept": c.edgesEnvelopeKept, "evidence_dropped": c.evidenceDropped,
+		"edges_skipped_conflict": c.edgesSkippedConflict} {
 		if n > 0 {
 			out[k] = n
 		}

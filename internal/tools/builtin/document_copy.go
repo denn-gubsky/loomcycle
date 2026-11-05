@@ -931,18 +931,20 @@ func (d *Document) copyStatements(ctx context.Context, p *copyPlan) {
 		chunkRemap := func(v any) any { return remapID(v, p.chunkMap) }
 		// Both ends must have been written: a member whose rows failed took its
 		// chunks out of chunkMap.
-		res, err := d.query(ctx, p.src, `SELECT from_id, to_id, kind FROM chunk_edges WHERE id = ?`, id)
+		res, err := d.query(ctx, p.src, `SELECT from_id, to_id, method FROM chunk_edges WHERE id = ?`, id)
 		if err != nil || len(res.Rows) == 0 {
 			p.statementsFailed++
 			continue
 		}
 		from, to := asStr(res.Rows[0][0]), asStr(res.Rows[0][1])
 		// A run without the link grant writing into the tenant scope carries a
-		// relation as a proposal: what it asserted — or ruled on — in a scope of
-		// its own is not the tenant's until reviewed there (RFC FZ Part C). The
-		// runtime's own kinds (about, derived_from, [[name]] links, supersedes)
-		// are the documents' structure and are carried as they are.
-		demote := runFilesProposals(ctx, p.dstMem) && !isReservedEdgeKind(asStr(res.Rows[0][2]))
+		// relation as a proposal: what it asserted in a scope of its own is not
+		// the tenant's until reviewed there (RFC FZ Part C). Who made a statement
+		// is its method, not its kind: only the runtime's own (about and
+		// derived_from from a fact upsert, [[name]] links) is the documents'
+		// structure and travels as it is. A rejection stays rejected.
+		method := asStr(res.Rows[0][2])
+		demote := runFilesProposals(ctx, p.dstMem) && method != edgeMethodRuntime && method != edgeMethodWikilink
 		failEnds := func() {
 			p.failDoc(p.chunkDoc[from], "a relation could not be written")
 			p.failDoc(p.chunkDoc[to], "a relation could not be written")
@@ -963,8 +965,11 @@ func (d *Document) copyStatements(ctx context.Context, p *copyPlan) {
 					if err := execInserts(ctx, d, txnID, append(edge, evidence...)); err != nil || !demote {
 						return err
 					}
-					return d.execTxn(ctx, txnID, `UPDATE chunk_edges SET status = ?, operator_ruled_at = NULL, ruled_by = NULL
-						WHERE id = ? AND status IN (?, ?)`, edgeStatusProposed, newEdge, edgeStatusAsserted, edgeStatusRejected)
+					// The verdict and the ruling that made it hold are not carried:
+					// the proposal is judged afresh in the tenant.
+					return d.execTxn(ctx, txnID, `UPDATE chunk_edges SET status = ?, operator_ruled_at = NULL, ruled_by = NULL,
+						judged_at = NULL, judge_reason = NULL, judged_by = NULL, verdict_confidence = NULL
+						WHERE id = ? AND status = ?`, edgeStatusProposed, newEdge, edgeStatusAsserted)
 				})
 			}
 		}
