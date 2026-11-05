@@ -89,6 +89,7 @@ func New(t testing.TB, opt Options) *Repo {
 	cgiPath := backend(t)
 	base := t.TempDir()
 	work := filepath.Join(base, "work")
+	// #nosec G301 -- a test helper building a throwaway repository under the test's temp dir
 	if err := os.MkdirAll(work, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +97,7 @@ func New(t testing.TB, opt Options) *Repo {
 	write := func(rel, content string, mode os.FileMode) {
 		t.Helper()
 		p := filepath.Join(work, rel)
+		// #nosec G301 -- a test helper building a throwaway repository under the test's temp dir
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -105,6 +107,7 @@ func New(t testing.TB, opt Options) *Repo {
 	}
 	link := func(target, name string) {
 		t.Helper()
+		// #nosec G301 -- a test helper building a throwaway repository under the test's temp dir
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(work, name)), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -131,6 +134,7 @@ func New(t testing.TB, opt Options) *Repo {
 	head := Git(t, work, "rev-parse", "HEAD")
 
 	bare := filepath.Join(base, "served", "acme", "app.git")
+	// #nosec G301 -- a test helper building a throwaway repository under the test's temp dir
 	if err := os.MkdirAll(filepath.Dir(bare), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -171,6 +175,7 @@ func New(t testing.TB, opt Options) *Repo {
 // returns its sha.
 func (r *Repo) Commit(t testing.TB, name string, content []byte) string {
 	t.Helper()
+	// #nosec G306 -- a test helper building a throwaway repository under the test's temp dir
 	if err := os.WriteFile(filepath.Join(r.work, name), content, 0o644); err != nil {
 		t.Fatal(err)
 	}

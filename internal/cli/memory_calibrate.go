@@ -129,6 +129,7 @@ func loadCalibrationCorpus(name string) (eval.CalibrationCorpus, error) {
 	if name == "cluster" || name == "clustered" {
 		return eval.ClusteredCalibrationCorpus()
 	}
+	// #nosec G304 -- a file named on the operator's command line
 	f, err := os.Open(name)
 	if err != nil {
 		return eval.CalibrationCorpus{}, fmt.Errorf("open corpus: %w", err)

@@ -7692,6 +7692,7 @@ func resolveSystemPromptFiles(cfg *Config, configPath string) error {
 		if !filepath.IsAbs(p) {
 			p = filepath.Join(configDir, p)
 		}
+		// #nosec G304 -- system_prompt_file from static config, relative to the config dir; no runtime def can set it (overridability: notOverridable)
 		body, err := os.ReadFile(p)
 		if err != nil {
 			return fmt.Errorf("agent %q: read system_prompt_file %s: %w", name, p, err)

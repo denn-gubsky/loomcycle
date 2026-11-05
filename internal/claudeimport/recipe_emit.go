@@ -63,6 +63,7 @@ func WriteSkillCopies(report *ImportReport, force bool) ([]string, error) {
 		} else if err != nil && !os.IsNotExist(err) {
 			return written, fmt.Errorf("skill copy: stat %s: %w", s.DestinationPath, err)
 		}
+		// #nosec G301 -- a skill directory under the operator's --dest; skills are shareable markdown
 		if err := os.MkdirAll(parentDir(s.DestinationPath), 0o755); err != nil {
 			return written, fmt.Errorf("skill copy: mkdir for %s: %w", s.DestinationPath, err)
 		}
@@ -70,8 +71,9 @@ func WriteSkillCopies(report *ImportReport, force bool) ([]string, error) {
 		if err != nil {
 			return written, fmt.Errorf("skill copy: read %s: %w", s.SourcePath, err)
 		}
-		// #nosec G703 -- DestinationPath is the operator's --dest joined with a
-		// directory entry's name (no separators, dot-names skipped; skill.go).
+		// #nosec G703 G306 -- DestinationPath is the operator's --dest joined with a
+		// directory entry's name (no separators, dot-names skipped; skill.go); a
+		// skill is shareable markdown, copied readable like its source.
 		if err := os.WriteFile(s.DestinationPath, data, 0o644); err != nil {
 			return written, fmt.Errorf("skill copy: write %s: %w", s.DestinationPath, err)
 		}
@@ -131,6 +133,7 @@ func WriteAgentsToConfig(report *ImportReport, target string, force bool) ([]str
 
 	// Read target. Missing = create-fresh.
 	var source []byte
+	// #nosec G304 -- the operator's own target config, read before it is rewritten
 	if data, err := os.ReadFile(target); err == nil {
 		source = data
 	} else if !os.IsNotExist(err) {

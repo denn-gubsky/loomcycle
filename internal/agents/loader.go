@@ -399,6 +399,7 @@ func LoadSet(root string) (*Set, error) {
 			return nil, fmt.Errorf("invalid agent file name %q under %s", fileName, root)
 		}
 		path := filepath.Join(root, fileName)
+		// #nosec G304 -- an agent file found by listing the operator's agents directory; the name is checked above
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", path, err)

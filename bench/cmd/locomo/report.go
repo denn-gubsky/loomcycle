@@ -39,6 +39,7 @@ type Report struct {
 
 // Write persists report.json + matrix.md into dir.
 func (r Report) Write(dir string) error {
+	// #nosec G301 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -46,11 +47,13 @@ func (r Report) Write(dir string) error {
 	if err != nil {
 		return err
 	}
+	// #nosec G306 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	if err := os.WriteFile(filepath.Join(dir, "report.json"), append(b, '\n'), 0o644); err != nil {
 		return err
 	}
 	var md strings.Builder
 	r.Matrix(&md)
+	// #nosec G306 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	return os.WriteFile(filepath.Join(dir, "matrix.md"), []byte(md.String()), 0o644)
 }
 
@@ -216,6 +219,7 @@ func (r AnswerReport) Matrix(w io.Writer) {
 
 // Write persists the answer report.
 func (r AnswerReport) Write(dir string) error {
+	// #nosec G301 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -223,10 +227,12 @@ func (r AnswerReport) Write(dir string) error {
 	if err != nil {
 		return err
 	}
+	// #nosec G306 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	if err := os.WriteFile(filepath.Join(dir, "answer-report.json"), append(b, '\n'), 0o644); err != nil {
 		return err
 	}
 	var md strings.Builder
 	r.Matrix(&md)
+	// #nosec G306 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	return os.WriteFile(filepath.Join(dir, "answer-matrix.md"), []byte(md.String()), 0o644)
 }

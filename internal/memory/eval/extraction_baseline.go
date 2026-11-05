@@ -109,6 +109,7 @@ const DefaultRecallTolerance = 0.15
 // run against a new model legitimately has nothing to compare to, and forcing the
 // operator to create an empty file first would just be friction.
 func LoadBaseline(path string) (Baseline, error) {
+	// #nosec G304 -- the baseline file the eval's caller names
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return Baseline{RecallTolerance: DefaultRecallTolerance}, nil
@@ -308,5 +309,6 @@ func SaveBaselineEntry(path string, r Measured) error {
 	if err != nil {
 		return err
 	}
+	// #nosec G306 -- a baseline is a checked-in fixture, readable like the rest of the tree
 	return os.WriteFile(path, append(out, '\n'), 0o644)
 }

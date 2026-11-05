@@ -257,6 +257,7 @@ func goldAnswer(raw json.RawMessage) string {
 
 // Load reads locomo10.json and converts it, keeping only the named categories.
 func Load(path string, categories []int) ([]Conversation, *Defects, error) {
+	// #nosec G304 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read dataset: %w", err)

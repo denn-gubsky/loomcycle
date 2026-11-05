@@ -254,6 +254,7 @@ func RunRestore(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "envelope file is required: `loomcycle restore <file.json>`")
 	}
 	path := rest[0]
+	// #nosec G304 -- a file named on the operator's command line
 	envelope, err := os.ReadFile(path)
 	if err != nil {
 		// "File not found" is a user error (typo'd path) → exit 2.

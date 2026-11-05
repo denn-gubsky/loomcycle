@@ -88,6 +88,7 @@ func main() {
 }
 
 func appendJSONL(path string, rs []RunResult) error {
+	// #nosec G302 G304 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err

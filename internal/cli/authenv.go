@@ -32,6 +32,7 @@ const authEnvFileName = "auth.env"
 // skipped, never fatal, so a hand-edited file can't wedge startup.
 func LoadAuthEnv(configPath string) (path string, n int, err error) {
 	path = filepath.Join(filepath.Dir(configPath), authEnvFileName)
+	// #nosec G304 -- a fixed file name next to the operator's config file
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {

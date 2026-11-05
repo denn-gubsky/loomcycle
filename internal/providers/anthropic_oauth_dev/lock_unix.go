@@ -18,6 +18,7 @@ import (
 // The fd is kept open inside the returned release closure — closing it earlier
 // would drop the lock.
 func acquireFileLock(lockPath string) (func(), error) {
+	// #nosec G304 -- a lock file in the dev token directory, created owner-only
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)

@@ -294,6 +294,7 @@ func main() {
 		return
 	}
 
+	// #nosec G301 -- a load-test tool run by a developer; the path is its own flag or results directory
 	if err := os.MkdirAll(f.resultsDir, 0755); err != nil {
 		fatal("mkdir results: %v", err)
 	}
@@ -340,6 +341,7 @@ func main() {
 func loadPrompts(path string) []string {
 	var raw string
 	if path != "" {
+		// #nosec G304 -- a load-test tool run by a developer; the path is its own flag or results directory
 		b, err := os.ReadFile(path)
 		if err != nil {
 			fatal("read prompts: %v", err)
@@ -714,6 +716,7 @@ func discoverCircuitUsers(c *lcClient) []string {
 // ─── Output ─────────────────────────────────────────────────────────
 
 func writeResults(dir string, results []circuitResult) {
+	// #nosec G304 -- a load-test tool run by a developer; the path is its own flag or results directory
 	jsonl, err := os.Create(filepath.Join(dir, "circuits.jsonl"))
 	if err != nil {
 		fatal("create circuits.jsonl: %v", err)
