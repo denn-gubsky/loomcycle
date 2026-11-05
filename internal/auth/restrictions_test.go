@@ -201,3 +201,53 @@ func TestRestrictions_Rate(t *testing.T) {
 		t.Error("a rate with an unknown key was read without error")
 	}
 }
+
+// RFC GA: surfaces are granted only beside agents, only from the known set,
+// once each; a confined credential reaches exactly the surfaces it holds and
+// an unconfined one reaches every surface.
+func TestRestrictions_SurfacesNeedAgentsAndAKnownName(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		r    Restrictions
+		ok   bool
+	}{
+		{"both, beside agents", Restrictions{Agents: []string{"chat"}, Surfaces: []string{SurfaceSpeech, SurfaceTranscription}}, true},
+		{"without agents", Restrictions{Surfaces: []string{SurfaceSpeech}}, false},
+		{"unknown", Restrictions{Agents: []string{"chat"}, Surfaces: []string{"chat"}}, false},
+		{"twice", Restrictions{Agents: []string{"chat"}, Surfaces: []string{SurfaceSpeech, SurfaceSpeech}}, false},
+	} {
+		if err := c.r.Validate(len(c.r.Agents) > 0); (err == nil) != c.ok {
+			t.Errorf("%s: Validate = %v, want ok=%v", c.name, err, c.ok)
+		}
+	}
+	hear := Restrictions{Agents: []string{"chat"}, Surfaces: []string{SurfaceTranscription}}
+	if !hear.SurfaceAllowed(SurfaceTranscription) || hear.SurfaceAllowed(SurfaceSpeech) {
+		t.Error("a confined credential reaches a surface other than the ones it holds")
+	}
+	if (Restrictions{Agents: []string{"chat"}}).SurfaceAllowed(SurfaceSpeech) {
+		t.Error("a confined credential with no grant reaches a surface")
+	}
+	if !(Restrictions{}).SurfaceAllowed(SurfaceSpeech) {
+		t.Error("an unconfined credential is kept off a surface")
+	}
+	if (Restrictions{Surfaces: []string{SurfaceSpeech}}).IsZero() {
+		t.Error("a record carrying surfaces reads as zero")
+	}
+}
+
+// A stored record round-trips its surfaces, and one naming a surface this
+// build does not know is refused, never read as having no grant.
+func TestRestrictions_StoredSurfacesFailClosed(t *testing.T) {
+	in := Restrictions{Agents: []string{"chat"}, Surfaces: []string{SurfaceSpeech}}
+	s, err := MarshalRestrictions(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := ParseRestrictions(s)
+	if err != nil || len(back.Surfaces) != 1 || back.Surfaces[0] != SurfaceSpeech {
+		t.Errorf("round trip of %s = %+v (err %v)", s, back, err)
+	}
+	if r, err := ParseRestrictions(`{"agents":["chat"],"surfaces":["teleport"]}`); err == nil {
+		t.Errorf("an unknown surface read as %+v with no error", r)
+	}
+}

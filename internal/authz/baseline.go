@@ -225,6 +225,53 @@ func Baselines() map[string]ACL {
 	}
 }
 
+// RunPlaneGranting is the run-plane list for a token that was granted
+// off-run surfaces beside its agents (auth.Restrictions.Surfaces, RFC GA):
+// the same denies, except that `use` is denied on every gateway kind but the
+// granted ones, rather than on gateway:*. A surface is named as its gateway
+// kind (speech, transcription). With none granted it is the list as built,
+// so a confined token without a grant compiles exactly as before; a gateway
+// kind added later is denied to a granted token too, because the kinds are
+// read from the catalog here.
+func RunPlaneGranting(surfaces []string) ACL {
+	acl := Baselines()[BaselineRunPlane]
+	if len(surfaces) == 0 {
+		return acl
+	}
+	granted := make(map[string]bool, len(surfaces))
+	for _, s := range surfaces {
+		granted[s] = true
+	}
+	var denied []string
+	for _, k := range gatewayKinds {
+		if !granted[k] {
+			denied = append(denied, "gateway:"+k)
+		}
+	}
+	rules := make([]Rule, 0, len(acl.Rules))
+	for _, r := range acl.Rules {
+		if len(r.Resources) == 1 && r.Resources[0] == "gateway:*" {
+			if len(denied) == 0 {
+				continue
+			}
+			r.Resources = denied
+		}
+		rules = append(rules, r)
+	}
+	acl.Rules = rules
+	return acl
+}
+
+// IsGatewayKind reports whether kind is one the catalog's gateway type names.
+func IsGatewayKind(kind string) bool {
+	for _, k := range gatewayKinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
+
 // IsBuiltin reports whether name is a baseline list's.
 func IsBuiltin(name string) bool {
 	return len(name) > len(BuiltinPrefix) && name[:len(BuiltinPrefix)] == BuiltinPrefix

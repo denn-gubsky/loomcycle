@@ -445,6 +445,7 @@ func gateTokenRequest(e *config.AuthExternalGate, req *external.TokenRequest) (a
 	if req.Agents != nil {
 		want.Agents = append([]string(nil), req.Agents...)
 	}
+	want.Surfaces = append([]string(nil), req.Surfaces...)
 	if req.Overrides != nil {
 		want.Overrides = &auth.OverridePolicy{Allow: append([]string(nil), req.Overrides...)}
 	}

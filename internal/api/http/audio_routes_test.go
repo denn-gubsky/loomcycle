@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -539,6 +541,132 @@ func TestAudioRoutes_GatedAsAChatUsersCall(t *testing.T) {
 	srv.cfg().Speech.Engine = config.SpeechEngineOff
 	if got := navSurfacesOf(t, url, "tok-nav-iso"); got["speech"] {
 		t.Error("speech engine off, but the isolated user's speech surface is true")
+	}
+}
+
+// bearerUpload posts a transcription form as bearer.
+func bearerUpload(t *testing.T, ts *httptest.Server, bearer string, file []byte) (int, string) {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	h := textproto.MIMEHeader{}
+	h.Set("Content-Disposition", `form-data; name="file"; filename="note.wav"`)
+	h.Set("Content-Type", "audio/wav")
+	part, _ := mw.CreatePart(h)
+	_, _ = part.Write(file)
+	_ = mw.Close()
+	req, err := http.NewRequest("POST", ts.URL+"/v1/audio/transcriptions", &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(out)
+}
+
+// RFC GA: a token limited to an agent (a chat bridge's user token) reaches an
+// audio route only when it was granted that route's surface, and the grant
+// opens nothing else: not the other direction, not the decision call, not
+// the model gateway. /v1/_me and /v1/_speech say the same as the routes, and
+// the ACL still applies to a granted token.
+func TestAudioRoutes_AgentLimitedTokenReachesOnlyItsGrantedSurfaces(t *testing.T) {
+	srv, url, st, _ := navFixture(t, authz.ModeCompat)
+	withAudio(srv.cfg())
+	srv.SetSTT(&builtin.FileSTT{Config: srv.cfg().Transcription.Resolved(), Engine: &hearingEngine{}, Ledger: transcriptionLedger{s: srv}})
+	ts := httptestServerAt(url)
+	member := []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}
+	const voiceBearer, hearBearer = "tok-bridge-voice", "tok-bridge-hear"
+	for _, tok := range []struct{ id, bearer, restrictions string }{
+		{"def_bridge_voice", voiceBearer, `{"agents":["allowed"],"surfaces":["speech","transcription"]}`},
+		{"def_bridge_hear", hearBearer, `{"agents":["allowed"],"surfaces":["transcription"]}`},
+	} {
+		if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
+			DefID: tok.id, Name: "u-" + tok.id, TenantID: "acme", Subject: "dev",
+			TokenHash: auth.HashToken(testTokenPepper, tok.bearer), AllowedScopes: member,
+			RestrictionsJSON: tok.restrictions,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wav := pcmWAV(16000, time.Second)
+	info := func(bearer string) speechInfo {
+		t.Helper()
+		code, body := bearerCall(t, ts, bearer, "GET", "/v1/_speech", "")
+		var out speechInfo
+		if code != 200 || json.Unmarshal([]byte(body), &out) != nil {
+			t.Fatalf("GET /v1/_speech as %s: %d %s", bearer, code, body)
+		}
+		return out
+	}
+
+	// Both surfaces granted: both routes, both flags, both directions.
+	if got := navSurfacesOf(t, url, voiceBearer); !got["speech"] || !got["transcription"] {
+		t.Errorf("granted both: speech=%v transcription=%v, want both true", got["speech"], got["transcription"])
+	}
+	// This fixture has no speaking provider, so past the gates is a 502 from
+	// the engine; any 401 or 403 is the gates refusing.
+	if code, body := bearerCall(t, ts, voiceBearer, "POST", "/v1/audio/speech", `{"input":"Hello."}`); code == 401 || code == 403 {
+		t.Errorf("granted speech, read-aloud refused at the gate: %d %s", code, body)
+	}
+	if code, body := bearerUpload(t, ts, voiceBearer, wav); code != 200 {
+		t.Errorf("granted transcription, upload: %d %s", code, body)
+	}
+	if got := info(voiceBearer); !got.Speech.Enabled || !got.Transcription.Enabled {
+		t.Errorf("granted both, info: speech=%v transcription=%v", got.Speech.Enabled, got.Transcription.Enabled)
+	}
+
+	// Transcription only: the other direction stays shut, everywhere.
+	if got := navSurfacesOf(t, url, hearBearer); got["speech"] || !got["transcription"] {
+		t.Errorf("granted transcription: speech=%v transcription=%v", got["speech"], got["transcription"])
+	}
+	if code, body := bearerCall(t, ts, hearBearer, "POST", "/v1/audio/speech", `{"input":"Hello."}`); code != 403 || !strings.Contains(body, "restricted_token") {
+		t.Errorf("not granted speech, read-aloud: %d %s", code, body)
+	}
+	if code, body := bearerUpload(t, ts, hearBearer, wav); code != 200 {
+		t.Errorf("granted transcription, upload: %d %s", code, body)
+	}
+	if got := info(hearBearer); got.Speech.Enabled || !got.Transcription.Enabled {
+		t.Errorf("granted transcription, info: speech=%v transcription=%v", got.Speech.Enabled, got.Transcription.Enabled)
+	}
+
+	// No grant: as before, every audio route is refused, the info route too.
+	for _, c := range []struct{ method, path, body string }{
+		{"POST", "/v1/audio/speech", `{"input":"Hello."}`},
+		{"GET", "/v1/_speech", ""},
+	} {
+		if code, body := bearerCall(t, ts, restrictedBearer, c.method, c.path, c.body); code != 403 || !strings.Contains(body, "restricted_token") {
+			t.Errorf("no grant, %s %s: %d %s", c.method, c.path, code, body)
+		}
+	}
+	if code, body := bearerUpload(t, ts, restrictedBearer, wav); code != 403 || !strings.Contains(body, "restricted_token") {
+		t.Errorf("no grant, upload: %d %s", code, body)
+	}
+
+	// The grant opens nothing beyond the audio routes.
+	for _, c := range []struct{ method, path, body string }{
+		{"POST", "/v1/_decide", `{"text":"x","questions":[{"id":"q","kind":"yes_no","text":"?"}]}`},
+		{"POST", "/v1/chat/completions", `{"model":"stub-model","messages":[{"role":"user","content":"hi"}]}`},
+		{"GET", "/v1/_usage", ""},
+	} {
+		if code, body := bearerCall(t, ts, voiceBearer, c.method, c.path, c.body); code != 403 || !strings.Contains(body, "restricted_token") {
+			t.Errorf("granted voice, %s %s: %d %s, want 403 restricted_token", c.method, c.path, code, body)
+		}
+	}
+
+	// The ACL still governs a granted token.
+	putACL(t, st, "no-voice", `[{"effect":"deny","actions":["use"],"resources":["gateway:speech"]}]`)
+	bind(t, st, "no-voice", "user", "dev")
+	if code, body := bearerCall(t, ts, voiceBearer, "POST", "/v1/audio/speech", `{"input":"Hello."}`); code != 403 || strings.Contains(body, "restricted_token") {
+		t.Errorf("granted speech under an ACL deny: %d %s, want 403 from the ACL", code, body)
+	}
+	if got := navSurfacesOf(t, url, voiceBearer); got["speech"] {
+		t.Error("granted speech under an ACL deny, but the surface is true")
 	}
 }
 

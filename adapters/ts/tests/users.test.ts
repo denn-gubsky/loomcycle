@@ -152,6 +152,7 @@ describe("mintUserToken", () => {
       name: "laptop-1",
       maxActive: 2,
       agents: ["score"],
+      surfaces: ["speech", "transcription"],
       overrides: "none",
       rate: { perMinute: 6, burst: 20 },
     });
@@ -164,6 +165,7 @@ describe("mintUserToken", () => {
       name: "laptop-1",
       max_active: 2,
       agents: ["score"],
+      surfaces: ["speech", "transcription"],
       overrides: "none",
       rate: { per_minute: 6, burst: 20 },
     });

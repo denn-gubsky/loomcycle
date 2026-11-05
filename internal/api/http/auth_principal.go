@@ -85,7 +85,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		// After the scope check, and independent of it: a credential limited
 		// to certain agents is held to the run plane however wide its scopes.
-		if p.Restrictions.RunPlaneOnly() && !runPlaneRoute(r.Method, r.URL.Path) {
+		if confinedOffRoute(p, r.Method, r.URL.Path) {
 			writeJSONError(w, http.StatusForbidden, "restricted_token",
 				"this token is limited to starting and following runs of its allowed agents")
 			return
@@ -181,7 +181,7 @@ func RouteAdmits(p auth.Principal, method, path string) bool {
 	if _, admitted := scopeGate(p, method, path); !admitted {
 		return false
 	}
-	return !p.Restrictions.RunPlaneOnly() || runPlaneRoute(method, path)
+	return !confinedOffRoute(p, method, path)
 }
 
 // admitPrincipalAgent refuses a top-level run of an agent the caller's token
@@ -218,12 +218,18 @@ func (s *Server) admitPrincipalAgent(ctx context.Context, agent string) error {
 //
 // A call made from inside a run is not refused: that is the allowed agent
 // using a tool its definition gives it, which the allowlist does not govern.
-func (s *Server) refuseAgentlessCall(ctx context.Context, what string) error {
+//
+// surface, when not "", is the grantable surface the call belongs to: a
+// credential granted it is not refused (auth.Restrictions.Surfaces).
+func (s *Server) refuseAgentlessCall(ctx context.Context, what, surface string) error {
 	if tools.RunID(ctx) != "" {
 		return nil
 	}
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !ok || !p.Restrictions.RunPlaneOnly() {
+		return nil
+	}
+	if surface != "" && p.Restrictions.SurfaceAllowed(surface) {
 		return nil
 	}
 	return fmt.Errorf("%w: %s", runner.ErrAgentNotAllowed, what)
@@ -242,6 +248,38 @@ func writeAgentNotAllowed(w http.ResponseWriter, err error) {
 // isGatewayRoute reports whether path is one of the raw model endpoints.
 func isGatewayRoute(path string) bool {
 	return path == "/v1/_llm/chat" || path == "/v1/chat/completions" || path == "/v1/embeddings"
+}
+
+// confinedOffRoute reports whether p's run-plane confinement keeps it off the
+// route: p is limited to certain agents, the route is not on the run plane,
+// and it is not an off-run surface p was granted (auth.Restrictions.Surfaces).
+// Every HTTP check of the confinement asks this, so the gate, the parity
+// helper and the whoami summary cannot disagree about a granted surface.
+func confinedOffRoute(p auth.Principal, method, path string) bool {
+	if !p.Restrictions.RunPlaneOnly() || runPlaneRoute(method, path) {
+		return false
+	}
+	for _, surface := range offRunSurfacesOf(method, path) {
+		if p.Restrictions.SurfaceAllowed(surface) {
+			return false
+		}
+	}
+	return true
+}
+
+// offRunSurfacesOf names the grantable surfaces a route belongs to (RFC GA).
+// The info route serves either direction, so either grant reaches it; the
+// handler then shows only the directions the caller may use.
+func offRunSurfacesOf(method, path string) []string {
+	switch {
+	case method == http.MethodPost && path == audioSpeechPath:
+		return []string{auth.SurfaceSpeech}
+	case method == http.MethodPost && path == audioTranscriptionsPath:
+		return []string{auth.SurfaceTranscription}
+	case method == http.MethodGet && path == speechInfoPath:
+		return []string{auth.SurfaceSpeech, auth.SurfaceTranscription}
+	}
+	return nil
 }
 
 // runPlaneRoute reports whether a route belongs to the run plane: starting,
@@ -1532,7 +1570,7 @@ func requiredScopeFor(method, path string) string {
 	// them. The ACL asks `use gateway:speech` / `use gateway:transcription`
 	// (authz.HTTPSurface), and none is on the run plane, so a token limited to
 	// certain agents is refused.
-	case path == audioSpeechPath || path == audioTranscriptionsPath || path == "/v1/_speech":
+	case path == audioSpeechPath || path == audioTranscriptionsPath || path == speechInfoPath:
 		return auth.ScopeRunsCreate
 	// Everything else under /v1/_* is OPERATOR-admin: token minting
 	// (_operatortokendef), runtime admin (pause/resume/state/snapshots/metrics),
