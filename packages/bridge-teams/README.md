@@ -62,7 +62,7 @@ Configuration is by environment:
 |---|---|---|
 | `CLIENT_ID`, `CLIENT_SECRET`, `TENANT_ID` | The bot's Entra app | required |
 | `PORT` | Listen port | `3978` |
-| `LOOMCYCLE_BASE_URL` | loomcycle's URL: `https://`, or `http://` to localhost; over a private network set `BRIDGE_ALLOW_INSECURE_LOOMCYCLE=1` | required |
+| `LOOMCYCLE_BASE_URL` | loomcycle's URL. From `@loomcycle/bridge-core` 0.4.0: `https://`, or `http://` to localhost; over a private network set `BRIDGE_ALLOW_INSECURE_LOOMCYCLE=1` | required |
 | `LOOMCYCLE_TOKEN` | The bridge's `substrate:tenant` token | required, unless the bridge is a gate (below) |
 | `BRIDGE_AGENT` | The loomcycle agent every conversation runs | required |
 | `TEAMS_BRIDGE_ALLOWED_TENANTS` | Comma list of Entra tenant ids allowed to use the bot | required |
@@ -71,7 +71,7 @@ Configuration is by environment:
 | `BRIDGE_USER_ACCESS_MODE` | `isolated` (a user sees only their own data) or `tenant` | `isolated` |
 | `BRIDGE_IDLE_MINUTES` | End a conversation's run after this long without a message; the next message continues it | `1440` |
 | `BRIDGE_STORE` | `memory`, or `file:<path>` to survive restarts on one instance | `memory` |
-| `BRIDGE_DEV` | `1` accepts unauthenticated requests, for local testing only, on your own machine: refused on a gate. The Teams SDK listens on every interface, so keep the port closed to the network | unset |
+| `BRIDGE_DEV` | `1` accepts unauthenticated requests, for local testing only: the listener then binds 127.0.0.1 only. From `@loomcycle/bridge-core` 0.4.0 it is refused on a gate | unset |
 
 With `BRIDGE_STORE=memory`, a restart forgets which loomcycle session each Teams conversation was in, and the next message starts a fresh one. Use `file:<path>` (one instance) or your own `ConversationStore` (several).
 

@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import http from "node:http";
 import net from "node:net";
 
@@ -9,6 +10,7 @@ import { createTeamsBridge, type ConversationRef, type TeamsBridge } from "../sr
 import { parseCardAction, renderCard } from "../src/cards.js";
 import { loadConfig } from "../src/config.js";
 import { conversationSubject, identify, NOT_AVAILABLE_TEXT, type ActivityIdentityFields } from "../src/identity.js";
+import { BOT_ID, FakeBotFramework } from "./botframework.js";
 import { FakeGate, FakeLoomcycle, FakeTeams, httpError, RecordingLogger, settle, silentLogger, waitFor, type StartedRun } from "./fakes.js";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
@@ -371,8 +373,9 @@ function freePort(): Promise<number> {
   });
 }
 
-// The whole bridge as a loomcycle gate (RFC FA §3.7d): the Teams SDK app in
-// its local (unauthenticated) mode, activities POSTed to /api/messages, a
+// The whole bridge as a loomcycle gate (RFC FA §3.7d): the Teams SDK app with
+// request authentication on (a gate refuses dev mode), activities POSTed to
+// /api/messages with a Bot Framework token from a fake token service, a
 // recording Bot Connector for replies, and a fake loomcycle gate surface.
 describe("teams bridge as a loomcycle gate", () => {
   const OTHER_TENANT = "22222222-2222-2222-2222-222222222222";
@@ -384,10 +387,13 @@ describe("teams bridge as a loomcycle gate", () => {
   let bridge: TeamsBridge | undefined;
   let port: number;
   let seq = 0;
+  let bf: FakeBotFramework;
 
   beforeEach(async () => {
     lc = new FakeLoomcycle();
     gate = new FakeGate();
+    bf = new FakeBotFramework();
+    await bf.start();
     connector = http.createServer((req, res) => {
       req.resume();
       req.on("end", () => {
@@ -404,6 +410,7 @@ describe("teams bridge as a loomcycle gate", () => {
     await bridge?.stop();
     bridge = undefined;
     await new Promise((r) => connector.close(r));
+    await bf.stop();
   });
 
   async function start(opts: { asGate?: boolean; logger?: Logger } = {}) {
@@ -416,10 +423,11 @@ describe("teams bridge as a loomcycle gate", () => {
       ...auth,
       BRIDGE_AGENT: "helper",
       TEAMS_BRIDGE_ALLOWED_TENANTS: TENANT,
-      BRIDGE_DEV: "1",
+      CLIENT_ID: BOT_ID,
       PORT: String(port),
     });
     bridge = createTeamsBridge(cfg, {
+      app: { clientId: BOT_ID, token: bf.token, cloud: bf.cloud },
       clients: lc.client,
       gateFetch: gate.fetch,
       gateKey: keyFromSecret(SECRET),
@@ -430,10 +438,10 @@ describe("teams bridge as a loomcycle gate", () => {
     await bridge.start();
   }
 
-  const post = (activity: Record<string, unknown>) =>
+  const post = (activity: Record<string, unknown>, authorization: string | null = bf.authorization(connectorUrl)) =>
     fetch(`http://127.0.0.1:${port}/api/messages`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(authorization ? { Authorization: authorization } : {}) },
       body: JSON.stringify({
         channelId: "msteams",
         serviceUrl: connectorUrl,
@@ -447,7 +455,8 @@ describe("teams bridge as a loomcycle gate", () => {
       }),
     });
 
-  const uninstall = (over: Record<string, unknown> = {}) => post({ type: "installationUpdate", action: "remove", ...over });
+  const uninstall = (over: Record<string, unknown> = {}, authorization?: string | null) =>
+    post({ type: "installationUpdate", action: "remove", ...over }, authorization === undefined ? bf.authorization(connectorUrl) : authorization);
 
   /** message posts a message and lets the run it starts announce itself. */
   async function message(conversation: Record<string, unknown>, text = "hello") {
@@ -520,6 +529,25 @@ describe("teams bridge as a loomcycle gate", () => {
     gate.revokeStatus = 204;
     expect((await uninstall()).status).toBe(200);
     expect(gate.revokes).toHaveLength(2);
+  });
+
+  it("refuses an activity without a Bot Framework token, or with a forged one", async () => {
+    await start();
+    const { privateKey: stranger } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const forged = [
+      null,
+      bf.authorization(connectorUrl, {}, { key: stranger }),
+      bf.authorization(connectorUrl, { aud: "someone-else" }),
+      bf.authorization("https://elsewhere.example/"),
+    ];
+    for (const authorization of forged) {
+      expect((await post({ type: "message", text: "hi", conversation: { id: "a:personal", conversationType: "personal", tenantId: TENANT } }, authorization)).status).toBe(401);
+      expect((await uninstall({}, authorization)).status).toBe(401);
+    }
+    await settle();
+    expect(gate.asserts).toEqual([]);
+    expect(gate.revokes).toEqual([]);
+    expect(lc.runs).toEqual([]);
   });
 
   it("with a loomcycle token, ignores an uninstall as it always has", async () => {
