@@ -157,7 +157,7 @@ describe("identity as a loomcycle gate", () => {
 
 describe("config", () => {
   const base = {
-    LOOMCYCLE_BASE_URL: "http://loomcycle:8787/",
+    LOOMCYCLE_BASE_URL: "https://loomcycle:8787/",
     LOOMCYCLE_TOKEN: "t",
     BRIDGE_AGENT: "helper",
     TEAMS_BRIDGE_ALLOWED_TENANTS: `${T.toUpperCase()}, `,
@@ -166,7 +166,7 @@ describe("config", () => {
 
   it("reads defaults and normalises tenants", () => {
     const cfg = loadConfig(base);
-    expect(cfg.shared.loomcycleBaseUrl).toBe("http://loomcycle:8787");
+    expect(cfg.shared.loomcycleBaseUrl).toBe("https://loomcycle:8787");
     expect([...cfg.allowedTenants]).toEqual([T]);
     expect(cfg.shared).toMatchObject({ tokenTtlSeconds: 43200, userAccessMode: "isolated", idleMinutes: 1440, store: "memory", dev: false, port: 3978 });
   });

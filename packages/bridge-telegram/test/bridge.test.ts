@@ -41,7 +41,7 @@ describe("telegram bridge", () => {
     const port = await freePort();
     base = `http://127.0.0.1:${port}`;
     const cfg = loadConfig({
-      LOOMCYCLE_BASE_URL: "http://loomcycle.test",
+      LOOMCYCLE_BASE_URL: "https://loomcycle.test",
       BRIDGE_GATE: "telegram",
       BRIDGE_GATE_AUDIENCE: "https://lc.example",
       BRIDGE_GATE_SECRET: "s".repeat(40),

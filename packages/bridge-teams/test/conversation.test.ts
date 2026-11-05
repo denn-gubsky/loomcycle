@@ -412,7 +412,7 @@ describe("teams bridge as a loomcycle gate", () => {
       ? { LOOMCYCLE_TOKEN: ADMIN_TOKEN }
       : { BRIDGE_GATE: "teams", BRIDGE_GATE_AUDIENCE: "https://lc.example", BRIDGE_GATE_SECRET: SECRET };
     const cfg = loadConfig({
-      LOOMCYCLE_BASE_URL: "http://loomcycle.test",
+      LOOMCYCLE_BASE_URL: "https://loomcycle.test",
       ...auth,
       BRIDGE_AGENT: "helper",
       TEAMS_BRIDGE_ALLOWED_TENANTS: TENANT,
