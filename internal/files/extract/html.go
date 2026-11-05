@@ -182,9 +182,10 @@ func (h *htmlState) list(n *html.Node, ordered bool, level int) string {
 }
 
 // table renders a <table>'s rows (from thead, tbody and tfoot alike) as a
-// GFM table, the first row as its header.
+// GFM table, the first row as its header, held to the tableRows caps.
 func (h *htmlState) table(t *html.Node) string {
-	var rows [][]string
+	var rows tableRows
+	defer func() { h.w.tableCut, h.w.tableWide = h.w.tableCut || rows.full, h.w.tableWide || rows.wide }()
 	var walk func(*html.Node, int)
 	walk = func(n *html.Node, depth int) {
 		if depth > 8 {
@@ -197,22 +198,24 @@ func (h *htmlState) table(t *html.Node) string {
 			switch c.Data {
 			case "tr":
 				var row []string
-				for td := c.FirstChild; td != nil; td = td.NextSibling {
+				for td := c.FirstChild; td != nil && len(row) <= maxSheetColumns; td = td.NextSibling {
 					if td.Type == html.ElementNode && (td.Data == "td" || td.Data == "th") {
 						row = append(row, cell(collapseSpace(textOf(td))))
 					}
 				}
-				rows = append(rows, row)
+				if !rows.add(row) {
+					return
+				}
 			case "thead", "tbody", "tfoot":
 				walk(c, depth+1)
 			}
 		}
 	}
 	walk(t, 0)
-	if len(rows) == 0 {
+	if len(rows.rows) == 0 {
 		return ""
 	}
-	return table(rows)
+	return table(rows.rows)
 }
 
 // imgLink writes an image as a link to its source; a data: URL is not

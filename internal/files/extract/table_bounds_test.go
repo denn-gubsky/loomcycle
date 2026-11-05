@@ -266,3 +266,16 @@ func (s *cancelSink) Text(string) error {
 	return nil
 }
 func (s *cancelSink) Image(Image) (string, error) { return "", nil }
+
+// TestExtractHTML_TablePaddingIsBounded: one row of 5,000 cells, then 1,000
+// empty rows, each padded to the widest: 20 MB of Markdown from 30 KB of page.
+func TestExtractHTML_TablePaddingIsBounded(t *testing.T) {
+	page := "<html><body><table><tr>" + strings.Repeat("<td>x", 5000) + strings.Repeat("<tr>", 1000) + "</table></body></html>"
+	s, rep := run(t, HTML{}, []byte(page), Options{Name: "p.html"})
+	if n := s.md.Len(); n > 1<<20 {
+		t.Errorf("wrote %d bytes for a table of 5,000 one-letter cells", n)
+	}
+	if !hasNote(rep, fmt.Sprintf("wider than %d columns", maxSheetColumns)) {
+		t.Errorf("notes = %v", rep.Notes)
+	}
+}
