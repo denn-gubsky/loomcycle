@@ -637,3 +637,35 @@ func TestUserLifecycle_AnOperatorPatternLockKeepsAListThroughRemoval(t *testing.
 		t.Error("victim's corp-deny binding is gone after the dormant removal's unbind; want it kept by the corp-* lock")
 	}
 }
+
+// An identity provider's group sync takes a user out of the gate's groups
+// with no operator behind it; the user may sway the provider. It keeps a
+// membership whose group carries only deny lists, one of them locked, as
+// the removal policy does, and still drops the rest.
+func TestAuthGateSync_KeepsAMembershipWhoseDenyListIsLocked(t *testing.T) {
+	srv, _, st := lockedFixture(t)
+	ctx := context.Background()
+	gate := config.AuthGate{Name: "okta", Identity: &config.AuthIdentityMap{SyncGroups: true, Trusted: true}}
+	for _, g := range []store.GroupRow{
+		{TenantID: "acme", Name: "bound", ExternalID: "okta:bound"},
+		{TenantID: "acme", Name: "idp-plain", ExternalID: "okta:plain"},
+	} {
+		if _, err := st.GroupPut(ctx, g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.GroupMemberAdd(ctx, store.GroupMemberRow{TenantID: "acme", GroupName: "idp-plain", MemberKind: store.GroupMemberUser, MemberID: "delegate"}); err != nil {
+		t.Fatal(err)
+	}
+	_, removed, err := srv.syncGroups(ctx, gate, "acme", "delegate", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := st.GroupsOfSubject(ctx, "acme", "delegate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(groups, ",") != "bound" || strings.Join(removed, ",") != "idp-plain" {
+		t.Errorf("delegate's groups after a sync asserting none: %v (removed %v), want bound kept and idp-plain removed", groups, removed)
+	}
+}

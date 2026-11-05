@@ -343,8 +343,25 @@ func (s *Server) syncGroupsWith(ctx context.Context, g config.AuthGate, tenant, 
 		}
 	}
 	// Removals first: a failure part-way leaves the user with less than the
-	// provider says, never more.
+	// provider says, never more. No operator stands behind a removal and the
+	// user may sway the provider, so a membership whose group carries only
+	// deny lists, one of them locked, is kept as the removal policy keeps it
+	// (unattendedLocks).
+	var locks *unattendedLocks
+	if len(plan.Remove) > 0 {
+		if locks, err = s.unattendedLocks(ctx, tenant, subject); err != nil {
+			return added, removed, len(made) > 0, fmt.Errorf("access control: %w", err)
+		}
+	}
 	for _, name := range plan.Remove {
+		lists, err := s.aclGroupLists(ctx, tenant, name)
+		if err != nil {
+			return added, removed, len(made) > 0, err
+		}
+		if list, ok := locks.keeps(ctx, lists); ok {
+			s.recordLockKept(ctx, tenant, subject, "gate:"+g.Name, "membership of group "+name, list)
+			continue
+		}
 		ok, err := s.store.GroupMemberRemove(ctx, tenant, name, store.GroupMemberUser, subject)
 		if err != nil {
 			return added, removed, len(made) > 0, err
