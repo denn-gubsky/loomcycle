@@ -399,6 +399,7 @@ var mcpToolTwins = map[string]mcpToolTwin{
 	"interruption_resolve":   {"POST", "/v1/runs/r/interrupts/i/resolve"},
 	"file":                   {"GET", "/v1/runs/r/file"},
 	"retention_override":     {"GET", "/v1/_retention/overrides"},
+	"erasure":                {"POST", "/v1/_erasure"},
 	"ontology":               {"POST", "/v1/_ontology/subjects/merge"},
 	"review":                 {"GET", "/v1/_statements/review"},
 	"list_agents":            {"GET", "/v1/_runnable-agents"},
@@ -456,10 +457,6 @@ var mcpToolsWithoutTwin = map[string]string{
 	"authz":    "the access questions are ungoverned on every transport (POST /v1/_authz/*)",
 	"context":  "the caller's own identity and reach; no route",
 	"identity": "the directory questions ask read or manage principal per call",
-	// The HTTP route is carved out of the member path; this tool is not, and
-	// asking the route's question here would narrow members under enforce. Left
-	// as it is for the phase that settles erasure's reach.
-	"erasure": "its reach for members differs from the route's; settled with erasure (RFC FY Part F)",
 }
 
 func principalMayCallTool(ctx context.Context, toolName string) bool {
