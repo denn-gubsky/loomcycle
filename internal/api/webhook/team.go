@@ -139,7 +139,7 @@ func (rec *Receiver) deliverTeam(ctx context.Context, w http.ResponseWriter, spa
 	// must not die with the sender's connection, and nothing on the request is
 	// the walk's authority — that is all in `in`. It names the webhook
 	// transport, as a spawned run's does.
-	runID, err := rec.teams.StartTeamWalk(deliveryRunCtx(), in)
+	runID, err := rec.teams.StartTeamWalk(deliveryRunCtx(ctx), in)
 	if err == nil {
 		rec.setHeldRun(name, held, runID)
 		rec.dedup.recordAccepted(dk)

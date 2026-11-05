@@ -438,7 +438,10 @@ func (s *Server) releaseStoppedOwnersSlot(run store.Run) {
 // below. Nothing it needs comes from the caller — the boot path, which passes
 // no values, is proof of that.
 func (s *Server) resumePausedRun(run store.Run) error {
-	ctx := context.Background()
+	// A resumed or crash-recovered run has no client by nature: the address of
+	// the request that started it is not recorded, so a source_cidr condition
+	// has nothing to match (RFC FY Part E). Its sub-runs inherit the mark.
+	ctx := authz.WithNoClient(context.Background())
 	if run.ID == "" || run.AgentID == "" || run.SessionID == "" {
 		return fmt.Errorf("missing id/agent_id/session_id")
 	}
@@ -646,9 +649,6 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	}
 
 	// What a condition reads about the run, as at its start (RFC FY Part E).
-	// The client address of the request that started it is not recorded, so
-	// a source_cidr condition is unknown here: a deny on it holds for the
-	// resumed run and an allow on it does not (authz fails it closed).
 	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: run.Agent, Depth: s.recordedSpawnDepth(ctx, run), Interactive: run.Interactive})
 
 	// Tools + dispatcher, narrowed by the caller's own allowed_hosts when the

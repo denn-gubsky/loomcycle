@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -161,6 +162,7 @@ type Receiver struct {
 	// unsigned external POSTs. Set from LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED.
 	allowUnauthenticated bool
 	logger               *slog.Logger
+	clientIP             func(*http.Request) net.IP
 
 	dedup   *dedupCache
 	limiter *rateLimiter
@@ -212,6 +214,10 @@ type Deps struct {
 	Credentials CredentialResolver
 	// AllowUnauthenticated enables auth.kind="none" webhooks. Default false.
 	AllowUnauthenticated bool
+	// ClientIP is a delivery's client address (the peer, or the client a
+	// trusted proxy names), stamped for an access-control source_cidr
+	// condition. Nil: the peer itself.
+	ClientIP func(*http.Request) net.IP
 	// Logger receives the receiver's log lines. Nil discards them.
 	Logger *slog.Logger
 	// Counts stores each definition's delivery counters (RFC EK §9). May be
@@ -258,6 +264,7 @@ func New(d Deps) *Receiver {
 		creds:                creds,
 		secrets:              secrets,
 		allowUnauthenticated: d.AllowUnauthenticated,
+		clientIP:             d.ClientIP,
 		logger:               logger,
 		dedup:                newDedupCache(now),
 		limiter:              newRateLimiter(now),
@@ -309,7 +316,7 @@ func webhookInert(wd config.Webhook) bool {
 // from the body — the body is fully attacker-controlled until the
 // signature verifies.
 func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx := rec.withClient(r)
 	name := r.PathValue("name")
 	// "" for the bare-root route (shared tenant); the named tenant for the
 	// /{tenant}/{name} route. RFC N.
@@ -682,7 +689,7 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 	userID := proj.Fields["user_id"]
 
 	if !wantSync {
-		rec.spawnAsync(w, span, name, whKey, did, dk, held, wd, in, userID)
+		rec.spawnAsync(ctx, w, span, name, whKey, did, dk, held, wd, in, userID)
 		return
 	}
 	rec.spawnSync(ctx, w, span, name, whKey, did, dk, held, wd, in, userID)
@@ -724,7 +731,7 @@ func (rec *Receiver) priorDeliveryRun(ctx context.Context, dk deliveryKeys, did 
 // the loop starts, so on the happy path it always precedes any meaningful
 // work — the 202 carries a real id. The select also guards a (rare) hung
 // setup with a timeout that surfaces 503 rather than hanging the request.
-func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, held *heldKeys, wd config.Webhook, in runner.RunInput, userID string) {
+func (rec *Receiver) spawnAsync(ctx context.Context, w http.ResponseWriter, span trace.Span, name, whKey, did string, dk deliveryKeys, held *heldKeys, wd config.Webhook, in runner.RunInput, userID string) {
 	registered := make(chan string, 1)
 	setupErr := make(chan error, 1)
 	var spawnedRunID, spawnedAgentID string
@@ -746,7 +753,7 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 		Admit: func(string) error { return linkErr },
 	}
 	go func() {
-		err := rec.runner.RunOnce(deliveryRunCtx(), in, cb)
+		err := rec.runner.RunOnce(deliveryRunCtx(ctx), in, cb)
 		if err != nil {
 			rec.logger.Warn("webhook: async run failed", "webhook", name, "run_id", spawnedRunID, "err", err)
 		}
@@ -852,9 +859,21 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 // deliveryRunCtx is the detached ctx a delivery's run starts on: a client
 // disconnect never aborts an accepted run. It names the surface the run
 // arrived on, for an access-control rule's `transport` condition evaluated
-// under the def owner's set (RFC EZ §1.5).
-func deliveryRunCtx() context.Context {
-	return authz.WithTransport(context.Background(), "webhook")
+// under the def owner's set (RFC EZ §1.5), and the delivery's client address
+// (stamped on src by withClient) for a `source_cidr` one (RFC FY Part E).
+func deliveryRunCtx(src context.Context) context.Context {
+	return authz.WithSourceIP(authz.WithTransport(context.Background(), "webhook"), authz.SourceIPFrom(src))
+}
+
+// withClient is r's ctx carrying the delivery's client address.
+func (rec *Receiver) withClient(r *http.Request) context.Context {
+	var ip net.IP
+	if rec.clientIP != nil {
+		ip = rec.clientIP(r)
+	} else if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		ip = net.ParseIP(host)
+	}
+	return authz.WithSourceIP(r.Context(), ip)
 }
 
 // spawnSetupErrorResponse maps a runner setup-time sentinel to the wire
@@ -929,7 +948,7 @@ func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span 
 		Admit: func(string) error { return linkErr },
 	}
 	go func() {
-		err := rec.runner.RunOnce(deliveryRunCtx(), in, cb)
+		err := rec.runner.RunOnce(deliveryRunCtx(ctx), in, cb)
 		if err != nil {
 			rec.logger.Warn("webhook: sync run failed", "webhook", name, "run_id", spawnedRunID, "err", err)
 		}

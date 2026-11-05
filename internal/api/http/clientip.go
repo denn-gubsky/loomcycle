@@ -117,6 +117,13 @@ func ProxyThrottleWarning(cfg *config.Config) string {
 		"behind a Cloudflare tunnel)"
 }
 
+// RequestClientIP is the client address of an HTTP request served outside
+// authMiddleware (an inbound webhook delivery, an A2A call), under the same
+// auth.trusted_proxies rule, for a source_cidr condition (RFC FY Part E).
+func (s *Server) RequestClientIP(r *http.Request) net.IP {
+	return net.ParseIP(s.clientSource(r))
+}
+
 // clientSource is sourceIP under the live config.
 func (s *Server) clientSource(r *http.Request) string {
 	return sourceIP(s.cfg().ResolvedAuth, r)

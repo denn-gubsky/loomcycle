@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
@@ -555,7 +556,9 @@ func (s *Server) queueAgain(ctx context.Context, rows []store.QueuedRun) (starte
 // compiled again now, for RunOnce to narrow the run by and to ask
 // `run agent:<agent>` against (runCallerACL, admitPrincipalAgent).
 func (s *Server) queuedRunCtx(q store.QueuedRun, agent string) (context.Context, error) {
-	ctx := context.Background()
+	// Its request is gone with the restart: no client address to match
+	// (RFC FY Part E).
+	ctx := authz.WithNoClient(context.Background())
 	var rec queuedRecord
 	if json.Unmarshal(q.Input, &rec) != nil || rec.ACLOrigin == nil {
 		return ctx, nil
