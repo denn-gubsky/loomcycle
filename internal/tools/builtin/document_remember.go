@@ -103,6 +103,9 @@ func (d *Document) rememberFact(ctx context.Context, key sqlmem.ScopeKey, mscope
 
 // entityDocumentID resolves (and on first use creates) the scope's entity document.
 func (d *Document) entityDocumentID(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, scope string) (string, error) {
+	// The runtime chooses this name, not the caller, so it may give the reserved
+	// /memory/entities in the tenant scope (RFC FY Part C) — and only this name.
+	ctx = context.WithValue(ctx, reservedProvisionKey{}, rememberedFactsPath)
 	ids, err := d.documentsUnderPath(ctx, key, rememberedFactsPath)
 	if err == nil && len(ids) > 0 {
 		return ids[0], nil

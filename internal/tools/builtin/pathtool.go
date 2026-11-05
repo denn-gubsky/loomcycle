@@ -442,7 +442,7 @@ func (p *Path) mkdir(ctx context.Context, tenantID, scope, scopeID string, in pa
 	// Materialize an empty directory dirent. ResourceRef is left nil (a
 	// directory backs no resource); the store coerces it to "{}" for backend
 	// parity.
-	if _, err := p.Store.DirentCreate(ctx, store.DirentRow{
+	if _, err := createDirent(ctx, p.Store, store.DirentRow{
 		TenantID: tenantID, Scope: scope, ScopeID: scopeID,
 		ParentPath: parent, Name: name, Kind: "directory",
 	}); err != nil {
@@ -492,7 +492,7 @@ func (p *Path) mv(ctx context.Context, tenantID, scope, scopeID string, in pathI
 	if _, err := p.Store.DirentGet(ctx, tenantID, scope, scopeID, toParent, toName); err == nil {
 		return errBusiness("destination already exists: "+toC, "Choose another destination, or remove it with op=rm first."), nil
 	}
-	moved, err := p.Store.DirentMove(ctx, tenantID, scope, scopeID, fromParent, fromName, toParent, toName)
+	moved, err := moveDirent(ctx, p.Store, tenantID, scope, scopeID, fromParent, fromName, toParent, toName)
 	if err != nil {
 		return errFrom("mv: "+err.Error(), err), nil
 	}
@@ -536,13 +536,13 @@ func (p *Path) rm(ctx context.Context, tenantID, scope, scopeID string, in pathI
 	}
 	removed := 0
 	if in.Recursive && len(descendants) > 0 {
-		n, derr := p.Store.DirentDeleteUnder(ctx, tenantID, scope, scopeID, prefix)
+		n, derr := deleteDirentsUnder(ctx, p.Store, tenantID, scope, scopeID, prefix)
 		if derr != nil {
 			return errFrom("rm: "+derr.Error(), derr), nil
 		}
 		removed += n
 	}
-	found, err := p.Store.DirentDelete(ctx, tenantID, scope, scopeID, parent, name)
+	found, err := deleteDirent(ctx, p.Store, tenantID, scope, scopeID, parent, name)
 	if err != nil {
 		return errFrom("rm: "+err.Error(), err), nil
 	}

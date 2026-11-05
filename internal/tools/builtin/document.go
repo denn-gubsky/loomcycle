@@ -2390,10 +2390,14 @@ func (d *Document) registerDocDirent(ctx context.Context, key sqlmem.ScopeKey, d
 		return "", docClassify(fmt.Errorf("path may not be the root"), errValidation, docPathFix)
 	}
 	ref, _ := json.Marshal(map[string]any{"document_id": docID})
-	if _, err := d.Store.DirentCreate(ctx, store.DirentRow{
+	if _, err := createDirent(ctx, d.Store, store.DirentRow{
 		TenantID: direntTenant(ctx), Scope: key.Scope, ScopeID: direntScopeID(key),
 		ParentPath: parent, Name: name, Kind: "document", ResourceRef: ref,
 	}); err != nil {
+		var rn *reservedNameError
+		if errors.As(err, &rn) {
+			return "", docClassify(err, errPermission, "Use another path.")
+		}
 		return "", err
 	}
 	return canonical, nil
@@ -2868,7 +2872,7 @@ func (d *Document) removeDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 			}
 			_ = json.Unmarshal(r.ResourceRef, &ref)
 			if ref.DocumentID == docID {
-				_, _ = d.Store.DirentDelete(ctx, direntTenant(ctx), key.Scope, direntScopeID(key), r.ParentPath, r.Name)
+				_, _ = deleteDirent(ctx, d.Store, direntTenant(ctx), key.Scope, direntScopeID(key), r.ParentPath, r.Name)
 			}
 		}
 	}

@@ -1391,8 +1391,14 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	}
 	// Fail fast on a malformed path before writing the value (RFC AL).
 	if in.Path != "" {
-		if _, err := normalizePath(in.Path); err != nil {
+		canonical, err := normalizePath(in.Path)
+		if err != nil {
 			return errValidation("set: "+err.Error(), "Pass an absolute path of letters, digits and . _ - segments, such as /notes/plan."), nil
+		}
+		// A reserved tenant name is the operator's to give (RFC FY Part C). Refused
+		// here, before the value is written, rather than only at the dirent write.
+		if r := reservedNameRefusal(ctx, "set", string(scope), canonical); r != nil {
+			return *r, nil
 		}
 	}
 	if m.MaxValueBytes > 0 && len(in.Value) > m.MaxValueBytes {
@@ -1542,7 +1548,7 @@ func (m *Memory) registerMemoryDirent(ctx context.Context, scope store.MemorySco
 		return fmt.Errorf("path may not be the root")
 	}
 	ref, _ := json.Marshal(map[string]any{"scope": string(scope), "scope_id": scopeID, "key": key, "facet": "kv"})
-	_, err = m.Store.DirentCreate(ctx, store.DirentRow{
+	_, err = createDirent(ctx, m.Store, store.DirentRow{
 		TenantID: tools.RunIdentity(ctx).TenantID, Scope: string(scope), ScopeID: scopeID,
 		ParentPath: parent, Name: name, Kind: "memory_entry", ResourceRef: ref,
 	})

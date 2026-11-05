@@ -712,6 +712,22 @@ func (b *boot) startStoreSweepers() {
 		slog.Warn("deadlink gc: disabled (LOOMCYCLE_DEADLINK_GC_MS=0 or no Store)")
 	}
 
+	// The tenant ontology's recorded identity (RFC FY Part C, D3): one pass at boot
+	// records the id of every tenant ontology that is still known only by its name, so
+	// no tenant sits in the window before its first resolve. Idempotent, so every
+	// replica may run it; the lazy migration in the resolver stays as the fallback.
+	if storeIface != nil && sqlMemMgr != nil {
+		ontologyDoc := &builtin.Document{Store: storeIface, SqlMem: sqlMemMgr, Cfg: cfg}
+		go func() {
+			n, err := ontologyDoc.RecordTenantOntologies(bgCtx)
+			if err != nil {
+				slog.Error("ontology: boot pass over tenant scopes failed", "err", err)
+				return
+			}
+			slog.Info("ontology: recorded tenant ontology identities", "tenants", n)
+		}()
+	}
+
 	// The document projection (RFC FQ P2): off unless memory.projection asks.
 	startProjectionSweeper(bgCtx, cfg, storeIface, sqlMemMgr, b.embedder, advisoryLock)
 

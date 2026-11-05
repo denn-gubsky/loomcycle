@@ -316,3 +316,42 @@ func (d *Document) ProvisionReservedDocument(ctx context.Context, path, markdown
 	}
 	return res, nil
 }
+
+// RecordTenantOntologies records the ontology's document id for every tenant scope
+// that holds its ontology at the name and has no record yet: the one-time migration of
+// an upgraded deployment (RFC FY Part C, D3). Run at boot so no tenant sits in the
+// window before its first resolve; resolveOntologyID's lazy migration stays as the
+// fallback for a scope this pass could not reach. Returns how many tenant scopes have
+// an ontology.
+func (d *Document) RecordTenantOntologies(ctx context.Context) (int, error) {
+	if d == nil || d.Store == nil || d.SqlMem == nil {
+		return 0, nil
+	}
+	scopes, err := d.SqlMem.ListScopes(ctx)
+	if err != nil {
+		return 0, err
+	}
+	found := 0
+	for _, sk := range scopes {
+		if sk.Scope != "tenant" {
+			continue
+		}
+		// The dirent plane keys the tenant raw; SQL Memory stores "" as "default", so
+		// that one SQL tenant may be either.
+		for _, raw := range bodyTenantsFor(sk.Tenant) {
+			tctx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: raw})
+			id, rerr := d.resolveOntologyID(tctx, sk)
+			if rerr != nil {
+				// Per scope: one unreadable scope must not stop the pass; its first
+				// resolve migrates it instead.
+				slog.WarnContext(ctx, "ontology: boot pass could not resolve a tenant's ontology", "tenant", sk.Tenant, "err", rerr)
+				break
+			}
+			if id != "" {
+				found++
+				break
+			}
+		}
+	}
+	return found, nil
+}

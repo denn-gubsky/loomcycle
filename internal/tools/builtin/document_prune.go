@@ -360,7 +360,7 @@ func (d *Document) deleteDossierDirent(ctx context.Context, key sqlmem.ScopeKey,
 				DocumentID string `json:"document_id"`
 			}
 			if json.Unmarshal(r.ResourceRef, &ref) == nil && ref.DocumentID == docID {
-				_, _ = d.Store.DirentDelete(ctx, tenant, key.Scope, direntScopeID(key), r.ParentPath, r.Name)
+				_, _ = deleteDirent(ctx, d.Store, tenant, key.Scope, direntScopeID(key), r.ParentPath, r.Name)
 			}
 		}
 	}
