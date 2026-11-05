@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/auth/gatekey"
 )
@@ -25,7 +27,7 @@ import (
 //	      public_key: { kty: OKP, crv: Ed25519, x: "…" }   # or hmac_secret_env: LOOMCYCLE_GATE_TG_SECRET
 //	      callback_url: https://gate.internal/login         # optional: a browser login starts there
 //	      allowed_return_to: [https://www.example.com/app]  # where a browser login may land
-//	      issued_token: { ttl: 12h, agents: [chat], overrides: [interactive], rate: { per_minute: 6, burst: 10 }, max_active: 2 }
+//	      issued_token: { ttl: 12h, agents: [chat], overrides: [interactive], rate: { per_minute: 6, burst: 10 }, max_active: 2 }  # required; or: unrestricted
 //	      on_removed: { unbind_after: 72h }                 # overrides auth.lifecycle.on_removed
 //	      identity_map: { tenant: acme, provision: auto }
 //
@@ -70,6 +72,36 @@ type AuthIssuedTokenConfig struct {
 		Burst     int `yaml:"burst,omitempty"`
 	} `yaml:"rate,omitempty"`
 	MaxActive int `yaml:"max_active,omitempty"`
+	// Unrestricted is `issued_token: unrestricted` written out: the tokens
+	// get their user's whole member reach. The ceiling is required (RFC FZ
+	// D), so this reach is never what an omitted key means.
+	Unrestricted bool `yaml:"-"`
+}
+
+// issuedTokenUnrestricted is the one scalar issued_token takes.
+const issuedTokenUnrestricted = "unrestricted"
+
+// UnmarshalYAML takes the ceiling as a mapping, or the scalar unrestricted.
+func (t *AuthIssuedTokenConfig) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		if strings.TrimSpace(n.Value) != issuedTokenUnrestricted {
+			return fmt.Errorf("issued_token: %q — write a ceiling ({agents: [...], overrides: [...]}) or %s", n.Value, issuedTokenUnrestricted)
+		}
+		*t = AuthIssuedTokenConfig{Unrestricted: true}
+		return nil
+	}
+	type plain AuthIssuedTokenConfig // no UnmarshalYAML, so the decode does not recurse
+	return n.Decode((*plain)(t))
+}
+
+// MarshalYAML writes unrestricted back as the scalar, so a config that is
+// re-marshalled (layer merge, reload diff) loads the same way again.
+func (t AuthIssuedTokenConfig) MarshalYAML() (any, error) {
+	if t.Unrestricted {
+		return issuedTokenUnrestricted, nil
+	}
+	type plain AuthIssuedTokenConfig
+	return plain(t), nil
 }
 
 // AuthExternalGate is a validated external gate.
@@ -211,7 +243,20 @@ func resolveExternalGate(c *Config, name string, g AuthGateConfig, deployment Au
 		return nil, fmt.Errorf("%s.allowed_return_to: applies only with callback_url (a browser login)", where)
 	}
 	out.TokenTTL = DefaultNewUserTokenTTL
-	if t := e.IssuedToken; t != nil {
+	// The ceiling is required: without one, whoever holds the gate's key can
+	// ask for tokens with its users' whole member reach (every agent their ACL
+	// allows, every per-run override). That reach may be what the operator
+	// wants, but then it is written down, not what a forgotten key means.
+	switch t := e.IssuedToken; {
+	case t == nil:
+		return nil, fmt.Errorf("%s.issued_token: required — the ceiling every token this gate gets issued is held to "+
+			"(e.g. { agents: [chat], overrides: [interactive] }); write issued_token: %s to give the tokens their user's whole member reach",
+			where, issuedTokenUnrestricted)
+	case !t.Unrestricted && t.Agents == nil && t.Overrides == nil:
+		return nil, fmt.Errorf("%s.issued_token: names neither agents nor overrides, so it limits nothing; "+
+			"name them, or write issued_token: %s", where, issuedTokenUnrestricted)
+	}
+	if t := e.IssuedToken; !t.Unrestricted {
 		if t.TTL != "" {
 			if out.TokenTTL, err = parseLifecycleAge(where+".issued_token.ttl", t.TTL, false); err != nil {
 				return nil, err

@@ -20,6 +20,9 @@ func edJWK(t *testing.T) map[string]any {
 	return map[string]any{"kty": "OKP", "crv": "Ed25519", "x": base64.RawURLEncoding.EncodeToString(pub)}
 }
 
+// unrestricted is issued_token: unrestricted, for a test about something else.
+func unrestricted() *AuthIssuedTokenConfig { return &AuthIssuedTokenConfig{Unrestricted: true} }
+
 func externalCfg(g AuthGateConfig) *Config {
 	c := &Config{Auth: AuthConfig{Gates: map[string]AuthGateConfig{"tg": g}}}
 	c.Env.PublicURL = "https://lc.example"
@@ -55,6 +58,7 @@ func TestResolveExternalGate_RefusesWhatItCannotHonour(t *testing.T) {
 	good := func() AuthGateConfig {
 		g := AuthGateConfig{Kind: "external", IdentityMap: &AuthIdentityMapConfig{Tenant: "acme"}}
 		g.External.PublicKey = edJWK(t)
+		g.External.IssuedToken = unrestricted()
 		return g
 	}
 	for name, tc := range map[string]struct {
@@ -90,8 +94,10 @@ func TestResolveExternalGate_RefusesWhatItCannotHonour(t *testing.T) {
 		"http callback":      {func(g *AuthGateConfig, c *Config) { g.External.CallbackURL = "http://gate.example/login" }, "https"},
 		"return_to no login": {func(g *AuthGateConfig, c *Config) { g.AllowedReturnTo = []string{"https://app.example/"} }, "callback_url"},
 		"password keys":      {func(g *AuthGateConfig, c *Config) { g.Invites.MaxTTL = "1h" }, "do not apply"},
-		"token ttl too long": {func(g *AuthGateConfig, c *Config) { g.External.IssuedToken = &AuthIssuedTokenConfig{TTL: "90d"} }, "issued_token.ttl"},
-		"reactivate auto":    {func(g *AuthGateConfig, c *Config) { g.External.OnRemoved = &AuthOnRemovedConfig{Reactivate: "auto"} }, "not supported yet"},
+		"token ttl too long": {func(g *AuthGateConfig, c *Config) {
+			g.External.IssuedToken = &AuthIssuedTokenConfig{TTL: "90d", Agents: []string{"chat"}}
+		}, "issued_token.ttl"},
+		"reactivate auto": {func(g *AuthGateConfig, c *Config) { g.External.OnRemoved = &AuthOnRemovedConfig{Reactivate: "auto"} }, "not supported yet"},
 		"untrusted promotes": {func(g *AuthGateConfig, c *Config) {
 			g.IdentityMap.NewUser = &AuthNewUserConfig{AccessMode: "tenant"}
 		}, "trusted"},
@@ -123,6 +129,7 @@ func TestResolveExternalGate_HMACSecretComesFromTheOperatorsEnv(t *testing.T) {
 	t.Setenv("LOOMCYCLE_TEST_GATE_HMAC", strings.Repeat("k", 40))
 	g := AuthGateConfig{Kind: "external", IdentityMap: &AuthIdentityMapConfig{Tenant: "acme"}}
 	g.External.HMACSecretEnv = "LOOMCYCLE_TEST_GATE_HMAC"
+	g.External.IssuedToken = unrestricted()
 	c := externalCfg(g)
 	if err := resolveAuth(c); err != nil {
 		t.Fatal(err)
@@ -173,6 +180,7 @@ gates:
 func TestResolveExternalGate_StrictCountsOnlyABrowserGate(t *testing.T) {
 	g := AuthGateConfig{Kind: "external", IdentityMap: &AuthIdentityMapConfig{Tenant: "acme"}}
 	g.External.PublicKey = edJWK(t)
+	g.External.IssuedToken = unrestricted()
 	c := externalCfg(g)
 	c.Auth.Mode = "strict"
 	if err := resolveAuth(c); err == nil || !strings.Contains(err.Error(), "interactive gate") {
@@ -205,12 +213,14 @@ func TestResolveExternalGate_AGateKeyIsThatGatesAlone(t *testing.T) {
 	hmacGate := func(env string) AuthGateConfig {
 		g := AuthGateConfig{Kind: "external", IdentityMap: idm}
 		g.External.HMACSecretEnv = env
+		g.External.IssuedToken = unrestricted()
 		return g
 	}
 	pub := edJWK(t)
 	pubGate := func() AuthGateConfig {
 		g := AuthGateConfig{Kind: "external", IdentityMap: idm}
 		g.External.PublicKey = pub
+		g.External.IssuedToken = unrestricted()
 		return g
 	}
 	for name, gates := range map[string]map[string]AuthGateConfig{
@@ -254,6 +264,7 @@ func TestResolveExternalGate_AGateKeyIsThatGatesAlone(t *testing.T) {
 func TestResolveExternalGate_LegacySubjectPrefixIsAnExternalGatesAlone(t *testing.T) {
 	g := AuthGateConfig{Kind: "external", IdentityMap: &AuthIdentityMapConfig{Tenant: "acme", LegacySubjectPrefix: "telegram-"}}
 	g.External.PublicKey = edJWK(t)
+	g.External.IssuedToken = unrestricted()
 	c := externalCfg(g)
 	if err := resolveAuth(c); err != nil {
 		t.Fatal(err)
@@ -271,5 +282,68 @@ func TestResolveExternalGate_LegacySubjectPrefixIsAnExternalGatesAlone(t *testin
 		IdentityMap: &AuthIdentityMapConfig{Tenant: "acme", LegacySubjectPrefix: "telegram-"}})
 	if err := resolveAuth(oc); err == nil || !strings.Contains(err.Error(), "legacy_subject_prefix") {
 		t.Fatalf("an oidc gate took legacy_subject_prefix: %v", err)
+	}
+}
+
+// An external gate's issued_token ceiling is required (RFC FZ Part D): a gate
+// key that is stolen otherwise asks for tokens with its users' whole member
+// reach. That reach loads only when written out as issued_token: unrestricted.
+func TestConfig_AnExternalGateNeedsAnIssuedTokenCeiling(t *testing.T) {
+	load := func(issued string) (*Config, error) {
+		t.Helper()
+		src := `
+gates:
+  tg:
+    kind: external
+    public_key: { kty: OKP, crv: Ed25519, x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo" }
+    identity_map: { tenant: acme, provision: auto }
+` + issued
+		var a AuthConfig
+		if err := yaml.Unmarshal([]byte(src), &a); err != nil {
+			return nil, err
+		}
+		c := &Config{Auth: a}
+		c.Env.PublicURL = "https://lc.example"
+		return c, resolveAuth(c)
+	}
+	for name, tc := range map[string]struct{ issued, want string }{
+		"omitted":        {"", "issued_token: required"},
+		"limits nothing": {"    issued_token: { ttl: 2h, max_active: 2 }\n", "limits nothing"},
+		"another word":   {"    issued_token: everything\n", "unrestricted"},
+	} {
+		if _, err := load(tc.issued); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want it to mention %q", name, err, tc.want)
+		}
+	}
+
+	c, err := load("    issued_token: { agents: [chat], overrides: [interactive] }\n")
+	if err != nil {
+		t.Fatalf("a ceiling: %v", err)
+	}
+	if x := c.ResolvedAuth.Gates[0].External; len(x.TokenRestrictions.Agents) != 1 || x.TokenRestrictions.Overrides == nil {
+		t.Fatalf("ceiling = %+v", x.TokenRestrictions)
+	}
+
+	c, err = load("    issued_token: unrestricted\n")
+	if err != nil {
+		t.Fatalf("unrestricted, written out: %v", err)
+	}
+	if x := c.ResolvedAuth.Gates[0].External; x.TokenRestrictions.Agents != nil || x.TokenRestrictions.Overrides != nil ||
+		x.TokenTTL != DefaultNewUserTokenTTL {
+		t.Fatalf("unrestricted = %+v ttl %s", x.TokenRestrictions, x.TokenTTL)
+	}
+	// Re-marshalled (a layer merge, a reload diff), it reads the same again.
+	raw, err := yaml.Marshal(c.Auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back AuthConfig
+	if err := yaml.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	again := &Config{Auth: back}
+	again.Env.PublicURL = "https://lc.example"
+	if err := resolveAuth(again); err != nil {
+		t.Fatalf("round trip: %v\n%s", err, raw)
 	}
 }
