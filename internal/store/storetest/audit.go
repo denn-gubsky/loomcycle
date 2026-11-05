@@ -185,10 +185,11 @@ func testAuditHeadAndListRoundTrip(t *testing.T, a, b store.Store) {
 	ts := time.Date(2026, 11, 5, 10, 11, 12, 987654321, time.UTC)
 	row := audit.RowFor(audit.Event{TS: ts, Action: "auth_login", TargetTenant: "t1", ActorSubject: "alice",
 		TargetSubject: "bob"}, []byte(`{"action":"auth_login"}`))
-	written, err := a.AuditAppend(ctx, row, auditTestKeys.Seal(), nil)
-	if err != nil {
-		t.Fatal(err)
+	rows, err := a.AuditAppend(ctx, []store.AuditEventRow{row}, auditTestKeys.Seal(), nil)
+	if err != nil || len(rows) != 1 {
+		t.Fatal(rows, err)
 	}
+	written := rows[0]
 	if written.Seq != 1 || written.PrevHash != "" || written.Hash == "" || written.MAC == "" {
 		t.Fatalf("written = %+v", written)
 	}
@@ -220,7 +221,7 @@ func testAuditUnsafeTextIsStoredEscapedAndHashed(t *testing.T, a, b store.Store)
 		t.Fatalf("an event with NUL and invalid UTF-8 was not recorded: %v", err)
 	}
 	row := audit.RowFor(audit.Event{TS: time.Now(), Action: "acl_denied", ActorTenant: "t1"}, []byte("{\"x\":\"\x00\xfe\"}"))
-	if _, err := a.AuditAppend(ctx, row, auditTestKeys.Seal(), nil); err != nil {
+	if _, err := a.AuditAppend(ctx, []store.AuditEventRow{row}, auditTestKeys.Seal(), nil); err != nil {
 		t.Fatalf("a payload with NUL and invalid UTF-8 was not stored: %v", err)
 	}
 	rows, err := b.AuditEventsList(ctx, "t1", 0, 0)

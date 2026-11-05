@@ -21,34 +21,45 @@ const auditListDefault = 500
 // then locked FOR UPDATE, so every appender to one tenant — on any replica —
 // reads the head only after the previous append committed. A new tenant's
 // head is locked before the operator chain's (opened), always in that order.
-func (s *Store) AuditAppend(ctx context.Context, row store.AuditEventRow, seal store.AuditSealFunc, opened *store.AuditEventRow) (store.AuditEventRow, error) {
-	if row.Action == "" || seal == nil {
-		return store.AuditEventRow{}, fmt.Errorf("audit append: action and seal are required")
+func (s *Store) AuditAppend(ctx context.Context, rows []store.AuditEventRow, seal store.AuditSealFunc, opened *store.AuditEventRow) ([]store.AuditEventRow, error) {
+	if len(rows) == 0 || seal == nil {
+		return nil, fmt.Errorf("audit append: rows and seal are required")
+	}
+	tenant := rows[0].TenantID
+	for _, r := range rows {
+		if r.Action == "" || r.TenantID != tenant {
+			return nil, fmt.Errorf("audit append: every row needs an action and the same tenant")
+		}
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return store.AuditEventRow{}, fmt.Errorf("audit append: %w", err)
+		return nil, fmt.Errorf("audit append: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	created, err := auditLockHead(ctx, tx, row.TenantID)
+	created, err := auditLockHead(ctx, tx, tenant)
 	if err != nil {
-		return store.AuditEventRow{}, err
+		return nil, err
 	}
-	if created && opened != nil && opened.TenantID != row.TenantID {
+	if created && opened != nil && opened.TenantID != tenant {
 		if _, err := auditLockHead(ctx, tx, opened.TenantID); err != nil {
-			return store.AuditEventRow{}, err
+			return nil, err
 		}
 		if _, err := auditAppendLocked(ctx, tx, *opened, seal); err != nil {
-			return store.AuditEventRow{}, err
+			return nil, err
 		}
 	}
-	if row, err = auditAppendLocked(ctx, tx, row, seal); err != nil {
-		return store.AuditEventRow{}, err
+	written := make([]store.AuditEventRow, 0, len(rows))
+	for _, row := range rows {
+		row, err := auditAppendLocked(ctx, tx, row, seal)
+		if err != nil {
+			return nil, err
+		}
+		written = append(written, row)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return store.AuditEventRow{}, fmt.Errorf("audit append: commit: %w", err)
+		return nil, fmt.Errorf("audit append: commit: %w", err)
 	}
-	return row, nil
+	return written, nil
 }
 
 // auditLockHead creates a tenant's head if it has none and locks it for the

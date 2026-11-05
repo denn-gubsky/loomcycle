@@ -17,17 +17,23 @@ const auditListDefault = 500
 // connection takes the database write lock before the head is read, so two
 // appenders — two connections here, or two processes on one file — read the
 // head one after the other and never both extend the same row.
-func (s *Store) AuditAppend(ctx context.Context, row store.AuditEventRow, seal store.AuditSealFunc, opened *store.AuditEventRow) (store.AuditEventRow, error) {
-	if row.Action == "" || seal == nil {
-		return store.AuditEventRow{}, fmt.Errorf("audit append: action and seal are required")
+func (s *Store) AuditAppend(ctx context.Context, rows []store.AuditEventRow, seal store.AuditSealFunc, opened *store.AuditEventRow) ([]store.AuditEventRow, error) {
+	if len(rows) == 0 || seal == nil {
+		return nil, fmt.Errorf("audit append: rows and seal are required")
+	}
+	tenant := rows[0].TenantID
+	for _, r := range rows {
+		if r.Action == "" || r.TenantID != tenant {
+			return nil, fmt.Errorf("audit append: every row needs an action and the same tenant")
+		}
 	}
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
-		return store.AuditEventRow{}, fmt.Errorf("audit append: %w", err)
+		return nil, fmt.Errorf("audit append: %w", err)
 	}
 	defer conn.Close()
 	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return store.AuditEventRow{}, fmt.Errorf("audit append: begin: %w", err)
+		return nil, fmt.Errorf("audit append: begin: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -35,26 +41,31 @@ func (s *Store) AuditAppend(ctx context.Context, row store.AuditEventRow, seal s
 			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 		}
 	}()
-	created, err := auditEnsureHead(ctx, conn, row.TenantID)
+	created, err := auditEnsureHead(ctx, conn, tenant)
 	if err != nil {
-		return store.AuditEventRow{}, err
+		return nil, err
 	}
-	if created && opened != nil && opened.TenantID != row.TenantID {
+	if created && opened != nil && opened.TenantID != tenant {
 		if _, err := auditEnsureHead(ctx, conn, opened.TenantID); err != nil {
-			return store.AuditEventRow{}, err
+			return nil, err
 		}
 		if _, err := auditAppendLocked(ctx, conn, *opened, seal); err != nil {
-			return store.AuditEventRow{}, err
+			return nil, err
 		}
 	}
-	if row, err = auditAppendLocked(ctx, conn, row, seal); err != nil {
-		return store.AuditEventRow{}, err
+	written := make([]store.AuditEventRow, 0, len(rows))
+	for _, row := range rows {
+		row, err := auditAppendLocked(ctx, conn, row, seal)
+		if err != nil {
+			return nil, err
+		}
+		written = append(written, row)
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return store.AuditEventRow{}, fmt.Errorf("audit append: commit: %w", err)
+		return nil, fmt.Errorf("audit append: commit: %w", err)
 	}
 	committed = true
-	return row, nil
+	return written, nil
 }
 
 // auditEnsureHead creates a tenant's head if it has none, reporting whether

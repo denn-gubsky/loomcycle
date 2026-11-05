@@ -66,12 +66,13 @@ type AuditAnchorSealFunc func(tenantID string, seq int64, hash, prevState string
 
 // AuditStore persists the audit stream.
 type AuditStore interface {
-	// AuditAppend appends row to its tenant's chain. Within one transaction
-	// it locks the tenant's head (creating it on the first append), sets
+	// AuditAppend appends rows, in order, to their tenant's chain (every row
+	// names the same tenant). Within one transaction it locks the tenant's
+	// head (creating it on the first append), and for each row sets
 	// row.Seq = head.Seq+1 and row.PrevHash = head.Hash, calls seal, inserts
 	// the row and moves the head. Two appenders on one tenant — on one
 	// replica or two — are serialized by the head lock, so the chain never
-	// forks. It returns the row as written.
+	// forks. It returns the rows as written.
 	//
 	// When this append creates the tenant's head and opened is non-nil,
 	// opened is appended first, in the same transaction, to the chain it
@@ -79,7 +80,7 @@ type AuditStore interface {
 	// exists, so deleting the chain outright reads as a break rather than as
 	// a tenant that never had one. The tenant's head is always locked before
 	// the operator chain's, so two such appends cannot deadlock.
-	AuditAppend(ctx context.Context, row AuditEventRow, seal AuditSealFunc, opened *AuditEventRow) (AuditEventRow, error)
+	AuditAppend(ctx context.Context, rows []AuditEventRow, seal AuditSealFunc, opened *AuditEventRow) ([]AuditEventRow, error)
 	// AuditHeadGet returns a tenant's head, or *ErrNotFound when the tenant
 	// has no chain.
 	AuditHeadGet(ctx context.Context, tenantID string) (AuditHead, error)
