@@ -136,6 +136,9 @@ func TestRuleNotEnforceable_NamesThePairOrTheField(t *testing.T) {
 		{Rule{Effect: Deny, Actions: []string{"browse"}, Resources: []string{"document:user"}}, "browse document is not evaluated by any surface (the member-browse change asks it)"},
 		{Rule{Effect: Deny, Actions: []string{"use"}, Resources: []string{"search:*"}}, "use search is not evaluated by any surface (removed from the catalog)"},
 		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:own"}, When: &Condition{Time: &TimeWindow{Days: []string{"mon"}}}}, ""},
+		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:own"}, When: &Condition{Transport: []string{"mcp", "webui"}}}, ""},
+		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:own"}, When: &Condition{Transport: []string{"http", "bridge"}}}, `condition "transport" is not evaluated by any surface (no surface stamps the transport "bridge")`},
+		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:own"}, When: &Condition{Transport: []string{"bridge:slack"}}}, `condition "transport" is not evaluated by any surface (no surface stamps the transport "bridge:slack")`},
 	}
 	for _, c := range cases {
 		if err := c.rule.Validate(); err != nil {
@@ -171,6 +174,21 @@ func TestBaselines_NameNoRetiredVerb(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+// Every transport value a condition may name is either stamped by a surface
+// or refused at write: the stamped set is the condition's set less bridge.
+func TestTransports_EveryStampedValueIsAConditionValue(t *testing.T) {
+	for v := range stampedTransports {
+		if !contains(Transports, v) {
+			t.Errorf("%s is stamped but not a condition value", v)
+		}
+	}
+	for _, v := range Transports {
+		if !IsTransportStamped(v) && v != "bridge" {
+			t.Errorf("%s is a condition value no surface stamps; refuse it or stamp it", v)
 		}
 	}
 }

@@ -199,6 +199,16 @@ var unenforcedConditions = map[string]string{
 	"user_tier": "a run request names its own user tier, and nothing binds one to the principal",
 }
 
+// stampedTransports are the transport values a surface stamps (authz
+// WithTransport callers): a `transport` condition naming any other value —
+// `bridge`, `bridge:<name>` — can never match, so it is refused at write.
+var stampedTransports = map[string]bool{
+	"http": true, "webui": true, "mcp": true, "grpc": true, "a2a": true, "webhook": true, "schedule": true,
+}
+
+// IsTransportStamped reports whether some surface stamps transport value t.
+func IsTransportStamped(t string) bool { return stampedTransports[t] }
+
 // IsEnforced reports whether some surface asks verb of typ.
 func IsEnforced(typ, verb string) bool {
 	_, ok := enforcedPairs[pairKey{typ, verb}]
@@ -255,7 +265,11 @@ type NotEnforceableError struct {
 func (e *NotEnforceableError) Error() string {
 	if e.Condition != "" {
 		msg := fmt.Sprintf("condition %q is not evaluated by any surface", e.Condition)
-		if r := unenforcedConditions[e.Condition]; r != "" {
+		r := e.Reason
+		if r == "" {
+			r = unenforcedConditions[e.Condition]
+		}
+		if r != "" {
 			msg += " (" + r + ")"
 		}
 		return msg
@@ -290,6 +304,13 @@ func RuleNotEnforceable(r Rule) error {
 	for _, f := range conditionFieldsSet(r.When) {
 		if _, ok := enforcedConditions[f]; !ok {
 			return &NotEnforceableError{Condition: f}
+		}
+	}
+	if r.When != nil {
+		for _, t := range r.When.Transport {
+			if !IsTransportStamped(t) {
+				return &NotEnforceableError{Condition: "transport", Reason: fmt.Sprintf("no surface stamps the transport %q", t)}
+			}
 		}
 	}
 	return nil
