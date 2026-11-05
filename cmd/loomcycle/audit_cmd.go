@@ -59,7 +59,8 @@ func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Walks the store-backed audit chain from its retention anchor to its head and")
 		fmt.Fprintln(stderr, "reports the first row that does not verify: changed, missing, out of order, or")
 		fmt.Fprintln(stderr, "not signed with the deployment's key. Run it with the server's own config and")
-		fmt.Fprintln(stderr, "environment (LOOMCYCLE_SECRET_KEY). Read-only; safe while servers are running.")
+		fmt.Fprintln(stderr, "environment (LOOMCYCLE_SECRET_KEY). It writes no audit rows; opening the store")
+		fmt.Fprintln(stderr, "applies its schema, as the server does. Safe while servers are running.")
 		fmt.Fprintln(stderr)
 		fs.PrintDefaults()
 	}
