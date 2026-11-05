@@ -68,6 +68,8 @@ func PrintHelp(w io.Writer, metaToolCount int) {
 	fmt.Fprintln(w, "                                   LOOMCYCLE_SECRET_KEY (writes nothing)")
 	fmt.Fprintln(w, "    [--def-id <id>@<fingerprint>]  then rewrap the named rows onto its pepper,")
 	fmt.Fprintln(w, "    | [--all-listed <digest>]      or exactly the set the listing showed")
+	fmt.Fprintln(w, "  audit verify --tenant <t> | --operator | --all [--config <y>]")
+	fmt.Fprintln(w, "                                   check the store-backed audit chains")
 	fmt.Fprintln(w, "  mcp [--config <yaml>]            run as MCP server over stdio (v0.8.15+)")
 	fmt.Fprintf(w, "                                   exposes %d meta-tools; consumed by Claude\n", metaToolCount)
 	fmt.Fprintln(w, "                                   Code, Claude Desktop, custom orchestrators")
