@@ -560,3 +560,39 @@ func TestUserLifecycle_TheUnbindDropsWhatIsNotAnExactlyLockedDenyList(t *testing
 		t.Errorf("the erase lock on other: %q %v, want none (no exactly locked deny list)", list, err)
 	}
 }
+
+// A lock whose deny carries a condition the unattended step cannot answer
+// (the sweeper has no transport, source address, agent or tier) holds: a
+// condition that could not be checked must not unlock the list.
+func TestUserLifecycle_AConditionalLockHoldsForTheUnattendedUnbind(t *testing.T) {
+	srv, ts, st := aclMgmtServer(t, authz.ModeCompat)
+	ctx := context.Background()
+	admin := func(method, path, body string) {
+		t.Helper()
+		if code, out := bearerCall(t, ts, legacyAdminBearer, method, path+"?tenant=acme", body); code >= 300 {
+			t.Fatalf("admin %s %s: %d %s", method, path, code, out)
+		}
+	}
+	deny := `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]}]`
+	admin("POST", "/v1/_acldef", `{"op":"create","name":"guard","rules":`+deny+`}`)
+	admin("POST", "/v1/_acldef", `{"op":"create","name":"t-lock","rules":[`+
+		`{"effect":"deny","actions":["retire"],"resources":["def:acl/guard"],"when":{"transport":["http"]}}]}`)
+	admin("POST", "/v1/_aclbinding", `{"acl":"t-lock","subject_kind":"tenant"}`)
+	admin("POST", "/v1/_users", `{"subject":"victim"}`)
+	admin("POST", "/v1/_aclbinding", `{"acl":"guard","subject_kind":"user","subject_id":"victim"}`)
+
+	if _, err := srv.unbindSubject(ctx, "acme", "victim", false, lifecycleActor); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.AclBindingList(ctx, "acme", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := false
+	for _, b := range rows {
+		kept = kept || (b.SubjectID == "victim" && b.ACLName == "guard")
+	}
+	if !kept {
+		t.Error("victim's guard binding is gone after the unbind; want it kept (its lock names a transport the sweeper has none of)")
+	}
+}

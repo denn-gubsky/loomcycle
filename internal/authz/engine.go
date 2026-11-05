@@ -396,8 +396,12 @@ func (e *Effective) decideOwn(req Request) Decision {
 // exact name — a literal selector, never a wildcard, a prefix or a whole
 // scope — matches req's action and condition. It tells a lock someone
 // placed on one named resource from a broad restriction that happens to
-// cover it. The ceiling's rules count too. The tenant floor does not: it
-// names no resource.
+// cover it. It is asked for steps no caller stands behind (the removal
+// policy's sweeper), which have no transport, source address, agent or
+// tier: a condition the request cannot answer reads as holding, as a deny
+// does in DecideScope, since a condition that could not be checked must
+// never unlock. The ceiling's rules count too. The tenant floor does not:
+// it names no resource.
 func (e *Effective) LiteralDeny(req Request) bool {
 	if e.ceiling != nil && e.ceiling.LiteralDeny(req) {
 		return true
@@ -408,7 +412,7 @@ func (e *Effective) LiteralDeny(req Request) bool {
 		return false
 	}
 	for _, r := range tr.deny {
-		if !r.actions[req.Action] || !r.when.holds(&req) {
+		if !r.actions[req.Action] || !r.when.holdsForScope(&req, true) {
 			continue
 		}
 		for _, sel := range r.sels {

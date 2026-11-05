@@ -516,3 +516,17 @@ func TestRestrictsOnly_ADenyListWithNoAllow(t *testing.T) {
 		}
 	}
 }
+
+// LiteralDeny is asked for steps no caller stands behind: a condition such a
+// request cannot answer reads as holding, one it answers is decided.
+func TestLiteralDeny_AnUnanswerableConditionHolds(t *testing.T) {
+	lock := mustACL(t, `{"name":"lock","rules":[{"effect":"deny","actions":["retire"],"resources":["def:acl/guard"],"when":{"transport":["http"]}}]}`)
+	subj := Subject{TenantID: "acme", ID: "u"}
+	e := compile(t, subj, []Binding{{ACL: "lock", SubjectKind: SubjectUser, SubjectID: "u"}}, lock)
+	for transport, want := range map[string]bool{"": true, "http": true, "grpc": false} {
+		req := Request{Subject: subj, Action: "retire", Resource: Resource{Type: "def", Name: "acl/guard"}, Context: Context{Transport: transport, Now: testNow}}
+		if got := e.LiteralDeny(req); got != want {
+			t.Errorf("LiteralDeny with transport %q = %v, want %v", transport, got, want)
+		}
+	}
+}
