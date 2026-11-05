@@ -241,9 +241,9 @@ func newCanaryEnv(t *testing.T, restricted bool, scripts func(e *canaryEnv) map[
 	put("acme-app", string(appCfg), []string{e.repoApp.URL})
 
 	var srv *Server
-	register := func(v string) {
+	register := func(tenantID, v string) {
 		if srv != nil {
-			srv.Redactor().Register(v)
+			srv.Redactor().RegisterTenant(tenantID, v)
 		}
 	}
 	minter := credential.NewGitHubAppMinter(nil, gh.Client())
@@ -265,7 +265,7 @@ func newCanaryEnv(t *testing.T, restricted bool, scripts func(e *canaryEnv) map[
 			if err != nil || !found {
 				return "", false, nil
 			}
-			register(res.Value)
+			register(ri.TenantID, res.Value)
 			return res.Value, true, nil
 		},
 	}

@@ -45,7 +45,7 @@ func bindingWith(t *testing.T, creds map[string]*time.Time) (credentialBinding, 
 		}
 	}
 	var registered []string
-	return credentialBinding{engine: engine, register: func(v string) { registered = append(registered, v) }}, &registered
+	return credentialBinding{engine: engine, register: func(tenantID, v string) { registered = append(registered, tenantID+":"+v) }}, &registered
 }
 
 func runCtx() context.Context {
@@ -84,8 +84,8 @@ func TestCredentialBinding_ExpiredProviderKeyFailsInsteadOfTheOperatorKey(t *tes
 	if key, source, _, err := providers.ResolveKeyOrOperator(ctx, "OPENAI_API_KEY", "sk-operator"); err != nil || key != "OPENAI_API_KEY-value" || source != "tenant" {
 		t.Errorf("a live override: key=%q source=%q err=%v; want the tenant's key", key, source, err)
 	}
-	if len(*registered) != 1 || (*registered)[0] != "OPENAI_API_KEY-value" {
-		t.Errorf("registered %d value(s); want only the live override masked", len(*registered))
+	if len(*registered) != 1 || (*registered)[0] != "t:OPENAI_API_KEY-value" {
+		t.Errorf("registered %d value(s); want only the live override masked, charged to the run's tenant", len(*registered))
 	}
 }
 
@@ -219,7 +219,7 @@ func TestBash_ResolvedCredValueRedactedFromOutput(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			b, _ := bindingWith(t, map[string]*time.Time{"GITHUB_TOKEN": nil})
 			rd := redact.New(nil, true)
-			b.register = rd.Register
+			b.register = rd.RegisterTenant
 			res, err := tc.tool(b).Execute(ctx, cmd)
 			if err != nil {
 				t.Fatal(err)

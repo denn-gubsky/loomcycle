@@ -16,8 +16,9 @@
 //     distinctive secret shape; see patternRules for the per-rule rationale.
 //
 // A Redactor's static tiers are fixed at New; runtime-resolved secret values may
-// be added later via Register (RFC AV/AR). It is safe for concurrent
-// String/Bytes/Register calls — the registered set is guarded by an RWMutex. The
+// be added later via RegisterTenant or RegisterOperator (RFC AV/AR), into a
+// bounded set (dynamic.go). It is safe for concurrent String/Bytes/Register*
+// calls — the registered set is guarded by an RWMutex. The
 // zero value / a nil *Redactor is a no-op, so callers may hold a nil redactor
 // when redaction is disabled.
 package redact
@@ -27,7 +28,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 )
 
 // minSecretLen is the shortest env value Tier A will mask. A shorter value is
@@ -35,13 +35,13 @@ import (
 // (e.g. an env var that happens to be set to "true") would be a false positive.
 const minSecretLen = 8
 
-// minDynamicSecretLen is the shortest runtime-registered (Register) value we
+// minDynamicSecretLen is the shortest runtime-registered value we
 // mask. Registered values are EXACT known secrets (zero false positives on the
 // exact string), so the floor only guards against masking trivially short
 // values that would appear everywhere.
 const minDynamicSecretLen = 4
 
-// dynamicMarker replaces a runtime-registered secret value. Register carries no
+// dynamicMarker replaces a runtime-registered secret value. A registration carries no
 // env NAME (the value is resolved at run time, e.g. an RFC AR $cred:), so unlike
 // Tier A's [redacted:NAME] the marker is generic.
 const dynamicMarker = "[redacted:credential]"
@@ -57,12 +57,8 @@ type Redactor struct {
 	// Tier A' — runtime-registered exact secret values (RFC AV/AR: resolved
 	// $cred: values + provider-key overrides). Registered as credentials resolve,
 	// so a downstream tool that echoes one is masked in the persisted transcript.
-	// dynamic is the deduped value set (bounds the inventory); dynReplacer is its
-	// compiled longest-first form, applied in String. Guarded by mu — Register
-	// takes Lock, String takes RLock.
-	mu          sync.RWMutex
-	dynamic     map[string]struct{}
-	dynReplacer *strings.Replacer
+	// Bounded and owned per tenant; see dynamic.go.
+	dyn dynamicSet
 }
 
 type patternRule struct {
@@ -338,37 +334,35 @@ func New(secrets map[string]string, withPatterns bool) *Redactor {
 	return r
 }
 
-// Register adds a runtime-resolved secret VALUE so a later tool_call/tool_result
-// that echoes it is masked in the persisted transcript (RFC AV/AR). Thread-safe
-// and safe to call concurrently with String/Bytes. Deduped by value (re-
-// registering is a no-op) so the set stays bounded by the distinct-credential
-// inventory, not per call. Values shorter than minDynamicSecretLen and a nil
-// redactor are ignored.
-func (r *Redactor) Register(value string) {
+// RegisterOperator adds a secret VALUE the operator plane obtained at run
+// time (a provider's minted cloud credentials), so a later tool_call or
+// tool_result that echoes it is masked in the persisted transcript. Operator
+// values hold their own share of the bounded set: no tenant registration ever
+// evicts one; past the share the operator's own least recently registered
+// value goes (an expired credential, in practice). Values shorter than
+// minDynamicSecretLen and a nil redactor are ignored. Safe for concurrent use.
+//
+// The static env values given to New are not in this set at all and are never
+// evicted.
+func (r *Redactor) RegisterOperator(value string) {
 	if r == nil || len(value) < minDynamicSecretLen {
 		return
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, dup := r.dynamic[value]; dup {
-		return // already registered — keep the set bounded
+	r.dyn.register(value, "", true)
+}
+
+// RegisterTenant adds a secret VALUE resolved for, or received by, a run of
+// tenantID (a $cred: value, a minted token, the credential part of a URL a
+// tool fetched). The set is bounded (DefaultDynamicCap, LRU by registration),
+// and a tenant holds at most a quarter of it: its registrations past that
+// evict its own oldest values, so one tenant cannot push another's secrets
+// out. The value is masked from the moment this returns. Values shorter than
+// minDynamicSecretLen and a nil redactor are ignored. Safe for concurrent use.
+func (r *Redactor) RegisterTenant(tenantID, value string) {
+	if r == nil || len(value) < minDynamicSecretLen {
+		return
 	}
-	if r.dynamic == nil {
-		r.dynamic = make(map[string]struct{})
-	}
-	r.dynamic[value] = struct{}{}
-	// Rebuild the replacer longest-value-first so a value that is a substring of
-	// another is masked as part of the longer match first (mirrors New's Tier A).
-	vals := make([]string, 0, len(r.dynamic))
-	for v := range r.dynamic {
-		vals = append(vals, v)
-	}
-	sort.Slice(vals, func(i, j int) bool { return len(vals[i]) > len(vals[j]) })
-	pairs := make([]string, 0, len(vals)*2)
-	for _, v := range vals {
-		pairs = append(pairs, v, dynamicMarker)
-	}
-	r.dynReplacer = strings.NewReplacer(pairs...)
+	r.dyn.register(value, tenantID, false)
 }
 
 // WithSignedURLParams turns on Tier C and returns r.
@@ -390,9 +384,8 @@ func (r *Redactor) Enabled() bool {
 	if r.replacer != nil || len(r.patterns) > 0 || r.signedURLs {
 		return true
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.dynReplacer != nil
+	pending, settled := r.dyn.replacers()
+	return pending != nil || settled != nil
 }
 
 // String returns s with every recognised secret masked. The exact tiers run
@@ -408,11 +401,14 @@ func (r *Redactor) String(s string) string {
 	if r.replacer != nil {
 		s = r.replacer.Replace(s)
 	}
-	r.mu.RLock()
-	dyn := r.dynReplacer
-	r.mu.RUnlock()
-	if dyn != nil {
-		s = dyn.Replace(s)
+	// The pending overlay first, then the settled set; dynamicSet.compile
+	// keeps the two from nesting, so the order cannot split a value.
+	pending, settled := r.dyn.replacers()
+	if pending != nil {
+		s = pending.Replace(s)
+	}
+	if settled != nil {
+		s = settled.Replace(s)
 	}
 	// Before the patterns: their key=value rule would otherwise take a URL's
 	// token= value to the end of the URL, parameters after it included.

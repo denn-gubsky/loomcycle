@@ -30,13 +30,14 @@ import (
 // A nil *PeerCredentials (no credential store wired) has no credentials.
 type PeerCredentials struct {
 	engine   *credential.Engine
-	register func(string)
+	register func(tenantID, value string)
 }
 
 // NewPeerCredentials wraps the server's credential engine. register, if
 // non-nil, receives each resolved value so the caller can mask a downstream
-// echo of it (the server redactor), as the MCP $cred: resolver does.
-func NewPeerCredentials(engine *credential.Engine, register func(string)) *PeerCredentials {
+// echo of it (the server redactor), as the MCP $cred: resolver does, charged
+// to the tenant it was resolved in.
+func NewPeerCredentials(engine *credential.Engine, register func(tenantID, value string)) *PeerCredentials {
 	return &PeerCredentials{engine: engine, register: register}
 }
 
@@ -69,7 +70,7 @@ func (p *PeerCredentials) Resolve(ctx context.Context, tenantID, name, targetURL
 		return "", fmt.Errorf("api_key_env %q: tenant %q has no tenant-level credential of that name", ref, tenantID)
 	}
 	if p.register != nil {
-		p.register(res.Value)
+		p.register(tenantID, res.Value)
 	}
 	return res.Value, nil
 }

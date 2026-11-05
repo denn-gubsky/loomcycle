@@ -58,6 +58,7 @@ import (
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/vllm"
+	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	// Deterministic stub embedder for runtime tests; its init() registers the
 	// "stub" provider ONLY when LOOMCYCLE_EMBEDDER_STUB=1, so it is invisible
@@ -632,18 +633,30 @@ type providerResolver struct {
 	sched *concurrency.CallScheduler
 }
 
-// secretSink forwards secret values to a function set after the components
-// holding the sink were built: providers are built before the server and its
-// redactor exist (RFC EM). It is read at each use, never captured.
-type secretSink struct{ f atomic.Pointer[func(string)] }
-
-func (s *secretSink) set(f func(string)) { s.f.Store(&f) }
-
-func (s *secretSink) register(v string) {
-	if f := s.f.Load(); f != nil {
-		(*f)(v)
-	}
+// secretSink forwards secret values to the server's redactor, which a
+// function set after the components holding the sink were built returns:
+// providers are built before the server and its redactor exist (RFC EM). It
+// is read at each use, never captured.
+type secretSink struct {
+	f atomic.Pointer[func() *redact.Redactor]
 }
+
+func (s *secretSink) set(f func() *redact.Redactor) { s.f.Store(&f) }
+
+func (s *secretSink) redactor() *redact.Redactor {
+	if f := s.f.Load(); f != nil {
+		return (*f)()
+	}
+	return nil
+}
+
+// register takes a secret the operator plane obtained (a provider's minted
+// cloud credentials): no tenant's registrations can evict it.
+func (s *secretSink) register(v string) { s.redactor().RegisterOperator(v) }
+
+// registerTenant takes a secret resolved for, or received by, a run of
+// tenantID; it counts against that tenant's share of the bounded set.
+func (s *secretSink) registerTenant(tenantID, v string) { s.redactor().RegisterTenant(tenantID, v) }
 
 // buildProviderMap constructs every ENABLED provider from cfg.Providers via the
 // RFC BF driver registry, returning the id→Provider map. Factored out of
@@ -1230,15 +1243,19 @@ type refSubstituter interface {
 // the run identity on ctx. A run that may not use its user's own scope (a
 // trigger whose definition's author could not act as that user) resolves for
 // its agent and tenant only.
-func substituteForRun(ctx context.Context, s, targetURL string, register func(string), subs ...refSubstituter) (string, []string, error) {
+func substituteForRun(ctx context.Context, s, targetURL string, register func(tenantID, value string), subs ...refSubstituter) (string, []string, error) {
 	ri := tools.RunIdentity(ctx)
 	userID := ri.UserID
 	if ri.NoUserScope() {
 		userID = ""
 	}
+	var reg func(string)
+	if register != nil {
+		reg = func(v string) { register(ri.TenantID, v) }
+	}
 	var unresolved []string
 	for _, sub := range subs {
-		out, un, err := sub.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), userID, s, targetURL, register)
+		out, un, err := sub.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), userID, s, targetURL, reg)
 		if err != nil {
 			return "", nil, err
 		}
