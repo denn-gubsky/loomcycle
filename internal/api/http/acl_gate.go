@@ -329,7 +329,7 @@ func (s *Server) triggerOwnerCtx(ctx context.Context, owner *authz.SubjectRef, a
 	if _, ok := recordedCallerFrom(ctx); ok {
 		return ctx, nil
 	}
-	o := aclOriginRecord{TenantID: owner.TenantID, Subject: owner.Subject, TokenDefID: owner.TokenDefID, Class: owner.Class, Transport: authz.TransportFrom(ctx)}
+	o := aclOriginRecord{TenantID: owner.TenantID, Subject: owner.Subject, TokenDefID: owner.TokenDefID, Class: owner.Class, Transport: authz.TransportFrom(ctx), SourceIP: sourceIPString(ctx)}
 	ctx, eff, err := s.recordedCallerACL(ctx, &o, agent)
 	if err != nil {
 		return ctx, fmt.Errorf("%w: the access-control rules of the owner of the trigger that fired %q (tenant %q, subject %q) could not be read (%v); the run is refused rather than run without them",
@@ -357,7 +357,7 @@ func (s *Server) triggerWalkOwnerCtx(ctx context.Context, owner *authz.SubjectRe
 		return ctx, nil
 	}
 	surface := authz.Surface{Action: "run", Type: "team", Name: team}
-	o := aclOriginRecord{TenantID: owner.TenantID, Subject: owner.Subject, TokenDefID: owner.TokenDefID, Class: owner.Class, Transport: authz.TransportFrom(ctx)}
+	o := aclOriginRecord{TenantID: owner.TenantID, Subject: owner.Subject, TokenDefID: owner.TokenDefID, Class: owner.Class, Transport: authz.TransportFrom(ctx), SourceIP: sourceIPString(ctx)}
 	ctx, eff, err := s.recordedCallerACLFor(ctx, &o, surface)
 	if err != nil {
 		return ctx, fmt.Errorf("%w: the access-control rules of the owner of the trigger that started team %q (tenant %q, subject %q) could not be read (%v); the walk is refused rather than run without them",

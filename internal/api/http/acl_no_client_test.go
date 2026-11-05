@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -74,5 +75,43 @@ func TestSourceCIDR_ABlocklistDoesNotNarrowAResumedRun(t *testing.T) {
 	resumeAndFinish(t, e.srv, run)
 	if res := resumedToolResult(t, e.srv, run, "tu_resumed_set"); strings.Contains(res, "read-only") {
 		t.Errorf("a blocklist naming other addresses made the resumed run read-only: %s", res)
+	}
+}
+
+// A run a client started keeps that client's address: a resume re-stamps the
+// address recorded with the run, so a deny naming the client's range holds
+// after the resume as it held at the start.
+func TestSourceCIDR_AResumedRunKeepsItsClientsAddress(t *testing.T) {
+	e := keyspaceWriteFixture(t, authz.ModeCompat, `[{"effect":"deny","actions":["write"],"resources":["memory:tenant"],"when":{"source_cidr":["127.0.0.0/8","::1/128"]}}]`,
+		[][]providers.Event{
+			toolCallTurn("tu_probe", "Probe", `{}`), endTurn(),
+			toolCallTurn("tu_resumed_set", "Memory", `{"op":"set","scope":"tenant","key":"after-resume","value":"x"}`), endTurn(),
+		})
+	run := e.run(t, "a_keeper_client")
+	waitFor(t, "the live probe", func() bool { return len(e.probe.calls()) >= 1 })
+	if live := e.probe.calls()[0]; !slices.Equal(live.Memory.ReadOnlyScopes, []string{"tenant"}) {
+		t.Fatalf("live policy: read-only %v; the deny on the client's range did not hold at the start", live.Memory.ReadOnlyScopes)
+	}
+	if rec, ok := decodeRunConfig(run.RunConfig); !ok || rec.ACLOrigin == nil || rec.ACLOrigin.SourceIP == "" {
+		t.Fatalf("the run did not record its client's address: %s", run.RunConfig)
+	}
+	resumeAndFinish(t, e.srv, run)
+	if res := resumedToolResult(t, e.srv, run, "tu_resumed_set"); !strings.Contains(res, "read-only") {
+		t.Errorf("the resumed run wrote the scope its client's range is denied: %s", res)
+	}
+}
+
+// A client request recorded before its address was kept is unknown, not
+// clientless: a deny on an address range holds for it.
+func TestAClientOriginWithNoRecordedAddressIsUnknown(t *testing.T) {
+	ctx := (&aclOriginRecord{Transport: "http"}).withOriginClient(context.Background())
+	if authz.ContextFrom(ctx).NoClient {
+		t.Error("a client request with no recorded address was taken for a run with no client")
+	}
+	if !authz.ContextFrom((&aclOriginRecord{Transport: "schedule"}).withOriginClient(context.Background())).NoClient {
+		t.Error("a schedule's fire was not taken for a run with no client")
+	}
+	if ip := authz.ContextFrom((&aclOriginRecord{Transport: "http", SourceIP: "198.51.100.7"}).withOriginClient(context.Background())).SourceIP; ip.String() != "198.51.100.7" {
+		t.Errorf("the recorded address was not re-stamped: %v", ip)
 	}
 }

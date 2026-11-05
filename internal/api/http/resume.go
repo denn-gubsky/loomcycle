@@ -438,10 +438,9 @@ func (s *Server) releaseStoppedOwnersSlot(run store.Run) {
 // below. Nothing it needs comes from the caller — the boot path, which passes
 // no values, is proof of that.
 func (s *Server) resumePausedRun(run store.Run) error {
-	// A resumed or crash-recovered run has no client by nature: the address of
-	// the request that started it is not recorded, so a source_cidr condition
-	// has nothing to match (RFC FY Part E). Its sub-runs inherit the mark.
-	ctx := authz.WithNoClient(context.Background())
+	// The starting request's client is re-stamped from the run's record with
+	// its caller's set (recordedCallerACLFor, RFC FY Part E).
+	ctx := context.Background()
 	if run.ID == "" || run.AgentID == "" || run.SessionID == "" {
 		return fmt.Errorf("missing id/agent_id/session_id")
 	}
@@ -2396,6 +2395,7 @@ func (s *Server) recordedCallerACLFor(ctx context.Context, o *aclOriginRecord, s
 	if o.Transport != "" {
 		ctx = authz.WithTransport(ctx, o.Transport)
 	}
+	ctx = o.withOriginClient(ctx)
 	if s.aclResolver == nil {
 		return ctx, nil, nil
 	}
