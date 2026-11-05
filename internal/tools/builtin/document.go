@@ -5234,7 +5234,11 @@ func (d *Document) renderChunkTree(ctx context.Context, key sqlmem.ScopeKey, msc
 	// failure mode that let the v1.33.0 tenant regression pass for a full
 	// table-of-contents export. Abort the walk on the first fault instead.
 	var walkErr error
-	acl := d.newDocACL(ctx, key) // an embed's target is asked on its own
+	// An embed's target is asked on its own, by the reverse index: a render
+	// reads a few documents' names, never the whole tree (the section renderer
+	// builds one of these per section).
+	acl := d.newDocACL(ctx, key)
+	acl.useIndex()
 	var walk func(row chunkRow, depth int)
 	walk = func(row chunkRow, depth int) {
 		if walkErr != nil {

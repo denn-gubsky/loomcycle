@@ -5,9 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -344,5 +346,39 @@ func TestCopyDocuments_ANamedUnreadableIDLooksMissing(t *testing.T) {
 		if len(refused) != 2 {
 			t.Errorf("%s: only the two ids should be refused: %v", op, refused)
 		}
+	}
+}
+
+// listUnderCounter counts whole-tree dirent listings.
+type listUnderCounter struct {
+	store.Store
+	n atomic.Int32
+}
+
+func (c *listUnderCounter) DirentListUnder(ctx context.Context, tenantID, scope, scopeID, prefix string) ([]store.DirentRow, error) {
+	c.n.Add(1)
+	return c.Store.DirentListUnder(ctx, tenantID, scope, scopeID, prefix)
+}
+
+// TestRenderEmbeds_AskTheReverseIndexNotTheWholeTree: checking an embed's
+// target under a path-sensitive set looks up that document's names, not every
+// name of the scope, and rendering a document's sections does not list the tree
+// once per section.
+func TestRenderEmbeds_AskTheReverseIndexNotTheWholeTree(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	importAt(t, d, ctx, "/lib/target", "# Target\n\n## Part\n\nShared text.\n")
+	importAt(t, d, ctx, "/specs/embeds", "# Spec\n\n## One\n\n![[/lib/target#Part]]\n\n## Two\n\n![[/lib/target#Part]]\n\n## Three\n\n![[/lib/target#Part]]\n")
+	counter := &listUnderCounter{Store: d.Store}
+	d.Store = counter
+	limited := withACL(ctx, aclSet(t, denyRule("read", "document:user:/secret/**")))
+	secs, err := d.Sections(limited, "user", "/specs/embeds")
+	if err != nil || len(secs) != 3 {
+		t.Fatalf("Sections: %d %v", len(secs), err)
+	}
+	if !strings.Contains(secs[0].Markdown, "Shared text.") {
+		t.Fatalf("fixture: the readable embed should expand: %s", secs[0].Markdown)
+	}
+	if n := counter.n.Load(); n != 0 {
+		t.Errorf("rendering three sections listed the whole tree %d times, want 0", n)
 	}
 }
