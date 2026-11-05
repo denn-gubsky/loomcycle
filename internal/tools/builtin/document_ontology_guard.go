@@ -80,10 +80,6 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 	// on all of them: picking one (document_id, else id) let a call carry an unrelated
 	// document_id while its handler acted on the ontology chunk named by id.
 	own, related := d.guardTargets(ctx, key, op, in)
-	if len(own) > 1 {
-		return refusal(errValidation("the call names more than one document ("+strings.Join(own, ", ")+
-			") in the fields that address its target; they must agree", "Pass one document, by one of its addresses."))
-	}
 	hit := false
 	for _, t := range append(own, related...) {
 		if t == docID {
@@ -91,7 +87,15 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 		}
 	}
 	if !hit {
+		// Disagreeing addresses outside the ontology are the handlers' business: the
+		// consolidator names its home document beside a natural key that fact homing or
+		// a subject merge has moved, and upsert_chunk follows the key.
 		return nil
+	}
+	if len(own) > 1 {
+		return refusal(errValidation("the call names more than one document ("+strings.Join(own, ", ")+
+			") in the fields that address its target, one of them the ontology; they must agree",
+			"Pass one document, by one of its addresses."))
 	}
 
 	if op == "create_chunk" || op == "upsert_chunk" {
@@ -101,11 +105,42 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 				"does it for you). An entity that is in force is the operator's decision, and "+
 				"accepting a proposal is a separate operator action.", ""))
 		}
+		// Only a NEW chunk is a proposal. An upsert whose key names an existing chunk
+		// rewrites it in place, so a "proposed" upsert over an accepted (or rejected)
+		// entity would edit it and drop it back to proposed. Re-filing a chunk that is
+		// itself still a proposal stays allowed.
+		if op == "upsert_chunk" {
+			existing, status, err := d.ontologyChunkByNaturalKey(ctx, key, docID, in.NaturalKey)
+			if err != nil {
+				return refusal(errFrom("could not check the natural key against the ontology, so this "+
+					"write is refused: "+err.Error(), err))
+			}
+			if existing != "" && !strings.EqualFold(strings.TrimSpace(status), memrank.OntologyStatusProposed) {
+				return refusal(errPermission("an agent may not modify the ontology document: natural_key "+
+					strconv.Quote(in.NaturalKey)+" names an entity that is not a proposal, and an upsert "+
+					"would rewrite it. Propose a NEW entity under its own key instead.", ""))
+			}
+		}
 		return nil
 	}
 	return refusal(errPermission("an agent may not modify the ontology document — it may only add a "+
 		"proposal (op=propose_entity). Resolving one, editing a live entity, importing "+
 		"over the document, re-homing it, or removing anything is the operator's decision.", ""))
+}
+
+// ontologyChunkByNaturalKey returns the chunk of the ontology document holding key,
+// and its status; "" when no ontology chunk holds it.
+func (d *Document) ontologyChunkByNaturalKey(ctx context.Context, key sqlmem.ScopeKey, ontologyID, naturalKey string) (id, status string, err error) {
+	nk := strings.TrimSpace(naturalKey)
+	if nk == "" {
+		return "", "", nil
+	}
+	res, err := d.query(ctx, key, `SELECT c.id, coalesce(c.status, '') FROM chunk_memory_meta m JOIN chunks c ON c.id = m.chunk_id
+		  WHERE m.natural_key = ? AND c.document_id = ? LIMIT 1`, nk, ontologyID)
+	if err != nil || len(res.Rows) == 0 || len(res.Rows[0]) < 2 {
+		return "", "", err
+	}
+	return asStr(res.Rows[0][0]), asStr(res.Rows[0][1]), nil
 }
 
 // guardTargets resolves the document behind each addressing field of a guarded op, the

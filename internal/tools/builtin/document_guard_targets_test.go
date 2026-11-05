@@ -61,18 +61,19 @@ func TestOntologyGuard_EveryAddressingFieldIsChecked(t *testing.T) {
 }
 
 // TestOntologyGuard_AddressesThatDisagreeAreRefused: a call whose own-target fields
-// name two documents is ambiguous about what it acts on, so it is refused, as
-// docIDFromInput refuses an id and a document_id that differ.
+// name two documents, one of them the ontology, is ambiguous about what it acts on, so
+// it is refused, as docIDFromInput refuses an id and a document_id that differ.
+// Outside the ontology the handlers decide (a re-keyed upsert is legitimate).
 func TestOntologyGuard_AddressesThatDisagreeAreRefused(t *testing.T) {
 	e := newReservedEnv(t)
-	out, r := docExec(t, e.d, e.opCtx, `{"op":"create_document","scope":"tenant","title":"Other","path":"/notes/other"}`)
+	out, r := docExec(t, e.d, e.opCtx, `{"op":"get_document","scope":"tenant","id":"`+e.decoy+`"}`)
 	if r.IsError {
-		t.Fatalf("other: %s", r.Text)
+		t.Fatalf("decoy: %s", r.Text)
 	}
-	otherRoot, _ := out["root_chunk_id"].(string)
-	r = e.doc(t, e.agentCtx, `{"op":"add_tags","scope":"tenant","document_id":"`+e.decoy+`","id":"`+otherRoot+`","tags":["x"]}`)
+	decoyRoot, _ := out["root_chunk_id"].(string)
+	r = e.doc(t, e.agentCtx, `{"op":"add_tags","scope":"tenant","document_id":"`+e.ontology+`","id":"`+decoyRoot+`","tags":["x"]}`)
 	if !r.IsError || !strings.Contains(r.Text, "more than one document") {
-		t.Errorf("a call naming two documents was not refused: %s", r.Text)
+		t.Errorf("a call naming the ontology and another document was not refused: %s", r.Text)
 	}
 	// Agreeing addresses still work.
 	if r := e.doc(t, e.agentCtx, `{"op":"add_tags","scope":"tenant","document_id":"`+e.decoy+`","tags":["x"]}`); r.IsError {
