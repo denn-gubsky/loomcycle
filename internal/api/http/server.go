@@ -7736,9 +7736,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	if err := s.aclAdmitSpawn(ctx, parentPolicy.ACL, name); err != nil {
 		return nil, err
 	}
-	// From here ctx prepares the child: a condition reads the child's agent
-	// and depth (RFC FY Part E). A child is never interactive itself.
-	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: name, Depth: builtin.AgentDepth(ctx)})
+	// From here ctx prepares the child: a condition reads the child's agent,
+	// depth and interactivity (RFC FY Part E) — a resident child runs
+	// interactive, every other child does not.
+	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: name, Depth: builtin.AgentDepth(ctx), Interactive: interactive})
 	childOwn, _ := s.agentRunPolicy(ctx, def, name, runPolicySource{
 		Volumes:      s.volumePolicyForAgent(ctx, def),
 		Crypto:       cryptoPolicyForAgent(def),

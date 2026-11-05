@@ -9,8 +9,17 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"path/filepath"
+	"slices"
+	"sync"
+	"time"
 )
 
 // RFC FY Part E: every condition a rule may carry is filled by the surface
@@ -158,4 +167,59 @@ func TestRequestTransport_NamesMCPAndTheWebUI(t *testing.T) {
 			t.Errorf("%s cookie=%v: %q, want %q", c.path, c.cookie, got, c.want)
 		}
 	}
+}
+
+// A resident child runs interactive, so an interactive condition reads it as
+// interactive: a deny of Read on interactive runs withholds Read from it
+// (RFC FY Part E). Every child was stamped not interactive.
+func TestACLGate_AResidentChildIsInteractive(t *testing.T) {
+	cfg := &config.Config{
+		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents:      map[string]config.AgentDef{"child": {Model: "stub-model", Tools: []string{"Read"}, SystemPrompt: "be brief"}},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
+	}
+	provider := &toolRecordingProvider{stubProvider: stubProvider{events: []providers.Event{
+		{Type: providers.EventText, Text: "ok"},
+		{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+	}}}
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "resident-acl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	srv := New(cfg, &stubResolver{p: provider}, []tools.Tool{namedStubTool{"Read"}}, concurrency.New(8, 8, time.Second), st)
+	srv.SetSteerRegistry(steer.NewRegistry(0))
+	ctx := tools.WithRunPolicy(residentParentCtx("parent-agent", ""), tools.RunPolicy{ACL: runACL(t,
+		authz.Rule{Effect: authz.Deny, Actions: []string{"invoke"}, Resources: []string{"tool:Read"}, When: &authz.Condition{Interactive: boolPtr(true)}})})
+	runID, _, _, err := srv.openResidentChild(ctx, "child", "start", "", 0, 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.closeResidentChild(ctx, runID) })
+	if got := provider.lastTools(); slices.Contains(got, "Read") {
+		t.Errorf("the resident child was offered %v; Read must be withheld under a deny on interactive runs", got)
+	}
+}
+
+// toolRecordingProvider is stubProvider recording the tools each call offers.
+type toolRecordingProvider struct {
+	stubProvider
+	mu    sync.Mutex
+	tools []string
+}
+
+func (p *toolRecordingProvider) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+	p.mu.Lock()
+	p.tools = p.tools[:0]
+	for _, ts := range req.Tools {
+		p.tools = append(p.tools, ts.Name)
+	}
+	p.mu.Unlock()
+	return p.stubProvider.Call(ctx, req)
+}
+
+func (p *toolRecordingProvider) lastTools() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.tools...)
 }
