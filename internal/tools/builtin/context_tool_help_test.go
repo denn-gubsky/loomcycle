@@ -98,8 +98,14 @@ func TestContextSelf_ReportsScopeGrantsOfHeldTools(t *testing.T) {
 	if sql["applies"] != "sql_* ops" || joinAny(sql["granted"]) != "" {
 		t.Errorf("Memory sql field = %v, want applies sql_* ops with nothing granted", sql)
 	}
-	if got := joinAny(scopes["Path"].([]any)[0].(map[string]any)["granted"]); got != "agent,user,tenant" {
-		t.Errorf("Path granted = %s", got)
+	// Path's tenant tree needs both tenant grants, as a tenant document does; this run
+	// holds only the memory one.
+	path := scopes["Path"].([]any)[0].(map[string]any)
+	if got := joinAny(path["granted"]); got != "agent,user" {
+		t.Errorf("Path granted = %s, want agent,user", got)
+	}
+	if reason, _ := path["refused"].(map[string]any)["tenant"].(string); !strings.Contains(reason, "sql_scopes") {
+		t.Errorf("Path tenant refusal = %q, want the sql_scopes reason", reason)
 	}
 }
 

@@ -62,56 +62,208 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 	if tools.IsOperatorPlane(ctx) || key.Scope != "tenant" {
 		return nil
 	}
-	docID := d.ontologyDocumentID(ctx, key)
+	if !ontologyWriteOp(op) {
+		return nil // a read, or an op that cannot reach a document's content
+	}
+	// By the RECORDED id (document_ontology_identity.go), whatever the document is named
+	// now. FAILS CLOSED for these write ops: not knowing which document is the ontology
+	// must not read as "this is not it".
+	docID, err := d.resolveOntologyID(ctx, key)
+	if err != nil {
+		return refusal(errFrom("could not determine which document is the tenant ontology, so this "+
+			"write is refused: "+err.Error(), err))
+	}
 	if docID == "" {
 		return nil // no ontology document in this tenant — nothing to protect
 	}
-	// Which document does this call touch? Three addressings, and missing one is how a
-	// guard gets bypassed: create/import name the document, the chunk ops name a chunk
-	// whose document must be looked up, and delete_document/set_path put the DOCUMENT id
-	// in `id` — where a chunk lookup returns nothing and the check would sail past.
-	target := strings.TrimSpace(in.DocumentID)
-	if target == "" && in.ID != "" {
-		if target = d.documentIDForChunk(ctx, key, in.ID); target == "" {
-			target = strings.TrimSpace(in.ID)
+	// Which documents does this call touch? EVERY field a guarded handler addresses a
+	// document by is resolved the way that handler resolves it, and the call is judged
+	// on all of them: picking one (document_id, else id) let a call carry an unrelated
+	// document_id while its handler acted on the ontology chunk named by id.
+	own, related := d.guardTargets(ctx, key, op, in)
+	hit := false
+	for _, t := range append(own, related...) {
+		if t == docID {
+			hit = true
 		}
 	}
-	if target != docID {
+	if !hit {
+		// Disagreeing addresses outside the ontology are the handlers' business: the
+		// consolidator names its home document beside a natural key that fact homing or
+		// a subject merge has moved, and upsert_chunk follows the key.
 		return nil
 	}
+	if len(own) > 1 {
+		return refusal(errValidation("the call names more than one document ("+strings.Join(own, ", ")+
+			") in the fields that address its target, one of them the ontology; they must agree",
+			"Pass one document, by one of its addresses."))
+	}
 
-	switch op {
-	case "create_chunk", "upsert_chunk":
+	if op == "create_chunk" || op == "upsert_chunk" {
 		if !strings.EqualFold(strings.TrimSpace(in.Status), memrank.OntologyStatusProposed) {
 			return refusal(errValidation("an agent may only add a PROPOSED entity to the ontology: pass "+
 				"status=\""+memrank.OntologyStatusProposed+"\" (or use op=propose_entity, which "+
 				"does it for you). An entity that is in force is the operator's decision, and "+
 				"accepting a proposal is a separate operator action.", ""))
 		}
-		return nil
-	// EVERY op that can create, alter, retire or re-home an entity — audited from the op
-	// list rather than from the obvious ones. The first version of this guard covered the
-	// five chunk mutations and missed four routes to the same effect: import_md and
-	// import_canvas author chunks wholesale, supersede_chunk both creates and retires, and
-	// delete_document / set_path reach the WHOLE ontology (set_path by re-homing
-	// /memory/ontology so the reader resolves somewhere else entirely).
-	case "update_chunk", "delete_chunk", "move_chunk", "reorder_chunk",
-		"supersede_chunk", "import_md", "import_canvas", "delete_document", "set_path":
-		return refusal(errPermission("an agent may not modify the ontology document — it may only add a "+
-			"proposal (op=propose_entity). Resolving one, editing a live entity, importing "+
-			"over the document, re-homing it, or removing anything is the operator's decision.", ""))
-	default:
+		// Only a NEW chunk is a proposal. An upsert whose key names an existing chunk
+		// rewrites it in place, so a "proposed" upsert over an accepted (or rejected)
+		// entity would edit it and drop it back to proposed. Re-filing a chunk that is
+		// itself still a proposal stays allowed.
+		if op == "upsert_chunk" {
+			existing, status, err := d.ontologyChunkByNaturalKey(ctx, key, docID, in.NaturalKey)
+			if err != nil {
+				return refusal(errFrom("could not check the natural key against the ontology, so this "+
+					"write is refused: "+err.Error(), err))
+			}
+			if existing != "" && !strings.EqualFold(strings.TrimSpace(status), memrank.OntologyStatusProposed) {
+				return refusal(errPermission("an agent may not modify the ontology document: natural_key "+
+					strconv.Quote(in.NaturalKey)+" names an entity that is not a proposal, and an upsert "+
+					"would rewrite it. Propose a NEW entity under its own key instead.", ""))
+			}
+		}
 		return nil
 	}
+	return refusal(errPermission("an agent may not modify the ontology document — it may only add a "+
+		"proposal (op=propose_entity). Resolving one, editing a live entity, importing "+
+		"over the document, re-homing it, or removing anything is the operator's decision.", ""))
 }
 
-// ontologyDocumentID resolves the tenant ontology document, or "" when there is none.
-func (d *Document) ontologyDocumentID(ctx context.Context, key sqlmem.ScopeKey) string {
-	id, err := d.docIDFromInput(ctx, key, docInput{Path: memrank.OntologyPath})
-	if err != nil {
-		return ""
+// ontologyChunkByNaturalKey returns the chunk of the ontology document holding key,
+// and its status; "" when no ontology chunk holds it.
+func (d *Document) ontologyChunkByNaturalKey(ctx context.Context, key sqlmem.ScopeKey, ontologyID, naturalKey string) (id, status string, err error) {
+	nk := strings.TrimSpace(naturalKey)
+	if nk == "" {
+		return "", "", nil
 	}
-	return id
+	res, err := d.query(ctx, key, `SELECT c.id, coalesce(c.status, '') FROM chunk_memory_meta m JOIN chunks c ON c.id = m.chunk_id
+		  WHERE m.natural_key = ? AND c.document_id = ? LIMIT 1`, nk, ontologyID)
+	if err != nil || len(res.Rows) == 0 || len(res.Rows[0]) < 2 {
+		return "", "", err
+	}
+	return asStr(res.Rows[0][0]), asStr(res.Rows[0][1]), nil
+}
+
+// guardTargets resolves the document behind each addressing field of a guarded op, the
+// way its handler does. own are the fields that name the call's target — they must
+// agree (as docIDFromInput requires of id and document_id); related are the fields that
+// name a neighbour the op acts beside (a parent, a sibling, the chunk superseded, the
+// edition amended), which must not be the ontology either. A field that resolves to
+// nothing is left to the handler to refuse.
+//
+// Census of the guarded handlers' fields: document_id, id (a chunk, else a document),
+// path (an address everywhere but set_path, where it is the name being given),
+// natural_key (upsert_chunk, judge_fact), work_key (import_md reimport), parent_id and
+// after_id (create_chunk), new_parent_id (move_chunk), supersedes_id
+// (supersede_chunk), amending_document_id (import_md).
+func (d *Document) guardTargets(ctx context.Context, key sqlmem.ScopeKey, op string, in docInput) (own, related []string) {
+	seen := map[string]bool{}
+	addOwn := func(id string) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			own = append(own, id)
+		}
+	}
+	chunkDoc := func(id string) string {
+		if id == "" {
+			return ""
+		}
+		return d.documentIDForChunk(ctx, key, strings.TrimSpace(id))
+	}
+	addOwn(strings.TrimSpace(in.DocumentID))
+	if id := strings.TrimSpace(in.ID); id != "" {
+		if doc := chunkDoc(id); doc != "" {
+			addOwn(doc)
+		} else {
+			addOwn(id)
+		}
+	}
+	if in.Path != "" && op != "set_path" {
+		if id, err := d.docIDFromInput(ctx, key, docInput{Path: in.Path}); err == nil {
+			addOwn(id)
+		}
+	}
+	if nk := strings.TrimSpace(in.NaturalKey); nk != "" {
+		if res, err := d.query(ctx, key, `SELECT c.document_id FROM chunk_memory_meta m JOIN chunks c ON c.id = m.chunk_id
+			  WHERE m.natural_key = ? LIMIT 1`, nk); err == nil && len(res.Rows) > 0 && len(res.Rows[0]) > 0 {
+			addOwn(asStr(res.Rows[0][0]))
+		}
+	}
+	if wk := strings.TrimSpace(in.WorkKey); wk != "" && op == "import_md" {
+		if id, _, _, err := d.documentByWorkKey(ctx, key, wk); err == nil {
+			addOwn(id)
+		}
+	}
+	for _, c := range []string{in.ParentID, in.AfterID, in.NewParentID, in.SupersedesID} {
+		if doc := chunkDoc(c); doc != "" {
+			related = append(related, doc)
+		}
+	}
+	if a := strings.TrimSpace(in.AmendingDocumentID); a != "" {
+		related = append(related, a)
+	}
+	return own, related
+}
+
+// ontologyWriteOp reports whether op can create, alter, retire or re-home an entity of
+// the ontology: create_chunk/upsert_chunk only as a proposal, every other one not at all.
+//
+// EVERY such op — and the list is no longer kept by hand beside a dispatch that grows:
+// each op dispatch serves is in exactly one of this, documentReadOp and
+// ontologyGuardExemption, which TestDocumentOps_EveryOpIsClassifiedForTheOntologyGuard
+// enforces. The hand-kept version missed four routes at first (import_md,
+// import_canvas, supersede_chunk, delete_document / set_path) and later set_remote and
+// sync, which bind the document to a peer and pull the peer's chunks over it, and the
+// tag, type and asset writes.
+func ontologyWriteOp(op string) bool {
+	switch op {
+	case "create_chunk", "upsert_chunk",
+		"update_chunk", "delete_chunk", "move_chunk", "reorder_chunk",
+		"supersede_chunk", "import_md", "import_canvas", "delete_document", "set_path",
+		"set_remote", "sync", "add_tags", "remove_tags", "define_type", "set_asset",
+		"judge_fact", "classify":
+		return true
+	}
+	return false
+}
+
+// documentReadOp reports the ops that change nothing in the scope.
+func documentReadOp(op string) bool {
+	switch op {
+	case "get_document", "documents_summary", "query_documents", "graph_snapshot",
+		"get_chunk", "graph_recall", "verbatim_answer", "verification_stats", "list_facts",
+		"get_edges", "get_edge", "list_statements", "describe_ontology", "query_chunks",
+		"list_tags", "list_types", "get_asset", "export_md", "export_canvas", "history",
+		"get_version", "diff", "backlinks", "search", "related", "unlinked_mentions",
+		"diff_remote":
+		return true
+	}
+	return false
+}
+
+// ontologyGuardExemption says why a write op is not asked by the ontology guard, ""
+// for any other op. Each reason is a claim about what the op can reach.
+func ontologyGuardExemption(op string) string {
+	switch op {
+	case "create_document":
+		return "makes a new document; the reserved names are refused by reservedTargetRefusal"
+	case "copy_documents", "move_documents":
+		return "planCopy refuses the ontology as a member of the set and as a target name"
+	case "propose_entity", "propose_subject":
+		return "files an inert proposal, which is what an agent may do to the ontology"
+	case "remember":
+		return "writes only the scope's entity document, which the runtime chooses"
+	case "link_chunks", "unlink_chunks", "propose_statement", "accept_statement",
+		"reject_statement", "judge_statements", "maintain_statement", "extract_citations":
+		return "writes statements (edges and their evidence), never a document's chunks"
+	case "accept_classification":
+		return "the operator's ruling only (refused inside a run), which sets the root's type and tags"
+	case "resolve_anchor":
+		return "may file a placeholder for a cited work, which is a new document"
+	case "lease", "release":
+		return "writes the scope's lease table, not a document"
+	}
+	return ""
 }
 
 // documentIDForChunk returns the document a chunk belongs to, or "".

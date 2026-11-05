@@ -143,7 +143,18 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	// Callers that legitimately provision (the server's ontology endpoints) do it
 	// themselves before they get here. With no schema the lookup below simply errors
 	// and the caller reads it as "no tenant layer", which is the truth.
-	docID, err := d.docIDFromInput(ctx, key, docInput{Path: path})
+	var docID string
+	var err error
+	if key.Scope == "tenant" && path == memrank.OntologyPath {
+		// The tenant ontology is the RECORDED document, wherever it is named now
+		// (document_ontology_identity.go); a document that merely sits at the name is
+		// not it.
+		if docID, err = d.resolveOntologyID(ctx, key); err == nil && docID == "" {
+			err = errNoOntology
+		}
+	} else {
+		docID, err = d.docIDFromInput(ctx, key, docInput{Path: path})
+	}
 	if err != nil {
 		return OntologyRead{}, nil // no such document — no tenant layer
 	}
@@ -646,8 +657,11 @@ func (d *Document) tenantOntologyRead(ctx context.Context) (OntologyRead, bool) 
 		Scope:   "tenant",
 		ScopeID: sqlScopeTenant(ctx),
 	}
-	docID, err := d.docIDFromInput(ctx, key, docInput{Path: memrank.OntologyPath})
+	docID, err := d.resolveOntologyID(ctx, key)
 	if err != nil {
+		return OntologyRead{}, false
+	}
+	if docID == "" {
 		return OntologyRead{}, true // no such document — no tenant layer, as ontologyForKey reports it
 	}
 	fp, err := d.ontologyFingerprint(ctx, key, docID)
@@ -681,8 +695,11 @@ func (d *Document) tenantOntologyRead(ctx context.Context) (OntologyRead, bool) 
 // be read).
 var errPartialOntologyRead = errors.New("ontology read incomplete")
 
+// errNoOntology: the tenant has no ontology document.
+var errNoOntology = errors.New("no ontology document")
+
 // ontologyFingerprint changes whenever anything the ontology read depends on changes:
-// which document is named /memory/ontology, its status (the confirm gate), and its
+// which document is the ontology (its recorded id), its status (the confirm gate), and its
 // chunks — a count catches an add or delete, max(updated_at) a move, and sum(revision)
 // every body, title, type or status edit, since update_chunk bumps the revision on each.
 func (d *Document) ontologyFingerprint(ctx context.Context, key sqlmem.ScopeKey, docID string) (string, error) {

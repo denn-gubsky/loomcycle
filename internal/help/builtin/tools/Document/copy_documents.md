@@ -60,6 +60,9 @@ refusal codes are:
 - `not_found` — no such document in `scope`.
 - `is_ontology` — the tenant ontology, or a target name that is the
   ontology's. The ontology is edited in place, never copied.
+- `reserved_name` — a target name the tenant scope reserves (`/memory/entities`,
+  `/memory/tenant_root`), or, for a move out of the tenant scope, a document
+  that holds one; only an operator may give or vacate it.
 - `is_subject` — a subject document.
 - `holds_facts` — a document holding facts (chunks with a natural key).
   Subjects and facts have their own identity, so they don't move between

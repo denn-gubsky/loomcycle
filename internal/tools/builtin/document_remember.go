@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -39,7 +40,10 @@ import (
 // rememberedFactsPath is where operator-authored facts land: the same document the
 // consolidation pass mirrors its entity graph into, so one subject's facts stay in one
 // place regardless of who wrote them.
-const rememberedFactsPath = "/memory/entities"
+const rememberedFactsPath = memrank.EntitiesPath
+
+// entitiesDocumentTitle is the entity document's title, which the runtime supplies.
+const entitiesDocumentTitle = "Entities"
 
 // rememberedKeyPrefix namespaces an operator's fact away from the pass's.
 //
@@ -102,12 +106,20 @@ func (d *Document) rememberFact(ctx context.Context, key sqlmem.ScopeKey, mscope
 
 // entityDocumentID resolves (and on first use creates) the scope's entity document.
 func (d *Document) entityDocumentID(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, scope string) (string, error) {
-	ids, err := d.documentsUnderPath(ctx, key, rememberedFactsPath)
-	if err == nil && len(ids) > 0 {
-		return ids[0], nil
+	// The runtime chooses this name, not the caller, so it may give the reserved
+	// /memory/entities in the tenant scope (RFC FY Part C) — and only this name.
+	ctx = context.WithValue(ctx, reservedProvisionKey{}, rememberedFactsPath)
+	// The document AT the name, and only that one. A fallback to any document BELOW
+	// the name (documentsUnderPath) never found this document — so every call made a
+	// new one — and adopted whatever an agent filed at /memory/entities/<anything> as
+	// the document every placed fact lands in, leaving the reserved name unregistered.
+	if id, err := d.documentAtName(ctx, key, rememberedFactsPath); err != nil {
+		return "", err
+	} else if id != "" {
+		return id, nil
 	}
 	res, cerr := d.createDocument(ctx, key, mscope, docInput{
-		Scope: scope, Title: "Entities", Path: rememberedFactsPath,
+		Scope: scope, Title: entitiesDocumentTitle, Path: rememberedFactsPath,
 	})
 	if cerr != nil {
 		return "", cerr
@@ -155,3 +167,64 @@ func slugForKey(text string) string {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// entitiesEnsureKeys are the only fields a create_document at /memory/entities may
+// carry from inside a run: the shape of the memory bundle's consolidator call.
+func entitiesEnsureKey(k string) bool {
+	switch k {
+	case "op", "scope", "path", "title":
+		return true
+	}
+	return false
+}
+
+// ensureEntitiesDocument answers a run's create_document at the reserved tenant name
+// /memory/entities (RFC FY Part C, review of P2).
+//
+// The memory bundle's consolidator creates that document from inside its run, and the
+// name is reserved, so the plain create would be refused and every placed fact's graph
+// chunk dropped. The call is therefore read as what it is — an ENSURE of the runtime's
+// own empty entities document, the one remember files into — and served by the same
+// get-or-create. The runtime supplies the title; a call carrying anything of its own
+// (a body, status, type, tags, fields, another title) is refused, because that would be
+// an agent authoring the document every placed fact lands in. An existing document
+// answers with its id and created:false.
+//
+// handled is false for every other call, which then meets the ordinary gates.
+func (d *Document) ensureEntitiesDocument(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, raw json.RawMessage) (tools.Result, bool) {
+	if in.Op != "create_document" || key.Scope != "tenant" || reservedNameWriter(ctx) || len(raw) == 0 {
+		return tools.Result{}, false
+	}
+	if canonical, err := normalizePath(in.Path); err != nil || canonical != memrank.EntitiesPath {
+		return tools.Result{}, false
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return tools.Result{}, false
+	}
+	refuse := errPermission("create_document: "+memrank.EntitiesPath+" is a reserved name in the tenant scope; "+
+		"a run may only ensure the runtime's own entities document there, so the call may carry op, scope, "+
+		"path and title \"Entities\" and nothing else.",
+		"Drop the other fields, or file facts with op=remember.")
+	for k := range fields {
+		if !entitiesEnsureKey(k) {
+			return refuse, true
+		}
+	}
+	if t := strings.TrimSpace(in.Title); t != "" && t != entitiesDocumentTitle {
+		return refuse, true
+	}
+	existing, _ := d.documentAtName(ctx, key, rememberedFactsPath)
+	docID, err := d.entityDocumentID(ctx, key, mscope, in.Scope)
+	if err != nil {
+		return errFrom("create_document: "+err.Error(), err), true
+	}
+	resp := map[string]any{"document_id": docID, "title": entitiesDocumentTitle, "path": memrank.EntitiesPath,
+		"created": existing == ""}
+	if res, qerr := d.query(ctx, key, `SELECT root_chunk_id FROM documents WHERE id = ? LIMIT 1`, docID); qerr == nil &&
+		len(res.Rows) > 0 && len(res.Rows[0]) > 0 {
+		resp["root_chunk_id"] = asStr(res.Rows[0][0])
+	}
+	res, _ := jsonResult(resp)
+	return res, true
+}

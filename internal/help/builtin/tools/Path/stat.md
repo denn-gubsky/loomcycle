@@ -9,7 +9,7 @@ is enough for finding the resource.
 ## Arguments
 
 - `path` (required).
-- `scope` — `agent` (default), `user` or `tenant`.
+- `scope` — `agent` (default), `user` or `tenant`. `tenant` needs `tenant` in both the agent's `memory_scopes` and `sql_scopes`.
 
 ## Returns
 

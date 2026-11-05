@@ -34,6 +34,9 @@ derived from its text keep their quotes.
 - `delete_document: no such path: /...` — nothing is named there in this scope.
 - `an agent may not modify the ontology document ...` — the tenant ontology can
   only be changed by an operator. Retrying is pointless.
+- `delete_document: /memory/... is a reserved name in the tenant scope ...` —
+  the document holds a name the runtime finds a tenant-wide document by
+  (`/memory/entities`, `/memory/tenant_root`); only an operator may delete it.
 
 ## Examples
 

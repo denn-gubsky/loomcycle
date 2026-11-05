@@ -60,9 +60,22 @@ func TestPath_IsolatedConfinesScope(t *testing.T) {
 		}
 	}
 
-	non := isoScopeCtx(false)
+	// Non-isolated: tenant resolves once the run holds both tenant grants, as a
+	// tenant document needs.
+	non := tools.UpdateRunPolicy(isoScopeCtx(false), func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
+	})
 	if _, _, _, err := p.resolveScope(non, "tenant"); err != nil {
 		t.Errorf("non-isolated Path.resolveScope(tenant) err=%v, want ok", err)
+	}
+	// Isolation still wins over the grants.
+	isoGranted := tools.UpdateRunPolicy(iso, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
+	})
+	if _, _, _, err := p.resolveScope(isoGranted, "tenant"); err == nil || !strings.Contains(err.Error(), "isolated") {
+		t.Errorf("isolated Path.resolveScope(tenant) with grants err=%v, want isolated-confinement refusal", err)
 	}
 }
 

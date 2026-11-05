@@ -531,8 +531,8 @@ func (d *Document) ontologyVersion(ctx context.Context) int {
 		return 0
 	}
 	key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(ctx), Scope: "tenant", ScopeID: sqlScopeTenant(ctx)}
-	docID, err := d.docIDFromInput(ctx, key, docInput{Path: memrank.OntologyPath})
-	if err != nil {
+	docID := d.ontologyDocumentID(ctx, key)
+	if docID == "" {
 		return 0
 	}
 	res, err := d.query(ctx, key,

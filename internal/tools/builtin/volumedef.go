@@ -278,7 +278,7 @@ func (v *VolumeDef) registerVolumeMount(ctx context.Context, tenantID, name, mod
 		return "", fmt.Errorf("mount_at may not be the root path")
 	}
 	ref, _ := json.Marshal(map[string]any{"volume_name": name, "mode": mode})
-	if _, err := v.Store.DirentCreate(ctx, store.DirentRow{
+	if _, err := createDirent(ctx, v.Store, store.DirentRow{
 		TenantID: tenantID, Scope: "tenant", ScopeID: "",
 		ParentPath: parent, Name: leaf, Kind: "volume_mount", ResourceRef: ref,
 	}); err != nil {

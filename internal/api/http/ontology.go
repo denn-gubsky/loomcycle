@@ -78,11 +78,17 @@ func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms [
 	// requiring every agent that renders the placeholder to hold the tenant grant.
 	dctx = withTenantDocGrants(dctx)
 
+	// BY ID, not by name: the ontology is the document whose id the tenant recorded,
+	// wherever it is named now (RFC FY Part C).
+	ontologyID, err := doc.TenantOntologyID(dctx)
+	if err != nil || ontologyID == "" {
+		return nil, false, nil
+	}
 	// The GATE is the root chunk's status, which get_document reports directly.
 	// (It does NOT return a chunk list — an earlier draft of this read expected one
 	// and silently found zero terms, which the wiring test caught.)
 	req, _ := json.Marshal(map[string]any{
-		"op": "get_document", "scope": "tenant", "path": meminject.OntologyPath,
+		"op": "get_document", "scope": "tenant", "id": ontologyID,
 	})
 	res, _ := doc.Execute(dctx, req)
 	if res.IsError {
@@ -128,7 +134,7 @@ func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms [
 	// silent fallback would leave the operator's hierarchy quietly inert, which is the
 	// exact bug being fixed here wearing a different hat.
 	exp, _ := json.Marshal(map[string]any{
-		"op": "export_md", "scope": "tenant", "path": meminject.OntologyPath,
+		"op": "export_md", "scope": "tenant", "id": ontologyID,
 		"include_metadata": false,
 	})
 	eres, _ := doc.Execute(dctx, exp)
@@ -196,18 +202,18 @@ func (s *Server) provisionOntologyDoc(ctx context.Context, mi memInject) {
 	dctx := s.docToolCtx(ctx, mi)
 	dctx = withTenantDocGrants(dctx)
 
-	probe, _ := json.Marshal(map[string]any{
-		"op": "get_document", "scope": "tenant", "path": meminject.OntologyPath,
-	})
-	if res, _ := doc.Execute(dctx, probe); !res.IsError {
+	// The probe asks for the tenant's ontology by its RECORDED identity, not by the
+	// name: an ontology the operator renamed is still provisioned, and a second one at
+	// the old name would split the vocabulary (RFC FY Part C). A fault reads as "do not
+	// provision now" — the next reference retries — rather than as "absent", which
+	// would create a duplicate.
+	if id, err := doc.TenantOntologyID(dctx); err != nil || id != "" {
 		return // already provisioned, here or by another replica
 	}
 
-	create, _ := json.Marshal(map[string]any{
-		"op": "import_md", "scope": "tenant", "path": meminject.OntologyPath,
-		"markdown": meminject.OntologyTemplate(),
-	})
-	res, _ := doc.Execute(dctx, create)
+	// The reserved name is given through the one entry point that may give it outside
+	// the operator plane: this can run inside a run's prompt render.
+	res, _ := doc.ProvisionReservedDocument(dctx, meminject.OntologyPath, meminject.OntologyTemplate())
 	if res.IsError {
 		return // best-effort; the next reference retries
 	}

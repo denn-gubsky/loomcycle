@@ -25,6 +25,11 @@ import (
 // using the resource still goes through that resource's own tool + gates.
 type Path struct {
 	Store store.Store
+	// Identities, when set, records which document holds each tenant-wide role
+	// before an operator renames or removes a reserved name (RFC FY Part C), so the
+	// rename cannot lose track of the tenant ontology. Nil in a deployment without
+	// SQL Memory, where there are no documents to lose track of.
+	Identities TenantIdentityRecorder
 }
 
 func (p *Path) Name() string { return "Path" }
@@ -53,7 +58,7 @@ const pathInputSchema = `{
 		"op":            {"type": "string", "enum": ["resolve","ls","stat","mkdir","mv","rm"], "description": "The operation."},
 		"path":          {"type": "string", "description": "Absolute path, e.g. /docs/launch. Segments are [a-zA-Z0-9._-]; no \"..\"."},
 		"to":            {"type": "string", "description": "Destination path (mv only)."},
-		"scope":         {"type": "string", "enum": ["agent","user","tenant"], "description": "Which tree (default agent). user requires a user_id on the run; tenant is shared across the tenant."},
+		"scope":         {"type": "string", "enum": ["agent","user","tenant"], "description": "Which tree (default agent). user requires a user_id on the run; tenant is shared across the tenant and needs the agent to hold tenant in both memory_scopes and sql_scopes."},
 		"recursive":     {"type": "boolean", "description": "ls: list all descendants. rm: required to remove a path that has descendants."},
 		"kind_filter":   {"type": "string", "description": "ls: only entries of this kind (document/volume_mount/memory_entry/directory)."},
 		"limit":         {"type": "integer", "minimum": 1, "description": "ls: maximum entries to return (default 500, max 5000). A truncated listing reports truncated:true and a next_cursor — pass that back as the cursor field to continue. Subject-homed facts make a directory as large as the tenant's entity count, so a listing has to be pageable rather than whole."},
@@ -138,10 +143,32 @@ func (p *Path) resolveScope(ctx context.Context, requested string) (tenantID, sc
 		}
 		return tenantID, "user", uid, nil
 	case "tenant":
+		// GATED like Document's tenant scope (RFC FY Part C): a tenant name is shared
+		// by every user and agent in the tenant, and renaming one re-points what they
+		// all resolve. Ungated, an agent holding only tools:[Path] could unname any
+		// tenant document. The same two grants a tenant document needs open it.
+		if missing := missingTenantGrants(ctx); missing != "" {
+			return "", "", "", fmt.Errorf("Path: scope=tenant is not granted to this agent — a tenant path is "+
+				"shared by every user and agent in the tenant, so the operator must opt in. Missing on the agent: %s", missing)
+		}
 		return tenantID, "tenant", "", nil
 	default:
 		return "", "", "", fmt.Errorf("Path: unknown scope %q (agent | user | tenant)", requested)
 	}
+}
+
+// missingTenantGrants names the tenant grants ctx's policy lacks, "" when it holds
+// both — the same pair Document's tenant scope requires, so one rule opens the whole
+// tenant scope whichever tool an operator reasons about.
+func missingTenantGrants(ctx context.Context) string {
+	missing := make([]string, 0, 2)
+	if !contains(tools.PolicyOf(ctx).Memory.AllowedScopes, "tenant") {
+		missing = append(missing, "memory_scopes: [tenant]")
+	}
+	if !contains(tools.PolicyOf(ctx).SqlMem.AllowedScopes, "tenant") {
+		missing = append(missing, "sql_scopes: [tenant]")
+	}
+	return strings.Join(missing, " and ")
 }
 
 // pathScopeFailure classifies a resolveScope refusal. Its reasons differ in
@@ -157,6 +184,8 @@ func pathScopeFailure(ctx context.Context, requested string, err error) tools.Re
 	switch {
 	case tools.ConfineIsolatedScope(ctx, store.MemoryScope(requested)) != nil:
 		return errPermission(err.Error(), "Use scope=user or scope=agent; this run may not address the shared tenant scope.")
+	case requested == "tenant" && missingTenantGrants(ctx) != "":
+		return errPermission(err.Error(), "Use scope=user or scope=agent, or ask an operator to grant the tenant scope.")
 	case requested == "agent":
 		return errBusiness(err.Error(), "Use scope=user or scope=tenant instead.")
 	case requested == "user":
@@ -385,6 +414,9 @@ func (p *Path) mkdir(ctx context.Context, tenantID, scope, scopeID string, in pa
 	if r := newPathACL(ctx, scope, scopeID).allows(ctx, "mkdir", "directory", canonical, nil, "write"); r != nil {
 		return *r, nil
 	}
+	if r := reservedNameRefusal(ctx, "mkdir", scope, canonical); r != nil {
+		return *r, nil
+	}
 	// Something already named here? ok if it's a directory; never overwrite a
 	// document / volume_mount / memory_entry with a directory.
 	row, gerr := p.Store.DirentGet(ctx, tenantID, scope, scopeID, parent, name)
@@ -410,7 +442,7 @@ func (p *Path) mkdir(ctx context.Context, tenantID, scope, scopeID string, in pa
 	// Materialize an empty directory dirent. ResourceRef is left nil (a
 	// directory backs no resource); the store coerces it to "{}" for backend
 	// parity.
-	if _, err := p.Store.DirentCreate(ctx, store.DirentRow{
+	if _, err := createDirent(ctx, p.Store, store.DirentRow{
 		TenantID: tenantID, Scope: scope, ScopeID: scopeID,
 		ParentPath: parent, Name: name, Kind: "directory",
 	}); err != nil {
@@ -443,6 +475,11 @@ func (p *Path) mv(ctx context.Context, tenantID, scope, scopeID string, in pathI
 	if strings.HasPrefix(toC+"/", fromC+"/") {
 		return errValidation("cannot move a path into itself or its own subtree: "+fromC+" -> "+toC, "Pass a `to` outside the source path's subtree."), nil
 	}
+	// A reserved name may not leave (source) nor arrive (destination) — moving an
+	// ancestor such as /memory takes the names below it along.
+	if r := p.guardReserved(ctx, "mv", scope, append(reservedAtOrUnder(fromC), reservedAtOrUnder(toC)...)); r != nil {
+		return *r, nil
+	}
 	if acl := newPathACL(ctx, scope, scopeID); acl != nil {
 		if r, err := p.aclSubtree(ctx, acl, "mv", "write", tenantID, scope, scopeID, fromC, toC); err != nil || r != nil {
 			if err != nil {
@@ -455,7 +492,7 @@ func (p *Path) mv(ctx context.Context, tenantID, scope, scopeID string, in pathI
 	if _, err := p.Store.DirentGet(ctx, tenantID, scope, scopeID, toParent, toName); err == nil {
 		return errBusiness("destination already exists: "+toC, "Choose another destination, or remove it with op=rm first."), nil
 	}
-	moved, err := p.Store.DirentMove(ctx, tenantID, scope, scopeID, fromParent, fromName, toParent, toName)
+	moved, err := moveDirent(ctx, p.Store, tenantID, scope, scopeID, fromParent, fromName, toParent, toName)
 	if err != nil {
 		return errFrom("mv: "+err.Error(), err), nil
 	}
@@ -486,6 +523,9 @@ func (p *Path) rm(ctx context.Context, tenantID, scope, scopeID string, in pathI
 	if len(descendants) > 0 && !in.Recursive {
 		return errBusiness(fmt.Sprintf("path %q has %d descendant(s); pass recursive:true to remove them", canonical, len(descendants)), ""), nil
 	}
+	if r := p.guardReserved(ctx, "rm", scope, reservedAtOrUnder(canonical)); r != nil {
+		return *r, nil
+	}
 	if acl := newPathACL(ctx, scope, scopeID); acl != nil {
 		if r, err := p.aclSubtree(ctx, acl, "rm", "delete", tenantID, scope, scopeID, canonical, ""); err != nil || r != nil {
 			if err != nil {
@@ -496,13 +536,13 @@ func (p *Path) rm(ctx context.Context, tenantID, scope, scopeID string, in pathI
 	}
 	removed := 0
 	if in.Recursive && len(descendants) > 0 {
-		n, derr := p.Store.DirentDeleteUnder(ctx, tenantID, scope, scopeID, prefix)
+		n, derr := deleteDirentsUnder(ctx, p.Store, tenantID, scope, scopeID, prefix)
 		if derr != nil {
 			return errFrom("rm: "+derr.Error(), derr), nil
 		}
 		removed += n
 	}
-	found, err := p.Store.DirentDelete(ctx, tenantID, scope, scopeID, parent, name)
+	found, err := deleteDirent(ctx, p.Store, tenantID, scope, scopeID, parent, name)
 	if err != nil {
 		return errFrom("rm: "+err.Error(), err), nil
 	}
@@ -513,6 +553,29 @@ func (p *Path) rm(ctx context.Context, tenantID, scope, scopeID string, in pathI
 		return errNotFound("no such path: "+canonical, "List the parent directory with op=ls to find the right path."), nil
 	}
 	return jsonResult(map[string]any{"ok": true, "removed": canonical, "n_removed": removed})
+}
+
+// guardReserved refuses an rm or mv that would take away or create one of the
+// reserved tenant names (RFC FY Part C). The operator may; for the operator it first
+// has the tenant's roles recorded, so an ontology renamed here stays the ontology
+// even in a tenant nothing had resolved since the upgrade. Existence is not consulted:
+// the names are reserved whether or not their documents exist yet, so no answer
+// depends on what the tenant holds.
+func (p *Path) guardReserved(ctx context.Context, op, scope string, reserved []string) *tools.Result {
+	if scope != "tenant" || len(reserved) == 0 {
+		return nil
+	}
+	if r := reservedNameRefusal(ctx, op, scope, reserved[0]); r != nil {
+		return r
+	}
+	if p.Identities != nil {
+		if err := p.Identities.RecordTenantIdentities(ctx); err != nil {
+			r := errFrom(op+": could not record which documents the tenant's reserved names hold, so "+
+				"nothing was changed: "+err.Error(), err)
+			return &r
+		}
+	}
+	return nil
 }
 
 // asNotFound reports whether err is a *store.ErrNotFound (the store's miss

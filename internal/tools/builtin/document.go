@@ -722,6 +722,10 @@ var docSchemaDDL = []string{
 	// changed, so it can be undone together (document_review.go).
 	statementRulingsDDL,
 	statementRulingItemsDDL,
+	// document_roles: which document plays a runtime role here — the tenant
+	// ontology, by id rather than by name (document_ontology_identity.go).
+	documentRolesDDL,
+	documentRolesMarkerDDL,
 }
 
 // maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
@@ -769,11 +773,12 @@ func (d *Document) executeInput(ctx context.Context, in docInput, raw json.RawMe
 	if err := d.ensureSchema(ctx, key); err != nil {
 		return errFrom("document: schema init: "+err.Error(), err), nil
 	}
-	// RFC CA: an agent may PROPOSE an ontology entity, never decide one. Checked at the
-	// single dispatch point rather than inside each op — a per-op check is one op away
-	// from being forgotten, and the ops that would need it (create/update/delete/move/
-	// reorder) are exactly the ones a future change is likely to add a sibling to.
-	if refused := d.guardOntologyWrite(ctx, key, in.Op, in); refused != nil {
+	// RFC FY Part C: the names the runtime finds tenant-wide documents by are the
+	// operator's to give; see document_ontology_identity.go.
+	if res, handled := d.ensureEntitiesDocument(ctx, key, mscope, in, raw); handled {
+		return res, nil
+	}
+	if refused := d.reservedTargetRefusal(ctx, key, in); refused != nil {
 		return *refused, nil
 	}
 	// RFC EZ §1.5 seam 5: the caller's access-control set, asked about the
@@ -789,6 +794,22 @@ func (d *Document) executeInput(ctx context.Context, in docInput, raw json.RawMe
 	// ops; see document_ontology_fields.go. Pre-write so a collision leaves nothing behind.
 	classRules, refused := d.applyClassRules(ctx, key, mscope, acl, &in, raw)
 	if refused != nil {
+		return *refused, nil
+	}
+	// RFC CA: an agent may PROPOSE an ontology entity, never decide one. Checked at the
+	// single dispatch point rather than inside each op — a per-op check is one op away
+	// from being forgotten, and the ops that would need it (create/update/delete/move/
+	// reorder) are exactly the ones a future change is likely to add a sibling to.
+	//
+	// AFTER applyClassRules, on the input the handler will act on: an upsert_chunk may
+	// omit natural_key and have the class derive it, and a guard judging the caller's
+	// empty key let a "proposal" rewrite the accepted entity the derived key names
+	// (RFC FY P2 review). applyClassRules only reads, so nothing is written first.
+	if refused := d.guardOntologyWrite(ctx, key, in.Op, in); refused != nil {
+		return *refused, nil
+	}
+	// The root of a reserved document is the operator's; same placement and reason.
+	if refused := d.reservedRootRefusal(ctx, key, in); refused != nil {
 		return *refused, nil
 	}
 	res, err := d.dispatch(ctx, key, mscope, in, raw)
@@ -1167,10 +1188,29 @@ func (d *Document) provisionSchema(ctx context.Context, key sqlmem.ScopeKey) err
 // provisionTables creates the document tables on the key's plane and runs every
 // migration on them.
 func (d *Document) provisionTables(ctx context.Context, key sqlmem.ScopeKey) error {
+	// Before the DDL: CREATE TABLE IF NOT EXISTS would keep a document_roles table an
+	// agent planted before the name was reserved (document_ontology_identity.go).
+	if err := d.quarantineUntrustedRoles(ctx, key); err != nil {
+		return err
+	}
 	for _, ddl := range docSchemaDDL {
+		if ddl == documentRolesDDL || ddl == documentRolesMarkerDDL {
+			continue // together, below
+		}
 		if _, err := d.docSQL().Exec(ctx, key, ddl, nil, 0); err != nil {
 			return err
 		}
+	}
+	// document_roles and its marker in ONE transaction (DDL is transactional on both
+	// tiers), so no replica ever sees the runtime's table without the marker and
+	// quarantines it as a plant (document_ontology_identity.go).
+	if err := d.withSqlTxn(ctx, key, func(txnID string) error {
+		if err := d.execTxn(ctx, txnID, documentRolesDDL); err != nil {
+			return err
+		}
+		return d.execTxn(ctx, txnID, documentRolesMarkerDDL)
+	}); err != nil {
+		return fmt.Errorf("document_roles: %w", err)
 	}
 	// chunk_assets (RFC BO) holds image chunk bytes as TRUE binary. The binary
 	// column type is the ONE non-portable part of the doc schema — sqlite BLOB vs
@@ -2382,10 +2422,14 @@ func (d *Document) registerDocDirent(ctx context.Context, key sqlmem.ScopeKey, d
 		return "", docClassify(fmt.Errorf("path may not be the root"), errValidation, docPathFix)
 	}
 	ref, _ := json.Marshal(map[string]any{"document_id": docID})
-	if _, err := d.Store.DirentCreate(ctx, store.DirentRow{
+	if _, err := createDirent(ctx, d.Store, store.DirentRow{
 		TenantID: direntTenant(ctx), Scope: key.Scope, ScopeID: direntScopeID(key),
 		ParentPath: parent, Name: name, Kind: "document", ResourceRef: ref,
 	}); err != nil {
+		var rn *reservedNameError
+		if errors.As(err, &rn) {
+			return "", docClassify(err, errPermission, "Use another path.")
+		}
 		return "", err
 	}
 	return canonical, nil
@@ -2859,7 +2903,7 @@ func (d *Document) removeDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 			}
 			_ = json.Unmarshal(r.ResourceRef, &ref)
 			if ref.DocumentID == docID {
-				_, _ = d.Store.DirentDelete(ctx, direntTenant(ctx), key.Scope, direntScopeID(key), r.ParentPath, r.Name)
+				_, _ = deleteDirent(ctx, d.Store, direntTenant(ctx), key.Scope, direntScopeID(key), r.ParentPath, r.Name)
 			}
 		}
 	}

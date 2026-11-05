@@ -22,9 +22,12 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"strings"
 
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -92,18 +95,24 @@ func (s *Server) provisionTenantRootDoc(ctx context.Context, mi memInject) {
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 	dctx := s.tenantRootCtx(ctx, mi)
 
-	probe, _ := json.Marshal(map[string]any{
-		"op": "get_document", "scope": "tenant", "path": meminject.TenantRootPath,
-	})
-	if res, _ := doc.Execute(dctx, probe); !res.IsError {
+	// Provision ONLY on "absent". The probe asks the dirent store directly because a
+	// Document get_document answers a store fault and a missing name with the same
+	// error category, and a fault read as "absent" would import the template over the
+	// operator's deployment context. An existing name is left alone, whatever it holds.
+	cut := strings.LastIndex(meminject.TenantRootPath, "/") + 1
+	_, err := s.store.DirentGet(dctx, mi.Tenant, "tenant", "", meminject.TenantRootPath[:cut], meminject.TenantRootPath[cut:])
+	if err == nil {
 		return // already provisioned, here or by another replica
 	}
+	var nf *store.ErrNotFound
+	if !errors.As(err, &nf) {
+		slog.WarnContext(ctx, "tenant root: probe failed; not provisioning", "tenant", mi.Tenant, "err", err)
+		return
+	}
 
-	create, _ := json.Marshal(map[string]any{
-		"op": "import_md", "scope": "tenant", "path": meminject.TenantRootPath,
-		"markdown": meminject.TenantRootTemplate(),
-	})
-	_, _ = doc.Execute(dctx, create) // best-effort; the next reference retries
+	// A reserved tenant name (RFC FY Part C), given through the one entry point that
+	// may give it outside the operator plane: this runs inside a run's prompt render.
+	_, _ = doc.ProvisionReservedDocument(dctx, meminject.TenantRootPath, meminject.TenantRootTemplate()) // best-effort; the next reference retries
 }
 
 // readTenantRootMarkdown exports the document to clean Markdown for injection.

@@ -10,7 +10,7 @@ content. Moving a directory moves every entry under it in one step.
 
 - `path` (required) — the current path.
 - `to` (required) — the new path. It must not exist yet.
-- `scope` — `agent` (default), `user` or `tenant`. Both paths are in this one
+- `scope` — `agent` (default), `user` or `tenant`. `tenant` needs `tenant` in both the agent's `memory_scopes` and `sql_scopes`. Both paths are in this one
   scope: `mv` cannot carry a name from one scope to another.
 
 ## Returns
@@ -25,6 +25,9 @@ content. Moving a directory moves every entry under it in one step.
 - `cannot move a path into itself or its own subtree` — e.g. `/docs` to
   `/docs/old`.
 - `source and destination are the same path`.
+- `... is a reserved name in the tenant scope ...` — `/memory/ontology`,
+  `/memory/entities` and `/memory/tenant_root` in the tenant tree are the
+  operator's: an agent cannot remove, rename or replace them, nor move a directory above them such as `/memory`.
 
 ## Examples
 

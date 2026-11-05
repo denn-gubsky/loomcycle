@@ -8,7 +8,7 @@ including directories that exist only because something lives beneath them.
 ## Arguments
 
 - `path` (required) — the directory, e.g. `/docs`. Use `/` for the root.
-- `scope` — `agent` (default), `user` or `tenant`.
+- `scope` — `agent` (default), `user` or `tenant`. `tenant` needs `tenant` in both the agent's `memory_scopes` and `sql_scopes`.
 - `recursive` — `true` lists every descendant, flat, by full path.
 - `kind_filter` — only `document`, `volume_mount`, `memory_entry` or `directory`.
 - `limit` — entries per page (default 500, at most 5000).

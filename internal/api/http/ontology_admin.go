@@ -470,8 +470,16 @@ func (s *Server) ontologyDocCtx(ctx context.Context, mi memInject) context.Conte
 // ontologyRoot returns the ontology document's (root chunk id, document id, root
 // status).
 func (s *Server) ontologyRoot(dctx context.Context, doc *builtin.Document) (rootID, docID, status string, err error) {
+	// By the recorded id, wherever the operator has named the document (RFC FY Part C).
+	ontologyID, err := doc.TenantOntologyID(dctx)
+	if err != nil {
+		return "", "", "", err
+	}
+	if ontologyID == "" {
+		return "", "", "", errors.New("this tenant has no ontology document")
+	}
 	req, _ := json.Marshal(map[string]any{
-		"op": "get_document", "scope": "tenant", "path": meminject.OntologyPath,
+		"op": "get_document", "scope": "tenant", "id": ontologyID,
 	})
 	res, derr := doc.Execute(dctx, req)
 	if derr != nil {
