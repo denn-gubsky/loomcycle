@@ -47,10 +47,10 @@ func held(r *Redactor, v string) bool {
 	return ok
 }
 
-func bucketLen(r *Redactor, kind bucketKind, h Holder) int {
+func observedLen(r *Redactor, tenant string) int {
 	r.dyn.mu.RLock()
 	defer r.dyn.mu.RUnlock()
-	if b := r.dyn.buckets[bucketKey(kind, h)]; b != nil {
+	if b := r.dyn.observed[tenant]; b != nil {
 		return b.Len()
 	}
 	return 0
@@ -63,48 +63,34 @@ func masked(t *testing.T, r *Redactor, v string) {
 	}
 }
 
-// TestRedact_DynamicSetIsBounded: a bucket never holds more than its share of
-// unpinned values, and the set stops growing at its cap, each registration
-// evicting only from its own bucket; the compiled replacer shrinks with it.
+// TestRedact_DynamicSetIsBounded: with no live run, credentials stop at the
+// cap (the least recently registered go), a tenant's observed values at its
+// share, the operator plane at its share; the compiled replacer follows.
 func TestRedact_DynamicSetIsBounded(t *testing.T) {
-	r, _ := newBounded(64) // credential share 16, observed share 4
-	a := Holder{Tenant: "a", Runs: []string{"run-a"}}
-	for i := 0; i < 1000; i++ {
-		r.RegisterCredential(a, fmt.Sprintf("a-credential-%04d", i))
+	r, _ := newBounded(64) // operator share 16, observed share 4
+	for tn := 0; tn < 10; tn++ {
+		for i := 0; i < 100; i++ {
+			r.RegisterCredential(Holder{Tenant: fmt.Sprintf("t%d", tn)}, fmt.Sprintf("t%d-credential-%03d", tn, i))
+		}
 	}
-	if n := bucketLen(r, bucketCredential, a); n != 16 {
-		t.Errorf("tenant a holds %d credentials, want its share of 16", n)
+	if n := r.dyn.creds.Len(); n != 64 {
+		t.Errorf("credentials: %d held, want the cap of 64", n)
 	}
-	if held(r, "a-credential-0000") || !held(r, "a-credential-0999") {
-		t.Error("the share did not evict the oldest value first")
+	if held(r, "t9-credential-035") || !held(r, "t9-credential-036") {
+		t.Error("the cap did not keep exactly the most recently registered")
 	}
-	u := Holder{Tenant: "a", User: "u1", Runs: []string{"run-a"}}
 	for i := 0; i < 100; i++ {
-		r.RegisterObserved(u, fmt.Sprintf("url-part-%04d", i))
+		r.RegisterObserved(Holder{Tenant: "t0", User: "u"}, fmt.Sprintf("url-part-%03d", i))
+		r.RegisterOperator(fmt.Sprintf("operator-secret-%03d", i))
 	}
-	if n := bucketLen(r, bucketObserved, u); n != 4 {
-		t.Errorf("user u1 holds %d observed values, want the observed share of 4", n)
+	if n := observedLen(r, "t0"); n != 4 {
+		t.Errorf("observed: %d held, want the share of 4", n)
 	}
-	// A few tenants: the set stops at the cap.
-	for tn := 0; tn < 4; tn++ {
-		h := Holder{Tenant: fmt.Sprintf("t%02d", tn)}
-		for i := 0; i < 16; i++ {
-			r.RegisterCredential(h, fmt.Sprintf("t%02d-credential-%02d", tn, i))
-		}
+	if n := r.dyn.operator.Len(); n != 16 {
+		t.Errorf("operator: %d held, want the share of 16", n)
 	}
-	if n := len(r.dyn.entries); n > 64 {
-		t.Errorf("the set holds %d values; want at most the cap of 64", n)
-	}
-	// Many tenants: each keeps its floor, so past cap/bucketFloor buckets the
-	// set holds the floors and no more.
-	for tn := 4; tn < 40; tn++ {
-		h := Holder{Tenant: fmt.Sprintf("t%02d", tn)}
-		for i := 0; i < 16; i++ {
-			r.RegisterCredential(h, fmt.Sprintf("t%02d-credential-%02d", tn, i))
-		}
-	}
-	if n, limit := len(r.dyn.entries), len(r.dyn.buckets)*bucketFloor; n > limit {
-		t.Errorf("the set holds %d values across %d buckets; want at most their floors, %d", n, len(r.dyn.buckets), limit)
+	if n := len(r.dyn.entries); n != 64+4+16 {
+		t.Errorf("the set holds %d values, want 84", n)
 	}
 	_ = r.String("compile")
 	if r.dyn.repl == nil || r.dyn.dirty {
@@ -112,98 +98,79 @@ func TestRedact_DynamicSetIsBounded(t *testing.T) {
 	}
 }
 
-// TestRedact_RegistrationsNeverEvictAnotherTenantsValue: however many values
-// other tenants (or another user's model) register, a tenant's own values stay
-// and stay masked.
-func TestRedact_RegistrationsNeverEvictAnotherTenantsValue(t *testing.T) {
-	r, _ := newBounded(16)
-	r.RegisterCredential(Holder{Tenant: "victim"}, "victim-credential")
-	r.RegisterOperator("operator-session-token")
-	for tn := 0; tn < 50; tn++ {
-		for i := 0; i < 8; i++ {
-			r.RegisterObserved(Holder{Tenant: fmt.Sprintf("t%02d", tn), User: "u"}, fmt.Sprintf("t%02d-url-part-%d", tn, i))
-			r.RegisterCredential(Holder{Tenant: fmt.Sprintf("t%02d", tn)}, fmt.Sprintf("t%02d-cred-%d", tn, i))
-		}
+// TestRedact_ObservedFloodNeverEvictsALiveRunsCredential: however many
+// model-influenced values a tenant's runs register, a live run's credential
+// (of that tenant or another) stays and stays masked; so does an unpinned
+// credential, since observed values never displace credentials.
+func TestRedact_ObservedFloodNeverEvictsALiveRunsCredential(t *testing.T) {
+	r, live := newBounded(16)
+	live.set("run-live", true)
+	r.RegisterCredential(Holder{Tenant: "t", Runs: []string{"run-live"}}, "live-run-credential")
+	r.RegisterCredential(Holder{Tenant: "t"}, "idle-credential")
+	for i := 0; i < 5000; i++ {
+		r.RegisterObserved(Holder{Tenant: "t", Runs: []string{fmt.Sprintf("r%d", i)}}, fmt.Sprintf("model-chosen-url-part-%05d", i))
+		r.RegisterObserved(Holder{Tenant: "other"}, fmt.Sprintf("other-url-part-%05d", i))
 	}
-	for _, v := range []string{"victim-credential", "operator-session-token"} {
+	for _, v := range []string{"live-run-credential", "idle-credential"} {
 		if !held(r, v) {
-			t.Errorf("other tenants' registrations evicted %s", v)
+			t.Errorf("observed values evicted %s", v)
 		}
 		masked(t, r, v)
 	}
-	// The same tenant's model-driven values cannot evict its credentials
-	// either: the observed bucket is its own.
-	for i := 0; i < 100; i++ {
-		r.RegisterObserved(Holder{Tenant: "victim", User: "model-driven"}, fmt.Sprintf("victim-url-%03d", i))
-	}
-	if !held(r, "victim-credential") {
-		t.Error("observed values evicted the tenant's credential")
-	}
 }
 
-// TestRedact_LiveRunsValueIsNeverEvicted: a value a live run registered stays
-// however far its own bucket is pushed past its share, and goes once the run
-// is over.
-func TestRedact_LiveRunsValueIsNeverEvicted(t *testing.T) {
-	r, live := newBounded(16) // credential share 4
-	live.set("run-live", true)
-	h := Holder{Tenant: "t", Runs: []string{"run-live"}}
-	r.RegisterCredential(h, "pinned-credential")
-	for i := 0; i < 200; i++ {
-		r.RegisterCredential(Holder{Tenant: "t", Runs: []string{fmt.Sprintf("run-%d", i)}}, fmt.Sprintf("later-credential-%03d", i))
-	}
-	if !held(r, "pinned-credential") {
-		t.Fatal("a live run's credential was evicted")
-	}
-	masked(t, r, "pinned-credential")
-	if n := bucketLen(r, bucketCredential, h); n != 4 {
-		t.Errorf("bucket holds %d, want its share of 4 (the pinned value and the 3 newest)", n)
-	}
-
-	// Pinned values alone past the share are kept.
-	for i := 0; i < 10; i++ {
-		id := fmt.Sprintf("live-%d", i)
+// TestRedact_PinnedValueSurvivesAnyChurn: a credential a live run holds stays
+// however many credentials other tenants register, and pinned values alone
+// may exceed the cap.
+func TestRedact_PinnedValueSurvivesAnyChurn(t *testing.T) {
+	r, live := newBounded(16)
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("victim-run-%d", i)
 		live.set(id, true)
-		r.RegisterCredential(Holder{Tenant: "t", Runs: []string{id}}, fmt.Sprintf("pinned-%d-credential", i))
+		r.RegisterCredential(Holder{Tenant: "victim", Runs: []string{id}}, fmt.Sprintf("victim-live-credential-%02d", i))
 	}
-	for i := 0; i < 10; i++ {
-		if v := fmt.Sprintf("pinned-%d-credential", i); !held(r, v) {
-			t.Errorf("pinned %s evicted", v)
+	for tn := 0; tn < 50; tn++ {
+		for i := 0; i < 100; i++ {
+			r.RegisterCredential(Holder{Tenant: fmt.Sprintf("t%02d", tn)}, fmt.Sprintf("t%02d-churn-%03d", tn, i))
 		}
 	}
-
-	// Runs over: the next registrations may evict their values.
-	live.set("run-live", false)
-	for i := 0; i < 10; i++ {
-		live.set(fmt.Sprintf("live-%d", i), false)
-	}
 	for i := 0; i < 20; i++ {
-		r.RegisterCredential(Holder{Tenant: "t"}, fmt.Sprintf("after-%02d-credential", i))
+		v := fmt.Sprintf("victim-live-credential-%02d", i)
+		if !held(r, v) {
+			t.Fatalf("other tenants' churn evicted pinned %s", v)
+		}
+		masked(t, r, v)
 	}
-	if held(r, "pinned-credential") {
-		t.Error("a value stayed pinned after its run ended")
+	// The churn is bounded: past the pinned values, each registration keeps
+	// only itself.
+	if n := r.dyn.creds.Len(); n > 21 {
+		t.Errorf("credentials: %d held with 20 pinned, want at most 21", n)
 	}
 }
 
-// TestRedact_SharedValueLeavesOnlyWhenEveryOwnerLetsGo: a secret two tenants
-// resolved stays while either still holds it.
-func TestRedact_SharedValueLeavesOnlyWhenEveryOwnerLetsGo(t *testing.T) {
-	r, _ := newBounded(16) // share 4
-	a, b := Holder{Tenant: "a"}, Holder{Tenant: "b"}
-	r.RegisterCredential(a, "shared-credential")
-	r.RegisterCredential(b, "shared-credential")
-	for i := 0; i < 10; i++ {
-		r.RegisterCredential(a, fmt.Sprintf("a-only-credential-%d", i))
+// TestRedact_UnpinnedValueIsEvictable: once no run that registered a value is
+// live, it is an ordinary LRU entry; a value two runs registered stays until
+// both have ended.
+func TestRedact_UnpinnedValueIsEvictable(t *testing.T) {
+	r, live := newBounded(4)
+	live.set("run-a", true)
+	live.set("run-b", true)
+	r.RegisterCredential(Holder{Tenant: "a", Runs: []string{"run-a"}}, "shared-credential")
+	r.RegisterCredential(Holder{Tenant: "b", Runs: []string{"run-b"}}, "shared-credential")
+	churn := func(tag string) {
+		for i := 0; i < 20; i++ {
+			r.RegisterCredential(Holder{Tenant: "c"}, fmt.Sprintf("%s-churn-%02d", tag, i))
+		}
 	}
+	live.set("run-a", false)
+	churn("one")
 	if !held(r, "shared-credential") {
-		t.Fatal("tenant a letting go evicted a value tenant b still holds")
+		t.Fatal("evicted while run-b, which registered it too, is live")
 	}
-	masked(t, r, "shared-credential")
-	for i := 0; i < 10; i++ {
-		r.RegisterCredential(b, fmt.Sprintf("b-only-credential-%d", i))
-	}
+	live.set("run-b", false)
+	churn("two")
 	if held(r, "shared-credential") {
-		t.Error("the value stayed after both owners let it go")
+		t.Error("an unpinned value was not evicted by the cap")
 	}
 }
 
@@ -281,37 +248,5 @@ func BenchmarkRedact_RebuildAtCap(b *testing.B) {
 		r.dyn.dirty = true
 		r.dyn.mu.Unlock()
 		_ = r.String("x")
-	}
-}
-
-// TestRedact_OverCapChargesTheBucketsOverTheirFairShare: when the set is full
-// because other tenants filled their shares, a tenant registering within its
-// fair share keeps its values; the overflow is taken from the buckets furthest
-// over theirs.
-func TestRedact_OverCapChargesTheBucketsOverTheirFairShare(t *testing.T) {
-	r, _ := newBounded(64) // credential share 16
-	for _, tn := range []string{"t1", "t2", "t3"} {
-		for i := 0; i < 16; i++ {
-			r.RegisterCredential(Holder{Tenant: tn}, fmt.Sprintf("%s-credential-%02d", tn, i))
-		}
-	}
-	a := Holder{Tenant: "a"}
-	for i := 0; i < 1000; i++ {
-		r.RegisterCredential(a, fmt.Sprintf("a-flood-%04d", i))
-	}
-	b := Holder{Tenant: "b"}
-	for i := 0; i < 8; i++ {
-		r.RegisterCredential(b, fmt.Sprintf("b-credential-%d", i))
-	}
-	for i := 0; i < 8; i++ {
-		if v := fmt.Sprintf("b-credential-%d", i); !held(r, v) {
-			t.Errorf("tenant b, within its fair share, lost %s", v)
-		}
-	}
-	if n := len(r.dyn.entries); n > 64 {
-		t.Errorf("the set holds %d values, want at most the cap of 64", n)
-	}
-	if n := bucketLen(r, bucketCredential, a); n >= 16 {
-		t.Errorf("tenant a, furthest over its fair share, still holds %d", n)
 	}
 }

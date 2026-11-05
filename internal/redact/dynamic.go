@@ -12,52 +12,50 @@ import (
 // The runtime-registered set (Tier A') is fed by values a run's tools resolve
 // or receive: $cred: values, minted tokens, peer and provider keys, and the
 // credential parts of a URL a tool fetched (which a model chooses). It is
-// bounded (RFC FZ D5), but a value that leaves it is no longer masked, so the
-// bound is built to never cost a live secret:
+// bounded (RFC FZ D5), and the bound is built so that evicting a value can
+// never unmask a secret a run can still emit:
 //
-//   - Every value belongs to buckets: the operator plane's, a tenant's
-//     credentials, or a tenant and user's observed values (URL parts). A
-//     registration that pushes its bucket past its share evicts the least
-//     recently registered value of that same bucket, so one tenant (or one
-//     user's model) cannot push out another's secrets by flooding.
-//   - When the whole set passes the cap, the value is taken from the bucket
-//     furthest over its fair share (the cap divided by the buckets in use,
-//     never less than bucketFloor), and never from a bucket at or below its
-//     fair share or its floor, nor from the operator plane: the overflow is
-//     charged to whoever holds the most, not to whoever registered last.
-//   - A value is pinned while a run that registered it is live (the server
-//     answers liveness from its cancel registry). Eviction skips pinned
-//     values; if pinned values alone exceed a bound, they are kept and a
-//     warning is logged: they are bounded by the live runs.
-//   - A value held by several buckets (two tenants resolved the same secret)
-//     leaves the set only when every bucket holding it has let it go.
+//   - A value is PINNED while any run that registered it is live (the server
+//     answers liveness from its cancel registry, by root run id and agent id,
+//     so a parent that repeats what a child resolved keeps it pinned). Pinned
+//     values are never evicted. If pinned values alone exceed a bound, the
+//     set grows past it with a rate-limited warning: live runs bound them.
+//     A run's content is redacted when it is written, while the run is live;
+//     what is read back after it ends (a stream re-attach, a replay, a
+//     resume, a snapshot) is the stored, already-masked text.
+//   - Credentials (resolved secrets) share one global LRU of DefaultDynamicCap
+//     values; past it the least recently registered UNPINNED value goes,
+//     whoever registered it. No run can emit it any more, and a later run that
+//     resolves it registers and pins it again, so no per-tenant fairness is
+//     needed.
+//   - Observed values (whose content a model may influence: URL parts) have a
+//     smaller bucket per tenant and evict only within it, oldest unpinned
+//     first; they never displace a credential.
+//   - Operator-plane values have their own bucket, evicted only by operator
+//     registrations; the static env values given to New are outside the set.
 //   - The replacer is one longest-first replacer over the whole set, rebuilt
 //     on the first String after the set changed. Two replacers applied in
 //     turn can split a value that overlaps another (a suffix of one is a
-//     prefix of the other), so there is no overlay: masking is never deferred.
+//     prefix of the other), so masking is never deferred to a second pass.
 const (
-	// DefaultDynamicCap is how many registered values the set holds before
-	// registrations start evicting (pinned values may exceed it).
+	// DefaultDynamicCap bounds the unpinned credentials.
 	DefaultDynamicCap = 4096
-	// A tenant's credentials, and the operator plane, each hold at most a
-	// quarter of the cap; a tenant and user's observed values a sixteenth.
-	credentialShareDivisor = 4
-	observedShareDivisor   = 16
-	// bucketFloor is how many values a bucket keeps whatever the pressure
-	// from other buckets; past cap/bucketFloor buckets the set can exceed
-	// the cap (with a warning) rather than take a bucket below it.
-	bucketFloor = 8
+	// The operator plane holds at most a quarter of the cap; a tenant's
+	// observed values a sixteenth.
+	operatorShareDivisor = 4
+	observedShareDivisor = 16
 	// pruneHoldersAt is how many run ids a value collects before the dead
 	// ones are dropped, so a long-lived secret does not grow its holder set
 	// by one per run that ever used it.
 	pruneHoldersAt = 16
 )
 
-// Holder is who registered a value: the tenant (and, for an observed value,
-// the user) it belongs to and the runs that keep it pinned while live.
+// Holder is who registered a value: the tenant it belongs to and the runs
+// that keep it pinned while live.
 type Holder struct {
 	Tenant string
-	User   string
+	// User is carried for the caller's record; buckets are per tenant.
+	User string
 	// Runs are the ids whose liveness pins the value (a run id and an agent
 	// id are both accepted; empty ones are ignored).
 	Runs []string
@@ -71,19 +69,24 @@ const (
 	bucketObserved
 )
 
-// dynEntry is one registered value.
+// dynEntry is one registered value and where it is held. It leaves the set
+// when no list holds it.
 type dynEntry struct {
-	value   string
-	buckets map[string]*list.Element // bucket key → this entry's element in it
-	runs    map[string]struct{}      // pinning holders
+	value    string
+	cred     *list.Element            // in dynamicSet.creds
+	observed map[string]*list.Element // tenant → in dynamicSet.observed[tenant]
+	op       *list.Element            // in dynamicSet.operator
+	runs     map[string]struct{}      // pinning holders
 }
 
 // dynamicSet is the bounded set and its compiled form.
 type dynamicSet struct {
-	mu      sync.RWMutex
-	cap     int // 0 means DefaultDynamicCap
-	entries map[string]*dynEntry
-	buckets map[string]*list.List // most recent first
+	mu       sync.RWMutex
+	cap      int // 0 means DefaultDynamicCap
+	entries  map[string]*dynEntry
+	creds    *list.List            // most recent first
+	observed map[string]*list.List // per tenant, most recent first
+	operator *list.List            // most recent first
 	// liveness returns a predicate over run ids, answered from one snapshot;
 	// nil means no run is ever live (nothing is pinned).
 	liveness func() func(run string) bool
@@ -101,49 +104,20 @@ func (d *dynamicSet) capacity() int {
 	return DefaultDynamicCap
 }
 
-func (d *dynamicSet) share(kind bucketKind) int {
-	div := credentialShareDivisor
-	if kind == bucketObserved {
-		div = observedShareDivisor
-	}
-	return max(1, d.capacity()/div)
-}
-
-func bucketKey(kind bucketKind, h Holder) string {
-	switch kind {
-	case bucketOperator:
-		return "operator"
-	case bucketCredential:
-		return "credential\x00" + h.Tenant
-	}
-	return "observed\x00" + h.Tenant + "\x00" + h.User
-}
-
-// register adds value to the bucket kind/h names. The caller has checked the
-// value's length.
+// register adds value as kind for h. The caller has checked its length.
 func (d *dynamicSet) register(kind bucketKind, h Holder, value string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.entries == nil {
 		d.entries = map[string]*dynEntry{}
-		d.buckets = map[string]*list.List{}
-	}
-	key := bucketKey(kind, h)
-	b := d.buckets[key]
-	if b == nil {
-		b = list.New()
-		d.buckets[key] = b
+		d.creds, d.operator = list.New(), list.New()
+		d.observed = map[string]*list.List{}
 	}
 	e, ok := d.entries[value]
 	if !ok {
-		e = &dynEntry{value: value, buckets: map[string]*list.Element{}}
+		e = &dynEntry{value: value}
 		d.entries[value] = e
 		d.dirty = true
-	}
-	if el, in := e.buckets[key]; in {
-		b.MoveToFront(el)
-	} else {
-		e.buckets[key] = b.PushFront(e)
 	}
 	var live func(string) bool
 	liveOf := func() func(string) bool {
@@ -172,72 +146,73 @@ func (d *dynamicSet) register(kind bucketKind, h Holder, value string) {
 			}
 		}
 	}
-	for b.Len() > d.share(kind) {
-		if !d.evictFrom(key, e, liveOf()) {
-			d.warnOver("a bucket's pinned values exceed its share", key, b.Len())
-			break
+
+	switch kind {
+	case bucketOperator:
+		e.op = pushOrTouch(d.operator, e.op, e)
+		for d.operator.Len() > max(1, d.capacity()/operatorShareDivisor) {
+			// Operator values are pinned by no run: the oldest goes (an
+			// expired credential, in practice).
+			if !d.evictOldest(d.operator, e, nil, func(x *dynEntry) { d.operator.Remove(x.op); x.op = nil }) {
+				break
+			}
 		}
-	}
-	for len(d.entries) > d.capacity() {
-		if !d.evictOverFairShare(e, liveOf()) {
-			d.warnOver("the set is over its cap and no bucket is over its fair share with a value to give up", key, len(d.entries))
-			return
+	case bucketCredential:
+		e.cred = pushOrTouch(d.creds, e.cred, e)
+		for d.creds.Len() > d.capacity() {
+			if !d.evictOldest(d.creds, e, liveOf(), func(x *dynEntry) { d.creds.Remove(x.cred); x.cred = nil }) {
+				d.warnOver("live runs hold more credentials than the cap", h.Tenant, d.creds.Len())
+				break
+			}
+		}
+	case bucketObserved:
+		b := d.observed[h.Tenant]
+		if b == nil {
+			b = list.New()
+			d.observed[h.Tenant] = b
+		}
+		if e.observed == nil {
+			e.observed = map[string]*list.Element{}
+		}
+		e.observed[h.Tenant] = pushOrTouch(b, e.observed[h.Tenant], e)
+		tenant := h.Tenant
+		for b.Len() > max(1, d.capacity()/observedShareDivisor) {
+			if !d.evictOldest(b, e, liveOf(), func(x *dynEntry) { b.Remove(x.observed[tenant]); delete(x.observed, tenant) }) {
+				d.warnOver("live runs hold more observed values than a tenant's share", tenant, b.Len())
+				break
+			}
 		}
 	}
 }
 
-// evictFrom lets go of the least recently registered unpinned value in the
-// bucket key, other than keep (the value being registered, which must be
-// masked when Register returns): the bucket drops it, and the set drops it
-// when no other bucket holds it. It reports false when there is no such value.
-func (d *dynamicSet) evictFrom(key string, keep *dynEntry, live func(string) bool) bool {
-	b := d.buckets[key]
-	if b == nil {
-		return false
+// pushOrTouch moves el to the front of l, or pushes e when el is nil.
+func pushOrTouch(l *list.List, el *list.Element, e *dynEntry) *list.Element {
+	if el != nil {
+		l.MoveToFront(el)
+		return el
 	}
-	for el := b.Back(); el != nil; el = el.Prev() {
+	return l.PushFront(e)
+}
+
+// evictOldest takes the least recently registered value of l that is
+// neither keep (the value being registered, which must be masked when the
+// registration returns) nor pinned, with release (which takes it out of l),
+// and drops it from the set when no list holds it any more. live nil means
+// nothing in l is pinned. It reports false when l has no such value.
+func (d *dynamicSet) evictOldest(l *list.List, keep *dynEntry, live func(string) bool, release func(*dynEntry)) bool {
+	for el := l.Back(); el != nil; el = el.Prev() {
 		e := el.Value.(*dynEntry)
-		if e == keep || pinned(e, live) {
+		if e == keep || (live != nil && pinned(e, live)) {
 			continue
 		}
-		b.Remove(el)
-		delete(e.buckets, key)
-		if b.Len() == 0 {
-			delete(d.buckets, key)
-		}
-		if len(e.buckets) == 0 {
+		release(e)
+		if e.cred == nil && e.op == nil && len(e.observed) == 0 {
 			delete(d.entries, e.value)
 			d.dirty = true
 		}
 		return true
 	}
 	return false
-}
-
-// evictOverFairShare takes one value from the tenant bucket furthest over its
-// fair share that has an unpinned value other than keep to give. It reports
-// false when no bucket over its fair share can give one.
-func (d *dynamicSet) evictOverFairShare(keep *dynEntry, live func(string) bool) bool {
-	fair := max(bucketFloor, d.capacity()/max(1, len(d.buckets)))
-	tried := map[string]bool{}
-	for {
-		victim, over := "", 0
-		for k, b := range d.buckets {
-			if k == bucketKey(bucketOperator, Holder{}) || tried[k] {
-				continue
-			}
-			if n := b.Len() - fair; n > over {
-				victim, over = k, n
-			}
-		}
-		if victim == "" {
-			return false
-		}
-		if d.evictFrom(victim, keep, live) {
-			return true
-		}
-		tried[victim] = true // everything it holds is pinned
-	}
 }
 
 func pinned(e *dynEntry, live func(string) bool) bool {
@@ -249,17 +224,15 @@ func pinned(e *dynEntry, live func(string) bool) bool {
 	return false
 }
 
-// warnOver logs, at most once a minute, that a bound is exceeded. Bucket keys
-// carry a tenant id and a user id, never a value.
-func (d *dynamicSet) warnOver(msg, key string, n int) {
+// warnOver logs, at most once a minute, that pinned values exceed a bound.
+// It names a tenant id, never a value.
+func (d *dynamicSet) warnOver(msg, tenant string, n int) {
 	now := time.Now()
 	if now.Sub(d.lastWarn) < time.Minute {
 		return
 	}
 	d.lastWarn = now
-	kind, rest, _ := strings.Cut(key, "\x00")
-	tenant, _, _ := strings.Cut(rest, "\x00")
-	slog.Warn("redact: keeping pinned secrets past the bound", "reason", msg, "bucket", kind, "tenant", tenant, "held", n, "cap", d.capacity())
+	slog.Warn("redact: keeping pinned secrets past the bound", "reason", msg, "tenant", tenant, "held", n, "cap", d.capacity())
 }
 
 // replacer returns the compiled set, rebuilding it first if the set changed.

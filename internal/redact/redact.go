@@ -337,10 +337,10 @@ func New(secrets map[string]string, withPatterns bool) *Redactor {
 // RegisterOperator adds a secret VALUE the operator plane obtained at run
 // time (a provider's minted cloud credentials), so a later tool_call or
 // tool_result that echoes it is masked in the persisted transcript. Operator
-// values have their own bucket, which no tenant registration evicts from.
-// Values shorter than minDynamicSecretLen and a nil redactor are ignored.
-// Safe for concurrent use. The static env values given to New are not in the
-// bounded set at all.
+// values have their own bucket, which only operator registrations evict from
+// (the oldest first). Values shorter than minDynamicSecretLen and a nil
+// redactor are ignored. Safe for concurrent use. The static env values given
+// to New are not in the bounded set at all.
 func (r *Redactor) RegisterOperator(value string) {
 	if r == nil || len(value) < minDynamicSecretLen {
 		return
@@ -350,10 +350,10 @@ func (r *Redactor) RegisterOperator(value string) {
 
 // RegisterCredential adds a secret VALUE resolved for h.Tenant (a $cred:
 // value, a minted token, a peer or provider key). It is masked from the
-// moment this returns, stays while any of h.Runs is live, and otherwise
-// competes only with the same tenant's credentials for the tenant's share
-// (see dynamic.go). Values shorter than minDynamicSecretLen and a nil
-// redactor are ignored. Safe for concurrent use.
+// moment this returns and is never evicted while any of h.Runs is live; past
+// DefaultDynamicCap the least recently registered credential no live run
+// holds goes (see dynamic.go). Values shorter than minDynamicSecretLen and a
+// nil redactor are ignored. Safe for concurrent use.
 func (r *Redactor) RegisterCredential(h Holder, value string) {
 	if r == nil || len(value) < minDynamicSecretLen {
 		return
@@ -363,9 +363,10 @@ func (r *Redactor) RegisterCredential(h Holder, value string) {
 
 // RegisterObserved adds a VALUE a run received rather than resolved, whose
 // content a model may influence (the credential part of a URL a tool
-// fetched). It is masked like a credential and pinned the same way, but is
-// held in a smaller bucket of its own per tenant and user, so registrations
-// a model drives can only evict that user's own observed values.
+// fetched). It is masked and pinned like a credential, but held in a smaller
+// bucket of its own per tenant, so registrations a model drives can only
+// evict that tenant's own observed values no live run holds, never a
+// credential.
 func (r *Redactor) RegisterObserved(h Holder, value string) {
 	if r == nil || len(value) < minDynamicSecretLen {
 		return
