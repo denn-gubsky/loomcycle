@@ -417,6 +417,14 @@ func (s *Server) aclAdmitUse(ctx context.Context, eff *authz.Effective, typ, nam
 	return nil
 }
 
+// ModelUseGate is the check a model call outside the resolver makes of the
+// model it is about to call (decision.Service.SetModelGate): `use
+// model:<model>` of the caller's set, nil when there is no caller to ask for
+// (RFC FY Part E).
+func (s *Server) ModelUseGate(ctx context.Context, model string) error {
+	return s.askPinnedModelUse(ctx, model)
+}
+
 // recordShadowNarrowing records, in shadow mode, what enforce would take
 // from run runID's policy p at its start (tools.ShadowACLNarrowing) — one
 // acl_shadow_diverged entry each, the run keeping all of it. It returns ctx

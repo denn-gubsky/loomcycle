@@ -35,6 +35,9 @@ type Service struct {
 	models  map[string]ModelSpec
 	names   []string
 	onUsage func(ctx context.Context, u *providers.Usage)
+	// modelGate, when set, may refuse a call to a model before it is made:
+	// the caller's access-control rules on the model (SetModelGate).
+	modelGate func(ctx context.Context, model string) error
 }
 
 // NewService builds a Service over models, with def the default. def must be
@@ -75,6 +78,13 @@ func (s *Service) Models() []ModelInfo {
 // Set once, before the server serves.
 func (s *Service) SetOnUsage(f func(ctx context.Context, u *providers.Usage)) { s.onUsage = f }
 
+// SetModelGate installs the check every call makes of the model it is about
+// to call: the server's question of the caller's rules (`use model:<model>`),
+// which refuses with the caller's access-control refusal. A call with no
+// caller on its ctx (a background pass) is the gate's to let through. Set
+// once, before the server serves.
+func (s *Service) SetModelGate(f func(ctx context.Context, model string) error) { s.modelGate = f }
+
 // Decide asks questions about state of the model listed as name ("" = the
 // default). A name outside the list is CodeModelNotAllowed: the list is the
 // operator's, and a caller cannot reach a model by knowing what it is called.
@@ -87,6 +97,11 @@ func (s *Service) Decide(ctx context.Context, name string, state map[string]any,
 	if !ok {
 		return nil, &Error{Code: CodeModelNotAllowed,
 			Message: fmt.Sprintf("model %q is not one of the decision models (%v)", name, s.names)}
+	}
+	if s.modelGate != nil {
+		if err := s.modelGate(ctx, m.Model); err != nil {
+			return nil, err
+		}
 	}
 	resp, err := m.Driver.Decide(ctx, Request{Model: m.Model, State: state, Questions: questions})
 	if err != nil {

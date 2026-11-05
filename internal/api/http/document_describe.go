@@ -182,7 +182,7 @@ func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve the vision model even for a dry run: an operator planning a sweep needs
 	// to learn it would be refused BEFORE they set dry_run=false.
-	providerID, prov, model, err := s.resolveVisionModel(tier)
+	providerID, prov, model, err := s.resolveVisionModel(ctx, tier)
 	if err != nil {
 		// resolveErrorToStatus maps an unresolvable TIER to 503 (retryable) and
 		// anything else to 400; a resolved-but-blind model is the 400 case, since the
@@ -281,11 +281,11 @@ func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
 // handed an image returns an opaque provider 400, and a sweep that turned that into
 // "failed" per image would read as a network problem rather than a misconfigured
 // tier.
-func (s *Server) resolveVisionModel(tier string) (string, providers.Provider, string, error) {
+func (s *Server) resolveVisionModel(ctx context.Context, tier string) (string, providers.Provider, string, error) {
 	if s.resolver == nil {
 		return "", nil, "", errNoVisionResolver
 	}
-	dec, err := s.resolver.Resolve(resolve.AgentRequest{Name: "document_describe_images", Tier: tier})
+	dec, err := s.resolveInference(ctx, resolve.AgentRequest{Name: "document_describe_images", Tier: tier})
 	if err != nil {
 		return "", nil, "", err
 	}

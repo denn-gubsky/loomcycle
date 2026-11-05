@@ -1841,7 +1841,7 @@ func (s *Server) resolveAgent(ctx context.Context, tenantID, userID, agentName, 
 func (s *Server) ResolveAgentProvider(ctx context.Context, tenantID, userID, agentName, userTier string) (string, error) {
 	// No run here — this asks where a run WOULD land, so there is no override
 	// to speak for. See the KNOWN GAP note above for the sibling shortcut.
-	providerID, _, _, err := s.resolveAgent(ctx, tenantID, userID, agentName, userTier, false, nil)
+	providerID, _, _, err := s.resolveAgent(withReportOnlyResolution(ctx), tenantID, userID, agentName, userTier, false, nil)
 	return providerID, err
 }
 
@@ -1939,18 +1939,6 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 			req.KeyableProviders = s.keyableProvidersFor(ctx, req, tenantID, agentName, userID)
 		}
 		// RFC EI P4: only where a run starts (see queue_routing.go).
-		// RFC FY Part E: the caller's rules say which tiers and models it may
-		// use. The tier is asked whole; a model is passed over for the next
-		// candidate when denied, and the run is refused when none is left.
-		useACL, askUse := modelUseACL(ctx)
-		if askUse {
-			if err := s.aclAdmitUse(ctx, useACL, "tier", def.Tier); err != nil {
-				return "", "", "", err
-			}
-			req.Permitted = func(_, model string) bool {
-				return tools.ACLFilterAllows(ctx, useACL, "use", authz.Resource{Type: "model", Name: model})
-			}
-		}
 		if def.Routing != nil && def.Routing.QueueAware && isRunStart(ctx) {
 			req.QueueWait = s.estimatedQueueWait
 			req.SwitchAfter = def.Routing.SwitchAfter()
@@ -1958,12 +1946,8 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 				req.Eligible = s.acceptsImages
 			}
 		}
-		dec, rerr := s.resolver.Resolve(req)
-		if errors.Is(rerr, resolve.ErrModelNotPermitted) {
-			// Asked of the tier's models one by one; the refusal names the
-			// question for the whole type, which is what was refused.
-			return "", "", "", s.aclAdmitUse(ctx, useACL, "model", authz.AnyInstance)
-		}
+		// RFC FY Part E: the caller's rules on the tier and its models.
+		dec, rerr := s.resolveInference(ctx, req)
 		if rerr != nil {
 			return "", "", "", rerr
 		}
@@ -1996,7 +1980,7 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 			return "", "", "", fmt.Errorf("%w: agent %q pins model_pattern %q but resolver is not configured",
 				runner.ErrInvalidArgument, agentName, pattern)
 		}
-		dec, rerr := s.resolver.Resolve(resolve.AgentRequest{
+		dec, rerr := s.resolveInference(ctx, resolve.AgentRequest{
 			Name:            agentName,
 			PinProvider:     providerID,
 			PinModelPattern: pattern,
@@ -2004,9 +1988,6 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 		})
 		if rerr != nil {
 			return "", "", "", rerr
-		}
-		if err := s.askPinnedModelUse(ctx, dec.Model); err != nil {
-			return "", "", "", err
 		}
 		return dec.Provider, dec.Model, dec.Effort, nil
 	}
@@ -2029,22 +2010,73 @@ func (s *Server) askPinnedModelUse(ctx context.Context, model string) error {
 }
 
 // modelUseACL is the set a resolution asks `use tier:` and `use model:` of
-// (RFC FY Part E), and whether to ask at all: inside a run (a sub-run's
-// preparation, a provider fallback's re-resolution) the originating caller's
-// set on the run policy; at a run's start the caller's. Elsewhere — the
-// library, a run's effective configuration — a resolution only reports, and
-// asks nothing.
+// (RFC FY Part E), and whether to ask at all. Every resolution that leads to
+// a model call asks — a run's start, a sub-run's, a provider fallback's, a
+// resume, a compaction or recap, the gateway, OCR — judged by the caller's
+// set: the run policy's inside a run, else the principal's, else a recorded
+// caller's. A resolution that only reports (the library, a run's effective
+// configuration, a scheduler's placement probe) is marked report-only by its
+// caller and asks nothing; TestModelUse_EveryResolutionIsClassified holds
+// every caller to one of the two. No set (open mode, a background pass with no
+// caller): nothing to ask.
 func modelUseACL(ctx context.Context) (*authz.Effective, bool) {
-	if eff := tools.PolicyOf(ctx).ACL; eff != nil {
-		return eff, true
-	}
-	if !isRunStart(ctx) {
+	if reportOnlyResolution(ctx) {
 		return nil, false
 	}
-	// No caller set (open mode, a trigger whose definition records no
-	// owner): nothing to ask, as the run's narrowing asks nothing either.
-	eff := runCallerACL(ctx)
+	eff := tools.CallerACL(ctx)
+	if eff == nil {
+		if rc, ok := recordedCallerFrom(ctx); ok {
+			eff = rc.eff
+		}
+	}
 	return eff, eff != nil
+}
+
+type ctxKeyReportOnly struct{}
+
+// withReportOnlyResolution marks ctx for a resolution that only reports where
+// a run would land and starts no model call: it asks no use question.
+func withReportOnlyResolution(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyReportOnly{}, true)
+}
+
+func reportOnlyResolution(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyReportOnly{}).(bool)
+	return v
+}
+
+// resolveInference resolves req for a model call: it asks the caller's `use
+// tier:` of a tier request, passes over each model the caller may not use
+// (resolve.AgentRequest.Permitted), refuses when none is left, and asks `use
+// model:` of a pin's resolved model, which has no other candidate. Every
+// direct resolver call that leads to inference goes through it.
+func (s *Server) resolveInference(ctx context.Context, req resolve.AgentRequest) (resolve.Decision, error) {
+	eff, ask := modelUseACL(ctx)
+	if ask {
+		if req.Tier != "" && req.PinProvider == "" {
+			if err := s.aclAdmitUse(ctx, eff, "tier", req.Tier); err != nil {
+				return resolve.Decision{}, err
+			}
+		}
+		req.Permitted = func(_, model string) bool {
+			return tools.ACLFilterAllows(ctx, eff, "use", authz.Resource{Type: "model", Name: model})
+		}
+	}
+	dec, err := s.resolver.Resolve(req)
+	if errors.Is(err, resolve.ErrModelNotPermitted) {
+		// Asked of the tier's models one by one; the refusal names the
+		// question for the whole type, which is what was refused.
+		return resolve.Decision{}, s.aclAdmitUse(ctx, eff, "model", authz.AnyInstance)
+	}
+	if err != nil {
+		return resolve.Decision{}, err
+	}
+	if ask && req.PinProvider != "" {
+		if err := s.aclAdmitUse(ctx, eff, "model", dec.Model); err != nil {
+			return resolve.Decision{}, err
+		}
+	}
+	return dec, nil
 }
 
 // routesByTier reports whether def resolves through its tier's cascade. A
@@ -9272,6 +9304,12 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 			summaryModel = *c.Model
 		}
 	}
+	// The compaction model is a model call of its own (RFC FY Part E).
+	if summaryModel != model {
+		if err := s.askPinnedModelUse(ctx, summaryModel); err != nil {
+			return connector.CompactResult{}, err
+		}
+	}
 	// CompactionSplit (shared with the loop) picks what to summarize vs keep.
 	firstIdx, cut, splitOK := loop.CompactionSplit(msgs, keepLastN, keepFirst)
 	if !splitOK {
@@ -9498,6 +9536,11 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 	if c := agentDef.Compaction; c != nil {
 		if c.Model != nil && *c.Model != "" {
 			summaryModel = *c.Model
+		}
+	}
+	if summaryModel != model {
+		if err := s.askPinnedModelUse(ctx, summaryModel); err != nil {
+			return "", err
 		}
 	}
 

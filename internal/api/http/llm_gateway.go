@@ -140,7 +140,12 @@ func (s *Server) prepareGatewayDispatch(w http.ResponseWriter, r *http.Request, 
 	requestID := newRequestID()
 	startedAt := time.Now()
 
-	providerID, modelID, effort, err := s.resolveGatewayRequest(req)
+	providerID, modelID, effort, err := s.resolveGatewayRequest(r.Context(), req)
+	var denied *errACLDenied
+	if errors.As(err, &denied) {
+		writeACLDenied(w, denied.surface, denied.decision)
+		return gatewayDispatch{}, false
+	}
 	if err != nil {
 		// Mirror the agent-run path: ErrTierUnavailable /
 		// ErrPinUnavailable map to 503 (retryable) so adapter
@@ -436,7 +441,11 @@ func (s *Server) serveLLMChatStream(
 //  4. Neither — full resolver pick by tier/user_tier.
 //
 // All paths honor the user_tier overlay when set.
-func (s *Server) resolveGatewayRequest(req *llmChatRequest) (providerID, modelID, effort string, err error) {
+//
+// Every path asks the caller's `use tier:` and `use model:` as a run's
+// resolution does (RFC FY Part E): a raw model call must not reach a model
+// the caller's rules keep its runs from.
+func (s *Server) resolveGatewayRequest(ctx context.Context, req *llmChatRequest) (providerID, modelID, effort string, err error) {
 	// When BOTH provider and model are set, the resolver's pin path
 	// is essentially a validation pass: it checks the candidate is in
 	// the operator's matrix (or accepts it as an explicit pin). No
@@ -446,6 +455,9 @@ func (s *Server) resolveGatewayRequest(req *llmChatRequest) (providerID, modelID
 		// lookup downstream (s.providers.Get) is the validation
 		// gate — registry returns an error if the provider isn't
 		// registered.
+		if err := s.askPinnedModelUse(ctx, req.Model); err != nil {
+			return "", "", "", err
+		}
 		return req.Provider, req.Model, "", nil
 	}
 
@@ -465,7 +477,7 @@ func (s *Server) resolveGatewayRequest(req *llmChatRequest) (providerID, modelID
 		Tier:        tier,
 		UserTier:    s.userTierOverlay(req.UserTier),
 	}
-	dec, err := s.resolver.Resolve(r)
+	dec, err := s.resolveInference(ctx, r)
 	if err != nil {
 		return "", "", "", err
 	}

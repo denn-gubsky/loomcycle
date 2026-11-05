@@ -130,7 +130,7 @@ var enforcedPairs = map[pairKey][]Site{
 
 	{"transport", "use"}: {SiteHTTPRoute},
 
-	{"model", "use"}: {Proof("TestResolveAgentDef_AsksTheCallersUseOfTheTierAndTheModel")},
+	{"model", "use"}: {Proof("TestResolveAgentDef_AsksTheCallersUseOfTheTierAndTheModel"), Proof("TestModelUse_EveryInferencePathAsks")},
 	{"tier", "use"}:  {Proof("TestResolveAgentDef_AsksTheCallersUseOfTheTierAndTheModel")},
 	{"git", "fetch"}: {Proof("TestGit_ACLDenyOnTheRemoteRefusesBeforeAnyRequest")},
 	{"git", "push"}:  {Proof("TestGit_ACLDenyOnTheRemoteRefusesBeforeAnyRequest")},
