@@ -6,6 +6,7 @@ A Slack bot for a [loomcycle](https://github.com/denn-gubsky/loomcycle) interact
 - **Steering:** a message sent while the agent is working reaches it mid-turn.
 - **Questions and reviews** from the agent arrive as Block Kit cards with buttons.
 - **Commands:** `/new` (start over), `/stop` (stop the current answer), `/help`, typed as the whole message.
+- **Voice messages** (optional): send a clip, hear the answer as an audio file. See [Voice messages](#voice-messages).
 - **Restarts lose nothing:** the next message continues the conversation, with the agent's full history.
 
 Built on [`@loomcycle/bridge-core`](../bridge-core). Design: RFC EQ (Bridges) in the loomcycle document store.
@@ -35,7 +36,7 @@ loomcycle operator-token create --name slack-bridge --tenant acme --subject slac
 ### 2. The Slack app
 
 1. At [api.slack.com/apps](https://api.slack.com/apps), **Create New App → From scratch**, in your workspace.
-2. **OAuth & Permissions → Bot Token Scopes:** add `chat:write`, `app_mentions:read` and `im:history`. Add `users:read` too if you want the agent to see people's display names; without it, people are named by their Slack id.
+2. **OAuth & Permissions → Bot Token Scopes:** add `chat:write`, `app_mentions:read` and `im:history`. Add `users:read` too if you want the agent to see people's display names; without it, people are named by their Slack id. For [voice messages](#voice-messages), add `files:read` and `files:write`.
 3. **App Home:** turn on the **Messages Tab** and allow users to send messages from it, so people can DM the bot.
 4. **Install to Workspace.** Copy the **Bot User OAuth Token** (`xoxb-…`) into `SLACK_BOT_TOKEN`.
 5. **Basic Information → App Credentials:** copy the **Signing Secret** into `SLACK_SIGNING_SECRET`.
@@ -129,6 +130,24 @@ A person deactivated in an allowed workspace is revoked in loomcycle: disabled a
 
 From `@loomcycle/bridge-core` 0.4.0, a revoke loomcycle does not take is also kept and retried by the bridge itself, so a loomcycle outage longer than Slack's redelivery no longer loses it. The bridge also reconciles a few minutes after start and every `BRIDGE_GATE_SYNC_HOURS` (default 6): it reads each allowed workspace's people with `users.list` (the same `users:read` scope) and revokes each person it served 1:1 whom Slack no longer lists, so a person who left while nothing was listening is removed too. It never removes anyone for being missing from the bridge's own store, and a round that would revoke more than `BRIDGE_RECONCILE_MAX_REVOKES` revokes nobody. Use `BRIDGE_STORE=file:<path>`: a memory store starts empty after a restart. `@loomcycle/bridge-core`'s README has the details.
 
+## Voice messages
+
+With `BRIDGE_VOICE=1` a person can send the bot a Slack clip, or share an audio file, instead of typing (RFC GA). The bridge downloads it, has loomcycle transcribe it with the conversation's own token, and gives the agent the text, marked `(voice message)`. When the reply should be spoken (by default: when the question was), loomcycle voices it and the bridge posts it as an audio file. The text reply is always sent as well. The shared settings (`BRIDGE_VOICE_*`, `/voice on|off|auto`) are described in [`@loomcycle/bridge-core`](../bridge-core#voice-messages).
+
+- **What is taken:** a DM, or a message that mentions the bot in a channel, carrying exactly one audio file: a clip recorded in Slack, or a shared file whose type is audio. As with text, a channel message must mention the bot; a clip there without `@your-bot` is ignored. Text typed beside the clip is not read. Video clips, images, and several files at once are not taken.
+- **Replies are an audio file in the thread,** titled with the label (`AI voice` by default), not a native Slack clip: no API posts a clip. It goes beside the text reply: in the thread a channel conversation runs in, and in a DM in the thread of the answered message when DM replies stream, else top-level.
+- **Scopes:** `files:read` (to download the clip) and `files:write` (to upload the reply). Both are new for this bridge, so an existing install must add them and be reinstalled. `files:read` lets the bot read the files shared in conversations it is in. At start, with voice on, the bridge logs a warning when Slack reports either scope missing; it starts anyway, and text keeps working.
+- **Downloads** carry the bot token only to `https://files.slack.com`, checked before every request and on every redirect. A response that is not audio or video (Slack answers a request it does not accept with its HTML sign-in page) is refused, and the download stops as soon as it passes `BRIDGE_VOICE_MAX_BYTES`. The upload sends the bytes to the pre-signed URL Slack returns, without the token. Nothing is written to disk.
+- **When Slack refuses the upload** (`not_in_channel`, `channel_not_found`, `missing_scope`), spoken replies stop in that conversation until someone sends `/voice on`. The text reply has already gone out.
+
+**What loomcycle needs:**
+
+- the `speech:` and `transcription.stt:` engines. Slack's inline player is offered `mp3` first, then `ogg`, then `wav`; loomcycle returns `wav`, plus the one format set by `speech.format` when `speech.encode` is configured. Set `speech.encode` with `speech.format: mp3` for the most reliable inline playback. With `wav` only, replies are still uploaded as `wav` files.
+- a grant on each user token: loomcycle 1.141 or later. For a gate bridge, add `surfaces: [speech, transcription]` to the gate's `issued_token` in loomcycle; without it the bridge stays on text.
+- **Rate:** a voice turn takes three starts from the user's rate (transcribe, run, speak). Raise `BRIDGE_RATE_PER_MINUTE` to at least `12` with voice on.
+
+**Not yet confirmed against a real workspace** (RFC GA P0): the clip's exact fields (file `subtype` `slack_audio`, its `mimetype`, whether `duration_ms` comes with it, whether the event carries `url_private_download` or only a file id), whether the download is served with an audio or video content type, and which of `mp3`, `ogg` and `wav` Slack plays inline. A clip whose event carries no download link is answered with "I couldn't download that voice message." Slack's own clip transcripts are not used.
+
 ## Conversations
 
 - **A DM** is one conversation, one loomcycle user: the person.
@@ -148,7 +167,7 @@ From `@loomcycle/bridge-core` 0.4.0, a revoke loomcycle does not take is also ke
 - **Inbound:** every request's `X-Slack-Signature` is checked against the raw body before anything is parsed, compared in constant time, and refused when its timestamp is more than five minutes off. `url_verification` is answered only after the check.
 - **Workspace fence:** the workspace a request is delivered for must be in `SLACK_BRIDGE_ALLOWED_TEAMS`. A refused conversation is told once and never reaches loomcycle.
 - **Slack Connect guests:** a speaker whose own team is not allowed is a guest. In a shared channel or group DM a guest is admitted as **untrusted**, whatever `SLACK_BRIDGE_SHARED_TRUST` says: the run stays the conversation's, and the guest's text is data. A guest never owns a thread: in one a guest opened, the first member who speaks or presses a button there answers its cards and may `/stop` it. A guest's DM is refused, since there they would run as themselves. A speaker's own team is the event's `user_team`, else its `team`. An event that carries neither is taken as a member of the workspace it was delivered for (the envelope's `team_id`), unless the envelope says `is_ext_shared_channel: true` (absent counts as false): then the speaker's team is unknown, which counts as a guest's and goes further. Such a message is refused everywhere, with the notice in a DM and silently in a channel, because the only subject it could have is a member's, and that would let it act as the member. A button press counts the same way with no `user.team_id`, in any channel.
-- **No loops:** edits, joins and other subtyped events, every bot's messages, and the bot's own (learned with `auth.test`) are dropped before anything else.
+- **No loops:** every bot's messages and the bot's own (learned with `auth.test`) are dropped before anything else, including a shared file, so the bridge's own audio reply is never taken as a voice message. Edits, joins and other subtyped events are dropped too; with voice on, `file_share` passes only when it carries one audio file.
 - **Outbound text is inert.** Nothing the agent writes can page a channel or disguise a link: every `<`, `&` and `]` it writes outside a code block is broken with an invisible word joiner, so no mention (`<!channel>`, `<!here>`, `<@U…>`), Slack link (`<url|label>`), Markdown link, image or entity can form, and a link shows its real target as text. A bare `@here`, `@channel` or `@everyone` is broken the same way. Inside a ```` ``` ```` code block, code stays copyable and only what could still form a link or mention is broken. Fields Slack reads as mrkdwn (a card's notification text, a private reply) are escaped instead.
 - **No unfurls:** every message is posted with `unfurl_links` and `unfurl_media` off, so a link the agent writes is never fetched by Slack. Streamed messages are not unfurled by Slack. The bridge never builds an image or attachment from a URL.
 - **Least privilege:** the bridge's own token never runs agents. A user's token is limited to one agent, its per-run overrides are locked except `interactive`, it is rate-limited, and it expires. A card's result goes only to Slack's own `response_url`, never with the bot token.
