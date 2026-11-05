@@ -1,6 +1,6 @@
 // Test doubles for the two edges: a scripted loomcycle and a recording Teams.
 
-import type { AgentEvent, ContinueOptions, MintedUserToken, RunOptions } from "@loomcycle/client";
+import type { AgentEvent, ContinueOptions, MintedUserToken, RunOptions, SpeechInfo, WhoamiResponse } from "@loomcycle/client";
 
 import type { AdminClient, BridgePort, Logger, OutboundActivity, RunClient, StreamLike } from "@loomcycle/bridge-core";
 
@@ -65,6 +65,9 @@ export class FakeLoomcycle {
   /** What runStreaming / continueSession throw when started (admission refusal). */
   startError?: unknown;
   existingUsers = new Set<string>();
+  /** Set to give the client the speech calls (RFC GA): what whoami reports
+   *  and what a transcription returns. */
+  speech?: { transcription: boolean; transcript: string };
   ttlMs = 12 * 3600 * 1000;
   now = () => Date.now();
   private tokenSeq = 0;
@@ -92,7 +95,29 @@ export class FakeLoomcycle {
       this.runs.push({ token, kind, opts, events });
       return events;
     };
+    const sp = this.speech;
+    const speechCalls = sp
+      ? {
+          whoami: async () => {
+            rec("whoami", []);
+            return { effective: { surfaces: { speech: false, transcription: sp.transcription } } } as unknown as WhoamiResponse;
+          },
+          speechInfo: async () => {
+            rec("speechInfo", []);
+            return { transcription: { enabled: sp.transcription } } as unknown as SpeechInfo;
+          },
+          transcribe: async (file: unknown, opts: unknown) => {
+            rec("transcribe", [file, opts]);
+            return { text: sp.transcript, language: "en" };
+          },
+          speech: async (input: string, opts: unknown) => {
+            rec("speech", [input, opts]);
+            throw new Error("the Teams bridge never speaks");
+          },
+        }
+      : {};
     return {
+      ...speechCalls,
       runStreaming: (opts) => start("start", opts),
       continueSession: (opts) => start("continue", opts),
       sendRunInput: async (runId, text) => {

@@ -1,0 +1,177 @@
+// Voice in for Teams (RFC GA §5.4, decision D12): an audio FILE a person
+// attaches in their 1:1 chat with the bot. Teams offers no voice-note button
+// in a bot chat, and a channel's voice notes are reachable only through
+// tenant-wide Graph rights, so this is the most Teams allows a bot. Replies
+// stay text: the port has no sendVoice.
+//
+// The file sits in the person's own OneDrive. The activity carries a
+// pre-authorised downloadUrl that lives a few minutes, so it is fetched at
+// once, with no credential of ours, and only from the SharePoint hosts the
+// operator allows.
+
+import type { VoiceIn, VoicePort } from "@loomcycle/bridge-core";
+
+export const FILE_DOWNLOAD_INFO = "application/vnd.microsoft.teams.file.download.info";
+
+/** The audio a person may attach, by Teams' fileType, and the media type the
+ *  transcription route is told. Only what loomcycle reads whole without
+ *  ffmpeg: a format it would have to convert is left to today's behaviour. */
+export const AUDIO_FILE_TYPES: Readonly<Record<string, string>> = {
+  m4a: "audio/mp4",
+  mp4: "audio/mp4",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  ogg: "audio/ogg",
+  webm: "audio/webm",
+  flac: "audio/flac",
+};
+
+/** Where a pre-authorised Teams file link may point by default: the tenant's
+ *  SharePoint and OneDrive (`<tenant>-my.sharepoint.com`) hosts. */
+export const DEFAULT_FILE_HOSTS = [".sharepoint.com"];
+
+/** What the port downloads from: the link and the file's own name. */
+export interface TeamsAudioRef {
+  url: string;
+  name?: string;
+}
+
+/** The subset of a Teams attachment this module reads. */
+export interface TeamsAttachment {
+  contentType?: string;
+  name?: string;
+  content?: unknown;
+}
+
+/** audioFileOf is the first attached audio file an activity carries, or
+ *  undefined. Teams gives no size or length up front, so the byte cap is
+ *  applied while reading. */
+export function audioFileOf(attachments: readonly TeamsAttachment[] | undefined): VoiceIn | undefined {
+  for (const a of attachments ?? []) {
+    if (a.contentType !== FILE_DOWNLOAD_INFO || !a.content || typeof a.content !== "object") continue;
+    const c = a.content as { downloadUrl?: unknown; fileType?: unknown };
+    if (typeof c.downloadUrl !== "string" || !c.downloadUrl || typeof c.fileType !== "string") continue;
+    const mime = AUDIO_FILE_TYPES[c.fileType.trim().toLowerCase().replace(/^\./, "")];
+    if (!mime) continue;
+    const ref: TeamsAudioRef = { url: c.downloadUrl, ...(a.name ? { name: a.name } : {}) };
+    return { kind: "audio_file", ref, mime };
+  }
+  return undefined;
+}
+
+/** hostAllowed says a URL is https on a host under one of the suffixes
+ *  (each starting with a dot, so `evilsharepoint.com` never matches). */
+export function hostAllowed(url: URL, suffixes: readonly string[]): boolean {
+  if (url.protocol !== "https:" || url.username || url.password) return false;
+  const host = url.hostname.toLowerCase();
+  return suffixes.some((s) => host.endsWith(s));
+}
+
+/** A download that did not happen. The message is fixed and never carries
+ *  the link: a pre-authorised URL is a credential while it lives. */
+export class TeamsFileError extends Error {
+  constructor(readonly reason: "host" | "redirect" | "status" | "type" | "size") {
+    super(`teams file download refused: ${reason}`);
+    this.name = "TeamsFileError";
+  }
+}
+
+/** How many redirects a download follows, each checked against the hosts. */
+const MAX_REDIRECTS = 3;
+
+export interface TeamsVoicePortOptions<TRef> {
+  /** Allowed host suffixes (TEAMS_BRIDGE_FILE_HOSTS). */
+  hosts: readonly string[];
+  /** The fetch downloads go through (tests). */
+  fetch?: typeof fetch;
+  /** The "listening" indicator: Teams' typing activity. */
+  typing?: (ref: TRef) => Promise<void>;
+}
+
+/** teamsVoicePort takes voice in only: no sendVoice, out "none". */
+export function teamsVoicePort<TRef>(opts: TeamsVoicePortOptions<TRef>): VoicePort<TRef> {
+  const doFetch = opts.fetch ?? fetch;
+  const typing = opts.typing;
+  return {
+    capabilities: { voiceFormats: [], out: "none", maxUploadBytes: 0 },
+    ...(typing ? { indicate: (ref: TRef) => typing(ref) } : {}),
+    async download(v, maxBytes, signal) {
+      const ref = v.ref as TeamsAudioRef;
+      const bytes = await downloadPinned(doFetch, ref.url, opts.hosts, maxBytes, signal);
+      return { bytes, mime: v.mime ?? "application/octet-stream", ...(ref.name ? { name: ref.name } : {}) };
+    },
+  };
+}
+
+/** downloadPinned fetches a pre-authorised link with no credential and no
+ *  added header, following a redirect only to another allowed host, and
+ *  reads at most maxBytes (more is an error, found while streaming). */
+async function downloadPinned(
+  doFetch: typeof fetch,
+  link: string,
+  hosts: readonly string[],
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
+  let url: URL;
+  try {
+    url = new URL(link);
+  } catch {
+    throw new TeamsFileError("host");
+  }
+  if (!hostAllowed(url, hosts)) throw new TeamsFileError("host");
+  for (let hop = 0; ; hop++) {
+    const res = await doFetch(url, { redirect: "manual", signal });
+    if (res.status >= 300 && res.status < 400) {
+      await res.body?.cancel().catch(() => undefined);
+      const loc = res.headers.get("location");
+      if (!loc || hop >= MAX_REDIRECTS) throw new TeamsFileError("redirect");
+      try {
+        url = new URL(loc, url);
+      } catch {
+        throw new TeamsFileError("redirect");
+      }
+      if (!hostAllowed(url, hosts)) throw new TeamsFileError("redirect");
+      continue;
+    }
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined);
+      throw new TeamsFileError("status");
+    }
+    // An expired or refused link can answer 200 with a sign-in page.
+    if ((res.headers.get("content-type") ?? "").toLowerCase().startsWith("text/html")) {
+      await res.body?.cancel().catch(() => undefined);
+      throw new TeamsFileError("type");
+    }
+    const declared = Number(res.headers.get("content-length") ?? NaN);
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      await res.body?.cancel().catch(() => undefined);
+      throw new TeamsFileError("size");
+    }
+    return readCapped(res, maxBytes);
+  }
+}
+
+async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array> {
+  if (!res.body) return new Uint8Array();
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new TeamsFileError("size");
+    }
+    parts.push(value);
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.byteLength;
+  }
+  return out;
+}
