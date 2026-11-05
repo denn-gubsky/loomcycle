@@ -1884,6 +1884,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		// The document a change row belongs to, stamped at write time (RFC FV);
 		// '' for every row before. Mirrors postgres 0129.
 		`ALTER TABLE memory_changes ADD COLUMN document_id TEXT NOT NULL DEFAULT ''`,
+		// When a subject erasure ended the account and kept its row as a
+		// tombstone (RFC FY Part F); NULL for every live user. Mirrors
+		// postgres 0130.
+		`ALTER TABLE users ADD COLUMN erased_at INTEGER`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {

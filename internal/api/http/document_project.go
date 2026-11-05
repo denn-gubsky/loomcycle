@@ -65,18 +65,21 @@ func (s *Server) handleDocumentProject(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "scope must be one of: agent, user, tenant")
 		return
 	}
+	dryRun := dryRunParam(q.Get("dry_run"))
+	refit := q.Get("refit") == "true" || q.Get("refit") == "1"
+	// A real pass rewrites the scope's map. A refit asked in a dry run fits
+	// nothing (the pass reports before it would), but refits stay the
+	// operator's (decision D7), so asking one counts as a write all the same.
+	ctx, ok := s.browseCtx(w, r, scope, !dryRun || refit)
+	if !ok {
+		return
+	}
 	if s.embedder == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "embedder_unavailable",
 			"no embedder is configured (memory.embedder), so there is no model whose vectors to place")
 		return
 	}
-	opts := builtin.ProjectionOptions{DryRun: true}
-	if v := q.Get("dry_run"); v != "" {
-		opts.DryRun = v != "false" && v != "0"
-	}
-	if v := q.Get("refit"); v != "" {
-		opts.Refit = v == "true" || v == "1"
-	}
+	opts := builtin.ProjectionOptions{DryRun: dryRun, Refit: refit}
 	if v := q.Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			opts.PlaceLimit = n
@@ -98,7 +101,6 @@ func (s *Server) handleDocumentProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := s.substrateBrowseCtxFn(r)(r.Context())
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem, Embedder: s.embedder, Cfg: cfg}
 	rep, err := doc.ProjectScope(ctx, scope, opts)
 	if err != nil {

@@ -70,6 +70,7 @@ const (
 	oauthRevokeClientMismatch = "client_mismatch"
 	oauthRevokeByApp          = "revoked_by_app"
 	oauthRevokeClientRetired  = "client_retired"
+	oauthRevokeUserDisabled   = "user_disabled"
 )
 
 // hashOAuthSecret is a code's or a refresh token's row key. They are 256-bit
@@ -749,6 +750,44 @@ func (s *Server) revokeAppFamily(ctx context.Context, clientID, familyID, reason
 		}
 	}
 	s.invalidateTokenCache(ctx)
+}
+
+// endSubjectAppSignIns ends every app sign-in of a user being disabled or
+// erased: each live refresh-token family is revoked, then every access token
+// the user holds from a sign-in that is no longer live is retired, and every
+// replica's token cache is flushed. A re-enable restores none of them: the
+// person signs in to each app again.
+//
+// The retirement reads the families, not the ids the revoke returned, and
+// runs even when the revoke failed: a call retried after a partial failure
+// (families revoked, tokens still live) finishes the job.
+//
+// It runs BEFORE the user's other tokens are retired. A refresh racing the
+// disable then either minted before the revoke, and its token is retired
+// here, or reads the family as revoked when it re-reads it after minting
+// (oauthIssue) and retires its own token. Run after the token retirement
+// instead, a refresh that finished in between left an access token that
+// outlived the disable and worked again after a re-enable.
+func (s *Server) endSubjectAppSignIns(ctx context.Context, tenant, subject string) error {
+	now := time.Now().UTC()
+	_, revokeErr := s.store.OAuthFamilyRevokeSubject(ctx, tenant, subject, oauthRevokeUserDisabled, now)
+	_, retireErr := s.store.OAuthTokenRetireEndedSignIns(ctx, tenant, subject, now)
+	s.invalidateTokenCache(ctx)
+	return errors.Join(revokeErr, retireErr)
+}
+
+// endAppSignInsBeforeReEnable ends the app sign-ins of a user about to be
+// re-enabled from disabled. None can be made while the user is disabled, so
+// one live now came from a code exchange that raced the disable: ending it
+// keeps "a re-enable restores no app sign-in" true for that window too. A
+// user who is not disabled (a no-op PATCH, a pending approval) keeps its
+// sign-ins.
+func (s *Server) endAppSignInsBeforeReEnable(ctx context.Context, tenant, subject string) error {
+	u, err := s.store.UserGet(ctx, tenant, subject)
+	if err != nil || u.Status != "disabled" {
+		return nil // a missing user is the handler's to report
+	}
+	return s.endSubjectAppSignIns(ctx, tenant, subject)
 }
 
 // retireAppToken retires one access token at once.

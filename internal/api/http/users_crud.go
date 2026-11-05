@@ -10,6 +10,7 @@ package http
 // cross-tenant update/delete is an opaque 404, never an existence oracle.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -47,6 +48,18 @@ type wireUserRecord struct {
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
 	CreatedBy   string    `json:"created_by"`
+	// ErasedAt marks an erasure's tombstone: it cannot be re-enabled, changed
+	// or deleted (409 user_erased). Absent for every other user.
+	ErasedAt *time.Time `json:"erased_at,omitempty"`
+}
+
+// wireErasedAt is UserRow.ErasedAt on the wire: nil (omitted) for a live user.
+func wireErasedAt(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	u := t.UTC()
+	return &u
 }
 
 // wireUserStatus is the status a caller may set through the users CRUD:
@@ -66,6 +79,7 @@ func toWireUserRecord(r store.UserRow) wireUserRecord {
 		Status:      r.Status,
 		CreatedAt:   r.CreatedAt,
 		CreatedBy:   r.CreatedBy,
+		ErasedAt:    wireErasedAt(r.ErasedAt),
 	}
 }
 
@@ -275,6 +289,11 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// After the floor checks, so an auth:manage caller is told about an
+	// erased user only where it may act on that user at all.
+	if s.refuseErasedUser(w, r.Context(), tenant, subject) {
+		return
+	}
 	if req.Status != nil && *req.Status == "active" {
 		cur, err := s.store.UserGet(r.Context(), tenant, subject)
 		if err == nil && cur.Status == store.UserStatusPending {
@@ -290,6 +309,10 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		by := ""
 		if p, ok := auth.PrincipalFromContext(r.Context()); ok {
 			by = p.Subject
+		}
+		if err := s.endAppSignInsBeforeReEnable(r.Context(), tenant, subject); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "app_sign_in_revoke_failed", err.Error())
+			return
 		}
 		var locked *aclLockedError
 		switch err := s.reactivateRemoved(r.Context(), tenant, subject, by); {
@@ -312,8 +335,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	// Disabling a user must revoke its live bearer(s) — the auth path is
 	// token-only and never checks users.status, so a status flip alone would
-	// leave existing tokens working. (Re-enabling does not re-issue tokens; the
-	// operator re-mints.)
+	// leave existing tokens working. Its app sign-ins (refresh families) end
+	// too. (Re-enabling restores neither: the operator re-mints, and the
+	// person signs in to each app again.)
 	if req.Status != nil && *req.Status == "disabled" {
 		ctx := r.Context()
 		// The status write and the end of any SCIM removal's ownership are
@@ -345,7 +369,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		// Revocation always runs, the disable's failure included: the
 		// operator asked for the user's access to end, and an error is
-		// reported only once it has.
+		// reported only once it has. App sign-ins first (see
+		// endSubjectAppSignIns for the race this order closes).
+		appErr := s.endSubjectAppSignIns(ctx, tenant, subject)
 		_, retireErr := s.retireDelegatedUserTokens(ctx, tenant, subject)
 		_, sessionErr := s.store.UISessionRevokeSubject(ctx, tenant, subject, time.Now().UTC())
 		switch {
@@ -358,6 +384,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		case sessionErr != nil:
 			writeJSONError(w, http.StatusInternalServerError, "session_revoke_failed", sessionErr.Error())
 			return
+		case appErr != nil:
+			writeJSONError(w, http.StatusInternalServerError, "app_sign_in_revoke_failed", appErr.Error())
+			return
 		}
 		req.Status = nil
 	}
@@ -367,6 +396,10 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		Status:      req.Status,
 	}
 	if err := s.store.UserUpdate(r.Context(), tenant, subject, patch); err != nil {
+		if errors.Is(err, store.ErrUserErased) {
+			writeUserErased(w)
+			return
+		}
 		var notFound *store.ErrNotFound
 		if errors.As(err, &notFound) {
 			writeJSONError(w, http.StatusNotFound, "user_not_found", "no such user in this tenant")
@@ -405,6 +438,9 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.holdManagerToFloorTarget(w, r.Context(), caller, nil, tenant, subject, "delete", false); !ok {
 		return
 	}
+	if s.refuseErasedUser(w, r.Context(), tenant, subject) {
+		return
+	}
 	// The delete retires the user's bindings and drops its memberships: a
 	// list the caller is locked out of retiring keeps it (before anything
 	// below changes).
@@ -429,6 +465,10 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	removed, err := s.store.UserDelete(r.Context(), tenant, subject)
+	if errors.Is(err, store.ErrUserErased) {
+		writeUserErased(w)
+		return
+	}
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "user_delete_failed", err.Error())
 		return
@@ -441,4 +481,22 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	// the row: refresh the cached sets everywhere, and audit it.
 	s.aclChanged(r.Context(), tenant, "user_unbound", subject)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// refuseErasedUser answers 409 user_erased, and reports true, when (tenant,
+// subject) is an erasure's tombstone. The row is kept so the subject id is
+// never registered again (RFC FY D6): re-enabling, renaming or deleting it
+// would undo that. A store fault is left to the handler's own read.
+func (s *Server) refuseErasedUser(w http.ResponseWriter, ctx context.Context, tenant, subject string) bool {
+	u, err := s.store.UserGet(ctx, tenant, subject)
+	if err != nil || u.ErasedAt.IsZero() {
+		return false
+	}
+	writeUserErased(w)
+	return true
+}
+
+func writeUserErased(w http.ResponseWriter) {
+	writeJSONError(w, http.StatusConflict, "user_erased",
+		"this user was erased: the account is kept as a record with no personal data, and cannot be re-enabled, changed or deleted")
 }

@@ -468,12 +468,22 @@ func AclEraseSubject(ctx context.Context, db DB, tenantID, subject string) (memb
 // group memberships are removed, with one acl_version bump. A user given the
 // same subject later — operator-chosen subjects repeat — then starts with none
 // of the deleted user's authority. Group-kind rows whose id equals the subject
-// are a group's, and stay. Reports whether a user row went.
+// are a group's, and stay. Reports whether a user row went; an erasure's
+// tombstone is never deleted (store.ErrUserErased).
 func UserDeleteUnbind(ctx context.Context, db DB, tenantID, subject string) (bool, error) {
 	var removed bool
 	err := db.InTx(ctx, func(tx Querier) error {
-		n, err := tx.Exec(ctx, `DELETE FROM users WHERE tenant_id = ? AND subject = ?`, tenantID, subject)
-		if err != nil || n == 0 {
+		// A tombstone stays: it is what keeps an erased subject id from being
+		// registered again (store.ErrUserErased).
+		n, err := tx.Exec(ctx, `DELETE FROM users WHERE tenant_id = ? AND subject = ? AND erased_at IS NULL`, tenantID, subject)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			erased, err := UserErased(ctx, tx, tenantID, subject)
+			if err == nil && erased {
+				return store.ErrUserErased
+			}
 			return err
 		}
 		removed = true

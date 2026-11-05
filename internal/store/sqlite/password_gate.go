@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlshared"
 )
 
 // password_gate.go — RFC FA P2 password-gate state. Sibling of
@@ -690,7 +691,8 @@ func (s *Store) AuthInviteRedeem(ctx context.Context, red store.AuthInviteRedemp
 		}
 	} else {
 		var one int
-		err := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE tenant_id = ? AND subject = ?`,
+		// An erasure's tombstone takes no new login: it reads as no user.
+		err := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE tenant_id = ? AND subject = ? AND erased_at IS NULL`,
 			red.Identity.TenantID, red.Identity.Subject).Scan(&one)
 		if errors.Is(err, sql.ErrNoRows) {
 			return &store.ErrNotFound{Kind: "user", ID: red.Identity.Subject}
@@ -1033,38 +1035,20 @@ func (s *Store) AuthThrottleDeleteExpired(ctx context.Context, before time.Time)
 
 // ---- subject deletion ------------------------------------------------------
 
-// AuthSubjectDelete implements store.PasswordGateStore. Invites go when they
-// attach to the subject or were redeemed by it, so no row names the deleted
-// user afterwards.
+// AuthSubjectDelete implements store.PasswordGateStore: the shared family
+// list (sqlshared/auth_subject.go), with the removal record.
 func (s *Store) AuthSubjectDelete(ctx context.Context, tenantID, subject string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	for _, q := range []string{
-		`DELETE FROM user_identities WHERE tenant_id = ?1 AND subject = ?2`,
-		`DELETE FROM user_credentials WHERE tenant_id = ?1 AND subject = ?2`,
-		`DELETE FROM user_totp WHERE tenant_id = ?1 AND subject = ?2`,
-		`DELETE FROM user_recovery_codes WHERE tenant_id = ?1 AND subject = ?2`,
-		`DELETE FROM auth_invites WHERE tenant_id = ?1 AND (subject = ?2 OR redeemed_subject = ?2)`,
-		`DELETE FROM auth_resets WHERE tenant_id = ?1 AND subject = ?2`,
-		`DELETE FROM auth_removals WHERE tenant_id = ?1 AND subject = ?2`,
-		// RFC FL app sign-ins: the refresh tokens before their families.
-		`DELETE FROM oauth_refresh_tokens WHERE family_id IN (
-			SELECT family_id FROM oauth_refresh_families WHERE tenant_id = ?1 AND subject = ?2)`,
-		`DELETE FROM oauth_refresh_families WHERE tenant_id = ?1 AND subject = ?2`,
-		`DELETE FROM oauth_codes WHERE tenant_id = ?1 AND subject = ?2`,
-		// RFC FA P6: passkeys and SCIM resources.
-		`DELETE FROM user_passkeys WHERE tenant_id = ?1 AND subject = ?2`,
-		`DELETE FROM scim_group_members WHERE tenant_id = ?1 AND subject = ?2`,
-		`DELETE FROM scim_users WHERE tenant_id = ?1 AND subject = ?2`,
-	} {
-		if _, err := tx.ExecContext(ctx, q, tenantID, subject); err != nil {
-			return fmt.Errorf("auth subject delete: %w", err)
-		}
-	}
-	return tx.Commit()
+	return sqlshared.AuthSubjectDelete(ctx, s.shared(), tenantID, subject)
+}
+
+// AuthSubjectCount implements store.PasswordGateStore.
+func (s *Store) AuthSubjectCount(ctx context.Context, tenantID, subject string) (map[string]int, error) {
+	return sqlshared.AuthSubjectCount(ctx, s.shared(), tenantID, subject)
+}
+
+// UserErase implements store.PasswordGateStore.
+func (s *Store) UserErase(ctx context.Context, tenantID, subject string, at time.Time) (map[string]int, error) {
+	return sqlshared.UserErase(ctx, s.shared(), tenantID, subject, at)
 }
 
 // checkOwnerBinding refuses an owner binding that is not the user's own in

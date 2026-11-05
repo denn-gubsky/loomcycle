@@ -574,6 +574,13 @@ func Run(t *testing.T, factory Factory) {
 		{"AuthThrottleWindowBlockAndExpiry", testAuthThrottleWindowBlockAndExpiry},
 		{"AuthInviteAndResetDeleteExpiredKeepLiveRows", testAuthInviteAndResetDeleteExpiredKeepLiveRows},
 		{"AuthSubjectDeleteRemovesOnlyThatSubjectsRows", testAuthSubjectDeleteRemovesOnlyThatSubjectsRows},
+		// RFC FY Part F: an erasure ends the account.
+		{"UserEraseEndsTheAccountAndOnlyThatSubjects", testUserEraseEndsTheAccountAndOnlyThatSubjects},
+		{"UserEraseWithoutAUserRowRemovesTheRest", testUserEraseWithoutAUserRowRemovesTheRest},
+		{"UserErasedTombstoneRefusesEveryWayBack", testUserErasedTombstoneRefusesEveryWayBack},
+		{"UserCreateWithErasedAtIsATombstone", testUserCreateWithErasedAtIsATombstone},
+		{"OAuthFamilyRevokeSubjectRevokesOnlyItsLiveFamilies", testOAuthFamilyRevokeSubjectRevokesOnlyItsLiveFamilies},
+		{"OAuthTokenRetireEndedSignInsFinishesAPartialDisable", testOAuthTokenRetireEndedSignInsFinishesAPartialDisable},
 		// RFC FA P5 device login + per-tenant gate policy.
 		{"DeviceAuthCreateGetRoundTripAndConflict", testDeviceAuthCreateGetRoundTripAndConflict},
 		{"DeviceAuthPollSlowsDownEarlyPollsOnly", testDeviceAuthPollSlowsDownEarlyPollsOnly},

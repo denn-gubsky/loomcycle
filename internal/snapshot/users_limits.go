@@ -66,6 +66,7 @@ func captureUsers(ctx context.Context, s store.Store, out *UsersSection) error {
 			Status:      r.Status,
 			CreatedAt:   r.CreatedAt,
 			CreatedBy:   r.CreatedBy,
+			ErasedAt:    erasedAtPtr(r.ErasedAt),
 		})
 	}
 	marks, err := s.TenantBootstrapList(ctx)
@@ -170,6 +171,7 @@ func restoreUsers(ctx context.Context, s store.Store, sec *UsersSection, result 
 			Status:      e.Status,
 			CreatedAt:   e.CreatedAt,
 			CreatedBy:   e.CreatedBy,
+			ErasedAt:    erasedAtOf(e.ErasedAt),
 		})
 		var conflict *store.ErrConflict
 		switch {
@@ -193,6 +195,13 @@ func restoreUsers(ctx context.Context, s store.Store, sec *UsersSection, result 
 // row is already the stricter of the two.
 func stricterUserWarnings(snap UserEntry, live store.UserRow) []string {
 	var out []string
+	if snap.ErasedAt != nil && live.ErasedAt.IsZero() {
+		// Erasing deletes the user's sign-in rows; a restore never does that
+		// on its own, so the operator is told and runs the erasure.
+		return append(out, fmt.Sprintf(
+			"user %s/%s: the snapshot has this user erased (at %s) but this instance has it live; the live row was kept — run the subject erasure (POST /v1/_erasure) if the snapshot is right",
+			snap.TenantID, snap.Subject, snap.ErasedAt.UTC().Format(time.RFC3339)))
+	}
 	if snap.AccessMode == "isolated" && live.AccessMode != "isolated" {
 		out = append(out, fmt.Sprintf(
 			"user %s/%s: the snapshot has access_mode=%s but this instance has %s; the live row was kept — set it to %s by hand if the snapshot is right",
@@ -301,4 +310,21 @@ func restoreUsageCarry(ctx context.Context, s store.Store, b *UsageMTDBlock, now
 			})
 		}
 	}
+}
+
+// erasedAtPtr / erasedAtOf convert UserRow.ErasedAt to and from the
+// envelope's optional field: absent for a live user.
+func erasedAtPtr(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	u := t.UTC()
+	return &u
+}
+
+func erasedAtOf(p *time.Time) time.Time {
+	if p == nil {
+		return time.Time{}
+	}
+	return *p
 }

@@ -171,7 +171,7 @@ func (s *Store) AuthRemovalReactivate(ctx context.Context, seen store.AuthRemova
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var status string
-	err = tx.QueryRow(ctx, `SELECT status FROM users WHERE tenant_id = $1 AND subject = $2 FOR UPDATE`, seen.TenantID, seen.Subject).Scan(&status)
+	err = tx.QueryRow(ctx, `SELECT `+userStatusRead+` FROM users WHERE tenant_id = $1 AND subject = $2 FOR UPDATE`, seen.TenantID, seen.Subject).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}

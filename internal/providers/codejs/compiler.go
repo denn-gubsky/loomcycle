@@ -103,6 +103,13 @@ func (c *compiler) load(name string) (*compiled, error) {
 			return nil, fmt.Errorf("code-agent %q: invalid agent name (empty, \".\", or \"..\" path segment)", name)
 		}
 	}
+	// A ".." anywhere is refused too. agents.ValidateName already limits a
+	// segment to A-Z a-z 0-9 _ -, so no valid name contains one; the check
+	// is written in the form static analysis recognises as a traversal
+	// guard, so the per-segment check above is not its only witness.
+	if strings.Contains(name, "..") {
+		return nil, fmt.Errorf("code-agent %q: invalid agent name (contains \"..\")", name)
+	}
 	path := c.agentFile(name)
 	// Defence in depth: the joined+cleaned entrypoint must remain under CodeRoot.
 	if absRoot, rerr := filepath.Abs(c.root); rerr == nil {

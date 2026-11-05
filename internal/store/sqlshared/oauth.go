@@ -217,33 +217,36 @@ func OAuthFamilyRevoke(ctx context.Context, db DB, familyID, reason string, at t
 
 // OAuthFamilyRevokeClient revokes every live family of clientID.
 func OAuthFamilyRevokeClient(ctx context.Context, db DB, clientID, reason string, at time.Time) ([]string, error) {
-	var ids []string
-	err := db.InTx(ctx, func(tx Querier) error {
-		rows, err := tx.Query(ctx, `SELECT family_id FROM oauth_refresh_families WHERE client_id = ? AND revoked_at IS NULL`, clientID)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return err
-			}
-			ids = append(ids, id)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `UPDATE oauth_refresh_families SET revoked_at = ?, revoke_reason = ?
-			WHERE client_id = ? AND revoked_at IS NULL`, tx.Dialect().TimeArg(at), reason, clientID)
-		return err
-	})
+	return revokeFamiliesWhere(ctx, db, `client_id = ?`, []any{clientID}, reason, at)
+}
+
+// OAuthFamilyRevokeSubject revokes every live family of (tenantID, subject).
+func OAuthFamilyRevokeSubject(ctx context.Context, db DB, tenantID, subject, reason string, at time.Time) ([]string, error) {
+	return revokeFamiliesWhere(ctx, db, `tenant_id = ? AND subject = ?`, []any{tenantID, subject}, reason, at)
+}
+
+// revokeFamiliesWhere revokes the live families matching where (its
+// placeholders bound by args) and returns their ids. One UPDATE … RETURNING,
+// not a read then a write in a transaction: on SQLite a deferred transaction
+// that reads first deadlocks ("database table is locked") when it upgrades
+// to write beside a concurrent writer, which a user's disable racing other
+// removals hit.
+func revokeFamiliesWhere(ctx context.Context, db DB, where string, args []any, reason string, at time.Time) ([]string, error) {
+	rows, err := db.Query(ctx, `UPDATE oauth_refresh_families SET revoked_at = ?, revoke_reason = ?
+		WHERE `+where+` AND revoked_at IS NULL RETURNING family_id`, append([]any{db.Dialect().TimeArg(at), reason}, args...)...)
 	if err != nil {
 		return nil, err
 	}
-	return ids, nil
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // OAuthRefreshCreate inserts a refresh token's hash.
@@ -317,6 +320,18 @@ func OAuthTokenRetire(ctx context.Context, db DB, clientID, familyID string, at 
 		args = append(args, familyID)
 	}
 	n, err := db.Exec(ctx, q, args...)
+	return int(n), err
+}
+
+// OAuthTokenRetireEndedSignIns retires the subject's live app access tokens
+// whose family is revoked or gone.
+func OAuthTokenRetireEndedSignIns(ctx context.Context, db DB, tenantID, subject string, at time.Time) (int, error) {
+	t := db.Dialect().TimeArg(at)
+	n, err := db.Exec(ctx, `UPDATE operator_token_defs SET retired_at = ?
+		WHERE tenant_id = ? AND subject = ? AND oauth_client <> '' AND (retired_at IS NULL OR retired_at > ?)
+		AND NOT EXISTS (SELECT 1 FROM oauth_refresh_families f
+			WHERE f.family_id = operator_token_defs.oauth_family AND f.revoked_at IS NULL)`,
+		t, tenantID, subject, t)
 	return int(n), err
 }
 

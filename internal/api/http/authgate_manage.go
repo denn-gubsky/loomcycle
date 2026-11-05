@@ -700,6 +700,10 @@ func (s *Server) attachGrant(w http.ResponseWriter, ctx context.Context, g Passw
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return inviteGrant{}, false
 	}
+	if !user.ErasedAt.IsZero() {
+		writeUserErased(w)
+		return inviteGrant{}, false
+	}
 	if has, err := s.hasGateCredential(ctx, g.Name, tenant, subject); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return inviteGrant{}, false

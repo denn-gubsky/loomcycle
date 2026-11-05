@@ -44,9 +44,11 @@ func (s *Server) handleDeriveUnits(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "scope must be one of: agent, user, tenant")
 		return
 	}
-	dryRun := true
-	if v := q.Get("dry_run"); v != "" {
-		dryRun = v != "false" && v != "0"
+	dryRun := dryRunParam(q.Get("dry_run"))
+	// A real pass writes units with the operator's generator.
+	ctx, ok := s.browseCtx(w, r, scope, !dryRun)
+	if !ok {
+		return
 	}
 	limit := 0
 	if v := q.Get("limit"); v != "" {
@@ -73,7 +75,6 @@ func (s *Server) handleDeriveUnits(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ctx := s.substrateBrowseCtxFn(r)(r.Context())
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem, Embedder: s.embedder}
 	rep, err := doc.DeriveUnits(ctx, scope, s.unitGenerator, builtin.DeriveUnitsOptions{
 		Generator: s.cfg().Memory.UnitGenerator,

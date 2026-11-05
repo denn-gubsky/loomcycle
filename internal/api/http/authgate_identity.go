@@ -147,11 +147,14 @@ func (s *Server) legacyUser(ctx context.Context, g config.AuthGate, fresh identi
 	if !ok {
 		return identity.Target{}, false, nil
 	}
-	if _, err := s.store.UserGet(ctx, fresh.TenantID, subject); err != nil {
+	// An erasure's tombstone has no sign-in left, but it is nobody's to link.
+	if u, err := s.store.UserGet(ctx, fresh.TenantID, subject); err != nil {
 		if isNotFound(err) {
 			return identity.Target{}, false, nil
 		}
 		return identity.Target{}, false, err
+	} else if !u.ErasedAt.IsZero() {
+		return identity.Target{}, false, nil
 	}
 	for _, k := range signInKinds() {
 		held, err := k.holds(ctx, s.store, fresh.TenantID, subject)

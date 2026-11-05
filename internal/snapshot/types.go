@@ -223,6 +223,9 @@ type UserEntry struct {
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
 	CreatedBy   string    `json:"created_by,omitempty"`
+	// ErasedAt is set for an erasure's tombstone, which is restored as one:
+	// never re-enabled, renamed, or its subject id registered again.
+	ErasedAt *time.Time `json:"erased_at,omitempty"`
 }
 
 // ACLSection carries every tenant's RFC EY rows. None holds a secret: a rule

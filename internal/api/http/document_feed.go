@@ -134,11 +134,21 @@ func (s *Server) serveDocumentFeed(w http.ResponseWriter, r *http.Request, p doc
 	defer release()
 
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
-	browse := s.substrateBrowseCtxFn(r)
+	reqScopeID, reqTenant := r.URL.Query().Get("scope_id"), r.URL.Query().Get("tenant")
+	// The subject is resolved again on every re-check, under the caller's
+	// current rules: a revoked browse grant ends the stream.
 	open := func(ctx context.Context) (*builtin.DocumentFeedView, error) {
-		return doc.OpenDocumentFeedView(browse(ctx), scope)
+		b, ok := s.browseSubjectFor(ctx, "document", reqScopeID, reqTenant, false, scope)
+		if !ok {
+			return nil, errBrowseRefused
+		}
+		return doc.OpenDocumentFeedView(b.apply(ctx), scope)
 	}
 	view, err := open(r.Context())
+	if errors.Is(err, errBrowseRefused) {
+		writeBrowseNotFound(w)
+		return
+	}
 	if err != nil {
 		status := http.StatusForbidden
 		if errors.Is(err, builtin.ErrDocumentFeedScope) {

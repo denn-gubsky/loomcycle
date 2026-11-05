@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
@@ -77,7 +78,7 @@ var handlersByName = map[string]toolHandler{
 	"channeldef": handleChannelDef,
 
 	// Builtin wrappers
-	"memory": wrapBuiltin("memory", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	"memory": wrapDataBuiltin("memory", "", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Memory(ctx, in)
 	}),
 	"channel": wrapBuiltin("channel", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
@@ -202,10 +203,10 @@ var handlersByName = map[string]toolHandler{
 	// RFC AL Path VFS + RFC AK Document — scope-aware, tenant-isolated tools.
 	// The tenant is authoritative from ctx (operatorCtx → RunIdentity), never
 	// the wire; scope (agent/user[/tenant]) is resolved server-side.
-	"path": wrapBuiltin("path", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	"path": wrapDataBuiltin("path", "agent", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Path(ctx, in)
 	}),
-	"document": wrapBuiltin("document", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	"document": wrapDataBuiltin("document", "user", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Document(ctx, in)
 	}),
 	"history": wrapBuiltin("history", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
@@ -859,6 +860,28 @@ func wrapBuiltin(toolName string, call func(connector.Connector, context.Context
 			return toolErrFrom(toolName, err), nil
 		}
 		return toolResultFromConnector(res), nil
+	}
+}
+
+// wrapDataBuiltin is wrapBuiltin for the data tools (memory, path, document)
+// with the synthetic agent name kept for the operator plane only (RFC FY
+// Part A). mcpPrincipalCtx stamps one name for every principal, so its agent
+// scope is the operator's off-run scope: a member, which cannot name an agent
+// here, gets no agent name, and its call touching an agent scope (defaultScope
+// when the input names none) is refused before the tool runs.
+func wrapDataBuiltin(toolName, defaultScope string, call func(connector.Connector, context.Context, json.RawMessage) (connector.ToolResult, error)) toolHandler {
+	inner := wrapBuiltin(toolName, func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		if p, ok := auth.PrincipalFromContext(ctx); !memberpath.OperatorPlane(p, ok) {
+			ctx = tools.WithAgentName(ctx, "")
+		}
+		return call(c, ctx, in)
+	})
+	return func(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
+		if p, ok := auth.PrincipalFromContext(ctx); !memberpath.OperatorPlane(p, ok) && memberpath.NamesAgentScope(args, defaultScope) {
+			return toolErrValidation(toolName+": not found",
+				"An agent's scope is reached from a run of that agent: pass scope user or tenant."), nil
+		}
+		return inner(ctx, env, args)
 	}
 }
 

@@ -877,6 +877,29 @@ func TestExternalAssert_ALegacyPrefixNeverTakesAUserWithItsOwnSignIn(t *testing.
 	}
 }
 
+// An erasure's tombstone is no bridge's user to link: the gate's login gets
+// its own "<gate>:<sub>" user, and the tombstone's subject id stays reserved.
+func TestExternalAssert_ALegacyPrefixNeverTakesAnErasedUser(t *testing.T) {
+	ctx := context.Background()
+	m := acmeMap()
+	m.LegacySubjectPrefix = "telegram-"
+	g := newExtGate(t, "telegram", m, config.AuthExternalGate{})
+	f := extFixture(t, g)
+	if err := f.st.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "telegram-12345", AccessMode: "isolated", Status: "active", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.UserErase(ctx, "acme", "telegram-12345", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	code, body := f.assert(t, "telegram", g.sign(t, "assert", nil, nil))
+	if code != http.StatusOK || body["subject"] != "telegram:12345" {
+		t.Fatalf("assert after the erasure = %d %v, want a fresh telegram:12345 user", code, body)
+	}
+	if u, err := f.st.UserGet(ctx, "acme", "telegram-12345"); err != nil || u.ErasedAt.IsZero() || u.Status != "disabled" {
+		t.Fatalf("the tombstone changed: %+v, %v", u, err)
+	}
+}
+
 // A passkey is a sign-in of its own, like a password: a passkey-only user is
 // a person, so the prefix never hands it to the gate (or to whoever holds the
 // gate's key). The gate gets its own "<gate>:<sub>" user instead.

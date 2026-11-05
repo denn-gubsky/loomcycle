@@ -22,6 +22,7 @@ import (
 // *store.ErrConflict{Kind:"user", ID:subject} on a (tenant, subject) PK
 // violation (Postgres SQLSTATE 23505 = unique_violation).
 func (s *Store) UserCreate(ctx context.Context, row store.UserRow) error {
+	row = row.AsTombstone()
 	if !store.ValidUserAccessMode(row.AccessMode) {
 		return fmt.Errorf("user create: access_mode must be one of tenant|isolated, got %q", row.AccessMode)
 	}
@@ -40,10 +41,10 @@ func (s *Store) UserCreate(ctx context.Context, row store.UserRow) error {
 	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO users (
-			tenant_id, subject, display_name, access_mode, status, created_at, created_by
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)
+			tenant_id, subject, display_name, access_mode, status, created_at, created_by, erased_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`,
-		row.TenantID, row.Subject, row.DisplayName, row.AccessMode, row.Status, createdAt, row.CreatedBy,
+		row.TenantID, row.Subject, row.DisplayName, row.AccessMode, row.Status, createdAt, row.CreatedBy, erasedAtArg(row.ErasedAt),
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -61,12 +62,13 @@ func (s *Store) UserGet(ctx context.Context, tenantID, subject string) (store.Us
 	var r store.UserRow
 	var createdAt time.Time
 	var createdBy *string
+	var erased *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT tenant_id, subject, display_name, access_mode, status, created_at, created_by
+		SELECT tenant_id, subject, display_name, access_mode, status, created_at, created_by, erased_at
 		FROM users
 		WHERE tenant_id = $1 AND subject = $2
 	`, tenantID, subject).Scan(
-		&r.TenantID, &r.Subject, &r.DisplayName, &r.AccessMode, &r.Status, &createdAt, &createdBy,
+		&r.TenantID, &r.Subject, &r.DisplayName, &r.AccessMode, &r.Status, &createdAt, &createdBy, &erased,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.UserRow{}, &store.ErrNotFound{Kind: "user", ID: subject}
@@ -78,6 +80,9 @@ func (s *Store) UserGet(ctx context.Context, tenantID, subject string) (store.Us
 	if createdBy != nil {
 		r.CreatedBy = *createdBy
 	}
+	if erased != nil {
+		r.ErasedAt = erased.UTC()
+	}
 	return r, nil
 }
 
@@ -86,7 +91,7 @@ func (s *Store) UserGet(ctx context.Context, tenantID, subject string) (store.Us
 // Empty slice (not nil) when none match.
 func (s *Store) UserList(ctx context.Context, tenantID string) ([]store.UserRow, error) {
 	q := `
-		SELECT tenant_id, subject, display_name, access_mode, status, created_at, created_by
+		SELECT tenant_id, subject, display_name, access_mode, status, created_at, created_by, erased_at
 		FROM users`
 	args := []any{}
 	if tenantID != "" {
@@ -104,14 +109,18 @@ func (s *Store) UserList(ctx context.Context, tenantID string) ([]store.UserRow,
 		var r store.UserRow
 		var createdAt time.Time
 		var createdBy *string
+		var erased *time.Time
 		if err := rows.Scan(
-			&r.TenantID, &r.Subject, &r.DisplayName, &r.AccessMode, &r.Status, &createdAt, &createdBy,
+			&r.TenantID, &r.Subject, &r.DisplayName, &r.AccessMode, &r.Status, &createdAt, &createdBy, &erased,
 		); err != nil {
 			return nil, fmt.Errorf("user list scan: %w", err)
 		}
 		r.CreatedAt = createdAt.UTC()
 		if createdBy != nil {
 			r.CreatedBy = *createdBy
+		}
+		if erased != nil {
+			r.ErasedAt = erased.UTC()
 		}
 		out = append(out, r)
 	}
@@ -165,15 +174,17 @@ func (s *Store) UserUpdate(ctx context.Context, tenantID, subject string, patch 
 		return nil
 	}
 	args = append(args, tenantID, subject)
+	// A tombstone is never patched: it would re-enable or rename an erased
+	// subject (store.ErrUserErased).
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE users SET `+strings.Join(sets, ", ")+fmt.Sprintf(` WHERE tenant_id = $%d AND subject = $%d`, idx, idx+1),
+		`UPDATE users SET `+strings.Join(sets, ", ")+fmt.Sprintf(` WHERE tenant_id = $%d AND subject = $%d AND erased_at IS NULL`, idx, idx+1),
 		args...,
 	)
 	if err != nil {
 		return fmt.Errorf("user update: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return &store.ErrNotFound{Kind: "user", ID: subject}
+		return sqlshared.UserUpdateMiss(ctx, s.shared(), tenantID, subject)
 	}
 	return nil
 }
@@ -182,4 +193,12 @@ func (s *Store) UserUpdate(ctx context.Context, tenantID, subject string, patch 
 // removed. Owned data (runs / sessions / memory) has no FK here and stays.
 func (s *Store) UserDelete(ctx context.Context, tenantID, subject string) (bool, error) {
 	return sqlshared.UserDeleteUnbind(ctx, s.shared(), tenantID, subject)
+}
+
+// erasedAtArg binds UserRow.ErasedAt: NULL for a live user.
+func erasedAtArg(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
 }

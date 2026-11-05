@@ -141,9 +141,11 @@ func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
 	}
 	// dry_run defaults TRUE, matching every other sweep here: a bare `curl -X POST`
 	// must not spend a vision call per image.
-	dryRun := true
-	if v := r.URL.Query().Get("dry_run"); v != "" {
-		dryRun = v != "false" && v != "0"
+	dryRun := dryRunParam(r.URL.Query().Get("dry_run"))
+	// A real pass writes descriptions with the operator's vision model.
+	ctx, ok := s.browseCtx(w, r, scope, !dryRun)
+	if !ok {
+		return
 	}
 	limit := 25
 	if v := r.URL.Query().Get("limit"); v != "" {
@@ -156,7 +158,6 @@ func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
 		tier = describeImagesDefaultTier
 	}
 
-	ctx := s.substrateBrowseCtxFn(r)(r.Context())
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem, Embedder: s.embedder}
 
 	assets, err := doc.ListUndescribedAssets(ctx, scope, limit)
