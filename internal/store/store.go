@@ -1720,6 +1720,11 @@ type UserSummary struct {
 // (the subject is sandboxed to its own scope). Status is "active" |
 // "disabled". TenantID "" is the shared/legacy tenant. CreatedBy is the
 // principal subject that registered the row (non-secret; "" in open mode).
+//
+// ErasedAt is set when a subject erasure ended the account (UserErase): the
+// row is then a tombstone, kept so the subject id is never registered again
+// and audit records keep a referent. A tombstone is disabled, carries no
+// display name, and no store write moves it out of that state.
 type UserRow struct {
 	TenantID    string
 	Subject     string
@@ -1728,7 +1733,23 @@ type UserRow struct {
 	Status      string
 	CreatedAt   time.Time
 	CreatedBy   string
+	ErasedAt    time.Time
 }
+
+// AsTombstone is row as a tombstone keeps it when ErasedAt is set — no
+// display name, disabled — and row unchanged otherwise. UserCreate applies
+// it, so a row carried in with ErasedAt (a snapshot restore) can never bring
+// a tombstone back to life or its name back.
+func (row UserRow) AsTombstone() UserRow {
+	if !row.ErasedAt.IsZero() {
+		row.DisplayName, row.Status = "", "disabled"
+	}
+	return row
+}
+
+// ErrUserErased: the user is an erasure's tombstone, which no write may
+// re-enable, rename or delete.
+var ErrUserErased = errors.New("store: the user was erased")
 
 // UserPatch carries the subset of fields UserUpdate can modify. Pointer
 // fields so nil = "leave unchanged"; non-nil = set to the dereferenced value
@@ -2577,6 +2598,7 @@ type UserStore interface {
 	// PK collision. Stamps CreatedAt to now if the caller left it zero.
 	// Rejects an AccessMode / Status outside the shared enum (so a direct
 	// store caller can't persist a value the wire layer would refuse).
+	// A row with ErasedAt set is written as a tombstone (UserRow.AsTombstone).
 	UserCreate(ctx context.Context, row UserRow) error
 
 	// UserGet returns one identity row by (tenantID, subject). Returns
@@ -2593,7 +2615,8 @@ type UserStore interface {
 	// UserUpdate patches mutable fields on one identity row. Nil patch
 	// fields leave the corresponding column unchanged. Returns
 	// *ErrNotFound{Kind:"user"} when the (tenant, subject) row is absent,
-	// and rejects an AccessMode / Status outside the shared enum.
+	// ErrUserErased for an erasure's tombstone (which no patch changes), and
+	// rejects an AccessMode / Status outside the shared enum.
 	UserUpdate(ctx context.Context, tenantID, subject string, patch UserPatch) error
 
 	// UserDelete hard-deletes one identity row and, in the same transaction,
@@ -2602,7 +2625,8 @@ type UserStore interface {
 	// user of the same subject inherits nothing. It reports whether a row
 	// was removed (false = the row did not exist). The subject's OWNED data
 	// (runs / sessions / memory) has no FK to this table and is left intact
-	// — deleting the identity record is not the erasure surface.
+	// — deleting the identity record is not the erasure surface. An
+	// erasure's tombstone is never deleted: ErrUserErased.
 	UserDelete(ctx context.Context, tenantID, subject string) (bool, error)
 
 	// ListTenants enumerates tenants that have RUN something, with derived
@@ -4621,6 +4645,18 @@ type OAuthStore interface {
 	// OAuthFamilyRevokeClient revokes every live family of clientID and
 	// returns their ids.
 	OAuthFamilyRevokeClient(ctx context.Context, clientID, reason string, at time.Time) ([]string, error)
+	// OAuthFamilyRevokeSubject revokes every live family of (tenantID,
+	// subject) — a disabled user's app sign-ins end with the disable — and
+	// returns their ids. A revoked family stays revoked when the user is
+	// re-enabled: the person signs in to the app again.
+	OAuthFamilyRevokeSubject(ctx context.Context, tenantID, subject, reason string, at time.Time) ([]string, error)
+	// OAuthTokenRetireEndedSignIns retires, at `at`, every live access token
+	// of (tenantID, subject) issued through an app sign-in that is no longer
+	// live — its family revoked, whatever the reason, or gone — and returns
+	// how many. It reads the families rather than taking their ids, so a
+	// disable or erasure retried after a partial failure (families revoked,
+	// tokens not yet retired) still finishes.
+	OAuthTokenRetireEndedSignIns(ctx context.Context, tenantID, subject string, at time.Time) (int, error)
 	// OAuthRefreshCreate inserts a refresh token's hash into its family.
 	OAuthRefreshCreate(ctx context.Context, row OAuthRefreshRow) error
 	// OAuthRefreshUse marks a refresh token used and returns it with

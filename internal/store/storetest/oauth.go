@@ -3,6 +3,8 @@ package storetest
 import (
 	"context"
 	"errors"
+	"reflect"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -333,5 +335,109 @@ func testOAuthSubjectDeleteRemovesItsSignIns(t *testing.T, s store.Store) {
 	}
 	if _, err := s.OAuthFamilyGet(ctx, "f-bob"); err != nil {
 		t.Fatalf("another subject's family went: %v", err)
+	}
+}
+
+// OAuthFamilyRevokeSubject ends that subject's live families only, and
+// reports them.
+func testOAuthFamilyRevokeSubjectRevokesOnlyItsLiveFamilies(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	mk := func(id, tenant, subject string) {
+		f := oauthFamily(id, "board")
+		f.TenantID, f.Subject = tenant, subject
+		if err := s.OAuthFamilyCreate(ctx, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("f-a1", "acme", "alice")
+	mk("f-a2", "acme", "alice")
+	mk("f-done", "acme", "alice")
+	mk("f-bob", "acme", "bob")
+	mk("f-other", "other", "alice")
+	if _, err := s.OAuthFamilyRevoke(ctx, "f-done", "earlier", pwgT0); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.OAuthFamilyRevokeSubject(ctx, "acme", "alice", "user_disabled", pwgT0.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(ids)
+	if !reflect.DeepEqual(ids, []string{"f-a1", "f-a2"}) {
+		t.Fatalf("revoked %v, want the subject's live families", ids)
+	}
+	for id, want := range map[string]string{"f-a1": "user_disabled", "f-a2": "user_disabled", "f-done": "earlier", "f-bob": "", "f-other": ""} {
+		f, err := s.OAuthFamilyGet(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.RevokeReason != want || f.RevokedAt.IsZero() != (want == "") {
+			t.Errorf("%s = revoked %v reason %q, want reason %q", id, f.RevokedAt, f.RevokeReason, want)
+		}
+	}
+}
+
+// OAuthTokenRetireEndedSignIns retires the subject's live app tokens whose
+// sign-in is revoked (whatever the reason) or gone, and nothing else. It is
+// what lets a disable retried after a partial failure finish: the families
+// are already revoked, so the revoke returns none, and the tokens still go.
+func testOAuthTokenRetireEndedSignInsFinishesAPartialDisable(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	fam := func(id, subject string) {
+		t.Helper()
+		f := oauthFamily(id, "board")
+		f.Subject = subject
+		if err := s.OAuthFamilyCreate(ctx, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mint := func(id, subject, client, family string) {
+		t.Helper()
+		if _, err := s.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{DefID: id, Name: "app-" + id, TenantID: "acme",
+			Subject: subject, TokenHash: "h-" + id, AllowedScopes: []string{"runs:read"}, CreatedAt: pwgT0,
+			ExpiresAt: pwgT0.Add(time.Hour), IssuedByGate: "pw", OAuthClient: client, OAuthFamily: family}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fam("f-live", "alice")
+	fam("f-done", "alice")
+	fam("f-bob", "bob")
+	mint("t-live", "alice", "board", "f-live")
+	mint("t-done", "alice", "board", "f-done")
+	mint("t-gone", "alice", "board", "f-missing")
+	mint("t-bob", "bob", "board", "f-bob")
+	mint("t-plain", "alice", "", "")
+	// The partial failure: the first disable revoked the families and
+	// stopped before retiring their tokens.
+	if _, err := s.OAuthFamilyRevokeSubject(ctx, "acme", "alice", "user_disabled", pwgT0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.OAuthFamilyRevoke(ctx, "f-bob", "client_retired", pwgT0); err != nil {
+		t.Fatal(err)
+	}
+	// The retry: nothing is left to revoke, and the tokens still go.
+	if ids, err := s.OAuthFamilyRevokeSubject(ctx, "acme", "alice", "user_disabled", pwgT0.Add(time.Minute)); err != nil || len(ids) != 0 {
+		t.Fatalf("second revoke = %v, %v; want none", ids, err)
+	}
+	at := pwgT0.Add(time.Minute)
+	if n, err := s.OAuthTokenRetireEndedSignIns(ctx, "acme", "alice", at); err != nil || n != 3 {
+		t.Fatalf("retire ended sign-ins = %d, %v; want alice's three app tokens", n, err)
+	}
+	for id, retired := range map[string]bool{"t-live": true, "t-done": true, "t-gone": true, "t-bob": false, "t-plain": false} {
+		got, err := s.OperatorTokenDefGet(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.RetiredAt.IsZero() == retired {
+			t.Errorf("%s retired_at = %v, want retired %v", id, got.RetiredAt, retired)
+		}
+	}
+	if n, err := s.OAuthTokenRetireEndedSignIns(ctx, "acme", "alice", at.Add(time.Minute)); err != nil || n != 0 {
+		t.Fatalf("a repeat retired %d, %v; want 0", n, err)
+	}
+	// A live sign-in's token is left.
+	fam("f-new", "alice")
+	mint("t-new", "alice", "board", "f-new")
+	if n, err := s.OAuthTokenRetireEndedSignIns(ctx, "acme", "alice", at.Add(2*time.Minute)); err != nil || n != 0 {
+		t.Fatalf("retire with a live sign-in = %d, %v; want 0", n, err)
 	}
 }

@@ -311,8 +311,9 @@ func TestSignInKinds_CoverEveryPerUserStoreFamily(t *testing.T) {
 		"TOTP":         "a second factor: it never signs in alone",
 		"RecoveryCode": "the TOTP factor's backup codes",
 	}
-	// The user row itself, not a credential.
-	userRow := map[string]bool{"Create": true, "CreateOwner": true, "Delete": true, "Get": true, "List": true, "Update": true}
+	// The user row itself, not a credential. Erase turns the row into its
+	// tombstone, which no one signs in with.
+	userRow := map[string]bool{"Create": true, "CreateOwner": true, "Delete": true, "Erase": true, "Get": true, "List": true, "Update": true}
 	families := map[string]bool{}
 	for f := range notSignIn {
 		families[f] = true

@@ -28,6 +28,8 @@ type wireUserSummary struct {
 	DisplayName string `json:"display_name"`
 	AccessMode  string `json:"access_mode"`
 	Status      string `json:"status"`
+	// ErasedAt marks an erasure's tombstone (see wireUserRecord.ErasedAt).
+	ErasedAt *time.Time `json:"erased_at,omitempty"`
 }
 
 // handleListUsers serves GET /v1/_users — distinct user_ids with
@@ -90,6 +92,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 			resp.Users[i].DisplayName = rec.DisplayName
 			resp.Users[i].AccessMode = rec.AccessMode
 			resp.Users[i].Status = rec.Status
+			resp.Users[i].ErasedAt = wireErasedAt(rec.ErasedAt)
 			continue
 		}
 		idx[rec.Subject] = len(resp.Users)
@@ -99,6 +102,7 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 			DisplayName: rec.DisplayName,
 			AccessMode:  rec.AccessMode,
 			Status:      rec.Status,
+			ErasedAt:    wireErasedAt(rec.ErasedAt),
 		})
 	}
 	// RFC BX P2b: an ISOLATED member (substrate:user) may see ONLY its own user
@@ -137,6 +141,7 @@ func (s *Server) listUsersForManager(w http.ResponseWriter, r *http.Request) {
 	for _, rec := range records {
 		resp.Users = append(resp.Users, wireUserSummary{
 			UserID: rec.Subject, Registered: true, DisplayName: rec.DisplayName, AccessMode: rec.AccessMode, Status: rec.Status,
+			ErasedAt: wireErasedAt(rec.ErasedAt),
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)

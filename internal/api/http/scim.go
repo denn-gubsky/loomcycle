@@ -956,14 +956,16 @@ func (s *Server) scimRemove(ctx context.Context, c scimCtx, subject string) *sci
 		return internal
 	}
 	if err == nil && rm.Gate == c.g.Name && store.SCIMRemovalReason(rm.Reason) {
-		retired, err := s.retireDelegatedUserTokens(ctx, c.tenant, subject)
+		// App sign-ins before the other tokens: endSubjectAppSignIns says why.
+		// Each step runs whatever the one before answered, so a fault in one
+		// leaves no other credential working.
+		appErr := s.endSubjectAppSignIns(ctx, c.tenant, subject)
+		retired, retireErr := s.retireDelegatedUserTokens(ctx, c.tenant, subject)
 		for _, t := range retired {
 			s.recordTokenAudit(ctx, "retire", t)
 		}
-		if err == nil {
-			_, err = s.store.UISessionRevokeSubject(ctx, c.tenant, subject, now)
-		}
-		if err != nil {
+		_, sessionErr := s.store.UISessionRevokeSubject(ctx, c.tenant, subject, now)
+		if err := errors.Join(appErr, retireErr, sessionErr); err != nil {
 			slog.Error("scim: ending a removed user's credentials failed", "gate", c.g.Name, "err", err)
 			return internal
 		}
@@ -1017,6 +1019,12 @@ func (s *Server) scimReactivate(ctx context.Context, c scimCtx, subject string) 
 	// The provisioner is no operator: what is locked stays (unbindSubject).
 	if err := s.stripRemovedUser(ctx, c.tenant, subject, "gate:"+c.g.Name); err != nil {
 		slog.Error("scim: resetting a user to the floor failed", "gate", c.g.Name, "err", err)
+		return "", internal
+	}
+	// The claim holds the user disabled: an app sign-in live now raced the
+	// disable, and the re-enable must not revive it (endSubjectAppSignIns).
+	if err := s.endSubjectAppSignIns(ctx, c.tenant, subject); err != nil {
+		slog.Error("scim: ending a re-enabled user's app sign-ins failed", "gate", c.g.Name, "err", err)
 		return "", internal
 	}
 	restored, ok, err := s.store.SCIMReactivate(ctx, c.g.Name, c.tenant, subject)

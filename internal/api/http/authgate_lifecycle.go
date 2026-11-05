@@ -6,8 +6,9 @@ package http
 // this file does them. A removal is three stages that never skip:
 //
 //	disable — at once, when the removal starts: users.status = disabled, every
-//	          Web UI session ended, every delegated token retired. Nothing is
-//	          deleted; the person can be re-enabled.
+//	          Web UI session and app sign-in ended, every delegated token
+//	          retired. Nothing is deleted; the person can be re-enabled (and
+//	          signs in to each app again).
 //	unbind  — at unbind_due_at: memberships in gate-managed groups (a group
 //	          with an external_id) removed and the user's own ACL bindings
 //	          retired. The login identities stay, so a returning person is
@@ -94,15 +95,25 @@ func (s *Server) startRemovalWith(ctx context.Context, policy lifecycle.Policy, 
 		}
 		return fmt.Errorf("record removal: %w", err)
 	}
+	// App sign-ins before the other tokens: endSubjectAppSignIns says why.
+	// Each step runs whatever the one before answered, so a fault in one
+	// leaves no other credential working; the errors are reported together.
+	var errs []error
+	if err := s.endSubjectAppSignIns(ctx, tenant, subject); err != nil {
+		errs = append(errs, fmt.Errorf("end app sign-ins: %w", err))
+	}
 	retired, err := s.retireDelegatedUserTokens(ctx, tenant, subject)
 	for _, row := range retired {
 		s.recordTokenAudit(ctx, "retire", row)
 	}
 	if err != nil {
-		return fmt.Errorf("retire tokens: %w", err)
+		errs = append(errs, fmt.Errorf("retire tokens: %w", err))
 	}
 	if _, err := s.store.UISessionRevokeSubject(ctx, tenant, subject, now); err != nil {
-		return fmt.Errorf("end sessions: %w", err)
+		errs = append(errs, fmt.Errorf("end sessions: %w", err))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
 	}
 	if started || u.Status != "disabled" {
 		s.recordLifecycleEvent("auth_user_disabled", tenant, subject, gate, reason, by)

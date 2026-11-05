@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
@@ -38,6 +39,22 @@ func (s *Server) erasureService() *erasure.Service {
 		// retiring flushes the auth cache on every replica, and each retire is
 		// recorded as a token retire would be.
 		ListTokens: s.erasureSubjectTokens,
+		// The subject's app sign-ins and their access tokens, ended before
+		// the account's rows go (endSubjectAppSignIns says why first).
+		EndAppSignIns: s.endSubjectAppSignIns,
+		// Config-declared principals of the subject, by name (never the
+		// secret): an erasure cannot edit the config, so it names them.
+		DeclaredPrincipals: func(tenant, subject string) []string {
+			var names []string
+			if c := s.cfg(); c != nil {
+				for _, d := range c.ResolvedPrincipals {
+					if d.Principal.TenantID == tenant && d.Principal.Subject == subject {
+						names = append(names, strings.TrimPrefix(d.Principal.TokenDefID, "cfg:"))
+					}
+				}
+			}
+			return names
+		},
 		RetireTokens: func(ctx context.Context, tenant, subject string) ([]store.OperatorTokenDefRow, error) {
 			retired, err := s.retireDelegatedUserTokens(ctx, tenant, subject)
 			for _, row := range retired {

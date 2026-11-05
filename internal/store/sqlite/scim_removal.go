@@ -34,6 +34,12 @@ func (s *Store) immediateTx(ctx context.Context, fn func(conn *sql.Conn) error) 
 	return nil
 }
 
+// userStatusRead is the status column as the re-enabling writes read it: a
+// tombstone (erased_at set) reads "erased", never "disabled", so nothing that
+// re-enables a disabled user can re-enable an erased one. The word is never
+// stored. Mirrors postgres.
+const userStatusRead = `CASE WHEN erased_at IS NULL THEN status ELSE 'erased' END`
+
 // errNoChange ends an immediateTx with nothing written.
 var errNoChange = errors.New("no change")
 
@@ -105,9 +111,11 @@ func claimedReason(reason string) string {
 
 // userStatus reads the user's status inside an IMMEDIATE transaction (which
 // already holds the write lock). The same order as Postgres: the user first.
+// An erasure's tombstone reads as "erased" (userStatusRead), which no
+// re-enable takes for disabled.
 func userStatus(ctx context.Context, conn *sql.Conn, tenantID, subject string) (string, bool, error) {
 	var status string
-	err := conn.QueryRowContext(ctx, `SELECT status FROM users WHERE tenant_id = ? AND subject = ?`, tenantID, subject).Scan(&status)
+	err := conn.QueryRowContext(ctx, `SELECT `+userStatusRead+` FROM users WHERE tenant_id = ? AND subject = ?`, tenantID, subject).Scan(&status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}

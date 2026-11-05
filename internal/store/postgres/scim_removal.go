@@ -96,11 +96,18 @@ func scimLock(ctx context.Context, tx pgx.Tx, kind, gate, tenantID string) error
 	return err
 }
 
-// lockUserStatus locks the user row and returns its status: every removal
-// write locks the user before the removal, so none can deadlock another.
+// userStatusRead is the status column as the re-enabling writes read it: a
+// tombstone (erased_at set) reads "erased", never "disabled", so nothing that
+// re-enables a disabled user can re-enable an erased one. The word is never
+// stored. Mirrors sqlite.
+const userStatusRead = `CASE WHEN erased_at IS NULL THEN status ELSE 'erased' END`
+
+// lockUserStatus locks the user row and returns its status (userStatusRead):
+// every removal write locks the user before the removal, so none can
+// deadlock another.
 func lockUserStatus(ctx context.Context, tx pgx.Tx, tenantID, subject string) (string, bool, error) {
 	var status string
-	err := tx.QueryRow(ctx, `SELECT status FROM users WHERE tenant_id = $1 AND subject = $2 FOR UPDATE`, tenantID, subject).Scan(&status)
+	err := tx.QueryRow(ctx, `SELECT `+userStatusRead+` FROM users WHERE tenant_id = $1 AND subject = $2 FOR UPDATE`, tenantID, subject).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}

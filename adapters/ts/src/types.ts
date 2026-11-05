@@ -2629,6 +2629,9 @@ export interface UserSummary {
   access_mode?: string; // "tenant" | "isolated"
   /** The registered user's status; `""` for a subject seen only in runs. */
   status?: UserStatus | (string & {});
+  /** Set when a subject erasure made the user a tombstone (RFC3339): it can
+   *  never be re-enabled, changed or deleted (409 `user_erased`). */
+  erased_at?: string;
 }
 
 export interface ListUsersResponse {
@@ -2662,6 +2665,8 @@ export interface UserRecord {
   status: UserStatus | (string & {});
   created_at: string;
   created_by: string;
+  /** Set when a subject erasure made the user a tombstone (RFC3339). */
+  erased_at?: string;
 }
 
 export interface CreateUserBody {
