@@ -2571,9 +2571,10 @@ func erasureErrToStatus(err error) error {
 	case errors.Is(err, erasure.ErrLocked):
 		// HTTP's 403: a list the caller is locked out of retiring.
 		return status.Error(codes.PermissionDenied, err.Error())
-	case errors.Is(err, erasure.ErrAuditUnavailable):
-		// HTTP's 503: nothing was deleted, and configuring the sink and
-		// retrying is the way out.
+	case errors.Is(err, erasure.ErrAuditUnavailable), errors.Is(err, erasure.ErrACLUnavailable):
+		// HTTP's 503: nothing was deleted, and configuring the sink (or
+		// waiting for access control to be readable) and retrying is the
+		// way out.
 		return status.Error(codes.Unavailable, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())

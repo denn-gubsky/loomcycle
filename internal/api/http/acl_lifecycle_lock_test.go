@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authgate/lifecycle"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -682,5 +684,21 @@ func TestAuthGateSync_KeepsAMembershipWhoseDenyListIsLocked(t *testing.T) {
 	}
 	if strings.Join(groups, ",") != "bound" || strings.Join(removed, ",") != "idp-plain" {
 		t.Errorf("delegate's groups after a sync asserting none: %v (removed %v), want bound kept and idp-plain removed", groups, removed)
+	}
+}
+
+// A lock check that could not be evaluated is a 503, not a lock: the
+// erasure error must not carry erasure.ErrLocked, which another transport
+// maps to a permission refusal (gRPC PermissionDenied) instead of Unavailable.
+func TestErasure_AnUnevaluableLockIsNotALockRefusal(t *testing.T) {
+	srv, _, _ := aclMgmtServer(t, authz.ModeCompat)
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Subject: "delegate", TenantID: "acme", Scopes: []string{auth.ScopeTenant}})
+	_, err := srv.ErasureExecute(ctx, erasure.ExecuteRequest{Tenant: "acme", Subject: "victim", DryRun: true})
+	if err == nil || errors.Is(err, erasure.ErrLocked) {
+		t.Fatalf("erasure with an unevaluable access-control set: %v, want an error that is not ErrLocked", err)
+	}
+	var locked *aclLockedError
+	if !errors.As(err, &locked) || locked.reply.status != 503 {
+		t.Errorf("erasure with an unevaluable access-control set: %#v, want the 503 acl_unavailable reply", err)
 	}
 }
