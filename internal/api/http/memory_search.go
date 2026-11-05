@@ -210,6 +210,34 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, dsErr.code, dsErr.msg)
 		return
 	}
+	// Each subject the body names is resolved as the key routes resolve their
+	// {scope_id} (RFC FY Part A): a member searches another subject's scope only
+	// where its rules let it browse that scope.
+	docCtx, ok := s.memorySearchFilterCtx(r, "memory", body.Scope, storeScopeID)
+	if !ok {
+		writeBrowseNotFound(w)
+		return
+	}
+	// The search reads the scope's memory: the instance question the key
+	// routes ask of it too.
+	if !s.memoryInstanceAllowed(w, r, body.Scope, storeScopeID, "read") {
+		return
+	}
+	// The scope's documents (chunk bodies, facts homed in them, derived units)
+	// are answered only to a caller that may browse its documents as well; a
+	// search aimed at them by a filter is refused without it.
+	_, documents := s.memorySearchFilterCtx(r, "document", body.Scope, storeScopeID)
+	if !documents && !body.documentFilter().IsZero() && legScope == "" {
+		writeBrowseNotFound(w)
+		return
+	}
+	var legCtx context.Context
+	if legScope != "" {
+		if legCtx, ok = s.memorySearchFilterCtx(r, "document", string(legScope), legStoreScopeID); !ok {
+			writeBrowseNotFound(w)
+			return
+		}
+	}
 	sq := memrank.SearchQuery{
 		QueryText: body.Query, Prefix: "", TopK: topK,
 		Sources: sources,
@@ -218,7 +246,6 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 	// A document filter is resolved to chunk ids BEFORE the search, and only when
 	// one was given: a filter-free search stays on exactly the old path.
 	var filterEcho *builtin.MemoryDocFilterEcho
-	docCtx := memorySearchFilterCtx(r, body.Scope, storeScopeID)
 	docs := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 	// With a second scope, the document filter aims at its documents instead.
 	if df := body.documentFilter(); !df.IsZero() && legScope == "" {
@@ -252,10 +279,8 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 	// rules the first scope's filter and /v1/_document use — so this reaches
 	// no document the caller could not search there. A refusal refuses the
 	// whole call; it never answers from one scope.
-	var legCtx context.Context
 	var legPlan *builtin.DocumentsLegPlan
 	if legScope != "" {
-		legCtx = memorySearchFilterCtx(r, string(legScope), legStoreScopeID)
 		plan, refusal := builtin.PlanDocumentsLeg(legCtx, docs, "search", legScope, legStoreScopeID, body.documentFilter())
 		if refusal != nil {
 			status, code := memorySearchFilterRefusalStatus(*refusal)
@@ -304,6 +329,9 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 		slog.Error("memory search access check failed", "scope", body.Scope, "scope_id", body.ScopeID, "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal", "search failed")
 		return
+	}
+	if !documents {
+		builtin.DropDocumentHits(&res, hitsFrom(legPlan, res.Scopes, store.MemoryScope(body.Scope), store.MemoryScope(body.Scope)))
 	}
 	if legPlan != nil {
 		if err := builtin.DropUnreadableSearchHits(legCtx, docs, legScope, legStoreScopeID, &res,
@@ -446,19 +474,24 @@ func hitsFrom(legPlan *builtin.DocumentsLegPlan, scopes []store.MemoryScope, own
 }
 
 // memorySearchFilterCtx is the identity a document filter resolves under, and
-// the one the hits' document access check runs under: the
-// principal's own tenant (as the search itself), the requested scope's subject,
-// and the operator-plane grants the off-run Document routes run with
-// (substrateBrowseCtx → substrateAdminCtx). The principal stays on ctx, so the
-// Document tool's access-control narrowing reads the caller's own set. The
-// subject is the scope_id this handler already accepts for the search; no
-// tenant focus is honoured, because the search does not honour one either.
-func memorySearchFilterCtx(r *http.Request, scope, storeScopeID string) context.Context {
+// the one the hits' document access check runs under: the principal's own
+// tenant (as the search itself), the requested scope's subject as
+// browseSubjectFor resolves it for a browse of typ ("memory" for the scope's
+// memory, "document" for its documents), and the operator-plane grants the
+// off-run Document routes run with (substrateAdminCtx). The principal stays
+// on ctx, so the Document tool's access-control narrowing reads the caller's
+// own set. No tenant focus is honoured, because the search does not honour
+// one either. False: the caller may not browse that subject's scope.
+func (s *Server) memorySearchFilterCtx(r *http.Request, typ, scope, storeScopeID string) (context.Context, bool) {
 	subject := ""
 	if scope != string(store.MemoryScopeTenant) {
 		subject = storeScopeID
 	}
-	return substrateBrowseCtx(r.Context(), subject, "")
+	b, ok := s.browseSubjectFor(r.Context(), typ, subject, "", false, scope)
+	if !ok {
+		return nil, false
+	}
+	return b.apply(r.Context()), true
 }
 
 // memorySearchFilterRefusalStatus maps a refused document filter to its HTTP

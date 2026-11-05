@@ -69,7 +69,7 @@ func TestMemoryKeyRoutes_ACLDeniedDocumentRowsAreAbsent(t *testing.T) {
 func TestMemoryKeyRoutes_UnrestrictedCallerAnswerIsUnchanged(t *testing.T) {
 	c := newACLSearchCorpus(t)
 	admin := auth.Principal{TenantID: "A", Subject: "op", Scopes: []string{auth.ScopeAdmin}}
-	unlimited := auth.Principal{TenantID: "A", Subject: "bob", Scopes: []string{auth.ScopeRunsCreate}, Effective: allowDocumentsSet(t, "bob")}
+	unlimited := auth.Principal{TenantID: "A", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}, Effective: allowDocumentsSet(t, "alice")}
 	for _, path := range []string{
 		"/v1/_memory/scopes/user/alice/keys",
 		"/v1/_memory/scopes/user/alice/keys?include_embedding_metadata=true",

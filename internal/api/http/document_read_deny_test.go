@@ -70,8 +70,14 @@ func TestMemoryDocRowDelete_OffRunRouteAsksTheDocumentACL(t *testing.T) {
 		reseed()
 		noDelete := auth.Principal{TenantID: "A", Subject: "bob", Scopes: scopes,
 			Effective: documentSet(t, "bob", authz.Rule{Effect: authz.Deny, Actions: []string{"delete"}, Resources: []string{"document:user:/qg/reports/**"}})}
-		if rec := deleteMemoryKey(t, c.s, noDelete, path); rec.Code != http.StatusForbidden {
-			t.Errorf("%s denied delete: %d %s, want 403", name, rec.Code, rec.Body.String())
+		// A member may not change another subject's scope at all, so it gets
+		// the opaque not-found before the document's rules are asked.
+		want := http.StatusForbidden
+		if name == "member" {
+			want = http.StatusNotFound
+		}
+		if rec := deleteMemoryKey(t, c.s, noDelete, path); rec.Code != want {
+			t.Errorf("%s denied delete: %d %s, want %d", name, rec.Code, rec.Body.String(), want)
 		}
 		stays(name + " denied delete")
 

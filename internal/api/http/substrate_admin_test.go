@@ -808,4 +808,23 @@ func TestSubstrateBrowseCtxFn_Authz(t *testing.T) {
 	if ri, _ := build("", tenant); ri.UserID != "tok-ld2" || ri.TenantID != "loomcycle-dev" {
 		t.Errorf("no-override must keep own identity: ri=%+v", ri)
 	}
+
+	// RFC FY Part A — a member (no substrate:tenant) is not the operator plane:
+	// with no rule letting it browse another subject (here: no set at all) its
+	// user scope stays its own whatever it names, and ?tenant= never moves it.
+	// The routes refuse such a request outright
+	// (TestSubstrateBrowseCtxFn_MemberAndIsolatedRoutes); the ctx never carries
+	// the named subject on the user plane either way.
+	memberP := auth.Principal{TenantID: "loomcycle-dev", Subject: "dev", Scopes: []string{auth.ScopeRunsCreate}}
+	if ri, _ := build("?scope_id=marketing&tenant=acme", memberP); ri.UserID != "dev" || ri.TenantID != "loomcycle-dev" {
+		t.Errorf("member naming another subject: ri=%+v, want its own user dev in loomcycle-dev", ri)
+	}
+	// An isolated member keeps its own subject AND its isolation bit, which the
+	// tools read to refuse it the tenant keyspace.
+	isoP := auth.Principal{TenantID: "loomcycle-dev", Subject: "dev", Scopes: []string{auth.ScopeUser}}
+	for _, q := range []string{"", "?scope_id=dev", "?scope_id=marketing", "?tenant=acme"} {
+		if ri, _ := build(q, isoP); ri.UserID != "dev" || ri.TenantID != "loomcycle-dev" || !ri.Isolated {
+			t.Errorf("isolated member %q: ri=%+v, want its own user dev, isolated", q, ri)
+		}
+	}
 }

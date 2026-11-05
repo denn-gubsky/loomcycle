@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -141,6 +142,9 @@ func (k ScopeKey) keyPath(root string) (string, error) {
 		return "", err
 	}
 	if k.Scope == runScope {
+		if strings.Contains(id, "..") {
+			return "", errDotDotSegment
+		}
 		return filepath.Join(root, runScope, id+".db"), nil
 	}
 	tenant, err := sanitize(k.Tenant)
@@ -153,8 +157,26 @@ func (k ScopeKey) keyPath(root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// One plain check per segment, so static analysis sees the guard on each.
+	if strings.Contains(tenant, "..") {
+		return "", errDotDotSegment
+	}
+	if strings.Contains(scope, "..") {
+		return "", errDotDotSegment
+	}
+	if strings.Contains(id, "..") {
+		return "", errDotDotSegment
+	}
 	return filepath.Join(root, tenant, scope, id+".db"), nil
 }
+
+// errDotDotSegment refuses a path segment holding "..". sanitize() keeps only
+// A-Z a-z 0-9 _ - (anything else is replaced and the original hashed), so a
+// sanitized segment can never hold one: this never refuses a real key. The
+// checks are written in the form static analysis recognises as a traversal
+// guard, so the guarantee is visible at the join rather than only inside
+// sanitize.
+var errDotDotSegment = errors.New(`sqlmem: scope path segment contains ".."`)
 
 // dsnPragmas mirrors driver_default.go openDB: WAL + foreign-key enforcement
 // + a 5-second busy timeout. SQL Memory uses the SAME pragma posture as the

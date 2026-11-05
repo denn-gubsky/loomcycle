@@ -31,7 +31,18 @@ families require the `substrate:tenant` scope and are also reachable by a
 `substrate:user` token is confined and refused. The tenant is always derived
 server-side from the token — never from the request. The `?scope_id=` /
 `?tenant=` query params only re-focus a browse WITHIN the caller's authorized
-tenant (an admin may cross tenants).
+tenant (an admin may cross tenants). Naming another subject is the operator's:
+a member may name only itself, or a subject its access-control rules let it
+`browse` (`document:user` / `memory:user` with `owner_is_self: false`), or an
+agent it may run — and only to read there: a member's write to any scope but
+its own user scope is refused, an agent's scope included (the Web UI's agent
+memory and documents are read-only for a member). A member has no off-run agent
+scope of its own: `scope=agent` without naming an agent is refused. A
+`memory:user` browse grant reads the colleague's memory but not her documents'
+text (chunk rows are left out, and searching her documents is refused) unless
+`document:user` is granted too, and a maintenance pass (`project`, `reindex`,
+`derive_units`, `describe_images`) runs on her scope only as a dry run.
+Anything else is `404 not_found`.
 
 ## Generate a client
 

@@ -309,13 +309,15 @@ func TestDocumentRulings_AMemberIsRefusedTheOperatorsOps(t *testing.T) {
 			t.Errorf("a member's %s = %d %v, want past the ruling gate (the op's own refusal)", c.name, code, out)
 		}
 	}
-	for _, c := range []struct{ name, body, want string }{
-		{"accept a classification in another subject's scope", fmt.Sprintf(`{"op":"accept_classification","scope":"user","document_id":%q}`, mine), "only an operator"},
-		{"maintain a statement in another subject's scope", `{"op":"maintain_statement","scope":"user","id":"nope","action":"verify"}`, "only a code agent granted statement_methods, or an operator"},
+	// In another subject's scope a member changes nothing: the browse guard
+	// answers the opaque not-found before the ruling gate is reached.
+	for _, c := range []struct{ name, body string }{
+		{"accept a classification in another subject's scope", fmt.Sprintf(`{"op":"accept_classification","scope":"user","document_id":%q}`, mine)},
+		{"maintain a statement in another subject's scope", `{"op":"maintain_statement","scope":"user","id":"nope","action":"verify"}`},
 	} {
 		code, out := s.postDocument(t, member, "scope_id=alice", c.body)
-		if code == http.StatusOK || !strings.Contains(errText(out), c.want) {
-			t.Errorf("a member's %s = %d %v, want a refusal naming %q", c.name, code, out, c.want)
+		if code != http.StatusNotFound || out["code"] != "not_found" {
+			t.Errorf("a member's %s = %d %v, want the opaque not-found", c.name, code, out)
 		}
 	}
 	// The operator still defines a tenant-wide type, and a member still defines
@@ -397,9 +399,10 @@ func TestCallerTier_EachPrincipalGetsItsTier(t *testing.T) {
 			if got := tools.CallerTier(substrateAdminUserCtx(c.ctx)); got != c.want && c.focus == "" {
 				t.Errorf("substrateAdminUserCtx tier = %s, want %s", got, c.want)
 			}
-			browse := substrateBrowseCtx(c.ctx, "someone", c.focus)
+			req := httptest.NewRequest("GET", "/v1/_path?scope_id=someone&tenant="+c.focus, nil)
+			browse := (&Server{}).substrateBrowseCtxFn(req)(c.ctx)
 			if got := tools.CallerTier(browse); got != c.want {
-				t.Errorf("substrateBrowseCtx tier = %s, want %s", got, c.want)
+				t.Errorf("substrateBrowseCtxFn tier = %s, want %s", got, c.want)
 			}
 			if p, ok := auth.PrincipalFromContext(c.ctx); ok && !p.Legacy && !auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 				if got := tools.RunIdentity(browse).TenantID; got != p.TenantID {

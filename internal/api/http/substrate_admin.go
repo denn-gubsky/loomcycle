@@ -1,6 +1,7 @@
 package http
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
@@ -41,9 +43,9 @@ const (
 	substrateAdminAgentID = "a_http-admin"
 	// substrateAdminUserID is the corresponding user_id. Same
 	// rationale as above.
-	substrateAdminUserID = "http-admin"
+	substrateAdminUserID = tools.OffRunOperatorHTTP
 	// substrateAdminAgentName is the synthetic agent name.
-	substrateAdminAgentName = "http-admin"
+	substrateAdminAgentName = tools.OffRunOperatorHTTP
 )
 
 // handleSubstrateAgentDef serves POST /v1/_agentdef.
@@ -158,7 +160,7 @@ func (s *Server) handleSubstrateVolumeDef(w http.ResponseWriter, r *http.Request
 // user-scope tree an agent run for this principal uses (see
 // substrateAdminUserCtx).
 func (s *Server) handleSubstratePath(w http.ResponseWriter, r *http.Request) {
-	s.dispatchSubstrateCtx(w, r, "Path", s.Path, s.substrateBrowseCtxFn(r))
+	s.dispatchSubstrateCtxGuarded(w, r, "Path", s.Path, s.substrateBrowseCtxFn(r), s.browseGuard(r, "agent", builtin.PathCallReadsOnly))
 }
 
 // handleSubstrateDocument serves POST /v1/_document.
@@ -166,7 +168,7 @@ func (s *Server) handleSubstratePath(w http.ResponseWriter, r *http.Request) {
 // USER-aware ctx so off-run user-scoped documents interoperate with the
 // principal's agent runs (see substrateAdminUserCtx).
 func (s *Server) handleSubstrateDocument(w http.ResponseWriter, r *http.Request) {
-	s.dispatchSubstrateCtx(w, r, "Document", s.Document, s.substrateBrowseCtxFn(r))
+	s.dispatchSubstrateCtxGuarded(w, r, "Document", s.Document, s.substrateBrowseCtxFn(r), s.browseGuard(r, "user", builtin.DocumentCallReadsOnly))
 }
 
 // handleSubstrateDocumentAsset serves GET /v1/_document/asset/{chunk_id} — the
@@ -189,7 +191,13 @@ func (s *Server) handleSubstrateDocumentAsset(w http.ResponseWriter, r *http.Req
 		return
 	}
 	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
-	ctx := s.substrateBrowseCtxFn(r)(r.Context())
+	q := r.URL.Query()
+	b, ok := s.browseSubjectFor(r.Context(), "document", q.Get("scope_id"), q.Get("tenant"), false, cmp.Or(scope, "user"))
+	if !ok {
+		http.NotFound(w, r) // the same opaque answer as a missing asset
+		return
+	}
+	ctx := b.apply(r.Context())
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 	mediaType, data, ok, err := doc.ReadAsset(ctx, scope, chunkID)
 	if err != nil || !ok || !builtin.ValidImageMediaType(mediaType) {
@@ -628,78 +636,78 @@ func substrateAdminUserCtx(ctx context.Context) context.Context {
 }
 
 // substrateBrowseCtxFn returns the scope ctx builder for the off-run Path +
-// Document BROWSE endpoints (RFC AS). It extends substrateAdminUserCtx with an
-// optional caller-chosen subject (?scope_id=) and tenant (?tenant=) so an
-// operator can inspect a tree/document owned by a subject OTHER than its own —
-// the fix for "a doc an MCP agent created under its own subject is invisible to
-// every human login". Authz mirrors principalTenantScope:
+// Document BROWSE endpoints (RFC AS): substrateAdminUserCtx with the subject
+// (?scope_id=) and tenant (?tenant=) the request names, resolved by
+// browseSubjectFor (RFC FY Part A) — an operator may name any subject of its
+// tenant (an admin any tenant too); a member only what its rules let it
+// browse. scope_id overrides BOTH the user-scope id (RunIdentity.UserID) and
+// the agent-scope id (agent name), each only where the caller may browse it,
+// so it selects the right tree whichever `scope` the request asks for. With
+// neither param set the behaviour is byte-identical to substrateAdminUserCtx.
 //
-//   - admin / legacy / open: may browse ANY (tenant, scope_id) — sees every
-//     primitive across the deployment.
-//   - substrate:tenant: the tenant is FORCED to the principal's own (a tenant
-//     can't read another tenant); scope_id may be any subject WITHIN that tenant
-//     (the whole-tenant model — subjects share their tenant's workspace).
-//
-// scope_id overrides BOTH the user-scope id (RunIdentity.UserID) and the
-// agent-scope id (agent name), so it selects the right tree whichever `scope`
-// the request asks for. With neither param set the behaviour is byte-identical
-// to substrateAdminUserCtx (the caller's own subject), so existing clients are
-// unaffected.
+// The scope a body-carrying request touches is not known here, so a refusal
+// cannot be written here either: a request the caller may not make gets its
+// own ctx, and the route's browseGuard refuses it before the tool runs.
 func (s *Server) substrateBrowseCtxFn(r *http.Request) func(context.Context) context.Context {
-	reqScopeID := strings.TrimSpace(r.URL.Query().Get("scope_id"))
-	reqTenant := strings.TrimSpace(r.URL.Query().Get("tenant"))
+	reqScopeID := r.URL.Query().Get("scope_id")
+	reqTenant := r.URL.Query().Get("tenant")
 	return func(ctx context.Context) context.Context {
-		return substrateBrowseCtx(ctx, reqScopeID, reqTenant)
+		b, ok := s.browseSubjectFor(ctx, "document", reqScopeID, reqTenant, false)
+		if !ok {
+			p, has := auth.PrincipalFromContext(ctx)
+			b = browseSubject{own: true, isolated: auth.IsIsolated(p, has), memberPlane: true}
+		}
+		return b.apply(ctx)
 	}
 }
 
-// substrateBrowseCtx is substrateBrowseCtxFn's ctx for an explicit subject
-// (reqScopeID) and tenant focus (reqTenant), each "" for none — for a handler
-// that takes them from its body rather than the query string. Same authz: the
-// tenant focus is honoured for an admin only.
-func substrateBrowseCtx(ctx context.Context, reqScopeID, reqTenant string) context.Context {
-	base := substrateAdminUserCtx(ctx)
-	if reqScopeID == "" && reqTenant == "" {
-		return base // no override → caller's own subject (back-compat)
+// browseGuard refuses, before the tool runs, a Path or Document request whose
+// ?scope_id= names a subject the caller may not browse on a scope its body
+// touches — `scope` (defaultScope when absent) and copy/move's `to_scope` — or
+// that a member sends to change another subject's scope: readsOnly is the
+// tool's own read-only classification of the call.
+func (s *Server) browseGuard(r *http.Request, defaultScope string, readsOnly func(json.RawMessage) bool) func(context.Context, []byte) ([]byte, *guardError) {
+	reqScopeID := r.URL.Query().Get("scope_id")
+	reqTenant := r.URL.Query().Get("tenant")
+	return func(_ context.Context, body []byte) ([]byte, *guardError) {
+		var in struct {
+			Scope   string `json:"scope"`
+			ToScope string `json:"to_scope"`
+		}
+		// The body was validated as JSON; a shape this cannot read leaves the
+		// default scope, and the ctx still holds only what the caller may browse.
+		_ = json.Unmarshal(body, &in)
+		// A member has no off-run agent tree, so Path's agent default would
+		// only ever answer it not-found: say what to pass instead.
+		if p, ok := auth.PrincipalFromContext(r.Context()); in.Scope == "" && defaultScope == "agent" && !memberpath.OperatorPlane(p, ok) {
+			return nil, &guardError{status: http.StatusBadRequest, code: "scope_required",
+				msg: "pass scope user (your own tree) or tenant; scope agent needs scope_id naming an agent you may run"}
+		}
+		scopes := []string{in.Scope}
+		if in.Scope == "" {
+			scopes[0] = defaultScope
+		}
+		if in.ToScope != "" {
+			scopes = append(scopes, in.ToScope)
+		}
+		if _, ok := s.browseSubjectFor(r.Context(), "document", reqScopeID, reqTenant, !readsOnly(body), scopes...); !ok {
+			return nil, &guardError{status: http.StatusNotFound, code: "not_found", msg: "not found"}
+		}
+		return body, nil
 	}
-	p, ok := auth.PrincipalFromContext(ctx)
-	// Open mode (no principal) is unrestricted (is_admin-equivalent), like
-	// handleWhoami/principalTenantScope — honor both overrides.
-	admin := !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin)
+}
 
-	tenantID := ""
-	subject := ""
-	if ok {
-		tenantID = p.TenantID
-		subject = p.Subject
+// browseCtx is the browse ctx for a handler that knows the one scope it acts
+// on (a query parameter), writes saying whether this request may change it:
+// false after writing the opaque not-found.
+func (s *Server) browseCtx(w http.ResponseWriter, r *http.Request, scope string, writes bool) (context.Context, bool) {
+	q := r.URL.Query()
+	b, ok := s.browseSubjectFor(r.Context(), "document", q.Get("scope_id"), q.Get("tenant"), writes, scope)
+	if !ok {
+		writeBrowseNotFound(w)
+		return nil, false
 	}
-	if admin {
-		if reqTenant != "" {
-			tenantID = reqTenant
-		}
-		if reqScopeID != "" {
-			subject = reqScopeID
-		}
-	} else {
-		// substrate:tenant — tenant stays the principal's own (reqTenant
-		// IGNORED, never widens); scope_id may target any subject in it.
-		if reqScopeID != "" {
-			subject = reqScopeID
-		}
-	}
-	// Override BOTH the user id and the agent name so resolveScope picks the
-	// requested tree for scope=user OR scope=agent. The tier is re-derived for
-	// the tenant acted in: an admin's focus keeps it the operator plane, and a
-	// substrate:tenant principal's tenant was forced to its own above.
-	base = tools.WithCallerTier(base, tools.TierForPrincipal(p, ok, tenantID))
-	return tools.WithAgentName(
-		tools.WithRunIdentity(base, tools.RunIdentityValue{
-			UserID:   subject,
-			AgentID:  substrateAdminAgentID,
-			TenantID: tenantID,
-		}),
-		subject,
-	)
+	return b.apply(r.Context()), true
 }
 
 // handleSubstrateOperatorTokenDef serves POST /v1/_operatortokendef.

@@ -34,7 +34,7 @@ func TestCodeJS_Compiler_RejectsPathTraversal(t *testing.T) {
 	// here — RFC BA agent grouping makes an interior `/` a legal nested path
 	// (agent_code/a/b/index.js), so the floor must reject only true escapes:
 	// backslashes, `.`/`..` (whole or as a segment), and traversal sequences.
-	for _, bad := range []string{`a\b`, "..", ".", "../../etc/hosts", "a/../b", "a//b", "/abs"} {
+	for _, bad := range []string{`a\b`, "..", ".", "../../etc/hosts", "a/../b", "a//b", "a..b", "/abs"} {
 		if _, err := c.load(bad); err == nil {
 			t.Errorf("load(%q) was not rejected by the containment floor", bad)
 		}

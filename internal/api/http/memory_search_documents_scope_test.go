@@ -243,7 +243,7 @@ func TestMemorySearchEndpoint_DocumentsScopeChecksEachScopesDocuments(t *testing
 
 	denying := func(resource string) *authz.Effective {
 		t.Helper()
-		eff, err := authz.Compile(authz.Input{Subject: authz.Subject{TenantID: "A", ID: "bob"},
+		eff, err := authz.Compile(authz.Input{Subject: authz.Subject{TenantID: "A", ID: "alice"},
 			Bindings: []authz.Binding{{ACL: "a", SubjectKind: authz.SubjectTenant}},
 			ACLs: map[string]authz.ACLVersion{"a": {ACL: authz.ACL{Name: "a", Rules: []authz.Rule{
 				{Effect: authz.Allow, Actions: []string{"read", "write"}, Resources: []string{"document:*", "memory:*", "sqlmem:*"}},
@@ -263,7 +263,7 @@ func TestMemorySearchEndpoint_DocumentsScopeChecksEachScopesDocuments(t *testing
 		"tenant reports denied": {"document:tenant:/qg/reports/**", tenantReport, []string{userReport, tenantNorm}},
 		"user reports denied":   {"document:user:/qg/reports/**", userReport, []string{tenantReport, tenantNorm}},
 	} {
-		member := auth.Principal{TenantID: "A", Subject: "bob", Scopes: []string{auth.ScopeRunsCreate}, Effective: denying(tc.resource)}
+		member := auth.Principal{TenantID: "A", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}, Effective: denying(tc.resource)}
 		code, out, raw := searchAs(t, s, member, body)
 		if code != http.StatusOK {
 			t.Fatalf("%s: status %d: %s", name, code, raw)

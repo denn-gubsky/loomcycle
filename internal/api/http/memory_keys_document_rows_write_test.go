@@ -37,10 +37,12 @@ func memoryKeyWrite(t *testing.T, s *Server, p auth.Principal, method, key, body
 }
 
 // everyCaller is each kind of principal the key routes admit, with no access
-// rule in play: the refusal is the namespace's, not an access decision.
+// rule in play: the refusal is the namespace's, not an access decision. The
+// member is alice, whose scope the routes address: a member reaches only its
+// own user scope (RFC FY Part A).
 func everyCaller() map[string]auth.Principal {
 	return map[string]auth.Principal{
-		"member":          {TenantID: "A", Subject: "bob", Scopes: []string{auth.ScopeRunsCreate}},
+		"member":          {TenantID: "A", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}},
 		"tenant operator": {TenantID: "A", Subject: "op", Scopes: []string{auth.ScopeTenant}},
 		"admin":           {TenantID: "A", Subject: "root", Scopes: []string{auth.ScopeAdmin}},
 	}
