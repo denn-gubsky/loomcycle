@@ -12,8 +12,8 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 *A chat client can read a reply aloud and transcribe the microphone: `POST /v1/audio/speech` and `POST /v1/audio/transcriptions` put loomcycle's speech engines behind two routes and three `@loomcycle/client` methods. And a security line closes what the 2026-11-04 re-assessment found on the member plane: a tenant member no longer reads or writes other people's data, decides for the tenant, or escapes an admin's access-control list; every stored access rule is either enforced or refused; an erasure ends the account.*
 
-The v1.140 line: #2392 to #2403.
-- `@loomcycle/client` 1.140.0 adds `speech()`, `transcribe()` and `speechInfo()`, and the user record's `erased_at`. The Python adapter moves to 1.140.0 for lockstep; its API does not change.
+The v1.140 line: #2392 to #2406.
+- `@loomcycle/client` 1.140.0 adds `speech()`, `transcribe()` and `speechInfo()`, the user record's `erased_at`, and `source_ip` on an access-check context (#2406). The Python adapter moves to 1.140.0 for lockstep; its API does not change.
 - **One migration:** 0130 adds `users.erased_at` (Postgres; SQLite alters the table at boot).
 - **Read the upgrade notes below before upgrading.** Several fixes refuse what used to be allowed, and one can stop a config from loading.
 
@@ -36,6 +36,10 @@ The v1.140 line: #2392 to #2403.
 - **Who may call them:** `runs:create`, not `llm:gateway`, so a self-signed-up (isolated) user can. The ACL asks `use gateway:speech` / `use gateway:transcription`. A token limited to certain agents gets `403 restricted_token`.
 - **Cost and load:** each engine request is billed to the caller (one `tts` or `stt` usage row) under the run rate and hard token limits. One queue per direction, sized by `LOOMCYCLE_SPEECH_MAX_INFLIGHT` / `LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT` (default 2), makes a request over the bound wait, not fail. `/metrics` gains `loomcycle_audio_engine_inflight` and `loomcycle_audio_engine_queued`.
 - The speech-to-text pass moved out of the File tool into `internal/transcribe/sttpass`, shared by both; the File tool's behaviour is unchanged. New guide: `docs/SPEECH.md`.
+
+### Docs (#2404)
+
+- `docs/CONFIGURATION.md` names the four caller tiers, what only the operator plane may decide, what `?scope_id=` a member may pass, and the ceiling on agents a member authors.
 
 ### A member reaches only its own data (#2397, RFC FY Part A)
 
