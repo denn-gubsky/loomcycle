@@ -75,6 +75,9 @@ func (a *AgentDef) checkCapabilityCeiling(ctx context.Context, name string, def 
 			return err
 		}
 		ctx = a.memberCeilingCtx(ctx, def)
+		// No base: the forked version's grants were its author's, and a
+		// member's fork holds only what the member could grant itself.
+		base = nil
 	}
 	held := "this agent's own"
 	if base != nil {

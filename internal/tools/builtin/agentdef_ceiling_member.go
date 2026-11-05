@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"path"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -42,16 +43,28 @@ import (
 //	ceilSkills               the plane's grant; the runner's rules narrow skills
 //	                         at run start
 //	ceilEvaluation           the token's grant (submit_self for a member)
-//	ceilShellCreds           the plane's (no narrowing): a shell's reach follows
-//	                         the Bash/Bashbox tool, which `tools` judges
+//	ceilShellCreds           explicit for an agent holding Bash or Bashbox: unset
+//	                         (every credential the operator lists) is refused,
+//	                         and the only list allowed is [] — the credential
+//	                         rules (credential:<scope>:<name>) name stored
+//	                         credentials, not the operator's host env names, so
+//	                         no rule can grant one. Unset without a shell tool.
 //	ceilInterruption         unset only: no plane stamps a member's policy
 //	ceilGitRemote            operator-grade: unset only
 //	ceilStatementMethods     operator-grade: unset only
 //	ceilDefScopes            operator-grade: unset only (every *_def_scopes)
 //	decisionAuthorityIssues  rules: use gateway:decide
 //
-// With no compiled rule set (no resolver wired), the member's class baseline
-// stands in for it, so the answer is what the baseline grants.
+// With no compiled rule set because no resolver is wired, the member's class
+// baseline stands in for it. When a resolver is wired and the set could not be
+// read (auth.Principal.ACLFault), nothing is granted: the fault must not stand
+// in for the member's own denies.
+//
+// A fork by a member is judged with NO base: the forked version's grants are
+// its author's, not the member's, so a member's fork may carry only what the
+// member could grant itself (an operator-grade field must be emptied), and the
+// member may not make it the active version of an operator's agent
+// (memberActivationGuard).
 var memberCeilingClass = map[string]string{
 	"tools":                   "rules: invoke",
 	"ceilVolumes":             "rules: mount volume",
@@ -62,7 +75,7 @@ var memberCeilingClass = map[string]string{
 	"ceilChannels":            "plane",
 	"ceilSkills":              "plane",
 	"ceilEvaluation":          "token",
-	"ceilShellCreds":          "plane (follows tools)",
+	"ceilShellCreds":          "explicit [] with a shell tool",
 	"ceilInterruption":        "unset only",
 	"ceilGitRemote":           "operator-grade",
 	"ceilStatementMethods":    "operator-grade",
@@ -78,6 +91,9 @@ func memberCeilingSet(ctx context.Context) *authz.Effective {
 		return eff
 	}
 	p, ok := auth.PrincipalFromContext(ctx)
+	if p.ACLFault {
+		return nil
+	}
 	name := authz.BaselineMember
 	if auth.IsIsolated(p, ok) {
 		name = authz.BaselineIsolated
@@ -117,20 +133,46 @@ func (a *AgentDef) memberCeilingCtx(ctx context.Context, def mergedDef) context.
 			vols.Bindings = append(vols.Bindings, tools.VolumeBinding{Name: v})
 		}
 	}
-	ctx = tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) {
-		p.Volumes = vols
-		p.Memory.AllowedScopes = keep(p.Memory.AllowedScopes, "write", "memory")
-		p.SqlMem.AllowedScopes = keep(p.SqlMem.AllowedScopes, "write", "sqlmem")
-		p.History.Scopes = keep(p.History.Scopes, "read", "history")
-		p.Crypto = tools.CryptoPolicyValue{Scopes: keep([]string{"user", "agent"}, "use", "crypto")}
-		p.StatementMethods = nil
-		p.GitRemote = tools.GitRemotePolicyValue{}
-		p.AgentDef = tools.AgentDefPolicyValue{}
-		p.VolumeDef = tools.VolumeDefPolicyValue{}
+	shell := tools.ShellCredsPolicyValue{}
+	if holdsShellTool(def.Tools) {
+		shell = tools.ShellCredsPolicyValue{Set: true}
+	}
+	p, ok := auth.PrincipalFromContext(ctx)
+	// Every field is set here, from the member and the fixed candidate lists,
+	// never read from the plane's ctx: the plane grants the same to everyone,
+	// and register_agent reaches this with no plane ctx at all.
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Volumes = vols
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: keep([]string{"agent", "user", "tenant", "global"}, "write", "memory")}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: keep([]string{"agent", "user", "tenant"}, "write", "sqlmem")}
+		rp.History = tools.HistoryPolicyValue{Scopes: keep([]string{"self", "user", "tenant", "global"}, "read", "history")}
+		rp.Crypto = tools.CryptoPolicyValue{Scopes: keep([]string{"user", "agent"}, "use", "crypto")}
+		rp.Channel = tools.ChannelPolicyValue{AllPublish: true, AllSubscribe: true}
+		rp.Skill = tools.SkillPolicyValue{Granted: true}
+		rp.Evaluation = tools.OffRunEvaluationPolicy(p, ok)
+		rp.Interruption = nil
+		rp.ShellCreds = shell
+		rp.StatementMethods = nil
+		rp.GitRemote = tools.GitRemotePolicyValue{}
+		rp.AgentDef = tools.AgentDefPolicyValue{}
+		rp.VolumeDef = tools.VolumeDefPolicyValue{}
 	})
 	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{})
 	ctx = tools.WithA2AServerCardDefPolicy(ctx, tools.A2AServerCardDefPolicyValue{})
 	return tools.WithA2AAgentDefPolicy(ctx, tools.A2AAgentDefPolicyValue{})
+}
+
+// holdsShellTool reports whether tools names Bash or Bashbox, by name or by a
+// pattern that covers one.
+func holdsShellTool(names []string) bool {
+	for _, t := range names {
+		for _, shell := range []string{"Bash", "Bashbox"} {
+			if ok, _ := path.Match(t, shell); ok || t == shell {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // memberToolsCeiling refuses a tool the member may not invoke itself: the
