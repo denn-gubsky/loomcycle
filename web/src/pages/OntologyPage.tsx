@@ -619,7 +619,7 @@ export default function OntologySection() {
       <p className="settings-help">
         {state?.document_id ? (
           <Link className="settings-action-link" to={ontologyEditHref(state.document_id)}>
-            Edit ontology →
+            {decides ? "Edit ontology →" : "View ontology →"}
           </Link>
         ) : (
           <Link to="/documents">{path}</Link>
@@ -738,7 +738,7 @@ export default function OntologySection() {
             <span className="settings-muted">
               stages a pass that reads {pickedUser ? <code>{pickedUser}</code> : "a user"}
               &rsquo;s stored facts and files suggestions here. It cannot change anything on its
-              own — everything it files waits for you.
+              own — everything it files waits for {decides ? "you" : "a tenant operator"}.
             </span>
           </p>
 
@@ -749,9 +749,9 @@ export default function OntologySection() {
                 {rejectedProposals.length === 1 ? "" : "s"}
               </summary>
               <p>
-                Kept on purpose: a rejection is a record, so an automated curator can see what you
-                already turned down instead of proposing it again. They are not in force, and
-                never will be unless you clear the status in the document editor.
+                {decides
+                  ? "Kept on purpose: a rejection is a record, so an automated curator can see what you already turned down instead of proposing it again. They are not in force, and never will be unless you clear the status in the document editor."
+                  : "Kept on purpose: a rejection is a record, so an automated curator can see what a tenant operator already turned down instead of proposing it again. They are not in force."}
               </p>
               {rejectedProposals.map((p) => (
                 <div key={p.chunk_id}>
