@@ -13,7 +13,9 @@ import (
 // tenant, or declared in config — that still names a pair or a condition no
 // surface evaluates (RFC FY Part E). Such a list was written before the write
 // surfaces refused it, or names a verb since removed from the catalog; the
-// rule decides nothing, and an operator relying on it should know. The boot
+// rule does not do what it says (a pair decides nothing; an unfilled
+// condition holds a deny everywhere and an allow nowhere), and an operator
+// relying on it should know. The boot
 // is not failed: the list's other rules still hold. Names and ids only. It
 // returns what it logged, one "<source> <tenant>/<list>#<rule>: <reason>" each.
 func (s *Server) ReportUnenforceableACLs(ctx context.Context) []string {
@@ -54,7 +56,10 @@ func reportUnenforceable(source, tenant, name string, rules []authz.Rule) []stri
 	for i, r := range rules {
 		if err := authz.RuleNotEnforceable(r); err != nil {
 			out = append(out, fmt.Sprintf("%s %s/%s#%d: %v", source, tenant, name, i, err))
-			slog.Warn("authz: a stored access-control rule is not enforced by any surface; it decides nothing",
+			// A pair no surface asks decides nothing; a condition no surface
+			// fills reads as unknown, so a deny on it holds everywhere and an
+			// allow nowhere. Either way the rule does not do what it says.
+			slog.Warn("authz: a stored access-control rule names something no surface evaluates",
 				"source", source, "tenant", tenant, "acl", name, "rule", i, "reason", err.Error())
 		}
 	}
