@@ -92,18 +92,18 @@ func (t *TeamDef) decisionIssues(def teamgraph.Definition) []teamIssue {
 // authoring act by whoever forks, so a state it carries over is judged under
 // the forker's authority like one it adds.
 // memberTeamActivationGuard is AgentDef's memberActivationGuard for a team: a
-// member may not make a version of a team active over an operator-authored
-// active version (there is no static team layer).
+// member may not make a version of a team active when a run of the name
+// resolves to an operator's team (operatorHoldsTeamName).
 func (t *TeamDef) memberTeamActivationGuard(ctx context.Context, op, tenantID, name string) error {
 	if tools.IsOperatorPlane(ctx) || !tools.IsOffRunPlane(ctx) {
 		return nil
 	}
-	active, err := t.Store.TeamDefGetActive(ctx, tenantID, name)
-	switch {
-	case err == nil && active.OperatorAuthored:
-		return fmt.Errorf("%s: %q is an operator's team; you may fork it without promote, and an operator makes a version active", op, name)
-	case err != nil && !isNotFound(err):
+	held, err := operatorHoldsTeamName(ctx, t.Store, tenantID, name)
+	if err != nil {
 		return fmt.Errorf("%s: %w", op, err)
+	}
+	if held {
+		return fmt.Errorf("%s: %q is an operator's team; you may fork it without promote, and an operator makes a version active", op, name)
 	}
 	return nil
 }
