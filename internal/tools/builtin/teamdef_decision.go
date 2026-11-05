@@ -92,8 +92,25 @@ func (t *TeamDef) decisionIssues(def teamgraph.Definition) []teamIssue {
 // authoring act by whoever forks, so a state it carries over is judged under
 // the forker's authority like one it adds.
 func (t *TeamDef) decisionAuthorityIssues(ctx context.Context, def teamgraph.Definition) []teamIssue {
-	if authorEscapesCapabilityCeiling(ctx) {
+	switch {
+	case tools.IsOperatorPlane(ctx):
 		return nil
+	case tools.IsOffRunPlane(ctx):
+		// A member on a plane holds the wildcard tools ceiling, which names no
+		// Decision tool; it may write a decision state when it may ask a
+		// decision model itself (memberCeilingClass), and may name any model the
+		// operator configured, as POST /v1/_decide lets it.
+		if memberMayUseDecisions(ctx) {
+			return nil
+		}
+		var out []teamIssue
+		for i, st := range def.States {
+			if st.Handler.Kind == teamgraph.HandlerDecision {
+				out = append(out, teamIssue{Kind: teamIssueDecisionAuthority, Severity: severityRefused, Path: fmt.Sprintf("states[%d].handler", i), State: st.ID,
+					Detail: fmt.Sprintf("state %q asks a decision model, which its author may not ask — a team may only do what its author may", st.ID)})
+			}
+		}
+		return out
 	}
 	holdsTool := false
 	for _, name := range tools.PolicyOf(ctx).Tools {

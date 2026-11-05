@@ -55,32 +55,26 @@ import (
 // is static-only). Hooks have their own gate (checkHooks); code_body runs only
 // through the agent's own tools, which the tools ceiling bounds.
 
-// authorEscapesCapabilityCeiling reports whether a definition's author is a
-// person on a substrate plane, off-run — the operator or a member RFC CB admits
-// to the authoring routes — rather than a run. The ceiling exists so a model
-// cannot write itself authority it does not hold; no plane stamps a person's
-// volume, crypto, statement-method or decision policies, so judging a member
-// against them would refuse every volume and every decision state.
-//
-// It is not "is the operator": what the definition is recorded as
-// (operator_authored) and the Document rulings that decide for the tenant ask
-// tools.IsOperatorPlane (RFC FY Part B).
-//
-// Anything else — a run, a sub-agent, a ctx no plane stamped — is narrowed by
-// the policies on ctx, and a policy that is absent grants nothing, so a
-// non-empty capability field fails closed exactly as the tools ceiling does.
-func authorEscapesCapabilityCeiling(ctx context.Context) bool {
-	return tools.IsOffRunPlane(ctx)
-}
-
 // checkCapabilityCeiling refuses a definition granting a capability its author
 // does not hold. base is the stored version a fork is made from (nil at
 // create): what it already holds a fork may keep, so a fork can narrow a
 // lineage but never widen it beyond what its author or the version it forks
 // held.
+//
+// The operator plane is the root of authority and is not narrowed. A member
+// on a plane is narrowed by what it may do itself (memberCeilingCtx, and the
+// classification beside it); a run by its own policies, where a policy that
+// is absent grants nothing, so a non-empty capability field fails closed
+// exactly as the tools ceiling does.
 func (a *AgentDef) checkCapabilityCeiling(ctx context.Context, name string, def mergedDef, base *mergedDef) error {
-	if authorEscapesCapabilityCeiling(ctx) {
+	switch {
+	case tools.IsOperatorPlane(ctx):
 		return nil
+	case tools.IsOffRunPlane(ctx):
+		if err := memberToolsCeiling(ctx, def); err != nil {
+			return err
+		}
+		ctx = a.memberCeilingCtx(ctx, def)
 	}
 	held := "this agent's own"
 	if base != nil {

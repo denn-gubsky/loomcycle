@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/decision"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -127,5 +130,28 @@ func TestTeamDefCreate_AMemberOffRunMayWriteADecisionState(t *testing.T) {
 	member := tools.WithCallerTier(localAuthorCtx("", []string{"any"}, []string{"*"}), tools.TierMember)
 	if res := teamOp(t, tool, member, "create", "gated", gateTeam("deep")); res.IsError {
 		t.Errorf("the member was refused: %s", res.Text)
+	}
+}
+
+// A member whose own rules do not let it ask a decision model may not write a
+// state that asks one; the operator plane is not narrowed.
+func TestTeamDefCreate_AMemberWhoMayNotDecideCannotWriteADecisionState(t *testing.T) {
+	tool := decisionTeamFixture(t)
+	base := authz.Baselines()[authz.BaselineMember]
+	deny := authz.ACL{Name: "no-decide", Rules: []authz.Rule{{Effect: authz.Deny, Actions: []string{"use"}, Resources: []string{"gateway:decide"}}}}
+	eff, err := authz.Compile(authz.Input{Subject: authz.Subject{TenantID: "", ID: "bob"},
+		Bindings: []authz.Binding{{ACL: base.Name, SubjectKind: authz.SubjectTenant}, {ACL: deny.Name, SubjectKind: authz.SubjectTenant}},
+		ACLs:     map[string]authz.ACLVersion{base.Name: {ACL: base}, deny.Name: {ACL: deny}}, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := tools.WithCallerTier(localAuthorCtx("", []string{"any"}, []string{"*"}), tools.TierMember)
+	member = auth.WithPrincipal(member, auth.Principal{Subject: "bob", Scopes: []string{auth.ScopeRunsCreate}, Effective: eff})
+	if res := teamOp(t, tool, member, "create", "gated", gateTeam("deep")); !res.IsError || !strings.Contains(res.Text, "decision model") {
+		t.Errorf("a member denied decisions wrote a decision state: %s", res.Text)
+	}
+	operator := tools.WithCallerTier(localAuthorCtx("", []string{"any"}, []string{"*"}), tools.TierOperatorPlane)
+	if res := teamOp(t, tool, operator, "create", "gated", gateTeam("deep")); res.IsError {
+		t.Errorf("the operator was refused: %s", res.Text)
 	}
 }
