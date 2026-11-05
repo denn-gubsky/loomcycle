@@ -120,6 +120,9 @@ type copyPlan struct {
 	// quietFinish: a move's unfinished moves (another call's) the caller may not
 	// read in the target; finished, never reported (document_move.go).
 	quietFinish map[string]bool
+	// unreadable: ids the caller named but may not read (copySet); refused as
+	// not_found, before anything else is asked about them.
+	unreadable map[string]bool
 }
 
 func (p *copyPlan) unfinish(docID, code, detail string) {
@@ -165,12 +168,12 @@ func (d *Document) copyDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 		return errValidation(op+": a copy into the same scope needs a path_map",
 			"Every copy would take a name its original already holds. Pass path_map, e.g. {\"/docs\": \"/docs-copy\"}."), nil
 	}
-	ids, refused := d.copySet(ctx, src, op, in, false)
+	ids, unreadable, refused := d.copySet(ctx, src, op, in, false)
 	if refused != nil {
 		return *refused, nil
 	}
 	plan := &copyPlan{src: src, dst: dst, srcMem: srcMem, dstMem: dstMem, chunkDoc: map[string]string{},
-		counts: map[string]int{}, chunkMap: map[string]string{}}
+		counts: map[string]int{}, chunkMap: map[string]string{}, unreadable: unreadable}
 	if err := d.planCopy(ctx, plan, op, ids, pathMap); err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}
@@ -193,28 +196,35 @@ func (d *Document) copyDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 // otherwise answer for it (not_found, is_subject, holds_facts, forbidden, its
 // relations) and the set's size would count it, so a dry run over a subtree
 // would enumerate what the caller cannot see (security re-audit 2026-11-04,
-// D16). Such a document is simply absent from the answer.
-func (d *Document) copySet(ctx context.Context, src sqlmem.ScopeKey, op string, in docInput, allowEmpty bool) ([]string, *tools.Result) {
+// D16). Found under a path, such a document is simply absent. Named by id, it
+// stays in the set as unreadable, and the plan answers for it exactly as for
+// an id that names nothing (not_found), so naming ids cannot tell the two
+// apart.
+func (d *Document) copySet(ctx context.Context, src sqlmem.ScopeKey, op string, in docInput, allowEmpty bool) ([]string, map[string]bool, *tools.Result) {
 	var ids []string
+	var unreadable map[string]bool
 	seen := map[string]bool{}
 	acl := d.newDocACL(ctx, src)
 	var aclErr error
-	add := func(id string) {
+	add := func(id string, named bool) {
 		id = strings.TrimSpace(id)
 		if id == "" || seen[id] || aclErr != nil {
 			return
 		}
 		seen[id] = true
 		if readable, err := acl.permits(ctx, "read", id); err != nil || !readable {
-			aclErr = err
-			return
+			if aclErr = err; aclErr != nil || !named {
+				return
+			}
+			if unreadable == nil {
+				unreadable = map[string]bool{}
+			}
+			unreadable[id] = true
 		}
 		ids = append(ids, id)
 	}
-	named := false
 	for _, id := range in.DocumentIDs {
-		named = named || strings.TrimSpace(id) != ""
-		add(id)
+		add(id, true)
 	}
 	under := append([]string{}, in.UnderPaths...)
 	if in.UnderPath != "" {
@@ -224,30 +234,28 @@ func (d *Document) copySet(ctx context.Context, src sqlmem.ScopeKey, op string, 
 		got, err := d.documentsUnderPath(ctx, src, p)
 		if err != nil {
 			r := docFail(op+": under_path "+p+": ", err)
-			return nil, &r
+			return nil, nil, &r
 		}
 		sort.Strings(got)
 		for _, id := range got {
-			add(id)
+			add(id, false)
 		}
 	}
 	if aclErr != nil {
 		r := errFrom(op+": access control: "+aclErr.Error(), aclErr)
-		return nil, &r
+		return nil, nil, &r
 	}
-	// Ids named outright that the caller may not read leave an empty plan, not
-	// the "names none" refusal a path with nothing (readable) under it gets.
-	if len(ids) == 0 && !named && !allowEmpty {
+	if len(ids) == 0 && !allowEmpty {
 		r := errValidation(op+": no documents named: pass document_ids, under_path or under_paths (a path with no documents under it names none)",
 			"List the scope's documents with op=query_documents or the Path tool's ls, then pass their ids or the subtree.")
-		return nil, &r
+		return nil, nil, &r
 	}
 	if len(ids) > copyMaxDocuments {
 		r := errValidation(fmt.Sprintf("%s: the set holds %d documents, at most %d per call", op, len(ids), copyMaxDocuments),
 			"Split the set: pass a narrower under_path, or document_ids in batches.")
-		return nil, &r
+		return nil, nil, &r
 	}
-	return ids, nil
+	return ids, unreadable, nil
 }
 
 // planCopy checks every document of the set and decides its target names. A
@@ -265,6 +273,11 @@ func (d *Document) planCopy(ctx context.Context, p *copyPlan, op string, ids []s
 	}
 	claimed := map[string]string{} // target name → the member taking it
 	for _, id := range ids {
+		if p.unreadable[id] {
+			// Named by the caller, who may not read it: answered as a missing id.
+			p.refuse(id, copyNotFound, "no such document in scope "+p.src.Scope)
+			continue
+		}
 		res, err := d.query(ctx, p.src, `SELECT title FROM documents WHERE id = ? LIMIT 1`, id)
 		if err != nil {
 			return err

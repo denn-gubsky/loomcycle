@@ -68,8 +68,10 @@ refusal codes are:
   target name.
 
 A document the caller's access-control rules don't let it read is left out of
-the set before anything is checked: it is not copied, refused, counted or
-listed, and a relation into it is not listed under `dangling`.
+the set before anything is checked. Found under a path, it is not copied,
+refused, counted or listed; named in `document_ids`, it is refused as
+`not_found`, exactly as an id that names nothing. A relation into it is not
+listed under `dangling`.
 - `path_collision` — a target name already names something in `to_scope`, or
   two documents of the set would take the same name.
 - `key_collision` — `to_scope` already holds the document's work key or

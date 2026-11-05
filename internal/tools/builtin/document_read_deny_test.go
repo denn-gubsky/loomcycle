@@ -155,7 +155,6 @@ func TestCopyMoveDryRun_DoesNotRevealUnreadableDocuments(t *testing.T) {
 
 	for _, call := range []string{
 		`{"op":"copy_documents","scope":"user","to_scope":"tenant","under_path":"/proj"}`,
-		`{"op":"copy_documents","scope":"user","to_scope":"tenant","document_ids":["` + s.planDoc + `","` + s.guideDoc + `","` + asStr(facts["document_id"]) + `"]}`,
 		`{"op":"move_documents","scope":"user","to_scope":"tenant","under_path":"/proj"}`,
 		`{"op":"move_documents","scope":"user","to_scope":"tenant","under_path":"/proj","dangling":"drop"}`,
 	} {
@@ -318,5 +317,32 @@ func TestMoveDocuments_UnfinishedMovesAreReportedOnlyWhereReadable(t *testing.T)
 	}
 	if got := copyExec(t, d, open, `{"op":"get_document","scope":"tenant","path":"/proj/rfcs/plan"}`); asStr(got["document_id"]) != s.planDoc {
 		t.Errorf("the plan's move should still be finished: %v", got)
+	}
+}
+
+// TestCopyDocuments_ANamedUnreadableIDLooksMissing: an id the caller names but
+// may not read is answered exactly as an id that names nothing, so naming ids
+// cannot tell the two apart.
+func TestCopyDocuments_ANamedUnreadableIDLooksMissing(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	open := grantedTenantCtx(base)
+	s := seedCopyDocs(t, d, open)
+	const missing = "0123456789abcdef0123456789abcdef"
+	ctx := withACL(open, aclSet(t, denyRule("read", "document:user:/proj/rfcs/**")))
+	for _, op := range []string{"copy_documents", "move_documents"} {
+		out := copyExec(t, d, ctx, `{"op":"`+op+`","scope":"user","to_scope":"tenant","document_ids":["`+s.planDoc+`","`+missing+`","`+s.guideDoc+`"]}`)
+		refused, _ := out["refused"].([]any)
+		byID := map[string]map[string]any{}
+		for _, e := range refused {
+			m := e.(map[string]any)
+			byID[asStr(m["document_id"])] = m
+		}
+		hidden, absent := byID[s.planDoc], byID[missing]
+		if hidden == nil || absent == nil || hidden["code"] != copyNotFound || hidden["code"] != absent["code"] || hidden["detail"] != absent["detail"] {
+			t.Errorf("%s: the unreadable id should be refused exactly as the missing one: %v", op, refused)
+		}
+		if len(refused) != 2 {
+			t.Errorf("%s: only the two ids should be refused: %v", op, refused)
+		}
 	}
 }

@@ -106,13 +106,13 @@ func (d *Document) moveDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 	if err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}
-	ids, refused := d.copySet(ctx, src, op, in, len(pending) > 0)
+	ids, unreadable, refused := d.copySet(ctx, src, op, in, len(pending) > 0)
 	if refused != nil {
 		return *refused, nil
 	}
 	ids = withoutFinished(ids, pending)
 	plan := &copyPlan{move: true, src: src, dst: dst, srcMem: srcMem, dstMem: dstMem, chunkDoc: map[string]string{},
-		counts: map[string]int{}, chunkMap: map[string]string{}, failedDocs: map[string]string{}}
+		counts: map[string]int{}, chunkMap: map[string]string{}, failedDocs: map[string]string{}, unreadable: unreadable}
 	plan.quietFinish = quietFinishes(ctx, d.newDocACL(ctx, dst), pending)
 	if err := d.planCopy(ctx, plan, op, ids, pathMap); err != nil {
 		return errFrom(op+": "+err.Error(), err), nil

@@ -357,7 +357,8 @@ without the op naming it.
   needs both grants.
 - Under access control, the op needs read on each source document and write on
   each target name. A document the caller may not read is left out of the set
-  before anything is checked, so a dry run neither refuses, counts nor lists it.
+  before anything is checked: under a path it is neither refused, counted nor
+  listed, and named by id it is refused as `not_found`, as a missing id is.
 - A copy gets new ids, and its root records `copied_from: {scope, document_id}`.
 - One document's rows go into the target in one transaction, read in full
   before it opens: a SQLite scope has one connection.
