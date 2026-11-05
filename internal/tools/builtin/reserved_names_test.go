@@ -324,3 +324,109 @@ func TestPath_OperatorRenameKeepsAnUnrecordedOntology(t *testing.T) {
 		t.Errorf("the ontology reads as %q (err %v), want the renamed %q", read.DocumentID, err, ontology)
 	}
 }
+
+// entitiesEnv is reservedEnv plus a tenant document at /memory/entities, a reserved
+// name that is not the recorded ontology.
+func entitiesEnv(t *testing.T) (reservedEnv, string) {
+	t.Helper()
+	e := newReservedEnv(t)
+	out, r := docExec(t, e.d, e.opCtx, `{"op":"create_document","scope":"tenant","title":"Entities","path":"/memory/entities"}`)
+	if r.IsError {
+		t.Fatalf("entities: %s", r.Text)
+	}
+	id, _ := out["document_id"].(string)
+	return e, id
+}
+
+// TestReservedName_AnAgentCannotDeleteTheDocumentAtOne: delete_document drops every
+// name a document holds, so deleting the document at a reserved name vacates it —
+// whether the call names the document by id or by that name.
+func TestReservedName_AnAgentCannotDeleteTheDocumentAtOne(t *testing.T) {
+	for _, addr := range []string{"id", "path"} {
+		t.Run(addr, func(t *testing.T) {
+			e, entities := entitiesEnv(t)
+			req := `{"op":"delete_document","scope":"tenant","id":"` + entities + `"}`
+			if addr == "path" {
+				req = `{"op":"delete_document","scope":"tenant","path":"/memory/entities"}`
+			}
+			if r := e.doc(t, e.agentCtx, req); !r.IsError {
+				t.Errorf("an agent deleted the document at a reserved name: %s", r.Text)
+			}
+			if got := e.tenantName(t, "/memory/entities"); got != entities {
+				t.Errorf("/memory/entities names %q after a refused delete, want %q", got, entities)
+			}
+			if r := e.doc(t, e.opCtx, req); r.IsError {
+				t.Errorf("the operator's delete was refused: %s", r.Text)
+			}
+			if got := e.tenantName(t, "/memory/entities"); got != "" {
+				t.Errorf("the operator's delete left /memory/entities naming %q", got)
+			}
+		})
+	}
+	// An ordinary tenant document stays deletable by an agent.
+	e, _ := entitiesEnv(t)
+	if r := e.doc(t, e.agentCtx, `{"op":"delete_document","scope":"tenant","id":"`+e.decoy+`"}`); r.IsError {
+		t.Errorf("an agent could not delete an ordinary tenant document: %s", r.Text)
+	}
+}
+
+// moveOut moves one tenant document to the user scope (dry run, then the move).
+func moveOut(t *testing.T, d *Document, ctx context.Context, docID string) (map[string]any, tools.Result) {
+	t.Helper()
+	args := `"scope":"tenant","to_scope":"user","document_ids":["` + docID + `"]`
+	dry, r := docExec(t, d, ctx, `{"op":"move_documents",`+args+`}`)
+	if r.IsError {
+		return nil, r
+	}
+	n := int(dry["counts"].(map[string]any)["documents"].(float64))
+	return docExec(t, d, ctx, fmt.Sprintf(`{"op":"move_documents",%s,"dry_run":false,"expect_count":%d}`, args, n))
+}
+
+// TestReservedName_AnAgentCannotMoveTheDocumentAtOneAway: a move removes the
+// source's names, so moving the document at a reserved name out of the tenant scope
+// vacates it.
+func TestReservedName_AnAgentCannotMoveTheDocumentAtOneAway(t *testing.T) {
+	e, entities := entitiesEnv(t)
+	out, r := moveOut(t, e.d, e.agentCtx, entities)
+	if r.IsError {
+		t.Fatalf("move_documents: %s", r.Text)
+	}
+	if !strings.Contains(r.Text, copyReservedName) {
+		t.Errorf("the document at a reserved name was not refused by name: %v", out)
+	}
+	if got := e.tenantName(t, "/memory/entities"); got != entities {
+		t.Errorf("/memory/entities names %q after an agent's move, want %q", got, entities)
+	}
+	if _, r := moveOut(t, e.d, e.opCtx, entities); r.IsError {
+		t.Fatalf("operator move_documents: %s", r.Text)
+	}
+	if got := e.tenantName(t, "/memory/entities"); got != "" {
+		t.Errorf("the operator's move left /memory/entities naming %q", got)
+	}
+}
+
+// failingOntologyLookup fails the dirent read of the ontology's name, which is how a
+// store fault reaches the ontology resolution.
+type failingOntologyLookup struct{ store.Store }
+
+func (f failingOntologyLookup) DirentGet(ctx context.Context, tenant, scope, scopeID, parent, name string) (store.DirentRow, error) {
+	if scope == "tenant" && parent+name == memrank.OntologyPath {
+		return store.DirentRow{}, fmt.Errorf("injected store fault")
+	}
+	return f.Store.DirentGet(ctx, tenant, scope, scopeID, parent, name)
+}
+
+// TestReservedName_AMoveFailsClosedWhenTheOntologyCannotBeResolved: a move out of the
+// tenant scope that cannot tell which document is the ontology must not proceed as if
+// none were.
+func TestReservedName_AMoveFailsClosedWhenTheOntologyCannotBeResolved(t *testing.T) {
+	e := newReservedEnv(t)
+	faulty := &Document{Store: failingOntologyLookup{e.d.Store}, SqlMem: e.d.SqlMem, Bus: e.d.Bus}
+	_, r := moveOut(t, faulty, e.agentCtx, e.decoy)
+	if !r.IsError {
+		t.Errorf("a move ran although the ontology could not be resolved: %s", r.Text)
+	}
+	if got := e.tenantName(t, "/notes/decoy"); got != e.decoy {
+		t.Errorf("the plan moved a document anyway: /notes/decoy names %q", got)
+	}
+}

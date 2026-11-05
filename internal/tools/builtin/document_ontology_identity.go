@@ -89,23 +89,71 @@ func reservedAtOrUnder(canonical string) []string {
 	return out
 }
 
-// reservedTargetRefusal refuses a Document call that would put a reserved tenant
-// name on a document. copy_documents / move_documents name their targets per
-// document and are checked in planCopy.
-func reservedTargetRefusal(ctx context.Context, key sqlmem.ScopeKey, in docInput) *tools.Result {
+// reservedTargetRefusal refuses a Document call that would give a reserved tenant
+// name to a document, or take one away by deleting the document that holds it.
+// copy_documents / move_documents name and unname per document and are checked in
+// planCopy. Every other op that writes a dirent only adds a name the runtime chose
+// (remember, fact homing) or never removes one.
+func (d *Document) reservedTargetRefusal(ctx context.Context, key sqlmem.ScopeKey, in docInput) *tools.Result {
 	switch in.Op {
 	case "create_document", "import_md", "import_canvas", "set_path":
-	default:
+		if in.Path == "" {
+			return nil
+		}
+		canonical, err := normalizePath(in.Path)
+		if err != nil {
+			return nil // the op refuses a malformed path itself, with its own advice
+		}
+		return reservedNameRefusal(ctx, in.Op, key.Scope, canonical)
+	case "delete_document":
+		return d.reservedHeldRefusal(ctx, key, in)
+	}
+	return nil
+}
+
+// reservedHeldRefusal refuses deleting a document that holds a reserved tenant name:
+// the delete drops every name the document has, so it would vacate the name for the
+// next document to take. Mirrors Path's rm, which refuses the name itself.
+func (d *Document) reservedHeldRefusal(ctx context.Context, key sqlmem.ScopeKey, in docInput) *tools.Result {
+	if key.Scope != "tenant" || reservedNameWriter(ctx) {
 		return nil
 	}
-	if in.Path == "" {
-		return nil
-	}
-	canonical, err := normalizePath(in.Path)
+	docID, err := d.docIDFromInput(ctx, key, in)
 	if err != nil {
-		return nil // the op refuses a malformed path itself, with its own advice
+		return nil // the op reports a missing or unknown document itself
 	}
-	return reservedNameRefusal(ctx, in.Op, key.Scope, canonical)
+	held, err := d.reservedNameHeld(ctx, key, docID)
+	if err != nil {
+		// FAILS CLOSED: not knowing the document's names must not read as "it has none".
+		r := errFrom(in.Op+": could not read the document's names, so it was not deleted: "+err.Error(), err)
+		return &r
+	}
+	if held == "" {
+		return nil
+	}
+	return reservedNameRefusal(ctx, in.Op, key.Scope, held)
+}
+
+// reservedNameHeld returns a reserved tenant name docID holds in key's scope, or "".
+func (d *Document) reservedNameHeld(ctx context.Context, key sqlmem.ScopeKey, docID string) (string, error) {
+	if key.Scope != "tenant" {
+		return "", nil
+	}
+	names, err := d.namesOfDocuments(ctx, key, []string{docID})
+	if err != nil {
+		return "", err
+	}
+	return firstReservedTenantPath(names[docID]), nil
+}
+
+// firstReservedTenantPath returns the first of names that is a reserved tenant name.
+func firstReservedTenantPath(names []string) string {
+	for _, n := range names {
+		if memrank.IsReservedTenantPath(n) {
+			return n
+		}
+	}
+	return ""
 }
 
 // TenantIdentityRecorder records which document holds each tenant-wide role before

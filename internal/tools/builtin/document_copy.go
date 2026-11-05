@@ -225,7 +225,11 @@ func (d *Document) planCopy(ctx context.Context, p *copyPlan, op string, ids []s
 	}
 	ontology := ""
 	if p.src.Scope == "tenant" {
-		ontology = d.ontologyDocumentID(ctx, p.src)
+		// FAILS CLOSED: a plan that cannot tell which document is the ontology must
+		// not proceed as if none were, or it would copy or move the ontology away.
+		if ontology, err = d.resolveOntologyID(ctx, p.src); err != nil {
+			return fmt.Errorf("could not determine which document is the tenant ontology: %w", err)
+		}
 	}
 	claimed := map[string]string{} // target name → the member taking it
 	for _, id := range ids {
@@ -241,6 +245,14 @@ func (d *Document) planCopy(ctx context.Context, p *copyPlan, op string, ids []s
 		if id == ontology {
 			p.refuse(id, copyIsOntology, "the tenant ontology is edited in place, never copied or moved")
 			continue
+		}
+		// A move removes the source's names, so moving the document at a reserved
+		// tenant name away vacates that name (RFC FY Part C). A copy keeps them.
+		if p.move && p.src.Scope == "tenant" {
+			if held := firstReservedTenantPath(names[id]); held != "" && reservedNameRefusal(ctx, op, p.src.Scope, held) != nil {
+				p.refuse(id, copyReservedName, "the document holds the reserved name "+held+"; only an operator may move it away")
+				continue
+			}
 		}
 		if _, isSubject, err := d.subjectRootOf(ctx, p.src, id, true); err != nil {
 			return err
