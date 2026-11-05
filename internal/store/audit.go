@@ -47,6 +47,10 @@ type AuditHead struct {
 	AnchorSeq  int64
 	AnchorHash string
 	AnchorMAC  string
+	// AnchorState is what the pruned rows held that verification still
+	// needs, carried forward by each prune and signed with the anchor: for
+	// the operator chain, which tenant chains were opened before it.
+	AnchorState string
 }
 
 // AuditSealFunc fills row.Hash and row.MAC for a row whose Seq and PrevHash
@@ -55,9 +59,10 @@ type AuditHead struct {
 // what is written.
 type AuditSealFunc func(row *AuditEventRow) (headMAC string, err error)
 
-// AuditAnchorSealFunc returns the MAC of the anchor a prune leaves at
-// (seq, hash).
-type AuditAnchorSealFunc func(tenantID string, seq int64, hash string) string
+// AuditAnchorSealFunc returns the state and MAC of the anchor a prune leaves
+// at (seq, hash), given the previous anchor's state and the pruned rows whose
+// action is the prune's carryAction.
+type AuditAnchorSealFunc func(tenantID string, seq int64, hash, prevState string, carried []AuditEventRow) (state, mac string)
 
 // AuditStore persists the audit stream.
 type AuditStore interface {
@@ -84,7 +89,11 @@ type AuditStore interface {
 	// AuditTenants lists every tenant that has a chain, sorted.
 	AuditTenants(ctx context.Context) ([]string, error)
 	// AuditPrune removes a tenant's rows up to the last one recorded before
-	// `before`, and moves the head's anchor to that row (signed by seal), in
-	// one transaction under the head lock. It returns the rows removed.
-	AuditPrune(ctx context.Context, tenantID string, before time.Time, seal AuditAnchorSealFunc) (int, error)
+	// `before` (rows are numbered in commit order and stamped by each
+	// replica's clock, so a few rows newer than `before` can go with them),
+	// and moves the head's anchor to that row, in one transaction under the
+	// head lock. seal is handed the pruned rows whose action is carryAction
+	// ("" hands none) to carry forward in the anchor's state. It returns the
+	// rows removed.
+	AuditPrune(ctx context.Context, tenantID string, before time.Time, carryAction string, seal AuditAnchorSealFunc) (int, error)
 }

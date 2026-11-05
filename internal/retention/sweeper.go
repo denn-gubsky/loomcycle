@@ -44,6 +44,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -456,7 +457,7 @@ func (s *Sweeper) sweepAuditOnce(parent context.Context) (int, error) {
 		if ctx.Err() != nil {
 			break
 		}
-		n, err := s.store.AuditPrune(ctx, tenant, cutoff, s.auditAnchorSeal)
+		n, err := s.store.AuditPrune(ctx, tenant, cutoff, audit.CarryAction(tenant), s.auditAnchorSeal)
 		if err != nil {
 			s.logger.Warn("retention: audit prune failed", "tenant", tenant, "err", err)
 			continue

@@ -11,7 +11,9 @@
 -- audit_heads is the per-tenant head an append locks (SELECT ... FOR UPDATE),
 -- so two replicas appending to one tenant are serialized and the chain never
 -- forks; the (tenant_id, seq) primary key backs that up. anchor_* is the last
--- row a retention prune removed, signed, so the rows left still verify.
+-- row a retention prune removed, signed, so the rows left still verify;
+-- anchor_state carries what the pruned rows held that verification still
+-- needs (the operator chain's record of which tenant chains were opened).
 CREATE TABLE IF NOT EXISTS audit_events (
     tenant_id TEXT   NOT NULL,
     seq       BIGINT NOT NULL,
@@ -33,5 +35,6 @@ CREATE TABLE IF NOT EXISTS audit_heads (
     mac         TEXT   NOT NULL DEFAULT '',
     anchor_seq  BIGINT NOT NULL DEFAULT 0,
     anchor_hash TEXT   NOT NULL DEFAULT '',
-    anchor_mac  TEXT   NOT NULL DEFAULT ''
+    anchor_mac  TEXT   NOT NULL DEFAULT '',
+    anchor_state TEXT  NOT NULL DEFAULT ''
 );

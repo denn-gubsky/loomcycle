@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -318,5 +319,29 @@ func TestAuditVerify_ANewChainOpenedDuringTheWalkVerifies(t *testing.T) {
 	}
 	if !rep.OK || rep.Rows != 1 {
 		t.Errorf("a chain opened during the walk: %+v, want it verified", rep)
+	}
+}
+
+// After the operator chain is pruned, its anchor still carries the openings
+// it pruned, so a tenant chain deleted later is still caught.
+func TestAuditVerify_OpeningsSurviveTheOperatorChainsPrune(t *testing.T) {
+	s, db := chainFixture(t, 3)
+	ctx := context.Background()
+	if n, err := pruneForTest(ctx, s, "", time.Now().Add(time.Hour)); err != nil || n != 1 {
+		t.Fatalf("pruning the operator chain: %d, %v", n, err)
+	}
+	if rep := verify(t, s, testKeys); !rep.OK {
+		t.Fatalf("t1 after the operator chain's prune: %+v", rep)
+	}
+	exec(t, db, `DELETE FROM audit_events WHERE tenant_id = 't1'`)
+	exec(t, db, `DELETE FROM audit_heads WHERE tenant_id = 't1'`)
+	rep := verify(t, s, testKeys)
+	if rep.OK || !strings.Contains(rep.Reason, "disappeared") {
+		t.Errorf("t1 deleted after the operator chain's prune: %+v, want it reported disappeared", rep)
+	}
+	// Dropping the carried opening from the anchor breaks its signature.
+	exec(t, db, `UPDATE audit_heads SET anchor_state = '' WHERE tenant_id = ''`)
+	if rep := verify(t, s, testKeys); rep.OK || !strings.Contains(rep.Reason, "operator chain") {
+		t.Errorf("the operator anchor's carried openings dropped: %+v, want the operator chain broken", rep)
 	}
 }

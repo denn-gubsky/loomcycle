@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -133,7 +134,7 @@ func testAuditPruneKeepsTheChainVerifiable(t *testing.T, a, b store.Store) {
 	for i := 0; i < 3; i++ {
 		appendAt(b, recent.Add(time.Duration(i)*time.Hour), fmt.Sprintf("new-%d", i))
 	}
-	n, err := b.AuditPrune(ctx, "t1", time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), auditTestKeys.SealAnchor())
+	n, err := b.AuditPrune(ctx, "t1", time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), "", auditTestKeys.SealAnchor())
 	if err != nil || n != 4 {
 		t.Fatalf("AuditPrune = %d, %v; want 4 rows removed", n, err)
 	}
@@ -147,7 +148,7 @@ func testAuditPruneKeepsTheChainVerifiable(t *testing.T, a, b store.Store) {
 	}
 	// Pruning what is left (every row older than now) leaves an empty chain
 	// whose anchor is its head, and that still verifies.
-	if _, err := a.AuditPrune(ctx, "t1", time.Now().Add(time.Hour), auditTestKeys.SealAnchor()); err != nil {
+	if _, err := a.AuditPrune(ctx, "t1", time.Now().Add(time.Hour), "", auditTestKeys.SealAnchor()); err != nil {
 		t.Fatal(err)
 	}
 	rep, err = audit.Verify(ctx, b, auditTestKeys, "t1")
@@ -157,8 +158,19 @@ func testAuditPruneKeepsTheChainVerifiable(t *testing.T, a, b store.Store) {
 	if !rep.OK || rep.AnchorSeq != 8 || rep.HeadSeq != 8 || rep.Rows != 0 {
 		t.Errorf("after pruning everything: %+v, want OK with anchor = head = 8", rep)
 	}
+	// Pruning the operator chain carries t1's opening in its signed anchor
+	// state, so t1 is still known to exist with no opening row left.
+	if n, err := b.AuditPrune(ctx, "", time.Now().Add(time.Hour), audit.CarryAction(""), auditTestKeys.SealAnchor()); err != nil || n != 1 {
+		t.Fatalf("pruning the operator chain = %d, %v; want its one opening removed", n, err)
+	}
+	if head, err := a.AuditHeadGet(ctx, ""); err != nil || !strings.Contains(head.AnchorState, `"t1":1`) {
+		t.Errorf("operator head after the prune = %+v, %v; want t1's opening in the anchor state", head, err)
+	}
+	if rep, err := audit.Verify(ctx, a, auditTestKeys, "t1"); err != nil || !rep.OK {
+		t.Errorf("t1 after the operator chain's prune: %+v, %v", rep, err)
+	}
 	// A prune of a tenant with no chain does nothing.
-	if n, err := a.AuditPrune(ctx, "nobody", time.Now(), auditTestKeys.SealAnchor()); err != nil || n != 0 {
+	if n, err := a.AuditPrune(ctx, "nobody", time.Now(), "", auditTestKeys.SealAnchor()); err != nil || n != 0 {
 		t.Errorf("prune of an absent chain = %d, %v", n, err)
 	}
 }

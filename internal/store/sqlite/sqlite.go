@@ -271,7 +271,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			mac         TEXT    NOT NULL DEFAULT '',
 			anchor_seq  INTEGER NOT NULL DEFAULT 0,
 			anchor_hash TEXT    NOT NULL DEFAULT '',
-			anchor_mac  TEXT    NOT NULL DEFAULT ''
+			anchor_mac  TEXT    NOT NULL DEFAULT '',
+			anchor_state TEXT   NOT NULL DEFAULT ''
 		)`,
 		// Web UI login sessions (RFC FA §5), keyed by the SHA-256 of the cookie
 		// id; every time is unix nanos, revoked_at NULL = live. Mirrors postgres

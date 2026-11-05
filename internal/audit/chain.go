@@ -108,9 +108,11 @@ func RowHash(prevHash string, r store.AuditEventRow) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func chainMAC(key []byte, domain, tenant string, seq int64, hash string) string {
+// chainMAC signs (domain, tenant, seq, hash, extra...). An anchor's state is
+// its extra field; rows and heads have none.
+func chainMAC(key []byte, domain, tenant string, seq int64, hash string, extra ...string) string {
 	m := hmac.New(sha256.New, key)
-	m.Write(lp(domain, tenant, strconv.FormatInt(seq, 10), hash))
+	m.Write(lp(append([]string{domain, tenant, strconv.FormatInt(seq, 10), hash}, extra...)...))
 	return hex.EncodeToString(m.Sum(nil))
 }
 
@@ -150,8 +152,8 @@ func SafeText(s string) string {
 	return b.String()
 }
 
-func (k ChainKeys) sign(domain, tenant string, seq int64, hash string) string {
-	return chainMAC(k.Current, domain, tenant, seq, hash)
+func (k ChainKeys) sign(domain, tenant string, seq int64, hash string, extra ...string) string {
+	return chainMAC(k.Current, domain, tenant, seq, hash, extra...)
 }
 
 // signedBy says which key a MAC verifies under.
@@ -165,19 +167,19 @@ const (
 
 // which reports which key mac signs (domain, tenant, seq, hash) under,
 // comparing in constant time.
-func (k ChainKeys) which(mac, domain, tenant string, seq int64, hash string) signedBy {
-	if len(k.Current) > 0 && hmac.Equal([]byte(mac), []byte(chainMAC(k.Current, domain, tenant, seq, hash))) {
+func (k ChainKeys) which(mac, domain, tenant string, seq int64, hash string, extra ...string) signedBy {
+	if len(k.Current) > 0 && hmac.Equal([]byte(mac), []byte(chainMAC(k.Current, domain, tenant, seq, hash, extra...))) {
 		return signedByCurrent
 	}
-	if len(k.Previous) > 0 && hmac.Equal([]byte(mac), []byte(chainMAC(k.Previous, domain, tenant, seq, hash))) {
+	if len(k.Previous) > 0 && hmac.Equal([]byte(mac), []byte(chainMAC(k.Previous, domain, tenant, seq, hash, extra...))) {
 		return signedByPrevious
 	}
 	return signedByNone
 }
 
 // check reports whether mac verifies under the current or the previous key.
-func (k ChainKeys) check(mac, domain, tenant string, seq int64, hash string) bool {
-	return k.which(mac, domain, tenant, seq, hash) != signedByNone
+func (k ChainKeys) check(mac, domain, tenant string, seq int64, hash string, extra ...string) bool {
+	return k.which(mac, domain, tenant, seq, hash, extra...) != signedByNone
 }
 
 // Seal returns the store.AuditSealFunc that hashes and signs a row whose Seq
@@ -193,10 +195,56 @@ func (k ChainKeys) Seal() store.AuditSealFunc {
 	}
 }
 
-// SealAnchor returns the store.AuditAnchorSealFunc a prune signs its anchor with.
+// anchorState is what an anchor carries forward from the rows a prune
+// removed. Opened counts, per tenant, the ActionChainOpened rows the operator
+// chain had before its anchor; it is empty for a tenant chain.
+type anchorState struct {
+	Opened map[string]int `json:"opened,omitempty"`
+}
+
+func decodeAnchorState(s string) (anchorState, error) {
+	var st anchorState
+	if s == "" {
+		return st, nil
+	}
+	err := json.Unmarshal([]byte(s), &st)
+	return st, err
+}
+
+// CarryAction is the action whose pruned rows a prune of tenant's chain
+// carries in its anchor: the openings, for the operator chain; none for a
+// tenant chain.
+func CarryAction(tenant string) string {
+	if tenant == "" {
+		return ActionChainOpened
+	}
+	return ""
+}
+
+// SealAnchor returns the store.AuditAnchorSealFunc a prune signs its anchor
+// with. The new state is the previous anchor's plus the carried rows; the
+// MAC covers it, so the openings a prune removed cannot be dropped or added
+// without the key. A previous state that does not decode (it verified when
+// the chain last did, so only a writer without the key leaves one) is
+// replaced by what the carried rows hold, and verification reports the old
+// anchor's signature as broken until then.
 func (k ChainKeys) SealAnchor() store.AuditAnchorSealFunc {
-	return func(tenant string, seq int64, hash string) string {
-		return k.sign(macAnchor, tenant, seq, hash)
+	return func(tenant string, seq int64, hash, prevState string, carried []store.AuditEventRow) (string, string) {
+		st, _ := decodeAnchorState(prevState)
+		for _, r := range carried {
+			if r.Action == ActionChainOpened {
+				if st.Opened == nil {
+					st.Opened = map[string]int{}
+				}
+				st.Opened[r.Subject]++
+			}
+		}
+		state := ""
+		if len(st.Opened) > 0 {
+			b, _ := json.Marshal(st) // map keys marshal sorted: one encoding
+			state = string(b)
+		}
+		return state, k.sign(macAnchor, tenant, seq, hash, state)
 	}
 }
 
@@ -218,6 +266,8 @@ type VerifyReport struct {
 	BreakSeq int64  `json:"break_seq,omitempty"`
 	Reason   string `json:"reason,omitempty"`
 
+	// anchorState is the verified head's anchor state, for ReadRegistry.
+	anchorState string
 	// noOpening marks a break for a missing opening record, which a chain
 	// opened after the operator chain was read also shows: the caller
 	// re-reads the operator chain once before reporting it.
@@ -238,14 +288,13 @@ const verifyPage = 500
 const ActionChainOpened = "audit_chain_opened"
 
 // Registry is what the operator chain says about the tenant chains: how
-// many times each was opened, and whether the operator chain has been
-// pruned (an opening older than the prune is no longer there to count). It
-// is read only from an operator chain that verified, up to its verified head,
-// so a forged or deleted opening, or a forged anchor, breaks the operator
-// chain instead of steering a tenant's verification.
+// many times each was opened — the openings its signed anchor carries from
+// pruned rows, plus those in its remaining rows. It is read only from an
+// operator chain that verified, up to its verified head, so a forged or
+// deleted opening, or a forged anchor, breaks the operator chain instead of
+// steering a tenant's verification.
 type Registry struct {
 	Openings map[string]int
-	Pruned   bool
 }
 
 // ReadRegistry verifies the operator chain and, when it holds, reads the
@@ -256,7 +305,15 @@ func ReadRegistry(ctx context.Context, r ChainReader, keys ChainKeys) (Registry,
 	if err != nil || !op.OK {
 		return reg, op, err
 	}
-	reg.Pruned = op.AnchorSeq > 0
+	st, err := decodeAnchorState(op.anchorState)
+	if err != nil {
+		// The anchor's MAC verified over this state, so only the runtime
+		// itself could have written it; treat it as a read failure.
+		return reg, op, fmt.Errorf("audit: the operator chain's anchor state does not decode: %w", err)
+	}
+	for t, n := range st.Opened {
+		reg.Openings[t] += n
+	}
 	after := op.AnchorSeq
 	for after < op.HeadSeq {
 		rows, err := r.AuditEventsList(ctx, "", after, verifyPage)
@@ -401,15 +458,16 @@ func verifyChain(ctx context.Context, r ChainReader, keys ChainKeys, tenant stri
 			// The opening and the first row are written together, and a prune
 			// never moves the head back, so an opened chain's head is past 0.
 			return rep.broken(1, "the chain was opened but its head is empty"), nil
-		case n == 0 && found && !reg.Pruned:
+		case n == 0 && found:
 			rep = rep.broken(1, "the operator chain has no record of this chain's opening")
 			rep.noOpening = true
 			return rep, nil
 		}
 	}
-	if head.AnchorSeq > 0 && !keys.check(head.AnchorMAC, macAnchor, tenant, head.AnchorSeq, head.AnchorHash) {
+	if head.AnchorSeq > 0 && !keys.check(head.AnchorMAC, macAnchor, tenant, head.AnchorSeq, head.AnchorHash, head.AnchorState) {
 		return rep.broken(head.AnchorSeq, "the retention anchor's signature does not verify"), nil
 	}
+	rep.anchorState = head.AnchorState
 	prev, want := head.AnchorHash, head.AnchorSeq+1
 	rotated := false
 	for want <= head.Seq {
