@@ -18,7 +18,7 @@ func TestMemorySQL_SqliteDbpageIsRefused(t *testing.T) {
 		if r.IsError {
 			t.Fatalf("propose_statement: %s", r.Text)
 		}
-		mustMemSQL(t, m, ctx, "sql_exec", `CREATE TABLE notes (id INT, body BLOB)`)
+		mustMemSQL(t, m, ctx, "sql_exec", `CREATE TABLE notes (id INT, body TEXT)`)
 		sqlite := d.SqlMem.Tier() != "postgres"
 
 		// The chunk body stmtDoc wrote; finding it on a page is the leak.
