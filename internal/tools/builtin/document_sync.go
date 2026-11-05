@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -632,6 +633,26 @@ type edgeCarry struct {
 	evidenceDropped      int
 }
 
+// errSyncKeyConflict is a sideWriter's answer for a keyed chunk it would have to
+// create in the bound document while the key already names a chunk of another
+// document on its side: that chunk is never written or moved by a sync, and the
+// reconcile reports the key as a conflict instead.
+var errSyncKeyConflict = errors.New("natural key held by a chunk of another document")
+
+// keyHeldOutside reports whether natural key nk names a chunk of a document other
+// than docID in this scope.
+func (d *Document) keyHeldOutside(ctx context.Context, key sqlmem.ScopeKey, nk, docID string) (bool, error) {
+	existing, err := d.chunkIDByNaturalKey(ctx, key, nk)
+	if err != nil || existing == "" {
+		return false, err
+	}
+	res, err := d.query(ctx, key, `SELECT document_id FROM chunks WHERE id = ? LIMIT 1`, existing)
+	if err != nil {
+		return false, err
+	}
+	return len(res.Rows) == 0 || len(res.Rows[0]) == 0 || asStr(res.Rows[0][0]) != docID, nil
+}
+
 // localWriter applies a reconcile to the local document store.
 type localWriter struct {
 	d      *Document
@@ -643,17 +664,12 @@ type localWriter struct {
 func (w localWriter) createKeyed(ctx context.Context, sc syncChunk) (string, error) {
 	// A natural key is unique across the scope, so a key a chunk of ANOTHER document
 	// holds would make upsert_chunk rewrite that chunk, not create one in the bound
-	// document — a pull from a peer reaching any document in the scope (RFC FY P2).
-	if existing, err := w.d.chunkIDByNaturalKey(ctx, w.key, sc.nk); err != nil {
+	// document — a pull from a peer reaching any document in the scope (RFC FY P2,
+	// RFC FZ Part C: reported as a conflict, the rest of the pull still lands).
+	if outside, err := w.d.keyHeldOutside(ctx, w.key, sc.nk, w.docID); err != nil {
 		return "", err
-	} else if existing != "" {
-		res, qerr := w.d.query(ctx, w.key, `SELECT document_id FROM chunks WHERE id = ? LIMIT 1`, existing)
-		if qerr != nil {
-			return "", qerr
-		}
-		if len(res.Rows) == 0 || len(res.Rows[0]) == 0 || asStr(res.Rows[0][0]) != w.docID {
-			return "", fmt.Errorf("natural key %q is held by a chunk of another document; a sync writes only the bound document", sc.nk)
-		}
+	} else if outside {
+		return "", errSyncKeyConflict
 	}
 	res, err := w.d.upsertChunk(ctx, w.key, w.mscope, docInput{
 		NaturalKey: sc.nk, DocumentID: w.docID, Title: sc.title, Type: sc.ctype, Status: sc.status, Body: sc.body, Tags: sc.tags,
@@ -821,9 +837,17 @@ func (w remoteWriter) createKeyed(ctx context.Context, sc syncChunk) (string, er
 		return "", err
 	}
 	var out struct {
-		ID string `json:"id"`
+		ID      string `json:"id"`
+		Created *bool  `json:"created"`
 	}
 	_ = json.Unmarshal(raw, &out)
+	// The peer's upsert_chunk resolves the key across its whole scope (and asks
+	// for write on that whole scope, so this reaches no further than the
+	// credential may). A key it found outside the peer document was updated
+	// there, not created here: never move it into this document as well.
+	if out.Created != nil && !*out.Created {
+		return "", errSyncKeyConflict
+	}
 	return out.ID, nil
 }
 
@@ -923,6 +947,9 @@ type reconcileCounts struct {
 	// a peer a push cannot change.
 	// evidenceDropped: source evidence the writer's side could not check.
 	edgesUpdated, edgesEnvelopeKept, evidenceDropped int
+	// conflicts: source keys a chunk of another document on the writer's side
+	// already holds — neither written nor moved (see errSyncKeyConflict).
+	conflicts []string
 }
 
 // applyReconcile reconciles `source` INTO the writer's side, using `target` as
@@ -953,6 +980,10 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 		tc, exists := target.chunks[nk]
 		if !exists {
 			id, err := w.createKeyed(ctx, sc)
+			if errors.Is(err, errSyncKeyConflict) {
+				c.conflicts = append(c.conflicts, nk)
+				continue
+			}
 			if err != nil {
 				return c, fmt.Errorf("create %s: %w", nk, err)
 			}
@@ -989,6 +1020,9 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 			if _, ok := idByNK[sc.parentNK]; ok {
 				wantParentNK = sc.parentNK
 			}
+		}
+		if _, placed := idByNK[nk]; !placed {
+			continue // a conflict (pass 1): never moved into this document
 		}
 		if tc, existed := target.chunks[nk]; existed && wantParentNK == tc.parentNK && sc.position == tc.position {
 			continue // an existing chunk already in its source-matching place
@@ -1201,8 +1235,15 @@ func reconcileReport(direction string, b *remoteBinding, excludedUnkeyed int, c 
 			out[k] = n
 		}
 	}
+	if len(c.conflicts) > 0 {
+		out["conflicts"] = len(c.conflicts)
+		out["conflicting_keys"] = c.conflicts[:min(len(c.conflicts), syncConflictKeysMax)]
+	}
 	return out
 }
+
+// syncConflictKeysMax bounds the keys a sync report names; conflicts counts them all.
+const syncConflictKeysMax = 100
 
 // contentDiffers reports whether a source keyed chunk's content — body, title,
 // type, status, or tags — differs from the target's. Title/type/status are
@@ -1284,6 +1325,7 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 	}
 
 	onlyLocal, onlyRemote, diverged, retagged, reparented := []diffEntry{}, []diffEntry{}, []diffEntry{}, []diffEntry{}, []diffEntry{}
+	var conflicts []diffEntry
 	same := 0
 	for _, nk := range sortedChunkKeys(local.chunks) {
 		lc := local.chunks[nk]
@@ -1321,6 +1363,16 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		}
 		if lc, ok := local.chunks[nk]; !ok || lc.withheld {
 			onlyRemote = append(onlyRemote, diffEntry{NaturalKey: nk, Title: rc.title})
+			if !ok {
+				// What a pull would report as a conflict rather than create.
+				outside, err := d.keyHeldOutside(ctx, key, nk, b.localDocID)
+				if err != nil {
+					return errFrom("diff_remote: "+err.Error(), err), nil
+				}
+				if outside {
+					conflicts = append(conflicts, diffEntry{NaturalKey: nk, Title: rc.title})
+				}
+			}
 		}
 	}
 
@@ -1336,7 +1388,7 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		}
 	}
 
-	return okJSON(map[string]any{
+	out := map[string]any{
 		"source":                  b.source,
 		"remote_ref":              b.ref,
 		"remote_document_id":      b.remoteDocID,
@@ -1351,7 +1403,12 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		"edges_only_remote":       edgesOnlyRemote,
 		"excluded_unkeyed_local":  local.unkeyed,
 		"excluded_unkeyed_remote": remote.unkeyed,
-	})
+	}
+	// Only when there are any, so a diff without them reads as it did before.
+	if len(conflicts) > 0 {
+		out["conflicts"] = conflicts
+	}
+	return okJSON(out)
 }
 
 // wouldReparent reports whether reconciling `src` INTO the side holding
