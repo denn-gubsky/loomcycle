@@ -137,8 +137,8 @@ type AuthLifecycleStore interface {
 	// erased_at is not; false otherwise (an erase never skips the unbind).
 	AuthRemovalMarkErased(ctx context.Context, tenantID, subject string, at time.Time) (bool, error)
 	// AuthRemovalDeferErase moves a due erase to `until` and releases the
-	// claimed stage, if the removal is unbound and not erased; false
-	// otherwise. The erase stage leaves the due set until then, so a
+	// claimed stage, if the removal is unbound, not erased and has an erase
+	// due at all (erase_after: never stays never); false otherwise. The erase stage leaves the due set until then, so a
 	// subject the sweeper may not erase yet never holds the queue.
 	AuthRemovalDeferErase(ctx context.Context, tenantID, subject string, until time.Time) (bool, error)
 	// AuthRemovalDelete removes the subject's removal (a reactivation, or a

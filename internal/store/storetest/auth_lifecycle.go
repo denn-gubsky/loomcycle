@@ -144,6 +144,13 @@ func testAuthRemovalStagesNeverSkip(t *testing.T, s store.Store) {
 	if due, _ = s.AuthRemovalDue(ctx, time.Now().Add(100*365*24*time.Hour), 10); len(due) != 0 {
 		t.Fatalf("an erase_after: never removal came due: %+v", due)
 	}
+	// Nor can a deferral schedule an erase it never had.
+	if ok, err := s.AuthRemovalDeferErase(ctx, "acme", "bob", time.Now()); err != nil || ok {
+		t.Fatalf("defer an erase_after: never removal = %v, %v; want false", ok, err)
+	}
+	if got, err := s.AuthRemovalGet(ctx, "acme", "bob"); err != nil || !got.EraseDueAt.IsZero() {
+		t.Fatalf("after deferring an erase_after: never removal = %+v, %v; want no erase due", got, err)
+	}
 	// Out-of-order due times are refused.
 	bad := mkRemoval("carol", t0)
 	bad.EraseDueAt = t0.Add(time.Hour)
