@@ -1471,7 +1471,8 @@ func callerDecidesIn(ctx context.Context, key sqlmem.ScopeKey) bool {
 // have pointed at another subject's tree.
 func callerOwnsUserScope(ctx context.Context, key sqlmem.ScopeKey) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
-	return ok && p.Subject != "" && key.Scope == "user" && key.ScopeID == p.Subject
+	return ok && p.Subject != "" && key.Scope == "user" && key.ScopeID == p.Subject &&
+		key.Tenant == sqlScopeTenantValue(p.TenantID)
 }
 
 // memberMayReview asks a member's single ruling what a bulk ruling asks of
