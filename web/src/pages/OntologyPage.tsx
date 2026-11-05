@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { useUserId } from "../components/Layout";
+import { usePrincipal, useUserId } from "../components/Layout";
+import { canDecideOntology } from "../lib/ontologyAuthority";
 import { ontologistRunHref, ontologyEditHref } from "../lib/ontologyEditHref";
 import {
   buildRelationTree,
@@ -190,7 +191,8 @@ function OntologyRelationsDetail({
 }: {
   state: OntologyResponse;
   busy: boolean;
-  onAdopt: (name: string) => void;
+  // Absent for a caller who may not adopt (a member): the server refuses it.
+  onAdopt?: (name: string) => void;
 }) {
   const mine = state.relations ?? [];
   const inForce = state.effective_relations ?? [];
@@ -224,7 +226,7 @@ function OntologyRelationsDetail({
           </tbody>
         </table>
       </div>
-      {(state.adoptable_relations ?? []).length > 0 && (
+      {onAdopt && (state.adoptable_relations ?? []).length > 0 && (
         <p className="settings-help">
           <strong>List a standard kind to agents:</strong> standard kinds are valid without
           this, but agents are only told about the kinds your document declares. Adopting
@@ -361,7 +363,8 @@ function OntologyClassesTab({
 }: {
   state: OntologyResponse;
   busy: boolean;
-  onAdopt: (name: string) => void;
+  // Absent for a caller who may not adopt (a member): the server refuses it.
+  onAdopt?: (name: string) => void;
 }) {
   const tenantTerms = state.terms ?? [];
   return (
@@ -376,7 +379,7 @@ function OntologyClassesTab({
       {/* ADOPT — the standard types this document does not declare. Offered here
           because the documented way to subclass one is to declare it yourself first,
           which otherwise means retyping its field names off the column on the right. */}
-      {(state.adoptable ?? []).length > 0 && (
+      {onAdopt && (state.adoptable ?? []).length > 0 && (
         <p className="settings-help">
           <strong>Extend a standard type:</strong> adopting one copies it into your document
           with its fields, so you can add to it or nest subtypes under it. Your copy then
@@ -542,6 +545,9 @@ export default function OntologySection() {
   // The topbar user picker IS the survey scope: facts live per user, so which user the
   // curation run belongs to decides what it can see.
   const pickedUser = useUserId();
+  // Confirming, adopting and ruling on suggestions are the operator's (the
+  // server refuses a member); a member sees the state and the suggestions.
+  const decides = canDecideOntology(usePrincipal());
   const [params] = useSearchParams();
   const [state, setState] = useState<OntologyResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -640,15 +646,16 @@ export default function OntologySection() {
                 ? ` · sections: ${(state.sections ?? []).join(", ")}`
                 : " · classes only (no @section)"}
             </span>
-            {state.confirmed ? (
-              <button type="button" onClick={() => void flip("draft")} disabled={busy}>
-                Revert to draft
-              </button>
-            ) : (
-              <button type="button" onClick={() => void flip("confirmed")} disabled={busy}>
-                Confirm
-              </button>
-            )}
+            {decides &&
+              (state.confirmed ? (
+                <button type="button" onClick={() => void flip("draft")} disabled={busy}>
+                  Revert to draft
+                </button>
+              ) : (
+                <button type="button" onClick={() => void flip("confirmed")} disabled={busy}>
+                  Confirm
+                </button>
+              ))}
           </div>
 
           {(state.notes ?? []).map((n) => (
@@ -676,8 +683,9 @@ export default function OntologySection() {
                   {pendingProposals.length} suggestion{pendingProposals.length === 1 ? "" : "s"}
                 </strong>{" "}
                 <span className="settings-muted">
-                  not in force until you accept — accepting keeps each one exactly where it sits
-                  in the document
+                  {decides
+                    ? "not in force until you accept — accepting keeps each one exactly where it sits in the document"
+                    : "not in force until a tenant operator accepts them"}
                 </span>
                 {pendingProposals.map((p) => (
                   <div className="ontology-proposal" key={p.chunk_id}>
@@ -696,23 +704,25 @@ export default function OntologySection() {
                     </div>
                     {/* The evidence, so the operator judges a case and not a name. */}
                     {p.body && <pre className="ontology-evidence">{p.body.trim()}</pre>}
-                    <div className="settings-row-actions">
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void resolveProposal(p.chunk_id, "accept")}
-                      >
-                        accept
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost-btn"
-                        disabled={busy}
-                        onClick={() => void resolveProposal(p.chunk_id, "reject")}
-                      >
-                        reject
-                      </button>
-                    </div>
+                    {decides && (
+                      <div className="settings-row-actions">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void resolveProposal(p.chunk_id, "accept")}
+                        >
+                          accept
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-btn"
+                          disabled={busy}
+                          onClick={() => void resolveProposal(p.chunk_id, "reject")}
+                        >
+                          reject
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -777,14 +787,18 @@ export default function OntologySection() {
 
           <div className="ontology-tab-body">
             {tab === "classes" && (
-              <OntologyClassesTab state={state} busy={busy} onAdopt={(name) => void adopt(name)} />
+              <OntologyClassesTab
+                state={state}
+                busy={busy}
+                onAdopt={decides ? (name) => void adopt(name) : undefined}
+              />
             )}
             {tab === "document-classes" && <OntologyDocumentClassesTab state={state} />}
             {tab === "relations" && (
               <OntologyRelationsDetail
                 state={state}
                 busy={busy}
-                onAdopt={(name) => void adopt(name, "relations")}
+                onAdopt={decides ? (name) => void adopt(name, "relations") : undefined}
               />
             )}
             {tab === "schemes" && <OntologySchemesDetail state={state} />}
