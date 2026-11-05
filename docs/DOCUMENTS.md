@@ -920,6 +920,8 @@ An asserted statement is never *rejected*. It leaves the live set in one of thre
 | `ontology` | a relation declared in the tenant ontology's Instances section |
 | `rule:<name>` / `extractor:<name>` | a code agent granted `statement_methods` (see below): code found it, or a model the code drives found it. `<name>` is 1–64 of `a-z 0-9 _ . / -` |
 
+A run never asserts a statement that waits for review by linking it again: only a caller who may rule on it does, and that link is `accept_statement`'s ruling. The guarantee is per statement — the exact `from_id`, `to_id`, `kind`, `valid_at` and discriminator. A run holding `link` that links the same triple under a different `valid_at` writes a second statement, which it may assert.
+
 A later pass treats a `manual` statement as a person's and never undoes it (see `maintain_statement`).
 
 **Reserved kinds.** `about`, `supersedes`, `references`, `mentions`, `derived_from` and `supported_by` are written only by the runtime, because a caller-made one would be read as the runtime's: a manual `supersedes` would block a real correction, a manual `references` would be mistaken for an inline link. `link_chunks`, `propose_statement` and the import, canvas and sync paths refuse them with `kind_reserved`. The one exception: `link_chunks` still accepts `about` when `from_id` is a fact.
