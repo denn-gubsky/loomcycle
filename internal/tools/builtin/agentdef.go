@@ -535,6 +535,11 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 		// CreatedByRunID stays empty here — there's no run_id on
 		// RunIdentityValue today; carried via the run ctx separately.
 	}
+	if in.Promote == nil || *in.Promote {
+		if err := a.memberActivationGuard(ctx, "create", tenantID, in.Name); err != nil {
+			return errResult(err.Error()), nil
+		}
+	}
 	created, err := a.Store.AgentDefCreate(ctx, row)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
@@ -737,6 +742,11 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 		// operator authority.
 		OperatorAuthored: tools.IsOperatorPlane(ctx),
 	}
+	if in.Promote != nil && *in.Promote {
+		if err := a.memberActivationGuard(ctx, "fork", tenantID, in.Name); err != nil {
+			return errResult(err.Error()), nil
+		}
+	}
 	created, err := a.Store.AgentDefCreate(ctx, row)
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
@@ -838,6 +848,12 @@ func (a *AgentDef) execRetire(ctx context.Context, policy tools.AgentDefPolicyVa
 			return errResult(fmt.Sprintf("retire: %s", err)), nil
 		}
 	}
+	// Retiring the active version clears the pointer, after which a create
+	// makes a new one active: a member may not retire (or restore) an
+	// operator's version (RFC FY Part B).
+	if row.OperatorAuthored && !tools.IsOperatorPlane(ctx) && tools.IsOffRunPlane(ctx) {
+		return errResult(fmt.Sprintf("retire: version %q of %q is an operator's; an operator retires it", row.DefID, row.Name)), nil
+	}
 	if err := a.Store.AgentDefSetRetired(ctx, in.DefID, *in.Retired); err != nil {
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
 	}
@@ -876,6 +892,9 @@ func (a *AgentDef) execPromote(ctx context.Context, policy tools.AgentDefPolicyV
 		return errResult(fmt.Sprintf("promote: parse definition: %s", err)), nil
 	}
 	if err := a.admitNoTraceChange(ctx, "promote", ident.TenantID, row.Name, target); err != nil {
+		return errResult(err.Error()), nil
+	}
+	if err := a.memberActivationGuard(ctx, "promote", ident.TenantID, row.Name); err != nil {
 		return errResult(err.Error()), nil
 	}
 	// RFC N: promote within the agent's own tenant. AgentDefSetActive
