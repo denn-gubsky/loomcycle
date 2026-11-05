@@ -72,7 +72,7 @@ type Options struct {
 	// alt text.
 	Images bool
 	// MaxRows caps the rows of a spreadsheet or CSV table (header included).
-	// Zero takes DefaultMaxRows.
+	// Zero takes DefaultMaxRows; more than maxRowsCeiling takes the ceiling.
 	MaxRows int
 
 	// limits overrides the archive bounds, and pdfMaxPages and pdfMaxDecode
@@ -89,7 +89,7 @@ const DefaultMaxRows = 1000
 
 func (o Options) maxRows() int {
 	if o.MaxRows > 0 {
-		return o.MaxRows
+		return min(o.MaxRows, maxRowsCeiling)
 	}
 	return DefaultMaxRows
 }
