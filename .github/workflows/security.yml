@@ -25,10 +25,12 @@ env:
 permissions:
   contents: read
 
-# Both jobs cover every Go module that ships: the runtime at the repo root,
-# the in-tree modules the root go.mod replaces (internal/errkind, internal/otel,
-# internal/providers; RFC FE), and deploy/builder, a separate module published
-# as the loomcycle-builder image. `./...` from the root reaches none of them.
+# The Go jobs (govulncheck, gosec) cover every Go module that ships: the
+# runtime at the repo root, the in-tree modules the root go.mod replaces
+# (internal/errkind, internal/otel, internal/providers; RFC FE), and
+# deploy/builder, a separate module published as the loomcycle-builder image.
+# `./...` from the root reaches none of them. npm-audit and pip-audit, at the
+# end, cover the npm packages and the Python adapter.
 jobs:
   govulncheck:
     name: govulncheck (${{ matrix.module }})
@@ -199,3 +201,63 @@ jobs:
             -exclude-generated \
             -exclude-dir=vendor -exclude-dir=node_modules -exclude-dir=testdata \
             ./...
+
+  # A gate over the production dependency tree of every npm package in the
+  # repo: a high or critical advisory fails the job. The list is every tracked
+  # package-lock.json, not a fixed set, so a new package is covered the day it
+  # lands. npm audit reads the lockfile and asks the registry; it needs no
+  # install. Every lockfile is audited even after one fails, so the log names
+  # them all. There is no exception list: an advisory with no upstream fix is
+  # handled in its package, with the narrowest npm `overrides` entry that
+  # moves the dependency past it (packages/bridge-teams scopes one to the
+  # Teams SDK), not by weakening this gate.
+  npm-audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The Node CI tests with; its npm is the one that resolves these lockfiles.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "20"
+
+      - name: npm audit --omit=dev (every lockfile)
+        run: |
+          set -uo pipefail
+          failed=""
+          for lock in $(git ls-files '*package-lock.json'); do
+            dir=$(dirname "$lock")
+            echo "::group::$dir"
+            if ! (cd "$dir" && npm audit --omit=dev --audit-level=high); then
+              failed="$failed $dir"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::npm audit found high or critical advisories in:$failed"
+            exit 1
+          fi
+
+  # A gate over the Python adapter's runtime dependencies. The adapter ships
+  # no lockfile (installers resolve its ranges), so pip-audit resolves
+  # pyproject.toml the way `pip install loomcycle` would today and audits the
+  # result: it fails when the newest versions the ranges allow are vulnerable,
+  # e.g. when a fix lands only above an upper bound. Dev extras are not
+  # audited, matching --omit=dev above.
+  pip-audit:
+    name: pip-audit (Python adapter)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+
+      # PINNED, like govulncheck; dependabot does not update it.
+      - name: Install pip-audit
+        run: python -m pip install pip-audit==2.10.1
+
+      - name: pip-audit
+        run: python -m pip_audit --strict --progress-spinner off adapters/python
