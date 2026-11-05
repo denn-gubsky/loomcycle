@@ -138,3 +138,68 @@ func TestRemember_ARunNeedsTheGrant(t *testing.T) {
 		}
 	})
 }
+
+// The relation a fact states (upsert_chunk relation with two about_ids) is a
+// statement a run chose like a link_chunks: in the tenant scope it is filed for
+// review unless the agent holds the link grant. A code agent stamping its granted
+// rule: method is its own authority and is not held to it.
+func TestFactRelation_ATenantRelationFromARunIsAProposal(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		op := reviewOperatorCtx(base, nil)
+		a, b := twoChunks(t, d, op, "tenant", "/kb/facts")
+		out, r := docExec(t, d, op, `{"op":"get_chunk","scope":"tenant","id":"`+a+`"}`)
+		if r.IsError {
+			t.Fatalf("get_chunk: %s", r.Text)
+		}
+		doc := asStr(out["document_id"])
+		relationOf := func(ctx context.Context, nk, kind string) map[string]any {
+			t.Helper()
+			out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"tenant","document_id":%q,"natural_key":%q,
+				"title":"A relates to B.","body":"A relates to B.","about_ids":[%q,%q],"relation":%q}`, doc, nk, a, b, kind))
+			if r.IsError {
+				t.Fatalf("upsert_chunk %s: %s", nk, r.Text)
+			}
+			rel, _ := out["relation"].(map[string]any)
+			if rel == nil {
+				t.Fatalf("upsert_chunk %s wrote no relation: %v", nk, out)
+			}
+			return rel
+		}
+		if rel := relationOf(tenantRunCtx(base), "fact:one", "cites"); rel["status"] != edgeStatusProposed {
+			t.Errorf("an ungranted run's tenant relation = %v, want proposed", rel)
+		}
+		if rel := relationOf(tenantRunCtx(base, statementLinkGrant), "fact:two", "refers"); rel["status"] != edgeStatusAsserted {
+			t.Errorf("a granted run's tenant relation = %v, want asserted", rel)
+		}
+	})
+}
+
+// A run copying documents into the tenant scope carries their statements as
+// proposals: what it asserted, or ruled on, in a scope of its own is not the
+// tenant's until it is reviewed there.
+func TestCopyDocuments_ARunsStatementsArriveInTheTenantAsProposals(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		run := tenantRunCtx(base)
+		a, b := twoChunks(t, d, run, "user", "/mine/links")
+		if s := linkFrom(t, d, run, "user", a, b, "cites"); s["status"] != edgeStatusAsserted {
+			t.Fatalf("the user-scope link = %v, want asserted", s)
+		}
+		out, r := docExec(t, d, run, `{"op":"copy_documents","scope":"user","to_scope":"tenant","under_path":"/mine","dry_run":false}`)
+		if r.IsError {
+			t.Fatalf("copy_documents: %s", r.Text)
+		}
+		_ = out
+		op := reviewOperatorCtx(base, nil)
+		ls, r := docExec(t, d, op, `{"op":"list_statements","scope":"tenant","kind":"cites","status":"asserted"}`)
+		if r.IsError {
+			t.Fatalf("list_statements: %s", r.Text)
+		}
+		if got, _ := ls["statements"].([]any); len(got) != 0 {
+			t.Errorf("a run's copy asserted %d statements in the tenant: %v", len(got), got)
+		}
+		ls, _ = docExec(t, d, op, `{"op":"list_statements","scope":"tenant","kind":"cites","status":"proposed"}`)
+		if got, _ := ls["statements"].([]any); len(got) != 1 {
+			t.Errorf("the copied statement is not a proposal in the tenant: %v", ls)
+		}
+	})
+}

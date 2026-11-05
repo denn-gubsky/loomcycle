@@ -18,7 +18,8 @@ than titles.
 in the `tenant` scope (which every user and agent of the tenant reads), the
 link is filed for review instead (`status: proposed`) unless your agent's
 definition grants `link` in `statement_methods`; in the `user` and `agent`
-scopes it is asserted. When you found the
+scopes it is asserted. Such a link to a relation that already holds answers
+with that statement (`status: asserted`) and adds no evidence to it. When you found the
 relation in text and someone should check it first — or your run is not the
 authority on it — use `propose_statement` instead. Where the tenant's confirmed
 ontology declares relation kinds (`describe_ontology` lists them under
@@ -101,8 +102,6 @@ status, actor}`.
   - `qualifier_violation` — an `attributes` name the kind does not declare, or
     a value outside its declared list.
 - `statement_rejected` — an operator rejected this relation; do not re-link it.
-- `statement_asserted` — a link filed for review cannot add to a relation that
-  already holds; leave it.
 - `attribute_reserved` — `attributes` names `judge`, `review_route` or
   `classified_by`, which only the runtime writes; leave them out.
 - A permission error when your access-control rules do not let you link one of

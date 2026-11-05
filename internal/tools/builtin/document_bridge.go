@@ -264,11 +264,15 @@ func (d *Document) factRelation(ctx context.Context, key sqlmem.ScopeKey, mscope
 	w := edgeWrite{
 		from: from, to: to, kind: kind, method: edgeMethodConsolidator, status: edgeStatusAsserted,
 		confidence: in.Confidence, validAt: in.ValidAt, invalidAt: in.InvalidAt, proposeIfInvalid: true,
+		// The relation the caller's fact states: from a run in the tenant scope
+		// without the link grant it is filed for review (runFilesProposals).
+		runGated: true,
 	}
 	// A code-js run that named its method (stampStatementMethod) owns the
-	// relation as written by its rule or extractor, not by the memory pass.
+	// relation as written by its rule or extractor, not by the memory pass:
+	// its granted method is its authority, as on propose_statement.
 	if in.edgeMethod != "" {
-		w.method = in.edgeMethod
+		w.method, w.runGated = in.edgeMethod, false
 	}
 	if claim != "" {
 		w.evidence = []edgeEvidenceIn{{ChunkID: factID, Quote: claim}}

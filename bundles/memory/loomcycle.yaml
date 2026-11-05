@@ -228,6 +228,10 @@ agents:
     # It is also INERT on its own: no shipped ontology type declares a scope, so a
     # default deployment places nothing until an operator declares one per tenant.
     sql_scopes: [tenant]
+    # A fact this pass places in the tenant scope states its relation as an
+    # asserted statement, as it does in a user's scope. Without `link` a run's
+    # tenant relations are filed for review instead.
+    statement_methods: [link]
     memory_consolidation: true    # the cursor / supersede / pending-queue control ops
     history_scope: [user]         # narrowest scope that can read the target user's chats
     # ⚠️ MUST STAY BELOW the LEASE_TTL_MS literal in the body below. A pass that

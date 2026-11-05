@@ -388,6 +388,22 @@ type edgeWrite struct {
 	// proposeIfInvalid writes the statement proposed rather than asserted when the
 	// vocabulary does not accept it (annotate mode for an extracted relation).
 	proposeIfInvalid bool
+	// runGated marks a relation the caller chose (a link, a fact's relation, an
+	// import's or a canvas's edges): from a run in the tenant scope without the
+	// link grant it is filed proposed, through the review policy, rather than
+	// asserted (runFilesProposals). Runtime-derived and operator-sourced writes
+	// (about, derived_from, sync, ontology instances, classify) leave it unset.
+	runGated bool
+}
+
+// runFilesProposals reports a run writing in the tenant scope — read by every
+// user and agent of the tenant — whose agent does not hold
+// statement_methods: [link]: the relations it chooses are filed for review
+// (RFC FZ Part C, D4). A run is any call no transport stamped as a person's
+// (tools.IsOffRunPlane), so a path that forgot to stamp files a proposal.
+func runFilesProposals(ctx context.Context, mscope store.MemoryScope) bool {
+	return mscope == store.MemoryScopeTenant && !tools.IsOffRunPlane(ctx) &&
+		!contains(tools.PolicyOf(ctx).StatementMethods, statementLinkGrant)
 }
 
 // gateAuthored reports a principal's own link_chunks: the one write the
@@ -487,6 +503,19 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 	if w.proposeIfInvalid && !gate.Valid {
 		status = edgeStatusProposed
 	}
+	filedForReview := false
+	if w.runGated && status == edgeStatusAsserted && runFilesProposals(ctx, mscope) {
+		status, filedForReview = edgeStatusProposed, true
+		// Filed as propose_statement files it: a person's rejection of the
+		// relation at any valid_at refuses it.
+		if reason, rejected, err := d.rejectedRelation(ctx, key, w.from, w.to, w.kind, discriminator); err != nil {
+			return out, nil, err
+		} else if rejected {
+			r := errBusiness("statement_rejected: this relation was rejected by an operator ("+reason+")",
+				"Do not write it again. An operator can accept it from the review queue if it was rejected in error.")
+			return out, &r, nil
+		}
+	}
 
 	if existing != nil && w.revisionOf == "" {
 		if policyRejected(existing) {
@@ -524,6 +553,14 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 		// A proposal is filed for review; it may not add to a relation that already
 		// holds. Evidence on an asserted statement is live data, and the propose verb
 		// is narrower than link (a principal holding only read + propose).
+		if filedForReview && existing.Status == edgeStatusAsserted {
+			// A run's chosen relation that already holds here: nothing to file,
+			// and its evidence is not added to a live statement it may not
+			// assert. Answered as the statement it is, so a re-written fact keeps
+			// its relation.
+			out.ID, out.Status = existing.ID, existing.Status
+			return out, nil, nil
+		}
 		if status == edgeStatusProposed && existing.Status == edgeStatusAsserted {
 			r := errBusiness("statement_asserted: this relation is already asserted (id "+existing.ID+"), so a proposal cannot add to it",
 				"Leave it, or propose a correction beside it by passing id.")
@@ -594,6 +631,13 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 		return out, nil, err
 	}
 	out.EvidenceWritten, out.EvidenceCapped = written, capped
+	if filedForReview {
+		// The tenant's review policy, when one is in force, rules on it as on any
+		// proposal filed (propose_statement).
+		if pf, inForce := d.reviewPolicyInForce(ctx); inForce && pf.section {
+			out = d.ruleOnFiling(ctx, key, mscope, pf, out)
+		}
+	}
 	return out, nil, nil
 }
 
@@ -1207,43 +1251,29 @@ func (d *Document) statementJSON(ctx context.Context, s statementRow, ends map[s
 
 // linkChunks asserts a relation: a statement with status asserted, method manual
 // for a person's call or agent for a run's (or the internal path's own), and any
-// evidence the caller supplies.
-//
-// A run's link in the tenant scope — read by every user and agent of the tenant —
-// is filed for review instead, unless its agent holds statement_methods: [link]
-// (RFC FZ Part C, D4). A run is any call no transport stamped as a person's
-// (tools.IsOffRunPlane), so a path that forgot to stamp files a proposal.
+// evidence the caller supplies. A run's link in the tenant scope is filed for
+// review instead unless its agent holds the link grant (runFilesProposals).
 func (d *Document) linkChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	if r := refuseRuntimeAttributes("link_chunks", in.Attributes); r != nil {
 		return *r, nil
 	}
-	method, status := in.edgeMethod, edgeStatusAsserted
+	method := in.edgeMethod
 	if method == "" {
 		method = edgeMethodManual
 		if !tools.IsOffRunPlane(ctx) {
 			method = edgeMethodAgent
-			if mscope == store.MemoryScopeTenant && !contains(tools.PolicyOf(ctx).StatementMethods, statementLinkGrant) {
-				status = edgeStatusProposed
-			}
 		}
 	}
 	w := edgeWrite{
-		from: in.FromID, to: in.ToID, kind: in.Kind, method: method, status: status,
+		from: in.FromID, to: in.ToID, kind: in.Kind, method: method, status: edgeStatusAsserted,
 		authored: true, confidence: in.Confidence, validAt: in.ValidAt, invalidAt: in.InvalidAt,
 		attributes: in.Attributes, evidence: in.Evidence,
 		// An operator's own link may re-assert a rejection; sync and canvas carry
 		// another document's relations and never override one, whoever runs them.
 		overrideRejected: method == edgeMethodManual && callerDecidesIn(ctx, key),
-	}
-	if status == edgeStatusProposed {
-		// Filed as propose_statement files it: a person's rejection of the
-		// relation at any valid_at refuses it.
-		if reason, rejected, err := d.rejectedRelation(ctx, key, w.from, w.to, w.kind, d.discriminatorFor(ctx, w.kind, w.attributes)); err != nil {
-			return errFrom("link_chunks: "+err.Error(), err), nil
-		} else if rejected {
-			return errBusiness("link_chunks: statement_rejected: this relation was rejected by an operator ("+reason+")",
-				"Do not re-link it. An operator can accept it from the review queue if it was rejected in error."), nil
-		}
+		// The caller's own link, or a canvas's edges: chosen by whoever calls.
+		// The ontology's instances (edgeMethodOntology) are the operator's.
+		runGated: in.edgeMethod == "" || in.edgeMethod == edgeMethodCanvas,
 	}
 	res, refuse, err := d.writeStatement(ctx, key, mscope, w)
 	if err != nil {
@@ -1254,13 +1284,6 @@ func (d *Document) linkChunks(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		return *refuse, nil
 	}
 	d.publishEdgeChange(ctx, key, mscope, "link_chunks", res.ID, in.FromID, in.ToID, in.Kind, res.Status)
-	if status == edgeStatusProposed {
-		// The tenant's review policy, when one is in force, rules on it as on any
-		// proposal filed (propose_statement).
-		if pf, inForce := d.reviewPolicyInForce(ctx); inForce && pf.section {
-			res = d.ruleOnFiling(ctx, key, mscope, pf, res)
-		}
-	}
 	out := map[string]any{"ok": true, "from_id": in.FromID, "to_id": in.ToID, "kind": in.Kind,
 		"id": res.ID, "status": res.Status, "evidence_written": res.EvidenceWritten}
 	if res.EvidenceCapped {
@@ -2210,7 +2233,7 @@ func (d *Document) importEdges(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			skipped++
 			continue
 		}
-		w := edgeWrite{from: nf, to: nt, kind: e.kind, method: edgeMethodImport, status: edgeStatusAsserted, authored: true}
+		w := edgeWrite{from: nf, to: nt, kind: e.kind, method: edgeMethodImport, status: edgeStatusAsserted, authored: true, runGated: true}
 		if e.env != nil {
 			if e.env.Status == edgeStatusRejected {
 				skipped++
