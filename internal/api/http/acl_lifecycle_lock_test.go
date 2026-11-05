@@ -424,6 +424,8 @@ func TestUserLifecycle_TheUnbindKeepsWhatTheSubjectIsLockedInto(t *testing.T) {
 func TestUserLifecycle_TheEraseStageDefersASubjectLockedIntoItsOwnList(t *testing.T) {
 	srv, _, st := lockedFixture(t)
 	srv.SetEraseAudit(&recordingSink{})
+	sink := &lockedSink{}
+	srv.SetTokenAudit(sink)
 	ctx := context.Background()
 	if err := srv.startRemovalWith(ctx, lifecycle.Policy{UnbindAfter: time.Millisecond, EraseAfter: time.Millisecond},
 		"acme", "delegate", "", store.RemovalReasonDormant, lifecycleActor); err != nil {
@@ -444,6 +446,19 @@ func TestUserLifecycle_TheEraseStageDefersASubjectLockedIntoItsOwnList(t *testin
 	}
 	if b, m := liveLocks(t, st, "delegate"); b != 1 || !m {
 		t.Errorf("delegate after the erase stage: %d live admin-deny bindings, member of bound %v; want 1 and true", b, m)
+	}
+	// A deferral is audited once, naming the lists that hold it: an
+	// operator can see who keeps an erase from happening.
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	var deferred []string
+	for _, ev := range sink.events {
+		if ev.Action == "erase_deferred_locked" {
+			deferred = append(deferred, ev.TargetTenant+"/"+ev.TargetSubject+":"+ev.AuthReason)
+		}
+	}
+	if len(deferred) != 1 || !strings.HasPrefix(deferred[0], "acme/delegate:") || !strings.Contains(deferred[0], "admin-deny") {
+		t.Errorf("erase_deferred_locked records: %q, want one for acme/delegate naming admin-deny", deferred)
 	}
 }
 
@@ -556,8 +571,8 @@ func TestUserLifecycle_TheUnbindDropsWhatIsNotAnExactlyLockedDenyList(t *testing
 		t.Errorf("victim's bindings after the unbind: %v, want only guard (wild-guard, perk, broad and self-wild retired)", live)
 	}
 	// The erase stage reads the same rule: other carries nothing it keeps.
-	if list, err := srv.lifecycleEraseLock(ctx, "acme", "other"); err != nil || list != "" {
-		t.Errorf("the erase lock on other: %q %v, want none (no exactly locked deny list)", list, err)
+	if lists, err := srv.lifecycleEraseLock(ctx, "acme", "other"); err != nil || len(lists) != 0 {
+		t.Errorf("the erase lock on other: %q %v, want none (no locked deny list)", lists, err)
 	}
 }
 

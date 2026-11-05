@@ -207,33 +207,34 @@ func (l *unattendedLocks) locked(ctx context.Context, name string) bool {
 // sweeper, so the next sweep re-checks it.
 const lockedEraseRecheck = time.Hour
 
-// lifecycleEraseLock names a list subject carries that its unattendedLocks
-// keep, or "" when none: the removal policy's erase stage has no caller, so
-// it is judged as unbindSubject's steps are. Erasure is all or nothing, so
-// such a subject is deferred (eraseRemoved) rather than erased around the
-// locked rows; the operator who imposed the lock lifts it or erases the
+// lifecycleEraseLock names, sorted, the lists subject carries that its
+// unattendedLocks keep, or none: the removal policy's erase stage has no
+// caller, so it is judged as unbindSubject's steps are. Erasure is all or
+// nothing, so such a subject is deferred (eraseRemoved) rather than erased
+// around the locked rows; only an admin lifts the lock or erases the
 // subject itself. A set or list that cannot be read is an error, and the
 // subject is not erased this pass (fail closed). It is asked here, not in
 // ErasureExecute, because open mode also erases with no principal and is
 // the operator.
-func (s *Server) lifecycleEraseLock(ctx context.Context, tenant, subject string) (string, error) {
+func (s *Server) lifecycleEraseLock(ctx context.Context, tenant, subject string) ([]string, error) {
 	locks, err := s.unattendedLocks(ctx, tenant, subject)
 	if err != nil {
-		return "", fmt.Errorf("access control for the erase stage: %w", err)
+		return nil, fmt.Errorf("access control for the erase stage: %w", err)
 	}
 	if locks == nil {
-		return "", nil
+		return nil, nil
 	}
 	names, err := s.aclSubjectLists(ctx, tenant, subject)
 	if err != nil {
-		return "", fmt.Errorf("the lists the subject carries: %w", err)
+		return nil, fmt.Errorf("the lists the subject carries: %w", err)
 	}
+	var locked []string
 	for _, name := range names {
-		if list, ok := locks.keeps(ctx, []string{name}); ok {
-			return list, nil
+		if _, ok := locks.keeps(ctx, []string{name}); ok {
+			locked = append(locked, name)
 		}
 	}
-	return "", nil
+	return locked, nil
 }
 
 // aclCallerMayReadLists reports whether the caller passes the list-read gate

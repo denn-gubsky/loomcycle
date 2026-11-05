@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -316,21 +317,25 @@ func (s *Server) advanceRemoval(ctx context.Context, r store.AuthRemovalRow, now
 // erase_intent before anything is deleted and refuses when it cannot, so an
 // erasure nobody could audit never happens; the removal then stays due.
 func (s *Server) eraseRemoved(ctx context.Context, r store.AuthRemovalRow, now time.Time) (bool, error) {
-	list, err := s.lifecycleEraseLock(ctx, r.TenantID, r.Subject)
+	lists, err := s.lifecycleEraseLock(ctx, r.TenantID, r.Subject)
 	if err != nil {
 		return false, err
 	}
-	if list != "" {
+	if len(lists) > 0 {
 		// Deferred, not failed: the erase leaves the due set until the next
 		// sweep re-checks it, so subjects that stay locked never hold the
 		// queue ahead of the ones that can go, and the deferral counts as
-		// this pass's handling of the row.
-		ok, err := s.store.AuthRemovalDeferErase(ctx, r.TenantID, r.Subject, now.Add(lockedEraseRecheck))
+		// this pass's handling of the row. Each deferral is audited: a
+		// delegate who can bind a locked list can postpone a configured
+		// erase for as long as it stays bound, and only an admin lifts it.
+		recheck := now.Add(lockedEraseRecheck)
+		ok, err := s.store.AuthRemovalDeferErase(ctx, r.TenantID, r.Subject, recheck)
 		if err != nil {
 			return false, err
 		}
-		slog.WarnContext(ctx, "auth: erase stage deferred: the subject carries a locked list",
-			"tenant", r.TenantID, "subject", r.Subject, "list", list, "recheck_at", now.Add(lockedEraseRecheck))
+		if ok {
+			s.recordEraseDeferred(ctx, r, lists, recheck)
+		}
 		return ok, nil
 	}
 	rep, err := s.ErasureReport(ctx, r.TenantID, r.Subject)
@@ -352,6 +357,23 @@ func (s *Server) eraseRemoved(ctx context.Context, r store.AuthRemovalRow, now t
 			fmt.Sprintf("%s; reported %d rows, %d plane errors", r.Reason, rep.Tier1.Total, len(res.Errors)), lifecycleActor)
 	}
 	return ok, nil
+}
+
+// recordEraseDeferred logs and audits one deferral of r's erase stage by the
+// locked lists it names.
+func (s *Server) recordEraseDeferred(ctx context.Context, r store.AuthRemovalRow, lists []string, recheck time.Time) {
+	reason := "locked lists: " + strings.Join(lists, ", ") + "; re-checked at " + recheck.UTC().Format(time.RFC3339)
+	slog.WarnContext(ctx, "auth: erase stage deferred: the subject carries a locked list",
+		"tenant", r.TenantID, "subject", r.Subject, "lists", lists, "recheck_at", recheck)
+	if s.tokenAudit == nil {
+		return
+	}
+	if err := s.tokenAudit.Record(audit.Event{
+		Action: "erase_deferred_locked", ActorSubject: lifecycleActor, TargetTenant: r.TenantID, TargetSubject: r.Subject,
+		AuthGate: r.Gate, AuthReason: reason,
+	}); err != nil {
+		slog.ErrorContext(ctx, "auth: audit write failed", "err", err)
+	}
 }
 
 // errNoRemoval: the user has no removal to reactivate from.
