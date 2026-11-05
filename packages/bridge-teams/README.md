@@ -71,7 +71,7 @@ Configuration is by environment:
 | `BRIDGE_USER_ACCESS_MODE` | `isolated` (a user sees only their own data) or `tenant` | `isolated` |
 | `BRIDGE_IDLE_MINUTES` | End a conversation's run after this long without a message; the next message continues it | `1440` |
 | `BRIDGE_STORE` | `memory`, or `file:<path>` to survive restarts on one instance | `memory` |
-| `BRIDGE_DEV` | `1` accepts unauthenticated requests, for local testing only: refused on a gate, and the listener binds loopback only | unset |
+| `BRIDGE_DEV` | `1` accepts unauthenticated requests, for local testing only, on your own machine: refused on a gate. The Teams SDK listens on every interface, so keep the port closed to the network | unset |
 
 With `BRIDGE_STORE=memory`, a restart forgets which loomcycle session each Teams conversation was in, and the next message starts a fresh one. Use `file:<path>` (one instance) or your own `ConversationStore` (several).
 
