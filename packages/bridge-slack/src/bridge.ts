@@ -229,9 +229,9 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
 
   /** members reads users.list (users:read, the scope revocation already
    *  needs) for each allowed workspace: every account that is not deleted
-   *  and not a bot. The core's reconciliation leaves out of a complete sync
-   *  each person it served who is not here, so the list must be whole: a
-   *  page Slack fails, or a list past MAX_MEMBER_PAGES, fails it all. */
+   *  and not a bot. The core's reconciliation revokes each person it served
+   *  who is not here, so the list must be whole: a page Slack fails, or a
+   *  list past MAX_MEMBER_PAGES, fails it all. */
   async function members(): Promise<ReadonlySet<string>> {
     const out = new Set<string>();
     for (const team of cfg.allowedTeams) {

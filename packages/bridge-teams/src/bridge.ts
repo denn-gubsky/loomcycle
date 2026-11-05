@@ -113,9 +113,15 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
     // Always explicit: the SDK would otherwise read the env var itself, and
     // a stray one must not turn off request validation in production.
     dangerouslyAllowUnauthenticatedRequests: shared.dev,
-    // Dev mode checks no request, so it listens on loopback only (D6).
+    // Dev mode checks no request, so it listens on loopback only (D6): the
+    // core's BRIDGE_BIND, which from bridge-core 0.4 it holds to loopback in
+    // dev mode, else 127.0.0.1 (an older core has no bind address).
     ...(shared.dev
-      ? { httpServerAdapter: new LoopbackExpressAdapter("127.0.0.1", (err) => log.error("teams listener error", { error: err.name })) }
+      ? {
+          httpServerAdapter: new LoopbackExpressAdapter((shared as typeof shared & { bindHost?: string }).bindHost ?? "127.0.0.1", (err) =>
+            log.error("teams listener error", { error: err.name }),
+          ),
+        }
       : {}),
   });
   // The bridge's gate name in loomcycle; unset for a bridge with a token.
