@@ -526,12 +526,11 @@ func importFileProvenance(ctx context.Context, r dataRef, rel, digest string) (p
 }
 
 // fileDocumentGrant refuses an import the run could not make with the
-// Document tool: outside a run, without Document in its tools, or when
-// Document's pre-hooks deny the equivalent import_md.
+// Document tool: without Document in its tools, or when Document's pre-hooks
+// deny the equivalent import_md. An off-run substrate plane holds the wildcard
+// tools ceiling, which names no tool, so it is refused here; the File twin is
+// off-run too and grants Document by name for import alone.
 func fileDocumentGrant(ctx context.Context, in fileInput, scope string) (tools.Result, bool) {
-	if tools.IsSubstrateOperator(ctx) && tools.RunID(ctx) == "" {
-		return errPermission("import is not available outside a run", "Use the Document tool's import_md."), false
-	}
 	if !slices.Contains(tools.PolicyOf(ctx).Tools, "Document") {
 		return errPermission("import needs the Document tool, which this run does not have", "Ask an operator to grant the tool."), false
 	}

@@ -73,7 +73,7 @@ func (s *Server) Crypto(ctx context.Context, input json.RawMessage) (connector.T
 		}
 	}
 
-	ctx = tools.WithSubstrateOperator(ctx)
+	ctx = tools.WithCallerTier(ctx, tools.TierForPrincipal(p, hasPrincipal, tenant))
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: tenant, UserID: userID})
 	ctx = tools.WithAgentName(ctx, "")
 	ctx = tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.Crypto = tools.CryptoPolicyValue{Scopes: scopes} })

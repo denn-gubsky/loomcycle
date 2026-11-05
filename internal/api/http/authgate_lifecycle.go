@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -113,8 +114,23 @@ func (s *Server) startRemovalWith(ctx context.Context, policy lifecycle.Policy, 
 // retires its own ACL bindings. Local groups (no external_id) are left: an
 // operator put the user there, and the user is disabled anyway. It reports
 // whether anything changed.
-func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allGroups bool) (bool, error) {
+//
+// unattendedBy names the actor of a step no operator stands behind (the
+// sweeper, a SCIM re-enable; a tenant operator can set either going): it
+// keeps, logs and audits a binding or membership its unattendedLocks keep —
+// a deny-only list that is locked. An operator's re-enable passes "": its
+// caller's own lock was asked first (aclSubjectLockForCaller, which refuses
+// a delegate the lock holds), and the caller it let through (an admin, the
+// legacy token, open mode) resets the user to the floor.
+func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allGroups bool, unattendedBy string) (bool, error) {
 	changed := false
+	var locks *unattendedLocks
+	if unattendedBy != "" {
+		var err error
+		if locks, err = s.unattendedLocks(ctx, tenant, subject); err != nil {
+			return false, fmt.Errorf("access control: %w", err)
+		}
+	}
 	groups, err := s.store.GroupsOfSubject(ctx, tenant, subject)
 	if err != nil {
 		return false, err
@@ -132,6 +148,14 @@ func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allG
 				continue
 			}
 		}
+		lists, err := s.aclGroupLists(ctx, tenant, name)
+		if err != nil {
+			return changed, err
+		}
+		if list, ok := locks.keeps(ctx, lists); ok {
+			s.recordLockKept(ctx, tenant, subject, unattendedBy, "membership of group "+name, list)
+			continue
+		}
 		ok, err := s.store.GroupMemberRemove(ctx, tenant, name, store.GroupMemberUser, subject)
 		if err != nil {
 			return changed, err
@@ -146,6 +170,10 @@ func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allG
 		if b.SubjectKind != store.GroupMemberUser || b.SubjectID != subject || !b.RetiredAt.IsZero() {
 			continue
 		}
+		if list, ok := locks.keeps(ctx, []string{b.ACLName}); ok {
+			s.recordLockKept(ctx, tenant, subject, unattendedBy, "binding "+b.BindingID, list)
+			continue
+		}
 		ok, err := s.store.AclBindingRetire(ctx, tenant, b.BindingID)
 		if err != nil {
 			return changed, err
@@ -153,6 +181,23 @@ func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allG
 		changed = changed || ok
 	}
 	return changed, nil
+}
+
+// recordLockKept logs and audits a binding or membership (what) an
+// unattended step kept because list only denies and is locked.
+func (s *Server) recordLockKept(ctx context.Context, tenant, subject, by, what, list string) {
+	reason := what + " kept: list " + list + " only denies and is locked against retiring"
+	slog.WarnContext(ctx, "auth: deprovisioning kept a locked list", "tenant", tenant, "subject", subject,
+		"kept", what, "list", list, "by", by)
+	if s.tokenAudit == nil {
+		return
+	}
+	if err := s.tokenAudit.Record(audit.Event{
+		Action: "auth_unbind_kept_locked", ActorSubject: by, TargetTenant: tenant, TargetSubject: subject,
+		TargetName: "def:acl/" + list, AuthReason: reason,
+	}); err != nil {
+		slog.ErrorContext(ctx, "auth: audit write failed", "err", err)
+	}
 }
 
 // AuthLifecycleSweep runs one tick of the removal policy: users dormant past
@@ -246,7 +291,7 @@ func (s *Server) advanceRemoval(ctx context.Context, r store.AuthRemovalRow, now
 	}
 	switch next {
 	case lifecycle.StageUnbind:
-		changed, err := s.unbindSubject(ctx, r.TenantID, r.Subject, false)
+		changed, err := s.unbindSubject(ctx, r.TenantID, r.Subject, false, lifecycleActor)
 		if changed {
 			s.aclChanged(ctx, r.TenantID, "removal_unbound", r.Subject)
 		}
@@ -272,6 +317,27 @@ func (s *Server) advanceRemoval(ctx context.Context, r store.AuthRemovalRow, now
 // erase_intent before anything is deleted and refuses when it cannot, so an
 // erasure nobody could audit never happens; the removal then stays due.
 func (s *Server) eraseRemoved(ctx context.Context, r store.AuthRemovalRow, now time.Time) (bool, error) {
+	lists, err := s.lifecycleEraseLock(ctx, r.TenantID, r.Subject)
+	if err != nil {
+		return false, err
+	}
+	if len(lists) > 0 {
+		// Deferred, not failed: the erase leaves the due set until the next
+		// sweep re-checks it, so subjects that stay locked never hold the
+		// queue ahead of the ones that can go, and the deferral counts as
+		// this pass's handling of the row. Each deferral is audited: a
+		// delegate who can bind a locked list can postpone a configured
+		// erase for as long as it stays bound, and only an admin lifts it.
+		recheck := now.Add(lockedEraseRecheck)
+		ok, err := s.store.AuthRemovalDeferErase(ctx, r.TenantID, r.Subject, recheck)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			s.recordEraseDeferred(ctx, r, lists, recheck)
+		}
+		return ok, nil
+	}
 	rep, err := s.ErasureReport(ctx, r.TenantID, r.Subject)
 	if err != nil {
 		return false, fmt.Errorf("erasure report: %w", err)
@@ -291,6 +357,23 @@ func (s *Server) eraseRemoved(ctx context.Context, r store.AuthRemovalRow, now t
 			fmt.Sprintf("%s; reported %d rows, %d plane errors", r.Reason, rep.Tier1.Total, len(res.Errors)), lifecycleActor)
 	}
 	return ok, nil
+}
+
+// recordEraseDeferred logs and audits one deferral of r's erase stage by the
+// locked lists it names.
+func (s *Server) recordEraseDeferred(ctx context.Context, r store.AuthRemovalRow, lists []string, recheck time.Time) {
+	reason := "locked lists: " + strings.Join(lists, ", ") + "; re-checked at " + recheck.UTC().Format(time.RFC3339)
+	slog.WarnContext(ctx, "auth: erase stage deferred: the subject carries a locked list",
+		"tenant", r.TenantID, "subject", r.Subject, "lists", lists, "recheck_at", recheck)
+	if s.tokenAudit == nil {
+		return
+	}
+	if err := s.tokenAudit.Record(audit.Event{
+		Action: "erase_deferred_locked", ActorSubject: lifecycleActor, TargetTenant: r.TenantID, TargetSubject: r.Subject,
+		AuthGate: r.Gate, AuthReason: reason,
+	}); err != nil {
+		slog.ErrorContext(ctx, "auth: audit write failed", "err", err)
+	}
 }
 
 // errNoRemoval: the user has no removal to reactivate from.
@@ -318,6 +401,11 @@ func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by stri
 	if r.Stage != "" || !r.ErasedAt.IsZero() {
 		return errRemovalBusy
 	}
+	// The reset drops every binding and membership of the user's own: the
+	// caller's lock on a list holds it.
+	if refusal := s.aclSubjectLockForCaller(ctx, tenant, subject); refusal != nil {
+		return &aclLockedError{reply: *refusal}
+	}
 	if err := s.resetRemovedToFloor(ctx, tenant, subject, by); err != nil {
 		return err
 	}
@@ -338,7 +426,7 @@ func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by stri
 // memberships and bindings go, its access mode drops to the floor, and it
 // joins the floor groups that exist. Its status is the caller's to set.
 func (s *Server) resetRemovedToFloor(ctx context.Context, tenant, subject, by string) error {
-	if err := s.stripRemovedUser(ctx, tenant, subject); err != nil {
+	if err := s.stripRemovedUser(ctx, tenant, subject, ""); err != nil {
 		return err
 	}
 	return s.rejoinFloorGroups(ctx, tenant, subject, by)
@@ -348,8 +436,9 @@ func (s *Server) resetRemovedToFloor(ctx context.Context, tenant, subject, by st
 // group membership and binding of the user's own goes and its access mode
 // drops to the floor's (the deployment floor is always isolated, the
 // lowest). It may run before the caller owns the re-enable for good.
-func (s *Server) stripRemovedUser(ctx context.Context, tenant, subject string) error {
-	changed, err := s.unbindSubject(ctx, tenant, subject, true)
+// unattendedBy is unbindSubject's.
+func (s *Server) stripRemovedUser(ctx context.Context, tenant, subject, unattendedBy string) error {
+	changed, err := s.unbindSubject(ctx, tenant, subject, true, unattendedBy)
 	if err != nil {
 		return err
 	}

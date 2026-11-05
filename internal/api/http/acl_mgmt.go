@@ -210,45 +210,90 @@ func (s *Server) aclChanged(ctx context.Context, tenant, action, targetName stri
 	}
 }
 
-// aclNoSelfElevation refuses a binding a delegated writer would benefit
-// from: to its own subject, its own token, or a group it is in (RFC EY §10
-// invariant 4, in its practical form). A tenant operator or admin already
-// holds the whole tenant's authority and is exempt; so is a tenant-wide
-// binding, which an operator alone may write.
-func aclNoSelfElevation(ctx context.Context, kind, id string) error {
-	p, ok := auth.PrincipalFromContext(ctx)
-	if !ok || aclWriterHoldsTenant(p) {
-		return nil
-	}
-	switch authz.SubjectKind(kind) {
-	case authz.SubjectUser:
-		if id == p.Subject {
-			return fmt.Errorf("a binding to your own subject")
+// aclRetireLists asks retire def:acl/<name> of each list, the question the
+// documented lock on a list answers (a deny on author/retire def:acl/<name>).
+// A binding, a group and a membership in a group each carry their lists'
+// rules to a principal, so dropping one lifts those rules as surely as
+// retiring the list: the same lock holds it, for a tenant operator too. It
+// replaces the self-elevation guards that exempted every tenant operator
+// and so could never fire behind the management gate (re-audit B2, B15).
+func (s *Server) aclRetireLists(ctx context.Context, names []string) *aclReply {
+	for _, name := range names {
+		if r := s.aclAsk(ctx, authz.Surface{Action: "retire", Type: "def", Name: "acl/" + name}); r != nil {
+			return r
 		}
-	case authz.SubjectToken:
-		if id == p.TokenDefID {
-			return fmt.Errorf("a binding to your own token")
-		}
-	case authz.SubjectGroup:
-		for _, g := range p.Groups {
-			if g == id {
-				return fmt.Errorf("a binding to a group you are in")
-			}
-		}
-	case authz.SubjectTenant:
-		return fmt.Errorf("a tenant-wide binding")
 	}
 	return nil
 }
 
-// aclWriterHoldsTenant reports whether the writer already holds every
-// ACL, group and binding authority in its tenant (RFC EY §3.8): admin, the
-// legacy token and a tenant operator. The self-elevation guards bind the
-// writers that hold only what an ACL delegates to them. An admin who wants a
-// tenant operator unable to lift a list binds it a deny on `author
-// def:acl/<name>`, which the per-op check honours.
-func aclWriterHoldsTenant(p auth.Principal) bool {
-	return p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin) || auth.HasScope(p.Scopes, auth.ScopeTenant)
+// aclGroupLists names, sorted, the lists bound (stored and config-declared,
+// live) to group or to any group that contains it, at any depth: a member
+// that leaves group leaves each of those groups through it, and deleting
+// group takes every member out of them. A binding to a group whose name is
+// not in the graph still counts: the store keeps bindings to a deleted group.
+func (s *Server) aclGroupLists(ctx context.Context, tenant, group string) ([]string, error) {
+	graph, err := s.store.GroupGraph(ctx, tenant)
+	if err != nil {
+		return nil, fmt.Errorf("group graph: %w", err)
+	}
+	static := s.aclStatic()
+	_, staticGraph := static.GroupsOf(tenant, "")
+	holders := map[string]bool{group: true}
+	for _, g := range authz.Closure(authz.MergeGraph(graph, staticGraph), []string{group}) {
+		holders[g] = true
+	}
+	rows, err := s.store.AclBindingList(ctx, tenant, false)
+	if err != nil {
+		return nil, fmt.Errorf("bindings: %w", err)
+	}
+	seen := map[string]bool{}
+	var names []string
+	add := func(kind, id, acl string) {
+		if authz.SubjectKind(kind) == authz.SubjectGroup && holders[id] && !seen[acl] {
+			seen[acl] = true
+			names = append(names, acl)
+		}
+	}
+	for _, row := range rows {
+		add(row.SubjectKind, row.SubjectID, row.ACLName)
+	}
+	for _, b := range static.BindingsIn(tenant) {
+		add(string(b.SubjectKind), b.SubjectID, b.ACL)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// aclGroupHandOver asks the group lock when an upsert would change who
+// manages the group's membership: a new external_id hands it to an identity
+// provider, whose sync and the removal policy then drop members while local
+// edits are refused — leaving the group, by another route. A group that
+// does not exist yet still asks: bindings to a deleted group's name stay.
+func (s *Server) aclGroupHandOver(ctx context.Context, tenant, name, externalID string) *aclReply {
+	current := ""
+	row, err := s.store.GroupGet(ctx, tenant, name)
+	switch {
+	case err == nil:
+		current = row.ExternalID
+	case !isNotFound(err):
+		r := aclFail(http.StatusInternalServerError, "group_get_failed", err.Error())
+		return &r
+	}
+	if externalID == current {
+		return nil
+	}
+	return s.aclGroupLock(ctx, tenant, name)
+}
+
+// aclGroupLock asks the retire question of every list group carries, or
+// returns the refusal; a store fault refuses (fail closed).
+func (s *Server) aclGroupLock(ctx context.Context, tenant, group string) *aclReply {
+	names, err := s.aclGroupLists(ctx, tenant, group)
+	if err != nil {
+		r := aclFail(http.StatusInternalServerError, "group_lists_failed", err.Error())
+		return &r
+	}
+	return s.aclRetireLists(ctx, names)
 }
 
 func aclStoreError(err error, kind string) aclReply {
@@ -384,6 +429,9 @@ func (s *Server) aclGroupPut(ctx context.Context, focus string, req groupRequest
 	}
 	tenant := s.adminFocusedTenant(ctx, focus)
 	if r := s.aclGroupExternal(ctx, tenant, strings.TrimSpace(req.Name)); r != nil {
+		return *r
+	}
+	if r := s.aclGroupHandOver(ctx, tenant, strings.TrimSpace(req.Name), req.ExternalID); r != nil {
 		return *r
 	}
 	row, err := s.store.GroupPut(ctx, store.GroupRow{TenantID: tenant, Name: strings.TrimSpace(req.Name),
@@ -569,6 +617,9 @@ func (s *Server) aclGroupDelete(ctx context.Context, focus, name string) aclRepl
 		return *r
 	}
 	tenant := s.adminFocusedTenant(ctx, focus)
+	if r := s.aclGroupLock(ctx, tenant, name); r != nil {
+		return *r
+	}
 	ok, err := s.store.GroupDelete(ctx, tenant, name)
 	if err != nil {
 		return aclFail(http.StatusInternalServerError, "group_delete_failed", err.Error())
@@ -593,12 +644,6 @@ func (s *Server) aclGroupAddMember(ctx context.Context, focus, name string, req 
 	tenant := s.adminFocusedTenant(ctx, focus)
 	if r := s.aclGroupExternal(ctx, tenant, name); r != nil {
 		return *r
-	}
-	if req.Kind == store.GroupMemberUser {
-		if err := aclNoSelfElevation(ctx, string(authz.SubjectUser), req.ID); err != nil {
-			// Adding yourself to a group is the membership form of self-binding.
-			return aclFail(http.StatusForbidden, "acl_self_elevation", "refused: adding yourself to a group")
-		}
 	}
 	err := s.store.GroupMemberAdd(ctx, store.GroupMemberRow{TenantID: tenant, GroupName: name, MemberKind: req.Kind, MemberID: strings.TrimSpace(req.ID), AddedBy: principalSubject(ctx)})
 	if err != nil {
@@ -643,6 +688,9 @@ func (s *Server) aclGroupRemoveMember(ctx context.Context, focus, name, kind, id
 	}
 	tenant := s.adminFocusedTenant(ctx, focus)
 	if r := s.aclGroupExternal(ctx, tenant, name); r != nil {
+		return *r
+	}
+	if r := s.aclGroupLock(ctx, tenant, name); r != nil {
 		return *r
 	}
 	ok, err := s.store.GroupMemberRemove(ctx, tenant, name, kind, id)
@@ -704,11 +752,17 @@ func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) 
 				return *r
 			}
 		}
+		if r := s.aclNameReserved(ctx, tenant, strings.TrimSpace(req.Name)); r != nil {
+			return *r
+		}
 		row, err := s.store.AclDefPut(ctx, store.AclDefRow{TenantID: tenant, Name: strings.TrimSpace(req.Name), Rules: req.Rules, Description: req.Description, CreatedBy: principalSubject(ctx)})
 		if err != nil {
 			return aclStoreError(err, "acl")
 		}
 		s.aclChanged(ctx, tenant, "acl_written", row.Name)
+		if tenant == "" {
+			return s.aclSharedWritten(ctx, row)
+		}
 		return aclCreated(row)
 	case "validate":
 		rules, err := authz.ParseRules(req.Rules)
@@ -768,6 +822,159 @@ func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) 
 	}
 }
 
+// aclNameReserved refuses a write that would put a list of tenant in force
+// under a name a config-declared list holds, or (for a tenant other than
+// the shared one) a live shared-tenant list holds. The resolver reads the
+// tenant's row first (aclres lookupACL), so such a row would silently
+// replace the operator's list for every binding in the tenant: a tenant
+// operator could lift a deny the deployment declared (re-audit B3). The
+// three write ops share the check because each is an upsert. A live row the
+// tenant already holds stays writable: it is a shadow written before this
+// check, which ReportACLShadows names at boot and resolution keeps until
+// the operator renames it (RFC FY D4). The check and the write are not one
+// transaction; a shared list created between them is named by the next boot
+// or acls reload report (ReportACLShadows), and a binding of the name in
+// the tenant is refused as ambiguous (aclBindingNameAmbiguous).
+func (s *Server) aclNameReserved(ctx context.Context, tenant, name string) *aclReply {
+	held, err := s.aclLiveList(ctx, tenant, name)
+	if err != nil {
+		return aclListLookupFault(ctx, tenant, name, err)
+	}
+	if held {
+		return nil
+	}
+	if static := s.aclStatic(); static != nil {
+		if _, declared := static.ACLs[name]; declared {
+			r := aclFail(http.StatusConflict, "acl_name_reserved", fmt.Sprintf("list %q is declared in the server configuration; a stored list of that name would replace it, so choose another name", name))
+			return &r
+		}
+	}
+	if tenant == "" {
+		return nil
+	}
+	shared, err := s.aclLiveList(ctx, "", name)
+	if err != nil {
+		return aclListLookupFault(ctx, "", name, err)
+	}
+	if shared {
+		r := aclFail(http.StatusConflict, "acl_name_reserved", fmt.Sprintf("list %q is a shared list every tenant reads; a list of that name here would replace it, so choose another name", name))
+		return &r
+	}
+	return nil
+}
+
+// aclSharedWritten answers a write of a shared-tenant list. A tenant that
+// already holds a live list of the name keeps resolving its own (RFC FY D4),
+// so the shared list does not reach it: each such tenant is warned of in
+// the log, and the answer carries only how many there are
+// ("shadowed_in_tenants"), never which — the admin renames, or a binding
+// of the name in such a tenant is refused (acl_name_shadowed). The scan
+// reads every tenant's lists; a shared-list write is an admin's, and rare.
+func (s *Server) aclSharedWritten(ctx context.Context, row store.AclDefRow) aclReply {
+	snap, err := s.store.SnapshotReadAcl(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "authz: tenants holding a shared list's name could not be checked", "name", row.Name, "err", err)
+		return aclCreated(row)
+	}
+	n := 0
+	for _, def := range snap.Defs {
+		if def.TenantID == "" || def.Name != row.Name || def.Retired() {
+			continue
+		}
+		slog.WarnContext(ctx, "authz: a tenant's list shadows the shared list of the same name; bindings there resolve to the tenant's",
+			"tenant", def.TenantID, "name", def.Name)
+		n++
+	}
+	body, err := aclRowWith(row, "shadowed_in_tenants", n)
+	if err != nil {
+		return aclCreated(row)
+	}
+	return aclCreated(body)
+}
+
+// aclRowWith is row's JSON with one more key. The row is kept as raw JSON
+// so its int64 version never passes through a float.
+func aclRowWith(row store.AclDefRow, key string, v any) (map[string]json.RawMessage, error) {
+	raw, err := json.Marshal(row)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	if m[key], err = json.Marshal(v); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// aclLiveList reports whether tenant holds a live stored list of name.
+func (s *Server) aclLiveList(ctx context.Context, tenant, name string) (bool, error) {
+	row, err := s.store.AclDefGet(ctx, tenant, name)
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return !row.Retired(), nil
+}
+
+// aclListLookupFault is the refusal for a store fault while checking a
+// name: fail closed, and retryable.
+func aclListLookupFault(ctx context.Context, tenant, name string, err error) *aclReply {
+	slog.ErrorContext(ctx, "authz: list name check failed", "tenant", tenant, "name", name, "err", err)
+	r := aclFail(http.StatusServiceUnavailable, "acl_unavailable", "the list name could not be checked; retry")
+	return &r
+}
+
+// ReportACLShadows warns once for every live stored list that shadows
+// another list of the same name, and returns how many it found: a tenant's
+// or a shared-tenant row over a config-declared list, and a tenant's row
+// over a live shared-tenant list. Resolution keeps the nearer list first for
+// now (RFC FY D4), so this is how an operator learns a guardrail it declared
+// does not reach a tenant, and renames the list. Run at boot and on an acls
+// reload; it reads every tenant's lists.
+func (s *Server) ReportACLShadows(ctx context.Context, log *slog.Logger) int {
+	if s.store == nil {
+		return 0
+	}
+	snap, err := s.store.SnapshotReadAcl(ctx)
+	if err != nil {
+		log.Warn("authz: stored lists could not be checked for shadowing", "err", err)
+		return 0
+	}
+	var declared map[string]authz.ACL
+	if static := s.aclStatic(); static != nil {
+		declared = static.ACLs
+	}
+	shared := map[string]bool{}
+	for _, def := range snap.Defs {
+		if def.TenantID == "" && !def.Retired() {
+			shared[def.Name] = true
+		}
+	}
+	n := 0
+	for _, def := range snap.Defs {
+		if def.Retired() {
+			continue
+		}
+		if _, ok := declared[def.Name]; ok {
+			log.Warn("authz: a stored list shadows the config-declared list of the same name; bindings resolve to the stored one",
+				"tenant", def.TenantID, "name", def.Name)
+			n++
+			continue
+		}
+		if def.TenantID != "" && shared[def.Name] {
+			log.Warn("authz: a tenant's list shadows the shared list of the same name; bindings there resolve to the tenant's",
+				"tenant", def.TenantID, "name", def.Name)
+			n++
+		}
+	}
+	return n
+}
+
 // aclListOpSurface is the question an op of POST /v1/_acldef asks of the list
 // it names: read for a get, retire for a retire, and author for every other op
 // — fail closed, so a write op added to the handler later is checked even if
@@ -790,8 +997,7 @@ func aclListOpSurface(op, name string) *authz.Surface {
 	return &authz.Surface{Action: action, Type: "def", Name: "acl/" + name}
 }
 
-// aclListOpCheck asks the op's question of the named list, then refuses a
-// write that would change the writer's own authority. It returns the
+// aclListOpCheck asks the op's question of the named list. It returns the
 // refusal, or nil. No principal (open mode) has no set to ask.
 func (s *Server) aclListOpCheck(ctx context.Context, op, name string) *aclReply {
 	p, ok := auth.PrincipalFromContext(ctx)
@@ -799,41 +1005,7 @@ func (s *Server) aclListOpCheck(ctx context.Context, op, name string) *aclReply 
 	if !ok || surface == nil {
 		return nil
 	}
-	if r := s.gateReply(ctx, p, *surface, authz.EvaluateSurface(ctx, p.Effective, *surface, true)); r != nil {
-		return r
-	}
-	if surface.Action == "read" {
-		return nil
-	}
-	if err := aclListNotSelfBound(p, name); err != nil {
-		r := aclFail(http.StatusForbidden, "acl_self_elevation", "refused: "+err.Error()+" would change your own authority")
-		return &r
-	}
-	return nil
-}
-
-// aclListNotSelfBound refuses a delegated writer a write or retire of a list
-// that shapes its own set (RFC EY §10 invariant 4): one bound to its subject,
-// its token, a group it is in or its tenant, which is what the compiled set's
-// applied bindings are, and a name bound to it that no list has yet, which
-// creating would bring into force. Rewriting or retiring such a list could
-// drop the very denies that hold the writer back. Like the binding guard it
-// leaves a writer that holds the tenant's authority alone (§3.8).
-func aclListNotSelfBound(p auth.Principal, name string) error {
-	if aclWriterHoldsTenant(p) || p.Effective == nil {
-		return nil
-	}
-	for _, b := range p.Effective.Applied() {
-		if b.ACL == name {
-			return fmt.Errorf("list %q is bound to you (%s binding); changing it", name, b.SubjectKind)
-		}
-	}
-	for _, missing := range p.Effective.Missing() {
-		if missing == name {
-			return fmt.Errorf("list %q is bound to you and not yet created; creating it", name)
-		}
-	}
-	return nil
+	return s.gateReply(ctx, p, *surface, authz.EvaluateSurface(ctx, p.Effective, *surface, true))
 }
 
 // The config-declared entries the management lists include (RFC EY §9):
@@ -1080,9 +1252,6 @@ func (s *Server) aclBindingCreate(ctx context.Context, focus string, req binding
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
-	if err := aclNoSelfElevation(ctx, req.SubjectKind, req.SubjectID); err != nil {
-		return aclFail(http.StatusForbidden, "acl_self_elevation", "refused: "+err.Error()+" would change your own authority")
-	}
 	tenant := s.adminFocusedTenant(ctx, focus)
 	if r := s.aclBindingTargetCheck(ctx, tenant, req); r != nil {
 		return *r
@@ -1111,7 +1280,8 @@ func (s *Server) aclBindingTargetCheck(ctx context.Context, tenant string, req b
 	if s.aclResolver == nil {
 		return nil
 	}
-	src, err := s.aclResolver.ACLSource(ctx, tenant, strings.TrimSpace(req.ACL))
+	name := strings.TrimSpace(req.ACL)
+	src, err := s.aclResolver.ACLSource(ctx, tenant, name)
 	if err != nil {
 		r := aclFail(http.StatusServiceUnavailable, "acl_unavailable", "the list could not be looked up; retry")
 		return &r
@@ -1120,7 +1290,44 @@ func (s *Server) aclBindingTargetCheck(ctx context.Context, tenant string, req b
 		r := aclFail(http.StatusBadRequest, "acl_binding_invalid", fmt.Sprintf("list %q does not exist (or is retired): a binding to it would match nothing — create the list first", req.ACL))
 		return &r
 	}
-	return nil
+	return s.aclBindingNameAmbiguous(ctx, tenant, name)
+}
+
+// aclBindingNameAmbiguous refuses a binding in tenant to a name that tenant
+// holds as a live list of its own AND a config-declared or shared-tenant
+// list holds too. The binding would resolve to the tenant's list (RFC FY
+// D4), so an admin binding a shared or config guardrail into a tenant that
+// pre-created a list of the name would bind the tenant's own rules instead:
+// create refuses the name in the other order (acl_name_reserved), this
+// refuses it in this one. The way out is renaming one of the lists.
+func (s *Server) aclBindingNameAmbiguous(ctx context.Context, tenant, name string) *aclReply {
+	own, err := s.aclLiveList(ctx, tenant, name)
+	if err != nil {
+		return aclListLookupFault(ctx, tenant, name, err)
+	}
+	if !own {
+		return nil
+	}
+	other := ""
+	if static := s.aclStatic(); static != nil {
+		if _, declared := static.ACLs[name]; declared {
+			other = "the server configuration declares one"
+		}
+	}
+	if other == "" && tenant != "" {
+		shared, err := s.aclLiveList(ctx, "", name)
+		if err != nil {
+			return aclListLookupFault(ctx, "", name, err)
+		}
+		if shared {
+			other = "a shared list has it"
+		}
+	}
+	if other == "" {
+		return nil
+	}
+	r := aclFail(http.StatusConflict, "acl_name_shadowed", fmt.Sprintf("list name %q is ambiguous here: this tenant has its own list of that name and %s, and a binding would resolve to this tenant's; rename one of them", name, other))
+	return &r
 }
 
 func (s *Server) aclBindingRetire(ctx context.Context, focus, id string) aclReply {
@@ -1134,6 +1341,16 @@ func (s *Server) aclBindingRetire(ctx context.Context, focus, id string) aclRepl
 		return *r
 	}
 	tenant := s.adminFocusedTenant(ctx, focus)
+	list, found, err := s.aclLiveBindingList(ctx, tenant, id)
+	if err != nil {
+		return aclFail(http.StatusInternalServerError, "acl_binding_retire_failed", err.Error())
+	}
+	if !found {
+		return aclFail(http.StatusNotFound, "acl_binding_not_found", "no live binding of that id")
+	}
+	if r := s.aclRetireLists(ctx, []string{list}); r != nil {
+		return *r
+	}
 	ok, err := s.store.AclBindingRetire(ctx, tenant, id)
 	if err != nil {
 		return aclFail(http.StatusInternalServerError, "acl_binding_retire_failed", err.Error())
@@ -1143,6 +1360,22 @@ func (s *Server) aclBindingRetire(ctx context.Context, focus, id string) aclRepl
 	}
 	s.aclChanged(ctx, tenant, "binding_retired", id)
 	return aclOK(map[string]any{"retired": id})
+}
+
+// aclLiveBindingList is the list a live binding of tenant names. The store
+// has no lookup by id, so the tenant's live bindings are scanned; a tenant
+// holds operator-authored bindings, few enough for that.
+func (s *Server) aclLiveBindingList(ctx context.Context, tenant, id string) (string, bool, error) {
+	rows, err := s.store.AclBindingList(ctx, tenant, false)
+	if err != nil {
+		return "", false, err
+	}
+	for _, row := range rows {
+		if row.BindingID == id {
+			return row.ACLName, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // ---- evaluate / explain / simulate (AuthZEN 1.0 shapes) ----
@@ -1397,7 +1630,8 @@ func (s *Server) authzExplain(ctx context.Context, focus string, req authzEvalua
 	if r := s.aclEnter(ctx, false, nil); r != nil {
 		return *r
 	}
-	eff, code, msg := s.authzSubjectSet(ctx, s.adminFocusedTenant(ctx, focus), req.Subject)
+	tenant := s.adminFocusedTenant(ctx, focus)
+	eff, code, msg := s.authzSubjectSet(ctx, tenant, req.Subject)
 	if code != 0 {
 		return aclFail(code, "authz_subject", msg)
 	}
@@ -1406,7 +1640,79 @@ func (s *Server) authzExplain(ctx context.Context, focus string, req authzEvalua
 		return authzRequestReply("", err)
 	}
 	ex := eff.Explain(areq)
-	return aclOK(map[string]any{"decision": decisionWire(ctx, ex.Decision), "traces": ex.Traces, "missing_acls": ex.Missing, "applied_bindings": ex.Applied, "groups": eff.Subject.Groups})
+	out := map[string]any{"decision": decisionWire(ctx, ex.Decision), "traces": ex.Traces, "missing_acls": ex.Missing, "applied_bindings": ex.Applied, "groups": eff.Subject.Groups}
+	// The notes name lists and where they are stored, which a member could
+	// not otherwise learn: only a caller the list-read gate admits gets them.
+	if s.store != nil && s.aclCallerMayReadLists(ctx) {
+		s.explainLocks(ctx, eff.Subject.TenantID, tenant, ex.Applied, areq.Resource, out)
+	}
+	return aclOK(out)
+}
+
+// aclShadowNote names an applied list whose stored row shadows the
+// config-declared list of the same name, and the tenant that row is in
+// ("" for the shared tenant).
+type aclShadowNote struct {
+	ACL            string `json:"acl"`
+	StoredInTenant string `json:"stored_in_tenant"`
+	Shadows        string `json:"shadows"`
+}
+
+// explainLocks adds to an explain answer what the rule trace cannot show:
+// "shadowed_lists", the applied lists a stored row resolves in place of the
+// config-declared one (RFC FY D4 keeps that order for now), and, when the
+// resource is one group, "governed_by": the lists whose retire question
+// guards leaving or deleting it (aclGroupLists). A binding is not a
+// resource a request can name, so it has no such entry; the list it names
+// is the one that governs it. Both are best-effort: a store fault leaves
+// the entry out, never the decision. The caller has passed the list-read
+// gate. subjectTenant is where the explained set's lists resolve; focus is
+// the tenant the request addresses (an admin's ?tenant=), which holds the
+// group — the legacy admin's own set is in "default" whatever it focuses.
+func (s *Server) explainLocks(ctx context.Context, subjectTenant, focus string, applied []authz.Binding, res authz.Resource, out map[string]any) {
+	if static := s.aclStatic(); static != nil {
+		var notes []aclShadowNote
+		seen := map[string]bool{}
+		for _, b := range applied {
+			if _, declared := static.ACLs[b.ACL]; !declared || seen[b.ACL] {
+				continue
+			}
+			seen[b.ACL] = true
+			// The resolver's order (aclres storedACL): the tenant's row,
+			// then the shared tenant's.
+			order := []string{subjectTenant}
+			if subjectTenant != "" {
+				order = append(order, "")
+			}
+			for _, t := range order {
+				live, err := s.aclLiveList(ctx, t, b.ACL)
+				if err != nil {
+					slog.WarnContext(ctx, "authz: explain could not check a list for shadowing", "tenant", t, "name", b.ACL, "err", err)
+					break
+				}
+				if live {
+					notes = append(notes, aclShadowNote{ACL: b.ACL, StoredInTenant: t, Shadows: aclres.SourceConfig})
+					break
+				}
+			}
+		}
+		if len(notes) > 0 {
+			out["shadowed_lists"] = notes
+		}
+	}
+	group, isGroup := strings.CutPrefix(res.Name, "group:")
+	if res.Type != "principal" || !isGroup || group == "" || strings.Contains(group, "*") {
+		return
+	}
+	names, err := s.aclGroupLists(ctx, focus, group)
+	if err != nil {
+		slog.WarnContext(ctx, "authz: explain could not read the lists that govern a group", "tenant", focus, "group", group, "err", err)
+		return
+	}
+	if names == nil {
+		names = []string{}
+	}
+	out["governed_by"] = map[string]any{"group": group, "retire": names}
 }
 
 // authzSimulate evaluates against a DRAFT: the stored lists and bindings the

@@ -396,6 +396,70 @@ func (e *Effective) decideOwn(req Request) Decision {
 	return Decision{Outcome: NoMatch}
 }
 
+// DeniesUnattended reports whether any deny rule matches req, for a step no
+// caller stands behind (the removal policy's sweeper), which has no
+// transport, source address, agent or tier: a condition the request cannot
+// answer reads as holding, as a deny does in DecideScope, since a condition
+// that could not be checked must never unlock. One it answers is decided.
+// The ceiling's rules count too; the tenant floor does not (it names no
+// resource).
+func (e *Effective) DeniesUnattended(req Request) bool {
+	return e.deniesUnattended(req, false)
+}
+
+// LiteralDeny is DeniesUnattended counting only a rule that names req's
+// resource by its exact name — a literal selector, never a wildcard, a
+// prefix or a whole scope. It tells a lock someone placed on one named
+// resource from a broad restriction that happens to cover it.
+func (e *Effective) LiteralDeny(req Request) bool {
+	return e.deniesUnattended(req, true)
+}
+
+func (e *Effective) deniesUnattended(req Request, exact bool) bool {
+	if e.ceiling != nil && e.ceiling.deniesUnattended(req, exact) {
+		return true
+	}
+	tr := e.byType[req.Resource.Type]
+	spec, ok := catalogByName[req.Resource.Type]
+	if tr == nil || !ok {
+		return false
+	}
+	for _, r := range tr.deny {
+		if !r.actions[req.Action] || !r.when.holdsForScope(&req, true) {
+			continue
+		}
+		for _, sel := range r.sels {
+			hit := sel.matches(spec, req.Resource.Name)
+			if exact {
+				hit = sel.namesExactly(spec, req.Resource.Name)
+			}
+			if hit {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// RestrictsOnly reports whether the list named acl, as compiled into e,
+// carries at least one deny rule and no allow rule: binding it can only
+// take away. A list e did not compile (not bound to the subject, or
+// missing) restricts nothing.
+func (e *Effective) RestrictsOnly(acl string) bool {
+	deny := false
+	for _, tr := range e.byType {
+		for _, r := range tr.allow {
+			if r.acl == acl {
+				return false
+			}
+		}
+		for _, r := range tr.deny {
+			deny = deny || r.acl == acl
+		}
+	}
+	return deny
+}
+
 // DecideScope answers a question about EVERY instance of one scope of a
 // scoped type at once; Resource.Name is the bare scope (`tenant`). It is what
 // an operation asks when it reaches a scope's instances without naming them

@@ -2822,8 +2822,20 @@ func (m *Memory) execDelete(ctx context.Context, scope store.MemoryScope, scopeI
 	if in.Key == "" {
 		return errValidation("delete: missing required field: key", "Pass the key to delete."), nil
 	}
+	// Asked before the key rule, whose answer for a document row would say the
+	// row exists.
+	hidden, denied, err := documentRowDelete(ctx, m.rowDeleter(), scope, scopeID, in.Key)
+	if err != nil {
+		return errFrom("delete: access control: "+err.Error(), err), nil
+	}
+	if hidden {
+		return okJSON(map[string]any{"deleted": false})
+	}
 	if res, refused := m.deleteRefusal(ctx, "delete", scope, scopeID, in.Key); refused {
 		return res, nil
+	}
+	if denied {
+		return documentRowDeleteRefusal("delete", in.Key), nil
 	}
 	// A consolidated fact's body row is the one chunk body deletable by key; the
 	// change feed files its removal under the fact's document (RFC FV §1).

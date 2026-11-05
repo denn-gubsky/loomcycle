@@ -55,41 +55,29 @@ import (
 // is static-only). Hooks have their own gate (checkHooks); code_body runs only
 // through the agent's own tools, which the tools ceiling bounds.
 
-// authorIsOperatorPlane reports whether the author of a definition is the
-// operator, authoring through an operator surface — who is the root of
-// authority and is not narrowed by an agent's policies.
-//
-// The signal is the one the tools ceiling already relies on: every operator
-// plane (the HTTP substrate surface, the gRPC substrate surface, every MCP
-// operator session) stamps the wildcard tools ceiling ["*"], and no run does —
-// a run stamps the concrete names of the tools it resolved. It is paired with
-// "not inside a run" so that a run is always narrowed, whatever reaches its
-// ctx. IsSubstrateOperator is not used: only the HTTP plane stamps it, so it
-// would narrow an operator authoring over MCP or gRPC.
-//
-// Anything else — a run, a sub-agent, a ctx no plane stamped — is narrowed by
-// the policies on ctx, and a policy that is absent grants nothing, so a
-// non-empty capability field fails closed exactly as the tools ceiling does.
-func authorIsOperatorPlane(ctx context.Context) bool {
-	if tools.RunID(ctx) != "" {
-		return false
-	}
-	for _, t := range tools.PolicyOf(ctx).Tools {
-		if t == "*" {
-			return true
-		}
-	}
-	return false
-}
-
 // checkCapabilityCeiling refuses a definition granting a capability its author
 // does not hold. base is the stored version a fork is made from (nil at
 // create): what it already holds a fork may keep, so a fork can narrow a
 // lineage but never widen it beyond what its author or the version it forks
 // held.
+//
+// The operator plane is the root of authority and is not narrowed. A member
+// on a plane is narrowed by what it may do itself (memberCeilingCtx, and the
+// classification beside it); a run by its own policies, where a policy that
+// is absent grants nothing, so a non-empty capability field fails closed
+// exactly as the tools ceiling does.
 func (a *AgentDef) checkCapabilityCeiling(ctx context.Context, name string, def mergedDef, base *mergedDef) error {
-	if authorIsOperatorPlane(ctx) {
+	switch {
+	case tools.IsOperatorPlane(ctx):
 		return nil
+	case tools.IsOffRunPlane(ctx):
+		if err := memberToolsCeiling(ctx, def); err != nil {
+			return err
+		}
+		ctx = a.memberCeilingCtx(ctx, def)
+		// No base: the forked version's grants were its author's, and a
+		// member's fork holds only what the member could grant itself.
+		base = nil
 	}
 	held := "this agent's own"
 	if base != nil {
