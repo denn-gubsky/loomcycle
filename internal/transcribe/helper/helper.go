@@ -19,7 +19,7 @@
 // the helper runs as the loomcycle user and can read any file the process
 // can. The fence decides where it starts, not what it reaches. An operator
 // confines it with a wrapper (Spec.Wrapper, LOOMCYCLE_HELPER_WRAPPER: bwrap,
-// systemd-run, firejail), which runs the helper as its argv. ffmpeg is always
+// firejail), which runs the helper as its argv. ffmpeg is always
 // run with -nostdin and its inputs pinned to the file and pipe protocols
 // (ffmpegDefaults), so a hostile recording cannot open a URL or a nested
 // protocol.

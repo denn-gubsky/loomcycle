@@ -511,7 +511,7 @@ questions:
               default: ""
           - variable: LOOMCYCLE_HELPER_WRAPPER
             label: LOOMCYCLE_HELPER_WRAPPER
-            description: 'Confinement for the helper commands (transcription.ocr.rasterize, transcription.stt.media, speech.encode). Without it they run as the loomcycle user and can read what it can. Words split like a helper command (no shell, no placeholders); the helper''s program and arguments are appended as argv. ffmpeg always runs with -nostdin and -protocol_whitelist file,pipe. (example: bwrap --ro-bind / / --dev …'
+            description: Confinement for the helper commands (transcription.ocr.rasterize, transcription.stt.media, speech.encode). Without it they run as the loomcycle user and can read what it can. Words split like a helper command (no shell, no placeholders); the helper's program and arguments are appended as argv. The helpers write under the inbox root (the volume marked dynamic_root) and TMPDIR (the /v1/audio routes…
             schema:
               type: string
               default: ""

@@ -4277,7 +4277,10 @@ type Env struct {
 	HTTPPrivateHostAllowlistMode string
 	// HelperWrapper is LOOMCYCLE_HELPER_WRAPPER: a command (argv words, no
 	// shell, no placeholder) the transcription and speech helpers run under,
-	// e.g. "bwrap --ro-bind / / --dev /dev --unshare-net --". Empty runs them
+	// e.g. "bwrap --ro-bind / / --dev /dev --bind /tmp /tmp --bind <inbox
+	// root> <inbox root> --unshare-net --die-with-parent --": the helpers
+	// write their output under the inbox root (File tool) and TMPDIR (the
+	// /v1/audio routes), so both stay writable. Empty runs them
 	// directly, as the loomcycle user. Parsed at load; see helper.ParseWrapper.
 	HelperWrapper string
 	// MCPAllowPrivateIPs controls whether the MCP-HTTP client may dial
