@@ -147,7 +147,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
 
   // A revoke loomcycle did not take is kept and retried by the bridge itself:
   // the platform's own redelivery gives up after minutes or an hour.
-  const revokes = gateBroker ? (opts.revokes ?? revokeQueueFromSpec(cfg.store)) : undefined;
+  const revokes = gateBroker ? (opts.revokes ?? revokeQueueFromSpec(cfg.store, log)) : undefined;
   // A person a kept revoke names who writes to the bot again has come back
   // (unblocked it, reinstalled the app): the revoke is dropped, not delivered.
   const onSeen = (subject: string): void => {

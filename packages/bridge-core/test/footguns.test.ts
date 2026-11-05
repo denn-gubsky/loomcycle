@@ -2,7 +2,7 @@
 // so a person who leaves the platform does not stay a loomcycle user.
 
 import type { AddressInfo } from "node:net";
-import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -323,6 +323,27 @@ describe("reconciliation", () => {
   });
 });
 
+describe("the kept-revoke file", () => {
+  it("keeps a revoke in memory when its file cannot be read, and never overwrites the file", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "bridge-file-"));
+    const file = path.join(dir, "revokes.json");
+    await writeFile(file, "{ not json", { mode: 0o600 });
+    const errors: string[] = [];
+    const q = new FileRevokeQueue(file, { info: () => {}, warn: () => {}, error: (m: string) => void errors.push(m) });
+    await q.put({ subject: "tg:1", attempts: 1, firstFailedAt: 0, nextAttemptAt: 0 });
+    expect((await q.list()).map((p) => p.subject)).toEqual(["tg:1"]);
+    expect(await readFile(file, "utf8")).toBe("{ not json");
+    expect(errors.length).toBeGreaterThan(0);
+
+    // The file is readable again (the fault was transient, or an operator
+    // repaired it): the next operation reads it, keeps both, and writes them.
+    await writeFile(file, JSON.stringify([{ subject: "tg:2", attempts: 3, firstFailedAt: 0, nextAttemptAt: 0 }]));
+    await q.put({ subject: "tg:3", attempts: 1, firstFailedAt: 0, nextAttemptAt: 0 });
+    expect((await q.list()).map((p) => p.subject).sort()).toEqual(["tg:1", "tg:2", "tg:3"]);
+    expect(JSON.parse(await readFile(file, "utf8")).map((p: { subject: string }) => p.subject).sort()).toEqual(["tg:1", "tg:2", "tg:3"]);
+  });
+});
+
 describe("the bridge's files", () => {
   const stores = {
     conversations: (file: string) => {
@@ -341,9 +362,36 @@ describe("the bridge's files", () => {
       const file = path.join(dir, "data.json");
       await writeFile(file, "{ not json", { mode: 0o600 });
       const s = open(file);
-      await expect(s.list()).rejects.toThrow();
-      await expect(s.write()).rejects.toThrow();
+      if (name === "conversations") {
+        await expect(s.list()).rejects.toThrow();
+        await expect(s.write()).rejects.toThrow();
+      } else {
+        // A revoke is kept in memory instead (the kept-revoke file test).
+        await s.write();
+      }
       expect(await readFile(file, "utf8")).toBe("{ not json");
+    });
+
+    it(`${name}: a write that fails does not stop the next one`, async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "bridge-file-"));
+      const file = path.join(dir, "sub", "data.json");
+      const s = open(file);
+      await s.list(); // no file yet
+      await writeFile(path.join(dir, "sub"), "a file where the directory goes");
+      await expect(s.write()).rejects.toThrow();
+      await rm(path.join(dir, "sub"));
+      await s.write();
+      expect(JSON.parse(await readFile(file, "utf8"))).toHaveLength(1);
+    });
+
+    it(`${name}: a stale temp file a crashed write left is cleared at load`, async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "bridge-file-"));
+      const file = path.join(dir, "data.json");
+      const stale = `${file}.99999999.0b0b0b0b-0000-4000-8000-000000000000.tmp`;
+      await writeFile(stale, "half a write");
+      await writeFile(path.join(dir, "other.json.1.x.tmp"), "not ours");
+      await open(file).list();
+      await vi.waitFor(async () => expect((await readdir(dir)).sort()).toEqual(["other.json.1.x.tmp"]));
     });
 
     it(`${name}: the file is private even when a stale temp file is in the way`, async () => {

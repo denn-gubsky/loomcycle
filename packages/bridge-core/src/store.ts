@@ -69,14 +69,19 @@ export class FileStore<TRef = unknown> extends MemoryStore<TRef> {
     super();
   }
 
-  // A file that fails to read (not one that is missing) stays failed: it is
-  // never treated as empty, or the next write would replace it.
+  // A file that fails to read (not one that is missing) is never treated as
+  // empty, or the next write would replace it: the operation fails, and the
+  // next one reads again, so a passing fault (EMFILE, EIO) does not stick.
   private load(): Promise<void> {
-    this.loading ??= this.read();
+    this.loading ??= this.read().catch((err: unknown) => {
+      this.loading = undefined;
+      throw err;
+    });
     return this.loading;
   }
 
   private async read(): Promise<void> {
+    await removeStaleTemps(this.file);
     try {
       const data = JSON.parse(await fs.readFile(this.file, "utf8")) as ConversationRecord<TRef>[];
       for (const r of data) this.recs.set(r.conversationId, r);
@@ -87,11 +92,11 @@ export class FileStore<TRef = unknown> extends MemoryStore<TRef> {
 
   private persist(): Promise<void> {
     const snapshot = JSON.stringify([...this.recs.values()], null, 2);
-    // Serialize writes: two overlapping renames could land the older snapshot last.
-    this.writes = this.writes.then(async () => {
-      await writePrivate(this.file, snapshot);
-    });
-    return this.writes;
+    // Serialize writes: two overlapping renames could land the older snapshot
+    // last. A failed write must not fail every later one: the chain goes on.
+    const w = this.writes.catch(() => undefined).then(() => writePrivate(this.file, snapshot));
+    this.writes = w;
+    return w;
   }
 
   override async get(id: string): Promise<ConversationRecord<TRef> | undefined> {
@@ -130,6 +135,23 @@ export async function writePrivate(file: string, data: string): Promise<void> {
   } catch (err) {
     await fs.rm(tmp, { force: true }).catch(() => undefined);
     throw err;
+  }
+}
+
+/** removeStaleTemps deletes the temp files writePrivate makes for file that a
+ *  crashed write left behind (another process id: this one has written none
+ *  yet when a store first loads). Best effort: a failure is ignored. */
+export async function removeStaleTemps(file: string): Promise<void> {
+  const dir = path.dirname(file);
+  const base = path.basename(file);
+  const own = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.(\\d+)\\.[0-9a-f-]{36}\\.tmp$`);
+  try {
+    for (const name of await fs.readdir(dir)) {
+      const m = own.exec(name);
+      if (m && Number(m[1]) !== process.pid) await fs.rm(path.join(dir, name), { force: true });
+    }
+  } catch {
+    // no directory yet, or not listable: nothing to clear
   }
 }
 
