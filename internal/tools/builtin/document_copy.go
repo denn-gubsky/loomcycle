@@ -117,6 +117,9 @@ type copyPlan struct {
 	// unlinkable: listed relations leaving the set whose ends the caller may
 	// not link; dangling:drop would unlink them, so they block a drop.
 	unlinkable int
+	// quietFinish: a move's unfinished moves (another call's) the caller may not
+	// read in the target; finished, never reported (document_move.go).
+	quietFinish map[string]bool
 }
 
 func (p *copyPlan) unfinish(docID, code, detail string) {

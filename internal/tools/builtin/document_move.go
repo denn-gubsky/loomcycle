@@ -113,6 +113,7 @@ func (d *Document) moveDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 	ids = withoutFinished(ids, pending)
 	plan := &copyPlan{move: true, src: src, dst: dst, srcMem: srcMem, dstMem: dstMem, chunkDoc: map[string]string{},
 		counts: map[string]int{}, chunkMap: map[string]string{}, failedDocs: map[string]string{}}
+	plan.quietFinish = quietFinishes(ctx, d.newDocACL(ctx, dst), pending)
 	if err := d.planCopy(ctx, plan, op, ids, pathMap); err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}
@@ -147,17 +148,58 @@ func (d *Document) moveDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 		out["blocked_by"] = "forbidden_relations"
 	}
 	if dryRun {
-		if len(pending) > 0 {
-			ids := make([]string, len(pending))
-			for i, f := range pending {
-				ids[i] = f.id
-			}
+		ids := make([]string, len(pending))
+		for i, f := range pending {
+			ids[i] = f.id
+		}
+		if ids = plan.reportable(ids); len(ids) > 0 {
 			out["to_finish"] = ids
 		}
 	} else {
-		out["moved"] = finished
+		out["moved"] = plan.reportable(finished)
 	}
 	return jsonResult(out)
+}
+
+// quietFinishes picks the unfinished moves the caller may not read in the
+// target at every name they recorded. Every move call between two scopes
+// finishes the unfinished moves between them, whoever started them: that is
+// housekeeping, and stays. What the caller is told about them is another
+// matter, so these are finished without being reported. The names are asked
+// one by one because the target holds no name for the document yet, and asking
+// about the document would fall back to the whole scope.
+func quietFinishes(ctx context.Context, acl *docACL, pending []moveFinish) map[string]bool {
+	if acl == nil {
+		return nil
+	}
+	quiet := map[string]bool{}
+	for _, f := range pending {
+		names := f.names
+		if len(names) == 0 {
+			names = []string{""}
+		}
+		for _, n := range names {
+			if !tools.ACLFilterAllows(ctx, acl.eff, "read", acl.resource(n)) {
+				quiet[f.id] = true
+				break
+			}
+		}
+	}
+	return quiet
+}
+
+// reportable is ids without the quietly finished moves.
+func (p *copyPlan) reportable(ids []string) []string {
+	if len(p.quietFinish) == 0 {
+		return ids
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !p.quietFinish[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // relationsForbidden reports whether removing the sources would delete a
@@ -328,11 +370,19 @@ func (d *Document) finishMove(ctx context.Context, p *copyPlan, f moveFinish) {
 			continue // named by the call this one resumes
 		}
 		if _, err := d.registerDocDirent(ctx, p.dst, f.id, n); err != nil {
+			if p.quietFinish[f.id] {
+				slog.WarnContext(ctx, "move_documents: a name of an unfinished move could not be given", "document_id", f.id)
+				continue
+			}
 			p.nameFailures = append(p.nameFailures, map[string]any{"document_id": f.id, "path": n, "error": err.Error()})
 		}
 	}
 	if err := d.exec(ctx, p.dst, `DELETE FROM document_moves WHERE document_id = ?`, f.id); err != nil {
 		// The document stays out of listings until the same move is run again.
+		if p.quietFinish[f.id] {
+			slog.WarnContext(ctx, "move_documents: the marker of an unfinished move could not be cleared", "document_id", f.id)
+			return
+		}
 		p.unfinish(f.id, moveWriteMarker, err.Error())
 		return
 	}

@@ -295,3 +295,28 @@ func TestCopyDocuments_AKeyHeldByAnUnreadableDocumentIsNotNamed(t *testing.T) {
 		t.Errorf("a key held by a readable document is a key_collision: %v", out)
 	}
 }
+
+// TestMoveDocuments_UnfinishedMovesAreReportedOnlyWhereReadable: a move between
+// two scopes finishes every unfinished move between them, whoever started it,
+// but reports (to_finish, moved) only those whose recorded names the caller may
+// read in the target. The others are still finished.
+func TestMoveDocuments_UnfinishedMovesAreReportedOnlyWhereReadable(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	open := grantedTenantCtx(base)
+	s := seedCopyDocs(t, d, open)
+	interruptMove(t, d, open, s, "source_removed")
+	ctx := withACL(open, aclSet(t, denyRule("read", "document:tenant:/proj/rfcs/**")))
+	call := `{"op":"move_documents","scope":"user","to_scope":"tenant","under_path":"/proj"`
+
+	dry := copyExec(t, d, ctx, call+`}`)
+	if b, _ := json.Marshal(dry); strings.Contains(string(b), s.planDoc) || !strings.Contains(string(b), s.guideDoc) {
+		t.Errorf("to_finish should list the guide and not the plan, whose target name the caller may not read: %s", b)
+	}
+	out := copyExec(t, d, ctx, call+`,"dry_run":false,"expect_count":0}`)
+	if b, _ := json.Marshal(out); strings.Contains(string(b), s.planDoc) || !strings.Contains(string(b), s.guideDoc) {
+		t.Errorf("moved should list the guide and not the plan: %s", b)
+	}
+	if got := copyExec(t, d, open, `{"op":"get_document","scope":"tenant","path":"/proj/rfcs/plan"}`); asStr(got["document_id"]) != s.planDoc {
+		t.Errorf("the plan's move should still be finished: %v", got)
+	}
+}
