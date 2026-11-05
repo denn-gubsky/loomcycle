@@ -356,7 +356,9 @@ without the op naming it.
 - The target scope goes through the same gate as any call's `scope`: tenant
   needs both grants.
 - Under access control, the op needs read on each source document and write on
-  each target name.
+  each target name. A document the caller may not read is left out of the set
+  before anything is checked: under a path it is neither refused, counted nor
+  listed, and named by id it is refused as `not_found`, as a missing id is.
 - A copy gets new ids, and its root records `copied_from: {scope, document_id}`.
 - One document's rows go into the target in one transaction, read in full
   before it opens: a SQLite scope has one connection.
@@ -378,8 +380,10 @@ relations with the source (`dropped` counts them).
 
 **Refusals.** Those of a copy, plus `id_collision` when `to_scope` already holds
 the id. A live lease on the source scope (a links-agent pass) refuses the whole
-call; retry when it ends. Under access control a move also needs write on each
-source document.
+call; retry when it ends. Under access control a move also needs write and
+delete on each source document, and `dangling: "drop"` needs link on both ends
+of each relation it deletes; a relation into a document the caller may not read
+blocks the move (`blocked_by: "forbidden_relations"`) without being listed.
 
 **Confirming.** It is a dry run unless `dry_run: false`, and a real move needs
 `expect_count`, the dry run's `counts.documents`. If the set changed, nothing

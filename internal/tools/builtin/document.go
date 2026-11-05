@@ -2426,8 +2426,7 @@ func (d *Document) docIDFromInput(ctx context.Context, key sqlmem.ScopeKey, in d
 	if err != nil {
 		var nf *store.ErrNotFound
 		if asNotFound(err, &nf) {
-			return "", docClassify(fmt.Errorf("no such path: %s", canonical),
-				errNotFound, "List the scope's documents with op=query_documents, or browse with the Path tool's ls.")
+			return "", docNoSuchPath(canonical)
 		}
 		return "", err
 	}
@@ -3313,7 +3312,9 @@ func (d *Document) readAssetRow(ctx context.Context, key sqlmem.ScopeKey, chunkI
 // is "agent"|"user" (default user); the ScopeKey + tenant come from ctx exactly
 // as the tool's own ops resolve them, so a caller can only read an asset in its
 // OWN scope (cross-scope simply misses → opaque 404 at the handler). ok=false
-// when the chunk has no asset in this scope.
+// when the chunk has no asset in this scope, and when the caller's set does not
+// allow reading the chunk's document: get_asset's question, answered as a miss
+// so the asset route cannot tell an unreadable image from an absent one.
 func (d *Document) ReadAsset(ctx context.Context, scope, chunkID string) (mediaType string, data []byte, ok bool, err error) {
 	if d.Store == nil || d.SqlMem == nil {
 		return "", nil, false, fmt.Errorf("Document asset: requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
@@ -3324,6 +3325,18 @@ func (d *Document) ReadAsset(ctx context.Context, scope, chunkID string) (mediaT
 	}
 	if err := d.ensureSchema(ctx, key); err != nil {
 		return "", nil, false, err
+	}
+	if acl := d.newDocACL(ctx, key); acl != nil {
+		row, found, rerr := d.getChunkRow(ctx, key, chunkID)
+		if rerr != nil {
+			return "", nil, false, rerr
+		}
+		if !found {
+			return "", nil, false, nil
+		}
+		if readable, perr := acl.permits(ctx, "read", row.DocumentID); perr != nil || !readable {
+			return "", nil, false, perr
+		}
 	}
 	res, err := d.query(ctx, key, `SELECT media_type, bytes FROM chunk_assets WHERE chunk_id = ? LIMIT 1`, chunkID)
 	if err != nil {
@@ -4748,6 +4761,13 @@ func (d *Document) resolveLinkTarget(ctx context.Context, key sqlmem.ScopeKey, t
 	return "", false
 }
 
+// docNoSuchPath is the answer for a path that names no document in the scope,
+// and for one naming a document the caller may not read (Sections).
+func docNoSuchPath(canonical string) error {
+	return docClassify(fmt.Errorf("no such path: %s", canonical),
+		errNotFound, "List the scope's documents with op=query_documents, or browse with the Path tool's ls.")
+}
+
 // resolveEmbedTarget maps a `![[target]]` embed's inner string to the chunk id
 // whose body is transcluded, CONFINED to the writer's own scope/tenant. It is a
 // superset of resolveLinkTarget (the Phase-2a link resolver): an embed also
@@ -5047,7 +5067,12 @@ const maxEmbedDepth = 4
 // Iterates FindAllStringSubmatchIndex rather than ReplaceAllStringFunc because
 // each match needs its own resolve + cycle/depth decision, and the gaps between
 // matches are copied verbatim.
-func (d *Document) expandTransclusions(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, body string, chain []string, depth int) string {
+//
+// acl is the reader's set (nil: none). An embed is a read of its target, so a
+// target in a document the reader may not read stays literal too, the same
+// text a target that does not exist leaves: the exported document is readable,
+// the embedded one need not be (security re-audit 2026-11-04, B7a).
+func (d *Document) expandTransclusions(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, acl *docACL, body string, chain []string, depth int) string {
 	matches := embedRe.FindAllStringSubmatchIndex(body, -1)
 	if len(matches) == 0 {
 		return body
@@ -5062,8 +5087,8 @@ func (d *Document) expandTransclusions(ctx context.Context, key sqlmem.ScopeKey,
 		target := strings.TrimSpace(body[m[2]:m[3]])
 		targetID, ok := d.resolveEmbedTarget(ctx, key, target)
 		switch {
-		case !ok, inChain(chain, targetID), depth >= maxEmbedDepth:
-			// Unresolved, would loop, or too deep → leave the embed literal.
+		case !ok, inChain(chain, targetID), depth >= maxEmbedDepth, !d.embedReadable(ctx, key, acl, targetID):
+			// Unresolved, would loop, too deep, or unreadable → leave the embed literal.
 			b.WriteString(token)
 		default:
 			cb, err := d.readBody(ctx, mscope, key, targetID)
@@ -5071,11 +5096,26 @@ func (d *Document) expandTransclusions(ctx context.Context, key sqlmem.ScopeKey,
 				b.WriteString(token) // a store fault degrades gracefully
 				continue
 			}
-			b.WriteString(d.expandTransclusions(ctx, key, mscope, cb.Body, append(chain, targetID), depth+1))
+			b.WriteString(d.expandTransclusions(ctx, key, mscope, acl, cb.Body, append(chain, targetID), depth+1))
 		}
 	}
 	b.WriteString(body[last:]) // the tail after the last embed
 	return b.String()
+}
+
+// embedReadable asks get_chunk's question of an embed's target: may the reader
+// read the document holding it, at every name it is filed under. A lookup fault
+// answers no, so the embed stays literal rather than leak.
+func (d *Document) embedReadable(ctx context.Context, key sqlmem.ScopeKey, acl *docACL, chunkID string) bool {
+	if acl == nil {
+		return true
+	}
+	row, ok, err := d.getChunkRow(ctx, key, chunkID)
+	if err != nil || !ok {
+		return false
+	}
+	readable, err := acl.permits(ctx, "read", row.DocumentID)
+	return err == nil && readable
 }
 
 // inChain reports whether id is already on the expansion path (the cycle guard).
@@ -5200,6 +5240,11 @@ func (d *Document) renderChunkTree(ctx context.Context, key sqlmem.ScopeKey, msc
 	// failure mode that let the v1.33.0 tenant regression pass for a full
 	// table-of-contents export. Abort the walk on the first fault instead.
 	var walkErr error
+	// An embed's target is asked on its own, by the reverse index: a render
+	// reads a few documents' names, never the whole tree (the section renderer
+	// builds one of these per section).
+	acl := d.newDocACL(ctx, key)
+	acl.useIndex()
 	var walk func(row chunkRow, depth int)
 	walk = func(row chunkRow, depth int) {
 		if walkErr != nil {
@@ -5255,7 +5300,7 @@ func (d *Document) renderChunkTree(ctx context.Context, key sqlmem.ScopeKey, msc
 				// copy in and lose the embed. The chain seeds with THIS chunk's id
 				// so a chunk embedding itself is caught as a cycle.
 				if !includeMeta {
-					body = d.expandTransclusions(ctx, key, mscope, cb.Body, []string{row.ID}, 0)
+					body = d.expandTransclusions(ctx, key, mscope, acl, cb.Body, []string{row.ID}, 0)
 				}
 				b.WriteString("\n" + body + "\n")
 			}

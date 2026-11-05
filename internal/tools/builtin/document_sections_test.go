@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -100,5 +101,28 @@ func TestDocumentSections_ScopeIsGated(t *testing.T) {
 	}
 	if _, err := d.Sections(ctx, "agent", "/specs/acme"); err == nil || !strings.Contains(err.Error(), "unsupported scope") {
 		t.Errorf("agent scope: err = %v, want a refusal", err)
+	}
+}
+
+// A document the caller's access-control set does not let it read gives no
+// sections, and reads exactly like a path that does not exist — for a run's set
+// and for the set of a person whose walk calls this off a run alike.
+func TestDocumentSections_AnUnreadableDocumentIsNotFound(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	importAt(t, d, ctx, "/specs/secret", sectionsSpec)
+	if secs, err := d.Sections(ctx, "user", "/specs/secret"); err != nil || len(secs) != 3 {
+		t.Fatalf("fixture: with no set the document has 3 sections: %d, %v", len(secs), err)
+	}
+	eff := aclSet(t, denyRule("read", "document:user:/specs/**"))
+	for name, denied := range map[string]context.Context{
+		"run":    withACL(ctx, eff),
+		"person": auth.WithPrincipal(ctx, auth.Principal{TenantID: "tnt", Subject: "u1", Effective: eff}),
+	} {
+		_, missing := d.Sections(denied, "user", "/specs/nothing")
+		secs, err := d.Sections(denied, "user", "/specs/secret")
+		if len(secs) != 0 || err == nil || missing == nil ||
+			strings.ReplaceAll(err.Error(), "/specs/secret", "/specs/nothing") != missing.Error() {
+			t.Errorf("%s denied read: %d sections, err = %v; want the missing path's error %v", name, len(secs), err, missing)
+		}
 	}
 }
