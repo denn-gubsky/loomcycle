@@ -41,8 +41,9 @@ export interface SharedConfig {
   dev: boolean;
   /** How often a gate bridge reconciles its users with loomcycle by a
    *  complete sync from the platform's member list (RFC FA §3.7c), in hours;
-   *  0 turns it off. Only a platform that can list its members does it. */
-  gateSyncHours: number;
+   *  0 turns it off; unset (a config built in code) is the default, 6. Only
+   *  a platform that can list its members does it. */
+  gateSyncHours?: number;
 }
 
 export interface GateConfig {
@@ -160,7 +161,7 @@ export function loadSharedConfig(reader: EnvReader, defaults: { port: number; ga
   // Dev mode defaults to loopback; outside it the bind is the operator's.
   const bindHost = reader.get("BRIDGE_BIND") ?? (dev ? "127.0.0.1" : undefined);
   // At most a week: a timer over 2^31 ms (about 24 days) fires at once.
-  const gateSyncHours = reader.int("BRIDGE_GATE_SYNC_HOURS", 6, 0, 168);
+  const gateSyncHours = reader.int("BRIDGE_GATE_SYNC_HOURS", DEFAULT_GATE_SYNC_HOURS, 0, 168);
   if (!gate && reader.get("BRIDGE_GATE_SYNC_HOURS")) {
     reader.problems.push("BRIDGE_GATE_SYNC_HOURS applies only to a gate bridge (BRIDGE_GATE)");
   }
@@ -227,6 +228,8 @@ function checkLoomcycleBaseUrl(raw: string, allowInsecure: boolean, problems: st
     "LOOMCYCLE_BASE_URL must be https:// (http:// only to localhost, or with BRIDGE_ALLOW_INSECURE_LOOMCYCLE=1 when the bridge reaches loomcycle over a private network)",
   );
 }
+
+export const DEFAULT_GATE_SYNC_HOURS = 6;
 
 const GATE_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 

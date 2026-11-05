@@ -9,7 +9,7 @@
 import { LoomcycleClient } from "@loomcycle/client";
 import type http from "node:http";
 
-import { ConfigError, devModeProblem, type SharedConfig } from "./config.js";
+import { ConfigError, DEFAULT_GATE_SYNC_HOURS, devModeProblem, type SharedConfig } from "./config.js";
 import type { ConversationDeps } from "./conversation.js";
 import { Health } from "./health.js";
 import { close, createBridgeServer, listen, type Route } from "./http.js";
@@ -275,13 +275,14 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
         revokeTimer = setInterval(() => void retryRevokes(), 60_000);
         revokeTimer.unref?.();
       }
-      if (gateBroker && adapter.members && cfg.gateSyncHours > 0) {
+      const syncHours = cfg.gateSyncHours ?? DEFAULT_GATE_SYNC_HOURS;
+      if (gateBroker && adapter.members && syncHours > 0) {
         if (opts.store === undefined && cfg.store === "memory") {
           // A memory store forgets its shared conversations on a restart, and a
           // complete sync would then remove their users.
           log.warn("reconcile is off: it needs a store that survives a restart (BRIDGE_STORE=file:<path>)", {});
         } else {
-          syncTimer = setInterval(() => void reconcile(), cfg.gateSyncHours * 3_600_000);
+          syncTimer = setInterval(() => void reconcile(), syncHours * 3_600_000);
           syncTimer.unref?.();
         }
       }
