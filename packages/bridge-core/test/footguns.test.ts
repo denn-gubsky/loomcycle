@@ -2,7 +2,7 @@
 // so a person who leaves the platform does not stay a loomcycle user.
 
 import type { AddressInfo } from "node:net";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -12,7 +12,7 @@ import { ConfigError, EnvReader, loadSharedConfig, type Env, type SharedConfig }
 import { keyFromSecret } from "../src/gate.js";
 import { FileRevokeQueue } from "../src/revokes.js";
 import { createBridge, type BridgeAdapter, type BridgeContext } from "../src/start.js";
-import { MemoryStore, type ConversationRecord } from "../src/store.js";
+import { FileStore, MemoryStore, type ConversationRecord } from "../src/store.js";
 
 const GATE_ENV: Env = {
   LOOMCYCLE_BASE_URL: "https://lc.example",
@@ -219,4 +219,39 @@ describe("reconciliation", () => {
     expect(lc.calls.filter((c) => c.path === "/v1/_auth/sync")).toHaveLength(0);
     await bridge.stop();
   });
+});
+
+describe("the bridge's files", () => {
+  const stores = {
+    conversations: (file: string) => {
+      const s = new FileStore(file);
+      return { list: () => s.list(), write: () => s.put(rec("dm-1", "tg:1")) };
+    },
+    revokes: (file: string) => {
+      const q = new FileRevokeQueue(file);
+      return { list: () => q.list(), write: () => q.put({ subject: "tg:1", attempts: 1, firstFailedAt: 0, nextAttemptAt: 0 }) };
+    },
+  };
+
+  for (const [name, open] of Object.entries(stores)) {
+    it(`${name}: a file that cannot be read is never overwritten`, async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "bridge-file-"));
+      const file = path.join(dir, "data.json");
+      await writeFile(file, "{ not json", { mode: 0o600 });
+      const s = open(file);
+      await expect(s.list()).rejects.toThrow();
+      await expect(s.write()).rejects.toThrow();
+      expect(await readFile(file, "utf8")).toBe("{ not json");
+    });
+
+    it(`${name}: the file is private even when a stale temp file is in the way`, async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), "bridge-file-"));
+      const file = path.join(dir, "data.json");
+      // A temp file a crashed write left, readable by everyone.
+      await writeFile(`${file}.${process.pid}.tmp`, "", { mode: 0o644 });
+      await chmod(`${file}.${process.pid}.tmp`, 0o644);
+      await open(file).write();
+      expect((await stat(file)).mode & 0o777).toBe(0o600);
+    });
+  }
 });

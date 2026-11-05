@@ -9,7 +9,8 @@
 // name, nothing a revoke does not need.
 
 import { promises as fs } from "node:fs";
-import path from "node:path";
+
+import { writePrivate } from "./store.js";
 
 export interface PendingRevoke {
   /** The loomcycle subject, "<gate>:<sub>". */
@@ -44,19 +45,24 @@ export class MemoryRevokeQueue implements RevokeQueue {
   }
 }
 
-/** A JSON file beside the conversation store's, written the same way: to a
- *  temp file, renamed into place, mode 0600. */
+/** A JSON file beside the conversation store's, written the same way
+ *  (writePrivate). */
 export class FileRevokeQueue extends MemoryRevokeQueue {
-  private loaded = false;
+  private loading?: Promise<void>;
   private writes: Promise<void> = Promise.resolve();
 
   constructor(private readonly file: string) {
     super();
   }
 
-  private async load(): Promise<void> {
-    if (this.loaded) return;
-    this.loaded = true;
+  // A file that fails to read (not one that is missing) stays failed: it is
+  // never treated as empty, or the next write would replace it.
+  private load(): Promise<void> {
+    this.loading ??= this.read();
+    return this.loading;
+  }
+
+  private async read(): Promise<void> {
     try {
       const data = JSON.parse(await fs.readFile(this.file, "utf8")) as PendingRevoke[];
       for (const p of data) {
@@ -70,10 +76,7 @@ export class FileRevokeQueue extends MemoryRevokeQueue {
   private persist(): Promise<void> {
     const snapshot = JSON.stringify([...this.items.values()], null, 2);
     this.writes = this.writes.then(async () => {
-      await fs.mkdir(path.dirname(this.file), { recursive: true });
-      const tmp = `${this.file}.${process.pid}.tmp`;
-      await fs.writeFile(tmp, snapshot, { mode: 0o600 });
-      await fs.rename(tmp, this.file);
+      await writePrivate(this.file, snapshot);
     });
     return this.writes;
   }
