@@ -130,24 +130,24 @@ func (e *aclLockedError) Error() string { return aclReplyError(e.reply) }
 func (e *aclLockedError) Unwrap() error { return e.cause }
 
 // unattendedLocks decide what a step no operator stands behind (the removal
-// policy's sweeper, a SCIM re-enable) keeps of a subject's bindings and
-// memberships in a tenant. Such a step deprovisions, so it keeps a list only
-// when both hold:
+// policy's unbind and erase, a SCIM re-enable, an identity provider's group
+// sync) keeps of a subject's bindings and memberships in a tenant. Such a
+// step deprovisions, so it keeps a list only when both hold:
 //
 //   - the list can only take away: it has a deny rule and no allow rule
 //     (authz.Effective.RestrictsOnly), so keeping it never leaves a removed
 //     user a grant;
-//   - someone locked that list on purpose, in either of two sets:
-//   - lifecycleLockSubject's, a tenant operator of the tenant, denies
-//     retiring it by any rule, a pattern included (an admin may lock a
-//     family, `retire def:acl/corp-*`): a list locked against the tenant's
-//     operators holds against the step too, since a tenant operator can
-//     set a removal going;
-//   - the removed subject's own denies it by a rule naming that exact list
-//     (authz.Effective.LiteralDeny), never a wildcard or a prefix: a list
-//     the subject is locked into (an admin's self-locking deny bound to the
-//     user or to a group it is in) survives its removal, so a user cannot
-//     shed it by going dormant.
+//   - someone locked that list on purpose, as one of two sets answers:
+//
+// The first, lifecycleLockSubject's (a tenant operator of the tenant), denies
+// retiring it by any rule, a pattern included (an admin may lock a family,
+// `retire def:acl/corp-*`): a list locked against the tenant's operators
+// holds against the step too, since a tenant operator can set a removal
+// going. The second, the removed subject's own, denies it by a rule naming
+// that exact list (authz.Effective.LiteralDeny), never a wildcard or a
+// prefix: a list the subject is locked into (an admin's self-locking deny
+// bound to the user or to a group it is in) survives its removal, so a user
+// cannot shed it by going dormant.
 //
 // The subject's set is read only for such a rule, never for what it denies
 // the subject as an actor: a member's baseline, or a broad `retire def:*`
