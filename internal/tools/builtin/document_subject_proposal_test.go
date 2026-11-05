@@ -194,7 +194,8 @@ func TestAdoptSubjectProposal_MintsTheEntityTheConsolidatorWouldHaveWritten(t *t
 // granted context and proposing on the plain one is what keeps that honest.
 func seedTenantOntology(t *testing.T, d *Document, ctx context.Context) {
 	t.Helper()
-	res, err := d.Execute(grantedTenantCtx(ctx), json.RawMessage(`{"op":"create_document","scope":"tenant",
+	// The ontology's name is reserved to the operator, so the seed runs as the operator.
+	res, err := d.Execute(tools.WithSubstrateOperator(grantedTenantCtx(ctx)), json.RawMessage(`{"op":"create_document","scope":"tenant",
 		"title":"Tenant Ontology","path":"`+memory.OntologyPath+`"}`))
 	if err != nil || res.IsError {
 		t.Fatalf("seed ontology: %v %s", err, res.Text)

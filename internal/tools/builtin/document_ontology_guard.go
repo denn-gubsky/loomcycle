@@ -61,26 +61,41 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 	if (tools.IsSubstrateOperator(ctx) && tools.RunID(ctx) == "") || key.Scope != "tenant" {
 		return nil
 	}
-	docID := d.ontologyDocumentID(ctx, key)
+	if !ontologyWriteOp(op) {
+		return nil // a read, or an op that cannot reach a document's content
+	}
+	// By the RECORDED id (document_ontology_identity.go), whatever the document is named
+	// now. FAILS CLOSED for these write ops: not knowing which document is the ontology
+	// must not read as "this is not it".
+	docID, err := d.resolveOntologyID(ctx, key)
+	if err != nil {
+		return refusal(errFrom("could not determine which document is the tenant ontology, so this "+
+			"write is refused: "+err.Error(), err))
+	}
 	if docID == "" {
 		return nil // no ontology document in this tenant — nothing to protect
 	}
-	// Which document does this call touch? Three addressings, and missing one is how a
+	// Which document does this call touch? Four addressings, and missing one is how a
 	// guard gets bypassed: create/import name the document, the chunk ops name a chunk
-	// whose document must be looked up, and delete_document/set_path put the DOCUMENT id
-	// in `id` — where a chunk lookup returns nothing and the check would sail past.
+	// whose document must be looked up, delete_document/set_path put the DOCUMENT id
+	// in `id` — where a chunk lookup returns nothing and the check would sail past — and
+	// a document op may name its document by `path` alone.
 	target := strings.TrimSpace(in.DocumentID)
 	if target == "" && in.ID != "" {
 		if target = d.documentIDForChunk(ctx, key, in.ID); target == "" {
 			target = strings.TrimSpace(in.ID)
 		}
 	}
+	if target == "" && in.Path != "" {
+		if id, perr := d.docIDFromInput(ctx, key, docInput{Path: in.Path}); perr == nil {
+			target = id
+		}
+	}
 	if target != docID {
 		return nil
 	}
 
-	switch op {
-	case "create_chunk", "upsert_chunk":
+	if op == "create_chunk" || op == "upsert_chunk" {
 		if !strings.EqualFold(strings.TrimSpace(in.Status), memrank.OntologyStatusProposed) {
 			return refusal(errValidation("an agent may only add a PROPOSED entity to the ontology: pass "+
 				"status=\""+memrank.OntologyStatusProposed+"\" (or use op=propose_entity, which "+
@@ -88,29 +103,28 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 				"accepting a proposal is a separate operator action.", ""))
 		}
 		return nil
-	// EVERY op that can create, alter, retire or re-home an entity — audited from the op
-	// list rather than from the obvious ones. The first version of this guard covered the
-	// five chunk mutations and missed four routes to the same effect: import_md and
-	// import_canvas author chunks wholesale, supersede_chunk both creates and retires, and
-	// delete_document / set_path reach the WHOLE ontology (set_path by re-homing
-	// /memory/ontology so the reader resolves somewhere else entirely).
-	case "update_chunk", "delete_chunk", "move_chunk", "reorder_chunk",
-		"supersede_chunk", "import_md", "import_canvas", "delete_document", "set_path":
-		return refusal(errPermission("an agent may not modify the ontology document — it may only add a "+
-			"proposal (op=propose_entity). Resolving one, editing a live entity, importing "+
-			"over the document, re-homing it, or removing anything is the operator's decision.", ""))
-	default:
-		return nil
 	}
+	return refusal(errPermission("an agent may not modify the ontology document — it may only add a "+
+		"proposal (op=propose_entity). Resolving one, editing a live entity, importing "+
+		"over the document, re-homing it, or removing anything is the operator's decision.", ""))
 }
 
-// ontologyDocumentID resolves the tenant ontology document, or "" when there is none.
-func (d *Document) ontologyDocumentID(ctx context.Context, key sqlmem.ScopeKey) string {
-	id, err := d.docIDFromInput(ctx, key, docInput{Path: memrank.OntologyPath})
-	if err != nil {
-		return ""
+// ontologyWriteOp reports whether op can create, alter, retire or re-home an entity of
+// the ontology: create_chunk/upsert_chunk only as a proposal, every other one not at all.
+//
+// EVERY such op — audited from the op list rather than from the obvious ones. The first
+// version of this guard covered the five chunk mutations and missed four routes to the
+// same effect: import_md and import_canvas author chunks wholesale, supersede_chunk both
+// creates and retires, and delete_document / set_path reach the WHOLE ontology (set_path
+// by re-homing /memory/ontology so the reader resolves somewhere else entirely).
+func ontologyWriteOp(op string) bool {
+	switch op {
+	case "create_chunk", "upsert_chunk",
+		"update_chunk", "delete_chunk", "move_chunk", "reorder_chunk",
+		"supersede_chunk", "import_md", "import_canvas", "delete_document", "set_path":
+		return true
 	}
-	return id
+	return false
 }
 
 // documentIDForChunk returns the document a chunk belongs to, or "".

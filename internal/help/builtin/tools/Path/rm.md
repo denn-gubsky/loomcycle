@@ -25,6 +25,9 @@ descendant removed with it.
   guard, not a failure: nothing was removed.
 - `no such path: ...` — not named in this scope.
 - `cannot remove the root path`.
+- `... is a reserved name in the tenant scope ...` — `/memory/ontology`,
+  `/memory/entities` and `/memory/tenant_root` in the tenant tree are the
+  operator's: an agent cannot remove, rename or replace them, nor remove a directory above them such as `/memory`.
 
 ## Examples
 

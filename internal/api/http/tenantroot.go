@@ -99,11 +99,9 @@ func (s *Server) provisionTenantRootDoc(ctx context.Context, mi memInject) {
 		return // already provisioned, here or by another replica
 	}
 
-	create, _ := json.Marshal(map[string]any{
-		"op": "import_md", "scope": "tenant", "path": meminject.TenantRootPath,
-		"markdown": meminject.TenantRootTemplate(),
-	})
-	_, _ = doc.Execute(dctx, create) // best-effort; the next reference retries
+	// A reserved tenant name (RFC FY Part C), given through the one entry point that
+	// may give it outside the operator plane: this runs inside a run's prompt render.
+	_, _ = doc.ProvisionReservedDocument(dctx, meminject.TenantRootPath, meminject.TenantRootTemplate()) // best-effort; the next reference retries
 }
 
 // readTenantRootMarkdown exports the document to clean Markdown for injection.

@@ -73,7 +73,8 @@ func TestDocument_TenantPathLookupFindsTheDocument(t *testing.T) {
 	create, _ := json.Marshal(map[string]any{
 		"op": "create_document", "scope": "tenant", "title": "ontology", "path": "/memory/ontology",
 	})
-	res, _ := d.Execute(ctx, create)
+	// A reserved tenant name: only the operator's off-run call may give it.
+	res, _ := d.Execute(tools.WithSubstrateOperator(ctx), create)
 	if res.IsError {
 		t.Fatalf("create_document: %s", res.Text)
 	}

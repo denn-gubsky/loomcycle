@@ -55,6 +55,7 @@ const (
 const (
 	copyNotFound      = "not_found"
 	copyIsOntology    = "is_ontology"
+	copyReservedName  = "reserved_name"
 	copyIsSubject     = "is_subject"
 	copyHoldsFacts    = "holds_facts"
 	copyForbidden     = "forbidden"
@@ -298,6 +299,12 @@ func (d *Document) planCopy(ctx context.Context, p *copyPlan, op string, ids []s
 			}
 			if p.dst.Scope == "tenant" && canonical == memrank.OntologyPath {
 				p.refuse(id, copyIsOntology, "the target name is the tenant ontology's")
+				ok = false
+				break
+			}
+			// The other reserved names are the operator's to give (RFC FY Part C).
+			if reservedNameRefusal(ctx, op, p.dst.Scope, canonical) != nil {
+				p.refuse(id, copyReservedName, "the target name "+canonical+" is reserved in the tenant scope; only an operator may give it")
 				ok = false
 				break
 			}

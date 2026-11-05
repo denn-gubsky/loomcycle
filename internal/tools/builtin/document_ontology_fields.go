@@ -111,8 +111,8 @@ func (d *Document) tenantOntologyConfirmed(ctx context.Context) bool {
 		return false
 	}
 	key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(ctx), Scope: "tenant", ScopeID: sqlScopeTenant(ctx)}
-	docID, err := d.docIDFromInput(ctx, key, docInput{Path: memrank.OntologyPath})
-	if err != nil {
+	docID := d.ontologyDocumentID(ctx, key)
+	if docID == "" {
 		return false
 	}
 	res, err := d.query(ctx, key, `SELECT coalesce(status, '') FROM documents WHERE id = ? LIMIT 1`, docID)

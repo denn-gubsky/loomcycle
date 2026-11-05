@@ -25,6 +25,11 @@ import (
 // using the resource still goes through that resource's own tool + gates.
 type Path struct {
 	Store store.Store
+	// Identities, when set, records which document holds each tenant-wide role
+	// before an operator renames or removes a reserved name (RFC FY Part C), so the
+	// rename cannot lose track of the tenant ontology. Nil in a deployment without
+	// SQL Memory, where there are no documents to lose track of.
+	Identities TenantIdentityRecorder
 }
 
 func (p *Path) Name() string { return "Path" }
@@ -409,6 +414,9 @@ func (p *Path) mkdir(ctx context.Context, tenantID, scope, scopeID string, in pa
 	if r := newPathACL(ctx, scope, scopeID).allows(ctx, "mkdir", "directory", canonical, nil, "write"); r != nil {
 		return *r, nil
 	}
+	if r := reservedNameRefusal(ctx, "mkdir", scope, canonical); r != nil {
+		return *r, nil
+	}
 	// Something already named here? ok if it's a directory; never overwrite a
 	// document / volume_mount / memory_entry with a directory.
 	row, gerr := p.Store.DirentGet(ctx, tenantID, scope, scopeID, parent, name)
@@ -467,6 +475,11 @@ func (p *Path) mv(ctx context.Context, tenantID, scope, scopeID string, in pathI
 	if strings.HasPrefix(toC+"/", fromC+"/") {
 		return errValidation("cannot move a path into itself or its own subtree: "+fromC+" -> "+toC, "Pass a `to` outside the source path's subtree."), nil
 	}
+	// A reserved name may not leave (source) nor arrive (destination) — moving an
+	// ancestor such as /memory takes the names below it along.
+	if r := p.guardReserved(ctx, "mv", scope, append(reservedAtOrUnder(fromC), reservedAtOrUnder(toC)...)); r != nil {
+		return *r, nil
+	}
 	if acl := newPathACL(ctx, scope, scopeID); acl != nil {
 		if r, err := p.aclSubtree(ctx, acl, "mv", "write", tenantID, scope, scopeID, fromC, toC); err != nil || r != nil {
 			if err != nil {
@@ -510,6 +523,9 @@ func (p *Path) rm(ctx context.Context, tenantID, scope, scopeID string, in pathI
 	if len(descendants) > 0 && !in.Recursive {
 		return errBusiness(fmt.Sprintf("path %q has %d descendant(s); pass recursive:true to remove them", canonical, len(descendants)), ""), nil
 	}
+	if r := p.guardReserved(ctx, "rm", scope, reservedAtOrUnder(canonical)); r != nil {
+		return *r, nil
+	}
 	if acl := newPathACL(ctx, scope, scopeID); acl != nil {
 		if r, err := p.aclSubtree(ctx, acl, "rm", "delete", tenantID, scope, scopeID, canonical, ""); err != nil || r != nil {
 			if err != nil {
@@ -537,6 +553,29 @@ func (p *Path) rm(ctx context.Context, tenantID, scope, scopeID string, in pathI
 		return errNotFound("no such path: "+canonical, "List the parent directory with op=ls to find the right path."), nil
 	}
 	return jsonResult(map[string]any{"ok": true, "removed": canonical, "n_removed": removed})
+}
+
+// guardReserved refuses an rm or mv that would take away or create one of the
+// reserved tenant names (RFC FY Part C). The operator may; for the operator it first
+// has the tenant's roles recorded, so an ontology renamed here stays the ontology
+// even in a tenant nothing had resolved since the upgrade. Existence is not consulted:
+// the names are reserved whether or not their documents exist yet, so no answer
+// depends on what the tenant holds.
+func (p *Path) guardReserved(ctx context.Context, op, scope string, reserved []string) *tools.Result {
+	if scope != "tenant" || len(reserved) == 0 {
+		return nil
+	}
+	if r := reservedNameRefusal(ctx, op, scope, reserved[0]); r != nil {
+		return r
+	}
+	if p.Identities != nil {
+		if err := p.Identities.RecordTenantIdentities(ctx); err != nil {
+			r := errFrom(op+": could not record which documents the tenant's reserved names hold, so "+
+				"nothing was changed: "+err.Error(), err)
+			return &r
+		}
+	}
+	return nil
 }
 
 // asNotFound reports whether err is a *store.ErrNotFound (the store's miss

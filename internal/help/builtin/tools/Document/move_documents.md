@@ -78,7 +78,7 @@ reason `moved`, and each move is recorded in the audit log.
 
 A refused document does not move, and the rest of the set goes ahead. The
 refusal codes are those of `copy_documents` (`not_found`, `is_ontology`,
-`is_subject`, `holds_facts`, `forbidden`, `path_collision`, `key_collision`,
+`reserved_name`, `is_subject`, `holds_facts`, `forbidden`, `path_collision`, `key_collision`,
 `write_failed`), plus `id_collision`: `to_scope` already holds a document with
 that id. Under access control a move needs write on each source document as
 well as read.

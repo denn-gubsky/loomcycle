@@ -38,6 +38,30 @@ func OntologyTemplate() string { return ontologyTemplate }
 // operator-editable ontology document.
 const OntologyPath = "/memory/ontology"
 
+// EntitiesPath is where a scope's entity graph and remembered facts are filed.
+const EntitiesPath = "/memory/entities"
+
+// IsReservedTenantPath reports whether canonical (a normalized Path-tree path) is a
+// name the runtime finds a tenant-wide document by: the ontology, the shared entity
+// document, and the deployment context composed into every run's prompt. In the
+// TENANT scope only the operator may create, rename or remove these names; an agent
+// that could would decide what every run in the tenant reads (RFC FY Part C).
+//
+// Kept here, beside the constants, so a new authority path cannot be added without
+// passing the place that decides who may move it.
+func IsReservedTenantPath(canonical string) bool {
+	switch canonical {
+	case OntologyPath, EntitiesPath, TenantRootPath:
+		return true
+	}
+	return false
+}
+
+// ReservedTenantPaths lists IsReservedTenantPath's names, for a check over a subtree.
+func ReservedTenantPaths() []string {
+	return []string{OntologyPath, EntitiesPath, TenantRootPath}
+}
+
 // OntologyTitle MUST match the template's first heading — import_md makes the
 // first heading the root chunk and the document title.
 const OntologyTitle = "Tenant Ontology"

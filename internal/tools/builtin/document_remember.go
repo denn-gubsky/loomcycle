@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -39,7 +40,7 @@ import (
 // rememberedFactsPath is where operator-authored facts land: the same document the
 // consolidation pass mirrors its entity graph into, so one subject's facts stay in one
 // place regardless of who wrote them.
-const rememberedFactsPath = "/memory/entities"
+const rememberedFactsPath = memrank.EntitiesPath
 
 // rememberedKeyPrefix namespaces an operator's fact away from the pass's.
 //
