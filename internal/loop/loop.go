@@ -5086,7 +5086,9 @@ func executePendingTools(
 			callCtx, endWork := providers.BeginWork(ctx)
 			defer endWork() // idempotent; also on a panic
 			callCtx, mark := tools.WithContentMark(callCtx)
-			r := dispatchOneTool(callCtx, dispatcher, tu, hookDispatcher, hookIdent, emit)
+			r := recoverToolPanic(callCtx, dispatcher, tu.Name, func() tools.Result {
+				return dispatchOneTool(callCtx, dispatcher, tu, hookDispatcher, hookIdent, emit)
+			})
 			endWork()
 			resCh <- result{idx: i, tu: tu, res: r, notRetained: mark.NotRetained()}
 		}(i, tu)
@@ -5140,6 +5142,20 @@ func executePendingTools(
 		}
 	}
 	return results
+}
+
+// recoverToolPanic runs one call on a tool goroutine. The dispatcher already
+// recovers a panic in the tool itself; this catches one in what runs around
+// it here (the hook chains, the dispatch code), which on this goroutine would
+// otherwise end every run on the instance. Either way the call answers
+// tool_panicked and the batch goes on.
+func recoverToolPanic(ctx context.Context, d *tools.Dispatcher, name string, call func() tools.Result) (r tools.Result) {
+	defer func() {
+		if p := recover(); p != nil {
+			r = d.Panicked(ctx, name, p)
+		}
+	}()
+	return call()
 }
 
 // inbandError is a failed tool call as the model reads it: one JSON object,
