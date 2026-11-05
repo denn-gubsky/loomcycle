@@ -9,7 +9,7 @@
 // once, with no credential of ours, and only from the SharePoint hosts the
 // operator allows.
 
-import type { VoiceIn, VoicePort } from "@loomcycle/bridge-core";
+import type { Logger, VoiceIn, VoicePort } from "@loomcycle/bridge-core";
 
 export const FILE_DOWNLOAD_INFO = "application/vnd.microsoft.teams.file.download.info";
 
@@ -67,10 +67,13 @@ export function hostAllowed(url: URL, suffixes: readonly string[]): boolean {
   return suffixes.some((s) => host.endsWith(s));
 }
 
-/** A download that did not happen. The message is fixed and never carries
- *  the link: a pre-authorised URL is a credential while it lives. */
+/** A download that did not happen. It never carries the link, whose query
+ *  is a credential while it lives: only the host refused, or the status. */
 export class TeamsFileError extends Error {
-  constructor(readonly reason: "host" | "redirect" | "status" | "type" | "size") {
+  constructor(
+    readonly reason: "host" | "redirect" | "status" | "type" | "size",
+    readonly detail: { host?: string; status?: number } = {},
+  ) {
     super(`teams file download refused: ${reason}`);
     this.name = "TeamsFileError";
   }
@@ -86,6 +89,10 @@ export interface TeamsVoicePortOptions<TRef> {
   fetch?: typeof fetch;
   /** The "listening" indicator: Teams' typing activity. */
   typing?: (ref: TRef) => Promise<void>;
+  /** Where a refused download is logged, with its reason and host, so an
+   *  operator can tell a host to add to TEAMS_BRIDGE_FILE_HOSTS from a file
+   *  that was too large. */
+  log?: Logger;
 }
 
 /** teamsVoicePort takes voice in only: no sendVoice, out "none". */
@@ -97,7 +104,13 @@ export function teamsVoicePort<TRef>(opts: TeamsVoicePortOptions<TRef>): VoicePo
     ...(typing ? { indicate: (ref: TRef) => typing(ref) } : {}),
     async download(v, maxBytes, signal) {
       const ref = v.ref as TeamsAudioRef;
-      const bytes = await downloadPinned(doFetch, ref.url, opts.hosts, maxBytes, signal);
+      let bytes: Uint8Array;
+      try {
+        bytes = await downloadPinned(doFetch, ref.url, opts.hosts, maxBytes, signal);
+      } catch (err) {
+        if (err instanceof TeamsFileError) opts.log?.warn("teams file download refused", { reason: err.reason, ...err.detail });
+        throw err;
+      }
       return { bytes, mime: v.mime ?? "application/octet-stream", ...(ref.name ? { name: ref.name } : {}) };
     },
   };
@@ -119,7 +132,7 @@ async function downloadPinned(
   } catch {
     throw new TeamsFileError("host");
   }
-  if (!hostAllowed(url, hosts)) throw new TeamsFileError("host");
+  if (!hostAllowed(url, hosts)) throw new TeamsFileError("host", { host: url.hostname });
   for (let hop = 0; ; hop++) {
     const res = await doFetch(url, { redirect: "manual", signal });
     if (res.status >= 300 && res.status < 400) {
@@ -131,12 +144,12 @@ async function downloadPinned(
       } catch {
         throw new TeamsFileError("redirect");
       }
-      if (!hostAllowed(url, hosts)) throw new TeamsFileError("redirect");
+      if (!hostAllowed(url, hosts)) throw new TeamsFileError("redirect", { host: url.hostname });
       continue;
     }
     if (!res.ok) {
       await res.body?.cancel().catch(() => undefined);
-      throw new TeamsFileError("status");
+      throw new TeamsFileError("status", { status: res.status });
     }
     // An expired or refused link can answer 200 with a sign-in page.
     if ((res.headers.get("content-type") ?? "").toLowerCase().startsWith("text/html")) {

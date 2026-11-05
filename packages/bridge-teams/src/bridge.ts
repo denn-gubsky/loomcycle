@@ -3,6 +3,7 @@
 // @loomcycle/bridge-core's.
 
 import {
+  consoleLogger,
   createBridge,
   type Bridge,
   type BridgeAdapter,
@@ -156,6 +157,7 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
       hosts: cfg.fileHosts,
       fetch: opts.fileFetch,
       typing: (ref) => app.sendTo(ref, { type: "typing" }),
+      log: opts.logger ?? consoleLogger,
     }),
     async start(ctx) {
       app.on("message", async ({ activity, ref }) => {

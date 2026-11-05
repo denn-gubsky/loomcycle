@@ -14,7 +14,7 @@ import { loadConfig } from "../src/config.js";
 import { identify } from "../src/identity.js";
 import { routeMessage, type MessageRouter } from "../src/inbound.js";
 import { audioFileOf, FILE_DOWNLOAD_INFO, hostAllowed, TeamsFileError, teamsVoicePort, type TeamsAttachment } from "../src/voice.js";
-import { FakeLoomcycle, silentLogger, waitFor, type StartedRun } from "./fakes.js";
+import { FakeLoomcycle, RecordingLogger, silentLogger, waitFor, type StartedRun } from "./fakes.js";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
 const ALICE = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -201,6 +201,19 @@ describe("the Teams voice port", () => {
       await expect(port().download(voice(url), 1000, signal())).rejects.toMatchObject({ name: "TeamsFileError", reason: "host" });
     }
     expect(host.requests).toEqual([]);
+  });
+
+  it("logs a refused download's reason and host, never the link", async () => {
+    const log = new RecordingLogger();
+    const p = teamsVoicePort<ConversationRef>({ hosts: HOSTS, fetch: host.fetch, log });
+    await expect(p.download(voice("https://contoso.sharepoint.us/f.m4a?tempauth=x"), 1000, signal())).rejects.toBeInstanceOf(TeamsFileError);
+    host.routes.set(LINK, { status: 401 });
+    await expect(p.download(voice(), 1000, signal())).rejects.toBeInstanceOf(TeamsFileError);
+    expect(log.lines).toEqual([
+      { level: "warn", msg: "teams file download refused", attrs: { reason: "host", host: "contoso.sharepoint.us" } },
+      { level: "warn", msg: "teams file download refused", attrs: { reason: "status", status: 401 } },
+    ]);
+    expect(JSON.stringify(log.lines)).not.toContain("tempauth");
   });
 
   it("follows a redirect to another allowed host, never one off them", async () => {
