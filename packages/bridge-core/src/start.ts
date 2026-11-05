@@ -19,6 +19,7 @@ import type { MessageSinkOptions, StreamSinkOptions } from "./renderer.js";
 import { ConversationRouter } from "./router.js";
 import { storeFromSpec, type ConversationStore } from "./store.js";
 import { GateBroker, loadGateKey, type GateKey } from "./gate.js";
+import { retryDelayMs, revokeQueueFromSpec, type RevokeQueue } from "./revokes.js";
 import { TokenBroker, type TokenSource } from "./tokens.js";
 
 export interface BridgeContext<TRef> {
@@ -44,6 +45,11 @@ export interface BridgeAdapter<TRef> {
   /** A gate bridge's groups for a run identity, from its conversation's
    *  reply reference (RFC FA §3.7d). undefined asserts none. */
   groupsFor?(subject: string, ref: TRef): Promise<string[] | undefined>;
+  /** A gate bridge whose platform can list its people: the platform id (the
+   *  gate's `sub`, without "<gate>:") of every person who is a member now.
+   *  The list must be complete: throw rather than return a first page. The
+   *  core reconciles loomcycle with it every BRIDGE_GATE_SYNC_HOURS. */
+  members?(): Promise<ReadonlySet<string>>;
 }
 
 export interface BridgeOptions<TRef> {
@@ -58,6 +64,9 @@ export interface BridgeOptions<TRef> {
   gateKey?: GateKey;
   /** The fetch a gate bridge reaches loomcycle's /v1/_auth routes with (tests). */
   gateFetch?: typeof fetch;
+  /** Where a gate bridge keeps revokes loomcycle has not taken yet. Default:
+   *  beside BRIDGE_STORE's file ("<path>.revokes.json"), else in memory. */
+  revokes?: RevokeQueue;
 }
 
 export interface Bridge<TRef> {
@@ -133,8 +142,102 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     message: opts.message,
   };
   const router = new ConversationRouter<TRef>({ idleMinutes: cfg.idleMinutes }, deps);
+  const now = opts.now ?? Date.now;
+  const gateName = cfg.gate?.name ?? "";
+
+  // A revoke loomcycle did not take is kept and retried by the bridge itself:
+  // the platform's own redelivery gives up after minutes or an hour.
+  const revokes = gateBroker ? (opts.revokes ?? revokeQueueFromSpec(cfg.store)) : undefined;
+  const keepRevoke = async (subject: string): Promise<void> => {
+    try {
+      const prev = (await revokes!.list()).find((p) => p.subject === subject);
+      const attempts = (prev?.attempts ?? 0) + 1;
+      await revokes!.put({ subject, attempts, firstFailedAt: prev?.firstFailedAt ?? now(), nextAttemptAt: now() + retryDelayMs(attempts) });
+    } catch (err) {
+      log.error("a failed revoke could not be kept for retry", { error: (err as Error)?.name });
+    }
+  };
+  const revoke = async (subject: string): Promise<void> => {
+    try {
+      await gateBroker!.revoke(subject);
+    } catch (err) {
+      await keepRevoke(subject);
+      throw err;
+    }
+    await revokes!.delete(subject).catch((err: unknown) => log.warn("a delivered revoke stayed queued", { error: (err as Error)?.name }));
+  };
+  let retrying = false;
+  // `due` false retries every kept revoke, backoff or not: at start, after a
+  // restart that may well have been the fix (loomcycle back, a key replaced).
+  const retryRevokes = async (due = true): Promise<void> => {
+    if (!revokes || retrying) return;
+    retrying = true;
+    try {
+      for (const p of await revokes.list()) {
+        if (due && p.nextAttemptAt > now()) continue;
+        try {
+          await gateBroker!.revoke(p.subject);
+          await revokes.delete(p.subject);
+          log.info("a kept revoke reached loomcycle", { attempts: p.attempts });
+        } catch (err) {
+          await revokes.put({ ...p, attempts: p.attempts + 1, nextAttemptAt: now() + retryDelayMs(p.attempts + 1) });
+          log.warn("a kept revoke failed again; it is retried later", { status: (err as { status?: number })?.status, attempts: p.attempts + 1 });
+        }
+      }
+    } catch (err) {
+      log.warn("kept revokes could not be retried", { error: (err as Error)?.name });
+    } finally {
+      retrying = false;
+    }
+  };
+
+  // Reconciliation: every gate subject the bridge knows (each conversation's
+  // run identity) that is still there is listed, and the sync is complete,
+  // so loomcycle removes a linked user the list leaves out: a person the
+  // platform no longer lists, whose revoke was lost or never sent. A shared
+  // conversation's own user is always listed; it is not a person.
+  let syncing = false;
+  const reconcile = async (): Promise<void> => {
+    if (!gateBroker || !adapter.members || syncing) return;
+    syncing = true;
+    try {
+      let members: ReadonlySet<string>;
+      try {
+        members = await adapter.members();
+      } catch (err) {
+        log.warn("reconcile skipped: the platform's member list could not be read", { error: (err as Error)?.name });
+        return;
+      }
+      // An empty list is far likelier a platform fault than everyone gone.
+      if (members.size === 0) {
+        log.warn("reconcile skipped: the platform listed no members", {});
+        return;
+      }
+      const pending = new Set((await revokes!.list()).map((p) => p.subject));
+      const prefix = `${gateName}:`;
+      const users = new Map<string, string>();
+      for (const rec of await store.list()) {
+        const s = rec.runSubject;
+        if (!s.startsWith(prefix) || s.length === prefix.length || pending.has(s)) continue;
+        if (s.startsWith(`${prefix}conv:`) || members.has(s.slice(prefix.length))) users.set(s, rec.runName);
+      }
+      if (users.size === 0) {
+        log.info("reconcile skipped: no conversation to vouch for", {});
+        return;
+      }
+      const res = await gateBroker.syncComplete([...users].map(([subject, name]) => ({ subject, name })));
+      log.info("reconciled users with loomcycle", { listed: users.size, created: res.created, removed: res.removed, refused: res.refused });
+    } catch (err) {
+      // 409 sync_removal_limit: loomcycle changed nothing; an operator looks.
+      log.warn("reconcile failed", { status: (err as { status?: number })?.status, code: (err as { code?: string })?.code });
+    } finally {
+      syncing = false;
+    }
+  };
 
   let sweeper: ReturnType<typeof setInterval> | undefined;
+  let revokeTimer: ReturnType<typeof setInterval> | undefined;
+  let syncTimer: ReturnType<typeof setInterval> | undefined;
   let server: http.Server | undefined;
 
   const ctx: BridgeContext<TRef> = {
@@ -142,7 +245,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     router,
     health,
     log,
-    ...(gateBroker ? { gate: { subjectOf: (sub: string) => gateBroker.subjectOf(sub), revoke: (subject: string) => gateBroker.revoke(subject) } } : {}),
+    ...(gateBroker ? { gate: { subjectOf: (sub: string) => gateBroker.subjectOf(sub), revoke } } : {}),
     async serve(routes, o) {
       if (server) throw new Error("serve called twice");
       server = createBridgeServer({ routes, health, log, maxBodyBytes: o?.maxBodyBytes });
@@ -166,10 +269,28 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
       await adapter.start(ctx);
       sweeper = setInterval(() => void router.sweepIdle(), 60_000);
       sweeper.unref?.();
+      if (revokes) {
+        // Revokes kept before a restart go out now, then on the minute.
+        void retryRevokes(false);
+        revokeTimer = setInterval(() => void retryRevokes(), 60_000);
+        revokeTimer.unref?.();
+      }
+      if (gateBroker && adapter.members && cfg.gateSyncHours > 0) {
+        if (opts.store === undefined && cfg.store === "memory") {
+          // A memory store forgets its shared conversations on a restart, and a
+          // complete sync would then remove their users.
+          log.warn("reconcile is off: it needs a store that survives a restart (BRIDGE_STORE=file:<path>)", {});
+        } else {
+          syncTimer = setInterval(() => void reconcile(), cfg.gateSyncHours * 3_600_000);
+          syncTimer.unref?.();
+        }
+      }
       log.info(`${name} listening`, { port: cfg.port, agent: cfg.agent });
     },
     async stop() {
       if (sweeper) clearInterval(sweeper);
+      if (revokeTimer) clearInterval(revokeTimer);
+      if (syncTimer) clearInterval(syncTimer);
       await router.stop();
       await adapter.stop?.();
       if (server) await close(server);

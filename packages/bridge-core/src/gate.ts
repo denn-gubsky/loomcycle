@@ -362,4 +362,16 @@ export class GateBroker implements TokenSource {
   async revoke(subject: string): Promise<void> {
     await this.started().revoke(this.subOf(subject));
   }
+
+  /** syncComplete tells loomcycle these subjects are every identity the
+   *  gate still vouches for. On a gate whose identity_map is
+   *  authoritative_for_users, a linked user missing from the list is removed,
+   *  within the gate's removal ceiling (max_sync_removals): loomcycle refuses
+   *  the whole sync, changing nothing, past it. */
+  async syncComplete(users: { subject: string; name?: string }[]): Promise<Record<string, unknown>> {
+    return this.started().sync(
+      users.map((u) => ({ sub: this.subOf(u.subject), ...(u.name ? { name: u.name } : {}) })),
+      { complete: true },
+    );
+  }
 }

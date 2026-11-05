@@ -31,3 +31,5 @@ export type { Exec, GateAlg, GateClientOptions, GateIdentity, GateKey, GroupsFor
 export type { GateConfig } from "./config.js";
 export type { TokenSource } from "./tokens.js";
 export { gateSharedSubject, legacySubject } from "./identity.js";
+export { FileRevokeQueue, MemoryRevokeQueue, revokeQueueFromSpec } from "./revokes.js";
+export type { PendingRevoke, RevokeQueue } from "./revokes.js";

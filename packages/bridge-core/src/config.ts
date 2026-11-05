@@ -159,7 +159,8 @@ export function loadSharedConfig(reader: EnvReader, defaults: { port: number; ga
   const dev = reader.flag("BRIDGE_DEV");
   // Dev mode defaults to loopback; outside it the bind is the operator's.
   const bindHost = reader.get("BRIDGE_BIND") ?? (dev ? "127.0.0.1" : undefined);
-  const gateSyncHours = reader.int("BRIDGE_GATE_SYNC_HOURS", 6, 0, 24 * 30);
+  // At most a week: a timer over 2^31 ms (about 24 days) fires at once.
+  const gateSyncHours = reader.int("BRIDGE_GATE_SYNC_HOURS", 6, 0, 168);
   if (!gate && reader.get("BRIDGE_GATE_SYNC_HOURS")) {
     reader.problems.push("BRIDGE_GATE_SYNC_HOURS applies only to a gate bridge (BRIDGE_GATE)");
   }
