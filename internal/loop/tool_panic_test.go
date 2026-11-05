@@ -75,18 +75,19 @@ func TestLoop_APanicAroundAToolCallBecomesAToolError(t *testing.T) {
 	c := tools.NewPanicCounter()
 	d := tools.NewDispatcher(nil)
 	d.SetPanicCounter(c)
-	r := recoverToolPanic(context.Background(), d, "Read", func() tools.Result {
+	r := recoverToolPanic(context.Background(), d, providers.ToolUse{Name: "Read", Input: json.RawMessage(`{}`)}, func() tools.Result {
 		var hook func()
 		hook() // a nil hook called
 		return tools.Result{}
 	})
-	if !r.IsError || !strings.HasPrefix(r.Text, "tool_panicked:") || !strings.Contains(r.Text, "Read") {
+	if !r.IsError || !strings.HasPrefix(r.Text, "tool_panicked:") || !strings.Contains(r.Text, "Read") || !strings.Contains(r.Text, "may have taken effect") {
 		t.Errorf("result = %+v", r)
 	}
-	if c.Snapshot()["Read"] != 1 {
+	// Read is not a tool of this dispatcher, so it is counted as other.
+	if c.Snapshot()["other"] != 1 {
 		t.Errorf("counts = %v", c.Snapshot())
 	}
-	if r := recoverToolPanic(context.Background(), nil, "Read", func() tools.Result { panic("x") }); !r.IsError {
+	if r := recoverToolPanic(context.Background(), nil, providers.ToolUse{Name: "Read"}, func() tools.Result { panic("x") }); !r.IsError {
 		t.Errorf("with no dispatcher: %+v", r)
 	}
 }

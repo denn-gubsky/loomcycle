@@ -5086,7 +5086,7 @@ func executePendingTools(
 			callCtx, endWork := providers.BeginWork(ctx)
 			defer endWork() // idempotent; also on a panic
 			callCtx, mark := tools.WithContentMark(callCtx)
-			r := recoverToolPanic(callCtx, dispatcher, tu.Name, func() tools.Result {
+			r := recoverToolPanic(callCtx, dispatcher, tu, func() tools.Result {
 				return dispatchOneTool(callCtx, dispatcher, tu, hookDispatcher, hookIdent, emit)
 			})
 			endWork()
@@ -5148,11 +5148,12 @@ func executePendingTools(
 // recovers a panic in the tool itself; this catches one in what runs around
 // it here (the hook chains, the dispatch code), which on this goroutine would
 // otherwise end every run on the instance. Either way the call answers
-// tool_panicked and the batch goes on.
-func recoverToolPanic(ctx context.Context, d *tools.Dispatcher, name string, call func() tools.Result) (r tools.Result) {
+// tool_panicked and the batch goes on; here the tool may already have run, so
+// the answer says its outcome is unknown.
+func recoverToolPanic(ctx context.Context, d *tools.Dispatcher, tu providers.ToolUse, call func() tools.Result) (r tools.Result) {
 	defer func() {
 		if p := recover(); p != nil {
-			r = d.Panicked(ctx, name, p)
+			r = d.PanickedAroundCall(ctx, tu.Name, tu.Input, p)
 		}
 	}()
 	return call()

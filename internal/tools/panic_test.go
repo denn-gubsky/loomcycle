@@ -73,3 +73,47 @@ func TestDispatcher_APanickingFallbackBecomesAToolError(t *testing.T) {
 		t.Errorf("result = %+v", res)
 	}
 }
+
+// The tool name a call carries is the model's: a panic is counted under it
+// only when it names a tool the dispatcher has, so a model cannot mint a
+// metric series per guess.
+func TestDispatcher_APanicIsCountedUnderABoundedLabel(t *testing.T) {
+	c := NewPanicCounter()
+	d := NewDispatcherWithFallback(nil, func(context.Context, string, json.RawMessage) (Result, bool) {
+		var p *Result
+		return *p, true
+	})
+	d.SetPanicCounter(c)
+	d.Execute(context.Background(), "mcp__made_up_7__x", json.RawMessage(`{}`))
+	d.Execute(context.Background(), "invented-tool-42", json.RawMessage(`{}`))
+	got := c.Snapshot()
+	if len(got) != 2 || got["mcp"] != 1 || got["other"] != 1 {
+		t.Errorf("counts = %v; want {mcp:1 other:1}", got)
+	}
+}
+
+// A panic around the call (a hook after the tool ran) says the outcome is
+// unknown rather than that the tool was stopped, so the model checks before
+// repeating something that may have happened; and it counts as a failure of
+// that call for the repeat guard.
+func TestDispatcher_APanicAroundTheCallSaysTheOutcomeIsUnknown(t *testing.T) {
+	d := NewDispatcher(nil)
+	in := json.RawMessage(`{"op":"send"}`)
+	r := func() (r Result) {
+		defer func() {
+			if p := recover(); p != nil {
+				r = d.PanickedAroundCall(context.Background(), "Channel", in, p)
+			}
+		}()
+		panic("post-hook bug")
+	}()
+	if !r.IsError || !strings.HasPrefix(r.Text, "tool_panicked:") || !strings.Contains(r.Text, "may have taken effect") || strings.Contains(r.Text, "was stopped") {
+		t.Errorf("result = %q", r.Text)
+	}
+	d.repeats.mu.Lock()
+	n := d.repeats.failures[repeatKey("Channel", in)]
+	d.repeats.mu.Unlock()
+	if n != 1 {
+		t.Errorf("the repeat guard counted %d failures of the call, want 1", n)
+	}
+}
