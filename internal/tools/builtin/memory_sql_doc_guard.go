@@ -342,7 +342,11 @@ func plantedDocumentObject(ctx context.Context, m *sqlmem.Manager, checked *sync
 		return "", nil
 	}
 	postgres := m.Tier() == "postgres"
-	q := `SELECT type, name, COALESCE(sql, '') FROM sqlite_master WHERE type IN ('view', 'trigger')`
+	// A virtual table is stored as a table with no pages of its own (rootpage 0);
+	// one over sqlite_dbpage or dbstat reads the file's pages directly, so it is
+	// checked like a view.
+	q := `SELECT CASE type WHEN 'table' THEN 'virtual table' ELSE type END, name, COALESCE(sql, '') FROM sqlite_master
+		WHERE type IN ('view', 'trigger') OR (type = 'table' AND rootpage = 0)`
 	if postgres {
 		q = `SELECT 'view', viewname, definition FROM pg_views WHERE schemaname = current_schema()
 			UNION ALL SELECT 'rule', rulename, definition FROM pg_rules WHERE schemaname = current_schema()
@@ -384,7 +388,7 @@ func (m *Memory) guardDocumentTables(ctx context.Context, op, scope, scopeID str
 			return errFrom(fmt.Sprintf("%s: %s", op, err), err), true
 		}
 		if obj != "" {
-			why = fmt.Sprintf("this scope's %s reaches a document table; drop it before using Memory SQL here", obj)
+			why = fmt.Sprintf("this scope's %s reaches a document table or the database file beneath the tables; drop it before using Memory SQL here", obj)
 		}
 	}
 	if why == "" {

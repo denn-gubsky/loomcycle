@@ -163,6 +163,40 @@ func TestMemorySQL_PlantedCatalogViewBlocksUntilDropped(t *testing.T) {
 	})
 }
 
+// A virtual table over sqlite_dbpage or dbstat, made before the guard named
+// them, is a table, not a view: reading it is reading the pages directly, which
+// defensive mode does not stop. The planted-object check covers it, so the
+// scope is refused to Memory SQL until it is dropped.
+func TestMemorySQL_PlantedEngineVirtualTableBlocksUntilDropped(t *testing.T) {
+	guardBothTiers(t, func(t *testing.T, d *Document, m *Memory, ctx context.Context) {
+		if d.SqlMem.Tier() == "postgres" {
+			t.Skip("sqlite_dbpage and dbstat exist on the sqlite tier only")
+		}
+		stmtDoc(t, d, ctx, "Planted vtab")
+		key, _, _ := d.resolveScope(ctx, "user")
+		for _, p := range []struct{ create, name, read, drop string }{
+			{`CREATE VIRTUAL TABLE pg USING sqlite_dbpage`, "pg", `SELECT count(*) FROM pg WHERE instr(data, 'Article 12') > 0`, `DROP TABLE pg`},
+			{`CREATE VIRTUAL TABLE st USING dbstat`, "st", `SELECT name, pgsize FROM st`, `DROP TABLE st`},
+		} {
+			// Straight to the engine, as an agent could before the guard named it.
+			if _, err := d.SqlMem.Exec(ctx, key, p.create, nil, 0); err != nil {
+				t.Fatalf("plant %s: %v", p.name, err)
+			}
+			text, isErr := memSQL(t, m, ctx, "sql_query", p.read)
+			if !isErr || !strings.Contains(text, "document_tables_reserved") || !strings.Contains(text, p.name) {
+				t.Fatalf("Memory SQL reading planted %s: error=%v %s; want refused naming it", p.name, isErr, clip(text))
+			}
+			mustMemSQL(t, m, ctx, "sql_exec", p.drop)
+		}
+		mustMemSQL(t, m, ctx, "sql_query", `SELECT 1`)
+		// An agent's own virtual table names nothing reserved and stays usable.
+		mustMemSQL(t, m, ctx, "sql_exec", `CREATE VIRTUAL TABLE notes_fts USING fts5(body)`)
+		mustMemSQL(t, m, ctx, "sql_exec", `INSERT INTO notes_fts (body) VALUES ('alpha')`)
+		fresh := &Memory{Store: d.Store, SqlMem: d.SqlMem}
+		mustMemSQL(t, fresh, ctx, "sql_query", `SELECT count(*) FROM notes_fts WHERE notes_fts MATCH 'alpha'`)
+	})
+}
+
 // clip keeps a failure readable: a page read returns whole pages of the file.
 func clip(s string) string {
 	if len(s) > 200 {
