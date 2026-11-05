@@ -72,13 +72,15 @@ type AuthIssuedTokenConfig struct {
 		Burst     int `yaml:"burst,omitempty"`
 	} `yaml:"rate,omitempty"`
 	MaxActive int `yaml:"max_active,omitempty"`
-	// Unrestricted is `issued_token: unrestricted` written out: the tokens
-	// get their user's whole member reach. The ceiling is required (RFC FZ
-	// D), so this reach is never what an omitted key means.
-	Unrestricted bool `yaml:"-"`
+	// Unrestricted is `issued_token: unrestricted` written out (or
+	// `unrestricted: true` beside ttl, rate and max_active): the tokens get
+	// their user's whole member reach. The ceiling is required (RFC FZ D),
+	// so this reach is never what an omitted key means.
+	Unrestricted bool `yaml:"unrestricted,omitempty"`
 }
 
-// issuedTokenUnrestricted is the one scalar issued_token takes.
+// issuedTokenUnrestricted is the one scalar issued_token takes, short for
+// { unrestricted: true }.
 const issuedTokenUnrestricted = "unrestricted"
 
 // UnmarshalYAML takes the ceiling as a mapping, or the scalar unrestricted.
@@ -94,10 +96,10 @@ func (t *AuthIssuedTokenConfig) UnmarshalYAML(n *yaml.Node) error {
 	return n.Decode((*plain)(t))
 }
 
-// MarshalYAML writes unrestricted back as the scalar, so a config that is
-// re-marshalled (layer merge, reload diff) loads the same way again.
+// MarshalYAML writes a bare unrestricted back as the scalar, so a config
+// that is re-marshalled (layer merge, reload diff) loads the same way again.
 func (t AuthIssuedTokenConfig) MarshalYAML() (any, error) {
-	if t.Unrestricted {
+	if t.Unrestricted && t.TTL == "" && t.Rate == nil && t.MaxActive == 0 && t.Agents == nil && t.Overrides == nil {
 		return issuedTokenUnrestricted, nil
 	}
 	type plain AuthIssuedTokenConfig
@@ -252,11 +254,14 @@ func resolveExternalGate(c *Config, name string, g AuthGateConfig, deployment Au
 		return nil, fmt.Errorf("%s.issued_token: required — the ceiling every token this gate gets issued is held to "+
 			"(e.g. { agents: [chat], overrides: [interactive] }); write issued_token: %s to give the tokens their user's whole member reach",
 			where, issuedTokenUnrestricted)
+	case t.Unrestricted && (t.Agents != nil || t.Overrides != nil):
+		return nil, fmt.Errorf("%s.issued_token: unrestricted names no agents or overrides; drop one or the other", where)
 	case !t.Unrestricted && t.Agents == nil && t.Overrides == nil:
 		return nil, fmt.Errorf("%s.issued_token: names neither agents nor overrides, so it limits nothing; "+
 			"name them, or write issued_token: %s", where, issuedTokenUnrestricted)
 	}
-	if t := e.IssuedToken; !t.Unrestricted {
+	// unrestricted keeps its ttl, rate and max_active: only the reach is wide.
+	if t := e.IssuedToken; t != nil {
 		if t.TTL != "" {
 			if out.TokenTTL, err = parseLifecycleAge(where+".issued_token.ttl", t.TTL, false); err != nil {
 				return nil, err

@@ -347,3 +347,56 @@ gates:
 		t.Fatalf("round trip: %v\n%s", err, raw)
 	}
 }
+
+// unrestricted keeps a lifetime, a rate and max_active in the mapping form, so
+// moving a ceiling to unrestricted never drops its rate limit; it never
+// combines with agents or overrides.
+func TestConfig_AnUnrestrictedCeilingKeepsItsTTLAndRate(t *testing.T) {
+	load := func(issued string) (*Config, error) {
+		t.Helper()
+		src := `
+gates:
+  tg:
+    kind: external
+    public_key: { kty: OKP, crv: Ed25519, x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo" }
+    identity_map: { tenant: acme, provision: auto }
+    issued_token: ` + issued + "\n"
+		var a AuthConfig
+		if err := yaml.Unmarshal([]byte(src), &a); err != nil {
+			return nil, err
+		}
+		c := &Config{Auth: a}
+		c.Env.PublicURL = "https://lc.example"
+		return c, resolveAuth(c)
+	}
+	c, err := load("{ unrestricted: true, ttl: 2h, rate: { per_minute: 6, burst: 10 }, max_active: 3 }")
+	if err != nil {
+		t.Fatalf("mapping form: %v", err)
+	}
+	x := c.ResolvedAuth.Gates[0].External
+	if x.TokenTTL != 2*time.Hour || x.TokenRestrictions.Rate == nil || x.TokenRestrictions.Rate.PerMinute != 6 || x.MaxActive != 3 ||
+		x.TokenRestrictions.Agents != nil || x.TokenRestrictions.Overrides != nil {
+		t.Fatalf("unrestricted mapping = %+v ttl %s max %d", x.TokenRestrictions, x.TokenTTL, x.MaxActive)
+	}
+	raw, err := yaml.Marshal(c.Auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back AuthConfig
+	if err := yaml.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	again := &Config{Auth: back}
+	again.Env.PublicURL = "https://lc.example"
+	if err := resolveAuth(again); err != nil || again.ResolvedAuth.Gates[0].External.TokenRestrictions.Rate == nil {
+		t.Fatalf("round trip lost the rate: %v\n%s", err, raw)
+	}
+	for _, bad := range []string{"{ unrestricted: true, agents: [chat] }", "{ unrestricted: true, overrides: [] }"} {
+		if _, err := load(bad); err == nil || !strings.Contains(err.Error(), "unrestricted") {
+			t.Errorf("%s: err = %v", bad, err)
+		}
+	}
+	if _, err := load("unrestricted"); err != nil {
+		t.Errorf("the scalar form: %v", err)
+	}
+}
