@@ -22,9 +22,22 @@ package audit
 // a row's MAC nor the head's can be replayed as an anchor to pass off deleted
 // rows as pruned ones.
 //
-// What it cannot show without an outside witness: a database writer who rolls
-// the tables back to an earlier, genuinely signed state (dropping the newest
-// rows AND restoring an older head). The JSONL mirror and the export are that
+// A chain that is deleted outright (head and rows) would otherwise read as a
+// tenant with no history, so a tenant chain's first append also writes a
+// signed ActionChainOpened row to the operator chain "" in the same
+// transaction. Verification of a tenant then breaks when the operator chain
+// records an opening but the chain has no head ("disappeared"), records two
+// (deleted and begun again), or records none while the operator chain is
+// unpruned (the operator chain itself deleted). A head missing or reset while
+// rows remain is a break too: rows past the head are reported.
+//
+// What it cannot show without an outside witness: a database writer who
+// deletes EVERY chain — the operator chain and all tenant chains — leaves an
+// empty audit store that verifies as empty; and one who rolls the tables back
+// to an earlier, genuinely signed state (dropping the newest rows AND
+// restoring an older head). A tenant chain deleted after the operator chain's
+// retention pruned its opening is likewise undetectable. The JSONL mirror
+// (LOOMCYCLE_AUDIT_LOG_PATH) and exports taken with GET /v1/_audit are that
 // witness.
 
 import (
@@ -35,6 +48,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -148,24 +162,136 @@ func (r VerifyReport) broken(seq int64, format string, args ...any) VerifyReport
 // verifyPage is how many rows verification reads at a time.
 const verifyPage = 500
 
+// ActionChainOpened is the operator-chain record of a tenant chain's first
+// append, written in the same transaction (store.AuditStore.AuditAppend).
+// Its Subject is the tenant.
+const ActionChainOpened = "audit_chain_opened"
+
+// Registry is what the operator chain says about the tenant chains: how
+// many times each was opened, and whether the operator chain has been
+// pruned (an opening older than the prune is no longer there to count).
+type Registry struct {
+	Openings map[string]int
+	Pruned   bool
+}
+
+// ReadRegistry reads the chain openings from the operator chain.
+func ReadRegistry(ctx context.Context, r ChainReader) (Registry, error) {
+	reg := Registry{Openings: map[string]int{}}
+	head, err := r.AuditHeadGet(ctx, "")
+	var nf *store.ErrNotFound
+	switch {
+	case errors.As(err, &nf):
+	case err != nil:
+		return reg, err
+	default:
+		reg.Pruned = head.AnchorSeq > 0
+	}
+	var after int64
+	for {
+		rows, err := r.AuditEventsList(ctx, "", after, verifyPage)
+		if err != nil {
+			return reg, err
+		}
+		for _, row := range rows {
+			if row.Action == ActionChainOpened {
+				reg.Openings[row.Subject]++
+			}
+			after = row.Seq
+		}
+		if len(rows) < verifyPage {
+			return reg, nil
+		}
+	}
+}
+
 // Verify walks a tenant's chain from its anchor to its head and reports the
 // first link that does not hold. An error is a failure to read, never a
 // break. The head is read first and rows past it are not walked, so appends
 // made during the walk do not read as a break; a prune made during it can,
 // and a re-run then passes.
+//
+// For a tenant chain it also asks the operator chain whether the tenant's
+// chain was opened, so a chain deleted outright — head and rows — is a
+// break, not a tenant with no history.
 func Verify(ctx context.Context, r ChainReader, keys ChainKeys, tenant string) (VerifyReport, error) {
+	var reg Registry
+	if tenant != "" {
+		var err error
+		if reg, err = ReadRegistry(ctx, r); err != nil {
+			return VerifyReport{Tenant: tenant}, err
+		}
+	}
+	return verifyChain(ctx, r, keys, tenant, reg)
+}
+
+// VerifyAll verifies the operator chain and every tenant chain the store or
+// the operator chain knows of, in tenant order.
+func VerifyAll(ctx context.Context, r ChainReader, keys ChainKeys, tenants []string) ([]VerifyReport, error) {
+	reg, err := ReadRegistry(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{"": true}
+	all := []string{""}
+	for _, t := range tenants {
+		if !seen[t] {
+			seen[t] = true
+			all = append(all, t)
+		}
+	}
+	for t := range reg.Openings {
+		if !seen[t] {
+			seen[t] = true
+			all = append(all, t)
+		}
+	}
+	sort.Strings(all)
+	out := make([]VerifyReport, 0, len(all))
+	for _, t := range all {
+		rep, err := verifyChain(ctx, r, keys, t, reg)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, rep)
+	}
+	return out, nil
+}
+
+func verifyChain(ctx context.Context, r ChainReader, keys ChainKeys, tenant string, reg Registry) (VerifyReport, error) {
 	rep := VerifyReport{Tenant: tenant, OK: true}
 	if len(keys.Current) == 0 {
 		return rep, errors.New("no audit chain key: set LOOMCYCLE_SECRET_KEY")
 	}
 	head, err := r.AuditHeadGet(ctx, tenant)
 	var nf *store.ErrNotFound
+	found := true
 	if errors.As(err, &nf) {
-		head = store.AuditHead{TenantID: tenant}
+		head, found = store.AuditHead{TenantID: tenant}, false
 	} else if err != nil {
 		return rep, err
 	}
 	rep.AnchorSeq, rep.HeadSeq = head.AnchorSeq, head.Seq
+	if !found {
+		// No head is an empty chain only if there are no rows either.
+		rows, err := r.AuditEventsList(ctx, tenant, 0, 1)
+		if err != nil {
+			return rep, err
+		}
+		if len(rows) > 0 {
+			return rep.broken(rows[0].Seq, "the chain has rows but no head"), nil
+		}
+	}
+	if tenant != "" {
+		switch n := reg.Openings[tenant]; {
+		case n > 1:
+			return rep.broken(1, "the chain was opened again %d times: its earlier history was removed", n-1), nil
+		case n == 1 && !found:
+			return rep.broken(1, "the chain disappeared: the operator chain records its opening, but it has no head"), nil
+		case n == 0 && found && !reg.Pruned:
+			return rep.broken(1, "the operator chain has no record of this chain's opening"), nil
+		}
+	}
 	if head.AnchorSeq > 0 && !keys.check(head.AnchorMAC, macAnchor, tenant, head.AnchorSeq, head.AnchorHash) {
 		return rep.broken(head.AnchorSeq, "the retention anchor's signature does not verify"), nil
 	}
@@ -207,12 +333,27 @@ func Verify(ctx context.Context, r ChainReader, keys ChainKeys, tenant string) (
 	if head.Seq > 0 && !keys.check(head.MAC, macHead, tenant, head.Seq, head.Hash) {
 		return rep.broken(head.Seq, "the head's signature does not verify"), nil
 	}
+	// Rows past the head: an append since the head was read moved the head
+	// too; a head moved back over rows that remain did not.
+	past, err := r.AuditEventsList(ctx, tenant, head.Seq, 1)
+	if err != nil {
+		return rep, err
+	}
+	if len(past) > 0 {
+		now, err := r.AuditHeadGet(ctx, tenant)
+		if err != nil && !errors.As(err, &nf) {
+			return rep, err
+		}
+		if err != nil || now.Seq < past[0].Seq {
+			return rep.broken(past[0].Seq, "row %d lies past the chain's head (at %d)", past[0].Seq, head.Seq), nil
+		}
+	}
 	return rep, nil
 }
 
 // Appender is the store surface a StoreSink writes through.
 type Appender interface {
-	AuditAppend(ctx context.Context, row store.AuditEventRow, seal store.AuditSealFunc) (store.AuditEventRow, error)
+	AuditAppend(ctx context.Context, row store.AuditEventRow, seal store.AuditSealFunc, opened *store.AuditEventRow) (store.AuditEventRow, error)
 }
 
 // storeAppendTimeout bounds one append, since Sink.Record carries no context:
@@ -250,11 +391,31 @@ func (s *StoreSink) Record(ev Event) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), storeAppendTimeout)
 	defer cancel()
-	_, err = s.store.AuditAppend(ctx, RowFor(ev, payload), s.keys.Seal())
-	if err != nil {
+	row := RowFor(ev, payload)
+	var opened *store.AuditEventRow
+	if row.TenantID != "" {
+		o, err := openedRow(row.TenantID, ev.TS)
+		if err != nil {
+			return err
+		}
+		opened = &o
+	}
+	if _, err := s.store.AuditAppend(ctx, row, s.keys.Seal(), opened); err != nil {
 		return fmt.Errorf("audit: append: %w", err)
 	}
 	return nil
+}
+
+// openedRow is the operator-chain record that tenant's chain exists.
+func openedRow(tenant string, ts time.Time) (store.AuditEventRow, error) {
+	ev := Event{TS: ts, Action: ActionChainOpened, TargetTenant: tenant}
+	payload, err := json.Marshal(ev)
+	if err != nil {
+		return store.AuditEventRow{}, fmt.Errorf("audit: marshal: %w", err)
+	}
+	row := RowFor(ev, payload)
+	row.TenantID, row.Subject = "", tenant
+	return row, nil
 }
 
 // ChainTenant is the chain an event belongs to: the tenant it acted on, else

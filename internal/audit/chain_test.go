@@ -138,6 +138,31 @@ func TestAudit_ATamperedRowFailsVerification(t *testing.T) {
 		{"the oldest rows deleted without an anchor", func(t *testing.T, s *sqlite.Store, db *sql.DB) {
 			exec(t, db, `DELETE FROM audit_events WHERE tenant_id = 't1' AND seq <= 2`)
 		}, 1, "missing"},
+		{"the head deleted, its rows kept", func(t *testing.T, s *sqlite.Store, db *sql.DB) {
+			exec(t, db, `DELETE FROM audit_heads WHERE tenant_id = 't1'`)
+		}, 1, "head"},
+		{"the head reset to zero, its rows kept", func(t *testing.T, s *sqlite.Store, db *sql.DB) {
+			exec(t, db, `UPDATE audit_heads SET seq = 0, hash = '', mac = '' WHERE tenant_id = 't1'`)
+		}, 1, "head"},
+		{"the whole chain deleted", func(t *testing.T, s *sqlite.Store, db *sql.DB) {
+			exec(t, db, `DELETE FROM audit_events WHERE tenant_id = 't1'`)
+			exec(t, db, `DELETE FROM audit_heads WHERE tenant_id = 't1'`)
+		}, 1, "disappeared"},
+		{"the operator chain deleted", func(t *testing.T, s *sqlite.Store, db *sql.DB) {
+			exec(t, db, `DELETE FROM audit_events WHERE tenant_id = ''`)
+			exec(t, db, `DELETE FROM audit_heads WHERE tenant_id = ''`)
+		}, 1, "no record"},
+		{"the whole chain deleted and a new one begun", func(t *testing.T, s *sqlite.Store, db *sql.DB) {
+			exec(t, db, `DELETE FROM audit_events WHERE tenant_id = 't1'`)
+			exec(t, db, `DELETE FROM audit_heads WHERE tenant_id = 't1'`)
+			sink, err := audit.NewStoreSink(s, testKeys)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sink.Record(audit.Event{Action: "auth_login", TargetTenant: "t1"}); err != nil {
+				t.Fatal(err)
+			}
+		}, 1, "opened again"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -19,8 +19,9 @@ const auditListDefault = 500
 // AuditAppend implements store.AuditStore. The head row is created if absent
 // (a concurrent creator waits on the primary key, then does nothing) and
 // then locked FOR UPDATE, so every appender to one tenant — on any replica —
-// reads the head only after the previous append committed.
-func (s *Store) AuditAppend(ctx context.Context, row store.AuditEventRow, seal store.AuditSealFunc) (store.AuditEventRow, error) {
+// reads the head only after the previous append committed. A new tenant's
+// head is locked before the operator chain's (opened), always in that order.
+func (s *Store) AuditAppend(ctx context.Context, row store.AuditEventRow, seal store.AuditSealFunc, opened *store.AuditEventRow) (store.AuditEventRow, error) {
 	if row.Action == "" || seal == nil {
 		return store.AuditEventRow{}, fmt.Errorf("audit append: action and seal are required")
 	}
@@ -29,15 +30,49 @@ func (s *Store) AuditAppend(ctx context.Context, row store.AuditEventRow, seal s
 		return store.AuditEventRow{}, fmt.Errorf("audit append: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO audit_heads (tenant_id) VALUES ($1) ON CONFLICT (tenant_id) DO NOTHING`, row.TenantID); err != nil {
-		return store.AuditEventRow{}, fmt.Errorf("audit append: head: %w", err)
+	created, err := auditLockHead(ctx, tx, row.TenantID)
+	if err != nil {
+		return store.AuditEventRow{}, err
 	}
+	if created && opened != nil && opened.TenantID != row.TenantID {
+		if _, err := auditLockHead(ctx, tx, opened.TenantID); err != nil {
+			return store.AuditEventRow{}, err
+		}
+		if _, err := auditAppendLocked(ctx, tx, *opened, seal); err != nil {
+			return store.AuditEventRow{}, err
+		}
+	}
+	if row, err = auditAppendLocked(ctx, tx, row, seal); err != nil {
+		return store.AuditEventRow{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.AuditEventRow{}, fmt.Errorf("audit append: commit: %w", err)
+	}
+	return row, nil
+}
+
+// auditLockHead creates a tenant's head if it has none and locks it for the
+// rest of the transaction, reporting whether it was created.
+func auditLockHead(ctx context.Context, tx pgx.Tx, tenantID string) (bool, error) {
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO audit_heads (tenant_id) VALUES ($1) ON CONFLICT (tenant_id) DO NOTHING`, tenantID)
+	if err != nil {
+		return false, fmt.Errorf("audit append: head: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM audit_heads WHERE tenant_id = $1 FOR UPDATE`, tenantID); err != nil {
+		return false, fmt.Errorf("audit append: lock head: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// auditAppendLocked appends one row to a chain whose head the caller holds
+// locked.
+func auditAppendLocked(ctx context.Context, tx pgx.Tx, row store.AuditEventRow, seal store.AuditSealFunc) (store.AuditEventRow, error) {
 	var headSeq int64
 	var headHash string
 	if err := tx.QueryRow(ctx,
-		`SELECT seq, hash FROM audit_heads WHERE tenant_id = $1 FOR UPDATE`, row.TenantID).Scan(&headSeq, &headHash); err != nil {
-		return store.AuditEventRow{}, fmt.Errorf("audit append: lock head: %w", err)
+		`SELECT seq, hash FROM audit_heads WHERE tenant_id = $1`, row.TenantID).Scan(&headSeq, &headHash); err != nil {
+		return store.AuditEventRow{}, fmt.Errorf("audit append: read head: %w", err)
 	}
 	row.Seq, row.PrevHash = headSeq+1, headHash
 	headMAC, err := seal(&row)
@@ -55,9 +90,6 @@ func (s *Store) AuditAppend(ctx context.Context, row store.AuditEventRow, seal s
 		`UPDATE audit_heads SET seq = $1, hash = $2, mac = $3 WHERE tenant_id = $4`,
 		row.Seq, row.Hash, headMAC, row.TenantID); err != nil {
 		return store.AuditEventRow{}, fmt.Errorf("audit append: move head: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return store.AuditEventRow{}, fmt.Errorf("audit append: commit: %w", err)
 	}
 	return row, nil
 }

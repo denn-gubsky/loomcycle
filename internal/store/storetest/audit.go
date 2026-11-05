@@ -77,8 +77,13 @@ func testAuditEveryReplicaWritesOneChainPerTenant(t *testing.T, a, b store.Store
 	for err := range errs {
 		t.Fatalf("append: %v", err)
 	}
-	want := int64(len(sinks) * 2 * perWriter)
 	for _, tenant := range tenants {
+		want := int64(len(sinks) * 2 * perWriter)
+		if tenant == "" {
+			// Plus one opening record per tenant chain, written exactly once
+			// however many replicas raced to the first append.
+			want += 2
+		}
 		for _, s := range []store.Store{a, b} {
 			rep, err := audit.Verify(ctx, s, auditTestKeys, tenant)
 			if err != nil {
@@ -88,6 +93,13 @@ func testAuditEveryReplicaWritesOneChainPerTenant(t *testing.T, a, b store.Store
 				t.Errorf("tenant %q: report %+v, want an unbroken chain of %d rows", tenant, rep, want)
 			}
 		}
+	}
+	reg, err := audit.ReadRegistry(ctx, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.Openings["t1"] != 1 || reg.Openings["t2"] != 1 || len(reg.Openings) != 2 {
+		t.Errorf("chain openings = %v, want t1 and t2 once each", reg.Openings)
 	}
 	got, err := a.AuditTenants(ctx)
 	if err != nil {
@@ -104,8 +116,11 @@ func testAuditPruneKeepsTheChainVerifiable(t *testing.T, a, b store.Store) {
 	ctx := context.Background()
 	appendAt := func(s store.Store, ts time.Time, subject string) {
 		t.Helper()
-		row := audit.RowFor(audit.Event{TS: ts, Action: "acl_edit", ActorTenant: "t1", ActorSubject: subject}, []byte(`{}`))
-		if _, err := s.AuditAppend(ctx, row, auditTestKeys.Seal()); err != nil {
+		sink, err := audit.NewStoreSink(s, auditTestKeys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sink.Record(audit.Event{TS: ts, Action: "acl_edit", ActorTenant: "t1", ActorSubject: subject}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -157,7 +172,7 @@ func testAuditHeadAndListRoundTrip(t *testing.T, a, b store.Store) {
 	ts := time.Date(2026, 11, 5, 10, 11, 12, 987654321, time.UTC)
 	row := audit.RowFor(audit.Event{TS: ts, Action: "auth_login", TargetTenant: "t1", ActorSubject: "alice",
 		TargetSubject: "bob"}, []byte(`{"action":"auth_login"}`))
-	written, err := a.AuditAppend(ctx, row, auditTestKeys.Seal())
+	written, err := a.AuditAppend(ctx, row, auditTestKeys.Seal(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

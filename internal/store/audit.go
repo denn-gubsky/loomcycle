@@ -67,7 +67,14 @@ type AuditStore interface {
 	// the row and moves the head. Two appenders on one tenant — on one
 	// replica or two — are serialized by the head lock, so the chain never
 	// forks. It returns the row as written.
-	AuditAppend(ctx context.Context, row AuditEventRow, seal AuditSealFunc) (AuditEventRow, error)
+	//
+	// When this append creates the tenant's head and opened is non-nil,
+	// opened is appended first, in the same transaction, to the chain it
+	// names (the operator chain): a signed record that this tenant's chain
+	// exists, so deleting the chain outright reads as a break rather than as
+	// a tenant that never had one. The tenant's head is always locked before
+	// the operator chain's, so two such appends cannot deadlock.
+	AuditAppend(ctx context.Context, row AuditEventRow, seal AuditSealFunc, opened *AuditEventRow) (AuditEventRow, error)
 	// AuditHeadGet returns a tenant's head, or *ErrNotFound when the tenant
 	// has no chain.
 	AuditHeadGet(ctx context.Context, tenantID string) (AuditHead, error)

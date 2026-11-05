@@ -17,7 +17,7 @@ const auditListDefault = 500
 // connection takes the database write lock before the head is read, so two
 // appenders — two connections here, or two processes on one file — read the
 // head one after the other and never both extend the same row.
-func (s *Store) AuditAppend(ctx context.Context, row store.AuditEventRow, seal store.AuditSealFunc) (store.AuditEventRow, error) {
+func (s *Store) AuditAppend(ctx context.Context, row store.AuditEventRow, seal store.AuditSealFunc, opened *store.AuditEventRow) (store.AuditEventRow, error) {
 	if row.Action == "" || seal == nil {
 		return store.AuditEventRow{}, fmt.Errorf("audit append: action and seal are required")
 	}
@@ -35,10 +35,45 @@ func (s *Store) AuditAppend(ctx context.Context, row store.AuditEventRow, seal s
 			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 		}
 	}()
-	if _, err := conn.ExecContext(ctx,
-		`INSERT INTO audit_heads (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO NOTHING`, row.TenantID); err != nil {
-		return store.AuditEventRow{}, fmt.Errorf("audit append: head: %w", err)
+	created, err := auditEnsureHead(ctx, conn, row.TenantID)
+	if err != nil {
+		return store.AuditEventRow{}, err
 	}
+	if created && opened != nil && opened.TenantID != row.TenantID {
+		if _, err := auditEnsureHead(ctx, conn, opened.TenantID); err != nil {
+			return store.AuditEventRow{}, err
+		}
+		if _, err := auditAppendLocked(ctx, conn, *opened, seal); err != nil {
+			return store.AuditEventRow{}, err
+		}
+	}
+	if row, err = auditAppendLocked(ctx, conn, row, seal); err != nil {
+		return store.AuditEventRow{}, err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return store.AuditEventRow{}, fmt.Errorf("audit append: commit: %w", err)
+	}
+	committed = true
+	return row, nil
+}
+
+// auditEnsureHead creates a tenant's head if it has none, reporting whether
+// it did.
+func auditEnsureHead(ctx context.Context, conn *sql.Conn, tenantID string) (bool, error) {
+	res, err := conn.ExecContext(ctx,
+		`INSERT INTO audit_heads (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO NOTHING`, tenantID)
+	if err != nil {
+		return false, fmt.Errorf("audit append: head: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("audit append: head: %w", err)
+	}
+	return n > 0, nil
+}
+
+// auditAppendLocked appends one row under the write lock the caller holds.
+func auditAppendLocked(ctx context.Context, conn *sql.Conn, row store.AuditEventRow, seal store.AuditSealFunc) (store.AuditEventRow, error) {
 	var headSeq int64
 	var headHash string
 	if err := conn.QueryRowContext(ctx,
@@ -62,10 +97,6 @@ func (s *Store) AuditAppend(ctx context.Context, row store.AuditEventRow, seal s
 		row.Seq, row.Hash, headMAC, row.TenantID); err != nil {
 		return store.AuditEventRow{}, fmt.Errorf("audit append: move head: %w", err)
 	}
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return store.AuditEventRow{}, fmt.Errorf("audit append: commit: %w", err)
-	}
-	committed = true
 	return row, nil
 }
 
