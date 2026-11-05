@@ -309,6 +309,11 @@ func canQueryResource(q canQuery) (authz.Resource, error) {
 		spec, _ := authz.TypeSpecOf(q.Resource.Type)
 		return authz.Resource{}, fmt.Errorf("%q is not an action on %s (one of: %v)", q.Action, q.Resource.Type, spec.Verbs)
 	}
+	// No surface asks it, so no rule on it decides anything: refused, as the
+	// HTTP twin refuses it, rather than answered (RFC FY Part E).
+	if !authz.IsEnforced(q.Resource.Type, q.Action) {
+		return authz.Resource{}, &authz.NotEnforceableError{Verb: q.Action, Type: q.Resource.Type}
+	}
 	name := q.Resource.ID
 	if name == "" {
 		name = authz.AnyInstance

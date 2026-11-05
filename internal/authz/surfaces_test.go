@@ -223,3 +223,29 @@ func TestEvaluate_PerMode(t *testing.T) {
 		t.Error("ctx defaults")
 	}
 }
+
+// The gate fills the clock and the transport it decides with: a deny bound to
+// a transport holds there and nowhere else, and a time window is read
+// against the gate's own clock.
+func TestEvaluate_TheGateSuppliesTheClockAndTheTransport(t *testing.T) {
+	everyDay := []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+	acl := ACL{Name: "d", Rules: []Rule{
+		{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:*"}, When: &Condition{Transport: []string{"grpc"}}},
+		{Effect: Deny, Actions: []string{"steer"}, Resources: []string{"run:*"}, When: &Condition{Time: &TimeWindow{Days: everyDay}}},
+	}}
+	eff, err := Compile(Input{Subject: Subject{TenantID: "t", ID: "u"}, Bindings: []Binding{{ACL: "d", SubjectKind: SubjectTenant}},
+		ACLs: map[string]ACLVersion{"d": {ACL: acl}}, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithMode(context.Background(), ModeCompat)
+	if EvaluateSurface(WithTransport(ctx, "grpc"), eff, typeLevel("read", "run"), true).Allowed {
+		t.Error("a deny bound to grpc did not hold on grpc")
+	}
+	if !EvaluateSurface(WithTransport(ctx, "http"), eff, typeLevel("read", "run"), true).Allowed {
+		t.Error("a deny bound to grpc held on http")
+	}
+	if EvaluateSurface(WithTransport(ctx, "http"), eff, typeLevel("steer", "run"), true).Allowed {
+		t.Error("a deny for every day of the week did not hold: the gate supplied no clock")
+	}
+}

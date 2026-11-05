@@ -64,8 +64,10 @@ var (
 
 // catalog is the closed set (RFC EY §3.3, owner decision D8: every primitive
 // a principal can reach has a type here). Adding a type or a verb is a code
-// change; TestCatalog_* pins the shape, and the surfaces' census tests
-// (RFC EZ §2) hold that every pair is enforced somewhere.
+// change; TestCatalog_* pins the shape, and the enforcement table
+// (enforced.go) classifies every pair: asked by a named site, or refused at
+// write until one asks it. TestACLCatalog_EveryPairIsEnforcedSomewhere and
+// the transports' censuses hold the table to the code.
 var catalog = []TypeSpec{
 	globType("agent", "run", "read", "spawn", "steer", "cancel", "review"),
 	globType("volume", "read", "write", "provision", "mount"),

@@ -309,6 +309,13 @@ var runPlaneTools = map[string]bool{
 	"get_run":              true, "list_runs": true, "stream_user_run_states": true,
 }
 
+// mcpToolQuestions is every ACL question the per-tool gate asks of toolName.
+// The enforcement census (TestACLEnforcement_MetaToolsAskWhatTheTableSays)
+// reads it, so the table and the gate cannot disagree.
+func mcpToolQuestions(toolName string) []authz.Surface {
+	return []authz.Surface{authz.MCPToolSurface(toolName)}
+}
+
 func principalMayCallTool(ctx context.Context, toolName string) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !ok {
@@ -322,9 +329,11 @@ func principalMayCallTool(ctx context.Context, toolName string) bool {
 	// RFC EY: an explicit ACL deny on the meta-tool holds for every class,
 	// admin included (deny overrides); in enforce mode an unmatched tool is
 	// refused and an unavailable set refuses everything.
-	res := authz.EvaluateSurface(ctx, p.Effective, authz.MCPToolSurface(toolName), true)
-	if res.Unavailable || !res.Allowed {
-		return false
+	for _, q := range mcpToolQuestions(toolName) {
+		res := authz.EvaluateSurface(ctx, p.Effective, q, true)
+		if res.Unavailable || !res.Allowed {
+			return false
+		}
 	}
 	if auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 		return true

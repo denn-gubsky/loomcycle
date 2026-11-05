@@ -695,6 +695,14 @@ func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) 
 		if len(req.Rules) == 0 {
 			return aclFail(http.StatusBadRequest, "missing_rules", "rules are required")
 		}
+		// RFC FY Part E: a rule no surface evaluates would be stored and
+		// decide nothing. A list that does not parse is left to the store,
+		// which reports it as before.
+		if rules, err := authz.ParseRules(req.Rules); err == nil {
+			if r := notEnforceable(authz.RulesNotEnforceable(rules)); r != nil {
+				return *r
+			}
+		}
 		row, err := s.store.AclDefPut(ctx, store.AclDefRow{TenantID: tenant, Name: strings.TrimSpace(req.Name), Rules: req.Rules, Description: req.Description, CreatedBy: principalSubject(ctx)})
 		if err != nil {
 			return aclStoreError(err, "acl")
@@ -705,6 +713,9 @@ func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) 
 		rules, err := authz.ParseRules(req.Rules)
 		if err != nil {
 			return aclFail(http.StatusBadRequest, "acl_invalid", err.Error())
+		}
+		if r := notEnforceable(authz.RulesNotEnforceable(rules)); r != nil {
+			return *r
 		}
 		return aclOK(map[string]any{"valid": true, "rules": len(rules), "catalog_version": authz.CatalogVersion})
 	case "get":
@@ -924,7 +935,14 @@ func catalogTypes() []map[string]any {
 	var out []map[string]any
 	for _, name := range authz.Types() {
 		spec, _ := authz.TypeSpecOf(name)
-		entry := map[string]any{"type": name, "verbs": spec.Verbs}
+		// Only what a rule may be written with: a verb no surface asks is
+		// refused at write (RFC FY Part E), so a picker built from this
+		// listing never offers one.
+		verbs := authz.EnforcedVerbs(name)
+		if len(verbs) == 0 {
+			continue
+		}
+		entry := map[string]any{"type": name, "verbs": verbs}
 		if len(spec.Scopes) > 0 {
 			entry["scopes"] = spec.Scopes
 			if spec.Sep != 0 {
@@ -1152,6 +1170,37 @@ type authzContextRef struct {
 	Depth       int    `json:"depth,omitempty"`
 }
 
+// unenforcedField names a set field of c that no surface fills, or "".
+func (c *authzContextRef) unenforcedField() string {
+	set := map[string]bool{"interactive": c.Interactive, "tier": c.Tier != "", "user_tier": c.UserTier != "", "agent": c.Agent != "", "depth": c.Depth != 0}
+	for _, f := range []string{"interactive", "tier", "user_tier", "agent", "depth"} {
+		if set[f] && !authz.IsConditionEnforced(f) {
+			return f
+		}
+	}
+	return ""
+}
+
+// notEnforceable is the refusal of a rule or a question no surface
+// evaluates (RFC FY Part E), or nil when err is nil.
+func notEnforceable(err error) *aclReply {
+	if err == nil {
+		return nil
+	}
+	r := aclFail(http.StatusBadRequest, "rule_not_enforceable", err.Error())
+	return &r
+}
+
+// authzRequestReply is the refusal of a malformed question: invalid_request,
+// or rule_not_enforceable for one no surface asks.
+func authzRequestReply(prefix string, err error) aclReply {
+	var ne *authz.NotEnforceableError
+	if errors.As(err, &ne) {
+		return aclFail(http.StatusBadRequest, "rule_not_enforceable", prefix+err.Error())
+	}
+	return aclFail(http.StatusBadRequest, "invalid_request", prefix+err.Error())
+}
+
 type authzEvaluationRequest struct {
 	Subject  *authzSubjectRef  `json:"subject,omitempty"`
 	Action   *authzActionRef   `json:"action,omitempty"`
@@ -1226,6 +1275,16 @@ func authzRequestFrom(eff *authz.Effective, in authzEvaluationRequest, ctx conte
 	if !authz.ValidVerb(in.Resource.Type, in.Action.Name) {
 		return authz.Request{}, fmt.Errorf("%q is not a verb of %s", in.Action.Name, in.Resource.Type)
 	}
+	// The question is answered as a gate would answer it, so one no gate
+	// asks is refused, as a rule naming it is (RFC FY Part E).
+	if !authz.IsEnforced(in.Resource.Type, in.Action.Name) {
+		return authz.Request{}, &authz.NotEnforceableError{Verb: in.Action.Name, Type: in.Resource.Type}
+	}
+	if in.Context != nil {
+		if f := in.Context.unenforcedField(); f != "" {
+			return authz.Request{}, &authz.NotEnforceableError{Condition: f}
+		}
+	}
 	name := in.Resource.ID
 	if name == "" {
 		name = authz.AnyInstance
@@ -1282,7 +1341,7 @@ func (s *Server) authzEvaluation(ctx context.Context, focus string, req authzEva
 	}
 	areq, err := authzRequestFrom(eff, req, ctx)
 	if err != nil {
-		return aclFail(http.StatusBadRequest, "invalid_request", err.Error())
+		return authzRequestReply("", err)
 	}
 	return aclOK(decisionWire(ctx, eff.Decide(areq)))
 }
@@ -1311,7 +1370,7 @@ func (s *Server) authzEvaluations(ctx context.Context, focus string, req authzEv
 		}
 		areq, err := authzRequestFrom(eff, e, ctx)
 		if err != nil {
-			return aclFail(http.StatusBadRequest, "invalid_request", fmt.Sprintf("evaluations[%d]: %v", i, err))
+			return authzRequestReply(fmt.Sprintf("evaluations[%d]: ", i), err)
 		}
 		reqs = append(reqs, areq)
 	}
@@ -1336,7 +1395,7 @@ func (s *Server) authzExplain(ctx context.Context, focus string, req authzEvalua
 	}
 	areq, err := authzRequestFrom(eff, req, ctx)
 	if err != nil {
-		return aclFail(http.StatusBadRequest, "invalid_request", err.Error())
+		return authzRequestReply("", err)
 	}
 	ex := eff.Explain(areq)
 	return aclOK(map[string]any{"decision": decisionWire(ctx, ex.Decision), "traces": ex.Traces, "missing_acls": ex.Missing, "applied_bindings": ex.Applied, "groups": eff.Subject.Groups})
@@ -1368,6 +1427,9 @@ func (s *Server) authzSimulate(ctx context.Context, focus string, req authzSimul
 		if err := a.Validate(); err != nil {
 			return aclFail(http.StatusBadRequest, "acl_invalid", err.Error())
 		}
+		if r := notEnforceable(authz.RulesNotEnforceable(a.Rules)); r != nil {
+			return *r
+		}
 		in.ACLs[a.Name] = authz.ACLVersion{ACL: a, Version: 0}
 	}
 	for _, b := range req.Bindings {
@@ -1384,7 +1446,7 @@ func (s *Server) authzSimulate(ctx context.Context, focus string, req authzSimul
 	for i, e := range req.Requests {
 		areq, err := authzRequestFrom(draft, e, ctx)
 		if err != nil {
-			return aclFail(http.StatusBadRequest, "invalid_request", fmt.Sprintf("requests[%d]: %v", i, err))
+			return authzRequestReply(fmt.Sprintf("requests[%d]: ", i), err)
 		}
 		now, after := eff.Decide(areq), draft.Decide(areq)
 		out = append(out, map[string]any{"request": e, "now": decisionWire(ctx, now), "with_draft": decisionWire(ctx, after), "changed": now.Outcome != after.Outcome})

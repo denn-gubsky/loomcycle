@@ -265,6 +265,7 @@ func (b *boot) wireAuth() {
 	}
 	aclResolver := aclres.New(storeIface, aclMode, time.Duration(cfg.Env.ACLCacheTTLSeconds)*time.Second)
 	srv.SetACLResolver(aclResolver)
+	srv.ReportUnenforceableACLs(context.Background())
 	// The Identity tool compiles another person's set (can, explain) and
 	// reads the config-declared groups through the same resolver.
 	b.identityTool.ACL = aclResolver
