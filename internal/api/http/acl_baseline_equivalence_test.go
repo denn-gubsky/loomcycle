@@ -53,11 +53,13 @@ import (
 // eqClass is one principal class of the matrix: a token's scopes and, for a
 // credential limited to certain agents (RFC EF), its agent allowlist.
 type eqClass struct {
-	name    string
-	scopes  []string
-	agents  []string
-	legacy  bool // the LOOMCYCLE_AUTH_TOKEN secret, not a minted token
-	maximal bool // the widest token of its class: the widening direction is asserted for it
+	name   string
+	scopes []string
+	agents []string
+	// surfaces are the off-run surfaces granted beside agents (RFC GA).
+	surfaces []string
+	legacy   bool // the LOOMCYCLE_AUTH_TOKEN secret, not a minted token
+	maximal  bool // the widest token of its class: the widening direction is asserted for it
 }
 
 // The non-tenant scopes a member or an isolated user can be granted.
@@ -76,6 +78,7 @@ func eqClasses() []eqClass {
 		{name: "member-channels", scopes: []string{auth.ScopeChannelPublish, auth.ScopeChannelRead}},
 		{name: "member-none", scopes: []string{}},
 		{name: "member+runplane", scopes: eqMemberScopes, agents: []string{"chat"}},
+		{name: "member+runplane+voice", scopes: eqMemberScopes, agents: []string{"chat"}, surfaces: []string{auth.SurfaceSpeech, auth.SurfaceTranscription}},
 		{name: "isolated-full", scopes: append([]string{auth.ScopeUser}, eqMemberScopes...), maximal: true},
 		{name: "isolated", scopes: []string{auth.ScopeUser}},
 		{name: "isolated+runplane", scopes: append([]string{auth.ScopeUser}, eqMemberScopes...), agents: []string{"chat"}},
@@ -227,7 +230,7 @@ func eqServers(t *testing.T, mode *authz.Mode) (main, admin *Server) {
 			}
 			restrictions := ""
 			if len(c.agents) > 0 {
-				raw, err := json.Marshal(auth.Restrictions{Agents: c.agents})
+				raw, err := json.Marshal(auth.Restrictions{Agents: c.agents, Surfaces: c.surfaces})
 				if err != nil {
 					t.Fatal(err)
 				}

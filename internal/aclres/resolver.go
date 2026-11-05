@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -140,25 +142,47 @@ const runPlaneSuffix = "+runplane"
 
 // ClassKey is the class a principal's set is compiled and cached for: its
 // baseline class (Class), with runPlaneSuffix when the token is confined to
-// the run plane. It is what authz.Subject.Class records, so a set can be
-// compiled again for the same subject without its principal (ResolveSubject).
+// the run plane, and then the off-run surfaces it was granted, sorted
+// (":speech,transcription"; RFC GA). It is what authz.Subject.Class records,
+// so a set can be compiled again for the same subject without its principal
+// (ResolveSubject), and two tokens with different grants never share a
+// cached set.
 func ClassKey(p auth.Principal) string {
 	class := Class(p)
 	if p.Restrictions.RunPlaneOnly() {
 		class += runPlaneSuffix
+		if len(p.Restrictions.Surfaces) > 0 {
+			surfaces := append([]string(nil), p.Restrictions.Surfaces...)
+			sort.Strings(surfaces)
+			class += ":" + strings.Join(surfaces, ",")
+		}
 	}
 	return class
 }
 
-// splitClassKey reads a class key back: the baseline class and whether the
-// run-plane list applies. ok is false for a key ClassKey never produces.
-func splitClassKey(key string) (class string, runPlane, ok bool) {
-	class, runPlane = strings.CutSuffix(key, runPlaneSuffix)
+// splitClassKey reads a class key back: the baseline class, whether the
+// run-plane list applies, and the surfaces granted beside it. ok is false for
+// a key ClassKey never produces, a surface this build does not know among
+// them.
+func splitClassKey(key string) (class string, runPlane bool, surfaces []string, ok bool) {
+	class, rest, runPlane := strings.Cut(key, runPlaneSuffix)
+	if runPlane && rest != "" {
+		list, found := strings.CutPrefix(rest, ":")
+		if !found || list == "" {
+			return "", false, nil, false
+		}
+		surfaces = strings.Split(list, ",")
+		for _, s := range surfaces {
+			if !authz.IsGatewayKind(s) || !slices.Contains(auth.KnownSurfaces, s) {
+				return "", false, nil, false
+			}
+		}
+	}
 	switch class {
 	case "admin", "tenant", "isolated", "member", "authmanager", "scimprovisioner":
-		return class, runPlane, true
+		return class, runPlane, surfaces, true
 	}
-	return "", false, false
+	return "", false, nil, false
 }
 
 func baselineName(class string) string {
@@ -207,7 +231,7 @@ func (r *Resolver) ResolveSubject(ctx context.Context, subj authz.Subject) (*aut
 	if subj.ID == "" {
 		return nil, errors.New("subject has no id")
 	}
-	if _, _, ok := splitClassKey(subj.Class); !ok {
+	if _, _, _, ok := splitClassKey(subj.Class); !ok {
 		return nil, fmt.Errorf("subject class %q is not one this resolver compiles", subj.Class)
 	}
 	return r.resolve(ctx, subj)
@@ -275,7 +299,7 @@ func (r *Resolver) version(ctx context.Context, tenant string) (int64, error) {
 // as a member). A class this resolver does not compile is an error, never a
 // guess at a baseline. subj.Groups is recomputed.
 func (r *Resolver) Input(ctx context.Context, subj authz.Subject) (authz.Input, error) {
-	if _, _, ok := splitClassKey(subj.Class); !ok {
+	if _, _, _, ok := splitClassKey(subj.Class); !ok {
 		return authz.Input{}, fmt.Errorf("subject class %q is not one this resolver compiles", subj.Class)
 	}
 	subj = authz.Subject{TenantID: subj.TenantID, ID: subj.ID, TokenDefID: subj.TokenDefID, Class: subj.Class}
@@ -291,7 +315,7 @@ func (r *Resolver) Input(ctx context.Context, subj authz.Subject) (authz.Input, 
 // store read. The caller falls back to it when the store cannot be read, so
 // the baseline's explicit denies still hold (RFC FY Part E).
 func (r *Resolver) StaticBaseline(p auth.Principal) (*authz.Effective, error) {
-	class, runPlane, ok := splitClassKey(ClassKey(p))
+	class, runPlane, surfaces, ok := splitClassKey(ClassKey(p))
 	if !ok {
 		return nil, fmt.Errorf("principal class %q is not one this resolver compiles", ClassKey(p))
 	}
@@ -306,7 +330,7 @@ func (r *Resolver) StaticBaseline(p auth.Principal) (*authz.Effective, error) {
 	}
 	if runPlane {
 		in.Bindings = append(in.Bindings, authz.Binding{ACL: authz.BaselineRunPlane, SubjectKind: authz.SubjectTenant})
-		in.ACLs[authz.BaselineRunPlane] = authz.ACLVersion{ACL: baselines[authz.BaselineRunPlane]}
+		in.ACLs[authz.BaselineRunPlane] = authz.ACLVersion{ACL: authz.RunPlaneGranting(surfaces)}
 	}
 	return authz.Compile(in)
 }
@@ -322,7 +346,7 @@ func (r *Resolver) compile(ctx context.Context, subj authz.Subject, version int6
 // input assembles what Compile is given for subj; subj.Class (a ClassKey)
 // picks the baseline, and subj.Groups is recomputed.
 func (r *Resolver) input(ctx context.Context, subj authz.Subject, version int64) (authz.Input, error) {
-	class, runPlane, ok := splitClassKey(subj.Class)
+	class, runPlane, surfaces, ok := splitClassKey(subj.Class)
 	if !ok {
 		return authz.Input{}, fmt.Errorf("subject class %q is not one this resolver compiles", subj.Class)
 	}
@@ -362,7 +386,7 @@ func (r *Resolver) input(ctx context.Context, subj authz.Subject, version int64)
 	in.ACLs[base] = authz.ACLVersion{ACL: baselines[base]}
 	if runPlane {
 		in.Bindings = append(in.Bindings, authz.Binding{ACL: authz.BaselineRunPlane, SubjectKind: authz.SubjectTenant})
-		in.ACLs[authz.BaselineRunPlane] = authz.ACLVersion{ACL: baselines[authz.BaselineRunPlane]}
+		in.ACLs[authz.BaselineRunPlane] = authz.ACLVersion{ACL: authz.RunPlaneGranting(surfaces)}
 	}
 	for _, row := range rows {
 		in.Bindings = append(in.Bindings, authz.Binding{ID: row.BindingID, ACL: row.ACLName, SubjectKind: authz.SubjectKind(row.SubjectKind), SubjectID: row.SubjectID, ExpiresAt: row.ExpiresAt})

@@ -106,6 +106,7 @@ const operatorTokenDefInputSchema = `{
     "scopes":     {"type": "array", "items": {"type": "string"}, "description": "Allowed scopes from the closed catalog. REQUIRED on create (except with import_token) — an omitted list is refused rather than defaulting to [substrate:admin], because that made a mistyped key mint a full-power token. Note the asymmetry: the request field is scopes, the response echoes it as allowed_scopes."},
     "ttl_seconds": {"type": "integer", "description": "Lifetime in seconds (create). The token stops authenticating when it runs out, and a later rotate does not extend it. Omit for a token that never expires. Refused for a token holding substrate:admin."},
     "agents": {"type": "array", "items": {"type": "string"}, "description": "Optional (create). Limits the token to starting these agents as top-level runs, and to the run endpoints: it is refused everywhere else, whatever its scopes. An agent a listed one spawns is not limited. Omit for no limit; an empty list is refused."},
+    "surfaces": {"type": "array", "items": {"type": "string", "enum": ["speech", "transcription"]}, "description": "Optional (create, with agents). Off-run calls the agent-limited token may still make: \"speech\" (POST /v1/audio/speech) and \"transcription\" (POST /v1/audio/transcriptions); either also opens GET /v1/_speech. Refused without agents. A token can grant only the surfaces it holds itself."},
     "overrides": {"description": "Optional (create). Locks the per-run settings for runs this token starts, and for retunes it makes: the string \"none\" (every such setting is locked — the model, provider, tier, effort, sampling, limits, output format and the rest), or an array of the settings it may still set. A request that sets a locked one is refused, not ignored. Omit for no lock."},
     "rate": {"type": "object", "description": "Optional (create). Bounds how often this token may start runs: {\"per_minute\": N, \"burst\": M}. burst is how many it may start at once from idle (default: per_minute). A start past the rate is refused with a time to wait. Omit to use the server's default, if it has one.", "properties": {"per_minute": {"type": "integer"}, "burst": {"type": "integer"}}, "required": ["per_minute"]},
     "retention": {"type": "string", "enum": ["none", "default"], "description": "Optional (create). \"none\" makes every run this token starts a no-trace run: its content is delivered to the caller and stored nowhere, and neither a request nor an agent can change that. Omit (or \"default\") to leave the mode to the request and the agent."},
@@ -126,6 +127,7 @@ type operatorTokenDefInput struct {
 	// Agents is a pointer so an absent list (no limit) and an empty one
 	// (refused) are told apart.
 	Agents       *[]string            `json:"agents,omitempty"`
+	Surfaces     []string             `json:"surfaces,omitempty"`
 	Overrides    *auth.OverridePolicy `json:"overrides,omitempty"`
 	Rate         *auth.RateLimit      `json:"rate,omitempty"`
 	Retention    string               `json:"retention,omitempty"`
@@ -285,6 +287,7 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 	if in.Agents != nil {
 		restrictions.Agents = *in.Agents
 	}
+	restrictions.Surfaces = in.Surfaces
 	restrictions.Overrides, restrictions.Rate = in.Overrides, in.Rate
 	retention, rerr := auth.ParseRetention(in.Retention)
 	if rerr != nil {
@@ -545,7 +548,7 @@ func heldToMinter(ctx context.Context, r auth.Restrictions) (auth.Restrictions, 
 
 // sameRestrictions reports whether a and b restrict the same things: the
 // same mode, the same rate (an unset burst reads as the per-minute rate), the
-// same overrides allowed and the same agents, in any order.
+// same overrides allowed, the same agents and the same surfaces, in any order.
 func sameRestrictions(a, b auth.Restrictions) bool {
 	sameSet := func(x, y []string) bool {
 		if len(x) != len(y) {
@@ -562,7 +565,7 @@ func sameRestrictions(a, b auth.Restrictions) bool {
 		}
 		return true
 	}
-	if a.Retention != b.Retention || !sameSet(a.Agents, b.Agents) {
+	if a.Retention != b.Retention || !sameSet(a.Agents, b.Agents) || !sameSet(a.Surfaces, b.Surfaces) {
 		return false
 	}
 	if (a.Rate == nil) != (b.Rate == nil) || (a.Rate != nil &&

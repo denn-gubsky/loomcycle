@@ -924,3 +924,38 @@ func TestExternalAssert_ALegacyPrefixNeverTakesAPasskeyUser(t *testing.T) {
 		t.Fatalf("the passkey user was linked to the gate: %v %v", ids, err)
 	}
 }
+
+// RFC GA: a bridge asks its gate for a token with the speech surfaces. The
+// gate's ceiling decides: one that grants them passes on what was asked, one
+// that names agents and no surfaces passes on none (the bridge then reads
+// false surfaces in /v1/_me and stays on text), and a request for surfaces
+// without agents is refused.
+func TestGateTokenRequest_SurfacesAreHeldToTheGatesCeiling(t *testing.T) {
+	gate := func(surfaces ...string) *config.AuthExternalGate {
+		g := &config.AuthExternalGate{TokenTTL: time.Hour}
+		g.TokenRestrictions.Agents = []string{"chat"}
+		g.TokenRestrictions.Surfaces = surfaces
+		return g
+	}
+	ask := &external.TokenRequest{Agents: []string{"chat"}, Surfaces: []string{"speech", "transcription"}}
+
+	got, _, err := gateTokenRequest(gate("speech", "transcription"), ask)
+	if err != nil || !slices.Equal(got.Surfaces, []string{"speech", "transcription"}) {
+		t.Errorf("ceiling grants both: %+v (err %v)", got.Surfaces, err)
+	}
+	got, _, err = gateTokenRequest(gate("transcription"), ask)
+	if err != nil || !slices.Equal(got.Surfaces, []string{"transcription"}) {
+		t.Errorf("ceiling grants transcription: %+v (err %v)", got.Surfaces, err)
+	}
+	got, _, err = gateTokenRequest(gate(), ask)
+	if err != nil || len(got.Surfaces) != 0 {
+		t.Errorf("ceiling grants none: %+v (err %v), want none", got.Surfaces, err)
+	}
+	if _, _, err := gateTokenRequest(gate("speech"), &external.TokenRequest{Surfaces: []string{"speech"}}); err == nil {
+		t.Error("surfaces asked for without agents were accepted")
+	}
+	// No request at all: the ceiling as configured.
+	if got, _, _ := gateTokenRequest(gate("speech"), nil); !slices.Equal(got.Surfaces, []string{"speech"}) {
+		t.Errorf("no request: %+v, want the ceiling's", got.Surfaces)
+	}
+}

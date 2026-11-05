@@ -2714,6 +2714,10 @@ export interface MintedUserToken {
  *  run endpoints. */
 export interface TokenRestrictions {
   agents?: string[];
+  /** Off-run calls a token with `agents` may still make (a chat bridge's
+   *  voice messages): `"speech"` opens `speech()`, `"transcription"` opens
+   *  `transcribe()`; either opens `speechInfo()`. */
+  surfaces?: TokenSurface[];
   /** `"none"` when every per-run override is locked, or the overrides the
    *  token may still set. Absent when nothing is locked. */
   overrides?: "none" | string[];
@@ -2722,6 +2726,9 @@ export interface TokenRestrictions {
   /** `"none"` when every run the token starts is a no-trace run. */
   retention?: "none";
 }
+
+/** An off-run surface an agent-limited token may be granted. */
+export type TokenSurface = "speech" | "transcription";
 
 /** One token row from GET /v1/_users/{subject}/tokens — METADATA ONLY (never
  *  the plaintext or hash). `active` applies the auth-layer validity rule. */

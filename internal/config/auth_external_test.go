@@ -91,7 +91,13 @@ func TestResolveExternalGate_RefusesWhatItCannotHonour(t *testing.T) {
 		"return_to no login": {func(g *AuthGateConfig, c *Config) { g.AllowedReturnTo = []string{"https://app.example/"} }, "callback_url"},
 		"password keys":      {func(g *AuthGateConfig, c *Config) { g.Invites.MaxTTL = "1h" }, "do not apply"},
 		"token ttl too long": {func(g *AuthGateConfig, c *Config) { g.External.IssuedToken = &AuthIssuedTokenConfig{TTL: "90d"} }, "issued_token.ttl"},
-		"reactivate auto":    {func(g *AuthGateConfig, c *Config) { g.External.OnRemoved = &AuthOnRemovedConfig{Reactivate: "auto"} }, "not supported yet"},
+		"surfaces without agents": {func(g *AuthGateConfig, c *Config) {
+			g.External.IssuedToken = &AuthIssuedTokenConfig{Surfaces: []string{"speech"}}
+		}, "surfaces applies only with agents"},
+		"unknown surface": {func(g *AuthGateConfig, c *Config) {
+			g.External.IssuedToken = &AuthIssuedTokenConfig{Agents: []string{"chat"}, Surfaces: []string{"chat"}}
+		}, "not a surface"},
+		"reactivate auto": {func(g *AuthGateConfig, c *Config) { g.External.OnRemoved = &AuthOnRemovedConfig{Reactivate: "auto"} }, "not supported yet"},
 		"untrusted promotes": {func(g *AuthGateConfig, c *Config) {
 			g.IdentityMap.NewUser = &AuthNewUserConfig{AccessMode: "tenant"}
 		}, "trusted"},
@@ -149,7 +155,7 @@ gates:
     public_key: { kty: OKP, crv: Ed25519, x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo" }
     callback_url: https://gate.example/login
     allowed_return_to: [https://app.example/welcome]
-    issued_token: { ttl: 2h, agents: [chat], overrides: [interactive], rate: { per_minute: 6, burst: 10 }, max_active: 2 }
+    issued_token: { ttl: 2h, agents: [chat], surfaces: [speech, transcription], overrides: [interactive], rate: { per_minute: 6, burst: 10 }, max_active: 2 }
     on_removed: { unbind_after: 72h }
     identity_map: { tenant: acme, provision: auto }
 `
@@ -163,7 +169,7 @@ gates:
 	}
 	x := c.ResolvedAuth.Gates[0].External
 	if x.CallbackURL != "https://gate.example/login" || x.TokenTTL != 2*time.Hour || x.TokenRestrictions.Rate.PerMinute != 6 ||
-		len(x.AllowedReturnTo) != 1 || x.Removal.UnbindAfter != 72*time.Hour {
+		len(x.AllowedReturnTo) != 1 || x.Removal.UnbindAfter != 72*time.Hour || len(x.TokenRestrictions.Surfaces) != 2 {
 		t.Fatalf("external = %+v", x)
 	}
 }

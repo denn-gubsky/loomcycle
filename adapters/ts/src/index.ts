@@ -313,6 +313,7 @@ export type {
   UpdateUserBody,
   MintedUserToken,
   TokenRestrictions,
+  TokenSurface,
   UserTokenMeta,
   ListUserTokensResponse,
   UserIdentity,
