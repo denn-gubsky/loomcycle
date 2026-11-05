@@ -1120,6 +1120,8 @@ func TestValidateURL_RefusesNonCanonicalPathSegments(t *testing.T) {
 		"https://github.com//org/repo.git",
 		"https://github.com/org//repo.git",
 		"https://github.com/org/repo/",
+		"https://github.com/org/repo/.git",
+		"https://github.com/org/.GIT/repo",
 	} {
 		if _, err := ValidateURL(raw); !errors.Is(err, ErrInvalidRequest) {
 			t.Errorf("%s: %v, want ErrInvalidRequest", raw, err)

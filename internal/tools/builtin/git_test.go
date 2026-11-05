@@ -512,9 +512,13 @@ func TestGit_ACLDenyOnTheRemoteRefusesBeforeAnyRequest(t *testing.T) {
 	if requests == 0 {
 		t.Error("the allowed call did not reach the server")
 	}
-	if r := gitACLResource(host, srv.URL+"/acme/app.git"); r.Name != host+"/acme/app" {
-		t.Errorf("resource = %q", r.Name)
+	// Every spelling of one repository is one resource.
+	for _, p := range []string{"/acme/app", "/acme/app.git", "/acme/app.GIT", "/ACME/APP.Git"} {
+		if r := gitACLResource(host, srv.URL+p); r.Name != host+"/acme/app" {
+			t.Errorf("%s: resource = %q, want %s/acme/app", p, r.Name, host)
+		}
 	}
+	wantGitClass(t, g, gitCtx(root, false, tools.GitRemotePolicyValue{Fetch: true}), map[string]any{"op": "ls_remote", "url": srv.URL + "/acme/app/.git"}, "invalid_argument")
 	// Another spelling of the denied repository is matched or refused, never
 	// let through: a case variant is the same repository, and a dot segment
 	// is refused before the ACL is asked.

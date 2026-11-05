@@ -98,8 +98,11 @@ func ValidateURL(raw string) (host string, err error) {
 	// be stepped around (RFC FY Part E). Percent-encoding is refused above.
 	if p := strings.TrimPrefix(u.Path, "/"); p != "" {
 		for _, seg := range strings.Split(p, "/") {
-			if seg == "" || seg == "." || seg == ".." {
-				return bad("the repository URL's path must not have an empty, \".\" or \"..\" segment")
+			// A bare `.git` segment (`org/repo/.git`) is the same repository
+			// as `org/repo` spelled another way; a `.git` suffix on a name
+			// is the usual spelling and stays.
+			if seg == "" || seg == "." || seg == ".." || strings.EqualFold(seg, ".git") {
+				return bad("the repository URL's path must not have an empty, \".\", \"..\" or \".git\" segment")
 			}
 		}
 	}

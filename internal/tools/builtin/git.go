@@ -1147,13 +1147,16 @@ func (g *Git) record(ev audit.Event) {
 // here; a `git:` selector is lowercased when it is parsed, so the match is
 // case-insensitive both ways.
 func gitACLResource(host, rawURL string) authz.Resource {
-	name := host
+	name := strings.ToLower(host)
 	if u, err := url.Parse(rawURL); err == nil {
-		if p := strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), ".git"); p != "" {
+		// Lowercase before the suffix is trimmed, so repo.GIT and repo.git
+		// name the same repository; ValidateURL refuses a bare `.git`
+		// segment, so the suffix is only ever a repository name's.
+		if p := strings.TrimSuffix(strings.ToLower(strings.TrimPrefix(u.Path, "/")), ".git"); p != "" {
 			name += "/" + p
 		}
 	}
-	return authz.Resource{Type: "git", Name: strings.ToLower(name)}
+	return authz.Resource{Type: "git", Name: name}
 }
 
 func redactURLPath(raw string) string {
