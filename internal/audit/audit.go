@@ -209,6 +209,14 @@ type Event struct {
 	IdentityOutcome string `json:"identity_outcome,omitempty"` // ok | refused | not_found
 	IdentityRunID   string `json:"identity_run_id,omitempty"`
 	IdentityAgent   string `json:"identity_agent,omitempty"`
+
+	// --- Dropped observations (Action = "audit_events_dropped") ---
+	//
+	// The store-backed stream queues observation events (refusals, denials,
+	// lookups); when its queue is full it drops them rather than block the
+	// caller, and writes this summary — action → events dropped — to the
+	// operator chain once it can.
+	DroppedCounts map[string]int `json:"dropped_counts,omitempty"`
 }
 
 // Sink records audit events. Record must be safe for concurrent use and

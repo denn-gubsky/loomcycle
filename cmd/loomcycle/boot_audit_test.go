@@ -43,7 +43,7 @@ func TestAudit_IsOnByDefaultWithAGateConfigured(t *testing.T) {
 		t.Run("on/"+name, func(t *testing.T) {
 			cfg.Env.SecretKey = key
 			st := open(t)
-			sink, _, err := openAuditSink(ctx, cfg, st)
+			sink, _, _, err := openAuditSink(ctx, cfg, st)
 			if err != nil || sink == nil {
 				t.Fatalf("openAuditSink = %v, %v; want the store-backed stream", sink, err)
 			}
@@ -64,7 +64,7 @@ func TestAudit_IsOnByDefaultWithAGateConfigured(t *testing.T) {
 
 	t.Run("off/single operator", func(t *testing.T) {
 		cfg := &config.Config{Env: config.Env{AuthToken: "legacy", ACLMode: "compat", SecretKey: key}}
-		sink, _, err := openAuditSink(ctx, cfg, open(t))
+		sink, _, _, err := openAuditSink(ctx, cfg, open(t))
 		if err != nil || sink != nil {
 			t.Fatalf("openAuditSink = %v, %v; want no sink", sink, err)
 		}
@@ -73,7 +73,7 @@ func TestAudit_IsOnByDefaultWithAGateConfigured(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "audit.jsonl")
 		cfg := &config.Config{Env: config.Env{AuditLogPath: path}}
 		st := open(t)
-		sink, desc, err := openAuditSink(ctx, cfg, st)
+		sink, _, desc, err := openAuditSink(ctx, cfg, st)
 		if err != nil || sink == nil || len(desc) != 1 || desc[0] != "file:"+path {
 			t.Fatalf("openAuditSink = %v, %v, %v; want the file only", sink, desc, err)
 		}
@@ -87,7 +87,7 @@ func TestAudit_IsOnByDefaultWithAGateConfigured(t *testing.T) {
 
 	t.Run("refused/no secret key", func(t *testing.T) {
 		cfg := &config.Config{ResolvedAuth: config.AuthPolicy{Gates: gate}}
-		_, _, err := openAuditSink(ctx, cfg, open(t))
+		_, _, _, err := openAuditSink(ctx, cfg, open(t))
 		if err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_SECRET_KEY") {
 			t.Fatalf("err = %v; want a refusal naming LOOMCYCLE_SECRET_KEY", err)
 		}
@@ -96,13 +96,13 @@ func TestAudit_IsOnByDefaultWithAGateConfigured(t *testing.T) {
 		cfg := &config.Config{ResolvedAuth: config.AuthPolicy{Gates: gate}, Env: config.Env{SecretKey: key}}
 		st := open(t)
 		_ = st.Close()
-		if _, _, err := openAuditSink(ctx, cfg, st); err == nil {
+		if _, _, _, err := openAuditSink(ctx, cfg, st); err == nil {
 			t.Fatal("a closed store opened the stream; want a refusal")
 		}
 	})
 	t.Run("refused/no store", func(t *testing.T) {
 		cfg := &config.Config{ResolvedAuth: config.AuthPolicy{Gates: gate}, Env: config.Env{SecretKey: key}}
-		if _, _, err := openAuditSink(ctx, cfg, nil); err == nil {
+		if _, _, _, err := openAuditSink(ctx, cfg, nil); err == nil {
 			t.Fatal("no store opened the stream; want a refusal")
 		}
 	})
