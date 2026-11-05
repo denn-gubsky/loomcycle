@@ -57,9 +57,6 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if in.Class != "" && !entityClasses[in.Class] {
 		return errValidation(fmt.Sprintf("upsert_chunk: unknown class %q (want derived or evidential)", in.Class), "Omit `class`, or pass derived or evidential."), nil
 	}
-	if refused := refuseForgedRemember(ctx, in); refused != nil {
-		return *refused, nil
-	}
 	// The ontology governs what an entity assertion may be about, so every writer is
 	// held to it here rather than only the one that carries its own list.
 	if refused := d.gateEntityType(ctx, in); refused != nil {

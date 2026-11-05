@@ -590,24 +590,24 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 		// Only an authored link_chunks asserts a statement that awaits review (or, by
 		// an operator, one rejected), and only by a caller who may rule there: the
 		// review queue is cleared by a ruling, never by holding link (RFC FZ Part C).
-		// Anyone else's link — a run's, granted link or not, a member's without the
-		// review grant — adds its evidence and leaves the proposal waiting. A
-		// machine write — a fact's relation, sync, import, canvas — carries someone
-		// else's judgement and only ever adds evidence.
+		// The link then IS accept_statement's ruling, through the same applyRuling:
+		// a judge's refuting verdict goes, the ruling is recorded, and the proposer
+		// stays the actor. Anyone else's link — a run's, granted link or not, a
+		// member's without the review grant — adds its evidence and leaves the
+		// proposal waiting. A machine write — a fact's relation, sync, import,
+		// canvas — carries someone else's judgement and only ever adds evidence.
 		if status == edgeStatusAsserted && existing.Status != edgeStatusAsserted && w.gateAuthored() {
 			mayRule, err := d.callerMayRuleOn(ctx, key, mscope, existing.ID)
 			if err != nil {
 				return out, nil, err
 			}
 			if mayRule {
-				// Recorded as the ruling it is, as accept_statement records one.
-				n, err := d.execCount(ctx, key, `UPDATE chunk_edges SET status = ?, actor = ?, operator_ruled_at = ?, ruled_by = ?
-					WHERE id = ? AND status = ?`, edgeStatusAsserted, nullIfEmpty(actor), now, operatorRuler(ctx), existing.ID, existing.Status)
+				r, err := d.applyRuling(ctx, key, mscope, "accept_statement", existing.ID, true, "", operatorRuler(ctx))
 				if err != nil {
 					return out, nil, err
 				}
-				if n > 0 {
-					out.Status = edgeStatusAsserted
+				if r.refusal == nil {
+					out.Status = r.status
 				}
 			}
 		}

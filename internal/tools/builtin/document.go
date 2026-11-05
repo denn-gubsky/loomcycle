@@ -6157,6 +6157,12 @@ func (d *Document) listTypes(ctx context.Context, key sqlmem.ScopeKey, in docInp
 // the tags when supplied. Mirroring a root chunk's title/type/status onto the
 // documents row happens inside upsertChunk, so its direct callers get it too.
 func (d *Document) upsertChunkOp(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, raw json.RawMessage) (tools.Result, error) {
+	// The caller's own op only: remember and sync write through upsertChunk too,
+	// and a pulled remembered fact is the peer's claim, already carried with the
+	// peer's provenance.
+	if refused := refuseForgedRemember(ctx, in); refused != nil {
+		return *refused, nil
+	}
 	res, err := d.upsertChunk(ctx, key, mscope, in)
 	if err != nil || res.IsError {
 		return res, err
