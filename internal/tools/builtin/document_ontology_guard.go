@@ -112,19 +112,61 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 // ontologyWriteOp reports whether op can create, alter, retire or re-home an entity of
 // the ontology: create_chunk/upsert_chunk only as a proposal, every other one not at all.
 //
-// EVERY such op — audited from the op list rather than from the obvious ones. The first
-// version of this guard covered the five chunk mutations and missed four routes to the
-// same effect: import_md and import_canvas author chunks wholesale, supersede_chunk both
-// creates and retires, and delete_document / set_path reach the WHOLE ontology (set_path
-// by re-homing /memory/ontology so the reader resolves somewhere else entirely).
+// EVERY such op — and the list is no longer kept by hand beside a dispatch that grows:
+// each op dispatch serves is in exactly one of this, documentReadOp and
+// ontologyGuardExemption, which TestDocumentOps_EveryOpIsClassifiedForTheOntologyGuard
+// enforces. The hand-kept version missed four routes at first (import_md,
+// import_canvas, supersede_chunk, delete_document / set_path) and later set_remote and
+// sync, which bind the document to a peer and pull the peer's chunks over it, and the
+// tag, type and asset writes.
 func ontologyWriteOp(op string) bool {
 	switch op {
 	case "create_chunk", "upsert_chunk",
 		"update_chunk", "delete_chunk", "move_chunk", "reorder_chunk",
-		"supersede_chunk", "import_md", "import_canvas", "delete_document", "set_path":
+		"supersede_chunk", "import_md", "import_canvas", "delete_document", "set_path",
+		"set_remote", "sync", "add_tags", "remove_tags", "define_type", "set_asset",
+		"judge_fact", "classify":
 		return true
 	}
 	return false
+}
+
+// documentReadOp reports the ops that change nothing in the scope.
+func documentReadOp(op string) bool {
+	switch op {
+	case "get_document", "documents_summary", "query_documents", "graph_snapshot",
+		"get_chunk", "graph_recall", "verbatim_answer", "verification_stats", "list_facts",
+		"get_edges", "get_edge", "list_statements", "describe_ontology", "query_chunks",
+		"list_tags", "list_types", "get_asset", "export_md", "export_canvas", "history",
+		"get_version", "diff", "backlinks", "search", "related", "unlinked_mentions",
+		"diff_remote":
+		return true
+	}
+	return false
+}
+
+// ontologyGuardExemption says why a write op is not asked by the ontology guard, ""
+// for any other op. Each reason is a claim about what the op can reach.
+func ontologyGuardExemption(op string) string {
+	switch op {
+	case "create_document":
+		return "makes a new document; the reserved names are refused by reservedTargetRefusal"
+	case "copy_documents", "move_documents":
+		return "planCopy refuses the ontology as a member of the set and as a target name"
+	case "propose_entity", "propose_subject":
+		return "files an inert proposal, which is what an agent may do to the ontology"
+	case "remember":
+		return "writes only the scope's entity document, which the runtime chooses"
+	case "link_chunks", "unlink_chunks", "propose_statement", "accept_statement",
+		"reject_statement", "judge_statements", "maintain_statement",
+		"accept_classification", "extract_citations":
+		return "writes statements (edges and their evidence), never a document's chunks"
+	case "resolve_anchor":
+		return "may file a placeholder for a cited work, which is a new document"
+	case "lease", "release":
+		return "writes the scope's lease table, not a document"
+	}
+	return ""
 }
 
 // documentIDForChunk returns the document a chunk belongs to, or "".
