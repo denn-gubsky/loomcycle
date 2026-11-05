@@ -101,6 +101,23 @@ var documentTables = func() map[string]bool {
 	return set
 }()
 
+// engineTables reach the scope's file beneath its tables, where no document
+// table name appears: sqlite_dbpage reads (and, without defensive mode, writes)
+// raw pages, Document's included; dbstat reports every table's pages; the
+// schema catalogs hold every table's definition. isEngineTable adds the
+// statistics tables and the pragma_* table-valued functions by prefix, which
+// read engine state and every table's shape. On sqlite these are the way
+// around the name check; on postgres none exists, so refusing them there
+// costs nothing.
+var engineTables = map[string]bool{
+	"sqlite_dbpage": true, "sqlite_dbstat": true, "dbstat": true,
+	"sqlite_schema": true, "sqlite_master": true, "sqlite_temp_schema": true, "sqlite_temp_master": true,
+}
+
+func isEngineTable(name string) bool {
+	return engineTables[name] || strings.HasPrefix(name, "sqlite_stat") || strings.HasPrefix(name, "pragma_")
+}
+
 // pgQueryTextFns are the core functions that run a query, or read a table,
 // named by a string the guard cannot see through, and set_config, which could
 // turn standard_conforming_strings off and so move where a literal ends.
@@ -131,6 +148,9 @@ func refuseDocumentTables(stmt string, postgres bool) string {
 		name := t.kind == 'w' || t.kind == 'q' || (t.kind == 's' && !postgres)
 		if name && documentTables[t.val] {
 			return fmt.Sprintf("%q is a document table or index, or a statistics catalog: Memory SQL may not read or change it", t.val)
+		}
+		if name && isEngineTable(t.val) {
+			return fmt.Sprintf("%q reads the database file beneath its tables (pages, page statistics, the schema or engine settings): Memory SQL may not use it; keep track of the tables you create yourself", t.val)
 		}
 		if !postgres {
 			continue
