@@ -94,9 +94,9 @@ func testAuditEveryReplicaWritesOneChainPerTenant(t *testing.T, a, b store.Store
 			}
 		}
 	}
-	reg, err := audit.ReadRegistry(ctx, b)
-	if err != nil {
-		t.Fatal(err)
+	reg, op, err := audit.ReadRegistry(ctx, b, auditTestKeys)
+	if err != nil || !op.OK {
+		t.Fatalf("ReadRegistry: %+v, %v", op, err)
 	}
 	if reg.Openings["t1"] != 1 || reg.Openings["t2"] != 1 || len(reg.Openings) != 2 {
 		t.Errorf("chain openings = %v, want t1 and t2 once each", reg.Openings)

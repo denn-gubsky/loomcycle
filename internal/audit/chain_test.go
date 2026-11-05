@@ -152,6 +152,25 @@ func TestAudit_ATamperedRowFailsVerification(t *testing.T) {
 			exec(t, db, `DELETE FROM audit_events WHERE tenant_id = ''`)
 			exec(t, db, `DELETE FROM audit_heads WHERE tenant_id = ''`)
 		}, 1, "no record"},
+		{"the chain and its opening record deleted", func(t *testing.T, s *sqlite.Store, db *sql.DB) {
+			exec(t, db, `DELETE FROM audit_events WHERE tenant_id = 't1'`)
+			exec(t, db, `DELETE FROM audit_heads WHERE tenant_id = 't1'`)
+			exec(t, db, `DELETE FROM audit_events WHERE tenant_id = '' AND action = 'audit_chain_opened' AND subject = 't1'`)
+		}, 1, "operator chain"},
+		{"an opening record forged into the operator chain", func(t *testing.T, s *sqlite.Store, db *sql.DB) {
+			exec(t, db, `INSERT INTO audit_events (tenant_id, seq, ts, actor, action, subject, payload, prev_hash, hash, mac)
+				SELECT '', seq + 1, ts, actor, action, subject, payload, hash, hash, mac FROM audit_events
+				WHERE tenant_id = '' AND seq = (SELECT MAX(seq) FROM audit_events WHERE tenant_id = '')`)
+			exec(t, db, `UPDATE audit_heads SET seq = seq + 1 WHERE tenant_id = ''`)
+		}, 1, "operator chain"},
+		{"the operator chain marked as pruned", func(t *testing.T, s *sqlite.Store, db *sql.DB) {
+			exec(t, db, `DELETE FROM audit_events WHERE tenant_id = ''`)
+			exec(t, db, `UPDATE audit_heads SET anchor_seq = seq, anchor_hash = hash, anchor_mac = mac WHERE tenant_id = ''`)
+		}, 1, "operator chain"},
+		{"an opened chain's rows deleted and its head zeroed", func(t *testing.T, s *sqlite.Store, db *sql.DB) {
+			exec(t, db, `DELETE FROM audit_events WHERE tenant_id = 't1'`)
+			exec(t, db, `UPDATE audit_heads SET seq = 0, hash = '', mac = '' WHERE tenant_id = 't1'`)
+		}, 1, "head"},
 		{"the whole chain deleted and a new one begun", func(t *testing.T, s *sqlite.Store, db *sql.DB) {
 			exec(t, db, `DELETE FROM audit_events WHERE tenant_id = 't1'`)
 			exec(t, db, `DELETE FROM audit_heads WHERE tenant_id = 't1'`)

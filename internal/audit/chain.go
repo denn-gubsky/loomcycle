@@ -25,8 +25,10 @@ package audit
 // A chain that is deleted outright (head and rows) would otherwise read as a
 // tenant with no history, so a tenant chain's first append also writes a
 // signed ActionChainOpened row to the operator chain "" in the same
-// transaction. Verification of a tenant then breaks when the operator chain
-// records an opening but the chain has no head ("disappeared"), records two
+// transaction. Verification of a tenant first verifies the operator chain —
+// a registry read from an unverified chain could be forged — and then breaks
+// when the operator chain records an opening but the chain has no head
+// ("disappeared") or an empty one, records two
 // (deleted and begun again), or records none while the operator chain is
 // unpruned (the operator chain itself deleted). A head missing or reset while
 // rows remain is a break too: rows past the head are reported.
@@ -169,40 +171,52 @@ const ActionChainOpened = "audit_chain_opened"
 
 // Registry is what the operator chain says about the tenant chains: how
 // many times each was opened, and whether the operator chain has been
-// pruned (an opening older than the prune is no longer there to count).
+// pruned (an opening older than the prune is no longer there to count). It
+// is read only from an operator chain that verified, up to its verified head,
+// so a forged or deleted opening, or a forged anchor, breaks the operator
+// chain instead of steering a tenant's verification.
 type Registry struct {
 	Openings map[string]int
 	Pruned   bool
 }
 
-// ReadRegistry reads the chain openings from the operator chain.
-func ReadRegistry(ctx context.Context, r ChainReader) (Registry, error) {
+// ReadRegistry verifies the operator chain and, when it holds, reads the
+// registry from the rows it verified.
+func ReadRegistry(ctx context.Context, r ChainReader, keys ChainKeys) (Registry, VerifyReport, error) {
 	reg := Registry{Openings: map[string]int{}}
-	head, err := r.AuditHeadGet(ctx, "")
-	var nf *store.ErrNotFound
-	switch {
-	case errors.As(err, &nf):
-	case err != nil:
-		return reg, err
-	default:
-		reg.Pruned = head.AnchorSeq > 0
+	op, err := verifyChain(ctx, r, keys, "", Registry{})
+	if err != nil || !op.OK {
+		return reg, op, err
 	}
-	var after int64
-	for {
+	reg.Pruned = op.AnchorSeq > 0
+	after := op.AnchorSeq
+	for after < op.HeadSeq {
 		rows, err := r.AuditEventsList(ctx, "", after, verifyPage)
 		if err != nil {
-			return reg, err
+			return reg, op, err
+		}
+		if len(rows) == 0 {
+			break
 		}
 		for _, row := range rows {
+			if row.Seq > op.HeadSeq {
+				break
+			}
 			if row.Action == ActionChainOpened {
 				reg.Openings[row.Subject]++
 			}
 			after = row.Seq
 		}
-		if len(rows) < verifyPage {
-			return reg, nil
-		}
 	}
+	return reg, op, nil
+}
+
+// operatorChainBroken is a tenant's report when the operator chain, which
+// vouches for the tenant chain's existence, does not verify.
+func operatorChainBroken(tenant string, op VerifyReport) VerifyReport {
+	rep := VerifyReport{Tenant: tenant}
+	return rep.broken(1, "the operator chain does not verify (row %d: %s), so this chain's registration cannot be checked",
+		op.BreakSeq, op.Reason)
 }
 
 // Verify walks a tenant's chain from its anchor to its head and reports the
@@ -211,29 +225,32 @@ func ReadRegistry(ctx context.Context, r ChainReader) (Registry, error) {
 // made during the walk do not read as a break; a prune made during it can,
 // and a re-run then passes.
 //
-// For a tenant chain it also asks the operator chain whether the tenant's
-// chain was opened, so a chain deleted outright — head and rows — is a
-// break, not a tenant with no history.
+// For a tenant chain it first verifies the operator chain and asks it
+// whether the tenant's chain was opened, so a chain deleted outright — head
+// and rows — is a break, not a tenant with no history.
 func Verify(ctx context.Context, r ChainReader, keys ChainKeys, tenant string) (VerifyReport, error) {
-	var reg Registry
-	if tenant != "" {
-		var err error
-		if reg, err = ReadRegistry(ctx, r); err != nil {
-			return VerifyReport{Tenant: tenant}, err
-		}
+	if tenant == "" {
+		return verifyChain(ctx, r, keys, "", Registry{})
+	}
+	reg, op, err := ReadRegistry(ctx, r, keys)
+	if err != nil {
+		return VerifyReport{Tenant: tenant}, err
+	}
+	if !op.OK {
+		return operatorChainBroken(tenant, op), nil
 	}
 	return verifyChain(ctx, r, keys, tenant, reg)
 }
 
 // VerifyAll verifies the operator chain and every tenant chain the store or
-// the operator chain knows of, in tenant order.
+// the operator chain knows of, in tenant order (the operator chain first).
 func VerifyAll(ctx context.Context, r ChainReader, keys ChainKeys, tenants []string) ([]VerifyReport, error) {
-	reg, err := ReadRegistry(ctx, r)
+	reg, op, err := ReadRegistry(ctx, r, keys)
 	if err != nil {
 		return nil, err
 	}
 	seen := map[string]bool{"": true}
-	all := []string{""}
+	var all []string
 	for _, t := range tenants {
 		if !seen[t] {
 			seen[t] = true
@@ -247,8 +264,12 @@ func VerifyAll(ctx context.Context, r ChainReader, keys ChainKeys, tenants []str
 		}
 	}
 	sort.Strings(all)
-	out := make([]VerifyReport, 0, len(all))
+	out := []VerifyReport{op}
 	for _, t := range all {
+		if !op.OK {
+			out = append(out, operatorChainBroken(t, op))
+			continue
+		}
 		rep, err := verifyChain(ctx, r, keys, t, reg)
 		if err != nil {
 			return out, err
@@ -288,6 +309,10 @@ func verifyChain(ctx context.Context, r ChainReader, keys ChainKeys, tenant stri
 			return rep.broken(1, "the chain was opened again %d times: its earlier history was removed", n-1), nil
 		case n == 1 && !found:
 			return rep.broken(1, "the chain disappeared: the operator chain records its opening, but it has no head"), nil
+		case n == 1 && head.Seq == 0:
+			// The opening and the first row are written together, and a prune
+			// never moves the head back, so an opened chain's head is past 0.
+			return rep.broken(1, "the chain was opened but its head is empty"), nil
 		case n == 0 && found && !reg.Pruned:
 			return rep.broken(1, "the operator chain has no record of this chain's opening"), nil
 		}
