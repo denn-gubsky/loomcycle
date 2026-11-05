@@ -58,7 +58,14 @@ ancestor such as `/memory`) and `mkdir` refuse them, and so do the Document
 ops that would give one to a document (`create_document`, `import_md`,
 `import_canvas`, `set_path` with that `path`, and a `copy_documents` /
 `move_documents` target) or vacate one (`delete_document` of, or
-`move_documents` out of the tenant scope for, the document that holds it). Only the operator's own off-run call (`/v1/_path`,
+`move_documents` out of the tenant scope for, the document that holds it).
+Every writer of the tree enforces it — a Memory `set` with a `path` too — and
+a subtree is matched by exact, case-sensitive prefix, so `/MEMORY` is not an
+ancestor of `/memory/ontology` on any backend. One exception is the runtime's
+own document: a run's `create_document` at `/memory/entities` carrying only
+`op`, `scope`, `path` and `title: "Entities"` is an ensure of the empty
+entities document (the memory bundle's consolidator makes exactly this call)
+and answers with it, `created: false` when it already existed. Only the operator's own off-run call (`/v1/_path`,
 `/v1/_document`) may create, rename or remove them; the runtime itself
 creates the ontology and the deployment context on first reference. The
 ontology is also known by its document id, so a rename does not unseat it

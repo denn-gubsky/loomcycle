@@ -58,6 +58,9 @@ the string: `"value": "\"Prefers email\""` stores the quote marks too, and
   date yourself and pass e.g. `2026-03-14T00:00:00Z`.
 - `path must be absolute` / `invalid path segment` — paths are `/`-rooted,
   segments use letters, digits, `.`, `_`, `-`. Nothing was written.
+- `set: /memory/... is a reserved name in the tenant scope ...` — in the tenant
+  scope `/memory/ontology`, `/memory/entities` and `/memory/tenant_root` name the
+  runtime's own documents; pick another path. Nothing was written.
 - `memory: no embedder configured` / `memory: vector index not configured` —
   `embed: true` is not available on this server. Nothing was written; retry
   without `embed`.
