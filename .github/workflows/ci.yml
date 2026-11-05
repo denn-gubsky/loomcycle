@@ -30,6 +30,7 @@ jobs:
       ts: ${{ steps.c.outputs.ts }}
       python: ${{ steps.c.outputs.python }}
       bridges: ${{ steps.c.outputs.bridges }}
+      landing: ${{ steps.c.outputs.landing }}
       proto: ${{ steps.c.outputs.proto }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -714,6 +715,27 @@ jobs:
             docker buildx build --load -f deploy/bridges/Dockerfile -t "ci-$(basename "$dir")" "$dir"
             echo "::endgroup::"
           done
+
+  # The loomcycle.cloud landing server (cloud-deployment/landing): its node:test
+  # suite boots server.js against a fake runtime and checks the static site in
+  # cloud-web/ that it serves. Node 20, the floor its package.json declares.
+  landing:
+    name: Landing server
+    needs: changes
+    if: needs.changes.outputs.landing == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloud-deployment/landing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: cloud-deployment/landing/package-lock.json
+      - run: npm ci
+      - run: npm test
 
   web-ui:
     name: Web UI build
