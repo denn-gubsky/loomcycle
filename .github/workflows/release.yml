@@ -116,7 +116,7 @@ jobs:
     if: needs.classify.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # goreleaser needs full git history for the version
           # template + commit-date stamp.
@@ -128,14 +128,14 @@ jobs:
           # pre-create step below, which force-refetches and verifies.
           fetch-tags: true
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
           # The runner caches an older patch; take the newest so a stdlib fix lands.
           check-latest: true
           cache: true
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "20"
           cache: npm
@@ -158,13 +158,16 @@ jobs:
       # failing on the missing registry credentials.
       - name: Set up QEMU for multi-arch Docker builds
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          # binfmt pinned by digest like the base images (dependabot cannot bump it).
+          image: tonistiigi/binfmt:latest@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
       - name: Set up Docker Buildx
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Log in to Docker Hub
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -176,7 +179,7 @@ jobs:
       # a login failure on either registry fails the whole dockers stage.
       - name: Log in to GHCR
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -250,7 +253,7 @@ jobs:
         # credentials yet. Once DOCKER_PUBLISH_ENABLED is set to
         # "true" in the repo's Actions vars, the same run pushes
         # multi-arch images without further config changes.
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           version: "v2.15.4"
           # `--skip=docker` skips BOTH the dockers stage AND the
@@ -284,7 +287,7 @@ jobs:
       contents: write # pre-create the GitHub release from the annotated tag
       packages: write # push the GHCR mirror of loomcycle-browser
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -320,14 +323,14 @@ jobs:
       # goreleaser docker stage. A patch's only artifact IS the image, so with
       # docker publishing off there is nothing more to do (the release page
       # above is still created).
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
         with:
           go-version: "1.26"
           # The runner caches an older patch; take the newest so a stdlib fix lands.
           check-latest: true
           cache: true
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
         with:
           node-version: "20"
@@ -355,16 +358,16 @@ jobs:
 
       - name: Set up Docker Buildx
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Log in to Docker Hub
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
       - name: Log in to GHCR
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -376,7 +379,7 @@ jobs:
       # links the GHCR package to this repo in the UI.
       - name: Build + push loomcycle-browser (linux/amd64)
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile.browser
