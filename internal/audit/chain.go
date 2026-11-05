@@ -200,6 +200,33 @@ func (k ChainKeys) Seal() store.AuditSealFunc {
 // chain had before its anchor; it is empty for a tenant chain.
 type anchorState struct {
 	Opened map[string]int `json:"opened,omitempty"`
+	// Rotated records that a row up to the anchor verified under the current
+	// key, so the previous key no longer signs a row after it: the rotation
+	// point survives the rows that established it being pruned.
+	Rotated bool `json:"rotated,omitempty"`
+}
+
+// checkAnchor checks a chain's retention anchor and returns the state it
+// carries, or why it does not hold. With no anchor (seq 0) every anchor
+// field must be empty: a state planted there is never carried or trusted.
+// Verification and the prune's seal share it.
+func (k ChainKeys) checkAnchor(head store.AuditHead) (anchorState, string) {
+	switch {
+	case head.AnchorSeq < 0:
+		return anchorState{}, "the retention anchor's position is negative"
+	case head.AnchorSeq == 0:
+		if head.AnchorHash != "" || head.AnchorMAC != "" || head.AnchorState != "" {
+			return anchorState{}, "the chain has no retention anchor but its anchor fields are set"
+		}
+		return anchorState{}, ""
+	case !k.check(head.AnchorMAC, macAnchor, head.TenantID, head.AnchorSeq, head.AnchorHash, head.AnchorState):
+		return anchorState{}, "the retention anchor's signature does not verify"
+	}
+	st, err := decodeAnchorState(head.AnchorState)
+	if err != nil {
+		return anchorState{}, "the retention anchor's state does not decode"
+	}
+	return st, ""
 }
 
 func decodeAnchorState(s string) (anchorState, error) {
@@ -229,14 +256,11 @@ func (k ChainKeys) SealAnchor() store.AuditAnchorSealFunc {
 		if len(pruned) == 0 {
 			return "", "", fmt.Errorf("%w: nothing to prune", ErrChainBroken)
 		}
-		if prev.AnchorSeq > 0 && !k.check(prev.AnchorMAC, macAnchor, tenant, prev.AnchorSeq, prev.AnchorHash, prev.AnchorState) {
-			return "", "", fmt.Errorf("%w: the retention anchor's signature does not verify", ErrChainBroken)
+		st, why := k.checkAnchor(prev)
+		if why != "" {
+			return "", "", fmt.Errorf("%w: %s", ErrChainBroken, why)
 		}
-		st, err := decodeAnchorState(prev.AnchorState)
-		if err != nil {
-			return "", "", fmt.Errorf("%w: the retention anchor's state does not decode: %v", ErrChainBroken, err)
-		}
-		link, want, rotated := prev.AnchorHash, prev.AnchorSeq+1, false
+		link, want, rotated := prev.AnchorHash, prev.AnchorSeq+1, st.Rotated
 		for _, r := range pruned {
 			if why := k.checkLink(tenant, link, want, r, &rotated); why != "" {
 				return "", "", fmt.Errorf("%w: %s", ErrChainBroken, why)
@@ -250,8 +274,9 @@ func (k ChainKeys) SealAnchor() store.AuditAnchorSealFunc {
 			link = r.Hash
 			want++
 		}
+		st.Rotated = rotated
 		state := ""
-		if len(st.Opened) > 0 {
+		if len(st.Opened) > 0 || st.Rotated {
 			b, err := json.Marshal(st) // map keys marshal sorted: one encoding
 			if err != nil {
 				return "", "", err
@@ -540,12 +565,14 @@ func verifyChain(ctx context.Context, r ChainReader, keys ChainKeys, tenant stri
 			return rep, nil
 		}
 	}
-	if head.AnchorSeq > 0 && !keys.check(head.AnchorMAC, macAnchor, tenant, head.AnchorSeq, head.AnchorHash, head.AnchorState) {
-		return rep.broken(head.AnchorSeq, "the retention anchor's signature does not verify"), nil
+	head.TenantID = tenant
+	st, why := keys.checkAnchor(head)
+	if why != "" {
+		return rep.broken(max(head.AnchorSeq, 1), "%s", why), nil
 	}
 	rep.anchorState = head.AnchorState
 	prev, want := head.AnchorHash, head.AnchorSeq+1
-	rotated := false
+	rotated := st.Rotated
 	for want <= head.Seq {
 		rows, err := r.AuditEventsList(ctx, tenant, want-1, verifyPage)
 		if err != nil {

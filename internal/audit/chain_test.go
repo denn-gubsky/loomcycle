@@ -387,3 +387,47 @@ func TestAuditPrune_RefusesAChainThatDoesNotVerify(t *testing.T) {
 		}
 	})
 }
+
+// With no anchor (seq 0) the anchor's hash, MAC and state must be empty: a
+// state planted there is never carried or trusted.
+func TestAuditVerify_NoAnchorMeansEmptyAnchorFields(t *testing.T) {
+	s, db := chainFixture(t, 2)
+	ctx := context.Background()
+	exec(t, db, `UPDATE audit_heads SET anchor_state = '{"opened":{"ghost":1}}' WHERE tenant_id = ''`)
+	rep, err := audit.Verify(ctx, s, testKeys, "")
+	if err != nil || rep.OK || !strings.Contains(rep.Reason, "anchor") {
+		t.Errorf("an anchor state with no anchor: %+v, %v; want a break naming the anchor", rep, err)
+	}
+	if n, err := pruneForTest(ctx, s, "", time.Now().Add(time.Hour)); err == nil || n != 0 {
+		t.Errorf("prune over a planted anchor state = %d, %v; want a refusal", n, err)
+	}
+}
+
+// The rotation point survives a prune: the anchor carries "rotated", so a
+// row signed with the previous key after the prune still fails.
+func TestAuditVerify_RotationPointSurvivesAPrune(t *testing.T) {
+	s, _ := chainFixture(t, 3)
+	ctx := context.Background()
+	newKey := []byte("the-rotated-in-audit-key-32bytes")
+	keys := audit.ChainKeys{Current: newKey, Previous: testKeys.Current}
+	record := func(key []byte) {
+		t.Helper()
+		sink, err := audit.NewStoreSink(s, audit.ChainKeys{Current: key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sink.Record(audit.Event{Action: "acl_edit", TargetTenant: "t1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record(newKey)
+	record(newKey)
+	if n, err := audit.Prune(ctx, s, keys, "t1", time.Now().Add(time.Hour)); err != nil || n != 5 {
+		t.Fatalf("prune across the rotation = %d, %v", n, err)
+	}
+	record(testKeys.Current) // a forgery with the rotated-out key
+	rep, err := audit.Verify(ctx, s, keys, "t1")
+	if err != nil || rep.OK || rep.BreakSeq != 6 {
+		t.Errorf("a previous-key row after a pruned rotation point: %+v, %v; want a break at 6", rep, err)
+	}
+}
