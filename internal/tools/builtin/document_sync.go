@@ -641,6 +641,20 @@ type localWriter struct {
 }
 
 func (w localWriter) createKeyed(ctx context.Context, sc syncChunk) (string, error) {
+	// A natural key is unique across the scope, so a key a chunk of ANOTHER document
+	// holds would make upsert_chunk rewrite that chunk, not create one in the bound
+	// document — a pull from a peer reaching any document in the scope (RFC FY P2).
+	if existing, err := w.d.chunkIDByNaturalKey(ctx, w.key, sc.nk); err != nil {
+		return "", err
+	} else if existing != "" {
+		res, qerr := w.d.query(ctx, w.key, `SELECT document_id FROM chunks WHERE id = ? LIMIT 1`, existing)
+		if qerr != nil {
+			return "", qerr
+		}
+		if len(res.Rows) == 0 || len(res.Rows[0]) == 0 || asStr(res.Rows[0][0]) != w.docID {
+			return "", fmt.Errorf("natural key %q is held by a chunk of another document; a sync writes only the bound document", sc.nk)
+		}
+	}
 	res, err := w.d.upsertChunk(ctx, w.key, w.mscope, docInput{
 		NaturalKey: sc.nk, DocumentID: w.docID, Title: sc.title, Type: sc.ctype, Status: sc.status, Body: sc.body, Tags: sc.tags,
 	})

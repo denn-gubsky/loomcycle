@@ -80,6 +80,13 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if err != nil {
 		return errFrom("upsert_chunk: lookup: "+err.Error(), err), nil
 	}
+	// Backstop for the op gate (RFC FY P2): a key naming the root of a reserved
+	// document would rewrite that root in place.
+	if existing != "" {
+		if r := d.reservedRootWriteRefusal(ctx, key, "upsert_chunk", existing); r != nil {
+			return *r, nil
+		}
+	}
 	// Re-typing a subject through its key is checked before anything is written and
 	// announced after. A type with a subject was already held to the entity types above.
 	var retype *subjectRetype

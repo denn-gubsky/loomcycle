@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -287,25 +288,40 @@ func (d *Document) reservedRootRefusal(ctx context.Context, key sqlmem.ScopeKey,
 				err = rootOf(existing)
 			}
 		}
-	case "import_md":
-		if strings.TrimSpace(in.DocumentID) != "" || strings.TrimSpace(in.ID) != "" {
-			if id, derr := d.docIDFromInput(ctx, key, docInput{ID: in.ID, DocumentID: in.DocumentID}); derr == nil {
+	case "import_md", "sync", "set_remote", "define_type", "classify":
+		// These five name a DOCUMENT, by id or document_id; two that differ would let
+		// this gate judge one document while the handler writes the other.
+		if a, b := strings.TrimSpace(in.ID), strings.TrimSpace(in.DocumentID); a != "" && b != "" && a != b {
+			r := errValidation(in.Op+": id "+strconv.Quote(a)+" and document_id "+strconv.Quote(b)+
+				" name different documents; pass one", "")
+			return &r
+		}
+		// Judged on exactly the field each handler reads, and FAILS CLOSED: a lookup that
+		// errors here refuses the call, rather than letting through a write whose
+		// handler may resolve the same name a moment later.
+		switch in.Op {
+		case "import_md", "define_type":
+			if doc := strings.TrimSpace(in.DocumentID); doc != "" {
+				docs = append(docs, doc)
+			} else if in.Op == "import_md" && in.Reimport && strings.TrimSpace(in.WorkKey) != "" {
+				id, _, _, werr := d.documentByWorkKey(ctx, key, strings.TrimSpace(in.WorkKey))
+				if werr != nil {
+					r := docFail(in.Op+": could not resolve the work key, so nothing was written: ", werr)
+					return &r
+				}
+				if id != "" {
+					docs = append(docs, id)
+				}
+			}
+		default: // sync, set_remote, classify: docIDFromInput(in), as their handlers do
+			if in.ID != "" || in.DocumentID != "" || in.Path != "" {
+				id, derr := d.docIDFromInput(ctx, key, in)
+				if derr != nil {
+					r := docFail(in.Op+": could not resolve the document, so nothing was written: ", derr)
+					return &r
+				}
 				docs = append(docs, id)
 			}
-		}
-		if in.Reimport && in.Path != "" {
-			if id, derr := d.docIDFromInput(ctx, key, docInput{Path: in.Path}); derr == nil {
-				docs = append(docs, id)
-			}
-		}
-		if wk := strings.TrimSpace(in.WorkKey); wk != "" {
-			if id, _, _, werr := d.documentByWorkKey(ctx, key, wk); werr == nil && id != "" {
-				docs = append(docs, id)
-			}
-		}
-	case "sync", "set_remote", "define_type", "classify":
-		if id, derr := d.docIDFromInput(ctx, key, in); derr == nil {
-			docs = append(docs, id)
 		}
 	}
 	if err != nil {
@@ -326,6 +342,35 @@ func (d *Document) reservedRootRefusal(ctx context.Context, key sqlmem.ScopeKey,
 		}
 	}
 	return nil
+}
+
+// reservedRootWriteRefusal is the write-site backstop for the root rule: the handler
+// that is about to rewrite chunkID in place asks it directly, so an op the op gate's
+// census missed still cannot rewrite the root of a reserved document.
+func (d *Document) reservedRootWriteRefusal(ctx context.Context, key sqlmem.ScopeKey, op, chunkID string) *tools.Result {
+	if key.Scope != "tenant" || reservedNameWriter(ctx) || strings.TrimSpace(chunkID) == "" {
+		return nil
+	}
+	res, err := d.query(ctx, key, `SELECT id FROM documents WHERE root_chunk_id = ? LIMIT 1`, chunkID)
+	if err != nil {
+		r := errFrom(op+": could not check the chunk against the reserved documents, so it was not written: "+err.Error(), err)
+		return &r
+	}
+	if len(res.Rows) == 0 || len(res.Rows[0]) == 0 {
+		return nil
+	}
+	held, err := d.reservedNameHeld(ctx, key, asStr(res.Rows[0][0]))
+	if err != nil {
+		r := errFrom(op+": could not read the document's names, so it was not written: "+err.Error(), err)
+		return &r
+	}
+	if held == "" {
+		return nil
+	}
+	r := errPermission(op+": this writes the root of the document at "+held+", a reserved name in the tenant scope; "+
+		"its title, status, body, tags and type are the operator's.",
+		"Write chunks under the root instead (create_chunk with its id as parent_id).")
+	return &r
 }
 
 // reservedHeldRefusal refuses deleting a document that holds a reserved tenant name:
