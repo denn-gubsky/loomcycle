@@ -96,7 +96,7 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
   const groupCache = new Map<string, { groups: string[]; until: number }>();
   let self: SelfIds | undefined;
   let namesRefused = false;
-  const voiceOn = cfg.shared.voice.enabled;
+  const voiceOn = cfg.shared.voice?.enabled === true;
   const voice = createSlackVoice({
     api,
     botToken: cfg.botToken,
