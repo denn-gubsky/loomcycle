@@ -2,6 +2,7 @@ package http
 
 import (
 	"fmt"
+	"net"
 	"net/http/httptest"
 	"net/netip"
 	"testing"
@@ -86,5 +87,30 @@ func TestProxyThrottleWarning_NamesEverySourceThrottledGateAndOnlyThose(t *testi
 	c.ResolvedAuth.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
 	if w := ProxyThrottleWarning(c); w != "" {
 		t.Errorf("trusted_proxies set, yet: %s", w)
+	}
+}
+
+// gRPC reads a forwarded client address only from a peer in
+// auth.grpc_trusted_proxies, never from one the HTTP list trusts: an HTTP
+// proxy that overwrites X-Forwarded-For passes gRPC metadata through, so a
+// client behind it could name any address (RFC FY Part E).
+func TestGRPCClientIP_TrustsOnlyTheGRPCProxyList(t *testing.T) {
+	md := func(string) []string { return []string{"198.51.100.9"} }
+	peer := netip.MustParseAddr("10.1.2.3")
+	for _, c := range []struct {
+		name       string
+		http, grpc []netip.Prefix
+		want       string
+	}{
+		{"no gRPC proxies: the peer", nil, nil, "10.1.2.3"},
+		{"peer in the HTTP list only: the peer", []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}, nil, "10.1.2.3"},
+		{"peer in the gRPC list: the forwarded client", nil, []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}, "198.51.100.9"},
+	} {
+		cfg := makeBaseConfig()
+		cfg.ResolvedAuth.TrustedProxies, cfg.ResolvedAuth.GRPCTrustedProxies = c.http, c.grpc
+		srv := New(cfg, &stubResolver{}, nil, nil, nil)
+		if got := srv.GRPCClientIP(peer, md); !got.Equal(net.ParseIP(c.want)) {
+			t.Errorf("%s: %v, want %s", c.name, got, c.want)
+		}
 	}
 }

@@ -64,7 +64,7 @@ func (b *boot) startListeners() {
 			// authoritatively through RunOnce) and shares the open-mode
 			// decision.
 			PrincipalResolver: srv.ResolvePrincipal,
-			ClientIP:          srv.ClientIP,
+			ClientIP:          srv.GRPCClientIP,
 			AuthConfigured:    srv.AuthConfigured,
 			BuildCommit:       buildCommit,
 			BuildTime:         buildTime,

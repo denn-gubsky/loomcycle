@@ -66,7 +66,7 @@ func TestGRPCPeerIP_IsTheConnectionsRemoteAddress(t *testing.T) {
 	}
 }
 
-// A peer in auth.trusted_proxies may name its client in the call's metadata,
+// A peer in auth.grpc_trusted_proxies may name its client in the call's metadata,
 // as on HTTP; any other peer is the client whatever its metadata says.
 func TestGRPCCallerIP_ReadsATrustedProxysForwardedAddress(t *testing.T) {
 	trusted := netip.MustParsePrefix("10.0.0.0/8")

@@ -109,7 +109,7 @@ type Server struct {
 	// = legacy-token-only auth with no principal stamping.
 	principalResolver func(context.Context, string) (auth.Principal, bool)
 	// clientIP resolves a call's client address from its peer and metadata
-	// under auth.trusted_proxies (Config.ClientIP). Nil: the peer.
+	// under auth.grpc_trusted_proxies (Config.ClientIP). Nil: the peer.
 	clientIP func(peer netip.Addr, header func(string) []string) net.IP
 	aclMode  authz.Mode
 	// authConfigured reports whether auth is active (open-mode decision).
@@ -163,8 +163,8 @@ type Config struct {
 	// AuthToken compare with no principal.
 	PrincipalResolver func(context.Context, string) (auth.Principal, bool)
 	// ClientIP resolves a call's client address from its peer and its
-	// metadata, so a trusted proxy's forwarded address is read as the HTTP
-	// listener reads it (auth.trusted_proxies). Nil: the peer itself.
+	// metadata: a forwarded address is read only from a peer in
+	// auth.grpc_trusted_proxies, never the HTTP list. Nil: the peer itself.
 	ClientIP func(peer netip.Addr, header func(string) []string) net.IP
 	// AuthConfigured reports whether auth is active (legacy secret set,
 	// config principals declared, or an admin token exists). Wired alongside
@@ -972,7 +972,7 @@ func (s *Server) authenticate(ctx context.Context) (context.Context, error) {
 		}
 		ctx = authz.WithTransport(authz.WithMode(ctx, s.aclMode), "grpc")
 		// The client address a source_cidr condition reads: the gRPC peer,
-		// or the client a trusted proxy names for it.
+		// or the client a listed gRPC proxy names for it.
 		ctx = authz.WithSourceIP(ctx, s.callerIP(ctx))
 		return auth.WithPrincipal(ctx, p), nil
 	}
