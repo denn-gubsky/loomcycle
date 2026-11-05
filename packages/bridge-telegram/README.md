@@ -7,6 +7,7 @@ A Telegram bot for a [loomcycle](https://github.com/denn-gubsky/loomcycle) inter
 - **Questions and reviews** from the agent arrive as messages with buttons.
 - **Commands:** `/new` (start over), `/stop` (stop the current answer), `/help`. In a group, `/new@YourBot` works too.
 - **Optional streaming** in private chats: the answer grows in one message as it is written.
+- **Optional voice messages** (`BRIDGE_VOICE=1`): send a voice note, hear the answer as one (see Voice messages). `/voice on|off|auto` sets when replies are spoken.
 - **Restarts lose nothing:** the next message continues the conversation, with the agent's full history.
 
 It is built on [`@loomcycle/bridge-core`](../bridge-core), which holds everything the bridges share. Design: RFC EQ (Bridges) in the loomcycle document store.
@@ -100,6 +101,7 @@ Telegram's own:
 | `TELEGRAM_BRIDGE_PUBLIC_URL` | The bridge's public `https://` base URL; the webhook is `<url>/telegram/webhook` | |
 | `TELEGRAM_BRIDGE_SET_WEBHOOK` | `1` calls `setWebhook` at start, with the secret and the update types the bridge handles | unset |
 | `TELEGRAM_BRIDGE_API_BASE_URL` | The Bot API server, for a [local Bot API server](https://github.com/tdlib/telegram-bot-api). `http://` is accepted only to localhost | `https://api.telegram.org` |
+| `TELEGRAM_BRIDGE_VOICE_AUDIO` | `1`: with `BRIDGE_VOICE=1`, also take audio files (usually music) as voice messages (see Voice messages) | unset |
 
 **The bot is closed by default.** With no allow-list and no `TELEGRAM_BRIDGE_ALLOW_ANYONE=1`, the bridge refuses to start: a bot anyone can find must not run on your model keys unless you say so. A private chat passes when its user is in `TELEGRAM_BRIDGE_ALLOWED_USERS`; a group passes when the group is in `TELEGRAM_BRIDGE_ALLOWED_CHATS`, for anyone in it, or with `TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS=1` only for its members who are in `TELEGRAM_BRIDGE_ALLOWED_USERS`. A refused chat hears why, once.
 
@@ -147,7 +149,7 @@ As a gate the bridge also tells loomcycle about groups and leavers. A person is 
 
 - **A group runs as itself, never as one of its members.** It is its own loomcycle user (`telegram-conv-<hash>`), with its own memory and history. A forum topic is its own conversation inside the group's memory.
 - Every message reaches the agent labelled with the speaker's name.
-- The person who started the conversation answers the agent's question and review buttons, and only they can `/new` or `/stop`.
+- The person who started the conversation answers the agent's question and review buttons, and only they can `/new`, `/stop` or `/voice on|off|auto`.
 - A group that becomes a supergroup gets a new id. If the old id was allowed, the bot says so once in the new chat, with the new id: "This group was upgraded, so its id changed to … Ask the operator to allow it." The new id is never allowed for you. Once you allow it, the group starts a fresh conversation and a fresh memory: the old group's memory stays under the old id.
 - Anonymous group admins, and channels, cannot use the bot.
 
@@ -165,6 +167,30 @@ List a group as trusted only if you would let every member of it instruct the ag
 - A pressed card is replaced by its result, so it cannot be answered twice.
 - With `TELEGRAM_BRIDGE_STREAMING=1`, a private chat's answer appears as soon as it starts and is edited as it grows, at most once a second. Groups always get one message per turn. Telegram's own draft streaming (`sendMessageDraft`) is not used: it has no option to turn link previews off (see Security).
 
+## Voice messages
+
+With `BRIDGE_VOICE=1` a person can send the bot a voice note instead of typing, and hear the answer as a voice note. The bridge downloads the recording, has loomcycle transcribe it with the conversation's own token, and gives the agent the text, marked `(voice message)`, the way it gives typed text. When the turn ends the text answer goes out as always and, when the reply should be spoken, a voice note follows it, replying to the answer and captioned "AI voice". Nothing is kept: the audio lives in memory for one request. The shared settings (`BRIDGE_VOICE_REPLY`, `BRIDGE_VOICE_MAX_SECONDS`, `BRIDGE_VOICE_ECHO`, …) and the `/voice on|off|auto` command are in `@loomcycle/bridge-core`'s README.
+
+- **What is taken:** voice notes and round video notes. Audio files (`message.audio`, which is mostly music) only with `TELEGRAM_BRIDGE_VOICE_AUDIO=1`. Photos, stickers, documents and the rest still get "I can only read text for now."
+- **Where:** in a private chat, any voice note. In a group, only a voice note that **replies to one of the bot's messages**: a voice note cannot mention the bot, and a reply to it is what Telegram's privacy mode delivers. The allow-lists and trust rules are the same as for text; in an untrusted group the transcript reaches the agent as an untrusted block.
+- **Language:** the sender's Telegram language is passed to loomcycle as a hint.
+- **Download:** `getFile`, then the file from the Bot API's own file host (`TELEGRAM_BRIDGE_API_BASE_URL`) only. A redirect is refused, and a download larger than `BRIDGE_VOICE_MAX_BYTES` is cut off while it streams in (Telegram lets a bot download at most 20 MB). The bot token is in the file URL, so the URL is never logged and never in an error.
+
+**What loomcycle needs.**
+
+- The `speech:` and `transcription.stt:` engines.
+- For spoken replies, `speech.encode` (an ffmpeg Opus command) with `speech.format: ogg`. Telegram shows OGG/Opus (or MP3) as a voice note; loomcycle's default `wav` is not, so without an encoder replies stay text.
+- The speech surfaces on each user token. As a gate, add them to the gate's issued token, or the bridge stays on text:
+
+  ```yaml
+  issued_token: { ttl: 12h, agents: [chat], overrides: [interactive], surfaces: [speech, transcription], rate: { per_minute: 12, burst: 20 } }
+  ```
+
+  With `LOOMCYCLE_TOKEN`, the bridge asks for them when it mints each user's token.
+- **Rate.** A voice turn takes three starts from the user's rate: transcribe, run, speak. Raise `BRIDGE_RATE_PER_MINUTE` (and the gate's `rate.per_minute`) to at least `12` with voice on.
+
+A person whose privacy settings forbid voice notes from others gets the text answer only, and spoken replies stop in that chat until someone sends `/voice on`.
+
 ## Security
 
 - **Inbound:** every webhook must carry the `X-Telegram-Bot-Api-Secret-Token` header with your secret, compared in constant time before the body is read. Anything else gets `401`. Redelivered updates are handled once.
@@ -177,7 +203,7 @@ List a group as trusted only if you would let every member of it instruct the ag
 ## Limits
 
 - Messages are split at 4,000 characters (Telegram's limit is 4,096).
-- Text messages only. In a private chat a photo, file, voice note, sticker or other non-text message is answered with "I can only read text for now."; in a group it is ignored.
+- Text, and voice notes with `BRIDGE_VOICE=1`. In a private chat a photo, file, sticker or other non-text message (and a voice note with voice off) is answered with "I can only read text for now."; in a group it is ignored.
 - Telegram limits how fast a bot may send. On a `429` the bridge waits the `retry_after` Telegram asks for, up to 30 seconds.
 
 ## As a library
