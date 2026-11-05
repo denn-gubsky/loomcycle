@@ -492,6 +492,9 @@ func TestLiteralDeny_OnlyARuleNamingTheExactInstanceCounts(t *testing.T) {
 		if got := e.LiteralDeny(req(c.action, c.name)); got != c.want {
 			t.Errorf("LiteralDeny(%s def:%s) = %v, want %v", c.action, c.name, got, c.want)
 		}
+		if got, want := e.DeniesUnattended(req(c.action, c.name)), c.action == "retire"; got != want {
+			t.Errorf("DeniesUnattended(%s def:%s) = %v, want %v (patterns count)", c.action, c.name, got, want)
+		}
 		if d := e.Decide(req(c.action, c.name)); c.action == "retire" && c.name != "agent/guard" && d.Outcome != Denied {
 			t.Errorf("Decide(%s def:%s) = %v, want the wildcards to deny it", c.action, c.name, d.Outcome)
 		}
@@ -527,6 +530,9 @@ func TestLiteralDeny_AnUnanswerableConditionHolds(t *testing.T) {
 		req := Request{Subject: subj, Action: "retire", Resource: Resource{Type: "def", Name: "acl/guard"}, Context: Context{Transport: transport, Now: testNow}}
 		if got := e.LiteralDeny(req); got != want {
 			t.Errorf("LiteralDeny with transport %q = %v, want %v", transport, got, want)
+		}
+		if got := e.DeniesUnattended(req); got != want {
+			t.Errorf("DeniesUnattended with transport %q = %v, want %v", transport, got, want)
 		}
 	}
 }

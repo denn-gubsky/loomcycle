@@ -137,21 +137,24 @@ func (e *aclLockedError) Unwrap() error { return e.cause }
 //   - the list can only take away: it has a deny rule and no allow rule
 //     (authz.Effective.RestrictsOnly), so keeping it never leaves a removed
 //     user a grant;
-//   - someone locked that list on purpose: retiring it is denied by a rule
-//     naming that exact list (authz.Effective.LiteralDeny), never by a
-//     wildcard or a prefix, in either of two sets —
-//   - lifecycleLockSubject's, a tenant operator of the tenant, so a list
-//     locked against the tenant's operators holds against the step too (a
-//     tenant operator can set a removal going);
-//   - the removed subject's own, so a list the subject is locked into (an
-//     admin's self-locking deny bound to the user or to a group it is in)
-//     survives its removal and a user cannot shed it by going dormant.
+//   - someone locked that list on purpose, in either of two sets:
+//   - lifecycleLockSubject's, a tenant operator of the tenant, denies
+//     retiring it by any rule, a pattern included (an admin may lock a
+//     family, `retire def:acl/corp-*`): a list locked against the tenant's
+//     operators holds against the step too, since a tenant operator can
+//     set a removal going;
+//   - the removed subject's own denies it by a rule naming that exact list
+//     (authz.Effective.LiteralDeny), never a wildcard or a prefix: a list
+//     the subject is locked into (an admin's self-locking deny bound to the
+//     user or to a group it is in) survives its removal, so a user cannot
+//     shed it by going dormant.
 //
 // The subject's set is read only for such a rule, never for what it denies
 // the subject as an actor: a member's baseline, or a broad `retire def:*`
 // the user carries, restricts what the user may do and marks no binding as
 // one to keep. It is compiled at the tenant-operator baseline the first set
-// uses; only what its bindings add is asked. nil when no resolver is wired.
+// uses; only what its bindings add is asked. Both read a condition they
+// cannot answer as holding (fail closed). nil when no resolver is wired.
 type unattendedLocks struct {
 	operator, subject *authz.Effective
 }
@@ -171,7 +174,7 @@ func (s *Server) unattendedLocks(ctx context.Context, tenant, subject string) (*
 	return &unattendedLocks{operator: sets[0], subject: sets[1]}, nil
 }
 
-// keeps returns the first of names locked by name, when every one of names
+// keeps returns the first of names that is locked, when every one of names
 // can only take away: what a kept binding (one list) or membership (every
 // list the group carries) leaves the subject must never grant.
 func (l *unattendedLocks) keeps(ctx context.Context, names []string) (string, bool) {
@@ -183,22 +186,20 @@ func (l *unattendedLocks) keeps(ctx context.Context, names []string) (string, bo
 		if !l.subject.RestrictsOnly(name) {
 			return "", false
 		}
-		if kept == "" && l.lockedByName(ctx, name) {
+		if kept == "" && l.locked(ctx, name) {
 			kept = name
 		}
 	}
 	return kept, kept != ""
 }
 
-func (l *unattendedLocks) lockedByName(ctx context.Context, name string) bool {
+func (l *unattendedLocks) locked(ctx context.Context, name string) bool {
 	surface := authz.Surface{Action: "retire", Type: "def", Name: "acl/" + name}
-	for _, eff := range []*authz.Effective{l.operator, l.subject} {
-		if eff.LiteralDeny(authz.Request{Subject: eff.Subject, Action: surface.Action, Resource: surface.Resource(eff.Subject.TenantID),
-			Context: authz.Context{Transport: authz.TransportFrom(ctx), Now: time.Now()}}) {
-			return true
-		}
+	ask := func(eff *authz.Effective) authz.Request {
+		return authz.Request{Subject: eff.Subject, Action: surface.Action, Resource: surface.Resource(eff.Subject.TenantID),
+			Context: authz.Context{Transport: authz.TransportFrom(ctx), Now: time.Now()}}
 	}
-	return false
+	return l.operator.DeniesUnattended(ask(l.operator)) || l.subject.LiteralDeny(ask(l.subject))
 }
 
 // lockedEraseRecheck is how long a removal's erase stage is deferred when

@@ -117,7 +117,7 @@ func (s *Server) startRemovalWith(ctx context.Context, policy lifecycle.Policy, 
 // unattendedBy names the actor of a step no operator stands behind (the
 // sweeper, a SCIM re-enable; a tenant operator can set either going): it
 // keeps, logs and audits a binding or membership its unattendedLocks keep —
-// a deny-only list locked by name. An operator's re-enable passes "": its
+// a deny-only list that is locked. An operator's re-enable passes "": its
 // caller's own lock was asked first (aclSubjectLockForCaller, which refuses
 // a delegate the lock holds), and the caller it let through (an admin, the
 // legacy token, open mode) resets the user to the floor.
@@ -183,9 +183,9 @@ func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allG
 }
 
 // recordLockKept logs and audits a binding or membership (what) an
-// unattended step kept because list is a deny list locked by name.
+// unattended step kept because list only denies and is locked.
 func (s *Server) recordLockKept(ctx context.Context, tenant, subject, by, what, list string) {
-	reason := what + " kept: list " + list + " only denies and is locked by name against retiring"
+	reason := what + " kept: list " + list + " only denies and is locked against retiring"
 	slog.WarnContext(ctx, "auth: deprovisioning kept a locked list", "tenant", tenant, "subject", subject,
 		"kept", what, "list", list, "by", by)
 	if s.tokenAudit == nil {

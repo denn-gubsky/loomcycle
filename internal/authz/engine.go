@@ -392,18 +392,27 @@ func (e *Effective) decideOwn(req Request) Decision {
 	return Decision{Outcome: NoMatch}
 }
 
-// LiteralDeny reports whether a deny rule that names req's resource by its
-// exact name — a literal selector, never a wildcard, a prefix or a whole
-// scope — matches req's action and condition. It tells a lock someone
-// placed on one named resource from a broad restriction that happens to
-// cover it. It is asked for steps no caller stands behind (the removal
-// policy's sweeper), which have no transport, source address, agent or
-// tier: a condition the request cannot answer reads as holding, as a deny
-// does in DecideScope, since a condition that could not be checked must
-// never unlock. The ceiling's rules count too. The tenant floor does not:
-// it names no resource.
+// DeniesUnattended reports whether any deny rule matches req, for a step no
+// caller stands behind (the removal policy's sweeper), which has no
+// transport, source address, agent or tier: a condition the request cannot
+// answer reads as holding, as a deny does in DecideScope, since a condition
+// that could not be checked must never unlock. One it answers is decided.
+// The ceiling's rules count too; the tenant floor does not (it names no
+// resource).
+func (e *Effective) DeniesUnattended(req Request) bool {
+	return e.deniesUnattended(req, false)
+}
+
+// LiteralDeny is DeniesUnattended counting only a rule that names req's
+// resource by its exact name — a literal selector, never a wildcard, a
+// prefix or a whole scope. It tells a lock someone placed on one named
+// resource from a broad restriction that happens to cover it.
 func (e *Effective) LiteralDeny(req Request) bool {
-	if e.ceiling != nil && e.ceiling.LiteralDeny(req) {
+	return e.deniesUnattended(req, true)
+}
+
+func (e *Effective) deniesUnattended(req Request, exact bool) bool {
+	if e.ceiling != nil && e.ceiling.deniesUnattended(req, exact) {
 		return true
 	}
 	tr := e.byType[req.Resource.Type]
@@ -416,7 +425,11 @@ func (e *Effective) LiteralDeny(req Request) bool {
 			continue
 		}
 		for _, sel := range r.sels {
-			if sel.namesExactly(spec, req.Resource.Name) {
+			hit := sel.matches(spec, req.Resource.Name)
+			if exact {
+				hit = sel.namesExactly(spec, req.Resource.Name)
+			}
+			if hit {
 				return true
 			}
 		}

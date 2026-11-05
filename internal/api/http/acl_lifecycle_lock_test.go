@@ -503,12 +503,12 @@ func TestUserReenable_AnAdminResetsToTheFloorOverATenantLock(t *testing.T) {
 	}
 }
 
-// Deprovisioning keeps only what an admin locked on purpose and what can
-// only take away: a list with a deny rule and no allow, whose retiring a
-// rule naming that exact list denies. The removed subject's own set is read
-// for such a rule, never for what it denies the subject as an actor, so a
-// broad `retire def:*` deny the user carries locks nothing; an allow list
-// goes even when locked exactly, and a list locked only by a wildcard goes.
+// Deprovisioning keeps only what can only take away (a list with a deny
+// rule and no allow) and was locked on purpose. The removed subject's own
+// set locks a list only by a rule naming that exact list, never by what it
+// denies the subject as an actor, so a broad `retire def:*` or
+// `retire def:acl/*` the user carries locks nothing; an allow list goes
+// even when locked exactly.
 func TestUserLifecycle_TheUnbindDropsWhatIsNotAnExactlyLockedDenyList(t *testing.T) {
 	srv, ts, st := aclMgmtServer(t, authz.ModeCompat)
 	ctx := context.Background()
@@ -524,18 +524,18 @@ func TestUserLifecycle_TheUnbindDropsWhatIsNotAnExactlyLockedDenyList(t *testing
 	admin("POST", "/v1/_acldef", `{"op":"create","name":"wild-guard","rules":`+deny+`}`)
 	admin("POST", "/v1/_acldef", `{"op":"create","name":"perk","rules":`+allow+`}`)
 	admin("POST", "/v1/_acldef", `{"op":"create","name":"broad","rules":[{"effect":"deny","actions":["retire"],"resources":["def:*"]}]}`)
-	// Tenant-wide: guard and perk locked by name, every list by a wildcard.
+	admin("POST", "/v1/_acldef", `{"op":"create","name":"self-wild","rules":[{"effect":"deny","actions":["retire"],"resources":["def:acl/*"]}]}`)
+	// Tenant-wide: guard and perk locked by name.
 	admin("POST", "/v1/_acldef", `{"op":"create","name":"t-lock","rules":[`+
-		`{"effect":"deny","actions":["retire"],"resources":["def:acl/guard","def:acl/perk"]},`+
-		`{"effect":"deny","actions":["retire"],"resources":["def:acl/*"]}]}`)
+		`{"effect":"deny","actions":["retire"],"resources":["def:acl/guard","def:acl/perk"]}]}`)
 	admin("POST", "/v1/_aclbinding", `{"acl":"t-lock","subject_kind":"tenant"}`)
 	for _, u := range []string{"victim", "other"} {
 		admin("POST", "/v1/_users", `{"subject":"`+u+`"}`)
 	}
-	for _, list := range []string{"guard", "wild-guard", "perk", "broad"} {
+	for _, list := range []string{"guard", "wild-guard", "perk", "broad", "self-wild"} {
 		admin("POST", "/v1/_aclbinding", `{"acl":"`+list+`","subject_kind":"user","subject_id":"victim"}`)
 	}
-	for _, list := range []string{"wild-guard", "perk", "broad"} {
+	for _, list := range []string{"wild-guard", "perk", "broad", "self-wild"} {
 		admin("POST", "/v1/_aclbinding", `{"acl":"`+list+`","subject_kind":"user","subject_id":"other"}`)
 	}
 
@@ -553,7 +553,7 @@ func TestUserLifecycle_TheUnbindDropsWhatIsNotAnExactlyLockedDenyList(t *testing
 		}
 	}
 	if strings.Join(live, ",") != "guard" {
-		t.Errorf("victim's bindings after the unbind: %v, want only guard (wild-guard, perk and broad retired)", live)
+		t.Errorf("victim's bindings after the unbind: %v, want only guard (wild-guard, perk, broad and self-wild retired)", live)
 	}
 	// The erase stage reads the same rule: other carries nothing it keeps.
 	if list, err := srv.lifecycleEraseLock(ctx, "acme", "other"); err != nil || list != "" {
@@ -594,5 +594,46 @@ func TestUserLifecycle_AConditionalLockHoldsForTheUnattendedUnbind(t *testing.T)
 	}
 	if !kept {
 		t.Error("victim's guard binding is gone after the unbind; want it kept (its lock names a transport the sweeper has none of)")
+	}
+}
+
+// The tenant-operator set locks a list by any rule, a pattern included: an
+// admin who locks a family of lists against the tenant's operators
+// (`retire def:acl/corp-*`) keeps each of them through a removal.
+func TestUserLifecycle_AnOperatorPatternLockKeepsAListThroughRemoval(t *testing.T) {
+	srv, ts, st := aclMgmtServer(t, authz.ModeCompat)
+	ctx := context.Background()
+	admin := func(method, path, body string) {
+		t.Helper()
+		if code, out := bearerCall(t, ts, legacyAdminBearer, method, path+"?tenant=acme", body); code >= 300 {
+			t.Fatalf("admin %s %s: %d %s", method, path, code, out)
+		}
+	}
+	admin("POST", "/v1/_acldef", `{"op":"create","name":"corp-deny","rules":[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]}]}`)
+	admin("POST", "/v1/_acldef", `{"op":"create","name":"corp-lock","rules":[{"effect":"deny","actions":["author","retire"],"resources":["def:acl/corp-*"]}]}`)
+	admin("POST", "/v1/_aclbinding", `{"acl":"corp-lock","subject_kind":"tenant"}`)
+	admin("POST", "/v1/_users", `{"subject":"victim"}`)
+	admin("POST", "/v1/_aclbinding", `{"acl":"corp-deny","subject_kind":"user","subject_id":"victim"}`)
+	if err := srv.startRemovalWith(ctx, lifecycle.Policy{UnbindAfter: time.Millisecond},
+		"acme", "victim", "", store.RemovalReasonDormant, lifecycleActor); err != nil {
+		t.Fatal(err)
+	}
+	row, err := st.AuthRemovalGet(ctx, "acme", "victim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.advanceRemoval(ctx, row, time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.AclBindingList(ctx, "acme", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := false
+	for _, b := range rows {
+		kept = kept || (b.SubjectID == "victim" && b.ACLName == "corp-deny")
+	}
+	if !kept {
+		t.Error("victim's corp-deny binding is gone after the dormant removal's unbind; want it kept by the corp-* lock")
 	}
 }
