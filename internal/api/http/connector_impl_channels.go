@@ -477,6 +477,9 @@ func (s *Server) AckChannel(ctx context.Context, req connector.ChannelAckRequest
 // SAME systemPublisher as PublishChannel, so deferred-publish scheduling +
 // Bus wake-up of waiting subscribers (or awaiters) are identical.
 func (s *Server) BroadcastChannels(ctx context.Context, req connector.ChannelBroadcastRequest) (connector.ChannelBroadcastResult, error) {
+	if err := s.askChannels(ctx, "broadcast", req.Channels); err != nil {
+		return connector.ChannelBroadcastResult{}, err
+	}
 	if s.systemPublisher == nil {
 		return connector.ChannelBroadcastResult{}, connector.ErrSystemPublisherUnwired
 	}
@@ -571,6 +574,9 @@ func (s *Server) BroadcastChannels(ctx context.Context, req connector.ChannelBro
 // timeout is NOT an error — returns TimedOut:true with whatever partials
 // accumulated.
 func (s *Server) AwaitChannels(ctx context.Context, req connector.ChannelAwaitRequest) (connector.ChannelAwaitResult, error) {
+	if err := s.askChannels(ctx, "await", req.Channels); err != nil {
+		return connector.ChannelAwaitResult{}, err
+	}
 	if len(req.Channels) == 0 {
 		return connector.ChannelAwaitResult{}, fmt.Errorf("await: missing required field: channels")
 	}

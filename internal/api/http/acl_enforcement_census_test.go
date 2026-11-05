@@ -1,10 +1,12 @@
 package http
 
 import (
+	"encoding/json"
 	"sort"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // The route gate asks exactly the pairs the enforcement table says it asks
@@ -58,10 +60,31 @@ func TestACLEnforcement_ConnectorOperationsAskWhatTheTableSays(t *testing.T) {
 			t.Errorf("Memory %s asks %+v, which connectorQuestions does not list", in, q)
 		}
 	}
-	for _, op := range []string{"publish", "subscribe", "peek", "ack"} {
-		if q := channelQuestion(op, "c"); q == nil || !asked[q.Action+" "+q.Type] {
-			t.Errorf("channel %s asks %+v, which connectorQuestions does not list", op, q)
+	// Every op the Channel tool's schema offers is mapped to a question, so
+	// no op reaches the tool unasked; the op list is the schema's own.
+	var schema struct {
+		Properties struct {
+			Op struct {
+				Enum []string `json:"enum"`
+			} `json:"op"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal((&builtin.Channel{}).InputSchema(), &schema); err != nil || len(schema.Properties.Op.Enum) < 5 {
+		t.Fatalf("the Channel schema's op enum could not be read: %v %v", err, schema.Properties.Op.Enum)
+	}
+	for _, op := range schema.Properties.Op.Enum {
+		qs, err := channelOpQuestions([]byte(`{"op":"` + op + `","channel":"c","channels":["c"]}`))
+		if err != nil || len(qs) == 0 {
+			t.Errorf("Channel op %s asks no question (%v)", op, err)
 		}
+		for _, q := range qs {
+			if !asked[q.Action+" "+q.Type] {
+				t.Errorf("Channel op %s asks %s %s, which connectorQuestions does not list", op, q.Action, q.Type)
+			}
+		}
+	}
+	if _, err := channelOpQuestions([]byte(`{"op":"no_such_op","channel":"c"}`)); err == nil {
+		t.Error("an op the table does not map was let through unasked")
 	}
 	assertSiteAsks(t, authz.SiteConnector, asked)
 }

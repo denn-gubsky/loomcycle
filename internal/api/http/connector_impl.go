@@ -996,8 +996,12 @@ func (s *Server) Memory(ctx context.Context, input json.RawMessage) (connector.T
 }
 
 func (s *Server) Channel(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
-	if q := channelOpQuestion(input); q != nil {
-		if res, refused := refusalResult(s.connectorAsk(ctx, *q)); refused {
+	qs, err := channelOpQuestions(input)
+	if err != nil {
+		return aclToolResult(aclFail(400, "unknown_op", err.Error())), nil
+	}
+	for _, q := range qs {
+		if res, refused := refusalResult(s.connectorAsk(ctx, q)); refused {
 			return res, nil
 		}
 	}

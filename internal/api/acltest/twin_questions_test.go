@@ -91,3 +91,40 @@ func TestACLTwins_ADeniedChannelPublishHoldsOnEveryTransport(t *testing.T) {
 		t.Errorf("gRPC publish to another channel was refused: %v", err)
 	}
 }
+
+// await and broadcast ask every channel they name, on gRPC and over the MCP
+// channel tool, so a deny on one channel holds for a fan-in or fan-out that
+// includes it; and a deny of the whole verb holds there too.
+func TestACLTwins_ADeniedAwaitOrBroadcastHoldsOnEveryTransport(t *testing.T) {
+	e := newEnv(t, authz.ModeCompat)
+	e.bindMemberDeny("no-alerts-fan", `[{"effect":"deny","actions":["await","broadcast"],"resources":["channel:alerts"]}]`)
+	if _, err := e.grpc.AwaitChannels(asAlice(), &loomcyclepb.AwaitChannelsRequest{Channels: []string{"news", "alerts"}, Scope: "user", ScopeId: "alice"}); !grpcDenied(err) {
+		t.Errorf("gRPC await: %v", err)
+	}
+	if _, err := e.grpc.BroadcastChannels(asAlice(), &loomcyclepb.BroadcastChannelsRequest{Channels: []string{"news", "alerts"}, Scope: "user", ScopeId: "alice", Payload: []byte(`{"x":1}`)}); !grpcDenied(err) {
+		t.Errorf("gRPC broadcast: %v", err)
+	}
+	for _, op := range []string{"await", "broadcast"} {
+		if o := e.viaMCP(member, call{family: "channel", input: `{"op":"` + op + `","channels":["news","alerts"],"value":{"x":1}}`}); o.code != "acl_denied" {
+			t.Errorf("MCP channel %s: %+v", op, o)
+		}
+	}
+
+	e2 := newEnv(t, authz.ModeCompat)
+	e2.bindMemberDeny("no-await", `[{"effect":"deny","actions":["await"],"resources":["channel:*"]}]`)
+	if o := e2.viaMCP(member, call{family: "channel", input: `{"op":"await","channels":["news"]}`}); o.code != "acl_denied" {
+		t.Errorf("MCP channel await under a deny of every channel: %+v", o)
+	}
+	if _, err := e2.grpc.AwaitChannels(asAlice(), &loomcyclepb.AwaitChannelsRequest{Channels: []string{"news"}, Scope: "user", ScopeId: "alice"}); !grpcDenied(err) {
+		t.Errorf("gRPC await under a deny of every channel: %v", err)
+	}
+}
+
+// A Channel op the server does not map to a question is refused rather than
+// let through unasked.
+func TestACLTwins_AnUnknownChannelOpIsRefused(t *testing.T) {
+	e := newEnv(t, authz.ModeCompat)
+	if o := e.viaMCP(member, call{family: "channel", input: `{"op":"no_such_op","channel":"alerts"}`}); o.code != "unknown_op" {
+		t.Errorf("MCP channel no_such_op: %+v", o)
+	}
+}
