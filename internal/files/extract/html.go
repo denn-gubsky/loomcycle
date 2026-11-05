@@ -123,7 +123,11 @@ func (h *htmlState) walk(n *html.Node, depth int) error {
 			}
 		case tag == "table":
 			h.flush()
-			if t := h.table(c); t != "" {
+			t, err := h.table(c)
+			if err != nil {
+				return err
+			}
+			if t != "" {
 				h.rep.Tables++
 				h.blocks = append(h.blocks, t)
 			}
@@ -182,40 +186,51 @@ func (h *htmlState) list(n *html.Node, ordered bool, level int) string {
 }
 
 // table renders a <table>'s rows (from thead, tbody and tfoot alike) as a
-// GFM table, the first row as its header, held to the tableRows caps.
-func (h *htmlState) table(t *html.Node) string {
-	var rows tableRows
-	defer func() { h.w.tableCut, h.w.tableWide = h.w.tableCut || rows.full, h.w.tableWide || rows.wide }()
-	var walk func(*html.Node, int)
-	walk = func(n *html.Node, depth int) {
+// GFM table, the first row as its header, held to the tableRows caps. Its
+// rows and cells count toward the page's element cap, as the elements the
+// page walk reads do, and the context is read at every row.
+func (h *htmlState) table(t *html.Node) (string, error) {
+	rows := h.w.newTable()
+	defer rows.done()
+	var walk func(*html.Node, int) error
+	walk = func(n *html.Node, depth int) error {
 		if depth > 8 {
-			return
+			return nil
 		}
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
+		for c := n.FirstChild; c != nil && !rows.full; c = c.NextSibling {
 			if c.Type != html.ElementNode {
 				continue
 			}
 			switch c.Data {
 			case "tr":
+				if err := h.w.ctx.Err(); err != nil {
+					return err
+				}
 				var row []string
 				for td := c.FirstChild; td != nil && len(row) <= maxSheetColumns; td = td.NextSibling {
 					if td.Type == html.ElementNode && (td.Data == "td" || td.Data == "th") {
 						row = append(row, cell(collapseSpace(textOf(td))))
 					}
 				}
-				if !rows.add(row) {
-					return
+				if h.nodes += 1 + len(row); h.nodes > maxXMLNodes {
+					return refusedf("the page holds more than %d elements", maxXMLNodes)
 				}
+				rows.add(row)
 			case "thead", "tbody", "tfoot":
-				walk(c, depth+1)
+				if err := walk(c, depth+1); err != nil {
+					return err
+				}
 			}
 		}
+		return nil
 	}
-	walk(t, 0)
+	if err := walk(t, 0); err != nil {
+		return "", err
+	}
 	if len(rows.rows) == 0 {
-		return ""
+		return "", nil
 	}
-	return table(rows.rows)
+	return table(rows.rows), nil
 }
 
 // imgLink writes an image as a link to its source; a data: URL is not

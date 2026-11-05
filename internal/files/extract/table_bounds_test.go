@@ -279,3 +279,97 @@ func TestExtractHTML_TablePaddingIsBounded(t *testing.T) {
 		t.Errorf("notes = %v", rep.Notes)
 	}
 }
+
+// The per-table caps leave each table free to pad a few kilobytes of rows to
+// most of a megabyte; a document of many such tables must still stop at one
+// bound for all of them, whatever the sink in front of it allows.
+
+// paddedRow is the cell count of the wide first row of each padded table, and
+// paddedRows the empty rows after it: under maxTableCells together, so no
+// per-table cap applies, yet ~800 KB rendered from ~5 KB of document.
+const paddedCols, paddedRows = 200, 990
+
+func checkDocTableBound(t *testing.T, s *memSink, rep Report) {
+	t.Helper()
+	if n := s.md.Len(); n > maxDocTableBytes+(1<<20) {
+		t.Errorf("wrote %d bytes; all of a document's tables are capped at %d", n, maxDocTableBytes)
+	}
+	if !hasNote(rep, "for all of the document's tables") {
+		t.Errorf("no note says the document's tables were cut: %v", rep.Notes)
+	}
+}
+
+func TestExtractHTML_ManyTablesAreBoundedTogether(t *testing.T) {
+	one := "<table><tr>" + strings.Repeat("<td>x", paddedCols) + strings.Repeat("<tr>", paddedRows) + "</table>"
+	page := "<html><body>" + strings.Repeat(one, 60) + "</body></html>"
+	s, rep := run(t, HTML{}, []byte(page), Options{Name: "p.html"})
+	checkDocTableBound(t, s, rep)
+}
+
+func TestExtractPPTX_ManyTablesOnASlideAreBoundedTogether(t *testing.T) {
+	one := `<p:graphicFrame><a:graphic><a:graphicData><a:tbl><a:tr>` +
+		strings.Repeat(`<a:tc><a:txBody><a:p><a:r><a:t>x</a:t></a:r></a:p></a:txBody></a:tc>`, paddedCols) + `</a:tr>` +
+		strings.Repeat(`<a:tr/>`, paddedRows) + `</a:tbl></a:graphicData></a:graphic></p:graphicFrame>`
+	slide := `<p:sld ` + nsP + ` ` + nsA + ` ` + nsR + `><p:cSld><p:spTree>` + strings.Repeat(one, 50) + `</p:spTree></p:cSld></p:sld>`
+	data := zipOf(t,
+		xmlEntry("_rels/.rels", relsXML([3]string{"rId1", "officeDocument", "ppt/presentation.xml"})),
+		xmlEntry("ppt/presentation.xml", `<p:presentation `+nsP+` `+nsR+`><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst></p:presentation>`),
+		xmlEntry("ppt/_rels/presentation.xml.rels", relsXML([3]string{"rId2", "slide", "slides/slide1.xml"})),
+		xmlEntry("ppt/slides/slide1.xml", slide),
+	)
+	s, rep := run(t, PPTX{}, data, Options{Name: "t.pptx"})
+	checkDocTableBound(t, s, rep)
+}
+
+func TestExtractDOCX_ManyTablesAreBoundedTogether(t *testing.T) {
+	one := `<w:tbl><w:tr>` + strings.Repeat(`<w:tc><w:p><w:r><w:t>x</w:t></w:r></w:p></w:tc>`, paddedCols) + `</w:tr>` +
+		strings.Repeat(`<w:tr/>`, paddedRows) + `</w:tbl>`
+	s, rep, err := extractDOCX(t, docxWith(t, `<w:document `+nsW+`><w:body>`+strings.Repeat(one, 60)+`</w:body></w:document>`), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkDocTableBound(t, s, rep)
+}
+
+// Four sheets that all name the same amplified part: each is cut at its own
+// table cap, and together they stop at the document's.
+func TestExtractXLSX_ManySheetsAreBoundedTogether(t *testing.T) {
+	data := amplifiedXLSX(t, 64<<10, 10, 200)
+	// Re-point the workbook at the one sheet four times.
+	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, f := range r.File {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var b bytes.Buffer
+		if _, err := b.ReadFrom(rc); err != nil {
+			t.Fatal(err)
+		}
+		_ = rc.Close()
+		body := b.String()
+		if f.Name == "xl/workbook.xml" {
+			body = strings.Replace(body, `<sheet name="S" r:id="rId1"/>`, `<sheet name="A" r:id="rId1"/><sheet name="B" r:id="rId1"/><sheet name="C" r:id="rId1"/><sheet name="D" r:id="rId1"/>`, 1)
+		}
+		w, err := zw.CreateHeader(&zip.FileHeader{Name: f.Name, Method: f.Method})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, rep := run(t, XLSX{}, buf.Bytes(), Options{Name: "m.xlsx"})
+	if rep.Sheets != 4 {
+		t.Fatalf("sheets = %d, want 4", rep.Sheets)
+	}
+	checkDocTableBound(t, s, rep)
+}

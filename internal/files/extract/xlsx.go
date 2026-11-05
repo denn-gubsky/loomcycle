@@ -139,7 +139,9 @@ func writeSheet(ctx context.Context, w *writer, rep *Report, name string, data [
 		show--
 	}
 	width := widths[show-1]
-	rep.Tables++
+	// What this sheet's table may render to: its own cap, or what the
+	// document's other tables have left.
+	room, docBound := w.tableRoom()
 
 	// A shared string long enough to matter is rendered once, however many
 	// cells name it.
@@ -185,16 +187,21 @@ func writeSheet(ctx context.Context, w *writer, rep *Report, name string, data [
 				line.WriteString(" --- |")
 			}
 		}
-		// The header row is always written: maxSheetColumns cells of at
-		// most maxCellBytes, escaped, stay under maxTableBytes.
-		if written > 0 && size+line.Len() > maxTableBytes {
+		// The header row is always written when the table has its own cap
+		// to fill: maxSheetColumns cells of at most maxCellBytes, escaped,
+		// stay under maxTableBytes.
+		if size+line.Len() > room && (written > 0 || docBound) {
 			full = true
 			return errSheetFull
+		}
+		if written == 0 {
+			rep.Tables++
 		}
 		size += line.Len()
 		written++
 		return w.text(line.String())
 	})
+	w.tableBytes += size
 	if err != nil && !errors.Is(err, errSheetFull) {
 		return err
 	}
@@ -207,7 +214,10 @@ func writeSheet(ctx context.Context, w *writer, rep *Report, name string, data [
 	if show < len(widths) {
 		rep.note("sheet %q: rows past %d cells are not shown", name, maxTableCells)
 	}
-	if full {
+	switch {
+	case full && docBound:
+		w.docTablesCut = true
+	case full:
 		rep.note("sheet %q: the table was cut at %d bytes of text", name, maxTableBytes)
 	}
 	if long {

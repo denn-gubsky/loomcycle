@@ -158,7 +158,7 @@ func (s *slideState) shapes(tree *node) error {
 			// A cell's text holds whatever is nested in it, so only the
 			// outermost tables are rendered.
 			for _, tbl := range k.outermost("tbl") {
-				var rows tableRows
+				rows := s.w.newTable()
 				for _, tr := range tbl.kids {
 					if tr.name != "tr" {
 						continue
@@ -179,7 +179,7 @@ func (s *slideState) shapes(tree *node) error {
 						break
 					}
 				}
-				s.w.tableCut, s.w.tableWide = s.w.tableCut || rows.full, s.w.tableWide || rows.wide
+				rows.done()
 				if len(rows.rows) > 0 {
 					s.rep.Tables++
 					s.blocks = append(s.blocks, table(rows.rows))

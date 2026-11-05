@@ -485,8 +485,8 @@ func renderSegs(segs []seg) string {
 // one line; an image in a cell stays in the cell. The table is held to the
 // tableRows caps.
 func (d *docx) table(t *node) (string, error) {
-	var rows tableRows
-	defer func() { d.w.tableCut, d.w.tableWide = d.w.tableCut || rows.full, d.w.tableWide || rows.wide }()
+	rows := d.w.newTable()
+	defer rows.done()
 	for _, tr := range t.kids {
 		if tr.name != "tr" {
 			continue
