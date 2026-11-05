@@ -41,7 +41,8 @@ fi
 has() { grep -qE "$1" <<<"$changed" && echo true || echo false; }
 
 go=false
-if grep -qE '^(go\.mod|go\.sum|Makefile)$' <<<"$changed"; then
+# scripts/release/ holds the license-bundle script the go job runs.
+if grep -qE '^(go\.mod|go\.sum|Makefile|scripts/release/.*)$' <<<"$changed"; then
   go=true
 else
   bin="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/loomcycle-affected"

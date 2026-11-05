@@ -113,6 +113,14 @@ jobs:
         # same tests again under -race.
         run: make bashbox-escape
 
+      # The release archives carry THIRD_PARTY_LICENSES (.goreleaser.yaml
+      # before hook). Its Go half refuses a dependency whose license
+      # go-licenses cannot classify; running it here makes such a dependency
+      # fail its pull request rather than the release, which by then has
+      # already created its release page.
+      - name: Third-party licenses (Go)
+        run: scripts/release/third-party-licenses.sh --go-only "$RUNNER_TEMP/THIRD_PARTY_LICENSES"
+
       # gofmt walks files, not modules, so `.` already covers every module.
       - name: gofmt check
         run: |

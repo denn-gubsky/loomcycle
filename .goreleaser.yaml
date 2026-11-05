@@ -2,7 +2,8 @@
 #
 # Triggered by .github/workflows/release.yml on `v*` tag push. Builds
 # loomcycle for darwin-{arm64,amd64} + linux-{arm64,amd64}, packages
-# each as tar.gz with LICENSE + README, attaches everything to the
+# each as tar.gz with LICENSE + NOTICE + README + THIRD_PARTY_LICENSES,
+# attaches everything to the
 # GitHub release at the tag, generates SHA256SUMS, then bumps
 # Formula/loomcycle.rb in denn-gubsky/homebrew-loomcycle with the new
 # version + per-platform sha256 values.
@@ -15,6 +16,14 @@
 version: 2
 
 project_name: loomcycle
+
+# The third-party license bundle the archives carry: every Go module linked
+# into the binary and every npm package bundled into the embedded Web UI (the
+# workflow's `make build-ui` step has already installed the npm packages this
+# reads). bin/ is gitignored, so the file never dirties the tree.
+before:
+  hooks:
+    - ./scripts/release/third-party-licenses.sh bin/release/THIRD_PARTY_LICENSES
 
 builds:
   - id: loomcycle
@@ -57,6 +66,8 @@ archives:
       - LICENSE
       - NOTICE
       - README.md
+      - src: bin/release/THIRD_PARTY_LICENSES
+        strip_parent: true
 
 checksum:
   name_template: "SHA256SUMS"
