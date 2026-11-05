@@ -21,7 +21,7 @@ func placementFixture(t *testing.T, confirmed bool, scopes ...string) (*Memory, 
 	// op is what an agent gets to know, not what an operator can write.
 	base = tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}} })
 	base = tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}} })
-	dctx := tools.WithSubstrateOperator(base)
+	dctx := tools.WithCallerTier(base, tools.TierOperatorPlane)
 
 	// The ontology lives in the TENANT scope at a fixed path, which is where the reader
 	// looks — authoring it anywhere else would test nothing.

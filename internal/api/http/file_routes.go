@@ -49,10 +49,9 @@ func (s *Server) handleRunFile(w http.ResponseWriter, r *http.Request) {
 // SQL Memory scopes import's Document call needs. The twin itself narrows the
 // tools and volumes to the op's own.
 //
-// Deliberately not substrateAdminCtx: that marks the call as the runtime
-// operator's own (tools.WithSubstrateOperator), under which the File tool
-// refuses import, and it grants def-family authority the twin never uses. A
-// twin call is a principal's, as over MCP.
+// Deliberately not substrateAdminCtx: its wildcard tools ceiling names no
+// tool, under which the File tool refuses import, and it grants def-family
+// authority the twin never uses. A twin call is a principal's, as over MCP.
 func fileRouteCtx(ctx context.Context) context.Context {
 	p, ok := auth.PrincipalFromContext(ctx)
 	ident := tools.RunIdentityValue{UserID: substrateAdminUserID, AgentID: substrateAdminAgentID}

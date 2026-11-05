@@ -129,6 +129,27 @@ var baselineWiderThanGateHTTP = map[string]string{
 	"legacy|manage principal:scim:groups": scimReserved,
 }
 
+// baselineWiderThanGateRoutes is baselineWiderThanGateHTTP for one route of a
+// class rather than one question: the routes below ask the same type-level
+// `write document:*` as a member's own document writes, which the baseline
+// allows, but they are operator routes the scope gate keeps a member off.
+// Keyed "<class>|<METHOD> <pattern>", so a NEW route asking that question for
+// a member is still reported.
+var baselineWiderThanGateRoutes = map[string]string{
+	// RFC FY Part B: the ontology's decisions and subject merge/binding.
+	"member-full|POST /v1/_ontology/adopt":              memberOperatorRoute,
+	"member-full|POST /v1/_ontology/proposals":          memberOperatorRoute,
+	"member-full|POST /v1/_ontology/subjects/merge":     memberOperatorRoute,
+	"member-full|POST /v1/_ontology/subjects/principal": memberOperatorRoute,
+	// The document maintenance routes (RFC FY P6 decides their member reach).
+	"member-full|POST /v1/_document/derive_units":    memberOperatorRoute,
+	"member-full|POST /v1/_document/describe_images": memberOperatorRoute,
+	"member-full|POST /v1/_document/project":         memberOperatorRoute,
+	"member-full|POST /v1/_document/reindex":         memberOperatorRoute,
+}
+
+const memberOperatorRoute = "asks the type-level question a member's own document writes ask; the scope gate keeps a member off this operator route"
+
 const scimReserved = "the scope gate reserves /scim/v2 to a scim:provision credential, whatever the ACL baseline allows"
 
 const inRunReach = "the class's in-run reach asks the same question as an off-run operator route the scope gate refuses it"
@@ -288,7 +309,7 @@ func TestACLBaseline_HTTPRoutesMatchTheLegacyGatePerClass(t *testing.T) {
 	}
 
 	var narrowing, widening, collisions []string
-	usedAllow, usedNarrow := map[string]bool{}, map[string]bool{}
+	usedAllow, usedNarrow, usedRoute := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	admitted := map[string]int{}
 	for _, r := range routes {
 		surface, governed := authz.HTTPSurface(r.method, r.path)
@@ -329,6 +350,8 @@ func TestACLBaseline_HTTPRoutesMatchTheLegacyGatePerClass(t *testing.T) {
 					collisions = append(collisions, fmt.Sprintf("%s: %s %s asks %q, as %s does", c.name, r.method, r.pattern, q, askedOK[c.name][q]))
 				case baselineWiderThanGateHTTP[key] != "":
 					usedAllow[key] = true
+				case baselineWiderThanGateRoutes[c.name+"|"+r.method+" "+r.pattern] != "":
+					usedRoute[c.name+"|"+r.method+" "+r.pattern] = true
 				default:
 					widening = append(widening, fmt.Sprintf("%s: %s %s — the legacy gate refuses the widest token of the class, the baseline allows %s (%v)",
 						c.name, r.method, r.pattern, q, d.Reasons))
@@ -339,6 +362,11 @@ func TestACLBaseline_HTTPRoutesMatchTheLegacyGatePerClass(t *testing.T) {
 	for key := range baselineWiderThanGateHTTP {
 		if !usedAllow[key] {
 			widening = append(widening, fmt.Sprintf("%s is allowlisted as baseline-wider but no route needs it any more; remove the entry", key))
+		}
+	}
+	for key := range baselineWiderThanGateRoutes {
+		if !usedRoute[key] {
+			widening = append(widening, fmt.Sprintf("%s is allowlisted as a baseline-wider route but no longer needs it; remove the entry", key))
 		}
 	}
 	for key := range baselineNarrowerThanGateHTTP {

@@ -89,9 +89,6 @@ func (f *File) transferURL(ctx context.Context, op string, in fileTransferInput)
 	if err := checkTransferHeaders(in.Headers); err != nil {
 		return nil, errValidation(op+": "+err.Error(), "A pre-authenticated URL carries its own authorisation; pass only non-secret headers."), false
 	}
-	if tools.IsSubstrateOperator(ctx) && tools.RunID(ctx) == "" {
-		return nil, errPermission(op+": not available outside a run", ""), false
-	}
 	if !slices.Contains(tools.PolicyOf(ctx).Tools, "HTTP") {
 		return nil, errPermission(op+": needs the HTTP tool, which this run does not have", "Ask an operator to grant HTTP."), false
 	}

@@ -27,7 +27,7 @@ import (
 func TestAgentDefTool_InternalRoundTripsCreateAndFork(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
-	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
+	ctx = tools.WithCallerTier(tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} }), tools.TierOperatorPlane)
 
 	create := `{"op":"create","name":"maintenance-agent","promote":true,"overlay":{
 		"system_prompt":"extract facts",

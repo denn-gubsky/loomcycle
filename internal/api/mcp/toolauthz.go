@@ -45,8 +45,9 @@ var tenantConfinableTools = map[string]bool{
 	// Tenant-confinable rather than admin-only because the handler takes the
 	// tenant from the PRINCIPAL and offers no wire field for it, so a tenant
 	// session physically cannot reach another tenant's subject — the same posture
-	// as credentialdef. The destructive half is guarded by dry_run defaulting true
-	// plus a confirm that must equal the subject, not by the scope.
+	// as credentialdef. It also needs substrate:tenant by name
+	// (toolRequiredScope): POST /v1/_erasure is carved out of the member path,
+	// and neither the handler nor the connector asks who is calling (RFC FY).
 	"erasure": true,
 	// retention_override: the connector takes the tenant from the PRINCIPAL
 	// for anyone but an admin, so a tenant operator's session can only reach
@@ -241,6 +242,9 @@ var toolRequiredScope = map[string]string{
 	// Folding one ontology subject into another, which POST
 	// /v1/_ontology/subjects/merge keeps from a tenant's members.
 	"ontology": auth.ScopeTenant,
+	// Reporting on or erasing a subject, which /v1/_erasure keeps from a
+	// tenant's members: a member could otherwise erase a colleague.
+	"erasure": auth.ScopeTenant,
 	// Starting a run, and every write on a run's state.
 	"spawn_run":            auth.ScopeRunsCreate,
 	"spawn_runs":           auth.ScopeRunsCreate,

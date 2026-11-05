@@ -1333,6 +1333,9 @@ func requiredScopeFor(method, path string) string {
 	// document per tenant, the tenant derived from the principal and never the wire —
 	// and both are strictly NARROWER than what this token can already do through
 	// /v1/_document, which is the point of having them as dedicated ops.
+	// RFC FY Part B: "this token" is a tenant operator's; a member reaches
+	// neither the writes here nor their effect through /v1/_document, so every
+	// POST here is carved out of the member path (memberpath.CarvedOut).
 	// RFC FR P2: /subjects/merge too — and, unlike the others, it is carved out of
 	// the member path (memberpath.CarvedOut): which of two subjects survives is
 	// the operator's decision, not a member's. RFC FR P4: /subjects/principal

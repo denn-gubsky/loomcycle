@@ -7450,7 +7450,7 @@ func (s *Server) prepareSubRun(ctx context.Context, name, systemExtra, prompt, d
 // prepareSubRunValues; TestPrepareSubRun_EveryOperatorPlaneSetterIsReplacedForTheChild
 // holds the two lists together.
 func stripOperatorPlane(ctx context.Context) context.Context {
-	ctx = tools.WithoutSubstrateOperator(ctx)
+	ctx = tools.WithCallerTier(ctx, tools.TierRun)
 	ctx = tools.WithoutUnauthenticatedOperator(ctx)
 	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{})
 	ctx = tools.WithA2AServerCardDefPolicy(ctx, tools.A2AServerCardDefPolicyValue{})

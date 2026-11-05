@@ -6058,6 +6058,13 @@ func (d *Document) defineType(ctx context.Context, key sqlmem.ScopeKey, in docIn
 	if in.Name == "" {
 		return errValidation("define_type: missing required field: name", "Pass `name`, the type's name."), nil
 	}
+	// The tenant scope's type record is what every user and agent of the tenant
+	// reads as the shared vocabulary: the operator's to write, off-run (RFC FY
+	// Part B), as the ontology is.
+	if key.Scope == "tenant" && !tools.IsOperatorPlane(ctx) {
+		return errPermission("define_type: a type in the tenant scope is the operator's to define",
+			"Define it in the user or agent scope, or propose it for the ontology with op=propose_entity."), nil
+	}
 	fields := in.Fields
 	if len(fields) == 0 {
 		fields = json.RawMessage(`[]`)

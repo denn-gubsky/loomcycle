@@ -50,6 +50,11 @@ type Principal struct {
 	// back to the scope answer in compat and shadow mode and refuse in
 	// enforce mode.
 	Effective *authz.Effective
+	// ACLFault is set when a resolver is wired and reading the principal's set
+	// failed (Effective is then nil). It tells "no resolver" (the class
+	// baseline may stand in) from "the set could not be read", where a check
+	// that grants from the caller's own rules must refuse (RFC FY Part B).
+	ACLFault bool
 	// IssuedByGate names the auth gate that issued the token this principal
 	// came from (RFC FA §7); "" for every other credential. Such a token
 	// stands only while its user is active: the server re-reads the user's

@@ -57,9 +57,9 @@ func mcpTools(names ...string) []string {
 }
 
 // memberMCPTools is what the per-tool gate admits a non-isolated member to:
-// the tenant-confinable tools less the seven that need substrate:tenant by
+// the tenant-confinable tools less the eight that need substrate:tenant by
 // name (retention_override, crypto, groupdef, acldef, aclbinding, clientdef,
-// ontology).
+// ontology, erasure).
 var memberMCPTools = []string{
 	"spawn_run", "spawn_runs", "cancel_run", "get_run", "compact_run", "retune_run", "review_run",
 	"configured_run", "list_runs", "delete_run_tree", "register_agent", "unregister_agent", "list_agents",
@@ -68,7 +68,7 @@ var memberMCPTools = []string{
 	"memorybackenddef", "documentsourcedef", "volumedef", "credentialdef", "authz",
 	"memory", "channel", "channeldef", "path", "document", "history", "decision",
 	"evaluation", "context", "interruption_resolve", "publish_channel", "subscribe_channel",
-	"peek_channel", "ack_channel", "stream_user_run_states", "identity", "erasure", "file",
+	"peek_channel", "ack_channel", "stream_user_run_states", "identity", "file",
 	// review: reaching the tool is not ruling; each statement asks the
 	// member's `review` grant, which no member baseline holds.
 	"review",
@@ -78,7 +78,7 @@ var memberMCPTools = []string{
 // tenant-confinable tool. The runtime-global ones (snapshots, pause and
 // resume, the resolver probe, token minting, the all-channel list) stay the
 // admin's.
-var tenantMCPTools = append([]string{"retention_override", "crypto", "groupdef", "acldef", "aclbinding", "clientdef", "ontology"}, memberMCPTools...)
+var tenantMCPTools = append([]string{"retention_override", "crypto", "groupdef", "acldef", "aclbinding", "clientdef", "ontology", "erasure"}, memberMCPTools...)
 
 // selfTokenRule is every user's say over its own credentials (RFC FA P5):
 // approving a device login, which mints a token for the approver themselves

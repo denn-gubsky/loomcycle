@@ -33,7 +33,7 @@ import (
 //   - plumbing: run ids, the dispatcher, emitters, observers, the pause gate,
 //     and per-call transients (ToolUseID, HookedExecute, ExtraAllowedHosts);
 //   - identity: RunIdentity (already one typed value, persisted per run);
-//   - the operator plane's own authority (SubstrateOperator and the
+//   - the operator plane's own authority (the caller tier and the
 //     operator-only def policies): a run never holds it (stripOperatorPlane).
 type RunPolicy struct {
 	// Tools is the agent's effective tool names (after the definition's and
