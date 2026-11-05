@@ -147,3 +147,72 @@ func TestOntology_BootPassRecordsAnUnrecordedTenant(t *testing.T) {
 		t.Errorf("recorded ontology after the boot pass = %q (err %v), want %q", got, err, e.ontology)
 	}
 }
+
+// TestReservedName_ConsolidatorEnsuresTheEntitiesDocument: the memory bundle's
+// consolidator creates /memory/entities from inside its run with exactly this call
+// (op, scope, title, path). That is the runtime's own document, so the call is an
+// ensure of it: allowed, idempotent, and answering with the document either way.
+func TestReservedName_ConsolidatorEnsuresTheEntitiesDocument(t *testing.T) {
+	e := newReservedEnv(t)
+	call := `{"op":"create_document","scope":"tenant","title":"Entities","path":"/memory/entities"}`
+	out, r := docExec(t, e.d, e.agentCtx, call)
+	if r.IsError {
+		t.Fatalf("the consolidator's create of /memory/entities was refused: %s", r.Text)
+	}
+	id, _ := out["document_id"].(string)
+	if id == "" || e.tenantName(t, "/memory/entities") != id {
+		t.Fatalf("/memory/entities names %q, the call answered %v", e.tenantName(t, "/memory/entities"), out)
+	}
+	again, r := docExec(t, e.d, e.agentCtx, call)
+	if r.IsError || again["document_id"] != id {
+		t.Errorf("a second ensure answered %v (%s), want the same document %s", again, r.Text, id)
+	}
+	// Without a title, as the runtime supplies it anyway.
+	if _, r := docExec(t, e.d, e.agentCtx, `{"op":"create_document","scope":"tenant","path":"/memory/entities"}`); r.IsError {
+		t.Errorf("an ensure without a title was refused: %s", r.Text)
+	}
+}
+
+// TestReservedName_AnAgentCannotCreateTheEntitiesDocumentWithItsOwnContent: the ensure
+// carries nothing of the caller's — a body, status, type, tags, fields or another
+// title would be the agent authoring the document every placed fact lands in.
+func TestReservedName_AnAgentCannotCreateTheEntitiesDocumentWithItsOwnContent(t *testing.T) {
+	for _, extra := range []string{
+		`"body":"planted"`, `"status":"confirmed"`, `"type":"ontology"`, `"tags":["x"]`,
+		`"fields":{"a":"b"}`, `"title":"Not Entities"`,
+	} {
+		t.Run(extra, func(t *testing.T) {
+			e := newReservedEnv(t)
+			_, r := docExec(t, e.d, e.agentCtx, `{"op":"create_document","scope":"tenant","path":"/memory/entities",`+extra+`}`)
+			if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryPermission {
+				t.Errorf("an agent created /memory/entities with %s: %+v", extra, r)
+			}
+			if got := e.tenantName(t, "/memory/entities"); got != "" {
+				t.Errorf("/memory/entities names %q after a refused create", got)
+			}
+		})
+	}
+}
+
+// TestRemember_FilesIntoOneEntitiesDocument: the entity document's get-or-create
+// looked only BELOW /memory/entities, so it never found the document it had made and
+// each remember created another and moved the name onto it.
+func TestRemember_FilesIntoOneEntitiesDocument(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	for _, fact := range []string{"Ada wrote the first program.", "Grace found the first bug."} {
+		if _, r := docExec(t, d, ctx, `{"op":"remember","scope":"user","text":"`+fact+`"}`); r.IsError {
+			t.Fatalf("remember: %s", r.Text)
+		}
+	}
+	key, _, err := d.resolveScope(ctx, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := d.query(ctx, key, `SELECT count(*) FROM documents WHERE title = ?`, entitiesDocumentTitle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := asInt(res.Rows[0][0]); n != 1 {
+		t.Errorf("two remembers made %d entity documents, want 1", n)
+	}
+}

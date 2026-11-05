@@ -774,6 +774,9 @@ func (d *Document) executeInput(ctx context.Context, in docInput, raw json.RawMe
 	}
 	// RFC FY Part C: the names the runtime finds tenant-wide documents by are the
 	// operator's to give; see document_ontology_identity.go.
+	if res, handled := d.ensureEntitiesDocument(ctx, key, mscope, in, raw); handled {
+		return res, nil
+	}
 	if refused := d.reservedTargetRefusal(ctx, key, in); refused != nil {
 		return *refused, nil
 	}
