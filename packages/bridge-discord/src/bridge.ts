@@ -50,7 +50,10 @@ export function createDiscordBridge(cfg: DiscordConfig, opts: DiscordBridgeOptio
   const adapter: BridgeAdapter<DiscordRef> = {
     // `/ask prompt:/help` reaches the core as "/help": answer with the same
     // list as the /help command, not the core's typed-command one.
-    platform: { name: "discord", label: "Discord", helpText: helpText(voice !== undefined) },
+    // An "Ask by voice" is a deferred interaction: it must be answered even
+    // in a server channel, where the core is otherwise quiet about a voice
+    // message it does not take.
+    platform: { name: "discord", label: "Discord", helpText: helpText(voice !== undefined), answerEveryVoice: true },
     // Without the Gateway there is no message to edit as it grows, and each
     // turn is one message per 2,000 characters.
     capabilities: { streaming: "never", maxMessageChars: MAX_MESSAGE_CHARS },

@@ -554,6 +554,17 @@ describe("discord bridge over HTTP", () => {
       expect(lc.callsTo("transcribe")[0].token).toContain("discord-conv-");
     });
 
+    it("answers a voice message it may not transcribe in a server channel, rather than leave it thinking", async () => {
+      lc.speech!.surfaces = { speech: false, transcription: false };
+      const ix = askByVoice({ guild: GUILD, invoker: BOB, author: BOB });
+      expect((await post(ix)).json).toEqual(DEFERRED);
+      await waitFor(
+        () => discord.calls.some((c) => c.method === "PATCH" && (c.body as { content?: string })?.content === VOICE_TEXT.unavailable),
+        "the notice",
+      );
+      expect(discord.downloads).toHaveLength(0);
+    });
+
     it("keeps an untrusted server's speakers to text when BRIDGE_VOICE_UNTRUSTED=0", async () => {
       await restart({ untrusted: false });
       const res = await post(askByVoice({ guild: OPEN_GUILD }));
