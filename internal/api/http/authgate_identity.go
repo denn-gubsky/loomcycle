@@ -96,8 +96,13 @@ func (s *Server) resolveAssertion(ctx context.Context, g config.AuthGate, a auth
 	}
 	fresh, err := identity.Resolve(g.Name, m, a)
 	if err != nil {
-		if errors.Is(err, identity.ErrTenantRefused) {
+		switch {
+		case errors.Is(err, identity.ErrTenantRefused):
 			return identity.Target{}, 0, refused("tenant not allowed")
+		case errors.Is(err, identity.ErrSubjectUnverified):
+			// Refused before the identity lookup below, so an unverified
+			// address neither links a user nor signs in through a link.
+			return identity.Target{}, 0, refused("subject_unverified")
 		}
 		return identity.Target{}, 0, refused("no usable subject")
 	}
@@ -134,9 +139,9 @@ func (s *Server) resolveAssertion(ctx context.Context, g config.AuthGate, a auth
 }
 
 // legacyUser finds the user a bridge made for this identity before it was a
-// gate. Only a user nothing else signs in as qualifies: one with a password
-// or an identity at any gate is a person's own account, and the prefix is the
-// operator's word about the bridge's subjects, not about theirs.
+// gate. Only a user nothing else signs in as qualifies: one that holds any
+// sign-in of its own (signInKinds) is a person's account, and the prefix is
+// the operator's word about the bridge's subjects, not about theirs.
 func (s *Server) legacyUser(ctx context.Context, g config.AuthGate, fresh identity.Target) (identity.Target, bool, error) {
 	subject, ok := identity.LegacySubject(g.Name, g.Identity, fresh.Subject)
 	if !ok {
@@ -151,20 +156,54 @@ func (s *Server) legacyUser(ctx context.Context, g config.AuthGate, fresh identi
 	} else if !u.ErasedAt.IsZero() {
 		return identity.Target{}, false, nil
 	}
-	ids, err := s.store.UserIdentityListSubject(ctx, fresh.TenantID, subject)
-	if err != nil {
-		return identity.Target{}, false, err
-	}
-	if len(ids) > 0 {
-		return identity.Target{}, false, nil
-	}
-	switch _, err := s.store.UserCredentialGet(ctx, fresh.TenantID, subject, store.CredentialKindPassword); {
-	case err == nil:
-		return identity.Target{}, false, nil
-	case !isNotFound(err):
-		return identity.Target{}, false, err
+	for _, k := range signInKinds() {
+		held, err := k.holds(ctx, s.store, fresh.TenantID, subject)
+		if err != nil {
+			return identity.Target{}, false, err
+		}
+		if held {
+			return identity.Target{}, false, nil
+		}
 	}
 	return identity.Target{TenantID: fresh.TenantID, Subject: subject}, true, nil
+}
+
+// signInKind is one stored way a person signs in as a subject on their own.
+type signInKind struct {
+	// family is the store's method family that keeps it (User<family>…),
+	// which TestSignInKinds_CoverEveryPerUserStoreFamily matches against
+	// the store's methods.
+	family string
+	holds  func(ctx context.Context, st store.Store, tenant, subject string) (bool, error)
+}
+
+// signInKinds is every stored way a person signs in as a subject: an
+// identity at any gate, a password, a passkey. Not sign-ins, by decision:
+// TOTP and recovery codes (second factors, never a way in alone) and bearer
+// tokens (a bridge minted its own users' tokens, so holding one says nothing
+// about a person). A new per-user store family fails the census test until it
+// is listed here or recorded there as not a sign-in.
+func signInKinds() []signInKind {
+	return []signInKind{
+		{family: "Identity", holds: func(ctx context.Context, st store.Store, tenant, subject string) (bool, error) {
+			ids, err := st.UserIdentityListSubject(ctx, tenant, subject)
+			return len(ids) > 0, err
+		}},
+		{family: "Credential", holds: func(ctx context.Context, st store.Store, tenant, subject string) (bool, error) {
+			// user_credentials holds the password kind only.
+			_, err := st.UserCredentialGet(ctx, tenant, subject, store.CredentialKindPassword)
+			if isNotFound(err) {
+				return false, nil
+			}
+			return err == nil, err
+		}},
+		{family: "Passkey", holds: func(ctx context.Context, st store.Store, tenant, subject string) (bool, error) {
+			// A flagged passkey still counts: it is the person's, and an
+			// operator removes it.
+			pks, err := st.UserPasskeyList(ctx, tenant, subject)
+			return len(pks) > 0, err
+		}},
+	}
 }
 
 // provisionOrRefuse resolves an assertion and makes it a user: it creates the

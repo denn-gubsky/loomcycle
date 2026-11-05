@@ -93,9 +93,9 @@ func resolveSCIMGate(c *Config, name string, g AuthGateConfig, floor AuthNewUser
 	if g.IdentityMap != nil {
 		m = *g.IdentityMap
 	}
-	if m.TenantClaim != "" || len(m.AllowedTenants) > 0 || m.Subject != "" || m.LegacySubjectPrefix != "" {
+	if m.TenantClaim != "" || len(m.AllowedTenants) > 0 || m.Subject != "" || m.SubjectClaimImmutable || m.LegacySubjectPrefix != "" {
 		return nil, nil, fmt.Errorf("%s.identity_map: a SCIM gate's tenant is its token's and its subject is the SCIM id; "+
-			"tenant_claim, allowed_tenants, subject and legacy_subject_prefix do not apply", where)
+			"tenant_claim, allowed_tenants, subject, subject_claim_immutable and legacy_subject_prefix do not apply", where)
 	}
 	switch p := strings.TrimSpace(m.Provision); p {
 	case "", ProvisionAuto:
