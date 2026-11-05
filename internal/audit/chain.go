@@ -154,18 +154,30 @@ func (k ChainKeys) sign(domain, tenant string, seq int64, hash string) string {
 	return chainMAC(k.Current, domain, tenant, seq, hash)
 }
 
-// check reports whether mac signs (domain, tenant, seq, hash) under the
-// current or the previous key, comparing in constant time.
-func (k ChainKeys) check(mac, domain, tenant string, seq int64, hash string) bool {
-	for _, key := range [][]byte{k.Current, k.Previous} {
-		if len(key) == 0 {
-			continue
-		}
-		if hmac.Equal([]byte(mac), []byte(chainMAC(key, domain, tenant, seq, hash))) {
-			return true
-		}
+// signedBy says which key a MAC verifies under.
+type signedBy int
+
+const (
+	signedByNone signedBy = iota
+	signedByCurrent
+	signedByPrevious
+)
+
+// which reports which key mac signs (domain, tenant, seq, hash) under,
+// comparing in constant time.
+func (k ChainKeys) which(mac, domain, tenant string, seq int64, hash string) signedBy {
+	if len(k.Current) > 0 && hmac.Equal([]byte(mac), []byte(chainMAC(k.Current, domain, tenant, seq, hash))) {
+		return signedByCurrent
 	}
-	return false
+	if len(k.Previous) > 0 && hmac.Equal([]byte(mac), []byte(chainMAC(k.Previous, domain, tenant, seq, hash))) {
+		return signedByPrevious
+	}
+	return signedByNone
+}
+
+// check reports whether mac verifies under the current or the previous key.
+func (k ChainKeys) check(mac, domain, tenant string, seq int64, hash string) bool {
+	return k.which(mac, domain, tenant, seq, hash) != signedByNone
 }
 
 // Seal returns the store.AuditSealFunc that hashes and signs a row whose Seq
@@ -205,6 +217,11 @@ type VerifyReport struct {
 	// Reason says why.
 	BreakSeq int64  `json:"break_seq,omitempty"`
 	Reason   string `json:"reason,omitempty"`
+
+	// noOpening marks a break for a missing opening record, which a chain
+	// opened after the operator chain was read also shows: the caller
+	// re-reads the operator chain once before reporting it.
+	noOpening bool
 }
 
 func (r VerifyReport) broken(seq int64, format string, args ...any) VerifyReport {
@@ -292,6 +309,24 @@ func Verify(ctx context.Context, r ChainReader, keys ChainKeys, tenant string) (
 	if !op.OK {
 		return operatorChainBroken(tenant, op), nil
 	}
+	return verifyWithRetry(ctx, r, keys, tenant, reg)
+}
+
+// verifyWithRetry verifies a tenant chain and, when its opening is missing
+// from the operator chain as read, reads the operator chain again once: a
+// chain whose first append committed after that read shows the same way.
+func verifyWithRetry(ctx context.Context, r ChainReader, keys ChainKeys, tenant string, reg Registry) (VerifyReport, error) {
+	rep, err := verifyChain(ctx, r, keys, tenant, reg)
+	if err != nil || rep.OK || !rep.noOpening {
+		return rep, err
+	}
+	reg, op, err := ReadRegistry(ctx, r, keys)
+	if err != nil {
+		return rep, err
+	}
+	if !op.OK {
+		return operatorChainBroken(tenant, op), nil
+	}
 	return verifyChain(ctx, r, keys, tenant, reg)
 }
 
@@ -323,7 +358,7 @@ func VerifyAll(ctx context.Context, r ChainReader, keys ChainKeys, tenants []str
 			out = append(out, operatorChainBroken(t, op))
 			continue
 		}
-		rep, err := verifyChain(ctx, r, keys, t, reg)
+		rep, err := verifyWithRetry(ctx, r, keys, t, reg)
 		if err != nil {
 			return out, err
 		}
@@ -367,13 +402,16 @@ func verifyChain(ctx context.Context, r ChainReader, keys ChainKeys, tenant stri
 			// never moves the head back, so an opened chain's head is past 0.
 			return rep.broken(1, "the chain was opened but its head is empty"), nil
 		case n == 0 && found && !reg.Pruned:
-			return rep.broken(1, "the operator chain has no record of this chain's opening"), nil
+			rep = rep.broken(1, "the operator chain has no record of this chain's opening")
+			rep.noOpening = true
+			return rep, nil
 		}
 	}
 	if head.AnchorSeq > 0 && !keys.check(head.AnchorMAC, macAnchor, tenant, head.AnchorSeq, head.AnchorHash) {
 		return rep.broken(head.AnchorSeq, "the retention anchor's signature does not verify"), nil
 	}
 	prev, want := head.AnchorHash, head.AnchorSeq+1
+	rotated := false
 	for want <= head.Seq {
 		rows, err := r.AuditEventsList(ctx, tenant, want-1, verifyPage)
 		if err != nil {
@@ -394,7 +432,18 @@ func verifyChain(ctx context.Context, r ChainReader, keys ChainKeys, tenant stri
 				return rep.broken(want, "row %d does not follow the row before it", want), nil
 			case RowHash(prev, row) != row.Hash:
 				return rep.broken(want, "row %d's content does not match its hash", want), nil
-			case !keys.check(row.MAC, macRow, tenant, row.Seq, row.Hash):
+			}
+			switch keys.which(row.MAC, macRow, tenant, row.Seq, row.Hash) {
+			case signedByCurrent:
+				rotated = true
+			case signedByPrevious:
+				// The previous key is honoured only up to the rotation: a
+				// row it signs after one the current key signed was written
+				// by someone still holding the rotated-out key.
+				if rotated {
+					return rep.broken(want, "row %d is signed with the previous key after rows signed with the current one", want), nil
+				}
+			default:
 				return rep.broken(want, "row %d's signature does not verify", want), nil
 			}
 			prev = row.Hash
@@ -408,8 +457,10 @@ func verifyChain(ctx context.Context, r ChainReader, keys ChainKeys, tenant stri
 	if prev != head.Hash {
 		return rep.broken(head.Seq, "the head does not match the last row"), nil
 	}
-	if head.Seq > 0 && !keys.check(head.MAC, macHead, tenant, head.Seq, head.Hash) {
-		return rep.broken(head.Seq, "the head's signature does not verify"), nil
+	if head.Seq > 0 {
+		if w := keys.which(head.MAC, macHead, tenant, head.Seq, head.Hash); w == signedByNone || (rotated && w == signedByPrevious) {
+			return rep.broken(head.Seq, "the head's signature does not verify"), nil
+		}
 	}
 	// Rows past the head: an append since the head was read moved the head
 	// too; a head moved back over rows that remain did not.

@@ -253,3 +253,70 @@ func TestSafeText_EscapesNULAndInvalidUTF8Reversibly(t *testing.T) {
 		}
 	}
 }
+
+// A rotated-out key verifies only the rows signed before the rotation: once a
+// row verifies under the current key, a later row signed with the previous
+// key is a forgery by whoever still holds it.
+func TestAuditVerify_PreviousKeyStopsAtTheRotationPoint(t *testing.T) {
+	s, _ := chainFixture(t, 3)
+	newKey := []byte("the-rotated-in-audit-key-32bytes")
+	record := func(key []byte, subject string) {
+		t.Helper()
+		sink, err := audit.NewStoreSink(s, audit.ChainKeys{Current: key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sink.Record(audit.Event{Action: "acl_edit", TargetTenant: "t1", TargetName: subject}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record(newKey, "after-rotation-1")
+	record(newKey, "after-rotation-2")
+	keys := audit.ChainKeys{Current: newKey, Previous: testKeys.Current}
+	if rep := verify(t, s, keys); !rep.OK || rep.Rows != 5 {
+		t.Fatalf("rows before and after the rotation: %+v", rep)
+	}
+	record(testKeys.Current, "forged-with-the-old-key")
+	rep := verify(t, s, keys)
+	if rep.OK || rep.BreakSeq != 6 || !strings.Contains(rep.Reason, "previous key") {
+		t.Errorf("a row signed with the rotated-out key after the rotation: %+v, want a break at 6 naming the previous key", rep)
+	}
+}
+
+// interleavingReader appends a new tenant's first event between the
+// operator chain's read and the tenant head's read, as a live server can.
+type interleavingReader struct {
+	*sqlite.Store
+	sink   audit.Sink
+	tenant string
+	done   bool
+}
+
+func (r *interleavingReader) AuditHeadGet(ctx context.Context, tenant string) (store.AuditHead, error) {
+	if tenant == r.tenant && !r.done {
+		r.done = true
+		if err := r.sink.Record(audit.Event{Action: "auth_login", ActorTenant: tenant}); err != nil {
+			return store.AuditHead{}, err
+		}
+	}
+	return r.Store.AuditHeadGet(ctx, tenant)
+}
+
+// A tenant whose first append commits between the operator chain's read
+// and its own head's read is not reported broken: verification re-reads the
+// operator chain for the opening before calling it missing.
+func TestAuditVerify_ANewChainOpenedDuringTheWalkVerifies(t *testing.T) {
+	s, _ := chainFixture(t, 2)
+	sink, err := audit.NewStoreSink(s, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &interleavingReader{Store: s, sink: sink, tenant: "t2"}
+	rep, err := audit.Verify(context.Background(), r, testKeys, "t2")
+	if err != nil || !r.done {
+		t.Fatalf("Verify: %v (interleaved: %v)", err, r.done)
+	}
+	if !rep.OK || rep.Rows != 1 {
+		t.Errorf("a chain opened during the walk: %+v, want it verified", rep)
+	}
+}
