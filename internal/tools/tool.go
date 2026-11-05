@@ -611,6 +611,9 @@ type ctxKeyMCPDiscovery struct{}
 // the run makes and holds none of the run's credentials: like the boot-time
 // handshake, it goes without a per-run credential its headers name, instead
 // of being refused for it. A tool call is never made under this marker.
+//
+// The one exception is a run being created: its own credentials, handed over
+// with WithMCPDiscoveryCredentials, are used when its identity holds none yet.
 func WithMCPDiscovery(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeyMCPDiscovery{}, true)
 }
@@ -620,6 +623,40 @@ func WithMCPDiscovery(ctx context.Context) context.Context {
 func IsMCPDiscovery(ctx context.Context) bool {
 	v, _ := ctx.Value(ctxKeyMCPDiscovery{}).(bool)
 	return v
+}
+
+type ctxKeyMCPDiscoveryCredentials struct{}
+
+// MCPDiscoveryCredentials are the per-run secrets of a run that is being
+// created, for its run-start discovery handshake only.
+type MCPDiscoveryCredentials struct {
+	UserBearer      string
+	UserCredentials map[string]string
+}
+
+// WithMCPDiscoveryCredentials hands a run's own bearer and named credentials
+// to its run-start discovery handshake. A top-level run lists its tools before
+// its RunIdentity is stamped, so without this a server that authenticates
+// tools/list with ${run.credentials.<name>} gets no header, refuses the
+// handshake, and the run starts with none of its tools — until some sub-agent,
+// which discovers on its parent's credentialed ctx, has warmed the pool.
+//
+// Only the discovery handshake reads it (see mcp.discoveryCtx), and only when
+// the identity on ctx carries no credentials of its own. Nothing else sees it:
+// stamping a partial RunIdentity here instead would change what every other
+// ctx reader (client-tools key, refusal rule) takes this ctx to be.
+func WithMCPDiscoveryCredentials(ctx context.Context, bearer string, creds map[string]string) context.Context {
+	if bearer == "" && len(creds) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyMCPDiscoveryCredentials{}, MCPDiscoveryCredentials{UserBearer: bearer, UserCredentials: creds})
+}
+
+// MCPDiscoveryCredentialsFrom returns what WithMCPDiscoveryCredentials put on
+// ctx.
+func MCPDiscoveryCredentialsFrom(ctx context.Context) (MCPDiscoveryCredentials, bool) {
+	v, ok := ctx.Value(ctxKeyMCPDiscoveryCredentials{}).(MCPDiscoveryCredentials)
+	return v, ok
 }
 
 // ConfineIsolatedScope enforces the RFC BX P2b data-scope confinement for an

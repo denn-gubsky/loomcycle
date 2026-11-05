@@ -3538,7 +3538,14 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// tenant (effectiveTenantID), not the ctx tenant — WithRunIdentity
 	// isn't stamped yet, so for non-HTTP-principal spawn surfaces the ctx
 	// tenant is "" and the run would not see its OWN dynamic MCP tools.
-	allowedTools := filterTools(s.candidateTools(ctx, effectiveTenantID, agentDef.Tools), agentDef.Tools, in.Tools)
+	//
+	// The run's own credentials go to the run-start MCP discovery: the run is
+	// not stamped yet, and a server that authenticates tools/list with
+	// ${run.credentials.<name>} would otherwise refuse the handshake and leave
+	// the run with none of its tools (a sub-agent, discovering on its parent's
+	// stamped ctx, never had this gap).
+	discoverCtx := tools.WithMCPDiscoveryCredentials(ctx, in.UserBearer, in.UserCredentials)
+	allowedTools := filterTools(s.candidateTools(discoverCtx, effectiveTenantID, agentDef.Tools), agentDef.Tools, in.Tools)
 	// RFC CT: context.recall auto-grants the Recall tool so enabling recall works
 	// without also listing Recall in tools:.
 	allowedTools = s.grantRecallTool(allowedTools, config.MergeContext(agentDef.Context, in.Context))

@@ -24,13 +24,29 @@ import (
 // header naming the per-run bearer — so a server that came up after loomcycle
 // was never advertised again under a named tenant. Discovery goes without it,
 // as the boot handshake does; the tool call itself still needs it.
+//
+// A run being created hands its own credentials over
+// (tools.WithMCPDiscoveryCredentials): a top-level run discovers before its
+// identity is stamped, so its handshake would otherwise go unauthenticated to
+// a server that authenticates tools/list. They fill only an identity that has
+// none — a sub-agent discovers on its parent's ctx, whose identity already
+// holds the same credentials it inherits. The handshake still never refuses.
 func discoveryCtx(ctx context.Context, tenant string) context.Context {
 	ctx = tools.WithMCPDiscovery(ctx)
 	ident := tools.RunIdentity(ctx)
-	if ident.TenantID == tenant {
+	changed := false
+	if ident.TenantID != tenant {
+		ident.TenantID = tenant
+		changed = true
+	}
+	if dc, ok := tools.MCPDiscoveryCredentialsFrom(ctx); ok && ident.UserBearer == "" && len(ident.UserCredentials) == 0 {
+		ident.UserBearer = dc.UserBearer
+		ident.UserCredentials = dc.UserCredentials
+		changed = true
+	}
+	if !changed {
 		return ctx
 	}
-	ident.TenantID = tenant
 	return tools.WithRunIdentity(ctx, ident)
 }
 
