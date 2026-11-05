@@ -8,6 +8,7 @@ import (
 	a2aapi "github.com/denn-gubsky/loomcycle/internal/api/a2a"
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
 	webhookapi "github.com/denn-gubsky/loomcycle/internal/api/webhook"
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -118,6 +119,11 @@ type boot struct {
 	// bootAuthConfigured is the open-mode decision made right after srv is
 	// built (RFC ES #8); startBackground repeats the warning while it is false.
 	bootAuthConfigured bool
+
+	// openAudit: the audit sink every recorder shares — the store-backed
+	// chain, the JSONL file, or both. Nil when neither is on: recorders
+	// treat a nil sink as "nothing durable is written".
+	auditSink audit.Sink
 
 	// The rest of the server build.
 	hookDefTool           *builtin.HookDef

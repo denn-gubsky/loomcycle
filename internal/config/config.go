@@ -4197,6 +4197,17 @@ type Env struct {
 	// AuditLogPath is the JSONL sink for OperatorTokenDef mutations
 	// (RFC L). Empty = no file audit (a NopSink is wired).
 	AuditLogPath string
+	// AuditStore (LOOMCYCLE_AUDIT_STORE=1) turns on the store-backed,
+	// hash-chained audit stream (RFC FZ Part E) where the posture does not
+	// already require it (see Config.AuditStoreRequired). AuditStoreOff records
+	// an explicit LOOMCYCLE_AUDIT_STORE=0, which config load refuses when the
+	// stream is required: there is no opt-out where it matters.
+	AuditStore    bool
+	AuditStoreOff bool
+	// AuditRetention (LOOMCYCLE_AUDIT_RETENTION_DAYS) is how long the store
+	// keeps audit rows; older ones are pruned behind a signed anchor by the
+	// retention sweeper. Zero (the default) keeps them forever.
+	AuditRetention time.Duration
 	// AuthVerbose (LOOMCYCLE_AUTH_VERBOSE=1) logs a server-side reason
 	// when a bearer is rejected. Off by default; the wire 401 stays
 	// opaque regardless (no oracle) — this only affects local logs.
@@ -5786,6 +5797,25 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// RFC BM data-retention sweeper (opt-in; default OFF). The New() constructor
 	// applies the 1h interval fallback when RetentionInterval stays 0.
 	cfg.Env.RetentionEnabled = os.Getenv("LOOMCYCLE_RETENTION_ENABLED") == "1"
+	// RFC FZ Part E: the store-backed audit stream and its retention. A typo
+	// fails the load rather than leaving an audit posture other than the one
+	// asked for.
+	switch v := strings.TrimSpace(os.Getenv("LOOMCYCLE_AUDIT_STORE")); v {
+	case "":
+	case "1":
+		cfg.Env.AuditStore = true
+	case "0":
+		cfg.Env.AuditStoreOff = true
+	default:
+		return nil, fmt.Errorf("LOOMCYCLE_AUDIT_STORE: %q is not 1 or 0", v)
+	}
+	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_AUDIT_RETENTION_DAYS")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("LOOMCYCLE_AUDIT_RETENTION_DAYS: %q is not a number of days (0 keeps every row)", v)
+		}
+		cfg.Env.AuditRetention = time.Duration(n) * 24 * time.Hour
+	}
 	if v := os.Getenv("LOOMCYCLE_RETENTION_INTERVAL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.RetentionInterval = time.Duration(n) * time.Millisecond
@@ -9198,6 +9228,10 @@ func validate(c *Config) error {
 	// RFC FA: the auth mode, session lifetimes and login gates.
 	if err := resolveAuth(c); err != nil {
 		return err
+	}
+	if c.Env.AuditStoreOff && c.AuditStoreRequired() {
+		return fmt.Errorf("LOOMCYCLE_AUDIT_STORE=0: the store-backed audit stream cannot be turned off " +
+			"while a sign-in gate, auth.mode: strict or a LOOMCYCLE_ACL other than compat is configured")
 	}
 	// RFC EY §9: validate the acls / groups / acl_bindings blocks with the
 	// engine's own strict parser, so an unenforceable entry fails the load.

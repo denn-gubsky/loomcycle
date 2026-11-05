@@ -99,9 +99,9 @@ func parseLifecycleAge(where, v string, allowNever bool) (time.Duration, error) 
 }
 
 // resolveRemoval validates auth.lifecycle.on_removed and dormant_after.
-// erase_after needs LOOMCYCLE_AUDIT_LOG_PATH: an erasure is refused unless
-// who erased whom can be recorded, so a policy that schedules one without an
-// audit sink would only fail every day.
+// erase_after needs an audit sink (the file or the store-backed stream): an
+// erasure is refused unless who erased whom can be recorded, so a policy that
+// schedules one without an audit sink would only fail every day.
 func resolveRemoval(c *Config) (AuthRemovalPolicy, error) {
 	o := c.Auth.Lifecycle.OnRemoved
 	r := AuthRemovalPolicy{UnbindAfter: DefaultUnbindAfter, Reactivate: ReactivateOperator}
@@ -129,8 +129,8 @@ func resolveRemoval(c *Config) (AuthRemovalPolicy, error) {
 		if r.EraseAfter > 0 && r.EraseAfter < r.UnbindAfter {
 			return r, fmt.Errorf("auth.lifecycle.on_removed.erase_after (%s) is before unbind_after (%s): the stages never skip", r.EraseAfter, r.UnbindAfter)
 		}
-		if r.EraseAfter > 0 && strings.TrimSpace(c.Env.AuditLogPath) == "" {
-			return r, fmt.Errorf("auth.lifecycle.on_removed.erase_after: an erasure is recorded or not done; set LOOMCYCLE_AUDIT_LOG_PATH")
+		if r.EraseAfter > 0 && strings.TrimSpace(c.Env.AuditLogPath) == "" && !c.auditStoreOn(len(c.Auth.Gates) > 0) {
+			return r, fmt.Errorf("auth.lifecycle.on_removed.erase_after: an erasure is recorded or not done; set LOOMCYCLE_AUDIT_LOG_PATH or LOOMCYCLE_AUDIT_STORE=1")
 		}
 	}
 	switch strings.TrimSpace(o.Reactivate) {
