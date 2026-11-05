@@ -223,6 +223,51 @@ func (d *Document) reservedTargetRefusal(ctx context.Context, key sqlmem.ScopeKe
 		return reservedNameRefusal(ctx, in.Op, key.Scope, canonical)
 	case "delete_document":
 		return d.reservedHeldRefusal(ctx, key, in)
+	case "update_chunk", "delete_chunk", "move_chunk", "reorder_chunk", "supersede_chunk",
+		"add_tags", "remove_tags", "set_asset":
+		return d.reservedRootRefusal(ctx, key, in)
+	}
+	return nil
+}
+
+// reservedRootRefusal refuses a write to the ROOT of a document that holds a reserved
+// tenant name: its title, status, body, tags and type name and describe the runtime's
+// document, and are the operator's. Chunks under the root stay writable — the memory
+// bundle's consolidator files facts there. Document-level tags (add_tags/remove_tags
+// with document_id alone) are the root's facets too.
+func (d *Document) reservedRootRefusal(ctx context.Context, key sqlmem.ScopeKey, in docInput) *tools.Result {
+	if key.Scope != "tenant" || reservedNameWriter(ctx) {
+		return nil
+	}
+	var docs []string
+	for _, c := range []string{in.ID, in.SupersedesID} {
+		if c = strings.TrimSpace(c); c == "" {
+			continue
+		}
+		res, err := d.query(ctx, key, `SELECT id FROM documents WHERE root_chunk_id = ? LIMIT 1`, c)
+		if err != nil {
+			r := errFrom(in.Op+": could not check the chunk against the reserved documents, so it was not written: "+err.Error(), err)
+			return &r
+		}
+		if len(res.Rows) > 0 && len(res.Rows[0]) > 0 {
+			docs = append(docs, asStr(res.Rows[0][0]))
+		}
+	}
+	if (in.Op == "add_tags" || in.Op == "remove_tags") && strings.TrimSpace(in.ID) == "" && strings.TrimSpace(in.DocumentID) != "" {
+		docs = append(docs, strings.TrimSpace(in.DocumentID))
+	}
+	for _, doc := range docs {
+		held, err := d.reservedNameHeld(ctx, key, doc)
+		if err != nil {
+			r := errFrom(in.Op+": could not read the document's names, so it was not written: "+err.Error(), err)
+			return &r
+		}
+		if held != "" {
+			r := errPermission(in.Op+": this is the root of the document at "+held+", a reserved name in the tenant scope: "+
+				"its title, status, body, tags and type are the operator's.",
+				"Write chunks under the root instead (create_chunk with its id as parent_id).")
+			return &r
+		}
 	}
 	return nil
 }

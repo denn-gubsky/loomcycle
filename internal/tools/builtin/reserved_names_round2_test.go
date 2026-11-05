@@ -178,3 +178,41 @@ func TestReservedName_CreatesAtAnAncestorAreNotRefused(t *testing.T) {
 		t.Errorf("Memory set at /memory: %v %s", err, res.Text)
 	}
 }
+
+// TestReservedName_TheRootOfAReservedDocumentIsTheOperators: the consolidator writes
+// chunks INTO the entities document, so those stay writable; the root's own facets —
+// title, status, body, tags, type — name and describe the runtime's document and are
+// the operator's.
+func TestReservedName_TheRootOfAReservedDocumentIsTheOperators(t *testing.T) {
+	e, entities := entitiesEnv(t)
+	out, r := docExec(t, e.d, e.opCtx, `{"op":"get_document","scope":"tenant","id":"`+entities+`"}`)
+	if r.IsError {
+		t.Fatalf("get: %s", r.Text)
+	}
+	root, _ := out["root_chunk_id"].(string)
+	for _, req := range []string{
+		`{"op":"update_chunk","scope":"tenant","id":"` + root + `","title":"Mine now","revision":1}`,
+		`{"op":"update_chunk","scope":"tenant","id":"` + root + `","status":"archived","revision":1}`,
+		`{"op":"delete_chunk","scope":"tenant","id":"` + root + `"}`,
+		`{"op":"add_tags","scope":"tenant","id":"` + root + `","tags":["x"]}`,
+		`{"op":"add_tags","scope":"tenant","document_id":"` + entities + `","tags":["x"]}`,
+		`{"op":"remove_tags","scope":"tenant","document_id":"` + entities + `","tags":["x"]}`,
+	} {
+		if r := e.doc(t, e.agentCtx, req); !r.IsError || !strings.Contains(r.Text, "reserved name") {
+			t.Errorf("an agent wrote the root of a reserved document: %s\n  -> %s", req, r.Text)
+		}
+	}
+	// Chunks under the root stay the consolidator's to write.
+	out, r = docExec(t, e.d, e.agentCtx, `{"op":"create_chunk","scope":"tenant","document_id":"`+entities+`","parent_id":"`+root+`","title":"fact","body":"x"}`)
+	if r.IsError {
+		t.Fatalf("an agent could not write a chunk under the root: %s", r.Text)
+	}
+	child, _ := out["id"].(string)
+	if r := e.doc(t, e.agentCtx, `{"op":"update_chunk","scope":"tenant","id":"`+child+`","body":"y","revision":1}`); r.IsError {
+		t.Errorf("an agent could not update a chunk under the root: %s", r.Text)
+	}
+	// The operator may.
+	if r := e.doc(t, e.opCtx, `{"op":"update_chunk","scope":"tenant","id":"`+root+`","title":"Entities","revision":1}`); r.IsError {
+		t.Errorf("the operator could not update the root: %s", r.Text)
+	}
+}

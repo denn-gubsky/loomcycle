@@ -65,7 +65,10 @@ ancestor of `/memory/ontology` on any backend. One exception is the runtime's
 own document: a run's `create_document` at `/memory/entities` carrying only
 `op`, `scope`, `path` and `title: "Entities"` is an ensure of the empty
 entities document (the memory bundle's consolidator makes exactly this call)
-and answers with it, `created: false` when it already existed. Only the operator's own off-run call (`/v1/_path`,
+and answers with it, `created: false` when it already existed. Inside a run,
+chunks may be written under the root of a reserved document (that is where the
+consolidator files facts), but the root's own title, status, body, tags and
+type are the operator's. Only the operator's own off-run call (`/v1/_path`,
 `/v1/_document`) may create, rename or remove them; the runtime itself
 creates the ontology and the deployment context on first reference. The
 ontology is also known by its document id, so a rename does not unseat it

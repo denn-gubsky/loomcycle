@@ -105,7 +105,7 @@ func TestOntologyGuard_PeerAndMetadataWritesAreRefused(t *testing.T) {
 	} {
 		r := e.doc(t, e.agentCtx, req)
 		if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryPermission ||
-			!strings.Contains(r.Text, "may not modify the ontology") {
+			!(strings.Contains(r.Text, "may not modify the ontology") || strings.Contains(r.Text, "reserved name")) {
 			t.Errorf("not refused by the ontology guard: %s\n  -> %+v", req, r)
 		}
 	}
