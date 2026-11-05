@@ -25,6 +25,7 @@ func RunAudit(t *testing.T, factory ReplicaFactory) {
 		{"EveryReplicaWritesOneChainPerTenant", testAuditEveryReplicaWritesOneChainPerTenant},
 		{"PruneKeepsTheChainVerifiable", testAuditPruneKeepsTheChainVerifiable},
 		{"HeadAndListRoundTrip", testAuditHeadAndListRoundTrip},
+		{"UnsafeTextIsStoredEscapedAndHashed", testAuditUnsafeTextIsStoredEscapedAndHashed},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -189,5 +190,39 @@ func testAuditHeadAndListRoundTrip(t *testing.T, a, b store.Store) {
 	head, err := b.AuditHeadGet(ctx, "t1")
 	if err != nil || head.Seq != 1 || head.Hash != written.Hash || head.MAC == "" || head.AnchorSeq != 0 {
 		t.Errorf("head = %+v, %v", head, err)
+	}
+}
+
+// A NUL or an invalid UTF-8 byte in a recorded field — a member's denied
+// path with %00 in it, a model-chosen definition name — must still leave a
+// row (Postgres refuses NUL and invalid UTF-8 in text), and the hash must
+// cover exactly the bytes stored, so the field is stored escaped.
+func testAuditUnsafeTextIsStoredEscapedAndHashed(t *testing.T, a, b store.Store) {
+	ctx := context.Background()
+	sink, err := audit.NewStoreSink(a, auditTestKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Record(audit.Event{Action: "acl_denied", ActorTenant: "t1", ActorSubject: "mal\x00lory\x00",
+		TargetName: "doc:/a\x00b\xff\\c"}); err != nil {
+		t.Fatalf("an event with NUL and invalid UTF-8 was not recorded: %v", err)
+	}
+	row := audit.RowFor(audit.Event{TS: time.Now(), Action: "acl_denied", ActorTenant: "t1"}, []byte("{\"x\":\"\x00\xfe\"}"))
+	if _, err := a.AuditAppend(ctx, row, auditTestKeys.Seal(), nil); err != nil {
+		t.Fatalf("a payload with NUL and invalid UTF-8 was not stored: %v", err)
+	}
+	rows, err := b.AuditEventsList(ctx, "t1", 0, 0)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows = %v, %v", rows, err)
+	}
+	if rows[0].Actor != `mal\x00lory\x00` || rows[0].Subject != `doc:/a\x00b\xff\\c` {
+		t.Errorf("stored actor %q subject %q, want the reversible escapes", rows[0].Actor, rows[0].Subject)
+	}
+	if rows[1].Payload != `{"x":"\x00\xfe"}` {
+		t.Errorf("stored payload %q, want the reversible escapes", rows[1].Payload)
+	}
+	rep, err := audit.Verify(ctx, b, auditTestKeys, "t1")
+	if err != nil || !rep.OK || rep.Rows != 2 {
+		t.Errorf("verify = %+v, %v", rep, err)
 	}
 }

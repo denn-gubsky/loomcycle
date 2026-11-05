@@ -46,12 +46,16 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -75,16 +79,28 @@ type ChainKeys struct {
 	Previous []byte
 }
 
-// canonical is the hashed encoding of a row's content. A JSON array of
-// strings and integers has exactly one encoding, and no field can run into
-// the next.
-func canonical(r store.AuditEventRow) []byte {
-	b, _ := json.Marshal([]any{chainVersion, r.TenantID, r.Seq, r.TS.UnixNano(), r.Actor, r.Action, r.Subject, r.Payload})
+// lp appends each field length-prefixed (uvarint length, then the bytes):
+// no field can run into the next, and every byte is covered as stored —
+// unlike a JSON encoding, which maps invalid UTF-8 to U+FFFD and would let
+// two different stored values hash alike.
+func lp(fields ...string) []byte {
+	var b []byte
+	for _, f := range fields {
+		b = binary.AppendUvarint(b, uint64(len(f)))
+		b = append(b, f...)
+	}
 	return b
 }
 
+// canonical is the hashed encoding of a row's content.
+func canonical(r store.AuditEventRow) []byte {
+	return lp(chainVersion, r.TenantID, strconv.FormatInt(r.Seq, 10), strconv.FormatInt(r.TS.UnixNano(), 10),
+		r.Actor, r.Action, r.Subject, r.Payload)
+}
+
 // RowHash is H(prev_hash ‖ canonical row). prevHash is fixed-length hex or
-// empty, and canonical starts with '[', so the concatenation is unambiguous.
+// empty, and canonical starts with a length byte that is not a hex digit, so
+// the concatenation is unambiguous.
 func RowHash(prevHash string, r store.AuditEventRow) string {
 	h := sha256.New()
 	h.Write([]byte(prevHash))
@@ -94,9 +110,44 @@ func RowHash(prevHash string, r store.AuditEventRow) string {
 
 func chainMAC(key []byte, domain, tenant string, seq int64, hash string) string {
 	m := hmac.New(sha256.New, key)
-	b, _ := json.Marshal([]any{domain, tenant, seq, hash})
-	m.Write(b)
+	m.Write(lp(domain, tenant, strconv.FormatInt(seq, 10), hash))
 	return hex.EncodeToString(m.Sum(nil))
+}
+
+// SafeText makes a recorded field storable as text on every backend and
+// hashed exactly as stored. A string that is valid UTF-8 with no NUL is
+// returned unchanged. Otherwise the whole field is escaped, reversibly: a
+// backslash becomes `\\`, a NUL `\x00`, and each byte of an invalid UTF-8
+// sequence `\xHH` — so the original bytes can be recovered from the stored
+// text, where replacing them (with U+FFFD, say) would lose which bytes a
+// caller sent. Postgres refuses NUL and invalid UTF-8 in text outright; a
+// row it refuses is an event nobody can see, which is what someone sending
+// a %00 in a denied path would want.
+//
+// An escaped field is valid UTF-8 with no NUL, so SafeText is idempotent.
+// The escape is not marked: a clean field holding the literal text `\x00`
+// reads like an escaped NUL. The row's payload — the event as JSON, which
+// writes a NUL as \u0000 — tells them apart.
+func SafeText(s string) string {
+	if utf8.ValidString(s) && !strings.ContainsRune(s, 0) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size <= 1:
+			fmt.Fprintf(&b, `\x%02x`, s[i])
+		case r == 0:
+			b.WriteString(`\x00`)
+		case r == '\\':
+			b.WriteString(`\\`)
+		default:
+			b.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
 }
 
 func (k ChainKeys) sign(domain, tenant string, seq int64, hash string) string {
@@ -467,13 +518,15 @@ func RowFor(ev Event, payload []byte) store.AuditEventRow {
 			subject = s
 		}
 	}
+	// Every text field through SafeText: an event may carry bytes a caller
+	// chose (a path, a definition name), and the row must still be written.
 	return store.AuditEventRow{
-		TenantID: ChainTenant(ev),
+		TenantID: SafeText(ChainTenant(ev)),
 		TS:       ev.TS,
-		Actor:    actor,
-		Action:   ev.Action,
-		Subject:  subject,
-		Payload:  string(payload),
+		Actor:    SafeText(actor),
+		Action:   SafeText(ev.Action),
+		Subject:  SafeText(subject),
+		Payload:  SafeText(string(payload)),
 	}
 }
 

@@ -232,3 +232,24 @@ func TestAuditStoreSink_ChainsByTenantAndNeedsAKey(t *testing.T) {
 	}
 	var _ store.AuditStore = (*sqlite.Store)(nil)
 }
+
+// SafeText leaves clean text alone and escapes the rest reversibly; an
+// escaped field is clean, so a second pass changes nothing.
+func TestSafeText_EscapesNULAndInvalidUTF8Reversibly(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain/ünïcode":      "plain/ünïcode",
+		`back\slash`:         `back\slash`,
+		"a\x00b":             `a\x00b`,
+		"a\xffb\\c":          `a\xffb\\c`,
+		"\xe2\x82":           `\xe2\x82`,
+		"ok\x00\xc3\xa9\xc3": `ok\x00é\xc3`,
+	} {
+		got := audit.SafeText(in)
+		if got != want {
+			t.Errorf("SafeText(%q) = %q, want %q", in, got, want)
+		}
+		if again := audit.SafeText(got); again != got {
+			t.Errorf("SafeText is not idempotent on %q: %q", got, again)
+		}
+	}
+}
