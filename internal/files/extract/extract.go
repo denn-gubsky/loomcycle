@@ -142,6 +142,12 @@ func (r *Report) finish(w *writer) {
 	if w.unsupportedImages > 0 {
 		r.note("%d images in formats other than PNG, JPEG, GIF, WebP or BMP were left out", w.unsupportedImages)
 	}
+	if w.tableCut {
+		r.note("a table was cut at %d bytes of text or %d cells", maxTableBytes, maxTableCells)
+	}
+	if w.tableWide {
+		r.note("table rows wider than %d columns were cut", maxSheetColumns)
+	}
 }
 
 // Extractor reads one family of formats.
@@ -247,6 +253,9 @@ type writer struct {
 	images            int // images kept
 	skippedImages     int
 	unsupportedImages int
+	// tableCut and tableWide say a table built in memory (tableRows) was
+	// stopped at its caps, or had rows cut to maxSheetColumns.
+	tableCut, tableWide bool
 }
 
 func newWriter(ctx context.Context, sink Sink, opts Options) *writer {

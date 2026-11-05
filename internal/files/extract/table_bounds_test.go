@@ -149,6 +149,75 @@ func TestExtract_MaxRowsIsClamped(t *testing.T) {
 	})
 }
 
+// TestExtractDOCX_TablePaddingIsBounded: one row of 1,000 cells each spanning
+// 64 columns, then empty rows. Every row is padded to the widest, so a few
+// kilobytes of rows rendered to tens of megabytes before the output limit.
+func TestExtractDOCX_TablePaddingIsBounded(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<w:document ` + nsW + `><w:body><w:tbl><w:tr>`)
+	for range 1000 {
+		b.WriteString(`<w:tc><w:tcPr><w:gridSpan w:val="65"/></w:tcPr><w:p><w:r><w:t>x</w:t></w:r></w:p></w:tc>`)
+	}
+	b.WriteString(`</w:tr>` + strings.Repeat(`<w:tr/>`, 100) + `</w:tbl></w:body></w:document>`)
+	s, rep, err := extractDOCX(t, docxWith(t, b.String()), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := s.md.Len(); n > 1<<20 {
+		t.Errorf("wrote %d bytes for a table of one cell of text", n)
+	}
+	if !hasNote(rep, fmt.Sprintf("wider than %d columns", maxSheetColumns)) {
+		t.Errorf("notes = %v", rep.Notes)
+	}
+}
+
+// TestExtractDOCX_NestedParagraphsCountOnce: a cell's paragraph nested in its
+// own paragraph two hundred deep. Each nesting level read the text below it
+// again, so 64 KiB of text became 12 MiB.
+func TestExtractDOCX_NestedParagraphsCountOnce(t *testing.T) {
+	text := strings.Repeat("ab ", (64<<10)/3)
+	body := `<w:document ` + nsW + `><w:body><w:tbl><w:tr><w:tc>` +
+		strings.Repeat(`<w:p>`, 200) + `<w:r><w:t>` + text + `</w:t></w:r>` + strings.Repeat(`</w:p>`, 200) +
+		`</w:tc></w:tr></w:tbl></w:body></w:document>`
+	s, _, err := extractDOCX(t, docxWith(t, body), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := s.md.Len(); n > 2*len(text) {
+		t.Errorf("wrote %d bytes for %d bytes of text", n, len(text))
+	}
+}
+
+// TestExtractPPTX_NestedTablesCountOnce: a table nested in its own cell
+// forty-five deep (the XML depth cap allows no more). Each was rendered as a table of its own, holding the text of
+// every table inside it.
+func TestExtractPPTX_NestedTablesCountOnce(t *testing.T) {
+	text := strings.Repeat("ab ", (64<<10)/3)
+	var tbl strings.Builder
+	for range 45 {
+		tbl.WriteString(`<a:tbl><a:tr><a:tc><a:txBody><a:p>`)
+	}
+	tbl.WriteString(`<a:r><a:t>` + text + `</a:t></a:r>`)
+	for range 45 {
+		tbl.WriteString(`</a:p></a:txBody></a:tc></a:tr></a:tbl>`)
+	}
+	slide := `<p:sld ` + nsP + ` ` + nsA + ` ` + nsR + `><p:cSld><p:spTree><p:graphicFrame><a:graphic><a:graphicData>` +
+		tbl.String() + `</a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>`
+	data := zipOf(t,
+		xmlEntry("_rels/.rels", relsXML([3]string{"rId1", "officeDocument", "ppt/presentation.xml"})),
+		xmlEntry("ppt/presentation.xml", `<p:presentation `+nsP+` `+nsR+`><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst></p:presentation>`),
+		xmlEntry("ppt/_rels/presentation.xml.rels", relsXML([3]string{"rId2", "slide", "slides/slide1.xml"})),
+		xmlEntry("ppt/slides/slide1.xml", slide),
+	)
+	s, rep := run(t, PPTX{}, data, Options{Name: "n.pptx"})
+	if n := s.md.Len(); n > 2*len(text) {
+		t.Errorf("wrote %d bytes for %d bytes of text", n, len(text))
+	}
+	if rep.Tables != 1 {
+		t.Errorf("tables = %d, want 1", rep.Tables)
+	}
+}
+
 // TestExtractXLSX_TableIsWrittenARowAtATime: the sink sees a sheet's rows as
 // they are read, so its own limit stops a sheet part way rather than after the
 // whole table was built.

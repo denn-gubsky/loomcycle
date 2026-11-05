@@ -482,20 +482,31 @@ func renderSegs(segs []seg) string {
 }
 
 // table renders a w:tbl as a GFM table. A cell's paragraphs are joined on
-// one line; an image in a cell stays in the cell.
+// one line; an image in a cell stays in the cell. The table is held to the
+// tableRows caps.
 func (d *docx) table(t *node) (string, error) {
-	var rows [][]string
+	var rows tableRows
+	defer func() { d.w.tableCut, d.w.tableWide = d.w.tableCut || rows.full, d.w.tableWide || rows.wide }()
 	for _, tr := range t.kids {
 		if tr.name != "tr" {
 			continue
+		}
+		if err := d.w.ctx.Err(); err != nil {
+			return "", err
 		}
 		var row []string
 		for _, tc := range tr.kids {
 			if tc.name != "tc" {
 				continue
 			}
+			// The cells past the cap are not read: add cuts the row there.
+			if len(row) > maxSheetColumns {
+				break
+			}
 			var parts []string
-			for _, p := range tc.all("p") {
+			// A nested table's paragraphs are the cell's too; a paragraph
+			// inside another is read with it (runs descends into it).
+			for _, p := range tc.outermost("p") {
 				var segs []seg
 				if err := d.runs(p, &segs); err != nil {
 					return "", err
@@ -520,13 +531,15 @@ func (d *docx) table(t *node) (string, error) {
 				}
 			}
 		}
-		rows = append(rows, row)
+		if !rows.add(row) {
+			break
+		}
 	}
-	if len(rows) == 0 {
+	if len(rows.rows) == 0 {
 		return "", nil
 	}
 	d.rep.Tables++
-	return table(rows), nil
+	return table(rows.rows), nil
 }
 
 func nonEmpty(ss []string) []string {
