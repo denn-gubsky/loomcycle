@@ -137,6 +137,9 @@ type Server struct {
 	// tokenAudit records delegated user-token mints and revocations
 	// (SetTokenAudit); nil = not recorded.
 	tokenAudit audit.Sink
+	// aclResolutionFailures counts the requests whose ACL set could not be
+	// read (enrichPrincipal), for loomcycle_acl_resolution_failures_total.
+	aclResolutionFailures atomic.Int64
 	// reviewAudit records bulk statement rulings and their reverts
 	// (SetStatementReviewAudit); nil = logged only.
 	reviewAudit audit.Sink

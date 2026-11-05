@@ -268,15 +268,47 @@ func (r *Resolver) version(ctx context.Context, tenant string) (int64, error) {
 
 // Input returns what Compile would be given for a subject right now — its
 // closed groups, applicable bindings, the lists they name and the class
-// baseline — so a simulation can add a draft to it. The class is read as
-// the subject's token class would be; subj.Groups is recomputed.
+// baseline — so a simulation can add a draft to it. subj.Class is the class
+// the subject's set was compiled for (authz.Effective.Subject.Class): a
+// simulation of an isolated user keeps that baseline's explicit denies, one
+// of an operator its grants (RFC FY Part E; it used to compile every subject
+// as a member). A class this resolver does not compile is an error, never a
+// guess at a baseline. subj.Groups is recomputed.
 func (r *Resolver) Input(ctx context.Context, subj authz.Subject) (authz.Input, error) {
-	subj = authz.Subject{TenantID: subj.TenantID, ID: subj.ID, TokenDefID: subj.TokenDefID, Class: "member"}
+	if _, _, ok := splitClassKey(subj.Class); !ok {
+		return authz.Input{}, fmt.Errorf("subject class %q is not one this resolver compiles", subj.Class)
+	}
+	subj = authz.Subject{TenantID: subj.TenantID, ID: subj.ID, TokenDefID: subj.TokenDefID, Class: subj.Class}
 	version, err := r.version(ctx, subj.TenantID)
 	if err != nil {
 		return authz.Input{}, err
 	}
 	return r.input(ctx, subj, version)
+}
+
+// StaticBaseline compiles p's class baseline alone (with the run-plane list
+// for a token limited to certain agents): the part of p's set that needs no
+// store read. The caller falls back to it when the store cannot be read, so
+// the baseline's explicit denies still hold (RFC FY Part E).
+func (r *Resolver) StaticBaseline(p auth.Principal) (*authz.Effective, error) {
+	class, runPlane, ok := splitClassKey(ClassKey(p))
+	if !ok {
+		return nil, fmt.Errorf("principal class %q is not one this resolver compiles", ClassKey(p))
+	}
+	baselines := authz.Baselines()
+	base := baselineName(class)
+	in := authz.Input{
+		Subject:  authz.Subject{TenantID: p.TenantID, ID: p.Subject, TokenDefID: p.TokenDefID, Class: ClassKey(p)},
+		Now:      r.now(),
+		ACLs:     map[string]authz.ACLVersion{base: {ACL: baselines[base]}},
+		Bindings: []authz.Binding{{ACL: base, SubjectKind: authz.SubjectTenant}},
+		Baseline: base,
+	}
+	if runPlane {
+		in.Bindings = append(in.Bindings, authz.Binding{ACL: authz.BaselineRunPlane, SubjectKind: authz.SubjectTenant})
+		in.ACLs[authz.BaselineRunPlane] = authz.ACLVersion{ACL: baselines[authz.BaselineRunPlane]}
+	}
+	return authz.Compile(in)
 }
 
 func (r *Resolver) compile(ctx context.Context, subj authz.Subject, version int64) (*authz.Effective, error) {

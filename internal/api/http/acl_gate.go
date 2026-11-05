@@ -51,18 +51,39 @@ func (s *Server) aclMode() authz.Mode {
 }
 
 // enrichPrincipal fills the principal's groups and compiled set. A store
-// fault leaves Effective nil and logs: compat and shadow then decide on the
-// scope answer, enforce refuses at the gate (authz.Evaluate).
+// fault is counted (loomcycle_acl_resolution_failures_total), logged and
+// audited (acl_resolution_failed) — in compat it drops every stored deny for
+// the request, which an operator must be able to see (RFC FY Part E). Enforce
+// then refuses at the gate (Effective nil, authz.Evaluate) and shadow decides
+// on the scope answer. Compat keeps the class baseline, which needs no store
+// read, so its explicit denies (the isolated user's tenant-wide data) still
+// hold; its allows widen nothing in compat.
 func (s *Server) enrichPrincipal(ctx context.Context, p auth.Principal) auth.Principal {
 	if s.aclResolver == nil {
 		return p
 	}
 	out, err := s.aclResolver.Resolve(ctx, p)
-	if err != nil {
-		slog.Error("authz: resolving the set failed", "tenant", p.TenantID, "subject", p.Subject, "mode", s.aclMode(), "err", err)
-		return p
+	if err == nil {
+		return out
 	}
-	return out
+	mode := s.aclMode()
+	s.aclResolutionFailures.Add(1)
+	slog.Error("authz: resolving the set failed", "tenant", p.TenantID, "subject", p.Subject, "mode", mode, "err", err)
+	if s.tokenAudit != nil {
+		ev := audit.Event{Action: "acl_resolution_failed", ActorTenant: p.TenantID, ActorSubject: p.Subject,
+			ActorTokenSuffix: p.TokenSuffix, AclOutcome: string(mode)}
+		if aerr := s.tokenAudit.Record(ev); aerr != nil {
+			slog.Error("authz: audit write failed", "err", aerr)
+		}
+	}
+	if mode == authz.ModeCompat {
+		if eff, berr := s.aclResolver.StaticBaseline(p); berr == nil {
+			p.Effective = eff
+		} else {
+			slog.Error("authz: compiling the class baseline failed", "tenant", p.TenantID, "subject", p.Subject, "err", berr)
+		}
+	}
+	return p
 }
 
 // aclGateHTTP asks the route's type-level question. It returns false after

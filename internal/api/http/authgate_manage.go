@@ -369,7 +369,10 @@ func (s *Server) aboveFloor(ctx context.Context, tenant, subject string, g *Pass
 		}
 		return false
 	}
-	in, err := res.Input(ctx, authz.Subject{TenantID: tenant, ID: subject})
+	// Only the bindings are read here, and the class baseline is bound
+	// tenant-wide (skipped above), so the class named is immaterial; member
+	// is the class the roster's users have.
+	in, err := res.Input(ctx, authz.Subject{TenantID: tenant, ID: subject, Class: "member"})
 	if err != nil {
 		return true, u, err
 	}
@@ -393,7 +396,7 @@ func (s *Server) aboveFloor(ctx context.Context, tenant, subject string, g *Pass
 				return true, u, nil
 			}
 		}
-		tin, err := res.Input(ctx, authz.Subject{TenantID: tenant, ID: subject, TokenDefID: t.DefID})
+		tin, err := res.Input(ctx, authz.Subject{TenantID: tenant, ID: subject, TokenDefID: t.DefID, Class: "member"})
 		if err != nil {
 			return true, u, err
 		}
