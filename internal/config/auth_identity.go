@@ -300,7 +300,24 @@ func raisesFloor(nu, floor AuthNewUser) string {
 	if nu.Status == UserStatusActive && floor.Status == UserStatusPending {
 		return "status: active (the deployment default is pending)"
 	}
+	if looserBudget(nu.Budget, floor.Budget) {
+		return "a budget looser than the deployment's"
+	}
 	return ""
+}
+
+// looserBudget reports whether b lets a new user spend more than floor: a
+// tier the floor sets that b leaves off or sets higher. No floor budget means
+// any budget only narrows.
+func looserBudget(b, floor *AuthBudgetConfig) bool {
+	if floor == nil {
+		return false
+	}
+	if b == nil {
+		return true
+	}
+	looser := func(v, f *int64) bool { return f != nil && (v == nil || *v > *f) }
+	return looser(b.SoftLimit, floor.SoftLimit) || looser(b.HardLimit, floor.HardLimit)
 }
 
 // resolveIdentityMap validates one gate's identity_map against the

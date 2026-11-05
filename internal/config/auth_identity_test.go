@@ -209,3 +209,35 @@ func TestResolveIdentityMap_NewUserBudgetIsCheckedAndInherited(t *testing.T) {
 		}
 	}
 }
+
+// A budget looser than the deployment's (a higher tier, or a tier left off)
+// is a raise like tenant reach: only a trusted gate may set one.
+func TestResolveIdentityMap_AnUntrustedGateCannotLoosenTheBudget(t *testing.T) {
+	n := func(v int64) *int64 { return &v }
+	floor, err := resolveLifecycle(AuthLifecycleConfig{NewUser: AuthNewUserConfig{Budget: &AuthBudgetConfig{SoftLimit: n(100), HardLimit: n(1000)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	looser := map[string]*AuthBudgetConfig{
+		"higher hard":   {SoftLimit: n(100), HardLimit: n(5000)},
+		"higher soft":   {SoftLimit: n(500), HardLimit: n(1000)},
+		"no hard limit": {SoftLimit: n(100)},
+	}
+	for name, b := range looser {
+		m := &AuthIdentityMapConfig{Tenant: "acme", NewUser: &AuthNewUserConfig{Budget: b}}
+		if _, err := resolveIdentityMap("g", m, floor, false); err == nil || !strings.Contains(err.Error(), "budget") {
+			t.Errorf("%s on an untrusted gate: %v", name, err)
+		}
+		if _, err := resolveIdentityMap("g", m, floor, true); err != nil {
+			t.Errorf("%s on a trusted gate: %v", name, err)
+		}
+	}
+	tighter := &AuthIdentityMapConfig{Tenant: "acme", NewUser: &AuthNewUserConfig{Budget: &AuthBudgetConfig{SoftLimit: n(10), HardLimit: n(20)}}}
+	if _, err := resolveIdentityMap("g", tighter, floor, false); err != nil {
+		t.Errorf("a tighter budget on an untrusted gate: %v", err)
+	}
+	// With no deployment budget, any gate budget only narrows.
+	if _, err := resolveIdentityMap("g", tighter, defaultLifecycle(), false); err != nil {
+		t.Errorf("a budget over no floor: %v", err)
+	}
+}
