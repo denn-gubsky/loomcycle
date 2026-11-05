@@ -35,7 +35,7 @@ to propose a correction instead, which is filed beside the original (its
   `extractor:<name>` (a model the code drives found it); `<name>` is 1–64 of
   `a-z 0-9 _ . / -`. Only an agent whose definition grants that kind of method
   may send it (a code agent's `statement_methods`). Omitted, the statement is
-  `manual`, as a person's.
+  recorded as `agent` from inside a run, or `manual` from a person.
 - `scope` — `user` (default), `agent` or `tenant`.
 
 ## Returns

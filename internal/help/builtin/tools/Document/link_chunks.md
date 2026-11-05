@@ -64,8 +64,9 @@ relation proposed is filed for review, marked.
 for review may add `ruled_by` / `ruling_id` (the tenant's review policy ruled
 on it) or `review_route`. Linking the
 same pair with the same kind (and the same `valid_at`) again does not make a
-second link; it adds any new evidence to the existing one, and asserts it if it
-was awaiting review. A different `valid_at` is a second statement of the same
+second link; it adds any new evidence to the existing one. A link to a relation
+awaiting review asserts it only when you may rule on it (the operator, or a
+member granted review on its document); otherwise the proposal keeps waiting. A different `valid_at` is a second statement of the same
 relation, for another period. `evidence_capped: true` means the link already
 holds as much evidence as it keeps.
 

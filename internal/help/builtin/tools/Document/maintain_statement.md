@@ -15,7 +15,7 @@ Only a code agent whose definition grants statement methods
 `demote` and `merge` also need `link` on both of them — they change what
 readers see as live.
 
-A relation a person wrote (its `method` is `manual`) takes only `verify` and
+A relation a person wrote (its `method` is `manual`, with no run id) takes only `verify` and
 `flag`, from anyone, and so does one an operator ruled on (accepted it, for
 instance), from inside a run: flag it with your reason and let a person
 decide. A relation a run wrote with `link_chunks` (`method` `agent`) is not a

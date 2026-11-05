@@ -112,6 +112,27 @@ func (d *Document) rememberFact(ctx context.Context, key sqlmem.ScopeKey, mscope
 	return d.upsertChunk(ctx, key, mscope, next)
 }
 
+// refuseForgedRemember holds upsert_chunk from a run to the remember grant for
+// the two shapes only remember writes (RFC FZ Part C, D5): a key in the
+// remembered namespace, and a self-citing piece of source material — class
+// evidential, its source_quote its own body, no source_chunk_id — which a judge
+// trivially supports and verbatim_answer would quote. A fact distilled from a
+// source (a quote that is not the body, or a derived fact from a chat) is left
+// alone, as is any person's off-run call.
+func refuseForgedRemember(ctx context.Context, in docInput) *tools.Result {
+	if tools.IsOffRunPlane(ctx) || contains(tools.PolicyOf(ctx).StatementMethods, statementRememberGrant) {
+		return nil
+	}
+	quote := strings.TrimSpace(in.SourceQuote)
+	selfCiting := in.Class == "evidential" && in.SourceChunkID == "" && quote != "" && quote == strings.TrimSpace(in.Body)
+	if !strings.HasPrefix(strings.TrimSpace(in.NaturalKey), rememberedKeyPrefix) && !selfCiting {
+		return nil
+	}
+	r := errPermission("upsert_chunk: this fact has the shape of something a person said (a remembered key, or evidential text citing itself), which only remember files, and this agent is not granted remember; record what you derived with a source_quote taken from its source, or propose it with propose_statement",
+		"Use a key of your own and the source's quote, or ask an operator to grant remember in the agent's statement_methods.")
+	return &r
+}
+
 // entityDocumentID resolves (and on first use creates) the scope's entity document.
 func (d *Document) entityDocumentID(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, scope string) (string, error) {
 	// The runtime chooses this name, not the caller, so it may give the reserved

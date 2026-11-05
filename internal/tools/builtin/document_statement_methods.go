@@ -72,7 +72,7 @@ func stampStatementMethod(ctx context.Context, in *docInput) *tools.Result {
 	}
 	if !contains(tools.PolicyOf(ctx).StatementMethods, prefix) {
 		r := errPermission(in.Op+": method_not_granted: this agent may not stamp "+prefix+": statements",
-			"Omit method to write it as manual. Only a code-js agent whose definition lists "+prefix+" in statement_methods may stamp it.")
+			"Omit method to write it as your own. Only a code-js agent whose definition lists "+prefix+" in statement_methods may stamp it.")
 		return &r
 	}
 	in.edgeMethod = in.Method

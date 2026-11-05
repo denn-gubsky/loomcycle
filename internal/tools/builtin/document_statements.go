@@ -148,7 +148,10 @@ const edgeOriginPeerPrefix = "peer:"
 func madeByAPerson(s *statementRow) bool {
 	switch s.Method {
 	case edgeMethodManual:
-		return true
+		// A run's own write is stamped agent; a manual row carrying a run id is
+		// one a run wrote before that, so it is not a person's. An off-run call
+		// has no run id to record.
+		return s.RunID == ""
 	case edgeMethodSync:
 		origin, _ := s.Attributes[edgeOriginMethodAttr].(string)
 		return !strings.HasPrefix(origin, edgeOriginPeerPrefix) && !machineMethod(origin)
@@ -407,6 +410,9 @@ type edgeWrite struct {
 	// asserted (runFilesProposals). Runtime-derived and operator-sourced writes
 	// (about, derived_from, sync, ontology instances, classify) leave it unset.
 	runGated bool
+	// reviewInTenant files the write for review from a run in the tenant scope
+	// whatever the run is granted (a code agent's extractor: relation).
+	reviewInTenant bool
 }
 
 // runFilesProposals reports a run writing in the tenant scope — read by every
@@ -517,7 +523,8 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 		status = edgeStatusProposed
 	}
 	filedForReview := false
-	if w.runGated && status == edgeStatusAsserted && runFilesProposals(ctx, mscope) {
+	if status == edgeStatusAsserted && ((w.runGated && runFilesProposals(ctx, mscope)) ||
+		(w.reviewInTenant && mscope == store.MemoryScopeTenant && !tools.IsOffRunPlane(ctx))) {
 		status, filedForReview = edgeStatusProposed, true
 		// Filed as propose_statement files it: a person's rejection of the
 		// relation at any valid_at refuses it.
@@ -581,15 +588,28 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 		}
 		out.ID, out.Status = existing.ID, existing.Status
 		// Only an authored link_chunks asserts a statement that awaits review (or, by
-		// an operator, one rejected). A machine write — a fact's relation, sync,
-		// import, canvas — carries someone else's judgement and adds its evidence to
-		// the proposal; clearing the review queue is not something holding write
-		// should be able to do.
+		// an operator, one rejected), and only by a caller who may rule there: the
+		// review queue is cleared by a ruling, never by holding link (RFC FZ Part C).
+		// Anyone else's link — a run's, granted link or not, a member's without the
+		// review grant — adds its evidence and leaves the proposal waiting. A
+		// machine write — a fact's relation, sync, import, canvas — carries someone
+		// else's judgement and only ever adds evidence.
 		if status == edgeStatusAsserted && existing.Status != edgeStatusAsserted && w.gateAuthored() {
-			if err := d.exec(ctx, key, `UPDATE chunk_edges SET status = ?, actor = ? WHERE id = ?`, edgeStatusAsserted, nullIfEmpty(actor), existing.ID); err != nil {
+			mayRule, err := d.callerMayRuleOn(ctx, key, mscope, existing.ID)
+			if err != nil {
 				return out, nil, err
 			}
-			out.Status = edgeStatusAsserted
+			if mayRule {
+				// Recorded as the ruling it is, as accept_statement records one.
+				n, err := d.execCount(ctx, key, `UPDATE chunk_edges SET status = ?, actor = ?, operator_ruled_at = ?, ruled_by = ?
+					WHERE id = ? AND status = ?`, edgeStatusAsserted, nullIfEmpty(actor), now, operatorRuler(ctx), existing.ID, existing.Status)
+				if err != nil {
+					return out, nil, err
+				}
+				if n > 0 {
+					out.Status = edgeStatusAsserted
+				}
+			}
 		}
 	} else {
 		id := newDocID()
@@ -1407,6 +1427,9 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 	}
 	if in.edgeMethod != "" {
 		w.method = in.edgeMethod
+	} else if !tools.IsOffRunPlane(ctx) {
+		// A run's proposal is the run's, never a person's (madeByAPerson).
+		w.method = edgeMethodAgent
 	}
 	res, refuse, err := d.writeStatement(ctx, key, mscope, w)
 	if err != nil {
@@ -1520,6 +1543,20 @@ func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, msc
 		return *r.refusal, nil
 	}
 	return jsonResult(map[string]any{"id": in.ID, "status": r.status})
+}
+
+// callerMayRuleOn reports whether the caller may make the operator's ruling on
+// statement id: the operator plane, a person in its own user scope
+// (callerDecidesIn), or a member holding the review grant on the statement's
+// document in the tenant scope (memberMayReview). Never a run.
+func (d *Document) callerMayRuleOn(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, id string) (bool, error) {
+	if callerDecidesIn(ctx, key) {
+		return true, nil
+	}
+	if mscope != store.MemoryScopeTenant || !tools.IsOffRunPlane(ctx) || !rulesAsMember(ctx) {
+		return false, nil
+	}
+	return d.memberMayReview(ctx, key, id)
 }
 
 // rulesAsMember reports a ruling by a tenant member rather than an operator:

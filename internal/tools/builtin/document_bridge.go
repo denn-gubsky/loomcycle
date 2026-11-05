@@ -269,10 +269,14 @@ func (d *Document) factRelation(ctx context.Context, key sqlmem.ScopeKey, mscope
 		runGated: true,
 	}
 	// A code-js run that named its method (stampStatementMethod) owns the
-	// relation as written by its rule or extractor, not by the memory pass:
-	// its granted method is its authority, as on propose_statement.
+	// relation as written by its rule or extractor, not by the memory pass. A
+	// rule: one is its code's finding and holds, as a rule: proposal may be
+	// auto-asserted; an extractor: one is a model's finding, which in the
+	// tenant scope is always filed for review, link grant or not.
 	if in.edgeMethod != "" {
-		w.method, w.runGated = in.edgeMethod, false
+		w.method = in.edgeMethod
+		w.runGated = false
+		w.reviewInTenant = strings.HasPrefix(in.edgeMethod, "extractor:")
 	}
 	if claim != "" {
 		w.evidence = []edgeEvidenceIn{{ChunkID: factID, Quote: claim}}
