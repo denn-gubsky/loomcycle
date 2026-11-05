@@ -5547,11 +5547,16 @@ function normalizeHookDef(d: HookDefOverlay): Record<string, unknown> {
 /** strings.TrimSpace: Go's Unicode White_Space set, which is not
  *  String.prototype.trim's (Go trims U+0085 and keeps U+FEFF; JavaScript does
  *  the reverse). Trimming differently could make two descriptions the server
- *  stores differently compare equal, and skip a real change. */
-const goTrimRe =
-  /^[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+|[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+$/g;
+ *  stores differently compare equal, and skip a real change. Scanned from
+ *  both ends rather than matched with /[\u2026]+$/, which backtracks
+ *  quadratically on a long whitespace run that is not at the end. */
+const goSpaceRe = /^[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]$/;
 function goTrimSpace(s: string): string {
-  return s.replace(goTrimRe, "");
+  let start = 0;
+  let end = s.length;
+  while (start < end && goSpaceRe.test(s[start]!)) start++;
+  while (end > start && goSpaceRe.test(s[end - 1]!)) end--;
+  return s.slice(start, end);
 }
 
 /** Structural JSON equality, ignoring object key order (the server's
