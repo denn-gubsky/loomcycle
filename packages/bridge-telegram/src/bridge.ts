@@ -235,7 +235,7 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
     const thread = topicOf(msg);
     const id = identify(msg.chat, msg.from, thread, this.policy);
     const ref = refFor(msg.chat, thread);
-    const voiceOn = this.cfg.voice.enabled;
+    const voiceOn = this.cfg.voice?.enabled === true;
     const text = addressedText(msg, bot, { voice: voiceOn });
     if (text === undefined) {
       // A voice note goes the way text goes, through the same identity and
