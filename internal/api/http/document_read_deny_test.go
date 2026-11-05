@@ -11,7 +11,6 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
-	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -128,33 +127,26 @@ func TestMaintenanceRoutes_AreNotOnTheMemberPath(t *testing.T) {
 	}
 
 	// The handler's own refit check, asked directly (the route gate is above).
-	srv := projectServer(t)
-	member := auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}}
-	operator := auth.Principal{TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeTenant}}
+	srv, _, _ := projectFixture(t, true)
+	member := auth.Principal{TenantID: "", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}}
+	operator := auth.Principal{TenantID: "", Subject: "op", Scopes: []string{auth.ScopeTenant}}
 	for _, c := range []struct {
 		who   auth.Principal
 		query string
 		want  bool // refused with 403
 	}{
-		{member, "?refit=true", true},
-		{member, "?refit=1&dry_run=false", true},
+		{member, "&refit=true", true},
+		{member, "&refit=1&dry_run=false", true},
 		{member, "", false},
-		{member, "?refit=false", false},
-		{operator, "?refit=true", false},
+		{member, "&refit=false", false},
+		{operator, "&refit=true", false},
 	} {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/v1/_document/project"+c.query, nil).
+		req := httptest.NewRequest(http.MethodPost, "/v1/_document/project?scope=user"+c.query, nil).
 			WithContext(auth.WithPrincipal(context.Background(), c.who))
 		srv.handleDocumentProject(rec, req)
 		if got := rec.Code == http.StatusForbidden; got != c.want {
 			t.Errorf("%s project%s: %d %s, want refused=%v", c.who.Subject, c.query, rec.Code, rec.Body.String(), c.want)
 		}
 	}
-}
-
-// projectServer has no store, so a call the refit check lets through answers
-// 503 rather than running a pass.
-func projectServer(t *testing.T) *Server {
-	t.Helper()
-	return &Server{cfgHolder: config.NewHolder(&config.Config{})}
 }

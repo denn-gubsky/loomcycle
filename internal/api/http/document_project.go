@@ -45,14 +45,6 @@ func operatorPlanePrincipal(ctx context.Context) bool {
 // model call; a UMAP fit takes seconds to a minute at 10,000 chunks, and the call
 // returns when it is done. 409 while memory.projection is off.
 func (s *Server) handleDocumentProject(w http.ResponseWriter, r *http.Request) {
-	// A forced refit is a fit of the whole scope (a UMAP fit runs seconds to a
-	// minute), so it is the operator plane's, whoever the route admits: the
-	// projection without one is what a member may run (RFC FY D7). Asked first,
-	// so the answer does not depend on how this server is configured.
-	if refit := r.URL.Query().Get("refit"); (refit == "true" || refit == "1") && !operatorPlanePrincipal(r.Context()) {
-		writeJSONError(w, http.StatusForbidden, "operator_plane", "a refit of the projection is an operator's; run it without refit")
-		return
-	}
 	if s.store == nil || s.sqlMem == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "sqlmem_unavailable",
 			"projecting documents requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
@@ -95,6 +87,14 @@ func (s *Server) handleDocumentProject(w http.ResponseWriter, r *http.Request) {
 		opts.Method = m
 	default:
 		writeJSONError(w, http.StatusBadRequest, "invalid_method", "method must be one of: pca, umap")
+		return
+	}
+	// A forced refit is a fit of the whole scope (a UMAP fit runs seconds to a
+	// minute), so it is the operator plane's whoever the route admits. The route
+	// is admin-only today; this keeps a refit the operator's if the projection
+	// without one is ever opened to members (RFC FY D7).
+	if opts.Refit && !operatorPlanePrincipal(r.Context()) {
+		writeJSONError(w, http.StatusForbidden, "operator_plane", "a refit of the projection is an operator's; run it without refit")
 		return
 	}
 
