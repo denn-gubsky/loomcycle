@@ -4,7 +4,7 @@
 
 import net from "node:net";
 
-import { gateSharedSubject, keyFromSecret, UNTRUSTED_KIND, type Bridge, type Logger } from "@loomcycle/bridge-core";
+import { DEFAULT_VOICE_CONFIG, gateSharedSubject, keyFromSecret, UNTRUSTED_KIND, type Bridge, type Logger } from "@loomcycle/bridge-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createDiscordBridge } from "../src/bridge.js";
@@ -97,6 +97,7 @@ describe("discord bridge over HTTP", () => {
       trustedGuilds: new Set([GUILD]),
       registerCommands: false,
       apiBaseUrl: discord.base,
+      voice: DEFAULT_VOICE_CONFIG,
     };
     bridge = createDiscordBridge(cfg, {
       clients: (token) => lc.client(token),
@@ -458,6 +459,7 @@ describe("discord bridge as a loomcycle gate", () => {
       trustedGuilds: new Set([GUILD]),
       registerCommands: false,
       apiBaseUrl: discord.base,
+      voice: DEFAULT_VOICE_CONFIG,
     };
     bridge = createDiscordBridge(cfg, {
       clients: (token) => lc.client(token),
