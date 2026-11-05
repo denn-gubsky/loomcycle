@@ -13,7 +13,7 @@
 #   docker build -t denngubsky/loomcycle-builder:dev --build-arg VERSION=dev .
 
 # ---- Stage 1: build the sidecar (stdlib only, static) -----------------------
-FROM golang:1.26-bookworm AS build
+FROM golang:1.26-bookworm@sha256:e0c50aecba3a2edfab18924d493cd9210b73c4746fc5fd5b3bb46e0ec7f0465a AS build
 WORKDIR /src
 COPY go.mod ./
 COPY *.go ./
@@ -26,7 +26,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # quay.io/podman/stable ships podman + fuse-overlayfs + slirp4netns + the
 # rootless uid/gid mapping setup — the fiddly parts of running podman in a
 # container are already done here.
-FROM quay.io/podman/stable:latest
+FROM quay.io/podman/stable:latest@sha256:f7a17ef911a2b9b866ada8a9426a07e29a6e4f8109ef8c0e0b7010c2541b4e49
 
 # gVisor (runsc) for the strong-isolation runtime tier is OPTIONAL — uncomment
 # to bake it in, then set SANDBOX_RUNTIME=runsc. Left out by default to keep the

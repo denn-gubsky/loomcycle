@@ -8,6 +8,37 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.141.0
+
+*A chat bridge can exchange voice messages with an agent on its users' own tokens: a token limited to certain agents can now be granted the speech routes. SQLite scopes open in defensive mode and Memory SQL refuses the tables that reach a scope's file underneath the document guard. CI now gates npm and pip advisories, with every action and base image pinned.*
+
+The v1.141 line: #2407 to #2409.
+- `@loomcycle/client` 1.141.0: `mintUserToken` takes `surfaces`, `TokenRestrictions` reports them, and a `TokenSurface` type is exported. The Python adapter moves to 1.141.0 for lockstep; its API does not change.
+- No migration.
+
+### Upgrade notes
+
+- **Mint a speech grant only after every replica runs 1.141.** A token whose stored restrictions carry `surfaces` is refused at sign-in by an older replica, which does not know the field (a restriction a build cannot read always fails closed).
+- **Memory SQL refuses more names.** A query or statement naming `sqlite_dbpage`, `dbstat`, `sqlite_schema` / `sqlite_master` (and the temp ones), any `sqlite_stat*` table or any `pragma_*` function is refused, and a view an agent made earlier over one of them blocks its scope until dropped.
+
+### A bridge user's token can be granted the speech routes (#2407, RFC GA P1)
+
+- **The gap.** A chat bridge mints each person a token limited to the bridge's agent, which holds it to the run plane. The speech routes (v1.140.0) are off the run plane on purpose, so a bridge could not transcribe a person's voice note or voice a reply as that person.
+- **Now** `Restrictions.surfaces` names off-run surfaces such a token may still call: `speech` opens `POST /v1/audio/speech`, `transcription` opens `POST /v1/audio/transcriptions`, and either opens `GET /v1/_speech`. It is refused without `agents`, held to the minter (a confined minter grants only what it holds), and opens nothing else: the model gateways and `/v1/_decide` stay refused. The scope, the ACL (`use gateway:speech` / `use gateway:transcription`), the hard budget, the run rate (one start per call) and the usage row under the user all still apply. `GET /v1/_me`'s `effective.surfaces` reports the result.
+- **Where it is set:** `surfaces` on `POST /v1/_users/{subject}/tokens` and the `OperatorTokenDef` `create` op, `surfaces:` beside `agents:` on a declared principal, and an external gate's assertion `token.surfaces`, held to a new `issued_token.surfaces` ceiling in the gate's config. A gate whose ceiling names `agents` and no `surfaces` issues none.
+- The grant holds at every plane that confines such a token: the HTTP gate, off-run admission, and the access-control run-plane list, which for a granted token denies `use` on every other gateway kind. Docs: `CONFIGURATION.md` "Granting the speech routes", `SPEECH.md` "Who may call them".
+
+### SQLite scopes in defensive mode (#2408, RFC FZ P0)
+
+- **The hole.** A SQLite scope file holds an agent's SQL Memory tables beside the Document plane's, on one connection. `sqlite_dbpage` let an agent with `sql_scopes` rewrite any page of the file, and so turn proposed document statements asserted with no review, and read every chunk's raw text, without naming a table the guard matched.
+- **Now** every scope opens with SQLite's defensive mode, so page writes fail and `writable_schema` is ignored, and Memory SQL refuses the page, stat, schema and pragma tables by name in every quoting form (upgrade notes above). Postgres is unaffected: none of those names exist there.
+
+### Supply chain (#2409, RFC FZ P6)
+
+- CI gates on `npm audit --omit=dev --audit-level=high` over every tracked lockfile and on `pip-audit` for the Python adapter, on every PR, on `main` and weekly. The Teams bridge's transitive advisories (`@azure/msal-node`, `body-parser`, `follow-redirects`, `qs`) and the landing server's `body-parser` are cleared.
+- Every workflow action is pinned to a full commit SHA and every Dockerfile base image by digest; dependabot moves both.
+- The landing server's tests run in CI. `CODEOWNERS` and `MAINTAINERS.md` are added.
+
 ## What's in v1.140.0
 
 *A chat client can read a reply aloud and transcribe the microphone: `POST /v1/audio/speech` and `POST /v1/audio/transcriptions` put loomcycle's speech engines behind two routes and three `@loomcycle/client` methods. And a security line closes what the 2026-11-04 re-assessment found on the member plane: a tenant member no longer reads or writes other people's data, decides for the tenant, or escapes an admin's access-control list; every stored access rule is either enforced or refused; an erasure ends the account.*

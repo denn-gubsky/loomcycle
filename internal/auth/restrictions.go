@@ -11,9 +11,14 @@ import (
 
 // Restrictions narrows what one credential may do, below what its scopes
 // allow. A scope says which kind of thing a principal may do ("create runs");
-// a restriction says which ones ("of this agent only"). Every field only
-// narrows, so a tenant operator may set any of them on a token it mints: no
-// restriction grants anything.
+// a restriction says which ones ("of this agent only"). Every field narrows,
+// measured against a credential with no restrictions at all, so a tenant
+// operator may set any of them on a token it mints: no restriction grants
+// anything such a credential could not already do.
+//
+// Surfaces is the one field that loosens another: it names off-run surfaces a
+// credential confined by Agents may still reach. It never reaches past what an
+// unrestricted credential reaches, and Within holds it to the minter's own.
 //
 // The zero value restricts nothing, and is what every token minted before
 // restrictions existed carries.
@@ -23,6 +28,12 @@ type Restrictions struct {
 	// plane (see RunPlaneOnly). An agent the listed one spawns is not gated:
 	// that follows the agent's own definition.
 	Agents []string `json:"agents,omitempty"`
+	// Surfaces, with Agents set, names the off-run surfaces the credential may
+	// still call though it is confined to the run plane: a chat bridge's user
+	// token that also transcribes voice notes and reads replies aloud (RFC
+	// GA). Each is one of KnownSurfaces. Without Agents it is refused: an
+	// unconfined credential already reaches every surface its scopes allow.
+	Surfaces []string `json:"surfaces,omitempty"`
 	// Overrides, when set, locks the per-run overrides: a run this credential
 	// starts runs on its agent's own settings, except for the fields the
 	// policy allows. Nil locks nothing.
@@ -84,6 +95,17 @@ func (r RateLimit) Validate() error {
 	}
 	return nil
 }
+
+// The off-run surfaces a run-plane credential may be granted (Surfaces). Each
+// names the routes it opens in the transports that serve them; the HTTP layer
+// maps routes to these names and a test holds the two lists together.
+const (
+	SurfaceSpeech        = "speech"        // read a text aloud
+	SurfaceTranscription = "transcription" // turn a recording into text
+)
+
+// KnownSurfaces is every surface a credential may be granted.
+var KnownSurfaces = []string{SurfaceSpeech, SurfaceTranscription}
 
 // LockableOverrides is every per-run override a policy locks, by wire name:
 // the fields of a run request that change which model answers, how it is
@@ -192,7 +214,7 @@ var restrictedAgentNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,1
 
 // IsZero reports whether nothing is restricted.
 func (r Restrictions) IsZero() bool {
-	return len(r.Agents) == 0 && r.Overrides == nil && r.Rate == nil && r.Retention == ""
+	return len(r.Agents) == 0 && len(r.Surfaces) == 0 && r.Overrides == nil && r.Rate == nil && r.Retention == ""
 }
 
 // RunPlaneOnly reports whether the credential is confined to the run plane:
@@ -205,6 +227,21 @@ func (r Restrictions) IsZero() bool {
 // would miss the next one added, so the rule is the other way round: such a
 // credential may use the run endpoints and is refused everywhere else.
 func (r Restrictions) RunPlaneOnly() bool { return len(r.Agents) > 0 }
+
+// SurfaceAllowed reports whether a credential confined to the run plane may
+// still call the named off-run surface. A credential that is not confined
+// reaches every surface its scopes allow, so the answer is true for it.
+func (r Restrictions) SurfaceAllowed(name string) bool {
+	if !r.RunPlaneOnly() {
+		return true
+	}
+	for _, s := range r.Surfaces {
+		if s == name {
+			return true
+		}
+	}
+	return false
+}
 
 // AgentAllowed reports whether name may be started as a top-level run.
 func (r Restrictions) AgentAllowed(name string) bool {
@@ -241,6 +278,12 @@ func (r Restrictions) Validate(agentsWasSet bool) error {
 		}
 		seen[a] = true
 	}
+	if err := validateSurfaces(r.Surfaces); err != nil {
+		return err
+	}
+	if len(r.Surfaces) > 0 && len(r.Agents) == 0 {
+		return fmt.Errorf("surfaces applies only with agents: a token not limited to agents already reaches every surface its scopes allow")
+	}
 	if r.Rate != nil {
 		if err := r.Rate.Validate(); err != nil {
 			return err
@@ -269,6 +312,30 @@ func (r Restrictions) Validate(agentsWasSet bool) error {
 		}
 	}
 	return nil
+}
+
+// validateSurfaces refuses a surface this build does not know, and a repeat.
+func validateSurfaces(surfaces []string) error {
+	seen := make(map[string]bool, len(surfaces))
+	for _, s := range surfaces {
+		if !knownSurface(s) {
+			return fmt.Errorf("surfaces: %q is not a surface (one of: %s)", s, strings.Join(KnownSurfaces, ", "))
+		}
+		if seen[s] {
+			return fmt.Errorf("surfaces: %q is listed twice", s)
+		}
+		seen[s] = true
+	}
+	return nil
+}
+
+func knownSurface(s string) bool {
+	for _, k := range KnownSurfaces {
+		if k == s {
+			return true
+		}
+	}
+	return false
 }
 
 // Within is r held to what a minting credential is itself held to: for each
@@ -301,6 +368,16 @@ func (r Restrictions) Within(minter Restrictions) (Restrictions, error) {
 		}
 	}
 	if len(minter.Agents) > 0 {
+		// Surfaces first, while out.Agents still says whether the record was
+		// confined of its own accord. An unconfined record reaches every
+		// surface, so held to a confined minter it gets the minter's surfaces;
+		// a confined one keeps only those both name. Either way it is never
+		// granted a surface the minter does not hold.
+		if len(out.Agents) == 0 {
+			out.Surfaces = append([]string(nil), minter.Surfaces...)
+		} else {
+			out.Surfaces = intersect(out.Surfaces, minter.Surfaces)
+		}
 		if len(out.Agents) == 0 {
 			out.Agents = append([]string(nil), minter.Agents...)
 		} else if out.Agents = intersect(out.Agents, minter.Agents); len(out.Agents) == 0 {
@@ -340,6 +417,9 @@ func (r Restrictions) Describe() string {
 		} else {
 			parts = append(parts, "overrides=["+strings.Join(r.Overrides.Allow, ",")+"]")
 		}
+	}
+	if len(r.Surfaces) > 0 {
+		parts = append(parts, "surfaces=["+strings.Join(r.Surfaces, ",")+"]")
 	}
 	if r.Rate != nil {
 		parts = append(parts, fmt.Sprintf("rate=%d/min burst=%d", r.Rate.PerMinute, r.Rate.EffectiveBurst()))
@@ -390,6 +470,11 @@ func ParseRestrictions(s string) (Restrictions, error) {
 	// told is never stored.
 	if r.Retention != "" && r.Retention != retentionmode.None {
 		return Restrictions{}, fmt.Errorf("restrictions: retention %q is not a mode this build knows", r.Retention)
+	}
+	// A surface this build does not know opens a route it cannot name, so the
+	// record is refused rather than read without it.
+	if err := validateSurfaces(r.Surfaces); err != nil {
+		return Restrictions{}, fmt.Errorf("restrictions: %w", err)
 	}
 	return r, nil
 }

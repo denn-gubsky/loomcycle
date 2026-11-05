@@ -1,0 +1,71 @@
+# Code owners for loomcycle. GitHub requests a review from the owners of
+# every path a pull request touches; with "Require review from Code Owners"
+# on in the main ruleset, a matching owner's approval is needed to merge.
+#
+# The last matching pattern wins, so the catch-all comes first and the
+# security-sensitive paths below restate their owner explicitly. Today one
+# maintainer owns everything (see MAINTAINERS.md); when a second joins, add
+# them to the security-sensitive entries first, so a change to a trust
+# boundary always needs a reviewer other than its author.
+
+*                                       @denn-gubsky
+
+# --- Security-sensitive: trust boundaries, secrets, isolation -------------
+# Authentication, sessions, sign-in gates, operator tokens, ACLs
+/internal/auth/                         @denn-gubsky
+/internal/authgate/                     @denn-gubsky
+/internal/authz/                        @denn-gubsky
+/internal/aclres/                       @denn-gubsky
+/internal/api/http/auth*                @denn-gubsky
+/internal/api/http/acl_*                @denn-gubsky
+/internal/api/http/oauth_*              @denn-gubsky
+/internal/api/http/ui_session*          @denn-gubsky
+/internal/api/http/tenant_authz*        @denn-gubsky
+/internal/api/http/token_authority*     @denn-gubsky
+/internal/api/http/operator_authority*  @denn-gubsky
+
+# Credentials, encryption, key management, secret scrubbing
+/internal/credential/                   @denn-gubsky
+/internal/cryptoops/                    @denn-gubsky
+/internal/kms/                          @denn-gubsky
+/internal/awsauth/                      @denn-gubsky
+/internal/sigv1/                        @denn-gubsky
+/internal/redact/                       @denn-gubsky
+/internal/tools/builtin/credentialdef*  @denn-gubsky
+/internal/tools/builtin/crypto*         @denn-gubsky
+
+# Sandboxes, filesystem fences, egress policy
+/internal/tools/builtin/bash*           @denn-gubsky
+/internal/tools/builtin/narrowing*      @denn-gubsky
+/internal/tools/builtin/httptool*       @denn-gubsky
+/internal/tools/builtin/webfetch*       @denn-gubsky
+/internal/fence/                        @denn-gubsky
+/internal/netguard/                     @denn-gubsky
+/internal/hostenv/                      @denn-gubsky
+/internal/procgroup/                    @denn-gubsky
+
+# Tenant-isolated state, SQL Memory, erasure, audit
+/internal/store/                        @denn-gubsky
+/internal/sqlmem/                       @denn-gubsky
+/internal/erasure/                      @denn-gubsky
+/internal/audit/                        @denn-gubsky
+
+# Inbound peers: webhooks (HMAC verify-before-parse), A2A
+/internal/api/webhook/                  @denn-gubsky
+/internal/a2a/                          @denn-gubsky
+
+# Supply chain: CI, release, dependencies, images
+/.github/                               @denn-gubsky
+/.goreleaser.yaml                       @denn-gubsky
+/scripts/ci/                            @denn-gubsky
+**/go.mod                               @denn-gubsky
+**/go.sum                               @denn-gubsky
+**/package.json                         @denn-gubsky
+**/package-lock.json                    @denn-gubsky
+**/pyproject.toml                       @denn-gubsky
+**/Dockerfile*                          @denn-gubsky
+/deploy/                                @denn-gubsky
+
+# Security policy and threat model
+/SECURITY.md                            @denn-gubsky
+/MAINTAINERS.md                         @denn-gubsky

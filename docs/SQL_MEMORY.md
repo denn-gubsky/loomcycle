@@ -99,7 +99,22 @@ On sqlite it also reads every `'string'`, since sqlite accepts
 The check also reserves:
 - Document's indexes, since dropping one would let duplicates in;
 - the statistics catalogs (`pg_stats` and kin, `sqlite_stat1` …), which hold
-  sampled values of the document tables' columns.
+  sampled values of the document tables' columns;
+- the names that reach the database file beneath its tables: `sqlite_dbpage`
+  (raw pages, Document's included), `dbstat` / `sqlite_dbstat`, the schema
+  catalogs `sqlite_schema` / `sqlite_master` / `sqlite_temp_schema` /
+  `sqlite_temp_master`, and every `pragma_*` table-valued function. None of
+  them names a document table, so without this a read of `sqlite_dbpage`
+  returned every chunk's text. They are refused on both tiers; none exists on
+  PostgreSQL. An agent that needs to know its own tables keeps track of what it
+  creates. `sqlite_stat` and `pragma_` match as prefixes, and on sqlite a
+  `'string'` is read as a name too, so a value such as `'pragma_notes'` or
+  `LIKE 'pragma_%'` is refused as well.
+
+On sqlite every scope connection is also opened in SQLite's defensive mode
+(`SQLITE_DBCONFIG_DEFENSIVE`), so the engine itself refuses writes to
+`sqlite_dbpage` and ignores `PRAGMA writable_schema`, whatever the statement
+looks like. Defensive mode does not stop reads; the name check above does.
 
 On PostgreSQL the guard also refuses statements that could build a table name
 out of strings:
@@ -110,8 +125,8 @@ out of strings:
 - a `DO` block (sqlmem's allow-list already refuses it; the guard does too);
 - `U&"…"` escapes.
 
-A view, trigger, rule or (PostgreSQL) function made before this check existed
-can still reach a document table. So before Memory SQL first runs on a scope,
+A view, trigger, rule, (sqlite) virtual table or (PostgreSQL) function made
+before this check existed can still reach a document table, or the file's pages. So before Memory SQL first runs on a scope,
 these objects are checked. If one names a document table, or a function body
 uses `EXECUTE`, the scope refuses Memory SQL until that object is dropped;
 `DROP` statements stay allowed.

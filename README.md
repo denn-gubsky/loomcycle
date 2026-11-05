@@ -201,17 +201,16 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.140.0) lets a chat client read a reply aloud and
-transcribe the microphone through two routes, `POST /v1/audio/speech` and
-`POST /v1/audio/transcriptions`, and closes what the 2026-11-04 security
-re-assessment found on the member plane: a tenant member reaches only its own
-data, no longer decides for the tenant or escapes an admin's access-control
-list, every stored access rule is enforced or refused, and an erasure ends the
-account. Read its upgrade notes in [`REVISIONS.md`](REVISIONS.md) first.
+The most recent line (v1.141.0) lets a chat bridge exchange voice messages with
+an agent on its users' own tokens: a token limited to certain agents can be
+granted the speech routes. It also opens SQLite scopes in defensive mode and
+gates CI on npm and pip advisories. Read its upgrade notes in
+[`REVISIONS.md`](REVISIONS.md) first.
 
-Before it, v1.139.0 edited a team definition as highlighted, wrapped YAML or
-JSON through a new shared editor package, `@loomcycle/code-editor`. See
-[`REVISIONS.md`](REVISIONS.md).
+Before it, v1.140.0 let a chat client read a reply aloud and transcribe the
+microphone through `POST /v1/audio/speech` and `POST /v1/audio/transcriptions`,
+and closed what the 2026-11-04 security re-assessment found on the member
+plane. See [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
 recordings into timed transcripts through a whisper server, and Teams captions
