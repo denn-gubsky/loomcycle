@@ -67,27 +67,28 @@ const documentRolesMarkerDDL = `CREATE INDEX IF NOT EXISTS ` + documentRolesMark
 // one the runtime did not create. The fresh table is then created by the DDL, and the
 // ontology is re-derived by the name-migration rule — the operator's document at the
 // reserved name, not whatever the plant recorded.
+//
+// WHY THE CATALOG and not an HMAC'd row: what an agent could never have made is an
+// index ON documents, so the catalog answers "is this ours" exactly, with no key to
+// manage and no second trust root. What the catalog must also answer is who else holds
+// the marker's NAME: before the upgrade it was an ordinary name, so a table, view or
+// index of the agent's could sit on it — read as the marker if only the name were
+// checked, or making the DDL fail and wedge the scope.
 func (d *Document) quarantineUntrustedRoles(ctx context.Context, key sqlmem.ScopeKey) error {
-	_, err := d.docSQL().Query(ctx, key, `SELECT role FROM document_roles WHERE 1=0`, nil)
-	tableExists := !schemaMissing(err)
-	if err != nil && tableExists {
-		return err
-	}
-	if _, derr := d.docSQL().Query(ctx, key, `SELECT id FROM documents WHERE 1=0`, nil); schemaMissing(derr) {
-		return nil // a fresh scope: nothing can have been planted beside tables that do not exist
-	}
 	marked, err := d.documentRolesMarked(ctx, key)
 	if err != nil || marked {
 		return err
 	}
-	// Unmarked: an index by the marker's name is not on documents, so it is not the
-	// runtime's, and left in place it would make the DDL's CREATE INDEX IF NOT EXISTS a
-	// no-op — the runtime's own table would then be quarantined on every boot.
-	if _, err := d.docSQL().Exec(ctx, key, `DROP INDEX IF EXISTS `+documentRolesMarkerName, nil, 0); err != nil {
-		return fmt.Errorf("drop an untrusted %s index: %w", documentRolesMarkerName, err)
+	if err := d.clearMarkerName(ctx, key); err != nil {
+		return err
 	}
-	if !tableExists {
+	// Whether or not the scope has its document tables yet: a plant can predate them.
+	_, err = d.docSQL().Query(ctx, key, `SELECT role FROM document_roles WHERE 1=0`, nil)
+	if schemaMissing(err) {
 		return nil // no table: the DDL makes the runtime's own
+	}
+	if err != nil {
+		return err
 	}
 	quarantined := fmt.Sprintf("document_roles_quarantined_%d", time.Now().UnixNano())
 	if _, err := d.docSQL().Exec(ctx, key, `ALTER TABLE document_roles RENAME TO `+quarantined, nil, 0); err != nil {
@@ -98,9 +99,57 @@ func (d *Document) quarantineUntrustedRoles(ctx context.Context, key sqlmem.Scop
 	return nil
 }
 
-// documentRolesMarked reports whether the marker index exists ON documents. The table
-// is checked too: an index of the same name on a table of the agent's would otherwise
-// pass, and CREATE INDEX IF NOT EXISTS would leave it in place.
+// clearMarkerName removes whatever object holds the marker's name, called only when
+// the name is NOT the runtime's index on documents: a table is renamed away (it may hold
+// someone's data), a view, index or trigger is dropped. An object of a kind this does
+// not know fails provisioning rather than being trusted.
+func (d *Document) clearMarkerName(ctx context.Context, key sqlmem.ScopeKey) error {
+	postgres := d.docSQL().Tier() == "postgres"
+	// SQLite object names are case-insensitive, so a squatter differing in case still
+	// blocks CREATE INDEX; Postgres folds unquoted names, which the DDL uses.
+	stmt := `SELECT type, name FROM sqlite_master WHERE name = ? COLLATE NOCASE`
+	if postgres {
+		stmt = `SELECT c.relkind::text, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		         WHERE n.nspname = current_schema() AND c.relname = ?`
+	}
+	res, err := d.docSQL().Query(ctx, key, d.docSQL().Rebind(stmt), []any{documentRolesMarkerName})
+	if err != nil {
+		return fmt.Errorf("look up the %s name: %w", documentRolesMarkerName, err)
+	}
+	for _, row := range res.Rows {
+		if len(row) < 2 {
+			continue
+		}
+		kind, name := asStr(row[0]), asStr(row[1])
+		var drop string
+		switch kind {
+		case "table", "r", "p":
+			drop = fmt.Sprintf(`ALTER TABLE "%s" RENAME TO %s_quarantined_%d`, name, documentRolesMarkerName, time.Now().UnixNano())
+		case "view", "v":
+			drop = `DROP VIEW "` + name + `"`
+		case "m":
+			drop = `DROP MATERIALIZED VIEW "` + name + `"`
+		case "index", "i":
+			drop = `DROP INDEX "` + name + `"`
+		case "trigger":
+			drop = `DROP TRIGGER "` + name + `"`
+		case "S":
+			drop = `DROP SEQUENCE "` + name + `"`
+		default:
+			return fmt.Errorf("an object of kind %q holds the %s name; remove it to provision this scope", kind, documentRolesMarkerName)
+		}
+		if _, err := d.docSQL().Exec(ctx, key, drop, nil, 0); err != nil {
+			return fmt.Errorf("clear the %s name (%s): %w", documentRolesMarkerName, kind, err)
+		}
+		slog.WarnContext(ctx, "ontology: removed an object squatting on the document_roles marker name",
+			"tenant", key.Tenant, "scope", key.Scope, "kind", kind, "name", name)
+	}
+	return nil
+}
+
+// documentRolesMarked reports whether the marker is exactly the runtime's: an index of
+// that name ON documents. An object of the same name that is anything else is a
+// squatter, which clearMarkerName removes.
 func (d *Document) documentRolesMarked(ctx context.Context, key sqlmem.ScopeKey) (bool, error) {
 	stmt := `SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ? AND tbl_name = 'documents'`
 	if d.docSQL().Tier() == "postgres" {

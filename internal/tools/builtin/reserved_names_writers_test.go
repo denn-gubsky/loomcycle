@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -242,8 +243,72 @@ func TestReservedName_CaseFoldedSubtreeOpsLeaveItIntact(t *testing.T) {
 // TestOntology_APlantedRolesTableIsNotTrusted: before the upgrade document_roles was
 // an ordinary name, so an agent with tenant sql_scopes could create it and record its
 // own document as the ontology; CREATE TABLE IF NOT EXISTS would then keep that table.
-// The first provisioning that introduces the table must not trust one it did not make.
+// The first provisioning that introduces the table must not trust one it did not make —
+// nor be fooled, or wedged, by an object squatting on its marker's name.
 func TestOntology_APlantedRolesTableIsNotTrusted(t *testing.T) {
+	for _, squat := range []struct{ name, stmt string }{
+		{"no squatter", ""},
+		{"index on the plant", `CREATE INDEX document_roles_trusted ON document_roles(role)`},
+		{"table", `CREATE TABLE document_roles_trusted (x TEXT)`},
+		{"view", `CREATE VIEW document_roles_trusted AS SELECT role FROM document_roles`},
+	} {
+		t.Run(squat.name, func(t *testing.T) {
+			statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+				base := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
+					rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
+				})
+				opCtx := tools.WithSubstrateOperator(base)
+				agentCtx := tools.WithRunID(base, "r_agent")
+				md, _ := json.Marshal("# Tenant Ontology\n\n## event\n")
+				out, r := docExec(t, d, opCtx, `{"op":"import_md","scope":"tenant","path":"/memory/ontology","markdown":`+string(md)+`}`)
+				if r.IsError {
+					t.Fatalf("import_md: %s", r.Text)
+				}
+				ontology, _ := out["document_id"].(string)
+				out, r = docExec(t, d, agentCtx, `{"op":"create_document","scope":"tenant","title":"Impostor","path":"/notes/impostor"}`)
+				if r.IsError {
+					t.Fatalf("impostor: %s", r.Text)
+				}
+				impostor, _ := out["document_id"].(string)
+
+				// The scope as an older release left it, with the agent's plant in place.
+				key := mustTenantKey(t, d, opCtx)
+				stmts := []string{
+					`DROP INDEX IF EXISTS document_roles_trusted`,
+					`DROP TABLE IF EXISTS document_roles`,
+					`CREATE TABLE document_roles (role TEXT PRIMARY KEY, document_id TEXT NOT NULL, recorded_at BIGINT NOT NULL)`,
+					`INSERT INTO document_roles (role, document_id, recorded_at) VALUES ('ontology', '` + impostor + `', 0)`,
+				}
+				if squat.stmt != "" {
+					stmts = append(stmts, squat.stmt)
+				}
+				for _, stmt := range stmts {
+					if _, err := d.docSQL().Exec(context.Background(), key, stmt, nil, 0); err != nil {
+						t.Fatalf("%s: %v", stmt, err)
+					}
+				}
+				d.docSQL().ForgetEnsured(key) // a new process after the upgrade
+
+				if r := docExec2(t, d, agentCtx, `{"op":"create_chunk","scope":"tenant","document_id":"`+impostor+`","title":"live","body":"x"}`); r.IsError {
+					t.Errorf("the planted record made the impostor the ontology (or the scope is wedged): %s", r.Text)
+				}
+				if got, err := d.recordedRole(context.Background(), key, roleOntology); err != nil || got != ontology {
+					t.Errorf("recorded ontology = %q (err %v), want the one at the name %q", got, err, ontology)
+				}
+				// The runtime's own table now carries a real marker, so the next process keeps it.
+				if marked, err := d.documentRolesMarked(context.Background(), key); err != nil || !marked {
+					t.Errorf("after quarantine the new table is unmarked (err %v): every boot would quarantine it again", err)
+				}
+			})
+		})
+	}
+}
+
+// TestOntology_ARolesTablePlantedBeforeAnyDocumentIsNotTrusted: the plant can predate
+// the scope's document tables entirely, and name a document that arrives later — a
+// move between scopes keeps the document's id, so the agent knows it in advance.
+func TestOntology_ARolesTablePlantedBeforeAnyDocumentIsNotTrusted(t *testing.T) {
 	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
 		base := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
 			rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
@@ -251,46 +316,48 @@ func TestOntology_APlantedRolesTableIsNotTrusted(t *testing.T) {
 		})
 		opCtx := tools.WithSubstrateOperator(base)
 		agentCtx := tools.WithRunID(base, "r_agent")
-		md, _ := json.Marshal("# Tenant Ontology\n\n## event\n")
-		out, r := docExec(t, d, opCtx, `{"op":"import_md","scope":"tenant","path":"/memory/ontology","markdown":`+string(md)+`}`)
+		out, r := docExec(t, d, agentCtx, `{"op":"create_document","scope":"user","title":"Impostor","path":"/drafts/impostor"}`)
 		if r.IsError {
-			t.Fatalf("import_md: %s", r.Text)
-		}
-		ontology, _ := out["document_id"].(string)
-		out, r = docExec(t, d, agentCtx, `{"op":"create_document","scope":"tenant","title":"Impostor","path":"/notes/impostor"}`)
-		if r.IsError {
-			t.Fatalf("impostor: %s", r.Text)
+			t.Fatalf("user impostor: %s", r.Text)
 		}
 		impostor, _ := out["document_id"].(string)
 
-		// The scope as an older release left it, with the agent's plant in place.
+		// A tenant scope with no document tables yet, and the plant.
 		key := mustTenantKey(t, d, opCtx)
 		for _, stmt := range []string{
-			`DROP INDEX IF EXISTS document_roles_trusted`,
-			`DROP TABLE IF EXISTS document_roles`,
 			`CREATE TABLE document_roles (role TEXT PRIMARY KEY, document_id TEXT NOT NULL, recorded_at BIGINT NOT NULL)`,
 			`INSERT INTO document_roles (role, document_id, recorded_at) VALUES ('ontology', '` + impostor + `', 0)`,
-			// A forged marker: the right name on the wrong table.
-			`CREATE INDEX document_roles_trusted ON document_roles(role)`,
 		} {
 			if _, err := d.docSQL().Exec(context.Background(), key, stmt, nil, 0); err != nil {
 				t.Fatalf("%s: %v", stmt, err)
 			}
 		}
-		d.docSQL().ForgetEnsured(key) // a new process after the upgrade
-
-		if r := docExec2(t, d, agentCtx, `{"op":"create_chunk","scope":"tenant","document_id":"`+impostor+`","title":"live","body":"x"}`); r.IsError {
-			t.Errorf("the planted record made the impostor the ontology: %s", r.Text)
+		md, _ := json.Marshal("# Tenant Ontology\n\n## event\n")
+		out, r = docExec(t, d, opCtx, `{"op":"import_md","scope":"tenant","path":"/memory/ontology","markdown":`+string(md)+`}`)
+		if r.IsError {
+			t.Fatalf("import_md: %s", r.Text)
 		}
-		if r := docExec2(t, d, agentCtx, `{"op":"delete_document","scope":"tenant","id":"`+ontology+`"}`); !r.IsError {
-			t.Error("with a planted record an agent deleted the real ontology")
+		ontology, _ := out["document_id"].(string)
+		if _, r := moveSet2(t, d, agentCtx, impostor); r.IsError {
+			t.Fatalf("move the impostor in: %s", r.Text)
+		}
+		if r := docExec2(t, d, agentCtx, `{"op":"create_chunk","scope":"tenant","document_id":"`+impostor+`","title":"live","body":"x"}`); r.IsError {
+			t.Errorf("the planted record made the moved-in impostor the ontology: %s", r.Text)
 		}
 		if got, err := d.recordedRole(context.Background(), key, roleOntology); err != nil || got != ontology {
-			t.Errorf("recorded ontology = %q (err %v), want the one at the name %q", got, err, ontology)
-		}
-		// The runtime's own table now carries a real marker, so the next process keeps it.
-		if marked, err := d.documentRolesMarked(context.Background(), key); err != nil || !marked {
-			t.Errorf("after quarantine the new table is unmarked (err %v): every boot would quarantine it again", err)
+			t.Errorf("recorded ontology = %q (err %v), want %q", got, err, ontology)
 		}
 	})
+}
+
+// moveSet2 moves one user-scope document into the tenant scope.
+func moveSet2(t *testing.T, d *Document, ctx context.Context, docID string) (map[string]any, tools.Result) {
+	t.Helper()
+	args := `"scope":"user","to_scope":"tenant","document_ids":["` + docID + `"]`
+	dry, r := docExec(t, d, ctx, `{"op":"move_documents",`+args+`}`)
+	if r.IsError {
+		return nil, r
+	}
+	n := int(dry["counts"].(map[string]any)["documents"].(float64))
+	return docExec(t, d, ctx, fmt.Sprintf(`{"op":"move_documents",%s,"dry_run":false,"expect_count":%d}`, args, n))
 }
