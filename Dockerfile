@@ -38,7 +38,7 @@
 # into ../packages/*), so each of those needs its own node_modules before the
 # web build, or it cannot resolve their react, js-yaml and client imports. The
 # lockfiles go in first so the npm ci layer is cached until one changes.
-FROM node:26-alpine AS web-builder
+FROM node:26-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 AS web-builder
 WORKDIR /src
 COPY packages/library/package.json packages/library/package-lock.json packages/library/
 COPY packages/explorer/package.json packages/explorer/package-lock.json packages/explorer/
@@ -61,7 +61,7 @@ COPY web/ web/
 RUN cd web && npm run build
 
 # ---- Stage 2: build the Go binary -------------------------------------------
-FROM golang:1.26-alpine AS go-builder
+FROM golang:1.26-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS go-builder
 WORKDIR /src
 # No `COPY go.mod go.sum` + `go mod download` layer: the root go.mod replaces
 # in-tree modules with their directories (./internal/errkind, ...), and Go
@@ -87,7 +87,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     -o /out/loomcycle ./cmd/loomcycle
 
 # ---- Stage 3: runtime image -------------------------------------------------
-FROM gcr.io/distroless/static:nonroot
+FROM gcr.io/distroless/static:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329
 WORKDIR /
 COPY --from=go-builder /out/loomcycle /usr/local/bin/loomcycle
 COPY LICENSE NOTICE /usr/share/doc/loomcycle/

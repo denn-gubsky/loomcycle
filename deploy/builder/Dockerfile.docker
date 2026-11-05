@@ -21,7 +21,7 @@
 #     -f deploy/builder/Dockerfile.docker --build-arg VERSION=dev deploy/builder
 
 # ---- Stage 1: build the sidecar (stdlib only, static) -----------------------
-FROM golang:1.26-alpine AS build
+FROM golang:1.26-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS build
 WORKDIR /src
 COPY go.mod ./
 COPY *.go ./
@@ -31,9 +31,9 @@ RUN CGO_ENABLED=0 go build -trimpath \
     -o /out/loomcycle-builder .
 
 # ---- Stage 2: runtime on the Docker CLI image (client only, no daemon) ------
-# docker:cli is Alpine + the docker client. Pin a concrete tag (e.g. docker:28-cli)
-# for production reproducibility.
-FROM docker:cli
+# docker:cli is Alpine + the docker client. The digest pins the build; dependabot
+# moves it when the tag is republished.
+FROM docker:cli@sha256:4d742ab934c2149b628bf26369ac3ec51cb91e2e28fe6722a0e86a6d6efc4bd5
 COPY --from=build /out/loomcycle-builder /usr/local/bin/loomcycle-builder
 EXPOSE 9000
 # SANDBOX_IMAGE (the toolchain session image, resolvable by the HOST Docker) +
