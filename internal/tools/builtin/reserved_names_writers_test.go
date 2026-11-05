@@ -238,3 +238,59 @@ func TestReservedName_CaseFoldedSubtreeOpsLeaveItIntact(t *testing.T) {
 		t.Errorf("mv /MEMORY left /memory/ontology naming %q, want %q", got, e.ontology)
 	}
 }
+
+// TestOntology_APlantedRolesTableIsNotTrusted: before the upgrade document_roles was
+// an ordinary name, so an agent with tenant sql_scopes could create it and record its
+// own document as the ontology; CREATE TABLE IF NOT EXISTS would then keep that table.
+// The first provisioning that introduces the table must not trust one it did not make.
+func TestOntology_APlantedRolesTableIsNotTrusted(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		base := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+			rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
+			rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
+		})
+		opCtx := tools.WithSubstrateOperator(base)
+		agentCtx := tools.WithRunID(base, "r_agent")
+		md, _ := json.Marshal("# Tenant Ontology\n\n## event\n")
+		out, r := docExec(t, d, opCtx, `{"op":"import_md","scope":"tenant","path":"/memory/ontology","markdown":`+string(md)+`}`)
+		if r.IsError {
+			t.Fatalf("import_md: %s", r.Text)
+		}
+		ontology, _ := out["document_id"].(string)
+		out, r = docExec(t, d, agentCtx, `{"op":"create_document","scope":"tenant","title":"Impostor","path":"/notes/impostor"}`)
+		if r.IsError {
+			t.Fatalf("impostor: %s", r.Text)
+		}
+		impostor, _ := out["document_id"].(string)
+
+		// The scope as an older release left it, with the agent's plant in place.
+		key := mustTenantKey(t, d, opCtx)
+		for _, stmt := range []string{
+			`DROP INDEX IF EXISTS document_roles_trusted`,
+			`DROP TABLE IF EXISTS document_roles`,
+			`CREATE TABLE document_roles (role TEXT PRIMARY KEY, document_id TEXT NOT NULL, recorded_at BIGINT NOT NULL)`,
+			`INSERT INTO document_roles (role, document_id, recorded_at) VALUES ('ontology', '` + impostor + `', 0)`,
+			// A forged marker: the right name on the wrong table.
+			`CREATE INDEX document_roles_trusted ON document_roles(role)`,
+		} {
+			if _, err := d.docSQL().Exec(context.Background(), key, stmt, nil, 0); err != nil {
+				t.Fatalf("%s: %v", stmt, err)
+			}
+		}
+		d.docSQL().ForgetEnsured(key) // a new process after the upgrade
+
+		if r := docExec2(t, d, agentCtx, `{"op":"create_chunk","scope":"tenant","document_id":"`+impostor+`","title":"live","body":"x"}`); r.IsError {
+			t.Errorf("the planted record made the impostor the ontology: %s", r.Text)
+		}
+		if r := docExec2(t, d, agentCtx, `{"op":"delete_document","scope":"tenant","id":"`+ontology+`"}`); !r.IsError {
+			t.Error("with a planted record an agent deleted the real ontology")
+		}
+		if got, err := d.recordedRole(context.Background(), key, roleOntology); err != nil || got != ontology {
+			t.Errorf("recorded ontology = %q (err %v), want the one at the name %q", got, err, ontology)
+		}
+		// The runtime's own table now carries a real marker, so the next process keeps it.
+		if marked, err := d.documentRolesMarked(context.Background(), key); err != nil || !marked {
+			t.Errorf("after quarantine the new table is unmarked (err %v): every boot would quarantine it again", err)
+		}
+	})
+}

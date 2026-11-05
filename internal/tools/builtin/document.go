@@ -725,6 +725,7 @@ var docSchemaDDL = []string{
 	// document_roles: which document plays a runtime role here — the tenant
 	// ontology, by id rather than by name (document_ontology_identity.go).
 	documentRolesDDL,
+	documentRolesMarkerDDL,
 }
 
 // maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
@@ -1178,6 +1179,11 @@ func (d *Document) provisionSchema(ctx context.Context, key sqlmem.ScopeKey) err
 // provisionTables creates the document tables on the key's plane and runs every
 // migration on them.
 func (d *Document) provisionTables(ctx context.Context, key sqlmem.ScopeKey) error {
+	// Before the DDL: CREATE TABLE IF NOT EXISTS would keep a document_roles table an
+	// agent planted before the name was reserved (document_ontology_identity.go).
+	if err := d.quarantineUntrustedRoles(ctx, key); err != nil {
+		return err
+	}
 	for _, ddl := range docSchemaDDL {
 		if _, err := d.docSQL().Exec(ctx, key, ddl, nil, 0); err != nil {
 			return err

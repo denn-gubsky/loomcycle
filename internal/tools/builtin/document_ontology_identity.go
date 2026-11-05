@@ -29,6 +29,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -45,6 +46,72 @@ const roleOntology = "ontology"
 // documentRolesDDL holds which document plays a runtime role in this scope.
 const documentRolesDDL = `CREATE TABLE IF NOT EXISTS document_roles (
 		role TEXT PRIMARY KEY, document_id TEXT NOT NULL, recorded_at BIGINT NOT NULL)`
+
+// documentRolesMarkerName is the index that marks a document_roles table as the
+// runtime's own.
+const documentRolesMarkerName = "document_roles_trusted"
+
+// documentRolesMarkerDDL creates the marker, right after the table it vouches for.
+//
+// WHY AN INDEX ON documents. Before document_roles was a document table, an agent
+// holding tenant sql_scopes could create a table by that name and record its own
+// document as the ontology; CREATE TABLE IF NOT EXISTS would then keep the plant. The
+// marker has to be something no agent could have made on any release: every statement
+// naming `documents` is refused to an agent's SQL (memory_sql_doc_guard.go), so an
+// index ON documents can only be the runtime's. Partial on a never-true condition (id is
+// the primary key), so it is empty and costs no write.
+const documentRolesMarkerDDL = `CREATE INDEX IF NOT EXISTS ` + documentRolesMarkerName +
+	` ON documents(id) WHERE id IS NULL`
+
+// quarantineUntrustedRoles renames away a document_roles table that carries no marker:
+// one the runtime did not create. The fresh table is then created by the DDL, and the
+// ontology is re-derived by the name-migration rule — the operator's document at the
+// reserved name, not whatever the plant recorded.
+func (d *Document) quarantineUntrustedRoles(ctx context.Context, key sqlmem.ScopeKey) error {
+	_, err := d.docSQL().Query(ctx, key, `SELECT role FROM document_roles WHERE 1=0`, nil)
+	tableExists := !schemaMissing(err)
+	if err != nil && tableExists {
+		return err
+	}
+	if _, derr := d.docSQL().Query(ctx, key, `SELECT id FROM documents WHERE 1=0`, nil); schemaMissing(derr) {
+		return nil // a fresh scope: nothing can have been planted beside tables that do not exist
+	}
+	marked, err := d.documentRolesMarked(ctx, key)
+	if err != nil || marked {
+		return err
+	}
+	// Unmarked: an index by the marker's name is not on documents, so it is not the
+	// runtime's, and left in place it would make the DDL's CREATE INDEX IF NOT EXISTS a
+	// no-op — the runtime's own table would then be quarantined on every boot.
+	if _, err := d.docSQL().Exec(ctx, key, `DROP INDEX IF EXISTS `+documentRolesMarkerName, nil, 0); err != nil {
+		return fmt.Errorf("drop an untrusted %s index: %w", documentRolesMarkerName, err)
+	}
+	if !tableExists {
+		return nil // no table: the DDL makes the runtime's own
+	}
+	quarantined := fmt.Sprintf("document_roles_quarantined_%d", time.Now().UnixNano())
+	if _, err := d.docSQL().Exec(ctx, key, `ALTER TABLE document_roles RENAME TO `+quarantined, nil, 0); err != nil {
+		return fmt.Errorf("quarantine an untrusted document_roles table: %w", err)
+	}
+	slog.WarnContext(ctx, "ontology: renamed a document_roles table the runtime did not create; the tenant ontology is re-derived from its reserved name",
+		"tenant", key.Tenant, "scope", key.Scope, "renamed_to", quarantined)
+	return nil
+}
+
+// documentRolesMarked reports whether the marker index exists ON documents. The table
+// is checked too: an index of the same name on a table of the agent's would otherwise
+// pass, and CREATE INDEX IF NOT EXISTS would leave it in place.
+func (d *Document) documentRolesMarked(ctx context.Context, key sqlmem.ScopeKey) (bool, error) {
+	stmt := `SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ? AND tbl_name = 'documents'`
+	if d.docSQL().Tier() == "postgres" {
+		stmt = `SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND indexname = ? AND tablename = 'documents'`
+	}
+	res, err := d.docSQL().Query(ctx, key, d.docSQL().Rebind(stmt), []any{documentRolesMarkerName})
+	if err != nil {
+		return false, err
+	}
+	return len(res.Rows) > 0 && len(res.Rows[0]) > 0 && asInt(res.Rows[0][0]) > 0, nil
+}
 
 // reservedNameWriter reports whether ctx may create, rename or remove a reserved
 // tenant name: the operator's own off-run call. The marker counts only off-run, as
