@@ -1,7 +1,10 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 
 	googlegrpc "google.golang.org/grpc"
@@ -42,5 +45,22 @@ func TestRecoverStreamInterceptor_AHandlerPanicBecomesInternal(t *testing.T) {
 	})
 	if status.Code(err) != codes.Internal {
 		t.Errorf("err = %v; want Internal", err)
+	}
+}
+
+// The panic value may quote the request (a run's prompt, a document), and a
+// gRPC handler does not know whether the run keeps any trace: the log names
+// the value's type and the stack, never the value.
+func TestRecoverUnaryInterceptor_TheLogNeverHoldsThePanicValue(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+	info := &googlegrpc.UnaryServerInfo{FullMethod: "/loomcycle.v1.Loomcycle/Run"}
+	_, _ = RecoverUnaryInterceptor()(context.Background(), nil, info, func(context.Context, any) (any, error) {
+		panic("the user's private prompt text")
+	})
+	if out := buf.String(); strings.Contains(out, "private prompt") || !strings.Contains(out, "panic_type=string") {
+		t.Errorf("log = %q; want the panic's type and not its value", out)
 	}
 }

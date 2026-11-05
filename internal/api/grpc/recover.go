@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"runtime/debug"
 
@@ -50,6 +51,9 @@ func RecoverStreamInterceptor() googlegrpc.StreamServerInterceptor {
 	}
 }
 
+// logHandlerPanic logs the panic's type and the stack, never its value: the
+// value may quote the request (a prompt, a document), and here nothing says
+// whether the run keeps any trace of it.
 func logHandlerPanic(ctx context.Context, method string, p any) {
-	slog.ErrorContext(ctx, "grpc: handler panicked", "method", method, "panic", p, "stack", string(debug.Stack()))
+	slog.ErrorContext(ctx, "grpc: handler panicked", "method", method, "panic_type", fmt.Sprintf("%T", p), "stack", string(debug.Stack()))
 }
