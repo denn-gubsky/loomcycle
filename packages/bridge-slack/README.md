@@ -127,6 +127,8 @@ As a gate the bridge also tells loomcycle about groups and leavers, which it tak
 
 A person deactivated in an allowed workspace is revoked in loomcycle: disabled at once, then removed by the gate's removal policy. For that, subscribe to the `user_change` event and grant `users:read`. The bridge revokes before it answers Slack; if loomcycle does not take it, Slack is answered with an error and delivers the event again.
 
+A revoke loomcycle does not take is also kept and retried by the bridge itself, so a loomcycle outage longer than Slack's redelivery no longer loses it. And every `BRIDGE_GATE_SYNC_HOURS` (default 6) the bridge reconciles: it reads each allowed workspace's people with `users.list` (the same `users:read` scope) and sends loomcycle a complete sync of the users it serves that are still there, so a person who left while nothing was listening is removed too. Removal by sync takes `authoritative_for_users: true` in the gate's `identity_map`, and is held to its `max_sync_removals`. Reconciliation needs `BRIDGE_STORE=file:<path>` (it is off with the memory store) and one bridge per gate; `@loomcycle/bridge-core`'s README has the details.
+
 ## Conversations
 
 - **A DM** is one conversation, one loomcycle user: the person.
