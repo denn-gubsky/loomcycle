@@ -62,7 +62,7 @@ Configuration is by environment. The shared variables (every bridge reads them):
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `LOOMCYCLE_BASE_URL` | loomcycle's URL: `https://`, or `http://` to localhost; over a private network set `BRIDGE_ALLOW_INSECURE_LOOMCYCLE=1` | required |
+| `LOOMCYCLE_BASE_URL` | loomcycle's URL. From `@loomcycle/bridge-core` 0.4.0: `https://`, or `http://` to localhost; over a private network set `BRIDGE_ALLOW_INSECURE_LOOMCYCLE=1` | required |
 | `LOOMCYCLE_TOKEN` | The bridge's `substrate:tenant` token | required, unless the bridge is a gate (below) |
 | `BRIDGE_AGENT` | The loomcycle agent every conversation runs | required |
 | `BRIDGE_TOKEN_TTL_SECONDS` | Lifetime of a user's token | `43200` |
@@ -70,7 +70,7 @@ Configuration is by environment. The shared variables (every bridge reads them):
 | `BRIDGE_USER_ACCESS_MODE` | `isolated` (a user sees only their own data) or `tenant` | `isolated` |
 | `BRIDGE_IDLE_MINUTES` | End a conversation's run after this long without a message; the next message continues it | `1440` |
 | `BRIDGE_STORE` | `memory`, or `file:<path>` to survive restarts on one instance | `memory` |
-| `BRIDGE_DEV` | `1` turns request signature checks off, for local testing only: refused on a gate, and the listener binds loopback only | unset |
+| `BRIDGE_DEV` | `1` turns request signature checks off, for local testing only. From `@loomcycle/bridge-core` 0.4.0 it is refused on a gate, and the listener binds loopback only | unset |
 | `PORT` | Listen port | `3000` |
 
 Slack's own:
@@ -127,7 +127,7 @@ As a gate the bridge also tells loomcycle about groups and leavers, which it tak
 
 A person deactivated in an allowed workspace is revoked in loomcycle: disabled at once, then removed by the gate's removal policy. For that, subscribe to the `user_change` event and grant `users:read`. The bridge revokes before it answers Slack; if loomcycle does not take it, Slack is answered with an error and delivers the event again.
 
-A revoke loomcycle does not take is also kept and retried by the bridge itself, so a loomcycle outage longer than Slack's redelivery no longer loses it. And every `BRIDGE_GATE_SYNC_HOURS` (default 6) the bridge reconciles: it reads each allowed workspace's people with `users.list` (the same `users:read` scope) and sends loomcycle a complete sync of the users it serves that are still there, so a person who left while nothing was listening is removed too. Removal by sync takes `authoritative_for_users: true` in the gate's `identity_map`, and is held to its `max_sync_removals`. Reconciliation needs `BRIDGE_STORE=file:<path>` (it is off with the memory store) and one bridge per gate; `@loomcycle/bridge-core`'s README has the details.
+From `@loomcycle/bridge-core` 0.4.0, a revoke loomcycle does not take is also kept and retried by the bridge itself, so a loomcycle outage longer than Slack's redelivery no longer loses it. The bridge also reconciles a few minutes after start and every `BRIDGE_GATE_SYNC_HOURS` (default 6): it reads each allowed workspace's people with `users.list` (the same `users:read` scope) and revokes each person it served 1:1 whom Slack no longer lists, so a person who left while nothing was listening is removed too. It never removes anyone for being missing from the bridge's own store, and a round that would revoke more than `BRIDGE_RECONCILE_MAX_REVOKES` revokes nobody. Use `BRIDGE_STORE=file:<path>`: a memory store starts empty after a restart. `@loomcycle/bridge-core`'s README has the details.
 
 ## Conversations
 

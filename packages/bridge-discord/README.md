@@ -73,7 +73,7 @@ The shared settings, as every bridge reads them:
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `LOOMCYCLE_BASE_URL` | loomcycle's URL: `https://`, or `http://` to localhost; over a private network set `BRIDGE_ALLOW_INSECURE_LOOMCYCLE=1` | required |
+| `LOOMCYCLE_BASE_URL` | loomcycle's URL. From `@loomcycle/bridge-core` 0.4.0: `https://`, or `http://` to localhost; over a private network set `BRIDGE_ALLOW_INSECURE_LOOMCYCLE=1` | required |
 | `LOOMCYCLE_TOKEN` | The bridge's `substrate:tenant` token | required, unless the bridge is a gate (below) |
 | `BRIDGE_AGENT` | The loomcycle agent every conversation runs | required |
 | `BRIDGE_TOKEN_TTL_SECONDS` | Lifetime of a user's token | `43200` |
@@ -81,7 +81,7 @@ The shared settings, as every bridge reads them:
 | `BRIDGE_USER_ACCESS_MODE` | `isolated` (a user sees only their own data) or `tenant` | `isolated` |
 | `BRIDGE_IDLE_MINUTES` | End a conversation's run after this long without a message; the next message continues it | `1440` |
 | `BRIDGE_STORE` | `memory`, or `file:<path>` to survive restarts on one instance | `memory` |
-| `BRIDGE_DEV` | `1` turns signature verification off, for local testing only: refused on a gate, and the listener binds loopback only | unset |
+| `BRIDGE_DEV` | `1` turns signature verification off, for local testing only. From `@loomcycle/bridge-core` 0.4.0 it is refused on a gate, and the listener binds loopback only | unset |
 | `PORT` | Listen port | `8080` |
 
 Discord's:
