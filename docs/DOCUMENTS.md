@@ -1077,7 +1077,7 @@ judge_floor: 0.85
 - human  *
 ```
 
-This is MTB's first policy plus two illustrative rules: the rule-made citations and repeals between two documents, with their quotes found, need no person; classify's rule-matched subject tags neither; everything else waits for a person.
+This is a first policy as one production tenant wrote it, plus two illustrative rules: the rule-made citations and repeals between two documents, with their quotes found, need no person; classify's rule-matched subject tags neither; everything else waits for a person.
 
 **Grammar.** `<action> <selectors> [when <conditions>] [options]`.
 - **Actions:** `accept`, `reject`, `judge` (leave it for the judge agent, marking it `attributes.review_route: judge`), `human` (leave it for a person).
