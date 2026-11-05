@@ -577,6 +577,24 @@ func (m *Manager) ScopeExists(ctx context.Context, key ScopeKey) (bool, error) {
 	return m.backend.scopeExists(ctx, key.wholeScope())
 }
 
+// PlaneExists reports whether this Manager's PLANE of a durable scope has been
+// provisioned. ScopeExists answers for the scope as a whole (its agent plane); on
+// postgres the document plane is a schema and login role of its own, so a reader that
+// must not provision it asks here first (RFC FY P2: the ontology's boot pass and
+// resolver). On sqlite the planes are one file and the answers agree.
+func (m *Manager) PlaneExists(ctx context.Context, key ScopeKey) (bool, error) {
+	if key.Scope == runScope {
+		return false, fmt.Errorf("sqlmem: PlaneExists is for durable scopes")
+	}
+	if key.Scope == "" || strings.TrimSpace(key.ScopeID) == "" {
+		return false, fmt.Errorf("sqlmem: PlaneExists requires a non-empty scope and scope_id")
+	}
+	if err := key.validate(); err != nil {
+		return false, err
+	}
+	return m.backend.scopeExists(ctx, m.onPlane(key))
+}
+
 // DropRunScope removes the ephemeral run scope (sqlite: the .db file behind a
 // path fence; postgres: the scope schema + role). removed reports whether the
 // scope existed.

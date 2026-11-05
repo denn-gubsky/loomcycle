@@ -129,6 +129,9 @@ var (
 	// pause_state='paused' runs (F42 / RFC X Phase 2) so exactly ONE replica
 	// resurrects each paused run's loop in a cluster — not a periodic sweep.
 	LockKeyResumePausedRuns int64
+	// LockKeyOntologyIdentityPass gates the one-shot boot-time recording of each
+	// tenant ontology's document id (RFC FY P2) so ONE replica runs it per boot.
+	LockKeyOntologyIdentityPass int64
 	// LockKeyEphemeralVolumeSweeper gates the RFC AH Phase 2b crash-recovery
 	// sweep of ephemeral volumes whose owning run is terminal (not paused), so
 	// only one replica per tick runs the fenced os.RemoveAll.
@@ -257,6 +260,7 @@ func init() {
 	LockKeyAuthGateSweeper = fnvKey("auth_gate_sweeper")
 	LockKeyAuthLifecycleSweeper = fnvKey("auth_lifecycle_sweeper")
 	LockKeyProjectionSweeper = fnvKey("projection_sweeper")
+	LockKeyOntologyIdentityPass = fnvKey("ontology_identity_pass")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.

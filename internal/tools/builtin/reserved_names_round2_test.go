@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -296,5 +297,72 @@ func TestReservedName_EveryRootWriteIsTheOperators(t *testing.T) {
 				t.Errorf("the operator's %s was refused as a reserved-name write: %s", c.name, r.Text)
 			}
 		})
+	}
+}
+
+// faultyDefaultTenant fails every dirent read under the raw tenant "default", which is
+// one of the two raw tenants SQL Memory's "default" can stand for.
+type faultyDefaultTenant struct{ store.Store }
+
+func (f faultyDefaultTenant) DirentGet(ctx context.Context, tenant, scope, scopeID, parent, name string) (store.DirentRow, error) {
+	if tenant == "default" {
+		return store.DirentRow{}, fmt.Errorf("injected store fault")
+	}
+	return f.Store.DirentGet(ctx, tenant, scope, scopeID, parent, name)
+}
+
+// TestOntology_BootPassTriesEveryRawTenantAfterAnError: SQL Memory stores the raw
+// tenant "" as "default", so the boot pass tries both raw keys. An error on the first
+// stopped it before the second, which is where a default-tenant deployment's ontology
+// actually is.
+func TestOntology_BootPassTriesEveryRawTenantAfterAnError(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := tools.WithRunIdentity(base, tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: ""})
+	ctx = tools.WithSubstrateOperator(tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
+	}))
+	md, _ := json.Marshal("# Tenant Ontology\n\n## event\n")
+	out, r := docExec(t, d, ctx, `{"op":"import_md","scope":"tenant","path":"/memory/ontology","markdown":`+string(md)+`}`)
+	if r.IsError {
+		t.Fatalf("import_md: %s", r.Text)
+	}
+	ontology, _ := out["document_id"].(string)
+	key := mustTenantKey(t, d, ctx)
+	if _, err := d.docSQL().Exec(context.Background(), key, `DELETE FROM document_roles`, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	faulty := &Document{Store: faultyDefaultTenant{d.Store}, SqlMem: d.SqlMem}
+	if n, _ := faulty.RecordTenantOntologies(context.Background()); n != 1 {
+		t.Errorf("boot pass found %d ontologies, want 1", n)
+	}
+	if got, err := d.recordedRole(context.Background(), key, roleOntology); err != nil || got != ontology {
+		t.Errorf("recorded ontology = %q (err %v), want %q", got, err, ontology)
+	}
+}
+
+// TestOntology_BootPassDoesNotProvisionADocumentPlane: a tenant scope that holds only
+// an agent's own SQL has no document tables, and the boot pass must not create a
+// document-plane schema and role for it — not even when a name sits at
+// /memory/ontology (a dangling one, or a memory entry from before the names were
+// reserved).
+func TestOntology_BootPassDoesNotProvisionADocumentPlane(t *testing.T) {
+	d, ctx := pgDocumentOrSkip(t)
+	key := mustTenantKey(t, d, ctx)
+	if _, err := d.SqlMem.Exec(context.Background(), key, `CREATE TABLE notes (x TEXT)`, nil, 0); err != nil {
+		t.Fatalf("agent table: %v", err)
+	}
+	if ok, err := d.docSQL().PlaneExists(context.Background(), key); err != nil || ok {
+		t.Fatalf("the fixture already has a document plane (%v, %v)", ok, err)
+	}
+	if _, err := d.Store.DirentCreate(context.Background(), store.DirentRow{TenantID: "tnt", Scope: "tenant",
+		ParentPath: "/memory/", Name: "ontology", Kind: "document", ResourceRef: []byte(`{"document_id":"gone"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.RecordTenantOntologies(context.Background()); err != nil {
+		t.Fatalf("boot pass: %v", err)
+	}
+	if ok, err := d.docSQL().PlaneExists(context.Background(), key); err != nil || ok {
+		t.Errorf("the boot pass provisioned a document plane for a scope that had none (exists=%v err=%v)", ok, err)
 	}
 }

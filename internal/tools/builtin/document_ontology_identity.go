@@ -418,19 +418,18 @@ func (d *Document) ontologyDocumentID(ctx context.Context, key sqlmem.ScopeKey) 
 // only to migrate a scope with no record yet, and the first such read records it.
 //
 // Reading must not provision (see ontologyForKey): the name comes from the dirent
-// plane, and SQL is touched only when that name exists — so the scope holds documents
-// — or the scope already exists. A tenant with no documents is answered without
-// creating its database.
+// plane, and SQL is touched only when the scope's document plane already exists. A
+// tenant with no documents is answered without creating its database.
 func (d *Document) resolveOntologyID(ctx context.Context, key sqlmem.ScopeKey) (string, error) {
 	atName, err := d.documentAtName(ctx, key, memrank.OntologyPath)
 	if err != nil {
 		return "", err
 	}
-	if atName == "" {
-		ok, err := d.docSQL().ScopeExists(ctx, key)
-		if err != nil || !ok {
-			return "", err
-		}
+	// The DOCUMENT plane, not the scope: on postgres a scope holding only an agent's own
+	// tables has no document plane, and querying it would create the schema and login
+	// role. No document plane, no documents — whatever a name points at.
+	if ok, err := d.docSQL().PlaneExists(ctx, key); err != nil || !ok {
+		return "", err
 	}
 	recorded, err := d.recordedRole(ctx, key, roleOntology)
 	if err != nil || recorded != "" {
@@ -553,16 +552,24 @@ func (d *Document) RecordTenantOntologies(ctx context.Context) (int, error) {
 		if sk.Scope != "tenant" {
 			continue
 		}
+		// A scope with no document plane has no documents; skipping it here keeps the
+		// pass from creating one (resolveOntologyID checks too).
+		if ok, perr := d.docSQL().PlaneExists(ctx, sk); perr != nil || !ok {
+			if perr != nil {
+				slog.WarnContext(ctx, "ontology: boot pass could not check a tenant scope", "tenant", sk.Tenant, "err", perr)
+			}
+			continue
+		}
 		// The dirent plane keys the tenant raw; SQL Memory stores "" as "default", so
-		// that one SQL tenant may be either.
+		// that one SQL tenant may be either — and an error on one must not stop the
+		// other, which is where a default-tenant deployment keeps its names.
 		for _, raw := range bodyTenantsFor(sk.Tenant) {
 			tctx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: raw})
 			id, rerr := d.resolveOntologyID(tctx, sk)
 			if rerr != nil {
-				// Per scope: one unreadable scope must not stop the pass; its first
-				// resolve migrates it instead.
-				slog.WarnContext(ctx, "ontology: boot pass could not resolve a tenant's ontology", "tenant", sk.Tenant, "err", rerr)
-				break
+				// Its first resolve migrates it instead.
+				slog.WarnContext(ctx, "ontology: boot pass could not resolve a tenant's ontology", "tenant", sk.Tenant, "raw_tenant", raw, "err", rerr)
+				continue
 			}
 			if id != "" {
 				found++
