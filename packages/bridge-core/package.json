@@ -43,7 +43,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@loomcycle/client": "^1.140.0"
+    "@loomcycle/client": "^1.141.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
