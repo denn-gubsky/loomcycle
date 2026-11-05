@@ -66,6 +66,14 @@ type Server struct {
 	// exactly once when the compound test fires one schedule per user).
 	mu  sync.Mutex
 	log []CallRecord
+
+	// requiredAuth, when set, is the Authorization header every request must
+	// carry — initialize and tools/list included, as a web service that puts
+	// its whole MCP route behind auth does. Anything else gets a 401.
+	requiredAuth string
+	// seenAuth records the Authorization header of each JSON-RPC request
+	// with an id, keyed by method (the last one seen per method).
+	seenAuth map[string]string
 }
 
 // CallRecord is one entry in the server's per-call log.
@@ -83,6 +91,22 @@ type Option func(*Server)
 // agent's tools list can route to specific servers.
 func WithToolName(name string) Option {
 	return func(s *Server) { s.toolName = name }
+}
+
+// WithRequiredAuthorization makes every request, the handshake included,
+// need exactly this Authorization header; any other gets a 401 and no answer.
+func WithRequiredAuthorization(header string) Option {
+	return func(s *Server) { s.requiredAuth = header }
+}
+
+// AuthorizationSeen returns the Authorization header the last request of
+// method carried, and whether such a request arrived at all (a refused one
+// counts: it is what the client sent).
+func (s *Server) AuthorizationSeen(method string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.seenAuth[method]
+	return v, ok
 }
 
 // NewServer returns a ready-to-use Server. The test must Close() it
@@ -131,6 +155,19 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		Params json.RawMessage `json:"params"`
 	}
 	_ = json.Unmarshal(body, &probe)
+
+	if probe.ID != nil {
+		s.mu.Lock()
+		if s.seenAuth == nil {
+			s.seenAuth = make(map[string]string)
+		}
+		s.seenAuth[probe.Method] = r.Header.Get("Authorization")
+		s.mu.Unlock()
+	}
+	if s.requiredAuth != "" && r.Header.Get("Authorization") != s.requiredAuth {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 
 	if probe.Method == "initialize" {
 		// Set a per-server session id so the client's session-id
