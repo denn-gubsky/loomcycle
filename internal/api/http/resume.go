@@ -550,6 +550,21 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// Note the direction on the fan-out ceiling: a stale record can only ever
 	// have asked for LESS width than the definition allows, so the fallback is
 	// the WIDER of the two, which is why it is reported.
+	// RFC EY: the access-control rules that bound the run at its start — its
+	// caller's, or the originating caller's a sub-run inherited — compiled
+	// again now and applied below as its start applied them. A set the record
+	// names but that cannot be compiled leaves the run paused: resuming it on
+	// its agent's full grants is the widening this exists to prevent. Compiled
+	// before the run's model is resolved, so a `use model:` or `use tier:`
+	// deny bound during the pause refuses the resume (RFC FY Part E).
+	ctx, acl, aerr := s.resumedACL(ctx, run, runCfg)
+	if aerr != nil {
+		return aerr // not settled: the row goes back to paused for a later pass
+	}
+	resolveCtx := ctx
+	if acl != nil {
+		resolveCtx = tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.ACL = acl })
+	}
 	if ed, oerr := s.effectiveDef(ctx, agentDef, runOverrides{
 		Routing: runCfg.Routing, Resources: runCfg.Resources, Tuning: runCfg.Tuning,
 	}); oerr == nil {
@@ -557,7 +572,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	} else {
 		slog.Warn("resume: the run had an override the definition no longer permits; resolving from the definition", "run_id", run.ID, "err", oerr)
 	}
-	providerID, model, effort, rerr := s.resolveAgentDef(ctx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
+	providerID, model, effort, rerr := s.resolveAgentDef(resolveCtx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
 	if rerr != nil {
 		flag(fmt.Sprintf("resolve provider/model: %v", rerr))
 		return fmt.Errorf("resolve agent: %w", rerr)
@@ -580,6 +595,12 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// fallbacks on the row is a hot-path write and a separate decision.
 	if run.Model != "" && run.Model != model {
 		if pid, ok := s.providerForModel(ctx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, run.Model); ok {
+			// The restored model is the one the run calls: asked of the
+			// caller's current rules like any other (RFC FY Part E).
+			if err := s.askPinnedModelUse(resolveCtx, run.Model); err != nil {
+				flag(fmt.Sprintf("resolve provider/model: %v", err))
+				return fmt.Errorf("resolve agent: %w", err)
+			}
 			slog.Info("resume: restoring the run's started model", "run_id", run.ID, "model", run.Model, "definition_model", model)
 			providerID, model = pid, run.Model
 		} else {
@@ -624,15 +645,6 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		runCfg.Hosts = &runHostRecord{HasList: true}
 	}
 
-	// RFC EY: the access-control rules that bound the run at its start — its
-	// caller's, or the originating caller's a sub-run inherited — compiled
-	// again now and applied below as its start applied them. A set the record
-	// names but that cannot be compiled leaves the run paused: resuming it on
-	// its agent's full grants is the widening this exists to prevent.
-	ctx, acl, aerr := s.resumedACL(ctx, run, runCfg)
-	if aerr != nil {
-		return aerr // not settled: the row goes back to paused for a later pass
-	}
 	// What a condition reads about the run, as at its start (RFC FY Part E).
 	// The client address of the request that started it is not recorded, so
 	// a source_cidr condition is unknown here: a deny on it holds for the
