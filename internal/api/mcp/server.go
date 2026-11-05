@@ -445,6 +445,12 @@ func (s *Server) handleToolsCall(ctx context.Context, stdout io.Writer, req loom
 		s.writeError(stdout, req.ID, mcpErrForbidden, params.Name+": forbidden — op="+op+" requires "+need)
 		return
 	}
+	// The question the tool's HTTP twin route asks (RFC FY Part E), answered
+	// as that route answers it.
+	if refusal := mcpTwinRefusal(ctx, params.Name); refusal != nil {
+		s.writeResult(stdout, req.ID, refusal)
+		return
+	}
 
 	res, err := handler(ctx, &handlerEnv{
 		connector:         s.cfg.Connector,

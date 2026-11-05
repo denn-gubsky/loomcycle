@@ -3,10 +3,13 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
 
 // mcpErrForbidden is the JSON-RPC error code returned when a principal calls a
@@ -309,11 +312,150 @@ var runPlaneTools = map[string]bool{
 	"get_run":              true, "list_runs": true, "stream_user_run_states": true,
 }
 
-// mcpToolQuestions is every ACL question the per-tool gate asks of toolName.
-// The enforcement census (TestACLEnforcement_MetaToolsAskWhatTheTableSays)
-// reads it, so the table and the gate cannot disagree.
+// mcpToolQuestions is every ACL question the per-tool gate asks of toolName:
+// `invoke mcp-tool:<name>`, and the question the meta-tool's HTTP twin route
+// asks (RFC FY Part E), read through authz.HTTPSurface so the two cannot
+// differ — before, a `deny cancel run:*` refused POST /v1/runs/{id}/cancel
+// and let cancel_run through. An op the twin route answers per call is asked
+// by the shared operation behind both (the connector). The enforcement census
+// (TestACLEnforcement_MetaToolsAskWhatTheTableSays) reads this.
 func mcpToolQuestions(toolName string) []authz.Surface {
-	return []authz.Surface{authz.MCPToolSurface(toolName)}
+	out := []authz.Surface{authz.MCPToolSurface(toolName)}
+	if q, ok := mcpTwinSurface(toolName); ok {
+		out = append(out, q)
+	}
+	return out
+}
+
+// mcpTwinSurface is the question toolName's HTTP twin route asks, and false
+// when it has none.
+func mcpTwinSurface(toolName string) (authz.Surface, bool) {
+	tw, ok := mcpToolTwins[toolName]
+	if !ok {
+		return authz.Surface{}, false
+	}
+	return authz.HTTPSurface(tw.Method, tw.Path)
+}
+
+// mcpTwinRefusal asks the principal on ctx toolName's twin question, after
+// the per-tool gate admitted the call. It returns the refusal the twin route
+// would write — acl_denied, or acl_unavailable when enforce mode has no set —
+// as the tool's error result, or nil when the call may proceed. No principal
+// (stdio, open mode): nothing to ask.
+func mcpTwinRefusal(ctx context.Context, toolName string) *loommcp.CallToolResult {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	q, twinned := mcpTwinSurface(toolName)
+	if !twinned {
+		return nil
+	}
+	res := authz.EvaluateSurface(ctx, p.Effective, q, true)
+	if res.Diverged {
+		slog.Warn("authz: acl_shadow_diverged", "tenant", p.TenantID, "subject", p.Subject, "action", q.Action,
+			"resource", q.Type+":"+q.Name, "outcome", res.Decision.Outcome.String(), "transport", authz.TransportFrom(ctx))
+	}
+	code, msg := "", ""
+	switch {
+	case res.Unavailable:
+		code, msg = "acl_unavailable", "access control could not be evaluated; retry"
+	case !res.Allowed:
+		code, msg = "acl_denied", fmt.Sprintf("%s %s:%s is denied", q.Action, q.Type, q.Name)
+		slog.Warn("authz: acl_denied", "tenant", p.TenantID, "subject", p.Subject, "action", q.Action,
+			"resource", q.Type+":"+q.Name, "outcome", res.Decision.Outcome.String(), "transport", authz.TransportFrom(ctx))
+	default:
+		return nil
+	}
+	body, _ := json.Marshal(map[string]any{"code": code, "error": msg, "action": q.Action, "resource": q.Type + ":" + q.Name, "reasons": res.Decision.Reasons})
+	return toolErr(string(body))
+}
+
+// mcpToolTwin is the HTTP route a meta-tool mirrors: for a tool whose ops are
+// several routes, the one asking the weakest question (its reads), as the
+// route of an op-in-body family does. Placeholder segments are `*` so an
+// instance route asks about every instance.
+type mcpToolTwin struct{ Method, Path string }
+
+// mcpToolTwins maps each meta-tool to its HTTP twin. A meta-tool with none is
+// in mcpToolsWithoutTwin with the reason; TestMCPToolTwins_EveryToolIsListed
+// holds every tool to one of the two.
+var mcpToolTwins = map[string]mcpToolTwin{
+	"spawn_run":              {"POST", "/v1/runs"},
+	"spawn_runs":             {"POST", "/v1/runs:batch"},
+	"configured_run":         {"POST", "/v1/runs"},
+	"cancel_run":             {"POST", "/v1/runs/r/cancel"},
+	"get_run":                {"GET", "/v1/runs/r"},
+	"list_runs":              {"GET", "/v1/runs"},
+	"stream_user_run_states": {"GET", "/v1/users/u/agents/stream"},
+	"compact_run":            {"POST", "/v1/runs/r/compact"},
+	"retune_run":             {"POST", "/v1/runs/r/retune"},
+	"review_run":             {"POST", "/v1/runs/r/review"},
+	"delete_run_tree":        {"DELETE", "/v1/runs/r/tree"},
+	"interruption_resolve":   {"POST", "/v1/runs/r/interrupts/i/resolve"},
+	"file":                   {"GET", "/v1/runs/r/file"},
+	"retention_override":     {"GET", "/v1/_retention/overrides"},
+	"ontology":               {"POST", "/v1/_ontology/subjects/merge"},
+	"review":                 {"GET", "/v1/_statements/review"},
+	"list_agents":            {"GET", "/v1/_runnable-agents"},
+	"register_agent":         {"POST", "/v1/_agentdef"},
+	"unregister_agent":       {"POST", "/v1/_agentdef"},
+	"agentdef":               {"POST", "/v1/_agentdef"},
+	"skilldef":               {"POST", "/v1/_skilldef"},
+	"teamdef":                {"POST", "/v1/_teamdef"},
+	"hookdef":                {"POST", "/v1/_hookdef"},
+	"mcpserverdef":           {"POST", "/v1/_mcpserverdef"},
+	"scheduledef":            {"POST", "/v1/_scheduledef"},
+	"a2aservercarddef":       {"POST", "/v1/_a2aservercarddef"},
+	"a2aagentdef":            {"POST", "/v1/_a2aagentdef"},
+	"webhookdef":             {"POST", "/v1/_webhookdef"},
+	"memorybackenddef":       {"POST", "/v1/_memorybackenddef"},
+	"documentsourcedef":      {"POST", "/v1/_documentsourcedef"},
+	"volumedef":              {"POST", "/v1/_volumedef"},
+	"clientdef":              {"POST", "/v1/_clientdef"},
+	"operatortokendef":       {"POST", "/v1/_operatortokendef"},
+	"credentialdef":          {"POST", "/v1/_credentialdef"},
+	"crypto":                 {"POST", "/v1/_crypto"},
+	"groupdef":               {"GET", "/v1/_groups"},
+	"acldef":                 {"POST", "/v1/_acldef"},
+	"aclbinding":             {"GET", "/v1/_aclbinding"},
+	"evaluation":             {"POST", "/v1/_evaluation"},
+	"path":                   {"POST", "/v1/_path"},
+	"document":               {"POST", "/v1/_document"},
+	"history":                {"POST", "/v1/_history"},
+	"decision":               {"POST", "/v1/_decide"},
+	"memory":                 {"GET", "/v1/_memory/scopes/user/u/keys/k"},
+	"channeldef":             {"GET", "/v1/_channels"},
+	"channel":                {"GET", "/v1/_channels"},
+	"list_channels":          {"GET", "/v1/_channels"},
+	"publish_channel":        {"POST", "/v1/_channels/*/publish"},
+	"subscribe_channel":      {"POST", "/v1/_channels/*/subscribe"},
+	"peek_channel":           {"GET", "/v1/_channels/*/peek"},
+	"ack_channel":            {"POST", "/v1/_channels/*/ack"},
+	"list_team_channels":     {"GET", "/v1/_teamdef/t/channels"},
+	"peek_team_channel":      {"GET", "/v1/_teamdef/t/channels/c/peek"},
+	"release_team_channel":   {"POST", "/v1/_teamdef/t/channels/c/release"},
+	"pause_runtime":          {"POST", "/v1/_pause"},
+	"resume_runtime":         {"POST", "/v1/_resume"},
+	"get_runtime_state":      {"GET", "/v1/_state"},
+	"resolve_probe":          {"POST", "/v1/_resolve/probe"},
+	"create_snapshot":        {"POST", "/v1/_snapshots"},
+	"list_snapshots":         {"GET", "/v1/_snapshots"},
+	"get_snapshot":           {"GET", "/v1/_snapshots/x"},
+	"export_snapshot":        {"GET", "/v1/_snapshots/x/export"},
+	"restore_snapshot":       {"POST", "/v1/_snapshots/x/restore"},
+	"delete_snapshot":        {"DELETE", "/v1/_snapshots/x"},
+}
+
+// mcpToolsWithoutTwin are the meta-tools no HTTP route mirrors.
+var mcpToolsWithoutTwin = map[string]string{
+	"authz":    "the access questions are ungoverned on every transport (POST /v1/_authz/*)",
+	"context":  "the caller's own identity and reach; no route",
+	"identity": "the directory questions ask read or manage principal per call",
+	// The HTTP route is carved out of the member path; this tool is not, and
+	// asking the route's question here would narrow members under enforce. Left
+	// as it is for the phase that settles erasure's reach.
+	"erasure": "its reach for members differs from the route's; settled with erasure (RFC FY Part F)",
 }
 
 func principalMayCallTool(ctx context.Context, toolName string) bool {
@@ -329,11 +471,9 @@ func principalMayCallTool(ctx context.Context, toolName string) bool {
 	// RFC EY: an explicit ACL deny on the meta-tool holds for every class,
 	// admin included (deny overrides); in enforce mode an unmatched tool is
 	// refused and an unavailable set refuses everything.
-	for _, q := range mcpToolQuestions(toolName) {
-		res := authz.EvaluateSurface(ctx, p.Effective, q, true)
-		if res.Unavailable || !res.Allowed {
-			return false
-		}
+	res := authz.EvaluateSurface(ctx, p.Effective, authz.MCPToolSurface(toolName), true)
+	if res.Unavailable || !res.Allowed {
+		return false
 	}
 	if auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 		return true

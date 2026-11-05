@@ -45,3 +45,23 @@ func assertSiteAsks(t *testing.T, site authz.Site, asked map[string]bool) {
 		t.Errorf("%s asks %q, which the enforcement table does not credit to it", site, p)
 	}
 }
+
+// The shared connector operations ask exactly the pairs the table credits to
+// them.
+func TestACLEnforcement_ConnectorOperationsAskWhatTheTableSays(t *testing.T) {
+	asked := map[string]bool{}
+	for _, s := range connectorQuestions {
+		asked[s.Action+" "+s.Type] = true
+	}
+	for _, in := range []string{`{"op":"set"}`, `{"op":"sql_exec"}`} {
+		if q := memoryOpQuestion([]byte(in)); q == nil || !asked[q.Action+" "+q.Type] {
+			t.Errorf("Memory %s asks %+v, which connectorQuestions does not list", in, q)
+		}
+	}
+	for _, op := range []string{"publish", "subscribe", "peek", "ack"} {
+		if q := channelQuestion(op, "c"); q == nil || !asked[q.Action+" "+q.Type] {
+			t.Errorf("channel %s asks %+v, which connectorQuestions does not list", op, q)
+		}
+	}
+	assertSiteAsks(t, authz.SiteConnector, asked)
+}

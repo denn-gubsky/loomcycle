@@ -33,8 +33,13 @@ const (
 	SiteHTTPRoute Site = "http-route"
 	// SiteGRPCRPC: the gRPC per-RPC gate (GRPCSurface).
 	SiteGRPCRPC Site = "grpc-rpc"
-	// SiteMCPTool: the /v1/_mcp per-tool gate (MCPToolSurfaces).
+	// SiteMCPTool: the /v1/_mcp per-tool gate: the meta-tool's own question
+	// and its HTTP twin route's.
 	SiteMCPTool Site = "mcp-tool"
+	// SiteConnector: the shared operations behind the gRPC RPCs and the MCP
+	// meta-tools (memory and channel calls), asking what the HTTP route asks
+	// per call.
+	SiteConnector Site = "connector"
 )
 
 // proofPrefix marks a Site that is a test name: the pair is asked inside the
@@ -54,8 +59,8 @@ type pairKey struct{ typ, verb string }
 
 // enforcedPairs: every pair some site asks, and where.
 var enforcedPairs = map[pairKey][]Site{
-	{"agent", "run"}:   {SiteHTTPRoute, SiteGRPCRPC},
-	{"agent", "read"}:  {SiteHTTPRoute},
+	{"agent", "run"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
+	{"agent", "read"}:  {SiteHTTPRoute, SiteMCPTool},
 	{"agent", "spawn"}: {Proof("TestACLRun_DeniedSpawnIsRefusedAtTheAgentTool")},
 
 	{"volume", "read"}:  {SiteHTTPRoute},
@@ -69,59 +74,59 @@ var enforcedPairs = map[pairKey][]Site{
 
 	{"mcp-tool", "invoke"}: {SiteMCPTool},
 
-	{"memory", "read"}:  {SiteHTTPRoute, SiteGRPCRPC},
-	{"memory", "write"}: {SiteHTTPRoute},
+	{"memory", "read"}:  {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
+	{"memory", "write"}: {SiteHTTPRoute, SiteConnector},
 	{"sqlmem", "read"}:  {Proof("TestNarrowScopesByACL")},
-	{"sqlmem", "write"}: {Proof("TestReadOnlyScopesByACL_NamesTheReadableScopesItMayNotWrite")},
+	{"sqlmem", "write"}: {Proof("TestReadOnlyScopesByACL_NamesTheReadableScopesItMayNotWrite"), SiteConnector},
 
-	{"document", "read"}:    {SiteHTTPRoute, SiteGRPCRPC},
-	{"document", "write"}:   {SiteHTTPRoute, SiteGRPCRPC},
+	{"document", "read"}:    {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
+	{"document", "write"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 	{"document", "delete"}:  {Proof("TestDocumentACL_EveryOpIsMapped")},
 	{"document", "link"}:    {Proof("TestDocumentACL_EveryOpIsMapped")},
 	{"document", "propose"}: {Proof("TestDocumentACL_EveryOpIsMapped")},
 	{"document", "review"}:  {Proof("TestReviewStatement_AMemberNeedsTheReviewGrant")},
 
-	{"history", "read"}: {SiteHTTPRoute, SiteGRPCRPC},
+	{"history", "read"}: {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 
-	{"channel", "publish"}:   {SiteHTTPRoute, SiteGRPCRPC},
-	{"channel", "subscribe"}: {SiteHTTPRoute, SiteGRPCRPC},
-	{"channel", "ack"}:       {SiteHTTPRoute, SiteGRPCRPC},
+	{"channel", "publish"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool, SiteConnector},
+	{"channel", "subscribe"}: {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool, SiteConnector},
+	{"channel", "ack"}:       {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool, SiteConnector},
 	{"channel", "await"}:     {SiteHTTPRoute, SiteGRPCRPC},
 	{"channel", "broadcast"}: {SiteHTTPRoute, SiteGRPCRPC},
 	{"channel", "manage"}:    {SiteHTTPRoute, SiteGRPCRPC},
 
 	{"def", "author"}: {Proof("TestAuthorizeDefOp_AsksTheOpsVerbOfTheNamedDefinition")},
 	{"def", "retire"}: {Proof("TestAuthorizeDefOp_AsksTheOpsVerbOfTheNamedDefinition")},
-	{"def", "read"}:   {SiteHTTPRoute, SiteGRPCRPC},
+	{"def", "read"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 	{"def", "manage"}: {SiteHTTPRoute},
 
 	{"team", "run"}:    {Proof("TestAuthorizeTeamOp_AsksTheWalkOpsVerbOfTheNamedTeam")},
 	{"team", "read"}:   {Proof("TestAuthorizeTeamOp_AsksTheWalkOpsVerbOfTheNamedTeam")},
 	{"team", "cancel"}: {Proof("TestAuthorizeTeamOp_AsksTheWalkOpsVerbOfTheNamedTeam")},
 
-	{"credential", "use"}:    {SiteHTTPRoute, SiteGRPCRPC},
+	{"credential", "use"}:    {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 	{"credential", "manage"}: {Proof("TestCredentialDefACL_ManageDenyRefusesRotateOfThatName")},
 
-	{"crypto", "use"}: {SiteHTTPRoute, SiteGRPCRPC},
+	{"crypto", "use"}: {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 
-	{"gateway", "use"}: {SiteHTTPRoute, SiteGRPCRPC},
+	{"gateway", "use"}: {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 
-	{"evaluation", "read"}: {SiteHTTPRoute, SiteGRPCRPC},
+	{"evaluation", "read"}: {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 
-	{"run", "read"}:    {SiteHTTPRoute, SiteGRPCRPC},
-	{"run", "delete"}:  {SiteHTTPRoute, SiteGRPCRPC},
-	{"run", "steer"}:   {SiteHTTPRoute, SiteGRPCRPC},
-	{"run", "cancel"}:  {SiteHTTPRoute, SiteGRPCRPC},
-	{"run", "compact"}: {SiteHTTPRoute, SiteGRPCRPC},
-	{"run", "retune"}:  {SiteHTTPRoute, SiteGRPCRPC},
-	{"run", "review"}:  {SiteHTTPRoute, SiteGRPCRPC},
+	{"run", "read"}:    {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
+	{"run", "delete"}:  {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
+	{"run", "steer"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
+	{"run", "cancel"}:  {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
+	{"run", "compact"}: {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
+	{"run", "retune"}:  {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
+	{"run", "review"}:  {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 
-	{"principal", "read"}:   {SiteHTTPRoute, SiteGRPCRPC},
+	{"principal", "read"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 	{"principal", "manage"}: {SiteHTTPRoute},
-	{"principal", "mint"}:   {SiteHTTPRoute, SiteGRPCRPC},
+	{"principal", "mint"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 
-	{"runtime", "read"}:   {SiteHTTPRoute, SiteGRPCRPC},
-	{"runtime", "manage"}: {SiteHTTPRoute, SiteGRPCRPC},
+	{"runtime", "read"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
+	{"runtime", "manage"}: {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 
 	{"transport", "use"}: {SiteHTTPRoute},
 }
