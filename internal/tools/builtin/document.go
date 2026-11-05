@@ -1194,9 +1194,23 @@ func (d *Document) provisionTables(ctx context.Context, key sqlmem.ScopeKey) err
 		return err
 	}
 	for _, ddl := range docSchemaDDL {
+		if ddl == documentRolesDDL || ddl == documentRolesMarkerDDL {
+			continue // together, below
+		}
 		if _, err := d.docSQL().Exec(ctx, key, ddl, nil, 0); err != nil {
 			return err
 		}
+	}
+	// document_roles and its marker in ONE transaction (DDL is transactional on both
+	// tiers), so no replica ever sees the runtime's table without the marker and
+	// quarantines it as a plant (document_ontology_identity.go).
+	if err := d.withSqlTxn(ctx, key, func(txnID string) error {
+		if err := d.execTxn(ctx, txnID, documentRolesDDL); err != nil {
+			return err
+		}
+		return d.execTxn(ctx, txnID, documentRolesMarkerDDL)
+	}); err != nil {
+		return fmt.Errorf("document_roles: %w", err)
 	}
 	// chunk_assets (RFC BO) holds image chunk bytes as TRUE binary. The binary
 	// column type is the ONE non-portable part of the doc schema — sqlite BLOB vs
