@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
+	"sort"
 	"sync"
 	"time"
 
@@ -37,25 +37,82 @@ const (
 // queue dropped.
 const ActionEventsDropped = "audit_events_dropped"
 
-// IsObservation reports whether an action is an observation — something
-// refused, denied, looked up or used, recorded per request or per tool call
-// and caused by whoever sends it — rather than a state change. Observations
-// are queued and written by one writer per process, so a flood of them (a
-// burst of failed sign-ins) cannot hold the database's connections or a
-// chain's head lock against the requests behind it; a state change (a token
-// minted, a rule edited, a user approved, an erasure) is written before
-// Record returns. An action not listed here is a state change: the safe
-// default for an audit record is to be waited for.
-func IsObservation(action string) bool {
+// eventClass is how the store-backed sink writes an event.
+type eventClass int
+
+const (
+	// classSync: written before Record returns. Every state change, every
+	// high-signal detection, and any action not classified below.
+	classSync eventClass = iota
+	// classAnonymous: an observation caused by a request nobody has
+	// authenticated (a failed sign-in, a refused assertion or OAuth call).
+	// Queued apart, so a flood of them cannot push out anyone else's.
+	classAnonymous
+	// classObserved: an observation caused by an authenticated caller or
+	// run (a denial, a lookup, a key used, a read-only git operation).
+	classObserved
+)
+
+// classify sorts an action. An observation is something refused, denied,
+// looked up or read, recorded per request or per tool call and caused by
+// whoever sends it; it is queued and written by one writer per queue, so a
+// flood cannot hold the database's connections or a chain's head lock
+// against the requests behind it, and on overflow it is dropped and
+// counted. Everything else is waited for:
+//   - state changes (tokens, rules, users, approvals, erasure, sign-ins
+//     that succeeded, gate syncs that ran, a git pull or push);
+//   - high-signal detections, which must never be dropped however full a
+//     queue is: a lockout (auth_login_locked), a replayed authorization
+//     code or refresh token (oauth_code_reuse, oauth_refresh_reuse), a
+//     session downgrade refused (auth_downgrade_refused).
+//
+// SQL Memory's per-statement records (sql_query, sql_exec) never reach the
+// store sink: they are written to the JSONL file only.
+func classify(action string) eventClass {
 	switch action {
-	case "auth_login_failed", "auth_assertion_refused", "auth_downgrade_refused", "auth_gate_sync_refused",
-		"auth_link_refused", "auth_manage_refused", "auth_login_locked",
-		"oauth_refused", "oauth_token_refused", "oauth_code_reuse", "oauth_refresh_reuse",
+	case "auth_login_failed", "auth_assertion_refused", "oauth_refused", "oauth_token_refused":
+		return classAnonymous
+	case "auth_gate_sync_refused", "auth_link_refused", "auth_manage_refused",
 		"acl_denied", "acl_unavailable", "acl_shadow_diverged", "acl_resolution_failed",
-		"identity_lookup", "crypto_op", "sql_query", "sql_exec":
-		return true
+		"identity_lookup", "crypto_op", "git_clone", "git_fetch", "git_ls_remote":
+		return classObserved
 	}
-	return strings.HasPrefix(action, "git_")
+	return classSync
+}
+
+// IsObservation reports whether the store-backed sink queues an action
+// rather than writing it before Record returns.
+func IsObservation(action string) bool { return classify(action) != classSync }
+
+// dropSourcesShown bounds the sources a drop summary names, and
+// dropSourcesTracked how many distinct sources a tally counts before it
+// folds the rest into "other".
+const (
+	dropSourcesShown   = 10
+	dropSourcesTracked = 256
+)
+
+// dropTally counts one chain's dropped observations.
+type dropTally struct {
+	counts  map[string]int
+	sources map[string]int
+}
+
+func dropSource(ev Event) string {
+	switch {
+	case ev.SourceAddr != "":
+		return ev.SourceAddr
+	case ev.ActorSubject != "" || ev.ActorTenant != "":
+		return ev.ActorTenant + "/" + ev.ActorSubject
+	}
+	return "unknown"
+}
+
+// obsQueue is one bounded observation queue with its own writer.
+type obsQueue struct {
+	ch      chan Event
+	done    chan struct{}
+	dropped map[string]*dropTally // chain tenant → tally; guarded by StoreSink.mu
 }
 
 // StoreSink records events into the store-backed chain.
@@ -64,11 +121,10 @@ type StoreSink struct {
 	keys  ChainKeys
 	now   func() time.Time
 
-	mu      sync.Mutex
-	queue   chan Event // nil until StartAsync: every event is written at once
-	closed  bool
-	done    chan struct{}
-	dropped map[string]int
+	mu        sync.Mutex
+	anonymous *obsQueue // nil until StartAsync: every event is written at once
+	observed  *obsQueue
+	closed    bool
 }
 
 // NewStoreSink returns a sink appending to s, signing with keys. It refuses
@@ -82,55 +138,64 @@ func NewStoreSink(s Appender, keys ChainKeys) (*StoreSink, error) {
 	if len(keys.Current) == 0 {
 		return nil, errors.New("audit: the store-backed audit stream signs its chain with a key derived from LOOMCYCLE_SECRET_KEY, which is not set")
 	}
-	return &StoreSink{store: s, keys: keys, now: time.Now, dropped: map[string]int{}}, nil
+	return &StoreSink{store: s, keys: keys, now: time.Now}, nil
 }
 
-// StartAsync starts the observation queue (capacity events; 0 takes the
-// default) and its single writer. Call Close to drain it.
+// StartAsync starts the two observation queues (capacity events each; 0
+// takes the default) and their writers. Call Close to drain them.
 func (s *StoreSink) StartAsync(capacity int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.queue != nil || s.closed {
+	if s.anonymous != nil || s.closed {
 		return
 	}
 	if capacity <= 0 {
 		capacity = DefaultQueueCapacity
 	}
-	s.queue = make(chan Event, capacity)
-	s.done = make(chan struct{})
-	go s.writer(s.queue, s.done)
+	s.anonymous = s.startQueue(capacity)
+	s.observed = s.startQueue(capacity)
+}
+
+func (s *StoreSink) startQueue(capacity int) *obsQueue {
+	q := &obsQueue{ch: make(chan Event, capacity), done: make(chan struct{}), dropped: map[string]*dropTally{}}
+	go s.writer(q)
+	return q
 }
 
 // Close stops queueing (later observations are written at once), and waits
-// until the writer has written what was queued, and the drop summary, or ctx
-// ends.
+// until the writers have written what was queued, and the drop summaries,
+// or ctx ends.
 func (s *StoreSink) Close(ctx context.Context) error {
 	s.mu.Lock()
-	q, done := s.queue, s.done
-	if q != nil && !s.closed {
-		close(q)
+	queues := []*obsQueue{s.anonymous, s.observed}
+	if s.anonymous != nil && !s.closed {
+		for _, q := range queues {
+			close(q.ch)
+		}
 	}
 	s.closed = true
 	s.mu.Unlock()
-	if q == nil {
+	if queues[0] == nil {
 		return nil
 	}
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	for _, q := range queues {
+		select {
+		case <-q.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
+	return nil
 }
 
-// Record appends ev to its tenant's chain: a state change before it returns,
-// an observation through the queue (never waited for; dropped and counted
-// when the queue is full).
+// Record appends ev to its tenant's chain: a state change or high-signal
+// event before it returns, an observation through its queue (never waited
+// for; dropped and counted when the queue is full).
 func (s *StoreSink) Record(ev Event) error {
 	if ev.TS.IsZero() {
 		ev.TS = s.now().UTC()
 	}
-	if IsObservation(ev.Action) && s.enqueue(ev) {
+	if c := classify(ev.Action); c != classSync && s.enqueue(c, ev) {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), syncAppendTimeout)
@@ -138,31 +203,50 @@ func (s *StoreSink) Record(ev Event) error {
 	return s.appendEvents(ctx, []Event{ev})
 }
 
-// enqueue queues an observation, or counts it dropped when the queue is
-// full. It reports false when there is no running queue, and the caller
+// enqueue queues an observation, or counts it dropped when its queue is
+// full. It reports false when the queues are not running, and the caller
 // writes the event itself.
-func (s *StoreSink) enqueue(ev Event) bool {
+func (s *StoreSink) enqueue(c eventClass, ev Event) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.queue == nil || s.closed {
+	if s.anonymous == nil || s.closed {
 		return false
 	}
+	q := s.observed
+	if c == classAnonymous {
+		q = s.anonymous
+	}
 	select {
-	case s.queue <- ev:
+	case q.ch <- ev:
 	default:
-		s.dropped[ev.Action]++
+		s.countDropLocked(q, ev)
 	}
 	return true
 }
 
-func (s *StoreSink) writer(q <-chan Event, done chan<- struct{}) {
-	defer close(done)
-	for ev := range q {
+func (s *StoreSink) countDropLocked(q *obsQueue, ev Event) {
+	tenant := ChainTenant(ev)
+	t := q.dropped[tenant]
+	if t == nil {
+		t = &dropTally{counts: map[string]int{}, sources: map[string]int{}}
+		q.dropped[tenant] = t
+	}
+	t.counts[ev.Action]++
+	src := dropSource(ev)
+	if _, seen := t.sources[src]; !seen && len(t.sources) >= dropSourcesTracked {
+		src = "other"
+	}
+	t.sources[src]++
+}
+
+func (s *StoreSink) writer(q *obsQueue) {
+	defer close(q.done)
+	for ev := range q.ch {
 		batch := []Event{ev}
 	drain:
 		for len(batch) < writerBatch {
 			select {
-			case e, ok := <-q:
+			case e, ok := <-q.ch:
 				if !ok {
 					break drain
 				}
@@ -171,16 +255,16 @@ func (s *StoreSink) writer(q <-chan Event, done chan<- struct{}) {
 				break drain
 			}
 		}
-		s.writeBatch(batch)
-		s.writeDropSummary()
+		s.writeBatch(q, batch)
+		s.writeDropSummaries(q)
 	}
-	s.writeDropSummary()
+	s.writeDropSummaries(q)
 }
 
 // writeBatch appends a batch of observations, one transaction per tenant in
 // the order each tenant first appears, each tenant's events in queue order.
 // A failed append counts its events as dropped.
-func (s *StoreSink) writeBatch(batch []Event) {
+func (s *StoreSink) writeBatch(q *obsQueue, batch []Event) {
 	byTenant := map[string][]Event{}
 	var order []string
 	for _, ev := range batch {
@@ -198,34 +282,68 @@ func (s *StoreSink) writeBatch(batch []Event) {
 			slog.Error("audit: writing queued observations failed; counted as dropped", "tenant", t, "events", len(byTenant[t]), "err", err)
 			s.mu.Lock()
 			for _, ev := range byTenant[t] {
-				s.dropped[ev.Action]++
+				s.countDropLocked(q, ev)
 			}
 			s.mu.Unlock()
 		}
 	}
 }
 
-// writeDropSummary writes the drops counted so far as one operator-chain
-// row, and keeps them counted if it cannot.
-func (s *StoreSink) writeDropSummary() {
+// writeDropSummaries writes one summary row per chain that lost
+// observations — into that chain, the operator chain for events with no
+// tenant — with the counts per action and the top sources, and keeps a
+// tally counted if its row cannot be written.
+func (s *StoreSink) writeDropSummaries(q *obsQueue) {
 	s.mu.Lock()
-	if len(s.dropped) == 0 {
+	if len(q.dropped) == 0 {
 		s.mu.Unlock()
 		return
 	}
-	counts := s.dropped
-	s.dropped = map[string]int{}
+	tallies := q.dropped
+	q.dropped = map[string]*dropTally{}
 	s.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), writerBatchTimeout)
-	defer cancel()
-	if err := s.appendEvents(ctx, []Event{{TS: s.now().UTC(), Action: ActionEventsDropped, DroppedCounts: counts}}); err != nil {
-		slog.Error("audit: writing the dropped-observations summary failed", "err", err)
-		s.mu.Lock()
-		for a, n := range counts {
-			s.dropped[a] += n
+	for tenant, t := range tallies {
+		ev := Event{TS: s.now().UTC(), Action: ActionEventsDropped, TargetTenant: tenant,
+			DroppedCounts: t.counts, DroppedSources: topSources(t.sources, dropSourcesShown)}
+		ctx, cancel := context.WithTimeout(context.Background(), writerBatchTimeout)
+		err := s.appendEvents(ctx, []Event{ev})
+		cancel()
+		if err != nil {
+			slog.Error("audit: writing a dropped-observations summary failed", "tenant", tenant, "err", err)
+			s.mu.Lock()
+			keep := q.dropped[tenant]
+			if keep == nil {
+				q.dropped[tenant] = t
+			} else {
+				for a, n := range t.counts {
+					keep.counts[a] += n
+				}
+				for src, n := range t.sources {
+					keep.sources[src] += n
+				}
+			}
+			s.mu.Unlock()
 		}
-		s.mu.Unlock()
 	}
+}
+
+// topSources keeps the n sources with the most events (ties by name).
+func topSources(sources map[string]int, n int) map[string]int {
+	keys := make([]string, 0, len(sources))
+	for k := range sources {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if sources[keys[i]] != sources[keys[j]] {
+			return sources[keys[i]] > sources[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	out := map[string]int{}
+	for _, k := range keys[:min(n, len(keys))] {
+		out[k] = sources[k]
+	}
+	return out
 }
 
 // appendEvents appends events of one tenant's chain in one transaction.
