@@ -44,7 +44,7 @@ export function createDiscordBridge(cfg: DiscordConfig, opts: DiscordBridgeOptio
     ...(cfg.gate ? { gate: cfg.gate.name } : {}),
   };
   // Voice messages (RFC GA §5.3), with BRIDGE_VOICE=1 only.
-  const voice = cfg.voice.enabled ? new DiscordVoice(api, port, { fetch: opts.fetch }) : undefined;
+  const voice = cfg.voice?.enabled ? new DiscordVoice(api, port, { fetch: opts.fetch }) : undefined;
   const groups = cfg.gate ? new GroupLookup({ api, gate: cfg.gate.name, trustedGuilds: cfg.trustedGuilds, now }) : undefined;
 
   const adapter: BridgeAdapter<DiscordRef> = {
@@ -67,7 +67,7 @@ export function createDiscordBridge(cfg: DiscordConfig, opts: DiscordBridgeOptio
           log: ctx.log,
           now,
           inlineCardMs: opts.inlineCardMs,
-          ...(voice ? { voice: { port: voice, untrusted: cfg.voice.untrusted } } : {}),
+          ...(voice ? { voice: { port: voice, untrusted: cfg.voice?.untrusted ?? true } } : {}),
         }),
         // Webhook Events only for a gate, which is what tells loomcycle of a
         // person who removed the app.
