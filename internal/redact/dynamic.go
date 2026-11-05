@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // The runtime-registered set (Tier A') is fed by values a run's tools resolve
@@ -16,10 +17,14 @@ import (
 //
 //   - Every value belongs to buckets: the operator plane's, a tenant's
 //     credentials, or a tenant and user's observed values (URL parts). A
-//     registration that pushes its bucket past its share, or the whole set
-//     past the cap, evicts the least recently registered value of THAT
-//     bucket. No registration ever evicts from another bucket, so one tenant
-//     (or one user's model) cannot push out another's secrets.
+//     registration that pushes its bucket past its share evicts the least
+//     recently registered value of that same bucket, so one tenant (or one
+//     user's model) cannot push out another's secrets by flooding.
+//   - When the whole set passes the cap, the value is taken from the bucket
+//     furthest over its fair share (the cap divided by the buckets in use,
+//     never less than bucketFloor), and never from a bucket at or below its
+//     fair share or its floor, nor from the operator plane: the overflow is
+//     charged to whoever holds the most, not to whoever registered last.
 //   - A value is pinned while a run that registered it is live (the server
 //     answers liveness from its cancel registry). Eviction skips pinned
 //     values; if pinned values alone exceed a bound, they are kept and a
@@ -38,6 +43,10 @@ const (
 	// quarter of the cap; a tenant and user's observed values a sixteenth.
 	credentialShareDivisor = 4
 	observedShareDivisor   = 16
+	// bucketFloor is how many values a bucket keeps whatever the pressure
+	// from other buckets; past cap/bucketFloor buckets the set can exceed
+	// the cap (with a warning) rather than take a bucket below it.
+	bucketFloor = 8
 	// pruneHoldersAt is how many run ids a value collects before the dead
 	// ones are dropped, so a long-lived secret does not grow its holder set
 	// by one per run that ever used it.
@@ -81,7 +90,7 @@ type dynamicSet struct {
 
 	repl         *strings.Replacer // nil when the set is empty
 	dirty        bool              // the set changed since repl was built
-	overWarned   bool
+	lastWarn     time.Time
 	rebuildCount int // for tests
 }
 
@@ -170,13 +179,10 @@ func (d *dynamicSet) register(kind bucketKind, h Holder, value string) {
 		}
 	}
 	for len(d.entries) > d.capacity() {
-		if !d.evictFrom(key, e, liveOf()) {
-			d.warnOver("the set is over its cap and this bucket holds nothing evictable", key, len(d.entries))
+		if !d.evictOverFairShare(e, liveOf()) {
+			d.warnOver("the set is over its cap and no bucket is over its fair share with a value to give up", key, len(d.entries))
 			return
 		}
-	}
-	if len(d.entries) <= d.capacity() {
-		d.overWarned = false
 	}
 }
 
@@ -208,6 +214,32 @@ func (d *dynamicSet) evictFrom(key string, keep *dynEntry, live func(string) boo
 	return false
 }
 
+// evictOverFairShare takes one value from the tenant bucket furthest over its
+// fair share that has an unpinned value other than keep to give. It reports
+// false when no bucket over its fair share can give one.
+func (d *dynamicSet) evictOverFairShare(keep *dynEntry, live func(string) bool) bool {
+	fair := max(bucketFloor, d.capacity()/max(1, len(d.buckets)))
+	tried := map[string]bool{}
+	for {
+		victim, over := "", 0
+		for k, b := range d.buckets {
+			if k == bucketKey(bucketOperator, Holder{}) || tried[k] {
+				continue
+			}
+			if n := b.Len() - fair; n > over {
+				victim, over = k, n
+			}
+		}
+		if victim == "" {
+			return false
+		}
+		if d.evictFrom(victim, keep, live) {
+			return true
+		}
+		tried[victim] = true // everything it holds is pinned
+	}
+}
+
 func pinned(e *dynEntry, live func(string) bool) bool {
 	for run := range e.runs {
 		if live(run) {
@@ -217,13 +249,14 @@ func pinned(e *dynEntry, live func(string) bool) bool {
 	return false
 }
 
-// warnOver logs once per stretch over a bound. Bucket keys carry a tenant id
-// and a user id, never a value.
+// warnOver logs, at most once a minute, that a bound is exceeded. Bucket keys
+// carry a tenant id and a user id, never a value.
 func (d *dynamicSet) warnOver(msg, key string, n int) {
-	if d.overWarned {
+	now := time.Now()
+	if now.Sub(d.lastWarn) < time.Minute {
 		return
 	}
-	d.overWarned = true
+	d.lastWarn = now
 	kind, rest, _ := strings.Cut(key, "\x00")
 	tenant, _, _ := strings.Cut(rest, "\x00")
 	slog.Warn("redact: keeping pinned secrets past the bound", "reason", msg, "bucket", kind, "tenant", tenant, "held", n, "cap", d.capacity())

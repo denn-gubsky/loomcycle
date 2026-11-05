@@ -85,16 +85,26 @@ func TestRedact_DynamicSetIsBounded(t *testing.T) {
 	if n := bucketLen(r, bucketObserved, u); n != 4 {
 		t.Errorf("user u1 holds %d observed values, want the observed share of 4", n)
 	}
-	// Many tenants: the set stops at the cap, give or take one fresh value per
-	// registering bucket (a value is never evicted by its own registration).
-	for tn := 0; tn < 40; tn++ {
+	// A few tenants: the set stops at the cap.
+	for tn := 0; tn < 4; tn++ {
 		h := Holder{Tenant: fmt.Sprintf("t%02d", tn)}
 		for i := 0; i < 16; i++ {
 			r.RegisterCredential(h, fmt.Sprintf("t%02d-credential-%02d", tn, i))
 		}
 	}
-	if n := len(r.dyn.entries); n > 64+40 {
-		t.Errorf("the set holds %d values; want at most the cap of 64 plus one per registering bucket", n)
+	if n := len(r.dyn.entries); n > 64 {
+		t.Errorf("the set holds %d values; want at most the cap of 64", n)
+	}
+	// Many tenants: each keeps its floor, so past cap/bucketFloor buckets the
+	// set holds the floors and no more.
+	for tn := 4; tn < 40; tn++ {
+		h := Holder{Tenant: fmt.Sprintf("t%02d", tn)}
+		for i := 0; i < 16; i++ {
+			r.RegisterCredential(h, fmt.Sprintf("t%02d-credential-%02d", tn, i))
+		}
+	}
+	if n, limit := len(r.dyn.entries), len(r.dyn.buckets)*bucketFloor; n > limit {
+		t.Errorf("the set holds %d values across %d buckets; want at most their floors, %d", n, len(r.dyn.buckets), limit)
 	}
 	_ = r.String("compile")
 	if r.dyn.repl == nil || r.dyn.dirty {
@@ -271,5 +281,37 @@ func BenchmarkRedact_RebuildAtCap(b *testing.B) {
 		r.dyn.dirty = true
 		r.dyn.mu.Unlock()
 		_ = r.String("x")
+	}
+}
+
+// TestRedact_OverCapChargesTheBucketsOverTheirFairShare: when the set is full
+// because other tenants filled their shares, a tenant registering within its
+// fair share keeps its values; the overflow is taken from the buckets furthest
+// over theirs.
+func TestRedact_OverCapChargesTheBucketsOverTheirFairShare(t *testing.T) {
+	r, _ := newBounded(64) // credential share 16
+	for _, tn := range []string{"t1", "t2", "t3"} {
+		for i := 0; i < 16; i++ {
+			r.RegisterCredential(Holder{Tenant: tn}, fmt.Sprintf("%s-credential-%02d", tn, i))
+		}
+	}
+	a := Holder{Tenant: "a"}
+	for i := 0; i < 1000; i++ {
+		r.RegisterCredential(a, fmt.Sprintf("a-flood-%04d", i))
+	}
+	b := Holder{Tenant: "b"}
+	for i := 0; i < 8; i++ {
+		r.RegisterCredential(b, fmt.Sprintf("b-credential-%d", i))
+	}
+	for i := 0; i < 8; i++ {
+		if v := fmt.Sprintf("b-credential-%d", i); !held(r, v) {
+			t.Errorf("tenant b, within its fair share, lost %s", v)
+		}
+	}
+	if n := len(r.dyn.entries); n > 64 {
+		t.Errorf("the set holds %d values, want at most the cap of 64", n)
+	}
+	if n := bucketLen(r, bucketCredential, a); n >= 16 {
+		t.Errorf("tenant a, furthest over its fair share, still holds %d", n)
 	}
 }
