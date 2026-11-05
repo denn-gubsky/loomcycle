@@ -47,7 +47,11 @@ state, and a link a judge refuted or an operator rejected stays where it is.
   quote from an unkeyed chunk, a chat turn or another scope, a key this side
   does not hold or may not read, or a quote that does not occur in this side's
   text. Evidence already recorded is not added twice.
-- **A link pulled before** and asserted here is updated in place when the
+- **A link that holds here** gains nothing from a source the operator has not
+  declared `trust: asserted`: its envelope is kept (counted in
+  `edges_envelope_kept`) and the peer's quotes are not added (counted in
+  `evidence_dropped`).
+- **A link pulled before** from a trusted source is updated in place when the
   peer's copy changed:
   its `confidence`, `invalid_at` and `attributes` follow the peer, a value the
   peer cleared is cleared, and its evidence is kept (counted in

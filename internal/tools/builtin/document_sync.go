@@ -776,8 +776,10 @@ func (w localWriter) carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry, 
 	attrs := pulledAttributes(in.src, w.source)
 	if in.have != nil {
 		// A statement a pull wrote follows the peer, until an operator here rules
-		// on it: then it is the operator's, and kept like one written here.
-		if in.have.method == edgeMethodSync && !in.have.ruled {
+		// on it: then it is the operator's, and kept like one written here. Only
+		// a trusted peer's changes reach a statement that holds here; an
+		// untrusted one's difference is reported as kept.
+		if w.trusted && in.have.method == edgeMethodSync && !in.have.ruled {
 			updated, refuse, err := w.d.resyncStatement(ctx, w.key, in.have.id, edgeWrite{
 				from: in.fromID, to: in.toID, kind: in.kind, method: edgeMethodSync,
 				confidence: in.src.confidence, validAt: in.src.validAt, invalidAt: in.src.invalidAt, attributes: attrs,
@@ -817,18 +819,10 @@ func (w localWriter) carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry, 
 	}
 	if in.have != nil && !w.trusted {
 		// The statement already holds here (the target snapshot carries asserted
-		// ones only). The peer's checked quotes are added to it; its status is
-		// this side's, and an untrusted peer neither files nor asserts anything
-		// beside it.
-		checked, refuse, err := w.d.checkEvidence(ctx, w.key, w.mscope, evidence)
-		if err != nil {
-			return out, err
-		}
-		if refuse != nil {
-			return out, fmt.Errorf("%s", refuse.Text)
-		}
-		_, _, err = w.d.addEvidence(ctx, w.key, in.have.id, checked)
-		return out, err
+		// ones only): an untrusted peer adds nothing to it, not even evidence,
+		// and files nothing beside it. Its quotes are counted as not carried.
+		out.evidenceDropped += len(evidence)
+		return out, nil
 	}
 	status := edgeStatusProposed
 	if w.trusted {

@@ -149,3 +149,41 @@ func proposedStatements(t *testing.T, d *Document, ctx context.Context, docID, k
 	}
 	return out
 }
+
+// A peer that is not trusted changes nothing that already holds here. A statement
+// an earlier pull asserted (from a source trusted then, or before pulls filed
+// proposals) keeps its envelope when the peer changes it, and gains none of the
+// peer's evidence: the difference is reported as kept.
+func TestSyncPull_AnUntrustedPeerCannotChangeAnAssertedStatement(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		localDoc, pd, pctx, remoteDoc := carryPair(t, d, ctx)
+		id := richPeerStatement(t, d, ctx, pd, pctx, remoteDoc)
+		syncReport(t, d, ctx, localDoc, "pull")
+		before := statementsOfKind(t, d, ctx, localDoc, "cites", 1)[0]
+		if before["status"] != edgeStatusAsserted {
+			t.Fatalf("the trusted pull = %v, want asserted", before["status"])
+		}
+
+		src := d.Cfg.DocumentSources["peerA"]
+		src.Trust = ""
+		d.Cfg.DocumentSources["peerA"] = src
+		scopeExec(t, pd, pctx, `UPDATE chunk_edges SET confidence = ?, invalid_at = ?, attributes = ? WHERE id = ?`, 0.1, ns2025, `{"note":"peer rewrote"}`, id)
+		pa, _, _ := pd.resolveScope(pctx, "user")
+		peerB, _ := pd.chunkIDByNaturalKey(pctx, pa, "nkB")
+		scopeExec(t, pd, pctx, `INSERT INTO chunk_edge_evidence (id, edge_id, chunk_id, quote, created_at) VALUES (?, ?, ?, ?, ?)`,
+			"ev-new", id, peerB, "reporting duty", 2)
+
+		rep := syncReport(t, d, ctx, localDoc, "pull")
+		if rep["edges_updated"] != nil || rep["edges_envelope_kept"] != float64(1) || rep["edges_added"] != float64(0) {
+			t.Errorf("an untrusted pull over an asserted statement = %v, want edges_envelope_kept 1 and nothing updated or added", rep)
+		}
+		after := statementsOfKind(t, d, ctx, localDoc, "cites", 1)[0]
+		attrs, _ := after["attributes"].(map[string]any)
+		if after["confidence"] != before["confidence"] || after["invalid_at"] != before["invalid_at"] || attrs["note"] != "para 3" {
+			t.Errorf("an untrusted peer changed an asserted statement: %v", after)
+		}
+		if after["evidence_count"] != before["evidence_count"] {
+			t.Errorf("an untrusted peer added evidence to an asserted statement: %v -> %v", before["evidence_count"], after["evidence_count"])
+		}
+	})
+}
