@@ -457,3 +457,26 @@ func TestExtractPPTX_NestedNoteShapesCountOnce(t *testing.T) {
 		t.Errorf("wrote %d bytes for %d bytes of notes", n, len(text))
 	}
 }
+
+// Three million empty shared strings, 15 MB of part, held a 16-byte string
+// header each: the table must cost little more per entry than its text.
+func TestExtractXLSX_ManySharedStringsAreHeldCompactly(t *testing.T) {
+	const n = 3_000_000
+	data := []byte(`<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` + strings.Repeat(`<si/>`, n) + `</sst>`)
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	sst, err := sharedStrings(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	live := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	runtime.KeepAlive(sst)
+	runtime.KeepAlive(data)
+	t.Logf("%d entries hold %d MiB", n, live>>20)
+	if live > 6*n {
+		t.Errorf("%d empty shared strings hold %d MiB; want at most 6 bytes each", n, live>>20)
+	}
+}

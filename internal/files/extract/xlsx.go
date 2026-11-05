@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -51,7 +52,7 @@ func (XLSX) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 	if err != nil {
 		return rep, err
 	}
-	var sst []string
+	var sst sharedTable
 	for _, rl := range rels {
 		if relType(rl.Type, "sharedStrings") && !rl.External {
 			b, err := a.read(rl.Target)
@@ -111,7 +112,7 @@ var errSheetFull = errors.New("extract: sheet table full")
 // stops at maxTableCells and maxTableBytes: a shared string is stored once
 // but may be named by every cell, so the sheet's own size says nothing about
 // what its table renders to.
-func writeSheet(ctx context.Context, w *writer, rep *Report, name string, data []byte, sst []string, maxRows int) error {
+func writeSheet(ctx context.Context, w *writer, rep *Report, name string, data []byte, sst sharedTable, maxRows int) error {
 	// widths[k] is the width the first k+1 rows need.
 	var widths []int
 	total, wide, err := scanSheet(ctx, data, sst, maxRows, func(row []xlsxCell) error {
@@ -252,34 +253,55 @@ func appendCapped(dst, b []byte) []byte {
 	return dst
 }
 
+// sharedTable is a workbook's shared strings: their text end to end in one
+// string, and where each ends. A string per entry would cost a 16-byte header
+// each, so a part of millions of empty <si/> would hold several times its own
+// size; this holds four bytes an entry besides the text.
+type sharedTable struct {
+	text string
+	ends []uint32
+}
+
+func (t sharedTable) len() int { return len(t.ends) }
+
+func (t sharedTable) at(i int) string {
+	start := uint32(0)
+	if i > 0 {
+		start = t.ends[i-1]
+	}
+	return t.text[start:t.ends[i]]
+}
+
 // sharedStrings reads xl/sharedStrings.xml: each <si>'s text, its rich-text
 // runs joined, its phonetic hints (<rPh>) left out, kept to just past
 // maxCellBytes (no cell shows more).
-func sharedStrings(ctx context.Context, data []byte) ([]string, error) {
+func sharedStrings(ctx context.Context, data []byte) (sharedTable, error) {
 	d := xml.NewDecoder(bytes.NewReader(data))
 	d.Strict = true
-	var out []string
-	var cur strings.Builder
+	var buf []byte
+	var ends []uint32
+	start := 0 // where the <si> being read begins in buf
 	inSI, inT, inPh := false, false, 0
 	for n := 0; ; n++ {
 		if n%4096 == 0 {
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return sharedTable{}, err
 			}
 		}
 		tok, err := d.Token()
 		if err == io.EOF {
-			return out, nil
+			// Exact-size copies: growth slack would hold up to a quarter more.
+			return sharedTable{text: string(buf), ends: append([]uint32(nil), ends...)}, nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("extract: malformed shared strings: %w", err)
+			return sharedTable{}, fmt.Errorf("extract: malformed shared strings: %w", err)
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
 			switch t.Name.Local {
 			case "si":
 				inSI = true
-				cur.Reset()
+				start = len(buf)
 			case "rPh":
 				inPh++
 			case "t":
@@ -289,7 +311,10 @@ func sharedStrings(ctx context.Context, data []byte) ([]string, error) {
 			switch t.Name.Local {
 			case "si":
 				inSI = false
-				out = append(out, cur.String())
+				if len(buf) > math.MaxUint32 {
+					return sharedTable{}, refusedf("the shared strings hold more than %d bytes", uint32(math.MaxUint32))
+				}
+				ends = append(ends, uint32(len(buf)))
 			case "rPh":
 				inPh--
 			case "t":
@@ -297,8 +322,8 @@ func sharedStrings(ctx context.Context, data []byte) ([]string, error) {
 			}
 		case xml.CharData:
 			if inT {
-				if room := maxCellBytes + 1 - cur.Len(); room > 0 {
-					cur.Write(t[:min(len(t), room)])
+				if room := maxCellBytes + 1 - (len(buf) - start); room > 0 {
+					buf = append(buf, t[:min(len(t), room)]...)
 				}
 			}
 		}
@@ -317,7 +342,7 @@ type xlsxCell struct {
 // cells dropped (fn must not keep the slice). It returns the count of all
 // non-empty rows and whether any cell lay past maxSheetColumns. An error
 // from fn stops the scan and is returned.
-func scanSheet(ctx context.Context, data []byte, sst []string, maxRows int, fn func(row []xlsxCell) error) (int, bool, error) {
+func scanSheet(ctx context.Context, data []byte, sst sharedTable, maxRows int, fn func(row []xlsxCell) error) (int, bool, error) {
 	d := xml.NewDecoder(bytes.NewReader(data))
 	d.Strict = true
 	total := 0
@@ -426,14 +451,14 @@ func scanSheet(ctx context.Context, data []byte, sst []string, maxRows int, fn f
 
 // cellValue is a cell's cached value as text: a shared string, an inline
 // string, a boolean, or the number, date or error exactly as stored.
-func cellValue(typ, val, inline string, sst []string) xlsxCell {
+func cellValue(typ, val, inline string, sst sharedTable) xlsxCell {
 	switch typ {
 	case "s":
 		i, err := strconv.Atoi(strings.TrimSpace(val))
-		if err != nil || i < 0 || i >= len(sst) {
+		if err != nil || i < 0 || i >= sst.len() {
 			return xlsxCell{shared: -1}
 		}
-		return xlsxCell{text: sst[i], shared: i}
+		return xlsxCell{text: sst.at(i), shared: i}
 	case "inlineStr":
 		return xlsxCell{text: inline, shared: -1}
 	case "b":
