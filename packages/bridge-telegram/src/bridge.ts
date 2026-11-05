@@ -17,6 +17,7 @@ import {
   refFor,
   TEXT_ONLY_NOTICE,
   topicOf,
+  voiceOf,
   type AccessPolicy,
   type BotInfo,
   type TgCallbackQuery,
@@ -28,6 +29,7 @@ import {
 import { MAX_MESSAGE_CHARS, TelegramPort } from "./port.js";
 import type { StreamTiming } from "./stream.js";
 import { SeenSet, verifySecret } from "./verify.js";
+import { TelegramVoice } from "./voice.js";
 
 export interface TelegramBridgeOptions extends BridgeOptions<TelegramRef> {
   /** The fetch the Bot API is called with (tests). */
@@ -63,6 +65,8 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
   readonly platform = { name: "telegram", label: "Telegram" };
   readonly capabilities;
   readonly port;
+  /** Always offered; the core uses it only with BRIDGE_VOICE=1. */
+  readonly voice: TelegramVoice;
   private readonly tgPort: TelegramPort;
   private readonly policy: AccessPolicy;
   private readonly seen = new SeenSet();
@@ -94,6 +98,7 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
       now: opts.now,
     });
     this.port = this.tgPort.asBridgePort();
+    this.voice = new TelegramVoice({ api, replyTarget: (ref) => this.tgPort.lastTextMessage(ref) });
     this.policy = {
       allowedUsers: cfg.allowedUsers,
       allowedChats: cfg.allowedChats,
@@ -230,8 +235,18 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
     const thread = topicOf(msg);
     const id = identify(msg.chat, msg.from, thread, this.policy);
     const ref = refFor(msg.chat, thread);
-    const text = addressedText(msg, bot);
+    const voiceOn = this.cfg.voice.enabled;
+    const text = addressedText(msg, bot, { voice: voiceOn });
     if (text === undefined) {
+      // A voice note goes the way text goes, through the same identity and
+      // allow-list; the core decides whether it is taken (RFC GA). With
+      // voice off it is media like any other, below.
+      const voice = voiceOn ? voiceOf(msg, bot, { audio: this.cfg.voiceAudio }) : undefined;
+      if (voice) {
+        if (id.ok && id.scope === "group") this.rememberMessage(`${id.conversationId}|${id.speaker.subject}`, msg.message_id);
+        await ctx.router.onVoice(id, ref, voice, msg.from.language_code);
+        return;
+      }
       // A private chat is told why a photo went unanswered. A group stays
       // silent: its media is mostly not for the bot. A stranger hears only
       // the refusal, which the router gives once.

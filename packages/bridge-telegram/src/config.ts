@@ -20,6 +20,9 @@ export interface TelegramConfig extends SharedConfig {
   /** Stream answers in private chats by editing one message. */
   streaming: boolean;
   apiBaseUrl: string;
+  /** With BRIDGE_VOICE=1, also take audio files (message.audio, usually
+   *  music) as voice messages (TELEGRAM_BRIDGE_VOICE_AUDIO). */
+  voiceAudio: boolean;
 }
 
 export const DEFAULT_PORT = 8443;
@@ -115,6 +118,8 @@ export function loadConfig(env: Env = process.env): TelegramConfig {
   const apiBaseUrl =
     httpsBase(reader, "TELEGRAM_BRIDGE_API_BASE_URL", reader.get("TELEGRAM_BRIDGE_API_BASE_URL"), { allowHttp: true }) ?? DEFAULT_API_BASE_URL;
 
+  const voiceAudio = reader.flag("TELEGRAM_BRIDGE_VOICE_AUDIO");
+
   reader.check(BRIDGE);
   return {
     ...shared,
@@ -129,6 +134,7 @@ export function loadConfig(env: Env = process.env): TelegramConfig {
     setWebhook,
     streaming,
     apiBaseUrl,
+    voiceAudio,
   };
 }
 
