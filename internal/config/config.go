@@ -3904,6 +3904,23 @@ type MemoryBackendTenancy struct {
 type DocumentSource struct {
 	Config          DocumentSourceConfig  `json:"config,omitempty" yaml:"config"`
 	TenancyStrategy DocumentSourceTenancy `json:"tenancy_strategy,omitempty" yaml:"tenancy_strategy"`
+	// Trust is how a pull from this peer files the statements it carries:
+	// "" or "proposed" (the default) files each as a proposal for review, its
+	// peer status and method kept as attributes; "asserted" keeps them
+	// asserted, the operator vouching for the peer. Only the operator plane
+	// may author a runtime definition that declares "asserted".
+	Trust string `json:"trust,omitempty" yaml:"trust"`
+}
+
+// Document source trust levels (DocumentSource.Trust).
+const (
+	DocumentSourceTrustProposed = "proposed"
+	DocumentSourceTrustAsserted = "asserted"
+)
+
+// ValidDocumentSourceTrust reports a trust value a document source may declare.
+func ValidDocumentSourceTrust(t string) bool {
+	return t == "" || t == DocumentSourceTrustProposed || t == DocumentSourceTrustAsserted
 }
 
 type DocumentSourceConfig struct {
@@ -9182,6 +9199,9 @@ func validate(c *Config) error {
 			}
 		default:
 			return fmt.Errorf("document_sources.%s: tenancy_strategy.kind %q must be \"\" or key_per_tenant", dname, ds.TenancyStrategy.Kind)
+		}
+		if !ValidDocumentSourceTrust(ds.Trust) {
+			return fmt.Errorf("document_sources.%s: trust %q must be proposed (the default) or asserted", dname, ds.Trust)
 		}
 	}
 	// Static webhooks: a misconfigured delivery target can never fire (F24).

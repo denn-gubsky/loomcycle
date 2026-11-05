@@ -141,6 +141,9 @@ type remoteBinding struct {
 	remoteDocID string
 	remoteRoot  string
 	scope       string
+	// trusted: the source is declared trust: asserted, so a pull keeps the
+	// peer's asserted statements asserted rather than filing them for review.
+	trusted bool
 }
 
 // resolveRemoteBinding runs the prologue both sync and diff_remote need: resolve
@@ -196,6 +199,7 @@ func (d *Document) resolveRemoteBinding(ctx context.Context, key sqlmem.ScopeKey
 	return &remoteBinding{
 		client: client, source: source, ref: ref, localDocID: localDocID,
 		remoteDocID: remoteDoc.DocumentID, remoteRoot: remoteDoc.RootChunkID, scope: scope,
+		trusted: ds.Trust == config.DocumentSourceTrustAsserted,
 	}, nil
 }
 
@@ -255,6 +259,7 @@ func (k edgeKey) relation() edgeKey {
 type syncEdge struct {
 	id         string // side-local
 	method     string // "" from a peer that predates statements
+	status     string // the peer's, on a remote snapshot; "" from a peer that predates statements
 	confidence *float64
 	validAt    *int64
 	invalidAt  *int64
@@ -559,7 +564,7 @@ func (d *Document) loadRemoteSnapshot(ctx context.Context, client *docremote.Cli
 			_ = json.Unmarshal(raw, &one)
 			evidence = one.Statement.Evidence
 		}
-		se := syncEdge{id: e.ID, method: e.Method, confidence: e.Confidence, validAt: e.ValidAt, invalidAt: e.InvalidAt, attributes: e.Attributes}
+		se := syncEdge{id: e.ID, method: e.Method, status: e.Status, confidence: e.Confidence, validAt: e.ValidAt, invalidAt: e.InvalidAt, attributes: e.Attributes}
 		for _, r := range evidence {
 			ev := syncEvidence{quote: r.Quote}
 			if r.ChunkID != "" {
@@ -659,6 +664,10 @@ type localWriter struct {
 	key    sqlmem.ScopeKey
 	mscope store.MemoryScope
 	docID  string
+	// source names the document source a pull reads; trusted is its trust:
+	// asserted. Unused by the chunk writes.
+	source  string
+	trusted bool
 }
 
 func (w localWriter) createKeyed(ctx context.Context, sc syncChunk) (string, error) {
@@ -756,12 +765,15 @@ type remoteEdge struct {
 }
 
 // carryEdge on a pull. The statement is written with method sync, whoever runs
-// the pull. Evidence is re-pointed to this side's chunk by natural key and checked
+// the pull, and its origin_method names the peer (pulledAttributes). A new one is
+// filed proposed, for review here, unless the source is declared trust: asserted
+// (RFC FZ Part C, D3): the peer's asserted status is its own claim, not this
+// store's. Evidence is re-pointed to this side's chunk by natural key and checked
 // as link_chunks checks it; a row that fails is dropped and counted, never sent
 // on to refuse the whole statement.
 func (w localWriter) carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry, error) {
 	var out edgeCarry
-	attrs := carriedAttributes(in.src)
+	attrs := pulledAttributes(in.src, w.source)
 	if in.have != nil {
 		// A statement a pull wrote follows the peer, until an operator here rules
 		// on it: then it is the operator's, and kept like one written here.
@@ -803,18 +815,44 @@ func (w localWriter) carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry, 
 	if in.have != nil && len(evidence) == 0 {
 		return out, nil
 	}
-	res, err := w.d.linkChunks(ctx, w.key, w.mscope, docInput{
-		FromID: in.fromID, ToID: in.toID, Kind: in.kind, edgeMethod: edgeMethodSync,
-		Confidence: in.src.confidence, ValidAt: in.src.validAt, InvalidAt: in.src.invalidAt,
-		Attributes: attrs, Evidence: evidence,
+	if in.have != nil && !w.trusted {
+		// The statement already holds here (the target snapshot carries asserted
+		// ones only). The peer's checked quotes are added to it; its status is
+		// this side's, and an untrusted peer neither files nor asserts anything
+		// beside it.
+		checked, refuse, err := w.d.checkEvidence(ctx, w.key, w.mscope, evidence)
+		if err != nil {
+			return out, err
+		}
+		if refuse != nil {
+			return out, fmt.Errorf("%s", refuse.Text)
+		}
+		_, _, err = w.d.addEvidence(ctx, w.key, in.have.id, checked)
+		return out, err
+	}
+	status := edgeStatusProposed
+	if w.trusted {
+		status = edgeStatusAsserted
+	}
+	res, refuse, err := w.d.writeStatement(ctx, w.key, w.mscope, edgeWrite{
+		from: in.fromID, to: in.toID, kind: in.kind, method: edgeMethodSync, status: status, authored: true,
+		confidence: in.src.confidence, validAt: in.src.validAt, invalidAt: in.src.invalidAt,
+		attributes: attrs, evidence: evidence,
 	})
 	if err != nil {
 		return out, err
 	}
-	if res.IsError {
-		return out, fmt.Errorf("%s", res.Text)
+	if refuse != nil {
+		if strings.Contains(refuse.Text, "statement_asserted:") {
+			// A proposal may not add to a relation that already holds here (one
+			// outside the snapshot, e.g. retired): the statement here stands.
+			out.kept = true
+			return out, nil
+		}
+		return out, fmt.Errorf("%s", refuse.Text)
 	}
-	out.added = in.have == nil
+	w.d.publishEdgeChange(ctx, w.key, w.mscope, "link_chunks", res.ID, in.fromID, in.toID, in.kind, res.Status)
+	out.added = in.have == nil && res.Created
 	return out, nil
 }
 
@@ -1084,30 +1122,67 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 }
 
 // carriedAttributes is the attributes a statement arrives with on the other
-// side: its own, less the statement layer's bookkeeping (each side's gate
-// annotates for itself), plus origin_method — the method it was made by, which
-// the receiving side's server-stamped method cannot say. A statement that was
-// itself synced passes on the method it was first made by.
+// side of a push: its own, less the statement layer's bookkeeping (each side's
+// gate annotates for itself), plus origin_method — the method it was made by,
+// which the receiving side's server-stamped method cannot say.
 func carriedAttributes(se syncEdge) map[string]any {
-	out := map[string]any{}
-	for k, v := range se.attributes {
-		if !statementLayerAttributes[k] && k != edgeOriginMethodAttr {
-			out[k] = v
-		}
-	}
-	origin := se.method
-	if origin == edgeMethodSync {
-		if m, _ := se.attributes[edgeOriginMethodAttr].(string); m != "" {
-			origin = m
-		}
-	}
-	if originMethodForm.MatchString(origin) {
+	out := ownAttributes(se)
+	if origin := madeBy(se); originMethodForm.MatchString(origin) {
 		out[edgeOriginMethodAttr] = origin
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// pulledAttributes is the attributes a statement arrives with on a pull: its own,
+// less the bookkeeping, with origin_method naming the peer it came from
+// (peer:<source>) and what the peer said about it kept as the peer's claims —
+// peer_method, the method it was made by there, and peer_status, its status
+// there (a peer that predates statements served every link as live). The peer's
+// method never becomes this side's: a peer's manual is not a person's here.
+func pulledAttributes(se syncEdge, source string) map[string]any {
+	out := ownAttributes(se)
+	out[edgeOriginMethodAttr] = edgeOriginPeerPrefix + source
+	if m := madeBy(se); originMethodForm.MatchString(m) {
+		out[edgePeerMethodAttr] = m
+	}
+	status := se.status
+	if status == "" {
+		status = edgeStatusAsserted
+	}
+	if originMethodForm.MatchString(status) {
+		out[edgePeerStatusAttr] = status
+	}
+	return out
+}
+
+// ownAttributes is a statement's attributes less the statement layer's own.
+func ownAttributes(se syncEdge) map[string]any {
+	out := map[string]any{}
+	for k, v := range se.attributes {
+		if !statementLayerAttributes[k] {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// madeBy is the method a statement was first made by: its own, or for one its
+// side itself synced in, the method recorded there — peer_method for a pull made
+// by this version, origin_method for a push or an older pull.
+func madeBy(se syncEdge) string {
+	if se.method != edgeMethodSync {
+		return se.method
+	}
+	if m, _ := se.attributes[edgePeerMethodAttr].(string); m != "" {
+		return m
+	}
+	if m, _ := se.attributes[edgeOriginMethodAttr].(string); !strings.HasPrefix(m, edgeOriginPeerPrefix) {
+		return m
+	}
+	return ""
 }
 
 // originMethodForm is what a method looks like — manual, import, rule:<name> —
@@ -1183,7 +1258,7 @@ func (d *Document) syncPull(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if err != nil {
 		return errFrom("sync: "+err.Error(), err), nil
 	}
-	w := localWriter{d: d, key: key, mscope: mscope, docID: b.localDocID}
+	w := localWriter{d: d, key: key, mscope: mscope, docID: b.localDocID, source: b.source, trusted: b.trusted}
 	c, err := applyReconcile(ctx, w, source, target)
 	if err != nil {
 		return errFrom("sync: "+err.Error(), err), nil

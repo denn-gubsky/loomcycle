@@ -120,25 +120,38 @@ const (
 	edgeMethodAgent = "agent"
 )
 
-// edgeOriginMethodAttr names, on a statement a sync carried, the method it was
-// made by where it came from. Provenance, not a qualifier: the vocabulary gate
-// does not check it.
+// edgeOriginMethodAttr names, on a statement a sync carried, where it came from:
+// on a pull, peer:<source> (the document source it was pulled from); on a push,
+// the method it was made by here. Provenance, not a qualifier: the vocabulary
+// gate does not check it.
 const edgeOriginMethodAttr = "origin_method"
+
+// edgePeerMethodAttr and edgePeerStatusAttr keep, on a pulled statement, what the
+// peer said about it — the method it was made by there and its status there —
+// as claims of the peer's, never this store's (RFC FZ Part C).
+const (
+	edgePeerMethodAttr = "peer_method"
+	edgePeerStatusAttr = "peer_status"
+)
+
+// edgeOriginPeerPrefix starts the origin_method of a pulled statement.
+const edgeOriginPeerPrefix = "peer:"
 
 // madeByAPerson reports whether a person wrote s: the test behind every rule
 // that keeps a pass from undoing a person's statement. A pull writes every
 // statement it carries with method sync, so a synced statement is judged by its
-// origin_method, and judged a person's unless that names a machine method. It
-// fails closed: an origin of manual, none at all (a pull from before
-// origin_method was carried), or anything this build does not know reads as a
-// person's.
+// origin_method. A peer's (peer:<source>) is the peer's claim, never a person's
+// here, whatever method the peer says it was made by. Otherwise it is judged a
+// person's unless that names a machine method, failing closed: an origin of
+// manual, none at all (a pull from before origin_method was carried), or
+// anything this build does not know reads as a person's.
 func madeByAPerson(s *statementRow) bool {
 	switch s.Method {
 	case edgeMethodManual:
 		return true
 	case edgeMethodSync:
 		origin, _ := s.Attributes[edgeOriginMethodAttr].(string)
-		return !machineMethod(origin)
+		return !strings.HasPrefix(origin, edgeOriginPeerPrefix) && !machineMethod(origin)
 	}
 	return false
 }

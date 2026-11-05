@@ -12,6 +12,12 @@ change.
 by id. Chunks made with `create_chunk` or `import_md` have no key and are
 skipped (counted in `excluded_unkeyed`).
 
+**Only the bound document is written.** A key is unique across a scope, so a
+peer chunk whose key a chunk of ANOTHER document here holds is a conflict: that
+chunk is neither changed nor moved, the key is counted in `conflicts` and named
+in `conflicting_keys`, and the rest of the sync goes ahead. `diff_remote`
+lists the same keys beforehand.
+
 For each keyed chunk, the side being written to receives the other side's
 title, type, status, body, tags and validity period (`valid_at` /
 `invalid_at`; a peer on an older version has none, which reads as undated),
@@ -28,16 +34,21 @@ A link travels with its `confidence`, `valid_at` / `invalid_at` and
 `attributes`. Only asserted links travel: a proposal is one side's review
 state, and a link a judge refuted or an operator rejected stays where it is.
 
-- **Pull.** A pulled link is asserted here with method `sync`; the method it
-  was made by on the peer is kept in `attributes.origin_method` (for a link the
-  peer itself pulled, the method it was first made by).
+- **Pull.** A pulled link is written here with method `sync` and
+  `attributes.origin_method` `peer:<source>`; what the peer said about it is
+  kept beside it: `attributes.peer_method` (the method it was made by there,
+  or for a link the peer itself pulled, the method it was first made by) and
+  `attributes.peer_status`. It arrives **proposed**, for review here, unless
+  the operator declared the source `trust: asserted`; then it stays asserted.
+  A link the peer marks as a person's is never a person's here.
 - **Evidence** is matched by the cited chunk's `natural_key` and its quote is
   checked again against this side's text, as `link_chunks` checks it. A row
   that cannot be checked here is dropped and counted in `evidence_dropped`: a
   quote from an unkeyed chunk, a chat turn or another scope, a key this side
   does not hold or may not read, or a quote that does not occur in this side's
   text. Evidence already recorded is not added twice.
-- **A link pulled before** is updated in place when the peer's copy changed:
+- **A link pulled before** and asserted here is updated in place when the
+  peer's copy changed:
   its `confidence`, `invalid_at` and `attributes` follow the peer, a value the
   peer cleared is cleared, and its evidence is kept (counted in
   `edges_updated`). `valid_at` is part of a link's identity, so a peer link
@@ -74,7 +85,9 @@ counts the sending side's chunks that could not be carried.
 `edges_skipped_rejected` counts the peer's links a pull left out because an
 operator rejected that relation here; a sync never undoes a rejection.
 Three more counts appear only when they are not zero: `edges_updated`,
-`edges_envelope_kept` and `evidence_dropped` (see Links and their evidence).
+`edges_envelope_kept` and `evidence_dropped` (see Links and their evidence), and
+`conflicts` with `conflicting_keys` (at most 100) when a key is held by another
+document.
 
 ## Errors
 

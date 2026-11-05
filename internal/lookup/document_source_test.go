@@ -149,6 +149,7 @@ func TestDocumentSource_DriftDetection(t *testing.T) {
 		"name":             true,
 		"config":           true,
 		"tenancy_strategy": true,
+		"trust":            true,
 	}
 	have := a2aJSONTagsOf(reflect.TypeOf(lookup.SubstrateDocumentSourceDef{}))
 	assertTagSetsEqual(t, "SubstrateDocumentSourceDef", want, have)
@@ -158,7 +159,7 @@ func TestDocumentSource_DriftDetection(t *testing.T) {
 	// column, never a field on config.DocumentSource). So the merged↔substrate↔
 	// config loop still closes: a field added to config's config/tenancy_strategy
 	// without the other two mirrors fails CI here.
-	wantCfg := map[string]bool{"config": true, "tenancy_strategy": true}
+	wantCfg := map[string]bool{"config": true, "tenancy_strategy": true, "trust": true}
 	cfgTags := a2aJSONTagsOf(reflect.TypeOf(config.DocumentSource{}))
 	assertTagSetsEqual(t, "config.DocumentSource", wantCfg, cfgTags)
 }
