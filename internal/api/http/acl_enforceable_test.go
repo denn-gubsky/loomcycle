@@ -17,10 +17,10 @@ import (
 // pair (RFC FY Part E). Before, it was stored and decided nothing.
 func TestACLDef_ARuleOnAnUnenforcedPairIsRefused(t *testing.T) {
 	srv, ts, _ := aclMgmtServer(t, authz.ModeCompat)
-	inert := `[{"effect":"deny","actions":["browse"],"resources":["document:user"]}]`
+	inert := `[{"effect":"deny","actions":["mount"],"resources":["volume:data"]}]`
 	for _, op := range []string{"create", "update", "put", "validate"} {
 		code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"`+op+`","name":"inert","rules":`+inert+`}`)
-		if code != 400 || jsonField(t, body, "code") != "rule_not_enforceable" || !strings.Contains(body, "browse document") {
+		if code != 400 || jsonField(t, body, "code") != "rule_not_enforceable" || !strings.Contains(body, "mount volume") {
 			t.Errorf("%s: %d %s, want 400 rule_not_enforceable naming the pair", op, code, body)
 		}
 	}
@@ -75,7 +75,7 @@ func TestACLDef_ARemovedVerbIsRefusedAndUnlisted(t *testing.T) {
 		t.Errorf("evaluation of a removed verb: %d %s, want rule_not_enforceable", code, body)
 	}
 	code, body = bearerCall(t, ts, operatorBearer, "POST", "/v1/_authz/simulate",
-		`{"acls":[{"name":"draft","rules":[{"effect":"deny","actions":["browse"],"resources":["memory:user"]}]}],"requests":[{"action":{"name":"read"},"resource":{"type":"run"}}]}`)
+		`{"acls":[{"name":"draft","rules":[{"effect":"deny","actions":["mount"],"resources":["volume:data"]}]}],"requests":[{"action":{"name":"read"},"resource":{"type":"run"}}]}`)
 	if code != 400 || jsonField(t, body, "code") != "rule_not_enforceable" {
 		t.Errorf("simulate with an unenforced draft rule: %d %s, want rule_not_enforceable", code, body)
 	}
@@ -115,5 +115,18 @@ func TestReportUnenforceableACLs_NamesEachClass(t *testing.T) {
 	}
 	if strings.Contains(got, "acme/old#0") || strings.Contains(got, "unenforced store acme/old#2") {
 		t.Errorf("an enforced rule was reported, or an inert one as unenforced: %q", got)
+	}
+}
+
+// A member reads a colleague's scope only through an explicit browse allow,
+// so the operator must be able to write one: browse is asked, not refused as
+// a pair no surface evaluates.
+func TestACLDef_ABrowseAllowIsWritten(t *testing.T) {
+	_, ts, _ := aclMgmtServer(t, authz.ModeCompat)
+	for _, typ := range []string{"memory", "document"} {
+		rules := `[{"effect":"allow","actions":["browse"],"resources":["` + typ + `:user"]}]`
+		if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"create","name":"browse-`+typ+`","rules":`+rules+`}`); code != 201 {
+			t.Errorf("a browse allow on %s: %d %s, want 201", typ, code, body)
+		}
 	}
 }
