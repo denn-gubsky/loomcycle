@@ -179,3 +179,33 @@ func TestResolveAuth_LifecycleIsTheFloorOfAnEdgeGate(t *testing.T) {
 		t.Fatalf("the gate's new users get status %q, want the lifecycle floor's pending", got)
 	}
 }
+
+// A new_user budget (RFC AW's soft/hard tiers) is checked at load and taken
+// from the deployment floor when the gate sets none; a gate's own replaces it.
+func TestResolveIdentityMap_NewUserBudgetIsCheckedAndInherited(t *testing.T) {
+	n := func(v int64) *int64 { return &v }
+	floor, err := resolveLifecycle(AuthLifecycleConfig{NewUser: AuthNewUserConfig{Budget: &AuthBudgetConfig{HardLimit: n(1000)}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := resolveIdentityMap("tg", &AuthIdentityMapConfig{Tenant: "acme"}, floor, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := m.NewUser.Budget; b == nil || b.SoftLimit != nil || b.HardLimit == nil || *b.HardLimit != 1000 {
+		t.Fatalf("inherited budget = %+v", b)
+	}
+	m, err = resolveIdentityMap("tg", &AuthIdentityMapConfig{Tenant: "acme",
+		NewUser: &AuthNewUserConfig{Budget: &AuthBudgetConfig{SoftLimit: n(10), HardLimit: n(20)}}}, floor, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := m.NewUser.Budget; *b.SoftLimit != 10 || *b.HardLimit != 20 {
+		t.Fatalf("gate budget = %+v", b)
+	}
+	for _, bad := range []*AuthBudgetConfig{{}, {SoftLimit: n(-1)}, {HardLimit: n(-5)}} {
+		if _, err := resolveLifecycle(AuthLifecycleConfig{NewUser: AuthNewUserConfig{Budget: bad}}); err == nil || !strings.Contains(err.Error(), "budget") {
+			t.Errorf("budget %+v: err = %v", bad, err)
+		}
+	}
+}
