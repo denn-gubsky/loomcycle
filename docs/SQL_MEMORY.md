@@ -107,7 +107,9 @@ The check also reserves:
   them names a document table, so without this a read of `sqlite_dbpage`
   returned every chunk's text. They are refused on both tiers; none exists on
   PostgreSQL. An agent that needs to know its own tables keeps track of what it
-  creates.
+  creates. `sqlite_stat` and `pragma_` match as prefixes, and on sqlite a
+  `'string'` is read as a name too, so a value such as `'pragma_notes'` or
+  `LIKE 'pragma_%'` is refused as well.
 
 On sqlite every scope connection is also opened in SQLite's defensive mode
 (`SQLITE_DBCONFIG_DEFENSIVE`), so the engine itself refuses writes to
@@ -123,8 +125,8 @@ out of strings:
 - a `DO` block (sqlmem's allow-list already refuses it; the guard does too);
 - `U&"…"` escapes.
 
-A view, trigger, rule or (PostgreSQL) function made before this check existed
-can still reach a document table. So before Memory SQL first runs on a scope,
+A view, trigger, rule, (sqlite) virtual table or (PostgreSQL) function made
+before this check existed can still reach a document table, or the file's pages. So before Memory SQL first runs on a scope,
 these objects are checked. If one names a document table, or a function body
 uses `EXECUTE`, the scope refuses Memory SQL until that object is dropped;
 `DROP` statements stay allowed.
