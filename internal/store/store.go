@@ -1528,7 +1528,9 @@ func DecodeRunCursor(token string) (startedAt time.Time, runID string, err error
 		return time.Time{}, "", fmt.Errorf("%w %q", ErrInvalidRunCursor, token)
 	}
 	nanos, perr := strconv.ParseUint(token[len(prefix):len(prefix)+16], 16, 64)
-	if perr != nil {
+	// EncodeRunCursor never writes a time past int64; a larger value is not a
+	// token this build issued, and converting it would wrap to before 1970.
+	if perr != nil || nanos > math.MaxInt64 {
 		return time.Time{}, "", fmt.Errorf("%w %q", ErrInvalidRunCursor, token)
 	}
 	runID = token[len(prefix)+16+1:]
