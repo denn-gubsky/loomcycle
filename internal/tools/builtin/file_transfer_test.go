@@ -34,7 +34,7 @@ type transferFile struct {
 
 func newTransferFile(h *HTTP) *transferFile {
 	tf := &transferFile{}
-	tf.File = &File{HTTP: h, RegisterSecret: func(_, v string) {
+	tf.File = &File{HTTP: h, RegisterSecret: func(_ context.Context, v string) {
 		tf.mu.Lock()
 		tf.registered = append(tf.registered, v)
 		tf.mu.Unlock()

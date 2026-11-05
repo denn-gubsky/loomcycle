@@ -45,7 +45,7 @@ func bindingWith(t *testing.T, creds map[string]*time.Time) (credentialBinding, 
 		}
 	}
 	var registered []string
-	return credentialBinding{engine: engine, register: func(tenantID, v string) { registered = append(registered, tenantID+":"+v) }}, &registered
+	return credentialBinding{engine: engine, register: func(_ context.Context, tenantID, v string) { registered = append(registered, tenantID+":"+v) }}, &registered
 }
 
 func runCtx() context.Context {
@@ -219,7 +219,9 @@ func TestBash_ResolvedCredValueRedactedFromOutput(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			b, _ := bindingWith(t, map[string]*time.Time{"GITHUB_TOKEN": nil})
 			rd := redact.New(nil, true)
-			b.register = rd.RegisterTenant
+			sink := &secretSink{}
+			sink.set(func() *redact.Redactor { return rd })
+			b.register = sink.registerCredential
 			res, err := tc.tool(b).Execute(ctx, cmd)
 			if err != nil {
 				t.Fatal(err)

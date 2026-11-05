@@ -82,7 +82,7 @@ func newGitSourceFixtureFor(t *testing.T, user string) *gitSourceFixture {
 		Timeout:    30 * time.Second,
 		Slots:      make(chan struct{}, 1),
 		Transport:  f.repo.Transport,
-		Credential: GitCredentialResolver(f.engine, nil, func(_, v string) { f.registered = append(f.registered, v) }),
+		Credential: GitCredentialResolver(f.engine, nil, func(_ context.Context, _, v string) { f.registered = append(f.registered, v) }),
 	}
 	ctx, set := ephemeralCtx(base, "run-1")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a", RootRunID: "run-1", TenantID: "tnt"})
@@ -514,7 +514,7 @@ func TestGitCredentialResolver_AppCredentialIsMintedAndAnOpenOneRefused(t *testi
 	resolve := GitCredentialResolver(f.engine, func(_ context.Context, tenantID, cfgJSON, repository string) (string, error) {
 		mintedFrom = tenantID + ":" + cfgJSON + ":" + repository
 		return "ghs_minted_installation_token", nil
-	}, func(_, v string) { registered = append(registered, v) })
+	}, func(_ context.Context, _, v string) { registered = append(registered, v) })
 
 	user, token, err := resolve(f.ctx, "$ghapp:app", target)
 	if err != nil || user != "x-access-token" || token != "ghs_minted_installation_token" {
@@ -601,7 +601,7 @@ func TestGitCredentialResolver_AnExpiredCredentialIsUnresolvable(t *testing.T) {
 	resolve := GitCredentialResolver(f.engine, func(context.Context, string, string, string) (string, error) {
 		minted = true
 		return "ghs_minted", nil
-	}, func(_, v string) { registered = append(registered, v) })
+	}, func(_ context.Context, _, v string) { registered = append(registered, v) })
 
 	for _, ref := range []string{"$cred:token", "$ghapp:app"} {
 		_, token, err := resolve(f.ctx, ref, target)

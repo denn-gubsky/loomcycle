@@ -16,10 +16,10 @@
 //     distinctive secret shape; see patternRules for the per-rule rationale.
 //
 // A Redactor's static tiers are fixed at New; runtime-resolved secret values may
-// be added later via RegisterTenant or RegisterOperator (RFC AV/AR), into a
-// bounded set (dynamic.go). It is safe for concurrent String/Bytes/Register*
-// calls — the registered set is guarded by an RWMutex. The
-// zero value / a nil *Redactor is a no-op, so callers may hold a nil redactor
+// be added later via RegisterCredential, RegisterObserved or RegisterOperator
+// (RFC AV/AR), into a bounded set (dynamic.go). It is safe for concurrent
+// String/Bytes/Register* calls — the registered set is guarded by an RWMutex.
+// The zero value / a nil *Redactor is a no-op, so callers may hold a nil redactor
 // when redaction is disabled.
 package redact
 
@@ -337,32 +337,53 @@ func New(secrets map[string]string, withPatterns bool) *Redactor {
 // RegisterOperator adds a secret VALUE the operator plane obtained at run
 // time (a provider's minted cloud credentials), so a later tool_call or
 // tool_result that echoes it is masked in the persisted transcript. Operator
-// values hold their own share of the bounded set: no tenant registration ever
-// evicts one; past the share the operator's own least recently registered
-// value goes (an expired credential, in practice). Values shorter than
-// minDynamicSecretLen and a nil redactor are ignored. Safe for concurrent use.
-//
-// The static env values given to New are not in this set at all and are never
-// evicted.
+// values have their own bucket, which no tenant registration evicts from.
+// Values shorter than minDynamicSecretLen and a nil redactor are ignored.
+// Safe for concurrent use. The static env values given to New are not in the
+// bounded set at all.
 func (r *Redactor) RegisterOperator(value string) {
 	if r == nil || len(value) < minDynamicSecretLen {
 		return
 	}
-	r.dyn.register(value, "", true)
+	r.dyn.register(bucketOperator, Holder{}, value)
 }
 
-// RegisterTenant adds a secret VALUE resolved for, or received by, a run of
-// tenantID (a $cred: value, a minted token, the credential part of a URL a
-// tool fetched). The set is bounded (DefaultDynamicCap, LRU by registration),
-// and a tenant holds at most a quarter of it: its registrations past that
-// evict its own oldest values, so one tenant cannot push another's secrets
-// out. The value is masked from the moment this returns. Values shorter than
-// minDynamicSecretLen and a nil redactor are ignored. Safe for concurrent use.
-func (r *Redactor) RegisterTenant(tenantID, value string) {
+// RegisterCredential adds a secret VALUE resolved for h.Tenant (a $cred:
+// value, a minted token, a peer or provider key). It is masked from the
+// moment this returns, stays while any of h.Runs is live, and otherwise
+// competes only with the same tenant's credentials for the tenant's share
+// (see dynamic.go). Values shorter than minDynamicSecretLen and a nil
+// redactor are ignored. Safe for concurrent use.
+func (r *Redactor) RegisterCredential(h Holder, value string) {
 	if r == nil || len(value) < minDynamicSecretLen {
 		return
 	}
-	r.dyn.register(value, tenantID, false)
+	r.dyn.register(bucketCredential, h, value)
+}
+
+// RegisterObserved adds a VALUE a run received rather than resolved, whose
+// content a model may influence (the credential part of a URL a tool
+// fetched). It is masked like a credential and pinned the same way, but is
+// held in a smaller bucket of its own per tenant and user, so registrations
+// a model drives can only evict that user's own observed values.
+func (r *Redactor) RegisterObserved(h Holder, value string) {
+	if r == nil || len(value) < minDynamicSecretLen {
+		return
+	}
+	r.dyn.register(bucketObserved, h, value)
+}
+
+// SetLiveness gives the redactor the server's view of which runs are live:
+// liveness returns a predicate over run ids, answered from one snapshot. A
+// value registered by a live run is never evicted. Call once, before runs
+// start.
+func (r *Redactor) SetLiveness(liveness func() func(run string) bool) {
+	if r == nil {
+		return
+	}
+	r.dyn.mu.Lock()
+	r.dyn.liveness = liveness
+	r.dyn.mu.Unlock()
 }
 
 // WithSignedURLParams turns on Tier C and returns r.
@@ -384,8 +405,7 @@ func (r *Redactor) Enabled() bool {
 	if r.replacer != nil || len(r.patterns) > 0 || r.signedURLs {
 		return true
 	}
-	pending, settled := r.dyn.replacers()
-	return pending != nil || settled != nil
+	return r.dyn.held()
 }
 
 // String returns s with every recognised secret masked. The exact tiers run
@@ -401,14 +421,8 @@ func (r *Redactor) String(s string) string {
 	if r.replacer != nil {
 		s = r.replacer.Replace(s)
 	}
-	// The pending overlay first, then the settled set; dynamicSet.compile
-	// keeps the two from nesting, so the order cannot split a value.
-	pending, settled := r.dyn.replacers()
-	if pending != nil {
-		s = pending.Replace(s)
-	}
-	if settled != nil {
-		s = settled.Replace(s)
+	if dyn := r.dyn.replacer(); dyn != nil {
+		s = dyn.Replace(s)
 	}
 	// Before the patterns: their key=value rule would otherwise take a URL's
 	// token= value to the end of the URL, parameters after it included.

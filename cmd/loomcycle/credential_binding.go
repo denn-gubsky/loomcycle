@@ -32,7 +32,7 @@ type credentialBinding struct {
 	engine *credential.Engine
 	// register masks a resolved value against a downstream transcript echo,
 	// charged to the tenant it was resolved for.
-	register func(tenantID, value string)
+	register func(ctx context.Context, tenantID, value string)
 }
 
 // resolve looks name up for the run on ctx. what labels the log line.
@@ -65,7 +65,7 @@ func (b credentialBinding) resolve(ctx context.Context, what, name string) (cred
 		return credential.Resolved{}, false, nil
 	}
 	if b.register != nil {
-		b.register(ri.TenantID, res.Value)
+		b.register(ctx, ri.TenantID, res.Value)
 	}
 	return res, true, nil
 }

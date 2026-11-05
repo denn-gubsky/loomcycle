@@ -297,7 +297,7 @@ func (b *boot) buildTools() {
 	// download and upload go out on the HTTP tool's host policy, and hand
 	// each URL (a pre-authenticated one is a credential) to the redactor.
 	// Docs (the Document tool import builds through) is set below.
-	fileTool := &builtin.File{HTTP: httpTool, RegisterSecret: b.secrets.registerTenant}
+	fileTool := &builtin.File{HTTP: httpTool, RegisterSecret: b.secrets.registerObserved}
 	b.allTools = append(b.allTools, fileTool)
 
 	// RFC FB — the Git tool: repository work inside bound volumes through

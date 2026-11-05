@@ -654,9 +654,26 @@ func (s *secretSink) redactor() *redact.Redactor {
 // cloud credentials): no tenant's registrations can evict it.
 func (s *secretSink) register(v string) { s.redactor().RegisterOperator(v) }
 
-// registerTenant takes a secret resolved for, or received by, a run of
-// tenantID; it counts against that tenant's share of the bounded set.
-func (s *secretSink) registerTenant(tenantID, v string) { s.redactor().RegisterTenant(tenantID, v) }
+// registerCredential takes a secret resolved for tenantID by the run on ctx;
+// it stays masked while that run (or its tree's root) is live.
+func (s *secretSink) registerCredential(ctx context.Context, tenantID, v string) {
+	s.redactor().RegisterCredential(secretHolder(ctx, tenantID), v)
+}
+
+// registerObserved takes a value the run on ctx received whose content a
+// model may influence (the credential part of a URL a tool fetched).
+func (s *secretSink) registerObserved(ctx context.Context, v string) {
+	ri := tools.RunIdentity(ctx)
+	s.redactor().RegisterObserved(secretHolder(ctx, ri.TenantID), v)
+}
+
+// secretHolder names who holds a registered value: the tenant, the run's
+// user, and the run ids whose liveness pins it — the tree's root (a parent
+// can repeat what a child resolved) and the run itself.
+func secretHolder(ctx context.Context, tenantID string) redact.Holder {
+	ri := tools.RunIdentity(ctx)
+	return redact.Holder{Tenant: tenantID, User: ri.UserID, Runs: []string{ri.RootRunID, ri.AgentID}}
+}
 
 // buildProviderMap constructs every ENABLED provider from cfg.Providers via the
 // RFC BF driver registry, returning the id→Provider map. Factored out of
@@ -1243,7 +1260,7 @@ type refSubstituter interface {
 // the run identity on ctx. A run that may not use its user's own scope (a
 // trigger whose definition's author could not act as that user) resolves for
 // its agent and tenant only.
-func substituteForRun(ctx context.Context, s, targetURL string, register func(tenantID, value string), subs ...refSubstituter) (string, []string, error) {
+func substituteForRun(ctx context.Context, s, targetURL string, register func(ctx context.Context, tenantID, value string), subs ...refSubstituter) (string, []string, error) {
 	ri := tools.RunIdentity(ctx)
 	userID := ri.UserID
 	if ri.NoUserScope() {
@@ -1251,7 +1268,7 @@ func substituteForRun(ctx context.Context, s, targetURL string, register func(te
 	}
 	var reg func(string)
 	if register != nil {
-		reg = func(v string) { register(ri.TenantID, v) }
+		reg = func(v string) { register(ctx, ri.TenantID, v) }
 	}
 	var unresolved []string
 	for _, sub := range subs {

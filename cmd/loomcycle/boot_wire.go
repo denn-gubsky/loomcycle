@@ -179,7 +179,7 @@ func (b *boot) wireCredentials() {
 		}
 		return b.srv.Redactor()
 	})
-	registerSecret := secrets.registerTenant
+	registerSecret := secrets.registerCredential
 	// A volume created from a git source (RFC EJ): off unless the operator
 	// lists the hosts. The credential a clone names is resolved for the run,
 	// and only when it is restricted to URLs covering the clone's.

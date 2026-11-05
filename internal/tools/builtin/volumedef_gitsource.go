@@ -106,7 +106,7 @@ var gitCredentialRefRe = regexp.MustCompile(`^\$(cred|ghapp):([A-Za-z0-9_-]{1,12
 func GitCredentialResolver(
 	engine *credential.Engine,
 	mintApp func(ctx context.Context, tenantID, cfgJSON, repository string) (string, error),
-	register func(tenantID, value string),
+	register func(ctx context.Context, tenantID, value string),
 ) GitCredentialFunc {
 	return gitCredentialResolver(engine, mintApp, register)
 }
@@ -118,7 +118,7 @@ func GitCredentialResolver(
 func GitPushCredentialResolver(
 	engine *credential.Engine,
 	mintAppWrite func(ctx context.Context, tenantID, cfgJSON, repository string) (string, error),
-	register func(tenantID, value string),
+	register func(ctx context.Context, tenantID, value string),
 ) GitCredentialFunc {
 	return gitCredentialResolver(engine, mintAppWrite, register)
 }
@@ -126,7 +126,7 @@ func GitPushCredentialResolver(
 func gitCredentialResolver(
 	engine *credential.Engine,
 	mintApp func(ctx context.Context, tenantID, cfgJSON, repository string) (string, error),
-	register func(tenantID, value string),
+	register func(ctx context.Context, tenantID, value string),
 ) GitCredentialFunc {
 	return func(ctx context.Context, ref, targetURL string) (string, string, error) {
 		m := gitCredentialRefRe.FindStringSubmatch(ref)
@@ -182,7 +182,7 @@ func gitCredentialResolver(
 			}
 		}
 		if register != nil {
-			register(ri.TenantID, token)
+			register(ctx, ri.TenantID, token)
 		}
 		return user, token, nil
 	}
