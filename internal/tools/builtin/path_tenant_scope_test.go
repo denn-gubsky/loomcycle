@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -57,5 +58,15 @@ func TestPath_TenantScopeNeedsBothGrants(t *testing.T) {
 	// The agent and user trees stay ungated, as they have always been.
 	if _, r := pathExec(t, p, base, `{"op":"ls","scope":"agent","path":"/"}`); r.IsError {
 		t.Errorf("agent scope needs no grant: %s", r.Text)
+	}
+}
+
+// TestPath_SchemaSaysTenantNeedsBothGrants: the model reads the scope argument's
+// description before it calls; it must not learn the tenant tree is open to it.
+func TestPath_SchemaSaysTenantNeedsBothGrants(t *testing.T) {
+	for _, want := range []string{"memory_scopes", "sql_scopes"} {
+		if !strings.Contains(pathInputSchema, want) {
+			t.Errorf("Path's scope description does not say tenant needs %s", want)
+		}
 	}
 }

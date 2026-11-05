@@ -58,7 +58,7 @@ const pathInputSchema = `{
 		"op":            {"type": "string", "enum": ["resolve","ls","stat","mkdir","mv","rm"], "description": "The operation."},
 		"path":          {"type": "string", "description": "Absolute path, e.g. /docs/launch. Segments are [a-zA-Z0-9._-]; no \"..\"."},
 		"to":            {"type": "string", "description": "Destination path (mv only)."},
-		"scope":         {"type": "string", "enum": ["agent","user","tenant"], "description": "Which tree (default agent). user requires a user_id on the run; tenant is shared across the tenant."},
+		"scope":         {"type": "string", "enum": ["agent","user","tenant"], "description": "Which tree (default agent). user requires a user_id on the run; tenant is shared across the tenant and needs the agent to hold tenant in both memory_scopes and sql_scopes."},
 		"recursive":     {"type": "boolean", "description": "ls: list all descendants. rm: required to remove a path that has descendants."},
 		"kind_filter":   {"type": "string", "description": "ls: only entries of this kind (document/volume_mount/memory_entry/directory)."},
 		"limit":         {"type": "integer", "minimum": 1, "description": "ls: maximum entries to return (default 500, max 5000). A truncated listing reports truncated:true and a next_cursor — pass that back as the cursor field to continue. Subject-homed facts make a directory as large as the tenant's entity count, so a listing has to be pageable rather than whole."},

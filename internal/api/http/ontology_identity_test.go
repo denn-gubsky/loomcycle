@@ -3,11 +3,13 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -70,5 +72,36 @@ func TestReservedDocs_ProvisionFromInsideARun(t *testing.T) {
 	id, err := doc.TenantOntologyID(dctx)
 	if err != nil || id == "" {
 		t.Errorf("the provisioned ontology was not recorded: %q %v", id, err)
+	}
+}
+
+// faultyTenantRootLookup fails the dirent read of the deployment-context name, which
+// is how a store fault reaches the provisioning probe.
+type faultyTenantRootLookup struct{ store.Store }
+
+func (f faultyTenantRootLookup) DirentGet(ctx context.Context, tenant, scope, scopeID, parent, name string) (store.DirentRow, error) {
+	if parent+name == meminject.TenantRootPath {
+		return store.DirentRow{}, errors.New("injected store fault")
+	}
+	return f.Store.DirentGet(ctx, tenant, scope, scopeID, parent, name)
+}
+
+// TestTenantRoot_AProbeFaultDoesNotReprovision: provisioning runs only when the probe
+// says the document is absent. A fault read as "absent" would import a fresh template
+// over the operator's deployment context.
+func TestTenantRoot_AProbeFaultDoesNotReprovision(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	real := s.store
+	s.store = faultyTenantRootLookup{real}
+	s.ensureTenantRootDoc(context.Background(), mi)
+	parent, name := "/memory/", "tenant_root"
+	if _, err := real.DirentGet(context.Background(), mi.Tenant, "tenant", "", parent, name); err == nil {
+		t.Error("a probe fault provisioned the deployment context")
+	}
+	// Without the fault the first reference provisions it, as before.
+	s.store = real
+	s.ensureTenantRootDoc(context.Background(), mi)
+	if _, err := real.DirentGet(context.Background(), mi.Tenant, "tenant", "", parent, name); err != nil {
+		t.Errorf("the first reference did not provision the deployment context: %v", err)
 	}
 }
