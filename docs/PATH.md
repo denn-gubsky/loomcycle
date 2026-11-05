@@ -41,6 +41,29 @@ end-user — needs a `user_id` on the run), or `tenant` (shared across the
 tenant). Trees are keyed by the authoritative tenant; in open mode the tenant
 is the shared `""`.
 
+**The tenant tree is gated like tenant Documents.** A run may use
+`scope: tenant` only when its agent holds `tenant` in both `memory_scopes` and
+`sql_scopes` — the same two grants a tenant document needs — and an isolated
+member never may. A tenant name is shared by every user and agent in the
+tenant, so renaming one re-points what all of them resolve. The off-run
+surfaces (`/v1/_path` and the MCP `path` tool) carry these grants for the
+operator, as they do for Document; gRPC's `Path`, like its `Document`, does
+not grant the tenant scope.
+
+**Some tenant names carry authority.** `/memory/ontology` (the tenant
+ontology), `/memory/entities` (the shared entity document) and
+`/memory/tenant_root` (the deployment context every run's prompt includes) are
+reserved: inside a run, `rm`, `mv` (as source or destination, including an
+ancestor such as `/memory`) and `mkdir` refuse them, and so do the Document
+ops that would give one to a document (`create_document`, `import_md`,
+`import_canvas`, `set_path` with that `path`, and a `copy_documents` /
+`move_documents` target) or vacate one (`delete_document` of, or
+`move_documents` out of the tenant scope for, the document that holds it). Only the operator's own off-run call (`/v1/_path`,
+`/v1/_document`) may create, rename or remove them; the runtime itself
+creates the ontology and the deployment context on first reference. The
+ontology is also known by its document id, so a rename does not unseat it
+(see `docs/DOCUMENTS.md`).
+
 **Path grammar** (enforced by `normalizePath`): slash-rooted and absolute;
 segments match `[a-zA-Z0-9._-]+`; **no `..`** (rejected, not resolved — this is
 what makes the tree tenant-safe); at most 64 segments / 1024 chars.

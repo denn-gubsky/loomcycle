@@ -1302,7 +1302,7 @@ memory:
 - Calls take the decision / chat lane of their provider and are charged to the classifying run under the usage purpose `classify`.
 - The thresholds are provisional: they are to be set from a measurement against a labelled corpus.
 
-**Revising the ontology.** Revise the confirmed ontology document in place (edit its sections). Replacing it with a new document gives every concept a new chunk: the statements already filed still point at the old concepts, and the next classify files duplicates against the new ones.
+**Revising the ontology.** The tenant ontology is created at `/memory/ontology`, but the runtime knows it by its document id, recorded when it is created or first found there: renaming it keeps it the ontology, and another document put at that name is an ordinary document. Revise the confirmed ontology document in place (edit its sections). Replacing it with a new document gives every concept a new chunk: the statements already filed still point at the old concepts, and the next classify files duplicates against the new ones.
 
 ### Merging two subjects
 
