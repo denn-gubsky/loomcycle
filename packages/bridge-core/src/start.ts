@@ -20,7 +20,7 @@ import { ConversationRouter } from "./router.js";
 import { storeFromSpec, type ConversationStore } from "./store.js";
 import { GateBroker, loadGateKey, type GateKey } from "./gate.js";
 import { retryDelayMs, revokeQueueFromSpec, type RevokeQueue } from "./revokes.js";
-import { TokenBroker, type TokenSource } from "./tokens.js";
+import { statusOf, TokenBroker, type TokenSource } from "./tokens.js";
 
 export interface BridgeContext<TRef> {
   config: SharedConfig;
@@ -47,8 +47,9 @@ export interface BridgeAdapter<TRef> {
   groupsFor?(subject: string, ref: TRef): Promise<string[] | undefined>;
   /** A gate bridge whose platform can list its people: the platform id (the
    *  gate's `sub`, without "<gate>:") of every person who is a member now.
-   *  The list must be complete: throw rather than return a first page. The
-   *  core reconciles loomcycle with it every BRIDGE_GATE_SYNC_HOURS. */
+   *  The list must be complete: throw rather than return a first page. Every
+   *  BRIDGE_GATE_SYNC_HOURS the core revokes each person it served who is not
+   *  on it. */
   members?(): Promise<ReadonlySet<string>>;
 }
 
@@ -141,13 +142,26 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     stream: opts.stream,
     message: opts.message,
   };
-  const router = new ConversationRouter<TRef>({ idleMinutes: cfg.idleMinutes }, deps);
   const now = opts.now ?? Date.now;
   const gateName = cfg.gate?.name ?? "";
 
   // A revoke loomcycle did not take is kept and retried by the bridge itself:
   // the platform's own redelivery gives up after minutes or an hour.
   const revokes = gateBroker ? (opts.revokes ?? revokeQueueFromSpec(cfg.store)) : undefined;
+  // A person a kept revoke names who writes to the bot again has come back
+  // (unblocked it, reinstalled the app): the revoke is dropped, not delivered.
+  const onSeen = (subject: string): void => {
+    if (!revokes || !subject.startsWith(`${gateName}:`)) return;
+    void revokes
+      .list()
+      .then(async (all) => {
+        if (!all.some((p) => p.subject === subject)) return;
+        await revokes.delete(subject);
+        log.info("a kept revoke was dropped: the person wrote again", {});
+      })
+      .catch((err: unknown) => log.warn("kept revokes could not be read", { error: (err as Error)?.name }));
+  };
+  const router = new ConversationRouter<TRef>({ idleMinutes: cfg.idleMinutes, onSeen }, deps);
   const keepRevoke = async (subject: string): Promise<void> => {
     try {
       const prev = (await revokes!.list()).find((p) => p.subject === subject);
@@ -161,7 +175,8 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     try {
       await gateBroker!.revoke(subject);
     } catch (err) {
-      await keepRevoke(subject);
+      if (retryable(err)) await keepRevoke(subject);
+      else log.error("loomcycle refused a revoke; it is not retried", { status: statusOf(err) });
       throw err;
     }
     await revokes!.delete(subject).catch((err: unknown) => log.warn("a delivered revoke stayed queued", { error: (err as Error)?.name }));
@@ -180,8 +195,13 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
           await revokes.delete(p.subject);
           log.info("a kept revoke reached loomcycle", { attempts: p.attempts });
         } catch (err) {
+          if (!retryable(err)) {
+            await revokes.delete(p.subject);
+            log.error("loomcycle refused a kept revoke; it is dropped", { status: statusOf(err), attempts: p.attempts + 1 });
+            continue;
+          }
           await revokes.put({ ...p, attempts: p.attempts + 1, nextAttemptAt: now() + retryDelayMs(p.attempts + 1) });
-          log.warn("a kept revoke failed again; it is retried later", { status: (err as { status?: number })?.status, attempts: p.attempts + 1 });
+          log.warn("a kept revoke failed again; it is retried later", { status: statusOf(err), attempts: p.attempts + 1 });
         }
       }
     } catch (err) {
@@ -191,11 +211,13 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     }
   };
 
-  // Reconciliation: every gate subject the bridge knows (each conversation's
-  // run identity) that is still there is listed, and the sync is complete,
-  // so loomcycle removes a linked user the list leaves out: a person the
-  // platform no longer lists, whose revoke was lost or never sent. A shared
-  // conversation's own user is always listed; it is not a person.
+  // Reconciliation acts only on evidence: a person this bridge served (a
+  // run subject in its store) whom the platform's member list no longer has
+  // is revoked, through the same path as a platform's own leave event. A user
+  // the store does not know (a lost or replaced store, another bridge's) is
+  // never touched, and a shared conversation's own user is not a person. A
+  // round that would revoke more than its cap is skipped whole: a member list
+  // read from the wrong workspace looks exactly like everyone leaving.
   let syncing = false;
   const reconcile = async (): Promise<void> => {
     if (!gateBroker || !adapter.members || syncing) return;
@@ -208,28 +230,37 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
         log.warn("reconcile skipped: the platform's member list could not be read", { error: (err as Error)?.name });
         return;
       }
-      // An empty list is far likelier a platform fault than everyone gone.
       if (members.size === 0) {
         log.warn("reconcile skipped: the platform listed no members", {});
         return;
       }
-      const pending = new Set((await revokes!.list()).map((p) => p.subject));
       const prefix = `${gateName}:`;
-      const users = new Map<string, string>();
-      for (const rec of await store.list()) {
-        const s = rec.runSubject;
-        if (!s.startsWith(prefix) || s.length === prefix.length || pending.has(s)) continue;
-        if (s.startsWith(`${prefix}conv:`) || members.has(s.slice(prefix.length))) users.set(s, rec.runName);
-      }
-      if (users.size === 0) {
-        log.info("reconcile skipped: no conversation to vouch for", {});
+      const records = await store.list();
+      const people = new Set(
+        records.map((r) => r.runSubject).filter((s) => s.startsWith(prefix) && s.length > prefix.length && !s.startsWith(`${prefix}conv:`)),
+      );
+      const pending = new Set((await revokes!.list()).map((p) => p.subject));
+      const gone = [...people].filter((s) => !members.has(s.slice(prefix.length)) && !pending.has(s));
+      const cap = reconcileCap(people.size);
+      if (gone.length > cap) {
+        log.warn("reconcile skipped: more people gone than the cap allows", { gone: gone.length, cap, people: people.size });
         return;
       }
-      const res = await gateBroker.syncComplete([...users].map(([subject, name]) => ({ subject, name })));
-      log.info("reconciled users with loomcycle", { listed: users.size, created: res.created, removed: res.removed, refused: res.refused });
+      let revoked = 0;
+      for (const subject of gone) {
+        try {
+          await revoke(subject);
+        } catch {
+          continue; // kept for retry, or refused for good; logged by revoke
+        }
+        revoked++;
+        // Their conversations go too: the person has left the platform, and
+        // a record kept would be revoked again every round.
+        for (const r of records) if (r.runSubject === subject) await store.delete(r.conversationId);
+      }
+      if (gone.length > 0) log.info("reconcile revoked people the platform no longer lists", { gone: gone.length, revoked });
     } catch (err) {
-      // 409 sync_removal_limit: loomcycle changed nothing; an operator looks.
-      log.warn("reconcile failed", { status: (err as { status?: number })?.status, code: (err as { code?: string })?.code });
+      log.warn("reconcile failed", { error: (err as Error)?.name });
     } finally {
       syncing = false;
     }
@@ -238,6 +269,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
   let sweeper: ReturnType<typeof setInterval> | undefined;
   let revokeTimer: ReturnType<typeof setInterval> | undefined;
   let syncTimer: ReturnType<typeof setInterval> | undefined;
+  let firstSync: ReturnType<typeof setTimeout> | undefined;
   let server: http.Server | undefined;
 
   const ctx: BridgeContext<TRef> = {
@@ -277,14 +309,12 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
       }
       const syncHours = cfg.gateSyncHours ?? DEFAULT_GATE_SYNC_HOURS;
       if (gateBroker && adapter.members && syncHours > 0) {
-        if (opts.store === undefined && cfg.store === "memory") {
-          // A memory store forgets its shared conversations on a restart, and a
-          // complete sync would then remove their users.
-          log.warn("reconcile is off: it needs a store that survives a restart (BRIDGE_STORE=file:<path>)", {});
-        } else {
-          syncTimer = setInterval(() => void reconcile(), syncHours * 3_600_000);
-          syncTimer.unref?.();
-        }
+        // The first round a few minutes after start (jittered, so replicas
+        // and restarts do not line up), then on the interval.
+        firstSync = setTimeout(() => void reconcile(), 120_000 + Math.floor(Math.random() * 180_000));
+        firstSync.unref?.();
+        syncTimer = setInterval(() => void reconcile(), syncHours * 3_600_000);
+        syncTimer.unref?.();
       }
       log.info(`${name} listening`, { port: cfg.port, agent: cfg.agent });
     },
@@ -292,6 +322,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
       if (sweeper) clearInterval(sweeper);
       if (revokeTimer) clearInterval(revokeTimer);
       if (syncTimer) clearInterval(syncTimer);
+      if (firstSync) clearTimeout(firstSync);
       await router.stop();
       await adapter.stop?.();
       if (server) await close(server);
@@ -328,4 +359,17 @@ export async function runCli<TRef>(name: string, build: () => Bridge<TRef>): Pro
     console.error(`${name}: failed to start:`, (err as Error)?.message ?? err);
     process.exit(1);
   }
+}
+
+/** reconcileCap is the most people one reconcile round may revoke: 10% of
+ *  the people the bridge serves, never fewer than five. */
+function reconcileCap(people: number): number {
+  return Math.max(5, Math.floor(people / 10));
+}
+
+/** retryable: anything but a 4xx refusal, which a retry would only repeat.
+ *  A timeout (408) and throttling (429) are worth another try. */
+function retryable(err: unknown): boolean {
+  const s = statusOf(err);
+  return s === undefined || s < 400 || s >= 500 || s === 408 || s === 429;
 }

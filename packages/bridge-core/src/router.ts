@@ -8,6 +8,8 @@ import type { Identified } from "./identity.js";
 
 export interface RouterOptions {
   idleMinutes: number;
+  /** Called with each speaker the platform authenticated: they are present. */
+  onSeen?(subject: string): void;
 }
 
 type Ok = Extract<Identified, { ok: true }>;
@@ -32,6 +34,7 @@ export class ConversationRouter<TRef> {
       await this.refuse(id, ref);
       return;
     }
+    this.opts.onSeen?.(id.speaker.subject);
     const conv = await this.conversation(id, ref);
     conv.updateRef(ref);
     conv.adoptGateSubjects(id.runAs, id.speaker);

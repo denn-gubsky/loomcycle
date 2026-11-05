@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ConfigError, EnvReader, loadSharedConfig, type Env, type SharedConfig } from "../src/config.js";
 import { keyFromSecret } from "../src/gate.js";
-import { FileRevokeQueue } from "../src/revokes.js";
+import { FileRevokeQueue, MemoryRevokeQueue } from "../src/revokes.js";
 import { createBridge, type BridgeAdapter, type BridgeContext } from "../src/start.js";
 import { FileStore, MemoryStore, type ConversationRecord } from "../src/store.js";
 
@@ -49,12 +49,13 @@ function adapter(extra: Partial<BridgeAdapter<unknown>> = {}): { a: BridgeAdapte
 /** A fake loomcycle /v1/_auth: records each call; `fail` answers a revoke 503. */
 function fakeAuth() {
   const calls: { path: string; payload: Record<string, any> }[] = [];
-  const state = { failRevoke: false };
+  const state = { failRevoke: false, revokeStatus: 0 };
   const fetchFn = (async (url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body));
     const jwt: string = body.assertion ?? body.request;
     calls.push({ path: new URL(url).pathname, payload: JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString()) });
     if (url.endsWith("/v1/_auth/revoke")) {
+      if (state.revokeStatus) return new Response(JSON.stringify({ code: "refused" }), { status: state.revokeStatus });
       return state.failRevoke ? new Response(JSON.stringify({ code: "revoke_failed" }), { status: 503 }) : new Response(null, { status: 204 });
     }
     return new Response(JSON.stringify({ created: 0, updated: 2, refused: 0, removed: 1, unchanged: 0 }), { status: 200 });
@@ -159,9 +160,65 @@ describe("revokes a gate bridge keeps", () => {
   });
 });
 
+describe("a kept revoke ends", () => {
+  it("drops a kept revoke when the person writes again", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    const { cfg } = load(GATE_ENV, true);
+    const revokes = new MemoryRevokeQueue();
+    const lc = fakeAuth();
+    lc.state.failRevoke = true;
+    const { a, ctx } = adapter();
+    const bridge = createBridge(cfg, a, { logger: quiet, revokes, gateKey: keyFromSecret("s".repeat(40)), gateFetch: lc.fetchFn });
+    await bridge.start();
+    await expect(ctx().gate!.revoke("tg:42")).rejects.toMatchObject({ status: 503 });
+    expect(await revokes.list()).toHaveLength(1);
+
+    // They unblocked the bot and wrote: they are not gone after all.
+    await ctx().router.onMessage(
+      { ok: true, speaker: { subject: "tg:42", name: "Ann", trust: "trusted" }, scope: "personal", conversationId: "dm-42", runAs: { subject: "tg:42", name: "Ann" } },
+      {},
+      "hello again",
+    );
+    await vi.waitFor(async () => expect(await revokes.list()).toEqual([]));
+    lc.state.failRevoke = false;
+    await vi.advanceTimersByTimeAsync(2 * 3_600_000);
+    expect(lc.calls.filter((c) => c.path === "/v1/_auth/revoke")).toHaveLength(1);
+    await bridge.stop();
+  });
+
+  it("gives up a revoke loomcycle refuses for good, and keeps one it may yet take", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    const { cfg } = load(GATE_ENV, true);
+    const revokes = new MemoryRevokeQueue();
+    const lc = fakeAuth();
+    const { a, ctx } = adapter();
+    const bridge = createBridge(cfg, a, { logger: quiet, revokes, gateKey: keyFromSecret("s".repeat(40)), gateFetch: lc.fetchFn });
+    await bridge.start();
+
+    lc.state.revokeStatus = 400;
+    await expect(ctx().gate!.revoke("tg:1")).rejects.toMatchObject({ status: 400 });
+    expect(await revokes.list()).toEqual([]);
+
+    lc.state.revokeStatus = 429; // throttled: worth another try
+    await expect(ctx().gate!.revoke("tg:2")).rejects.toMatchObject({ status: 429 });
+    expect((await revokes.list()).map((p) => p.subject)).toEqual(["tg:2"]);
+
+    // Retried, and refused for good this time: dropped, not retried hourly forever.
+    lc.state.revokeStatus = 403;
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(await revokes.list()).toEqual([]);
+    const before = lc.calls.length;
+    await vi.advanceTimersByTimeAsync(3 * 3_600_000);
+    expect(lc.calls.length).toBe(before);
+    await bridge.stop();
+  });
+});
+
 describe("reconciliation", () => {
-  it("runs a complete sync on the timer", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+  const FIRST_RUN_BY = 6 * 60_000; // jittered, within minutes of start
+
+  it("revokes the people it served whom the platform no longer lists, a few minutes after start", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
     const { cfg } = load(GATE_ENV, true);
     expect(cfg.gateSyncHours).toBe(6);
     const store = new MemoryStore();
@@ -174,23 +231,45 @@ describe("reconciliation", () => {
     const bridge = createBridge(cfg, a, { logger: quiet, store, gateKey: keyFromSecret("s".repeat(40)), gateFetch: lc.fetchFn });
     await bridge.start();
 
-    await vi.advanceTimersByTimeAsync(6 * 3_600_000 - 1_000);
-    expect(lc.calls.filter((c) => c.path === "/v1/_auth/sync")).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(1_000);
-    const syncs = lc.calls.filter((c) => c.path === "/v1/_auth/sync");
-    expect(syncs).toHaveLength(1);
-    expect(syncs[0]!.payload).toMatchObject({ lc_use: "sync", iss: "tg", complete: true });
-    // bob is left out, so loomcycle removes him; dave was never this
-    // bridge's user, so he is not made one.
-    expect(syncs[0]!.payload.users.map((u: { sub: string }) => u.sub).sort()).toEqual(["alice", "conv:abc"]);
+    await vi.advanceTimersByTimeAsync(FIRST_RUN_BY);
+    const revokes = lc.calls.filter((c) => c.path === "/v1/_auth/revoke");
+    // Only bob: evidence that he left. A linked user this bridge never saw
+    // (dave, or anyone a lost store forgot) is never removed for its absence.
+    expect(revokes.map((c) => c.payload.sub)).toEqual(["bob"]);
+    expect(lc.calls.filter((c) => c.path === "/v1/_auth/sync")).toEqual([]);
+    expect(await store.get("dm-bob")).toBeUndefined();
+    expect(await store.get("dm-alice")).toBeDefined();
+    expect(await store.get("chan")).toBeDefined();
 
+    // Then on the timer; bob is not revoked a second time.
     await vi.advanceTimersByTimeAsync(6 * 3_600_000);
-    expect(lc.calls.filter((c) => c.path === "/v1/_auth/sync")).toHaveLength(2);
+    expect(lc.calls.filter((c) => c.path === "/v1/_auth/revoke")).toHaveLength(1);
     await bridge.stop();
   });
 
-  it("never syncs on a member list it could not read, or one that is empty", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+  it("skips a round that would revoke more people than its cap", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    const { cfg } = load(GATE_ENV, true);
+    const store = new MemoryStore();
+    for (const n of ["a", "b", "c", "d", "e", "f"]) await store.put(rec(`dm-${n}`, `tg:${n}`));
+    const lc = fakeAuth();
+    // Six of six gone: over max(5, 10%). A platform API returning the wrong
+    // workspace looks exactly like this.
+    const bridge = createBridge(cfg, adapter({ members: async () => new Set(["zed"]) }).a, {
+      logger: quiet,
+      store,
+      gateKey: keyFromSecret("s".repeat(40)),
+      gateFetch: lc.fetchFn,
+    });
+    await bridge.start();
+    await vi.advanceTimersByTimeAsync(FIRST_RUN_BY + 6 * 3_600_000);
+    expect(lc.calls.filter((c) => c.path === "/v1/_auth/revoke")).toEqual([]);
+    expect(await store.list()).toHaveLength(6);
+    await bridge.stop();
+  });
+
+  it("never revokes on a member list it could not read, or one that is empty", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
     const { cfg } = load(GATE_ENV, true);
     const store = new MemoryStore();
     await store.put(rec("dm-alice", "tg:alice"));
@@ -198,26 +277,10 @@ describe("reconciliation", () => {
       const lc = fakeAuth();
       const bridge = createBridge(cfg, adapter({ members }).a, { logger: quiet, store, gateKey: keyFromSecret("s".repeat(40)), gateFetch: lc.fetchFn });
       await bridge.start();
-      await vi.advanceTimersByTimeAsync(6 * 3_600_000);
-      expect(lc.calls.filter((c) => c.path === "/v1/_auth/sync")).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(FIRST_RUN_BY + 6 * 3_600_000);
+      expect(lc.calls.filter((c) => c.path === "/v1/_auth/revoke")).toHaveLength(0);
       await bridge.stop();
     }
-  });
-
-  it("is off with a memory store, which forgets shared conversations on a restart", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
-    const { cfg } = load(GATE_ENV, true);
-    expect(cfg.store).toBe("memory");
-    const lc = fakeAuth();
-    const bridge = createBridge(cfg, adapter({ members: async () => new Set(["alice"]) }).a, {
-      logger: quiet,
-      gateKey: keyFromSecret("s".repeat(40)),
-      gateFetch: lc.fetchFn,
-    });
-    await bridge.start();
-    await vi.advanceTimersByTimeAsync(12 * 3_600_000);
-    expect(lc.calls.filter((c) => c.path === "/v1/_auth/sync")).toHaveLength(0);
-    await bridge.stop();
   });
 });
 

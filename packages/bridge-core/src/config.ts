@@ -39,8 +39,9 @@ export interface SharedConfig {
   /** Local testing only: the platform's request authentication is off.
    *  Accepted only on loopback and never with a gate (devModeProblem). */
   dev: boolean;
-  /** How often a gate bridge reconciles its users with loomcycle by a
-   *  complete sync from the platform's member list (RFC FA §3.7c), in hours;
+  /** How often a gate bridge reconciles its users with loomcycle (RFC FA
+   *  §3.7c): it revokes each person it served whom the platform's member
+   *  list no longer has. In hours;
    *  0 turns it off; unset (a config built in code) is the default, 6. Only
    *  a platform that can list its members does it. */
   gateSyncHours?: number;
