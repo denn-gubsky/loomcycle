@@ -64,8 +64,12 @@ type AuthExternalGateConfig struct {
 
 // AuthIssuedTokenConfig is the ceiling of the tokens a gate gets issued.
 type AuthIssuedTokenConfig struct {
-	TTL       string   `yaml:"ttl,omitempty"`
-	Agents    []string `yaml:"agents,omitempty"`
+	TTL    string   `yaml:"ttl,omitempty"`
+	Agents []string `yaml:"agents,omitempty"`
+	// Surfaces is the off-run surfaces a token this gate is issued may
+	// carry beside agents (speech, transcription; RFC GA). A gate whose
+	// ceiling names agents and no surfaces gets none.
+	Surfaces  []string `yaml:"surfaces,omitempty"`
 	Overrides []string `yaml:"overrides,omitempty"`
 	Rate      *struct {
 		PerMinute int `yaml:"per_minute"`
@@ -99,7 +103,7 @@ func (t *AuthIssuedTokenConfig) UnmarshalYAML(n *yaml.Node) error {
 // MarshalYAML writes a bare unrestricted back as the scalar, so a config
 // that is re-marshalled (layer merge, reload diff) loads the same way again.
 func (t AuthIssuedTokenConfig) MarshalYAML() (any, error) {
-	if t.Unrestricted && t.TTL == "" && t.Rate == nil && t.MaxActive == 0 && t.Agents == nil && t.Overrides == nil {
+	if t.Unrestricted && t.TTL == "" && t.Rate == nil && t.MaxActive == 0 && t.Agents == nil && t.Overrides == nil && t.Surfaces == nil {
 		return issuedTokenUnrestricted, nil
 	}
 	type plain AuthIssuedTokenConfig
@@ -254,9 +258,11 @@ func resolveExternalGate(c *Config, name string, g AuthGateConfig, deployment Au
 		return nil, fmt.Errorf("%s.issued_token: required — the ceiling every token this gate gets issued is held to "+
 			"(e.g. { agents: [chat], overrides: [interactive] }); write issued_token: %s to give the tokens their user's whole member reach",
 			where, issuedTokenUnrestricted)
-	case t.Unrestricted && (t.Agents != nil || t.Overrides != nil):
-		return nil, fmt.Errorf("%s.issued_token: unrestricted names no agents or overrides; drop one or the other", where)
-	case !t.Unrestricted && t.Agents == nil && t.Overrides == nil:
+	case t.Unrestricted && (t.Agents != nil || t.Overrides != nil || t.Surfaces != nil):
+		// surfaces is a grant to a token confined to agents; an unrestricted
+		// token is not confined, so it already reaches those routes.
+		return nil, fmt.Errorf("%s.issued_token: unrestricted names no agents, overrides or surfaces; drop one or the other", where)
+	case !t.Unrestricted && t.Agents == nil && t.Overrides == nil && t.Surfaces == nil:
 		return nil, fmt.Errorf("%s.issued_token: names neither agents nor overrides, so it limits nothing; "+
 			"name them, or write issued_token: %s", where, issuedTokenUnrestricted)
 	}
@@ -273,6 +279,7 @@ func resolveExternalGate(c *Config, name string, g AuthGateConfig, deployment Au
 		if t.Agents != nil {
 			out.TokenRestrictions.Agents = append([]string(nil), t.Agents...)
 		}
+		out.TokenRestrictions.Surfaces = append([]string(nil), t.Surfaces...)
 		if t.Overrides != nil {
 			out.TokenRestrictions.Overrides = &auth.OverridePolicy{Allow: append([]string(nil), t.Overrides...)}
 		}

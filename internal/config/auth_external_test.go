@@ -97,6 +97,12 @@ func TestResolveExternalGate_RefusesWhatItCannotHonour(t *testing.T) {
 		"token ttl too long": {func(g *AuthGateConfig, c *Config) {
 			g.External.IssuedToken = &AuthIssuedTokenConfig{TTL: "90d", Agents: []string{"chat"}}
 		}, "issued_token.ttl"},
+		"surfaces without agents": {func(g *AuthGateConfig, c *Config) {
+			g.External.IssuedToken = &AuthIssuedTokenConfig{Surfaces: []string{"speech"}}
+		}, "surfaces applies only with agents"},
+		"unknown surface": {func(g *AuthGateConfig, c *Config) {
+			g.External.IssuedToken = &AuthIssuedTokenConfig{Agents: []string{"chat"}, Surfaces: []string{"chat"}}
+		}, "not a surface"},
 		"reactivate auto": {func(g *AuthGateConfig, c *Config) { g.External.OnRemoved = &AuthOnRemovedConfig{Reactivate: "auto"} }, "not supported yet"},
 		"untrusted promotes": {func(g *AuthGateConfig, c *Config) {
 			g.IdentityMap.NewUser = &AuthNewUserConfig{AccessMode: "tenant"}
@@ -156,7 +162,7 @@ gates:
     public_key: { kty: OKP, crv: Ed25519, x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo" }
     callback_url: https://gate.example/login
     allowed_return_to: [https://app.example/welcome]
-    issued_token: { ttl: 2h, agents: [chat], overrides: [interactive], rate: { per_minute: 6, burst: 10 }, max_active: 2 }
+    issued_token: { ttl: 2h, agents: [chat], surfaces: [speech, transcription], overrides: [interactive], rate: { per_minute: 6, burst: 10 }, max_active: 2 }
     on_removed: { unbind_after: 72h }
     identity_map: { tenant: acme, provision: auto }
 `
@@ -170,7 +176,7 @@ gates:
 	}
 	x := c.ResolvedAuth.Gates[0].External
 	if x.CallbackURL != "https://gate.example/login" || x.TokenTTL != 2*time.Hour || x.TokenRestrictions.Rate.PerMinute != 6 ||
-		len(x.AllowedReturnTo) != 1 || x.Removal.UnbindAfter != 72*time.Hour {
+		len(x.AllowedReturnTo) != 1 || x.Removal.UnbindAfter != 72*time.Hour || len(x.TokenRestrictions.Surfaces) != 2 {
 		t.Fatalf("external = %+v", x)
 	}
 }
@@ -391,12 +397,29 @@ gates:
 	if err := resolveAuth(again); err != nil || again.ResolvedAuth.Gates[0].External.TokenRestrictions.Rate == nil {
 		t.Fatalf("round trip lost the rate: %v\n%s", err, raw)
 	}
-	for _, bad := range []string{"{ unrestricted: true, agents: [chat] }", "{ unrestricted: true, overrides: [] }"} {
+	// surfaces is a grant to a token confined to agents; an unrestricted token
+	// is not confined and reaches the speech routes already.
+	for _, bad := range []string{"{ unrestricted: true, agents: [chat] }", "{ unrestricted: true, overrides: [] }", "{ unrestricted: true, surfaces: [speech] }"} {
 		if _, err := load(bad); err == nil || !strings.Contains(err.Error(), "unrestricted") {
 			t.Errorf("%s: err = %v", bad, err)
 		}
 	}
 	if _, err := load("unrestricted"); err != nil {
 		t.Errorf("the scalar form: %v", err)
+	}
+	// A ceiling with surfaces keeps them through a re-marshal.
+	c, err = load("{ agents: [chat], overrides: [interactive], surfaces: [speech] }")
+	if err != nil {
+		t.Fatalf("surfaces: %v", err)
+	}
+	raw, _ = yaml.Marshal(c.Auth)
+	back = AuthConfig{}
+	if err := yaml.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	again = &Config{Auth: back}
+	again.Env.PublicURL = "https://lc.example"
+	if err := resolveAuth(again); err != nil || len(again.ResolvedAuth.Gates[0].External.TokenRestrictions.Surfaces) != 1 {
+		t.Fatalf("round trip lost the surfaces: %v\n%s", err, raw)
 	}
 }

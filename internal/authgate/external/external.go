@@ -161,6 +161,7 @@ type Claims struct {
 // TokenRequest narrows an issued token (UseAssert).
 type TokenRequest struct {
 	Agents     []string `json:"agents,omitempty"`
+	Surfaces   []string `json:"surfaces,omitempty"`
 	Overrides  []string `json:"overrides,omitempty"`
 	RatePerMin int      `json:"rate_per_minute,omitempty"`
 	RateBurst  int      `json:"rate_burst,omitempty"`

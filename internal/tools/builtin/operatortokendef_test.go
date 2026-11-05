@@ -833,3 +833,36 @@ func TestOperatorTokenDef_RotateCarriesEveryUnchangedField(t *testing.T) {
 		t.Fatalf("rotated row %+v does not carry %+v", next, orig)
 	}
 }
+
+// RFC GA: surfaces granted beside agents are stored and survive a rotation;
+// without agents they are refused.
+func TestOperatorTokenDef_SurfacesAreStoredAndSurviveRotation(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	surfacesOf := func(defID string) []string {
+		row, err := st.OperatorTokenDefGet(ctx, defID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := auth.ParseRestrictions(row.RestrictionsJSON)
+		if err != nil {
+			t.Fatalf("stored %q: %v", row.RestrictionsJSON, err)
+		}
+		return r.Surfaces
+	}
+	out := mustOp(t, tool, ctx, `{"op":"create","name":"bridge","tenant_id":"acme","scopes":["runs:create"],"agents":["chat"],"surfaces":["transcription"]}`)
+	if s := surfacesOf(out["def_id"].(string)); len(s) != 1 || s[0] != auth.SurfaceTranscription {
+		t.Errorf("stored surfaces = %v", s)
+	}
+	rotated := mustOp(t, tool, ctx, `{"op":"rotate","name":"bridge"}`)
+	if s := surfacesOf(rotated["def_id"].(string)); len(s) != 1 {
+		t.Errorf("a rotation dropped the surfaces: %v", s)
+	}
+	res, err := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"bad","tenant_id":"acme","scopes":["runs:create"],"surfaces":["speech"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(res.Text, "surfaces") {
+		t.Errorf("surfaces without agents: is_error=%v text=%q, want a refusal naming surfaces", res.IsError, res.Text)
+	}
+}

@@ -137,7 +137,7 @@ func routeGatesAdmit(ctx context.Context, p auth.Principal, method, path string)
 	if _, ok := scopeGate(p, method, path); !ok {
 		return false
 	}
-	if p.Restrictions.RunPlaneOnly() && !runPlaneRoute(method, path) {
+	if confinedOffRoute(p, method, path) {
 		return false
 	}
 	surface, governed := authz.HTTPSurface(method, path)

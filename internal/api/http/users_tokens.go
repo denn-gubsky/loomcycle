@@ -71,6 +71,10 @@ type mintUserTokenRequest struct {
 	// to the run endpoints. A pointer so "absent" (unrestricted) and "[]"
 	// (refused) are told apart.
 	Agents *[]string `json:"agents,omitempty"`
+	// Surfaces, with Agents, names the off-run surfaces the token may still
+	// call: "speech", "transcription" (a chat bridge's voice messages, RFC
+	// GA). Refused without Agents, and held to the minter's own.
+	Surfaces []string `json:"surfaces,omitempty"`
 	// Overrides locks the per-run overrides for runs this token starts:
 	// "none", or the list of overrides it may still set.
 	Overrides *auth.OverridePolicy `json:"overrides,omitempty"`
@@ -111,6 +115,7 @@ func (r mintUserTokenRequest) restrictions() (auth.Restrictions, error) {
 	if r.Agents != nil {
 		out.Agents = *r.Agents
 	}
+	out.Surfaces = r.Surfaces
 	out.Overrides, out.Rate = r.Overrides, r.Rate
 	retention, err := auth.ParseRetention(r.Retention)
 	if err != nil {

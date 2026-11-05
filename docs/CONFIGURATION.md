@@ -1514,14 +1514,37 @@ A token with an `agents` list:
 | `GET /v1/users/{id}/agents`, `…/agents/stream`, `…/interrupts` | channels, memory, documents, paths, usage, the credential store |
 | `GET /v1/_runnable-agents` (lists only its agents), `GET /v1/_me`, `GET /v1/config` | A2A: such a token is not accepted as an A2A peer |
 | `/v1/_mcp` (run tools only) | anything added later, until it is listed as a run endpoint |
+| the speech routes, **only when granted** (below) | the speech routes, when not granted |
+
+#### Granting the speech routes
+
+A chat bridge's user token is limited to the bridge's agent, but the bridge also needs to transcribe that person's voice notes and read replies aloud as that person, so the usage is billed to them (RFC GA). A token with an `agents` list may be granted these off-run **surfaces** as well:
+
+| Surface | Opens |
+|---|---|
+| `speech` | `POST /v1/audio/speech` and `GET /v1/_speech` |
+| `transcription` | `POST /v1/audio/transcriptions` and `GET /v1/_speech` |
+
+| Where | How |
+|---|---|
+| A per-user token | `{"agents": ["chat"], "surfaces": ["speech", "transcription"]}` on `POST /v1/_users/{subject}/tokens` (TS: `mintUserToken(subject, { agents, surfaces })`) |
+| An operator token | `surfaces` on the `OperatorTokenDef` `create` op |
+| A declared principal | `surfaces: [speech, transcription]` beside `agents:` in `principals:` |
+| A token an external gate is issued | `token.surfaces` in the assertion, held to the gate's `issued_token.surfaces` ceiling |
+
+- **Only beside `agents`.** A token with no `agents` list already reaches every route its scopes allow, so `surfaces` without `agents` is refused.
+- **Held to the minter.** A token limited to certain agents can grant only the surfaces it holds itself. A gate whose `issued_token` names `agents` and no `surfaces` issues none: the bridge sees `speech` and `transcription` false in `GET /v1/_me` and stays on text.
+- **Opens nothing else.** The model gateways, `/v1/_decide` and every other off-run route stay refused.
+- **Every other check still applies:** the `runs:create` scope, the ACL (`use gateway:speech` / `use gateway:transcription`, so a deny bound to the user or the token wins), the hard token budget, the token's run rate (each speech or transcription call takes one start from it), and the usage row under the token's own user.
+- `GET /v1/_me` reports the result in `effective.surfaces.speech` / `.transcription`, and `GET /v1/_speech` shows only the granted directions.
 
 Rules worth knowing:
 
-- **The list is fixed at mint.** A rotation carries it over unchanged.
+- **The list is fixed at mint.** A rotation carries it over unchanged, `surfaces` included.
 - **An empty list is refused.** Omit `agents` for a token with no limit.
 - **A token holding `substrate:admin` cannot have a list.** It could no longer administer, and would still switch the legacy login off.
 - **A run started by a schedule, a webhook or a channel hook is not gated.** It runs under the definition's own identity; there is no token there to limit.
-- **A token whose stored restrictions this version cannot read is refused at login.** This matters after a downgrade: a newer version may have written a restriction this one does not know how to enforce.
+- **A token whose stored restrictions this version cannot read is refused at login.** This matters after a downgrade: a newer version may have written a restriction this one does not know how to enforce, `surfaces` among them.
 - `GET /v1/_me`, token listings and `Context op=self` show a token's `restrictions`.
 
 ### Locking a token's per-run settings
@@ -1924,6 +1947,7 @@ auth:
       public_key: { kty: OKP, crv: Ed25519, x: "<the gate key's public x>" }   # or P-256 (ES256)
       # hmac_secret_env: LOOMCYCLE_GATE_TG_SECRET   # instead of public_key, for a co-located gate
       issued_token: { ttl: 12h, agents: [chat], overrides: [interactive], rate: { per_minute: 6, burst: 10 }, max_active: 2 }   # required
+      # for voice messages through the bridge (RFC GA), add to issued_token: surfaces: [speech, transcription]
       identity_map: { tenant: acme, provision: auto }
       # on_removed: { unbind_after: 72h }           # this gate's removal policy, over auth.lifecycle.on_removed
     hr:
@@ -1943,8 +1967,8 @@ auth:
   - `GET /v1/_authgate` (admin) lists the gates with each key's fingerprint, never the key; `?probe=1` also reads each gate's `/.well-known/loomcycle-authgate`.
 - **What a gate may not say.** The tenant and the reach come from the `identity_map`, not the assertion. Only a gate marked `trusted: true` may assert an `access_mode` or groups, and only its own `<gate>:` groups. The sign-in method it reports is not taken: its sessions and tokens show `amr: [ext]`, so a gate can never stand in for a second factor. Its `auth_time` is never later than when it signed.
 - **Keys.** `public_key` is an Ed25519 or P-256 public JWK. `hmac_secret_env` names a `LOOMCYCLE_*` env var holding an HS256 secret (at least 32 bytes); a literal or a `$cred:` reference is refused. A key is its gate's alone: two gates with the same key (one public key, or one secret under one env var or two) fail the load, since the gate's name is only a claim the key holder writes, and so does an `hmac_secret_env` that also holds a principal's `token_env` or a gate's `client_secret_env`. A gate is registered in config only: its key is a trust anchor, and one an API call could add is one a stolen admin token could add too.
-- **The ceiling is required.** `issued_token` is the most any token the gate gets issued may do, and whoever holds the gate's key can ask for exactly that much, for any of its users. A gate without it fails the load, and so does one that names neither `agents` nor `overrides` (a `ttl` or `rate` alone limits no reach). `issued_token: unrestricted` loads: the tokens then carry their user's whole member reach (every agent the user's access control allows, every per-run override), now a choice written in the config rather than what a missing key means. To keep a lifetime, a rate or `max_active` with it, write the mapping form, `issued_token: { unrestricted: true, ttl: 12h, rate: { per_minute: 6, burst: 10 } }`; `unrestricted` with `agents` or `overrides` is refused. Before RFC FZ an omitted `issued_token` meant exactly that, so a config that relied on it must now say `unrestricted` or name a ceiling.
-- **Issued tokens** stop the moment their user is not `active` (disabled, revoked, pending), or their gate is taken out of the config, checked on every request on every replica. `issued_token.ttl` is at most 30 days; `max_active` (0–100) caps a user's live tokens, retiring the oldest.
+- **The ceiling is required.** `issued_token` is the most any token the gate gets issued may do, and whoever holds the gate's key can ask for exactly that much, for any of its users. A gate without it fails the load, and so does one that names neither `agents` nor `overrides` (a `ttl` or `rate` alone limits no reach). `issued_token: unrestricted` loads: the tokens then carry their user's whole member reach (every agent the user's access control allows, every per-run override), now a choice written in the config rather than what a missing key means. To keep a lifetime, a rate or `max_active` with it, write the mapping form, `issued_token: { unrestricted: true, ttl: 12h, rate: { per_minute: 6, burst: 10 } }`; `unrestricted` with `agents`, `overrides` or `surfaces` is refused (an unrestricted token is not confined to agents, so it already reaches the speech routes). Before RFC FZ an omitted `issued_token` meant exactly that, so a config that relied on it must now say `unrestricted` or name a ceiling.
+- **Issued tokens** stop the moment their user is not `active` (disabled, revoked, pending), or their gate is taken out of the config, checked on every request on every replica. `issued_token.ttl` is at most 30 days; `max_active` (0–100) caps a user's live tokens, retiring the oldest. `issued_token.surfaces` (`speech`, `transcription`, only beside `agents`) is the most a token from this gate may be granted of the speech routes ([Granting the speech routes](#granting-the-speech-routes)): an assertion's `token.surfaces` is narrowed to it, and with `agents` set and no `surfaces`, an issued token gets none.
 - **Removal.** A revoke, an authoritative sync, or (with `auth.lifecycle.dormant_after`) no sign-in through any gate for that long starts a removal in three stages that never skip:
 
   ```yaml

@@ -163,6 +163,7 @@ import type {
   CreateUserBody,
   UpdateUserBody,
   MintedUserToken,
+  TokenSurface,
   UserTokenMeta,
   ListUserTokensResponse,
   UserIdentitiesResponse,
@@ -2125,6 +2126,10 @@ export class LoomcycleClient {
       name?: string;
       maxActive?: number;
       agents?: string[];
+      /** With `agents`: the off-run surfaces the token may still call, e.g.
+       *  `["speech", "transcription"]` for a chat bridge that exchanges voice
+       *  messages. Refused without `agents`; held to the caller's own. */
+      surfaces?: TokenSurface[];
       overrides?: "none" | string[];
       rate?: { perMinute: number; burst?: number };
       /** `"none"`: every run the token starts is a no-trace run, whatever
@@ -2137,6 +2142,7 @@ export class LoomcycleClient {
     if (opts?.name !== undefined) body.name = opts.name;
     if (opts?.maxActive !== undefined) body.max_active = opts.maxActive;
     if (opts?.agents !== undefined) body.agents = opts.agents;
+    if (opts?.surfaces !== undefined) body.surfaces = opts.surfaces;
     if (opts?.overrides !== undefined) body.overrides = opts.overrides;
     if (opts?.rate !== undefined) {
       body.rate = { per_minute: opts.rate.perMinute, burst: opts.rate.burst };

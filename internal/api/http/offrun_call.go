@@ -36,10 +36,12 @@ import (
 //     which is what makes the side-call ledgers write the usage row under the
 //     caller, and what lifts a tool's own refusal of a call with no run.
 //
-// what names the call in a run-plane token's refusal. release is never nil
+// what names the call in a run-plane token's refusal. surface is the
+// grantable surface the call belongs to ("" for none): a run-plane token
+// granted it is admitted (auth.Restrictions.Surfaces). release is never nil
 // when err is nil, and must be called once the call is over.
-func (s *Server) admitOffRunCall(ctx context.Context, what string) (context.Context, func(), error) {
-	if err := s.refuseAgentlessCall(ctx, what); err != nil {
+func (s *Server) admitOffRunCall(ctx context.Context, what, surface string) (context.Context, func(), error) {
+	if err := s.refuseAgentlessCall(ctx, what, surface); err != nil {
 		return ctx, nil, err
 	}
 	// A call a caller asked for directly is a model call, like a run start.

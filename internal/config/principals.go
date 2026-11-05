@@ -31,6 +31,9 @@ type PrincipalDef struct {
 	Scopes   []string  `yaml:"scopes"`
 	TokenEnv string    `yaml:"token_env"`
 	Agents   *[]string `yaml:"agents"`
+	// Surfaces, with Agents, names the off-run surfaces the principal may
+	// still call: speech, transcription (RFC GA).
+	Surfaces []string `yaml:"surfaces"`
 	// Overrides locks the per-run overrides for runs the principal starts:
 	// `none`, or the fields it may still set, comma-separated or as a list.
 	Overrides *overridePolicyYAML `yaml:"overrides"`
@@ -174,6 +177,7 @@ func resolvePrincipals(c *Config) error {
 		if def.Agents != nil {
 			restrictions.Agents = append([]string(nil), (*def.Agents)...)
 		}
+		restrictions.Surfaces = append([]string(nil), def.Surfaces...)
 		if def.Overrides != nil {
 			restrictions.Overrides = &auth.OverridePolicy{Allow: append([]string(nil), def.Overrides.Allow...)}
 		}
