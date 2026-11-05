@@ -3046,6 +3046,7 @@ func (s *Store) PrunableAgedSessions(ctx context.Context, olderThan time.Time, m
 	args := append(store.TerminalRunStatusArgs(), olderThan.UnixNano())
 	agentCond := agentMatchCond(match, agents, &args)
 	args = append(args, limit)
+	// #nosec G202 -- placeholders and agentMatchCond's constant "?" fragments only; values are bound
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT session_id FROM runs
 		 GROUP BY session_id
@@ -3164,6 +3165,7 @@ func (s *Store) ConsolidatableSessions(ctx context.Context, tenantID, userID, ag
 	}
 	args = append(args, limit)
 
+	// #nosec G202 -- placeholders and agentMatchCond's constant "?" fragments only; values are bound
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT r.session_id, MAX(r.completed_at), s.user_id, s.agent
 		 FROM runs r JOIN sessions s ON s.id = r.session_id
@@ -3502,6 +3504,7 @@ func (s *Store) SetSessionMeta(ctx context.Context, sessionID string, p store.Se
 		return err
 	}
 	args = append(args, sessionID)
+	// #nosec G202 -- sets holds constant "col = ?" fragments; values are bound
 	res, err := s.db.ExecContext(ctx,
 		"UPDATE sessions SET "+strings.Join(sets, ", ")+" WHERE id = ?", args...)
 	if err != nil {
@@ -3954,6 +3957,7 @@ func (s *Store) RunByDeliveryKeys(ctx context.Context, keys []string) (store.Run
 		return store.Run{}, false, nil
 	}
 	in := "(" + strings.TrimSuffix(strings.Repeat("?,", len(args)), ",") + ")"
+	// #nosec G202 -- runColumns/runFromTable are constants and in is a "?" placeholder list
 	row := s.db.QueryRowContext(ctx,
 		`SELECT `+runColumns+` FROM `+runFromTable+`
 		 WHERE r.idempotency_key IN `+in+` OR r.delivery_alt_key IN `+in+`
@@ -4461,6 +4465,7 @@ func (s *Store) TakeRunUserSlot(ctx context.Context, runID string) (store.RunUse
 		{`user_slot = 1`, store.RunUserSlotHeld},
 		{`user_slot IS NULL`, store.RunUserSlotUnrecorded},
 	} {
+		// #nosec G202 -- step.where is one of the two constant predicates in the loop above
 		res, err := s.db.ExecContext(ctx, `UPDATE runs SET user_slot = 0 WHERE id = ? AND `+step.where, runID)
 		if err != nil {
 			return store.RunUserSlotNone, fmt.Errorf("take run user slot: %w", err)
@@ -6483,6 +6488,7 @@ func (s *Store) MemoryListBySourceSessions(ctx context.Context, tenantID string,
 	args = append(args, limit)
 	// Live rows only: an expired or superseded row is invisible to every read, so
 	// reporting it would overstate what is actually held.
+	// #nosec G202 -- marks is a "?" placeholder list; the session ids are bound
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT COALESCE(tenant_id, ''), scope, scope_id, key, COALESCE(source_session_id, '')
 		   FROM memory
@@ -6897,6 +6903,7 @@ func (s *Store) MemoryPendingAck(ctx context.Context, tenantID string, scope sto
 		placeholders[i] = "?"
 		args = append(args, id)
 	}
+	// #nosec G202 -- placeholders is a "?" list; the ids are bound
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE memory_pending SET drained_at = ?
 		 WHERE tenant_id = ? AND scope = ? AND scope_id = ?
@@ -7581,6 +7588,7 @@ func (s *Store) backfillContentSHA256(ctx context.Context, table string, signFn 
 	// Table name is whitelisted above, so safe to interpolate; we
 	// avoid prepared-statement reuse on the read because the column
 	// list is identical for both tables.
+	// #nosec G202 -- table is checked against the three def tables above
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT def_id, name, definition FROM `+table+` WHERE content_sha256 IS NULL OR content_sha256 = ''`)
 	if err != nil {
@@ -7611,6 +7619,7 @@ func (s *Store) backfillContentSHA256(ctx context.Context, table string, signFn 
 		if err != nil {
 			return n, fmt.Errorf("backfill %s sign def_id=%s: %w", table, p.DefID, err)
 		}
+		// #nosec G202 -- table is checked against the three def tables above; values are bound
 		if _, err := s.db.ExecContext(ctx,
 			`UPDATE `+table+` SET content_sha256 = ? WHERE def_id = ?`,
 			hash, p.DefID); err != nil {
@@ -8134,6 +8143,7 @@ func (s *Store) ListPurgeableRetiredDefVersions(ctx context.Context, defType str
 		args = append(args, store.TerminalRunStatusArgs()...)
 	}
 	args = append(args, keepLastN, limit)
+	// #nosec G201 -- defsTable/activeTable are allowlisted table names and pinned a constant fragment; every value is a bound argument
 	q := fmt.Sprintf(`
 		SELECT def_id, tenant_id, name, version, definition, created_at
 		FROM (
@@ -8185,6 +8195,7 @@ func (s *Store) DeleteDefVersions(ctx context.Context, defType string, defIDs []
 		args[i] = id
 	}
 	// defsTable is allowlisted; the ids are parameterized.
+	// #nosec G201 -- defsTable is an allowlisted table name and the IN list is "?" placeholders; the ids are bound
 	q := fmt.Sprintf(`DELETE FROM %s WHERE def_id IN (%s)`, defsTable, strings.Join(placeholders, ", "))
 	res, err := s.db.ExecContext(ctx, q, args...)
 	if err != nil {
@@ -8910,6 +8921,7 @@ func (s *Store) TeamDefDelete(ctx context.Context, tenantID, name string) (bool,
 		prefix := store.TeamChannelName(name, "")
 		plen := utf8.RuneCountInString(prefix)
 		for _, table := range []string{"channel_messages", "channel_cursors", "channel_hook_state"} {
+			// #nosec G202 -- table ranges over the three constant names in the loop header; values are bound
 			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE tenant_id = ? AND substr(channel, 1, ?) = ? AND length(channel) > ? AND instr(substr(channel, ? + 1), '/') = 0`,
 				tenantID, plen, prefix, plen, plen); err != nil {
 				return false, fmt.Errorf("teamdef delete own channels (%s): %w", table, err)
@@ -11424,6 +11436,7 @@ func (s *Store) ScheduleActiveRunsListEnded(ctx context.Context, limit int) ([]s
 		limit = 100
 	}
 	args := append(store.TerminalRunStatusArgs(), limit)
+	// #nosec G202 -- scheduleActiveRunColumns is a constant column list and the IN list is "?" placeholders
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+scheduleActiveRunColumns+`, r.id IS NOT NULL, COALESCE(r.status, ''), COALESCE(r.error, ''), COALESCE(r.agent_id, '')
 		 FROM schedule_active_runs a LEFT JOIN runs r ON r.id = a.run_id
@@ -12351,10 +12364,12 @@ func (s *Store) WebhookDeliveryClaimRun(ctx context.Context, c store.WebhookRunC
 			   AND r.status IN (` + sqlitePlaceholders(len(retake)) + `)`
 	// The failed run gives up its own keys too, so the run that retakes the
 	// event can carry them.
+	// #nosec G202 -- failedHolders is a "?" placeholder list; the run ids are bound
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE runs SET idempotency_key = NULL, delivery_alt_key = NULL WHERE id IN (`+failedHolders+`)`, args...); err != nil {
 		return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim retake: %w", err)
 	}
+	// #nosec G202 -- failedHolders is a "?" placeholder list; the run ids are bound
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM webhook_deliveries WHERE run_id IN (`+failedHolders+`)`, args...); err != nil {
 		return store.WebhookRunClaimResult{}, fmt.Errorf("webhook delivery claim retake: %w", err)
@@ -12397,6 +12412,7 @@ func (s *Store) WebhookDeliveryClaimRun(ctx context.Context, c store.WebhookRunC
 // that lands first wins.
 func (s *Store) settleStaleWebhookClaims(ctx context.Context, tx *sql.Tx, keyArgs, retake []any, graceCutoff int64) error {
 	type stale struct{ id, runKey, runAltKey string }
+	// #nosec G202 -- sqlitePlaceholders emits "?" placeholders only; the keys are bound
 	rows, err := tx.QueryContext(ctx,
 		`SELECT DISTINCT claim_id, run_key, run_alt_key FROM webhook_deliveries
 		 WHERE delivery_key IN (`+sqlitePlaceholders(len(keyArgs))+`)
@@ -12553,6 +12569,7 @@ func (s *Store) RunReleaseFailedDeliveryKeys(ctx context.Context, keys []string)
 	}
 	ph := sqlitePlaceholders(len(ks))
 	args := append(append(append([]any{}, retake...), ks...), ks...)
+	// #nosec G202 -- sqlitePlaceholders emits "?" placeholders only; values are bound
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET idempotency_key = NULL, delivery_alt_key = NULL
 		 WHERE status IN (`+sqlitePlaceholders(len(retake))+`)
@@ -12571,6 +12588,7 @@ func (s *Store) WebhookDeliveryRelease(ctx context.Context, keys []string) error
 	for i, k := range keys {
 		args[i] = k
 	}
+	// #nosec G202 -- sqlitePlaceholders emits "?" placeholders only; the keys are bound
 	if _, err := s.db.ExecContext(ctx,
 		`DELETE FROM webhook_deliveries WHERE delivery_key IN (`+sqlitePlaceholders(len(keys))+`)`, args...); err != nil {
 		return fmt.Errorf("webhook delivery release: %w", err)
@@ -13051,6 +13069,7 @@ func (s *Store) interruptList(ctx context.Context, col, val, statusFilter string
 	if col != "run_id" && col != "user_id" {
 		return nil, fmt.Errorf("interrupts: list: unknown filter column %q", col)
 	}
+	// #nosec G202 -- col is checked against run_id/user_id above; values are bound
 	q := `
 		SELECT interrupt_id, run_id, kind, status,
 		       question, options, context_data, priority,

@@ -60,6 +60,7 @@ func (s *Store) snapshotRestoreDef(ctx context.Context, table string, r snapshot
 	if r.CreatedAt.IsZero() {
 		createdNs = time.Now().UnixNano()
 	}
+	// #nosec G202 -- table is one of the tbl* constants (every caller passes one); values are bound
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO `+table+`(
 			def_id, name, version, parent_def_id, definition, description,
@@ -89,6 +90,7 @@ func (s *Store) snapshotRestoreActive(ctx context.Context, table string, e snaps
 	if e.PromotedAt.IsZero() {
 		promotedNs = time.Now().UnixNano()
 	}
+	// #nosec G202 -- table is one of the tbl* constants (every caller passes one); values are bound
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO `+table+`(tenant_id, name, def_id, promoted_at, promoted_by_agent_id) VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(tenant_id, name) DO NOTHING`,
@@ -103,6 +105,7 @@ func (s *Store) snapshotRestoreActive(ctx context.Context, table string, e snaps
 
 // snapshotReadActive returns every pointer of an active-pointer table.
 func (s *Store) snapshotReadActive(ctx context.Context, table string) ([]snapshotActiveCols, error) {
+	// #nosec G202 -- table is one of the tbl* constants (every caller passes one); no caller input
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id FROM `+table+`
 		 ORDER BY tenant_id ASC, name ASC`)

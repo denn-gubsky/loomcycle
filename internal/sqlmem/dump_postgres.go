@@ -473,6 +473,7 @@ func insertRowsPG(ctx context.Context, db *sql.DB, schema string, t TableDump) e
 		cols[i] = q(c)
 		marks[i] = fmt.Sprintf("$%d::%s", i+1, t.ColumnTypes[i])
 	}
+	// #nosec G201 -- identifiers go through q(); each ::type cast comes from the same dump whose DDL this restore already runs on the scope's own role, so it reaches nothing that DDL could not
 	stmt := fmt.Sprintf(`INSERT INTO %s.%s (%s) VALUES (%s)`,
 		q(schema), q(t.Name), strings.Join(cols, ", "), strings.Join(marks, ", "))
 	for _, row := range t.Rows {

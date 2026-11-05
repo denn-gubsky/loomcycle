@@ -258,6 +258,7 @@ func (s *Store) TenantAuthPolicyRevokeSessions(ctx context.Context, tenantID str
 	q := `UPDATE ui_sessions SET revoked_at = ? WHERE tenant_id = ? AND revoked_at IS NULL`
 	args := []any{at.UnixNano(), tenantID}
 	if len(gates) > 0 {
+		// #nosec G202 -- a "?" placeholder per gate; the gate names are bound
 		q += ` AND gate NOT IN (` + strings.TrimSuffix(strings.Repeat("?,", len(gates)), ",") + `)`
 		for _, g := range gates {
 			args = append(args, g)

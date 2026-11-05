@@ -166,6 +166,7 @@ func (s *Store) UserUpdate(ctx context.Context, tenantID, subject string, patch 
 	args = append(args, tenantID, subject)
 	// A tombstone is never patched: it would re-enable or rename an erased
 	// subject (store.ErrUserErased).
+	// #nosec G202 -- sets holds constant "col = ?" fragments; values are bound
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE users SET `+strings.Join(sets, ", ")+` WHERE tenant_id = ? AND subject = ? AND erased_at IS NULL`,
 		args...,

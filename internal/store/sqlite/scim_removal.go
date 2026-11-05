@@ -247,6 +247,7 @@ func (s *Store) OperatorDisableUser(ctx context.Context, tenantID, subject strin
 		if _, err := conn.ExecContext(ctx, `UPDATE users SET status = 'disabled' WHERE tenant_id = ? AND subject = ?`, tenantID, subject); err != nil {
 			return fmt.Errorf("operator disable: %w", err)
 		}
+		// #nosec G202 -- store.SCIMRemovalReasons is a constant list of quoted literals
 		del, err := conn.ExecContext(ctx, `DELETE FROM auth_removals WHERE tenant_id = ? AND subject = ? AND reason IN (`+store.SCIMRemovalReasons+`)`,
 			tenantID, subject)
 		if err != nil {
