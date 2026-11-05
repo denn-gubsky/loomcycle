@@ -4,7 +4,8 @@
 # loomcycle for darwin-{arm64,amd64} + linux-{arm64,amd64}, packages
 # each as tar.gz with LICENSE + NOTICE + README + THIRD_PARTY_LICENSES,
 # writes an SPDX SBOM per archive, attaches everything to the GitHub
-# release at the tag, generates SHA256SUMS and signs it (cosign keyless),
+# release at the tag, generates SHA256SUMS and signs it (cosign keyless; the
+# images are signed by release.yml after this run),
 # then bumps Formula/loomcycle.rb in denn-gubsky/homebrew-loomcycle with
 # the new version + per-platform sha256 values. docs/VERIFYING-RELEASES.md
 # says how a user checks the signatures and the provenance.
@@ -86,6 +87,12 @@ sboms:
 # token (release.yml grants id-token: write). Signing the checksums file signs
 # every archive and SBOM it lists. The bundle (signature, certificate and
 # transparency-log proof in one file) is uploaded as SHA256SUMS.sigstore.json.
+#
+# It runs before the release upload and a failure stops goreleaser, after
+# release.yml has pre-created the release page: a Sigstore outage leaves that
+# page without assets until the job is re-run. Blob signing talks only to
+# Sigstore, not to a registry, so that is the one dependency it adds. Images
+# are signed by release.yml after goreleaser for exactly this reason.
 signs:
   - cmd: cosign
     artifacts: checksum
@@ -501,17 +508,3 @@ docker_manifests:
     image_templates:
       - "ghcr.io/denn-gubsky/loomcycle-media:latest-amd64"
       - "ghcr.io/denn-gubsky/loomcycle-media:latest-arm64"
-
-# Keyless cosign over every multi-arch manifest pushed above, in both
-# registries, by digest (a tag can move; the digest cannot). `cosign verify
-# <image>:<version>` resolves the tag to the signed manifest. Per-arch tags are
-# not signed separately: they are what the manifests point at. The signatures
-# go to the same registries as the images, so the logins in release.yml cover
-# them.
-docker_signs:
-  - cmd: cosign
-    artifacts: manifests
-    args:
-      - sign
-      - "${artifact}@${digest}"
-      - "--yes"

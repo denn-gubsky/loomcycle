@@ -156,7 +156,7 @@ jobs:
             ghcr.io/denn-gubsky/${{ needs.resolve.outputs.image }}:latest
 
       # Signature and build provenance, as a loomcycle release gives its
-      # images (.goreleaser.yaml docker_signs:, release.yml attest-images).
+      # images (release.yml's image-signing step and attest-images).
       # One build pushed the same bytes to both registries, so both names
       # carry one digest: cosign signs each copy, and the attestation pushed
       # to GHCR is also what `gh attestation verify` finds for the Docker Hub
