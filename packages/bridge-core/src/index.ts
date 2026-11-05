@@ -1,6 +1,6 @@
 export { isButtonInput, isVerb, optionLabels, VERB } from "./cards.js";
 export type { CanonicalCard, CardAction, CardButton, CardInput, Verb } from "./cards.js";
-export { ConfigError, EnvReader, loadSharedConfig } from "./config.js";
+export { ConfigError, devModeProblem, EnvReader, isLoopback, loadSharedConfig } from "./config.js";
 export type { AccessMode, Env, SharedConfig } from "./config.js";
 export { Conversation, friendlyError, MAX_DEFERRED, resultCard, UNTRUSTED_KIND, UNTRUSTED_TYPED_ANSWER_TEXT } from "./conversation.js";
 export type { CardResult, ConversationDeps } from "./conversation.js";

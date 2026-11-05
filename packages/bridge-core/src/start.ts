@@ -9,7 +9,7 @@
 import { LoomcycleClient } from "@loomcycle/client";
 import type http from "node:http";
 
-import { ConfigError, type SharedConfig } from "./config.js";
+import { ConfigError, devModeProblem, type SharedConfig } from "./config.js";
 import type { ConversationDeps } from "./conversation.js";
 import { Health } from "./health.js";
 import { close, createBridgeServer, listen, type Route } from "./http.js";
@@ -146,7 +146,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     async serve(routes, o) {
       if (server) throw new Error("serve called twice");
       server = createBridgeServer({ routes, health, log, maxBodyBytes: o?.maxBodyBytes });
-      await listen(server, cfg.port);
+      await listen(server, cfg.port, cfg.bindHost);
       return server;
     },
   };
@@ -156,6 +156,10 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     router,
     health,
     async start() {
+      // Also checked when the configuration is read; a config built in code
+      // is held to the same rule here.
+      const devProblem = devModeProblem(cfg);
+      if (devProblem) throw new ConfigError(name, [devProblem]);
       if (cfg.dev) log.warn(`BRIDGE_DEV=1: inbound requests are NOT authenticated; never use this in production`);
       // The gate key is read once, here, and held in memory.
       if (gateBroker && cfg.gate) gateBroker.ready(opts.gateKey ?? (await loadGateKey(cfg.gate.keyEnv)));
