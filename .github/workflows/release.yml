@@ -57,9 +57,9 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
+# Read-only by default; each job that writes asks for exactly what it writes.
 permissions:
-  contents: write  # needed for goreleaser to upload release assets
-  packages: write  # push the GHCR mirror with the built-in GITHUB_TOKEN
+  contents: read
 
 jobs:
   # Decide FULL vs LEAN from the tag shape (the release-cadence rule):
@@ -115,6 +115,14 @@ jobs:
     needs: classify
     if: needs.classify.outputs.full == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write      # create the release and upload its assets
+      packages: write      # push the GHCR mirror with the built-in GITHUB_TOKEN
+      id-token: write      # keyless cosign (signs:, docker_signs:) and the attestation below
+      attestations: write  # store the build-provenance attestation with GitHub
+    outputs:
+      # The multi-arch image manifests goreleaser pushed, for attest-images.
+      images: ${{ steps.images.outputs.list }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -146,6 +154,20 @@ jobs:
         # which `make build-ui` populates. Every cross-compiled
         # binary ships the same UI bundle.
         run: make build-ui
+
+      # The tools goreleaser shells out to for signs:/docker_signs: (cosign)
+      # and sboms: (syft), at pinned versions. Installed before the release
+      # page is pre-created, so a failed install leaves no empty release.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # The installer's own default, which it checks against a digest it
+          # carries; a different release would be checked by signature instead.
+          cosign-release: v3.0.6
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          syft-version: v1.55.0
 
       # v0.11.2 Docker image steps (stubbed until operator creates the
       # Docker Hub access token). Setup-qemu enables linux/arm64 cross-
@@ -269,6 +291,81 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
+      # SLSA build provenance for every file SHA256SUMS lists (the archives and
+      # their SBOMs), signed through this job's OIDC token and stored with
+      # GitHub. `gh attestation verify <file> --repo denn-gubsky/loomcycle`
+      # checks it (docs/VERIFYING-RELEASES.md).
+      - name: Attest build provenance (archives and SBOMs)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      # The image manifests goreleaser pushed, by digest, for the attest-images
+      # job. The :latest manifests are skipped: they share the version tag's
+      # digest. A Docker Hub name gets the docker.io/ prefix the attest action
+      # needs for a push to the registry.
+      - name: List the pushed image manifests
+        id: images
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        run: |
+          set -euo pipefail
+          LIST="$(jq -c '[.[]
+            | select(.type == "Docker Manifest")
+            | select(.name | endswith(":latest") | not)
+            | {name: (.name | sub(":[^:/]*$"; "") | if startswith("ghcr.io/") then . else "docker.io/" + . end),
+               digest: .extra.Digest}]' dist/artifacts.json)"
+          if [ "$(jq 'length' <<<"$LIST")" -eq 0 ]; then
+            echo "::error::dist/artifacts.json lists no image manifest"
+            exit 1
+          fi
+          if ! jq -e 'all(.[]; (.digest | type == "string") and (.digest | test("^sha256:[0-9a-f]{64}$")))' <<<"$LIST" >/dev/null; then
+            echo "::error::an image manifest in dist/artifacts.json has no sha256 digest"
+            exit 1
+          fi
+          echo "list=$LIST" >> "$GITHUB_OUTPUT"
+
+  # SLSA build provenance for each multi-arch image goreleaser pushed, one
+  # matrix entry per image and registry. The attestation is stored with GitHub
+  # (what `gh attestation verify oci://…` reads) and pushed next to the image
+  # in its registry. Runs only when the goreleaser job pushed images.
+  attest-images:
+    name: attest ${{ matrix.image.name }}
+    needs: goreleaser
+    if: vars.DOCKER_PUBLISH_ENABLED == 'true' && needs.goreleaser.outputs.images != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write      # push the attestation to the GHCR image
+      id-token: write      # sign the attestation (Sigstore, keyless)
+      attestations: write  # store it with GitHub
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.goreleaser.outputs.images) }}
+    steps:
+      - name: Log in to Docker Hub
+        if: startsWith(matrix.image.name, 'docker.io/')
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Log in to GHCR
+        if: startsWith(matrix.image.name, 'ghcr.io/')
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ matrix.image.name }}
+          subject-digest: ${{ matrix.image.digest }}
+          push-to-registry: true
+          # Storage records exist only for organisation-owned repositories;
+          # this one belongs to a user, so the record call could only fail.
+          create-storage-record: false
+
   # LEAN patch path: on a vX.Y.Z (Z>0) tag, publish ONLY the loomcycle-browser
   # linux/amd64 image — the deployable variant — and skip the binaries,
   # Homebrew, the other images, and the sandbox images (publish-sandbox-images
@@ -284,8 +381,10 @@ jobs:
     permissions:
       # A job-level block REPLACES the workflow-level one, so packages:write
       # has to be restated here — otherwise the GHCR push 403s on a patch tag.
-      contents: write # pre-create the GitHub release from the annotated tag
-      packages: write # push the GHCR mirror of loomcycle-browser
+      contents: write      # pre-create the GitHub release from the annotated tag
+      packages: write      # push the GHCR mirror of loomcycle-browser
+      id-token: write      # keyless cosign signature and the attestation
+      attestations: write  # store the build-provenance attestation with GitHub
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -378,6 +477,7 @@ jobs:
       # registry prefix without a version change. The source label is what
       # links the GHCR package to this repo in the UI.
       - name: Build + push loomcycle-browser (linux/amd64)
+        id: push
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -392,3 +492,31 @@ jobs:
             denngubsky/loomcycle-browser:latest
             ghcr.io/denn-gubsky/loomcycle-browser:${{ needs.classify.outputs.version }}
             ghcr.io/denn-gubsky/loomcycle-browser:latest
+
+      # The same signature and provenance a full release gives its images
+      # (.goreleaser.yaml docker_signs:, the attest-images job). One build
+      # pushed the same bytes to both registries, so both names carry one
+      # digest: cosign signs each copy, and the attestation pushed to GHCR is
+      # also what `gh attestation verify` finds for the Docker Hub copy.
+      - name: Install cosign
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+      - name: Sign loomcycle-browser
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes \
+            "docker.io/denngubsky/loomcycle-browser@${DIGEST}" \
+            "ghcr.io/denn-gubsky/loomcycle-browser@${DIGEST}"
+      - name: Attest build provenance
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/denn-gubsky/loomcycle-browser
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
