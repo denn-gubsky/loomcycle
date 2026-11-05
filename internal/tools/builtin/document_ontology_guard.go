@@ -75,23 +75,22 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 	if docID == "" {
 		return nil // no ontology document in this tenant — nothing to protect
 	}
-	// Which document does this call touch? Four addressings, and missing one is how a
-	// guard gets bypassed: create/import name the document, the chunk ops name a chunk
-	// whose document must be looked up, delete_document/set_path put the DOCUMENT id
-	// in `id` — where a chunk lookup returns nothing and the check would sail past — and
-	// a document op may name its document by `path` alone.
-	target := strings.TrimSpace(in.DocumentID)
-	if target == "" && in.ID != "" {
-		if target = d.documentIDForChunk(ctx, key, in.ID); target == "" {
-			target = strings.TrimSpace(in.ID)
+	// Which documents does this call touch? EVERY field a guarded handler addresses a
+	// document by is resolved the way that handler resolves it, and the call is judged
+	// on all of them: picking one (document_id, else id) let a call carry an unrelated
+	// document_id while its handler acted on the ontology chunk named by id.
+	own, related := d.guardTargets(ctx, key, op, in)
+	if len(own) > 1 {
+		return refusal(errValidation("the call names more than one document ("+strings.Join(own, ", ")+
+			") in the fields that address its target; they must agree", "Pass one document, by one of its addresses."))
+	}
+	hit := false
+	for _, t := range append(own, related...) {
+		if t == docID {
+			hit = true
 		}
 	}
-	if target == "" && in.Path != "" {
-		if id, perr := d.docIDFromInput(ctx, key, docInput{Path: in.Path}); perr == nil {
-			target = id
-		}
-	}
-	if target != docID {
+	if !hit {
 		return nil
 	}
 
@@ -107,6 +106,67 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 	return refusal(errPermission("an agent may not modify the ontology document — it may only add a "+
 		"proposal (op=propose_entity). Resolving one, editing a live entity, importing "+
 		"over the document, re-homing it, or removing anything is the operator's decision.", ""))
+}
+
+// guardTargets resolves the document behind each addressing field of a guarded op, the
+// way its handler does. own are the fields that name the call's target — they must
+// agree (as docIDFromInput requires of id and document_id); related are the fields that
+// name a neighbour the op acts beside (a parent, a sibling, the chunk superseded, the
+// edition amended), which must not be the ontology either. A field that resolves to
+// nothing is left to the handler to refuse.
+//
+// Census of the guarded handlers' fields: document_id, id (a chunk, else a document),
+// path (an address everywhere but set_path, where it is the name being given),
+// natural_key (upsert_chunk, judge_fact), work_key (import_md reimport), parent_id and
+// after_id (create_chunk), new_parent_id (move_chunk), supersedes_id
+// (supersede_chunk), amending_document_id (import_md).
+func (d *Document) guardTargets(ctx context.Context, key sqlmem.ScopeKey, op string, in docInput) (own, related []string) {
+	seen := map[string]bool{}
+	addOwn := func(id string) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			own = append(own, id)
+		}
+	}
+	chunkDoc := func(id string) string {
+		if id == "" {
+			return ""
+		}
+		return d.documentIDForChunk(ctx, key, strings.TrimSpace(id))
+	}
+	addOwn(strings.TrimSpace(in.DocumentID))
+	if id := strings.TrimSpace(in.ID); id != "" {
+		if doc := chunkDoc(id); doc != "" {
+			addOwn(doc)
+		} else {
+			addOwn(id)
+		}
+	}
+	if in.Path != "" && op != "set_path" {
+		if id, err := d.docIDFromInput(ctx, key, docInput{Path: in.Path}); err == nil {
+			addOwn(id)
+		}
+	}
+	if nk := strings.TrimSpace(in.NaturalKey); nk != "" {
+		if res, err := d.query(ctx, key, `SELECT c.document_id FROM chunk_memory_meta m JOIN chunks c ON c.id = m.chunk_id
+			  WHERE m.natural_key = ? LIMIT 1`, nk); err == nil && len(res.Rows) > 0 && len(res.Rows[0]) > 0 {
+			addOwn(asStr(res.Rows[0][0]))
+		}
+	}
+	if wk := strings.TrimSpace(in.WorkKey); wk != "" && op == "import_md" {
+		if id, _, _, err := d.documentByWorkKey(ctx, key, wk); err == nil {
+			addOwn(id)
+		}
+	}
+	for _, c := range []string{in.ParentID, in.AfterID, in.NewParentID, in.SupersedesID} {
+		if doc := chunkDoc(c); doc != "" {
+			related = append(related, doc)
+		}
+	}
+	if a := strings.TrimSpace(in.AmendingDocumentID); a != "" {
+		related = append(related, a)
+	}
+	return own, related
 }
 
 // ontologyWriteOp reports whether op can create, alter, retire or re-home an entity of
