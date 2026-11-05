@@ -16,6 +16,8 @@ func TestDocumentLeaseOwner_EachOffRunPrincipalOwnsItsOwn(t *testing.T) {
 	for _, agent := range []string{"", "http-admin", "grpc-admin", "mcp-operator"} {
 		owner := func(subject string) string {
 			ctx := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: subject, Scopes: []string{auth.ScopeRunsCreate}})
+			// Every off-run plane stamps the caller's tier; a member's here.
+			ctx = tools.WithCallerTier(ctx, tools.TierMember)
 			return documentLeaseOwner(tools.WithAgentName(ctx, agent))
 		}
 		bob, carol := owner("bob"), owner("carol")

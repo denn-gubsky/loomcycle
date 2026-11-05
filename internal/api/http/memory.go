@@ -415,6 +415,15 @@ func (s *Server) memoryInstanceAllowed(w http.ResponseWriter, r *http.Request, s
 	return s.applyGate(r.Context(), w, p, surface, authz.Evaluate(r.Context(), p.Effective, verb, res, true))
 }
 
+// documentRowDelete is the Memory tool's access-control rule for removing key
+// (builtin.DocumentRowDelete), asked under browse — the identity
+// memoryRouteCtx resolved for the route, the one unreadableDocumentKeys asks
+// the reads under — so the delete and the get of one row agree.
+func (s *Server) documentRowDelete(browse context.Context, scope, storeScopeID, key string) (hidden, denied bool, err error) {
+	return builtin.DocumentRowDelete(browse, &builtin.Document{Store: s.store, SqlMem: s.sqlMem},
+		store.MemoryScope(scope), storeScopeID, key)
+}
+
 // validAdminMemoryScope mirrors the closed scope set the runtime
 // accepts. Distinct from the agent yaml allowlist (which is per-
 // agent + caller-side); this is the admin-side gate so the UI can't
@@ -634,13 +643,28 @@ func (s *Server) handleDeleteMemoryEntry(w http.ResponseWriter, r *http.Request)
 			"scope_id and key are required")
 		return
 	}
-	if _, ok := s.memoryRouteCtx(w, r, scope, scopeID, "write"); !ok {
+	browse, ok := s.memoryRouteCtx(w, r, scope, scopeID, "write")
+	if !ok {
 		return
 	}
 	if refuseMemberCoreKey(w, r, key) {
 		return
 	}
 	tenantID := s.adminFocusedTenant(r.Context(), r.URL.Query().Get("tenant"))
+	// The Memory tool's access-control rule for a document row, asked first as
+	// the tool asks it: a row of a document the caller may not read answers as a
+	// missing key (204, nothing removed), one it may read but not delete is
+	// refused.
+	hidden, denied, err := s.documentRowDelete(browse.ctx, scope, adminMemoryStoreScopeID(scope, scopeID), key)
+	if err != nil {
+		slog.Error("memory delete could not check the document's access control", "scope", scope, "scope_id", scopeID, "key", key, "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal", "delete failed")
+		return
+	}
+	if hidden {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	// The Memory tool's delete rule for this key: a derived unit or a prose chunk
 	// body is removed through the Document routes, so the chunk and its text go
 	// together; a consolidated fact's body row stays deletable by its id. A row
@@ -651,6 +675,11 @@ func (s *Server) handleDeleteMemoryEntry(w http.ResponseWriter, r *http.Request)
 			slog.Error("memory delete could not classify the row", "scope", scope, "scope_id", scopeID, "key", key, "err", res.Text)
 			writeJSONError(w, http.StatusInternalServerError, "internal", "delete failed")
 		}
+		return
+	}
+	if denied {
+		writeJSONError(w, http.StatusForbidden, "acl_denied",
+			"the caller's access-control rules do not allow delete on the document holding "+key)
 		return
 	}
 	// A consolidated fact's body row is a chunk body: the change feed files its

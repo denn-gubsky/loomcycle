@@ -912,38 +912,6 @@ type ctxKeyDispatcher struct{}
 // WithDispatcher attaches the run's Dispatcher to ctx. Called at run
 // start in the HTTP server (same locations as WithRunID /
 // WithRunIdentity).
-type ctxKeySubstrateOperator struct{}
-
-// WithSubstrateOperator marks a context as the OPERATOR's own off-run substrate call —
-// the Web UI and the admin HTTP routes, not an agent's tool call inside a run.
-//
-// EXPLICIT DISCRIMINATOR, deliberately, rather than inferring it from the identity the
-// off-run path already stamps. That path uses a synthetic agent id (`a_http-admin`), and
-// reading authorization off it would be a hole: `POST /v1/runs` accepts a caller-supplied
-// `agent_id`, so a run could claim that value and be mistaken for the operator. A marker
-// with no wire field cannot be claimed.
-//
-// Absent means "not the operator", so anything that has not been explicitly stamped —
-// every run path, every sub-agent, every MCP session — is treated as an agent. A
-// no-op-on-empty setter here would silently widen, which is the failure mode this
-// codebase has already paid for once.
-func WithSubstrateOperator(ctx context.Context) context.Context {
-	return context.WithValue(ctx, ctxKeySubstrateOperator{}, true)
-}
-
-// WithoutSubstrateOperator takes the marker off ctx, whatever an ancestor
-// stamped. A run started from an operator plane's ctx (a TeamDef op=run walk)
-// derives its children from it, and they are agents, not the operator.
-func WithoutSubstrateOperator(ctx context.Context) context.Context {
-	return context.WithValue(ctx, ctxKeySubstrateOperator{}, false)
-}
-
-// IsSubstrateOperator reports whether ctx is an operator's own off-run call.
-func IsSubstrateOperator(ctx context.Context) bool {
-	v, _ := ctx.Value(ctxKeySubstrateOperator{}).(bool)
-	return v
-}
-
 type ctxKeyUnauthenticatedOperator struct{}
 
 // WithUnauthenticatedOperator marks ctx as the operator's own off-run call on a
@@ -952,9 +920,9 @@ type ctxKeyUnauthenticatedOperator struct{}
 // operator — there is no lesser principal to tell apart — so the def tools treat
 // such a call as having operator authority, like substrate:admin.
 //
-// Distinct from WithSubstrateOperator on purpose: that marker is on every
-// off-run call, a tenant operator's included, so reading authority off it would
-// make every tenant token an admin. Stamp this one ONLY where no principal can
+// Distinct from the caller tier on purpose (WithCallerTier): TierOperatorPlane
+// is on a tenant operator's off-run call too, so reading admin authority off it
+// would make every tenant token an admin. Stamp this one ONLY where no principal can
 // exist; never on a run, a sub-agent, or a trigger-fired context. Readers must
 // still check that no auth.Principal is on ctx (see the builtin
 // callerHasOperatorAuthority), so a marker that leaked onto an authenticated
@@ -963,8 +931,9 @@ func WithUnauthenticatedOperator(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeyUnauthenticatedOperator{}, true)
 }
 
-// WithoutUnauthenticatedOperator takes the marker off ctx, for the same reason
-// as WithoutSubstrateOperator.
+// WithoutUnauthenticatedOperator takes the marker off ctx, whatever an ancestor
+// stamped: a run started from an operator plane's ctx is an agent, not the
+// operator (see WithCallerTier and TierRun).
 func WithoutUnauthenticatedOperator(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeyUnauthenticatedOperator{}, false)
 }

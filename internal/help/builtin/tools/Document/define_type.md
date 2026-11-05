@@ -35,6 +35,9 @@ ontology: read them with `describe_ontology`, and suggest new ones with
 ## Errors
 
 - `define_type: missing required field: name`.
+- `define_type: a type in the tenant scope is the operator's to define` — in
+  the tenant scope only an operator, outside a run, records a type; define it
+  in the user or agent scope.
 
 ## Examples
 

@@ -271,7 +271,7 @@ func TestStatementReviewAPI_QueueTakesTheExactSelectorsAndGroupsCarryTheirFilter
 func installReviewPolicy(t *testing.T, s *Server, mi memInject, rules string) {
 	t.Helper()
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
-	ctx := tools.WithSubstrateOperator(withTenantDocGrants(s.docToolCtx(context.Background(), mi)))
+	ctx := tools.WithCallerTier(withTenantDocGrants(s.docToolCtx(context.Background(), mi)), tools.TierOperatorPlane)
 	call := func(body string) map[string]any {
 		res, err := doc.Execute(ctx, json.RawMessage(body))
 		if err != nil || res.IsError {

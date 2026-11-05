@@ -291,9 +291,13 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		if p, ok := auth.PrincipalFromContext(r.Context()); ok {
 			by = p.Subject
 		}
+		var locked *aclLockedError
 		switch err := s.reactivateRemoved(r.Context(), tenant, subject, by); {
 		case err == nil:
 			req.Status = nil
+		case errors.As(err, &locked):
+			writeACLReply(w, locked.reply)
+			return
 		case errors.Is(err, errRemovalBusy):
 			writeJSONError(w, http.StatusConflict, "removal_in_progress", err.Error())
 			return
@@ -330,6 +334,12 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			by := ""
 			if p, ok := auth.PrincipalFromContext(ctx); ok {
 				by = p.Subject
+			}
+			// The removal it starts will unbind the user: the caller's
+			// lock is asked now, while the caller is here to answer to it.
+			if refusal := s.aclSubjectLockForCaller(ctx, tenant, subject); refusal != nil {
+				writeACLReply(w, *refusal)
+				return
 			}
 			disableErr = s.startRemoval(ctx, tenant, subject, "", store.RemovalReasonOperator, by)
 		}
@@ -393,6 +403,13 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := s.holdManagerToFloorTarget(w, r.Context(), caller, nil, tenant, subject, "delete", false); !ok {
+		return
+	}
+	// The delete retires the user's bindings and drops its memberships: a
+	// list the caller is locked out of retiring keeps it (before anything
+	// below changes).
+	if refusal := s.aclSubjectLockForCaller(r.Context(), tenant, subject); refusal != nil {
+		writeACLReply(w, *refusal)
 		return
 	}
 	// Fail-safe ordering: retire the user's delegated tokens BEFORE removing the

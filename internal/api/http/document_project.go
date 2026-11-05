@@ -1,12 +1,22 @@
 package http
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
+
+// operatorPlanePrincipal reports whether the caller is on the operator plane:
+// open mode (no principal), the legacy token, an admin, or a tenant operator
+// (auth.HasScope: admin satisfies substrate:tenant).
+func operatorPlanePrincipal(ctx context.Context) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	return !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeTenant)
+}
 
 // handleDocumentProject serves POST /v1/_document/project — run the document
 // projection pass (RFC FQ P2) over one scope now, rather than waiting for the
@@ -80,6 +90,14 @@ func (s *Server) handleDocumentProject(w http.ResponseWriter, r *http.Request) {
 		opts.Method = m
 	default:
 		writeJSONError(w, http.StatusBadRequest, "invalid_method", "method must be one of: pca, umap")
+		return
+	}
+	// A forced refit is a fit of the whole scope (a UMAP fit runs seconds to a
+	// minute), so it is the operator plane's whoever the route admits. The route
+	// is admin-only today; this keeps a refit the operator's if the projection
+	// without one is ever opened to members (RFC FY D7).
+	if opts.Refit && !operatorPlanePrincipal(r.Context()) {
+		writeJSONError(w, http.StatusForbidden, "operator_plane", "a refit of the projection is an operator's; run it without refit")
 		return
 	}
 

@@ -30,7 +30,7 @@ func TestCallerHasOperatorAuthority_HeldOnlyOffRun(t *testing.T) {
 	open := tools.WithUnauthenticatedOperator(asTenant(context.Background(), ""))
 	// The substrate-operator marker is on every off-run HTTP call, a tenant
 	// operator's included, so it is no operator authority on its own.
-	tenantOp := auth.WithPrincipal(tools.WithSubstrateOperator(asTenant(context.Background(), "acme")),
+	tenantOp := auth.WithPrincipal(tools.WithCallerTier(asTenant(context.Background(), "acme"), tools.TierOperatorPlane),
 		auth.Principal{TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeTenant}})
 	for _, c := range []struct {
 		name string

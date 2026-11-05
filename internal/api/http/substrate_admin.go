@@ -478,11 +478,12 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 		// bearer is configured at all, so whoever is calling is the operator.
 		ctx = tools.WithUnauthenticatedOperator(ctx)
 	}
-	// RFC CA: mark this as the OPERATOR's own off-run call. Stamped here, at the single
-	// root of every substrate admin dispatch, so no route can forget it; and it is a
-	// dedicated marker rather than the synthetic agent id below, because that id is
-	// caller-supplied on POST /v1/runs and a run could claim it.
-	ctx = tools.WithSubstrateOperator(ctx)
+	// RFC FY Part B: who is calling, stamped here at the single root of every
+	// substrate admin dispatch so no route can forget it. The grants below are the
+	// same for every principal; the tier is what tells the operator from a member
+	// RFC CB admitted to these routes. A ctx value rather than the synthetic agent
+	// id below, because that id is caller-supplied on POST /v1/runs.
+	ctx = tools.WithCallerTier(ctx, tools.TierForPrincipal(principal, hasPrincipal, principal.TenantID))
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{
 		UserID:   substrateAdminUserID,
 		AgentID:  substrateAdminAgentID,

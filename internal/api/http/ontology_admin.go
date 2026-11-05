@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -455,10 +456,13 @@ func (s *Server) ontologyDocument() *builtin.Document {
 // reaching tenant memory, so it does not require the caller to hold the agent-side
 // tenant grants. The tenant itself is principal-derived and never from the wire.
 func (s *Server) ontologyDocCtx(ctx context.Context, mi memInject) context.Context {
-	// RFC CA: these routes ARE the operator surface — the confirm toggle, accept/reject,
-	// adopt. Marked so the ontology guard admits them while refusing an agent's tool call
-	// (which is never stamped, because there is no wire field for it).
-	dctx := tools.WithSubstrateOperator(s.docToolCtx(ctx, mi))
+	// RFC CA: the writing routes ARE the operator surface — the confirm toggle,
+	// accept/reject, adopt — and the route gate keeps members off them (RFC FY Part B).
+	// The tier is still the caller's own rather than stamped operator outright, so a
+	// member who reached one would meet the ontology guard as an agent does. No
+	// principal (open mode, or an internal caller such as erasure) is the operator.
+	p, ok := auth.PrincipalFromContext(ctx)
+	dctx := tools.WithCallerTier(s.docToolCtx(ctx, mi), tools.TierForPrincipal(p, ok, mi.Tenant))
 	dctx = withTenantDocGrants(dctx)
 	return dctx
 }

@@ -453,7 +453,9 @@ func (d *Document) reviewOp(ctx context.Context, scope string) (sqlmem.ScopeKey,
 	if d.SqlMem == nil || d.Store == nil {
 		return sqlmem.ScopeKey{}, "", connector.WithMessage(connector.ErrStatementReviewUnavailable, "reviewing statements needs SQL Memory; none is configured")
 	}
-	if !authorIsOperatorPlane(ctx) {
+	// A person's call, the operator's or a member's: which statements a member
+	// may rule on is mayRule's question, asked of each one (RFC FS).
+	if !tools.IsOffRunPlane(ctx) {
 		return sqlmem.ScopeKey{}, "", reviewForbidden("only the operator plane rules on statements, never an agent inside a run")
 	}
 	key, mscope, err := d.resolveScope(ctx, scope)

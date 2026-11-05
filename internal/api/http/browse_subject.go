@@ -174,6 +174,11 @@ func (b browseSubject) apply(ctx context.Context) context.Context {
 		}
 		return base
 	}
+	// The tier is re-derived for the tenant acted in: an admin's ?tenant= focus
+	// keeps it the operator plane there, and every other caller's tenant was
+	// held to its own by browseSubjectFor.
+	p, ok := auth.PrincipalFromContext(ctx)
+	base = tools.WithCallerTier(base, tools.TierForPrincipal(p, ok, b.tenantID))
 	ctx = tools.WithRunIdentity(base, tools.RunIdentityValue{
 		UserID:   b.userID,
 		AgentID:  substrateAdminAgentID,

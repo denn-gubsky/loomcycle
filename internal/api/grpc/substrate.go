@@ -67,6 +67,9 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 		Isolated: auth.IsIsolated(principal, ok),
 	})
 	ctx = tools.WithAgentName(ctx, grpcSubstrateAdminAgentName)
+	// RFC FY Part B: who is calling, as on the HTTP plane — a member the gRPC
+	// member path admits gets the grants below and is still not the operator.
+	ctx = tools.WithCallerTier(ctx, tools.TierForPrincipal(principal, ok, principal.TenantID))
 	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{
 		Scopes:   []string{"any"},
 		SelfName: grpcSubstrateAdminAgentName,

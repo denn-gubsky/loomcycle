@@ -65,6 +65,10 @@ const (
 	moveIDCollision = "id_collision"
 )
 
+// copyTargetForbidden is the detail of a refusal that must not say what in the
+// target scope refused it.
+const copyTargetForbidden = "write on the target is not allowed"
+
 // copyDoc is one document of the set, as planned.
 type copyDoc struct {
 	id      string
@@ -105,6 +109,20 @@ type copyPlan struct {
 	// unfinished: a move's members whose target is written but which are not
 	// moved yet; the same call again finishes them.
 	unfinished []map[string]any
+
+	// hiddenDangling: relations leaving the set whose far end is in a document
+	// the caller may not read. They are never listed or counted in the answer,
+	// yet a move would delete them with the source, so they block a move.
+	hiddenDangling int
+	// unlinkable: listed relations leaving the set whose ends the caller may
+	// not link; dangling:drop would unlink them, so they block a drop.
+	unlinkable int
+	// quietFinish: a move's unfinished moves (another call's) the caller may not
+	// read in the target; finished, never reported (document_move.go).
+	quietFinish map[string]bool
+	// unreadable: ids the caller named but may not read (copySet); refused as
+	// not_found, before anything else is asked about them.
+	unreadable map[string]bool
 }
 
 func (p *copyPlan) unfinish(docID, code, detail string) {
@@ -150,12 +168,12 @@ func (d *Document) copyDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 		return errValidation(op+": a copy into the same scope needs a path_map",
 			"Every copy would take a name its original already holds. Pass path_map, e.g. {\"/docs\": \"/docs-copy\"}."), nil
 	}
-	ids, refused := d.copySet(ctx, src, op, in, false)
+	ids, unreadable, refused := d.copySet(ctx, src, op, in, false)
 	if refused != nil {
 		return *refused, nil
 	}
 	plan := &copyPlan{src: src, dst: dst, srcMem: srcMem, dstMem: dstMem, chunkDoc: map[string]string{},
-		counts: map[string]int{}, chunkMap: map[string]string{}}
+		counts: map[string]int{}, chunkMap: map[string]string{}, unreadable: unreadable}
 	if err := d.planCopy(ctx, plan, op, ids, pathMap); err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}
@@ -172,18 +190,41 @@ func (d *Document) copyDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 // copySet resolves the call's set: document_ids, under_path and under_paths,
 // their union, each document once, in the order named. allowEmpty: a move with
 // unfinished work to complete may name nothing more.
-func (d *Document) copySet(ctx context.Context, src sqlmem.ScopeKey, op string, in docInput, allowEmpty bool) ([]string, *tools.Result) {
+//
+// A document the caller may not read is left out of the set here, before
+// anything is asked about it, as a listing leaves it out: the plan would
+// otherwise answer for it (not_found, is_subject, holds_facts, forbidden, its
+// relations) and the set's size would count it, so a dry run over a subtree
+// would enumerate what the caller cannot see (security re-audit 2026-11-04,
+// D16). Found under a path, such a document is simply absent. Named by id, it
+// stays in the set as unreadable, and the plan answers for it exactly as for
+// an id that names nothing (not_found), so naming ids cannot tell the two
+// apart.
+func (d *Document) copySet(ctx context.Context, src sqlmem.ScopeKey, op string, in docInput, allowEmpty bool) ([]string, map[string]bool, *tools.Result) {
 	var ids []string
+	var unreadable map[string]bool
 	seen := map[string]bool{}
-	add := func(id string) {
+	acl := d.newDocACL(ctx, src)
+	var aclErr error
+	add := func(id string, named bool) {
 		id = strings.TrimSpace(id)
-		if id != "" && !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
+		if id == "" || seen[id] || aclErr != nil {
+			return
 		}
+		seen[id] = true
+		if readable, err := acl.permits(ctx, "read", id); err != nil || !readable {
+			if aclErr = err; aclErr != nil || !named {
+				return
+			}
+			if unreadable == nil {
+				unreadable = map[string]bool{}
+			}
+			unreadable[id] = true
+		}
+		ids = append(ids, id)
 	}
 	for _, id := range in.DocumentIDs {
-		add(id)
+		add(id, true)
 	}
 	under := append([]string{}, in.UnderPaths...)
 	if in.UnderPath != "" {
@@ -193,24 +234,28 @@ func (d *Document) copySet(ctx context.Context, src sqlmem.ScopeKey, op string, 
 		got, err := d.documentsUnderPath(ctx, src, p)
 		if err != nil {
 			r := docFail(op+": under_path "+p+": ", err)
-			return nil, &r
+			return nil, nil, &r
 		}
 		sort.Strings(got)
 		for _, id := range got {
-			add(id)
+			add(id, false)
 		}
+	}
+	if aclErr != nil {
+		r := errFrom(op+": access control: "+aclErr.Error(), aclErr)
+		return nil, nil, &r
 	}
 	if len(ids) == 0 && !allowEmpty {
 		r := errValidation(op+": no documents named: pass document_ids, under_path or under_paths (a path with no documents under it names none)",
 			"List the scope's documents with op=query_documents or the Path tool's ls, then pass their ids or the subtree.")
-		return nil, &r
+		return nil, nil, &r
 	}
 	if len(ids) > copyMaxDocuments {
 		r := errValidation(fmt.Sprintf("%s: the set holds %d documents, at most %d per call", op, len(ids), copyMaxDocuments),
 			"Split the set: pass a narrower under_path, or document_ids in batches.")
-		return nil, &r
+		return nil, nil, &r
 	}
-	return ids, nil
+	return ids, unreadable, nil
 }
 
 // planCopy checks every document of the set and decides its target names. A
@@ -228,6 +273,11 @@ func (d *Document) planCopy(ctx context.Context, p *copyPlan, op string, ids []s
 	}
 	claimed := map[string]string{} // target name → the member taking it
 	for _, id := range ids {
+		if p.unreadable[id] {
+			// Named by the caller, who may not read it: answered as a missing id.
+			p.refuse(id, copyNotFound, "no such document in scope "+p.src.Scope)
+			continue
+		}
 		res, err := d.query(ctx, p.src, `SELECT title FROM documents WHERE id = ? LIMIT 1`, id)
 		if err != nil {
 			return err
@@ -255,21 +305,15 @@ func (d *Document) planCopy(ctx context.Context, p *copyPlan, op string, ids []s
 			p.refuse(id, copyHoldsFacts, "a document holding facts is not copied between scopes")
 			continue
 		}
-		if srcACL != nil {
-			if r, err := srcACL.document(ctx, op, "read", id); err != nil {
+		// Read was asked when the set was resolved (copySet). A move removes the
+		// source, so it needs write and delete there too: without delete, a move
+		// would take away a document the caller may not delete.
+		if srcACL != nil && p.move {
+			if code, detail, err := moveSourceRefusal(ctx, srcACL, op, id); err != nil {
 				return err
-			} else if r != nil {
-				p.refuse(id, copyForbidden, "read on the source document is not allowed")
+			} else if code != "" {
+				p.refuse(id, code, detail)
 				continue
-			}
-			// A move removes the source, so it needs write there too.
-			if p.move {
-				if r, err := srcACL.document(ctx, op, "write", id); err != nil {
-					return err
-				} else if r != nil {
-					p.refuse(id, copyForbidden, "write on the source document is not allowed")
-					continue
-				}
 			}
 		}
 		if p.move {
@@ -306,6 +350,15 @@ func (d *Document) planCopy(ctx context.Context, p *copyPlan, op string, ids []s
 				ok = false
 				break
 			}
+			// Asked before the target is probed for what holds the name, so a
+			// name the caller may not write says nothing about the target scope.
+			if dstACL != nil {
+				if r := dstACL.path(ctx, op, "write", canonical); r != nil {
+					p.refuse(id, copyForbidden, "write on the target name "+canonical+" is not allowed")
+					ok = false
+					break
+				}
+			}
 			parent, name, _ := splitPath(canonical)
 			if row, gerr := d.Store.DirentGet(ctx, direntTenant(ctx), p.dst.Scope, direntScopeID(p.dst), parent, name); gerr == nil {
 				// A move that stopped after naming its target already holds the
@@ -323,13 +376,6 @@ func (d *Document) planCopy(ctx context.Context, p *copyPlan, op string, ids []s
 					return gerr
 				}
 			}
-			if dstACL != nil {
-				if r := dstACL.path(ctx, op, "write", canonical); r != nil {
-					p.refuse(id, copyForbidden, "write on the target name "+canonical+" is not allowed")
-					ok = false
-					break
-				}
-			}
 			doc.targets = append(doc.targets, canonical)
 		}
 		if !ok {
@@ -337,7 +383,7 @@ func (d *Document) planCopy(ctx context.Context, p *copyPlan, op string, ids []s
 		}
 		// A resumed move's own rows hold its keys already.
 		if !doc.resumed {
-			if code, detail, err := d.copyKeyCollision(ctx, p, id); err != nil {
+			if code, detail, err := d.copyKeyCollision(ctx, p, dstACL, id); err != nil {
 				return err
 			} else if code != "" {
 				p.refuse(id, code, detail)
@@ -360,9 +406,29 @@ func (d *Document) planCopy(ctx context.Context, p *copyPlan, op string, ids []s
 	return d.countCopy(ctx, p)
 }
 
+// moveSourceRefusal asks what removing a source document needs besides reading
+// it: write, and delete. "" when both are allowed.
+func moveSourceRefusal(ctx context.Context, acl *docACL, op, docID string) (code, detail string, err error) {
+	for _, verb := range []string{"write", "delete"} {
+		r, err := acl.document(ctx, op, verb, docID)
+		if err != nil {
+			return "", "", err
+		}
+		if r != nil {
+			return copyForbidden, verb + " on the source document is not allowed", nil
+		}
+	}
+	return "", "", nil
+}
+
 // copyKeyCollision refuses a document whose work key or identity key the target
 // already holds: both are unique in a scope, so the copy would fail its insert.
-func (d *Document) copyKeyCollision(ctx context.Context, p *copyPlan, docID string) (string, string, error) {
+//
+// When the holder is a document the caller may not read (dstACL), the refusal is
+// a plain write refusal that names neither the key nor the scope: otherwise a dry
+// run would answer "is this work held there" for a document the caller cannot
+// see, which resolve_anchor deliberately does not.
+func (d *Document) copyKeyCollision(ctx context.Context, p *copyPlan, dstACL *docACL, docID string) (string, string, error) {
 	for _, col := range []string{"work_key", "identity_key"} {
 		res, err := d.query(ctx, p.src, `SELECT DISTINCT `+col+` FROM chunks WHERE document_id = ? AND `+col+` IS NOT NULL AND `+col+` <> ''`, docID)
 		if err != nil {
@@ -373,7 +439,7 @@ func (d *Document) copyKeyCollision(ctx context.Context, p *copyPlan, docID stri
 		}
 		for _, r := range res.Rows {
 			k := asStr(r[0])
-			hit, err := d.query(ctx, p.dst, `SELECT 1 FROM chunks WHERE `+col+` = ? LIMIT 1`, k)
+			hit, err := d.query(ctx, p.dst, `SELECT document_id FROM chunks WHERE `+col+` = ? LIMIT 1`, k)
 			if err != nil {
 				if isNoSuchColumn(err) {
 					break
@@ -381,6 +447,11 @@ func (d *Document) copyKeyCollision(ctx context.Context, p *copyPlan, docID stri
 				return "", "", err
 			}
 			if len(hit.Rows) > 0 {
+				if readable, err := dstACL.permits(ctx, "read", asStr(hit.Rows[0][0])); err != nil {
+					return "", "", err
+				} else if !readable {
+					return copyForbidden, copyTargetForbidden, nil
+				}
 				return copyKeyCollision, fmt.Sprintf("scope %s already holds %s %q", p.dst.Scope, col, k), nil
 			}
 		}
@@ -419,6 +490,9 @@ func (d *Document) countCopy(ctx context.Context, p *copyPlan) error {
 	return nil
 }
 
+// copyStmt is a statement touching a member's chunks, as planStatements reads it.
+type copyStmt struct{ id, kind, from, to string }
+
 // planStatements sorts every statement touching a member's chunks: carried when
 // both ends and every evidence chunk are members, dangling otherwise.
 func (d *Document) planStatements(ctx context.Context, p *copyPlan) error {
@@ -427,13 +501,12 @@ func (d *Document) planStatements(ctx context.Context, p *copyPlan) error {
 		chunks = append(chunks, doc.chunks...)
 	}
 	seen := map[string]bool{}
-	type stmt struct{ id, kind, from, to string }
-	var touching []stmt
+	var touching []copyStmt
 	for _, batch := range batchesOf(chunks, copyBatch) {
 		ph := placeholders(len(batch))
 		args := append(anySlice(batch), anySlice(batch)...)
 		if err := d.copyRows(ctx, p.src, `SELECT id, kind, from_id, to_id FROM chunk_edges WHERE from_id IN (`+ph+`) OR to_id IN (`+ph+`)`, "id", args, func(_ []string, r []any) error {
-			s := stmt{asStr(r[0]), asStr(r[1]), asStr(r[2]), asStr(r[3])}
+			s := copyStmt{asStr(r[0]), asStr(r[1]), asStr(r[2]), asStr(r[3])}
 			if !seen[s.id] {
 				seen[s.id] = true
 				touching = append(touching, s)
@@ -459,6 +532,11 @@ func (d *Document) planStatements(ctx context.Context, p *copyPlan) error {
 			return err
 		}
 	}
+	acl := d.newDocACL(ctx, p.src)
+	farDoc, err := d.farEndDocuments(ctx, p, acl, touching)
+	if err != nil {
+		return err
+	}
 	for _, s := range touching {
 		_, fromIn := p.chunkDoc[s.from]
 		_, toIn := p.chunkDoc[s.to]
@@ -475,6 +553,37 @@ func (d *Document) planStatements(ctx context.Context, p *copyPlan) error {
 			p.statements = append(p.statements, s.id)
 			continue
 		}
+		// The documents of the relation's two ends: an end outside the set is in
+		// a document of the scope that is not a member.
+		ends := []string{p.chunkDoc[s.from], p.chunkDoc[s.to]}
+		if far, isFar := farDoc[s.id]; isFar {
+			if outside == "from" {
+				ends[0] = far
+			} else {
+				ends[1] = far
+			}
+			// A far end the caller may not read is not reported: listing it would
+			// name a chunk of a document it cannot see, and counting it would say
+			// one is there. A move still has to stop for it (moveDocuments).
+			if readable, err := acl.permits(ctx, "read", far); err != nil {
+				return err
+			} else if !readable {
+				p.hiddenDangling++
+				continue
+			}
+		}
+		// dangling:drop deletes the relation with the source: an unlink, so
+		// it needs link on both ends, as unlink_chunks asks.
+		if p.move && acl != nil {
+			for _, docID := range ends {
+				if linkable, err := acl.permits(ctx, "link", docID); err != nil {
+					return err
+				} else if !linkable {
+					p.unlinkable++
+					break
+				}
+			}
+		}
 		p.danglingCount++
 		if len(p.dangling) < copyMaxListed {
 			p.dangling = append(p.dangling, map[string]any{"statement_id": s.id, "kind": s.kind, "from": s.from, "to": s.to, "outside": outside})
@@ -482,6 +591,45 @@ func (d *Document) planStatements(ctx context.Context, p *copyPlan) error {
 	}
 	p.counts["statements"] = len(p.statements)
 	return nil
+}
+
+// farEndDocuments maps each statement leaving the set by an end (not by its
+// evidence) to the document holding that outside end. Only asked for a caller
+// with a set; a chunk with no row maps to "" (the whole scope is asked).
+func (d *Document) farEndDocuments(ctx context.Context, p *copyPlan, acl *docACL, touching []copyStmt) (map[string]string, error) {
+	if acl == nil {
+		return nil, nil
+	}
+	farChunk := map[string]string{} // statement id → its outside chunk
+	var chunks []string
+	for _, s := range touching {
+		_, fromIn := p.chunkDoc[s.from]
+		_, toIn := p.chunkDoc[s.to]
+		switch {
+		case !fromIn:
+			farChunk[s.id] = s.from
+		case !toIn:
+			farChunk[s.id] = s.to
+		default:
+			continue
+		}
+		chunks = append(chunks, farChunk[s.id])
+	}
+	docOf := map[string]string{}
+	for _, batch := range batchesOf(chunks, copyBatch) {
+		meta, err := d.chunkMetaByIDs(ctx, p.src, batch)
+		if err != nil {
+			return nil, err
+		}
+		for id, m := range meta {
+			docOf[id] = m.documentID
+		}
+	}
+	out := make(map[string]string, len(farChunk))
+	for stmt, c := range farChunk {
+		out[stmt] = docOf[c]
+	}
+	return out, nil
 }
 
 // writeCopy copies every member, then the statements between them.

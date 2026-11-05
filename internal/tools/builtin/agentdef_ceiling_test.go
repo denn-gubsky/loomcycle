@@ -17,7 +17,7 @@ import (
 // tools ceiling, outside any run — so an authoring call is not narrowed by an
 // agent's policies.
 func operatorPlane(ctx context.Context) context.Context {
-	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
+	return tools.WithCallerTier(tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} }), tools.TierOperatorPlane)
 }
 
 // ceilingFixture is an AgentDef tool with two static volumes and one static
@@ -275,8 +275,9 @@ func TestAgentDefCreate_ReviewerEscalationCaseIsRefused(t *testing.T) {
 	}
 }
 
-// The operator plane is told apart by the wildcard tools ceiling outside a run.
-// The same wildcard on a run's ctx grants nothing: a run is always narrowed.
+// A person on a substrate plane is told apart by its caller tier outside a
+// run. The wildcard tools ceiling every plane stamps grants nothing by itself:
+// on a run's ctx the author is narrowed.
 func TestAgentDefCreate_WildcardToolsInsideARunIsStillNarrowed(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
