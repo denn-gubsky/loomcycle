@@ -69,21 +69,30 @@ tag.
 
 ```sh
 VERSION=1.142.0
-IMAGE=denngubsky/loomcycle      # or ghcr.io/denn-gubsky/loomcycle, -toolbox, -media, -browser
+NAME=loomcycle                  # or loomcycle-toolbox, -media, -browser
 
-cosign verify "$IMAGE:$VERSION" \
+# The signature: check whichever copy you pull. Each registry holds its own.
+cosign verify "denngubsky/$NAME:$VERSION" \
   --certificate-identity "https://github.com/denn-gubsky/loomcycle/.github/workflows/release.yml@refs/tags/v$VERSION" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
-gh attestation verify "oci://$IMAGE:$VERSION" \
+# The build provenance: check it through the GHCR name.
+gh attestation verify "oci://ghcr.io/denn-gubsky/$NAME:$VERSION" \
   --repo denn-gubsky/loomcycle \
   --signer-workflow denn-gubsky/loomcycle/.github/workflows/release.yml
 ```
 
-`gh attestation verify` looks the attestation up on GitHub by the image's
-digest, so it works for either registry's copy (log in to the registry first
-if it asks). The attestation is also pushed next to the image in the registry;
-add `--bundle-from-oci` to read it from there instead.
+The provenance attestation is made for the GHCR copy (and also pushed next to
+it in GHCR; add `--bundle-from-oci` to read it from there). The Docker Hub
+copy is the same image with the same digest: both registries receive the same
+per-arch images joined into the same manifest. `gh attestation verify` looks
+attestations up by digest, so the GHCR check above vouches for the Docker Hub
+image too. To confirm the two digests match:
+
+```sh
+docker buildx imagetools inspect "denngubsky/$NAME:$VERSION" --format '{{json .Manifest.Digest}}'
+docker buildx imagetools inspect "ghcr.io/denn-gubsky/$NAME:$VERSION" --format '{{json .Manifest.Digest}}'
+```
 
 Different images come from different workflows, and the certificate names the
 workflow and the git ref it ran at:
@@ -130,6 +139,11 @@ checks them from the command line.
   enforces through `LOOMCYCLE_WEBUI_BUNDLE_SHA256`.
 - Container images carry no SBOM of their own yet. The binary inside is the one
   the archive SBOMs describe.
+- A release signs its images after the archives are uploaded and the Homebrew
+  formula is bumped, so a signing failure cannot leave a release without its
+  files; it can leave a version's images unsigned until the job is re-run.
+  `SHA256SUMS` is signed earlier, before the upload: if Sigstore is down at
+  that moment the release page exists without assets until a re-run.
 - Homebrew installs the release archives; `brew` checks their SHA-256 against
   the formula, which the release workflow writes. To check the signature too,
   verify the archive as above.
