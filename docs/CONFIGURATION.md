@@ -1315,7 +1315,7 @@ A scope says which routes a token may call. What a call may decide *for the tena
 
 A `substrate:tenant` token counts as the operator plane only in its own tenant. A tenant operator's call is the operator plane on HTTP, gRPC and MCP alike.
 
-**What `?scope_id=` a member may pass.** On the off-run memory, Document, Path, feed, asset and maintenance routes, a member may name:
+**What `?scope_id=` a member may pass.** On the off-run memory, Document, Path, feed and asset routes, a member may name:
 
 - itself;
 - a subject its rules let it `browse` (`browse memory:user` or `browse document:user` with `owner_is_self: false`), and then only to read;
