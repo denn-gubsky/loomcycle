@@ -56,14 +56,11 @@ func (s *Server) handleDocumentReindex(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_scope", "scope must be one of: agent, user, tenant")
 		return
 	}
+	dryRun := dryRunParam(q.Get("dry_run"))
 	// A real pass rewrites the scope's vectors with the operator's embedder.
-	ctx, ok := s.browseCtx(w, r, scope, !dryRunParam(q.Get("dry_run")))
+	ctx, ok := s.browseCtx(w, r, scope, !dryRun)
 	if !ok {
 		return
-	}
-	dryRun := true
-	if v := q.Get("dry_run"); v != "" {
-		dryRun = v != "false" && v != "0"
 	}
 	if !dryRun && s.embedder == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "embedder_unavailable",

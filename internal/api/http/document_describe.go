@@ -139,16 +139,13 @@ func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
 			"scope must be one of: agent, user, tenant")
 		return
 	}
-	// A real pass writes descriptions with the operator's vision model.
-	ctx, ok := s.browseCtx(w, r, scope, !dryRunParam(r.URL.Query().Get("dry_run")))
-	if !ok {
-		return
-	}
 	// dry_run defaults TRUE, matching every other sweep here: a bare `curl -X POST`
 	// must not spend a vision call per image.
-	dryRun := true
-	if v := r.URL.Query().Get("dry_run"); v != "" {
-		dryRun = v != "false" && v != "0"
+	dryRun := dryRunParam(r.URL.Query().Get("dry_run"))
+	// A real pass writes descriptions with the operator's vision model.
+	ctx, ok := s.browseCtx(w, r, scope, !dryRun)
+	if !ok {
+		return
 	}
 	limit := 25
 	if v := r.URL.Query().Get("limit"); v != "" {
