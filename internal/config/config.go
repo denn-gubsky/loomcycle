@@ -4268,6 +4268,12 @@ type Env struct {
 	// be a CIDR range ("100.64.0.0/10" for a whole tailnet), matched
 	// against each resolved address; a malformed range fails validate.
 	HTTPPrivateHostAllowlist []string
+	// HTTPPrivateHostAllowlistMode is LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE:
+	// "any" (the default, also when unset) or "cidr_only", which refuses a
+	// host-name entry in HTTPPrivateHostAllowlist at load, so a deployment
+	// that must trust no DNS answer can state it as a flag. Validated by
+	// netguard.ValidatePrivateHostAllowlistMode; an unknown value fails load.
+	HTTPPrivateHostAllowlistMode string
 	// MCPAllowPrivateIPs controls whether the MCP-HTTP client may dial
 	// private/loopback/metadata IPs. DEFAULT true (MCP servers are commonly
 	// operator-run on localhost / a private network — incl. loomcycle's own
@@ -5731,6 +5737,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST"); v != "" {
 		cfg.Hooks.PrivateHostAllowlist = append(cfg.Hooks.PrivateHostAllowlist, splitCSV(v)...)
 	}
+
+	// Checked against HTTPPrivateHostAllowlist in validate.
+	cfg.Env.HTTPPrivateHostAllowlistMode = strings.TrimSpace(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE"))
 
 	// gRPC server (v0.5.5+). Disabled by default; operator opts in
 	// by setting LOOMCYCLE_GRPC_ADDR. Coexists with HTTP+SSE (which
@@ -8893,6 +8902,9 @@ func validate(c *Config) error {
 	// refuse it here where the operator sees it.
 	if err := netguard.ValidatePrivateHostAllowlist(c.Env.HTTPPrivateHostAllowlist); err != nil {
 		return fmt.Errorf("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST: %w", err)
+	}
+	if err := netguard.ValidatePrivateHostAllowlistMode(c.Env.HTTPPrivateHostAllowlistMode, c.Env.HTTPPrivateHostAllowlist); err != nil {
+		return fmt.Errorf("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE: %w", err)
 	}
 	if err := netguard.ValidatePrivateHostAllowlist(c.Hooks.PrivateHostAllowlist); err != nil {
 		return fmt.Errorf("hooks.private_host_allowlist (or LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST): %w", err)

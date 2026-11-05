@@ -2254,6 +2254,12 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 | `LOOMCYCLE_LOG_FORMAT` | `text` | `text`: the familiar `2006/01/02 15:04:05 message` line, with `WARN`/`ERROR`/`DEBUG` before the message and structured fields appended as `key=value`. `json`: one JSON object per line (`time`, `level`, `msg`, fields), plus `run_id`/`tenant`/`agent`/`user` and `trace_id`/`span_id` where the line belongs to a run. An unknown value warns and uses `text`. |
 | `LOOMCYCLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; lines below it are dropped. Every runtime line is levelled, so `warn` or `error` also hides the Info lines, "listening on" among them; fatal and startup errors are logged at `ERROR` and show at every level. An unknown value warns and uses `info`. |
 
+**Network guard: trust no DNS.** An entry of `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` is a host name (suffix-matched: it vouches for whatever that name's DNS answers) or a CIDR range (it vouches for the addresses inside it, whatever name reached them); `docs/TOOLS.md` has the full rules. A deployment that must not let a DNS answer open a private address states it with the mode, and the load checks the list against it.
+
+| Env var | Default | Values |
+|---|---|---|
+| `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE` | `any` | `any`: host-name and CIDR entries. `cidr_only`: CIDR entries only; a host-name entry fails startup, and so does an IP literal written as a host entry (the error names the `/32` or `/128` entry that admits the same address). Any other value fails startup. It governs this list only: `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST` and the host of a remote memory backend or document source the operator declared in yaml (its own `base_url`, vouched for by name) are not covered. |
+
 **Shutdown.** On SIGTERM or SIGINT, loomcycle pauses this replica's runs in flight before it exits, so the next boot resumes them instead of the stale-run sweeper failing them. It is the [pause](ARCHITECTURE.md#pause--resume--snapshot-v0817) the operator can request, made local and bounded:
 
 1. New runs are refused (503) and each run in flight parks at its next iteration boundary, its row `pause_state='paused'`. The HTTP and gRPC listeners drain alongside, each for at most 5 s.
