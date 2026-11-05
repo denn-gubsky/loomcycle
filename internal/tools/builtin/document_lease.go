@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -42,11 +43,18 @@ func documentLeaseAllowed(ctx context.Context) bool {
 	return authorIsOperatorPlane(ctx) || HasStatementMethodGrant(ctx)
 }
 
-// documentLeaseOwner is the holder's identity: the run id when present, else the
-// agent name. Never caller-supplied, so one run cannot release another's lease.
+// documentLeaseOwner is the holder's identity: the run id when present; off a
+// run, the calling principal (principal:<subject>), since every off-run caller
+// of a plane carries the plane's one synthetic agent name, or none; else the
+// agent name. Never caller-supplied, so one caller cannot release or extend
+// another's lease. The principal prefix here names an OWNER; the reserved
+// principal: lease NAMES are the runtime's subject-binding locks.
 func documentLeaseOwner(ctx context.Context) string {
 	if id := tools.RunID(ctx); id != "" {
 		return id
+	}
+	if p, ok := auth.PrincipalFromContext(ctx); ok && p.Subject != "" {
+		return principalLeasePrefix + p.Subject
 	}
 	if n := tools.AgentName(ctx); n != "" {
 		return "agent:" + n
