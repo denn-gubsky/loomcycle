@@ -169,7 +169,7 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
           ref as unknown as ConversationRef,
           text,
           activity,
-          ctx.config.voice.enabled,
+          ctx.config.voice?.enabled === true,
         );
       });
       app.on("card.action", async ({ activity, ref }) => {
