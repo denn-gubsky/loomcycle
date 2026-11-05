@@ -216,3 +216,25 @@ func TestRemember_FilesIntoOneEntitiesDocument(t *testing.T) {
 		t.Errorf("two remembers made %d entity documents, want 1", n)
 	}
 }
+
+// TestReservedName_CaseFoldedSubtreeOpsLeaveItIntact: Path names are case-sensitive,
+// so /MEMORY is not an ancestor of the reserved names and the guard lets it through.
+// The store must agree: on SQLite a LIKE prefix folded the case and rm/mv of /MEMORY
+// reached /memory/ontology.
+func TestReservedName_CaseFoldedSubtreeOpsLeaveItIntact(t *testing.T) {
+	e := newReservedEnv(t)
+	if r := e.path(t, e.agentCtx, `{"op":"mkdir","scope":"tenant","path":"/MEMORY"}`); r.IsError {
+		t.Fatalf("mkdir /MEMORY: %s", r.Text)
+	}
+	_ = e.path(t, e.agentCtx, `{"op":"rm","scope":"tenant","path":"/MEMORY","recursive":true}`)
+	if got := e.tenantName(t, memrank.OntologyPath); got != e.ontology {
+		t.Errorf("rm -r /MEMORY left /memory/ontology naming %q, want %q", got, e.ontology)
+	}
+	if r := e.path(t, e.agentCtx, `{"op":"mkdir","scope":"tenant","path":"/MEMORY"}`); r.IsError {
+		t.Fatalf("mkdir /MEMORY again: %s", r.Text)
+	}
+	_ = e.path(t, e.agentCtx, `{"op":"mv","scope":"tenant","path":"/MEMORY","to":"/elsewhere"}`)
+	if got := e.tenantName(t, memrank.OntologyPath); got != e.ontology {
+		t.Errorf("mv /MEMORY left /memory/ontology naming %q, want %q", got, e.ontology)
+	}
+}

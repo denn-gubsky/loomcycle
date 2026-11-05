@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -100,6 +101,22 @@ func DirentList(ctx context.Context, q Querier, tenantID, scope, scopeID, parent
 	return collectDirents(d, rows)
 }
 
+// direntUnderPredicate matches a dirent whose parent_path is prefix or begins with it.
+// Takes four arguments: prefix, EscapeLike(prefix)+"%", underPrefixLen(prefix), prefix.
+//
+// The LIKE alone is not enough: SQLite's LIKE folds ASCII case, so "/MEMORY/" matched
+// "/memory/ontology" there while Postgres and the tools (whose Path names are
+// case-sensitive, and whose reserved-name guard reasons on exact prefixes) did not — an
+// rm or mv of /MEMORY reached the reserved names under /memory (RFC FY Part C). The
+// SUBSTR comparison is exact on both dialects; the LIKE stays so Postgres can still
+// use a pattern index to narrow the rows. CAST: a bare placeholder as SUBSTR's length
+// is inferred as text by Postgres, as in DirentMove.
+const direntUnderPredicate = `(parent_path = ? OR (parent_path LIKE ? ESCAPE '\' AND SUBSTR(parent_path, 1, CAST(? AS INTEGER)) = ?))`
+
+// underPrefixLen is prefix's length as SUBSTR counts it: in characters, on both
+// dialects.
+func underPrefixLen(prefix string) int { return utf8.RuneCountInString(prefix) }
+
 // DirentListUnder returns every dirent at or under prefix (a trailing-slashed
 // directory path, e.g. "/docs/"): rows whose parent_path is prefix or begins
 // with it. Used for recursive ls.
@@ -108,9 +125,9 @@ func DirentListUnder(ctx context.Context, q Querier, tenantID, scope, scopeID, p
 	rows, err := q.Query(ctx,
 		direntSelect(d)+`
 		 WHERE tenant_id = ? AND scope = ? AND scope_id = ?
-		   AND (parent_path = ? OR parent_path LIKE ? ESCAPE '\')
+		   AND `+direntUnderPredicate+`
 		 ORDER BY parent_path, name`,
-		tenantID, scope, scopeID, prefix, EscapeLike(prefix)+"%")
+		tenantID, scope, scopeID, prefix, EscapeLike(prefix)+"%", underPrefixLen(prefix), prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -185,8 +202,8 @@ func DirentDeleteUnder(ctx context.Context, q Querier, tenantID, scope, scopeID,
 	n, err := q.Exec(ctx,
 		`DELETE FROM dirents
 		 WHERE tenant_id = ? AND scope = ? AND scope_id = ?
-		   AND (parent_path = ? OR parent_path LIKE ? ESCAPE '\')`,
-		tenantID, scope, scopeID, prefix, EscapeLike(prefix)+"%")
+		   AND `+direntUnderPredicate,
+		tenantID, scope, scopeID, prefix, EscapeLike(prefix)+"%", underPrefixLen(prefix), prefix)
 	if err != nil {
 		return 0, err
 	}
@@ -223,9 +240,9 @@ func DirentMove(ctx context.Context, db DB, tenantID, scope, scopeID, fromParent
 			`UPDATE dirents
 			 SET parent_path = ? || SUBSTR(parent_path, CAST(? AS INTEGER)), updated_at = ?
 			 WHERE tenant_id = ? AND scope = ? AND scope_id = ?
-			   AND (parent_path = ? OR parent_path LIKE ? ESCAPE '\')`,
+			   AND `+direntUnderPredicate,
 			toFull, len(fromFull)+1, now,
-			tenantID, scope, scopeID, fromFull, EscapeLike(fromFull)+"%")
+			tenantID, scope, scopeID, fromFull, EscapeLike(fromFull)+"%", underPrefixLen(fromFull), fromFull)
 		return err
 	})
 	if err != nil {

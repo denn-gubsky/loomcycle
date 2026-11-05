@@ -615,6 +615,7 @@ func Run(t *testing.T, factory Factory) {
 		{"DirentListUnderRecursive", testDirentListUnderRecursive},
 		{"DirentListByDocumentsIsTheReverseLookup", testDirentListByDocumentsIsTheReverseLookup},
 		{"DirentUnderTreatsUnderscoreLiterally", testDirentUnderTreatsUnderscoreLiterally},
+		{"DirentUnderIsCaseSensitive", testDirentUnderIsCaseSensitive},
 		{"DirentDeleteAndDeleteUnder", testDirentDeleteAndDeleteUnder},
 		{"DirentMoveCascade", testDirentMoveCascade},
 		{"DirentScopeIsolation", testDirentScopeIsolation},
@@ -15438,6 +15439,36 @@ func testDirentUnderTreatsUnderscoreLiterally(t *testing.T, s store.Store) {
 	}
 	if _, err := s.DirentGet(ctx, "", "user", "u1", "/axb/", "y"); err != nil {
 		t.Errorf("/axb/y must survive delete under /c_d/: %v", err)
+	}
+}
+
+// testDirentUnderIsCaseSensitive: Path names are case-sensitive, and the tools decide
+// what a subtree op may touch with case-sensitive prefixes. SQLite's LIKE folds ASCII
+// case, so a prefix match done by LIKE alone let rm/mv of /MEMORY reach /memory/... —
+// past a guard that reserves names under /memory (RFC FY Part C).
+func testDirentUnderIsCaseSensitive(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, d := range [][3]string{
+		{"/", "memory", "directory"}, {"/memory/", "ontology", "document"}, {"/", "MEMORY", "directory"},
+	} {
+		if _, err := s.DirentCreate(ctx, mkDirent("", "tenant", "", d[0], d[1], d[2], `{}`)); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+	if got, err := s.DirentListUnder(ctx, "", "tenant", "", "/MEMORY/"); err != nil || len(got) != 0 {
+		t.Errorf("list under /MEMORY/ = %v err=%v, want nothing (/memory/ontology differs in case)", names(got), err)
+	}
+	if n, err := s.DirentDeleteUnder(ctx, "", "tenant", "", "/MEMORY/"); err != nil || n != 0 {
+		t.Errorf("delete under /MEMORY/ = %d err=%v, want 0", n, err)
+	}
+	if _, err := s.DirentGet(ctx, "", "tenant", "", "/memory/", "ontology"); err != nil {
+		t.Fatalf("/memory/ontology must survive delete under /MEMORY/: %v", err)
+	}
+	if moved, err := s.DirentMove(ctx, "", "tenant", "", "/", "MEMORY", "/", "elsewhere"); err != nil || !moved {
+		t.Fatalf("move /MEMORY: moved=%v err=%v", moved, err)
+	}
+	if _, err := s.DirentGet(ctx, "", "tenant", "", "/memory/", "ontology"); err != nil {
+		t.Errorf("/memory/ontology must not move with /MEMORY: %v", err)
 	}
 }
 
