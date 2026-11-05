@@ -8691,6 +8691,8 @@ export interface AuthzRequestContext {
   user_tier?: string;
   agent?: string;
   depth?: number;
+  /** The client address a `source_cidr` condition reads, e.g. `203.0.113.7`. */
+  source_ip?: string;
 }
 
 /** One question: may `subject` do `action` to `resource`? An omitted
