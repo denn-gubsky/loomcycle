@@ -216,3 +216,36 @@ func TestReservedName_TheRootOfAReservedDocumentIsTheOperators(t *testing.T) {
 		t.Errorf("the operator could not update the root: %s", r.Text)
 	}
 }
+
+// TestOntologyGuard_ADerivedNaturalKeyIsCheckedToo: upsert_chunk may omit natural_key
+// and let the class derive it from its identity fields. The guard must judge the key
+// the handler will use, not the empty one the caller sent, or a "proposal" rewrites an
+// accepted entity whose identity it repeats.
+func TestOntologyGuard_ADerivedNaturalKeyIsCheckedToo(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	opCtx := installTenantOntology(t, d, base, typedOntologyMD, memrank.OntologyConfirmedStatus)
+	agentCtx := tools.WithRunID(tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
+	}), "r_agent")
+	read, _ := d.OntologyTermsFromTree(opCtx, "tenant", memrank.OntologyPath)
+
+	// The operator files an accepted Provision in the ontology; the class derives its key.
+	out, r := docExec(t, d, opCtx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"tenant","document_id":"%s","parent_id":"%s","type":"Provision","title":"Art. 5","body":"orig","fields":{"anchor":"art-5"}}`,
+		read.DocumentID, read.RootChunkID))
+	if r.IsError {
+		t.Fatalf("operator upsert: %s", r.Text)
+	}
+	accepted, _ := out["id"].(string)
+
+	// An agent repeats the identity with no natural_key, marked proposed.
+	r = docExec2(t, d, agentCtx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"tenant","document_id":"%s","type":"Provision","title":"hijacked","body":"rewritten","status":"proposed","fields":{"anchor":"art-5"}}`,
+		read.DocumentID))
+	if !r.IsError {
+		t.Errorf("a proposal with a derived key rewrote an accepted entity: %s", r.Text)
+	}
+	got, gr := docExec(t, d, opCtx, `{"op":"get_chunk","scope":"tenant","id":"`+accepted+`"}`)
+	if gr.IsError || got["title"] != "Art. 5" || got["status"] != nil && got["status"] != "" {
+		t.Errorf("the accepted entity changed: %v", got)
+	}
+}

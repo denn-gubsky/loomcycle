@@ -781,13 +781,6 @@ func (d *Document) executeInput(ctx context.Context, in docInput, raw json.RawMe
 	if refused := d.reservedTargetRefusal(ctx, key, in); refused != nil {
 		return *refused, nil
 	}
-	// RFC CA: an agent may PROPOSE an ontology entity, never decide one. Checked at the
-	// single dispatch point rather than inside each op — a per-op check is one op away
-	// from being forgotten, and the ops that would need it (create/update/delete/move/
-	// reorder) are exactly the ones a future change is likely to add a sibling to.
-	if refused := d.guardOntologyWrite(ctx, key, in.Op, in); refused != nil {
-		return *refused, nil
-	}
 	// RFC EZ §1.5 seam 5: the caller's access-control set, asked about the
 	// document(s) this call resolves to; see document_acl.go.
 	acl, refused, err := d.guardDocumentACL(ctx, key, in)
@@ -801,6 +794,18 @@ func (d *Document) executeInput(ctx context.Context, in docInput, raw json.RawMe
 	// ops; see document_ontology_fields.go. Pre-write so a collision leaves nothing behind.
 	classRules, refused := d.applyClassRules(ctx, key, mscope, acl, &in, raw)
 	if refused != nil {
+		return *refused, nil
+	}
+	// RFC CA: an agent may PROPOSE an ontology entity, never decide one. Checked at the
+	// single dispatch point rather than inside each op — a per-op check is one op away
+	// from being forgotten, and the ops that would need it (create/update/delete/move/
+	// reorder) are exactly the ones a future change is likely to add a sibling to.
+	//
+	// AFTER applyClassRules, on the input the handler will act on: an upsert_chunk may
+	// omit natural_key and have the class derive it, and a guard judging the caller's
+	// empty key let a "proposal" rewrite the accepted entity the derived key names
+	// (RFC FY P2 review). applyClassRules only reads, so nothing is written first.
+	if refused := d.guardOntologyWrite(ctx, key, in.Op, in); refused != nil {
 		return *refused, nil
 	}
 	res, err := d.dispatch(ctx, key, mscope, in, raw)
