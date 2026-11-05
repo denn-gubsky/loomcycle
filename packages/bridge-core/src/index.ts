@@ -16,7 +16,7 @@ export type { AdminClient, BridgePort, ClientFactory, Logger, OutboundActivity, 
 export { DEFAULT_MAX_MESSAGE_CHARS, DEFAULT_ROLLOVER_MS, MessageSink, StreamSink } from "./renderer.js";
 export type { MessageSinkOptions, StreamSinkOptions, TurnSink } from "./renderer.js";
 export { ConversationRouter } from "./router.js";
-export type { RouterOptions } from "./router.js";
+export type { MessageOptions, RouterOptions, SeenMessage } from "./router.js";
 export { createBridge, runCli } from "./start.js";
 export type { Bridge, BridgeAdapter, BridgeContext, BridgeOptions } from "./start.js";
 export { FileStore, MemoryStore, storeFromSpec } from "./store.js";

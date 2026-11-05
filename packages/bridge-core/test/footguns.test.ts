@@ -168,7 +168,7 @@ describe("revokes a gate bridge keeps", () => {
 });
 
 describe("a kept revoke ends", () => {
-  it("drops a kept revoke when the person writes again", async () => {
+  it("drops a kept revoke only for a 1:1 message the person sent after it", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
     const { cfg } = load(GATE_ENV, true);
     const revokes = new MemoryRevokeQueue();
@@ -178,14 +178,26 @@ describe("a kept revoke ends", () => {
     const bridge = createBridge(cfg, a, { logger: quiet, revokes, gateKey: keyFromSecret("s".repeat(40)), gateFetch: lc.fetchFn });
     await bridge.start();
     await expect(ctx().gate!.revoke("tg:42")).rejects.toMatchObject({ status: 503 });
+    const failedAt = (await revokes.list())[0]!.firstFailedAt;
+    const dm = { ok: true as const, speaker: { subject: "tg:42", name: "Ann", trust: "trusted" as const }, scope: "personal" as const, conversationId: "dm-42", runAs: { subject: "tg:42", name: "Ann" } };
+
+    // In a group the person speaks, but the group runs as itself: that says
+    // nothing about the 1:1 they blocked. The revoke stays.
+    await ctx().router.onMessage(
+      { ok: true, speaker: { subject: "tg:42", name: "Ann", trust: "untrusted" }, scope: "group", conversationId: "grp-1", runAs: { subject: "tg:conv:abc", name: "Group" } },
+      {},
+      "hi all",
+      { sentAt: failedAt + 60_000 },
+    );
+    // A 1:1 message the platform dates before the failure (a redelivery), or
+    // one it gives no date for, proves nothing either.
+    await ctx().router.onMessage(dm, {}, "old", { sentAt: failedAt - 1 });
+    await ctx().router.onMessage(dm, {}, "undated");
+    await vi.advanceTimersByTimeAsync(10);
     expect(await revokes.list()).toHaveLength(1);
 
-    // They unblocked the bot and wrote: they are not gone after all.
-    await ctx().router.onMessage(
-      { ok: true, speaker: { subject: "tg:42", name: "Ann", trust: "trusted" }, scope: "personal", conversationId: "dm-42", runAs: { subject: "tg:42", name: "Ann" } },
-      {},
-      "hello again",
-    );
+    // They unblocked the bot and wrote to it: they are not gone after all.
+    await ctx().router.onMessage(dm, {}, "hello again", { sentAt: failedAt + 60_000 });
     await vi.waitFor(async () => expect(await revokes.list()).toEqual([]));
     lc.state.failRevoke = false;
     await vi.advanceTimersByTimeAsync(2 * 3_600_000);
@@ -262,10 +274,10 @@ describe("reconciliation", () => {
     const store = new MemoryStore();
     for (const n of ["a", "b", "c", "d", "e", "f"]) await store.put(rec(`dm-${n}`, `tg:${n}`));
     const lc = fakeAuth();
-    // Six of six gone: over max(5, 10%). A platform API returning the wrong
-    // workspace looks exactly like this.
+    // Five of six gone: over the cap (half of six). A platform API returning
+    // a wrong list looks exactly like this.
     const logs = recording();
-    const bridge = createBridge(cfg, adapter({ members: async () => new Set(["zed"]) }).a, {
+    const bridge = createBridge(cfg, adapter({ members: async () => new Set(["a", "zed"]) }).a, {
       logger: logs.logger,
       store,
       gateKey: keyFromSecret("s".repeat(40)),
@@ -282,7 +294,7 @@ describe("reconciliation", () => {
     // An operator who knows it is a real departure raises the cap deliberately.
     const { cfg: raised } = load({ ...GATE_ENV, BRIDGE_RECONCILE_MAX_REVOKES: "10" }, true);
     expect(raised.reconcileMaxRevokes).toBe(10);
-    const applied = createBridge(raised, adapter({ members: async () => new Set(["zed"]) }).a, {
+    const applied = createBridge(raised, adapter({ members: async () => new Set(["a", "zed"]) }).a, {
       logger: quiet,
       store,
       gateKey: keyFromSecret("s".repeat(40)),
@@ -290,7 +302,7 @@ describe("reconciliation", () => {
     });
     await applied.start();
     await vi.advanceTimersByTimeAsync(FIRST_RUN_BY);
-    expect(lc.calls.filter((c) => c.path === "/v1/_auth/revoke")).toHaveLength(6);
+    expect(lc.calls.filter((c) => c.path === "/v1/_auth/revoke")).toHaveLength(5);
     await applied.stop();
   });
 
@@ -305,6 +317,42 @@ describe("reconciliation", () => {
     await bridge.start();
     expect(logs.lines).toContainEqual(expect.objectContaining({ level: "warn", msg: expect.stringContaining("BRIDGE_STORE=file:") }));
     await bridge.stop();
+  });
+
+  it("protects a small deployment: half at most, and never everyone", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    const lc = fakeAuth();
+    const run = async (people: string[], members: string[], env: Env = {}) => {
+      const store = new MemoryStore();
+      for (const n of people) await store.put(rec(`dm-${n}`, `tg:${n}`));
+      const logs = recording();
+      const before = lc.calls.length;
+      const bridge = createBridge(load({ ...GATE_ENV, ...env }, true).cfg, adapter({ members: async () => new Set(members) }).a, {
+        logger: logs.logger,
+        store,
+        gateKey: keyFromSecret("s".repeat(40)),
+        gateFetch: lc.fetchFn,
+      });
+      await bridge.start();
+      await vi.advanceTimersByTimeAsync(FIRST_RUN_BY);
+      await bridge.stop();
+      return { revoked: lc.calls.slice(before).filter((c) => c.path === "/v1/_auth/revoke").length, errors: logs.lines.filter((l) => l.level === "error") };
+    };
+    // Three served, two gone: over half. A wrong but non-empty list.
+    expect((await run(["a", "b", "c"], ["a", "zed"])).revoked).toBe(0);
+    // Three served, one gone: within half.
+    expect((await run(["a", "b", "c"], ["a", "b"])).revoked).toBe(1);
+    // Everyone gone is never applied by a round, cap or no cap.
+    const all = await run(["a", "b"], ["zed"], { BRIDGE_RECONCILE_MAX_REVOKES: "10" });
+    expect(all.revoked).toBe(0);
+    expect(all.errors).toHaveLength(1);
+  });
+
+  it("refuses a cap of zero built in code, as it does from the environment", async () => {
+    expect(load({ ...GATE_ENV, BRIDGE_RECONCILE_MAX_REVOKES: "0" }, true).problems).toContainEqual(expect.stringContaining("BRIDGE_RECONCILE_MAX_REVOKES"));
+    const { cfg } = load(GATE_ENV, true);
+    const bridge = createBridge({ ...cfg, reconcileMaxRevokes: 0 }, adapter().a, { logger: quiet, gateKey: keyFromSecret("s".repeat(40)) });
+    await expect(bridge.start()).rejects.toBeInstanceOf(ConfigError);
   });
 
   it("never revokes on a member list it could not read, or one that is empty", async () => {

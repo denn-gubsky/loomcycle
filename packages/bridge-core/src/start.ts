@@ -16,7 +16,7 @@ import { close, createBridgeServer, listen, type Route } from "./http.js";
 import type { PlatformCapabilities, PlatformInfo } from "./platform.js";
 import { consoleLogger, type BridgePort, type ClientFactory, type Logger } from "./ports.js";
 import type { MessageSinkOptions, StreamSinkOptions } from "./renderer.js";
-import { ConversationRouter } from "./router.js";
+import { ConversationRouter, type SeenMessage } from "./router.js";
 import { storeFromSpec, type ConversationStore } from "./store.js";
 import { GateBroker, loadGateKey, type GateKey } from "./gate.js";
 import { retryDelayMs, revokeQueueFromSpec, type RevokeQueue } from "./revokes.js";
@@ -148,16 +148,25 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
   // A revoke loomcycle did not take is kept and retried by the bridge itself:
   // the platform's own redelivery gives up after minutes or an hour.
   const revokes = gateBroker ? (opts.revokes ?? revokeQueueFromSpec(cfg.store, log)) : undefined;
-  // A person a kept revoke names who writes to the bot again has come back
-  // (unblocked it, reinstalled the app): the revoke is dropped, not delivered.
-  const onSeen = (subject: string): void => {
+  // A person a kept revoke names who writes to the bot again 1:1 has come
+  // back (unblocked it, reinstalled the app): the revoke is dropped, not
+  // delivered. Only a 1:1 message the person runs as, and that the platform
+  // dates after the revoke first failed, counts: speaking in a group says
+  // nothing about the 1:1 they left, and an undated or older message may be
+  // a redelivery from before they left. A delivered revoke is undone only by
+  // an operator (reactivate: operator); a kept one by the person returning.
+  const onSeen = (seen: SeenMessage): void => {
+    const subject = seen.speaker;
     if (!revokes || !subject.startsWith(`${gateName}:`)) return;
+    if (seen.scope !== "personal" || seen.runAs !== subject || seen.sentAt === undefined) return;
+    const sentAt = seen.sentAt;
     void revokes
       .list()
       .then(async (all) => {
-        if (!all.some((p) => p.subject === subject)) return;
+        const kept = all.find((p) => p.subject === subject);
+        if (!kept || sentAt <= kept.firstFailedAt) return;
         await revokes.delete(subject);
-        log.info("a kept revoke was dropped: the person wrote again", {});
+        log.info("a kept revoke was dropped: the person wrote to the bot again", {});
       })
       .catch((err: unknown) => log.warn("kept revokes could not be read", { error: (err as Error)?.name }));
   };
@@ -240,6 +249,12 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
       );
       const pending = new Set((await revokes!.list()).map((p) => p.subject));
       const gone = [...people].filter((s) => !members.has(s.slice(prefix.length)) && !pending.has(s));
+      // Everyone at once is never applied by a round, cap or no cap: it is
+      // what a list read from the wrong place looks like.
+      if (people.size >= 2 && gone.length === people.size) {
+        log.error("reconcile revoked nobody: the platform lists none of the people this bridge serves", { people: people.size });
+        return;
+      }
       const cap = cfg.reconcileMaxRevokes ?? reconcileCap(people.size);
       if (gone.length > cap) {
         // Never a part of them: a short member list must not drain the users
@@ -300,6 +315,9 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
       // is held to the same rule here.
       const devProblem = devModeProblem(cfg);
       if (devProblem) throw new ConfigError(name, [devProblem]);
+      if (cfg.reconcileMaxRevokes !== undefined && !(Number.isInteger(cfg.reconcileMaxRevokes) && cfg.reconcileMaxRevokes >= 1)) {
+        throw new ConfigError(name, ["BRIDGE_RECONCILE_MAX_REVOKES must be an integer >= 1"]);
+      }
       if (cfg.dev) log.warn(`BRIDGE_DEV=1: inbound requests are NOT authenticated; never use this in production`);
       // The gate key is read once, here, and held in memory.
       if (gateBroker && cfg.gate) gateBroker.ready(opts.gateKey ?? (await loadGateKey(cfg.gate.keyEnv)));
@@ -371,9 +389,11 @@ export async function runCli<TRef>(name: string, build: () => Bridge<TRef>): Pro
   }
 }
 
-/** reconcileCap is the most people one reconcile round may revoke: 10% of
- *  the people the bridge serves, never fewer than five. */
+/** reconcileCap is the most people one reconcile round may revoke: under
+ *  ten served, half of them (at least one), so a wrong list cannot empty a
+ *  small deployment; from ten, 10% and never fewer than five. */
 function reconcileCap(people: number): number {
+  if (people < 10) return Math.max(1, Math.floor(people / 2));
   return Math.max(5, Math.floor(people / 10));
 }
 
