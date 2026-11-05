@@ -80,13 +80,17 @@ export function createSlackVoice(o: SlackVoiceOptions): VoicePort<SlackRef> {
         await res.body?.cancel().catch(() => undefined);
         throw new SlackFileError(`http_${res.status}`);
       }
-      // Without the token Slack answers 200 with its login page (text/html):
-      // only audio or video is taken.
-      const mime = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
-      if (!mime.startsWith("audio/") && !mime.startsWith("video/")) {
+      // Without the token Slack answers 200 with its login page (text/html),
+      // so a page or any other text is refused. A file host may also serve
+      // the bytes as application/octet-stream; that is taken, typed by the
+      // event's own mimetype, and loomcycle refuses what is not audio.
+      const served = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+      const media = served.startsWith("audio/") || served.startsWith("video/");
+      if (!media && served !== "application/octet-stream") {
         await res.body?.cancel().catch(() => undefined);
         throw new SlackFileError("not_audio");
       }
+      const mime = media ? served : (v.mime ?? "application/octet-stream");
       return { bytes: await readCapped(res, maxBytes), mime };
     }
   }

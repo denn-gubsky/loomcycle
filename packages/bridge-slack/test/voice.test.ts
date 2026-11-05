@@ -111,6 +111,13 @@ describe("slack voice: download", () => {
     expect((await get()).mime).toBe("video/mp4");
   });
 
+  it("takes bytes served as application/octet-stream, typed by the event's own mimetype", async () => {
+    slack.files.set(CLIP_URL, () => new Response(new Uint8Array([1, 2]), { status: 200, headers: { "content-type": "application/octet-stream" } }));
+    const got = await get();
+    expect(got.bytes.byteLength).toBe(2);
+    expect(got.mime).toBe(clip().mime ?? "application/octet-stream");
+  });
+
   it("caps the bytes while reading, whatever Content-Length says", async () => {
     slack.files.set(CLIP_URL, chunked(4096));
     await expect(get(clip(), 1024)).rejects.toMatchObject({ code: "too_large" });
