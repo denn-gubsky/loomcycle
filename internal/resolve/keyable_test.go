@@ -151,3 +151,25 @@ func TestCascade_AppliesKeyableFilter(t *testing.T) {
 		t.Error("filtered cascade should still contain the keyable deepseek candidate")
 	}
 }
+
+// A candidate the caller may not use is passed over for the next one the
+// tier lists; when the caller may use none, the refusal is
+// ErrModelNotPermitted, not an outage.
+func TestResolve_PermittedSkipsAModelTheCallerMayNotUse(t *testing.T) {
+	priority, tiers := fixtureLibrary()
+	r := NewResolver(priority, tiers)
+	seedAll(t, r, tiers)
+	first, err := r.Resolve(AgentRequest{Name: "x", Tier: "low"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := AgentRequest{Name: "x", Tier: "low", Permitted: func(_, model string) bool { return model != first.Model }}
+	dec, err := r.Resolve(req)
+	if err != nil || dec.Model == first.Model {
+		t.Fatalf("Resolve = %+v %v, want a model other than the refused %s", dec, err, first.Model)
+	}
+	req.Permitted = func(string, string) bool { return false }
+	if _, err := r.Resolve(req); !errors.Is(err, ErrModelNotPermitted) {
+		t.Errorf("every model refused: %v, want ErrModelNotPermitted", err)
+	}
+}

@@ -756,6 +756,11 @@ var memoryWriteOps = map[string]bool{
 	"sql_exec": true, "sql_begin": true,
 }
 
+// MemoryOpWrites reports whether a Memory op changes what it addresses — the
+// ops a read-only scope refuses. The off-run surfaces ask the caller's `write`
+// for them (RFC FY Part E), as the HTTP write routes do.
+func MemoryOpWrites(op string) bool { return memoryWriteOps[op] }
+
 // resolveScope validates the requested scope against the agent's
 // MemoryPolicy and resolves scope_id from ctx. Returns a typed scope
 // + the runtime-supplied scope_id, or a refusal error suitable for

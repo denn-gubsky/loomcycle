@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"slices"
 	"time"
 	"unicode/utf8"
@@ -736,6 +737,38 @@ type aclOriginRecord struct {
 	// (aclres.ClassKey).
 	Class     string `json:"class"`
 	Transport string `json:"transport,omitempty"`
+	// SourceIP is the client address of the request that started the run
+	// (RFC FY Part E), re-stamped when the run outlives that request — a
+	// resume, a queued run started after a restart — so a source_cidr
+	// condition reads what it read at the start. "" for a run with no client
+	// (a schedule's fire) or one recorded before it was kept.
+	SourceIP string `json:"source_ip,omitempty"`
+}
+
+// noClientTransports are the origins that have no client by nature.
+var noClientTransports = map[string]bool{"schedule": true, "": true}
+
+// withOriginClient stamps ctx with what the record says of the starting
+// request's client: its address when recorded; no client when the run came
+// from a schedule (or an origin with no transport, a run the server itself
+// started); otherwise nothing, so a source_cidr deny holds for a client
+// request whose address was not kept (one recorded before this build).
+func (o *aclOriginRecord) withOriginClient(ctx context.Context) context.Context {
+	if ip := net.ParseIP(o.SourceIP); ip != nil {
+		return authz.WithSourceIP(ctx, ip)
+	}
+	if noClientTransports[o.Transport] {
+		return authz.WithNoClient(ctx)
+	}
+	return ctx
+}
+
+// sourceIPString is the address stamped on ctx, as recorded.
+func sourceIPString(ctx context.Context) string {
+	if ip := authz.SourceIPFrom(ctx); ip != nil {
+		return ip.String()
+	}
+	return ""
 }
 
 // aclOriginOf records whose set eff is, with the transport on ctx; nil when
@@ -746,7 +779,7 @@ func aclOriginOf(ctx context.Context, eff *authz.Effective) *aclOriginRecord {
 	}
 	return &aclOriginRecord{
 		TenantID: eff.Subject.TenantID, Subject: eff.Subject.ID, TokenDefID: eff.Subject.TokenDefID,
-		Class: eff.Subject.Class, Transport: authz.TransportFrom(ctx),
+		Class: eff.Subject.Class, Transport: authz.TransportFrom(ctx), SourceIP: sourceIPString(ctx),
 	}
 }
 

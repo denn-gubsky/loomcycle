@@ -66,7 +66,7 @@ func TestCondition_Holds(t *testing.T) {
 		{"over midnight no", Condition{Time: &TimeWindow{Between: []string{"22:00", "06:00"}, TZ: "Europe/Kyiv"}}, false},
 		{"interactive", Condition{Interactive: bptr(true)}, true},
 		{"not interactive", Condition{Interactive: bptr(false)}, false},
-		{"tier", Condition{Tier: []string{"middle"}}, true},
+		{"tier (inert even when it would match)", Condition{Tier: []string{"middle"}}, false},
 		{"user tier no", Condition{UserTier: []string{"free"}}, false},
 		{"cidr yes", Condition{SourceCIDR: []string{"10.0.0.0/8"}}, true},
 		{"cidr no", Condition{SourceCIDR: []string{"192.168.0.0/16"}}, false},
@@ -79,28 +79,39 @@ func TestCondition_Holds(t *testing.T) {
 	}
 	for _, c := range cases {
 		req := base
-		if got := compileCondition(&c.c).holds(&req); got != c.want {
+		if got := compileCondition(&c.c).holds(&req, false); got != c.want {
 			t.Errorf("%s: holds = %v, want %v", c.name, got, c.want)
 		}
 	}
 }
 
 func TestCondition_UnanswerableFieldsDoNotHold(t *testing.T) {
-	// A condition the request cannot answer must never read as true.
+	// A condition the request cannot answer must never read as true for an
+	// allow, and must hold for a deny when the fact is one the surface could
+	// not supply (RFC FY Part E): an unchecked condition never lifts a deny.
 	req := Request{Subject: Subject{ID: "alice"}, Resource: Resource{Type: "run", Name: "own"}}
-	for name, c := range map[string]Condition{
-		"no clock":      {Time: &TimeWindow{Days: []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}}},
-		"no address":    {SourceCIDR: []string{"0.0.0.0/0"}},
-		"no agent":      {Agent: "*"},
-		"no owner":      {OwnerIsSelf: bptr(true)},
-		"no transport":  {Transport: Transports},
-		"no subject id": {OwnerIsSelf: bptr(true)},
+	for name, c := range map[string]struct {
+		cond     Condition
+		denyHold bool
+	}{
+		"no clock":          {Condition{Time: &TimeWindow{Days: []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}}}, true},
+		"no address":        {Condition{SourceCIDR: []string{"0.0.0.0/0"}}, true},
+		"no transport":      {Condition{Transport: Transports}, true},
+		"tier (inert)":      {Condition{Tier: []string{"high"}}, false},
+		"user tier (inert)": {Condition{UserTier: []string{"free"}}, false},
+		"no agent":          {Condition{Agent: "*"}, false},
+		"no owner":          {Condition{OwnerIsSelf: bptr(true)}, false},
+		"no subject id":     {Condition{OwnerIsSelf: bptr(true)}, false},
 	} {
-		if compileCondition(&c).holds(&req) {
-			t.Errorf("%s: condition held on a request that cannot answer it", name)
+		cc := compileCondition(&c.cond)
+		if cc.holds(&req, false) {
+			t.Errorf("%s: an allow's condition held on a request that cannot answer it", name)
+		}
+		if got := cc.holds(&req, true); got != c.denyHold {
+			t.Errorf("%s: a deny's condition holds = %v, want %v", name, got, c.denyHold)
 		}
 	}
-	if compileCondition(nil).holds(&req) == false {
+	if compileCondition(nil).holds(&req, false) == false {
 		t.Error("an empty condition (never stored, but reachable) must hold")
 	}
 }

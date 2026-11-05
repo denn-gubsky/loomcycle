@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 
@@ -15,6 +16,7 @@ import (
 
 	bridge "github.com/denn-gubsky/loomcycle/internal/a2a"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
@@ -92,6 +94,11 @@ type Deps struct {
 	// resume bridge is disabled: a parked run still surfaces INPUT_REQUIRED
 	// but a follow-up message starts a fresh run instead of resuming.
 	ChannelNotify func(busKey string)
+
+	// ClientIP is a call's client address (the peer, or the client a
+	// trusted proxy names), stamped for an access-control source_cidr
+	// condition. Nil: the peer itself.
+	ClientIP func(*http.Request) net.IP
 }
 
 // Server is the mounted A2A surface. It owns the resolved card + the SDK
@@ -301,12 +308,27 @@ func (s *Server) Mount(mux *http.ServeMux, adminAuth func(http.Handler) http.Han
 	// JSON-RPC handler needs no stripping (it is a single endpoint with
 	// no sub-routing). StripPrefix runs INSIDE hostTenantWrap so the
 	// host-derived tenant is still attached.
-	mux.Handle(pathREST+"/", s.hostTenantWrap(capBody(http.StripPrefix(pathREST, rest))))
-	mux.Handle(pathJSONRPC, s.hostTenantWrap(capBody(jsonrpc)))
+	mux.Handle(pathREST+"/", s.hostTenantWrap(s.withClient(capBody(http.StripPrefix(pathREST, rest)))))
+	mux.Handle(pathJSONRPC, s.hostTenantWrap(s.withClient(capBody(jsonrpc))))
 
 	if adminAuth != nil {
 		mux.Handle("GET "+pathWellKnown+"/extended", adminAuth(http.HandlerFunc(s.handleExtendedCard)))
 	}
+}
+
+// withClient stamps the call's client address on its ctx, which the run it
+// starts inherits, for an access-control source_cidr condition (RFC FY Part
+// E): these routes are not behind authMiddleware, which stamps it elsewhere.
+func (s *Server) withClient(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var ip net.IP
+		if s.deps.ClientIP != nil {
+			ip = s.deps.ClientIP(r)
+		} else if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			ip = net.ParseIP(host)
+		}
+		next.ServeHTTP(w, r.WithContext(authz.WithSourceIP(r.Context(), ip)))
+	})
 }
 
 // maxA2ABodyBytes bounds an inbound A2A binding request body, matching the

@@ -178,6 +178,13 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w)
 	}
 
+	// Access-control sets that could not be read (RFC FY Part E): in compat
+	// mode each dropped the stored denies for its request.
+	fmt.Fprintln(w, "# HELP loomcycle_acl_resolution_failures_total Requests whose access-control rules could not be read on this replica; in compat mode each ran with only its class baseline's denies.")
+	fmt.Fprintln(w, "# TYPE loomcycle_acl_resolution_failures_total counter")
+	fmt.Fprintf(w, "loomcycle_acl_resolution_failures_total%s %d\n", replicaLabels, s.aclResolutionFailures.Load())
+	fmt.Fprintln(w)
+
 	// Build info as a single-series gauge=1 with version metadata as
 	// labels. Standard Prometheus convention — operators alert on
 	// version churn or filter by version in a multi-replica cluster.

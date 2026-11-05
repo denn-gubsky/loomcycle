@@ -223,3 +223,112 @@ func TestEvaluate_PerMode(t *testing.T) {
 		t.Error("ctx defaults")
 	}
 }
+
+// The gate fills the clock and the transport it decides with: a deny bound to
+// a transport holds there and nowhere else, and a time window is read
+// against the gate's own clock.
+func TestEvaluate_TheGateSuppliesTheClockAndTheTransport(t *testing.T) {
+	everyDay := []string{"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+	acl := ACL{Name: "d", Rules: []Rule{
+		{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:*"}, When: &Condition{Transport: []string{"grpc"}}},
+		{Effect: Deny, Actions: []string{"steer"}, Resources: []string{"run:*"}, When: &Condition{Time: &TimeWindow{Days: everyDay}}},
+	}}
+	eff, err := Compile(Input{Subject: Subject{TenantID: "t", ID: "u"}, Bindings: []Binding{{ACL: "d", SubjectKind: SubjectTenant}},
+		ACLs: map[string]ACLVersion{"d": {ACL: acl}}, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithMode(context.Background(), ModeCompat)
+	if EvaluateSurface(WithTransport(ctx, "grpc"), eff, typeLevel("read", "run"), true).Allowed {
+		t.Error("a deny bound to grpc did not hold on grpc")
+	}
+	if !EvaluateSurface(WithTransport(ctx, "http"), eff, typeLevel("read", "run"), true).Allowed {
+		t.Error("a deny bound to grpc held on http")
+	}
+	if EvaluateSurface(WithTransport(ctx, "http"), eff, typeLevel("steer", "run"), true).Allowed {
+		t.Error("a deny for every day of the week did not hold: the gate supplied no clock")
+	}
+}
+
+// The gate reads the run facts the entry points stamp: an allow bounded by
+// depth or interactivity holds only for a run it describes — before, with no
+// facts read, every run read as top-level and non-interactive, so both
+// allows held at any depth and in an interactive run.
+func TestEvaluate_RunFactsDecideDepthAndInteractiveAllows(t *testing.T) {
+	no := false
+	acl := ACL{Name: "a", Rules: []Rule{
+		{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}, When: &Condition{Depth: &DepthBound{Max: 0}}},
+		{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:Read"}, When: &Condition{Interactive: &no}},
+	}}
+	eff, err := Compile(Input{Subject: Subject{TenantID: "t", ID: "u"}, Bindings: []Binding{{ACL: "a", SubjectKind: SubjectTenant}},
+		ACLs: map[string]ACLVersion{"a": {ACL: acl}}, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask := func(f RunFacts, tool string) bool {
+		ctx := WithRunFacts(WithMode(context.Background(), ModeEnforce), f)
+		return Evaluate(ctx, eff, "invoke", Resource{Type: "tool", Name: tool}, true).Allowed
+	}
+	if !ask(RunFacts{}, "Bash") || ask(RunFacts{Depth: 1}, "Bash") {
+		t.Error("allow depth<=0: want it at depth 0 only")
+	}
+	if !ask(RunFacts{}, "Read") || ask(RunFacts{Interactive: true}, "Read") {
+		t.Error("allow interactive:false: want it for a run that is not interactive only")
+	}
+}
+
+// No surface stamps a model or user tier (a run request names its own), so a
+// rule conditioned on one is inert: its allow never grants and its deny never
+// refuses — what such a stored rule did before writes refused it (RFC FY
+// Part E).
+func TestEvaluate_ATierConditionedRuleIsInert(t *testing.T) {
+	acl := ACL{Name: "a", Rules: []Rule{
+		{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}, When: &Condition{UserTier: []string{"pro"}}},
+		{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:Read"}, When: &Condition{Tier: []string{"high"}}},
+		{Effect: Deny, Actions: []string{"invoke"}, Resources: []string{"tool:Grep"}, When: &Condition{UserTier: []string{"free"}}},
+		{Effect: Deny, Actions: []string{"read"}, Resources: []string{"memory:tenant"}, When: &Condition{Tier: []string{"low"}}},
+	}}
+	eff, err := Compile(Input{Subject: Subject{TenantID: "t", ID: "u"}, Bindings: []Binding{{ACL: "a", SubjectKind: SubjectTenant}},
+		ACLs: map[string]ACLVersion{"a": {ACL: acl}}, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithRunFacts(WithMode(context.Background(), ModeEnforce), RunFacts{Agent: "worker"})
+	for _, tool := range []string{"Bash", "Read"} {
+		if Evaluate(ctx, eff, "invoke", Resource{Type: "tool", Name: tool}, true).Allowed {
+			t.Errorf("an allow on a tier granted %s", tool)
+		}
+	}
+	compat := WithMode(ctx, ModeCompat)
+	if !Evaluate(compat, eff, "invoke", Resource{Type: "tool", Name: "Grep"}, true).Allowed {
+		t.Error("a deny on a user tier refused: it must be inert")
+	}
+	if !EvaluateScope(compat, eff, "read", Resource{Type: "memory", Name: "tenant"}, true).Allowed {
+		t.Error("a deny on a tier refused a scope question: it must be inert")
+	}
+}
+
+// A source_cidr condition on a request with no client by nature (a
+// schedule's fire, a resume) holds for neither effect; on a request whose
+// client is unknown it fails a deny closed.
+func TestEvaluate_SourceCIDRWithNoClientHoldsForNeitherEffect(t *testing.T) {
+	acl := ACL{Name: "a", Rules: []Rule{
+		{Effect: Deny, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}, When: &Condition{SourceCIDR: []string{"198.51.100.0/24"}}},
+		{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:Read"}, When: &Condition{SourceCIDR: []string{"0.0.0.0/0"}}},
+	}}
+	eff, err := Compile(Input{Subject: Subject{TenantID: "t", ID: "u"}, Bindings: []Binding{{ACL: "a", SubjectKind: SubjectTenant}},
+		ACLs: map[string]ACLVersion{"a": {ACL: acl}}, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compat := WithMode(context.Background(), ModeCompat)
+	if !Evaluate(WithNoClient(compat), eff, "invoke", Resource{Type: "tool", Name: "Bash"}, true).Allowed {
+		t.Error("a blocklist deny refused a request with no client")
+	}
+	if Evaluate(compat, eff, "invoke", Resource{Type: "tool", Name: "Bash"}, true).Allowed {
+		t.Error("a request whose client is unknown slipped the deny")
+	}
+	if Evaluate(WithNoClient(WithMode(context.Background(), ModeEnforce)), eff, "invoke", Resource{Type: "tool", Name: "Read"}, true).Allowed {
+		t.Error("an allow on an address granted a request with no client")
+	}
+}

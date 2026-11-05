@@ -81,9 +81,15 @@ func (c *Condition) Validate() error {
 	}
 	if len(c.Tier) > 0 {
 		fields++
+		if contains(c.Tier, "") {
+			return fmt.Errorf("tier: an empty name is not a tier")
+		}
 	}
 	if len(c.UserTier) > 0 {
 		fields++
+		if contains(c.UserTier, "") {
+			return fmt.Errorf("user_tier: an empty name is not a tier")
+		}
 	}
 	if len(c.SourceCIDR) > 0 {
 		fields++
@@ -192,30 +198,57 @@ func compileCondition(c *Condition) *compiledCondition {
 	return cc
 }
 
-// holds reports whether the condition is satisfied by the request. A field
-// the request cannot answer (no clock, no source address, no agent) does
-// not hold: a condition that could not be checked must never read as true.
-func (cc *compiledCondition) holds(req *Request) bool {
+// holds reports whether the condition is satisfied by the request, for a
+// rule of the given effect (deny true). A fact a surface should have supplied
+// and did not — no transport, no clock, no client address on a request — is
+// read the safe way round (RFC FY Part E): a deny conditioned on it holds, an
+// allow does not, so an unchecked condition never widens and never lifts a
+// deny. A run with no client by nature (Context.NoClient: a schedule's fire,
+// a resume) has no address to match, so a source_cidr condition holds for
+// neither. A condition on the model or user tier is inert (inert).
+//
+// Two facts are never unknown, only absent by nature: the agent and the
+// owner. Outside a run there is no agent, so `agent` is false for both
+// effects; a resource with no owner is nobody's own, so `owner_is_self` reads
+// false. The spawn depth and the interactive bit describe what the run is
+// (stamped by the entry points from the run itself); a request outside any
+// run reads as depth 0, not interactive.
+func (cc *compiledCondition) holds(req *Request, deny bool) bool {
 	if cc == nil {
 		return true
 	}
 	c := cc.c
-	if len(c.Transport) > 0 && !contains(c.Transport, req.Context.Transport) {
+	ctx := req.Context
+	if cc.inert() {
 		return false
 	}
-	if c.Time != nil && !cc.timeHolds(req.Context.Now) {
+	// No client by nature (a schedule's fire, a resumed run): there is no
+	// address to match, so a source_cidr condition holds for neither effect.
+	if len(c.SourceCIDR) > 0 && ctx.SourceIP == nil && ctx.NoClient {
 		return false
 	}
-	if c.Interactive != nil && *c.Interactive != req.Context.Interactive {
+	unknown := (len(c.Transport) > 0 && ctx.Transport == "") ||
+		(c.Time != nil && ctx.Now.IsZero()) ||
+		(len(c.SourceCIDR) > 0 && ctx.SourceIP == nil)
+	if unknown {
+		return deny
+	}
+	if len(c.Transport) > 0 && !contains(c.Transport, ctx.Transport) {
 		return false
 	}
-	if len(c.Tier) > 0 && !contains(c.Tier, req.Context.Tier) {
+	if c.Time != nil && !cc.timeHolds(ctx.Now) {
 		return false
 	}
-	if len(c.UserTier) > 0 && !contains(c.UserTier, req.Context.UserTier) {
+	if c.Interactive != nil && *c.Interactive != ctx.Interactive {
 		return false
 	}
-	if len(c.SourceCIDR) > 0 && !inAnyPrefix(cc.prefixe, req.Context.SourceIP) {
+	if len(c.Tier) > 0 && !contains(c.Tier, ctx.Tier) {
+		return false
+	}
+	if len(c.UserTier) > 0 && !contains(c.UserTier, ctx.UserTier) {
+		return false
+	}
+	if len(c.SourceCIDR) > 0 && !inAnyPrefix(cc.prefixe, ctx.SourceIP) {
 		return false
 	}
 	if c.OwnerIsSelf != nil {
@@ -225,14 +258,26 @@ func (cc *compiledCondition) holds(req *Request) bool {
 		}
 	}
 	if c.Agent != "" {
-		if req.Context.Agent == "" || !doublestarMatch(cc.agent, strings.Split(req.Context.Agent, "/")) {
+		if ctx.Agent == "" || !doublestarMatch(cc.agent, strings.Split(ctx.Agent, "/")) {
 			return false
 		}
 	}
-	if c.Depth != nil && req.Context.Depth > c.Depth.Max {
+	if c.Depth != nil && ctx.Depth > c.Depth.Max {
 		return false
 	}
 	return true
+}
+
+// inert reports whether the condition names a fact no surface vouches for —
+// the model or user tier, which a run request names itself. Such a rule is
+// skipped whole, its deny and its allow alike (RFC FY Part E, owner
+// decision). This is not a lifted deny: before this build no surface filled
+// either field, so a stored rule on one never matched and never applied —
+// inert is byte-identical to that. Writes refuse a new one
+// (rule_not_enforceable), and the boot report names every stored or yaml rule
+// that still carries one.
+func (cc *compiledCondition) inert() bool {
+	return len(cc.c.Tier) > 0 || len(cc.c.UserTier) > 0
 }
 
 // holdsForScope is holds for a question about EVERY instance of a scope
@@ -247,8 +292,14 @@ func (cc *compiledCondition) holdsForScope(req *Request, deny bool) bool {
 	if cc == nil {
 		return true
 	}
+	if cc.inert() {
+		return false
+	}
 	c := cc.c
 	ctx := req.Context
+	if len(c.SourceCIDR) > 0 && ctx.SourceIP == nil && ctx.NoClient {
+		return false
+	}
 	undecided := (c.OwnerIsSelf != nil && req.Resource.Owner == "") ||
 		(len(c.Transport) > 0 && ctx.Transport == "") ||
 		(c.Time != nil && ctx.Now.IsZero()) ||
@@ -260,7 +311,7 @@ func (cc *compiledCondition) holdsForScope(req *Request, deny bool) bool {
 	if undecided {
 		return deny
 	}
-	return cc.holds(req)
+	return cc.holds(req, deny)
 }
 
 func (cc *compiledCondition) timeHolds(now time.Time) bool {

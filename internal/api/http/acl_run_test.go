@@ -28,6 +28,12 @@ const workerBearer = "tok-worker"
 // scripted provider.
 func aclRunFixture(t *testing.T, scripts ...[]providers.Event) (*httptest.Server, store.Store) {
 	t.Helper()
+	return aclRunFixtureMode(t, authz.ModeCompat, scripts...)
+}
+
+// aclRunFixtureMode is aclRunFixture under mode.
+func aclRunFixtureMode(t *testing.T, mode authz.Mode, scripts ...[]providers.Event) (*httptest.Server, store.Store) {
+	t.Helper()
 	cfg := makeBaseConfig()
 	cfg.Defaults.Provider = "scripted"
 	cfg.Env.AuthToken = "legacy-admin-secret"
@@ -54,7 +60,7 @@ func aclRunFixture(t *testing.T, scripts ...[]providers.Event) (*httptest.Server
 	}
 	reg := []tools.Tool{namedStubTool{"Read"}, namedStubTool{"Bash"}}
 	srv := New(cfg, &stubResolver{p: &scriptedProvider{scripts: scripts, defaultS: done}}, reg, concurrency.New(8, 8, 5*time.Second), st)
-	srv.SetACLResolver(aclres.New(st, authz.ModeCompat, 0))
+	srv.SetACLResolver(aclres.New(st, mode, 0))
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
 	return ts, st

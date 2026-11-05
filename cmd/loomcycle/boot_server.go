@@ -163,6 +163,7 @@ func (b *boot) buildServer() {
 	// ledger and budget. Set here because srv exists only now.
 	if decisionService != nil {
 		decisionService.SetOnUsage(srv.SideCallUsage(store.UsagePurposeDecision))
+		decisionService.SetModelGate(srv.ModelUseGate)
 	}
 	// RFC FG: the File tool's OCR, on this server's model resolution and usage
 	// ledger. A configured engine that cannot be built fails boot.

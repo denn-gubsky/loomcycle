@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/go-git/go-git/v5/plumbing/transport"
@@ -472,4 +473,62 @@ func assertNoFileHolds(t *testing.T, root, s string) {
 		}
 		return nil
 	})
+}
+
+// The caller's access-control rules on the remote hold before any request
+// (RFC FY Part E): a deny of fetch on the repository refuses ls_remote with
+// acl_denied, a deny on another repository does not, and push is asked
+// separately.
+func TestGit_ACLDenyOnTheRemoteRefusesBeforeAnyRequest(t *testing.T) {
+	var requests int
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	host := hostOf(t, srv.URL)
+	src := &GitSourceConfig{Hosts: []string{host}, MaxBytes: 1 << 20, MaxObjectBytes: 1 << 20, Timeout: 10 * time.Second, Transport: srv.Client().Transport}
+	root := realDir(t)
+	withRules := func(rules ...authz.Rule) context.Context {
+		eff, err := authz.Compile(authz.Input{Subject: authz.Subject{TenantID: "t", ID: "u"},
+			Bindings: []authz.Binding{{ACL: "git", SubjectKind: authz.SubjectTenant}},
+			ACLs:     map[string]authz.ACLVersion{"git": {ACL: authz.ACL{Name: "git", Rules: rules}}}, Now: time.Now()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := gitCtx(root, false, tools.GitRemotePolicyValue{Fetch: true})
+		return tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.ACL = eff })
+	}
+	g := &Git{Source: src}
+	in := map[string]any{"op": "ls_remote", "url": srv.URL + "/acme/app.git"}
+
+	wantGitClass(t, g, withRules(authz.Rule{Effect: authz.Deny, Actions: []string{"fetch"}, Resources: []string{"git:" + host + "/acme/*"}}), in, "acl_denied")
+	if requests != 0 {
+		t.Fatalf("a refused call reached the server")
+	}
+	if _, _, raw := runGit(t, g, withRules(authz.Rule{Effect: authz.Deny, Actions: []string{"fetch"}, Resources: []string{"git:" + host + "/other/*"}}), in); strings.Contains(raw, "acl_denied") {
+		t.Errorf("a deny on another repository refused this one: %s", raw)
+	}
+	if requests == 0 {
+		t.Error("the allowed call did not reach the server")
+	}
+	// Every spelling of one repository is one resource.
+	for _, p := range []string{"/acme/app", "/acme/app.git", "/acme/app.GIT", "/ACME/APP.Git", "/acme/app/", "/acme/app.git/"} {
+		if r := gitACLResource(host, srv.URL+p); r.Name != host+"/acme/app" {
+			t.Errorf("%s: resource = %q, want %s/acme/app", p, r.Name, host)
+		}
+	}
+	wantGitClass(t, g, gitCtx(root, false, tools.GitRemotePolicyValue{Fetch: true}), map[string]any{"op": "ls_remote", "url": srv.URL + "/acme/app/.git"}, "invalid_argument")
+	// Another spelling of the denied repository is matched or refused, never
+	// let through: a case variant is the same repository, and a dot segment
+	// is refused before the ACL is asked.
+	denied := withRules(authz.Rule{Effect: authz.Deny, Actions: []string{"fetch"}, Resources: []string{"git:" + host + "/Acme/*"}})
+	before := requests
+	wantGitClass(t, g, denied, map[string]any{"op": "ls_remote", "url": srv.URL + "/ACME/App.git"}, "acl_denied")
+	for _, p := range []string{"/other/../acme/app.git", "/./acme/app.git", "//acme/app.git", "/acme//app.git"} {
+		wantGitClass(t, g, denied, map[string]any{"op": "ls_remote", "url": srv.URL + p}, "invalid_argument")
+	}
+	if requests != before {
+		t.Error("a refused spelling reached the server")
+	}
 }

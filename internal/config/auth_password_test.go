@@ -124,6 +124,28 @@ func TestResolveAuth_TrustedProxiesAndClientIPHeader(t *testing.T) {
 	}
 }
 
+// auth.grpc_trusted_proxies is its own list, empty by default and never
+// filled from the HTTP one.
+func TestResolveAuth_GRPCTrustedProxiesAreTheirOwnList(t *testing.T) {
+	c := &Config{Auth: AuthConfig{TrustedProxies: []string{"172.18.0.0/16"}}}
+	if err := resolveAuth(c); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.ResolvedAuth.GRPCTrustedProxies) != 0 {
+		t.Errorf("the HTTP list reached the gRPC one: %v", c.ResolvedAuth.GRPCTrustedProxies)
+	}
+	c = &Config{Auth: AuthConfig{GRPCTrustedProxies: []string{"10.0.0.0/8", "127.0.0.1"}}}
+	if err := resolveAuth(c); err != nil {
+		t.Fatal(err)
+	}
+	if p := c.ResolvedAuth.GRPCTrustedProxies; len(p) != 2 || p[1].Bits() != 32 {
+		t.Errorf("resolved = %v", p)
+	}
+	if err := resolveAuth(&Config{Auth: AuthConfig{GRPCTrustedProxies: []string{"not-a-network"}}}); err == nil {
+		t.Error("a bad gRPC proxy CIDR was accepted")
+	}
+}
+
 // new_user.status decides what a website's invite creates: active by default,
 // pending to hold the person for an operator's approval. Any other value is
 // refused, and the key on a gate that is not a password gate is too.

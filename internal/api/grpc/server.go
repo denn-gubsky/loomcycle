@@ -21,7 +21,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	nethttp "net/http"
+	"net/netip"
 	"slices"
 	"strings"
 	"time"
@@ -29,6 +31,7 @@ import (
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -105,7 +108,10 @@ type Server struct {
 	// principalResolver (RFC L) resolves a bearer → auth.Principal. Nil
 	// = legacy-token-only auth with no principal stamping.
 	principalResolver func(context.Context, string) (auth.Principal, bool)
-	aclMode           authz.Mode
+	// clientIP resolves a call's client address from its peer and metadata
+	// under auth.grpc_trusted_proxies (Config.ClientIP). Nil: the peer.
+	clientIP func(peer netip.Addr, header func(string) []string) net.IP
+	aclMode  authz.Mode
 	// authConfigured reports whether auth is active (open-mode decision).
 	authConfigured func(context.Context) bool
 
@@ -156,6 +162,10 @@ type Config struct {
 	// RunOnce); when nil, they fall back to the legacy constant-time
 	// AuthToken compare with no principal.
 	PrincipalResolver func(context.Context, string) (auth.Principal, bool)
+	// ClientIP resolves a call's client address from its peer and its
+	// metadata: a forwarded address is read only from a peer in
+	// auth.grpc_trusted_proxies, never the HTTP list. Nil: the peer itself.
+	ClientIP func(peer netip.Addr, header func(string) []string) net.IP
 	// AuthConfigured reports whether auth is active (legacy secret set,
 	// config principals declared, or an admin token exists). Wired alongside
 	// PrincipalResolver so gRPC shares HTTP's open-mode decision: when it
@@ -189,6 +199,7 @@ func New(cfg Config) *Server {
 		queuePosition:     cfg.QueuePosition,
 		authToken:         cfg.AuthToken,
 		principalResolver: cfg.PrincipalResolver,
+		clientIP:          cfg.ClientIP,
 		aclMode:           cfg.ACLMode,
 		authConfigured:    cfg.AuthConfigured,
 		buildCommit:       cfg.BuildCommit,
@@ -960,6 +971,9 @@ func (s *Server) authenticate(ctx context.Context) (context.Context, error) {
 			return nil, status.Error(codes.Unauthenticated, "invalid bearer token")
 		}
 		ctx = authz.WithTransport(authz.WithMode(ctx, s.aclMode), "grpc")
+		// The client address a source_cidr condition reads: the gRPC peer,
+		// or the client a listed gRPC proxy names for it.
+		ctx = authz.WithSourceIP(ctx, s.callerIP(ctx))
 		return auth.WithPrincipal(ctx, p), nil
 	}
 	// Legacy-only fallback (no resolver wired — e.g. test harnesses).
@@ -967,6 +981,35 @@ func (s *Server) authenticate(ctx context.Context) (context.Context, error) {
 		return nil, status.Error(codes.Unauthenticated, "invalid bearer token")
 	}
 	return ctx, nil
+}
+
+// grpcPeerIP is the connection's remote address, or nil when the transport
+// has none (an in-process listener).
+func grpcPeerIP(ctx context.Context) net.IP {
+	pr, ok := peer.FromContext(ctx)
+	if !ok || pr.Addr == nil {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(pr.Addr.String())
+	if err != nil {
+		host = pr.Addr.String()
+	}
+	return net.ParseIP(host)
+}
+
+// callerIP is the call's client address: through the trusted-proxy rule
+// when one is wired, else the peer.
+func (s *Server) callerIP(ctx context.Context) net.IP {
+	ip := grpcPeerIP(ctx)
+	if s.clientIP == nil || ip == nil {
+		return ip
+	}
+	peerAddr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return ip
+	}
+	md, _ := metadata.FromIncomingContext(ctx)
+	return s.clientIP(peerAddr.Unmap(), md.Get)
 }
 
 // grpcMethodPrefix is the fully-qualified gRPC service path; every

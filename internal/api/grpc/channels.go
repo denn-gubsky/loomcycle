@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
 // channelErrCode maps the typed Connector errors to gRPC status codes.
@@ -41,6 +42,10 @@ func channelErrCode(err error) error {
 		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, connector.ErrChannelHooksInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, runner.ErrAgentNotAllowed):
+		// The access-control refusal the channel operation asks of the
+		// instance (RFC FY Part E), as the HTTP route answers 403.
+		return status.Error(codes.PermissionDenied, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}

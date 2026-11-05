@@ -2,6 +2,7 @@ package authz
 
 import (
 	"context"
+	"net"
 	"time"
 )
 
@@ -11,6 +12,8 @@ import (
 
 type ctxKeyMode struct{}
 type ctxKeyTransport struct{}
+type ctxKeySourceIP struct{}
+type ctxKeyRunFacts struct{}
 
 // WithMode stamps the rollout mode a request is evaluated under.
 func WithMode(ctx context.Context, m Mode) context.Context {
@@ -36,6 +39,83 @@ func WithTransport(ctx context.Context, t string) context.Context {
 func TransportFrom(ctx context.Context) string {
 	t, _ := ctx.Value(ctxKeyTransport{}).(string)
 	return t
+}
+
+// WithSourceIP stamps the client address a request came from: the HTTP peer,
+// or the client a trusted proxy names for it (auth.trusted_proxies), or the
+// gRPC peer. Never the request's own word about itself.
+func WithSourceIP(ctx context.Context, ip net.IP) context.Context {
+	if ip == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeySourceIP{}, ip)
+}
+
+type ctxKeyNoClient struct{}
+
+// WithNoClient marks ctx as a request with no client by nature — a
+// schedule's fire, a resumed run — so a source_cidr condition holds for
+// neither effect rather than failing a deny closed. Sub-runs inherit it.
+func WithNoClient(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyNoClient{}, true)
+}
+
+func noClient(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyNoClient{}).(bool)
+	return v
+}
+
+// SourceIPFrom returns the stamped client address, or nil.
+func SourceIPFrom(ctx context.Context) net.IP {
+	ip, _ := ctx.Value(ctxKeySourceIP{}).(net.IP)
+	return ip
+}
+
+// RunFacts is what a condition may ask about the run a question is asked in
+// (or, at a run intake, the run about to start): its agent, its spawn depth
+// (0 for a top-level run) and whether it is interactive. Each describes what
+// the run IS — the agent it runs, how many spawns deep it sits, whether an
+// operator is attached — so a caller that chose them chose the run they
+// describe, and a rule on them holds for that run. The run entry points
+// stamp them; a request outside any run carries none, and reads as a
+// top-level, non-interactive caller with no agent.
+//
+// The model and user tiers are deliberately absent: a run request names
+// both (`tier`, `user_tier`), and no principal, token or user row binds a
+// tier the caller cannot choose, so a rule on them would be the caller's own
+// say. They stay unknown, which holds a deny and never an allow.
+type RunFacts struct {
+	Agent       string
+	Depth       int
+	Interactive bool
+}
+
+// WithRunFacts stamps the run facts, replacing any a parent run stamped.
+func WithRunFacts(ctx context.Context, f RunFacts) context.Context {
+	return context.WithValue(ctx, ctxKeyRunFacts{}, f)
+}
+
+// RunFactsFrom returns the stamped run facts.
+func RunFactsFrom(ctx context.Context) (RunFacts, bool) {
+	f, ok := ctx.Value(ctxKeyRunFacts{}).(RunFacts)
+	return f, ok
+}
+
+// ContextFrom is the condition context of a question asked under ctx: the
+// transport, the client address and the run facts the surfaces stamped, and
+// the clock now. Every gate decides with it, so a condition reads the same
+// facts wherever it is asked.
+func ContextFrom(ctx context.Context) Context {
+	f, _ := RunFactsFrom(ctx)
+	return Context{
+		Transport:   TransportFrom(ctx),
+		Now:         time.Now(),
+		SourceIP:    SourceIPFrom(ctx),
+		NoClient:    noClient(ctx),
+		Agent:       f.Agent,
+		Depth:       f.Depth,
+		Interactive: f.Interactive,
+	}
 }
 
 // GateResult is what a transport gate does with an evaluation.
@@ -83,7 +163,7 @@ func evaluate(ctx context.Context, eff *Effective, action string, res Resource, 
 		Subject:  eff.Subject,
 		Action:   action,
 		Resource: res,
-		Context:  Context{Transport: TransportFrom(ctx), Now: time.Now()},
+		Context:  ContextFrom(ctx),
 	})
 	out := GateResult{Evaluated: true, Decision: d, Allowed: Resolve(mode, d, legacyAllowed)}
 	if mode == ModeShadow {
@@ -118,7 +198,7 @@ func Grants(ctx context.Context, eff *Effective, action string, res Resource) bo
 		Subject:  eff.Subject,
 		Action:   action,
 		Resource: res,
-		Context:  Context{Transport: TransportFrom(ctx), Now: time.Now()},
+		Context:  ContextFrom(ctx),
 	})
 	return d.Outcome == Allowed
 }

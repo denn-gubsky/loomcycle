@@ -51,21 +51,42 @@ func (s *Server) aclMode() authz.Mode {
 }
 
 // enrichPrincipal fills the principal's groups and compiled set. A store
-// fault leaves Effective nil and logs: compat and shadow then decide on the
-// scope answer, enforce refuses at the gate (authz.Evaluate).
+// fault is counted (loomcycle_acl_resolution_failures_total), logged and
+// audited (acl_resolution_failed) — in compat it drops every stored deny for
+// the request, which an operator must be able to see (RFC FY Part E). Enforce
+// then refuses at the gate (Effective nil, authz.Evaluate) and shadow decides
+// on the scope answer. Compat keeps the class baseline, which needs no store
+// read, so its explicit denies (the isolated user's tenant-wide data) still
+// hold; its allows widen nothing in compat.
 func (s *Server) enrichPrincipal(ctx context.Context, p auth.Principal) auth.Principal {
 	if s.aclResolver == nil {
 		return p
 	}
 	out, err := s.aclResolver.Resolve(ctx, p)
-	if err != nil {
-		slog.Error("authz: resolving the set failed", "tenant", p.TenantID, "subject", p.Subject, "mode", s.aclMode(), "err", err)
-		// Recorded, so a check that grants from the caller's own rules refuses
-		// rather than taking the class baseline in their place.
-		p.ACLFault = true
-		return p
+	if err == nil {
+		return out
 	}
-	return out
+	mode := s.aclMode()
+	// Recorded, so a check that grants from the caller's own rules refuses
+	// rather than taking the class baseline in their place.
+	p.ACLFault = true
+	s.aclResolutionFailures.Add(1)
+	slog.Error("authz: resolving the set failed", "tenant", p.TenantID, "subject", p.Subject, "mode", mode, "err", err)
+	if s.tokenAudit != nil {
+		ev := audit.Event{Action: "acl_resolution_failed", ActorTenant: p.TenantID, ActorSubject: p.Subject,
+			ActorTokenSuffix: p.TokenSuffix, AclOutcome: string(mode)}
+		if aerr := s.tokenAudit.Record(ev); aerr != nil {
+			slog.Error("authz: audit write failed", "err", aerr)
+		}
+	}
+	if mode == authz.ModeCompat {
+		if eff, berr := s.aclResolver.StaticBaseline(p); berr == nil {
+			p.Effective = eff
+		} else {
+			slog.Error("authz: compiling the class baseline failed", "tenant", p.TenantID, "subject", p.Subject, "err", berr)
+		}
+	}
+	return p
 }
 
 // aclGateHTTP asks the route's type-level question. It returns false after
@@ -172,6 +193,12 @@ func (e *errACLDenied) Is(target error) bool { return target == runner.ErrAgentN
 func (s *Server) aclAdmitAgent(ctx context.Context, p auth.Principal, ok bool, agent string) error {
 	if !ok {
 		return nil // no principal: open mode or a trigger firing under a definition
+	}
+	// The question is about the run this intake starts: an `agent` condition
+	// reads its agent, whichever intake asks (RunOnce stamps the rest).
+	if f, _ := authz.RunFactsFrom(ctx); f.Agent != agent {
+		f.Agent = agent
+		ctx = authz.WithRunFacts(ctx, f)
 	}
 	return s.aclAdmit(ctx, p, authz.Surface{Action: "run", Type: "agent", Name: agent})
 }
@@ -305,7 +332,7 @@ func (s *Server) triggerOwnerCtx(ctx context.Context, owner *authz.SubjectRef, a
 	if _, ok := recordedCallerFrom(ctx); ok {
 		return ctx, nil
 	}
-	o := aclOriginRecord{TenantID: owner.TenantID, Subject: owner.Subject, TokenDefID: owner.TokenDefID, Class: owner.Class, Transport: authz.TransportFrom(ctx)}
+	o := aclOriginRecord{TenantID: owner.TenantID, Subject: owner.Subject, TokenDefID: owner.TokenDefID, Class: owner.Class, Transport: authz.TransportFrom(ctx), SourceIP: sourceIPString(ctx)}
 	ctx, eff, err := s.recordedCallerACL(ctx, &o, agent)
 	if err != nil {
 		return ctx, fmt.Errorf("%w: the access-control rules of the owner of the trigger that fired %q (tenant %q, subject %q) could not be read (%v); the run is refused rather than run without them",
@@ -333,7 +360,7 @@ func (s *Server) triggerWalkOwnerCtx(ctx context.Context, owner *authz.SubjectRe
 		return ctx, nil
 	}
 	surface := authz.Surface{Action: "run", Type: "team", Name: team}
-	o := aclOriginRecord{TenantID: owner.TenantID, Subject: owner.Subject, TokenDefID: owner.TokenDefID, Class: owner.Class, Transport: authz.TransportFrom(ctx)}
+	o := aclOriginRecord{TenantID: owner.TenantID, Subject: owner.Subject, TokenDefID: owner.TokenDefID, Class: owner.Class, Transport: authz.TransportFrom(ctx), SourceIP: sourceIPString(ctx)}
 	ctx, eff, err := s.recordedCallerACLFor(ctx, &o, surface)
 	if err != nil {
 		return ctx, fmt.Errorf("%w: the access-control rules of the owner of the trigger that started team %q (tenant %q, subject %q) could not be read (%v); the walk is refused rather than run without them",
@@ -367,6 +394,38 @@ func (s *Server) aclAdmitSpawn(ctx context.Context, eff *authz.Effective, child 
 		return &errACLDenied{surface: surface, decision: res.Decision}
 	}
 	return nil
+}
+
+// aclAdmitUse asks `use <typ>:<name>` (a model or a tier) of eff, the set a
+// run's resolution is judged by, as aclAdmitSpawn asks a spawn: a refusal is
+// audited and returned as an *errACLDenied; no set refuses nothing outside
+// enforce mode.
+func (s *Server) aclAdmitUse(ctx context.Context, eff *authz.Effective, typ, name string) error {
+	if name == "" {
+		return nil
+	}
+	surface := authz.Surface{Action: "use", Type: typ, Name: name}
+	res := authz.EvaluateSurface(ctx, eff, surface, true)
+	if authz.ModeFrom(ctx) == authz.ModeShadow && res.Evaluated && !authz.Resolve(authz.ModeEnforce, res.Decision, true) {
+		s.recordRunShadowDivergence(ctx, tools.RunID(ctx), eff, surface, res.Decision)
+	}
+	if res.Unavailable || !res.Allowed {
+		p, _ := auth.PrincipalFromContext(ctx)
+		if eff != nil {
+			p.TenantID, p.Subject = eff.Subject.TenantID, eff.Subject.ID
+		}
+		s.recordACLEvent(ctx, p, "acl_denied", surface, res.Decision)
+		return &errACLDenied{surface: surface, decision: res.Decision}
+	}
+	return nil
+}
+
+// ModelUseGate is the check a model call outside the resolver makes of the
+// model it is about to call (decision.Service.SetModelGate): `use
+// model:<model>` of the caller's set, nil when there is no caller to ask for
+// (RFC FY Part E).
+func (s *Server) ModelUseGate(ctx context.Context, model string) error {
+	return s.askPinnedModelUse(ctx, model)
 }
 
 // recordShadowNarrowing records, in shadow mode, what enforce would take

@@ -992,10 +992,24 @@ func (s *Server) ListAgents(ctx context.Context, includeDynamic bool) ([]connect
 // --- 3. Builtin tool wrappers ---
 
 func (s *Server) Memory(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	if q := memoryOpQuestion(input); q != nil {
+		if res, refused := refusalResult(s.connectorAsk(ctx, *q)); refused {
+			return res, nil
+		}
+	}
 	return s.dispatchBuiltin(ctx, "Memory", input)
 }
 
 func (s *Server) Channel(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	qs, err := channelOpQuestions(input)
+	if err != nil {
+		return aclToolResult(aclFail(400, "unknown_op", err.Error())), nil
+	}
+	for _, q := range qs {
+		if res, refused := refusalResult(s.connectorAsk(ctx, q)); refused {
+			return res, nil
+		}
+	}
 	return s.dispatchBuiltin(ctx, "Channel", input)
 }
 

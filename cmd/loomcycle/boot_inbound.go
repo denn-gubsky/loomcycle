@@ -53,6 +53,9 @@ func (b *boot) mountA2AServer() {
 			// A2A INPUT_REQUIRED follow-up wakes the parked run on the same
 			// "intr:<id>" key.
 			ChannelNotify: channelBus.Notify,
+			// A call's client address for a source_cidr condition, under
+			// auth.trusted_proxies like every HTTP request.
+			ClientIP: srv.RequestClientIP,
 		})
 		if err != nil {
 			fatal("a2a server: setup failed", "err", err)
@@ -112,6 +115,9 @@ func (b *boot) mountWebhooks() {
 			AllowUnauthenticated: cfg.Env.WebhooksAllowUnauthenticated,
 			Logger:               slog.Default(),
 			Counts:               storeIface, // per-definition delivery counters (RFC EK §9)
+			// A delivery's client address for a source_cidr condition, under
+			// auth.trusted_proxies like every HTTP request.
+			ClientIP: srv.RequestClientIP,
 		})
 		webhookReceiver = rec
 		srv.SetWebhookMux(func(reg lchttp.MuxRegistrar, adminAuth func(http.Handler) http.Handler) {

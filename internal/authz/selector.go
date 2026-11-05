@@ -67,6 +67,13 @@ func parseSelector(sel string) (selector, error) {
 			s.all = true
 			return s, nil
 		}
+		if typ == "git" {
+			// A remote is matched case-insensitively (RFC FY Part E): hosts
+			// are, and the common forges treat a repository path so too, so
+			// `deny push git:github.com/Org/**` must hold for org/repo. The
+			// Git tool asks with the remote lowercased (gitACLResource).
+			name = strings.ToLower(name)
+		}
 		g, lit, err := parseGlob(name, '/')
 		if err != nil {
 			return selector{}, fmt.Errorf("selector %q: %w", sel, err)

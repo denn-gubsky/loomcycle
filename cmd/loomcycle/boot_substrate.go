@@ -265,6 +265,7 @@ func (b *boot) wireAuth() {
 	}
 	aclResolver := aclres.New(storeIface, aclMode, time.Duration(cfg.Env.ACLCacheTTLSeconds)*time.Second)
 	srv.SetACLResolver(aclResolver)
+	srv.ReportUnenforceableACLs(context.Background())
 	// A stored list that shadows a config-declared one still resolves first;
 	// name each so the operator can rename it (it cannot be created now).
 	srv.ReportACLShadows(context.Background(), slog.Default())
