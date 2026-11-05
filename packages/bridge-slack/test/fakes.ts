@@ -150,18 +150,27 @@ export const settle = () => new Promise((r) => setTimeout(r, 10));
 
 export interface SlackCall {
   url: string;
+  /** The Web API method; "response_url"; or "file" for files.slack.com
+   *  (a download, or an upload's bytes). */
   method: string;
   auth?: string;
+  /** A JSON body, or a form's fields. */
   body: Record<string, unknown>;
+  /** An upload's bytes. */
+  bytes?: Uint8Array;
 }
 
 type Reply = { status?: number; headers?: Record<string, string>; json?: Record<string, unknown> };
 
-/** A recording fake of Slack's Web API (and of response_urls), as `fetch`. */
+export const FILES_ORIGIN = "https://files.slack.com";
+
+/** A recording fake of Slack's Web API, response_urls and files.slack.com, as `fetch`. */
 export class FakeSlack {
   readonly calls: SlackCall[] = [];
   /** Queued replies by method, used before the defaults. */
   readonly script: Record<string, Reply[]> = {};
+  /** What files.slack.com answers a download of each URL. */
+  readonly files = new Map<string, () => Response>();
   private seq = 0;
 
   constructor(readonly base = "https://slack.test/api") {}
@@ -176,9 +185,19 @@ export class FakeSlack {
 
   fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
-    const method = url.startsWith(`${this.base}/`) ? url.slice(this.base.length + 1) : "response_url";
     const headers = (init?.headers ?? {}) as Record<string, string>;
-    this.calls.push({ url, method, auth: headers.authorization, body: JSON.parse(String(init?.body ?? "{}")) });
+    if (url.startsWith(`${FILES_ORIGIN}/`)) {
+      const bytes = init?.body instanceof Uint8Array ? init.body : undefined;
+      this.calls.push({ url, method: "file", auth: headers.authorization, body: {}, ...(bytes ? { bytes } : {}) });
+      if (init?.method === "POST") return new Response("OK", { status: 200 });
+      return this.files.get(url)?.() ?? new Response("not found", { status: 404 });
+    }
+    const method = url.startsWith(`${this.base}/`) ? url.slice(this.base.length + 1) : "response_url";
+    const raw = String(init?.body ?? "{}");
+    const body = headers["content-type"]?.startsWith("application/x-www-form-urlencoded")
+      ? Object.fromEntries(new URLSearchParams(raw))
+      : (JSON.parse(raw) as Record<string, unknown>);
+    this.calls.push({ url, method, auth: headers.authorization, body });
     const r = this.script[method]?.shift() ?? { json: this.defaultReply(method) };
     return new Response(JSON.stringify(r.json ?? { ok: true }), {
       status: r.status ?? 200,
@@ -192,6 +211,8 @@ export class FakeSlack {
         return { ok: true, user_id: "UBOT", team_id: "T1", bot_id: "BBOT" };
       case "users.info":
         return { ok: true, user: { name: "ada", profile: { display_name: "Ada", real_name: "Ada L" } } };
+      case "files.getUploadURLExternal":
+        return { ok: true, upload_url: `${FILES_ORIGIN}/upload/v1/UPLOAD${++this.seq}`, file_id: `FUP${this.seq}` };
       case "chat.postMessage":
       case "chat.startStream":
         return { ok: true, channel: "C", ts: `1700000000.${String(++this.seq).padStart(6, "0")}` };
