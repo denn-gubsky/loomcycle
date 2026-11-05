@@ -387,12 +387,12 @@ func (b *boot) startRunSweepers() {
 	// this sweeper even when the RFC BM families are off; it then gets a
 	// config holding only the audit fields, so no other family's env setting
 	// is picked up behind LOOMCYCLE_RETENTION_ENABLED's back.
-	auditSeal := b.auditAnchorSeal
-	if !cfg.Env.RetentionEnabled && auditSeal != nil && storeIface != nil {
+	auditKeys := b.auditRetentionKeys
+	if !cfg.Env.RetentionEnabled && auditKeys != nil && storeIface != nil {
 		rCfg := retention.Config{
-			Interval:        cfg.Env.RetentionInterval,
-			AuditMaxAge:     cfg.Env.AuditRetention,
-			AuditAnchorSeal: auditSeal,
+			Interval:    cfg.Env.RetentionInterval,
+			AuditMaxAge: cfg.Env.AuditRetention,
+			AuditKeys:   auditKeys,
 		}
 		if advisoryLock != nil {
 			rCfg.AdvisoryLock = advisoryLock
@@ -424,7 +424,7 @@ func (b *boot) startRunSweepers() {
 			MemContentMaxAge:   cfg.Env.RetentionMemContentMaxAge,
 			ExportDir:          cfg.Env.RetentionExportDir,
 			AuditMaxAge:        cfg.Env.AuditRetention,
-			AuditAnchorSeal:    auditSeal,
+			AuditKeys:          auditKeys,
 		}
 		// SQL-Memory scope reclamation needs the manager; nil (SQL Memory off) is
 		// fine — the mem sweep then reclaims base memory + dirents only. Typed-nil

@@ -22,7 +22,7 @@ func (b *boot) openAudit() {
 	if err != nil {
 		fatal("audit: the audit trail cannot be opened", "err", err)
 	}
-	if b.auditAnchorSeal, err = auditAnchorSeal(b.cfg); err != nil {
+	if b.auditRetentionKeys, err = auditRetentionKeys(b.cfg); err != nil {
 		fatal("audit: the audit retention cannot run", "err", err)
 	}
 	b.auditSink = sink
@@ -94,11 +94,12 @@ func openAuditSink(ctx context.Context, cfg *config.Config, st store.Store) (aud
 	return audit.Combine(sinks...), desc, nil
 }
 
-// auditAnchorSeal is the signer the retention sweeper's audit family moves a
-// chain's anchor with, or nil when LOOMCYCLE_AUDIT_RETENTION_DAYS keeps every
-// row. A retention age with no LOOMCYCLE_SECRET_KEY is an error: pruning
-// without signing the anchor would leave a chain that no longer verifies.
-func auditAnchorSeal(cfg *config.Config) (store.AuditAnchorSealFunc, error) {
+// auditRetentionKeys are the keys the retention sweeper's audit family
+// verifies a chain with and signs its new anchor with, or nil when
+// LOOMCYCLE_AUDIT_RETENTION_DAYS keeps every row. A retention age with no
+// LOOMCYCLE_SECRET_KEY is an error: pruning without signing the anchor would
+// leave a chain that no longer verifies.
+func auditRetentionKeys(cfg *config.Config) (*audit.ChainKeys, error) {
 	if cfg.Env.AuditRetention <= 0 {
 		return nil, nil
 	}
@@ -109,5 +110,9 @@ func auditAnchorSeal(cfg *config.Config) (store.AuditAnchorSealFunc, error) {
 	if cur == nil {
 		return nil, fmt.Errorf("LOOMCYCLE_AUDIT_RETENTION_DAYS prunes the audit chain behind a signed anchor and needs LOOMCYCLE_SECRET_KEY to sign it")
 	}
-	return audit.ChainKeys{Current: cur}.SealAnchor(), nil
+	prev, err := credential.DeriveAuditChainKey(cfg.Env.SecretKeyPrevious)
+	if err != nil {
+		return nil, fmt.Errorf("LOOMCYCLE_SECRET_KEY_PREVIOUS: %w", err)
+	}
+	return &audit.ChainKeys{Current: cur, Previous: prev}, nil
 }

@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ func RunAudit(t *testing.T, factory ReplicaFactory) {
 		{"PruneKeepsTheChainVerifiable", testAuditPruneKeepsTheChainVerifiable},
 		{"HeadAndListRoundTrip", testAuditHeadAndListRoundTrip},
 		{"UnsafeTextIsStoredEscapedAndHashed", testAuditUnsafeTextIsStoredEscapedAndHashed},
+		{"PruneHandsTheSealEveryRowAndAbortsOnItsError", testAuditPruneHandsTheSealEveryRowAndAbortsOnItsError},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -134,7 +136,7 @@ func testAuditPruneKeepsTheChainVerifiable(t *testing.T, a, b store.Store) {
 	for i := 0; i < 3; i++ {
 		appendAt(b, recent.Add(time.Duration(i)*time.Hour), fmt.Sprintf("new-%d", i))
 	}
-	n, err := b.AuditPrune(ctx, "t1", time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), "", auditTestKeys.SealAnchor())
+	n, err := audit.Prune(ctx, b, auditTestKeys, "t1", time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil || n != 4 {
 		t.Fatalf("AuditPrune = %d, %v; want 4 rows removed", n, err)
 	}
@@ -148,7 +150,7 @@ func testAuditPruneKeepsTheChainVerifiable(t *testing.T, a, b store.Store) {
 	}
 	// Pruning what is left (every row older than now) leaves an empty chain
 	// whose anchor is its head, and that still verifies.
-	if _, err := a.AuditPrune(ctx, "t1", time.Now().Add(time.Hour), "", auditTestKeys.SealAnchor()); err != nil {
+	if _, err := audit.Prune(ctx, a, auditTestKeys, "t1", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	rep, err = audit.Verify(ctx, b, auditTestKeys, "t1")
@@ -160,7 +162,7 @@ func testAuditPruneKeepsTheChainVerifiable(t *testing.T, a, b store.Store) {
 	}
 	// Pruning the operator chain carries t1's opening in its signed anchor
 	// state, so t1 is still known to exist with no opening row left.
-	if n, err := b.AuditPrune(ctx, "", time.Now().Add(time.Hour), audit.CarryAction(""), auditTestKeys.SealAnchor()); err != nil || n != 1 {
+	if n, err := audit.Prune(ctx, b, auditTestKeys, "", time.Now().Add(time.Hour)); err != nil || n != 1 {
 		t.Fatalf("pruning the operator chain = %d, %v; want its one opening removed", n, err)
 	}
 	if head, err := a.AuditHeadGet(ctx, ""); err != nil || !strings.Contains(head.AnchorState, `"t1":1`) {
@@ -170,7 +172,7 @@ func testAuditPruneKeepsTheChainVerifiable(t *testing.T, a, b store.Store) {
 		t.Errorf("t1 after the operator chain's prune: %+v, %v", rep, err)
 	}
 	// A prune of a tenant with no chain does nothing.
-	if n, err := a.AuditPrune(ctx, "nobody", time.Now(), "", auditTestKeys.SealAnchor()); err != nil || n != 0 {
+	if n, err := a.AuditPrune(ctx, "nobody", time.Now(), 0, auditTestKeys.SealAnchor()); err != nil || n != 0 {
 		t.Errorf("prune of an absent chain = %d, %v", n, err)
 	}
 }
@@ -237,5 +239,58 @@ func testAuditUnsafeTextIsStoredEscapedAndHashed(t *testing.T, a, b store.Store)
 	rep, err := audit.Verify(ctx, b, auditTestKeys, "t1")
 	if err != nil || !rep.OK || rep.Rows != 2 {
 		t.Errorf("verify = %+v, %v", rep, err)
+	}
+}
+
+// The store side of a prune: inside its transaction it hands the seal the
+// locked head (the previous anchor and its state) and every row it would
+// remove, in order and complete, and a seal error removes nothing. The seal
+// does the verifying (audit.ChainKeys.SealAnchor); this pins that each
+// backend gives it the whole range to verify.
+func testAuditPruneHandsTheSealEveryRowAndAbortsOnItsError(t *testing.T, a, b store.Store) {
+	ctx := context.Background()
+	sink, err := audit.NewStoreSink(a, auditTestKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		if err := sink.Record(audit.Event{TS: base.Add(time.Duration(i) * time.Hour), Action: "acl_edit", ActorTenant: "t1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refuse := func(store.AuditHead, []store.AuditEventRow) (string, string, error) {
+		return "", "", errors.New("refused")
+	}
+	if n, err := b.AuditPrune(ctx, "t1", base.Add(24*time.Hour), 0, refuse); err == nil || n != 0 {
+		t.Fatalf("prune with a refusing seal = %d, %v; want an error and nothing removed", n, err)
+	}
+	if rows, _ := a.AuditEventsList(ctx, "t1", 0, 0); len(rows) != 5 {
+		t.Fatalf("after a refused prune %d rows remain, want 5", len(rows))
+	}
+	// A limit of 3 takes rows 1-3, then 4-5: each time the seal sees the
+	// previous anchor and exactly the rows removed.
+	var seen [][]int64
+	var anchors []int64
+	inner := auditTestKeys.SealAnchor()
+	record := func(prev store.AuditHead, pruned []store.AuditEventRow) (string, string, error) {
+		var seqs []int64
+		for _, r := range pruned {
+			seqs = append(seqs, r.Seq)
+		}
+		seen = append(seen, seqs)
+		anchors = append(anchors, prev.AnchorSeq)
+		return inner(prev, pruned)
+	}
+	for _, want := range []int{3, 2} {
+		if n, err := b.AuditPrune(ctx, "t1", base.Add(24*time.Hour), 3, record); err != nil || n != want {
+			t.Fatalf("prune = %d, %v; want %d", n, err, want)
+		}
+	}
+	if fmt.Sprint(seen) != "[[1 2 3] [4 5]]" || fmt.Sprint(anchors) != "[0 3]" {
+		t.Errorf("the seal saw rows %v after anchors %v; want [[1 2 3] [4 5]] after [0 3]", seen, anchors)
+	}
+	if rep, err := audit.Verify(ctx, a, auditTestKeys, "t1"); err != nil || !rep.OK || rep.AnchorSeq != 5 {
+		t.Errorf("after the batched prune: %+v, %v", rep, err)
 	}
 }

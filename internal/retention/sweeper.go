@@ -245,12 +245,13 @@ type Config struct {
 
 	// AuditMaxAge is how long the store-backed audit stream keeps its rows
 	// (RFC FZ Part E, LOOMCYCLE_AUDIT_RETENTION_DAYS). Older rows are pruned
-	// per tenant chain behind an anchor signed by AuditAnchorSeal, so what is
-	// left still verifies. Zero, or a nil AuditAnchorSeal, keeps every row.
+	// per tenant chain behind an anchor signed with AuditKeys, so what is
+	// left still verifies; a chain that does not verify is not pruned (its
+	// rows, and the break, stay). Zero, or nil AuditKeys, keeps every row.
 	// Independent of every other family: it is its own knob, and deleting
 	// audit rows never rides on a chats or defs setting.
-	AuditMaxAge     time.Duration
-	AuditAnchorSeal store.AuditAnchorSealFunc
+	AuditMaxAge time.Duration
+	AuditKeys   *audit.ChainKeys
 
 	// ExportDir is the directory export+prune writes JSON into: def versions under
 	// <ExportDir>/<day>/<def-type>/, chat sessions under <ExportDir>/chats/<day>/.
@@ -331,6 +332,9 @@ type Result struct {
 	// sweep. Counted under DryRun as zero: the prune is a single store
 	// transaction with no listing step to report from.
 	Audit int
+	// AuditRefused is the number of audit chains left unpruned because they
+	// do not verify.
+	AuditRefused int
 	// Mem is the number of retired-agent reclamation UNITS this sweep (or, under
 	// DryRun, would-be). A unit is one (tenant, name) whose SQL-Memory scope
 	// and/or dirents were dropped, PLUS one per name whose globally-dead base
@@ -367,7 +371,7 @@ type Sweeper struct {
 	lockKey             int64
 	now                 func() time.Time
 	auditMaxAge         time.Duration
-	auditAnchorSeal     store.AuditAnchorSealFunc
+	auditKeys           *audit.ChainKeys
 }
 
 // New constructs a Sweeper. A nil store means "no persistence" — Run is then a
@@ -432,39 +436,43 @@ func New(st store.Store, cfg Config) *Sweeper {
 		lockKey:             cfg.AdvisoryLockKey,
 		now:                 cfg.Now,
 		auditMaxAge:         cfg.AuditMaxAge,
-		auditAnchorSeal:     cfg.AuditAnchorSeal,
+		auditKeys:           cfg.AuditKeys,
 	}
 }
 
 // auditPruneEnabled reports whether the audit family runs: an age and a key
 // to sign the anchor with. Never under DryRun — the prune has no preview.
 func (s *Sweeper) auditPruneEnabled() bool {
-	return s.auditMaxAge > 0 && s.auditAnchorSeal != nil && !s.dryRun
+	return s.auditMaxAge > 0 && s.auditKeys != nil && !s.dryRun
 }
 
-// sweepAuditOnce prunes every tenant chain's rows older than the cutoff. A
-// failure on one chain is logged and the rest are still pruned.
-func (s *Sweeper) sweepAuditOnce(parent context.Context) (int, error) {
+// sweepAuditOnce prunes every chain's rows older than the cutoff. A chain
+// that does not verify is refused — pruning it would re-sign an anchor over
+// tampered rows — logged at error and counted; a failure on one chain never
+// stops the rest.
+func (s *Sweeper) sweepAuditOnce(parent context.Context) (pruned, refused int, err error) {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	tenants, err := s.store.AuditTenants(ctx)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	cutoff := s.now().Add(-s.auditMaxAge)
-	total := 0
 	for _, tenant := range tenants {
 		if ctx.Err() != nil {
 			break
 		}
-		n, err := s.store.AuditPrune(ctx, tenant, cutoff, audit.CarryAction(tenant), s.auditAnchorSeal)
-		if err != nil {
+		n, err := audit.Prune(ctx, s.store, *s.auditKeys, tenant, cutoff)
+		pruned += n
+		switch {
+		case errors.Is(err, audit.ErrChainBroken):
+			refused++
+			s.logger.Error("retention: an audit chain does not verify; it is not pruned", "tenant", tenant, "err", err)
+		case err != nil:
 			s.logger.Warn("retention: audit prune failed", "tenant", tenant, "err", err)
-			continue
 		}
-		total += n
 	}
-	return total, nil
+	return pruned, refused, nil
 }
 
 // defsPurgeEnabled reports whether the destructive def purge should run:
@@ -782,11 +790,12 @@ func (s *Sweeper) sweepOnce(parent context.Context) (Result, error) {
 		s.sweepDefsOnce(parent, &res)
 	}
 	if s.auditPruneEnabled() {
-		n, err := s.sweepAuditOnce(parent)
+		n, refused, err := s.sweepAuditOnce(parent)
 		if err != nil {
 			s.logger.Warn("retention: audit sweep failed", "err", err)
 		}
 		res.Audit += n
+		res.AuditRefused += refused
 	}
 	if s.chatsPruneEnabled() {
 		n, internal, err := s.sweepChatsOnce(parent)

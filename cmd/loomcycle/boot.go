@@ -124,9 +124,10 @@ type boot struct {
 	// chain, the JSONL file, or both. Nil when neither is on: recorders
 	// treat a nil sink as "nothing durable is written".
 	auditSink audit.Sink
-	// auditAnchorSeal signs the anchor the retention sweeper leaves when it
-	// prunes a chain; nil when LOOMCYCLE_AUDIT_RETENTION_DAYS keeps every row.
-	auditAnchorSeal store.AuditAnchorSealFunc
+	// auditRetentionKeys verify a chain and sign the anchor the retention
+	// sweeper leaves when it prunes it; nil when LOOMCYCLE_AUDIT_RETENTION_DAYS
+	// keeps every row.
+	auditRetentionKeys *audit.ChainKeys
 
 	// The rest of the server build.
 	hookDefTool           *builtin.HookDef

@@ -13,6 +13,10 @@ import (
 // auditListDefault caps one AuditEventsList page when the caller names none.
 const auditListDefault = 500
 
+// auditPruneDefault caps one AuditPrune when the caller names no limit: the
+// prune reads every row it removes, to have them verified.
+const auditPruneDefault = 5000
+
 // AuditAppend implements store.AuditStore. BEGIN IMMEDIATE on a pinned
 // connection takes the database write lock before the head is read, so two
 // appenders — two connections here, or two processes on one file — read the
@@ -170,10 +174,15 @@ func (s *Store) AuditTenants(ctx context.Context) ([]string, error) {
 }
 
 // AuditPrune implements store.AuditStore, under the same write lock as an
-// append so the anchor and the head never disagree.
-func (s *Store) AuditPrune(ctx context.Context, tenantID string, before time.Time, carryAction string, seal store.AuditAnchorSealFunc) (int, error) {
+// append so the anchor and the head never disagree. It reads the head and
+// every row it would remove inside the transaction and hands them to seal,
+// which verifies them before signing; a seal error rolls the prune back.
+func (s *Store) AuditPrune(ctx context.Context, tenantID string, before time.Time, limit int, seal store.AuditAnchorSealFunc) (int, error) {
 	if seal == nil {
 		return 0, fmt.Errorf("audit prune: seal is required")
+	}
+	if limit <= 0 {
+		limit = auditPruneDefault
 	}
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
@@ -189,54 +198,60 @@ func (s *Store) AuditPrune(ctx context.Context, tenantID string, before time.Tim
 			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 		}
 	}()
+	head := store.AuditHead{TenantID: tenantID}
+	err = conn.QueryRowContext(ctx,
+		`SELECT seq, hash, mac, anchor_seq, anchor_hash, anchor_mac, anchor_state FROM audit_heads WHERE tenant_id = ?`, tenantID,
+	).Scan(&head.Seq, &head.Hash, &head.MAC, &head.AnchorSeq, &head.AnchorHash, &head.AnchorMAC, &head.AnchorState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("audit prune: head: %w", err)
+	}
 	var last sql.NullInt64
 	if err := conn.QueryRowContext(ctx,
-		`SELECT MAX(seq) FROM audit_events WHERE tenant_id = ? AND ts < ?`, tenantID, before.UnixNano(),
+		`SELECT MAX(seq) FROM audit_events WHERE tenant_id = ? AND seq > ? AND seq <= ? AND ts < ?`,
+		tenantID, head.AnchorSeq, head.AnchorSeq+int64(limit), before.UnixNano(),
 	).Scan(&last); err != nil {
 		return 0, fmt.Errorf("audit prune: find: %w", err)
 	}
 	if !last.Valid {
 		return 0, nil
 	}
-	var hash, prevState string
-	if err := conn.QueryRowContext(ctx,
-		`SELECT hash FROM audit_events WHERE tenant_id = ? AND seq = ?`, tenantID, last.Int64).Scan(&hash); err != nil {
-		return 0, fmt.Errorf("audit prune: anchor row: %w", err)
+	rows, err := conn.QueryContext(ctx,
+		`SELECT seq, ts, actor, action, subject, payload, prev_hash, hash, mac FROM audit_events
+		 WHERE tenant_id = ? AND seq <= ? ORDER BY seq`, tenantID, last.Int64)
+	if err != nil {
+		return 0, fmt.Errorf("audit prune: read: %w", err)
 	}
-	if err := conn.QueryRowContext(ctx,
-		`SELECT anchor_state FROM audit_heads WHERE tenant_id = ?`, tenantID).Scan(&prevState); err != nil {
-		return 0, fmt.Errorf("audit prune: head: %w", err)
+	var pruned []store.AuditEventRow
+	for rows.Next() {
+		r := store.AuditEventRow{TenantID: tenantID}
+		var ts int64
+		if err := rows.Scan(&r.Seq, &ts, &r.Actor, &r.Action, &r.Subject, &r.Payload, &r.PrevHash, &r.Hash, &r.MAC); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("audit prune: read: %w", err)
+		}
+		r.TS = time.Unix(0, ts).UTC()
+		pruned = append(pruned, r)
 	}
-	var carried []store.AuditEventRow
-	if carryAction != "" {
-		rows, err := conn.QueryContext(ctx,
-			`SELECT seq, action, subject FROM audit_events WHERE tenant_id = ? AND seq <= ? AND action = ? ORDER BY seq`,
-			tenantID, last.Int64, carryAction)
-		if err != nil {
-			return 0, fmt.Errorf("audit prune: carried rows: %w", err)
-		}
-		for rows.Next() {
-			r := store.AuditEventRow{TenantID: tenantID}
-			if err := rows.Scan(&r.Seq, &r.Action, &r.Subject); err != nil {
-				rows.Close()
-				return 0, fmt.Errorf("audit prune: carried rows: %w", err)
-			}
-			carried = append(carried, r)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return 0, fmt.Errorf("audit prune: carried rows: %w", err)
-		}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("audit prune: read: %w", err)
 	}
-	res, err := conn.ExecContext(ctx, `DELETE FROM audit_events WHERE tenant_id = ? AND seq <= ?`, tenantID, last.Int64)
+	state, mac, err := seal(head, pruned)
+	if err != nil {
+		return 0, fmt.Errorf("audit prune: %w", err)
+	}
+	end := pruned[len(pruned)-1]
+	res, err := conn.ExecContext(ctx, `DELETE FROM audit_events WHERE tenant_id = ? AND seq <= ?`, tenantID, end.Seq)
 	if err != nil {
 		return 0, fmt.Errorf("audit prune: delete: %w", err)
 	}
 	n, _ := res.RowsAffected()
-	state, mac := seal(tenantID, last.Int64, hash, prevState, carried)
 	if _, err := conn.ExecContext(ctx,
 		`UPDATE audit_heads SET anchor_seq = ?, anchor_hash = ?, anchor_mac = ?, anchor_state = ? WHERE tenant_id = ?`,
-		last.Int64, hash, mac, state, tenantID); err != nil {
+		end.Seq, end.Hash, mac, state, tenantID); err != nil {
 		return 0, fmt.Errorf("audit prune: anchor: %w", err)
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {

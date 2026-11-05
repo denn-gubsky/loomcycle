@@ -59,10 +59,12 @@ type AuditHead struct {
 // what is written.
 type AuditSealFunc func(row *AuditEventRow) (headMAC string, err error)
 
-// AuditAnchorSealFunc returns the state and MAC of the anchor a prune leaves
-// at (seq, hash), given the previous anchor's state and the pruned rows whose
-// action is the prune's carryAction.
-type AuditAnchorSealFunc func(tenantID string, seq int64, hash, prevState string, carried []AuditEventRow) (state, mac string)
+// AuditAnchorSealFunc checks a prune and signs its new anchor. It is handed
+// the chain's head as locked (the previous anchor with its state) and every
+// row the prune would remove, in order, and returns the new anchor's state
+// and MAC — or an error, which aborts the prune. It must not sign anything it
+// has not verified.
+type AuditAnchorSealFunc func(prev AuditHead, pruned []AuditEventRow) (state, mac string, err error)
 
 // AuditStore persists the audit stream.
 type AuditStore interface {
@@ -90,11 +92,12 @@ type AuditStore interface {
 	// AuditTenants lists every tenant that has a chain, sorted.
 	AuditTenants(ctx context.Context) ([]string, error)
 	// AuditPrune removes a tenant's rows up to the last one recorded before
-	// `before` (rows are numbered in commit order and stamped by each
-	// replica's clock, so a few rows newer than `before` can go with them),
-	// and moves the head's anchor to that row, in one transaction under the
-	// head lock. seal is handed the pruned rows whose action is carryAction
-	// ("" hands none) to carry forward in the anchor's state. It returns the
-	// rows removed.
-	AuditPrune(ctx context.Context, tenantID string, before time.Time, carryAction string, seal AuditAnchorSealFunc) (int, error)
+	// `before` — at most limit rows past the current anchor (a non-positive
+	// limit takes a default) — and moves the head's anchor to the last row
+	// removed, in one transaction under the head lock. Rows are numbered in
+	// commit order and stamped by each replica's clock, so a few rows newer
+	// than `before` can go with them. seal is handed the locked head and
+	// every row to be removed and must verify them; its error aborts the
+	// prune. It returns the rows removed.
+	AuditPrune(ctx context.Context, tenantID string, before time.Time, limit int, seal AuditAnchorSealFunc) (int, error)
 }

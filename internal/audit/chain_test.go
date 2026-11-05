@@ -345,3 +345,45 @@ func TestAuditVerify_OpeningsSurviveTheOperatorChainsPrune(t *testing.T) {
 		t.Errorf("the operator anchor's carried openings dropped: %+v, want the operator chain broken", rep)
 	}
 }
+
+// A prune must not launder tampering: it re-signs an anchor over what it
+// removes, so it verifies the range first and refuses a chain that does
+// not verify, leaving the rows (and the break) in place.
+func TestAuditPrune_RefusesAChainThatDoesNotVerify(t *testing.T) {
+	ctx := context.Background()
+	t.Run("a tampered row", func(t *testing.T) {
+		s, db := chainFixture(t, 4)
+		exec(t, db, `UPDATE audit_events SET payload = '{"action":"nothing"}' WHERE tenant_id = 't1' AND seq = 2`)
+		if n, err := pruneForTest(ctx, s, "t1", time.Now().Add(time.Hour)); err == nil || n != 0 {
+			t.Errorf("prune of a tampered chain = %d, %v; want a refusal", n, err)
+		}
+		if rep := verify(t, s, testKeys); rep.OK || rep.BreakSeq != 2 {
+			t.Errorf("after the refused prune: %+v, want the break at 2 still reported", rep)
+		}
+	})
+	t.Run("a tampered anchor state", func(t *testing.T) {
+		s, db := chainFixture(t, 2)
+		if _, err := pruneForTest(ctx, s, "", time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		sink, err := audit.NewStoreSink(s, testKeys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sink.Record(audit.Event{Action: "auth_login", ActorTenant: "t2"}); err != nil {
+			t.Fatal(err)
+		}
+		// Forge an opening for a tenant that never existed.
+		exec(t, db, `UPDATE audit_heads SET anchor_state = '{"opened":{"ghost":1,"t1":1}}' WHERE tenant_id = ''`)
+		if n, err := pruneForTest(ctx, s, "", time.Now().Add(time.Hour)); err == nil || n != 0 {
+			t.Errorf("prune over a forged anchor state = %d, %v; want a refusal", n, err)
+		}
+		head, err := s.AuditHeadGet(ctx, "")
+		if err != nil || !strings.Contains(head.AnchorState, "ghost") {
+			t.Fatalf("operator head = %+v, %v", head, err)
+		}
+		if rep := verify(t, s, testKeys); rep.OK || !strings.Contains(rep.Reason, "operator chain") {
+			t.Errorf("after the refused prune: %+v, want the operator chain still broken", rep)
+		}
+	})
+}

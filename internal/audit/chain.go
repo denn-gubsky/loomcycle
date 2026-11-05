@@ -211,41 +211,117 @@ func decodeAnchorState(s string) (anchorState, error) {
 	return st, err
 }
 
-// CarryAction is the action whose pruned rows a prune of tenant's chain
-// carries in its anchor: the openings, for the operator chain; none for a
-// tenant chain.
-func CarryAction(tenant string) string {
-	if tenant == "" {
-		return ActionChainOpened
-	}
-	return ""
-}
+// ErrChainBroken is a prune's refusal: the chain, or the range it would
+// remove, does not verify. Re-signing an anchor over it would launder the
+// tampering under the key, so the rows stay and the break stays reported.
+var ErrChainBroken = errors.New("audit: the chain does not verify")
 
 // SealAnchor returns the store.AuditAnchorSealFunc a prune signs its anchor
-// with. The new state is the previous anchor's plus the carried rows; the
-// MAC covers it, so the openings a prune removed cannot be dropped or added
-// without the key. A previous state that does not decode (it verified when
-// the chain last did, so only a writer without the key leaves one) is
-// replaced by what the carried rows hold, and verification reports the old
-// anchor's signature as broken until then.
+// with, inside the prune's transaction. Before it signs anything it checks
+// what it is handed: the previous anchor's signature over its seq, hash and
+// state, and every pruned row's link from that anchor (in place, unaltered,
+// signed). Any failure is ErrChainBroken and aborts the prune — nothing
+// unverified is folded into a new signature. The new state is the previous
+// anchor's openings plus the pruned rows' (operator chain only).
 func (k ChainKeys) SealAnchor() store.AuditAnchorSealFunc {
-	return func(tenant string, seq int64, hash, prevState string, carried []store.AuditEventRow) (string, string) {
-		st, _ := decodeAnchorState(prevState)
-		for _, r := range carried {
-			if r.Action == ActionChainOpened {
+	return func(prev store.AuditHead, pruned []store.AuditEventRow) (string, string, error) {
+		tenant := prev.TenantID
+		if len(pruned) == 0 {
+			return "", "", fmt.Errorf("%w: nothing to prune", ErrChainBroken)
+		}
+		if prev.AnchorSeq > 0 && !k.check(prev.AnchorMAC, macAnchor, tenant, prev.AnchorSeq, prev.AnchorHash, prev.AnchorState) {
+			return "", "", fmt.Errorf("%w: the retention anchor's signature does not verify", ErrChainBroken)
+		}
+		st, err := decodeAnchorState(prev.AnchorState)
+		if err != nil {
+			return "", "", fmt.Errorf("%w: the retention anchor's state does not decode: %v", ErrChainBroken, err)
+		}
+		link, want, rotated := prev.AnchorHash, prev.AnchorSeq+1, false
+		for _, r := range pruned {
+			if why := k.checkLink(tenant, link, want, r, &rotated); why != "" {
+				return "", "", fmt.Errorf("%w: %s", ErrChainBroken, why)
+			}
+			if tenant == "" && r.Action == ActionChainOpened {
 				if st.Opened == nil {
 					st.Opened = map[string]int{}
 				}
 				st.Opened[r.Subject]++
 			}
+			link = r.Hash
+			want++
 		}
 		state := ""
 		if len(st.Opened) > 0 {
-			b, _ := json.Marshal(st) // map keys marshal sorted: one encoding
+			b, err := json.Marshal(st) // map keys marshal sorted: one encoding
+			if err != nil {
+				return "", "", err
+			}
 			state = string(b)
 		}
-		return state, k.sign(macAnchor, tenant, seq, hash, state)
+		last := pruned[len(pruned)-1]
+		return state, k.sign(macAnchor, tenant, last.Seq, last.Hash, state), nil
 	}
+}
+
+// PruneStore is what Prune reads and prunes through.
+type PruneStore interface {
+	ChainReader
+	AuditPrune(ctx context.Context, tenantID string, before time.Time, limit int, seal store.AuditAnchorSealFunc) (int, error)
+}
+
+// pruneBatch is how many rows one prune transaction removes at most, so a
+// first prune of a long chain does not read it all into memory at once.
+const pruneBatch = 5000
+
+// Prune removes a chain's rows recorded before `before`, in batches, behind
+// a signed anchor. It verifies the whole chain first (rows, anchor, head and,
+// for a tenant chain, the operator chain's record of it) and refuses with
+// ErrChainBroken when it does not hold; each batch's transaction re-checks
+// the range it removes, so a row changed between the two is caught too.
+func Prune(ctx context.Context, st PruneStore, keys ChainKeys, tenant string, before time.Time) (int, error) {
+	rep, err := Verify(ctx, st, keys, tenant)
+	if err != nil {
+		return 0, err
+	}
+	if !rep.OK {
+		return 0, fmt.Errorf("%w: row %d: %s", ErrChainBroken, rep.BreakSeq, rep.Reason)
+	}
+	total := 0
+	for {
+		n, err := st.AuditPrune(ctx, tenant, before, pruneBatch, keys.SealAnchor())
+		total += n
+		if err != nil || n < pruneBatch {
+			return total, err
+		}
+	}
+}
+
+// checkLink checks that row is the chain's row want following a row hashed
+// prev: in place, linked, unaltered, and signed. It returns why not, or "".
+// rotated tracks the key rotation: once a row verifies under the current
+// key, the previous key no longer signs a later one (it would be someone
+// still holding the rotated-out key). Verification and the prune's
+// re-check share it, so the two cannot disagree on what a valid link is.
+func (k ChainKeys) checkLink(tenant, prev string, want int64, row store.AuditEventRow, rotated *bool) string {
+	switch {
+	case row.Seq != want:
+		return fmt.Sprintf("row %d is missing (the next row is %d)", want, row.Seq)
+	case row.PrevHash != prev:
+		return fmt.Sprintf("row %d does not follow the row before it", want)
+	case RowHash(prev, row) != row.Hash:
+		return fmt.Sprintf("row %d's content does not match its hash", want)
+	}
+	switch k.which(row.MAC, macRow, tenant, row.Seq, row.Hash) {
+	case signedByCurrent:
+		*rotated = true
+	case signedByPrevious:
+		if *rotated {
+			return fmt.Sprintf("row %d is signed with the previous key after rows signed with the current one", want)
+		}
+	default:
+		return fmt.Sprintf("row %d's signature does not verify", want)
+	}
+	return ""
 }
 
 // ChainReader is what verification reads.
@@ -483,26 +559,8 @@ func verifyChain(ctx context.Context, r ChainReader, keys ChainKeys, tenant stri
 				// Appended after the head was read.
 				break
 			}
-			switch {
-			case row.Seq != want:
-				return rep.broken(want, "row %d is missing (the next row is %d)", want, row.Seq), nil
-			case row.PrevHash != prev:
-				return rep.broken(want, "row %d does not follow the row before it", want), nil
-			case RowHash(prev, row) != row.Hash:
-				return rep.broken(want, "row %d's content does not match its hash", want), nil
-			}
-			switch keys.which(row.MAC, macRow, tenant, row.Seq, row.Hash) {
-			case signedByCurrent:
-				rotated = true
-			case signedByPrevious:
-				// The previous key is honoured only up to the rotation: a
-				// row it signs after one the current key signed was written
-				// by someone still holding the rotated-out key.
-				if rotated {
-					return rep.broken(want, "row %d is signed with the previous key after rows signed with the current one", want), nil
-				}
-			default:
-				return rep.broken(want, "row %d's signature does not verify", want), nil
+			if why := keys.checkLink(tenant, prev, want, row, &rotated); why != "" {
+				return rep.broken(want, "%s", why), nil
 			}
 			prev = row.Hash
 			want++

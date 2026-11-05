@@ -160,16 +160,16 @@ func TestBoot_SingleOperatorNeedsNoAuditStream(t *testing.T) {
 
 // An audit retention age needs the key that signs the anchor a prune leaves;
 // none keeps every row and needs nothing.
-func TestAuditAnchorSeal_RetentionNeedsTheKey(t *testing.T) {
-	if seal, err := auditAnchorSeal(&config.Config{}); seal != nil || err != nil {
+func TestAuditRetentionKeys_RetentionNeedsTheKey(t *testing.T) {
+	if seal, err := auditRetentionKeys(&config.Config{}); seal != nil || err != nil {
 		t.Errorf("no retention: %v, %v; want nothing", seal, err)
 	}
 	cfg := &config.Config{Env: config.Env{AuditRetention: 24 * time.Hour}}
-	if _, err := auditAnchorSeal(cfg); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_SECRET_KEY") {
+	if _, err := auditRetentionKeys(cfg); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_SECRET_KEY") {
 		t.Errorf("retention with no key: %v; want an error naming LOOMCYCLE_SECRET_KEY", err)
 	}
 	cfg.Env.SecretKey = testSecretKey()
-	if seal, err := auditAnchorSeal(cfg); seal == nil || err != nil {
+	if seal, err := auditRetentionKeys(cfg); seal == nil || err != nil {
 		t.Errorf("retention with a key: %v, %v; want a signer", seal, err)
 	}
 }
