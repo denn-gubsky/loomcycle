@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -194,6 +195,29 @@ func TestMemorySQL_PlantedEngineVirtualTableBlocksUntilDropped(t *testing.T) {
 		mustMemSQL(t, m, ctx, "sql_exec", `INSERT INTO notes_fts (body) VALUES ('alpha')`)
 		fresh := &Memory{Store: d.Store, SqlMem: d.SqlMem}
 		mustMemSQL(t, fresh, ctx, "sql_query", `SELECT count(*) FROM notes_fts WHERE notes_fts MATCH 'alpha'`)
+	})
+}
+
+// An agent refused for reading the schema catalog, typically to list its own
+// tables, is told how to do without it, not to rename tables it never named.
+func TestMemorySQL_EngineTableRefusalHasItsOwnHint(t *testing.T) {
+	guardBothTiers(t, func(t *testing.T, d *Document, m *Memory, ctx context.Context) {
+		stmtDoc(t, d, ctx, "Hinted")
+		hint := func(stmt string) string {
+			t.Helper()
+			body, _ := json.Marshal(map[string]any{"op": "sql_query", "scope": "user", "statement": stmt})
+			res, err := m.Execute(ctx, body)
+			if err != nil || !res.IsError || res.Error == nil {
+				t.Fatalf("%q: want a classified refusal, got %+v, %v", stmt, res, err)
+			}
+			return res.Error.Description
+		}
+		if h := hint(`SELECT name FROM sqlite_master WHERE type = 'table'`); !strings.Contains(h, "Keep track of the tables") || strings.Contains(h, "under other names") {
+			t.Errorf("engine-table refusal hint = %q; want advice on tracking the agent's own tables", h)
+		}
+		if h := hint(`SELECT * FROM chunks`); !strings.Contains(h, "Document tool") {
+			t.Errorf("document-table refusal hint = %q; want it to point at the Document tool", h)
+		}
 	})
 }
 

@@ -118,6 +118,32 @@ func isEngineTable(name string) bool {
 	return engineTables[name] || strings.HasPrefix(name, "sqlite_stat") || strings.HasPrefix(name, "pragma_")
 }
 
+// refuseEngineTables returns the reason a Memory SQL statement is refused for
+// naming one of the engine tables, or "". It reads names exactly as
+// refuseDocumentTables does; a statement the tokenizer cannot read is left to
+// refuseDocumentTables to refuse.
+func refuseEngineTables(stmt string, postgres bool) string {
+	toks, bad := sqlTokens(stmt, postgres)
+	if bad != "" {
+		return ""
+	}
+	for _, t := range toks {
+		name := t.kind == 'w' || t.kind == 'q' || (t.kind == 's' && !postgres)
+		if name && isEngineTable(t.val) {
+			return fmt.Sprintf("%q reads the database file beneath its tables (pages, page statistics, the schema or engine settings): Memory SQL may not use it", t.val)
+		}
+	}
+	return ""
+}
+
+// The hint that goes with each kind of refusal. An agent refused for listing
+// its tables through sqlite_master needs different advice from one that named
+// a document table.
+const (
+	documentTablesHint = "Read and change documents, chunks and statements through the Document tool; keep this agent's own tables under other names."
+	engineTablesHint   = "Memory SQL cannot read the schema catalog, the pragma functions or the file's pages. Keep track of the tables this agent creates (for example in a table of your own), and query those tables by name."
+)
+
 // pgQueryTextFns are the core functions that run a query, or read a table,
 // named by a string the guard cannot see through, and set_config, which could
 // turn standard_conforming_strings off and so move where a literal ends.
@@ -148,9 +174,6 @@ func refuseDocumentTables(stmt string, postgres bool) string {
 		name := t.kind == 'w' || t.kind == 'q' || (t.kind == 's' && !postgres)
 		if name && documentTables[t.val] {
 			return fmt.Sprintf("%q is a document table or index, or a statistics catalog: Memory SQL may not read or change it", t.val)
-		}
-		if name && isEngineTable(t.val) {
-			return fmt.Sprintf("%q reads the database file beneath its tables (pages, page statistics, the schema or engine settings): Memory SQL may not use it; keep track of the tables you create yourself", t.val)
 		}
 		if !postgres {
 			continue
@@ -365,7 +388,7 @@ func plantedDocumentObject(ctx context.Context, m *sqlmem.Manager, checked *sync
 			continue
 		}
 		def, _ := row[2].(string)
-		if refuseDocumentTables(def, postgres) != "" || (row[0] == "function" && pgDynamicSQLRe.MatchString(def)) {
+		if refuseDocumentTables(def, postgres) != "" || refuseEngineTables(def, postgres) != "" || (row[0] == "function" && pgDynamicSQLRe.MatchString(def)) {
 			return fmt.Sprintf("%v %v", row[0], row[1]), nil
 		}
 	}
@@ -380,7 +403,11 @@ var leadingDropRe = regexp.MustCompile(`(?i)^\s*drop\b`)
 // planted-object check: it has passed the name check, so it cannot touch a
 // document table, and it is how an agent removes the object the check found.
 func (m *Memory) guardDocumentTables(ctx context.Context, op, scope, scopeID string, key sqlmem.ScopeKey, stmt string) (tools.Result, bool) {
-	why := refuseDocumentTables(stmt, m.SqlMem.Tier() == "postgres")
+	postgres := m.SqlMem.Tier() == "postgres"
+	why, hint := refuseEngineTables(stmt, postgres), engineTablesHint
+	if why == "" {
+		why, hint = refuseDocumentTables(stmt, postgres), documentTablesHint
+	}
 	if why == "" && !leadingDropRe.MatchString(stmt) {
 		obj, err := plantedDocumentObject(ctx, m.SqlMem, &m.docGuardChecked, key)
 		if err != nil {
@@ -395,6 +422,5 @@ func (m *Memory) guardDocumentTables(ctx context.Context, op, scope, scopeID str
 		return tools.Result{}, false
 	}
 	m.auditSql(ctx, op, scope, scopeID, stmt, 0, 0, errors.New(why))
-	return errBusiness(op+": document_tables_reserved: "+why,
-		"Read and change documents, chunks and statements through the Document tool; keep this agent's own tables under other names."), true
+	return errBusiness(op+": document_tables_reserved: "+why, hint), true
 }
