@@ -141,6 +141,9 @@ func (k ScopeKey) keyPath(root string) (string, error) {
 		return "", err
 	}
 	if k.Scope == runScope {
+		if err := noDotDot(id); err != nil {
+			return "", err
+		}
 		return filepath.Join(root, runScope, id+".db"), nil
 	}
 	tenant, err := sanitize(k.Tenant)
@@ -153,7 +156,24 @@ func (k ScopeKey) keyPath(root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := noDotDot(tenant, scope, id); err != nil {
+		return "", err
+	}
 	return filepath.Join(root, tenant, scope, id+".db"), nil
+}
+
+// noDotDot refuses a path segment holding "..". sanitize() keeps only
+// A-Z a-z 0-9 _ - (anything else is replaced and the original hashed), so a
+// sanitized segment can never hold one: this never refuses a real key. It
+// is written in the form static analysis recognises as a traversal guard,
+// so the guarantee is visible at the join rather than only inside sanitize.
+func noDotDot(segs ...string) error {
+	for _, s := range segs {
+		if strings.Contains(s, "..") {
+			return fmt.Errorf("sqlmem: scope path segment %q contains \"..\"", s)
+		}
+	}
+	return nil
 }
 
 // dsnPragmas mirrors driver_default.go openDB: WAL + foreign-key enforcement
