@@ -256,6 +256,39 @@ func ffmpegDefaults(argv []string) []string {
 	return out
 }
 
+// FFmpegDefaultsSkipped reports why ffmpegDefaults would leave template's
+// ffmpeg as written, or "" when they apply (or the template runs no ffmpeg,
+// or does not parse, which validation reports on its own). The defaults key
+// on the program being ffmpeg and on the template leaving the whitelist to
+// them, so a template that runs ffmpeg behind another program (nice,
+// timeout) or sets -protocol_whitelist itself gets neither.
+func FFmpegDefaultsSkipped(template string) string {
+	words, err := parseTemplate(template)
+	if err != nil {
+		return ""
+	}
+	argv := make([]string, len(words))
+	for i, w := range words {
+		for _, seg := range w {
+			if !seg.placeholder {
+				argv[i] += seg.text
+			}
+		}
+	}
+	if filepath.Base(argv[0]) == "ffmpeg" {
+		if slices.Contains(argv[1:], "-protocol_whitelist") {
+			return "the template sets -protocol_whitelist itself"
+		}
+		return ""
+	}
+	for _, a := range argv[1:] {
+		if filepath.Base(a) == "ffmpeg" {
+			return fmt.Sprintf("the template runs ffmpeg behind %s", filepath.Base(argv[0]))
+		}
+	}
+	return ""
+}
+
 // workDir fences dir under root. Only root — operator configuration — is
 // resolved through symlinks. The part of dir below it is derived lexically and
 // walked one component at a time with Lstat, refusing a link, so a link

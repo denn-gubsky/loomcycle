@@ -89,3 +89,25 @@ func TestTranscribeHelper_WrapperRunsTheHelperAsArgv(t *testing.T) {
 		t.Errorf("a missing wrapper program: err = %v, want it named", err)
 	}
 }
+
+// TestFFmpegDefaultsSkipped_NamesWhyTheyWereNotApplied: the defaults apply
+// only to a template whose program is ffmpeg and that leaves the whitelist to
+// them; a template that runs ffmpeg behind another program, or sets the
+// whitelist itself, is reported so the operator learns it at load.
+func TestFFmpegDefaultsSkipped_NamesWhyTheyWereNotApplied(t *testing.T) {
+	for tmpl, want := range map[string]string{
+		"ffmpeg -i {in} {out}":                               "",
+		"/usr/bin/ffmpeg -nostdin -i {in} {out}":             "",
+		"pdftoppm -r 150 -png {in} {out_prefix}":             "",
+		"nice -n 10 ffmpeg -i {in} {out}":                    "behind",
+		"timeout 60 /opt/bin/ffmpeg -i {in} {out}":           "behind",
+		"ffmpeg -protocol_whitelist file,http -i {in} {out}": "sets -protocol_whitelist",
+		"ffmpeg -i {in} -protocol_whitelist file,pipe {out}": "sets -protocol_whitelist",
+		"not a valid 'template":                              "",
+	} {
+		got := FFmpegDefaultsSkipped(tmpl)
+		if (want == "") != (got == "") || !strings.Contains(got, want) {
+			t.Errorf("%q: %q, want one containing %q", tmpl, got, want)
+		}
+	}
+}
