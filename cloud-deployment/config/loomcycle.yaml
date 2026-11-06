@@ -27,9 +27,16 @@ providers:
   # Dokploy app (faster-whisper, CPU), reached on the shared loomcycle_loomnet
   # network. Stock Ollama cannot serve Whisper (its /v1/audio/transcriptions
   # takes only its own audio-capable models, WAV only), so it is not used here.
+  # api_key_env is REQUIRED here even though speaches takes no key: without
+  # it the openai driver resolves a tenant's or user's stored OPENAI_API_KEY
+  # credential for this provider and would send that key, in clear, to
+  # speaches. Its own name means no vendor key ever matches. A provider
+  # naming api_key_env is enabled only when the variable is set, so
+  # .env.insecure sets it to a placeholder (speaches ignores the header).
   whisper-local:
     driver: openai
     base_url: http://speaches:8000/v1
+    api_key_env: LOOMCYCLE_WHISPER_API_KEY
 
 # ─── Models: name each model once, reference it by alias everywhere ───
 # kind: chat (default) | decision | embedder. A tagged alias used in the
