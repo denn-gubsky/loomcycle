@@ -281,7 +281,7 @@ describe("the Teams app package and configuration", () => {
   });
 
   const base = {
-    LOOMCYCLE_BASE_URL: "http://loomcycle:8787",
+    LOOMCYCLE_BASE_URL: "https://loomcycle:8787",
     LOOMCYCLE_TOKEN: "t",
     BRIDGE_AGENT: "helper",
     TEAMS_BRIDGE_ALLOWED_TENANTS: TENANT,
@@ -339,7 +339,7 @@ describe("teams bridge with voice on", () => {
     port = await freePort();
     bridge = createTeamsBridge(
       loadConfig({
-        LOOMCYCLE_BASE_URL: "http://loomcycle.test",
+        LOOMCYCLE_BASE_URL: "https://loomcycle.test",
         LOOMCYCLE_TOKEN: "admin-token",
         BRIDGE_AGENT: "helper",
         TEAMS_BRIDGE_ALLOWED_TENANTS: TENANT,
