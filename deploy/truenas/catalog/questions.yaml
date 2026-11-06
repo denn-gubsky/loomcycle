@@ -1317,6 +1317,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_EXTRACT_CONCURRENCY
+            label: LOOMCYCLE_EXTRACT_CONCURRENCY
+            description: '(example: 4)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN
             label: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN
             description: 'Children one run has alive at once, across every Agent op that starts one; a spawn past it is refused. Per run, not per tree: a child''s children count against the child. Default 32. (example: 32)'
