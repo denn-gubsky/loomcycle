@@ -539,6 +539,7 @@ func Run(t *testing.T, factory Factory) {
 		{"OAuthCodeInvalidateClientTouchesOnlyItsUnusedCodes", testOAuthCodeInvalidateClientTouchesOnlyItsUnusedCodes},
 		{"OAuthFamilyRoundTripsTouchesAndRevokesOnce", testOAuthFamilyRoundTripsTouchesAndRevokesOnce},
 		{"OAuthFamilyRevokedBeforeCreateCannotBeCreated", testOAuthFamilyRevokedBeforeCreateCannotBeCreated},
+		{"OAuthFamilyRevokeForReuseReportsTheFirstReuseOnce", testOAuthFamilyRevokeForReuseReportsTheFirstReuseOnce},
 		{"OAuthFamilyRevokeClientRevokesOnlyItsLiveFamilies", testOAuthFamilyRevokeClientRevokesOnlyItsLiveFamilies},
 		{"OAuthRefreshUseIsOnceAndReportsReuse", testOAuthRefreshUseIsOnceAndReportsReuse},
 		{"OAuthTokenRetireRetiresOnlyThatSignIn", testOAuthTokenRetireRetiresOnlyThatSignIn},

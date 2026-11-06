@@ -746,3 +746,50 @@ func TestOAuthReuseAlarm_IsRecordedOnceAndRepeatsAreObservations(t *testing.T) {
 		}
 	}
 }
+
+// A sign-in already ended for another reason (here the app revoked it) does
+// not demote the first replay of one of its tokens: that replay is still the
+// alarm, written at once; only its repeats are observations.
+func TestOAuthReuseAlarm_AFamilyEndedForAnotherReasonStillAlarmsOnce(t *testing.T) {
+	f := newAppFixture(t, "tenant")
+	_, rt1 := f.signIn(t)
+	rec, body := f.refresh(t, rt1)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("refresh = %d", rec.Code)
+	}
+	rt2 := body["refresh_token"].(string)
+	if rec, _ := f.post(t, "/v1/_oauth/revoke", url.Values{"token": {rt2}, "client_id": {"board"}}); rec.Code != http.StatusOK {
+		t.Fatalf("revoke = %d", rec.Code)
+	}
+	for range 3 {
+		_, _ = f.refresh(t, rt1) // the used token, replayed
+	}
+	if n := countEvents(f.sink, "oauth_refresh_reuse"); n != 1 {
+		t.Errorf("oauth_refresh_reuse recorded %d times after an app revoke, want the first replay once", n)
+	}
+	if n := countEvents(f.sink, "oauth_refresh_reuse_repeat"); n != 2 {
+		t.Errorf("oauth_refresh_reuse_repeat recorded %d times, want 2", n)
+	}
+}
+
+// A refresh token presented by another client means it leaked: the sign-in
+// it belongs to is ended, and that ending is an alarm written at once —
+// once; a stale token presented again only counts as a refused request.
+func TestOAuthClientMismatch_EndsTheSignInWithOneAlarm(t *testing.T) {
+	f := newAppFixture(t, "tenant")
+	other, _ := config.ResolveAppClient("test", "other", config.AuthClientConfig{Kind: "public", RedirectURIs: []string{appTestRedirect}})
+	f.s.cfg().ResolvedAuth.Clients = append(f.s.cfg().ResolvedAuth.Clients, other)
+	_, rt := f.signIn(t)
+	for range 3 {
+		rec, _ := f.post(t, "/v1/_oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rt}, "client_id": {"other"}})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("a foreign client's refresh = %d", rec.Code)
+		}
+	}
+	if n := countEvents(f.sink, "oauth_client_mismatch"); n != 1 {
+		t.Errorf("oauth_client_mismatch recorded %d times, want once", n)
+	}
+	if auditchain.IsObservation("oauth_client_mismatch") {
+		t.Error("oauth_client_mismatch is queued; ending a sign-in must be written at once")
+	}
+}

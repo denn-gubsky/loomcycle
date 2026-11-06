@@ -215,6 +215,56 @@ func OAuthFamilyRevoke(ctx context.Context, db DB, familyID, reason string, at t
 	return revoked, err
 }
 
+// OAuthFamilyRevokeForReuse revokes a family because one of its codes or
+// refresh tokens was presented again, and reports whether this is the first
+// reuse recorded on it. A live family is revoked with reason; one already
+// ended for another reason keeps that reason and gains ";"+reason; an
+// unknown one gets a revoked tombstone. A family already marked with a reuse
+// reports false, so a caller raises the alarm once however often the stale
+// token is replayed. One transaction, so two replays at once cannot both be
+// first.
+func OAuthFamilyRevokeForReuse(ctx context.Context, db DB, familyID, reason string, at time.Time) (bool, error) {
+	if familyID == "" {
+		return false, errors.New("oauth_family revoke for reuse: family_id required")
+	}
+	var first bool
+	err := db.InTx(ctx, func(tx Querier) error {
+		t := tx.Dialect().TimeArg(at)
+		n, err := tx.Exec(ctx, `UPDATE oauth_refresh_families SET revoked_at = ?, revoke_reason = ?
+			WHERE family_id = ? AND revoked_at IS NULL`, t, reason, familyID)
+		if err != nil {
+			return err
+		}
+		if n == 1 {
+			first = true
+			return nil
+		}
+		n, err = tx.Exec(ctx, `UPDATE oauth_refresh_families SET revoke_reason = revoke_reason || ';' || ?
+			WHERE family_id = ? AND revoked_at IS NOT NULL
+			AND revoke_reason NOT IN (?, ?) AND revoke_reason NOT LIKE ? AND revoke_reason NOT LIKE ?`,
+			reason, familyID, OAuthReuseCode, OAuthReuseRefresh, "%;"+OAuthReuseCode, "%;"+OAuthReuseRefresh)
+		if err != nil {
+			return err
+		}
+		if n == 1 {
+			first = true
+			return nil
+		}
+		n, err = tx.Exec(ctx, `INSERT INTO oauth_refresh_families (family_id, created_at, last_used_at, idle_expires_at,
+			absolute_expires_at, revoked_at, revoke_reason) VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (family_id) DO NOTHING`, familyID, t, t, t, t, t, reason)
+		first = n == 1
+		return err
+	})
+	return first, err
+}
+
+// The revoke reasons that mark a family as reused (OAuthFamilyRevokeForReuse).
+const (
+	OAuthReuseCode    = "code_reuse"
+	OAuthReuseRefresh = "refresh_reuse"
+)
+
 // OAuthFamilyRevokeClient revokes every live family of clientID.
 func OAuthFamilyRevokeClient(ctx context.Context, db DB, clientID, reason string, at time.Time) ([]string, error) {
 	return revokeFamiliesWhere(ctx, db, `client_id = ?`, []any{clientID}, reason, at)
