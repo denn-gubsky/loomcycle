@@ -6,3 +6,7 @@ export { DEFAULT_PORT, loadConfig } from "./config.js";
 export type { TeamsConfig } from "./config.js";
 export { conversationSubject, groupsOf, identify, NOT_AVAILABLE_TEXT, personSub, subjectFor, tenantGroup, uninstalledSub } from "./identity.js";
 export type { ActivityIdentityFields, RefGroupFields } from "./identity.js";
+export { routeMessage } from "./inbound.js";
+export type { MessageFields, MessageRouter } from "./inbound.js";
+export { AUDIO_FILE_TYPES, audioFileOf, DEFAULT_FILE_HOSTS, FILE_DOWNLOAD_INFO, hostAllowed, TeamsFileError, teamsVoicePort } from "./voice.js";
+export type { TeamsAttachment, TeamsAudioRef, TeamsVoicePortOptions } from "./voice.js";
