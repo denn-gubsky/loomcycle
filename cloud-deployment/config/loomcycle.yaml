@@ -23,6 +23,13 @@ providers:
     # this lane. It replaces the two blocks' own max_concurrent, which are gone.
     lanes:
       decision: { max_concurrent: 2 }
+  # Speech-to-text: the speaches container of the separate loomcycle-speech
+  # Dokploy app (faster-whisper, CPU), reached on the shared loomcycle_loomnet
+  # network. Stock Ollama cannot serve Whisper (its /v1/audio/transcriptions
+  # takes only its own audio-capable models, WAV only), so it is not used here.
+  whisper-local:
+    driver: openai
+    base_url: http://speaches:8000/v1
 
 # ─── Models: name each model once, reference it by alias everywhere ───
 # kind: chat (default) | decision | embedder. A tagged alias used in the
@@ -53,6 +60,9 @@ models:
   local-embedding: { provider: ollama-local, model: bge-m3:latest, kind: embedder }
   decide:      { provider: ollama-local, model: nimble, kind: decision }
   decide-deep: { provider: ollama-local, model: clef,   kind: decision }
+  # large-v3-turbo int8: the CPU choice. speaches must have it downloaded
+  # (the speech app's PRELOAD_MODELS), or every transcription fails.
+  whisper: { provider: whisper-local, model: deepdml/faster-whisper-large-v3-turbo-ct2, kind: transcriber }
 
 timeout_scaling:
   models:
@@ -128,6 +138,25 @@ memory:
     chat:     { model: local-medium, effort: low, timeout_ms: 300000 }
     min_probability: 0.6
     min_margin: 0.2
+
+# ─── Transcription: speech-to-text ───────────────────────────────────
+# File op=transcribe (and extract on a recording). No media.command: the
+# runtime image (loomcycle-browser) is distroless and has no ffmpeg, so a
+# recording goes to whisper whole, and only when it is in a format whisper
+# reads (mp3, mp4, m4a, ogg, wav, webm), under 25 MB and within
+# max_minutes_per_call; anything else is refused, never truncated. Language
+# is the default (uk) for the bridges' voice notes; a call may name another.
+# The whisper host is CPU-only: one request may take minutes, bounded by
+# timeout_s.
+transcription:
+  stt:
+    engine: openai-audio
+    provider: whisper-local
+    model: whisper
+    language: uk
+    max_minutes_per_call: 60
+    max_minutes_per_run: 180
+    timeout_s: 1800
 
 # ─── Decision models (a change here needs a restart) ──────────────────
 decision:
