@@ -249,6 +249,7 @@ func (b *boot) openSQLMemory() {
 			QuotaBytes:         cfg.Storage.SqlMemQuotaBytes,
 			StatementTimeoutMS: cfg.Storage.SqlMemStatementTimeoutMS,
 			MaxRows:            cfg.Storage.SqlMemMaxRows,
+			MaxResultBytes:     cfg.Storage.SqlMemMaxResultBytes,
 			TxnTimeoutMS:       cfg.Storage.SqlMemTxnTimeoutMS,
 			MaxOpenTxns:        cfg.Storage.SqlMemMaxOpenTxns,
 			MaxTxnDepth:        cfg.Storage.SqlMemMaxTxnDepth,
@@ -312,7 +313,7 @@ func (b *boot) openSQLMemory() {
 		// store closer so an in-flight finish-path drop still has a live handle.
 		b.addCleanup(func() { _ = sqlMemMgr.Close() })
 		slog.Info("sqlmem: SQL Memory enabled", "tier", sqlMemTier, "quota_bytes", cfg.Storage.SqlMemQuotaBytes,
-			"max_rows", cfg.Storage.SqlMemMaxRows, "timeout_ms", cfg.Storage.SqlMemStatementTimeoutMS,
+			"max_rows", cfg.Storage.SqlMemMaxRows, "max_result_bytes", cfg.Storage.SqlMemMaxResultBytes, "timeout_ms", cfg.Storage.SqlMemStatementTimeoutMS,
 			"audit", cfg.Storage.SqlMemAuditMode)
 	}
 

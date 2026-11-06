@@ -569,6 +569,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES
+            label: LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES
+            description: '(example: 8388608)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS
             label: LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS
             description: '(example: 5000)'

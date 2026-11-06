@@ -429,6 +429,12 @@ type StorageConfig struct {
 	// and the result is flagged truncated). Default 10000. Env:
 	// LOOMCYCLE_SQLMEM_MAX_ROWS.
 	SqlMemMaxRows int `yaml:"sqlmem_max_rows"`
+	// SqlMemMaxResultBytes caps the size of what an agent's own SQL returns
+	// (Memory sql_query, Document query_chunks sql): rows stop before the
+	// budget and the result is flagged truncated; a single row over it is
+	// refused. Default 8 MiB; zero or negative takes the default — there is no
+	// "unlimited". Env: LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES.
+	SqlMemMaxResultBytes int `yaml:"sqlmem_max_result_bytes"`
 	// SqlMemAuditMode controls how much of an audited statement is recorded:
 	// "full" (the default) records the redacted statement text; "metadata"
 	// records only op/scope/row counts, never the statement. Env:
@@ -5641,6 +5647,11 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 			cfg.Storage.SqlMemMaxRows = n
 		}
 	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Storage.SqlMemMaxResultBytes = n
+		}
+	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_AUDIT_MODE"); v != "" {
 		cfg.Storage.SqlMemAuditMode = v
 	}
@@ -5698,6 +5709,12 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	}
 	if cfg.Storage.SqlMemMaxRows == 0 {
 		cfg.Storage.SqlMemMaxRows = 10000
+	}
+	// The same value as sqlmem.DefaultMaxResultBytes (which also applies when a
+	// Manager is built without it); config does not import sqlmem for one
+	// constant. A non-positive yaml value takes the default, never "no cap".
+	if cfg.Storage.SqlMemMaxResultBytes <= 0 {
+		cfg.Storage.SqlMemMaxResultBytes = 8 << 20
 	}
 	if cfg.Storage.SqlMemAuditMode == "" {
 		cfg.Storage.SqlMemAuditMode = "full"

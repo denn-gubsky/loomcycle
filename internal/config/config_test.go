@@ -600,8 +600,43 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 	if cfg.Storage.SqlMemMaxRows != 10000 {
 		t.Errorf("SqlMemMaxRows = %d, want 10000", cfg.Storage.SqlMemMaxRows)
 	}
+	if cfg.Storage.SqlMemMaxResultBytes != 8<<20 {
+		t.Errorf("SqlMemMaxResultBytes = %d, want 8 MiB", cfg.Storage.SqlMemMaxResultBytes)
+	}
 	if cfg.Storage.SqlMemAuditMode != "full" {
 		t.Errorf("SqlMemAuditMode = %q, want full", cfg.Storage.SqlMemAuditMode)
+	}
+}
+
+// TestSqlMem_MaxResultBytesHasNoOff: the env and yaml set the result byte
+// budget, and a zero or negative value takes the default rather than turning
+// the cap off.
+func TestSqlMem_MaxResultBytesHasNoOff(t *testing.T) {
+	load := func(t *testing.T, yamlExtra string) int {
+		t.Helper()
+		yamlPath := filepath.Join(t.TempDir(), "c.yaml")
+		if err := os.WriteFile(yamlPath, []byte("defaults: { provider: anthropic, model: claude-sonnet-4-6 }\n"+yamlExtra), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(yamlPath)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return cfg.Storage.SqlMemMaxResultBytes
+	}
+	if got := load(t, "storage: { sqlmem_max_result_bytes: 1048576 }\n"); got != 1<<20 {
+		t.Errorf("yaml 1 MiB: got %d", got)
+	}
+	if got := load(t, "storage: { sqlmem_max_result_bytes: -1 }\n"); got != 8<<20 {
+		t.Errorf("yaml -1: got %d, want the 8 MiB default", got)
+	}
+	t.Setenv("LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES", "0")
+	if got := load(t, ""); got != 8<<20 {
+		t.Errorf("env 0: got %d, want the 8 MiB default", got)
+	}
+	t.Setenv("LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES", "2097152")
+	if got := load(t, ""); got != 2<<20 {
+		t.Errorf("env 2 MiB: got %d", got)
 	}
 }
 
