@@ -306,7 +306,7 @@ const SECRET = "test-signing-secret";
 
 function adapterWith(env: Record<string, string>, slack: FakeSlack, logger: Logger = silentLogger) {
   const cfg = loadConfig({
-    LOOMCYCLE_BASE_URL: "http://loomcycle.test",
+    LOOMCYCLE_BASE_URL: "https://loomcycle.test",
     LOOMCYCLE_TOKEN: "admin-token",
     BRIDGE_AGENT: "helper",
     SLACK_BOT_TOKEN: "xoxb-test",
