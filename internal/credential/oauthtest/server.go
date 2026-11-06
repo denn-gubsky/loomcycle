@@ -51,6 +51,9 @@ type Server struct {
 	RequireResource bool
 	MetaOverride    func(map[string]any)
 	Interval        int // the device poll interval it names (default 5)
+	// IssueClientSecret answers a registration with a client_secret too (it
+	// is not checked at the token endpoint).
+	IssueClientSecret bool
 	// Resource serves the protected resource itself (at Resource()); nil
 	// answers 404.
 	ResourceHandler http.Handler
@@ -67,6 +70,9 @@ type Server struct {
 	DevicePolls   int
 	Registrations []map[string]any
 	TokenForms    []map[string][]string
+
+	// IssuedClientSecrets: with IssueClientSecret, one per registration.
+	IssuedClientSecrets []string
 
 	calls map[string]*atomic.Int64
 }
@@ -179,7 +185,13 @@ func (f *Server) register(w http.ResponseWriter, r *http.Request) {
 	}
 	id := randTok("client-")
 	f.clients[id] = true
-	WriteJSON(w, 201, map[string]any{"client_id": id})
+	answer := map[string]any{"client_id": id}
+	if f.IssueClientSecret {
+		secret := randTok("csecret-")
+		f.IssuedClientSecrets = append(f.IssuedClientSecrets, secret)
+		answer["client_secret"] = secret
+	}
+	WriteJSON(w, 201, answer)
 }
 
 func (f *Server) device(w http.ResponseWriter, r *http.Request) {
@@ -304,13 +316,15 @@ func (f *Server) userinfo(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, 200, map[string]any{"sub": "u-1", "email": "someone@example.test"})
 }
 
-// Secrets returns every token, device code and client id the server issued.
+// Secrets returns every token, device code and client secret the server
+// issued.
 func (f *Server) Secrets() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := append([]string{}, f.IssuedAccess...)
 	out = append(out, f.IssuedRefresh...)
-	return append(out, f.IssuedDevice...)
+	out = append(out, f.IssuedDevice...)
+	return append(out, f.IssuedClientSecrets...)
 }
 
 // LastAccess is the access token issued last.

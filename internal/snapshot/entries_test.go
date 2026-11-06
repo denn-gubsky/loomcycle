@@ -106,7 +106,7 @@ func TestSnapshotEntries_NeverEmbedStoreRows(t *testing.T) {
 // person adding it must decide it is safe in a PORTABLE file that leaves this
 // deployment. Do not add a key without that decision.
 var pinnedEntryKeys = map[string][]string{
-	"Sections": {"users", "token_limits", "acl", "agent_defs", "agent_def_active", "skill_defs", "skill_def_active", "team_defs",
+	"Sections": {"users", "token_limits", "acl", "oauth_credentials", "agent_defs", "agent_def_active", "skill_defs", "skill_def_active", "team_defs",
 		"team_def_active", "hook_defs", "hook_def_active", "mcp_server_defs", "mcp_server_def_active", "volume_defs",
 		"memory_backend_defs", "memory_backend_def_active", "document_source_defs", "document_source_def_active",
 		"a2a_agent_defs", "a2a_agent_def_active", "a2a_server_card_defs", "a2a_server_card_def_active",
@@ -151,6 +151,13 @@ var pinnedEntryKeys = map[string][]string{
 	// re-validates the rules and computes both. A binding names a token
 	// DEFINITION id, never a bearer, and nothing here may ever carry one.
 	"ACLSection": {"version", "lists", "groups", "members", "bindings"},
+	// RFC GB: an OAuth credential's config, URL restriction and key. Never
+	// a token, a device code, a client registration or a status time —
+	// those are sealed or imply a grant, and the target connects again.
+	"OAuthCredentialsSection": {"version", "entries"},
+	"OAuthCredentialEntry":    {"tenant_id", "scope", "scope_id", "name", "config", "allowed_urls", "had_grant"},
+	"OAuthConfigEntry":        {"resource", "issuer", "client", "scopes"},
+	"OAuthClientConfigEntry":  {"registration", "token_endpoint_auth"},
 	"ACLListEntry": {"tenant_id", "name", "version", "rules", "description", "created_at", "updated_at",
 		"created_by", "retired_at"},
 	"ACLGroupEntry":  {"tenant_id", "name", "description", "external_id", "created_at", "updated_at", "created_by"},

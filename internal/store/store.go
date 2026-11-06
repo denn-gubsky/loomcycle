@@ -4188,6 +4188,11 @@ type CredentialDefStore interface {
 	// row holds something else; *ErrNotFound when there is no row. It never
 	// creates one.
 	CredentialDefPutIf(ctx context.Context, row credentialdef.Row, prev json.RawMessage) (bool, error)
+	// CredentialDefListAll returns every row of every tenant and scope,
+	// ordered by (tenant_id, scope, scope_id, name). For the snapshot
+	// capture only, which keeps an OAuth credential's config and drops
+	// everything else — sealed definitions must not leave the caller.
+	CredentialDefListAll(ctx context.Context) ([]credentialdef.Row, error)
 }
 
 // DirentStore persists the Path VFS naming layer.

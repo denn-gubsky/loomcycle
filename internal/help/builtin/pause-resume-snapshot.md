@@ -195,6 +195,18 @@ another instance such a binding applies to nobody until it is re-bound
 to a token minted there. Lists declared in the config file are not in a
 snapshot: they come from the target's own config.
 
+### OAuth credentials
+
+Stored credentials never travel, with one partial exception: an **OAuth
+credential**'s config (resource, issuer, scopes, client settings), its
+`allowed_urls` and its key travel in `oauth_credentials`. Its tokens,
+device code, client registration (client id and secret) and status
+times do not. It restores as `needs_reauth` (`pending_connect` if it was never connected), so its
+owner only connects it again with `oauth_connect_start`; a config this
+host would refuse is skipped, and a credential of the same name already
+here is left alone, each with a warning. `oauth_credentials_restored`
+counts them. The section is present only when there is at least one.
+
 ### Definitions: agents, skills, teams, hooks, MCP servers, channels
 
 **Every restored definition is re-validated** with the rules an author

@@ -68,10 +68,20 @@ func (s *Store) CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, 
 }
 
 func (s *Store) CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]credentialdef.Row, error) {
-	rows, err := s.db.QueryContext(ctx,
+	return s.credentialDefQuery(ctx,
 		`SELECT tenant_id, scope, scope_id, name, backend, definition, expires_at, created_at, updated_at
 		 FROM credential_defs WHERE tenant_id = ? AND scope = ? AND scope_id = ? ORDER BY name`,
 		tenantID, scope, scopeID)
+}
+
+func (s *Store) CredentialDefListAll(ctx context.Context) ([]credentialdef.Row, error) {
+	return s.credentialDefQuery(ctx,
+		`SELECT tenant_id, scope, scope_id, name, backend, definition, expires_at, created_at, updated_at
+		 FROM credential_defs ORDER BY tenant_id, scope, scope_id, name`)
+}
+
+func (s *Store) credentialDefQuery(ctx context.Context, query string, args ...any) ([]credentialdef.Row, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

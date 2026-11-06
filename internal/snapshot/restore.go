@@ -147,6 +147,7 @@ type RestoreOptions struct {
 type RestoreResult struct {
 	UsersRestored                  int      `json:"users_restored"`
 	TokenLimitsRestored            int      `json:"token_limits_restored"`
+	OAuthCredentialsRestored       int      `json:"oauth_credentials_restored,omitempty"`
 	ACLListsRestored               int      `json:"acl_lists_restored"`
 	ACLGroupsRestored              int      `json:"acl_groups_restored"`
 	ACLMembersRestored             int      `json:"acl_members_restored"`
@@ -384,6 +385,15 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			return result, err
 		}
 		restoreACL(ctx, s, &sec, &result)
+	}
+	// oauth_credentials: before the definitions that name them, so the
+	// missing-credential scan finds each one, not connected.
+	if rawSection, ok := sections[migrations.SectionOAuthCredentials]; ok {
+		var sec OAuthCredentialsSection
+		if err := decodeWithMigration(migrations.SectionOAuthCredentials, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreOAuthCredentials(ctx, s, &sec, &result)
 	}
 
 	// The definitions this restore brings back that name credentials; the

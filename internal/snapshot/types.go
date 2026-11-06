@@ -76,13 +76,18 @@ type Sections struct {
 	// or re-queued run does, because those runs are re-narrowed by their
 	// caller's CURRENT set — a set the restore had not brought back yet would
 	// resume them on the target's rows instead of the source's.
-	ACL            ACLSection            `json:"acl"`
-	AgentDefs      AgentDefsSection      `json:"agent_defs"`
-	AgentDefActive AgentDefActiveSection `json:"agent_def_active"`
-	SkillDefs      SkillDefsSection      `json:"skill_defs"`
-	SkillDefActive SkillDefActiveSection `json:"skill_def_active"`
-	TeamDefs       TeamDefsSection       `json:"team_defs"`
-	TeamDefActive  TeamDefActiveSection  `json:"team_def_active"`
+	ACL ACLSection `json:"acl"`
+	// OAuthCredentials is the config of every OAuth credential (RFC GB), and
+	// nothing sealed: restored without a grant, before the definitions that
+	// name them. Present only when there is one (omitempty), so a capture
+	// without any is byte-identical to one taken before the section existed.
+	OAuthCredentials *OAuthCredentialsSection `json:"oauth_credentials,omitempty"`
+	AgentDefs        AgentDefsSection         `json:"agent_defs"`
+	AgentDefActive   AgentDefActiveSection    `json:"agent_def_active"`
+	SkillDefs        SkillDefsSection         `json:"skill_defs"`
+	SkillDefActive   SkillDefActiveSection    `json:"skill_def_active"`
+	TeamDefs         TeamDefsSection          `json:"team_defs"`
+	TeamDefActive    TeamDefActiveSection     `json:"team_def_active"`
 	// HookDefs travel with the definitions that name them, so a restored
 	// agent or team is gated the way it was.
 	HookDefs           HookDefsSection           `json:"hook_defs"`

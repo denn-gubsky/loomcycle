@@ -248,40 +248,46 @@ type plantedRow struct {
 
 // Distinctive markers: no fixture elsewhere spells them, so a hit is this row.
 const (
-	markCredName    = "dp0mark-credential-name-unreferenced"
-	markCredCipher  = "dp0mark-credential-ciphertext"
-	markTokName     = "dp0mark-operator-token-name"
-	markTokSubject  = "dp0mark-operator-token-subject"
-	markTokHash     = "dp0mark-operator-token-hash"
-	markSchedCred   = "dp0mark-schedule-literal-credential"
-	markSchedRef    = "$cred:dp0mark-schedule-reference"
-	markHookCred    = "dp0mark-webhook-literal-credential"
-	markEnvResolved = "dp0mark-resolved-env-value"
-	markProvider    = "dp0mark-usage-provider"
-	markModel       = "dp0mark-usage-model"
-	markUsageRun    = "dp0mark-usage-run"
-	markUsageTenant = "dp0mark-usage-tenant"
-	markUser        = "dp0mark-user-subject"
-	markLimitUser   = "dp0mark-limit-subject"
-	markCarryTenant = "dp0mark-carry-tenant"
-	markVolumePath  = "/dp0mark-volume-host-path"
-	markPending     = "dp0mark-pending-undrained-content"
-	markDrained     = "dp0mark-pending-drained-content"
-	markLeaseOwner  = "dp0mark-consolidation-lease-owner"
-	markDirent      = "dp0mark-dirent-name"
-	markBootTenant  = "dp0mark-bootstrap-tenant"
-	markLogin       = "dp0mark-gate-login"
-	markPHC         = "dp0mark-password-phc"
-	markTOTPSeal    = "dp0mark-totp-sealed"
-	markRecovery    = "dp0mark-recovery-code-hash"
-	markInviteCode  = "dp0mark-invite-code-hash"
-	markResetCode   = "dp0mark-reset-code-hash"
-	markThrottleKey = "dp0mark-throttle-key"
-	markACLList     = "dp0mark-acl-list"
-	markGroup       = "dp0mark-group"
-	markMember      = "dp0mark-group-member"
-	markBinding     = "aclb_dp0mark"
-	plantedEnvName  = "LOOMCYCLE_DP0_PLANTED_KEY"
+	markCredName   = "dp0mark-credential-name-unreferenced"
+	markCredCipher = "dp0mark-credential-ciphertext"
+	// An OAuth credential: name and resource host travel, nothing else.
+	markOAuthName    = "dp0mark-oauth-credential-name"
+	markOAuthHost    = "dp0mark-oauth-resource.example.test"
+	markOAuthCipher  = "dp0mark-oauth-sealed-grant"
+	markOAuthAccount = "dp0mark-oauth-connected-as"
+	markOAuthHolder  = "dp0mark-oauth-lease-holder"
+	markTokName      = "dp0mark-operator-token-name"
+	markTokSubject   = "dp0mark-operator-token-subject"
+	markTokHash      = "dp0mark-operator-token-hash"
+	markSchedCred    = "dp0mark-schedule-literal-credential"
+	markSchedRef     = "$cred:dp0mark-schedule-reference"
+	markHookCred     = "dp0mark-webhook-literal-credential"
+	markEnvResolved  = "dp0mark-resolved-env-value"
+	markProvider     = "dp0mark-usage-provider"
+	markModel        = "dp0mark-usage-model"
+	markUsageRun     = "dp0mark-usage-run"
+	markUsageTenant  = "dp0mark-usage-tenant"
+	markUser         = "dp0mark-user-subject"
+	markLimitUser    = "dp0mark-limit-subject"
+	markCarryTenant  = "dp0mark-carry-tenant"
+	markVolumePath   = "/dp0mark-volume-host-path"
+	markPending      = "dp0mark-pending-undrained-content"
+	markDrained      = "dp0mark-pending-drained-content"
+	markLeaseOwner   = "dp0mark-consolidation-lease-owner"
+	markDirent       = "dp0mark-dirent-name"
+	markBootTenant   = "dp0mark-bootstrap-tenant"
+	markLogin        = "dp0mark-gate-login"
+	markPHC          = "dp0mark-password-phc"
+	markTOTPSeal     = "dp0mark-totp-sealed"
+	markRecovery     = "dp0mark-recovery-code-hash"
+	markInviteCode   = "dp0mark-invite-code-hash"
+	markResetCode    = "dp0mark-reset-code-hash"
+	markThrottleKey  = "dp0mark-throttle-key"
+	markACLList      = "dp0mark-acl-list"
+	markGroup        = "dp0mark-group"
+	markMember       = "dp0mark-group-member"
+	markBinding      = "aclb_dp0mark"
+	plantedEnvName   = "LOOMCYCLE_DP0_PLANTED_KEY"
 )
 
 func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
@@ -301,6 +307,17 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 		TenantID: "acme", Scope: "tenant", Name: markCredName, Backend: "inline",
 		Definition: json.RawMessage(`{"value":{"key_id":"k1","nonce":"bm9uY2U=","ciphertext":"` + markCredCipher + `"}}`),
 		CreatedAt:  now, UpdatedAt: now,
+	})
+	must("credential_defs", err)
+	// An OAuth credential (RFC GB): its config travels, its sealed secret and
+	// its status times never do.
+	_, err = s.CredentialDefPut(ctx, credentialdef.Row{
+		TenantID: "acme", Scope: "tenant", Name: markOAuthName, Backend: "inline",
+		Definition: json.RawMessage(`{"usage":"oauth","config":{"resource":"https://` + markOAuthHost + `/mcp","client":{"registration":"dynamic","token_endpoint_auth":"none"}},` +
+			`"allowed_urls":["https://` + markOAuthHost + `/mcp"],"status":{"state":"connected","connected_as":"` + markOAuthAccount + `","connected_at":"2026-01-01T00:00:00Z"},` +
+			`"state_version":3,"lease":{"holder":"` + markOAuthHolder + `","purpose":"refresh","until":"2026-01-01T00:00:00Z"},` +
+			`"secret":{"key_id":"k1","nonce":"bm9uY2U=","ciphertext":"` + markOAuthCipher + `"}}`),
+		CreatedAt: now, UpdatedAt: now,
 	})
 	must("credential_defs", err)
 
@@ -416,6 +433,8 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 
 	return []plantedRow{
 		{table: "credential_defs", absent: []string{markCredName, markCredCipher}},
+		{table: "credential_defs", present: []string{markOAuthName, markOAuthHost},
+			absent: []string{markOAuthCipher, markOAuthAccount, markOAuthHolder, "connected_at"}},
 		{table: "operator_token_defs", absent: []string{markTokName, markTokSubject, markTokHash, "otd_dp0mark"}},
 		{table: "schedule_defs", present: []string{"dp0mark-schedule", markSchedRef, `"stripped_credentials":["GITHUB_TOKEN"]`},
 			absent: []string{markSchedCred}},

@@ -145,6 +145,9 @@ func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	if err := captureACL(ctx, s, &envelope.Sections.ACL); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := captureOAuthCredentials(ctx, s, &envelope.Sections.OAuthCredentials); err != nil {
+		return nil, nil, nil, err
+	}
 	if err := captureAgentDefs(ctx, s, &envelope.Sections.AgentDefs); err != nil {
 		return nil, nil, nil, err
 	}
