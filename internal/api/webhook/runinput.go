@@ -51,15 +51,15 @@ func collectPrefixed(fields map[string]string, prefix string) map[string]string 
 
 // payloadCredentialRef returns the name of a user_credentials.<name> value
 // projected from the payload that is, or holds, a stored-credential
-// reference ($cred:<name>, $ghapp:<name>), and true; "" and false when there
-// is none. Only a definition's author may name a stored credential: the MCP
-// client and the A2A tool resolve a reference wherever it appears in a
-// credential, so a sender that put one in its body would choose which of the
-// tenant's secrets is sent.
+// reference ($cred:<name>, $ghapp:<name>, $oauth:<name>), and true; "" and
+// false when there is none. Only a definition's author may name a stored
+// credential: the MCP client and the A2A tool resolve a reference wherever
+// it appears in a credential, so a sender that put one in its body would
+// choose which of the tenant's secrets is sent.
 func payloadCredentialRef(fields map[string]string) (string, bool) {
 	var names []string
 	for name, val := range collectPrefixed(fields, credentialsPrefix) {
-		if len(credential.RefNames(val)) > 0 || len(credential.GHAppRefNames(val)) > 0 {
+		if credential.HasAnyRef(val) {
 			names = append(names, name)
 		}
 	}

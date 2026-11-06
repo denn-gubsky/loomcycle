@@ -1259,7 +1259,7 @@ func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 	}, true
 }
 
-// refSubstituter resolves the references of one syntax ($cred:, $ghapp:) in s
+// refSubstituter resolves the references of one syntax ($cred:, $ghapp:, $oauth:) in s
 // for an identity and a destination.
 type refSubstituter interface {
 	Substitute(ctx context.Context, tenantID, agentName, userID, s, targetURL string, register func(string)) (string, []string, error)
@@ -1290,17 +1290,52 @@ func substituteForRun(ctx context.Context, s, targetURL string, register func(ct
 	return s, unresolved, nil
 }
 
+// newCredSubstitute builds the resolver of stored-credential references in an
+// outbound header or env value, for the run identity on the request's ctx.
+// ghApp may be nil (no $ghapp: minting).
+func newCredSubstitute(engine *credential.Engine, register func(ctx context.Context, tenantID, value string), ghApp refSubstituter) func(ctx context.Context, s, targetURL string) (string, []string, error) {
+	// $oauth: first: a $cred: value that itself spells an $oauth: reference
+	// is not expanded in the same pass (as $ghapp: goes before $cred:).
+	subs := []refSubstituter{oauthUnavailable{}}
+	if ghApp != nil {
+		subs = append(subs, ghApp)
+	}
+	subs = append(subs, engine)
+	return func(ctx context.Context, s, targetURL string) (string, []string, error) {
+		// Fast-path: when nothing can resolve (no KEK / no external backend) skip
+		// the store reads. Report every reference as unresolved so the caller
+		// still drops it (never send a literal token downstream).
+		if !engine.CanResolve() {
+			return s, credential.AnyRefNames(s), nil
+		}
+		// $oauth:, $ghapp: (mint an installation token), then $cred: (durable
+		// secret). The syntaxes don't overlap; each drops its own header on an
+		// unresolved/failed ref, and a mint/resolve error aborts so no literal
+		// token is sent.
+		return substituteForRun(ctx, s, targetURL, register, subs...)
+	}
+}
+
 // lateCredSubstitute returns a resolver that reads *ref when a request is
 // built, so a client made before main assigns it still uses it. Until then it
-// reports every $cred: and $ghapp: reference unresolved — the client drops or
+// reports every $cred:, $ghapp: and $oauth: reference unresolved — the client drops or
 // refuses the header — so a reference never goes out as written.
 func lateCredSubstitute(ref *func(ctx context.Context, s, targetURL string) (string, []string, error)) func(ctx context.Context, s, targetURL string) (string, []string, error) {
 	return func(ctx context.Context, s, targetURL string) (string, []string, error) {
 		if f := *ref; f != nil {
 			return f(ctx, s, targetURL)
 		}
-		return s, append(credential.RefNames(s), credential.GHAppRefNames(s)...), nil
+		return s, credential.AnyRefNames(s), nil
 	}
+}
+
+// oauthUnavailable reports every $oauth: reference unresolved: nothing
+// resolves one yet, and the header that names one must be dropped, not sent
+// with the reference in it.
+type oauthUnavailable struct{}
+
+func (oauthUnavailable) Substitute(_ context.Context, _, _, _, s, _ string, _ func(string)) (string, []string, error) {
+	return s, credential.OAuthRefNames(s), nil
 }
 
 // mcpResultPolicy resolves a server's binary_results (RFC FF) the way

@@ -70,3 +70,17 @@ func TestParseRef_AcceptsOnlyAWholeReference(t *testing.T) {
 		}
 	}
 }
+
+// AnyRefNames and HasAnyRef cover every syntax, and only the exact grammar:
+// a near miss is not a reference.
+func TestAnyRefNames_CoversEverySyntax(t *testing.T) {
+	got := AnyRefNames("Bearer $cred:a $ghapp:b $oauth:c $oauthx:d $OAUTH:e")
+	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Errorf("AnyRefNames = %v, want [a b c]", got)
+	}
+	for s, want := range map[string]bool{"$oauth:c": true, "$cred:a": true, "$ghapp:b": true, "$oauth:": false, "plain": false} {
+		if HasAnyRef(s) != want {
+			t.Errorf("HasAnyRef(%q) = %t, want %t", s, !want, want)
+		}
+	}
+}

@@ -226,7 +226,7 @@ func stripTriggerCredentials(body json.RawMessage) (json.RawMessage, []string, e
 }
 
 // isCredentialReference reports whether a credential value is a reference
-// rather than a literal: at least one $cred:/$ghapp:/${...} form, with nothing
+// rather than a literal: at least one $cred:/$ghapp:/$oauth:/${...} form, with nothing
 // left over but an auth-scheme word ("Bearer ${LOOMCYCLE_X}"). The forms are
 // the ones the header scanner treats as references.
 func isCredentialReference(v string) bool {
