@@ -89,6 +89,7 @@ var docACLOps = map[string]docACLRule{
 	"copy_documents":     {verb: "read", target: docACLListing}, // asks per document as it plans: read on each source (an unreadable one is left out), write on each target name
 	"move_documents":     {verb: "read", target: docACLListing}, // as copy_documents, plus write and delete on each source, and link on both ends of a relation it drops
 	"find_duplicates":    {verb: "read", target: docACLListing}, // leaves out each document the caller may not read; each proposal it files asks what propose_statement asks
+	"mark_source":        {verb: "write", target: docACLDocument},
 	"judge_fact":         {verb: "write", target: docACLJudge},
 	"propose_entity":     {verb: "write", target: docACLTenantScope},
 	"propose_subject":    {verb: "write", target: docACLTenantScope},

@@ -66,7 +66,7 @@ var documentReadOnlyOps = map[string]func(documentReadOnlyCall) bool{
 // move removes the source); judge_statements rules on what it judges.
 var documentWriteOps = map[string]bool{
 	"create_document": true, "delete_document": true, "set_path": true,
-	"copy_documents": true, "move_documents": true,
+	"copy_documents": true, "move_documents": true, "mark_source": true,
 	"create_chunk": true, "update_chunk": true, "delete_chunk": true, "move_chunk": true, "reorder_chunk": true,
 	"upsert_chunk": true, "supersede_chunk": true, "remember": true, "judge_fact": true,
 	"propose_entity": true, "propose_subject": true,

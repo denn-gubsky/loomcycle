@@ -482,13 +482,9 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	// captured: say so, and tag no source rather than source/volume/inbox,
 	// which reads like one.
 	unrecordedInbox := r.kind == refVolume && r.volume == inbox.Name && !recorded
-	if src.URL == "" {
-		// A downloaded file links back to its download, as the record keeps
-		// it: no query.
-		if u, _ := prov.fields[importFieldSourceURL].(string); u != "" {
-			src.URL = u
-		}
-	}
+	// A downloaded file links back to its download, as the record keeps it
+	// (no query), unless the importer names its source: importFileProvenance
+	// set it, and withSource replaces it only with a URL the importer gave.
 	prov = prov.withSource(src)
 
 	// The file is untrusted text: no raw HTML or loom metadata acts on the
