@@ -182,6 +182,7 @@ type oauthEndpoints struct {
 	Registration        string `json:"registration"`
 	Revocation          string `json:"revocation,omitempty"`
 	Userinfo            string `json:"userinfo,omitempty"`
+	JWKS                string `json:"jwks,omitempty"`
 }
 
 // oauthSecret is the sealed part of an OAuth credential.

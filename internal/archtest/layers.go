@@ -79,12 +79,16 @@ var layers = []layer{
 		// import nothing in this module except another L0 package (see
 		// allowedSideways). The root api package is the embedded OpenAPI
 		// document and internal/embedded the config presets, bundles and
-		// examples the binary embeds: data only.
+		// examples the binary embeds: data only. internal/authgate/jwtverify
+		// (a JWS verifier over go-jose, importing nothing in this module) sits
+		// here, apart from the gates, because credential verifies an OAuth
+		// id_token with it and authgate builds on credential.
 		name: "L0 utilities",
 		subsystems: []string{
 			"api",
 			"internal/a2a/sign",
 			"internal/audit",
+			"internal/authgate/jwtverify",
 			"internal/authz",
 			"internal/awsauth",
 			"internal/breakpoints",

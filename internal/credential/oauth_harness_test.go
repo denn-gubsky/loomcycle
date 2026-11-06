@@ -94,6 +94,7 @@ func newOAuthHarnessOn(t *testing.T, st Store, f *oauthtest.Server, holder strin
 	h := &oauthHarness{f: f, e: e, st: st, clock: clock, sink: &recordingSink{}, waited: make(chan struct{}, 1000)}
 	h.m = NewOAuthManager(e, f.Client(), holder, h.sink)
 	h.m.now = clock.now
+	h.m.client.now = clock.now
 	h.m.wait = h.wait
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {

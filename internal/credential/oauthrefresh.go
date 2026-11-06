@@ -334,11 +334,31 @@ func (m *OAuthManager) refreshUnderLease(ctx context.Context, r oauthRow, sec oa
 	def.Status.LastError = ""
 	// The rotated refresh token is stored before the access token is handed
 	// out: the server has already retired the old one.
-	if _, ok, err := m.engine.casOAuth(ctx, r, def, &next); err != nil || !ok {
+	stored, ok, err := m.engine.casOAuth(ctx, r, def, &next)
+	if err != nil || !ok {
 		return "", m.reauth(ctx, r, sec, "the refreshed grant could not be stored")
 	}
 	m.clearFailures(r.key())
+	m.nameFromRefresh(ctx, stored, next, tok.IDToken)
 	return next.AccessToken, nil
+}
+
+// nameFromRefresh gives a grant that named no account at connect (no
+// userinfo, no usable id_token then) the name a refresh's id_token carries;
+// a name it has is kept. It runs after the rotated grant is stored, so
+// verifying the token (a key-set fetch) never delays that write. Best
+// effort: a lost write leaves the name for a later refresh.
+func (m *OAuthManager) nameFromRefresh(ctx context.Context, r oauthRow, sec oauthSecret, idToken string) {
+	if idToken == "" || r.def.Status.ConnectedAs != "" {
+		return
+	}
+	name := m.client.idTokenName(ctx, sec, idToken)
+	if name == "" {
+		return
+	}
+	def := r.def
+	def.Status.ConnectedAs = name
+	_, _, _ = m.engine.casOAuth(context.WithoutCancel(ctx), r, def, nil)
 }
 
 // reauth moves r to needs_reauth (best effort: it loses to any newer write)

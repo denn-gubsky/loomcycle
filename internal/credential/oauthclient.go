@@ -14,10 +14,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -73,6 +75,12 @@ func isTransient(err error) bool {
 // http.ErrUseLastResponse), so a token request is never re-sent elsewhere.
 type oauthClient struct {
 	http *http.Client
+	// now stamps the id_token key-set cache and the id_token's time checks
+	// (nil: time.Now).
+	now func() time.Time
+
+	jwksMu sync.Mutex
+	jwks   map[string]*jwksEntry // by issuer and jwks_uri; see idtoken.go
 }
 
 // tokenResponse is a token endpoint's successful answer.
@@ -82,6 +90,9 @@ type tokenResponse struct {
 	ExpiresIn    int64  `json:"expires_in"`
 	TokenType    string `json:"token_type"`
 	Scope        string `json:"scope"`
+	// IDToken is an OpenID Connect id_token, read only for a display name
+	// (idTokenName) and never kept.
+	IDToken string `json:"id_token"`
 }
 
 // deviceResponse is a device authorization endpoint's answer.
@@ -191,6 +202,7 @@ func (c *oauthClient) discover(ctx context.Context, cfg OAuthConfig) (oauthEndpo
 		RegistrationEndpoint        string `json:"registration_endpoint"`
 		RevocationEndpoint          string `json:"revocation_endpoint"`
 		UserinfoEndpoint            string `json:"userinfo_endpoint"`
+		JWKSURI                     string `json:"jwks_uri"`
 	}
 	asURL, err := wellKnown(issuer, "oauth-authorization-server")
 	if err != nil {
@@ -226,6 +238,16 @@ func (c *oauthClient) discover(ctx context.Context, cfg OAuthConfig) (oauthEndpo
 		}
 		if err := checkEndpoint(f.name, f.value, issuer, cfg.Resource); err != nil {
 			return oauthEndpoints{}, err
+		}
+	}
+	// The key set only ever names the account (connected_as): one the
+	// endpoint rule refuses is dropped rather than failing the connect, and
+	// its id_tokens then go unverified and unused.
+	if meta.JWKSURI != "" {
+		if err := checkEndpoint("jwks_uri", meta.JWKSURI, issuer, cfg.Resource); err != nil {
+			slog.DebugContext(ctx, "oauth: jwks_uri refused; id_tokens will not name the account", "issuer", issuer, "err", err)
+		} else {
+			ep.JWKS = meta.JWKSURI
 		}
 	}
 	return ep, nil
@@ -369,8 +391,9 @@ func (c *oauthClient) revoke(ctx context.Context, cfg OAuthConfig, sec oauthSecr
 
 // userinfo returns a display name for the account that connected: from the
 // authorization server's userinfo endpoint, only when it advertised one and
-// the grant includes openid. The access token is never decoded for it, nor
-// an unverified id_token trusted. "" when there is none.
+// the grant includes openid. The access token is never decoded for it.
+// "" when there is none; the caller then tries a verified id_token
+// (idTokenName).
 func (c *oauthClient) userinfo(ctx context.Context, sec oauthSecret, grantedScope string) string {
 	if sec.Endpoints.Userinfo == "" || !hasScope(grantedScope, "openid") {
 		return ""

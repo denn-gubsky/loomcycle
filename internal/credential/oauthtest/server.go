@@ -7,7 +7,12 @@
 package oauthtest
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -18,7 +23,26 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	jose "github.com/go-jose/go-jose/v4"
 )
+
+// How the token endpoint signs the OpenID Connect id_token it adds to a
+// grant (Server.IDToken).
+const (
+	// IDTokenSigned signs with the key the server publishes at its jwks_uri.
+	IDTokenSigned = "signed"
+	// IDTokenWrongKey signs with another key under the published key's kid.
+	IDTokenWrongKey = "wrong-key"
+	// IDTokenAlgNone sends an unsigned token (alg none).
+	IDTokenAlgNone = "alg-none"
+	// IDTokenHS256 signs with HMAC-SHA256 keyed by the client_id, a value
+	// the client knows: the algorithm-confusion forgery.
+	IDTokenHS256 = "hs256"
+)
+
+// idTokenKid is the kid of the key the server publishes.
+const idTokenKid = "fake-k1"
 
 // The grant types the server knows.
 const (
@@ -31,7 +55,8 @@ const (
 // on one TLS test server: protected resource metadata, authorization server
 // metadata, dynamic registration that refuses a device-only client, the
 // device grant, a token endpoint that rotates the refresh token on every
-// refresh, revocation and userinfo. Knobs make it misbehave; counters say
+// refresh (optionally adding an OpenID Connect id_token), revocation,
+// userinfo and a JWKS. Knobs make it misbehave; counters say
 // what was called.
 type Server struct {
 	t   *testing.T
@@ -57,6 +82,18 @@ type Server struct {
 	// Resource serves the protected resource itself (at Resource()); nil
 	// answers 404.
 	ResourceHandler http.Handler
+	// IDToken adds an id_token to every grant, made as the IDToken*
+	// constant says; "" adds none.
+	IDToken string
+	// IDTokenClaims edits the claims before signing. The defaults: iss the
+	// server, aud the client_id, sub u-1, email idtoken@example.test with
+	// email_verified true, preferred_username idtoken-user, iat now, exp an
+	// hour on.
+	IDTokenClaims func(c map[string]any)
+	// IDTokenKid overrides the kid in the token's header.
+	IDTokenKid string
+	// Now is the clock the claims are stamped from (nil: time.Now).
+	Now func() time.Time
 
 	// state
 	clients       map[string]bool
@@ -73,8 +110,10 @@ type Server struct {
 
 	// IssuedClientSecrets: with IssueClientSecret, one per registration.
 	IssuedClientSecrets []string
+	IssuedIDTokens      []string
 
-	calls map[string]*atomic.Int64
+	signKey, wrongKey *ecdsa.PrivateKey
+	calls             map[string]*atomic.Int64
 }
 
 type fakeDevice struct {
@@ -88,7 +127,14 @@ func New(t *testing.T) *Server {
 	f := &Server{t: t, AccessTTL: 300, RequireResource: true, Interval: 5,
 		clients: map[string]bool{}, devices: map[string]*fakeDevice{}, refresh: map[string]bool{}, access: map[string]bool{},
 		calls: map[string]*atomic.Int64{}}
-	for _, k := range []string{"prm", "meta", "register", "device", "token", "revoke", "userinfo"} {
+	var err error
+	if f.signKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader); err != nil {
+		t.Fatal(err)
+	}
+	if f.wrongKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"prm", "meta", "register", "device", "token", "revoke", "userinfo", "jwks"} {
 		f.calls[k] = &atomic.Int64{}
 	}
 	mux := http.NewServeMux()
@@ -99,6 +145,7 @@ func New(t *testing.T) *Server {
 	mux.HandleFunc("/token", f.token)
 	mux.HandleFunc("/revoke", f.revoke)
 	mux.HandleFunc("/userinfo", f.userinfo)
+	mux.HandleFunc("/jwks", f.jwks)
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		h := f.ResourceHandler
@@ -118,7 +165,7 @@ func New(t *testing.T) *Server {
 func (f *Server) Resource() string { return f.Srv.URL + "/mcp" }
 
 // Count is how often endpoint k (prm, meta, register, device, token,
-// revoke, userinfo) was called.
+// revoke, userinfo, jwks) was called.
 func (f *Server) Count(k string) int64 { return f.calls[k].Load() }
 
 // Client is an HTTP client that trusts the test server and follows no
@@ -156,6 +203,7 @@ func (f *Server) meta(w http.ResponseWriter, r *http.Request) {
 		"registration_endpoint":         f.Srv.URL + "/register",
 		"revocation_endpoint":           f.Srv.URL + "/revoke",
 		"userinfo_endpoint":             f.Srv.URL + "/userinfo",
+		"jwks_uri":                      f.Srv.URL + "/jwks",
 	}
 	f.mu.Lock()
 	if f.MetaOverride != nil {
@@ -214,7 +262,7 @@ func (f *Server) device(w http.ResponseWriter, r *http.Request) {
 		"expires_in": 299, "interval": f.Interval})
 }
 
-func (f *Server) issue(w http.ResponseWriter) {
+func (f *Server) issue(w http.ResponseWriter, clientID string) {
 	at, rt := randTok("at-"), randTok("rt-")
 	f.access[at], f.refresh[rt] = true, true
 	f.IssuedAccess = append(f.IssuedAccess, at)
@@ -223,8 +271,72 @@ func (f *Server) issue(w http.ResponseWriter) {
 	if f.GrantOpenID {
 		scope = "openid mcp"
 	}
-	WriteJSON(w, 200, map[string]any{"access_token": at, "refresh_token": rt, "token_type": "Bearer",
-		"expires_in": f.AccessTTL, "scope": scope})
+	answer := map[string]any{"access_token": at, "refresh_token": rt, "token_type": "Bearer",
+		"expires_in": f.AccessTTL, "scope": scope}
+	if f.IDToken != "" {
+		idt := f.idToken(clientID)
+		f.IssuedIDTokens = append(f.IssuedIDTokens, idt)
+		answer["id_token"] = idt
+	}
+	WriteJSON(w, 200, answer)
+}
+
+// idToken makes an id_token for clientID as f.IDToken says. Called under
+// f.mu.
+func (f *Server) idToken(clientID string) string {
+	now := time.Now()
+	if f.Now != nil {
+		now = f.Now()
+	}
+	claims := map[string]any{"iss": f.Srv.URL, "aud": clientID, "sub": "u-1",
+		"email": "idtoken@example.test", "email_verified": true, "preferred_username": "idtoken-user",
+		"iat": now.Unix(), "exp": now.Add(time.Hour).Unix()}
+	if f.IDTokenClaims != nil {
+		f.IDTokenClaims(claims)
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	kid := idTokenKid
+	if f.IDTokenKid != "" {
+		kid = f.IDTokenKid
+	}
+	b64 := base64.RawURLEncoding.EncodeToString
+	switch f.IDToken {
+	case IDTokenAlgNone:
+		return b64([]byte(`{"alg":"none","typ":"JWT"}`)) + "." + b64(payload) + "."
+	case IDTokenHS256:
+		input := b64([]byte(`{"alg":"HS256","typ":"JWT","kid":"`+kid+`"}`)) + "." + b64(payload)
+		mac := hmac.New(sha256.New, []byte(clientID))
+		mac.Write([]byte(input))
+		return input + "." + b64(mac.Sum(nil))
+	}
+	key := f.signKey
+	if f.IDToken == IDTokenWrongKey {
+		key = f.wrongKey
+	}
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key},
+		(&jose.SignerOptions{}).WithType("JWT").WithHeader(jose.HeaderKey("kid"), kid))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	jws, err := signer.Sign(payload)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	out, err := jws.CompactSerialize()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return out
+}
+
+// jwks publishes the id_token signing key.
+func (f *Server) jwks(w http.ResponseWriter, _ *http.Request) {
+	f.calls["jwks"].Add(1)
+	WriteJSON(w, 200, map[string]any{"keys": []jose.JSONWebKey{
+		{Key: &f.signKey.PublicKey, KeyID: idTokenKid, Algorithm: string(jose.ES256), Use: "sig"}}})
 }
 
 func (f *Server) token(w http.ResponseWriter, r *http.Request) {
@@ -265,7 +377,7 @@ func (f *Server) token(w http.ResponseWriter, r *http.Request) {
 			WriteJSON(w, 400, map[string]any{"error": "access_denied"})
 		default:
 			delete(f.devices, r.Form.Get("device_code"))
-			f.issue(w)
+			f.issue(w, r.Form.Get("client_id"))
 		}
 	case grantRefreshToken:
 		rt := r.Form.Get("refresh_token")
@@ -283,7 +395,7 @@ func (f *Server) token(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		delete(f.refresh, rt) // every refresh rotates the refresh token
-		f.issue(w)
+		f.issue(w, r.Form.Get("client_id"))
 	default:
 		WriteJSON(w, 400, map[string]any{"error": "unsupported_grant_type"})
 	}
@@ -316,14 +428,15 @@ func (f *Server) userinfo(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, 200, map[string]any{"sub": "u-1", "email": "someone@example.test"})
 }
 
-// Secrets returns every token, device code and client secret the server
-// issued.
+// Secrets returns every token, id_token, device code and client secret the
+// server issued.
 func (f *Server) Secrets() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := append([]string{}, f.IssuedAccess...)
 	out = append(out, f.IssuedRefresh...)
 	out = append(out, f.IssuedDevice...)
+	out = append(out, f.IssuedIDTokens...)
 	return append(out, f.IssuedClientSecrets...)
 }
 
