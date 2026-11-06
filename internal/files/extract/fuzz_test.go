@@ -29,8 +29,9 @@ const (
 	fuzzContext = 3 * time.Second
 	fuzzGrace   = 3 * time.Second
 	// fuzzOutput is the sink's output limit: small, so the fuzzer reaches
-	// the cut often.
-	fuzzOutput = 64 << 10
+	// the cut from small inputs. Seeds stay a few KiB too: the fuzzer
+	// minimizes every new input it keeps, and a large one stalls it.
+	fuzzOutput = 2 << 10
 )
 
 // fuzzSink refuses everything once it has refused once, and counts the
@@ -164,7 +165,7 @@ func addZipSeeds(f *testing.F, archives ...[]byte) {
 func FuzzExtractDOCX(f *testing.F) {
 	png := tinyPNG(f)
 	addZipSeeds(f, boardDOCX(f, png),
-		docxWith(f, `<w:document `+nsW+`><w:body>`+strings.Repeat(wPara("", strings.Repeat("слово ", 40)), 400)+`</w:body></w:document>`),
+		docxWith(f, `<w:document `+nsW+`><w:body>`+strings.Repeat(wPara("", strings.Repeat("слово ", 10)), 20)+`</w:body></w:document>`),
 		docxWith(f, `<w:document `+nsW+`><w:body><w:tbl><w:tr>`+wCell("a")+wCell("b")+`</w:tr><w:tr>`+wCell("1")+`</w:tr></w:tbl>`+
 			wListItem("x")+`</w:body></w:document>`))
 	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, DOCX{}, "f.docx", data, true) })
@@ -172,7 +173,7 @@ func FuzzExtractDOCX(f *testing.F) {
 
 func FuzzExtractXLSX(f *testing.F) {
 	// The last renders past the fuzz sink's limit, so the cut is seeded.
-	addZipSeeds(f, budgetXLSX(f, 3), amplifiedXLSX(f, 30, 4, 3), amplifiedXLSX(f, 300, 400, 3))
+	addZipSeeds(f, budgetXLSX(f, 3), amplifiedXLSX(f, 30, 4, 3), amplifiedXLSX(f, 60, 40, 3))
 	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, XLSX{}, "f.xlsx", data, true) })
 }
 
@@ -210,7 +211,7 @@ func FuzzExtractVTT(f *testing.F) {
 func FuzzExtractCSV(f *testing.F) {
 	f.Add([]byte("Стаття,Сума\n\"Оренда, склад\",120\nx|y,2\n"))
 	f.Add([]byte("a\tb\n1\t2\n"))
-	f.Add([]byte(strings.Repeat(strings.Repeat("значення,", 20)+"\n", 500)))
+	f.Add([]byte(strings.Repeat(strings.Repeat("значення,", 20)+"\n", 20)))
 	f.Add([]byte("\xef\xbb\xbf\"a\"\"b\",c\n,,,,\n\"unterminated\n"))
 	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, CSV{}, "f.csv", data, false) })
 }
