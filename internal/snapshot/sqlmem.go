@@ -58,6 +58,9 @@ func captureSqlMem(ctx context.Context, snap SqlMemSnapshotter, maxScopeBytes in
 			PostDDL: dump.PostDDL,
 			Tables:  make([]SqlMemTable, 0, len(dump.Tables)),
 		}
+		if t := dump.DocTail; t != nil {
+			sc.DocTail = &SqlMemDocTail{DDL: t.DDL, PostDDL: t.PostDDL, Tables: t.Tables}
+		}
 		for _, t := range dump.Tables {
 			sc.Tables = append(sc.Tables, SqlMemTable{
 				Name:        t.Name,
@@ -97,6 +100,9 @@ func restoreSqlMem(ctx context.Context, snap SqlMemSnapshotter, sec *SqlMemSecti
 	}
 	for _, sc := range sec.Scopes {
 		dump := &sqlmem.ScopeDump{DDL: sc.DDL, PostDDL: sc.PostDDL}
+		if t := sc.DocTail; t != nil {
+			dump.DocTail = &sqlmem.DocTail{DDL: t.DDL, PostDDL: t.PostDDL, Tables: t.Tables}
+		}
 		for _, t := range sc.Tables {
 			dump.Tables = append(dump.Tables, sqlmem.TableDump{
 				Name:        t.Name,
