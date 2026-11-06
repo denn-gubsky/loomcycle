@@ -17,7 +17,7 @@ import (
 func TestRemember_StoresAFactThatCitesItself(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
 
-	out, r := docExec(t, d, ctx, `{"op":"remember","scope":"user",`+
+	out, r := docExec(t, d, withStatementGrant(ctx, "remember"), `{"op":"remember","scope":"user",`+
 		`"text":"The user deploys on Fridays."}`)
 	if r.IsError {
 		t.Fatalf("remember: %s", r.Text)
@@ -73,7 +73,7 @@ func TestRemember_DoesNotOverwriteADistilledFact(t *testing.T) {
 	}
 	distilledID, _ := distilled["id"].(string)
 
-	remembered, r := docExec(t, d, ctx, `{"op":"remember","scope":"user",`+
+	remembered, r := docExec(t, d, withStatementGrant(ctx, "remember"), `{"op":"remember","scope":"user",`+
 		`"text":"The user deploys on Fridays."}`)
 	if r.IsError {
 		t.Fatalf("remember: %s", r.Text)
@@ -96,7 +96,7 @@ func TestRemember_RefusesWhatIsNotAFact(t *testing.T) {
 		{"nothing to remember", `{"op":"remember","scope":"user","text":"   "}`, "missing required field"},
 		{"a document, not a fact", `{"op":"remember","scope":"user","text":"` + strings.Repeat("x", 1200) + `"}`, "longer than a fact"},
 	} {
-		_, r := docExec(t, d, ctx, tc.req)
+		_, r := docExec(t, d, withStatementGrant(ctx, "remember"), tc.req)
 		if !r.IsError || !strings.Contains(r.Text, tc.want) {
 			t.Errorf("%s: err=%v %s", tc.name, r.IsError, r.Text)
 		}

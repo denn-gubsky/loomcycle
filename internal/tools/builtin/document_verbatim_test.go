@@ -129,6 +129,10 @@ func TestVerbatim_QuotesAVerifiedFactWithItsCitation(t *testing.T) {
 	if got, _ := out["chunk_id"].(string); got != id {
 		t.Errorf("chunk_id = %q, want %q", got, id)
 	}
+	// Who the quote is from travels with it: a fact written off-run is the operator's.
+	if got, _ := out["origin"].(string); got != "operator" {
+		t.Errorf("origin = %q, want operator", got)
+	}
 }
 
 // TestVerbatim_RefusesAnUnverifiedFact.
@@ -462,7 +466,7 @@ func TestVerificationStats_IgnoresEntityIdentityNodes(t *testing.T) {
 func TestVerificationStats_CountsAFactWhoseChunkTypeIsNotFact(t *testing.T) {
 	d, ctx, doc, root := verbatimFixture(t)
 	// A remembered fact: typed by its caller, cites itself, and nothing is `about` it.
-	if _, r := docExec(t, d, ctx, fmt.Sprintf(
+	if _, r := docExec(t, d, withStatementGrant(ctx, statementRememberGrant), fmt.Sprintf(
 		`{"op":"upsert_chunk","scope":"user","document_id":%q,"parent_id":%q,`+
 			`"natural_key":"memory/operator/remembered","title":"Remembered.","body":"Remembered.",`+
 			`"source_quote":"Remembered.","type":"object","class":"evidential"}`, doc, root)); r.IsError {

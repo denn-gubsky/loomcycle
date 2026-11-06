@@ -15,14 +15,15 @@ Only a code agent whose definition grants statement methods
 `demote` and `merge` also need `link` on both of them — they change what
 readers see as live.
 
-A relation a person wrote (its `method` is `manual`) takes only `verify` and
+A relation a person wrote (its `method` is `manual`, with no run id) takes only `verify` and
 `flag`, from anyone, and so does one an operator ruled on (accepted it, for
 instance), from inside a run: flag it with your reason and let a person
-decide. A relation a sync brought in (`method` `sync`) counts as a person's
-unless its `attributes.origin_method` names a method code stamps —
-`rule:<name>`, `extractor:<name>`, `import`, `canvas`, `wikilink`, `runtime`,
-`consolidator` or `ontology`. With `manual`, no origin at all, or anything
-else there, only `verify` and `flag` apply.
+decide. A relation a run wrote with `link_chunks` (`method` `agent`) is not a
+person's. A relation a sync brought in (`method` `sync`) counts as a person's
+unless its `attributes.origin_method` names a peer (`peer:<source>`) or a
+method code stamps — `rule:<name>`, `extractor:<name>`, `import`, `canvas`,
+`wikilink`, `runtime`, `consolidator`, `ontology` or `agent`. With `manual`,
+no origin at all, or anything else there, only `verify` and `flag` apply.
 
 ## Arguments
 

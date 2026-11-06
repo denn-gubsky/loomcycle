@@ -191,7 +191,7 @@ const documentInputSchema = `{
 		"kind":        {"type": "string", "description": "link/unlink_chunks / propose_statement: the relation kind (cites, based_on, defines, implements, related, …). Kinds the runtime writes are refused: about, supersedes, references, mentions, derived_from, supported_by. get_edges / backlinks / list_statements: return only this kind. graph_recall / related (related_to): follow only this kind."},
 		"kinds":       {"type": "array", "items": {"type": "string"}, "description": "get_edges / backlinks / list_statements: return only these relation kinds (with kind, the union). graph_recall / related (related_to): follow only these kinds."},
 		"attributes":  {"type": "object", "description": "link_chunks / propose_statement: the relation's qualifiers (e.g. aspect, coverage), at most 4 KB of JSON."},
-		"method":      {"type": "string", "description": "propose_statement / upsert_chunk (its relation): how the statement was made, rule:<name> or extractor:<name> (name: 1-64 of a-z 0-9 _ . / -). maintain_statement: the same, recorded as the judge of what it changes. Only an agent granted that kind of method may send it; otherwise it is refused (method_not_granted). Omit it and the statement is recorded as manual."},
+		"method":      {"type": "string", "description": "propose_statement / upsert_chunk (its relation): how the statement was made, rule:<name> or extractor:<name> (name: 1-64 of a-z 0-9 _ . / -). maintain_statement: the same, recorded as the judge of what it changes. Only an agent granted that kind of method may send it; otherwise it is refused (method_not_granted). Omit it and the statement is recorded as your own: agent from inside a run, manual from a person."},
 		"action":      {"type": "string", "enum": ["verify","expire","demote","merge","stale_evidence","relocate_evidence","flag"], "description": "maintain_statement: verify (stamp verified_at), expire (retire it, reason required), demote (asserted back to proposed, reason required), merge (move its evidence onto survivor_id and expire it), stale_evidence (mark evidence_id stale), relocate_evidence (re-point evidence_id to chunk_id, where its quote must occur), flag (attributes.needs_review). A statement a person wrote takes only verify and flag, and so does one an operator ruled on, from inside a run. expire, demote and merge need the link permission on both ends."},
 		"survivor_id": {"type": "string", "description": "maintain_statement merge: the live statement of the same from_id, to_id, kind and status that keeps the evidence."},
 		"evidence_id": {"type": "string", "description": "maintain_statement stale_evidence / relocate_evidence: the evidence row, by its id from get_edge."},
@@ -6157,6 +6157,12 @@ func (d *Document) listTypes(ctx context.Context, key sqlmem.ScopeKey, in docInp
 // the tags when supplied. Mirroring a root chunk's title/type/status onto the
 // documents row happens inside upsertChunk, so its direct callers get it too.
 func (d *Document) upsertChunkOp(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, raw json.RawMessage) (tools.Result, error) {
+	// The caller's own op only: remember and sync write through upsertChunk too,
+	// and a pulled remembered fact is the peer's claim, already carried with the
+	// peer's provenance.
+	if refused := refuseForgedRemember(ctx, in); refused != nil {
+		return *refused, nil
+	}
 	res, err := d.upsertChunk(ctx, key, mscope, in)
 	if err != nil || res.IsError {
 		return res, err

@@ -931,12 +931,24 @@ func (d *Document) copyStatements(ctx context.Context, p *copyPlan) {
 		chunkRemap := func(v any) any { return remapID(v, p.chunkMap) }
 		// Both ends must have been written: a member whose rows failed took its
 		// chunks out of chunkMap.
-		res, err := d.query(ctx, p.src, `SELECT from_id, to_id FROM chunk_edges WHERE id = ?`, id)
+		res, err := d.query(ctx, p.src, `SELECT from_id, to_id, method, kind, run_id FROM chunk_edges WHERE id = ?`, id)
 		if err != nil || len(res.Rows) == 0 {
 			p.statementsFailed++
 			continue
 		}
 		from, to := asStr(res.Rows[0][0]), asStr(res.Rows[0][1])
+		// A run without the link grant writing into the tenant scope carries a
+		// relation as a proposal: what it asserted in a scope of its own is not
+		// the tenant's until reviewed there (RFC FZ Part C). Who made a statement
+		// is its method, not its kind: the runtime's own (about and derived_from
+		// from a fact upsert, [[name]] links) is the documents' structure and
+		// travels as it is — and so does a structural kind an old scope's
+		// statements migration stamped manual with no run id. A row a run wrote
+		// (method agent, or any run id) is demoted. A rejection stays rejected.
+		method, kind, runID := asStr(res.Rows[0][2]), asStr(res.Rows[0][3]), asStr(res.Rows[0][4])
+		structural := method == edgeMethodRuntime || method == edgeMethodWikilink ||
+			(isReservedEdgeKind(kind) && method == edgeMethodManual && runID == "")
+		demote := runFilesProposals(ctx, p.dstMem) && !structural
 		failEnds := func() {
 			p.failDoc(p.chunkDoc[from], "a relation could not be written")
 			p.failDoc(p.chunkDoc[to], "a relation could not be written")
@@ -954,7 +966,14 @@ func (d *Document) copyStatements(ctx context.Context, p *copyPlan) {
 				map[string]func(any) any{"id": newEvidence, "edge_id": edgeRemap, "chunk_id": chunkRemap}}, id)
 			if err == nil {
 				err = d.withSqlTxn(ctx, p.dst, func(txnID string) error {
-					return execInserts(ctx, d, txnID, append(edge, evidence...))
+					if err := execInserts(ctx, d, txnID, append(edge, evidence...)); err != nil || !demote {
+						return err
+					}
+					// The verdict and the ruling that made it hold are not carried:
+					// the proposal is judged afresh in the tenant.
+					return d.execTxn(ctx, txnID, `UPDATE chunk_edges SET status = ?, operator_ruled_at = NULL, ruled_by = NULL,
+						judged_at = NULL, judge_reason = NULL, judged_by = NULL, verdict_confidence = NULL
+						WHERE id = ? AND status = ?`, edgeStatusProposed, newEdge, edgeStatusAsserted)
 				})
 			}
 		}

@@ -210,7 +210,9 @@ func TestGraphRecall_TenantChunkCarriesItsBody(t *testing.T) {
 		"title": "Board", "body": "the board"})["id"].(string)
 	note := docRun(t, d, ctx, map[string]any{"op": "create_chunk", "scope": "tenant", "document_id": doc["document_id"],
 		"title": "Quorum", "body": "quorum of the board"})["id"].(string)
-	docRun(t, d, ctx, map[string]any{"op": "link_chunks", "scope": "tenant", "document_id": doc["document_id"],
+	// An asserted link: a run's tenant link without the link grant is a proposal,
+	// which the walk does not follow.
+	docRun(t, d, withStatementGrant(ctx, statementLinkGrant), map[string]any{"op": "link_chunks", "scope": "tenant", "document_id": doc["document_id"],
 		"from_id": seed, "to_id": note, "kind": "notes"})
 	out := docRun(t, d, ctx, map[string]any{"op": "graph_recall", "scope": "tenant", "seed_ids": []string{seed}, "hops": 1})
 	rows, _ := out["chunks"].([]any)

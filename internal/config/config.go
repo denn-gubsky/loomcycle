@@ -3904,6 +3904,23 @@ type MemoryBackendTenancy struct {
 type DocumentSource struct {
 	Config          DocumentSourceConfig  `json:"config,omitempty" yaml:"config"`
 	TenancyStrategy DocumentSourceTenancy `json:"tenancy_strategy,omitempty" yaml:"tenancy_strategy"`
+	// Trust is how a pull from this peer files the statements it carries:
+	// "" or "proposed" (the default) files each as a proposal for review, its
+	// peer status and method kept as attributes; "asserted" keeps them
+	// asserted, the operator vouching for the peer. Only the operator plane
+	// may author a runtime definition that declares "asserted".
+	Trust string `json:"trust,omitempty" yaml:"trust"`
+}
+
+// Document source trust levels (DocumentSource.Trust).
+const (
+	DocumentSourceTrustProposed = "proposed"
+	DocumentSourceTrustAsserted = "asserted"
+)
+
+// ValidDocumentSourceTrust reports a trust value a document source may declare.
+func ValidDocumentSourceTrust(t string) bool {
+	return t == "" || t == DocumentSourceTrustProposed || t == DocumentSourceTrustAsserted
 }
 
 type DocumentSourceConfig struct {
@@ -8130,26 +8147,46 @@ func ValidateGitRemote(ops []string) error {
 const CodeJSProvider = "code-js"
 
 // ValidateStatementMethods refuses a statement_methods list holding a value
-// other than "rule", "extractor" or "judge", a duplicate, or any value on an agent
-// whose provider is not code-js. One function for every place a definition is
-// authored — operator yaml and the AgentDef create/fork overlay — so a grant
-// refused at boot is not quietly kept by a runtime write. provider is the
-// definition's own `provider:` field, after any fork has been merged.
+// other than "rule", "extractor", "judge", "link" or "remember", a duplicate, or
+// a code-only value (rule, extractor, judge) on an agent whose provider is not
+// code-js. One function for every place a definition is authored — operator
+// yaml and the AgentDef create/fork overlay — so a grant refused at boot is not
+// quietly kept by a runtime write. provider is the definition's own `provider:`
+// field, after any fork has been merged.
 func ValidateStatementMethods(provider string, methods []string) error {
 	seen := map[string]bool{}
 	for i, m := range methods {
-		if m != "rule" && m != "extractor" && m != "judge" {
-			return fmt.Errorf("statement_methods[%d]: unknown method %q (want rule, extractor and/or judge)", i, m)
+		if !StatementMethodKnown(m) {
+			return fmt.Errorf("statement_methods[%d]: unknown method %q (want rule, extractor, judge, link and/or remember)", i, m)
 		}
 		if seen[m] {
 			return fmt.Errorf("statement_methods[%d]: %q is listed twice", i, m)
 		}
 		seen[m] = true
-	}
-	if len(methods) > 0 && provider != CodeJSProvider {
-		return fmt.Errorf("statement_methods is honoured only for provider: %s (a relation stamped rule: claims code made it, and only a code-js body is code); this agent's provider is %q", CodeJSProvider, provider)
+		if StatementMethodCodeOnly(m) && provider != CodeJSProvider {
+			return fmt.Errorf("statement_methods %q is honoured only for provider: %s (a relation stamped rule: claims code made it, and only a code-js body is code); this agent's provider is %q", m, CodeJSProvider, provider)
+		}
 	}
 	return nil
+}
+
+// StatementMethodKnown reports a statement_methods value this build knows.
+func StatementMethodKnown(m string) bool {
+	switch m {
+	case "rule", "extractor", "judge", "link", "remember":
+		return true
+	}
+	return false
+}
+
+// StatementMethodCodeOnly reports a statement_methods value only a code-js
+// agent may hold: rule and extractor stamp a method that says code made the
+// statement, and judge rules above the policy's floor. link (a run's link_chunks
+// in the tenant scope is asserted, not filed as a proposal) and remember (a run
+// may file a fact as a person's statement) stamp nothing and claim no code, so
+// any agent may be granted them.
+func StatementMethodCodeOnly(m string) bool {
+	return m == "rule" || m == "extractor" || m == "judge"
 }
 
 // InertShellCredentials returns the names in an agent's shell_credentials
@@ -9162,6 +9199,9 @@ func validate(c *Config) error {
 			}
 		default:
 			return fmt.Errorf("document_sources.%s: tenancy_strategy.kind %q must be \"\" or key_per_tenant", dname, ds.TenancyStrategy.Kind)
+		}
+		if !ValidDocumentSourceTrust(ds.Trust) {
+			return fmt.Errorf("document_sources.%s: trust %q must be proposed (the default) or asserted", dname, ds.Trust)
 		}
 	}
 	// Static webhooks: a misconfigured delivery target can never fire (F24).

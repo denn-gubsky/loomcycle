@@ -909,15 +909,18 @@ An asserted statement is never *rejected*. It leaves the live set in one of thre
 
 | method | written by |
 |---|---|
-| `manual` | `link_chunks` and `propose_statement` without a method: a person's (or a model's) own write |
+| `manual` | `link_chunks` and `propose_statement` without a method, by a person outside a run. A `manual` row that carries a run id (written by a run before runs were named) is not a person's |
+| `agent` | `link_chunks`, and `propose_statement` without a method, from inside a run: a model's (or code's) own link, with the run's agent as `actor`. In the tenant scope it is filed as a proposal unless the agent holds `statement_methods: [link]`, as are the other relations a run chooses there (a fact's `relation`, `import_md` and `import_canvas` edges, statements `copy_documents` / `move_documents` carry in) |
 | `wikilink` | a `[[name]]` link in a chunk body |
 | `import` | `import_md` (its `<!-- loom-edges -->` block, and the `amends` statements of an edition) |
-| `sync` | a link pulled from a peer by `sync` |
+| `sync` | a link pulled from a peer by `sync` (`attributes.origin_method` `peer:<source>`) |
 | `canvas` | `import_canvas` |
 | `runtime` | the runtime's own links: `about`, `derived_from` and the like from `upsert_chunk` |
 | `consolidator` | the relation a fact states (`upsert_chunk` `relation`), when no method is named |
 | `ontology` | a relation declared in the tenant ontology's Instances section |
 | `rule:<name>` / `extractor:<name>` | a code agent granted `statement_methods` (see below): code found it, or a model the code drives found it. `<name>` is 1–64 of `a-z 0-9 _ . / -` |
+
+A run never asserts a statement that waits for review by linking it again: only a caller who may rule on it does, and that link is `accept_statement`'s ruling. The guarantee is per statement — the exact `from_id`, `to_id`, `kind`, `valid_at` and discriminator. A run holding `link` that links the same triple under a different `valid_at` writes a second statement, which it may assert.
 
 A later pass treats a `manual` statement as a person's and never undoes it (see `maintain_statement`).
 
@@ -1159,7 +1162,7 @@ A links pass (find citations in imported text, propose the relations, keep them 
 | `relocate_evidence` | re-point the row `evidence_id` to `chunk_id`, where its quote must occur; the span is recomputed and the stale mark cleared |
 | `flag` | set `attributes.needs_review` (and the reason) for a person |
 
-- A relation a person wrote takes only `verify` and `flag`, from anyone (`statement_manual`). That is a `manual` one, and a `sync` one unless its `attributes.origin_method` names a machine method (`rule:` / `extractor:`, `import`, `canvas`, `wikilink`, `runtime`, `consolidator`, `ontology`): a link a person made on a peer is still a person's here, and one whose origin is unknown is treated as one. A relation an operator ruled on takes only the same two from inside a run (`statement_operator_ruled`): flag it and let a person decide.
+- A relation a person wrote takes only `verify` and `flag`, from anyone (`statement_manual`). That is a `manual` one, and a `sync` one unless its `attributes.origin_method` names a peer (`peer:<source>`) or a machine method (`rule:` / `extractor:`, `import`, `canvas`, `wikilink`, `runtime`, `consolidator`, `ontology`, `agent`): a link pulled from a peer is the peer's claim, not a person's here, and a sync one from before peers were named, whose origin is unknown, is treated as a person's. A relation an operator ruled on takes only the same two from inside a run (`statement_operator_ruled`): flag it and let a person decide.
 - Every action needs `propose` on the relation's documents; `expire`, `demote` and `merge` change what readers see as live, so they also need `link` on both ends.
 - A relation that changed while the pass looked at it is refused with `statement_changed`: reload it (`get_edge`) and decide again.
 
@@ -1260,9 +1263,10 @@ Search finds chunks by what they say; statements let retrieval also reach what t
 `sync` between two loomcycles carries statements between keyed chunks with their envelope (`confidence`, `valid_at` / `invalid_at`, `attributes`) and their evidence.
 
 - **Asserted only.** A proposal is one side's review state, and a relation a judge refuted or an operator rejected stays where it is. A pull never undoes a local rejection: such a link is left out and counted in `edges_skipped_rejected`.
-- **Pull.** A pulled link is asserted here with method `sync`; the method it was made by on the peer is kept in `attributes.origin_method` (for a link the peer itself pulled, the method it was first made by).
+- **Pull files a peer's links for review.** A pulled link is written with method `sync` and `attributes.origin_method` `peer:<source>`, and what the peer said is kept beside it: `attributes.peer_method` (the method it was made by there; for a link the peer itself pulled, the method it was first made by) and `attributes.peer_status`. It arrives `proposed`, for review here, unless the operator declares the source `trust: asserted` (yaml `document_sources.<name>.trust`, or a `DocumentSourceDef` authored from the operator plane — a run or a member may author a source only as `proposed`, and must say so when it forks a trusted one). A peer's `manual` never becomes a person's here.
+- **Only the bound document is written.** A key a chunk of another document in the scope holds is a conflict: that chunk is neither written nor moved, and the key is counted in `conflicts` and named in `conflicting_keys` (`diff_remote` lists them as `conflicts` beforehand).
 - **Evidence is re-verified.** A row is matched by the cited chunk's `natural_key`, and its quote is checked again against this side's text. A row that cannot be checked here (an unkeyed chunk, a chat turn, another scope, a key this side does not hold or may not read, a quote not in this side's text) is dropped and counted in `evidence_dropped`.
-- **Updates.** A link pulled before follows the peer's `confidence`, `invalid_at` and `attributes` (`edges_updated`). A link written here, or one an operator here ruled on, keeps its own envelope and gains only the evidence it lacks (`edges_envelope_kept`). `valid_at` is part of a statement's identity, so a peer link with another `valid_at` arrives as a second statement.
+- **Updates.** Only a source declared `trust: asserted` changes a link that holds here: from any other, its envelope is kept (`edges_envelope_kept`) and the peer's quotes are not added (`evidence_dropped`). A link pulled before from a trusted source follows the peer's `confidence`, `invalid_at` and `attributes` (`edges_updated`). A link written here, or one an operator here ruled on, keeps its own envelope and gains only the evidence it lacks (`edges_envelope_kept`). `valid_at` is part of a statement's identity, so a peer link with another `valid_at` arrives as a second statement.
 
 **What push cannot do.** A pushed link arrives on the peer as the peer's own `manual` statement, its method here in `attributes.origin_method`, and the peer checks every quote again; only quotes from keyed chunks of this document whose text the peer now holds are sent. The peer has no way to change an existing link's envelope, so a push adds only the evidence a peer link lacks, and counts an envelope that differs in `edges_envelope_kept`.
 

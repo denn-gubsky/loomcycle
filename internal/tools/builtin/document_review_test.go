@@ -507,7 +507,7 @@ func TestRevertRuling_LeavesAndReportsWhatChangedSince(t *testing.T) {
 	op := reviewOperatorCtx(base, nil)
 	res := ruleReal(t, d, op, connector.RuleStatementsRequest{Action: "accept", IDs: []string{c.cites, c.repeals, c.elaborates}}, RuleAsOperator)
 	// cites: new evidence; repeals: maintenance; elaborates: untouched.
-	if _, r := docExec(t, d, reviewWriterCtx(base), fmt.Sprintf(`{"op":"link_chunks","scope":"tenant","from_id":%q,"to_id":%q,"kind":"cites",
+	if _, r := docExec(t, d, withStatementGrant(reviewWriterCtx(base), statementLinkGrant), fmt.Sprintf(`{"op":"link_chunks","scope":"tenant","from_id":%q,"to_id":%q,"kind":"cites",
 		"evidence":[{"chunk_id":%q,"quote":"The Act of 2015"}]}`, c.b1, c.b2, c.b2)); r.IsError {
 		t.Fatal(r.Text)
 	}
