@@ -159,6 +159,7 @@
  *     path(input): Promise<PathToolResponse>                      // resolve/ls/stat/mkdir/mv/rm
  *     document(input): Promise<DocumentToolResponse>              // 13 ops; needs SQL Memory
  *     copyDocuments(input) / moveDocuments(input): Promise<DocumentTransferResult> // RFC FT, dry run by default
+ *     findDuplicates(input): Promise<DocumentFindDuplicatesResult> // RFC GB, a report unless propose: true
  *
  *     // History — browse/search/annotate past chats (RFC BE; tenant-confined)
  *     history(input): Promise<HistoryToolResponse>                // list/get/search/rename/annotate/pin/archive/recap/resume
@@ -460,6 +461,9 @@ export type {
   DocumentMoveInput,
   DocumentTransferEntry,
   DocumentTransferResult,
+  DocumentFindDuplicatesInput,
+  DocumentDuplicatePair,
+  DocumentFindDuplicatesResult,
   DocumentSearchFilter,
   DocumentSearchHit,
   DocumentSearchResult,

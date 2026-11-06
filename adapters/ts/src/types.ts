@@ -4318,7 +4318,8 @@ export type DocumentToolInput = {
   kinds?: string[];
   /** link_chunks / propose_statement: the relation's qualifiers. */
   attributes?: Record<string, unknown>;
-  /** propose_statement / maintain_statement / upsert_chunk (its relation): how
+  /** propose_statement / maintain_statement / upsert_chunk (its relation) /
+   *  find_duplicates (its proposals): how
    *  the statement was made (maintain_statement: the judge of what it changes) — `rule:<name>` or `extractor:<name>`, the name `[a-z0-9_./-]{1,64}`.
    *  Only a code-js agent whose `statement_methods` lists the prefix may send
    *  it; anything else is refused with `method_not_granted`. Omitted = `manual`. */
@@ -4440,6 +4441,12 @@ export type DocumentToolInput = {
   /** move_documents: required with `dry_run: false` — the dry run's
    *  `counts.documents`. */
   expect_count?: number;
+  /** find_duplicates: how documents match — `sha256` (the same text) and/or
+   *  `title` (the same title once copy markers are stripped). Omitted = both. */
+  basis?: ("sha256" | "title")[];
+  /** find_duplicates: true files a `duplicate_of` proposal per pair; false (the
+   *  default) only reports. */
+  propose?: boolean;
   /** search / related: never chunks of these documents (e.g. the document under
    *  review, so its own text is not found as evidence for itself). */
   exclude_document_ids?: string[];
@@ -4647,6 +4654,59 @@ export interface DocumentTransferResult {
   body_failures?: number;
   statements_failed?: number;
   statement_error?: string;
+}
+
+/** The set and options of {@link LoomcycleClient.findDuplicates} — the
+ *  Document tool's find_duplicates, in its wire shape. `document_ids`,
+ *  `under_path` and `under_paths` combine (at most 5000 documents). A report
+ *  unless `propose: true`. */
+export interface DocumentFindDuplicatesInput {
+  /** Where the documents are (default `user`). */
+  scope?: "agent" | "user" | "tenant";
+  document_ids?: string[];
+  under_path?: string;
+  under_paths?: string[];
+  /** `sha256` (the same text) and/or `title` (the same title once copy markers
+   *  are stripped, and the same kind of document). Omitted = both. */
+  basis?: ("sha256" | "title")[];
+  /** true files a `duplicate_of` proposal from each copy to its original,
+   *  through propose_statement; false (the default) only reports. */
+  propose?: boolean;
+  /** `rule:<name>` or `extractor:<name>`, only for an agent granted that
+   *  statement method; omitted = the proposals are the caller's own. */
+  method?: string;
+}
+
+/** One copy and its original. `copy_id` / `original_id` are document ids; the
+ *  statement, when one is filed, joins their root chunks. */
+export interface DocumentDuplicatePair {
+  copy_id: string;
+  original_id: string;
+  copy_root_id: string;
+  original_root_id: string;
+  copy_title: string;
+  original_title: string;
+  basis: "sha256" | "title";
+  /** 1.0 for sha256, 0.7 for title. */
+  confidence: number;
+  /** The proposal filed for this pair (propose: true). */
+  statement_id?: string;
+  status?: string;
+  ontology_valid?: boolean;
+  /** `exists` — the pair already has a duplicate_of statement, either way
+   *  round and in any status; `refused:<category>` — propose_statement refused
+   *  it, with its message in `detail`. */
+  skipped?: string;
+  detail?: string;
+}
+
+/** What {@link LoomcycleClient.findDuplicates} answers. */
+export interface DocumentFindDuplicatesResult {
+  /** At most 1000 (`truncated` says so); every pair is still proposed. */
+  pairs: DocumentDuplicatePair[];
+  /** documents, pairs, sha256, title, proposed, skipped_existing, refused. */
+  counts: Record<string, number>;
+  truncated: boolean;
 }
 
 /** What a filtered `document({op:"search"|"related", …})` call resolved its
