@@ -116,6 +116,18 @@ memory:
     enabled: true
     interval: 1h
     method: umap
+  # What Document op=classify asks when a tenant ontology's rules and the
+  # neighbourhood vote leave a document's class or topics open (the
+  # knowledge-base preset's kb/linker runs classify as its first layer).
+  # Unset, classify asks no model and every such document stays unclassified.
+  # Both models are local, so a tenant's documents never reach a hosted
+  # provider for classification. The thresholds are the documented
+  # provisional defaults, written out so a tuning change shows in review.
+  classifier:
+    decision: { model: decide, timeout_ms: 120000 }   # covers a reload after a chat model evicts it
+    chat:     { model: local-medium, effort: low, timeout_ms: 300000 }
+    min_probability: 0.6
+    min_margin: 0.2
 
 # ─── Decision models (a change here needs a restart) ──────────────────
 decision:
@@ -146,6 +158,23 @@ agents:
   memory/judge:          { providers: [ollama-local] }
   memory/conflict-judge: { providers: [ollama-local] }
   memory/ontologist:     { providers: [ollama-local] }
+
+  # The knowledge-base agents' model calls carry passages of tenants'
+  # documents. The same reasoning as above: local only, a failure waits for
+  # the next pass. kb/linker and kb/judge are code-js (no model); the tenant
+  # grants they need for a tenant-scope pass (memory_scopes/sql_scopes:
+  # [tenant]) are NOT given here, since a static grant would reach every
+  # tenant: each tenant's operator forks the agent in its own tenant.
+  kb/verdict:            { providers: [ollama-local] }
+  kb/judge-verdict:      { providers: [ollama-local] }
+
+# The knowledge-base preset declares documents/ingested user-scoped. Tenants
+# here import their corpus into the TENANT scope, where the runtime publishes
+# the ingest event, so the links agent's drain reads it at that scope
+# ({"mode":"drain","scope":"tenant","queue":"documents"}).
+channels:
+  documents/ingested:
+    scope: tenant
 
 # Without this the memory bundle's consolidator stays off, and what agents add
 # to memory is queued and never becomes durable. Runs hourly (the bundle's
