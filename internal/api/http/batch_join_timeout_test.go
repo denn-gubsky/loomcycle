@@ -238,6 +238,10 @@ func TestSpawnRunBatch_TimeoutMSCancelsAFreshChildAndSaysSo(t *testing.T) {
 	s, gate := newGatedBatchServer(t, 8)
 	s.cfg().Env.BatchJoinTimeout = time.Hour
 	gate <- struct{}{} // exactly one of the two children may finish
+	// The gated child must FINISH inside the timeout. Under -race on a loaded
+	// runner a run took more than 300 ms, so both came back cancelled (#2451).
+	// 3 s leaves room and stays well under joinHangLimit; the other child is
+	// held by the gate and ends only at the timeout.
 	t.Cleanup(func() {
 		select {
 		case gate <- struct{}{}:
@@ -246,7 +250,7 @@ func TestSpawnRunBatch_TimeoutMSCancelsAFreshChildAndSaysSo(t *testing.T) {
 	})
 
 	res, _ := joinWithin(t, func() connector.BatchSpawnResult {
-		res, err := s.SpawnRunBatch(context.Background(), connector.BatchSpawnRequest{TimeoutMS: 300, Spawns: []connector.SpawnRunRequest{
+		res, err := s.SpawnRunBatch(context.Background(), connector.BatchSpawnRequest{TimeoutMS: 3000, Spawns: []connector.SpawnRunRequest{
 			{Agent: "r", UserID: "u1", Segments: oneUserSeg("a")},
 			{Agent: "r", UserID: "u1", Segments: oneUserSeg("b")},
 		}})
