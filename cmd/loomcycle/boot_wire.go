@@ -141,6 +141,13 @@ func (b *boot) wireCredentials() {
 		AllowHTTP: cfg.Env.KMSVaultAllowHTTP,
 	}
 	credentialDefTool.KMS = kmsAccess
+	// OAuth credentials (RFC GB): the connect, refresh and disconnect
+	// requests go to the authorization server a tenant names, so through
+	// the guard (no private or metadata address unless the operator vouched
+	// for the host), and follow no redirect at all.
+	b.oauthMgr = credential.NewOAuthManager(credEngine,
+		credential.NewOAuthHTTPClient(cfg.Env.HTTPPrivateHostAllowlist), oauthHolder(cfg.Env.ReplicaID), nil)
+	credentialDefTool.OAuth = b.oauthMgr
 	cryptoTool.KMS = kmsAccess
 	// A team's own webhook may name a stored secret of the author's tenant.
 	teamDefTool.Credentials = credEngine

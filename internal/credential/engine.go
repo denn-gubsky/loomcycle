@@ -29,6 +29,9 @@ type Store interface {
 	CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (credentialdef.Row, error)
 	CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]credentialdef.Row, error)
 	CredentialDefDelete(ctx context.Context, tenantID, scope, scopeID, name string) (bool, error)
+	// CredentialDefPutIf writes row only while its stored definition equals
+	// prev; (false, nil) on a mismatch, a NotFound error when the row is gone.
+	CredentialDefPutIf(ctx context.Context, row credentialdef.Row, prev json.RawMessage) (bool, error)
 }
 
 // isNotFound reports whether err is the store's missing-row error. It asks the
@@ -127,6 +130,10 @@ type Meta struct {
 	Versions       []KeyVersion
 	CurrentVersion int
 	MinVersion     int
+
+	// OAuth is an OAuth credential's config and status (RFC GB); nil for any
+	// other. Usage is UsageOAuth for one. Never a token.
+	OAuth *OAuthMeta
 }
 
 // PutInline seals plaintext and upserts the row (create / update / rotate —
@@ -156,9 +163,15 @@ func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, e
 	e.cryptoMu.Lock()
 	defer e.cryptoMu.Unlock()
 	// The upsert would replace a crypto key's every version with one secret,
-	// destroying material that may still protect data.
-	if row, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name); err == nil && isCryptoDef(row.Definition) {
-		return Meta{}, fmt.Errorf("%w (%q in %s scope is a crypto key; rotate it instead)", ErrKeyExists, id.Name, id.Scope)
+	// destroying material that may still protect data; or an OAuth
+	// credential's grant with a value nothing refreshes.
+	if row, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name); err == nil {
+		switch defKind(row.Definition) {
+		case kindCrypto:
+			return Meta{}, fmt.Errorf("%w (%q in %s scope is a crypto key; rotate it instead)", ErrKeyExists, id.Name, id.Scope)
+		case kindOAuth:
+			return Meta{}, fmt.Errorf("%w (%q in %s scope is an OAuth credential; delete it first)", ErrKeyExists, id.Name, id.Scope)
+		}
 	}
 	if allowedURLs == nil {
 		kept, err := e.existingRestriction(ctx, id)
@@ -341,10 +354,14 @@ func (e *Engine) ResolveFor(ctx context.Context, tenantID, agentName, userID, na
 
 func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name string, target *string) (Resolved, bool, error) {
 	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
-	// A crypto key is never handed out as a secret, and the refusal does not
-	// fall through to a same-named credential further down.
+	// A crypto key or an OAuth credential is never handed out as a secret,
+	// and the refusal does not fall through to a same-named credential
+	// further down.
 	if found && isCryptoDef(row.Definition) {
 		return Resolved{}, false, cryptoKeyErr(name, row.Scope)
+	}
+	if found && isOAuthDef(row.Definition) {
+		return Resolved{}, false, oauthCredentialErr(name, row.Scope)
 	}
 	if err != nil || !found {
 		return Resolved{}, false, err
@@ -518,6 +535,9 @@ func (e *Engine) ResolveToCompare(ctx context.Context, tenantID, name string) (s
 	if isCryptoDef(row.Definition) {
 		return "", false, cryptoKeyErr(name, row.Scope)
 	}
+	if isOAuthDef(row.Definition) {
+		return "", false, oauthCredentialErr(name, row.Scope)
+	}
 	// An expired verification secret verifies nothing: a webhook whose
 	// secret lapsed refuses its deliveries rather than accepting them.
 	if err := e.expiredErr(row, name); err != nil {
@@ -544,6 +564,9 @@ func (e *Engine) HasToCompare(ctx context.Context, tenantID, name string) (bool,
 	// Held, but ResolveToCompare would refuse it.
 	if isCryptoDef(row.Definition) {
 		return false, cryptoKeyErr(name, row.Scope)
+	}
+	if isOAuthDef(row.Definition) {
+		return false, oauthCredentialErr(name, row.Scope)
 	}
 	if err := e.expiredErr(row, name); err != nil {
 		return false, err
@@ -574,6 +597,9 @@ func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name s
 	if found && isCryptoDef(row.Definition) {
 		return false, cryptoKeyErr(name, row.Scope)
 	}
+	if found && isOAuthDef(row.Definition) {
+		return false, oauthCredentialErr(name, row.Scope)
+	}
 	if err != nil || !found {
 		return false, err
 	}
@@ -594,7 +620,8 @@ func (e *Engine) HasKey(ctx context.Context, tenantID, agentName, userID, name s
 // restricted to URLs this use does not name or cover, or stored but not
 // openable (no key, a wrong key, a corrupt seal), or of the wrong kind for
 // the use (a crypto key on a secret path, an ordinary credential where a
-// crypto key is named, a crypto key asked for as key material). That is not
+// crypto key is named, a crypto key asked for as key material, an OAuth
+// credential on a secret path or one not connected). That is not
 // a miss. A caller that falls back to some other value when the run has no credential
 // (the operator's provider key, an operator-allowlisted host variable) must
 // not do so for it: the tenant's credential would be quietly replaced by the
@@ -604,7 +631,9 @@ func HeldButUnusable(err error) bool {
 		errors.Is(err, ErrURLNotAllowed) || errors.Is(err, ErrNotPinnable) ||
 		errors.Is(err, ErrUnopenable) || errors.Is(err, ErrCryptoKey) ||
 		errors.Is(err, ErrNotCryptoKey) || errors.Is(err, ErrUseKeyName) ||
-		errors.Is(err, ErrAmbiguousKey)
+		errors.Is(err, ErrAmbiguousKey) || errors.Is(err, ErrOAuthCredential) ||
+		errors.Is(err, ErrNotOAuth) || errors.Is(err, ErrOAuthNotConnected) ||
+		errors.Is(err, ErrOAuthReauthRequired)
 }
 
 // HasKeyFor is HasKey for a credential about to be sent to targetURL: it
@@ -618,6 +647,9 @@ func (e *Engine) HasKeyFor(ctx context.Context, tenantID, agentName, userID, nam
 	row, found, err := e.find(ctx, tenantID, agentName, userID, name)
 	if found && isCryptoDef(row.Definition) {
 		return true, false, cryptoKeyErr(name, row.Scope)
+	}
+	if found && isOAuthDef(row.Definition) {
+		return true, false, oauthCredentialErr(name, row.Scope)
 	}
 	if err != nil || !found {
 		return found, false, err
@@ -645,6 +677,7 @@ func (e *Engine) backendFor(name string) (Backend, error) {
 func (e *Engine) metaOf(row credentialdef.Row) Meta {
 	m := Meta{AllowedURLs: restrictionOf(row.Definition), Username: usernameOf(row.Definition), Expired: e.expired(row)}
 	cryptoMeta(&m, row.Definition)
+	oauthMeta(&m, row.Definition)
 	row.Definition = nil
 	m.Row = row
 	return m

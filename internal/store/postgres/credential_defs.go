@@ -89,3 +89,22 @@ func (s *Store) CredentialDefDelete(ctx context.Context, tenantID, scope, scopeI
 	}
 	return tag.RowsAffected() > 0, nil
 }
+
+func (s *Store) CredentialDefPutIf(ctx context.Context, row credentialdef.Row, prev json.RawMessage) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE credential_defs SET backend = $1, definition = $2::jsonb, expires_at = $3, updated_at = $4
+		 WHERE tenant_id = $5 AND scope = $6 AND scope_id = $7 AND name = $8 AND definition = $9::jsonb`,
+		row.Backend, string(row.Definition), row.ExpiresAt, time.Now().UTC(),
+		row.TenantID, row.Scope, row.ScopeID, row.Name, string(prev))
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() > 0 {
+		return true, nil
+	}
+	// Nothing written: a lost race, or no row at all.
+	if _, err := s.CredentialDefGet(ctx, row.TenantID, row.Scope, row.ScopeID, row.Name); err != nil {
+		return false, err
+	}
+	return false, nil
+}

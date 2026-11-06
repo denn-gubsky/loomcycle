@@ -163,14 +163,41 @@ type cryptoHeader struct {
 	External json.RawMessage `json:"external"`
 }
 
-// isCryptoDef reports whether a stored definition is a crypto key's.
-func isCryptoDef(def json.RawMessage) bool {
+// defKindT is what kind of credential a stored definition holds.
+type defKindT int
+
+const (
+	kindNone   defKindT = iota // no row: findOne's "saw nothing else"
+	kindSecret                 // an ordinary credential ($cred:)
+	kindCrypto                 // a crypto key (RFC EP)
+	kindOAuth                  // an OAuth credential (RFC GB, $oauth:)
+)
+
+// defKind reports what kind of credential a stored definition is. OAuth is
+// usage "oauth" with none of a crypto key's fields. Any other usage, or any
+// crypto field at all, is a crypto key: a definition that is neither cleanly
+// one kind nor the other stays off every path that sends a secret, as an
+// unknown usage always has.
+func defKind(def json.RawMessage) defKindT {
 	var h cryptoHeader
 	if err := json.Unmarshal(def, &h); err != nil {
-		return false
+		return kindSecret
 	}
-	return h.Usage != "" || h.KeyType != "" || len(h.Versions) > 0 || len(h.External) > 0
+	cryptoFields := h.KeyType != "" || len(h.Versions) > 0 || len(h.External) > 0
+	if h.Usage == UsageOAuth && !cryptoFields {
+		return kindOAuth
+	}
+	if h.Usage != "" || cryptoFields {
+		return kindCrypto
+	}
+	return kindSecret
 }
+
+// isCryptoDef reports whether a stored definition is a crypto key's.
+func isCryptoDef(def json.RawMessage) bool { return defKind(def) == kindCrypto }
+
+// isOAuthDef reports whether a stored definition is an OAuth credential's.
+func isOAuthDef(def json.RawMessage) bool { return defKind(def) == kindOAuth }
 
 // cryptoBound is what each version is sealed together with. Its prefix
 // differs from boundURLs' ("urls\x1e"), and parseCryptoDef only accepts a
@@ -552,7 +579,7 @@ func cryptoDeleteRefusal(row credentialdef.Row) error {
 // reported in sawOther), so writing an ordinary credential cannot make a
 // crypto key ambiguous, nor the reverse. The decision is made from one read
 // of each scope, with no second look.
-func (e *Engine) findOne(ctx context.Context, tenantID, agentName, userID, name string, allowed Scopes, crypto bool) (row credentialdef.Row, found, sawOther bool, err error) {
+func (e *Engine) findOne(ctx context.Context, tenantID, agentName, userID, name string, allowed Scopes, crypto bool) (row credentialdef.Row, found bool, sawOther defKindT, err error) {
 	if userID == systemUserID {
 		userID = ""
 	}
@@ -576,8 +603,16 @@ func (e *Engine) findOne(ctx context.Context, tenantID, agentName, userID, name 
 			}
 			return credentialdef.Row{}, false, sawOther, gerr
 		}
-		if isCryptoDef(r.Definition) != crypto {
-			sawOther = true
+		want := kindSecret
+		if crypto {
+			want = kindCrypto
+		}
+		// An OAuth credential is neither kind: skipped like the other one,
+		// and named as such when nothing of the asked kind was found.
+		if k := defKind(r.Definition); k != want {
+			if sawOther != kindOAuth {
+				sawOther = k
+			}
 			continue
 		}
 		hits = append(hits, r)
@@ -608,12 +643,12 @@ func (e *Engine) findOne(ctx context.Context, tenantID, agentName, userID, name 
 // whose versions are all retired resolves (found, no error) with an empty
 // Versions map: the caller refuses any operation on it.
 func (e *Engine) ResolveCryptoKey(ctx context.Context, tenantID, agentName, userID, name string, allowed Scopes) (CryptoKey, bool, error) {
-	row, found, sawOrdinary, err := e.findOne(ctx, tenantID, agentName, userID, name, allowed, true)
+	row, found, sawOther, err := e.findOne(ctx, tenantID, agentName, userID, name, allowed, true)
 	if err != nil {
 		return CryptoKey{}, false, err
 	}
 	if !found {
-		if sawOrdinary {
+		if sawOther != kindNone {
 			// Say so: the name is a credential, just not a key.
 			return CryptoKey{}, false, fmt.Errorf("%w (%q)", ErrNotCryptoKey, name)
 		}
@@ -672,6 +707,9 @@ func (e *Engine) ResolveKMSSecret(ctx context.Context, id Identity) (string, boo
 	if isCryptoDef(row.Definition) {
 		return "", false, cryptoKeyErr(id.Name, row.Scope)
 	}
+	if isOAuthDef(row.Definition) {
+		return "", false, oauthCredentialErr(id.Name, row.Scope)
+	}
 	if err := e.expiredErr(row, id.Name); err != nil {
 		return "", false, err
 	}
@@ -693,12 +731,15 @@ func (e *Engine) ResolveKMSSecret(ctx context.Context, id Identity) (string, boo
 // restricted where it goes, not agreed to its use as a key), an expired one
 // with ErrExpired.
 func (e *Engine) ResolveKeyMaterial(ctx context.Context, tenantID, agentName, userID, name string, allowed Scopes) (Resolved, bool, error) {
-	row, found, sawKey, err := e.findOne(ctx, tenantID, agentName, userID, name, allowed, false)
+	row, found, sawOther, err := e.findOne(ctx, tenantID, agentName, userID, name, allowed, false)
 	if err != nil {
 		return Resolved{}, false, err
 	}
 	if !found {
-		if sawKey {
+		switch sawOther {
+		case kindOAuth:
+			return Resolved{}, false, fmt.Errorf("%w (%q)", ErrOAuthCredential, name)
+		case kindCrypto:
 			return Resolved{}, false, fmt.Errorf("%w (%q)", ErrUseKeyName, name)
 		}
 		return Resolved{}, false, nil

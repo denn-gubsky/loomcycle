@@ -14,6 +14,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1327,6 +1329,18 @@ func lateCredSubstitute(ref *func(ctx context.Context, s, targetURL string) (str
 		}
 		return s, credential.AnyRefNames(s), nil
 	}
+}
+
+// oauthHolder names this replica in an OAuth credential's lease: its
+// replica id, or a random name for a single replica (a restart then takes
+// over its own stale lease after the lease's TTL).
+func oauthHolder(replicaID string) string {
+	if replicaID != "" {
+		return replicaID
+	}
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return "replica-" + hex.EncodeToString(b[:])
 }
 
 // oauthUnavailable reports every $oauth: reference unresolved: nothing
