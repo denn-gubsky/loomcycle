@@ -330,31 +330,13 @@ func (e *Engine) PutOAuth(ctx context.Context, id Identity, cfg OAuthConfig, all
 	if !e.sealer.Enabled() {
 		return Meta{}, ErrNoKey
 	}
-	if err := validOAuthConfig(cfg); err != nil {
+	raw, err := newOAuthDefinition(cfg, allowedURLs, OAuthStatus{State: OAuthPendingConnect})
+	if err != nil {
 		return Meta{}, err
-	}
-	if allowedURLs == nil {
-		def := []string{cfg.Resource}
-		norm, err := NormalizeAllowedURLs(&def)
-		if err != nil {
-			return Meta{}, fmt.Errorf("oauth.resource: %w", err)
-		}
-		allowedURLs = norm
-	}
-	if *allowedURLs == nil {
-		allowedURLs = &[]string{}
 	}
 	e.cryptoMu.Lock()
 	defer e.cryptoMu.Unlock()
 	if err := e.absent(ctx, id); err != nil {
-		return Meta{}, err
-	}
-	raw, err := json.Marshal(oauthDefinition{
-		Usage: UsageOAuth, Config: cfg, AllowedURLs: allowedURLs,
-		Status:       OAuthStatus{State: OAuthPendingConnect},
-		StateVersion: 1,
-	})
-	if err != nil {
 		return Meta{}, err
 	}
 	row, err := e.store.CredentialDefPut(ctx, credentialdef.Row{
@@ -365,6 +347,29 @@ func (e *Engine) PutOAuth(ctx context.Context, id Identity, cfg OAuthConfig, all
 		return Meta{}, err
 	}
 	return e.metaOf(row), nil
+}
+
+// newOAuthDefinition builds the stored definition of an OAuth credential that
+// holds no grant: cfg checked, allowedURLs (already normalised; nil for the
+// default, the resource alone) and status, with no secret. Create and a
+// snapshot restore both build it here, so a restored row is one a create
+// could have written.
+func newOAuthDefinition(cfg OAuthConfig, allowedURLs *[]string, status OAuthStatus) (json.RawMessage, error) {
+	if err := validOAuthConfig(cfg); err != nil {
+		return nil, err
+	}
+	if allowedURLs == nil {
+		def := []string{cfg.Resource}
+		norm, err := NormalizeAllowedURLs(&def)
+		if err != nil {
+			return nil, fmt.Errorf("oauth.resource: %w", err)
+		}
+		allowedURLs = norm
+	}
+	if *allowedURLs == nil {
+		allowedURLs = &[]string{}
+	}
+	return json.Marshal(oauthDefinition{Usage: UsageOAuth, Config: cfg, AllowedURLs: allowedURLs, Status: status, StateVersion: 1})
 }
 
 // getOAuth reads the OAuth credential stored exactly under id (no

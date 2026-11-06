@@ -48,7 +48,8 @@ LOOMCYCLE_SECRET_KEY=$(openssl rand -base64 32)   # 32 bytes, base64
 Encryption: AES-256-GCM, a per-tenant key derived via HKDF from the master key,
 with the ciphertext bound to its row (a row copied to another tenant/name won't
 decrypt). Credentials are **excluded from snapshots** (secrets don't ride out on
-backups; a restore re-provisions).
+backups; a restore re-provisions). The one exception is an OAuth credential's
+settings, never its secrets — see [Connecting through OAuth](#connecting-through-oauth--oauthname).
 
 ## Managing credentials (tenant)
 
@@ -335,6 +336,15 @@ reference (`user_bearer`, `api_key_env`, an A2A peer's bearer, a hook's
 signing secret, the Git tool's `credential`) does not take `$oauth:`. A
 `user_bearer` that names one is refused when the run sends it.
 
+**Snapshots** carry an OAuth credential's settings (resource, issuer,
+client registration mode and token endpoint auth, scopes, `allowed_urls`) and
+its key, never a secret: no token, device code or client registration (client
+id and secret). It restores as `needs_reauth` (`pending_connect` if it was
+never connected), so its owner only connects it again with
+`oauth_connect_start`; a credential of the same name already on the target is
+left alone, with a warning. The restore's missing-credential scan names each
+`$oauth:` reference that is missing or not connected on the target.
+
 ## Overriding a provider / tool API key by its env-var name
 
 Some credentials aren't referenced with `$cred:` — they **override the operator's
@@ -456,7 +466,7 @@ agents:
 
 `key_type` is one of `aes-256-gcm`, `xchacha20-poly1305` (encrypt / decrypt), `hmac-sha256`, `hmac-sha512` (MAC, JWS), `ed25519`, `ecdsa-p256`, `rsa-pss-2048` / `-3072` / `-4096` (sign / verify, public key), `x25519`, `rsa-oaep-2048` / `-3072` / `-4096` (encrypt to the key's own public half as a JWE, decrypt, public key), `totp` (one-time codes). An RSA key either signs or decrypts, never both. It is fixed for the key's life and sealed into every version, so it cannot be changed behind the engine's back.
 
-Inside a run, an agent creates and changes crypto keys **only in its own agent scope**; tenant and user keys are made by an operator or the user, outside a run. Snapshots never carry credentials, crypto keys included: move a key with `export_key` / `import_key`.
+Inside a run, an agent creates and changes crypto keys **only in its own agent scope**; tenant and user keys are made by an operator or the user, outside a run. Snapshots never carry credentials (an OAuth credential's settings aside), crypto keys included: move a key with `export_key` / `import_key`.
 
 **Using keys.** The `Crypto` tool takes a crypto key by name (`key`), an ordinary credential as key material (`cred`, with its `key_type`; one restricted by `allowed_urls` is refused), or a credential the run's caller passed (`run`). An agent may use only the scopes its `crypto_scopes` grants; with none it can still `hash` and make `random` values. Unlike a `$cred:` secret, where a narrower scope wins, a key name has **no precedence**: a `key` is used only when exactly one of the run's scopes holds a crypto key of that name, and a `cred` only when exactly one holds an ordinary credential of that name (the other kind is ignored either way). When more than one does, the call is refused until it names the scope with `key_scope` (`agent`, `user` or `tenant`), so a key or secret someone stores under another's name can never stand in for it (a user's own value under the tenant's webhook-secret name would otherwise verify MACs they forged). CredentialDef also refuses to create a crypto key under a name another scope the caller sees already holds as one. An envelope records its key's kind and scope (`lcx1:kt:` crypto key in tenant scope, `ku` user, `ka` agent; `ct` / `cu` / `ca` for an ordinary credential; `r` for a run credential), and that is part of the associated data, so a ciphertext decrypts only with the key of the scope that sealed it; a same-named key that appears later can neither open it nor block it. Decrypt and verify failures never say why. `decrypt` with `sensitive: true` keeps the plaintext out of the stored transcript, and the plaintext an agent encrypts is never stored. Every keyed op and every key change is written to the audit log (`LOOMCYCLE_AUDIT_LOG_PATH`), never with data or key material.
 

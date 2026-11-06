@@ -191,9 +191,16 @@ var tableCoverageMap = map[string]tableCoverage{
 	"webhook_defs": {Kind: coverSection, Section: "webhook_defs", Backends: onBoth,
 		Secrets: "stripped: literal user_credentials values (keys kept as stripped_credentials; the def travels with enabled:false)"},
 
+	// credential_defs is carried only in part (RFC GB, owner decision): an
+	// OAuth credential's config, URL restriction and key, restored without a
+	// grant so its owner only connects it again. Every sealed value — every
+	// ordinary credential and crypto key whole, and an OAuth credential's
+	// tokens, device code and registration — stays behind, as do the names of
+	// every other credential. Was coverNever before RFC GB.
+	"credential_defs": {Kind: coverSection, Section: "oauth_credentials", Backends: onBoth,
+		Secrets: "stripped: every sealed value, and every credential but an OAuth one (whose config, allowed_urls and key travel; restored with no grant)"},
+
 	// ---- never in an envelope (§3.1) ----------------------------------------
-	"credential_defs": {Kind: coverNever, Backends: onBoth,
-		Reason: "sealed tenant secrets keyed off the source's LOOMCYCLE_SECRET_KEY; even the names are withheld"},
 	"operator_token_defs": {Kind: coverNever, Backends: onBoth,
 		Reason: "bearer-authentication material; restoring one would make a source bearer valid on the target"},
 	"ui_sessions": {Kind: coverNever, Backends: onBoth,

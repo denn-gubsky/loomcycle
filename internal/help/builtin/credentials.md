@@ -153,6 +153,9 @@ retries the call once; a second refusal moves the credential to
 `$cred:<name>` (`user_bearer`, `api_key_env`, an A2A peer's bearer, a signing
 secret, a git `credential`) does not take `$oauth:`.
 
+A snapshot carries an OAuth credential's config and `allowed_urls`, never its
+grant: it restores as `needs_reauth`, and its owner connects it again.
+
 ## Provider keys
 
 A stored credential named for a provider env var (e.g. `ANTHROPIC_API_KEY`,

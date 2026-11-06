@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -98,5 +99,34 @@ func testCredentialDefPutIfMissingRowIsNotFound(t *testing.T, s store.Store) {
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) {
 		t.Fatalf("err = %v, want *store.ErrNotFound", err)
+	}
+}
+
+// Listing every credential row spans every tenant and scope, in key order:
+// what the snapshot capture walks.
+func testCredentialDefListAllSpansTenantsAndScopes(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, r := range []credentialdef.Row{
+		{TenantID: "b", Scope: "tenant", Name: "x"},
+		{TenantID: "a", Scope: "user", ScopeID: "u1", Name: "y"},
+		{TenantID: "a", Scope: "agent", ScopeID: "ag", Name: "z"},
+		{TenantID: "", Scope: "tenant", Name: "w"},
+	} {
+		r.Backend, r.Definition = "inline", json.RawMessage(`{"value":"v"}`)
+		if _, err := s.CredentialDefPut(ctx, r); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+	}
+	got, err := s.CredentialDefListAll(ctx)
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	var keys []string
+	for _, r := range got {
+		keys = append(keys, r.TenantID+"/"+r.Scope+"/"+r.ScopeID+"/"+r.Name)
+	}
+	want := []string{"/tenant//w", "a/agent/ag/z", "a/user/u1/y", "b/tenant//x"}
+	if fmt.Sprint(keys) != fmt.Sprint(want) {
+		t.Errorf("list all = %v, want %v", keys, want)
 	}
 }
