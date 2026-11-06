@@ -34,15 +34,15 @@
 
 **What makes it different.** Most agent platforms are a library you embed, a hosted service you rent, or a gateway that does not run the loop. loomcycle is a self-hostable **agent-system kernel** that owns the loop *and* ships with the data substrate, teams primitive, decision model, Crypto tool, canvas, dev toolchain and headless browser already assembled.
 
-## Last week delivered: v1.135 → v1.141 (Nov 2–5, 2026)
+## Last week delivered: v1.135 → v1.142 (Nov 2–6, 2026)
 
-Seven minor releases this week; per-release notes are in [`REVISIONS.md`](REVISIONS.md).
+Eight minor releases this week; per-release notes are in [`REVISIONS.md`](REVISIONS.md).
 
 - **Documents move between scopes (v1.135 → v1.136).** `copy_documents` and `move_documents` carry a set of documents with their relations between the agent, user and tenant scopes; a move keeps every document, chunk and relation id and finishes an interrupted move on the next call. The Path explorer and both adapters gain copy and move.
 - **The document star map (v1.135).** A scope drawn in 3D by meaning, its embeddings projected server side, with link review, saved views and live updates from a member-safe document change feed.
 - **Agents cite documents as links (v1.138).** `[title](loom:doc/<id>)` and `[title](loom:chunk/<id>)` open in the viewer on the cited chunk.
-- **Speech for chat clients (v1.140 → v1.141).** `POST /v1/audio/speech` reads a reply aloud and `POST /v1/audio/transcriptions` transcribes the microphone; a bridge user's token can be granted those routes, so the chat bridges can exchange voice messages.
-- **Security (v1.140 → v1.141).** A tenant member no longer reads other people's data or decides for the tenant, every stored access rule is enforced or refused, and an erasure ends the account; SQLite scopes open in defensive mode; CI gates npm and pip advisories with every action and base image pinned.
+- **Speech for chat clients and the bridges (v1.140 → v1.142).** `POST /v1/audio/speech` reads a reply aloud and `POST /v1/audio/transcriptions` transcribes the microphone; a bridge user's token can be granted those routes, and the Telegram, Slack, Discord and Teams bridges take voice messages in and (except Teams) answer with voice.
+- **Security (v1.140 → v1.142).** A tenant member no longer reads other people's data or decides for the tenant, every stored access rule is enforced or refused, and an erasure ends the account; SQLite scopes open in defensive mode; CI gates npm and pip advisories with every action and base image pinned. v1.142 adds a hash-chained audit trail in the store, each SQLite scope's documents in a file of their own, bounded file extraction, truthful provenance for tenant facts, bridges that refuse unsafe settings, security headers, and signed releases with SBOMs.
 
 See [`REVISIONS.md`](REVISIONS.md) for the per-release detail.
 
@@ -684,7 +684,7 @@ Full request flow, abstractions, and concurrency model: [`docs/ARCHITECTURE.md`]
 - **Access control.** Rule lists, nested groups and bindings, explicit deny over allow, rolled out `compat` → `shadow` → `enforce`; a stored rule no surface evaluates is refused at write.
 - **Secrets the model never sees.** Tenant credentials sealed with AES-256-GCM per tenant; Crypto keys held by loomcycle or in Vault Transit / AWS KMS / Google Cloud KMS; a credential restricted by URL goes only where it is allowed.
 - **Untrusted files parsed under bounds.** Extraction caps every table, cell and document, runs a bounded number at once, and recovers a parser panic as a failed tool call. Imported text is tagged untrusted, and a run's tenant-scope links are filed for review.
-- **Durable audit trail and signed releases** (on `main`, in the release after v1.141.0): a store-backed, hash-chained, HMAC-signed audit stream on by default once sign-in gates or access control are configured; release binaries and images signed with cosign, with SBOMs and build provenance ([`docs/VERIFYING-RELEASES.md`](docs/VERIFYING-RELEASES.md)).
+- **Durable audit trail and signed releases** (since v1.142.0): a store-backed, hash-chained, HMAC-signed audit stream on by default once sign-in gates or access control are configured; release binaries and images signed with cosign, with SBOMs and build provenance ([`docs/VERIFYING-RELEASES.md`](docs/VERIFYING-RELEASES.md)).
 
 Full security model and the two-layer default-deny walkthrough: [`docs/TOOLS.md`](docs/TOOLS.md). To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
 

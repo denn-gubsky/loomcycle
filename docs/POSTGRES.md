@@ -1,6 +1,6 @@
 # Postgres backend
 
-This guide is for operators running loomcycle in production. The Postgres backend first shipped in v0.5.0; this guide is current for v1.141.0, except the benchmark section, which keeps the v0.5.0 reference numbers. SQLite stays the default — it covers compact installs, dev environments, and the [README](../README.md) quick-start with zero external dependencies. **Switch to Postgres when you need horizontal scaling** (multiple loomcycle replicas behind a load balancer, hundreds of concurrent agents, shared-DB across services). The agent-facing wire protocol and the `Store` interface are identical between backends; the operator-visible difference is the deployment topology.
+This guide is for operators running loomcycle in production. The Postgres backend first shipped in v0.5.0; this guide is current for v1.142.0, except the benchmark section, which keeps the v0.5.0 reference numbers. SQLite stays the default — it covers compact installs, dev environments, and the [README](../README.md) quick-start with zero external dependencies. **Switch to Postgres when you need horizontal scaling** (multiple loomcycle replicas behind a load balancer, hundreds of concurrent agents, shared-DB across services). The agent-facing wire protocol and the `Store` interface are identical between backends; the operator-visible difference is the deployment topology.
 
 For the runtime architecture, see [ARCHITECTURE.md](ARCHITECTURE.md). For the public roadmap (v0.5.0 milestones), see [PLAN.md](PLAN.md).
 
