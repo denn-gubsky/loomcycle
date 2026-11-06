@@ -111,7 +111,7 @@ func TestPrepare_PicksTheVoiceByScriptAndKeepsToTheList(t *testing.T) {
 		err         error
 	}{
 		{req: Request{Text: "Привіт, це перевірка голосу."}, lang: "uk", voice: "ukrainian_tts"},
-		{req: Request{Text: "Hello, this is a voice check."}, lang: "uk", voice: "ukrainian_tts"}, // Latin is never guessed
+		{req: Request{Text: "Hello, this is a voice check."}, lang: "en", voice: "Hadley"}, // mostly Latin, and en is the only Latin-script voice
 		{req: Request{Text: "Hello.", Language: "EN"}, lang: "en", voice: "Hadley"},
 		{req: Request{Text: "Hello.", Language: "en", Voice: "Zoey"}, lang: "en", voice: "Zoey"},
 		{req: Request{Text: "Hello.", Language: "en", Voice: "Bob"}, err: ErrVoice},
