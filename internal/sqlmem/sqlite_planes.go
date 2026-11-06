@@ -32,18 +32,23 @@ import (
 // dropped with its table.
 //
 // CRASH SAFETY. All the copies and the split mark are ONE transaction on the
-// document file, so the file goes from "tables provisioned, empty, unsplit" to
-// "every row, split" atomically: no reader — the dead-link GC above all, which
-// reaps a body whose chunk row it cannot see — ever sees half a move. Dropping the
-// old tables is a second transaction, on the agent file, after the mark. Each step
-// is safe to stop after:
-//   - before the copy commits: nothing in the document file counts (unsplit), the
-//     agent file still holds every row, and the next adoption copies them;
-//   - after it commits, before the drop: the split is recorded, so the next
-//     adoption drops the leftovers WITHOUT reading them — they are duplicates of
-//     what was copied, and anything written to them since is an agent's;
+// document file, so the file goes from "unmarked" to "every row, marked"
+// atomically: no reader — the dead-link GC above all, which reaps a body whose
+// chunk row it cannot see — ever sees half a move. An unmarked document file never
+// counts, so the move clears whatever its tables hold before copying. Dropping the
+// old tables is a second transaction, on the agent file, after the mark (with
+// secure_delete, then a VACUUM and a WAL truncate, so the moved rows do not linger
+// in free pages). Each step is safe to stop after:
+//   - before the copy commits: nothing in the document file counts, the agent
+//     file still holds every row, and the next adoption copies them;
+//   - after it commits, before the drop: the split is recorded, and the leftovers
+//     are exact duplicates; the next adoption merges in only rows whose key the
+//     document file lacks (none, here) and drops them;
 //   - a failed drop is logged, not returned: the document file is complete, and
 //     the next adoption (the boot pass, or the next process's first use) retries.
+//
+// A restore of the document plane writes its rows and the mark in one
+// transaction too, under the same per-scope lock as a move (restoreScope).
 
 // docFileSplitMark is the document file's user_version once the scope's tables
 // have moved into it (or it was created that way). The header field is written
@@ -148,16 +153,20 @@ func (b *sqliteBackend) adoptTables(ctx context.Context, key ScopeKey, tables []
 		// the scope's, after which nothing in the agent file is ever copied over.
 		return b.markSplit(ctx, key)
 	}
+	if b.adoptStep != nil {
+		if err := b.adoptStep(adoptStepHeld); err != nil {
+			return err
+		}
+	}
 
 	// Pin both files for the move, so the GC sweeps and DropScope see the scope in
-	// use and leave it alone: the move's own connection is not in the pool.
-	if _, err := b.acquire(agentPath); err != nil {
+	// use and leave it alone: the move's own connection is not in the pool. A scope
+	// erased since its tables were listed is gone, and stays gone.
+	there, err := b.pinScopeFiles(agentPath, docPath)
+	if err != nil || !there {
 		return err
 	}
 	defer b.release(agentPath)
-	if _, err := b.acquire(docPath); err != nil {
-		return err
-	}
 	defer b.release(docPath)
 
 	// A connection of the move's own, closed when it is done: the agent file is
@@ -181,10 +190,7 @@ func (b *sqliteBackend) adoptTables(ctx context.Context, key ScopeKey, tables []
 	if _, err := conn.ExecContext(ctx, `ATTACH DATABASE ? AS `+adoptAttachName, agentPath); err != nil {
 		return fmt.Errorf("sqlmem: move document tables: attach the agent file: %w", err)
 	}
-	if split {
-		slog.Warn("sqlmem: dropping tables named like document tables from the agent file of a scope that already has its document file; their rows were not read",
-			"path", agentPath, "tables", held)
-	} else if err := b.copyIntoDocFile(ctx, conn, agentPath, held); err != nil {
+	if err := b.moveRows(ctx, conn, agentPath, held, split); err != nil {
 		return err
 	}
 	if b.adoptStep != nil {
@@ -195,80 +201,105 @@ func (b *sqliteBackend) adoptTables(ctx context.Context, key ScopeKey, tables []
 	if err := dropAgentFileTables(ctx, conn, held); err != nil {
 		slog.Warn("sqlmem: could not drop the moved document tables from the agent file; the next move retries",
 			"path", agentPath, "err", err)
+		return nil
 	}
+	compactAgentFile(ctx, conn, agentPath)
 	return nil
 }
 
-// copyIntoDocFile copies held's rows from the attached agent file into the
-// document file's tables of the same names, and records the split, in ONE
-// transaction on the document file.
+// pinScopeFiles pins both of a scope's files (inUse++) if the agent file still
+// exists, under b.mu, the lock removeIfIdle checks and removes under. false
+// means the scope was erased: nothing is pinned, and nothing created.
+func (b *sqliteBackend) pinScopeFiles(agentPath, docPath string) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if there, err := statExists(agentPath); err != nil || !there {
+		return false, err
+	}
+	if there, err := statExists(docPath); err != nil || !there {
+		if err == nil {
+			err = fmt.Errorf("sqlmem: the scope's document file is not provisioned; provision it before moving the tables")
+		}
+		return false, err
+	}
+	if _, err := b.acquireLocked(agentPath); err != nil {
+		return false, err
+	}
+	if _, err := b.acquireLocked(docPath); err != nil {
+		if h, ok := b.open[agentPath]; ok && h.inUse > 0 {
+			h.inUse--
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// moveRows carries held's rows from the attached agent file into the document
+// file's tables of the same names, in ONE transaction on the document file.
 //
-// Only columns the document file's table has are copied (an agent could have
-// added one before the guard existed; it is logged and left behind). A document
-// table that already holds rows keeps them and the agent copy is discarded, with a
-// warning, as on postgres: that is a scope restored from an older archive over a
-// live document file. INSERT … SELECT runs inside the engine, so a large scope
-// streams page by page rather than through Go memory.
-func (b *sqliteBackend) copyIntoDocFile(ctx context.Context, conn *sql.Conn, agentPath string, held []string) error {
+// Unmarked (the move proper): the document file does not count yet, so whatever
+// its tables hold — rows a write that skipped provisioning left in a failed move's
+// empty tables — is cleared, the agent file's rows are copied, and the split is
+// marked, all in that transaction. INSERT … SELECT runs inside the engine, so a
+// large scope streams page by page rather than through Go memory.
+//
+// Marked (the move already happened): the agent file's tables are leftovers. Most
+// often they are exact duplicates, from a stop between the move's commit and its
+// drop, and add nothing. But rows whose key the document file lacks were written
+// after the move — by an older release the deployment was rolled back to, which
+// knows only the agent file — and are real data: they are merged in, logged with
+// their count. A row the document file already holds keeps the document file's
+// version.
+//
+// Only columns the document file's table has are carried (an agent could have
+// added one before the guard existed; it is logged and left behind).
+func (b *sqliteBackend) moveRows(ctx context.Context, conn *sql.Conn, agentPath string, held []string, split bool) error {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("sqlmem: move document tables: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	var orphans []string
+	merged := map[string]int64{}
 	for _, t := range held {
-		docCols, err := tableColumns(ctx, tx, "main", t)
+		cols, err := carriedColumns(ctx, tx, agentPath, t)
 		if err != nil {
 			return err
 		}
-		if len(docCols) == 0 {
+		if cols == nil {
 			// Not a table the Document tool creates any more (a migration's
 			// scratch table, say): nothing in the document file takes its rows.
 			orphans = append(orphans, t)
-			continue
-		}
-		agentCols, err := tableColumns(ctx, tx, adoptAttachName, t)
-		if err != nil {
-			return err
-		}
-		inAgent := map[string]bool{}
-		for _, c := range agentCols {
-			inAgent[strings.ToLower(c)] = true
-		}
-		inDoc := map[string]bool{}
-		var cols []string
-		for _, c := range docCols {
-			inDoc[strings.ToLower(c)] = true
-			if inAgent[strings.ToLower(c)] {
-				cols = append(cols, quoteIdent(c))
-			}
-		}
-		for _, c := range agentCols {
-			if !inDoc[strings.ToLower(c)] {
-				slog.Warn("sqlmem: dropping a column an agent added to a document table", "path", agentPath, "table", t, "column", c)
-			}
-		}
-		var one int
-		err = tx.QueryRowContext(ctx, `SELECT 1 FROM main.`+quoteIdent(t)+` LIMIT 1`).Scan(&one)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("sqlmem: check %s in the document file: %w", t, err)
-		}
-		if err == nil {
-			slog.Warn("sqlmem: discarded the agent file's copy of a document table; the document file already holds rows",
-				"path", agentPath, "table", t)
 			continue
 		}
 		if len(cols) == 0 {
 			continue
 		}
 		list := strings.Join(cols, ", ")
+		dst, src := `main.`+quoteIdent(t), adoptAttachName+`.`+quoteIdent(t)
+		if !split {
+			// #nosec G202 -- t matched pgTableNameRe
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+dst); err != nil {
+				return fmt.Errorf("sqlmem: clear %s in the unmarked document file: %w", t, err)
+			}
+			// #nosec G202 -- t matched pgTableNameRe and the columns come from the files' own catalogs, quoted
+			if _, err := tx.ExecContext(ctx, `INSERT INTO `+dst+` (`+list+`) SELECT `+list+` FROM `+src); err != nil {
+				return fmt.Errorf("sqlmem: move %s to the document file: %w", t, err)
+			}
+			continue
+		}
+		// EXCEPT keeps exact duplicates out of a table without a key; OR IGNORE
+		// keeps the document file's row where a key matches.
 		// #nosec G202 -- t matched pgTableNameRe and the columns come from the files' own catalogs, quoted
-		stmt := `INSERT INTO main.` + quoteIdent(t) + ` (` + list + `) SELECT ` + list + ` FROM ` + adoptAttachName + `.` + quoteIdent(t)
-		if _, err := tx.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("sqlmem: move %s to the document file: %w", t, err)
+		r, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO `+dst+` (`+list+`) SELECT `+list+` FROM `+src+` EXCEPT SELECT `+list+` FROM `+dst)
+		if err != nil {
+			return fmt.Errorf("sqlmem: merge %s into the document file: %w", t, err)
+		}
+		if n, _ := r.RowsAffected(); n > 0 {
+			merged[t] = n
 		}
 	}
-	if len(orphans) == len(held) {
+	if !split && len(orphans) == len(held) {
 		// Every table would be dropped unread for want of a place to go: the
 		// document file was never provisioned. Refuse rather than lose the rows.
 		return fmt.Errorf("sqlmem: the document file holds none of %v; provision it before moving the tables", held)
@@ -276,27 +307,69 @@ func (b *sqliteBackend) copyIntoDocFile(ctx context.Context, conn *sql.Conn, age
 	for _, t := range orphans {
 		slog.Warn("sqlmem: dropping a document table with no document-file counterpart", "path", agentPath, "table", t)
 	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA main.user_version = %d`, docFileSplitMark)); err != nil {
-		return fmt.Errorf("sqlmem: record the scope's split: %w", err)
-	}
-	if b.adoptStep != nil {
-		if err := b.adoptStep(adoptStepCopied); err != nil {
-			return err
+	if !split {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA main.user_version = %d`, docFileSplitMark)); err != nil {
+			return fmt.Errorf("sqlmem: record the scope's split: %w", err)
+		}
+		if b.adoptStep != nil {
+			if err := b.adoptStep(adoptStepCopied); err != nil {
+				return err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sqlmem: move document tables: commit: %w", err)
 	}
+	if len(merged) > 0 {
+		slog.Warn("sqlmem: merged rows written to the agent file after the scope's documents moved out (an older release ran on this data); the document file's own rows were kept",
+			"path", agentPath, "rows_by_table", merged)
+	}
 	return nil
+}
+
+// carriedColumns returns the quoted columns a table's rows carry from the agent
+// file into the document file: those the document file's table has. nil when the
+// document file has no such table.
+func carriedColumns(ctx context.Context, tx *sql.Tx, agentPath, table string) ([]string, error) {
+	docCols, err := tableColumns(ctx, tx, "main", table)
+	if err != nil || len(docCols) == 0 {
+		return nil, err
+	}
+	agentCols, err := tableColumns(ctx, tx, adoptAttachName, table)
+	if err != nil {
+		return nil, err
+	}
+	inAgent := map[string]bool{}
+	for _, c := range agentCols {
+		inAgent[strings.ToLower(c)] = true
+	}
+	inDoc := map[string]bool{}
+	cols := []string{}
+	for _, c := range docCols {
+		inDoc[strings.ToLower(c)] = true
+		if inAgent[strings.ToLower(c)] {
+			cols = append(cols, quoteIdent(c))
+		}
+	}
+	for _, c := range agentCols {
+		if !inDoc[strings.ToLower(c)] {
+			slog.Warn("sqlmem: dropping a column an agent added to a document table", "path", agentPath, "table", table, "column", c)
+		}
+	}
+	return cols, nil
 }
 
 // dropAgentFileTables drops the moved tables from the attached agent file in one
 // transaction. Foreign keys are off for it: an agent table that once REFERENCED a
 // document table would otherwise make the implicit delete fail and wedge the move
-// for good. Dropping a table takes its indexes and triggers with it.
+// for good. Dropping a table takes its indexes and triggers with it. secure_delete
+// zeroes the pages the tables free, so the moved rows are not left readable in the
+// agent file's free pages, which page-level access (sqlite_dbpage) reaches.
 func dropAgentFileTables(ctx context.Context, conn *sql.Conn, held []string) error {
-	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
-		return err
+	for _, p := range []string{`PRAGMA foreign_keys = OFF`, `PRAGMA ` + adoptAttachName + `.secure_delete = ON`} {
+		if _, err := conn.ExecContext(ctx, p); err != nil {
+			return err
+		}
 	}
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
@@ -309,6 +382,22 @@ func dropAgentFileTables(ctx context.Context, conn *sql.Conn, held []string) err
 		}
 	}
 	return tx.Commit()
+}
+
+// compactAgentFile gives the space the moved tables left back to the disk and
+// clears the agent file's WAL, which still holds earlier images of their pages.
+// Best-effort: an agent transaction open on the file makes it busy, and the zeroed
+// free pages (secure_delete) already hold nothing; it is logged, not returned.
+func compactAgentFile(ctx context.Context, conn *sql.Conn, agentPath string) {
+	if _, err := conn.ExecContext(ctx, `VACUUM `+adoptAttachName); err != nil {
+		slog.Warn("sqlmem: could not compact the agent file after moving its document tables out", "path", agentPath, "err", err)
+		return
+	}
+	var busy, logFrames, checkpointed int64
+	err := conn.QueryRowContext(ctx, `PRAGMA `+adoptAttachName+`.wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed)
+	if err != nil || busy != 0 {
+		slog.Warn("sqlmem: could not clear the agent file's WAL after moving its document tables out", "path", agentPath, "busy", busy, "err", err)
+	}
 }
 
 // markSplit records in the scope's document file that the file is the scope's

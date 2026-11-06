@@ -65,6 +65,10 @@ type sqliteBackend struct {
 const (
 	adoptStepCopied = "copied" // rows copied, split recorded, not yet committed
 	adoptStepMarked = "marked" // committed; the agent file's tables not yet dropped
+	// adoptStepHeld: the tables to move are known, the scope's files not yet pinned.
+	adoptStepHeld = "held"
+	// adoptStepRestored: a restore's document rows and mark written, not committed.
+	adoptStepRestored = "restored"
 )
 
 // openHandle is one live scope database plus its LRU stamp and an in-flight
@@ -282,6 +286,11 @@ func openScopeDB(path string) (*sql.DB, error) {
 func (b *sqliteBackend) acquire(path string) (*sql.DB, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.acquireLocked(path)
+}
+
+// acquireLocked is acquire with b.mu held.
+func (b *sqliteBackend) acquireLocked(path string) (*sql.DB, error) {
 	b.clock++
 	h, ok := b.open[path]
 	if !ok {
@@ -397,7 +406,7 @@ func (b *sqliteBackend) exec(ctx context.Context, key ScopeKey, statement string
 		if err != nil {
 			return nil, fmt.Errorf("sqlmem: quota check: %w", err)
 		}
-		other, err := b.otherPlaneBytes(key)
+		other, err := b.otherPlaneBytes(ctx, key)
 		if err != nil {
 			return nil, fmt.Errorf("sqlmem: quota check: %w", err)
 		}
@@ -425,19 +434,24 @@ func (b *sqliteBackend) exec(ctx context.Context, key ScopeKey, statement string
 	return out, nil
 }
 
-// scopeSizeBytes returns the on-disk size of the scope database as
-// page_count * page_size. Runs on either the scope handle (auto-commit) or an
-// open transaction (rowQueryer). Both pragmas are engine-internal (read-only
+// scopeSizeBytes returns what the scope database holds, as (page_count -
+// freelist_count) * page_size: free pages are space the file keeps, not data the
+// scope stores, and a scope whose documents moved out of its agent file must not
+// be charged for the pages they left. Runs on either the scope handle (auto-commit)
+// or an open transaction (rowQueryer). The pragmas are engine-internal (read-only
 // here); they never touch agent data.
 func scopeSizeBytes(ctx context.Context, q rowQueryer) (int64, error) {
-	var pageCount, pageSize int64
+	var pageCount, freePages, pageSize int64
 	if err := q.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pageCount); err != nil {
 		return 0, fmt.Errorf("page_count: %w", err)
+	}
+	if err := q.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&freePages); err != nil {
+		return 0, fmt.Errorf("freelist_count: %w", err)
 	}
 	if err := q.QueryRowContext(ctx, "PRAGMA page_size").Scan(&pageSize); err != nil {
 		return 0, fmt.Errorf("page_size: %w", err)
 	}
-	return pageCount * pageSize, nil
+	return (pageCount - freePages) * pageSize, nil
 }
 
 // beginTx pins the scope handle (so it is not evicted while the txn is open)
@@ -466,18 +480,25 @@ func (b *sqliteBackend) txnSizeBytes(ctx context.Context, tx *sql.Tx, key ScopeK
 	if err != nil {
 		return 0, err
 	}
-	other, err := b.otherPlaneBytes(key)
+	other, err := b.otherPlaneBytes(ctx, key)
 	if err != nil {
 		return 0, err
 	}
 	return size + other, nil
 }
 
-// otherPlaneBytes is the on-disk size of the scope's OTHER file. The quota is the
-// scope's, wherever its tables live, as on postgres (pgScopeSizeBytes): before the
-// planes split, documents and the agent's tables shared one file and one quota,
-// and moving the documents out must not hand the agent their share.
-func (b *sqliteBackend) otherPlaneBytes(key ScopeKey) (int64, error) {
+// otherPlaneBytes is the size of what the scope's OTHER file holds, measured as
+// scopeSizeBytes measures this one. The quota is the scope's, wherever its tables
+// live, as on postgres (pgScopeSizeBytes): before the planes split, documents and
+// the agent's tables shared one file and one quota, and moving the documents out
+// must not hand the agent their share.
+//
+// It reads the other file on a short-lived connection of its own, not through the
+// pool: each scope file has one pooled connection, and a transaction holding it
+// (an agent's sql_begin, the Document tool's withSqlTxn) would block this check
+// until it ended. A WAL reader never waits on a writer. Only a write under a quota
+// pays for it.
+func (b *sqliteBackend) otherPlaneBytes(ctx context.Context, key ScopeKey) (int64, error) {
 	other := key
 	other.plane = planeDoc
 	if key.isDoc() {
@@ -487,7 +508,15 @@ func (b *sqliteBackend) otherPlaneBytes(key ScopeKey) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return fileFootprint(path), nil
+	if there, err := statExists(path); err != nil || !there {
+		return 0, err
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = db.Close() }()
+	return scopeSizeBytes(ctx, db)
 }
 
 // fileFootprint is a scope file's size on disk with its -wal/-shm sidecars (in
@@ -581,28 +610,30 @@ func (b *sqliteBackend) durableScopes() ([]*durableScope, error) {
 	return out, err
 }
 
-// takeIdle evicts the handles of every one of a scope's files, unless any of them
-// is pinned by an in-flight op or an open transaction (inUse>0): then it touches
-// nothing and reports false. Never evict a pinned handle — it would break the live
-// op, exactly what the inUse refcount exists to prevent.
-func (b *sqliteBackend) takeIdle(files []string) bool {
+// removeIfIdle evicts and fenced-removes every one of a scope's files, unless any
+// of them is pinned by an in-flight op, an open transaction or a move (inUse>0):
+// then it touches nothing and reports idle=false. Never evict a pinned handle — it
+// would break the live op, exactly what the inUse refcount exists to prevent.
+//
+// The check and the removal are one step under b.mu, the lock a move pins the
+// scope under (pinScopeFiles): a move either sees the files gone or pins them
+// before they are removed, so it never writes into a scope being erased or
+// recreates one.
+//
+// Each file is fenced under its OWN directory (tighter than <root>) so a
+// symlinked file can't widen the delete to another tenant's subtree. removed
+// reports whether any file was deleted.
+func (b *sqliteBackend) removeIfIdle(files []string) (idle, removed bool, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for _, path := range files {
 		if h, ok := b.open[path]; ok && h.inUse > 0 {
-			return false
+			return false, false, nil
 		}
 	}
 	for _, path := range files {
 		b.evictPathLocked(path)
 	}
-	return true
-}
-
-// removeScopeFiles fenced-removes each of a scope's files under its OWN directory
-// (tighter than <root>) so a symlinked file can't widen the delete to another
-// tenant's subtree. removed reports whether any file was deleted.
-func removeScopeFiles(files []string) (removed bool, err error) {
 	for _, path := range files {
 		r, rerr := fencedRemoveDB(filepath.Dir(path), path)
 		if rerr != nil && err == nil {
@@ -610,7 +641,7 @@ func removeScopeFiles(files []string) (removed bool, err error) {
 		}
 		removed = removed || r
 	}
-	return removed, err
+	return true, removed, err
 }
 
 // sweepStale fenced-removes each durable scope whose files were last used before
@@ -623,10 +654,7 @@ func (b *sqliteBackend) sweepStale(cutoff time.Time) (int, error) {
 			continue
 		}
 		// An in-use scope is skipped; the next sweep catches it once idle.
-		if !b.takeIdle(sc.files) {
-			continue
-		}
-		if removed, rerr := removeScopeFiles(sc.files); rerr == nil && removed {
+		if _, removed, rerr := b.removeIfIdle(sc.files); rerr == nil && removed {
 			dropped++
 		}
 	}
@@ -656,10 +684,9 @@ func (b *sqliteBackend) sweepBudget(budget int64) (int, error) {
 		if total <= budget {
 			break
 		}
-		if !b.takeIdle(sc.files) {
-			continue // pinned by a live op / open txn — skip, catch it next sweep
-		}
-		if removed, rerr := removeScopeFiles(sc.files); rerr == nil && removed {
+		// A pinned scope (live op / open txn / move) is skipped; the next sweep
+		// catches it once idle.
+		if _, removed, rerr := b.removeIfIdle(sc.files); rerr == nil && removed {
 			dropped++
 			total -= sc.size
 		}
@@ -714,10 +741,11 @@ func (b *sqliteBackend) dropScope(key ScopeKey) (removed bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	if !b.takeIdle([]string{agent, doc}) {
+	idle, removed, err := b.removeIfIdle([]string{agent, doc})
+	if !idle {
 		return false, fmt.Errorf("sqlmem: scope %s/%s in use", key.Scope, key.ScopeID)
 	}
-	return removeScopeFiles([]string{agent, doc})
+	return removed, err
 }
 
 // fencedRemoveDB removes a single scope .db file (and its -wal/-shm

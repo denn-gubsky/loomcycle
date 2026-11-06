@@ -242,8 +242,9 @@ func TestSqlmem_AdoptResumesAfterAnInterruptedCopy(t *testing.T) {
 }
 
 // Stopped after the copy committed but before the agent file's tables were
-// dropped, the split is recorded: the next adoption drops the leftovers without
-// reading them, so a row written to them in between never crosses.
+// dropped, the split is recorded and the leftovers are exact duplicates: the next
+// adoption drops them, and a change made to a copied row in between does not
+// overwrite the document file's row.
 func TestSqlmem_AdoptResumesAfterAnInterruptedDrop(t *testing.T) {
 	ctx := context.Background()
 	m := newTestManager(t, Config{})
@@ -262,7 +263,7 @@ func TestSqlmem_AdoptResumesAfterAnInterruptedDrop(t *testing.T) {
 	if held, _ := m.AgentPlaneTables(ctx, key, []string{"chunks"}); len(held) != 1 {
 		t.Fatalf("agent file holds %v, want the undropped chunks", held)
 	}
-	if _, err := m.Exec(ctx, key.AgentPlane(), `INSERT INTO chunks (id, title, status) VALUES ('forged', 'forged', 'asserted')`, nil, 0); err != nil {
+	if _, err := m.Exec(ctx, key.AgentPlane(), `UPDATE chunks SET status = 'asserted' WHERE id = 'c1'`, nil, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -273,8 +274,8 @@ func TestSqlmem_AdoptResumesAfterAnInterruptedDrop(t *testing.T) {
 	if got := countRows(t, m.DocPlane(), key, "chunks"); got != 2 {
 		t.Errorf("document file: %d rows, want the 2 copied once", got)
 	}
-	if res, _ := m.DocPlane().Query(ctx, key, `SELECT count(*) FROM chunks WHERE id = 'forged'`, nil); res.Rows[0][0] != int64(0) {
-		t.Error("a row written to the agent file after the split crossed into the document file")
+	if res, _ := m.DocPlane().Query(ctx, key, `SELECT status FROM chunks WHERE id = 'c1'`, nil); res.Rows[0][0] != "proposed" {
+		t.Errorf("c1 in the document file = %v; a change to the agent file's leftover overwrote it", res.Rows)
 	}
 	if held, _ := m.AgentPlaneTables(ctx, key, []string{"chunks"}); len(held) != 0 {
 		t.Errorf("agent file still holds %v", held)
@@ -520,5 +521,238 @@ func TestSqlmem_QuotaCountsBothPlaneFiles(t *testing.T) {
 	}
 	if _, err := m.Exec(ctx, key, `INSERT INTO notes VALUES ('a')`, nil, 0); err == nil || !strings.Contains(err.Error(), "quota") {
 		t.Errorf("agent write with the document file over the quota: err = %v; want refused", err)
+	}
+}
+
+// moveOldScope builds the old layout and moves it, as the Document tool does.
+func moveOldScope(t *testing.T, m *Manager, key ScopeKey) {
+	t.Helper()
+	oldLayoutScope(t, m, key)
+	provisionDocFile(t, m, key)
+	if err := m.DocPlane().AdoptAgentTables(context.Background(), key, []string{"chunks"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// After the split, rows in an agent-file table named like a document table whose
+// key the document file lacks were written after the move — by an older release
+// the deployment was rolled back to, say — and are real data: they are merged in,
+// never dropped unread. Rows the document file already holds keep its version.
+func TestSqlmem_AdoptMergesRowsWrittenToTheAgentFileAfterTheSplit(t *testing.T) {
+	ctx := context.Background()
+	m := newTestManager(t, Config{})
+	key := ScopeKey{Tenant: "t1", Scope: "user", ScopeID: "u1"}
+	moveOldScope(t, m, key)
+
+	// What a rolled-back release does: fresh tables in the agent file, written to.
+	for _, stmt := range []string{
+		docTableDDL,
+		`INSERT INTO chunks (id, title, status) VALUES ('c3', 'written after the rollback', 'proposed')`,
+		`INSERT INTO chunks (id, title, status) VALUES ('c1', 'a different c1', 'asserted')`,
+	} {
+		if _, err := m.Exec(ctx, key.AgentPlane(), stmt, nil, 0); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := m.DocPlane().AdoptAgentTables(ctx, key, []string{"chunks"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.DocPlane().Query(ctx, key, `SELECT id, title FROM chunks ORDER BY id`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Rows) != 3 || res.Rows[0][1] != "secret-title-c1" || res.Rows[2][0] != "c3" {
+		t.Errorf("document file = %v; want c1 as it was, c2, and c3 merged in", res.Rows)
+	}
+	if held, _ := m.AgentPlaneTables(ctx, key, []string{"chunks"}); len(held) != 0 {
+		t.Errorf("agent file still holds %v", held)
+	}
+}
+
+// pageStats reads a file's page counts on a connection of the test's own.
+func pageStats(t *testing.T, path string) (pages, free int64) {
+	t.Helper()
+	db, err := openScopeDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.QueryRow(`PRAGMA page_count`).Scan(&pages); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`PRAGMA freelist_count`).Scan(&free); err != nil {
+		t.Fatal(err)
+	}
+	return pages, free
+}
+
+// fileHolds reports whether a file or its -wal holds the bytes.
+func fileHolds(t *testing.T, path string, needle []byte) bool {
+	t.Helper()
+	for _, p := range []string{path, path + "-wal"} {
+		raw, err := os.ReadFile(p)
+		if err == nil && bytes.Contains(raw, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// bigOldScope is an old-layout scope with about 1.5 MB of document rows.
+func bigOldScope(t *testing.T, m *Manager, key ScopeKey) {
+	t.Helper()
+	ctx := context.Background()
+	oldLayoutScope(t, m, key)
+	body := "moved-secret-" + strings.Repeat("x", 64<<10)
+	for i := 0; i < 24; i++ {
+		if _, err := m.Exec(ctx, key.AgentPlane(), `INSERT INTO chunks (id, title) VALUES (?, ?)`, []any{"big" + string(rune('a'+i)), body}, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// The moved rows must not stay readable in the agent file's free pages (or its
+// WAL), which page-level access reaches, and the file must not keep their size.
+func TestSqlmem_AdoptLeavesNoDocumentBytesInTheAgentFile(t *testing.T) {
+	m := newTestManager(t, Config{})
+	key := ScopeKey{Tenant: "t1", Scope: "user", ScopeID: "u1"}
+	bigOldScope(t, m, key)
+	agentPath, _ := planePaths(t, m, key)
+	if !fileHolds(t, agentPath, []byte("moved-secret-")) {
+		t.Fatal("the old layout's agent file does not hold the rows; the check means nothing")
+	}
+	provisionDocFile(t, m, key)
+	if err := m.DocPlane().AdoptAgentTables(context.Background(), key, []string{"chunks"}); err != nil {
+		t.Fatal(err)
+	}
+	if fileHolds(t, agentPath, []byte("moved-secret-")) {
+		t.Error("the agent file (or its WAL) still holds the moved rows' bytes")
+	}
+	if pages, free := pageStats(t, agentPath); free > 2 || pages > 16 {
+		t.Errorf("agent file after the move: %d pages, %d free; want it compacted", pages, free)
+	}
+}
+
+// The quota measures what a scope holds, the same way for both files: an upgraded
+// scope is not charged for the agent file's freed pages, nor its documents twice.
+func TestSqlmem_QuotaOfAnUpgradedScopeIsItsData(t *testing.T) {
+	ctx := context.Background()
+	m := newTestManager(t, Config{})
+	key := ScopeKey{Tenant: "t1", Scope: "user", ScopeID: "u1"}
+	bigOldScope(t, m, key)
+	agentPath, _ := planePaths(t, m, key)
+	before, _ := pageStats(t, agentPath)
+	provisionDocFile(t, m, key)
+	if err := m.DocPlane().AdoptAgentTables(ctx, key, []string{"chunks"}); err != nil {
+		t.Fatal(err)
+	}
+	// A quota a quarter above the scope's data before the move.
+	quota := int(before*4096) * 5 / 4
+	if _, err := m.Exec(ctx, key, `INSERT INTO notes (body) VALUES ('after the move')`, nil, quota); err != nil {
+		t.Errorf("agent write under a quota above the scope's data: %v", err)
+	}
+	if _, err := m.DocPlane().Exec(ctx, key, `INSERT INTO chunks (id, title) VALUES ('new', 'after the move')`, nil, quota); err != nil {
+		t.Errorf("document write under a quota above the scope's data: %v", err)
+	}
+}
+
+// A document file not yet marked never counts: rows found in it at the move (a
+// write that skipped provisioning, landing in a failed move's empty tables) are
+// replaced by the agent file's, which hold the scope's documents.
+func TestSqlmem_AdoptReplacesAnUnmarkedDocFilesRows(t *testing.T) {
+	ctx := context.Background()
+	m := newTestManager(t, Config{})
+	key := ScopeKey{Tenant: "t1", Scope: "user", ScopeID: "u1"}
+	oldLayoutScope(t, m, key)
+	provisionDocFile(t, m, key)
+	if _, err := m.DocPlane().Exec(ctx, key, `INSERT INTO chunks (id, title) VALUES ('stray', 'stray')`, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.DocPlane().AdoptAgentTables(ctx, key, []string{"chunks"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.DocPlane().Query(ctx, key, `SELECT id FROM chunks ORDER BY id`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Rows) != 2 || res.Rows[0][0] != "c1" || res.Rows[1][0] != "c2" {
+		t.Errorf("document file = %v; want the agent file's c1, c2", res.Rows)
+	}
+}
+
+// A restore writes the document part's rows and the mark in one transaction, so
+// a restore stopped before it commits leaves an unmarked, empty document file
+// (and an old scope's rows where they were), never rows that outrank them.
+func TestSqlmem_RestoreWritesTheDocumentRowsAndTheMarkTogether(t *testing.T) {
+	ctx := context.Background()
+	src := newTestManager(t, Config{})
+	key := ScopeKey{Tenant: "t1", Scope: "user", ScopeID: "u1"}
+	provisionDocFile(t, src, key)
+	if _, err := src.DocPlane().Exec(ctx, key, `INSERT INTO chunks (id, title) VALUES ('archived', 'from the archive')`, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := src.DocPlane().AdoptAgentTables(ctx, key, []string{"chunks"}); err != nil {
+		t.Fatal(err)
+	}
+	dump, err := src.ExportScope(ctx, key)
+	if err != nil || dump.DocTail == nil {
+		t.Fatalf("export = %+v, %v", dump, err)
+	}
+
+	m := newTestManager(t, Config{})
+	b := m.backend.(*sqliteBackend)
+	oldLayoutScope(t, m, key)
+	failAt(b, adoptStepRestored)
+	if err := m.RestoreScope(ctx, key, dump); err == nil {
+		t.Fatal("the injected stop did not surface")
+	}
+	if ok, _ := m.DocPlane().PlaneExists(ctx, key); ok {
+		t.Fatal("a stopped restore recorded the split")
+	}
+	if got := countRows(t, m.DocPlane(), key, "chunks"); got != 0 {
+		t.Errorf("document file after a stopped restore: %d rows, want 0", got)
+	}
+	b.adoptStep = nil
+	provisionDocFile(t, m, key)
+	if err := m.DocPlane().AdoptAgentTables(ctx, key, []string{"chunks"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(t, m.DocPlane(), key, "chunks"); got != 2 {
+		t.Errorf("document file after the move: %d rows, want the old scope's 2", got)
+	}
+
+	// Completed, the restore leaves its rows marked.
+	m2 := newTestManager(t, Config{})
+	if err := m2.RestoreScope(ctx, key, dump); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := m2.DocPlane().PlaneExists(ctx, key); !ok || countRows(t, m2.DocPlane(), key, "chunks") != 1 {
+		t.Errorf("a completed restore: marked=%v; want marked with the archived row", ok)
+	}
+}
+
+// A scope erased while a move waits does not come back: the move finds its files
+// gone and does not recreate them.
+func TestSqlmem_AdoptSkipsAScopeErasedMidMove(t *testing.T) {
+	ctx := context.Background()
+	m := newTestManager(t, Config{})
+	b := m.backend.(*sqliteBackend)
+	key := ScopeKey{Tenant: "t1", Scope: "user", ScopeID: "u1"}
+	oldLayoutScope(t, m, key)
+	provisionDocFile(t, m, key)
+	b.adoptStep = func(step string) error {
+		if step == adoptStepHeld {
+			if _, err := m.DropScope(ctx, key); err != nil {
+				t.Errorf("DropScope mid-move: %v", err)
+			}
+		}
+		return nil
+	}
+	if err := m.DocPlane().AdoptAgentTables(ctx, key, []string{"chunks"}); err != nil {
+		t.Fatalf("a move of an erased scope: %v", err)
+	}
+	agentPath, docPath := planePaths(t, m, key)
+	if fileExists(agentPath) || fileExists(docPath) {
+		t.Errorf("after the move: agent file %v, document file %v; want neither recreated", fileExists(agentPath), fileExists(docPath))
 	}
 }

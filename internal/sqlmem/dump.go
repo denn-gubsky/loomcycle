@@ -203,11 +203,9 @@ func (m *Manager) RestoreScope(ctx context.Context, key ScopeKey, dump *ScopeDum
 		Tables:  dump.Tables[len(dump.Tables)-tail.Tables:],
 	}
 	if m.dialect != dialectPostgres {
-		// sqlite DDL is unqualified: the document file takes it as it is.
-		if err := m.backend.restoreScope(ctx, docKey, docPart); err != nil {
-			return err
-		}
-		return m.backend.markSplit(ctx, key)
+		// sqlite DDL is unqualified: the document file takes it as it is, and the
+		// restore marks the split in the transaction that writes the rows.
+		return m.backend.restoreScope(ctx, docKey, docPart)
 	}
 	agentSchema, _, err := pgScopeNames(key.wholeScope())
 	if err != nil {

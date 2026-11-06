@@ -248,10 +248,26 @@ func (b *sqliteBackend) exportTableSQLite(ctx context.Context, db *sql.DB, table
 // empty (so a re-restore is a no-op). The data load runs in one transaction
 // with PRAGMA defer_foreign_keys=ON so cross-table insert order can't trip a
 // foreign-key check before its parent row lands (verified at COMMIT instead).
+//
+// Into the document plane it also writes the split mark, in the same
+// transaction as the rows, under the scope's move lock: a restore stopped before
+// it commits leaves an unmarked, empty document file, which never counts, rather
+// than rows that would outrank the agent file's at the next move. A document
+// file not yet marked does not count either way, so its tables are cleared
+// rather than kept.
 func (b *sqliteBackend) restoreScope(ctx context.Context, key ScopeKey, dump *ScopeDump) error {
 	path, err := key.keyPath(b.cfg.Root)
 	if err != nil {
 		return err
+	}
+	if key.isDoc() {
+		agentPath, _, err := key.planeFiles(b.cfg.Root)
+		if err != nil {
+			return err
+		}
+		lk := b.adoptLock(agentPath)
+		lk.Lock()
+		defer lk.Unlock()
 	}
 	db, err := b.acquire(path)
 	if err != nil {
@@ -285,9 +301,23 @@ func (b *sqliteBackend) restoreScope(ctx context.Context, key ScopeKey, dump *Sc
 	if _, err := tx.ExecContext(ctx, "PRAGMA defer_foreign_keys=ON"); err != nil {
 		return fmt.Errorf("sqlmem: defer FK: %w", err)
 	}
+	replace := false
+	if key.isDoc() {
+		split, err := docFileSplit(ctx, tx)
+		if err != nil {
+			return err
+		}
+		replace = !split
+	}
 	for _, t := range dump.Tables {
 		if shadow[t.Name] {
 			continue
+		}
+		if replace {
+			// #nosec G202 -- the name comes from the dump's own table list, quoted
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+quoteIdent(t.Name)); err != nil {
+				return fmt.Errorf("sqlmem: clear %q in the unmarked document file: %w", t.Name, err)
+			}
 		}
 		empty, err := tableIsEmpty(ctx, tx, t.Name)
 		if err != nil {
@@ -298,6 +328,16 @@ func (b *sqliteBackend) restoreScope(ctx context.Context, key ScopeKey, dump *Sc
 		}
 		if err := insertRows(ctx, tx, t, "?"); err != nil {
 			return err
+		}
+	}
+	if key.isDoc() {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA main.user_version = %d`, docFileSplitMark)); err != nil {
+			return fmt.Errorf("sqlmem: record the scope's split: %w", err)
+		}
+		if b.adoptStep != nil {
+			if err := b.adoptStep(adoptStepRestored); err != nil {
+				return err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
