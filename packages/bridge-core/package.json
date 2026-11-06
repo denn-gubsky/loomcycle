@@ -1,6 +1,6 @@
 {
   "name": "@loomcycle/bridge-core",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "type": "module",
   "description": "The shared core of the loomcycle bridges (RFC EQ): each person on a chat platform talks to a loomcycle interactive agent as their own loomcycle user, with per-user tokens, conversations, streamed replies, question and review cards, and an idle sweep. A bridge package adds one platform.",
   "license": "Apache-2.0",
@@ -10,7 +10,14 @@
     "url": "git+https://github.com/denn-gubsky/loomcycle.git",
     "directory": "packages/bridge-core"
   },
-  "keywords": ["loomcycle", "bridge", "chat", "bot", "agent", "ai"],
+  "keywords": [
+    "loomcycle",
+    "bridge",
+    "chat",
+    "bot",
+    "agent",
+    "ai"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -18,9 +25,16 @@
     }
   },
   "types": "./dist/index.d.ts",
-  "files": ["dist", "README.md"],
-  "publishConfig": { "access": "public" },
-  "engines": { "node": ">=20" },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build",
@@ -29,7 +43,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@loomcycle/client": "^1.112.0"
+    "@loomcycle/client": "^1.141.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

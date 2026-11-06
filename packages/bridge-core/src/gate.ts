@@ -134,6 +134,9 @@ export interface GateIdentity {
 /** What the issued token is held to; loomcycle can only narrow it further. */
 export interface TokenRequest {
   agents?: string[];
+  /** Off-run surfaces beside agents (RFC GA), held to the gate's
+   *  issued_token.surfaces ceiling in loomcycle. */
+  surfaces?: Array<"speech" | "transcription">;
   overrides?: string[];
   ratePerMinute?: number;
   rateBurst?: number;
@@ -245,6 +248,7 @@ export class GateClient {
     if (t) {
       claims.token = {
         ...(t.agents ? { agents: t.agents } : {}),
+        ...(t.surfaces?.length ? { surfaces: t.surfaces } : {}),
         ...(t.overrides ? { overrides: t.overrides } : {}),
         ...(t.ratePerMinute ? { rate_per_minute: t.ratePerMinute } : {}),
         ...(t.rateBurst ? { rate_burst: t.rateBurst } : {}),

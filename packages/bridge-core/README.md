@@ -19,7 +19,8 @@ This package is for writing one more.
 - **Conversations.** One conversation drives one interactive run at a time. A second message steers the live run. After a restart, the next message continues the stored session in a new run, so nothing is replayed.
 - **Turns.** Where the platform can stream, the answer shows as it is written. Elsewhere the bridge shows a typing indicator, then sends one message per turn, split at the platform's size limit.
 - **Cards.** A question the agent asks, and an answer held for review, are sent as platform-neutral cards: a question with up to six options, or a review with approve and send-back. The platform package renders them. Each button has a short id, so a platform with a small button payload sends only the id.
-- **Commands.** `/new`, `/stop`, `/help`, as the whole message. In a shared chat only the person who started the conversation may `/new`, `/stop` or answer a card. A platform package may give `/help` its own text.
+- **Commands.** `/new`, `/stop`, `/help`, as the whole message, and `/voice on|off|auto` on a bridge that takes voice messages. In a shared chat only the person who started the conversation may `/new`, `/stop`, change `/voice` or answer a card. A platform package may give `/help` its own text.
+- **Voice messages** (opt-in, below). A voice note is transcribed by loomcycle and answered like the same words typed; a reply can be spoken back.
 - **Idle sweep.** A run nobody has written to for `BRIDGE_IDLE_MINUTES` is ended; its session is kept.
 - **`GET /healthz`.** When the bridge last heard from the platform, sent to it, and called loomcycle. Times only.
 
@@ -50,6 +51,40 @@ Every bridge reads these, then its platform's own:
 | `BRIDGE_STORE` | `memory`, or `file:<path>` to survive restarts on one instance | `memory` |
 | `BRIDGE_DEV` | `1` turns the platform's request authentication off, for local testing only | unset |
 | `PORT` | Listen port | per platform |
+
+## Voice messages
+
+With `BRIDGE_VOICE=1`, on a platform package that supports it, a person can send a voice note instead of typing, and hear the reply as a voice note (RFC GA). The bridge uses loomcycle's speech routes with the **conversation's own token**, so the person's budget, access rules and usage rows apply:
+
+1. Check the recording's length and size from the platform's metadata, **before** downloading it.
+2. Download it with the platform's credential, from the platform's own file host only. It stays in memory for one request.
+3. Transcribe it (`POST /v1/audio/transcriptions`), with the platform's language for the speaker as a hint.
+4. Give the agent the text with the line `(voice message)` before it. The text goes the way typed text goes: a trusted speaker's into the prompt, an untrusted speaker's as an untrusted block. It is never read as a command.
+5. When the turn ends, speak the reply (`POST /v1/audio/speech`) and post it as the platform's voice message, labelled "AI voice". The text reply is always sent as well.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `BRIDGE_VOICE` | `1` turns voice messages on | unset (off) |
+| `BRIDGE_VOICE_REPLY` | `mirror` (a voice message gets a spoken reply), `always`, or `never`. A conversation's `/voice` overrides it. | `mirror` |
+| `BRIDGE_VOICE_UNTRUSTED` | `0` keeps untrusted speakers (a public group) to text | `1` |
+| `BRIDGE_VOICE_MAX_SECONDS` | Longest voice message taken | `120` |
+| `BRIDGE_VOICE_MAX_BYTES` | Largest download | `8388608` |
+| `BRIDGE_VOICE_REPLY_MAX_CHARS` | Longest stretch of a reply that is spoken. A longer reply is spoken up to here, cut at a sentence, and labelled "first part" | `1500` |
+| `BRIDGE_VOICE_ECHO` | `1` quotes what was heard (`🎙 "…"`) before the agent answers | unset (off) |
+| `BRIDGE_VOICE_LABEL` | Says a spoken reply is generated; never empty | `AI voice` |
+| `BRIDGE_VOICE_LANGUAGE` | A language hint when the platform gives none (`en`, `uk`) | unset |
+
+**What loomcycle needs.**
+
+- **Engines.** The `speech:` and `transcription.stt:` engines. For spoken replies on Telegram and Discord, `speech.encode` (an ffmpeg Opus command) with `speech.format: ogg`: those platforms show only Opus as a voice note. Without it, replies stay text.
+- **A grant on each user token.** loomcycle 1.141 or later. A user token is limited to the bridge's agent, so it reaches the speech routes only when granted them (`surfaces`):
+  - The bridge asks for `speech` and `transcription`, or `transcription` alone on a platform that takes voice in only.
+  - For a gate bridge, add `surfaces: [speech, transcription]` to the gate's `issued_token` in loomcycle; without it the gate grants none, and the bridge stays on text.
+- **Rate.** Each voice turn takes three starts from the user's rate: transcribe, run, speak. Raise `BRIDGE_RATE_PER_MINUTE` (at least `12`) when voice is on.
+
+**When a voice message is not taken,** a private chat hears "I can only read text for now." and a group stays quiet. That happens when voice is off, the speaker is untrusted and `BRIDGE_VOICE_UNTRUSTED=0`, or loomcycle reports no transcription for the conversation (`effective.surfaces.transcription` in `GET /v1/_me`, cached ten minutes).
+
+**When a spoken reply is refused by the platform** (a person's privacy setting, a missing permission), spoken replies stop in that conversation until someone sends `/voice on`.
 
 ### As a loomcycle gate
 
@@ -109,6 +144,7 @@ const adapter: BridgeAdapter<MyRef> = {
   platform: { name: "myplatform", label: "MyPlatform", helpText: HELP_TEXT + "\n- **/link**: connect your account" },
   ```
   The core handles only `/new`, `/stop` and `/help`. Your route handles your own commands before calling the router. Unset, `/help` answers with `HELP_TEXT`.
+- **Voice.** Give the adapter a `voice` port (`VoicePort`): `download` (from the platform's file host only, at most the bytes asked), `sendVoice` where the platform can post a voice message, an optional `indicate`, and `capabilities` (the formats it shows as voice, best first). Route a voice message with `ctx.router.onVoice(identified, ref, { kind, ref, mime, seconds, bytes }, locale)`. A `sendVoice` that the platform refused for a conversation should throw `VoiceRefusedError`.
 - **Names.** A personal subject is `<platform>-<stable id>`. A shared conversation runs as `sharedSubject(platform, ...parts)`. Its parts name the memory: a channel's threads pass the channel alone.
 
-Design: RFC EQ (Bridges), generalising RFC EN (the Teams bridge).
+Design: RFC EQ (Bridges), generalising RFC EN (the Teams bridge). Voice messages: RFC GA.
