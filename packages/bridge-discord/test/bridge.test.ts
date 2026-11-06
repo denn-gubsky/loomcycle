@@ -4,14 +4,24 @@
 
 import net from "node:net";
 
-import { gateSharedSubject, keyFromSecret, UNTRUSTED_KIND, type Bridge, type Logger } from "@loomcycle/bridge-core";
+import {
+  DEFAULT_VOICE_CONFIG,
+  gateSharedSubject,
+  keyFromSecret,
+  UNTRUSTED_KIND,
+  VOICE_PREFIX,
+  VOICE_TEXT,
+  type Bridge,
+  type Logger,
+} from "@loomcycle/bridge-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createDiscordBridge } from "../src/bridge.js";
+import { createDiscordBridge, type DiscordBridgeOptions } from "../src/bridge.js";
 import type { DiscordConfig } from "../src/config.js";
 import type { DiscordRef } from "../src/port.js";
 import { appKey, FakeDiscord, signedHeaders, type AppKey } from "./discord.js";
-import { FakeGate, FakeLoomcycle, settle, waitFor, type StartedRun } from "./fakes.js";
+import { fakeSpeech, FakeGate, FakeLoomcycle, settle, waitFor, type StartedRun } from "./fakes.js";
+import { NEEDS_VOICE, OWN_VOICE_ONLY, VOICE_OFF } from "../src/voice.js";
 
 const APP = "100000000000000001";
 const GUILD = "200000000000000002";
@@ -56,6 +66,8 @@ describe("discord bridge over HTTP", () => {
   let lc: FakeLoomcycle;
   let discord: FakeDiscord;
   let bridge: Bridge<DiscordRef>;
+  let cfg: DiscordConfig;
+  let bridgeOpts: DiscordBridgeOptions;
   let base: string;
   let now: number;
   let seq: number;
@@ -77,7 +89,7 @@ describe("discord bridge over HTTP", () => {
     logs.length = 0;
     const port = await freePort();
     base = `http://127.0.0.1:${port}`;
-    const cfg: DiscordConfig = {
+    cfg = {
       loomcycleBaseUrl: "http://loomcycle.invalid",
       loomcycleToken: "admin-token",
       agent: "helper",
@@ -97,15 +109,17 @@ describe("discord bridge over HTTP", () => {
       trustedGuilds: new Set([GUILD]),
       registerCommands: false,
       apiBaseUrl: discord.base,
+      voice: DEFAULT_VOICE_CONFIG,
     };
-    bridge = createDiscordBridge(cfg, {
+    bridgeOpts = {
       clients: (token) => lc.client(token),
       fetch: discord.fetch,
       logger: capture,
       now: () => now,
       message: { typingEveryMs: 60_000 },
       inlineCardMs: 200,
-    });
+    };
+    bridge = createDiscordBridge(cfg, bridgeOpts);
     await bridge.start();
   });
 
@@ -411,6 +425,160 @@ describe("discord bridge over HTTP", () => {
     const all = logs.join("\n");
     for (const secret of [BOT_TOKEN, ix.token, "my secret plan", "the secret answer", "admin-token"]) expect(all).not.toContain(secret);
   });
+
+  const CDN_URL = "https://cdn.discordapp.com/attachments/4/6/voice-message.ogg?ex=1&is=2&hm=sig";
+  const VOICE_MSG = "600000000000000006";
+
+  /** askByVoice is Ask by voice on a message: by default the invoker's own
+   *  voice message, in the DM. */
+  function askByVoice(o: { invoker?: string; author?: string; flags?: number; guild?: string; attachments?: unknown[] } = {}) {
+    const id = nextId();
+    const invoker = o.invoker ?? ALICE;
+    const where = o.guild
+      ? { context: 0, guild_id: o.guild, channel: { id: CHANNEL, type: 0 }, member: { user: { id: invoker, username: "x", global_name: "X" }, nick: null } }
+      : { context: 1, channel: { id: DM, type: 1 }, user: { id: invoker, username: "alice", global_name: "Alice" } };
+    return {
+      id,
+      application_id: APP,
+      type: 2,
+      token: `itok-${id}`,
+      locale: "uk",
+      attachment_size_limit: 10 * 1024 * 1024,
+      ...where,
+      data: {
+        id: "800000000000000008",
+        type: 3,
+        name: "Ask by voice",
+        target_id: VOICE_MSG,
+        resolved: {
+          messages: {
+            [VOICE_MSG]: {
+              id: VOICE_MSG,
+              author: { id: o.author ?? invoker },
+              flags: o.flags ?? 1 << 13,
+              attachments: o.attachments ?? [{ id: "1", url: CDN_URL, content_type: "audio/ogg", size: 4000, duration_secs: 3.5 }],
+            },
+          },
+        },
+      },
+    };
+  }
+
+  it("answers Ask by voice privately while voice is off, and calls nothing", async () => {
+    const res = await post(askByVoice());
+    expect(res.json).toEqual({ type: 4, data: { content: VOICE_OFF, allowed_mentions: { parse: [] }, flags: (1 << 6) | SUPPRESS_EMBEDS } });
+    await settle();
+    expect(lc.calls).toHaveLength(0);
+    expect(discord.downloads).toHaveLength(0);
+  });
+
+  describe("with voice on", () => {
+    const ogg = new Uint8Array([0x4f, 0x67, 0x67, 0x53, 9, 9, 9]);
+
+    async function restart(voice: Partial<DiscordConfig["voice"]> = {}) {
+      await bridge.stop();
+      cfg = { ...cfg, voice: { ...DEFAULT_VOICE_CONFIG, enabled: true, ...voice } };
+      bridge = createDiscordBridge(cfg, bridgeOpts);
+      await bridge.start();
+    }
+
+    beforeEach(async () => {
+      lc.speech = fakeSpeech({ transcript: "what is the weather", language: "uk", audio: { bytes: ogg, seconds: 1.5 } });
+      discord.files.set(CDN_URL, { body: new Uint8Array([1, 2, 3, 4]) });
+      await restart();
+    });
+
+    // A run left mid-turn would hold the conversation's queue, and stop with it.
+    afterEach(() => {
+      for (const r of lc.runs) r.events.end();
+    });
+
+    it("transcribes the invoker's own voice message as the invoker, then posts the reply and a labelled voice reply", async () => {
+      const ix = askByVoice();
+      const res = await post(ix);
+      expect(res).toEqual({ status: 200, json: DEFERRED });
+      await waitFor(() => lc.runs.length === 1, "the run");
+      announce(lc.runs[0], "run-1");
+
+      // Downloaded from the CDN with no credential, transcribed with the
+      // person's token and their client's language.
+      expect(discord.downloads).toEqual([{ url: CDN_URL, authorization: undefined, redirect: "manual" }]);
+      const [transcribe] = lc.callsTo("transcribe");
+      expect(transcribe.token).toMatch(new RegExp(`^tok-discord-${ALICE}-`));
+      expect(transcribe.args[0]).toEqual(new Uint8Array([1, 2, 3, 4]));
+      expect(transcribe.args[1]).toMatchObject({ contentType: "audio/ogg", language: "uk" });
+      expect(lc.mints[0].opts).toMatchObject({ surfaces: ["speech", "transcription"] });
+      // The agent gets the words as the person's own, marked as spoken.
+      const seg = (lc.runs[0].opts.segments as Array<{ content: Array<{ type: string; text: string }> }>)[0].content[0];
+      expect(seg.type).toBe("trusted-text");
+      expect(seg.text).toContain(VOICE_PREFIX);
+      expect(seg.text).toContain("what is the weather");
+
+      lc.runs[0].events.push({ type: "text", text: "Sunny." });
+      lc.runs[0].events.push({ type: "awaiting_input" });
+      await waitFor(() => discord.calls.some((c) => c.form), "the voice message");
+      const original = `/webhooks/${APP}/${ix.token}/messages/@original`;
+      expect(discord.calls.filter((c) => c.method === "PATCH").map((c) => [c.path, (c.body as { content: string }).content])).toEqual([
+        [original, "Sunny."],
+        [original, "Sunny.\n-# AI voice"],
+      ]);
+      // No language: the deployment lists only en.
+      expect(lc.callsTo("speech")[0].args).toEqual(["Sunny.", { format: "ogg" }]);
+      const voice = discord.calls.find((c) => c.form)!;
+      expect(voice).toMatchObject({ method: "POST", path: `/channels/${DM}/messages`, authorization: `Bot ${BOT_TOKEN}` });
+      expect(voice.form!.payload).toEqual({
+        flags: 1 << 13,
+        attachments: [{ id: 0, filename: "voice-message.ogg", duration_secs: 1.5, waveform: "" }],
+        message_reference: { message_id: expect.stringMatching(/^\d+$/), fail_if_not_exists: false },
+      });
+      expect(voice.form!.files[0].bytes).toEqual(ogg);
+    });
+
+    it("answers a message that is not voice privately, and downloads nothing", async () => {
+      const res = await post(askByVoice({ flags: 0, attachments: [] }));
+      expect(res.json).toMatchObject({ type: 4, data: { content: NEEDS_VOICE } });
+      await settle();
+      expect(lc.calls).toHaveLength(0);
+      expect(discord.downloads).toHaveLength(0);
+    });
+
+    it("refuses someone else's voice message in a server, and runs the author's own as the channel", async () => {
+      const res = await post(askByVoice({ guild: GUILD, invoker: BOB, author: ALICE }));
+      expect(res.json).toMatchObject({ type: 4, data: { content: OWN_VOICE_ONLY } });
+      await settle();
+      expect(lc.calls).toHaveLength(0);
+      expect(discord.downloads).toHaveLength(0);
+
+      expect((await post(askByVoice({ guild: GUILD, invoker: BOB, author: BOB }))).json).toEqual(DEFERRED);
+      await waitFor(() => lc.callsTo("transcribe").length === 1, "the transcription");
+      expect(lc.callsTo("transcribe")[0].token).toContain("discord-conv-");
+    });
+
+    it("answers a voice message it may not transcribe in a server channel, rather than leave it thinking", async () => {
+      lc.speech!.surfaces = { speech: false, transcription: false };
+      const ix = askByVoice({ guild: GUILD, invoker: BOB, author: BOB });
+      expect((await post(ix)).json).toEqual(DEFERRED);
+      await waitFor(
+        () => discord.calls.some((c) => c.method === "PATCH" && (c.body as { content?: string })?.content === VOICE_TEXT.unavailable),
+        "the notice",
+      );
+      expect(discord.downloads).toHaveLength(0);
+    });
+
+    it("keeps an untrusted server's speakers to text when BRIDGE_VOICE_UNTRUSTED=0", async () => {
+      await restart({ untrusted: false });
+      const res = await post(askByVoice({ guild: OPEN_GUILD }));
+      expect(res.json).toMatchObject({ type: 4, data: { content: VOICE_TEXT.unavailable } });
+      await settle();
+      expect(lc.calls).toHaveLength(0);
+    });
+
+    it("lists Ask by voice and the voice settings in /help", async () => {
+      const res = await post(dmCommand("help"));
+      expect(res.json.data.content).toContain("Ask by voice");
+      expect(res.json.data.content).toContain("/voice on");
+    });
+  });
 });
 
 // RFC FA §3.7d: as a loomcycle gate the bridge holds no loomcycle token. It
@@ -458,6 +626,7 @@ describe("discord bridge as a loomcycle gate", () => {
       trustedGuilds: new Set([GUILD]),
       registerCommands: false,
       apiBaseUrl: discord.base,
+      voice: DEFAULT_VOICE_CONFIG,
     };
     bridge = createDiscordBridge(cfg, {
       clients: (token) => lc.client(token),

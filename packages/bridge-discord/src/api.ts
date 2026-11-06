@@ -45,11 +45,21 @@ const MAX_WAIT_MS = 30_000;
 
 export interface CommandSpec {
   name: string;
+  /** Empty for a message command: Discord refuses one with a description. */
   description: string;
-  type: 1;
+  /** 1: a slash command; 3: a message command (a message's Apps menu). */
+  type: 1 | 3;
   contexts: number[];
   integration_types: number[];
   options?: Array<{ type: 3; name: string; description: string; required: boolean; max_length?: number }>;
+}
+
+/** A voice message (flag IS_VOICE_MESSAGE): Discord allows no content,
+ *  embeds or components beside its one attachment. */
+export interface VoiceMessagePayload {
+  flags: number;
+  attachments: Array<{ id: number; filename: string; duration_secs: number; waveform: string }>;
+  message_reference?: { message_id: string; fail_if_not_exists: boolean };
 }
 
 export class DiscordApi {
@@ -69,8 +79,25 @@ export class DiscordApi {
     return this.call("POST", `/webhooks/${this.opts.applicationId}/${interactionToken}`, "POST webhooks/followup", body, false);
   }
 
+  editFollowUp(interactionToken: string, messageId: string, body: MessageBody): Promise<unknown> {
+    return this.call("PATCH", `/webhooks/${this.opts.applicationId}/${interactionToken}/messages/${messageId}`, "PATCH webhooks/messages", body, false);
+  }
+
   createMessage(channelId: string, body: MessageBody): Promise<unknown> {
     return this.call("POST", `/channels/${channelId}/messages`, "POST channels/messages", body, true);
+  }
+
+  editMessage(channelId: string, messageId: string, body: MessageBody): Promise<unknown> {
+    return this.call("PATCH", `/channels/${channelId}/messages/${messageId}`, "PATCH channels/messages", body, true);
+  }
+
+  /** createVoiceMessage posts audio as a voice message, with the bot token:
+   *  multipart, payload_json beside the file as files[0]. */
+  createVoiceMessage(channelId: string, payload: VoiceMessagePayload, file: { bytes: Uint8Array; filename: string; contentType: string }): Promise<unknown> {
+    const form = new FormData();
+    form.set("payload_json", JSON.stringify(payload));
+    form.set("files[0]", new Blob([new Uint8Array(file.bytes)], { type: file.contentType }), file.filename);
+    return this.call("POST", `/channels/${channelId}/messages`, "POST channels/messages (voice)", form, true);
   }
 
   typing(channelId: string): Promise<unknown> {
@@ -93,13 +120,15 @@ export class DiscordApi {
 
   private async call(method: string, path: string, route: string, body: unknown, bot: boolean): Promise<unknown> {
     const headers: Record<string, string> = { "user-agent": USER_AGENT };
-    if (body !== undefined) headers["content-type"] = "application/json";
+    // A FormData body sets its own multipart content type, boundary included.
+    const form = body instanceof FormData;
+    if (body !== undefined && !form) headers["content-type"] = "application/json";
     if (bot) headers.authorization = `Bot ${this.opts.botToken}`;
     for (let attempt = 0; ; attempt++) {
       const res = await this.fetch(`${this.opts.baseUrl}${path}`, {
         method,
         headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: body === undefined ? undefined : form ? body : JSON.stringify(body),
       });
       const text = await res.text();
       const json = parseJson(text);
