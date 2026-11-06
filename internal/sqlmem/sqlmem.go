@@ -57,7 +57,10 @@ type Config struct {
 	// MaxResultBytes caps the size of a result an AGENT gets back
 	// (QueryCapped / QueryTxnCapped): rows stop before the one that would cross
 	// it and Truncated is set, as for MaxRows. A first row over it on its own is
-	// refused. 0 = no cap. See collectRows for how a row is measured.
+	// refused. Zero or negative takes DefaultMaxResultBytes: unlike the other
+	// bounds there is no "off", because the agent-facing read is the one place
+	// an unset field must not mean unbounded. See collectRows for how a row is
+	// measured.
 	MaxResultBytes int
 	// TxnTimeoutMS bounds how long an explicit transaction (sql_begin) may stay
 	// open before the reaper rolls it back. 0 = no reaper (txns end only on
@@ -312,6 +315,9 @@ func New(cfg Config) (*Manager, error) {
 // newManager wires the facade + the explicit-transaction registry and starts
 // the abandoned-txn reaper. Shared by New (sqlite) and NewPostgres.
 func newManager(d dialect, cfg Config, b backend) *Manager {
+	if cfg.MaxResultBytes <= 0 {
+		cfg.MaxResultBytes = DefaultMaxResultBytes
+	}
 	core := &managerCore{dialect: d, cfg: cfg, backend: b, txns: newTxnRegistry(),
 		lastTouch: make(map[string]time.Time), ensured: make(map[string]struct{})}
 	m := &Manager{managerCore: core, plane: planeAgent}
@@ -763,6 +769,10 @@ func collectRows(rows *sql.Rows, maxRows, maxBytes int) (*QueryResult, error) {
 	}
 	return res, nil
 }
+
+// DefaultMaxResultBytes is the result budget of an agent's query when
+// Config.MaxResultBytes is not set.
+const DefaultMaxResultBytes = 8 << 20
 
 // resultCellOverhead is what every cell of a result costs on top of its text or
 // bytes: about the in-memory interface value it is held in, and more than the

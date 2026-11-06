@@ -3,6 +3,7 @@ package sqlmem
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -165,6 +166,29 @@ func TestSqlmem_OversizedFirstRowIsRefused(t *testing.T) {
 		own, err := m.Query(ctx, key, "SELECT body FROM cells WHERE id = 2", nil)
 		if err != nil || len(own.Rows) != 1 {
 			t.Fatalf("uncapped Query of the big row: rows=%v err=%v", own, err)
+		}
+	})
+}
+
+// TestSqlmem_ZeroConfigStillCapsResultBytes: a Manager built without a byte
+// budget — as a caller that never heard of the field builds it — caps an agent's
+// result at the default rather than not at all.
+func TestSqlmem_ZeroConfigStillCapsResultBytes(t *testing.T) {
+	resultBytesTiers(t, 0, func(t *testing.T, m *Manager, tier string) {
+		ctx := context.Background()
+		key := agentKey("t1", "zero")
+		over := DefaultMaxResultBytes + 1<<20
+		stmt := fmt.Sprintf("SELECT printf('%%.*c', %d, 'z')", over)
+		if tier == "postgres" {
+			stmt = fmt.Sprintf("SELECT repeat('z', %d)", over)
+		}
+		res, err := m.QueryCapped(ctx, key, stmt, nil)
+		if err == nil {
+			t.Fatalf("a %d-byte first row came back from a zero-config Manager (%d rows); want the default budget to refuse it",
+				over, len(res.Rows))
+		}
+		if !strings.Contains(err.Error(), fmt.Sprintf("%d-byte result limit", DefaultMaxResultBytes)) {
+			t.Fatalf("err = %v, want the default %d-byte limit", err, DefaultMaxResultBytes)
 		}
 	})
 }
