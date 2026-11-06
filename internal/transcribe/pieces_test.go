@@ -2,6 +2,7 @@ package transcribe
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -56,5 +57,43 @@ func TestTranscribe_ChunksOverlapDeduped(t *testing.T) {
 	// A piece that was not transcribed contributes nothing.
 	if n := len(Merge(pieces, results[:1])); n != 3 {
 		t.Errorf("first piece only: %d segments", n)
+	}
+}
+
+// TestTranscribe_UntimedPiecesOverlapDedupedByText — an engine with no
+// timestamps returns each piece as one untimed segment, so the overlap is
+// found by text: the words the previous piece ended on and this one starts
+// with are said once, even when the cut split a word at either end; without
+// such a run both texts are kept whole.
+func TestTranscribe_UntimedPiecesOverlapDedupedByText(t *testing.T) {
+	s := time.Second
+	pieces := Pieces(90*s, 60*s, 2*s) // [0,60) and [58,90) carrying from 58
+	untimed := func(text string, end time.Duration) Segments {
+		return Segments{{Start: 0, End: end, Text: text, Untimed: true}}
+	}
+	for _, c := range []struct {
+		name, first, second, want string
+	}{
+		{"the overlap repeated", "We met on Friday to review the plan.", "review the plan. Then we agreed on dates.", "We met on Friday to review the plan. | Then we agreed on dates."},
+		{"case and punctuation differ", "and we signed the contract", "We signed the contract, finally.", "and we signed the contract | finally."},
+		{"the cut split the previous piece's last word", "the budget for next quart", "for next quarter is approved", "the budget for next | quarter is approved"},
+		{"the cut split this piece's first word", "the budget for next quarter is", "xt quarter is approved", "the budget for next quarter is | approved"},
+		{"no shared run", "The first part ends here.", "A second part starts.", "The first part ends here. | A second part starts."},
+		{"one shared word is not enough", "it was the", "the end", "it was the | the end"},
+		{"the second piece only repeats", "one two three four", "three four", "one two three four"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := Merge(pieces, []Segments{untimed(c.first, 60*s), untimed(c.second, 32*s)})
+			var texts []string
+			for _, x := range got {
+				texts = append(texts, x.Text)
+			}
+			if strings.Join(texts, " | ") != c.want {
+				t.Errorf("got %q, want %q", strings.Join(texts, " | "), c.want)
+			}
+			if len(got) == 2 && (got[1].Start != 60*s || got[1].End != 90*s) {
+				t.Errorf("second segment at %v–%v, want 60s–90s", got[1].Start, got[1].End)
+			}
+		})
 	}
 }

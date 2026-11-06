@@ -97,7 +97,7 @@ A client should show "working…" rather than time out early, and give the user 
 
 `transcription.languages` is present when the operator set `transcription.stt.languages`: a request (or an agent's `File op=transcribe`) naming any other language is a 400 `unsupported_language`, and one naming none is transcribed in `default_language`. Without the list, any supported code is taken.
 
-With a converter configured, `accepts` is `["audio/wav", "audio/*", "video/*"]` and `whole_file_max_bytes` is absent.
+With a converter configured, `accepts` is `["audio/wav", "audio/*", "video/*"]` and `whole_file_max_bytes` is absent. Without one, it lists `audio/wav` and the types the engine reads whole: OpenAI's formats, or the operator's `transcription.stt.accepts` (`[audio/wav]` for an engine on Ollama, which reads nothing else).
 
 ## From the TS client
 

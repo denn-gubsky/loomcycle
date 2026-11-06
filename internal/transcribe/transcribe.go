@@ -209,6 +209,10 @@ type Segment struct {
 	Start, End time.Duration
 	Speaker    string
 	Text       string
+	// Untimed marks a segment whose engine returned no timestamps: it spans
+	// its whole unit, so Merge cannot drop the overlap by time and drops it
+	// by text instead.
+	Untimed bool
 }
 
 // Segments is an engine's transcript of one Unit, in order.

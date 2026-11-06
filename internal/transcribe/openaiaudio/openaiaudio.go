@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,6 +50,9 @@ type Engine struct {
 	resolve  Resolver
 	provider func(id string) (providers.Provider, error)
 	timeout  time.Duration
+	// accepts is transcription.stt.accepts: the whole-file types the
+	// operator says the endpoint reads. Empty: OpenAI's list.
+	accepts []string
 }
 
 // New builds the engine.
@@ -62,7 +67,12 @@ func New(o Options) (*Engine, error) {
 	if timeout <= 0 {
 		timeout = config.TranscriptionDefaultSTTTimeoutSecs * time.Second
 	}
-	return &Engine{resolve: o.Resolve, provider: o.Provider, timeout: timeout}, nil
+	for _, mt := range o.Config.Accepts {
+		if _, ok := uploadExt[mt]; !ok {
+			return nil, fmt.Errorf("openai-audio: transcription.stt.accepts lists %q, which this engine cannot upload", mt)
+		}
+	}
+	return &Engine{resolve: o.Resolve, provider: o.Provider, timeout: timeout, accepts: o.Config.Accepts}, nil
 }
 
 func (e *Engine) Name() string { return config.STTEngineOpenAIAudio }
@@ -80,11 +90,30 @@ var uploadExt = map[string]string{
 	"video/mpeg": ".mpeg",
 }
 
-// Accepts is the formats the endpoint reads whole (OpenAI's list: flac, mp3,
-// mp4, mpeg, mpga, m4a, ogg, wav, webm).
+// canonicalType names each accepted type the way transcription.stt.accepts
+// lists it.
+var canonicalType = map[string]string{
+	"audio/wave": "audio/wav", "audio/x-wav": "audio/wav", "audio/vnd.wave": "audio/wav",
+	"audio/mp3": "audio/mpeg",
+	"audio/m4a": "audio/mp4", "audio/x-m4a": "audio/mp4",
+	"audio/x-flac":    "audio/flac",
+	"application/ogg": "audio/ogg", "audio/opus": "audio/ogg",
+}
+
+// Accepts is the formats the endpoint reads whole: OpenAI's list (flac, mp3,
+// mp4, mpeg, mpga, m4a, ogg, wav, webm), or the operator's
+// transcription.stt.accepts when set. WAV is always read: the runtime cuts a
+// long recording into WAV pieces, so an engine that reads nothing else (Ollama)
+// still works.
 func (e *Engine) Accepts(mediaType string) bool {
-	_, ok := uploadExt[mediaType]
-	return ok
+	if _, ok := uploadExt[mediaType]; !ok {
+		return false
+	}
+	mt := mediaType
+	if c, ok := canonicalType[mt]; ok {
+		mt = c
+	}
+	return len(e.accepts) == 0 || mt == "audio/wav" || slices.Contains(e.accepts, mt)
 }
 
 // Plan resolves the provider and model and checks the provider serves the
@@ -212,6 +241,12 @@ func parse(body []byte, span time.Duration, res *transcribe.STTResult) error {
 		return fmt.Errorf("the speech-to-text answer is not the expected JSON: %w", err)
 	}
 	res.Language = w.Language
+	if lang, text, ok := asrHeader(w.Text); ok {
+		w.Text = text
+		if res.Language == "" {
+			res.Language = lang
+		}
+	}
 	if w.Duration != nil {
 		res.Duration = seconds(*w.Duration)
 	}
@@ -225,7 +260,11 @@ func parse(body []byte, span time.Duration, res *transcribe.STTResult) error {
 		}
 	}
 	for _, s := range w.Segments {
-		text := strings.TrimSpace(s.Text)
+		text := s.Text
+		if _, t, ok := asrHeader(text); ok {
+			text = t
+		}
+		text = strings.TrimSpace(text)
 		if text == "" {
 			continue
 		}
@@ -241,7 +280,7 @@ func parse(body []byte, span time.Duration, res *transcribe.STTResult) error {
 			if res.Duration > 0 {
 				end = res.Duration
 			}
-			res.Segments = transcribe.Segments{{Start: 0, End: end, Text: text}}
+			res.Segments = transcribe.Segments{{Start: 0, End: end, Text: text, Untimed: true}}
 		}
 	}
 	return nil
@@ -255,4 +294,34 @@ func seconds(f float64) time.Duration {
 		f = maxSegmentSeconds
 	}
 	return time.Duration(f * float64(time.Second))
+}
+
+// asrHeaderRE is the header Qwen3-ASR puts before every answer:
+// "language English<asr_text>…", or "language None<asr_text>" when it heard
+// no speech.
+var asrHeaderRE = regexp.MustCompile(`^\s*language\s+([A-Za-z][A-Za-z ]{0,30}?)\s*<asr_text>`)
+
+// asrLanguages maps the header's language names to codes on the transcription
+// language list.
+var asrLanguages = map[string]string{
+	"english": "en", "russian": "ru", "ukrainian": "uk", "belarusian": "be", "polish": "pl",
+	"german": "de", "french": "fr", "spanish": "es", "italian": "it", "portuguese": "pt",
+	"dutch": "nl", "czech": "cs", "slovak": "sk", "bulgarian": "bg", "serbian": "sr",
+	"croatian": "hr", "slovenian": "sl", "romanian": "ro", "hungarian": "hu",
+	"lithuanian": "lt", "latvian": "lv", "estonian": "et", "finnish": "fi", "swedish": "sv",
+	"norwegian": "no", "danish": "da", "greek": "el", "turkish": "tr", "georgian": "ka",
+	"armenian": "hy", "kazakh": "kk", "azerbaijani": "az", "uzbek": "uz", "arabic": "ar",
+	"hebrew": "he", "persian": "fa", "hindi": "hi", "chinese": "zh", "japanese": "ja",
+	"korean": "ko", "vietnamese": "vi", "thai": "th", "indonesian": "id",
+}
+
+// asrHeader removes a leading Qwen3-ASR header from text. lang is the code
+// of the language it names, or "" for None or a name not on the list.
+func asrHeader(text string) (lang, rest string, ok bool) {
+	m := asrHeaderRE.FindStringSubmatchIndex(text)
+	if m == nil {
+		return "", text, false
+	}
+	name := strings.ToLower(strings.TrimSpace(text[m[2]:m[3]]))
+	return asrLanguages[name], text[m[1]:], true
 }
