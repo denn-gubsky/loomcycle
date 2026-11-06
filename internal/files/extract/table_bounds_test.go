@@ -15,7 +15,7 @@ import (
 // amplifiedXLSX is a workbook whose one sheet has rows × cols cells that all
 // reference one shared string of strBytes: a few kilobytes of file that name
 // the same string thousands of times.
-func amplifiedXLSX(t *testing.T, strBytes, rows, cols int) []byte {
+func amplifiedXLSX(t testing.TB, strBytes, rows, cols int) []byte {
 	t.Helper()
 	var sb strings.Builder
 	sb.WriteString(`<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>`)
@@ -33,7 +33,7 @@ func amplifiedXLSX(t *testing.T, strBytes, rows, cols int) []byte {
 // storedSheetXLSX is a workbook of one sheet, sheetXML, and the shared
 // strings sstXML. The sheet part is stored, not deflated, so the archive's
 // ratio guard has nothing to refuse however repetitive it is.
-func storedSheetXLSX(t *testing.T, sheetXML, sstXML string) []byte {
+func storedSheetXLSX(t testing.TB, sheetXML, sstXML string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)

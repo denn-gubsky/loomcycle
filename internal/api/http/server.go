@@ -460,6 +460,9 @@ type Server struct {
 	// cryptoStats reads the Crypto tool's op counters ("<op>|<outcome>" →
 	// count) for /metrics; nil when not wired.
 	cryptoStats func() map[string]uint64
+	// extractionStats reads the File tool's extraction budget (the slots,
+	// those in flight and the calls waiting) for /metrics; nil when not wired.
+	extractionStats func() (limit, inFlight, waiting int)
 
 	// metricsSampler is the v0.8.x process-resource sampler.
 	// Nil = the /v1/_metrics/* endpoints return 503. Set via
@@ -1117,6 +1120,10 @@ func (s *Server) SetChannelHookStats(f func() channelhooks.Stats) { s.channelHoo
 // SetCryptoStats wires the Crypto tool's op counters into /metrics. Boot
 // wiring only.
 func (s *Server) SetCryptoStats(f func() map[string]uint64) { s.cryptoStats = f }
+
+// SetExtractionStats wires the File tool's extraction budget into /metrics.
+// Boot wiring only.
+func (s *Server) SetExtractionStats(f func() (limit, inFlight, waiting int)) { s.extractionStats = f }
 
 // SetInterruptionBus wires the v0.8.16 in-process notification bus
 // used by the Interruption-resolve HTTP handler to wake the blocked

@@ -2497,6 +2497,7 @@ The runtime makes one ephemeral volume of its own per run tree: **`inbox`**, at 
 | `LOOMCYCLE_FILE_INBOX_MAX_BYTES` | 1 GiB | the tree's whole inbox (a resumed tree counts what it already holds) |
 | `LOOMCYCLE_MCP_MAX_FRAME_BYTES` | 16 MiB | one MCP response: a stdio JSON-RPC line, or an MCP HTTP body |
 | `LOOMCYCLE_FILE_BASE64_MIN_BYTES` | 4096 | the shortest base64 string a `binary_results: capture` server's text is searched for |
+| `LOOMCYCLE_EXTRACT_CONCURRENCY` | GOMAXPROCS | `File` extractions the process runs at once: `extract`, `import` and the PDF page cuts OCR makes. The rest wait for a slot (at most 60 s, then a busy answer the model may retry) and a caller that goes away stops waiting. Zero or negative takes the default; a value that is not a whole number refuses the boot. Read at boot: a change takes a restart. `/metrics` reports `loomcycle_extractions_limit`, `_inflight` and `_waiting` |
 
 Since RFC FF, `/loomcycle/rfcs/files-by-reference`.
 

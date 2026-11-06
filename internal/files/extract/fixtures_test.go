@@ -18,7 +18,7 @@ import (
 var update = flag.Bool("update", false, "rewrite the golden .md files under testdata")
 
 // tinyPNG is a real 2x2 PNG.
-func tinyPNG(t *testing.T) []byte {
+func tinyPNG(t testing.TB) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	img.Set(0, 0, color.RGBA{R: 255, A: 255})
@@ -35,7 +35,7 @@ type entry struct {
 }
 
 // zipOf builds an archive of the entries, deflated, in order.
-func zipOf(t *testing.T, entries ...entry) []byte {
+func zipOf(t testing.TB, entries ...entry) []byte {
 	t.Helper()
 	var b bytes.Buffer
 	zw := zip.NewWriter(&b)
@@ -103,7 +103,7 @@ func wCell(text string) string {
 
 // boardDOCX is a Ukrainian board protocol: a title, two heading levels, a
 // numbered list, a table, a picture, and text that looks like Markdown.
-func boardDOCX(t *testing.T, png []byte) []byte {
+func boardDOCX(t testing.TB, png []byte) []byte {
 	t.Helper()
 	body := wPara("Title", "Протокол засідання правління") +
 		wPara("Heading1", "Порядок денний") +
@@ -142,7 +142,7 @@ func boardDOCX(t *testing.T, png []byte) []byte {
 
 // budgetXLSX is a workbook of two sheets: a budget with shared, inline and
 // boolean cells and a formula's cached value, and a long register.
-func budgetXLSX(t *testing.T, registerRows int) []byte {
+func budgetXLSX(t testing.TB, registerRows int) []byte {
 	t.Helper()
 	wb := `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` + nsR + `><sheets>` +
 		`<sheet name="Бюджет" sheetId="1" r:id="rId1"/><sheet name="Реєстр" sheetId="2" r:id="rId2"/></sheets></workbook>`
@@ -188,7 +188,7 @@ func pSp(ph, text string) string {
 
 // boardPPTX is two slides listed in reverse of their file names, the second
 // with a picture and speaker notes.
-func boardPPTX(t *testing.T, png []byte) []byte {
+func boardPPTX(t testing.TB, png []byte) []byte {
 	t.Helper()
 	pres := `<p:presentation ` + nsP + ` ` + nsR + `><p:sldIdLst><p:sldId id="256" r:id="rId3"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst></p:presentation>`
 	slide := func(body string) string {

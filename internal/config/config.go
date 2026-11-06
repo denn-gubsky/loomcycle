@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -4501,6 +4502,11 @@ type Env struct {
 	// LOOMCYCLE_FILE_INBOX_MAX_BYTES (default 1 GiB).
 	FileMaxBytes      int64
 	FileInboxMaxBytes int64
+	// ExtractConcurrency bounds the file extractions the process runs at once
+	// (File op=extract, op=import and the PDF page cuts OCR makes; RFC FZ
+	// Part B). Sourced from LOOMCYCLE_EXTRACT_CONCURRENCY; unset, zero or
+	// negative takes GOMAXPROCS, resolved at load.
+	ExtractConcurrency int
 	// FileBase64MinBytes is the shortest string the base64-in-text capture
 	// of an MCP server with binary_results: capture considers a file.
 	// Sourced from LOOMCYCLE_FILE_BASE64_MIN_BYTES (default 4 KiB).
@@ -6302,6 +6308,20 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 				return nil, fmt.Errorf("%s: %q is not a positive number of bytes", c.env, v)
 			}
 			*c.dst = n
+		}
+	}
+	// Extraction concurrency (RFC FZ Part B). Unset or non-positive takes
+	// GOMAXPROCS; a value that does not parse is refused rather than
+	// defaulted, so a bound the operator meant to lower is never read as a
+	// higher one.
+	cfg.Env.ExtractConcurrency = runtime.GOMAXPROCS(0)
+	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_EXTRACT_CONCURRENCY")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("LOOMCYCLE_EXTRACT_CONCURRENCY: %q is not a whole number", v)
+		}
+		if n > 0 {
+			cfg.Env.ExtractConcurrency = n
 		}
 	}
 	// Crypto tool limits (RFC EP): a positive override tunes each; a

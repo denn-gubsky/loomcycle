@@ -131,6 +131,46 @@ jobs:
             exit 1
           fi
 
+  fuzz:
+    # Every document extractor parses files a run was handed, so each is
+    # fuzzed (RFC FZ Part B): no panic, a return within its context, a stop
+    # once the sink is full. The seed corpora already run as tests in the
+    # suites above; this job mutates past them for a bounded time per target.
+    # A crasher is uploaded so it can be committed under testdata/fuzz as a
+    # regression seed with its fix.
+    name: Fuzz extractors
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.x"
+          # The runner caches an older patch; take the newest so a stdlib fix lands.
+          check-latest: true
+          cache: true
+
+      - name: Fuzz each extractor
+        run: |
+          for target in FuzzExtractPDF FuzzExtractDOCX FuzzExtractXLSX FuzzExtractPPTX FuzzExtractODT FuzzExtractHTML FuzzExtractVTT FuzzExtractCSV; do
+            echo "::group::$target"
+            # Each new input the fuzzer keeps is minimized first, for up to
+            # 60 s by default, while every worker stops: that would use the
+            # whole budget on one input.
+            go test -run='^$' -fuzz="^${target}\$" -fuzztime=30s -fuzzminimizetime=5s ./internal/files/extract/
+            echo "::endgroup::"
+          done
+
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crashers
+          path: internal/files/extract/testdata/fuzz
+          if-no-files-found: ignore
+
   go-race:
     # The race suite, split across runners (RFC EX Phase 1). On one 4-core
     # runner it took ~15 min, set by internal/api/http and

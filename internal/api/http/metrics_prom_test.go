@@ -377,3 +377,27 @@ func TestMetricsProm_ContentType(t *testing.T) {
 // drops uses; required because the package builds under -race with
 // strict imports.
 var _silenceUnused = io.Discard
+
+// The File tool's extraction budget reaches /metrics as three gauges, zeros
+// before boot wires it so the series never come and go.
+func TestMetricsProm_ExtractionGaugesReportTheBudget(t *testing.T) {
+	srv := newMetricsPromServer(t, false)
+	scrape := func() string {
+		rec := httptest.NewRecorder()
+		srv.handleMetricsProm(rec, httptest.NewRequest("GET", "/metrics", nil))
+		return rec.Body.String()
+	}
+	body := scrape()
+	for _, line := range []string{"loomcycle_extractions_limit 0", "loomcycle_extractions_inflight 0", "loomcycle_extractions_waiting 0"} {
+		if !strings.Contains(body, "\n"+line+"\n") {
+			t.Errorf("unwired: missing %q", line)
+		}
+	}
+	srv.SetExtractionStats(func() (int, int, int) { return 4, 3, 2 })
+	body = scrape()
+	for _, line := range []string{"# TYPE loomcycle_extractions_waiting gauge", "loomcycle_extractions_limit 4", "loomcycle_extractions_inflight 3", "loomcycle_extractions_waiting 2"} {
+		if !strings.Contains(body, line+"\n") {
+			t.Errorf("wired: missing %q", line)
+		}
+	}
+}
