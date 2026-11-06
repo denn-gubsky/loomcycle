@@ -132,6 +132,10 @@ func TestStoreSink_OverflowIsCountedInADropSummaryRow(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Error("recording observations blocked on a stalled store")
 	}
+	// What a shutdown that ran out of time would log.
+	if pending, dropped := sink.Backlog(); pending == 0 || dropped["auth_login_failed"] == 0 {
+		t.Errorf("Backlog = %d pending, %v dropped; want both counted while the store stalls", pending, dropped)
+	}
 	close(st.gate)
 	<-returned
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

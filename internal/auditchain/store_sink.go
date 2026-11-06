@@ -180,8 +180,11 @@ func (s *StoreSink) StartAsync(capacity int) {
 	if capacity <= 0 {
 		capacity = DefaultQueueCapacity
 	}
-	// Unauthenticated events have no tenant to share by (they all land on
-	// the operator chain); authenticated ones are shared per chain.
+	// The anonymous queue has no per-tenant share, by design: its events are
+	// caused by requests nobody authenticated, so there is no tenant whose
+	// room to protect. Most land on the operator chain; those that name the
+	// tenant they concern (oauth_token_refused, the oauth_*_repeat actions)
+	// go to that tenant's chain. Authenticated events are shared per chain.
 	s.anonymous = s.startQueue(capacity, 0)
 	s.observed = s.startQueue(capacity, max(capacity/tenantShareDivisor, 1))
 }
@@ -191,6 +194,27 @@ func (s *StoreSink) startQueue(capacity, share int) *obsQueue {
 		dropped: map[string]*dropTally{}, share: share, pending: map[string]int{}}
 	go s.writer(q)
 	return q
+}
+
+// Backlog reports what the queues still hold — events waiting to be written,
+// and dropped events per action not yet in a summary row — for a shutdown
+// whose drain ran out of time to log, so the tally is not lost.
+func (s *StoreSink) Backlog() (pending int, dropped map[string]int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dropped = map[string]int{}
+	for _, q := range []*obsQueue{s.anonymous, s.observed} {
+		if q == nil {
+			continue
+		}
+		pending += len(q.ch)
+		for _, t := range q.dropped {
+			for a, n := range t.counts {
+				dropped[a] += n
+			}
+		}
+	}
+	return pending, dropped
 }
 
 // Close stops queueing (later observations are written at once), and waits

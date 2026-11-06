@@ -31,7 +31,9 @@ func (b *boot) openAudit() {
 			ctx, cancel := context.WithTimeout(context.Background(), auditDrainTimeout)
 			defer cancel()
 			if err := stream.Close(ctx); err != nil {
-				slog.Warn("audit: the observation queue did not drain before shutdown", "err", err)
+				pending, dropped := stream.Backlog()
+				slog.Warn("audit: the observation queue did not drain before shutdown; these never reached the chain",
+					"pending", pending, "dropped", dropped, "err", err)
 			}
 		})
 	}
