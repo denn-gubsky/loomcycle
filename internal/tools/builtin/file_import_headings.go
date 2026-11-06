@@ -20,7 +20,9 @@ const importNoRecordNote = "file changed since capture: file-level provenance no
 // — and so without losing the file's capture record, which holds only while
 // the bytes still hash to it. An entry can also drop a heading the file
 // already has, such as a PDF extract's "## Page N": adding can only make
-// boundaries, so without it every page break stays a section boundary.
+// boundaries, so without it every page break stays a section boundary. And an
+// entry can re-level a heading the file already has, so a corrected outline
+// is applied without rewriting the heading's text.
 //
 // The caller sends line numbers and titles, never document text: the body is
 // the file's.
@@ -31,8 +33,9 @@ type ImportHeading struct {
 	// A drop takes none.
 	Level int `json:"level"`
 	// As is heading (the line becomes the heading), marker (a heading with
-	// Title is inserted before the line, which stays body text) or drop (the
-	// line, already a heading, is removed).
+	// Title is inserted before the line, which stays body text), drop (the
+	// line, already a heading, is removed) or level (the line, already a
+	// heading, gets Level).
 	As string `json:"as"`
 	// Lines is how many lines a heading spans when its title wraps (default
 	// 1). They are joined with one space.
@@ -45,6 +48,7 @@ const (
 	importHeadingAsHeading = "heading"
 	importHeadingAsMarker  = "marker"
 	importHeadingAsDrop    = "drop"
+	importHeadingAsLevel   = "level"
 	importHeadingsMax      = 10000
 	importHeadingTitleMax  = 300
 	// importHeadingSpanMax bounds a wrapped title: a heading is a line or a
@@ -63,11 +67,13 @@ const (
 //     line;
 //   - a dropped line, which is a heading line (see isATXHeadingLine), removed
 //     with the line break that ends it (for a last line with none, the one
-//     before it).
+//     before it);
+//   - a re-levelled line, which is a heading line, with its run of "#"
+//     replaced by "#"×level (its indentation and the rest of it unchanged).
 //
 // so removing the marker lines and the prefixes, splitting each joined span
-// at the recorded points, and putting each dropped line back at its number
-// gives text back.
+// at the recorded points, putting each dropped line back at its number and
+// each re-levelled line's run of "#" back gives text back.
 func applyImportHeadings(text string, hs []ImportHeading) (string, error) {
 	if len(hs) > importHeadingsMax {
 		return "", fmt.Errorf("%d entries, at most %d", len(hs), importHeadingsMax)
@@ -106,6 +112,13 @@ func applyImportHeadings(text string, hs []ImportHeading) (string, error) {
 		wrote = true
 		if !ok {
 			b.WriteString(lines[i])
+			continue
+		}
+		if h.As == importHeadingAsLevel {
+			indent, hashes := atxHeadingPrefix(lines[i])
+			b.WriteString(lines[i][:indent])
+			b.WriteString(strings.Repeat("#", h.Level))
+			b.WriteString(lines[i][indent+hashes:])
 			continue
 		}
 		b.WriteString(strings.Repeat("#", h.Level))
@@ -174,8 +187,30 @@ func checkImportHeading(h ImportHeading, lines []string, n int) (int, error) {
 			return 0, err
 		}
 		return h.Line, nil
+	case importHeadingAsLevel:
+		return checkImportHeadingLevel(h, lines)
 	}
-	return 0, fmt.Errorf("as %q is not heading, marker or drop", h.As)
+	return 0, fmt.Errorf("as %q is not heading, marker, drop or level", h.As)
+}
+
+// checkImportHeadingLevel checks a level entry, whose level and line are
+// already in range: it names one line that is already a heading of another
+// level, and nothing else. A same-level entry is refused rather than ignored
+// so every entry the provenance counts changed the text.
+func checkImportHeadingLevel(h ImportHeading, lines []string) (int, error) {
+	l := lines[h.Line-1]
+	switch {
+	case h.Title != "":
+		return 0, errors.New("a level entry changes an existing heading's level and takes no title")
+	case h.Lines != 0:
+		return 0, errors.New("a level entry changes one line and takes no lines")
+	case !isATXHeadingLine(l):
+		return 0, fmt.Errorf("line %d is not a heading line; level changes an existing heading's level, use as \"heading\" to make a line a heading", h.Line)
+	}
+	if _, hashes := atxHeadingPrefix(l); hashes == h.Level {
+		return 0, fmt.Errorf("line %d is already a level %d heading; leave it out", h.Line, h.Level)
+	}
+	return h.Line, nil
 }
 
 // checkImportHeadingDrop checks a drop entry: it names one line that is
@@ -203,16 +238,20 @@ func checkImportHeadingDrop(h ImportHeading, lines []string, n int) (int, error)
 // as the end).
 func isATXHeadingLine(l string) bool {
 	l = strings.TrimSuffix(l, "\r")
-	indent := len(l) - len(strings.TrimLeft(l, " "))
-	if indent > 3 {
+	indent, hashes := atxHeadingPrefix(l)
+	if indent > 3 || hashes < 1 || hashes > 6 {
 		return false
 	}
-	l = l[indent:]
-	hashes := len(l) - len(strings.TrimLeft(l, "#"))
-	if hashes < 1 || hashes > 6 {
-		return false
-	}
-	return hashes == len(l) || l[hashes] == ' ' || l[hashes] == '\t'
+	rest := l[indent+hashes:]
+	return rest == "" || rest[0] == ' ' || rest[0] == '\t'
+}
+
+// atxHeadingPrefix returns the byte lengths of l's leading spaces and of the
+// run of "#" after them.
+func atxHeadingPrefix(l string) (indent, hashes int) {
+	indent = len(l) - len(strings.TrimLeft(l, " "))
+	hashes = len(l[indent:]) - len(strings.TrimLeft(l[indent:], "#"))
+	return indent, hashes
 }
 
 // checkImportHeadingTitle refuses a marker title that is not one short line of

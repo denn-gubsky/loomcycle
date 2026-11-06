@@ -441,7 +441,7 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 		structured, err := applyImportHeadings(text, in.Headings)
 		if err != nil {
 			return errValidation("import: headings: "+err.Error()+". Nothing was imported.",
-				"Give each entry a line of the file (counted from 1), in increasing order, a level from 2 to 6, and as heading or marker; a marker needs a one-line title. A drop names a line that is already a heading and takes nothing else."), nil
+				"Give each entry a line of the file (counted from 1), in increasing order, a level from 2 to 6, and as heading or marker; a marker needs a one-line title. A drop names a line that is already a heading and takes nothing else. To change an existing heading's level use as level with its line and the new level."), nil
 		}
 		text = structured
 	}
@@ -459,10 +459,13 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 		prov.fields[importFieldStructured] = map[string]any{"headings": inferredHeadings, "by": inferredHeadingsBy}
 	}
 	if len(in.Headings) > 0 {
-		dropped := 0
+		dropped, relevelled := 0, 0
 		for _, h := range in.Headings {
-			if h.As == importHeadingAsDrop {
+			switch h.As {
+			case importHeadingAsDrop:
 				dropped++
+			case importHeadingAsLevel:
+				relevelled++
 			}
 		}
 		by := tools.RunID(ctx)
@@ -470,11 +473,17 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 			// The run corrected an inferred outline (RFC GB D4): both made it.
 			by = inferredHeadingsBy + "+" + by
 		}
+		// headings counts the heading lines the run added or changed: a
+		// re-levelled heading is structure the run decided, like an added one,
+		// and relevelled says how many of them it only re-levelled.
 		structured := map[string]any{"headings": len(in.Headings) - dropped, "by": by}
-		// Omitted when nothing was dropped, so an import without drops
-		// records exactly what it did before drops existed.
+		// Each omitted when zero, so an import without drops or re-levels
+		// records exactly what it did before they existed.
 		if dropped > 0 {
 			structured["dropped"] = dropped
+		}
+		if relevelled > 0 {
+			structured["relevelled"] = relevelled
 		}
 		prov.fields[importFieldStructured] = structured
 	}
