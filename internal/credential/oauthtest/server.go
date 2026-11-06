@@ -260,7 +260,9 @@ func (f *Server) token(w http.ResponseWriter, r *http.Request) {
 		if f.Fail5xx > 0 {
 			f.Fail5xx--
 			// A body that echoes the token: it must never be quoted.
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(500)
+			// #nosec G705 -- a test fake authorization server: the body deliberately echoes the refresh token so the no-leak test proves loomcycle never quotes a response body; plain text, never served outside tests
 			_, _ = w.Write([]byte("internal error while handling " + rt))
 			return
 		}
