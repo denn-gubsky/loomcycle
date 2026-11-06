@@ -30,12 +30,14 @@ describe("runFile", () => {
       headings: [
         { line: 593, level: 2, as: "heading" },
         { line: 594, level: 3, as: "marker", title: "1. Це Положення розроблено…" },
+        { line: 610, level: 3, as: "level" },
       ],
     });
     const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
     expect(body.headings).toEqual([
       { line: 593, level: 2, as: "heading" },
       { line: 594, level: 3, as: "marker", title: "1. Це Положення розроблено…" },
+      { line: 610, level: 3, as: "level" },
     ]);
     expect(body.source.kind).toBe("sharepoint");
   });

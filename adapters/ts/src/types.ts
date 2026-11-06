@@ -364,7 +364,7 @@ export type RunFileInput = {
   /** import: where the document came from, kept on it as a link back. */
   source?: RunFileImportSource;
   /** import: headings to add (or, with `as: "drop"`, existing headings to
-   *  remove) by line number, so a file whose structure is only in its
+   *  remove, and with `as: "level"`, to re-level) by line number, so a file whose structure is only in its
    *  numbering imports as sections. The file is not changed, so the document
    *  keeps the record of where it came from. */
   headings?: RunFileImportHeading[];
@@ -401,13 +401,17 @@ export interface RunFileImportSource {
 /** One entry of import's `headings`. Lines count from 1 in the file as it is;
  *  give entries in increasing line order. */
 export type RunFileImportHeading =
-  /** The line itself becomes a heading; `lines` (1–10) joins a wrapped title. */
+  /** The line itself becomes a heading; `lines` (1–10) joins a wrapped title.
+   *  The line must not already be a heading (re-level it with `as: "level"`). */
   | { line: number; level: 2 | 3 | 4 | 5 | 6; as: "heading"; lines?: number }
   /** A heading with `title` is inserted before the line, which stays body text. */
   | { line: number; level: 2 | 3 | 4 | 5 | 6; as: "marker"; title: string }
   /** The line, which must already be a heading (such as a PDF's "## Page 3"),
    *  is removed, so the text either side reads on as one section. */
-  | { line: number; as: "drop" };
+  | { line: number; as: "drop" }
+  /** The line, which must already be a heading of another level, gets
+   *  `level`; its text stays as it is. */
+  | { line: number; level: 2 | 3 | 4 | 5 | 6; as: "level" };
 
 /** What {@link LoomcycleClient.downloadRunInboxFile} returns: one inbox file's
  *  bytes and what the server says about them. */
