@@ -43,8 +43,9 @@ func seedEmptyDossier(t *testing.T, st *sqlite.Store, sm *sqlmem.Manager, tenant
 		t.Fatalf("decode create_document: %v %s", err, res.Text)
 	}
 	key := sqlmem.ScopeKey{Tenant: tenant, Scope: "user", ScopeID: user}
-	// The sidecar on the ROOT is what makes this a dossier rather than prose.
-	if _, err := sm.Exec(context.Background(), key,
+	// The sidecar on the ROOT is what makes this a dossier rather than prose. A
+	// Document table, so on the document plane.
+	if _, err := sm.DocPlane().Exec(context.Background(), key,
 		`INSERT INTO chunk_memory_meta (chunk_id, natural_key, valid_at, created_at, class)
 		 VALUES (?, ?, ?, ?, ?)`,
 		[]any{out.RootChunkID, "person:" + subject, 1, 1, "derived"}, 0); err != nil {
@@ -55,7 +56,7 @@ func seedEmptyDossier(t *testing.T, st *sqlite.Store, sm *sqlmem.Manager, tenant
 
 func documentExists(t *testing.T, sm *sqlmem.Manager, key sqlmem.ScopeKey, docID string) bool {
 	t.Helper()
-	res, err := sm.Query(context.Background(), key, `SELECT COUNT(*) FROM documents WHERE id = ?`, []any{docID})
+	res, err := sm.DocPlane().Query(context.Background(), key, `SELECT COUNT(*) FROM documents WHERE id = ?`, []any{docID})
 	if err != nil {
 		t.Fatalf("count documents: %v", err)
 	}

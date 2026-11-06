@@ -117,12 +117,13 @@ func memStoreFixture(t *testing.T) (store.Store, *sqlmem.Manager) {
 	return st, mgr
 }
 
-// userDocCount counts documents in a (tenant, user) SQL-Memory scope. A missing
-// scope DB / table (nothing provisioned yet) reads as zero.
+// userDocCount counts documents in a (tenant, user) SQL-Memory scope, on the
+// document plane where the Document tool keeps them. A missing scope DB / table
+// (nothing provisioned yet) reads as zero.
 func userDocCount(t *testing.T, mgr *sqlmem.Manager, tenant, user string) int {
 	t.Helper()
 	key := sqlmem.ScopeKey{Tenant: tenant, Scope: "user", ScopeID: user}
-	res, err := mgr.Query(context.Background(), key, "SELECT COUNT(*) FROM documents", nil)
+	res, err := mgr.DocPlane().Query(context.Background(), key, "SELECT COUNT(*) FROM documents", nil)
 	if err != nil || len(res.Rows) == 0 {
 		return 0
 	}

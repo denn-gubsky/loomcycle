@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// A scope file holds the agent's own tables and the Document plane's together,
-// so a statement that rewrites the file's pages, rather than naming a table,
-// reaches both. Defensive mode makes the engine refuse those writes on every
+// A scope file from before the planes split holds the agent's own tables and the
+// Document plane's together, so a statement that rewrites the file's pages, rather
+// than naming a table, reaches both. Defensive mode makes the engine refuse those writes on every
 // connection the tier opens; these checks run on the scope's own pool, below
 // the Memory tool and its guard.
 func TestSqlmem_DefensiveModeIsOnEveryScopeConnection(t *testing.T) {
@@ -64,8 +64,8 @@ func TestSqlmem_DefensiveModeIsOnEveryScopeConnection(t *testing.T) {
 		refusesPageWrites(t, key.Scope+" pool", db)
 		b.release(path)
 
-		// The Document plane is the same file on this tier and reaches it
-		// through the same pool.
+		// The Document plane is a file of its own on this tier, opened by the
+		// same pool code, so it is defensive too.
 		if _, err := m.DocPlane().Exec(ctx, key, `UPDATE sqlite_dbpage SET data = data WHERE pgno = 1`, nil, 0); err == nil || !strings.Contains(err.Error(), "read-only") {
 			t.Fatalf("%s: page write through the document plane: err = %v; want it refused", key.Scope, err)
 		}

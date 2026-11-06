@@ -431,7 +431,12 @@ func (b *boot) startRunSweepers() {
 		// fine — the mem sweep then reclaims base memory + dirents only. Typed-nil
 		// guard: only assign the interface field from a non-nil pointer.
 		if sqlMemMgr != nil {
-			rCfg.SQLMem = sqlMemMgr
+			// The document plane's view: the one statement the sweeper writes
+			// (the archival span snapshot) updates chunk_memory_meta, a Document
+			// table, which lives on that plane (its own schema on postgres, its own
+			// file on sqlite). Listing, export and drop cover the whole scope from
+			// either view.
+			rCfg.SQLMem = sqlMemMgr.DocPlane()
 			// The content prune needs the Document tool, which owns the chunk cascade —
 			// the family stays off without it, so a deployment with no SQL Memory is
 			// unaffected. Same typed-nil discipline as the interface assignments around it.
@@ -784,6 +789,15 @@ func (b *boot) startStoreSweepers() {
 			return nil
 		}
 		go func() {
+			// First, on sqlite, move every scope from before the document plane had
+			// a file of its own into it (RFC FZ Part A), so the ontology pass below
+			// and the other readers that do not provision find the documents where
+			// they now live. A sqlite data dir belongs to one replica: no lock.
+			if n, err := ontologyDoc.SplitDocumentPlanes(bgCtx); err != nil {
+				slog.Error("document: boot pass moving document tables into their own files failed", "err", err)
+			} else if n > 0 {
+				slog.Info("document: moved scopes' document tables into their own files", "scopes", n)
+			}
 			if advisoryLock != nil {
 				if _, err := advisoryLock.TryRun(bgCtx, coord.LockKeyOntologyIdentityPass, record); err != nil {
 					slog.Error("ontology: advisory-gated boot pass failed", "err", err)
