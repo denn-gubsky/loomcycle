@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -109,5 +110,75 @@ func TestEmbedder_RefusesWhatConfigRefuses(t *testing.T) {
 	}
 	if _, err := Embedder(cfg); err == nil || err.Error() != wantErr.Error() {
 		t.Fatalf("Embedder = %v, want config's refusal %q", err, wantErr)
+	}
+}
+
+// TestEmbedder_HostVendorKeyStaysAtTheVendorsEndpoint — the per-id env key the
+// embedder falls back to when the provider names no api_key_env (OPENAI_API_KEY
+// for the "openai" id) is the vendor's key: it goes only to the endpoint that
+// id calls by default, never to a base_url the operator pointed elsewhere,
+// whether on the provider or on the embedder block.
+func TestEmbedder_HostVendorKeyStaysAtTheVendorsEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider string
+		embedder string
+	}{
+		{name: "provider base_url", provider: "srv"},
+		{name: "embedder base_url", embedder: "srv"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, auths := openAIEmbedSrv(t)
+			pc := config.ProviderConfig{Driver: "openai"}
+			ec := config.EmbedderConfig{Provider: "openai", Model: "text-embedding-3-small"}
+			if tc.provider != "" {
+				pc.BaseURL = srv.URL
+			}
+			if tc.embedder != "" {
+				ec.BaseURL = srv.URL
+			}
+			cfg := &config.Config{
+				Env:       config.Env{OpenAIAPIKey: "host-openai-key"},
+				Providers: map[string]config.ProviderConfig{"openai": pc},
+				Memory:    config.MemoryConfig{Embedder: ec},
+			}
+			e, _, err := buildEmbedder(cfg)
+			if err != nil || e == nil {
+				t.Fatalf("buildEmbedder = %v, %v", e, err)
+			}
+			_, _ = e.Embed(context.Background(), []string{"x"})
+			// The openai embedder sends its (empty) key as a bare "Bearer"
+			// header; what matters is that no key follows it.
+			if got := auths(); len(got) != 1 || strings.TrimSpace(strings.TrimPrefix(got[0], "Bearer")) != "" {
+				t.Fatalf("requests at the operator's endpoint = %q, want one carrying no key", got)
+			}
+		})
+	}
+}
+
+// TestEmbedder_HostVendorKeyStillAuthenticatesAtTheVendor — the other half:
+// with no providers: entry and no base_url anywhere, the per-id env key is
+// still what the embedder authenticates with at the vendor's own endpoint, and
+// a base_url on the provider takes it away. A capturing constructor stands in
+// for the gemini embedder, so nothing dials Google.
+func TestEmbedder_HostVendorKeyStillAuthenticatesAtTheVendor(t *testing.T) {
+	registerCapture("gemini")
+	cfg := &config.Config{
+		Env:    config.Env{GeminiAPIKey: "host-gemini-key"},
+		Memory: config.MemoryConfig{Embedder: config.EmbedderConfig{Provider: "gemini", Model: "text-embedding-004"}},
+	}
+	if _, _, err := buildEmbedder(cfg); err != nil {
+		t.Fatalf("buildEmbedder: %v", err)
+	}
+	if o := capturedOpts(t, "gemini"); o.APIKey != "host-gemini-key" || o.BaseURL != "" {
+		t.Errorf("at the vendor: APIKey set = %v, BaseURL = %q; want the host key and the driver default", o.APIKey != "", o.BaseURL)
+	}
+
+	cfg.Providers = map[string]config.ProviderConfig{"gemini": {Driver: "gemini", BaseURL: "http://127.0.0.1:9/v1beta"}}
+	if _, _, err := buildEmbedder(cfg); err != nil {
+		t.Fatalf("buildEmbedder: %v", err)
+	}
+	if o := capturedOpts(t, "gemini"); o.APIKey != "" {
+		t.Error("a provider base_url off the vendor still received the vendor's host key")
 	}
 }

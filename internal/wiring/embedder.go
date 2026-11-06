@@ -131,7 +131,12 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, string, error) {
 		// embedder accepts an empty key at construction and only fails later at
 		// 401, so losing this fallback would trade a working embedder for a
 		// runtime auth error rather than a startup one.
-		if apiKey == "" && keyEnvName == "" {
+		//
+		// It is the VENDOR's key, so it goes only to the endpoint the id
+		// calls by default: not to a base_url the operator pointed at a
+		// server of its own, on the provider or on the embedder block below
+		// (the chat drivers apply the same rule to the vendor key name).
+		if apiKey == "" && keyEnvName == "" && cfg.Providers[provider].BaseURL == "" && cfg.Memory.Embedder.BaseURL == "" {
 			switch provider {
 			case "openai":
 				apiKey = cfg.Env.OpenAIAPIKey
