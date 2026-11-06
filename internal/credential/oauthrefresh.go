@@ -23,6 +23,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/netguard"
 )
 
 // refreshThreshold is how long before its expiry an access token is
@@ -74,7 +76,17 @@ func (m *OAuthManager) Substitute(ctx context.Context, tenantID, agentName, user
 			return ref
 		}
 		name := oauthTokenRe.FindStringSubmatch(ref)[1]
-		tok, found, err := m.token(ctx, tenantID, agentName, userID, name, targetURL)
+		attempt := oauthAttemptFrom(ctx)
+		var (
+			tok   string
+			found bool
+			err   error
+		)
+		if rejected, retry := attempt.rejected(name); retry {
+			tok, found, err = m.ForceRefresh(ctx, tenantID, agentName, userID, name, targetURL, rejected)
+		} else {
+			tok, found, err = m.token(ctx, tenantID, agentName, userID, name, targetURL)
+		}
 		if err != nil {
 			firstErr = err
 			return ref
@@ -85,6 +97,12 @@ func (m *OAuthManager) Substitute(ctx context.Context, tenantID, agentName, user
 		}
 		if register != nil {
 			register(tok)
+		}
+		if attempt != nil {
+			sent := tok
+			attempt.note(name, oauthSent{token: sent, reauth: func(ctx context.Context) error {
+				return m.refusedAfterRefresh(ctx, tenantID, agentName, userID, name, targetURL, sent)
+			}})
 		}
 		return tok
 	})
@@ -119,22 +137,91 @@ func (m *OAuthManager) token(ctx context.Context, tenantID, agentName, userID, n
 		}
 		return "", true, fmt.Errorf("%w (%q)", ErrOAuthUnavailable, name)
 	}
+	tok, err := m.flight(ctx, r, "")
+	return tok, true, err
+}
+
+// flight joins (or starts) this process's one refresh flight for r and
+// waits for its token. rejected is the token a server refused, which the
+// flight will not hand back; "" when none was.
+func (m *OAuthManager) flight(ctx context.Context, r oauthRow, rejected string) (string, error) {
 	id := r.id
 	id.Bound = nil
 	ch := m.sf.DoChan(r.key(), func() (any, error) {
 		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), oauthCallTimeout)
 		defer cancel()
-		return m.refresh(fctx, id)
+		return m.refresh(fctx, id, rejected)
 	})
 	select {
 	case <-ctx.Done():
-		return "", true, ctx.Err()
+		return "", ctx.Err()
 	case res := <-ch:
 		if res.Err != nil {
-			return "", true, res.Err
+			return "", res.Err
 		}
-		return res.Val.(string), true, nil
+		return res.Val.(string), nil
 	}
+}
+
+// ForceRefresh returns an access token for name other than rejected, the
+// one a resource server just refused, refreshing the credential even though
+// that token has not expired. A burst of refusals makes one refresh: they
+// share this process's flight and the cross-replica lease, and a caller that
+// comes after it finds a newer token stored and sends that. found is false
+// when no visible scope holds the name.
+func (m *OAuthManager) ForceRefresh(ctx context.Context, tenantID, agentName, userID, name, targetURL, rejected string) (string, bool, error) {
+	r, found, err := m.engine.findOAuth(ctx, tenantID, agentName, userID, name, targetURL)
+	if err != nil || !found {
+		return "", found, err
+	}
+	if err := usableState(r); err != nil {
+		return "", true, err
+	}
+	sec, err := m.engine.openOAuthSecret(r)
+	if err != nil {
+		return "", true, err
+	}
+	if !sameToken(sec.AccessToken, rejected) && m.unexpired(sec) {
+		return sec.AccessToken, true, nil
+	}
+	// A refresh failed a moment ago: the refused token is no use, and the
+	// server is not asked again yet.
+	if m.backingOff(r.key()) {
+		return "", true, fmt.Errorf("%w (%q)", ErrOAuthUnavailable, name)
+	}
+	// Twice at most: a flight already under way when this caller joined may
+	// have been started for a token it found still fresh — the refused one.
+	for range 2 {
+		tok, err := m.flight(ctx, r, rejected)
+		if err != nil {
+			return "", true, err
+		}
+		if !sameToken(tok, rejected) {
+			return tok, true, nil
+		}
+	}
+	return "", true, fmt.Errorf("%w (%q)", ErrOAuthUnavailable, name)
+}
+
+// refusedAfterRefresh is a resource server refusing sent, a token handed out
+// for a retry after a refusal: the grant is no good for that server. The
+// credential moves to needs_reauth, unless the token stored is no longer
+// sent (someone refreshed since), and the typed error is returned either
+// way.
+func (m *OAuthManager) refusedAfterRefresh(ctx context.Context, tenantID, agentName, userID, name, targetURL, sent string) error {
+	const reason = "the server refused a refreshed access token"
+	// The same lookup that handed the token out. It pins its ctx for the
+	// request about to carry the token; none is sent from here, so the pin
+	// is taken on a ctx of its own.
+	r, found, err := m.engine.findOAuth(netguard.WithPinnable(ctx), tenantID, agentName, userID, name, targetURL)
+	if err != nil || !found {
+		return &OAuthReauthError{Name: name, Scope: "unknown", Reason: reason}
+	}
+	sec, err := m.engine.openOAuthSecret(r)
+	if err != nil || !sameToken(sec.AccessToken, sent) {
+		return &OAuthReauthError{Name: r.row.Name, Scope: r.row.Scope, Reason: reason}
+	}
+	return m.reauth(ctx, r, sec, reason)
 }
 
 // usableState refuses a credential whose state holds no grant to send.
@@ -155,7 +242,8 @@ func usableState(r oauthRow) error {
 
 // refresh is one flight: it refreshes the credential stored exactly under
 // id unless someone else already has, and returns the access token to send.
-func (m *OAuthManager) refresh(ctx context.Context, id Identity) (string, error) {
+// A token equal to rejected is never handed back as it is.
+func (m *OAuthManager) refresh(ctx context.Context, id Identity, rejected string) (string, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -171,13 +259,14 @@ func (m *OAuthManager) refresh(ctx context.Context, id Identity) (string, error)
 		if err != nil {
 			return "", err
 		}
-		if m.fresh(sec) {
+		usable := !sameToken(sec.AccessToken, rejected)
+		if usable && m.fresh(sec) {
 			return sec.AccessToken, nil
 		}
 		if l := r.def.Lease; l != nil && m.now().Before(l.Until) && l.Holder != m.holder {
 			// Another replica is at it: send what is still valid, else wait
 			// for its write or for its lease to lapse.
-			if m.unexpired(sec) {
+			if usable && m.unexpired(sec) {
 				return sec.AccessToken, nil
 			}
 			if err := m.wait(ctx, m.leasePoll); err != nil {
@@ -197,14 +286,14 @@ func (m *OAuthManager) refresh(ctx context.Context, id Identity) (string, error)
 		if !ok {
 			continue // someone wrote first: look again
 		}
-		return m.refreshUnderLease(ctx, leased, sec)
+		return m.refreshUnderLease(ctx, leased, sec, rejected)
 	}
 }
 
 // refreshUnderLease spends sec's refresh token (read before the lease was
 // taken, from the definition the lease was written over) and stores the
 // rotated grant.
-func (m *OAuthManager) refreshUnderLease(ctx context.Context, r oauthRow, sec oauthSecret) (string, error) {
+func (m *OAuthManager) refreshUnderLease(ctx context.Context, r oauthRow, sec oauthSecret, rejected string) (string, error) {
 	tok, err := m.client.tokenRefresh(ctx, r.def.Config, sec)
 	switch {
 	case err == nil:
@@ -216,7 +305,7 @@ func (m *OAuthManager) refreshUnderLease(ctx context.Context, r oauthRow, sec oa
 		def.Lease = nil
 		def.Status.LastError = reasonOf(err)
 		_, _, _ = m.engine.casOAuth(ctx, r, def, nil)
-		if m.unexpired(sec) {
+		if !sameToken(sec.AccessToken, rejected) && m.unexpired(sec) {
 			return sec.AccessToken, nil
 		}
 		return "", fmt.Errorf("%w (%q)", ErrOAuthUnavailable, r.row.Name)

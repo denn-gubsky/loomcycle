@@ -20,6 +20,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -90,6 +91,16 @@ type Client struct {
 
 	sessMu    sync.Mutex
 	sessionID string // populated after first response that carries one
+	// initParams are the params of the last initialize this client sent,
+	// so it can open a new session after a token refresh.
+	initParams any
+
+	// usesOAuth: a header names an $oauth: credential, so a request the
+	// server refuses as invalid_token is refreshed and retried once.
+	usesOAuth bool
+	// reinitMu lets one call re-open a session after a refresh; the calls
+	// refused beside it wait and use the new one.
+	reinitMu sync.Mutex
 
 	maxBody int64
 
@@ -125,48 +136,196 @@ func New(cfg Config) (*Client, error) {
 		http:           netguard.HonorPins(hc),
 		credSubstitute: cfg.CredSubstitute,
 		maxBody:        maxBody,
+		usesOAuth:      headersUseOAuth(cfg.Headers),
 	}, nil
+}
+
+func headersUseOAuth(h map[string]string) bool {
+	for _, v := range h {
+		if credential.HasOAuthRef(v) {
+			return true
+		}
+	}
+	return false
 }
 
 // Call sends a JSON-RPC request and waits for the JSON response.
 //
 //   - 200 OK with JSON body → decode and return.
 //   - 404 with JSON-RPC error → marks the client dead, surfaces the error.
+//   - 401 invalid_token on a server whose headers name an $oauth:
+//     credential → refresh it, re-open a session tied to the old token,
+//     and send the request once more (refreshAndRetry).
 //   - Other 4xx/5xx → transport error.
 //   - Network failure → transport error.
 func (c *Client) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	if c.dead.Load() {
 		return nil, errors.New("mcp http: session invalidated; create a new client")
 	}
-	id := c.ids.Next()
+	if method == "initialize" {
+		c.sessMu.Lock()
+		c.initParams = params
+		c.sessMu.Unlock()
+	}
+	var attempt *credential.OAuthAttempt
+	if c.usesOAuth {
+		attempt = credential.NewOAuthAttempt()
+		ctx = credential.WithOAuthAttempt(ctx, attempt)
+	}
+	id, body, err := encodeRequest(c.ids.Next(), method, params)
+	if err != nil {
+		return nil, err
+	}
+	resp, respBody, sid, err := c.post(ctx, body, true)
+	if err != nil {
+		return nil, err
+	}
+	if attempt != nil && attempt.Sent() && refusedAsInvalidToken(resp) {
+		if resp, respBody, err = c.refreshAndRetry(ctx, attempt, method, sid, body); err != nil {
+			return nil, err
+		}
+	}
+	return c.decode(id, resp, respBody)
+}
+
+// refreshAndRetry answers a request refused as invalid_token: the server
+// did not run it, so sending it again is safe. The token is refreshed (the
+// substitution under attempt does it); a session the client holds is
+// re-opened first, in case the server tied it to the refused token; and
+// the request goes once more. A second refusal needs the credential's
+// owner.
+func (c *Client) refreshAndRetry(ctx context.Context, attempt *credential.OAuthAttempt, method, sid string, body []byte) (*http.Response, []byte, error) {
+	slog.InfoContext(ctx, "mcp http: the server refused the OAuth access token; refreshing it and retrying once", "url", c.url, "method", method)
+	if err := attempt.Rejected(ctx); err != nil {
+		return nil, nil, oauthRefusedErr(err)
+	}
+	if method != "initialize" && sid != "" {
+		if err := c.reinitialize(ctx, attempt, sid); err != nil {
+			return nil, nil, err
+		}
+	}
+	resp, respBody, _, err := c.post(ctx, body, true)
+	if err != nil {
+		return nil, nil, err
+	}
+	if refusedAsInvalidToken(resp) {
+		return nil, nil, c.refusedAgain(ctx, attempt)
+	}
+	return resp, respBody, nil
+}
+
+// reinitialize opens a new session for the refreshed token, unless another
+// call already replaced sid. Assumed rather than probed: a server that does
+// not tie its session to the token just opens another, which costs one
+// round trip, while one that does would answer the old session 404 and
+// this client would be dropped.
+func (c *Client) reinitialize(ctx context.Context, attempt *credential.OAuthAttempt, sid string) error {
+	c.reinitMu.Lock()
+	defer c.reinitMu.Unlock()
+	c.sessMu.Lock()
+	current, params := c.sessionID, c.initParams
+	c.sessMu.Unlock()
+	if current != sid || params == nil {
+		return nil
+	}
+	id, body, err := encodeRequest(c.ids.Next(), "initialize", params)
+	if err != nil {
+		return err
+	}
+	// Without the old session: the new one comes back on the answer.
+	resp, respBody, _, err := c.post(ctx, body, false)
+	if err != nil {
+		return err
+	}
+	if refusedAsInvalidToken(resp) {
+		return c.refusedAgain(ctx, attempt)
+	}
+	if _, err := c.decode(id, resp, respBody); err != nil {
+		return fmt.Errorf("mcp http: re-initialize after an OAuth token refresh: %w", err)
+	}
+	return c.Notify(ctx, "notifications/initialized", nil)
+}
+
+// refusedAgain is the server refusing the refreshed token too: no third
+// try. The credential moves to needs_reauth.
+func (c *Client) refusedAgain(ctx context.Context, attempt *credential.OAuthAttempt) error {
+	err := attempt.Rejected(ctx)
+	slog.WarnContext(ctx, "mcp http: the server refused a refreshed OAuth access token; the credential needs its owner to connect it again", "url", c.url)
+	return oauthRefusedErr(err)
+}
+
+// oauthRefusedErr is what the model sees of a refused OAuth token: the fix,
+// and the two sentinels, never the credential error's own text (operator
+// detail) or a token.
+func oauthRefusedErr(err error) error {
+	if err == nil {
+		err = credential.ErrOAuthReauthRequired
+	}
+	if !errors.Is(err, credential.ErrOAuthReauthRequired) {
+		return fmt.Errorf("the server refused the OAuth access token, which could not be refreshed: %w", tools.ErrRunCredentialUnavailable)
+	}
+	return fmt.Errorf("the server refused the OAuth access token after a refresh; it needs an OAuth connection its owner must connect (again) with oauth_connect_start: %w (%w)",
+		tools.ErrRunCredentialUnavailable, credential.ErrOAuthReauthRequired)
+}
+
+// invalidTokenRe finds error="invalid_token" in a challenge (RFC 6750 §3).
+var invalidTokenRe = regexp.MustCompile(`(?i)(?:^|[\s,])error\s*=\s*"?invalid_token"?(?:$|[\s,])`)
+
+// bearerSchemeRe finds the Bearer scheme in a challenge.
+var bearerSchemeRe = regexp.MustCompile(`(?i)(?:^|[\s,])bearer(?:$|\s)`)
+
+// refusedAsInvalidToken reports a 401 whose Bearer challenge says the token
+// is not accepted. Any other 401 (no challenge, another error, another
+// scheme) is answered as it always was.
+func refusedAsInvalidToken(resp *http.Response) bool {
+	if resp.StatusCode != http.StatusUnauthorized {
+		return false
+	}
+	for _, v := range resp.Header.Values("WWW-Authenticate") {
+		if bearerSchemeRe.MatchString(v) && invalidTokenRe.MatchString(v) {
+			return true
+		}
+	}
+	return false
+}
+
+func encodeRequest(id int64, method string, params any) (int64, []byte, error) {
 	req, err := mcp.NewRequest(id, method, params)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	body, err := json.Marshal(req)
+	return id, body, err
+}
+
+// post sends body and reads the answer, bounded. withSession sends the
+// session the client holds; sid is the one sent. A session the answer
+// names is kept.
+func (c *Client) post(ctx context.Context, body []byte, withSession bool) (*http.Response, []byte, string, error) {
+	resp, sid, err := c.do(ctx, body, withSession)
 	if err != nil {
-		return nil, err
-	}
-	resp, err := c.do(ctx, body)
-	if err != nil {
-		return nil, err
+		return nil, nil, "", err
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, c.maxBody+1))
 	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
+		return nil, nil, "", fmt.Errorf("read body: %w", err)
 	}
 	if int64(len(respBody)) > c.maxBody {
-		return nil, fmt.Errorf("mcp http: the response passed the %d-byte limit (LOOMCYCLE_MCP_MAX_FRAME_BYTES); a large file is better fetched by URL", c.maxBody)
+		return nil, nil, "", fmt.Errorf("mcp http: the response passed the %d-byte limit (LOOMCYCLE_MCP_MAX_FRAME_BYTES); a large file is better fetched by URL", c.maxBody)
 	}
 
-	if sid := resp.Header.Get(sessionHeader); sid != "" {
+	if newSID := resp.Header.Get(sessionHeader); newSID != "" {
 		c.sessMu.Lock()
-		c.sessionID = sid
+		c.sessionID = newSID
 		c.sessMu.Unlock()
 	}
+	return resp, respBody, sid, nil
+}
 
+// decode turns the answer to request id into its result.
+func (c *Client) decode(id int64, resp *http.Response, respBody []byte) (json.RawMessage, error) {
 	switch {
 	case resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusAccepted:
 		// Fall through to parse.
@@ -233,7 +392,7 @@ func (c *Client) Notify(ctx context.Context, method string, params any) error {
 	if err != nil {
 		return err
 	}
-	resp, err := c.do(ctx, body)
+	resp, _, err := c.do(ctx, body, true)
 	if err != nil {
 		return err
 	}
@@ -255,15 +414,16 @@ func (c *Client) Healthy() bool { return !c.dead.Load() }
 func (c *Client) Close() error { return nil }
 
 // do performs one POST with the JSON-RPC body and returns the raw http
-// response (caller closes Body). Adds session header + operator headers.
-func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
+// response (caller closes Body) and the session it sent. Adds the operator
+// headers, and the session header when withSession.
+func (c *Client) do(ctx context.Context, body []byte, withSession bool) (*http.Response, string, error) {
 	// Pinnable before the headers resolve: a credential restricted by
 	// allowed_urls resolves for c.url and pins this request, so the client
 	// will not follow a redirect that would carry it elsewhere.
 	ctx = netguard.WithPinnable(ctx)
 	req, err := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// MCP Streamable HTTP spec (2024-11-05) requires the client to advertise
@@ -308,7 +468,7 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 	refuseUnresolved := tools.HasRunIdentity(ctx) && !tools.IsMCPDiscovery(ctx)
 	bearer, runCreds, err := c.runBearer(ctx, runIdent)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	for k, v := range c.headers {
 		// Two-pass substitution: legacy ${run.user_bearer} first
@@ -323,7 +483,7 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 			slog.WarnContext(ctx, "mcp http: ${run.user_bearer} unresolved for header; "+unresolvedAction(ctx),
 				"header", k, "url", c.url, "agent_id", runIdent.AgentID, "bearer", tokenPrefix(runIdent.UserBearer))
 			if refuseUnresolved {
-				return nil, fmt.Errorf("header %q needs ${run.user_bearer}, which this run does not carry: %w", k, tools.ErrRunCredentialUnavailable)
+				return nil, "", fmt.Errorf("header %q needs ${run.user_bearer}, which this run does not carry: %w", k, tools.ErrRunCredentialUnavailable)
 			}
 			continue
 		}
@@ -332,7 +492,7 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 			slog.WarnContext(ctx, "mcp http: ${run.credentials.<name>} unresolved for header; "+unresolvedAction(ctx),
 				"header", k, "url", c.url, "agent_id", runIdent.AgentID, "missing", missingCreds)
 			if refuseUnresolved {
-				return nil, fmt.Errorf("header %q needs credential(s) %v, which this run does not carry: %w", k, missingCreds, tools.ErrRunCredentialUnavailable)
+				return nil, "", fmt.Errorf("header %q needs credential(s) %v, which this run does not carry: %w", k, missingCreds, tools.ErrRunCredentialUnavailable)
 			}
 			continue
 		}
@@ -350,12 +510,12 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 					// An OAuth credential that lost or never had its grant
 					// needs a person, not a retry: say so.
 					if errors.Is(cerr, credential.ErrOAuthReauthRequired) || errors.Is(cerr, credential.ErrOAuthNotConnected) {
-						return nil, fmt.Errorf("header %q needs an OAuth connection its owner must connect (again) with oauth_connect_start: %w", k, tools.ErrRunCredentialUnavailable)
+						return nil, "", fmt.Errorf("header %q needs an OAuth connection its owner must connect (again) with oauth_connect_start: %w", k, tools.ErrRunCredentialUnavailable)
 					}
 					// The resolve error text is operator-side (it can name a
 					// store or a scope), so the model sees only that it did not
 					// resolve.
-					return nil, fmt.Errorf("header %q needs a stored credential that could not be resolved: %w", k, tools.ErrRunCredentialUnavailable)
+					return nil, "", fmt.Errorf("header %q needs a stored credential that could not be resolved: %w", k, tools.ErrRunCredentialUnavailable)
 				}
 				continue
 			}
@@ -363,7 +523,7 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 				slog.WarnContext(ctx, "mcp http: $cred unresolved for header; "+unresolvedAction(ctx),
 					"header", k, "url", c.url, "agent_id", runIdent.AgentID, "credentials", unresolved)
 				if refuseUnresolved {
-					return nil, fmt.Errorf("header %q needs stored credential(s) %v, which are not available to this run: %w", k, unresolved, tools.ErrRunCredentialUnavailable)
+					return nil, "", fmt.Errorf("header %q needs stored credential(s) %v, which are not available to this run: %w", k, unresolved, tools.ErrRunCredentialUnavailable)
 				}
 				continue
 			}
@@ -376,13 +536,17 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 		subV = substituteRunIDs(subV, runIdent.RootRunID, runIdent.TenantID)
 		req.Header.Set(k, subV)
 	}
-	c.sessMu.Lock()
-	sid := c.sessionID
-	c.sessMu.Unlock()
+	sid := ""
+	if withSession {
+		c.sessMu.Lock()
+		sid = c.sessionID
+		c.sessMu.Unlock()
+	}
 	if sid != "" {
 		req.Header.Set(sessionHeader, sid)
 	}
-	return c.http.Do(req)
+	resp, err := c.http.Do(req)
+	return resp, sid, err
 }
 
 // runBearer returns the run's bearer as this request sends it, and its
