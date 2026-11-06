@@ -226,7 +226,7 @@ func (b *postgresBackend) adoptTable(ctx context.Context, aSchema, aRole, dSchem
 	defer b.releaseScope(dsc)
 	empty, err := pgTableIsEmpty(ctx, dsc.db, dSchema, table)
 	if err != nil {
-		return err
+		return explainConnectDenied(b.baseCfg.Database, err)
 	}
 	if !empty {
 		// Not counted: the admin never reads an agent's table, whose row policies
@@ -255,12 +255,12 @@ func (b *postgresBackend) copyRows(ctx context.Context, aSchema, aRole, dSchema 
 	defer b.releaseScope(asc)
 	rtx, err := asc.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return err
+		return explainConnectDenied(b.baseCfg.Database, err)
 	}
 	defer func() { _ = rtx.Rollback() }()
 	wtx, err := dsc.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return explainConnectDenied(b.baseCfg.Database, err)
 	}
 	defer func() { _ = wtx.Rollback() }()
 	// The roles' baked statement_timeout bounds an agent's statement; a one-time
