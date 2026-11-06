@@ -268,31 +268,31 @@ var ErrChainBroken = errors.New("audit: the chain does not verify")
 // unverified is folded into a new signature. The new state is the previous
 // anchor's openings plus the pruned rows' (operator chain only).
 func (k ChainKeys) SealAnchor() store.AuditAnchorSealFunc {
-	return func(prev store.AuditHead, pruned []store.AuditEventRow) (string, string, error) {
+	return func(prev store.AuditHead, pruned []store.AuditEventRow) (string, string, string, error) {
 		tenant := prev.TenantID
 		if len(pruned) == 0 {
-			return "", "", fmt.Errorf("%w: nothing to prune", ErrChainBroken)
+			return "", "", "", fmt.Errorf("%w: nothing to prune", ErrChainBroken)
 		}
 		st, why := k.checkAnchor(prev)
 		if why != "" {
-			return "", "", fmt.Errorf("%w: %s", ErrChainBroken, why)
+			return "", "", "", fmt.Errorf("%w: %s", ErrChainBroken, why)
 		}
 		// The head, as locked: signed, and not behind the rows removed. Without
 		// this, valid rows past a head moved back (an old head replayed) would
 		// be folded under the new anchor, and a chain pruned to its head is
 		// then vouched for by that anchor alone.
 		if !k.check(prev.MAC, macHead, tenant, prev.Seq, prev.Hash) {
-			return "", "", fmt.Errorf("%w: the head's signature does not verify", ErrChainBroken)
+			return "", "", "", fmt.Errorf("%w: the head's signature does not verify", ErrChainBroken)
 		}
 		if last := pruned[len(pruned)-1]; last.Seq > prev.Seq {
-			return "", "", fmt.Errorf("%w: row %d lies past the chain's head (at %d)", ErrChainBroken, last.Seq, prev.Seq)
+			return "", "", "", fmt.Errorf("%w: row %d lies past the chain's head (at %d)", ErrChainBroken, last.Seq, prev.Seq)
 		} else if last.Seq == prev.Seq && last.Hash != prev.Hash {
-			return "", "", fmt.Errorf("%w: the head does not match the last row", ErrChainBroken)
+			return "", "", "", fmt.Errorf("%w: the head does not match the last row", ErrChainBroken)
 		}
 		link, want, rotated := prev.AnchorHash, prev.AnchorSeq+1, st.Rotated
 		for _, r := range pruned {
 			if why := k.checkLink(tenant, link, want, r, &rotated); why != "" {
-				return "", "", fmt.Errorf("%w: %s", ErrChainBroken, why)
+				return "", "", "", fmt.Errorf("%w: %s", ErrChainBroken, why)
 			}
 			if tenant == "" && r.Action == ActionChainOpened {
 				if st.Opened == nil {
@@ -308,12 +308,19 @@ func (k ChainKeys) SealAnchor() store.AuditAnchorSealFunc {
 		if len(st.Opened) > 0 || st.Rotated {
 			b, err := json.Marshal(st) // map keys marshal sorted: one encoding
 			if err != nil {
-				return "", "", err
+				return "", "", "", err
 			}
 			state = string(b)
 		}
 		last := pruned[len(pruned)-1]
-		return state, k.sign(macAnchor, tenant, last.Seq, last.Hash, state), nil
+		// Pruned up to the head: re-sign the head (verified above) with the
+		// current key, as the anchor is, so a later key rotation finds both
+		// under the same key.
+		headMAC := ""
+		if last.Seq == prev.Seq {
+			headMAC = k.sign(macHead, tenant, prev.Seq, prev.Hash)
+		}
+		return state, k.sign(macAnchor, tenant, last.Seq, last.Hash, state), headMAC, nil
 	}
 }
 
@@ -640,10 +647,7 @@ func verifyChain(ctx context.Context, r ChainReader, keys ChainKeys, tenant stri
 	if prev != head.Hash {
 		return rep.broken(head.Seq, "the head does not match the last row"), nil
 	}
-	// A chain pruned up to its head is vouched for by the anchor, which the
-	// prune signed with a newer key than the head's own MAC may have.
-	prunedToHead := head.AnchorSeq > 0 && head.Seq == head.AnchorSeq && head.Hash == head.AnchorHash
-	if head.Seq > 0 && !prunedToHead {
+	if head.Seq > 0 {
 		if w := keys.which(head.MAC, macHead, tenant, head.Seq, head.Hash); w == signedByNone || (rotated && w == signedByPrevious) {
 			return rep.broken(head.Seq, "the head's signature does not verify"), nil
 		}

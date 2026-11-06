@@ -34,6 +34,7 @@ func RunAudit(t *testing.T, factory ReplicaFactory) {
 		{"HeadAndListRoundTrip", testAuditHeadAndListRoundTrip},
 		{"UnsafeTextIsStoredEscapedAndHashed", testAuditUnsafeTextIsStoredEscapedAndHashed},
 		{"PruneHandsTheSealEveryRowAndAbortsOnItsError", testAuditPruneHandsTheSealEveryRowAndAbortsOnItsError},
+		{"PruneToTheHeadReSignsTheHead", testAuditPruneToTheHeadReSignsTheHead},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -264,8 +265,8 @@ func testAuditPruneHandsTheSealEveryRowAndAbortsOnItsError(t *testing.T, a, b st
 			t.Fatal(err)
 		}
 	}
-	refuse := func(store.AuditHead, []store.AuditEventRow) (string, string, error) {
-		return "", "", errors.New("refused")
+	refuse := func(store.AuditHead, []store.AuditEventRow) (string, string, string, error) {
+		return "", "", "", errors.New("refused")
 	}
 	if n, err := b.AuditPrune(ctx, "t1", base.Add(24*time.Hour), 0, refuse); err == nil || n != 0 {
 		t.Fatalf("prune with a refusing seal = %d, %v; want an error and nothing removed", n, err)
@@ -278,7 +279,7 @@ func testAuditPruneHandsTheSealEveryRowAndAbortsOnItsError(t *testing.T, a, b st
 	var seen [][]int64
 	var anchors []int64
 	inner := auditTestKeys.SealAnchor()
-	record := func(prev store.AuditHead, pruned []store.AuditEventRow) (string, string, error) {
+	record := func(prev store.AuditHead, pruned []store.AuditEventRow) (string, string, string, error) {
 		var seqs []int64
 		for _, r := range pruned {
 			seqs = append(seqs, r.Seq)
@@ -297,5 +298,33 @@ func testAuditPruneHandsTheSealEveryRowAndAbortsOnItsError(t *testing.T, a, b st
 	}
 	if rep, err := auditchain.Verify(ctx, a, auditTestKeys, "t1"); err != nil || !rep.OK || rep.AnchorSeq != 5 {
 		t.Errorf("after the batched prune: %+v, %v", rep, err)
+	}
+}
+
+// A prune that reaches the head writes the head MAC the seal returns, in the
+// same transaction, so a chain pruned under a new key carries its head under
+// that key too.
+func testAuditPruneToTheHeadReSignsTheHead(t *testing.T, a, b store.Store) {
+	ctx := context.Background()
+	sink, err := auditchain.NewStoreSink(a, auditTestKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := sink.Record(audit.Event{TS: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Action: "acl_edit", ActorTenant: "t1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := a.AuditHeadGet(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated := auditchain.ChainKeys{Current: []byte("a-rotated-in-audit-key-32-bytes!"), Previous: auditTestKeys.Current}
+	if n, err := auditchain.Prune(ctx, b, rotated, "t1", time.Now()); err != nil || n != 2 {
+		t.Fatalf("prune to the head = %d, %v", n, err)
+	}
+	after, err := a.AuditHeadGet(ctx, "t1")
+	if err != nil || after.MAC == before.MAC || after.Seq != before.Seq || after.Hash != before.Hash {
+		t.Errorf("head after a prune to it under a new key = %+v (before %+v), %v; want the same position re-signed", after, before, err)
 	}
 }

@@ -241,7 +241,7 @@ func (s *Store) AuditPrune(ctx context.Context, tenantID string, before time.Tim
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("audit prune: read: %w", err)
 	}
-	state, mac, err := seal(head, pruned)
+	state, mac, headMAC, err := seal(head, pruned)
 	if err != nil {
 		return 0, fmt.Errorf("audit prune: %w", err)
 	}
@@ -255,6 +255,13 @@ func (s *Store) AuditPrune(ctx context.Context, tenantID string, before time.Tim
 		`UPDATE audit_heads SET anchor_seq = ?, anchor_hash = ?, anchor_mac = ?, anchor_state = ? WHERE tenant_id = ?`,
 		end.Seq, end.Hash, mac, state, tenantID); err != nil {
 		return 0, fmt.Errorf("audit prune: anchor: %w", err)
+	}
+	if headMAC != "" {
+		// Pruned up to the head: the head is re-signed with the key that
+		// signed the anchor, so a later rotation still verifies it.
+		if _, err := conn.ExecContext(ctx, `UPDATE audit_heads SET mac = ? WHERE tenant_id = ?`, headMAC, tenantID); err != nil {
+			return 0, fmt.Errorf("audit prune: head: %w", err)
+		}
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return 0, fmt.Errorf("audit prune: commit: %w", err)

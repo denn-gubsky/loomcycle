@@ -567,3 +567,29 @@ func TestAuditPrune_ChecksTheHead(t *testing.T) {
 		}
 	})
 }
+
+// Truncating a chain back to its anchor — the rows since the last prune
+// deleted and the head set to the anchor's seq and hash — is a break: the
+// head still has to carry a valid signature, which a writer without the key
+// cannot make for the anchor's position.
+func TestAuditVerify_TruncatingToTheAnchorIsABreak(t *testing.T) {
+	s, db := chainFixture(t, 3)
+	ctx := context.Background()
+	if _, err := pruneForTest(ctx, s, "t1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	sink, err := auditchain.NewStoreSink(s, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := sink.Record(audit.Event{Action: "acl_edit", TargetTenant: "t1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(t, db, `DELETE FROM audit_events WHERE tenant_id = 't1' AND seq > 3`)
+	exec(t, db, `UPDATE audit_heads SET seq = anchor_seq, hash = anchor_hash, mac = 'garbage' WHERE tenant_id = 't1'`)
+	if rep := verify(t, s, testKeys); rep.OK {
+		t.Errorf("a chain truncated to its anchor verifies: %+v", rep)
+	}
+}

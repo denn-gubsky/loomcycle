@@ -62,9 +62,10 @@ type AuditSealFunc func(row *AuditEventRow) (headMAC string, err error)
 // AuditAnchorSealFunc checks a prune and signs its new anchor. It is handed
 // the chain's head as locked (the previous anchor with its state) and every
 // row the prune would remove, in order, and returns the new anchor's state
-// and MAC — or an error, which aborts the prune. It must not sign anything it
-// has not verified.
-type AuditAnchorSealFunc func(prev AuditHead, pruned []AuditEventRow) (state, mac string, err error)
+// and MAC, and — when the prune reaches the head — a new head MAC the store
+// writes in the same transaction ("" leaves the head as it is); or an error,
+// which aborts the prune. It must not sign anything it has not verified.
+type AuditAnchorSealFunc func(prev AuditHead, pruned []AuditEventRow) (state, mac, headMAC string, err error)
 
 // AuditStore persists the audit stream.
 type AuditStore interface {
