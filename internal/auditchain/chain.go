@@ -582,6 +582,17 @@ func verifyChain(ctx context.Context, r ChainReader, keys ChainKeys, tenant stri
 	if why != "" {
 		return rep.broken(max(head.AnchorSeq, 1), "%s", why), nil
 	}
+	if head.AnchorSeq > 0 {
+		// Rows at or below the anchor were pruned; one there now was put
+		// there by something other than the chain.
+		low, err := r.AuditEventsList(ctx, tenant, 0, 1)
+		if err != nil {
+			return rep, err
+		}
+		if len(low) > 0 && low[0].Seq <= head.AnchorSeq {
+			return rep.broken(low[0].Seq, "row %d lies below the retention anchor (at %d)", low[0].Seq, head.AnchorSeq), nil
+		}
+	}
 	rep.anchorState = head.AnchorState
 	prev, want := head.AnchorHash, head.AnchorSeq+1
 	rotated := st.Rotated

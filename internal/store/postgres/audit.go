@@ -169,8 +169,10 @@ func (s *Store) AuditTenants(ctx context.Context) ([]string, error) {
 
 // AuditPrune implements store.AuditStore, holding the head lock an append
 // takes so the anchor and the head never disagree. It reads the head and
-// every row it would remove inside the transaction and hands them to seal,
-// which verifies them before signing; a seal error rolls the prune back.
+// every row it would remove (those past the anchor; a row below it is not
+// this prune's, and is left for verification to report) inside the
+// transaction and hands them to seal, which verifies them before signing; a
+// seal error rolls the prune back.
 func (s *Store) AuditPrune(ctx context.Context, tenantID string, before time.Time, limit int, seal store.AuditAnchorSealFunc) (int, error) {
 	if seal == nil {
 		return 0, fmt.Errorf("audit prune: seal is required")
@@ -205,7 +207,7 @@ func (s *Store) AuditPrune(ctx context.Context, tenantID string, before time.Tim
 	}
 	rows, err := tx.Query(ctx,
 		`SELECT seq, ts, actor, action, subject, payload, prev_hash, hash, mac FROM audit_events
-		 WHERE tenant_id = $1 AND seq <= $2 ORDER BY seq`, tenantID, *last)
+		 WHERE tenant_id = $1 AND seq > $2 AND seq <= $3 ORDER BY seq`, tenantID, head.AnchorSeq, *last)
 	if err != nil {
 		return 0, fmt.Errorf("audit prune: read: %w", err)
 	}
@@ -229,7 +231,7 @@ func (s *Store) AuditPrune(ctx context.Context, tenantID string, before time.Tim
 		return 0, fmt.Errorf("audit prune: %w", err)
 	}
 	end := pruned[len(pruned)-1]
-	tag, err := tx.Exec(ctx, `DELETE FROM audit_events WHERE tenant_id = $1 AND seq <= $2`, tenantID, end.Seq)
+	tag, err := tx.Exec(ctx, `DELETE FROM audit_events WHERE tenant_id = $1 AND seq > $2 AND seq <= $3`, tenantID, head.AnchorSeq, end.Seq)
 	if err != nil {
 		return 0, fmt.Errorf("audit prune: delete: %w", err)
 	}

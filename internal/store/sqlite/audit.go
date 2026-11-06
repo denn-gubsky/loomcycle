@@ -175,8 +175,10 @@ func (s *Store) AuditTenants(ctx context.Context) ([]string, error) {
 
 // AuditPrune implements store.AuditStore, under the same write lock as an
 // append so the anchor and the head never disagree. It reads the head and
-// every row it would remove inside the transaction and hands them to seal,
-// which verifies them before signing; a seal error rolls the prune back.
+// every row it would remove (those past the anchor; a row below it is not
+// this prune's, and is left for verification to report) inside the
+// transaction and hands them to seal, which verifies them before signing; a
+// seal error rolls the prune back.
 func (s *Store) AuditPrune(ctx context.Context, tenantID string, before time.Time, limit int, seal store.AuditAnchorSealFunc) (int, error) {
 	if seal == nil {
 		return 0, fmt.Errorf("audit prune: seal is required")
@@ -220,7 +222,7 @@ func (s *Store) AuditPrune(ctx context.Context, tenantID string, before time.Tim
 	}
 	rows, err := conn.QueryContext(ctx,
 		`SELECT seq, ts, actor, action, subject, payload, prev_hash, hash, mac FROM audit_events
-		 WHERE tenant_id = ? AND seq <= ? ORDER BY seq`, tenantID, last.Int64)
+		 WHERE tenant_id = ? AND seq > ? AND seq <= ? ORDER BY seq`, tenantID, head.AnchorSeq, last.Int64)
 	if err != nil {
 		return 0, fmt.Errorf("audit prune: read: %w", err)
 	}
@@ -244,7 +246,7 @@ func (s *Store) AuditPrune(ctx context.Context, tenantID string, before time.Tim
 		return 0, fmt.Errorf("audit prune: %w", err)
 	}
 	end := pruned[len(pruned)-1]
-	res, err := conn.ExecContext(ctx, `DELETE FROM audit_events WHERE tenant_id = ? AND seq <= ?`, tenantID, end.Seq)
+	res, err := conn.ExecContext(ctx, `DELETE FROM audit_events WHERE tenant_id = ? AND seq > ? AND seq <= ?`, tenantID, head.AnchorSeq, end.Seq)
 	if err != nil {
 		return 0, fmt.Errorf("audit prune: delete: %w", err)
 	}

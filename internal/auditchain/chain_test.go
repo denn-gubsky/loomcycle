@@ -501,3 +501,33 @@ func TestAuditPrune_ChecksOnlyWhatItRemoves(t *testing.T) {
 		t.Errorf("the operator chain after t1's prune: %+v, %v; want its break still reported", rep, err)
 	}
 }
+
+// A row planted below the retention anchor is a break verification reports;
+// it neither blocks the next prune nor gets removed (and so hidden) by it.
+func TestAuditVerify_ARowBelowTheAnchorIsABreakAndBlocksNoPrune(t *testing.T) {
+	s, db := chainFixture(t, 4)
+	ctx := context.Background()
+	if _, err := pruneForTest(ctx, s, "t1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	sink, err := auditchain.NewStoreSink(s, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := sink.Record(audit.Event{Action: "acl_edit", TargetTenant: "t1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(t, db, `INSERT INTO audit_events (tenant_id, seq, ts, actor, action, subject, payload, prev_hash, hash, mac)
+		SELECT tenant_id, 2, ts, 'mallory', action, subject, payload, prev_hash, hash, mac FROM audit_events WHERE tenant_id = 't1' AND seq = 5`)
+	if rep := verify(t, s, testKeys); rep.OK || !strings.Contains(rep.Reason, "below") {
+		t.Errorf("a row planted below the anchor: %+v, want a break naming it", rep)
+	}
+	if n, err := pruneForTest(ctx, s, "t1", time.Now().Add(time.Hour)); err != nil || n != 2 {
+		t.Errorf("prune past a planted row = %d, %v; want rows 5-6 removed", n, err)
+	}
+	if rep := verify(t, s, testKeys); rep.OK || rep.BreakSeq != 2 {
+		t.Errorf("after the prune: %+v, want the planted row still reported at 2", rep)
+	}
+}
