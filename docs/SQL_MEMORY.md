@@ -19,7 +19,8 @@ files, code execution, or the operational DB) and **resource exhaustion**.
 Two `Memory` ops (the `Memory` tool must be in the agent's `tools`):
 
 - `op: "sql_exec"` — one DDL/DML statement (`CREATE TABLE`/`INSERT`/`UPDATE`/
-  `DELETE`/…), `args` for `?`/`$1` bind params; returns `{rows_affected,
+  `DELETE`/…), `args` for bind params (`?` on SQLite, `$1, $2, …` on PostgreSQL —
+  `?` is a syntax error there); returns `{rows_affected,
   last_insert_id?}` (`last_insert_id` is sqlite-only — use `RETURNING` on
   postgres).
 - `op: "sql_query"` — one read-only `SELECT` / `WITH … SELECT`; returns

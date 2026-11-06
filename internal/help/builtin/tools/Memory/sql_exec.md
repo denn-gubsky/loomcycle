@@ -5,8 +5,10 @@ description: "Memory op=sql_exec — run ONE DDL/DML statement (CREATE, DROP, AL
 `sql_exec` changes your per-scope SQL database: create a table, insert,
 update or delete rows. One statement per call; each call commits on its own
 unless you opened a transaction with `sql_begin`. SQL needs its own grant,
-**`sql_scopes`**. Use `?` placeholders with `args` for values — never paste
-user text into the statement.
+**`sql_scopes`**. Pass values through `args` and placeholders — never paste
+user text into the statement. The placeholder form depends on the tier: `?` on
+SQLite, `$1, $2, …` on PostgreSQL, where `?` is a syntax error. If a `?`
+statement fails with a syntax error near `,` or `)`, switch to `$1, $2, …`.
 
 ## Arguments
 
@@ -17,7 +19,8 @@ user text into the statement.
   `ALTER`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE` or `WITH` (a CTE ending in
   a write). `SELECT`, `ATTACH`, `PRAGMA`, `VACUUM`, `load_extension`,
   `BEGIN`/`COMMIT`/`SAVEPOINT` and multiple statements are refused.
-- `args` — positional values for the `?` placeholders. `{"$embed": "text"}`
+- `args` — positional values for the placeholders (`?` on SQLite, `$1`, `$2`, …
+  on PostgreSQL), in order. `{"$embed": "text"}`
   stores that text's embedding (PostgreSQL tier with pgvector only).
 - `timeout_ms` — accepted but ignored.
 
@@ -66,7 +69,7 @@ Create a table once:
 {"rows_affected": 0, "last_insert_id": 0}
 ```
 
-Insert a row with bound values:
+Insert a row with bound values (SQLite tier):
 
 ```json
 {"op": "sql_exec", "scope": "user", "statement": "INSERT INTO tasks (title, priority) VALUES (?, ?)", "args": ["Renew passport", 3]}
@@ -74,6 +77,13 @@ Insert a row with bound values:
 
 ```json result
 {"rows_affected": 1, "last_insert_id": 7}
+```
+
+The same on the PostgreSQL tier (numbered placeholders; `RETURNING` instead of
+`last_insert_id`):
+
+```json
+{"op": "sql_exec", "scope": "user", "statement": "INSERT INTO tasks (title, priority) VALUES ($1, $2)", "args": ["Renew passport", 3]}
 ```
 
 Scratch table for this run only:
