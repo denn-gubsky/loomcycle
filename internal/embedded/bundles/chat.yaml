@@ -118,11 +118,32 @@ agents:
 
       {{tool:Context.guide}}
 
-      Two things the generated list above cannot tell you:
-      - `Memory op=recall` is the ONLY semantic search over remembered facts.
-        Start there for "what do I know about X" — both `scope` and `query` are
-        required. Searching document TEXT rather than facts is
+      Where answers come from — what the generated list above cannot tell you:
+      - Two stores, searched differently. `Memory op=recall` is the semantic
+        search over FACTS remembered from conversations; both `scope` and
+        `query` are required. DOCUMENTS — a corpus the operator imported:
+        policies, proposals, manuals, reports — are searched with
+        `Document op=search`, usually at `scope=tenant`, where shared documents
+        live. The deployment context above, when filled in, says which corpus
+        exists and where it is named.
+      - For a question about the organisation's own material, search the
+        documents first. One empty `Memory op=recall` is enough: do not repeat
+        it with reworded queries — go to `Document op=search scope=tenant`.
+        Searching document text in the user's own scope is
         `Memory op=search scope=user prefix="doc.chunk:" query="..."`.
+      - Narrow a document search instead of repeating it: `under_path` (a
+        folder of the Path tree), `types` (document classes),
+        `concept` (a topic, as `<scheme>/<path>`). `Document
+        op=describe_ontology` lists the classes, relation kinds and topics.
+      - Follow relations instead of searching again: `Document op=backlinks
+        id=<chunk_id> kind=<relation>` lists what points at a chunk — for
+        example every document linked to a client or subject document —
+        and `Document op=get_edges document_id=...` lists a document's own
+        relations.
+      - Read before you answer (`Document op=get_chunk` or `op=export_md`) and
+        cite each document you use as [title](loom:doc/<document_id>), adding
+        `?scope=tenant` for a tenant document. If the documents do not answer
+        the question, say so rather than guess.
       - `Document graph_recall` is the SECOND step, never the first: it
         follows relations outward from chunks a search already found, for a
         question that needs a chain of facts. Pass those as `seed_ids` (from
@@ -225,11 +246,32 @@ agents:
 
       {{tool:Context.guide}}
 
-      Two things the generated list above cannot tell you:
-      - `Memory op=recall` is the ONLY semantic search over remembered facts.
-        Start there for "what do I know about X" — both `scope` and `query` are
-        required. Searching document TEXT rather than facts is
+      Where answers come from — what the generated list above cannot tell you:
+      - Two stores, searched differently. `Memory op=recall` is the semantic
+        search over FACTS remembered from conversations; both `scope` and
+        `query` are required. DOCUMENTS — a corpus the operator imported:
+        policies, proposals, manuals, reports — are searched with
+        `Document op=search`, usually at `scope=tenant`, where shared documents
+        live. The deployment context above, when filled in, says which corpus
+        exists and where it is named.
+      - For a question about the organisation's own material, search the
+        documents first. One empty `Memory op=recall` is enough: do not repeat
+        it with reworded queries — go to `Document op=search scope=tenant`.
+        Searching document text in the user's own scope is
         `Memory op=search scope=user prefix="doc.chunk:" query="..."`.
+      - Narrow a document search instead of repeating it: `under_path` (a
+        folder of the Path tree), `types` (document classes),
+        `concept` (a topic, as `<scheme>/<path>`). `Document
+        op=describe_ontology` lists the classes, relation kinds and topics.
+      - Follow relations instead of searching again: `Document op=backlinks
+        id=<chunk_id> kind=<relation>` lists what points at a chunk — for
+        example every document linked to a client or subject document —
+        and `Document op=get_edges document_id=...` lists a document's own
+        relations.
+      - Read before you answer (`Document op=get_chunk` or `op=export_md`) and
+        cite each document you use as [title](loom:doc/<document_id>), adding
+        `?scope=tenant` for a tenant document. If the documents do not answer
+        the question, say so rather than guess.
       - `Document graph_recall` is the SECOND step, never the first: it
         follows relations outward from chunks a search already found, for a
         question that needs a chain of facts. Pass those as `seed_ids` (from
@@ -307,11 +349,32 @@ agents:
 
       {{tool:Context.guide}}
 
-      Two things the generated list above cannot tell you:
-      - `Memory op=recall` is the ONLY semantic search over remembered facts.
-        Start there for "what do I know about X" — both `scope` and `query` are
-        required. Searching document TEXT rather than facts is
+      Where answers come from — what the generated list above cannot tell you:
+      - Two stores, searched differently. `Memory op=recall` is the semantic
+        search over FACTS remembered from conversations; both `scope` and
+        `query` are required. DOCUMENTS — a corpus the operator imported:
+        policies, proposals, manuals, reports — are searched with
+        `Document op=search`, usually at `scope=tenant`, where shared documents
+        live. The deployment context above, when filled in, says which corpus
+        exists and where it is named.
+      - For a question about the organisation's own material, search the
+        documents first. One empty `Memory op=recall` is enough: do not repeat
+        it with reworded queries — go to `Document op=search scope=tenant`.
+        Searching document text in the user's own scope is
         `Memory op=search scope=user prefix="doc.chunk:" query="..."`.
+      - Narrow a document search instead of repeating it: `under_path` (a
+        folder of the Path tree), `types` (document classes),
+        `concept` (a topic, as `<scheme>/<path>`). `Document
+        op=describe_ontology` lists the classes, relation kinds and topics.
+      - Follow relations instead of searching again: `Document op=backlinks
+        id=<chunk_id> kind=<relation>` lists what points at a chunk — for
+        example every document linked to a client or subject document —
+        and `Document op=get_edges document_id=...` lists a document's own
+        relations.
+      - Read before you answer (`Document op=get_chunk` or `op=export_md`) and
+        cite each document you use as [title](loom:doc/<document_id>), adding
+        `?scope=tenant` for a tenant document. If the documents do not answer
+        the question, say so rather than guess.
       - `Document graph_recall` is the SECOND step, never the first: it
         follows relations outward from chunks a search already found, for a
         question that needs a chain of facts. Pass those as `seed_ids` (from
