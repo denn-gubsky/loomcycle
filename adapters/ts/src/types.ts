@@ -7877,7 +7877,11 @@ export type SpeechFormat = "wav" | "mp3" | "ogg" | "opus";
 /** Options of {@link LoomcycleClient.speech}. */
 export interface SpeechOptions {
   /** A language code from {@link SpeechDirectionInfo.languages}; omitted, the
-   *  text's script decides, else the deployment's default language. */
+   *  text's script decides: mostly Cyrillic text goes to `uk` or `ru`, mostly
+   *  Latin text to a Latin-script default, else the one configured
+   *  Latin-script language, else `en`; anything else, or nothing configured
+   *  that fits, to the deployment's default language. Name the language to
+   *  pick among several Latin-script ones. */
   language?: string;
   /** One of the language's voices; omitted, its default voice. */
   voice?: string;

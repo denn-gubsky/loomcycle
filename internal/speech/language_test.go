@@ -27,6 +27,18 @@ func TestSpeech_LanguageFromScript(t *testing.T) {
 		{"no letters is default", "123 — 456!", both, "uk", "uk"},
 		{"empty is default", "", both, "en", "en"},
 		{"configured is case-insensitive", "Привіт", []string{" UK "}, "en", "uk"},
+		// A Latin-script text on a deployment whose default is not Latin-script.
+		{"latin text goes to en over a uk default", "Leaves change colour in autumn.", ukEN, "uk", "en"},
+		{"latin majority naming Київ goes to en", "The capital is Київ.", ukEN, "uk", "en"},
+		{"cyrillic majority with latin names stays uk", "Ми використовуємо React і TypeScript.", ukEN, "uk", "uk"},
+		{"latin text with only uk stays uk", "Leaves change colour in autumn.", []string{"uk"}, "uk", "uk"},
+		{"the sole latin-script language is chosen", "Guten Morgen.", []string{"uk", "de"}, "uk", "de"},
+		{"several latin-script languages fall to en", "Guten Morgen.", []string{"uk", "de", "en"}, "uk", "en"},
+		{"several latin-script languages without en stay default", "Bonjour.", []string{"uk", "de", "fr"}, "uk", "uk"},
+		{"a latin-script default is kept", "Hello there.", []string{"de", "en"}, "de", "de"},
+		{"a code configured twice counts once", "Hello.", []string{"uk", "EN", "en"}, "uk", "en"},
+		{"serbian is not taken for latin", "Dobar dan.", []string{"uk", "sr"}, "uk", "uk"},
+		{"a tie stays default", "ab аб", ukEN, "uk", "uk"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
