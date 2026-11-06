@@ -65,6 +65,9 @@ func newFixture(t *testing.T) *fixture {
 		},
 		Defs: func(_ context.Context, tenant, ch string) (Def, bool, error) {
 			d, ok := f.def(tenant, ch)
+			// As in setDef's writer: "" is the operator's yaml, whose hooks
+			// may dial the fixtures' loopback callbacks.
+			d.Static = tenant == ""
 			return d, ok, nil
 		},
 	})

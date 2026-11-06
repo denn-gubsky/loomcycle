@@ -26,14 +26,17 @@ import (
 // caller passes a ctx with the per-hook deadline (so each Hook's
 // configured TimeoutMs is honoured per-call rather than per-client).
 //
-// Two clients, chosen by who registered the hook. An operator-global hook
-// (Tenant "": admin, legacy token, open mode) is the operator's own code and
-// commonly a localhost sidecar, so it dials anywhere. A TENANT operator's hook
-// is not: its callback receives every matching tool input, so an unguarded
-// dial let a tenant aim that stream at the metadata endpoint or an internal
-// service. Those dial through netguard, which refuses private addresses at
-// connect time (re-checked on each redirect hop and after DNS resolution),
-// except hosts the operator vouched for in hooks.private_host_allowlist.
+// Two clients, chosen by where the hook was declared. A hook in the operator's
+// static config (a yaml agent's) is the operator's own code and commonly a
+// localhost sidecar, so it dials anywhere. Every other webhook does not: its
+// callback receives every matching tool input, so an unguarded dial lets
+// whoever wrote it aim that stream at the metadata endpoint or an internal
+// service. That covers a tenant's definitions and, in the shared tenant too, a
+// run request's additions (open mode, the legacy token and an admin all add
+// hooks in tenant "") and runtime definitions. Those dial through netguard,
+// which refuses private addresses at connect time (re-checked on each redirect
+// hop and after DNS resolution), except hosts the operator vouched for in
+// hooks.private_host_allowlist.
 type webhookClient struct {
 	http    *http.Client
 	guarded *http.Client
@@ -53,7 +56,7 @@ func newWebhookClient(httpClient *http.Client, privateHostAllowlist []string) *w
 
 // clientFor picks the dial policy for a hook's callback.
 func (c *webhookClient) clientFor(h *Hook) *http.Client {
-	if h.Tenant == "" {
+	if h.OperatorConfig && h.Tenant == "" {
 		return c.http
 	}
 	return c.guarded

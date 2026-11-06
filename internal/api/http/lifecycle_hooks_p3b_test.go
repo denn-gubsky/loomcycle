@@ -63,8 +63,11 @@ func (h *recordingHook) waitBody(t *testing.T, want string) string {
 	return ""
 }
 
+// register adds h as the operator's own hook (OperatorConfig, as Resolve marks
+// a yaml agent's): the tests' fake callbacks are on loopback.
 func register(t *testing.T, s *Server, h *hooks.Hook) {
 	t.Helper()
+	h.OperatorConfig = true
 	if _, err := s.testHooks().Register(h); err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +179,7 @@ func TestCompactRun_HooksGateAndReportAManualCompaction(t *testing.T) {
 	srv, prov := compactFixture(t)
 	_, _, runID := seedContinuationSession(t, srv, 8, 1)
 	deny := newRecordingHook(t, `{"decision":"deny","reason":"keep the whole history for the audit"}`)
-	if _, err := srv.testHooks().Register(&hooks.Hook{Owner: "ops", Name: "keep", Phase: hooks.PhasePreCompact, CallbackURL: deny.srv.URL}); err != nil {
+	if _, err := srv.testHooks().Register(&hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "keep", Phase: hooks.PhasePreCompact, CallbackURL: deny.srv.URL}); err != nil {
 		t.Fatal(err)
 	}
 	_, err := srv.CompactRun(context.Background(), runID)

@@ -83,10 +83,26 @@ type reviewHarness struct {
 
 func newReviewHarness(t *testing.T) *reviewHarness {
 	t.Helper()
+	return newReviewHarnessWith(t, nil)
+}
+
+// newLoopbackHookHarness is a harness whose operator vouched for 127.0.0.1 in
+// hooks.private_host_allowlist, so a run's or a definition's webhook may reach
+// the tests' loopback receivers (only operator-config hooks dial unguarded).
+func newLoopbackHookHarness(t *testing.T) *reviewHarness {
+	t.Helper()
+	return newReviewHarnessWith(t, func(c *config.Config) { c.Hooks.PrivateHostAllowlist = []string{"127.0.0.1"} })
+}
+
+func newReviewHarnessWith(t *testing.T, edit func(*config.Config)) *reviewHarness {
+	t.Helper()
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
 		Agents:      map[string]config.AgentDef{"writer": {Model: "stub-model", SystemPrompt: "write"}},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
+	}
+	if edit != nil {
+		edit(cfg)
 	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "review.db"))
 	if err != nil {

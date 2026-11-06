@@ -54,6 +54,10 @@ const DecisionsChannel = "_system/channel_hooks/decisions"
 type Def struct {
 	Hold  bool
 	Hooks hooks.EventHooks
+	// Static: the channel is declared in the operator's static config, so its
+	// webhooks dial without the private-address guard (hooks.Hook.OperatorConfig).
+	// A stored channel definition's do not, whoever wrote it.
+	Static bool
 }
 
 // DefResolver resolves a channel's definition in the tenant whose definition
@@ -495,7 +499,7 @@ func (j *job) decide(ctx context.Context) {
 		return
 	}
 	set := hooks.NewSet()
-	src := hooks.Source{Owner: hooks.ChannelOwner(j.msg.Channel), Tenant: j.msg.HookTenant}
+	src := hooks.Source{Owner: hooks.ChannelOwner(j.msg.Channel), Tenant: j.msg.HookTenant, OperatorConfig: def.Static}
 	if err := hooks.ResolveChannel(ctx, src, def.Hooks, j.w.cfg.Lookup, set); err != nil {
 		// A gate the channel names must not vanish: whatever its fail mode,
 		// a hook that cannot be found fails closed.
