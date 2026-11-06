@@ -313,6 +313,14 @@ the dataset and its mount **before** the `dynamic:` overlay entry, since a volum
 whose path is missing stops the boot. The volume name `inbox` is reserved. Access
 control changes nothing until you set `LOOMCYCLE_ACL` or write a rule — see *Access control* below.
 
+**The store-backed audit trail:** with any sign-in gate configured, strict mode, or
+`LOOMCYCLE_ACL` set to `shadow` or `enforce`, the server records its audit trail in the
+database (migration 0131) and needs `LOOMCYCLE_SECRET_KEY` in the secure env file
+(Phase 4); without it the config is refused and the app does not start. On stop it
+drains its audit queue after pausing runs: give the container a 30 s stop grace
+(`stop_grace_period: 30s`) rather than Docker's default 10 s. Check the trail with
+`docker exec <loomcycle-container> /usr/local/bin/loomcycle audit verify --all`.
+
 ## Access control — rule lists, groups and bindings
 
 From v1.122.0 a tenant operator can say, per user or group, which agents, tools,

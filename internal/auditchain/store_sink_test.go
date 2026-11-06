@@ -343,3 +343,65 @@ func TestStoreSink_OneTenantsFloodDropsNoOtherTenantsObservations(t *testing.T) 
 		t.Error("git_submodule_update is written at once; it is a fetch, queued like git_fetch")
 	}
 }
+
+// failingSummaryAppender refuses every drop-summary row; other appends wait
+// for the gate.
+type failingSummaryAppender struct {
+	*sqlite.Store
+	gate chan struct{}
+}
+
+func (a *failingSummaryAppender) AuditAppend(ctx context.Context, rows []store.AuditEventRow, seal store.AuditSealFunc, opened *store.AuditEventRow) ([]store.AuditEventRow, error) {
+	for _, r := range rows {
+		if r.Action == auditchain.ActionEventsDropped {
+			return nil, fmt.Errorf("store unavailable")
+		}
+	}
+	<-a.gate
+	return a.Store.AuditAppend(ctx, rows, seal, opened)
+}
+
+type collectingSink struct {
+	mu     sync.Mutex
+	events []audit.Event
+}
+
+func (c *collectingSink) Record(ev audit.Event) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, ev)
+	return nil
+}
+
+// A drop summary the store refuses at shutdown — no later pass to retry it —
+// goes to the fallback (the JSONL mirror), so the count is not lost.
+func TestStoreSink_AFinalDropSummaryFallsBackToTheMirror(t *testing.T) {
+	st := &failingSummaryAppender{Store: sinkStore(t), gate: make(chan struct{})}
+	sink, err := auditchain.NewStoreSink(st, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mirror := &collectingSink{}
+	sink.SetFallback(mirror)
+	sink.StartAsync(4)
+	for i := 0; i < 30; i++ {
+		_ = sink.Record(audit.Event{Action: "auth_login_failed", SourceAddr: fmt.Sprint(i)})
+	}
+	close(st.gate)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := sink.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mirror.mu.Lock()
+	defer mirror.mu.Unlock()
+	dropped := 0
+	for _, ev := range mirror.events {
+		if ev.Action == auditchain.ActionEventsDropped {
+			dropped += ev.DroppedCounts["auth_login_failed"]
+		}
+	}
+	if dropped == 0 {
+		t.Errorf("the mirror got %d events and no drop summary; want the final tally there", len(mirror.events))
+	}
+}

@@ -141,6 +141,18 @@ type StoreSink struct {
 	anonymous *obsQueue // nil until StartAsync: every event is written at once
 	observed  *obsQueue
 	closed    bool
+	// fallback receives a drop summary the store would not take when there
+	// is no later pass to retry it (the queue is draining at shutdown).
+	fallback audit.Sink
+}
+
+// SetFallback names the sink (the JSONL mirror) a final drop summary goes to
+// when the store refuses it at shutdown, so the count of what the chain
+// lacks is not lost with the process. Call it before StartAsync.
+func (s *StoreSink) SetFallback(f audit.Sink) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fallback = f
 }
 
 // NewStoreSink returns a sink appending to s, signing with keys. It refuses
@@ -281,9 +293,9 @@ func (s *StoreSink) writer(q *obsQueue) {
 			}
 		}
 		s.writeBatch(q, batch)
-		s.writeDropSummaries(q)
+		s.writeDropSummaries(q, false)
 	}
-	s.writeDropSummaries(q)
+	s.writeDropSummaries(q, true)
 }
 
 // writeBatch appends a batch of observations, one transaction per tenant in
@@ -327,7 +339,7 @@ func (s *StoreSink) writeBatch(q *obsQueue, batch []audit.Event) {
 // observations — into that chain, the operator chain for events with no
 // tenant — with the counts per action and the top sources, and keeps a
 // tally counted if its row cannot be written.
-func (s *StoreSink) writeDropSummaries(q *obsQueue) {
+func (s *StoreSink) writeDropSummaries(q *obsQueue, final bool) {
 	s.mu.Lock()
 	if len(q.dropped) == 0 {
 		s.mu.Unlock()
@@ -342,6 +354,18 @@ func (s *StoreSink) writeDropSummaries(q *obsQueue) {
 		ctx, cancel := context.WithTimeout(context.Background(), writerBatchTimeout)
 		err := s.appendEvents(ctx, []audit.Event{ev})
 		cancel()
+		if err != nil && final {
+			// No later pass will retry it: hand it to the mirror, or at least
+			// the process log, rather than lose what the chain lacks.
+			s.mu.Lock()
+			fallback := s.fallback
+			s.mu.Unlock()
+			if fallback == nil || fallback.Record(ev) != nil {
+				slog.Error("audit: the final dropped-observations summary could not be written",
+					"tenant", tenant, "dropped", t.counts, "err", err)
+			}
+			continue
+		}
 		if err != nil {
 			slog.Error("audit: writing a dropped-observations summary failed", "tenant", tenant, "err", err)
 			s.mu.Lock()

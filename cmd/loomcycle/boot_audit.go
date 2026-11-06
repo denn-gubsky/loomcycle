@@ -49,8 +49,10 @@ func (b *boot) openAudit() {
 // auditOpenTimeout bounds the boot probe of the store-backed stream.
 const auditOpenTimeout = 30 * time.Second
 
-// auditDrainTimeout bounds the shutdown's wait for queued observations.
-const auditDrainTimeout = 10 * time.Second
+// auditDrainTimeout bounds the shutdown's wait for queued observations. It
+// comes after the listeners drain and the pause, so it is kept short; the
+// deployment docs recommend a 30 s stop grace for the whole sequence.
+const auditDrainTimeout = 5 * time.Second
 
 // openAuditSink builds the audit sink cfg asks for. It returns nil (and no
 // error) when nothing is configured and the posture does not require the
@@ -108,6 +110,10 @@ func openAuditSink(ctx context.Context, cfg *config.Config, st store.Store) (aud
 		}
 		sinks = append(sinks, fs)
 		desc = append(desc, "file:"+cfg.Env.AuditLogPath)
+		if stream != nil {
+			// A drop summary the store refuses at shutdown lands in the file.
+			stream.SetFallback(fs)
+		}
 	}
 	return audit.Combine(sinks...), stream, desc, nil
 }

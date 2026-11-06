@@ -1373,6 +1373,8 @@ Every audit record — token mints and revocations, sign-ins and gate management
 
 **Export.** `GET /v1/_audit?tenant=&since=<RFC3339>&after_seq=<n>&format=jsonl` streams one chain as JSON Lines, oldest first, each line with `seq`, `ts`/`ts_ns`, `actor`, `action`, `subject`, `payload` (the recorded event, as the exact string hashed), `prev_hash`, `hash` and `mac`, up to the head read when the export began; the last line is a trailer (`{"trailer":true,…}`) with that head and the retention anchor, signed. An export with no trailer was cut short. `substrate:tenant`: a tenant operator gets its own tenant's chain whatever `?tenant=` says; an admin names one, none being the operator chain. Members get `403`, and the route asks its own ACL question (`read runtime:audit`). It is not `GET /v1/_events`, which is the run event log.
 
+**Shutdown.** The two queues drain at shutdown after the runs are paused, for at most 5 s; a drop summary the store will not take then is written to the JSONL mirror when there is one. Give the process a stop grace of about 30 s (`stop_grace_period: 30s` in Docker Compose, `terminationGracePeriodSeconds: 30` in Kubernetes) instead of Docker's default 10 s.
+
 **Retention.** `LOOMCYCLE_AUDIT_RETENTION_DAYS` prunes each chain's older rows on the retention sweeper's tick (it runs even with `LOOMCYCLE_RETENTION_ENABLED` off) and leaves a signed anchor, so the rest still verifies. Rows are numbered in commit order but timed by each replica's clock, so a prune can take a few rows slightly newer than the cutoff. A chain that does not verify is not pruned: the sweeper logs it at error and leaves its rows, so a prune never re-signs tampering.
 
 ### Token pepper
