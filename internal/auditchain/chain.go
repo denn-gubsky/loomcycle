@@ -7,21 +7,26 @@
 //
 //	hash = hex(SHA-256(prev_hash || canonical(row)))
 //
-// where canonical(row) is the JSON array [version, tenant, seq, ts_ns, actor,
-// action, subject, payload] and prev_hash is the previous row's hash ("" for a
-// chain's first row). The hash alone shows that rows were changed, removed or
-// reordered — but anyone who can write the database could rewrite a row and
-// recompute every hash after it. So each link is also signed:
+// where canonical(row) is the length-prefixed (uvarint length, then bytes)
+// concatenation of version, tenant, seq, ts_ns, actor, action, subject and
+// payload, exactly as stored, and prev_hash is the previous row's hash (""
+// for a chain's first row). The hash alone shows that rows were changed,
+// removed or reordered — but anyone who can write the database could rewrite
+// a row and recompute every hash after it. So each link is also signed:
 //
-//	mac = hex(HMAC-SHA256(K, ["row", tenant, seq, hash]))
+//	mac = hex(HMAC-SHA256(K, lp("row", tenant, seq, hash)))
 //
 // with K derived from LOOMCYCLE_SECRET_KEY (credential.DeriveAuditChainKey).
 // The "segment" an HMAC covers is one row; since the hash commits to every
 // row before it, a valid MAC on row n vouches for rows 1..n. The tenant's head
-// (["head", tenant, seq, hash]) and the anchor a retention prune leaves
-// (["anchor", tenant, seq, hash]) are signed in their own domains, so neither
-// a row's MAC nor the head's can be replayed as an anchor to pass off deleted
-// rows as pruned ones.
+// (lp("head", tenant, seq, hash)) and the anchor a retention prune leaves
+// (lp("anchor", tenant, seq, hash, state)) are signed in their own domains,
+// so neither a row's MAC nor the head's can be replayed as an anchor to pass
+// off deleted rows as pruned ones.
+//
+// The payload (the event as JSON) is the record; actor, action and subject
+// are display fields derived from it, stored escaped (SafeText) where the
+// event carried a NUL or invalid UTF-8.
 //
 // A chain that is deleted outright (head and rows) would otherwise read as a
 // tenant with no history, so a tenant chain's first append also writes a

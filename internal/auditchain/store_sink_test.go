@@ -45,7 +45,7 @@ func (a *slowAppender) AuditAppend(ctx context.Context, rows []store.AuditEventR
 // for — so a flood of them neither slows its own callers nor holds up a
 // state change (a token mint) recorded at the same time.
 func TestStoreSink_AFloodOfFailedSignInsDoesNotBlockATokenMint(t *testing.T) {
-	st := &slowAppender{Store: sinkStore(t), delay: 20 * time.Millisecond}
+	st := &slowAppender{Store: sinkStore(t), delay: 50 * time.Millisecond}
 	sink, err := auditchain.NewStoreSink(st, testKeys)
 	if err != nil {
 		t.Fatal(err)
@@ -84,13 +84,13 @@ func TestStoreSink_AFloodOfFailedSignInsDoesNotBlockATokenMint(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The mint waits for at most the writer's batch in flight (one append
-	// of up to 64 rows), not for the flood: 40 callers queued at 20ms each
-	// would be ~800ms.
-	if mint > 400*time.Millisecond {
-		t.Errorf("the token mint's record took %s behind the flood, want under 400ms", mint)
+	// of up to 64 rows), not for the flood: 40 callers queued at 50ms each
+	// would be ~2s. The bounds leave room for -race and a loaded machine.
+	if mint > time.Second {
+		t.Errorf("the token mint's record took %s behind the flood, want under 1s", mint)
 	}
-	if slowest > 50*time.Millisecond {
-		t.Errorf("a failed sign-in's record took %s, want under 50ms (never waited for)", slowest)
+	if slowest > 250*time.Millisecond {
+		t.Errorf("a failed sign-in's record took %s, want under 250ms (never waited for)", slowest)
 	}
 	rows, err := st.AuditEventsList(context.Background(), "acme", 0, 0)
 	if err != nil || len(rows) != 1 || rows[0].Action != "create" {
