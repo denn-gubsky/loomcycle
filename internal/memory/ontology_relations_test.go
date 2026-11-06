@@ -2,6 +2,7 @@ package memory
 
 import (
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -216,5 +217,41 @@ func TestEffectiveRelations_ARootOverrideKeepsTheSeedParent(t *testing.T) {
 	}
 	if by["repeals"].Parent != "terminates" {
 		t.Errorf("an explicit nesting must win over the seed parent: %q", by["repeals"].Parent)
+	}
+}
+
+// TestSeedRelations_DuplicateOfIsAnAsymmetricCopyKindUnderAlternateOf (RFC GB A1.1):
+// the kind find_duplicates files, pointing from the copy at the original. It sits
+// under alternate_of so a filter on alternate_of finds the duplicates too, and it
+// neither walks nor auto-asserts: a duplicate is a fact to review, not a path for
+// retrieval to follow.
+func TestSeedRelations_DuplicateOfIsAnAsymmetricCopyKindUnderAlternateOf(t *testing.T) {
+	var dup *OntologyRelation
+	seed := SeedRelations()
+	for i := range seed {
+		if seed[i].Name == "duplicate_of" {
+			dup = &seed[i]
+		}
+	}
+	if dup == nil {
+		t.Fatal("duplicate_of is not a seed kind")
+	}
+	if dup.Parent != "alternate_of" || dup.Inverse != "duplicated_by" {
+		t.Errorf("duplicate_of: parent %q inverse %q, want alternate_of / duplicated_by", dup.Parent, dup.Inverse)
+	}
+	if !dup.Asymmetric || !dup.Irreflexive || dup.Symmetric || dup.Walk || dup.AutoAssert {
+		t.Errorf("duplicate_of characteristics: %#v", *dup)
+	}
+	if len(dup.Qualifiers) != 1 || dup.Qualifiers[0].Name != "basis" ||
+		!reflect.DeepEqual(dup.Qualifiers[0].Values, []string{"sha256", "title"}) {
+		t.Errorf("duplicate_of qualifiers = %#v, want basis: sha256 | title", dup.Qualifiers)
+	}
+	parentOf := map[string]string{}
+	for _, r := range EffectiveRelations(nil, true, true) {
+		parentOf[r.Name] = r.Parent
+	}
+	expanded, _ := ExpandDescendants([]string{"alternate_of"}, parentOf, 8)
+	if !slices.Contains(expanded, "duplicate_of") {
+		t.Errorf("a filter on alternate_of expands to %v, missing duplicate_of", expanded)
 	}
 }
