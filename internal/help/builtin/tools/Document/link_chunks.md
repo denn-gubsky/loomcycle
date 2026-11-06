@@ -41,8 +41,11 @@ relation proposed is filed for review, marked.
   scope). Each item names exactly one source. The `quote` must be copied
   exactly from its source, at most 4000 characters; one that does not occur
   there is refused. `char_start` / `char_end` (characters) say which occurrence
-  you mean when the quote appears more than once. A relation keeps up to 32
-  evidence rows (the operator may set another limit).
+  you mean when the quote appears more than once. A chunk quote is from the
+  chunk's body; add `part: "title"` to quote the chunk's title instead — a
+  document's name is its root chunk's title and is in no body — and then
+  `char_start` / `char_end` count characters of the title. A relation keeps up
+  to 32 evidence rows (the operator may set another limit).
 - `valid_at` / `invalid_at` — when the relation began and stopped holding (unix
   nanoseconds). Leave `invalid_at` unset while it still holds.
 - `confidence` — 0..1, how sure you are. It is recorded with the link and never
@@ -87,8 +90,10 @@ status, actor}`.
 - `kind_reserved` — the kind is one the runtime writes; choose your own. An
   `about` link is accepted only from a fact; a fact gets its `about` links from
   `upsert_chunk` `about_ids`.
-- `evidence_quote_not_found` — the quote is not in the cited chunk or turn;
-  copy it exactly (`get_chunk` shows the body). `quote is longer than 4000
+- `evidence_quote_not_found` — the quote is not in the cited chunk or turn (or,
+  with `part: "title"`, in the chunk's title); copy it exactly (`get_chunk`
+  shows the body and the title). A quote of the title sent without
+  `part: "title"` is refused this way, with a hint to add it. `quote is longer than 4000
   characters` — quote the sentence, not the passage. `name exactly one source`
   — an evidence item gave none, or several.
 - Only where the tenant's ontology declares relation kinds:

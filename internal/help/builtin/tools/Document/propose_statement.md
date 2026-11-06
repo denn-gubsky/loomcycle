@@ -27,9 +27,10 @@ to propose a correction instead, which is filed beside the original (its
   statement without `id`.
 - `id` — the existing statement this proposal revises.
 - `evidence` — the supporting text, as for `link_chunks`: a list of
-  `{chunk_id, quote, char_start?, char_end?}`, `{session_id, event_seq, quote}`
-  or `{scope, natural_key, quote}`. Strongly recommended: a reviewer reads it
-  to decide, and a quote that is not in its source is refused.
+  `{chunk_id, quote, char_start?, char_end?, part?}`, `{session_id, event_seq,
+  quote}` or `{scope, natural_key, quote}`. `part: "title"` quotes the chunk's
+  title rather than its body. Strongly recommended: a reviewer reads it to
+  decide, and a quote that is not in its source is refused.
 - `confidence`, `valid_at`, `invalid_at`, `attributes` — as for `link_chunks`.
 - `method` — how the relation was found: `rule:<name>` (code matched it) or
   `extractor:<name>` (a model the code drives found it); `<name>` is 1–64 of

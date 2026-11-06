@@ -4202,6 +4202,10 @@ export type DocumentEdgeEvidence = {
   quote: string;
   char_start?: number;
   char_end?: number;
+  /** With chunk_id: which text of the chunk the quote (and its span) is
+   *  from — "body" (the default) or "title" (a document's name is its root
+   *  chunk's title, in no body). */
+  part?: "body" | "title";
 };
 
 export type DocumentToolInput = {

@@ -100,8 +100,9 @@ Every relation is a **statement** with its own id, a `status`, how it was made
   `graph_recall`, `backlinks` or `search` `expand` until accepted. Use it for
   any relation you read out of text. Always pass `evidence`: each item is one
   source and the verbatim `quote` (`{"chunk_id", "quote", "char_start",
-  "char_end"}` for a chunk); a quote that does not occur in its source is
-  refused.
+  "char_end"}` for a chunk, plus `"part": "title"` for a quote of the chunk's
+  title, such as a document's name on its root); a quote that does not occur
+  in its source is refused.
 
 Who rules on what:
 

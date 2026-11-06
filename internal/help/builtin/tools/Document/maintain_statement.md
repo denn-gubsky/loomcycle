@@ -42,7 +42,8 @@ no origin at all, or anything else there, only `verify` and `flag` apply.
     no longer where it points.
   - `relocate_evidence` — re-point the evidence row `evidence_id` to
     `chunk_id`, where its quote must occur; the span is recomputed and the
-    stale mark cleared.
+    stale mark cleared. A row quoting a title (`part: "title"`) stays one, and
+    its quote must occur in the new chunk's title.
   - `flag` — set `attributes.needs_review` (and `needs_review_reason`) for a
     person to look at.
 - `reason` — why. Required for `expire` and `demote`; recorded by `flag`.

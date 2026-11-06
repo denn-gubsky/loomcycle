@@ -31,10 +31,10 @@ a `duplicate_of` proposal from the copy's root chunk to the original's, with
 `basis` in its attributes, through `propose_statement` — so it needs what a
 proposal needs (the `propose` permission on both documents; in a tenant whose
 ontology is confirmed with a Relations section, `duplicate_of` is a standard
-kind and is accepted). Each side's title is quoted as evidence when its root
-chunk's text holds it; for a `sha256` match whose title is not there, the
-first line of its text is quoted instead. Nothing is merged, hidden, deleted or
-renamed: a reviewer decides.
+kind and is accepted). Each side's evidence is its root chunk's title, quoted
+with `part: "title"`, so every pair carries two evidence rows a reviewer or
+judge can rule on; only a root with no title quotes the first line of its text
+instead. Nothing is merged, hidden, deleted or renamed: a reviewer decides.
 
 A pair already joined by a `duplicate_of` statement, in either direction and
 whatever its status — proposed, asserted, rejected or expired — is skipped and
