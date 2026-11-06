@@ -12,6 +12,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
@@ -298,8 +299,11 @@ func (b *boot) buildTools() {
 	// reaching the model. Capture itself needs no grant; this tool does.
 	// download and upload go out on the HTTP tool's host policy, and hand
 	// each URL (a pre-authenticated one is a credential) to the redactor.
-	// Docs (the Document tool import builds through) is set below.
-	fileTool := &builtin.File{HTTP: httpTool, RegisterSecret: b.secrets.registerObserved}
+	// Docs (the Document tool import builds through) is set below. One
+	// extraction limiter for the process (RFC FZ Part B): every per-run copy
+	// of this tool and its off-run twins share it.
+	fileTool := &builtin.File{HTTP: httpTool, RegisterSecret: b.secrets.registerObserved,
+		Extractions: extract.NewLimiter(cfg.Env.ExtractConcurrency)}
 	b.allTools = append(b.allTools, fileTool)
 
 	// RFC FB — the Git tool: repository work inside bound volumes through

@@ -407,7 +407,14 @@ func (f *File) ocrUnitFor(ctx context.Context, plan transcribe.Plan, fh io.Reade
 		}
 		return ocrUnit{data: data, mediaType: mediaType, pages: chunk}, nil, nil
 	}
+	// Cutting pages reads the whole PDF again: extraction work, under a slot
+	// of the same budget, given back before the engine is called.
+	release, err := f.extractSlot(ctx)
+	if err != nil {
+		return ocrUnit{}, nil, fmt.Errorf("waiting to cut page %s out of the PDF: %w", pageListText(chunk), err)
+	}
 	cut, err := extract.SelectPages(ctx, fh, size, chunk)
+	release()
 	if err != nil {
 		return ocrUnit{}, nil, fmt.Errorf("cutting page %s out of the PDF: %w", pageListText(chunk), err)
 	}

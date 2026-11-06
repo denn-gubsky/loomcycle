@@ -130,6 +130,7 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintln(w)
 	}
 	writeAudioQueueGauges(w, replicaLabels, s)
+	writeExtractionGauges(w, replicaLabels, s.extractionStats)
 	writeLaneGauges(w, replicaLabels, s.callSched.Stats())
 
 	// RFC DT per-(provider, model) throughput — only models this replica has
@@ -533,6 +534,27 @@ func unescapeLabelValue(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+// writeExtractionGauges reports the File tool's extraction budget
+// (LOOMCYCLE_EXTRACT_CONCURRENCY): its slots, the extractions holding one and
+// the calls waiting for one. A wait that keeps growing says files arrive
+// faster than the bound lets them be read. Zeros when not wired, so the
+// series do not come and go.
+func writeExtractionGauges(w io.Writer, replicaLabels string, stats func() (limit, inFlight, waiting int)) {
+	var limit, inFlight, waiting int
+	if stats != nil {
+		limit, inFlight, waiting = stats()
+	}
+	writeGauge(w, "loomcycle_extractions_limit",
+		"File extractions this replica runs at once at most (LOOMCYCLE_EXTRACT_CONCURRENCY).",
+		replicaLabels, float64(limit))
+	writeGauge(w, "loomcycle_extractions_inflight",
+		"File extractions on this replica holding a slot.",
+		replicaLabels, float64(inFlight))
+	writeGauge(w, "loomcycle_extractions_waiting",
+		"File extractions on this replica waiting for a slot.",
+		replicaLabels, float64(waiting))
 }
 
 // writeAudioQueueGauges reports the audio routes' engine queues (RFC FK P3):

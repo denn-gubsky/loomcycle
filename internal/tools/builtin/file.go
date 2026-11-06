@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
@@ -55,6 +56,17 @@ type File struct {
 	// STT lets op=transcribe (and op=extract on a recording) turn speech into
 	// text (file_transcribe.go); nil leaves speech-to-text off.
 	STT *FileSTT
+	// Extractions bounds the extractions the process runs at once, shared by
+	// op=extract, op=import and the PDF page cuts OCR makes (file_extract.go).
+	// A pointer, set once at boot from LOOMCYCLE_EXTRACT_CONCURRENCY: the
+	// per-run copies narrowing makes of this tool (narrowing.go) and the
+	// off-run File twins all hold the same limiter, so the bound is the
+	// process's, not a run's. nil (a File built outside boot, as in tests)
+	// bounds nothing.
+	Extractions *extract.Limiter
+	// slotWait overrides how long a call waits for an extraction slot, for
+	// tests; zero is fileSlotWait.
+	slotWait time.Duration
 }
 
 func (f *File) Name() string { return FileToolName }

@@ -36,6 +36,11 @@ const (
 	FileContentKind = "file_content"
 
 	fileExtractTimeout = 60 * time.Second
+	// fileSlotWait is the longest a call waits for an extraction slot
+	// (File.Extractions) before it is answered that the server is busy. A
+	// slot frees within fileExtractTimeout of being taken, so a wait this
+	// long means a queue, not one slow file.
+	fileSlotWait = 60 * time.Second
 	// fileExcerptChars is the default and the most an excerpt may hold.
 	fileExcerptChars = 30000
 	// fileExtractMaxMarkdown caps the Markdown one extraction writes.
@@ -83,6 +88,49 @@ func (s *extractSink) Image(img extract.Image) (string, error) {
 	}
 	s.images = append(s.images, res.Record.Ref)
 	return res.Record.Ref, nil
+}
+
+// ExtractionStats reports the extraction slots, those in flight and the calls
+// waiting for one, for /metrics.
+func (f *File) ExtractionStats() (limit, inFlight, waiting int) {
+	if f.Extractions == nil {
+		return 0, 0, 0
+	}
+	st := f.Extractions.Stats()
+	return st.Limit, st.InFlight, st.Waiting
+}
+
+// extractSlot waits for an extraction slot, at most fileSlotWait. The parsing
+// an extraction does (an archive inflated, an XML tree built, a PDF read) is
+// the work the slot bounds; reading the file to hash it and writing what was
+// extracted are not, so a caller takes the slot just around the parse and
+// gives it back before anything slow that is not extraction (an OCR model
+// call, a Document write).
+func (f *File) extractSlot(ctx context.Context) (release func(), err error) {
+	if f.Extractions == nil {
+		return func() {}, nil
+	}
+	wait := f.slotWait
+	if wait <= 0 {
+		wait = fileSlotWait
+	}
+	wctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	return f.Extractions.Acquire(wctx)
+}
+
+// slotBusy answers a call that got no extraction slot: the caller's own
+// context ending is returned as that error, a wait that ran out as a busy
+// server the model may try again.
+func slotBusy(ctx context.Context, op string, wait time.Duration) (tools.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return tools.Result{}, err
+	}
+	if wait <= 0 {
+		wait = fileSlotWait
+	}
+	return errTransient(fmt.Sprintf("%s: the server is extracting as many files as it allows at once, and none finished within %s", op, wait),
+		"Try again in a minute."), nil
 }
 
 // ---- extract ----
@@ -157,12 +205,21 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	if slug == "" {
 		slug = "document"
 	}
+	// The extraction's own time bound starts once it holds a slot: time spent
+	// queued behind other files is not this file's.
+	release, err := f.extractSlot(ctx)
+	if err != nil {
+		return slotBusy(ctx, "extract", f.slotWait)
+	}
+	defer release()
 	xctx, cancel := context.WithTimeout(ctx, fileExtractTimeout)
 	defer cancel()
 	sink := &extractSink{ctx: xctx, dir: path.Join(inbox.DirExtracted, slug), origin: origin}
 	// A dry run writes nothing, so it keeps no pictures either.
 	images := (in.Images == nil || *in.Images) && !in.DryRun
 	rep, err := ex.Extract(xctx, fh, info.Size(), sink, extract.Options{Name: name, Images: images, MaxRows: in.MaxRows})
+	// The OCR pass below calls a model and cuts pages under slots of its own.
+	release()
 	cut := false
 	switch {
 	case err == nil:
@@ -351,6 +408,16 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	if !ok {
 		return res, nil
 	}
+	// Reading the file and rewriting its text (headings, neutralizing,
+	// pictures hoisted) are passes over up to fileImportMaxBytes of someone
+	// else's text, made under an extraction slot; the Document write after
+	// them is not.
+	release, err := f.extractSlot(ctx)
+	if err != nil {
+		vfs.Close()
+		return slotBusy(ctx, "import", f.slotWait)
+	}
+	defer release()
 	b, res, ok := readMarkdown(vfs, rel, r)
 	vfs.Close()
 	if !ok {
@@ -405,6 +472,7 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	md := extract.Neutralize(text, false)
 	md = withRootHeading(md, in.Title, fileTitle(titleName))
 	md = hoistExtractedImages(md)
+	release()
 
 	call, _ := json.Marshal(importMDCall(in, scope, md))
 	ictx := withImportProvenance(withVolumeImageFields(withVolumeAssetReader(ctx, readExtractedImage), extractedImageFields), prov)
