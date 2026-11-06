@@ -24,7 +24,9 @@ they are set (`confidence`, `valid_at`, `invalid_at`, `attributes`, `actor`,
 too. Each evidence row has its `id` (what `maintain_statement` takes as
 `evidence_id`), its `quote` and its source —
 `chunk_id`, `session_id` + `event_seq`, or `scope` + `natural_key` — and
-`char_start` / `char_end` where the quote sits. `stale: true` marks a quote
+`char_start` / `char_end` where the quote sits. `part: "title"` marks a quote
+of the chunk's title, its span counted in the title; a row without `part`
+quotes the body. `stale: true` marks a quote
 that no longer occurs in its source. Evidence citing a document you may not
 read is left out, and `evidence_count` counts only what is shown. `confidence`
 is the writer's own; a judge's finding is `verdict_confidence`.

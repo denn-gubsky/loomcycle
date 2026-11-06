@@ -515,10 +515,10 @@ func (d *Document) copyMergedStatement(ctx context.Context, tx string, p mergePl
 			stale = 1
 		}
 		if err := d.execTxn(ctx, tx, `INSERT INTO chunk_edge_evidence
-			(id, edge_id, chunk_id, session_id, event_seq, ref_scope, ref_natural_key, quote, char_start, char_end, stale, created_at, run_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(id, edge_id, chunk_id, session_id, event_seq, ref_scope, ref_natural_key, quote, char_start, char_end, stale, created_at, run_id, part)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			newDocID(), copyID, nullIfEmpty(e.ChunkID), nullIfEmpty(e.SessionID), e.EventSeq,
-			nullIfEmpty(e.Scope), nullIfEmpty(e.NaturalKey), e.Quote, start, end, stale, now, nullIfEmpty(tools.RunID(ctx))); err != nil {
+			nullIfEmpty(e.Scope), nullIfEmpty(e.NaturalKey), e.Quote, start, end, stale, now, nullIfEmpty(tools.RunID(ctx)), nullIfEmpty(e.Part)); err != nil {
 			return err
 		}
 	}

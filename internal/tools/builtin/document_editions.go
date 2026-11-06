@@ -1210,6 +1210,24 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 	if err != nil {
 		return 0, 0, err
 	}
+	// newText is the text of a new version a quote of the given part is checked
+	// against: its body, or (part title) its title. The titles are read here,
+	// before any transaction: the copies below are written inside one, and on
+	// sqlite a read outside it would wait on the scope's one connection.
+	newTitle := map[string]string{}
+	for _, nid := range remap {
+		row, _, err := d.getChunkRow(ctx, key, nid)
+		if err != nil {
+			return 0, 0, err
+		}
+		newTitle[nid] = row.Title
+	}
+	newText := func(nid, part string) string {
+		if part == edgeEvidencePartTitle {
+			return newTitle[nid]
+		}
+		return newBody[nid]
+	}
 	mapped := func(id string) string {
 		if nid, ok := remap[id]; ok {
 			return nid
@@ -1242,7 +1260,7 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 		}
 		holds := true
 		for _, e := range ev[s.ID] {
-			if nid, ok := remap[e.ChunkID]; ok && !strings.Contains(newBody[nid], e.Quote) {
+			if nid, ok := remap[e.ChunkID]; ok && !strings.Contains(newText(nid, e.Part), e.Quote) {
 				holds = false
 			}
 		}
@@ -1299,17 +1317,17 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 					start, end = *e.CharStart, *e.CharEnd
 				}
 				if nid, ok := remap[chunkID]; ok {
-					if st, en, ok := quoteSpan(newBody[nid], e.Quote, nil, nil); ok {
+					if st, en, ok := quoteSpan(newText(nid, e.Part), e.Quote, nil, nil); ok {
 						chunkID, start, end = nid, st, en
 					} else {
 						stale = 1 // a manual or ruled statement copied though its quote is gone
 					}
 				}
 				if err := d.execTxn(ctx, txn, `INSERT INTO chunk_edge_evidence
-					(id, edge_id, chunk_id, session_id, event_seq, ref_scope, ref_natural_key, quote, char_start, char_end, stale, created_at, run_id)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					(id, edge_id, chunk_id, session_id, event_seq, ref_scope, ref_natural_key, quote, char_start, char_end, stale, created_at, run_id, part)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 					newDocID(), copyID, nullIfEmpty(chunkID), nullIfEmpty(e.SessionID), e.EventSeq,
-					nullIfEmpty(e.Scope), nullIfEmpty(e.NaturalKey), e.Quote, start, end, stale, now, nullIfEmpty(tools.RunID(ctx))); err != nil {
+					nullIfEmpty(e.Scope), nullIfEmpty(e.NaturalKey), e.Quote, start, end, stale, now, nullIfEmpty(tools.RunID(ctx)), nullIfEmpty(e.Part)); err != nil {
 					return err
 				}
 			}

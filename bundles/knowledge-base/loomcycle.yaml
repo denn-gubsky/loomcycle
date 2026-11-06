@@ -2988,16 +2988,19 @@ agents:
           if (row.quote === "") { return null; }
           var b = readChunk(st, map[row.chunk_id]);
           if (!b.ok) { return null; }
-          var at = b.body.indexOf(row.quote), end = at + row.quote.length;
+          var text = partText(b, row);
+          var at = text.indexOf(row.quote), end = at + row.quote.length;
           if (at < 0) {
-            var found = findLoose(b.body, row.quote);
+            var found = findLoose(text, row.quote);
             if (found === null) { return null; }
             at = found[0];
             end = found[1];
             loose++;
           }
-          var span = runeSpan(b.body, at, end);
-          ev.push({ chunk_id: map[row.chunk_id], quote: b.body.slice(at, end), char_start: span[0], char_end: span[1] });
+          var span = runeSpan(text, at, end);
+          var moved = { chunk_id: map[row.chunk_id], quote: text.slice(at, end), char_start: span[0], char_end: span[1] };
+          if (row.part === "title") { moved.part = "title"; }
+          ev.push(moved);
         }
         L.counts.successor_quotes_loose += loose;
         var p = { op: "propose_statement", from_id: from, to_id: to, kind: s.kind, evidence: ev,
@@ -3047,7 +3050,16 @@ agents:
       function evidenceCopy(row) {
         var e = { chunk_id: row.chunk_id, quote: row.quote };
         if (isSpan(row.char_start, row.char_end)) { e.char_start = row.char_start; e.char_end = row.char_end; }
+        if (row.part === "title") { e.part = "title"; }
         return e;
+      }
+
+      // partText is the text of a read chunk an evidence row quotes: its title for a
+      // row whose part is "title" (a document's name lives on its root's title, in
+      // no body), its body otherwise.
+      function partText(b, row) {
+        if (row.part === "title") { return typeof b.title === "string" ? b.title : ""; }
+        return b.body;
       }
 
       // checkEvidence reads every chunk-quoting evidence row. A quote no longer in its
@@ -3069,9 +3081,9 @@ agents:
           if (m !== null) {
             var b = readChunk(st, r.chunk_id);
             if (!b.ok) { out.unchecked = true; return out; }
-            if (b.body.indexOf(r.quote) >= 0) { continue; }
+            if (partText(b, r).indexOf(r.quote) >= 0) { continue; }
           }
-          var moved = m !== null ? movedPart(st, m, r.chunk_id, r.quote) : "";
+          var moved = m !== null ? movedPart(st, m, r) : "";
           if (moved !== "") {
             out.actions.push({ action: "relocate_evidence", evidence_id: r.id, chunk_id: moved });
             continue;
@@ -3084,13 +3096,13 @@ agents:
         return out;
       }
 
-      function movedPart(st, m, chunkID, quote) {
+      function movedPart(st, m, r) {
         if (m.document_id === "" || m.stable_id === "" || !safeLiteral(m.stable_id)) { return ""; }
-        var rows = sqlRows(call(st, { op: "query_chunks", sql: sqlSameKey(m.document_id, "stable_id", m.stable_id, chunkID) }));
+        var rows = sqlRows(call(st, { op: "query_chunks", sql: sqlSameKey(m.document_id, "stable_id", m.stable_id, r.chunk_id) }));
         for (var i = 0; i < rows.length; i++) {
           if (!isArray(rows[i]) || !isID(rows[i][0])) { continue; }
           var b = readChunk(st, rows[i][0]);
-          if (b.ok && b.body.indexOf(quote) >= 0) { return rows[i][0]; }
+          if (b.ok && partText(b, r).indexOf(r.quote) >= 0) { return rows[i][0]; }
         }
         return "";
       }
@@ -3165,7 +3177,7 @@ agents:
           if (m === undefined || typeof rows[j].quote !== "string" || rows[j].quote === "") { return; }
           if (m !== null) {
             var b = readChunk(st, rows[j].chunk_id);
-            if (!b.ok || b.body.indexOf(rows[j].quote) >= 0) { return; }
+            if (!b.ok || partText(b, rows[j]).indexOf(rows[j].quote) >= 0) { return; }
           }
         }
         C.auto_rule_a_candidates++;
@@ -3854,13 +3866,17 @@ agents:
           var side = ev.chunk_id === s.from_id ? "from" : (ev.chunk_id === s.to_id ? "to" : "other");
           if (!isID(ev.chunk_id)) { out.push({ side: "other", missing: "not a passage of this scope" }); continue; }
           if (ev.stale === true) { out.push({ side: side, missing: "no longer in its passage" }); continue; }
+          // A row whose part is "title" quotes the chunk's title (a document's
+          // name, on its root), and its span is in the title.
+          var inTitle = ev.part === "title";
           var c = chunkOf(st, ev.chunk_id);
-          var body = (c && typeof c.body === "string") ? c.body : "";
+          var field = inTitle ? "title" : "body";
+          var body = (c && typeof c[field] === "string") ? c[field] : "";
           var at = spanIn(body, ev.char_start, ev.char_end);
           if (at === null) { out.push({ side: side, missing: "no longer in its passage" }); continue; }
           var a = Math.max(0, at[0] - CONFIG.context_chars), b = Math.min(body.length, at[1] + CONFIG.context_chars);
           out.push({
-            side: side,
+            side: side, in_title: inTitle,
             passage: (c && typeof c.title === "string") ? c.title : "",
             before: body.slice(a, at[0]), quote: body.slice(at[0], at[1]), after: body.slice(at[1], b)
           });
@@ -3943,7 +3959,7 @@ agents:
         var ev = [];
         for (var i = 0; i < evidence.length; i++) {
           var e = evidence[i];
-          var head = "[" + (i + 1) + "] in the " + (e.side === "other" ? "another" : e.side.toUpperCase()) + " passage";
+          var head = "[" + (i + 1) + "] in the " + (e.side === "other" ? "another" : e.side.toUpperCase()) + " passage" + (e.in_title ? "'s title" : "");
           if (e.missing) {
             ev.push(head + ": (the quote is " + e.missing + ")");
           } else {

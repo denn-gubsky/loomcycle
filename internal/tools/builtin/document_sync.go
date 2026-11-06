@@ -275,12 +275,13 @@ type syncEdge struct {
 type syncEvidence struct {
 	chunkNK string
 	quote   string
+	part    string // "" for the body, edgeEvidencePartTitle for the chunk's title
 }
 
 // hasEvidence reports whether the statement already records this citation.
 func (e syncEdge) hasEvidence(ev syncEvidence) bool {
 	for _, have := range e.evidence {
-		if have.chunkNK != "" && have.chunkNK == ev.chunkNK && have.quote == ev.quote {
+		if have.chunkNK != "" && have.chunkNK == ev.chunkNK && have.quote == ev.quote && have.part == ev.part {
 			return true
 		}
 	}
@@ -413,7 +414,7 @@ func (d *Document) loadLocalEdges(ctx context.Context, key sqlmem.ScopeKey, idTo
 	for ek, st := range live {
 		e := syncEdge{id: st.ID, method: st.Method, ruled: st.OperatorRuledAt != nil, confidence: st.Confidence, validAt: st.ValidAt, invalidAt: st.InvalidAt, attributes: st.Attributes}
 		for _, r := range ev[st.ID] {
-			e.evidence = append(e.evidence, syncEvidence{chunkNK: nkOf[r.ChunkID], quote: r.Quote})
+			e.evidence = append(e.evidence, syncEvidence{chunkNK: nkOf[r.ChunkID], quote: r.Quote, part: r.Part})
 		}
 		snap.edges[ek] = e
 	}
@@ -566,7 +567,7 @@ func (d *Document) loadRemoteSnapshot(ctx context.Context, client *docremote.Cli
 		}
 		se := syncEdge{id: e.ID, method: e.Method, status: e.Status, confidence: e.Confidence, validAt: e.ValidAt, invalidAt: e.InvalidAt, attributes: e.Attributes}
 		for _, r := range evidence {
-			ev := syncEvidence{quote: r.Quote}
+			ev := syncEvidence{quote: r.Quote, part: r.Part}
 			if r.ChunkID != "" {
 				ev.chunkNK = nkOf(r.ChunkID)
 			}
@@ -801,7 +802,7 @@ func (w localWriter) carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry, 
 		if err != nil {
 			return out, err
 		}
-		cand := edgeEvidenceIn{ChunkID: id, Quote: ev.quote}
+		cand := edgeEvidenceIn{ChunkID: id, Quote: ev.quote, Part: ev.part}
 		if id != "" {
 			_, refuse, err := w.d.checkEvidence(ctx, w.key, w.mscope, []edgeEvidenceIn{cand})
 			if err != nil {
@@ -964,11 +965,19 @@ func (w remoteWriter) carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry,
 	for _, ev := range in.evidence {
 		id, onPeer := in.idByNK[ev.chunkNK]
 		sc, inDoc := w.source[ev.chunkNK]
-		if !onPeer || !inDoc || sc.withheld || !strings.Contains(sc.body, ev.quote) {
+		text := sc.body
+		if ev.part == edgeEvidencePartTitle {
+			text = sc.title
+		}
+		if !onPeer || !inDoc || sc.withheld || !strings.Contains(text, ev.quote) {
 			out.evidenceDropped++
 			continue
 		}
-		evidence = append(evidence, map[string]any{"chunk_id": id, "quote": ev.quote})
+		row := map[string]any{"chunk_id": id, "quote": ev.quote}
+		if ev.part != "" {
+			row["part"] = ev.part
+		}
+		evidence = append(evidence, row)
 	}
 	if in.have != nil && len(evidence) == 0 {
 		return out, nil

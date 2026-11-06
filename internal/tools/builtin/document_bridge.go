@@ -407,21 +407,21 @@ func (d *Document) snapshotDerivedQuotes(ctx context.Context, txnID, inSet strin
 func (d *Document) sourceStillHolds(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, factID string) (ok, checked bool, err error) {
 	// The newest edge and its newest quote: a fact written before facts kept a
 	// single source may still carry an older one.
-	res, err := d.query(ctx, key, `SELECT e.id, e.to_id, ev.quote FROM chunk_edges e
+	res, err := d.query(ctx, key, `SELECT e.id, e.to_id, ev.quote, COALESCE(ev.part, '') FROM chunk_edges e
 		JOIN chunk_edge_evidence ev ON ev.edge_id = e.id
 		WHERE e.from_id = ? AND e.kind = 'derived_from' ORDER BY e.created_at DESC, ev.created_at DESC LIMIT 1`, factID)
 	if err != nil || len(res.Rows) == 0 {
 		return true, false, err
 	}
-	edgeID, chunkID, quote := asStr(res.Rows[0][0]), asStr(res.Rows[0][1]), asStr(res.Rows[0][2])
+	edgeID, chunkID, quote, part := asStr(res.Rows[0][0]), asStr(res.Rows[0][1]), asStr(res.Rows[0][2]), asStr(res.Rows[0][3])
 	if readable, rerr := d.chunkReadable(ctx, key, chunkID); rerr != nil || !readable {
 		return true, false, rerr
 	}
-	cb, err := d.readBody(ctx, mscope, key, chunkID)
+	text, err := d.evidenceText(ctx, key, mscope, chunkID, part)
 	if err != nil {
 		return true, false, err
 	}
-	if strings.Contains(cb.Body, quote) {
+	if strings.Contains(text, quote) {
 		return true, true, nil
 	}
 	_ = d.exec(ctx, key, `UPDATE chunk_edge_evidence SET stale = 1 WHERE edge_id = ? AND chunk_id = ?`, edgeID, chunkID)

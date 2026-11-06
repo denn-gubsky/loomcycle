@@ -73,13 +73,16 @@ var preStatementEdgeColumns = map[string]bool{"from_id": true, "to_id": true, "k
 
 // chunkEdgeEvidenceColumns: exactly one of the three source forms is set — a chunk
 // of this scope, a chat turn (session_id + event_seq), or another scope by
-// natural key (resolved by a tolerant reader, never enumerated).
+// natural key (resolved by a tolerant reader, never enumerated). part names the
+// text of a chunk the quote and its span are in: NULL is the body, 'title' the
+// chunk's title (see edgeEvidencePartTitle).
 const chunkEdgeEvidenceColumns = `
 		id TEXT PRIMARY KEY, edge_id TEXT NOT NULL,
 		chunk_id TEXT, session_id TEXT, event_seq BIGINT,
 		ref_scope TEXT, ref_natural_key TEXT,
 		quote TEXT NOT NULL, char_start INTEGER, char_end INTEGER,
-		stale INTEGER NOT NULL DEFAULT 0, created_at BIGINT NOT NULL, run_id TEXT`
+		stale INTEGER NOT NULL DEFAULT 0, created_at BIGINT NOT NULL, run_id TEXT,
+		part TEXT`
 
 // chunkEdgeIndexes name columns a pre-statement chunk_edges does not have, so they
 // cannot sit in docSchemaDDL (which runs before the rebuild — the #1106 ordering
@@ -384,6 +387,39 @@ type edgeEvidenceIn struct {
 	Quote      string `json:"quote"`
 	CharStart  *int   `json:"char_start,omitempty"`
 	CharEnd    *int   `json:"char_end,omitempty"`
+	// Part is which text of a chunk the quote is from: "body" (the default) or
+	// "title". A chunk-form row only.
+	Part string `json:"part,omitempty"`
+}
+
+// Evidence parts. A document's title lives on its root chunk's title and in no
+// body, so a relation that rests on a title (two documents named alike) quotes
+// the title. Stored as NULL for the body, so every row written before parts
+// existed reads back unchanged.
+const (
+	edgeEvidencePartBody  = "body"
+	edgeEvidencePartTitle = "title"
+)
+
+// evidenceText is the text of chunkID a quote of the given part is checked
+// against: its title, or its body.
+func (d *Document) evidenceText(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, chunkID, part string) (string, error) {
+	if part == edgeEvidencePartTitle {
+		row, _, err := d.getChunkRow(ctx, key, chunkID)
+		return row.Title, err
+	}
+	cb, err := d.readBody(ctx, mscope, key, chunkID)
+	return cb.Body, err
+}
+
+// migrateEvidencePart adds chunk_edge_evidence.part to a scope whose evidence
+// table predates it. Probe-then-ALTER like its siblings; existing rows stay NULL,
+// which reads as the body — what every one of them quotes.
+func (d *Document) migrateEvidencePart(ctx context.Context, key sqlmem.ScopeKey) error {
+	if _, err := d.query(ctx, key, `SELECT part FROM chunk_edge_evidence WHERE 1=0`); err == nil {
+		return nil
+	}
+	return d.exec(ctx, key, `ALTER TABLE chunk_edge_evidence ADD COLUMN part TEXT`)
 }
 
 // edgeWrite is one statement write, from any path.
@@ -811,6 +847,18 @@ func (d *Document) checkEvidence(ctx context.Context, key sqlmem.ScopeKey, mscop
 			r := errValidation(where+": name exactly one source — chunk_id, session_id + event_seq, or scope + natural_key", "")
 			return nil, &r, nil
 		}
+		switch ev.Part {
+		case "", edgeEvidencePartBody:
+			ev.Part = ""
+		case edgeEvidencePartTitle:
+			if ev.ChunkID == "" {
+				r := errValidation(where+": part names the text of a chunk, and this evidence cites a chat turn or another scope", "Drop part, or cite a chunk by chunk_id.")
+				return nil, &r, nil
+			}
+		default:
+			r := errValidation(fmt.Sprintf("%s: part must be \"body\" or \"title\", not %q", where, ev.Part), "Omit part for a quote of the chunk's body.")
+			return nil, &r, nil
+		}
 		c := checkedEvidence{edgeEvidenceIn: ev}
 		switch {
 		case ev.ChunkID != "":
@@ -825,14 +873,16 @@ func (d *Document) checkEvidence(ctx context.Context, key sqlmem.ScopeKey, mscop
 				r := errNotFound(where+": no such chunk: "+ev.ChunkID, "Evidence must cite a chunk of this scope; cite another scope by scope + natural_key.")
 				return nil, &r, nil
 			}
-			cb, err := d.readBody(ctx, mscope, key, ev.ChunkID)
+			text, err := d.evidenceText(ctx, key, mscope, ev.ChunkID, ev.Part)
 			if err != nil {
 				return nil, nil, err
 			}
-			start, end, found := quoteSpan(cb.Body, quote, ev.CharStart, ev.CharEnd)
+			start, end, found := quoteSpan(text, quote, ev.CharStart, ev.CharEnd)
 			if !found {
-				r := errValidation(where+": evidence_quote_not_found — the quote does not occur in chunk "+ev.ChunkID,
-					"Copy the text exactly from the chunk body (op=get_chunk); a paraphrase is not evidence.")
+				r, err := d.quoteNotFound(ctx, key, mscope, where, ev)
+				if err != nil {
+					return nil, nil, err
+				}
 				return nil, &r, nil
 			}
 			c.start, c.end = &start, &end
@@ -871,6 +921,25 @@ func (d *Document) checkEvidence(ctx context.Context, key sqlmem.ScopeKey, mscop
 		out = append(out, c)
 	}
 	return out, nil, nil
+}
+
+// quoteNotFound is the refusal for a chunk quote not in the text its part names.
+// A body quote that is the chunk's title says so: that is the one mistake a
+// caller quoting a document's name makes, and the fix is one field.
+func (d *Document) quoteNotFound(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, where string, ev edgeEvidenceIn) (tools.Result, error) {
+	if ev.Part == edgeEvidencePartTitle {
+		return errValidation(where+": evidence_quote_not_found — the quote does not occur in the title of chunk "+ev.ChunkID,
+			"Copy the text exactly from the chunk's title (op=get_chunk), or omit part for a quote of its body."), nil
+	}
+	hint := "Copy the text exactly from the chunk body (op=get_chunk); a paraphrase is not evidence."
+	title, err := d.evidenceText(ctx, key, mscope, ev.ChunkID, edgeEvidencePartTitle)
+	if err != nil {
+		return tools.Result{}, err
+	}
+	if strings.Contains(title, ev.Quote) {
+		hint = `The quote is in the chunk's title, not its body: pass part "title" to quote the title.`
+	}
+	return errValidation(where+": evidence_quote_not_found — the quote does not occur in chunk "+ev.ChunkID, hint), nil
 }
 
 // quoteSpan locates quote in text, in characters. A caller-given span must be
@@ -942,13 +1011,13 @@ func (d *Document) addEvidence(ctx context.Context, key sqlmem.ScopeKey, edgeID 
 		return 0, false, nil
 	}
 	res, err := d.query(ctx, key, `SELECT COALESCE(chunk_id, ''), COALESCE(session_id, ''), COALESCE(event_seq, -1),
-		COALESCE(ref_scope, ''), COALESCE(ref_natural_key, ''), quote FROM chunk_edge_evidence WHERE edge_id = ?`, edgeID)
+		COALESCE(ref_scope, ''), COALESCE(ref_natural_key, ''), quote, COALESCE(part, '') FROM chunk_edge_evidence WHERE edge_id = ?`, edgeID)
 	if err != nil {
 		return 0, false, err
 	}
 	have := map[string]bool{}
 	for _, r := range res.Rows {
-		have[strings.Join([]string{asStr(r[0]), asStr(r[1]), strconv.Itoa(asInt(r[2])), asStr(r[3]), asStr(r[4]), asStr(r[5])}, "\x00")] = true
+		have[strings.Join([]string{asStr(r[0]), asStr(r[1]), strconv.Itoa(asInt(r[2])), asStr(r[3]), asStr(r[4]), asStr(r[5]), asStr(r[6])}, "\x00")] = true
 	}
 	n, max := len(res.Rows), edgeEvidenceMax()
 	written, capped := 0, false
@@ -958,7 +1027,7 @@ func (d *Document) addEvidence(ctx context.Context, key sqlmem.ScopeKey, edgeID 
 		if ev.EventSeq != nil {
 			seq = int(*ev.EventSeq)
 		}
-		k := strings.Join([]string{ev.ChunkID, ev.SessionID, strconv.Itoa(seq), ev.Scope, ev.NaturalKey, ev.Quote}, "\x00")
+		k := strings.Join([]string{ev.ChunkID, ev.SessionID, strconv.Itoa(seq), ev.Scope, ev.NaturalKey, ev.Quote, ev.Part}, "\x00")
 		if have[k] {
 			continue
 		}
@@ -975,10 +1044,10 @@ func (d *Document) addEvidence(ctx context.Context, key sqlmem.ScopeKey, edgeID 
 			start, end = *ev.start, *ev.end
 		}
 		if err := d.exec(ctx, key, `INSERT INTO chunk_edge_evidence
-			(id, edge_id, chunk_id, session_id, event_seq, ref_scope, ref_natural_key, quote, char_start, char_end, created_at, run_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(id, edge_id, chunk_id, session_id, event_seq, ref_scope, ref_natural_key, quote, char_start, char_end, created_at, run_id, part)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			newDocID(), edgeID, nullIfEmpty(ev.ChunkID), nullIfEmpty(ev.SessionID), eventSeq,
-			nullIfEmpty(ev.Scope), nullIfEmpty(ev.NaturalKey), ev.Quote, start, end, now, nullIfEmpty(tools.RunID(ctx))); err != nil {
+			nullIfEmpty(ev.Scope), nullIfEmpty(ev.NaturalKey), ev.Quote, start, end, now, nullIfEmpty(tools.RunID(ctx)), nullIfEmpty(ev.Part)); err != nil {
 			return written, capped, err
 		}
 		have[k] = true
@@ -1085,8 +1154,10 @@ type edgeEvidenceRow struct {
 	Quote      string `json:"quote"`
 	CharStart  *int64 `json:"char_start,omitempty"`
 	CharEnd    *int64 `json:"char_end,omitempty"`
-	Stale      bool   `json:"stale,omitempty"`
-	CreatedAt  int64  `json:"created_at"`
+	// Part is "title" for a quote of the chunk's title; omitted for its body.
+	Part      string `json:"part,omitempty"`
+	Stale     bool   `json:"stale,omitempty"`
+	CreatedAt int64  `json:"created_at"`
 }
 
 // evidenceFor returns up to limit evidence rows per edge (0 = all), oldest first,
@@ -1102,7 +1173,7 @@ func (d *Document) evidenceFor(ctx context.Context, key sqlmem.ScopeKey, edgeIDs
 		args[i] = id
 	}
 	res, err := d.query(ctx, key, `SELECT edge_id, id, chunk_id, session_id, event_seq, ref_scope, ref_natural_key,
-		quote, char_start, char_end, stale, created_at
+		quote, char_start, char_end, stale, created_at, COALESCE(part, '')
 		FROM chunk_edge_evidence WHERE edge_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")+`)
 		ORDER BY edge_id, created_at, id`, args...)
 	if err != nil {
@@ -1117,7 +1188,7 @@ func (d *Document) evidenceFor(ctx context.Context, key sqlmem.ScopeKey, edgeIDs
 		ev := edgeEvidenceRow{
 			ID: asStr(r[1]), ChunkID: asStr(r[2]), SessionID: asStr(r[3]), EventSeq: asInt64Ptr(r[4]),
 			Scope: asStr(r[5]), NaturalKey: asStr(r[6]), Quote: asStr(r[7]),
-			CharStart: asInt64Ptr(r[8]), CharEnd: asInt64Ptr(r[9]), Stale: asInt(r[10]) == 1,
+			CharStart: asInt64Ptr(r[8]), CharEnd: asInt64Ptr(r[9]), Stale: asInt(r[10]) == 1, Part: asStr(r[12]),
 		}
 		ev.CreatedAt, _ = asInt64(r[11])
 		rows[eid] = append(rows[eid], ev)

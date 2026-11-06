@@ -405,3 +405,38 @@ func TestFindDuplicates_MethodNeedsTheStatementMethodsGrant(t *testing.T) {
 		t.Fatalf("an ungranted method was not refused: %s", r.Text)
 	}
 }
+
+// TestFindDuplicates_EveryProposalQuotesBothRootTitles: a document's title lives
+// on its root chunk's title and in no body, so each side's evidence is that
+// title quoted as part title — always there, on a content match and a title
+// match alike, so a judge has two rows to rule on for every pair.
+func TestFindDuplicates_EveryProposalQuotesBothRootTitles(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	_, sameOrig := dupDocIn(t, d, ctx, "/p/a", "Menu", "", "soup of the day")
+	_, sameCopy := dupDocIn(t, d, ctx, "/p/b", "Lunch card", "", "soup of the day")
+	_, titleOrig := dupDocIn(t, d, ctx, "/p/c", "Rota", "", "monday: ana")
+	_, titleCopy := dupDocIn(t, d, ctx, "/p/d", "Copy of Rota", "", "tuesday: ben")
+	out := findDups(t, d, ctx, `{"op":"find_duplicates","scope":"user","under_path":"/p","propose":true}`)
+	pairs := dupPairs(t, out)
+	if len(pairs) != 2 || dupCount(out, "proposed") != 2 {
+		t.Fatalf("pairs = %v, want two proposed pairs", pairs)
+	}
+	want := map[string]map[string]string{
+		"sha256": {sameCopy: "Lunch card", sameOrig: "Menu"},
+		"title":  {titleCopy: "Copy of Rota", titleOrig: "Rota"},
+	}
+	for _, p := range pairs {
+		basis := asStr(p["basis"])
+		ev := getEdgeEvidence(t, d, ctx, "user", asStr(p["statement_id"]))
+		if len(ev) != 2 {
+			t.Errorf("%s pair evidence = %v, want two rows", basis, ev)
+			continue
+		}
+		for _, row := range ev {
+			chunk := asStr(row["chunk_id"])
+			if row["part"] != "title" || row["quote"] != want[basis][chunk] || row["char_start"] != float64(0) {
+				t.Errorf("%s pair row = %v, want the root title %q of %s quoted as part title", basis, row, want[basis][chunk], chunk)
+			}
+		}
+	}
+}
