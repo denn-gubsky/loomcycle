@@ -1211,18 +1211,22 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 		return 0, 0, err
 	}
 	// newText is the text of a new version a quote of the given part is checked
-	// against: its body, or (part title) its title, read once per version.
-	titles := map[string]string{}
-	newText := func(nid, part string) (string, error) {
-		if part != edgeEvidencePartTitle {
-			return newBody[nid], nil
-		}
-		if t, ok := titles[nid]; ok {
-			return t, nil
-		}
+	// against: its body, or (part title) its title. The titles are read here,
+	// before any transaction: the copies below are written inside one, and on
+	// sqlite a read outside it would wait on the scope's one connection.
+	newTitle := map[string]string{}
+	for _, nid := range remap {
 		row, _, err := d.getChunkRow(ctx, key, nid)
-		titles[nid] = row.Title
-		return row.Title, err
+		if err != nil {
+			return 0, 0, err
+		}
+		newTitle[nid] = row.Title
+	}
+	newText := func(nid, part string) string {
+		if part == edgeEvidencePartTitle {
+			return newTitle[nid]
+		}
+		return newBody[nid]
 	}
 	mapped := func(id string) string {
 		if nid, ok := remap[id]; ok {
@@ -1256,14 +1260,8 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 		}
 		holds := true
 		for _, e := range ev[s.ID] {
-			if nid, ok := remap[e.ChunkID]; ok {
-				text, err := newText(nid, e.Part)
-				if err != nil {
-					return copied, proposed, err
-				}
-				if !strings.Contains(text, e.Quote) {
-					holds = false
-				}
+			if nid, ok := remap[e.ChunkID]; ok && !strings.Contains(newText(nid, e.Part), e.Quote) {
+				holds = false
 			}
 		}
 		ruled := s.OperatorRuledAt != nil || s.Status == edgeStatusRejected
@@ -1319,11 +1317,7 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 					start, end = *e.CharStart, *e.CharEnd
 				}
 				if nid, ok := remap[chunkID]; ok {
-					text, err := newText(nid, e.Part)
-					if err != nil {
-						return err
-					}
-					if st, en, ok := quoteSpan(text, e.Quote, nil, nil); ok {
+					if st, en, ok := quoteSpan(newText(nid, e.Part), e.Quote, nil, nil); ok {
 						chunkID, start, end = nid, st, en
 					} else {
 						stale = 1 // a manual or ruled statement copied though its quote is gone
