@@ -17,16 +17,15 @@ func init() {
 // config-driven construction the resolver uses (the RFC BF replacement for the
 // pre-registry hardcoded ollama.New(...).WithNumCtx().WithNumGpu()). The
 // provider id (DriverOptions.ID → New's providerID) selects the default auth +
-// KeyEnvName behaviour: "ollama-local" is keyless, "ollama" uses OLLAMA_API_KEY.
+// KeyEnvName behaviour: "ollama-local" is keyless, "ollama" uses OLLAMA_API_KEY
+// when it talks to ollama.com (or names no base_url), and nothing elsewhere.
 // A config-declared api_key_env re-points that via SetKeyEnvName (so a custom-id
 // ollama provider is keyable under its own var). num_ctx / num_gpu come from the
 // options map.
 func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	// New defaults providerID to "ollama" when o.ID == "".
 	d := New(o.ID, o.APIKey, o.BaseURL, o.StreamOpts, nil)
-	if o.KeyEnvName != "" {
-		d.SetKeyEnvName(o.KeyEnvName)
-	}
+	d.SetKeyEnvName(o.KeyEnvNameFor(d.KeyEnvName(), cloudBaseURL))
 	d.capsPatch = o.Capabilities
 	if n, ok := providers.IntOption(o.Options, "num_ctx"); ok {
 		d.WithNumCtx(n)

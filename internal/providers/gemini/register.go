@@ -15,16 +15,15 @@ func init() {
 // pre-registry hardcoded gemini.New(...)). A config-declared api_key_env
 // re-points tenant/user credential resolution via SetKeyEnvName, so a custom-id
 // gemini provider resolves overrides under the SAME var toDriverOptions read the
-// host key from (defaults to GEMINI_API_KEY). It has no consumable driver
+// host key from. With none, it is GEMINI_API_KEY at Google's Gemini API and
+// nothing at any other endpoint (KeyEnvNameFor). It has no consumable driver
 // options today.
 func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	d := New(o.APIKey, o.BaseURL, o.StreamOpts, nil)
 	if o.ID != "" {
 		d.id = o.ID
 	}
-	if o.KeyEnvName != "" {
-		d.SetKeyEnvName(o.KeyEnvName)
-	}
+	d.SetKeyEnvName(o.KeyEnvNameFor(d.KeyEnvName(), defaultBaseURL))
 	d.capsPatch = o.Capabilities
 	providers.WarnUnknownOptions(o.Logger, "gemini", o.Options)
 	return d, nil

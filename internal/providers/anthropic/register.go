@@ -15,16 +15,15 @@ func init() {
 // the pre-registry hardcoded anthropic.New(...)). A config-declared api_key_env
 // re-points tenant/user credential resolution via SetKeyEnvName, so a custom-id
 // anthropic provider resolves overrides under the SAME var toDriverOptions read
-// the host key from (defaults to ANTHROPIC_API_KEY). The API version is a
+// the host key from. With none, it is ANTHROPIC_API_KEY at Anthropic's API and
+// nothing at any other endpoint (KeyEnvNameFor). The API version is a
 // compile-time const, so there are no consumable driver options today.
 func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	d := New(o.APIKey, o.BaseURL, o.StreamOpts, nil)
 	if o.ID != "" {
 		d.id = o.ID
 	}
-	if o.KeyEnvName != "" {
-		d.SetKeyEnvName(o.KeyEnvName)
-	}
+	d.SetKeyEnvName(o.KeyEnvNameFor(d.KeyEnvName(), defaultBaseURL))
 	d.capsPatch = o.Capabilities
 	d.auth = o.RequestAuth
 	providers.WarnUnknownOptions(o.Logger, "anthropic", o.Options)
