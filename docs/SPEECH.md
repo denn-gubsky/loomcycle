@@ -114,6 +114,34 @@ if (me.effective?.surfaces.transcription) {
 
 `transcribe` sends `FormData` and sets no `Content-Type`, so the runtime writes the multipart boundary. The Python adapter is gRPC-only and has no speech methods; the routes have no gRPC or MCP twin yet.
 
+## Through a chat bridge
+
+The bridges (`@loomcycle/bridge-*` 0.4.0) use these routes to exchange voice messages with an agent (RFC GA). With `BRIDGE_VOICE=1`, a bridge:
+
+1. downloads a voice message with the platform's credential, from the platform's own file host only;
+2. transcribes it with the **conversation's own token**;
+3. gives the agent the text after a `(voice message)` line, the way typed text goes;
+4. when the reply should be spoken, voices it and posts it in the platform's own form, labelled "AI voice".
+
+The text reply is always sent as well.
+
+| Platform | Voice in | Voice out |
+|---|---|---|
+| Telegram | voice and round video notes (in a group, a reply to the bot) | a native voice note (`ogg` or `mp3`) |
+| Discord | "Ask by voice" on your own voice message | a native voice message (`ogg`) |
+| Slack | a clip or an audio file in a DM, or mentioning the bot | an audio file in the thread |
+| Teams | an audio file attached in a 1:1 chat | text only |
+
+**What loomcycle needs:**
+- **Engines:** the `speech:` and `transcription.stt:` engines.
+- **A voice format:** Telegram and Discord show only Opus as a voice note, so they need `speech.encode` (an ffmpeg Opus command) with `speech.format: ogg`. Slack plays `mp3` most reliably. With `wav` only, Telegram and Discord replies stay text, and Slack uploads `wav`.
+- **A grant on each user token:** a bridge's user token is limited to its agent, so it reaches these routes only when granted them (`surfaces`, [Who may call them](#who-may-call-them)).
+  - A bridge with a loomcycle token asks for the grant itself.
+  - A bridge that is a gate is held to its `issued_token.surfaces` ceiling. Add `surfaces: [speech, transcription]` there, or the bridge stays on text.
+- **Rate:** each voice turn takes three starts from the user's run rate (transcribe, run, speak), so raise `BRIDGE_RATE_PER_MINUTE`.
+
+Each bridge's README has its platform's details and the settings (`BRIDGE_VOICE_*`, `/voice on|off|auto`). `@loomcycle/bridge-core`'s README has the shared ones.
+
 ## What it costs
 
 Each engine request writes one usage row filed under the caller and its tenant, with no run: `purpose: tts` with `input_chars` and `audio_seconds`, or `purpose: stt` with `audio_seconds`. They are priced from the `pricing:` table (`per_million_chars`, `per_minute`, or tokens for a token-billed model) and show in `GET /v1/_usage?group_by=purpose`. The token budgets count tokens only: a row adds the tokens a token-billed model reported (e.g. `gpt-4o-transcribe`), and none for an engine billed by the minute or by the character.
