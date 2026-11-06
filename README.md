@@ -34,15 +34,15 @@
 
 **What makes it different.** Most agent platforms are a library you embed, a hosted service you rent, or a gateway that does not run the loop. loomcycle is a self-hostable **agent-system kernel** that owns the loop *and* ships with the data substrate, teams primitive, decision model, Crypto tool, canvas, dev toolchain and headless browser already assembled.
 
-## Last week delivered: v1.112 → v1.116 (Oct 13–19, 2026)
+## Last week delivered: v1.135 → v1.141 (Nov 2–5, 2026)
 
-Five minor releases this week; longer writeups follow on [the blog](https://loomcycle.dev/blog/).
+Seven minor releases this week; per-release notes are in [`REVISIONS.md`](REVISIONS.md).
 
-- **The Crypto tool (v1.116).** An agent names a key; the runtime encrypts, decrypts, signs, verifies, MACs, generates a TOTP or hashes — only the result comes back. Keys live in loomcycle (sealed under `LOOMCYCLE_SECRET_KEY`) or in **Vault Transit, AWS KMS or Google Cloud KMS** — in that case the key material never leaves the KMS. JWE, JWS, X25519, RSA-OAEP/PSS, Argon2id passwords, data by reference. Same ops on the operator API (`POST /v1/_crypto`, gRPC, MCP, TS and Python).
-- **No-trace runs (v1.112).** A run that delivers what it says to its caller and stores none of it. Siblings: restricted tokens (lifetime, agent list, override lock, run-rate), strict budget enforcement on runs in flight, metered `llm:gateway`, one-call run-tree delete.
-- **Git-in-the-core, ephemeral volumes (v1.113).** An agent can be given a repository the runtime fetched itself — an ephemeral read-only volume cloned from a `git` source. The forge token never enters a shell. Diff-size and inflated-pack-size bounded. Sibling features: forge webhooks (GitHub, Gitea, GitLab) that can start runs, signed hook deliveries, and the Microsoft Teams bridge.
-- **Queued runs + call lanes + run-slot lending (v1.113 → v1.114).** A run that cannot start at once is **queued**, not refused: it gets its row, id and events before it waits, is cancellable, and survives a restart. A provider's `max_concurrent` now counts model calls in a **lane** per model kind. A run whose model call waits for a saturated local provider **lends its run slot** to a run bound elsewhere.
-- **Bridges on a shared core (v1.113+).** The Microsoft Teams bridge refactored onto `@loomcycle/bridge-core`; three siblings followed — Telegram, Slack (every message inert by construction, no live mentions, every link's real target shown), and Discord over HTTP interactions.
+- **Documents move between scopes (v1.135 → v1.136).** `copy_documents` and `move_documents` carry a set of documents with their relations between the agent, user and tenant scopes; a move keeps every document, chunk and relation id and finishes an interrupted move on the next call. The Path explorer and both adapters gain copy and move.
+- **The document star map (v1.135).** A scope drawn in 3D by meaning, its embeddings projected server side, with link review, saved views and live updates from a member-safe document change feed.
+- **Agents cite documents as links (v1.138).** `[title](loom:doc/<id>)` and `[title](loom:chunk/<id>)` open in the viewer on the cited chunk.
+- **Speech for chat clients (v1.140 → v1.141).** `POST /v1/audio/speech` reads a reply aloud and `POST /v1/audio/transcriptions` transcribes the microphone; a bridge user's token can be granted those routes, so the chat bridges can exchange voice messages.
+- **Security (v1.140 → v1.141).** A tenant member no longer reads other people's data or decides for the tenant, every stored access rule is enforced or refused, and an erasure ends the account; SQLite scopes open in defensive mode; CI gates npm and pip advisories with every action and base image pinned.
 
 See [`REVISIONS.md`](REVISIONS.md) for the per-release detail.
 
@@ -82,7 +82,7 @@ Same Go binary, same config schema. Operator flips a few env vars to pick the po
 | **True managed sandbox** | `LOOMCYCLE_BASH_ENABLED=0`, no `volumes:` block (sandbox-by-default — agents get no disk access), `LOOMCYCLE_HTTP_HOST_ALLOWLIST` empty, `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1`. Every tool default-deny; agents can only reach what the caller's per-request `allowed_hosts` says. | Shared-server deployments processing untrusted prompts. The runtime survives contact with adversarial input. |
 | **Agentic dev environment** | Bash enabled, a `default` rw `volumes:` entry pointing at your workspace, broad `allowed_hosts`, optional local Ollama for offline work. | Local development. Internal trusted operators. Single-user research workstation. |
 
-The trust boundary is **operator / caller**. The operator config is the floor; callers can narrow per-request but never widen. The bearer token (`LOOMCYCLE_AUTH_TOKEN`) is the authority. Treat anyone with the token as fully trusted to drive the runtime. For true isolation in the sandbox posture, run loomcycle inside a container or VM. `Bash` is restricted (cwd, env scrub, output bounds, timeouts) but it is **not** a kernel-level sandbox.
+The trust boundary is **operator / caller**. The operator config is the floor; callers can narrow per-request but never widen. The bearer is the authority. The shared `LOOMCYCLE_AUTH_TOKEN`, or an admin-scoped minted token, drives the whole runtime: treat its holder as fully trusted. A per-principal token or a sign-in session carries only its tenant, subject and scopes (see [`SECURITY.md`](SECURITY.md#scope-and-threat-model)). For true isolation in the sandbox posture, run loomcycle inside a container or VM. `Bash` is restricted (cwd, env scrub, output bounds, timeouts) but it is **not** a kernel-level sandbox.
 
 ## Install
 
@@ -679,6 +679,11 @@ Full request flow, abstractions, and concurrency model: [`docs/ARCHITECTURE.md`]
 - **SSRF defence.** Hostname allowlist + RFC1918/loopback/link-local IP block at the dial layer, re-checked on the connected address, so DNS rebinding cannot slip past it. A private host the operator vouches for **by name** may still resolve to any private address except link-local and cloud metadata; vouch by CIDR to trust no name. See [`docs/TOOLS.md`](docs/TOOLS.md).
 - **Constant-time bearer auth.** `sha256+CTC` on both HTTP and gRPC.
 - **`Bash` is restricted, not isolated.** Run inside a container or VM if you need real isolation.
+- **Per-principal authority.** Minted tokens and sign-in sessions (OIDC, OAuth, password with TOTP, passkeys, external, header and AWS IAM gates) resolve to an authoritative `(tenant, subject, scopes)`; the wire `tenant_id` / `user_id` never decide. A token row stores a hash peppered with a server secret (`LOOMCYCLE_OPERATOR_TOKEN_PEPPER`, or one derived from `LOOMCYCLE_SECRET_KEY`), never the token.
+- **Access control.** Rule lists, nested groups and bindings, explicit deny over allow, rolled out `compat` → `shadow` → `enforce`; a stored rule no surface evaluates is refused at write.
+- **Secrets the model never sees.** Tenant credentials sealed with AES-256-GCM per tenant; Crypto keys held by loomcycle or in Vault Transit / AWS KMS / Google Cloud KMS; a credential restricted by URL goes only where it is allowed.
+- **Untrusted files parsed under bounds.** Extraction caps every table, cell and document, runs a bounded number at once, and recovers a parser panic as a failed tool call. Imported text is tagged untrusted, and a run's tenant-scope links are filed for review.
+- **Durable audit trail and signed releases** (on `main`, in the release after v1.141.0): a store-backed, hash-chained, HMAC-signed audit stream on by default once sign-in gates or access control are configured; release binaries and images signed with cosign, with SBOMs and build provenance ([`docs/VERIFYING-RELEASES.md`](docs/VERIFYING-RELEASES.md)).
 
 Full security model and the two-layer default-deny walkthrough: [`docs/TOOLS.md`](docs/TOOLS.md). To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
 
