@@ -34,6 +34,7 @@ func TestResolveAuth_ANonImmutableSubjectClaimNeedsADeclaration(t *testing.T) {
 	external := func(t *testing.T, m *AuthIdentityMapConfig) *Config {
 		g := AuthGateConfig{Kind: "external", IdentityMap: m}
 		g.External.PublicKey = edJWK(t)
+		g.External.IssuedToken = unrestricted()
 		return externalCfg(g)
 	}
 	subject := func(claim string, declared bool) *AuthIdentityMapConfig {

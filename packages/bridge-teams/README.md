@@ -1,6 +1,6 @@
 # @loomcycle/bridge-teams
 
-A Microsoft Teams bot for a [loomcycle](https://github.com/denn-gubsky/loomcycle) interactive agent. People chat with the agent in Teams. In a 1:1 chat each person is their own loomcycle user, with their own runs, memory, history, budget and rate limit; a group chat or channel is a loomcycle user of its own.
+A Microsoft Teams bot for a [loomcycle](https://github.com/denn-gubsky/loomcycle) interactive agent. People chat with the agent in Teams. In a 1:1 chat each person is their own loomcycle user, with their own runs, memory, history and rate limit, and a token budget of their own when loomcycle holds one for them (the gate's `new_user.budget`, below); a group chat or channel is a loomcycle user of its own.
 
 - **Streamed answers** in 1:1 chats, with Teams' Stop button. Group chats and channels get one message per turn.
 - **Steering:** a message sent while the agent is working reaches it mid-turn.
@@ -64,7 +64,7 @@ Configuration is by environment:
 |---|---|---|
 | `CLIENT_ID`, `CLIENT_SECRET`, `TENANT_ID` | The bot's Entra app | required |
 | `PORT` | Listen port | `3978` |
-| `LOOMCYCLE_BASE_URL` | loomcycle's private URL | required |
+| `LOOMCYCLE_BASE_URL` | loomcycle's URL. From `@loomcycle/bridge-core` 0.4.0: `https://`, or `http://` to localhost; over a private network set `BRIDGE_ALLOW_INSECURE_LOOMCYCLE=1` | required |
 | `LOOMCYCLE_TOKEN` | The bridge's `substrate:tenant` token | required, unless the bridge is a gate (below) |
 | `BRIDGE_AGENT` | The loomcycle agent every conversation runs | required |
 | `TEAMS_BRIDGE_ALLOWED_TENANTS` | Comma list of Entra tenant ids allowed to use the bot | required |
@@ -73,7 +73,7 @@ Configuration is by environment:
 | `BRIDGE_USER_ACCESS_MODE` | `isolated` (a user sees only their own data) or `tenant` | `isolated` |
 | `BRIDGE_IDLE_MINUTES` | End a conversation's run after this long without a message; the next message continues it | `1440` |
 | `BRIDGE_STORE` | `memory`, or `file:<path>` to survive restarts on one instance | `memory` |
-| `BRIDGE_DEV` | `1` accepts unauthenticated requests, for local testing only | unset |
+| `BRIDGE_DEV` | `1` accepts unauthenticated requests, for local testing only: the listener then binds 127.0.0.1 only. From `@loomcycle/bridge-core` 0.4.0 it is refused on a gate | unset |
 
 With `BRIDGE_STORE=memory`, a restart forgets which loomcycle session each Teams conversation was in, and the next message starts a fresh one. Use `file:<path>` (one instance) or your own `ConversationStore` (several).
 
@@ -104,8 +104,14 @@ Since 0.3 the bridge can be a loomcycle gate instead of holding a token: it sign
          kind: external
          public_key: { kty: OKP, crv: Ed25519, x: "<the public x>" }
          issued_token: { ttl: 12h, agents: [chat], overrides: [interactive], rate: { per_minute: 6, burst: 10 } }
-         identity_map: { tenant: acme, provision: auto, legacy_subject_prefix: teams- }
+         identity_map:
+           tenant: acme
+           provision: auto
+           legacy_subject_prefix: teams-
+           new_user: { budget: { soft_limit: 500000, hard_limit: 1000000 } }   # tokens a month, per user
    ```
+
+   `issued_token` is required, or the gate does not load (write `issued_token: unrestricted` for tokens with the user's whole member reach). `new_user.budget` becomes each new user's token limit, so people the bot admits are capped without a limit written for each; leave it out and they have none.
 
    `legacy_subject_prefix: teams-` keeps the people the bridge already served: each person's first message through the gate links the user the bridge made (`teams-<entra object id>`, a group chat's or channel's `teams-conv-<hash>`), so their history, memory and documents stay theirs. Without it they would start again as new users `teams:<entra object id>`. New people are `teams:<entra object id>` either way.
 

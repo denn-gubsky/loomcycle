@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authgate/lifecycle"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/limits"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -511,5 +512,27 @@ func TestSCIM_AStaleRemovalRowNeverLeavesTheUserActive(t *testing.T) {
 		if st := f.status(t, "acme", subject); code < 300 && st != "disabled" {
 			t.Fatalf("%s answered %d with the user %s", how, code, st)
 		}
+	}
+}
+
+// The identity map's new_user budget is written for a user SCIM provisions
+// too: every gate kind creates users through the same path.
+func TestSCIM_AProvisionedUserGetsTheIdentityMapsBudget(t *testing.T) {
+	f := newSCIMFixture(t, scimOpts{tenant: "acme"})
+	f.srv.limits = limits.New(f.st) // as http.New builds it; the bare test server has none
+	hard := int64(0)
+	gates := f.srv.cfg().ResolvedAuth.Gates
+	gates[len(gates)-1].Identity.NewUser.Budget = &config.AuthBudgetConfig{HardLimit: &hard}
+	_, subject := f.scimUser(t, bSCIMAcme, "bob@acme.test")
+	rows, err := f.st.TokenLimitsAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Scope != "user" || rows[0].TenantID != "acme" || rows[0].ScopeID != subject ||
+		rows[0].HardLimit == nil || *rows[0].HardLimit != 0 || rows[0].UpdatedBy != "gate:okta" {
+		t.Fatalf("budget rows = %+v", rows)
+	}
+	if dec := f.srv.LimitsTracker().Check("acme", subject); dec.Allowed {
+		t.Fatal("the SCIM user's budget is stored but not enforced")
 	}
 }

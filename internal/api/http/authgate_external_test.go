@@ -25,6 +25,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/limits"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -922,6 +923,57 @@ func TestExternalAssert_ALegacyPrefixNeverTakesAPasskeyUser(t *testing.T) {
 	}
 	if ids, err := f.st.UserIdentityListSubject(ctx, "acme", "telegram-4"); err != nil || len(ids) != 0 {
 		t.Fatalf("the passkey user was linked to the gate: %v %v", ids, err)
+	}
+}
+
+// A user the gate provisions gets the identity map's new_user budget as its
+// user-scope token limit (RFC FZ Part D): an open bot with provision: auto
+// would otherwise make every platform account an uncapped user. The budget
+// is enforced at once, and a row an operator wrote first is kept.
+func TestExternalAssert_AProvisionedUserGetsTheGatesDefaultBudget(t *testing.T) {
+	soft, hard := int64(500), int64(0)
+	m := acmeMap()
+	m.NewUser = config.AuthNewUser{AccessMode: "isolated", Groups: []string{}, Status: "active", TokenTTL: time.Hour,
+		Budget: &config.AuthBudgetConfig{SoftLimit: &soft, HardLimit: &hard}}
+	g := newExtGate(t, "tg", m, config.AuthExternalGate{})
+	f := extFixture(t, g)
+	f.srv.limits = limits.New(f.st) // as http.New builds it; the bare test server has none
+	ctx := context.Background()
+
+	if code, body := f.assert(t, "tg", g.sign(t, "assert", nil, nil)); code != http.StatusOK {
+		t.Fatalf("assert: %d %v", code, body)
+	}
+	rows, err := f.st.TokenLimitsAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *store.TokenLimitRow
+	for i := range rows {
+		if rows[i].Scope == "user" && rows[i].TenantID == "acme" && rows[i].ScopeID == "tg:12345" {
+			got = &rows[i]
+		}
+	}
+	if got == nil || got.SoftLimit == nil || *got.SoftLimit != soft || got.HardLimit == nil || *got.HardLimit != hard {
+		t.Fatalf("the provisioned user's budget row = %+v (all rows %+v)", got, rows)
+	}
+	if dec := f.srv.LimitsTracker().Check("acme", "tg:12345"); dec.Allowed {
+		t.Fatal("the budget is stored but not enforced: a hard limit of 0 still admits a run")
+	}
+
+	// An operator's own row for a subject the gate has not made yet stands.
+	own := int64(9000)
+	if err := f.st.TokenLimitPut(ctx, store.TokenLimitRow{TenantID: "acme", Scope: "user", ScopeID: "tg:777", HardLimit: &own}); err != nil {
+		t.Fatal(err)
+	}
+	sub777 := func(c *jwt.Claims) { c.Subject = "777" }
+	if code, body := f.assert(t, "tg", g.sign(t, "assert", nil, sub777)); code != http.StatusOK {
+		t.Fatalf("assert 777: %d %v", code, body)
+	}
+	rows, _ = f.st.TokenLimitsAll(ctx)
+	for _, r := range rows {
+		if r.ScopeID == "tg:777" && (r.HardLimit == nil || *r.HardLimit != own || r.SoftLimit != nil) {
+			t.Fatalf("the operator's row was overwritten: %+v", r)
+		}
 	}
 }
 

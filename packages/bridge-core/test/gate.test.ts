@@ -179,7 +179,7 @@ describe("gate broker", () => {
 });
 
 describe("gate configuration", () => {
-  const base = { LOOMCYCLE_BASE_URL: "http://lc:8080", BRIDGE_AGENT: "chat", BRIDGE_GATE: "telegram", BRIDGE_GATE_AUDIENCE: "https://lc.example/", BRIDGE_GATE_KEY: "{}" };
+  const base = { LOOMCYCLE_BASE_URL: "https://lc:8080", BRIDGE_AGENT: "chat", BRIDGE_GATE: "telegram", BRIDGE_GATE_AUDIENCE: "https://lc.example/", BRIDGE_GATE_KEY: "{}" };
 
   it("reads the gate and holds no loomcycle token", () => {
     const r = new EnvReader(base);
@@ -208,17 +208,17 @@ describe("gate configuration", () => {
     // them took seconds. The URLs come from the environment, but a gate
     // bridge should not hang at start on a malformed value.
     const slashes = "/".repeat(50_000);
-    const r = new EnvReader({ ...base, LOOMCYCLE_BASE_URL: `http://lc${slashes}x`, BRIDGE_GATE_AUDIENCE: `https://lc.example${slashes}x` });
+    const r = new EnvReader({ ...base, LOOMCYCLE_BASE_URL: `https://lc${slashes}x`, BRIDGE_GATE_AUDIENCE: `https://lc.example${slashes}x` });
     const started = Date.now();
     loadSharedConfig(r, { port: 1, gate: true });
     expect(Date.now() - started).toBeLessThan(500);
 
-    const ok = new EnvReader({ ...base, LOOMCYCLE_BASE_URL: "http://lc///" });
-    expect(loadSharedConfig(ok, { port: 1, gate: true }).loomcycleBaseUrl).toBe("http://lc");
+    const ok = new EnvReader({ ...base, LOOMCYCLE_BASE_URL: "https://lc///" });
+    expect(loadSharedConfig(ok, { port: 1, gate: true }).loomcycleBaseUrl).toBe("https://lc");
   });
 
   it("leaves a bridge that is not a gate exactly as it was", () => {
-    const r = new EnvReader({ LOOMCYCLE_BASE_URL: "http://lc", LOOMCYCLE_TOKEN: "lct_x", BRIDGE_AGENT: "chat" });
+    const r = new EnvReader({ LOOMCYCLE_BASE_URL: "https://lc", LOOMCYCLE_TOKEN: "lct_x", BRIDGE_AGENT: "chat" });
     const cfg = loadSharedConfig(r, { port: 1 });
     r.check("t");
     expect(cfg.gate).toBeUndefined();

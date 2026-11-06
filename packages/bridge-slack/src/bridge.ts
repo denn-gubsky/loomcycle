@@ -47,6 +47,9 @@ export interface SlackAdapter extends BridgeAdapter<SlackRef> {
   /** The two routes, served by start(); exposed for a server of your own and for tests. */
   routes(ctx: Pick<BridgeContext<SlackRef>, "router" | "log" | "gate">): Record<string, Route>;
   groupsFor(subject: string, ref: SlackRef): Promise<string[] | undefined>;
+  /** Every person of the allowed workspaces Slack lists now, as the gate's
+   *  platform ids: what a gate bridge reconciles loomcycle with. */
+  members(): Promise<ReadonlySet<string>>;
 }
 
 const SLACK_HOOKS_ORIGIN = "https://hooks.slack.com";
@@ -58,6 +61,9 @@ const MAX_NAMES = 5000;
 const GROUP_CACHE_MS = 10 * 60 * 1000;
 const MAX_GROUP_CACHE = 5000;
 const DEFAULT_REVOKE_TIMEOUT_MS = 2000;
+/** users.list pages read per workspace before the list is given up as
+ *  unreadable (200 people a page). */
+const MAX_MEMBER_PAGES = 500;
 
 /** A link the agent writes is never unfurled: an unfurl fetches the URL from
  *  Slack's side, which a prompt-injected agent could use to send data out
@@ -221,6 +227,32 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
     }
   }
 
+  /** members reads users.list (users:read, the scope revocation already
+   *  needs) for each allowed workspace: every account that is not deleted
+   *  and not a bot. The core's reconciliation revokes each person it served
+   *  who is not here, so the list must be whole: a page Slack fails, or a
+   *  list past MAX_MEMBER_PAGES, fails it all. */
+  async function members(): Promise<ReadonlySet<string>> {
+    const out = new Set<string>();
+    for (const team of cfg.allowedTeams) {
+      let cursor = "";
+      for (let page = 0; ; page++) {
+        if (page >= MAX_MEMBER_PAGES) throw new Error("users.list: too many pages");
+        const r = await api.call("users.list", { team_id: team, limit: 200, ...(cursor ? { cursor } : {}) });
+        const list = (Array.isArray(r.members) ? r.members : []) as { id?: unknown; team_id?: unknown; deleted?: unknown; is_bot?: unknown }[];
+        for (const m of list) {
+          if (typeof m.id !== "string" || !m.id || m.deleted === true || m.is_bot === true || m.id === "USLACKBOT") continue;
+          // The subject is the person's own team, as identify names them.
+          out.add(personSub(typeof m.team_id === "string" && m.team_id ? m.team_id : team, m.id));
+        }
+        const next = (r.response_metadata as { next_cursor?: unknown } | undefined)?.next_cursor;
+        cursor = typeof next === "string" ? next : "";
+        if (!cursor) break;
+      }
+    }
+    return out;
+  }
+
   function authentic(req: RawRequest): boolean {
     return cfg.shared.dev || verifySlackRequest(req, cfg.signingSecret, now());
   }
@@ -340,6 +372,7 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
     learnSelf,
     routes,
     groupsFor,
+    members,
     async start(ctx) {
       await learnSelf();
       await ctx.serve(routes(ctx));

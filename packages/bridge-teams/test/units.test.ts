@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
+import net, { type AddressInfo } from "node:net";
 
 import { ConfigError, gateSharedSubject, sharedSubject, VERB, type CanonicalCard } from "@loomcycle/bridge-core";
 import { describe, expect, it } from "vitest";
 
+import { createTeamsBridge, LoopbackExpressAdapter } from "../src/bridge.js";
+import { silentLogger } from "./fakes.js";
 import { parseCardAction, questionCard, renderCard } from "../src/cards.js";
 import { loadConfig } from "../src/config.js";
 import {
@@ -157,7 +160,7 @@ describe("identity as a loomcycle gate", () => {
 
 describe("config", () => {
   const base = {
-    LOOMCYCLE_BASE_URL: "http://loomcycle:8787/",
+    LOOMCYCLE_BASE_URL: "https://loomcycle:8787/",
     LOOMCYCLE_TOKEN: "t",
     BRIDGE_AGENT: "helper",
     TEAMS_BRIDGE_ALLOWED_TENANTS: `${T.toUpperCase()}, `,
@@ -166,7 +169,7 @@ describe("config", () => {
 
   it("reads defaults and normalises tenants", () => {
     const cfg = loadConfig(base);
-    expect(cfg.shared.loomcycleBaseUrl).toBe("http://loomcycle:8787");
+    expect(cfg.shared.loomcycleBaseUrl).toBe("https://loomcycle:8787");
     expect([...cfg.allowedTenants]).toEqual([T]);
     expect(cfg.shared).toMatchObject({ tokenTtlSeconds: 43200, userAccessMode: "isolated", idleMinutes: 1440, store: "memory", dev: false, port: 3978 });
   });
@@ -190,6 +193,30 @@ describe("config", () => {
     const { CLIENT_ID: _drop, ...noBot } = base;
     expect(() => loadConfig(noBot)).toThrow(ConfigError);
     expect(loadConfig({ ...noBot, BRIDGE_DEV: "1" }).shared.dev).toBe(true);
+  });
+
+  // Dev mode checks no request, so the SDK's listener is on loopback only;
+  // outside it the bridge keeps listening on every interface, as a container
+  // publishing its port needs.
+  it("listens on loopback only in dev mode", async () => {
+    const { CLIENT_ID: _drop, ...noBot } = base;
+    const port = await new Promise<number>((resolve) => {
+      const probe = net.createServer().listen(0, "127.0.0.1", () => {
+        const p = (probe.address() as AddressInfo).port;
+        probe.close(() => resolve(p));
+      });
+    });
+    const dev = createTeamsBridge(loadConfig({ ...noBot, BRIDGE_DEV: "1", PORT: String(port) }), { logger: silentLogger });
+    await dev.start();
+    try {
+      const adapter = dev.app.server.adapter;
+      expect(adapter).toBeInstanceOf(LoopbackExpressAdapter);
+      expect(((adapter as LoopbackExpressAdapter).address() as AddressInfo).address).toBe("127.0.0.1");
+    } finally {
+      await dev.stop();
+    }
+    const prod = createTeamsBridge(loadConfig(base), { logger: silentLogger });
+    expect(prod.app.server.adapter).not.toBeInstanceOf(LoopbackExpressAdapter);
   });
 
   it("lists every problem at once", () => {

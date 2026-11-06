@@ -101,6 +101,16 @@ type AuthNewUserConfig struct {
 	Groups   *[]string `yaml:"groups,omitempty"`
 	Status   string    `yaml:"status,omitempty"`
 	TokenTTL string    `yaml:"token_ttl,omitempty"`
+	// Budget is the token budget written for each user the gate creates.
+	Budget *AuthBudgetConfig `yaml:"budget,omitempty"`
+}
+
+// AuthBudgetConfig is a per-user token budget in the shape of an RFC AW
+// token limit: tokens per calendar month (UTC), a soft tier that warns and a
+// hard tier that refuses new runs. An unset tier is no ceiling on that axis.
+type AuthBudgetConfig struct {
+	SoftLimit *int64 `yaml:"soft_limit,omitempty"`
+	HardLimit *int64 `yaml:"hard_limit,omitempty"`
 }
 
 // AuthIdentityMapConfig is a gate's `identity_map`.
@@ -151,6 +161,10 @@ type AuthNewUser struct {
 	Groups     []string
 	Status     string
 	TokenTTL   time.Duration
+	// Budget, when set, is written as the user-scope token limit of each user
+	// the gate creates, so an open bot's every new account is capped without
+	// an operator writing a row per subject. A row already there is kept.
+	Budget *AuthBudgetConfig
 }
 
 // AuthIdentityMap is a validated identity_map, with the gate's effective
@@ -252,7 +266,24 @@ func mergeNewUser(where string, base AuthNewUser, o *AuthNewUserConfig) (AuthNew
 		}
 		out.TokenTTL = d
 	}
+	if b := o.Budget; b != nil {
+		if b.SoftLimit == nil && b.HardLimit == nil {
+			return AuthNewUser{}, fmt.Errorf("%s.budget: set soft_limit, hard_limit or both (tokens per month)", where)
+		}
+		if (b.SoftLimit != nil && *b.SoftLimit < 0) || (b.HardLimit != nil && *b.HardLimit < 0) {
+			return AuthNewUser{}, fmt.Errorf("%s.budget: soft_limit and hard_limit must be >= 0", where)
+		}
+		out.Budget = &AuthBudgetConfig{SoftLimit: cloneInt64(b.SoftLimit), HardLimit: cloneInt64(b.HardLimit)}
+	}
 	return out, nil
+}
+
+func cloneInt64(p *int64) *int64 {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 // raisesFloor reports what of nu goes beyond floor: tenant reach, a group
@@ -269,7 +300,24 @@ func raisesFloor(nu, floor AuthNewUser) string {
 	if nu.Status == UserStatusActive && floor.Status == UserStatusPending {
 		return "status: active (the deployment default is pending)"
 	}
+	if looserBudget(nu.Budget, floor.Budget) {
+		return "a budget looser than the deployment's"
+	}
 	return ""
+}
+
+// looserBudget reports whether b lets a new user spend more than floor: a
+// tier the floor sets that b leaves off or sets higher. No floor budget means
+// any budget only narrows.
+func looserBudget(b, floor *AuthBudgetConfig) bool {
+	if floor == nil {
+		return false
+	}
+	if b == nil {
+		return true
+	}
+	looser := func(v, f *int64) bool { return f != nil && (v == nil || *v > *f) }
+	return looser(b.SoftLimit, floor.SoftLimit) || looser(b.HardLimit, floor.HardLimit)
 }
 
 // resolveIdentityMap validates one gate's identity_map against the
