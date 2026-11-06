@@ -12,7 +12,8 @@ injection (the agent is authorized to run SQL).
 
 ## Ops (all on the `Memory` tool)
 - `op: "sql_exec"` — ONE DDL/DML statement (`CREATE TABLE`/`INSERT`/`UPDATE`/
-  `DELETE`/…); `args` are positional bind params for `?`/`$1`. Returns
+  `DELETE`/…); `args` are positional bind params: `?` on SQLite, `$1, $2, …` on PostgreSQL
+  (`?` is a syntax error there). Returns
   `{rows_affected, last_insert_id?}` (`last_insert_id` is sqlite-only — use
   `RETURNING` on postgres).
 - `op: "sql_query"` — ONE read-only `SELECT` / `WITH … SELECT`. Returns
@@ -63,7 +64,8 @@ With pgvector installed, a scope can keep embeddings in its own tables and do
 semantic KNN + structured filters in one query. Pass a bind arg of the form
 `{"$embed": "some text"}` and the runtime embeds it server-side (no raw vector
 in your context); reference it with `::vector`:
-`... ORDER BY embedding <=> ?::vector`.
+`... ORDER BY embedding <=> $1::vector` (PostgreSQL numbering: `$n` is the
+position of the `$embed` element in `args`).
 
 ## Read-only shared schemas (postgres tier)
 The operator can expose curated reference tables (lookups, taxonomies) to every

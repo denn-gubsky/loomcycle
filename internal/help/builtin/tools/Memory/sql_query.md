@@ -1,13 +1,15 @@
 ---
 name: Memory/sql_query
-description: "Memory op=sql_query — run ONE read-only SELECT against this scope's SQL database, with ? bind parameters; returns columns and rows."
+description: "Memory op=sql_query — run ONE read-only SELECT against this scope's SQL database, with bind parameters (? on SQLite, $1, $2, … on PostgreSQL); returns columns and rows."
 ---
 `sql_query` reads from your per-scope SQL database: one `SELECT` (or
 `WITH … SELECT`) per call. The database is separate from key/value memory —
 tables you create with `sql_exec` live here, not under Memory keys. SQL needs
 its own grant, **`sql_scopes`**; having Memory alone does not give it. Pass
-values through `args` and `?` placeholders rather than pasting them into the
-statement.
+values through `args` and placeholders rather than pasting them into the
+statement: `?` on SQLite, `$1, $2, …` on PostgreSQL, where `?` is a syntax
+error. If a `?` statement fails with a syntax error near `,` or `)`, switch to
+`$1, $2, …`.
 
 ## Arguments
 
@@ -17,9 +19,10 @@ statement.
 - `statement` (required) — ONE read-only statement. Writes, `ATTACH`,
   `PRAGMA`, `load_extension`, `BEGIN`/`COMMIT` and a second statement after
   `;` are refused.
-- `args` — positional values for the `?` placeholders, in order. An element
+- `args` — positional values for the placeholders (`?` on SQLite, `$1`, `$2`,
+  … on PostgreSQL), in order. An element
   `{"$embed": "some text"}` is replaced by that text's embedding, for vector
-  search with a `?::vector` cast (needs the PostgreSQL tier with pgvector and
+  search with a `$1::vector` cast (numbered by its position in `args`) (needs the PostgreSQL tier with pgvector and
   an embedder).
 - `timeout_ms` — accepted but ignored; the server's timeout applies.
 
@@ -66,7 +69,7 @@ add `LIMIT`/`WHERE`, page with `OFFSET`, or select fewer or shorter columns.
 
 ## Examples
 
-Open tasks, highest priority first:
+Open tasks, highest priority first (SQLite tier; on PostgreSQL write `done = $1`):
 
 ```json
 {"op": "sql_query", "scope": "user", "statement": "SELECT id, title, priority FROM tasks WHERE done = ? ORDER BY priority DESC LIMIT 10", "args": [0]}
@@ -85,5 +88,5 @@ Read back scratch results collected earlier in this run:
 Nearest notes by meaning (PostgreSQL tier with vectors):
 
 ```json
-{"op": "sql_query", "scope": "agent", "statement": "SELECT id, note FROM notes ORDER BY embedding <=> ?::vector LIMIT 5", "args": [{"$embed": "flaky integration tests"}]}
+{"op": "sql_query", "scope": "agent", "statement": "SELECT id, note FROM notes ORDER BY embedding <=> $1::vector LIMIT 5", "args": [{"$embed": "flaky integration tests"}]}
 ```
