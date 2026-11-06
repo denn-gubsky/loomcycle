@@ -211,6 +211,31 @@ func TestAudioSpeech_SpeaksTheTextAndChargesTheCaller(t *testing.T) {
 	}
 }
 
+// With uk and en voices and a uk default, a request that names no language is
+// read in the language of its script: mostly-Latin text by the en voice,
+// mostly-Cyrillic text by the uk voice.
+func TestAudioSpeech_NoLanguageFollowsTheTextsScript(t *testing.T) {
+	srv, _ := audioServer(t, &speakingProvider{}, &hearingEngine{})
+	sp := srv.cfg().Speech
+	sp.DefaultLanguage = "uk"
+	sp.Voices["uk"] = config.SpeechVoice{Model: "en-voice", Voice: "ukrainian_tts"}
+	for _, c := range []struct{ input, lang, voice string }{
+		{"Leaves change colour in autumn.", "en", "af_heart"},
+		{"The capital is Київ.", "en", "af_heart"},
+		{"Ми використовуємо React і TypeScript.", "uk", "ukrainian_tts"},
+	} {
+		rec := postAudioJSON(srv, "/v1/audio/speech", fmt.Sprintf(`{"input":%q}`, c.input))
+		if rec.Code != 200 {
+			t.Fatalf("%q: status %d: %s", c.input, rec.Code, rec.Body.String())
+		}
+		h := rec.Header()
+		if h.Get("X-Loomcycle-Speech-Language") != c.lang || h.Get("X-Loomcycle-Speech-Voice") != c.voice {
+			t.Errorf("%q: language %q voice %q, want %s %s", c.input,
+				h.Get("X-Loomcycle-Speech-Language"), h.Get("X-Loomcycle-Speech-Voice"), c.lang, c.voice)
+		}
+	}
+}
+
 // Every refusal the caller can fix is answered before the engine is asked,
 // with a code it can branch on.
 func TestAudioSpeech_RefusesBeforeTheEngine(t *testing.T) {

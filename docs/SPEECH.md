@@ -23,11 +23,19 @@ The request shapes follow OpenAI's audio endpoints; fields an OpenAI client send
 `input` is Markdown or plain text. The runtime:
 
 1. normalises the Markdown (no "asterisk", no URLs; a code block becomes a short spoken note);
-2. picks the language: the caller's, else the text's script, else `speech.default_language`;
+2. picks the language: the caller's, else the text's script, else `speech.default_language` (see below);
 3. cuts the text into pieces of `speech.max_chars_per_call`;
 4. asks the engine for WAV one piece at a time, with the language's voice (or one of its `alternates` the caller named);
 5. joins the pieces, with a 200 ms pause at each paragraph end;
 6. for `ogg` or `mp3`, encodes through the operator's `speech.encode`.
+
+**The text's script.** When the caller names no language, the runtime counts the text's Cyrillic and Latin letters:
+
+- **Mostly Cyrillic:** `uk` when the text has a Ukrainian-only letter (і ї є ґ) and `uk` is configured, else `ru` if configured, else `uk` if configured.
+- **Mostly Latin:** the default language when it is itself written in Latin letters. Otherwise, the one configured Latin-script language if there is only one, else `en` if configured.
+- **Anything else:** `speech.default_language`.
+
+So on a deployment with `uk` and `en` voices and `default_language: uk`, an English text goes to the `en` voice, and so does "The capital is Київ." (mostly Latin). "Ми використовуємо React і TypeScript." stays `uk`. Among several Latin-script languages the script cannot tell which one a text is in, so name the language to get German or French.
 
 The audio comes back whole with a `Content-Length`; nothing is streamed, and a failure part-way returns no audio. The response headers say what was done: `X-Loomcycle-Speech-Language`, `-Voice`, `-Seconds`, `-Chars`, `-Pieces`. A browser can read them only on a same-origin request (the runtime exposes no CORS headers).
 
