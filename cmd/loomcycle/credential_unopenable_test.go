@@ -35,7 +35,7 @@ func sealedUnder(t *testing.T, a, b byte, names ...string) credentialBinding {
 			t.Fatal(err)
 		}
 	}
-	return credentialBinding{engine: engineWithKey(t, st, b), register: func(string) { t.Error("an unopenable value was registered") }}
+	return credentialBinding{engine: engineWithKey(t, st, b), register: func(context.Context, string, string) { t.Error("an unopenable value was registered") }}
 }
 
 func engineWithKey(t *testing.T, st store.Store, k byte) *credential.Engine {

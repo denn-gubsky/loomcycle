@@ -103,6 +103,7 @@ type SubstrateDocumentSourceDef struct {
 	Name            string                         `json:"name,omitempty"`
 	Config          SubstrateDocumentSourceConfig  `json:"config,omitempty"`
 	TenancyStrategy SubstrateDocumentSourceTenancy `json:"tenancy_strategy,omitempty"`
+	Trust           string                         `json:"trust,omitempty"`
 }
 
 // SubstrateDocumentSourceConfig mirrors config.DocumentSourceConfig.
@@ -132,5 +133,6 @@ func (s SubstrateDocumentSourceDef) ToConfigDef() config.DocumentSource {
 			Kind:       s.TenancyStrategy.Kind,
 			EnvPattern: s.TenancyStrategy.EnvPattern,
 		},
+		Trust: s.Trust,
 	}
 }

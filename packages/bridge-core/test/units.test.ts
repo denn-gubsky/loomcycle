@@ -60,7 +60,7 @@ describe("token broker", () => {
 
 describe("shared config", () => {
   const base = {
-    LOOMCYCLE_BASE_URL: "http://loomcycle:8787/",
+    LOOMCYCLE_BASE_URL: "https://loomcycle:8787/",
     LOOMCYCLE_TOKEN: "t",
     BRIDGE_AGENT: "helper",
   };
@@ -70,7 +70,7 @@ describe("shared config", () => {
     const cfg = loadSharedConfig(r, { port: 3000 });
     r.check("test-bridge");
     expect(cfg).toMatchObject({
-      loomcycleBaseUrl: "http://loomcycle:8787",
+      loomcycleBaseUrl: "https://loomcycle:8787",
       agent: "helper",
       tokenTtlSeconds: 43200,
       ratePerMinute: 6,

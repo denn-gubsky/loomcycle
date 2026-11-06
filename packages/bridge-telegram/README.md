@@ -1,6 +1,6 @@
 # @loomcycle/bridge-telegram
 
-A Telegram bot for a [loomcycle](https://github.com/denn-gubsky/loomcycle) interactive agent. People message the bot in Telegram and talk to the agent. In a private chat each person is their own loomcycle user, with their own runs, memory, history, budget and rate limit. A group is a loomcycle user of its own.
+A Telegram bot for a [loomcycle](https://github.com/denn-gubsky/loomcycle) interactive agent. People message the bot in Telegram and talk to the agent. In a private chat each person is their own loomcycle user, with their own runs, memory, history and rate limit, and a token budget of their own when loomcycle holds one for them (the gate's `new_user.budget`, below). A group is a loomcycle user of its own.
 
 - **Private chats and groups.** In a group the bot answers commands, mentions of it and replies to it. A forum topic is a conversation of its own.
 - **Steering:** a message sent while the agent is working reaches it mid-turn.
@@ -74,7 +74,7 @@ Shared by every bridge:
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `LOOMCYCLE_BASE_URL` | loomcycle's private URL | required |
+| `LOOMCYCLE_BASE_URL` | loomcycle's URL. From `@loomcycle/bridge-core` 0.4.0: `https://`, or `http://` to localhost; over a private network set `BRIDGE_ALLOW_INSECURE_LOOMCYCLE=1` | required |
 | `LOOMCYCLE_TOKEN` | The bridge's `substrate:tenant` token | required, unless the bridge is a gate (below) |
 | `BRIDGE_AGENT` | The loomcycle agent every conversation runs | required |
 | `BRIDGE_TOKEN_TTL_SECONDS` | Lifetime of a user's token | `43200` |
@@ -82,7 +82,7 @@ Shared by every bridge:
 | `BRIDGE_USER_ACCESS_MODE` | `isolated` (a user sees only their own data) or `tenant` | `isolated` |
 | `BRIDGE_IDLE_MINUTES` | End a conversation's run after this long without a message; the next message continues it | `1440` |
 | `BRIDGE_STORE` | `memory`, or `file:<path>` to survive restarts on one instance | `memory` |
-| `BRIDGE_DEV` | `1` accepts webhooks without the secret, for local testing only | unset |
+| `BRIDGE_DEV` | `1` accepts webhooks without the secret, for local testing only. From `@loomcycle/bridge-core` 0.4.0 it is refused on a gate, and the listener binds loopback only | unset |
 | `PORT` | Listen port | `8443` |
 
 Telegram's own:
@@ -102,6 +102,8 @@ Telegram's own:
 | `TELEGRAM_BRIDGE_API_BASE_URL` | The Bot API server, for a [local Bot API server](https://github.com/tdlib/telegram-bot-api). `http://` is accepted only to localhost | `https://api.telegram.org` |
 
 **The bot is closed by default.** With no allow-list and no `TELEGRAM_BRIDGE_ALLOW_ANYONE=1`, the bridge refuses to start: a bot anyone can find must not run on your model keys unless you say so. A private chat passes when its user is in `TELEGRAM_BRIDGE_ALLOWED_USERS`; a group passes when the group is in `TELEGRAM_BRIDGE_ALLOWED_CHATS`, for anyone in it, or with `TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS=1` only for its members who are in `TELEGRAM_BRIDGE_ALLOWED_USERS`. A refused chat hears why, once.
+
+`TELEGRAM_BRIDGE_ALLOW_ANYONE=1` makes every Telegram account that writes a loomcycle user. Pair it with loomcycle's token budgets: a tenant budget, and, as a gate, `new_user.budget` (or `provision: known`, or `new_user.status: pending` to approve each person).
 
 With `BRIDGE_STORE=memory`, a restart forgets which loomcycle session each chat was in, and the next message starts a fresh one. Use `file:<path>` (one instance) or your own `ConversationStore` (several).
 
@@ -126,8 +128,14 @@ Since 0.3 the bridge can be a loomcycle gate instead of holding a token: it sign
          kind: external
          public_key: { kty: OKP, crv: Ed25519, x: "<the public x>" }
          issued_token: { ttl: 12h, agents: [chat], overrides: [interactive], rate: { per_minute: 6, burst: 10 } }
-         identity_map: { tenant: acme, provision: auto, legacy_subject_prefix: telegram- }
+         identity_map:
+           tenant: acme
+           provision: auto
+           legacy_subject_prefix: telegram-
+           new_user: { budget: { soft_limit: 500000, hard_limit: 1000000 } }   # tokens a month, per user
    ```
+
+   `issued_token` is required, or the gate does not load (write `issued_token: unrestricted` for tokens with the user's whole member reach). `new_user.budget` becomes each new user's token limit, so people the bot admits are capped without a limit written for each; leave it out and they have none.
 
    `legacy_subject_prefix: telegram-` keeps the people the bridge already served: each person's first message through the gate links the user the bridge made (`telegram-42`, a group's `telegram-conv-<hash>`), so their history, memory and documents stay theirs. Without it they would start again as new users `telegram:42`. New people are `telegram:<id>` either way.
 

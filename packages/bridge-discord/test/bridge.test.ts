@@ -448,8 +448,8 @@ describe("discord bridge as a loomcycle gate", () => {
       idleMinutes: 1440,
       store: "memory",
       port,
-      // Webhook Events are verified even so: what they do is revoke.
-      dev: true,
+      // Never dev mode: a gate bridge refuses it. Every request is signed.
+      dev: false,
       applicationId: APP,
       publicKey: key.publicHex,
       botToken: BOT_TOKEN,

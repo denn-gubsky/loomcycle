@@ -110,6 +110,30 @@ type STTConfig struct {
 // command without a shell.
 type HelperCommand struct {
 	Command string `yaml:"command"`
+	// Wrapper is LOOMCYCLE_HELPER_WRAPPER, copied onto every helper command
+	// at load (stampHelperWrapper) so each caller hands it to the runner with
+	// the command. Not a yaml key: one operator setting confines them all.
+	Wrapper string `yaml:"-" json:"-"`
+}
+
+// stampHelperWrapper gives every configured helper command the operator's
+// wrapper.
+func stampHelperWrapper(c *Config) {
+	cmds := []*HelperCommand{}
+	if o := c.Transcription.OCR; o != nil {
+		cmds = append(cmds, o.Rasterize)
+	}
+	if s := c.Transcription.STT; s != nil {
+		cmds = append(cmds, s.Media)
+	}
+	if c.Speech != nil {
+		cmds = append(cmds, c.Speech.Encode)
+	}
+	for _, h := range cmds {
+		if h != nil {
+			h.Wrapper = c.Env.HelperWrapper
+		}
+	}
 }
 
 // Defaults. The OCR page caps match the Anthropic per-request ceiling (100) and
@@ -455,6 +479,9 @@ func strictKeys(n *yaml.Node, place string, notYet []string, t reflect.Type) err
 	known := map[string]bool{}
 	for i := 0; i < t.NumField(); i++ {
 		name, _, _ := strings.Cut(t.Field(i).Tag.Get("yaml"), ",")
+		if name == "-" {
+			continue // not a yaml key
+		}
 		known[name] = true
 	}
 	for i := 0; i+1 < len(n.Content); i += 2 {

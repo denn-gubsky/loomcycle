@@ -60,8 +60,8 @@ func TestFactRelation_LeavesAPendingProposalProposed(t *testing.T) {
 		if n, _ := s["evidence_count"].(float64); n != 1 {
 			t.Errorf("the fact's evidence was not added to the proposal: %v", s)
 		}
-		// The authored link of a caller holding `link` is what asserts it.
-		l, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"works_at"}`, dave, shop))
+		// The authored link of a caller who may rule on it is what asserts it.
+		l, r := docExec(t, d, operatorCtx(ctx), fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"works_at"}`, dave, shop))
 		if r.IsError || l["id"] != id || l["status"] != edgeStatusAsserted {
 			t.Fatalf("link_chunks over the proposal: %v %s", l, r.Text)
 		}

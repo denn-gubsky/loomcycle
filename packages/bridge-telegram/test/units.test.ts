@@ -13,7 +13,7 @@ const TOKEN = "123456:AAbbCC_dd-EE";
 const SECRET = "s3cret_value-1";
 
 const baseEnv = {
-  LOOMCYCLE_BASE_URL: "http://loomcycle.internal:8787",
+  LOOMCYCLE_BASE_URL: "https://loomcycle.internal:8787",
   BRIDGE_GATE: "telegram",
   BRIDGE_GATE_AUDIENCE: "https://lc.example",
   BRIDGE_GATE_KEY: "{}",
@@ -71,7 +71,9 @@ describe("config", () => {
   });
 
   it("lets only BRIDGE_DEV leave the secret unset, and never when it sets the webhook", () => {
-    const env = { ...baseEnv, TELEGRAM_BRIDGE_WEBHOOK_SECRET: undefined, BRIDGE_DEV: "1" };
+    // Dev mode is a token-mode bridge's only: a gate refuses it.
+    const tokenMode = { ...baseEnv, BRIDGE_GATE: undefined, BRIDGE_GATE_AUDIENCE: undefined, BRIDGE_GATE_KEY: undefined, LOOMCYCLE_TOKEN: "lct_x" };
+    const env = { ...tokenMode, TELEGRAM_BRIDGE_WEBHOOK_SECRET: undefined, BRIDGE_DEV: "1" };
     expect(problems(env)).toEqual([]);
     expect(
       problems({ ...env, TELEGRAM_BRIDGE_SET_WEBHOOK: "1", TELEGRAM_BRIDGE_PUBLIC_URL: "https://bot.example.com" }).join(),

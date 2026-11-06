@@ -30,8 +30,9 @@ import (
 // way it can fail to open is the tenant's key, and fails closed.
 type credentialBinding struct {
 	engine *credential.Engine
-	// register masks a resolved value against a downstream transcript echo.
-	register func(string)
+	// register masks a resolved value against a downstream transcript echo,
+	// charged to the tenant it was resolved for.
+	register func(ctx context.Context, tenantID, value string)
 }
 
 // resolve looks name up for the run on ctx. what labels the log line.
@@ -64,7 +65,7 @@ func (b credentialBinding) resolve(ctx context.Context, what, name string) (cred
 		return credential.Resolved{}, false, nil
 	}
 	if b.register != nil {
-		b.register(res.Value)
+		b.register(ctx, ri.TenantID, res.Value)
 	}
 	return res, true, nil
 }

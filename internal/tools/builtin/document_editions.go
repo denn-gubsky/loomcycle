@@ -1028,6 +1028,9 @@ func (d *Document) writeRenumbering(ctx context.Context, key sqlmem.ScopeKey, ms
 	res, refused, err := d.writeStatement(ctx, key, mscope, edgeWrite{
 		from: from, to: to, kind: kind, method: edgeMethodImport, status: edgeStatusAsserted,
 		validAt: edition, attributes: attrs,
+		// The amending document is the caller's choice: from a run in the tenant
+		// scope without the link grant its amends are filed for review.
+		runGated: true,
 	})
 	switch {
 	case err != nil:

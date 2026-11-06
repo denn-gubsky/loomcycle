@@ -4,10 +4,29 @@
 
 import type { CardInput } from "./cards.js";
 import { Conversation, type CardResult, type ConversationDeps } from "./conversation.js";
-import type { Identified } from "./identity.js";
+import type { Identified, Scope } from "./identity.js";
+import type { VoiceIn } from "./voice.js";
+
+/** What a message says about who is present: who spoke, where, and when the
+ *  platform says they sent it. */
+export interface SeenMessage {
+  speaker: string;
+  runAs: string;
+  scope: Scope;
+  /** Epoch ms the platform dates the message; undefined when it gives none. */
+  sentAt?: number;
+}
 
 export interface RouterOptions {
   idleMinutes: number;
+  /** Called for each message the platform authenticated. */
+  onSeen?(seen: SeenMessage): void;
+}
+
+export interface MessageOptions {
+  /** Epoch ms the platform dates the message (Telegram's date, Slack's ts,
+   *  a Teams activity's timestamp). */
+  sentAt?: number;
 }
 
 type Ok = Extract<Identified, { ok: true }>;
@@ -26,7 +45,29 @@ export class ConversationRouter<TRef> {
 
   /** onMessage routes one message and returns once it is queued; the reply is
    *  rendered in the background. */
-  async onMessage(id: Identified, ref: TRef, text: string): Promise<void> {
+  async onMessage(id: Identified, ref: TRef, text: string, opts: MessageOptions = {}): Promise<void> {
+    this.deps.health?.inbound();
+    if (!id.ok) {
+      await this.refuse(id, ref);
+      return;
+    }
+    this.opts.onSeen?.({ speaker: id.speaker.subject, runAs: id.runAs.subject, scope: id.scope, sentAt: opts.sentAt });
+    const conv = await this.conversation(id, ref);
+    conv.updateRef(ref);
+    conv.adoptGateSubjects(id.runAs, id.speaker);
+    conv.onMessage(id.speaker, text).catch((err: unknown) => {
+      this.deps.log.error("message failed", { conversation: id.conversationId, error: (err as Error)?.name });
+      this.deps.port
+        .send(ref, { type: "message", text: "Something went wrong. Please try again." })
+        .catch(() => undefined);
+    });
+  }
+
+  /** onVoice routes one voice message (RFC GA) like onMessage routes text:
+   *  the conversation downloads and transcribes it, then answers it as it
+   *  would the same words typed. locale is the platform's language for the
+   *  speaker, when it gives one. */
+  async onVoice(id: Identified, ref: TRef, voice: VoiceIn, locale?: string): Promise<void> {
     this.deps.health?.inbound();
     if (!id.ok) {
       await this.refuse(id, ref);
@@ -35,8 +76,8 @@ export class ConversationRouter<TRef> {
     const conv = await this.conversation(id, ref);
     conv.updateRef(ref);
     conv.adoptGateSubjects(id.runAs, id.speaker);
-    conv.onMessage(id.speaker, text).catch((err: unknown) => {
-      this.deps.log.error("message failed", { conversation: id.conversationId, error: (err as Error)?.name });
+    conv.onVoice(id.speaker, voice, locale).catch((err: unknown) => {
+      this.deps.log.error("voice message failed", { conversation: id.conversationId, error: (err as Error)?.name });
       this.deps.port
         .send(ref, { type: "message", text: "Something went wrong. Please try again." })
         .catch(() => undefined);

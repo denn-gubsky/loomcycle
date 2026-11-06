@@ -83,3 +83,8 @@ jobs:
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: adapters/python/dist/
+          # PEP 740 attestations: a Sigstore-signed statement per wheel/sdist,
+          # bound to this workflow through the same OIDC token. The action's
+          # default since v1.11 under Trusted Publishing; stated so a change of
+          # default cannot drop it silently. PyPI shows them on each file.
+          attestations: true

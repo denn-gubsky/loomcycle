@@ -25,7 +25,8 @@ type reviewSeed struct{ board, kb string }
 func seedReviewQueue(t *testing.T, s *Server, mi memInject) reviewSeed {
 	t.Helper()
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
-	ctx := withTenantDocGrants(s.docToolCtx(context.Background(), mi))
+	// The operator's own off-run call, so each proposal is a person's (manual).
+	ctx := tools.WithCallerTier(withTenantDocGrants(s.docToolCtx(context.Background(), mi)), tools.TierOperatorPlane)
 	call := func(body string) map[string]any {
 		res, err := doc.Execute(ctx, json.RawMessage(body))
 		if err != nil || res.IsError {

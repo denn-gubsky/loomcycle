@@ -20,8 +20,22 @@ import type { PlatformCapabilities, PlatformInfo } from "./platform.js";
 import type { BridgePort, ClientFactory, Logger, RunClient } from "./ports.js";
 import { MessageSink, StreamSink, type MessageSinkOptions, type StreamSinkOptions, type TurnSink } from "./renderer.js";
 import type { ConversationRecord, ConversationStore } from "./store.js";
-import { HELP_TEXT, parseCommand } from "./text.js";
+import { HELP_TEXT, parseCommand, VOICE_HELP_TEXT, type Command } from "./text.js";
 import { statusOf, type TokenSource } from "./tokens.js";
+import {
+  echoLine,
+  languageHint,
+  pickFormat,
+  spokenPart,
+  VOICE_PREFIX,
+  VOICE_TEXT,
+  VoiceRefusedError,
+  type VoiceClient,
+  type VoiceConfig,
+  type VoiceIn,
+  type VoiceInfoCache,
+  type VoicePort,
+} from "./voice.js";
 
 export interface ConversationDeps<TRef> {
   platform: PlatformInfo;
@@ -36,6 +50,18 @@ export interface ConversationDeps<TRef> {
   now?: () => number;
   stream?: StreamSinkOptions;
   message?: MessageSinkOptions;
+  /** Set when the bridge takes voice messages (RFC GA). */
+  voice?: { port: VoicePort<TRef>; config: VoiceConfig; info: VoiceInfoCache };
+}
+
+/** How long a recording's download may take. */
+const VOICE_DOWNLOAD_MS = 60_000;
+
+/** What came in with the message that began the current turn. */
+interface TurnInput {
+  voice: boolean;
+  /** The language the transcript was in, for the spoken reply. */
+  language?: string;
 }
 
 /** What a card action is answered with: a replacement card, or a short
@@ -99,6 +125,10 @@ export class Conversation<TRef> {
   /** Untrusted messages that arrived mid-turn, delivered when the turn ends. */
   private deferred: string[] = [];
   private limitShown = false;
+  /** How the turn in progress began, and the text it has written so far:
+   *  what a spoken reply is made of. */
+  private turnInput: TurnInput = { voice: false };
+  private turnText = "";
   private queue: Promise<unknown> = Promise.resolve();
   private readonly now: () => number;
 
@@ -149,6 +179,12 @@ export class Conversation<TRef> {
     return this.serial(() => this.handleMessage(speaker, text));
   }
 
+  /** onVoice takes a voice message (RFC GA). locale is the platform's
+   *  language for the speaker, when it gives one: a hint for transcription. */
+  onVoice(speaker: Speaker, voice: VoiceIn, locale?: string): Promise<void> {
+    return this.serial(() => this.handleVoice(speaker, voice, locale));
+  }
+
   onCardAction(speaker: Speaker, input: CardInput): Promise<CardResult> {
     return this.serial(() => this.handleCardAction(speaker, input));
   }
@@ -185,7 +221,7 @@ export class Conversation<TRef> {
 
   /** runClient is loomcycle as the conversation's run identity: the person in
    *  a 1:1 chat, the conversation itself in a shared one. */
-  private async runClient(): Promise<RunClient> {
+  private async runClient(): Promise<RunClient & Partial<VoiceClient>> {
     const token = await this.deps.broker.tokenFor(this.rec.runSubject, this.rec.runName, this.rec.ref);
     this.deps.health?.loomcycle();
     return this.deps.clients(token);
@@ -221,14 +257,23 @@ export class Conversation<TRef> {
 
     const command = parseCommand(text);
     // In a shared chat the run is the owner's: another member may talk to
-    // the agent, but not stop it or throw the conversation away.
-    if ((command === "new" || command === "stop") && !isOwner) {
+    // the agent, but not stop it, throw the conversation away or change how
+    // it answers.
+    if ((command === "new" || command === "stop" || isVoiceSetting(command)) && !isOwner) {
       await this.say(`Only ${this.rec.ownerSubject ? `${this.rec.ownerName}, who started this conversation,` : NO_OWNER} can do that.`);
       return;
     }
     switch (command) {
-      case "help":
-        await this.say(this.deps.platform.helpText || HELP_TEXT);
+      case "help": {
+        const help = this.deps.platform.helpText || HELP_TEXT;
+        await this.say(this.deps.voice ? `${help}\n${VOICE_HELP_TEXT}` : help);
+        return;
+      }
+      case "voice":
+      case "voice on":
+      case "voice off":
+      case "voice auto":
+        await this.voiceCommand(command);
         return;
       case "stop":
         if (!this.live?.runId || !(await this.cancelTurn("stopped by /stop"))) await this.say("Nothing is running.");
@@ -243,6 +288,14 @@ export class Conversation<TRef> {
         return;
     }
 
+    await this.deliver(speaker, text, undefined);
+  }
+
+  /** deliver hands a message's text to the agent: as the answer to an open
+   *  question, into the live run, or as a new run. voice is set when the text
+   *  is a voice message's transcript. */
+  private async deliver(speaker: Speaker, text: string, voice: TurnInput | undefined): Promise<void> {
+    const isOwner = speaker.subject === this.rec.ownerSubject;
     // A plain reply from the owner answers an open free-text question.
     if (this.pending && isOwner && this.pending.runId === this.live?.runId) {
       if (this.pending.options.length > 0) {
@@ -263,8 +316,13 @@ export class Conversation<TRef> {
       return;
     }
 
+    // The agent is told a message was spoken by a fixed line the bridge adds
+    // here, never by anything in the audio (RFC GA D9).
+    const body = voice ? `${VOICE_PREFIX}\n${text}` : text;
     // A shared chat runs as itself, so the agent needs every speaker named.
-    const forAgent = this.rec.scope !== "personal" ? `[${speaker.name}] ${text}` : text;
+    const forAgent = this.rec.scope !== "personal" ? `[${speaker.name}] ${body}` : body;
+    // The last message in decides how the turn is answered.
+    this.turnInput = voice ?? { voice: false };
 
     if (speaker.trust === "untrusted") {
       await this.deliverUntrusted(forAgent);
@@ -275,6 +333,7 @@ export class Conversation<TRef> {
       try {
         const client = await this.runClient();
         await client.sendRunInput(this.live.runId, forAgent);
+        if (this.live.parked) this.turnText = "";
         this.live.parked = false;
         await this.save();
         return;
@@ -345,6 +404,7 @@ export class Conversation<TRef> {
     const live: Live = { abort, parked: false, started, markStarted };
     this.live = live;
     this.limitShown = false;
+    this.turnText = "";
     const events = this.rec.sessionId
       ? client.continueSession({ sessionId: this.rec.sessionId, segments, interactive: true, signal: abort.signal })
       : client.runStreaming({ agent: this.deps.agent, segments, interactive: true, signal: abort.signal });
@@ -362,6 +422,7 @@ export class Conversation<TRef> {
       }
     } catch (err) {
       if (!live.abort.signal.aborted && this.live === live) {
+        this.turnText = "";
         this.deps.log.error("run stream failed", {
           conversation: this.rec.conversationId,
           run: live.runId,
@@ -378,6 +439,8 @@ export class Conversation<TRef> {
         this.pending = undefined;
         this.buttons.clear();
         await this.finishTurn().catch(() => undefined);
+        // A run that ended rather than parked: its last turn is spoken too.
+        if (!live.abort.signal.aborted) this.speakTurn();
         this.rec.runId = undefined;
         this.rec.agentId = undefined;
         await this.save().catch(() => undefined);
@@ -447,7 +510,10 @@ export class Conversation<TRef> {
         live.markStarted();
         return;
       case "text":
-        if (ev.text) await this.turn().text(ev.text);
+        if (ev.text) {
+          this.turnText += ev.text;
+          await this.turn().text(ev.text);
+        }
         return;
       case "tool_call":
         this.turn().tool(ev.tool_use?.name ?? "a tool");
@@ -503,12 +569,15 @@ export class Conversation<TRef> {
       case "awaiting_input":
         live.parked = true;
         await this.finishTurn();
+        this.speakTurn();
         if (this.deferred.length > 0) void this.flushDeferred().catch(() => undefined);
         return;
       case "turn_cancelled":
+        this.turnText = "";
         await this.finishTurn("_Stopped._");
         return;
       case "error":
+        this.turnText = "";
         this.deps.log.warn("run reported an error", { conversation: this.rec.conversationId, run: live.runId });
         await this.finishTurn(`The agent stopped with an error${live.runId ? ` (run ${live.runId})` : ""}.`, true);
         return;
@@ -613,6 +682,171 @@ export class Conversation<TRef> {
     }
   }
 
+  // ---- voice (RFC GA) ----
+
+  private async handleVoice(speaker: Speaker, voice: VoiceIn, locale: string | undefined): Promise<void> {
+    const vc = this.deps.voice;
+    // Not taken: a private chat hears why, a shared one stays quiet, as it
+    // does for a photo or a sticker, unless the platform must answer.
+    const notTaken = async () => {
+      if (this.rec.scope === "personal" || this.deps.platform.answerEveryVoice) await this.say(VOICE_TEXT.unavailable);
+    };
+    if (!vc?.config.enabled || (speaker.trust === "untrusted" && !vc.config.untrusted)) {
+      await notTaken();
+      return;
+    }
+    this.rec.lastActivityAt = this.now();
+    await this.claimOwner(speaker);
+    const cfg = vc.config;
+    if ((voice.seconds !== undefined && voice.seconds > cfg.maxSeconds) || (voice.bytes !== undefined && voice.bytes > cfg.maxBytes)) {
+      await this.say(VOICE_TEXT.tooLong(cfg.maxSeconds));
+      return;
+    }
+    const client = await this.runClient();
+    if (!hasVoice(client)) {
+      this.deps.log.warn("voice: the loomcycle client has no speech calls", { conversation: this.rec.conversationId });
+      await notTaken();
+      return;
+    }
+    let surfaces: { speech: boolean; transcription: boolean };
+    try {
+      surfaces = await vc.info.surfacesOf(this.rec.runSubject, client);
+    } catch (err) {
+      this.deps.log.warn("voice: could not read the caller's surfaces", { conversation: this.rec.conversationId, status: statusOf(err) });
+      await this.say(VOICE_TEXT.failed);
+      return;
+    }
+    if (!surfaces.transcription) {
+      // The operator has no transcription engine, or did not grant the
+      // bridge's tokens the surface (the gate's issued_token.surfaces).
+      this.deps.log.info("voice: transcription is not available to this conversation", { conversation: this.rec.conversationId });
+      await notTaken();
+      return;
+    }
+
+    void vc.port.indicate?.(this.rec.ref, "listening").catch(() => undefined);
+    let audio: { bytes: Uint8Array; mime: string; name?: string };
+    try {
+      audio = await vc.port.download(voice, cfg.maxBytes, AbortSignal.timeout(VOICE_DOWNLOAD_MS));
+    } catch (err) {
+      this.deps.log.warn("voice: download failed", { conversation: this.rec.conversationId, kind: voice.kind, error: (err as Error)?.name });
+      await this.say(VOICE_TEXT.download);
+      return;
+    }
+
+    const hint = languageHint(locale) ?? cfg.language;
+    let heard: { text: string; language?: string };
+    try {
+      heard = await this.transcribe(client, audio, hint);
+    } catch (err) {
+      const status = statusOf(err);
+      this.deps.log.warn("voice: transcription failed", { conversation: this.rec.conversationId, status });
+      if (status === 403) vc.info.forget(this.rec.runSubject);
+      if (status === 413) await this.say(VOICE_TEXT.tooLong(cfg.maxSeconds));
+      else if (status === 429 || status === 401) await this.say(friendlyError(status));
+      else await this.say(VOICE_TEXT.failed);
+      return;
+    }
+    const text = heard.text.trim();
+    if (!text) {
+      await this.say(VOICE_TEXT.empty);
+      return;
+    }
+    if (cfg.echo) await this.say(echoLine(text));
+    await this.deliver(speaker, text, { voice: true, language: heard.language ?? hint });
+  }
+
+  /** transcribe asks loomcycle for the text, with the language hint when
+   *  there is one; a hint the deployment refuses is dropped, not fatal. */
+  private async transcribe(client: VoiceClient, audio: { bytes: Uint8Array; mime: string; name?: string }, hint: string | undefined) {
+    const opts = { contentType: audio.mime, ...(audio.name ? { filename: audio.name } : {}) };
+    try {
+      return await client.transcribe(audio.bytes, hint ? { ...opts, language: hint } : opts);
+    } catch (err) {
+      if (!hint || statusOf(err) !== 400 || codeOf(err) !== "unsupported_language") throw err;
+      return client.transcribe(audio.bytes, opts);
+    }
+  }
+
+  /** speakTurn voices the turn that just ended, when the reply mode says so.
+   *  It runs beside the conversation, not in its queue: the text is already
+   *  posted, and the next message need not wait for the audio. */
+  private speakTurn(): void {
+    const text = this.turnText;
+    const input = this.turnInput;
+    this.turnText = "";
+    const vc = this.deps.voice;
+    if (!vc || !text.trim()) return;
+    const mode = this.rec.voice ?? vc.config.reply;
+    if (mode === "never" || (mode === "mirror" && !input.voice)) return;
+    void this.speak(vc, text, input.language).catch((err: unknown) => {
+      if (err instanceof VoiceRefusedError) {
+        // The platform refused a voice message here (a person's privacy
+        // setting, a permission): stop trying until someone asks again.
+        this.deps.log.info("voice: the platform refused a voice reply; replies here stay text", { conversation: this.rec.conversationId });
+        void this.serial(async () => {
+          this.rec.voice = "never";
+          await this.save();
+        }).catch(() => undefined);
+        return;
+      }
+      this.deps.log.warn("voice: speaking the reply failed", { conversation: this.rec.conversationId, status: statusOf(err), error: (err as Error)?.name });
+    });
+  }
+
+  private async speak(vc: NonNullable<ConversationDeps<TRef>["voice"]>, text: string, language: string | undefined): Promise<void> {
+    const port = vc.port;
+    if (!port.sendVoice || port.capabilities.out === "none") return;
+    const client = await this.runClient();
+    if (!hasVoice(client)) return;
+    if (!(await vc.info.surfacesOf(this.rec.runSubject, client)).speech) return;
+    const info = await vc.info.infoOf(this.rec.runSubject, client);
+    const format = pickFormat(port.capabilities, info);
+    if (!format) {
+      this.deps.log.info("voice: no audio format this platform shows as voice; set speech.encode and speech.format in loomcycle", {
+        conversation: this.rec.conversationId,
+        offered: info.speech?.formats ?? [],
+      });
+      return;
+    }
+    const part = spokenPart(text, vc.config.replyMaxChars);
+    if (!part.text) return;
+    const lang = language && info.speech?.languages?.[language] ? language : undefined;
+    void port.indicate?.(this.rec.ref, "speaking").catch(() => undefined);
+    const audio = await client.speech(part.text, { format, ...(lang ? { language: lang } : {}) });
+    if (audio.bytes.length > port.capabilities.maxUploadBytes) {
+      this.deps.log.info("voice: the spoken reply is larger than the platform takes", { conversation: this.rec.conversationId, bytes: audio.bytes.length });
+      return;
+    }
+    const label = part.partial ? `${vc.config.label} · ${VOICE_TEXT.partial}` : vc.config.label;
+    await port.sendVoice(this.rec.ref, { bytes: audio.bytes, mime: audio.contentType, seconds: audio.seconds, label });
+  }
+
+  private async voiceCommand(command: Command): Promise<void> {
+    const vc = this.deps.voice;
+    if (!vc) {
+      await this.say("Voice messages aren't turned on for this bot.");
+      return;
+    }
+    const speaks = Boolean(vc.port.sendVoice) && vc.port.capabilities.out !== "none";
+    if (command !== "voice") {
+      this.rec.voice = command === "voice on" ? "always" : command === "voice off" ? "never" : "mirror";
+      await this.save();
+    }
+    if (!speaks) {
+      await this.say(`${this.deps.platform.label} takes voice messages here, but replies come as text.`);
+      return;
+    }
+    const mode = this.rec.voice ?? vc.config.reply;
+    await this.say(
+      mode === "always"
+        ? "Replies here come with a voice message. /voice off for text only, /voice auto to answer only voice with voice."
+        : mode === "never"
+          ? "Replies here are text only. /voice on to hear every reply, /voice auto to answer voice with voice."
+          : "A voice message gets a spoken reply as well. /voice on to hear every reply, /voice off for text only.",
+    );
+  }
+
   private dropLive(): void {
     this.live?.abort.abort();
     this.live = undefined;
@@ -633,4 +867,21 @@ export class Conversation<TRef> {
     }
     await this.save();
   }
+}
+
+function isVoiceSetting(c: Command | undefined): boolean {
+  return c === "voice on" || c === "voice off" || c === "voice auto";
+}
+
+/** hasVoice reports whether a client has the speech calls (a client double
+ *  written before voice does not). */
+function hasVoice(c: Partial<VoiceClient>): c is VoiceClient {
+  return typeof c.transcribe === "function" && typeof c.speech === "function" && typeof c.speechInfo === "function" && typeof c.whoami === "function";
+}
+
+/** codeOf is an error's loomcycle error code, when it carries one. */
+function codeOf(err: unknown): string | undefined {
+  const e = err as { code?: unknown; body?: { code?: unknown } } | null;
+  const c = e?.code ?? e?.body?.code;
+  return typeof c === "string" ? c : undefined;
 }

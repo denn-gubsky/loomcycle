@@ -34,6 +34,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/teamspec"
+	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
 )
 
 // Config is the top-level YAML structure plus env-derived fields.
@@ -3904,6 +3905,23 @@ type MemoryBackendTenancy struct {
 type DocumentSource struct {
 	Config          DocumentSourceConfig  `json:"config,omitempty" yaml:"config"`
 	TenancyStrategy DocumentSourceTenancy `json:"tenancy_strategy,omitempty" yaml:"tenancy_strategy"`
+	// Trust is how a pull from this peer files the statements it carries:
+	// "" or "proposed" (the default) files each as a proposal for review, its
+	// peer status and method kept as attributes; "asserted" keeps them
+	// asserted, the operator vouching for the peer. Only the operator plane
+	// may author a runtime definition that declares "asserted".
+	Trust string `json:"trust,omitempty" yaml:"trust"`
+}
+
+// Document source trust levels (DocumentSource.Trust).
+const (
+	DocumentSourceTrustProposed = "proposed"
+	DocumentSourceTrustAsserted = "asserted"
+)
+
+// ValidDocumentSourceTrust reports a trust value a document source may declare.
+func ValidDocumentSourceTrust(t string) bool {
+	return t == "" || t == DocumentSourceTrustProposed || t == DocumentSourceTrustAsserted
 }
 
 type DocumentSourceConfig struct {
@@ -4268,6 +4286,20 @@ type Env struct {
 	// be a CIDR range ("100.64.0.0/10" for a whole tailnet), matched
 	// against each resolved address; a malformed range fails validate.
 	HTTPPrivateHostAllowlist []string
+	// HTTPPrivateHostAllowlistMode is LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE:
+	// "any" (the default, also when unset) or "cidr_only", which refuses a
+	// host-name entry in HTTPPrivateHostAllowlist at load, so a deployment
+	// that must trust no DNS answer can state it as a flag. Validated by
+	// netguard.ValidatePrivateHostAllowlistMode; an unknown value fails load.
+	HTTPPrivateHostAllowlistMode string
+	// HelperWrapper is LOOMCYCLE_HELPER_WRAPPER: a command (argv words, no
+	// shell, no placeholder) the transcription and speech helpers run under,
+	// e.g. "bwrap --ro-bind / / --dev /dev --bind /tmp /tmp --bind <inbox
+	// root> <inbox root> --unshare-net --die-with-parent --": the helpers
+	// write their output under the inbox root (File tool) and TMPDIR (the
+	// /v1/audio routes), so both stay writable. Empty runs them
+	// directly, as the loomcycle user. Parsed at load; see helper.ParseWrapper.
+	HelperWrapper string
 	// MCPAllowPrivateIPs controls whether the MCP-HTTP client may dial
 	// private/loopback/metadata IPs. DEFAULT true (MCP servers are commonly
 	// operator-run on localhost / a private network — incl. loomcycle's own
@@ -5734,6 +5766,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		cfg.Hooks.PrivateHostAllowlist = append(cfg.Hooks.PrivateHostAllowlist, splitCSV(v)...)
 	}
 
+	// Checked against HTTPPrivateHostAllowlist in validate.
+	cfg.Env.HTTPPrivateHostAllowlistMode = strings.TrimSpace(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE"))
+
 	// gRPC server (v0.5.5+). Disabled by default; operator opts in
 	// by setting LOOMCYCLE_GRPC_ADDR. Coexists with HTTP+SSE (which
 	// remains the default and is on a separate port).
@@ -6675,6 +6710,10 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// v0.8.7 default-add: every agent gets Context auto-appended to its tools
 	// unless `disable_context: true` is set.
 	addContextToolDefaults(cfg)
+
+	// RFC FZ D8: one operator wrapper confines every helper command.
+	cfg.Env.HelperWrapper = strings.TrimSpace(os.Getenv("LOOMCYCLE_HELPER_WRAPPER"))
+	stampHelperWrapper(cfg)
 
 	if err := validate(cfg); err != nil {
 		return nil, err
@@ -8133,26 +8172,46 @@ func ValidateGitRemote(ops []string) error {
 const CodeJSProvider = "code-js"
 
 // ValidateStatementMethods refuses a statement_methods list holding a value
-// other than "rule", "extractor" or "judge", a duplicate, or any value on an agent
-// whose provider is not code-js. One function for every place a definition is
-// authored — operator yaml and the AgentDef create/fork overlay — so a grant
-// refused at boot is not quietly kept by a runtime write. provider is the
-// definition's own `provider:` field, after any fork has been merged.
+// other than "rule", "extractor", "judge", "link" or "remember", a duplicate, or
+// a code-only value (rule, extractor, judge) on an agent whose provider is not
+// code-js. One function for every place a definition is authored — operator
+// yaml and the AgentDef create/fork overlay — so a grant refused at boot is not
+// quietly kept by a runtime write. provider is the definition's own `provider:`
+// field, after any fork has been merged.
 func ValidateStatementMethods(provider string, methods []string) error {
 	seen := map[string]bool{}
 	for i, m := range methods {
-		if m != "rule" && m != "extractor" && m != "judge" {
-			return fmt.Errorf("statement_methods[%d]: unknown method %q (want rule, extractor and/or judge)", i, m)
+		if !StatementMethodKnown(m) {
+			return fmt.Errorf("statement_methods[%d]: unknown method %q (want rule, extractor, judge, link and/or remember)", i, m)
 		}
 		if seen[m] {
 			return fmt.Errorf("statement_methods[%d]: %q is listed twice", i, m)
 		}
 		seen[m] = true
-	}
-	if len(methods) > 0 && provider != CodeJSProvider {
-		return fmt.Errorf("statement_methods is honoured only for provider: %s (a relation stamped rule: claims code made it, and only a code-js body is code); this agent's provider is %q", CodeJSProvider, provider)
+		if StatementMethodCodeOnly(m) && provider != CodeJSProvider {
+			return fmt.Errorf("statement_methods %q is honoured only for provider: %s (a relation stamped rule: claims code made it, and only a code-js body is code); this agent's provider is %q", m, CodeJSProvider, provider)
+		}
 	}
 	return nil
+}
+
+// StatementMethodKnown reports a statement_methods value this build knows.
+func StatementMethodKnown(m string) bool {
+	switch m {
+	case "rule", "extractor", "judge", "link", "remember":
+		return true
+	}
+	return false
+}
+
+// StatementMethodCodeOnly reports a statement_methods value only a code-js
+// agent may hold: rule and extractor stamp a method that says code made the
+// statement, and judge rules above the policy's floor. link (a run's link_chunks
+// in the tenant scope is asserted, not filed as a proposal) and remember (a run
+// may file a fact as a person's statement) stamp nothing and claim no code, so
+// any agent may be granted them.
+func StatementMethodCodeOnly(m string) bool {
+	return m == "rule" || m == "extractor" || m == "judge"
 }
 
 // InertShellCredentials returns the names in an agent's shell_credentials
@@ -8897,6 +8956,14 @@ func validate(c *Config) error {
 	if err := netguard.ValidatePrivateHostAllowlist(c.Env.HTTPPrivateHostAllowlist); err != nil {
 		return fmt.Errorf("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST: %w", err)
 	}
+	if err := netguard.ValidatePrivateHostAllowlistMode(c.Env.HTTPPrivateHostAllowlistMode, c.Env.HTTPPrivateHostAllowlist); err != nil {
+		return fmt.Errorf("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE: %w", err)
+	}
+	if c.Env.HelperWrapper != "" {
+		if _, err := helper.ParseWrapper(c.Env.HelperWrapper); err != nil {
+			return fmt.Errorf("LOOMCYCLE_HELPER_WRAPPER: %w", err)
+		}
+	}
 	if err := netguard.ValidatePrivateHostAllowlist(c.Hooks.PrivateHostAllowlist); err != nil {
 		return fmt.Errorf("hooks.private_host_allowlist (or LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST): %w", err)
 	}
@@ -9165,6 +9232,9 @@ func validate(c *Config) error {
 			}
 		default:
 			return fmt.Errorf("document_sources.%s: tenancy_strategy.kind %q must be \"\" or key_per_tenant", dname, ds.TenancyStrategy.Kind)
+		}
+		if !ValidDocumentSourceTrust(ds.Trust) {
+			return fmt.Errorf("document_sources.%s: trust %q must be proposed (the default) or asserted", dname, ds.Trust)
 		}
 	}
 	// Static webhooks: a misconfigured delivery target can never fire (F24).

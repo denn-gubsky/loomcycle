@@ -1,6 +1,6 @@
 # @loomcycle/bridge-discord
 
-A Discord bot for a [loomcycle](https://github.com/denn-gubsky/loomcycle) interactive agent. People talk to the agent with slash commands. In a DM each person is their own loomcycle user, with their own runs, memory, history, budget and rate limit; a server channel is a loomcycle user of its own.
+A Discord bot for a [loomcycle](https://github.com/denn-gubsky/loomcycle) interactive agent. People talk to the agent with slash commands. In a DM each person is their own loomcycle user, with their own runs, memory, history and rate limit, and a token budget of their own when loomcycle holds one for them (the gate's `new_user.budget`, below); a server channel is a loomcycle user of its own.
 
 - **Slash commands:** `/ask prompt:<text>` talks to the agent, `/new` starts over, `/stop` stops the current answer, `/help` lists them.
 - **Steering:** an `/ask` sent while the agent is working reaches it mid-turn.
@@ -73,7 +73,7 @@ The shared settings, as every bridge reads them:
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `LOOMCYCLE_BASE_URL` | loomcycle's private URL | required |
+| `LOOMCYCLE_BASE_URL` | loomcycle's URL. From `@loomcycle/bridge-core` 0.4.0: `https://`, or `http://` to localhost; over a private network set `BRIDGE_ALLOW_INSECURE_LOOMCYCLE=1` | required |
 | `LOOMCYCLE_TOKEN` | The bridge's `substrate:tenant` token | required, unless the bridge is a gate (below) |
 | `BRIDGE_AGENT` | The loomcycle agent every conversation runs | required |
 | `BRIDGE_TOKEN_TTL_SECONDS` | Lifetime of a user's token | `43200` |
@@ -81,7 +81,7 @@ The shared settings, as every bridge reads them:
 | `BRIDGE_USER_ACCESS_MODE` | `isolated` (a user sees only their own data) or `tenant` | `isolated` |
 | `BRIDGE_IDLE_MINUTES` | End a conversation's run after this long without a message; the next message continues it | `1440` |
 | `BRIDGE_STORE` | `memory`, or `file:<path>` to survive restarts on one instance | `memory` |
-| `BRIDGE_DEV` | `1` turns signature verification off, for local testing only | unset |
+| `BRIDGE_DEV` | `1` turns signature verification off, for local testing only. From `@loomcycle/bridge-core` 0.4.0 it is refused on a gate, and the listener binds loopback only | unset |
 | `PORT` | Listen port | `8080` |
 
 Discord's:
@@ -97,7 +97,7 @@ Discord's:
 | `DISCORD_BRIDGE_REGISTER_COMMANDS` | `1` registers the commands at start | off |
 | `DISCORD_BRIDGE_API_BASE_URL` | Discord's REST API (`https`, or `http` to localhost for a test fake) | `https://discord.com/api/v10` |
 
-**The bridge is closed by default.** It refuses to start unless `DISCORD_BRIDGE_ALLOWED_GUILDS` or `DISCORD_BRIDGE_ALLOW_DMS=1` opens something: anyone on the internet can reach a Discord bot, and every message it answers runs on your model keys. `DISCORD_BRIDGE_ALLOW_DMS=1` means exactly that, so pair it with the rate limit and loomcycle's token budgets.
+**The bridge is closed by default.** It refuses to start unless `DISCORD_BRIDGE_ALLOWED_GUILDS` or `DISCORD_BRIDGE_ALLOW_DMS=1` opens something: anyone on the internet can reach a Discord bot, and every message it answers runs on your model keys. `DISCORD_BRIDGE_ALLOW_DMS=1` means exactly that, so pair it with the rate limit and loomcycle's token budgets: a tenant budget, and, as a gate, `new_user.budget` (or `provision: known`, or `new_user.status: pending` to approve each person).
 
 ## As a loomcycle gate
 
@@ -120,8 +120,14 @@ Since 0.3 the bridge can be a loomcycle gate instead of holding a token: it sign
          kind: external
          public_key: { kty: OKP, crv: Ed25519, x: "<the public x>" }
          issued_token: { ttl: 12h, agents: [chat], overrides: [interactive], rate: { per_minute: 6, burst: 10 } }
-         identity_map: { tenant: acme, provision: auto, legacy_subject_prefix: discord- }
+         identity_map:
+           tenant: acme
+           provision: auto
+           legacy_subject_prefix: discord-
+           new_user: { budget: { soft_limit: 500000, hard_limit: 1000000 } }   # tokens a month, per user
    ```
+
+   `issued_token` is required, or the gate does not load (write `issued_token: unrestricted` for tokens with the user's whole member reach). `new_user.budget` becomes each new user's token limit, so people the bot admits are capped without a limit written for each; leave it out and they have none.
 
    `legacy_subject_prefix: discord-` keeps the people and channels the bridge already served: each one's first message through the gate links the user the bridge made (`discord-<user id>`, a channel's `discord-conv-<hash>`), so their history, memory and documents stay theirs. Without it they would start again as new users `discord:<user id>`. New people are `discord:<user id>`, new channels `discord:conv:<hash>`, either way.
 

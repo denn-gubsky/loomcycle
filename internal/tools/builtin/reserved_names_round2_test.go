@@ -139,7 +139,7 @@ func TestReservedName_APlantBelowTheEntitiesNameIsNotAdopted(t *testing.T) {
 	if at := e.tenantName(t, "/memory/entities"); at != got {
 		t.Errorf("/memory/entities names %q, the ensure answered %q", at, got)
 	}
-	if r := e.doc(t, e.agentCtx, `{"op":"remember","scope":"tenant","text":"Ada wrote the first program."}`); r.IsError {
+	if r := e.doc(t, withStatementGrant(e.agentCtx, "remember"), `{"op":"remember","scope":"tenant","text":"Ada wrote the first program."}`); r.IsError {
 		t.Fatalf("remember: %s", r.Text)
 	}
 	key := mustTenantKey(t, e.d, e.opCtx)

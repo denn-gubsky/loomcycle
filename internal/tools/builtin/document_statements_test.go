@@ -73,7 +73,8 @@ func edgesOf(t *testing.T, d *Document, ctx context.Context, body string) []map[
 }
 
 // A plain link is the old link plus an envelope: the same fields a reader of the
-// old shape used, asserted and manual, no evidence block when none was given.
+// old shape used, asserted (method agent: the fixture is a run), no evidence
+// block when none was given.
 func TestLinkChunks_PlainLinkKeepsTheOldShape(t *testing.T) {
 	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
 		docID, a, b, _ := stmtDoc(t, d, ctx, "plain")
@@ -95,7 +96,7 @@ func TestLinkChunks_PlainLinkKeepsTheOldShape(t *testing.T) {
 		}
 		e := edges[0]
 		if e["from_id"] != a || e["to_id"] != b || e["kind"] != "cites" || e["auto"] != false ||
-			e["method"] != "manual" || e["from_title"] != "Clause 4" || e["to_title"] != "Article 12" {
+			e["method"] != edgeMethodAgent || e["from_title"] != "Clause 4" || e["to_title"] != "Article 12" {
 			t.Fatalf("edge = %v", e)
 		}
 		if _, ok := e["evidence"]; ok {

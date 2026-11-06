@@ -27,7 +27,7 @@ const USER = "500000000000000005";
 
 describe("config", () => {
   const base = {
-    LOOMCYCLE_BASE_URL: "http://loomcycle:8787",
+    LOOMCYCLE_BASE_URL: "https://loomcycle:8787",
     LOOMCYCLE_TOKEN: "t",
     BRIDGE_AGENT: "helper",
     DISCORD_APPLICATION_ID: APP,

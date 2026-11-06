@@ -61,7 +61,7 @@ describe("request signature", () => {
 
 describe("config", () => {
   const base = {
-    LOOMCYCLE_BASE_URL: "http://loomcycle:8787",
+    LOOMCYCLE_BASE_URL: "https://loomcycle:8787",
     LOOMCYCLE_TOKEN: "t",
     BRIDGE_AGENT: "helper",
     SLACK_BOT_TOKEN: "xoxb-1-2-abc",

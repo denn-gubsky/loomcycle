@@ -318,7 +318,7 @@ func TestUpsertChunk_ARelationUsesTheFirstTwoGivenSubjects(t *testing.T) {
 // a subject node: a [[link]] to it is a reference, not a mention.
 func TestSubjectNodes_ARememberedFactIsNotASubject(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
-	out, r := docExec(t, d, ctx, `{"op":"remember","scope":"user","text":"Ada prefers tea.","subject":"Ada","type":"person"}`)
+	out, r := docExec(t, d, withStatementGrant(ctx, "remember"), `{"op":"remember","scope":"user","text":"Ada prefers tea.","subject":"Ada","type":"person"}`)
 	if r.IsError {
 		t.Fatal(r.Text)
 	}

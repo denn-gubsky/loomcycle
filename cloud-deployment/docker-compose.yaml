@@ -379,6 +379,9 @@ services:
     networks: [loomnet]
     environment:
       LOOMCYCLE_BASE_URL: http://tailscale:8787   # loomcycle lives in the tailscale netns
+      # A newer bridge refuses plain http to another host unless the link is
+      # private: loomnet is, and the token rides on it.
+      BRIDGE_ALLOW_INSECURE_LOOMCYCLE: "1"
       LOOMCYCLE_TOKEN: ${TELEGRAM_BRIDGE_LOOMCYCLE_TOKEN:-}   # secret — a substrate:tenant token
       BRIDGE_AGENT: ${TELEGRAM_BRIDGE_AGENT:-chat/medium}
       BRIDGE_STORE: file:/data/telegram.json      # a restart keeps each chat's session

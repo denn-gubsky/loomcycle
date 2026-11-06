@@ -41,9 +41,11 @@ type File struct {
 	// on: its allowlist (narrowed per run as the HTTP tool's is) and its
 	// guarded dialer. nil leaves both refused.
 	HTTP *HTTP
-	// RegisterSecret hands a download or upload URL to the server's
-	// redactor; a pre-authenticated URL is a credential. Late-bound at boot.
-	RegisterSecret func(string)
+	// RegisterSecret hands the credential parts of a download or upload URL
+	// to the server's redactor as values the run observed (a model chose the
+	// URL), held for the run's tenant; a pre-authenticated URL is a
+	// credential. Late-bound at boot.
+	RegisterSecret func(ctx context.Context, value string)
 	// Docs is the Document tool op=import builds a document through, so its
 	// scope checks hold; nil leaves import unavailable.
 	Docs *Document
@@ -92,7 +94,7 @@ func (f *File) InputSchema() json.RawMessage {
 			"recursive": {"type": "boolean", "description": "ls: list subfolders too."},
 			"prefix":    {"type": "string", "description": "clear: only this folder of the inbox (e.g. documents, web/example.com). Omit to empty the whole inbox."},
 			"images":        {"type": "boolean", "description": "extract: keep the document's pictures as files and link them from the Markdown. Default true."},
-			"max_rows":      {"type": "integer", "minimum": 0, "description": "extract: the rows of each spreadsheet or CSV table to keep, header included. Default 1000."},
+			"max_rows":      {"type": "integer", "minimum": 0, "description": "extract: the rows of each spreadsheet or CSV table to keep, header included. Default 1000, at most 10000."},
 			"excerpt_chars": {"type": "integer", "minimum": 0, "maximum": 30000, "description": "extract: how much of the text to return. Default and most 30000."},
 			"ocr":           {"type": "string", "enum": ["never", "auto", "always"], "description": "extract: read scanned pages and images with the OCR model. auto: only PDF pages with little or no text; always: every page; never: the text layer only. Default: your agent's setting, which is also the most you may ask for."},
 			"language":      {"type": "string", "description": "extract with OCR: the languages of the text, ISO 639-1 codes joined by +, e.g. uk or uk+ru. transcribe: the one language spoken, e.g. uk. Default: the operator's."},

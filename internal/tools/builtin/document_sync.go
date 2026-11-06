@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -140,6 +141,9 @@ type remoteBinding struct {
 	remoteDocID string
 	remoteRoot  string
 	scope       string
+	// trusted: the source is declared trust: asserted, so a pull keeps the
+	// peer's asserted statements asserted rather than filing them for review.
+	trusted bool
 }
 
 // resolveRemoteBinding runs the prologue both sync and diff_remote need: resolve
@@ -195,6 +199,7 @@ func (d *Document) resolveRemoteBinding(ctx context.Context, key sqlmem.ScopeKey
 	return &remoteBinding{
 		client: client, source: source, ref: ref, localDocID: localDocID,
 		remoteDocID: remoteDoc.DocumentID, remoteRoot: remoteDoc.RootChunkID, scope: scope,
+		trusted: ds.Trust == config.DocumentSourceTrustAsserted,
 	}, nil
 }
 
@@ -254,6 +259,7 @@ func (k edgeKey) relation() edgeKey {
 type syncEdge struct {
 	id         string // side-local
 	method     string // "" from a peer that predates statements
+	status     string // the peer's, on a remote snapshot; "" from a peer that predates statements
 	confidence *float64
 	validAt    *int64
 	invalidAt  *int64
@@ -558,7 +564,7 @@ func (d *Document) loadRemoteSnapshot(ctx context.Context, client *docremote.Cli
 			_ = json.Unmarshal(raw, &one)
 			evidence = one.Statement.Evidence
 		}
-		se := syncEdge{id: e.ID, method: e.Method, confidence: e.Confidence, validAt: e.ValidAt, invalidAt: e.InvalidAt, attributes: e.Attributes}
+		se := syncEdge{id: e.ID, method: e.Method, status: e.Status, confidence: e.Confidence, validAt: e.ValidAt, invalidAt: e.InvalidAt, attributes: e.Attributes}
 		for _, r := range evidence {
 			ev := syncEvidence{quote: r.Quote}
 			if r.ChunkID != "" {
@@ -632,28 +638,47 @@ type edgeCarry struct {
 	evidenceDropped      int
 }
 
+// errSyncKeyConflict is a sideWriter's answer for a keyed chunk it would have to
+// create in the bound document while the key already names a chunk of another
+// document on its side: that chunk is never written or moved by a sync, and the
+// reconcile reports the key as a conflict instead.
+var errSyncKeyConflict = errors.New("natural key held by a chunk of another document")
+
+// keyHeldOutside reports whether natural key nk names a chunk of a document other
+// than docID in this scope.
+func (d *Document) keyHeldOutside(ctx context.Context, key sqlmem.ScopeKey, nk, docID string) (bool, error) {
+	existing, err := d.chunkIDByNaturalKey(ctx, key, nk)
+	if err != nil || existing == "" {
+		return false, err
+	}
+	res, err := d.query(ctx, key, `SELECT document_id FROM chunks WHERE id = ? LIMIT 1`, existing)
+	if err != nil {
+		return false, err
+	}
+	return len(res.Rows) == 0 || len(res.Rows[0]) == 0 || asStr(res.Rows[0][0]) != docID, nil
+}
+
 // localWriter applies a reconcile to the local document store.
 type localWriter struct {
 	d      *Document
 	key    sqlmem.ScopeKey
 	mscope store.MemoryScope
 	docID  string
+	// source names the document source a pull reads; trusted is its trust:
+	// asserted. Unused by the chunk writes.
+	source  string
+	trusted bool
 }
 
 func (w localWriter) createKeyed(ctx context.Context, sc syncChunk) (string, error) {
 	// A natural key is unique across the scope, so a key a chunk of ANOTHER document
 	// holds would make upsert_chunk rewrite that chunk, not create one in the bound
-	// document — a pull from a peer reaching any document in the scope (RFC FY P2).
-	if existing, err := w.d.chunkIDByNaturalKey(ctx, w.key, sc.nk); err != nil {
+	// document — a pull from a peer reaching any document in the scope (RFC FY P2,
+	// RFC FZ Part C: reported as a conflict, the rest of the pull still lands).
+	if outside, err := w.d.keyHeldOutside(ctx, w.key, sc.nk, w.docID); err != nil {
 		return "", err
-	} else if existing != "" {
-		res, qerr := w.d.query(ctx, w.key, `SELECT document_id FROM chunks WHERE id = ? LIMIT 1`, existing)
-		if qerr != nil {
-			return "", qerr
-		}
-		if len(res.Rows) == 0 || len(res.Rows[0]) == 0 || asStr(res.Rows[0][0]) != w.docID {
-			return "", fmt.Errorf("natural key %q is held by a chunk of another document; a sync writes only the bound document", sc.nk)
-		}
+	} else if outside {
+		return "", errSyncKeyConflict
 	}
 	res, err := w.d.upsertChunk(ctx, w.key, w.mscope, docInput{
 		NaturalKey: sc.nk, DocumentID: w.docID, Title: sc.title, Type: sc.ctype, Status: sc.status, Body: sc.body, Tags: sc.tags,
@@ -740,16 +765,21 @@ type remoteEdge struct {
 }
 
 // carryEdge on a pull. The statement is written with method sync, whoever runs
-// the pull. Evidence is re-pointed to this side's chunk by natural key and checked
+// the pull, and its origin_method names the peer (pulledAttributes). A new one is
+// filed proposed, for review here, unless the source is declared trust: asserted
+// (RFC FZ Part C, D3): the peer's asserted status is its own claim, not this
+// store's. Evidence is re-pointed to this side's chunk by natural key and checked
 // as link_chunks checks it; a row that fails is dropped and counted, never sent
 // on to refuse the whole statement.
 func (w localWriter) carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry, error) {
 	var out edgeCarry
-	attrs := carriedAttributes(in.src)
+	attrs := pulledAttributes(in.src, w.source)
 	if in.have != nil {
 		// A statement a pull wrote follows the peer, until an operator here rules
-		// on it: then it is the operator's, and kept like one written here.
-		if in.have.method == edgeMethodSync && !in.have.ruled {
+		// on it: then it is the operator's, and kept like one written here. Only
+		// a trusted peer's changes reach a statement that holds here; an
+		// untrusted one's difference is reported as kept.
+		if w.trusted && in.have.method == edgeMethodSync && !in.have.ruled {
 			updated, refuse, err := w.d.resyncStatement(ctx, w.key, in.have.id, edgeWrite{
 				from: in.fromID, to: in.toID, kind: in.kind, method: edgeMethodSync,
 				confidence: in.src.confidence, validAt: in.src.validAt, invalidAt: in.src.invalidAt, attributes: attrs,
@@ -787,18 +817,36 @@ func (w localWriter) carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry, 
 	if in.have != nil && len(evidence) == 0 {
 		return out, nil
 	}
-	res, err := w.d.linkChunks(ctx, w.key, w.mscope, docInput{
-		FromID: in.fromID, ToID: in.toID, Kind: in.kind, edgeMethod: edgeMethodSync,
-		Confidence: in.src.confidence, ValidAt: in.src.validAt, InvalidAt: in.src.invalidAt,
-		Attributes: attrs, Evidence: evidence,
+	if in.have != nil && !w.trusted {
+		// The statement already holds here (the target snapshot carries asserted
+		// ones only): an untrusted peer adds nothing to it, not even evidence,
+		// and files nothing beside it. Its quotes are counted as not carried.
+		out.evidenceDropped += len(evidence)
+		return out, nil
+	}
+	status := edgeStatusProposed
+	if w.trusted {
+		status = edgeStatusAsserted
+	}
+	res, refuse, err := w.d.writeStatement(ctx, w.key, w.mscope, edgeWrite{
+		from: in.fromID, to: in.toID, kind: in.kind, method: edgeMethodSync, status: status, authored: true,
+		confidence: in.src.confidence, validAt: in.src.validAt, invalidAt: in.src.invalidAt,
+		attributes: attrs, evidence: evidence,
 	})
 	if err != nil {
 		return out, err
 	}
-	if res.IsError {
-		return out, fmt.Errorf("%s", res.Text)
+	if refuse != nil {
+		if strings.Contains(refuse.Text, "statement_asserted:") {
+			// A proposal may not add to a relation that already holds here (one
+			// outside the snapshot, e.g. retired): the statement here stands.
+			out.kept = true
+			return out, nil
+		}
+		return out, fmt.Errorf("%s", refuse.Text)
 	}
-	out.added = in.have == nil
+	w.d.publishEdgeChange(ctx, w.key, w.mscope, "link_chunks", res.ID, in.fromID, in.toID, in.kind, res.Status)
+	out.added = in.have == nil && res.Created
 	return out, nil
 }
 
@@ -813,6 +861,13 @@ type remoteWriter struct {
 }
 
 func (w remoteWriter) createKeyed(ctx context.Context, sc syncChunk) (string, error) {
+	// Asked before the write: the peer's upsert_chunk would rewrite a chunk of
+	// another peer document holding the key. A peer that cannot answer (an older
+	// version, or a credential refused the read) falls back to the check after
+	// the write below.
+	if holder, known := w.peerKeyHolder(ctx, sc.nk); known && holder != "" && holder != w.docID {
+		return "", errSyncKeyConflict
+	}
 	raw, err := w.client.Do(ctx, map[string]any{
 		"op": "upsert_chunk", "document_id": w.docID, "scope": w.scope,
 		"natural_key": sc.nk, "title": sc.title, "type": sc.ctype, "status": sc.status, "body": sc.body, "tags": nonNilTags(sc.tags),
@@ -821,10 +876,41 @@ func (w remoteWriter) createKeyed(ctx context.Context, sc syncChunk) (string, er
 		return "", err
 	}
 	var out struct {
-		ID string `json:"id"`
+		ID      string `json:"id"`
+		Created *bool  `json:"created"`
 	}
 	_ = json.Unmarshal(raw, &out)
+	// The peer's upsert_chunk resolves the key across its whole scope (and asks
+	// for write on that whole scope, so this reaches no further than the
+	// credential may). A key it found outside the peer document was updated
+	// there, not created here: never move it into this document as well.
+	if out.Created != nil && !*out.Created {
+		return "", errSyncKeyConflict
+	}
 	return out.ID, nil
+}
+
+// peerKeyHolder asks the peer which of its documents holds natural key nk, through
+// query_chunks' read-only SQL (the one peer op that reads a key across the
+// scope). known is false when the peer did not answer; holder is "" when no chunk
+// holds the key. The key is a local chunk's, quoted as an SQL string literal.
+func (w remoteWriter) peerKeyHolder(ctx context.Context, nk string) (holder string, known bool) {
+	raw, err := w.client.Do(ctx, map[string]any{"op": "query_chunks", "scope": w.scope,
+		"sql": "SELECT c.document_id FROM chunk_memory_meta m JOIN chunks c ON c.id = m.chunk_id WHERE m.natural_key = '" +
+			strings.ReplaceAll(nk, "'", "''") + "'"})
+	if err != nil {
+		return "", false
+	}
+	var out struct {
+		Rows *[][]any `json:"rows"`
+	}
+	if json.Unmarshal(raw, &out) != nil || out.Rows == nil {
+		return "", false
+	}
+	if len(*out.Rows) == 0 || len((*out.Rows)[0]) == 0 {
+		return "", true
+	}
+	return asStr((*out.Rows)[0][0]), true
 }
 
 func (w remoteWriter) updateKeyed(ctx context.Context, id string, sc syncChunk, revision int, includeBody bool) error {
@@ -923,6 +1009,12 @@ type reconcileCounts struct {
 	// a peer a push cannot change.
 	// evidenceDropped: source evidence the writer's side could not check.
 	edgesUpdated, edgesEnvelopeKept, evidenceDropped int
+	// conflicts: source keys a chunk of another document on the writer's side
+	// already holds — neither written nor moved (see errSyncKeyConflict).
+	conflicts []string
+	// edgesSkippedConflict: source statements left out because an end is a
+	// conflicting key.
+	edgesSkippedConflict int
 }
 
 // applyReconcile reconciles `source` INTO the writer's side, using `target` as
@@ -953,6 +1045,10 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 		tc, exists := target.chunks[nk]
 		if !exists {
 			id, err := w.createKeyed(ctx, sc)
+			if errors.Is(err, errSyncKeyConflict) {
+				c.conflicts = append(c.conflicts, nk)
+				continue
+			}
 			if err != nil {
 				return c, fmt.Errorf("create %s: %w", nk, err)
 			}
@@ -990,6 +1086,9 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 				wantParentNK = sc.parentNK
 			}
 		}
+		if _, placed := idByNK[nk]; !placed {
+			continue // a conflict (pass 1): never moved into this document
+		}
 		if tc, existed := target.chunks[nk]; existed && wantParentNK == tc.parentNK && sc.position == tc.position {
 			continue // an existing chunk already in its source-matching place
 		}
@@ -1001,6 +1100,11 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 			return c, fmt.Errorf("move %s: %w", nk, err)
 		}
 		c.reparented++
+	}
+
+	conflicted := make(map[string]bool, len(c.conflicts))
+	for _, nk := range c.conflicts {
+		conflicted[nk] = true
 	}
 
 	// Pass 3 — manual statements, additive (both endpoints must be keyed +
@@ -1016,6 +1120,9 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 		fromID, ok1 := idByNK[ek.fromNK]
 		toID, ok2 := idByNK[ek.toNK]
 		if !ok1 || !ok2 {
+			if conflicted[ek.fromNK] || conflicted[ek.toNK] {
+				c.edgesSkippedConflict++
+			}
 			continue
 		}
 		in := edgeCarryIn{fromID: fromID, toID: toID, kind: ek.kind, src: se, idByNK: idByNK}
@@ -1050,30 +1157,67 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 }
 
 // carriedAttributes is the attributes a statement arrives with on the other
-// side: its own, less the statement layer's bookkeeping (each side's gate
-// annotates for itself), plus origin_method — the method it was made by, which
-// the receiving side's server-stamped method cannot say. A statement that was
-// itself synced passes on the method it was first made by.
+// side of a push: its own, less the statement layer's bookkeeping (each side's
+// gate annotates for itself), plus origin_method — the method it was made by,
+// which the receiving side's server-stamped method cannot say.
 func carriedAttributes(se syncEdge) map[string]any {
-	out := map[string]any{}
-	for k, v := range se.attributes {
-		if !statementLayerAttributes[k] && k != edgeOriginMethodAttr {
-			out[k] = v
-		}
-	}
-	origin := se.method
-	if origin == edgeMethodSync {
-		if m, _ := se.attributes[edgeOriginMethodAttr].(string); m != "" {
-			origin = m
-		}
-	}
-	if originMethodForm.MatchString(origin) {
+	out := ownAttributes(se)
+	if origin := madeBy(se); originMethodForm.MatchString(origin) {
 		out[edgeOriginMethodAttr] = origin
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// pulledAttributes is the attributes a statement arrives with on a pull: its own,
+// less the bookkeeping, with origin_method naming the peer it came from
+// (peer:<source>) and what the peer said about it kept as the peer's claims —
+// peer_method, the method it was made by there, and peer_status, its status
+// there (a peer that predates statements served every link as live). The peer's
+// method never becomes this side's: a peer's manual is not a person's here.
+func pulledAttributes(se syncEdge, source string) map[string]any {
+	out := ownAttributes(se)
+	out[edgeOriginMethodAttr] = edgeOriginPeerPrefix + source
+	if m := madeBy(se); originMethodForm.MatchString(m) {
+		out[edgePeerMethodAttr] = m
+	}
+	status := se.status
+	if status == "" {
+		status = edgeStatusAsserted
+	}
+	if originMethodForm.MatchString(status) {
+		out[edgePeerStatusAttr] = status
+	}
+	return out
+}
+
+// ownAttributes is a statement's attributes less the statement layer's own.
+func ownAttributes(se syncEdge) map[string]any {
+	out := map[string]any{}
+	for k, v := range se.attributes {
+		if !statementLayerAttributes[k] {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// madeBy is the method a statement was first made by: its own, or for one its
+// side itself synced in, the method recorded there — peer_method for a pull made
+// by this version, origin_method for a push or an older pull.
+func madeBy(se syncEdge) string {
+	if se.method != edgeMethodSync {
+		return se.method
+	}
+	if m, _ := se.attributes[edgePeerMethodAttr].(string); m != "" {
+		return m
+	}
+	if m, _ := se.attributes[edgeOriginMethodAttr].(string); !strings.HasPrefix(m, edgeOriginPeerPrefix) {
+		return m
+	}
+	return ""
 }
 
 // originMethodForm is what a method looks like — manual, import, rule:<name> —
@@ -1149,7 +1293,7 @@ func (d *Document) syncPull(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if err != nil {
 		return errFrom("sync: "+err.Error(), err), nil
 	}
-	w := localWriter{d: d, key: key, mscope: mscope, docID: b.localDocID}
+	w := localWriter{d: d, key: key, mscope: mscope, docID: b.localDocID, source: b.source, trusted: b.trusted}
 	c, err := applyReconcile(ctx, w, source, target)
 	if err != nil {
 		return errFrom("sync: "+err.Error(), err), nil
@@ -1196,13 +1340,21 @@ func reconcileReport(direction string, b *remoteBinding, excludedUnkeyed int, c 
 	}
 	// Only when not zero, so a document whose statements carry nothing reports
 	// exactly what it did before statements carried an envelope.
-	for k, n := range map[string]int{"edges_updated": c.edgesUpdated, "edges_envelope_kept": c.edgesEnvelopeKept, "evidence_dropped": c.evidenceDropped} {
+	for k, n := range map[string]int{"edges_updated": c.edgesUpdated, "edges_envelope_kept": c.edgesEnvelopeKept, "evidence_dropped": c.evidenceDropped,
+		"edges_skipped_conflict": c.edgesSkippedConflict} {
 		if n > 0 {
 			out[k] = n
 		}
 	}
+	if len(c.conflicts) > 0 {
+		out["conflicts"] = len(c.conflicts)
+		out["conflicting_keys"] = c.conflicts[:min(len(c.conflicts), syncConflictKeysMax)]
+	}
 	return out
 }
+
+// syncConflictKeysMax bounds the keys a sync report names; conflicts counts them all.
+const syncConflictKeysMax = 100
 
 // contentDiffers reports whether a source keyed chunk's content — body, title,
 // type, status, or tags — differs from the target's. Title/type/status are
@@ -1284,6 +1436,7 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 	}
 
 	onlyLocal, onlyRemote, diverged, retagged, reparented := []diffEntry{}, []diffEntry{}, []diffEntry{}, []diffEntry{}, []diffEntry{}
+	var conflicts []diffEntry
 	same := 0
 	for _, nk := range sortedChunkKeys(local.chunks) {
 		lc := local.chunks[nk]
@@ -1321,6 +1474,16 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		}
 		if lc, ok := local.chunks[nk]; !ok || lc.withheld {
 			onlyRemote = append(onlyRemote, diffEntry{NaturalKey: nk, Title: rc.title})
+			if !ok {
+				// What a pull would report as a conflict rather than create.
+				outside, err := d.keyHeldOutside(ctx, key, nk, b.localDocID)
+				if err != nil {
+					return errFrom("diff_remote: "+err.Error(), err), nil
+				}
+				if outside {
+					conflicts = append(conflicts, diffEntry{NaturalKey: nk, Title: rc.title})
+				}
+			}
 		}
 	}
 
@@ -1336,7 +1499,7 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		}
 	}
 
-	return okJSON(map[string]any{
+	out := map[string]any{
 		"source":                  b.source,
 		"remote_ref":              b.ref,
 		"remote_document_id":      b.remoteDocID,
@@ -1351,7 +1514,12 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		"edges_only_remote":       edgesOnlyRemote,
 		"excluded_unkeyed_local":  local.unkeyed,
 		"excluded_unkeyed_remote": remote.unkeyed,
-	})
+	}
+	// Only when there are any, so a diff without them reads as it did before.
+	if len(conflicts) > 0 {
+		out["conflicts"] = conflicts
+	}
+	return okJSON(out)
 }
 
 // wouldReparent reports whether reconciling `src` INTO the side holding

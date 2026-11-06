@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	toolsa2a "github.com/denn-gubsky/loomcycle/internal/tools/a2a"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -163,22 +164,23 @@ func (b *boot) wireCredentials() {
 		// (LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST, e.g. a GitHub Enterprise
 		// server on the internal network).
 		netguard.NewGuardedClient(15*time.Second, cfg.Env.HTTPPrivateHostAllowlist))
-	// b.srv is assigned later, at lchttp.New; registerSecret reads it at call
-	// time so a resolved value can be registered in the server's redactor.
-	// registerSecret is only CALLED during a run (long after srv exists), so the
-	// forward reference is safe (mirrors credSubstitute's own late binding).
+	// b.srv is assigned later, at lchttp.New; the sink reads it at call time
+	// so a resolved value can be registered in the server's redactor. It is
+	// only CALLED during a run (long after srv exists), so the forward
+	// reference is safe (mirrors credSubstitute's own late binding).
 	// registerSecret masks a resolved credential value against a downstream echo:
 	// a $cred: value or a tenant/user provider-key that a tool later prints would
 	// otherwise land in the persisted transcript unredacted (RFC AV/AR). The
-	// server-global redactor dedups by value, so re-registering is cheap.
-	registerSecret := func(v string) {
-		if b.srv != nil {
-			if rd := b.srv.Redactor(); rd != nil {
-				rd.Register(v)
-			}
+	// server-global redactor dedups by value, so re-registering is cheap; it
+	// is bounded, and keeps a value while the run that resolved it is live, so
+	// the sink names the tenant and the run (secretHolder).
+	secrets.set(func() *redact.Redactor {
+		if b.srv == nil {
+			return nil
 		}
-	}
-	secrets.set(registerSecret)
+		return b.srv.Redactor()
+	})
+	registerSecret := secrets.registerCredential
 	// A volume created from a git source (RFC EJ): off unless the operator
 	// lists the hosts. The credential a clone names is resolved for the run,
 	// and only when it is restricted to URLs covering the clone's.

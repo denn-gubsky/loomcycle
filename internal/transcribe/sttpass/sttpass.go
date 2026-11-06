@@ -561,6 +561,7 @@ func convert(ctx context.Context, d Deps, src io.ReaderAt, size int64, mt, langu
 	if _, err := helper.Run(ctx, helper.Spec{
 		Key:      "transcription.stt.media",
 		Template: op.Media.Command,
+		Wrapper:  op.Media.Wrapper,
 		Vars:     map[string]string{"in": filepath.Join(tmp, inName), "out": filepath.Join(tmp, "audio.wav"), "lang": language},
 		Root:     root,
 		Dir:      tmp,

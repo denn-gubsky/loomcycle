@@ -16,6 +16,7 @@ package limits
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -75,6 +76,10 @@ type Tracker struct {
 
 	// limits is the cached ceilings, keyed limitKey(scope, tenant, scopeID).
 	limits map[string]tierPair
+	// limitsGen counts the single-row cache writes (PutLimit, DeleteLimit). A
+	// reload compares it before and after reading the store, so the older
+	// snapshot it read never replaces a write that landed meanwhile.
+	limitsGen uint64
 }
 
 // New builds a tracker over st. A nil store yields a no-op tracker: Check always
@@ -187,6 +192,7 @@ func (t *Tracker) PutLimit(row store.TokenLimitRow) {
 		t.limits = map[string]tierPair{}
 	}
 	t.limits[limitKey(row.Scope, row.TenantID, row.ScopeID)] = tierPair{soft: row.SoftLimit, hard: row.HardLimit}
+	t.limitsGen++
 }
 
 // DeleteLimit drops the cached ceiling for a scope after a successful store
@@ -199,6 +205,53 @@ func (t *Tracker) DeleteLimit(scope, tenantID, scopeID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.limits, limitKey(scope, tenantID, scopeID))
+	t.limitsGen++
+}
+
+// ReloadLimits re-reads every token_limits row and replaces the cached
+// ceilings. It is how a limit written on another replica (PUT /v1/_limits, or
+// the budget a gate writes for a user it provisions) comes to be enforced
+// here: each replica caches the rows it wrote itself and those it read at boot.
+//
+// A failed read keeps the cache as it is, so a store fault never leaves a
+// persisted budget unenforced. A PutLimit or DeleteLimit that lands while the
+// rows are being read is newer than the snapshot, so the snapshot is dropped
+// rather than applied; the next reload picks both up. Nil-safe.
+func (t *Tracker) ReloadLimits(ctx context.Context) error {
+	if t == nil || t.store == nil {
+		return nil
+	}
+	t.mu.RLock()
+	gen := t.limitsGen
+	t.mu.RUnlock()
+	lm, err := t.loadLimits(ctx)
+	if err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.limitsGen != gen {
+		return nil
+	}
+	t.limits = lm
+	return nil
+}
+
+// RunLimitsReloader reloads tr's ceilings every interval until ctx ends. A
+// failed reload is logged and the cached ceilings stay in force.
+func RunLimitsReloader(ctx context.Context, tr *Tracker, interval time.Duration) {
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			if err := tr.ReloadLimits(ctx); err != nil && ctx.Err() == nil {
+				slog.WarnContext(ctx, "limits: reload failed; the cached limits stay in force", "err", err)
+			}
+		}
+	}
 }
 
 func (t *Tracker) loadLimits(ctx context.Context) (map[string]tierPair, error) {

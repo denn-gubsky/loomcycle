@@ -13,8 +13,14 @@ import {
   type OutboundActivity,
   type StreamLike,
 } from "@loomcycle/bridge-core";
-import { stripMentionsText, type AdaptiveCardActionResponse, type ConversationReference } from "@microsoft/teams.api";
-import { App } from "@microsoft/teams.apps";
+import {
+  stripMentionsText,
+  type AdaptiveCardActionResponse,
+  type CloudEnvironment,
+  type ConversationReference,
+  type TokenProvider,
+} from "@microsoft/teams.api";
+import { App, ExpressAdapter } from "@microsoft/teams.apps";
 
 import { parseCardAction, renderCard } from "./cards.js";
 import type { TeamsConfig } from "./config.js";
@@ -48,7 +54,48 @@ export class TeamsBridgeApp extends App {
   }
 }
 
-export type TeamsBridgeOptions = BridgeOptions<ConversationRef> & { logger?: Logger };
+/** What of the SDK app a deployment (a sovereign cloud) or a test sets: its
+ *  credentials and cloud. Never its request authentication, which BRIDGE_DEV
+ *  alone decides. */
+export interface TeamsAppOptions {
+  clientId?: string;
+  clientSecret?: string;
+  tenantId?: string;
+  token?: TokenProvider;
+  cloud?: CloudEnvironment;
+}
+
+export type TeamsBridgeOptions = BridgeOptions<ConversationRef> & { logger?: Logger; app?: TeamsAppOptions };
+
+/** LoopbackExpressAdapter is the SDK's Express adapter listening on one
+ *  address. The SDK's own listens on every interface; in dev mode, where the
+ *  SDK checks no request, the bridge must be reachable from this machine only. */
+export class LoopbackExpressAdapter extends ExpressAdapter {
+  constructor(
+    private readonly host: string,
+    onError: (err: Error) => void,
+  ) {
+    super(undefined, { onError });
+  }
+
+  override async start(port: number | string): Promise<void> {
+    const server = this.server;
+    if (!server) throw new Error("the Teams listener has no server");
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(Number(port), this.host, () => {
+        server.off("error", reject);
+        if (this.onError) server.on("error", this.onError);
+        resolve();
+      });
+    });
+  }
+
+  /** address is where the listener is bound, once started. */
+  address(): ReturnType<NonNullable<typeof this.server>["address"]> | undefined {
+    return this.server?.address();
+  }
+}
 
 export interface TeamsBridge extends Bridge<ConversationRef> {
   app: TeamsBridgeApp;
@@ -60,10 +107,22 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
   if (!shared.dev && process.env.DANGEROUSLY_ALLOW_UNAUTHENTICATED_REQUESTS) {
     (opts.logger ?? console).warn("DANGEROUSLY_ALLOW_UNAUTHENTICATED_REQUESTS is ignored: set BRIDGE_DEV=1 for local testing");
   }
+  const log = opts.logger ?? console;
   const app = new TeamsBridgeApp({
+    ...opts.app,
     // Always explicit: the SDK would otherwise read the env var itself, and
     // a stray one must not turn off request validation in production.
     dangerouslyAllowUnauthenticatedRequests: shared.dev,
+    // Dev mode checks no request, so it listens on loopback only (D6): the
+    // core's BRIDGE_BIND, which from bridge-core 0.4 it holds to loopback in
+    // dev mode, else 127.0.0.1 (an older core has no bind address).
+    ...(shared.dev
+      ? {
+          httpServerAdapter: new LoopbackExpressAdapter((shared as typeof shared & { bindHost?: string }).bindHost ?? "127.0.0.1", (err) =>
+            log.error("teams listener error", { error: err.name }),
+          ),
+        }
+      : {}),
   });
   // The bridge's gate name in loomcycle; unset for a bridge with a token.
   const gate = shared.gate?.name;

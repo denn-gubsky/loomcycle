@@ -107,7 +107,7 @@ func TestRemember_LinksToTheSubjectNode(t *testing.T) {
 	if err := d.exec(ctx, key, `UPDATE chunk_memory_meta SET subject = 'Ada' WHERE chunk_id = ?`, subj); err != nil {
 		t.Fatal(err)
 	}
-	out, r := docExec(t, d, ctx, `{"op":"remember","scope":"user","text":"Ada prefers tea.","subject":"ada","type":"person"}`)
+	out, r := docExec(t, d, withStatementGrant(ctx, "remember"), `{"op":"remember","scope":"user","text":"Ada prefers tea.","subject":"ada","type":"person"}`)
 	if r.IsError {
 		t.Fatal(r.Text)
 	}
