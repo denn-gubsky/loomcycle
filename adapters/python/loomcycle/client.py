@@ -1223,6 +1223,48 @@ class LoomcycleClient:
             body["expect_count"] = expect_count
         return await self.document(body)
 
+    async def find_duplicates(
+        self,
+        *,
+        scope: Optional[str] = None,
+        document_ids: Optional[Sequence[str]] = None,
+        under_path: Optional[str] = None,
+        under_paths: Optional[Sequence[str]] = None,
+        basis: Optional[Sequence[str]] = None,
+        propose: bool = False,
+        method: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        """Find the copies in a set of documents (``document`` op
+        ``find_duplicates``, RFC GB): the same text by ``sha256``, or the same
+        title once copy markers like "Copy of" or " (1)" are stripped
+        (``title``), each copy pointed at its original. ``basis`` picks either
+        or both (the default). At most 5000 documents per call.
+
+        A report unless ``propose=True``, which files a ``duplicate_of``
+        proposal per pair through ``propose_statement``; a pair that already
+        has one, either way round and in any status, is skipped. ``method`` is
+        ``rule:<name>`` / ``extractor:<name>`` for an agent granted it.
+
+        Returns ``{"pairs": [...], "counts": {...}, "truncated": bool}``; each
+        pair names ``copy_id`` / ``original_id`` (document ids), their root
+        chunk ids and titles, ``basis``, ``confidence`` and, when proposed,
+        ``statement_id`` (or ``skipped``). A refused call raises
+        :class:`SubstrateToolRefusedError`."""
+        body: dict[str, Any] = {"op": "find_duplicates", "propose": propose}
+        if scope is not None:
+            body["scope"] = scope
+        if document_ids is not None:
+            body["document_ids"] = list(document_ids)
+        if under_path is not None:
+            body["under_path"] = under_path
+        if under_paths is not None:
+            body["under_paths"] = list(under_paths)
+        if basis is not None:
+            body["basis"] = list(basis)
+        if method is not None:
+            body["method"] = method
+        return await self.document(body)
+
     async def credential_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
         """Invoke the CredentialDef tool — the RFC AR secure credential store
         (RFC CN gRPC/Python parity). Op-discriminated: ``create`` / ``get`` /

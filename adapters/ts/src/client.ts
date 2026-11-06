@@ -253,6 +253,8 @@ import type {
   DocumentToolResponse,
   DocumentCopyInput,
   DocumentMoveInput,
+  DocumentFindDuplicatesInput,
+  DocumentFindDuplicatesResult,
   DocumentTransferResult,
   HistoryToolInput,
   HistoryToolResponse,
@@ -4086,6 +4088,21 @@ export class LoomcycleClient {
       { op: "move_documents", ...input } as DocumentToolInput,
       opts,
     )) as DocumentTransferResult;
+  }
+
+  /** Find the copies in a set of documents (the Document tool's
+   *  `find_duplicates`, RFC GB): the same text by sha256, or the same title once
+   *  copy markers are stripped, each copy pointed at its original. A report
+   *  unless `propose: true`, which files a `duplicate_of` proposal per pair
+   *  for review. `opts` as on {@link LoomcycleClient.document}. */
+  async findDuplicates(
+    input: DocumentFindDuplicatesInput,
+    opts?: { signal?: AbortSignal; scopeId?: string; tenant?: string },
+  ): Promise<DocumentFindDuplicatesResult> {
+    return (await this.document(
+      { op: "find_duplicates", ...input } as DocumentToolInput,
+      opts,
+    )) as DocumentFindDuplicatesResult;
   }
 
   /** Build the URL of an image chunk's asset (RFC BO) — `GET

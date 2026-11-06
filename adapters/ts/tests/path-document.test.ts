@@ -263,6 +263,33 @@ describe("document", () => {
   });
 });
 
+describe("findDuplicates", () => {
+  it("posts find_duplicates with the set, basis and propose, and types the answer", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        pairs: [{
+          copy_id: "d2", original_id: "d1", copy_root_id: "r2", original_root_id: "r1",
+          copy_title: "Copy of Trip plan", original_title: "Trip plan",
+          basis: "title", confidence: 0.7, statement_id: "s1", status: "proposed", ontology_valid: true,
+        }],
+        counts: { documents: 2, pairs: 1, sha256: 0, title: 1, proposed: 1, skipped_existing: 0, refused: 0 },
+        truncated: false,
+      }),
+    ]);
+    const res = await client.findDuplicates(
+      { scope: "user", under_path: "/notes", basis: ["title"], propose: true },
+      { tenant: "acme" },
+    );
+    expect(res.pairs[0]!.copy_id).toBe("d2");
+    expect(res.pairs[0]!.statement_id).toBe("s1");
+    expect(res.counts.proposed).toBe(1);
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_document?tenant=acme");
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body).toEqual({ op: "find_duplicates", scope: "user", under_path: "/notes", basis: ["title"], propose: true });
+  });
+});
+
 describe("copyDocuments / moveDocuments", () => {
   it("copyDocuments posts copy_documents with the set and target verbatim", async () => {
     const { client, fetchMock } = makeClient([

@@ -106,7 +106,7 @@ func (d *Document) moveDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 	if err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}
-	ids, unreadable, refused := d.copySet(ctx, src, op, in, len(pending) > 0)
+	ids, unreadable, refused := d.copySet(ctx, src, op, in, len(pending) > 0, copyMaxDocuments)
 	if refused != nil {
 		return *refused, nil
 	}

@@ -321,6 +321,12 @@ func SeedRelations() []OntologyRelation {
 	classified.Functional = true
 	holds := s("holds", "", "held_by", "a person holds a post")
 	holds.Dated = true
+	// duplicate_of points from a copy at its original (Document op=find_duplicates).
+	// Under alternate_of, so a filter on that kind finds duplicates too; asymmetric
+	// where its parent is symmetric, because which side is the copy is the point.
+	duplicate := q(s("duplicate_of", "alternate_of", "duplicated_by", "a copy of another document with the same content"),
+		RelationQualifier{Name: "basis", Values: []string{"sha256", "title"}})
+	duplicate.Asymmetric, duplicate.Irreflexive = true, true
 
 	return []OntologyRelation{
 		// structural
@@ -356,6 +362,7 @@ func SeedRelations() []OntologyRelation {
 		sym(s("related", "", "", "is related, without saying how")),
 		s("elaborates", "related", "elaborated_by", "gives detail to a general statement"),
 		sym(s("alternate_of", "", "", "the same content in another form or language")),
+		duplicate,
 		exact,
 		sym(s("close_match", "", "", "nearly the same concept in another scheme")),
 		// classification

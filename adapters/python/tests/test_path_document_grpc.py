@@ -156,3 +156,41 @@ async def test_move_documents_refusal_raises():
     with pytest.raises(SubstrateToolRefusedError):
         await client.move_documents(to_scope="tenant", under_path="/proj", dry_run=False)
 
+
+
+@pytest.mark.asyncio
+async def test_find_duplicates_sends_the_set_basis_and_propose():
+    client = _make_client()
+    answer = {
+        "pairs": [{"copy_id": "d2", "original_id": "d1", "basis": "title", "confidence": 0.7, "statement_id": "s1"}],
+        "counts": {"documents": 2, "pairs": 1, "proposed": 1},
+        "truncated": False,
+    }
+    fake, captured = _async_returning(pb.SubstrateResponse(output_json=json.dumps(answer).encode(), is_error=False))
+    client._stub.Document = fake  # type: ignore[attr-defined]
+
+    result = await client.find_duplicates(scope="user", under_path="/notes", basis=["title"], propose=True)
+    assert result["pairs"][0]["statement_id"] == "s1"
+    assert json.loads(captured["req"].input_json) == {
+        "op": "find_duplicates",
+        "propose": True,
+        "scope": "user",
+        "under_path": "/notes",
+        "basis": ["title"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_find_duplicates_reports_by_default():
+    client = _make_client()
+    fake, captured = _async_returning(
+        pb.SubstrateResponse(output_json=json.dumps({"pairs": [], "counts": {}, "truncated": False}).encode(), is_error=False)
+    )
+    client._stub.Document = fake  # type: ignore[attr-defined]
+
+    await client.find_duplicates(document_ids=["d1", "d2"])
+    assert json.loads(captured["req"].input_json) == {
+        "op": "find_duplicates",
+        "propose": False,
+        "document_ids": ["d1", "d2"],
+    }
