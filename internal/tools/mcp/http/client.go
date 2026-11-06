@@ -347,6 +347,11 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 				slog.WarnContext(ctx, "mcp http: $cred resolve failed for header; "+unresolvedAction(ctx),
 					"header", k, "url", c.url, "agent_id", runIdent.AgentID, "err", cerr)
 				if refuseUnresolved {
+					// An OAuth credential that lost or never had its grant
+					// needs a person, not a retry: say so.
+					if errors.Is(cerr, credential.ErrOAuthReauthRequired) || errors.Is(cerr, credential.ErrOAuthNotConnected) {
+						return nil, fmt.Errorf("header %q needs an OAuth connection its owner must connect (again) with oauth_connect_start: %w", k, tools.ErrRunCredentialUnavailable)
+					}
 					// The resolve error text is operator-side (it can name a
 					// store or a scope), so the model sees only that it did not
 					// resolve.

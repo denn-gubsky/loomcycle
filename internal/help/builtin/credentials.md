@@ -126,6 +126,30 @@ A remote memory backend or document source can name its peer key as
 user's or agent's credential and never the calling run's tenant. If it does not
 resolve, the call to the peer fails and nothing is sent.
 
+## Connected through OAuth — `$oauth:<name>`
+
+For an MCP server protected by OAuth, store an **OAuth credential**: `create`
+with `usage: "oauth"` and `oauth: {"resource": "<the server's https URL>"}`
+(optional `issuer`, `scopes`, `client.token_endpoint_auth`). `allowed_urls`
+defaults to `[resource]`. It is create-only: delete it and create it again to
+change it (delete revokes its grant first).
+
+Its owner connects it **outside a run**: `op=oauth_connect_start` returns a
+`user_code` and a `verification_uri` to open and approve (never the device
+code); `op=oauth_connect_status` reports the state (`pending_connect`,
+`connected`, `needs_reauth`, `revoked`), `connected_as` and when the access
+token expires; `op=oauth_disconnect` revokes the grant and clears it. Tenant
+scope needs an operator or `substrate:tenant`, agent scope an operator; user
+scope is your own.
+
+Name it as `$oauth:<name>` wherever a `$cred:` header would go. The runtime
+sends a fresh access token, refreshing it before it expires; one refresh runs
+per credential, across replicas too, and the rotated refresh token is stored
+before the new access token is sent. A credential that is not connected, or
+lost its grant (`needs_reauth`), refuses the call. A field that takes a whole
+`$cred:<name>` (`user_bearer`, `api_key_env`, an A2A peer's bearer, a signing
+secret, a git `credential`) does not take `$oauth:`.
+
 ## Provider keys
 
 A stored credential named for a provider env var (e.g. `ANTHROPIC_API_KEY`,

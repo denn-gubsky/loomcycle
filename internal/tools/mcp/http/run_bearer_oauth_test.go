@@ -2,9 +2,11 @@ package http
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
@@ -59,5 +61,27 @@ func TestMCPHTTPClient_RefusesOAuthRefAsRunBearer(t *testing.T) {
 	}
 	if got := seen.all(); len(got) > 0 {
 		t.Fatalf("the server saw %v", got)
+	}
+}
+
+// An OAuth credential that needs its owner refuses the call and says so:
+// a person must connect it, a retry will not help.
+func TestMCPHTTPClient_OAuthReauthRefusalNamesTheFix(t *testing.T) {
+	seen := &keySeen{}
+	srv := mcpServer(t, seen)
+	sub := func(context.Context, string, string) (string, []string, error) {
+		return "", nil, &credential.OAuthReauthError{Name: "docs", Scope: "tenant", Reason: "invalid_grant"}
+	}
+	c, err := New(Config{URL: srv.URL, Headers: map[string]string{"Authorization": "Bearer $oauth:docs"}, HTTPClient: srv.Client(), CredSubstitute: sub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "t", AgentID: "a"})
+	_, err = mcp.Initialize(ctx, c, "t", "1")
+	if err == nil || !strings.Contains(err.Error(), "oauth_connect_start") || !errors.Is(err, tools.ErrRunCredentialUnavailable) {
+		t.Errorf("err = %v, want a refusal naming oauth_connect_start", err)
+	}
+	if len(seen.all()) > 0 {
+		t.Error("the call was sent")
 	}
 }

@@ -50,7 +50,7 @@ type Config struct {
 	ExposeNetwork string
 
 	// Env injection. When enabled, X-Loom-Sandbox-Env-<Name> request headers
-	// loomcycle fills — the value substituted server-side from $cred:/$ghapp:, so a
+	// loomcycle fills — the value substituted server-side from $cred:/$ghapp:/$oauth:, so a
 	// secret never touches the model — are injected as --env into the session
 	// container (e.g. a GitHub token for authenticated git/gh). Off by default: a
 	// generic header->env seam is a capability the operator opts into.

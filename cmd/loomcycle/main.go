@@ -1294,11 +1294,15 @@ func substituteForRun(ctx context.Context, s, targetURL string, register func(ct
 
 // newCredSubstitute builds the resolver of stored-credential references in an
 // outbound header or env value, for the run identity on the request's ctx.
-// ghApp may be nil (no $ghapp: minting).
-func newCredSubstitute(engine *credential.Engine, register func(ctx context.Context, tenantID, value string), ghApp refSubstituter) func(ctx context.Context, s, targetURL string) (string, []string, error) {
+// ghApp may be nil (no $ghapp: minting); oauth may be nil (every $oauth:
+// reference is then reported unresolved).
+func newCredSubstitute(engine *credential.Engine, register func(ctx context.Context, tenantID, value string), ghApp, oauth refSubstituter) func(ctx context.Context, s, targetURL string) (string, []string, error) {
+	if oauth == nil {
+		oauth = oauthUnavailable{}
+	}
 	// $oauth: first: a $cred: value that itself spells an $oauth: reference
 	// is not expanded in the same pass (as $ghapp: goes before $cred:).
-	subs := []refSubstituter{oauthUnavailable{}}
+	subs := []refSubstituter{oauth}
 	if ghApp != nil {
 		subs = append(subs, ghApp)
 	}
@@ -1343,9 +1347,9 @@ func oauthHolder(replicaID string) string {
 	return "replica-" + hex.EncodeToString(b[:])
 }
 
-// oauthUnavailable reports every $oauth: reference unresolved: nothing
-// resolves one yet, and the header that names one must be dropped, not sent
-// with the reference in it.
+// oauthUnavailable reports every $oauth: reference unresolved, where no
+// OAuth manager is wired: the header that names one must be dropped, not
+// sent with the reference in it.
 type oauthUnavailable struct{}
 
 func (oauthUnavailable) Substitute(_ context.Context, _, _, _, s, _ string, _ func(string)) (string, []string, error) {

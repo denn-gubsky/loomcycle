@@ -43,7 +43,7 @@ func TestLateCredSubstitute_ReportsOAuthRefUnresolved(t *testing.T) {
 
 func TestCredSubstituteFastPath_ReportsOAuthRefUnresolved(t *testing.T) {
 	// No key configured: nothing can resolve, so the fast path answers.
-	sub := newCredSubstitute(newCensusEngine(t, ""), nil, nil)
+	sub := newCredSubstitute(newCensusEngine(t, ""), nil, nil, nil)
 	_, unresolved, err := sub(context.Background(), "Bearer $oauth:docs", "https://mcp.example/")
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +54,7 @@ func TestCredSubstituteFastPath_ReportsOAuthRefUnresolved(t *testing.T) {
 }
 
 func TestCredSubstitute_ReportsOAuthRefUnresolvedWhenEngineResolves(t *testing.T) {
-	sub := newCredSubstitute(newCensusEngine(t, base64.StdEncoding.EncodeToString(make([]byte, 32))), nil, nil)
+	sub := newCredSubstitute(newCensusEngine(t, base64.StdEncoding.EncodeToString(make([]byte, 32))), nil, nil, nil)
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "t"})
 	_, unresolved, err := sub(ctx, "Bearer $oauth:docs", "https://mcp.example/")
 	if err != nil {

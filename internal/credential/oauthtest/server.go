@@ -51,6 +51,9 @@ type Server struct {
 	RequireResource bool
 	MetaOverride    func(map[string]any)
 	Interval        int // the device poll interval it names (default 5)
+	// Resource serves the protected resource itself (at Resource()); nil
+	// answers 404.
+	ResourceHandler http.Handler
 
 	// state
 	clients       map[string]bool
@@ -90,6 +93,16 @@ func New(t *testing.T) *Server {
 	mux.HandleFunc("/token", f.token)
 	mux.HandleFunc("/revoke", f.revoke)
 	mux.HandleFunc("/userinfo", f.userinfo)
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		h := f.ResourceHandler
+		f.mu.Unlock()
+		if h == nil {
+			http.NotFound(w, r)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 	f.Srv = httptest.NewTLSServer(mux)
 	t.Cleanup(f.Srv.Close)
 	return f

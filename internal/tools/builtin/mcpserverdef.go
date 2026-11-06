@@ -87,7 +87,7 @@ const mcpServerDefDescription = `Register, fork, promote, retire, rediscover, an
 	`(best-effort; opt out with discover:false), so a separate rediscover is only needed to ` +
 	`refresh a changed tool surface. A ${NAME} reference in url, headers or a stdio command/args/env ` +
 	`reads the server's environment when it dials, so only an admin, outside a run, may store one; anyone else uses ` +
-	`${run.credentials.<name>} or $cred:<name>. A stored definition holding one that an admin did not ` +
+	`${run.credentials.<name>}, $cred:<name>, or $oauth:<name> for an OAuth-protected server. A stored definition holding one that an admin did not ` +
 	`save is logged as a warning, and the server may be set to refuse to dial it. ` +
 	`Operations: create, fork, get, list, retire, promote, rediscover, verify.`
 
@@ -885,7 +885,7 @@ func (m *MCPServerDef) bindOperatorEnv(ctx context.Context, name string, def, pa
 		return nil
 	}
 	return fmt.Errorf("%s holds a ${NAME} reference, which reads this server's environment and may be set only by an admin. "+
-		"Use ${run.credentials.<name>} for a credential the run supplies, or $cred:<name> for one stored for your tenant",
+		"Use ${run.credentials.<name>} for a credential the run supplies, $cred:<name> for one stored for your tenant, or $oauth:<name> for an OAuth connection",
 		strings.Join(locs, ", "))
 }
 

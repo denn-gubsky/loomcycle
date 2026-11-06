@@ -228,7 +228,9 @@ func (b *boot) wireCredentials() {
 	// Wire the $cred: header resolver the MCP http pool captured by reference
 	// in buildMCP. Identity comes from the per-request ctx (tenant + user + agent), so
 	// a pooled client binds each request's own user-scoped token.
-	b.credSubstitute = newCredSubstitute(credEngine, registerSecret, ghAppMinter)
+	// $oauth:<name> (RFC GB): the manager substitutes a fresh access token,
+	// refreshing it first when it is close to expiry; registerSecret masks it.
+	b.credSubstitute = newCredSubstitute(credEngine, registerSecret, ghAppMinter, b.oauthMgr)
 	// RFC AR: resolve a tenant/user credential by env-var NAME (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for the run's identity, so a tenant's own key overrides
 	// the operator host key (scope agent>user>tenant). Wired onto the Server

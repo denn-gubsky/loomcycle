@@ -604,7 +604,7 @@ runs do.
    e.g. a GitHub App installation token. The payload value **overlays** (and
    wins over) the env-resolved one for the same key; an absent path does not
    clobber the env fallback. A projected value that is, or contains, a stored
-   credential reference (`$cred:<name>`, `$ghapp:<name>`) refuses the delivery
+   credential reference (`$cred:<name>`, `$ghapp:<name>`, `$oauth:<name>`) refuses the delivery
    with `400 bad_mapping`: only the definition may name a stored credential.
    ```yaml
    payload_mapping:

@@ -403,9 +403,10 @@ func (s *Server) snapshotRestoreOptions(ctx context.Context, includeHistory bool
 			// path, known scope and kind, a ref of that kind's shape.
 			migrations.SectionDirents: builtin.ValidateDirentEntry,
 		},
-		CredentialExists:    s.credKeyable,
-		CredentialToCompare: s.credToCompare,
-		EnvSet:              func(name string) bool { return os.Getenv(name) != "" },
+		CredentialExists:     s.credKeyable,
+		CredentialToCompare:  s.credToCompare,
+		OAuthCredentialState: s.oauthCredState,
+		EnvSet:               func(name string) bool { return os.Getenv(name) != "" },
 	}
 	// The dynamic root and static volume names the VolumeDef tool resolves
 	// against: a restored volume lands where a create here would put it, and

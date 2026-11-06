@@ -239,6 +239,90 @@ rules are those of a git-source volume:
   less than `write`; a config without `permissions` takes what the
   installation was granted.
 
+## Connecting through OAuth — `$oauth:<name>`
+
+Some MCP servers take no API key: they are protected by OAuth, and every
+access token they accept is short-lived. An **OAuth credential** holds such a
+connection. Its owner connects it once, by approving a code in a browser
+(the OAuth device grant, RFC 8628); from then on loomcycle refreshes the
+access token itself and substitutes it wherever the credential is named as
+`$oauth:<name>`, exactly where a `$cred:` value would go. Nobody — the
+model, the owner, the operator — sees the access token, the refresh token or
+the device code.
+
+Why this and not a `$cred:` holding a token you copied: the server's access
+tokens expire in minutes, and every refresh rotates the refresh token. A
+copied token stops working almost at once, and two processes refreshing one
+grant lose it. loomcycle keeps one refresh in flight per credential (across
+replicas too), stores the rotated refresh token before it hands out the new
+access token, and moves the credential to `needs_reauth` rather than guess
+when anything goes wrong.
+
+**Create** it with `usage: "oauth"` and an `oauth` object naming the
+protected resource (the MCP server's https URL):
+
+```jsonc
+credentialdef  op=create  scope=user  name=docs-server  usage=oauth
+               oauth={"resource": "https://docs.example.com/mcp"}
+// optional: "issuer" (when the resource lists more than one authorization
+// server), "scopes": [...], "client": {"token_endpoint_auth": "none" |
+// "client_secret_basic" | "client_secret_post"}
+```
+
+- `allowed_urls` defaults to `[resource]`: the access token is sent only to
+  the resource, and a request carrying it follows no redirect.
+- Create-only: to change the config, `delete` the credential (its grant is
+  revoked first, best effort) and create it again.
+- loomcycle discovers the authorization server from the resource's protected
+  resource metadata (RFC 9728) and the server's own metadata (RFC 8414). Every
+  endpoint must be https on the issuer's or the resource's host. It registers
+  itself as a client (RFC 7591, dynamic registration; a static client is not
+  supported yet) as a native client with a loopback redirect it never uses,
+  because some servers refuse to register a client that asks for the device
+  grant alone.
+
+**Connect** it (outside a run — a person has to approve it):
+
+```jsonc
+credentialdef  op=oauth_connect_start  scope=user  name=docs-server
+// → {"user_code":"ABCD-EFGH","verification_uri":"https://…","expires_in":299,"interval":5,…}
+```
+
+Open `verification_uri`, enter `user_code` and approve. The replica that
+served the start polls for the grant; `oauth_connect_status` reports the
+state (`pending_connect`, `connected`, `needs_reauth`, `revoked`), the account
+it is connected as (from the server's userinfo, only when it grants `openid`),
+when the access token expires and the last error. If that replica restarted
+meanwhile, a status check finishes the connect. `oauth_disconnect` revokes the
+grant at the server (best effort) and clears it here; the registration is
+kept for the next connect.
+
+**Use** it where a `$cred:` would go — an MCP server's header, a hook's
+webhook header, a trigger's `user_credentials`:
+
+```yaml
+headers:
+  Authorization: "Bearer $oauth:docs-server"
+```
+
+It resolves with the same scope precedence as `$cred:` (agent > user >
+tenant), so each user's runs send their own connection. A credential that is
+not connected, or needs its owner to connect it again, **refuses the call**;
+nothing stands in for it.
+
+Who may do what:
+
+- create, connect, status, disconnect and delete happen **outside a run**.
+- **tenant** scope: an operator, or a principal with `substrate:tenant`;
+  **user** scope: the caller's own; **agent** scope: an operator only.
+- `oauth_connect_status` asks the `use` verb of the access-control rules, the
+  others `manage`.
+
+Not accepted (in this version): a field that takes a whole `$cred:<name>`
+reference (`user_bearer`, `api_key_env`, an A2A peer's bearer, a hook's
+signing secret, the Git tool's `credential`) does not take `$oauth:`. A
+`user_bearer` that names one is refused when the run sends it.
+
 ## Overriding a provider / tool API key by its env-var name
 
 Some credentials aren't referenced with `$cred:` — they **override the operator's
