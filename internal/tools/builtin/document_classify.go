@@ -117,11 +117,10 @@ type classifyIssuer struct {
 }
 
 type classifyAnswer struct {
-	DocumentID string `json:"document_id"`
-	Write      string `json:"write"`
-	Result     string `json:"result"` // classified | proposed | kept | unclassified | skipped
-	// Reason says why a document was skipped (result skipped).
-	Reason     string            `json:"reason,omitempty"`
+	DocumentID string            `json:"document_id"`
+	Write      string            `json:"write"`
+	Result     string            `json:"result"`           // classified | proposed | kept | unclassified | skipped
+	Reason     string            `json:"reason,omitempty"` // why a document was skipped
 	Class      string            `json:"class,omitempty"`
 	Live       bool              `json:"live"`
 	WorkKey    string            `json:"work_key,omitempty"`
