@@ -784,6 +784,15 @@ func (b *boot) startStoreSweepers() {
 			return nil
 		}
 		go func() {
+			// First, on sqlite, move every scope from before the document plane had
+			// a file of its own into it (RFC FZ Part A), so the ontology pass below
+			// and the other readers that do not provision find the documents where
+			// they now live. A sqlite data dir belongs to one replica: no lock.
+			if n, err := ontologyDoc.SplitDocumentPlanes(bgCtx); err != nil {
+				slog.Error("document: boot pass moving document tables into their own files failed", "err", err)
+			} else if n > 0 {
+				slog.Info("document: moved scopes' document tables into their own files", "scopes", n)
+			}
 			if advisoryLock != nil {
 				if _, err := advisoryLock.TryRun(bgCtx, coord.LockKeyOntologyIdentityPass, record); err != nil {
 					slog.Error("ontology: advisory-gated boot pass failed", "err", err)
