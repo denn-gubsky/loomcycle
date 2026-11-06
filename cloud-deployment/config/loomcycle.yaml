@@ -154,10 +154,19 @@ agents:
   # is busy or failing, whatever the tenant's own tier allows. Pinning their
   # provider list keeps that text on the local Ollama. If it is down they fail,
   # and the queue waits for the next run.
-  memory/extractor:      { providers: [ollama-local] }
-  memory/judge:          { providers: [ollama-local] }
-  memory/conflict-judge: { providers: [ollama-local] }
-  memory/ontologist:     { providers: [ollama-local] }
+  #
+  # max_context_tokens: 65536 on every agent that calls the local Ollama, equal
+  # to providers.ollama-local num_ctx. The bundles ask for 8192, 16384 or 32768;
+  # a request at another size makes Ollama reload the model (about 10 s, prompt
+  # cache lost), and on the shared Spark a reload while another request runs
+  # crashes CUDA ("an illegal memory access"), after which the provider is
+  # marked stalled and every agent on the tier fails. 65536 is never smaller
+  # than what an agent budgets for (the consolidator sizes extractor parts for
+  # 32768), so a larger window only leaves room unused.
+  memory/extractor:      { providers: [ollama-local], max_context_tokens: 65536 }
+  memory/judge:          { providers: [ollama-local], max_context_tokens: 65536 }
+  memory/conflict-judge: { providers: [ollama-local], max_context_tokens: 65536 }
+  memory/ontologist:     { providers: [ollama-local], max_context_tokens: 65536 }
 
   # The knowledge-base agents' model calls carry passages of tenants'
   # documents. The same reasoning as above: local only, a failure waits for
@@ -165,8 +174,8 @@ agents:
   # grants they need for a tenant-scope pass (memory_scopes/sql_scopes:
   # [tenant]) are NOT given here, since a static grant would reach every
   # tenant: each tenant's operator forks the agent in its own tenant.
-  kb/verdict:            { providers: [ollama-local] }
-  kb/judge-verdict:      { providers: [ollama-local] }
+  kb/verdict:            { providers: [ollama-local], max_context_tokens: 65536 }
+  kb/judge-verdict:      { providers: [ollama-local], max_context_tokens: 65536 }
 
 # The knowledge-base preset declares documents/ingested user-scoped. Tenants
 # here import their corpus into the TENANT scope, where the runtime publishes
