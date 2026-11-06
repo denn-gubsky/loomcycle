@@ -29,12 +29,13 @@ import (
 // supplies with its run — not from the credential store or the environment —
 // so nothing on this host could say whether it will resolve.
 
-// credRefRe matches $cred:<name> and $ghapp:<name> (both resolved from the
-// credential store); envRefRe matches ${NAME} for an env-var-shaped NAME, so
-// ${run.*} placeholders are not mistaken for env vars. The name grammars
-// mirror internal/credential and the header scanner.
+// credRefRe matches $cred:<name>, $ghapp:<name> and $oauth:<name> (all
+// resolved from the credential store); envRefRe matches ${NAME} for an
+// env-var-shaped NAME, so ${run.*} placeholders are not mistaken for env
+// vars. The name grammars mirror internal/credential and the header scanner
+// (TestRefGrammar_SnapshotRegexesMatchCredentialGrammar).
 var (
-	credRefRe = regexp.MustCompile(`\$(cred|ghapp):([A-Za-z0-9_-]{1,128})`)
+	credRefRe = regexp.MustCompile(`\$(cred|ghapp|oauth):([A-Za-z0-9_-]{1,128})`)
 	envRefRe  = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 )
 
@@ -169,7 +170,7 @@ func defRefs(prefix string, body json.RawMessage, extra ...string) []credRef {
 	var out []credRef
 	add := func(field, value string) {
 		for _, m := range credRefRe.FindAllStringSubmatch(value, -1) {
-			out = append(out, credRef{field: field, cred: m[0], name: m[2]})
+			out = append(out, credRef{field: field, cred: m[0], name: m[2], oauth: m[1] == "oauth"})
 		}
 		for _, m := range envRefRe.FindAllStringSubmatch(value, -1) {
 			out = append(out, credRef{field: field, env: m[1]})
@@ -225,8 +226,15 @@ func defRefs(prefix string, body json.RawMessage, extra ...string) []credRef {
 type credRef struct {
 	field string // "user_credentials_from_env.slack"
 	env   string // an env var name, or
-	cred  string // "$cred:<name>" / "$ghapp:<name>" as written
+	cred  string // "$cred:<name>" / "$ghapp:<name>" / "$oauth:<name>" as written
 	name  string // the credential name inside cred
+	// oauth marks an $oauth: reference: checked through
+	// RestoreOptions.OAuthCredentialState, which can also say it is held but
+	// not connected.
+	oauth bool
+	// refused, when set, is why the runtime refuses this reference whatever
+	// the target holds; it is warned as such and not checked.
+	refused string
 	// tenantOnly marks a reference that resolves only at tenant level (a
 	// remote peer's api_key_env), so no per-user credential could supply it.
 	tenantOnly bool
@@ -247,7 +255,7 @@ func refsOf(b credScanBody) []credRef {
 	for _, k := range sortedMapKeys(b.UserCredentials) {
 		v := b.UserCredentials[k]
 		for _, m := range credRefRe.FindAllStringSubmatch(v, -1) {
-			out = append(out, credRef{field: "user_credentials." + k, cred: m[0], name: m[2]})
+			out = append(out, credRef{field: "user_credentials." + k, cred: m[0], name: m[2], oauth: m[1] == "oauth"})
 		}
 		for _, m := range envRefRe.FindAllStringSubmatch(v, -1) {
 			out = append(out, credRef{field: "user_credentials." + k, env: m[1]})
@@ -255,7 +263,12 @@ func refsOf(b credScanBody) []credRef {
 	}
 	for _, m := range credRefRe.FindAllStringSubmatch(b.UserBearer, -1) {
 		// Resolved at tenant level only, whatever the run's agent and user.
-		out = append(out, credRef{field: "user_bearer", cred: m[0], name: m[2], tenantOnly: true})
+		r := credRef{field: "user_bearer", cred: m[0], name: m[2], tenantOnly: true, oauth: m[1] == "oauth"}
+		if r.oauth {
+			// The runtime refuses it whatever this host holds.
+			r.refused = "a bearer takes a $cred: reference or a literal, never an $oauth: one"
+		}
+		out = append(out, r)
 	}
 	out = append(out, authRefs("", b.Auth)...)
 	if b.SignWithKeyEnv != "" {
@@ -297,6 +310,9 @@ func (c *credScan) run(ctx context.Context, opts RestoreOptions, result *Restore
 			}
 			seen[key] = true
 			switch {
+			case r.refused != "":
+				result.Warnings = append(result.Warnings, fmt.Sprintf(
+					"refused credential: %s: %s references %s: %s", t.where, r.field, r.cred, r.refused))
 			case r.env != "":
 				if opts.EnvSet == nil {
 					uncheckedEnv++
@@ -305,6 +321,26 @@ func (c *credScan) run(ctx context.Context, opts RestoreOptions, result *Restore
 				if !opts.EnvSet(r.env) {
 					result.Warnings = append(result.Warnings, fmt.Sprintf(
 						"missing credential: %s: %s names env var %s, which is not set on this host", t.where, r.field, r.env))
+				}
+			case r.oauth:
+				if opts.OAuthCredentialState == nil {
+					uncheckedCred++
+					continue
+				}
+				askAgent, askUser := agent, b.UserID
+				if r.tenantOnly {
+					askAgent, askUser = "", ""
+				}
+				state, found := opts.OAuthCredentialState(ctx, tenant, askAgent, askUser, r.name)
+				switch {
+				case !found:
+					result.Warnings = append(result.Warnings, fmt.Sprintf(
+						"missing credential: %s: %s references %s, which no OAuth credential on this host provides for tenant %q; create it with usage oauth, then connect it with oauth_connect_start",
+						t.where, r.field, r.cred, tenant))
+				case state != "connected":
+					result.Warnings = append(result.Warnings, fmt.Sprintf(
+						"credential not connected: %s: %s references %s, which is held for tenant %q but not connected (status %s): reconnect it with oauth_connect_start",
+						t.where, r.field, r.cred, tenant, state))
 				}
 			case r.toCompare:
 				if opts.CredentialToCompare == nil {

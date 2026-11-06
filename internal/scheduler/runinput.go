@@ -114,11 +114,12 @@ type scheduleHook struct {
 	Payload map[string]interface{} `json:"payload,omitempty"`
 }
 
-// namesStoredCredential reports whether a credentials map holds a $cred: or
-// $ghapp: reference, which resolves by scope.
+// namesStoredCredential reports whether a credentials map holds a $cred:,
+// $ghapp: or $oauth: reference, which resolves by scope. A prefix match, wider
+// than the reference grammar, so it errs toward seeing one.
 func namesStoredCredential(creds map[string]string) bool {
 	for _, v := range creds {
-		if strings.Contains(v, "$cred:") || strings.Contains(v, "$ghapp:") {
+		if strings.Contains(v, "$cred:") || strings.Contains(v, "$ghapp:") || strings.Contains(v, "$oauth:") {
 			return true
 		}
 	}

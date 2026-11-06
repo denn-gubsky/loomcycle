@@ -115,7 +115,7 @@ func (d *Dispatcher) open(ctx context.Context, c caller, raw json.RawMessage) (s
 
 	// Operator-injected session env: e.g. a GitHub token for git/gh, delivered as
 	// X-Loom-Sandbox-Env-* headers whose values loomcycle already resolved from
-	// $cred:/$ghapp: — so the secret rides the transport, never a tool arg (never
+	// $cred:/$ghapp:/$oauth: — so the secret rides the transport, never a tool arg (never
 	// the model). Gated by SANDBOX_ALLOW_ENV_INJECTION; when off we drop it and the
 	// run just runs unauthenticated (like egress silently downgrades).
 	if len(c.Env) > 0 {

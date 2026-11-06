@@ -349,6 +349,9 @@ type Server struct {
 	// stored verification secret, which is only compared. Metadata only.
 	// Wired via SetCredToCompare; nil leaves those references unchecked.
 	credToCompare func(ctx context.Context, tenantID, name string) bool
+	// oauthCredState: the state of the OAuth credential an $oauth: reference
+	// resolves to (snapshot restore scan). nil: not checked.
+	oauthCredState func(ctx context.Context, tenantID, agentName, userID, name string) (string, bool)
 
 	// searchRegistry / searchResolver / searchHostKeys back the RFC BB search
 	// routing view (GET /v1/_routing → "search" block). searchHostKeys maps a
@@ -1542,6 +1545,12 @@ func (s *Server) SetSTT(stt *builtin.FileSTT) { s.stt = stt }
 // before resolution. Nil ⇒ no provider is tenant-keyable.
 func (s *Server) SetCredKeyable(fn func(ctx context.Context, tenantID, agentName, userID, name string) bool) {
 	s.credKeyable = fn
+}
+
+// SetOAuthCredentialState wires the snapshot scan's check for an $oauth:
+// reference: the state of the OAuth credential it resolves to.
+func (s *Server) SetOAuthCredentialState(fn func(ctx context.Context, tenantID, agentName, userID, name string) (string, bool)) {
+	s.oauthCredState = fn
 }
 
 // SetCredToCompare wires the snapshot scan's check for a credential that is

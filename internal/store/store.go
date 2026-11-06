@@ -4179,6 +4179,15 @@ type CredentialDefStore interface {
 	CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (credentialdef.Row, error)
 	CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]credentialdef.Row, error)
 	CredentialDefDelete(ctx context.Context, tenantID, scope, scopeID, name string) (bool, error)
+	// CredentialDefPutIf writes row's backend, definition and expires_at over
+	// the (tenant_id, scope, scope_id, name) row ONLY while its stored
+	// definition still equals prev — a compare-and-set, so replicas racing to
+	// change one credential (an OAuth credential's refresh, RFC GB) cannot
+	// lose each other's write. prev must be a definition this store returned
+	// (Postgres compares jsonb, SQLite the exact text). (false, nil) when the
+	// row holds something else; *ErrNotFound when there is no row. It never
+	// creates one.
+	CredentialDefPutIf(ctx context.Context, row credentialdef.Row, prev json.RawMessage) (bool, error)
 }
 
 // DirentStore persists the Path VFS naming layer.

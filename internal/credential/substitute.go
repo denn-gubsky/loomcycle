@@ -91,3 +91,45 @@ func (e *Engine) Substitute(ctx context.Context, tenantID, agentName, userID, s,
 	}
 	return out, unresolved, nil
 }
+
+// oauthTokenRe matches a $oauth:<name> reference (RFC GB): a credential
+// connected to an OAuth authorization server, whose short-lived access token
+// the runtime keeps fresh and substitutes. Same name charset as $cred:.
+var oauthTokenRe = regexp.MustCompile(`\$oauth:([A-Za-z0-9_-]{1,128})`)
+
+// HasOAuthRef reports whether s contains any $oauth:<name> token.
+func HasOAuthRef(s string) bool { return oauthTokenRe.MatchString(s) }
+
+// OAuthRefNames returns the <name> of every $oauth:<name> token in s (nil when
+// none), so a caller with no OAuth resolver still drops those headers instead
+// of sending a literal "$oauth:foo" downstream (mirrors RefNames).
+func OAuthRefNames(s string) []string {
+	ms := oauthTokenRe.FindAllStringSubmatch(s, -1)
+	if len(ms) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// AnyRefNames returns the <name> of every stored-credential reference in s —
+// $cred:, $ghapp: and $oauth: — in that order of syntax (nil when none). A
+// site that must report every reference as unresolved, or refuse a value
+// that holds one, uses this rather than listing the syntaxes itself, so a
+// new syntax cannot be missed at one site.
+func AnyRefNames(s string) []string {
+	var out []string
+	out = append(out, RefNames(s)...)
+	out = append(out, GHAppRefNames(s)...)
+	out = append(out, OAuthRefNames(s)...)
+	return out
+}
+
+// HasAnyRef reports whether s contains a stored-credential reference of any
+// syntax ($cred:, $ghapp:, $oauth:).
+func HasAnyRef(s string) bool {
+	return credTokenRe.MatchString(s) || ghAppTokenRe.MatchString(s) || oauthTokenRe.MatchString(s)
+}

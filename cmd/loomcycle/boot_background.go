@@ -62,6 +62,9 @@ func (b *boot) startBackground() {
 		heartbeatRunner.Start(bgCtx)
 	}
 
+	// OAuth device pollers end with the background work.
+	b.oauthMgr.SetBackground(bgCtx)
+
 	b.bgCtx = bgCtx
 	b.bgCancel = bgCancel
 	b.countFlusherDone = countFlusherDone

@@ -99,6 +99,9 @@ type boot struct {
 	// exists, so their clients read it at each request (lateCredSubstitute),
 	// never at build. Assigned once the credential engine exists.
 	credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
+	// oauthMgr connects, refreshes and disconnects OAuth credentials (RFC
+	// GB); its pollers run under bgCtx, its outcomes go to auditSink.
+	oauthMgr *credential.OAuthManager
 
 	// openAndMigrateStore
 	storeIface store.Store

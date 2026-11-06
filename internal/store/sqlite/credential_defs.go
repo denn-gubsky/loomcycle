@@ -114,3 +114,30 @@ func (s *Store) CredentialDefDelete(ctx context.Context, tenantID, scope, scopeI
 	}
 	return n > 0, nil
 }
+
+func (s *Store) CredentialDefPutIf(ctx context.Context, row credentialdef.Row, prev json.RawMessage) (bool, error) {
+	var expires sql.NullInt64
+	if row.ExpiresAt != nil {
+		expires = sql.NullInt64{Int64: row.ExpiresAt.UnixNano(), Valid: true}
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE credential_defs SET backend = ?, definition = ?, expires_at = ?, updated_at = ?
+		 WHERE tenant_id = ? AND scope = ? AND scope_id = ? AND name = ? AND definition = ?`,
+		row.Backend, string(row.Definition), expires, time.Now().UnixNano(),
+		row.TenantID, row.Scope, row.ScopeID, row.Name, string(prev))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return true, nil
+	}
+	// Nothing written: a lost race, or no row at all.
+	if _, err := s.CredentialDefGet(ctx, row.TenantID, row.Scope, row.ScopeID, row.Name); err != nil {
+		return false, err
+	}
+	return false, nil
+}

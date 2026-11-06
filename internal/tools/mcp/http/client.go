@@ -347,6 +347,11 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 				slog.WarnContext(ctx, "mcp http: $cred resolve failed for header; "+unresolvedAction(ctx),
 					"header", k, "url", c.url, "agent_id", runIdent.AgentID, "err", cerr)
 				if refuseUnresolved {
+					// An OAuth credential that lost or never had its grant
+					// needs a person, not a retry: say so.
+					if errors.Is(cerr, credential.ErrOAuthReauthRequired) || errors.Is(cerr, credential.ErrOAuthNotConnected) {
+						return nil, fmt.Errorf("header %q needs an OAuth connection its owner must connect (again) with oauth_connect_start: %w", k, tools.ErrRunCredentialUnavailable)
+					}
 					// The resolve error text is operator-side (it can name a
 					// store or a scope), so the model sees only that it did not
 					// resolve.
@@ -394,6 +399,13 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 // the header, which keeps resolving for the run's full identity.
 func (c *Client) runBearer(ctx context.Context, ident tools.RunIdentityValue) (string, map[string]string, error) {
 	bearer, creds := ident.UserBearer, ident.UserCredentials
+	// The bearer takes a $cred: reference or a literal. An $oauth: reference
+	// in it would be resolved by the header's own pass below, for the run's
+	// user rather than at tenant level where the bearer belongs.
+	if credential.HasOAuthRef(bearer) && c.headersUseBearer() {
+		slog.WarnContext(ctx, "mcp http: the run's bearer names an $oauth: credential, which a bearer cannot; refusing", "url", c.url, "agent_id", ident.AgentID)
+		return "", nil, fmt.Errorf("this run's bearer names an $oauth: credential, which is refused: %w", tools.ErrRunCredentialUnavailable)
+	}
 	if _, isRef := credential.ParseRef(bearer); !isRef || !c.headersUseBearer() {
 		// Not a reference, or no header sends it: a server the bearer is not
 		// for must not have its calls refused over the bearer's URL list.
@@ -413,7 +425,7 @@ func (c *Client) runBearer(ctx context.Context, ident tools.RunIdentityValue) (s
 	}
 	// The header is resolved again for the operator's own $cred: tokens; a
 	// value that itself spelled one would be resolved for the run's user.
-	if len(credential.RefNames(v)) > 0 || len(credential.GHAppRefNames(v)) > 0 {
+	if credential.HasAnyRef(v) {
 		return "", nil, fmt.Errorf("this run's stored bearer holds a credential reference, which is refused: %w", tools.ErrRunCredentialUnavailable)
 	}
 	if creds["default"] == bearer {

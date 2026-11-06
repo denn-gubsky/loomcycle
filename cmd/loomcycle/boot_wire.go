@@ -141,6 +141,13 @@ func (b *boot) wireCredentials() {
 		AllowHTTP: cfg.Env.KMSVaultAllowHTTP,
 	}
 	credentialDefTool.KMS = kmsAccess
+	// OAuth credentials (RFC GB): the connect, refresh and disconnect
+	// requests go to the authorization server a tenant names, so through
+	// the guard (no private or metadata address unless the operator vouched
+	// for the host), and follow no redirect at all.
+	b.oauthMgr = credential.NewOAuthManager(credEngine,
+		credential.NewOAuthHTTPClient(cfg.Env.HTTPPrivateHostAllowlist), oauthHolder(cfg.Env.ReplicaID), nil)
+	credentialDefTool.OAuth = b.oauthMgr
 	cryptoTool.KMS = kmsAccess
 	// A team's own webhook may name a stored secret of the author's tenant.
 	teamDefTool.Credentials = credEngine
@@ -221,18 +228,9 @@ func (b *boot) wireCredentials() {
 	// Wire the $cred: header resolver the MCP http pool captured by reference
 	// in buildMCP. Identity comes from the per-request ctx (tenant + user + agent), so
 	// a pooled client binds each request's own user-scoped token.
-	b.credSubstitute = func(ctx context.Context, s, targetURL string) (string, []string, error) {
-		// Fast-path: when nothing can resolve (no KEK / no external backend) skip
-		// the store reads. Report any $cred: / $ghapp: refs as unresolved so the
-		// caller still drops them (never send a literal token downstream).
-		if !credEngine.CanResolve() {
-			return s, append(credential.RefNames(s), credential.GHAppRefNames(s)...), nil
-		}
-		// $ghapp: (mint an installation token) then $cred: (durable secret). The two
-		// syntaxes don't overlap; each drops its own header on an unresolved/failed
-		// ref, and a mint/resolve error aborts so no literal token is sent.
-		return substituteForRun(ctx, s, targetURL, registerSecret, ghAppMinter, credEngine)
-	}
+	// $oauth:<name> (RFC GB): the manager substitutes a fresh access token,
+	// refreshing it first when it is close to expiry; registerSecret masks it.
+	b.credSubstitute = newCredSubstitute(credEngine, registerSecret, ghAppMinter, b.oauthMgr)
 	// RFC AR: resolve a tenant/user credential by env-var NAME (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for the run's identity, so a tenant's own key overrides
 	// the operator host key (scope agent>user>tenant). Wired onto the Server

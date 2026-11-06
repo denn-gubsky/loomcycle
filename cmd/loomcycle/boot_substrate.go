@@ -163,6 +163,7 @@ func (b *boot) wireAuth() {
 		// RFC EP: every keyed Crypto op and every crypto-key change.
 		cryptoTool.Audit = auditSink
 		credentialDefTool.Audit = auditSink
+		b.oauthMgr.SetAudit(auditSink)
 		// RFC FB: every Git network operation.
 		b.gitTool.Audit = auditSink
 	}

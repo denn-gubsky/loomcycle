@@ -113,6 +113,22 @@ type Event struct {
 	CryptoRunID   string `json:"crypto_run_id,omitempty"`
 	CryptoAgent   string `json:"crypto_agent,omitempty"`
 
+	// --- OAuth credential (RFC GB; Action = "oauth_create" |
+	// "oauth_connect_start" | "oauth_connected" | "oauth_connect_failed" |
+	// "oauth_needs_reauth" | "oauth_reregistered" | "oauth_disconnect") ---
+	//
+	// Who connected or disconnected which OAuth credential, and what came of
+	// a connect or a refresh: never a token, a device or user code, or a
+	// client secret (no field holds one). The credential's name travels in
+	// TargetName, its tenant in TargetTenant, the user it belongs to (user
+	// scope) in TargetSubject, and the caller in the Actor fields.
+	OAuthScope   string `json:"oauth_scope,omitempty"`   // tenant | user | agent
+	OAuthIssuer  string `json:"oauth_issuer,omitempty"`  // the authorization server
+	OAuthOutcome string `json:"oauth_outcome,omitempty"` // ok | refused | failed
+	// OAuthReason is why a connect failed or a grant was lost: a fixed
+	// phrase or the authorization server's error code.
+	OAuthReason string `json:"oauth_reason,omitempty"`
+
 	// --- Git network operation (Action = "git_clone" | "git_fetch" |
 	// "git_pull" | "git_push" | "git_ls_remote") ---
 	//

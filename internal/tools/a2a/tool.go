@@ -194,7 +194,7 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 }
 
 // openStoredBearer resolves a bearer that is, or holds, a stored credential
-// reference ("$cred:<name>", "$ghapp:<name>") — a webhook's or a schedule's
+// reference ("$cred:<name>", "$ghapp:<name>", "$oauth:<name>") — a webhook's or a schedule's
 // credentials carry them unopened — for this peer. The run identity on ctx
 // decides the scopes (the resolver drops the user's own scope for a trigger
 // that may not act as the run's user).
@@ -205,7 +205,7 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 // called at the URLs the card advertises, unknown here, so it is resolved for
 // no URL: only an unrestricted credential is sent to it.
 func (t *Tool) openStoredBearer(ctx context.Context, def config.A2AAgent, bearer string) (string, error) {
-	if len(credential.RefNames(bearer)) == 0 && len(credential.GHAppRefNames(bearer)) == 0 {
+	if !credential.HasAnyRef(bearer) {
 		return bearer, nil
 	}
 	if t.credSubstitute == nil {
@@ -222,6 +222,11 @@ func (t *Tool) openStoredBearer(ctx context.Context, def config.A2AAgent, bearer
 	// shadow the tenant's.
 	rctx := ctx
 	if ident := tools.RunIdentity(ctx); ident.UserBearer != "" && bearer == ident.UserBearer {
+		// The bearer takes a $cred: reference or a literal; an $oauth: one
+		// is refused rather than resolved at an identity nobody chose.
+		if credential.HasOAuthRef(bearer) {
+			return "", fmt.Errorf("the run's bearer names an $oauth: credential, which a bearer cannot: %w", tools.ErrRunCredentialUnavailable)
+		}
 		ident.UserID = ""
 		rctx = tools.WithAgentName(tools.WithRunIdentity(ctx, ident), "")
 	}

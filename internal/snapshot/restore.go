@@ -80,6 +80,12 @@ type RestoreOptions struct {
 	// is how such a secret is meant to be stored. nil skips these with the
 	// same warning.
 	CredentialToCompare func(ctx context.Context, tenantID, name string) bool
+	// OAuthCredentialState backs the scan for an $oauth:<name> reference:
+	// the state of the OAuth credential the name resolves to for that scope
+	// (connected, pending_connect, needs_reauth, revoked), and whether one is
+	// held at all. Like the others it never returns a value. nil skips these
+	// with the same warning.
+	OAuthCredentialState func(ctx context.Context, tenantID, agentName, userID, name string) (state string, found bool)
 
 	// VolumeRoot is this host's dynamic volume root (the static volume
 	// marked dynamic_root: true). Every restored dynamic volume's path is

@@ -108,9 +108,10 @@ func secretShaped(value string) bool {
 
 // referenceRe matches the reference forms a header value may use instead of a
 // literal: ${...} (an env or run placeholder, expanded at dial or call time),
-// and $cred:<name> / $ghapp:<name> (resolved per run from the credential
-// store). The name charset mirrors internal/credential's token grammar.
-var referenceRe = regexp.MustCompile(`\$\{[^}]*\}|\$(?:cred|ghapp):[A-Za-z0-9_-]{1,128}`)
+// and $cred:<name> / $ghapp:<name> / $oauth:<name> (resolved per run from the
+// credential store). The name charset mirrors internal/credential's token
+// grammar (TestRefGrammar_SnapshotRegexesMatchCredentialGrammar).
+var referenceRe = regexp.MustCompile(`\$\{[^}]*\}|\$(?:cred|ghapp|oauth):[A-Za-z0-9_-]{1,128}`)
 
 // authSchemes are the words that may precede a credential in an
 // Authorization-style value. A value that is only a scheme around a reference

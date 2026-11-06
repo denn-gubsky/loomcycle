@@ -38,6 +38,9 @@ type CredentialDef struct {
 	// KMS reaches external KMSs, for a crypto key held in one (shared with
 	// the Crypto tool). Nil: such keys cannot be created.
 	KMS *KMSAccess
+	// OAuth connects and disconnects OAuth credentials (RFC GB). Nil: they
+	// can be created and listed, not connected.
+	OAuth *credential.OAuthManager
 }
 
 // CredentialToolName is the in-band tool name (tools:[CredentialDef]).
@@ -61,14 +64,18 @@ func (c *CredentialDef) Description() string {
 		"Requires LOOMCYCLE_SECRET_KEY for the inline backend. It also holds crypto keys for the Crypto tool (usage crypto): " +
 		"generate makes one nobody ever sees, rotate adds a version, set_min_version retires old ones. A crypto key can also " +
 		"reference a key held in Vault, AWS KMS or Google Cloud KMS (create with backend and external). Inside a run, crypto " +
-		"keys are made and changed in agent scope only."
+		"keys are made and changed in agent scope only. An OAuth credential (usage oauth, with an oauth object naming the resource) " +
+		"connects to an OAuth authorization server: its owner runs oauth_connect_start and approves the code shown, " +
+		"oauth_connect_status reports the state, oauth_disconnect revokes it; other config names it as $oauth:<name> and the " +
+		"runtime sends a fresh access token. OAuth credentials are managed outside a run."
 }
 
 const credentialDefInputSchema = `{
   "type": "object",
   "properties": {
-    "op":         {"type": "string", "enum": ["create","get","list","delete","generate","rotate","set_min_version","delete_version","export_key","import_key"], "description": "The operation. generate, rotate, set_min_version, delete_version, export_key and import_key are for crypto keys (usage crypto), used by the Crypto tool."},
-    "usage":      {"type": "string", "enum": ["secret","crypto"], "description": "create only: secret (default) stores a value other config sends as $cred:<name>; crypto stores a key for the Crypto tool, never sent anywhere. A crypto key needs key_type."},
+    "op":         {"type": "string", "enum": ["create","get","list","delete","generate","rotate","set_min_version","delete_version","export_key","import_key","oauth_connect_start","oauth_connect_status","oauth_disconnect"], "description": "The operation. generate, rotate, set_min_version, delete_version, export_key and import_key are for crypto keys (usage crypto), used by the Crypto tool. oauth_connect_start, oauth_connect_status and oauth_disconnect are for OAuth credentials (usage oauth), outside a run."},
+    "usage":      {"type": "string", "enum": ["secret","crypto","oauth"], "description": "create only: secret (default) stores a value other config sends as $cred:<name>; crypto stores a key for the Crypto tool, never sent anywhere. A crypto key needs key_type. oauth stores the config of a connection to an OAuth authorization server (with oauth), named as $oauth:<name> once connected."},
+    "oauth":      {"type": "object", "description": "create with usage oauth: resource is the https URL of the protected resource (an MCP server) the access token is for; issuer the authorization server, needed only when the resource lists more than one; client.registration is dynamic (the default; the runtime registers itself); client.token_endpoint_auth is none (default), client_secret_basic or client_secret_post; scopes are the scopes to ask for. allowed_urls defaults to [resource]. Create-only: to change it, delete it and create it again.", "properties": {"resource": {"type": "string"}, "issuer": {"type": "string"}, "client": {"type": "object", "properties": {"registration": {"type": "string", "enum": ["dynamic"]}, "token_endpoint_auth": {"type": "string", "enum": ["none","client_secret_basic","client_secret_post"]}}, "additionalProperties": false}, "scopes": {"type": "array", "items": {"type": "string"}}}, "additionalProperties": false},
     "key_type":   {"type": "string", "enum": ["aes-256-gcm","xchacha20-poly1305","hmac-sha256","hmac-sha512","ed25519","ecdsa-p256","totp","x25519","rsa-oaep-2048","rsa-oaep-3072","rsa-oaep-4096","rsa-pss-2048","rsa-pss-3072","rsa-pss-4096"], "description": "create (usage crypto) and generate: what kind of key. Fixed for the key's life. An rsa-oaep key encrypts and an rsa-pss key signs, never both."},
     "key_encoding": {"type": "string", "enum": ["raw","base64","hex","base32","pem"], "description": "create (usage crypto) and rotate with a value: how value is written (default by key_type: base64 for AEAD and HMAC, base32 for totp, pem for the asymmetric types)."},
     "min_version": {"type": "integer", "description": "set_min_version: the lowest version still used. Versions below it are retired: nothing decrypts or verifies with them, and only they can be deleted. It can only go up."},
@@ -116,6 +123,9 @@ type credentialDefInput struct {
 	// External names a key held in an external KMS (backend vault, aws_kms
 	// or gcp_kms); its fields depend on the backend.
 	External json.RawMessage `json:"external"`
+
+	// OAuth is the config of an OAuth credential (usage oauth, RFC GB).
+	OAuth json.RawMessage `json:"oauth"`
 }
 
 var credNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
@@ -148,8 +158,14 @@ func (c *CredentialDef) Execute(ctx context.Context, raw json.RawMessage) (tools
 		if in.Usage == credential.UsageCrypto {
 			return c.execCreateKey(ctx, tenantID, scope, scopeID, in)
 		}
+		if in.Usage == credential.UsageOAuth {
+			return c.execCreateOAuth(ctx, tenantID, scope, scopeID, in)
+		}
 		if in.Usage != "" && in.Usage != "secret" {
-			return errResult(fmt.Sprintf("create: unknown usage %q (secret | crypto)", in.Usage)), nil
+			return errResult(fmt.Sprintf("create: unknown usage %q (secret | crypto | oauth)", in.Usage)), nil
+		}
+		if len(in.OAuth) > 0 {
+			return errValidation("create: oauth applies only to usage oauth", "Pass usage: \"oauth\"."), nil
 		}
 		return c.execCreate(ctx, tenantID, scope, scopeID, in)
 	case "get":
@@ -160,10 +176,12 @@ func (c *CredentialDef) Execute(ctx context.Context, raw json.RawMessage) (tools
 		return c.execDelete(ctx, tenantID, scope, scopeID, in)
 	case "generate", "rotate", "set_min_version", "delete_version", "export_key", "import_key":
 		return c.execKeyOp(ctx, tenantID, scope, scopeID, in)
+	case "oauth_connect_start", "oauth_connect_status", "oauth_disconnect":
+		return c.execOAuthOp(ctx, tenantID, scope, scopeID, in)
 	case "":
 		return errResult("missing required field: op"), nil
 	default:
-		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, get, list, delete, generate, rotate, set_min_version, delete_version, export_key, import_key)", in.Op)), nil
+		return errResult(fmt.Sprintf("unknown op %q (must be one of: create, get, list, delete, generate, rotate, set_min_version, delete_version, export_key, import_key, oauth_connect_start, oauth_connect_status, oauth_disconnect)", in.Op)), nil
 	}
 }
 
@@ -274,7 +292,19 @@ func (c *CredentialDef) execDelete(ctx context.Context, tenantID, scope, scopeID
 	if in.Name == "" {
 		return errResult("delete: name is required"), nil
 	}
-	found, err := c.Engine.Delete(ctx, credential.Identity{TenantID: tenantID, Scope: scope, ScopeID: scopeID, Name: in.Name})
+	id := credential.Identity{TenantID: tenantID, Scope: scope, ScopeID: scopeID, Name: in.Name}
+	if m, err := c.Engine.Get(ctx, id); err == nil && m.Usage == credential.UsageOAuth {
+		// Managed outside a run, by whoever may connect it.
+		if res, ok := oauthScopeAllowed(ctx, "delete", scope); !ok {
+			return res, nil
+		}
+		// Its grant is revoked first, best effort: deleting the row alone
+		// would leave a live refresh token at the server.
+		if c.OAuth != nil {
+			c.OAuth.RevokeBeforeDelete(ctx, id)
+		}
+	}
+	found, err := c.Engine.Delete(ctx, id)
 	if err != nil {
 		return errResult("delete: " + err.Error()), nil
 	}
@@ -286,7 +316,7 @@ func (c *CredentialDef) execDelete(ctx context.Context, tenantID, scope, scopeID
 // credential holds); everything that writes, rotates, retires or exports is
 // manage, and so is an op this table does not know (the stronger verb).
 func credentialACLVerb(op string) string {
-	if op == "get" {
+	if op == "get" || op == "oauth_connect_status" {
 		return "use"
 	}
 	return "manage"
@@ -341,6 +371,11 @@ func credentialMeta(row credential.Meta, note string) map[string]any {
 			versions = append(versions, map[string]any{"version": v.Version, "created_at": v.CreatedAt, "retired": v.Retired})
 		}
 		m["versions"] = versions
+	}
+	// An OAuth credential (RFC GB): its config and status, never a token.
+	if row.Usage == credential.UsageOAuth && row.OAuth != nil {
+		m["usage"] = row.Usage
+		oauthMetaFields(m, row.OAuth)
 	}
 	if note != "" {
 		m["status"] = note

@@ -201,6 +201,12 @@ func (b *boot) buildServer() {
 		ok, err := credEngine.HasToCompare(ctx, tenantID, name)
 		return err == nil && ok
 	})
+	// The snapshot scan's check for an $oauth: reference (RFC GB): held, and
+	// in which state. Metadata only.
+	srv.SetOAuthCredentialState(func(ctx context.Context, tenantID, agentName, userID, name string) (string, bool) {
+		state, found, err := credEngine.HasOAuth(ctx, tenantID, agentName, userID, name)
+		return state, found && err == nil
+	})
 	// RFC BE: the History tool's op=recap summarizer. Store was late-bound above
 	// (before srv existed); Recap needs server-side provider/model resolution, so
 	// it's the off-loop twin of the compaction summarizer (Server.RecapSession).

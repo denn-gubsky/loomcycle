@@ -422,7 +422,7 @@ credential is never printed.
 
 **Literal credentials.** A capture reports every header value, and every
 value in an MCP server's stdio `env`, that looks like a literal
-credential instead of a reference (`$cred:<name>`, `$ghapp:<name>`,
+credential instead of a reference (`$cred:<name>`, `$ghapp:<name>`, `$oauth:<name>`,
 `${...}`). The value travels in the snapshot as written. The capture
 response and every restore warn with its location — the definition and
 the field, such as `headers.Authorization` or `env.GITHUB_TOKEN` — never
@@ -433,7 +433,7 @@ the value. Replace it with a reference; in a stdio `env`, only a
 credentials. After the definitions land, the restore reads the
 references in each restored webhook, schedule and server card —
 `user_credentials_from_env` names, the webhook signing/bearer env names,
-`sign_with_key_env`, and `$cred:` / `$ghapp:` / `${...}` references —
+`sign_with_key_env`, and `$cred:` / `$ghapp:` / `$oauth:` / `${...}` references —
 and in the header maps of every restored MCP server, hook, channel,
 agent and team (plus an MCP server's url and stdio `env`), and warns for
 each one this host cannot supply: an env var that is not set, or a

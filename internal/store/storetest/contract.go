@@ -501,6 +501,8 @@ func Run(t *testing.T, factory Factory) {
 		{"VolumeDefCreateAndGet", testVolumeDefCreateAndGet},
 		{"VolumeDefTenantIsolation", testVolumeDefTenantIsolation},
 		{"CredentialDefScopeIsolation", testCredentialDefScopeIsolation},
+		{"CredentialDefPutIfWritesOnlyWhenDefinitionUnchanged", testCredentialDefPutIfWritesOnlyWhenDefinitionUnchanged},
+		{"CredentialDefPutIfMissingRowIsNotFound", testCredentialDefPutIfMissingRowIsNotFound},
 		{"VolumeDefDelete", testVolumeDefDelete},
 		{"VolumeDefList", testVolumeDefList},
 		{"VolumeDefCreateUpdatesDefinition", testVolumeDefCreateUpdatesDefinition},
