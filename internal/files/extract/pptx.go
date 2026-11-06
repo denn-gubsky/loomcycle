@@ -155,23 +155,34 @@ func (s *slideState) shapes(tree *node) error {
 				}
 			}
 		case "graphicFrame":
-			for _, tbl := range k.all("tbl") {
-				var rows [][]string
+			// A cell's text holds whatever is nested in it, so only the
+			// outermost tables are rendered.
+			for _, tbl := range k.outermost("tbl") {
+				rows := s.w.newTable()
 				for _, tr := range tbl.kids {
 					if tr.name != "tr" {
 						continue
 					}
+					if err := s.w.ctx.Err(); err != nil {
+						return err
+					}
 					var row []string
 					for _, tc := range tr.kids {
+						if len(row) > maxSheetColumns {
+							break
+						}
 						if tc.name == "tc" {
 							row = append(row, cell(strings.Join(shapeParagraphs(tc.child("txBody")), " ")))
 						}
 					}
-					rows = append(rows, row)
+					if !rows.add(row) {
+						break
+					}
 				}
-				if len(rows) > 0 {
+				rows.done()
+				if len(rows.rows) > 0 {
 					s.rep.Tables++
-					s.blocks = append(s.blocks, table(rows))
+					s.blocks = append(s.blocks, table(rows.rows))
 				}
 			}
 		case "grpSp":
@@ -208,7 +219,9 @@ func notesQuote(notes *node) string {
 		return ""
 	}
 	var lines []string
-	for _, sp := range tree.all("sp") {
+	// A shape's paragraphs hold any shape nested in them, so only the
+	// outermost shapes are read.
+	for _, sp := range tree.outermost("sp") {
 		if sp.path("nvSpPr", "nvPr", "ph").attr("type") != "body" {
 			continue
 		}

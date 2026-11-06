@@ -71,8 +71,9 @@ func (DOCX) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 		return rep, refusedf("the document has no body")
 	}
 	// A Title-style paragraph names the document: it becomes the "#" heading
-	// and is not repeated below it.
-	for _, p := range body.all("p") {
+	// and is not repeated below it. Only outermost paragraphs are looked at:
+	// a paragraph's text holds those nested in it.
+	for _, p := range body.outermost("p") {
 		if d.paraLevel(p) == levelTitle {
 			if t := strings.TrimSpace(plainText(p)); t != "" {
 				docTitle, d.titlePara = t, p
@@ -378,8 +379,14 @@ func (d *docx) drawing(n *node, out *[]seg) error {
 			*out = append(*out, seg{image: md})
 		}
 	}
-	for _, box := range n.all("txbxContent") {
-		for _, p := range box.all("p") {
+	// A paragraph's text holds every text box and paragraph nested in it,
+	// so only the outermost are read: reading each level again multiplied
+	// the text by the depth.
+	for _, box := range n.outermost("txbxContent") {
+		if err := d.w.ctx.Err(); err != nil {
+			return err
+		}
+		for _, p := range box.outermost("p") {
 			*out = append(*out, seg{text: "\n" + plainText(p)})
 		}
 	}
@@ -482,20 +489,31 @@ func renderSegs(segs []seg) string {
 }
 
 // table renders a w:tbl as a GFM table. A cell's paragraphs are joined on
-// one line; an image in a cell stays in the cell.
+// one line; an image in a cell stays in the cell. The table is held to the
+// tableRows caps.
 func (d *docx) table(t *node) (string, error) {
-	var rows [][]string
+	rows := d.w.newTable()
+	defer rows.done()
 	for _, tr := range t.kids {
 		if tr.name != "tr" {
 			continue
+		}
+		if err := d.w.ctx.Err(); err != nil {
+			return "", err
 		}
 		var row []string
 		for _, tc := range tr.kids {
 			if tc.name != "tc" {
 				continue
 			}
+			// The cells past the cap are not read: add cuts the row there.
+			if len(row) > maxSheetColumns {
+				break
+			}
 			var parts []string
-			for _, p := range tc.all("p") {
+			// A nested table's paragraphs are the cell's too; a paragraph
+			// inside another is read with it (runs descends into it).
+			for _, p := range tc.outermost("p") {
 				var segs []seg
 				if err := d.runs(p, &segs); err != nil {
 					return "", err
@@ -520,13 +538,15 @@ func (d *docx) table(t *node) (string, error) {
 				}
 			}
 		}
-		rows = append(rows, row)
+		if !rows.add(row) {
+			break
+		}
 	}
-	if len(rows) == 0 {
+	if len(rows.rows) == 0 {
 		return "", nil
 	}
 	d.rep.Tables++
-	return table(rows), nil
+	return table(rows.rows), nil
 }
 
 func nonEmpty(ss []string) []string {

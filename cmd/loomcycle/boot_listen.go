@@ -74,9 +74,11 @@ func (b *boot) startListeners() {
 			// RFC EI P3: where a queued run waits, from this replica's queue.
 			QueuePosition: srv.QueuePosition,
 		})
+		// The recover interceptors run first, so a panic anywhere below them,
+		// authentication included, ends one call rather than the process.
 		grpcSrv = googlegrpc.NewServer(
-			googlegrpc.UnaryInterceptor(grpcAdapter.UnaryAuthInterceptor()),
-			googlegrpc.StreamInterceptor(grpcAdapter.StreamAuthInterceptor()),
+			googlegrpc.ChainUnaryInterceptor(loomgrpc.RecoverUnaryInterceptor(), grpcAdapter.UnaryAuthInterceptor()),
+			googlegrpc.ChainStreamInterceptor(loomgrpc.RecoverStreamInterceptor(), grpcAdapter.StreamAuthInterceptor()),
 		)
 		loomcyclepb.RegisterLoomcycleServer(grpcSrv, grpcAdapter)
 		// v1.x RFC G — register the A2A gRPC binding on the same server.
