@@ -306,3 +306,40 @@ func TestStoreSink_ATenantsDropsAreSummarizedInItsOwnChain(t *testing.T) {
 		t.Errorf("acme's drop summary = %+v; want acl_denied counted and acme/mallory named", summary)
 	}
 }
+
+// One tenant flooding its observations (a member's denials) takes only its
+// own share of the authenticated queue: another tenant's still land.
+func TestStoreSink_OneTenantsFloodDropsNoOtherTenantsObservations(t *testing.T) {
+	st := &gatedAppender{Store: sinkStore(t), gate: make(chan struct{})}
+	sink, err := auditchain.NewStoreSink(st, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.StartAsync(16)
+	for i := 0; i < 100; i++ {
+		_ = sink.Record(audit.Event{Action: "acl_denied", ActorTenant: "acme", ActorSubject: "mallory", TargetName: fmt.Sprint("doc:", i)})
+	}
+	if err := sink.Record(audit.Event{Action: "crypto_op", ActorTenant: "globex", ActorSubject: "gina", TargetTenant: "globex"}); err != nil {
+		t.Fatal(err)
+	}
+	close(st.gate)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := sink.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.AuditEventsList(ctx, "globex", 0, 0)
+	if err != nil || len(rows) != 1 || rows[0].Action != "crypto_op" {
+		t.Errorf("globex's chain = %v, %v; want its crypto_op despite acme's flood", rows, err)
+	}
+	// Refused privileged attempts by authenticated callers are rare and
+	// worth keeping: written at once, never queued.
+	for _, a := range []string{"auth_manage_refused", "auth_gate_sync_refused"} {
+		if auditchain.IsObservation(a) {
+			t.Errorf("%s is queued (droppable); want it written at once", a)
+		}
+	}
+	if !auditchain.IsObservation("git_submodule_update") {
+		t.Error("git_submodule_update is written at once; it is a fetch, queued like git_fetch")
+	}
+}

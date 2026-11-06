@@ -65,7 +65,10 @@ const (
 //   - high-signal detections, which must never be dropped however full a
 //     queue is: a lockout (auth_login_locked), a replayed authorization
 //     code or refresh token (oauth_code_reuse, oauth_refresh_reuse), a
-//     session downgrade refused (auth_downgrade_refused).
+//     session downgrade refused (auth_downgrade_refused);
+//   - refused privileged attempts by an authenticated caller
+//     (auth_manage_refused, auth_gate_sync_refused): rare, and worth more
+//     than a count.
 //
 // SQL Memory's per-statement records (sql_query, sql_exec) never reach the
 // store sink: they are written to the JSONL file only.
@@ -76,9 +79,9 @@ func classify(action string) eventClass {
 		// was already ended: the alarm was written once, these only count.
 		"oauth_code_reuse_repeat", "oauth_refresh_reuse_repeat", "oauth_revoke_repeat":
 		return classAnonymous
-	case "auth_gate_sync_refused", "auth_link_refused", "auth_manage_refused",
+	case "auth_link_refused",
 		"acl_denied", "acl_unavailable", "acl_shadow_diverged", "acl_resolution_failed",
-		"identity_lookup", "crypto_op", "git_clone", "git_fetch", "git_ls_remote":
+		"identity_lookup", "crypto_op", "git_clone", "git_fetch", "git_ls_remote", "git_submodule_update":
 		return classObserved
 	}
 	return classSync
@@ -117,7 +120,16 @@ type obsQueue struct {
 	ch      chan audit.Event
 	done    chan struct{}
 	dropped map[string]*dropTally // chain tenant → tally; guarded by StoreSink.mu
+	// share caps how many events one chain may have waiting (0: no cap),
+	// so one tenant flooding its observations cannot take another's room;
+	// pending counts them, guarded by StoreSink.mu.
+	share   int
+	pending map[string]int
 }
+
+// tenantShareDivisor sets the authenticated queue's per-chain share: one
+// chain may hold at most capacity/tenantShareDivisor waiting events.
+const tenantShareDivisor = 8
 
 // StoreSink records events into the store-backed chain.
 type StoreSink struct {
@@ -156,12 +168,15 @@ func (s *StoreSink) StartAsync(capacity int) {
 	if capacity <= 0 {
 		capacity = DefaultQueueCapacity
 	}
-	s.anonymous = s.startQueue(capacity)
-	s.observed = s.startQueue(capacity)
+	// Unauthenticated events have no tenant to share by (they all land on
+	// the operator chain); authenticated ones are shared per chain.
+	s.anonymous = s.startQueue(capacity, 0)
+	s.observed = s.startQueue(capacity, max(capacity/tenantShareDivisor, 1))
 }
 
-func (s *StoreSink) startQueue(capacity int) *obsQueue {
-	q := &obsQueue{ch: make(chan audit.Event, capacity), done: make(chan struct{}), dropped: map[string]*dropTally{}}
+func (s *StoreSink) startQueue(capacity, share int) *obsQueue {
+	q := &obsQueue{ch: make(chan audit.Event, capacity), done: make(chan struct{}),
+		dropped: map[string]*dropTally{}, share: share, pending: map[string]int{}}
 	go s.writer(q)
 	return q
 }
@@ -220,8 +235,14 @@ func (s *StoreSink) enqueue(c eventClass, ev audit.Event) bool {
 	if c == classAnonymous {
 		q = s.anonymous
 	}
+	tenant := ChainTenant(ev)
+	if q.share > 0 && q.pending[tenant] >= q.share {
+		s.countDropLocked(q, ev)
+		return true
+	}
 	select {
 	case q.ch <- ev:
+		q.pending[tenant]++
 	default:
 		s.countDropLocked(q, ev)
 	}
@@ -269,6 +290,15 @@ func (s *StoreSink) writer(q *obsQueue) {
 // the order each tenant first appears, each tenant's events in queue order.
 // A failed append counts its events as dropped.
 func (s *StoreSink) writeBatch(q *obsQueue, batch []audit.Event) {
+	s.mu.Lock()
+	for _, ev := range batch {
+		if t := ChainTenant(ev); q.pending[t] > 1 {
+			q.pending[t]--
+		} else {
+			delete(q.pending, t)
+		}
+	}
+	s.mu.Unlock()
 	byTenant := map[string][]audit.Event{}
 	var order []string
 	for _, ev := range batch {
