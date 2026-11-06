@@ -570,14 +570,16 @@ jobs:
       # NON-superuser CREATEROLE admin (exactly the production provisioning), so
       # CI exercises the per-scope-login-role isolation tests (incl. the
       # cross-scope SET-role pivot regression) — not only SQLite. Without this
-      # the postgres sqlmem tests skip.
+      # the postgres sqlmem tests skip. CREATEDB is beyond the production recipe:
+      # the CONNECT-probe tests revoke PUBLIC CONNECT on a scratch database of
+      # their own rather than on sqlmem_aux, and skip without it.
       - name: Provision sqlmem aux DB + admin role
         if: matrix.group == 'tiers'
         env:
           PGPASSWORD: loomcycle
         run: |
           psql -h 127.0.0.1 -U loomcycle -d loomcycle_test -v ON_ERROR_STOP=1 \
-            -c "CREATE ROLE sqlmem_admin LOGIN PASSWORD 'auxpw' CREATEROLE;" \
+            -c "CREATE ROLE sqlmem_admin LOGIN PASSWORD 'auxpw' CREATEROLE CREATEDB;" \
             -c "CREATE DATABASE sqlmem_aux OWNER sqlmem_admin;"
           # Phase 3c vector columns: install pgvector into a dedicated read-only
           # sqlmem_ext schema (the operator step) so the vector tests exercise it.
