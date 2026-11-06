@@ -8,6 +8,123 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.142.0
+
+*People can talk to an agent through the chat bridges by voice: Telegram and Discord voice notes, Slack clips and Teams audio files are transcribed in, and replies can be spoken back. And the runtime-integrity line from the 2026-11-04 re-assessment ships whole: a tamper-evident audit trail in the store, documents that SQL Memory cannot reach, bounded extraction, facts that record who really made them, bridges that refuse unsafe setups, security headers, a bounded redactor, confined helpers, and signed releases.*
+
+The v1.142 line: #2410 to #2435.
+- `@loomcycle/client` 1.142.0: `statement_methods` takes `'judge'`, `'link'` and `'remember'`, and a description trim no longer backtracks on long whitespace. The Python adapter moves to 1.142.0 for lockstep; its API does not change.
+- The bridges ship as `@loomcycle/bridge-core`, `-telegram`, `-slack`, `-discord` and `-teams` 0.4.0 (already published).
+- **One migration:** 0131 adds `audit_events` and `audit_heads` (Postgres; SQLite creates them at boot).
+- **Read the upgrade notes below before upgrading.** Two can stop a deployment from starting, and one moves data on disk.
+
+### Upgrade notes
+
+- **Set `LOOMCYCLE_SECRET_KEY` before upgrading a gated deployment.**
+  - The store-backed audit trail is on whenever a sign-in gate is configured (any kind), `auth.mode: strict` is set, or `LOOMCYCLE_ACL` is `shadow` or `enforce`. It signs its chains with a key derived from `LOOMCYCLE_SECRET_KEY`. Without that key, config load (`loomcycle validate` too) and boot refuse.
+  - When you rotate the key later, keep the old one as `LOOMCYCLE_SECRET_KEY_PREVIOUS` until every chain is pruned past the rows it signed.
+  - Give the container a 30 s stop grace (`stop_grace_period: 30s`) so the audit queues drain.
+- **An `external` gate needs `issued_token`.** A gate without one, or with one naming neither `agents` nor `overrides`, fails config load.
+  - To keep full member reach, write `issued_token: unrestricted`, or `{ unrestricted: true, ttl, rate, max_active }` to keep a lifetime and a rate.
+  - `unrestricted` cannot be combined with `agents`, `overrides` or `surfaces`.
+- **SQLite SQL Memory: back up before upgrading.** Each scope's documents move into their own `<scope>.doc.db` beside `<scope>.db`, once, at the first boot. The log says `moved scopes' document tables into their own files`.
+  - Back up every `*.db` file under the sqlmem root first.
+  - Until the boot pass reaches a scope, readers that do not provision see no documents in it.
+  - **Rolling back past this release needs that backup:** an older release on moved data shows no documents, and its dead-link GC deletes the moved documents' bodies. If a rollback without the backup is unavoidable, set `LOOMCYCLE_DEADLINK_GC_MS=0` on the older release first. What it writes is quarantined on re-upgrade (`<scope>.leftover-<n>.db`, logged at error); `docs/SQL_MEMORY.md` shows how to merge it by hand.
+  - Postgres is not moved.
+- **Document facts record who made them.**
+  - A `sync` pull files the peer's statements as proposals unless the source is declared `trust: asserted`. Only the operator plane may declare that.
+  - A pull from an untrusted source no longer updates statements an earlier pull asserted.
+  - An agent's tenant-scope relations are filed for review unless it holds `statement_methods: [link]`. That covers its links, a fact's relation, import and canvas edges, and copy or move into the tenant. The memory consolidator ships with `link`; a custom one that writes tenant relations must add it.
+  - `remember` from a run needs `statement_methods: [remember]`.
+  - A run's proposals are now method `agent`, so a review-policy rule written for `method: manual` no longer matches them.
+- **Webhooks reach private addresses only from yaml.** A hook from a run request, a runtime agent or team definition, or a stored channel now goes through the private-address guard in every tenant. List a private host in `hooks.private_host_allowlist` if one must be reached. yaml agent and channel hooks are unchanged.
+- **Bridges (0.4.0).**
+  - `BRIDGE_DEV=1` is refused with `BRIDGE_GATE`, or off loopback.
+  - `LOOMCYCLE_BASE_URL` must be `https://` or loopback. A private-network `http://` URL needs `BRIDGE_ALLOW_INSECURE_LOOMCYCLE=1`.
+- **Smaller changes you may notice.**
+  - The Web UI blocks images from other origins inside rendered documents.
+  - New data directories, snapshot exports and the configs `import claude-code` writes are owner-only (0700/0600). A host-written config mounted into the container needs `chmod 0644` or `--user`.
+  - An oversized table in an extracted file is cut with a note.
+  - An agent's SQL result stops at 8 MiB (`LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES`).
+  - gosec now fails CI on medium findings.
+
+### Voice messages through the chat bridges (#2418, #2426 to #2431, RFC GA)
+
+- **Off unless `BRIDGE_VOICE=1`.**
+  - **In:** a voice message is transcribed on the person's own token and runs as their message, marked `(voice message)`.
+  - **Back:** a reply can be spoken back (`BRIDGE_VOICE_REPLY`: `mirror`, `always`, `never`).
+- **Per platform:**
+  - **Telegram:** voice notes and video notes, both ways.
+  - **Slack:** clips and audio files in, audio replies out.
+  - **Discord:** an "Ask by voice" message command on your own voice message, and voice-message replies.
+  - **Teams:** audio files attached in a 1:1 chat.
+- loomcycle needs its speech engines, an Opus `speech.encode` for Telegram and Discord voice notes, and the `surfaces` grant from v1.141.0. `docs/SPEECH.md` "Through a chat bridge" has the order.
+
+### A durable, tamper-evident audit trail (#2424, RFC FZ Part E)
+
+- **Storage and signing.**
+  - Audit events go to the store, one hash chain per tenant, written by every replica.
+  - Each row, chain head and retention anchor carries an HMAC under a key from `LOOMCYCLE_SECRET_KEY`.
+  - Deleting a whole chain is detected.
+- **How events are written.**
+  - State changes and alarms are written before the request continues.
+  - Failed sign-ins, denials and lookups go through bounded queues that never block a request. Drops are summarized in the chain.
+- **Commands and settings.**
+  - `loomcycle audit verify --tenant|--operator|--all` walks the chains.
+  - `GET /v1/_audit` exports one chain as JSONL with a signed trailer. It is the tenant operator's; members get 403.
+  - `LOOMCYCLE_AUDIT_RETENTION_DAYS` prunes behind a signed anchor.
+  - `LOOMCYCLE_AUDIT_LOG_PATH` stays as a mirror.
+- **Residuals:** deleting every chain at once, or rolling the tables back to an earlier signed state, needs an outside witness (exports or the mirror).
+
+### Documents SQL Memory cannot reach (#2408 in v1.141.0, #2434, RFC FZ Part A)
+
+- On SQLite, the document plane is now its own file per scope, so agent SQL cannot name it.
+- Snapshots carry it as `doc_tail`. This also fixes Postgres restores, which had put document tables on the agent plane since #2277.
+- The restore-time document check finds documents that have not moved yet, so an older archive keeps its Path names.
+
+### Bounded extraction and recovered panics (#2414, #2432, RFC FZ Part B)
+
+- **Table caps.** XLSX streams each sheet under caps: 16 MiB, 200,000 cells and 200 columns per table, 32 KiB per cell, and 32 MiB for all of a document's tables. DOCX, PPTX and HTML tables are bounded the same way, and nested text boxes and notes are read once. `max_rows` is at most 10,000.
+- **Concurrency.** `LOOMCYCLE_EXTRACT_CONCURRENCY` (default: the CPU count) bounds how many extractions run at once.
+- **Fuzzing.** Every extractor is fuzzed in CI.
+- **Panics.** A tool that panics answers `tool_panicked`, and the run continues; the count is `loomcycle_tool_panics_total`. gRPC handlers recover too.
+- **SQL results.** An agent's SQL result is capped at 8 MiB (#2425).
+
+### Facts that record who made them (#2419, RFC FZ Part C)
+
+- A sync stays inside its own document.
+- A policy cannot overturn an operator's rejection.
+- A link over a waiting proposal asserts it only for a caller who may rule there, and records the ruling.
+- The provenance rules are in the upgrade notes above.
+
+### Bridges refuse unsafe setups (#2420, RFC FZ Part D)
+
+- **Gate settings:** the `issued_token` ceiling is required. `new_user.budget` writes a provisioned user's token limit, and an untrusted gate may only tighten it.
+- **Kept revokes:** a failed revoke is kept and retried, never dropped on a refusal.
+- **Reconciliation:** a bridge whose platform lists members (Slack) revokes the people it served who left. The cap per round is half of those served under ten, otherwise max(5, 10%), and a round that would revoke everyone is never applied.
+- **Teams:** in dev mode it listens on loopback only.
+- **Budgets on every replica:** each replica reloads the token limits every `LOOMCYCLE_LIMITS_RELOAD_INTERVAL` (default 1m), so a budget written on one replica applies on all (#2417).
+
+### Headers, guards, redactor, helpers (#2422, #2433, RFC FZ Part F)
+
+- **Headers.** Every response carries `X-Frame-Options: DENY`, `nosniff` and `Referrer-Policy: same-origin`, plus HSTS when `LOOMCYCLE_PUBLIC_URL` is https. The Web UI's CSP admits its own inline scripts by hash.
+- **`LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE=cidr_only`** refuses host names in the private-host allowlist.
+- **Redactor.** Its runtime set is bounded: values a live run holds are never evicted.
+- **Helpers.** `LOOMCYCLE_HELPER_WRAPPER` runs ffmpeg and pdftoppm under an operator wrapper such as `bwrap`, and ffmpeg always gets `-nostdin -protocol_whitelist file,pipe`.
+
+### Supply chain and code scanning (#2421, #2423, RFC FZ Part G)
+
+- **Signed releases.** Checksums are signed with keyless cosign, images are signed by digest, each archive has an SPDX SBOM, and archives and images carry build-provenance attestations. Every npm package publishes with `--provenance`, and archives carry `THIRD_PARTY_LICENSES`. `docs/VERIFYING-RELEASES.md` shows how to check all of it. Releases up to v1.141.0 stay unsigned.
+- **Bugs the triage found.** Code scanning was triaged, and its findings fixed:
+  - an SSRF through run-level hooks;
+  - a `..` path parameter in the LocalAPI gateway;
+  - a ReDoS in the Telegram bridge;
+  - a reflected XSS on the dev OAuth page;
+  - PG pool sizes wrapping at int32;
+  - world-readable snapshot exports.
+- **Gate and triage list.** gosec gates at medium. `docs/SECURITY-TRIAGE.md` lists the CodeQL alerts dismissed as false positives, with reasons.
+
 ## What's in v1.141.0
 
 *A chat bridge can exchange voice messages with an agent on its users' own tokens: a token limited to certain agents can now be granted the speech routes. SQLite scopes open in defensive mode and Memory SQL refuses the tables that reach a scope's file underneath the document guard. CI now gates npm and pip advisories, with every action and base image pinned.*
