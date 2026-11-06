@@ -11,6 +11,6 @@ var FileTwinOps = []string{"stat", "ls", "extract", "import", "keep", "rm", "cle
 // schema is the File tool's cut to these.
 var FileTwinFields = []string{
 	"run_id", "op", "path", "from", "to", "overwrite", "recursive", "prefix",
-	"images", "max_rows", "excerpt_chars", "title", "doc_path", "scope", "tags", "source", "headings",
+	"images", "max_rows", "excerpt_chars", "structure", "title", "doc_path", "scope", "tags", "source", "headings",
 	"reimport", "work_key", "edition_date", "amending_document_id",
 }
