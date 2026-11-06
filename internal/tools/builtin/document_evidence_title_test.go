@@ -337,3 +337,41 @@ func TestDocumentSync_CarriesATitleEvidenceRowsPart(t *testing.T) {
 		}
 	})
 }
+
+// A scope whose evidence table predates parts gains the column on its next
+// provisioning, and the rows it already held read back as body rows — quotes
+// of the body, which is what every one of them is.
+func TestMigrateEvidencePart_ReachesAnExistingScope(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		_, a, b, _ := stmtDoc(t, d, ctx, "pre-part scope")
+		out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"cites",
+			"evidence":[{"chunk_id":%q,"quote":"comply with Article 12"}]}`, a, b, a))
+		if r.IsError {
+			t.Fatalf("link: %s", r.Text)
+		}
+		key, _, err := d.resolveScope(ctx, "user")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.docSQL().Exec(ctx, key, `ALTER TABLE chunk_edge_evidence DROP COLUMN part`, nil, 0); err != nil {
+			t.Fatalf("rewind: %v", err)
+		}
+		if d.tableHasColumn(ctx, key, "chunk_edge_evidence", "part") {
+			t.Fatal("rewind did not take — the test would pass against the unmigrated code")
+		}
+		d.docSQL().ForgetEnsured(key)
+		if err := d.ensureSchema(ctx, key); err != nil {
+			t.Fatalf("ensureSchema: %v", err)
+		}
+		if !d.tableHasColumn(ctx, key, "chunk_edge_evidence", "part") {
+			t.Fatal("part absent after ensureSchema — an existing scope never gains the column")
+		}
+		ev := getEdgeEvidence(t, d, ctx, "user", out["id"].(string))
+		if len(ev) != 1 || ev[0]["quote"] != "comply with Article 12" {
+			t.Fatalf("evidence after the migration = %v", ev)
+		}
+		if _, has := ev[0]["part"]; has {
+			t.Errorf("an old row reads back with a part: %v", ev[0])
+		}
+	})
+}
