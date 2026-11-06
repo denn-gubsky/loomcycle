@@ -29,8 +29,9 @@ inside it and sees its uncommitted writes.
 ## Returns
 
 `{columns, rows, truncated}`. `rows` is an array of arrays, one value per
-column, in `columns` order. `truncated: true` means the server's row cap cut
-the result — add `LIMIT`/`WHERE` or page with `OFFSET`.
+column, in `columns` order. `truncated: true` means the result was cut, either
+at the server's row cap or at its size limit (8 MiB of values by default) —
+add `LIMIT`/`WHERE`, page with `OFFSET`, or select fewer or shorter columns.
 
 ## Errors
 
@@ -58,6 +59,10 @@ the result — add `LIMIT`/`WHERE` or page with `OFFSET`.
 - `sql_query: no such table: ...` (wording depends on the database) — create
   it with `sql_exec`, and check you are in the same `scope`.
 - `sql_query: $embed requires ...` — vector search is not available here.
+- `sql_query: the first row of the result is N bytes, over the M-byte result
+  limit ...` — one row alone is larger than the size limit, so nothing is
+  returned. Select part of the value (`substr(col, 1, 1000)`), its
+  `length(col)`, or fewer columns.
 
 ## Examples
 

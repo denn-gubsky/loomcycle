@@ -72,8 +72,9 @@ agent via `sqlmem_shared_schemas`. They are on your `search_path`, so
 Qualify (`refdata.countries`) to bypass a same-named scope table.
 
 ## Bounds
-Per-statement timeout, `sql_query` row cap, and an optional per-scope byte
-quota apply; durable scopes can be reclaimed by an opt-in TTL / size-budget GC.
+Per-statement timeout, a `sql_query` row cap and size limit (8 MiB of values by
+default; a cut result says `truncated`, a single row over the limit is an
+error), and an optional per-scope byte quota apply; durable scopes can be reclaimed by an opt-in TTL / size-budget GC.
 The tier follows the main store: **sqlite** = one file per scope (compact,
 single-replica); **postgres** = one schema per scope in a separate aux DB,
 isolated by a per-scope least-privilege role (multi-replica). Full operator

@@ -48,7 +48,9 @@ the chunk is in a definitions passage, as `get_chunk` reports it (the `sql`
 form does not compute it). Fetch a body with `{"op":"get_chunk","id":...}`.
 
 With `sql`: `{columns: [...], rows: [[...], ...], truncated}`. `truncated:
-true` means the server's row cap cut the result.
+true` means the server's row cap or its size limit (8 MiB of values by
+default) cut the result; a single row over the size limit is an error instead
+— select less of it (`substr`, `length`) or fewer columns.
 
 ## Errors
 

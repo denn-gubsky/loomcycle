@@ -23,7 +23,8 @@ Two `Memory` ops (the `Memory` tool must be in the agent's `tools`):
   last_insert_id?}` (`last_insert_id` is sqlite-only — use `RETURNING` on
   postgres).
 - `op: "sql_query"` — one read-only `SELECT` / `WITH … SELECT`; returns
-  `{columns, rows, truncated}` (capped at `sqlmem_max_rows`).
+  `{columns, rows, truncated}` (capped at `sqlmem_max_rows` rows and
+  `sqlmem_max_result_bytes` bytes, see below).
 
 `scope` selects the database: `agent` (this agent, durable), `user` (this
 end-user, durable), or `run` (ephemeral scratch, dropped at run completion).
@@ -176,6 +177,7 @@ first use of a scope that has not yet moved takes it over.
 | `LOOMCYCLE_SQLMEM_QUOTA_BYTES` | `sqlmem_quota_bytes` | per-scope size cap (0 = none); per-agent `sql_quota_bytes` overrides |
 | `LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS` | `sqlmem_statement_timeout_ms` | per-statement timeout (default 30000) |
 | `LOOMCYCLE_SQLMEM_MAX_ROWS` | `sqlmem_max_rows` | `sql_query` row cap (default 10000) |
+| `LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES` | `sqlmem_max_result_bytes` | size cap on what an agent's own SQL returns — `sql_query` (also inside `sql_begin`) and Document `query_chunks` `sql` (default 8 MiB; zero or negative takes the default, there is no "off"). Rows stop before the one that would cross it and the result says `truncated`; a first row over it on its own is an error. Each cell counts its text/bytes length plus 16 bytes, so a huge result of NULLs or numbers counts too. JSON escaping can make the encoded result larger than this count. The runtime's own reads (document internals, image chunk bytes) and snapshot/backup dumps are not subject to it |
 | `LOOMCYCLE_SQLMEM_AUDIT_MODE` | `sqlmem_audit_mode` | `full` (redacted statement text, default) or `metadata` (counts only) |
 | `LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS` | `sqlmem_txn_timeout_ms` | explicit-transaction TTL — the reaper rolls back a txn open longer than this (default 30000; 0 disables) |
 | `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS` | `sqlmem_max_open_txns` | cap on concurrent open transactions process-wide (default 64; each pins a connection) |
