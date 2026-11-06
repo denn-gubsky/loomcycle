@@ -75,7 +75,9 @@ chown -R 65532:65532 /mnt/APPS2/loomcycle
 - `work` → an agent filesystem Volume (RFC AH); add more datasets + mounts as needed
 - `dynamic` → the dynamic root: volumes the runtime makes — each run's `inbox`
   (files an MCP server, HTTP or WebFetch returns are kept there, not handed to
-  the model as base64), ephemeral and VolumeDef volumes
+  the model as base64), ephemeral and VolumeDef volumes. Its host directory must
+  be owned by uid 65532 too: the runtime creates `_ephemeral/r_<run>` under it at
+  first use, and logs an error at boot when it cannot write there
 
 ## Phase 3 — The config overlay
 
@@ -470,6 +472,7 @@ Verify end-to-end: spawn `dev/exec` with `{"expose":"devsrv","commands":["nohup 
 | `doc/manager` idle | Needs `LOOMCYCLE_SQLMEM_ENABLED=1` + the `loomcycle_sqlmem` DSN + a `middle` tier (base provides one). |
 | An agent has no file access | Its bound volume isn't mapped — check the overlay `volumes:` `path` equals the in-container mount path (Phase 3 ↔ Phase 5). |
 | Crash-loop ending `config: load failed err="volumes.dynamic: path \"/mnt/dynamic\" must already exist …"` | The overlay declares the `dynamic` volume but the app has no mount at `/mnt/dynamic` (an install made from a compose before v1.122.0). Create the dataset owned by 65532 (Phase 2) and add the mount (Phase 5: `…/dynamic:/mnt/dynamic`, or *Additional storage* in the wizard). To boot first, comment out the `dynamic:` block. |
+| File downloads / kept tool results fail with `file not kept: mkdir "/mnt/dynamic/_ephemeral/r_…": permission denied` (the boot log also says the dynamic_root volume is not writable) | The `dynamic` dataset is not owned by the runtime uid. `chown -R 65532:65532 /mnt/APPS2/loomcycle/dynamic`. |
 | A tool's file shows as `[file not kept: no dynamic_root volume is configured …]` | The overlay has no `dynamic_root: true` volume, or its mount is missing — add the `dynamic` entry (Phase 3) and its mount (Phase 5). |
 | `403 {"code":"acl_denied", …}` on a request that worked before | A rule denies it, or (under `enforce`) no rule allows it. The body names the rules that denied; **Access → Simulator** shows every rule considered. Back to `shadow` while you fix the list. |
 | `503 acl_unavailable` | The caller's rules could not be read (a database fault). Under `enforce` the request is refused rather than admitted; a paused run stays paused and a schedule tries again next tick. Check the Postgres connection. |

@@ -538,6 +538,9 @@ func (b *boot) logToolPosture() {
 	if len(cfg.Volumes) == 0 {
 		slog.Info("note: file tools (Read/Write/Edit/Glob/Grep/Bash) require a `volumes:` binding — none configured; agents with no volume binding have no filesystem access")
 	}
+	if root, ok := builtin.DynamicVolumeRoot(cfg); ok {
+		checkDynamicRootWritable(slog.Default(), root)
+	}
 	if len(staticHosts) == 0 && !cfg.Env.HTTPCallerAuthoritative {
 		slog.Info("note: HTTP + WebFetch tools are registered but disabled — set LOOMCYCLE_HTTP_HOST_ALLOWLIST to enable (a comma-separated host list, or `*` for all public hosts; or LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1 to delegate the allowlist to the caller)")
 	}
