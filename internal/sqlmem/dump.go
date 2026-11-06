@@ -30,11 +30,12 @@ type ScopeDump struct {
 	PostDDL []string
 	Tables  []TableDump
 	// DocTail marks how much of the end of DDL, PostDDL and Tables is the
-	// scope's document plane (postgres; see scopePlane). The tail is written
-	// against the agent schema, so a runtime that does not know this field
-	// restores the whole dump into the agent plane, as it always did. A runtime
-	// that does restores the tail straight into the document plane: the
-	// document tables never pass through the agent's reach.
+	// scope's document plane (see scopePlane): the doc schema on postgres, the
+	// <scope>.doc.db file on sqlite. The tail is written as if for the agent plane
+	// (the agent schema on postgres; sqlite DDL is unqualified), so a runtime that
+	// does not know this field restores the whole dump into the agent plane, as it
+	// always did. A runtime that does restores the tail straight into the document
+	// plane: the document tables never pass through the agent's reach.
 	DocTail *DocTail `json:"DocTail,omitempty"`
 }
 
@@ -103,13 +104,15 @@ func (m *Manager) ExportScope(ctx context.Context, key ScopeKey) (*ScopeDump, er
 		return nil, err
 	}
 	dump, err := m.backend.exportScope(ctx, key.wholeScope())
-	if err != nil || m.dialect != dialectPostgres {
-		return dump, err
+	if err != nil {
+		return nil, err
 	}
-	// On postgres the Document tool's tables live on their own plane. They go into
-	// the same dump, so an archive restores on a runtime of any version: restored
-	// into the agent plane, they are moved over by the Document tool's first use of
-	// the scope, exactly like a scope from before the split.
+	// The Document tool's tables live on their own plane. They go into the same
+	// dump, so an archive restores on a runtime of any version: restored into the
+	// agent plane, they are moved over by the Document tool's first use of the
+	// scope, exactly like a scope from before the split. On sqlite a document file
+	// counts only once the scope's tables have moved into it; until then the agent
+	// file holds them and its dump carries them.
 	docKey := key
 	docKey.plane = planeDoc
 	held, err := m.backend.scopeExists(ctx, docKey)
@@ -119,6 +122,13 @@ func (m *Manager) ExportScope(ctx context.Context, key ScopeKey) (*ScopeDump, er
 	doc, err := m.backend.exportScope(ctx, docKey)
 	if err != nil {
 		return nil, err
+	}
+	if m.dialect != dialectPostgres {
+		dump.DDL = append(dump.DDL, doc.DDL...)
+		dump.Tables = append(dump.Tables, doc.Tables...)
+		dump.PostDDL = append(dump.PostDDL, doc.PostDDL...)
+		dump.DocTail = &DocTail{DDL: len(doc.DDL), PostDDL: len(doc.PostDDL), Tables: len(doc.Tables)}
+		return dump, nil
 	}
 	// The export qualifies every statement with its schema. The doc plane's DDL
 	// is replayed into the agent plane, so it names that schema instead: the two
@@ -166,7 +176,7 @@ func (m *Manager) RestoreScope(ctx context.Context, key ScopeKey, dump *ScopeDum
 	// scope in this process provisions again and so moves it or drops it.
 	defer m.ForgetEnsured(key)
 	tail := dump.DocTail
-	if tail == nil || m.dialect != dialectPostgres {
+	if tail == nil {
 		return m.backend.restoreScope(ctx, key.wholeScope(), dump)
 	}
 	if tail.DDL < 0 || tail.PostDDL < 0 || tail.Tables < 0 ||
@@ -178,11 +188,27 @@ func (m *Manager) RestoreScope(ctx context.Context, key ScopeKey, dump *ScopeDum
 		PostDDL: dump.PostDDL[:len(dump.PostDDL)-tail.PostDDL],
 		Tables:  dump.Tables[:len(dump.Tables)-tail.Tables],
 	}
-	if err := m.backend.restoreScope(ctx, key.wholeScope(), agent); err != nil {
-		return err
+	// A sqlite scope that only ever held documents has no agent file; restoring
+	// its empty agent part would create one.
+	if m.dialect == dialectPostgres || len(agent.DDL)+len(agent.PostDDL)+len(agent.Tables) > 0 {
+		if err := m.backend.restoreScope(ctx, key.wholeScope(), agent); err != nil {
+			return err
+		}
 	}
 	docKey := key
 	docKey.plane = planeDoc
+	docPart := &ScopeDump{
+		DDL:     dump.DDL[len(dump.DDL)-tail.DDL:],
+		PostDDL: dump.PostDDL[len(dump.PostDDL)-tail.PostDDL:],
+		Tables:  dump.Tables[len(dump.Tables)-tail.Tables:],
+	}
+	if m.dialect != dialectPostgres {
+		// sqlite DDL is unqualified: the document file takes it as it is.
+		if err := m.backend.restoreScope(ctx, docKey, docPart); err != nil {
+			return err
+		}
+		return m.backend.markSplit(ctx, key)
+	}
 	agentSchema, _, err := pgScopeNames(key.wholeScope())
 	if err != nil {
 		return err
@@ -199,9 +225,9 @@ func (m *Manager) RestoreScope(ctx context.Context, key ScopeKey, dump *ScopeDum
 		return out
 	}
 	doc := &ScopeDump{
-		DDL:     rename(dump.DDL[len(dump.DDL)-tail.DDL:]),
-		PostDDL: rename(dump.PostDDL[len(dump.PostDDL)-tail.PostDDL:]),
-		Tables:  dump.Tables[len(dump.Tables)-tail.Tables:],
+		DDL:     rename(docPart.DDL),
+		PostDDL: rename(docPart.PostDDL),
+		Tables:  docPart.Tables,
 	}
 	if err := m.backend.restoreScope(ctx, docKey, doc); err != nil {
 		return err

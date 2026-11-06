@@ -21,7 +21,8 @@ import (
 )
 
 // sqlite.go — the sqlite tier of SQL Memory: one .db file per scope under a
-// root directory, with an LRU of open handles. This is the Phase-1 backend;
+// root directory (and a .doc.db beside it for the Document tool's tables, see
+// sqlite_planes.go), with an LRU of open handles. This is the Phase-1 backend;
 // it backs a sqlite deployment (StorageConfig.Backend != "postgres"). The
 // postgres tier (schema-per-scope) lives in postgres.go. Both satisfy the
 // package-internal `backend` interface the Manager facade delegates to.
@@ -35,7 +36,8 @@ import (
 const maxOpenHandles = 64
 
 // sqliteBackend owns the per-scope sqlite databases. Each scope (agent/user/
-// run, keyed by tenant) maps to ONE .db file under root; it opens at most
+// run, keyed by tenant) maps to one .db file under root, plus a .doc.db file for
+// its document plane once the Document tool uses it; it opens at most
 // maxOpenHandles handles at a time, closing the least-recently-used on
 // overflow. Safe for concurrent use.
 //
@@ -48,7 +50,22 @@ type sqliteBackend struct {
 	mu    sync.Mutex
 	open  map[string]*openHandle // keyed by resolved file path
 	clock uint64                 // monotonic LRU stamp
+
+	// adoptLocks serialises the move of one scope's document tables into its
+	// document file (sqlite_planes.go), keyed by the scope's agent file.
+	adoptLocks map[string]*sync.Mutex
+
+	// adoptStep, when set, is called at each step of a scope's move into its
+	// document file and stops the move on an error: tests use it to leave the move
+	// where a crash at that step would.
+	adoptStep func(step string) error
 }
+
+// The steps of a move that adoptStep sees.
+const (
+	adoptStepCopied = "copied" // rows copied, split recorded, not yet committed
+	adoptStepMarked = "marked" // committed; the agent file's tables not yet dropped
+)
 
 // openHandle is one live scope database plus its LRU stamp and an in-flight
 // reference count. inUse > 0 means a query/exec is currently running against
@@ -119,10 +136,14 @@ func sanitize(s string) (string, error) {
 	return clean, nil
 }
 
-// keyPath resolves the on-disk .db path for a ScopeKey under root.
+// keyPath resolves the on-disk path of the key's PLANE of a scope under root.
 //
 //	durable:   <root>/<sanitize(tenant)>/<scope>/<sanitize(scope_id)>.db
 //	ephemeral: <root>/run/<sanitize(scope_id)>.db   (scope == run)
+//
+// The document plane is the same path with docFileSuffix in place of
+// scopeFileSuffix: <sanitize(scope_id)>.doc.db. sanitize never lets a '.' through,
+// so no scope id can end in ".doc" and the two names never meet.
 //
 // The shared tenant "" sanitizes via the empty-check error for durable
 // scopes; callers resolve a non-empty tenant (RunIdentity stamps "default"
@@ -145,7 +166,7 @@ func (k ScopeKey) keyPath(root string) (string, error) {
 		if strings.Contains(id, "..") {
 			return "", errDotDotSegment
 		}
-		return filepath.Join(root, runScope, id+".db"), nil
+		return filepath.Join(root, runScope, id+k.fileSuffix()), nil
 	}
 	tenant, err := sanitize(k.Tenant)
 	if err != nil {
@@ -167,7 +188,47 @@ func (k ScopeKey) keyPath(root string) (string, error) {
 	if strings.Contains(id, "..") {
 		return "", errDotDotSegment
 	}
-	return filepath.Join(root, tenant, scope, id+".db"), nil
+	return filepath.Join(root, tenant, scope, id+k.fileSuffix()), nil
+}
+
+// The two files of a scope. The agent plane's keeps the name every scope had
+// before the planes split, so a scope from then is opened where it lies.
+const (
+	scopeFileSuffix = ".db"
+	docFileSuffix   = ".doc.db"
+)
+
+// fileSuffix is the file name ending of the key's plane.
+func (k ScopeKey) fileSuffix() string {
+	if k.isDoc() {
+		return docFileSuffix
+	}
+	return scopeFileSuffix
+}
+
+// planeFiles returns both files of the key's scope, the agent file first.
+func (k ScopeKey) planeFiles(root string) (agent, doc string, err error) {
+	if agent, err = k.wholeScope().keyPath(root); err != nil {
+		return "", "", err
+	}
+	dk := k
+	dk.plane = planeDoc
+	if doc, err = dk.keyPath(root); err != nil {
+		return "", "", err
+	}
+	return agent, doc, nil
+}
+
+// scopeFileBase strips a scope file's plane suffix: both files of one scope map to
+// the same base. ok is false for anything that is not a scope file (-wal, -shm).
+func scopeFileBase(path string) (base string, doc, ok bool) {
+	switch {
+	case strings.HasSuffix(path, docFileSuffix):
+		return strings.TrimSuffix(path, docFileSuffix), true, true
+	case strings.HasSuffix(path, scopeFileSuffix):
+		return strings.TrimSuffix(path, scopeFileSuffix), false, true
+	}
+	return "", false, false
 }
 
 // errDotDotSegment refuses a path segment holding "..". sanitize() keeps only
@@ -183,12 +244,13 @@ var errDotDotSegment = errors.New(`sqlmem: scope path segment contains ".."`)
 // main store so a scope file behaves identically under contention.
 //
 // _defensive=1 turns on SQLITE_DBCONFIG_DEFENSIVE before anything else runs on
-// the connection. A scope file holds the agent's own tables and the Document
-// plane's together, and an agent's SQL runs on this connection: without it a
-// write to sqlite_dbpage rewrites any page of the file (a document statement's
-// status included) and writable_schema edits the schema, neither naming a
-// table the Memory tool's guard could refuse. Reads of sqlite_dbpage are not
-// stopped by it; the guard refuses those by name.
+// the connection. An agent's SQL runs on the agent file's connection: without it
+// a write to sqlite_dbpage rewrites any page of the file and writable_schema edits
+// the schema, neither naming a table the Memory tool's guard could refuse. A scope
+// from before the planes split still holds its document tables in that file until
+// the Document tool moves them (sqlite_planes.go), and the document file gets the
+// same posture. Reads of sqlite_dbpage are not stopped by it; the guard refuses
+// those by name.
 const dsnPragmas = "?_defensive=1&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)"
 
 // openScopeDB opens (creating the parent dir) the scope database at path
@@ -335,6 +397,11 @@ func (b *sqliteBackend) exec(ctx context.Context, key ScopeKey, statement string
 		if err != nil {
 			return nil, fmt.Errorf("sqlmem: quota check: %w", err)
 		}
+		other, err := b.otherPlaneBytes(key)
+		if err != nil {
+			return nil, fmt.Errorf("sqlmem: quota check: %w", err)
+		}
+		size += other
 		if size >= int64(quota) {
 			return nil, fmt.Errorf("sqlmem: scope is at its quota (%d bytes >= %d) — delete rows or drop tables before writing", size, quota)
 		}
@@ -392,36 +459,89 @@ func (b *sqliteBackend) beginTx(ctx context.Context, key ScopeKey) (*sql.Tx, fun
 	return tx, func() { b.release(path) }, nil
 }
 
-// txnSizeBytes measures the scope's size on the open transaction.
+// txnSizeBytes measures the scope's size on the open transaction, with the
+// scope's other file as it stands on disk.
 func (b *sqliteBackend) txnSizeBytes(ctx context.Context, tx *sql.Tx, key ScopeKey) (int64, error) {
-	return scopeSizeBytes(ctx, tx)
+	size, err := scopeSizeBytes(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	other, err := b.otherPlaneBytes(key)
+	if err != nil {
+		return 0, err
+	}
+	return size + other, nil
+}
+
+// otherPlaneBytes is the on-disk size of the scope's OTHER file. The quota is the
+// scope's, wherever its tables live, as on postgres (pgScopeSizeBytes): before the
+// planes split, documents and the agent's tables shared one file and one quota,
+// and moving the documents out must not hand the agent their share.
+func (b *sqliteBackend) otherPlaneBytes(key ScopeKey) (int64, error) {
+	other := key
+	other.plane = planeDoc
+	if key.isDoc() {
+		other.plane = planeAgent
+	}
+	path, err := other.keyPath(b.cfg.Root)
+	if err != nil {
+		return 0, err
+	}
+	return fileFootprint(path), nil
+}
+
+// fileFootprint is a scope file's size on disk with its -wal/-shm sidecars (in
+// WAL mode un-checkpointed pages live in -wal, so the file alone undercounts an
+// active scope). An absent file counts zero.
+func fileFootprint(path string) int64 {
+	var size int64
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if fi, err := os.Stat(p); err == nil {
+			size += fi.Size()
+		}
+	}
+	return size
 }
 
 // vectorsEnabled is always false for the sqlite tier (Phase 3c is postgres-only;
 // sqlite-vec is deferred — see RFC AA).
 func (b *sqliteBackend) vectorsEnabled() bool { return false }
 
-// touchScope sets the durable scope's .db mtime to now, so a read-only-but-live
-// scope also counts as used (writes already bump mtime). A not-yet-created file
-// is a no-op (the next write creates it with a fresh mtime).
+// touchScope sets the mtime of the durable scope's files to now, so a
+// read-only-but-live scope also counts as used (writes already bump mtime). Both
+// files: the GC judges a scope by the newer of them, and a file that does not
+// exist yet is skipped (the next write creates it with a fresh mtime).
 func (b *sqliteBackend) touchScope(key ScopeKey) error {
-	path, err := key.keyPath(b.cfg.Root)
+	agent, doc, err := key.planeFiles(b.cfg.Root)
 	if err != nil {
 		return err
 	}
 	now := time.Now()
-	if err := os.Chtimes(path, now, now); err != nil && !os.IsNotExist(err) {
-		return err
+	for _, path := range []string{agent, doc} {
+		if err := os.Chtimes(path, now, now); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	return nil
 }
 
-// sweepStale walks the durable scope tree (everything EXCEPT <root>/run) and
-// fenced-removes each .db whose mtime is before cutoff. The run subtree is
-// skipped — run scopes drop at run-end, never via GC.
-func (b *sqliteBackend) sweepStale(cutoff time.Time) (int, error) {
+// durableScope is one durable scope as a sweep finds it on disk: its files (the
+// agent file, the document file, or both), the newer of their mtimes and their
+// summed footprint. The sweeps act on a scope, never on one of its files: GC that
+// removed a scope's document file because only its agent file was in use would
+// lose the documents of a live scope.
+type durableScope struct {
+	files  []string
+	newest time.Time
+	size   int64
+}
+
+// durableScopes walks the durable scope tree (everything EXCEPT <root>/run) and
+// groups the scope files by scope, in a stable order.
+func (b *sqliteBackend) durableScopes() ([]*durableScope, error) {
 	runDir := filepath.Join(b.cfg.Root, runScope)
-	var dropped int
+	byBase := map[string]*durableScope{}
+	var order []string
 	err := filepath.WalkDir(b.cfg.Root, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return nil // skip unreadable entries
@@ -432,149 +552,172 @@ func (b *sqliteBackend) sweepStale(cutoff time.Time) (int, error) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".db") {
+		base, _, ok := scopeFileBase(path)
+		if !ok {
 			return nil // skip -wal/-shm + anything else
-		}
-		info, ierr := d.Info()
-		if ierr != nil || !info.ModTime().Before(cutoff) {
-			return nil
-		}
-		// Skip a scope that is actively in use — an in-flight Query/Exec OR an
-		// open explicit transaction pins the handle (inUse>0). Never evict/remove
-		// a pinned handle (it would break the live op, exactly what the inUse
-		// refcount exists to prevent); the next sweep catches it once idle.
-		b.mu.Lock()
-		if h, ok := b.open[path]; ok && h.inUse > 0 {
-			b.mu.Unlock()
-			return nil
-		}
-		b.evictPathLocked(path)
-		b.mu.Unlock()
-		// Fence under the scope's OWN directory (tighter than <root>) so a
-		// symlinked .db can't widen the delete to another tenant's subtree.
-		if removed, rerr := fencedRemoveDB(filepath.Dir(path), path); rerr == nil && removed {
-			dropped++
-		}
-		return nil
-	})
-	return dropped, err
-}
-
-// sweepBudget drops the LARGEST idle durable scopes until the aggregate durable
-// footprint is at or under budget (Phase 3f size-based GC). Size is the true
-// on-disk footprint — the .db file PLUS its -wal/-shm sidecars (in WAL mode
-// un-checkpointed pages live in -wal, so the .db alone undercounts an active
-// scope). In-use scopes (inUse>0) are skipped — the next sweep catches them once
-// idle — and the run subtree is never counted or dropped.
-func (b *sqliteBackend) sweepBudget(budget int64) (int, error) {
-	runDir := filepath.Join(b.cfg.Root, runScope)
-	type scopeFile struct {
-		path string
-		size int64
-	}
-	var files []scopeFile
-	var total int64
-	err := filepath.WalkDir(b.cfg.Root, func(path string, d fs.DirEntry, werr error) error {
-		if werr != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if path == runDir {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".db") {
-			return nil
 		}
 		info, ierr := d.Info()
 		if ierr != nil {
 			return nil
 		}
-		size := info.Size()
-		for _, suffix := range []string{"-wal", "-shm"} {
-			if si, serr := os.Stat(path + suffix); serr == nil {
-				size += si.Size()
-			}
+		sc := byBase[base]
+		if sc == nil {
+			sc = &durableScope{}
+			byBase[base] = sc
+			order = append(order, base)
 		}
-		files = append(files, scopeFile{path: path, size: size})
-		total += size
+		sc.files = append(sc.files, path)
+		if info.ModTime().After(sc.newest) {
+			sc.newest = info.ModTime()
+		}
+		sc.size += fileFootprint(path)
 		return nil
 	})
+	sort.Strings(order)
+	out := make([]*durableScope, 0, len(order))
+	for _, base := range order {
+		out = append(out, byBase[base])
+	}
+	return out, err
+}
+
+// takeIdle evicts the handles of every one of a scope's files, unless any of them
+// is pinned by an in-flight op or an open transaction (inUse>0): then it touches
+// nothing and reports false. Never evict a pinned handle — it would break the live
+// op, exactly what the inUse refcount exists to prevent.
+func (b *sqliteBackend) takeIdle(files []string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, path := range files {
+		if h, ok := b.open[path]; ok && h.inUse > 0 {
+			return false
+		}
+	}
+	for _, path := range files {
+		b.evictPathLocked(path)
+	}
+	return true
+}
+
+// removeScopeFiles fenced-removes each of a scope's files under its OWN directory
+// (tighter than <root>) so a symlinked file can't widen the delete to another
+// tenant's subtree. removed reports whether any file was deleted.
+func removeScopeFiles(files []string) (removed bool, err error) {
+	for _, path := range files {
+		r, rerr := fencedRemoveDB(filepath.Dir(path), path)
+		if rerr != nil && err == nil {
+			err = rerr
+		}
+		removed = removed || r
+	}
+	return removed, err
+}
+
+// sweepStale fenced-removes each durable scope whose files were last used before
+// cutoff. The run subtree is skipped — run scopes drop at run-end, never via GC.
+func (b *sqliteBackend) sweepStale(cutoff time.Time) (int, error) {
+	scopes, err := b.durableScopes()
+	var dropped int
+	for _, sc := range scopes {
+		if !sc.newest.Before(cutoff) {
+			continue
+		}
+		// An in-use scope is skipped; the next sweep catches it once idle.
+		if !b.takeIdle(sc.files) {
+			continue
+		}
+		if removed, rerr := removeScopeFiles(sc.files); rerr == nil && removed {
+			dropped++
+		}
+	}
+	return dropped, err
+}
+
+// sweepBudget drops the LARGEST idle durable scopes until the aggregate durable
+// footprint is at or under budget (Phase 3f size-based GC). A scope's size is the
+// true on-disk footprint of both its files with their sidecars. In-use scopes are
+// skipped — the next sweep catches them once idle — and the run subtree is never
+// counted or dropped.
+func (b *sqliteBackend) sweepBudget(budget int64) (int, error) {
+	scopes, err := b.durableScopes()
 	if err != nil {
 		return 0, err
+	}
+	var total int64
+	for _, sc := range scopes {
+		total += sc.size
 	}
 	if total <= budget {
 		return 0, nil
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].size > files[j].size })
+	sort.SliceStable(scopes, func(i, j int) bool { return scopes[i].size > scopes[j].size })
 	var dropped int
-	for _, f := range files {
+	for _, sc := range scopes {
 		if total <= budget {
 			break
 		}
-		b.mu.Lock()
-		if h, ok := b.open[f.path]; ok && h.inUse > 0 {
-			b.mu.Unlock()
+		if !b.takeIdle(sc.files) {
 			continue // pinned by a live op / open txn — skip, catch it next sweep
 		}
-		b.evictPathLocked(f.path)
-		b.mu.Unlock()
-		if removed, rerr := fencedRemoveDB(filepath.Dir(f.path), f.path); rerr == nil && removed {
+		if removed, rerr := removeScopeFiles(sc.files); rerr == nil && removed {
 			dropped++
-			total -= f.size
+			total -= sc.size
 		}
 	}
 	return dropped, nil
 }
 
-// dropRunScope closes+evicts the handle for the run/<runID>.db file and
-// removes it (plus -wal/-shm sidecars) behind a fence: the resolved target
-// must sit STRICTLY inside <Root>/run and not equal <Root>/run itself, so a
-// malformed run id can never widen the delete. Best-effort; mirrors the
-// VolumeDef ephemeral-purge fence rooted at <Root>/run. removed reports
-// whether a file was actually deleted (false when it was already gone).
+// dropRunScope closes+evicts the handles of the run/<runID> files and removes
+// them (plus -wal/-shm sidecars) behind a fence: the resolved target must sit
+// STRICTLY inside <Root>/run and not equal <Root>/run itself, so a malformed run
+// id can never widen the delete. Best-effort; mirrors the VolumeDef
+// ephemeral-purge fence rooted at <Root>/run. removed reports whether a file was
+// actually deleted (false when it was already gone).
 func (b *sqliteBackend) dropRunScope(runID string) (removed bool, err error) {
 	if strings.TrimSpace(runID) == "" {
 		return false, fmt.Errorf("sqlmem: empty run id")
 	}
 	key := ScopeKey{Scope: runScope, ScopeID: runID}
-	path, err := key.keyPath(b.cfg.Root)
+	agent, doc, err := key.planeFiles(b.cfg.Root)
 	if err != nil {
 		return false, err
 	}
 
 	b.mu.Lock()
-	b.evictPathLocked(path)
+	b.evictPathLocked(agent)
+	b.evictPathLocked(doc)
 	b.mu.Unlock()
 
 	runRoot := filepath.Join(b.cfg.Root, runScope)
-	return fencedRemoveDB(runRoot, path)
+	for _, path := range []string{agent, doc} {
+		r, rerr := fencedRemoveDB(runRoot, path)
+		if rerr != nil && err == nil {
+			err = rerr
+		}
+		removed = removed || r
+	}
+	return removed, err
 }
 
-// dropScope removes one DURABLE (agent/user) scope .db file (and its -wal/-shm
-// sidecars) behind a path fence. The path is RE-DERIVED from (Root, tenant,
-// scope, sanitize(scope_id)) — never a stored path — and fenced under the
-// scope's OWN directory (mirrors sweepStale) so a symlinked .db can't widen the
-// delete to another tenant's subtree. An in-use handle (inUse>0) is REFUSED with
-// an error (not silently skipped) so the RFC BM caller retries next tick rather
-// than assuming the scope is gone and dropping its sibling memory/dirents.
+// dropScope removes one DURABLE (agent/user) scope's files (and their -wal/-shm
+// sidecars) behind a path fence. The paths are RE-DERIVED from (Root, tenant,
+// scope, sanitize(scope_id)) — never a stored path — and fenced under the scope's
+// OWN directory (mirrors sweepStale) so a symlinked file can't widen the delete to
+// another tenant's subtree. An in-use handle (inUse>0) on either file is REFUSED
+// with an error (not silently skipped) so the RFC BM caller retries next tick
+// rather than assuming the scope is gone and dropping its sibling memory/dirents.
 func (b *sqliteBackend) dropScope(key ScopeKey) (removed bool, err error) {
 	if key.Scope == runScope {
 		return false, fmt.Errorf("sqlmem: dropScope is not for the run scope")
 	}
-	path, err := key.keyPath(b.cfg.Root)
+	agent, doc, err := key.planeFiles(b.cfg.Root)
 	if err != nil {
 		return false, err
 	}
-	b.mu.Lock()
-	if h, ok := b.open[path]; ok && h.inUse > 0 {
-		b.mu.Unlock()
+	if !b.takeIdle([]string{agent, doc}) {
 		return false, fmt.Errorf("sqlmem: scope %s/%s in use", key.Scope, key.ScopeID)
 	}
-	b.evictPathLocked(path)
-	b.mu.Unlock()
-	return fencedRemoveDB(filepath.Dir(path), path)
+	return removeScopeFiles([]string{agent, doc})
 }
 
 // fencedRemoveDB removes a single scope .db file (and its -wal/-shm
@@ -628,16 +771,6 @@ func fencedRemoveDB(expectedRoot, path string) (removed bool, err error) {
 
 // close closes every open scope handle. Best-effort: the first close error
 // is returned but every handle is still attempted.
-// agentTables / adoptTables: a sqlite scope is one file, so the planes coincide
-// and there is nothing to move.
-func (b *sqliteBackend) agentTables(context.Context, ScopeKey, []string) ([]string, error) {
-	return nil, nil
-}
-
-func (b *sqliteBackend) adoptTables(context.Context, ScopeKey, []string) error { return nil }
-
-func (b *sqliteBackend) markSplit(context.Context, ScopeKey) error { return nil }
-
 func (b *sqliteBackend) close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

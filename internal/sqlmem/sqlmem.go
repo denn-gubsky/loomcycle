@@ -9,7 +9,8 @@
 //
 // Two tiers behind one Manager facade (it FOLLOWS the main store's backend):
 //
-//   - sqlite (sqlite.go) — one .db file per scope under a root directory, an
+//   - sqlite (sqlite.go) — one .db file per scope under a root directory (and a
+//     .doc.db for the Document tool's tables, sqlite_planes.go), an
 //     LRU of open handles, file isolation as the backstop. The DEFAULT sqlite
 //     driver loomcycle links — modernc.org/sqlite (pure-Go) — exposes NO
 //     sqlite3_set_authorizer, so the PRIMARY, driver-agnostic defence is the
@@ -139,7 +140,6 @@ type backend interface {
 	restoreScope(ctx context.Context, key ScopeKey, dump *ScopeDump) error
 	// agentTables returns which of the named tables the scope's agent plane
 	// holds; adoptTables moves those into the doc plane (see AdoptAgentTables).
-	// The sqlite tier has one plane, so it holds none and adopts nothing.
 	agentTables(ctx context.Context, key ScopeKey, tables []string) ([]string, error)
 	adoptTables(ctx context.Context, key ScopeKey, tables []string) error
 	// markSplit records that the scope has its doc plane, after which nothing on
@@ -180,6 +180,9 @@ type managerCore struct {
 	// short-lived structs sharing one Manager pointer.
 	ensuredMu sync.Mutex
 	ensured   map[string]struct{}
+	// ensuring holds one lock per memo id, so one scope's provisioning runs once
+	// at a time (see EnsureOnce). Guarded by ensuredMu; as unbounded as ensured.
+	ensuring map[string]*sync.Mutex
 
 	// Derived-value memo — see Memo. Same reason to live here as the schema memo.
 	memoMu sync.Mutex
@@ -203,10 +206,11 @@ type managerCore struct {
 // its own proposed statement asserted, which only an operator may do. The Memory
 // tool refuses statements that name a document table (memory_sql_doc_guard.go),
 // but on postgres a statement check depends on the engine offering no other route
-// to dynamic SQL. So on postgres the document tables live on their own plane: a
+// to dynamic SQL. So the document tables live on their own plane: on postgres a
 // second schema and login role per scope, neither of which can use the other's
-// schema. On sqlite a scope is one file and the planes coincide; the statement
-// check is complete there, since sqlite cannot build SQL from strings.
+// schema; on sqlite a second file per scope (<scope>.doc.db), which no connection
+// of the agent plane ever opens, so neither a table name nor a page-level vtab
+// (sqlite_dbpage) reaches it (sqlite_planes.go).
 type scopePlane string
 
 const (
@@ -430,10 +434,22 @@ func (m *Manager) EnsureOnce(key ScopeKey, fn func() error) error {
 	if done {
 		return nil
 	}
-	// fn runs OUTSIDE the lock: it issues DDL, and holding a process-wide mutex
-	// across that would serialise every scope's first call behind the slowest one.
-	// Two callers racing on the same new scope both run it, which is exactly what
-	// happened before the memo existed and is what CREATE … IF NOT EXISTS is for.
+	// fn runs OUTSIDE the process-wide lock: it issues DDL, and holding that across
+	// it would serialise every scope's first call behind the slowest one. It runs
+	// under the SCOPE's lock instead. Two callers racing on one scope used to both
+	// run it, which CREATE … IF NOT EXISTS absorbs, but not a move of an old scope's
+	// document tables (AdoptAgentTables): the second caller would bring those tables
+	// up to date in the agent plane while the first was dropping them. The second
+	// now waits, and finds the work done.
+	lk := m.ensureLock(id)
+	lk.Lock()
+	defer lk.Unlock()
+	m.ensuredMu.Lock()
+	_, done = m.ensured[id]
+	m.ensuredMu.Unlock()
+	if done {
+		return nil
+	}
 	if err := fn(); err != nil {
 		return err
 	}
@@ -441,6 +457,21 @@ func (m *Manager) EnsureOnce(key ScopeKey, fn func() error) error {
 	m.ensured[id] = struct{}{}
 	m.ensuredMu.Unlock()
 	return nil
+}
+
+// ensureLock returns the per-scope provisioning lock for a memo id.
+func (m *Manager) ensureLock(id string) *sync.Mutex {
+	m.ensuredMu.Lock()
+	defer m.ensuredMu.Unlock()
+	if m.ensuring == nil {
+		m.ensuring = make(map[string]*sync.Mutex)
+	}
+	lk, ok := m.ensuring[id]
+	if !ok {
+		lk = &sync.Mutex{}
+		m.ensuring[id] = lk
+	}
+	return lk
 }
 
 // memoEntry is one Memo value and the fingerprint it was built at.
@@ -614,10 +645,11 @@ func (m *Manager) ScopeExists(ctx context.Context, key ScopeKey) (bool, error) {
 }
 
 // PlaneExists reports whether this Manager's PLANE of a durable scope has been
-// provisioned. ScopeExists answers for the scope as a whole (its agent plane); on
-// postgres the document plane is a schema and login role of its own, so a reader that
-// must not provision it asks here first (RFC FY P2: the ontology's boot pass and
-// resolver). On sqlite the planes are one file and the answers agree.
+// provisioned. ScopeExists answers for the scope as a whole; the document plane is
+// a schema and login role of its own on postgres and a file of its own on sqlite,
+// so a reader that must not provision it asks here first (RFC FY P2: the
+// ontology's boot pass and resolver). On sqlite the document plane counts once
+// the scope's tables have moved into its file (sqlite_planes.go).
 func (m *Manager) PlaneExists(ctx context.Context, key ScopeKey) (bool, error) {
 	if key.Scope == runScope {
 		return false, fmt.Errorf("sqlmem: PlaneExists is for durable scopes")
@@ -658,8 +690,8 @@ func (m *Manager) DropScope(ctx context.Context, key ScopeKey) (removed bool, er
 }
 
 // AgentPlaneTables returns which of the named tables a scope's agent plane still
-// holds: on postgres, Document tables a scope created before the planes split.
-// Always empty on sqlite, whose planes coincide.
+// holds: the Document tables a scope created before the planes split (on sqlite,
+// in the scope's agent file). It never creates the agent plane.
 func (m *Manager) AgentPlaneTables(ctx context.Context, key ScopeKey, tables []string) ([]string, error) {
 	if err := key.validate(); err != nil {
 		return nil, err
@@ -675,7 +707,9 @@ func (m *Manager) AgentPlaneTables(ctx context.Context, key ScopeKey, tables []s
 // holds rows keeps them and the agent copy is discarded, with a warning; that is
 // the case only for a scope restored from an older snapshot over live data.
 // Triggers, rules and policies on the agent tables are logged and dropped with
-// them. A no-op on sqlite.
+// them. On sqlite the rows are copied from the agent file into the document file
+// in one transaction, with the split mark, by a connection of the runtime's own
+// (sqlite_planes.go).
 func (m *Manager) AdoptAgentTables(ctx context.Context, key ScopeKey, tables []string) error {
 	if err := key.validate(); err != nil {
 		return err
