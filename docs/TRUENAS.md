@@ -124,7 +124,9 @@ generate the `trains/` output, and point TrueNAS at the catalog.
   Route B exposes an **Auto-migrate on boot** toggle (`=1`, default on for a single
   operator) — or turn it off and run `loomcycle migrate up` yourself before deploy.
 - TrueNAS dataset snapshots back up `data` + your agent datasets; that's orthogonal
-  to loomcycle's own `/v1/_snapshots`.
+  to loomcycle's own `/v1/_snapshots`. If SQL Memory runs on the sqlite tier (no
+  `LOOMCYCLE_SQLMEM_PG_DSN`), each scope under `data/sqlmem/` is two files,
+  `<scope>.db` and `<scope>.doc.db` (the documents); a dataset snapshot covers both.
 
 ## Web search (SearXNG sidecar)
 

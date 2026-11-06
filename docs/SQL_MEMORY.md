@@ -132,8 +132,44 @@ these objects are checked. If one names a document table, or a function body
 uses `EXECUTE`, the scope refuses Memory SQL until that object is dropped;
 `DROP` statements stay allowed.
 
-On sqlite this check is complete, because sqlite cannot build SQL from
-strings. On PostgreSQL the engine enforces the boundary as well. Each scope has
+On both tiers the storage layout enforces the boundary as well: the document
+tables live where an agent's SQL cannot reach them.
+
+On sqlite each scope has a second file for the Document tool's tables,
+`<scope>.doc.db` beside the agent's `<scope>.db` (for example
+`<DataDir>/sqlmem/acme/user/alice.db` and `…/alice.doc.db`). Memory SQL only
+ever opens the `.db` file, and an agent's SQL can neither `ATTACH` nor
+`VACUUM INTO`, so a document table is not there to name (*no such table*) and no
+page of it can be read through `sqlite_dbpage`. The document file is opened in
+defensive mode too.
+
+A sqlite scope created before this split keeps its document tables in its
+`.db` file until they move. They move once, at boot (a pass over every scope)
+or on the Document tool's first use of the scope, whichever comes first:
+1. The old tables are brought to the current shape where they are.
+2. Fresh tables are created in `<scope>.doc.db` from the Document tool's own
+   definitions.
+3. The rows are copied into them, and the file is marked as the scope's
+   document plane, in **one transaction** on the document file.
+4. The old tables are dropped from `<scope>.db`.
+
+A crash at any point is safe. Before step 3 commits, the document file does not
+count and the `.db` file still holds every row; the next start copies them.
+After it commits, the copy is complete, and the next start drops the leftovers in
+`<scope>.db` without reading them. The copy runs inside the engine, so a large
+scope is not held in memory. Triggers, views and extra columns an agent attached
+to the old tables are not carried over. A scope that is never used again and
+that the boot pass could not move (for example because it was busy) keeps its
+tables in `<scope>.db` until its next use, still behind the name check above.
+
+**Back up before upgrading, and do not downgrade past the move.** An older
+release does not know the `.doc.db` file: it sees a scope with no documents and
+starts new, empty document tables in `<scope>.db`. Documents written there by the
+older release are dropped, unread, when a newer release next starts, because the
+scope's document file is already the authority. To go back, restore the backup
+of the sqlmem root taken before the upgrade (or a runtime snapshot).
+
+On PostgreSQL the engine enforces the boundary through roles. Each scope has
 a second schema and login role for the Document tool's tables (`sqlmem_d_…` /
 `sqlmem_dr_…`, beside the agent's `sqlmem_s_…` / `sqlmem_r_…`):
 - the agent's role has no `USAGE` on that schema, so even an unchecked
@@ -141,8 +177,8 @@ a second schema and login role for the Document tool's tables (`sqlmem_d_…` /
 - the Document role's `search_path` holds only its own schema, so nothing an
   agent creates in its schema can stand in for a document table or function.
 
-A scope created before this split keeps its document tables in the agent's
-schema. The Document tool's first use of the scope moves them:
+A PostgreSQL scope created before this split keeps its document tables in the
+agent's schema. The Document tool's first use of the scope moves them:
 1. It brings the tables to the current shape where they are.
 2. It creates fresh tables on the document plane.
 3. It copies the rows, read as the agent's role and written as the Document
@@ -154,17 +190,21 @@ The move happens once per scope. After it, a table on the agent's schema named
 like a document table is dropped unread, so rows an agent writes there never
 reach the document plane.
 
-A snapshot holds both planes in one dump and marks the document part. A runtime
-with the document plane restores that part straight into it. An older runtime
-ignores the mark and restores everything into the agent's schema, as before. An
-archive taken before the mark existed restores into the agent's schema, and the
-first use of a scope that has not yet moved takes it over.
+A snapshot holds both planes in one dump and marks the document part: on
+sqlite, the `.doc.db` file's tables once the scope has moved. A runtime with the
+document plane restores that part straight into it (the `.doc.db` file on
+sqlite). An older runtime ignores the mark and restores everything into the
+agent's plane, as before. An archive taken before the mark existed (or of a
+sqlite scope not yet moved) restores into the agent's plane, and the first use
+of the scope moves it. Restored over a scope that already has its document
+plane, such an archive's document tables are dropped unread and the live ones
+kept.
 
 ## Storage tiers — SQL Memory follows the main backend
 
 | Main `storage.backend` | SQL Memory tier | Isolation |
 |---|---|---|
-| `sqlite` (default) | one **file per scope** under `<DataDir>/sqlmem/` | a separate `.db` per scope (single-replica) |
+| `sqlite` (default) | **two files per scope** under `<DataDir>/sqlmem/`: `<scope>.db` (the agent's tables) and `<scope>.doc.db` (the Document tool's) | separate files per scope (single-replica) |
 | `postgres` | one **schema per scope** in a **separate aux database** | a per-scope least-privilege role (multi-replica) |
 
 ### Configuration (env / yaml)
@@ -201,8 +241,10 @@ ever used SQL Memory. Optional GC reclaims the idle ones.
 
 Set **`sqlmem_scope_ttl_ms`** (off by default) and a background sweeper (every
 `sqlmem_gc_interval_ms`, default 1h) drops any durable scope **not used** for
-longer than the TTL — the sqlite `.db` file (fenced removal), or the postgres
-schema + role. `run` scopes are never touched.
+longer than the TTL — the sqlite `.db` and `.doc.db` files (fenced removal), or
+the postgres schema + role. `run` scopes are never touched. On sqlite a scope's
+last use is the newer of its two files' mtimes and its size is the two together:
+GC never removes one file of a scope and keeps the other.
 
 The same sweeper also enforces an optional **aggregate size budget**: set
 **`sqlmem_total_max_bytes`** (off by default) and when the combined on-disk
@@ -443,7 +485,11 @@ Requirements / notes:
 - **Backups:** SQL Memory is included in the runtime JSON snapshot — see
   *Snapshot integration* below. A database-level backup of the aux DB / the
   sqlmem root is still recommended for large datasets (the snapshot is built
-  in-memory under a 512 MB cap).
+  in-memory under a 512 MB cap). On sqlite back up the whole sqlmem root
+  (`<DataDir>/sqlmem/`, or `sqlmem_root`): each scope is a `<scope>.db` and a
+  `<scope>.doc.db` (with their `-wal`/`-shm` sidecars), and the documents live
+  only in the `.doc.db` files. A backup rule that matches `*.db` already covers
+  both; one that lists files by name must add the `.doc.db` ones.
 
 ## Snapshot integration
 
