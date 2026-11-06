@@ -485,3 +485,19 @@ func TestAuditVerify_ARotationAfterAPruneKeepsTheChainVerifiable(t *testing.T) {
 		t.Errorf("a previous-key row after the second rotation point: %+v, %v; want a break at 10", rep, err)
 	}
 }
+
+// A prune checks what it removes (and the anchor it extends) inside its
+// transaction, not the whole store: a tenant's chain is pruned on its own
+// merits even while another chain — here the operator chain — is broken,
+// and the broken one keeps reporting its break.
+func TestAuditPrune_ChecksOnlyWhatItRemoves(t *testing.T) {
+	s, db := chainFixture(t, 3)
+	ctx := context.Background()
+	exec(t, db, `UPDATE audit_events SET actor = 'mallory' WHERE tenant_id = '' AND seq = 1`)
+	if n, err := pruneForTest(ctx, s, "t1", time.Now().Add(time.Hour)); err != nil || n != 3 {
+		t.Errorf("pruning t1 while the operator chain is broken = %d, %v; want its 3 rows", n, err)
+	}
+	if rep, err := auditchain.Verify(ctx, s, testKeys, ""); err != nil || rep.OK {
+		t.Errorf("the operator chain after t1's prune: %+v, %v; want its break still reported", rep, err)
+	}
+}

@@ -446,23 +446,31 @@ func (s *Sweeper) auditPruneEnabled() bool {
 	return s.auditMaxAge > 0 && s.auditKeys != nil && !s.dryRun
 }
 
+// auditChainBudget bounds one chain's prune per tick. Each chain gets its
+// own, so a long chain (the operator chain grows with every failed sign-in)
+// cannot use up the time of the chains after it; a prune that runs out of
+// time resumes from its anchor on the next tick.
+const auditChainBudget = time.Minute
+
 // sweepAuditOnce prunes every chain's rows older than the cutoff. A chain
-// that does not verify is refused — pruning it would re-sign an anchor over
-// tampered rows — logged at error and counted; a failure on one chain never
-// stops the rest.
+// whose rows to prune (or anchor) do not verify is refused — pruning it
+// would re-sign an anchor over tampered rows — logged at error and counted;
+// a failure on one chain never stops the rest.
 func (s *Sweeper) sweepAuditOnce(parent context.Context) (pruned, refused int, err error) {
-	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(parent, auditChainBudget)
 	tenants, err := s.store.AuditTenants(ctx)
+	cancel()
 	if err != nil {
 		return 0, 0, err
 	}
 	cutoff := s.now().Add(-s.auditMaxAge)
 	for _, tenant := range tenants {
-		if ctx.Err() != nil {
+		if parent.Err() != nil {
 			break
 		}
+		ctx, cancel := context.WithTimeout(parent, auditChainBudget)
 		n, err := auditchain.Prune(ctx, s.store, *s.auditKeys, tenant, cutoff)
+		cancel()
 		pruned += n
 		switch {
 		case errors.Is(err, auditchain.ErrChainBroken):

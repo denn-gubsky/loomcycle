@@ -310,19 +310,19 @@ type PruneStore interface {
 // first prune of a long chain does not read it all into memory at once.
 const pruneBatch = 5000
 
-// Prune removes a chain's rows recorded before `before`, in batches, behind
-// a signed anchor. It verifies the whole chain first (rows, anchor, head and,
-// for a tenant chain, the operator chain's record of it) and refuses with
-// ErrChainBroken when it does not hold; each batch's transaction re-checks
-// the range it removes, so a row changed between the two is caught too.
+// Prune removes a chain's rows recorded before `before`, in batches of at
+// most pruneBatch, behind a signed anchor. It does not walk the whole chain:
+// each batch's transaction hands the seal (SealAnchor) the current anchor and
+// every row it would remove, and the seal verifies exactly those — the
+// anchor's signature and state, each row's link, hash and signature — before
+// it signs anything, refusing with ErrChainBroken otherwise. That is what
+// keeps a prune from re-signing tampering; the rest of the chain is left as
+// it is and stays as verifiable as it was. Full verification (the head, rows
+// past the prune point, the operator chain's record of each chain) is the
+// separate, on-demand Verify / `loomcycle audit verify`, so a prune's cost
+// is bounded by what it removes, however long the chain or the operator
+// chain has grown.
 func Prune(ctx context.Context, st PruneStore, keys ChainKeys, tenant string, before time.Time) (int, error) {
-	rep, err := Verify(ctx, st, keys, tenant)
-	if err != nil {
-		return 0, err
-	}
-	if !rep.OK {
-		return 0, fmt.Errorf("%w: row %d: %s", ErrChainBroken, rep.BreakSeq, rep.Reason)
-	}
 	total := 0
 	for {
 		n, err := st.AuditPrune(ctx, tenant, before, pruneBatch, keys.SealAnchor())
