@@ -201,7 +201,10 @@ document file. If it finds tables there named like document tables holding rows
 that are not exact copies of the document file's (an older release ran on the
 data, or something got past the name check), it copies those tables whole into
 `<scope>.leftover-<n>.db` beside the scope, drops them from `<scope>.db`, and
-logs an **error** naming the file and the row count per table. The document
+logs an **error** with the row count per table and the file's `<n>`
+(`quarantine_stamp`). The log leaves the scope's path out, because it carries the
+user's subject id; find the file with
+`find <sqlmem root> -name '*.leftover-<quarantine_stamp>.db'`. The document
 file is unchanged. A quarantine file is opened by nothing: it is not a scope,
 GC does not count it, and dropping or erasing the scope deletes it with the
 scope's other files. It is not in snapshots.

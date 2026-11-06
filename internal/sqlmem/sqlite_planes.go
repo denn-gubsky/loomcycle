@@ -209,11 +209,10 @@ func (b *sqliteBackend) adoptTables(ctx context.Context, key ScopeKey, tables []
 		}
 	}
 	if err := dropAgentFileTables(ctx, conn, held); err != nil {
-		slog.Warn("sqlmem: could not drop the moved document tables from the agent file; the next move retries",
-			"path", agentPath, "err", err)
+		slog.Warn("sqlmem: could not drop the moved document tables from the agent file; the next move retries", "err", err)
 		return nil
 	}
-	compactAgentFile(ctx, conn, agentPath)
+	compactAgentFile(ctx, conn)
 	return nil
 }
 
@@ -260,7 +259,7 @@ func (b *sqliteBackend) copyIntoDocFile(ctx context.Context, conn *sql.Conn, age
 	defer func() { _ = tx.Rollback() }()
 	var orphans []string
 	for _, t := range held {
-		cols, err := carriedColumns(ctx, tx, agentPath, t)
+		cols, err := carriedColumns(ctx, tx, t)
 		if err != nil {
 			return err
 		}
@@ -290,7 +289,7 @@ func (b *sqliteBackend) copyIntoDocFile(ctx context.Context, conn *sql.Conn, age
 		return fmt.Errorf("sqlmem: the document file holds none of %v; provision it before moving the tables", held)
 	}
 	for _, t := range orphans {
-		slog.Warn("sqlmem: dropping a document table with no document-file counterpart", "path", agentPath, "table", t)
+		slog.Warn("sqlmem: dropping a document table with no document-file counterpart", "table", t)
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA main.user_version = %d`, docFileSplitMark)); err != nil {
 		return fmt.Errorf("sqlmem: record the scope's split: %w", err)
@@ -323,7 +322,7 @@ const quarantineInfix = ".leftover-"
 func (b *sqliteBackend) quarantineLeftovers(ctx context.Context, conn *sql.Conn, agentPath string, held []string) error {
 	counts := map[string]int64{}
 	for _, t := range held {
-		n, err := leftoverRows(ctx, conn, agentPath, t)
+		n, err := leftoverRows(ctx, conn, t)
 		if err != nil {
 			return err
 		}
@@ -334,7 +333,8 @@ func (b *sqliteBackend) quarantineLeftovers(ctx context.Context, conn *sql.Conn,
 	if len(counts) == 0 {
 		return nil
 	}
-	qpath := strings.TrimSuffix(agentPath, scopeFileSuffix) + quarantineInfix + strconv.FormatInt(time.Now().UnixNano(), 10) + scopeFileSuffix
+	stamp := strconv.FormatInt(time.Now().UnixNano(), 10)
+	qpath := strings.TrimSuffix(agentPath, scopeFileSuffix) + quarantineInfix + stamp + scopeFileSuffix
 	if _, err := conn.ExecContext(ctx, `ATTACH DATABASE ? AS `+quarantineAttachName, qpath); err != nil {
 		return fmt.Errorf("sqlmem: quarantine leftover document tables: %w", err)
 	}
@@ -357,10 +357,10 @@ func (b *sqliteBackend) quarantineLeftovers(ctx context.Context, conn *sql.Conn,
 		return fmt.Errorf("sqlmem: quarantine leftover document tables: commit: %w", err)
 	}
 	if err := os.Chmod(qpath, 0o600); err != nil {
-		slog.Warn("sqlmem: could not restrict the quarantine file's mode", "path", qpath, "err", err)
+		slog.Warn("sqlmem: could not restrict the quarantine file's mode", "quarantine_stamp", stamp, "err", err)
 	}
-	slog.Error("sqlmem: QUARANTINED rows found under document table names in the agent file of a scope whose documents already moved out; they were NOT merged into the document file. An older release run on this data, or a write past the Memory SQL guard, put them there. Inspect the quarantine file (docs/SQL_MEMORY.md) and merge by hand only what you trust",
-		"path", agentPath, "quarantine", qpath, "rows_by_table", counts)
+	slog.Error("sqlmem: QUARANTINED rows found under document table names in the agent file of a scope whose documents already moved out; they were NOT merged into the document file. An older release run on this data, or a write past the Memory SQL guard, put them there. Find the file with `find <sqlmem root> -name '*.leftover-<quarantine_stamp>.db'`, inspect it (docs/SQL_MEMORY.md) and merge by hand only what you trust",
+		"quarantine_stamp", stamp, "rows_by_table", counts)
 	return nil
 }
 
@@ -371,8 +371,8 @@ const quarantineAttachName = "quarantine"
 // leftoverRows counts a leftover agent-file table's rows that do not duplicate a
 // row of the document file's table on the columns that table has. A table the
 // document file lacks, or that shares no column with it, counts every row.
-func leftoverRows(ctx context.Context, conn *sql.Conn, agentPath, table string) (int64, error) {
-	cols, err := carriedColumns(ctx, conn, agentPath, table)
+func leftoverRows(ctx context.Context, conn *sql.Conn, table string) (int64, error) {
+	cols, err := carriedColumns(ctx, conn, table)
 	if err != nil {
 		return 0, err
 	}
@@ -394,7 +394,7 @@ func leftoverRows(ctx context.Context, conn *sql.Conn, agentPath, table string) 
 // carriedColumns returns the quoted columns a table's rows carry from the agent
 // file into the document file: those the document file's table has. nil when the
 // document file has no such table.
-func carriedColumns(ctx context.Context, tx queryer, agentPath, table string) ([]string, error) {
+func carriedColumns(ctx context.Context, tx queryer, table string) ([]string, error) {
 	docCols, err := tableColumns(ctx, tx, "main", table)
 	if err != nil || len(docCols) == 0 {
 		return nil, err
@@ -417,7 +417,7 @@ func carriedColumns(ctx context.Context, tx queryer, agentPath, table string) ([
 	}
 	for _, c := range agentCols {
 		if !inDoc[strings.ToLower(c)] {
-			slog.Warn("sqlmem: dropping a column an agent added to a document table", "path", agentPath, "table", table, "column", c)
+			slog.Warn("sqlmem: dropping a column an agent added to a document table", "table", table, "column", c)
 		}
 	}
 	return cols, nil
@@ -452,15 +452,15 @@ func dropAgentFileTables(ctx context.Context, conn *sql.Conn, held []string) err
 // clears the agent file's WAL, which still holds earlier images of their pages.
 // Best-effort: an agent transaction open on the file makes it busy, and the zeroed
 // free pages (secure_delete) already hold nothing; it is logged, not returned.
-func compactAgentFile(ctx context.Context, conn *sql.Conn, agentPath string) {
+func compactAgentFile(ctx context.Context, conn *sql.Conn) {
 	if _, err := conn.ExecContext(ctx, `VACUUM `+adoptAttachName); err != nil {
-		slog.Warn("sqlmem: could not compact the agent file after moving its document tables out", "path", agentPath, "err", err)
+		slog.Warn("sqlmem: could not compact the agent file after moving its document tables out", "err", err)
 		return
 	}
 	var busy, logFrames, checkpointed int64
 	err := conn.QueryRowContext(ctx, `PRAGMA `+adoptAttachName+`.wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed)
 	if err != nil || busy != 0 {
-		slog.Warn("sqlmem: could not clear the agent file's WAL after moving its document tables out", "path", agentPath, "busy", busy, "err", err)
+		slog.Warn("sqlmem: could not clear the agent file's WAL after moving its document tables out", "busy", busy, "err", err)
 	}
 }
 
