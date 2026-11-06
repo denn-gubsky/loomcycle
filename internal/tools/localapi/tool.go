@@ -185,12 +185,13 @@ func (t *EndpointTool) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	// Substitute path parameters into the URL template. url.PathEscape
 	// escapes characters outside the unreserved set (which includes
-	// '.' but NOT '/'), so '/' becomes '%2F' on the wire. The dot is
-	// untouched, but it can't introduce a path-traversal step without
-	// a slash; `id=../admin` becomes `..%2Fadmin`, which the upstream
-	// router treats as one literal segment. OpenAPI path parameters
-	// are scoped to a single segment by default (style: simple); this
-	// escape matches that contract.
+	// '.' but NOT '/'), so '/' becomes '%2F' on the wire: `id=../admin`
+	// becomes `..%2Fadmin`, one literal segment. A value that is exactly
+	// "." or ".." passes through unchanged, though, and would add a dot
+	// segment the upstream (or a proxy in front of it) resolves, moving
+	// the call to another route; those two are refused. OpenAPI path
+	// parameters are scoped to a single segment by default (style:
+	// simple); this matches that contract.
 	urlPath := t.Path
 	for _, p := range t.Parameters {
 		if p.In != "path" {
@@ -203,7 +204,11 @@ func (t *EndpointTool) Execute(ctx context.Context, input json.RawMessage) (tool
 			}
 			continue
 		}
-		urlPath = strings.ReplaceAll(urlPath, "{"+p.Name+"}", url.PathEscape(fmt.Sprintf("%v", v)))
+		seg := fmt.Sprintf("%v", v)
+		if seg == "." || seg == ".." {
+			return tools.Result{IsError: true, Text: fmt.Sprintf("path parameter %q may not be %q", p.Name, seg)}, nil
+		}
+		urlPath = strings.ReplaceAll(urlPath, "{"+p.Name+"}", url.PathEscape(seg))
 	}
 
 	// Build query string from query parameters.
