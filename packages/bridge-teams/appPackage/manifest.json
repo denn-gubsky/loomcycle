@@ -20,7 +20,7 @@
     {
       "botId": "${{BOT_ID}}",
       "scopes": ["personal", "groupChat", "team"],
-      "supportsFiles": false,
+      "supportsFiles": true,
       "isNotificationOnly": false,
       "commandLists": [
         {

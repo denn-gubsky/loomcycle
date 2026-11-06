@@ -17,7 +17,19 @@ import { createSlackAdapter, type SlackAdapter } from "../src/bridge.js";
 import { loadConfig } from "../src/config.js";
 import type { SlackRef } from "../src/identity.js";
 import { slackSignature } from "../src/verify.js";
-import { FakeGate, FakeLoomcycle, FakeSlack, LIVE_MENTION, MENTION_FORMS, settle, silentLogger, waitFor, type StartedRun } from "./fakes.js";
+import {
+  fakeSpeech,
+  FakeGate,
+  FakeLoomcycle,
+  FakeSlack,
+  FILES_ORIGIN,
+  LIVE_MENTION,
+  MENTION_FORMS,
+  settle,
+  silentLogger,
+  waitFor,
+  type StartedRun,
+} from "./fakes.js";
 
 const SECRET = "test-signing-secret";
 
@@ -715,5 +727,81 @@ describe("slack bridge with a loomcycle token", () => {
     expect(r.gate.revokes).toEqual([]);
     expect(r.lc.calls).toHaveLength(0);
     expect(r.slack.calls.map((c) => c.method)).toEqual(["auth.test"]);
+  });
+});
+
+describe("slack bridge voice messages (RFC GA)", () => {
+  const CLIP_URL = `${FILES_ORIGIN}/files-pri/T1-F1/download/audio_message.webm`;
+  const clipFile = { id: "F1", subtype: "slack_audio", mimetype: "audio/webm", size: 4000, duration_ms: 3500, url_private_download: CLIP_URL };
+  const dmClip = (ts = "100.1", user = "UALICE") => ({ type: "message", subtype: "file_share", channel_type: "im", channel: "D1", user, text: "", ts, team: "T1", files: [clipFile] });
+
+  async function voiceRig(env: Record<string, string> = {}): Promise<Rig> {
+    const r = await rig({ BRIDGE_VOICE: "1", ...env });
+    r.lc.speech = fakeSpeech();
+    r.slack.files.set(CLIP_URL, () => new Response(new Uint8Array([1, 2, 3, 4]), { status: 200, headers: { "content-type": "audio/webm" } }));
+    return r;
+  }
+
+  it("transcribes a DM clip with the person's token, and answers in text and an audio file beside it", async () => {
+    const r = await voiceRig();
+    await r.events(signed(eventBody(dmClip())));
+    await waitFor(() => r.lc.runs.length === 1, "run");
+    announce(r.lc.runs[0], "run-1");
+
+    expect(r.slack.to("file")[0]).toMatchObject({ url: CLIP_URL, auth: "Bearer xoxb-test" });
+    const [tr] = r.lc.callsTo("transcribe");
+    expect(tr.token).toMatch(/^tok-slack-t1-ualice-/);
+    expect(Array.from(tr.args[0] as Uint8Array)).toEqual([1, 2, 3, 4]);
+    expect(tr.args[1]).toMatchObject({ contentType: "audio/webm" });
+    expect(promptOf(r.lc.runs[0])).toEqual({ type: "trusted-text", text: "(voice message)\nwhat is the weather" });
+    expect(r.lc.mints[0].opts.surfaces).toEqual(["speech", "transcription"]);
+
+    r.lc.runs[0].events.push({ type: "text", text: "Sunny." });
+    r.lc.runs[0].events.push({ type: "awaiting_input" });
+    await waitFor(() => r.slack.to("files.completeUploadExternal").length === 1, "audio reply");
+
+    expect(r.lc.callsTo("speech")[0].args).toEqual(["Sunny.", { format: "mp3", language: "en" }]);
+    const order = r.slack.calls.map((c) => c.method).filter((m) => m.startsWith("files.") || m === "file" || m === "chat.stopStream");
+    expect(order).toEqual(["file", "chat.stopStream", "files.getUploadURLExternal", "file", "files.completeUploadExternal"]);
+    expect(r.slack.to("file")[1].bytes && Array.from(r.slack.to("file")[1].bytes!)).toEqual([7, 7, 7]);
+    expect(r.slack.to("file")[1].auth).toBeUndefined();
+    expect(r.slack.to("files.getUploadURLExternal")[0].body).toEqual({ filename: "reply.mp3", length: "3" });
+    // The streamed text went in the clip's thread, and so does the audio.
+    expect(r.slack.to("chat.startStream")[0].body).toMatchObject({ channel: "D1", thread_ts: "100.1" });
+    const complete = r.slack.to("files.completeUploadExternal")[0].body;
+    expect(complete).toMatchObject({ channel_id: "D1", thread_ts: "100.1" });
+    expect(JSON.parse(String(complete.files))).toEqual([{ id: expect.stringMatching(/^FUP/), title: "AI voice" }]);
+  });
+
+  it("never takes its own audio reply, shared back by Slack, as a voice message", async () => {
+    const r = await voiceRig();
+    await send(r, eventBody(dmClip("100.1", "UBOT")));
+    await send(r, eventBody({ ...dmClip("100.2"), bot_id: "BBOT" }));
+    expect(r.lc.calls).toEqual([]);
+    expect(r.slack.calls.map((c) => c.method)).toEqual(["auth.test"]);
+  });
+
+  it("stops speaking in a conversation where Slack refuses the upload, and keeps answering in text", async () => {
+    const r = await voiceRig();
+    r.slack.reply("files.completeUploadExternal", { json: { ok: false, error: "not_in_channel" } });
+    await r.events(signed(eventBody(dmClip())));
+    await waitFor(() => r.lc.runs.length === 1, "run");
+    announce(r.lc.runs[0], "run-1");
+    r.lc.runs[0].events.push({ type: "text", text: "Sunny." });
+    r.lc.runs[0].events.push({ type: "awaiting_input" });
+    await waitFor(() => r.slack.to("files.completeUploadExternal").length === 1, "refused upload");
+    await settle();
+
+    await r.events(signed(eventBody(dmClip("100.3"))));
+    await waitFor(() => r.lc.callsTo("transcribe").length === 2, "second transcription");
+    await waitFor(() => r.lc.runs.length + r.lc.callsTo("sendRunInput").length >= 2, "second turn");
+    const run = r.lc.runs[r.lc.runs.length - 1];
+    if (r.lc.runs.length === 2) announce(run, "run-2");
+    run.events.push({ type: "text", text: "Still sunny." });
+    run.events.push({ type: "awaiting_input" });
+    await waitFor(() => r.slack.to("chat.stopStream").length === 2, "second text reply");
+    await settle();
+    expect(r.lc.callsTo("speech")).toHaveLength(1);
+    expect(r.slack.to("files.getUploadURLExternal")).toHaveLength(1);
   });
 });

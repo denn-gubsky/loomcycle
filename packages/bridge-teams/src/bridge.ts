@@ -3,6 +3,7 @@
 // @loomcycle/bridge-core's.
 
 import {
+  consoleLogger,
   createBridge,
   type Bridge,
   type BridgeAdapter,
@@ -25,6 +26,8 @@ import { App, ExpressAdapter } from "@microsoft/teams.apps";
 import { parseCardAction, renderCard } from "./cards.js";
 import type { TeamsConfig } from "./config.js";
 import { groupsOf, identify, uninstalledSub } from "./identity.js";
+import { routeMessage } from "./inbound.js";
+import { teamsVoicePort } from "./voice.js";
 
 const ADAPTIVE_CARD = "application/vnd.microsoft.card.adaptive";
 
@@ -65,7 +68,12 @@ export interface TeamsAppOptions {
   cloud?: CloudEnvironment;
 }
 
-export type TeamsBridgeOptions = BridgeOptions<ConversationRef> & { logger?: Logger; app?: TeamsAppOptions };
+export type TeamsBridgeOptions = BridgeOptions<ConversationRef> & {
+  logger?: Logger;
+  app?: TeamsAppOptions;
+  /** The fetch attached files are downloaded with (tests). */
+  fileFetch?: typeof fetch;
+};
 
 /** LoopbackExpressAdapter is the SDK's Express adapter listening on one
  *  address. The SDK's own listens on every interface; in dev mode, where the
@@ -142,11 +150,27 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
     async groupsFor(_subject, ref) {
       return groupsOf(ref);
     },
+    // Voice in only (RFC GA D12): audio files attached in a 1:1 chat. The
+    // core uses it only with BRIDGE_VOICE=1, and grants the user tokens
+    // transcription alone, since the port cannot send voice.
+    voice: teamsVoicePort<ConversationRef>({
+      hosts: cfg.fileHosts,
+      fetch: opts.fileFetch,
+      typing: (ref) => app.sendTo(ref, { type: "typing" }),
+      log: opts.logger ?? consoleLogger,
+    }),
     async start(ctx) {
       app.on("message", async ({ activity, ref }) => {
         // Card submits from older clients arrive as messages with no text.
         const text = stripMentionsText(activity) ?? "";
-        await ctx.router.onMessage(identify(activity, cfg.allowedTenants, gate), ref as unknown as ConversationRef, text);
+        await routeMessage(
+          ctx.router,
+          identify(activity, cfg.allowedTenants, gate),
+          ref as unknown as ConversationRef,
+          text,
+          activity,
+          ctx.config.voice?.enabled === true,
+        );
       });
       app.on("card.action", async ({ activity, ref }) => {
         const res = await ctx.router.onCardAction(

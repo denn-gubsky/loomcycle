@@ -1,7 +1,21 @@
 // Reading Slack's two inbound shapes, after their signature is checked: an
 // Events API envelope, and a block_actions interaction payload.
 
+import type { VoiceIn } from "@loomcycle/bridge-core";
+
 import type { ChannelType, InboundFields } from "./identity.js";
+import type { SlackFileRef } from "./voice.js";
+
+/** A shared file, as a `file_share` message carries it. */
+export interface SlackFile {
+  id?: string;
+  /** `slack_audio` for an audio clip recorded in Slack. */
+  subtype?: string;
+  mimetype?: string;
+  size?: number;
+  duration_ms?: number;
+  url_private_download?: string;
+}
 
 export interface SlackMessageEvent {
   type?: string;
@@ -16,6 +30,7 @@ export interface SlackMessageEvent {
   team?: string;
   user_team?: string;
   source_team?: string;
+  files?: SlackFile[];
 }
 
 export interface EventEnvelope {
@@ -38,7 +53,15 @@ export type ReadEvent =
   | { kind: "ignore" }
   /** An edit, a join, a bot's message, our own. Dropped before anything else. */
   | { kind: "self_or_bot" }
-  | { kind: "message"; fields: InboundFields; text: string };
+  | { kind: "message"; fields: InboundFields; text: string }
+  /** A voice clip or an audio file (RFC GA), read only with voice on. */
+  | { kind: "voice"; fields: InboundFields; voice: VoiceIn };
+
+export interface ReadOptions {
+  /** Take a message carrying one audio file as a voice message. Off, such a
+   *  message is read exactly as before voice existed. */
+  voice?: boolean;
+}
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" && v ? v : undefined;
@@ -49,37 +72,76 @@ function channelTypeOf(t: string | undefined): ChannelType {
 }
 
 /** readEvent takes a DM (`message` with channel_type "im") or a mention in a
- *  channel (`app_mention`). Every other event is ignored. */
-export function readEvent(env: EventEnvelope, self: SelfIds): ReadEvent {
+ *  channel (`app_mention`). Every other event is ignored. With voice on, a
+ *  DM or a mention that carries exactly one audio file (a clip, or an audio
+ *  file shared) is a voice message: in a channel only a mention, as for
+ *  text, so a clip there must name the bot. */
+export function readEvent(env: EventEnvelope, self: SelfIds, opts: ReadOptions = {}): ReadEvent {
   const ev = env.event;
   if (!ev || env.type !== "event_callback") return { kind: "ignore" };
   const isDm = ev.type === "message" && ev.channel_type === "im";
   // A mention is delivered as app_mention, so a channel's plain `message`
   // (if the app also subscribes to message.channels) would answer it twice.
   if (!isDm && ev.type !== "app_mention") return { kind: "ignore" };
-  // Any subtype is an edit, a deletion, a join, a bot_message…: never a
-  // person writing to the agent.
-  if (ev.subtype !== undefined || ev.bot_id !== undefined) return { kind: "self_or_bot" };
+  // Bots and the bot itself first, before any subtype is let through: the
+  // bridge's own voice reply is a file_share of an audio file, and taking it
+  // as input would loop on the operator's engines.
+  if (ev.bot_id !== undefined) return { kind: "self_or_bot" };
   const user = str(ev.user);
   if (!user || user === self.userId) return { kind: "self_or_bot" };
+  const voice = opts.voice ? audioOf(ev.files) : undefined;
+  // Any other subtype is an edit, a deletion, a join, a bot_message…: never
+  // a person writing to the agent. file_share passes only as a voice message.
+  if (ev.subtype !== undefined && !(ev.subtype === "file_share" && voice)) return { kind: "self_or_bot" };
   const team = str(env.team_id);
   const channel = str(ev.channel);
   const ts = str(ev.ts);
   if (!team || !channel || !ts) return { kind: "ignore" };
+  const fields: InboundFields = {
+    team,
+    speakerTeam: speakerTeamOf(env, ev, team),
+    otherTeams: [str(ev.source_team)].filter((t): t is string => !!t),
+    user,
+    channel,
+    channelType: isDm ? "im" : channelTypeOf(ev.channel_type),
+    threadTs: str(ev.thread_ts),
+    ts,
+  };
+  // Text typed beside a clip is not read: the recording is the message.
+  if (voice) return { kind: "voice", fields, voice };
   return {
     kind: "message",
-    fields: {
-      team,
-      speakerTeam: speakerTeamOf(env, ev, team),
-      otherTeams: [str(ev.source_team)].filter((t): t is string => !!t),
-      user,
-      channel,
-      channelType: isDm ? "im" : channelTypeOf(ev.channel_type),
-      threadTs: str(ev.thread_ts),
-      ts,
-    },
+    fields,
     text: cleanInbound(str(ev.text) ?? "", self.userId),
   };
+}
+
+/** audioOf reads a message's files as a voice message: exactly one, either
+ *  a Slack audio clip or a file whose type is audio. Length and size come
+ *  from Slack's metadata, so the core can refuse before any download. */
+export function audioOf(files: unknown): VoiceIn | undefined {
+  if (!Array.isArray(files) || files.length !== 1) return undefined;
+  const f = files[0] as SlackFile | null;
+  if (typeof f !== "object" || f === null) return undefined;
+  const id = str(f.id);
+  const mime = str(f.mimetype)?.toLowerCase();
+  const isClip = f.subtype === "slack_audio";
+  if (!id || (!isClip && !mime?.startsWith("audio/"))) return undefined;
+  const url = str(f.url_private_download);
+  const ref: SlackFileRef = { id, ...(url ? { url } : {}) };
+  const seconds = count(f.duration_ms);
+  const bytes = count(f.size);
+  return {
+    kind: isClip ? "clip" : "audio_file",
+    ref,
+    ...(mime ? { mime } : {}),
+    ...(seconds !== undefined ? { seconds: seconds / 1000 } : {}),
+    ...(bytes !== undefined ? { bytes } : {}),
+  };
+}
+
+function count(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
 }
 
 /** A person deactivated in their workspace: their team and user id. */

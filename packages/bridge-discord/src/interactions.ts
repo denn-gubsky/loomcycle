@@ -1,17 +1,18 @@
 // POST /discord/interactions: verify, then answer within Discord's 3 seconds,
 // then do the work.
 
-import { header, type CardResult, type ConversationRouter, type Logger, type RawResponse, type Route } from "@loomcycle/bridge-core";
+import { header, VOICE_TEXT, type CardResult, type ConversationRouter, type Identified, type Logger, type RawResponse, type Route } from "@loomcycle/bridge-core";
 import type { KeyObject } from "node:crypto";
 
 import type { DiscordApi } from "./api.js";
 import { NO_MENTIONS, parseCustomId, renderCard, SUPPRESS_EMBEDS, textMessage } from "./cards.js";
-import { HELP_TEXT, MAX_PROMPT_CHARS } from "./commands.js";
+import { ASK_BY_VOICE, MAX_PROMPT_CHARS, slashHelpText } from "./commands.js";
 import { isSnowflake, type DiscordConfig } from "./config.js";
 import { identify, NOT_HERE, placeOf, type Fences, type Place } from "./identity.js";
-import { CallbackType, EPHEMERAL, InteractionType, type Interaction } from "./interaction.js";
+import { CallbackType, CommandType, EPHEMERAL, InteractionType, type Interaction } from "./interaction.js";
 import type { DeferOptions, DiscordPort, DiscordRef } from "./port.js";
 import { verifyInteraction } from "./verify.js";
+import { voiceOfMessage, VOICE_OFF, type DiscordVoice } from "./voice.js";
 
 export interface InteractionDeps {
   cfg: Fences & Pick<DiscordConfig, "dev">;
@@ -23,6 +24,9 @@ export interface InteractionDeps {
   now: () => number;
   /** How long a button press may take before the bridge acks it and finishes later. */
   inlineCardMs?: number;
+  /** Set with BRIDGE_VOICE=1: Ask by voice is taken. untrusted is
+   *  BRIDGE_VOICE_UNTRUSTED. */
+  voice?: { port: DiscordVoice; untrusted: boolean };
 }
 
 /** Interaction tokens are opaque; this keeps one from bending the URL path it is put in. */
@@ -81,6 +85,29 @@ export function interactionRoute(deps: InteractionDeps): Route {
   const seen = new Seen(deps.now);
   const { cfg, port, log } = deps;
 
+  const help = slashHelpText(deps.voice !== undefined);
+
+  /** voiceCommand takes Ask by voice: the core downloads, transcribes and
+   *  answers it, after a deferred response like /ask's. */
+  const voiceCommand = (ix: Interaction & { id: string; token: string }, id: Identified & { ok: true }): RawResponse => {
+    if (ix.data?.name !== ASK_BY_VOICE) return ephemeral("Unknown command. Try /help.");
+    if (!deps.voice) return ephemeral(VOICE_OFF);
+    // Said here rather than left to the core, which stays quiet in a shared
+    // channel: an interaction must be answered.
+    if (id.speaker.trust === "untrusted" && !deps.voice.untrusted) return ephemeral(VOICE_TEXT.unavailable);
+    const found = voiceOfMessage(ix);
+    if ("refusal" in found) return ephemeral(found.refusal);
+    const place = placeOf(ix)!;
+    const ref = refOf(place);
+    port.track(ix.id, ix.token, place.channelId, FALLBACK.ask);
+    setImmediate(() => {
+      deps.router.onVoice(id, ref, found.voice, typeof ix.locale === "string" ? ix.locale : undefined).catch((err: unknown) => {
+        log.error("voice message failed", { conversation: id.conversationId, error: (err as Error)?.name });
+      });
+    });
+    return json({ type: CallbackType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE, data: { flags: SUPPRESS_EMBEDS, allowed_mentions: NO_MENTIONS } });
+  };
+
   const command = (ix: Interaction & { id: string; token: string }): RawResponse => {
     const id = identify(ix, cfg);
     if (!id.ok) {
@@ -88,8 +115,12 @@ export function interactionRoute(deps: InteractionDeps): Route {
       // Every interaction must be answered, so each refused one hears why.
       return ephemeral(id.notice ?? NOT_HERE);
     }
+    // A spoken reply may follow any turn (/voice on), so every command says
+    // how large an upload this channel takes.
+    deps.voice?.port.observe(placeOf(ix)!.channelId, ix.attachment_size_limit);
+    if (ix.data?.type === CommandType.MESSAGE) return voiceCommand(ix, id);
     const name = ix.data?.name ?? "";
-    if (name === "help") return ephemeral(HELP_TEXT);
+    if (name === "help") return ephemeral(help);
     const text = name === "ask" ? promptOf(ix) : name === "new" || name === "stop" ? `/${name}` : undefined;
     if (text === undefined) return ephemeral("Unknown command. Try /help.");
     if (!text) return ephemeral("Write something after /ask.");
