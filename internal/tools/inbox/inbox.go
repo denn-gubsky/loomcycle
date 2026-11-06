@@ -139,6 +139,10 @@ type Record struct {
 	// copied when the extraction read bytes that still hashed to it: what an
 	// import of the extracted text says the document came from.
 	ExtractedFrom *Record `json:"extracted_from,omitempty"`
+	// InferredHeadings is how many headings the extraction that wrote this
+	// file inferred from formatting (File op=extract structure): what an
+	// import of it records as where its structure came from.
+	InferredHeadings int `json:"inferred_headings,omitempty"`
 }
 
 // Item is one file a producer hands over.
@@ -162,6 +166,9 @@ type Item struct {
 	URL string
 	// ExtractedFrom is the trusted record of the file an extraction read.
 	ExtractedFrom *Record
+	// InferredHeadings is the extraction's count of inferred headings (see
+	// Record).
+	InferredHeadings int
 }
 
 // Result is what a capture produced: the stub the model sees and, when the
@@ -340,18 +347,19 @@ func (h handle) write(ctx context.Context, root string, it Item, r io.Reader, ma
 		return fail(fmt.Errorf("could not keep the file: %v", err))
 	}
 	return Record{
-		Ref:           Ref(final),
-		Path:          final,
-		MediaType:     mt,
-		Size:          cw.n,
-		SHA256:        hex.EncodeToString(sum.Sum(nil)),
-		Origin:        it.Origin,
-		RunID:         tools.RunID(ctx),
-		CapturedAt:    time.Now().UTC(),
-		Page:          max(it.Page, 0),
-		Slide:         max(it.Slide, 0),
-		URL:           recordURL(it.URL),
-		ExtractedFrom: extractedFrom(it.ExtractedFrom),
+		Ref:              Ref(final),
+		Path:             final,
+		MediaType:        mt,
+		Size:             cw.n,
+		SHA256:           hex.EncodeToString(sum.Sum(nil)),
+		Origin:           it.Origin,
+		RunID:            tools.RunID(ctx),
+		CapturedAt:       time.Now().UTC(),
+		Page:             max(it.Page, 0),
+		Slide:            max(it.Slide, 0),
+		URL:              recordURL(it.URL),
+		ExtractedFrom:    extractedFrom(it.ExtractedFrom),
+		InferredHeadings: max(it.InferredHeadings, 0),
 	}, nil
 }
 
