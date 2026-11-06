@@ -1,6 +1,6 @@
 # Multi-replica deployment guide
 
-> v0.12.x cluster mode + v1.0 capstone — running 2+ loomcycle replicas behind a load balancer with a shared Postgres database.
+> Running 2+ loomcycle replicas behind a load balancer with a shared Postgres database. Cluster mode first shipped in v0.12.x; this guide is current for v1.141.0 and `main`.
 
 ## TL;DR
 
@@ -42,6 +42,8 @@ LB: round-robin or least-connections, any HTTP load balancer. **No sticky sessio
 | **Singleton sweepers** | `pg_try_advisory_lock` wrapping heartbeat/memory/channels/interrupts/metrics/dynamic_agents | **v0.12.4** |
 | **Session-continuation lock** | `pg_try_advisory_lock(hash(session_id))` on a pinned conn | **v0.12.5** |
 | **Cross-replica steering + turn cancel** | `loomcycle.steer` / `loomcycle.turncancel` LISTEN/NOTIFY, routed to the replica that owns the run; same ack timeout as cancel | **v0.26.1**; every steering surface since **v1.100.0** |
+| **Token-limit ceilings** | each replica re-reads the `token_limits` rows every `LOOMCYCLE_LIMITS_RELOAD_INTERVAL` (default `1m`, `0` off), so a budget written on one replica (`PUT /v1/_limits`, a gate's new-user budget) is enforced on all; usage counters stay per replica | after v1.141.0 |
+| **Audit trail** | `audit_events`: one hash chain per tenant, appended by every replica through the store under a lock on the chain's head, so replicas never fork a chain (`docs/CONFIGURATION.md`, Audit trail) | after v1.141.0 |
 
 ## What stays per-replica
 
