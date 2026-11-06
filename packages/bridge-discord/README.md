@@ -6,12 +6,13 @@ A Discord bot for a [loomcycle](https://github.com/denn-gubsky/loomcycle) intera
 - **Steering:** an `/ask` sent while the agent is working reaches it mid-turn.
 - **Questions and reviews** from the agent arrive as messages with buttons.
 - **Restarts lose nothing:** the next `/ask` continues the conversation, with the agent's full history.
+- **Voice messages** (opt-in): ask with your own voice message through its **Apps → Ask by voice** menu, and hear the reply as a Discord voice message (below).
 
 It is built on `@loomcycle/bridge-core`, which holds the per-user tokens, conversations and cards every bridge shares. Design: RFC EQ (Bridges) in the loomcycle document store.
 
 ## What v1 does not do
 
-The bridge takes Discord **interactions over HTTP** only. It does not connect to the Gateway, so it never sees ordinary messages: people use `/ask`, in a server or in a DM. Free-text messages need the Gateway and are a later phase.
+The bridge takes Discord **interactions over HTTP** only. It does not connect to the Gateway, so it never sees ordinary messages: people use `/ask`, in a server or in a DM. Free-text messages, and voice messages sent without the **Ask by voice** command, need the Gateway and are a later phase.
 
 ## How it works
 
@@ -45,7 +46,7 @@ Run loomcycle with authentication on and a persistent store. Then:
 1. In the [Developer Portal](https://discord.com/developers/applications), create an application.
 2. **General Information:** copy the **Application ID** (`DISCORD_APPLICATION_ID`) and the **Public Key** (`DISCORD_PUBLIC_KEY`).
 3. **Bot:** reset and copy the token (`DISCORD_BOT_TOKEN`). The bot needs no privileged intents.
-4. **Installation:** keep **Guild Install** only. For the install link, add the scopes `bot` and `applications.commands`, and the bot permissions *Send Messages* and *View Channels*. Install it in your server.
+4. **Installation:** keep **Guild Install** only. For the install link, add the scopes `bot` and `applications.commands`, and the bot permissions *Send Messages* and *View Channels*. With voice messages on, also *Send Voice Messages* and *Attach Files* (permissions integer `70368744213504`, against `3072` without voice). Install it in your server.
 5. Start the bridge (below), then set **Interactions Endpoint URL** to `https://<bridge-host>/discord/interactions`. Discord checks the URL with a PING when you save it, so the bridge must be running and reachable; it also probes the endpoint with bad signatures from time to time.
 
 ### 3. Run the bridge
@@ -60,7 +61,7 @@ Or run the container image, `denngubsky/loomcycle-bridge-discord` (also `ghcr.io
 docker run --env-file discord-bridge.env -p 8080:8080 -v discord-bridge-data:/data denngubsky/loomcycle-bridge-discord:<version>
 ```
 
-With `DISCORD_BRIDGE_REGISTER_COMMANDS=1` the bridge registers its four commands when it starts:
+With `DISCORD_BRIDGE_REGISTER_COMMANDS=1` the bridge registers its four commands when it starts, and with `BRIDGE_VOICE=1` the **Ask by voice** message command beside them:
 
 - **in each allowed server, as that server's commands.** They take effect at once and show only where the bot answers.
 - **globally, limited to the bot's DMs,** when DMs are on. Commands in DMs can only be global, and limiting them to DMs keeps a server from listing them twice.
@@ -140,6 +141,34 @@ As a gate the bridge also tells loomcycle about groups and leavers.
 - **Groups.** A channel is in the loomcycle group `discord:dc-guild-<server id>` of its server. A person (a DM) is in `discord:dc-guild-<server id>` for each server in `DISCORD_BRIDGE_TRUSTED_GUILDS` they are a member of, and `discord:dc-role-<role id>` for each role they hold there, which an operator can bind permissions to; it takes `trusted: true` on the gate and an `identity_map.groups` block. The bridge reads a person's membership with the bot token (Get Guild Member, which needs no privileged intent; the bot must be in the server), once per person per 10 minutes. When a lookup fails, or with more than 20 trusted servers, it asserts no groups for that person, so loomcycle never drops a group on a guess.
 - **Leavers.** A person who removes the app is revoked in loomcycle: disabled at once, then removed by the gate's removal policy. Discord tells the bridge through Webhook Events: in the Developer Portal, on the **Webhooks** page, set the **Endpoint** to `https://<bridge-host>/discord/events`, turn **Events** on and select `APPLICATION_DEAUTHORIZED`. Discord checks the URL with a PING when you save it, so the bridge must already run as a gate. These events are signed like interactions and always verified. The bridge answers an event only once loomcycle has taken the revoke; if it has not, Discord gets a `503` and delivers the event again.
 
+## Voice messages
+
+With `BRIDGE_VOICE=1`, a person can put a question to the agent as a voice message and hear the answer as one (RFC GA). Off by default.
+
+**Asking.** Record a voice message in the channel or DM as usual, then right-click it (long-press on mobile) and pick **Apps → Ask by voice**. The bridge answers with "thinking…", has loomcycle transcribe the recording with the conversation's own token, and hands the agent the words, marked `(voice message)`, exactly as typed text goes: a trusted speaker's into the prompt, an untrusted speaker's as an untrusted block. A message with exactly one audio file works the same way.
+
+- **Why a command, not just a voice message.** The bridge has no Gateway connection, so it never sees messages people post; a message command arrives as an interaction, through the endpoint the bridge already serves, with the message and its attachment in it. In a server, Discord would also withhold a message's attachments from a Gateway bot without the privileged Message Content intent. The command needs neither.
+- **Only your own voice message.** Ask by voice on someone else's message is refused. Their words would reach the agent as your request, with your trust, and their recording would go to transcription without their asking. It also keeps the bridge from transcribing its own voice replies.
+- **The recording** is fetched from Discord's CDN (`cdn.discordapp.com`, `media.discordapp.net`, nowhere else, redirects included) at its signed URL, with no token, and held in memory for that one request. A recording longer than `BRIDGE_VOICE_MAX_SECONDS` is refused from its metadata, before anything is downloaded.
+- **Settings.** `/voice on`, `/voice off` and `/voice auto` are typed through `/ask`, as in `/ask /voice on`. `/help` lists them with voice on.
+
+**The spoken reply.** The text reply is always posted. When the reply should also be spoken (by default, when the question was a voice message), the bridge has loomcycle voice it and posts it as a Discord voice message with the bot token, as a reply to the text. A voice message can carry no text, so the text reply gets one more line, `-# AI voice` (`BRIDGE_VOICE_LABEL`), saying the voice is generated. If the text cannot be edited (its interaction is too old, or the reply already fills its 2,000 characters), the label is posted as a short message of its own and the voice replies to that. A voice message that cannot be labelled is not sent.
+
+**What it needs.**
+
+- **Discord:** the bot permissions *Send Voice Messages* and *Attach Files* in the channel, and the bot in the channel, since the voice message goes by the bot token. If Discord refuses it (a missing permission, a DM the person closed), spoken replies stop in that conversation until someone sends `/ask /voice on`; the text replies carry on.
+- **loomcycle:** the `speech:` and `transcription.stt:` engines, and for spoken replies `speech.encode` (an ffmpeg Opus command) with `speech.format: ogg`, because Discord shows only OGG/Opus as a voice message. Without it, voice messages are still understood and the replies stay text.
+- **The user tokens' surfaces.** With voice on, the bridge asks for each user token to reach loomcycle's speech routes (`surfaces: [speech, transcription]`, loomcycle 1.141 or later). As a gate, add `surfaces: [speech, transcription]` to the gate's `issued_token`; without it loomcycle grants none. A voice message then gets "I can only read text for now.", in a DM and in a server channel alike: the "Ask by voice" reply is always answered.
+- **Rate.** A voice turn takes three starts from the user's rate (transcribe, run, speak). Raise `BRIDGE_RATE_PER_MINUTE` to at least `12` with voice on (and the gate's `issued_token.rate`, for a gate).
+
+The other `BRIDGE_VOICE_*` settings (length and size caps, the reply mode, the echo, untrusted speakers) are in `@loomcycle/bridge-core`'s README.
+
+**Not yet checked against Discord** (RFC GA P0):
+
+- **The waveform.** The bridge sends an empty one, as community clients do, and Discord draws a flat bar. If Discord starts refusing that, loomcycle will send a real one.
+- **Bot-token posting.** A voice message is posted with the bot token, not through the interaction, because whether an interaction follow-up may carry the voice flag is unconfirmed. So a spoken reply in a DM, or in a channel the bot is not in, may be refused where the text reply was not.
+- **The upload limit** is the `attachment_size_limit` of the channel's last interaction, else 10 MB. A spoken reply is far smaller than either.
+
 ## Servers, channels and trust
 
 - **A server channel runs as itself, never as one of its members.** It is its own loomcycle user (`discord-conv-<hash>`), with its own memory and history. A thread is its own conversation and shares its parent channel's memory.
@@ -167,6 +196,7 @@ As a gate the bridge also tells loomcycle about groups and leavers.
 - **Inbound:** every request's `X-Signature-Ed25519` is checked over the timestamp and the raw body with the application's public key, before the body is parsed. A timestamp more than five minutes off, and an interaction id already seen, are refused. A failed check is a bare `401`.
 - **Bots are dropped,** the bot itself included, before anything reaches loomcycle.
 - **Least privilege:** the bridge's own token never runs agents; as a loomcycle gate (above) it holds no loomcycle token at all. A user's token is limited to one agent, every per-run override except `interactive` is locked, it is rate-limited, and it expires.
+- **Voice:** a recording is downloaded from Discord's CDN hosts only, with no credential, read up to the size cap and never kept; the bot token never goes to the CDN. Logs carry sizes and outcomes, never a transcript.
 - **Credentials stay in memory.** Interaction tokens are never written to the conversation store, so `BRIDGE_STORE=file:` holds no credential; after a restart, replies use the bot token until the next command. The bot token is sent only to Discord's REST API, never to an interaction webhook. Logs carry ids, never a token, message text or agent output.
 - **Output:** agent text can be steered by whoever writes in a channel, so nothing the bridge posts can ping anyone (`allowed_mentions` parses nothing, so `@everyone` and role mentions are inert), shows a link preview (`SUPPRESS_EMBEDS` on every message: Discord would fetch the link to build one, with no click, and hand its query string to whoever runs that server), or hides a link's target (a masked link `[label](url)` is rewritten as `label (<url>)`). Tool inputs and outputs are never sent.
 

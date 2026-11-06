@@ -1,7 +1,7 @@
 // Test doubles: a scripted loomcycle (copied from bridge-core's tests) and a
 // recording fake of Slack's Web API.
 
-import type { AdminClient, Logger, RunClient } from "@loomcycle/bridge-core";
+import type { AdminClient, Logger, RunClient, VoiceClient } from "@loomcycle/bridge-core";
 
 // The loomcycle client's types, read off the core's ports, so this package
 // needs no dependency of its own on @loomcycle/client.
@@ -9,6 +9,21 @@ type RunOptions = Parameters<RunClient["runStreaming"]>[0];
 type ContinueOptions = Parameters<RunClient["continueSession"]>[0];
 type AgentEvent = ReturnType<RunClient["runStreaming"]> extends AsyncIterable<infer E> ? E : never;
 type MintedUserToken = Awaited<ReturnType<AdminClient["mintUserToken"]>>;
+type Whoami = Awaited<ReturnType<VoiceClient["whoami"]>>;
+type SpeechInfo = Awaited<ReturnType<VoiceClient["speechInfo"]>>;
+
+/** What the fake loomcycle's speech routes answer (RFC GA), when a test
+ *  turns them on. */
+export interface FakeSpeech {
+  surfaces: { speech: boolean; transcription: boolean };
+  /** The formats GET /v1/_speech lists. */
+  formats: string[];
+  transcript: string;
+}
+
+export function fakeSpeech(over: Partial<FakeSpeech> = {}): FakeSpeech {
+  return { surfaces: { speech: true, transcription: true }, formats: ["wav", "mp3"], transcript: "what is the weather", ...over };
+}
 
 /** A push-driven async iterable: the test feeds the events a run would stream. */
 export class EventChannel<T> implements AsyncIterable<T> {
@@ -70,6 +85,8 @@ export class FakeLoomcycle {
   /** What runStreaming / continueSession throw when started (admission refusal). */
   startError?: unknown;
   existingUsers = new Set<string>();
+  /** Set to give the client the speech calls. */
+  speech?: FakeSpeech;
   ttlMs = 12 * 3600 * 1000;
   now = () => Date.now();
   private tokenSeq = 0;
@@ -97,7 +114,30 @@ export class FakeLoomcycle {
       this.runs.push({ token, kind, opts, events });
       return events;
     };
+    const sp = this.speech;
+    const voice: Partial<VoiceClient> = sp
+      ? {
+          whoami: async () => {
+            rec("whoami", []);
+            return { effective: { surfaces: { ...sp.surfaces } } } as unknown as Whoami;
+          },
+          speechInfo: async () => {
+            rec("speechInfo", []);
+            return { speech: { enabled: true, default_language: "en", languages: { en: {} }, formats: sp.formats } } as unknown as SpeechInfo;
+          },
+          transcribe: async (file, opts) => {
+            rec("transcribe", [file, opts]);
+            return { text: sp.transcript, language: "en" };
+          },
+          speech: async (input, opts) => {
+            rec("speech", [input, opts]);
+            const contentType = opts?.format === "mp3" ? "audio/mpeg" : opts?.format === "ogg" ? "audio/ogg" : "audio/wav";
+            return { bytes: new Uint8Array([7, 7, 7]), contentType, seconds: 1.5 };
+          },
+        }
+      : {};
     return {
+      ...voice,
       runStreaming: (opts) => start("start", opts),
       continueSession: (opts) => start("continue", opts),
       sendRunInput: async (runId, text) => {
@@ -150,18 +190,27 @@ export const settle = () => new Promise((r) => setTimeout(r, 10));
 
 export interface SlackCall {
   url: string;
+  /** The Web API method; "response_url"; or "file" for files.slack.com
+   *  (a download, or an upload's bytes). */
   method: string;
   auth?: string;
+  /** A JSON body, or a form's fields. */
   body: Record<string, unknown>;
+  /** An upload's bytes. */
+  bytes?: Uint8Array;
 }
 
 type Reply = { status?: number; headers?: Record<string, string>; json?: Record<string, unknown> };
 
-/** A recording fake of Slack's Web API (and of response_urls), as `fetch`. */
+export const FILES_ORIGIN = "https://files.slack.com";
+
+/** A recording fake of Slack's Web API, response_urls and files.slack.com, as `fetch`. */
 export class FakeSlack {
   readonly calls: SlackCall[] = [];
   /** Queued replies by method, used before the defaults. */
   readonly script: Record<string, Reply[]> = {};
+  /** What files.slack.com answers a download of each URL. */
+  readonly files = new Map<string, () => Response>();
   private seq = 0;
 
   constructor(readonly base = "https://slack.test/api") {}
@@ -176,9 +225,19 @@ export class FakeSlack {
 
   fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
-    const method = url.startsWith(`${this.base}/`) ? url.slice(this.base.length + 1) : "response_url";
     const headers = (init?.headers ?? {}) as Record<string, string>;
-    this.calls.push({ url, method, auth: headers.authorization, body: JSON.parse(String(init?.body ?? "{}")) });
+    if (url.startsWith(`${FILES_ORIGIN}/`)) {
+      const bytes = init?.body instanceof Uint8Array ? init.body : undefined;
+      this.calls.push({ url, method: "file", auth: headers.authorization, body: {}, ...(bytes ? { bytes } : {}) });
+      if (init?.method === "POST") return new Response("OK", { status: 200 });
+      return this.files.get(url)?.() ?? new Response("not found", { status: 404 });
+    }
+    const method = url.startsWith(`${this.base}/`) ? url.slice(this.base.length + 1) : "response_url";
+    const raw = String(init?.body ?? "{}");
+    const body = headers["content-type"]?.startsWith("application/x-www-form-urlencoded")
+      ? Object.fromEntries(new URLSearchParams(raw))
+      : (JSON.parse(raw) as Record<string, unknown>);
+    this.calls.push({ url, method, auth: headers.authorization, body });
     const r = this.script[method]?.shift() ?? { json: this.defaultReply(method) };
     return new Response(JSON.stringify(r.json ?? { ok: true }), {
       status: r.status ?? 200,
@@ -192,6 +251,8 @@ export class FakeSlack {
         return { ok: true, user_id: "UBOT", team_id: "T1", bot_id: "BBOT" };
       case "users.info":
         return { ok: true, user: { name: "ada", profile: { display_name: "Ada", real_name: "Ada L" } } };
+      case "files.getUploadURLExternal":
+        return { ok: true, upload_url: `${FILES_ORIGIN}/upload/v1/UPLOAD${++this.seq}`, file_id: `FUP${this.seq}` };
       case "chat.postMessage":
       case "chat.startStream":
         return { ok: true, channel: "C", ts: `1700000000.${String(++this.seq).padStart(6, "0")}` };

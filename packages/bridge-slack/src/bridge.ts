@@ -29,6 +29,7 @@ import { SeenSet } from "./seen.js";
 import { SlackStream } from "./stream.js";
 import { escapeMrkdwn, MAX_MESSAGE_CHARS, neutralise } from "./text.js";
 import { verifySlackRequest } from "./verify.js";
+import { createSlackVoice } from "./voice.js";
 
 export interface SlackBridgeOptions extends BridgeOptions<SlackRef> {
   /** Slack's side of every outbound call (tests, a proxy). */
@@ -65,6 +66,10 @@ const DEFAULT_REVOKE_TIMEOUT_MS = 2000;
  *  unreadable (200 people a page). */
 const MAX_MEMBER_PAGES = 500;
 
+/** The scopes voice messages need beyond text (RFC GA): reading a shared
+ *  clip, and uploading a spoken reply. */
+const VOICE_SCOPES = ["files:read", "files:write"] as const;
+
 /** A link the agent writes is never unfurled: an unfurl fetches the URL from
  *  Slack's side, which a prompt-injected agent could use to send data out
  *  with no click. Every message the bridge posts carries this; Slack's
@@ -91,6 +96,14 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
   const groupCache = new Map<string, { groups: string[]; until: number }>();
   let self: SelfIds | undefined;
   let namesRefused = false;
+  const voiceOn = cfg.shared.voice?.enabled === true;
+  const voice = createSlackVoice({
+    api,
+    botToken: cfg.botToken,
+    fetch: opts.fetch,
+    // The core streams only personal conversations (DMs).
+    streamsDms: cfg.streaming,
+  });
 
   const port: BridgePort<SlackRef> = {
     async send(ref, activity) {
@@ -277,7 +290,15 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
     };
 
     async function handleEvent(env: EventEnvelope): Promise<void> {
-      const r = readEvent(env, me());
+      const r = readEvent(env, me(), { voice: voiceOn });
+      if (r.kind === "voice") {
+        const id = identify(r.fields, policy, await displayName(r.fields));
+        if (!id.ok && !id.notice) return;
+        // Slack gives no locale on an event (users.info would, with a scope
+        // the bridge does not ask for): BRIDGE_VOICE_LANGUAGE, or none.
+        await router.onVoice(id, refOf(r.fields), r.voice);
+        return;
+      }
       if (r.kind !== "message" || !r.text) return;
       const id = identify(r.fields, policy, await displayName(r.fields));
       // The bot's own and other bots' messages never reach here (readEvent);
@@ -355,12 +376,22 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
   }
 
   async function learnSelf(): Promise<SelfIds> {
-    const r = await api.call("auth.test", {});
+    const { data: r, headers } = await api.callWithHeaders("auth.test", {});
     if (typeof r.user_id !== "string" || !r.user_id) throw new Error("auth.test returned no bot user id");
     self = { userId: r.user_id };
     const team = typeof r.team_id === "string" ? r.team_id : undefined;
     if (team && !cfg.allowedTeams.has(team.toUpperCase())) {
       log.warn("the bot's own workspace is not in SLACK_BRIDGE_ALLOWED_TEAMS; nobody there can use it", { team });
+    }
+    // Slack reports the token's scopes on every Web API answer. Missing ones
+    // are only warned about: text still works, and the operator may add them.
+    const granted = headers.get("x-oauth-scopes");
+    if (voiceOn && granted !== null) {
+      const have = new Set(granted.split(",").map((x) => x.trim()));
+      const missing = VOICE_SCOPES.filter((x) => !have.has(x));
+      if (missing.length > 0) {
+        log.warn("BRIDGE_VOICE=1, but the bot token lacks scopes voice messages need; add them and reinstall the app", { missing: missing.join(",") });
+      }
     }
     return self;
   }
@@ -369,6 +400,7 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
     platform: { name: "slack", label: "Slack" },
     capabilities: { streaming: cfg.streaming ? "personal-only" : "never", maxMessageChars: MAX_MESSAGE_CHARS },
     port,
+    voice,
     learnSelf,
     routes,
     groupsFor,

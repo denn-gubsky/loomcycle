@@ -22,6 +22,10 @@ export const MAX_MESSAGE_CHARS = 4000;
  *  without anyone clicking. */
 export const NO_LINK_PREVIEW = { link_preview_options: { is_disabled: true } } as const;
 
+function textKey(ref: TelegramRef): string {
+  return `${ref.chatId}|${ref.threadId ?? ""}`;
+}
+
 function threadParams(ref: TelegramRef): Record<string, unknown> {
   return ref.threadId === undefined ? { chat_id: ref.chatId } : { chat_id: ref.chatId, message_thread_id: ref.threadId };
 }
@@ -51,9 +55,15 @@ export interface TelegramPortOptions {
   now?: () => number;
 }
 
+/** Conversations whose latest text message id is remembered. Forgetting one
+ *  only makes a voice reply stand alone instead of replying to its text. */
+const MAX_LAST_TEXTS = 10_000;
+
 export class TelegramPort {
   /** Allowed groups already told of their new id. Bounded by the allow-list. */
   private readonly toldMigrated = new Set<number>();
+  /** "<chat>|<topic>" → the bridge's latest plain message there. */
+  private readonly lastTexts = new Map<string, number>();
 
   constructor(private readonly opts: TelegramPortOptions) {}
 
@@ -96,8 +106,31 @@ export class TelegramPort {
     }
   }
 
+  /** lastTextMessage is the bridge's latest message in the conversation that
+   *  carried no keyboard or reply prompt: the end of the agent's reply, which
+   *  a voice reply then replies to (RFC GA). It can be a newer message than
+   *  the reply the voice belongs to, when the next turn's text went out while
+   *  the audio was made; the voice note then quotes that one. */
+  lastTextMessage(ref: TelegramRef): number | undefined {
+    return this.lastTexts.get(textKey(ref));
+  }
+
+  private rememberText(ref: TelegramRef, messageId: number | undefined): void {
+    if (typeof messageId !== "number") return;
+    const key = textKey(ref);
+    this.lastTexts.delete(key);
+    this.lastTexts.set(key, messageId);
+    if (this.lastTexts.size > MAX_LAST_TEXTS) this.lastTexts.delete(this.lastTexts.keys().next().value!);
+  }
+
   /** sendMessage sends HTML, and the plain text if Telegram refuses the HTML. */
   async sendMessage(ref: TelegramRef, m: OutgoingMessage, o: { retry?: boolean } = {}): Promise<number | undefined> {
+    const id = await this.sendMessageOnce(ref, m, o);
+    if (!m.replyMarkup) this.rememberText(ref, id);
+    return id;
+  }
+
+  private async sendMessageOnce(ref: TelegramRef, m: OutgoingMessage, o: { retry?: boolean }): Promise<number | undefined> {
     const base = {
       ...threadParams(ref),
       ...NO_LINK_PREVIEW,

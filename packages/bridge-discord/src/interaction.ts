@@ -16,6 +16,9 @@ export const CallbackType = {
   UPDATE_MESSAGE: 7,
 } as const;
 
+/** Application command types. */
+export const CommandType = { CHAT_INPUT: 1, MESSAGE: 3 } as const;
+
 /** Interaction context types: where a command was used. */
 export const Context = { GUILD: 0, BOT_DM: 1, PRIVATE_CHANNEL: 2 } as const;
 
@@ -34,6 +37,20 @@ export interface CommandOption {
   value?: unknown;
 }
 
+/** A message as a message command's interaction resolves it. */
+export interface ResolvedMessage {
+  id?: string;
+  author?: DiscordUser;
+  flags?: number;
+  attachments?: Array<{
+    id?: string;
+    url?: string;
+    content_type?: string;
+    size?: number;
+    duration_secs?: number;
+  }>;
+}
+
 export interface Interaction {
   id?: string;
   application_id?: string;
@@ -45,9 +62,18 @@ export interface Interaction {
   member?: { user?: DiscordUser; nick?: string | null };
   user?: DiscordUser;
   context?: number;
+  /** The invoking person's client language (en-US, pt-BR, uk). */
+  locale?: string;
+  /** The largest file the bot may upload here, in bytes. */
+  attachment_size_limit?: number;
   data?: {
     name?: string;
+    /** The command's type (CommandType). */
+    type?: number;
     options?: CommandOption[];
     custom_id?: string;
+    /** A message command's target message. */
+    target_id?: string;
+    resolved?: { messages?: Record<string, ResolvedMessage> };
   };
 }

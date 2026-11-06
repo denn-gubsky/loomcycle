@@ -2,12 +2,39 @@
 // only). The loomcycle client types are derived from the core's ports, so
 // this package needs no direct dependency on @loomcycle/client.
 
-import type { AdminClient, Logger, RunClient } from "@loomcycle/bridge-core";
+import type { AdminClient, Logger, RunClient, VoiceClient } from "@loomcycle/bridge-core";
 
 type RunOptions = Parameters<RunClient["runStreaming"]>[0];
 type ContinueOptions = Parameters<RunClient["continueSession"]>[0];
 export type AgentEvent = ReturnType<RunClient["runStreaming"]> extends AsyncIterable<infer E> ? E : never;
 type MintedUserToken = Awaited<ReturnType<AdminClient["mintUserToken"]>>;
+type SpeechInfo = Awaited<ReturnType<VoiceClient["speechInfo"]>>;
+type WhoamiResponse = Awaited<ReturnType<VoiceClient["whoami"]>>;
+
+/** What the fake loomcycle's speech side answers, when a test turns it on
+ *  (copied from the core's fakes, RFC GA). */
+export interface FakeSpeech {
+  surfaces: { speech: boolean; transcription: boolean };
+  info: SpeechInfo;
+  transcript: string;
+  language?: string;
+  /** What speech returns: Ogg bytes, and the duration loomcycle reports. */
+  audio: { bytes: Uint8Array; seconds?: number };
+}
+
+export function fakeSpeech(over: Partial<FakeSpeech> = {}): FakeSpeech {
+  return {
+    surfaces: { speech: true, transcription: true },
+    info: {
+      speech: { enabled: true, default_language: "en", languages: { en: { voices: ["v1"], default_voice: "v1" } }, formats: ["wav", "ogg"] },
+      transcription: { enabled: true },
+    } as SpeechInfo,
+    transcript: "what is the weather",
+    language: "en",
+    audio: { bytes: new Uint8Array([1, 2, 3]), seconds: 2.5 },
+    ...over,
+  };
+}
 
 /** A push-driven async iterable: the test feeds the events a run would stream. */
 export class EventChannel<T> implements AsyncIterable<T> {
@@ -67,6 +94,8 @@ export class FakeLoomcycle {
   /** What runStreaming / continueSession throw when started (admission refusal). */
   startError?: unknown;
   existingUsers = new Set<string>();
+  /** Set to give the client the speech calls (RFC GA). */
+  speech?: FakeSpeech;
   ttlMs = 12 * 3600 * 1000;
   now = () => Date.now();
   private tokenSeq = 0;
@@ -75,7 +104,7 @@ export class FakeLoomcycle {
     return this.calls.filter((c) => c.method === method);
   }
 
-  client = (token: string): RunClient & AdminClient => {
+  client = (token: string): RunClient & AdminClient & Partial<VoiceClient> => {
     const rec = (method: string, args: unknown[]) => {
       this.calls.push({ method, token, args });
       const f = this.failNext[method];
@@ -94,7 +123,29 @@ export class FakeLoomcycle {
       this.runs.push({ token, kind, opts, events });
       return events;
     };
+    const sp = this.speech;
+    const voice: Partial<VoiceClient> = sp
+      ? {
+          whoami: async () => {
+            rec("whoami", []);
+            return { tenant_id: "acme", subject: "x", scopes: [], is_admin: false, legacy: false, effective: { surfaces: { ...sp.surfaces } } } as unknown as WhoamiResponse;
+          },
+          speechInfo: async () => {
+            rec("speechInfo", []);
+            return sp.info;
+          },
+          transcribe: async (file, opts) => {
+            rec("transcribe", [file, opts]);
+            return { text: sp.transcript, ...(sp.language ? { language: sp.language } : {}) };
+          },
+          speech: async (input, opts) => {
+            rec("speech", [input, opts]);
+            return { bytes: sp.audio.bytes, contentType: opts?.format === "ogg" ? "audio/ogg" : "audio/wav", ...(sp.audio.seconds !== undefined ? { seconds: sp.audio.seconds } : {}) };
+          },
+        }
+      : {};
     return {
+      ...voice,
       runStreaming: (opts) => start("start", opts),
       continueSession: (opts) => start("continue", opts),
       sendRunInput: async (runId, text) => {
