@@ -39,6 +39,11 @@
 #                 relation and its evidence, accept, reject or unsure, with a
 #                 confidence and one sentence of rationale".
 #
+# OPERATIONAL DOCUMENTS. A document whose root type is SourceStub (a sync's
+# stand-in for an item it could not import as text) or SyncReport (a sync's run
+# report) is not knowledge: kb/linker runs no layer on it (a drain acks its
+# message as `skipped`) and kb/judge does not judge a proposal touching it.
+#
 # MODES. `document` (one document, the default), `maintain` (L6 only, over one
 # document's statements), `drain` (one message at a time, each acked only
 # after its pass: `queue: documents` the documents the `documents/ingested`
@@ -283,6 +288,13 @@ agents:
         "statement_asserted", "not_a_proposal", "statement_changed", "statement_manual",
         "statement_operator_ruled", "statement_not_asserted", "statement_expired", "survivor_mismatch",
         "evidence_quote_not_found", "method_not_granted", "permission"];
+
+      // Root types of documents that are not knowledge: a sync's SourceStub (a
+      // stand-in for an item it could not import as text: a title, provenance and
+      // a reason, no body) and its SyncReport (a run report). They are passed over
+      // whole. The runtime's classify skips the same list, and a test keeps the
+      // two equal; the match ignores case.
+      var OPERATIONAL_DOCUMENT_TYPES = ["SourceStub", "SyncReport"];
 
       var INGEST_REASONS = { created: true, imported: true, reimported: true, copied: true, moved: true };
       var SUBJECT_OPS = { adopted: true, merged: true, retyped: true, removed: true, erased: true };
@@ -702,6 +714,7 @@ agents:
           layers: {},
           l4: null,
           documents: [],
+          skipped_documents: [], // {document_id, type, reason}, at most max_report_ids
           messages: [],
           queue: null
         };
@@ -867,12 +880,31 @@ agents:
         passDocument(st, ref, null);
       }
 
+      // operationalType is the OPERATIONAL_DOCUMENT_TYPES entry t names, as written
+      // there, or "" for any other type.
+      function operationalType(t) {
+        if (typeof t !== "string") { return ""; }
+        var low = t.trim().toLowerCase();
+        for (var i = 0; i < OPERATIONAL_DOCUMENT_TYPES.length; i++) {
+          if (OPERATIONAL_DOCUMENT_TYPES[i].toLowerCase() === low) { return OPERATIONAL_DOCUMENT_TYPES[i]; }
+        }
+        return "";
+      }
+
       // passDocument runs the requested layers over one document, in layer order. A
       // reimport names the parts that changed; L2 and L3 then read only those, while
-      // L1 and L6 always look at the whole document.
+      // L1 and L6 always look at the whole document. An operational document runs
+      // no layer at all; passDocument answers false for it, true otherwise.
       function passDocument(st, ref, changed) {
         var doc = resolveDocument(st, ref);
         st.documents.push(doc.id);
+        var op = operationalType(doc.type);
+        if (op !== "") {
+          if (st.skipped_documents.length < CONFIG.max_report_ids) {
+            st.skipped_documents.push({ document_id: doc.id, type: op, reason: "operational_document" });
+          }
+          return false;
+        }
         if (changed !== null) { changed = ownParts(st, doc, changed); }
         // First: an applied class decides the citation grammar L2 reads.
         if (st.opts.layers.L0 === true) { layerClassify(st, doc); }
@@ -882,6 +914,7 @@ agents:
         if (st.opts.layers.L4 === true) { layerRelate(st, doc); }
         if (st.opts.layers.L5 === true) { layerCheck(st, doc); }
         if (st.opts.layers.L6 === true) { layerMaintain(st, doc); }
+        return true;
       }
 
       // drainPass works through a queue one message at a time: the ingest queue
@@ -954,7 +987,7 @@ agents:
 
       function runMessage(st, rec, m) {
         try {
-          passDocument(st, { document_id: m.document_id }, m.reason === "reimported" ? m.changed : null);
+          if (!passDocument(st, { document_id: m.document_id }, m.reason === "reimported" ? m.changed : null)) { return "skipped"; }
         } catch (e) {
           if (e && e.missing === true) { return "document_missing"; }
           rec.outcome = isStop(e) ? (e.stop === "budget" ? "budget_stopped" : "lease_lost") : "failed";
@@ -1080,7 +1113,8 @@ agents:
           throw new Error("get_document answered without a document_id");
         }
         return { id: d.document_id, root: isID(d.root_chunk_id) ? d.root_chunk_id : "",
-                 title: typeof d.title === "string" ? d.title : "" };
+                 title: typeof d.title === "string" ? d.title : "",
+                 type: typeof d.type === "string" ? d.type : "" };
       }
 
       // listChunks is the document's chunk rows, read once per pass.
@@ -3241,6 +3275,7 @@ agents:
                                 reason: st.onto.reason } : null,
           lease: leaseReport(st),
           documents: st.documents,
+          skipped_documents: st.skipped_documents,
           layers: layersReport(st),
           writes: st.writes,
           would_write: st.would_write,
@@ -3596,6 +3631,13 @@ agents:
         to_document_id: "id", under_path: "abs", from_under_path: "abs", to_under_path: "abs", routed: "bool"
       };
 
+      // Root types of documents that are not knowledge: a sync's SourceStub (a
+      // stand-in for an item it could not import as text: a title, provenance and
+      // a reason, no body) and its SyncReport (a run report). They are passed over
+      // whole. The runtime's classify skips the same list, and a test keeps the
+      // two equal; the match ignores case.
+      var OPERATIONAL_DOCUMENT_TYPES = ["SourceStub", "SyncReport"];
+
       var VERDICTS = { accept: true, reject: true, unsure: true };
 
       var USAGE = "Pass a JSON object: {\"scope\": user|agent|tenant (default user), " +
@@ -3800,6 +3842,7 @@ agents:
         var from = endOf(st, s.from_id, s.from_document_id);
         var to = endOf(st, s.to_id, s.to_document_id);
         if (from === null || to === null) { bump(st.skipped, "end_unreadable"); return; }
+        if (isOperational(from) || isOperational(to)) { bump(st.skipped, "operational_document"); return; }
         var evidence = readEvidence(st, s);
         if (evidence.length === 0 && s.kind === "subject") { evidence = readOpening(st, s, to); }
         if (evidence.length === 0) { bump(st.skipped, "no_evidence"); return; }
@@ -3821,6 +3864,19 @@ agents:
         st.pending.push(j);
         if (st.pending.length >= CONFIG.batch) { flush(st); }
       }
+
+      // operationalType is the OPERATIONAL_DOCUMENT_TYPES entry t names, as written
+      // there, or "" for any other type.
+      function operationalType(t) {
+        if (typeof t !== "string") { return ""; }
+        var low = t.trim().toLowerCase();
+        for (var i = 0; i < OPERATIONAL_DOCUMENT_TYPES.length; i++) {
+          if (OPERATIONAL_DOCUMENT_TYPES[i].toLowerCase() === low) { return OPERATIONAL_DOCUMENT_TYPES[i]; }
+        }
+        return "";
+      }
+
+      function isOperational(end) { return operationalType(end.type) !== "" || operationalType(end.doc_type) !== ""; }
 
       // endOf reads one end: its chunk's title and type, and its document's.
       function endOf(st, chunkID, docID) {
