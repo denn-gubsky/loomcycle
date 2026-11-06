@@ -22,7 +22,7 @@ const odfNS = `xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" `
 
 // odtZip packages an ODT the way LibreOffice does: a stored "mimetype"
 // entry first, then the XML parts, deflated.
-func odtZip(t *testing.T, mimetype string, entries ...entry) []byte {
+func odtZip(t testing.TB, mimetype string, entries ...entry) []byte {
 	t.Helper()
 	var b bytes.Buffer
 	zw := zip.NewWriter(&b)
@@ -81,7 +81,7 @@ func tcell(paras ...string) string {
 // spaces, a line break, a footnote, a tracked deletion, a comment, a
 // picture, a picture outside the package, and text that looks like
 // Markdown.
-func passportODT(t *testing.T, png []byte) []byte {
+func passportODT(t testing.TB, png []byte) []byte {
 	t.Helper()
 	automatic := `<style:style style:name="P1" style:family="paragraph" style:parent-style-name="Title"/>` +
 		`<style:style style:name="P2" style:family="paragraph" style:parent-style-name="Standard"/>` +

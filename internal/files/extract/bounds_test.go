@@ -19,7 +19,7 @@ func extractDOCX(t *testing.T, data []byte, opts Options) (*memSink, Report, err
 }
 
 // docxWith is a minimal DOCX whose document part is body.
-func docxWith(t *testing.T, body string, more ...entry) []byte {
+func docxWith(t testing.TB, body string, more ...entry) []byte {
 	t.Helper()
 	es := []entry{
 		xmlEntry("_rels/.rels", relsXML([3]string{"rId1", "officeDocument", "word/document.xml"})),
