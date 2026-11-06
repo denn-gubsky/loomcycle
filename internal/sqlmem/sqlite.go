@@ -224,15 +224,41 @@ func (k ScopeKey) planeFiles(root string) (agent, doc string, err error) {
 }
 
 // scopeFileBase strips a scope file's plane suffix: both files of one scope map to
-// the same base. ok is false for anything that is not a scope file (-wal, -shm).
+// the same base. ok is false for anything that is not a scope file: -wal, -shm,
+// and any name whose id part holds a '.', which sanitize never produces — a
+// quarantine file (<id>.leftover-<n>.db) is one.
 func scopeFileBase(path string) (base string, doc, ok bool) {
 	switch {
 	case strings.HasSuffix(path, docFileSuffix):
-		return strings.TrimSuffix(path, docFileSuffix), true, true
+		base, doc = strings.TrimSuffix(path, docFileSuffix), true
 	case strings.HasSuffix(path, scopeFileSuffix):
-		return strings.TrimSuffix(path, scopeFileSuffix), false, true
+		base = strings.TrimSuffix(path, scopeFileSuffix)
+	default:
+		return "", false, false
 	}
-	return "", false, false
+	if strings.Contains(filepath.Base(base), ".") {
+		return "", false, false
+	}
+	return base, doc, true
+}
+
+// quarantineFilesOf lists the quarantine files (sqlite_planes.go) beside a scope
+// whose files share base. Read from the directory rather than globbed, so a root
+// holding glob metacharacters cannot widen the match.
+func quarantineFilesOf(base string) []string {
+	dir, prefix := filepath.Dir(base), filepath.Base(base)+quarantineInfix
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() && strings.HasPrefix(name, prefix) && strings.HasSuffix(name, scopeFileSuffix) {
+			out = append(out, filepath.Join(dir, name))
+		}
+	}
+	return out
 }
 
 // errDotDotSegment refuses a path segment holding "..". sanitize() keeps only
@@ -640,6 +666,21 @@ func (b *sqliteBackend) removeIfIdle(files []string) (idle, removed bool, err er
 			err = rerr
 		}
 		removed = removed || r
+	}
+	// The scope's quarantine files go with it: they hold its rows too.
+	seen := map[string]bool{}
+	for _, path := range files {
+		base, _, ok := scopeFileBase(path)
+		if !ok || seen[base] {
+			continue
+		}
+		seen[base] = true
+		for _, q := range quarantineFilesOf(base) {
+			if _, rerr := fencedRemoveDB(filepath.Dir(q), q); rerr != nil && err == nil {
+				err = rerr
+			}
+			_ = os.Remove(q + "-journal")
+		}
 	}
 	return true, removed, err
 }

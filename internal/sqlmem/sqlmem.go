@@ -710,8 +710,9 @@ func (m *Manager) AgentPlaneTables(ctx context.Context, key ScopeKey, tables []s
 // them. On sqlite the rows are copied from the agent file into the document file
 // in one transaction, with the split mark, by a connection of the runtime's own;
 // an unmarked document file's rows are replaced, not kept, and once the scope is
-// split, agent-file rows whose key the document file lacks are merged in rather
-// than discarded (sqlite_planes.go).
+// split, leftovers in the agent file that are not exact duplicates are moved to a
+// quarantine file beside the scope, never into the document file
+// (sqlite_planes.go).
 func (m *Manager) AdoptAgentTables(ctx context.Context, key ScopeKey, tables []string) error {
 	if err := key.validate(); err != nil {
 		return err

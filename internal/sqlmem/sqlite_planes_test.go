@@ -3,8 +3,10 @@ package sqlmem
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -243,8 +245,7 @@ func TestSqlmem_AdoptResumesAfterAnInterruptedCopy(t *testing.T) {
 
 // Stopped after the copy committed but before the agent file's tables were
 // dropped, the split is recorded and the leftovers are exact duplicates: the next
-// adoption drops them, and a change made to a copied row in between does not
-// overwrite the document file's row.
+// adoption drops them, and quarantines nothing.
 func TestSqlmem_AdoptResumesAfterAnInterruptedDrop(t *testing.T) {
 	ctx := context.Background()
 	m := newTestManager(t, Config{})
@@ -263,9 +264,6 @@ func TestSqlmem_AdoptResumesAfterAnInterruptedDrop(t *testing.T) {
 	if held, _ := m.AgentPlaneTables(ctx, key, []string{"chunks"}); len(held) != 1 {
 		t.Fatalf("agent file holds %v, want the undropped chunks", held)
 	}
-	if _, err := m.Exec(ctx, key.AgentPlane(), `UPDATE chunks SET status = 'asserted' WHERE id = 'c1'`, nil, 0); err != nil {
-		t.Fatal(err)
-	}
 
 	b.adoptStep = nil
 	if err := m.DocPlane().AdoptAgentTables(ctx, key, []string{"chunks"}); err != nil {
@@ -274,8 +272,8 @@ func TestSqlmem_AdoptResumesAfterAnInterruptedDrop(t *testing.T) {
 	if got := countRows(t, m.DocPlane(), key, "chunks"); got != 2 {
 		t.Errorf("document file: %d rows, want the 2 copied once", got)
 	}
-	if res, _ := m.DocPlane().Query(ctx, key, `SELECT status FROM chunks WHERE id = 'c1'`, nil); res.Rows[0][0] != "proposed" {
-		t.Errorf("c1 in the document file = %v; a change to the agent file's leftover overwrote it", res.Rows)
+	if q := quarantineFiles(t, m, key); len(q) != 0 {
+		t.Errorf("exact duplicates were quarantined: %v", q)
 	}
 	if held, _ := m.AgentPlaneTables(ctx, key, []string{"chunks"}); len(held) != 0 {
 		t.Errorf("agent file still holds %v", held)
@@ -534,21 +532,34 @@ func moveOldScope(t *testing.T, m *Manager, key ScopeKey) {
 	}
 }
 
-// After the split, rows in an agent-file table named like a document table whose
-// key the document file lacks were written after the move — by an older release
-// the deployment was rolled back to, say — and are real data: they are merged in,
-// never dropped unread. Rows the document file already holds keep its version.
-func TestSqlmem_AdoptMergesRowsWrittenToTheAgentFileAfterTheSplit(t *testing.T) {
+// quarantineFiles lists the scope's quarantine files.
+func quarantineFiles(t *testing.T, m *Manager, key ScopeKey) []string {
+	t.Helper()
+	agentPath, _ := planePaths(t, m, key)
+	out, err := filepath.Glob(strings.TrimSuffix(agentPath, ".db") + ".leftover-*.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// After the split, an agent-file table named like a document table holds rows
+// the document file does not: written by an older release the deployment was
+// rolled back to, or planted past the name guard. The agent file is the plane
+// Memory SQL writes, so none of it is merged into the document plane: the tables
+// go to a quarantine file beside the scope for an operator to inspect, and leave
+// the agent file. The document plane is unchanged.
+func TestSqlmem_AdoptQuarantinesRowsWrittenToTheAgentFileAfterTheSplit(t *testing.T) {
 	ctx := context.Background()
 	m := newTestManager(t, Config{})
 	key := ScopeKey{Tenant: "t1", Scope: "user", ScopeID: "u1"}
 	moveOldScope(t, m, key)
 
-	// What a rolled-back release does: fresh tables in the agent file, written to.
 	for _, stmt := range []string{
 		docTableDDL,
-		`INSERT INTO chunks (id, title, status) VALUES ('c3', 'written after the rollback', 'proposed')`,
+		`INSERT INTO chunks (id, title, status) VALUES ('c3', 'written after the move', 'asserted')`,
 		`INSERT INTO chunks (id, title, status) VALUES ('c1', 'a different c1', 'asserted')`,
+		`INSERT INTO chunks (id, title, status, n, raw) VALUES ('c2', 'second', 'asserted', 2, NULL)`,
 	} {
 		if _, err := m.Exec(ctx, key.AgentPlane(), stmt, nil, 0); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
@@ -557,15 +568,40 @@ func TestSqlmem_AdoptMergesRowsWrittenToTheAgentFileAfterTheSplit(t *testing.T) 
 	if err := m.DocPlane().AdoptAgentTables(ctx, key, []string{"chunks"}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := m.DocPlane().Query(ctx, key, `SELECT id, title FROM chunks ORDER BY id`, nil)
+	res, err := m.DocPlane().Query(ctx, key, `SELECT id, title, status FROM chunks ORDER BY id`, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Rows) != 3 || res.Rows[0][1] != "secret-title-c1" || res.Rows[2][0] != "c3" {
-		t.Errorf("document file = %v; want c1 as it was, c2, and c3 merged in", res.Rows)
+	if len(res.Rows) != 2 || res.Rows[0][1] != "secret-title-c1" || res.Rows[0][2] != "proposed" || res.Rows[1][2] != "asserted" {
+		t.Errorf("document plane = %v; want it unchanged (c1 proposed, c2 as copied)", res.Rows)
 	}
 	if held, _ := m.AgentPlaneTables(ctx, key, []string{"chunks"}); len(held) != 0 {
 		t.Errorf("agent file still holds %v", held)
+	}
+	q := quarantineFiles(t, m, key)
+	if len(q) != 1 {
+		t.Fatalf("quarantine files = %v; want one", q)
+	}
+	qdb, err := sql.Open("sqlite", "file:"+q[0]+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	err = qdb.QueryRow(`SELECT count(*) FROM chunks WHERE id IN ('c1', 'c3')`).Scan(&n)
+	_ = qdb.Close()
+	if err != nil || n != 2 {
+		t.Errorf("quarantine holds %d of the late rows (%v); want c1 and c3", n, err)
+	}
+
+	// Never a scope of its own, and erased with the scope.
+	if keys, err := m.ListScopes(ctx); err != nil || len(keys) != 1 {
+		t.Errorf("ListScopes = %v, %v; the quarantine file must not be listed as a scope", keys, err)
+	}
+	if removed, err := m.DropScope(ctx, key); err != nil || !removed {
+		t.Fatalf("DropScope = %v, %v", removed, err)
+	}
+	if q := quarantineFiles(t, m, key); len(q) != 0 {
+		t.Errorf("DropScope left the quarantine file: %v", q)
 	}
 }
 

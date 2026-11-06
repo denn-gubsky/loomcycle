@@ -40,6 +40,21 @@ func TestService_ErasureRemovesBothFilesOfASqliteScope(t *testing.T) {
 	if _, err := mgr.DocPlane().Exec(ctx, key, `INSERT INTO chunks VALUES ('c1', 'about alice')`, nil, 0); err != nil {
 		t.Fatal(err)
 	}
+	// Mark alice's document file as her scope's, then leave rows in her agent
+	// file under a document table's name: the move quarantines them in a file
+	// beside the scope, which the erasure must take too.
+	if err := mgr.DocPlane().AdoptAgentTables(ctx, key, []string{"chunks"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Exec(ctx, key, `CREATE TABLE chunks (id TEXT PRIMARY KEY, title TEXT)`, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Exec(ctx, key, `INSERT INTO chunks VALUES ('late', 'about alice, later')`, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.DocPlane().AdoptAgentTables(ctx, key, []string{"chunks"}); err != nil {
+		t.Fatal(err)
+	}
 	// A scope that only ever held documents has no agent file at all.
 	bob := sqlmem.ScopeKey{Tenant: "acme", Scope: "user", ScopeID: "bob"}
 	if _, err := mgr.DocPlane().Exec(ctx, bob, `CREATE TABLE chunks (id TEXT PRIMARY KEY)`, nil, 0); err != nil {
@@ -64,8 +79,8 @@ func TestService_ErasureRemovesBothFilesOfASqliteScope(t *testing.T) {
 		}
 		return false
 	}
-	if f := files("alice"); !hasDoc(f) {
-		t.Fatalf("alice's files before the erasure = %v; want a document file", f)
+	if f := files("alice"); !hasDoc(f) || !strings.Contains(strings.Join(f, " "), ".leftover-") {
+		t.Fatalf("alice's files before the erasure = %v; want a document file and a quarantine file", f)
 	}
 
 	for _, subject := range []string{"alice", "bob"} {

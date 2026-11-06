@@ -188,8 +188,8 @@ func TestSqlmem_UpgradeMovesDocumentTablesToTheirOwnFile(t *testing.T) {
 	})
 
 	// Stopped after the move committed, before the agent file's tables were
-	// dropped: they are dropped unread, so a row an agent wrote to them in between
-	// never crosses.
+	// dropped, with a ruling changed in them since: nothing crosses into the
+	// document plane; the changed tables are quarantined beside the scope.
 	t.Run("moved, old tables not dropped", func(t *testing.T) {
 		d, ctx, root := planeFileFixture(t)
 		s := buildOldScope(t, d, ctx, root)
@@ -207,6 +207,13 @@ func TestSqlmem_UpgradeMovesDocumentTablesToTheirOwnFile(t *testing.T) {
 		}
 		d.SqlMem.ForgetEnsured(s.key)
 		assertMoved(t, d, ctx, root, s)
+		var quarantined bool
+		for _, f := range scopeFiles(t, root) {
+			quarantined = quarantined || strings.Contains(f, "u1.leftover-")
+		}
+		if !quarantined {
+			t.Errorf("no quarantine file for the changed leftovers: %v", scopeFiles(t, root))
+		}
 	})
 }
 

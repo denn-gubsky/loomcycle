@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,8 +43,8 @@ import (
 //   - before the copy commits: nothing in the document file counts, the agent
 //     file still holds every row, and the next adoption copies them;
 //   - after it commits, before the drop: the split is recorded, and the leftovers
-//     are exact duplicates; the next adoption merges in only rows whose key the
-//     document file lacks (none, here) and drops them;
+//     are exact duplicates, which the next adoption drops (leftovers that are not
+//     duplicates are quarantined, never merged: quarantineLeftovers);
 //   - a failed drop is logged, not returned: the document file is complete, and
 //     the next adoption (the boot pass, or the next process's first use) retries.
 //
@@ -190,7 +191,16 @@ func (b *sqliteBackend) adoptTables(ctx context.Context, key ScopeKey, tables []
 	if _, err := conn.ExecContext(ctx, `ATTACH DATABASE ? AS `+adoptAttachName, agentPath); err != nil {
 		return fmt.Errorf("sqlmem: move document tables: attach the agent file: %w", err)
 	}
-	if err := b.moveRows(ctx, conn, agentPath, held, split); err != nil {
+	if split {
+		// Leftovers in the agent file after the move are never merged: that file
+		// is the plane Memory SQL writes, so a merge would turn any way past the
+		// name guard into a document-plane write. Exact duplicates (a stop between
+		// the move's commit and its drop) are simply dropped; anything else goes
+		// to a quarantine file for an operator.
+		if err := b.quarantineLeftovers(ctx, conn, agentPath, held); err != nil {
+			return err
+		}
+	} else if err := b.copyIntoDocFile(ctx, conn, agentPath, held); err != nil {
 		return err
 	}
 	if b.adoptStep != nil {
@@ -234,33 +244,21 @@ func (b *sqliteBackend) pinScopeFiles(agentPath, docPath string) (bool, error) {
 	return true, nil
 }
 
-// moveRows carries held's rows from the attached agent file into the document
-// file's tables of the same names, in ONE transaction on the document file.
-//
-// Unmarked (the move proper): the document file does not count yet, so whatever
-// its tables hold — rows a write that skipped provisioning left in a failed move's
-// empty tables — is cleared, the agent file's rows are copied, and the split is
-// marked, all in that transaction. INSERT … SELECT runs inside the engine, so a
-// large scope streams page by page rather than through Go memory.
-//
-// Marked (the move already happened): the agent file's tables are leftovers. Most
-// often they are exact duplicates, from a stop between the move's commit and its
-// drop, and add nothing. But rows whose key the document file lacks were written
-// after the move — by an older release the deployment was rolled back to, which
-// knows only the agent file — and are real data: they are merged in, logged with
-// their count. A row the document file already holds keeps the document file's
-// version.
-//
-// Only columns the document file's table has are carried (an agent could have
-// added one before the guard existed; it is logged and left behind).
-func (b *sqliteBackend) moveRows(ctx context.Context, conn *sql.Conn, agentPath string, held []string, split bool) error {
+// copyIntoDocFile copies held's rows from the attached agent file into the
+// document file's tables of the same names, and records the split, in ONE
+// transaction on the document file. The document file is unmarked here, so it does
+// not count: whatever its tables hold — rows a write that skipped provisioning
+// left in a failed move's empty tables — is cleared first. INSERT … SELECT runs
+// inside the engine, so a large scope streams page by page rather than through Go
+// memory. Only columns the document file's table has are carried (an agent could
+// have added one before the guard existed; it is logged and left behind).
+func (b *sqliteBackend) copyIntoDocFile(ctx context.Context, conn *sql.Conn, agentPath string, held []string) error {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("sqlmem: move document tables: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	var orphans []string
-	merged := map[string]int64{}
 	for _, t := range held {
 		cols, err := carriedColumns(ctx, tx, agentPath, t)
 		if err != nil {
@@ -277,29 +275,16 @@ func (b *sqliteBackend) moveRows(ctx context.Context, conn *sql.Conn, agentPath 
 		}
 		list := strings.Join(cols, ", ")
 		dst, src := `main.`+quoteIdent(t), adoptAttachName+`.`+quoteIdent(t)
-		if !split {
-			// #nosec G202 -- t matched pgTableNameRe
-			if _, err := tx.ExecContext(ctx, `DELETE FROM `+dst); err != nil {
-				return fmt.Errorf("sqlmem: clear %s in the unmarked document file: %w", t, err)
-			}
-			// #nosec G202 -- t matched pgTableNameRe and the columns come from the files' own catalogs, quoted
-			if _, err := tx.ExecContext(ctx, `INSERT INTO `+dst+` (`+list+`) SELECT `+list+` FROM `+src); err != nil {
-				return fmt.Errorf("sqlmem: move %s to the document file: %w", t, err)
-			}
-			continue
+		// #nosec G202 -- t matched pgTableNameRe
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+dst); err != nil {
+			return fmt.Errorf("sqlmem: clear %s in the unmarked document file: %w", t, err)
 		}
-		// EXCEPT keeps exact duplicates out of a table without a key; OR IGNORE
-		// keeps the document file's row where a key matches.
 		// #nosec G202 -- t matched pgTableNameRe and the columns come from the files' own catalogs, quoted
-		r, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO `+dst+` (`+list+`) SELECT `+list+` FROM `+src+` EXCEPT SELECT `+list+` FROM `+dst)
-		if err != nil {
-			return fmt.Errorf("sqlmem: merge %s into the document file: %w", t, err)
-		}
-		if n, _ := r.RowsAffected(); n > 0 {
-			merged[t] = n
+		if _, err := tx.ExecContext(ctx, `INSERT INTO `+dst+` (`+list+`) SELECT `+list+` FROM `+src); err != nil {
+			return fmt.Errorf("sqlmem: move %s to the document file: %w", t, err)
 		}
 	}
-	if !split && len(orphans) == len(held) {
+	if len(orphans) == len(held) {
 		// Every table would be dropped unread for want of a place to go: the
 		// document file was never provisioned. Refuse rather than lose the rows.
 		return fmt.Errorf("sqlmem: the document file holds none of %v; provision it before moving the tables", held)
@@ -307,30 +292,109 @@ func (b *sqliteBackend) moveRows(ctx context.Context, conn *sql.Conn, agentPath 
 	for _, t := range orphans {
 		slog.Warn("sqlmem: dropping a document table with no document-file counterpart", "path", agentPath, "table", t)
 	}
-	if !split {
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA main.user_version = %d`, docFileSplitMark)); err != nil {
-			return fmt.Errorf("sqlmem: record the scope's split: %w", err)
-		}
-		if b.adoptStep != nil {
-			if err := b.adoptStep(adoptStepCopied); err != nil {
-				return err
-			}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA main.user_version = %d`, docFileSplitMark)); err != nil {
+		return fmt.Errorf("sqlmem: record the scope's split: %w", err)
+	}
+	if b.adoptStep != nil {
+		if err := b.adoptStep(adoptStepCopied); err != nil {
+			return err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sqlmem: move document tables: commit: %w", err)
 	}
-	if len(merged) > 0 {
-		slog.Warn("sqlmem: merged rows written to the agent file after the scope's documents moved out (an older release ran on this data); the document file's own rows were kept",
-			"path", agentPath, "rows_by_table", merged)
-	}
 	return nil
+}
+
+// quarantineInfix names a quarantine file: <id>.leftover-<unix nanos>.db beside the
+// scope's files. The '.' keeps it from ever reading as a scope (scopeFileBase):
+// no plane opens it, ListScopes and GC skip it, and dropping the scope removes it.
+const quarantineInfix = ".leftover-"
+
+// quarantineLeftovers deals with document-named tables found in the agent file
+// of a scope that is already split. Rows that duplicate the document file's
+// exactly (on the columns it has) are what a stop between the move's commit and
+// its drop leaves, and are simply dropped with their tables afterwards. If any
+// table holds anything else — rows an older release wrote after a rollback, or
+// rows planted past the name guard — every such table is copied whole into a new
+// quarantine file, on this runtime-only connection, before the tables are dropped
+// from the agent file. Nothing reaches the document file. A failure leaves the
+// tables where they are (behind the guard) and is returned.
+func (b *sqliteBackend) quarantineLeftovers(ctx context.Context, conn *sql.Conn, agentPath string, held []string) error {
+	counts := map[string]int64{}
+	for _, t := range held {
+		n, err := leftoverRows(ctx, conn, agentPath, t)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			counts[t] = n
+		}
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+	qpath := strings.TrimSuffix(agentPath, scopeFileSuffix) + quarantineInfix + strconv.FormatInt(time.Now().UnixNano(), 10) + scopeFileSuffix
+	if _, err := conn.ExecContext(ctx, `ATTACH DATABASE ? AS `+quarantineAttachName, qpath); err != nil {
+		return fmt.Errorf("sqlmem: quarantine leftover document tables: %w", err)
+	}
+	defer func() { _, _ = conn.ExecContext(context.WithoutCancel(ctx), `DETACH DATABASE `+quarantineAttachName) }()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlmem: quarantine leftover document tables: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, t := range held {
+		if counts[t] == 0 {
+			continue
+		}
+		// #nosec G202 -- t matched pgTableNameRe
+		if _, err := tx.ExecContext(ctx, `CREATE TABLE `+quarantineAttachName+`.`+quoteIdent(t)+` AS SELECT * FROM `+adoptAttachName+`.`+quoteIdent(t)); err != nil {
+			return fmt.Errorf("sqlmem: quarantine %s: %w", t, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlmem: quarantine leftover document tables: commit: %w", err)
+	}
+	if err := os.Chmod(qpath, 0o600); err != nil {
+		slog.Warn("sqlmem: could not restrict the quarantine file's mode", "path", qpath, "err", err)
+	}
+	slog.Error("sqlmem: QUARANTINED rows found under document table names in the agent file of a scope whose documents already moved out; they were NOT merged into the document file. An older release run on this data, or a write past the Memory SQL guard, put them there. Inspect the quarantine file (docs/SQL_MEMORY.md) and merge by hand only what you trust",
+		"path", agentPath, "quarantine", qpath, "rows_by_table", counts)
+	return nil
+}
+
+// quarantineAttachName is the schema a quarantine file is attached under, on the
+// move's own connection.
+const quarantineAttachName = "quarantine"
+
+// leftoverRows counts a leftover agent-file table's rows that do not duplicate a
+// row of the document file's table on the columns that table has. A table the
+// document file lacks, or that shares no column with it, counts every row.
+func leftoverRows(ctx context.Context, conn *sql.Conn, agentPath, table string) (int64, error) {
+	cols, err := carriedColumns(ctx, conn, agentPath, table)
+	if err != nil {
+		return 0, err
+	}
+	src := adoptAttachName + `.` + quoteIdent(table)
+	// #nosec G202 -- table matched pgTableNameRe and the columns come from the files' own catalogs, quoted
+	q := `SELECT count(*) FROM ` + src
+	if len(cols) > 0 {
+		list := strings.Join(cols, ", ")
+		// #nosec G202 -- as above
+		q = `SELECT count(*) FROM (SELECT ` + list + ` FROM ` + src + ` EXCEPT SELECT ` + list + ` FROM main.` + quoteIdent(table) + `)`
+	}
+	var n int64
+	if err := conn.QueryRowContext(ctx, q).Scan(&n); err != nil {
+		return 0, fmt.Errorf("sqlmem: compare the agent file's %s with the document file: %w", table, err)
+	}
+	return n, nil
 }
 
 // carriedColumns returns the quoted columns a table's rows carry from the agent
 // file into the document file: those the document file's table has. nil when the
 // document file has no such table.
-func carriedColumns(ctx context.Context, tx *sql.Tx, agentPath, table string) ([]string, error) {
+func carriedColumns(ctx context.Context, tx queryer, agentPath, table string) ([]string, error) {
 	docCols, err := tableColumns(ctx, tx, "main", table)
 	if err != nil || len(docCols) == 0 {
 		return nil, err
@@ -429,7 +493,7 @@ func docFileSplit(ctx context.Context, q rowQueryer) (bool, error) {
 
 // tableColumns lists a table's columns in one schema of the connection, in order;
 // empty when the table does not exist there.
-func tableColumns(ctx context.Context, tx *sql.Tx, schema, table string) ([]string, error) {
+func tableColumns(ctx context.Context, tx queryer, schema, table string) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT name FROM pragma_table_info(?, ?) ORDER BY cid`, table, schema)
 	if err != nil {
 		return nil, fmt.Errorf("sqlmem: columns of %s.%s: %w", schema, table, err)
@@ -444,6 +508,11 @@ func tableColumns(ctx context.Context, tx *sql.Tx, schema, table string) ([]stri
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// queryer is satisfied by *sql.Tx and *sql.Conn.
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 // quoteIdent double-quotes a sqlite identifier.
