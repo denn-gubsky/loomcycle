@@ -105,6 +105,12 @@ type STTConfig struct {
 	// whisper server on a CPU host can take several minutes for a ten-minute
 	// chunk and sends nothing until it is done, so this is long by default.
 	TimeoutSeconds int `yaml:"timeout_s"`
+	// Accepts, when set, is the recording types the engine reads whole, of
+	// audio/wav, audio/mpeg, audio/mp4, audio/ogg, audio/flac, audio/webm,
+	// video/mp4, video/webm, video/mpeg. Unset: OpenAI's list. WAV is always
+	// read (a long recording is sent as WAV pieces); set [audio/wav] for an
+	// engine that reads nothing else, such as Ollama's.
+	Accepts []string `yaml:"accepts,omitempty"`
 	// Media is the converter (ffmpeg or equivalent) that turns a recording
 	// into a mono WAV the runtime can cut: `{in}` is the recording, `{out}`
 	// the WAV it must write.
@@ -203,6 +209,7 @@ func (t TranscriptionConfig) Resolved() TranscriptionConfig {
 			s.Media = &m
 		}
 		s.Languages = slices.Clone(s.Languages)
+		s.Accepts = slices.Clone(s.Accepts)
 		if s.Language == "" && len(s.Languages) > 0 {
 			s.Language = s.Languages[0]
 		}
@@ -389,6 +396,18 @@ func (c *Config) validateSTT(s *STTConfig) error {
 			}
 			seen[lang] = true
 			s.Languages[i] = lang
+		}
+	}
+	if s.Accepts != nil {
+		if len(s.Accepts) == 0 {
+			return fmt.Errorf("%s.accepts is empty: remove it for the engine's own list, or list [audio/wav]", place)
+		}
+		for i, mt := range s.Accepts {
+			mt = strings.ToLower(strings.TrimSpace(mt))
+			if !sttWholeFileTypes[mt] {
+				return fmt.Errorf("%s.accepts[%d]: %q is not one of %s", place, i, s.Accepts[i], strings.Join(sttWholeFileTypeList, ", "))
+			}
+			s.Accepts[i] = mt
 		}
 	}
 	if s.Vocabulary != "" {
@@ -636,3 +655,14 @@ func SanitizeTranscriptionVocabulary(v string) (string, error) {
 func (s *STTConfig) AllowsLanguage(lang string) bool {
 	return len(s.Languages) == 0 || slices.Contains(s.Languages, lang)
 }
+
+// sttWholeFileTypeList is what transcription.stt.accepts may name.
+var sttWholeFileTypeList = []string{"audio/wav", "audio/mpeg", "audio/mp4", "audio/ogg", "audio/flac", "audio/webm", "video/mp4", "video/webm", "video/mpeg"}
+
+var sttWholeFileTypes = func() map[string]bool {
+	m := map[string]bool{}
+	for _, t := range sttWholeFileTypeList {
+		m[t] = true
+	}
+	return m
+}()

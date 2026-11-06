@@ -256,3 +256,84 @@ func (noAudio) ListModels(context.Context) ([]string, error) {
 func (noAudio) Call(context.Context, providers.Request) (<-chan providers.Event, error) {
 	return nil, nil
 }
+
+// TestOpenAIAudio_QwenHeaderStripped — Qwen3-ASR's "language <Name><asr_text>"
+// header is removed from the text; the language it names fills the result's
+// language when the answer has none; "language None" with nothing after it is
+// no speech, so no segment; an answer without the header is kept as written.
+func TestOpenAIAudio_QwenHeaderStripped(t *testing.T) {
+	for _, c := range []struct {
+		name, body, text, lang string
+	}{
+		{"english speech", `{"text":"language English<asr_text>Please summarize the quarterly sales report."}`, "Please summarize the quarterly sales report.", "en"},
+		{"russian speech", `{"text":"language Russian<asr_text>Привет, мир."}`, "Привет, мир.", "ru"},
+		{"no speech", `{"text":"language None<asr_text>"}`, "", ""},
+		{"an unknown name", `{"text":"language Klingon<asr_text>Qapla'"}`, "Qapla'", ""},
+		{"the engine's own language wins", `{"text":"language English<asr_text>Hello.","language":"english"}`, "Hello.", "english"},
+		{"no header", `{"text":"language is how we talk"}`, "language is how we talk", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var res transcribe.STTResult
+			if err := parse([]byte(c.body), 30*time.Second, &res); err != nil {
+				t.Fatal(err)
+			}
+			text := ""
+			if len(res.Segments) == 1 {
+				text = res.Segments[0].Text
+				if !res.Segments[0].Untimed {
+					t.Error("a text-only answer must be marked untimed")
+				}
+			} else if len(res.Segments) > 1 {
+				t.Fatalf("segments = %+v", res.Segments)
+			}
+			if text != c.text || res.Language != c.lang {
+				t.Errorf("text %q language %q, want %q %q", text, res.Language, c.text, c.lang)
+			}
+		})
+	}
+	// In a timed answer the header is removed from a segment too, and the
+	// segment stays timed.
+	var res transcribe.STTResult
+	if err := parse([]byte(`{"segments":[{"start":0,"end":2,"text":"language English<asr_text>Hi."}]}`), time.Minute, &res); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Segments) != 1 || res.Segments[0].Text != "Hi." || res.Segments[0].Untimed {
+		t.Errorf("segments = %+v", res.Segments)
+	}
+}
+
+// TestOpenAIAudio_AcceptsFollowsTheOperatorList — without
+// transcription.stt.accepts the engine reads OpenAI's formats; with
+// [audio/wav] (an Ollama engine) only WAV, under any of its names; a type the
+// engine cannot upload is refused when the engine is built.
+func TestOpenAIAudio_AcceptsFollowsTheOperatorList(t *testing.T) {
+	ep := newEndpoint(t, func(map[string]string) string { return `{"text":"x"}` })
+	all := engineFor(t, ep, "whisper-1", config.STTConfig{})
+	wavOnly := engineFor(t, ep, "qwen3-asr", config.STTConfig{Accepts: []string{"audio/wav"}})
+	withOgg := engineFor(t, ep, "qwen3-asr", config.STTConfig{Accepts: []string{"audio/wav", "audio/ogg"}})
+	for _, c := range []struct {
+		mt                   string
+		all, wavOnly, withOg bool
+	}{
+		{"audio/wav", true, true, true},
+		{"audio/x-wav", true, true, true},
+		{"audio/webm", true, false, false},
+		{"audio/mp4", true, false, false},
+		{"audio/ogg", true, false, true},
+		{"audio/opus", true, false, true},
+		{"audio/aiff", false, false, false},
+	} {
+		if all.Accepts(c.mt) != c.all || wavOnly.Accepts(c.mt) != c.wavOnly || withOgg.Accepts(c.mt) != c.withOg {
+			t.Errorf("%s: all %v wavOnly %v withOgg %v, want %v %v %v", c.mt,
+				all.Accepts(c.mt), wavOnly.Accepts(c.mt), withOgg.Accepts(c.mt), c.all, c.wavOnly, c.withOg)
+		}
+	}
+	_, err := New(Options{
+		Config:   config.STTConfig{Engine: config.STTEngineOpenAIAudio, Accepts: []string{"audio/aiff"}},
+		Resolve:  func(context.Context) (string, string, error) { return "", "", nil },
+		Provider: func(string) (providers.Provider, error) { return nil, nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "transcription.stt.accepts") {
+		t.Errorf("an unknown type: %v", err)
+	}
+}

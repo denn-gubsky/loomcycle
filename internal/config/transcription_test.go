@@ -157,6 +157,8 @@ func TestTranscriptionConfig_RefusesBadValues(t *testing.T) {
 		{"stt combined listed language", "stt: { engine: off, languages: [uk+ru] }", []string{"transcription.stt.languages[0]", "one language"}},
 		{"stt language listed twice", "stt: { engine: off, languages: [uk, UK] }", []string{"transcription.stt.languages", `"uk" is listed twice`}},
 		{"stt default off the list", "stt: { engine: off, language: de, languages: [uk, en] }", []string{"transcription.stt.language", `"de"`, "uk, en"}},
+		{"stt empty accepts", "stt: { engine: off, accepts: [] }", []string{"transcription.stt.accepts is empty"}},
+		{"stt unknown accepted type", "stt: { engine: off, accepts: [audio/wav, audio/aiff] }", []string{"transcription.stt.accepts[1]", `"audio/aiff"`, "audio/webm"}},
 		{"stt bad diarize", "stt: { engine: off, diarize: maybe }", []string{"transcription.stt.diarize", `"maybe"`}},
 		{"stt negative per call", "stt: { engine: off, max_minutes_per_call: -1 }", []string{"transcription.stt.max_minutes_per_call"}},
 		{"stt negative per run", "stt: { engine: off, max_minutes_per_run: -1 }", []string{"transcription.stt.max_minutes_per_run"}},
@@ -274,6 +276,25 @@ func TestTranscriptionConfig_LanguagesListSetsTheDefault(t *testing.T) {
 	}
 	if s := cfg.Transcription.STT; s.Languages != nil || !s.AllowsLanguage("de") {
 		t.Errorf("no list: languages %v, want nil and any code allowed", s.Languages)
+	}
+}
+
+// TestTranscriptionConfig_AcceptsIsNormalised — accepts is lower-cased and
+// trimmed; absent, it stays nil (the engine's own list).
+func TestTranscriptionConfig_AcceptsIsNormalised(t *testing.T) {
+	cfg, err := loadTranscription(t, "transcription:\n  stt: { engine: off, accepts: [\" Audio/WAV \", video/webm] }\n")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := strings.Join(cfg.Transcription.STT.Accepts, ","); got != "audio/wav,video/webm" {
+		t.Errorf("accepts = %q", got)
+	}
+	cfg, err = loadTranscription(t, "transcription:\n  stt: { engine: off }\n")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Transcription.STT.Accepts != nil {
+		t.Errorf("accepts = %v, want nil", cfg.Transcription.STT.Accepts)
 	}
 }
 
