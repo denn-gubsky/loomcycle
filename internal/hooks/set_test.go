@@ -9,8 +9,15 @@ import (
 	"testing"
 )
 
+// mustRegister registers h. A hook with no tenant stands for the operator's
+// static config (Resolve marks a yaml agent's hooks so): the fixtures' fake
+// callbacks are on loopback, which only such a hook may dial. Tests of the
+// dial guard build their hooks through Resolve or with a tenant.
 func mustRegister(t *testing.T, s *Set, h *Hook) string {
 	t.Helper()
+	if h.Tenant == "" {
+		h.OperatorConfig = true
+	}
 	id, err := s.Register(h)
 	if err != nil {
 		t.Fatalf("Register: %v", err)

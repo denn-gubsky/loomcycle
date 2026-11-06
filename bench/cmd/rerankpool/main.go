@@ -109,6 +109,7 @@ func run() error {
 		return err
 	}
 	defer src.Close()
+	// #nosec G302 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	dst, err := os.OpenFile(*out, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err

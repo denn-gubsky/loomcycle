@@ -299,6 +299,17 @@ func (w *walkCancels) remove(runID string) {
 	delete(w.m, runID)
 }
 
+// runIDs lists the walks live on this replica.
+func (w *walkCancels) runIDs() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	ids := make([]string, 0, len(w.m))
+	for id := range w.m {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func (w *walkCancels) get(runID string) (walkCancel, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

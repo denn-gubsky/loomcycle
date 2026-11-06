@@ -17,8 +17,13 @@ name: Publish @loomcycle/code-editor to npm
 # this brand-new scoped package (OIDC Trusted Publishing can't bootstrap a package
 # that doesn't exist yet). Once @loomcycle/code-editor exists on npm, the operator
 # MAY switch to OIDC Trusted Publishing (register the publisher on the package's
-# Access tab, drop the secret, add `id-token: write` + `--provenance`) — see the
+# Access tab, then drop the secret and NODE_AUTH_TOKEN below) — see the
 # @loomcycle/client publish-ts-adapter.yml workflow for that shape.
+#
+# Provenance: `npm publish --provenance` works with token auth too. npm signs a
+# SLSA provenance statement through the job's GitHub OIDC token (id-token: write)
+# and shows it on the package page; package.json's `repository` must name this
+# repository, or the publish is refused.
 #
 # Inputs reaching `run` steps are limited to GITHUB_REF_NAME (a git tag — git
 # rejects metacharacters in ref names) and constants; the tag is routed through
@@ -38,6 +43,11 @@ jobs:
   publish:
     name: Publish @loomcycle/code-editor
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # npm publish --provenance signs its provenance statement through the
+      # job's GitHub OIDC token. Publishing itself still uses NPM_TOKEN.
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -81,9 +91,8 @@ jobs:
         working-directory: packages/code-editor
         # --access public for the scoped package. prepack rebuilds dist from a
         # clean tree, so the published tarball is fresh regardless. NODE_AUTH_TOKEN
-        # is the NPM_TOKEN secret setup-node wired into ~/.npmrc. (--provenance is
-        # omitted: it requires OIDC/id-token, not token auth; add it if/when this
-        # switches to Trusted Publishing.)
+        # is the NPM_TOKEN secret setup-node wired into ~/.npmrc. --provenance
+        # attaches the signed build provenance (see the header).
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: npm publish --access public --provenance

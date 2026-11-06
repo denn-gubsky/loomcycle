@@ -118,6 +118,7 @@ func (c *compiler) load(name string) (*compiled, error) {
 			return nil, fmt.Errorf("code-agent %q: resolved path escapes CodeRoot", name)
 		}
 	}
+	// #nosec G304 -- the agent name is checked for ".." above and the path is confined to CodeRoot
 	src, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

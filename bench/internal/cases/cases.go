@@ -123,6 +123,7 @@ func LoadAll(root string, tier string) ([]Case, error) {
 
 // Load reads one case file. Exposed for tests.
 func Load(path string) (Case, error) {
+	// #nosec G304 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return Case{}, fmt.Errorf("read %s: %w", path, err)

@@ -134,7 +134,7 @@ func TestListFacts_ARelationFactIsListedUnderBothItsSubjects(t *testing.T) {
 func TestListFacts_ASubjectsOwnFactsAreListedWithoutAnEdge(t *testing.T) {
 	f := newSubjectFixture(t)
 	// A fact filed under Dave whose edge write never happened.
-	out, r := docExec(t, f.d, f.ctx, `{"op":"upsert_chunk","scope":"user","document_id":"`+f.daveDoc+
+	out, r := docExec(t, f.d, withStatementGrant(f.ctx, statementRememberGrant), `{"op":"upsert_chunk","scope":"user","document_id":"`+f.daveDoc+
 		`","parent_id":"`+f.daveRoot+`","natural_key":"memory/operator/dave-likes-tea",`+
 		`"title":"Dave likes tea.","body":"Dave likes tea.","type":"fact"}`)
 	if r.IsError {

@@ -2,10 +2,13 @@
 #
 # Triggered by .github/workflows/release.yml on `v*` tag push. Builds
 # loomcycle for darwin-{arm64,amd64} + linux-{arm64,amd64}, packages
-# each as tar.gz with LICENSE + README, attaches everything to the
-# GitHub release at the tag, generates SHA256SUMS, then bumps
-# Formula/loomcycle.rb in denn-gubsky/homebrew-loomcycle with the new
-# version + per-platform sha256 values.
+# each as tar.gz with LICENSE + NOTICE + README + THIRD_PARTY_LICENSES,
+# writes an SPDX SBOM per archive, attaches everything to the GitHub
+# release at the tag, generates SHA256SUMS and signs it (cosign keyless; the
+# images are signed by release.yml after this run),
+# then bumps Formula/loomcycle.rb in denn-gubsky/homebrew-loomcycle with
+# the new version + per-platform sha256 values. docs/VERIFYING-RELEASES.md
+# says how a user checks the signatures and the provenance.
 #
 # The Web UI is built once before the goreleaser run (the workflow's
 # `make build-ui` step) so internal/webui/dist/ is populated for
@@ -15,6 +18,14 @@
 version: 2
 
 project_name: loomcycle
+
+# The third-party license bundle the archives carry: every Go module linked
+# into the binary and every npm package bundled into the embedded Web UI (the
+# workflow's `make build-ui` step has already installed the npm packages this
+# reads). bin/ is gitignored, so the file never dirties the tree.
+before:
+  hooks:
+    - ./scripts/release/third-party-licenses.sh bin/release/THIRD_PARTY_LICENSES
 
 builds:
   - id: loomcycle
@@ -57,10 +68,40 @@ archives:
       - LICENSE
       - NOTICE
       - README.md
+      - src: bin/release/THIRD_PARTY_LICENSES
+        strip_parent: true
 
 checksum:
   name_template: "SHA256SUMS"
   algorithm: sha256
+
+# One SPDX SBOM per archive (<archive>.sbom.json), with syft's defaults
+# (goreleaser passes --enrich all, so license data is looked up from the module
+# proxy). SHA256SUMS covers the SBOMs too, so the signature below vouches for
+# them. syft is installed by the release workflow at a pinned version.
+sboms:
+  - artifacts: archive
+
+# Keyless cosign over SHA256SUMS: the certificate binds the signature to this
+# repository's release workflow at the tag, through the job's GitHub OIDC
+# token (release.yml grants id-token: write). Signing the checksums file signs
+# every archive and SBOM it lists. The bundle (signature, certificate and
+# transparency-log proof in one file) is uploaded as SHA256SUMS.sigstore.json.
+#
+# It runs before the release upload and a failure stops goreleaser, after
+# release.yml has pre-created the release page: a Sigstore outage leaves that
+# page without assets until the job is re-run. Blob signing talks only to
+# Sigstore, not to a registry, so that is the one dependency it adds. Images
+# are signed by release.yml after goreleaser for exactly this reason.
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
 
 # Snapshot mode is what `goreleaser release --snapshot` uses to test
 # the config locally without pushing anywhere. The tag template

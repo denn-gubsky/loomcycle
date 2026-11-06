@@ -112,6 +112,27 @@ func TestRunSnapshotsExport_WritesToFile(t *testing.T) {
 	}
 }
 
+// TestRunSnapshotsExport_FileIsOwnerOnly: an export holds run transcripts and
+// the runtime's stored state, so the file it writes is readable by its owner
+// only, whatever the umask.
+func TestRunSnapshotsExport_FileIsOwnerOnly(t *testing.T) {
+	srv := stubServer(t, "GET", "/v1/_snapshots/snap_x/export", 200, `{"schema_version":1,"sections":{}}`, nil)
+	defer srv.Close()
+
+	out := filepath.Join(t.TempDir(), "snap.json")
+	var stdout, stderr bytes.Buffer
+	if rc := RunSnapshotsExport([]string{"--target", srv.URL, "--out", out, "snap_x"}, &stdout, &stderr); rc != 0 {
+		t.Fatalf("rc = %d, stderr = %q", rc, stderr.String())
+	}
+	info, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("export file mode = %o, want 600", perm)
+	}
+}
+
 func TestRunSnapshotsExport_WritesToStdout(t *testing.T) {
 	envelope := `{"schema_version":1,"sections":{}}`
 	srv := stubServer(t, "GET", "/v1/_snapshots/snap_x/export", 200, envelope, nil)

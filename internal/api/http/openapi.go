@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	loomapi "github.com/denn-gubsky/loomcycle/api"
+	"github.com/denn-gubsky/loomcycle/internal/webui"
 )
 
 // openapiDocsAssets holds the self-contained Swagger UI console served at
@@ -75,6 +76,23 @@ var docsAsset = map[string]string{
 	"swagger-ui-bundle.js": "application/javascript; charset=utf-8",
 }
 
+// docsCSP is the Swagger UI console's policy: its bundle and its one inline
+// boot script (by hash), the inline styles Swagger UI writes, its data: icons,
+// and "Try it out" calls to this origin only. No framing; images from other
+// origins (Swagger's online validator badge) are refused.
+func docsCSP(index []byte) string {
+	return strings.Join([]string{
+		"default-src 'self'",
+		"script-src 'self' " + strings.Join(webui.InlineScriptHashes(index), " "),
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data:",
+		"connect-src 'self'",
+		"object-src 'none'",
+		"base-uri 'self'",
+		"frame-ancestors 'none'",
+	}, "; ")
+}
+
 // handleOpenAPIDocs serves the self-contained Swagger UI console at /v1/docs
 // (and its two vendored assets under /v1/docs/). Unauthenticated, like the spec
 // itself — the console authenticates its "Try it out" calls with a bearer the
@@ -97,10 +115,12 @@ func (s *Server) handleOpenAPIDocs(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", ct)
 	if name == "index.html" {
+		w.Header().Set("Content-Security-Policy", docsCSP(data))
 		w.Header().Set("Cache-Control", "no-cache")
 	} else {
 		// Version-pinned vendored assets — safe to cache.
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 	}
+	// #nosec G705 -- data is an embedded, version-pinned Swagger UI asset chosen from the docsAsset allowlist, served with its fixed content type
 	_, _ = w.Write(data)
 }

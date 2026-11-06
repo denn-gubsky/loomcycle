@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/changesub"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
+	"github.com/denn-gubsky/loomcycle/internal/limits"
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/retention"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -466,6 +467,18 @@ func (b *boot) seedServerState() {
 	if err := srv.SeedLimits(bgCtx); err != nil {
 		slog.Error("limits: seed failed (budgets start empty until next write)", "err", err)
 	}
+	// Each replica caches the limit rows it read at boot and those it wrote
+	// itself, so a limit written on another replica (PUT /v1/_limits, or the
+	// budget a gate writes for a user it provisions) is enforced here only
+	// once the cache is re-read. A misspelt interval stops boot: a deployment
+	// that set one expects its limits to travel.
+	reload, err := limitsReloadInterval(os.Getenv("LOOMCYCLE_LIMITS_RELOAD_INTERVAL"))
+	if err != nil {
+		fatal("limits: LOOMCYCLE_LIMITS_RELOAD_INTERVAL is not a duration of at least 1s, or 0", "value", os.Getenv("LOOMCYCLE_LIMITS_RELOAD_INTERVAL"))
+	}
+	if reload > 0 {
+		go limits.RunLimitsReloader(bgCtx, srv.LimitsTracker(), reload)
+	}
 	// RFC DT: seed the per-model throughput estimate from the ledger's latest
 	// timed calls. Non-fatal — an empty estimate learns again from live calls,
 	// and nothing depends on it yet (measure-only).
@@ -480,6 +493,30 @@ func (b *boot) seedServerState() {
 	// written principal list is small, but it is one store round-trip each and boot
 	// should not wait on a convenience. Best-effort inside.
 	go srv.ProvisionDeclaredPrincipalDocs(bgCtx)
+}
+
+// defaultLimitsReloadInterval is how often a replica re-reads the token limit
+// rows when LOOMCYCLE_LIMITS_RELOAD_INTERVAL is unset.
+const defaultLimitsReloadInterval = time.Minute
+
+// limitsReloadInterval reads LOOMCYCLE_LIMITS_RELOAD_INTERVAL: unset is the
+// default, "0" turns the reload off, and anything else must be a Go duration
+// of at least a second (a tighter loop would re-read every row for nothing).
+func limitsReloadInterval(v string) (time.Duration, error) {
+	switch v {
+	case "":
+		return defaultLimitsReloadInterval, nil
+	case "0":
+		return 0, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, err
+	}
+	if d < time.Second {
+		return 0, fmt.Errorf("limits reload interval %s is under 1s", d)
+	}
+	return d, nil
 }
 
 // authGateLinkRetention is how long a used, revoked or expired invite or

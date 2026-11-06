@@ -66,6 +66,7 @@ func walkMCP(claudeRoot string, opts WalkOptions, report *ImportReport) error {
 				fmt.Sprintf("mcp %s: stat: %v", path, err))
 			continue
 		}
+		// #nosec G304 -- the .mcp.json the operator pointed the importer at
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			report.Warnings = append(report.Warnings,

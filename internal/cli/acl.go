@@ -333,6 +333,7 @@ func readRulesFile(path string) (any, error) {
 
 // readYAMLOrJSON decodes a file as YAML, which also reads JSON.
 func readYAMLOrJSON(path string, into any) error {
+	// #nosec G304 -- a file named on the operator's command line
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err

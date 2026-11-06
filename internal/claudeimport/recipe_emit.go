@@ -34,7 +34,7 @@ func WriteEmittedRecipes(report *ImportReport, force bool) ([]string, error) {
 		} else if err != nil && !os.IsNotExist(err) {
 			return written, fmt.Errorf("emit-recipes: stat %s: %w", m.EmitRecipePath, err)
 		}
-		if err := os.WriteFile(m.EmitRecipePath, []byte(m.EmitRecipeJSON), 0o644); err != nil {
+		if err := os.WriteFile(m.EmitRecipePath, []byte(m.EmitRecipeJSON), 0o600); err != nil {
 			return written, fmt.Errorf("emit-recipes: write %s: %w", m.EmitRecipePath, err)
 		}
 		written = append(written, fmt.Sprintf("wrote %s", m.EmitRecipePath))
@@ -63,6 +63,7 @@ func WriteSkillCopies(report *ImportReport, force bool) ([]string, error) {
 		} else if err != nil && !os.IsNotExist(err) {
 			return written, fmt.Errorf("skill copy: stat %s: %w", s.DestinationPath, err)
 		}
+		// #nosec G301 -- a skill directory under the operator's --dest; skills are shareable markdown
 		if err := os.MkdirAll(parentDir(s.DestinationPath), 0o755); err != nil {
 			return written, fmt.Errorf("skill copy: mkdir for %s: %w", s.DestinationPath, err)
 		}
@@ -70,8 +71,9 @@ func WriteSkillCopies(report *ImportReport, force bool) ([]string, error) {
 		if err != nil {
 			return written, fmt.Errorf("skill copy: read %s: %w", s.SourcePath, err)
 		}
-		// #nosec G703 -- DestinationPath is the operator's --dest joined with a
-		// directory entry's name (no separators, dot-names skipped; skill.go).
+		// #nosec G703 G306 -- DestinationPath is the operator's --dest joined with a
+		// directory entry's name (no separators, dot-names skipped; skill.go); a
+		// skill is shareable markdown, copied readable like its source.
 		if err := os.WriteFile(s.DestinationPath, data, 0o644); err != nil {
 			return written, fmt.Errorf("skill copy: write %s: %w", s.DestinationPath, err)
 		}
@@ -106,7 +108,7 @@ func WriteMCPToConfig(report *ImportReport, target string, force bool) ([]string
 		if err != nil {
 			return written, fmt.Errorf("AppendToConfig %s: %w", m.Name, err)
 		}
-		if err := os.WriteFile(target, newContents, 0o644); err != nil {
+		if err := os.WriteFile(target, newContents, 0o600); err != nil {
 			return written, fmt.Errorf("write %s: %w", target, err)
 		}
 		written = append(written, fmt.Sprintf("wrote mcp_servers.%s into %s", m.Name, target))
@@ -131,6 +133,7 @@ func WriteAgentsToConfig(report *ImportReport, target string, force bool) ([]str
 
 	// Read target. Missing = create-fresh.
 	var source []byte
+	// #nosec G304 -- the operator's own target config, read before it is rewritten
 	if data, err := os.ReadFile(target); err == nil {
 		source = data
 	} else if !os.IsNotExist(err) {
@@ -216,7 +219,7 @@ func WriteAgentsToConfig(report *ImportReport, target string, force bool) ([]str
 	if err := enc.Close(); err != nil {
 		return written, fmt.Errorf("close marshal %s: %w", target, err)
 	}
-	if err := os.WriteFile(target, buf.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(target, buf.Bytes(), 0o600); err != nil {
 		return written, fmt.Errorf("write %s: %w", target, err)
 	}
 	return written, nil

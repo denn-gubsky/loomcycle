@@ -58,6 +58,7 @@ import (
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/openai"
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/vllm"
+	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	// Deterministic stub embedder for runtime tests; its init() registers the
 	// "stub" provider ONLY when LOOMCYCLE_EMBEDDER_STUB=1, so it is invisible
@@ -560,7 +561,7 @@ func openStore(cfg *config.Config, server bool) (store.Store, func(), error) {
 					"shared replicas heartbeat table). Set storage.backend: postgres " +
 					"+ storage.pg_dsn, or unset LOOMCYCLE_REPLICA_ID for single-replica mode")
 		}
-		if err := os.MkdirAll(cfg.Env.DataDir, 0o755); err != nil {
+		if err := os.MkdirAll(cfg.Env.DataDir, 0o700); err != nil {
 			return nil, nil, fmt.Errorf("data dir: %w", err)
 		}
 		dbPath := filepath.Join(cfg.Env.DataDir, "loomcycle.db")
@@ -633,17 +634,54 @@ type providerResolver struct {
 	sched *concurrency.CallScheduler
 }
 
-// secretSink forwards secret values to a function set after the components
-// holding the sink were built: providers are built before the server and its
-// redactor exist (RFC EM). It is read at each use, never captured.
-type secretSink struct{ f atomic.Pointer[func(string)] }
+// secretSink forwards secret values to the server's redactor, which a
+// function set after the components holding the sink were built returns:
+// providers are built before the server and its redactor exist (RFC EM). It
+// is read at each use, never captured.
+type secretSink struct {
+	f atomic.Pointer[func() *redact.Redactor]
+}
 
-func (s *secretSink) set(f func(string)) { s.f.Store(&f) }
+func (s *secretSink) set(f func() *redact.Redactor) { s.f.Store(&f) }
 
-func (s *secretSink) register(v string) {
+func (s *secretSink) redactor() *redact.Redactor {
 	if f := s.f.Load(); f != nil {
-		(*f)(v)
+		return (*f)()
 	}
+	return nil
+}
+
+// register takes a secret the operator plane obtained (a provider's minted
+// cloud credentials): no tenant's registrations can evict it.
+func (s *secretSink) register(v string) { s.redactor().RegisterOperator(v) }
+
+// registerCredential takes a secret resolved for tenantID by the run on ctx;
+// it stays masked while that run (or its tree's root) is live.
+func (s *secretSink) registerCredential(ctx context.Context, tenantID, v string) {
+	s.redactor().RegisterCredential(secretHolder(ctx, tenantID), v)
+}
+
+// registerObserved takes a value the run on ctx received whose content a
+// model may influence (the credential part of a URL a tool fetched).
+func (s *secretSink) registerObserved(ctx context.Context, v string) {
+	ri := tools.RunIdentity(ctx)
+	s.redactor().RegisterObserved(secretHolder(ctx, ri.TenantID), v)
+}
+
+// secretHolder names who holds a registered value: the tenant and the run ids
+// whose liveness pins it — the tree's root (a parent can repeat what a child
+// resolved), the run itself, and the team walk a member or a member's
+// sub-agent runs in (the walk writes its result after its members end).
+func secretHolder(ctx context.Context, tenantID string) redact.Holder {
+	ri := tools.RunIdentity(ctx)
+	runs := []string{ri.RootRunID, ri.AgentID}
+	if w, ok := store.WalkTaskFromContext(ctx); ok {
+		runs = append(runs, w.WalkID)
+	}
+	if w, ok := store.WalkLineageFromContext(ctx); ok {
+		runs = append(runs, w.WalkID)
+	}
+	return redact.Holder{Tenant: tenantID, Runs: runs}
 }
 
 // buildProviderMap constructs every ENABLED provider from cfg.Providers via the
@@ -1231,15 +1269,19 @@ type refSubstituter interface {
 // the run identity on ctx. A run that may not use its user's own scope (a
 // trigger whose definition's author could not act as that user) resolves for
 // its agent and tenant only.
-func substituteForRun(ctx context.Context, s, targetURL string, register func(string), subs ...refSubstituter) (string, []string, error) {
+func substituteForRun(ctx context.Context, s, targetURL string, register func(ctx context.Context, tenantID, value string), subs ...refSubstituter) (string, []string, error) {
 	ri := tools.RunIdentity(ctx)
 	userID := ri.UserID
 	if ri.NoUserScope() {
 		userID = ""
 	}
+	var reg func(string)
+	if register != nil {
+		reg = func(v string) { register(ctx, ri.TenantID, v) }
+	}
 	var unresolved []string
 	for _, sub := range subs {
-		out, un, err := sub.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), userID, s, targetURL, register)
+		out, un, err := sub.Substitute(ctx, ri.TenantID, tools.AgentName(ctx), userID, s, targetURL, reg)
 		if err != nil {
 			return "", nil, err
 		}

@@ -562,11 +562,11 @@ func checkStorageBackend(cfg configForDoctor) (detail string, ok bool) {
 		if dir == "" {
 			dir = "./data"
 		}
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Sprintf("sqlite data dir %s not creatable: %v", dir, err), false
 		}
 		probe := filepath.Join(dir, ".loomcycle-doctor-probe")
-		if err := os.WriteFile(probe, []byte("probe"), 0o644); err != nil {
+		if err := os.WriteFile(probe, []byte("probe"), 0o600); err != nil {
 			return fmt.Sprintf("sqlite data dir %s not writable: %v", dir, err), false
 		}
 		_ = os.Remove(probe)

@@ -147,6 +147,8 @@ type Dispatcher struct {
 	// runtime's typed errors and so imports half the tree, this package
 	// included. Nil: a Go error stays unclassified, as it always was.
 	classify func(error) (ErrorInfo, bool)
+	// panics counts the calls recovered from a panic (SetPanicCounter).
+	panics *PanicCounter
 }
 
 // SetErrorClassifier sets how a Go error returned by a tool is classified, so
@@ -1898,10 +1900,13 @@ func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMes
 		d.noteResult(name, input, r)
 		return r, nil
 	}
+	// A panic in the tool (or in the fallback that resolves and runs it) is
+	// recovered into a failed call (panic.go), which then counts like any
+	// other failure: a run that resends it is refused by the repeat guard.
 	if t, ok := d.tools[name]; ok {
 		if r, refused := d.refuseUnknownFields(t, input); refused {
 			res = r
-		} else if r, err := t.Execute(ctx, input); err != nil {
+		} else if r, _, err := d.guarded(ctx, name, func() (Result, error) { return t.Execute(ctx, input) }); err != nil {
 			res, goErr = Result{Text: err.Error(), IsError: true}, err
 			if d.classify != nil {
 				if info, ok := d.classify(err); ok {
@@ -1912,8 +1917,13 @@ func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMes
 			res = r
 		}
 	} else if d.fallback != nil {
-		r, handled := d.fallback(ctx, name, input)
-		if !handled {
+		var handled bool
+		r, panicked, _ := d.guarded(ctx, name, func() (Result, error) {
+			var r Result
+			r, handled = d.fallback(ctx, name, input)
+			return r, nil
+		})
+		if !handled && !panicked {
 			return toolNotFound(name), nil
 		}
 		res = r

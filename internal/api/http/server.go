@@ -140,6 +140,9 @@ type Server struct {
 	// aclResolutionFailures counts the requests whose ACL set could not be
 	// read (enrichPrincipal), for loomcycle_acl_resolution_failures_total.
 	aclResolutionFailures atomic.Int64
+	// toolPanics counts the tool calls recovered from a panic, on every
+	// dispatcher this server builds, for loomcycle_tool_panics_total.
+	toolPanics *tools.PanicCounter
 	// reviewAudit records bulk statement rulings and their reverts
 	// (SetStatementReviewAudit); nil = logged only.
 	reviewAudit audit.Sink
@@ -735,6 +738,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		hookPermits:    hooks.NewPermits(cfg.Hooks.PermitHostWiden.Owners),
 		hookDispatcher: hooks.NewDispatcherWithPrivateHosts(nil, nil, cfg.Hooks.PrivateHostAllowlist),
 		startedAt:      time.Now(),
+		toolPanics:     tools.NewPanicCounter(),
 	}
 	// RFC BH: the turn-cancel registry builds its cancel cause via loop.TurnCancelCause
 	// (the loop recognizes it to PARK the run instead of terminating). Injected here
@@ -756,6 +760,9 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	// (its methods are nil-safe, so makeRecordingEmit just skips redaction).
 	if cfg.Env.RedactSecrets {
 		s.redactor = newAtRestRedactor(os.Environ())
+		// A value a run still in flight registered is never evicted from the
+		// bounded runtime set: the cancel registry is the census of live runs.
+		s.redactor.SetLiveness(s.liveRunIDs)
 	}
 	// RFC Z: build the runtime-wide context-transform chain once. The redact
 	// plugin masks the same operator env-secret values + the Tier-B heuristic
@@ -1467,6 +1474,7 @@ func (s *Server) newDispatcher(allowedTools []tools.Tool) *tools.Dispatcher {
 	// A Go error a tool returns reaches the model classified — the same
 	// category, retryability and next step the transports give it.
 	d.SetErrorClassifier(errclassify.CategoryOf)
+	d.SetPanicCounter(s.toolPanics)
 	// Every caller builds a RUN's dispatcher, whose history of help reads and
 	// hints is what gates a help hint on a failed call.
 	d.EnableHelpHints()
@@ -2917,7 +2925,7 @@ func (s *Server) ChannelWriteDef(ctx context.Context, tenantID, channel string) 
 // applies, and so does a hold.
 func (s *Server) ChannelHookDef(ctx context.Context, tenant, channel string) (channelhooks.Def, bool, error) {
 	if def, ok := s.cfg().Channels[channel]; ok {
-		return channelhooks.Def{Hold: def.Hold, Hooks: def.Hooks}, true, nil
+		return channelhooks.Def{Hold: def.Hold, Hooks: def.Hooks, Static: true}, true, nil
 	}
 	if s.store == nil {
 		return channelhooks.Def{}, false, nil
@@ -4341,7 +4349,7 @@ func (s *Server) Mux() http.Handler {
 	// The header gates' filter runs before every route (RFC FA P3): it
 	// strips smuggled aliases of a gate's identity header before any
 	// handler can read one.
-	return s.edgeHeaderFilter(s.routes())
+	return s.securityHeaders(s.edgeHeaderFilter(s.routes()))
 }
 
 // routes is the route table Mux serves.
@@ -6963,6 +6971,21 @@ func maskCredentialCreateValue(toolName string, input json.RawMessage) json.RawM
 // so it is masked only in the stored copy.
 func newAtRestRedactor(environ []string) *redact.Redactor {
 	return redact.New(secretEnvValues(environ), true).WithSignedURLParams()
+}
+
+// liveRunIDs answers, from one snapshot, whether a run id or agent id names
+// something in flight on this replica: a run in the cancel registry, or a team
+// walk, which is live in the walk table while its members come and go.
+func (s *Server) liveRunIDs() func(string) bool {
+	live := map[string]bool{}
+	for _, e := range s.cancelReg.ListAll() {
+		live[e.AgentID], live[e.RunID] = true, true
+	}
+	for _, id := range s.walks.runIDs() {
+		live[id] = true
+	}
+	delete(live, "")
+	return func(id string) bool { return live[id] }
 }
 
 // secretEnvValues extracts the VALUES of secret-classified env vars (by name)

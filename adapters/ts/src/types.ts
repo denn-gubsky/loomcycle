@@ -6068,13 +6068,14 @@ export interface AgentDefOverlay {
    *  Held to the author's own grant; a sub-agent may perform an operation
    *  only when its parent run also may. */
   git_remote?: Array<'fetch' | 'push'>;
-  /** Which methods the agent may stamp on the document relations it writes:
-   *  `'rule'` (its code found it) and/or `'extractor'` (a model it drives
-   *  found it). Only for `provider: 'code-js'` — refused on any other
-   *  provider. Unset or `[]` = none: every relation it writes is stamped
-   *  `manual`. A new agent may list only what its author may stamp; a fork
-   *  only what the version it forks held. */
-  statement_methods?: Array<'rule' | 'extractor'>;
+  /** What the agent's runs may do with document statements. `'rule'` (its
+   *  code found the relation), `'extractor'` (a model it drives found it) and
+   *  `'judge'` (it records the judge's verdicts) are for `provider: 'code-js'`
+   *  only. `'link'`: its `link_chunks` in the tenant scope is asserted rather
+   *  than filed for review. `'remember'`: its runs may call Document
+   *  `remember`. Unset or `[]` = none. A new agent may list only what its
+   *  author holds; a fork only what the version it forks held. */
+  statement_methods?: Array<'rule' | 'extractor' | 'judge' | 'link' | 'remember'>;
   /** Channel tool ACL (default-deny until set). */
   channels?: AgentChannelACL;
   /** Interruption tool gate — `enabled: true` REQUIRED for the tool to work. */

@@ -156,6 +156,7 @@ func lmeAnswerString(raw json.RawMessage) string {
 // every arm of a paired comparison must see the same instances, and a random
 // sample would make two arms incomparable while looking fine.
 func LoadLongMemEval(path string, limit int) ([]Conversation, LMEDefects, error) {
+	// #nosec G304 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	blob, err := os.ReadFile(path)
 	if err != nil {
 		return nil, LMEDefects{}, err

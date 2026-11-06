@@ -265,7 +265,10 @@ func ProvisionEphemeral(dynRoot, rootRunID, name string) (path string, created b
 // a failure (already gone, not empty) leaves the directory in place.
 func RemoveEmptyFenced(dynRoot, path string) {
 	rootResolved, rel, err := locateBelowRoot(dynRoot, path)
-	if err != nil {
+	// locateBelowRoot already placed rel strictly inside the root, and no
+	// validated segment holds a dot; the dot-dot test restates that at the
+	// filesystem call, where it is visible without following the helper.
+	if err != nil || strings.Contains(rel, "..") {
 		return
 	}
 	_ = os.Remove(filepath.Join(rootResolved, rel))
@@ -291,6 +294,9 @@ func mkdirFenced(dynRoot, path string) (created bool, err error) {
 	rootResolved, rel, err := locateBelowRoot(dynRoot, path)
 	if err != nil {
 		return false, fmt.Errorf("refusing to provision outside the dynamic root: %s", err)
+	}
+	if strings.Contains(rel, "..") { // as in RemoveEmptyFenced
+		return false, fmt.Errorf("refusing to provision outside the dynamic root: %q", rel)
 	}
 	if err := refuseSymlinkBelowRoot(rootResolved, rel); err != nil {
 		return false, fmt.Errorf("refusing to provision outside the dynamic root: %s", err)

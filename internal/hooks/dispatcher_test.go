@@ -479,7 +479,9 @@ func tenantHookOnLoopback(t *testing.T, tenant string) (*fakeHook, *Set) {
 	hook := newFakeHook(t, `{"input":{"rewritten":true}}`)
 	r := NewSet()
 	mustRegister(t, r, &Hook{
-		Tenant: tenant, Owner: "app", Name: "gate", Phase: PhasePre,
+		// tenant "" stands for the operator's static config, the one hook
+		// that dials without the guard (Resolve sets it from a yaml agent).
+		Tenant: tenant, OperatorConfig: tenant == "", Owner: "app", Name: "gate", Phase: PhasePre,
 		CallbackURL: hook.srv.URL, Tools: []string{"WebFetch"}, FailMode: FailClosed,
 	})
 	return hook, r
@@ -522,9 +524,9 @@ func TestDispatcher_TenantHookReachesAnOperatorVouchedPrivateHost(t *testing.T) 
 	}
 }
 
-// An operator-global hook (admin / legacy / open mode register with no tenant)
-// is the operator's own code — commonly a localhost sidecar — and must keep
-// working exactly as before the guard existed.
+// A hook from the operator's static config is the operator's own code —
+// commonly a localhost sidecar — and must keep working exactly as before the
+// guard existed.
 func TestDispatcher_OperatorGlobalHookStillReachesLoopback(t *testing.T) {
 	hook, r := tenantHookOnLoopback(t, "")
 	d := NewDispatcher(r, nil)

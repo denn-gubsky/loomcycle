@@ -88,6 +88,7 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		}
 	}
 
+	// #nosec G301 -- the config directory init scaffolds; it holds an example config and a README, no secrets
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fail(stderr, "init: create dir %s: %v", destDir, err)
 	}
@@ -109,9 +110,11 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		}
 	}
 
+	// #nosec G306 -- an example config with no secrets (they go in .env.local, written 0600)
 	if err := os.WriteFile(yamlPath, embedded.ExampleYAML(), 0o644); err != nil {
 		return fail(stderr, "init: write %s: %v", yamlPath, err)
 	}
+	// #nosec G306 -- a README
 	if err := os.WriteFile(docPath, embedded.LocalReadme(), 0o644); err != nil {
 		return fail(stderr, "init: write %s: %v", docPath, err)
 	}

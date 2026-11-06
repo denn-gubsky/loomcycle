@@ -164,7 +164,7 @@ func TestRedactor_RegisterMasksDynamicValue(t *testing.T) {
 		t.Fatalf("value should NOT be masked before Register; got %q", before)
 	}
 
-	r.Register(secret)
+	r.RegisterOperator(secret)
 	after := r.String("the value is " + secret + " today")
 	if strings.Contains(after, secret) {
 		t.Errorf("registered value survived redaction: %q", after)
@@ -187,7 +187,7 @@ func TestRedactor_RegisterEnablesOtherwiseEmpty(t *testing.T) {
 	if r.Enabled() {
 		t.Fatal("empty redactor should start disabled")
 	}
-	r.Register("super-secret-value")
+	r.RegisterOperator("super-secret-value")
 	if !r.Enabled() {
 		t.Error("redactor should be Enabled after Register")
 	}
@@ -201,13 +201,13 @@ func TestRedactor_RegisterEnablesOtherwiseEmpty(t *testing.T) {
 // noise).
 func TestRedactor_RegisterDedupAndShortIgnored(t *testing.T) {
 	r := New(nil, false)
-	r.Register("abcd-token-value")
-	r.Register("abcd-token-value") // dedup — no-op
-	if got := len(r.dynamic); got != 1 {
+	r.RegisterOperator("abcd-token-value")
+	r.RegisterOperator("abcd-token-value") // dedup — no-op
+	if got := len(r.dyn.entries); got != 1 {
 		t.Errorf("dynamic set size = %d, want 1 after duplicate Register", got)
 	}
-	r.Register("xy") // below minDynamicSecretLen — ignored
-	if got := len(r.dynamic); got != 1 {
+	r.RegisterOperator("xy") // below minDynamicSecretLen — ignored
+	if got := len(r.dyn.entries); got != 1 {
 		t.Errorf("dynamic set size = %d, want 1 (short value ignored)", got)
 	}
 }
@@ -216,7 +216,7 @@ func TestRedactor_RegisterDedupAndShortIgnored(t *testing.T) {
 // hold a nil redactor when redaction is disabled).
 func TestRedactor_RegisterNilNoOp(t *testing.T) {
 	var nilR *Redactor
-	nilR.Register("whatever-value") // must not panic
+	nilR.RegisterOperator("whatever-value") // must not panic
 }
 
 // TestRedactor_RegisterConcurrent asserts concurrent Register + String don't
@@ -226,7 +226,7 @@ func TestRedactor_RegisterConcurrent(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < 500; i++ {
-			r.Register("secret-value-" + string(rune('A'+i%26)))
+			r.RegisterOperator("secret-value-" + string(rune('A'+i%26)))
 		}
 		close(done)
 	}()

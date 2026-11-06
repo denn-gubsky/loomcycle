@@ -203,7 +203,13 @@ func (d *Dispatcher) resolveWorkspaceDir(principal, name string) (string, error)
 	if err := validateWorkspaceName(name); err != nil {
 		return "", err
 	}
-	dir := filepath.Join(root, principalSegment(principal), name)
+	// Both segments are charset-gated above; the dot-dot check restates that
+	// at the filesystem calls, where it is visible without following helpers.
+	rel := filepath.Join(principalSegment(principal), name)
+	if strings.Contains(rel, "..") {
+		return "", fmt.Errorf("workspace path escapes the workspace root")
+	}
+	dir := filepath.Join(root, rel)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("provision workspace: %w", err)
 	}

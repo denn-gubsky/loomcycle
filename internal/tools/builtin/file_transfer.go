@@ -126,9 +126,10 @@ func (f *File) httpHook(ctx context.Context, op, method string, u *url.URL, head
 // transcript that repeats it is masked. Called only for a request that
 // passed the host and grant checks, or a redirect it was sent.
 //
-// The redactor is process-wide: redact.Register has no scope, and what one
-// run registers is masked in every run's transcripts and kept for the
-// server's life. So a run may register at most fileRegisterLimit values, and
+// The redactor is process-wide: what one run registers is masked in every
+// run's transcripts, held in a bounded bucket of the run's tenant
+// (pinned while the run is live). So a run may register at most
+// fileRegisterLimit values, and
 // only the parts of a URL that carry a credential: an arbitrary string a
 // model wrote into a URL cannot become a mask for everyone. Past the limit a
 // URL is still shown masked in results; it is only not registered.
@@ -158,7 +159,7 @@ func (f *File) registerURL(ctx context.Context, u *url.URL) {
 		if !inbox.ClaimRegistration(ctx, fileRegisterLimit) {
 			return
 		}
-		f.RegisterSecret(p)
+		f.RegisterSecret(ctx, p)
 	}
 }
 

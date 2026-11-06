@@ -185,6 +185,22 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "loomcycle_acl_resolution_failures_total%s %d\n", replicaLabels, s.aclResolutionFailures.Load())
 	fmt.Fprintln(w)
 
+	// Tool calls recovered from a panic, by tool: each is a bug in that tool
+	// that cost one call instead of the process. The tool set is the
+	// configured one, so the series stay bounded.
+	fmt.Fprintln(w, "# HELP loomcycle_tool_panics_total Tool calls on this replica that panicked and were recovered into a failed call, by tool.")
+	fmt.Fprintln(w, "# TYPE loomcycle_tool_panics_total counter")
+	panics := s.toolPanics.Snapshot()
+	names := make([]string, 0, len(panics))
+	for n := range panics {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		fmt.Fprintf(w, "loomcycle_tool_panics_total%s %d\n", mergeLabels(replicaLabels, map[string]string{"tool": n}), panics[n])
+	}
+	fmt.Fprintln(w)
+
 	// Build info as a single-series gauge=1 with version metadata as
 	// labels. Standard Prometheus convention — operators alert on
 	// version churn or filter by version in a multi-replica cluster.

@@ -114,10 +114,15 @@ const (
 // "mcp__jobs__*"). No regex, no middle wildcards.
 type Hook struct {
 	ID string `json:"id"`
-	// Tenant owns the definition the hook came from; "" = the operator's own
-	// config (or a shared definition an operator wrote). A tenant's webhook is
-	// dialed through the private-address guard; the operator's is not.
+	// Tenant owns the definition the hook came from; "" = the shared tenant.
 	Tenant string `json:"tenant"`
+	// OperatorConfig: the hook comes from the operator's static config (a yaml
+	// agent's hooks). Only such a hook dials without the private-address
+	// guard, since it is commonly a localhost sidecar the operator runs. Every
+	// other webhook — a tenant's, a run request's additions, a runtime
+	// definition's even in the shared tenant — goes through the guard. Set
+	// only by Resolve; never carried on the wire, so it cannot be claimed.
+	OperatorConfig bool `json:"-"`
 	// Owner says where the hook came from — "agent:<name>" for a hook an
 	// AgentDef carries — and is sent in the payload as `owner`. (Owner, Name)
 	// names the hook in hook_decision events.

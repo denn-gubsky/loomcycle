@@ -11,12 +11,14 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/localapi"
+	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
 	"github.com/denn-gubsky/loomcycle/internal/wiring"
 )
 
@@ -297,7 +299,7 @@ func (b *boot) buildTools() {
 	// download and upload go out on the HTTP tool's host policy, and hand
 	// each URL (a pre-authenticated one is a credential) to the redactor.
 	// Docs (the Document tool import builds through) is set below.
-	fileTool := &builtin.File{HTTP: httpTool, RegisterSecret: b.secrets.register}
+	fileTool := &builtin.File{HTTP: httpTool, RegisterSecret: b.secrets.registerObserved}
 	b.allTools = append(b.allTools, fileTool)
 
 	// RFC FB — the Git tool: repository work inside bound volumes through
@@ -522,6 +524,9 @@ func (b *boot) addLocalAPITools() {
 // which agents have no tools at all.
 func (b *boot) logToolPosture() {
 	cfg := b.cfg
+	for _, w := range helperDefaultsSkipped(cfg) {
+		slog.Warn("helper command: ffmpeg runs without -nostdin and the protocol whitelist", "setting", w.key, "reason", w.reason)
+	}
 	staticHosts := b.staticHosts
 	searchRegistry := b.searchRegistry
 	searchResolver := b.searchResolver
@@ -590,4 +595,31 @@ func (b *boot) logToolPosture() {
 			slog.Info(fmt.Sprintf("note: agent %q has no tools — it will see zero tools (intentional default-deny; add tools to its YAML to expose tools)", name), "agent", name)
 		}
 	}
+}
+
+type helperSkip struct{ key, reason string }
+
+// helperDefaultsSkipped lists the operator helper commands whose ffmpeg the
+// runner cannot give its defaults (-nostdin, -protocol_whitelist file,pipe):
+// one that runs ffmpeg behind another program, or sets the whitelist itself.
+func helperDefaultsSkipped(cfg *config.Config) []helperSkip {
+	cmds := map[string]*config.HelperCommand{}
+	if o := cfg.Transcription.OCR; o != nil {
+		cmds["transcription.ocr.rasterize"] = o.Rasterize
+	}
+	if st := cfg.Transcription.STT; st != nil {
+		cmds["transcription.stt.media"] = st.Media
+	}
+	if cfg.Speech != nil {
+		cmds["speech.encode"] = cfg.Speech.Encode
+	}
+	var out []helperSkip
+	for _, key := range []string{"transcription.ocr.rasterize", "transcription.stt.media", "speech.encode"} {
+		if h := cmds[key]; h != nil {
+			if why := helper.FFmpegDefaultsSkipped(h.Command); why != "" {
+				out = append(out, helperSkip{key, why})
+			}
+		}
+	}
+	return out
 }

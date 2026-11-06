@@ -1,6 +1,6 @@
 export { isButtonInput, isVerb, optionLabels, VERB } from "./cards.js";
 export type { CanonicalCard, CardAction, CardButton, CardInput, Verb } from "./cards.js";
-export { ConfigError, EnvReader, loadSharedConfig } from "./config.js";
+export { ConfigError, devModeProblem, EnvReader, isLoopback, loadSharedConfig, loadVoiceConfig } from "./config.js";
 export type { AccessMode, Env, SharedConfig } from "./config.js";
 export { Conversation, friendlyError, MAX_DEFERRED, resultCard, UNTRUSTED_KIND, UNTRUSTED_TYPED_ANSWER_TEXT } from "./conversation.js";
 export type { CardResult, ConversationDeps } from "./conversation.js";
@@ -16,12 +16,12 @@ export type { AdminClient, BridgePort, ClientFactory, Logger, OutboundActivity, 
 export { DEFAULT_MAX_MESSAGE_CHARS, DEFAULT_ROLLOVER_MS, MessageSink, StreamSink } from "./renderer.js";
 export type { MessageSinkOptions, StreamSinkOptions, TurnSink } from "./renderer.js";
 export { ConversationRouter } from "./router.js";
-export type { RouterOptions } from "./router.js";
-export { createBridge, runCli } from "./start.js";
+export type { MessageOptions, RouterOptions, SeenMessage } from "./router.js";
+export { createBridge, runCli, voiceSurfaces } from "./start.js";
 export type { Bridge, BridgeAdapter, BridgeContext, BridgeOptions } from "./start.js";
 export { FileStore, MemoryStore, storeFromSpec } from "./store.js";
 export type { ConversationRecord, ConversationStore } from "./store.js";
-export { HELP_TEXT, parseCommand, splitMessage } from "./text.js";
+export { HELP_TEXT, parseCommand, splitMessage, VOICE_HELP_TEXT } from "./text.js";
 export type { Command } from "./text.js";
 export { statusOf, TokenBroker } from "./tokens.js";
 export type { TokenBrokerOptions } from "./tokens.js";
@@ -31,3 +31,19 @@ export type { Exec, GateAlg, GateClientOptions, GateIdentity, GateKey, GroupsFor
 export type { GateConfig } from "./config.js";
 export type { TokenSource } from "./tokens.js";
 export { gateSharedSubject, legacySubject } from "./identity.js";
+export { FileRevokeQueue, MemoryRevokeQueue, revokeQueueFromSpec } from "./revokes.js";
+export type { PendingRevoke, RevokeQueue } from "./revokes.js";
+export {
+  DEFAULT_VOICE_CONFIG,
+  ECHO_MAX_CHARS,
+  echoLine,
+  languageHint,
+  pickFormat,
+  spokenPart,
+  VOICE_INFO_TTL_MS,
+  VOICE_PREFIX,
+  VOICE_TEXT,
+  VoiceInfoCache,
+  VoiceRefusedError,
+} from "./voice.js";
+export type { VoiceCapabilities, VoiceClient, VoiceConfig, VoiceIn, VoiceOut, VoicePort, VoiceReplyMode } from "./voice.js";

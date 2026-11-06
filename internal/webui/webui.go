@@ -175,7 +175,10 @@ func Handler(prefix string, login func(*http.Request) LoginConfig, opts ...Optio
 		serveFile(w, src, "index.html")
 	})
 
-	return mux
+	// The policy is built once, from the shell this handler serves: a bundle
+	// loaded from disk is fixed for the handler's life, as is the embedded one.
+	index, _ := src.file("index.html")
+	return withSecurityHeaders(mux, spaCSP(InlineScriptHashes(index)))
 }
 
 // source is where the handler reads SPA files from. Every source is served by
@@ -225,6 +228,7 @@ func writeFile(w http.ResponseWriter, name string, data []byte) {
 		// reload picks up a fresh shell after a UI redeploy.
 		w.Header().Set("Cache-Control", "no-cache")
 	}
+	// #nosec G705 -- the Web UI's own build output (embedded, or the operator's pinned bundle), with a content type from its extension
 	_, _ = w.Write(data)
 }
 

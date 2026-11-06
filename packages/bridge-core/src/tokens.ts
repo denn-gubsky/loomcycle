@@ -20,6 +20,9 @@ export interface TokenBrokerOptions {
   ratePerMinute: number;
   rateBurst: number;
   accessMode: AccessMode;
+  /** Off-run surfaces each token is granted beside the agent (RFC GA), for
+   *  a bridge that exchanges voice messages. */
+  surfaces?: Array<"speech" | "transcription">;
   /** Re-mint this long before a token expires. */
   renewBeforeMs?: number;
   now?: () => number;
@@ -96,6 +99,7 @@ export class TokenBroker implements TokenSource {
       // the stream an older process may still be draining.
       maxActive: 2,
       agents: [this.opts.agent],
+      ...(this.opts.surfaces?.length ? { surfaces: this.opts.surfaces } : {}),
       // `interactive` is itself a lockable override, and the bridge must set
       // it; every other per-run setting stays the agent definition's.
       overrides: ["interactive"],

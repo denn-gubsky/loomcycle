@@ -60,7 +60,10 @@ const documentSourceDefDescription = `Author, fork, retire, and inspect named do
 	`Only an admin, outside a run, may set config.api_key_env to an env var name. Anyone else leaves the credential unset, ` +
 	`sets api_key_env to "$cred:<name>" naming a tenant-level credential that already exists in their own tenant ` +
 	`(create it with CredentialDef; it is resolved in the tenant that owns this definition, never the caller's), or uses ` +
-	`tenancy_strategy key_per_tenant with an env_pattern containing {tenant_id}, so each run sends its own tenant's key.`
+	`tenancy_strategy key_per_tenant with an env_pattern containing {tenant_id}, so each run sends its own tenant's key. ` +
+	`trust says how a sync pull files the peer's statements: proposed (the default) files each for review; asserted keeps ` +
+	`the peer's asserted ones asserted, and only an operator outside a run may declare it (a fork of a trusted source by ` +
+	`anyone else must set trust to proposed).`
 
 const documentSourceDefInputSchema = `{
   "type": "object",
@@ -163,6 +166,9 @@ func (s *DocumentSourceDef) execCreate(ctx context.Context, policy tools.Documen
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	if err := s.checkAuthorCredential(ctx, def); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	if err := requireOperatorForAssertedTrust(ctx, def); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	defJSON, err := json.Marshal(def)
@@ -301,6 +307,9 @@ func (s *DocumentSourceDef) execFork(ctx context.Context, policy tools.DocumentS
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if err := s.checkAuthorCredential(ctx, def); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := requireOperatorForAssertedTrust(ctx, def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	defJSON, err := json.Marshal(def)
@@ -531,6 +540,20 @@ func (s *DocumentSourceDef) checkAuthorCredential(ctx context.Context, def merge
 	return requireAuthorBoundCredential(ctx, s.PeerCredentials, peer, static)
 }
 
+// requireOperatorForAssertedTrust refuses a definition declaring trust: asserted
+// unless the operator authors it from the operator plane (the operator's own
+// off-run call — an admin, the legacy token, or a tenant operator in its own
+// tenant). With it, every statement the peer sends holds here without review,
+// so it is the same decision as accepting them, which a run or a member never
+// makes for the tenant. A fork inherits its parent's trust, so a fork by anyone
+// else of a trusted source is refused too until it declares proposed.
+func requireOperatorForAssertedTrust(ctx context.Context, def mergedDocumentSourceDef) error {
+	if def.Trust != config.DocumentSourceTrustAsserted || tools.IsOperatorPlane(ctx) {
+		return nil
+	}
+	return fmt.Errorf("trust: asserted lets every statement this peer sends hold without review, and only an operator outside a run may declare it; set trust to proposed (statements arrive for review), or ask an operator")
+}
+
 // DocumentSourceDefBodyValidator returns the check a snapshot restore runs
 // over a stored document-source def body before writing it (injected by the
 // restore call sites): base_url is dialed and the api_key_env it names is sent
@@ -598,6 +621,9 @@ func validateDocumentSourceDef(cfg *config.Config, def mergedDocumentSourceDef, 
 	default:
 		return fmt.Errorf("tenancy_strategy.kind %q must be \"\" or key_per_tenant", def.TenancyStrategy.Kind)
 	}
+	if !config.ValidDocumentSourceTrust(def.Trust) {
+		return fmt.Errorf("trust %q must be proposed (the default) or asserted", def.Trust)
+	}
 	// Last, so a malformed def is told what is wrong with its shape first.
 	return requireListedPeerHost(cfg, "config.base_url", def.Config.BaseURL, operatorBaseURL)
 }
@@ -636,6 +662,7 @@ type mergedDocumentSourceDef struct {
 	Name            string                      `json:"name,omitempty"`
 	Config          mergedDocumentSourceConfig  `json:"config,omitempty"`
 	TenancyStrategy mergedDocumentSourceTenancy `json:"tenancy_strategy,omitempty"`
+	Trust           string                      `json:"trust,omitempty"`
 }
 
 // mergedDocumentSourceConfig mirrors config.DocumentSourceConfig.
@@ -667,6 +694,9 @@ func (d *mergedDocumentSourceDef) applyOverlay(ov mergedDocumentSourceDef) {
 	if ov.TenancyStrategy.EnvPattern != "" {
 		d.TenancyStrategy.EnvPattern = ov.TenancyStrategy.EnvPattern
 	}
+	if ov.Trust != "" {
+		d.Trust = ov.Trust
+	}
 }
 
 func staticToMergedDocumentSourceDef(m config.DocumentSource) mergedDocumentSourceDef {
@@ -680,5 +710,6 @@ func staticToMergedDocumentSourceDef(m config.DocumentSource) mergedDocumentSour
 			Kind:       m.TenancyStrategy.Kind,
 			EnvPattern: m.TenancyStrategy.EnvPattern,
 		},
+		Trust: m.Trust,
 	}
 }

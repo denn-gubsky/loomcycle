@@ -1,7 +1,8 @@
 // A Teams bridge moving from a loomcycle token to being a loomcycle gate (RFC
-// FA §3.7d), against a real loomcycle: the Teams SDK app in its local
-// (unauthenticated) mode, activities POSTed to /api/messages, and a fake Bot
-// Connector for replies. Runs only under test/integration/run.sh, which pins
+// FA §3.7d), against a real loomcycle: the Teams SDK app with request
+// authentication on (a gate refuses dev mode), activities POSTed to
+// /api/messages with a token from a fake Bot Framework token service, and a
+// fake Bot Connector for replies. Runs only under test/integration/run.sh, which pins
 // the gate's public key in loomcycle and hands the private key here.
 //
 // Two phases, as a live deployment moves: the bridge first runs with a
@@ -18,6 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTeamsBridge, type ConversationRef, type TeamsBridge } from "../../src/bridge.js";
 import { loadConfig } from "../../src/config.js";
 import { conversationSubject, subjectFor } from "../../src/identity.js";
+import { BOT_ID, FakeBotFramework } from "../botframework.js";
 import { silentLogger } from "../fakes.js";
 
 const BASE = process.env.TEAMS_BRIDGE_IT_BASE_URL;
@@ -56,8 +58,10 @@ describe.skipIf(!BASE || !TOKEN || !ADMIN || !GATE_KEY)("teams bridge moving to 
   let connectorUrl: string;
   let bridge: TeamsBridge | undefined;
   let seq = 0;
+  const bf = new FakeBotFramework();
 
   beforeAll(async () => {
+    await bf.start();
     connector = http.createServer((req, res) => {
       let data = "";
       req.on("data", (c) => (data += c));
@@ -74,6 +78,7 @@ describe.skipIf(!BASE || !TOKEN || !ADMIN || !GATE_KEY)("teams bridge moving to 
   afterAll(async () => {
     await bridge?.stop();
     await new Promise((r) => connector?.close(r));
+    await bf.stop();
   });
 
   async function startBridge(auth: Record<string, string>): Promise<void> {
@@ -82,11 +87,15 @@ describe.skipIf(!BASE || !TOKEN || !ADMIN || !GATE_KEY)("teams bridge moving to 
       ...auth,
       BRIDGE_AGENT: "helper",
       TEAMS_BRIDGE_ALLOWED_TENANTS: TENANT,
-      BRIDGE_DEV: "1",
+      CLIENT_ID: BOT_ID,
       PORT: String(PORT),
     });
     // A fresh memory store, as a restarted bridge with BRIDGE_STORE=memory.
-    bridge = createTeamsBridge(cfg, { store: new MemoryStore<ConversationRef>(), logger: silentLogger });
+    bridge = createTeamsBridge(cfg, {
+      store: new MemoryStore<ConversationRef>(),
+      logger: silentLogger,
+      app: { clientId: BOT_ID, token: bf.token, cloud: bf.cloud },
+    });
     await bridge.start();
   }
 
@@ -98,7 +107,7 @@ describe.skipIf(!BASE || !TOKEN || !ADMIN || !GATE_KEY)("teams bridge moving to 
   const post = (activity: Record<string, unknown>) =>
     fetch(`http://127.0.0.1:${PORT}/api/messages`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: bf.authorization(connectorUrl) },
       body: JSON.stringify({
         channelId: "msteams",
         serviceUrl: connectorUrl,

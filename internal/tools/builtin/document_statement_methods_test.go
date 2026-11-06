@@ -49,8 +49,9 @@ func TestProposeStatement_StampsTheGrantedMethod(t *testing.T) {
 		if r.IsError {
 			t.Fatalf("propose without a method: %s", r.Text)
 		}
-		if got := statementMethodOf(t, d, ctx, out["id"].(string)); got != "manual" {
-			t.Errorf("method = %q, want manual", got)
+		// From a run, a proposal naming no method is the run's own.
+		if got := statementMethodOf(t, d, ctx, out["id"].(string)); got != edgeMethodAgent {
+			t.Errorf("method = %q, want agent", got)
 		}
 	})
 }

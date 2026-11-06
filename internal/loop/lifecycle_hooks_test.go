@@ -76,7 +76,7 @@ func withHooks(d *hooks.Dispatcher, more func(*RunOptions)) func(*RunOptions) {
 func TestLifecycle_AnAgentStartDenyStopsTheRunBeforeAnyModelCall(t *testing.T) {
 	h := newScriptedHook(t, `{"decision":"deny","reason":"writer is disabled"}`)
 	r := startReviewRun(t, context.Background(), withHooks(lifecycleHooks(t,
-		&hooks.Hook{Owner: "ops", Name: "gate", Phase: hooks.PhaseAgentStart, CallbackURL: h.srv.URL}), nil))
+		&hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "gate", Phase: hooks.PhaseAgentStart, CallbackURL: h.srv.URL}), nil))
 	o := r.finish(t)
 	if o.err == nil || !strings.Contains(o.err.Error(), "writer is disabled") || o.res.StopReason != StopReasonDeniedByHook {
 		t.Fatalf("outcome = %+v, %v", o.res, o.err)
@@ -90,7 +90,7 @@ func TestLifecycle_AnAgentStartDenyStopsTheRunBeforeAnyModelCall(t *testing.T) {
 // for a resumed run, which has already started.
 func TestLifecycle_AgentStartContextReachesThePromptOnce(t *testing.T) {
 	h := newScriptedHook(t, `{"additional_context":"The user prefers short answers."}`)
-	d := lifecycleHooks(t, &hooks.Hook{Owner: "ops", Name: "ctx", Phase: hooks.PhaseAgentStart, CallbackURL: h.srv.URL})
+	d := lifecycleHooks(t, &hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "ctx", Phase: hooks.PhaseAgentStart, CallbackURL: h.srv.URL})
 	r := startReviewRun(t, context.Background(), withHooks(d, nil))
 	r.result(t)
 	r.prov.mu.Lock()
@@ -113,7 +113,7 @@ func TestLifecycle_AgentStartContextReachesThePromptOnce(t *testing.T) {
 func TestLifecycle_ABlockSendsTheModelBackWithTheReason(t *testing.T) {
 	h := newScriptedHook(t, `{"decision":"block","reason":"cite a source"}`, `{}`)
 	r := startReviewRun(t, context.Background(), withHooks(lifecycleHooks(t,
-		&hooks.Hook{Owner: "ops", Name: "check", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}), nil))
+		&hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "check", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}), nil))
 	res := r.result(t)
 	if r.prov.calls() != 2 || r.prov.lastUserText() != "cite a source" {
 		t.Fatalf("calls = %d, last user turn %q", r.prov.calls(), r.prov.lastUserText())
@@ -128,7 +128,7 @@ func TestLifecycle_ABlockSendsTheModelBackWithTheReason(t *testing.T) {
 func TestLifecycle_ABlockEveryTimeFailsTheRunAtTheCap(t *testing.T) {
 	h := newScriptedHook(t, `{"decision":"block","reason":"never good enough"}`)
 	r := startReviewRun(t, context.Background(), withHooks(lifecycleHooks(t,
-		&hooks.Hook{Owner: "ops", Name: "picky", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}), nil))
+		&hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "picky", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}), nil))
 	o := r.finish(t)
 	if o.err == nil || o.res.StopReason != StopReasonStopBlocked || !strings.Contains(o.err.Error(), "ops/picky") ||
 		!strings.Contains(o.err.Error(), "never good enough") {
@@ -163,7 +163,7 @@ func (r *reviewRun) recordedBlocks() int {
 func TestLifecycle_AHoldIsAReviewHoldNamingTheHook(t *testing.T) {
 	h := newScriptedHook(t, `{"decision":"hold","reason":"a person should read this"}`)
 	r := startReviewRun(t, context.Background(), withHooks(lifecycleHooks(t,
-		&hooks.Hook{Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}), nil))
+		&hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}), nil))
 	ev := r.waitFor(t, providers.EventAwaitingReview)
 	if ev.AwaitingReview == nil || ev.AwaitingReview.HeldBy != "ops/hold" {
 		t.Fatalf("hold = %+v", ev.AwaitingReview)
@@ -182,7 +182,7 @@ func TestLifecycle_AHooksHoldOutlastsTheDisarmedReviewHeartbeat(t *testing.T) {
 	defer func() { parkHeartbeatInterval = orig }()
 	h := newScriptedHook(t, `{"decision":"hold"}`)
 	r := startReviewRun(t, context.Background(), withHooks(lifecycleHooks(t,
-		&hooks.Hook{Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}), nil))
+		&hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}), nil))
 	r.waitFor(t, providers.EventAwaitingReview)
 	select {
 	case o := <-r.done:
@@ -200,7 +200,7 @@ func TestLifecycle_AHooksHoldOutlastsTheDisarmedReviewHeartbeat(t *testing.T) {
 func TestLifecycle_AHoldOnARunThatCannotBeHeldEndsItRejected(t *testing.T) {
 	h := newScriptedHook(t, `{"decision":"hold"}`)
 	r := startReviewRun(t, context.Background(), withHooks(lifecycleHooks(t,
-		&hooks.Hook{Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}),
+		&hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}),
 		func(o *RunOptions) { o.SteerQueue = nil }))
 	if res := r.result(t); res.StopReason != StopReasonRejected {
 		t.Errorf("result = %+v", res)
@@ -211,7 +211,7 @@ func TestLifecycle_AHoldOnARunThatCannotBeHeldEndsItRejected(t *testing.T) {
 // than letting it through.
 func TestLifecycle_AFailedClosedStopHookHolds(t *testing.T) {
 	r := startReviewRun(t, context.Background(), withHooks(lifecycleHooks(t,
-		&hooks.Hook{Owner: "ops", Name: "down", Phase: hooks.PhaseAgentStop, CallbackURL: "http://127.0.0.1:1/nope", FailMode: hooks.FailClosed}), nil))
+		&hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "down", Phase: hooks.PhaseAgentStop, CallbackURL: "http://127.0.0.1:1/nope", FailMode: hooks.FailClosed}), nil))
 	ev := r.waitFor(t, providers.EventAwaitingReview)
 	if ev.AwaitingReview.HeldBy != "ops/down" {
 		t.Fatalf("hold = %+v", ev.AwaitingReview)
@@ -225,7 +225,7 @@ func TestLifecycle_AFailedClosedStopHookHolds(t *testing.T) {
 func TestLifecycle_ABlockWithNoIterationLeftFailsTheRun(t *testing.T) {
 	h := newScriptedHook(t, `{"decision":"block","reason":"cite a source"}`)
 	r := startReviewRun(t, context.Background(), withHooks(lifecycleHooks(t,
-		&hooks.Hook{Owner: "ops", Name: "check", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}),
+		&hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "check", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}),
 		func(o *RunOptions) { o.MaxIterations = 1 }))
 	o := r.finish(t)
 	if o.err == nil || o.res.StopReason != StopReasonStopBlocked || !strings.Contains(o.err.Error(), "ops/check") ||
@@ -249,7 +249,7 @@ func TestLifecycle_CompactionHooksGateAndReport(t *testing.T) {
 	opts := RunOptions{
 		Provider: &steerProvider{}, Model: "x", AgentName: "writer",
 		Compaction: &config.Compaction{KeepLastN: cptr(2), KeepFirst: cptr(true), TargetPercentage: cptr(10)},
-		Hooks:      lifecycleHooks(t, &hooks.Hook{Owner: "ops", Name: "keep", Phase: hooks.PhasePreCompact, CallbackURL: deny.srv.URL}),
+		Hooks:      lifecycleHooks(t, &hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "keep", Phase: hooks.PhasePreCompact, CallbackURL: deny.srv.URL}),
 	}
 	msgs := distillableConvo()
 	var declined *providers.ContextDistillDeclinedInfo
@@ -274,7 +274,7 @@ func TestLifecycle_CompactionHooksGateAndReport(t *testing.T) {
 		mu.Unlock()
 	}))
 	defer report.Close()
-	opts.Hooks = lifecycleHooks(t, &hooks.Hook{Owner: "ops", Name: "log", Phase: hooks.PhasePostCompact, CallbackURL: report.URL})
+	opts.Hooks = lifecycleHooks(t, &hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "log", Phase: hooks.PhasePostCompact, CallbackURL: report.URL})
 	if _, did := maybeAutoCompact(context.Background(), opts, msgs, 900, 1000, func(providers.Event) {}, "self"); !did {
 		t.Fatal("the compaction did not run")
 	}
@@ -312,7 +312,7 @@ func TestLifecycle_ARunCancelledWhileAStopHookDecidesEndsCancelled(t *testing.T)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	r := startReviewRun(t, ctx, withHooks(lifecycleHooks(t,
-		&hooks.Hook{Owner: "ops", Name: "slow", Phase: hooks.PhaseAgentStop, CallbackURL: hs.URL}), nil))
+		&hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "slow", Phase: hooks.PhaseAgentStop, CallbackURL: hs.URL}), nil))
 	select {
 	case <-deciding:
 	case <-time.After(2 * time.Second):

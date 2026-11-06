@@ -27,6 +27,15 @@ var statementMethodOps = map[string]bool{
 	"upsert_chunk":       true, // its relation statement; its runtime edges keep method runtime
 }
 
+// statementLinkGrant and statementRememberGrant are the statement_methods values
+// that stamp nothing but widen what a run may do: link asserts a run's
+// link_chunks in the tenant scope instead of filing it for review, and remember
+// lets a run file a fact as a person's statement (op=remember).
+const (
+	statementLinkGrant     = "link"
+	statementRememberGrant = "remember"
+)
+
 // statementMethodName is the <name> of rule:<name> / extractor:<name>: short,
 // lower case and path-like, so it reads as an identifier in the review queue
 // and can never carry a sentence.
@@ -63,7 +72,7 @@ func stampStatementMethod(ctx context.Context, in *docInput) *tools.Result {
 	}
 	if !contains(tools.PolicyOf(ctx).StatementMethods, prefix) {
 		r := errPermission(in.Op+": method_not_granted: this agent may not stamp "+prefix+": statements",
-			"Omit method to write it as manual. Only a code-js agent whose definition lists "+prefix+" in statement_methods may stamp it.")
+			"Omit method to write it as your own. Only a code-js agent whose definition lists "+prefix+" in statement_methods may stamp it.")
 		return &r
 	}
 	in.edgeMethod = in.Method

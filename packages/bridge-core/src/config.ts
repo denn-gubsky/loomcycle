@@ -5,6 +5,7 @@
 // than run half-configured.
 
 import { trimTrailingSlashes } from "./text.js";
+import { DEFAULT_VOICE_CONFIG, languageHint, type VoiceConfig } from "./voice.js";
 
 export type AccessMode = "isolated" | "tenant";
 
@@ -32,8 +33,27 @@ export interface SharedConfig {
   store: string;
   /** Listen port. */
   port: number;
-  /** Local testing only: the platform's request authentication is off. */
+  /** The address the listener binds (BRIDGE_BIND). undefined: every
+   *  interface, which a container that publishes its port needs. In dev mode
+   *  it is loopback, and nothing else is accepted. */
+  bindHost?: string;
+  /** Local testing only: the platform's request authentication is off.
+   *  Accepted only on loopback and never with a gate (devModeProblem). */
   dev: boolean;
+  /** How often a gate bridge reconciles its users with loomcycle (RFC FA
+   *  §3.7c): it revokes each person it served whom the platform's member
+   *  list no longer has. In hours;
+   *  0 turns it off; unset (a config built in code) is the default, 6. Only
+   *  a platform that can list its members does it. */
+  gateSyncHours?: number;
+  /** The most people one reconcile round may revoke
+   *  (BRIDGE_RECONCILE_MAX_REVOKES). Unset: 10% of the people the bridge
+   *  serves, never fewer than five. A round over it revokes nobody. */
+  reconcileMaxRevokes?: number;
+  /** Voice messages (RFC GA), off unless BRIDGE_VOICE=1. Optional so a
+   *  config built by hand before voice existed still type-checks: absent is
+   *  voice off. loadSharedConfig always sets it. */
+  voice?: VoiceConfig;
 }
 
 export interface GateConfig {
@@ -99,6 +119,11 @@ export class EnvReader {
     return false;
   }
 
+  /** flag with a default for when it is unset. */
+  flagOr(name: string, def: boolean): boolean {
+    return this.get(name) === undefined ? def : this.flag(name);
+  }
+
   /** A comma list, trimmed, blanks dropped; lower-cased when asked. */
   list(name: string, opts: { lower?: boolean } = {}): string[] {
     const raw = this.get(name);
@@ -130,6 +155,7 @@ export class EnvReader {
  *  read too, so every problem is reported together. */
 export function loadSharedConfig(reader: EnvReader, defaults: { port: number; gate?: boolean }): SharedConfig {
   const loomcycleBaseUrl = trimTrailingSlashes(reader.required("LOOMCYCLE_BASE_URL"));
+  if (loomcycleBaseUrl) checkLoomcycleBaseUrl(loomcycleBaseUrl, reader.flag("BRIDGE_ALLOW_INSECURE_LOOMCYCLE"), reader.problems);
   const gate = defaults.gate ? loadGateConfig(reader) : undefined;
   // A gate bridge holds no loomcycle credential at all: a leftover operator
   // token beside the gate key is refused, so it cannot stay deployed unused.
@@ -146,7 +172,18 @@ export function loadSharedConfig(reader: EnvReader, defaults: { port: number; ga
   if (store !== "memory" && !(store.startsWith("file:") && store.length > "file:".length)) {
     reader.problems.push('BRIDGE_STORE must be "memory" or "file:<path>"');
   }
-  return {
+  const dev = reader.flag("BRIDGE_DEV");
+  // Dev mode defaults to loopback; outside it the bind is the operator's.
+  const bindHost = reader.get("BRIDGE_BIND") ?? (dev ? "127.0.0.1" : undefined);
+  // At most a week: a timer over 2^31 ms (about 24 days) fires at once.
+  const gateSyncHours = reader.int("BRIDGE_GATE_SYNC_HOURS", DEFAULT_GATE_SYNC_HOURS, 0, 168);
+  if (!gate && reader.get("BRIDGE_GATE_SYNC_HOURS")) {
+    reader.problems.push("BRIDGE_GATE_SYNC_HOURS applies only to a gate bridge (BRIDGE_GATE)");
+  }
+  const maxRevokesRaw = reader.get("BRIDGE_RECONCILE_MAX_REVOKES");
+  if (!gate && maxRevokesRaw) reader.problems.push("BRIDGE_RECONCILE_MAX_REVOKES applies only to a gate bridge (BRIDGE_GATE)");
+  const reconcileMaxRevokes = maxRevokesRaw ? reader.int("BRIDGE_RECONCILE_MAX_REVOKES", 0, 1) : undefined;
+  const cfg: SharedConfig = {
     loomcycleBaseUrl,
     loomcycleToken,
     ...(gate ? { gate } : {}),
@@ -158,9 +195,84 @@ export function loadSharedConfig(reader: EnvReader, defaults: { port: number; ga
     idleMinutes: reader.int("BRIDGE_IDLE_MINUTES", 1440, 1),
     store,
     port: reader.int("PORT", defaults.port, 1, 65535),
-    dev: reader.flag("BRIDGE_DEV"),
+    ...(bindHost ? { bindHost } : {}),
+    dev,
+    gateSyncHours,
+    ...(reconcileMaxRevokes ? { reconcileMaxRevokes } : {}),
+    voice: loadVoiceConfig(reader),
+  };
+  const devProblem = devModeProblem(cfg);
+  if (devProblem) reader.problems.push(devProblem);
+  return cfg;
+}
+
+/** loadVoiceConfig reads BRIDGE_VOICE and its BRIDGE_VOICE_* settings. Each
+ *  setting is checked even with voice off, so a typo is found before the
+ *  day voice is turned on. */
+export function loadVoiceConfig(reader: EnvReader): VoiceConfig {
+  const d = DEFAULT_VOICE_CONFIG;
+  const label = reader.get("BRIDGE_VOICE_LABEL") ?? d.label;
+  if (label.length > 64) reader.problems.push("BRIDGE_VOICE_LABEL must be at most 64 characters");
+  const rawLanguage = reader.get("BRIDGE_VOICE_LANGUAGE");
+  const language = languageHint(rawLanguage);
+  if (rawLanguage && !language) reader.problems.push("BRIDGE_VOICE_LANGUAGE must be a language code such as en or uk");
+  return {
+    enabled: reader.flag("BRIDGE_VOICE"),
+    untrusted: reader.flagOr("BRIDGE_VOICE_UNTRUSTED", d.untrusted),
+    reply: reader.oneOf("BRIDGE_VOICE_REPLY", ["mirror", "always", "never"] as const, d.reply),
+    maxSeconds: reader.int("BRIDGE_VOICE_MAX_SECONDS", d.maxSeconds, 1, 3600),
+    maxBytes: reader.int("BRIDGE_VOICE_MAX_BYTES", d.maxBytes, 1024, 100 * 1024 * 1024),
+    replyMaxChars: reader.int("BRIDGE_VOICE_REPLY_MAX_CHARS", d.replyMaxChars, 50, 100_000),
+    echo: reader.flagOr("BRIDGE_VOICE_ECHO", d.echo),
+    label,
+    ...(language ? { language } : {}),
   };
 }
+
+/** isLoopback says whether a host name or address is this machine only. */
+export function isLoopback(host: string): boolean {
+  const h = host.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
+  return h === "localhost" || h === "::1" || /^127(\.\d{1,3}){3}$/.test(h);
+}
+
+/** devModeProblem is why a configuration may not run in dev mode, or
+ *  undefined. Dev mode turns off the platform's request authentication, so
+ *  anyone who can reach the listener speaks as any platform user: it is for
+ *  a developer's own machine. As a gate the bridge would then sign a loomcycle
+ *  identity for whoever a forged request names, so the two never go together.
+ *  Checked at configuration and again at start, for a config built in code. */
+export function devModeProblem(cfg: Pick<SharedConfig, "dev" | "gate" | "bindHost">): string | undefined {
+  if (!cfg.dev) return undefined;
+  if (cfg.gate) {
+    return "BRIDGE_DEV=1 is refused on a gate bridge (BRIDGE_GATE): dev mode turns off the platform's request authentication, and a gate would sign a loomcycle identity for whoever a forged request names; unset BRIDGE_DEV";
+  }
+  if (cfg.bindHost === undefined || !isLoopback(cfg.bindHost)) {
+    return "BRIDGE_DEV=1 is refused off loopback: dev mode turns off the platform's request authentication; bind to 127.0.0.1 (BRIDGE_BIND), or unset BRIDGE_DEV";
+  }
+  return undefined;
+}
+
+/** checkLoomcycleBaseUrl holds loomcycle's URL to https: the bridge's
+ *  operator token, or the tokens loomcycle issues a gate bridge, travel on
+ *  every call. Plain http is accepted to this machine, or when the operator
+ *  says the link is a private network (BRIDGE_ALLOW_INSECURE_LOOMCYCLE=1, as
+ *  in a compose file where the bridge reaches http://loomcycle:8787). */
+function checkLoomcycleBaseUrl(raw: string, allowInsecure: boolean, problems: string[]): void {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    problems.push("LOOMCYCLE_BASE_URL must be a URL");
+    return;
+  }
+  if (u.protocol === "https:") return;
+  if (u.protocol === "http:" && (isLoopback(u.hostname) || allowInsecure)) return;
+  problems.push(
+    "LOOMCYCLE_BASE_URL must be https:// (http:// only to localhost, or with BRIDGE_ALLOW_INSECURE_LOOMCYCLE=1 when the bridge reaches loomcycle over a private network)",
+  );
+}
+
+export const DEFAULT_GATE_SYNC_HOURS = 6;
 
 const GATE_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 

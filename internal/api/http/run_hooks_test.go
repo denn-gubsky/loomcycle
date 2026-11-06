@@ -209,7 +209,7 @@ func TestRunHooks_AHeaderCredentialIsResolvedForTheRun(t *testing.T) {
 // The run request's hooks fire on the run, after the agent's own, named as the
 // run's.
 func TestRunHooks_ARunRequestAddsHooks(t *testing.T) {
-	h := newReviewHarness(t)
+	h := newLoopbackHookHarness(t)
 	end := newRecordingHook(t, `{}`)
 	body := `{"agent":"writer","segments":[{"role":"user","content":[{"type":"trusted-text","text":"write"}]}],
 	  "hooks":{"run_end":[{"name":"audit","url":"` + end.srv.URL + `"}]}}`
@@ -224,6 +224,43 @@ func TestRunHooks_ARunRequestAddsHooks(t *testing.T) {
 	if !strings.Contains(string(run.RunConfig), `"audit"`) {
 		t.Fatalf("the run's record does not keep its additions: %s", run.RunConfig)
 	}
+}
+
+// A run's hooks are the caller's. In the shared tenant (open mode, the legacy
+// token, an admin) they used to dial without the private-address guard, so
+// POST /v1/runs was a blind SSRF to loopback, private and metadata addresses.
+// Unless the operator vouched for the host, the call is refused before it
+// leaves the runtime, and a fail-closed hook then fails the run.
+func TestRunHooks_ARunRequestHookCannotReachAPrivateAddress(t *testing.T) {
+	h := newReviewHarness(t)
+	probe := newRecordingHook(t, `{}`)
+	body := `{"agent":"writer","segments":[{"role":"user","content":[{"type":"trusted-text","text":"write"}]}],
+	  "hooks":{"agent_start":[{"name":"probe","url":"` + probe.srv.URL + `","fail_mode":"closed"}]}}`
+	runID, _, _, stop := h.start(body)
+	defer stop()
+	waitRunStatus(t, h.st, runID, store.RunFailed)
+	probe.mu.Lock()
+	n := len(probe.bodies)
+	probe.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("a run's hook reached a loopback receiver %d time(s)", n)
+	}
+}
+
+// A yaml agent's hooks are the operator's own config, commonly a localhost
+// sidecar: they still dial without the private-address guard.
+func TestRunHooks_AYamlAgentsHookStillReachesLoopback(t *testing.T) {
+	end := newRecordingHook(t, `{}`)
+	h := newReviewHarnessWith(t, func(c *config.Config) {
+		w := c.Agents["writer"]
+		w.Hooks = hooks.EventHooks{hooks.PhaseRunEnd: {{Inline: &hooks.Inline{Name: "audit", URL: end.srv.URL}}}}
+		c.Agents["writer"] = w
+	})
+	body := `{"agent":"writer","segments":[{"role":"user","content":[{"type":"trusted-text","text":"write"}]}]}`
+	runID, _, frames, stop := h.start(body)
+	defer stop()
+	h.waitFrame(frames, "done")
+	end.waitBody(t, `"run_id":"`+runID+`"`)
 }
 
 // A caller cannot name a credential in its own hook's headers: the value would
@@ -303,7 +340,7 @@ func TestRunHooks_AResumedRunKeepsItsAdditions(t *testing.T) {
 // A walk is a run and carries its definition's own hooks: its run_end hook
 // fires when the walk ends, named for the team.
 func TestTeamHooks_TheWalksRunEndHookFires(t *testing.T) {
-	h := newReviewHarness(t)
+	h := newLoopbackHookHarness(t)
 	end := newRecordingHook(t, `{}`)
 	ctx := teamrun.WithWalkHooks(context.Background(), teamrun.WalkHooks{
 		Hooks: hooks.EventHooks{hooks.PhaseRunEnd: {{Inline: &hooks.Inline{Name: "log", URL: end.srv.URL}}}},
@@ -322,7 +359,7 @@ func TestTeamHooks_TheWalksRunEndHookFires(t *testing.T) {
 // A walk an agent's TeamDef call started reports that agent's run to its
 // run_end hook, as the row records it.
 func TestTeamHooks_TheWalksRunEndHookNamesTheCallingRun(t *testing.T) {
-	h := newReviewHarness(t)
+	h := newLoopbackHookHarness(t)
 	end := newRecordingHook(t, `{}`)
 	ctx := teamrun.WithWalkHooks(tools.WithRunID(context.Background(), "r_caller"), teamrun.WalkHooks{
 		Hooks: hooks.EventHooks{hooks.PhaseRunEnd: {{Inline: &hooks.Inline{Name: "log", URL: end.srv.URL}}}},

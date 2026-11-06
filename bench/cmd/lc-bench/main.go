@@ -50,6 +50,7 @@ func main() {
 	if *outRoot == "" {
 		*outRoot = filepath.Join(*benchRoot, "results", time.Now().Format("2006-01-02-1504"))
 	}
+	// #nosec G301 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	if err := os.MkdirAll(*outRoot, 0o755); err != nil {
 		log.Fatalf("mkdir %s: %v", *outRoot, err)
 	}
@@ -137,6 +138,7 @@ func main() {
 
 	// --- 6. Iterate (provider, model) ---
 	tracesDir := filepath.Join(*outRoot, "traces")
+	// #nosec G301 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	if err := os.MkdirAll(tracesDir, 0o755); err != nil {
 		log.Fatalf("mkdir traces: %v", err)
 	}
@@ -410,11 +412,13 @@ func runOneCase(ctx context.Context, cli *runner.Client, judge grader.Judge,
 	// Trace dump per (model, case[, repeat]). When repeats > 1, each
 	// repeat gets its own trace file so we can inspect variance later.
 	traceDir := filepath.Join(tracesDir, sanitize(provider)+"-"+sanitize(model))
+	// #nosec G301 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	_ = os.MkdirAll(traceDir, 0o755)
 	traceName := c.ID + ".json"
 	if repeats > 1 {
 		traceName = fmt.Sprintf("%s.repeat-%d.json", c.ID, repeatIdx+1)
 	}
+	// #nosec G304 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	if f, err := os.Create(filepath.Join(traceDir, traceName)); err == nil {
 		_ = json.NewEncoder(f).Encode(result)
 		f.Close()
@@ -599,6 +603,7 @@ func trimForSmoke(d []discover.Discovery) []discover.Discovery {
 }
 
 func readAgentPrompt(path string) (string, error) {
+	// #nosec G304 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", err

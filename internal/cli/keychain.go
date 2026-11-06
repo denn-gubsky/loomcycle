@@ -71,6 +71,7 @@ type commandRunner func(ctx context.Context, name string, args []string, stdin s
 func execRunner(ctx context.Context, name string, args []string, stdin string) (runResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	// #nosec G204 -- name and args come from the keychain stores in this package (fixed security/secret-tool argv); no shell
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	var out, errb bytes.Buffer

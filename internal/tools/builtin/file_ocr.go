@@ -479,6 +479,7 @@ func (f *File) rasterize(ctx context.Context, onePage []byte, language string) (
 	if _, err := helper.Run(ctx, helper.Spec{
 		Key:      "transcription.ocr.rasterize",
 		Template: op.Rasterize.Command,
+		Wrapper:  op.Rasterize.Wrapper,
 		Vars:     map[string]string{"in": filepath.Join(tmp, "page.pdf"), "out_prefix": prefix, "out": prefix + ".png", "lang": language},
 		Root:     root,
 		Dir:      tmp,

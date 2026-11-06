@@ -59,7 +59,7 @@ async function rig(env: Record<string, string> = {}, o: { gate?: boolean; now?: 
     ? { BRIDGE_GATE: "slack", BRIDGE_GATE_AUDIENCE: "https://lc.example", BRIDGE_GATE_SECRET: GATE_SECRET }
     : { LOOMCYCLE_TOKEN: "admin-token" };
   const cfg = loadConfig({
-    LOOMCYCLE_BASE_URL: "http://loomcycle.test",
+    LOOMCYCLE_BASE_URL: "https://loomcycle.test",
     ...auth,
     BRIDGE_AGENT: "helper",
     SLACK_BOT_TOKEN: "xoxb-test",
@@ -679,6 +679,31 @@ describe("slack bridge as a loomcycle gate", () => {
     await settle();
     expect(r.gate.revokes).toEqual([]);
     expect(r.lc.calls).toHaveLength(0);
+  });
+
+  it("lists every allowed workspace's people, page by page, for reconciliation", async () => {
+    const r = await rig({ SLACK_BRIDGE_ALLOWED_TEAMS: "T1,T2" }, { gate: true });
+    r.slack.reply(
+      "users.list",
+      { json: { ok: true, members: [{ id: "UANN", team_id: "T1" }, { id: "UBOT", team_id: "T1", is_bot: true }], response_metadata: { next_cursor: "p2" } } },
+      { json: { ok: true, members: [{ id: "UBOB", team_id: "T1", deleted: true }, { id: "USLACKBOT", team_id: "T1" }, { id: "UCID" }], response_metadata: { next_cursor: "" } } },
+      { json: { ok: true, members: [{ id: "UDEE", team_id: "T2" }] } },
+    );
+    expect([...(await r.adapter.members())].sort()).toEqual(["t1:uann", "t1:ucid", "t2:udee"]);
+    expect(r.slack.to("users.list").map((c) => c.body)).toEqual([
+      { team_id: "T1", limit: 200 },
+      { team_id: "T1", limit: 200, cursor: "p2" },
+      { team_id: "T2", limit: 200 },
+    ]);
+
+    // A page Slack refuses fails the whole list: a shorter one would read as
+    // people who left.
+    r.slack.reply(
+      "users.list",
+      { json: { ok: true, members: [{ id: "UANN", team_id: "T1" }], response_metadata: { next_cursor: "p2" } } },
+      { json: { ok: false, error: "missing_scope" } },
+    );
+    await expect(r.adapter.members()).rejects.toThrow("missing_scope");
   });
 });
 

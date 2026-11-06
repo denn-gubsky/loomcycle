@@ -447,6 +447,7 @@ func encode(ctx context.Context, d Deps, wav []byte, format string) ([]byte, err
 	if _, err := helper.Run(ctx, helper.Spec{
 		Key:      "speech.encode",
 		Template: d.Config.Encode.Command,
+		Wrapper:  d.Config.Encode.Wrapper,
 		Vars:     map[string]string{"in": filepath.Join(tmp, "speech.wav"), "out": filepath.Join(tmp, outName)},
 		Root:     root,
 		Dir:      tmp,

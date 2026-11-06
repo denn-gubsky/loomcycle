@@ -251,7 +251,7 @@ func TestRedactor_SignedURLParamsEveryNameInEveryEncoding(t *testing.T) {
 func TestRedactor_RegisteredValueMaskedWholeBeforeHeuristics(t *testing.T) {
 	const secret = "https://x.example/p?token=AAAA1111&key=BBBB2222"
 	r := New(nil, true).WithSignedURLParams()
-	r.Register(secret)
+	r.RegisterOperator(secret)
 	got := r.String(`{"url":"` + secret + `"}`)
 	if want := `{"url":"` + dynamicMarker + `"}`; got != want {
 		t.Errorf("registered value not masked whole:\n got  %s\n want %s", got, want)

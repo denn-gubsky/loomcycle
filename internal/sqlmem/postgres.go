@@ -802,6 +802,7 @@ func (b *postgresBackend) dropSchemaRole(ctx context.Context, schema, role strin
 	// role holds no per-scope DB grant). Terminate any lingering backend first so
 	// DROP ROLE doesn't fail on a live session.
 	_, _ = b.admin.ExecContext(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = $1`, role)
+	// #nosec G201 -- role is runtime-derived and goes in through lit() and q(); DO blocks take no bind parameters
 	dropRole := fmt.Sprintf(
 		`DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname=%s) THEN DROP ROLE %s; END IF; END $$`,
 		lit(role), q(role),

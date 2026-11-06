@@ -78,7 +78,10 @@ to you came from the file. Read the whole text with Read on the `.md`.
 - `images` — keep the pictures as files and link them. Default true; false
   writes only their descriptions.
 - `max_rows` — rows of each spreadsheet or CSV table to keep, header
-  included. Default 1000.
+  included. Default 1000, at most 10000. A sheet, Word, slide or HTML table
+  also stops at 200,000 cells or 16 MiB of text, all such tables of a
+  document together at 32 MiB, and a sheet's cell at 32 KiB; `notes` says
+  where.
 - `excerpt_chars` — how much of the text to return. Default and most 30000.
 - `ocr` — `never`, `auto` or `always` (see above). Default: your agent's
   setting, which is also the most you may ask for.

@@ -10,6 +10,12 @@ there is no "forget" here. **Write the fact itself as one self-contained
 sentence ("Ada takes her coffee black."), not an instruction about it ("remember
 the coffee thing").**
 
+From inside a run, `remember` needs the agent's definition to grant `remember`
+in `statement_methods`: it files the text as something a person said, quotable
+as such by `verbatim_answer`. Without the grant, propose what you learned for
+review with `propose_statement`, or record a fact you derived from a source with
+`upsert_chunk` and its `source_quote`.
+
 ## Arguments
 
 - `text` (required) — the statement, at most 1000 characters. Longer content
@@ -31,6 +37,9 @@ confirm it against its own text.
 
 ## Errors
 
+- `remember: this agent may not file a fact as something a person said (...)` —
+  your agent is not granted `remember`; use `propose_statement` or
+  `upsert_chunk` with a `source_quote` instead.
 - `remember: missing required field: text ...`.
 - `remember: that is longer than a fact — store it as a document instead`.
 - `upsert_chunk: "<type>" is not an entity type this tenant declares ...` —

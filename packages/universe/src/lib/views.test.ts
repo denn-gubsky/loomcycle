@@ -43,6 +43,7 @@ describe("saved universe views", () => {
   it("TestViewPath_FilesUnderViewsUniverseBySlug", () => {
     expect(viewPath("Drafts — by Meaning!", () => 0.5)).toBe("/views/universe/drafts-by-meaning-7fff");
     expect(viewPath("  ", () => 0)).toBe("/views/universe/view-0000");
+    expect(viewPath("--Hello, world--", () => 0)).toBe("/views/universe/hello-world-0000");
   });
 });
 

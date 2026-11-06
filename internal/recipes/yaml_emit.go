@@ -49,6 +49,7 @@ func AppendToConfig(rec *Recipe, targetPath string, opts AppendOptions) ([]byte,
 	// operators usually `loomcycle init` first), so we treat absence
 	// as "empty document" rather than an error.
 	var source []byte
+	// #nosec G304 -- the operator's own target config, read before it is rewritten
 	if data, err := os.ReadFile(targetPath); err == nil {
 		source = data
 	} else if !os.IsNotExist(err) {

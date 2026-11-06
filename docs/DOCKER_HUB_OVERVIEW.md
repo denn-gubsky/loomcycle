@@ -95,6 +95,8 @@ On Linux hosts, the writable mount must be owned by uid 65532:
 mkdir -p ./data && sudo chown -R 65532:65532 ./data
 ```
 
+The config mount only has to be readable by uid 65532. A config that `loomcycle import claude-code` or `loomcycle mcp-registry` created on the host is written owner-only (`0600`), because an imported MCP server's `env` block can hold a literal token, so the container cannot read it as is. Either make the file readable (`chmod 0644 loomcycle.yaml`, if it holds no secret; better, move the secret into `.env.local` and reference it as `${NAME}`), or run the container as your own uid (`docker run --user "$(id -u):$(id -g)" …`, with the data mount owned by that uid too).
+
 Docker Desktop on macOS handles this transparently via its file-sharing layer.
 
 ## Docker Compose

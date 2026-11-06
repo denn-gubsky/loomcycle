@@ -47,7 +47,7 @@ export function loadConfig(env: Env = process.env): SlackConfig {
   // Streaming is on unless set to 0; flag() still refuses a typo.
   const streaming = r.get("SLACK_BRIDGE_STREAMING") === undefined ? true : r.flag("SLACK_BRIDGE_STREAMING");
 
-  const apiBaseUrl = (r.get("SLACK_BRIDGE_API_BASE_URL") ?? DEFAULT_API_BASE_URL).replace(/\/+$/, "");
+  const apiBaseUrl = withoutTrailingSlashes(r.get("SLACK_BRIDGE_API_BASE_URL") ?? DEFAULT_API_BASE_URL);
   checkApiBaseUrl(apiBaseUrl, r.problems);
 
   r.check("slack-bridge");
@@ -67,4 +67,13 @@ function checkApiBaseUrl(raw: string, problems: string[]): void {
   if (u.protocol === "https:") return;
   if (u.protocol === "http:" && LOOPBACK.has(u.hostname)) return;
   problems.push("SLACK_BRIDGE_API_BASE_URL must be https (http only to localhost)");
+}
+
+/** withoutTrailingSlashes drops a URL's trailing slashes. A loop, not
+ *  /\/+$/, which backtracks quadratically on a long run of slashes that is
+ *  not at the end. */
+function withoutTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s[end - 1] === "/") end--;
+  return s.slice(0, end);
 }

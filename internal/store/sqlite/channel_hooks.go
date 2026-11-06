@@ -57,6 +57,7 @@ func (s *Store) ChannelReleaseHookHeld(ctx context.Context, key store.ChannelMes
 	args = append(args, keyArgs(key)...)
 	args = append(args, store.ChannelHookHeldVisibleAt().UnixNano(), now.UnixNano())
 	args = append(append(args, keyArgs(key)...), lease)
+	// #nosec G202 -- set and keyWhere are built from constant fragments with "?" placeholders; values are bound
 	res, err := tx.ExecContext(ctx,
 		`UPDATE channel_messages SET `+set+`
 		  WHERE `+keyWhere+` AND visible_at = ? AND (expires_at IS NULL OR expires_at > ?)

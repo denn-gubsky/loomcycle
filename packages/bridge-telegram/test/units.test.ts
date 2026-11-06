@@ -13,7 +13,7 @@ const TOKEN = "123456:AAbbCC_dd-EE";
 const SECRET = "s3cret_value-1";
 
 const baseEnv = {
-  LOOMCYCLE_BASE_URL: "http://loomcycle.internal:8787",
+  LOOMCYCLE_BASE_URL: "https://loomcycle.internal:8787",
   BRIDGE_GATE: "telegram",
   BRIDGE_GATE_AUDIENCE: "https://lc.example",
   BRIDGE_GATE_KEY: "{}",
@@ -71,7 +71,9 @@ describe("config", () => {
   });
 
   it("lets only BRIDGE_DEV leave the secret unset, and never when it sets the webhook", () => {
-    const env = { ...baseEnv, TELEGRAM_BRIDGE_WEBHOOK_SECRET: undefined, BRIDGE_DEV: "1" };
+    // Dev mode is a token-mode bridge's only: a gate refuses it.
+    const tokenMode = { ...baseEnv, BRIDGE_GATE: undefined, BRIDGE_GATE_AUDIENCE: undefined, BRIDGE_GATE_KEY: undefined, LOOMCYCLE_TOKEN: "lct_x" };
+    const env = { ...tokenMode, TELEGRAM_BRIDGE_WEBHOOK_SECRET: undefined, BRIDGE_DEV: "1" };
     expect(problems(env)).toEqual([]);
     expect(
       problems({ ...env, TELEGRAM_BRIDGE_SET_WEBHOOK: "1", TELEGRAM_BRIDGE_PUBLIC_URL: "https://bot.example.com" }).join(),
@@ -365,6 +367,26 @@ describe("markdown to Telegram HTML", () => {
   it("shows a link's target as text, quote and all", () => {
     expect(markdownToHtml("[x](javascript:alert(1))")).toBe("[x](javascript:alert(1))");
     expect(markdownToHtml('[x](https://e.com/"onmouseover=1)')).toBe('x (https://e.com/"onmouseover=1)');
+  });
+
+  it("reads headings and fence lines in their usual forms", () => {
+    expect(markdownToHtml("### Title ###  \nbody")).toBe("<b>Title</b>\nbody");
+    expect(markdownToHtml("# C# notes")).toBe("<b>C# notes</b>");
+    expect(markdownToHtml("####### seven")).toBe("####### seven");
+    expect(markdownToHtml("#nospace")).toBe("#nospace");
+    expect(markdownToHtml("  ```  ts  \nx\n```")).toBe('<pre><code class="language-ts">x</code></pre>');
+    expect(markdownToHtml("```\nx\n```")).toBe("<pre>x</pre>");
+    expect(markdownToHtml("```not a lang\nx")).toBe("```not a lang\nx");
+  });
+
+  // An agent's text is untrusted; a long whitespace run in one line made the
+  // heading pattern backtrack cubically and stall the bridge.
+  it("reads a heading or fence line with a long whitespace run in linear time", () => {
+    const run = "\t".repeat(5000);
+    const t0 = Date.now();
+    expect(markdownToHtml(`# a${run}x`)).toBe(`<b>a${run}x</b>`);
+    expect(markdownToHtml("```" + " ".repeat(50_000) + "!")).toBe("```" + " ".repeat(50_000) + "!");
+    expect(Date.now() - t0).toBeLessThan(250);
   });
 
   it("runs an unclosed fence to the end, so a streamed answer stays valid", () => {

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"net/url"
@@ -144,7 +145,9 @@ func (cs *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if res.Err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, callbackHTML, "Authorization failed", res.Err.Error())
+		// The message carries the query's error_description, which any page can
+		// set by sending the browser here; it goes out as text, not markup.
+		fmt.Fprintf(w, callbackHTML, "Authorization failed", html.EscapeString(res.Err.Error()))
 	} else {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, callbackHTML, "Authorization successful", "You can close this tab and return to the terminal.")

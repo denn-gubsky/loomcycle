@@ -397,3 +397,28 @@ func buildOneTool(t *testing.T, body, baseURL, opID string) (*EndpointTool, []st
 	t.Fatalf("tool local__%s not found in %d generated tools", opID, len(out))
 	return nil, nil, nil
 }
+
+// A path parameter fills one segment. url.PathEscape leaves "." and ".."
+// unchanged, so those values would add a dot segment the upstream (or a proxy
+// in front of it) resolves, moving the call to another route: id=".." turns
+// /api/applications/{id} into /api/applications/.. — the collection. Both are
+// refused before any request is made.
+func TestEndpointTool_DotSegmentPathParamIsRefused(t *testing.T) {
+	for _, v := range []string{"..", "."} {
+		stub := &stubServerHandler{respBody: "ok"}
+		ts := httptest.NewServer(stub)
+		tool, _, _ := buildOneTool(t, minimalSpec, ts.URL, "get_application")
+		in, _ := json.Marshal(map[string]string{"bearer": "x", "id": v})
+		res, err := tool.Execute(context.Background(), in)
+		ts.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError {
+			t.Errorf("id=%q: want a refusal, got %q", v, res.Text)
+		}
+		if stub.gotMethod != "" {
+			t.Errorf("id=%q: the request went out, to path %q", v, stub.gotPath)
+		}
+	}
+}

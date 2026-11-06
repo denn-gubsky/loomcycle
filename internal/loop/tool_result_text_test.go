@@ -398,7 +398,7 @@ func postHookServer(t *testing.T, rewrite func(hooks.ToolResult) *hooks.ToolResu
 	}))
 	t.Cleanup(srv.Close)
 	reg := hooks.NewSet()
-	if _, err := reg.Register(&hooks.Hook{
+	if _, err := reg.Register(&hooks.Hook{OperatorConfig: true,
 		Owner: "test", Name: "post", Phase: hooks.PhasePost,
 		CallbackURL: srv.URL, Tools: []string{"failer"},
 	}); err != nil {

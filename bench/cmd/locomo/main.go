@@ -342,6 +342,7 @@ func doConvert(convs []Conversation, opts options, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "dry-run: would write %d datasets to %s\n", len(convs), opts.out)
 		return nil
 	}
+	// #nosec G301 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	if err := os.MkdirAll(opts.out, 0o755); err != nil {
 		return err
 	}
@@ -379,6 +380,7 @@ func doConvert(convs []Conversation, opts options, stdout io.Writer) error {
 			b.WriteString("\n")
 		}
 		path := filepath.Join(opts.out, conv.ScopeID()+".jsonl")
+		// #nosec G306 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 		if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
 			return err
 		}

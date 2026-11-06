@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/credential/credentialtest"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -45,7 +47,7 @@ func bindingWith(t *testing.T, creds map[string]*time.Time) (credentialBinding, 
 		}
 	}
 	var registered []string
-	return credentialBinding{engine: engine, register: func(v string) { registered = append(registered, v) }}, &registered
+	return credentialBinding{engine: engine, register: func(_ context.Context, tenantID, v string) { registered = append(registered, tenantID+":"+v) }}, &registered
 }
 
 func runCtx() context.Context {
@@ -84,8 +86,8 @@ func TestCredentialBinding_ExpiredProviderKeyFailsInsteadOfTheOperatorKey(t *tes
 	if key, source, _, err := providers.ResolveKeyOrOperator(ctx, "OPENAI_API_KEY", "sk-operator"); err != nil || key != "OPENAI_API_KEY-value" || source != "tenant" {
 		t.Errorf("a live override: key=%q source=%q err=%v; want the tenant's key", key, source, err)
 	}
-	if len(*registered) != 1 || (*registered)[0] != "OPENAI_API_KEY-value" {
-		t.Errorf("registered %d value(s); want only the live override masked", len(*registered))
+	if len(*registered) != 1 || (*registered)[0] != "t:OPENAI_API_KEY-value" {
+		t.Errorf("registered %d value(s); want only the live override masked, charged to the run's tenant", len(*registered))
 	}
 }
 
@@ -219,7 +221,9 @@ func TestBash_ResolvedCredValueRedactedFromOutput(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			b, _ := bindingWith(t, map[string]*time.Time{"GITHUB_TOKEN": nil})
 			rd := redact.New(nil, true)
-			b.register = rd.Register
+			sink := &secretSink{}
+			sink.set(func() *redact.Redactor { return rd })
+			b.register = sink.registerCredential
 			res, err := tc.tool(b).Execute(ctx, cmd)
 			if err != nil {
 				t.Fatal(err)
@@ -236,5 +240,23 @@ func TestBash_ResolvedCredValueRedactedFromOutput(t *testing.T) {
 				t.Errorf("the resolved value survives redaction: %q", stored)
 			}
 		})
+	}
+}
+
+// TestSecretHolder_PinsToTheWalkAMemberRunsIn: a value a walk's member (or a
+// member's sub-agent) resolves is held by the walk's run id too, so it stays
+// masked until the walk, which writes its result last, is over.
+func TestSecretHolder_PinsToTheWalkAMemberRunsIn(t *testing.T) {
+	base := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "t", AgentID: "agent-m", RootRunID: "root-1"})
+	member := store.WithWalkTask(base, store.WalkTask{WalkID: "walk-1", State: "s"})
+	descendant := store.WithWalkLineage(base, store.WalkTask{WalkID: "walk-2", State: "s"})
+	for name, tc := range map[string]struct {
+		ctx  context.Context
+		want string
+	}{"member": {member, "walk-1"}, "member's sub-agent": {descendant, "walk-2"}} {
+		h := secretHolder(tc.ctx, "t")
+		if !slices.Contains(h.Runs, tc.want) || !slices.Contains(h.Runs, "agent-m") || !slices.Contains(h.Runs, "root-1") {
+			t.Errorf("%s: holder runs %v, want the walk %s beside the run's own ids", name, h.Runs, tc.want)
+		}
 	}
 }

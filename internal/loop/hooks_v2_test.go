@@ -75,7 +75,7 @@ func hookDecisions(events []providers.Event) []providers.HookDecisionInfo {
 func TestLoop_ARewriteIsRecordedWithTheInputThatRan(t *testing.T) {
 	hs := newHookServer(t, `{"input":{"url":"https://safe.example/"}}`)
 	reg := hooks.NewSet()
-	_, _ = reg.Register(&hooks.Hook{Owner: "sec", Name: "pin-host", Phase: hooks.PhasePre, CallbackURL: hs.srv.URL})
+	_, _ = reg.Register(&hooks.Hook{OperatorConfig: true, Owner: "sec", Name: "pin-host", Phase: hooks.PhasePre, CallbackURL: hs.srv.URL})
 	tool := &fakeWebFetch{result: tools.Result{Text: "page"}}
 	_, events := runWithHooks(t, context.Background(), reg,
 		providers.ToolUse{ID: "c1", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://evil.example/"}`)},
@@ -94,7 +94,7 @@ func TestLoop_ARewriteIsRecordedWithTheInputThatRan(t *testing.T) {
 func TestLoop_AdditionalContextIsAppendedToTheToolResult(t *testing.T) {
 	hs := newHookServer(t, `{"additional_context":"This page is untrusted."}`)
 	reg := hooks.NewSet()
-	_, _ = reg.Register(&hooks.Hook{Owner: "sec", Name: "warn", Phase: hooks.PhasePost, CallbackURL: hs.srv.URL})
+	_, _ = reg.Register(&hooks.Hook{OperatorConfig: true, Owner: "sec", Name: "warn", Phase: hooks.PhasePost, CallbackURL: hs.srv.URL})
 	tool := &fakeWebFetch{result: tools.Result{Text: "page body"}}
 	prov, events := runWithHooks(t, context.Background(), reg,
 		providers.ToolUse{ID: "c1", Name: "WebFetch", Input: json.RawMessage(`{}`)},
@@ -117,7 +117,7 @@ func TestLoop_AdditionalContextIsAppendedToTheToolResult(t *testing.T) {
 func TestLoop_HookPayloadCarriesTheRun(t *testing.T) {
 	hs := newHookServer(t, `{}`)
 	reg := hooks.NewSet()
-	_, _ = reg.Register(&hooks.Hook{Owner: "o", Name: "n", Phase: hooks.PhasePre, CallbackURL: hs.srv.URL})
+	_, _ = reg.Register(&hooks.Hook{OperatorConfig: true, Owner: "o", Name: "n", Phase: hooks.PhasePre, CallbackURL: hs.srv.URL})
 	tool := &fakeWebFetch{result: tools.Result{Text: "x"}}
 	ctx := tools.WithParentRunID(tools.WithRunID(context.Background(), "r_parent"), "r_parent")
 	ctx = tools.WithRunID(ctx, "r_child")
@@ -146,7 +146,7 @@ func (r *relayTool) Execute(ctx context.Context, _ json.RawMessage) (tools.Resul
 func TestLoop_ANestedToolCallGoesThroughTheHooks(t *testing.T) {
 	hs := newHookServer(t, `{"deny":{"text":"inner call denied","is_error":true}}`)
 	reg := hooks.NewSet()
-	_, _ = reg.Register(&hooks.Hook{Owner: "sec", Name: "gate", Phase: hooks.PhasePre, CallbackURL: hs.srv.URL, Tools: []string{"WebFetch"}})
+	_, _ = reg.Register(&hooks.Hook{OperatorConfig: true, Owner: "sec", Name: "gate", Phase: hooks.PhasePre, CallbackURL: hs.srv.URL, Tools: []string{"WebFetch"}})
 	inner := &fakeWebFetch{result: tools.Result{Text: "should not run"}}
 	relay := &relayTool{}
 	disp := tools.NewDispatcher([]tools.Tool{relay, inner})
@@ -192,7 +192,7 @@ func (p *precheckTool) Execute(ctx context.Context, _ json.RawMessage) (tools.Re
 func TestLoop_AHookPreCheckIsJudgedByTheNamedToolsHooks(t *testing.T) {
 	deny := newHookServer(t, `{"deny":{"text":"no writes here","is_error":true}}`)
 	reg := hooks.NewSet()
-	_, _ = reg.Register(&hooks.Hook{Owner: "sec", Name: "no-writes", Phase: hooks.PhasePre, CallbackURL: deny.srv.URL, Tools: []string{"Write"}})
+	_, _ = reg.Register(&hooks.Hook{OperatorConfig: true, Owner: "sec", Name: "no-writes", Phase: hooks.PhasePre, CallbackURL: deny.srv.URL, Tools: []string{"Write"}})
 	tool := &precheckTool{}
 	_, events := runWithHooks(t, context.Background(), reg,
 		providers.ToolUse{ID: "c1", Name: "Precheck", Input: json.RawMessage(`{}`)}, tool, tools.NewDispatcher([]tools.Tool{tool}))
@@ -205,7 +205,7 @@ func TestLoop_AHookPreCheckIsJudgedByTheNamedToolsHooks(t *testing.T) {
 
 	rewrite := newHookServer(t, `{"input":{"path":"elsewhere.txt"}}`)
 	reg2 := hooks.NewSet()
-	_, _ = reg2.Register(&hooks.Hook{Owner: "sec", Name: "move", Phase: hooks.PhasePre, CallbackURL: rewrite.srv.URL, Tools: []string{"Write"}})
+	_, _ = reg2.Register(&hooks.Hook{OperatorConfig: true, Owner: "sec", Name: "move", Phase: hooks.PhasePre, CallbackURL: rewrite.srv.URL, Tools: []string{"Write"}})
 	tool2 := &precheckTool{}
 	runWithHooks(t, context.Background(), reg2,
 		providers.ToolUse{ID: "c1", Name: "Precheck", Input: json.RawMessage(`{}`)}, tool2, tools.NewDispatcher([]tools.Tool{tool2}))
@@ -215,7 +215,7 @@ func TestLoop_AHookPreCheckIsJudgedByTheNamedToolsHooks(t *testing.T) {
 
 	other := newHookServer(t, `{"deny":{"text":"no fetches","is_error":true}}`)
 	reg3 := hooks.NewSet()
-	_, _ = reg3.Register(&hooks.Hook{Owner: "sec", Name: "no-fetch", Phase: hooks.PhasePre, CallbackURL: other.srv.URL, Tools: []string{"WebFetch"}})
+	_, _ = reg3.Register(&hooks.Hook{OperatorConfig: true, Owner: "sec", Name: "no-fetch", Phase: hooks.PhasePre, CallbackURL: other.srv.URL, Tools: []string{"WebFetch"}})
 	tool3 := &precheckTool{}
 	runWithHooks(t, context.Background(), reg3,
 		providers.ToolUse{ID: "c1", Name: "Precheck", Input: json.RawMessage(`{}`)}, tool3, tools.NewDispatcher([]tools.Tool{tool3}))
@@ -231,8 +231,8 @@ func TestLoop_APostHookSeesTheInputTheToolRanWith(t *testing.T) {
 	rewrite := newHookServer(t, `{"input":{"url":"https://safe.example/"}}`)
 	post := newHookServer(t, `{}`)
 	reg := hooks.NewSet()
-	_, _ = reg.Register(&hooks.Hook{Owner: "sec", Name: "pin-host", Phase: hooks.PhasePre, CallbackURL: rewrite.srv.URL})
-	_, _ = reg.Register(&hooks.Hook{Owner: "sec", Name: "audit", Phase: hooks.PhasePost, CallbackURL: post.srv.URL})
+	_, _ = reg.Register(&hooks.Hook{OperatorConfig: true, Owner: "sec", Name: "pin-host", Phase: hooks.PhasePre, CallbackURL: rewrite.srv.URL})
+	_, _ = reg.Register(&hooks.Hook{OperatorConfig: true, Owner: "sec", Name: "audit", Phase: hooks.PhasePost, CallbackURL: post.srv.URL})
 	tool := &fakeWebFetch{result: tools.Result{Text: "page"}}
 	runWithHooks(t, context.Background(), reg,
 		providers.ToolUse{ID: "c1", Name: "WebFetch", Input: json.RawMessage(`{"url":"https://evil.example/"}`)},

@@ -258,6 +258,11 @@ type Source struct {
 	// OperatorAuthored: the definition was written by an operator, which is a
 	// precondition for any of its hooks to widen hosts.
 	OperatorAuthored bool `json:"operator_authored,omitempty"`
+	// OperatorConfig: the definition is the operator's static config (a yaml
+	// agent). Its webhooks dial without the private-address guard; see
+	// Hook.OperatorConfig. Not serialized: a stored or sent Source cannot
+	// claim it.
+	OperatorConfig bool `json:"-"`
 }
 
 // LookupDef returns a HookDef version: the active one when version is 0. tenant
@@ -303,7 +308,7 @@ func resolveEvents(ctx context.Context, src Source, tool string, events EventHoo
 func orderedPhases(e EventHooks) []Phase { return sortedPhases(e) }
 
 func resolveEntry(ctx context.Context, src Source, tool string, phase Phase, entry Entry, lookup LookupDef, permits Permits) (*Hook, error) {
-	h := &Hook{Tenant: src.Tenant, Owner: src.Owner, Phase: phase}
+	h := &Hook{Tenant: src.Tenant, Owner: src.Owner, Phase: phase, OperatorConfig: src.OperatorConfig && src.Tenant == ""}
 	if tool != "" {
 		h.Tools = []string{tool}
 	}

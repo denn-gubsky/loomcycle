@@ -175,6 +175,7 @@ func (p *Provider) authorize(w http.ResponseWriter, r *http.Request) {
 	back.Set("code", code)
 	back.Set("state", q.Get("state"))
 	u.RawQuery = back.Encode()
+	// #nosec G710 -- a test identity provider: redirecting to the client's redirect_uri is its job
 	http.Redirect(w, r, u.String(), http.StatusFound)
 }
 

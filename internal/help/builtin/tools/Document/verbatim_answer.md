@@ -23,7 +23,10 @@ It looks only at facts (plain document prose is ignored) and needs an embedder.
 ## Returns
 
 Answered: `{answered: true, answer, source, chunk_id, score, confidence,
-judged_at}` — `answer` is the fact's body, `source` its verified quote.
+judged_at, origin}` — `answer` is the fact's body, `source` its verified quote,
+`origin` who wrote it: `operator` (a person, outside a run), `agent_explicit`
+(a run, e.g. through `remember`), or `consolidator` (the memory pass). A fact
+that cites itself is trivially supported, so say whose statement you quote.
 
 Declined: `{answered: false, reason, chunk_id?, score?}`. The reasons:
 

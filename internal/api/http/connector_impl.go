@@ -1319,6 +1319,7 @@ func (s *Server) execBuiltin(ctx context.Context, tool tools.Tool, input json.Ra
 	}
 	d := tools.NewDispatcher(ts)
 	d.SetErrorClassifier(errclassify.CategoryOf)
+	d.SetPanicCounter(s.toolPanics)
 	return d.Call(tools.WithACLRecorder(ctx, s.recordToolACLEvent), tool.Name(), input)
 }
 

@@ -142,6 +142,7 @@ func (s *Server) requestSecure(r *http.Request) bool {
 // LOOMCYCLE_UI_INSECURE_COOKIES (the documented plain-HTTP exception).
 // maxAge 0 is a browser-session cookie, negative deletes it.
 func (s *Server) transportCookie(r *http.Request, name, value string, maxAge int) *http.Cookie {
+	// #nosec G124 -- Secure is dropped only for a plain-HTTP request, which sessionRefusal admits only outside strict mode or with LOOMCYCLE_UI_INSECURE_COOKIES; HttpOnly and SameSite=Strict always hold
 	c := &http.Cookie{Name: name, Value: value, Path: "/", MaxAge: maxAge, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode}
 	if !s.requestSecure(r) {
 		c.Secure = false
@@ -825,6 +826,7 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 // expiredCookie deletes a cookie. A __Host- cookie can only be deleted by a
 // Set-Cookie that is itself Secure.
 func expiredCookie(name string, secure bool) *http.Cookie {
+	// #nosec G124 -- a deletion (MaxAge -1); Secure is set whenever the request is HTTPS or the cookie is the __Host- one
 	return &http.Cookie{Name: name, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode}
 }
 

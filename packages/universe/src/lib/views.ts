@@ -96,13 +96,15 @@ export function parseUniverseView(
 /** viewPath is where a new saved view is filed: under /views/universe, by a
  *  slug of its title plus a short random tail so two views may share a title. */
 export function viewPath(title: string, rand: () => number = Math.random): string {
-  const slug =
-    title
-      .toLowerCase()
-      .normalize("NFKD")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 48) || "view";
+  let slug = title
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, "-");
+  // Every run is one dash after the collapse, so there is at most one at each
+  // end (and no /^-+|-+$/, which backtracks on a long run of dashes).
+  if (slug.startsWith("-")) slug = slug.slice(1);
+  if (slug.endsWith("-")) slug = slug.slice(0, -1);
+  slug = slug.slice(0, 48) || "view";
   const tail = Math.floor(rand() * 0xffff)
     .toString(16)
     .padStart(4, "0");

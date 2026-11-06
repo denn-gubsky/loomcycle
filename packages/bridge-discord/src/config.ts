@@ -46,7 +46,7 @@ function apiBaseUrl(reader: EnvReader): string {
   if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) {
     reader.problems.push("DISCORD_BRIDGE_API_BASE_URL must be https (http only to localhost)");
   }
-  return raw.replace(/\/+$/, "");
+  return withoutTrailingSlashes(raw);
 }
 
 function guilds(reader: EnvReader, name: string): Set<string> {
@@ -100,4 +100,13 @@ export function loadConfig(env: Env = process.env): DiscordConfig {
   };
   reader.check("discord-bridge");
   return cfg;
+}
+
+/** withoutTrailingSlashes drops a URL's trailing slashes. A loop, not
+ *  /\/+$/, which backtracks quadratically on a long run of slashes that is
+ *  not at the end. */
+function withoutTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s[end - 1] === "/") end--;
+  return s.slice(0, end);
 }

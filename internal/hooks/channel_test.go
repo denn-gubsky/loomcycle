@@ -10,7 +10,9 @@ import (
 )
 
 func channelHook(url string) *Hook {
-	return &Hook{Owner: ChannelOwner("inbox"), Name: "screen", Phase: PhaseChannelPublish, CallbackURL: url}
+	// Its fake callback is on loopback, which only an operator-config hook
+	// may dial (as mustRegister marks one).
+	return &Hook{OperatorConfig: true, Owner: ChannelOwner("inbox"), Name: "screen", Phase: PhaseChannelPublish, CallbackURL: url}
 }
 
 func channelCall() ChannelHookCall {

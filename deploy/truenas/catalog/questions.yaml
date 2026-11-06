@@ -431,6 +431,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE
+            label: LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE
+            description: 'Private-host allowlist mode. any (the default): host-name and CIDR entries. cidr_only: CIDR entries only, so no private address is admitted on the say-so of a DNS answer; a host-name entry (or an IP written as a host entry) fails startup, as does any other value. (example: cidr_only)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE
             label: LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE
             description: 'Caller-authoritative mode for HTTP/WebFetch host allowlist. When unset (default): caller''s per-request allowed_hosts can ONLY narrow the operator''s static list. Trust model: operator owns the host policy; caller fine-tunes per-call. When =1: caller''s allowed_hosts is the SOLE policy. Operator''s static list becomes a fallback for runs that don''t carry their own list. Trust model: caller (the appli…'
@@ -500,6 +506,12 @@ questions:
           - variable: LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT
             label: LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT
             description: '(example: 2)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_HELPER_WRAPPER
+            label: LOOMCYCLE_HELPER_WRAPPER
+            description: Confinement for the helper commands (transcription.ocr.rasterize, transcription.stt.media, speech.encode). Without it they run as the loomcycle user and can read what it can. Words split like a helper command (no shell, no placeholders); the helper's program and arguments are appended as argv. The helpers write under the inbox root (the volume marked dynamic_root) and TMPDIR (the /v1/audio routes…
             schema:
               type: string
               default: ""

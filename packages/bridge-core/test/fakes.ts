@@ -1,9 +1,34 @@
 // Test doubles for the two edges: a scripted loomcycle and a recording platform.
 
-import type { AgentEvent, ContinueOptions, MintedUserToken, RunOptions } from "@loomcycle/client";
+import type { AgentEvent, ContinueOptions, MintedUserToken, RunOptions, SpeechInfo, WhoamiResponse } from "@loomcycle/client";
 
 import type { CanonicalCard } from "../src/cards.js";
 import type { AdminClient, BridgePort, Logger, OutboundActivity, RunClient, StreamLike } from "../src/ports.js";
+import type { VoiceCapabilities, VoiceClient, VoiceIn, VoiceOut, VoicePort } from "../src/voice.js";
+
+/** What the fake loomcycle's speech side answers, when a test turns it on. */
+export interface FakeSpeech {
+  surfaces: { speech: boolean; transcription: boolean };
+  info: SpeechInfo;
+  transcript: string;
+  language?: string;
+  /** Fail transcribe calls with this error, in order, then succeed. */
+  transcribeErrors: unknown[];
+}
+
+export function fakeSpeech(over: Partial<FakeSpeech> = {}): FakeSpeech {
+  return {
+    surfaces: { speech: true, transcription: true },
+    info: {
+      speech: { enabled: true, default_language: "en", languages: { en: { voices: ["v1"], default_voice: "v1" } }, formats: ["wav", "ogg"] },
+      transcription: { enabled: true },
+    },
+    transcript: "what is the weather",
+    language: "en",
+    transcribeErrors: [],
+    ...over,
+  };
+}
 
 /** A push-driven async iterable: the test feeds the events a run would stream. */
 export class EventChannel<T> implements AsyncIterable<T> {
@@ -71,7 +96,10 @@ export class FakeLoomcycle {
     return this.calls.filter((c) => c.method === method);
   }
 
-  client = (token: string): RunClient & AdminClient => {
+  /** Set to give the client the speech calls (RFC GA). */
+  speech?: FakeSpeech;
+
+  client = (token: string): RunClient & AdminClient & Partial<VoiceClient> => {
     const rec = (method: string, args: unknown[]) => {
       this.calls.push({ method, token, args });
       const f = this.failNext[method];
@@ -90,7 +118,31 @@ export class FakeLoomcycle {
       this.runs.push({ token, kind, opts, events });
       return events;
     };
+    const sp = this.speech;
+    const voice: Partial<VoiceClient> = sp
+      ? {
+          whoami: async () => {
+            rec("whoami", []);
+            return { tenant_id: "acme", subject: "x", scopes: [], is_admin: false, legacy: false, effective: { surfaces: { ...sp.surfaces } } } as unknown as WhoamiResponse;
+          },
+          speechInfo: async () => {
+            rec("speechInfo", []);
+            return sp.info;
+          },
+          transcribe: async (file, opts) => {
+            rec("transcribe", [file, opts]);
+            const e = sp.transcribeErrors.shift();
+            if (e) throw e;
+            return { text: sp.transcript, ...(sp.language ? { language: sp.language } : {}) };
+          },
+          speech: async (input, opts) => {
+            rec("speech", [input, opts]);
+            return { bytes: new Uint8Array([1, 2, 3]), contentType: opts?.format === "ogg" ? "audio/ogg" : "audio/wav", seconds: 2.5 };
+          },
+        }
+      : {};
     return {
+      ...voice,
       runStreaming: (opts) => start("start", opts),
       continueSession: (opts) => start("continue", opts),
       sendRunInput: async (runId, text) => {
@@ -192,3 +244,34 @@ export async function waitFor(cond: () => boolean, what = "condition"): Promise<
 
 /** settle lets queued promise callbacks run. */
 export const settle = () => new Promise((r) => setTimeout(r, 10));
+
+/** A platform's voice side that records what it was asked to do. */
+export class FakeVoicePort implements VoicePort<FakeRef> {
+  readonly downloads: VoiceIn[] = [];
+  readonly voices: Array<{ ref: FakeRef; audio: VoiceOut }> = [];
+  readonly indications: string[] = [];
+  /** Set to make sendVoice throw this. */
+  sendError?: unknown;
+  sendVoice?: (ref: FakeRef, audio: VoiceOut) => Promise<void>;
+
+  constructor(
+    readonly capabilities: VoiceCapabilities = { voiceFormats: ["ogg", "mp3"], out: "native", maxUploadBytes: 1_000_000 },
+    opts: { canSend?: boolean } = {},
+  ) {
+    if (opts.canSend !== false) {
+      this.sendVoice = async (ref, audio) => {
+        if (this.sendError) throw this.sendError;
+        this.voices.push({ ref, audio });
+      };
+    }
+  }
+
+  async download(v: VoiceIn): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
+    this.downloads.push(v);
+    return { bytes: new Uint8Array([9, 9, 9]), mime: v.mime ?? "audio/ogg", name: "voice.ogg" };
+  }
+
+  async indicate(_ref: FakeRef, what: "listening" | "speaking"): Promise<void> {
+    this.indications.push(what);
+  }
+}

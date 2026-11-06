@@ -31,6 +31,9 @@ edges_only_remote, excluded_unkeyed_local, excluded_unkeyed_remote}`.
 - Each of these is a list of `{natural_key, title}`. `same` counts chunks
   whose content matches; `edges_only_*` count links present on one side;
   `excluded_unkeyed_*` count chunks with no key, which neither op can carry.
+- `conflicts` (only when there are any) — keys only the peer has in this
+  document that a chunk of ANOTHER local document already holds: a `pull`
+  leaves that chunk alone and reports the key instead of creating it.
 
 ## Errors
 

@@ -31,6 +31,11 @@ export interface IntegrationEditModalProps {
   mode: ModalMode;
   forkSource?: DefRow;
   existingNames?: string[];
+  /** The caller may declare a document source trust: asserted (an admin, or a
+   *  tenant operator). Anyone else never sees the field, and every source they
+   *  save — a fork of a trusted one included — is sent as proposed, which the
+   *  server would otherwise require of them. */
+  canDeclareTrust?: boolean;
   onClose: () => void;
   onSaved: (row: DefRow) => void;
 }
@@ -135,6 +140,9 @@ export interface DocumentSourceFormState {
   apiKeyEnv: string;
   tenancyKind: "" | "key_per_tenant";
   envPattern: string;
+  /** How a sync pull files the peer's statements: proposed (for review) or
+   *  asserted. Only the operator may declare asserted. */
+  trust: "proposed" | "asserted";
 }
 
 export default function IntegrationEditModal({
@@ -142,6 +150,7 @@ export default function IntegrationEditModal({
   mode,
   forkSource,
   existingNames,
+  canDeclareTrust = false,
   onClose,
   onSaved,
 }: IntegrationEditModalProps) {
@@ -228,7 +237,7 @@ export default function IntegrationEditModal({
       case "memory-backend":
         return buildMemoryBackendOverlay(memBackend, description);
       case "document-source":
-        return buildDocumentSourceOverlay(docSource, description);
+        return buildDocumentSourceOverlay(docSource, description, canDeclareTrust);
     }
   };
 
@@ -333,6 +342,7 @@ export default function IntegrationEditModal({
             state={docSource}
             set={setDocSource}
             submitting={submitting}
+            canDeclareTrust={canDeclareTrust}
           />
         )}
 
@@ -1913,8 +1923,9 @@ function DocumentSourceFields(props: {
   state: DocumentSourceFormState;
   set: (v: DocumentSourceFormState) => void;
   submitting: boolean;
+  canDeclareTrust: boolean;
 }) {
-  const { state: s, set, submitting } = props;
+  const { state: s, set, submitting, canDeclareTrust } = props;
   const patch = (p: Partial<DocumentSourceFormState>) => set({ ...s, ...p });
   return (
     <>
@@ -1994,6 +2005,29 @@ function DocumentSourceFields(props: {
           />
         </div>
       )}
+      {canDeclareTrust && (
+        <div className="library-form-row">
+          <label htmlFor="int-ds-trust">
+            trust
+            <span className="library-modal-field-hint">
+              {" "}
+              — proposed: a pull files the peer&apos;s statements for review here;
+              asserted: they hold as the peer asserts them
+            </span>
+          </label>
+          <select
+            id="int-ds-trust"
+            value={s.trust}
+            onChange={(e) =>
+              patch({ trust: e.target.value as DocumentSourceFormState["trust"] })
+            }
+            disabled={submitting}
+          >
+            <option value="proposed">proposed (default)</option>
+            <option value="asserted">asserted</option>
+          </select>
+        </div>
+      )}
     </>
   );
 }
@@ -2008,6 +2042,7 @@ export function initDocumentSource(def: unknown): DocumentSourceFormState {
     tenancyKind:
       pickString(tenancy, "kind") === "key_per_tenant" ? "key_per_tenant" : "",
     envPattern: pickString(tenancy, "env_pattern"),
+    trust: pickString(def, "trust") === "asserted" ? "asserted" : "proposed",
   };
 }
 
@@ -2034,6 +2069,7 @@ export function validateDocumentSource(s: DocumentSourceFormState): string | nul
 export function buildDocumentSourceOverlay(
   s: DocumentSourceFormState,
   description: string,
+  canDeclareTrust = false,
 ): Record<string, unknown> {
   const ov: Record<string, unknown> = {};
   if (description.trim()) ov.description = description.trim();
@@ -2046,6 +2082,10 @@ export function buildDocumentSourceOverlay(
     if (s.envPattern.trim()) ten.env_pattern = s.envPattern.trim();
     ov.tenancy_strategy = ten;
   }
+  // Always explicit: a fork inherits its parent's trust, so a caller who may
+  // not declare asserted forks a trusted source as proposed rather than being
+  // refused.
+  ov.trust = canDeclareTrust ? s.trust : "proposed";
   return ov;
 }
 

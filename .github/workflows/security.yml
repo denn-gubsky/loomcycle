@@ -188,16 +188,16 @@ jobs:
           sarif_file: ${{ matrix.dir }}/gosec-upload.sarif
           category: gosec-${{ matrix.module }}
 
-      # A gate on high severity, last so the report and upload above still
-      # run when it fails. The report covers medium too, but
-      # its ~120 medium findings (mostly SQL built from fixed fragments in the
-      # store layer) are not triaged, so only high severity fails a PR. Each
-      # accepted high finding carries a `#nosec <rule> -- <reason>` at its line.
-      - name: gosec gate (high severity)
+      # A gate on medium severity and up, the same findings the report
+      # lists, last so the report and upload above still run when it fails.
+      # Every accepted finding carries a `#nosec <rule> -- <reason>` at its
+      # line; a new finding is fixed or gets its own reason in review.
+      # docs/SECURITY-TRIAGE.md records the triage that brought this to zero.
+      - name: gosec gate (medium severity)
         run: |
           export PATH="$(go env GOPATH)/bin:$PATH"
           gosec -quiet \
-            -confidence high -severity high \
+            -confidence high -severity medium \
             -exclude-generated \
             -exclude-dir=vendor -exclude-dir=node_modules -exclude-dir=testdata \
             ./...

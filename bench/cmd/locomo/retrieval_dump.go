@@ -199,5 +199,6 @@ func trimForDump(s string) string {
 // openRetrievalDump opens the dump file for append across instances, since the answer
 // axis walks conversations one at a time and each contributes its own rows.
 func openRetrievalDump(path string) (*os.File, error) {
+	// #nosec G302 G304 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 }

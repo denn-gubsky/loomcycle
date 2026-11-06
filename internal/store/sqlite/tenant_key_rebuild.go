@@ -262,6 +262,7 @@ func rebuildTable(ctx context.Context, tx *sql.Tx, table string, schema []string
 		return 0, err
 	}
 	cols := `"` + strings.Join(oldCols, `", "`) + `"`
+	// #nosec G202 -- table is a schema table this migration names, tmp derives from it, and cols are its pragma_table_info names; all are quoted
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO "`+tmp+`" (`+cols+`) SELECT `+cols+` FROM "`+table+`"`)
 	if err != nil {

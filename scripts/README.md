@@ -147,6 +147,29 @@ A docs-only pull request runs nothing but this job. On `main` every job runs.
 GITHUB_EVENT_NAME=pull_request CI_DIFF_BASE=abc123^ CI_DIFF_HEAD=abc123 scripts/ci/changes.sh
 ```
 
+## `release/third-party-licenses.sh` — the license bundle in release archives
+
+Every release archive carries `THIRD_PARTY_LICENSES`: the module and version of
+every third-party Go module linked into the binary, their license and notice
+files, then the name, version and license of every npm package bundled into the
+embedded Web UI. `.goreleaser.yaml` runs the script as a `before` hook into
+`bin/release/` (gitignored); the CI `go` job runs its Go half on every Go change.
+
+```sh
+make build-ui                                                     # the Web UI half reads its npm installs
+scripts/release/third-party-licenses.sh bin/release/THIRD_PARTY_LICENSES
+scripts/release/third-party-licenses.sh --go-only /tmp/THIRD_PARTY_LICENSES
+```
+
+The Go half runs `go-licenses save` (pinned in the script; dependabot does not
+see it) for each platform the release builds and fails when a dependency's
+license cannot be classified: such a dependency needs a decision before it
+ships, and CI says so on its pull request. `go-licenses report` is not used
+because it looks up every license's URL online; `save` reads only the module
+cache. The Web UI half runs the Vite build once more into a scratch directory
+with Vite's `build.license` notice turned on, so `internal/webui/dist` stays
+exactly what the binary embeds.
+
 ## `webui-bundle` — releasing a Web UI bundle
 
 The Web UI can ship without a new binary (RFC FE). A server keeps the UI it was

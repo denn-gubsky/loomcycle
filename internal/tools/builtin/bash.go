@@ -150,6 +150,7 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// #nosec G204 -- running the model's command is this tool's purpose; it is opt-in (LOOMCYCLE_BASH_ENABLED), bound to the volume's cwd, with a scrubbed env, bounded output and a timeout
 	cmd := exec.CommandContext(runCtx, "/bin/sh", "-c", args.Command)
 	cmd.Dir = cwd
 	procgroup.Bind(cmd)
