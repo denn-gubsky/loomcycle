@@ -11,9 +11,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"time"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
+	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/sigv1"
 )
 
@@ -96,13 +99,14 @@ type signing struct {
 // non-JSON response bodies, and ctx-deadline expiry. All of these
 // flow into the Dispatcher's fail-mode branch.
 func (c *webhookClient) post(ctx context.Context, hc *http.Client, url string, headers map[string]string, sig *signing, body, out any) error {
+	target := logTarget(url)
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return callError("the hook's payload could not be encoded", fmt.Errorf("marshal hook payload: %w", err))
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
 	if err != nil {
-		return callError("the hook's callback URL is invalid", fmt.Errorf("build hook request: %w", err))
+		return callError("the hook's callback URL is invalid", fmt.Errorf("build hook request %s: %w", target, withoutURL(err)))
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -124,17 +128,17 @@ func (c *webhookClient) post(ctx context.Context, hc *http.Client, url string, h
 		case errors.Is(err, context.Canceled):
 			category = "the hook call was cancelled"
 		}
-		return callError(category, fmt.Errorf("hook transport: %w", err))
+		return callError(category, fmt.Errorf("hook transport %s: %w", target, withoutURL(err)))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Read up to 1 KiB of the body for diagnostics; webhook errors
-		// are operator-side bugs and the response usually carries a
-		// useful explanation.
+		// A short snippet of the body for diagnostics (the response usually
+		// says what went wrong), redacted first: a receiver can echo the
+		// credential it was sent.
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return callError(fmt.Sprintf("the hook returned status %d", resp.StatusCode),
-			fmt.Errorf("hook %s: %d %s", url, resp.StatusCode, bytes.TrimSpace(errBody)))
+			fmt.Errorf("hook %s: %d %s", target, resp.StatusCode, logSnippet(errBody)))
 	}
 
 	// 204 → no rewrite. Empty body with 200 → also no rewrite.
@@ -206,10 +210,11 @@ func formatUUID(b [16]byte, version byte) string {
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }
 
-// hookCallError is a failed webhook call. Error() is the full detail, for the
-// server log: it can name the callback URL — whose query string may carry a
-// token — and quote up to 1 KiB of the callback's response body. category is
-// the short, fixed text a run's viewer is shown instead (see DecisionReason).
+// hookCallError is a failed webhook call. Error() is the detail for the server
+// log: the callback's scheme and host (never its path or query, which can be
+// the secret — an incoming-webhook URL is one) and at most a short, redacted
+// snippet of its response body. category is the short, fixed text a run's
+// viewer is shown instead (see DecisionReason).
 type hookCallError struct {
 	category string
 	err      error
@@ -231,4 +236,41 @@ func DecisionReason(err error) string {
 		return ce.category
 	}
 	return err.Error()
+}
+
+// logSnippetBytes bounds the response text a failure log line quotes.
+const logSnippetBytes = 256
+
+// logTarget is how a failure names the callback: scheme and host only.
+func logTarget(raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "(callback URL)"
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// withoutURL drops the URL net/http quotes in its errors (url.Error prints
+// the whole URL), keeping the operation and the cause for errors.Is.
+func withoutURL(err error) error {
+	var ue *neturl.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s: %w", ue.Op, ue.Err)
+	}
+	return err
+}
+
+// logSnippet is a response body as a log line may quote it: redacted by the
+// credential-shape patterns BEFORE it is cut (a cut secret would no longer
+// match), then at most logSnippetBytes, ending on a whole rune.
+func logSnippet(b []byte) string {
+	s := redact.New(nil, true).String(string(bytes.TrimSpace(b)))
+	if len(s) > logSnippetBytes {
+		cut := logSnippetBytes
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "…"
+	}
+	return s
 }
