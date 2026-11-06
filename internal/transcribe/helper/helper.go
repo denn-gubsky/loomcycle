@@ -242,7 +242,7 @@ func ffmpegDefaults(argv []string) []string {
 		return argv
 	}
 	rest := argv[1:]
-	out := append(make([]string, 0, len(argv)+6), argv[0])
+	out := []string{argv[0]}
 	if !slices.Contains(rest, "-nostdin") {
 		out = append(out, "-nostdin")
 	}
