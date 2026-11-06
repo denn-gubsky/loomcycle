@@ -431,7 +431,12 @@ func (b *boot) startRunSweepers() {
 		// fine — the mem sweep then reclaims base memory + dirents only. Typed-nil
 		// guard: only assign the interface field from a non-nil pointer.
 		if sqlMemMgr != nil {
-			rCfg.SQLMem = sqlMemMgr
+			// The document plane's view: the one statement the sweeper writes
+			// (the archival span snapshot) updates chunk_memory_meta, a Document
+			// table, which lives on that plane (its own schema on postgres, its own
+			// file on sqlite). Listing, export and drop cover the whole scope from
+			// either view.
+			rCfg.SQLMem = sqlMemMgr.DocPlane()
 			// The content prune needs the Document tool, which owns the chunk cascade —
 			// the family stays off without it, so a deployment with no SQL Memory is
 			// unaffected. Same typed-nil discipline as the interface assignments around it.
