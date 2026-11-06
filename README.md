@@ -201,17 +201,18 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.142.0) lets people talk to an agent through the chat
-bridges by voice, and ships the runtime-integrity line from the 2026-11-04
-re-assessment: a tamper-evident audit trail in the store, documents SQL Memory
-cannot reach, bounded extraction, truthful fact provenance, safer bridges,
-security headers and signed releases. Read its upgrade notes in
-[`REVISIONS.md`](REVISIONS.md) first: a gated deployment needs
-`LOOMCYCLE_SECRET_KEY`, and SQLite SQL Memory should be backed up before the
-upgrade.
+The most recent line (v1.143.0) lets loomcycle mount remote MCP servers that
+sign in with OAuth: an OAuth credential is connected once by device-code sign-in,
+refreshed by the runtime and sent as `Bearer $oauth:<name>`. Documents gain a
+duplicate finder that proposes copies for review, and a provider's vendor key now
+goes only to that vendor's API. Read its upgrade notes in
+[`REVISIONS.md`](REVISIONS.md): a keyless provider pointed at a non-vendor host
+now sends no key.
 
-Before it, v1.141.0 let a bridge user's token be granted the speech routes and
-opened SQLite scopes in defensive mode. See [`REVISIONS.md`](REVISIONS.md).
+Before it, v1.142.0 let people talk to an agent through the chat bridges by voice
+and shipped the runtime-integrity line: a tamper-evident audit trail, documents SQL
+Memory cannot reach, bounded extraction and signed releases. See
+[`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
 recordings into timed transcripts through a whisper server, and Teams captions

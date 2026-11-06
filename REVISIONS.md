@@ -8,6 +8,54 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.143.0
+
+*Remote MCP servers that sign in with OAuth can now be mounted from inside loomcycle: an OAuth credential is connected once by device-code sign-in, refreshed by the runtime, and sent as `Bearer $oauth:<name>`. Documents gain a duplicate finder that proposes "this is a copy of that" for review. And a provider's vendor key now goes only to that vendor's API.*
+
+The v1.143 line: #2437 to #2445.
+- `@loomcycle/client` 1.143.0: `findDuplicates()` (Document `find_duplicates`). The Python adapter moves to 1.143.0 with `find_duplicates()`.
+- No migration.
+
+### Upgrade notes
+
+- **A provider keyless toward a non-vendor host now sends no key (#2439).**
+  - A provider on a vendor driver (`openai`, `deepseek`, `anthropic`, `gemini`, `ollama`) that names no `api_key_env` and whose `base_url` is not that vendor's API no longer uses the vendor key name (`OPENAI_API_KEY` and so on). It sends no key, and a tenant's stored key of that name is no longer looked up for it.
+  - If such a provider (a proxy, vLLM, llama.cpp, a self-hosted speech server) needs a key, name it with `api_key_env`. A boot `Info` line names each provider this applies to.
+  - The memory embedder's per-id env key fallback is likewise sent only to that vendor's endpoint.
+- **Boot now reports two deployment misconfigurations (#2441).** Nothing stops; the log says what to fix.
+  - When the SQL Memory database does not grant `CONNECT` to `PUBLIC`, boot logs an Error with `GRANT CONNECT ON DATABASE "<db>" TO PUBLIC;`. A scope refused a connection names the same fix in its error.
+  - When the runtime user cannot write to `dynamic_root`, boot logs an Error with the path and the `chown`.
+
+### OAuth credentials for MCP servers (#2445, RFC GB P1)
+
+- **A new credential kind, `usage: oauth`.** Create it with the protected resource's URL. loomcycle discovers the authorization server (RFC 9728, then RFC 8414) and registers itself dynamically (RFC 7591).
+  - `oauth_connect_start` returns a user code and a link; the account owner approves it once (RFC 8628 device code). `oauth_connect_status` and `oauth_disconnect` complete the set.
+  - These ops are refused inside a run: a model never starts a sign-in. A tenant credential is connected by a tenant operator, a user credential by its own user, an agent credential by an admin.
+  - `allowed_urls` defaults to the resource itself.
+- **Use it as `Authorization: Bearer $oauth:<name>`** in an MCP server's headers, an A2A peer or a hook webhook.
+  - The access token is refreshed before it expires. One refresh runs at a time across all replicas, and a rotated refresh token is saved before the new access token is used.
+  - A revoked or expired grant turns the credential `needs_reauth`, with an audit event; reconnect to restore it.
+  - Tokens never appear in logs, tool results, transcripts, audit events or snapshots.
+- **A reference is never sent as written.** Before this release a header holding `$oauth:<name>` went out literally, and a webhook payload could name one; both are refused now.
+- **Not yet:** the Web UI "Connect account" button, typed adapter methods (use `POST /v1/_credentialdef`, the MCP `credentialdef` tool or gRPC), the MCP client's retry after a 401, and snapshots carrying OAuth credential settings (a restore warns that the credential is missing).
+- See `docs/CREDENTIALS.md`, "Connecting through OAuth".
+
+### Duplicate documents (#2444, RFC GB A1)
+
+- **`Document op=find_duplicates`** over a path or a list of documents (up to 5,000).
+  - **Same text:** the documents' normalised text hashes match (confidence 1.0).
+  - **Same title:** the titles match after stripping copy markers (`Copy of`, `Копия`, `Kopie von`, `Copie de`, ` (1)`–` (99)`, ` - Copy`), and the documents are the same kind (confidence 0.7).
+  - It reports by default. With `propose: true` it files `duplicate_of` statements, copy to original, for review. It skips any pair that already has one in either direction, rejected ones included, and never merges, hides or deletes anything.
+- **`duplicate_of`** joins the seed relation vocabulary under `alternate_of`, with inverse `duplicated_by` and a `basis` qualifier (`sha256` | `title`).
+
+### Smaller changes
+
+- **Speech-to-text languages (#2443).** `transcription.stt.languages` lists the languages a deployment takes; a request in another language is refused (`unsupported_language`), and `GET /v1/_speech` publishes the list.
+- **SQL Memory help (#2440).** The help agents read now says `?` placeholders on SQLite and `$1, $2, …` on PostgreSQL, where `?` is a syntax error.
+- **Docs (#2437).** SECURITY.md's threat model covers the post-1.0 surfaces: sign-in gates, access control, members, erasure, the audit trail, documents, transcription and the bridges.
+- **Cloud template (#2442).** The cloud deployment's Ollama address is on the cloud's own tailnet.
+- **Tests (#2438).** A lane test gets room under `-race`.
+
 ## What's in v1.142.0
 
 *People can talk to an agent through the chat bridges by voice: Telegram and Discord voice notes, Slack clips and Teams audio files are transcribed in, and replies can be spoken back. And the runtime-integrity line from the 2026-11-04 re-assessment ships whole: a tamper-evident audit trail in the store, documents that SQL Memory cannot reach, bounded extraction, facts that record who really made them, bridges that refuse unsafe setups, security headers, a bounded redactor, confined helpers, and signed releases.*
