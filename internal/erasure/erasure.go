@@ -438,6 +438,17 @@ const retainedUsageLedger = "retained by design: cost rows are accounting record
 	"linkage rather than destroy the totals, which is a row merge (usage_archive keys user_id " +
 	"in its primary key) and is not implemented yet."
 
+// retainedAuditChain says what the audit trail keeps about an erased subject
+// and why it stays.
+const retainedAuditChain = "retained by design: the audit trail (the store-backed, " +
+	"hash-chained audit stream, and the JSONL file when LOOMCYCLE_AUDIT_LOG_PATH is set) " +
+	"keeps the records that name this subject as actor or target — sign-ins and failed " +
+	"sign-ins with their gate and source address, token mints and revocations, approvals, " +
+	"access-rule changes and denials, and this erasure's own records — never a credential or " +
+	"content. Each row is signed into a chain whose verification breaks if any row is removed " +
+	"or altered, and they are the evidence of who did what, this erasure included, so no " +
+	"erasure removes them. They age out only through LOOMCYCLE_AUDIT_RETENTION_DAYS."
+
 // sqlScopeTenant maps the raw principal tenant onto SQL Memory's spelling.
 //
 // The planes canonicalize differently and this catches out every caller that
@@ -946,6 +957,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	}
 
 	res.Retained["usage_ledger"] = retainedUsageLedger
+	res.Retained["audit_chain"] = retainedAuditChain
 	if res.Residue.Rows > 0 {
 		res.Retained["tier3_residue"] = fmt.Sprintf(
 			"%d fact(s) about this subject live in scope(s) they do not own (%s). They are not "+

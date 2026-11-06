@@ -171,6 +171,10 @@ var layers = []layer{
 		// Persistence and the run state kept on it.
 		name: "L3 storage",
 		subsystems: []string{
+			// The store-backed audit chain (RFC FZ Part E): signs, verifies
+			// and prunes rows the store keeps. Package audit (the event and
+			// the file sink) stays in L0 so everything may record to it.
+			"internal/auditchain",
 			"internal/awaited",
 			"internal/channels",
 			"internal/coord",
@@ -291,6 +295,7 @@ var allowedSideways = []subsystemEdge{
 
 	// L3: store is the base of the layer; coord sits on it, and the run-state
 	// services sit on both.
+	{"internal/auditchain", "internal/store"},
 	{"internal/awaited", "internal/store"},
 	{"internal/channels", "internal/coord"},
 	{"internal/channels", "internal/store"},

@@ -55,7 +55,7 @@ var (
 	runScopes        = []string{"own", "tenant"}
 	gatewayKinds     = []string{"chat", "embeddings", "decide", "speech", "transcription"}
 	principalKinds   = []string{"user", "group", "token", "scim"}
-	runtimeAreas     = []string{"pause", "snapshot", "limits", "retention", "erasure", "usage", "routing", "events", "config", "tenants", "metrics"}
+	runtimeAreas     = []string{"pause", "snapshot", "limits", "retention", "erasure", "usage", "routing", "events", "audit", "config", "tenants", "metrics"}
 	// defFamilies are the definition families a rule may name under `def:`.
 	// `acl` and `group` are the RFC EY families themselves, so authoring an
 	// ACL is an ACL decision like any other.

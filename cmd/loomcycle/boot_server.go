@@ -285,8 +285,12 @@ func (b *boot) openSQLMemory() {
 		if smErr != nil {
 			fatal("sqlmem: opening SQL Memory failed", "err", smErr)
 		}
-		// Audit sink: reuse the operator audit log file when configured (the
+		// Audit sink: the operator audit log file when configured (the
 		// records carry a distinct action=sql_query/sql_exec), else NopSink.
+		// File only, never the store-backed chain: these are per-statement
+		// run telemetry at query rate, and on the chain every SQL Memory
+		// statement of a tenant would queue behind that tenant's head lock
+		// (on SQLite, behind the one writer).
 		var sqlAudit audit.Sink = audit.NopSink{}
 		if cfg.Env.AuditLogPath != "" {
 			fs, aerr := audit.NewFileSink(cfg.Env.AuditLogPath)

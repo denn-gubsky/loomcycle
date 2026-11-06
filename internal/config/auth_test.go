@@ -115,6 +115,8 @@ func TestLoad_StrictWithoutGateFailsTheLoad(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "interactive gate") {
 		t.Fatalf("load err = %v, want the strict lock-out refusal", err)
 	}
+	// Strict mode turns the signed audit stream on, which needs the key.
+	t.Setenv("LOOMCYCLE_SECRET_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	cfg, err := LoadLayers(Layer{Name: "auth.yaml", Data: []byte("auth:\n  mode: strict\n  session: {idle: 1h}\n  gates:\n    paste: {kind: token}\n")})
 	if err != nil {
 		t.Fatalf("load: %v", err)

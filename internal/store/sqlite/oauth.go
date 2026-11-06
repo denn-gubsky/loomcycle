@@ -38,6 +38,10 @@ func (s *Store) OAuthFamilyRevoke(ctx context.Context, familyID, reason string, 
 	return sqlshared.OAuthFamilyRevoke(ctx, s.shared(), familyID, reason, at)
 }
 
+func (s *Store) OAuthFamilyRevokeForReuse(ctx context.Context, familyID, reason string, at time.Time) (bool, error) {
+	return sqlshared.OAuthFamilyRevokeForReuse(ctx, s.shared(), familyID, reason, at)
+}
+
 func (s *Store) OAuthFamilyRevokeClient(ctx context.Context, clientID, reason string, at time.Time) ([]string, error) {
 	return sqlshared.OAuthFamilyRevokeClient(ctx, s.shared(), clientID, reason, at)
 }

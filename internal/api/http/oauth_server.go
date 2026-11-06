@@ -41,6 +41,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlshared"
 )
 
 const (
@@ -65,8 +66,8 @@ const (
 
 // Refusal reasons for a family, in its row and the audit record.
 const (
-	oauthRevokeCodeReuse      = "code_reuse"
-	oauthRevokeRefreshReuse   = "refresh_reuse"
+	oauthRevokeCodeReuse      = sqlshared.OAuthReuseCode
+	oauthRevokeRefreshReuse   = sqlshared.OAuthReuseRefresh
 	oauthRevokeClientMismatch = "client_mismatch"
 	oauthRevokeByApp          = "revoked_by_app"
 	oauthRevokeClientRetired  = "client_retired"
@@ -535,8 +536,15 @@ func (s *Server) oauthCodeGrant(w http.ResponseWriter, r *http.Request, f map[st
 	if !first {
 		// A replayed code: whoever has it is not (only) the app. End the
 		// sign-in it produced, on every replica.
-		s.revokeAppFamily(ctx, code.ClientID, code.FamilyID, oauthRevokeCodeReuse)
-		s.recordAuthEvent(audit.Event{Action: "oauth_code_reuse", TargetTenant: code.TenantID, TargetSubject: code.Subject,
+		// The alarm once — on the first reuse recorded on the sign-in, even
+		// if it had already ended for another reason; a repeat of the same
+		// stale code is an observation, queued, so replaying it in a loop
+		// cannot hold the tenant's audit chain.
+		action := "oauth_code_reuse"
+		if !s.revokeAppFamilyForReuse(ctx, code.ClientID, code.FamilyID, oauthRevokeCodeReuse) {
+			action = "oauth_code_reuse_repeat"
+		}
+		s.recordAuthEvent(audit.Event{Action: action, TargetTenant: code.TenantID, TargetSubject: code.Subject,
 			AuthGate: code.Gate, AuthClient: code.ClientID, AuthRecordID: code.FamilyID, SourceAddr: s.clientSource(r)})
 		oauthTokenError(w, http.StatusBadRequest, "invalid_grant", "")
 		return
@@ -630,13 +638,22 @@ func (s *Server) oauthRefreshFamily(w http.ResponseWriter, r *http.Request, clie
 	if fam.ClientID != client.ID {
 		// A refresh token is bound to its client (RFC 6749 §10.4); another
 		// client holding it means it leaked.
-		s.revokeAppFamily(ctx, fam.ClientID, fam.FamilyID, oauthRevokeClientMismatch)
+		// Ending the sign-in is an alarm, written at once — when this call
+		// ended it; the stale token presented again only counts as refused.
+		if s.revokeAppFamily(ctx, fam.ClientID, fam.FamilyID, oauthRevokeClientMismatch) {
+			s.recordAuthEvent(audit.Event{Action: "oauth_client_mismatch", TargetTenant: fam.TenantID, TargetSubject: fam.Subject,
+				AuthGate: fam.Gate, AuthClient: client.ID, AuthRecordID: fam.FamilyID, SourceAddr: s.clientSource(r)})
+		}
 		refused("client")
 		return
 	}
 	if !first {
-		s.revokeAppFamily(ctx, fam.ClientID, fam.FamilyID, oauthRevokeRefreshReuse)
-		s.recordAuthEvent(audit.Event{Action: "oauth_refresh_reuse", TargetTenant: fam.TenantID, TargetSubject: fam.Subject,
+		// As for a replayed code: the alarm once, repeats as observations.
+		action := "oauth_refresh_reuse"
+		if !s.revokeAppFamilyForReuse(ctx, fam.ClientID, fam.FamilyID, oauthRevokeRefreshReuse) {
+			action = "oauth_refresh_reuse_repeat"
+		}
+		s.recordAuthEvent(audit.Event{Action: action, TargetTenant: fam.TenantID, TargetSubject: fam.Subject,
 			AuthGate: fam.Gate, AuthClient: fam.ClientID, AuthRecordID: fam.FamilyID, SourceAddr: s.clientSource(r)})
 		oauthTokenError(w, http.StatusBadRequest, "invalid_grant", "")
 		return
@@ -735,14 +752,19 @@ func (s *Server) oauthIssue(w http.ResponseWriter, r *http.Request, client confi
 
 // revokeAppFamily ends a sign-in: the family is revoked (a tombstone if it
 // does not exist yet) and its access tokens retired, and every replica's
-// token cache is flushed so none keeps answering for them.
-func (s *Server) revokeAppFamily(ctx context.Context, clientID, familyID, reason string) {
+// token cache is flushed so none keeps answering for them. It reports
+// whether this call revoked the family — false when it was already revoked —
+// so a caller records the alarm once; a failed revoke counts as a change, so
+// its alarm is never demoted.
+func (s *Server) revokeAppFamily(ctx context.Context, clientID, familyID, reason string) bool {
 	if familyID == "" {
-		return
+		return false
 	}
 	now := time.Now().UTC()
-	if _, err := s.store.OAuthFamilyRevoke(ctx, familyID, reason, now); err != nil {
+	changed, err := s.store.OAuthFamilyRevoke(ctx, familyID, reason, now)
+	if err != nil {
 		slog.Error("oauth: revoking a family failed", "family", familyID, "err", err)
+		changed = true
 	}
 	if clientID != "" {
 		if _, err := s.store.OAuthTokenRetire(ctx, clientID, familyID, now); err != nil {
@@ -750,6 +772,30 @@ func (s *Server) revokeAppFamily(ctx context.Context, clientID, familyID, reason
 		}
 	}
 	s.invalidateTokenCache(ctx)
+	return changed
+}
+
+// revokeAppFamilyForReuse is revokeAppFamily for a replayed code or refresh
+// token: it ends the sign-in and reports whether this is the first reuse
+// recorded on it (OAuthFamilyRevokeForReuse), whatever ended it before. A
+// failed write counts as first, so its alarm is never demoted.
+func (s *Server) revokeAppFamilyForReuse(ctx context.Context, clientID, familyID, reason string) bool {
+	if familyID == "" {
+		return false
+	}
+	now := time.Now().UTC()
+	first, err := s.store.OAuthFamilyRevokeForReuse(ctx, familyID, reason, now)
+	if err != nil {
+		slog.Error("oauth: revoking a reused family failed", "family", familyID, "err", err)
+		first = true
+	}
+	if clientID != "" {
+		if _, err := s.store.OAuthTokenRetire(ctx, clientID, familyID, now); err != nil {
+			slog.Error("oauth: retiring a family's tokens failed", "family", familyID, "err", err)
+		}
+	}
+	s.invalidateTokenCache(ctx)
+	return first
 }
 
 // endSubjectAppSignIns ends every app sign-in of a user being disabled or
@@ -825,8 +871,11 @@ func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			fam, err := s.store.OAuthFamilyGet(ctx, rt.FamilyID)
 			if err == nil && fam.ClientID == client.ID {
-				s.revokeAppFamily(ctx, client.ID, fam.FamilyID, oauthRevokeByApp)
-				s.recordAuthEvent(audit.Event{Action: "oauth_revoked", TargetTenant: fam.TenantID, TargetSubject: fam.Subject,
+				action := "oauth_revoked"
+				if !s.revokeAppFamily(ctx, client.ID, fam.FamilyID, oauthRevokeByApp) {
+					action = "oauth_revoke_repeat" // already ended: nothing changed
+				}
+				s.recordAuthEvent(audit.Event{Action: action, TargetTenant: fam.TenantID, TargetSubject: fam.Subject,
 					AuthGate: fam.Gate, AuthClient: client.ID, AuthRecordID: fam.FamilyID, AuthReason: "refresh_token",
 					SourceAddr: s.clientSource(r)})
 			}

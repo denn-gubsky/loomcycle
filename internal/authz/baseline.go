@@ -118,6 +118,9 @@ func Baselines() map[string]ACL {
 				Rule{Effect: Allow, Actions: []string{"read"}, Resources: []string{"principal:token:*"}},
 				selfTokenRule,
 				Rule{Effect: Allow, Actions: []string{"read", "manage"}, Resources: []string{"runtime:limits", "runtime:retention", "runtime:erasure", "runtime:usage", "runtime:routing", "runtime:events"}},
+				// The audit chain export: the operator's record, read-only,
+				// and not on the member baseline (the member path refuses it).
+				Rule{Effect: Allow, Actions: []string{"read"}, Resources: []string{"runtime:audit"}},
 			)},
 		BaselineMember: {Name: BaselineMember, Description: "a non-isolated member — the collaboration plane, not the operator controls",
 			Rules: []Rule{

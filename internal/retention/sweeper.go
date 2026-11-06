@@ -44,6 +44,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auditchain"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -242,6 +243,16 @@ type Config struct {
 	// drop is skipped. Interface-typed for testability.
 	SQLMem SQLMemory
 
+	// AuditMaxAge is how long the store-backed audit stream keeps its rows
+	// (RFC FZ Part E, LOOMCYCLE_AUDIT_RETENTION_DAYS). Older rows are pruned
+	// per tenant chain behind an anchor signed with AuditKeys, so what is
+	// left still verifies; a chain that does not verify is not pruned (its
+	// rows, and the break, stay). Zero, or nil AuditKeys, keeps every row.
+	// Independent of every other family: it is its own knob, and deleting
+	// audit rows never rides on a chats or defs setting.
+	AuditMaxAge time.Duration
+	AuditKeys   *auditchain.ChainKeys
+
 	// ExportDir is the directory export+prune writes JSON into: def versions under
 	// <ExportDir>/<day>/<def-type>/, chat sessions under <ExportDir>/chats/<day>/.
 	// Required for export+prune (defs OR chats); if empty, the corresponding
@@ -317,6 +328,13 @@ type Result struct {
 	// Folding it into either would hide the one family that deletes the last trace
 	// of an entity.
 	EmptyDossiers int
+	// Audit is the number of audit rows pruned behind a signed anchor this
+	// sweep. Counted under DryRun as zero: the prune is a single store
+	// transaction with no listing step to report from.
+	Audit int
+	// AuditRefused is the number of audit chains left unpruned because they
+	// do not verify.
+	AuditRefused int
 	// Mem is the number of retired-agent reclamation UNITS this sweep (or, under
 	// DryRun, would-be). A unit is one (tenant, name) whose SQL-Memory scope
 	// and/or dirents were dropped, PLUS one per name whose globally-dead base
@@ -352,6 +370,8 @@ type Sweeper struct {
 	lock                AdvisoryLocker
 	lockKey             int64
 	now                 func() time.Time
+	auditMaxAge         time.Duration
+	auditKeys           *auditchain.ChainKeys
 }
 
 // New constructs a Sweeper. A nil store means "no persistence" — Run is then a
@@ -415,7 +435,52 @@ func New(st store.Store, cfg Config) *Sweeper {
 		lock:                cfg.AdvisoryLock,
 		lockKey:             cfg.AdvisoryLockKey,
 		now:                 cfg.Now,
+		auditMaxAge:         cfg.AuditMaxAge,
+		auditKeys:           cfg.AuditKeys,
 	}
+}
+
+// auditPruneEnabled reports whether the audit family runs: an age and a key
+// to sign the anchor with. Never under DryRun — the prune has no preview.
+func (s *Sweeper) auditPruneEnabled() bool {
+	return s.auditMaxAge > 0 && s.auditKeys != nil && !s.dryRun
+}
+
+// auditChainBudget bounds one chain's prune per tick. Each chain gets its
+// own, so a long chain (the operator chain grows with every failed sign-in)
+// cannot use up the time of the chains after it; a prune that runs out of
+// time resumes from its anchor on the next tick.
+const auditChainBudget = time.Minute
+
+// sweepAuditOnce prunes every chain's rows older than the cutoff. A chain
+// whose rows to prune (or anchor) do not verify is refused — pruning it
+// would re-sign an anchor over tampered rows — logged at error and counted;
+// a failure on one chain never stops the rest.
+func (s *Sweeper) sweepAuditOnce(parent context.Context) (pruned, refused int, err error) {
+	ctx, cancel := context.WithTimeout(parent, auditChainBudget)
+	tenants, err := s.store.AuditTenants(ctx)
+	cancel()
+	if err != nil {
+		return 0, 0, err
+	}
+	cutoff := s.now().Add(-s.auditMaxAge)
+	for _, tenant := range tenants {
+		if parent.Err() != nil {
+			break
+		}
+		ctx, cancel := context.WithTimeout(parent, auditChainBudget)
+		n, err := auditchain.Prune(ctx, s.store, *s.auditKeys, tenant, cutoff)
+		cancel()
+		pruned += n
+		switch {
+		case errors.Is(err, auditchain.ErrChainBroken):
+			refused++
+			s.logger.Error("retention: an audit chain does not verify; it is not pruned", "tenant", tenant, "err", err)
+		case err != nil:
+			s.logger.Warn("retention: audit prune failed", "tenant", tenant, "err", err)
+		}
+	}
+	return pruned, refused, nil
 }
 
 // defsPurgeEnabled reports whether the destructive def purge should run:
@@ -609,7 +674,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 		"interval", s.interval, "defs_mode", s.defsMode, "defs_max_age", s.defsMaxAge, "keep_last_n", s.defsKeepLastN,
 		"chats_mode", s.chatsMode, "chats_max_age", s.chatsMaxAge, "chats_internal_max_age", s.chatsInternalMaxAge,
 		"internal_agents", len(s.internalAgents), "mem_mode", s.memMode, "mem_max_age", s.memMaxAge,
-		"sqlmem", s.sqlMem != nil, "dry_run", s.dryRun)
+		"sqlmem", s.sqlMem != nil, "audit_max_age", s.auditMaxAge, "dry_run", s.dryRun)
 	if s.defsMode == "export+prune" && s.exportDir == "" {
 		s.logger.Warn("retention: defs purge DISABLED — mode=export+prune requires LOOMCYCLE_RETENTION_EXPORT_DIR")
 	}
@@ -661,7 +726,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 			}
 			if err != nil {
 				s.logger.Error("retention: sweep failed", "err", err)
-			} else if res.Total > 0 || res.Chats > 0 || res.ChatsInternal > 0 || res.Mem > 0 {
+			} else if res.Total > 0 || res.Chats > 0 || res.ChatsInternal > 0 || res.Mem > 0 || res.Audit > 0 {
 				msgPrefix := "retention: purged"
 				if s.dryRun {
 					msgPrefix = "retention: would purge"
@@ -681,6 +746,9 @@ func (s *Sweeper) Run(ctx context.Context) {
 				}
 				if res.Mem > 0 {
 					s.logger.Info(msgPrefix+" retired-agent memory reclamation units", "units", res.Mem, "mode", s.memMode)
+				}
+				if res.Audit > 0 {
+					s.logger.Info("retention: pruned audit rows behind a signed anchor", "rows", res.Audit, "max_age", s.auditMaxAge)
 				}
 				noOpStreak = 0
 			} else {
@@ -728,6 +796,14 @@ func (s *Sweeper) sweepOnce(parent context.Context) (Result, error) {
 	}
 	if s.defsPurgeEnabled() {
 		s.sweepDefsOnce(parent, &res)
+	}
+	if s.auditPruneEnabled() {
+		n, refused, err := s.sweepAuditOnce(parent)
+		if err != nil {
+			s.logger.Warn("retention: audit sweep failed", "err", err)
+		}
+		res.Audit += n
+		res.AuditRefused += refused
 	}
 	if s.chatsPruneEnabled() {
 		n, internal, err := s.sweepChatsOnce(parent)

@@ -41,6 +41,7 @@ func Route(required, method, path string) bool {
 //   - the memory maintenance sweeps (IsMemoryMaintenancePath) — bulk rewrites and
 //     embedder/model spend
 //   - the document maintenance passes (IsDocumentMaintenancePath) — likewise
+//   - the audit chain export (/v1/_audit) — the tenant's record of who did what
 func CarvedOut(method, path string) bool {
 	switch {
 	case path == "/v1/_users" && method == http.MethodPost:
@@ -114,6 +115,10 @@ func CarvedOut(method, path string) bool {
 	// Crypto with the tenant's keys: a member who could decrypt with them could
 	// read whatever the tenant sealed, and sign as the tenant. Operators only.
 	case path == "/v1/_crypto":
+		return true
+	// RFC FZ Part E: the audit chain records who signed in, minted, ruled and
+	// changed rules across the tenant — the operator's record, not a member's.
+	case path == "/v1/_audit":
 		return true
 	}
 	return false

@@ -438,6 +438,7 @@ func main() {
 	b.addA2ATools()
 
 	b.buildServer() // 7. the HTTP server and its wiring
+	b.openAudit()
 	b.openSQLMemory()
 	b.wireSubstrateTools()
 	b.wireAuth()

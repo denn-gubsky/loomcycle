@@ -68,7 +68,7 @@ type HookDef struct {
 	Cfg *config.Config
 
 	// Audit records an operator changing a HookDef that a no-trace agent
-	// runs (LOOMCYCLE_AUDIT_LOG_PATH). Nil = no audit log: the process log
+	// runs (the deployment audit sink). Nil = no audit sink: the process log
 	// line is then the record.
 	Audit audit.Sink
 }

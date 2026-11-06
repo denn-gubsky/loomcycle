@@ -75,7 +75,7 @@ type AgentDef struct {
 	MaxCodeBytes int
 
 	// Audit records an operator taking an agent's no-trace mode off
-	// (LOOMCYCLE_AUDIT_LOG_PATH). Nil = no audit log: the process log line
+	// (the deployment audit sink). Nil = no audit sink: the process log line
 	// is then the record.
 	Audit audit.Sink
 }

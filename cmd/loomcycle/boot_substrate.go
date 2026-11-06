@@ -151,54 +151,49 @@ func (b *boot) wireAuth() {
 	hookDefTool := b.hookDefTool
 
 	// RFC L OSS multi-tenant authorization — wire the OperatorTokenDef
-	// substrate tool (auth-token minting/rotation/retirement). Audit sink
-	// is a file when LOOMCYCLE_AUDIT_LOG_PATH is set, else a NopSink. The
-	// rotation grace defaults to 24h (override via
-	// LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS). Nothing consumes
-	// the tokens yet — the auth-middleware switch lands in the next PR.
+	// substrate tool (auth-token minting/rotation/retirement). Every recorder
+	// shares the one audit sink openAudit built (the store-backed chain, the
+	// JSONL file, or both); the token tool takes a NopSink when there is none.
+	// The rotation grace defaults to 24h (override via
+	// LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS).
+	auditSink := b.auditSink
 	var tokenAudit audit.Sink = audit.NopSink{}
-	if cfg.Env.AuditLogPath != "" {
-		fs, aerr := audit.NewFileSink(cfg.Env.AuditLogPath)
-		if aerr != nil {
-			fatal("audit: opening the audit log failed", "path", cfg.Env.AuditLogPath, "err", aerr)
-		}
-		tokenAudit = fs
-		slog.Info("audit: OperatorTokenDef mutations are recorded", "path", cfg.Env.AuditLogPath)
+	if auditSink != nil {
+		tokenAudit = auditSink
 		// RFC EP: every keyed Crypto op and every crypto-key change.
-		cryptoTool.Audit = tokenAudit
-		credentialDefTool.Audit = tokenAudit
+		cryptoTool.Audit = auditSink
+		credentialDefTool.Audit = auditSink
 		// RFC FB: every Git network operation.
-		b.gitTool.Audit = tokenAudit
+		b.gitTool.Audit = auditSink
 	}
-	// Subject erasure shares the same sink — but NOT the same posture: with no audit
-	// path configured, erasure REFUSES rather than proceeding unrecorded. It is the one
-	// operation nothing can undo, so "we cannot say who did this" is a reason not to do
-	// it. Wiring the sink even when it is a NopSink would defeat that, so this passes
-	// nil when there is no file to write to.
-	if cfg.Env.AuditLogPath != "" {
-		srv.SetEraseAudit(tokenAudit)
-		slog.Info("audit: subject erasures are recorded", "path", cfg.Env.AuditLogPath)
+	// Subject erasure shares the same sink — but NOT the same posture: with no
+	// audit sink, erasure REFUSES rather than proceeding unrecorded. It is the
+	// one operation nothing can undo, so "we cannot say who did this" is a
+	// reason not to do it. Wiring a NopSink would defeat that, so this passes
+	// nil when nothing durable is written.
+	if auditSink != nil {
+		srv.SetEraseAudit(auditSink)
 	} else {
-		slog.Warn("audit: no LOOMCYCLE_AUDIT_LOG_PATH — subject erasure is DISABLED " +
-			"(it will not delete without a durable record of who asked)")
+		slog.Warn("audit: no audit sink — subject erasure is DISABLED " +
+			"(it will not delete without a durable record of who asked; set LOOMCYCLE_AUDIT_STORE=1 or LOOMCYCLE_AUDIT_LOG_PATH)")
 	}
-	// Run-tree deletes are recorded to the same file when there is one. With
+	// Run-tree deletes are recorded to the same sink when there is one. With
 	// none they still work and are logged: nil here, not the NopSink, so the
 	// server knows nothing durable was written.
-	if cfg.Env.AuditLogPath != "" {
-		srv.SetRunDeleteAudit(tokenAudit)
+	if auditSink != nil {
+		srv.SetRunDeleteAudit(auditSink)
 		// Bulk statement rulings and their reverts (RFC FS): who ruled on
-		// what, as a unit. Nil with no file, as above.
-		srv.SetStatementReviewAudit(tokenAudit)
+		// what, as a unit. Nil with no sink, as above.
+		srv.SetStatementReviewAudit(auditSink)
 		// An operator changing a no-trace agent's mode, its hooks, or a
-		// HookDef it runs. Nil with no file, as above: the process log line
+		// HookDef it runs. Nil with no sink, as above: the process log line
 		// is the record then.
-		agentDefTool.Audit = tokenAudit
-		hookDefTool.Audit = tokenAudit
+		agentDefTool.Audit = auditSink
+		hookDefTool.Audit = auditSink
 		// A run's or an MCP session's lookup of another person or a group.
-		b.identityTool.Audit = tokenAudit
+		b.identityTool.Audit = auditSink
 		// Each move of documents between scopes (RFC FT).
-		b.documentTool.Audit = tokenAudit
+		b.documentTool.Audit = auditSink
 	}
 	graceSecs := 0
 	if v := os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS"); v != "" {
@@ -273,11 +268,12 @@ func (b *boot) wireAuth() {
 	// reads the config-declared groups through the same resolver.
 	b.identityTool.ACL = aclResolver
 	slog.Info("authz: access control (LOOMCYCLE_ACL)", "mode", aclMode, "set_cache_ttl_seconds", cfg.Env.ACLCacheTTLSeconds, "live", cfg.Env.ACLLive)
-	// Delegated user-token mints and revocations are recorded to the same
-	// sink as operator-token mutations. Not wired when there is no file: the
-	// handler treats a nil sink as "not recorded".
-	if cfg.Env.AuditLogPath != "" {
-		srv.SetTokenAudit(tokenAudit)
+	// Delegated user-token mints and revocations, sign-ins, gate management
+	// and ACL denials and edits are recorded to the same sink as
+	// operator-token mutations. Not wired when there is none: the handler
+	// treats a nil sink as "not recorded".
+	if auditSink != nil {
+		srv.SetTokenAudit(auditSink)
 	}
 	// A cap on how long a delegated user token may live. Unset = no cap; with
 	// a cap, a mint that asks for no lifetime gets the cap.

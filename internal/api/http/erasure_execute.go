@@ -71,7 +71,7 @@ func (s *Server) handleErasureExecute(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, erasure.ErrAuditUnavailable):
 		writeJSONError(w, http.StatusServiceUnavailable, "audit_unavailable",
 			err.Error()+". Erasure cannot be undone, so it is not performed unless who did it "+
-				"can be recorded — set LOOMCYCLE_AUDIT_LOG_PATH and retry.")
+				"can be recorded — set LOOMCYCLE_AUDIT_STORE=1 or LOOMCYCLE_AUDIT_LOG_PATH and retry.")
 		return
 	case err != nil:
 		writeJSONError(w, http.StatusInternalServerError, "erasure_failed", err.Error())

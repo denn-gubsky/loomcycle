@@ -441,3 +441,38 @@ func testOAuthTokenRetireEndedSignInsFinishesAPartialDisable(t *testing.T, s sto
 		t.Fatalf("retire with a live sign-in = %d, %v; want 0", n, err)
 	}
 }
+
+// A reuse marks its family once: the first reuse of a live family revokes
+// it, the first reuse of a family ended for another reason keeps that reason
+// and adds the reuse, an unknown family gets a tombstone — each reports
+// "first" — and every later reuse of the same family reports a repeat.
+func testOAuthFamilyRevokeForReuseReportsTheFirstReuseOnce(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, id := range []string{"fam-live", "fam-ended"} {
+		if err := s.OAuthFamilyCreate(ctx, oauthFamily(id, "board")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ok, err := s.OAuthFamilyRevoke(ctx, "fam-ended", "revoked_by_app", pwgT0); err != nil || !ok {
+		t.Fatalf("app revoke = %v, %v", ok, err)
+	}
+	for _, tc := range []struct{ id, reason, wantReason string }{
+		{"fam-live", "refresh_reuse", "refresh_reuse"},
+		{"fam-ended", "refresh_reuse", "revoked_by_app;refresh_reuse"},
+		{"fam-unknown", "code_reuse", "code_reuse"},
+	} {
+		first, err := s.OAuthFamilyRevokeForReuse(ctx, tc.id, tc.reason, pwgT0)
+		if err != nil || !first {
+			t.Fatalf("%s first reuse = %v, %v; want first", tc.id, first, err)
+		}
+		for range 2 {
+			if again, err := s.OAuthFamilyRevokeForReuse(ctx, tc.id, tc.reason, pwgT0); err != nil || again {
+				t.Fatalf("%s repeat = %v, %v; want a repeat", tc.id, again, err)
+			}
+		}
+		got, err := s.OAuthFamilyGet(ctx, tc.id)
+		if err != nil || got.RevokedAt.IsZero() || got.RevokeReason != tc.wantReason {
+			t.Errorf("%s = revoked %v reason %q, %v; want reason %q", tc.id, got.RevokedAt, got.RevokeReason, err, tc.wantReason)
+		}
+	}
+}

@@ -57,6 +57,7 @@ func TestRoute_OpensOnlyUncarvedTenantSurfaces(t *testing.T) {
 		{auth.ScopeTenant, http.MethodGet, "/v1/_limits", true},
 		{auth.ScopeTenant, http.MethodPut, "/v1/_limits", false},
 		{auth.ScopeTenant, http.MethodPost, "/v1/_crypto", false},
+		{auth.ScopeTenant, http.MethodGet, "/v1/_audit", false},
 		{auth.ScopeTenant, http.MethodGet, "/v1/_groups/g", false},
 		{auth.ScopeTenant, http.MethodPost, "/v1/_memory/search", true},
 		{auth.ScopeTenant, http.MethodPost, "/v1/_memory/reembed", false},

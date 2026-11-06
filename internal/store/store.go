@@ -1852,6 +1852,7 @@ type Store interface {
 	DynamicAgentStore
 	InterruptStore
 	ChannelDefStore
+	AuditStore
 	io.Closer
 }
 
@@ -4644,6 +4645,12 @@ type OAuthStore interface {
 	// A family that does not exist yet is written as a revoked tombstone, so
 	// its later create fails.
 	OAuthFamilyRevoke(ctx context.Context, familyID, reason string, at time.Time) (bool, error)
+	// OAuthFamilyRevokeForReuse revokes a family because one of its codes or
+	// refresh tokens was replayed, and reports whether this is the first
+	// reuse recorded on it: a family already ended for another reason keeps
+	// that reason and gains ";"+reason, an unknown one gets a tombstone, and
+	// one already marked with a reuse reports false.
+	OAuthFamilyRevokeForReuse(ctx context.Context, familyID, reason string, at time.Time) (bool, error)
 	// OAuthFamilyRevokeClient revokes every live family of clientID and
 	// returns their ids.
 	OAuthFamilyRevokeClient(ctx context.Context, clientID, reason string, at time.Time) ([]string, error)
