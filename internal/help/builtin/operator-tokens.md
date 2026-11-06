@@ -320,13 +320,17 @@ re-displayed). Now distribute per-principal tokens at your own pace.
   worst-case backstop.
 - `LOOMCYCLE_AUDIT_LOG_PATH` — JSONL audit of every create/rotate/retire
   (`{ts, actor_*, action, target_*, scopes_*}` — never a token or hash).
-  Per-replica local file; ship it with logrotate/fluentd/Loki.
+  Per-replica local file; ship it with logrotate/fluentd/Loki. With a
+  sign-in gate, `auth.mode: strict` or a `LOOMCYCLE_ACL` other than
+  `compat` (or `LOOMCYCLE_AUDIT_STORE=1`) the same records also go to the store-backed,
+  hash-chained audit trail: `loomcycle audit verify` checks it and
+  `GET /v1/_audit` exports it.
 - `LOOMCYCLE_AUTH_VERBOSE=1` — log a server-side reason on a rejected
   bearer (the wire 401 stays opaque regardless).
 
-## The OSS ceiling
+## Beyond tokens
 
-OSS does *basic* multi-tenancy: token-per-principal, scopes, rotation,
-file audit. SSO/OIDC/SAML, RBAC roles, SCIM, automated rotation policy,
-signed/queryable audit, and compliance evidence are the enterprise
-edition — layered on this same substrate without changing it.
+The same substrate carries sign-in gates (OIDC, OAuth, password, passkeys,
+external, header, AWS IAM), SCIM provisioning, access-control lists with
+groups and bindings, and the hash-chained audit trail. Not included:
+SAML, automated rotation policies, and compliance evidence.

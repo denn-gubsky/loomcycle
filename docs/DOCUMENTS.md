@@ -1143,9 +1143,9 @@ A `judge` rule hands a proposal to a judge instead of a person. The judge is `kb
 
 A links pass (find citations in imported text, propose the relations, keep them true as the documents change) is deterministic work, so it runs as a `provider: code-js` agent. Three pieces make that safe.
 
-**`statement_methods`** (an agent definition field; see `docs/CONFIGURATION.md` §7) lists the method kinds the agent's runs may stamp: `rule`, `extractor`, or both. A run then names its method per write: `method: "rule:citations"`. A third value, `judge`, stamps nothing: it lets the agent's runs record verdicts through `judge_statements` ([the judge agent](#the-judge-agent)), and alone does not grant `maintain_statement` or the lease.
+**`statement_methods`** (an agent definition field; see `docs/CONFIGURATION.md` §7) lists the method kinds the agent's runs may stamp: `rule`, `extractor`, or both. A run then names its method per write: `method: "rule:citations"`. A third value, `judge`, stamps nothing: it lets the agent's runs record verdicts through `judge_statements` ([the judge agent](#the-judge-agent)), and alone does not grant `maintain_statement` or the lease. Two more values, `link` and `remember`, are for any provider and stamp nothing either: `link` lets the run's relations in the tenant scope be asserted rather than filed for review ([What a statement is](#what-a-statement-is), its **Methods** table), and `remember` lets it call `remember` ([Facts and documents](#facts-and-documents)).
 
-- **code-js only.** A `rule:` method claims that code made the relation, and only a code-js body is code. The field is refused at config load and at AgentDef create/fork for any other provider, and a model-driven definition that reached a run some other way holds no grant.
+- **code-js only** (`rule`, `extractor`, `judge`). A `rule:` method claims that code made the relation, and only a code-js body is code. The field is refused at config load and at AgentDef create/fork for any other provider, and a model-driven definition that reached a run some other way holds no grant.
 - **Fork narrows, never widens.** A new definition authored from a run may list only methods its author may stamp; a fork may list only what the version it forks already holds, even when the author holds more. The grant is what lets a rule's writes skip review (auto-assert), so the operator chooses which bodies hold it.
 - Not per-run overridable, and a sub-agent holds only its own definition's grant. Authority, not content: not part of `content_sha256`.
 - `method` is taken by `propose_statement`, `maintain_statement` and `upsert_chunk` (for its `relation`). A malformed method, or one outside the grant, is refused with `method_not_granted`; `link_chunks` refuses a method outright. Without the grant, every relation an agent writes is `manual`.
@@ -1239,6 +1239,8 @@ A fact (a chunk with fact metadata, written by `upsert_chunk`) and the documents
 ```
 
 The answer adds `derived_from: {statement_id, chunk_id, char_start, char_end}`, `about_written` / `about_skipped`, `relation: {statement_id, kind, status}` and any `relation_conflicts`.
+
+**`remember` files what a person said.** `remember` takes one sentence (`text`, at most 1000 characters) and stores it in the scope's entity document as an `evidential` fact whose source span is the sentence itself, so a judge finds it supported and `verbatim_answer` may quote it. That makes it a person's statement, which a model must not forge: a run may call `remember` only when its agent holds `statement_methods: [remember]`, and without it the call is refused and points at `propose_statement` or `upsert_chunk` with a quote from the real source. `upsert_chunk` from such a run is refused the same way for the two shapes only `remember` writes (a key in the remembered namespace, or evidential text citing itself). A person's own call from outside a run (the operator, a member over HTTP or MCP) needs no grant.
 
 ### Following relations in retrieval
 

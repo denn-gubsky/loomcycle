@@ -2,9 +2,10 @@
 // OperatorTokenDef mutation (create/rotate/retire) writes one JSONL line
 // recording WHO did WHAT to WHICH principal — never any token plaintext
 // or hash (the Event struct deliberately has no field for them). The OSS
-// sink is a per-replica local file; operators wire their own pipeline
-// (logrotate/fluentd/Loki). Tamper-evidence + unified queryable audit
-// are enterprise features (RFC M).
+// sink here is a per-replica local file; operators wire their own pipeline
+// (logrotate/fluentd/Loki). The tamper-evident, store-backed stream that
+// every replica appends to is internal/auditchain (RFC FZ Part E); this
+// file sink is its optional mirror.
 package audit
 
 import (

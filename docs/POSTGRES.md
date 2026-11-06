@@ -1,6 +1,6 @@
-# Postgres backend (v0.5.0)
+# Postgres backend
 
-This guide is for operators running loomcycle in production. SQLite stays the default — it covers compact installs, dev environments, and the [README](../README.md) quick-start with zero external dependencies. **Switch to Postgres when you need horizontal scaling** (multiple loomcycle replicas behind a load balancer, hundreds of concurrent agents, shared-DB across services). The agent-facing wire protocol and the `Store` interface are identical between backends; the operator-visible difference is the deployment topology.
+This guide is for operators running loomcycle in production. The Postgres backend first shipped in v0.5.0; this guide is current for v1.142.0, except the benchmark section, which keeps the v0.5.0 reference numbers. SQLite stays the default — it covers compact installs, dev environments, and the [README](../README.md) quick-start with zero external dependencies. **Switch to Postgres when you need horizontal scaling** (multiple loomcycle replicas behind a load balancer, hundreds of concurrent agents, shared-DB across services). The agent-facing wire protocol and the `Store` interface are identical between backends; the operator-visible difference is the deployment topology.
 
 For the runtime architecture, see [ARCHITECTURE.md](ARCHITECTURE.md). For the public roadmap (v0.5.0 milestones), see [PLAN.md](PLAN.md).
 
@@ -13,6 +13,7 @@ For the runtime architecture, see [ARCHITECTURE.md](ARCHITECTURE.md). For the pu
 | Single production server, hundreds of concurrent agents | **Postgres.** SQLite's single-writer becomes the bottleneck under burst load. |
 | Multiple replicas / horizontal scale | **Postgres.** SQLite has no story here; Postgres + advisory locks (v1.0) does. |
 | You already run Postgres for the rest of your stack | **Postgres.** Avoid the per-replica SQLite file. |
+| Mutually distrusting tenants, or a knowledge base agents write in the tenant scope | **Postgres.** SQL Memory gives each scope's Document plane its own schema behind its own login role, which the agent's role cannot use; on SQLite it rests on the scope's file layout, a name check and SQLite's defensive mode, inside one process with one OS user. See [`SQL_MEMORY.md`](SQL_MEMORY.md#the-document-tools-tables-are-off-limits) and [`SECURITY.md`](../SECURITY.md#documents-and-the-knowledge-base). |
 
 ## Configuration
 
