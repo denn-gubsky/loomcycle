@@ -279,3 +279,51 @@ func warningsContain(ws []string, sub string) bool {
 	}
 	return false
 }
+
+// The envelope carries a scope's document plane as the dump's document tail, so
+// a restore lands the Document tool's tables back on their own plane (the
+// <scope>.doc.db file on sqlite) and the agent's tables on theirs. Dropping the
+// tail in the envelope put every document table in the agent plane on restore,
+// where nothing that reads documents looks.
+func TestSnapshot_SqlMemKeepsTheDocumentPlaneApart(t *testing.T) {
+	ctx := context.Background()
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	src := newSqlMemManager(t)
+	key := sqlmem.ScopeKey{Tenant: "t1", Scope: "user", ScopeID: "u1"}
+	for _, stmt := range []string{"CREATE TABLE notes (body TEXT)", "INSERT INTO notes VALUES ('agent')"} {
+		if _, err := src.Exec(ctx, key, stmt, nil, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, stmt := range []string{"CREATE TABLE documents (id TEXT PRIMARY KEY)", "INSERT INTO documents VALUES ('d1')"} {
+		if _, err := src.DocPlane().Exec(ctx, key, stmt, nil, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// What the Document tool's provisioning ends with: the plane is the scope's.
+	if err := src.DocPlane().AdoptAgentTables(ctx, key, []string{"documents"}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, jsonBytes, err := Capture(ctx, s, CaptureOptions{SqlMem: src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, cleanup2 := newTestStore(t)
+	defer cleanup2()
+	dst := newSqlMemManager(t)
+	res, err := Restore(ctx, s2, jsonBytes, RestoreOptions{SqlMem: dst})
+	if err != nil || res.SqlMemScopesRestored != 1 {
+		t.Fatalf("Restore = %+v, %v", res, err)
+	}
+	if q, err := dst.DocPlane().Query(ctx, key, "SELECT id FROM documents", nil); err != nil || len(q.Rows) != 1 {
+		t.Errorf("document plane after the restore: %v, %v; want the document", q, err)
+	}
+	if held, err := dst.AgentPlaneTables(ctx, key, []string{"documents"}); err != nil || len(held) != 0 {
+		t.Errorf("the restore put %v on the agent plane (%v)", held, err)
+	}
+	if q, err := dst.Query(ctx, key, "SELECT body FROM notes", nil); err != nil || len(q.Rows) != 1 {
+		t.Errorf("agent plane after the restore: %v, %v; want the agent's row", q, err)
+	}
+}

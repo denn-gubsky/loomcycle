@@ -1262,6 +1262,19 @@ type SqlMemScope struct {
 	DDL     []string      `json:"ddl"`
 	PostDDL []string      `json:"post_ddl,omitempty"`
 	Tables  []SqlMemTable `json:"tables"`
+	// DocTail marks how much of the end of DDL, PostDDL and Tables is the
+	// scope's document plane (see SqlMemDocTail): restored there, not into the
+	// agent's reach. Absent in an archive from before it was carried, which
+	// restores everything into the agent plane for the Document tool to move.
+	DocTail *SqlMemDocTail `json:"doc_tail,omitempty"`
+}
+
+// SqlMemDocTail counts the trailing DDL, PostDDL and Tables entries of a scope
+// that belong to its document plane (mirrors sqlmem.DocTail).
+type SqlMemDocTail struct {
+	DDL     int `json:"ddl"`
+	PostDDL int `json:"post_ddl"`
+	Tables  int `json:"tables"`
 }
 
 // SqlMemTable is one table's data. ColumnTypes is populated for the postgres

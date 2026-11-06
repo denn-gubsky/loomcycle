@@ -275,7 +275,8 @@ var pinnedEntryKeys = map[string][]string{
 	"runident.ParentContext": {"root_agent_run_id", "function_key", "tier_at_run", "board_scope", "board_chunk_id",
 		"board_document_id", "walk_id", "wave_id", "wave_index", "state", "state_visit"},
 
-	"SqlMemScope":        {"tenant", "scope", "scope_id", "ddl", "post_ddl", "tables"},
+	"SqlMemScope":        {"tenant", "scope", "scope_id", "ddl", "post_ddl", "tables", "doc_tail"},
+	"SqlMemDocTail":      {"ddl", "post_ddl", "tables"},
 	"SqlMemSkippedScope": {"tenant", "scope", "scope_id", "bytes"},
 	"SqlMemTable":        {"name", "columns", "column_types", "rows"},
 

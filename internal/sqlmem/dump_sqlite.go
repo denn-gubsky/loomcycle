@@ -19,8 +19,10 @@ import (
 // restore move a scope's schema + data via sqlite_master + plain SELECT/INSERT.
 
 // listScopes walks the durable scope tree and recovers each scope's ScopeKey
-// from its path: <root>/<tenant>/<scope>/<id>.db. The run subtree (<root>/run,
-// which is NOT tenant-keyed) is skipped — run scopes are never snapshotted.
+// from its path: <root>/<tenant>/<scope>/<id>.db, or <id>.doc.db for a scope that
+// so far holds only documents. A scope with both files is listed once. The run
+// subtree (<root>/run, which is NOT tenant-keyed) is skipped — run scopes are
+// never snapshotted.
 //
 // Identity recovery from the path is exact for the validated key space: tenant/
 // scope/scope_id are charset-validated upstream ([A-Za-z0-9_-]), and sanitize is
@@ -32,6 +34,7 @@ import (
 func (b *sqliteBackend) listScopes(ctx context.Context) ([]ScopeKey, error) {
 	runDir := filepath.Join(b.cfg.Root, runScope)
 	var out []ScopeKey
+	seen := map[string]bool{}
 	err := filepath.WalkDir(b.cfg.Root, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return nil // skip unreadable entries
@@ -42,21 +45,23 @@ func (b *sqliteBackend) listScopes(ctx context.Context) ([]ScopeKey, error) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".db") {
-			return nil // skip -wal/-shm and non-db files
+		base, _, ok := scopeFileBase(path)
+		if !ok || seen[base] {
+			return nil // skip -wal/-shm, non-db files, and a scope's second file
 		}
-		rel, rerr := filepath.Rel(b.cfg.Root, path)
+		rel, rerr := filepath.Rel(b.cfg.Root, base)
 		if rerr != nil {
 			return nil
 		}
 		parts := strings.Split(rel, string(filepath.Separator))
 		if len(parts) != 3 {
-			return nil // a durable scope is exactly <tenant>/<scope>/<id>.db
+			return nil // a durable scope is exactly <tenant>/<scope>/<id>
 		}
+		seen[base] = true
 		out = append(out, ScopeKey{
 			Tenant:  parts[0],
 			Scope:   parts[1],
-			ScopeID: strings.TrimSuffix(parts[2], ".db"),
+			ScopeID: parts[2],
 		})
 		return nil
 	})
@@ -66,13 +71,36 @@ func (b *sqliteBackend) listScopes(ctx context.Context) ([]ScopeKey, error) {
 	return out, nil
 }
 
-// scopeExists stats the scope's .db file; it never opens (and so never creates)
-// it.
-func (b *sqliteBackend) scopeExists(_ context.Context, key ScopeKey) (bool, error) {
-	path, err := key.keyPath(b.cfg.Root)
+// scopeExists answers without opening (and so creating) a file that is not
+// there. For the scope as a whole, either file will do. For the document plane,
+// the document file must carry the split mark: until the scope's tables have
+// moved into it, the agent file holds the scope's documents and the document
+// file — if any — holds provisioned, empty tables that are not yet the answer.
+func (b *sqliteBackend) scopeExists(ctx context.Context, key ScopeKey) (bool, error) {
+	agent, doc, err := key.planeFiles(b.cfg.Root)
 	if err != nil {
 		return false, err
 	}
+	docThere, err := statExists(doc)
+	if err != nil || !key.isDoc() {
+		if err != nil || docThere {
+			return docThere, err
+		}
+		return statExists(agent)
+	}
+	if !docThere {
+		return false, nil
+	}
+	db, err := b.acquire(doc)
+	if err != nil {
+		return false, err
+	}
+	defer b.release(doc)
+	return docFileSplit(ctx, db)
+}
+
+// statExists reports whether a file exists, without opening it.
+func statExists(path string) (bool, error) {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return false, nil
@@ -82,12 +110,18 @@ func (b *sqliteBackend) scopeExists(_ context.Context, key ScopeKey) (bool, erro
 	return true, nil
 }
 
-// exportScope dumps the scope's schema (CREATE statements from sqlite_master,
-// tables before indexes) and every user table's rows.
+// exportScope dumps the key's plane of a scope — its file's schema (CREATE
+// statements from sqlite_master, tables before indexes) and every user table's
+// rows.
 func (b *sqliteBackend) exportScope(ctx context.Context, key ScopeKey) (*ScopeDump, error) {
 	path, err := key.keyPath(b.cfg.Root)
 	if err != nil {
 		return nil, err
+	}
+	// A plane with no file has nothing to dump, and opening it would create it: a
+	// scope that only ever held documents would grow an empty agent file.
+	if there, err := statExists(path); err != nil || !there {
+		return &ScopeDump{}, err
 	}
 	db, err := b.acquire(path)
 	if err != nil {
@@ -214,10 +248,26 @@ func (b *sqliteBackend) exportTableSQLite(ctx context.Context, db *sql.DB, table
 // empty (so a re-restore is a no-op). The data load runs in one transaction
 // with PRAGMA defer_foreign_keys=ON so cross-table insert order can't trip a
 // foreign-key check before its parent row lands (verified at COMMIT instead).
+//
+// Into the document plane it also writes the split mark, in the same
+// transaction as the rows, under the scope's move lock: a restore stopped before
+// it commits leaves an unmarked, empty document file, which never counts, rather
+// than rows that would outrank the agent file's at the next move. A document
+// file not yet marked does not count either way, so its tables are cleared
+// rather than kept.
 func (b *sqliteBackend) restoreScope(ctx context.Context, key ScopeKey, dump *ScopeDump) error {
 	path, err := key.keyPath(b.cfg.Root)
 	if err != nil {
 		return err
+	}
+	if key.isDoc() {
+		agentPath, _, err := key.planeFiles(b.cfg.Root)
+		if err != nil {
+			return err
+		}
+		lk := b.adoptLock(agentPath)
+		lk.Lock()
+		defer lk.Unlock()
 	}
 	db, err := b.acquire(path)
 	if err != nil {
@@ -251,9 +301,23 @@ func (b *sqliteBackend) restoreScope(ctx context.Context, key ScopeKey, dump *Sc
 	if _, err := tx.ExecContext(ctx, "PRAGMA defer_foreign_keys=ON"); err != nil {
 		return fmt.Errorf("sqlmem: defer FK: %w", err)
 	}
+	replace := false
+	if key.isDoc() {
+		split, err := docFileSplit(ctx, tx)
+		if err != nil {
+			return err
+		}
+		replace = !split
+	}
 	for _, t := range dump.Tables {
 		if shadow[t.Name] {
 			continue
+		}
+		if replace {
+			// #nosec G202 -- the name comes from the dump's own table list, quoted
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+quoteIdent(t.Name)); err != nil {
+				return fmt.Errorf("sqlmem: clear %q in the unmarked document file: %w", t.Name, err)
+			}
 		}
 		empty, err := tableIsEmpty(ctx, tx, t.Name)
 		if err != nil {
@@ -264,6 +328,16 @@ func (b *sqliteBackend) restoreScope(ctx context.Context, key ScopeKey, dump *Sc
 		}
 		if err := insertRows(ctx, tx, t, "?"); err != nil {
 			return err
+		}
+	}
+	if key.isDoc() {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA main.user_version = %d`, docFileSplitMark)); err != nil {
+			return fmt.Errorf("sqlmem: record the scope's split: %w", err)
+		}
+		if b.adoptStep != nil {
+			if err := b.adoptStep(adoptStepRestored); err != nil {
+				return err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
