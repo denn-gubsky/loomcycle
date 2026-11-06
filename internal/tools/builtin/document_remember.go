@@ -59,6 +59,14 @@ const maxRememberChars = 1000
 
 // rememberFact stores a statement as a self-citing evidential fact.
 func (d *Document) rememberFact(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	// A remembered fact is filed as a PERSON's statement — evidential, citing
+	// itself, quotable by verbatim_answer — so a run may file one only when its
+	// agent is granted statement_methods: [remember] (RFC FZ Part C, D5). A
+	// person's own off-run call needs no grant.
+	if !tools.IsOffRunPlane(ctx) && !contains(tools.PolicyOf(ctx).StatementMethods, statementRememberGrant) {
+		return errPermission("remember: this agent may not file a fact as something a person said (its definition's statement_methods does not grant remember); propose what you learned with propose_statement, or record what you derived from a source with upsert_chunk and its source_quote",
+			"Use propose_statement or upsert_chunk instead; an operator grants remember in the agent's statement_methods."), nil
+	}
 	text := strings.TrimSpace(in.Text)
 	if text == "" {
 		return errValidation("remember: missing required field: text (the statement to remember, "+
@@ -102,6 +110,27 @@ func (d *Document) rememberFact(ctx context.Context, key sqlmem.ScopeKey, mscope
 		next.AboutIDs = []string{target}
 	}
 	return d.upsertChunk(ctx, key, mscope, next)
+}
+
+// refuseForgedRemember holds upsert_chunk from a run to the remember grant for
+// the two shapes only remember writes (RFC FZ Part C, D5): a key in the
+// remembered namespace, and a self-citing piece of source material — class
+// evidential, its source_quote its own body, no source_chunk_id — which a judge
+// trivially supports and verbatim_answer would quote. A fact distilled from a
+// source (a quote that is not the body, or a derived fact from a chat) is left
+// alone, as is any person's off-run call.
+func refuseForgedRemember(ctx context.Context, in docInput) *tools.Result {
+	if tools.IsOffRunPlane(ctx) || contains(tools.PolicyOf(ctx).StatementMethods, statementRememberGrant) {
+		return nil
+	}
+	quote := strings.TrimSpace(in.SourceQuote)
+	selfCiting := in.Class == "evidential" && in.SourceChunkID == "" && quote != "" && quote == strings.TrimSpace(in.Body)
+	if !strings.HasPrefix(strings.TrimSpace(in.NaturalKey), rememberedKeyPrefix) && !selfCiting {
+		return nil
+	}
+	r := errPermission("upsert_chunk: this fact has the shape of something a person said (a remembered key, or evidential text citing itself), which only remember files, and this agent is not granted remember; record what you derived with a source_quote taken from its source, or propose it with propose_statement",
+		"Use a key of your own and the source's quote, or ask an operator to grant remember in the agent's statement_methods.")
+	return &r
 }
 
 // entityDocumentID resolves (and on first use creates) the scope's entity document.

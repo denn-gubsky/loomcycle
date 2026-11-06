@@ -354,6 +354,7 @@ func (d *Document) gateAttributes(ctx context.Context, kind string, attributes m
 // method). They share the attributes object with a kind's qualifiers and are never
 // checked against them.
 var statementLayerAttributes = map[string]bool{"ontology_valid": true, "revision_of": true, "origin_method": true,
+	edgePeerMethodAttr: true, edgePeerStatusAttr: true,
 	attrJudge: true, attrReviewRoute: true, attrClassifiedBy: true}
 
 // The attribute keys only the runtime writes: a judge's verdict (judge), the

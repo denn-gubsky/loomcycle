@@ -645,6 +645,8 @@ document_sources: {}
   #   tenancy_strategy:                            # optional; "" = one shared credential
   #     kind: key_per_tenant                       # a distinct peer credential per local tenant
   #     env_pattern: LOOMCYCLE_PEERA_{tenant_id}_KEY
+  #   trust: proposed                              # default: pulled statements arrive for review;
+  #                                                # `asserted` keeps the peer's asserted ones asserted
 
 # ─── Default routing for agents that don't specify their own ──────────
 # Used by agents that declare neither `tier:` nor an explicit

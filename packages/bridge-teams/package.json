@@ -56,7 +56,7 @@
     "@loomcycle/client": "^1.115.0",
     "@types/node": "^26.6.6",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.5"
+    "vitest": "^5.1.0"
   },
   "overrides": {
     "@microsoft/teams.apps": {

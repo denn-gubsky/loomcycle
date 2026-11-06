@@ -5,6 +5,7 @@
 // than run half-configured.
 
 import { trimTrailingSlashes } from "./text.js";
+import { DEFAULT_VOICE_CONFIG, languageHint, type VoiceConfig } from "./voice.js";
 
 export type AccessMode = "isolated" | "tenant";
 
@@ -49,6 +50,10 @@ export interface SharedConfig {
    *  (BRIDGE_RECONCILE_MAX_REVOKES). Unset: 10% of the people the bridge
    *  serves, never fewer than five. A round over it revokes nobody. */
   reconcileMaxRevokes?: number;
+  /** Voice messages (RFC GA), off unless BRIDGE_VOICE=1. Optional so a
+   *  config built by hand before voice existed still type-checks: absent is
+   *  voice off. loadSharedConfig always sets it. */
+  voice?: VoiceConfig;
 }
 
 export interface GateConfig {
@@ -112,6 +117,11 @@ export class EnvReader {
     if (raw === "0") return false;
     this.problems.push(`${name} must be 1 or 0`);
     return false;
+  }
+
+  /** flag with a default for when it is unset. */
+  flagOr(name: string, def: boolean): boolean {
+    return this.get(name) === undefined ? def : this.flag(name);
   }
 
   /** A comma list, trimmed, blanks dropped; lower-cased when asked. */
@@ -189,10 +199,34 @@ export function loadSharedConfig(reader: EnvReader, defaults: { port: number; ga
     dev,
     gateSyncHours,
     ...(reconcileMaxRevokes ? { reconcileMaxRevokes } : {}),
+    voice: loadVoiceConfig(reader),
   };
   const devProblem = devModeProblem(cfg);
   if (devProblem) reader.problems.push(devProblem);
   return cfg;
+}
+
+/** loadVoiceConfig reads BRIDGE_VOICE and its BRIDGE_VOICE_* settings. Each
+ *  setting is checked even with voice off, so a typo is found before the
+ *  day voice is turned on. */
+export function loadVoiceConfig(reader: EnvReader): VoiceConfig {
+  const d = DEFAULT_VOICE_CONFIG;
+  const label = reader.get("BRIDGE_VOICE_LABEL") ?? d.label;
+  if (label.length > 64) reader.problems.push("BRIDGE_VOICE_LABEL must be at most 64 characters");
+  const rawLanguage = reader.get("BRIDGE_VOICE_LANGUAGE");
+  const language = languageHint(rawLanguage);
+  if (rawLanguage && !language) reader.problems.push("BRIDGE_VOICE_LANGUAGE must be a language code such as en or uk");
+  return {
+    enabled: reader.flag("BRIDGE_VOICE"),
+    untrusted: reader.flagOr("BRIDGE_VOICE_UNTRUSTED", d.untrusted),
+    reply: reader.oneOf("BRIDGE_VOICE_REPLY", ["mirror", "always", "never"] as const, d.reply),
+    maxSeconds: reader.int("BRIDGE_VOICE_MAX_SECONDS", d.maxSeconds, 1, 3600),
+    maxBytes: reader.int("BRIDGE_VOICE_MAX_BYTES", d.maxBytes, 1024, 100 * 1024 * 1024),
+    replyMaxChars: reader.int("BRIDGE_VOICE_REPLY_MAX_CHARS", d.replyMaxChars, 50, 100_000),
+    echo: reader.flagOr("BRIDGE_VOICE_ECHO", d.echo),
+    label,
+    ...(language ? { language } : {}),
+  };
 }
 
 /** isLoopback says whether a host name or address is this machine only. */

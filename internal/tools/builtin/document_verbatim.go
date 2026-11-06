@@ -184,7 +184,7 @@ func (d *Document) verbatimAnswer(ctx context.Context, key sqlmem.ScopeKey, msco
 		return jsonResult(out)
 	}
 
-	return jsonResult(map[string]any{
+	out = map[string]any{
 		"answered":   true,
 		"answer":     body,
 		"source":     best.meta.SourceQuote,
@@ -192,7 +192,14 @@ func (d *Document) verbatimAnswer(ctx context.Context, key sqlmem.ScopeKey, msco
 		"score":      best.score,
 		"confidence": *best.meta.Confidence,
 		"judged_at":  *best.meta.JudgedAt,
-	})
+	}
+	// Who the quote is from: a fact that cites itself (remember) is trivially
+	// supported, so the caller must be able to tell a person's statement
+	// (operator) from one a run filed (agent_explicit) or a pass distilled.
+	if best.meta.Origin != "" {
+		out["origin"] = best.meta.Origin
+	}
+	return jsonResult(out)
 }
 
 // verificationStats reports how much of the scope's fact store is actually verified.

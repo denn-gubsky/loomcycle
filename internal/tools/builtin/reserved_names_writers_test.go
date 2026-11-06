@@ -222,7 +222,7 @@ func TestReservedName_AnAgentCannotCreateTheEntitiesDocumentWithItsOwnContent(t 
 func TestRemember_FilesIntoOneEntitiesDocument(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
 	for _, fact := range []string{"Ada wrote the first program.", "Grace found the first bug."} {
-		if _, r := docExec(t, d, ctx, `{"op":"remember","scope":"user","text":"`+fact+`"}`); r.IsError {
+		if _, r := docExec(t, d, withStatementGrant(ctx, "remember"), `{"op":"remember","scope":"user","text":"`+fact+`"}`); r.IsError {
 			t.Fatalf("remember: %s", r.Text)
 		}
 	}

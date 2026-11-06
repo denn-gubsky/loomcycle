@@ -14,7 +14,12 @@ automatically. Use this op for any other kind, or when you have ids rather
 than titles.
 
 `link_chunks` **asserts**: the relation is live as soon as it is written, and
-`graph_recall`, `backlinks` and `search` `expand` follow it. When you found the
+`graph_recall`, `backlinks` and `search` `expand` follow it. From inside a run,
+in the `tenant` scope (which every user and agent of the tenant reads), the
+link is filed for review instead (`status: proposed`) unless your agent's
+definition grants `link` in `statement_methods`; in the `user` and `agent`
+scopes it is asserted. Such a link to a relation that already holds answers
+with that statement (`status: asserted`) and adds no evidence to it. When you found the
 relation in text and someone should check it first — or your run is not the
 authority on it — use `propose_statement` instead. Where the tenant's confirmed
 ontology declares relation kinds (`describe_ontology` lists them under
@@ -49,14 +54,19 @@ relation proposed is filed for review, marked.
   scope. See `{"op":"help","topic":"scopes"}`.
 
 `link_chunks` takes no `method`: a link is the caller's own act, recorded as
-`manual`. A rule or extractor names itself with `propose_statement`.
+`agent` (with your agent as `actor` and the run's id) when a run makes it, and
+`manual` when a person does. A rule or extractor names itself with
+`propose_statement`.
 
 ## Returns
 
-`{ok: true, id, from_id, to_id, kind, status, evidence_written}`. Linking the
+`{ok: true, id, from_id, to_id, kind, status, evidence_written}`; a link filed
+for review may add `ruled_by` / `ruling_id` (the tenant's review policy ruled
+on it) or `review_route`. Linking the
 same pair with the same kind (and the same `valid_at`) again does not make a
-second link; it adds any new evidence to the existing one, and asserts it if it
-was awaiting review. A different `valid_at` is a second statement of the same
+second link; it adds any new evidence to the existing one. A link to a relation
+awaiting review asserts it only when you may rule on it (the operator, or a
+member granted review on its document); otherwise the proposal keeps waiting. A different `valid_at` is a second statement of the same
 relation, for another period. `evidence_capped: true` means the link already
 holds as much evidence as it keeps.
 

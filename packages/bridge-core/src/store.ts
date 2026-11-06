@@ -29,6 +29,9 @@ export interface ConversationRecord<TRef = unknown> {
   agentId?: string;
   /** Epoch ms of the last message. */
   lastActivityAt: number;
+  /** When replies are spoken here, set by /voice (RFC GA). Unset: the
+   *  bridge's BRIDGE_VOICE_REPLY. */
+  voice?: "mirror" | "always" | "never";
 }
 
 export interface ConversationStore<TRef = unknown> {

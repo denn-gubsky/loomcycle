@@ -13,6 +13,7 @@ import type {
 } from "@loomcycle/client";
 
 import type { CanonicalCard } from "./cards.js";
+import type { VoiceClient } from "./voice.js";
 
 /** The run-plane calls a bridge makes with a user's own token. */
 export interface RunClient {
@@ -40,14 +41,19 @@ export interface AdminClient {
       name?: string;
       maxActive?: number;
       agents?: string[];
+      /** Off-run surfaces beside agents: "speech", "transcription" (RFC GA).
+       *  loomcycle 1.141 and later; an older server refuses the key. */
+      surfaces?: Array<"speech" | "transcription">;
       overrides?: "none" | string[];
       rate?: { perMinute: number; burst?: number };
     },
   ): Promise<MintedUserToken>;
 }
 
-/** Builds a loomcycle client authenticated with the given bearer. */
-export type ClientFactory = (token: string) => RunClient & AdminClient;
+/** Builds a loomcycle client authenticated with the given bearer. The speech
+ *  calls are optional so a client double written before voice still fits;
+ *  `LoomcycleClient` has them all, and a bridge with voice on needs them. */
+export type ClientFactory = (token: string) => RunClient & AdminClient & Partial<VoiceClient>;
 
 /** What a bridge sends to the platform: plain text, a typing indicator, or a
  *  card. The platform's port renders the card in its own format. */

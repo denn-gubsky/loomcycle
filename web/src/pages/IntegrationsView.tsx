@@ -20,6 +20,16 @@ import IntegrationEditModal, {
   type IntegrationKind,
   type ModalMode,
 } from "../components/IntegrationEditModal";
+import { usePrincipal } from "../components/Layout";
+import type { Principal } from "../api";
+
+// canDeclareTrust mirrors the server's operator plane: an admin, the legacy
+// token, open mode, or a tenant operator (substrate:tenant) in its own tenant.
+// Only they may author a document source declared trust: asserted.
+export function canDeclareTrust(p: Principal | null | undefined): boolean {
+  if (!p) return false;
+  return p.is_admin || p.legacy || !!p.open_mode || p.scopes.includes("substrate:tenant");
+}
 
 // IntegrationsView — v0.24.0 manual-management surface for the five
 // substrate families that connect loomcycle to the outside world:
@@ -48,6 +58,7 @@ type SubKey =
   | "document-sources";
 
 export default function IntegrationsView() {
+  const principal = usePrincipal();
   const [webhooks, setWebhooks] = useState<LibraryEntry[]>([]);
   const [serverCards, setServerCards] = useState<LibraryEntry[]>([]);
   const [a2aAgents, setA2AAgents] = useState<LibraryEntry[]>([]);
@@ -182,6 +193,7 @@ export default function IntegrationsView() {
           mode={modal.mode}
           forkSource={modal.forkSource}
           existingNames={tabEntries.map((e) => e.name)}
+          canDeclareTrust={canDeclareTrust(principal)}
           onClose={() => setModal(null)}
           onSaved={() => {
             setModal(null);

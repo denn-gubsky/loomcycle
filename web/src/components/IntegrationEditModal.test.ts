@@ -124,6 +124,7 @@ const docState = (over: Partial<DocumentSourceFormState> = {}): DocumentSourceFo
   apiKeyEnv: "LOOMCYCLE_PEER_DOC_KEY",
   tenancyKind: "",
   envPattern: "",
+  trust: "proposed",
   ...over,
 });
 
@@ -160,6 +161,19 @@ describe("buildDocumentSourceOverlay", () => {
       kind: "key_per_tenant",
       env_pattern: "LOOMCYCLE_{tenant_id}_KEY",
     });
+  });
+});
+
+describe("document source trust", () => {
+  it("reads a def's trust, proposed when unset", () => {
+    expect(initDocumentSource({ config: { base_url: "https://p" }, trust: "asserted" }).trust).toBe("asserted");
+    expect(initDocumentSource({ config: { base_url: "https://p" } }).trust).toBe("proposed");
+  });
+  it("sends the operator's choice", () => {
+    expect(buildDocumentSourceOverlay(docState({ trust: "asserted" }), "", true).trust).toBe("asserted");
+  });
+  it("sends proposed for anyone else, a fork of a trusted source included", () => {
+    expect(buildDocumentSourceOverlay(docState({ trust: "asserted" }), "").trust).toBe("proposed");
   });
 });
 

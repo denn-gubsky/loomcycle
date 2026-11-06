@@ -140,6 +140,9 @@ type Server struct {
 	// aclResolutionFailures counts the requests whose ACL set could not be
 	// read (enrichPrincipal), for loomcycle_acl_resolution_failures_total.
 	aclResolutionFailures atomic.Int64
+	// toolPanics counts the tool calls recovered from a panic, on every
+	// dispatcher this server builds, for loomcycle_tool_panics_total.
+	toolPanics *tools.PanicCounter
 	// reviewAudit records bulk statement rulings and their reverts
 	// (SetStatementReviewAudit); nil = logged only.
 	reviewAudit audit.Sink
@@ -735,6 +738,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		hookPermits:    hooks.NewPermits(cfg.Hooks.PermitHostWiden.Owners),
 		hookDispatcher: hooks.NewDispatcherWithPrivateHosts(nil, nil, cfg.Hooks.PrivateHostAllowlist),
 		startedAt:      time.Now(),
+		toolPanics:     tools.NewPanicCounter(),
 	}
 	// RFC BH: the turn-cancel registry builds its cancel cause via loop.TurnCancelCause
 	// (the loop recognizes it to PARK the run instead of terminating). Injected here
@@ -1467,6 +1471,7 @@ func (s *Server) newDispatcher(allowedTools []tools.Tool) *tools.Dispatcher {
 	// A Go error a tool returns reaches the model classified — the same
 	// category, retryability and next step the transports give it.
 	d.SetErrorClassifier(errclassify.CategoryOf)
+	d.SetPanicCounter(s.toolPanics)
 	// Every caller builds a RUN's dispatcher, whose history of help reads and
 	// hints is what gates a help hint on a failed call.
 	d.EnableHelpHints()

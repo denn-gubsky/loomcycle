@@ -21,6 +21,7 @@ import { storeFromSpec, type ConversationStore } from "./store.js";
 import { GateBroker, loadGateKey, type GateKey } from "./gate.js";
 import { retryDelayMs, revokeQueueFromSpec, type RevokeQueue } from "./revokes.js";
 import { statusOf, TokenBroker, type TokenSource } from "./tokens.js";
+import { DEFAULT_VOICE_CONFIG, VoiceInfoCache, type VoiceConfig, type VoicePort } from "./voice.js";
 
 export interface BridgeContext<TRef> {
   config: SharedConfig;
@@ -51,6 +52,9 @@ export interface BridgeAdapter<TRef> {
    *  BRIDGE_GATE_SYNC_HOURS the core revokes each person it served who is not
    *  on it. */
   members?(): Promise<ReadonlySet<string>>;
+  /** Present on a platform that can take voice messages (RFC GA). Used only
+   *  with BRIDGE_VOICE=1. */
+  voice?: VoicePort<TRef>;
 }
 
 export interface BridgeOptions<TRef> {
@@ -83,6 +87,12 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     opts.clients ?? ((token) => new LoomcycleClient({ baseUrl: cfg.loomcycleBaseUrl, authToken: token }));
   const store = opts.store ?? storeFromSpec<TRef>(cfg.store);
   const health = new Health(adapter.platform.name, opts.now);
+  const voiceCfg = cfg.voice ?? DEFAULT_VOICE_CONFIG;
+  const voice = voiceCfg.enabled && adapter.voice ? adapter.voice : undefined;
+  const surfaces = voiceSurfaces(voiceCfg, adapter.voice);
+  if (voiceCfg.enabled && !adapter.voice) {
+    log.warn("BRIDGE_VOICE=1, but this platform's bridge does not take voice messages; ignoring it");
+  }
 
   // Every send goes through here, so /healthz knows when the platform last
   // took a message.
@@ -104,6 +114,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
           audience: cfg.gate.audience,
           token: {
             agents: [cfg.agent],
+            ...(surfaces.length ? { surfaces } : {}),
             // `interactive` is itself a lockable override, and the bridge
             // must set it; every other per-run setting stays the agent's.
             overrides: ["interactive"],
@@ -126,6 +137,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
       ratePerMinute: cfg.ratePerMinute,
       rateBurst: cfg.rateBurst,
       accessMode: cfg.userAccessMode,
+      ...(surfaces.length ? { surfaces } : {}),
       now: opts.now,
     });
   const deps: ConversationDeps<TRef> = {
@@ -141,6 +153,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     now: opts.now,
     stream: opts.stream,
     message: opts.message,
+    ...(voice ? { voice: { port: voice, config: voiceCfg, info: new VoiceInfoCache(opts.now) } } : {}),
   };
   const now = opts.now ?? Date.now;
   const gateName = cfg.gate?.name ?? "";
@@ -344,7 +357,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
         syncTimer = setInterval(() => void reconcile(), syncHours * 3_600_000);
         syncTimer.unref?.();
       }
-      log.info(`${name} listening`, { port: cfg.port, agent: cfg.agent });
+      log.info(`${name} listening`, { port: cfg.port, agent: cfg.agent, voice: voice ? surfaces.join(",") : "off" });
     },
     async stop() {
       if (sweeper) clearInterval(sweeper);
@@ -356,6 +369,14 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
       if (server) await close(server);
     },
   };
+}
+
+/** voiceSurfaces is what each user token is granted beside the agent (RFC
+ *  GA): nothing unless the operator turned voice on and the platform takes
+ *  it, and never speech for a platform that cannot post a voice message. */
+export function voiceSurfaces<TRef>(cfg: VoiceConfig, port: VoicePort<TRef> | undefined): Array<"speech" | "transcription"> {
+  if (!cfg.enabled || !port) return [];
+  return port.sendVoice && port.capabilities.out !== "none" ? ["speech", "transcription"] : ["transcription"];
 }
 
 /** runCli runs a bridge until SIGINT or SIGTERM. `build` reads the
