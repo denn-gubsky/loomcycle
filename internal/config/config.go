@@ -867,7 +867,9 @@ type EmbedderConfig struct {
 	BaseURL string `yaml:"base_url"`
 	// APIKeyEnv names the ENV VAR holding the credential — never the
 	// credential itself, mirroring the `providers:` map convention.
-	// Empty = the per-provider default env var (OPENAI_API_KEY etc.).
+	// Empty = the provider's api_key_env, else (no providers: entry names
+	// one) the per-provider default env var (OPENAI_API_KEY etc.), which is
+	// sent only when neither base_url re-points the embedder.
 	// A self-hosted keyless endpoint needs neither.
 	APIKeyEnv string `yaml:"api_key_env"`
 	// Dimensions requests a specific output vector width from models
@@ -1050,8 +1052,11 @@ type ProviderConfig struct {
 	// Gemini, local Ollama, …). Empty = driver default.
 	BaseURL string `json:"base_url,omitempty" yaml:"base_url,omitempty"`
 	// APIKeyEnv is the env-var NAME (never the value) whose credential keys this
-	// provider and can be overridden per-tenant (RFC AR). Empty = the driver's
-	// built-in default (e.g. OPENAI_API_KEY).
+	// provider and can be overridden per-tenant (RFC AR). Empty = no operator
+	// key; tenant credentials then resolve under the driver's vendor key name
+	// (e.g. OPENAI_API_KEY) only while BaseURL is unset or the vendor's own API
+	// host, and under none elsewhere, so a self-hosted endpoint is called with
+	// no key (providers.DriverOptions.KeyEnvNameFor).
 	APIKeyEnv string `json:"api_key_env,omitempty" yaml:"api_key_env,omitempty"`
 	// MaxConcurrent caps the model CALLS in flight to this provider — the chat
 	// lane's cap (see EffectiveLanes). A slot is held for one call, never for a

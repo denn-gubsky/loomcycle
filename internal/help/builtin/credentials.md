@@ -130,7 +130,10 @@ resolve, the call to the peer fails and nothing is sent.
 
 A stored credential named for a provider env var (e.g. `ANTHROPIC_API_KEY`,
 `BRAVE_API_KEY`) overrides the operator's host key for that run, so a tenant can
-bring its own key and be billed for its own spend.
+bring its own key and be billed for its own spend. A vendor key name applies
+only to providers that talk to that vendor: a self-hosted endpoint the operator
+declared on the same driver without naming a key takes no override and is
+called with no key.
 
 ## Crypto keys held in an external KMS
 

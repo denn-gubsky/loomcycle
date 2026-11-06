@@ -269,6 +269,13 @@ no host key at all.
 credentialdef  op=create  scope=tenant  name=ANTHROPIC_API_KEY  value=sk-ant-…
 ```
 
+> A provider key override follows the vendor: a provider on the `openai` (or
+> `anthropic`, `gemini`, `deepseek`, `ollama`) driver that points at some other
+> host and names no `api_key_env` takes no `OPENAI_API_KEY` override (it calls
+> with no key), so a tenant's own vendor key never reaches an operator's
+> self-hosted server. A provider that names its `api_key_env` takes overrides
+> under that name, wherever it points.
+>
 > This override happens only on the **inference / tool request** path.
 > Model-*availability* probes stay on the operator key (which models are reachable
 > is an operator concern), and `ollama-local` is unauthenticated so it never takes
