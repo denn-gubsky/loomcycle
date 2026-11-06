@@ -310,6 +310,18 @@ tenant), so each user's runs send their own connection. A credential that is
 not connected, or needs its owner to connect it again, **refuses the call**;
 nothing stands in for it.
 
+A server may still refuse an access token loomcycle has not seen expire —
+clock skew, or the token revoked at the server while the grant holds. When an
+MCP server answers `401` with `WWW-Authenticate: Bearer error="invalid_token"`,
+the client refreshes the credential once (one refresh for every call refused
+at the same moment, across replicas too), opens a new MCP session if it held
+one, and sends the request **once** more: a refused request was not run, so
+sending it again is safe. A second refusal moves the credential to
+`needs_reauth` and the call fails, asking its owner to connect it again; the
+server is used again as soon as they do, with no restart. Any other `401` is
+returned as it is, and a server whose headers name no `$oauth:` is never
+retried.
+
 Who may do what:
 
 - create, connect, status, disconnect and delete happen **outside a run**.

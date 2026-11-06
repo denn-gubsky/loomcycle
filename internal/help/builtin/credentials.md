@@ -145,8 +145,11 @@ scope is your own.
 Name it as `$oauth:<name>` wherever a `$cred:` header would go. The runtime
 sends a fresh access token, refreshing it before it expires; one refresh runs
 per credential, across replicas too, and the rotated refresh token is stored
-before the new access token is sent. A credential that is not connected, or
-lost its grant (`needs_reauth`), refuses the call. A field that takes a whole
+before the new access token is sent. When an MCP server refuses the token
+anyway (`401` with `error="invalid_token"`), the runtime refreshes it once and
+retries the call once; a second refusal moves the credential to
+`needs_reauth`. A credential that is not connected, or lost its grant
+(`needs_reauth`), refuses the call. A field that takes a whole
 `$cred:<name>` (`user_bearer`, `api_key_env`, an A2A peer's bearer, a signing
 secret, a git `credential`) does not take `$oauth:`.
 
