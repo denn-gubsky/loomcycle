@@ -531,3 +531,39 @@ func TestAuditVerify_ARowBelowTheAnchorIsABreakAndBlocksNoPrune(t *testing.T) {
 		t.Errorf("after the prune: %+v, want the planted row still reported at 2", rep)
 	}
 }
+
+// The prune's in-transaction check covers the head too: a head moved back
+// (an older, genuinely signed head replayed) with valid rows past it, or a
+// head whose signature does not verify, refuses the prune rather than have
+// the rows past the head folded under a new anchor.
+func TestAuditPrune_ChecksTheHead(t *testing.T) {
+	ctx := context.Background()
+	t.Run("rows past a replayed head", func(t *testing.T) {
+		s, db := chainFixture(t, 2)
+		var seq int64
+		var hash, mac string
+		if err := db.QueryRow(`SELECT seq, hash, mac FROM audit_heads WHERE tenant_id = 't1'`).Scan(&seq, &hash, &mac); err != nil {
+			t.Fatal(err)
+		}
+		sink, err := auditchain.NewStoreSink(s, testKeys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if err := sink.Record(audit.Event{Action: "acl_edit", TargetTenant: "t1"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		exec(t, db, `UPDATE audit_heads SET seq = ?, hash = ?, mac = ? WHERE tenant_id = 't1'`, seq, hash, mac)
+		if n, err := pruneForTest(ctx, s, "t1", time.Now().Add(time.Hour)); err == nil || n != 0 {
+			t.Errorf("prune over rows past a replayed head = %d, %v; want a refusal", n, err)
+		}
+	})
+	t.Run("a head that does not verify", func(t *testing.T) {
+		s, db := chainFixture(t, 2)
+		exec(t, db, `UPDATE audit_heads SET mac = 'forged' WHERE tenant_id = 't1'`)
+		if n, err := pruneForTest(ctx, s, "t1", time.Now().Add(time.Hour)); err == nil || n != 0 {
+			t.Errorf("prune under a forged head = %d, %v; want a refusal", n, err)
+		}
+	})
+}

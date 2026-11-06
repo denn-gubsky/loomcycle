@@ -272,6 +272,18 @@ func (k ChainKeys) SealAnchor() store.AuditAnchorSealFunc {
 		if why != "" {
 			return "", "", fmt.Errorf("%w: %s", ErrChainBroken, why)
 		}
+		// The head, as locked: signed, and not behind the rows removed. Without
+		// this, valid rows past a head moved back (an old head replayed) would
+		// be folded under the new anchor, and a chain pruned to its head is
+		// then vouched for by that anchor alone.
+		if !k.check(prev.MAC, macHead, tenant, prev.Seq, prev.Hash) {
+			return "", "", fmt.Errorf("%w: the head's signature does not verify", ErrChainBroken)
+		}
+		if last := pruned[len(pruned)-1]; last.Seq > prev.Seq {
+			return "", "", fmt.Errorf("%w: row %d lies past the chain's head (at %d)", ErrChainBroken, last.Seq, prev.Seq)
+		} else if last.Seq == prev.Seq && last.Hash != prev.Hash {
+			return "", "", fmt.Errorf("%w: the head does not match the last row", ErrChainBroken)
+		}
 		link, want, rotated := prev.AnchorHash, prev.AnchorSeq+1, st.Rotated
 		for _, r := range pruned {
 			if why := k.checkLink(tenant, link, want, r, &rotated); why != "" {
