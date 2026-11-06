@@ -174,8 +174,8 @@ func Run(ctx context.Context, spec Spec) (Result, error) {
 	defer cancel()
 
 	stdout, stderr := &cappedBuffer{max: limit}, &cappedBuffer{max: limit}
-	// #nosec G204 -- prog is the operator-configured helper (ffmpeg, pdftoppm) run without a shell, scrubbed env, fenced cwd, capped output and a timeout
-	cmd := exec.CommandContext(runCtx, prog, argv[1:]...)
+	// #nosec G204 -- prog is the operator-configured helper (ffmpeg, pdftoppm), or the operator's wrapper with the helper's resolved path in args, run without a shell, scrubbed env, fenced cwd, capped output and a timeout
+	cmd := exec.CommandContext(runCtx, prog, args...)
 	cmd.Dir = dir
 	cmd.Env = hostenv.Scrubbed(spec.ExtraEnv)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
