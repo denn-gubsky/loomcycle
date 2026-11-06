@@ -292,9 +292,21 @@ credentialdef  op=oauth_connect_start  scope=user  name=docs-server
 Open `verification_uri`, enter `user_code` and approve. The replica that
 served the start polls for the grant; `oauth_connect_status` reports the
 state (`pending_connect`, `connected`, `needs_reauth`, `revoked`), the account
-it is connected as (from the server's userinfo, only when it grants `openid`),
-when the access token expires and the last error. If that replica restarted
-meanwhile, a status check finishes the connect. `oauth_disconnect` revokes the
+it is connected as, when the access token expires and the last error. If that
+replica restarted meanwhile, a status check finishes the connect.
+
+The account (`connected_as`) is display-only and comes from, in order: the
+server's userinfo endpoint (when it advertises one and the grant includes
+`openid`); else the OpenID Connect `id_token` in the token response, used
+only once verified — signed (RS/PS/ES/EdDSA, never `none` or HS*) by a key
+from the `jwks_uri` the server's metadata names on its own or the resource's
+https host, issued by that exact issuer to this client, and unexpired (60 s
+leeway) — taking `email` (unless `email_verified` is false), else
+`preferred_username`, else `sub`; else it stays empty. A grant connected with
+no name takes one from the first refresh whose `id_token` verifies. The
+`id_token` itself is never stored, logged or returned. A grant connected
+before the runtime knew the `jwks_uri` has none sealed: connect it again to
+fill `connected_as`. `oauth_disconnect` revokes the
 grant at the server (best effort) and clears it here; the registration is
 kept for the next connect.
 

@@ -138,7 +138,11 @@ Its owner connects it **outside a run**: `op=oauth_connect_start` returns a
 `user_code` and a `verification_uri` to open and approve (never the device
 code); `op=oauth_connect_status` reports the state (`pending_connect`,
 `connected`, `needs_reauth`, `revoked`), `connected_as` and when the access
-token expires; `op=oauth_disconnect` revokes the grant and clears it. Tenant
+token expires; `op=oauth_disconnect` revokes the grant and clears it.
+`connected_as` names the account from the server's userinfo, else from a
+verified OpenID Connect `id_token` (signed by a key from the issuer's own
+`jwks_uri`, for this client, unexpired): its `email`, else
+`preferred_username`, else `sub`; else it is empty. Tenant
 scope needs an operator or `substrate:tenant`, agent scope an operator; user
 scope is your own.
 
