@@ -213,7 +213,7 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 		// with it. As with the Bash tool, a descendant that calls setsid()
 		// escapes the group — this is not a container; run loomcycle in one
 		// for hard isolation.
-		// #nosec G204 -- the operator's host-command fallback: name is on the operator's allowlist and runs without a shell, cwd-bound, with a scrubbed env and the run's timeout
+		// #nosec G204 -- the documented host-command escape hatch: name must be on the operator's fallback allowlist, but the model picks its arguments, by design; no shell, cwd-bound, scrubbed env, the run's timeout
 		cmd := exec.CommandContext(ctx, name, inv.Args...)
 		cmd.Dir = hostCwd
 		procgroup.Bind(cmd)
