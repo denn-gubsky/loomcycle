@@ -902,3 +902,33 @@ func TestKBLinker_MergedIntoOutsideSubjectModeIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestKBLinker_TitleQuoteIsCheckedAgainstTheTitle: an evidence row whose part is
+// "title" quotes the chunk's title (a document's name lives on its root's title,
+// in no body), so the evidence check reads the title for it and leaves a title
+// that still says it alone. A title row whose title changed is staled, and the
+// same text as a BODY row is staled too — the part decides where it is looked
+// for, so neither control can pass by accident.
+func TestKBLinker_TitleQuoteIsCheckedAgainstTheTitle(t *testing.T) {
+	f := maintainFixture()
+	ok := citeStatement("st-title-ok", "c1", "x1")
+	ok.Evidence = []*kbEvidence{{ID: "ev-title-ok", ChunkID: "x1", Quote: "TITLE-X1", Part: "title"}}
+	lost := citeStatement("st-title-lost", "c1", "x2")
+	lost.Evidence = []*kbEvidence{{ID: "ev-title-lost", ChunkID: "x2", Quote: "TITLE-RENAMED", Part: "title"}}
+	asBody := citeStatement("st-title-as-body", "c-short", "x1")
+	asBody.Evidence = []*kbEvidence{{ID: "ev-title-as-body", ChunkID: "x1", Quote: "TITLE-X1"}}
+	f.statements = []*kbStatement{ok, lost, asBody}
+
+	runLinker(t, f, maintainInput)
+
+	if got := actionsOf(f, "st-title-ok"); strings.Contains(got, "stale") || strings.Contains(got, "demote") {
+		t.Errorf("st-title-ok actions = %q, want its title quote left alone", got)
+	}
+	if got := actionsOf(f, "st-title-lost"); got != "stale_evidence,demote" {
+		t.Errorf("st-title-lost actions = %q, want its gone title quote staled then a demote", got)
+	}
+	if got := actionsOf(f, "st-title-as-body"); got != "stale_evidence,demote" {
+		t.Errorf("st-title-as-body actions = %q, want a body row quoting only the title staled", got)
+	}
+	noViolations(t, f)
+}

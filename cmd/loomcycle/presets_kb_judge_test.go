@@ -578,3 +578,31 @@ func TestKBJudge_OnlyASubjectWithTextIsJudgedWithoutQuotes(t *testing.T) {
 		t.Errorf("a subject of a document with no text was judged: report %v", rep)
 	}
 }
+
+// A duplicate_of proposal's evidence is each side's title (find_duplicates
+// quotes the two root titles, part title): the judge reads the quote from the
+// cited chunk's TITLE at its span, not from the body, so the proposal is judged
+// rather than skipped, and the prompt says the quote is a title.
+func TestKBJudge_ATitleQuoteIsReadFromTheChunksTitle(t *testing.T) {
+	f := newKBJudgeFixture()
+	f.edges["s1"]["evidence"] = []map[string]any{
+		{"chunk_id": "ca", "quote": "Article 4", "part": "title", "char_start": 0, "char_end": 9},
+		{"chunk_id": "cb", "quote": "Section 2", "part": "title", "char_start": 0, "char_end": 9},
+	}
+	rep := runKBJudge(t, f, `{"scope":"tenant"}`)
+	if len(f.prompts) != 1 {
+		t.Fatalf("the proposal was not judged: report %v", rep)
+	}
+	p := f.prompts[0]
+	for _, want := range []string{"in the FROM passage's title", "<<Article 4>>", "in the TO passage's title", "<<Section 2>>"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the verdict prompt lacks %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "<<BODYFROM") || strings.Contains(p, "<<BODYTO") {
+		t.Errorf("a title quote was read from the body:\n%s", p)
+	}
+	if sent := kbJudgementsSent(t, f); len(sent) != 1 || sent[0]["id"] != "s1" {
+		t.Errorf("judgements = %v, want s1 judged", sent)
+	}
+}

@@ -149,8 +149,19 @@ type kbChunk struct {
 
 type kbEvidence struct {
 	ID, ChunkID, Scope, NaturalKey, Quote string
-	Start, End                            int
-	Stale                                 bool
+	// Part is "title" for a quote of the chunk's title, "" for its body.
+	Part       string
+	Start, End int
+	Stale      bool
+}
+
+// evidenceText is the text of c a quote of part is checked against, as the
+// runtime reads it.
+func evidenceText(c kbChunk, part string) string {
+	if part == "title" {
+		return c.Title
+	}
+	return c.Body
 }
 
 type kbStatement struct {
@@ -644,8 +655,10 @@ func (f *kbFixture) answerCitations(in map[string]any) (tools.Result, error) {
 func (f *kbFixture) checkSpan(ev map[string]any) bool {
 	cid, _ := ev["chunk_id"].(string)
 	quote, _ := ev["quote"].(string)
+	part, _ := ev["part"].(string)
 	c, ok := f.chunkByID(cid)
-	if !ok || quote == "" || !strings.Contains(c.Body, quote) {
+	text := evidenceText(c, part)
+	if !ok || quote == "" || !strings.Contains(text, quote) {
 		f.violate("evidence quote %q does not occur in chunk %s", quote, cid)
 		return false
 	}
@@ -654,7 +667,7 @@ func (f *kbFixture) checkSpan(ev map[string]any) bool {
 	if !sok && !eok {
 		return true
 	}
-	r := []rune(c.Body)
+	r := []rune(text)
 	if !sok || !eok || s < 0 || e > float64(len(r)) || s >= e || string(r[int(s):int(e)]) != quote {
 		f.violate("evidence span [%v,%v) in chunk %s does not slice to its quote %q (rune offsets)", ev["char_start"], ev["char_end"], cid, quote)
 		return false
@@ -685,7 +698,8 @@ func (f *kbFixture) answerPropose(in map[string]any) (tools.Result, error) {
 		quote, _ := ev["quote"].(string)
 		s, _ := ev["char_start"].(float64)
 		e, _ := ev["char_end"].(float64)
-		evs = append(evs, &kbEvidence{ChunkID: cid, Quote: quote, Start: int(s), End: int(e)})
+		part, _ := ev["part"].(string)
+		evs = append(evs, &kbEvidence{ChunkID: cid, Quote: quote, Part: part, Start: int(s), End: int(e)})
 	}
 	status := "proposed"
 	if f.autoAssert[kind] {
@@ -707,7 +721,7 @@ func (f *kbFixture) answerPropose(in map[string]any) (tools.Result, error) {
 			for _, ev := range evs {
 				held := false
 				for _, h := range s.Evidence {
-					held = held || (h.ChunkID == ev.ChunkID && h.Quote == ev.Quote)
+					held = held || (h.ChunkID == ev.ChunkID && h.Quote == ev.Quote && h.Part == ev.Part)
 				}
 				if !held {
 					fresh = append(fresh, ev)
@@ -756,6 +770,9 @@ func (f *kbFixture) statementJSON(s *kbStatement, previewCap int) map[string]any
 		}
 		if e.Stale {
 			row["stale"] = true
+		}
+		if e.Part != "" {
+			row["part"] = e.Part
 		}
 		ev = append(ev, row)
 	}
@@ -911,7 +928,7 @@ func (f *kbFixture) answerMaintain(in map[string]any) (tools.Result, error) {
 		e := evidenceRow()
 		to, _ := in["chunk_id"].(string)
 		c, ok := f.chunkByID(to)
-		if e == nil || !ok || !strings.Contains(c.Body, e.Quote) {
+		if e == nil || !ok || !strings.Contains(evidenceText(c, e.Part), e.Quote) {
 			return kbErr("maintain_statement: evidence_quote_not_found in the chunk to relocate to")
 		}
 		e.ChunkID, e.Stale = to, false
