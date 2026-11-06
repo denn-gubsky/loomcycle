@@ -412,6 +412,30 @@ it half-configured.
 The bridge keeps which loomcycle session each chat is in under the
 `telegram-bridge-data` volume, so a restart continues every conversation.
 
+### Voice messages
+
+With `TELEGRAM_BRIDGE_VOICE=1` a person can send the bot a voice note and hear
+the reply as one (RFC GA; `docs/SPEECH.md` → "Through a chat bridge"). In this
+order:
+
+1. **loomcycle 1.141 or later.** The bridge asks for a speech grant on each
+   user's token, and an older loomcycle refuses the request, so with voice on
+   the bridge could not mint tokens at all.
+2. **Speech engines** in `config/loomcycle.yaml`: `speech:` and
+   `transcription.stt:` (the `loomcycle-speech` speaches), with `speech.encode`
+   (an ffmpeg Opus command; the `loomcycle-browser` image has ffmpeg) and
+   `speech.format: ogg`, since Telegram shows only Opus or MP3 as a voice note.
+   `GET /v1/_speech` should list both directions and `ogg`.
+3. **The bridge:** `BRIDGE_TELEGRAM_VERSION=0.4.0` (or later),
+   `TELEGRAM_BRIDGE_VOICE=1`, and `TELEGRAM_BRIDGE_RATE_PER_MINUTE=12` or more:
+   a voice turn takes three starts from the user's rate. Restart the bridge, so
+   it mints fresh tokens with the grant.
+
+In a private chat a voice note is transcribed and answered in text, then as a
+voice note captioned "AI voice". `/voice on|off|auto` changes when replies are
+spoken. If a voice note gets "I can only read text for now.", check that user's
+`effective.surfaces.transcription` in `GET /v1/_me`.
+
 ---
 
 ## Upgrading an existing deployment to 1.108.0

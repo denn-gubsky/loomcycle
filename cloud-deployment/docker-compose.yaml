@@ -393,6 +393,15 @@ services:
       TELEGRAM_BRIDGE_ALLOW_ANYONE: ${TELEGRAM_BRIDGE_ALLOW_ANYONE:-}
       TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS: ${TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS:-}
       TELEGRAM_BRIDGE_STREAMING: ${TELEGRAM_BRIDGE_STREAMING:-1}
+      # Voice messages (RFC GA; bridge 0.4.0+, loomcycle 1.141+ with speech
+      # engines): off unless TELEGRAM_BRIDGE_VOICE=1. Unset values take the
+      # bridge's defaults (rate 6/min, burst 10; reply mirror).
+      BRIDGE_VOICE: ${TELEGRAM_BRIDGE_VOICE:-}
+      BRIDGE_VOICE_REPLY: ${TELEGRAM_BRIDGE_VOICE_REPLY:-}
+      # A voice turn takes three starts (transcribe, run, speak): raise the
+      # rate with voice on.
+      BRIDGE_RATE_PER_MINUTE: ${TELEGRAM_BRIDGE_RATE_PER_MINUTE:-}
+      BRIDGE_RATE_BURST: ${TELEGRAM_BRIDGE_RATE_BURST:-}
       # setWebhook at every start, so the URL and secret Telegram holds always
       # match this deployment's.
       TELEGRAM_BRIDGE_PUBLIC_URL: ${TELEGRAM_BRIDGE_PUBLIC_URL:-https://telegram.loomcycle.cloud}
