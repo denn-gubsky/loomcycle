@@ -432,3 +432,56 @@ func TestAuditVerify_RotationPointSurvivesAPrune(t *testing.T) {
 		t.Errorf("a previous-key row after a pruned rotation point: %+v, %v; want a break at 6", rep, err)
 	}
 }
+
+// A rotation after a prune must not break the pruned chain: the anchor's
+// "rotated" holds only for the key that signed the anchor. Once that key is
+// the previous one, rows signed with it after the anchor are legitimate.
+// Then a second rotation, after another prune, verifies the same way.
+func TestAuditVerify_ARotationAfterAPruneKeepsTheChainVerifiable(t *testing.T) {
+	s, _ := chainFixture(t, 3)
+	ctx := context.Background()
+	k1 := testKeys.Current
+	k2 := []byte("the-second-audit-chain-key-32byt")
+	k3 := []byte("the-third--audit-chain-key-32byt")
+	record := func(key []byte, n int) {
+		t.Helper()
+		sink, err := auditchain.NewStoreSink(s, auditchain.ChainKeys{Current: key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < n; i++ {
+			if err := sink.Record(audit.Event{Action: "acl_edit", TargetTenant: "t1"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := auditchain.Prune(ctx, s, auditchain.ChainKeys{Current: k1}, "t1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	record(k1, 2) // rows 4-5, signed before the rotation
+	first := auditchain.ChainKeys{Current: k2, Previous: k1}
+	if rep, err := auditchain.Verify(ctx, s, first, "t1"); err != nil || !rep.OK {
+		t.Fatalf("after a rotation that follows a prune: %+v, %v", rep, err)
+	}
+	record(k2, 2) // rows 6-7 under the new key
+	if rep, err := auditchain.Verify(ctx, s, first, "t1"); err != nil || !rep.OK {
+		t.Fatalf("rows on both sides of the rotation: %+v, %v", rep, err)
+	}
+	// Both chains pruned past every row k1 signed: after the next rotation
+	// k1 verifies nothing, so an unpruned k1 row would no longer verify.
+	for _, tenant := range []string{"t1", ""} {
+		if _, err := auditchain.Prune(ctx, s, first, tenant, time.Now().Add(time.Hour)); err != nil {
+			t.Fatalf("pruning %q across the rotation: %v", tenant, err)
+		}
+	}
+	record(k2, 1) // row 8, before the second rotation
+	second := auditchain.ChainKeys{Current: k3, Previous: k2}
+	if rep, err := auditchain.Verify(ctx, s, second, "t1"); err != nil || !rep.OK {
+		t.Fatalf("after a second rotation: %+v, %v", rep, err)
+	}
+	record(k3, 1)
+	record(k2, 1) // forged with the rotated-out key after the new key signed
+	if rep, err := auditchain.Verify(ctx, s, second, "t1"); err != nil || rep.OK || rep.BreakSeq != 10 {
+		t.Errorf("a previous-key row after the second rotation point: %+v, %v; want a break at 10", rep, err)
+	}
+}

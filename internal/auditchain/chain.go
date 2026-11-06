@@ -222,12 +222,21 @@ func (k ChainKeys) checkAnchor(head store.AuditHead) (anchorState, string) {
 			return anchorState{}, "the chain has no retention anchor but its anchor fields are set"
 		}
 		return anchorState{}, ""
-	case !k.check(head.AnchorMAC, macAnchor, head.TenantID, head.AnchorSeq, head.AnchorHash, head.AnchorState):
+	}
+	by := k.which(head.AnchorMAC, macAnchor, head.TenantID, head.AnchorSeq, head.AnchorHash, head.AnchorState)
+	if by == signedByNone {
 		return anchorState{}, "the retention anchor's signature does not verify"
 	}
 	st, err := decodeAnchorState(head.AnchorState)
 	if err != nil {
 		return anchorState{}, "the retention anchor's state does not decode"
+	}
+	// "rotated" speaks of the key that signed the anchor. An anchor that
+	// verifies only under the previous key was signed before a rotation that
+	// has happened since, so the rows after it may be signed with that
+	// (now previous) key: the rotation point starts over.
+	if by == signedByPrevious {
+		st.Rotated = false
 	}
 	return st, ""
 }
@@ -603,7 +612,10 @@ func verifyChain(ctx context.Context, r ChainReader, keys ChainKeys, tenant stri
 	if prev != head.Hash {
 		return rep.broken(head.Seq, "the head does not match the last row"), nil
 	}
-	if head.Seq > 0 {
+	// A chain pruned up to its head is vouched for by the anchor, which the
+	// prune signed with a newer key than the head's own MAC may have.
+	prunedToHead := head.AnchorSeq > 0 && head.Seq == head.AnchorSeq && head.Hash == head.AnchorHash
+	if head.Seq > 0 && !prunedToHead {
 		if w := keys.which(head.MAC, macHead, tenant, head.Seq, head.Hash); w == signedByNone || (rotated && w == signedByPrevious) {
 			return rep.broken(head.Seq, "the head's signature does not verify"), nil
 		}
