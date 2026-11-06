@@ -551,19 +551,6 @@ func (m *Manager) Rebind(sql string) string {
 // operator's asset cap). A statement whose result goes back to an agent uses
 // QueryCapped.
 func (m *Manager) Query(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error) {
-	return m.query(ctx, key, statement, args, 0)
-}
-
-// QueryCapped is Query with the result also bounded by MaxResultBytes. It is
-// the read for a statement an agent wrote (Memory sql_query, Document
-// query_chunks sql): without it, one SELECT of a few wide rows could make the
-// runtime hold and serialise gigabytes, up to MaxRows times the engine's value
-// limit.
-func (m *Manager) QueryCapped(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error) {
-	return m.query(ctx, key, statement, args, m.cfg.MaxResultBytes)
-}
-
-func (m *Manager) query(ctx context.Context, key ScopeKey, statement string, args []any, maxBytes int) (*QueryResult, error) {
 	if err := validateStatementForDialect(statement, true, m.dialect); err != nil {
 		return nil, err
 	}
@@ -571,7 +558,26 @@ func (m *Manager) query(ctx context.Context, key ScopeKey, statement string, arg
 		return nil, err
 	}
 	defer m.touch(key)
-	return m.backend.query(ctx, m.onPlane(key), statement, args, maxBytes)
+	return m.backend.query(ctx, m.onPlane(key), statement, args, 0)
+}
+
+// QueryCapped is Query with the result also bounded by MaxResultBytes. It is
+// the read for a statement an agent wrote (Memory sql_query, Document
+// query_chunks sql): without it, one SELECT of a few wide rows could make the
+// runtime hold and serialise gigabytes, up to MaxRows times the engine's value
+// limit.
+//
+// It repeats Query's checks rather than sharing a helper so that each entry
+// point taking a ScopeKey visibly validates it (TestScopeKey_EveryEntryPointValidates).
+func (m *Manager) QueryCapped(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error) {
+	if err := validateStatementForDialect(statement, true, m.dialect); err != nil {
+		return nil, err
+	}
+	if err := key.validate(); err != nil {
+		return nil, err
+	}
+	defer m.touch(key)
+	return m.backend.query(ctx, m.onPlane(key), statement, args, m.cfg.MaxResultBytes)
 }
 
 // Exec runs a DDL/DML statement against the scope database. The statement is

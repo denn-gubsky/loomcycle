@@ -95,6 +95,12 @@ func TestSqlmem_ResultBytesAreCapped(t *testing.T) {
 		}
 		check(t, res)
 
+		// The capped door validates the scope key like Query does.
+		bad := ScopeKey{Tenant: "t1", Scope: "agent", ScopeID: "a\x1fb"}
+		if _, err := m.QueryCapped(ctx, bad, stmt, nil); err == nil {
+			t.Fatal("QueryCapped accepted a separator-bearing scope id")
+		}
+
 		txnID := "txn-" + tier
 		if _, err := m.BeginTxn(ctx, txnID, "root-"+tier, key); err != nil {
 			t.Fatalf("BeginTxn: %v", err)
