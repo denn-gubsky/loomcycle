@@ -156,8 +156,8 @@ or on the Document tool's first use of the scope, whichever comes first:
 A crash at any point is safe. Until step 3 commits, the document file does not
 count (whatever it holds is replaced at the next attempt) and the `.db` file
 still holds every row; the next start copies them. After it commits, the copy is
-complete; the leftovers in `<scope>.db` are dropped at the next start, after
-merging in any row whose key the document file lacks (see rollback below). The
+complete; the leftovers in `<scope>.db` are exact duplicates and are dropped at
+the next start (anything else found there is quarantined, see below). The
 copy runs inside the engine, so a large scope is not held in memory. After the
 drop the `.db` file is compacted (`VACUUM`, then its WAL is truncated), and the
 freed pages are zeroed even if that fails, so the moved rows are not left
@@ -192,9 +192,43 @@ it:
 So to go back, restore the backup of the sqlmem root (and the main store) taken
 before the upgrade, or a runtime snapshot taken by the older release. If a
 rollback without that backup cannot be avoided, set `LOOMCYCLE_DEADLINK_GC_MS=0`
-on the older release **before it starts**. On the next upgrade, documents the
-older release wrote are merged into the document file (rows whose key it lacks;
-logged with their counts), so they are not lost.
+on the older release **before it starts**. On the next upgrade, what the older
+release wrote is quarantined (below), not merged.
+
+**Quarantine files.** Once a scope's documents have moved, its `<scope>.db` is
+the file Memory SQL writes, so the runtime never copies rows from it into the
+document file. If it finds tables there named like document tables holding rows
+that are not exact copies of the document file's (an older release ran on the
+data, or something got past the name check), it copies those tables whole into
+`<scope>.leftover-<n>.db` beside the scope, drops them from `<scope>.db`, and
+logs an **error** naming the file and the row count per table. The document
+file is unchanged. A quarantine file is opened by nothing: it is not a scope,
+GC does not count it, and dropping or erasing the scope deletes it with the
+scope's other files. It is not in snapshots.
+
+To inspect one and merge what you trust, stop loomcycle (or make sure nothing
+uses the scope), back up the scope's files, then with the `sqlite3` CLI:
+
+```sh
+cd <DataDir>/sqlmem/<tenant>/<scope>
+sqlite3 -readonly alice.leftover-1793950594800951000.db '.tables'
+sqlite3 -readonly alice.leftover-1793950594800951000.db 'SELECT id, title FROM chunks'
+# merge chosen rows (here: documents and chunks the document file lacks)
+sqlite3 alice.doc.db <<'SQL'
+ATTACH 'alice.leftover-1793950594800951000.db' AS q;
+BEGIN;
+INSERT OR IGNORE INTO documents SELECT * FROM q.documents WHERE id IN ('…');
+INSERT OR IGNORE INTO chunks    SELECT * FROM q.chunks    WHERE document_id IN ('…');
+COMMIT;
+DETACH q;
+SQL
+rm alice.leftover-1793950594800951000.db   # once you are done with it
+```
+
+`SELECT *` copies by column position: check first that the two tables list the
+same columns in the same order (`PRAGMA table_info(chunks)` in each), and name
+the columns otherwise. A merged chunk's body lives in Memory, not here; if an
+older release's dead-link GC ran, the body may be gone.
 
 On PostgreSQL the engine enforces the boundary through roles. Each scope has
 a second schema and login role for the Document tool's tables (`sqlmem_d_…` /
@@ -224,10 +258,10 @@ sqlite). An older runtime ignores the mark and restores everything into the
 agent's plane, as before. An archive taken before the mark existed (or of a
 sqlite scope not yet moved) restores into the agent's plane, and the first use
 of the scope moves it. Restored over a sqlite scope that already has its
-document file, such an archive's rows are merged in where the document file
-lacks their key, and the live rows are kept (on PostgreSQL the archive's
-document tables are dropped unread). A sqlite restore writes the document
-file's rows and its mark in one transaction.
+document file, such an archive's document tables are quarantined (above) unless
+they duplicate the live rows, and the live rows are kept (on PostgreSQL they are
+dropped unread). A sqlite restore writes the document file's rows and its mark
+in one transaction.
 
 ## Storage tiers — SQL Memory follows the main backend
 
