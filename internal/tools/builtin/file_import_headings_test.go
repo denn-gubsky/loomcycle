@@ -586,6 +586,28 @@ func TestApplyImportHeadings_LevelRefusals(t *testing.T) {
 	}
 }
 
+// A heading entry on a line that is already a heading would have written
+// "### ## X": it is refused, pointing at as "level", and so is a wrapped
+// title that runs into a heading.
+func TestApplyImportHeadings_HeadingOnAHeadingLineIsRefused(t *testing.T) {
+	for name, tc := range map[string]struct {
+		hs   []ImportHeading
+		want string
+	}{
+		"heading line":      {[]ImportHeading{{Line: 3, Level: 3, As: "heading"}}, `line 3 is already a heading; use as "level"`},
+		"indented heading":  {[]ImportHeading{{Line: 6, Level: 3, As: "heading"}}, "line 6 is already a heading"},
+		"span into heading": {[]ImportHeading{{Line: 4, Level: 3, As: "heading", Lines: 2}}, "line 5 is already a heading"},
+	} {
+		got, err := applyImportHeadings(relevelMD, tc.hs)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want it to mention %q", name, err, tc.want)
+		}
+		if strings.Contains(got, "### ##") {
+			t.Errorf("%s: wrote a heading over a heading: %q", name, got)
+		}
+	}
+}
+
 // Re-levels, additions, markers and drops mix in one call, all by the file's
 // own line numbers, in line order.
 func TestApplyImportHeadings_LevelMixesWithHeadingsAndDrops(t *testing.T) {

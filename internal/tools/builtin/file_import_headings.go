@@ -177,6 +177,11 @@ func checkImportHeading(h ImportHeading, lines []string, n int) (int, error) {
 			if strings.TrimSpace(lines[l-1]) == "" {
 				return 0, fmt.Errorf("line %d is blank, and a heading needs text", l)
 			}
+			// Prefixing a heading line would write "### ## X", a heading
+			// whose text starts with the old run of "#".
+			if isATXHeadingLine(lines[l-1]) {
+				return 0, fmt.Errorf("line %d is already a heading; use as \"level\" to change its level, or start a wrapped title after it", l)
+			}
 		}
 		return end, nil
 	case importHeadingAsMarker:

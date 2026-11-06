@@ -441,7 +441,7 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 		structured, err := applyImportHeadings(text, in.Headings)
 		if err != nil {
 			return errValidation("import: headings: "+err.Error()+". Nothing was imported.",
-				"Give each entry a line of the file (counted from 1), in increasing order, a level from 2 to 6, and as heading or marker; a marker needs a one-line title. A drop names a line that is already a heading and takes nothing else. To change an existing heading's level use as level with its line and the new level."), nil
+				"Give each entry a line of the file (counted from 1), in increasing order, a level from 2 to 6, and as heading or marker; a marker needs a one-line title. A drop names a line that is already a heading and takes nothing else. To change an existing heading's level use as level with its line and the new level, never as heading."), nil
 		}
 		text = structured
 	}
