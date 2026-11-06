@@ -2642,6 +2642,7 @@ components:
             - set_path
             - copy_documents
             - move_documents
+            - find_duplicates
             - create_chunk
             - propose_entity
             - propose_subject
@@ -2723,6 +2724,8 @@ components:
         dry_run: { type: boolean, description: "copy_documents / move_documents: true (the default) reports without writing." }
         dangling: { type: string, enum: [refuse, drop], description: "move_documents: relations leaving the set refuse the move (refuse, the default) or are deleted with the source (drop)." }
         expect_count: { type: integer, description: "move_documents: required with dry_run false — the dry run's counts.documents." }
+        basis: { type: array, items: { type: string, enum: [sha256, title] }, description: "find_duplicates: how documents match — sha256 (the same text) and/or title (the same title once copy markers are stripped). Omitted = both." }
+        propose: { type: boolean, description: "find_duplicates: true files a duplicate_of proposal per pair; false (the default) only reports." }
     PathToolInput:
       type: object
       additionalProperties: true
