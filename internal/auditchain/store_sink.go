@@ -125,6 +125,11 @@ type obsQueue struct {
 	// pending counts them, guarded by StoreSink.mu.
 	share   int
 	pending map[string]int
+	// outstanding counts the events accepted into the queue and not yet
+	// written — queued, or in the writer's batch in flight — guarded by
+	// StoreSink.mu: what an operator reading Backlog at a drain timeout
+	// needs, with no gap while the writer moves events between the two.
+	outstanding int
 }
 
 // tenantShareDivisor sets the authenticated queue's per-chain share: one
@@ -197,7 +202,8 @@ func (s *StoreSink) startQueue(capacity, share int) *obsQueue {
 }
 
 // Backlog reports what the queues still hold — events waiting to be written,
-// and dropped events per action not yet in a summary row — for a shutdown
+// queued or in the writer's batch in flight, and dropped events per action
+// not yet in a summary row — for a shutdown
 // whose drain ran out of time to log, so the tally is not lost.
 func (s *StoreSink) Backlog() (pending int, dropped map[string]int) {
 	s.mu.Lock()
@@ -207,7 +213,7 @@ func (s *StoreSink) Backlog() (pending int, dropped map[string]int) {
 		if q == nil {
 			continue
 		}
-		pending += len(q.ch)
+		pending += q.outstanding
 		for _, t := range q.dropped {
 			for a, n := range t.counts {
 				dropped[a] += n
@@ -279,6 +285,7 @@ func (s *StoreSink) enqueue(c eventClass, ev audit.Event) bool {
 	select {
 	case q.ch <- ev:
 		q.pending[tenant]++
+		q.outstanding++
 	default:
 		s.countDropLocked(q, ev)
 	}
@@ -317,6 +324,9 @@ func (s *StoreSink) writer(q *obsQueue) {
 			}
 		}
 		s.writeBatch(q, batch)
+		s.mu.Lock()
+		q.outstanding -= len(batch)
+		s.mu.Unlock()
 		s.writeDropSummaries(q, false)
 	}
 	s.writeDropSummaries(q, true)
