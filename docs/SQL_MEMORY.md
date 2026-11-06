@@ -153,21 +153,48 @@ or on the Document tool's first use of the scope, whichever comes first:
    document plane, in **one transaction** on the document file.
 4. The old tables are dropped from `<scope>.db`.
 
-A crash at any point is safe. Before step 3 commits, the document file does not
-count and the `.db` file still holds every row; the next start copies them.
-After it commits, the copy is complete, and the next start drops the leftovers in
-`<scope>.db` without reading them. The copy runs inside the engine, so a large
-scope is not held in memory. Triggers, views and extra columns an agent attached
-to the old tables are not carried over. A scope that is never used again and
-that the boot pass could not move (for example because it was busy) keeps its
-tables in `<scope>.db` until its next use, still behind the name check above.
+A crash at any point is safe. Until step 3 commits, the document file does not
+count (whatever it holds is replaced at the next attempt) and the `.db` file
+still holds every row; the next start copies them. After it commits, the copy is
+complete; the leftovers in `<scope>.db` are dropped at the next start, after
+merging in any row whose key the document file lacks (see rollback below). The
+copy runs inside the engine, so a large scope is not held in memory. After the
+drop the `.db` file is compacted (`VACUUM`, then its WAL is truncated), and the
+freed pages are zeroed even if that fails, so the moved rows are not left
+readable in it. Triggers, views and extra columns an agent attached to the old
+tables are not carried over. A scope that is never used again and that the boot
+pass could not move (for example because it was busy) keeps its tables in
+`<scope>.db` until its next use, still behind the name check above.
 
-**Back up before upgrading, and do not downgrade past the move.** An older
-release does not know the `.doc.db` file: it sees a scope with no documents and
-starts new, empty document tables in `<scope>.db`. Documents written there by the
-older release are dropped, unread, when a newer release next starts, because the
-scope's document file is already the authority. To go back, restore the backup
-of the sqlmem root taken before the upgrade (or a runtime snapshot).
+While the boot pass runs, the readers that do not provision a scope — the
+ontology resolver, document labels and source spans in memory recall, the
+change feed — see no documents in a scope it has not reached yet. On a large
+deployment that window lasts as long as the pass; the Document tool itself is
+unaffected (its first use of a scope moves it).
+
+The quota counts both files, each as the pages that hold data
+(`page_count - freelist_count`), so a moved scope is charged for what it holds,
+not for the space the move freed.
+
+**Back up before upgrading. Rolling back past the move means restoring that
+backup.** An older release does not know the `.doc.db` file. Run on moved data,
+it:
+- sees every moved scope as holding no documents, and starts empty document
+  tables in `<scope>.db`;
+- runs its dead-link GC (on by default, hourly), which, once any chunk row
+  exists in those new tables, treats the stored body of every moved document's
+  chunks as orphaned and **deletes it from Memory**. That loss survives a later
+  re-upgrade;
+- lists `<scope>.doc.db` as a scope of its own (`<scope>.doc`) and may create
+  stray files for it;
+- leaves the moved documents out of its snapshots.
+
+So to go back, restore the backup of the sqlmem root (and the main store) taken
+before the upgrade, or a runtime snapshot taken by the older release. If a
+rollback without that backup cannot be avoided, set `LOOMCYCLE_DEADLINK_GC_MS=0`
+on the older release **before it starts**. On the next upgrade, documents the
+older release wrote are merged into the document file (rows whose key it lacks;
+logged with their counts), so they are not lost.
 
 On PostgreSQL the engine enforces the boundary through roles. Each scope has
 a second schema and login role for the Document tool's tables (`sqlmem_d_…` /
@@ -196,9 +223,11 @@ document plane restores that part straight into it (the `.doc.db` file on
 sqlite). An older runtime ignores the mark and restores everything into the
 agent's plane, as before. An archive taken before the mark existed (or of a
 sqlite scope not yet moved) restores into the agent's plane, and the first use
-of the scope moves it. Restored over a scope that already has its document
-plane, such an archive's document tables are dropped unread and the live ones
-kept.
+of the scope moves it. Restored over a sqlite scope that already has its
+document file, such an archive's rows are merged in where the document file
+lacks their key, and the live rows are kept (on PostgreSQL the archive's
+document tables are dropped unread). A sqlite restore writes the document
+file's rows and its mark in one transaction.
 
 ## Storage tiers — SQL Memory follows the main backend
 
