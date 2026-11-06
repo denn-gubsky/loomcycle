@@ -262,6 +262,8 @@ func ontologyGuardExemption(op string) string {
 		return "may file a placeholder for a cited work, which is a new document"
 	case "lease", "release":
 		return "writes the scope's lease table, not a document"
+	case "find_duplicates":
+		return "files its proposals through propose_statement, which passes every gate itself"
 	}
 	return ""
 }

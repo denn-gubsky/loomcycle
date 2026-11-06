@@ -25,6 +25,7 @@ var statementMethodOps = map[string]bool{
 	"propose_statement":  true,
 	"maintain_statement": true, // the judge of what it expires, demotes or merges
 	"upsert_chunk":       true, // its relation statement; its runtime edges keep method runtime
+	"find_duplicates":    true, // the proposals it files, each checked again by propose_statement
 }
 
 // statementLinkGrant and statementRememberGrant are the statement_methods values

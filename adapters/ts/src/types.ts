@@ -4206,6 +4206,7 @@ export type DocumentToolInput = {
     | "set_path"
     | "copy_documents"
     | "move_documents"
+    | "find_duplicates"
     | "create_chunk"
     | "upsert_chunk"
     | "get_chunk"

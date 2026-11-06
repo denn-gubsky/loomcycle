@@ -169,7 +169,7 @@ func (d *Document) copyDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 		return errValidation(op+": a copy into the same scope needs a path_map",
 			"Every copy would take a name its original already holds. Pass path_map, e.g. {\"/docs\": \"/docs-copy\"}."), nil
 	}
-	ids, unreadable, refused := d.copySet(ctx, src, op, in, false)
+	ids, unreadable, refused := d.copySet(ctx, src, op, in, false, copyMaxDocuments)
 	if refused != nil {
 		return *refused, nil
 	}
@@ -189,8 +189,8 @@ func (d *Document) copyDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 }
 
 // copySet resolves the call's set: document_ids, under_path and under_paths,
-// their union, each document once, in the order named. allowEmpty: a move with
-// unfinished work to complete may name nothing more.
+// their union, each document once, in the order named, at most limit of them.
+// allowEmpty: a move with unfinished work to complete may name nothing more.
 //
 // A document the caller may not read is left out of the set here, before
 // anything is asked about it, as a listing leaves it out: the plan would
@@ -201,7 +201,7 @@ func (d *Document) copyDocuments(ctx context.Context, src sqlmem.ScopeKey, srcMe
 // stays in the set as unreadable, and the plan answers for it exactly as for
 // an id that names nothing (not_found), so naming ids cannot tell the two
 // apart.
-func (d *Document) copySet(ctx context.Context, src sqlmem.ScopeKey, op string, in docInput, allowEmpty bool) ([]string, map[string]bool, *tools.Result) {
+func (d *Document) copySet(ctx context.Context, src sqlmem.ScopeKey, op string, in docInput, allowEmpty bool, limit int) ([]string, map[string]bool, *tools.Result) {
 	var ids []string
 	var unreadable map[string]bool
 	seen := map[string]bool{}
@@ -251,8 +251,8 @@ func (d *Document) copySet(ctx context.Context, src sqlmem.ScopeKey, op string, 
 			"List the scope's documents with op=query_documents or the Path tool's ls, then pass their ids or the subtree.")
 		return nil, nil, &r
 	}
-	if len(ids) > copyMaxDocuments {
-		r := errValidation(fmt.Sprintf("%s: the set holds %d documents, at most %d per call", op, len(ids), copyMaxDocuments),
+	if len(ids) > limit {
+		r := errValidation(fmt.Sprintf("%s: the set holds %d documents, at most %d per call", op, len(ids), limit),
 			"Split the set: pass a narrower under_path, or document_ids in batches.")
 		return nil, nil, &r
 	}

@@ -67,6 +67,7 @@ and examples, as `Document/<op>` — for example
 | `graph_snapshot` | a whole scope's documents, chunk trees, relations and Path names as columns, paged by whole documents | — |
 | `delete_document` | delete a document, every chunk in it, and its path | `id` or `path` |
 | `set_path` | give an existing document a (further) Path-tree name | `id`, `path` |
+| `find_duplicates` | the copies in a set of documents (same text, or same title without copy markers), each pointed at its original; `propose: true` files them for review | `document_ids` or `under_path` |
 
 **Chunks**
 

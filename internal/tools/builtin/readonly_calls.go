@@ -19,6 +19,7 @@ type documentReadOnlyCall struct {
 	Op                string `json:"op"`
 	Write             string `json:"write"`
 	CreatePlaceholder bool   `json:"create_placeholder"`
+	Propose           bool   `json:"propose"`
 }
 
 // documentReadOnlyOps are the Document ops that change nothing, each with the
@@ -56,6 +57,8 @@ var documentReadOnlyOps = map[string]func(documentReadOnlyCall) bool{
 	"classify": func(in documentReadOnlyCall) bool { return in.Write == "report" },
 	// resolve_anchor files a placeholder document when asked to.
 	"resolve_anchor": func(in documentReadOnlyCall) bool { return !in.CreatePlaceholder },
+	// find_duplicates files a proposal per pair when propose is true.
+	"find_duplicates": func(in documentReadOnlyCall) bool { return !in.Propose },
 }
 
 // documentWriteOps are the Document ops that change something. copy and move
