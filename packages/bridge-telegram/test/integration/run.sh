@@ -14,6 +14,9 @@ TOKEN="it-$(openssl rand -hex 16)"
 # Auth must be on: in open mode loomcycle ignores config principals and every
 # caller is the default admin in tenant "", which cannot mint user tokens.
 ADMIN_TOKEN="it-admin-$(openssl rand -hex 16)"
+# The gate turns the signed audit trail on, which needs a master key: a
+# throwaway one per run (base64 of 32 random bytes), never a committed value.
+SECRET_KEY="$(openssl rand -base64 32)"
 cleanup() {
   [[ -n "${PID:-}" ]] && { kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; }
   echo "logs: $TEST_DIR/boot.log"
@@ -42,6 +45,7 @@ env -i PATH="$PATH" HOME="$TEST_DIR/home" \
   LOOMCYCLE_AUTH_TOKEN="$ADMIN_TOKEN" \
   LOOMCYCLE_TELEGRAM_BRIDGE_IT_TOKEN="$TOKEN" \
   LOOMCYCLE_PUBLIC_URL="$BASE" \
+  LOOMCYCLE_SECRET_KEY="$SECRET_KEY" \
   "$TEST_DIR/loomcycle" --config "$TEST_DIR/loomcycle.yaml" > "$TEST_DIR/boot.log" 2>&1 &
 PID=$!
 for _ in $(seq 1 100); do
