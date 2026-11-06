@@ -196,7 +196,7 @@ const documentInputSchema = `{
 		"survivor_id": {"type": "string", "description": "maintain_statement merge: the live statement of the same from_id, to_id, kind and status that keeps the evidence."},
 		"evidence_id": {"type": "string", "description": "maintain_statement stale_evidence / relocate_evidence: the evidence row, by its id from get_edge."},
 		"chunk_id":    {"type": "string", "description": "maintain_statement relocate_evidence: the chunk the evidence's quote is in now."},
-		"evidence":    {"type": "array", "description": "link_chunks / propose_statement: the text that supports the relation. Each item names ONE source — chunk_id (a chunk of this scope), session_id + event_seq (a chat turn), or scope + natural_key (another scope) — and the verbatim quote. A quote that does not occur in its chunk or turn is refused.", "items": {"type": "object", "properties": {"chunk_id": {"type": "string"}, "session_id": {"type": "string"}, "event_seq": {"type": "integer"}, "scope": {"type": "string", "enum": ["agent","user","tenant"]}, "natural_key": {"type": "string"}, "quote": {"type": "string"}, "char_start": {"type": "integer"}, "char_end": {"type": "integer"}}, "required": ["quote"]}},
+		"evidence":    {"type": "array", "description": "link_chunks / propose_statement: the text that supports the relation. Each item names ONE source — chunk_id (a chunk of this scope), session_id + event_seq (a chat turn), or scope + natural_key (another scope) — and the verbatim quote. A quote that does not occur in its chunk or turn is refused. A chunk quote is from the chunk's body unless part is \"title\": then it is from the chunk's title (a document's name is its root chunk's title), and char_start/char_end count characters of the title.", "items": {"type": "object", "properties": {"chunk_id": {"type": "string"}, "session_id": {"type": "string"}, "event_seq": {"type": "integer"}, "scope": {"type": "string", "enum": ["agent","user","tenant"]}, "natural_key": {"type": "string"}, "quote": {"type": "string"}, "char_start": {"type": "integer"}, "char_end": {"type": "integer"}, "part": {"type": "string", "enum": ["body","title"], "description": "With chunk_id: which text of the chunk the quote is from. Default body."}}, "required": ["quote"]}},
 		"include_proposed": {"type": "boolean", "description": "get_edges (default true) / backlinks (default false) / graph_snapshot (default false): include statements proposed for review and not yet accepted. graph_recall (default false): also follow them."},
 		"after":       {"type": "string", "description": "get_edges / backlinks / list_statements / graph_snapshot: continue a truncated listing — pass the next_cursor from the previous page (list_statements: with the same order; graph_snapshot: page.next_cursor)."},
 		"evidence_document_id": {"type": "string", "description": "list_statements: only statements with an evidence row quoting a chunk of this document."},
@@ -1263,6 +1263,9 @@ func (d *Document) provisionTables(ctx context.Context, key sqlmem.ScopeKey) err
 		return err
 	}
 	if err := d.migrateEdgeStatements(ctx, key); err != nil {
+		return err
+	}
+	if err := d.migrateEvidencePart(ctx, key); err != nil {
 		return err
 	}
 	if err := d.migrateSourceQuote(ctx, key); err != nil {

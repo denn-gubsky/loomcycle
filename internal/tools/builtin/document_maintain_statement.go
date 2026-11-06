@@ -266,21 +266,22 @@ func (d *Document) statementEvidenceRow(ctx context.Context, key sqlmem.ScopeKey
 }
 
 // relocateEvidence re-points a chunk citation to chunk_id after checking its
-// quote occurs there, recomputing the span (characters) and clearing stale.
+// quote occurs there, recomputing the span (characters) and clearing stale. The
+// row keeps its part: a quote of a title is looked for in the new chunk's title.
 func (d *Document) relocateEvidence(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, s *statementRow, in docInput) (int64, *tools.Result, error) {
 	refuse := func(r tools.Result) (int64, *tools.Result, error) { return 0, &r, nil }
 	if in.EvidenceID == "" || in.ChunkID == "" {
 		return refuse(errValidation(maintainOp+": relocate_evidence: evidence_id and chunk_id are required",
 			"Pass the evidence row's id (op=get_edge) and the chunk its quote is in now."))
 	}
-	res, err := d.query(ctx, key, `SELECT COALESCE(chunk_id, ''), quote FROM chunk_edge_evidence WHERE id = ? AND edge_id = ?`, in.EvidenceID, s.ID)
+	res, err := d.query(ctx, key, `SELECT COALESCE(chunk_id, ''), quote, COALESCE(part, '') FROM chunk_edge_evidence WHERE id = ? AND edge_id = ?`, in.EvidenceID, s.ID)
 	if err != nil {
 		return 0, nil, err
 	}
 	if len(res.Rows) == 0 {
 		return refuse(errNotFound(maintainOp+": no such evidence row on that statement: "+in.EvidenceID, "Read the statement's evidence ids with op=get_edge."))
 	}
-	from, quote := asStr(res.Rows[0][0]), asStr(res.Rows[0][1])
+	from, quote, part := asStr(res.Rows[0][0]), asStr(res.Rows[0][1]), asStr(res.Rows[0][2])
 	if from == "" {
 		return refuse(errValidation(maintainOp+": relocate_evidence moves a chunk citation, and this evidence cites a chat turn or another scope", ""))
 	}
@@ -293,13 +294,17 @@ func (d *Document) relocateEvidence(ctx context.Context, key sqlmem.ScopeKey, ms
 	if !readable {
 		return refuse(errNotFound(maintainOp+": no such chunk: "+in.ChunkID, "Pass a chunk of this scope."))
 	}
-	cb, err := d.readBody(ctx, mscope, key, in.ChunkID)
+	text, err := d.evidenceText(ctx, key, mscope, in.ChunkID, part)
 	if err != nil {
 		return 0, nil, err
 	}
-	start, end, found := quoteSpan(cb.Body, quote, nil, nil)
+	start, end, found := quoteSpan(text, quote, nil, nil)
 	if !found {
-		return refuse(errValidation(maintainOp+": evidence_quote_not_found — the evidence's quote does not occur in chunk "+in.ChunkID,
+		where := "chunk " + in.ChunkID
+		if part == edgeEvidencePartTitle {
+			where = "the title of chunk " + in.ChunkID
+		}
+		return refuse(errValidation(maintainOp+": evidence_quote_not_found — the evidence's quote does not occur in "+where,
 			"Relocate it to the chunk whose text holds the quote, or mark it stale (action stale_evidence)."))
 	}
 	n, err := d.execCount(ctx, key, `UPDATE chunk_edge_evidence SET chunk_id = ?, char_start = ?, char_end = ?, stale = 0
@@ -315,7 +320,7 @@ type mergeCounts struct {
 
 // mergeStatement folds s into survivor_id, a live statement of the same from,
 // to and kind: s is expired (judge_reason "merged") and its evidence re-pointed
-// to the survivor, except a row the survivor already holds (same source, quote
+// to the survivor, except a row the survivor already holds (same source, part, quote
 // and span) and any past the survivor's evidence cap — those stay on s, so
 // nothing is deleted. One transaction: a merge whose statement or survivor
 // changed after it was read leaves both as they were (errMaintainChanged).
@@ -356,12 +361,12 @@ func (d *Document) mergeStatement(ctx context.Context, key sqlmem.ScopeKey, s *s
 			return errMaintainChanged
 		}
 		const cols = `id, COALESCE(chunk_id, ''), COALESCE(session_id, ''), COALESCE(event_seq, -1), COALESCE(ref_scope, ''),
-			COALESCE(ref_natural_key, ''), quote, COALESCE(char_start, -1), COALESCE(char_end, -1)`
-		// rowKey is a row's source, quote and span: what makes two rows the same
-		// citation.
+			COALESCE(ref_natural_key, ''), quote, COALESCE(char_start, -1), COALESCE(char_end, -1), COALESCE(part, '')`
+		// rowKey is a row's source, part, quote and span: what makes two rows the
+		// same citation.
 		rowKey := func(r []any) string {
 			return strings.Join([]string{asStr(r[1]), asStr(r[2]), strconv.Itoa(asInt(r[3])), asStr(r[4]), asStr(r[5]),
-				asStr(r[6]), strconv.Itoa(asInt(r[7])), strconv.Itoa(asInt(r[8]))}, "\x00")
+				asStr(r[6]), strconv.Itoa(asInt(r[7])), strconv.Itoa(asInt(r[8])), asStr(r[9])}, "\x00")
 		}
 		held, err := d.queryTxn(ctx, tx, `SELECT `+cols+` FROM chunk_edge_evidence WHERE edge_id = ?`, sv.ID)
 		if err != nil {
