@@ -4922,7 +4922,7 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 		// Raw escape hatch: pass the model's SQL straight to the Manager (NO
 		// Rebind — the model uses the tier's native placeholders; rebinding
 		// could corrupt a `?` inside a string literal). Validator-gated.
-		res, err := d.docSQL().Query(ctx, key, in.SQL, nil)
+		res, err := d.docSQL().QueryCapped(ctx, key, in.SQL, nil)
 		if err != nil {
 			return docRawSQLFail("query_chunks: "+err.Error(), err), nil
 		}

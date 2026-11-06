@@ -54,6 +54,14 @@ type Config struct {
 	// MaxRows caps the rows a Query returns; the remainder is drained and
 	// Truncated is set. 0 = no cap.
 	MaxRows int
+	// MaxResultBytes caps the size of a result an AGENT gets back
+	// (QueryCapped / QueryTxnCapped): rows stop before the one that would cross
+	// it and Truncated is set, as for MaxRows. A first row over it on its own is
+	// refused. Zero or negative takes DefaultMaxResultBytes: unlike the other
+	// bounds there is no "off", because the agent-facing read is the one place
+	// an unset field must not mean unbounded. See collectRows for how a row is
+	// measured.
+	MaxResultBytes int
 	// TxnTimeoutMS bounds how long an explicit transaction (sql_begin) may stay
 	// open before the reaper rolls it back. 0 = no reaper (txns end only on
 	// commit/rollback/run-end).
@@ -89,7 +97,7 @@ type Config struct {
 // statement has passed the security validator. Implemented by sqliteBackend
 // (sqlite.go) and postgresBackend (postgres.go).
 type backend interface {
-	query(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error)
+	query(ctx context.Context, key ScopeKey, statement string, args []any, maxBytes int) (*QueryResult, error)
 	exec(ctx context.Context, key ScopeKey, statement string, args []any, quotaOverride int) (*ExecResult, error)
 	dropRunScope(runID string) (removed bool, err error)
 	// dropScope drops one DURABLE (agent/user) scope: retire its pool, drop its
@@ -307,6 +315,9 @@ func New(cfg Config) (*Manager, error) {
 // newManager wires the facade + the explicit-transaction registry and starts
 // the abandoned-txn reaper. Shared by New (sqlite) and NewPostgres.
 func newManager(d dialect, cfg Config, b backend) *Manager {
+	if cfg.MaxResultBytes <= 0 {
+		cfg.MaxResultBytes = DefaultMaxResultBytes
+	}
 	core := &managerCore{dialect: d, cfg: cfg, backend: b, txns: newTxnRegistry(),
 		lastTouch: make(map[string]time.Time), ensured: make(map[string]struct{})}
 	m := &Manager{managerCore: core, plane: planeAgent}
@@ -533,6 +544,12 @@ func (m *Manager) Rebind(sql string) string {
 // is validated by the Go-layer security floor FIRST (read-only dialect);
 // only then does it reach the backend. A *ErrStatement or a driver error is
 // returned as a plain error — the caller surfaces it as is_error.
+//
+// Query applies MaxRows but NOT MaxResultBytes: it is for statements the
+// runtime writes itself, whose pages are bounded by their own LIMIT and some of
+// which legitimately read one large value (an image chunk's bytes, up to the
+// operator's asset cap). A statement whose result goes back to an agent uses
+// QueryCapped.
 func (m *Manager) Query(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error) {
 	if err := validateStatementForDialect(statement, true, m.dialect); err != nil {
 		return nil, err
@@ -541,7 +558,26 @@ func (m *Manager) Query(ctx context.Context, key ScopeKey, statement string, arg
 		return nil, err
 	}
 	defer m.touch(key)
-	return m.backend.query(ctx, m.onPlane(key), statement, args)
+	return m.backend.query(ctx, m.onPlane(key), statement, args, 0)
+}
+
+// QueryCapped is Query with the result also bounded by MaxResultBytes. It is
+// the read for a statement an agent wrote (Memory sql_query, Document
+// query_chunks sql): without it, one SELECT of a few wide rows could make the
+// runtime hold and serialise gigabytes, up to MaxRows times the engine's value
+// limit.
+//
+// It repeats Query's checks rather than sharing a helper so that each entry
+// point taking a ScopeKey visibly validates it (TestScopeKey_EveryEntryPointValidates).
+func (m *Manager) QueryCapped(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error) {
+	if err := validateStatementForDialect(statement, true, m.dialect); err != nil {
+		return nil, err
+	}
+	if err := key.validate(); err != nil {
+		return nil, err
+	}
+	defer m.touch(key)
+	return m.backend.query(ctx, m.onPlane(key), statement, args, m.cfg.MaxResultBytes)
 }
 
 // Exec runs a DDL/DML statement against the scope database. The statement is
@@ -679,12 +715,26 @@ type rowQueryer interface {
 // than base64 (both sqlite-under-modernc and postgres-under-pgx hand TEXT
 // columns back as []byte). When maxRows is hit, Truncated is set and the
 // caller's deferred rows.Close drains the rest. Shared by both backends.
-func collectRows(rows *sql.Rows, maxRows int) (*QueryResult, error) {
+//
+// maxBytes (0 = none) bounds the result the same way: rows are measured with
+// cellBytes, and the row that would take the total past maxBytes is dropped and
+// Truncated set, so a result never exceeds it. A FIRST row over maxBytes on its
+// own is refused with an *ErrStatement instead — returning it would break the
+// bound, and returning nothing marked truncated would read as an empty table.
+//
+// The driver still reads that one row into memory before it can be measured:
+// neither engine can bound a value before handing it over, and the size of a
+// computed value is not known until it is. One row is bounded by the engine's
+// own value limit (SQLite SQLITE_MAX_LENGTH, 1e9 bytes by default; PostgreSQL
+// 1 GB per field) and by the statement timeout; what this cap removes is
+// holding, encoding and returning maxRows of them.
+func collectRows(rows *sql.Rows, maxRows, maxBytes int) (*QueryResult, error) {
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, err
 	}
 	res := &QueryResult{Columns: cols, Rows: make([][]any, 0)}
+	total := 0
 	for rows.Next() {
 		if maxRows > 0 && len(res.Rows) >= maxRows {
 			res.Truncated = true
@@ -698,6 +748,21 @@ func collectRows(rows *sql.Rows, maxRows int) (*QueryResult, error) {
 		if err := rows.Scan(ptrs...); err != nil {
 			return nil, err
 		}
+		if maxBytes > 0 {
+			size := 0
+			for _, v := range scan {
+				size += cellBytes(v)
+			}
+			if total+size > maxBytes {
+				if len(res.Rows) == 0 {
+					return nil, refuse("the first row of the result is %d bytes, over the %d-byte result limit; "+
+						"select less of it (substr, length) or fewer columns", size, maxBytes)
+				}
+				res.Truncated = true
+				break
+			}
+			total += size
+		}
 		for i, v := range scan {
 			if b, ok := v.([]byte); ok {
 				scan[i] = string(b)
@@ -709,6 +774,29 @@ func collectRows(rows *sql.Rows, maxRows int) (*QueryResult, error) {
 		return nil, err
 	}
 	return res, nil
+}
+
+// DefaultMaxResultBytes is the result budget of an agent's query when
+// Config.MaxResultBytes is not set.
+const DefaultMaxResultBytes = 8 << 20
+
+// resultCellOverhead is what every cell of a result costs on top of its text or
+// bytes: about the in-memory interface value it is held in, and more than the
+// JSON punctuation it is written with. It keeps a result of millions of NULL or
+// numeric cells (a wide SELECT of many rows) inside the byte budget too.
+const resultCellOverhead = 16
+
+// cellBytes is one cell's cost against MaxResultBytes: its length for a string
+// or []byte, plus resultCellOverhead for every cell. Numbers, booleans, times
+// and NULL cost the overhead alone.
+func cellBytes(v any) int {
+	switch x := v.(type) {
+	case string:
+		return resultCellOverhead + len(x)
+	case []byte:
+		return resultCellOverhead + len(x)
+	}
+	return resultCellOverhead
 }
 
 // effectiveQuota returns the quota to enforce for a call: the per-call

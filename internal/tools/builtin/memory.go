@@ -930,9 +930,9 @@ func (m *Memory) execSqlQuery(ctx context.Context, in memoryInput) (tools.Result
 	var res *sqlmem.QueryResult
 	var qerr error
 	if txnID != "" && m.SqlMem.InTxn(txnID) {
-		res, qerr = m.SqlMem.QueryTxn(ctx, txnID, in.Statement, args)
+		res, qerr = m.SqlMem.QueryTxnCapped(ctx, txnID, in.Statement, args)
 	} else {
-		res, qerr = m.SqlMem.Query(ctx, key, in.Statement, args)
+		res, qerr = m.SqlMem.QueryCapped(ctx, key, in.Statement, args)
 	}
 	durMs := time.Since(start).Milliseconds()
 	if qerr != nil {

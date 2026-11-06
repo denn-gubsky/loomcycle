@@ -285,8 +285,9 @@ func (b *sqliteBackend) evictPathLocked(path string) {
 }
 
 // query runs a (already-validated, read-only) statement against the scope
-// database. Rows beyond MaxRows are drained and Truncated is set.
-func (b *sqliteBackend) query(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error) {
+// database. Rows beyond MaxRows, or past maxBytes (0 = none), are drained and
+// Truncated is set.
+func (b *sqliteBackend) query(ctx context.Context, key ScopeKey, statement string, args []any, maxBytes int) (*QueryResult, error) {
 	path, err := key.keyPath(b.cfg.Root)
 	if err != nil {
 		return nil, err
@@ -307,7 +308,7 @@ func (b *sqliteBackend) query(ctx context.Context, key ScopeKey, statement strin
 	}
 	defer rows.Close()
 
-	return collectRows(rows, b.cfg.MaxRows)
+	return collectRows(rows, b.cfg.MaxRows, maxBytes)
 }
 
 // exec runs a (already-validated, read-write) DDL/DML statement against the
