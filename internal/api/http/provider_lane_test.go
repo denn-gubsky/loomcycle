@@ -445,7 +445,7 @@ func TestProviderLane_InteractiveRunCallsAreCounted(t *testing.T) {
 // times out at 300 ms.
 func TestProviderLane_BoundedChildQueueWaitNotCountedAgainstTimeout(t *testing.T) {
 	parentProv := &scriptedProvider{scripts: [][]providers.Event{
-		toolThenDone("tu_spawn", "Agent", `{"name":"child","prompt":"go","timeout_ms":300}`),
+		toolThenDone("tu_spawn", "Agent", `{"name":"child","prompt":"go","timeout_ms":1500}`),
 		textThenDone("parent done"),
 	}}
 	childProv := &scriptedProvider{defaultS: textThenDone("child answered")}
@@ -467,7 +467,10 @@ func TestProviderLane_BoundedChildQueueWaitNotCountedAgainstTimeout(t *testing.T
 	var once sync.Once
 	releaseOther := func() { once.Do(other) }
 	defer releaseOther()
-	time.AfterFunc(900*time.Millisecond, releaseOther)
+	// The budget left after the slot frees must cover the child's own run
+	// setup and store writes under -race on a loaded CI runner (300 ms did
+	// not); the hold still exceeds the timeout so a counted wait would fail.
+	time.AfterFunc(4500*time.Millisecond, releaseOther)
 
 	body := postLaneRun(t, ts, laneRunBody("parent", "parent-bounded"))
 	if strings.Contains(body, "timed out") {
