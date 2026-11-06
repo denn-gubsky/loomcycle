@@ -221,11 +221,13 @@ func TestEmbedderConfig_OllamaLocalIgnoresTheDisabledSentinel(t *testing.T) {
 	}
 }
 
-// TestEmbedderConfig_UnsetKeyEnvKeepsTheHostKey — the compatibility guarantee
-// in the other direction: with api_key_env absent, the per-provider switch's
-// host key is still what authenticates. (base_url is set purely to make the
-// header observable without dialling api.openai.com.)
-func TestEmbedderConfig_UnsetKeyEnvKeepsTheHostKey(t *testing.T) {
+// TestEmbedderConfig_UnsetKeyEnvSendsNoVendorKeyOffVendor — with api_key_env
+// absent, the per-provider switch's host key (OPENAI_API_KEY) is the vendor's
+// key: it authenticates at the vendor's endpoint only, never at an embedder
+// base_url the operator pointed elsewhere. That the key still reaches the
+// vendor's own endpoint is internal/wiring's
+// TestEmbedder_HostVendorKeyStillAuthenticatesAtTheVendor (no dial needed there).
+func TestEmbedderConfig_UnsetKeyEnvSendsNoVendorKeyOffVendor(t *testing.T) {
 	var seenAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenAuth = r.Header.Get("Authorization")
@@ -245,7 +247,7 @@ func TestEmbedderConfig_UnsetKeyEnvKeepsTheHostKey(t *testing.T) {
 	if _, err := e.Embed(context.Background(), []string{"x"}); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
-	if seenAuth != "Bearer host-key-placeholder" {
-		t.Errorf("Authorization = %q, want the per-provider host key when api_key_env is unset", seenAuth)
+	if strings.Contains(seenAuth, "host-key-placeholder") {
+		t.Errorf("Authorization = %q, want no vendor key at an endpoint that is not the vendor's", seenAuth)
 	}
 }

@@ -15,15 +15,14 @@ func init() {
 // config-driven construction the resolver uses (the RFC BF replacement for the
 // pre-registry hardcoded deepseek.New(...)). New() already points the inner key
 // resolution at DEEPSEEK_API_KEY; a config-declared api_key_env re-points it via
-// SetKeyEnvName.
+// SetKeyEnvName, and with none an endpoint other than DeepSeek's API has no key
+// name at all (KeyEnvNameFor).
 func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	d := New(o.APIKey, o.BaseURL, o.StreamOpts, nil)
 	if o.ID != "" {
 		d.id = o.ID
 	}
-	if o.KeyEnvName != "" {
-		d.SetKeyEnvName(o.KeyEnvName)
-	}
+	d.SetKeyEnvName(o.KeyEnvNameFor(d.KeyEnvName(), defaultBaseURL))
 	d.capsPatch = o.Capabilities
 	providers.WarnUnknownOptions(o.Logger, "deepseek", o.Options)
 	return d, nil

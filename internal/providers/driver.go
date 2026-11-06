@@ -80,10 +80,10 @@ type DriverOptions struct {
 	// fallback host key the driver was constructed with.
 	APIKey string
 	// KeyEnvName is the well-known env-var NAME whose tenant/user credential
-	// overrides the host key (RFC AR/AX). Empty leaves the driver's built-in
-	// default (e.g. "OPENAI_API_KEY"); the DeepSeek/OpenAI factories forward it
-	// via SetKeyEnvName so a self-hosted OpenAI-compatible mirror can name its
-	// own key var.
+	// overrides the host key (RFC AR/AX). Empty means the driver's vendor key
+	// name (e.g. "OPENAI_API_KEY") when BaseURL is unset or the vendor's API,
+	// and no key name at all elsewhere (see KeyEnvNameFor); a self-hosted
+	// OpenAI-compatible mirror that needs a key names its own var here.
 	KeyEnvName string
 	// StreamOpts carries the per-stream HTTP timeouts (header + idle). Zero
 	// fields resolve to streamhttp defaults inside each driver's New(...).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -120,12 +121,13 @@ func TestEmbedderConfig_ProvidersMapApiKeyEnvIsHonoured(t *testing.T) {
 	}
 }
 
-// TestEmbedderConfig_NoProvidersBlockStillUsesTheEnvKey — a deployment running
-// with LOOMCYCLE_NO_DEFAULT_PROVIDERS=1 and no `providers:` block declares no
-// api_key_env at all. The per-id env key must remain the last resort: the openai
-// embedder accepts an empty key at construction and only fails later at 401, so
-// dropping this fallback would turn a working embedder into a runtime auth error.
-func TestEmbedderConfig_NoProvidersBlockStillUsesTheEnvKey(t *testing.T) {
+// TestEmbedderConfig_NoProvidersBlockEnvKeyStaysAtTheVendor — a deployment
+// running with LOOMCYCLE_NO_DEFAULT_PROVIDERS=1 and no `providers:` block
+// declares no api_key_env at all. The per-id env key remains the last resort at
+// the vendor's own endpoint (internal/wiring's
+// TestEmbedder_HostVendorKeyStillAuthenticatesAtTheVendor), but it is the
+// vendor's key, so an embedder base_url pointed elsewhere does not receive it.
+func TestEmbedderConfig_NoProvidersBlockEnvKeyStaysAtTheVendor(t *testing.T) {
 	var seenAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenAuth = r.Header.Get("Authorization")
@@ -145,8 +147,8 @@ func TestEmbedderConfig_NoProvidersBlockStillUsesTheEnvKey(t *testing.T) {
 	if _, err := e.Embed(context.Background(), []string{"x"}); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
-	if seenAuth != "Bearer env-key-placeholder" {
-		t.Errorf("Authorization = %q, want the per-id env key fallback", seenAuth)
+	if strings.Contains(seenAuth, "env-key-placeholder") {
+		t.Errorf("Authorization = %q, want no vendor env key at an endpoint that is not the vendor's", seenAuth)
 	}
 }
 

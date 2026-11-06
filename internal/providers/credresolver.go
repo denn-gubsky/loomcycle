@@ -145,6 +145,21 @@ func OperatorKeyAllowed(ctx context.Context) bool {
 // attribute spend (RFC AV). It reads the run identity + the operator-key
 // permission from ctx, so it works uniformly across every transport.
 func ResolveKeyOrOperator(ctx context.Context, name, operatorKey string) (key, source, scopeID string, err error) {
+	if name == "" {
+		// A provider with no key name has no credential a tenant could own,
+		// so nothing is looked up under "". With no operator key either it
+		// is keyless (a self-hosted endpoint): there is nothing a restricted
+		// run could spend, and routing already counts it as keyable. A
+		// provider that authenticates with RequestAuth always has a key name
+		// (providerbuild gives it the Bedrock key's), so it never lands here.
+		if operatorKey == "" {
+			return "", "operator", "", nil
+		}
+		if OperatorKeyAllowed(ctx) {
+			return operatorKey, "operator", "", nil
+		}
+		return "", "", "", ErrOperatorKeyForbidden
+	}
 	r, ok, err := ResolveCredentialFull(ctx, name)
 	if err != nil {
 		return "", "", "", err

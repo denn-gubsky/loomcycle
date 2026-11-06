@@ -15,15 +15,15 @@ func init() {
 // config-driven construction the resolver uses (the RFC BF replacement for the
 // pre-registry hardcoded openai.New(...)). A config-declared api_key_env
 // re-points tenant/user credential resolution via SetKeyEnvName, so a self-hosted
-// OpenAI-compatible mirror can name its own key var.
+// OpenAI-compatible mirror can name its own key var. With none, the provider keys
+// by OPENAI_API_KEY only at OpenAI's own API; a self-hosted endpoint gets no key
+// name, so no tenant's OpenAI key is sent to it (KeyEnvNameFor).
 func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	d := New(o.APIKey, o.BaseURL, o.StreamOpts, nil)
 	if o.ID != "" {
 		d.id = o.ID
 	}
-	if o.KeyEnvName != "" {
-		d.SetKeyEnvName(o.KeyEnvName)
-	}
+	d.SetKeyEnvName(o.KeyEnvNameFor(d.KeyEnvName(), defaultBaseURL))
 	d.capsPatch = o.Capabilities
 	d.auth = o.RequestAuth
 	// The openai driver has no driver-specific options today; surface any that

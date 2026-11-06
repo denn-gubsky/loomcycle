@@ -59,6 +59,8 @@ tiers:
 
 A **keyless** endpoint (no auth) is declared by simply omitting `api_key_env` — declaring the provider *is* the opt-in; loomcycle calls `base_url` with no key. (Before v1.21.0 a declared provider without `api_key_env` was silently treated as "not configured".)
 
+**A vendor's key goes only to that vendor.** Without `api_key_env`, a provider on the `openai` / `anthropic` / `gemini` / `deepseek` / `ollama` driver answers to the vendor's key name (a tenant's stored `OPENAI_API_KEY`, …) only while `base_url` is unset or the vendor's own API host: `api.openai.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`, `api.deepseek.com`, `ollama.com` (scheme, host and port must match; the path does not count). Pointed anywhere else, it calls with no key and no tenant credential is consulted, so a tenant's own vendor key never reaches a self-hosted server. A proxy that needs the vendor key (Azure, a gateway, a regional host) names it explicitly with `api_key_env: OPENAI_API_KEY`. The boot log names each provider this applies to.
+
 ### Per-provider concurrency (`max_concurrent`, `lanes`)
 
 `max_concurrent` caps how many **model calls** are in flight to a provider at once. A slot is taken just before a call and given back when its response stream ends; nothing is held while a run executes a tool, waits for a sub-agent or waits for its operator. Calls over the cap **queue inside loomcycle** and never time out. The motivating case is a **local model on one GPU**: cap `ollama-local` so the host computes a fixed number of requests at a time.
