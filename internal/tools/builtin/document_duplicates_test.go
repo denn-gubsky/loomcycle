@@ -108,6 +108,34 @@ func TestDuplicateTitleKey_StripsEveryCopyMarkerRepeatedly(t *testing.T) {
 	}
 }
 
+// TestDuplicateTitleKey_OnlyACopyNumberIsAMarker: a trailing number in
+// parentheses is a copy marker only in the form a file manager or editor
+// writes, one or two digits. A year is part of the title, so two budgets of
+// different years are not copies of each other.
+func TestDuplicateTitleKey_OnlyACopyNumberIsAMarker(t *testing.T) {
+	for in, want := range map[string]struct {
+		key    string
+		marked bool
+	}{
+		"Budget (2)":    {"budget", true},
+		"Budget (99)":   {"budget", true},
+		"Budget (100)":  {"budget (100)", false},
+		"Budget (2023)": {"budget (2023)", false},
+	} {
+		key, marked := duplicateTitleKey(in)
+		if key != want.key || marked != want.marked {
+			t.Errorf("duplicateTitleKey(%q) = %q, %v; want %q, %v", in, key, marked, want.key, want.marked)
+		}
+	}
+
+	d, ctx, _ := documentFixture(t)
+	dupDocIn(t, d, ctx, "/years/a", "Budget (2023)", "", "rent")
+	dupDocIn(t, d, ctx, "/years/b", "Budget (2024)", "", "rent and food")
+	if pairs := dupPairs(t, findDups(t, d, ctx, `{"op":"find_duplicates","scope":"user","under_path":"/years","basis":["title"]}`)); len(pairs) != 0 {
+		t.Errorf("budgets of two years were paired as copies: %v", pairs)
+	}
+}
+
 func TestDuplicateContentHash_IgnoresWhitespaceAndRootTitleButNotAWord(t *testing.T) {
 	a := duplicateContentHash([]string{"", "alpha  beta\n\n gamma "})
 	if a == "" {

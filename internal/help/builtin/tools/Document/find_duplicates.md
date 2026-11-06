@@ -14,7 +14,8 @@ two documents match when
   markers are set aside, and they are the same kind of document: the same
   root `type` and, when both were imported, the same media type. The markers
   are a leading `Copy of `, `Копия `, `Копия - `, `Kopie von ` or `Copie de `,
-  and a trailing ` (1)`, ` (2)`, … or ` - Copy`, as often as they repeat.
+  and a trailing ` (1)` to ` (99)` or ` - Copy`, as often as they repeat. A
+  longer number, such as a year in ` (2023)`, is part of the title.
   Confidence 0.7.
 
 A pair that matches both ways is reported once, as `sha256`.

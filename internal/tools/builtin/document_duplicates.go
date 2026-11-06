@@ -55,8 +55,10 @@ const (
 // prefix of another ("Копия - " before "Копия "). Fixed in v1 (owner decision).
 var duplicatePrefixes = []string{"Copy of ", "Копия - ", "Копия ", "Kopie von ", "Copie de "}
 
-// duplicateNumberSuffix is a trailing " (n)", as a file manager numbers a copy.
-var duplicateNumberSuffix = regexp.MustCompile(` \(\d+\)$`)
+// duplicateNumberSuffix is a trailing " (1)" to " (99)", as a file manager or
+// editor numbers a copy. One or two digits only: "Budget (2023)" names a year,
+// and would otherwise pair with "Budget (2024)".
+var duplicateNumberSuffix = regexp.MustCompile(` \([1-9][0-9]?\)$`)
 
 const duplicateCopySuffix = " - Copy"
 
