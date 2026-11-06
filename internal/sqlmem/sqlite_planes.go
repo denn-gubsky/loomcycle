@@ -149,6 +149,17 @@ func (b *sqliteBackend) adoptTables(ctx context.Context, key ScopeKey, tables []
 		return b.markSplit(ctx, key)
 	}
 
+	// Pin both files for the move, so the GC sweeps and DropScope see the scope in
+	// use and leave it alone: the move's own connection is not in the pool.
+	if _, err := b.acquire(agentPath); err != nil {
+		return err
+	}
+	defer b.release(agentPath)
+	if _, err := b.acquire(docPath); err != nil {
+		return err
+	}
+	defer b.release(docPath)
+
 	// A connection of the move's own, closed when it is done: the agent file is
 	// attached to it, and an ATTACH left on a pooled connection would outlive the
 	// move. The agent's pool keeps its own connection to the agent file; WAL lets
