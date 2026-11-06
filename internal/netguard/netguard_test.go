@@ -431,3 +431,35 @@ func TestSocketControl_RefusesZonedAndUnparsableAddresses(t *testing.T) {
 		t.Errorf("Control refused a public address: %v", err)
 	}
 }
+
+// TestNetguard_CIDROnlyModeRefusesNameEntries: in cidr_only mode the vouch
+// list may hold only CIDR ranges, so "trust no DNS" is a flag an operator can
+// check rather than a reading of the list. A host name, and an IP literal
+// written as a host entry (it is suffix-matched as a name), are refused; the
+// default mode keeps accepting both; an unknown mode is refused.
+func TestNetguard_CIDROnlyModeRefusesNameEntries(t *testing.T) {
+	cidrs := []string{"100.64.0.0/10", " 10.1.2.3/32 ", "fd7a:115c:a1e0::/48", ""}
+	if err := ValidatePrivateHostAllowlistMode(PrivateHostAllowlistModeCIDROnly, cidrs); err != nil {
+		t.Fatalf("cidr_only refused a CIDR-only list: %v", err)
+	}
+	for _, entry := range []string{"localhost", "peer.internal", "127.0.0.1", "[::1]"} {
+		err := ValidatePrivateHostAllowlistMode(PrivateHostAllowlistModeCIDROnly, append([]string{"100.64.0.0/10"}, entry))
+		if err == nil || !strings.Contains(err.Error(), strings.TrimSpace(entry)) {
+			t.Errorf("cidr_only accepted name entry %q (err = %v)", entry, err)
+		}
+	}
+	// The IP-literal refusal names the CIDR that admits the same address.
+	if err := ValidatePrivateHostAllowlistMode(PrivateHostAllowlistModeCIDROnly, []string{"127.0.0.1"}); err == nil || !strings.Contains(err.Error(), "127.0.0.1/32") {
+		t.Errorf("IP literal refusal = %v, want it to suggest 127.0.0.1/32", err)
+	}
+	for _, mode := range []string{"", PrivateHostAllowlistModeAny} {
+		if err := ValidatePrivateHostAllowlistMode(mode, []string{"localhost", "100.64.0.0/10"}); err != nil {
+			t.Errorf("mode %q refused a name entry: %v", mode, err)
+		}
+	}
+	for _, mode := range []string{"cidr-only", "CIDR", "strict", "cidr_only "} {
+		if err := ValidatePrivateHostAllowlistMode(mode, nil); err == nil {
+			t.Errorf("unknown mode %q accepted", mode)
+		}
+	}
+}

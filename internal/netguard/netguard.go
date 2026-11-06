@@ -199,6 +199,43 @@ func ValidatePrivateHostAllowlist(entries []string) error {
 	return nil
 }
 
+// The modes of a private-host allowlist (LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE).
+const (
+	// PrivateHostAllowlistModeAny accepts host-name and CIDR entries: a name
+	// entry vouches for whatever its DNS answers. The default.
+	PrivateHostAllowlistModeAny = "any"
+	// PrivateHostAllowlistModeCIDROnly accepts CIDR entries only, so no
+	// private address is ever admitted on the say-so of a DNS answer.
+	PrivateHostAllowlistModeCIDROnly = "cidr_only"
+)
+
+// ValidatePrivateHostAllowlistMode checks entries against mode, after
+// ValidatePrivateHostAllowlist's own checks. In cidr_only mode every entry
+// must be a CIDR range: a host name is refused, and so is an IP literal, which
+// the guard suffix-matches as a name (the error names the /32 or /128 that
+// admits the same address). An empty mode is the default; any other value is
+// refused, so a typo cannot quietly leave names trusted.
+func ValidatePrivateHostAllowlistMode(mode string, entries []string) error {
+	switch mode {
+	case "", PrivateHostAllowlistModeAny:
+		return nil
+	case PrivateHostAllowlistModeCIDROnly:
+	default:
+		return fmt.Errorf("unknown mode %q (want %s or %s)", mode, PrivateHostAllowlistModeAny, PrivateHostAllowlistModeCIDROnly)
+	}
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if e == "" || isCIDREntry(e) {
+			continue
+		}
+		if a, ok := ipLiteral(e); ok {
+			return fmt.Errorf("entry %q is not a CIDR range, and %s admits only CIDR ranges; write it as %s", e, PrivateHostAllowlistModeCIDROnly, SingleAddressCIDR(a))
+		}
+		return fmt.Errorf("entry %q is a host name, and %s admits only CIDR ranges (a name would trust its DNS answer)", e, PrivateHostAllowlistModeCIDROnly)
+	}
+	return nil
+}
+
 // ipLiteral parses host as an IP address, in brackets or with a zone or not,
 // unmapped to IPv4 where it is one.
 func ipLiteral(host string) (netip.Addr, bool) {

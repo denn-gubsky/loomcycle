@@ -28,6 +28,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource/gitsourcetest"
 	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
+	"github.com/denn-gubsky/loomcycle/internal/redact"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -241,9 +242,9 @@ func newCanaryEnv(t *testing.T, restricted bool, scripts func(e *canaryEnv) map[
 	put("acme-app", string(appCfg), []string{e.repoApp.URL})
 
 	var srv *Server
-	register := func(v string) {
+	register := func(ctx context.Context, tenantID, v string) {
 		if srv != nil {
-			srv.Redactor().Register(v)
+			srv.Redactor().RegisterCredential(redact.Holder{Tenant: tenantID, Runs: []string{tools.RunIdentity(ctx).AgentID}}, v)
 		}
 	}
 	minter := credential.NewGitHubAppMinter(nil, gh.Client())
@@ -265,7 +266,7 @@ func newCanaryEnv(t *testing.T, restricted bool, scripts func(e *canaryEnv) map[
 			if err != nil || !found {
 				return "", false, nil
 			}
-			register(res.Value)
+			register(ctx, ri.TenantID, res.Value)
 			return res.Value, true, nil
 		},
 	}

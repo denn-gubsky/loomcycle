@@ -41,9 +41,11 @@ type File struct {
 	// on: its allowlist (narrowed per run as the HTTP tool's is) and its
 	// guarded dialer. nil leaves both refused.
 	HTTP *HTTP
-	// RegisterSecret hands a download or upload URL to the server's
-	// redactor; a pre-authenticated URL is a credential. Late-bound at boot.
-	RegisterSecret func(string)
+	// RegisterSecret hands the credential parts of a download or upload URL
+	// to the server's redactor as values the run observed (a model chose the
+	// URL), held for the run's tenant; a pre-authenticated URL is a
+	// credential. Late-bound at boot.
+	RegisterSecret func(ctx context.Context, value string)
 	// Docs is the Document tool op=import builds a document through, so its
 	// scope checks hold; nil leaves import unavailable.
 	Docs *Document

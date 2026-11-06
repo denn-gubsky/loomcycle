@@ -101,12 +101,12 @@ var gitCredentialRefRe = regexp.MustCompile(`^\$(cred|ghapp):([A-Za-z0-9_-]{1,12
 // "$ghapp:<name>" names a stored GitHub App config; mintApp turns it into a
 // short-lived installation token for the one repository being cloned, with
 // read access to its contents only (GitHubAppMinter.TokenForRepository).
-// register is called with the token so the transcript redactor masks any
-// later echo of it.
+// register is called with the run's tenant and the token so the transcript
+// redactor masks any later echo of it.
 func GitCredentialResolver(
 	engine *credential.Engine,
 	mintApp func(ctx context.Context, tenantID, cfgJSON, repository string) (string, error),
-	register func(string),
+	register func(ctx context.Context, tenantID, value string),
 ) GitCredentialFunc {
 	return gitCredentialResolver(engine, mintApp, register)
 }
@@ -118,7 +118,7 @@ func GitCredentialResolver(
 func GitPushCredentialResolver(
 	engine *credential.Engine,
 	mintAppWrite func(ctx context.Context, tenantID, cfgJSON, repository string) (string, error),
-	register func(string),
+	register func(ctx context.Context, tenantID, value string),
 ) GitCredentialFunc {
 	return gitCredentialResolver(engine, mintAppWrite, register)
 }
@@ -126,7 +126,7 @@ func GitPushCredentialResolver(
 func gitCredentialResolver(
 	engine *credential.Engine,
 	mintApp func(ctx context.Context, tenantID, cfgJSON, repository string) (string, error),
-	register func(string),
+	register func(ctx context.Context, tenantID, value string),
 ) GitCredentialFunc {
 	return func(ctx context.Context, ref, targetURL string) (string, string, error) {
 		m := gitCredentialRefRe.FindStringSubmatch(ref)
@@ -182,7 +182,7 @@ func gitCredentialResolver(
 			}
 		}
 		if register != nil {
-			register(token)
+			register(ctx, ri.TenantID, token)
 		}
 		return user, token, nil
 	}

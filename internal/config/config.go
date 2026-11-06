@@ -34,6 +34,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/teamspec"
+	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
 )
 
 // Config is the top-level YAML structure plus env-derived fields.
@@ -4285,6 +4286,20 @@ type Env struct {
 	// be a CIDR range ("100.64.0.0/10" for a whole tailnet), matched
 	// against each resolved address; a malformed range fails validate.
 	HTTPPrivateHostAllowlist []string
+	// HTTPPrivateHostAllowlistMode is LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE:
+	// "any" (the default, also when unset) or "cidr_only", which refuses a
+	// host-name entry in HTTPPrivateHostAllowlist at load, so a deployment
+	// that must trust no DNS answer can state it as a flag. Validated by
+	// netguard.ValidatePrivateHostAllowlistMode; an unknown value fails load.
+	HTTPPrivateHostAllowlistMode string
+	// HelperWrapper is LOOMCYCLE_HELPER_WRAPPER: a command (argv words, no
+	// shell, no placeholder) the transcription and speech helpers run under,
+	// e.g. "bwrap --ro-bind / / --dev /dev --bind /tmp /tmp --bind <inbox
+	// root> <inbox root> --unshare-net --die-with-parent --": the helpers
+	// write their output under the inbox root (File tool) and TMPDIR (the
+	// /v1/audio routes), so both stay writable. Empty runs them
+	// directly, as the loomcycle user. Parsed at load; see helper.ParseWrapper.
+	HelperWrapper string
 	// MCPAllowPrivateIPs controls whether the MCP-HTTP client may dial
 	// private/loopback/metadata IPs. DEFAULT true (MCP servers are commonly
 	// operator-run on localhost / a private network — incl. loomcycle's own
@@ -5749,6 +5764,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		cfg.Hooks.PrivateHostAllowlist = append(cfg.Hooks.PrivateHostAllowlist, splitCSV(v)...)
 	}
 
+	// Checked against HTTPPrivateHostAllowlist in validate.
+	cfg.Env.HTTPPrivateHostAllowlistMode = strings.TrimSpace(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE"))
+
 	// gRPC server (v0.5.5+). Disabled by default; operator opts in
 	// by setting LOOMCYCLE_GRPC_ADDR. Coexists with HTTP+SSE (which
 	// remains the default and is on a separate port).
@@ -6690,6 +6708,10 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// v0.8.7 default-add: every agent gets Context auto-appended to its tools
 	// unless `disable_context: true` is set.
 	addContextToolDefaults(cfg)
+
+	// RFC FZ D8: one operator wrapper confines every helper command.
+	cfg.Env.HelperWrapper = strings.TrimSpace(os.Getenv("LOOMCYCLE_HELPER_WRAPPER"))
+	stampHelperWrapper(cfg)
 
 	if err := validate(cfg); err != nil {
 		return nil, err
@@ -8930,6 +8952,14 @@ func validate(c *Config) error {
 	// refuse it here where the operator sees it.
 	if err := netguard.ValidatePrivateHostAllowlist(c.Env.HTTPPrivateHostAllowlist); err != nil {
 		return fmt.Errorf("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST: %w", err)
+	}
+	if err := netguard.ValidatePrivateHostAllowlistMode(c.Env.HTTPPrivateHostAllowlistMode, c.Env.HTTPPrivateHostAllowlist); err != nil {
+		return fmt.Errorf("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE: %w", err)
+	}
+	if c.Env.HelperWrapper != "" {
+		if _, err := helper.ParseWrapper(c.Env.HelperWrapper); err != nil {
+			return fmt.Errorf("LOOMCYCLE_HELPER_WRAPPER: %w", err)
+		}
 	}
 	if err := netguard.ValidatePrivateHostAllowlist(c.Hooks.PrivateHostAllowlist); err != nil {
 		return fmt.Errorf("hooks.private_host_allowlist (or LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST): %w", err)
