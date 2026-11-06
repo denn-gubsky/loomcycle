@@ -239,7 +239,7 @@ func (s *Server) transcriptionOptions(w http.ResponseWriter, op *config.STTConfi
 		return opts, "", false
 	}
 	if f.language != "" {
-		lang, err := transcribe.SanitizeSTTLanguage(f.language)
+		lang, err := transcribe.CheckSTTLanguage(op, f.language)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, transcriptionCodeBadLanguage, "language: "+err.Error())
 			return opts, "", false

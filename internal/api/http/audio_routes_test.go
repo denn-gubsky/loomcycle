@@ -344,6 +344,10 @@ func TestAudioTranscriptions_RefusesBeforeTheEngine(t *testing.T) {
 		{"an unknown response format", map[string]string{"response_format": "srt"}, nil, 400, "unsupported_response_format"},
 		{"another model", map[string]string{"model": "whisper-1"}, nil, 400, "model_not_allowed"},
 		{"not a language code", map[string]string{"language": "english please"}, nil, 400, "unsupported_language"},
+		{"a language off the operator's list", map[string]string{"language": "de"}, func(s *Server) {
+			s.cfg().Transcription.STT.Languages = []string{"uk", "en"}
+			s.SetSTT(&builtin.FileSTT{Config: s.cfg().Transcription.Resolved(), Engine: s.stt.Engine, Ledger: s.stt.Ledger})
+		}, 400, "unsupported_language"},
 		{"speech-to-text off", nil, func(s *Server) { s.SetSTT(nil) }, 503, "transcription_not_configured"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -487,6 +491,23 @@ func TestSpeechInfo_ListsWhatAClientMayPick(t *testing.T) {
 	if !tr.Enabled || tr.Accepts[0] != "audio/wav" || !strings.Contains(strings.Join(tr.Accepts, ","), "audio/webm") ||
 		tr.WholeFileMaxBytes != 25<<20 || tr.MaxUploadBytes != 16<<20 || tr.MaxSecondsPerRequest == 0 {
 		t.Errorf("transcription = %+v", tr)
+	}
+
+	if tr.Languages != nil {
+		t.Errorf("no languages list configured, got %v", tr.Languages)
+	}
+
+	// With a list, the route publishes it beside the default.
+	srv.cfg().Transcription.STT.Languages = []string{"uk", "ru", "en"}
+	srv.SetSTT(&builtin.FileSTT{Config: srv.cfg().Transcription.Resolved(), Engine: srv.stt.Engine, Ledger: srv.stt.Ledger})
+	rec = httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/_speech", nil))
+	info = speechInfo{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(info.Transcription.Languages, ","); got != "uk,ru,en" {
+		t.Errorf("transcription.languages = %q, want uk,ru,en", got)
 	}
 
 	srv.cfg().Speech.Engine = config.SpeechEngineOff

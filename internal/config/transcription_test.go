@@ -152,6 +152,11 @@ func TestTranscriptionConfig_RefusesBadValues(t *testing.T) {
 		{"stt bad language", "stt: { engine: off, language: xx }", []string{"transcription.stt.language", `"xx"`}},
 		{"stt combined language", "stt: { engine: off, language: uk+ru }", []string{"transcription.stt.language", "one language"}},
 		{"stt vocabulary too long", "stt: { engine: off, vocabulary: \"" + strings.Repeat("a", MaxTranscriptionVocabularyRunes+1) + "\" }", []string{"transcription.stt.vocabulary", "longer than"}},
+		{"stt empty languages", "stt: { engine: off, languages: [] }", []string{"transcription.stt.languages is empty"}},
+		{"stt bad listed language", "stt: { engine: off, languages: [uk, xx] }", []string{"transcription.stt.languages[1]", `"xx"`}},
+		{"stt combined listed language", "stt: { engine: off, languages: [uk+ru] }", []string{"transcription.stt.languages[0]", "one language"}},
+		{"stt language listed twice", "stt: { engine: off, languages: [uk, UK] }", []string{"transcription.stt.languages", `"uk" is listed twice`}},
+		{"stt default off the list", "stt: { engine: off, language: de, languages: [uk, en] }", []string{"transcription.stt.language", `"de"`, "uk, en"}},
 		{"stt bad diarize", "stt: { engine: off, diarize: maybe }", []string{"transcription.stt.diarize", `"maybe"`}},
 		{"stt negative per call", "stt: { engine: off, max_minutes_per_call: -1 }", []string{"transcription.stt.max_minutes_per_call"}},
 		{"stt negative per run", "stt: { engine: off, max_minutes_per_run: -1 }", []string{"transcription.stt.max_minutes_per_run"}},
@@ -236,6 +241,39 @@ transcription:
 	}
 	if cfg.Transcription.OCREnabled() || cfg.Transcription.STTEnabled() {
 		t.Error("engine: off must leave the engine disabled")
+	}
+}
+
+// TestTranscriptionConfig_LanguagesListSetsTheDefault — a languages list is
+// normalised, and without a language its first entry is the default; without
+// a list any supported code is allowed.
+func TestTranscriptionConfig_LanguagesListSetsTheDefault(t *testing.T) {
+	cfg, err := loadTranscription(t, "transcription:\n  stt: { engine: off, languages: [\" RU \", uk, en] }\n")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	s := cfg.Transcription.STT
+	if s.Language != "ru" || strings.Join(s.Languages, ",") != "ru,uk,en" {
+		t.Errorf("language %q languages %v, want ru and [ru uk en]", s.Language, s.Languages)
+	}
+	if !s.AllowsLanguage("en") || s.AllowsLanguage("de") {
+		t.Error("want en allowed and de refused")
+	}
+
+	cfg, err = loadTranscription(t, "transcription:\n  stt: { engine: off, language: en, languages: [uk, en] }\n")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.Transcription.STT.Language; got != "en" {
+		t.Errorf("language = %q, want the written default en", got)
+	}
+
+	cfg, err = loadTranscription(t, "transcription:\n  stt: { engine: off }\n")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if s := cfg.Transcription.STT; s.Languages != nil || !s.AllowsLanguage("de") {
+		t.Errorf("no list: languages %v, want nil and any code allowed", s.Languages)
 	}
 }
 

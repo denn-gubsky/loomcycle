@@ -392,6 +392,27 @@ func TestTranscription_VocabularySanitisedBeforeCommand(t *testing.T) {
 	}
 }
 
+// TestTranscription_LanguageOffTheOperatorListRefused — with
+// transcription.stt.languages set, a language off the list is refused before
+// anything is sent, and one on it reaches the engine.
+func TestTranscription_LanguageOffTheOperatorListRefused(t *testing.T) {
+	x := sttRun(t, config.STTConfig{Languages: []string{"uk", "en"}}, nil)
+	ref := x.keep(t, "a.wav", testWAV(1000, 5*time.Second))
+	_, _, res := x.call(t, map[string]any{"path": ref, "language": "de"})
+	if !res.IsError || !strings.Contains(res.Text, "uk, en") {
+		t.Errorf("de: got %q, want a refusal naming uk, en", res.Text)
+	}
+	if n := len(x.engine.sent()); n != 0 {
+		t.Fatalf("%d requests sent for a refused language", n)
+	}
+	if _, _, res := x.call(t, map[string]any{"path": ref, "language": "EN"}); res.IsError {
+		t.Fatal(res.Text)
+	}
+	if s := x.engine.sent(); len(s) != 1 || s[0].opts.Language != "en" {
+		t.Errorf("sent %+v, want one request in en", s)
+	}
+}
+
 // TestTranscribe_ExcerptFencedUntrusted — a transcript is untrusted text:
 // a recording that "says" a closing tag cannot end the excerpt's fence.
 func TestTranscribe_ExcerptFencedUntrusted(t *testing.T) {
