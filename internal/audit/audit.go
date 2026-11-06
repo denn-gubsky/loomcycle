@@ -242,6 +242,7 @@ func NewFileSink(path string) (*FileSink, error) {
 	}
 	// Probe writability up front so a misconfigured path fails at boot,
 	// not on the first token op.
+	// #nosec G304 -- the audit log path is operator config
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("audit: open %q: %w", path, err)

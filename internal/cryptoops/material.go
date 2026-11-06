@@ -58,6 +58,11 @@ func Generate(k KeyType) ([]byte, error) {
 		return priv.Bytes(), nil
 	}
 	if bits := k.rsaBits(); bits != 0 {
+		// rsaBits names only 2048 and up; this keeps a future entry from
+		// minting a key below the floor.
+		if bits < 2048 {
+			return nil, fmt.Errorf("cryptoops: generate %s: %d-bit RSA is below the 2048-bit floor", k, bits)
+		}
 		// Exactly bits long (GenerateKey sets the top bits) with e = 65537.
 		priv, err := rsa.GenerateKey(rand.Reader, bits)
 		if err != nil {

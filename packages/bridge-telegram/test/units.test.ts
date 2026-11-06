@@ -369,6 +369,26 @@ describe("markdown to Telegram HTML", () => {
     expect(markdownToHtml('[x](https://e.com/"onmouseover=1)')).toBe('x (https://e.com/"onmouseover=1)');
   });
 
+  it("reads headings and fence lines in their usual forms", () => {
+    expect(markdownToHtml("### Title ###  \nbody")).toBe("<b>Title</b>\nbody");
+    expect(markdownToHtml("# C# notes")).toBe("<b>C# notes</b>");
+    expect(markdownToHtml("####### seven")).toBe("####### seven");
+    expect(markdownToHtml("#nospace")).toBe("#nospace");
+    expect(markdownToHtml("  ```  ts  \nx\n```")).toBe('<pre><code class="language-ts">x</code></pre>');
+    expect(markdownToHtml("```\nx\n```")).toBe("<pre>x</pre>");
+    expect(markdownToHtml("```not a lang\nx")).toBe("```not a lang\nx");
+  });
+
+  // An agent's text is untrusted; a long whitespace run in one line made the
+  // heading pattern backtrack cubically and stall the bridge.
+  it("reads a heading or fence line with a long whitespace run in linear time", () => {
+    const run = "\t".repeat(5000);
+    const t0 = Date.now();
+    expect(markdownToHtml(`# a${run}x`)).toBe(`<b>a${run}x</b>`);
+    expect(markdownToHtml("```" + " ".repeat(50_000) + "!")).toBe("```" + " ".repeat(50_000) + "!");
+    expect(Date.now() - t0).toBeLessThan(250);
+  });
+
   it("runs an unclosed fence to the end, so a streamed answer stays valid", () => {
     expect(markdownToHtml("before\n```py\nx = 1")).toBe('before\n<pre><code class="language-py">x = 1</code></pre>');
   });

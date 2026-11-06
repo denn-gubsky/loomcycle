@@ -121,6 +121,7 @@ func LoadSpec(specPath, configDir string) (*Spec, error) {
 	if !filepath.IsAbs(resolved) && configDir != "" {
 		resolved = filepath.Join(configDir, resolved)
 	}
+	// #nosec G304 -- the OpenAPI spec path is operator config
 	raw, err := os.ReadFile(resolved)
 	if err != nil {
 		return nil, fmt.Errorf("localapi: read %s: %w", resolved, err)

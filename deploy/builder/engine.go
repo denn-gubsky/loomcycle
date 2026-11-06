@@ -32,6 +32,7 @@ func (execRunner) Run(ctx context.Context, stdin []byte, maxOut int64, argv ...s
 	if len(argv) == 0 {
 		return nil, -1, errors.New("empty argv")
 	}
+	// #nosec G204 -- argv[0] is the operator's SANDBOX_PODMAN_BIN at every call site, run without a shell; the commands the session runs go to podman, inside the container
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)

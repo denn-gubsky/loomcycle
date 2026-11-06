@@ -330,6 +330,7 @@ func LoadSet(root string) (*Set, error) {
 			slog.Warn("help: skipping symlink (operator-supplied help topics must be regular files)", "path", path)
 			continue
 		}
+		// #nosec G304 -- a topic file listed from the operator's help directory; symlinks are refused above
 		data, err := os.ReadFile(path)
 		if err != nil {
 			slog.Warn("help: skipping topic", "path", path, "err", err)
@@ -419,6 +420,7 @@ func (o osDirFS) ReadFile(rel string) ([]byte, error) {
 	if fi.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("symlink (operator-supplied help topics must be regular files)")
 	}
+	// #nosec G304 -- a topic file under the operator's help directory; symlinks are refused above
 	return os.ReadFile(p)
 }
 

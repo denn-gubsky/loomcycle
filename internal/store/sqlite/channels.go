@@ -154,6 +154,7 @@ func (s *Store) ChannelsUpdate(ctx context.Context, tenantID, name string, patch
 		return nil
 	}
 	args = append(args, tenantID, name)
+	// #nosec G202 -- sets holds constant "col = ?" fragments; values are bound
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE channels SET `+strings.Join(sets, ", ")+` WHERE tenant_id = ? AND name = ?`,
 		args...,

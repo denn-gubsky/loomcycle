@@ -1453,7 +1453,7 @@ func TestRun_Stateful_APreHookDenyStopsTheAction(t *testing.T) {
 	}))
 	defer hookSrv.Close()
 	reg := hooks.NewSet()
-	if _, err := reg.Register(&hooks.Hook{
+	if _, err := reg.Register(&hooks.Hook{OperatorConfig: true,
 		Owner: "test", Name: "deny-echo", Phase: hooks.PhasePre,
 		CallbackURL: hookSrv.URL, Agents: []string{"stateful-agent"}, Tools: []string{"Echo"},
 	}); err != nil {

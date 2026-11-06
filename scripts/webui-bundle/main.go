@@ -124,12 +124,15 @@ func run(o options) (result, error) {
 		sumPath:     filepath.Join(o.out, name+".sha256"),
 		digest:      digest,
 	}
+	// #nosec G301 -- release tooling: the bundle and its checksum are published files, readable by anyone
 	if err := os.MkdirAll(o.out, 0o755); err != nil {
 		return result{}, err
 	}
+	// #nosec G306 -- release tooling: the bundle and its checksum are published files, readable by anyone
 	if err := os.WriteFile(res.archivePath, archive, 0o644); err != nil {
 		return result{}, err
 	}
+	// #nosec G306 -- release tooling: the bundle and its checksum are published files, readable by anyone
 	if err := os.WriteFile(res.sumPath, []byte(digest+"  "+name+"\n"), 0o644); err != nil {
 		return result{}, err
 	}

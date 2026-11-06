@@ -62,7 +62,7 @@ function httpsBase(reader: EnvReader, name: string, value: string | undefined, o
     reader.problems.push(`${name} must not have a query or fragment`);
     return undefined;
   }
-  return value.replace(/\/+$/, "");
+  return withoutTrailingSlashes(value);
 }
 
 /** loadConfig reads the environment and throws a ConfigError naming every
@@ -130,4 +130,13 @@ export function loadConfig(env: Env = process.env): TelegramConfig {
     streaming,
     apiBaseUrl,
   };
+}
+
+/** withoutTrailingSlashes drops a URL's trailing slashes. A loop, not
+ *  /\/+$/, which backtracks quadratically on a long run of slashes that is
+ *  not at the end. */
+function withoutTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s[end - 1] === "/") end--;
+  return s.slice(0, end);
 }

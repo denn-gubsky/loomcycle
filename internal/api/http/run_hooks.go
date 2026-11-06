@@ -107,7 +107,9 @@ func (s *Server) resolveRunHooks(ctx context.Context, agentName string, def conf
 			return hooks.FailedSet(fmt.Errorf("%s's hooks: %w", g.Source.Owner, err))
 		}
 	}
-	agent := hooks.Source{Owner: "agent:" + agentName, Tenant: def.OwnerTenant, OperatorAuthored: def.OperatorAuthored}
+	// Only a static (yaml) agent's hooks are the operator's config and dial
+	// without the private-address guard; see hooks.Hook.OperatorConfig.
+	agent := hooks.Source{Owner: "agent:" + agentName, Tenant: def.OwnerTenant, OperatorAuthored: def.OperatorAuthored, OperatorConfig: def.Static}
 	if err := hooks.Resolve(ctx, agent, def.Hooks, def.ToolHooks, lookup, s.hookPermits, set); err != nil {
 		return hooks.FailedSet(fmt.Errorf("agent %s: %w", agentName, err))
 	}

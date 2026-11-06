@@ -118,6 +118,7 @@ const (
 // across scopes, every question becomes unanswerable for a reason that has
 // nothing to do with traversal.
 func LoadSynthesis(path string, limit int) ([]Conversation, SynthDefects, error) {
+	// #nosec G304 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	blob, err := os.ReadFile(path)
 	if err != nil {
 		return nil, SynthDefects{}, err

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -87,5 +88,19 @@ func TestChannelCursor_RejectsMsgIDNonHex(t *testing.T) {
 	_, _, _, err := DecodeChannelCursor(bad)
 	if err == nil {
 		t.Error("non-hex char in msg_id should be rejected")
+	}
+}
+
+// TestDecodeRunCursor_RefusesTimestampPastInt64: EncodeRunCursor writes a
+// started_at this build can hold, so a timestamp field past int64 is a token
+// it never issued. It is refused, not wrapped into a time before 1970.
+func TestDecodeRunCursor_RefusesTimestampPastInt64(t *testing.T) {
+	if _, _, err := DecodeRunCursor("run_8000000000000000_r1"); !errors.Is(err, ErrInvalidRunCursor) {
+		t.Errorf("DecodeRunCursor(top bit set) err = %v, want ErrInvalidRunCursor", err)
+	}
+	at := time.Unix(1_800_000_000, 42)
+	got, id, err := DecodeRunCursor(EncodeRunCursor(at, "r1"))
+	if err != nil || !got.Equal(at) || id != "r1" {
+		t.Errorf("round trip = %v %q %v, want %v r1 nil", got, id, err, at)
 	}
 }

@@ -195,6 +195,7 @@ func (s *Server) beginRedirectLogin(w http.ResponseWriter, r *http.Request, cfg 
 	if err != nil {
 		return "", err
 	}
+	// #nosec G124 -- Secure follows the request's transport (a plain-HTTP login is the documented LOOMCYCLE_UI_INSECURE_COOKIES exception); HttpOnly and SameSite=Lax are set, Lax because the IdP's redirect back is a cross-site top-level GET
 	http.SetCookie(w, &http.Cookie{Name: s.loginCookieName(r), Value: codeflow.EncodeSecret(l.Secret), Path: "/",
 		MaxAge: int(codeflow.TTL / time.Second), HttpOnly: true, Secure: s.requestSecure(r), SameSite: http.SameSiteLaxMode})
 	return u, nil
@@ -236,6 +237,7 @@ func (s *Server) handleRedirectLogin(w http.ResponseWriter, r *http.Request) {
 		loginRedirect(w, r, name, "gate_unavailable")
 		return
 	}
+	// #nosec G710 -- u is the configured gate's own authorization URL (operator config), not request input
 	http.Redirect(w, r, u, http.StatusSeeOther)
 }
 
@@ -244,6 +246,7 @@ func (s *Server) handleRedirectLogin(w http.ResponseWriter, r *http.Request) {
 // whatever the outcome.
 func (s *Server) takeLoginState(w http.ResponseWriter, r *http.Request, cfg config.AuthGate) (store.AuthLoginStateRow, authgate.LoginState, string) {
 	secure := s.requestSecure(r)
+	// #nosec G124 -- Secure follows the request's transport (a plain-HTTP login is the documented LOOMCYCLE_UI_INSECURE_COOKIES exception); HttpOnly and SameSite=Lax are set, Lax because the IdP's redirect back is a cross-site top-level GET
 	http.SetCookie(w, &http.Cookie{Name: s.loginCookieName(r), Value: "", Path: "/", MaxAge: -1, HttpOnly: true,
 		Secure: secure, SameSite: http.SameSiteLaxMode})
 	c, err := r.Cookie(s.loginCookieName(r))

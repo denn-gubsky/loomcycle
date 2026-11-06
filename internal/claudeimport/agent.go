@@ -71,6 +71,7 @@ func walkAgents(dir string, report *ImportReport) error {
 		}
 		name := strings.TrimSuffix(e.Name(), ".md")
 		path := filepath.Join(dir, e.Name())
+		// #nosec G304 -- a file the importer found under the .claude directory the operator named
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			report.Warnings = append(report.Warnings,

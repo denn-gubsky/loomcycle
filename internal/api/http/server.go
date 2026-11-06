@@ -2925,7 +2925,7 @@ func (s *Server) ChannelWriteDef(ctx context.Context, tenantID, channel string) 
 // applies, and so does a hold.
 func (s *Server) ChannelHookDef(ctx context.Context, tenant, channel string) (channelhooks.Def, bool, error) {
 	if def, ok := s.cfg().Channels[channel]; ok {
-		return channelhooks.Def{Hold: def.Hold, Hooks: def.Hooks}, true, nil
+		return channelhooks.Def{Hold: def.Hold, Hooks: def.Hooks, Static: true}, true, nil
 	}
 	if s.store == nil {
 		return channelhooks.Def{}, false, nil

@@ -196,7 +196,7 @@ func TestRun_ClosingTurnAnswerGoesThroughTheAnswerGates(t *testing.T) {
 	t.Run("agent_stop block", func(t *testing.T) {
 		h := newScriptedHook(t, `{"decision":"block","reason":"cite a source"}`)
 		r := startReviewRun(t, context.Background(), closingTurnGated(lifecycleHooks(t,
-			&hooks.Hook{Owner: "ops", Name: "check", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}), false, true))
+			&hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "check", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}), false, true))
 		o := r.finish(t)
 		if o.err == nil || o.res.StopReason != StopReasonStopBlocked || !strings.Contains(o.err.Error(), "no iteration left") {
 			t.Fatalf("outcome = %+v, %v", o.res, o.err)
@@ -208,7 +208,7 @@ func TestRun_ClosingTurnAnswerGoesThroughTheAnswerGates(t *testing.T) {
 	t.Run("hold with no verdict possible", func(t *testing.T) {
 		h := newScriptedHook(t, `{"decision":"hold"}`)
 		r := startReviewRun(t, context.Background(), closingTurnGated(lifecycleHooks(t,
-			&hooks.Hook{Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}), false, false))
+			&hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: h.srv.URL}), false, false))
 		if o := r.finish(t); o.err != nil || o.res.StopReason != StopReasonRejected {
 			t.Fatalf("outcome = %+v, %v", o.res, o.err)
 		}

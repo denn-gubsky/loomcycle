@@ -304,10 +304,13 @@ func openBrowser(rawURL string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
+		// #nosec G204 -- a fixed opener; rawURL is BuildAuthorizeURL's (a constant base plus url.Values-encoded query), checked to be http(s) above, passed as one argument
 		cmd = exec.Command("open", rawURL)
 	case "windows":
+		// #nosec G204 -- cmd /C re-parses its command line, so rawURL is not one argument here (the & between query parameters splits it); nothing in it is caller-controlled: BuildAuthorizeURL builds it from a constant base, constant parameter names and url.Values-escaped values
 		cmd = exec.Command("cmd", "/C", "start", "", rawURL)
 	default:
+		// #nosec G204 -- a fixed opener; rawURL is BuildAuthorizeURL's (a constant base plus url.Values-encoded query), checked to be http(s) above, passed as one argument
 		cmd = exec.Command("xdg-open", rawURL)
 	}
 	return cmd.Start()

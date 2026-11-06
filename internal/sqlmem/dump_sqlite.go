@@ -167,6 +167,7 @@ func (b *sqliteBackend) exportScope(ctx context.Context, key ScopeKey) (*ScopeDu
 // value (UTF-8 []byte → string; binary []byte → the $b64 tagged form; int64 →
 // the $int tagged form to survive JSON without precision/storage-class drift).
 func (b *sqliteBackend) exportTableSQLite(ctx context.Context, db *sql.DB, table string) (*TableDump, error) {
+	// #nosec G202 -- table comes from the scope's own sqlite_master and is quoted with "" doubling
 	rows, err := db.QueryContext(ctx, `SELECT * FROM "`+strings.ReplaceAll(table, `"`, `""`)+`"`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlmem: read table %q: %w", table, err)

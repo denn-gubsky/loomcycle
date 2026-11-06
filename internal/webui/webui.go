@@ -228,6 +228,7 @@ func writeFile(w http.ResponseWriter, name string, data []byte) {
 		// reload picks up a fresh shell after a UI redeploy.
 		w.Header().Set("Cache-Control", "no-cache")
 	}
+	// #nosec G705 -- the Web UI's own build output (embedded, or the operator's pinned bundle), with a content type from its extension
 	_, _ = w.Write(data)
 }
 

@@ -246,6 +246,22 @@ describe("ensureHookDef", () => {
     expect(differs.fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  // A long inner whitespace run made the trailing-space pattern backtrack
+  // quadratically (40,000 tabs took seconds).
+  it("trims a description with a long inner whitespace run in linear time", async () => {
+    const run = "\t".repeat(40_000);
+    const deployed = jsonResponse({ deployed: true, current_def_id: "hdf_1", version: 1, name: "g", matches: false, current_sha256: "x" });
+    const active = jsonResponse({
+      def_id: "hdf_1", name: "g", version: 1,
+      definition: { description: `x${run}y`, event: "run_end", body: { kind: "code-js", code: "c" }, fail_mode: "open" },
+    });
+    const { client } = makeClient([deployed, active]);
+    const t0 = Date.now();
+    const r = await client.ensureHookDef("g", { description: ` x${run}y\u0085`, event: "run_end", body: { kind: "code-js", code: "c" } });
+    expect(Date.now() - t0).toBeLessThan(250);
+    expect(r.changed).toBe(false);
+  });
+
   it("creates a new version when the active definition differs", async () => {
     const { client, fetchMock } = makeClient([
       jsonResponse({ deployed: true, current_def_id: "hdf_3", version: 3, name: "gate", matches: false, current_sha256: "x" }),

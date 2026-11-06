@@ -293,5 +293,6 @@ func parseMeminfoField(data []byte, prefix string) (int64, error) {
 // container) rather than a downstream parse error like "VmRSS
 // line not found in /proc/self/status".
 var readFile = func(path string) ([]byte, error) {
+	// #nosec G304 -- every caller passes a fixed /proc path
 	return os.ReadFile(path)
 }

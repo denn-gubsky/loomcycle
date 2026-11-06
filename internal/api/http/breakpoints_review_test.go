@@ -124,7 +124,7 @@ func TestBreakpoints_DisarmingReviewLeavesAHooksHold(t *testing.T) {
 	}))
 	defer hook.Close()
 	h := newReviewHarness(t)
-	if _, err := h.srv.testHooks().Register(&hooks.Hook{Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: hook.URL}); err != nil {
+	if _, err := h.srv.testHooks().Register(&hooks.Hook{OperatorConfig: true, Owner: "ops", Name: "hold", Phase: hooks.PhaseAgentStop, CallbackURL: hook.URL}); err != nil {
 		t.Fatal(err)
 	}
 	walkRunID, set := walkUnderReview(t, h, "draft:review")

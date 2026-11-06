@@ -96,6 +96,7 @@ func (s *Store) AuthRemovalStart(ctx context.Context, row store.AuthRemovalRow) 
 				return fmt.Errorf("auth removal start: disable: %w", err)
 			}
 		}
+		// #nosec G202 -- removalCols is a constant column list; every value is a bound argument
 		res, err := conn.ExecContext(ctx, `
 			INSERT INTO auth_removals (`+removalCols+`, prior_status)
 			VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
@@ -131,6 +132,7 @@ func (s *Store) AuthRemovalClaimStage(ctx context.Context, tenantID, subject, st
 		if status != "disabled" {
 			return nil
 		}
+		// #nosec G202 -- constant fragments only; every value is a bound argument
 		res, err := conn.ExecContext(ctx, `UPDATE auth_removals SET stage = ?3
 			WHERE tenant_id = ?1 AND subject = ?2 AND (stage = '' OR stage = ?3)
 			  AND reason NOT IN ('`+store.RemovalReasonSCIMReactivating+`', '`+store.RemovalReasonSCIMReactivatingPending+`')`,

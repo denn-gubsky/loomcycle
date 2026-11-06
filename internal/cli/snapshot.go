@@ -197,7 +197,7 @@ func RunSnapshotsExport(args []string, stdout, stderr io.Writer) int {
 		return failPrintingBody(stderr, url, resp, rc)
 	}
 	if *out != "" {
-		if err := os.WriteFile(*out, resp, 0o644); err != nil {
+		if err := os.WriteFile(*out, resp, 0o600); err != nil {
 			return failOp(stderr, "write %s: %v", *out, err)
 		}
 		fmt.Fprintf(stderr, "wrote %d bytes to %s\n", len(resp), *out)
@@ -254,6 +254,7 @@ func RunRestore(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "envelope file is required: `loomcycle restore <file.json>`")
 	}
 	path := rest[0]
+	// #nosec G304 -- a file named on the operator's command line
 	envelope, err := os.ReadFile(path)
 	if err != nil {
 		// "File not found" is a user error (typo'd path) → exit 2.

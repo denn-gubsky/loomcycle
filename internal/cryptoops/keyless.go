@@ -3,7 +3,7 @@ package cryptoops
 import (
 	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha1" //nolint:gosec // TOTP is defined over HMAC-SHA1 (RFC 6238); HMAC-SHA1 is not broken by SHA-1 collisions
+	"crypto/sha1" // #nosec G505 -- TOTP is defined over HMAC-SHA1 (RFC 6238); HMAC-SHA1 is not broken by SHA-1 collisions
 	"crypto/sha256"
 	"crypto/sha3"
 	"crypto/sha512"

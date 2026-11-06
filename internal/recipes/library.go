@@ -208,6 +208,7 @@ func LoadLibrary(overlayRoot string) (*Library, error) {
 			slog.Warn("mcp-recipes: skipping symlink (overlay recipes must be regular files)", "path", path)
 			continue
 		}
+		// #nosec G304 -- an overlay file listed from the operator's recipe directory
 		data, err := os.ReadFile(path)
 		if err != nil {
 			slog.Warn("mcp-recipes: skipping recipe", "path", path, "err", err)
@@ -228,6 +229,7 @@ func LoadLibrary(overlayRoot string) (*Library, error) {
 	// Load the .disabled file (after recipe parsing so we can warn
 	// about names that don't exist in the library).
 	disabledPath := filepath.Join(overlayRoot, disabledFilename)
+	// #nosec G304 -- a fixed file name in the operator's recipe directory
 	if data, err := os.ReadFile(disabledPath); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
@@ -295,7 +297,7 @@ func (l *Library) AddOverlay(name string, jsonBody []byte, force bool) (*Recipe,
 			return nil, fmt.Errorf("stat %s: %w", dst, err)
 		}
 	}
-	if err := os.WriteFile(dst, jsonBody, 0o644); err != nil {
+	if err := os.WriteFile(dst, jsonBody, 0o600); err != nil {
 		return nil, fmt.Errorf("write %s: %w", dst, err)
 	}
 	rec.Source = "overlay"
@@ -399,6 +401,7 @@ func writeDisabledFile(overlayRoot string, disabled map[string]bool) error {
 		b.WriteString("\n")
 	}
 	path := filepath.Join(overlayRoot, disabledFilename)
+	// #nosec G306 -- the disable list holds recipe names only
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 

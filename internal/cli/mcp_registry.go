@@ -242,7 +242,7 @@ func runMCPRegistryAppend(args []string, stdout, stderr io.Writer) int {
 		}
 		return failOp(stderr, "%v", err)
 	}
-	if err := os.WriteFile(*target, out, 0o644); err != nil {
+	if err := os.WriteFile(*target, out, 0o600); err != nil {
 		return failOp(stderr, "write %s: %v", *target, err)
 	}
 	fmt.Fprintf(stdout, "✓ wrote mcp_servers.%s to %s\n", name, *target)
@@ -264,6 +264,7 @@ func runMCPRegistryAdd(args []string, stdout, stderr io.Writer) int {
 	}
 	path := fs.Arg(0)
 
+	// #nosec G304 -- a file named on the operator's command line
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return failOp(stderr, "read %s: %v", path, err)
@@ -362,6 +363,7 @@ func runMCPRegistryDisable(args []string, stdout, stderr io.Writer) int {
 // a UX-quality safeguard, not a security boundary — `loomcycle run`
 // rejects unallowlisted ${LOOMCYCLE_*} expansion at boot regardless.
 func readEnvAllowlist(configPath string) map[string]bool {
+	// #nosec G304 -- the operator's config file
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil

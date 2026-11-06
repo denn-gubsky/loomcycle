@@ -34,7 +34,7 @@ func TestVerifySignature_AcceptsASignedHookDelivery(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	s := hooks.NewSet()
-	if _, err := s.Register(&hooks.Hook{Owner: "agent:w", Name: "gate", Phase: hooks.PhasePre, CallbackURL: srv.URL, SigningSecret: "$cred:sign"}); err != nil {
+	if _, err := s.Register(&hooks.Hook{OperatorConfig: true, Owner: "agent:w", Name: "gate", Phase: hooks.PhasePre, CallbackURL: srv.URL, SigningSecret: "$cred:sign"}); err != nil {
 		t.Fatal(err)
 	}
 	d := hooks.NewDispatcher(s, nil)

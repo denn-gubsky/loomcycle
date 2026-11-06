@@ -30,9 +30,37 @@ function escapeAttr(s: string): string {
   return escapeHtml(s).replace(/"/g, "&quot;");
 }
 
-const FENCE_OPEN = /^\s*```\s*([A-Za-z0-9_+#.-]*)\s*$/;
 const FENCE_CLOSE = /^\s*```\s*$/;
-const HEADING = /^#{1,6}\s+(.+?)\s*#*\s*$/;
+const FENCE_LANG = /^[A-Za-z0-9_+#.-]*$/;
+const SPACE = /\s/;
+
+// fenceOpen and headingText read a line by hand. The patterns they replace
+// (/^\s*```\s*(lang)\s*$/ and /^#{1,6}\s+(.+?)\s*#*\s*$/) backtracked on a
+// long whitespace run, the heading one cubically: one line of agent text
+// could stall the bridge for minutes.
+
+/** fenceOpen returns the language of an opening ``` line ("" for none), or
+ *  undefined when the line does not open a fence. */
+function fenceOpen(line: string): string | undefined {
+  const t = line.trim();
+  if (!t.startsWith("```")) return undefined;
+  const lang = t.slice(3).trim();
+  return FENCE_LANG.test(lang) ? lang : undefined;
+}
+
+/** headingText returns the text of an ATX heading (1 to 6 #, whitespace, the
+ *  text, optional closing #s), or undefined when the line is not one. A
+ *  heading with no text is not one. */
+function headingText(line: string): string | undefined {
+  let n = 0;
+  while (n < line.length && line[n] === "#") n++;
+  if (n < 1 || n > 6 || !SPACE.test(line.charAt(n))) return undefined;
+  let text = line.slice(n).trim();
+  let end = text.length;
+  while (end > 0 && text[end - 1] === "#") end--;
+  text = text.slice(0, end).trimEnd();
+  return text === "" ? undefined : text;
+}
 
 /** markdownToHtml converts an agent's Markdown to Telegram HTML. */
 export function markdownToHtml(md: string): string {
@@ -44,11 +72,11 @@ export function markdownToHtml(md: string): string {
     prose = [];
   };
   for (let i = 0; i < lines.length; i++) {
-    const fence = FENCE_OPEN.exec(lines[i]!);
-    if (!fence) {
-      const h = HEADING.exec(lines[i]!);
+    const lang = fenceOpen(lines[i]!);
+    if (lang === undefined) {
+      const h = headingText(lines[i]!);
       // A heading shows as a bold line; one with its own asterisks stays as written.
-      prose.push(h && !h[1]!.includes("*") ? `**${h[1]}**` : lines[i]!);
+      prose.push(h !== undefined && !h.includes("*") ? `**${h}**` : lines[i]!);
       continue;
     }
     flush();
@@ -56,7 +84,6 @@ export function markdownToHtml(md: string): string {
     for (i++; i < lines.length && !FENCE_CLOSE.test(lines[i]!); i++) body.push(lines[i]!);
     if (body.length === 0) continue;
     const code = escapeHtml(body.join("\n"));
-    const lang = fence[1];
     out.push(lang ? `<pre><code class="language-${escapeAttr(lang)}">${code}</code></pre>` : `<pre>${code}</pre>`);
   }
   flush();

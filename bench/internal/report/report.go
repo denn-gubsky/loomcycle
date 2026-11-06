@@ -157,6 +157,7 @@ func summarize(rows []CaseOutcome) ModelSummary {
 // WriteAll writes matrix.md, matrix.json, matrix.csv into dir.
 // Returns the first error encountered.
 func WriteAll(m Matrix, dir string) error {
+	// #nosec G301 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -173,6 +174,7 @@ func WriteAll(m Matrix, dir string) error {
 }
 
 func writeFile(path string, write func(io.Writer) error) error {
+	// #nosec G304 -- a benchmark tool run by a developer; the path is its own flag or output directory and its reports are meant to be shared
 	f, err := os.Create(path)
 	if err != nil {
 		return err

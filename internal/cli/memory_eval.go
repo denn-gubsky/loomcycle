@@ -70,7 +70,7 @@ func RunMemoryEval(args []string, stdout, stderr io.Writer) int {
 
 	if *output != "" {
 		b, _ := json.MarshalIndent(rep, "", "  ")
-		if err := os.WriteFile(*output, append(b, '\n'), 0o644); err != nil {
+		if err := os.WriteFile(*output, append(b, '\n'), 0o600); err != nil {
 			return failOp(stderr, "memory-eval: write report: %v", err)
 		}
 		fmt.Fprintf(stdout, "wrote report to %s\n", *output)
@@ -85,6 +85,7 @@ func loadEvalDataset(name string) (eval.Dataset, error) {
 	if name == "" || name == "bundled" {
 		return eval.BundledDataset()
 	}
+	// #nosec G304 -- a file named on the operator's command line
 	f, err := os.Open(name)
 	if err != nil {
 		return eval.Dataset{}, fmt.Errorf("open dataset: %w", err)
@@ -94,6 +95,7 @@ func loadEvalDataset(name string) (eval.Dataset, error) {
 }
 
 func loadRankConfig(path string) (memory.RankConfig, error) {
+	// #nosec G304 -- a file named on the operator's command line
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return memory.RankConfig{}, fmt.Errorf("read: %w", err)
