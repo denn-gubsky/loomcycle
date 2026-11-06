@@ -530,7 +530,10 @@ Requirements / notes:
   row). The isolation boundary is the per-scope **schema** (`USAGE` is granted
   per scope, never to `PUBLIC`), not DB-level `CONNECT` — so on a *dedicated* aux
   DB, `PUBLIC CONNECT` is safe. (Revoking schema-level `PUBLIC` access, below, is
-  still correct + recommended.)
+  still correct + recommended.) If a shared Postgres has revoked it, every SQL
+  Memory and Document op fails with `permission denied for database`; the
+  runtime logs this at boot and names the fix in the error. Run, as the database
+  owner: `GRANT CONNECT ON DATABASE loomcycle_sqlmem TO PUBLIC;`
 - **PostgreSQL 13+** (the runtime relies only on `LOGIN` roles, `ALTER ROLE …
   SET`, and per-role `search_path`/`statement_timeout` — all long-standing).
 - Do **not** install `dblink` / `postgres_fdw` / `file_fdw` / untrusted

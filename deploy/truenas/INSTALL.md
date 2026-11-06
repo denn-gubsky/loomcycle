@@ -52,6 +52,10 @@ CREATE DATABASE loomcycle_sqlmem OWNER loomcycle;   -- only if you enable SQL Me
 > role"? Grant it in place (as a Postgres superuser), no reinstall needed:
 > `ALTER ROLE loomcycle CREATEROLE;`
 
+> The per-scope roles connect to `loomcycle_sqlmem` through `PUBLIC`'s `CONNECT`
+> (the default). If your Postgres revokes `CONNECT` from `PUBLIC`, restore it on
+> this database: `GRANT CONNECT ON DATABASE loomcycle_sqlmem TO PUBLIC;`
+
 Your DSNs (used below):
 `postgres://loomcycle:CHANGE_ME_STRONG@PG_HOST:5432/loomcycle?sslmode=disable`
 (and `…/loomcycle_sqlmem`). Confirm the TrueNAS apps network can reach `PG_HOST:5432`.
@@ -462,6 +466,7 @@ Verify end-to-end: spawn `dev/exec` with `{"expose":"devsrv","commands":["nohup 
 | migrate `LOOMCYCLE_PG_DSN ... required` | The `env_file:` line is missing from the `loomcycle-migrate` service (it needs the DSNs too), or the path is wrong. |
 | Crash-loop ending `sqlmem audit: ... open /data: is a directory` | `LOOMCYCLE_AUDIT_LOG_PATH` must be a **file**, not the `/data` mount — set `/data/audit.log` (or remove the line; the audit log is optional). |
 | Documents fail with `sqlmem: provision scope: ... permission denied to create role` | The SQL-Memory DSN's role lacks `CREATEROLE` (it provisions a per-scope login role). Grant it: `ALTER ROLE loomcycle CREATEROLE;` (Phase 1 now creates the role with it). |
+| Documents fail with `permission denied for database "loomcycle_sqlmem"` (SQLSTATE 42501) | `PUBLIC` lacks `CONNECT` on the SQL-Memory database (a shared Postgres revoked it); the per-scope roles connect through it. Run `GRANT CONNECT ON DATABASE loomcycle_sqlmem TO PUBLIC;` |
 | `doc/manager` idle | Needs `LOOMCYCLE_SQLMEM_ENABLED=1` + the `loomcycle_sqlmem` DSN + a `middle` tier (base provides one). |
 | An agent has no file access | Its bound volume isn't mapped — check the overlay `volumes:` `path` equals the in-container mount path (Phase 3 ↔ Phase 5). |
 | Crash-loop ending `config: load failed err="volumes.dynamic: path \"/mnt/dynamic\" must already exist …"` | The overlay declares the `dynamic` volume but the app has no mount at `/mnt/dynamic` (an install made from a compose before v1.122.0). Create the dataset owned by 65532 (Phase 2) and add the mount (Phase 5: `…/dynamic:/mnt/dynamic`, or *Additional storage* in the wizard). To boot first, comment out the `dynamic:` block. |

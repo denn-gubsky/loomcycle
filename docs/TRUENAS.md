@@ -43,6 +43,10 @@ not source `.env.local` in a container — only real env + the mounted overlay.
    GRANT ALL PRIVILEGES ON DATABASE loomcycle TO loomcycle;
    GRANT ALL PRIVILEGES ON DATABASE loomcycle_sqlmem TO loomcycle;
    ```
+   SQL Memory's per-scope roles also connect through `PUBLIC`'s `CONNECT` on
+   `loomcycle_sqlmem` (the default). If your Postgres revokes it, run
+   `GRANT CONNECT ON DATABASE loomcycle_sqlmem TO PUBLIC;`, or every Document op
+   fails with `permission denied for database`.
 2. **Datasets**, owned by the distroless uid (the image is fixed at **65532**):
    ```sh
    mkdir -p /mnt/tank/loomcycle/{data,config,work}
