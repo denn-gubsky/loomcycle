@@ -1,7 +1,7 @@
 // Who sent a Telegram update, whether they may use the bot, and how far their
 // words are trusted. Pure functions over the Bot API's own shapes.
 
-import { gateSharedSubject, sharedSubject, type Identified, type Trust } from "@loomcycle/bridge-core";
+import { gateSharedSubject, sharedSubject, type Identified, type Trust, type VoiceIn } from "@loomcycle/bridge-core";
 
 /** The few Bot API fields the bridge reads. */
 export interface TgUser {
@@ -10,6 +10,8 @@ export interface TgUser {
   first_name?: string;
   last_name?: string;
   username?: string;
+  /** The user's client language (IETF tag), a hint for transcription. */
+  language_code?: string;
 }
 
 export interface TgChat {
@@ -38,6 +40,21 @@ export interface TgMessage {
   reply_to_message?: { from?: TgUser };
   /** Telegram's service message in a group that became a supergroup. */
   migrate_to_chat_id?: number;
+  /** A voice note (OGG/Opus). */
+  voice?: TgMedia;
+  /** A round video message (MP4). */
+  video_note?: TgMedia;
+  /** A music or audio file. */
+  audio?: TgMedia;
+}
+
+/** The fields of Voice, VideoNote and Audio the bridge reads. */
+export interface TgMedia {
+  file_id: string;
+  /** Seconds, as the sender's client reported. */
+  duration?: number;
+  mime_type?: string;
+  file_size?: number;
 }
 
 export interface TgCallbackQuery {
@@ -223,6 +240,8 @@ export function hasNonTextContent(msg: TgMessage): boolean {
 const COMMAND = /^\/([A-Za-z0-9_]{1,32})(?:@([A-Za-z0-9_]{1,64}))?(?=\s|$)/;
 /** The bridge's own commands, plus /start, which Telegram sends first. */
 const OWN_COMMANDS = new Set(["new", "stop", "help", "start"]);
+/** Ours too when voice messages are on. */
+const VOICE_COMMAND = "voice";
 
 export interface BotInfo {
   id: number;
@@ -238,7 +257,7 @@ export interface BotInfo {
  *  A command addressed to the bot ("/new@MyBot") loses its suffix, so the
  *  core sees "/new"; one addressed to another bot is not ours. /start, which
  *  Telegram sends when someone first opens the bot, shows the help. */
-export function addressedText(msg: TgMessage, bot: BotInfo): string | undefined {
+export function addressedText(msg: TgMessage, bot: BotInfo, o: { voice?: boolean } = {}): string | undefined {
   const text = msg.text;
   if (!text || !text.trim()) return undefined;
   const isGroup = msg.chat.type !== "private";
@@ -250,7 +269,7 @@ export function addressedText(msg: TgMessage, bot: BotInfo): string | undefined 
     if (target !== undefined && target !== me) return undefined;
     const name = cmd[1]!.toLowerCase();
     // An unaddressed command in a group may be meant for another bot there.
-    if (isGroup && target === undefined && !OWN_COMMANDS.has(name)) return undefined;
+    if (isGroup && target === undefined && !OWN_COMMANDS.has(name) && !(o.voice && name === VOICE_COMMAND)) return undefined;
     const rest = text.slice(cmd[0].length);
     return name === "start" ? "/help" : `/${cmd[1]}${rest}`;
   }
@@ -267,6 +286,42 @@ export function addressedText(msg: TgMessage, bot: BotInfo): string | undefined 
   // "@MyBot what's up" reaches the agent as "what's up".
   const stripped = text.replace(new RegExp(`^\\s*@${escapeRegExp(bot.username)}\\b[\\s,:]*`, "i"), "");
   return stripped.trim() ? stripped : text;
+}
+
+/** isAddressedVoice reports whether a message without text is for this bot:
+ *  always in a private chat; in a group only as a reply to one of the bot's
+ *  messages. A voice note cannot carry a mention, and a reply to the bot is
+ *  what Telegram's privacy mode delivers, so this is addressedText's rule. */
+function isAddressedVoice(msg: TgMessage, bot: BotInfo): boolean {
+  return msg.chat.type === "private" || msg.reply_to_message?.from?.id === bot.id;
+}
+
+/** A MIME type as a platform reports it; anything else is replaced by the
+ *  kind's default rather than passed on. */
+const MIME = /^(audio|video)\/[a-z0-9][a-z0-9.+-]{0,63}$/i;
+
+/** voiceOf is the recording a message carries for this bot (RFC GA): a voice
+ *  note or a round video note, and an audio file only when the operator
+ *  asked for them (they are mostly music). undefined for anything else, or
+ *  for a group message not addressed to the bot. */
+export function voiceOf(msg: TgMessage, bot: BotInfo, o: { audio: boolean }): VoiceIn | undefined {
+  if (msg.text !== undefined || !isAddressedVoice(msg, bot)) return undefined;
+  const pick = (m: TgMedia | undefined, kind: VoiceIn["kind"], mime: string): VoiceIn | undefined => {
+    if (!m || typeof m.file_id !== "string" || !m.file_id) return undefined;
+    return {
+      kind,
+      ref: m.file_id,
+      mime: m.mime_type && MIME.test(m.mime_type) ? m.mime_type.toLowerCase() : mime,
+      ...(typeof m.duration === "number" && m.duration >= 0 ? { seconds: m.duration } : {}),
+      ...(typeof m.file_size === "number" && m.file_size >= 0 ? { bytes: m.file_size } : {}),
+    };
+  };
+  // A video note has no mime_type in the Bot API: it is always MP4.
+  return (
+    pick(msg.voice, "voice", "audio/ogg") ??
+    pick(msg.video_note, "video_note", "video/mp4") ??
+    (o.audio ? pick(msg.audio, "audio_file", "audio/mpeg") : undefined)
+  );
 }
 
 function escapeRegExp(s: string): string {

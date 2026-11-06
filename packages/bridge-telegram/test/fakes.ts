@@ -2,12 +2,34 @@
 // the client types derived from the core's ports so this package needs no
 // @loomcycle/client of its own) and a fake Telegram Bot API.
 
-import type { AdminClient, Logger, RunClient } from "@loomcycle/bridge-core";
+import type { AdminClient, Logger, RunClient, VoiceClient } from "@loomcycle/bridge-core";
 
 type RunOptions = Parameters<RunClient["runStreaming"]>[0];
 type ContinueOptions = Parameters<RunClient["continueSession"]>[0];
 type AgentEvent = RunClient["runStreaming"] extends (o: never) => AsyncIterable<infer E> ? E : never;
 type MintedUserToken = Awaited<ReturnType<AdminClient["mintUserToken"]>>;
+type SpeechInfo = Awaited<ReturnType<VoiceClient["speechInfo"]>>;
+type WhoamiResponse = Awaited<ReturnType<VoiceClient["whoami"]>>;
+
+/** What the fake loomcycle's speech side answers, when a test turns it on
+ *  (copied from bridge-core's tests). */
+export interface FakeSpeech {
+  surfaces: { speech: boolean; transcription: boolean };
+  info: SpeechInfo;
+  transcript: string;
+}
+
+export function fakeSpeech(over: Partial<FakeSpeech> = {}): FakeSpeech {
+  return {
+    surfaces: { speech: true, transcription: true },
+    info: {
+      speech: { enabled: true, default_language: "en", languages: { en: { voices: ["v1"], default_voice: "v1" } }, formats: ["wav", "ogg"] },
+      transcription: { enabled: true },
+    } as SpeechInfo,
+    transcript: "what is the weather",
+    ...over,
+  };
+}
 
 /** A push-driven async iterable: the test feeds the events a run would stream. */
 export class EventChannel<T> implements AsyncIterable<T> {
@@ -69,6 +91,8 @@ export class FakeLoomcycle {
   existingUsers = new Set<string>();
   ttlMs = 12 * 3600 * 1000;
   now = () => Date.now();
+  /** Set to give the client the speech calls (RFC GA). */
+  speech?: FakeSpeech;
   private tokenSeq = 0;
 
   callsTo(method: string): Call[] {
@@ -94,7 +118,29 @@ export class FakeLoomcycle {
       this.runs.push({ token, kind, opts, events });
       return events;
     };
+    const sp = this.speech;
+    const voice: Partial<VoiceClient> = sp
+      ? {
+          whoami: async () => {
+            rec("whoami", []);
+            return { tenant_id: "acme", subject: "x", scopes: [], is_admin: false, legacy: false, effective: { surfaces: { ...sp.surfaces } } } as unknown as WhoamiResponse;
+          },
+          speechInfo: async () => {
+            rec("speechInfo", []);
+            return sp.info;
+          },
+          transcribe: async (file, opts) => {
+            rec("transcribe", [file, opts]);
+            return { text: sp.transcript, language: "en" };
+          },
+          speech: async (input, opts) => {
+            rec("speech", [input, opts]);
+            return { bytes: new Uint8Array([1, 2, 3]), contentType: opts?.format === "ogg" ? "audio/ogg" : "audio/wav", seconds: 2.5 };
+          },
+        }
+      : {};
     return {
+      ...voice,
       runStreaming: (opts) => start("start", opts),
       continueSession: (opts) => start("continue", opts),
       sendRunInput: async (runId, text) => {
@@ -150,7 +196,19 @@ export interface TgCall {
   params: Record<string, unknown>;
   /** The request path, to check the token is where Telegram wants it. */
   path: string;
+  /** How the call was made: a JSON body, a multipart form, or a file GET. */
+  kind: "json" | "form" | "file";
 }
+
+/** A form's file field, as the fake records it. */
+export interface FormFile {
+  name: string;
+  type: string;
+  bytes: Uint8Array;
+}
+
+/** What the fake file host answers a download with. */
+export type FileAnswer = (path: string, init: RequestInit | undefined) => Response | Promise<Response>;
 
 /** A fake Bot API behind `fetch`: records each call, answers ok by default.
  *  `reply` overrides the answer for one method; returning an envelope with
@@ -160,12 +218,20 @@ export class FakeTelegram {
   private nextMessageId = 100;
   reply: Record<string, (params: Record<string, unknown>, n: number) => object | undefined> = {};
   bot = { id: 999, is_bot: true, first_name: "Loom", username: "LoomBot" };
+  /** The file host (GET <base>/file/bot<token>/<path>): by default a small
+   *  OGG-ish body. */
+  file: FileAnswer = () => new Response(new Uint8Array([0x4f, 0x67, 0x67, 0x53]), { status: 200 });
 
   fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    if (/^\/file\/bot[^/]+\//.test(url.pathname)) {
+      this.calls.push({ method: "file", params: {}, path: url.pathname, kind: "file" });
+      return this.file(url.pathname.replace(/^\/file\/bot[^/]+\//, ""), init);
+    }
     const method = url.pathname.split("/").pop() ?? "";
-    const params = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-    this.calls.push({ method, params, path: url.pathname });
+    const form = init?.body instanceof FormData ? init.body : undefined;
+    const params = form ? await formParams(form) : (JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+    this.calls.push({ method, params, path: url.pathname, kind: form ? "form" : "json" });
     const n = this.calls.filter((c) => c.method === method).length;
     const custom = this.reply[method]?.(params, n);
     const env = custom ?? { ok: true, result: this.defaultResult(method) };
@@ -174,7 +240,8 @@ export class FakeTelegram {
 
   private defaultResult(method: string): unknown {
     if (method === "getMe") return this.bot;
-    if (method === "sendMessage") return { message_id: this.nextMessageId++ };
+    if (method === "sendMessage" || method === "sendVoice") return { message_id: this.nextMessageId++ };
+    if (method === "getFile") return { file_id: "f", file_unique_id: "u", file_size: 4, file_path: "voice/file_1.oga" };
     return true;
   }
 
@@ -186,6 +253,16 @@ export class FakeTelegram {
   texts(): string[] {
     return this.callsTo("sendMessage").map((c) => String(c.params.text));
   }
+}
+
+/** formParams reads a multipart body the way the fake records it: strings as
+ *  they are, files as their name, type and bytes. */
+async function formParams(form: FormData): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of form.entries()) {
+    out[k] = typeof v === "string" ? v : ({ name: v.name, type: v.type, bytes: new Uint8Array(await v.arrayBuffer()) } satisfies FormFile);
+  }
+  return out;
 }
 
 /** FakeGate is loomcycle's external-gate surface (/v1/_auth/assert, revoke):
