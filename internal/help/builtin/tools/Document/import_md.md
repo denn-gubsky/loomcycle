@@ -35,7 +35,8 @@ existing one.** A new document always gets a Path-tree name.
   edition" below.
 - `scope` — `user` (default), `agent` or `tenant`. See
   `{"op":"help","topic":"scopes"}`.
-- `source_url`, `source_kind`, `source_title` — new document only: where the
+- `source_url`, `source_kind`, `source_title`, `source_revision`,
+  `source_updated_at` — a new document, or a reimport (below): where the
   text came from, such as the email whose body you are importing. Naming any
   of them marks the document as imported: its text is then found by document
   search but never treated as something you learned, and its root records the
@@ -44,9 +45,12 @@ existing one.** A new document always gets a Path-tree name.
   SharePoint file's `webUrl` — never a download or upload link; at most 2048
   bytes, with no user name or password, and a signature or token in its query
   is masked before it is kept. `source_kind` is `sharepoint`, `email`,
-  `attachment`, `web` or `other` (the default) and tags the document
-  `source/<kind>`. `source_title` is the source's own name, such as the
-  email's subject: one line, at most 300 characters.
+  `attachment`, `web`, `skybits` or `other` (the default) and tags the
+  document `source/<kind>`. `source_title` is the source's own name, such as
+  the email's subject: one line, at most 300 characters. For a source that
+  keeps changing, `source_revision` is its own name for the version imported
+  (`doc:r12`, `sheet:r3`, `file:v2`; at most 64 characters) and
+  `source_updated_at` its own update time, RFC 3339 (kept in UTC).
 
 Markdown written by `export_md` with metadata also carries:
 
@@ -108,6 +112,22 @@ work's title. Running the same reimport twice changes nothing, and a reimport
 that stopped part way is completed by running it again. Two reimports of the
 same work run one after the other.
 
+**The provenance follows the edition.** On a document that was imported
+(it has `provenance`), a reimport — by `document_id` or by `work_key`, or File
+`op=import` with `reimport` — refreshes it: the captured file, its `sha256`,
+`captured_at`, `run_id`, `source_revision` and `source_updated_at` become the
+new edition's. The source stays the stored one: a `source_url` you pass must
+be the one the document was imported from, or the reimport is refused with
+`source_mismatch` and nothing is written. A `source_kind` you pass replaces
+the stored kind (a document imported as `other` becomes `skybits`), its
+`source/<kind>` tag following. What you leave out of the URL, kind and title
+is kept. The `source_status` set by `mark_source`
+is kept too. The change is a revision of the root chunk, and the earlier
+provenance stays in its history: `history` lists each revision's
+`provenance`, `get_version` returns it, and `diff` gives `from_provenance` and
+`to_provenance` when they differ. A reimport onto a document that was not
+imported leaves it unimported.
+
 A reimport reads only the headings, the text under them, and a chunk's type,
 status and fields from its `<!-- loom: ... -->` line. It ignores the
 `<!-- loom-edges: ... -->` block, the `valid_at` / `invalid_at` in a `loom:`
@@ -165,8 +185,12 @@ path is not in the result; use `get_document` or `Path` `ls` to see it.
 - `import_md: no such document: ...` / `no such parent chunk: ...` — the
   target is not in this scope.
 - A source that is not valid (a URL that is not http(s), has a user name or
-  password, or is too long; a `source_kind` not in the list), or a source with
-  `document_id`: a source describes a whole new document. Nothing is written.
+  password, or is too long; a `source_kind` not in the list; a
+  `source_revision` over 64 characters; a `source_updated_at` that is not RFC
+  3339), or a source with `document_id` and no `reimport`: a source describes a
+  whole document. Nothing is written.
+- With `reimport`: `source_mismatch` — the source named is not the one the
+  document was imported from.
 - With `reimport`: `edition_date ... is earlier than the edition already in
   force` — import editions in date order. `identity_collision` — another
   document holds the `work_key`.

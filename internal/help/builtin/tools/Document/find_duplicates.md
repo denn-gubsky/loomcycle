@@ -22,7 +22,9 @@ A pair that matches both ways is reported once, as `sha256`.
 
 **Which side is the copy.** In a title match where only one title carries a
 copy marker, that one is the copy. Otherwise the earlier document is the
-original (by when it was created, then by id). Three or more matching
+original: by its source's own update time (`source_updated_at` in the
+provenance) when both documents have one, else by when it was created, then
+by id. Three or more matching
 documents make a star: every copy points at the one original, never at each
 other.
 

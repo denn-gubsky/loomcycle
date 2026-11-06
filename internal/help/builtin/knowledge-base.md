@@ -114,6 +114,7 @@ Who rules on what:
 | merge two subjects, bind a subject to a user account | an operator only | the operator plane; never a Document op |
 | find a relation or fact unsupported by its evidence | any agent | `judge_fact` — a finding, kept and withheld, not a deletion |
 | re-check, retire, demote or merge relations a rule made | a code agent granted statement methods, or an operator | `maintain_statement` |
+| mark an imported document's source removed, trashed or present again | a code agent granted statement methods, or an operator | `mark_source` |
 | auto-assert a rule-made relation | the server | a `rule:` proposal of a kind the ontology marks auto-asserting, every quote in a chunk |
 
 A rejected relation is a tombstone: proposing it again, at any `valid_at`, is
