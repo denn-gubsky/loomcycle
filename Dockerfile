@@ -92,7 +92,10 @@ WORKDIR /
 COPY --from=go-builder /out/loomcycle /usr/local/bin/loomcycle
 COPY LICENSE NOTICE /usr/share/doc/loomcycle/
 # Distroless runs as user "nonroot" (uid 65532) by default — operator
-# mounts should match that uid for write access to the config dir.
+# mounts should match that uid for write access to the config dir. A config
+# that `import claude-code` / `mcp-registry` wrote on the host is 0600 (it can
+# hold an MCP server's literal token): chmod it 0644 or run with --user set to
+# the host uid (docs/DOCKER_HUB_OVERVIEW.md, "Volume mounts").
 USER nonroot
 EXPOSE 8787
 ENTRYPOINT ["/usr/local/bin/loomcycle"]
