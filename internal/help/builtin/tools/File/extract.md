@@ -31,6 +31,40 @@ to be anything but a scan, `notes` says the same in words, and
 `yield_chars_per_page` is the text per page read; a scan reads near zero. At
 most 2000 pages are read.
 
+## Headings marked by formatting
+
+Some editors export headings as formatting rather than heading styles: a
+section title is a 14pt coloured line, a sub-section a lone bold line. Such
+a document extracts as one long section. `structure: {"infer_headings":
+true}` recovers the outline, for DOCX and HTML only (any other format is
+extracted as usual, and `notes` says the option was not applied).
+
+A paragraph becomes a heading when it is one line of at most 120
+characters, does not end with `.`, `,` or `;`, is not in a list or table
+cell, and is:
+
+- wholly bold, or
+- at least 1.15 times the size of the body text (the median over the
+  document), or
+- in a colour other than the body's and bold or larger.
+
+Real headings (a Word heading style, an `<h1>`–`<h6>`) keep their level.
+Inferred headings take the levels below the shallowest real heading, one per
+distinct font size, largest first; bold lines at body size are the deepest.
+A DOCX's formatting is read from its runs, character and paragraph styles
+and document defaults; an HTML page's from `<b>`, `<strong>` and inline
+`style` (`font-weight`, `font-size`, `color`), not from style sheets.
+
+With the option on, a picture that appears 3 or more times in the document
+is taken as decoration (a divider, a repeated logo) and left out, and tabs
+and runs of non-breaking spaces become one space. The result counts
+`inferred_headings` and `dropped_decorative_images`. The same file always
+gives the same outline. When the text is then imported, the document's
+provenance records `structured: {headings, by: "extract:infer_headings"}`
+(by `extract:infer_headings+<run id>` when the import also passes
+`headings`), as long as the Markdown file is unchanged since extract wrote
+it.
+
 ## Reading scans and images (OCR)
 
 Where the operator has set up an OCR model and your agent is allowed to use
@@ -83,6 +117,8 @@ to you came from the file. Read the whole text with Read on the `.md`.
   document together at 32 MiB, and a sheet's cell at 32 KiB; `notes` says
   where.
 - `excerpt_chars` — how much of the text to return. Default and most 30000.
+- `structure` — `{"infer_headings": true}` makes headings of the lines a
+  DOCX or HTML file marks by formatting (see above). Default off.
 - `ocr` — `never`, `auto` or `always` (see above). Default: your agent's
   setting, which is also the most you may ask for.
 - `language` — the languages of the text, for OCR: ISO 639-1 codes joined
@@ -94,7 +130,9 @@ to you came from the file. Read the whole text with Read on the `.md`.
 
 `{ref, source, media_type, format, chars, pages, sheets, slides, tables,
 images, image_refs, yield_chars_per_page, notes, excerpt}` — `ref` is the
-Markdown file; counts that do not apply to the format are left out.
+Markdown file; counts that do not apply to the format are left out. With
+`structure.infer_headings` on a DOCX or HTML file, `inferred_headings` and
+`dropped_decorative_images` are given, zero included.
 `yield_chars_per_page` is given when the page count is known; a low value
 means the pages are mostly pictures (a scan) rather than text.
 `low_yield_pages` lists a PDF's likely scanned pages. After OCR, `ocr` is
@@ -178,6 +216,18 @@ The same scan with OCR, after asking what it would cost:
  "ocr": {"mode": "auto", "engine": "vision", "provider": "anthropic", "model": "claude-sonnet-4-6", "pages": [1, 2, 3], "pages_sent": 3,
          "units": 1, "status": "ok", "input_tokens": 4920, "output_tokens": 2310, "cost": 0.049, "currency": "USD"},
  "excerpt": "<file_content path=\"volume:inbox:extracted/scan-2026-10.md\" truncated=\"false\">\n# scan-2026-10\n…\n## Page 1\n\nПРОТОКОЛ №3\n…\n</file_content>"}
+```
+
+A report whose section titles are bold or coloured lines, given an outline:
+
+```json
+{"op": "extract", "path": "volume:inbox:documents/field-report.docx", "structure": {"infer_headings": true}}
+```
+
+```json result
+{"ref": "volume:inbox:extracted/field-report.md", "format": "docx", "chars": 9120, "images": 2,
+ "inferred_headings": 7, "dropped_decorative_images": 9,
+ "excerpt": "<file_content path=\"volume:inbox:extracted/field-report.md\" truncated=\"false\">\n# field-report\n\n## Quarterly field report\n\n### Section one: Overview\n…\n</file_content>"}
 ```
 
 Only the first 200 rows of each sheet, and no pictures:
