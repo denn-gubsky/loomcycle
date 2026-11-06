@@ -71,7 +71,10 @@ const (
 // store sink: they are written to the JSONL file only.
 func classify(action string) eventClass {
 	switch action {
-	case "auth_login_failed", "auth_assertion_refused", "oauth_refused", "oauth_token_refused":
+	case "auth_login_failed", "auth_assertion_refused", "oauth_refused", "oauth_token_refused",
+		// A stale code or refresh token presented again after its sign-in
+		// was already ended: the alarm was written once, these only count.
+		"oauth_code_reuse_repeat", "oauth_refresh_reuse_repeat", "oauth_revoke_repeat":
 		return classAnonymous
 	case "auth_gate_sync_refused", "auth_link_refused", "auth_manage_refused",
 		"acl_denied", "acl_unavailable", "acl_shadow_diverged", "acl_resolution_failed",

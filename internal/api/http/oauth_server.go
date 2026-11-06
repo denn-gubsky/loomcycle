@@ -535,8 +535,14 @@ func (s *Server) oauthCodeGrant(w http.ResponseWriter, r *http.Request, f map[st
 	if !first {
 		// A replayed code: whoever has it is not (only) the app. End the
 		// sign-in it produced, on every replica.
-		s.revokeAppFamily(ctx, code.ClientID, code.FamilyID, oauthRevokeCodeReuse)
-		s.recordAuthEvent(audit.Event{Action: "oauth_code_reuse", TargetTenant: code.TenantID, TargetSubject: code.Subject,
+		// The alarm once, when this replay ended the sign-in; a repeat of
+		// the same stale code is an observation, queued, so replaying it in
+		// a loop cannot hold the tenant's audit chain.
+		action := "oauth_code_reuse"
+		if !s.revokeAppFamily(ctx, code.ClientID, code.FamilyID, oauthRevokeCodeReuse) {
+			action = "oauth_code_reuse_repeat"
+		}
+		s.recordAuthEvent(audit.Event{Action: action, TargetTenant: code.TenantID, TargetSubject: code.Subject,
 			AuthGate: code.Gate, AuthClient: code.ClientID, AuthRecordID: code.FamilyID, SourceAddr: s.clientSource(r)})
 		oauthTokenError(w, http.StatusBadRequest, "invalid_grant", "")
 		return
@@ -635,8 +641,12 @@ func (s *Server) oauthRefreshFamily(w http.ResponseWriter, r *http.Request, clie
 		return
 	}
 	if !first {
-		s.revokeAppFamily(ctx, fam.ClientID, fam.FamilyID, oauthRevokeRefreshReuse)
-		s.recordAuthEvent(audit.Event{Action: "oauth_refresh_reuse", TargetTenant: fam.TenantID, TargetSubject: fam.Subject,
+		// As for a replayed code: the alarm once, repeats as observations.
+		action := "oauth_refresh_reuse"
+		if !s.revokeAppFamily(ctx, fam.ClientID, fam.FamilyID, oauthRevokeRefreshReuse) {
+			action = "oauth_refresh_reuse_repeat"
+		}
+		s.recordAuthEvent(audit.Event{Action: action, TargetTenant: fam.TenantID, TargetSubject: fam.Subject,
 			AuthGate: fam.Gate, AuthClient: fam.ClientID, AuthRecordID: fam.FamilyID, SourceAddr: s.clientSource(r)})
 		oauthTokenError(w, http.StatusBadRequest, "invalid_grant", "")
 		return
@@ -735,14 +745,19 @@ func (s *Server) oauthIssue(w http.ResponseWriter, r *http.Request, client confi
 
 // revokeAppFamily ends a sign-in: the family is revoked (a tombstone if it
 // does not exist yet) and its access tokens retired, and every replica's
-// token cache is flushed so none keeps answering for them.
-func (s *Server) revokeAppFamily(ctx context.Context, clientID, familyID, reason string) {
+// token cache is flushed so none keeps answering for them. It reports
+// whether this call revoked the family — false when it was already revoked —
+// so a caller records the alarm once; a failed revoke counts as a change, so
+// its alarm is never demoted.
+func (s *Server) revokeAppFamily(ctx context.Context, clientID, familyID, reason string) bool {
 	if familyID == "" {
-		return
+		return false
 	}
 	now := time.Now().UTC()
-	if _, err := s.store.OAuthFamilyRevoke(ctx, familyID, reason, now); err != nil {
+	changed, err := s.store.OAuthFamilyRevoke(ctx, familyID, reason, now)
+	if err != nil {
 		slog.Error("oauth: revoking a family failed", "family", familyID, "err", err)
+		changed = true
 	}
 	if clientID != "" {
 		if _, err := s.store.OAuthTokenRetire(ctx, clientID, familyID, now); err != nil {
@@ -750,6 +765,7 @@ func (s *Server) revokeAppFamily(ctx context.Context, clientID, familyID, reason
 		}
 	}
 	s.invalidateTokenCache(ctx)
+	return changed
 }
 
 // endSubjectAppSignIns ends every app sign-in of a user being disabled or
@@ -825,8 +841,11 @@ func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			fam, err := s.store.OAuthFamilyGet(ctx, rt.FamilyID)
 			if err == nil && fam.ClientID == client.ID {
-				s.revokeAppFamily(ctx, client.ID, fam.FamilyID, oauthRevokeByApp)
-				s.recordAuthEvent(audit.Event{Action: "oauth_revoked", TargetTenant: fam.TenantID, TargetSubject: fam.Subject,
+				action := "oauth_revoked"
+				if !s.revokeAppFamily(ctx, client.ID, fam.FamilyID, oauthRevokeByApp) {
+					action = "oauth_revoke_repeat" // already ended: nothing changed
+				}
+				s.recordAuthEvent(audit.Event{Action: action, TargetTenant: fam.TenantID, TargetSubject: fam.Subject,
 					AuthGate: fam.Gate, AuthClient: client.ID, AuthRecordID: fam.FamilyID, AuthReason: "refresh_token",
 					SourceAddr: s.clientSource(r)})
 			}

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auditchain"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -674,5 +675,74 @@ func TestOAuthMetadata_PublishesTheIssuerAndS256Only(t *testing.T) {
 	rec = f.authorize(t, appAuthorizeParams(), true)
 	if loc, _ := url.Parse(rec.Header().Get("Location")); loc.Query().Get("iss") != "https://lc.example" {
 		t.Fatalf("iss = %q", loc.Query().Get("iss"))
+	}
+}
+
+// countEvents counts the recorded events of one action.
+func countEvents(sink *recordingSink, action string) int {
+	n := 0
+	for _, ev := range sink.events {
+		if ev.Action == action {
+			n++
+		}
+	}
+	return n
+}
+
+// Anyone holding one stale code or refresh token can present it again and
+// again, authenticated only by the public client id. The alarm (written
+// before the request goes on, never dropped) is recorded once, when the
+// sign-in was actually ended; each repeat is a queued observation, so the
+// repeats cannot serialise the victim tenant's chain.
+func TestOAuthReuseAlarm_IsRecordedOnceAndRepeatsAreObservations(t *testing.T) {
+	f := newAppFixture(t, "tenant")
+	code := f.code(t)
+	if rec, _ := f.exchange(t, code); rec.Code != http.StatusOK {
+		t.Fatalf("first exchange = %d", rec.Code)
+	}
+	for range 3 {
+		if rec, _ := f.exchange(t, code); rec.Code != http.StatusBadRequest {
+			t.Fatalf("replay = %d", rec.Code)
+		}
+	}
+	if n := countEvents(f.sink, "oauth_code_reuse"); n != 1 {
+		t.Errorf("oauth_code_reuse recorded %d times for three replays, want once", n)
+	}
+	if n := countEvents(f.sink, "oauth_code_reuse_repeat"); n != 2 {
+		t.Errorf("oauth_code_reuse_repeat recorded %d times, want 2", n)
+	}
+
+	_, rt1 := f.signIn(t)
+	if rec, _ := f.refresh(t, rt1); rec.Code != http.StatusOK {
+		t.Fatalf("refresh = %d", rec.Code)
+	}
+	for range 3 {
+		_, _ = f.refresh(t, rt1)
+	}
+	if n := countEvents(f.sink, "oauth_refresh_reuse"); n != 1 {
+		t.Errorf("oauth_refresh_reuse recorded %d times for three reuses, want once", n)
+	}
+	if n := countEvents(f.sink, "oauth_refresh_reuse_repeat"); n != 2 {
+		t.Errorf("oauth_refresh_reuse_repeat recorded %d times, want 2", n)
+	}
+
+	_, rt := f.signIn(t)
+	for range 3 {
+		if rec, _ := f.post(t, "/v1/_oauth/revoke", url.Values{"token": {rt}, "client_id": {"board"}}); rec.Code != http.StatusOK {
+			t.Fatalf("revoke = %d", rec.Code)
+		}
+	}
+	if n := countEvents(f.sink, "oauth_revoked"); n != 1 {
+		t.Errorf("oauth_revoked recorded %d times for three revokes of one sign-in, want once", n)
+	}
+	for _, a := range []string{"oauth_code_reuse_repeat", "oauth_refresh_reuse_repeat", "oauth_revoke_repeat"} {
+		if !auditchain.IsObservation(a) {
+			t.Errorf("%s is written synchronously; a repeat must be a queued observation", a)
+		}
+	}
+	for _, a := range []string{"oauth_code_reuse", "oauth_refresh_reuse", "oauth_revoked"} {
+		if auditchain.IsObservation(a) {
+			t.Errorf("%s is queued; the first alarm must be written at once", a)
+		}
 	}
 }
