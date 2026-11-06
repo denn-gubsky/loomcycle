@@ -98,8 +98,14 @@ func ValidateDirentEntry(body json.RawMessage) error {
 // without provisioning it: a restore asks about every document name it
 // carries, and must not leave an empty database behind for each one whose
 // document did not arrive.
+//
+// Documents live on the document plane (Document.docSQL) once the scope has
+// one. Until then — a scope from an archive taken before snapshots carried the
+// document plane, restored into the agent plane for the Document tool to move —
+// they are in the agent plane, and the check looks there. Once the document
+// plane exists it alone answers: what the agent plane holds under a document
+// table's name is never moved across after that.
 func SnapshotDocumentExists(sm *sqlmem.Manager) func(ctx context.Context, tenantID, scope, scopeID, documentID string) (bool, error) {
-	// Documents live on the document plane (Document.docSQL).
 	sm = sm.DocPlane()
 	return func(ctx context.Context, tenantID, scope, scopeID, documentID string) (bool, error) {
 		key := sqlmem.ScopeKey{Tenant: sqlScopeTenantValue(tenantID), Scope: scope, ScopeID: scopeID}
@@ -109,6 +115,17 @@ func SnapshotDocumentExists(sm *sqlmem.Manager) func(ctx context.Context, tenant
 		ok, err := sm.ScopeExists(ctx, key)
 		if err != nil || !ok {
 			return false, err
+		}
+		onDocPlane, err := sm.PlaneExists(ctx, key)
+		if err != nil {
+			return false, err
+		}
+		if !onDocPlane {
+			held, err := sm.AgentPlaneTables(ctx, key, []string{"documents"})
+			if err != nil || len(held) == 0 {
+				return false, err
+			}
+			key = key.AgentPlane()
 		}
 		res, err := sm.Query(ctx, key, sm.Rebind(`SELECT 1 FROM documents WHERE id = ? LIMIT 1`), []any{documentID})
 		if schemaMissing(err) {

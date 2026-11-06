@@ -292,3 +292,33 @@ func TestDeadLink_AgainstTheTwoFiles(t *testing.T) {
 		t.Errorf("scope files = %v; want the agent and document files", files)
 	}
 }
+
+// A restore asks whether each Path name's document is on this host before it
+// restores the name. An archive from before the document plane was carried
+// restores the documents into the agent plane, where they wait for the Document
+// tool to move them; the check must find them there, or every document name in
+// such an archive is dropped. Asking must not move or create anything.
+func TestSnapshotDocumentExists_FindsADocumentNotYetMoved(t *testing.T) {
+	d, ctx, root := planeFileFixture(t)
+	s := buildOldScope(t, d, ctx, root)
+	exists := SnapshotDocumentExists(d.SqlMem)
+	if ok, err := exists(context.Background(), "tnt", "user", "u1", s.docID); err != nil || !ok {
+		t.Errorf("a document in a scope not yet moved: exists=%v err=%v; want found", ok, err)
+	}
+	if ok, err := exists(context.Background(), "tnt", "user", "u1", "no-such-document"); err != nil || ok {
+		t.Errorf("an id the scope does not hold: exists=%v err=%v; want false", ok, err)
+	}
+	for _, f := range scopeFiles(t, root) {
+		if strings.HasSuffix(f, ".doc.db") {
+			t.Errorf("asking created a document file: %v", scopeFiles(t, root))
+		}
+	}
+	// Once moved, it is found on the document plane.
+	d.SqlMem.ForgetEnsured(s.key)
+	if err := d.ensureSchema(ctx, s.key); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := exists(context.Background(), "tnt", "user", "u1", s.docID); err != nil || !ok {
+		t.Errorf("a moved document: exists=%v err=%v; want found", ok, err)
+	}
+}
