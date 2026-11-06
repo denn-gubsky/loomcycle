@@ -3020,7 +3020,8 @@ transcription:
     engine: openai-audio      # required: openai-audio | off
     provider: whisper-local   # required for openai-audio: a provider on the openai driver
     model: whisper            # required for openai-audio: an alias tagged kind: transcriber, naming a model
-    language: uk              # default uk; exactly one code
+    language: uk              # default uk (or the first of languages); exactly one code
+    languages: [uk, ru, en]   # optional; the only languages a request may name, language among them
     vocabulary: ""            # optional names and terms; folded to one line, at most 400 characters
     diarize: auto             # auto | on | off, default auto
     max_minutes_per_call: 120 # default 120 (never above max_minutes_per_run)
@@ -3031,7 +3032,7 @@ transcription:
     media: { command: "ffmpeg -nostdin -loglevel error -i {in} -ac 1 -ar 16000 -f wav {out}" }   # optional; must contain {in} and {out}
 ```
 
-- `loomcycle validate` fails on an unknown key, a missing `engine`, a negative number, a per-call cap above its per-run cap, an unknown language code, an OCR `model` that is not a chat alias, an STT `provider` not on the `openai` driver, an STT `model` not tagged `kind: transcriber` (or served by another provider, or given as a `model_pattern`), an OCR helper command without `{in}`, and a `media` command without `{in}` and `{out}`.
+- `loomcycle validate` fails on an unknown key, a missing `engine`, a negative number, a per-call cap above its per-run cap, an unknown language code, an empty or repeating `languages` list or a `language` not on it, an OCR `model` that is not a chat alias, an STT `provider` not on the `openai` driver, an STT `model` not tagged `kind: transcriber` (or served by another provider, or given as a `model_pattern`), an OCR helper command without `{in}`, and a `media` command without `{in}` and `{out}`.
 - `command` and `http` (both engines) and `gemini-audio` (STT) are refused as not available yet.
 - Whether the OCR model can read images is checked when the engine is built, not at load.
 - **Speech-to-text, how a recording is sent.** A PCM WAV is cut by the runtime into `chunk_minutes` pieces under 25 MB each, every piece after the first reaching `chunk_overlap_seconds` back; the overlap's repeat is removed. With `media.command` every other format is converted to a mono 16 kHz WAV first (the converter runs without a shell, scrubbed env, on a copy in a scratch folder of the inbox), then cut. Without it, a file goes whole only if the engine reads its format, it is under 25 MB and within `max_minutes_per_call`; otherwise the call is refused naming `transcription.stt.media.command` — never truncated.

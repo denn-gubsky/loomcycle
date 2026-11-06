@@ -1,6 +1,11 @@
 package transcribe
 
-import "github.com/denn-gubsky/loomcycle/internal/config"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/denn-gubsky/loomcycle/internal/config"
+)
 
 // The model may choose a language hint and a vocabulary hint; both reach an
 // engine prompt or a helper command line, so both are sanitised here before
@@ -18,6 +23,19 @@ func SanitizeLanguage(code string) (string, error) {
 // exactly one language.
 func SanitizeSTTLanguage(code string) (string, error) {
 	return config.NormalizeTranscriptionLanguage(code, false)
+}
+
+// CheckSTTLanguage is SanitizeSTTLanguage plus the operator's languages list:
+// a code the deployment does not take is refused, not passed on.
+func CheckSTTLanguage(op *config.STTConfig, code string) (string, error) {
+	lang, err := SanitizeSTTLanguage(code)
+	if err != nil {
+		return "", err
+	}
+	if !op.AllowsLanguage(lang) {
+		return "", fmt.Errorf("%q is not one of this deployment's languages (%s)", lang, strings.Join(op.Languages, ", "))
+	}
+	return lang, nil
 }
 
 // SanitizeVocabulary folds a vocabulary hint to one line (newlines and tabs to

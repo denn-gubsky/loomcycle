@@ -82,9 +82,13 @@ func (f *File) sttRequest(ctx context.Context, in fileInput) (sttCall, tools.Res
 	op := f.sttConfig()
 	c.opts = transcribe.STTOptions{Language: op.Language, Vocabulary: op.Vocabulary, Diarize: transcribe.Diarize(op.Diarize)}
 	if in.Language != "" {
-		lang, err := transcribe.SanitizeSTTLanguage(in.Language)
+		lang, err := transcribe.CheckSTTLanguage(op, in.Language)
 		if err != nil {
-			return c, errValidation("transcribe: language: "+err.Error(), "Pass one ISO 639-1 code, e.g. uk."), false
+			hint := "Pass one ISO 639-1 code, e.g. uk."
+			if len(op.Languages) > 0 {
+				hint = "Pass one of: " + strings.Join(op.Languages, ", ") + "."
+			}
+			return c, errValidation("transcribe: language: "+err.Error(), hint), false
 		}
 		c.opts.Language = lang
 	}

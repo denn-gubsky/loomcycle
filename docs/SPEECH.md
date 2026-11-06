@@ -87,13 +87,15 @@ A client should show "working…" rather than time out early, and give the user 
     "max_chars_per_call": 4000, "max_chars_per_request": 100000, "max_seconds_per_request": 3600
   },
   "transcription": {
-    "enabled": true, "default_language": "uk",
+    "enabled": true, "default_language": "uk", "languages": ["uk", "ru", "en"],
     "accepts": ["audio/wav", "audio/webm", "audio/mp4", "audio/mpeg", "audio/ogg", "audio/flac", "video/mp4", "video/webm"],
     "max_upload_bytes": 16777216, "max_seconds_per_call": 7200, "max_seconds_per_request": 18000,
     "whole_file_max_bytes": 26214400
   }
 }
 ```
+
+`transcription.languages` is present when the operator set `transcription.stt.languages`: a request (or an agent's `File op=transcribe`) naming any other language is a 400 `unsupported_language`, and one naming none is transcribed in `default_language`. Without the list, any supported code is taken.
 
 With a converter configured, `accepts` is `["audio/wav", "audio/*", "video/*"]` and `whole_file_max_bytes` is absent.
 

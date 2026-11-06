@@ -897,6 +897,7 @@ paths:
                     transcription:
                       enabled: true
                       default_language: uk
+                      languages: [uk, ru, en]
                       accepts: [audio/wav, audio/webm, audio/mp4, audio/mpeg, audio/ogg, audio/flac, video/mp4, video/webm]
                       max_upload_bytes: 16777216
                       max_seconds_per_call: 7200
@@ -2442,6 +2443,7 @@ components:
           properties:
             enabled: { type: boolean }
             default_language: { type: string }
+            languages: { type: array, items: { type: string }, description: "The languages a request may name, when the operator set transcription.stt.languages; another is a 400 unsupported_language. Absent: any supported code." }
             accepts: { type: array, items: { type: string } }
             max_upload_bytes: { type: integer }
             max_seconds_per_call: { type: integer }

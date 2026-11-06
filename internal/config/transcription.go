@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -86,8 +87,13 @@ type STTConfig struct {
 	// Model is a models: alias tagged kind: transcriber. Required for
 	// openai-audio.
 	Model string `yaml:"model"`
-	// Language is ONE code: speech engines take a single language.
+	// Language is ONE code: speech engines take a single language. It is the
+	// default when a request names none.
 	Language string `yaml:"language"`
+	// Languages, when set, is the closed list a request may name; a request
+	// for any other language is refused. Language must be on it (unset, it
+	// defaults to the first). Unset, any supported code is taken.
+	Languages []string `yaml:"languages,omitempty"`
 	// Vocabulary is a prompt hint (names, terms), folded to one line.
 	Vocabulary          string `yaml:"vocabulary"`
 	Diarize             string `yaml:"diarize"`
@@ -196,6 +202,10 @@ func (t TranscriptionConfig) Resolved() TranscriptionConfig {
 			m := *s.Media
 			s.Media = &m
 		}
+		s.Languages = slices.Clone(s.Languages)
+		if s.Language == "" && len(s.Languages) > 0 {
+			s.Language = s.Languages[0]
+		}
 		s.Language = orDefault(s.Language, TranscriptionDefaultSTTLanguage)
 		s.Diarize = orDefault(s.Diarize, TranscriptionDefaultDiarize)
 		s.MaxMinutesPerRun = orDefaultInt(s.MaxMinutesPerRun, TranscriptionDefaultMaxMinutesPerRun)
@@ -246,6 +256,9 @@ func resolveTranscription(c *Config) error {
 		return fmt.Errorf("transcription.ocr: max_pages_per_call (%d) is above max_pages_per_run (%d)", o.MaxPagesPerCall, o.MaxPagesPerRun)
 	}
 	if s := c.Transcription.STT; s != nil {
+		if !s.AllowsLanguage(s.Language) {
+			return fmt.Errorf("transcription.stt.language: %q is not on transcription.stt.languages (%s)", s.Language, strings.Join(s.Languages, ", "))
+		}
 		if s.MaxMinutesPerCall > s.MaxMinutesPerRun {
 			return fmt.Errorf("transcription.stt: max_minutes_per_call (%d) is above max_minutes_per_run (%d)", s.MaxMinutesPerCall, s.MaxMinutesPerRun)
 		}
@@ -360,6 +373,23 @@ func (c *Config) validateSTT(s *STTConfig) error {
 			return fmt.Errorf("%s.language: %w", place, err)
 		}
 		s.Language = lang
+	}
+	if s.Languages != nil {
+		if len(s.Languages) == 0 {
+			return fmt.Errorf("%s.languages is empty: remove it to take any language, or list the ones to take", place)
+		}
+		seen := map[string]bool{}
+		for i, code := range s.Languages {
+			lang, err := NormalizeTranscriptionLanguage(code, false)
+			if err != nil {
+				return fmt.Errorf("%s.languages[%d]: %w", place, i, err)
+			}
+			if seen[lang] {
+				return fmt.Errorf("%s.languages: %q is listed twice", place, lang)
+			}
+			seen[lang] = true
+			s.Languages[i] = lang
+		}
 	}
 	if s.Vocabulary != "" {
 		v, err := SanitizeTranscriptionVocabulary(s.Vocabulary)
@@ -599,4 +629,10 @@ func SanitizeTranscriptionVocabulary(v string) (string, error) {
 		return "", fmt.Errorf("vocabulary is longer than %d characters (%d)", MaxTranscriptionVocabularyRunes, n)
 	}
 	return out, nil
+}
+
+// AllowsLanguage is whether a request may name lang, a normalised code: any
+// code when no languages list is set, otherwise one on the list.
+func (s *STTConfig) AllowsLanguage(lang string) bool {
+	return len(s.Languages) == 0 || slices.Contains(s.Languages, lang)
 }

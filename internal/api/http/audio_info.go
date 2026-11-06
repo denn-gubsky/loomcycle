@@ -44,10 +44,13 @@ type speechLanguageInfo struct {
 }
 
 type transcriptionDirectionInfo struct {
-	Enabled         bool     `json:"enabled"`
-	DefaultLanguage string   `json:"default_language,omitempty"`
-	Accepts         []string `json:"accepts,omitempty"`
-	MaxUploadBytes  int64    `json:"max_upload_bytes,omitempty"`
+	Enabled         bool   `json:"enabled"`
+	DefaultLanguage string `json:"default_language,omitempty"`
+	// Languages is the operator's list, when one is set; absent, any
+	// supported code is taken.
+	Languages      []string `json:"languages,omitempty"`
+	Accepts        []string `json:"accepts,omitempty"`
+	MaxUploadBytes int64    `json:"max_upload_bytes,omitempty"`
 	// MaxSecondsPerCall is one engine request; MaxSecondsPerRequest what one
 	// upload may last.
 	MaxSecondsPerCall    int `json:"max_seconds_per_call,omitempty"`
@@ -114,7 +117,7 @@ func (s *Server) transcriptionDirection(ctx context.Context) transcriptionDirect
 	op := s.stt.Config.STT
 	caps := transcribe.Effective(s.stt.Config, config.AgentTranscription{})
 	out := transcriptionDirectionInfo{
-		Enabled: true, DefaultLanguage: op.Language, MaxUploadBytes: s.maxRequestBytes(),
+		Enabled: true, DefaultLanguage: op.Language, Languages: op.Languages, MaxUploadBytes: s.maxRequestBytes(),
 		MaxSecondsPerCall: caps.MaxMinutesPerCall * 60, MaxSecondsPerRequest: caps.MaxMinutesPerRun * 60,
 	}
 	if op.Media != nil {

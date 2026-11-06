@@ -7912,6 +7912,10 @@ export interface SpeechDirectionInfo {
 export interface TranscriptionDirectionInfo {
   enabled: boolean;
   default_language?: string;
+  /** The languages a request may name, when the operator set a list
+   *  (`transcription.stt.languages`); another is a 400
+   *  `unsupported_language`. Absent: any supported code. */
+  languages?: string[];
   /** The recording types the route takes. `audio/wav` always; with a
    *  converter, `audio/*` and `video/*`; without one, the types the engine
    *  reads whole. */
