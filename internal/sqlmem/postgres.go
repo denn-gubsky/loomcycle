@@ -567,7 +567,7 @@ func (b *postgresBackend) invalidate(schema, role string) {
 // query runs a (already-validated, read-only) statement on the scope connection
 // in a READ-ONLY transaction (the write backstop). No SET LOCAL ROLE: the
 // connection's session_user IS the scope role.
-func (b *postgresBackend) query(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error) {
+func (b *postgresBackend) query(ctx context.Context, key ScopeKey, statement string, args []any, maxBytes int) (*QueryResult, error) {
 	schema, role, err := pgScopeNames(key)
 	if err != nil {
 		return nil, err
@@ -595,7 +595,7 @@ func (b *postgresBackend) query(ctx context.Context, key ScopeKey, statement str
 		return nil, err
 	}
 	defer rows.Close()
-	return collectRows(rows, b.cfg.MaxRows)
+	return collectRows(rows, b.cfg.MaxRows, maxBytes)
 }
 
 // exec runs a (already-validated, read-write) statement on the scope connection.

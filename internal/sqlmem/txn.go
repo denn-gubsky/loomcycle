@@ -317,7 +317,20 @@ func (m *Manager) RollbackRunTxns(rootRunID string) {
 // QueryTxn runs a validated read-only statement on the open transaction for
 // txnID. (An explicit transaction is read-write; read-safety rests on the
 // validator's SELECT-only rule, not the auto-commit read-only-transaction.)
+//
+// Like Query it does not apply MaxResultBytes; QueryTxnCapped does.
 func (m *Manager) QueryTxn(ctx context.Context, txnID, statement string, args []any) (*QueryResult, error) {
+	return m.queryTxn(ctx, txnID, statement, args, 0)
+}
+
+// QueryTxnCapped is QueryTxn with the result bounded by MaxResultBytes — the
+// read for an agent's own statement inside its sql_begin transaction (see
+// QueryCapped).
+func (m *Manager) QueryTxnCapped(ctx context.Context, txnID, statement string, args []any) (*QueryResult, error) {
+	return m.queryTxn(ctx, txnID, statement, args, m.cfg.MaxResultBytes)
+}
+
+func (m *Manager) queryTxn(ctx context.Context, txnID, statement string, args []any, maxBytes int) (*QueryResult, error) {
 	if err := validateStatementForDialect(statement, true, m.dialect); err != nil {
 		return nil, err
 	}
@@ -334,7 +347,7 @@ func (m *Manager) QueryTxn(ctx context.Context, txnID, statement string, args []
 		return nil, err
 	}
 	defer rows.Close()
-	return collectRows(rows, m.cfg.MaxRows)
+	return collectRows(rows, m.cfg.MaxRows, maxBytes)
 }
 
 // ExecTxn runs a validated DDL/DML statement on the open transaction for txnID,
