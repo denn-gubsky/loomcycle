@@ -487,6 +487,24 @@ func TestFileTwin_ImportTakesHeadings(t *testing.T) {
 	}
 }
 
+// structure reaches extract from outside a run: the twin's field list takes
+// it, and the result counts what heading recovery did.
+func TestFileTwin_ExtractTakesStructure(t *testing.T) {
+	f := newFileTwinFixture(t)
+	runID := f.run(t, "acme", "alice", "")
+	page := `<html><head><title>Notes</title></head><body><p><b>Decision</b></p>` +
+		`<p>The board approved the budget for the coming year after a short discussion of the risks.</p></body></html>`
+	rec := f.capture(t, runID, "acme", "notes.html", "mcp:ms365/get-attachment", []byte(page), true)
+	ex, text, isErr := f.call(t, twinOwner, map[string]any{"run_id": runID, "op": "extract", "path": rec.Ref,
+		"structure": map[string]any{"infer_headings": true}})
+	if isErr {
+		t.Fatalf("extract: %s", text)
+	}
+	if ex["inferred_headings"] != float64(1) {
+		t.Errorf("extract = %v, want inferred_headings 1", ex)
+	}
+}
+
 // download and upload, and paths outside the inbox, are refused before the
 // run is read.
 func TestFileTwin_RefusesTransfersAndPathsOutsideTheInbox(t *testing.T) {

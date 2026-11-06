@@ -40,20 +40,22 @@ var fileTwinOwnerOps = map[string]bool{"extract": true, "rm": true, "clear": tru
 // authorised and what is passed on, re-encoded from this struct, so the tool
 // never reads a byte of the caller's input that was not checked here.
 type fileTwinArgs struct {
-	Op           string   `json:"op"`
-	Path         string   `json:"path,omitempty"`
-	From         string   `json:"from,omitempty"`
-	To           string   `json:"to,omitempty"`
-	Overwrite    bool     `json:"overwrite,omitempty"`
-	Recursive    bool     `json:"recursive,omitempty"`
-	Prefix       string   `json:"prefix,omitempty"`
-	Images       *bool    `json:"images,omitempty"`
-	MaxRows      int      `json:"max_rows,omitempty"`
-	ExcerptChars int      `json:"excerpt_chars,omitempty"`
-	Title        string   `json:"title,omitempty"`
-	DocPath      string   `json:"doc_path,omitempty"`
-	Scope        string   `json:"scope,omitempty"`
-	Tags         []string `json:"tags,omitempty"`
+	Op           string `json:"op"`
+	Path         string `json:"path,omitempty"`
+	From         string `json:"from,omitempty"`
+	To           string `json:"to,omitempty"`
+	Overwrite    bool   `json:"overwrite,omitempty"`
+	Recursive    bool   `json:"recursive,omitempty"`
+	Prefix       string `json:"prefix,omitempty"`
+	Images       *bool  `json:"images,omitempty"`
+	MaxRows      int    `json:"max_rows,omitempty"`
+	ExcerptChars int    `json:"excerpt_chars,omitempty"`
+	// Structure is extract's heading recovery; the File tool reads it.
+	Structure *builtin.ExtractStructure `json:"structure,omitempty"`
+	Title     string                    `json:"title,omitempty"`
+	DocPath   string                    `json:"doc_path,omitempty"`
+	Scope     string                    `json:"scope,omitempty"`
+	Tags      []string                  `json:"tags,omitempty"`
 	// Source is import's link to where the document came from; the File
 	// tool checks and masks it.
 	Source *builtin.ImportSource `json:"source,omitempty"`

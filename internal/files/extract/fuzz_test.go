@@ -71,10 +71,24 @@ func fuzzExtract(t *testing.T, e Extractor, name string, data []byte, zipped boo
 	}
 }
 
+// fuzzExtractBoth runs e on data with heading recovery off and on: the
+// option's second pass over the document is held to the same properties.
+func fuzzExtractBoth(t *testing.T, e Extractor, name string, data []byte, zipped bool) {
+	for _, infer := range []bool{false, true} {
+		if err := fuzzCheckOpts(e, data, zipped, Options{Name: name, Images: true, InferHeadings: infer}); err != nil {
+			t.Fatalf("infer_headings %t: %v", infer, err)
+		}
+	}
+}
+
 // fuzzCheck runs e on data and reports the first property above it broke.
 // zipped says the format is a zip archive, whose image bytes the read budget
 // bounds.
 func fuzzCheck(e Extractor, name string, data []byte, zipped bool) error {
+	return fuzzCheckOpts(e, data, zipped, Options{Name: name, Images: true})
+}
+
+func fuzzCheckOpts(e Extractor, data []byte, zipped bool, opts Options) error {
 	ctx, cancel := context.WithTimeout(context.Background(), fuzzContext)
 	defer cancel()
 	sink := &fuzzSink{}
@@ -89,7 +103,7 @@ func fuzzCheck(e Extractor, name string, data []byte, zipped bool) error {
 				done <- outcome{panic: fmt.Sprintf("%v\n%s", p, debug.Stack())}
 			}
 		}()
-		_, err := e.Extract(ctx, bytes.NewReader(data), int64(len(data)), sink, Options{Name: name, Images: true})
+		_, err := e.Extract(ctx, bytes.NewReader(data), int64(len(data)), sink, opts)
 		done <- outcome{err: err}
 	}()
 	var o outcome
@@ -167,8 +181,9 @@ func FuzzExtractDOCX(f *testing.F) {
 	addZipSeeds(f, boardDOCX(f, png),
 		docxWith(f, `<w:document `+nsW+`><w:body>`+strings.Repeat(wPara("", strings.Repeat("слово ", 10)), 20)+`</w:body></w:document>`),
 		docxWith(f, `<w:document `+nsW+`><w:body><w:tbl><w:tr>`+wCell("a")+wCell("b")+`</w:tr><w:tr>`+wCell("1")+`</w:tr></w:tbl>`+
-			wListItem("x")+`</w:body></w:document>`))
-	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, DOCX{}, "f.docx", data, true) })
+			wListItem("x")+`</w:body></w:document>`),
+		inferDOCXOf(f, gdocBody()))
+	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtractBoth(t, DOCX{}, "f.docx", data, true) })
 }
 
 func FuzzExtractXLSX(f *testing.F) {
@@ -195,10 +210,12 @@ func FuzzExtractHTML(f *testing.F) {
 <img src="https://example.com/logo (1).png" alt="Логотип"><pre>code ` + "```" + ` inside</pre><style>p{}</style></body></html>`,
 		`<ol start="3"><li><a href="javascript:x">link</a></li></ol><blockquote><p>q</p></blockquote><h7>x</h7>`,
 		`<table><tr><td><table><tr><td>nested</td></tr></table></td></tr></table>`,
+		gdocHTML(),
+		`<p style="font-size:1e308pt;color:rgb(300,-1,50%);font-weight:900">A</p><p style="font-size:200%"><span style="font-size:3em">B</span></p>`,
 	} {
 		f.Add([]byte(s))
 	}
-	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, HTML{}, "f.html", data, false) })
+	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtractBoth(t, HTML{}, "f.html", data, false) })
 }
 
 func FuzzExtractVTT(f *testing.F) {

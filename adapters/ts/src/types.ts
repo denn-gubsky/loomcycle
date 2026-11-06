@@ -352,6 +352,11 @@ export type RunFileInput = {
   images?: boolean;
   max_rows?: number;
   excerpt_chars?: number;
+  /** extract, DOCX and HTML only: recover the headings a document marks by
+   *  formatting (bold, larger or coloured lines) rather than heading styles.
+   *  The result then counts `inferred_headings` and
+   *  `dropped_decorative_images`. Off by default. */
+  structure?: RunFileExtractStructure;
   title?: string;
   doc_path?: string;
   scope?: string;
@@ -374,6 +379,14 @@ export type RunFileInput = {
    *  act); each renumbered part gets an `amends` statement from it. */
   amending_document_id?: string;
 };
+
+/** extract's `structure` option. */
+export interface RunFileExtractStructure {
+  /** Make a heading of each short line that is wholly bold, at least 1.15x
+   *  the body's size, or coloured and bold or larger; drop a picture repeated
+   *  3+ times as decoration; collapse non-breaking spaces. */
+  infer_headings?: boolean;
+}
 
 /** import's `source`: the item's web link (a SharePoint `webUrl`, an email's
  *  `webLink`), never a download or upload link. */

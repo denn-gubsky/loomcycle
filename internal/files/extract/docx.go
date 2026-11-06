@@ -84,6 +84,9 @@ func (DOCX) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 	if docTitle == "" {
 		docTitle = title(opts.Name, "Document")
 	}
+	if opts.InferHeadings {
+		d.infer(body)
+	}
 	if err := d.emit(block{text: heading(1, docTitle)}); err != nil {
 		return rep, err
 	}
@@ -137,11 +140,19 @@ type docx struct {
 	titlePara *node
 	lastList  bool
 	started   bool
+	// Heading recovery (Options.InferHeadings): the run formatting the
+	// styles part sets, the level each promoted paragraph gets, and how
+	// often each picture appears. All nil when the option is off.
+	defaults    docxRPr
+	defaultPara string
+	inferred    map[*node]int
+	decor       decorative
 }
 
 type docxStyle struct {
 	level   int // levelTitle, levelBody, or a heading level 1..9
 	basedOn string
+	rpr     docxRPr
 }
 
 func (d *docx) loadStyles(part string) error {
@@ -153,12 +164,16 @@ func (d *docx) loadStyles(part string) error {
 		return nil // a document without readable styles is all body text
 	}
 	d.styles = map[string]docxStyle{}
+	d.defaults = parseRPr(root.path("styles", "docDefaults", "rPrDefault", "rPr"))
 	for _, s := range root.all("style") {
 		id := s.attr("styleId")
 		if id == "" {
 			continue
 		}
-		st := docxStyle{level: styleLevel(s.child("name").attr("val"), id)}
+		if d.defaultPara == "" && s.attr("type") == "paragraph" && onOff(s.attr("default")) {
+			d.defaultPara = id
+		}
+		st := docxStyle{level: styleLevel(s.child("name").attr("val"), id), rpr: parseRPr(s.child("rPr"))}
 		if st.level == levelBody {
 			if o := s.path("pPr", "outlineLvl"); o != nil {
 				st.level = outlineLevel(o.attr("val"))
@@ -371,6 +386,10 @@ func (d *docx) drawing(n *node, out *[]seg) error {
 		}
 	}
 	for _, id := range ids {
+		if d.decor != nil && d.decor.is(d.imageKey(id)) {
+			d.rep.DroppedDecorativeImages++
+			continue
+		}
 		md, err := d.image(id, alt)
 		if err != nil {
 			return err
@@ -425,6 +444,9 @@ func (d *docx) para(p *node) (block, error) {
 		return block{}, err
 	}
 	level := d.paraLevel(p)
+	if l := d.inferred[p]; l > 0 && level == levelBody {
+		level = l
+	}
 	if level != levelBody {
 		var text strings.Builder
 		var images []string
@@ -445,7 +467,11 @@ func (d *docx) para(p *node) (block, error) {
 		parts := append([]string{h}, images...)
 		return block{text: strings.Trim(strings.Join(parts, "\n"), "\n")}, nil
 	}
-	body := renderSegs(segs)
+	var clean func(string) string
+	if d.inferred != nil {
+		clean = cleanSpace
+	}
+	body := renderSegsWith(segs, clean)
 	if body == "" {
 		return block{}, nil
 	}
@@ -467,11 +493,19 @@ func (d *docx) para(p *node) (block, error) {
 
 // renderSegs renders a paragraph: its text escaped line by line, each image
 // on a line of its own.
-func renderSegs(segs []seg) string {
+func renderSegs(segs []seg) string { return renderSegsWith(segs, nil) }
+
+// renderSegsWith is renderSegs with each stretch of text between pictures
+// passed through clean first, when clean is not nil.
+func renderSegsWith(segs []seg, clean func(string) string) string {
 	var lines []string
 	var text strings.Builder
 	flush := func() {
-		if p := paragraph(text.String()); p != "" {
+		t := text.String()
+		if clean != nil {
+			t = clean(t)
+		}
+		if p := paragraph(t); p != "" {
 			lines = append(lines, p)
 		}
 		text.Reset()

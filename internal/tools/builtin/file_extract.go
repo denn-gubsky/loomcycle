@@ -217,7 +217,8 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	sink := &extractSink{ctx: xctx, dir: path.Join(inbox.DirExtracted, slug), origin: origin}
 	// A dry run writes nothing, so it keeps no pictures either.
 	images := (in.Images == nil || *in.Images) && !in.DryRun
-	rep, err := ex.Extract(xctx, fh, info.Size(), sink, extract.Options{Name: name, Images: images, MaxRows: in.MaxRows})
+	infer := in.Structure != nil && in.Structure.InferHeadings
+	rep, err := ex.Extract(xctx, fh, info.Size(), sink, extract.Options{Name: name, Images: images, MaxRows: in.MaxRows, InferHeadings: infer})
 	// The OCR pass below calls a model and cuts pages under slots of its own.
 	release()
 	cut := false
@@ -235,6 +236,10 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	default:
 		return errValidation(fmt.Sprintf("extract: could not read %s as %s: %s", r.raw, rep.Format, strings.TrimPrefix(err.Error(), "extract: ")),
 			"Check the file is not damaged, or that its type is the one its name says."), nil
+	}
+	inferred := infer && inferFormats[rep.Format]
+	if infer && !inferred {
+		rep.Notes = append(rep.Notes, fmt.Sprintf("structure.infer_headings reads DOCX and HTML; it was not applied to %s", rep.Format))
 	}
 	md := sink.md.String()
 	if cut {
@@ -269,7 +274,8 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	}
 
 	// ctx, not xctx: an OCR pass may well outlast the extraction's bound.
-	kept := inbox.Capture(ctx, inbox.Item{Name: slug + ".md", MediaType: "text/markdown", Origin: origin, Dir: inbox.DirExtracted, ExtractedFrom: from}, []byte(md))
+	kept := inbox.Capture(ctx, inbox.Item{Name: slug + ".md", MediaType: "text/markdown", Origin: origin, Dir: inbox.DirExtracted, ExtractedFrom: from,
+		InferredHeadings: rep.InferredHeadings}, []byte(md))
 	if !kept.Kept {
 		return errBusiness("extract: the extracted text could not be kept: "+kept.Stub, "Free inbox space with op=rm or op=clear, then try again."), nil
 	}
@@ -285,6 +291,11 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 		_ = json.Unmarshal(b, &out)
 	}
 	excerpt, truncated := cutRunes(md, excerptChars)
+	if inferred {
+		// Counted even when zero: the caller asked, and none is an answer.
+		out["inferred_headings"] = rep.InferredHeadings
+		out["dropped_decorative_images"] = rep.DroppedDecorativeImages
+	}
 	out["ref"] = kept.Record.Ref
 	out["source"] = r.raw
 	out["media_type"] = mt
@@ -438,6 +449,15 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	digest := hex.EncodeToString(sum[:])
 	origin := strings.TrimPrefix(sourceOrigin(ctx, r, rel, digest), "extract:")
 	prov, titleName, recorded := importFileProvenance(ctx, r, rel, digest)
+	// Headings the extraction that wrote this file inferred, while its bytes
+	// still hash to that extraction's record.
+	inferredHeadings := 0
+	if rec, ok := recordFor(ctx, r, rel, digest); ok {
+		inferredHeadings = rec.InferredHeadings
+	}
+	if inferredHeadings > 0 && len(in.Headings) == 0 {
+		prov.fields[importFieldStructured] = map[string]any{"headings": inferredHeadings, "by": inferredHeadingsBy}
+	}
 	if len(in.Headings) > 0 {
 		dropped := 0
 		for _, h := range in.Headings {
@@ -445,7 +465,12 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 				dropped++
 			}
 		}
-		structured := map[string]any{"headings": len(in.Headings) - dropped, "by": tools.RunID(ctx)}
+		by := tools.RunID(ctx)
+		if inferredHeadings > 0 {
+			// The run corrected an inferred outline (RFC GB D4): both made it.
+			by = inferredHeadingsBy + "+" + by
+		}
+		structured := map[string]any{"headings": len(in.Headings) - dropped, "by": by}
 		// Omitted when nothing was dropped, so an import without drops
 		// records exactly what it did before drops existed.
 		if dropped > 0 {
@@ -846,3 +871,17 @@ func (f *File) ScopeGrants(ctx context.Context) []tools.ScopeField {
 		return err
 	})}}
 }
+
+// ExtractStructure is File op=extract's structure option (RFC GB §6).
+type ExtractStructure struct {
+	// InferHeadings promotes lines that look like headings to headings
+	// (extract.Options.InferHeadings).
+	InferHeadings bool `json:"infer_headings"`
+}
+
+// inferFormats are the extract formats structure.infer_headings reads.
+var inferFormats = map[string]bool{"docx": true, "html": true}
+
+// inferredHeadingsBy is the provenance structured.by of headings an
+// extraction inferred.
+const inferredHeadingsBy = "extract:infer_headings"

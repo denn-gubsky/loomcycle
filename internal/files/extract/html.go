@@ -31,7 +31,7 @@ func (HTML) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 		return rep, err
 	}
 	w := newWriter(ctx, sink, opts)
-	h := &htmlState{w: w, rep: &rep}
+	h := &htmlState{w: w, rep: &rep, infer: opts.InferHeadings}
 	docTitle := ""
 	if t := findElement(doc, "title"); t != nil {
 		docTitle = strings.TrimSpace(textOf(t))
@@ -44,10 +44,19 @@ func (HTML) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 	if body == nil {
 		body = doc
 	}
+	if h.infer {
+		h.cur = htmlStyled(body, runFmt{size: htmlBodyPt})
+		h.decor = decorative{}
+		budget := maxXMLNodes
+		countImages(body, h.decor, &budget, 0)
+	}
 	if err := h.walk(body, 0); err != nil {
 		return rep, err
 	}
 	h.flush()
+	if h.infer {
+		h.promote()
+	}
 	if err := w.text(strings.Join(h.blocks, "\n\n")); err != nil {
 		rep.finish(w)
 		return rep, err
@@ -62,14 +71,51 @@ type htmlState struct {
 	blocks []string
 	inline strings.Builder // text of the paragraph being collected
 	nodes  int
+
+	// Heading recovery (Options.InferHeadings): the formatting the text
+	// being walked inherits, the current paragraph's text by formatting,
+	// whether it is in a list item, every paragraph and real heading
+	// written with the block it became, and how often each picture appears.
+	infer  bool
+	cur    runFmt
+	runs   []fmtRun
+	inList int
+	paras  []inferPara
+	paraAt []int
+	decor  decorative
 }
 
 // flush ends the paragraph being collected.
 func (h *htmlState) flush() {
 	if p := paragraph(collapseSpace(h.inline.String())); p != "" {
 		h.blocks = append(h.blocks, p)
+		if h.infer {
+			h.paras = append(h.paras, inferPara{runs: h.runs, eligible: h.inList == 0})
+			h.paraAt = append(h.paraAt, len(h.blocks)-1)
+		}
 	}
 	h.inline.Reset()
+	h.runs = nil
+}
+
+// text adds text to the paragraph being collected.
+func (h *htmlState) text(s string) {
+	h.inline.WriteString(s)
+	if h.infer {
+		h.runs = append(h.runs, fmtRun{text: s, fmt: h.cur})
+	}
+}
+
+// promote rewrites the paragraphs inferLevels makes headings.
+func (h *htmlState) promote() {
+	levels, n := inferLevels(h.paras)
+	for i, lv := range levels {
+		if lv > 0 {
+			// Below the document's "#", as a real <hN> is.
+			h.blocks[h.paraAt[i]] = heading(lv+1, h.paras[i].look().text)
+		}
+	}
+	h.rep.InferredHeadings = n
 }
 
 var htmlSkip = map[string]bool{
@@ -99,7 +145,7 @@ func (h *htmlState) walk(n *html.Node, depth int) error {
 		}
 		switch c.Type {
 		case html.TextNode:
-			h.inline.WriteString(sourceSpace(c.Data))
+			h.text(sourceSpace(c.Data))
 			continue
 		case html.ElementNode:
 		default:
@@ -113,9 +159,13 @@ func (h *htmlState) walk(n *html.Node, depth int) error {
 			if t := strings.TrimSpace(textOf(c)); t != "" {
 				// Below the document's "#".
 				h.blocks = append(h.blocks, heading(int(tag[1]-'0')+1, t))
+				if h.infer {
+					h.paras = append(h.paras, inferPara{real: int(tag[1] - '0')})
+					h.paraAt = append(h.paraAt, len(h.blocks)-1)
+				}
 			}
 		case tag == "br":
-			h.inline.WriteString("\n")
+			h.text("\n")
 		case tag == "ul" || tag == "ol":
 			h.flush()
 			if l := h.list(c, tag == "ol", 0); l != "" {
@@ -138,17 +188,21 @@ func (h *htmlState) walk(n *html.Node, depth int) error {
 			}
 		case tag == "img":
 			h.flush()
+			if h.infer && h.decor.is(imageSrc(c)) {
+				h.rep.DroppedDecorativeImages++
+				continue
+			}
 			if l := imgLink(c); l != "" {
 				h.blocks = append(h.blocks, l)
 			}
 		case htmlBlock[tag] || tag == "li":
 			h.flush()
-			if err := h.walk(c, depth+1); err != nil {
+			if err := h.walkStyled(c, depth, tag == "li"); err != nil {
 				return err
 			}
 			h.flush()
 		default:
-			if err := h.walk(c, depth+1); err != nil {
+			if err := h.walkStyled(c, depth, false); err != nil {
 				return err
 			}
 		}

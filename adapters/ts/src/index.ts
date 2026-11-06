@@ -669,6 +669,7 @@ export type {
   EffectiveConfigResponse,
   RunFileInput,
   RunFileImportSource,
+  RunFileExtractStructure,
   RunFileImportHeading,
   RunInboxDownload,
   EffectiveConfigSource,

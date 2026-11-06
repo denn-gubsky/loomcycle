@@ -74,6 +74,12 @@ type Options struct {
 	// MaxRows caps the rows of a spreadsheet or CSV table (header included).
 	// Zero takes DefaultMaxRows; more than maxRowsCeiling takes the ceiling.
 	MaxRows int
+	// InferHeadings promotes paragraphs that look like headings (a short
+	// line, bold, larger or coloured) to headings, drops a picture repeated
+	// three or more times as decoration, and collapses non-breaking spaces
+	// (RFC GB §6). DOCX and HTML read it; other formats ignore it. Off, the
+	// output is what it was before the option existed.
+	InferHeadings bool
 
 	// limits overrides the archive bounds, and pdfMaxPages and pdfMaxDecode
 	// the PDF page and decode caps, for tests.
@@ -107,8 +113,12 @@ type Report struct {
 	// YieldCharsPerPage is Chars / Pages, when the page count is known. A
 	// low yield on a document with pages marks a scan, whose text is in its
 	// images rather than its text layer.
-	YieldCharsPerPage float64  `json:"yield_chars_per_page,omitempty"`
-	Notes             []string `json:"notes,omitempty"`
+	YieldCharsPerPage float64 `json:"yield_chars_per_page,omitempty"`
+	// InferredHeadings and DroppedDecorativeImages count what
+	// Options.InferHeadings did.
+	InferredHeadings        int      `json:"inferred_headings,omitempty"`
+	DroppedDecorativeImages int      `json:"dropped_decorative_images,omitempty"`
+	Notes                   []string `json:"notes,omitempty"`
 	// PageYields is the text each page read held, in page order (PDF). Not
 	// part of what the model is shown: a caller uses it to choose the pages
 	// an OCR pass reads.

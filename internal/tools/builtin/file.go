@@ -108,6 +108,9 @@ func (f *File) InputSchema() json.RawMessage {
 			"images":        {"type": "boolean", "description": "extract: keep the document's pictures as files and link them from the Markdown. Default true."},
 			"max_rows":      {"type": "integer", "minimum": 0, "description": "extract: the rows of each spreadsheet or CSV table to keep, header included. Default 1000, at most 10000."},
 			"excerpt_chars": {"type": "integer", "minimum": 0, "maximum": 30000, "description": "extract: how much of the text to return. Default and most 30000."},
+			"structure":     {"type": "object", "additionalProperties": false, "description": "extract, DOCX and HTML only: recover the structure the document's formatting implies, for a file whose headings are bold, larger or coloured lines rather than heading styles (as an editor without heading styles exports it). Off by default; the same file always gives the same outline.", "properties": {
+				"infer_headings": {"type": "boolean", "description": "Make a heading of each short line (one line, at most 120 characters, not ending in . , or ;, not in a list or table) that is wholly bold, at least 1.15 times the body's size, or coloured and bold or larger; real headings keep their level. Also drops a picture repeated 3 or more times as decoration, and collapses non-breaking spaces. The result counts inferred_headings and dropped_decorative_images, and an import of the text records the inferred structure in the document's provenance."}
+			}},
 			"ocr":           {"type": "string", "enum": ["never", "auto", "always"], "description": "extract: read scanned pages and images with the OCR model. auto: only PDF pages with little or no text; always: every page; never: the text layer only. Default: your agent's setting, which is also the most you may ask for."},
 			"language":      {"type": "string", "description": "extract with OCR: the languages of the text, ISO 639-1 codes joined by +, e.g. uk or uk+ru. transcribe: the one language spoken, e.g. uk. Default: the operator's."},
 			"vocabulary":    {"type": "string", "description": "transcribe: names and terms the recording uses, to help the model spell them (one line, at most 400 characters). Default: the operator's."},
@@ -154,6 +157,9 @@ type fileInput struct {
 	OCR          string `json:"ocr"`
 	Language     string `json:"language"`
 	DryRun       bool   `json:"dry_run"`
+	// Structure asks extract to recover structure the file's formatting
+	// implies (RFC GB §6).
+	Structure *ExtractStructure `json:"structure"`
 	// transcribe
 	Vocabulary string `json:"vocabulary"`
 	Diarize    *bool  `json:"diarize"`
