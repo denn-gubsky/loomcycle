@@ -150,6 +150,16 @@ func newPostgresBackend(ctx context.Context, cfg Config) (*postgresBackend, erro
 		_ = admin.Close()
 		return nil, fmt.Errorf("sqlmem: connect aux postgres: %w", err)
 	}
+	// Every scope role connects through PUBLIC CONNECT (no per-scope grant: see
+	// runProvisionDDL). A shared Postgres may have revoked it; the admin still
+	// connects as the owner, so say it now rather than at the first scope op.
+	// Not fatal: a deployment may never use SQL Memory.
+	if ok, err := pgPublicHasConnect(pingCtx, admin); err != nil {
+		slog.Warn("sqlmem: could not check CONNECT on the aux database", "database", baseCfg.Database, "err", err)
+	} else if !ok {
+		slog.Error("sqlmem: PUBLIC lacks CONNECT on the aux database; every SQL Memory and Document op will fail with permission denied until the owner grants it",
+			"database", baseCfg.Database, "remedy", connectGrantSQL(baseCfg.Database), "why", connectGrantWhy)
+	}
 	// Probe for pgvector: the operator-installed `vector` type living in the
 	// dedicated sqlmem_ext schema enables Phase-3c vector columns. Both must be
 	// present (a stray `vector` type elsewhere isn't reachable by scope roles).
@@ -651,11 +661,12 @@ func (b *postgresBackend) exec(ctx context.Context, key ScopeKey, statement stri
 // healAuth self-heals a wedged scope on an authentication failure (a role whose
 // password drifted from the derivation, e.g. after a partial provision): it
 // invalidates the cache so the next op re-provisions, and returns the error.
+// A connect refused for want of CONNECT gets the operator's remedy attached.
 func (b *postgresBackend) healAuth(schema, role string, err error) error {
 	if isAuthError(err) {
 		b.invalidate(schema, role)
 	}
-	return err
+	return explainConnectDenied(b.baseCfg.Database, err)
 }
 
 // beginTx provisions the scope, pins a per-scope-pool connection (authenticated
@@ -1046,4 +1057,40 @@ func pgCodeIn(err error, codes ...string) bool {
 		}
 	}
 	return false
+}
+
+// pgPublicHasConnect reports whether PUBLIC holds CONNECT on the database db is
+// connected to. A NULL datacl means the default ACL, which grants it.
+func pgPublicHasConnect(ctx context.Context, db *sql.DB) (bool, error) {
+	var ok bool
+	err := db.QueryRowContext(ctx, `SELECT EXISTS (
+	   SELECT 1 FROM pg_database d, aclexplode(COALESCE(d.datacl, acldefault('d', d.datdba))) a
+	    WHERE d.datname = current_database() AND a.grantee = 0 AND a.privilege_type = 'CONNECT')`).Scan(&ok)
+	return ok, err
+}
+
+// connectGrantSQL is the operator's fix for a scope role refused CONNECT.
+func connectGrantSQL(dbName string) string {
+	return fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO PUBLIC;", q(dbName))
+}
+
+// connectGrantWhy says why the runtime leaves that grant to the operator.
+const connectGrantWhy = "each SQL Memory scope has its own login role, and all of them connect through PUBLIC CONNECT; " +
+	"the runtime does not grant CONNECT per scope, because concurrent grants on the shared database ACL collide"
+
+// explainConnectDenied adds the remedy to a scope role's "permission denied for
+// database" (42501 at connect), keeping err wrapped. Any other error is
+// returned unchanged. A 42501 counts when pgx reports it as a connect failure
+// (any server locale) or when the message names the database.
+func explainConnectDenied(dbName string, err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+		return err
+	}
+	var connErr *pgconn.ConnectError
+	if !errors.As(err, &connErr) && !strings.Contains(pgErr.Message, "permission denied for database") {
+		return err
+	}
+	return fmt.Errorf("sqlmem: a scope role may not connect to the SQL Memory database %q; run `%s` as the database owner (%s): %w",
+		dbName, connectGrantSQL(dbName), connectGrantWhy, err)
 }
