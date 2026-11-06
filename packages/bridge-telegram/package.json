@@ -10,7 +10,14 @@
     "url": "git+https://github.com/denn-gubsky/loomcycle.git",
     "directory": "packages/bridge-telegram"
   },
-  "keywords": ["loomcycle", "bridge", "telegram", "bot", "agent", "ai"],
+  "keywords": [
+    "loomcycle",
+    "bridge",
+    "telegram",
+    "bot",
+    "agent",
+    "ai"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -18,10 +25,19 @@
     }
   },
   "types": "./dist/index.d.ts",
-  "bin": { "loomcycle-bridge-telegram": "./dist/cli.js" },
-  "files": ["dist", "README.md"],
-  "publishConfig": { "access": "public" },
-  "engines": { "node": ">=20" },
+  "bin": {
+    "loomcycle-bridge-telegram": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build",
@@ -30,7 +46,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@loomcycle/bridge-core": "^0.3.1"
+    "@loomcycle/bridge-core": "^0.4.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
