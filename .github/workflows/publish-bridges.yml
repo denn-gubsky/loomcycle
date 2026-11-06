@@ -19,6 +19,11 @@ name: Publish a loomcycle bridge to npm
 # package use (OIDC Trusted Publishing cannot bootstrap a package that does not
 # exist yet). setup-node writes it into ~/.npmrc via NODE_AUTH_TOKEN below.
 #
+# Provenance: `npm publish --provenance` works with token auth too. npm signs a
+# SLSA provenance statement through the job's GitHub OIDC token (id-token: write)
+# and shows it on the package page; package.json's `repository` must name this
+# repository, or the publish is refused.
+#
 # Inputs reaching `run` steps are limited to GITHUB_REF_NAME (a git tag — git
 # rejects metacharacters in ref names, and the tag is matched against a strict
 # pattern before use) and constants; the tag is routed through `env:` per the
@@ -38,6 +43,11 @@ jobs:
   publish:
     name: Publish ${{ github.ref_name }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # npm publish --provenance signs its provenance statement through the
+      # job's GitHub OIDC token. Publishing itself still uses NPM_TOKEN.
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -102,7 +112,8 @@ jobs:
       - name: Publish
         working-directory: ${{ steps.pkg.outputs.dir }}
         # --access public for the scoped package. prepack rebuilds dist from a
-        # clean tree. (--provenance is omitted: it requires OIDC, not token auth.)
+        # clean tree. --provenance attaches the signed build provenance (see the
+        # header).
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: npm publish --access public --provenance
