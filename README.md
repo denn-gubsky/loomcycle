@@ -201,16 +201,17 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.141.0) lets a chat bridge exchange voice messages with
-an agent on its users' own tokens: a token limited to certain agents can be
-granted the speech routes. It also opens SQLite scopes in defensive mode and
-gates CI on npm and pip advisories. Read its upgrade notes in
-[`REVISIONS.md`](REVISIONS.md) first.
+The most recent line (v1.142.0) lets people talk to an agent through the chat
+bridges by voice, and ships the runtime-integrity line from the 2026-11-04
+re-assessment: a tamper-evident audit trail in the store, documents SQL Memory
+cannot reach, bounded extraction, truthful fact provenance, safer bridges,
+security headers and signed releases. Read its upgrade notes in
+[`REVISIONS.md`](REVISIONS.md) first: a gated deployment needs
+`LOOMCYCLE_SECRET_KEY`, and SQLite SQL Memory should be backed up before the
+upgrade.
 
-Before it, v1.140.0 let a chat client read a reply aloud and transcribe the
-microphone through `POST /v1/audio/speech` and `POST /v1/audio/transcriptions`,
-and closed what the 2026-11-04 security re-assessment found on the member
-plane. See [`REVISIONS.md`](REVISIONS.md).
+Before it, v1.141.0 let a bridge user's token be granted the speech routes and
+opened SQLite scopes in defensive mode. See [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
 recordings into timed transcripts through a whisper server, and Teams captions
