@@ -65,6 +65,7 @@ const duplicateCopySuffix = " - Copy"
 // dupDoc is one document of the set, as the op compares it.
 type dupDoc struct {
 	id, title, rootID, typ string
+	rootTitle              string // the root chunk's title, quoted as evidence
 	createdAt              int64
 	titleKey               string // title without copy markers, case-folded
 	marked                 bool   // the title carried a copy marker
@@ -72,7 +73,7 @@ type dupDoc struct {
 	mediaType              string // the import provenance's, "" when not imported
 	rootBody               string
 	// firstChunk / firstLine: the first non-empty line of text, and its chunk,
-	// quoted as evidence when the title cannot be.
+	// quoted as evidence when the root has no title.
 	firstChunk, firstLine string
 }
 
@@ -279,7 +280,7 @@ func (d *Document) proposeDuplicate(ctx context.Context, in docInput, p dupPair,
 		Op: "propose_statement", Scope: in.Scope, Method: in.Method,
 		FromID: p.copy.rootID, ToID: p.orig.rootID, Kind: duplicateKind,
 		Attributes: map[string]any{"basis": p.basis}, Confidence: &conf,
-		Evidence: append(duplicateEvidence(p.copy, p.basis), duplicateEvidence(p.orig, p.basis)...),
+		Evidence: append(duplicateEvidence(p.copy), duplicateEvidence(p.orig)...),
 	}
 	res, err := d.executeInput(ctx, pin, nil)
 	if err != nil || res.IsError {
@@ -304,16 +305,19 @@ func (d *Document) proposeDuplicate(ctx context.Context, in docInput, p dupPair,
 	counts["proposed"]++
 }
 
-// duplicateEvidence is one side's evidence: its title, quoted from its root
-// chunk when the root's body holds it. A document's title is not part of any
-// body, and evidence must quote a body (checkEvidence), so for a content match
-// whose title is not in the root body the first line of its text stands in.
-// A title match whose title is in no body has no quotable evidence.
-func duplicateEvidence(doc *dupDoc, basis string) []edgeEvidenceIn {
-	if t := strings.TrimSpace(doc.title); t != "" && strings.Contains(doc.rootBody, t) {
-		return []edgeEvidenceIn{{ChunkID: doc.rootID, Quote: t}}
+// duplicateEvidence is one side's evidence: its root chunk's title, quoted as
+// part title. A document's title lives there and in no body, and every pair is
+// a claim about two documents, so the two titles are what a judge rules on —
+// on a content match too, where they show it is the same text under two names.
+// Only a root with no title falls back to the first line of its text.
+func duplicateEvidence(doc *dupDoc) []edgeEvidenceIn {
+	if t := strings.TrimSpace(doc.rootTitle); t != "" {
+		if utf8.RuneCountInString(t) > edgeEvidenceQuoteMax {
+			t, _ = cutRunes(t, edgeEvidenceQuoteMax)
+		}
+		return []edgeEvidenceIn{{ChunkID: doc.rootID, Quote: t, Part: edgeEvidencePartTitle}}
 	}
-	if basis == duplicateBasisSHA256 && doc.firstLine != "" {
+	if doc.firstLine != "" {
 		return []edgeEvidenceIn{{ChunkID: doc.firstChunk, Quote: doc.firstLine}}
 	}
 	return nil
@@ -416,10 +420,10 @@ func (d *Document) loadDuplicateDocs(ctx context.Context, key sqlmem.ScopeKey, m
 	var docs []*dupDoc
 	for _, batch := range batchesOf(ids, copyBatch) {
 		ph := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
-		err := d.copyRows(ctx, key, `SELECT dd.id, dd.title, dd.root_chunk_id, COALESCE(c.type, ''), dd.created_at
+		err := d.copyRows(ctx, key, `SELECT dd.id, dd.title, dd.root_chunk_id, COALESCE(c.type, ''), dd.created_at, COALESCE(c.title, '')
 			FROM documents dd LEFT JOIN chunks c ON c.id = dd.root_chunk_id
 			WHERE dd.id IN (`+ph+`) AND dd.`+notMoving, "dd.id", anySlice(batch), func(_ []string, r []any) error {
-			x := &dupDoc{id: asStr(r[0]), title: asStr(r[1]), rootID: asStr(r[2]), typ: asStr(r[3])}
+			x := &dupDoc{id: asStr(r[0]), title: asStr(r[1]), rootID: asStr(r[2]), typ: asStr(r[3]), rootTitle: asStr(r[5])}
 			x.createdAt, _ = asInt64(r[4])
 			x.titleKey, x.marked = duplicateTitleKey(x.title)
 			docs = append(docs, x)
