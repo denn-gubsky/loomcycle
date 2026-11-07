@@ -1547,6 +1547,19 @@ func requiredScopeFor(method, path string) string {
 	// prefix — it has no slash after "memory".
 	case strings.HasPrefix(path, "/v1/_memory/"):
 		return auth.ScopeTenant
+	// The document maintenance passes (re-index, unit generation, image
+	// descriptions) are the memory sweeps' twins on the Document side, and get
+	// the same posture. Each handler resolves its scope through browseCtx, which
+	// confines a substrate:tenant operator to its own tenant (another tenant's
+	// ?tenant= is an opaque 404), and the two that spend a model refuse an
+	// operator-key-restricted tenant first. Without this case the /v1/_*
+	// catch-all pinned them to ScopeAdmin, so a tenant operator could backfill
+	// its memory embeddings but not describe its own documents' images.
+	// Members stay refused: memberpath.CarvedOut lists all three. The
+	// projection (/v1/_document/project) is not opened here: it is not carved
+	// out of member access, so opening it would also widen a member's reach.
+	case memberpath.IsDocumentMaintenancePath(path):
+		return auth.ScopeTenant
 	// The channel admin family (list/create/patch/delete/purge/publish/
 	// subscribe/peek/ack/_await/_broadcast). channel_messages/_cursors/
 	// the channels def table now carry a tenant_id (migration 0066), and
