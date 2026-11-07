@@ -7353,9 +7353,13 @@ export interface CredentialMeta {
   /** Present with `expires_at`: true once that time has passed. An expired
    *  credential is kept so it can be seen and rotated, but resolves nowhere. */
   expired?: boolean;
-  /** `"crypto"` for a key the Crypto tool uses (RFC EP); absent for an
-   *  ordinary secret. The fields below are present only for a crypto key. */
-  usage?: "crypto";
+  /** `"crypto"` for a key the Crypto tool uses (RFC EP), `"oauth"` for an
+   *  OAuth connection (then `oauth` is set); absent for an ordinary secret.
+   *  The crypto fields below are present only for a crypto key. */
+  usage?: "crypto" | "oauth";
+  /** An OAuth credential's config and connection state. Never a token, a
+   *  device code or a client secret. */
+  oauth?: OAuthCredentialStatus;
   /** The crypto key's type, fixed for its life. */
   key_type?: CryptoKeyType;
   /** The external KMS holding the key; absent for a key held by loomcycle.
@@ -7377,6 +7381,71 @@ export interface CryptoKeyVersion {
   /** RFC3339. */
   created_at: string;
   retired: boolean;
+}
+
+/** Where an OAuth credential's connection stands. `pending_connect`: created,
+ *  or a connect started and not yet approved. `connected`: usable as
+ *  `$oauth:<name>`. `needs_reauth`: the grant failed (or a snapshot restored
+ *  it without one); its owner connects it again. `revoked`: disconnected. */
+export type OAuthCredentialState = "pending_connect" | "connected" | "needs_reauth" | "revoked";
+
+/** How loomcycle authenticates to the authorization server's token endpoint. */
+export type OAuthTokenEndpointAuth = "none" | "client_secret_basic" | "client_secret_post";
+
+/** The `oauth` object of {@link LoomcycleClient.createOAuthCredential}. */
+export interface OAuthCredentialConfig {
+  /** The protected resource: the MCP server's https URL. The authorization
+   *  server is discovered from it. */
+  resource: string;
+  /** The authorization server to use when the resource lists more than one. */
+  issuer?: string;
+  /** Scopes to ask for. */
+  scopes?: string[];
+  client?: {
+    /** Only `"dynamic"` (dynamic client registration) is accepted. */
+    registration?: "dynamic";
+    /** Default `"none"`. */
+    token_endpoint_auth?: OAuthTokenEndpointAuth;
+  };
+}
+
+/** {@link CredentialMeta.oauth}: an OAuth credential's config and state.
+ *  Timestamps are RFC3339. */
+export interface OAuthCredentialStatus {
+  resource: string;
+  registration: string;
+  state: OAuthCredentialState;
+  issuer?: string;
+  scopes?: string[];
+  token_endpoint_auth?: string;
+  /** The account the grant belongs to, for display only. Empty when the
+   *  server names none. */
+  connected_as?: string;
+  connected_at?: string;
+  last_refresh_at?: string;
+  /** When the current access token expires; loomcycle refreshes it itself. */
+  access_expires_at?: string;
+  /** Why the last connect or refresh failed. Never carries a token. */
+  last_error?: string;
+}
+
+/** What {@link LoomcycleClient.oauthConnectStart} returns: the code a person
+ *  approves (OAuth device grant). It holds no token and no device code. */
+export interface OAuthConnectStart {
+  name: string;
+  scope: string;
+  status: "pending_connect";
+  /** The code to enter at `verification_uri`. */
+  user_code: string;
+  verification_uri: string;
+  /** `verification_uri` with the code filled in, when the server gives one. */
+  verification_uri_complete?: string;
+  /** Seconds until the code expires. */
+  expires_in: number;
+  /** Seconds between status checks. */
+  interval: number;
+  /** A human-readable next step. */
+  next?: string;
 }
 
 /** CredentialListResponse is the {op:list} result: metadata for the given scope. */

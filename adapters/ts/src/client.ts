@@ -57,6 +57,8 @@ import type {
   DocumentFeedStatus,
   CredentialListResponse,
   CredentialMeta,
+  OAuthConnectStart,
+  OAuthCredentialConfig,
   CryptoKeyEncoding,
   CryptoKeyExport,
   CryptoKeyExternal,
@@ -5238,6 +5240,91 @@ export class LoomcycleClient {
       this.ctx,
       "/v1/_credentialdef",
       { op: "delete", ...input },
+      opts,
+    );
+  }
+
+  // ── OAuth credentials ────────────────────────────────────────────────────
+  //
+  // An OAuth credential holds a connection to an OAuth-protected server (an
+  // MCP server, say): its owner connects it once by approving a code in a
+  // browser, and loomcycle refreshes the access token itself wherever config
+  // names it as `$oauth:<name>`. None of these calls returns a token, a
+  // refresh token or the device code. They are made outside a run. Scope
+  // `user` is the caller's own; `tenant` needs `substrate:tenant`. Read one
+  // with `getCredential`, delete one (its grant is revoked first, best
+  // effort) with `deleteCredential`. All post to `POST /v1/_credentialdef`.
+
+  /** Create an OAuth credential for the protected resource `oauth.resource`
+   *  (an https URL). It starts as `pending_connect`; connect it with
+   *  {@link oauthConnectStart}. Create-only: to change it, delete and create
+   *  it again. `allowed_urls` defaults to `[resource]`. Mirrors
+   *  `{op:create, usage:"oauth"}`. */
+  async createOAuthCredential(
+    input: {
+      scope: CredentialScope;
+      name: string;
+      oauth: OAuthCredentialConfig;
+      allowed_urls?: string[];
+    },
+    opts?: { signal?: AbortSignal },
+  ): Promise<CredentialMeta> {
+    return postJSON<CredentialMeta>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "create", usage: "oauth", ...input },
+      opts,
+    );
+  }
+
+  /** Start connecting an OAuth credential (the OAuth device grant). Show the
+   *  person `verification_uri` (or `verification_uri_complete`) and
+   *  `user_code`; once they approve, the server finishes the connect on its
+   *  own. Poll {@link oauthConnectStatus} every `interval` seconds until
+   *  `oauth.state` is `connected`, or until `expires_in` passes. A second
+   *  start supersedes the first, and on a connected credential drops the
+   *  current grant until the new one is approved. Mirrors
+   *  `{op:oauth_connect_start}`. */
+  async oauthConnectStart(
+    input: { scope: CredentialScope; name: string },
+    opts?: { signal?: AbortSignal },
+  ): Promise<OAuthConnectStart> {
+    return postJSON<OAuthConnectStart>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "oauth_connect_start", ...input },
+      opts,
+    );
+  }
+
+  /** An OAuth credential's state (`oauth.state`), the account it is
+   *  connected as, when its access token expires and the last error. A
+   *  check also finishes a connect the server lost track of across a
+   *  restart. Mirrors `{op:oauth_connect_status}`. */
+  async oauthConnectStatus(
+    input: { scope: CredentialScope; name: string },
+    opts?: { signal?: AbortSignal },
+  ): Promise<CredentialMeta> {
+    return postJSON<CredentialMeta>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "oauth_connect_status", ...input },
+      opts,
+    );
+  }
+
+  /** Disconnect an OAuth credential: revoke the grant at the server (best
+   *  effort) and clear it here; `oauth.state` becomes `revoked`. The
+   *  credential and its client registration stay, ready for the next
+   *  {@link oauthConnectStart}. Mirrors `{op:oauth_disconnect}`. */
+  async oauthDisconnect(
+    input: { scope: CredentialScope; name: string },
+    opts?: { signal?: AbortSignal },
+  ): Promise<CredentialMeta> {
+    return postJSON<CredentialMeta>(
+      this.ctx,
+      "/v1/_credentialdef",
+      { op: "oauth_disconnect", ...input },
       opts,
     );
   }

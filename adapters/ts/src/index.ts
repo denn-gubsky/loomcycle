@@ -696,6 +696,11 @@ export type {
   // RFC AR credential store (RFC CN adapter parity)
   CredentialScope,
   CredentialMeta,
+  OAuthConnectStart,
+  OAuthCredentialConfig,
+  OAuthCredentialState,
+  OAuthCredentialStatus,
+  OAuthTokenEndpointAuth,
   CredentialListResponse,
   // RFC EP crypto keys + the Crypto tool (POST /v1/_crypto)
   CryptoKeyVersion,
