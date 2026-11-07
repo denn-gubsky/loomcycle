@@ -8,6 +8,70 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.144.0
+
+*The OAuth line for remote MCP servers is complete enough to run unattended. When a server refuses a token, the client refreshes it and retries once. Snapshots carry an OAuth credential's settings, never its secrets, and a connected account is named from a verified OpenID Connect `id_token`. Documents can now follow a source that keeps changing: imports record the source's revision and update time, a re-import refreshes provenance, and `Document op=mark_source` marks a source removed or trashed. File extract can recover headings a document marks only by formatting, and import can change the level of an existing heading. loomcycle.cloud gains OCR for image files.*
+
+The v1.144 line: #2447 to #2461.
+- `@loomcycle/client` 1.144.0: `RunFileInput.structure`, the `as: "level"` heading entry, import source `kind: "skybits"`, `revision` and `updated_at`, the `mark_source` op, and `DocumentEdgeEvidence.part`. The Python adapter moves to 1.144.0 with no API change; it passes these as dicts.
+- No store migration. A document scope adds two nullable columns the first time it is opened: `chunk_revisions.provenance` and `chunk_edge_evidence.part`. Nothing is backfilled.
+
+### Upgrade notes
+
+- **`File op=import`: `as: "heading"` on a line that is already a heading is now refused (#2460).** It used to write `### ## Title`. Use `as: "level"` to re-level the heading.
+- **A re-import no longer reads a download link as the source URL (#2458).** Only a caller-given `source.url` names a source. A re-import that names a different URL than the stored one is refused with `source_mismatch`, and nothing is written.
+- **An existing OAuth credential's account name (#2457).** `connected_as` is filled at the next connect. A refresh fills it too, but only when it is still empty and the token response carries an `id_token`. If it stays empty, reconnect once.
+- **A second refusal of a fresh OAuth token parks the credential (#2451).** It moves to `needs_reauth`, with the usual audit event, until someone reconnects it.
+- **Speech, a mostly-Latin text with no language named (#2449).** It now goes to a Latin-script voice: the default if the default is Latin-script, else the one configured Latin-script language, else `en`. Before, it went to the default language whatever its script.
+- **Speech-to-text, `transcription.stt.accepts` (#2453).** When the engine reads only some types whole (Ollama reads WAV only), list them, for example `[audio/wav]`. `GET /v1/_speech` then advertises only those types. Unset, the list is OpenAI's, as before.
+
+### OAuth credentials, continued (RFC GB P1, P2)
+
+- **Refresh and retry on a refused token (#2451).**
+  - When an MCP server answers `401` with a Bearer `invalid_token` challenge to an `$oauth:` token, the client forces one refresh and retries once. It re-initializes the MCP session if it holds one.
+  - Concurrent refusals share one refresh.
+  - The refused token is never sent again.
+  - Any other `401`, or a server with no `$oauth:` header, behaves as before.
+- **Snapshots carry OAuth credential settings (#2455).**
+  - Each OAuth credential's resource, issuer, client registration mode, scopes and `allowed_urls` are carried, never its tokens, device codes or client secret.
+  - A restored credential comes back unconnected: `needs_reauth` if it ever had a grant, else `pending_connect`.
+  - An existing row under the same name is left alone, with a warning.
+- **`connected_as` from a verified `id_token` (#2457).**
+  - When the authorization server has no userinfo endpoint, the account is named from the token response's OpenID Connect `id_token`: its `email`, else `preferred_username`, else `sub`.
+  - The token is verified against the issuer's key set, with an algorithm allowlist and exact `iss`/`aud`/`azp` checks. An unverifiable token is ignored.
+  - The `id_token` is never stored, logged or returned.
+
+### Documents that follow a changing source (RFC GB P3, P4, A1)
+
+- **Source provenance (#2458).**
+  - Imports take `source.revision` (the source's own version name) and `source.updated_at`, plus the source kind `skybits`.
+  - A re-import by `work_key`, or by `document_id` for `import_md`, refreshes the provenance. It may change the kind, for example `other` to `skybits`; the `source/<kind>` tag follows.
+  - Earlier provenance stays in `history`, `get_version` and `diff`.
+- **`Document op=mark_source` (#2458).**
+  - It takes `status: present | removed | trashed`, records the source's state, and adds or removes the `source/removed` tag.
+  - It never touches a body.
+  - An operator may call it, or a code-js run that holds `statement_methods: [rule]` or `[extractor]`.
+- **Recover headings marked by formatting (#2452).**
+  - `File op=extract structure: {infer_headings: true}`, for DOCX and HTML, makes a heading of each short line that is wholly bold, larger than the body, or coloured and bold.
+  - It drops a picture repeated three or more times as decoration.
+  - It is off by default; with it off, output is byte-identical.
+- **Re-level a heading on import (#2460).** A `headings` entry `{line, level, as: "level"}` changes an existing heading's level. Provenance counts it under `structured.relevelled`.
+- **Not knowledge: `SourceStub` and `SyncReport` (#2459).** `Document op=classify` returns `skipped` for a document whose root type is one of these. kb/linker runs no layer on it, and kb/judge does not judge a proposal touching it.
+- **Evidence may quote a title (#2456).**
+  - An evidence item takes `part: "title"` to quote a chunk's title rather than its body.
+  - `find_duplicates` now quotes both documents' titles, so each pair it proposes carries evidence.
+  - Pairs proposed earlier without evidence are not re-filed.
+- `find_duplicates` orders a pair by `source_updated_at` when both documents have it (#2458).
+
+### Smaller changes
+
+- **loomcycle.cloud (#2461, #2447).**
+  - OCR for image files through a local `glm-ocr` model (`local-ocr`, en+ru).
+  - The local-model agents ask for one context size, so Ollama no longer reloads the model between them.
+- **Speech-to-text through Ollama's Qwen3-ASR (#2453).** The `language …<asr_text>` header is removed. Pieces without timestamps are merged by their overlapping words, so a word is no longer repeated at a cut.
+- **Chat bundle (#2450).** The `chat/*` agents search the documents after one empty recall, rather than rewording recall queries.
+- **Tests (#2454).** A batch-timeout test gets room under `-race`.
+
 ## What's in v1.143.0
 
 *Remote MCP servers that sign in with OAuth can now be mounted from inside loomcycle: an OAuth credential is connected once by device-code sign-in, refreshed by the runtime, and sent as `Bearer $oauth:<name>`. Documents gain a duplicate finder that proposes "this is a copy of that" for review. And a provider's vendor key now goes only to that vendor's API.*
