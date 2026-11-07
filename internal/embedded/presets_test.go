@@ -28,6 +28,7 @@ func TestUnits_RegistryShape(t *testing.T) {
 		"doc-colorizer":  "bundle",
 		"dev-exec":       "bundle",
 		"knowledge-base": "bundle",
+		"skybits-sync":   "bundle",
 	}
 	for name, kind := range want {
 		u, ok := byName[name]
