@@ -8,6 +8,62 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.145.0
+
+*A tenant member now reads and acts on only its own conversations. The new `skybits-sync` bundle keeps a tenant's Documents in step with a Skybits account. OAuth credentials get a Web UI "Connect account", a banner when one needs reconnecting, and typed client methods. Document extract reads headings styled through CSS classes. Image descriptions no longer stall on pictures the vision model cannot load.*
+
+The v1.145 line: #2463 to #2478.
+- `@loomcycle/client` 1.145.0: `createOAuthCredential()`, `oauthConnectStart()`, `oauthConnectStatus()` and `oauthDisconnect()`. The Python adapter moves to 1.145.0 with `create_oauth_credential()`, `oauth_connect_start()`, `oauth_connect_status()` and `oauth_disconnect()`.
+- No migration.
+
+### Upgrade notes
+
+- **A tenant member reads and acts on only its own runs and sessions (#2476).**
+  - Before this release, a non-isolated member (access mode `tenant`) could read every run, session, transcript and event stream in its tenant. It could also continue a colleague's session, which then ran as the colleague, and cancel, steer or delete other people's runs.
+  - Now a member reaches only its own runs, sessions and questions; another user's reads as not found. A tenant operator still reads every conversation of its tenant, and an admin reads all.
+  - The same rule covers HTTP, gRPC, MCP and A2A, run actions, session continuation, the audit view, resident sub-agents and user-scoped channels.
+  - **Schedules:** a member's ScheduleDef runs only as the member. A `user_id` naming someone else is refused, and an unset one becomes the member.
+  - **Webhooks:** a member's WebhookDef may not map `user_id`.
+  - **Unchanged:** tenant-scoped memory and documents stay shared. Usage counts, the user roster and evaluation scores stay readable.
+- **Tenant operators run the document maintenance passes (#2464).** `POST /v1/_document/describe_images`, `/reindex` and `/derive_units` take `substrate:tenant`, confined to the operator's own tenant. Members stay refused, and `/v1/_document/project` stays admin-only.
+- **`File op=extract` with `infer_headings` (#2470, #2471).**
+  - In a document whose body is mostly bold, bold alone no longer marks a heading.
+  - HTML class rules can now promote a line that was plain before.
+  - With the option off, output is unchanged.
+
+### Skybits sync bundle (#2474, RFC GB P5)
+
+- **Preset `skybits-sync`, three agents.**
+  - `skybits/sync` lists the account, compares it with the manifest and imports what changed, up to 3 items at a time. Plan mode writes nothing.
+  - `skybits/import` imports one item, keeping its pictures, with OCR for image files and speech-to-text for recordings.
+  - `skybits/structure` proposes headings for a changed item with a thin outline. Headings are only added or re-levelled, never removed.
+- **What a run takes care of.**
+  - Source provenance: kind `skybits`, revision and update time.
+  - Removed and trashed items are marked with `mark_source`.
+  - An item that cannot be imported as text gets a `SourceStub` document.
+  - Each run adds a section to the monthly `SyncReport`, and duplicate proposals are filed through `find_duplicates`.
+  - A lease stops overlapping runs, and a mass-removal guard holds a run back when too many items vanish at once.
+- **It adopts an existing import without re-importing it.** The manifest tables, Paths, tags and document ids stay as they are.
+- **Requirements.** The deployment supplies an MCP server named `skybits`, `LOOMCYCLE_CODE_AGENTS_ENABLED=1`, SQL Memory, and an operator overlay granting `memory_scopes` and `sql_scopes: [tenant]`. See `bundles/skybits-sync/README.md`.
+
+### OAuth credentials, continued (#2467, #2469, RFC GB P1b)
+
+- **Web UI.**
+  - **Connect account.** Both credentials pages show an OAuth credential's state and account, with Connect account, Reconnect and Disconnect.
+  - **The connect flow.** A connect shows the code with a copy button and the sign-in link, and waits until the credential connects. Codes last about 5 minutes; approve the newest.
+  - **Reconnect banner.** A banner above every page lists the OAuth credentials you manage that need reconnecting. It reads the credential lists you can already see, so it never names another tenant's or another user's credential.
+- **Typed client methods** in the TS and Python adapters, over the existing credential calls; there is no wire change.
+
+### Smaller changes
+
+- **Image descriptions (#2478).** When the vision model refuses a picture, `describe_images` re-encodes it once and retries. A picture refused again is marked examined and reported as `unreadable`, so it no longer blocks the pass. Outages, timeouts and key refusals stay retryable.
+- **Document sync (#2475).** A push to a peer older than v1.144.0 resends a link that quotes a title without the title rows, counted in `evidence_dropped`. Before, the peer refused it and the rest of the statement pass stopped.
+- **Review (#2472).** A quote taken from a title is labelled "(title)" in the review page and the explorer.
+- **npm (#2463).** Every `@loomcycle` package now publishes through npm Trusted Publishing, with no stored token.
+- **Docs (#2468, #2477).** The documents, configuration, tools and credentials guides are exported again from the document store.
+- **loomcycle.cloud (#2465, #2473).** A privacy notice and terms of use.
+- **CI (#2466).** One "CI ok" gate job.
+
 ## What's in v1.144.0
 
 *The OAuth line for remote MCP servers is complete enough to run unattended. When a server refuses a token, the client refreshes it and retries once. Snapshots carry an OAuth credential's settings, never its secrets, and a connected account is named from a verified OpenID Connect `id_token`. Documents can now follow a source that keeps changing: imports record the source's revision and update time, a re-import refreshes provenance, and `Document op=mark_source` marks a source removed or trashed. File extract can recover headings a document marks only by formatting, and import can change the level of an existing heading. loomcycle.cloud gains OCR for image files.*
