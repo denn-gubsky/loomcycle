@@ -7,6 +7,7 @@ import { useTheme } from "../hooks/useTheme";
 import PauseControls from "./PauseControls";
 import NoTraceOverrideBanner from "./NoTraceOverrideBanner";
 import OpenModeBanner from "./OpenModeBanner";
+import OAuthReauthBanner from "./OAuthReauthBanner";
 import { type UserOption, appliedUserId, filterUsers, userOptions } from "../lib/userOptions";
 import { visibleNavTree } from "./navItems";
 import SidebarNav from "./SidebarNav";
@@ -319,6 +320,7 @@ export default function Layout() {
         </header>
         <OpenModeBanner principal={principal} />
         {(isAdmin || hasTenantScope) && <NoTraceOverrideBanner />}
+        {principal && <OAuthReauthBanner canManageTenant={isAdmin || hasTenantScope} />}
         <main className="content">
           <Outlet context={{ userId, principal: principal ?? null, focusTenant }} />
         </main>
