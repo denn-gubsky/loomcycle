@@ -93,15 +93,36 @@ func (p inferPara) look() paraLook {
 	return l
 }
 
-// inferLevels returns the heading level each paragraph gets (0: none),
-// counting from 1 in the document's own heading space (an inferred heading
-// at level 2 sits where a Heading 2 would), and how many were inferred.
-func inferLevels(paras []inferPara) ([]int, int) {
+// inferred is what inferLevels decided.
+type inferred struct {
+	// levels is the heading level each paragraph gets (0: none), counting
+	// from 1 in the document's own heading space (an inferred heading at
+	// level 2 sits where a Heading 2 would).
+	levels []int
+	// headings is how many paragraphs were made headings.
+	headings int
+	// boldPct is the share of the body's characters that are bold, in
+	// percent, when bold is the body's own weight (over half of them) and
+	// so kept a bold line from being a heading; 0 otherwise.
+	boldPct int
+}
+
+// note reports on rep what the inference decided that a reader of the
+// outline could not otherwise tell.
+func (r inferred) note(rep *Report) {
+	if r.boldPct > 0 {
+		rep.note("bold is the body's own weight (%d%% of its text), so a bold line was not taken for a heading", r.boldPct)
+	}
+}
+
+// inferLevels decides which paragraphs are headings, and at which level.
+func inferLevels(paras []inferPara) inferred {
 	looks := make([]paraLook, len(paras))
 	// The body: every paragraph that is not a real heading, by the
 	// characters each holds, so a long paragraph outweighs a short label.
 	var sizes []sizeWeight
 	colors := map[string]int{}
+	boldChars, bodyChars := 0, 0
 	shallowest := 0
 	for i, p := range paras {
 		if p.real > 0 {
@@ -121,9 +142,21 @@ func inferLevels(paras []inferPara) ([]int, int) {
 		if !l.mixed {
 			colors[l.color] += l.chars
 		}
+		bodyChars += l.chars
+		for _, r := range p.runs {
+			if r.fmt.bold {
+				boldChars += nonSpaceRunes(r.text)
+			}
+		}
 	}
 	median := weightedMedian(sizes)
 	dominant := dominantColor(colors)
+	// A document set mostly in bold (more than half of its body's
+	// characters, counted as the median size is) has no bold to set a
+	// heading apart with: every short bold line would otherwise become one.
+	// Exactly half is not "mostly", so a body split evenly keeps the rule.
+	res := inferred{}
+	boldIsBody := 2*boldChars > bodyChars
 
 	levels := make([]int, len(paras))
 	larger := map[float64]bool{}
@@ -140,9 +173,16 @@ func inferLevels(paras []inferPara) ([]int, int) {
 		if !headingShaped(l.text) || l.chars == 0 {
 			continue
 		}
+		wasBold := l.bold
+		if boldIsBody {
+			l.bold = false
+		}
 		big := median > 0 && l.size > median
 		byColor := !l.mixed && l.color != dominant && (l.bold || big)
 		if !l.bold && !(median > 0 && l.size >= inferSizeRatio*median) && !byColor {
+			if wasBold {
+				res.boldPct = boldChars * 100 / bodyChars
+			}
 			continue
 		}
 		s := 0.0
@@ -166,7 +206,8 @@ func inferLevels(paras []inferPara) ([]int, int) {
 		}
 		levels[p.i] = min(lv, 9)
 	}
-	return levels, len(picks)
+	res.levels, res.headings = levels, len(picks)
+	return res
 }
 
 // headingShaped reports whether text could be a heading: one line, at most
