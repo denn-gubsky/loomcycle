@@ -152,6 +152,37 @@ func TestFileMCP_SchemaIsTheToolsCutToTheTwin(t *testing.T) {
 
 // The description is the documentation an MCP client reads: every op the twin
 // takes is named in it.
+// The MCP file tool's headings take every entry kind the File tool applies,
+// as "level" among them: the schema is derived, so a kind added to the tool
+// reaches an MCP caller without restating it.
+func TestFileMCP_HeadingsTakeEveryEntryKind(t *testing.T) {
+	var schema json.RawMessage
+	for _, td := range toolDescriptors() {
+		if td.Name == "file" {
+			schema = td.InputSchema
+		}
+	}
+	var got struct {
+		Properties struct {
+			Headings struct {
+				Items struct {
+					Properties struct {
+						As struct {
+							Enum []string `json:"enum"`
+						} `json:"as"`
+					} `json:"properties"`
+				} `json:"items"`
+			} `json:"headings"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &got); err != nil {
+		t.Fatal(err)
+	}
+	if as := got.Properties.Headings.Items.Properties.As.Enum; !slices.Equal(as, []string{"heading", "marker", "drop", "level"}) {
+		t.Errorf("headings as enum = %v, want heading, marker, drop and level", as)
+	}
+}
+
 func TestFileMCP_DescriptionListsEveryOp(t *testing.T) {
 	desc := toolDescription(t, "file")
 	for _, op := range connector.FileTwinOps {

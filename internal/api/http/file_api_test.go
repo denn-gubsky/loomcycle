@@ -487,6 +487,25 @@ func TestFileTwin_ImportTakesHeadings(t *testing.T) {
 	}
 }
 
+// A level entry reaches the File tool from outside a run: the twin's typed
+// headings carry as "level", and the re-levelled heading is counted.
+func TestFileTwin_ImportTakesALevelEntry(t *testing.T) {
+	f := newFileTwinFixture(t)
+	runID := f.run(t, "acme", "alice", "")
+	rec := f.capture(t, runID, "acme", "reg.md", "mcp:ms365/download-bytes",
+		[]byte("# Положення\n#### 1. Загальні положення\nТекст.\n"), true)
+	out, text, isErr := f.call(t, twinOperator, map[string]any{"run_id": runID, "op": "import", "path": rec.Ref,
+		"headings": []any{map[string]any{"line": 2, "level": 2, "as": "level"}}})
+	if isErr {
+		t.Fatalf("import: %s", text)
+	}
+	p, _ := out["provenance"].(map[string]any)
+	s, _ := p["structured"].(map[string]any)
+	if s["headings"] != float64(1) || s["relevelled"] != float64(1) || p["sha256"] != rec.SHA256 {
+		t.Errorf("provenance = %v, want the capture record and 1 re-levelled heading", p)
+	}
+}
+
 // structure reaches extract from outside a run: the twin's field list takes
 // it, and the result counts what heading recovery did.
 func TestFileTwin_ExtractTakesStructure(t *testing.T) {

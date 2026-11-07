@@ -57,15 +57,26 @@ Each entry is one of:
   section per page, so a section or a пункт that runs onto the next page
   would be split there; drop the page headings and the text either side
   reads on as one section. A drop takes no `level`, `title` or `lines`.
+- `{"line": N, "level": L, "as": "level"}` — line N, which must already be
+  a heading of another level, becomes a heading of level L. Only its run of
+  `#` changes: the heading's text stays as it is. Use it to correct an
+  outline, such as an extract whose headings are one level too deep. It
+  takes no `title` or `lines`.
+
+A `heading` entry must not name a line that is already a heading (that
+would write `### ## X`): re-level it with `level` instead. One line takes
+one entry, so a line cannot be both dropped and re-levelled.
 
 A heading line is one that starts, after at most 3 spaces, with 1 to 6 `#`
 followed by a space, a tab or the end of the line. Levels are 2 to 6 (the
 document's title is level 1). Give entries in increasing line order, at most
 10 000, and do not put one inside a heading's wrapped lines. Lines count from
 1 in the file as it is — read it, or its outline, to find them. The
-document's `provenance` then also says `structured: {headings, dropped, by}`:
-how many headings were added, how many lines were dropped (left out when
-none were) and the run that did it, so a reader knows the structure was
+document's `provenance` then also says
+`structured: {headings, relevelled, dropped, by}`: how many heading lines
+were added or changed (`relevelled` of them only re-levelled, left out when
+none were), how many lines were dropped (left out when none were) and the
+run that did it, so a reader knows the structure was
 changed, not written by the file's author.
 
 Import writes a document, so it needs the Document tool as well as this one,
@@ -87,8 +98,9 @@ and the scope must be one your Document grants allow.
   name, such as the email's subject: one line, at most 300 characters.
 - `headings` — headings to add, by line number: `{line, level, as}` with
   `as` `heading` (plus `lines` for a wrapped title) or `marker` (plus
-  `title`, one line, at most 300 characters); or headings to remove,
-  `{line, as: "drop"}`, for a line that is already a heading. See above.
+  `title`, one line, at most 300 characters); or, for a line that is
+  already a heading, `{line, as: "drop"}` to remove it or
+  `{line, level, as: "level"}` to change its level. See above.
 - `reimport` — the file is a new edition of the work named by `work_key`; see
   "A new edition" below.
 - `work_key` — with `reimport`: the work's key, e.g. `law:ua/2297-vi`.
@@ -136,8 +148,10 @@ and `not_announced` says why the scope was not told, when it was not.
   password, or is too long; or a `kind` not in the list.
 - `headings` is not valid: a line outside the file, entries out of order or
   inside a heading's wrapped lines, a level not 2 to 6, a heading on a blank
-  line, a marker without a one-line title, a title over 300 characters, a
-  drop of a line that is not a heading, or a drop with a `level`, `title` or
+  line or on a line that is already a heading, a marker without a one-line
+  title, a title over 300 characters, a drop or a re-level of a line that is
+  not a heading, a re-level to the level the heading already has, a drop
+  with a `level`, `title` or `lines`, or a re-level with a `title` or
   `lines`. Nothing is imported.
 
 ## Examples
@@ -213,5 +227,26 @@ stays one section:
  "source": "mcp:ms365/download-bytes",
  "provenance": {"origin": "import", "file": "Polozhennya.pdf", "sha256": "4d0c…", "captured_from": "mcp:ms365/download-bytes",
                 "captured_at": "2026-10-28T07:20:03Z", "run_id": "run_7c2…", "structured": {"headings": 2, "dropped": 3, "by": "run_7c2…"}},
+ "tags": ["source/mcp/ms365", "untrusted"]}
+```
+
+Apply a corrected outline to an extract: its sections came out as `###` and
+one пункт as `##`, so re-level them, and drop a page heading:
+
+```json
+{"op": "import", "path": "volume:inbox:extracted/Polozhennya.md", "scope": "tenant",
+ "headings": [
+   {"line": 5, "level": 2, "as": "level"},
+   {"line": 9, "as": "drop"},
+   {"line": 14, "level": 2, "as": "level"},
+   {"line": 20, "level": 3, "as": "level"}
+ ]}
+```
+
+```json result
+{"document_id": "7a41…", "root_chunk_id": "c03e…", "chunks": 4, "image_chunks": 0, "skipped": 0,
+ "source": "mcp:ms365/download-bytes",
+ "provenance": {"origin": "import", "file": "Polozhennya.pdf", "sha256": "4d0c…", "captured_from": "mcp:ms365/download-bytes",
+                "captured_at": "2026-10-28T07:20:03Z", "run_id": "run_7c2…", "structured": {"headings": 3, "relevelled": 3, "dropped": 1, "by": "run_7c2…"}},
  "tags": ["source/mcp/ms365", "untrusted"]}
 ```

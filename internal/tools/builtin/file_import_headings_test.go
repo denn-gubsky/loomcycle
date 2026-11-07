@@ -72,6 +72,9 @@ func TestFileImport_HeadingsKeepTheCaptureProvenance(t *testing.T) {
 	if _, ok := s["dropped"]; ok {
 		t.Errorf("provenance structured = %v, want no dropped when nothing was dropped", p["structured"])
 	}
+	if _, ok := s["relevelled"]; ok {
+		t.Errorf("provenance structured = %v, want no relevelled when nothing was re-levelled", p["structured"])
+	}
 	if tags, _ := got["tags"].([]any); !slices.Contains(tags, any("source/mcp/ms365")) {
 		t.Errorf("tags = %v, want the captured file's source tag", got["tags"])
 	}
@@ -199,6 +202,17 @@ func undoImportHeadings(t *testing.T, structured, original string, hs []ImportHe
 		case h.As == importHeadingAsMarker:
 			back = append(back, out[o+1]) // skip the inserted line
 			o, i = o+2, i+1
+		case h.As == "level":
+			// Only the run of "#" changed: put the original run back.
+			l, run := out[o], strings.Repeat("#", h.Level)
+			indent := len(l) - len(strings.TrimLeft(l, " "))
+			if !strings.HasPrefix(l[indent:], run) {
+				t.Fatalf("re-levelled line %q lacks %q", l, run)
+			}
+			oi := len(orig[i]) - len(strings.TrimLeft(orig[i], " "))
+			hashes := len(orig[i][oi:]) - len(strings.TrimLeft(orig[i][oi:], "#"))
+			back = append(back, l[:indent]+orig[i][oi:oi+hashes]+l[indent+len(run):])
+			o, i = o+1, i+1
 		default:
 			body := strings.TrimPrefix(out[o], strings.Repeat("#", h.Level)+" ")
 			span := max(h.Lines, 1)
@@ -510,5 +524,149 @@ func TestFileImport_DroppedPageHeadingsKeepTheCaptureProvenance(t *testing.T) {
 	sec := text[start:]
 	if i := strings.Index(sec, "## Розділ II"); i < 0 || !strings.Contains(sec[:i], "вимог законодавства.") {
 		t.Errorf("the пункт broken by page 2 is not one section's body:\n%s", text)
+	}
+}
+
+// relevelMD is an extract whose outline a structurer corrects: two headings
+// at the wrong level, one indented and one ending a CRLF line, among body
+// text and a page heading.
+const relevelMD = "# Положення\n\n## Розділ I\nтекст\n#### 1. Пункт\r\n   ### Розділ II\n##\tТаб\n## Page 2\nРозділ III\n"
+
+// Re-levelling rewrites the run of "#" and nothing else: the heading's text,
+// its indentation and its line ending are the file's own.
+func TestApplyImportHeadings_LevelChangesOnlyTheHashes(t *testing.T) {
+	hs := []ImportHeading{
+		{Line: 3, Level: 3, As: "level"},
+		{Line: 5, Level: 2, As: "level"},
+		{Line: 6, Level: 2, As: "level"},
+		{Line: 7, Level: 4, As: "level"},
+		{Line: 1, Level: 2, As: "level"},
+	}
+	slices.SortFunc(hs, func(a, b ImportHeading) int { return a.Line - b.Line })
+	got, err := applyImportHeadings(relevelMD, hs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "## Положення\n\n### Розділ I\nтекст\n## 1. Пункт\r\n   ## Розділ II\n####\tТаб\n## Page 2\nРозділ III\n"
+	if got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+	if back := undoImportHeadings(t, got, relevelMD, hs); back != relevelMD {
+		t.Fatalf("undoing the levels gave %q, want the file %q", back, relevelMD)
+	}
+}
+
+func TestApplyImportHeadings_LevelRefusals(t *testing.T) {
+	for name, tc := range map[string]struct {
+		hs   []ImportHeading
+		want string
+	}{
+		"plain line":         {[]ImportHeading{{Line: 4, Level: 2, As: "level"}}, "line 4 is not a heading line"},
+		"blank line":         {[]ImportHeading{{Line: 2, Level: 2, As: "level"}}, "line 2 is not a heading line"},
+		"hint for a plain":   {[]ImportHeading{{Line: 9, Level: 2, As: "level"}}, `use as "heading"`},
+		"level 1":            {[]ImportHeading{{Line: 3, Level: 1, As: "level"}}, "level 1 is not 2 to 6"},
+		"level 7":            {[]ImportHeading{{Line: 3, Level: 7, As: "level"}}, "level 7 is not 2 to 6"},
+		"no level":           {[]ImportHeading{{Line: 3, As: "level"}}, "level 0 is not 2 to 6"},
+		"same level":         {[]ImportHeading{{Line: 3, Level: 2, As: "level"}}, "already a level 2 heading"},
+		"title":              {[]ImportHeading{{Line: 3, Level: 3, As: "level", Title: "x"}}, "takes no title"},
+		"lines":              {[]ImportHeading{{Line: 3, Level: 3, As: "level", Lines: 1}}, "takes no lines"},
+		"past the end":       {[]ImportHeading{{Line: 10, Level: 3, As: "level"}}, "lines 1 to 9"},
+		"level, then drop":   {[]ImportHeading{{Line: 8, Level: 3, As: "level"}, {Line: 8, As: "drop"}}, "not after the previous entry"},
+		"drop, then level":   {[]ImportHeading{{Line: 8, As: "drop"}, {Line: 8, Level: 3, As: "level"}}, "not after the previous entry"},
+		"marker, then level": {[]ImportHeading{{Line: 3, Level: 2, As: "marker", Title: "x"}, {Line: 3, Level: 3, As: "level"}}, "not after the previous entry"},
+		"level twice":        {[]ImportHeading{{Line: 3, Level: 3, As: "level"}, {Line: 3, Level: 4, As: "level"}}, "not after the previous entry"},
+	} {
+		got, err := applyImportHeadings(relevelMD, tc.hs)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want it to mention %q", name, err, tc.want)
+		}
+		if got != "" {
+			t.Errorf("%s: a refused call returned text %q", name, got)
+		}
+	}
+}
+
+// A heading entry on a line that is already a heading would have written
+// "### ## X": it is refused, pointing at as "level", and so is a wrapped
+// title that runs into a heading.
+func TestApplyImportHeadings_HeadingOnAHeadingLineIsRefused(t *testing.T) {
+	for name, tc := range map[string]struct {
+		hs   []ImportHeading
+		want string
+	}{
+		"heading line":      {[]ImportHeading{{Line: 3, Level: 3, As: "heading"}}, `line 3 is already a heading; use as "level"`},
+		"indented heading":  {[]ImportHeading{{Line: 6, Level: 3, As: "heading"}}, "line 6 is already a heading"},
+		"span into heading": {[]ImportHeading{{Line: 4, Level: 3, As: "heading", Lines: 2}}, "line 5 is already a heading"},
+	} {
+		got, err := applyImportHeadings(relevelMD, tc.hs)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want it to mention %q", name, err, tc.want)
+		}
+		if strings.Contains(got, "### ##") {
+			t.Errorf("%s: wrote a heading over a heading: %q", name, got)
+		}
+	}
+}
+
+// Re-levels, additions, markers and drops mix in one call, all by the file's
+// own line numbers, in line order.
+func TestApplyImportHeadings_LevelMixesWithHeadingsAndDrops(t *testing.T) {
+	hs := []ImportHeading{
+		{Line: 3, Level: 3, As: "level"},
+		{Line: 4, Level: 4, As: "marker", Title: "Вступ"},
+		{Line: 5, Level: 3, As: "level"},
+		{Line: 8, As: "drop"},
+		{Line: 9, Level: 2, As: "heading"},
+	}
+	got, err := applyImportHeadings(relevelMD, hs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# Положення\n\n### Розділ I\n#### Вступ\nтекст\n### 1. Пункт\r\n   ### Розділ II\n##\tТаб\n## Розділ III\n"
+	if got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+	if back := undoImportHeadings(t, got, relevelMD, hs); back != relevelMD {
+		t.Fatalf("undoing the headings gave %q, want the file %q", back, relevelMD)
+	}
+}
+
+// The provenance counts a re-levelled heading among the headings the run
+// made (added or changed), and says how many of them were re-levelled, so
+// the structure a reader sees is accounted for and the file's record holds.
+func TestFileImport_RelevelledHeadingsAreCountedInProvenance(t *testing.T) {
+	f, ctx, d, _ := fileDocRun(t)
+	kept := inbox.Capture(ctx, inbox.Item{Name: "reg.md", MediaType: "text/markdown", Origin: "mcp:ms365/download-bytes"}, []byte(relevelMD))
+	out, res := fileOp(t, f, ctx, map[string]any{"op": "import", "path": kept.Record.Ref,
+		"headings": []any{
+			map[string]any{"line": 3, "level": 3, "as": "level"},
+			map[string]any{"line": 5, "level": 3, "as": "level"},
+			map[string]any{"line": 8, "as": "drop"},
+			map[string]any{"line": 9, "level": 2, "as": "heading"},
+		}})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	docID := asStr(out["document_id"])
+	got, r := docExec(t, d, ctx, `{"op":"get_document","scope":"user","id":"`+docID+`"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	p, _ := got["provenance"].(map[string]any)
+	if p["sha256"] != kept.Record.SHA256 {
+		t.Errorf("provenance = %v, want the capture record", p)
+	}
+	s, _ := p["structured"].(map[string]any)
+	if s["headings"] != float64(3) || s["relevelled"] != float64(2) || s["dropped"] != float64(1) || s["by"] != tools.RunID(ctx) {
+		t.Errorf("provenance structured = %v, want 3 headings (2 relevelled), 1 dropped, by %s", s, tools.RunID(ctx))
+	}
+	md, r := docExec(t, d, ctx, `{"op":"export_md","scope":"user","id":"`+docID+`"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	// The export writes levels by depth: re-levelled from 4 to 3, the пункт
+	// is now a sibling of Розділ I (also 3), not its child.
+	if text := asStr(md["markdown"]); !strings.Contains(text, "\n## Розділ I\n") || !strings.Contains(text, "\n## 1. Пункт\n") {
+		t.Errorf("export lacks the re-levelled tree:\n%s", text)
 	}
 }
