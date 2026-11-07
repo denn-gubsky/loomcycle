@@ -2682,6 +2682,21 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   semantic layers also need an embedder on the Postgres vector tier and a
   `low` tier. Input, report and limits:
   [`bundles/knowledge-base/README.md`](../bundles/knowledge-base/README.md).
+- **`skybits-sync`** (opt-in) keeps tenant Documents under `/skybits` in
+  step with one Skybits account, read through a tenant MCP server named
+  `skybits`. `skybits/sync` (`code-js`) lists and diffs the account against a
+  manifest in tenant SQL Memory and, in `apply` mode, spawns one
+  `skybits/import` (`code-js`) per changed item: DOCX/XLSX export or download,
+  extract with heading recovery, OCR for images, speech-to-text for
+  recordings, a heading outline from the tool-less `skybits/structure`
+  (validated line by line), then File import onto the work key
+  `skybits:<id>` with `source.kind: skybits`. Items that cannot become text
+  are `SourceStub` documents; removed and trashed items are marked with
+  `mark_source`, never deleted; copies are proposed as `duplicate_of`. No
+  Skybits write tool is on any agent. It needs
+  `LOOMCYCLE_CODE_AGENTS_ENABLED=1`, SQL Memory and tenant `memory_scopes`/
+  `sql_scopes` on the two code agents in an overlay, and installs no
+  schedule. See [`bundles/skybits-sync/README.md`](../bundles/skybits-sync/README.md).
 
 ### A Starter that fans out over a document
 
