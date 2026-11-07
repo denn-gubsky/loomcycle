@@ -103,9 +103,17 @@ test("the signup redirect replaces history rather than pushing the invite link",
   assert.doesNotMatch(html, /location\.(href|assign)\s*[=(]\s*res\.json\.(redirect|url)/);
 });
 
-// ─── the privacy notice (cloud-web/privacy.html) ─────────────────────────────
+// ─── the privacy notice and the terms (cloud-web/privacy.html, terms.html) ────
 const WEB = path.resolve(HERE, "../../../cloud-web");
 const privacy = fs.readFileSync(path.join(WEB, "privacy.html"), "utf8");
+const terms = fs.readFileSync(path.join(WEB, "terms.html"), "utf8");
+// The plain pages: each with its title and the section ids it must keep.
+const PAGES = [
+  { file: "privacy.html", page: privacy, title: "Privacy",
+    ids: ["controller", "shared", "keep", "retention", "where", "erasure"] },
+  { file: "terms.html", page: terms, title: "Terms",
+    ids: ["preview", "accounts", "use", "shared", "content", "warranty", "changes", "general", "contact"] },
+];
 
 // localRefs lists the href/src values of a page that point inside the site.
 function localRefs(page) {
@@ -113,42 +121,76 @@ function localRefs(page) {
     .filter((u) => !/^(?:[a-z]+:|\/\/|#)/i.test(u));
 }
 
-test("the footer has no dead links and points at the privacy notice", () => {
+test("the footer has no dead links and points at the terms and the privacy notice", () => {
   const footer = html.slice(html.indexOf("<footer>"), html.indexOf("</footer>"));
   assert.ok(footer.length > 0);
   assert.doesNotMatch(footer, /href="#"/);
-  assert.match(footer, /<a href="privacy\.html">Privacy<\/a>/);
+  assert.match(footer, /<a href="terms\.html">Terms<\/a>\s*<a href="privacy\.html">Privacy<\/a>/);
 });
 
 test("the shared sign-up says what members see and links the privacy notice", () => {
   const shared = html.slice(html.indexOf("<div class=\"acct\" data-shared-only"), html.indexOf("<div data-vault-section>"));
   assert.match(shared, /Approved members can see what other members share in the shared workspace/);
+  assert.match(shared, /Your conversations are visible to you and to the workspace&rsquo;s operators; other members cannot open them\./);
+  assert.doesNotMatch(shared, /open other members/);
   assert.match(shared, /<a href="privacy\.html">Privacy<\/a>/);
+  assert.match(shared, /<a href="terms\.html">Terms<\/a>/);
 });
 
-// Only the privacy page's references are checked: index.html also names the
+// Only the plain pages' references are checked: index.html also names the
 // hero and mascot clips, which are git-ignored (assets/*.mp4) and copied to the
 // host separately.
-test("every local link and asset of the privacy notice exists", () => {
-  const refs = localRefs(privacy);
-  assert.ok(refs.includes("index.html") && refs.includes("./ds-base.js"));
-  for (const ref of refs) {
-    assert.ok(fs.existsSync(path.join(WEB, ref.split(/[?#]/)[0])), `privacy.html: ${ref} does not exist`);
-  }
+for (const { file, page, title, ids } of PAGES) {
+  test(`every local link and asset of ${file} exists`, () => {
+    const refs = localRefs(page);
+    assert.ok(refs.includes("index.html") && refs.includes("./ds-base.js"));
+    for (const ref of refs) {
+      assert.ok(fs.existsSync(path.join(WEB, ref.split(/[?#]/)[0])), `${file}: ${ref} does not exist`);
+    }
+  });
+
+  test(`${file} is plain markup: balanced, no inline script, the site's stylesheet loader`, () => {
+    // Closing tags match with optional whitespace (`</script >`), as browsers do.
+    const scripts = [...page.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
+    assert.equal((page.match(/<script\b/gi) || []).length, scripts.length, "every <script> is closed");
+    assert.deepEqual(scripts.map((m) => [m[1].trim(), m[2].trim()]), [['src="./ds-base.js"', ""]]);
+    assert.doesNotMatch(page, /\son[a-z]+=/i, "no inline event handlers");
+    const body = withoutCodeBlocks(page);
+    for (const tag of ["div", "section", "ul", "li", "p", "nav", "footer"]) {
+      const open = (body.match(new RegExp(`<${tag}[\\s>]`, "g")) || []).length;
+      const close = (body.match(new RegExp(`</${tag}>`, "g")) || []).length;
+      assert.equal(open, close, `<${tag}> ${open} open vs ${close} closed`);
+    }
+    assert.ok(page.includes(`<title>${title} · loomcycle.cloud</title>`), "title");
+    for (const id of ids) assert.ok(page.includes(`id="${id}"`), `missing #${id}`);
+  });
+}
+
+test("the privacy notice and the terms link each other", () => {
+  assert.match(privacy, /<a href="terms\.html">terms of use<\/a>/);
+  assert.match(privacy, /<a href="terms\.html">Terms<\/a>/);
+  assert.match(terms, /<a href="privacy\.html">Privacy<\/a>/);
 });
 
-test("the privacy notice is plain markup: balanced, no inline script, the site's stylesheet loader", () => {
-  // Closing tags match with optional whitespace (`</script >`), as browsers do.
-  const scripts = [...privacy.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
-  assert.equal((privacy.match(/<script\b/gi) || []).length, scripts.length, "every <script> is closed");
-  assert.deepEqual(scripts.map((m) => [m[1].trim(), m[2].trim()]), [['src="./ds-base.js"', ""]]);
-  assert.doesNotMatch(privacy, /\son[a-z]+=/i, "no inline event handlers");
-  const body = withoutCodeBlocks(privacy);
-  for (const tag of ["div", "section", "ul", "li", "p", "nav", "footer"]) {
-    const open = (body.match(new RegExp(`<${tag}[\\s>]`, "g")) || []).length;
-    const close = (body.match(new RegExp(`</${tag}>`, "g")) || []).length;
-    assert.equal(open, close, `<${tag}> ${open} open vs ${close} closed`);
-  }
-  assert.match(privacy, /<title>Privacy · loomcycle\.cloud<\/title>/);
-  for (const id of ["shared", "keep", "where", "erasure"]) assert.ok(privacy.includes(`id="${id}"`), `missing #${id}`);
+// A generic preview-service terms page: it names the contact and the shared
+// workspace's rule, and invents no jurisdiction or price.
+test("the terms mark a preview service, give the contact and the conversation rule", () => {
+  assert.match(terms, /loomcycle\.cloud is a preview service/);
+  assert.match(terms, /<a href="mailto:privacy@loomcycle\.cloud">privacy@loomcycle\.cloud<\/a>/);
+  assert.match(terms, /Last updated \d{1,2} [A-Z][a-z]+ \d{4}\./);
+  assert.match(terms, /as is and as available/);
+  assert.match(terms, /Your conversations are visible to you and to the workspace's operators; other members cannot open them\./);
+  assert.doesNotMatch(terms, /governed by the laws of|jurisdiction|courts of|\$\d|€\d|£\d/i);
+});
+
+// The statements the owner answered for: who the controller is, where to
+// write, the date the retention settings were read on, and who can open a
+// member's conversations (members read only their own runs).
+test("the privacy notice names the controller, the contact, its date and the conversation rule", () => {
+  assert.match(privacy, /The loomcycle Authors are the controller of the personal data processed on loomcycle\.cloud/);
+  assert.match(privacy, /<a href="mailto:privacy@loomcycle\.cloud">privacy@loomcycle\.cloud<\/a>/);
+  assert.match(privacy, /Last updated \d{1,2} [A-Z][a-z]+ \d{4}\./);
+  assert.match(privacy, /Your conversations are visible to you and to the workspace's operators; other members cannot open them\./);
+  assert.doesNotMatch(privacy, /so can other approved members/);
+  assert.match(privacy, /Cloudflare Web Analytics/);
 });

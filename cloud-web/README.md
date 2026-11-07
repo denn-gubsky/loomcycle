@@ -8,6 +8,7 @@ The runtime itself runs on a VPS behind a reverse proxy at `app.loomcycle.cloud`
 ```
 index.html            the whole page (markup + styles + logic, no build step)
 privacy.html          the privacy notice (served at /privacy; no script but ds-base.js)
+terms.html            the terms of use (served at /terms; same rules as privacy.html)
 ds-base.js            loads the Modernist design-system stylesheet + bundle
 _ds/modernist-*/      the design system (tokens, components) — styles.css is the only sheet
 assets/               logo, favicon, loom + mascot clips
@@ -175,4 +176,17 @@ keychain storage, the `--upstream` single-runtime invariant), and
 documented erasure and audit behaviour (`SECURITY.md`, "Subject erasure", "The
 audit trail" and "The loomcycle.cloud deployment"). When the deployment changes
 what it keeps, where model calls go, or who may read a member's conversations,
-change the page with it.
+change the page with it. Its retention list reads the example settings: the
+retention sweeper in `.env.insecure.example` (chats 90 days with an exported
+copy, internal maintenance chats 3 days), the absence of
+`LOOMCYCLE_AUDIT_RETENTION_DAYS` (the audit trail is kept with no fixed
+limit), the usage sweeper's defaults (30 days of per-call records, then daily
+totals), and `keep_backups` in `deploy/loomcycle-cloud-deploy`. Two statements
+come from the operator rather than the repository: that Cloudflare Web
+Analytics is on in its default mode (a Cloudflare dashboard setting), and the
+controller and contact (The loomcycle Authors, `privacy@loomcycle.cloud`).
+Both pages carry a "Last updated" date; change it with their content.
+
+`terms.html` is a generic terms-of-use for the preview service. It names no
+jurisdiction, company registration or price; keep it that way unless the
+operator supplies them.
