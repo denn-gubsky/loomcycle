@@ -124,7 +124,7 @@ func decodeFileTwinInput(input json.RawMessage) (fileTwinInput, error) {
 // rules, in the order they are checked:
 //
 //   - The run is read through the gate every run read uses (get_run's): the
-//     caller's tenant, an isolated member's own runs, a restricted token's
+//     caller's tenant, a member's own runs, a restricted token's
 //     agents. Anything else is the same not-found a missing run gets.
 //   - The inbox is the run tree's, at the path the runtime derives from the
 //     dynamic root and the tree's root run id, and it is used only while the
@@ -189,7 +189,7 @@ func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.Too
 }
 
 // fileTwinReadableRun reads the run named runID through the gate every run
-// read uses (get_run's): the caller's tenant, an isolated member's own runs, a
+// read uses (get_run's): the caller's tenant, a member's own runs, a
 // restricted token's agents. A run the caller may not read is the same
 // not-found a missing run gets. err is a store fault.
 func (s *Server) fileTwinReadableRun(ctx context.Context, runID string) (store.Run, connector.ToolResult, bool, error) {

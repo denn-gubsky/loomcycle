@@ -66,10 +66,11 @@ func (s *Server) StreamUserRunStates(req *loomcyclepb.StreamUserRunStatesRequest
 	if req.GetUserId() == "" {
 		return status.Error(codes.InvalidArgument, "user_id is required")
 	}
-	// An isolated member holds runs:read, so it reaches this RPC — but it may
-	// stream only its OWN runs. Another user id is the same opaque not-found the
-	// HTTP stream returns, so the RPC is no cross-user existence oracle.
-	if p, ok := auth.PrincipalFromContext(stream.Context()); auth.IsIsolated(p, ok) && req.GetUserId() != p.Subject {
+	// A member (isolated or not) holds runs:read, so it reaches this RPC — but
+	// it may stream only its OWN runs. Another user id is the same opaque
+	// not-found the HTTP stream returns, so the RPC is no cross-user existence
+	// oracle.
+	if p, ok := auth.PrincipalFromContext(stream.Context()); auth.OwnRowsOnly(p, ok) && req.GetUserId() != p.Subject {
 		return status.Error(codes.NotFound, "no such user")
 	}
 

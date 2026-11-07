@@ -161,24 +161,26 @@ func TestResidentChild_TenantIsolation(t *testing.T) {
 }
 
 // residentPeers are runs in the opener's tenant that did not open its child
-// and may still address it: the tenant's runs collaborate, and an isolated
-// member's run reaches its own user's children.
+// and may still address it: the same user's other runs, isolated or not.
 var residentPeers = []struct {
 	name string
 	id   tools.RunIdentityValue
 }{
-	{"other user", tools.RunIdentityValue{AgentID: "a_bob_run", UserID: "bob", TenantID: "acme"}},
 	{"same user, another run", tools.RunIdentityValue{AgentID: "a_alice_other", UserID: "alice", TenantID: "acme"}},
-	{"other user, opener's id", tools.RunIdentityValue{AgentID: "a_alice_lead", UserID: "bob", TenantID: "acme"}},
 	{"same user isolated, another run", tools.RunIdentityValue{AgentID: "a_alice_other", UserID: "alice", TenantID: "acme", Isolated: true}},
 }
 
 // residentStrangers are runs in the opener's tenant that may not address its
-// child: an isolated member's run for another user, whatever its agent id.
+// child: another user's run, isolated or not, whatever its agent id, and a
+// tenant-level run no user started. A child's turns are its opener's
+// conversation, and a person reads only its own.
 var residentStrangers = []struct {
 	name string
 	id   tools.RunIdentityValue
 }{
+	{"other user", tools.RunIdentityValue{AgentID: "a_bob_run", UserID: "bob", TenantID: "acme"}},
+	{"other user, opener's id", tools.RunIdentityValue{AgentID: "a_alice_lead", UserID: "bob", TenantID: "acme"}},
+	{"tenant-level run", tools.RunIdentityValue{AgentID: "a_schedule_run", TenantID: "acme"}},
 	{"other user isolated", tools.RunIdentityValue{AgentID: "a_bob_run", UserID: "bob", TenantID: "acme", Isolated: true}},
 	{"other user isolated, opener's id", tools.RunIdentityValue{AgentID: "a_alice_lead", UserID: "bob", TenantID: "acme", Isolated: true}},
 }
@@ -200,11 +202,10 @@ func residentLastUsed(t *testing.T, srv *Server, runID string) time.Time {
 	return rc.lastUsed
 }
 
-// TestResidentChild_TenantRunsCanAddressIt asserts a run in the opener's
-// tenant that did not open the child — another user's, another run of the
-// same user, or an isolated run of the same user — drives it with send, poll
-// and cancel, and that such a run can close it.
-func TestResidentChild_TenantRunsCanAddressIt(t *testing.T) {
+// TestResidentChild_SameUsersRunsCanAddressIt asserts a run of the opener's
+// user that did not open the child — another run of the same user, isolated or
+// not — drives it with send, poll and cancel, and that such a run can close it.
+func TestResidentChild_SameUsersRunsCanAddressIt(t *testing.T) {
 	srv := newResidentTestServer(t)
 	owner := residentOwnerCtx()
 	runID, _, _, err := srv.openResidentChild(owner, "child", "start", "", 0, 0)
@@ -235,11 +236,11 @@ func TestResidentChild_TenantRunsCanAddressIt(t *testing.T) {
 	waitResidentGone(t, srv, runID)
 }
 
-// TestResidentChild_IsolatedOtherUserCannotAddressIt asserts an isolated
-// member's run gets the unknown-id answer on send, poll, cancel and close for
-// another user's child in its tenant, cannot move its idle clock, and cannot
-// close it — while the opening run still drives it.
-func TestResidentChild_IsolatedOtherUserCannotAddressIt(t *testing.T) {
+// TestResidentChild_OtherUsersRunsCannotAddressIt asserts another user's run,
+// isolated or not, and a tenant-level run get the unknown-id answer on send,
+// poll, cancel and close for a user's child in their tenant, cannot move its
+// idle clock, and cannot close it — while the opening run still drives it.
+func TestResidentChild_OtherUsersRunsCannotAddressIt(t *testing.T) {
 	srv := newResidentTestServer(t)
 	owner := residentOwnerCtx()
 	runID, _, _, err := srv.openResidentChild(owner, "child", "start", "", 0, 0)
@@ -945,13 +946,13 @@ func TestResidentP3_OperatorTenantGate(t *testing.T) {
 	}
 	defer func() { _ = srv.closeResidentChild(ctx, runID) }()
 
-	if _, ok := srv.residentForOperator(runID, "tenant-b", false); ok {
+	if _, ok := srv.residentForOperator(context.Background(), runID, "tenant-b", false); ok {
 		t.Error("cross-tenant operator must NOT resolve the child")
 	}
-	if _, ok := srv.residentForOperator(runID, "tenant-a", false); !ok {
+	if _, ok := srv.residentForOperator(context.Background(), runID, "tenant-a", false); !ok {
 		t.Error("owning-tenant operator should resolve the child")
 	}
-	if _, ok := srv.residentForOperator(runID, "", true); !ok {
+	if _, ok := srv.residentForOperator(context.Background(), runID, "", true); !ok {
 		t.Error("admin (all) should resolve the child")
 	}
 }

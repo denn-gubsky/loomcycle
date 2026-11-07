@@ -140,7 +140,7 @@ func (s *Server) StreamRunEvents(ctx context.Context, runID string, fromSeq int6
 	// Tenant-ownership gate via the tenant-scoped accessor: a cross-tenant or
 	// missing run both fold into the opaque ErrRunNotInFlight (no existence
 	// oracle). Super-admin / legacy / open see all.
-	// An isolated member is confined to its own runs (runOwnershipOK): the
+	// A member is confined to its own runs (runOwnershipOK): the
 	// replay carries the run's prompt and answer.
 	if run, err := s.tenantStore(ctx).GetRun(ctx, runID); err != nil || !runOwnershipOK(ctx, run) || !s.allowlistReachesRow(ctx, run) {
 		return connector.ErrRunNotInFlight
@@ -212,7 +212,7 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 	if s.store == nil {
 		return false, false, connector.ErrRunNotInFlight
 	}
-	// The tenant fold alone would let an isolated member stop another user's
+	// The tenant fold alone would let a member stop another user's
 	// turn on another replica; the local path confines it via liveRunOwnershipOK.
 	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
 	if err != nil || !runOwnershipOK(ctx, run) || !s.allowlistReachesRun(ctx, runID) {
@@ -310,7 +310,7 @@ func (s *Server) ResolveInterrupt(ctx context.Context, runID, interruptID, kind,
 	}
 	// Ownership gate (RFC L/N): the run this interrupt belongs to must be the
 	// caller's to answer — in its tenant (else a resolve steers ANOTHER tenant's
-	// paused run), and for an isolated member one of its own. A run it may not
+	// paused run), and for a member one of its own. A run it may not
 	// answer is the same opaque not-found as one that does not exist.
 	if owns, err := s.callerOwnsRun(ctx, row.RunID); err != nil {
 		return "", err

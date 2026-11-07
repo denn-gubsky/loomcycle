@@ -1184,10 +1184,10 @@ func handleStreamUserRunStates(ctx context.Context, env *handlerEnv, args json.R
 	// the session principal's tenant exactly as the HTTP and gRPC streams are —
 	// otherwise a tenant session naming a user id receives that id's run
 	// transitions from every tenant. Open mode, the legacy operator and an admin
-	// stay unscoped. An isolated member may watch only its own user; any other
-	// id gets the same opaque answer HTTP gives (404, no cross-user oracle).
+	// stay unscoped. A member (isolated or not) may watch only its own user; any
+	// other id gets the same opaque answer HTTP gives (404, no cross-user oracle).
 	p, ok := auth.PrincipalFromContext(ctx)
-	if auth.IsIsolated(p, ok) && a.UserID != p.Subject {
+	if auth.OwnRowsOnly(p, ok) && a.UserID != p.Subject {
 		return toolErr("stream_user_run_states: no such user"), nil
 	}
 	req := connector.StreamUserRunStatesRequest{

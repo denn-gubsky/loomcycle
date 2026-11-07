@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -103,6 +104,16 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	// tenant's events (ListEvents filters via the owning session's tenant).
 	if tenantID, all := s.principalTenantScope(r.Context(), q.Get("tenant")); !all {
 		filter.TenantID = tenantID
+	}
+	// Every event is part of some run's transcript, and a member (the member
+	// path admits it here) reads only its own conversations: its view holds
+	// only its own sessions' events. A member with no subject has none.
+	if p, ok := auth.PrincipalFromContext(r.Context()); auth.OwnRowsOnly(p, ok) {
+		if p.Subject == "" {
+			writeJSON(w, http.StatusOK, listEventsResponse{Events: []wireEvent{}, Limit: limit, Offset: offset})
+			return
+		}
+		filter.UserID = p.Subject
 	}
 
 	events, total, err := s.store.ListEvents(r.Context(), filter, limit, offset)

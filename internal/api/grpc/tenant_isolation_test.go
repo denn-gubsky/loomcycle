@@ -200,7 +200,7 @@ func TestGrpcGetAgent_IsolatedMemberCannotReadAnotherUsersRun(t *testing.T) {
 }
 
 // An isolated member lists only its own runs: naming a co-tenant's user_id
-// yields an empty list (HTTP handleListUserAgents' isolatedCrossUser rule), its
+// yields an empty list (HTTP handleListUserAgents' otherUsersRuns rule), its
 // own user_id yields its runs, and a tenant operator keeps the tenant view.
 func TestGrpcListUserAgents_IsolatedMemberSeesOnlyItsOwnRuns(t *testing.T) {
 	adapter, st := tenantTestServer(t)

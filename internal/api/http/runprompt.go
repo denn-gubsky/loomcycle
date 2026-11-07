@@ -32,7 +32,7 @@ func redactPromptSnapshot(r *redact.Redactor, snap providers.PromptSnapshotInfo)
 // different prompt than the one the model saw.
 //
 // Gated like every run read that returns content (runOwnershipOK): another
-// tenant's run, or another user's for an isolated member, is the opaque 404 a
+// tenant's run, or another user's for a member, is the opaque 404 a
 // missing one gets. The snapshot can
 // hold resolved {{document:}} / {{memory:}} content the caller could not read
 // directly; that is the same content the run's transcript already holds, and

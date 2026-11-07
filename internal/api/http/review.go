@@ -67,7 +67,7 @@ func (s *Server) ReviewRun(ctx context.Context, runID, decision, feedback, sourc
 		return false, connector.ErrRunNotInFlight
 	}
 	if run.SessionID != "" {
-		// The tenant read above does not confine an isolated member to its own
+		// The tenant read above does not confine a member to its own
 		// runs; the session gate does, as it does for steering.
 		sess, serr := s.store.GetSession(ctx, run.SessionID)
 		if serr != nil || !sessionOwnershipOK(ctx, sess) {

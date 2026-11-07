@@ -23,7 +23,7 @@ var errWalkIDInvalid = errors.New("walk_id must match [A-Za-z0-9_-]{1,128}")
 //
 // The gate is the single-run read's: the caller must be allowed to read the
 // walk's OWN run (tenantStore folds another tenant's walk into ErrNotFound,
-// runOwnershipOK folds another user's walk for an isolated member into the
+// runOwnershipOK folds another user's walk for a member into the
 // same), so a walk the caller cannot read is indistinguishable from one that
 // does not exist. Each member is then held to the same row rule, which for
 // anyone who passed the walk's gate drops nothing a walk spawns under its own

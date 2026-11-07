@@ -72,17 +72,20 @@ func TestSessionOwnershipOK_Matrix(t *testing.T) {
 		{"no principal (open mode)", context.Background(), true},
 		{"legacy principal exempt", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "default", Subject: "default", Legacy: true}), true},
 		{"owner matches", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "alice"}), true},
-		// Whole-tenant model: a same-tenant DIFFERENT subject is allowed
-		// (subjects collaborate within their tenant's workspace).
-		{"same tenant, different subject (whole-tenant)", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "mallory"}), true},
+		// A person reads only its own conversations: a same-tenant DIFFERENT
+		// subject that is not a tenant operator is refused, isolated or not.
+		{"same tenant, different subject, member", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "mallory", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}}), false},
+		{"same tenant, different subject, no scopes", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "mallory"}), false},
+		// A tenant operator reads every session of its tenant.
+		{"same tenant, tenant operator", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeTenant}}), true},
 		// The cross-TENANT boundary stays hard (the security property).
 		{"wrong tenant blocked", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "evil", Subject: "alice"}), false},
 		// Super-admin crosses tenants by design.
 		{"super-admin sees all", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "x", Scopes: []string{auth.ScopeAdmin}}), true},
 		// RFC BX P2b: an ISOLATED member (substrate:user) is confined to its OWN
-		// sessions — its own is allowed, a same-tenant DIFFERENT subject is now
-		// DENIED (unlike the whole-tenant collaboration case above). This is the
-		// regression guard for the code-review CRITICAL finding.
+		// sessions — its own is allowed, a same-tenant DIFFERENT subject is
+		// DENIED. This is the regression guard for the code-review CRITICAL
+		// finding.
 		{"isolated owner matches", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeUser}}), true},
 		{"isolated, same tenant different subject BLOCKED", auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "mallory", Scopes: []string{auth.ScopeUser}}), false},
 	}

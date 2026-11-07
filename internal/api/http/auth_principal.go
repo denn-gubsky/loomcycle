@@ -876,15 +876,15 @@ func (s *Server) isolatedForCtx(ctx context.Context) bool {
 	return auth.IsIsolated(p, ok)
 }
 
-// isolatedCrossUser reports whether the ctx principal is an isolated member
-// reaching for a DIFFERENT user's per-user surface (a `/v1/users/{user_id}/…`
-// route) — i.e. it should be confined to itself. RFC BX P2b: an isolated
-// member sees only its own runs/sessions/metadata; a non-isolated principal
-// keeps the whole-tenant view (returns false). Handlers use this to return an
-// empty/own-only result rather than another user's data.
-func (s *Server) isolatedCrossUser(ctx context.Context, pathUserID string) bool {
+// otherUsersRuns reports whether the ctx principal is confined to its own runs
+// (auth.OwnRowsOnly — every member, isolated or not) and is reaching for a
+// DIFFERENT user's per-user run surface (a `/v1/users/{user_id}/…` route).
+// Handlers answer it as a user with no runs (or an opaque 404) rather than
+// with another user's data. A tenant operator and an admin keep the tenant
+// view (returns false).
+func (s *Server) otherUsersRuns(ctx context.Context, pathUserID string) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
-	return auth.IsIsolated(p, ok) && pathUserID != p.Subject
+	return auth.OwnRowsOnly(p, ok) && pathUserID != p.Subject
 }
 
 // isolatedOrCaptured is the RunOnce variant (sibling of
@@ -920,37 +920,23 @@ func (s *Server) operatorKeyRestrictedOrCaptured(ctx context.Context, captured b
 // could POST to a tenant-A session id and get cross-tenant memory read/write,
 // transcript replay, fairness-cap evasion, and attribution in A.
 //
-// WHOLE-TENANT model (the chosen Web-UI authz granularity): the boundary is
-// the TENANT, not the subject — subjects within one tenant share the tenant's
-// workspace (they collaborate), so any acme subject may read/continue any acme
-// session. The cross-TENANT boundary (the actual security property) stays
-// hard. A super-admin (substrate:admin) crosses tenants by design.
-//
-// Exempt (return true): no principal (open dev mode); the single-operator
-// legacy principal (Legacy=true) — one principal, no boundary, and pre-RFC-L
-// sessions carry default/empty identity; and any substrate:admin principal.
+// The rule is auth.OwnedRowVisible: a member (isolated or not) reads and
+// continues only its OWN sessions — a continuation runs under sess.UserID, so
+// another user's session would also hand it that user's user-scoped data; a
+// tenant operator reaches every session of its tenant; a super-admin
+// (substrate:admin), the legacy principal and open mode reach every session.
+// A non-isolated member was once trusted with its whole tenant's sessions;
+// people now read only their own conversations.
 func sessionOwnershipOK(ctx context.Context, sess store.Session) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
-	if !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
-		return true
-	}
-	// RFC BX P2b: an ISOLATED member is confined to its OWN sessions — the
-	// tenant match alone would let it read/continue another user's session in
-	// the same tenant (and, via a continuation, that user's user-scoped data,
-	// since the run inherits sess.UserID). Every non-isolated principal keeps
-	// the whole-tenant collaboration model (session_ids are not secret, so the
-	// tenant is the boundary there).
-	if auth.IsIsolated(p, ok) {
-		return sess.TenantID == p.TenantID && sess.UserID == p.Subject
-	}
-	return sess.TenantID == p.TenantID
+	return auth.OwnedRowVisible(p, ok, sess.TenantID, sess.UserID)
 }
 
 // runOwnershipOK is sessionOwnershipOK for a run: whether the ctx principal
-// may read the run's content — its prompt snapshot, result, spec or draft. The
-// tenant accessor alone admits an isolated member to another user's run in the
-// same tenant; every read that returns run content applies this on top of it
-// and answers a false with its own opaque not-found.
+// may read the run's content — its prompt snapshot, result, spec or draft —
+// or act on it. The tenant accessor alone admits a member to another user's
+// run in the same tenant; every read and every action on a run applies this
+// on top of it and answers a false with its own opaque not-found.
 func runOwnershipOK(ctx context.Context, run store.Run) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
 	return auth.OwnedRowVisible(p, ok, run.TenantID, run.UserID)
