@@ -3947,7 +3947,9 @@ export interface CredentialMeta {
   expired?: boolean;
   // RFC EP crypto keys: usage "crypto" plus the key's type and versions. Absent
   // on an ordinary credential. The key material itself is never returned.
-  usage?: "crypto";
+  // usage "oauth" is an OAuth credential; its config and state are in `oauth`.
+  usage?: "crypto" | "oauth";
+  oauth?: OAuthCredentialInfo;
   key_type?: string;
   // The external KMS holding the key (vault, aws_kms, gcp_kms); absent for a
   // key held here. Its versions are the KMS's, rotated and retired there.
@@ -4075,6 +4077,65 @@ export function deleteCryptoKeyVersion(input: {
   version: number;
 }): Promise<CredentialMeta> {
   return credentialDefOp<CredentialMeta>({ op: "delete_version", ...input });
+}
+
+// --- OAuth credentials (usage "oauth"): connect by approving a device code ---
+// Same route and envelope. None of these returns a token or the device code.
+
+export type OAuthState = "pending_connect" | "connected" | "needs_reauth" | "revoked";
+
+// OAuthCredentialInfo is an OAuth credential's config and state as list/get
+// report them. connected_as is display-only (the account the grant is for).
+export interface OAuthCredentialInfo {
+  resource: string;
+  registration?: string;
+  state: OAuthState;
+  issuer?: string;
+  scopes?: string[];
+  token_endpoint_auth?: string;
+  connected_as?: string;
+  connected_at?: string;
+  last_refresh_at?: string;
+  access_expires_at?: string;
+  // A code and one fixed sentence, never token material.
+  last_error?: string;
+}
+
+// OAuthConnectStart is what the owner is shown to approve the connect: open
+// verification_uri (or the _complete form, which carries the code) and enter
+// user_code. interval is the server's poll spacing in seconds.
+export interface OAuthConnectStart {
+  name: string;
+  scope: string;
+  status: OAuthState;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete?: string;
+  expires_in: number;
+  interval: number;
+}
+
+export interface OAuthCredentialRef {
+  scope: CredentialScope;
+  name: string;
+}
+
+// oauthConnectStart starts a device-code connect. A second start supersedes
+// the first: only the newest code is ever approved.
+export function oauthConnectStart(input: OAuthCredentialRef): Promise<OAuthConnectStart> {
+  return credentialDefOp<OAuthConnectStart>({ op: "oauth_connect_start", ...input });
+}
+
+// oauthConnectStatus reads the credential's state (and, when the replica that
+// started the connect is gone, advances it one poll step server-side).
+export function oauthConnectStatus(input: OAuthCredentialRef): Promise<CredentialMeta> {
+  return credentialDefOp<CredentialMeta>({ op: "oauth_connect_status", ...input });
+}
+
+// oauthDisconnect revokes the grant (best effort) and clears it; the
+// credential stays, state revoked, ready to connect again.
+export function oauthDisconnect(input: OAuthCredentialRef): Promise<CredentialMeta> {
+  return credentialDefOp<CredentialMeta>({ op: "oauth_disconnect", ...input });
 }
 
 // --- RFC AV: token-usage & cost report (GET /v1/_usage) ---
