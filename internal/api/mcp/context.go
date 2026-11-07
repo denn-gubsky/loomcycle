@@ -133,11 +133,16 @@ func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) 
 	// does on HTTP and gRPC, and the tool confines it to its own tenant.
 	p, hasPrincipal := auth.PrincipalFromContext(ctx)
 
-	// RFC BE History: a tenant principal gets the own-tenant scopes but NOT
+	// RFC BE History: a tenant operator gets the own-tenant scopes but NOT
 	// `global` — the tenant stamp on ctx + the tool's fold confine every op to
 	// this tenant/subject. The operator plane has full owner-scope reach
-	// INCLUDING cross-tenant `global`.
-	histScopes := []string{"self", "user", "tenant"}
+	// INCLUDING cross-tenant `global`. A member (no substrate:tenant) reads only
+	// its own chats, [self, user], as the HTTP and gRPC History planes give it:
+	// `tenant` would hand it every colleague's conversations.
+	histScopes := []string{"self", "user"}
+	if isAdmin || auth.HasScope(p.Scopes, auth.ScopeTenant) {
+		histScopes = append(histScopes, "tenant")
+	}
 	if isAdmin {
 		histScopes = append(histScopes, "global")
 		// Operator plane. A tenant principal's mint plane stays default-deny (zero).
