@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -388,8 +389,9 @@ func TestRunActions_AMemberActsOnlyOnItsOwnRuns(t *testing.T) {
 
 // memberRoute is how a member's request for ANOTHER user's conversation on one
 // route is answered. class is "hidden" (refused: an opaque 404, or the 4xx the
-// route gives what it cannot address) or "empty" (200 with none of that user's
-// rows). body and query are what the request carries, when the route takes
+// route gives what it cannot address), "empty" (200 with none of that user's
+// rows) or "shared" (a definition or the channel's global layer, not any
+// user's messages or runs: only the content check applies). body and query are what the request carries, when the route takes
 // its target from them rather than from the path.
 type memberRoute struct {
 	class string
@@ -451,27 +453,29 @@ var memberRunRoutes = map[string]memberRoute{
 	"POST /v1/users/{user_id}/channels/{name}/subscribe":       {class: "hidden", body: censusUserChannelBody},
 	"PUT /v1/runs/{run_id}/breakpoints":                        {class: "hidden"},
 	// Channels: a user-scoped channel's messages are each user's own.
-	"GET /v1/_channels/{name}/peek":                    {class: "hidden", query: censusUserChannelQS},
-	"POST /v1/_channels/{name}/ack":                    {class: "hidden", body: censusUserChannelBody},
-	"POST /v1/_channels/{name}/publish":                {class: "hidden", body: censusUserChannelBody},
-	"POST /v1/_channels/{name}/subscribe":              {class: "hidden", body: censusUserChannelBody},
+	"GET /v1/_channels/{name}/peek":                    {class: "shared"}, // the channel's global layer, never a user's
+	"POST /v1/_channels/{name}/ack":                    {class: "shared"}, // the channel's global layer, never a user's
+	"POST /v1/_channels/{name}/publish":                {class: "shared"}, // the channel's global layer, never a user's
+	"POST /v1/_channels/{name}/subscribe":              {class: "shared"}, // the channel's global layer, never a user's
 	"POST /v1/_channels/{name}/release":                {class: "hidden", body: censusUserChannelBody},
 	"POST /v1/_channels/{name}/purge":                  {class: "hidden"},
 	"DELETE /v1/_channels/{name}":                      {class: "hidden"},
+	"PATCH /v1/_channels/{name}":                       {class: "shared"}, // the definition, not its messages
 	"POST /v1/_channels/_await":                        {class: "hidden", body: censusUserChannelBody},
 	"POST /v1/_channels/_broadcast":                    {class: "hidden", body: censusUserChannelBody},
 	"POST /v1/_channels/{name...}":                     {class: "hidden", body: censusUserChannelBody}, // system channels: operator-admin
 	"GET /v1/_teamdef/{team}/channels/{name}/peek":     {class: "hidden", query: "?user_id=bob"},
 	"POST /v1/_teamdef/{team}/channels/{name}/release": {class: "hidden", body: `{"user_id":"bob","count":1}`},
 	// Definitions that carry the user their runs execute as.
-	"POST /v1/_scheduledef":                {class: "hidden", body: censusScheduleAsBob},
-	"POST /v1/_webhookdef":                 {class: "hidden", body: censusWebhookAsAnyone},
-	"GET /v1/_schedules/{def_id}/state":    {class: "hidden"},
-	"POST /v1/_schedules/{def_id}/run-now": {class: "hidden"},
-	"POST /v1/_schedules/{def_id}/pause":   {class: "hidden"},
-	"POST /v1/_schedules/{def_id}/resume":  {class: "hidden"},
-	// A member's chat search: its own chats only (the tool's scope fold).
-	"POST /v1/_history": {class: "empty", body: `{"op":"list","scope":"tenant"}`},
+	"POST /v1/_scheduledef":                       {class: "hidden", body: censusScheduleAsBob},
+	"POST /v1/_webhookdef":                        {class: "hidden", body: censusWebhookAsAnyone},
+	"DELETE /v1/_users/{subject}/tokens/{def_id}": {class: "hidden"}, // operator-only route
+	"GET /v1/_schedules/{def_id}/state":           {class: "hidden"},
+	"POST /v1/_schedules/{def_id}/run-now":        {class: "hidden"},
+	"POST /v1/_schedules/{def_id}/pause":          {class: "hidden"},
+	"POST /v1/_schedules/{def_id}/resume":         {class: "hidden"},
+	// A member's chat search: its own chats only; the tenant scope is refused.
+	"POST /v1/_history": {class: "hidden", body: `{"op":"list","scope":"tenant"}`},
 }
 
 var muxRouteRe = regexp.MustCompile(`\.Handle(?:Func)?\("([A-Z]+ /v1/[^"]*)"`)
@@ -552,6 +556,10 @@ func TestMemberRunRouteCensus_NoRouteHandsAMemberAnotherUsersRun(t *testing.T) {
 	srv, mux := treeDeleteServer(t)
 	st := srv.store
 	ctx := context.Background()
+	bus := channels.NewBus()
+	srv.SetSystemPublisher(&channels.StorePublisher{Store: st, Bus: bus, Scheduler: channels.NewScheduler(bus, 100)})
+	srv.SetChannelBus(bus)
+	srv.tools = append(srv.tools, &builtin.History{Store: st})
 	srv.SetScheduleDefTool(&builtin.ScheduleDef{Store: st, Cfg: srv.cfg()})
 	srv.SetWebhookDefTool(&builtin.WebhookDef{Store: st, Cfg: srv.cfg(), MaxDefinitionBytes: 131072, MaxDescriptionBytes: 8192})
 	bobs := seedTreeRun(t, st, "acme", "bob", "lead", "", true)
@@ -567,7 +575,7 @@ func TestMemberRunRouteCensus_NoRouteHandsAMemberAnotherUsersRun(t *testing.T) {
 	if _, err := srv.PublishChannel(op, connector.ChannelPublishRequest{Channel: "inbox", Scope: "user", ScopeID: "bob", Payload: json.RawMessage(`{"secret":"` + treeCanary + `"}`)}); err != nil {
 		t.Fatal(err)
 	}
-	sched, err := st.ScheduleDefCreate(ctx, store.ScheduleDefRow{Name: "bobs", Version: 1, TenantID: "acme",
+	sched, err := st.ScheduleDefCreate(ctx, store.ScheduleDefRow{DefID: "def_bobs", Name: "bobs", Version: 1, TenantID: "acme",
 		Definition: json.RawMessage(`{"agent":"writer","schedule":"0 6 * * *","tenant_id":"acme","user_id":"bob"}`)})
 	if err != nil {
 		t.Fatal(err)
@@ -579,7 +587,7 @@ func TestMemberRunRouteCensus_NoRouteHandsAMemberAnotherUsersRun(t *testing.T) {
 	expand := strings.NewReplacer(
 		"{run_id}", bobs.ID, "{agent_id}", bobs.AgentID, "{id}", bobs.SessionID,
 		"{user_id}", "bob", "{interrupt_id}", interrupt.InterruptID, "{path...}", "notes.txt",
-		"{def_id}", sched.DefID, "{name...}", "inbox", "{name}", "inbox", "{team}", "triage")
+		"{def_id}", sched.DefID, "{subject}", "bob", "{name...}", "inbox", "{name}", "inbox", "{team}", "triage")
 	for pattern, rt := range memberRunRoutes {
 		if !found[pattern] {
 			continue
@@ -785,7 +793,7 @@ func TestScheduleControls_AMemberReachesOnlyItsOwnSchedules(t *testing.T) {
 	seed := func(name, user string) string {
 		t.Helper()
 		row, err := srv.store.ScheduleDefCreate(ctx, store.ScheduleDefRow{
-			Name: name, Version: 1, TenantID: "acme",
+			DefID: "def_" + strings.ReplaceAll(name, "-", "_"), Name: name, Version: 1, TenantID: "acme",
 			Definition: json.RawMessage(`{"agent":"digest","schedule":"0 6 * * *","tenant_id":"acme","user_id":"` + user + `"}`),
 		})
 		if err != nil {

@@ -82,7 +82,9 @@ func TestScheduleDef_CapturesTheMostRestrictiveOfRunAndPrincipal(t *testing.T) {
 
 			res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"author-sched","overlay":{"agent":"job-search-batch","schedule":"0 9 * * 1","user_id":"alice"}}`))
 			checkBits(t, "create", c, res)
-			res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"author-sched","overlay":{"user_id":"bob"}}`))
+			// The fork changes the schedule, not whose runs it makes: a member
+			// (the restricted principal is alice) schedules runs only as itself.
+			res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"author-sched","overlay":{"schedule":"0 10 * * 1"}}`))
 			checkBits(t, "fork", c, res)
 		})
 	}
