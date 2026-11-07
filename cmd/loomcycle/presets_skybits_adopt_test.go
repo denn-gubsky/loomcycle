@@ -56,12 +56,15 @@ func TestSkybitsSync_AdoptsAnEarlierImportWithoutReimporting(t *testing.T) {
 		"a-doc":   seedDoc("a-doc", "Alpha plan", "/skybits/A/Alpha-plan"),
 		"a-sheet": seedDoc("a-sheet", "Budget", "/skybits/A/Budget"),
 		"a-pdf":   seedDoc("a-pdf", "Spec", "/skybits/_untagged/Spec"),
-		"g1":      seedDoc("g1", "Report", "/skybits/A/Report"),
+		"g2":      seedDoc("g2", "Old memo", "/skybits/A/Old-memo"),
 	}
 	row("a-doc", "doc", "Alpha plan", `["A"]`, "/skybits/A/Alpha-plan", "doc:r0", "s1", docs["a-doc"], "imported", "")
 	row("a-sheet", "spreadsheet", "Budget", `["A"]`, "/skybits/A/Budget", "sheet:r2", "s2", docs["a-sheet"], "reimported", "")
 	row("a-pdf", "file", "Spec", `[]`, "/skybits/_untagged/Spec", "file:v1", "s3", docs["a-pdf"], "unchanged", "")
-	row("g1", "doc", "Report", `["A"]`, "/skybits/A/Report", "doc:r1", "s4", docs["g1"], "imported", "")
+	// g1 is gone from Skybits and never had a document: only its row holds
+	// its name. g2 is gone too and has one.
+	row("g1", "canvas", "Report", `["A"]`, "/skybits/A/Report", "", "", "", "stub:canvas_not_supported", "")
+	row("g2", "doc", "Old memo", `["A"]`, "/skybits/A/Old-memo", "doc:r1", "s4", docs["g2"], "imported", "")
 	row("i-png", "file", "Photo", `[]`, "/skybits/_untagged/Photo", "file:v1", "", "", "stub:ocr_unavailable", "")
 	row("i-pptx", "file", "Deck", `[]`, "/skybits/_untagged/Deck", "file:v1", "", "", "skipped:deferred_pptx", "")
 	row("i-fail", "spreadsheet", "Stubborn", `[]`, "/skybits/_untagged/Stubborn", "", "", "", "failed", "The agent document service is unavailable; try again shortly")
@@ -135,11 +138,15 @@ func TestSkybitsSync_AdoptsAnEarlierImportWithoutReimporting(t *testing.T) {
 	if r := f.manifestRow("n1"); r["primary_path"] != "/skybits/A/Report-doc" || r["status"] != "imported" {
 		t.Errorf("new Report row = %v, want /skybits/A/Report-doc", r)
 	}
-	if f.docAt("/skybits/A/Report") != docs["g1"] {
-		t.Error("the removed item's name was taken")
+	if got := f.docAt("/skybits/A/Report"); got != "" {
+		t.Errorf("the removed item's name was taken by %s", got)
 	}
-	if r := f.manifestRow("g1"); r["source_status"] != "removed" {
-		t.Errorf("g1 = %v, want marked removed", r)
+	if r := f.manifestRow("g2"); r["source_status"] != "removed" {
+		t.Errorf("g2 = %v, want marked removed", r)
+	}
+	d := f.mustDoc(fmt.Sprintf(`{"op":"get_document","scope":"tenant","id":%q}`, docs["g2"]))
+	if prov, _ := d["provenance"].(map[string]any); prov["source_status"] != "removed" {
+		t.Errorf("g2's document provenance = %v, want source_status removed", prov)
 	}
 	for id, want := range map[string]string{"i-png": "imported", "i-pptx": "imported", "i-fail": "imported", "i-icon": "skipped:icon_artefact", "i-mp4": "stub:too_large"} {
 		if r := f.manifestRow(id); r["status"] != want {
