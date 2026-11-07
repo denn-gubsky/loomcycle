@@ -10,14 +10,7 @@
     "url": "git+https://github.com/denn-gubsky/loomcycle.git",
     "directory": "packages/bridge-slack"
   },
-  "keywords": [
-    "loomcycle",
-    "slack",
-    "bridge",
-    "bot",
-    "agent",
-    "ai"
-  ],
+  "keywords": ["loomcycle", "slack", "bridge", "bot", "agent", "ai"],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -28,16 +21,9 @@
   "bin": {
     "loomcycle-bridge-slack": "./dist/cli.js"
   },
-  "files": [
-    "dist",
-    "README.md"
-  ],
-  "publishConfig": {
-    "access": "public"
-  },
-  "engines": {
-    "node": ">=20"
-  },
+  "files": ["dist", "README.md"],
+  "publishConfig": { "access": "public" },
+  "engines": { "node": ">=20" },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build",
