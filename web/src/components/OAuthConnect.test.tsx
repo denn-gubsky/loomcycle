@@ -122,6 +122,23 @@ describe("OAuthConnect", () => {
     expect(s.starts()).toBe(2);
   });
 
+  it("a new code replaces one still waiting, and the old one's answer is never shown", async () => {
+    const s = steppedDeps(["OLD1-CODE", "NEW2-CODE"], [meta("connected", { connected_as: "old@example.com" })]);
+    const el = await mount(createElement(OAuthConnect, { meta: meta("pending_connect"), scope: "user", onChanged: () => {}, deps: s.deps }));
+    await act(async () => button(el, "Connect account").click());
+    await settle();
+    expect(el.querySelector("code.token-secret")?.textContent).toBe("OLD1-CODE");
+
+    await act(async () => button(el, "Get a new code").click());
+    await settle();
+    expect(el.querySelector("code.token-secret")?.textContent).toBe("NEW2-CODE");
+
+    await act(async () => s.tick()); // releases the first connect's wait
+    await settle();
+    expect(el.querySelector("code.token-secret")?.textContent).toBe("NEW2-CODE");
+    expect(el.textContent).not.toContain("old@example.com");
+  });
+
   it("asks before disconnecting, and does nothing when declined", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(meta("revoked")), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

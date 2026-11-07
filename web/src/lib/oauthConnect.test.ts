@@ -136,6 +136,19 @@ describe("runOAuthConnect", () => {
     expect(f.reads()).toBe(0);
   });
 
+  it("reports nothing from a status read that answers after a newer connect aborted it", async () => {
+    const ctl = new AbortController();
+    const f = fakeDeps(start(), [meta("connected", { connected_as: "old@example.com" })]);
+    const inner = f.deps.status;
+    f.deps.status = async (r) => {
+      const m = await inner(r);
+      ctl.abort();
+      return m;
+    };
+    const phases = await run(f.deps, ctl.signal);
+    expect(phases.map((p) => p.kind)).toEqual(["starting", "waiting"]);
+  });
+
   it("never offers a link that is not https", async () => {
     const f = fakeDeps(
       start({ verification_uri: "javascript:alert(1)", verification_uri_complete: "http://auth.example.com/x" }),

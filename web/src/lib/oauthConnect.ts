@@ -170,7 +170,6 @@ export async function runOAuthConnect(
     report({ kind: "failed", reason: messageOf(e) });
     return;
   }
-  if (signal.aborted) return;
   let interval = start.interval > 0 ? Math.min(start.interval, MAX_INTERVAL_S) : DEFAULT_INTERVAL_S;
   const expiresAt = deps.now() + Math.max(start.expires_in, 1) * 1000;
   report({
@@ -194,7 +193,6 @@ export async function runOAuthConnect(
       interval = Math.min(interval + SLOW_DOWN_STEP_S, MAX_INTERVAL_S);
       meta = { name: ref.name, scope: ref.scope, usage: "oauth", oauth: { resource: "", state: "pending_connect" } };
     }
-    if (signal.aborted) return;
     const o = meta.oauth;
     switch (o?.state) {
       case "connected":
