@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSee, grantOf, hasTenantScope, surfacesOf, TENANT_SCOPE } from "./visibility";
+import { canSee, grantOf, hasTenantScope, ownRunsOnly, surfacesOf, TENANT_SCOPE } from "./visibility";
 
 describe("canSee", () => {
   it("shows an `all` surface to every role, including a delegated user", () => {
@@ -77,5 +77,23 @@ describe("surfacesOf", () => {
     expect(surfacesOf({})).toBeUndefined();
     expect(surfacesOf(null)).toBeUndefined();
     expect(surfacesOf(undefined)).toBeUndefined();
+  });
+});
+
+describe("ownRunsOnly", () => {
+  it("pins a member, isolated or not, to its own runs", () => {
+    expect(ownRunsOnly({ is_admin: false, scopes: ["runs:create", "runs:read", "channel:publish", "channel:read"] })).toBe(true);
+    expect(ownRunsOnly({ is_admin: false, scopes: ["substrate:user"] })).toBe(true);
+  });
+
+  it("leaves an operator, an admin and open mode free to pick any user", () => {
+    expect(ownRunsOnly({ is_admin: false, scopes: [TENANT_SCOPE] })).toBe(false);
+    expect(ownRunsOnly({ is_admin: true, scopes: ["substrate:admin"] })).toBe(false);
+    expect(ownRunsOnly({ is_admin: true, open_mode: true, scopes: [] })).toBe(false);
+  });
+
+  it("decides nothing before the principal is known", () => {
+    expect(ownRunsOnly(undefined)).toBe(false);
+    expect(ownRunsOnly(null)).toBe(false);
   });
 });

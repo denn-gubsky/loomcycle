@@ -1,4 +1,4 @@
-import { hasTenantScope as principalHasTenantScope, surfacesOf } from "../lib/visibility";
+import { hasTenantScope as principalHasTenantScope, ownRunsOnly, surfacesOf } from "../lib/visibility";
 import { useEffect, useState } from "react";
 import { Link, Outlet, useOutletContext } from "react-router-dom";
 import { Moon, PanelLeftClose, PanelLeftOpen, Sun } from "lucide-react";
@@ -57,6 +57,8 @@ export default function Layout() {
   // RFC EZ §4: what the server says this principal may reach, page by page. Where
   // it answers, the nav and the settings menu follow it; the role is the fallback.
   const surfaces = surfacesOf(principal);
+  // A member sees only its own runs: no user picker, the workspace is its own.
+  const ownOnly = ownRunsOnly(principal);
 
   // Super-admin tenant-focus (?tenant=): "" = all tenants (admin's default
   // global view). A tenant principal can't set this — the backend forces
@@ -94,9 +96,13 @@ export default function Layout() {
           return;
         }
         setPrincipal(p);
-        // A tenant's workspace defaults to its own subject's runs so the
-        // runs view is populated immediately without picking a user.
-        if (!p.is_admin && !p.open_mode) {
+        // A member reads only its own runs, so its workspace IS its own
+        // subject: a user remembered from an earlier sign-in on this browser
+        // is replaced. A tenant operator's workspace defaults to its own
+        // subject's runs so the runs view is populated without picking a user.
+        if (ownRunsOnly(p)) {
+          setUserId(p.subject);
+        } else if (!p.is_admin && !p.open_mode) {
           setUserId((cur) => cur || p.subject);
         }
       })
@@ -279,6 +285,11 @@ export default function Layout() {
               is derived from runs, so a subject with no runs yet (or one whose
               documents the operator needs to reach) can only be typed. The
               "no user" row, or Enter on a blank field, clears it. */}
+          {ownOnly ? (
+            <span className="user-picker" title="You see your own runs and conversations">
+              <label>user</label> {principal?.subject}
+            </span>
+          ) : (
           <form
             className="user-picker"
             onSubmit={(e) => {
@@ -308,6 +319,7 @@ export default function Layout() {
               toggleLabel="Show known users"
             />
           </form>
+          )}
           {/* The account menu, rightmost, is rendered for EVERY role: it holds
               Log out, the only way out of a session. */}
           <AccountMenu
