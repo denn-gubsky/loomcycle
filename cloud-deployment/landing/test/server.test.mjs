@@ -1122,6 +1122,19 @@ describe("shared-tenant mode (LANDING_TENANT)", () => {
   });
 });
 
+describe("the static site", () => {
+  // The footer and the shared sign-up link privacy.html; express.static's
+  // extensions option also serves it at the shorter /privacy.
+  test("serves the privacy notice at /privacy and /privacy.html", async () => {
+    for (const p of ["/privacy", "/privacy.html"]) {
+      const r = await fetch(shared.base + p);
+      assert.equal(r.status, 200, p);
+      assert.match(r.headers.get("content-type") || "", /^text\/html/, p);
+      assert.match(await r.text(), /<title>Privacy · loomcycle\.cloud<\/title>/, p);
+    }
+  });
+});
+
 // Runs last (node:test runs top-level suites in order): everything above has
 // issued links and errors, so the landing's whole log is the evidence.
 describe("logging", () => {
