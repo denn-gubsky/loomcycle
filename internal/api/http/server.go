@@ -8522,8 +8522,8 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	// existence oracle). Super-admin / legacy / open mode see all.
 	run, err := s.tenantStore(r.Context()).GetRunByAgentID(r.Context(), agentID)
 	if err == nil && (!runOwnershipOK(r.Context(), run) || !s.allowlistReachesRow(r.Context(), run)) {
-		// The row carries another user's prompt, result and draft: an
-		// isolated member gets the same opaque 404 a missing run does, and so
+		// The row carries another user's prompt, result and draft: a
+		// member gets the same opaque 404 a missing run does, and so
 		// does a token limited to agents whose trees the run is outside.
 		err = &store.ErrNotFound{Kind: "run", ID: agentID}
 	}
@@ -8563,7 +8563,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Same gates as the agent read: tenantStore folds another tenant's run
-	// into ErrNotFound, and an isolated member reading another user's run
+	// into ErrNotFound, and a member reading another user's run
 	// gets that same opaque 404 — run ids are not secret.
 	run, err := s.tenantStore(r.Context()).GetRun(r.Context(), runID)
 	if err == nil && (!runOwnershipOK(r.Context(), run) || !s.allowlistReachesRow(r.Context(), run)) {
@@ -8657,7 +8657,7 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 	// missing run into an opaque 404 (mirrors the steer + compact
 	// run-mutations, which were migrated onto the accessor; cancel was the gap).
 	// admin / legacy / open see all tenants → unchanged.
-	// The tenant fold alone admits an isolated member to another user's run in
+	// The tenant fold alone admits a member to another user's run in
 	// its tenant, so the ownership rule every other run mutation applies folds
 	// that run into the same 404 — else the 200-vs-404 is also an oracle for
 	// another user's agent ids and how their runs ended.
@@ -8761,10 +8761,10 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, code, msg)
 		return
 	}
-	// RFC BX P2b: an isolated member sees only its OWN run metadata — another
-	// user_id yields an empty list (no cross-user enumeration), matching the
-	// session-plane confinement. Non-isolated principals keep the tenant view.
-	if s.isolatedCrossUser(r.Context(), userID) {
+	// A member (isolated or not) sees only its OWN runs — another user_id
+	// yields an empty list (no cross-user enumeration), matching the
+	// session-plane confinement. A tenant operator keeps the tenant view.
+	if s.otherUsersRuns(r.Context(), userID) {
 		writeJSON(w, http.StatusOK, map[string]any{"agents": []agentResponse{}})
 		return
 	}
@@ -8845,8 +8845,8 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 	// rows the caller may not see exist (a listing with nothing visible would
 	// read differently from a user with no runs). The cost is that such a
 	// caller whose own runs lie past the scan bound is not told so — the safe
-	// side of the trade. An isolated member's listing of another user never
-	// gets here (isolatedCrossUser above).
+	// side of the trade. A member's listing of another user never gets here
+	// (otherUsersRuns above).
 	if truncated && !tree.Restricted() && (allTenants || scopeTenant != "") {
 		resp["truncated"] = true
 	}
@@ -9229,7 +9229,7 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// missing) run both fold into the same opaque 404 (run_ids aren't secrets,
 	// so the gate must not become an existence oracle). Shared by the HTTP
 	// handler and the gRPC/MCP CompactRun — both carry the principal in ctx.
-	// An isolated member may compact only its own runs: the op makes a billed
+	// A member may compact only its own runs: the op makes a billed
 	// model call over the session's transcript and rewrites what the run's next
 	// turn sees, so another user's run gets the same 404 as a missing one.
 	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
@@ -9657,7 +9657,7 @@ func (s *Server) handleListRunInterrupts(w http.ResponseWriter, r *http.Request)
 	// cross-tenant or unknown run folds into *store.ErrNotFound, which we map
 	// to an empty list — indistinguishable from a real run with zero
 	// interrupts, so the listing can't be a cross-tenant existence oracle.
-	// An isolated member lists only its own runs' questions, and another
+	// A member lists only its own runs' questions, and another
 	// user's run reads as one with none.
 	if owns, err := s.callerOwnsRun(r.Context(), runID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -9705,8 +9705,9 @@ func (s *Server) handleListUserInterrupts(w http.ResponseWriter, r *http.Request
 	// store JOIN); super-admin / legacy / open mode see all. Without this a
 	// token could read another tenant's pending questions by guessing a
 	// user_id (user_ids are not secret). Mirrors handleListUsers' scoping.
-	// An isolated member's inbox is its own; another user's reads as empty.
-	if p, ok := auth.PrincipalFromContext(r.Context()); auth.IsIsolated(p, ok) && userID != p.Subject {
+	// A member's inbox (isolated or not) is its own; another user's reads as
+	// empty.
+	if s.otherUsersRuns(r.Context(), userID) {
 		writeJSON(w, http.StatusOK, map[string]any{"interrupts": []store.InterruptRow{}, "total": 0})
 		return
 	}

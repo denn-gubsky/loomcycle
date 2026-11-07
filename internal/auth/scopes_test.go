@@ -243,3 +243,36 @@ func TestOwnedRowVisible_ConfinesAnIsolatedMemberToItsOwnRows(t *testing.T) {
 		}
 	}
 }
+
+// A non-isolated member reads only its own rows too, and a row no user owns —
+// a tenant-level run an operator, a schedule or a webhook started — is
+// nobody's own: only an operator sees it. A member token with no subject owns
+// no row, the tenant-level ones included.
+func TestOwnedRowVisible_ConfinesEveryMemberToItsOwnRows(t *testing.T) {
+	scopes, err := GrantableUserScopes("tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := Principal{TenantID: "acme", Subject: "bob", Scopes: scopes}
+	isolated := Principal{TenantID: "acme", Subject: "bob", Scopes: []string{ScopeUser}}
+	tenantOp := Principal{TenantID: "acme", Subject: "op", Scopes: []string{ScopeTenant}}
+	noSubject := Principal{TenantID: "acme", Scopes: scopes}
+	for _, c := range []struct {
+		name         string
+		p            Principal
+		tenant, user string
+		want         bool
+	}{
+		{"member own row", member, "acme", "bob", true},
+		{"member other user", member, "acme", "alice", false},
+		{"member tenant-level row", member, "acme", "", false},
+		{"member other tenant", member, "evil", "bob", false},
+		{"isolated tenant-level row", isolated, "acme", "", false},
+		{"tenant op tenant-level row", tenantOp, "acme", "", true},
+		{"member with no subject, tenant-level row", noSubject, "acme", "", false},
+	} {
+		if got := OwnedRowVisible(c.p, true, c.tenant, c.user); got != c.want {
+			t.Errorf("%s: OwnedRowVisible = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

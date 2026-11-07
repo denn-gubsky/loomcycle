@@ -182,7 +182,7 @@ func (w *walkReviewMembers) of(walkRunID string) map[string]func(context.Context
 
 // liveBreakpointSet resolves the armed set for a run, or writes the refusal.
 //
-// A run the caller's tenant cannot see, one an isolated member does not own,
+// A run the caller's tenant cannot see, one a member does not own,
 // and a run with no walk in flight all fold into the SAME 404: run_ids are not secret (they are returned to callers
 // and shown in the UI), so the gate must not become an existence oracle.
 func (s *Server) liveBreakpointSet(w http.ResponseWriter, r *http.Request) (*breakpoints.Set, string, bool) {
@@ -201,7 +201,7 @@ func (s *Server) liveBreakpointSet(w http.ResponseWriter, r *http.Request) (*bre
 		return nil, "", false
 	}
 	if run.SessionID != "" {
-		// The tenant read does not confine an isolated member to its own runs;
+		// The tenant read does not confine a member to its own runs;
 		// the session gate does, as it does for the review verb and a walk's
 		// cancel. Disarming another user's walk would release their members
 		// held for review.

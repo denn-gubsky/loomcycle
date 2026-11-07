@@ -67,6 +67,8 @@ func (b *scriptedBackend) RunOnce(ctx context.Context, in runner.RunInput, cb ru
 		ID:         "run-" + in.AgentID,
 		AgentID:    in.AgentID,
 		SessionID:  "sess-" + in.AgentID,
+		TenantID:   in.TenantID,
+		UserID:     in.UserID,
 		Status:     status,
 		StopReason: detail,
 	}

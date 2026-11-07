@@ -39,13 +39,23 @@ const maxChannelReleaseCount = 1000
 // and validates `scope_id` shape. Channel CRUD only supports global +
 // user; agent scope isn't reachable from an HTTP boundary (the agent
 // is not present). Returns ErrChannelScopeInvalid for any other value.
-func resolveChannelScope(scopeStr, scopeID string) (store.MemoryScope, string, error) {
+//
+// A user-scoped channel is that user's own data: a member (auth.OwnRowsOnly,
+// isolated or not) reaches only its own subject's, as the per-user HTTP routes
+// and the gRPC channel RPCs already hold it. Another user's reads as a channel
+// that is not declared, so the refusal is no existence oracle. A tenant
+// operator reaches every user's channel of its tenant (the store confines the
+// tenant), an admin every tenant's.
+func resolveChannelScope(ctx context.Context, scopeStr, scopeID string) (store.MemoryScope, string, error) {
 	switch scopeStr {
 	case "global", "":
 		return store.MemoryScopeGlobal, "", nil
 	case "user":
 		if scopeID == "" {
 			return "", "", fmt.Errorf("%w: scope=user requires scope_id", connector.ErrChannelScopeInvalid)
+		}
+		if p, ok := auth.PrincipalFromContext(ctx); auth.OwnRowsOnly(p, ok) && scopeID != p.Subject {
+			return "", "", fmt.Errorf("%w: no such channel", connector.ErrChannelNotDeclared)
 		}
 		return store.MemoryScopeUser, scopeID, nil
 	case "tenant":
@@ -129,7 +139,7 @@ func (s *Server) PublishChannel(ctx context.Context, req connector.ChannelPublis
 		return connector.ChannelPublishResult{}, err
 	}
 
-	scope, scopeID, err := resolveChannelScope(req.Scope, req.ScopeID)
+	scope, scopeID, err := resolveChannelScope(ctx, req.Scope, req.ScopeID)
 	if err != nil {
 		return connector.ChannelPublishResult{}, err
 	}
@@ -248,7 +258,7 @@ func (s *Server) ReleaseChannel(ctx context.Context, req connector.ChannelReleas
 	if _, err := s.requireChannelDeclared(ctx, req.Channel); err != nil {
 		return connector.ChannelReleaseResult{}, err
 	}
-	scope, scopeID, err := resolveChannelScope(req.Scope, req.ScopeID)
+	scope, scopeID, err := resolveChannelScope(ctx, req.Scope, req.ScopeID)
 	if err != nil {
 		return connector.ChannelReleaseResult{}, err
 	}
@@ -308,7 +318,7 @@ func (s *Server) SubscribeChannel(ctx context.Context, req connector.ChannelSubs
 	if _, err := s.requireChannelDeclared(ctx, req.Channel); err != nil {
 		return connector.ChannelSubscribeResult{}, err
 	}
-	scope, scopeID, err := resolveChannelScope(req.Scope, req.ScopeID)
+	scope, scopeID, err := resolveChannelScope(ctx, req.Scope, req.ScopeID)
 	if err != nil {
 		return connector.ChannelSubscribeResult{}, err
 	}
@@ -403,7 +413,7 @@ func (s *Server) PeekChannel(ctx context.Context, req connector.ChannelPeekReque
 	if _, err := s.requireChannelDeclared(ctx, req.Channel); err != nil {
 		return connector.ChannelPeekResult{}, err
 	}
-	scope, scopeID, err := resolveChannelScope(req.Scope, req.ScopeID)
+	scope, scopeID, err := resolveChannelScope(ctx, req.Scope, req.ScopeID)
 	if err != nil {
 		return connector.ChannelPeekResult{}, err
 	}
@@ -454,7 +464,7 @@ func (s *Server) AckChannel(ctx context.Context, req connector.ChannelAckRequest
 	if _, err := s.requireChannelDeclared(ctx, req.Channel); err != nil {
 		return connector.ChannelAckResult{}, err
 	}
-	scope, scopeID, err := resolveChannelScope(req.Scope, req.ScopeID)
+	scope, scopeID, err := resolveChannelScope(ctx, req.Scope, req.ScopeID)
 	if err != nil {
 		return connector.ChannelAckResult{}, err
 	}
@@ -498,7 +508,7 @@ func (s *Server) BroadcastChannels(ctx context.Context, req connector.ChannelBro
 	if cap := s.cfg().Env.ChannelsMaxValueBytes; cap > 0 && len(req.Payload) > cap {
 		return connector.ChannelBroadcastResult{}, fmt.Errorf("broadcast: payload (%d bytes) exceeds max %d", len(req.Payload), cap)
 	}
-	scope, scopeID, err := resolveChannelScope(req.Scope, req.ScopeID)
+	scope, scopeID, err := resolveChannelScope(ctx, req.Scope, req.ScopeID)
 	if err != nil {
 		return connector.ChannelBroadcastResult{}, err
 	}
@@ -595,7 +605,7 @@ func (s *Server) AwaitChannels(ctx context.Context, req connector.ChannelAwaitRe
 	if mode == "at_least" && req.N <= 0 {
 		return connector.ChannelAwaitResult{}, fmt.Errorf("await: mode=at_least requires n > 0")
 	}
-	scope, scopeID, err := resolveChannelScope(req.Scope, req.ScopeID)
+	scope, scopeID, err := resolveChannelScope(ctx, req.Scope, req.ScopeID)
 	if err != nil {
 		return connector.ChannelAwaitResult{}, err
 	}

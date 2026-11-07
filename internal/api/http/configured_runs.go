@@ -278,7 +278,7 @@ func (s *Server) agentIDTaken(ctx context.Context, agentID string) (bool, error)
 
 // configuredRunCore resolves a run id for the draft operations under the same
 // gates as every other run read: another tenant's run is the opaque 404 a
-// missing one gets, and so is another user's run for an isolated member. A run
+// missing one gets, and so is another user's run for a member. A run
 // that is visible but not a draft is a 409.
 func (s *Server) configuredRunCore(ctx context.Context, runID string) (store.Run, error) {
 	if !validIdent(runID) {

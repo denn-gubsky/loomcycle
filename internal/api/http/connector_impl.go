@@ -550,7 +550,7 @@ func (s *Server) CancelRun(ctx context.Context, agentID, reason string) (connect
 	// A cancel keyed only by agent_id must not reach another tenant's run (ids
 	// are not secret; cluster cancel broadcasts). tenantStore folds a
 	// cross-tenant/missing run into an opaque ErrNotFound; open/legacy/admin see
-	// all tenants so behaviour is unchanged for them. An isolated member is
+	// all tenants so behaviour is unchanged for them. A member is
 	// confined to its own runs, as on HTTP: another user's run is the same
 	// ErrNotFound, never a cancel and never an AlreadyEnded answer.
 	if s.store != nil {
@@ -666,10 +666,10 @@ func (s *Server) ListRuns(ctx context.Context, filter connector.ListRunsFilter) 
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	// An isolated member sees only its OWN runs: another user id is an empty
-	// list, the same answer HTTP GET /v1/users/{user_id}/agents gives, so the
-	// listing is no cross-user enumeration.
-	if filter.UserID != "" && s.isolatedCrossUser(ctx, filter.UserID) {
+	// A member (isolated or not) sees only its OWN runs: another user id is an
+	// empty list, the same answer HTTP GET /v1/users/{user_id}/agents gives, so
+	// the listing is no cross-user enumeration.
+	if filter.UserID != "" && s.otherUsersRuns(ctx, filter.UserID) {
 		return []connector.Run{}, nil
 	}
 	// User ids are only unique within a tenant, so the tenant goes into the
@@ -1684,7 +1684,7 @@ func (s *Server) InterruptionResolve(ctx context.Context, req connector.Interrup
 	// in the caller's tenant, else resolving it steers ANOTHER tenant's paused
 	// run. Backs the MCP interruption_resolve tool (principal-bearing ctx). The
 	// row.RunID==req.RunID check above only blocks retargeting within a tenant.
-	// An isolated member answers only its own runs' questions (callerOwnsRun),
+	// A member answers only its own runs' questions (callerOwnsRun),
 	// with the opaque not-found a missing run gets.
 	if owns, err := s.callerOwnsRun(ctx, row.RunID); err != nil {
 		return connector.InterruptionResolveResult{}, err

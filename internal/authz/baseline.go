@@ -148,8 +148,10 @@ func Baselines() map[string]ACL {
 				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"credential:tenant:*"}},
 				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"evaluation:*"}},
 				// delete: a member token granted runs:delete deletes run trees;
-				// the scope stays the ceiling for one that was not.
-				{Effect: Allow, Actions: []string{"read", "steer", "cancel", "compact", "retune", "review", "delete"}, Resources: []string{"run:own", "run:tenant"}},
+				// the scope stays the ceiling for one that was not. run:own only:
+				// a member reads and acts on the runs it started, never a
+				// colleague's or a tenant-level one (auth.OwnedRowVisible).
+				{Effect: Allow, Actions: []string{"read", "steer", "cancel", "compact", "retune", "review", "delete"}, Resources: []string{"run:own"}},
 				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"principal:user:*"}},
 				selfTokenRule,
 				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"runtime:limits", "runtime:retention", "runtime:usage", "runtime:routing", "runtime:events"}},

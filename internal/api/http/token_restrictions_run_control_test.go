@@ -22,22 +22,29 @@ import (
 // parentRunID makes it a sub-run of that run.
 func seedLiveRun(t *testing.T, srv *Server, st store.Store, agent, agentID, parentRunID string) (runID string, steered <-chan steer.Message) {
 	t.Helper()
+	return seedLiveRunAs(t, srv, st, "dev", agent, agentID, parentRunID)
+}
+
+// seedLiveRunAs is seedLiveRun for a run of the given user: a member steers,
+// cancels and answers only its own runs.
+func seedLiveRunAs(t *testing.T, srv *Server, st store.Store, user, agent, agentID, parentRunID string) (runID string, steered <-chan steer.Message) {
+	t.Helper()
 	ctx := context.Background()
-	sess, err := st.CreateSession(ctx, "acme", agent, "dev")
+	sess, err := st.CreateSession(ctx, "acme", agent, user)
 	if err != nil {
 		t.Fatal(err)
 	}
 	run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{
-		AgentID: agentID, UserID: "dev", TenantID: "acme", ParentRunID: parentRunID,
+		AgentID: agentID, UserID: user, TenantID: "acme", ParentRunID: parentRunID,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	q, dereg := srv.steerReg.Register(steer.Entry{RunID: run.ID, AgentID: agentID, SessionID: sess.ID, UserID: "dev"})
+	q, dereg := srv.steerReg.Register(steer.Entry{RunID: run.ID, AgentID: agentID, SessionID: sess.ID, UserID: user})
 	t.Cleanup(dereg)
-	registerLiveCancel(t, srv, run.ID, agentID, "dev")
+	registerLiveCancel(t, srv, run.ID, agentID, user)
 	if _, err := st.InterruptCreate(ctx, store.InterruptRow{
-		InterruptID: "intr_" + agentID, RunID: run.ID, UserID: "dev", Question: "ok?", CreatedAt: time.Now(),
+		InterruptID: "intr_" + agentID, RunID: run.ID, UserID: user, Question: "ok?", CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
 	}

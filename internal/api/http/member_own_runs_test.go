@@ -1,0 +1,837 @@
+package http
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/store"
+	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+)
+
+// A person reads only their own conversations. A tenant member — isolated or
+// not — sees the runs and sessions it started and nothing else in its tenant:
+// not a colleague's, and not a tenant-level run no user started (an operator's,
+// a schedule's, a webhook's). A tenant operator sees every run of its tenant,
+// an admin every run.
+
+// tenantMemberCtx is a non-isolated member: the scopes a tenant-mode user's
+// token is minted with.
+func tenantMemberCtx(t *testing.T, tenant, subject string) context.Context {
+	t.Helper()
+	scopes, err := auth.GrantableUserScopes("tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := auth.Principal{TenantID: tenant, Subject: subject, Scopes: scopes}
+	if auth.IsIsolated(p, true) || auth.HasScope(p.Scopes, auth.ScopeTenant) {
+		t.Fatal("a tenant-mode member must be neither isolated nor a tenant operator for this test to mean anything")
+	}
+	return auth.WithPrincipal(context.Background(), p)
+}
+
+// ownRunsFixture seeds four finished runs, each with a prompt, an answer, a
+// transcript event and a pending question: alice's and bob's in acme, a
+// tenant-level run in acme that no user started, and carol's in globex.
+type ownRunsFixture struct {
+	srv  *Server
+	runs map[string]store.Run // by row name
+}
+
+var ownRunRows = []struct{ name, tenant, user string }{
+	{"alice", "acme", "alice"},
+	{"bob", "acme", "bob"},
+	{"tenant-level", "acme", ""},
+	{"globex", "globex", "carol"},
+}
+
+func newOwnRunsFixture(t *testing.T) *ownRunsFixture {
+	t.Helper()
+	srv, cleanup := channelFanFixture(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+	f := &ownRunsFixture{srv: srv, runs: map[string]store.Run{}}
+	for _, row := range ownRunRows {
+		run := seedTenantRun(t, srv.store, row.tenant, row.user, "a_"+strings.ReplaceAll(row.name, "-", "_"))
+		srv.makeRecordingEmit(ctx, run.ID, tools.RunIdentityValue{}, run.SessionID, runStateMeta{}, func(providers.Event) {})(
+			snapshotEvent("system", "secret plan of "+row.name))
+		if err := srv.store.FinishRun(ctx, run.ID, store.RunCompleted, "end_turn",
+			store.Usage{Result: []byte(`{"final_text":"answer for ` + row.name + `"}`)}, ""); err != nil {
+			t.Fatalf("FinishRun: %v", err)
+		}
+		if _, err := srv.store.InterruptCreate(ctx, store.InterruptRow{
+			InterruptID: store.MintInterruptID(time.Now()), RunID: run.ID, UserID: row.user,
+			Question: "question of " + row.name, CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("InterruptCreate: %v", err)
+		}
+		f.runs[row.name] = run
+	}
+	return f
+}
+
+// ownRunCallers names each caller and the rows it must see.
+func ownRunCallers(t *testing.T) []struct {
+	name string
+	ctx  context.Context
+	sees map[string]bool
+} {
+	return []struct {
+		name string
+		ctx  context.Context
+		sees map[string]bool
+	}{
+		{"member", tenantMemberCtx(t, "acme", "bob"), map[string]bool{"bob": true}},
+		{"isolated member", tenantPrincipalCtx("acme", "bob", auth.ScopeUser), map[string]bool{"bob": true}},
+		{"tenant operator", tenantOperatorCtx("acme"), map[string]bool{"alice": true, "bob": true, "tenant-level": true}},
+		{"another tenant's operator", tenantOperatorCtx("globex"), map[string]bool{"globex": true}},
+		{"admin", adminCtx(""), map[string]bool{"alice": true, "bob": true, "tenant-level": true, "globex": true}},
+	}
+}
+
+func TestRunReads_AMemberReadsOnlyItsOwnRuns(t *testing.T) {
+	f := newOwnRunsFixture(t)
+	srv := f.srv
+	serve := func(ctx context.Context, h http.HandlerFunc, path string, values map[string]string) (int, string) {
+		req := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
+		for k, v := range values {
+			req.SetPathValue(k, v)
+		}
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+	totalOf := func(body string) int {
+		var b struct {
+			Total int `json:"total"`
+		}
+		_ = json.Unmarshal([]byte(body), &b)
+		return b.Total
+	}
+	for _, c := range ownRunCallers(t) {
+		for _, row := range ownRunRows {
+			run, want := f.runs[row.name], c.sees[row.name]
+			check := func(what string, got bool, detail string) {
+				t.Helper()
+				if got != want {
+					t.Errorf("%s reading %s's run through %s: visible=%v, want %v (%s)", c.name, row.name, what, got, want, detail)
+				}
+			}
+
+			code, body := serve(c.ctx, srv.handleGetAgent, "/v1/agents/"+run.AgentID, map[string]string{"agent_id": run.AgentID})
+			check("GET /v1/agents/{agent_id}", code == http.StatusOK && strings.Contains(body, "answer for "+row.name), body)
+			code, body = serve(c.ctx, srv.handleGetRun, "/v1/runs/"+run.ID, map[string]string{"run_id": run.ID})
+			check("GET /v1/runs/{run_id}", code == http.StatusOK && strings.Contains(body, "answer for "+row.name), body)
+			code, body = getPrompt(t, srv, c.ctx, run.ID)
+			check("GET /v1/runs/{run_id}/prompt", code == http.StatusOK && strings.Contains(body, "secret plan of "+row.name), body)
+			code, body = serve(c.ctx, srv.handleRunStream, "/v1/runs/"+run.ID+"/stream", map[string]string{"run_id": run.ID})
+			check("GET /v1/runs/{run_id}/stream", code == http.StatusOK, body)
+			code, body = serve(c.ctx, srv.handleTranscript, "/v1/sessions/"+run.SessionID+"/transcript", map[string]string{"id": run.SessionID})
+			check("GET /v1/sessions/{id}/transcript", code == http.StatusOK, body)
+			code, body = serve(c.ctx, srv.handleListRunInterrupts, "/v1/runs/"+run.ID+"/interrupts?status=all", map[string]string{"run_id": run.ID})
+			check("GET /v1/runs/{run_id}/interrupts", code == http.StatusOK && totalOf(body) == 1, body)
+
+			// The connector backs gRPC and the MCP tools.
+			got, err := srv.GetRun(c.ctx, run.AgentID)
+			check("connector GetRun", err == nil && strings.Contains(string(got.Result), "answer for "+row.name), errString(err))
+			err = srv.StreamRunEvents(c.ctx, run.ID, 0, func(providers.Event) error { return nil })
+			check("connector StreamRunEvents", err == nil, errString(err))
+			if err != nil && !errors.Is(err, connector.ErrRunNotInFlight) {
+				t.Errorf("%s streaming %s's run: %v, want the opaque not-in-flight", c.name, row.name, err)
+			}
+		}
+	}
+}
+
+func TestRunLists_AMemberListsOnlyItsOwnRuns(t *testing.T) {
+	f := newOwnRunsFixture(t)
+	srv := f.srv
+	listAgents := func(ctx context.Context, user string) []string {
+		t.Helper()
+		// status=all: the fixture's runs have finished, and the default lists
+		// only running ones.
+		req := httptest.NewRequest(http.MethodGet, "/v1/users/"+user+"/agents?status=all", nil).WithContext(ctx)
+		req.SetPathValue("user_id", user)
+		rec := httptest.NewRecorder()
+		srv.handleListUserAgents(rec, req)
+		var body struct {
+			Agents []agentResponse `json:"agents"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != http.StatusOK {
+			t.Fatalf("GET /v1/users/%s/agents = %d %s", user, rec.Code, rec.Body.String())
+		}
+		var ids []string
+		for _, a := range body.Agents {
+			ids = append(ids, a.AgentID)
+		}
+		return ids
+	}
+	userInterrupts := func(ctx context.Context, user string) int {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/v1/users/"+user+"/interrupts?status=all", nil).WithContext(ctx)
+		req.SetPathValue("user_id", user)
+		rec := httptest.NewRecorder()
+		srv.handleListUserInterrupts(rec, req)
+		var body struct {
+			Total int `json:"total"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return body.Total
+	}
+	streamCode := func(ctx context.Context, user string) int {
+		t.Helper()
+		// Only a refused stream is driven: an admitted one holds the request
+		// open, and this server has no run-state bus, so it answers 503 at once.
+		req := httptest.NewRequest(http.MethodGet, "/v1/users/"+user+"/agents/stream", nil).WithContext(ctx)
+		req.SetPathValue("user_id", user)
+		rec := httptest.NewRecorder()
+		srv.handleStreamUserAgents(rec, req)
+		return rec.Code
+	}
+	connectorList := func(ctx context.Context, user string) int {
+		t.Helper()
+		rows, err := srv.ListRuns(ctx, connector.ListRunsFilter{UserID: user})
+		if err != nil {
+			t.Fatalf("connector ListRuns(%s): %v", user, err)
+		}
+		return len(rows)
+	}
+
+	for _, member := range []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"member", tenantMemberCtx(t, "acme", "bob")},
+		{"isolated member", tenantPrincipalCtx("acme", "bob", auth.ScopeUser)},
+	} {
+		if got := listAgents(member.ctx, "alice"); len(got) != 0 {
+			t.Errorf("%s listing alice's runs = %v, want none", member.name, got)
+		}
+		if got := listAgents(member.ctx, "bob"); len(got) != 1 || got[0] != f.runs["bob"].AgentID {
+			t.Errorf("%s listing its own runs = %v, want [%s]", member.name, got, f.runs["bob"].AgentID)
+		}
+		if n := userInterrupts(member.ctx, "alice"); n != 0 {
+			t.Errorf("%s listing alice's questions = %d, want none", member.name, n)
+		}
+		if n := userInterrupts(member.ctx, "bob"); n != 1 {
+			t.Errorf("%s listing its own questions = %d, want 1", member.name, n)
+		}
+		if code := streamCode(member.ctx, "alice"); code != http.StatusNotFound {
+			t.Errorf("%s streaming alice's run states = %d, want the opaque 404", member.name, code)
+		}
+		if n := connectorList(member.ctx, "alice"); n != 0 {
+			t.Errorf("%s listing alice's runs through the connector (MCP list_runs) = %d rows, want none", member.name, n)
+		}
+		if n := connectorList(member.ctx, "bob"); n != 1 {
+			t.Errorf("%s listing its own runs through the connector = %d rows, want 1", member.name, n)
+		}
+	}
+
+	op := tenantOperatorCtx("acme")
+	if got := listAgents(op, "alice"); len(got) != 1 {
+		t.Errorf("tenant operator listing alice's runs = %v, want her run", got)
+	}
+	if n := userInterrupts(op, "alice"); n != 1 {
+		t.Errorf("tenant operator listing alice's questions = %d, want 1", n)
+	}
+	if code := streamCode(op, "alice"); code == http.StatusNotFound {
+		t.Error("tenant operator streaming alice's run states got the member's 404")
+	}
+	if n := connectorList(op, "alice"); n != 1 {
+		t.Errorf("tenant operator listing alice's runs through the connector = %d rows, want 1", n)
+	}
+	if got := listAgents(tenantOperatorCtx("globex"), "alice"); len(got) != 0 {
+		t.Errorf("another tenant's operator listing acme's alice = %v, want none", got)
+	}
+}
+
+// The audit view is every event of the caller's tenant: the transcripts of
+// every run. A member's view holds only its own sessions' events.
+func TestListEvents_AMemberSeesOnlyItsOwnSessionsEvents(t *testing.T) {
+	f := newOwnRunsFixture(t)
+	srv := f.srv
+	sessions := func(ctx context.Context) map[string]bool {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/v1/_events?limit=500", nil).WithContext(ctx)
+		rec := httptest.NewRecorder()
+		srv.handleListEvents(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /v1/_events = %d %s", rec.Code, rec.Body.String())
+		}
+		var body listEventsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		seen := map[string]bool{}
+		for _, ev := range body.Events {
+			seen[ev.SessionID] = true
+		}
+		return seen
+	}
+	for _, c := range ownRunCallers(t) {
+		if c.name == "isolated member" {
+			continue // the route gate refuses an isolated member before the handler
+		}
+		got := sessions(c.ctx)
+		for _, row := range ownRunRows {
+			if want := c.sees[row.name]; got[f.runs[row.name].SessionID] != want {
+				t.Errorf("%s: events of %s's session visible=%v, want %v", c.name, row.name, !want, want)
+			}
+		}
+	}
+}
+
+// Acting on a run follows reading it: a member cancels, compacts and answers
+// the questions of its own runs only, and another user's or a tenant-level run
+// answers as an unknown id does. A tenant operator acts on every run of its
+// tenant.
+func TestRunActions_AMemberActsOnlyOnItsOwnRuns(t *testing.T) {
+	t.Run("cancel", func(t *testing.T) {
+		s, st := tokenAuthServer(t, "")
+		aliceLive := registerLiveCancel(t, s, seedRunInTenant(t, st, "acme", "alice", "a_alice"), "a_alice", "alice")
+		tenantLive := registerLiveCancel(t, s, seedRunInTenant(t, st, "acme", "", "a_tenant"), "a_tenant", "")
+		bobLive := registerLiveCancel(t, s, seedRunInTenant(t, st, "acme", "bob", "a_bob"), "a_bob", "bob")
+		bob := tenantMemberCtx(t, "acme", "bob")
+
+		cancelAs := func(ctx context.Context, agentID string) (int, string) {
+			r := httptest.NewRequest(http.MethodPost, "/v1/agents/"+agentID+"/cancel", nil)
+			r.SetPathValue("agent_id", agentID)
+			rr := httptest.NewRecorder()
+			s.handleCancelAgent(rr, r.WithContext(ctx))
+			return rr.Code, rr.Body.String()
+		}
+		ghostCode, ghostBody := cancelAs(bob, "a_ghost")
+		for _, id := range []string{"a_alice", "a_tenant"} {
+			code, body := cancelAs(bob, id)
+			if want := strings.ReplaceAll(ghostBody, "a_ghost", id); code != ghostCode || body != want {
+				t.Errorf("member cancelling %s over HTTP = %d %q, want the unknown-id reply %d %q", id, code, body, ghostCode, want)
+			}
+			if _, err := s.CancelRun(bob, id, ""); err == nil {
+				t.Errorf("member cancelling %s through the connector (gRPC CancelAgent, MCP cancel_run) succeeded", id)
+			}
+		}
+		if aliceLive() || tenantLive() {
+			t.Fatal("a member cancelled a run it did not start")
+		}
+		if code, body := cancelAs(bob, "a_bob"); code != http.StatusOK || !bobLive() {
+			t.Errorf("member cancelling its own run = %d %s, want 200 and cancelled", code, body)
+		}
+		if code, body := cancelAs(tenantOperatorCtx("acme"), "a_tenant"); code != http.StatusOK || !tenantLive() {
+			t.Errorf("tenant operator cancelling a tenant-level run = %d %s, want 200 and cancelled", code, body)
+		}
+	})
+
+	t.Run("compact", func(t *testing.T) {
+		srv, prov := compactFixture(t)
+		aliceSess, aliceRun := seedTenantConversation(t, srv, "acme", "alice", "a_alice")
+		bobSess, bobRun := seedTenantConversation(t, srv, "acme", "bob", "a_bob")
+		bob := tenantMemberCtx(t, "acme", "bob")
+		compactAs := func(ctx context.Context, runID string) (int, string) {
+			r := httptest.NewRequest(http.MethodPost, "/v1/runs/"+runID+"/compact", strings.NewReader(`{}`))
+			r.SetPathValue("run_id", runID)
+			rr := httptest.NewRecorder()
+			srv.handleCompactRun(rr, r.WithContext(ctx))
+			return rr.Code, rr.Body.String()
+		}
+		ghostCode, ghostBody := compactAs(bob, "run_ghost")
+		if code, body := compactAs(bob, aliceRun); code != ghostCode || body != ghostBody {
+			t.Errorf("member compacting alice's run = %d %q, want the unknown-id reply %d %q", code, body, ghostCode, ghostBody)
+		}
+		if _, err := srv.CompactRun(bob, aliceRun); err == nil {
+			t.Error("member compacting alice's run through the connector (gRPC CompactRun, MCP compact_run) succeeded")
+		}
+		if prov.calls.Load() != 0 || compactionMarkers(t, srv, aliceSess) != 0 {
+			t.Fatal("a member compacted another user's run")
+		}
+		if code, body := compactAs(bob, bobRun); code != http.StatusOK || compactionMarkers(t, srv, bobSess) != 1 {
+			t.Errorf("member compacting its own run = %d %s, want 200 and a marker", code, body)
+		}
+	})
+
+	t.Run("answer a question", func(t *testing.T) {
+		f := newOwnRunsFixture(t)
+		srv := f.srv
+		bob := tenantMemberCtx(t, "acme", "bob")
+		for _, name := range []string{"alice", "tenant-level"} {
+			rows, err := srv.store.InterruptListByRun(context.Background(), f.runs[name].ID, "")
+			if err != nil || len(rows) != 1 {
+				t.Fatalf("InterruptListByRun(%s) = %v, %v", name, rows, err)
+			}
+			_, err = srv.InterruptionResolve(bob, connector.InterruptionResolveRequest{
+				RunID: f.runs[name].ID, InterruptID: rows[0].InterruptID, Answer: "yes",
+			})
+			var nf *store.ErrNotFound
+			if !errors.As(err, &nf) {
+				t.Errorf("member answering %s's question (MCP interruption_resolve) = %v, want the opaque not-found", name, err)
+			}
+		}
+	})
+}
+
+// memberRoute is how a member's request for ANOTHER user's conversation on one
+// route is answered. class is "hidden" (refused: an opaque 404, or the 4xx the
+// route gives what it cannot address), "empty" (200 with none of that user's
+// rows) or "shared" (a definition or the channel's global layer, not any
+// user's messages or runs: only the content check applies). body and query are what the request carries, when the route takes
+// its target from them rather than from the path.
+type memberRoute struct {
+	class string
+	body  string
+	query string
+}
+
+// Bodies the census sends where the target is in the body.
+const (
+	censusUserChannelBody = `{"scope":"user","scope_id":"bob","channels":["inbox"],"payload":{"forged":true},"cursor":"cur_0","count":1,"max_messages":10}`
+	censusScheduleAsBob   = `{"op":"create","name":"as-bob","overlay":{"agent":"writer","schedule":"0 6 * * *","user_id":"bob"}}`
+	censusWebhookAsAnyone = `{"op":"create","name":"as-anyone","overlay":{"enabled":true,"delivery":"spawn","agent":"writer","auth":{"signing_secret_env":"LOOMCYCLE_S"},"payload_mapping":{"user_id":"$.user"}}}`
+	censusUserChannelQS   = "?scope=user&scope_id=bob"
+)
+
+// memberRunRoutes classifies every HTTP route that addresses a run, a
+// session, a user's runs, a user's channel or a definition that carries the
+// user its runs execute as. The census below derives the route list from the
+// mux registrations in every file of the package, so a route added without a
+// row here fails it.
+var memberRunRoutes = map[string]memberRoute{
+	"DELETE /v1/runs/{run_id}":                                 {class: "hidden"},
+	"DELETE /v1/runs/{run_id}/tree":                            {class: "hidden"},
+	"DELETE /v1/sessions/{id}":                                 {class: "hidden"},
+	"GET /v1/_events":                                          {class: "empty"},
+	"GET /v1/_metrics/runs/{run_id}":                           {class: "hidden"}, // operator-admin route
+	"GET /v1/_resident":                                        {class: "empty"},
+	"GET /v1/agents/{agent_id}":                                {class: "hidden"},
+	"GET /v1/runs":                                             {class: "hidden", query: "?parent_run_id={run_id}"},
+	"GET /v1/runs/{run_id}":                                    {class: "hidden"},
+	"GET /v1/runs/{run_id}/breakpoints":                        {class: "hidden"},
+	"GET /v1/runs/{run_id}/config":                             {class: "hidden"},
+	"GET /v1/runs/{run_id}/effective-config":                   {class: "hidden"},
+	"GET /v1/runs/{run_id}/inbox/{path...}":                    {class: "hidden"},
+	"GET /v1/runs/{run_id}/interrupts":                         {class: "empty"},
+	"GET /v1/runs/{run_id}/prompt":                             {class: "hidden"},
+	"GET /v1/runs/{run_id}/stream":                             {class: "hidden"},
+	"GET /v1/sessions/{id}/transcript":                         {class: "hidden"},
+	"GET /v1/users/{user_id}/agents":                           {class: "empty"},
+	"GET /v1/users/{user_id}/agents/stream":                    {class: "hidden"},
+	"GET /v1/users/{user_id}/interrupts":                       {class: "empty"},
+	"GET /v1/users/{user_id}/channels/{name}/peek":             {class: "hidden"},
+	"PATCH /v1/runs/{run_id}":                                  {class: "hidden"},
+	"POST /v1/_resident/{run_id}/cancel":                       {class: "hidden"},
+	"POST /v1/_resident/{run_id}/close":                        {class: "hidden"},
+	"POST /v1/agents/{agent_id}/cancel":                        {class: "hidden"},
+	"POST /v1/runs/{run_id}/cancel":                            {class: "hidden"},
+	"POST /v1/runs/{run_id}/compact":                           {class: "hidden"},
+	"POST /v1/runs/{run_id}/file":                              {class: "hidden"},
+	"POST /v1/runs/{run_id}/input":                             {class: "hidden"},
+	"POST /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve": {class: "hidden"},
+	"POST /v1/runs/{run_id}/retune":                            {class: "hidden"},
+	"POST /v1/runs/{run_id}/review":                            {class: "hidden"},
+	"POST /v1/runs/{run_id}/start":                             {class: "hidden"},
+	"POST /v1/sessions/{id}/messages":                          {class: "hidden"},
+	"POST /v1/sessions/{id}/replay":                            {class: "hidden"},
+	"POST /v1/users/{user_id}/channels/{name}/ack":             {class: "hidden", body: censusUserChannelBody},
+	"POST /v1/users/{user_id}/channels/{name}/publish":         {class: "hidden", body: censusUserChannelBody},
+	"POST /v1/users/{user_id}/channels/{name}/subscribe":       {class: "hidden", body: censusUserChannelBody},
+	"PUT /v1/runs/{run_id}/breakpoints":                        {class: "hidden"},
+	// Channels: a user-scoped channel's messages are each user's own.
+	"GET /v1/_channels/{name}/peek":                    {class: "shared"}, // the channel's global layer, never a user's
+	"POST /v1/_channels/{name}/ack":                    {class: "shared"}, // the channel's global layer, never a user's
+	"POST /v1/_channels/{name}/publish":                {class: "shared"}, // the channel's global layer, never a user's
+	"POST /v1/_channels/{name}/subscribe":              {class: "shared"}, // the channel's global layer, never a user's
+	"POST /v1/_channels/{name}/release":                {class: "hidden", body: censusUserChannelBody},
+	"POST /v1/_channels/{name}/purge":                  {class: "hidden"},
+	"DELETE /v1/_channels/{name}":                      {class: "hidden"},
+	"PATCH /v1/_channels/{name}":                       {class: "shared"}, // the definition, not its messages
+	"POST /v1/_channels/_await":                        {class: "hidden", body: censusUserChannelBody},
+	"POST /v1/_channels/_broadcast":                    {class: "hidden", body: censusUserChannelBody},
+	"POST /v1/_channels/{name...}":                     {class: "hidden", body: censusUserChannelBody}, // system channels: operator-admin
+	"GET /v1/_teamdef/{team}/channels/{name}/peek":     {class: "hidden", query: "?user_id=bob"},
+	"POST /v1/_teamdef/{team}/channels/{name}/release": {class: "hidden", body: `{"user_id":"bob","count":1}`},
+	// Definitions that carry the user their runs execute as.
+	"POST /v1/_scheduledef":                       {class: "hidden", body: censusScheduleAsBob},
+	"POST /v1/_webhookdef":                        {class: "hidden", body: censusWebhookAsAnyone},
+	"DELETE /v1/_users/{subject}/tokens/{def_id}": {class: "hidden"}, // operator-only route
+	"GET /v1/_schedules/{def_id}/state":           {class: "hidden"},
+	"POST /v1/_schedules/{def_id}/run-now":        {class: "hidden"},
+	"POST /v1/_schedules/{def_id}/pause":          {class: "hidden"},
+	"POST /v1/_schedules/{def_id}/resume":         {class: "hidden"},
+	// A member's chat search: its own chats only; the tenant scope is refused.
+	"POST /v1/_history": {class: "hidden", body: `{"op":"list","scope":"tenant"}`},
+}
+
+var muxRouteRe = regexp.MustCompile(`\.Handle(?:Func)?\("([A-Z]+ /v1/[^"]*)"`)
+
+// runAddressingRoute reports whether a mux pattern addresses a run, a
+// session, a user's runs or channels, or a definition that names the user its
+// runs execute as: the routes a member's request for another user's
+// conversation can reach. It reads the path parameters, so a new route that
+// takes one of them is classified whatever it is called.
+func runAddressingRoute(pattern string) bool {
+	_, path, _ := strings.Cut(pattern, " ")
+	for _, param := range []string{"{run_id}", "{agent_id}", "{user_id}", "{def_id}", "{interrupt_id}"} {
+		if strings.Contains(path, param) {
+			return true
+		}
+	}
+	switch {
+	case strings.HasPrefix(path, "/v1/sessions/"),
+		strings.HasPrefix(path, "/v1/_channels/"),
+		strings.HasPrefix(path, "/v1/_teamdef/{team}/channels/"),
+		path == "/v1/runs" && strings.HasPrefix(pattern, "GET "),
+		path == "/v1/_events", path == "/v1/_resident", path == "/v1/_history",
+		path == "/v1/_scheduledef", path == "/v1/_webhookdef":
+		return true
+	}
+	return false
+}
+
+// muxRoutes reads every route pattern the package's non-test files register.
+func muxRoutes(t *testing.T) map[string]bool {
+	t.Helper()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range muxRouteRe.FindAllSubmatch(src, -1) {
+			found[string(m[1])] = true
+		}
+	}
+	if len(found) < 100 {
+		t.Fatalf("read only %d routes from the package: the registration pattern this census reads has changed", len(found))
+	}
+	return found
+}
+
+// Every route that addresses another user's conversation, found from the mux
+// registrations, keeps it from a member: driven through the real mux and auth
+// middleware with a member's token at bob's run, session, channel and
+// schedule, none answers with its content, none acts on it, none stores a
+// trigger that runs as bob, and a listing holds none of it.
+func TestMemberRunRouteCensus_NoRouteHandsAMemberAnotherUsersRun(t *testing.T) {
+	found := map[string]bool{}
+	for p := range muxRoutes(t) {
+		if runAddressingRoute(p) {
+			found[p] = true
+		}
+	}
+	for p := range found {
+		if _, ok := memberRunRoutes[p]; !ok {
+			t.Errorf("%s addresses a run, a session, a user's channel or a run-as-user definition but is not in memberRunRoutes: classify it, and confine a member to its own there", p)
+		}
+	}
+	for p := range memberRunRoutes {
+		if !found[p] {
+			t.Errorf("memberRunRoutes lists %s, which the mux no longer registers (or the census no longer selects)", p)
+		}
+	}
+
+	srv, mux := treeDeleteServer(t)
+	st := srv.store
+	ctx := context.Background()
+	bus := channels.NewBus()
+	srv.SetSystemPublisher(&channels.StorePublisher{Store: st, Bus: bus, Scheduler: channels.NewScheduler(bus, 100)})
+	srv.SetChannelBus(bus)
+	srv.tools = append(srv.tools, &builtin.History{Store: st})
+	srv.SetScheduleDefTool(&builtin.ScheduleDef{Store: st, Cfg: srv.cfg()})
+	srv.SetWebhookDefTool(&builtin.WebhookDef{Store: st, Cfg: srv.cfg(), MaxDefinitionBytes: 131072, MaxDescriptionBytes: 8192})
+	bobs := seedTreeRun(t, st, "acme", "bob", "lead", "", true)
+	interrupt := store.InterruptRow{InterruptID: store.MintInterruptID(time.Now()), RunID: bobs.ID, UserID: "bob",
+		Question: "question for bob " + treeCanary, CreatedAt: time.Now()}
+	if _, err := st.InterruptCreate(ctx, interrupt); err != nil {
+		t.Fatal(err)
+	}
+	op := tenantOperatorCtx("acme")
+	if _, err := srv.CreateChannel(op, connector.ChannelCreateRequest{Name: "inbox", Scope: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.PublishChannel(op, connector.ChannelPublishRequest{Channel: "inbox", Scope: "user", ScopeID: "bob", Payload: json.RawMessage(`{"secret":"` + treeCanary + `"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	sched, err := st.ScheduleDefCreate(ctx, store.ScheduleDefRow{DefID: "def_bobs", Name: "bobs", Version: 1, TenantID: "acme",
+		Definition: json.RawMessage(`{"agent":"writer","schedule":"0 6 * * *","tenant_id":"acme","user_id":"bob"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := time.Now().Add(time.Hour)
+	if err := st.ScheduleRunStateSeed(ctx, sched.DefID, next); err != nil {
+		t.Fatal(err)
+	}
+	expand := strings.NewReplacer(
+		"{run_id}", bobs.ID, "{agent_id}", bobs.AgentID, "{id}", bobs.SessionID,
+		"{user_id}", "bob", "{interrupt_id}", interrupt.InterruptID, "{path...}", "notes.txt",
+		"{def_id}", sched.DefID, "{subject}", "bob", "{name...}", "inbox", "{name}", "inbox", "{team}", "triage")
+	for pattern, rt := range memberRunRoutes {
+		if !found[pattern] {
+			continue
+		}
+		method, path, _ := strings.Cut(pattern, " ")
+		path = expand.Replace(path + rt.query)
+		body := rt.body
+		if body == "" && method != http.MethodGet && method != http.MethodDelete {
+			body = `{"answer":"yes","verdict":"approve","message":"hi","prompt":"hi"}`
+		}
+		var rdr io.Reader
+		if body != "" {
+			rdr = strings.NewReader(body)
+		}
+		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		req := httptest.NewRequest(method, path, rdr).WithContext(rctx)
+		req.Header.Set("Authorization", "Bearer "+tokMember)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		cancel()
+		got := rec.Body.String()
+		if strings.Contains(got, treeCanary) {
+			t.Errorf("%s: a member read bob's conversation: %d %s", pattern, rec.Code, got)
+		}
+		switch rt.class {
+		case "hidden":
+			if rec.Code/100 == 2 {
+				t.Errorf("%s: a member was answered %d for bob's: %s", pattern, rec.Code, got)
+			}
+		case "empty":
+			if rec.Code != http.StatusOK || strings.Contains(got, bobs.ID) || strings.Contains(got, bobs.SessionID) {
+				t.Errorf("%s: a member's listing named bob's run: %d %s", pattern, rec.Code, got)
+			}
+		}
+	}
+	if !runExists(t, st, bobs.ID) || !sessionExists(t, st, bobs.SessionID) {
+		t.Fatal("a member's request removed bob's run")
+	}
+	if holding, _ := eventsHolding(t, st, treeCanary); holding != 2 {
+		t.Errorf("%d of bob's events hold the canary, want both untouched", holding)
+	}
+	rows, err := st.InterruptListByRun(ctx, bobs.ID, "")
+	if err != nil || len(rows) != 1 || rows[0].Status != store.InterruptStatusPending {
+		t.Errorf("bob's question after a member's requests = %+v, %v; want it pending", rows, err)
+	}
+	if msgs, err := srv.PeekChannel(op, connector.ChannelPeekRequest{Channel: "inbox", Scope: "user", ScopeID: "bob", MaxMessages: 10}); err != nil || len(msgs.Messages) != 1 {
+		t.Errorf("bob's channel after a member's requests = %d messages, %v; want his one, unforged and unconsumed", len(msgs.Messages), err)
+	}
+	if state, err := st.ScheduleRunStateGet(ctx, sched.DefID); err != nil || !state.PausedUntil.IsZero() || state.NextRunAt.Before(next.Add(-time.Second)) {
+		t.Errorf("bob's schedule after a member's requests = %+v, %v; want it neither paused nor brought forward", state, err)
+	}
+	for _, name := range []string{"as-bob", "as-anyone"} {
+		if _, err := st.ScheduleDefGetActive(ctx, "acme", name); err == nil {
+			t.Errorf("a member stored the trigger %s", name)
+		}
+		if _, err := st.WebhookDefGetActive(ctx, "acme", name); err == nil {
+			t.Errorf("a member stored the webhook %s", name)
+		}
+	}
+}
+
+// A continuation runs as its session's user, so continuing a colleague's
+// session would run the member's prompt with the colleague's memory,
+// documents and history. RunOnce backs gRPC Continue and MCP spawn_run with a
+// session_id: a member is refused as for a missing session, and no run is
+// created in the session. A tenant operator continues it, as the session's
+// user (the conversation stays that user's; continuation withholds the user's
+// stored credentials from anyone else).
+func TestRunOnce_AMemberCannotContinueAColleaguesSession(t *testing.T) {
+	cfg := &config.Config{
+		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents:      map[string]config.AgentDef{"default": {Model: "stub-model"}},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
+	}
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "continue.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	provider := &stubProvider{events: []providers.Event{
+		{Type: providers.EventText, Text: "ok"},
+		{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+	}}
+	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(4, 4, time.Second), st)
+	sess, err := st.CreateSession(context.Background(), "acme", "default", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cont := func(ctx context.Context) error {
+		return srv.RunOnce(ctx, runner.RunInput{
+			SessionID: sess.ID, TenantID: "acme",
+			Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "what do you know about me?"}}}},
+		}, runner.RunCallbacks{})
+	}
+	if err := cont(tenantMemberCtx(t, "acme", "carol")); !errors.Is(err, runner.ErrSessionNotFound) {
+		t.Fatalf("member continuing alice's session: %v, want the opaque session-not-found", err)
+	}
+	if runs, err := st.RunsForSession(context.Background(), sess.ID); err != nil || len(runs) != 0 {
+		t.Fatalf("a member's continuation created %d run(s) in alice's session (%v)", len(runs), err)
+	}
+	if err := cont(tenantOperatorCtx("acme")); err != nil {
+		t.Fatalf("tenant operator continuing alice's session: %v", err)
+	}
+	runs, err := st.RunsForSession(context.Background(), sess.ID)
+	if err != nil || len(runs) != 1 || runs[0].UserID != "alice" {
+		t.Fatalf("tenant operator's continuation = %+v, %v; want one run as alice", runs, err)
+	}
+}
+
+// A user-scoped channel is that user's: a member reaches only its own, on the
+// connector ops behind the MCP channel tools and POST /v1/_channels/_await and
+// _broadcast, as the per-user HTTP routes and the gRPC channel RPCs already
+// hold it. Another user's channel reads as an undeclared one; peeking,
+// subscribing, acking, awaiting, publishing and broadcasting all refuse, and
+// the owner's messages and cursor are untouched. A tenant operator reaches
+// every user's channel of its tenant.
+func TestUserChannels_AMemberReachesOnlyItsOwn(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	op := tenantOperatorCtx("acme")
+	for i := 0; i < 2; i++ {
+		if _, err := srv.PublishChannel(op, connector.ChannelPublishRequest{Channel: "c1", Scope: "user", ScopeID: "bob", Payload: json.RawMessage(`{"secret":"bob-private"}`)}); err != nil {
+			t.Fatalf("operator publish to bob's channel: %v", err)
+		}
+	}
+	carol := tenantMemberCtx(t, "acme", "carol")
+	refused := func(op string, err error) {
+		t.Helper()
+		if !errors.Is(err, connector.ErrChannelNotDeclared) {
+			t.Errorf("member %s on bob's user channel: err=%v, want the not-declared answer", op, err)
+		}
+	}
+	peek, err := srv.PeekChannel(carol, connector.ChannelPeekRequest{Channel: "c1", Scope: "user", ScopeID: "bob"})
+	refused("peek", err)
+	if len(peek.Messages) != 0 {
+		t.Errorf("member peeked bob's messages: %+v", peek.Messages)
+	}
+	_, err = srv.SubscribeChannel(carol, connector.ChannelSubscribeRequest{Channel: "c1", Scope: "user", ScopeID: "bob", MaxMessages: 10})
+	refused("subscribe", err)
+	_, err = srv.AckChannel(carol, connector.ChannelAckRequest{Channel: "c1", Scope: "user", ScopeID: "bob", Cursor: "cur_0"})
+	refused("ack", err)
+	_, err = srv.AwaitChannels(carol, connector.ChannelAwaitRequest{Channels: []string{"c1"}, Scope: "user", ScopeID: "bob", MaxMessages: 10})
+	refused("await", err)
+	_, err = srv.PublishChannel(carol, connector.ChannelPublishRequest{Channel: "c1", Scope: "user", ScopeID: "bob", Payload: json.RawMessage(`{"forged":true}`)})
+	refused("publish", err)
+	_, err = srv.BroadcastChannels(carol, connector.ChannelBroadcastRequest{Channels: []string{"c1", "c2"}, Scope: "user", ScopeID: "bob", Payload: json.RawMessage(`{"forged":true}`)})
+	refused("broadcast", err)
+
+	// Bob still has both of his messages, unconsumed and unforged.
+	bob := tenantMemberCtx(t, "acme", "bob")
+	own, err := srv.PeekChannel(bob, connector.ChannelPeekRequest{Channel: "c1", Scope: "user", ScopeID: "bob", MaxMessages: 10})
+	if err != nil || len(own.Messages) != 2 {
+		t.Fatalf("bob peeking his own channel = %+v, %v; want his 2 messages", own.Messages, err)
+	}
+	for _, m := range own.Messages {
+		if strings.Contains(string(m.Value), "forged") {
+			t.Errorf("a member's publish reached bob's channel: %s", m.Value)
+		}
+	}
+	if got, err := srv.PeekChannel(op, connector.ChannelPeekRequest{Channel: "c1", Scope: "user", ScopeID: "bob", MaxMessages: 10}); err != nil || len(got.Messages) != 2 {
+		t.Errorf("tenant operator peeking bob's channel = %d messages, %v; want 2", len(got.Messages), err)
+	}
+}
+
+// Purging a user-scoped channel, or deleting its definition, empties every
+// user's messages on it. A member acts only on its own, so both are refused;
+// the messages stay. A tenant operator may purge it.
+func TestUserChannels_AMemberCannotPurgeOrDeleteAUserScopedChannel(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	op := tenantOperatorCtx("acme")
+	if _, err := srv.CreateChannel(op, connector.ChannelCreateRequest{Name: "inbox", Scope: "user"}); err != nil {
+		t.Fatalf("operator create user-scoped channel: %v", err)
+	}
+	if _, err := srv.PublishChannel(op, connector.ChannelPublishRequest{Channel: "inbox", Scope: "user", ScopeID: "bob", Payload: json.RawMessage(`{"secret":"bob-private"}`)}); err != nil {
+		t.Fatalf("operator publish to bob: %v", err)
+	}
+	carol := tenantMemberCtx(t, "acme", "carol")
+	if res, err := srv.PurgeChannel(carol, "inbox"); err == nil {
+		t.Errorf("a member purged a user-scoped channel: %+v", res)
+	}
+	if err := srv.DeleteChannel(carol, "inbox"); err == nil {
+		t.Error("a member deleted a user-scoped channel")
+	}
+	got, err := srv.PeekChannel(op, connector.ChannelPeekRequest{Channel: "inbox", Scope: "user", ScopeID: "bob", MaxMessages: 10})
+	if err != nil || len(got.Messages) != 1 {
+		t.Fatalf("bob's message after a member's purge and delete = %d, %v; want it kept", len(got.Messages), err)
+	}
+	if res, err := srv.PurgeChannel(op, "inbox"); err != nil || res.Purged != 1 {
+		t.Errorf("tenant operator purge = %+v, %v; want 1 purged", res, err)
+	}
+}
+
+// A schedule's runs execute as its user_id. Running one now, pausing,
+// resuming or reading the state of a schedule whose runs are another user's
+// (or tenant-level) is acting on runs that are not the member's: refused as an
+// unknown schedule. Its own schedule, and a tenant operator, are answered.
+func TestScheduleControls_AMemberReachesOnlyItsOwnSchedules(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	seed := func(name, user string) string {
+		t.Helper()
+		row, err := srv.store.ScheduleDefCreate(ctx, store.ScheduleDefRow{
+			DefID: "def_" + strings.ReplaceAll(name, "-", "_"), Name: name, Version: 1, TenantID: "acme",
+			Definition: json.RawMessage(`{"agent":"digest","schedule":"0 6 * * *","tenant_id":"acme","user_id":"` + user + `"}`),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.store.ScheduleRunStateSeed(ctx, row.DefID, time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		return row.DefID
+	}
+	bobs, tenantLevel, carols := seed("bobs", "bob"), seed("tenant-level", ""), seed("carols", "carol")
+	do := func(c context.Context, method, path, defID string, h http.HandlerFunc) int {
+		req := httptest.NewRequest(method, path, nil).WithContext(c)
+		req.SetPathValue("def_id", defID)
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		return rec.Code
+	}
+	carol := tenantMemberCtx(t, "acme", "carol")
+	for _, defID := range []string{bobs, tenantLevel} {
+		for _, c := range []struct {
+			method, op string
+			h          http.HandlerFunc
+		}{
+			{http.MethodPost, "run-now", srv.handleScheduleRunNow},
+			{http.MethodPost, "pause", srv.handleSchedulePause},
+			{http.MethodPost, "resume", srv.handleScheduleResume},
+			{http.MethodGet, "state", srv.handleGetScheduleState},
+		} {
+			if code := do(carol, c.method, "/v1/_schedules/"+defID+"/"+c.op, defID, c.h); code != http.StatusNotFound {
+				t.Errorf("member %s on a schedule that is not its own = %d, want 404", c.op, code)
+			}
+		}
+	}
+	if code := do(carol, http.MethodPost, "/v1/_schedules/"+carols+"/run-now", carols, srv.handleScheduleRunNow); code != http.StatusOK {
+		t.Errorf("member run-now on its own schedule = %d, want 200", code)
+	}
+	if code := do(tenantOperatorCtx("acme"), http.MethodPost, "/v1/_schedules/"+bobs+"/run-now", bobs, srv.handleScheduleRunNow); code != http.StatusOK {
+		t.Errorf("tenant operator run-now on bob's schedule = %d, want 200", code)
+	}
+}

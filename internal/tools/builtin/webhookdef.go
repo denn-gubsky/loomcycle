@@ -212,6 +212,9 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 	if res, refused := refuseForeignExecTenant(ctx, "create", def.TenantID); refused {
 		return res, nil
 	}
+	if res, refused := refuseMappedRunUser(ctx, "create", def.PayloadMapping); refused {
+		return res, nil
+	}
 	// RFC AX: capture the author's operator-key restriction (server
 	// authority — unconditional so the payload/overlay can't set it) so the
 	// webhook receiver stamps the fired run with the creator's grant.
@@ -443,6 +446,9 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 		def.TenantID = ident.TenantID
 	}
 	if res, refused := refuseForeignExecTenant(ctx, "fork", def.TenantID); refused {
+		return res, nil
+	}
+	if res, refused := refuseMappedRunUser(ctx, "fork", def.PayloadMapping); refused {
 		return res, nil
 	}
 	// RFC AX: re-capture the forker's operator-key restriction (server

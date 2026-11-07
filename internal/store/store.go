@@ -693,6 +693,10 @@ type EventFilter struct {
 	// sessions.tenant_id is the event's tenant, so ListEvents JOINs sessions
 	// when this is set. Empty = no tenant filter (every tenant — the admin view).
 	TenantID string
+	// UserID, when non-empty, further restricts the result to events whose
+	// owning session belongs to that user: a member's audit view holds only its
+	// own conversations. Same JOIN as TenantID. Empty = every user.
+	UserID string
 }
 
 // Event is one streamed datum, persisted append-only. Payload is the JSON

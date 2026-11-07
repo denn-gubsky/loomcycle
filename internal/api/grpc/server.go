@@ -320,8 +320,8 @@ func (s *Server) GetRun(ctx context.Context, req *loomcyclepb.GetRunRequest) (*l
 		}
 		return nil, status.Errorf(codes.Internal, "store: %v", err)
 	}
-	// The same fold as GetAgent: another tenant's run, or for an isolated
-	// member another user's, is the NotFound a missing run gets.
+	// The same fold as GetAgent: another tenant's run, or for a member
+	// another user's, is the NotFound a missing run gets.
 	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnedRowVisible(p, ok, run.TenantID, run.UserID) || !s.runTree(ctx).ReachesKnown(runLink(run)) {
 		return nil, status.Errorf(codes.NotFound, "no run found for run_id %q", runID)
 	}
@@ -425,11 +425,11 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 		return nil, err
 	}
 	p, ok := auth.PrincipalFromContext(ctx)
-	// An isolated member lists only its own runs: another user's listing is
-	// that of a user with no runs, answered before any scan, as HTTP does
-	// (isolatedCrossUser) — a scan would read that user's rows, and its
+	// A member (isolated or not) lists only its own runs: another user's
+	// listing is that of a user with no runs, answered before any scan, as
+	// HTTP does (otherUsersRuns) — a scan would read that user's rows, and its
 	// `truncated` would say they exist.
-	if auth.IsIsolated(p, ok) && req.GetUserId() != p.Subject {
+	if auth.OwnRowsOnly(p, ok) && req.GetUserId() != p.Subject {
 		return &loomcyclepb.ListUserAgentsResponse{Agents: []*loomcyclepb.Agent{}}, nil
 	}
 	// The tenant goes into the query so it applies before the store's row
@@ -483,10 +483,10 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 	}
 	out := &loomcyclepb.ListUserAgentsResponse{Agents: make([]*loomcyclepb.Agent, 0, len(runs)), Truncated: truncated && truncatedExact}
 	for _, r := range runs {
-		// Drop cross-tenant rows, and for an isolated member another user's rows,
-		// mirroring HTTP handleListUserAgents (its isolatedCrossUser short-circuit
+		// Drop cross-tenant rows, and for a member another user's rows,
+		// mirroring HTTP handleListUserAgents (its otherUsersRuns short-circuit
 		// plus the principalTenantScope post-filter). Every row here carries the
-		// requested user_id, so a cross-user list from an isolated member comes
+		// requested user_id, so a cross-user list from a member comes
 		// back empty exactly as it does over HTTP. Still needed after the query's
 		// own tenant filter: the store reads tenant "" as "all tenants", so a
 		// non-admin principal whose tenant is "" gets every tenant's rows back
@@ -550,7 +550,7 @@ func userAgentsFilter(req *loomcyclepb.ListUserAgentsRequest) ([]store.RunStatus
 // walk's own run and every member, oldest first, a page at a time.
 //
 // The gate is GetRun's: the caller must be allowed to read the walk's own run,
-// so another tenant's walk — or, for an isolated member, another user's — is
+// so another tenant's walk — or, for a member, another user's — is
 // the NotFound an unknown walk gets. Each member is held to the same row rule.
 // The walk's own row carries its result, as on HTTP.
 func (s *Server) ListWalkRuns(ctx context.Context, req *loomcyclepb.ListWalkRunsRequest) (*loomcyclepb.ListWalkRunsResponse, error) {
@@ -612,7 +612,7 @@ func (s *Server) ListWalkRuns(ctx context.Context, req *loomcyclepb.ListWalkRuns
 // children, of every status, oldest first, a page at a time.
 //
 // The gate is ListWalkRuns': the caller must be allowed to read the parent
-// run, so another tenant's run — or, for an isolated member, another user's —
+// run, so another tenant's run — or, for a member, another user's —
 // is the NotFound an unknown run gets. Each child is held to the same row rule.
 func (s *Server) ListChildRuns(ctx context.Context, req *loomcyclepb.ListChildRunsRequest) (*loomcyclepb.ListChildRunsResponse, error) {
 	parentRunID := req.GetParentRunId()
@@ -780,8 +780,8 @@ func (s *Server) GetTranscript(ctx context.Context, req *loomcyclepb.GetTranscri
 	// Tenant isolation (RFC L/N): a transcript exposes the session's full
 	// history, so gate it on the session's tenant exactly as the HTTP
 	// handleTranscript does via tenantStore.GetSession — a cross-tenant session
-	// folds into the same opaque NotFound (session ids are not secret). An
-	// isolated member reads only its own sessions, as tenantStore.GetSession
+	// folds into the same opaque NotFound (session ids are not secret). A
+	// member reads only its own sessions, as tenantStore.GetSession
 	// confines it on HTTP.
 	// A token limited to certain agents reads only sessions whose runs are all
 	// in trees it could have started (sessionReachable); any other is the same

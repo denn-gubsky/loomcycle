@@ -224,6 +224,9 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 	if res, refused := refuseForeignExecTenant(ctx, "create", def.TenantID); refused {
 		return res, nil
 	}
+	if res, refused := refuseRunAsAnotherUser(ctx, "create", &def.UserID, true); refused {
+		return res, nil
+	}
 	// RFC AX: capture the author's operator-key restriction (server
 	// authority — unconditional so the overlay can't set it) so the scheduler
 	// stamps the fired run with the creator's grant.
@@ -474,6 +477,9 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 		def.TenantID = ident.TenantID
 	}
 	if res, refused := refuseForeignExecTenant(ctx, "fork", def.TenantID); refused {
+		return res, nil
+	}
+	if res, refused := refuseRunAsAnotherUser(ctx, "fork", &def.UserID, true); refused {
 		return res, nil
 	}
 	// RFC AX: re-capture the forker's operator-key restriction (server
@@ -790,6 +796,9 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 	// A hook edit re-mints the parent's body as a new version; a non-admin
 	// must not re-mint (or add hooks to) one whose runs execute elsewhere.
 	if res, refused := refuseForeignExecTenant(ctx, opLabel, def.TenantID); refused {
+		return res, nil
+	}
+	if res, refused := refuseRunAsAnotherUser(ctx, opLabel, &def.UserID, false); refused {
 		return res, nil
 	}
 	// The new version fires under the bits it carries. It keeps the parent's

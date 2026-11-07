@@ -8,12 +8,12 @@ import (
 )
 
 // callerOwnsRun reports whether the ctx principal may act on the run's
-// questions — read them or answer them: the run is in its tenant and, for an
-// isolated member, in one of its own sessions; for a token limited to certain
-// agents, in a tree it could have started (allowlistReachesRun). The run's
-// author is the main actor, so its own questions are always its to answer, a
-// hook's included; a colleague in a shared tenant keeps the tenant's
-// collaboration model.
+// questions — read them or answer them: the run is in its tenant and, for a
+// member (isolated or not), its own run in one of its own sessions; for a
+// token limited to certain agents, in a tree it could have started
+// (allowlistReachesRun). The run's author is the main actor, so its own
+// questions are always its to answer, a hook's included; a tenant operator
+// answers any run's of its tenant.
 // Same rule as the review verb.
 func (s *Server) callerOwnsRun(ctx context.Context, runID string) (bool, error) {
 	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
@@ -23,6 +23,11 @@ func (s *Server) callerOwnsRun(ctx context.Context, runID string) (bool, error) 
 			return false, nil
 		}
 		return false, err
+	}
+	// The run's own owner, not only its session's: a run with no session
+	// would otherwise pass on the tenant fold alone.
+	if !runOwnershipOK(ctx, run) {
+		return false, nil
 	}
 	if run.SessionID != "" {
 		sess, err := s.store.GetSession(ctx, run.SessionID)

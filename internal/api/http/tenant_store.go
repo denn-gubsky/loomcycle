@@ -16,12 +16,11 @@ import (
 // request with s.tenantStore(ctx); the scope is captured from the ctx principal
 // at construction.
 //
-// WHOLE-TENANT model (RFC L/N): the boundary is the TENANT, not the subject —
-// subjects within a tenant share its workspace (they collaborate). The
-// cross-TENANT boundary is the security property. A super-admin (substrate:
+// The accessor holds the TENANT boundary (RFC L/N): a super-admin (substrate:
 // admin) and the single-operator legacy principal cross it by design; open dev
-// mode (no principal) sees all. This matches tenantVisible / sessionOwnershipOK
-// exactly so migrating a handler onto the accessor is behaviour-preserving.
+// mode (no principal) sees all. Run reads add the owner rule on top
+// (runOwnershipOK — a member reads only its own runs); GetSession applies it
+// itself, as sessionOwnershipOK does.
 type tenantScopedStore struct {
 	store      store.Store
 	tenantID   string
@@ -93,12 +92,12 @@ func (t *tenantScopedStore) GetSession(ctx context.Context, sessionID string) (s
 	if !t.visible(sess.TenantID) {
 		return store.Session{}, &store.ErrNotFound{Kind: "session", ID: sessionID}
 	}
-	// RFC BX P2b: an ISOLATED member sees only its OWN sessions — the tenant
+	// A member (isolated or not) sees only its OWN sessions — the tenant
 	// visibility check above is not enough (it would expose another user's
 	// session/transcript in the same tenant, and a continuation would run under
 	// that user's identity). Opaque-404 on a cross-subject probe, exactly like
-	// the cross-tenant case. Non-isolated principals keep the whole-tenant model.
-	if p, ok := auth.PrincipalFromContext(ctx); ok && auth.IsIsolated(p, ok) && sess.UserID != p.Subject {
+	// the cross-tenant case. A tenant operator keeps the whole-tenant view.
+	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnedRowVisible(p, ok, sess.TenantID, sess.UserID) {
 		return store.Session{}, &store.ErrNotFound{Kind: "session", ID: sessionID}
 	}
 	return sess, nil

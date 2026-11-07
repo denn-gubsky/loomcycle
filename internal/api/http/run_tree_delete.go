@@ -240,7 +240,7 @@ func (s *Server) runTreeRoots(ctx context.Context, req connector.DeleteRunTreeRe
 	ts := s.tenantStore(ctx)
 	if req.RunID != "" {
 		// The gate the run reads use: the tenant accessor, then the row rule
-		// that confines an isolated member to its own runs.
+		// that confines a member to its own runs.
 		run, gerr := ts.GetRun(ctx, req.RunID)
 		switch {
 		case errors.As(gerr, &nf):

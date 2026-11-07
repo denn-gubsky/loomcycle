@@ -1,4 +1,4 @@
-import { hasTenantScope as principalHasTenantScope, surfacesOf } from "../lib/visibility";
+import { hasTenantScope as principalHasTenantScope, runsUserId, surfacesOf } from "../lib/visibility";
 import { useEffect, useState } from "react";
 import { Link, Outlet, useOutletContext } from "react-router-dom";
 import { Moon, PanelLeftClose, PanelLeftOpen, Sun } from "lucide-react";
@@ -322,7 +322,9 @@ export default function Layout() {
         {(isAdmin || hasTenantScope) && <NoTraceOverrideBanner />}
         {principal && <OAuthReauthBanner canManageTenant={isAdmin || hasTenantScope} />}
         <main className="content">
-          <Outlet context={{ userId, principal: principal ?? null, focusTenant }} />
+          <Outlet
+            context={{ userId, runsUserId: runsUserId(principal, userId), principal: principal ?? null, focusTenant }}
+          />
         </main>
       </div>
     </div>
@@ -331,13 +333,23 @@ export default function Layout() {
 
 interface LayoutContext {
   userId: string;
+  runsUserId: string;
   principal: Principal | null;
   focusTenant: string;
 }
 
-// Child routes read userId via this helper.
+// Child routes read userId via this helper. It is the user the picker names:
+// the browse pages (documents, paths, ontology, review) open that subject,
+// which a member's browse grant may allow.
 export function useUserId(): string {
   return useOutletContext<LayoutContext>().userId;
+}
+
+// useRunsUserId is whose runs the run views (runs list, run terminal, inbox)
+// show: the picked user, except for a member, which reads only its own runs —
+// another user's list would only ever come back empty.
+export function useRunsUserId(): string {
+  return useOutletContext<LayoutContext>().runsUserId;
 }
 
 // usePrincipal exposes the resolved identity to child views (role-aware

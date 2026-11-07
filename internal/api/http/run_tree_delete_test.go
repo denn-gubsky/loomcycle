@@ -393,10 +393,14 @@ func TestDeleteRunTree_NeedsTheRunsDeleteScope(t *testing.T) {
 		t.Fatal("a refused caller deleted a run")
 	}
 
-	// With the scope granted at mint: a member is not isolated, so it reads —
-	// and may delete — its tenant's runs.
-	if code, body, raw := doDelete(t, mux, tokMemberDel, "/v1/runs/"+alices.ID+"/tree"); code != http.StatusOK || body.DeletedRuns != 1 {
-		t.Errorf("member granted runs:delete = %d deleted_runs %d, want 200 and 1: %s", code, body.DeletedRuns, raw)
+	// With the scope granted at mint, a member deletes only its own runs: like
+	// an isolated user it reads, and acts on, only the runs it started.
+	carols := seedTreeRun(t, st, "acme", "carol", "lead", "", true)
+	if code, body, raw := doDelete(t, mux, tokMemberDel, "/v1/runs/"+alices.ID+"/tree"); code != http.StatusOK || body.DeletedRuns != 0 || !runExists(t, st, alices.ID) {
+		t.Errorf("member granted runs:delete on another user's run = %d deleted_runs %d, want 200, 0 and the run kept: %s", code, body.DeletedRuns, raw)
+	}
+	if code, body, raw := doDelete(t, mux, tokMemberDel, "/v1/runs/"+carols.ID+"/tree"); code != http.StatusOK || body.DeletedRuns != 1 {
+		t.Errorf("member granted runs:delete on its own run = %d deleted_runs %d, want 200 and 1: %s", code, body.DeletedRuns, raw)
 	}
 	// An isolated user granted it deletes its own run only.
 	danas := seedTreeRun(t, st, "acme", "dana", "lead", "", true)

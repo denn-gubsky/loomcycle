@@ -1875,10 +1875,17 @@ func (s *Store) ListEvents(ctx context.Context, filter store.EventFilter, limit,
 	// but events.session_id is NOT NULL → sessions.tenant_id is the event's
 	// tenant. Empty TenantID = no filter (all tenants — the admin view).
 	from := "events"
-	if filter.TenantID != "" {
+	if filter.TenantID != "" || filter.UserID != "" {
 		from = "events JOIN sessions ON sessions.id = events.session_id"
+	}
+	if filter.TenantID != "" {
 		conds = append(conds, fmt.Sprintf("sessions.tenant_id = $%d", i))
 		args = append(args, filter.TenantID)
+		i++
+	}
+	if filter.UserID != "" {
+		conds = append(conds, fmt.Sprintf("sessions.user_id = $%d", i))
+		args = append(args, filter.UserID)
 		i++
 	}
 	where := ""

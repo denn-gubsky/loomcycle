@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -417,18 +418,17 @@ type residentTombstone struct {
 }
 
 // residentOwnedBy reports whether caller may address a child opened in this
-// tenant by this user. It is the run-content rule (auth.OwnedRowVisible) read
-// off the caller's run identity: any run in the tenant may — the tenant's
-// runs collaborate, as they do on run cancel, compact and retune — except an
-// isolated member's run, which may address only its own user's children. A
-// run always sits in one tenant, so OwnedRowVisible's admin/legacy
-// cross-tenant pass has no counterpart here. The opener's agent id is
-// deliberately not part of the rule.
+// tenant by this user: only a run of the same user may. A child's turns are its
+// opener's conversation, and a person reads only its own conversations
+// (auth.OwnedRowVisible); a run acts as the user who started it and carries no
+// operator tier to read another's by, so the rule is the same for every run,
+// isolated or not. A child inherits its opener's user, so a run's own children
+// — and a schedule's, under its empty user — stay addressable. A run always
+// sits in one tenant, so OwnedRowVisible's admin/legacy cross-tenant pass has
+// no counterpart here. The opener's agent id is deliberately not part of the
+// rule.
 func residentOwnedBy(tenantID, userID string, caller tools.RunIdentityValue) bool {
-	if tenantID != caller.TenantID {
-		return false
-	}
-	return !caller.Isolated || userID == caller.UserID
+	return tenantID == caller.TenantID && userID == caller.UserID
 }
 
 func newResidentRegistry() *residentRegistry {
@@ -868,7 +868,7 @@ func residentReapedErr(childRunID, reason string) error {
 }
 
 // lookupOwnedResident resolves a child by run_id for a caller residentOwnedBy
-// admits. Any other caller — another tenant, or an isolated member's run for
+// admits. Any other caller — another tenant, or a member's run for
 // another user's child — gets the same not-found as an unknown id.
 func (s *Server) lookupOwnedResident(ctx context.Context, childRunID string) (*residentChild, bool) {
 	if s.residentReg == nil {
@@ -1036,10 +1036,12 @@ func (s *Server) sweepResidentChildren(now time.Time) {
 // --- RFC BK P3: Web-UI visibility + operator control ---
 
 // residentForOperator resolves a resident child by run_id for an operator HTTP
-// request, gated by the caller's tenant scope (all = admin/legacy/open). A child
-// in another tenant folds into not-found (opaque — run_ids aren't secrets, but
-// the gate must not become a cross-tenant existence oracle).
-func (s *Server) residentForOperator(runID, scopeTenant string, all bool) (*residentChild, bool) {
+// request, gated by the caller's tenant scope (all = admin/legacy/open) and,
+// for a member, by the child's user: a member reaches only the children its own
+// runs opened (auth.OwnedRowVisible). Any other child folds into not-found
+// (opaque — run_ids aren't secrets, but the gate must not become an existence
+// oracle).
+func (s *Server) residentForOperator(ctx context.Context, runID, scopeTenant string, all bool) (*residentChild, bool) {
 	if s.residentReg == nil {
 		return nil, false
 	}
@@ -1050,22 +1052,30 @@ func (s *Server) residentForOperator(runID, scopeTenant string, all bool) (*resi
 	if !all && rc.tenantID != scopeTenant {
 		return nil, false
 	}
+	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnedRowVisible(p, ok, rc.tenantID, rc.userID) {
+		return nil, false
+	}
 	return rc, true
 }
 
 // handleListResident serves GET /v1/_resident — the resident interactive
 // sub-agents visible to the caller (RFC BK P3). Tenant-scoped: an operator sees
-// its own tenant's; admin/legacy/open see all (or focus one via ?tenant=).
+// its own tenant's; admin/legacy/open see all (or focus one via ?tenant=); a
+// member sees only the children its own runs opened.
 // Per-replica (the registry is in-process; a child is co-located with its run).
 func (s *Server) handleListResident(w http.ResponseWriter, r *http.Request) {
 	out := make([]residentInfo, 0)
 	if s.residentReg != nil {
 		scopeTenant, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
-		for _, info := range s.residentReg.listInfo() {
-			if !all && info.TenantID != scopeTenant {
+		p, ok := auth.PrincipalFromContext(r.Context())
+		for _, rc := range s.residentReg.snapshot() {
+			if !all && rc.tenantID != scopeTenant {
 				continue
 			}
-			out = append(out, info)
+			if !auth.OwnedRowVisible(p, ok, rc.tenantID, rc.userID) {
+				continue
+			}
+			out = append(out, rc.snapshotInfo())
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"resident": out})
@@ -1080,7 +1090,7 @@ func (s *Server) handleResidentClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scopeTenant, all := s.principalTenantScope(r.Context(), "")
-	rc, ok := s.residentForOperator(runID, scopeTenant, all)
+	rc, ok := s.residentForOperator(r.Context(), runID, scopeTenant, all)
 	if !ok {
 		http.Error(w, "no resident sub-agent for that run_id", http.StatusNotFound)
 		return
@@ -1100,7 +1110,7 @@ func (s *Server) handleResidentCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scopeTenant, all := s.principalTenantScope(r.Context(), "")
-	rc, ok := s.residentForOperator(runID, scopeTenant, all)
+	rc, ok := s.residentForOperator(r.Context(), runID, scopeTenant, all)
 	if !ok {
 		http.Error(w, "no resident sub-agent for that run_id", http.StatusNotFound)
 		return

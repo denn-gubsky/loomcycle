@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { createConfiguredRun, getAgent, listLibraryAgents, type ConfiguredRun, type StartRunRequest } from "../api";
 import { draftPromptText } from "../lib/draft";
-import { useUserId } from "../components/Layout";
+import { useRunsUserId } from "../components/Layout";
 import { useRunStream } from "../hooks/useRunStream";
 import { useInteractiveSessions } from "../hooks/useInteractiveSessions";
 import RunForm from "../components/RunForm";
@@ -23,7 +23,7 @@ type Tab = "single" | "fanout" | "orchestrator";
 const FORM_COL_COLLAPSE_KEY = "loomcycle.run.form-col.collapsed";
 
 export default function RunView() {
-  const defaultUserId = useUserId();
+  const defaultUserId = useRunsUserId();
   const [agents, setAgents] = useState<string[]>([]);
   // Each agent's starting context window, from the same library listing —
   // lets the live pane draw its gauge's ceiling before the first model call.

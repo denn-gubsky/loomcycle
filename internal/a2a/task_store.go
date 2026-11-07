@@ -9,6 +9,7 @@ import (
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -208,9 +209,11 @@ func (s *TaskStore) List(ctx context.Context, req *a2asdk.ListTasksRequest) (*a2
 	// (RoutedTenantFrom ok==true) keep only tasks whose backing run belongs
 	// to the routed tenant: authorizeTaskTenant returns nil on a match, and
 	// any non-nil (cross-tenant OR an unresolved run) excludes the task —
-	// fail-closed, never leak. Single-tenant/none mode lists all, as before.
+	// fail-closed, never leak. Single-tenant/none mode lists all, as before,
+	// except to a member's peer, which lists only its own tasks.
 	out := candidates
-	if _, ok := RoutedTenantFrom(ctx); ok {
+	_, routed := RoutedTenantFrom(ctx)
+	if p, ok := PeerPrincipalFrom(ctx); routed || auth.OwnRowsOnly(p, ok) {
 		out = make([]*a2asdk.Task, 0, len(candidates))
 		for _, t := range candidates {
 			if authorizeTaskTenant(ctx, s.runs, string(t.ID)) == nil {
