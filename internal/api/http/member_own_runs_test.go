@@ -8,15 +8,21 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -159,7 +165,9 @@ func TestRunLists_AMemberListsOnlyItsOwnRuns(t *testing.T) {
 	srv := f.srv
 	listAgents := func(ctx context.Context, user string) []string {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodGet, "/v1/users/"+user+"/agents", nil).WithContext(ctx)
+		// status=all: the fixture's runs have finished, and the default lists
+		// only running ones.
+		req := httptest.NewRequest(http.MethodGet, "/v1/users/"+user+"/agents?status=all", nil).WithContext(ctx)
 		req.SetPathValue("user_id", user)
 		rec := httptest.NewRecorder()
 		srv.handleListUserAgents(rec, req)
@@ -523,5 +531,108 @@ func TestMemberRunRouteCensus_NoRouteHandsAMemberAnotherUsersRun(t *testing.T) {
 	rows, err := st.InterruptListByRun(context.Background(), bobs.ID, "")
 	if err != nil || len(rows) != 1 || rows[0].Status != store.InterruptStatusPending {
 		t.Errorf("bob's question after a member's requests = %+v, %v; want it pending", rows, err)
+	}
+}
+
+// A continuation runs as its session's user, so continuing a colleague's
+// session would run the member's prompt with the colleague's memory,
+// documents and history. RunOnce backs gRPC Continue and MCP spawn_run with a
+// session_id: a member is refused as for a missing session, and no run is
+// created in the session. A tenant operator continues it, as the session's
+// user (the conversation stays that user's; continuation withholds the user's
+// stored credentials from anyone else).
+func TestRunOnce_AMemberCannotContinueAColleaguesSession(t *testing.T) {
+	cfg := &config.Config{
+		Defaults:    config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents:      map[string]config.AgentDef{"default": {Model: "stub-model"}},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
+	}
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "continue.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	provider := &stubProvider{events: []providers.Event{
+		{Type: providers.EventText, Text: "ok"},
+		{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 1, OutputTokens: 1}},
+	}}
+	srv := New(cfg, &stubResolver{p: provider}, nil, concurrency.New(4, 4, time.Second), st)
+	sess, err := st.CreateSession(context.Background(), "acme", "default", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cont := func(ctx context.Context) error {
+		return srv.RunOnce(ctx, runner.RunInput{
+			SessionID: sess.ID, TenantID: "acme",
+			Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "what do you know about me?"}}}},
+		}, runner.RunCallbacks{})
+	}
+	if err := cont(tenantMemberCtx(t, "acme", "carol")); !errors.Is(err, runner.ErrSessionNotFound) {
+		t.Fatalf("member continuing alice's session: %v, want the opaque session-not-found", err)
+	}
+	if runs, err := st.RunsForSession(context.Background(), sess.ID); err != nil || len(runs) != 0 {
+		t.Fatalf("a member's continuation created %d run(s) in alice's session (%v)", len(runs), err)
+	}
+	if err := cont(tenantOperatorCtx("acme")); err != nil {
+		t.Fatalf("tenant operator continuing alice's session: %v", err)
+	}
+	runs, err := st.RunsForSession(context.Background(), sess.ID)
+	if err != nil || len(runs) != 1 || runs[0].UserID != "alice" {
+		t.Fatalf("tenant operator's continuation = %+v, %v; want one run as alice", runs, err)
+	}
+}
+
+// A user-scoped channel is that user's: a member reaches only its own, on the
+// connector ops behind the MCP channel tools and POST /v1/_channels/_await and
+// _broadcast, as the per-user HTTP routes and the gRPC channel RPCs already
+// hold it. Another user's channel reads as an undeclared one; peeking,
+// subscribing, acking, awaiting, publishing and broadcasting all refuse, and
+// the owner's messages and cursor are untouched. A tenant operator reaches
+// every user's channel of its tenant.
+func TestUserChannels_AMemberReachesOnlyItsOwn(t *testing.T) {
+	srv, cleanup := channelFanFixture(t)
+	defer cleanup()
+	op := tenantOperatorCtx("acme")
+	for i := 0; i < 2; i++ {
+		if _, err := srv.PublishChannel(op, connector.ChannelPublishRequest{Channel: "c1", Scope: "user", ScopeID: "bob", Payload: json.RawMessage(`{"secret":"bob-private"}`)}); err != nil {
+			t.Fatalf("operator publish to bob's channel: %v", err)
+		}
+	}
+	carol := tenantMemberCtx(t, "acme", "carol")
+	refused := func(op string, err error) {
+		t.Helper()
+		if !errors.Is(err, connector.ErrChannelNotDeclared) {
+			t.Errorf("member %s on bob's user channel: err=%v, want the not-declared answer", op, err)
+		}
+	}
+	peek, err := srv.PeekChannel(carol, connector.ChannelPeekRequest{Channel: "c1", Scope: "user", ScopeID: "bob"})
+	refused("peek", err)
+	if len(peek.Messages) != 0 {
+		t.Errorf("member peeked bob's messages: %+v", peek.Messages)
+	}
+	_, err = srv.SubscribeChannel(carol, connector.ChannelSubscribeRequest{Channel: "c1", Scope: "user", ScopeID: "bob", MaxMessages: 10})
+	refused("subscribe", err)
+	_, err = srv.AckChannel(carol, connector.ChannelAckRequest{Channel: "c1", Scope: "user", ScopeID: "bob", Cursor: "cur_0"})
+	refused("ack", err)
+	_, err = srv.AwaitChannels(carol, connector.ChannelAwaitRequest{Channels: []string{"c1"}, Scope: "user", ScopeID: "bob", MaxMessages: 10})
+	refused("await", err)
+	_, err = srv.PublishChannel(carol, connector.ChannelPublishRequest{Channel: "c1", Scope: "user", ScopeID: "bob", Payload: json.RawMessage(`{"forged":true}`)})
+	refused("publish", err)
+	_, err = srv.BroadcastChannels(carol, connector.ChannelBroadcastRequest{Channels: []string{"c1", "c2"}, Scope: "user", ScopeID: "bob", Payload: json.RawMessage(`{"forged":true}`)})
+	refused("broadcast", err)
+
+	// Bob still has both of his messages, unconsumed and unforged.
+	bob := tenantMemberCtx(t, "acme", "bob")
+	own, err := srv.PeekChannel(bob, connector.ChannelPeekRequest{Channel: "c1", Scope: "user", ScopeID: "bob", MaxMessages: 10})
+	if err != nil || len(own.Messages) != 2 {
+		t.Fatalf("bob peeking his own channel = %+v, %v; want his 2 messages", own.Messages, err)
+	}
+	for _, m := range own.Messages {
+		if strings.Contains(string(m.Value), "forged") {
+			t.Errorf("a member's publish reached bob's channel: %s", m.Value)
+		}
+	}
+	if got, err := srv.PeekChannel(op, connector.ChannelPeekRequest{Channel: "c1", Scope: "user", ScopeID: "bob", MaxMessages: 10}); err != nil || len(got.Messages) != 2 {
+		t.Errorf("tenant operator peeking bob's channel = %d messages, %v; want 2", len(got.Messages), err)
 	}
 }
