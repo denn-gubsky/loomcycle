@@ -343,6 +343,12 @@ Who may do what:
 - `oauth_connect_status` asks the `use` verb of the access-control rules, the
   others `manage`.
 
+The ops are `POST /v1/_credentialdef`, the gRPC `CredentialDef` RPC and the
+MCP `credentialdef` tool. The TS client has `createOAuthCredential`,
+`oauthConnectStart`, `oauthConnectStatus` and `oauthDisconnect`; the Python
+client `create_oauth_credential`, `oauth_connect_start`,
+`oauth_connect_status` and `oauth_disconnect`.
+
 Not accepted (in this version): a field that takes a whole `$cred:<name>`
 reference (`user_bearer`, `api_key_env`, an A2A peer's bearer, a hook's
 signing secret, the Git tool's `credential`) does not take `$oauth:`. A

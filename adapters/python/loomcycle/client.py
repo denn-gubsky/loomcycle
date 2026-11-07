@@ -1278,6 +1278,84 @@ class LoomcycleClient:
         :meth:`document`."""
         return await self._dispatch_substrate("CredentialDef", input)
 
+    # OAuth credentials: a credential with usage "oauth" holds a connection to
+    # an OAuth-protected server (a remote MCP server, say). Its owner connects
+    # it once by approving a code in a browser (the OAuth device grant), and
+    # loomcycle refreshes the access token itself wherever config names it as
+    # "$oauth:<name>". No answer carries an access token, a refresh token or
+    # the device code. These are made outside a run: scope "user" is the
+    # caller's own, "tenant" needs substrate:tenant. Typed twins of
+    # credential_def; read one with op "get", delete one with op "delete".
+
+    async def create_oauth_credential(
+        self,
+        *,
+        scope: str,
+        name: str,
+        resource: str,
+        issuer: Optional[str] = None,
+        scopes: Optional[Sequence[str]] = None,
+        token_endpoint_auth: Optional[str] = None,
+        allowed_urls: Optional[Sequence[str]] = None,
+    ) -> Mapping[str, Any]:
+        """Create an OAuth credential for the protected ``resource`` (the
+        server's https URL; the authorization server is discovered from it).
+        ``issuer`` picks one when the resource lists several; ``scopes`` are
+        the scopes to ask for; ``token_endpoint_auth`` is ``"none"`` (the
+        default), ``"client_secret_basic"`` or ``"client_secret_post"``.
+        ``allowed_urls`` defaults to ``[resource]``. It starts as
+        ``pending_connect``: connect it with :meth:`oauth_connect_start`.
+        Create-only; to change it, delete and create it again.
+
+        Returns the credential's metadata, with an ``oauth`` block
+        (``resource``, ``registration``, ``state``, ...). A refusal raises
+        :class:`SubstrateToolRefusedError`."""
+        oauth: dict[str, Any] = {"resource": resource}
+        if issuer is not None:
+            oauth["issuer"] = issuer
+        if scopes is not None:
+            oauth["scopes"] = list(scopes)
+        if token_endpoint_auth is not None:
+            oauth["client"] = {"token_endpoint_auth": token_endpoint_auth}
+        body: dict[str, Any] = {
+            "op": "create",
+            "usage": "oauth",
+            "scope": scope,
+            "name": name,
+            "oauth": oauth,
+        }
+        if allowed_urls is not None:
+            body["allowed_urls"] = list(allowed_urls)
+        return await self.credential_def(body)
+
+    async def oauth_connect_start(self, *, scope: str, name: str) -> Mapping[str, Any]:
+        """Start connecting an OAuth credential (the OAuth device grant).
+
+        Returns ``{name, scope, status: "pending_connect", user_code,
+        verification_uri, verification_uri_complete?, expires_in, interval,
+        next}``. Show the person ``verification_uri`` and ``user_code``; once
+        they approve, the server finishes the connect on its own. Poll
+        :meth:`oauth_connect_status` every ``interval`` seconds until
+        ``oauth["state"]`` is ``"connected"`` or ``expires_in`` passes. A
+        second start supersedes the first, and on a connected credential drops
+        the current grant until the new one is approved."""
+        return await self.credential_def({"op": "oauth_connect_start", "scope": scope, "name": name})
+
+    async def oauth_connect_status(self, *, scope: str, name: str) -> Mapping[str, Any]:
+        """An OAuth credential's metadata with its ``oauth`` block: ``state``
+        (``pending_connect`` / ``connected`` / ``needs_reauth`` /
+        ``revoked``), ``connected_as``, ``access_expires_at`` and
+        ``last_error`` when set. A check also finishes a connect the server
+        lost track of across a restart."""
+        return await self.credential_def({"op": "oauth_connect_status", "scope": scope, "name": name})
+
+    async def oauth_disconnect(self, *, scope: str, name: str) -> Mapping[str, Any]:
+        """Disconnect an OAuth credential: revoke the grant at the server
+        (best effort) and clear it here. Returns its metadata with
+        ``oauth["state"] == "revoked"``; the credential and its client
+        registration stay for the next :meth:`oauth_connect_start`."""
+        return await self.credential_def({"op": "oauth_disconnect", "scope": scope, "name": name})
+
     async def crypto(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
         """Invoke the Crypto tool outside a run — cryptography with keys the
         runtime holds, so the caller never sees key material. Op-discriminated:

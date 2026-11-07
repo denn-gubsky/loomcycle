@@ -865,6 +865,29 @@ const meta = await client.getCredential({ scope: "user", name: "GIT_TOKEN" });
 console.log(meta.allowed_urls ?? "unrestricted");
 ```
 
+### OAuth credentials
+
+An **OAuth credential** (`usage: "oauth"`) holds a connection to an OAuth-protected server, such as a remote MCP server. Its owner connects it once by approving a code in a browser (the OAuth device grant); loomcycle then refreshes the access token itself and sends it wherever config names `$oauth:<name>`. No call returns an access token, a refresh token or the device code. These calls are made outside a run: `scope: "user"` is your own connection, `scope: "tenant"` needs `substrate:tenant`. `getCredential` / `listCredentials` report the `oauth` block too; `deleteCredential` revokes the grant (best effort) and removes it. See `docs/CREDENTIALS.md`, "Connecting through OAuth".
+
+| Method | Returns | Notes |
+|---|---|---|
+| `createOAuthCredential({ scope, name, oauth, allowed_urls? })` | `Promise<CredentialMeta>` | `oauth` is `{ resource, issuer?, scopes?, client?: { token_endpoint_auth? } }` (`OAuthCredentialConfig`); `resource` is the server's https URL. Starts `pending_connect`. Create-only: delete and create again to change it. `{op: "create", usage: "oauth"}`. |
+| `oauthConnectStart({ scope, name })` | `Promise<OAuthConnectStart>` | `{ user_code, verification_uri, verification_uri_complete?, expires_in, interval, status: "pending_connect" }`. Show the person the URI and code. `{op: "oauth_connect_start"}`. |
+| `oauthConnectStatus({ scope, name })` | `Promise<CredentialMeta>` | `oauth.state` (`pending_connect` / `connected` / `needs_reauth` / `revoked`), `oauth.connected_as`, `oauth.access_expires_at`, `oauth.last_error`. Poll every `interval` seconds while connecting. `{op: "oauth_connect_status"}`. |
+| `oauthDisconnect({ scope, name })` | `Promise<CredentialMeta>` | Revokes the grant (best effort) and clears it; `oauth.state` becomes `revoked`. `{op: "oauth_disconnect"}`. |
+
+```ts
+await client.createOAuthCredential({ scope: "user", name: "docs-server", oauth: { resource: "https://docs.example.com/mcp" } });
+const start = await client.oauthConnectStart({ scope: "user", name: "docs-server" });
+console.log(`Open ${start.verification_uri} and enter ${start.user_code}`);
+const deadline = Date.now() + start.expires_in * 1000;
+let meta = await client.oauthConnectStatus({ scope: "user", name: "docs-server" });
+while (meta.oauth?.state === "pending_connect" && Date.now() < deadline) {
+  await new Promise((r) => setTimeout(r, start.interval * 1000));
+  meta = await client.oauthConnectStatus({ scope: "user", name: "docs-server" });
+}
+```
+
 ### Crypto keys + the Crypto tool (RFC EP)
 
 A **crypto key** is a credential with `usage: "crypto"`: a `key_type` fixed for its life, numbered versions, and a `min_version` below which versions are retired. No call ever returns key material. `getCredential` / `listCredentials` report a crypto key's `usage`, `key_type`, `current_version`, `min_version` and `versions` (`{version, created_at, retired}`).
