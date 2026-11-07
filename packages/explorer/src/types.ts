@@ -88,6 +88,8 @@ export interface EdgeEvidence {
   scope?: string;
   natural_key?: string;
   quote: string;
+  // part is "title" on a quote of the chunk's title; a body quote omits it.
+  part?: "body" | "title";
   char_start?: number;
   char_end?: number;
   stale?: boolean;

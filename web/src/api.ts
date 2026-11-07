@@ -4637,7 +4637,8 @@ export interface ReviewStatement {
   from_document_id?: string;
   to_document_id?: string;
   attributes?: Record<string, unknown>;
-  evidence?: { id: string; quote: string; chunk_id?: string; stale?: boolean }[];
+  /** part is "title" on a quote of the chunk's title; absent on a body quote. */
+  evidence?: { id: string; quote: string; chunk_id?: string; part?: "body" | "title"; stale?: boolean }[];
   evidence_count?: number;
 }
 

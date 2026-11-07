@@ -9041,6 +9041,9 @@ button.doc-ref-target.external {
 .review-stale {
   color: var(--lc-running);
 }
+.review-part {
+  font-style: italic;
+}
 .review-no-rights {
   border: 1px solid var(--lc-rule);
   border-left: 3px solid var(--lc-danger);
