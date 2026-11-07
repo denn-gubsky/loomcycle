@@ -11,14 +11,11 @@ name: Publish @loomcycle/loomboard to npm
 # doesn't match the tag (a dedicated tag should always match — a mismatch is a
 # mistake, surfaced loudly, npm untouched).
 #
-# Auth: an npm automation token in the `NPM_TOKEN` repo secret. setup-node writes
-# it into ~/.npmrc (via NODE_AUTH_TOKEN below), so `npm publish` authenticates as
-# that token's account. This is the token path chosen for the FIRST publish of
-# this brand-new scoped package (OIDC Trusted Publishing can't bootstrap a package
-# that doesn't exist yet). Once @loomcycle/loomboard exists on npm, the operator
-# MAY switch to OIDC Trusted Publishing (register the publisher on the package's
-# Access tab, then drop the secret and NODE_AUTH_TOKEN below) — see the
-# @loomcycle/client publish-ts-adapter.yml workflow for that shape.
+# Auth: npm Trusted Publishing (OIDC). The package's npm Access tab names this
+# repository and this workflow file as its trusted publisher; npm exchanges the
+# job's GitHub OIDC token (id-token: write) for a short-lived publish token, so
+# no npm token is stored in the repository. Trusted Publishing needs npm CLI
+# 11.5.1 or later, hence the upgrade step below.
 #
 # Provenance: `npm publish --provenance` works with token auth too. npm signs a
 # SLSA provenance statement through the job's GitHub OIDC token (id-token: write)
@@ -46,7 +43,7 @@ jobs:
     permissions:
       contents: read
       # npm publish --provenance signs its provenance statement through the
-      # job's GitHub OIDC token. Publishing itself still uses NPM_TOKEN.
+      # job's GitHub OIDC token, which also authenticates the publish (Trusted Publishing).
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,6 +54,10 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
           cache-dependency-path: packages/loomboard/package-lock.json
+
+      - name: Upgrade npm CLI for Trusted Publishing
+        # npm 11.5.1+ negotiates the OIDC exchange; npm 11 still runs on Node 20.
+        run: npm install -g npm@^11.5.1
 
       - name: Verify package version matches tag
         working-directory: packages/loomboard
@@ -90,9 +91,6 @@ jobs:
       - name: Publish
         working-directory: packages/loomboard
         # --access public for the scoped package. prepack rebuilds dist from a
-        # clean tree, so the published tarball is fresh regardless. NODE_AUTH_TOKEN
-        # is the NPM_TOKEN secret setup-node wired into ~/.npmrc. --provenance
+        # clean tree, so the published tarball is fresh regardless. --provenance
         # attaches the signed build provenance (see the header).
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance

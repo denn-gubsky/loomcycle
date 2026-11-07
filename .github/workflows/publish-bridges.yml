@@ -15,9 +15,11 @@ name: Publish a loomcycle bridge to npm
 # when the package directory does not exist, or when package.json's name or
 # version does not match the tag. npm is untouched in each case.
 #
-# Auth: the NPM_TOKEN repo secret, as the other first publishes of a scoped
-# package use (OIDC Trusted Publishing cannot bootstrap a package that does not
-# exist yet). setup-node writes it into ~/.npmrc via NODE_AUTH_TOKEN below.
+# Auth: npm Trusted Publishing (OIDC). The package's npm Access tab names this
+# repository and this workflow file as its trusted publisher; npm exchanges the
+# job's GitHub OIDC token (id-token: write) for a short-lived publish token, so
+# no npm token is stored in the repository. Trusted Publishing needs npm CLI
+# 11.5.1 or later, hence the upgrade step below.
 #
 # Provenance: `npm publish --provenance` works with token auth too. npm signs a
 # SLSA provenance statement through the job's GitHub OIDC token (id-token: write)
@@ -46,7 +48,7 @@ jobs:
     permissions:
       contents: read
       # npm publish --provenance signs its provenance statement through the
-      # job's GitHub OIDC token. Publishing itself still uses NPM_TOKEN.
+      # job's GitHub OIDC token, which also authenticates the publish (Trusted Publishing).
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,6 +80,10 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
           cache-dependency-path: ${{ steps.pkg.outputs.dir }}/package-lock.json
+
+      - name: Upgrade npm CLI for Trusted Publishing
+        # npm 11.5.1+ negotiates the OIDC exchange; npm 11 still runs on Node 20.
+        run: npm install -g npm@^11.5.1
 
       - name: Verify the package matches the tag, and depends on nothing by path
         working-directory: ${{ steps.pkg.outputs.dir }}
@@ -114,6 +120,4 @@ jobs:
         # --access public for the scoped package. prepack rebuilds dist from a
         # clean tree. --provenance attaches the signed build provenance (see the
         # header).
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance

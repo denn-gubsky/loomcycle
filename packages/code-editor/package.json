@@ -1,6 +1,6 @@
 {
   "name": "@loomcycle/code-editor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Shared structured-text editor for loomcycle surfaces (RFC FW): CodeMirror 6 with syntax highlighting, soft wrap, folding, search and lint marks, plus a JSON | YAML switch over a JSON value and pure helpers to convert, parse with positions, and locate JSON paths in either format.",
   "license": "Apache-2.0",

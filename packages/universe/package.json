@@ -1,6 +1,6 @@
 {
   "name": "@loomcycle/universe",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Embeddable 3D star-map navigator for loomcycle documents (RFC FQ) — documents as constellations of chunk stars, grouped by Path directories into formations, with selection, typed links, search and level of detail. Mounts standalone or as the @loomcycle/explorer navigator.",
   "license": "Apache-2.0",
