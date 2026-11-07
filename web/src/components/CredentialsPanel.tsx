@@ -25,6 +25,9 @@ import {
   versionChips,
   versionSummary,
 } from "../lib/cryptoKeys";
+import { isOAuthCredential } from "../lib/oauthConnect";
+import { OAuthConnect } from "./OAuthConnect";
+import { CREDENTIALS_CHANGED } from "./OAuthReauthBanner";
 
 // CredentialsPanel is the shared RFC AR credential UI, used in two places:
 //   - the tenant credentials page (full: tenant + user scopes, a scope selector);
@@ -144,6 +147,13 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
     void refresh();
   }, [refresh]);
 
+  // reloadChanged reloads the table after a credential changed here, and
+  // tells the needs-reauth banner to read again.
+  const reloadChanged = useCallback(async () => {
+    await refresh();
+    window.dispatchEvent(new Event(CREDENTIALS_CHANGED));
+  }, [refresh]);
+
   const onCreate = async (e: FormEvent) => {
     e.preventDefault();
     if (busy || !name.trim() || !value) return;
@@ -180,7 +190,9 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
   const onDelete = async (r: CredentialRow) => {
     const question = isCryptoKey(r)
       ? `Delete the ${r._scope} crypto key "${r.name}"? Its material is destroyed — anything still encrypted or signed with it can never be decrypted or verified again. (The server refuses while any version is unretired.)`
-      : `Delete the ${r._scope} credential "${r.name}"? Anything referencing $cred:${r.name} will stop resolving.`;
+      : isOAuthCredential(r)
+        ? `Delete the ${r._scope} OAuth credential "${r.name}"? Its grant is revoked first, and anything referencing $oauth:${r.name} will stop resolving.`
+        : `Delete the ${r._scope} credential "${r.name}"? Anything referencing $cred:${r.name} will stop resolving.`;
     if (!confirm(question)) {
       return;
     }
@@ -189,7 +201,7 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
     try {
       await deleteCredential({ scope: r._scope, name: r.name });
       if (openKey === rowKey(r)) setOpenKey(null);
-      await refresh();
+      await reloadChanged();
     } catch (e) {
       // A refused crypto-key delete explains itself (which version is still
       // unretired); show the server's own text.
@@ -607,6 +619,9 @@ export function CredentialsPanel({ userOnly = false }: { userOnly?: boolean }) {
                   <td>
                     <code>{r.name}</code>
                     {crypto && <CryptoKeyDetails r={r} />}
+                    {isOAuthCredential(r) && (
+                      <OAuthConnect meta={r} scope={r._scope} onChanged={() => void reloadChanged()} />
+                    )}
                     {r.allowed_urls && (
                       <div className="settings-muted">
                         {r.allowed_urls.length === 0

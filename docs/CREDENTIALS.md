@@ -297,6 +297,25 @@ state (`pending_connect`, `connected`, `needs_reauth`, `revoked`), the account
 it is connected as, when the access token expires and the last error. If that
 replica restarted meanwhile, a status check finishes the connect.
 
+**In the Web UI**, the credentials pages (*tenant credentials* for an
+operator, *My credentials* for your own) show each OAuth credential's state
+(pending connect, connected, needs reauth, disconnected) and the account it
+is connected as, with **Connect account** (or **Reconnect**) and
+**Disconnect**, which asks first. A connect shows the code with a copy
+button and opens the sign-in page in a new tab, then reads the status once
+per the server's `interval` (further apart when the server asks it to slow
+down) until the credential connects, the server refuses it, or the code
+expires. Codes last about 5 minutes and every start replaces the code before
+it, so approve the newest one; an expired code offers a new one.
+
+While any OAuth credential the viewer manages is in `needs_reauth` — their
+own user-scope ones, and the tenant's when they operate it — a banner above
+every Web UI page names it and why, with a **Reconnect** link to the page
+that connects it. The banner reads the same credential lists the pages do,
+so it never shows another tenant's or another user's credential; the
+`oauth_needs_reauth` (or `oauth_connect_failed`) audit event records the
+change.
+
 The account (`connected_as`) is display-only and comes from, in order: the
 server's userinfo endpoint (when it advertises one and the grant includes
 `openid`); else the OpenID Connect `id_token` in the token response, used

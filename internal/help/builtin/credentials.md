@@ -146,6 +146,14 @@ verified OpenID Connect `id_token` (signed by a key from the issuer's own
 scope needs an operator or `substrate:tenant`, agent scope an operator; user
 scope is your own.
 
+In the Web UI, the credentials pages (tenant credentials, and My credentials
+for your own) show each OAuth credential's state and account, with **Connect
+account** / **Reconnect** and **Disconnect**. A connect shows the code, a
+copy button and the sign-in link, then waits until it connects. Codes last
+about 5 minutes, and a new connect replaces the code before it, so approve
+the newest one. While any OAuth credential you manage is in `needs_reauth`, a
+banner above every page names it, with a Reconnect link.
+
 Name it as `$oauth:<name>` wherever a `$cred:` header would go. The runtime
 sends a fresh access token, refreshing it before it expires; one refresh runs
 per credential, across replicas too, and the rotated refresh token is stored

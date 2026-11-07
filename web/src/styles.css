@@ -922,6 +922,16 @@ textarea::placeholder {
   border-bottom: 1px solid var(--border);
   font-size: var(--lc-text-sm);
 }
+.oauth-reauth-banner {
+  padding: 8px 16px;
+  background: rgba(255, 93, 104, 0.12);
+  border-bottom: 1px solid var(--failed);
+  font-size: var(--lc-text-sm);
+}
+.oauth-reauth-banner ul {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
 .open-mode-banner {
   padding: 8px 16px;
   background: rgba(255, 93, 104, 0.12);
@@ -6714,6 +6724,18 @@ a.login-btn {
 .status-retired {
   background: var(--lc-surface-2);
   color: var(--lc-text-faint);
+}
+.status-bad {
+  background: rgba(255, 93, 104, 0.14);
+  color: var(--lc-failed);
+}
+
+/* OAuth credential: state, actions, and the code to approve */
+.oauth-connect-actions {
+  margin: var(--lc-space-1) 0;
+}
+.oauth-code {
+  margin: var(--lc-space-1) 0 0;
 }
 
 /* Token reveal (shown once) */
