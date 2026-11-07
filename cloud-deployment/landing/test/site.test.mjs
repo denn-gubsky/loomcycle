@@ -138,7 +138,9 @@ test("every local link and asset of the privacy notice exists", () => {
 });
 
 test("the privacy notice is plain markup: balanced, no inline script, the site's stylesheet loader", () => {
-  const scripts = [...privacy.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
+  // Closing tags match with optional whitespace (`</script >`), as browsers do.
+  const scripts = [...privacy.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
+  assert.equal((privacy.match(/<script\b/gi) || []).length, scripts.length, "every <script> is closed");
   assert.deepEqual(scripts.map((m) => [m[1].trim(), m[2].trim()]), [['src="./ds-base.js"', ""]]);
   assert.doesNotMatch(privacy, /\son[a-z]+=/i, "no inline event handlers");
   const body = withoutCodeBlocks(privacy);
