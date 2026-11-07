@@ -46,6 +46,7 @@ export function StatementMeta({ statement }: { statement: StatementFields }) {
           {rows.map((ev) => (
             <li key={ev.id} title={ev.quote}>
               “{clipQuote(ev.quote)}”
+              {ev.part === "title" && <span className="doc-stmt-part"> (title)</span>}
               {ev.stale && <span className="doc-stmt-stale"> (source changed)</span>}
             </li>
           ))}

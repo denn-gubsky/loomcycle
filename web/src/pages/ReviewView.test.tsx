@@ -77,6 +77,21 @@ describe("the queue table", () => {
     expect(out).not.toContain(`${"x".repeat(200)}”`);
   });
 
+  it("labels a quote of a chunk's title, and only that one", () => {
+    const titled = row({
+      evidence: [
+        { id: "e1", quote: "Quarterly field report", part: "title" },
+        { id: "e2", quote: "the survey found" },
+      ],
+      evidence_count: 2,
+    });
+    for (const expanded of [none, new Set(["s1"])]) {
+      const out = html(createElement(ReviewRows, { rows: [titled], scope: "tenant", selected: none, expanded }));
+      expect(out).toContain("“Quarterly field report”<span class=\"review-part\"> (title)</span>");
+      expect(out).toContain("“the survey found”</li>");
+    }
+  });
+
   it("shows a judge's verdict, and its rationale once the evidence is expanded", () => {
     const judged = row({ attributes: { judge: { verdict: "reject", confidence: 0.91, rationale: "an amending act, not the law" } } });
     const folded = html(createElement(ReviewRows, { rows: [judged], scope: "tenant", selected: none, expanded: none }));
@@ -183,6 +198,13 @@ describe("the confirm", () => {
     expect(out).toContain("Article 0");
     expect(out).toContain("+14 more in the sample");
     expect(out).toContain("<code>cites</code> by rule:citation: 1,000");
+  });
+
+  it("labels a sample's quote of a chunk's title", () => {
+    const sample = [row({ evidence: [{ id: "e1", quote: "Quarterly field report", part: "title" }] }), row({ id: "s2" })];
+    const out = html(createElement(RuleConfirm, { action: "accept", dry: dry({ sample }), why: "first" }));
+    expect(out).toContain("“Quarterly field report” (title)");
+    expect(out.match(/\(title\)/g)).toHaveLength(1);
   });
 
   it("says why it asks again, and what will be skipped", () => {

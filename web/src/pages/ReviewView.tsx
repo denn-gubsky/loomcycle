@@ -205,6 +205,7 @@ export function ReviewRows({ rows, scope, focusId, selected, expanded, onToggleS
                     {quotes.map((q) => (
                       <li key={q.id} title={open ? undefined : q.quote}>
                         &ldquo;{open ? q.quote : clip(q.quote)}&rdquo;
+                        {q.part === "title" && <span className="review-part"> (title)</span>}
                         {q.stale && <span className="review-stale"> (source changed)</span>}
                       </li>
                     ))}
@@ -269,7 +270,12 @@ export function RuleConfirm({ action, dry, why }: RuleConfirmProps) {
             {sample.slice(0, CONFIRM_SAMPLE).map((s) => (
               <li key={s.id}>
                 {s.from_title || s.from_id} <code>{s.kind}</code> {s.to_title || s.to_id}
-                {s.evidence?.[0] && <span className="settings-muted-inline"> &ldquo;{clip(s.evidence[0].quote, 80)}&rdquo;</span>}
+                {s.evidence?.[0] && (
+                  <span className="settings-muted-inline">
+                    {" "}
+                    &ldquo;{clip(s.evidence[0].quote, 80)}&rdquo;{s.evidence[0].part === "title" && " (title)"}
+                  </span>
+                )}
               </li>
             ))}
             {sample.length > CONFIRM_SAMPLE && (

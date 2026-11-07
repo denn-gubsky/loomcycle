@@ -1271,6 +1271,7 @@
   overflow-wrap: anywhere;
 }
 .loomcycle-explorer .doc-stmt-stale,
+.loomcycle-explorer .doc-stmt-part,
 .loomcycle-explorer .doc-stmt-more {
   color: var(--fg-muted);
   font-style: italic;
