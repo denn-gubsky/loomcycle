@@ -275,6 +275,11 @@ func (s *Server) DeleteChannel(ctx context.Context, name string) error {
 	if !validChannelName(name) {
 		return fmt.Errorf("delete channel: name must match [A-Za-z0-9_-]{1,128}")
 	}
+	if row, err := s.store.ChannelGet(ctx, tenantFromCtx(ctx), name); err == nil {
+		if err := refuseMemberOnUserChannel(ctx, "delete", row.Scope); err != nil {
+			return err
+		}
+	}
 	if err := s.store.ChannelsDelete(ctx, tenantFromCtx(ctx), name); err != nil {
 		var notFound *store.ErrNotFound
 		if errors.As(err, &notFound) {
@@ -344,6 +349,11 @@ func (s *Server) PurgeChannel(ctx context.Context, name string) (connector.Chann
 			return connector.ChannelPurgeResult{}, fmt.Errorf("%w: %q", connector.ErrChannelNotFound, name)
 		}
 	}
+	// A user-scoped channel holds each user's own messages, and a member acts
+	// only on its own: it may not empty everyone's.
+	if err := refuseMemberOnUserChannel(ctx, "purge", declaredScope); err != nil {
+		return connector.ChannelPurgeResult{}, err
+	}
 	// A purge empties the purger's own keyspace. An admin's purge of the
 	// operator's global channel also empties the global layer of every tenant
 	// that resolves to it — never a tenant's own same-named channel.
@@ -371,4 +381,19 @@ func (s *Server) PurgeChannel(ctx context.Context, name string) (connector.Chann
 		total += n
 	}
 	return connector.ChannelPurgeResult{Name: name, Purged: total}, nil
+}
+
+// refuseMemberOnUserChannel refuses a member (auth.OwnRowsOnly, isolated or
+// not) an operation that would empty every user's messages on a user-scoped
+// channel: purging it, or deleting its definition. Each user's messages there
+// are that user's own, and a member acts only on its own. A tenant operator
+// and an admin may.
+func refuseMemberOnUserChannel(ctx context.Context, op, scope string) error {
+	if store.MemoryScope(scope) != store.MemoryScopeUser {
+		return nil
+	}
+	if p, ok := auth.PrincipalFromContext(ctx); auth.OwnRowsOnly(p, ok) {
+		return fmt.Errorf("%s channel: a user-scoped channel holds every user's messages, so only a tenant operator may %s it", op, op)
+	}
+	return nil
 }
