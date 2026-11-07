@@ -201,16 +201,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.144.0) makes OAuth-connected MCP servers run
-unattended: a refused token is refreshed and retried once, snapshots carry OAuth
-credential settings (never secrets), and the account is named from a verified
-`id_token`. Documents now follow a source that keeps changing (revision, update
-time, `mark_source`), and File extract can recover headings marked by formatting.
-Read its upgrade notes in [`REVISIONS.md`](REVISIONS.md): an import heading entry
-on an existing heading is now refused.
+The most recent line (v1.145.0) confines a tenant member to its own
+conversations: a member reads and acts on only its own runs and sessions, while
+tenant operators still see the whole tenant. It adds the `skybits-sync` bundle,
+which keeps a tenant's Documents in step with a Skybits account, and a Web UI
+"Connect account" for OAuth credentials. Read its upgrade notes in
+[`REVISIONS.md`](REVISIONS.md): members lose access to colleagues' runs.
 
-Before it, v1.143.0 added OAuth credentials for MCP servers (`$oauth:<name>`) and
-the duplicate finder. See [`REVISIONS.md`](REVISIONS.md).
+Before it, v1.144.0 made OAuth-connected MCP servers run unattended and let
+documents follow a source that keeps changing. See [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
 recordings into timed transcripts through a whisper server, and Teams captions
