@@ -1332,6 +1332,8 @@ A scope says which routes a token may call. What a call may decide *for the tena
 
 A `substrate:tenant` token counts as the operator plane only in its own tenant. A tenant operator's call is the operator plane on HTTP, gRPC and MCP alike.
 
+**Whose conversations a caller reads.** A member and an isolated member read only the runs and sessions they started: a run's result, prompt, transcript and event stream, its questions and resident sub-agents, the per-user run lists and run-state streams, and their rows of the audit view (`GET /v1/_events`). Another user's run, and a tenant-level run no user started (an operator's, a schedule's, a webhook's), answer as a missing one does, on HTTP, gRPC and MCP. A bridge's group conversation runs as the conversation's own subject, so no person's member token reads it. Acting on a run (cancel, steer, compact, retune, review, answer a question, delete) follows the same rule. A tenant operator reads and acts on every run of its tenant; an admin on every run, with the `?tenant=` focus. Inside a run, an agent reads another user's chats only through a `history_scope` of `tenant` that an operator granted it. A non-isolated member used to read every run of its tenant.
+
 **What `?scope_id=` a member may pass.** On the off-run memory, Document, Path, feed and asset routes, a member may name:
 
 - itself;
