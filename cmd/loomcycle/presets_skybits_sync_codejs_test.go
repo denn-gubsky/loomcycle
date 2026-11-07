@@ -314,6 +314,10 @@ func TestSkybitsSync_MassRemovalMarksNothingAndFails(t *testing.T) {
 			t.Errorf("%s was marked removed past the guard", id)
 		}
 	}
+	// The failed run wrote one report section, beside the first run's.
+	if n := f.reportSections(); n != 2 {
+		t.Errorf("report sections = %d, want 2 (one per run)", n)
+	}
 }
 
 func TestSkybitsSync_ThreeTransientFailuresStopTheRun(t *testing.T) {
@@ -419,4 +423,26 @@ func TestSkybitsSync_ANameHeldByAnotherDocumentIsNeverTaken(t *testing.T) {
 	if row := f.manifestRow("d1"); row["primary_path"] != "/skybits/_untagged/Notes-doc" || row["status"] != "imported" {
 		t.Errorf("row = %v, want the next free name", row)
 	}
+}
+
+// reportSections counts the sections of the month's report document.
+func (f *skyFake) reportSections() int {
+	f.t.Helper()
+	ls := f.mustDoc(`{"op":"query_documents","scope":"tenant","limit":200}`)
+	for _, x := range ls["documents"].([]any) {
+		m := x.(map[string]any)
+		if !strings.HasPrefix(fmt.Sprint(m["title"]), "Skybits sync report ") {
+			continue
+		}
+		q := f.mustDoc(fmt.Sprintf(`{"op":"query_chunks","scope":"tenant","document_id":%q,"limit":200}`, m["document_id"]))
+		d := f.mustDoc(fmt.Sprintf(`{"op":"get_document","scope":"tenant","id":%q}`, m["document_id"]))
+		n := 0
+		for _, c := range q["chunks"].([]any) {
+			if c.(map[string]any)["id"] != d["root_chunk_id"] {
+				n++
+			}
+		}
+		return n
+	}
+	return 0
 }

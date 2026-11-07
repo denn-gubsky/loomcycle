@@ -140,7 +140,9 @@ agents:
           st.report.status = "failed";
           st.report.failure = errText(e).slice(0, 400);
           if (REAUTH.test(st.report.failure)) st.report.stopped = "Skybits sign-in needs renewing";
-          try { writeReport(st); } catch (e2) { st.report.report_error = errText(e2).slice(0, 200); }
+          if (!st.reported) {
+            try { writeReport(st); } catch (e2) { st.report.report_error = errText(e2).slice(0, 200); }
+          }
         } finally {
           try { Document({ op: "release", name: LEASE, scope: SCOPE }); } catch (e3) { /* the lease expires on its own */ }
         }
@@ -951,6 +953,7 @@ agents:
 
       function writeReport(st) {
         var rep = st.report;
+        st.reported = true;
         var path = st.P.root + "/_sync/report-" + st.month;
         var heading = st.now + " " + (rep.full ? "full" : "apply") + (rep.status && rep.status !== "complete" ? " (" + rep.status + ")" : "");
         var body = reportBody(rep);
