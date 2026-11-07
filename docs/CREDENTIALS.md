@@ -240,6 +240,8 @@ rules are those of a git-source volume:
   less than `write`; a config without `permissions` takes what the
   installation was granted.
 
+Since #2051 (RFC FB Phase 1).
+
 ## Connecting through OAuth — `$oauth:<name>`
 
 Some MCP servers take no API key: they are protected by OAuth, and every
@@ -420,8 +422,9 @@ in the stored transcript (unless `LOOMCYCLE_REDACT_SECRETS=0`), but the live
 tool result carries it, and so does the conversation sent to the LLM provider
 on the next call. Give a shell
 only credentials you would hand the model, and prefer the ones that keep the
-token out of reach: a git-source volume (`VolumeDef create source:{git:…}`)
-for a clone, an MCP server with a `$cred:` header for an API.
+token out of reach: the `Git` tool for repository work (see "In the Git tool"
+below), a git-source volume (`VolumeDef create source:{git:…}`) for a single
+commit, an MCP server with a `$cred:` header for an API.
 
 For the Bashbox fallback, bind each credential to the one command that needs
 it: `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS=git:GITHUB_TOKEN,gh:GH_TOKEN`
