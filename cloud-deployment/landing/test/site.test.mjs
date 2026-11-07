@@ -102,3 +102,53 @@ test("the signup redirect replaces history rather than pushing the invite link",
   assert.match(html, /location\.replace\(res\.json\.redirect\)/);
   assert.doesNotMatch(html, /location\.(href|assign)\s*[=(]\s*res\.json\.(redirect|url)/);
 });
+
+// ─── the privacy notice (cloud-web/privacy.html) ─────────────────────────────
+const WEB = path.resolve(HERE, "../../../cloud-web");
+const privacy = fs.readFileSync(path.join(WEB, "privacy.html"), "utf8");
+
+// localRefs lists the href/src values of a page that point inside the site.
+function localRefs(page) {
+  return [...page.matchAll(/\b(?:href|src)="([^"]*)"/g)].map((m) => m[1])
+    .filter((u) => !/^(?:[a-z]+:|\/\/|#)/i.test(u));
+}
+
+test("the footer has no dead links and points at the privacy notice", () => {
+  const footer = html.slice(html.indexOf("<footer>"), html.indexOf("</footer>"));
+  assert.ok(footer.length > 0);
+  assert.doesNotMatch(footer, /href="#"/);
+  assert.match(footer, /<a href="privacy\.html">Privacy<\/a>/);
+});
+
+test("the shared sign-up says what members see and links the privacy notice", () => {
+  const shared = html.slice(html.indexOf("<div class=\"acct\" data-shared-only"), html.indexOf("<div data-vault-section>"));
+  assert.match(shared, /Approved members can see what other members share in the shared workspace/);
+  assert.match(shared, /<a href="privacy\.html">Privacy<\/a>/);
+});
+
+// Only the privacy page's references are checked: index.html also names the
+// hero and mascot clips, which are git-ignored (assets/*.mp4) and copied to the
+// host separately.
+test("every local link and asset of the privacy notice exists", () => {
+  const refs = localRefs(privacy);
+  assert.ok(refs.includes("index.html") && refs.includes("./ds-base.js"));
+  for (const ref of refs) {
+    assert.ok(fs.existsSync(path.join(WEB, ref.split(/[?#]/)[0])), `privacy.html: ${ref} does not exist`);
+  }
+});
+
+test("the privacy notice is plain markup: balanced, no inline script, the site's stylesheet loader", () => {
+  // Closing tags match with optional whitespace (`</script >`), as browsers do.
+  const scripts = [...privacy.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
+  assert.equal((privacy.match(/<script\b/gi) || []).length, scripts.length, "every <script> is closed");
+  assert.deepEqual(scripts.map((m) => [m[1].trim(), m[2].trim()]), [['src="./ds-base.js"', ""]]);
+  assert.doesNotMatch(privacy, /\son[a-z]+=/i, "no inline event handlers");
+  const body = withoutCodeBlocks(privacy);
+  for (const tag of ["div", "section", "ul", "li", "p", "nav", "footer"]) {
+    const open = (body.match(new RegExp(`<${tag}[\\s>]`, "g")) || []).length;
+    const close = (body.match(new RegExp(`</${tag}>`, "g")) || []).length;
+    assert.equal(open, close, `<${tag}> ${open} open vs ${close} closed`);
+  }
+  assert.match(privacy, /<title>Privacy · loomcycle\.cloud<\/title>/);
+  for (const id of ["shared", "keep", "where", "erasure"]) assert.ok(privacy.includes(`id="${id}"`), `missing #${id}`);
+});

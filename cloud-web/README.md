@@ -7,6 +7,7 @@ The runtime itself runs on a VPS behind a reverse proxy at `app.loomcycle.cloud`
 
 ```
 index.html            the whole page (markup + styles + logic, no build step)
+privacy.html          the privacy notice (served at /privacy; no script but ds-base.js)
 ds-base.js            loads the Modernist design-system stylesheet + bundle
 _ds/modernist-*/      the design system (tokens, components) — styles.css is the only sheet
 assets/               logo, favicon, loom + mascot clips
@@ -167,3 +168,11 @@ Every technical claim on the page is lifted from the loomcycle repo —
 budgets), `docs/CLAUDE-CODE.md` (the plugin's 6 commands / 4 skills / 2 hooks,
 keychain storage, the `--upstream` single-runtime invariant), and
 `internal/api/http/server.go` (the `/healthz` response shape). Keep it that way.
+
+`privacy.html` describes this one deployment, so its claims come from
+`cloud-deployment/` (`config/loomcycle.yaml`, `docker-compose.yaml`,
+`.env.insecure.example`, the landing's sign-up flow) and from the runtime's
+documented erasure and audit behaviour (`SECURITY.md`, "Subject erasure", "The
+audit trail" and "The loomcycle.cloud deployment"). When the deployment changes
+what it keeps, where model calls go, or who may read a member's conversations,
+change the page with it.

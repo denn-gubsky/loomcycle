@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en" style="--color-bg:#f6f7ed">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Privacy · loomcycle.cloud</title>
+<link rel="icon" href="assets/favicon.svg" />
+<script src="./ds-base.js"></script>
+<style>
+/* The privacy notice. Same Modernist voice as index.html (its measures and
+   the prose/footer rules are copied, not shared: the site has no build step),
+   without the motion: this page is read, not watched, so nothing waits on a
+   script to become visible. */
+:root {
+  --leading: 28px;
+  --half: 14px;
+  --edge: clamp(20px, 5vw, 72px);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+body { margin: 0; text-wrap: pretty; }
+.wrap { max-width: 1200px; margin: 0 auto; padding: 0 var(--edge); }
+
+.nav { padding-inline: max(var(--edge), calc((100% - 1200px) / 2 + var(--edge))); }
+.nav .brand-lock { display: flex; align-items: center; margin-right: auto; border-bottom: 0; }
+.nav .brand-lock img { height: 21px; display: block; }
+.nav a { color: var(--color-text); border-bottom: 0; white-space: nowrap; }
+.nav a:hover { color: var(--color-accent); }
+
+.rule { height: 2px; border: 0; margin: 0; background: var(--color-divider); }
+
+.kicker {
+  display: block; font-size: 13px; line-height: var(--half);
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--color-accent-700);
+  margin: 0 0 calc(var(--leading) - var(--half));
+}
+
+.head { padding: calc(2.5 * var(--leading)) 0 calc(1.5 * var(--leading)); }
+.head h1 { font-size: clamp(36px, 4.4vw, 56px); line-height: 1.1; letter-spacing: -0.02em; margin: 0; }
+.head p { font-size: 17px; line-height: var(--leading); max-width: 62ch; margin: var(--leading) 0 0; }
+
+.prose { padding: calc(1.5 * var(--leading)) 0; }
+.prose .grid { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 8fr);
+  gap: var(--leading) clamp(24px, 4vw, 72px); }
+.prose h2 { font-size: 24px; line-height: calc(1.25 * var(--leading)); letter-spacing: -0.01em; margin: 0; }
+.prose p, .prose li { font-size: 16px; line-height: var(--leading); max-width: 62ch; }
+.prose p { margin: 0 0 var(--leading); }
+.prose p:last-child, .prose ul:last-child { margin-bottom: 0; }
+.prose ul { margin: 0 0 var(--leading); padding-left: 1.2em; }
+@media (max-width: 900px) { .prose .grid { grid-template-columns: 1fr; } }
+
+.inline-code { font-family: var(--mono); font-size: 0.9em;
+  background: var(--color-neutral-200); padding: 1px 4px; }
+
+a { color: var(--color-accent-700); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--color-accent-700) 40%, transparent); }
+a:hover { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+
+footer { padding: calc(2 * var(--leading)) 0; font-size: 13px; line-height: var(--leading);
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+footer .cols { display: flex; flex-wrap: wrap; gap: var(--half) clamp(24px, 4vw, 56px); }
+footer nav { display: flex; flex-wrap: wrap; gap: var(--half) clamp(16px, 2.5vw, 32px); }
+footer nav a { border-bottom: 0; color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+footer nav a:hover { color: var(--color-accent); }
+footer .meta { margin-left: auto; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a class="brand-lock" href="index.html"><img src="assets/loomcycle-logo.svg" alt="loomcycle.cloud home" /></a>
+  <a href="index.html">← loomcycle.cloud</a>
+</nav>
+
+<div class="wrap">
+
+  <section class="head">
+    <span class="kicker">Privacy</span>
+    <h1>What loomcycle.cloud keeps, and who sees it</h1>
+    <p>loomcycle.cloud is a shared preview of the loomcycle runtime. Everyone who is approved works in one shared workspace. This page says what that means for your data.</p>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="prose" id="shared">
+    <div class="grid">
+      <h2>One shared workspace</h2>
+      <div>
+        <p>Approved members share one workspace. Its shared documents, memory and agents can be read by every member, and members' agents can add to them and change them.</p>
+        <p>Your conversations are not private to you. The workspace's operators can open them, and so can other approved members.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="prose" id="keep">
+    <div class="grid">
+      <h2>What we keep</h2>
+      <div>
+        <ul>
+          <li>Your e-mail address. It is also your login.</li>
+          <li>Your password, as a salted hash. The password itself is never stored, and this website never sees it: you choose it on <span class="inline-code">app.loomcycle.cloud</span>.</li>
+          <li>Sign-in records: when you signed in, how, and from which network address.</li>
+          <li>An audit trail of account actions, such as invites, approvals, sign-ins and erasures.</li>
+          <li>Your conversations, what your agents remember for you, and usage records of the model calls they made.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="prose" id="where">
+    <div class="grid">
+      <h2>Where your data goes</h2>
+      <div>
+        <p>You sign in to this website with your Google account, through Cloudflare Access. The website and the app are served through Cloudflare.</p>
+        <p>Model calls go to the providers configured for the instance: a model server the operator runs, and the hosted providers DeepSeek, Google Gemini, OpenAI, Anthropic and Ollama's hosted models. Which one answers a conversation depends on the model its agent asks for and on which providers are available, so your messages, and the documents an agent reads for you, can reach any of them.</p>
+        <p>Memory consolidation, the knowledge-base passes over the workspace's documents, embeddings, document classification and text recognition in images use only the operator's own model server.</p>
+        <p>When an agent searches the web, the query goes through a search service the instance runs, which forwards it to public search engines.</p>
+        <p>If you talk to the workspace's agent through its Telegram bot, your messages also pass through Telegram, and the bot keeps which Telegram chat belongs to which conversation.</p>
+        <p>This website loads its typeface from Google Fonts, and remembers your display preferences in your browser.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="prose" id="erasure">
+    <div class="grid">
+      <h2>Erasing your account</h2>
+      <div>
+        <p>Ask us to erase your account. The erasure removes your conversations, your personal memory, your sign-in methods and your access tokens. A disabled record of the account stays, so it cannot sign in or be created again.</p>
+        <p>The erasure does not remove:</p>
+        <ul>
+          <li>the audit trail and the usage records;</li>
+          <li>what you put into the shared workspace (documents, shared memory, agents), except what it can trace back to you;</li>
+          <li>copies outside the database, such as backups;</li>
+          <li>the Telegram bot's record of your chat;</li>
+          <li>what the model providers, Cloudflare, Google and Telegram keep under their own terms.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<div class="wrap">
+  <hr class="rule" />
+  <footer>
+    <div class="cols">
+      <nav aria-label="Footer">
+        <a href="index.html">loomcycle.cloud</a>
+        <a href="https://loomcycle.dev">loomcycle.dev</a>
+        <a href="https://github.com/denn-gubsky/loomcycle">GitHub</a>
+      </nav>
+      <span class="meta">loomcycle · Apache-2.0 · runtime on app.loomcycle.cloud</span>
+    </div>
+  </footer>
+</div>
+
+</body>
+</html>
