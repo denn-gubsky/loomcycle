@@ -68,6 +68,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
+	"github.com/denn-gubsky/loomcycle/internal/transcribe/vision"
 	"github.com/denn-gubsky/loomcycle/internal/turncancel"
 	"github.com/denn-gubsky/loomcycle/internal/webui"
 
@@ -95,6 +96,11 @@ type Server struct {
 	providers ProviderResolver
 	tools     []tools.Tool
 	sem       *concurrency.Semaphore
+
+	// imageReencoder re-encodes an image a vision model refused (describe_images).
+	// One per server, so its single decode slot bounds the process: concurrent
+	// describe requests queue for it rather than each decoding up to the bound.
+	imageReencoder *vision.Reencoder
 
 	// --- RFC CK runtime config reload (POST /v1/_config/reload) ---
 	// reloadLoad re-loads the layered config the same way boot did (config.LoadLayers,
@@ -739,6 +745,9 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		cancelReg:     cancel.NewRegistry(),
 		turnCancelReg: turncancel.NewRegistry(),
 		sessionLocks:  runner.NewSessionLockMap(),
+
+		imageReencoder: vision.NewReencoder(),
+
 		// The permit list is frozen at construction — the only way to change
 		// the trust boundary is a restart with new yaml.
 		hookPermits:    hooks.NewPermits(cfg.Hooks.PermitHostWiden.Owners),

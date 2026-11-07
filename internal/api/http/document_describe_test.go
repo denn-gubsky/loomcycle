@@ -1,9 +1,13 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -31,6 +35,8 @@ type visionProvider struct {
 	reply   string
 	canSee  bool
 	failErr string
+	// failFirst, when set, limits failErr to the first failFirst calls.
+	failFirst int
 	// stopReason overrides the terminal EventDone reason, so a test can reproduce a
 	// turn that ran out of token budget before saying anything.
 	stopReason string
@@ -47,9 +53,10 @@ func (v *visionProvider) Capabilities() providers.Capabilities {
 func (v *visionProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
 	v.mu.Lock()
 	v.reqs = append(v.reqs, req)
+	n := len(v.reqs)
 	v.mu.Unlock()
 	ch := make(chan providers.Event, 2)
-	if v.failErr != "" {
+	if v.failErr != "" && (v.failFirst == 0 || n <= v.failFirst) {
 		ch <- providers.Event{Type: providers.EventError, Error: v.failErr}
 	} else {
 		ch <- providers.Event{Type: providers.EventText, Text: v.reply}
@@ -463,5 +470,137 @@ func TestDescribeImages_SaturatedProviderQueueRefusesTheCall(t *testing.T) {
 	}
 	if st := sched.Stats()["P"].Lanes[config.ModelKindChat]; st.Active != 0 {
 		t.Fatalf("P active = %d after the call, want 0", st.Active)
+	}
+}
+
+// TestDescribeImages_RefusedImageIsRetriedReencoded — a vision model's decoder can
+// refuse a file that a plain re-encode of the same picture gets past (seen on
+// Ollama: "Failed to load image or audio file" for a progressive JPEG with
+// Photoshop and ICC segments). The pass retries once with re-encoded bytes.
+func TestDescribeImages_RefusedImageIsRetriedReencoded(t *testing.T) {
+	prov := &visionProvider{canSee: true, reply: "a login form",
+		failErr: "vis 400: Failed to load image or audio file", failFirst: 1}
+	srv, doc, ctx, chunkID := describeFixture(t, prov)
+	setDecodablePNG(t, doc, ctx, chunkID)
+
+	_, out := postDescribe(t, srv, "&dry_run=false")
+	if n, _ := out["described"].(float64); n != 1 {
+		t.Fatalf("described = %v, want 1: %v", out["described"], out)
+	}
+	if out["failed"] != nil || out["unreadable"] != nil {
+		t.Errorf("a re-encode that succeeded still counted as failed/unreadable: %v", out)
+	}
+	calls := prov.calls()
+	if len(calls) != 2 {
+		t.Fatalf("vision calls = %d, want 2 (as stored, then re-encoded)", len(calls))
+	}
+	first, second := calls[0].Messages[0].Content[0], calls[1].Messages[0].Content[0]
+	if second.Type != "image" || second.Data == "" || second.Data == first.Data {
+		t.Errorf("the retry did not send re-encoded bytes (same data: %v)", second.Data == first.Data)
+	}
+}
+
+// TestDescribeImages_RefusedTwiceIsMarkedUnreadable — an image the model refuses
+// as stored AND re-encoded must leave the candidate set. Candidates come in chunk
+// order and a failed image stays one, so before this such images collected at the
+// front and every later pass spent its batch on them.
+func TestDescribeImages_RefusedTwiceIsMarkedUnreadable(t *testing.T) {
+	prov := &visionProvider{canSee: true, failErr: "vis 400: Failed to load image or audio file"}
+	srv, doc, ctx, chunkID := describeFixture(t, prov)
+	setDecodablePNG(t, doc, ctx, chunkID)
+
+	_, out := postDescribe(t, srv, "&dry_run=false")
+	if n, _ := out["unreadable"].(float64); n != 1 {
+		t.Fatalf("unreadable = %v, want 1: %v", out["unreadable"], out)
+	}
+	if out["failed"] != nil {
+		t.Errorf("an unreadable image also counted as failed: %v", out)
+	}
+	if ids, _ := out["unreadable_chunks"].([]any); len(ids) != 1 || ids[0] != chunkID {
+		t.Errorf("unreadable_chunks = %v, want [%s]", out["unreadable_chunks"], chunkID)
+	}
+	if r, _ := out["first_unreadable"].(string); !strings.Contains(r, "Failed to load image") {
+		t.Errorf("first_unreadable should carry the provider's reason, got %q", r)
+	}
+	if len(prov.calls()) != 2 {
+		t.Errorf("vision calls = %d, want 2", len(prov.calls()))
+	}
+	_, out2 := postDescribe(t, srv, "")
+	if n, _ := out2["candidates"].(float64); n != 0 {
+		t.Errorf("an unreadable image stayed a candidate (%v) and would head every pass", out2["candidates"])
+	}
+}
+
+// TestDescribeImages_OutageAndKeyRefusalStayRetryable — only a refusal of the
+// request itself retires an image. A server error or a refused key says nothing
+// about the image, so it is neither re-encoded nor marked.
+func TestDescribeImages_OutageAndKeyRefusalStayRetryable(t *testing.T) {
+	for _, e := range []string{"vis 503: model loading", "vis 401: invalid api key"} {
+		t.Run(e, func(t *testing.T) {
+			prov := &visionProvider{canSee: true, failErr: e}
+			srv, _, _, _ := describeFixture(t, prov)
+
+			_, out := postDescribe(t, srv, "&dry_run=false")
+			if n, _ := out["failed"].(float64); n != 1 || out["unreadable"] != nil {
+				t.Fatalf("want failed=1 and no unreadable, got %v", out)
+			}
+			if len(prov.calls()) != 1 {
+				t.Errorf("vision calls = %d, want 1 (no re-encode retry)", len(prov.calls()))
+			}
+			_, out2 := postDescribe(t, srv, "")
+			if n, _ := out2["candidates"].(float64); n != 1 {
+				t.Errorf("the image left the candidate set (%v)", out2["candidates"])
+			}
+		})
+	}
+}
+
+// TestDescribeImages_RefusedAndUndecodableIsMarkedUnreadable — when the model
+// refuses an image and Go cannot decode it either (the fixture's PNG fails its
+// zlib checksum), there is nothing to retry with: it is marked at once.
+func TestDescribeImages_RefusedAndUndecodableIsMarkedUnreadable(t *testing.T) {
+	prov := &visionProvider{canSee: true, failErr: "vis 400: Failed to load image or audio file"}
+	srv, _, _, _ := describeFixture(t, prov)
+
+	_, out := postDescribe(t, srv, "&dry_run=false")
+	if n, _ := out["unreadable"].(float64); n != 1 {
+		t.Fatalf("unreadable = %v, want 1: %v", out["unreadable"], out)
+	}
+	if r, _ := out["first_unreadable"].(string); !strings.Contains(r, "re-encoding it failed too") {
+		t.Errorf("first_unreadable should say the re-encode failed, got %q", r)
+	}
+	if len(prov.calls()) != 1 {
+		t.Errorf("vision calls = %d, want 1 (nothing to retry with)", len(prov.calls()))
+	}
+}
+
+// setDecodablePNG replaces the fixture image with one Go can decode, so a
+// re-encode has something to work with.
+func setDecodablePNG(t *testing.T, doc *builtin.Document, ctx context.Context, chunkID string) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 4, 3))
+	img.Set(1, 1, color.RGBA{R: 200, A: 255})
+	// Stored uncompressed, so the re-encode (default compression) is visibly
+	// different bytes.
+	var b bytes.Buffer
+	if err := (&png.Encoder{CompressionLevel: png.NoCompression}).Encode(&b, img); err != nil {
+		t.Fatal(err)
+	}
+	sa, _ := json.Marshal(map[string]any{
+		"op": "set_asset", "scope": "user", "id": chunkID,
+		"media_type": "image/png", "data": base64.StdEncoding.EncodeToString(b.Bytes()),
+	})
+	if r, err := doc.Execute(ctx, sa); err != nil || r.IsError {
+		t.Fatalf("set_asset: %v %s", err, r.Text)
+	}
+}
+
+// TestDescribeImages_ReencoderIsServerWide — the re-encoder's decode slot is the
+// bound on decoding memory, so it must be built once per server and not per
+// request: one per request would let concurrent passes each decode up to it.
+func TestDescribeImages_ReencoderIsServerWide(t *testing.T) {
+	srv, _, _, _ := describeFixture(t, &visionProvider{canSee: true})
+	if srv.imageReencoder == nil {
+		t.Fatal("New did not build the server's image re-encoder")
 	}
 }
