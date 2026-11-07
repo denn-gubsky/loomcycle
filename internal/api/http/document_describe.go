@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +41,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+	"github.com/denn-gubsky/loomcycle/internal/transcribe/vision"
 )
 
 // describeImagesDefaultTier is where the vision model is looked up. `middle` is the
@@ -91,6 +93,12 @@ type describeImagesResponse struct {
 	// Empty counts images the model looked at and produced nothing usable for. They
 	// are marked examined so a re-run does not keep paying for them.
 	Empty int `json:"empty,omitempty"`
+	// Unreadable counts images the vision model refused as input, both as stored
+	// and re-encoded (or that could not be decoded to re-encode). They are marked
+	// examined, with no description, so they stop heading every later pass.
+	Unreadable       int      `json:"unreadable,omitempty"`
+	UnreadableChunks []string `json:"unreadable_chunks,omitempty"`
+	FirstUnreadable  string   `json:"first_unreadable,omitempty"`
 
 	Samples      []describeSample `json:"samples,omitempty"`
 	FailedChunks []string         `json:"failed_chunks,omitempty"`
@@ -225,6 +233,19 @@ func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// One per request: images are described one after another, so it admits a
+	// single decode at a time, the bound the OCR engine keeps.
+	reenc := vision.NewReencoder()
+	unreadable := func(chunkID string, err error) {
+		resp.Unreadable++
+		if len(resp.UnreadableChunks) < describeSampleCap {
+			resp.UnreadableChunks = append(resp.UnreadableChunks, chunkID)
+		}
+		if resp.FirstUnreadable == "" {
+			resp.FirstUnreadable = err.Error()
+		}
+	}
+
 	for _, a := range assets {
 		mediaType, raw, ok, err := doc.ReadAsset(ctx, scope, a.ChunkID)
 		if err != nil || !ok || len(raw) == 0 {
@@ -238,6 +259,32 @@ func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
 			mediaType = a.MediaType
 		}
 		desc, err := s.describeOneImage(ctx, providerID, prov, model, mediaType, raw, a.Caption)
+		if err != nil && imageRefused(err) {
+			// The model refused THIS image as input. Its own decoder can reject a
+			// file Go reads fine, and a plain re-encode of the same picture is then
+			// accepted, so retry once with that before giving up on it.
+			sent, sentType, rerr := reenc.Reencode(ctx, raw)
+			if rerr == nil {
+				desc, err = s.describeOneImage(ctx, providerID, prov, model, sentType, sent, a.Caption)
+				if err == nil {
+					mediaType, raw = sentType, sent
+				}
+			} else {
+				err = fmt.Errorf("%w (re-encoding it failed too: %v)", err, rerr)
+			}
+			if err != nil && (rerr != nil || imageRefused(err)) {
+				// Refused twice, or unreadable here as well: marked examined with no
+				// description. Left unmarked, it would stay first in chunk order and
+				// every later pass would spend its batch on images that never succeed.
+				// It stays searchable by its caption.
+				if serr := doc.SetAssetDescription(ctx, scope, a.ChunkID, ""); serr != nil {
+					fail(a.ChunkID, serr)
+					continue
+				}
+				unreadable(a.ChunkID, err)
+				continue
+			}
+		}
 		if err != nil {
 			// NOT marked examined: a transport or model failure is transient, and
 			// stamping described_at would silently retire the image from every future
@@ -267,12 +314,32 @@ func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
 				"They were NOT marked examined, so a re-invocation retries exactly those — a "+
 				"transient model failure never silently retires an image.")
 	}
+	if resp.Unreadable > 0 {
+		resp.Notes = append(resp.Notes,
+			"some images were refused by the vision model as input, both as stored and "+
+				"re-encoded (see unreadable_chunks, capped; first_unreadable is the reason). "+
+				"They are marked examined with no description so later passes move past "+
+				"them, and stay searchable by caption.")
+	}
 	if resp.Empty > 0 {
 		resp.Notes = append(resp.Notes,
 			"some images were examined but produced no usable description; they are marked "+
 				"examined so a re-run does not keep paying for them, and stay searchable by caption.")
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// imageRefusedRe matches the status prefix every driver writes ("ollama-local 400:",
+// "anthropic 400:") for the two codes that mean the request itself was rejected.
+var imageRefusedRe = regexp.MustCompile(`^[a-z][a-z0-9_-]* (400|422):`)
+
+// imageRefused reports whether a describe call failed because the provider rejected
+// the request it was sent, as opposed to an outage, a timeout or a key refusal. The
+// model is known to take images (resolveVisionModel checks), and every request in a
+// pass is the same apart from the image, so a 400/422 here is about the image.
+func imageRefused(err error) bool {
+	return providers.ClassifyError(err) == providers.ErrorClassPermanent &&
+		!providers.IsKeyRefusal(err) && imageRefusedRe.MatchString(err.Error())
 }
 
 // resolveVisionModel picks the provider+model for the pass and refuses one that

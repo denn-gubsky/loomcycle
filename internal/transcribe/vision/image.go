@@ -9,6 +9,7 @@ import (
 	_ "image/gif" // decoders for DecodeConfig / Decode
 	"image/jpeg"
 	"image/png"
+	"io"
 
 	_ "golang.org/x/image/bmp"
 	"golang.org/x/image/draw"
@@ -207,19 +208,27 @@ func (e *Engine) prepareImage(ctx context.Context, data []byte, mediaType string
 	if sendable[mediaType] && max(cfg.Width, cfg.Height) <= MaxImageEdge {
 		return data, mediaType, nil
 	}
+	return reencode(ctx, data, format, cfg, e.decode, e.decodeSlot)
+}
+
+// reencode decodes data, scales it to fit MaxImageEdge and encodes it again
+// (JPEG stays JPEG; everything else becomes PNG), refusing a decode whose
+// estimated peak passes MaxDecodeBytes. slot admits one decode at a time.
+func reencode(ctx context.Context, data []byte, format string, cfg image.Config,
+	decode func(io.Reader) (image.Image, string, error), slot chan struct{}) ([]byte, string, error) {
 	bpp, advice := decodeCost(data, format, cfg)
 	if int64(cfg.Width)*int64(cfg.Height)*int64(bpp) > MaxDecodeBytes {
 		return nil, "", &ImageTooLargeError{Width: cfg.Width, Height: cfg.Height, BytesPerPixel: bpp, Limit: MaxDecodeBytes, advice: advice}
 	}
-	// One decode at a time per engine, so concurrent OCR calls cannot add
-	// their peaks up: MaxDecodeBytes is then what decoding holds at most.
+	// One decode at a time per slot, so concurrent calls cannot add their
+	// peaks up: MaxDecodeBytes is then what decoding holds at most.
 	select {
-	case e.decodeSlot <- struct{}{}:
-		defer func() { <-e.decodeSlot }()
+	case slot <- struct{}{}:
+		defer func() { <-slot }()
 	case <-ctx.Done():
 		return nil, "", ctx.Err()
 	}
-	src, _, err := e.decode(bytes.NewReader(data))
+	src, _, err := decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, "", fmt.Errorf("the image could not be decoded: %v", err)
 	}
@@ -240,4 +249,34 @@ func (e *Engine) prepareImage(ctx context.Context, data []byte, mediaType string
 		return nil, "", err
 	}
 	return b.Bytes(), "image/png", nil
+}
+
+// Reencoder writes an image out again through this package's decoder and
+// encoders, under the same decode bound OCR uses.
+//
+// It exists for a model that refuses an image it should take: a vision model's
+// own decoder can reject a file Go reads without trouble (a progressive JPEG
+// carrying Photoshop and ICC segments has been seen to fail on Ollama while a
+// plain re-encode of the same picture worked), so a caller can retry once with
+// the re-encoded bytes before giving up on the image.
+type Reencoder struct {
+	decode func(io.Reader) (image.Image, string, error)
+	slot   chan struct{}
+}
+
+// NewReencoder builds a Reencoder admitting one decode at a time.
+func NewReencoder() *Reencoder {
+	return &Reencoder{decode: image.Decode, slot: make(chan struct{}, 1)}
+}
+
+// Reencode always decodes and encodes data again, scaled to fit MaxImageEdge.
+func (r *Reencoder) Reencode(ctx context.Context, data []byte) ([]byte, string, error) {
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", fmt.Errorf("the image could not be read: %v", err)
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return nil, "", fmt.Errorf("the image header says %d×%d pixels", cfg.Width, cfg.Height)
+	}
+	return reencode(ctx, data, format, cfg, r.decode, r.slot)
 }
