@@ -85,7 +85,7 @@ var kbOpContracts = []kbOpContract{
 		Assumes:  `R2: any non-error answer is success; demote is sent only for an asserted statement; only a manual statement or one an operator ruled on (operator_ruled_at set) is limited to verify or flag (import/sync/canvas statements may be expired, demoted and merged — owner decision 2026-10-30); merge needs a survivor of the same status; expire/demote/merge need the link verb on the endpoints' documents (R2 as built)`},
 	{Tool: "Document", Op: "classify",
 		Request:  `{document_id, write: report|propose, scope}`,
-		Response: `{document_id, write, result: classified|proposed|kept|unclassified, class?, live, work_key?, fields?, issued_by: [{instance, quote, subject_chunk_id?}], concepts: [{concept, tag, kind?, chunk_id?, share}], steps: [{step, candidates, chosen?, neighbours?, reason?}], statements?, warnings?}`,
+		Response: `{document_id, write, result: classified|proposed|kept|unclassified|skipped, reason?, class?, live, work_key?, fields?, issued_by: [{instance, quote, subject_chunk_id?}], concepts: [{concept, tag, kind?, chunk_id?, share}], steps: [{step, candidates, chosen?, neighbours?, reason?}], statements?, warnings?}`,
 		Assumes:  `FO P5a (#2273): write report writes nothing; a refusal (permission, an unconfirmed ontology) is an error naming its reason; accept_classification is operator-only and never called`},
 	{Tool: "Document", Op: "describe_ontology",
 		Request:  `{scope} (scope ignored)`,

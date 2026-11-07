@@ -653,6 +653,34 @@ func EffectiveClasses(tenantTerms []OntologyTerm, tenantConfirmed bool) []Ontolo
 	return out
 }
 
+// OperationalDocumentTypes are root types that mark a document as not knowledge, so
+// Document op=classify skips it, and so do the knowledge-base bundle's agents (a test
+// in cmd/loomcycle keeps the bundle's list equal to this one):
+//
+//   - SourceStub: a stand-in a sync writes for a source item it could not import as
+//     text (an unsupported format, too large, no OCR or speech-to-text, a canvas). It
+//     has a title, provenance and a reason, and no body; it exists so the Path tree and
+//     search show the item. Classifying or linking it would retype the stub or file
+//     proposals about a document nobody can read.
+//   - SyncReport: a sync's run report — operational, not knowledge.
+//
+// The set is fixed here rather than declared in the ontology: a type an operator
+// forgets to declare must still be skipped.
+func OperationalDocumentTypes() []string { return []string{"SourceStub", "SyncReport"} }
+
+// IsOperationalDocumentType reports whether t is one of OperationalDocumentTypes. Case
+// and surrounding space are ignored, as classify ignores case when it compares a type
+// with what it applied.
+func IsOperationalDocumentType(t string) bool {
+	t = strings.TrimSpace(t)
+	for _, o := range OperationalDocumentTypes() {
+		if strings.EqualFold(t, o) {
+			return true
+		}
+	}
+	return false
+}
+
 // ReservedStructuralTypes are the values of chunks.type the document primitive itself
 // writes. They are not classes, cannot be declared as one, and list_types reports them
 // separately so an operator does not mistake a section chunk for an untyped class.

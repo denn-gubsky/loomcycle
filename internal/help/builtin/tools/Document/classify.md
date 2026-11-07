@@ -37,6 +37,13 @@ three steps, each reported in `steps`:
 
 A draft ontology classifies nothing.
 
+**Operational documents are skipped.** A document whose root type is
+`SourceStub` (a stand-in a sync writes for an item it could not import as text:
+a title, provenance and a reason, no body) or `SyncReport` (a sync's run
+report) is not knowledge. `classify` answers `result: "skipped"` with a
+`reason`, writes nothing, files no proposal and asks no model. The match
+ignores case.
+
 ## What is written
 
 With `write: "propose"` (the default):
@@ -69,11 +76,12 @@ With `write: "report"` nothing is written; the answer is the same.
 
 ## Returns
 
-`{document_id, write, result, class?, live, work_key?, fields?, issued_by,
-concepts, steps, statements?, warnings?}`:
+`{document_id, write, result, reason?, class?, live, work_key?, fields?,
+issued_by, concepts, steps, statements?, warnings?}`:
 
 - `result` — `classified` (a class was applied), `proposed`, `kept` (a type set
-  by hand stays) or `unclassified`.
+  by hand stays), `unclassified` or `skipped` (an operational document; `reason`
+  says why).
 - `live` — whether the class was applied rather than proposed.
 - `fields` — the identity fields the pattern filled.
 - `issued_by` — each `{instance, quote, subject_chunk_id?}`.

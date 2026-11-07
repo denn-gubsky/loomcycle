@@ -594,3 +594,38 @@ func TestClassify_AClassDecidedByRuleStillAsksForConcepts(t *testing.T) {
 		t.Errorf("model step = %+v", step)
 	}
 }
+
+// TestClassify_AnOperationalDocumentIsSkippedWithAReason: a SourceStub (an item a sync
+// could not import as text) and a SyncReport (a sync's run report) are not knowledge.
+// classify reports them skipped with a reason and writes nothing: no type, no record,
+// no statements, and the model is never asked — even when the title matches a class's
+// rule and a classifier would answer. A normal document beside them is still classified.
+func TestClassify_AnOperationalDocumentIsSkippedWithAReason(t *testing.T) {
+	f := newClassifyFixture(t, memrank.OntologyConfirmedStatus, false)
+	stub := &stubClassifier{verdict: memrank.ClassifyVerdict{Method: memrank.ClassifyMethodChat, Class: "Order", Concepts: []string{"Risk Management"}}}
+	f.d.Classifier = stub
+	for i, typ := range []string{"SourceStub", "SyncReport", "sourcestub"} {
+		path := fmt.Sprintf("/sync/item-%d", i)
+		docID, rootID := f.doc("tenant", "Закон України № 7"+fmt.Sprint(i)+"-I", path, typ,
+			[2]string{"Стаття 1", "управління ризиками"})
+		before := f.root("tenant", rootID)
+		a := f.classify(f.ctx, "tenant", docID, nil)
+		if a.Result != "skipped" || a.Reason == "" || a.Class != "" || a.Live || len(a.Statements) != 0 || len(a.Concepts) != 0 {
+			t.Errorf("%s: answer = %+v", typ, a)
+		}
+		if f.docType("tenant", docID) != typ {
+			t.Errorf("%s: the root type changed to %q", typ, f.docType("tenant", docID))
+		}
+		after := f.root("tenant", rootID)
+		if after["revision"] != before["revision"] || pendingOf(t, after).By != "" {
+			t.Errorf("%s: the root was written: before %v after %v", typ, before, after)
+		}
+	}
+	if len(stub.asked) != 0 {
+		t.Fatalf("the model was asked about an operational document: %+v", stub.asked)
+	}
+	normal, _ := f.doc("tenant", "Закон України № 8-I", "/kb/n/8", "", [2]string{"Стаття 1", "управління ризиками"})
+	if a := f.classify(f.ctx, "tenant", normal, nil); a.Result != "classified" || !a.Live || a.Class != "Law" {
+		t.Errorf("a normal document beside them was not classified: %+v", a)
+	}
+}

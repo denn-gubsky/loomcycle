@@ -119,7 +119,8 @@ type classifyIssuer struct {
 type classifyAnswer struct {
 	DocumentID string            `json:"document_id"`
 	Write      string            `json:"write"`
-	Result     string            `json:"result"` // classified | proposed | kept | unclassified
+	Result     string            `json:"result"`           // classified | proposed | kept | unclassified | skipped
+	Reason     string            `json:"reason,omitempty"` // why a document was skipped
 	Class      string            `json:"class,omitempty"`
 	Live       bool              `json:"live"`
 	WorkKey    string            `json:"work_key,omitempty"`
@@ -161,6 +162,11 @@ func (d *Document) classify(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		return errNotFound("classify: no such document: "+docID, "Find the document with op=query_documents in the same scope."), nil
 	}
 	out := classifyAnswer{DocumentID: docID, Write: write, Result: "unclassified", IssuedBy: []classifyIssuer{}, Concepts: []classifyConcept{}, Steps: []classifyStep{}}
+	if memrank.IsOperationalDocumentType(cd.rootType) {
+		out.Result = "skipped"
+		out.Reason = "the document's type " + cd.rootType + " records an item or a run, not knowledge; classify leaves it as it is"
+		return jsonResult(out)
+	}
 	read, ok := d.tenantOntologyRead(ctx)
 	if !ok || !read.Confirmed {
 		out.Steps = append(out.Steps, classifyStep{Step: "rules", Candidates: []classifyCandidate{}, Reason: "the tenant ontology is not confirmed; a draft classifies nothing"})

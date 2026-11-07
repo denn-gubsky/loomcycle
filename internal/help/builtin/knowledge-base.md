@@ -34,6 +34,17 @@ Everything lives in ONE scope per call (`user` by default, `agent`, or
 Ids are opaque 32-character hex strings. Never invent one: find it with
 `search`, `query_chunks`, `get_document` (by `path`) or `resolve_anchor`.
 
+## Documents that are not knowledge
+
+Two root types mark a document as operational rather than knowledge:
+`SourceStub`, the stand-in a sync writes for a source item it could not import
+as text (a title, provenance and a reason, no body — it is there so the Path
+tree and search show the item), and `SyncReport`, a sync's run report. The
+match ignores case. `classify` answers `result: "skipped"` for them and writes
+nothing; the knowledge-base bundle's links agent runs no layer on them (a drain
+acks their messages as `skipped`) and its judge does not judge a proposal that
+touches one.
+
 ## Read the ontology first
 
 Before writing into a knowledge base you do not know, call
