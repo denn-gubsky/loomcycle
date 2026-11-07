@@ -1,8 +1,12 @@
 package extract
 
 import (
+	"context"
+	"io"
 	"strings"
 	"testing"
+
+	"golang.org/x/net/html"
 )
 
 // Heading recovery on HTML styled by class rules: an editor's HTML export
@@ -150,7 +154,12 @@ func TestInferHeadings_ClassRulesAreBounded(t *testing.T) {
 	if strings.Contains(o.md, "# Lead in") {
 		t.Errorf("a rule past %d bytes of style sheet was read:\n%s", maxCSSBytes, o.md)
 	}
-	many := strings.Repeat("z ", maxCSSClasses) + "k"
+	// Distinct names: one name repeated is one class (see below).
+	var many string
+	for i := range maxCSSClasses {
+		many += "z" + itoa(i) + " "
+	}
+	many += "k"
 	o = inferPage(t, gdocPage(`.k{font-weight:bold}`, cFiller(3)+`<p class="`+many+`">Lead in</p>`+cFiller(1)))
 	if strings.Contains(o.md, "# Lead in") {
 		t.Errorf("a class past the first %d was read:\n%s", maxCSSClasses, o.md)
@@ -164,4 +173,93 @@ func TestInferHeadings_OffIgnoresClassRules(t *testing.T) {
 	if rep.InferredHeadings != 0 || strings.Contains(s.md.String(), "# Background") {
 		t.Errorf("report %+v, md:\n%s", rep, s.md.String())
 	}
+}
+
+// matchCost is how many rule entries the cascade applies to n: the work the
+// walk does on one element.
+func matchCost(s cssSheet, n *html.Node) int {
+	_, applied := s.match(n)
+	return applied
+}
+
+func classedP(t *testing.T, class string) *html.Node {
+	t.Helper()
+	doc, err := html.Parse(strings.NewReader(`<p class="` + class + `">x</p>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return findElement(doc, "p")
+}
+
+// One class named thousands of times on an element is one class: the
+// cascade applies it once, and the outline is the deduplicated page's.
+func TestInferHeadings_RepeatedClassNameIsAppliedOnce(t *testing.T) {
+	sheet := cssSheet{}
+	sheet.parse(`.a{font-weight:700}`)
+	repeated := strings.TrimSpace(strings.Repeat("a ", 5000))
+	if c := matchCost(sheet, classedP(t, repeated)); c > 1 {
+		t.Errorf("one class named 5000 times applied %d rule entries, want 1", c)
+	}
+	page := func(class string) string {
+		return gdocPage(`.a{font-weight:700}`, cFiller(3)+`<p class="`+class+`">Lead in</p>`+cFiller(1))
+	}
+	a, b := inferPage(t, page(repeated)), inferPage(t, page("a"))
+	if a.md != b.md || a.rep.InferredHeadings != 1 {
+		t.Errorf("repeated class: inferred %d\n%s\nwant as deduplicated:\n%s", a.rep.InferredHeadings, a.md, b.md)
+	}
+}
+
+// A sheet that repeats one class rule thousands of times (or lists the class
+// thousands of times in one selector) costs one entry per element, not one
+// per rule.
+func TestInferHeadings_RepeatedClassRuleIsAppliedOnce(t *testing.T) {
+	for name, css := range map[string]string{
+		"repeated rules":   strings.Repeat(`.a{font-weight:700}`, 3000),
+		"a selector list":  strings.TrimSuffix(strings.Repeat(".a,", 3000), ",") + `{font-weight:700}`,
+		"on a tag as well": strings.Repeat(`.a{font-weight:700}p.a{font-weight:700}`, 1500),
+	} {
+		t.Run(name, func(t *testing.T) {
+			sheet := cssSheet{}
+			sheet.parse(css)
+			if c := matchCost(sheet, classedP(t, "a b c")); c > 2 {
+				t.Errorf("applied %d rule entries to one element, want at most 2 (one .a, one p.a)", c)
+			}
+			a := inferPage(t, gdocPage(css, cFiller(3)+`<p class="a">Lead in</p>`+cFiller(1)))
+			b := inferPage(t, gdocPage(`.a{font-weight:700}`, cFiller(3)+`<p class="a">Lead in</p>`+cFiller(1)))
+			if a.md != b.md || a.rep.InferredHeadings != 1 {
+				t.Errorf("inferred %d\n%s\nwant as one rule:\n%s", a.rep.InferredHeadings, a.md, b.md)
+			}
+		})
+	}
+}
+
+// A page whose class rules apply on more elements than the work bound is
+// extracted as with the option off, with a note; the extract still succeeds.
+func TestInferHeadings_ClassRuleWorkOverTheBoundTurnsInferenceOff(t *testing.T) {
+	page := gdocPage(`.a{font-weight:700}`, cFiller(3)+`<p class="a">Lead in</p>`+cFiller(1)+
+		`<p>`+strings.Repeat(`<span class="a">word </span>`, 50)+`end.</p>`)
+	extract := func(budget int) inferOut {
+		s, rep := run(t, htmlWithBudget{budget}, []byte(page), Options{Name: "export.html", InferHeadings: true})
+		return inferOut{s.md.String(), rep, 0}
+	}
+	over := extract(20)
+	if over.rep.InferredHeadings != 0 || strings.Contains(over.md, "# Lead in") || !hasNote(over.rep, "headings were not inferred") {
+		t.Errorf("over the bound: report %+v\n%s", over.rep, over.md)
+	}
+	off, _ := run(t, HTML{}, []byte(page), Options{Name: "export.html"})
+	if over.md != off.md.String() {
+		t.Errorf("over the bound, the text differs from the option off:\n%s\nwant:\n%s", over.md, off.md.String())
+	}
+	if within := extract(1000); within.rep.InferredHeadings != 1 || hasNote(within.rep, "headings were not inferred") {
+		t.Errorf("within the bound: report %+v", within.rep)
+	}
+}
+
+// htmlWithBudget is the HTML extractor with a small class rule work bound.
+type htmlWithBudget struct{ budget int }
+
+func (htmlWithBudget) Match(string, string) bool { return true }
+
+func (e htmlWithBudget) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, opts Options) (Report, error) {
+	return extractHTML(ctx, r, size, sink, opts, e.budget)
 }

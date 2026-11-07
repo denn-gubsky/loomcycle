@@ -59,8 +59,10 @@ Docs' HTML download does) is read as an inline-styled page is. Only a rule
 whose selector is a single class, alone or on a tag (`.c4`, `p.c4`,
 `span.c4`), is read; other selectors, rules inside `@media` and linked
 style sheets are not, and an inline style overrides a class. The first 256
-KiB of style sheet text, 4096 class rules and 16 classes per element are
-read.
+KiB of style sheet text, 4096 class selectors, 4 KiB of each rule and 16
+distinct classes per element are read. A page whose class rules apply to
+more than about a million elements is extracted as with the option off, and
+`notes` says headings were not inferred.
 
 With the option on, a picture that appears 3 or more times in the document
 is taken as decoration (a divider, a repeated logo) and left out, and tabs

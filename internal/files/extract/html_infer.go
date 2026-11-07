@@ -53,21 +53,50 @@ func htmlStyled(n *html.Node, parent runFmt, sheet cssSheet) runFmt {
 			f.color = cssColor(c, parent.color)
 		}
 	}
-	for _, decls := range sheet.match(n) {
-		f = cssDeclare(f, parent, decls)
-	}
-	return cssDeclare(f, parent, attrOf(n, "style"))
+	classes, _ := sheet.match(n)
+	f = classes.apply(f, parent)
+	return parseDecls(attrOf(n, "style"), 0).apply(f, parent)
 }
 
-// cssDeclare applies a declaration block's font-weight, font-size and color
-// to f; a relative size is relative to the parent's.
-func cssDeclare(f, parent runFmt, style string) runFmt {
-	if style == "" {
-		return f
+// cssProp is one property's value as a declaration block set it, and where
+// its rule stood in the sheets (a later rule wins). set is false when no
+// rule set it.
+type cssProp struct {
+	val   string
+	order int
+	set   bool
+}
+
+// over is p, or q when q was set by a later rule.
+func (p cssProp) over(q cssProp) cssProp {
+	if q.set && (!p.set || q.order > p.order) {
+		return q
 	}
-	// A declaration block is someone else's text: only the first few
-	// declarations are read.
-	for i, decl := range strings.SplitN(style, ";", 64) {
+	return p
+}
+
+// cssDecls is what a declaration block says about font-weight, font-size and
+// color, read once: applying it to an element is a few comparisons, never a
+// new read of the block's text.
+type cssDecls struct {
+	bold, size, color cssProp
+}
+
+func (d cssDecls) over(e cssDecls) cssDecls {
+	return cssDecls{bold: d.bold.over(e.bold), size: d.size.over(e.size), color: d.color.over(e.color)}
+}
+
+// parseDecls reads a declaration block standing at order in the sheets. A
+// block is someone else's text: only its first maxCSSDeclBytes and the
+// first few declarations are read. A value that cannot be read sets
+// nothing, as a browser drops an invalid declaration.
+func parseDecls(block string, order int) cssDecls {
+	var d cssDecls
+	if block == "" {
+		return d
+	}
+	block = block[:min(len(block), maxCSSDeclBytes)]
+	for i, decl := range strings.SplitN(block, ";", 64) {
 		if i == 63 {
 			break
 		}
@@ -79,29 +108,57 @@ func cssDeclare(f, parent runFmt, style string) runFmt {
 		val = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(val), "!important")))
 		switch prop {
 		case "font-weight":
-			f.bold = cssBold(val, f.bold)
+			if b, ok := cssBold(val); ok {
+				v := ""
+				if b {
+					v = "bold"
+				}
+				d.bold = cssProp{val: v, order: order, set: true}
+			}
 		case "font-size":
-			if s, ok := cssSize(val, parent.size); ok {
-				f.size = s
+			// Validity does not depend on the parent's size; the value is
+			// resolved against it when applied.
+			if _, ok := cssSize(val, htmlBodyPt); ok {
+				d.size = cssProp{val: val, order: order, set: true}
 			}
 		case "color":
-			f.color = cssColor(val, parent.color)
+			if len(val) <= 64 {
+				d.color = cssProp{val: val, order: order, set: true}
+			}
 		}
+	}
+	return d
+}
+
+// apply sets what d declares on f; a relative size is relative to the
+// parent's, and inherit keeps the parent's colour.
+func (d cssDecls) apply(f, parent runFmt) runFmt {
+	if d.bold.set {
+		f.bold = d.bold.val != ""
+	}
+	if d.size.set {
+		if s, ok := cssSize(d.size.val, parent.size); ok {
+			f.size = s
+		}
+	}
+	if d.color.set {
+		f.color = cssColor(d.color.val, parent.color)
 	}
 	return f
 }
 
-func cssBold(v string, parent bool) bool {
+// cssBold reads a font-weight; ok is false for a value it cannot read.
+func cssBold(v string) (bold, ok bool) {
 	switch v {
 	case "bold", "bolder":
-		return true
+		return true, true
 	case "normal", "lighter":
-		return false
+		return false, true
 	}
 	if n, err := strconv.Atoi(v); err == nil {
-		return n >= 600
+		return n >= 600, true
 	}
-	return parent
+	return false, false
 }
 
 var cssSizeKeywords = map[string]float64{
@@ -215,10 +272,20 @@ const (
 	// maxCSSBytes caps the style sheet text read from a page's <style>
 	// blocks, all together.
 	maxCSSBytes = 256 << 10
-	// maxCSSRules caps the class rules kept from them.
+	// maxCSSParsed caps the rules parsed from them, of any selector.
+	maxCSSParsed = 16384
+	// maxCSSRules caps the class selectors kept from them.
 	maxCSSRules = 4096
-	// maxCSSClasses caps the classes read from one class attribute.
+	// maxCSSDeclBytes caps the text read from one declaration block.
+	maxCSSDeclBytes = 4 << 10
+	// maxCSSClasses caps the distinct classes read from one class
+	// attribute.
 	maxCSSClasses = 16
+	// maxCSSWork caps the class rule sets applied over a whole page. Each
+	// element applies at most two per distinct class (the class's and the
+	// tag's), so a page past this has class rules on hundreds of
+	// thousands of elements; heading inference is then not applied at all.
+	maxCSSWork = 1 << 20
 )
 
 // cssSheet is the class rules of a page's style sheets that the inference
@@ -227,19 +294,18 @@ const (
 // pseudo-class, a bare tag) and anything inside an at-rule is ignored: a
 // page's own heading formatting is what the class-styled exports write,
 // and reading more would mean writing a browser.
-type cssSheet map[string][]cssRule
+//
+// The rules of one class on one tag are merged as the sheet is read, a
+// later rule's property over an earlier's, so a sheet that repeats a rule
+// costs nothing more per element than one that states it once.
+type cssSheet map[cssKey]cssDecls
 
-// cssRule is one class rule: on a tag ("" for any), its declarations, and
-// where it stood in the sheets (later wins over earlier).
-type cssRule struct {
-	tag   string
-	decls string
-	order int
-}
+// cssKey is a class, on a tag ("" for any).
+type cssKey struct{ class, tag string }
 
 // readStyleSheets collects the class rules of every <style> element under
-// n, in document order, within maxCSSBytes of sheet text and maxCSSRules
-// rules. budget bounds the nodes visited.
+// n, in document order, within maxCSSBytes of sheet text. budget bounds the
+// nodes visited.
 func readStyleSheets(n *html.Node) cssSheet {
 	sheet := cssSheet{}
 	var b strings.Builder
@@ -274,11 +340,12 @@ func readStyleSheets(n *html.Node) cssSheet {
 	return sheet
 }
 
-// parse reads class rules from css.
+// parse reads class rules from css: at most maxCSSParsed rules, of which
+// at most maxCSSRules class selectors are kept.
 func (s cssSheet) parse(css string) {
 	css = stripCSSComments(css)
-	rules := 0
-	for css != "" && rules < maxCSSRules {
+	kept := 0
+	for parsed := 0; css != "" && parsed < maxCSSParsed && kept < maxCSSRules; parsed++ {
 		open := strings.IndexByte(css, '{')
 		if open < 0 {
 			return
@@ -300,20 +367,27 @@ func (s cssSheet) parse(css string) {
 		if end < 0 {
 			return
 		}
-		decls := css[open+1 : open+end]
+		block := css[open+1 : open+end]
 		css = css[open+end+1:]
 		// A stray '}' (an unbalanced sheet) leaves its text in front of
 		// the next selector: only what follows the last one is a selector.
 		if i := strings.LastIndexByte(sel, '}'); i >= 0 {
 			sel = strings.TrimSpace(sel[i+1:])
 		}
-		for _, part := range strings.Split(sel, ",") {
+		var d cssDecls
+		read := false
+		for part := range strings.SplitSeq(sel, ",") {
 			tag, class, ok := simpleClassSelector(strings.TrimSpace(part))
 			if !ok {
 				continue
 			}
-			s[class] = append(s[class], cssRule{tag: tag, decls: decls, order: rules})
-			if rules++; rules >= maxCSSRules {
+			if !read {
+				// Read once per rule, whatever its selector list names.
+				d, read = parseDecls(block, parsed), true
+			}
+			k := cssKey{class, tag}
+			s[k] = s[k].over(d)
+			if kept++; kept >= maxCSSRules {
 				return
 			}
 		}
@@ -387,38 +461,85 @@ func cssTag(s string) bool {
 	return true
 }
 
-// match returns the declarations of the rules that apply to n, in cascade
-// order: class rules before tag.class rules (the more specific wins), each
-// group in sheet order. Only the first maxCSSClasses classes are read.
-func (s cssSheet) match(n *html.Node) []string {
+// match is what n's class rules declare, in cascade order: a tag.class rule
+// over a .class rule (the more specific wins), a later rule over an earlier
+// within each. Only the first maxCSSClasses distinct classes are read.
+// applied counts the rule sets found, the work the cascade did.
+func (s cssSheet) match(n *html.Node) (d cssDecls, applied int) {
 	if len(s) == 0 {
-		return nil
+		return d, 0
 	}
 	cls := attrOf(n, "class")
 	if cls == "" {
-		return nil
+		return d, 0
 	}
-	// A class named twice applies its rules twice, to the same effect.
-	var plain, tagged []cssRule
-	for i, c := range strings.Fields(cls) {
-		if i == maxCSSClasses {
+	var plain, tagged cssDecls
+	var seen [maxCSSClasses]string
+	distinct := 0
+	for c := range strings.FieldsSeq(cls) {
+		if slices.Contains(seen[:distinct], c) {
+			continue
+		}
+		if distinct == maxCSSClasses {
 			break
 		}
-		for _, r := range s[c] {
-			switch r.tag {
-			case "":
-				plain = append(plain, r)
-			case n.Data:
-				tagged = append(tagged, r)
-			}
+		seen[distinct] = c
+		distinct++
+		if r, ok := s[cssKey{c, ""}]; ok {
+			plain = plain.over(r)
+			applied++
+		}
+		if r, ok := s[cssKey{c, n.Data}]; ok {
+			tagged = tagged.over(r)
+			applied++
 		}
 	}
-	byOrder := func(a, b cssRule) int { return a.order - b.order }
-	slices.SortFunc(plain, byOrder)
-	slices.SortFunc(tagged, byOrder)
-	out := make([]string, 0, len(plain)+len(tagged))
-	for _, r := range append(plain, tagged...) {
-		out = append(out, r.decls)
+	return cssDecls{
+		bold:  tagOver(plain.bold, tagged.bold),
+		size:  tagOver(plain.size, tagged.size),
+		color: tagOver(plain.color, tagged.color),
+	}, applied
+}
+
+// tagOver is the tag.class rule's value where one set it, else the class
+// rule's: specificity before order.
+func tagOver(plain, tagged cssProp) cssProp {
+	if tagged.set {
+		return tagged
 	}
-	return out
+	return plain
+}
+
+// cssWork reports whether applying s over the page under n stays within
+// limit rule sets. It visits every element the walk could (and those it
+// skips), so it bounds the walk's own cascade work from above.
+func (s cssSheet) cssWork(n *html.Node, limit int) bool {
+	if len(s) == 0 {
+		return true
+	}
+	work, budget := 0, maxXMLNodes
+	var walk func(*html.Node, int) bool
+	walk = func(m *html.Node, depth int) bool {
+		if depth > maxXMLDepth {
+			return true
+		}
+		for c := m.FirstChild; c != nil; c = c.NextSibling {
+			if budget--; budget < 0 {
+				return true
+			}
+			if c.Type != html.ElementNode {
+				continue
+			}
+			_, a := s.match(c)
+			if work += a; work > limit {
+				return false
+			}
+			if !walk(c, depth+1) {
+				return false
+			}
+		}
+		return true
+	}
+	_, a := s.match(n)
+	return a <= limit && walk(n, 0)
 }
