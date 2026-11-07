@@ -689,6 +689,7 @@ func Run(t *testing.T, factory Factory) {
 		// v0.8.21 audit-view cross-session event listing.
 		{"ListEventsFilterByTypeAndRange", testListEventsFilterByTypeAndRange},
 		{"ListEventsFilterByTenant", testListEventsFilterByTenant},
+		{"ListEventsFilterByUser", testListEventsFilterByUser},
 		{"ListEventsPaginationAndTotal", testListEventsPaginationAndTotal},
 		// v0.8.21 awaited-state derivation needs last-event-per-run.
 		{"GetLastEventForRunEmpty", testGetLastEventForRunEmpty},
@@ -14051,6 +14052,53 @@ func testListEventsFilterByTenant(t *testing.T, s store.Store) {
 		t.Fatal(err)
 	} else if totalCombo != 2 {
 		t.Errorf("tenant=globex type=text total = %d, want 2", totalCombo)
+	}
+}
+
+// testListEventsFilterByUser pins a member's audit view: EventFilter.UserID
+// restricts the result to events whose owning session belongs to that user, on
+// its own and combined with the tenant filter; a session with no user is
+// nobody's.
+func testListEventsFilterByUser(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	alice, _ := s.CreateSession(ctx, "acme", "default", "alice")
+	aliceRun, _ := s.CreateRun(ctx, alice.ID, store.RunIdentity{AgentID: "a_alice"})
+	bob, _ := s.CreateSession(ctx, "acme", "default", "bob")
+	bobRun, _ := s.CreateRun(ctx, bob.ID, store.RunIdentity{AgentID: "a_bob"})
+	tenantLevel, _ := s.CreateSession(ctx, "acme", "default", "")
+	tenantRun, _ := s.CreateRun(ctx, tenantLevel.ID, store.RunIdentity{AgentID: "a_tenant"})
+	otherAlice, _ := s.CreateSession(ctx, "globex", "default", "alice")
+	otherAliceRun, _ := s.CreateRun(ctx, otherAlice.ID, store.RunIdentity{AgentID: "a_other_alice"})
+	for runID, n := range map[string]int{aliceRun.ID: 3, bobRun.ID: 2, tenantRun.ID: 1, otherAliceRun.ID: 4} {
+		for i := 0; i < n; i++ {
+			if err := s.AppendEvent(ctx, runID, "text", []byte(`{"t":"x"}`)); err != nil {
+				t.Fatalf("AppendEvent: %v", err)
+			}
+		}
+	}
+
+	got, total, err := s.ListEvents(ctx, store.EventFilter{TenantID: "acme", UserID: "alice"}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || len(got) != 3 {
+		t.Fatalf("tenant=acme user=alice total=%d len=%d, want 3/3", total, len(got))
+	}
+	for _, ev := range got {
+		if ev.SessionID != alice.ID {
+			t.Errorf("tenant=acme user=alice leaked event from session %q (want %q)", ev.SessionID, alice.ID)
+		}
+	}
+	// The user filter alone spans tenants: alice in acme and in globex.
+	if _, totalUser, err := s.ListEvents(ctx, store.EventFilter{UserID: "alice"}, 50, 0); err != nil {
+		t.Fatal(err)
+	} else if totalUser != 7 {
+		t.Errorf("user=alice total = %d, want 7", totalUser)
+	}
+	if _, totalTenant, err := s.ListEvents(ctx, store.EventFilter{TenantID: "acme"}, 50, 0); err != nil {
+		t.Fatal(err)
+	} else if totalTenant != 6 {
+		t.Errorf("tenant=acme total = %d, want 6 (every user's and the tenant-level session's)", totalTenant)
 	}
 }
 
