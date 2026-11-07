@@ -416,11 +416,17 @@ func mustRunIDByAgent(t *testing.T, st store.Store, agentID string) string {
 // compiled.
 func (e *aclResumeEnv) principalCtx(t *testing.T, subject string) context.Context {
 	t.Helper()
+	return e.principalCtxWith(t, subject, auth.ScopeRunsCreate, auth.ScopeRunsRead)
+}
+
+// principalCtxWith is principalCtx for a principal holding the given scopes.
+func (e *aclResumeEnv) principalCtxWith(t *testing.T, subject string, scopes ...string) context.Context {
+	t.Helper()
 	token := "def_" + subject
 	if subject == "dev" {
 		token = "def_worker" // dev's own token, as authorCtx presents it
 	}
-	p, err := e.srv.ACLResolver().Resolve(context.Background(), auth.Principal{TenantID: "acme", Subject: subject, TokenDefID: token, Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}})
+	p, err := e.srv.ACLResolver().Resolve(context.Background(), auth.Principal{TenantID: "acme", Subject: subject, TokenDefID: token, Scopes: scopes})
 	if err != nil || p.Effective == nil {
 		t.Fatalf("resolve %s: %v", subject, err)
 	}
@@ -431,7 +437,13 @@ func (e *aclResumeEnv) principalCtx(t *testing.T, subject string) context.Contex
 // addHookAs edits defID's hooks as subject and returns the new version's id.
 func (e *aclResumeEnv) addHookAs(t *testing.T, subject, defID string) string {
 	t.Helper()
-	res, err := e.srv.ScheduleDef(e.principalCtx(t, subject), json.RawMessage(`{"op":"add_hook","def_id":"`+defID+`","hook":{"kind":"memory.set","scope":"user","key":"k"}}`))
+	return e.addHookIn(t, e.principalCtx(t, subject), subject, defID)
+}
+
+// addHookIn is addHookAs with the editor's ctx given.
+func (e *aclResumeEnv) addHookIn(t *testing.T, ctx context.Context, subject, defID string) string {
+	t.Helper()
+	res, err := e.srv.ScheduleDef(ctx, json.RawMessage(`{"op":"add_hook","def_id":"`+defID+`","hook":{"kind":"memory.set","scope":"user","key":"k"}}`))
 	if err != nil || res.IsError {
 		t.Fatalf("add_hook as %s: %v %s", subject, err, res.Text)
 	}
@@ -469,7 +481,9 @@ func TestScheduleDef_AHookEditBindsTheNextFireToTheEditorsACL(t *testing.T) {
 	if _, err := e.st.AclBindingPut(context.Background(), store.AclBindingRow{TenantID: "acme", ACLName: "dev-limits", SubjectKind: "user", SubjectID: "ed"}); err != nil {
 		t.Fatal(err)
 	}
-	edited := e.addHookAs(t, "ed", defID)
+	// ed is a tenant operator, narrowed by the list bound to it: a member may
+	// not edit a schedule whose runs execute as another user (dev).
+	edited := e.addHookIn(t, e.principalCtxWith(t, "ed", auth.ScopeTenant), "ed", defID)
 	if o := scheduleOwnerOf(t, e.st, edited); o == nil || o.Subject != "ed" {
 		t.Fatalf("the edited version's owner = %+v, want ed", o)
 	}
