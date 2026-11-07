@@ -45,7 +45,8 @@ func (HTML) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 		body = doc
 	}
 	if h.infer {
-		h.cur = htmlStyled(body, runFmt{size: htmlBodyPt})
+		h.sheet = readStyleSheets(doc)
+		h.cur = htmlStyled(body, runFmt{size: htmlBodyPt}, h.sheet)
 		h.decor = decorative{}
 		budget := maxXMLNodes
 		countImages(body, h.decor, &budget, 0)
@@ -83,6 +84,7 @@ type htmlState struct {
 	paras  []inferPara
 	paraAt []int
 	decor  decorative
+	sheet  cssSheet
 }
 
 // flush ends the paragraph being collected.
