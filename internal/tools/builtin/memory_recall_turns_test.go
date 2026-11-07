@@ -137,3 +137,44 @@ func TestRecallTurns_NeverAttachesAnUntrustedBlock(t *testing.T) {
 		t.Errorf("the user's own turn was not attached (attached=%d): %v", attached, memories[1]["turn"])
 	}
 }
+
+// TestRecallTurns_AnotherUsersChatNeedsTheTenantHistoryScope. A tenant-scoped
+// fact is shared, but the chat it was distilled from is still its author's
+// conversation. Recalling the fact as another user of the tenant must not
+// attach a turn of that chat unless the agent's history_scope reaches the
+// tenant's chats; the author's own recall still gets it.
+func TestRecallTurns_AnotherUsersChatNeedsTheTenantHistoryScope(t *testing.T) {
+	_, s := historyFixture(t)
+	bg := context.Background()
+	id := seedChat(t, s, "t1", "agentA", "alice")
+	run, err := s.CreateRun(bg, id, store.RunIdentity{AgentID: "a_alice", UserID: "alice", TenantID: "t1"})
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	for _, ev := range [][2]string{
+		{"user_input", `[{"role":"user","content":[{"type":"trusted-text","text":"My salary is 90k."}]}]`},
+		{"text", `{"type":"text","text":"Noted."}`},
+		{"done", `{"type":"done","stop_reason":"end_turn"}`},
+	} {
+		if err := s.AppendEvent(bg, run.ID, ev[0], []byte(ev[1])); err != nil {
+			t.Fatalf("AppendEvent(%s): %v", ev[0], err)
+		}
+	}
+	m := &Memory{Store: s}
+	recall := func(ctx context.Context) bool {
+		memories := []map[string]any{{"id": "memory/a"}}
+		spans := map[string]FactSource{"memory/a": {SessionID: id, Span: "My salary is 90k."}}
+		m.attachSourceTurns(ctx, store.MemoryScopeTenant, memories, spans)
+		_, ok := memories[0]["turn"]
+		return ok
+	}
+	if recall(histCtx([]string{"user"}, "agentA", "bob", "t1")) {
+		t.Error("another user's recall attached a turn of alice's chat without the tenant history scope")
+	}
+	if !recall(histCtx([]string{"user"}, "agentA", "alice", "t1")) {
+		t.Error("alice's own recall did not attach her turn")
+	}
+	if !recall(histCtx([]string{"user", "tenant"}, "agentA", "bob", "t1")) {
+		t.Error("an agent granted the tenant history scope did not attach the turn")
+	}
+}

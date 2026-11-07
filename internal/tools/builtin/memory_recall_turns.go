@@ -25,6 +25,7 @@ package builtin
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -89,13 +90,16 @@ func (m *Memory) attachSourceTurns(ctx context.Context, scope store.MemoryScope,
 		got, seen := cache[sp.SessionID]
 		if !seen {
 			got = loaded{}
-			// SCOPE GATE, mirroring History's: the session must belong to this tenant,
-			// and for a user-scoped recall to this user. A source_session_id is a
-			// COORDINATE, not an authorisation — a fact pointing at a chat does not
-			// entitle its reader to that chat.
+			// SCOPE GATE, mirroring History's: the session must belong to this tenant
+			// and to this user — for a recall outside the user scope, unless the
+			// agent's history_scope reaches the tenant's chats. A source_session_id
+			// is a COORDINATE, not an authorisation — a fact pointing at a chat does
+			// not entitle its reader to that chat. A tenant-scoped fact is shared,
+			// but the chat it was distilled from is still its author's conversation:
+			// the memory scope never decided who reads that, history_scope does.
 			if sess, err := m.Store.GetSession(ctx, sp.SessionID); err == nil &&
 				sess.TenantID == ident.TenantID &&
-				(scope != store.MemoryScopeUser || sess.UserID == ident.UserID) {
+				(sess.UserID == ident.UserID || (scope != store.MemoryScopeUser && historyScopeReachesTenant(histScopes))) {
 				if events, terr := m.Store.GetTranscript(ctx, sess.ID); terr == nil {
 					got = loaded{turns: ownConversationTurns(events), ok: true}
 				}
@@ -151,4 +155,11 @@ func historyScopeAllowsOwnChats(scopes []string) bool {
 		}
 	}
 	return false
+}
+
+// historyScopeReachesTenant reports whether the resolved history gate permits
+// reading other people's chats in the tenant: `tenant`, or `global`, which an
+// admin's agent alone is granted.
+func historyScopeReachesTenant(scopes []string) bool {
+	return slices.Contains(scopes, "tenant") || slices.Contains(scopes, "global")
 }
