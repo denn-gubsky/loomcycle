@@ -105,11 +105,11 @@ func CarvedOut(method, path string) bool {
 		return true
 	// The document maintenance passes re-embed a scope's chunks, generate units
 	// with a model call per chunk, or describe images with a vision call per
-	// image: the operator's, as the memory sweeps are. They sit at
-	// substrate:admin today (the /v1/_* catch-all), so a member is refused
-	// anyway; carving them out keeps it so if /v1/_document/* is ever opened to
-	// the tenant scope. The projection is not listed: without a refit a member
-	// may run it (RFC FY D7), and its handler refuses a member's refit.
+	// image: the operator's, as the memory sweeps are. Their route gate is
+	// substrate:tenant (a tenant operator runs them on its own tenant), so this
+	// carve-out is what keeps a member off them. The projection is not listed:
+	// without a refit a member may run it (RFC FY D7), and its handler refuses a
+	// member's refit.
 	case IsDocumentMaintenancePath(path):
 		return true
 	// Crypto with the tenant's keys: a member who could decrypt with them could
