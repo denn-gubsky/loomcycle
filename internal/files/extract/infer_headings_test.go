@@ -269,3 +269,69 @@ func TestInferHeadings_OffCountsNothing(t *testing.T) {
 		}
 	}
 }
+
+func wBoldFiller(n int) string {
+	var b strings.Builder
+	for i := range n {
+		b.WriteString(wP("", wrun{text: fillerSentence(i), bold: true}))
+	}
+	return b.String()
+}
+
+func hBoldFiller(n int) string {
+	var b strings.Builder
+	for i := range n {
+		b.WriteString("<p><b>" + fillerSentence(i) + "</b></p>\n")
+	}
+	return b.String()
+}
+
+// A document set in bold throughout: bold is how its body looks, so a short
+// bold line is not a heading by its weight. Size and colour still mark one.
+func TestInferHeadings_BoldMarksNothingWhenTheBodyIsMostlyBold(t *testing.T) {
+	c := inferCase{name: "all bold",
+		docx: wBoldFiller(3) + wP("", wrun{text: "Background", bold: true}) + wBoldFiller(1) +
+			wP("", wrun{text: "Next steps", bold: true}) + wBoldFiller(1),
+		html: hBoldFiller(3) + `<p><b>Background</b></p>` + hBoldFiller(1) +
+			`<p><b>Next steps</b></p>` + hBoldFiller(1),
+		want:     []string{"\n\nBackground\n", "\n\nNext steps\n"},
+		absent:   []string{"\n## ", "\n### "},
+		headings: 0,
+	}
+	c.check(t)
+	for _, o := range []inferOut{inferDOCX(t, c.docx, true), inferHTML(t, c.html, true)} {
+		if !hasNote(o.rep, "bold is the body's own weight") {
+			t.Errorf("notes = %q, want one saying bold marked no heading", o.rep.Notes)
+		}
+	}
+}
+
+func TestInferHeadings_SizeAndColourStillMarkHeadingsInABoldBody(t *testing.T) {
+	inferCase{name: "bold body, larger and coloured lines",
+		docx: wBoldFiller(3) + wP("", wrun{text: "Site survey", bold: true, sz: 28}) + wBoldFiller(1) +
+			wP("", wrun{text: "Highlights", bold: true, sz: 24, color: "C00000"}) + wBoldFiller(1) +
+			wP("", wrun{text: "Key result", bold: true, color: "C00000"}) + wBoldFiller(1),
+		html: hBoldFiller(3) + `<p style="font-size:14pt"><b>Site survey</b></p>` + hBoldFiller(1) +
+			`<p style="font-size:13pt;color:#c00000"><b>Highlights</b></p>` + hBoldFiller(1) +
+			`<p style="color:#c00000"><b>Key result</b></p>` + hBoldFiller(1),
+		// Colour with bold that is only the body's weight is colour alone.
+		want:     []string{"\n## Site survey\n", "\n### Highlights\n", "\n\nKey result\n"},
+		absent:   []string{"# Key result"},
+		headings: 2,
+	}.check(t)
+}
+
+// Bold is the body's weight only when MORE than half of its characters are
+// bold: a document whose body is half bold keeps bold as a heading mark.
+func TestInferHeadings_BoldStillMarksAHeadingWhenHalfTheBodyIsBold(t *testing.T) {
+	plain := wP("", plainRun(strings.Repeat("x", 40)+" plain body text that ends."))
+	bold := wP("", wrun{text: strings.Repeat("y", 40) + " bold body text that endss.", bold: true})
+	inferCase{name: "half bold",
+		// "Topic" is bold too: 5 more bold characters than plain, so the
+		// plain filler is lengthened by 5 to keep the split at exactly half.
+		docx:     plain + bold + wP("", wrun{text: "Topic", bold: true}) + wP("", plainRun("abcde")),
+		html:     `<p>` + strings.Repeat("x", 40) + ` plain body text that ends.</p><p><b>` + strings.Repeat("y", 40) + ` bold body text that endss.</b></p><p><b>Topic</b></p><p>abcde</p>`,
+		want:     []string{"\n## Topic\n"},
+		headings: 1,
+	}.check(t)
+}

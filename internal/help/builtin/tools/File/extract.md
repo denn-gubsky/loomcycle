@@ -48,6 +48,13 @@ cell, and is:
   document), or
 - in a colour other than the body's and bold or larger.
 
+Bold counts only while it sets a line apart. When more than half of the
+body's characters are bold (the body being every paragraph that is not a
+real heading), bold is the document's own weight: a bold line is then not a
+heading by its weight, and colour with bold counts as colour alone. Size, and
+colour with a larger size, still mark headings, and `notes` says that bold
+was set aside.
+
 Real headings (a Word heading style, an `<h1>`–`<h6>`) keep their level.
 Inferred headings take the levels below the shallowest real heading, one per
 distinct font size, largest first; bold lines at body size are the deepest.

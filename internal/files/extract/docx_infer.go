@@ -106,14 +106,15 @@ func (d *docx) infer(body *node) {
 	var nodes []*node
 	var paras []inferPara
 	d.collect(body, false, &nodes, &paras, 0)
-	levels, n := inferLevels(paras)
+	res := inferLevels(paras)
 	d.inferred = map[*node]int{}
-	for i, lv := range levels {
+	for i, lv := range res.levels {
 		if lv > 0 {
 			d.inferred[nodes[i]] = lv
 		}
 	}
-	d.rep.InferredHeadings = n
+	d.rep.InferredHeadings = res.headings
+	res.note(d.rep)
 	d.decor = decorative{}
 	for _, b := range body.all("blip") {
 		d.decor[d.imageKey(b.attrRel("embed"))]++

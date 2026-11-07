@@ -108,14 +108,15 @@ func (h *htmlState) text(s string) {
 
 // promote rewrites the paragraphs inferLevels makes headings.
 func (h *htmlState) promote() {
-	levels, n := inferLevels(h.paras)
-	for i, lv := range levels {
+	res := inferLevels(h.paras)
+	for i, lv := range res.levels {
 		if lv > 0 {
 			// Below the document's "#", as a real <hN> is.
 			h.blocks[h.paraAt[i]] = heading(lv+1, h.paras[i].look().text)
 		}
 	}
-	h.rep.InferredHeadings = n
+	h.rep.InferredHeadings = res.headings
+	res.note(h.rep)
 }
 
 var htmlSkip = map[string]bool{
