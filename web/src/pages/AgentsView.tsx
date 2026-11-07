@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Agent, listAgents } from "../api";
-import { useFocusTenant, useUserId } from "../components/Layout";
+import { useFocusTenant, useRunsUserId } from "../components/Layout";
 import AgentsTreePanel, { type StatusFilter } from "../components/AgentsTreePanel";
 import RunDetail from "../components/RunDetail";
 import { buildTree } from "../components/AgentsTree";
@@ -27,7 +27,7 @@ import Splitter from "../components/Splitter";
 const REFRESH_MS = 3_000;
 
 export default function AgentsView() {
-  const userId = useUserId();
+  const userId = useRunsUserId();
   // Super-admin tenant-focus; "" = the caller's own scope. Threaded into
   // the run listing so an admin's tenant switcher narrows the runs view.
   const focusTenant = useFocusTenant();

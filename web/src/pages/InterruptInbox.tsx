@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { InterruptRow, listUserInterrupts, resolveInterrupt } from "../api";
-import { useUserId } from "../components/Layout";
+import { useRunsUserId } from "../components/Layout";
 
 // Auto-refresh interval. Polls /v1/users/{user_id}/interrupts because
 // there's no global SSE feed of pending-interrupt state today; once
@@ -14,7 +14,7 @@ const REFRESH_MS = 3_000;
 // a row opens the Answer modal which posts to the v0.8.16 resolve
 // endpoint.
 export default function InterruptInbox() {
-  const userId = useUserId();
+  const userId = useRunsUserId();
   const [rows, setRows] = useState<InterruptRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);

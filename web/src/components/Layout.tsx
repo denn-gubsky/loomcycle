@@ -1,4 +1,4 @@
-import { hasTenantScope as principalHasTenantScope, ownRunsOnly, surfacesOf } from "../lib/visibility";
+import { hasTenantScope as principalHasTenantScope, runsUserId, surfacesOf } from "../lib/visibility";
 import { useEffect, useState } from "react";
 import { Link, Outlet, useOutletContext } from "react-router-dom";
 import { Moon, PanelLeftClose, PanelLeftOpen, Sun } from "lucide-react";
@@ -57,8 +57,6 @@ export default function Layout() {
   // RFC EZ §4: what the server says this principal may reach, page by page. Where
   // it answers, the nav and the settings menu follow it; the role is the fallback.
   const surfaces = surfacesOf(principal);
-  // A member sees only its own runs: no user picker, the workspace is its own.
-  const ownOnly = ownRunsOnly(principal);
 
   // Super-admin tenant-focus (?tenant=): "" = all tenants (admin's default
   // global view). A tenant principal can't set this — the backend forces
@@ -96,13 +94,9 @@ export default function Layout() {
           return;
         }
         setPrincipal(p);
-        // A member reads only its own runs, so its workspace IS its own
-        // subject: a user remembered from an earlier sign-in on this browser
-        // is replaced. A tenant operator's workspace defaults to its own
-        // subject's runs so the runs view is populated without picking a user.
-        if (ownRunsOnly(p)) {
-          setUserId(p.subject);
-        } else if (!p.is_admin && !p.open_mode) {
+        // A tenant's workspace defaults to its own subject's runs so the
+        // runs view is populated immediately without picking a user.
+        if (!p.is_admin && !p.open_mode) {
           setUserId((cur) => cur || p.subject);
         }
       })
@@ -285,11 +279,6 @@ export default function Layout() {
               is derived from runs, so a subject with no runs yet (or one whose
               documents the operator needs to reach) can only be typed. The
               "no user" row, or Enter on a blank field, clears it. */}
-          {ownOnly ? (
-            <span className="user-picker" title="You see your own runs and conversations">
-              <label>user</label> {principal?.subject}
-            </span>
-          ) : (
           <form
             className="user-picker"
             onSubmit={(e) => {
@@ -319,7 +308,6 @@ export default function Layout() {
               toggleLabel="Show known users"
             />
           </form>
-          )}
           {/* The account menu, rightmost, is rendered for EVERY role: it holds
               Log out, the only way out of a session. */}
           <AccountMenu
@@ -332,7 +320,9 @@ export default function Layout() {
         <OpenModeBanner principal={principal} />
         {(isAdmin || hasTenantScope) && <NoTraceOverrideBanner />}
         <main className="content">
-          <Outlet context={{ userId, principal: principal ?? null, focusTenant }} />
+          <Outlet
+            context={{ userId, runsUserId: runsUserId(principal, userId), principal: principal ?? null, focusTenant }}
+          />
         </main>
       </div>
     </div>
@@ -341,13 +331,23 @@ export default function Layout() {
 
 interface LayoutContext {
   userId: string;
+  runsUserId: string;
   principal: Principal | null;
   focusTenant: string;
 }
 
-// Child routes read userId via this helper.
+// Child routes read userId via this helper. It is the user the picker names:
+// the browse pages (documents, paths, ontology, review) open that subject,
+// which a member's browse grant may allow.
 export function useUserId(): string {
   return useOutletContext<LayoutContext>().userId;
+}
+
+// useRunsUserId is whose runs the run views (runs list, run terminal, inbox)
+// show: the picked user, except for a member, which reads only its own runs —
+// another user's list would only ever come back empty.
+export function useRunsUserId(): string {
+  return useOutletContext<LayoutContext>().runsUserId;
 }
 
 // usePrincipal exposes the resolved identity to child views (role-aware

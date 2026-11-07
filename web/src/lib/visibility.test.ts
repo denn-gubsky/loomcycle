@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSee, grantOf, hasTenantScope, ownRunsOnly, surfacesOf, TENANT_SCOPE } from "./visibility";
+import { canSee, grantOf, hasTenantScope, ownRunsOnly, runsUserId, surfacesOf, TENANT_SCOPE } from "./visibility";
 
 describe("canSee", () => {
   it("shows an `all` surface to every role, including a delegated user", () => {
@@ -95,5 +95,26 @@ describe("ownRunsOnly", () => {
   it("decides nothing before the principal is known", () => {
     expect(ownRunsOnly(undefined)).toBe(false);
     expect(ownRunsOnly(null)).toBe(false);
+  });
+});
+
+describe("runsUserId", () => {
+  const member = { is_admin: false, subject: "alice", scopes: ["runs:create", "runs:read", "channel:publish", "channel:read"] };
+
+  it("keeps a member's run views on its own subject whatever user is picked", () => {
+    // The picker stays: the browse pages open the picked subject, which a
+    // member's browse grant may allow. Only the run views are pinned.
+    expect(runsUserId(member, "bob")).toBe("alice");
+    expect(runsUserId({ ...member, scopes: ["substrate:user"] }, "bob")).toBe("alice");
+  });
+
+  it("follows the picker for an operator, an admin and open mode", () => {
+    expect(runsUserId({ is_admin: false, subject: "op", scopes: [TENANT_SCOPE] }, "bob")).toBe("bob");
+    expect(runsUserId({ is_admin: true, subject: "root", scopes: ["substrate:admin"] }, "bob")).toBe("bob");
+    expect(runsUserId({ is_admin: true, open_mode: true, scopes: [] }, "bob")).toBe("bob");
+  });
+
+  it("follows the picker before the principal is known", () => {
+    expect(runsUserId(undefined, "bob")).toBe("bob");
   });
 });

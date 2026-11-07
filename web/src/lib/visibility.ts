@@ -86,12 +86,22 @@ export function surfacesOf(
 // ownRunsOnly reports whether the principal reads only its own runs: a member
 // (isolated or not) — anyone who is neither an admin, the open-mode operator nor
 // a substrate:tenant operator. The server answers such a caller's request for
-// another user's runs with an empty list, so the UI pins its workspace to its own
-// subject instead of offering a user picker that could only come back empty. The
-// server's rule is auth.OwnRowsOnly; this mirrors it, it does not enforce it.
+// another user's runs with an empty list. The server's rule is auth.OwnRowsOnly;
+// this mirrors it, it does not enforce it.
 export function ownRunsOnly(
   p: { is_admin?: boolean; open_mode?: boolean; scopes?: string[] } | null | undefined,
 ): boolean {
   if (!p) return false;
   return !p.is_admin && !p.open_mode && !hasTenantScope(p.scopes);
+}
+
+// runsUserId is whose runs the run views show: the user picked in the top bar,
+// except for a member, whose run views stay on its own subject. The picker stays
+// for everyone, because the browse pages use it to open another subject's
+// documents and paths, which a member's browse grant may allow.
+export function runsUserId(
+  p: { is_admin?: boolean; open_mode?: boolean; scopes?: string[]; subject?: string } | null | undefined,
+  picked: string,
+): string {
+  return ownRunsOnly(p) && p?.subject ? p.subject : picked;
 }
