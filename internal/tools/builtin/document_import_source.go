@@ -400,7 +400,7 @@ func sourceMismatch(stored, given string) *tools.Result {
 // described the earlier text.
 func refreshedProvenance(stored map[string]any, in importProvenance) (map[string]any, *tools.Result) {
 	str := func(m map[string]any, k string) string { s, _ := m[k].(string); return s }
-	next := make(map[string]any, len(in.fields)+3)
+	next := map[string]any{}
 	for k, v := range in.fields {
 		next[k] = v
 	}
