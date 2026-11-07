@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en" style="--color-bg:#f6f7ed">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Terms · loomcycle.cloud</title>
+<link rel="icon" href="assets/favicon.svg" />
+<script src="./ds-base.js"></script>
+<style>
+/* The terms of use. Same Modernist voice as index.html (its measures and
+   the prose/footer rules are copied, not shared: the site has no build step),
+   without the motion: this page is read, not watched, so nothing waits on a
+   script to become visible. */
+:root {
+  --leading: 28px;
+  --half: 14px;
+  --edge: clamp(20px, 5vw, 72px);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+body { margin: 0; text-wrap: pretty; }
+.wrap { max-width: 1200px; margin: 0 auto; padding: 0 var(--edge); }
+
+.nav { padding-inline: max(var(--edge), calc((100% - 1200px) / 2 + var(--edge))); }
+.nav .brand-lock { display: flex; align-items: center; margin-right: auto; border-bottom: 0; }
+.nav .brand-lock img { height: 21px; display: block; }
+.nav a { color: var(--color-text); border-bottom: 0; white-space: nowrap; }
+.nav a:hover { color: var(--color-accent); }
+
+.rule { height: 2px; border: 0; margin: 0; background: var(--color-divider); }
+
+.kicker {
+  display: block; font-size: 13px; line-height: var(--half);
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--color-accent-700);
+  margin: 0 0 calc(var(--leading) - var(--half));
+}
+
+.head { padding: calc(2.5 * var(--leading)) 0 calc(1.5 * var(--leading)); }
+.head h1 { font-size: clamp(36px, 4.4vw, 56px); line-height: 1.1; letter-spacing: -0.02em; margin: 0; }
+.head p { font-size: 17px; line-height: var(--leading); max-width: 62ch; margin: var(--leading) 0 0; }
+
+.prose { padding: calc(1.5 * var(--leading)) 0; }
+.prose .grid { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 8fr);
+  gap: var(--leading) clamp(24px, 4vw, 72px); }
+.prose h2 { font-size: 24px; line-height: calc(1.25 * var(--leading)); letter-spacing: -0.01em; margin: 0; }
+.prose p, .prose li { font-size: 16px; line-height: var(--leading); max-width: 62ch; }
+.prose p { margin: 0 0 var(--leading); }
+.prose p:last-child, .prose ul:last-child { margin-bottom: 0; }
+.prose ul { margin: 0 0 var(--leading); padding-left: 1.2em; }
+@media (max-width: 900px) { .prose .grid { grid-template-columns: 1fr; } }
+
+.inline-code { font-family: var(--mono); font-size: 0.9em;
+  background: var(--color-neutral-200); padding: 1px 4px; }
+
+a { color: var(--color-accent-700); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--color-accent-700) 40%, transparent); }
+a:hover { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+
+footer { padding: calc(2 * var(--leading)) 0; font-size: 13px; line-height: var(--leading);
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+footer .cols { display: flex; flex-wrap: wrap; gap: var(--half) clamp(24px, 4vw, 56px); }
+footer nav { display: flex; flex-wrap: wrap; gap: var(--half) clamp(16px, 2.5vw, 32px); }
+footer nav a { border-bottom: 0; color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+footer nav a:hover { color: var(--color-accent); }
+footer .meta { margin-left: auto; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a class="brand-lock" href="index.html"><img src="assets/loomcycle-logo.svg" alt="loomcycle.cloud home" /></a>
+  <a href="index.html">← loomcycle.cloud</a>
+</nav>
+
+<div class="wrap">
+
+  <section class="head">
+    <span class="kicker">Terms</span>
+    <h1>Terms of use</h1>
+    <p>loomcycle.cloud is a preview service: a shared instance of the open-source loomcycle runtime, run by The loomcycle Authors (&ldquo;we&rdquo;) so that people can try it. By using it you accept these terms.</p>
+    <p>Last updated 7 November 2026.</p>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="prose" id="preview">
+    <div class="grid">
+      <h2>A preview service</h2>
+      <div>
+        <p>loomcycle.cloud is offered for trying the runtime out. Its features, limits, models and settings can change at any time, and it can be interrupted, suspended or shut down, with or without notice.</p>
+        <p>Do not rely on it for anything you cannot afford to lose or to have interrupted, and keep your own copies of anything that matters to you.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="prose" id="accounts">
+    <div class="grid">
+      <h2>Accounts</h2>
+      <div>
+        <p>You sign up with your Google account, and an operator approves each account before it can be used. A sign-up may be declined.</p>
+        <p>Keep your password and your access tokens to yourself. You are responsible for what is done with them.</p>
+        <p>We may suspend or remove an account, for example when it breaks these terms or puts the service or other members at risk, and we may end the preview for everyone. You can ask us to erase your account at any time, as the <a href="privacy.html">privacy notice</a> describes.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="prose" id="use">
+    <div class="grid">
+      <h2>Acceptable use</h2>
+      <div>
+        <p>Do not use the service, or its agents, to:</p>
+        <ul>
+          <li>break the law, or harm, harass or deceive anyone;</li>
+          <li>reach other members' data, or get around the service's access controls, limits or sandboxes;</li>
+          <li>attack, probe or overload the service or the systems its agents reach;</li>
+          <li>send spam, or collect data about people who would not expect it;</li>
+          <li>put in content you have no right to share, including other people's personal data;</li>
+          <li>resell the service or give other people access to it through your account.</li>
+        </ul>
+        <p>If you find a security problem, report it privately as the project's <a href="https://github.com/denn-gubsky/loomcycle/blob/main/SECURITY.md">security policy</a> describes, and do not test it further against this service.</p>
+        <p>Your messages are answered by third-party model providers, listed in the <a href="privacy.html">privacy notice</a>. Their usage policies apply to what you send them.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="prose" id="shared">
+    <div class="grid">
+      <h2>One shared workspace</h2>
+      <div>
+        <p>Every approved member works in one shared workspace. Its shared documents, memory and agents can be read by every member, and members' agents can add to them and change them.</p>
+        <p>Your conversations are visible to you and to the workspace's operators; other members cannot open them.</p>
+        <p>Put nothing into the service that you would not show its operators, and nothing into the shared workspace that you would not show every member.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="prose" id="content">
+    <div class="grid">
+      <h2>Your content</h2>
+      <div>
+        <p>You keep whatever rights you have in what you put into the service. You are responsible for it, and for having the right to put it there.</p>
+        <p>You allow the service to store and process it, and to send it to the model providers and other services listed in the <a href="privacy.html">privacy notice</a>, as far as running your agents and the shared workspace needs.</p>
+        <p>What agents produce is generated by models. It can be wrong, incomplete or unsafe: check it before you rely on it.</p>
+        <p>We may remove content that breaks these terms.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="prose" id="warranty">
+    <div class="grid">
+      <h2>No warranty</h2>
+      <div>
+        <p>The service is provided as is and as available, without warranties of any kind, express or implied, including that it is available, fit for a particular purpose, or that its results are accurate.</p>
+        <p>To the extent the law allows, we are not liable for any loss or damage that comes from using the service, including lost data or lost work.</p>
+        <p>The loomcycle software itself is open source under the Apache License 2.0. These terms cover this hosted service, not the software.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="prose" id="changes">
+    <div class="grid">
+      <h2>Changes to these terms</h2>
+      <div>
+        <p>We may change these terms. The date at the top shows when they last changed. If you keep using the service after a change, the new terms apply; if you do not accept them, stop using it and ask us to erase your account.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="prose" id="general">
+    <div class="grid">
+      <h2>General</h2>
+      <div>
+        <p>These terms are the whole agreement between you and us about the service. If a part of them cannot be enforced, the rest still applies. Nothing in them takes away rights the law gives you that cannot be given up by agreement.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="prose" id="contact">
+    <div class="grid">
+      <h2>Contact</h2>
+      <div>
+        <p>Write to <a href="mailto:privacy@loomcycle.cloud">privacy@loomcycle.cloud</a> about these terms, your account or your data. How we handle personal data is described in the <a href="privacy.html">privacy notice</a>.</p>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<div class="wrap">
+  <hr class="rule" />
+  <footer>
+    <div class="cols">
+      <nav aria-label="Footer">
+        <a href="index.html">loomcycle.cloud</a>
+        <a href="https://loomcycle.dev">loomcycle.dev</a>
+        <a href="https://github.com/denn-gubsky/loomcycle">GitHub</a>
+        <a href="privacy.html">Privacy</a>
+      </nav>
+      <span class="meta">loomcycle · Apache-2.0 · runtime on app.loomcycle.cloud</span>
+    </div>
+  </footer>
+</div>
+
+</body>
+</html>

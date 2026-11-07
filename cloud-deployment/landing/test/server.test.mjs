@@ -1123,14 +1123,23 @@ describe("shared-tenant mode (LANDING_TENANT)", () => {
 });
 
 describe("the static site", () => {
-  // The footer and the shared sign-up link privacy.html; express.static's
-  // extensions option also serves it at the shorter /privacy.
+  // The footer and the shared sign-up link privacy.html and terms.html;
+  // express.static's extensions option also serves them without ".html".
   test("serves the privacy notice at /privacy and /privacy.html", async () => {
     for (const p of ["/privacy", "/privacy.html"]) {
       const r = await fetch(shared.base + p);
       assert.equal(r.status, 200, p);
       assert.match(r.headers.get("content-type") || "", /^text\/html/, p);
       assert.match(await r.text(), /<title>Privacy · loomcycle\.cloud<\/title>/, p);
+    }
+  });
+
+  test("serves the terms at /terms and /terms.html", async () => {
+    for (const p of ["/terms", "/terms.html"]) {
+      const r = await fetch(shared.base + p);
+      assert.equal(r.status, 200, p);
+      assert.match(r.headers.get("content-type") || "", /^text\/html/, p);
+      assert.match(await r.text(), /<title>Terms · loomcycle\.cloud<\/title>/, p);
     }
   });
 });
