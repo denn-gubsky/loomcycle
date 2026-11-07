@@ -51,6 +51,7 @@ models:
   local-high:   { provider: ollama-local, model: ornith-1.5:35b }
   local-dense:  { provider: ollama-local, model: qwen3.8:latest }
   local-embedding: { provider: ollama-local, model: bge-m3:latest, kind: embedder }
+  local-ocr:    { provider: ollama-local, model: glm-ocr:q8_0 }   # a small OCR-tuned vision model
   decide:      { provider: ollama-local, model: nimble, kind: decision }
   decide-deep: { provider: ollama-local, model: clef,   kind: decision }
 
@@ -326,3 +327,15 @@ mcp_servers:
     transport: stdio
     command: /usr/local/bin/pinchtab
     args: ["--server", "http://pinchtab:9867", "mcp"]
+
+# ─── OCR ──────────────────────────────────────────────────────────────
+# File op=extract reads scanned PDF pages and image files with a vision model
+# when an agent allows it (its transcription.ocr: auto | always). The model is
+# pinned to a small OCR-tuned one so OCR does not load or compete with the chat
+# models. No rasterize helper in the image: PDF pages go to OCR only on an engine
+# that takes a PDF, so on this stack OCR reads image files.
+transcription:
+  ocr:
+    engine: vision
+    model: local-ocr
+    language: en+ru
