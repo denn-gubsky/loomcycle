@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/denn-gubsky/loomcycle/internal/aclres"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -26,14 +27,16 @@ import (
 // parent's body) an unset user_id — a tenant-level run — is refused too, since
 // that run is not the member's either.
 func refuseRunAsAnotherUser(ctx context.Context, op string, userID *string, defaultToCaller bool) (tools.Result, bool) {
-	p, ok := auth.PrincipalFromContext(ctx)
-	if !auth.OwnRowsOnly(p, ok) {
+	self, tenantLevelOK, confined := triggerRunUser(ctx)
+	if !confined {
 		return tools.Result{}, false
 	}
-	if *userID == "" && defaultToCaller && p.Subject != "" {
-		*userID = p.Subject
+	if *userID == "" && defaultToCaller && self != "" {
+		*userID = self
 	}
-	if *userID != "" && *userID == p.Subject {
+	// Only an ownerless tenant-level run (self "") may keep writing
+	// tenant-level schedules; a member, on or off a run, owns none.
+	if *userID == self && (self != "" || tenantLevelOK) {
 		return tools.Result{}, false
 	}
 	if defaultToCaller {
@@ -46,6 +49,35 @@ func refuseRunAsAnotherUser(ctx context.Context, op string, userID *string, defa
 		"ask a tenant operator, or create a schedule of your own"), true
 }
 
+// triggerRunUser reports whether the caller may write only triggers whose runs
+// execute as one user (confined), and which user that is (self).
+//
+// A principal on ctx decides it: a member (auth.OwnRowsOnly) is held to its
+// own subject. With no principal, an off-run call is the unauthenticated
+// operator. A run with no principal (a scheduler fire, a webhook delivery, a
+// resumed run, an A2A run) is held to the user its recorded owner IS when that
+// owner is a member or isolated, whatever user the run itself executes as: a
+// member's schedule stored before this rule may run as a colleague, and its
+// runs must not inherit that reach. A tenant operator's or an admin's run is
+// not held. A run whose owner is not recorded is held to its own user, and
+// only such a run with no user (tenantLevelOK) may write tenant-level
+// triggers: an agent inside a run is never the operator, whoever started it.
+func triggerRunUser(ctx context.Context) (self string, tenantLevelOK, confined bool) {
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		return p.Subject, false, auth.OwnRowsOnly(p, ok)
+	}
+	if tools.RunID(ctx) == "" {
+		return "", false, false
+	}
+	if acl := tools.PolicyOf(ctx).ACL; acl != nil {
+		if aclres.IsOperatorClass(acl.Subject.Class) {
+			return "", false, false
+		}
+		return acl.Subject.ID, false, true
+	}
+	return tools.RunIdentity(ctx).UserID, true, true
+}
+
 // refuseMappedRunUser returns a refusal when a member would store a webhook
 // that maps user_id: every delivery would then run as whatever user its body
 // names, and the member, holding the webhook's secret, chooses the body.
@@ -53,7 +85,7 @@ func refuseMappedRunUser(ctx context.Context, op string, mapping map[string]stri
 	if _, mapped := mapping["user_id"]; !mapped {
 		return tools.Result{}, false
 	}
-	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnRowsOnly(p, ok) {
+	if _, _, confined := triggerRunUser(ctx); !confined {
 		return tools.Result{}, false
 	}
 	return errValidation(

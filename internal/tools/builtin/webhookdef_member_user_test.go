@@ -1,10 +1,12 @@
 package builtin
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -46,5 +48,32 @@ func TestWebhookDef_AMemberCannotMapDeliveriesToAnotherUser(t *testing.T) {
 	}
 	if !res.IsError {
 		t.Errorf("a member forked a webhook that maps user_id (inherited): %s", res.Text)
+	}
+}
+
+// A run with no principal (a scheduler fire, a delivery, a resume, an A2A
+// run) may not write a webhook mapping user_id unless a tenant operator owns
+// the run, as a member may not off-run.
+func TestWebhookDef_ARunWithNoPrincipalCannotMapDeliveriesToAnotherUser(t *testing.T) {
+	tool, base, cleanup := webhookDefFixture(t)
+	defer cleanup()
+	inRun := func(ownerClass string) context.Context {
+		ctx := tools.WithRunIdentity(base, tools.RunIdentityValue{AgentID: "a_run", TenantID: "acme", UserID: "alice"})
+		ctx = tools.WithRunID(ctx, "r_alice")
+		if ownerClass != "" {
+			ctx = tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) {
+				p.ACL = &authz.Effective{Subject: authz.Subject{TenantID: "acme", ID: "owner", Class: ownerClass}}
+			})
+		}
+		return ctx
+	}
+	mapped := `{` + webhookBase + `,"payload_mapping":{"user_id":"$.user"}}`
+	for _, class := range []string{"", "member"} {
+		if text, isErr := webhookCreate(t, tool, inRun(class), "mapped-"+class, mapped); !isErr {
+			t.Errorf("a run (owner class %q) created a webhook that runs as the user a delivery names: %s", class, text)
+		}
+	}
+	if text, isErr := webhookCreate(t, tool, inRun("tenant"), "op-run-mapped", mapped); isErr {
+		t.Errorf("a run a tenant operator owns mapping user_id: %s", text)
 	}
 }

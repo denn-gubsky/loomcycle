@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -82,5 +83,82 @@ func TestScheduleDef_AMemberCannotScheduleRunsAsAColleague(t *testing.T) {
 	}
 	if got := activeScheduleDef(t, tool, "bobs").UserID; got != "bob" {
 		t.Errorf("the operator's schedule now runs as %q, want bob", got)
+	}
+}
+
+// A run carries no principal when a schedule fires it, a webhook delivers to
+// it, it resumes, or an A2A peer starts it. Such a run writing a schedule is
+// held to its own user, as a member is, unless the run's recorded owner is a
+// tenant operator: otherwise a member schedules an agent whose run writes the
+// schedule the member may not write itself.
+func TestScheduleDef_ARunWithNoPrincipalSchedulesOnlyAsItsOwnUser(t *testing.T) {
+	tool, operator := scheduleBearerFixture(t)
+	// inRunOwnedBy is a run executing as user, fired by a trigger owner
+	// recorded with ownerClass (none when ownerClass is "").
+	inRunOwnedBy := func(user, owner, ownerClass string) context.Context {
+		ctx := tools.WithAgentName(context.Background(), "scheduler-orchestrator")
+		ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_run", TenantID: "acme", UserID: user})
+		ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{Scopes: []string{"any"}, SelfName: "scheduler-orchestrator"})
+		ctx = tools.WithRunID(ctx, "r_"+user)
+		if ownerClass != "" {
+			ctx = tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) {
+				p.ACL = &authz.Effective{Subject: authz.Subject{TenantID: "acme", ID: owner, Class: ownerClass}}
+			})
+		}
+		return ctx
+	}
+	inRun := func(user, ownerClass string) context.Context { return inRunOwnedBy(user, user, ownerClass) }
+
+	for _, class := range []string{"", "member", "isolated"} {
+		alicesRun := inRun("alice", class)
+		if text, isErr := scheduleCreate(t, tool, alicesRun, "as-bob-"+class, `{"agent":"digest","schedule":"0 6 * * *","user_id":"bob"}`); !isErr {
+			t.Errorf("a run of alice's (owner class %q) created a schedule that runs as bob: %s", class, text)
+		}
+		if text, isErr := scheduleCreate(t, tool, alicesRun, "own-"+class, `{"agent":"digest","schedule":"0 6 * * *"}`); isErr {
+			t.Fatalf("a run of alice's (owner class %q) scheduling as alice: %s", class, text)
+		}
+		if got := activeScheduleDef(t, tool, "own-"+class).UserID; got != "alice" {
+			t.Errorf("a schedule a run of alice's wrote without user_id runs as %q, want alice", got)
+		}
+	}
+
+	// An ownerless tenant-level run (no user) keeps writing tenant-level
+	// schedules; a member's run does not, as a member does not off-run.
+	if text, isErr := scheduleCreate(t, tool, inRun("", ""), "tenant-level", `{"agent":"digest","schedule":"0 6 * * *"}`); isErr {
+		t.Errorf("an ownerless tenant-level run's tenant-level schedule: %s", text)
+	}
+	if text, isErr := scheduleCreate(t, tool, inRunOwnedBy("", "alice", "member"), "members-tenant-level", `{"agent":"digest","schedule":"0 6 * * *"}`); isErr {
+		t.Fatalf("a tenant-level run alice owns, scheduling with no user_id: %s", text)
+	}
+	if got := activeScheduleDef(t, tool, "members-tenant-level").UserID; got != "alice" {
+		t.Errorf("a schedule a run alice owns wrote without user_id runs as %q, want alice", got)
+	}
+
+	// A run alice owns that executes as bob (a schedule she stored before
+	// this rule) is held to alice, not to the user it runs as.
+	if text, isErr := scheduleCreate(t, tool, inRunOwnedBy("bob", "alice", "member"), "still-as-bob", `{"agent":"digest","schedule":"0 6 * * *","user_id":"bob"}`); !isErr {
+		t.Errorf("a run alice owns, executing as bob, created a schedule that runs as bob: %s", text)
+	}
+
+	// A run a tenant operator owns may schedule as any user of its tenant,
+	// as the operator may off-run.
+	if text, isErr := scheduleCreate(t, tool, inRun("alice", "tenant"), "op-run-as-bob", `{"agent":"digest","schedule":"0 6 * * *","user_id":"bob"}`); isErr {
+		t.Errorf("a run a tenant operator owns scheduling as bob: %s", text)
+	}
+
+	// A hook edit from a member-owned run on the operator's schedule as bob.
+	if text, isErr := scheduleCreate(t, tool, operator, "bobs", `{"agent":"digest","schedule":"0 6 * * *","user_id":"bob"}`); isErr {
+		t.Fatalf("a tenant operator's schedule as bob: %s", text)
+	}
+	row, err := tool.Store.ScheduleDefGetActive(context.Background(), "acme", "bobs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := tool.Execute(inRun("alice", "member"), json.RawMessage(`{"op":"add_hook","def_id":"`+row.DefID+`","hook":{"kind":"memory.set","scope":"user","key":"k"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Errorf("a run of alice's added a hook to bob's schedule: %s", res.Text)
 	}
 }
