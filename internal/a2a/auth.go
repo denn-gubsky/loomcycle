@@ -200,9 +200,9 @@ func principalFromContext(ctx context.Context, tenant string) principal {
 // tenant stamped by the mounting layer (WithRoutedTenant).
 //
 // Returns:
-//   - nil in single-tenant / none mode (RoutedTenantFrom ok==false): there
-//     is no cross-tenant surface, so this is a no-op and behaviour is
-//     unchanged — no store round-trips are made.
+//   - nil in single-tenant / none mode (RoutedTenantFrom ok==false) for a
+//     peer that is not a member: there is no cross-tenant surface, so no
+//     store round-trips are made.
 //   - nil when the run's session tenant equals the routed tenant.
 //   - a2asdk.ErrTaskNotFound on a cross-tenant mismatch, OR when the run /
 //     session is not found. ErrTaskNotFound (not a distinct "forbidden")
@@ -213,14 +213,27 @@ func principalFromContext(ctx context.Context, tenant string) principal {
 //     probe rather than leaked.
 //   - the underlying store error for any non-not-found failure, so a real
 //     storage fault is not masked as "task not found".
+//
+// A peer authenticated with a member's token (auth.OwnRowsOnly, isolated or
+// not) is held to its own tasks too, in every routing mode: a task is a run,
+// and a member reads and acts on only the runs it started. Another user's
+// task, or a tenant-level one, is the same ErrTaskNotFound.
 func authorizeTaskTenant(ctx context.Context, runs RunReader, agentID string) error {
-	routed, ok := RoutedTenantFrom(ctx)
-	if !ok {
+	routed, routedOK := RoutedTenantFrom(ctx)
+	peer, peerOK := PeerPrincipalFrom(ctx)
+	confined := auth.OwnRowsOnly(peer, peerOK)
+	if !routedOK && !confined {
 		return nil
 	}
 	run, err := runs.GetRunByAgentID(ctx, agentID)
 	if err != nil {
 		return notFoundAsTaskNotFound(err)
+	}
+	if confined && !auth.OwnedRowVisible(peer, peerOK, run.TenantID, run.UserID) {
+		return a2asdk.ErrTaskNotFound
+	}
+	if !routedOK {
+		return nil
 	}
 	sess, err := runs.GetSession(ctx, run.SessionID)
 	if err != nil {
