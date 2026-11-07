@@ -962,6 +962,7 @@ func (w remoteWriter) carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry,
 		out.kept = envelopeDiffers(in.src, attrs, *in.have)
 	}
 	evidence := []map[string]any{}
+	titleRows := 0
 	for _, ev := range in.evidence {
 		id, onPeer := in.idByNK[ev.chunkNK]
 		sc, inDoc := w.source[ev.chunkNK]
@@ -976,6 +977,9 @@ func (w remoteWriter) carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry,
 		row := map[string]any{"chunk_id": id, "quote": ev.quote}
 		if ev.part != "" {
 			row["part"] = ev.part
+		}
+		if ev.part == edgeEvidencePartTitle {
+			titleRows++
 		}
 		evidence = append(evidence, row)
 	}
@@ -998,7 +1002,31 @@ func (w remoteWriter) carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry,
 	if len(evidence) > 0 {
 		payload["evidence"] = evidence
 	}
-	if _, err := w.client.Do(ctx, payload); err != nil {
+	_, err := w.client.Do(ctx, payload)
+	if err != nil && titleRows > 0 && strings.Contains(err.Error(), "evidence_quote_not_found") {
+		// Each title row was checked above against the title just pushed, so a
+		// quote refused while title rows ride along is a peer that predates part
+		// "title" and looks for the quote in the body. No version signal lets us
+		// ask first, so send the statement once more without them.
+		var kept []map[string]any
+		for _, row := range evidence {
+			if row["part"] != edgeEvidencePartTitle {
+				kept = append(kept, row)
+			}
+		}
+		if in.have != nil && len(kept) == 0 {
+			out.evidenceDropped += titleRows // nothing left to add to the peer's statement
+			return out, nil
+		}
+		delete(payload, "evidence")
+		if len(kept) > 0 {
+			payload["evidence"] = kept
+		}
+		if _, err = w.client.Do(ctx, payload); err == nil {
+			out.evidenceDropped += titleRows
+		}
+	}
+	if err != nil {
 		return out, err
 	}
 	out.added = in.have == nil

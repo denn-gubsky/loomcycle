@@ -68,7 +68,10 @@ state, and a link a judge refuted or an operator rejected stays where it is.
   the peer's own `manual` method, its method here in
   `attributes.origin_method`. The peer has no way to change an existing
   link's envelope, so a push adds only the evidence a peer link lacks and
-  counts an envelope that differs in `edges_envelope_kept`.
+  counts an envelope that differs in `edges_envelope_kept`. A peer on an
+  older version cannot check a quote of a chunk's title (`part: "title"`);
+  when it refuses one, the link is sent again without its title quotes, and
+  those are counted in `evidence_dropped`.
 
 ## Arguments
 
