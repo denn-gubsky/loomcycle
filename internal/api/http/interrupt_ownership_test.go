@@ -76,8 +76,13 @@ func TestInterrupts_AnIsolatedMemberAnswersOnlyItsOwnRunsQuestions(t *testing.T)
 	if st, err := h.srv.ResolveInterrupt(as("alice", auth.ScopeRunsCreate, auth.ScopeUser), run.ID, id, "", "allow", "api", ""); err != nil || st != string(store.InterruptStatusResolved) {
 		t.Errorf("alice answering her own run: %q, %v", st, err)
 	}
+	// A non-isolated colleague is refused too: a member answers only its own
+	// runs' questions. A tenant operator answers any run's of its tenant.
 	carol := newAsk()
-	if _, err := h.srv.ResolveInterrupt(as("carol", auth.ScopeRunsCreate), run.ID, carol, "", "allow", "api", ""); err != nil {
-		t.Errorf("a non-isolated colleague: %v", err)
+	if _, err := h.srv.ResolveInterrupt(as("carol", auth.ScopeRunsCreate), run.ID, carol, "", "allow", "api", ""); err == nil {
+		t.Error("a non-isolated colleague answered another user's question")
+	}
+	if _, err := h.srv.ResolveInterrupt(as("op", auth.ScopeTenant), run.ID, carol, "", "allow", "api", ""); err != nil {
+		t.Errorf("a tenant operator: %v", err)
 	}
 }

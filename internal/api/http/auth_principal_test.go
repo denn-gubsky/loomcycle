@@ -129,10 +129,10 @@ func TestHandleMessages_RejectsCrossTenantSession(t *testing.T) {
 	if rr := mkReq("acme", "alice"); rr.Code == http.StatusNotFound {
 		t.Fatalf("owner continuation got 404 — the tenant gate rejected a legitimate caller")
 	}
-	// Whole-tenant: a DIFFERENT subject in the SAME tenant also passes (this
-	// is the loosening from the per-subject QA fix — same-tenant collaboration).
-	if rr := mkReq("acme", "bob"); rr.Code == http.StatusNotFound {
-		t.Fatalf("same-tenant different-subject continuation got 404 — whole-tenant sharing not enabled")
+	// A DIFFERENT subject in the SAME tenant that is a member continues only
+	// its own sessions: a person's conversations are its own.
+	if rr := mkReq("acme", "bob"); rr.Code != http.StatusNotFound {
+		t.Fatalf("same-tenant member continuation of another user's session: status=%d, want 404", rr.Code)
 	}
 }
 

@@ -75,9 +75,13 @@ func TestHandleListRunInterrupts_RejectsCrossTenant(t *testing.T) {
 	if got := listFor("acme", "alice", []string{auth.ScopeRunsRead}); got != 1 {
 		t.Errorf("own-tenant list returned %d rows, want 1 (gate rejected a legitimate caller)", got)
 	}
-	// A same-tenant DIFFERENT subject also sees it (whole-tenant collaboration).
-	if got := listFor("acme", "bob", []string{auth.ScopeRunsRead}); got != 1 {
-		t.Errorf("same-tenant different-subject list returned %d rows, want 1 (whole-tenant sharing)", got)
+	// A same-tenant DIFFERENT subject that is a member sees none: a person
+	// reads only its own runs' questions. A tenant operator sees it.
+	if got := listFor("acme", "bob", []string{auth.ScopeRunsRead}); got != 0 {
+		t.Errorf("same-tenant member list of another user's run returned %d rows, want 0", got)
+	}
+	if got := listFor("acme", "op", []string{auth.ScopeTenant}); got != 1 {
+		t.Errorf("tenant operator list returned %d rows, want 1", got)
 	}
 	// Super-admin crosses tenants by design.
 	if got := listFor("x", "ops", []string{auth.ScopeAdmin}); got != 1 {
@@ -113,8 +117,11 @@ func TestHandleTranscript_RejectsCrossTenant(t *testing.T) {
 	if got := statusFor("acme", "alice", []string{auth.ScopeRunsRead}); got == http.StatusNotFound {
 		t.Errorf("own-tenant transcript got 404 — gate rejected a legitimate caller")
 	}
-	if got := statusFor("acme", "bob", []string{auth.ScopeRunsRead}); got == http.StatusNotFound {
-		t.Errorf("same-tenant different-subject transcript got 404 — whole-tenant sharing")
+	if got := statusFor("acme", "bob", []string{auth.ScopeRunsRead}); got != http.StatusNotFound {
+		t.Errorf("same-tenant member transcript of another user's session = %d, want 404", got)
+	}
+	if got := statusFor("acme", "op", []string{auth.ScopeTenant}); got == http.StatusNotFound {
+		t.Errorf("tenant operator transcript got 404 — an operator reads every session of its tenant")
 	}
 	if got := statusFor("x", "ops", []string{auth.ScopeAdmin}); got == http.StatusNotFound {
 		t.Errorf("admin transcript got 404 — super-admin must cross tenants")
@@ -161,11 +168,11 @@ func TestHandleListUserInterrupts_RejectsCrossTenant(t *testing.T) {
 		return body.Total
 	}
 
-	// A tenant principal sees only its own tenant's interrupt for this user.
-	if got := totalFor("acme", "alice", []string{auth.ScopeRunsRead}); got != 1 {
+	// A tenant operator sees only its own tenant's interrupt for this user.
+	if got := totalFor("acme", "alice", []string{auth.ScopeTenant}); got != 1 {
 		t.Errorf("acme inbox for %q = %d rows, want 1 (cross-tenant leak)", user, got)
 	}
-	if got := totalFor("evil", "mallory", []string{auth.ScopeRunsRead}); got != 1 {
+	if got := totalFor("evil", "mallory", []string{auth.ScopeTenant}); got != 1 {
 		t.Errorf("evil inbox for %q = %d rows, want 1 (cross-tenant leak)", user, got)
 	}
 	// Super-admin sees both tenants' interrupts.

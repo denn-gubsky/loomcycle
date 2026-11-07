@@ -81,25 +81,26 @@ func TestFileRoute_RunsTheTwinOnThePathsRun(t *testing.T) {
 	runID := f.run(t, "acme", "alice", "")
 	rec := f.capture(t, runID, "acme", "report.pdf", "mcp:ms365/get-attachment", []byte("%PDF-1.7\nhello"), true)
 
-	resp := f.do(t, "POST", "/v1/runs/"+runID+"/file", fileTokReader, `{"op":"stat","path":"`+rec.Ref+`"}`, nil)
+	resp := f.do(t, "POST", "/v1/runs/"+runID+"/file", fileTokOwner, `{"op":"stat","path":"`+rec.Ref+`"}`, nil)
 	var out map[string]any
 	if resp.Code != http.StatusOK || json.Unmarshal(resp.Body.Bytes(), &out) != nil || out["sha256"] != rec.SHA256 {
 		t.Fatalf("stat = %d %s", resp.Code, resp.Body.String())
 	}
 	// run_id in the body may repeat the path's; it may not name another run.
-	if resp := f.do(t, "POST", "/v1/runs/"+runID+"/file", fileTokReader, `{"run_id":"`+runID+`","op":"ls"}`, nil); resp.Code != http.StatusOK {
+	if resp := f.do(t, "POST", "/v1/runs/"+runID+"/file", fileTokOwner, `{"run_id":"`+runID+`","op":"ls"}`, nil); resp.Code != http.StatusOK {
 		t.Errorf("ls with the same run_id = %d %s", resp.Code, resp.Body.String())
 	}
-	if resp := f.do(t, "POST", "/v1/runs/"+runID+"/file", fileTokReader, `{"run_id":"run_other","op":"ls"}`, nil); resp.Code != http.StatusBadRequest {
+	if resp := f.do(t, "POST", "/v1/runs/"+runID+"/file", fileTokOwner, `{"run_id":"run_other","op":"ls"}`, nil); resp.Code != http.StatusBadRequest {
 		t.Errorf("ls with another run_id = %d %s, want 400", resp.Code, resp.Body.String())
 	}
 	// The strict decoding of the twin still applies to the body.
-	if resp := f.do(t, "POST", "/v1/runs/"+runID+"/file", fileTokReader, `{"op":"stat","op":"rm","path":"`+rec.Ref+`"}`, nil); resp.Code != http.StatusUnprocessableEntity || !strings.Contains(resp.Body.String(), "more than once") {
+	if resp := f.do(t, "POST", "/v1/runs/"+runID+"/file", fileTokOwner, `{"op":"stat","op":"rm","path":"`+rec.Ref+`"}`, nil); resp.Code != http.StatusUnprocessableEntity || !strings.Contains(resp.Body.String(), "more than once") {
 		t.Errorf("a doubled op = %d %s", resp.Code, resp.Body.String())
 	}
-	// A reader is refused rm, in the tool-refusal envelope.
+	// A member who is not the run's owner is refused rm, in the tool-refusal
+	// envelope, as for a run that does not exist: it may not read the run.
 	resp = f.do(t, "POST", "/v1/runs/"+runID+"/file", fileTokReader, `{"op":"rm","path":"`+rec.Ref+`"}`, nil)
-	if resp.Code != http.StatusUnprocessableEntity || !strings.Contains(resp.Body.String(), "owner or an admin") || !strings.Contains(resp.Body.String(), `"tool_refused"`) {
+	if resp.Code != http.StatusUnprocessableEntity || !strings.Contains(resp.Body.String(), "not found") || !strings.Contains(resp.Body.String(), `"tool_refused"`) {
 		t.Errorf("rm by a reader = %d %s", resp.Code, resp.Body.String())
 	}
 	// The tenant's operator may.
@@ -139,7 +140,7 @@ func TestInboxDownload_ServesTheBytesWithSafeHeaders(t *testing.T) {
 	data := []byte("%PDF-1.7\nhello")
 	rec := f.capture(t, runID, "acme", "board report.pdf", "mcp:ms365/get-attachment", data, true)
 
-	resp := f.do(t, "GET", inboxURL(runID, rec.Path), fileTokReader, "", nil)
+	resp := f.do(t, "GET", inboxURL(runID, rec.Path), fileTokOwner, "", nil)
 	if resp.Code != http.StatusOK || resp.Body.String() != string(data) {
 		t.Fatalf("GET = %d %q", resp.Code, resp.Body.String())
 	}
@@ -198,11 +199,11 @@ func TestInboxDownload_ServesRangesAndHead(t *testing.T) {
 	data := []byte("0123456789abcdef")
 	rec := f.capture(t, runID, "acme", "digits.txt", "http", data, true)
 
-	resp := f.do(t, "GET", inboxURL(runID, rec.Path), fileTokReader, "", map[string]string{"Range": "bytes=2-5"})
+	resp := f.do(t, "GET", inboxURL(runID, rec.Path), fileTokOwner, "", map[string]string{"Range": "bytes=2-5"})
 	if resp.Code != http.StatusPartialContent || resp.Body.String() != "2345" {
 		t.Errorf("range = %d %q", resp.Code, resp.Body.String())
 	}
-	resp = f.do(t, "HEAD", inboxURL(runID, rec.Path), fileTokReader, "", nil)
+	resp = f.do(t, "HEAD", inboxURL(runID, rec.Path), fileTokOwner, "", nil)
 	if resp.Code != http.StatusOK || resp.Body.Len() != 0 || resp.Header().Get("X-Loomcycle-Sha256") != sha(data) {
 		t.Errorf("HEAD = %d body %d bytes, headers %v", resp.Code, resp.Body.Len(), resp.Header())
 	}
@@ -219,7 +220,7 @@ func TestInboxDownload_ModifiedFileHasUnknownOrigin(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(rec.Path)), changed, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	resp := f.do(t, "GET", inboxURL(runID, rec.Path), fileTokReader, "", nil)
+	resp := f.do(t, "GET", inboxURL(runID, rec.Path), fileTokOwner, "", nil)
 	if resp.Code != http.StatusOK || resp.Body.String() != string(changed) ||
 		resp.Header().Get("X-Loomcycle-Origin") != "unknown" || resp.Header().Get("X-Loomcycle-Sha256") != sha(changed) {
 		t.Errorf("GET = %d %q %v", resp.Code, resp.Body.String(), resp.Header())
@@ -238,7 +239,7 @@ func TestInboxDownload_UnreadableOrGoneIsNotFound(t *testing.T) {
 	if cross.Code != http.StatusNotFound || strings.Replace(cross.Body.String(), runID, "X", 1) != strings.Replace(missing.Body.String(), "run_nosuch", "X", 1) {
 		t.Errorf("another tenant = %d %q, missing run = %d %q", cross.Code, cross.Body.String(), missing.Code, missing.Body.String())
 	}
-	if resp := f.do(t, "GET", inboxURL(runID, "documents/nosuch.pdf"), fileTokReader, "", nil); resp.Code != http.StatusNotFound {
+	if resp := f.do(t, "GET", inboxURL(runID, "documents/nosuch.pdf"), fileTokOwner, "", nil); resp.Code != http.StatusNotFound {
 		t.Errorf("missing file = %d %s", resp.Code, resp.Body.String())
 	}
 	f.srv.purgeEphemeralVolumesForRun(runID)

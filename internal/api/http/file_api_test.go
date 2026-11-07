@@ -133,8 +133,8 @@ var (
 	twinOwner    = auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}}
 	twinOperator = auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeTenant}}
 	twinOutsider = auth.Principal{TenantID: "evil", Subject: "mallory", Scopes: []string{auth.ScopeTenant}}
-	// twinReader reads every run of its tenant and owns none of them: neither
-	// the run's owner nor an operator.
+	// twinReader is a member that owns none of the runs: neither the run's
+	// owner nor an operator, so it may not read them either.
 	twinReader = auth.Principal{TenantID: "acme", Subject: "dave", Scopes: []string{auth.ScopeRunsRead}}
 	twinAdmin  = auth.Principal{TenantID: "", Subject: "root", Scopes: []string{auth.ScopeAdmin}}
 )
@@ -209,7 +209,7 @@ func TestFileTwin_AnotherTenantsRunIsNotFound(t *testing.T) {
 }
 
 // rm, clear and extract change the run's inbox: the run's owner and an admin
-// may, a member who only reads the run may not.
+// may, a member who does not own the run may not (it may not read it either).
 func TestFileTwin_ChangingTheInboxNeedsTheOwnerOrAnAdmin(t *testing.T) {
 	f := newFileTwinFixture(t)
 	runID := f.run(t, "acme", "alice", "")
@@ -222,7 +222,7 @@ func TestFileTwin_ChangingTheInboxNeedsTheOwnerOrAnAdmin(t *testing.T) {
 		{"run_id": runID, "op": "clear"},
 		{"run_id": runID, "op": "extract", "path": a.Ref},
 	} {
-		if _, text, isErr := f.call(t, twinReader, op); !isErr || !strings.Contains(text, "owner or an admin") {
+		if _, text, isErr := f.call(t, twinReader, op); !isErr || !strings.Contains(text, "not found") {
 			t.Errorf("%v by a non-owner = %s", op["op"], text)
 		}
 	}
@@ -381,7 +381,7 @@ func TestFileTwin_KeepCopiesIntoTheCallersDynamicVolume(t *testing.T) {
 	}
 }
 
-// keep writes into the tenant's volumes, so a principal that only reads the
+// keep writes into the tenant's volumes, so a member that does not own the
 // run may not: not even with overwrite, and nothing is written. The owner's
 // access rules apply too: a volume its rules let it only read is refused.
 func TestFileTwin_KeepNeedsTheOwnerOrAnAdmin(t *testing.T) {
@@ -398,7 +398,7 @@ func TestFileTwin_KeepNeedsTheOwnerOrAnAdmin(t *testing.T) {
 		{"run_id": runID, "op": "keep", "from": rec.Ref, "to": "volume:docs:new.txt"},
 		{"run_id": runID, "op": "keep", "from": rec.Ref, "to": "volume:docs:minutes.txt", "overwrite": true},
 	} {
-		if _, text, isErr := f.call(t, twinReader, in); !isErr || !strings.Contains(text, "owner or an admin") {
+		if _, text, isErr := f.call(t, twinReader, in); !isErr || !strings.Contains(text, "not found") {
 			t.Errorf("keep %v by a reader = %s", in, text)
 		}
 	}

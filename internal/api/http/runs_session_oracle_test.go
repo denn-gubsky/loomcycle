@@ -62,6 +62,9 @@ func TestHandleRuns_UnownedSessionReadsLikeMissingOne(t *testing.T) {
 		p    auth.Principal
 	}{
 		{"isolated member, same tenant", auth.Principal{TenantID: "acme", Subject: "mallory", Scopes: []string{auth.ScopeUser}}},
+		// A non-isolated member continues only its own sessions too: a
+		// colleague's would run with the colleague's user scope.
+		{"member, same tenant", auth.Principal{TenantID: "acme", Subject: "mallory", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead, auth.ScopeChannelPublish, auth.ScopeChannelRead}}},
 		{"tenant operator, other tenant", auth.Principal{TenantID: "evil", Subject: "op", Scopes: []string{auth.ScopeTenant}}},
 	}
 	// "owner idle" is the baseline a raw read already got right; "owner run in

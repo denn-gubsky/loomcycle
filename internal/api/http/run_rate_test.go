@@ -409,7 +409,7 @@ func TestRateLimitedToken_EveryMessageToARunIsOneStart(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			srv, do := rateFixture(t)
 			srv.SetSteerRegistry(steer.NewRegistry(0))
-			runID, queued := seedLiveRun(t, srv, srv.store, "other", "a_live", "")
+			runID, queued := seedLiveRunAs(t, srv, srv.store, "rated", "other", "a_live", "")
 			srv.steerReg.SetParked(runID, park)
 			for i := 0; i < 2; i++ {
 				if code, body, _ := do("POST", "/v1/runs", runBody("other")); code != 200 {
@@ -435,7 +435,7 @@ func TestRateLimitedToken_EveryMessageToARunIsOneStart(t *testing.T) {
 func TestRateLimitedToken_ConcurrentMessagesShareTheBucket(t *testing.T) {
 	srv, do := rateFixture(t)
 	srv.SetSteerRegistry(steer.NewRegistry(0))
-	runID, queued := seedLiveRun(t, srv, srv.store, "other", "a_live", "")
+	runID, queued := seedLiveRunAs(t, srv, srv.store, "rated", "other", "a_live", "")
 	if code, body, _ := do("POST", "/v1/runs", runBody("other")); code != 200 {
 		t.Fatalf("start: status %d: %s", code, body)
 	}
