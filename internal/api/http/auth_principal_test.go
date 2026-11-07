@@ -300,17 +300,15 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"POST", "/v1/_memory/reembed", auth.ScopeTenant},
 		{"POST", "/v1/_memory/backfill_embeddings", auth.ScopeTenant},
 		{"POST", "/v1/_memory/search", auth.ScopeTenant},
-		// The document re-index re-embeds a whole scope with the operator's embedder. It
-		// is not in the tenant-confined /v1/_document family (that match is exact), so it
-		// takes the /v1/_* operator-admin posture, like /v1/_document/describe_images.
-		// Opening it to tenant operators, as reembed/backfill are, is a deliberate change.
-		{"POST", "/v1/_document/reindex", auth.ScopeAdmin},
-		// The projection pass rewrites a scope's 3D map — operator-admin like the
-		// re-index it sits beside.
+		// The document maintenance passes are tenant operators', like the memory
+		// sweeps (reembed/backfill above): the handlers confine the tenant through
+		// browseCtx, and members are carved out (memberpath.CarvedOut).
+		{"POST", "/v1/_document/reindex", auth.ScopeTenant},
+		{"POST", "/v1/_document/derive_units", auth.ScopeTenant},
+		{"POST", "/v1/_document/describe_images", auth.ScopeTenant},
+		// The projection pass is not carved out of member access, so it stays
+		// operator-admin: opening it would widen a member's reach too.
 		{"POST", "/v1/_document/project", auth.ScopeAdmin},
-		// Generation spends a model call per chunk on the operator's generator —
-		// operator-admin like the re-index and describe_images.
-		{"POST", "/v1/_document/derive_units", auth.ScopeAdmin},
 		// repair-tenant is a cross-tenant bulk rewrite — STAYS operator-admin even
 		// though it matches the /v1/_memory/ prefix (it is excluded first).
 		{"POST", "/v1/_memory/repair-tenant", auth.ScopeAdmin},
