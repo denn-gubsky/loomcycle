@@ -5,8 +5,61 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
+
+// A run-triggering def also carries the USER its runs execute as: a schedule's
+// user_id, or a webhook's user_id mapping (each delivery names its own). That
+// run reads and writes that user's memory, documents and history, so naming
+// another user is acting as them. A member (auth.OwnRowsOnly, isolated or not)
+// reads and acts on only its own conversations, so the triggers it writes run
+// as itself; a tenant operator, an admin and the unauthenticated operator may
+// name any user of their tenant.
+
+// refuseRunAsAnotherUser returns a refusal when a member would store a
+// schedule whose runs execute as someone other than itself. userID is the
+// MERGED value (overlay over parent), so one check covers an overlay that names
+// another user and a fork that inherits one. With defaultToCaller (create and
+// fork), an unset user_id becomes the member's own subject, so a member's
+// schedule runs as the member; without it (a hook edit, which re-mints the
+// parent's body) an unset user_id — a tenant-level run — is refused too, since
+// that run is not the member's either.
+func refuseRunAsAnotherUser(ctx context.Context, op string, userID *string, defaultToCaller bool) (tools.Result, bool) {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !auth.OwnRowsOnly(p, ok) {
+		return tools.Result{}, false
+	}
+	if *userID == "" && defaultToCaller && p.Subject != "" {
+		*userID = p.Subject
+	}
+	if *userID != "" && *userID == p.Subject {
+		return tools.Result{}, false
+	}
+	if defaultToCaller {
+		return errValidation(
+			fmt.Sprintf("%s: the schedule's user_id names another user (set in the overlay, or inherited from the parent on fork) — a schedule you write runs as you", op),
+			"omit user_id, or set it to your own user id; a tenant operator can schedule runs as another user"), true
+	}
+	return errValidation(
+		fmt.Sprintf("%s: this schedule's runs do not execute as you, so only a tenant operator may change it", op),
+		"ask a tenant operator, or create a schedule of your own"), true
+}
+
+// refuseMappedRunUser returns a refusal when a member would store a webhook
+// that maps user_id: every delivery would then run as whatever user its body
+// names, and the member, holding the webhook's secret, chooses the body.
+func refuseMappedRunUser(ctx context.Context, op string, mapping map[string]string) (tools.Result, bool) {
+	if _, mapped := mapping["user_id"]; !mapped {
+		return tools.Result{}, false
+	}
+	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnRowsOnly(p, ok) {
+		return tools.Result{}, false
+	}
+	return errValidation(
+		fmt.Sprintf("%s: payload_mapping maps user_id (set in the overlay, or inherited from the parent on fork), so each delivery would run as the user its body names — only a tenant operator may write such a webhook", op),
+		"remove the user_id mapping; a tenant operator can author a webhook whose deliveries run as their users"), true
+}
 
 // A run-triggering def (ScheduleDef, WebhookDef) carries TWO tenants: the
 // row's OWNING tenant (always the author's, stamped from the principal) and

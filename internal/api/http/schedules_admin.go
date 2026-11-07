@@ -22,6 +22,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -33,6 +34,10 @@ import (
 // (operator-global crons stay admin-managed). The per-def handlers surface a
 // false as an opaque 404, indistinguishable from an unknown or cross-tenant
 // def_id (no existence oracle).
+//
+// A member (auth.OwnRowsOnly) reaches only the schedules whose runs execute as
+// itself: running one now, pausing or resuming it acts on runs that are some
+// other user's conversation (or a tenant-level one) otherwise.
 func (s *Server) scheduleDefTenantVisible(ctx context.Context, defID string) bool {
 	tenantID, all := s.principalTenantScope(ctx, "")
 	if all {
@@ -42,10 +47,20 @@ func (s *Server) scheduleDefTenantVisible(ctx context.Context, defID string) boo
 		return false
 	}
 	row, err := s.store.ScheduleDefGet(ctx, defID)
-	if err != nil {
+	if err != nil || row.TenantID != tenantID {
 		return false
 	}
-	return row.TenantID == tenantID
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !auth.OwnRowsOnly(p, ok) {
+		return true
+	}
+	var def struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.Unmarshal(row.Definition, &def); err != nil {
+		return false
+	}
+	return auth.OwnedRowVisible(p, ok, row.TenantID, def.UserID)
 }
 
 // ScheduleListEntry is one row in the /ui/schedules list. Mirrors
