@@ -212,6 +212,7 @@ func FuzzExtractHTML(f *testing.F) {
 		`<table><tr><td><table><tr><td>nested</td></tr></table></td></tr></table>`,
 		gdocHTML(),
 		`<p style="font-size:1e308pt;color:rgb(300,-1,50%);font-weight:900">A</p><p style="font-size:200%"><span style="font-size:3em">B</span></p>`,
+		gdocPage(gdocCSS+`@media x{.a{}`, `<p class="c1 c2"><span class="c3">A</span></p><style>}p.c2{font-size:2em/*</style><p class="c2">B</p>`),
 	} {
 		f.Add([]byte(s))
 	}

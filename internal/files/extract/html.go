@@ -22,6 +22,12 @@ func (HTML) Match(mediaType, name string) bool {
 }
 
 func (HTML) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, opts Options) (Report, error) {
+	return extractHTML(ctx, r, size, sink, opts, maxCSSWork)
+}
+
+// extractHTML is HTML.Extract with the bound on class rule work as a
+// parameter, so a test can reach it with a small page.
+func extractHTML(ctx context.Context, r io.ReaderAt, size int64, sink Sink, opts Options, cssBudget int) (Report, error) {
 	rep := Report{Format: "html"}
 	if size > maxHTMLBytes {
 		return rep, refusedf("the page is over %d bytes", maxHTMLBytes)
@@ -45,7 +51,17 @@ func (HTML) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 		body = doc
 	}
 	if h.infer {
-		h.cur = htmlStyled(body, runFmt{size: htmlBodyPt})
+		h.sheet = readStyleSheets(doc)
+		if !h.sheet.cssWork(doc, cssBudget) {
+			// Applying the page's class rules would be work out of
+			// proportion to it: the page is extracted as if the option
+			// were off, and says so.
+			h.infer, h.sheet = false, nil
+			rep.note("headings were not inferred: the page's class rules apply to more elements than %d", cssBudget)
+		}
+	}
+	if h.infer {
+		h.cur = htmlStyled(body, runFmt{size: htmlBodyPt}, h.sheet)
 		h.decor = decorative{}
 		budget := maxXMLNodes
 		countImages(body, h.decor, &budget, 0)
@@ -83,6 +99,7 @@ type htmlState struct {
 	paras  []inferPara
 	paraAt []int
 	decor  decorative
+	sheet  cssSheet
 }
 
 // flush ends the paragraph being collected.

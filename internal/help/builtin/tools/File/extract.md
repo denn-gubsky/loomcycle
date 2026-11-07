@@ -59,8 +59,17 @@ Real headings (a Word heading style, an `<h1>`–`<h6>`) keep their level.
 Inferred headings take the levels below the shallowest real heading, one per
 distinct font size, largest first; bold lines at body size are the deepest.
 A DOCX's formatting is read from its runs, character and paragraph styles
-and document defaults; an HTML page's from `<b>`, `<strong>` and inline
-`style` (`font-weight`, `font-size`, `color`), not from style sheets.
+and document defaults. An HTML page's is read from `<b>`, `<strong>`, inline
+`style` and the class rules of its `<style>` blocks (`font-weight`,
+`font-size`, `color`), so an export that styles its text by class (Google
+Docs' HTML download does) is read as an inline-styled page is. Only a rule
+whose selector is a single class, alone or on a tag (`.c4`, `p.c4`,
+`span.c4`), is read; other selectors, rules inside `@media` and linked
+style sheets are not, and an inline style overrides a class. The first 256
+KiB of style sheet text, 4096 class selectors, 4 KiB of each rule and 16
+distinct classes per element are read. A page whose class rules apply to
+more than about a million elements is extracted as with the option off, and
+`notes` says headings were not inferred.
 
 With the option on, a picture that appears 3 or more times in the document
 is taken as decoration (a divider, a repeated logo) and left out, and tabs
