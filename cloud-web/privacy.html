@@ -77,6 +77,18 @@ footer .meta { margin-left: auto; }
     <span class="kicker">Privacy</span>
     <h1>What loomcycle.cloud keeps, and who sees it</h1>
     <p>loomcycle.cloud is a shared preview of the loomcycle runtime. Everyone who is approved works in one shared workspace. This page says what that means for your data.</p>
+    <p>Last updated 7 November 2026.</p>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="prose" id="controller">
+    <div class="grid">
+      <h2>Who is responsible</h2>
+      <div>
+        <p>The loomcycle Authors are the controller of the personal data processed on loomcycle.cloud. Write to <a href="mailto:privacy@loomcycle.cloud">privacy@loomcycle.cloud</a> about anything on this page.</p>
+      </div>
+    </div>
   </section>
 
   <hr class="rule" />
@@ -85,8 +97,8 @@ footer .meta { margin-left: auto; }
     <div class="grid">
       <h2>One shared workspace</h2>
       <div>
-        <p>Approved members share one workspace. Its shared documents, memory and agents can be read by every member, and members' agents can add to them and change them.</p>
-        <p>Your conversations are not private to you. The workspace's operators can open them, and so can other approved members.</p>
+        <p>Approved members share one workspace. Its shared documents, memory and agents can be read by every member, and members' agents can add to them and change them. What an agent writes from your conversation into them is shared like the rest.</p>
+        <p>Your conversations are visible to you and to the workspace's operators; other members cannot open them.</p>
       </div>
     </div>
   </section>
@@ -110,6 +122,26 @@ footer .meta { margin-left: auto; }
 
   <hr class="rule" />
 
+  <section class="prose" id="retention">
+    <div class="grid">
+      <h2>How long we keep it</h2>
+      <div>
+        <p>These are the instance's settings on the date at the top of this page. They may change, and this page changes with them.</p>
+        <ul>
+          <li>Conversations: a conversation is deleted once its last run finished more than 90 days ago. Before it is deleted, a copy is exported to a file on the server, and that copy is kept with no fixed limit. A pinned conversation is not deleted this way.</li>
+          <li>The transcripts of the runtime's own maintenance agents, such as memory consolidation, which reads what was said in conversations: deleted after 3 days, without an exported copy.</li>
+          <li>What your agents remember for you: no age limit is set. It stays until it is deleted or your account is erased.</li>
+          <li>The audit trail, including the sign-in records: no audit retention period is set, so it is kept with no fixed limit.</li>
+          <li>Usage records: each model call's record is kept for 30 days, then folded into daily totals per member, provider and model, which are kept with no fixed limit.</li>
+          <li>Database copies: before each upgrade of the runtime, a copy of its database is taken. The newest 10 copies are kept and older ones are deleted. A copy holds what the database held at that moment, including conversations deleted since.</li>
+          <li>Your account and its sign-in methods: until the account is erased. After that only the disabled record described below stays.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
   <section class="prose" id="where">
     <div class="grid">
       <h2>Where your data goes</h2>
@@ -120,6 +152,7 @@ footer .meta { margin-left: auto; }
         <p>When an agent searches the web, the query goes through a search service the instance runs, which forwards it to public search engines.</p>
         <p>If you talk to the workspace's agent through its Telegram bot, your messages also pass through Telegram, and the bot keeps which Telegram chat belongs to which conversation.</p>
         <p>This website loads its typeface from Google Fonts, and remembers your display preferences in your browser.</p>
+        <p>This website uses Cloudflare Web Analytics in its default mode. Cloudflare adds a small script to the pages as they pass through its network, and the script reports page views and how fast the pages load, with the page's address, the referring site and the visitor's country, browser, operating system and device type. Cloudflare describes it as privacy-first, and states that it uses no cookies or local storage to collect these metrics and does not fingerprint visitors by their network address, browser identification or any other data.</p>
       </div>
     </div>
   </section>
@@ -128,14 +161,16 @@ footer .meta { margin-left: auto; }
 
   <section class="prose" id="erasure">
     <div class="grid">
-      <h2>Erasing your account</h2>
+      <h2>Erasure, a copy of your data, corrections</h2>
       <div>
-        <p>Ask us to erase your account. The erasure removes your conversations, your personal memory, your sign-in methods and your access tokens. A disabled record of the account stays, so it cannot sign in or be created again.</p>
+        <p>Write to <a href="mailto:privacy@loomcycle.cloud">privacy@loomcycle.cloud</a> from your account's e-mail address to ask us to erase your account, to send you a copy of your data, or to correct it.</p>
+        <p>What happens next: we check that the request comes from the account's owner, and may ask you to confirm it from that address. Then we do what you asked and write back to say what we did. For a copy, we send you your conversations and what your agents remember for you. For an erasure, we tell you what it removed and what it could not reach.</p>
+        <p>The erasure removes your conversations, your personal memory, your sign-in methods and your access tokens. A disabled record of the account stays, so it cannot sign in or be created again.</p>
         <p>The erasure does not remove:</p>
         <ul>
           <li>the audit trail and the usage records;</li>
           <li>what you put into the shared workspace (documents, shared memory, agents), except what it can trace back to you;</li>
-          <li>copies outside the database, such as backups;</li>
+          <li>copies outside the database, such as the database copies taken before upgrades and the exported copies of old conversations;</li>
           <li>the Telegram bot's record of your chat;</li>
           <li>what the model providers, Cloudflare, Google and Telegram keep under their own terms.</li>
         </ul>

@@ -123,6 +123,8 @@ test("the footer has no dead links and points at the privacy notice", () => {
 test("the shared sign-up says what members see and links the privacy notice", () => {
   const shared = html.slice(html.indexOf("<div class=\"acct\" data-shared-only"), html.indexOf("<div data-vault-section>"));
   assert.match(shared, /Approved members can see what other members share in the shared workspace/);
+  assert.match(shared, /Your conversations are visible to you and to the workspace&rsquo;s operators; other members cannot open them\./);
+  assert.doesNotMatch(shared, /open other members/);
   assert.match(shared, /<a href="privacy\.html">Privacy<\/a>/);
 });
 
@@ -150,5 +152,17 @@ test("the privacy notice is plain markup: balanced, no inline script, the site's
     assert.equal(open, close, `<${tag}> ${open} open vs ${close} closed`);
   }
   assert.match(privacy, /<title>Privacy · loomcycle\.cloud<\/title>/);
-  for (const id of ["shared", "keep", "where", "erasure"]) assert.ok(privacy.includes(`id="${id}"`), `missing #${id}`);
+  for (const id of ["controller", "shared", "keep", "retention", "where", "erasure"]) assert.ok(privacy.includes(`id="${id}"`), `missing #${id}`);
+});
+
+// The statements the owner answered for: who the controller is, where to
+// write, the date the retention settings were read on, and who can open a
+// member's conversations (members read only their own runs).
+test("the privacy notice names the controller, the contact, its date and the conversation rule", () => {
+  assert.match(privacy, /The loomcycle Authors are the controller of the personal data processed on loomcycle\.cloud/);
+  assert.match(privacy, /<a href="mailto:privacy@loomcycle\.cloud">privacy@loomcycle\.cloud<\/a>/);
+  assert.match(privacy, /Last updated \d{1,2} [A-Z][a-z]+ \d{4}\./);
+  assert.match(privacy, /Your conversations are visible to you and to the workspace's operators; other members cannot open them\./);
+  assert.doesNotMatch(privacy, /so can other approved members/);
+  assert.match(privacy, /Cloudflare Web Analytics/);
 });
