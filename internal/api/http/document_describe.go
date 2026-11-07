@@ -41,7 +41,6 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
-	"github.com/denn-gubsky/loomcycle/internal/transcribe/vision"
 )
 
 // describeImagesDefaultTier is where the vision model is looked up. `middle` is the
@@ -233,9 +232,7 @@ func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// One per request: images are described one after another, so it admits a
-	// single decode at a time, the bound the OCR engine keeps.
-	reenc := vision.NewReencoder()
+	reenc := s.imageReencoder
 	unreadable := func(chunkID string, err error) {
 		resp.Unreadable++
 		if len(resp.UnreadableChunks) < describeSampleCap {

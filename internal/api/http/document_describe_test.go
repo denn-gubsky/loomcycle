@@ -594,3 +594,13 @@ func setDecodablePNG(t *testing.T, doc *builtin.Document, ctx context.Context, c
 		t.Fatalf("set_asset: %v %s", err, r.Text)
 	}
 }
+
+// TestDescribeImages_ReencoderIsServerWide — the re-encoder's decode slot is the
+// bound on decoding memory, so it must be built once per server and not per
+// request: one per request would let concurrent passes each decode up to it.
+func TestDescribeImages_ReencoderIsServerWide(t *testing.T) {
+	srv, _, _, _ := describeFixture(t, &visionProvider{canSee: true})
+	if srv.imageReencoder == nil {
+		t.Fatal("New did not build the server's image re-encoder")
+	}
+}
