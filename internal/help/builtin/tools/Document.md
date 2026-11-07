@@ -68,6 +68,7 @@ and examples, as `Document/<op>` — for example
 | `delete_document` | delete a document, every chunk in it, and its path | `id` or `path` |
 | `set_path` | give an existing document a (further) Path-tree name | `id`, `path` |
 | `find_duplicates` | the copies in a set of documents (same text, or same title without copy markers), each pointed at its original; `propose: true` files them for review | `document_ids` or `under_path` |
+| `mark_source` | say an imported document's source is `present`, `removed` or `trashed` (tags a gone one `source/removed`); an operator or a run granted statement methods | `id` or `path`, `status` |
 
 **Chunks**
 

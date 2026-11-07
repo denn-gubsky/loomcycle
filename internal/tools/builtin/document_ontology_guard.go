@@ -221,7 +221,7 @@ func ontologyWriteOp(op string) bool {
 		"update_chunk", "delete_chunk", "move_chunk", "reorder_chunk",
 		"supersede_chunk", "import_md", "import_canvas", "delete_document", "set_path",
 		"set_remote", "sync", "add_tags", "remove_tags", "define_type", "set_asset",
-		"judge_fact", "classify":
+		"judge_fact", "classify", "mark_source":
 		return true
 	}
 	return false

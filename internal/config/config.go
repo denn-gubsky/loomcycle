@@ -2277,7 +2277,8 @@ type AgentDef struct {
 	// stamps nothing: it lets the run record verdicts on the proposals the
 	// review policy routes to the judge, and rule on them above the floor
 	// (Document op=judge_statements). It does not, alone, make the agent a
-	// statement maintainer (maintain_statement, the document lease).
+	// statement maintainer (maintain_statement, the document lease,
+	// Document op=mark_source).
 	//
 	// Honoured only for `provider: code-js`, because only a code-js body is
 	// code: a model-driven agent declaring it is refused at load and at

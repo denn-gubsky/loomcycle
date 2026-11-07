@@ -32,6 +32,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -623,7 +624,8 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		}
 		// The first edition of a work: an ordinary import, then the work key.
 		res, err := d.importMD(ctx, key, mscope, docInput{Markdown: in.Markdown, Path: in.Path, Title: in.Title,
-			SourceURL: in.SourceURL, SourceKind: in.SourceKind, SourceTitle: in.SourceTitle})
+			SourceURL: in.SourceURL, SourceKind: in.SourceKind, SourceTitle: in.SourceTitle,
+			SourceRevision: in.SourceRevision, SourceUpdatedAt: in.SourceUpdatedAt})
 		if err != nil || res.IsError {
 			return res, err
 		}
@@ -663,6 +665,17 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 				return *r, nil
 			}
 		}
+	}
+
+	// The provenance the edition leaves (RFC GB §5), asked before anything is
+	// written: a source that is not the one the document was imported from
+	// refuses the whole re-import.
+	nextProv, storedKind, r, err := d.reimportProvenance(ctx, key, mscope, in, rootID)
+	if err != nil {
+		return errFrom("import_md: "+err.Error(), err), nil
+	}
+	if r != nil {
+		return *r, nil
 	}
 
 	// Editions are applied in date order. One older than a part in force would be
@@ -945,6 +958,21 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		return *r, nil
 	} else if changed {
 		rep.changed = append(rep.changed, rootID)
+	}
+	// Then its provenance, as a revision of its own: the earlier one stays in
+	// the root's history.
+	if nextProv != nil {
+		changed, err := d.reviseProvenance(ctx, key, mscope, rootID, nextProv)
+		if err != nil {
+			return errFrom("import_md: provenance: "+err.Error(), err), nil
+		}
+		if changed && !slices.Contains(rep.changed, rootID) {
+			rep.changed = append(rep.changed, rootID)
+		}
+		newKind, _ := nextProv[importFieldSourceKind].(string)
+		if err := d.retagSourceKind(ctx, key, docID, storedKind, newKind); err != nil {
+			return errFrom("import_md: tags: "+err.Error(), err), nil
+		}
 	}
 	// Sibling order follows the edition.
 	for _, kids := range order {

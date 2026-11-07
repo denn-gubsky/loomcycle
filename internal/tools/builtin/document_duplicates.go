@@ -29,6 +29,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -75,6 +76,9 @@ type dupDoc struct {
 	// firstChunk / firstLine: the first non-empty line of text, and its chunk,
 	// quoted as evidence when the root has no title.
 	firstChunk, firstLine string
+	// sourceUpdatedAt is the import provenance's source_updated_at, the
+	// source's own update time; zero when it has none.
+	sourceUpdatedAt time.Time
 }
 
 type dupPair struct {
@@ -147,7 +151,8 @@ func duplicateContentHash(bodies []string) string {
 
 // duplicateOriginal picks a group's original: with markers applied, an
 // unmarked member over a marked one (when the group has both), then the
-// earliest created, then the lowest id.
+// earliest at its source (source_updated_at) when both have that time, else
+// the earliest created, then the lowest id.
 func duplicateOriginal(members []*dupDoc, markers bool) *dupDoc {
 	cands := members
 	if markers {
@@ -163,11 +168,27 @@ func duplicateOriginal(members []*dupDoc, markers bool) *dupDoc {
 	}
 	best := cands[0]
 	for _, m := range cands[1:] {
-		if m.createdAt < best.createdAt || (m.createdAt == best.createdAt && m.id < best.id) {
+		if duplicateEarlier(m, best) {
 			best = m
 		}
 	}
 	return best
+}
+
+// duplicateEarlier reports whether a came before b. Each pair is compared on
+// the times both of them have: a source's own update time says when the text
+// was written, a document's created_at only when it was imported (RFC GB §5).
+// With some members timed at their source and some not, the order is not
+// total; the scan above still picks one member deterministically for a given
+// set.
+func duplicateEarlier(a, b *dupDoc) bool {
+	if !a.sourceUpdatedAt.IsZero() && !b.sourceUpdatedAt.IsZero() && !a.sourceUpdatedAt.Equal(b.sourceUpdatedAt) {
+		return a.sourceUpdatedAt.Before(b.sourceUpdatedAt)
+	}
+	if a.createdAt != b.createdAt {
+		return a.createdAt < b.createdAt
+	}
+	return a.id < b.id
 }
 
 // findDuplicates is op=find_duplicates.
@@ -442,6 +463,10 @@ func (d *Document) loadDuplicateDocs(ctx context.Context, key sqlmem.ScopeKey, m
 		x.rootBody = cb.Body
 		if p := d.importedProvenance(ctx, mscope, key, x.rootID, cb); p != nil {
 			x.mediaType, _ = p[importFieldMediaType].(string)
+			if s, _ := p[importFieldSourceUpdatedAt].(string); s != "" {
+				// Stored by normalize, so it parses; one that does not is no time.
+				x.sourceUpdatedAt, _ = time.Parse(time.RFC3339Nano, s)
+			}
 		}
 	}
 	if !withBodies {

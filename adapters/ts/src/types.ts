@@ -393,9 +393,15 @@ export interface RunFileExtractStructure {
 export interface RunFileImportSource {
   /** An http(s) link, at most 2048 bytes; a signature in its query is masked. */
   url?: string;
-  kind?: "sharepoint" | "email" | "attachment" | "web" | "other";
+  /** Default `other`; a reimport keeps the stored kind when it is left out. */
+  kind?: "sharepoint" | "email" | "attachment" | "web" | "skybits" | "other";
   /** One line, at most 300 characters. */
   title?: string;
+  /** The source's own name for this version, e.g. `doc:r12`; at most 64
+   *  characters. */
+  revision?: string;
+  /** When the source itself was last updated, RFC 3339. */
+  updated_at?: string;
 }
 
 /** One entry of import's `headings`. Lines count from 1 in the file as it is;
@@ -4228,6 +4234,7 @@ export type DocumentToolInput = {
     | "copy_documents"
     | "move_documents"
     | "find_duplicates"
+    | "mark_source"
     | "create_chunk"
     | "upsert_chunk"
     | "get_chunk"
@@ -4304,6 +4311,8 @@ export type DocumentToolInput = {
   type?: string;
   body?: string;
   fields?: Record<string, unknown>;
+  /** The chunk's status label; for `mark_source`, the source's: `present`,
+   *  `removed` or `trashed`. */
   status?: string;
   /** The chunk's or document's tags (RFC BS). create/update/upsert_chunk +
    *  create_document replace-set the whole set (omit = unchanged, [] = clear);

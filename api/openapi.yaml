@@ -2643,6 +2643,7 @@ components:
             - copy_documents
             - move_documents
             - find_duplicates
+            - mark_source
             - create_chunk
             - propose_entity
             - propose_subject

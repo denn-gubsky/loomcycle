@@ -90,12 +90,15 @@ and the scope must be one your Document grants allow.
   `/board/2026/minutes`.
 - `scope` — `agent`, `user` (the default) or `tenant`.
 - `tags` — tags for the document, besides `untrusted` and the `source/…` tag.
-- `source` — where the document came from: `{url, kind, title}`.
+- `source` — where the document came from: `{url, kind, title, revision,
+  updated_at}`.
   `url` is an http(s) web link, at most 2048 bytes, with no user name or
   password; a signature or token in its query is masked before it is kept.
-  `kind` is `sharepoint`, `email`, `attachment`, `web` or `other` (the
-  default) and adds the tag `source/<kind>`. `title` is the source's own
+  `kind` is `sharepoint`, `email`, `attachment`, `web`, `skybits` or `other`
+  (the default) and adds the tag `source/<kind>`. `title` is the source's own
   name, such as the email's subject: one line, at most 300 characters.
+  `revision` is the source's own name for this version (`doc:r12`; at most 64
+  characters) and `updated_at` its own update time, RFC 3339.
 - `headings` — headings to add, by line number: `{line, level, as}` with
   `as` `heading` (plus `lines` for a wrapped title) or `marker` (plus
   `title`, one line, at most 300 characters); or, for a line that is
@@ -122,8 +125,13 @@ statement from that document. The scope's `documents/ingested` channel is told
 the document was `reimported`.
 
 A reimport reads the file's headings and text; pictures are not attached to
-the parts it changes. `doc_path` and `source` are used only by a first edition. The document still gets the
-`untrusted` and `source/…` tags.
+the parts it changes. `doc_path` is used only by a first edition. The document
+still gets the `untrusted` and `source/…` tags. A reimport refreshes the
+document's `provenance` (the file, its sha256 and capture, the source's
+`revision` and `updated_at`), keeping the earlier one in the root's history;
+a `source.url` given must be the one the work was imported from, else
+`source_mismatch`; a `source.kind` given replaces the stored kind (see
+`import_md`'s help).
 
 ## Returns
 
@@ -145,7 +153,10 @@ and `not_announced` says why the scope was not told, when it was not.
 - The file is not UTF-8 text, or is over 32 MiB.
 - The scope is not one your Document grants allow.
 - `source` is not valid: a URL that is not http(s), has a user name or
-  password, or is too long; or a `kind` not in the list.
+  password, or is too long; a `kind` not in the list; a `revision` over 64
+  characters, or an `updated_at` that is not RFC 3339.
+- `source_mismatch` — a reimport's `source` is not the one the work was
+  imported from.
 - `headings` is not valid: a line outside the file, entries out of order or
   inside a heading's wrapped lines, a level not 2 to 6, a heading on a blank
   line or on a line that is already a heading, a marker without a one-line

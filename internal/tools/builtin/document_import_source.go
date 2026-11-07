@@ -8,12 +8,14 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // An imported document says where it came from (RFC FF D18). Its chunk
@@ -32,12 +34,13 @@ import (
 
 // Limits on a source the importer gives.
 const (
-	importSourceMaxURLBytes   = 2048
-	importSourceMaxTitleRunes = 300
+	importSourceMaxURLBytes      = 2048
+	importSourceMaxTitleRunes    = 300
+	importSourceMaxRevisionRunes = 64
 )
 
 // ImportSourceKinds are the kinds of place a document is imported from.
-var ImportSourceKinds = []string{"sharepoint", "email", "attachment", "web", "other"}
+var ImportSourceKinds = []string{"sharepoint", "email", "attachment", "web", "skybits", "other"}
 
 // importProvenanceKey is the root field the provenance is kept in.
 const importProvenanceKey = "provenance"
@@ -54,6 +57,15 @@ const (
 	importFieldSourceURL    = "source_url"
 	importFieldSourceKind   = "source_kind"
 	importFieldSourceTitle  = "source_title"
+	// importFieldSourceRevision / importFieldSourceUpdatedAt are the source's
+	// own revision (doc:r12) and update time (RFC 3339, UTC), for a source
+	// that keeps changing (RFC GB §5).
+	importFieldSourceRevision  = "source_revision"
+	importFieldSourceUpdatedAt = "source_updated_at"
+	// importFieldSourceStatus says whether the source is still there:
+	// present, removed or trashed. Only Document op=mark_source sets it; a
+	// re-import carries it over.
+	importFieldSourceStatus = "source_status"
 	// importFieldStructured records that a run added headings to the file
 	// on import (File op=import headings): {headings: <n>, by: <run id>}.
 	importFieldStructured = "structured"
@@ -64,31 +76,46 @@ var importProvenanceFields = []string{
 	importFieldOrigin, importFieldFile, importFieldMediaType, importFieldSHA256,
 	importFieldCapturedFrom, importFieldCapturedAt, importFieldRunID,
 	importFieldSourceURL, importFieldSourceKind, importFieldSourceTitle,
+	importFieldSourceRevision, importFieldSourceUpdatedAt, importFieldSourceStatus,
 	importFieldStructured,
 }
 
 // ImportSource is the link to where an imported document came from, as the
 // importer gives it: the File tool's `source`, or Document import_md's
-// source_url / source_kind / source_title.
+// source_url / source_kind / source_title / source_revision /
+// source_updated_at.
 type ImportSource struct {
 	URL   string `json:"url,omitempty"`
 	Kind  string `json:"kind,omitempty"`
 	Title string `json:"title,omitempty"`
+	// Revision is the source's own name for the version imported (doc:r12,
+	// sheet:r3, file:v2); UpdatedAt its own update time, RFC 3339.
+	Revision  string `json:"revision,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+	// kindDefaulted: normalize filled Kind in, the importer gave none. A
+	// re-import then keeps the stored kind rather than reading "other" as a
+	// different source.
+	kindDefaulted bool
 }
 
-func (s ImportSource) empty() bool { return s.URL == "" && s.Kind == "" && s.Title == "" }
+func (s ImportSource) empty() bool {
+	return s.URL == "" && s.Kind == "" && s.Title == "" && s.Revision == "" && s.UpdatedAt == ""
+}
 
 // normalize checks a source and returns the form that is stored: the URL
 // http(s), within its limit, without user information and with its
 // credential-bearing query parameters masked as a signed URL is at rest, and
 // no fragment; the kind one of ImportSourceKinds ("other" when a source is given without
-// one); the title one line, cut to its limit. An all-empty source is no
-// source.
+// one); the title one line, cut to its limit; the revision one line within
+// its limit (refused, not cut: a cut revision names another one); the update
+// time RFC 3339, kept in UTC. An all-empty source is no source.
 func (s ImportSource) normalize() (ImportSource, error) {
 	out := ImportSource{
-		URL:   strings.TrimSpace(s.URL),
-		Kind:  strings.ToLower(strings.TrimSpace(s.Kind)),
-		Title: oneLine(s.Title),
+		URL:       strings.TrimSpace(s.URL),
+		Kind:      strings.ToLower(strings.TrimSpace(s.Kind)),
+		Title:     oneLine(s.Title),
+		Revision:  strings.TrimSpace(s.Revision),
+		UpdatedAt: strings.TrimSpace(s.UpdatedAt),
 	}
 	if out.empty() {
 		return ImportSource{}, nil
@@ -100,8 +127,24 @@ func (s ImportSource) normalize() (ImportSource, error) {
 		}
 		out.URL = u
 	}
+	if out.Revision != "" {
+		if strings.IndexFunc(out.Revision, unicode.IsControl) >= 0 {
+			return ImportSource{}, errors.New("source revision contains a control character")
+		}
+		if n := utf8.RuneCountInString(out.Revision); n > importSourceMaxRevisionRunes {
+			return ImportSource{}, fmt.Errorf("source revision is %d characters, over the limit of %d", n, importSourceMaxRevisionRunes)
+		}
+	}
+	if out.UpdatedAt != "" {
+		t, err := time.Parse(time.RFC3339, out.UpdatedAt)
+		if err != nil {
+			return ImportSource{}, fmt.Errorf("source updated_at %q is not an RFC 3339 time, e.g. 2026-10-01T08:00:00Z", out.UpdatedAt)
+		}
+		out.UpdatedAt = t.UTC().Format(time.RFC3339Nano)
+	}
 	if out.Kind == "" {
 		out.Kind = "other"
+		out.kindDefaulted = true
 	}
 	if !slices.Contains(ImportSourceKinds, out.Kind) {
 		return ImportSource{}, fmt.Errorf("source kind %q is not one of %s", out.Kind, strings.Join(ImportSourceKinds, ", "))
@@ -154,6 +197,11 @@ func oneLine(s string) string {
 type importProvenance struct {
 	// fields go on the root chunk, over whatever the Markdown gave.
 	fields map[string]any
+	// urlGiven / kindGiven / titleGiven: the importer named the source's
+	// URL, kind or title, rather than the runtime deriving or defaulting it
+	// (a download's URL, kind other). A re-import holds what was named to
+	// the stored source, and keeps the stored value of what was not.
+	urlGiven, kindGiven, titleGiven bool
 }
 
 type importProvenanceCtxKey struct{}
@@ -187,6 +235,15 @@ func (p importProvenance) withSource(s ImportSource) importProvenance {
 	if s.Title != "" {
 		p.fields[importFieldSourceTitle] = s.Title
 	}
+	if s.Revision != "" {
+		p.fields[importFieldSourceRevision] = s.Revision
+	}
+	if s.UpdatedAt != "" {
+		p.fields[importFieldSourceUpdatedAt] = s.UpdatedAt
+	}
+	p.urlGiven = p.urlGiven || s.URL != ""
+	p.kindGiven = p.kindGiven || (s.Kind != "" && !s.kindDefaulted)
+	p.titleGiven = p.titleGiven || s.Title != ""
 	return p
 }
 
@@ -303,4 +360,218 @@ func provenanceLine(p map[string]any) string {
 		return ""
 	}
 	return "> " + strings.Join(parts, " · ")
+}
+
+// importSource is import_md's source fields as one source.
+func (in docInput) importSource() ImportSource {
+	return ImportSource{URL: in.SourceURL, Kind: in.SourceKind, Title: in.SourceTitle,
+		Revision: in.SourceRevision, UpdatedAt: in.SourceUpdatedAt}
+}
+
+// importSourceRefusal is import_md's refusal of a source normalize refused.
+func importSourceRefusal(err error) tools.Result {
+	return errValidation("import_md: "+err.Error()+". Nothing was imported.",
+		"Pass source_url as an http(s) link without a user name or password, source_kind as one of "+strings.Join(ImportSourceKinds, ", ")+
+			", source_revision as at most 64 characters on one line, and source_updated_at as an RFC 3339 time.")
+}
+
+// sourceMismatch refuses a re-import whose source is not the one the
+// document was imported from.
+func sourceMismatch(stored, given string) *tools.Result {
+	if stored == "" {
+		stored = "none"
+	}
+	r := errBusiness(fmt.Sprintf("import_md: source_mismatch: the document was imported from source url %s, and this re-import names %s. Nothing was imported.", stored, given),
+		"Re-import a new version of the same source onto its document, or import another source as a new document.")
+	return &r
+}
+
+// refreshedProvenance is the provenance a re-import leaves on a document
+// whose root holds stored: what the import recorded now (the captured
+// file, its sha256, when and by which run, the source's revision and update
+// time), the source being the stored one. A URL the importer names must be
+// the stored one (source_mismatch otherwise). A kind it names replaces the
+// stored one: the URL says which source it is, and the kind only what sort of
+// place that is — documents first imported as kind other are named skybits by
+// their next re-import. What it leaves out of the URL, kind and title is kept
+// from the stored source, and so is the source_status marker, which only
+// mark_source sets. What the new import
+// does not record (a file, for an import_md) is not carried over: it
+// described the earlier text.
+func refreshedProvenance(stored map[string]any, in importProvenance) (map[string]any, *tools.Result) {
+	str := func(m map[string]any, k string) string { s, _ := m[k].(string); return s }
+	next := map[string]any{}
+	for k, v := range in.fields {
+		next[k] = v
+	}
+	keep := func(k string) {
+		if v := str(stored, k); v != "" {
+			next[k] = v
+		}
+	}
+	if u := str(in.fields, importFieldSourceURL); in.urlGiven && u != str(stored, importFieldSourceURL) {
+		return nil, sourceMismatch(str(stored, importFieldSourceURL), u)
+	} else if !in.urlGiven {
+		keep(importFieldSourceURL)
+	}
+	if !in.kindGiven {
+		keep(importFieldSourceKind)
+	}
+	if !in.titleGiven {
+		keep(importFieldSourceTitle)
+	}
+	keep(importFieldSourceStatus)
+	return next, nil
+}
+
+// reimportProvenance is what a re-import onto the document rooted at rootID
+// will leave as its provenance; nil when it changes nothing: the re-import
+// names no source and is not the File tool's, or the document was not
+// imported (its text stays the document's own, as before). Asked before
+// anything is written, so a refusal leaves the document as it was.
+//
+// storedKind is the kind the document holds now, for the caller to move the
+// source/<kind> tag when the re-import names another.
+func (d *Document) reimportProvenance(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, rootID string) (next map[string]any, storedKind string, refused *tools.Result, err error) {
+	prov, imported := importProvenanceFrom(ctx)
+	src, err := in.importSource().normalize()
+	if err != nil {
+		r := importSourceRefusal(err)
+		return nil, "", &r, nil
+	}
+	if !imported && src.empty() {
+		return nil, "", nil, nil
+	}
+	if !imported {
+		prov = newImportProvenance()
+	}
+	prov = prov.withSource(src)
+	cb, err := d.readBody(ctx, mscope, key, rootID)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	stored := d.importedProvenance(ctx, mscope, key, rootID, cb)
+	if stored == nil {
+		return nil, "", nil, nil
+	}
+	storedKind, _ = stored[importFieldSourceKind].(string)
+	next, refused = refreshedProvenance(stored, prov)
+	return next, storedKind, refused, nil
+}
+
+// errProvenanceConflict: the root changed between the read and the bump.
+var errProvenanceConflict = errors.New("the document's root was changed by a concurrent write; nothing was changed, try again")
+
+// reviseProvenance makes next the provenance of the imported root rootID, as
+// a revision of the root: the revision is bumped, and the provenance in force
+// before stays on the revision it was in force at (chunk_revisions'
+// provenance column), so history, get_version and diff show what the
+// document said of its source then. The body text is written back as it is.
+// changed is false, and nothing is written, when next is what is stored.
+//
+// The caller holds the document's editions lock: a re-import and mark_source
+// both take it, so of two revisions one reads the other's result.
+func (d *Document) reviseProvenance(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, rootID string, next map[string]any) (bool, error) {
+	row, ok, err := d.getChunkRow(ctx, key, rootID)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, fmt.Errorf("no such chunk %s", rootID)
+	}
+	cb, err := d.readBody(ctx, mscope, key, rootID)
+	if err != nil {
+		return false, err
+	}
+	var prevRaw json.RawMessage
+	if m, ok := fieldsObject(cb.Fields); ok {
+		prevRaw = m[importProvenanceKey]
+	}
+	nextRaw, err := json.Marshal(next)
+	if err != nil {
+		return false, err
+	}
+	if sameJSONObject(prevRaw, nextRaw) {
+		return false, nil
+	}
+	if err := d.recordRevisionProvenance(ctx, key, rootID, row.Revision, cb.Body, prevRaw); err != nil {
+		return false, err
+	}
+	bumped, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(`UPDATE chunks SET revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`),
+		[]any{time.Now().UnixNano(), rootID, row.Revision}, 0)
+	if err != nil {
+		return false, err
+	}
+	if bumped.RowsAffected == 0 {
+		return false, errProvenanceConflict
+	}
+	if err := d.putBody(ctx, mscope, key, rootID, row.Type, cb.Body, cb.Fields, "", next); err != nil {
+		return false, err
+	}
+	return true, d.recordRevisionProvenance(ctx, key, rootID, row.Revision+1, cb.Body, nextRaw)
+}
+
+// recordRevisionProvenance keeps prov as the provenance of the root's
+// revision rev: the revision's row is written if the log has none (a root's
+// first body write records no revision) and its provenance set if it holds
+// none, so a row the log already has keeps what it recorded.
+func (d *Document) recordRevisionProvenance(ctx context.Context, key sqlmem.ScopeKey, chunkID string, rev int, body string, prov json.RawMessage) error {
+	if err := d.recordRevision(ctx, key, chunkID, rev, body); err != nil {
+		return err
+	}
+	if len(prov) == 0 {
+		return nil
+	}
+	return d.exec(ctx, key, `UPDATE chunk_revisions SET provenance = ? WHERE chunk_id = ? AND revision = ? AND provenance IS NULL`,
+		string(prov), chunkID, rev)
+}
+
+// sameJSONObject reports whether a and b decode to the same object.
+func sameJSONObject(a, b json.RawMessage) bool {
+	var x, y map[string]any
+	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
+		return len(a) == 0 && len(b) == 0
+	}
+	xs, _ := json.Marshal(x)
+	ys, _ := json.Marshal(y)
+	return string(xs) == string(ys)
+}
+
+// revisionProvenance decodes a revision's recorded provenance; nil when it
+// recorded none.
+func revisionProvenance(v any) map[string]any {
+	s := asStr(v)
+	if s == "" {
+		return nil
+	}
+	var p map[string]any
+	if json.Unmarshal([]byte(s), &p) != nil || len(p) == 0 {
+		return nil
+	}
+	return p
+}
+
+// migrateRevisionProvenance adds chunk_revisions.provenance: an imported
+// root's provenance as it was at that revision (RFC GB §5), NULL for every
+// revision that recorded none — every revision of a chunk that is not an
+// imported root. Probed before it alters, as every migration on the hot path.
+func (d *Document) migrateRevisionProvenance(ctx context.Context, key sqlmem.ScopeKey) error {
+	if d.tableHasColumn(ctx, key, "chunk_revisions", "provenance") {
+		return nil
+	}
+	return d.exec(ctx, key, `ALTER TABLE chunk_revisions ADD COLUMN provenance TEXT`)
+}
+
+// retagSourceKind moves a document's source/<kind> tag from one kind to
+// another, as a re-import that names a new kind changes its provenance.
+func (d *Document) retagSourceKind(ctx context.Context, key sqlmem.ScopeKey, docID, from, to string) error {
+	if from == to || to == "" {
+		return nil
+	}
+	if from != "" {
+		if err := d.removeTagRows(ctx, key, "document_tags", "document_id", docID, []string{"source/" + from}); err != nil {
+			return err
+		}
+	}
+	return d.addTagRows(ctx, key, "document_tags", "document_id", docID, []string{"source/" + to})
 }
