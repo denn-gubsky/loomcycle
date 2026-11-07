@@ -366,6 +366,9 @@ func (m *OAuthManager) connected(ctx context.Context, r oauthRow, sec oauthSecre
 	sec.AccessToken, sec.RefreshToken = tok.AccessToken, tok.RefreshToken
 	sec.IssuedAt, sec.ExpiresAt = now, accessExpiry(now, tok)
 	connectedAs := m.client.userinfo(ctx, sec, tok.Scope)
+	if connectedAs == "" {
+		connectedAs = m.client.idTokenName(ctx, sec, tok.IDToken)
+	}
 	def := r.def
 	def.Lease = nil
 	def.Status = OAuthStatus{State: OAuthConnected, ConnectedAs: connectedAs, ConnectedAt: &now, AccessExpiresAt: &sec.ExpiresAt}

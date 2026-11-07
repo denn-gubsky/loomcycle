@@ -68,6 +68,7 @@ func newOAuthRig(t *testing.T) *oauthRig {
 	rig.f.Set(func(f *oauthtest.Server) {
 		f.Interval = 1
 		f.ResourceHandler = http.HandlerFunc(rig.serve)
+		f.IDToken = oauthtest.IDTokenSigned // covered by the f.Secrets() no-leak checks
 	})
 	rig.mgr = credential.NewOAuthManager(rig.engine, rig.f.Client(), "replica-test", nil)
 	bg, cancel := context.WithCancel(context.Background())

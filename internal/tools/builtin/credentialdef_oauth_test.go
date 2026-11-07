@@ -19,7 +19,9 @@ func oauthToolFixture(t *testing.T) (*CredentialDef, context.Context, *oauthtest
 	t.Helper()
 	c, ctx := credFixture(t, "alice", testKEK())
 	f := oauthtest.New(t)
-	f.Set(func(f *oauthtest.Server) { f.Interval = 1 })
+	// Every grant carries an id_token, so the no-leak checks over
+	// f.Secrets() cover it too.
+	f.Set(func(f *oauthtest.Server) { f.Interval = 1; f.IDToken = oauthtest.IDTokenSigned })
 	c.OAuth = credential.NewOAuthManager(c.Engine, f.Client(), "replica-test", nil)
 	bg, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

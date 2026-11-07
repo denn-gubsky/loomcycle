@@ -25,7 +25,13 @@ func connectedOAuth(t *testing.T, s store.Store) (*oauthtest.Server, *credential
 	}
 	e := credential.NewEngine(s, sealer)
 	f := oauthtest.New(t)
-	f.Set(func(f *oauthtest.Server) { f.Interval = 1; f.IssueClientSecret = true })
+	// The grant carries an id_token, so the no-leak checks over f.Secrets()
+	// cover it too.
+	f.Set(func(f *oauthtest.Server) {
+		f.Interval = 1
+		f.IssueClientSecret = true
+		f.IDToken = oauthtest.IDTokenSigned
+	})
 	m := credential.NewOAuthManager(e, f.Client(), "replica-src", nil)
 	ctx := context.Background()
 	cfg := credential.OAuthConfig{Resource: f.Resource(), Scopes: []string{"mcp"},
