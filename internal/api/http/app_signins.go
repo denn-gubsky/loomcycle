@@ -117,7 +117,18 @@ func (s *Server) EndAppSignIn(ctx context.Context, tenant, subject, familyID str
 		return notFound
 	case err != nil:
 		return err
-	case fam.TenantID != tenant || fam.Subject != subject || !fam.RevokedAt.IsZero():
+	case fam.TenantID != tenant || fam.Subject != subject:
+		return notFound
+	case !fam.RevokedAt.IsZero():
+		// Already ended — perhaps by this call's earlier try, whose token
+		// retirement then faulted. Its access tokens are retired again, so a
+		// retry finishes the job; the answer stays not-found, as for any
+		// sign-in that is no longer live.
+		_, err := s.store.OAuthTokenRetire(ctx, fam.ClientID, familyID, time.Now().UTC())
+		s.invalidateTokenCache(ctx)
+		if err != nil {
+			return err
+		}
 		return notFound
 	}
 	reason := oauthRevokeByOperator
