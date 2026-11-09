@@ -313,7 +313,7 @@ func TestSignInKinds_CoverEveryPerUserStoreFamily(t *testing.T) {
 	}
 	// The user row itself, not a credential. Erase turns the row into its
 	// tombstone, which no one signs in with.
-	userRow := map[string]bool{"Create": true, "CreateOwner": true, "Delete": true, "Erase": true, "Get": true, "List": true, "Update": true}
+	userRow := map[string]bool{"Create": true, "CreateBudgeted": true, "CreateOwner": true, "Delete": true, "Erase": true, "Get": true, "List": true, "Update": true}
 	families := map[string]bool{}
 	for f := range notSignIn {
 		families[f] = true

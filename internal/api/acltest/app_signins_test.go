@@ -12,6 +12,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -111,5 +112,44 @@ func TestAppSignIns_OneAnswerOnEveryTransport(t *testing.T) {
 	}
 	if f, _ := st.OAuthFamilyGet(ctx, "fam-other2"); !f.RevokedAt.IsZero() {
 		t.Fatal("a refused own end revoked another person's sign-in")
+	}
+}
+
+// An app's own token is refused by the app sign-in RPCs too, the operator
+// pair included, as on HTTP.
+func TestAppSignIns_AnAppTokenIsRefusedOverGRPC(t *testing.T) {
+	var st store.Store
+	e := newEnvWith(t, authz.ModeCompat, func(_ *config.Config, s store.Store) ([]tools.Tool, func(*lchttp.Server)) {
+		st = s
+		return nil, func(*lchttp.Server) {}
+	})
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := st.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "appuser", AccessMode: "tenant", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.OAuthFamilyCreate(ctx, store.OAuthFamilyRow{FamilyID: "fam-app", ClientID: "board", TenantID: "acme",
+		Subject: "appuser", Gate: "idp", CreatedAt: now, LastUsedAt: now, IdleExpiresAt: now.Add(time.Hour),
+		AbsoluteExpiresAt: now.Add(24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	const app = "lct_acme_app_token" // test fixture, not a secret
+	if _, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{DefID: "def_app", Name: "u-app-board",
+		TenantID: "acme", Subject: "appuser", TokenHash: auth.HashToken(pepper, app),
+		AllowedScopes: []string{auth.ScopeTenant}, OAuthClient: "board", OAuthFamily: "fam-app", ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	call := metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+app)
+	if _, err := e.grpc.ListMyAppSignIns(call, &loomcyclepb.ListMyAppSignInsRequest{}); status.Code(err) != codes.PermissionDenied {
+		t.Errorf("ListMyAppSignIns with an app token = %v", err)
+	}
+	if _, err := e.grpc.ListUserAppSignIns(call, &loomcyclepb.ListUserAppSignInsRequest{Subject: "appuser"}); status.Code(err) != codes.PermissionDenied {
+		t.Errorf("ListUserAppSignIns with an app token = %v", err)
+	}
+	if _, err := e.grpc.EndUserAppSignIn(call, &loomcyclepb.EndUserAppSignInRequest{Subject: "appuser", FamilyId: "fam-app"}); status.Code(err) != codes.PermissionDenied {
+		t.Errorf("EndUserAppSignIn with an app token = %v", err)
+	}
+	if f, _ := st.OAuthFamilyGet(ctx, "fam-app"); !f.RevokedAt.IsZero() {
+		t.Fatal("an app token ended a sign-in over gRPC")
 	}
 }

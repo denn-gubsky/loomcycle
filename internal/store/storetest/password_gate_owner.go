@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -163,5 +164,72 @@ func testUserDeleteRetiresTheUsersBindingsAndMemberships(t *testing.T, s store.S
 	}
 	if removed, _ := s.UserDelete(ctx, "ut", "nobody"); removed {
 		t.Fatal("deleting a missing user reported a removal")
+	}
+}
+
+// UserCreateBudgeted writes the budget with the user, in one transaction:
+// a refused create (a taken subject, a tenant that is not empty for an
+// owner) writes none, and a limit already set for the subject is kept.
+func testUserCreateBudgetedWritesTheBudgetWithTheUser(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	hard, preset := int64(1000), int64(5)
+	budget := store.TokenLimitRow{HardLimit: &hard, UpdatedBy: "op"}
+	hardOf := func(tenant, subject string) *int64 {
+		t.Helper()
+		r, err := s.TokenLimitGet(ctx, tenant, "user", subject)
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return nil
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.HardLimit
+	}
+	user := func(tenant, subject string) store.UserRow {
+		return store.UserRow{TenantID: tenant, Subject: subject, AccessMode: "tenant", Status: "active"}
+	}
+	if err := s.UserCreateBudgeted(ctx, user("acme", "ann"), nil, budget); err != nil {
+		t.Fatal(err)
+	}
+	if h := hardOf("acme", "ann"); h == nil || *h != hard {
+		t.Fatalf("ann's budget = %v, want %d", h, hard)
+	}
+	// A second create of the subject is refused and changes nothing.
+	other := int64(7)
+	if err := s.UserCreateBudgeted(ctx, user("acme", "ann"), nil, store.TokenLimitRow{HardLimit: &other}); err == nil {
+		t.Fatal("a second create of ann was accepted")
+	}
+	if h := hardOf("acme", "ann"); h == nil || *h != hard {
+		t.Fatalf("a refused create changed ann's budget to %v", h)
+	}
+	// A limit set first is kept.
+	if err := s.TokenLimitPut(ctx, store.TokenLimitRow{TenantID: "acme", Scope: "user", ScopeID: "bo", HardLimit: &preset}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UserCreateBudgeted(ctx, user("acme", "bo"), nil, budget); err != nil {
+		t.Fatal(err)
+	}
+	if h := hardOf("acme", "bo"); h == nil || *h != preset {
+		t.Fatalf("bo's preset budget = %v, want %d kept", h, preset)
+	}
+	// An owner create writes the budget with the user and its binding; one
+	// refused because the tenant is not empty writes none.
+	owner := pwgOwnerBinding("fresh", "boss")
+	if err := s.UserCreateBudgeted(ctx, user("fresh", "boss"), &owner, budget); err != nil {
+		t.Fatal(err)
+	}
+	if h := hardOf("fresh", "boss"); h == nil || *h != hard {
+		t.Fatalf("the owner's budget = %v, want %d", h, hard)
+	}
+	second := pwgOwnerBinding("fresh", "boss2")
+	if err := s.UserCreateBudgeted(ctx, user("fresh", "boss2"), &second, budget); err == nil {
+		t.Fatal("a second owner of a bootstrapped tenant was accepted")
+	}
+	if h := hardOf("fresh", "boss2"); h != nil {
+		t.Fatalf("a refused owner create left a budget: %d", *h)
+	}
+	if _, err := s.UserGet(ctx, "fresh", "boss2"); err == nil {
+		t.Fatal("a refused owner create made the user")
 	}
 }

@@ -9,6 +9,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	nethttp "net/http"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -125,8 +126,11 @@ func appSignInToProto(a connector.AppSignIn) *loomcyclepb.AppSignIn {
 // that is not the user's live sign-in NotFound.
 func appSignInErrToStatus(err error) error {
 	var nf *store.ErrNotFound
+	var hs interface{ HTTPStatus() int }
 	switch {
-	case errors.Is(err, runner.ErrAgentNotAllowed):
+	case errors.Is(err, runner.ErrAgentNotAllowed),
+		// An app's own token, refused by the shared operation.
+		errors.As(err, &hs) && hs.HTTPStatus() == nethttp.StatusForbidden:
 		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.As(err, &nf):
 		return status.Error(codes.NotFound, "no such app sign-in for this user")

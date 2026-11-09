@@ -354,8 +354,18 @@ var intentExempt = map[string]string{
 	"authgate_password.go/joinInviteGroups":       "an invite's redemption (a sign-in)",
 	"authgate_tenant_policy.go/applyTenantPolicy": "retirements enforcing a recorded tenant policy",
 	"oauth_server.go/retireAppToken":              "ending an app sign-in",
-	"users_tokens.go/retireDelegatedUserTokens":   "retirements inside a recorded disable, delete or removal",
-	"users_tokens.go/retireUserTokensBeyond":      "retirements inside a recorded mint",
+	// Ending app sign-ins only takes access away (a reduction): the app
+	// signs in again or not at all. Each records oauth_revoked after the
+	// fact, or runs inside a recorded change (a disable, an erasure, a
+	// client retire, a credential change), as SECURITY.md says.
+	"app_signins.go/EndAppSignIn":             "ending one app sign-in, recorded oauth_revoked (a reduction)",
+	"oauth_clientdef.go/endClientSignIns":     "ending a retired client's sign-ins, inside the recorded retire (a reduction)",
+	"oauth_server.go/revokeAppFamily":         "ending an app sign-in, recorded oauth_revoked (a reduction)",
+	"oauth_server.go/revokeAppFamilyForReuse": "ending a replayed sign-in, recorded as the reuse alarm (a reduction)",
+	"oauth_server.go/endSubjectAppSignIns":    "ending a person's app sign-ins inside endSubjectCredentials (a reduction)",
+	"users_tokens.go/retireDelegatedUserTokens": "retirements inside a recorded disable, delete or removal, or a credential change's or " +
+		"factor removal's teardown (endSubjectCredentials): reductions",
+	"users_tokens.go/retireUserTokensBeyond": "retirements inside a recorded mint",
 }
 
 // TestAuditIntents_EveryStoreWriteSitsBehindAnIntent: a census of this
@@ -364,7 +374,7 @@ var intentExempt = map[string]string{
 // records an intent (…Intent( in its body) or is exempt above with a reason;
 // an exemption whose function no longer writes is stale.
 func TestAuditIntents_EveryStoreWriteSitsBehindAnIntent(t *testing.T) {
-	writes := regexp.MustCompile(`\.store\.(UserUpdate|UserCreate|UserCreateOwner|UserDelete|GroupMemberAdd|GroupMemberRemove|GroupPut|GroupCreate|GroupDelete|AclDefPut|AclDefRetire|AclBindingPut|AclBindingRetire|OperatorTokenDefCreate|OperatorTokenDefSetRetiredAt)\(`)
+	writes := regexp.MustCompile(`\.store\.(UserUpdate|UserCreate|UserCreateOwner|UserCreateBudgeted|UserDelete|GroupMemberAdd|GroupMemberRemove|GroupPut|GroupCreate|GroupDelete|AclDefPut|AclDefRetire|AclBindingPut|AclBindingRetire|OperatorTokenDefCreate|OperatorTokenDefSetRetiredAt|OAuthFamilyRevoke|OAuthFamilyRevokeSubject|OAuthFamilyRevokeClient|OAuthTokenRetire|OAuthTokenRetireEndedSignIns)\(`)
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)

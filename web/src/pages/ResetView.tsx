@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { NewPasswordFields, RecoveryCodes, TotpEnrolBlock, passwordReady } from "../components/PasswordGateParts";
+import { NewPasswordFields, RecoveryCodes, ResetPasskeys, TotpEnrolBlock, passwordReady } from "../components/PasswordGateParts";
 import {
   type Refusal,
   type ResetInfo,
+  type ResetPasskey,
   codeFromHash,
   completeReset,
   forgetHash,
@@ -28,7 +29,7 @@ export default function ResetView() {
   const [addTotp, setAddTotp] = useState(false);
   const [totpCode, setTotpCode] = useState("");
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState<{ redirect: string; codes: string[] } | null>(null);
+  const [done, setDone] = useState<{ redirect: string; codes: string[]; passkeys: ResetPasskey[] } | null>(null);
 
   useEffect(() => {
     forgetHash();
@@ -47,10 +48,17 @@ export default function ResetView() {
   }, [code]);
 
   if (done) {
+    // Recovery codes first (shown once), then the passkeys to check.
+    const next = () =>
+      done.passkeys.length > 0 ? setDone({ ...done, codes: [] }) : window.location.assign(done.redirect);
     return (
       <div className="login-page">
         <div className="login-card">
-          <RecoveryCodes codes={done.codes} onDone={() => window.location.assign(done.redirect)} />
+          {done.codes.length > 0 ? (
+            <RecoveryCodes codes={done.codes} onDone={next} />
+          ) : (
+            <ResetPasskeys passkeys={done.passkeys} onDone={() => window.location.assign(done.redirect)} />
+          )}
         </div>
       </div>
     );
@@ -86,8 +94,9 @@ export default function ResetView() {
       return;
     }
     const codes = r.data.recovery_codes ?? [];
-    if (codes.length === 0) window.location.assign(r.data.redirect || "/ui/");
-    else setDone({ redirect: r.data.redirect || "/ui/", codes });
+    const passkeys = r.data.passkeys ?? [];
+    if (codes.length === 0 && passkeys.length === 0) window.location.assign(r.data.redirect || "/ui/");
+    else setDone({ redirect: r.data.redirect || "/ui/", codes, passkeys });
   };
 
   return (

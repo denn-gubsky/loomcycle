@@ -2656,6 +2656,31 @@ func (s *Store) TokenLimitDelete(ctx context.Context, tenantID, scope, scopeID s
 	return err
 }
 
+// TokenLimitGet returns one scope's budget.
+func (s *Store) TokenLimitGet(ctx context.Context, tenantID, scope, scopeID string) (store.TokenLimitRow, error) {
+	r := store.TokenLimitRow{TenantID: tenantID, Scope: scope, ScopeID: scopeID}
+	var soft, hard sql.NullInt64
+	var updatedNano int64
+	err := s.db.QueryRowContext(ctx, `SELECT soft_limit, hard_limit, updated_at, updated_by FROM token_limits
+		WHERE tenant_id = ? AND scope = ? AND scope_id = ?`, tenantID, scope, scopeID).Scan(&soft, &hard, &updatedNano, &r.UpdatedBy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.TokenLimitRow{}, &store.ErrNotFound{Kind: "token_limit", ID: scope + ":" + scopeID}
+	}
+	if err != nil {
+		return store.TokenLimitRow{}, fmt.Errorf("token limit get: %w", err)
+	}
+	if soft.Valid {
+		v := soft.Int64
+		r.SoftLimit = &v
+	}
+	if hard.Valid {
+		v := hard.Int64
+		r.HardLimit = &v
+	}
+	r.UpdatedAt = time.Unix(0, updatedNano)
+	return r, nil
+}
+
 // TokenLimitsAll returns every token-limit row (RFC AW) for the tracker cache.
 func (s *Store) TokenLimitsAll(ctx context.Context) ([]store.TokenLimitRow, error) {
 	rows, err := s.db.QueryContext(ctx,

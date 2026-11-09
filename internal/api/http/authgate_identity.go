@@ -564,6 +564,23 @@ func (s *Server) writeNewUserBudget(ctx context.Context, by, tenant, subject str
 	return nil
 }
 
+// loadUserLimit puts the budget stored for (tenant, subject) into this
+// replica's limits cache, so a new user's limit is enforced here at once;
+// the others pick it up within LOOMCYCLE_LIMITS_RELOAD_INTERVAL. It reads
+// the row back rather than caching what was asked for: an insert-if-absent
+// that met a limit already there kept that one. A read fault is logged; the
+// next reload fills the cache.
+func (s *Server) loadUserLimit(ctx context.Context, tenant, subject string) {
+	row, err := s.store.TokenLimitGet(ctx, tenant, "user", subject)
+	if err != nil {
+		if !isNotFound(err) {
+			slog.Error("limits: reading a new user's budget failed", "tenant", tenant, "subject", subject, "err", err)
+		}
+		return
+	}
+	s.limits.PutLimit(row)
+}
+
 // floorNewUserBudget is the deployment floor's new_user budget
 // (auth.lifecycle.new_user.budget), nil when none is set.
 func (s *Server) floorNewUserBudget() *config.AuthBudgetConfig {

@@ -20,6 +20,39 @@ import (
 // *store.ErrConflict{Kind:"user", ID:subject} on a (tenant, subject) PK
 // violation (modernc.org/sqlite surfaces it as "UNIQUE constraint failed").
 func (s *Store) UserCreate(ctx context.Context, row store.UserRow) error {
+	return userCreate(ctx, s.db, row)
+}
+
+// UserCreateBudgeted implements store.UsersStore.
+func (s *Store) UserCreateBudgeted(ctx context.Context, row store.UserRow, owner *store.AclBindingRow, budget store.TokenLimitRow) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if owner != nil {
+		err = userCreateOwner(ctx, tx, row, *owner)
+	} else {
+		err = userCreate(ctx, tx, row)
+	}
+	if err != nil {
+		return err
+	}
+	updatedAt := budget.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO token_limits
+		(tenant_id, scope, scope_id, soft_limit, hard_limit, updated_at, updated_by) VALUES (?,?,?,?,?,?,?)`,
+		row.TenantID, "user", row.Subject, nullableInt64(budget.SoftLimit), nullableInt64(budget.HardLimit),
+		updatedAt.UnixNano(), budget.UpdatedBy); err != nil {
+		return fmt.Errorf("user create: budget: %w", err)
+	}
+	return tx.Commit()
+}
+
+// userCreate is UserCreate on db or a transaction.
+func userCreate(ctx context.Context, db gateExecer, row store.UserRow) error {
 	row = row.AsTombstone()
 	if !store.ValidUserAccessMode(row.AccessMode) {
 		return fmt.Errorf("user create: access_mode must be one of tenant|isolated, got %q", row.AccessMode)
@@ -33,11 +66,11 @@ func (s *Store) UserCreate(ctx context.Context, row store.UserRow) error {
 	}
 	// The tenant's bootstrap marker goes first: a marker with no user (the
 	// insert below failing) only refuses a later bootstrap, never allows one.
-	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO tenant_bootstraps (tenant_id, at, via) VALUES (?, ?, 'users')`,
+	if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO tenant_bootstraps (tenant_id, at, via) VALUES (?, ?, 'users')`,
 		row.TenantID, createdAt.UnixNano()); err != nil {
 		return fmt.Errorf("user create: bootstrap marker: %w", err)
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := db.ExecContext(ctx, `
 		INSERT INTO users (
 			tenant_id, subject, display_name, access_mode, status, created_at, created_by, erased_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)

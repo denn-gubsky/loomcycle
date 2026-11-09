@@ -518,6 +518,59 @@ func testAuthInviteRedeemWritesUserIdentityCredentialAndSecondFactor(t *testing.
 	}
 }
 
+// A redemption's Budget is written with its user, in its transaction: a
+// redemption refused part-way leaves no budget row, and a limit already
+// set for the subject is kept.
+func testAuthInviteRedeemWritesTheBudgetWithTheUser(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := pwgT0.Add(time.Hour)
+	hard, preset := int64(1000), int64(5)
+	budget := func(red store.AuthInviteRedemption) store.AuthInviteRedemption {
+		red.Budget = &store.TokenLimitRow{HardLimit: &hard, UpdatedBy: "gate:" + pwgGate}
+		return red
+	}
+	limitOf := func(subject string) *store.TokenLimitRow {
+		rows, err := s.TokenLimitsAll(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rows {
+			if r.TenantID == "acme" && r.Scope == "user" && r.ScopeID == subject {
+				return &r
+			}
+		}
+		return nil
+	}
+	for i, code := range []string{"code-b1", "code-b2", "code-b3"} {
+		if err := s.AuthInviteCreate(ctx, pwgInvite(fmt.Sprintf("inv-b%d", i+1), code, "acme")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AuthInviteRedeem(ctx, budget(pwgRedemption("code-b1", "acme", "alice", "alice", now))); err != nil {
+		t.Fatalf("redeem: %v", err)
+	}
+	if l := limitOf("alice"); l == nil || l.HardLimit == nil || *l.HardLimit != hard {
+		t.Fatalf("alice's budget = %+v, want hard %d", l, hard)
+	}
+	// The login is taken: the redemption is refused, and writes no budget.
+	if err := s.AuthInviteRedeem(ctx, budget(pwgRedemption("code-b2", "acme", "carol", "alice", now))); err == nil {
+		t.Fatal("a redemption with a taken login was accepted")
+	}
+	if l := limitOf("carol"); l != nil {
+		t.Fatalf("a refused redemption left a budget row: %+v", l)
+	}
+	// A limit already set for the subject is the operator's word.
+	if err := s.TokenLimitPut(ctx, store.TokenLimitRow{TenantID: "acme", Scope: "user", ScopeID: "dave", HardLimit: &preset, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AuthInviteRedeem(ctx, budget(pwgRedemption("code-b3", "acme", "dave", "dave", now))); err != nil {
+		t.Fatalf("redeem dave: %v", err)
+	}
+	if l := limitOf("dave"); l == nil || l.HardLimit == nil || *l.HardLimit != preset {
+		t.Fatalf("dave's preset budget = %+v, want hard %d kept", l, preset)
+	}
+}
+
 // assertRedeemWroteNothing checks that a refused redemption of subject left no
 // user, login, credential or second factor behind.
 func assertRedeemWroteNothing(t *testing.T, s store.Store, tenant, subject, login string) {

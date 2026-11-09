@@ -47,6 +47,9 @@ func isSelf(ctx context.Context, tenant, subject string) bool {
 // does not) or the HTTP route gate already asked it.
 func (s *Server) appSignInAccess(ctx context.Context, tenant, subject, method string) error {
 	p, ok := auth.PrincipalFromContext(ctx)
+	if ok && p.OAuthClient != "" {
+		return errAppTokenSignIns
+	}
 	if !ok || isSelf(ctx, tenant, subject) {
 		return nil
 	}
@@ -117,7 +120,18 @@ func (s *Server) EndAppSignIn(ctx context.Context, tenant, subject, familyID str
 		return notFound
 	case err != nil:
 		return err
-	case fam.TenantID != tenant || fam.Subject != subject || !fam.RevokedAt.IsZero():
+	case fam.TenantID != tenant || fam.Subject != subject:
+		return notFound
+	case !fam.RevokedAt.IsZero():
+		// Already ended — perhaps by this call's earlier try, whose token
+		// retirement then faulted. Its access tokens are retired again, so a
+		// retry finishes the job; the answer stays not-found, as for any
+		// sign-in that is no longer live.
+		_, err := s.store.OAuthTokenRetire(ctx, fam.ClientID, familyID, time.Now().UTC())
+		s.invalidateTokenCache(ctx)
+		if err != nil {
+			return err
+		}
 		return notFound
 	}
 	reason := oauthRevokeByOperator
@@ -146,6 +160,8 @@ func writeAppSignInError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.As(err, &denied):
 		writeACLDenied(w, denied.surface, denied.decision)
+	case errors.Is(err, errAppTokenSignIns):
+		writeJSONError(w, http.StatusForbidden, "app_token_refused", err.Error())
 	case isNotFound(err):
 		writeJSONError(w, http.StatusNotFound, "app_sign_in_not_found", "no such app sign-in for this user")
 	case errors.Is(err, errSessionsUnavailable):
@@ -182,6 +198,21 @@ func (s *Server) operatorAppSignInTarget(w http.ResponseWriter, r *http.Request)
 	}
 	return tenant, subject, true
 }
+
+// errAppTokenSignIns is the refusal of an app's own token by the app
+// sign-in operations, on every route and transport: an app signed in on the
+// person's behalf, capped to what it was granted, must not read or end the
+// person's sign-ins. The person does it with its own session or token.
+var errAppTokenSignIns error = appTokenRefusal{}
+
+type appTokenRefusal struct{}
+
+func (appTokenRefusal) Error() string {
+	return "an app's token cannot list or end app sign-ins; use your own session or token"
+}
+
+// HTTPStatus lets a transport map the refusal without knowing its type.
+func (appTokenRefusal) HTTPStatus() int { return http.StatusForbidden }
 
 // selfAppSignInTarget is the caller's own (tenant, subject). A principal
 // with no subject (open mode, the legacy token) has no sign-ins of its own.

@@ -163,25 +163,23 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 			s.recordFailed(r.Context(), ev)
 		}
 	}()
-	// The deployment floor's new_user budget goes in before the user, as a
-	// gate's does, so a user made here never runs uncapped. Only for a
-	// subject not yet taken: a create that conflicts must not cap a user the
-	// operator already runs (the insert-if-absent keeps an existing limit,
-	// not an existing user's lack of one).
-	// A lookup fault refuses: going on would make the user uncapped.
-	switch _, gerr := s.store.UserGet(r.Context(), tenant, subject); {
-	case isNotFound(gerr):
-		if err := s.writeNewUserBudget(r.Context(), principalSubject(r.Context()), tenant, subject, s.floorNewUserBudget(), row.CreatedAt); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "user_create_failed", err.Error())
-			return
-		}
-	case gerr != nil:
-		writeJSONError(w, http.StatusInternalServerError, "user_create_failed", gerr.Error())
-		return
-	}
+	var ownerRow *store.AclBindingRow
 	if owner {
-		err = s.store.UserCreateOwner(r.Context(), row, ownerBinding(row.TenantID, row.Subject, "bootstrap:"+principalSubject(r.Context())))
-	} else {
+		b := ownerBinding(row.TenantID, row.Subject, "bootstrap:"+principalSubject(r.Context()))
+		ownerRow = &b
+	}
+	switch budget := s.floorNewUserBudget(); {
+	case budget != nil:
+		// The deployment's new_user budget goes in with the user, in the
+		// create's transaction: a create the store refuses (a taken
+		// subject, a lost race, a tenant that is not empty) writes none, a
+		// limit an operator set for the subject first is kept, and the user
+		// never exists without one.
+		err = s.store.UserCreateBudgeted(r.Context(), row, ownerRow, store.TokenLimitRow{
+			SoftLimit: budget.SoftLimit, HardLimit: budget.HardLimit, UpdatedAt: row.CreatedAt, UpdatedBy: principalSubject(r.Context())})
+	case ownerRow != nil:
+		err = s.store.UserCreateOwner(r.Context(), row, *ownerRow)
+	default:
 		err = s.store.UserCreate(r.Context(), row)
 	}
 	if err != nil {
@@ -200,6 +198,9 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created = true
+	if s.floorNewUserBudget() != nil {
+		s.loadUserLimit(r.Context(), tenant, subject)
+	}
 	if owner {
 		s.aclChanged(r.Context(), row.TenantID, "auth_owner_bound", row.Subject)
 	}

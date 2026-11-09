@@ -923,15 +923,12 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 		red.User = &store.UserRow{TenantID: inv.TenantID, Subject: subject, AccessMode: inv.AccessMode,
 			Status: redeemedUserStatus(g, inv), CreatedAt: now, CreatedBy: "invite:" + inv.InviteID}
 	}
-	if red.User != nil {
-		// The budget goes in before the user, as an identity gate's does
-		// (provision): a failure here creates nothing, and the
-		// invite stays unspent for a retry.
-		if err := s.writeNewUserBudget(ctx, "gate:"+g.Name, inv.TenantID, subject, s.floorNewUserBudget(), now); err != nil {
-			slog.Error("authgate: writing an invited user's budget failed", "err", err)
-			writeJSONError(w, http.StatusInternalServerError, "internal", "the invitation could not be redeemed")
-			return
-		}
+	if b := s.floorNewUserBudget(); b != nil && red.User != nil {
+		// The deployment's new_user budget goes in with the user, in the
+		// redemption's transaction: the user never runs uncapped, and a
+		// redemption the store refuses leaves no budget row behind.
+		red.Budget = &store.TokenLimitRow{TenantID: inv.TenantID, Scope: "user", ScopeID: subject,
+			SoftLimit: b.SoftLimit, HardLimit: b.HardLimit, UpdatedAt: now, UpdatedBy: "gate:" + g.Name}
 	}
 	if inv.Bootstrap && red.User != nil {
 		// A tenant's first owner is its operator (owner decision, Q6): the
@@ -956,6 +953,9 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	if red.User != nil {
 		s.joinInviteGroups(ctx, g, inv, subject)
+	}
+	if red.Budget != nil {
+		s.loadUserLimit(ctx, inv.TenantID, subject)
 	}
 	if red.OwnerBinding != nil {
 		s.aclChanged(ctx, inv.TenantID, "auth_owner_bound", subject)
@@ -1305,7 +1305,31 @@ func (s *Server) handleCompleteReset(w http.ResponseWriter, r *http.Request) {
 	if !s.startPasswordSession(w, r, g.Name, rs.TenantID, rs.Subject, amr) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"redirect": "/ui/", "login": login, "recovery_codes": recovery})
+	writeJSON(w, http.StatusOK, map[string]any{"redirect": "/ui/", "login": login, "recovery_codes": recovery,
+		"passkeys": s.resetPasskeyNotice(ctx, rs.TenantID, rs.Subject)})
+}
+
+// resetPasskeyNotice names the account's passkeys (name, when added, when
+// last used) in the reset answer. A reset ends every sign-in but removes no
+// passkey, and one added by someone who knew the old password would
+// survive it: the person is shown them to check, and removes one that is not
+// theirs from the account page. Never a credential id or key. A read fault
+// names none rather than failing the reset that already happened.
+func (s *Server) resetPasskeyNotice(ctx context.Context, tenant, subject string) []map[string]any {
+	out := []map[string]any{}
+	rows, err := s.store.UserPasskeyList(ctx, tenant, subject)
+	if err != nil {
+		slog.Error("authgate: listing passkeys after a reset failed", "err", err)
+		return out
+	}
+	for _, k := range rows {
+		e := map[string]any{"name": k.Name, "created_at": k.CreatedAt.UTC()}
+		if !k.LastUsedAt.IsZero() {
+			e["last_used_at"] = k.LastUsedAt.UTC()
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // --- self-service (a signed-in password-gate session) ---
@@ -1424,6 +1448,18 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 func (s *Server) endOtherSignIns(ctx context.Context, sess store.UISessionRow) {
 	if _, err := s.endSubjectCredentials(ctx, sess.TenantID, sess.Subject, credAll); err != nil {
 		slog.Error("authgate: ending sign-ins after a password change failed", "err", err)
+	}
+}
+
+// endFactorSignIns ends what a person's removed second factor (a passkey,
+// an authenticator app) may have been used to make: app sign-ins and
+// delegated tokens, device-login ones included. Web UI sessions are left to
+// their binding: one made with a removed passkey ends on its next request,
+// and the browser that removed the factor stays signed in. A fault is
+// logged: the factor is already gone.
+func (s *Server) endFactorSignIns(ctx context.Context, sess store.UISessionRow) {
+	if _, err := s.endSubjectCredentials(ctx, sess.TenantID, sess.Subject, credAppSignIns|credDelegatedTokens); err != nil {
+		slog.Error("authgate: ending sign-ins after a factor removal failed", "err", err)
 	}
 }
 
@@ -1556,6 +1592,10 @@ func (s *Server) handleTOTPRemove(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.store.UserTOTPDelete(ctx, sess.TenantID, sess.Subject); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
+	}
+	if !newPass {
+		// A new password already ended every sign-in above.
+		s.endFactorSignIns(ctx, sess)
 	}
 	s.recordGateAudit(ctx, "auth_totp_removed", pw.g.Name, "", sess.TenantID, sess.Subject, floorTarget{})
 	if newPass && !s.startPasswordSession(w, r, pw.g.Name, sess.TenantID, sess.Subject, []string{amrPassword}) {

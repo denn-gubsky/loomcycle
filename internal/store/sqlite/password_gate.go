@@ -689,6 +689,14 @@ func (s *Store) AuthInviteRedeem(ctx context.Context, red store.AuthInviteRedemp
 			}
 			return fmt.Errorf("auth invite redeem: create user: %w", err)
 		}
+		if b := red.Budget; b != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO token_limits
+				(tenant_id, scope, scope_id, soft_limit, hard_limit, updated_at, updated_by) VALUES (?,?,?,?,?,?,?)`,
+				u.TenantID, "user", u.Subject, nullableInt64(b.SoftLimit), nullableInt64(b.HardLimit),
+				now.UnixNano(), b.UpdatedBy); err != nil {
+				return fmt.Errorf("auth invite redeem: budget: %w", err)
+			}
+		}
 	} else {
 		var one int
 		// An erasure's tombstone takes no new login: it reads as no user.
@@ -1088,6 +1096,19 @@ func insertOwnerBinding(ctx context.Context, tx *sql.Tx, b store.AclBindingRow, 
 // SQLite's write lock first: two owner creates are serialised, and the second
 // sees the first's user.
 func (s *Store) UserCreateOwner(ctx context.Context, user store.UserRow, owner store.AclBindingRow) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := userCreateOwner(ctx, tx, user, owner); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// userCreateOwner is UserCreateOwner's writes, in tx.
+func userCreateOwner(ctx context.Context, tx *sql.Tx, user store.UserRow, owner store.AclBindingRow) error {
 	if !store.ValidUserAccessMode(user.AccessMode) || !store.ValidUserStatus(user.Status) {
 		return fmt.Errorf("user create owner: invalid access_mode %q or status %q", user.AccessMode, user.Status)
 	}
@@ -1099,11 +1120,6 @@ func (s *Store) UserCreateOwner(ctx context.Context, user store.UserRow, owner s
 	if created.IsZero() {
 		created = now
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
 	if err := insertOwnerBinding(ctx, tx, owner, now); err != nil {
 		return err
 	}
@@ -1127,7 +1143,7 @@ func (s *Store) UserCreateOwner(ctx context.Context, user store.UserRow, owner s
 		}
 		return fmt.Errorf("user create owner: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // UserIdentityDelete implements store.AuthIdentityStore.
