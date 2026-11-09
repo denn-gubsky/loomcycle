@@ -39,10 +39,13 @@ var (
 	digest     = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
 )
 
-// TestComposeImages_ThirdPartyPinnedByDigest also reads commented-out image
+// TestComposeImages_EveryThirdPartyPinnedByDigest also reads commented-out image
 // lines: they are instructions to uncomment, and an operator who does runs
 // whatever the tag points at that day.
-func TestComposeImages_ThirdPartyPinnedByDigest(t *testing.T) {
+//
+// "Every" in the name puts it in scripts/ci/census-tests.sh, which runs on
+// every pull request: a change to compose files alone runs no Go job.
+func TestComposeImages_EveryThirdPartyPinnedByDigest(t *testing.T) {
 	var files []string
 	err := filepath.WalkDir(repoRoot, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
