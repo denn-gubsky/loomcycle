@@ -108,6 +108,15 @@ export interface Redeemed {
   redirect: string;
   login: string;
   recovery_codes: string[] | null;
+  /** A reset's answer: the account's passkeys, which a reset does not
+   *  remove, named for the person to check. */
+  passkeys?: ResetPasskey[];
+}
+
+export interface ResetPasskey {
+  name: string;
+  created_at: string;
+  last_used_at?: string;
 }
 
 export interface AccountInfo {

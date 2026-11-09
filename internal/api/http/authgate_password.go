@@ -1305,7 +1305,31 @@ func (s *Server) handleCompleteReset(w http.ResponseWriter, r *http.Request) {
 	if !s.startPasswordSession(w, r, g.Name, rs.TenantID, rs.Subject, amr) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"redirect": "/ui/", "login": login, "recovery_codes": recovery})
+	writeJSON(w, http.StatusOK, map[string]any{"redirect": "/ui/", "login": login, "recovery_codes": recovery,
+		"passkeys": s.resetPasskeyNotice(ctx, rs.TenantID, rs.Subject)})
+}
+
+// resetPasskeyNotice names the account's passkeys (name, when added, when
+// last used) in the reset answer. A reset ends every sign-in but removes no
+// passkey, and one added by someone who knew the old password would
+// survive it: the person is shown them to check, and removes one that is not
+// theirs from the account page. Never a credential id or key. A read fault
+// names none rather than failing the reset that already happened.
+func (s *Server) resetPasskeyNotice(ctx context.Context, tenant, subject string) []map[string]any {
+	out := []map[string]any{}
+	rows, err := s.store.UserPasskeyList(ctx, tenant, subject)
+	if err != nil {
+		slog.Error("authgate: listing passkeys after a reset failed", "err", err)
+		return out
+	}
+	for _, k := range rows {
+		e := map[string]any{"name": k.Name, "created_at": k.CreatedAt.UTC()}
+		if !k.LastUsedAt.IsZero() {
+			e["last_used_at"] = k.LastUsedAt.UTC()
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // --- self-service (a signed-in password-gate session) ---

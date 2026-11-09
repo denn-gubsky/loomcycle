@@ -225,3 +225,29 @@ func TestAppSignIns_AnAppTokenIsRefusedOnTheOperatorRouteToo(t *testing.T) {
 		t.Fatal("an app token ended a sign-in through the operator route")
 	}
 }
+
+// A reset does not remove the account's passkeys (a passkey registered by
+// someone who knew the password survives it), so the reset answer names
+// them for the person to check.
+func TestPasswordReset_TheAnswerNamesTheAccountsPasskeys(t *testing.T) {
+	f := newPasskeyFixture(t)
+	b, sub := f.passwordUser(t, "zoe@example.com")
+	a := registerPasskey(t, b)
+	rst := f.resetCode(t, bAcmeOp, "local", jsonBody(t, map[string]string{"subject": sub}))
+	fresh := f.browser(t)
+	const newPass = "a reset passphrase for zoe"
+	_, out := fresh.do("POST", "/v1/_auth/reset", jsonBody(t, map[string]any{"code": rst, "password": newPass}))
+	code, body := fresh.do("POST", "/v1/_auth/reset", jsonBody(t, map[string]any{"code": rst, "password": newPass,
+		"webauthn": a.get(out["webauthn"].(map[string]any))}))
+	if code != http.StatusOK {
+		t.Fatalf("reset: %d %v", code, body)
+	}
+	keys, _ := body["passkeys"].([]any)
+	if len(keys) != 1 {
+		t.Fatalf("the reset answer names %d passkeys, want 1: %v", len(keys), body["passkeys"])
+	}
+	k, _ := keys[0].(map[string]any)
+	if k["name"] != "laptop" || k["created_at"] == nil {
+		t.Fatalf("the named passkey = %v", k)
+	}
+}
