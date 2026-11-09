@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import type {
+  AnnotationTarget,
   AssistantContext,
   BrowseScope,
   NavigatorContext,
@@ -105,6 +106,11 @@ export interface PathExplorerProps extends ExplorerDataSource {
   // DocumentViewer. Provide it to show an "assistant" toggle; omit → none.
   renderAssistant?: (ctx: AssistantContext) => ReactNode;
 
+  // ---- Optional: have an annotation written again (tenant-scope documents),
+  // forwarded to the embedded DocumentViewer. The host owns how (typically by
+  // starting the annotating agent's run). Omit → no Regenerate.
+  onRegenerateAnnotation?: (target: AnnotationTarget) => void | Promise<void>;
+
   // ---- Optional second navigator beside the Path tree (the @loomcycle/universe
   // star map). Provide it to show a `tree | stars` switch in the toolbar; the
   // tree stays the default. Omit → tree only, and nothing else is loaded.
@@ -131,6 +137,7 @@ export default function PathExplorer(props: PathExplorerProps) {
     renderNavigator,
     navigator,
     onError,
+    onRegenerateAnnotation,
   } = props;
   const resolved = useResolvedDataLayer(props);
   return (
@@ -145,6 +152,7 @@ export default function PathExplorer(props: PathExplorerProps) {
         renderNavigator={renderNavigator}
         navigator={navigator}
         onError={onError}
+        onRegenerateAnnotation={onRegenerateAnnotation}
       />
     </ExplorerRoot>
   );
@@ -177,6 +185,7 @@ function PathExplorerBody({
   renderNavigator,
   navigator: navigatorProp,
   onError,
+  onRegenerateAnnotation,
 }: PathExplorerBodyProps) {
   const data: ExplorerDataLayer = useExplorerData();
 
@@ -870,6 +879,7 @@ function PathExplorerBody({
                 onTitle={onDocTitle}
                 onChunkSelect={(chunkId) => setLiveChunk({ documentId: view.documentId, chunkId })}
                 focusChunk={focusForView}
+                onRegenerateAnnotation={onRegenerateAnnotation}
               />
             </div>
           ) : selected ? (

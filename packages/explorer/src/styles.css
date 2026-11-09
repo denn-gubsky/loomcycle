@@ -1834,3 +1834,142 @@
 .loomcycle-explorer .doc-bulk .doc-conn-row input[type="checkbox"] {
   margin: 0 4px 0 0;
 }
+
+/* Annotations: a document's brief under its title and its abstract in a
+   collapsible panel (the same for a selected chunk), and a brief under a Path
+   tree row. Stale and manual are small muted markers, never hidden. Restyle
+   with --annotation-accent / --annotation-stale / --annotation-manual. */
+.loomcycle-explorer .doc-annotation {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.loomcycle-explorer .annotation-brief {
+  margin: 0 0 6px;
+  color: var(--fg-soft);
+  font-size: var(--lc-text-sm);
+  line-height: 1.4;
+}
+.loomcycle-explorer .doc-annotation .annotation-brief {
+  margin: 0;
+}
+.loomcycle-explorer .annotation-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: var(--lc-text-xs);
+  color: var(--fg-muted);
+  vertical-align: baseline;
+}
+.loomcycle-explorer .annotation-badge.annotation-stale {
+  color: var(--annotation-stale, var(--fg-muted));
+  border-style: dashed;
+}
+.loomcycle-explorer .annotation-badge.annotation-manual {
+  color: var(--annotation-manual, var(--fg-soft));
+}
+.loomcycle-explorer .annotation-panel {
+  margin: 0 0 6px;
+  font-size: var(--lc-text-sm);
+}
+.loomcycle-explorer .annotation-panel > summary {
+  cursor: pointer;
+  color: var(--fg-soft);
+  font-size: var(--lc-text-xs);
+  user-select: none;
+}
+.loomcycle-explorer .annotation-title {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--annotation-accent, var(--fg-soft));
+}
+.loomcycle-explorer .annotation-none,
+.loomcycle-explorer .annotation-empty,
+.loomcycle-explorer .annotation-hint {
+  color: var(--fg-muted);
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-explorer .annotation-none {
+  margin-left: 6px;
+  font-style: italic;
+}
+.loomcycle-explorer .annotation-record {
+  margin: 6px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--annotation-accent, var(--border));
+}
+.loomcycle-explorer .annotation-abstract {
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+.loomcycle-explorer .annotation-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0 10px;
+  margin: 0 0 6px;
+  font-size: var(--lc-text-xs);
+  color: var(--fg-muted);
+}
+.loomcycle-explorer .annotation-meta dt {
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .annotation-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.loomcycle-explorer .annotation-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.loomcycle-explorer .annotation-actions button {
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-explorer .annotation-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.loomcycle-explorer .annotation-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.loomcycle-explorer .annotation-actions button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.loomcycle-explorer .annotation-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 0;
+}
+.loomcycle-explorer .annotation-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--lc-text-xs);
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .annotation-editor textarea {
+  resize: vertical;
+  font-family: inherit;
+}
+.loomcycle-explorer .annotation-hint,
+.loomcycle-explorer .annotation-err {
+  margin: 0;
+}
+.loomcycle-explorer .annotation-err {
+  color: var(--failed);
+  font-size: var(--lc-text-xs);
+}

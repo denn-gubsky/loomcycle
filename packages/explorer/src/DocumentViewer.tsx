@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { AssistantContext, BrowseScope, DocScope, Principal } from "./types";
+import type { AnnotationTarget, AssistantContext, BrowseScope, DocScope, Principal } from "./types";
 import {
   ExplorerRoot,
   useResolvedDataLayer,
@@ -44,6 +44,10 @@ export interface DocumentViewerProps extends ExplorerDataSource {
    *  the document being left, with the chunk selected in it. Omit → the viewer
    *  swaps the document itself and keeps a breadcrumb trail back. */
   onOpenDocument?: (target: DocLocation, from: DocLocation) => void;
+  /** Have an annotation written again (tenant-scope documents). The host owns
+   *  how — typically by starting the annotating agent's run; the viewer reloads
+   *  the annotation when the returned promise settles. Omit → no Regenerate. */
+  onRegenerateAnnotation?: (target: AnnotationTarget) => void | Promise<void>;
 }
 
 export default function DocumentViewer(props: DocumentViewerProps) {
@@ -73,6 +77,7 @@ function DocumentViewerHost({
   principal,
   renderAssistant,
   onOpenDocument,
+  onRegenerateAnnotation,
 }: DocumentViewerProps) {
   const [trail, setTrail] = useState<Trail>([]);
   const current = trail[trail.length - 1];
@@ -126,6 +131,7 @@ function DocumentViewerHost({
         focusChunk={current ? undefined : focus}
         onOpenDocument={open}
         onTitle={onTitle}
+        onRegenerateAnnotation={onRegenerateAnnotation}
       />
     </>
   );
