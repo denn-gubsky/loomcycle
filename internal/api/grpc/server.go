@@ -47,6 +47,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -974,13 +975,48 @@ func (s *Server) authenticate(ctx context.Context) (context.Context, error) {
 		// The client address a source_cidr condition reads: the gRPC peer,
 		// or the client a listed gRPC proxy names for it.
 		ctx = authz.WithSourceIP(ctx, s.callerIP(ctx))
-		return auth.WithPrincipal(ctx, p), nil
+		return auth.WithPrincipal(withInboundTrace(ctx), p), nil
 	}
 	// Legacy-only fallback (no resolver wired — e.g. test harnesses).
 	if !auth.CompareBearer(bearer, s.authToken) {
 		return nil, status.Error(codes.Unauthenticated, "invalid bearer token")
 	}
-	return ctx, nil
+	return withInboundTrace(ctx), nil
+}
+
+// withInboundTrace reads the caller's traceparent/tracestate metadata into
+// ctx. Called only once the bearer is verified: the trace context decides
+// whether a run is sampled and which trace it joins, which an
+// unauthenticated caller must not choose (open mode reads none). A call the
+// scope or op gate then refuses never reaches a handler, so reading it before
+// those gates changes nothing.
+func withInboundTrace(ctx context.Context) context.Context {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ctx
+	}
+	return lcotel.ExtractInbound(ctx, mdCarrier(md))
+}
+
+// mdCarrier reads gRPC metadata as a trace-context carrier; metadata keys are
+// already lower-case, as traceparent is.
+type mdCarrier metadata.MD
+
+func (c mdCarrier) Get(key string) string {
+	if v := metadata.MD(c).Get(key); len(v) > 0 {
+		return v[0]
+	}
+	return ""
+}
+
+func (c mdCarrier) Set(key, value string) { metadata.MD(c).Set(key, value) }
+
+func (c mdCarrier) Keys() []string {
+	out := make([]string, 0, len(c))
+	for k := range c {
+		out = append(out, k)
+	}
+	return out
 }
 
 // grpcPeerIP is the connection's remote address, or nil when the transport

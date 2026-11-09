@@ -14,10 +14,12 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/webui"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // isNotFound reports whether err is a store ErrNotFound (a missing
@@ -103,6 +105,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		if !ok {
 			return
 		}
+		// The caller's trace context, read only now that every gate admitted
+		// the request: it decides whether a run is sampled and which trace it
+		// joins, which an unauthenticated caller must not choose. Open mode
+		// above authenticates nobody, so it reads none.
+		ctx = lcotel.ExtractInbound(ctx, propagation.HeaderCarrier(r.Header))
 		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(ctx, p)))
 	})
 }

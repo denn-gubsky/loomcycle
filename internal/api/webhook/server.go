@@ -18,6 +18,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
@@ -368,6 +369,12 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	// 3. AUTHENTICATE (VERIFY BEFORE PARSE — over the raw bytes).
 	if !rec.authenticate(w, r, span, whKey, name, wd.Auth, owner.TenantID, body) {
 		return
+	}
+	// The sender's trace context, read only once its signature verified: it
+	// decides whether the run is sampled and which trace it joins. A
+	// delivery accepted unauthenticated (auth.kind=none) gets none.
+	if !strings.EqualFold(strings.TrimSpace(wd.Auth.Kind), "none") {
+		ctx = lcotel.ExtractInbound(ctx, propagation.HeaderCarrier(r.Header))
 	}
 
 	// 3b. Events, when the definition lists them: a bad event header, the
@@ -862,7 +869,9 @@ func (rec *Receiver) spawnAsync(ctx context.Context, w http.ResponseWriter, span
 // under the def owner's set (RFC EZ §1.5), and the delivery's client address
 // (stamped on src by withClient) for a `source_cidr` one (RFC FY Part E).
 func deliveryRunCtx(src context.Context) context.Context {
-	return authz.WithSourceIP(authz.WithTransport(context.Background(), "webhook"), authz.SourceIPFrom(src))
+	ctx := authz.WithSourceIP(authz.WithTransport(context.Background(), "webhook"), authz.SourceIPFrom(src))
+	// The sender's trace context, when its delivery verified (handle).
+	return lcotel.CarryInbound(ctx, src)
 }
 
 // withClient is r's ctx carrying the delivery's client address.
