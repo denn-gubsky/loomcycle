@@ -136,6 +136,16 @@ func (s *Server) ReloadConfig(ctx context.Context, dryRun bool) (ReloadResult, e
 		return ReloadResult{}, fmt.Errorf("%w: %v", config.ErrReloadInvalid, err)
 	}
 
+	// The store-backed audit stream opens only at boot. A candidate whose
+	// posture requires it (a gate, strict mode, more than one principal) on a
+	// server that booted without it would run that posture unrecorded until
+	// a restart, so it is refused; a dry run reports the same.
+	if r := candidate.AuditRequiredReason(0); r != "" && !s.auditStream {
+		return ReloadResult{}, fmt.Errorf("%w: the new config requires the store-backed audit stream (%s), which "+
+			"this server did not open at boot; set LOOMCYCLE_AUDIT_STORE=1 and LOOMCYCLE_SECRET_KEY and restart instead of reloading",
+			config.ErrReloadInvalid, r)
+	}
+
 	// The candidate was loaded from disk; the runtime-wired fields of the
 	// running config carry over (an auth provider rebuilt below must still
 	// hand its secrets to the redactor).

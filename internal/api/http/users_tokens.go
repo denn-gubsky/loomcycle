@@ -171,6 +171,10 @@ func (s *Server) SetUserTokenMaxTTL(d time.Duration) { s.userTokenMaxTTL = d }
 // to. nil = not recorded.
 func (s *Server) SetTokenAudit(sink audit.Sink) { s.tokenAudit = sink }
 
+// SetAuditStreamRunning records that boot opened the store-backed audit
+// stream, which a reload raising the audit posture needs.
+func (s *Server) SetAuditStreamRunning(on bool) { s.auditStream = on }
+
 // recordTokenAudit writes one user-token audit record. Best-effort, like every
 // other token audit write: it never blocks or fails the operation.
 func (s *Server) recordTokenAudit(ctx context.Context, action string, row store.OperatorTokenDefRow) {
