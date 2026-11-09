@@ -902,7 +902,10 @@ func (s *annotationScope) folderConcept(ctx context.Context, folderName string) 
 }
 
 // folderOfChunk is the folder whose annotation chunkID carries: its path
-// record's folder, else (an _annotation document's root) the root's path field.
+// record's folder, else — an _annotation document's root with no record yet —
+// the folder its <folder>/_annotation name sits in. The name, not the root's
+// path field: the field is the document's content, and anyone who may write it
+// could point it elsewhere.
 func (d *Document) folderOfChunk(ctx context.Context, key sqlmem.ScopeKey, chunkID string) (string, error) {
 	recs, err := d.annotationRecordsFor(ctx, key, []string{chunkID}, annotationLevelPath)
 	if err != nil {
@@ -911,21 +914,21 @@ func (d *Document) folderOfChunk(ctx context.Context, key sqlmem.ScopeKey, chunk
 	if rec, ok := recs[chunkID][annotationLevelPath]; ok && rec.Folder != "" {
 		return rec.Folder, nil
 	}
-	res, err := d.query(ctx, key, `SELECT 1 FROM documents WHERE root_chunk_id = ? AND type = ?`, chunkID, annotationDocType)
+	res, err := d.query(ctx, key, `SELECT id FROM documents WHERE root_chunk_id = ? AND type = ?`, chunkID, annotationDocType)
 	if err != nil || len(res.Rows) == 0 {
 		return "", err
 	}
-	_, mscope, err := d.resolveScope(ctx, key.Scope)
+	rows, err := d.Store.DirentListByDocuments(ctx, direntTenant(ctx), key.Scope, direntScopeID(key), []string{asStr(res.Rows[0][0])})
 	if err != nil {
 		return "", err
 	}
-	b, err := d.readBody(ctx, mscope, key, chunkID)
-	if err != nil {
-		return "", err
+	for _, r := range rows {
+		if r.Name == annotationDocName {
+			if folder := strings.TrimSuffix(r.ParentPath, "/"); folder != "" {
+				return folder, nil
+			}
+			return "/", nil
+		}
 	}
-	var f struct {
-		Path string `json:"path"`
-	}
-	_ = json.Unmarshal(b.Fields, &f)
-	return f.Path, nil
+	return "", nil
 }

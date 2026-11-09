@@ -301,3 +301,25 @@ func TestFolderAnnotation_EditedByItsChunk(t *testing.T) {
 		t.Fatalf("edited record = %v", a)
 	}
 }
+
+// Before its record exists, an _annotation document's folder is read from where
+// it is named, never from its root's editable path field.
+func TestFolderAnnotation_ItsFolderIsWhereItIsNamed(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	op := annOperator(base)
+	seedFolderCorpus(t, d, op)
+	out, r := docExec(t, d, op, `{"op":"create_document","scope":"tenant","title":"products","path":"/kb/products/_annotation","type":"Annotation"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	root := out["root_chunk_id"].(string)
+	g, _ := docExec(t, d, op, `{"op":"get_chunk","scope":"tenant","id":"`+root+`"}`)
+	if _, r := docExec(t, d, op, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"fields":{"path":"/kb/elsewhere"},"revision":%v}`, root, g["revision"])); r.IsError {
+		t.Fatal(r.Text)
+	}
+	key, _, _ := d.resolveScope(op, "tenant")
+	folder, err := d.folderOfChunk(op, key, root)
+	if err != nil || folder != "/kb/products" {
+		t.Fatalf("folder = %q, %v; want /kb/products", folder, err)
+	}
+}
