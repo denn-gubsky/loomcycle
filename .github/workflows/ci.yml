@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Nightly: the full suite, -race shards included, on main as it stands. Every
+  # push to main already runs everything; this catches what a quiet day would
+  # not (a flake, a date or a dependency that moved) and keeps a recent green
+  # run to compare a red one against. Outside a pull request every job runs
+  # every package (scripts/ci/changes.sh, select-packages.sh).
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
 
 # Run JavaScript-based actions (checkout, setup-go, setup-node, …) on
 # Node.js 24. GitHub forces this default on 2026-06-16 and removes Node 20
@@ -44,6 +52,48 @@ jobs:
       - name: Classify the change
         id: c
         run: scripts/ci/changes.sh >> "$GITHUB_OUTPUT"
+
+  census:
+    # Census and drift tests on every pull request, whatever it changed. The
+    # jobs below run only what a change can reach, and a census test reads
+    # files no import names (Go source at run time, the proto, the adapters),
+    # so one could break with its pull request green and fail only on main.
+    # Picked by name and by what they open; scripts/ci/census-tests.sh says how.
+    name: Census and drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache: true
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: adapters/ts/package-lock.json
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+      # The checkout is shallow and has no tags; the docs' "current version"
+      # test (scripts/ci/docversion) compares against the newest release tag.
+      - name: Newest release tag
+        run: |
+          tag=$(git ls-remote --tags --refs origin 'v[0-9]*' | sed 's|.*refs/tags/||' |
+            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          echo "newest tag: $tag"
+          echo "LOOMCYCLE_LATEST_TAG=$tag" >> "$GITHUB_ENV"
+      - name: Go census and drift tests
+        run: scripts/ci/census-tests.sh go
+      - name: TypeScript drift tests
+        run: |
+          (cd adapters/ts && npm ci)
+          scripts/ci/census-tests.sh ts
+      - name: Python drift tests
+        run: |
+          (cd adapters/python && pip install -e ".[dev]")
+          scripts/ci/census-tests.sh python
 
   go:
     name: Go ${{ matrix.go-version }}
@@ -1002,6 +1052,7 @@ jobs:
     if: always()
     needs:
       - changes
+      - census
       - go
       - fuzz
       - go-race
