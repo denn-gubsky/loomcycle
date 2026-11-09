@@ -16,6 +16,8 @@ export type { AdminClient, BridgePort, ClientFactory, Logger, OutboundActivity, 
 export { DEFAULT_MAX_MESSAGE_CHARS, DEFAULT_ROLLOVER_MS, MessageSink, StreamSink } from "./renderer.js";
 export type { MessageSinkOptions, StreamSinkOptions, TurnSink } from "./renderer.js";
 export { ConversationRouter, sentAtOf } from "./router.js";
+export { downloadPinned, PinnedDownloadError } from "./download.js";
+export type { PinnedDownloadOptions, PinnedRefusal } from "./download.js";
 export type { MessageOptions, RouterOptions, SeenMessage } from "./router.js";
 export { createBridge, runCli, voiceSurfaces } from "./start.js";
 export type { Bridge, BridgeAdapter, BridgeContext, BridgeOptions } from "./start.js";
