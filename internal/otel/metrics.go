@@ -442,12 +442,26 @@ type UsageRecord struct {
 	Chat bool
 }
 
+type agentNameKey struct{}
+
+// WithAgentName returns ctx naming the agent whose usage is recorded under it;
+// RecordUsage takes it when the record names none.
+func WithAgentName(ctx context.Context, name string) context.Context {
+	if name == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, agentNameKey{}, name)
+}
+
 // RecordUsage counts one ledger row. Called where the row is written, so the
 // counters move with the ledger and with nothing else.
 func RecordUsage(ctx context.Context, u UsageRecord) {
 	st := meters.Load()
 	if st == nil {
 		return
+	}
+	if u.Agent == "" {
+		u.Agent, _ = ctx.Value(agentNameKey{}).(string)
 	}
 	base := []attribute.KeyValue{
 		attribute.String(LabelTenant, u.Tenant),

@@ -145,9 +145,14 @@ func TestRunMetrics_AgentLabelOnlyWhenOptedIn(t *testing.T) {
 		_, span := lcotel.RecordRunStart(context.Background(), lcotel.RunStartAttrs{Tenant: "t", AgentName: "researcher"})
 		lcotel.SetRunDone(span, lcotel.RunDoneAttrs{})
 		span.End()
-		lcotel.RecordUsage(context.Background(), lcotel.UsageRecord{Tenant: "t", Provider: "p", Model: "m", Agent: "researcher", Key: "operator", Input: 3})
-		if got := strings.Contains(render(lcotel.PromOptions{}), `agent="researcher"`); got != on {
-			t.Errorf("agent label present = %v with LOOMCYCLE_METRICS_AGENT_LABEL %v", got, on)
+		// The ledger write names the agent through ctx, not the record.
+		lcotel.RecordUsage(lcotel.WithAgentName(context.Background(), "writer"), lcotel.UsageRecord{Tenant: "t", Provider: "p", Model: "m", Key: "operator", Input: 3})
+		out := render(lcotel.PromOptions{})
+		if got := strings.Contains(out, `agent="researcher"`); got != on {
+			t.Errorf("run agent label present = %v with LOOMCYCLE_METRICS_AGENT_LABEL %v", got, on)
+		}
+		if got := strings.Contains(out, `agent="writer"`); got != on {
+			t.Errorf("token agent label present = %v with LOOMCYCLE_METRICS_AGENT_LABEL %v", got, on)
 		}
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -154,3 +155,45 @@ func TestFinishRun_CountsARejectedRunAsRejected(t *testing.T) {
 	}
 }
 
+// The token counters are the usage ledger: over a set of mocked runs (a
+// parent and its sub-agent, twice), each token type's counter equals the sum
+// of that type over the ledger rows the runs wrote.
+func TestTokenMetrics_MatchTheLedgerTotals(t *testing.T) {
+	render := installMetrics(t)
+	ts, st := subAgentFixture(t)
+	postParentRun(t, ts)
+	// A second deployment, so the set holds two independent ledgers.
+	ts2, st2 := subAgentFixture(t)
+	postParentRun(t, ts2)
+	out := waitForSample(t, render, `loomcycle_runs_active{tenant=""}`, 0)
+
+	var in, outTok, cr, cw int64
+	for _, s := range []*storesqlite.Store{st, st2} {
+		rows, err := s.UsageReport(context.Background(), store.UsageQuery{})
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("ledger total = %+v, %v; want one row", rows, err)
+		}
+		in += rows[0].InputTokens
+		outTok += rows[0].OutputTokens
+		cr += rows[0].CacheReadTokens
+		cw += rows[0].CacheCreationTokens
+	}
+	if in == 0 || outTok == 0 || cr == 0 || cw == 0 {
+		t.Fatalf("the fixture is wrong: ledger totals in=%d out=%d cache_read=%d cache_write=%d; every type must be non-zero", in, outTok, cr, cw)
+	}
+	for typ, want := range map[string]int64{"input": in, "output": outTok, "cache_read": cr, "cache_write": cw} {
+		var got float64
+		for _, line := range strings.Split(out, "\n") {
+			if strings.HasPrefix(line, "loomcycle_tokens_total{") && strings.Contains(line, `type="`+typ+`"`) {
+				v, _ := strconv.ParseFloat(line[strings.LastIndexByte(line, ' ')+1:], 64)
+				got += v
+			}
+		}
+		if got != float64(want) {
+			t.Errorf("loomcycle_tokens_total{type=%q} = %v, ledger = %d", typ, got, want)
+		}
+	}
+	if !strings.Contains(out, `key="operator"`) {
+		t.Errorf("tokens not attributed to the key that paid:\n%s", out)
+	}
+}
