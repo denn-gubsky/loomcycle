@@ -237,6 +237,13 @@ func countHTML(ctx context.Context, r io.Reader) error {
 		case html.EndTagToken:
 			name, _ := z.TagName()
 			tag := atom.Lookup(name)
+			// In <body> a stray </p> makes the parser create an empty <p>, and
+			// </br> a <br>: those end tags build nodes.
+			if tag == atom.P || tag == atom.Br {
+				if nodes++; nodes > maxXMLNodes {
+					return refusedf("the page holds more than %d elements", maxXMLNodes)
+				}
+			}
 			switch {
 			case htmlFormatting[tag]:
 				for j := len(active) - 1; j >= 0 && active[j].markers == 0; j-- {

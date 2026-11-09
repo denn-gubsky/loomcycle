@@ -182,3 +182,73 @@ func TestClassifier_AConceptsOnlyRequestAsksNoClass(t *testing.T) {
 		t.Errorf("concepts without evidence survived: %+v", v)
 	}
 }
+
+// conceptsReq asks three sibling concepts alone, as a tree level or a flat vocabulary is.
+var conceptsReq = memory.ClassifyRequest{Title: "A note", Text: "text", ConceptsOnly: true,
+	Concepts: []memory.ClassifyOption{{Name: "Risk"}, {Name: "Credit"}, {Name: "Payments"}}}
+
+// TestClassifier_ConceptFallbackTakesTheClearLeader: no concept clears min_probability,
+// but the best leads the runner-up by the margin above the fallback floor, so it alone
+// is taken and the verdict says so.
+func TestClassifier_ConceptFallbackTakesTheClearLeader(t *testing.T) {
+	dec := &stubDecision{nouls: map[string]float64{conceptQ + "0": 0.45, conceptQ + "1": 0.25, conceptQ + "2": 0.1}}
+	c := New(dec, "nimble", 0, nil, 0.6, 0.2)
+	c.SetConceptFallback(0.3, 0.1)
+	v := c.Classify(context.Background(), conceptsReq)
+	if len(v.Concepts) != 1 || v.Concepts[0] != "Risk" || !v.ConceptFallback {
+		t.Fatalf("verdict = %+v, want Risk taken by the fallback", v)
+	}
+}
+
+// TestClassifier_ConceptFallbackNeedsTheMargin: a leader too close to the runner-up is
+// not taken.
+func TestClassifier_ConceptFallbackNeedsTheMargin(t *testing.T) {
+	dec := &stubDecision{nouls: map[string]float64{conceptQ + "0": 0.45, conceptQ + "1": 0.4, conceptQ + "2": 0.1}}
+	c := New(dec, "nimble", 0, nil, 0.6, 0.2)
+	c.SetConceptFallback(0.3, 0.1)
+	if v := c.Classify(context.Background(), conceptsReq); len(v.Concepts) != 0 || v.ConceptFallback {
+		t.Fatalf("verdict = %+v, want no concept", v)
+	}
+}
+
+// TestClassifier_ConceptFallbackNeverAddsToASureAnswer: a concept above min_probability
+// is the answer; the fallback adds nothing beside it, on either decision path.
+func TestClassifier_ConceptFallbackNeverAddsToASureAnswer(t *testing.T) {
+	nouls := map[string]float64{conceptQ + "0": 0.45, conceptQ + "1": 0.05, conceptQ + "2": 0.7}
+	c := New(&stubDecision{nouls: nouls}, "nimble", 0, nil, 0.6, 0.2)
+	c.SetConceptFallback(0.3, 0.1)
+	if v := c.Classify(context.Background(), conceptsReq); len(v.Concepts) != 1 || v.Concepts[0] != "Payments" || v.ConceptFallback {
+		t.Fatalf("concepts only: verdict = %+v, want Payments alone, not a fallback", v)
+	}
+	withClass := conceptsReq
+	withClass.ConceptsOnly, withClass.Classes = false, req.Classes
+	c = New(&stubDecision{probs: map[string]float64{"Order": 0.9, "Law": 0.05}, nouls: nouls}, "nimble", 0, nil, 0.6, 0.2)
+	c.SetConceptFallback(0.3, 0.1)
+	if v := c.Classify(context.Background(), withClass); v.Class != "Order" || len(v.Concepts) != 1 || v.Concepts[0] != "Payments" || v.ConceptFallback {
+		t.Fatalf("with the class: verdict = %+v, want Order and Payments alone", v)
+	}
+}
+
+// TestClassifier_ConceptFallbackOffTakesNothingBelowTheFloor: unset, the fallback is
+// off and an answer with no concept above min_probability names none (as before it).
+func TestClassifier_ConceptFallbackOffTakesNothingBelowTheFloor(t *testing.T) {
+	dec := &stubDecision{nouls: map[string]float64{conceptQ + "0": 0.45, conceptQ + "1": 0.25, conceptQ + "2": 0.1}}
+	c := New(dec, "nimble", 0, nil, 0.6, 0.2)
+	if v := c.Classify(context.Background(), conceptsReq); len(v.Concepts) != 0 || v.ConceptFallback {
+		t.Fatalf("verdict = %+v, want no concept", v)
+	}
+}
+
+// TestClassifier_ConceptFallbackAppliesBesideASureClass: in the call that also asks
+// the class, the concept answers get the same fallback.
+func TestClassifier_ConceptFallbackAppliesBesideASureClass(t *testing.T) {
+	withClass := conceptsReq
+	withClass.ConceptsOnly, withClass.Classes = false, req.Classes
+	dec := &stubDecision{probs: map[string]float64{"Order": 0.9, "Law": 0.05},
+		nouls: map[string]float64{conceptQ + "0": 0.1, conceptQ + "1": 0.5, conceptQ + "2": 0.2}}
+	c := New(dec, "nimble", 0, nil, 0.6, 0.2)
+	c.SetConceptFallback(0.3, 0.1)
+	if v := c.Classify(context.Background(), withClass); v.Class != "Order" || len(v.Concepts) != 1 || v.Concepts[0] != "Credit" || !v.ConceptFallback {
+		t.Fatalf("verdict = %+v, want Order with Credit by the fallback", v)
+	}
+}

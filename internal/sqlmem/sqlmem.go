@@ -601,6 +601,9 @@ func (m *Manager) Query(ctx context.Context, key ScopeKey, statement string, arg
 // It repeats Query's checks rather than sharing a helper so that each entry
 // point taking a ScopeKey visibly validates it (TestScopeKey_EveryEntryPointValidates).
 func (m *Manager) QueryCapped(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error) {
+	if err := m.lexAgentStatement(statement); err != nil {
+		return nil, err
+	}
 	if err := validateStatementForDialect(statement, true, m.dialect); err != nil {
 		return nil, err
 	}
@@ -626,6 +629,11 @@ func (m *Manager) QueryCapped(ctx context.Context, key ScopeKey, statement strin
 // validated by the Go-layer floor FIRST (read-write dialect), then the backend
 // enforces the quota + timeout.
 func (m *Manager) Exec(ctx context.Context, key ScopeKey, statement string, args []any, quotaOverride int) (*ExecResult, error) {
+	if !m.onPlane(key).isDoc() {
+		if err := m.lexAgentStatement(statement); err != nil {
+			return nil, err
+		}
+	}
 	if err := validateStatementForDialect(statement, false, m.dialect); err != nil {
 		return nil, err
 	}
@@ -634,12 +642,13 @@ func (m *Manager) Exec(ctx context.Context, key ScopeKey, statement string, args
 	}
 	// A write to the agent plane is an agent's statement (sql_exec).
 	if !m.onPlane(key).isDoc() {
-		if err := validateWidths(statement, m.dialect, valueLengthLimit(m.cfg)); err != nil {
+		if err := validateAgentWrite(statement, m.dialect, valueLengthLimit(m.cfg)); err != nil {
 			return nil, err
 		}
 	}
 	defer m.touch(key)
-	return m.backend.exec(ctx, m.onPlane(key), statement, args, quotaOverride)
+	res, err := m.backend.exec(ctx, m.onPlane(key), statement, args, quotaOverride)
+	return res, valueLimitErr(err, valueLengthLimit(m.cfg))
 }
 
 // ScopeExists reports whether a DURABLE scope has been provisioned (sqlite: its
@@ -833,6 +842,29 @@ func collectRows(rows *sql.Rows, maxRows, maxBytes int) (*QueryResult, error) {
 // DefaultMaxResultBytes is the result budget of an agent's query when
 // Config.MaxResultBytes is not set.
 const DefaultMaxResultBytes = 8 << 20
+
+// lexAgentStatement reads an agent's postgres statement with the lexer every
+// postgres check shares (pgTokens, via pgCheckWrappable) before any other
+// check runs, refusing what it cannot read the way postgres does. Sqlite has
+// its engine limit and needs no such reading.
+func (m *Manager) lexAgentStatement(statement string) error {
+	if m.dialect != dialectPostgres {
+		return nil
+	}
+	return pgCheckWrappable(statement)
+}
+
+// validateAgentWrite is the width check for an agent's write, and on postgres
+// the refusal of any write that could make the server send rows (pgCheckExec).
+func validateAgentWrite(statement string, d dialect, limit int) error {
+	if err := validateWidths(statement, d, limit); err != nil {
+		return err
+	}
+	if d == dialectPostgres {
+		return pgCheckExec(statement)
+	}
+	return nil
+}
 
 // maxEngineValueLength is sqlite's compiled-in ceiling on a value's length
 // (SQLITE_MAX_LENGTH); sqlite3_limit takes no more.

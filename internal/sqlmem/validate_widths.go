@@ -28,7 +28,25 @@ func validateWidths(statement string, d dialect, limit int) error {
 	if limit <= 0 {
 		return nil
 	}
-	toks := widthTokens(stripComments(statement, d == dialectPostgres), d == dialectPostgres)
+	if d == dialectPostgres {
+		// Postgres statements are read by the lexer every postgres check shares
+		// (pgTokens), in both string readings.
+		for _, backslash := range []bool{false, true} {
+			toks, err := pgTokens(statement, backslash)
+			if err != nil {
+				return err
+			}
+			if err := widthScan(toks, d, limit); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return widthScan(widthTokens(stripComments(statement, false), false), d, limit)
+}
+
+// widthScan is validateWidths over a token stream.
+func widthScan(toks []widthToken, d dialect, limit int) error {
 	for i := 0; i+1 < len(toks); i++ {
 		if toks[i].kind != tokIdent || toks[i+1].text != "(" {
 			continue
@@ -248,8 +266,9 @@ const (
 )
 
 type widthToken struct {
-	kind widthTokenKind
-	text string // a string token's text is its unquoted content
+	kind   widthTokenKind
+	text   string // a string token's text is its unquoted content
+	quoted bool   // a "…", […] or `…` name
 }
 
 // widthTokens splits a comment-stripped statement into identifiers, numbers,
@@ -301,7 +320,7 @@ func widthTokens(s string, dollarQuotes bool) []widthToken {
 			if j < 0 {
 				j = len(s) - i - 1
 			}
-			out = append(out, widthToken{kind: tokIdent, text: s[i+1 : i+1+j]})
+			out = append(out, widthToken{kind: tokIdent, text: s[i+1 : i+1+j], quoted: true})
 			i += j + 2
 		case c >= '0' && c <= '9' || c == '.' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9':
 			j := i + 1

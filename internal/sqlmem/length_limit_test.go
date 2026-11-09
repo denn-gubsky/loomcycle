@@ -423,7 +423,6 @@ func TestPgWrappable_ReadsPostgresLexicalEdges(t *testing.T) {
 	}
 	accepted := []string{
 		"SELECT $é$ ) $é$ AS a",
-		"SELECT 1$a$ ) $a$ AS a",
 		"SELECT a$b$ FROM t",
 		"SELECT 1 -- )\r\n",
 		"SELECT /* /* ) */ */ 1",
@@ -462,5 +461,196 @@ func TestDollarTagAt_FollowsPostgresRules(t *testing.T) {
 		if got != c.want {
 			t.Errorf("dollarTagAt(%q, %d) = %q, want %q", c.s, c.i, got, c.want)
 		}
+	}
+}
+
+func TestPostgres_WrapperAliasCollisionStillChecked(t *testing.T) {
+	// A column named like the wrapper's alias: postgres resolves the bare name
+	// to the column, so the row check must measure the whole row explicitly.
+	m, _ := pgTestManager(t, Config{MaxResultBytes: 1 << 20})
+	ctx := context.Background()
+	key := agentKey("t1", "alias")
+	for _, stmt := range []string{
+		"SELECT NULL AS loomcycle_q, string_agg(md5(g::text), '') AS big FROM generate_series(1, 100000) g",
+		"SELECT 'x' AS LOOMCYCLE_Q, string_agg(md5(g::text), '') AS big FROM generate_series(1, 100000) g",
+	} {
+		var err error
+		got := allocatedDuring(func() { _, err = m.QueryCapped(ctx, key, stmt, nil) })
+		if err == nil || !strings.Contains(err.Error(), "limit on one SQL Memory value") {
+			t.Fatalf("%q: err = %v, want the value limit refusal", stmt, err)
+		}
+		if got > 32<<20 {
+			t.Fatalf("%q: allocated %d MiB in the runtime", stmt, got>>20)
+		}
+	}
+	res, err := m.QueryCapped(ctx, key, "SELECT 1 a, 2 a", nil)
+	if err != nil || len(res.Rows) != 1 {
+		t.Fatalf("duplicate column names: %v %v", res, err)
+	}
+}
+
+func TestPostgres_ExecReturningRefused(t *testing.T) {
+	// sql_exec reports rows affected only, yet the driver reads returned rows
+	// whole: a RETURNING clause is refused on postgres.
+	m, _ := pgTestManager(t, Config{MaxResultBytes: 1 << 20})
+	ctx := context.Background()
+	key := agentKey("t1", "ret")
+	if _, err := m.Exec(ctx, key, "CREATE TABLE w (n int, note text)", nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		"INSERT INTO w (n) VALUES (1) RETURNING n",
+		"WITH x AS (SELECT string_agg(md5(g::text), '') s FROM generate_series(1, 100000) g) UPDATE w SET n = 2 FROM x RETURNING x.s",
+		"DELETE FROM w returning *",
+	} {
+		var es *ErrStatement
+		if _, err := m.Exec(ctx, key, stmt, nil, 0); !errors.As(err, &es) {
+			t.Errorf("%q: err = %v, want a statement refusal", stmt, err)
+		}
+	}
+	if _, err := m.BeginTxn(ctx, "txn-r", "root-r", key); err != nil {
+		t.Fatal(err)
+	}
+	var es *ErrStatement
+	if _, err := m.ExecTxn(ctx, "txn-r", "INSERT INTO w (n) VALUES (1) RETURNING n", nil, 0); !errors.As(err, &es) {
+		t.Errorf("in a transaction: err = %v, want a statement refusal", err)
+	}
+	if _, err := m.RollbackTxn("txn-r"); err != nil {
+		t.Fatal(err)
+	}
+	// The word in a string or a name is not the clause.
+	if _, err := m.Exec(ctx, key, "INSERT INTO w (n, note) VALUES (1, 'returning soon')", nil, 0); err != nil {
+		t.Fatalf("a string holding the word: %v", err)
+	}
+}
+
+func TestPgWrappable_NoDollarQuoteRightAfterANumber(t *testing.T) {
+	// Postgres 14 reads 0x1$a$ and 1_0$a$ as a number then a name, 15+ as a
+	// number then a dollar quote: either reading may be the server's.
+	for _, stmt := range []string{
+		"SELECT 0x1$a$) AS z, (SELECT 1 --$a$",
+		"SELECT 1_0$a$) AS z, (SELECT 1 --$a$",
+		"SELECT 1$a$ x $a$",
+	} {
+		if err := pgCheckWrappable(stmt); err == nil {
+			t.Errorf("%q: accepted, want refused", stmt)
+		}
+	}
+}
+
+func TestPostgresExec_RefusesStatementsThatReturnRows(t *testing.T) {
+	// sql_exec on postgres reads every row the server sends whole, so a
+	// statement that can return rows is refused there, read by the same lexer
+	// as the wrapped query path.
+	const limit = 16 << 20
+	refused := []string{
+		// Rows without RETURNING: a WITH list ending in a SELECT, VALUES or TABLE.
+		"WITH x AS (SELECT 1) SELECT repeat('y', 10) FROM x",
+		"WITH x AS (SELECT 1) VALUES (1)",
+		"WITH RECURSIVE x(n) AS (SELECT 1) TABLE x",
+		// A rule whose action is a SELECT returns rows from a later INSERT.
+		"CREATE RULE r AS ON INSERT TO w DO INSTEAD SELECT repeat('y', 10)",
+		"CREATE OR REPLACE RULE r AS ON UPDATE TO w DO ALSO SELECT 1",
+		// RETURNING hidden from a weaker reader by a lexical differential.
+		"INSERT INTO w VALUES (E'\\'') RETURNING n",
+		"INSERT INTO w VALUES ('a\\'') RETURNING n --'",
+		"INSERT INTO w VALUES (1) /* /* */ RETURNING n */ RETURNING n",
+		"INSERT INTO w SELECT 0x1$a$) RETURNING (SELECT 1 --$a$",
+		"INSERT INTO w VALUES (1) RETURNING n",
+		"UPDATE w SET n = 1 RETURNING *",
+		"WITH d AS (DELETE FROM w RETURNING *) INSERT INTO w SELECT * FROM d",
+	}
+	for _, stmt := range refused {
+		if err := validateAgentWrite(stmt, dialectPostgres, limit); err == nil {
+			t.Errorf("%q: accepted, want refused", stmt)
+		}
+	}
+	accepted := []string{
+		"INSERT INTO w (n, note) VALUES (1, 'returning soon')",
+		"WITH x AS (SELECT 1 AS n) INSERT INTO w (n) SELECT n FROM x",
+		"WITH x AS MATERIALIZED (SELECT 1 AS n), y (m) AS (SELECT 2) UPDATE w SET n = y.m FROM y",
+		"CREATE TABLE t2 AS SELECT * FROM w",
+		`CREATE TABLE "returning" (n int)`,
+		"DELETE FROM w WHERE n > 3",
+		"ALTER TABLE w ADD COLUMN extra text",
+	}
+	for _, stmt := range accepted {
+		if err := validateAgentWrite(stmt, dialectPostgres, limit); err != nil {
+			t.Errorf("%q: refused (%v), want accepted", stmt, err)
+		}
+	}
+}
+
+func TestPostgres_ExecOfAQueryRefusedUnread(t *testing.T) {
+	m, _ := pgTestManager(t, Config{MaxResultBytes: 1 << 20})
+	ctx := context.Background()
+	key := agentKey("t1", "execq")
+	stmt := "WITH x AS (SELECT 1) SELECT string_agg(md5(g::text), '') FROM generate_series(1, 200000) g"
+	var err error
+	got := allocatedDuring(func() { _, err = m.Exec(ctx, key, stmt, nil, 0) })
+	var es *ErrStatement
+	if !errors.As(err, &es) {
+		t.Fatalf("err = %v (%T), want a statement refusal", err, err)
+	}
+	if got > 4<<20 {
+		t.Fatalf("refusing it allocated %d MiB", got>>20)
+	}
+}
+
+func TestPostgres_ProtocolCapRefusesAnOversizedRowUnread(t *testing.T) {
+	// The hard bound on postgres: an agent statement's connection refuses any
+	// backend message longer than the value limit (plus headroom) from its
+	// length header, before reading the body. Here a rule already on the table
+	// (created past the statement checks, as one from before them could be)
+	// makes a plain INSERT return a 100 MB row, and the wrapper is bypassed by
+	// calling the backend directly; the runtime's own reads stay unbounded.
+	m, _ := pgTestManager(t, Config{MaxResultBytes: 1 << 20})
+	ctx := context.Background()
+	key := agentKey("t1", "proto")
+	b := m.backend
+	for _, stmt := range []string{
+		"CREATE TABLE w (n int)",
+		"CREATE TABLE big (s text)",
+		"INSERT INTO big SELECT repeat('y', 100000000)",
+		"CREATE RULE r AS ON INSERT TO w DO INSTEAD SELECT s FROM big",
+	} {
+		if _, err := b.exec(ctx, m.onPlane(key), stmt, nil, 0); err != nil {
+			t.Fatalf("stage %q: %v", stmt, err)
+		}
+	}
+	for _, c := range []struct {
+		label string
+		run   func() error
+	}{
+		{"agent write through a rule", func() error {
+			_, err := m.Exec(ctx, key, "INSERT INTO w VALUES (1)", nil, 0)
+			return err
+		}},
+		{"agent read without the wrapper", func() error {
+			_, err := b.query(ctx, m.onPlane(key), "SELECT s FROM big", nil, m.cfg.MaxResultBytes)
+			return err
+		}},
+	} {
+		var err error
+		got := allocatedDuring(func() { err = c.run() })
+		if err == nil {
+			t.Fatalf("%s: no error, want the oversized row refused", c.label)
+		}
+		if c.label == "agent write through a rule" && !strings.Contains(err.Error(), "limit on one SQL Memory value") {
+			t.Fatalf("%s: err = %v, want the value limit refusal", c.label, err)
+		}
+		if got > 32<<20 {
+			t.Fatalf("%s: refusing it allocated %d MiB, want at most 32 MiB (err: %v)", c.label, got>>20, err)
+		}
+		t.Logf("%s: refused after %d MiB: %v", c.label, got>>20, err)
+	}
+	// The scope keeps working (the broken connection was discarded), and the
+	// runtime's own uncapped read of the large value still succeeds.
+	if _, err := m.QueryCapped(ctx, key, "SELECT count(*) FROM big", nil); err != nil {
+		t.Fatalf("the scope after a refused row: %v", err)
+	}
+	res, err := b.query(ctx, m.onPlane(key), "SELECT s FROM big", nil, 0)
+	if err != nil || len(res.Rows) != 1 {
+		t.Fatalf("the runtime's own read of the large value: %v", err)
 	}
 }

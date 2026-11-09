@@ -389,7 +389,8 @@ func TestPostgresPlanes_TheMoveRunsNothingAsTheAdmin(t *testing.T) {
 		   EXECUTE 'GRANT INSERT ON spied TO PUBLIC';
 		   EXECUTE 'GRANT SELECT ON chunks TO "` + admin + `"';
 		 END $$`,
-		`WITH g AS (SELECT grants()) SELECT * FROM g`,
+		// sql_exec takes writes only, so the call rides on one.
+		`WITH g AS (SELECT grants()) INSERT INTO spied SELECT 'staged' FROM g`,
 	} {
 		if _, err := m.Exec(ctx, key, stmt, nil, 0); err != nil {
 			t.Fatalf("stage: %s: %v", stmt, err)

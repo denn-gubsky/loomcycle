@@ -200,6 +200,13 @@ type pathEntry struct {
 	Kind        string          `json:"kind"`
 	FullPath    string          `json:"full_path"`
 	ResourceRef json.RawMessage `json:"resource_ref,omitempty"`
+	// HasChildren marks a non-directory entry (a document, memory entry or
+	// volume mount) that also has names beneath it. One-level ls emits one
+	// entry per name, so the implicit directory of the same name is dropped
+	// and this flag is the only trace of the subtree. Set only when a
+	// descendant survives the caller's read filter, so it never reveals that
+	// hidden names exist.
+	HasChildren bool `json:"has_children,omitempty"`
 }
 
 func (p *Path) resolve(ctx context.Context, tenantID, scope, scopeID string, in pathInput) (tools.Result, error) {
@@ -266,8 +273,8 @@ func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathI
 		return errFrom("ls: "+err.Error(), err), nil
 	}
 	entries := make([]pathEntry, 0, len(rows))
-	seen := make(map[string]bool)     // explicit direct-child names (leaf or dir)
-	implicit := make(map[string]bool) // synthesized child-directory names
+	seen := make(map[string]bool)                  // explicit direct-child names (leaf or dir)
+	implicit := make(map[string][]store.DirentRow) // synthesized child-directory name -> its descendants
 	for _, r := range rows {
 		if r.ParentPath == prefix {
 			// An explicit direct child.
@@ -285,7 +292,7 @@ func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathI
 			rest = rest[:i]
 		}
 		if rest != "" {
-			implicit[rest] = true
+			implicit[rest] = append(implicit[rest], r)
 		}
 	}
 	// Add implicit directories that aren't shadowed by an explicit direct child
@@ -299,7 +306,15 @@ func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathI
 			entries = append(entries, pathEntry{Name: name, Kind: "directory", FullPath: prefix + name})
 		}
 	}
-	entries = newPathACL(ctx, scope, scopeID).filter(ctx, entries)
+	acl := newPathACL(ctx, scope, scopeID)
+	entries = acl.filter(ctx, entries)
+	// A non-directory entry shadowing an implicit directory still has children;
+	// asked after the filter, over the descendants the caller may read.
+	for i := range entries {
+		if entries[i].Kind != "directory" && acl.anyReadable(ctx, implicit[entries[i].Name]) {
+			entries[i].HasChildren = true
+		}
+	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return lsPage(canonical, entries, in, func(e pathEntry) string { return e.Name })
 }
@@ -385,14 +400,26 @@ func (p *Path) stat(ctx context.Context, tenantID, scope, scopeID string, in pat
 		}
 		return errFrom("stat: "+err.Error(), err), nil
 	}
-	if r := newPathACL(ctx, scope, scopeID).allows(ctx, "stat", row.Kind, canonical, row.ResourceRef, "read"); r != nil {
+	acl := newPathACL(ctx, scope, scopeID)
+	if r := acl.allows(ctx, "stat", row.Kind, canonical, row.ResourceRef, "read"); r != nil {
 		return *r, nil
 	}
-	return jsonResult(map[string]any{
+	out := map[string]any{
 		"full_path": canonical, "name": row.Name, "kind": row.Kind,
 		"scope": scope, "resource_ref": row.ResourceRef,
 		"created_at": row.CreatedAt, "updated_at": row.UpdatedAt,
-	})
+	}
+	// Same rule as ls: a non-directory name with readable names beneath it.
+	if row.Kind != "directory" {
+		under, err := p.Store.DirentListUnder(ctx, tenantID, scope, scopeID, dirPrefix(canonical))
+		if err != nil {
+			return errFrom("stat: "+err.Error(), err), nil
+		}
+		if acl.anyReadable(ctx, under) {
+			out["has_children"] = true
+		}
+	}
+	return jsonResult(out)
 }
 
 // mkdir materializes an explicit `directory` dirent so an empty branch

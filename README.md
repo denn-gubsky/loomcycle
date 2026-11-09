@@ -201,15 +201,16 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.145.0) confines a tenant member to its own
-conversations: a member reads and acts on only its own runs and sessions, while
-tenant operators still see the whole tenant. It adds the `skybits-sync` bundle,
-which keeps a tenant's Documents in step with a Skybits account, and a Web UI
-"Connect account" for OAuth credentials. Read its upgrade notes in
-[`REVISIONS.md`](REVISIONS.md): members lose access to colleagues' runs.
+The most recent line (v1.146.0) is a hardening release. Changing a password now
+ends every other sign-in, and people and operators can list and end app
+sign-ins. Access-control rules that decided nothing are refused, and each MCP
+operation asks the same question as its HTTP route. File extraction and agent
+SQL get hard memory bounds. Read its upgrade notes in
+[`REVISIONS.md`](REVISIONS.md): some configs and rules that loaded before are
+now refused.
 
-Before it, v1.144.0 made OAuth-connected MCP servers run unattended and let
-documents follow a source that keeps changing. See [`REVISIONS.md`](REVISIONS.md).
+Before it, v1.145.0 confined a tenant member to its own runs and sessions and
+added the `skybits-sync` bundle. See [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
 recordings into timed transcripts through a whisper server, and Teams captions
