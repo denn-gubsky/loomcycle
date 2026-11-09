@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"github.com/denn-gubsky/loomcycle/internal/directory"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -143,6 +144,21 @@ type Connector interface {
 	// principal by the transport; the shared service never guesses it, because a
 	// subject id is only unique within one tenant.
 	ErasureReport(ctx context.Context, tenant, subject string) (erasure.Report, error)
+
+	// AppSignIns lists the live app sign-ins (OAuth refresh-token families)
+	// of (tenant, subject): which apps the person is signed in to, never any
+	// token material. EndAppSignIn ends one of them — the family and the
+	// access tokens issued through it — and answers a *store.ErrNotFound for
+	// a family that is not a live sign-in of that subject, whoever's it is.
+	//
+	// tenant and subject are AUTHORITATIVE, resolved by the transport: the
+	// caller's own pair on the self-service surface, the named user in the
+	// caller's tenant on the operator one. Each method asks the caller's
+	// access control about that user itself (read or manage
+	// principal:user:<subject>, unasked when the caller is the subject), so
+	// every transport is held to the same question.
+	AppSignIns(ctx context.Context, tenant, subject string) ([]AppSignIn, error)
+	EndAppSignIn(ctx context.Context, tenant, subject, familyID string) error
 
 	// ErasureExecute removes tiers 1 and 2 and reports what it could not reach.
 	// The confirm guard and the residue-is-one-shot semantics live in the shared
@@ -888,6 +904,23 @@ type RunStateVisitor func(evt RunStateEvent) error
 type RunEventVisitor func(ev providers.Event) error
 
 // InterruptionResolveRequest is the input to Connector.InterruptionResolve.
+// AppSignIn is one live app sign-in: a person signed in to an app through
+// loomcycle's OAuth authorization server. It carries no token material.
+type AppSignIn struct {
+	FamilyID string `json:"family_id"`
+	ClientID string `json:"client_id"`
+	// ClientName is the app's label, or its id when the app is gone from
+	// the config and the store.
+	ClientName string `json:"client_name"`
+	// Gate is the sign-in gate the person signed in through.
+	Gate       string    `json:"gate"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastUsedAt time.Time `json:"last_used_at"`
+	// ExpiresAt is when the sign-in ends unless the app refreshes it: the
+	// earlier of its idle and absolute expiry.
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 type InterruptionResolveRequest struct {
 	RunID       string `json:"run_id"`
 	InterruptID string `json:"interrupt_id"`

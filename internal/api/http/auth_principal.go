@@ -1267,6 +1267,11 @@ func requiredScopeFor(method, path string) string {
 	// identity (the Web UI's role source); a tenant token needs it too.
 	case path == "/v1/_me":
 		return ""
+	// The caller's own app sign-ins: any signed-in principal lists and ends
+	// its own (the handler answers for (tenant, subject) of the principal and
+	// nothing else), as it signs its own browser out.
+	case isMyAppSignInsPath(path):
+		return ""
 	// The /v1/_users collection, method-aware (RFC BX P2a):
 	//   - GET (list) — any authenticated principal; the handler tenant-scopes
 	//     the result (a tenant sees only its tenant's users; admin sees all /
@@ -1761,6 +1766,11 @@ func userSelfServiceRoute(method, path string) bool {
 		return method == http.MethodPost || method == http.MethodDelete
 	}
 	return false
+}
+
+// isMyAppSignInsPath reports the /v1/_me/app-sign-ins routes.
+func isMyAppSignInsPath(path string) bool {
+	return path == "/v1/_me/app-sign-ins" || strings.HasPrefix(path, "/v1/_me/app-sign-ins/")
 }
 
 // authManageRoute is the whole reach of an auth:manage credential (RFC FA

@@ -1696,6 +1696,47 @@ class LoomcycleClient:
             "notes": list(resp.notes),
         }
 
+    async def list_user_app_sign_ins(self, subject: str) -> Mapping[str, Any]:
+        """The apps *subject* is signed in to through loomcycle's OAuth
+        authorization server: ``{subject, app_sign_ins: [{family_id,
+        client_id, client_name, gate, created_at, last_used_at,
+        expires_at}]}``, never a token. For a tenant operator, about a user
+        of its own tenant; an unknown subject raises the not-found error."""
+        req = pb.ListUserAppSignInsRequest(subject=subject)
+        try:
+            resp = await self._stub.ListUserAppSignIns(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return _app_sign_ins(resp)
+
+    async def end_user_app_sign_in(self, subject: str, family_id: str) -> None:
+        """End one of *subject*'s app sign-ins: the app's refresh token and
+        every access token issued through it stop working. A family that is
+        not a live sign-in of that user raises the not-found error."""
+        req = pb.EndUserAppSignInRequest(subject=subject, family_id=family_id)
+        try:
+            await self._stub.EndUserAppSignIn(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+
+    async def list_my_app_sign_ins(self) -> Mapping[str, Any]:
+        """The apps the caller itself is signed in to, in the shape
+        :meth:`list_user_app_sign_ins` returns. Any signed-in principal."""
+        try:
+            resp = await self._stub.ListMyAppSignIns(pb.ListMyAppSignInsRequest(), metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return _app_sign_ins(resp)
+
+    async def end_my_app_sign_in(self, family_id: str) -> None:
+        """Sign the caller out of one app. A family that is not the caller's
+        own live sign-in raises the not-found error."""
+        req = pb.EndMyAppSignInRequest(family_id=family_id)
+        try:
+            await self._stub.EndMyAppSignIn(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+
     async def erasure_report(self, subject: str) -> Mapping[str, Any]:
         """Report what this deployment holds about one *subject*, in three
         tiers separated by what they guarantee (RFC BL P5). Read-only.
@@ -4219,6 +4260,24 @@ def _erasure_bound_subjects(subjects: Any) -> List[Mapping[str, Any]]:
         {"document_id": b.document_id, "natural_key": b.natural_key, "path": b.path}
         for b in subjects
     ]
+
+
+def _app_sign_ins(resp: Any) -> Mapping[str, Any]:
+    return {
+        "subject": resp.subject,
+        "app_sign_ins": [
+            {
+                "family_id": a.family_id,
+                "client_id": a.client_id,
+                "client_name": a.client_name,
+                "gate": a.gate,
+                "created_at": a.created_at,
+                "last_used_at": a.last_used_at,
+                "expires_at": a.expires_at,
+            }
+            for a in resp.app_sign_ins
+        ],
+    }
 
 
 def _directory_user(u: Any) -> Mapping[str, Any]:

@@ -26,6 +26,10 @@ var aclUngovernedRoutes = map[string]bool{
 	// Signing out ends the caller's own session and runs before any
 	// principal exists (an expired session may still log out).
 	"POST /v1/_auth/logout": true,
+	// The caller's own app sign-ins: listing them is whoami's kind of
+	// question and ending one is signing out of an app, both about the
+	// caller only (the operator twins under /v1/_users ask principal:user).
+	"GET /v1/_me/app-sign-ins": true, "DELETE /v1/_me/app-sign-ins/{family_id}": true,
 	// The password gate's login, invite and reset posts establish a session
 	// (no principal yet); the account routes act on the caller's own
 	// credentials only.

@@ -163,6 +163,22 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 			s.recordFailed(r.Context(), ev)
 		}
 	}()
+	// The deployment floor's new_user budget goes in before the user, as a
+	// gate's does, so a user made here never runs uncapped. Only for a
+	// subject not yet taken: a create that conflicts must not cap a user the
+	// operator already runs (the insert-if-absent keeps an existing limit,
+	// not an existing user's lack of one).
+	// A lookup fault refuses: going on would make the user uncapped.
+	switch _, gerr := s.store.UserGet(r.Context(), tenant, subject); {
+	case isNotFound(gerr):
+		if err := s.writeNewUserBudget(r.Context(), principalSubject(r.Context()), tenant, subject, s.floorNewUserBudget(), row.CreatedAt); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "user_create_failed", err.Error())
+			return
+		}
+	case gerr != nil:
+		writeJSONError(w, http.StatusInternalServerError, "user_create_failed", gerr.Error())
+		return
+	}
 	if owner {
 		err = s.store.UserCreateOwner(r.Context(), row, ownerBinding(row.TenantID, row.Subject, "bootstrap:"+principalSubject(r.Context())))
 	} else {
@@ -412,23 +428,20 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		// Revocation always runs, the disable's failure included: the
 		// operator asked for the user's access to end, and an error is
-		// reported only once it has. App sign-ins first (see
-		// endSubjectAppSignIns for the race this order closes).
-		appErr := s.endSubjectAppSignIns(ctx, tenant, subject)
-		_, retireErr := s.retireDelegatedUserTokens(ctx, tenant, subject)
-		_, sessionErr := s.store.UISessionRevokeSubject(ctx, tenant, subject, time.Now().UTC())
+		// reported only once it has.
+		_, endErr := s.endSubjectCredentials(ctx, tenant, subject, credAll)
 		switch {
 		case disableErr != nil:
 			writeJSONError(w, http.StatusInternalServerError, "user_update_failed", disableErr.Error())
 			return
-		case retireErr != nil:
-			writeJSONError(w, http.StatusInternalServerError, "token_retire_failed", retireErr.Error())
+		case errors.Is(endErr, errRetireTokens):
+			writeJSONError(w, http.StatusInternalServerError, "token_retire_failed", endErr.Error())
 			return
-		case sessionErr != nil:
-			writeJSONError(w, http.StatusInternalServerError, "session_revoke_failed", sessionErr.Error())
+		case errors.Is(endErr, errEndSessions):
+			writeJSONError(w, http.StatusInternalServerError, "session_revoke_failed", endErr.Error())
 			return
-		case appErr != nil:
-			writeJSONError(w, http.StatusInternalServerError, "app_sign_in_revoke_failed", appErr.Error())
+		case endErr != nil:
+			writeJSONError(w, http.StatusInternalServerError, "app_sign_in_revoke_failed", endErr.Error())
 			return
 		}
 		req.Status = nil
@@ -521,12 +534,13 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			s.recordFailed(r.Context(), ev)
 		}
 	}()
-	// Fail-safe ordering: retire the user's delegated tokens BEFORE removing the
-	// identity row, so a deleted user's bearer can never outlive the record (the
-	// auth path is token-only). A no-op when the user has no tokens / doesn't
-	// exist; a retire error aborts the delete so the operator retries rather than
-	// stranding live tokens under a gone identity.
-	if _, err := s.retireDelegatedUserTokens(r.Context(), tenant, subject); err != nil {
+	// Fail-safe ordering: end the user's app sign-ins, delegated tokens and
+	// sessions BEFORE removing the identity row, so a deleted user's bearer
+	// can never outlive the record (the auth path is token-only). A no-op
+	// when the user has none / doesn't exist; an error aborts the delete so
+	// the operator retries rather than stranding live credentials under a
+	// gone identity.
+	if _, err := s.endSubjectCredentials(r.Context(), tenant, subject, credAll); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "token_retire_failed", err.Error())
 		return
 	}

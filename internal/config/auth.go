@@ -445,10 +445,10 @@ func resolveAuth(c *Config) error {
 	if p.Idle > p.Absolute {
 		return fmt.Errorf("auth.session: idle (%s) is longer than absolute (%s)", p.Idle, p.Absolute)
 	}
-	if p.TrustedProxies, err = proxyPrefixes("auth.trusted_proxies", c.Auth.TrustedProxies); err != nil {
+	if p.TrustedProxies, err = proxyPrefixes(c, "auth.trusted_proxies", c.Auth.TrustedProxies); err != nil {
 		return err
 	}
-	if p.GRPCTrustedProxies, err = proxyPrefixes("auth.grpc_trusted_proxies", c.Auth.GRPCTrustedProxies); err != nil {
+	if p.GRPCTrustedProxies, err = proxyPrefixes(c, "auth.grpc_trusted_proxies", c.Auth.GRPCTrustedProxies); err != nil {
 		return err
 	}
 	if h := strings.TrimSpace(c.Auth.ClientIPHeader); h != "" {
@@ -793,19 +793,21 @@ func resolvePasswordGate(c *Config, name string, g AuthGateConfig, strict bool) 
 	return pw, nil
 }
 
-// proxyPrefixes validates a list of proxy CIDRs or bare addresses.
-func proxyPrefixes(key string, list []string) ([]netip.Prefix, error) {
+// proxyPrefixes validates a list of proxy CIDRs or bare addresses
+// (trustedProxyPrefix) and warns, on c, about a range broader than
+// broadProxyPrefix allows.
+func proxyPrefixes(c *Config, key string, list []string) ([]netip.Prefix, error) {
 	var out []netip.Prefix
 	for _, cidr := range list {
-		pfx, err := netip.ParsePrefix(strings.TrimSpace(cidr))
+		pfx, err := trustedProxyPrefix(key, cidr)
 		if err != nil {
-			addr, aerr := netip.ParseAddr(strings.TrimSpace(cidr))
-			if aerr != nil {
-				return nil, fmt.Errorf("%s: %q is not a CIDR or an address", key, cidr)
-			}
-			pfx = netip.PrefixFrom(addr, addr.BitLen())
+			return nil, err
 		}
-		out = append(out, pfx.Masked())
+		if broadProxyPrefix(pfx) {
+			c.Warnings = append(c.Warnings, fmt.Sprintf("%s: %s is a broad range — every address in it may name its own "+
+				"client address (throttling, audit, ACL source_cidr); list the proxy's own addresses", key, pfx))
+		}
+		out = append(out, pfx)
 	}
 	return out, nil
 }

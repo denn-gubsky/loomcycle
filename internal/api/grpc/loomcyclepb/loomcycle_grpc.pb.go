@@ -51,6 +51,10 @@ const (
 	Loomcycle_DirectoryInspect_FullMethodName     = "/loomcycle.v1.Loomcycle/DirectoryInspect"
 	Loomcycle_DirectoryTenants_FullMethodName     = "/loomcycle.v1.Loomcycle/DirectoryTenants"
 	Loomcycle_ErasureReport_FullMethodName        = "/loomcycle.v1.Loomcycle/ErasureReport"
+	Loomcycle_ListUserAppSignIns_FullMethodName   = "/loomcycle.v1.Loomcycle/ListUserAppSignIns"
+	Loomcycle_EndUserAppSignIn_FullMethodName     = "/loomcycle.v1.Loomcycle/EndUserAppSignIn"
+	Loomcycle_ListMyAppSignIns_FullMethodName     = "/loomcycle.v1.Loomcycle/ListMyAppSignIns"
+	Loomcycle_EndMyAppSignIn_FullMethodName       = "/loomcycle.v1.Loomcycle/EndMyAppSignIn"
 	Loomcycle_ErasureExecute_FullMethodName       = "/loomcycle.v1.Loomcycle/ErasureExecute"
 	Loomcycle_ReplaySession_FullMethodName        = "/loomcycle.v1.Loomcycle/ReplaySession"
 	Loomcycle_RunInput_FullMethodName             = "/loomcycle.v1.Loomcycle/RunInput"
@@ -214,6 +218,18 @@ type LoomcycleClient interface {
 	// filtered list, which would still confirm its own tenant's existence.
 	DirectoryTenants(ctx context.Context, in *DirectoryTenantsRequest, opts ...grpc.CallOption) (*DirectoryTenantsResponse, error)
 	ErasureReport(ctx context.Context, in *ErasureReportRequest, opts ...grpc.CallOption) (*ErasureReportResponse, error)
+	// A user's app sign-ins (OAuth refresh-token families): which apps the
+	// person is signed in to, and ending one. ListUserAppSignIns and
+	// EndUserAppSignIn are the twins of GET and DELETE
+	// /v1/_users/{subject}/app-sign-ins — the tenant operator's, for a user of
+	// the caller's own tenant (no tenant field, as DirectoryInspect).
+	// ListMyAppSignIns and EndMyAppSignIn are the twins of GET and DELETE
+	// /v1/_me/app-sign-ins: any signed-in principal, for its own sign-ins only.
+	// No response carries token material.
+	ListUserAppSignIns(ctx context.Context, in *ListUserAppSignInsRequest, opts ...grpc.CallOption) (*AppSignInsResponse, error)
+	EndUserAppSignIn(ctx context.Context, in *EndUserAppSignInRequest, opts ...grpc.CallOption) (*EndAppSignInResponse, error)
+	ListMyAppSignIns(ctx context.Context, in *ListMyAppSignInsRequest, opts ...grpc.CallOption) (*AppSignInsResponse, error)
+	EndMyAppSignIn(ctx context.Context, in *EndMyAppSignInRequest, opts ...grpc.CallOption) (*EndAppSignInResponse, error)
 	// ErasureExecute removes tiers 1 and 2 and reports what it could not reach.
 	// DEFAULTS TO A DRY RUN: dry_run is `optional` so an unset field means true,
 	// matching HTTP — a client that forgets it deletes nothing.
@@ -930,6 +946,46 @@ func (c *loomcycleClient) ErasureReport(ctx context.Context, in *ErasureReportRe
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ErasureReportResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_ErasureReport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ListUserAppSignIns(ctx context.Context, in *ListUserAppSignInsRequest, opts ...grpc.CallOption) (*AppSignInsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AppSignInsResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ListUserAppSignIns_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) EndUserAppSignIn(ctx context.Context, in *EndUserAppSignInRequest, opts ...grpc.CallOption) (*EndAppSignInResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EndAppSignInResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_EndUserAppSignIn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) ListMyAppSignIns(ctx context.Context, in *ListMyAppSignInsRequest, opts ...grpc.CallOption) (*AppSignInsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AppSignInsResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_ListMyAppSignIns_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) EndMyAppSignIn(ctx context.Context, in *EndMyAppSignInRequest, opts ...grpc.CallOption) (*EndAppSignInResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EndAppSignInResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_EndMyAppSignIn_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1790,6 +1846,18 @@ type LoomcycleServer interface {
 	// filtered list, which would still confirm its own tenant's existence.
 	DirectoryTenants(context.Context, *DirectoryTenantsRequest) (*DirectoryTenantsResponse, error)
 	ErasureReport(context.Context, *ErasureReportRequest) (*ErasureReportResponse, error)
+	// A user's app sign-ins (OAuth refresh-token families): which apps the
+	// person is signed in to, and ending one. ListUserAppSignIns and
+	// EndUserAppSignIn are the twins of GET and DELETE
+	// /v1/_users/{subject}/app-sign-ins — the tenant operator's, for a user of
+	// the caller's own tenant (no tenant field, as DirectoryInspect).
+	// ListMyAppSignIns and EndMyAppSignIn are the twins of GET and DELETE
+	// /v1/_me/app-sign-ins: any signed-in principal, for its own sign-ins only.
+	// No response carries token material.
+	ListUserAppSignIns(context.Context, *ListUserAppSignInsRequest) (*AppSignInsResponse, error)
+	EndUserAppSignIn(context.Context, *EndUserAppSignInRequest) (*EndAppSignInResponse, error)
+	ListMyAppSignIns(context.Context, *ListMyAppSignInsRequest) (*AppSignInsResponse, error)
+	EndMyAppSignIn(context.Context, *EndMyAppSignInRequest) (*EndAppSignInResponse, error)
 	// ErasureExecute removes tiers 1 and 2 and reports what it could not reach.
 	// DEFAULTS TO A DRY RUN: dry_run is `optional` so an unset field means true,
 	// matching HTTP — a client that forgets it deletes nothing.
@@ -2394,6 +2462,18 @@ func (UnimplementedLoomcycleServer) DirectoryTenants(context.Context, *Directory
 func (UnimplementedLoomcycleServer) ErasureReport(context.Context, *ErasureReportRequest) (*ErasureReportResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ErasureReport not implemented")
 }
+func (UnimplementedLoomcycleServer) ListUserAppSignIns(context.Context, *ListUserAppSignInsRequest) (*AppSignInsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListUserAppSignIns not implemented")
+}
+func (UnimplementedLoomcycleServer) EndUserAppSignIn(context.Context, *EndUserAppSignInRequest) (*EndAppSignInResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EndUserAppSignIn not implemented")
+}
+func (UnimplementedLoomcycleServer) ListMyAppSignIns(context.Context, *ListMyAppSignInsRequest) (*AppSignInsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListMyAppSignIns not implemented")
+}
+func (UnimplementedLoomcycleServer) EndMyAppSignIn(context.Context, *EndMyAppSignInRequest) (*EndAppSignInResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EndMyAppSignIn not implemented")
+}
 func (UnimplementedLoomcycleServer) ErasureExecute(context.Context, *ErasureExecuteRequest) (*ErasureExecuteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ErasureExecute not implemented")
 }
@@ -2849,6 +2929,78 @@ func _Loomcycle_ErasureReport_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).ErasureReport(ctx, req.(*ErasureReportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ListUserAppSignIns_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListUserAppSignInsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ListUserAppSignIns(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ListUserAppSignIns_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ListUserAppSignIns(ctx, req.(*ListUserAppSignInsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_EndUserAppSignIn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EndUserAppSignInRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).EndUserAppSignIn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_EndUserAppSignIn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).EndUserAppSignIn(ctx, req.(*EndUserAppSignInRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_ListMyAppSignIns_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListMyAppSignInsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).ListMyAppSignIns(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_ListMyAppSignIns_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).ListMyAppSignIns(ctx, req.(*ListMyAppSignInsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_EndMyAppSignIn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EndMyAppSignInRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).EndMyAppSignIn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_EndMyAppSignIn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).EndMyAppSignIn(ctx, req.(*EndMyAppSignInRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -4235,6 +4387,22 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ErasureReport",
 			Handler:    _Loomcycle_ErasureReport_Handler,
+		},
+		{
+			MethodName: "ListUserAppSignIns",
+			Handler:    _Loomcycle_ListUserAppSignIns_Handler,
+		},
+		{
+			MethodName: "EndUserAppSignIn",
+			Handler:    _Loomcycle_EndUserAppSignIn_Handler,
+		},
+		{
+			MethodName: "ListMyAppSignIns",
+			Handler:    _Loomcycle_ListMyAppSignIns_Handler,
+		},
+		{
+			MethodName: "EndMyAppSignIn",
+			Handler:    _Loomcycle_EndMyAppSignIn_Handler,
 		},
 		{
 			MethodName: "ErasureExecute",

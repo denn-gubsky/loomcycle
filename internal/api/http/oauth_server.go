@@ -833,7 +833,8 @@ func (s *Server) endAppSignInsBeforeReEnable(ctx context.Context, tenant, subjec
 	if err != nil || u.Status != "disabled" {
 		return nil // a missing user is the handler's to report
 	}
-	return s.endSubjectAppSignIns(ctx, tenant, subject)
+	_, err = s.endSubjectCredentials(ctx, tenant, subject, credAppSignIns)
+	return err
 }
 
 // retireAppToken retires one access token at once.

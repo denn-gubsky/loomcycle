@@ -584,6 +584,7 @@ func Run(t *testing.T, factory Factory) {
 		{"UserErasedTombstoneRefusesEveryWayBack", testUserErasedTombstoneRefusesEveryWayBack},
 		{"UserCreateWithErasedAtIsATombstone", testUserCreateWithErasedAtIsATombstone},
 		{"OAuthFamilyRevokeSubjectRevokesOnlyItsLiveFamilies", testOAuthFamilyRevokeSubjectRevokesOnlyItsLiveFamilies},
+		{"OAuthFamilyListReturnsOnlyTheSubjectsLiveSignIns", testOAuthFamilyListReturnsOnlyTheSubjectsLiveSignIns},
 		{"OAuthTokenRetireEndedSignInsFinishesAPartialDisable", testOAuthTokenRetireEndedSignInsFinishesAPartialDisable},
 		// RFC FA P5 device login + per-tenant gate policy.
 		{"DeviceAuthCreateGetRoundTripAndConflict", testDeviceAuthCreateGetRoundTripAndConflict},

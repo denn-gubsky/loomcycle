@@ -50,6 +50,10 @@ func (s *Store) OAuthFamilyRevokeSubject(ctx context.Context, tenantID, subject,
 	return sqlshared.OAuthFamilyRevokeSubject(ctx, s.shared(), tenantID, subject, reason, at)
 }
 
+func (s *Store) OAuthFamilyList(ctx context.Context, tenantID, subject string, now time.Time) ([]store.OAuthFamilyRow, error) {
+	return sqlshared.OAuthFamilyList(ctx, s.shared(), tenantID, subject, now)
+}
+
 func (s *Store) OAuthTokenRetireEndedSignIns(ctx context.Context, tenantID, subject string, at time.Time) (int, error) {
 	return sqlshared.OAuthTokenRetireEndedSignIns(ctx, s.shared(), tenantID, subject, at)
 }

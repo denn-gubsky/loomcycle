@@ -169,6 +169,7 @@ import type {
   UserTokenMeta,
   ListUserTokensResponse,
   UserIdentitiesResponse,
+  AppSignInsResponse,
   AuthGateListResponse,
   CreateInviteBody,
   CreatedInvite,
@@ -1915,6 +1916,58 @@ export class LoomcycleClient {
       ),
       { signal: opts?.signal },
     );
+  }
+
+  /** The apps a user is signed in to through loomcycle's OAuth authorization
+   *  server (`GET /v1/_users/{subject}/app-sign-ins`): client, gate, created,
+   *  last used and expiry — never a token. For a tenant operator (an admin
+   *  names the tenant with `opts.tenant`); 404 `user_not_found` for an
+   *  unknown or cross-tenant subject. */
+  async listUserAppSignIns(
+    subject: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<AppSignInsResponse> {
+    return jsonFetch<AppSignInsResponse>(
+      this.ctx,
+      this.aclPath(`/v1/_users/${encodeURIComponent(subject)}/app-sign-ins`, opts?.tenant),
+      opts,
+    );
+  }
+
+  /** End one of a user's app sign-ins
+   *  (`DELETE /v1/_users/{subject}/app-sign-ins/{family_id}`, 204): the app's
+   *  refresh token and every access token issued through it stop working, on
+   *  every replica. 404 `app_sign_in_not_found` for a family that is not a
+   *  live sign-in of that user. */
+  async endUserAppSignIn(
+    subject: string,
+    familyId: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<void> {
+    return deleteRequest(
+      this.ctx,
+      this.aclPath(
+        `/v1/_users/${encodeURIComponent(subject)}/app-sign-ins/${encodeURIComponent(familyId)}`,
+        opts?.tenant,
+      ),
+      { signal: opts?.signal },
+    );
+  }
+
+  /** The apps the caller itself is signed in to (`GET /v1/_me/app-sign-ins`).
+   *  Any signed-in principal; 403 `subject_required` for a credential that
+   *  names no person. */
+  async listMyAppSignIns(opts?: { signal?: AbortSignal }): Promise<AppSignInsResponse> {
+    return jsonFetch<AppSignInsResponse>(this.ctx, "/v1/_me/app-sign-ins", opts);
+  }
+
+  /** Sign the caller out of one app (`DELETE /v1/_me/app-sign-ins/{family_id}`,
+   *  204). 404 `app_sign_in_not_found` for a family that is not the caller's
+   *  own live sign-in. */
+  async endMyAppSignIn(familyId: string, opts?: { signal?: AbortSignal }): Promise<void> {
+    return deleteRequest(this.ctx, `/v1/_me/app-sign-ins/${encodeURIComponent(familyId)}`, {
+      signal: opts?.signal,
+    });
   }
 
   /** Sign in through the server's device gate (RFC 8628): shows the person a

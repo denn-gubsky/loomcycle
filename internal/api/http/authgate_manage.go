@@ -985,7 +985,12 @@ func (s *Server) handleAuthgateDeleteCredentials(w http.ResponseWriter, r *http.
 		keys, err = s.store.UserPasskeyDeleteSubject(ctx, tenant, subject)
 	}
 	removed = removed || keys > 0
-	if err != nil {
+	// The credentials are removed because they may be lost or known to
+	// someone else: what was signed in with them ends too — whatever the
+	// removal answered, since a fault part-way may already have removed the
+	// password.
+	_, endErr := s.endSubjectCredentials(ctx, tenant, subject, credAll)
+	if err = errors.Join(err, endErr); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}

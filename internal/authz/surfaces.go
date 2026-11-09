@@ -491,6 +491,13 @@ func GRPCSurface(rpc string) (Surface, bool) {
 		return instance("read", "principal", "user:*"), true
 	case "DirectoryTenants":
 		return instance("read", "runtime", "tenants"), true
+	// A user's app sign-ins ask the user plane's weakest verb, as
+	// DirectoryInspect does; the shared operation then asks the named
+	// user's own instance with the route's verb (read to list, manage to
+	// end), as GET/DELETE /v1/_users/{subject}/app-sign-ins do. The caller's
+	// own (ListMyAppSignIns, EndMyAppSignIn) are ungoverned, as /v1/_me is.
+	case "ListUserAppSignIns", "EndUserAppSignIn":
+		return instance("read", "principal", "user:*"), true
 	case "ErasureReport":
 		return instance("read", "runtime", "erasure"), true
 	case "ErasureExecute":

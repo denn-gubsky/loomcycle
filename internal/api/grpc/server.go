@@ -1131,6 +1131,13 @@ var grpcConsumerScopes = map[string]string{
 
 	"ErasureReport":  auth.ScopeTenant,
 	"ErasureExecute": auth.ScopeTenant,
+	// A user's app sign-ins, as GET/DELETE /v1/_users/{subject}/app-sign-ins
+	// gate them (ScopeTenant, carved out of the member path), and the
+	// caller's own, open to any signed-in principal as /v1/_me/app-sign-ins.
+	"ListUserAppSignIns": auth.ScopeTenant,
+	"EndUserAppSignIn":   auth.ScopeTenant,
+	"ListMyAppSignIns":   "",
+	"EndMyAppSignIn":     "",
 	// RFC AF: the tenant-confined substrate plane — the 8 def families + hook
 	// management. ScopeTenant (substrate:admin still satisfies). substrateGRPCCtx
 	// stamps the principal's authoritative tenant on the def-tools, and the hook

@@ -103,6 +103,26 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.ErasureReportRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.ErasureReportResponse.FromString,
                 _registered_method=True)
+        self.ListUserAppSignIns = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ListUserAppSignIns',
+                request_serializer=loomcycle__pb2.ListUserAppSignInsRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.AppSignInsResponse.FromString,
+                _registered_method=True)
+        self.EndUserAppSignIn = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/EndUserAppSignIn',
+                request_serializer=loomcycle__pb2.EndUserAppSignInRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.EndAppSignInResponse.FromString,
+                _registered_method=True)
+        self.ListMyAppSignIns = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/ListMyAppSignIns',
+                request_serializer=loomcycle__pb2.ListMyAppSignInsRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.AppSignInsResponse.FromString,
+                _registered_method=True)
+        self.EndMyAppSignIn = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/EndMyAppSignIn',
+                request_serializer=loomcycle__pb2.EndMyAppSignInRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.EndAppSignInResponse.FromString,
+                _registered_method=True)
         self.ErasureExecute = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/ErasureExecute',
                 request_serializer=loomcycle__pb2.ErasureExecuteRequest.SerializeToString,
@@ -629,6 +649,38 @@ class LoomcycleServicer:
         raise NotImplementedError('Method not implemented!')
 
     def ErasureReport(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListUserAppSignIns(self, request, context):
+        """A user's app sign-ins (OAuth refresh-token families): which apps the
+        person is signed in to, and ending one. ListUserAppSignIns and
+        EndUserAppSignIn are the twins of GET and DELETE
+        /v1/_users/{subject}/app-sign-ins — the tenant operator's, for a user of
+        the caller's own tenant (no tenant field, as DirectoryInspect).
+        ListMyAppSignIns and EndMyAppSignIn are the twins of GET and DELETE
+        /v1/_me/app-sign-ins: any signed-in principal, for its own sign-ins only.
+        No response carries token material.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def EndUserAppSignIn(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListMyAppSignIns(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def EndMyAppSignIn(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1658,6 +1710,26 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     request_deserializer=loomcycle__pb2.ErasureReportRequest.FromString,
                     response_serializer=loomcycle__pb2.ErasureReportResponse.SerializeToString,
             ),
+            'ListUserAppSignIns': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListUserAppSignIns,
+                    request_deserializer=loomcycle__pb2.ListUserAppSignInsRequest.FromString,
+                    response_serializer=loomcycle__pb2.AppSignInsResponse.SerializeToString,
+            ),
+            'EndUserAppSignIn': grpc.unary_unary_rpc_method_handler(
+                    servicer.EndUserAppSignIn,
+                    request_deserializer=loomcycle__pb2.EndUserAppSignInRequest.FromString,
+                    response_serializer=loomcycle__pb2.EndAppSignInResponse.SerializeToString,
+            ),
+            'ListMyAppSignIns': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListMyAppSignIns,
+                    request_deserializer=loomcycle__pb2.ListMyAppSignInsRequest.FromString,
+                    response_serializer=loomcycle__pb2.AppSignInsResponse.SerializeToString,
+            ),
+            'EndMyAppSignIn': grpc.unary_unary_rpc_method_handler(
+                    servicer.EndMyAppSignIn,
+                    request_deserializer=loomcycle__pb2.EndMyAppSignInRequest.FromString,
+                    response_serializer=loomcycle__pb2.EndAppSignInResponse.SerializeToString,
+            ),
             'ErasureExecute': grpc.unary_unary_rpc_method_handler(
                     servicer.ErasureExecute,
                     request_deserializer=loomcycle__pb2.ErasureExecuteRequest.FromString,
@@ -2389,6 +2461,114 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/ErasureReport',
             loomcycle__pb2.ErasureReportRequest.SerializeToString,
             loomcycle__pb2.ErasureReportResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListUserAppSignIns(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ListUserAppSignIns',
+            loomcycle__pb2.ListUserAppSignInsRequest.SerializeToString,
+            loomcycle__pb2.AppSignInsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EndUserAppSignIn(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/EndUserAppSignIn',
+            loomcycle__pb2.EndUserAppSignInRequest.SerializeToString,
+            loomcycle__pb2.EndAppSignInResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListMyAppSignIns(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/ListMyAppSignIns',
+            loomcycle__pb2.ListMyAppSignInsRequest.SerializeToString,
+            loomcycle__pb2.AppSignInsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EndMyAppSignIn(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/EndMyAppSignIn',
+            loomcycle__pb2.EndMyAppSignInRequest.SerializeToString,
+            loomcycle__pb2.EndAppSignInResponse.FromString,
             options,
             channel_credentials,
             insecure,
