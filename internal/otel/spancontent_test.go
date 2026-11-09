@@ -3,12 +3,15 @@ package otel_test
 import (
 	"context"
 	"encoding/hex"
+	"errors"
+	"net/http"
 	"sync"
 	"testing"
 
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -233,5 +236,55 @@ func TestGenAIProviderName_MapsToTheWellKnownValues(t *testing.T) {
 		if got := lcotel.GenAIProviderName(in); got != want {
 			t.Errorf("GenAIProviderName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
+
+func TestSetProviderResponse_ClassifiesTheFailure(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		err    error
+		want   string // error.type; "" = none
+	}{
+		{"ok", 200, nil, ""},
+		{"rate limited", 429, nil, lcotel.ErrorTypeRateLimited},
+		{"anthropic overloaded", 529, nil, lcotel.ErrorTypeOverloaded},
+		{"unavailable", 503, nil, lcotel.ErrorTypeOverloaded},
+		{"gateway timeout", 504, nil, lcotel.ErrorTypeTimeout},
+		{"not found", 404, nil, lcotel.ErrorTypeClientError},
+		{"internal", 500, nil, lcotel.ErrorTypeServerError},
+		{"cancelled", 0, context.Canceled, lcotel.ErrorTypeCancelled},
+		{"deadline", 0, context.DeadlineExceeded, lcotel.ErrorTypeTimeout},
+		{"net timeout", 0, timeoutErr{}, lcotel.ErrorTypeTimeout},
+		{"refused", 0, errors.New("dial tcp: connection refused"), lcotel.ErrorTypeNetwork},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exp := withInMemoryExporter(t)
+			_, span := lcotel.RecordProviderCall(context.Background(), lcotel.ProviderCallAttrs{Provider: "p"})
+			var resp *http.Response
+			if tc.err == nil {
+				resp = &http.Response{StatusCode: tc.status, Status: http.StatusText(tc.status)}
+			}
+			lcotel.SetProviderResponse(span, resp, tc.err)
+			span.End()
+			s := exp.GetSpans()[0]
+			got, _ := attrOf(s, "error.type")
+			if got.AsString() != tc.want {
+				t.Errorf("error.type = %q, want %q", got.AsString(), tc.want)
+			}
+			if isErr := s.Status.Code == codes.Error; isErr != (tc.want != "") {
+				t.Errorf("span status = %v with error.type %q", s.Status.Code, tc.want)
+			}
+			if code, ok := attrOf(s, "http.response.status_code"); (tc.err == nil) != ok || (ok && code.AsInt64() != int64(tc.status)) {
+				t.Errorf("http.response.status_code = %v (present %v)", code.Emit(), ok)
+			}
+		})
 	}
 }

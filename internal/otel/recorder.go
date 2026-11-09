@@ -170,7 +170,7 @@ func RecordProviderCall(ctx context.Context, attrs ProviderCallAttrs) (context.C
 	if attrs.CodeHash != "" {
 		kvs = append(kvs, attribute.String(AttrProviderCodeHash, attrs.CodeHash))
 	}
-	return Tracer().Start(ctx, SpanProviderCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
+	return Tracer().Start(ctx, SpanProviderCall, trace.WithAttributes(withTenantAttr(ctx, attemptAttrs(ctx, kvs))...))
 }
 
 // ToolCallAttrs identifies one tool call.

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"time"
 
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
@@ -134,11 +135,13 @@ func Do(ctx context.Context, cfg Config, attempt func(ctx context.Context) (*htt
 	}
 	cfg.applyDefaults()
 
-	var totalWait time.Duration
+	var totalWait, lastWait time.Duration
 	var lastResp *http.Response
 
 	for i := 0; i < cfg.MaxAttempts; i++ {
-		resp, err := attempt(ctx)
+		// The attempt's span records its number and the wait before it, so a
+		// retried 429 is visible as attempt 2 after N ms, not just a sibling.
+		resp, err := attempt(lcotel.WithAttempt(ctx, i+1, lastWait))
 		if err != nil {
 			return nil, err
 		}
@@ -199,6 +202,7 @@ func Do(ctx context.Context, cfg Config, attempt func(ctx context.Context) (*htt
 			return nil, ctx.Err()
 		}
 		totalWait += wait
+		lastWait = wait
 	}
 	// Budget exhausted; return the last 429 untouched (body intact for
 	// caller's normal error path).
