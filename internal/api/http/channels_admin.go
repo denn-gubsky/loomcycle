@@ -103,12 +103,17 @@ func writeChannelError(w http.ResponseWriter, err error) {
 // ---- v0.11.5 channel admin CRUD handlers ------------------------
 
 // writeIfACLDenied writes an access-control refusal from a channel definition
-// operation (askChannelManage) as the route gate writes one, and reports
+// operation (askChannelManage) as the route gate writes one — 403 acl_denied,
+// or 503 acl_unavailable when the rules could not be read — and reports
 // whether it did.
 func writeIfACLDenied(w http.ResponseWriter, err error) bool {
 	var denied *errACLDenied
 	if !errors.As(err, &denied) {
 		return false
+	}
+	if denied.unavailable {
+		writeJSONError(w, http.StatusServiceUnavailable, "acl_unavailable", "access control could not be evaluated; retry")
+		return true
 	}
 	writeACLDenied(w, denied.surface, denied.decision)
 	return true

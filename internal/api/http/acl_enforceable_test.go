@@ -213,6 +213,12 @@ func TestConnectorWrites_AskTheirManageQuestionThemselves(t *testing.T) {
 		if !errors.As(err, &denied) {
 			t.Errorf("RetentionOverride %s: %v, want an access-control refusal", op, err)
 		}
+		// The gRPC handler reads the refusal through this interface to map
+		// it to PermissionDenied (a deny) rather than Internal.
+		var r interface{ ACLRefusal() bool }
+		if !errors.As(err, &r) || r.ACLRefusal() {
+			t.Errorf("RetentionOverride %s: %v does not read as a deny through ACLRefusal", op, err)
+		}
 	}
 	if _, err := srv.RetentionOverride(ctx, connector.RetentionOverrideRequest{Op: "list"}); errors.As(err, &denied) {
 		t.Errorf("RetentionOverride list was refused by a manage deny: %v", err)
