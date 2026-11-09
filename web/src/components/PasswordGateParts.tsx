@@ -73,21 +73,51 @@ export function RecoveryCodes({ codes, onDone }: { codes: string[]; onDone: () =
 /** After a reset: the passkeys still on the account. A reset ends every
  *  sign-in but removes no passkey, so one added by someone who knew the old
  *  password would survive it. */
-export function ResetPasskeys({ passkeys, onDone }: { passkeys: { name: string; created_at: string }[]; onDone: () => void }) {
+type NamedPasskey = { name: string; created_at: string };
+
+function PasskeyList({ passkeys }: { passkeys: NamedPasskey[] }) {
+  return (
+    <ul className="login-codes">
+      {passkeys.map((k, i) => (
+        <li key={`${k.name}-${i}`}>
+          <strong>{k.name || "Unnamed passkey"}</strong> — added {new Date(k.created_at).toLocaleString()}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function ResetPasskeys({
+  passkeys,
+  removed,
+  onDone,
+}: {
+  passkeys: NamedPasskey[];
+  removed: NamedPasskey[];
+  onDone: () => void;
+}) {
   return (
     <div>
       <h2 className="login-title">Check your passkeys</h2>
-      <p className="login-sub">
-        Your password is reset and every other sign-in has ended, but a reset does not remove passkeys. These can still
-        sign in to your account. If one is not yours, remove it on your account page now.
-      </p>
-      <ul className="login-codes">
-        {passkeys.map((k, i) => (
-          <li key={`${k.name}-${i}`}>
-            <strong>{k.name || "Unnamed passkey"}</strong> — added {new Date(k.created_at).toLocaleString()}
-          </li>
-        ))}
-      </ul>
+      <p className="login-sub">Your password is reset and every other sign-in has ended.</p>
+      {removed.length > 0 && (
+        <>
+          <p className="login-sub">
+            These passkeys were added since your password was last set, so the reset removed them. Register yours
+            again from your account page.
+          </p>
+          <PasskeyList passkeys={removed} />
+        </>
+      )}
+      {passkeys.length > 0 && (
+        <>
+          <p className="login-sub">
+            These passkeys are older than your previous password and were kept. They can still sign in to your
+            account. If one is not yours, remove it on your account page now.
+          </p>
+          <PasskeyList passkeys={passkeys} />
+        </>
+      )}
       <button className="login-btn" type="button" onClick={onDone}>
         Continue
       </button>

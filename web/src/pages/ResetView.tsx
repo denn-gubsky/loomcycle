@@ -29,7 +29,12 @@ export default function ResetView() {
   const [addTotp, setAddTotp] = useState(false);
   const [totpCode, setTotpCode] = useState("");
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState<{ redirect: string; codes: string[]; passkeys: ResetPasskey[] } | null>(null);
+  const [done, setDone] = useState<{
+    redirect: string;
+    codes: string[];
+    passkeys: ResetPasskey[];
+    removed: ResetPasskey[];
+  } | null>(null);
 
   useEffect(() => {
     forgetHash();
@@ -50,14 +55,20 @@ export default function ResetView() {
   if (done) {
     // Recovery codes first (shown once), then the passkeys to check.
     const next = () =>
-      done.passkeys.length > 0 ? setDone({ ...done, codes: [] }) : window.location.assign(done.redirect);
+      done.passkeys.length + done.removed.length > 0
+        ? setDone({ ...done, codes: [] })
+        : window.location.assign(done.redirect);
     return (
       <div className="login-page">
         <div className="login-card">
           {done.codes.length > 0 ? (
             <RecoveryCodes codes={done.codes} onDone={next} />
           ) : (
-            <ResetPasskeys passkeys={done.passkeys} onDone={() => window.location.assign(done.redirect)} />
+            <ResetPasskeys
+              passkeys={done.passkeys}
+              removed={done.removed}
+              onDone={() => window.location.assign(done.redirect)}
+            />
           )}
         </div>
       </div>
@@ -95,8 +106,10 @@ export default function ResetView() {
     }
     const codes = r.data.recovery_codes ?? [];
     const passkeys = r.data.passkeys ?? [];
-    if (codes.length === 0 && passkeys.length === 0) window.location.assign(r.data.redirect || "/ui/");
-    else setDone({ redirect: r.data.redirect || "/ui/", codes, passkeys });
+    const removed = r.data.removed_passkeys ?? [];
+    if (codes.length === 0 && passkeys.length === 0 && removed.length === 0)
+      window.location.assign(r.data.redirect || "/ui/");
+    else setDone({ redirect: r.data.redirect || "/ui/", codes, passkeys, removed });
   };
 
   return (
