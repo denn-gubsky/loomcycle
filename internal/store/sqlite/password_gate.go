@@ -245,11 +245,11 @@ func (s *Store) UserCredentialSet(ctx context.Context, row store.UserCredentialR
 }
 
 // UserCredentialRehash implements store.PasswordGateStore.
-func (s *Store) UserCredentialRehash(ctx context.Context, tenantID, subject, kind, oldPHC, newPHC, pepperKID string, at time.Time) (bool, error) {
+func (s *Store) UserCredentialRehash(ctx context.Context, tenantID, subject, kind, oldPHC, newPHC, pepperKID string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE user_credentials SET phc = ?, pepper_kid = ?, updated_at = ?
+		UPDATE user_credentials SET phc = ?, pepper_kid = ?
 		WHERE tenant_id = ? AND subject = ? AND kind = ? AND phc = ?`,
-		newPHC, pepperKID, gateStamp(at).UnixNano(), tenantID, subject, kind, oldPHC)
+		newPHC, pepperKID, tenantID, subject, kind, oldPHC)
 	if err != nil {
 		return false, fmt.Errorf("user credential rehash: %w", err)
 	}

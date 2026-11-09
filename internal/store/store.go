@@ -4638,6 +4638,11 @@ type UISessionStore interface {
 	// disabled user is signed out everywhere at once rather than at each
 	// session's next request.
 	UISessionRevokeSubject(ctx context.Context, tenantID, subject string, at time.Time) (int, error)
+	// UISessionRevokeCredential ends every live session of (tenantID,
+	// subject) bound to one credential — the session's CredKind and CredRef
+	// (a passkey's sessions when the passkey is removed) — and returns how
+	// many it ended. The subject's other sessions are left alone.
+	UISessionRevokeCredential(ctx context.Context, tenantID, subject, credKind, credRef string, at time.Time) (int, error)
 }
 
 // OAuthStore persists app sign-ins (RFC FL): the authorization codes, the

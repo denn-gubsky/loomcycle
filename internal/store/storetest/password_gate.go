@@ -173,19 +173,23 @@ func testUserCredentialSetGetRehashIsACompareAndSet(t *testing.T, s store.Store)
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("get = %+v, %v; want %+v", got, err, want)
 	}
-	at := pwgT0.Add(time.Minute)
-	if ok, err := s.UserCredentialRehash(ctx, "acme", "alice", store.CredentialKindPassword, "phc-fake-stale", "phc-fake-2", "kid-2", at); ok || err != nil {
+	if ok, err := s.UserCredentialRehash(ctx, "acme", "alice", store.CredentialKindPassword, "phc-fake-stale", "phc-fake-2", "kid-2"); ok || err != nil {
 		t.Errorf("rehash against a changed PHC = %v, %v; want false", ok, err)
 	}
 	if got, _ := s.UserCredentialGet(ctx, "acme", "alice", store.CredentialKindPassword); got.PHC != "phc-fake-1" {
 		t.Errorf("refused rehash wrote PHC %q", got.PHC)
 	}
-	if ok, err := s.UserCredentialRehash(ctx, "acme", "alice", store.CredentialKindPassword, "phc-fake-1", "phc-fake-2", "kid-2", at); !ok || err != nil {
+	if ok, err := s.UserCredentialRehash(ctx, "acme", "alice", store.CredentialKindPassword, "phc-fake-1", "phc-fake-2", "kid-2"); !ok || err != nil {
 		t.Fatalf("rehash = %v, %v; want true", ok, err)
 	}
 	got, _ = s.UserCredentialGet(ctx, "acme", "alice", store.CredentialKindPassword)
-	if got.PHC != "phc-fake-2" || got.PepperKID != "kid-2" || !got.UpdatedAt.Equal(at) {
+	if got.PHC != "phc-fake-2" || got.PepperKID != "kid-2" {
 		t.Errorf("after rehash = %+v", got)
+	}
+	// A rehash re-encodes the same password: UpdatedAt stays the time the
+	// password was set, which a reset compares passkeys against.
+	if !got.UpdatedAt.Equal(want.UpdatedAt) {
+		t.Errorf("a rehash moved UpdatedAt to %v, want the set time %v", got.UpdatedAt, want.UpdatedAt)
 	}
 	if ok, err := s.UserCredentialDelete(ctx, "acme", "alice", store.CredentialKindPassword); !ok || err != nil {
 		t.Errorf("delete = %v, %v", ok, err)
