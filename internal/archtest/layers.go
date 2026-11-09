@@ -121,6 +121,8 @@ var layers = []layer{
 			"internal/search",
 			"internal/sigv1",
 			"internal/skillmatch",
+			// A script-and-stopword language guess over a text: stdlib only.
+			"internal/lang",
 			// Text-to-speech pure helpers (Markdown normaliser, splitter, WAV
 			// joiner, caps): stdlib only. The engine and the File tool sit above.
 			"internal/speech",
