@@ -1357,7 +1357,8 @@ acls:
   support-tier-1:
     description: Support staff
     rules:
-      - { effect: allow, actions: [run, read], resources: ["agent:chat/*", "agent:support/**"] }
+      - { effect: allow, actions: [run],       resources: ["agent:chat/*", "agent:support/**"] }
+      - { effect: allow, actions: [read],      resources: ["agent:*"] }   # the library is read whole
       - { effect: allow, actions: [read],      resources: ["volume:shared-ro"] }
       - { effect: deny,  actions: [invoke],    resources: ["tool:Bash", "tool:Bashbox"] }
       - { effect: deny,  actions: [run],       resources: ["agent:admin/**"] }
