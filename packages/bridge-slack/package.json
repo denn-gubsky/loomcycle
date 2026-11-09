@@ -1,6 +1,6 @@
 {
   "name": "@loomcycle/bridge-slack",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "type": "module",
   "description": "Slack bot for loomcycle interactive agents (RFC EQ): each Slack user chats with a loomcycle agent as their own loomcycle user, with streamed DM replies, steering, question and review cards in Block Kit, and a workspace allow-list.",
   "license": "Apache-2.0",
@@ -10,7 +10,14 @@
     "url": "git+https://github.com/denn-gubsky/loomcycle.git",
     "directory": "packages/bridge-slack"
   },
-  "keywords": ["loomcycle", "slack", "bridge", "bot", "agent", "ai"],
+  "keywords": [
+    "loomcycle",
+    "slack",
+    "bridge",
+    "bot",
+    "agent",
+    "ai"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -21,9 +28,16 @@
   "bin": {
     "loomcycle-bridge-slack": "./dist/cli.js"
   },
-  "files": ["dist", "README.md"],
-  "publishConfig": { "access": "public" },
-  "engines": { "node": ">=20" },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build",
@@ -32,7 +46,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@loomcycle/bridge-core": "file:../bridge-core"
+    "@loomcycle/bridge-core": "^0.5.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
