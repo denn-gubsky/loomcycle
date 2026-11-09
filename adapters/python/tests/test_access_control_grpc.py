@@ -193,3 +193,21 @@ def test_every_acl_family_has_a_stub_rpc_and_a_client_method():
     for fam in families:
         assert hasattr(pbg.LoomcycleServicer, rpcs[fam]), rpcs[fam]
         assert callable(getattr(LoomcycleClient, methods[fam]))
+
+
+def test_acl_def_doc_names_every_catalog_type_key():
+    """The catalog answer passes through as a dict, so its shape is known to
+    a caller only from acl_def's docstring: every key the server writes for a
+    catalog type (internal/api/http/acl_mgmt.go aclCatalogType) is named."""
+    repo = Path(__file__).resolve().parents[3]
+    src = repo / "internal" / "api" / "http" / "acl_mgmt.go"
+    if not src.exists():
+        pytest.skip("standalone checkout: no Go tree to compare against")
+    text = src.read_text()
+    start = text.index("type aclCatalogType struct {")
+    body = text[start : text.index("\n}", start)]
+    keys = re.findall(r'json:"([^",]+)', body)
+    assert keys, "aclCatalogType has no json tags"
+    doc = LoomcycleClient.acl_def.__doc__ or ""
+    missing = [k for k in keys if f"``{k}``" not in doc]
+    assert missing == [], f"acl_def's docstring does not name {missing}"

@@ -1,10 +1,16 @@
 import { ArrowDown, ArrowUp, Plus, Trash2, X } from "lucide-react";
 import {
   WEEKDAYS,
+  buildSelector,
   catalogType,
+  coversEveryInstance,
   emptySelector,
+  everyInstanceOnly,
+  everySelector,
   selectorShape,
+  setActions,
   setResourceType,
+  typeLevelActions,
   validateDraft,
   verbsFor,
   type AclCatalog,
@@ -18,7 +24,9 @@ import {
 // catalog: the type list, the scope list of the chosen type, and the action
 // checkboxes (only the verbs every chosen resource type has). Changing a
 // resource's type resets its selector and drops actions the new set lacks, so
-// the draft never holds a pair the catalog refuses.
+// the draft never holds a pair the catalog refuses. A resource whose type the
+// rule's actions ask only of every instance (the run verbs, `read agent`) shows
+// no selector picker: it is `<type>:*`, the only selector the server accepts.
 
 const GLOB_HINT: Record<string, string> = {
   agent: "chat/* or support/**",
@@ -63,7 +71,14 @@ export function RuleEditor({
     onChange({ ...draft, resources: draft.resources.map((r, j) => (j === i ? { ...r, ...patch } : r)) });
   const setWhen = (patch: Partial<ConditionDraft>) => onChange({ ...draft, when: { ...draft.when, ...patch } });
   const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
-  const toggleAction = (v: string) => onChange({ ...draft, actions: verbs.filter((x) => (x === v ? !draft.actions.includes(v) : draft.actions.includes(x))) });
+  const toggleAction = (v: string) =>
+    onChange(
+      setActions(
+        catalog,
+        draft,
+        verbs.filter((x) => (x === v ? !draft.actions.includes(v) : draft.actions.includes(x))),
+      ),
+    );
   // How many conditions are set, as the saved rule's `when` keys count them
   // (days, the window and tz are one `time` condition).
   const w = draft.when;
@@ -125,6 +140,8 @@ export function RuleEditor({
           {draft.resources.map((r, i) => {
             const t = catalogType(catalog, r.type);
             const shape = t ? selectorShape(t) : "glob";
+            const everyOnly = !!t && everyInstanceOnly(t, draft.actions);
+            const why = t ? typeLevelActions(t, draft.actions) : [];
             return (
               <div className="acl-rule-resource" key={i}>
                 <select aria-label="resource type" value={r.type} onChange={(e) => onChange(setResourceType(catalog, draft, i, e.target.value))}>
@@ -134,7 +151,21 @@ export function RuleEditor({
                     </option>
                   ))}
                 </select>
-                {shape !== "glob" && t && (
+                {everyOnly && t && (
+                  <span className="acl-rule-every" title={`${why.length ? why.join(", ") + " " + t.type : t.type} is decided for every ${t.type}, never one`}>
+                    {coversEveryInstance(t, r) ? (
+                      <>every {t.type}</>
+                    ) : (
+                      <>
+                        <s>{buildSelector(catalog, r)}</s>{" "}
+                        <button type="button" className="ghost-btn" onClick={() => setRes(i, everySelector(t))}>
+                          use {t.type}:*
+                        </button>
+                      </>
+                    )}
+                  </span>
+                )}
+                {!everyOnly && shape !== "glob" && t && (
                   <select aria-label="scope" value={r.scope} onChange={(e) => setRes(i, { scope: e.target.value })}>
                     {[...t.scopes!, "*"].map((sc) => (
                       <option key={sc} value={sc}>
@@ -143,7 +174,7 @@ export function RuleEditor({
                     ))}
                   </select>
                 )}
-                {shape !== "enum" && (
+                {!everyOnly && shape !== "enum" && (
                   <input
                     aria-label="selector"
                     type="text"

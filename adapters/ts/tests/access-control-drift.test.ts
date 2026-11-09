@@ -87,6 +87,7 @@ const PAIRS: Array<[string, Array<[string, string]>]> = [
   ["AuthzTrace", [[ENGINE, "Trace"]]],
   ["AuthzDecision", [[HTTP, "authzDecisionWire"]]],
   ["AuthzAppliedBinding", [[RULE, "Binding"]]],
+  ["AclCatalogType", [[HTTP, "aclCatalogType"]]],
   // Requests: what the server decodes.
   ["CreateGroupBody", [[HTTP, "groupRequest"]]],
   ["CreateAclBindingBody", [[HTTP, "bindingRequest"]]],

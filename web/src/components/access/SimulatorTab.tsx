@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { authzEvaluate, authzExplain, authzSimulate, type AuthzDecision, type AuthzExplain, type AuthzSimulateResult } from "../../api";
-import { catalogType, evaluationRequest, parseDraftDoc, selectorShape, type AclCatalog } from "../../lib/aclRules";
+import { catalogType, evaluationRequest, parseDraftDoc, selectorShape, typeLevelActions, type AclCatalog } from "../../lib/aclRules";
 import ErrorNotice from "../ErrorNotice";
 
 // SimulatorTab — "as <subject>, may I <action> <resource> [in this context]?"
@@ -53,6 +53,10 @@ export default function SimulatorTab({
 
   if (!catalog) return <div className="settings-muted">loading the catalog…</div>;
   const verbs = catalogType(catalog, type)?.verbs ?? [];
+  // A verb asked only of every instance: the server refuses a question naming
+  // one, so the id is not asked for (and not sent).
+  const ct = catalogType(catalog, type);
+  const everyOnly = !!ct && typeLevelActions(ct, [action]).length > 0;
 
   const ask = async (e: FormEvent) => {
     e.preventDefault();
@@ -60,7 +64,7 @@ export default function SimulatorTab({
     setErr(null);
     setSaved(null);
     setSim(null);
-    const req = evaluationRequest({ subject, action, type, id, owner, context: { transport, interactive, agent, depth } });
+    const req = evaluationRequest({ subject, action, type, id: everyOnly ? "" : id, owner, context: { transport, interactive, agent, depth } });
     setBusy(true);
     try {
       if (useDraft) {
@@ -115,7 +119,14 @@ export default function SimulatorTab({
             ))}
           </select>
           <span>:</span>
-          <input type="text" aria-label="resource id" placeholder={idPlaceholder(catalog, type)} value={id} onChange={(e) => setId(e.target.value)} />
+          <input
+            type="text"
+            aria-label="resource id"
+            placeholder={everyOnly ? `every ${type} (${action} is asked of every ${type})` : idPlaceholder(catalog, type)}
+            value={everyOnly ? "" : id}
+            disabled={everyOnly}
+            onChange={(e) => setId(e.target.value)}
+          />
           <span>?</span>
         </div>
         <details className="acl-sim-context">

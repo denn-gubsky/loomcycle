@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -172,6 +174,42 @@ func TestACLDef_AnInstanceSelectorOnATypeLevelOnlyVerbIsRefused(t *testing.T) {
 	}
 	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"create","name":"live","rules":[{"effect":"deny","actions":["read"],"resources":["run:*"]}]}`); code != 201 {
 		t.Errorf("a deny on every run: %d %s, want 201", code, body)
+	}
+}
+
+// The catalog a rule picker is built from marks each type-level-only verb on
+// its type, so a picker offers only the every-instance selector for it rather
+// than one the write then refuses. The marks are exactly the engine's pairs:
+// one missing lets a picker offer `run:own` again, one extra hides a selector
+// that would be enforced.
+func TestACLCatalog_MarksExactlyTheTypeLevelOnlyVerbs(t *testing.T) {
+	_, ts, _ := aclMgmtServer(t, authz.ModeCompat)
+	code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"catalog"}`)
+	if code != 200 {
+		t.Fatalf("catalog: %d %s", code, body)
+	}
+	var cat struct {
+		Types []struct {
+			Type          string   `json:"type"`
+			Verbs         []string `json:"verbs"`
+			TypeLevelOnly []string `json:"type_level_only"`
+		} `json:"types"`
+	}
+	if err := json.Unmarshal([]byte(body), &cat); err != nil {
+		t.Fatalf("catalog: %v %s", err, body)
+	}
+	var got []string
+	for _, ty := range cat.Types {
+		for _, v := range ty.TypeLevelOnly {
+			if !slices.Contains(ty.Verbs, v) {
+				t.Errorf("%s marks %s type-level-only but does not list it as a verb", ty.Type, v)
+			}
+			got = append(got, v+" "+ty.Type)
+		}
+	}
+	sort.Strings(got)
+	if want := authz.TypeLevelOnlyPairs(); !slices.Equal(got, want) {
+		t.Errorf("catalog marks %v type-level-only, want %v", got, want)
 	}
 }
 

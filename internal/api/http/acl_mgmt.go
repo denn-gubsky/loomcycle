@@ -1156,8 +1156,23 @@ func builtinACLs() []authz.ACL {
 	return out
 }
 
-func catalogTypes() []map[string]any {
-	var out []map[string]any
+// aclCatalogType is one type of the op=catalog answer.
+type aclCatalogType struct {
+	Type  string   `json:"type"`
+	Verbs []string `json:"verbs"`
+	// Scopes and Separator: present on a scoped or enum type; Separator only
+	// on a scoped one.
+	Scopes    []string `json:"scopes,omitempty"`
+	Separator string   `json:"separator,omitempty"`
+	// TypeLevelOnly: the verbs asked only of every instance, so a rule on
+	// one of them must name every instance (`run:*`); one naming some is
+	// refused at write. A picker offers only the every-instance selector for
+	// them.
+	TypeLevelOnly []string `json:"type_level_only,omitempty"`
+}
+
+func catalogTypes() []aclCatalogType {
+	var out []aclCatalogType
 	for _, name := range authz.Types() {
 		spec, _ := authz.TypeSpecOf(name)
 		// Only what a rule may be written with: a verb no surface asks is
@@ -1167,11 +1182,11 @@ func catalogTypes() []map[string]any {
 		if len(verbs) == 0 {
 			continue
 		}
-		entry := map[string]any{"type": name, "verbs": verbs}
+		entry := aclCatalogType{Type: name, Verbs: verbs, TypeLevelOnly: authz.TypeLevelOnlyVerbs(name)}
 		if len(spec.Scopes) > 0 {
-			entry["scopes"] = spec.Scopes
+			entry.Scopes = spec.Scopes
 			if spec.Sep != 0 {
-				entry["separator"] = string(spec.Sep)
+				entry.Separator = string(spec.Sep)
 			}
 		}
 		out = append(out, entry)

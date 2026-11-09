@@ -8749,6 +8749,11 @@ button.doc-ref-target.external {
 .acl-rule-resource input[type="text"] {
   min-width: 220px;
 }
+/* A type-level-only resource: no selector picker, only every instance. */
+.acl-rule-every {
+  color: var(--lc-text-muted, inherit);
+  font-size: 0.9em;
+}
 .acl-rule-checks {
   display: flex;
   flex-wrap: wrap;

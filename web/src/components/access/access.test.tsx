@@ -18,9 +18,10 @@ const catalog: AclCatalog = {
   catalog_version: 1,
   transports: ["http", "webui"],
   types: [
-    { type: "agent", verbs: ["run", "read", "spawn"] },
+    { type: "agent", verbs: ["run", "read", "spawn"], type_level_only: ["read"] },
     { type: "memory", verbs: ["read", "write"], scopes: ["user", "tenant"], separator: ":" },
     { type: "tool", verbs: ["invoke"] },
+    { type: "run", verbs: ["read", "cancel"], scopes: ["own", "tenant"], type_level_only: ["read", "cancel"] },
   ],
 };
 const noop = () => {};
@@ -60,6 +61,32 @@ describe("RuleEditor", () => {
     expect(out).toContain("share no action");
     expect(out).toContain("rule 2");
     expect(out).toContain("pick at least one action");
+  });
+
+  it("offers no instance selector for a verb asked only of every instance", () => {
+    const run = { ...emptyRuleDraft(catalog), actions: ["cancel"], resources: [{ type: "run", scope: "*", name: "" }] };
+    let out = html(createElement(RuleEditor, { catalog, draft: run, index: 0, count: 1, onChange: noop }));
+    expect(out).not.toContain('aria-label="scope"');
+    expect(out).not.toContain('value="own"');
+    expect(out).toContain("every run");
+
+    const agentRead = { ...emptyRuleDraft(catalog), actions: ["read"], resources: [{ type: "agent", scope: "", name: "*" }] };
+    out = html(createElement(RuleEditor, { catalog, draft: agentRead, index: 0, count: 1, onChange: noop }));
+    expect(out).not.toContain('aria-label="selector"');
+    expect(out).toContain("every agent");
+
+    // The run verb alone leaves the agent's name picker in place.
+    const agentRun = { ...agentRead, actions: ["run"], resources: [{ type: "agent", scope: "", name: "chat/*" }] };
+    out = html(createElement(RuleEditor, { catalog, draft: agentRun, index: 0, count: 1, onChange: noop }));
+    expect(out).toContain('aria-label="selector"');
+  });
+
+  it("shows a stored run:own rule struck through with the fix, and the server's refusal", () => {
+    const stored = { ...emptyRuleDraft(catalog), actions: ["cancel"], resources: [{ type: "run", scope: "own", name: "" }] };
+    const out = html(createElement(RuleEditor, { catalog, draft: stored, index: 0, count: 1, onChange: noop }));
+    expect(out).toContain("<s>run:own</s>");
+    expect(out).toContain("use run:*");
+    expect(out).toContain("cancel run is decided for every run, never one; use run:*");
   });
 
   it("is a disabled fieldset with no edit tools when read-only", () => {
