@@ -172,7 +172,7 @@ func validateStatementForDialect(raw string, readOnly bool, d dialect) error {
 	// keyword is otherwise legal). Applied before the read-only/exec split so it
 	// guards both ops.
 	if d == dialectPostgres {
-		if err := postgresStatementDenies(trimmed, readOnly); err != nil {
+		if err := postgresStatementDenies(raw, trimmed, readOnly); err != nil {
 			return err
 		}
 	}
