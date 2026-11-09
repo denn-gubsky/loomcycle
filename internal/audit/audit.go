@@ -305,6 +305,7 @@ func changeKinds() map[string]ChangeKind {
 		// Users.
 		"user_created":               ChangeGrants,
 		"auth_user_approved":         ChangeGrants,
+		"auth_login_renamed":         ChangeGrants,
 		"user_updated":               ChangeGrants, // re-enable, access mode, display name
 		"user_disabled":              ChangeReduces,
 		"user_deleted":               ChangeReduces,

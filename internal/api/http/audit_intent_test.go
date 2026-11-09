@@ -554,3 +554,20 @@ func plain() { aclIntent(ctx) }
 		}
 	}
 }
+
+// An operator renaming a person's login changes which name signs in as
+// them: a grant, refused when its record cannot be written.
+func TestAuthgateLogins_ARenameIsRefusedWhenItsAuditRecordCannotBeWritten(t *testing.T) {
+	f := newGateFixture(t)
+	f.addUser(t, "other", "b", "isolated")
+	f.addLogin(t, "other", "b", "local", "bob@example.com")
+	f.srv.tokenAudit = failingSink{errAuditDown}
+	if code, b := f.call(t, bOtherOp, "PATCH", "/v1/_authgate/local/logins/b", `{"login":"robert@example.com"}`); code != http.StatusServiceUnavailable {
+		t.Fatalf("a rename with the audit sink failing: %d %v; want 503", code, b)
+	}
+	f.srv.tokenAudit = f.audit
+	_, ids := f.call(t, bOtherOp, "GET", "/v1/_authgate/local/identities?subject=b", "")
+	if !strings.Contains(string(mustJSON(t, ids)), "bob@example.com") {
+		t.Errorf("the login after the refused rename: %v; want bob@example.com kept", ids)
+	}
+}
