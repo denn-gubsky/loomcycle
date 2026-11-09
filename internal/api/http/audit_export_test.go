@@ -126,3 +126,27 @@ func TestAuditExport_IsTenantScopedAndCarvedOutOfMembers(t *testing.T) {
 		t.Errorf("the last row does not reach the trailer's head")
 	}
 }
+
+// An export as the route streams it verifies offline with the chain key —
+// the crossing between the export's format and the verifier's reader.
+func TestAuditExport_VerifiesOfflineWithTheChainKey(t *testing.T) {
+	_, ts, st := overrideFixture(t)
+	keys := auditchain.ChainKeys{Current: []byte("export-test-chain-key-32-bytes!!")}
+	sink, err := auditchain.NewStoreSink(st, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := sink.Record(audit.Event{Action: "acl_edit", TargetTenant: "acme", ActorSubject: "ops"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, body := bearerCall(t, ts, opsBearer, "GET", "/v1/_audit", "")
+	if code != 200 {
+		t.Fatalf("export: %d %s", code, body)
+	}
+	rep, err := auditchain.VerifyExport(strings.NewReader(body), &keys)
+	if err != nil || !rep.OK || !rep.Signed || rep.Rows != 3 || rep.Tenant != "acme" {
+		t.Fatalf("VerifyExport of the route's export: %+v, %v", rep, err)
+	}
+}
