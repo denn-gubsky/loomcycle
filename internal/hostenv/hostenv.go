@@ -14,9 +14,9 @@ import (
 )
 
 // collectorHeaders reports whether name is an OTLP collector-header variable
-// (OTEL_EXPORTER_OTLP_HEADERS and its per-signal forms, or the retired
-// LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS). Matched here rather than through
-// internal/config so this package stays an import leaf.
+// (OTEL_EXPORTER_OTLP_HEADERS and its per-signal forms, or the LOOMCYCLE_
+// form that was retired). Matched here rather than through internal/config
+// so this package stays an import leaf.
 func collectorHeaders(name string) bool {
 	up := strings.ToUpper(name)
 	return (strings.HasPrefix(up, "OTEL_EXPORTER_OTLP") || strings.HasPrefix(up, "LOOMCYCLE_OTEL_EXPORTER_OTLP")) &&
