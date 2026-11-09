@@ -4056,7 +4056,8 @@ func (m *modelCall) observe(ev providers.Event) {
 	switch ev.Type {
 	case providers.EventDone:
 		r := lcotel.ModelCallResult{FinishReason: ev.StopReason, TTFT: m.timer.TTFT()}
-		if u := ev.Usage; u != nil {
+		// Pricing is work for the span alone: skipped when nothing records it.
+		if u := ev.Usage; u != nil && m.span.IsRecording() {
 			r.Usage = m.usage(*u)
 		}
 		m.finish(r)
