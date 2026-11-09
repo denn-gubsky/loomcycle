@@ -1014,9 +1014,13 @@ class LoomcycleClient:
         ``retire`` (``name``); ``list`` (``include_retired``; answers
         ``{"acls": [...], "builtin": [...]}``, config lists marked
         ``"source": "config"``); ``validate`` (``rules``); ``catalog`` (the
-        types, verbs and transports a rule may name); ``names`` (every live
-        list name a binding can reach). Rules the engine cannot enforce raise
-        AclRefusedError with reason ``acl_invalid``."""
+        types, verbs and transports a rule may name: ``catalog_version``,
+        ``transports`` and ``types``, each type a dict of ``type``,
+        ``verbs``, ``scopes`` and ``separator`` for a scoped or enum type,
+        and ``type_level_only`` — the verbs a rule must name every instance
+        of, ``<type>:*``); ``names`` (every live list name a binding can
+        reach). Rules the engine cannot enforce raise AclRefusedError with
+        reason ``acl_invalid``."""
         return await self._dispatch_acl("AclDef", input)
 
     async def acl_binding(self, input: Mapping[str, Any]) -> Mapping[str, Any]:

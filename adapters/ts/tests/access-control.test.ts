@@ -104,7 +104,7 @@ describe("rule lists", () => {
       jsonResponse({ name: "ops", rules, version: 2 }, 201),
       jsonResponse({ retired: "ops" }),
       jsonResponse({ valid: true, rules: 1, catalog_version: 1 }),
-      jsonResponse({ catalog_version: 1, types: [{ type: "agent", verbs: ["run"] }], transports: ["http"] }),
+      jsonResponse({ catalog_version: 1, types: [{ type: "agent", verbs: ["run", "read"], type_level_only: ["read"] }], transports: ["http"] }),
     ]);
     await client.listAclDefs({ includeRetired: true, tenant: "t" });
     await client.getAclDef("ops");
@@ -127,7 +127,8 @@ describe("rule lists", () => {
     ]);
     expect(put.version).toBe(2);
     expect(v.valid).toBe(true);
-    expect(cat.types[0]!.verbs).toEqual(["run"]);
+    expect(cat.types[0]!.verbs).toEqual(["run", "read"]);
+    expect(cat.types[0]!.type_level_only).toEqual(["read"]);
   });
 
   it("listAclDefs leaves include_retired out unless asked", async () => {

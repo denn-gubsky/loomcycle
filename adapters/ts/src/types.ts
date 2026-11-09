@@ -8727,6 +8727,10 @@ export interface AclCatalogType {
   verbs: string[];
   scopes?: string[];
   separator?: string;
+  /** The verbs asked only of every instance of this type: a rule on one of
+   *  them must name `<type>:*` (a selector naming some instances is refused
+   *  with `rule_not_enforceable`). Absent on a type with none. */
+  type_level_only?: string[];
 }
 
 /** `aclDef({op: "catalog"})`: what a rule may name. */
