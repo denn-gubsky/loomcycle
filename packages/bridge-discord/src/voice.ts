@@ -8,7 +8,7 @@
 // IS_VOICE_MESSAGE and one OGG/Opus attachment. It may carry no text, so it
 // replies to the text reply, whose last line says the voice is generated.
 
-import { VoiceRefusedError, type VoiceIn, type VoiceOut, type VoicePort } from "@loomcycle/bridge-core";
+import { downloadPinned, PinnedDownloadError, VoiceRefusedError, type VoiceIn, type VoiceOut, type VoicePort } from "@loomcycle/bridge-core";
 
 import { DiscordApiError, USER_AGENT, type DiscordApi } from "./api.js";
 import type { Interaction } from "./interaction.js";
@@ -26,7 +26,6 @@ export const VOICE_FILENAME = "voice-message.ogg";
  *  for a real one is here: loomcycle may add an X-Loomcycle-Speech-Waveform
  *  header (256 one-byte samples, base64), which would replace this constant. */
 export const WAVEFORM = "";
-const MAX_REDIRECTS = 3;
 const MAX_LIMITS = 10_000;
 /** Discord's error codes for "not here": Missing Permissions (the bot lacks
  *  SEND_VOICE_MESSAGES or ATTACH_FILES), Cannot send messages to this user,
@@ -121,34 +120,22 @@ export function oggSeconds(b: Uint8Array): number | undefined {
   return undefined;
 }
 
-/** readCapped reads a body, failing as soon as it passes maxBytes. */
-async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array> {
-  const declared = Number(res.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    await res.body?.cancel().catch(() => undefined);
-    throw new Error("discord voice download: larger than allowed");
+/** discordMessageOf is the message a refused download had before the
+ *  download moved into bridge-core. */
+function discordMessageOf(err: PinnedDownloadError): string {
+  switch (err.reason) {
+    case "url":
+    case "host":
+      return err.detail.redirected ? "discord voice download: redirected off Discord's CDN" : "discord voice download: not a Discord attachment URL";
+    case "redirect":
+      return "discord voice download: redirected off Discord's CDN";
+    case "status":
+      return `discord voice download: http ${err.detail.status}`;
+    case "type":
+      return "discord voice download: not audio";
+    case "size":
+      return "discord voice download: larger than allowed";
   }
-  if (!res.body) return new Uint8Array();
-  const reader = res.body.getReader();
-  const parts: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw new Error("discord voice download: larger than allowed");
-    }
-    parts.push(value);
-  }
-  const out = new Uint8Array(total);
-  let at = 0;
-  for (const p of parts) {
-    out.set(p, at);
-    at += p.byteLength;
-  }
-  return out;
 }
 
 export interface DiscordVoiceOptions {
@@ -182,31 +169,24 @@ export class DiscordVoice implements VoicePort<DiscordRef> {
   async download(v: VoiceIn, maxBytes: number, signal: AbortSignal): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
     const first = voiceUrl(v.ref);
     if (!first) throw new Error("discord voice download: not a Discord attachment URL");
-    let url: URL = first;
-    for (let hop = 0; ; hop++) {
+    let got: { bytes: Uint8Array; contentType: string };
+    try {
       // No Authorization header: the URL is signed, and the bot token is for
-      // Discord's API only.
-      const res = await this.fetch(url, { method: "GET", headers: { "user-agent": USER_AGENT }, redirect: "manual", signal });
-      if (res.status >= 300 && res.status < 400) {
-        await res.body?.cancel().catch(() => undefined);
-        const next: URL | undefined = hop < MAX_REDIRECTS ? voiceUrl(safeResolve(res.headers.get("location"), url)) : undefined;
-        if (!next) throw new Error("discord voice download: redirected off Discord's CDN");
-        url = next;
-        continue;
-      }
-      if (!res.ok) {
-        await res.body?.cancel().catch(() => undefined);
-        throw new Error(`discord voice download: http ${res.status}`);
-      }
-      const served = baseMime(res.headers.get("content-type"));
-      if (!served || !AUDIO_TYPE.test(served)) {
-        await res.body?.cancel().catch(() => undefined);
-        throw new Error("discord voice download: not audio");
-      }
-      const bytes = await readCapped(res, maxBytes);
-      const mime = v.mime ?? (served.startsWith("audio/") ? served : "audio/ogg");
-      return { bytes, mime, name: VOICE_FILENAME };
+      // Discord's API only. Every hop must be on Discord's CDN.
+      got = await downloadPinned(first.href, {
+        allowed: (u) => voiceUrl(u.href) !== undefined,
+        headers: { "user-agent": USER_AGENT },
+        accept: (ct) => AUDIO_TYPE.test(baseMime(ct) ?? ""),
+        maxBytes,
+        signal,
+        fetch: this.fetch,
+      });
+    } catch (err) {
+      throw err instanceof PinnedDownloadError ? new Error(discordMessageOf(err)) : err;
     }
+    const served = baseMime(got.contentType)!;
+    const mime = v.mime ?? (served.startsWith("audio/") ? served : "audio/ogg");
+    return { bytes: got.bytes, mime, name: VOICE_FILENAME };
   }
 
   async sendVoice(ref: DiscordRef, audio: VoiceOut): Promise<void> {
@@ -239,14 +219,5 @@ export class DiscordVoice implements VoicePort<DiscordRef> {
     // The port skips it while a deferred response shows Discord's own
     // "thinking…", and backs off a channel that refuses it.
     await this.port.send(ref, { type: "typing" });
-  }
-}
-
-function safeResolve(location: string | null, base: URL): string | undefined {
-  if (!location) return undefined;
-  try {
-    return new URL(location, base).href;
-  } catch {
-    return undefined;
   }
 }
