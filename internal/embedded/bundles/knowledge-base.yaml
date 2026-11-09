@@ -45,7 +45,10 @@
 #                 open it), each from the part's text and its parts' annotations.
 #                 The runtime computes what a part is written from and its hash
 #                 (annotation_inputs); a part whose hash is unchanged costs no
-#                 model call. Modes: document, drain (the documents the ingest
+#                 model call. Then the Path folders of those documents, the
+#                 deepest first, each from its documents' and sub-folders'
+#                 annotations, kept on a <folder>/_annotation document. Modes:
+#                 document, path (a folder; recursive), drain (the documents the ingest
 #                 queue names, newest first — read, NEVER acked, since the queue
 #                 belongs to kb/linker) and sweep (every document that needs it,
 #                 never-annotated first). Write modes: report (the default:
@@ -310,7 +313,7 @@ agents:
       // a reason, no body) and its SyncReport (a run report). They are passed over
       // whole. The runtime's classify skips the same list, and a test keeps the
       // two equal; the match ignores case.
-      var OPERATIONAL_DOCUMENT_TYPES = ["SourceStub", "SyncReport"];
+      var OPERATIONAL_DOCUMENT_TYPES = ["SourceStub", "SyncReport", "Annotation"];
 
       var INGEST_REASONS = { created: true, imported: true, reimported: true, copied: true, moved: true };
       var SUBJECT_OPS = { adopted: true, merged: true, retyped: true, removed: true, erased: true };
@@ -3652,7 +3655,7 @@ agents:
       // a reason, no body) and its SyncReport (a run report). They are passed over
       // whole. The runtime's classify skips the same list, and a test keeps the
       // two equal; the match ignores case.
-      var OPERATIONAL_DOCUMENT_TYPES = ["SourceStub", "SyncReport"];
+      var OPERATIONAL_DOCUMENT_TYPES = ["SourceStub", "SyncReport", "Annotation"];
 
       var VERDICTS = { accept: true, reject: true, unsure: true };
 
@@ -4332,12 +4335,13 @@ agents:
 
       var DEFAULTS = {
         mode: "document", write: "report", scope: "tenant", min_body_chars: 1500, max_body_chars: 6000,
-        max_relations: 20, max_calls: 200, max_writes: 500, max_messages: 10, force: false
+        max_relations: 20, max_calls: 200, max_writes: 500, max_messages: 10, force: false, recursive: false
       };
 
       var ALLOWED_FIELDS = {
         mode: true, document_id: true, path: true, under_path: true, write: true, scope: true, min_body_chars: true,
-        max_body_chars: true, max_relations: true, max_calls: true, max_writes: true, max_messages: true, force: true
+        max_body_chars: true, max_relations: true, max_calls: true, max_writes: true, max_messages: true, force: true,
+        recursive: true
       };
 
       // Root types of documents that are not knowledge. The runtime's classify skips
@@ -4349,10 +4353,12 @@ agents:
         document: "what it is; what it covers; whom it is for; what it decides or concludes"
       };
 
-      var WORDS = { branch: "60–120", document: "120–250" };
+      var WORDS = { branch: "60–120", document: "120–250", path: "120–250" };
 
-      var USAGE = "Pass a JSON object: {\"mode\": document|drain|sweep (default document), " +
-        "\"document_id\" or \"path\" (document mode), \"under_path\" (sweep), \"write\": report|annotate (default report), " +
+      var FOLDER_SLOTS = "what the folder collects; for whom or about what; the period it spans; how its documents relate";
+
+      var USAGE = "Pass a JSON object: {\"mode\": document|path|drain|sweep (default document), " +
+        "\"document_id\" or \"path\" (document mode), \"path\" and \"recursive\" (path mode), \"under_path\" (sweep), \"write\": report|annotate (default report), " +
         "\"scope\": tenant, \"min_body_chars\" (default 1500), \"max_body_chars\" (default 6000), " +
         "\"max_relations\" (default 20), \"max_calls\" (default 200), \"max_writes\" (default 500), " +
         "\"max_messages\" (drain, default 10), \"force\" (default false)}.";
@@ -4368,10 +4374,15 @@ agents:
             st.status = "busy";
           } else if (st.opts.mode === "document") {
             documentMode(st);
+            foldersOf(st);
+          } else if (st.opts.mode === "path") {
+            folderPass(st, st.opts.path, st.opts.recursive);
           } else if (st.opts.mode === "drain") {
             drainMode(st);
+            foldersOf(st);
           } else {
             sweepMode(st);
+            folderPass(st, st.opts.under_path !== "" ? st.opts.under_path : "/", true);
           }
         } catch (e) {
           if (isStop(e)) {
@@ -4414,8 +4425,8 @@ agents:
         o.path = "";
         o.under_path = "";
         if (v.mode !== undefined) {
-          if (v.mode !== "document" && v.mode !== "drain" && v.mode !== "sweep") {
-            return { error: "mode must be document, drain or sweep" };
+          if (v.mode !== "document" && v.mode !== "path" && v.mode !== "drain" && v.mode !== "sweep") {
+            return { error: "mode must be document, path, drain or sweep" };
           }
           o.mode = v.mode;
         }
@@ -4431,6 +4442,10 @@ agents:
         if (v.force !== undefined) {
           if (typeof v.force !== "boolean") { return { error: "force must be true or false" }; }
           o.force = v.force;
+        }
+        if (v.recursive !== undefined) {
+          if (typeof v.recursive !== "boolean") { return { error: "recursive must be true or false" }; }
+          o.recursive = v.recursive;
         }
         var nums = [["min_body_chars", 0, 100000], ["max_body_chars", 500, 20000], ["max_relations", 0, 20],
                     ["max_calls", 1, 5000], ["max_writes", 1, 10000], ["max_messages", 1, 100]];
@@ -4459,11 +4474,18 @@ agents:
           if ((o.document_id === "") === (o.path === "")) {
             return { error: "document mode needs exactly one of document_id and path" };
           }
+        } else if (o.mode === "path") {
+          if (o.path === "" || o.document_id !== "") {
+            return { error: "path mode needs path (a folder) and no document_id" };
+          }
         } else if (o.document_id !== "" || o.path !== "") {
           return { error: o.mode + " mode takes no document_id or path" };
         }
         if (o.under_path !== "" && o.mode !== "sweep") {
           return { error: "under_path is taken by sweep mode only" };
+        }
+        if (o.recursive && o.mode !== "path") {
+          return { error: "recursive is taken by path mode only" };
         }
         return { value: o };
       }
@@ -4474,7 +4496,10 @@ agents:
         return {
           opts: opts, status: "complete", failure: "", tool_calls: 0,
           lease: { taken: false, acquired: false, held: false, held_by: "", renewed_at: 0, renewals: 0, lost: false, released: false },
-          stale: { branch: 0, document: 0 },
+          stale: { branch: 0, document: 0, path: 0 }, folders: {}, folders_done: {}, folders_count: 0,
+          // Report mode writes nothing, so a folder whose child would be rewritten
+          // still reads current: dirty carries the would-be rewrite up instead.
+          dirty: {},
           calls: { made: 0, estimated_chars: 0 }, writes: 0, would_call: 0, would_write: 0,
           model_failures: 0, parse_errors: 0, wrong_language: 0,
           skipped: {}, refusals: {}, documents: [], documents_count: 0, skipped_documents: [],
@@ -4702,7 +4727,16 @@ agents:
         }
         st.documents_count++;
         if (st.documents.length < CONFIG.max_report_ids) { st.documents.push(doc.document_id); }
-        annotate(st, root, { document_id: doc.document_id }, "document");
+        // Its folders, up to the top, are looked at after the documents.
+        if (typeof root.path === "string" && root.path !== "") {
+          for (var f = dirname(root.path); ; f = dirname(f)) {
+            st.folders[f] = true;
+            if (f === "/") { break; }
+          }
+        }
+        if (annotate(st, root, { document_id: doc.document_id }, "document") && typeof root.path === "string" && root.path !== "") {
+          st.dirty[dirname(root.path)] = true;
+        }
       }
 
       // annotate writes the annotation of one part after its parts', and says whether
@@ -4733,7 +4767,12 @@ agents:
         if (!stale && !st.opts.force) { bump(st.skipped, "current"); return false; }
         if (isPlainObject(cur.record) && cur.record.manual === true) { bump(st.skipped, "manual"); return false; }
         st.stale[level]++;
-        var prompt = requestText(st, cur, level);
+        return write(st, cur, requestText(st, cur, level), ref, level);
+      }
+
+      // write asks the model for one annotation and writes it, or in report mode
+      // counts it. It says whether it wrote (or would write) one.
+      function write(st, cur, prompt, ref, level) {
         if (st.opts.write === "report") {
           st.would_call++;
           st.would_write++;
@@ -4755,7 +4794,7 @@ agents:
         if (v.language !== "" && v.language !== cur.language) { st.wrong_language++; return false; }
         var args = { op: "set_annotation", level: level, brief: v.brief, abstract: v.abstract, language: cur.language,
                      inputs_sha256: cur.inputs_sha256, prompt_version: CONFIG.prompt_version };
-        if (ref.id) { args.id = ref.id; } else { args.document_id = ref.document_id; }
+        if (ref.id) { args.id = ref.id; } else if (ref.path) { args.path = ref.path; } else { args.document_id = ref.document_id; }
         try {
           call(st, args);
         } catch (e) {
@@ -4764,6 +4803,71 @@ agents:
         }
         st.writes++;
         return true;
+      }
+
+      // foldersOf annotates the folders of the documents this pass looked at, the
+      // deepest first, so each folder is written after the folders below it.
+      function foldersOf(st) {
+        var list = [];
+        for (var f in st.folders) {
+          if (hasOwn(st.folders, f)) { list.push(f); }
+        }
+        list.sort(function (a, b) {
+          var da = a === "/" ? 0 : a.split("/").length, db = b === "/" ? 0 : b.split("/").length;
+          if (da !== db) { return db - da; }
+          return a < b ? -1 : (a > b ? 1 : 0);
+        });
+        for (var i = 0; i < list.length; i++) { folderPass(st, list[i], false); }
+      }
+
+      // folderPass annotates one folder; recursive, its sub-folders first. It says
+      // whether it wrote (or would write) the folder's annotation.
+      function folderPass(st, folder, recursive) {
+        if (st.folders_done[folder] === true || skippedFolder(folder)) { return false; }
+        var in0 = folderInputsOf(st, folder);
+        if (in0 === null) { bump(st.skipped, "unreadable"); return false; }
+        var childWrote = false;
+        if (recursive) {
+          var kids = isArray(in0.children) ? in0.children : [];
+          for (var i = 0; i < kids.length; i++) {
+            var ch = kids[i];
+            if (!isPlainObject(ch) || ch.kind !== "folder" || typeof ch.name !== "string") { continue; }
+            if (folderPass(st, (folder === "/" ? "" : folder) + "/" + ch.name, true)) { childWrote = true; }
+          }
+        }
+        st.folders_done[folder] = true;
+        if (!isArray(in0.covers) || in0.covers.length === 0) { return false; }
+        var cur = in0;
+        if (childWrote && st.opts.write === "annotate") {
+          cur = folderInputsOf(st, folder);
+          if (cur === null) { bump(st.skipped, "unreadable"); return false; }
+        }
+        var stale = cur.stale === true || (st.opts.write === "report" && (childWrote || st.dirty[folder] === true)) ||
+          (isPlainObject(cur.record) && cur.record.prompt_version !== CONFIG.prompt_version);
+        if (!stale && !st.opts.force) { bump(st.skipped, "current"); return false; }
+        if (isPlainObject(cur.record) && cur.record.manual === true) { bump(st.skipped, "manual"); return false; }
+        st.stale.path++;
+        st.folders_count++;
+        var wrote = write(st, cur, folderRequestText(st, cur), { path: folder }, "path");
+        if (wrote && folder !== "/") { st.dirty[dirname(folder)] = true; }
+        return wrote;
+      }
+
+      function skippedFolder(folder) {
+        for (var i = 0; i < CONFIG.skip_path_prefixes.length; i++) {
+          var p = CONFIG.skip_path_prefixes[i];
+          if (folder + "/" === p || folder.indexOf(p) === 0) { return true; }
+        }
+        return false;
+      }
+
+      function folderInputsOf(st, folder) {
+        try {
+          var r = call(st, { op: "annotation_inputs", level: "path", path: folder, prompt_version: CONFIG.prompt_version });
+          return isPlainObject(r) && typeof r.inputs_sha256 === "string" ? r : null;
+        } catch (e) {
+          return null;
+        }
       }
 
       function inputsOf(st, ref, level) {
@@ -4877,6 +4981,75 @@ agents:
         return blocks.join("\n\n");
       }
 
+      // folderRequestText renders a folder's request.
+      function folderRequestText(st, in1) {
+        var above = isPlainObject(in1.above) && typeof in1.above.abstract === "string" ? in1.above.abstract : "";
+        var parts = [];
+        var kids = isArray(in1.children) ? in1.children : [];
+        for (var i = 0; i < kids.length; i++) {
+          var ch = kids[i];
+          if (!isPlainObject(ch)) { continue; }
+          var line = (i + 1) + ". ";
+          if (ch.kind === "folder") {
+            line += oneLine(ch.name, CONFIG.max_title_chars) + "/";
+          } else {
+            line += oneLine(ch.title || ch.name || "(untitled)", CONFIG.max_title_chars) +
+              (typeof ch.class === "string" && ch.class !== "" ? " (" + oneLine(ch.class, 80) + ")" : "");
+          }
+          line += " — brief: " + (typeof ch.brief === "string" && ch.brief !== "" ? oneLine(ch.brief, CONFIG.max_brief_chars) : "(none yet)");
+          parts.push(line);
+        }
+        var more = isArray(in1.children_more) ? in1.children_more : [];
+        if (more.length > 0) {
+          var total = 0, groups = [], firsts = [];
+          for (var m = 0; m < more.length; m++) {
+            var g = more[m];
+            if (!isPlainObject(g)) { continue; }
+            total += g.count;
+            groups.push(g.count + " " + oneLine(g.class, 80));
+            var ts = isArray(g.titles) ? g.titles : [];
+            for (var t = 0; t < ts.length; t++) { firsts.push(oneLine(ts[t], CONFIG.max_title_chars)); }
+          }
+          parts.push("(" + total + " more: " + groups.join(", ") + "; first titles: " + firsts.join("; ") + ")");
+        }
+        var rels = [];
+        var rs = isArray(in1.relations) ? in1.relations : [];
+        for (var r = 0; r < rs.length; r++) {
+          if (isPlainObject(rs[r])) { rels.push(oneLine(rs[r].name, 64) + ": " + rs[r].count); }
+        }
+        var classes = [];
+        var cs = isArray(in1.classes) ? in1.classes : [];
+        for (var c = 0; c < cs.length; c++) {
+          if (isPlainObject(cs[c])) { classes.push(cs[c].count + " " + oneLine(cs[c].name, 80)); }
+        }
+        var concepts = [];
+        var ks = isArray(in1.concepts) ? in1.concepts : [];
+        for (var k = 0; k < ks.length; k++) {
+          if (isPlainObject(ks[k])) { concepts.push(oneLine(ks[k].name, 80) + " (" + ks[k].count + ")"); }
+        }
+        var material = [above, parts.join("\n"), rels.join("\n")];
+        var fAbove = fence("above", material), fParts = fence("parts", material), fRel = fence("relations", material);
+        var head = [
+          "LEVEL: a folder of documents",
+          "CLASS: a collection — " + (classes.length > 0 ? classes.join(", ") : "(no classes)") +
+            (concepts.length > 0 ? "; topics: " + concepts.join(", ") : ""),
+          "SLOTS: " + FOLDER_SLOTS,
+          "TITLE: " + oneLine(in1.title || "/", CONFIG.max_title_chars),
+          "PLACE: " + (typeof in1.parent === "string" && in1.parent !== "" ? oneLine(in1.parent, CONFIG.max_title_chars) : "(top level)"),
+          "LANGUAGE: " + in1.language,
+          "WORDS: " + WORDS.path
+        ];
+        var blocks = [head.join("\n")];
+        if (above !== "") {
+          blocks.push("ABOVE (the parent folder's abstract):\n<<<" + fAbove + "\n" + above + "\n" + fAbove + ">>>");
+        }
+        blocks.push("MATERIAL — the documents and sub-folders, by name:\n<<<" + fParts + "\n" + parts.join("\n") + "\n" + fParts + ">>>");
+        if (rels.length > 0) {
+          blocks.push("MATERIAL — relations among them:\n<<<" + fRel + "\n" + rels.join("\n") + "\n" + fRel + ">>>");
+        }
+        return blocks.join("\n\n");
+      }
+
       // fence is a block name that occurs nowhere in the material, as "<<<name" or
       // "name>>>", so no text inside can close its block.
       function fence(name, material) {
@@ -4957,7 +5130,7 @@ agents:
       function report(st) {
         var out = {
           status: st.status, mode: st.opts.mode, write: st.opts.write, prompt_version: CONFIG.prompt_version,
-          documents: st.documents_count, document_ids: st.documents, stale: st.stale,
+          documents: st.documents_count, document_ids: st.documents, folders: st.folders_count, stale: st.stale,
           calls: st.calls, skipped: st.skipped, tool_calls: st.tool_calls
         };
         if (st.failure !== "") { out.failure = st.failure; }

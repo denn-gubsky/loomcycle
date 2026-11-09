@@ -505,6 +505,16 @@ never deeper — so it stays small whatever the size of the document. A
 document's request also carries its identity fields and its relations to other
 documents, by kind and title.
 
+Then the **folders** of the documents it looked at, from the deepest up to `/`.
+A folder's request names each direct child's brief (documents and sub-folders,
+the first 60, the rest grouped by class), the classes and topics of the
+documents it covers and the kinds of relation among them. Its annotation is
+kept on a document `<folder>/_annotation` of the operational type
+`Annotation`, made on the first write; a folder that is itself a document
+keeps it on that document's root. A folder's annotation is withheld from a
+caller who may not read every document it covers. The `/facts` and `/memory`
+trees are never covered.
+
 **Only what changed.** The runtime computes what a part is written from and
 the hash of it (`annotation_inputs`), and refuses a write whose text moved in
 between. A part whose hash is unchanged costs no model call: a changed passage
@@ -516,9 +526,10 @@ is never rewritten.
 
 | `mode` | over | does |
 |---|---|---|
-| `document` | `document_id` or `path` | one document |
-| `drain` | the `documents/ingested` queue | the documents it names, newest first, up to `max_messages` that need work. It reads the queue from the oldest retained message and **never acknowledges it**: the queue's position is shared by its readers in the scope and belongs to `kb/linker`. A document that is current costs two reads |
-| `sweep` | the scope, or `under_path` | every document that needs work, never-annotated first, then the least recently written, up to 1000 documents per run |
+| `document` | `document_id` or `path` | one document, then its folders |
+| `path` | `path`, `recursive` | one folder; with `recursive: true` the folders beneath it first |
+| `drain` | the `documents/ingested` queue | the documents it names, newest first, up to `max_messages` that need work, then their folders. It reads the queue from the oldest retained message and **never acknowledges it**: the queue's position is shared by its readers in the scope and belongs to `kb/linker`. A document that is current costs two reads |
+| `sweep` | the scope, or `under_path` | every document that needs work, never-annotated first, then the least recently written, up to 1000 documents per run; then every folder beneath, deepest first |
 
 | `write` | does |
 |---|---|
@@ -533,7 +544,7 @@ documents (`SourceStub`, `SyncReport`, `Annotation`) and the `/facts` and
 `/memory` trees are skipped.
 
 **Report.** `{status, mode, write, prompt_version, documents, document_ids,
-stale: {branch, document}, calls: {made, estimated_chars}, skipped: {current,
+folders, stale: {branch, document, path}, calls: {made, estimated_chars}, skipped: {current,
 uncovered_leaf, manual, operational, unreadable}, queue? | sweep?}`, plus
 `would_call` / `would_write` in report mode, or `writes`, `parse_errors`,
 `wrong_language`, `model_failures`, `refusals` and `lease` in annotate mode.

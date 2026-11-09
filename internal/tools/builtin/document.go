@@ -1343,6 +1343,9 @@ func (d *Document) provisionTables(ctx context.Context, key sqlmem.ScopeKey) err
 	if err := d.migrateAssetDescription(ctx, key); err != nil {
 		return err
 	}
+	if err := d.migrateAnnotationFolders(ctx, key); err != nil {
+		return err
+	}
 	if err := d.migrateRevisionProvenance(ctx, key); err != nil {
 		return err
 	}

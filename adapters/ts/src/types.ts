@@ -4211,6 +4211,12 @@ export type PathToolInput = {
   cursor?: string;
   /** rm: also delete the backing resource (NOT supported in v1). */
   resource_too?: boolean;
+  /** ls (tenant scope): add each entry's annotation as `summary` (a folder's
+   *  from its `_annotation` document; `folder_summary` on a document with names
+   *  below it). */
+  with_summary?: boolean;
+  /** ls with_summary: the most abstract characters the page carries (default 2000). */
+  summary_chars?: number;
   [extra: string]: unknown;
 };
 

@@ -663,10 +663,13 @@ func EffectiveClasses(tenantTerms []OntologyTerm, tenantConfirmed bool) []Ontolo
 //     search show the item. Classifying or linking it would retype the stub or file
 //     proposals about a document nobody can read.
 //   - SyncReport: a sync's run report — operational, not knowledge.
+//   - Annotation: a Path folder's annotation document (<folder>/_annotation). It
+//     carries what the annotation pass wrote about the folder; classifying,
+//     linking or annotating it would describe a description.
 //
 // The set is fixed here rather than declared in the ontology: a type an operator
 // forgets to declare must still be skipped.
-func OperationalDocumentTypes() []string { return []string{"SourceStub", "SyncReport"} }
+func OperationalDocumentTypes() []string { return []string{"SourceStub", "SyncReport", "Annotation"} }
 
 // IsOperationalDocumentType reports whether t is one of OperationalDocumentTypes. Case
 // and surrounding space are ignored, as classify ignores case when it compares a type

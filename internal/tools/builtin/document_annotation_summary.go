@@ -25,6 +25,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -132,7 +133,8 @@ func (d *Document) documentBriefs(ctx context.Context, key sqlmem.ScopeKey, body
 	if len(roots) == 0 {
 		return false
 	}
-	recs, err := d.annotationRecordsFor(ctx, key, roots, annotationLevelDocument)
+	// A folder's _annotation document is labelled by its folder's brief.
+	recs, err := d.annotationRecordsFor(ctx, key, roots, annotationLevelDocument, annotationLevelPath)
 	if err != nil {
 		return false
 	}
@@ -141,6 +143,9 @@ func (d *Document) documentBriefs(ctx context.Context, key sqlmem.ScopeKey, body
 		m, _ := r.(map[string]any)
 		root, _ := m["root_chunk_id"].(string)
 		if rec, ok := recs[root][annotationLevelDocument]; ok {
+			m["brief"] = rec.Brief
+			changed = true
+		} else if rec, ok := recs[root][annotationLevelPath]; ok && strings.EqualFold(asStr(m["type"]), annotationDocType) {
 			m["brief"] = rec.Brief
 			changed = true
 		}

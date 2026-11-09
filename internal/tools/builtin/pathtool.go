@@ -30,6 +30,30 @@ type Path struct {
 	// rename cannot lose track of the tenant ontology. Nil in a deployment without
 	// SQL Memory, where there are no documents to lose track of.
 	Identities TenantIdentityRecorder
+	// Annotations, when set, answers ls with_summary from the documents'
+	// annotations. Nil in a deployment without SQL Memory.
+	Annotations PathAnnotations
+}
+
+// PathAnnotations is what ls asks of the Document tool for with_summary: the
+// summary of each listed entry, keyed by full path.
+type PathAnnotations interface {
+	PathEntrySummaries(ctx context.Context, scope string, entries []PathSummaryEntry, summaryChars int) map[string]PathEntrySummary
+}
+
+// PathSummaryEntry is one listed entry ls asks a summary for.
+type PathSummaryEntry struct {
+	FullPath    string
+	Kind        string
+	DocumentID  string
+	HasChildren bool
+}
+
+// PathEntrySummary is what an entry gains: its own summary, and for a document
+// that also has names below it, the folder's.
+type PathEntrySummary struct {
+	Summary       map[string]any
+	FolderSummary map[string]any
 }
 
 func (p *Path) Name() string { return "Path" }
@@ -63,7 +87,9 @@ const pathInputSchema = `{
 		"kind_filter":   {"type": "string", "description": "ls: only entries of this kind (document/volume_mount/memory_entry/directory)."},
 		"limit":         {"type": "integer", "minimum": 1, "description": "ls: maximum entries to return (default 500, max 5000). A truncated listing reports truncated:true and a next_cursor — pass that back as the cursor field to continue. Subject-homed facts make a directory as large as the tenant's entity count, so a listing has to be pageable rather than whole."},
 		"cursor":        {"type": "string", "description": "ls: continue a truncated listing — pass the next_cursor from the previous response. Opaque: its encoding is not part of the contract, so do not construct one."},
-		"resource_too":  {"type": "boolean", "description": "rm: also delete the backing resource. NOT supported in v1 (dirent-only removal)."}
+		"resource_too":  {"type": "boolean", "description": "rm: also delete the backing resource. NOT supported in v1 (dirent-only removal)."},
+		"with_summary":  {"type": "boolean", "description": "ls (tenant scope): add each entry's annotation as summary — a document's {brief, stale?}, a folder's {brief, abstract, stale?} from its _annotation document. An entry with none has no summary."},
+		"summary_chars": {"type": "integer", "description": "ls with_summary: the most abstract characters the page carries (default 2000, at most 8000)."}
 	},
 	"required": ["op"]
 }`
@@ -80,6 +106,8 @@ type pathInput struct {
 	ResourceToo bool   `json:"resource_too"`
 	Limit       int    `json:"limit"`
 	Cursor      string `json:"cursor"`
+	WithSummary  bool `json:"with_summary"`
+	SummaryChars int  `json:"summary_chars"`
 }
 
 func (p *Path) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
@@ -207,6 +235,9 @@ type pathEntry struct {
 	// descendant survives the caller's read filter, so it never reveals that
 	// hidden names exist.
 	HasChildren bool `json:"has_children,omitempty"`
+	// Summary / FolderSummary are the entry's annotation (ls with_summary).
+	Summary       map[string]any `json:"summary,omitempty"`
+	FolderSummary map[string]any `json:"folder_summary,omitempty"`
 }
 
 func (p *Path) resolve(ctx context.Context, tenantID, scope, scopeID string, in pathInput) (tools.Result, error) {
@@ -257,7 +288,7 @@ func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathI
 		// cursor a stable position rather than a bet on the store's row order.
 		entries = newPathACL(ctx, scope, scopeID).filter(ctx, entries)
 		sort.Slice(entries, func(i, j int) bool { return entries[i].FullPath < entries[j].FullPath })
-		return lsPage(canonical, entries, in, func(e pathEntry) string { return e.FullPath })
+		return lsPage(canonical, entries, in, func(e pathEntry) string { return e.FullPath }, p.summarize(ctx, scope, in))
 	}
 
 	// One-level ls. Directories are IMPLICIT (S3-style, RFC AL): a document at
@@ -316,7 +347,7 @@ func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathI
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-	return lsPage(canonical, entries, in, func(e pathEntry) string { return e.Name })
+	return lsPage(canonical, entries, in, func(e pathEntry) string { return e.Name }, p.summarize(ctx, scope, in))
 }
 
 // lsDefaultLimit / lsMaxLimit bound a listing's RESPONSE.
@@ -340,7 +371,10 @@ const (
 // encoding is deliberately not part of the contract so it can become a composite
 // (or move into the store as a keyset predicate) without a wire change. It is a
 // POSITION, not an offset, so entries created before it do not shift the page.
-func lsPage(canonical string, entries []pathEntry, in pathInput, keyOf func(pathEntry) string) (tools.Result, error) {
+//
+// decorate, when not nil, is applied to the page alone (ls with_summary), so a
+// summary is computed only for what is returned.
+func lsPage(canonical string, entries []pathEntry, in pathInput, keyOf func(pathEntry) string, decorate func([]pathEntry)) (tools.Result, error) {
 	if in.Cursor != "" {
 		after, err := decodeLsCursor(in.Cursor)
 		if err != nil {
@@ -359,13 +393,45 @@ func lsPage(canonical string, entries []pathEntry, in pathInput, keyOf func(path
 	out := map[string]any{"path": canonical}
 	if len(entries) > limit {
 		page := entries[:limit]
+		if decorate != nil {
+			decorate(page)
+		}
 		out["entries"] = page
 		out["truncated"] = true
 		out["next_cursor"] = encodeLsCursor(keyOf(page[len(page)-1]))
 		return jsonResult(out)
 	}
+	if decorate != nil {
+		decorate(entries)
+	}
 	out["entries"] = entries
 	return jsonResult(out)
+}
+
+// summarize is ls's with_summary decoration, or nil when it was not asked for or
+// cannot be answered here.
+func (p *Path) summarize(ctx context.Context, scope string, in pathInput) func([]pathEntry) {
+	if !in.WithSummary || p.Annotations == nil {
+		return nil
+	}
+	return func(page []pathEntry) {
+		asks := make([]PathSummaryEntry, 0, len(page))
+		for _, e := range page {
+			var ref struct {
+				DocumentID string `json:"document_id"`
+			}
+			if e.Kind == "document" {
+				_ = json.Unmarshal(e.ResourceRef, &ref)
+			}
+			asks = append(asks, PathSummaryEntry{FullPath: e.FullPath, Kind: e.Kind, DocumentID: ref.DocumentID, HasChildren: e.HasChildren})
+		}
+		got := p.Annotations.PathEntrySummaries(ctx, scope, asks, in.SummaryChars)
+		for i := range page {
+			if sm, ok := got[page[i].FullPath]; ok {
+				page[i].Summary, page[i].FolderSummary = sm.Summary, sm.FolderSummary
+			}
+		}
+	}
 }
 
 func encodeLsCursor(key string) string {

@@ -23,9 +23,17 @@ import (
 )
 
 // reservedNameError is a dirent write the chokepoint refused.
-type reservedNameError struct{ name string }
+type reservedNameError struct {
+	name string
+	// why replaces the reason when the name is reserved for something other
+	// than a tenant-wide document (a folder's annotation).
+	why string
+}
 
 func (e *reservedNameError) Error() string {
+	if e.why != "" {
+		return e.name + ": " + e.why
+	}
 	return e.name + " is a reserved name in the tenant scope: the runtime finds a tenant-wide " +
 		"document by it, so only an operator may create, rename or remove it"
 }
@@ -53,6 +61,9 @@ func createDirent(ctx context.Context, st store.Store, row store.DirentRow) (sto
 	if row.Scope == "tenant" && reservedNameRefusal(ctx, "", row.Scope, row.ParentPath+row.Name) != nil {
 		return store.DirentRow{}, &reservedNameError{name: row.ParentPath + row.Name}
 	}
+	if err := annotationNameErr(ctx, row.Scope, row.ParentPath+row.Name); err != nil {
+		return store.DirentRow{}, err
+	}
 	return st.DirentCreate(ctx, row)
 }
 
@@ -79,6 +90,9 @@ func deleteDirentsUnder(ctx context.Context, st store.Store, tenantID, scope, sc
 // moveDirent renames a name and everything below it.
 func moveDirent(ctx context.Context, st store.Store, tenantID, scope, scopeID, fromParent, fromName, toParent, toName string) (bool, error) {
 	if err := reservedDirentErr(ctx, scope, fromParent+fromName, toParent+toName); err != nil {
+		return false, err
+	}
+	if err := annotationNameErr(ctx, scope, fromParent+fromName, toParent+toName); err != nil {
 		return false, err
 	}
 	return st.DirentMove(ctx, tenantID, scope, scopeID, fromParent, fromName, toParent, toName)

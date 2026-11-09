@@ -112,15 +112,21 @@ type annotationRecord struct {
 	Manual          bool   `json:"manual"`
 	WrittenAt       string `json:"written_at"`
 	WrittenBy       string `json:"written_by"`
+	// Folder is the Path folder a path record annotates.
+	Folder string `json:"folder,omitempty"`
 	// Stale is computed on read: the current inputs hash differs from the stored
 	// one. Absent where the read did not compute it.
 	Stale *bool `json:"stale,omitempty"`
 
 	writtenAtNs int64
+	// covers is the documents a path record was written from: the caller must be
+	// able to read every one of them to be shown it.
+	covers []string
 }
 
 const annotationSelectCols = `a.chunk_id, c.document_id, a.level, a.brief, a.abstract, a.language, a.class,
-	a.ontology_version, a.inputs_sha256, a.prompt_version, a.model, a.manual, a.written_at, a.written_by`
+	a.ontology_version, a.inputs_sha256, a.prompt_version, a.model, a.manual, a.written_at, a.written_by,
+	a.folder, a.covers`
 
 // annotationFrom is the FROM clause every record read uses: a record whose chunk
 // is gone is an orphan and is never returned.
@@ -138,6 +144,10 @@ func scanAnnotationRecord(r []any) annotationRecord {
 		rec.OntologyVersion = &v
 	}
 	rec.WrittenAt = time.Unix(0, rec.writtenAtNs).UTC().Format(time.RFC3339)
+	rec.Folder = asStr(r[14])
+	if c := asStr(r[15]); c != "" {
+		rec.covers = parseCovers(c)
+	}
 	return rec
 }
 
@@ -544,6 +554,16 @@ func (s *annotationScope) relations(ctx context.Context, docID string, acl *docA
 // under the prompt version it was written with (a newer prompt is the driver's
 // to know about, through annotation_inputs).
 func (s *annotationScope) stale(ctx context.Context, rec annotationRecord) (bool, error) {
+	if rec.Level == annotationLevelPath {
+		if rec.Folder == "" {
+			return true, nil
+		}
+		in, err := s.folderInputsFor(ctx, rec.Folder, rec.PromptVersion, nil)
+		if err != nil {
+			return false, err
+		}
+		return in.InputsSHA256 != rec.InputsSHA256, nil
+	}
 	t, ok, err := s.targetOf(ctx, rec.ChunkID, rec.Level)
 	if err != nil || !ok {
 		return false, err
@@ -597,9 +617,11 @@ func (d *Document) resolveAnnotationTarget(ctx context.Context, s *annotationSco
 	switch level {
 	case "", annotationLevelBranch, annotationLevelDocument:
 	case annotationLevelPath:
-		return fail(errValidation(op+": level path is not available on this server yet", "Use level branch or document."))
+		if in.ID == "" {
+			return fail(errValidation(op+": a folder's annotation is addressed by its path with level path", ""))
+		}
 	default:
-		return fail(errValidation(op+": level must be branch or document", ""))
+		return fail(errValidation(op+": level must be branch, document or path", ""))
 	}
 	t, ok, err := s.targetOf(ctx, chunkID, level)
 	if err != nil {
@@ -617,6 +639,9 @@ func (d *Document) resolveAnnotationTarget(ctx context.Context, s *annotationSco
 		if isRoot {
 			t.level = annotationLevelDocument
 		}
+	}
+	if t.level == annotationLevelPath && !isRoot {
+		return fail(errValidation(op+": level path is kept on a document's root chunk; this chunk is a section", ""))
 	}
 	if t.level == annotationLevelDocument && !isRoot {
 		return fail(errValidation(op+": level document is written on a document's root chunk; this chunk is a section",
@@ -673,6 +698,9 @@ func (d *Document) annotationInputsOp(ctx context.Context, key sqlmem.ScopeKey, 
 	}
 	if in.PromptVersion < 0 {
 		return errValidation(op+": prompt_version must be 0 or more", ""), nil
+	}
+	if in.Level == annotationLevelPath {
+		return d.folderAnnotationInputs(ctx, key, mscope, in)
 	}
 	bodyChars := 0
 	if in.BodyChars != nil {
@@ -739,10 +767,16 @@ func (d *Document) setAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 	case in.Manual && !tools.IsOperatorPlane(ctx):
 		return errPermission(op+": manual annotations are written by the operator", "Omit manual."), nil
 	}
+	if in.Level == annotationLevelPath {
+		return d.setFolderAnnotation(ctx, key, mscope, in, brief, abstract)
+	}
 	s := d.newAnnotationScope(key, mscope)
 	t, refused := d.resolveAnnotationTarget(ctx, s, op, in, true)
 	if refused != nil {
 		return *refused, nil
+	}
+	if t.level == annotationLevelPath {
+		return errValidation(op+": a folder's annotation is written by its path with level path", ""), nil
 	}
 	cur, err := s.inputs(ctx, t, in.PromptVersion, 0, nil, false)
 	if err != nil {
@@ -799,7 +833,18 @@ func (d *Document) setAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 
 func (d *Document) getAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	const op = "get_annotation"
+	if in.Level == annotationLevelPath && in.ID == "" {
+		root, refused := d.folderRecordChunk(ctx, key, op, in.Path)
+		if refused != nil {
+			return *refused, nil
+		}
+		if root == "" {
+			return jsonResult(map[string]any{"annotations": []any{}})
+		}
+		in.ID, in.Path = root, ""
+	}
 	s := d.newAnnotationScope(key, mscope)
+	acl := d.newDocACL(ctx, key)
 	t, refused := d.resolveAnnotationTarget(ctx, s, op, in, false)
 	if refused != nil {
 		return *refused, nil
@@ -818,6 +863,13 @@ func (d *Document) getAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 		if !ok {
 			continue
 		}
+		if lvl == annotationLevelPath {
+			if ok, err := coversReadable(ctx, acl, rec.covers); err != nil {
+				return errFrom(op+": "+err.Error(), err), nil
+			} else if !ok {
+				continue
+			}
+		}
 		stale, err := s.stale(ctx, rec)
 		if err != nil {
 			return errFrom(op+": "+err.Error(), err), nil
@@ -835,7 +887,17 @@ func (d *Document) deleteAnnotation(ctx context.Context, key sqlmem.ScopeKey, ms
 			"Delete it from the console."), nil
 	}
 	if in.Level == "" {
-		return errValidation(op+": missing required field: level (branch or document)", ""), nil
+		return errValidation(op+": missing required field: level (branch, document or path)", ""), nil
+	}
+	if in.Level == annotationLevelPath && in.ID == "" {
+		root, refused := d.folderRecordChunk(ctx, key, op, in.Path)
+		if refused != nil {
+			return *refused, nil
+		}
+		if root == "" {
+			return jsonResult(map[string]any{"deleted": false})
+		}
+		in.ID, in.Path = root, ""
 	}
 	s := d.newAnnotationScope(key, mscope)
 	t, refused := d.resolveAnnotationTarget(ctx, s, op, in, true)
@@ -855,6 +917,15 @@ func (d *Document) deleteAnnotation(ctx context.Context, key sqlmem.ScopeKey, ms
 	}
 	if err := d.exec(ctx, key, `DELETE FROM chunk_annotations WHERE chunk_id = ? AND level = ?`, t.chunk.ID, t.level); err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
+	}
+	// A folder's _annotation document exists only to carry its record.
+	if t.level == annotationLevelPath && strings.EqualFold(t.docType, annotationDocType) {
+		raw, _ := json.Marshal(map[string]any{"op": "delete_document", "id": t.chunk.DocumentID})
+		var del docInput
+		_ = json.Unmarshal(raw, &del)
+		if res, err := d.dispatch(ctx, key, mscope, del, raw); err != nil || res.IsError {
+			return jsonResult(map[string]any{"deleted": true, "document_kept": true})
+		}
 	}
 	return jsonResult(map[string]any{"deleted": true})
 }
@@ -1022,4 +1093,24 @@ func (d *Document) annotationDocumentPath(ctx context.Context, key sqlmem.ScopeK
 	}
 	sort.Strings(names)
 	return names[0]
+}
+
+// folderRecordChunk is the chunk a folder's path record lives on, "" when the
+// folder has none.
+func (d *Document) folderRecordChunk(ctx context.Context, key sqlmem.ScopeKey, op, path string) (string, *tools.Result) {
+	if path == "" {
+		r := errValidation(op+": missing required field: path (the folder)", "")
+		return "", &r
+	}
+	canonical, err := folderPathOf(path)
+	if err != nil {
+		r := errValidation(op+": "+err.Error(), "Pass the folder's path, e.g. /kb/policies.")
+		return "", &r
+	}
+	t, err := d.folderTargetOf(ctx, key, canonical)
+	if err != nil {
+		r := errFrom(op+": "+err.Error(), err)
+		return "", &r
+	}
+	return t.root, nil
 }

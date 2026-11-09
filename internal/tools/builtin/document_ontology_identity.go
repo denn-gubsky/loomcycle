@@ -218,6 +218,10 @@ func (d *Document) reservedTargetRefusal(ctx context.Context, key sqlmem.ScopeKe
 		if err != nil {
 			return nil // the op refuses a malformed path itself, with its own advice
 		}
+		if err := annotationNameErr(ctx, key.Scope, canonical); err != nil {
+			r := errPermission(in.Op+": "+err.Error()+".", "Use another path.")
+			return &r
+		}
 		return reservedNameRefusal(ctx, in.Op, key.Scope, canonical)
 	case "delete_document":
 		return d.reservedHeldRefusal(ctx, key, in)

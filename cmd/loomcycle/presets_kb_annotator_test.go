@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"sync"
 	"testing"
@@ -88,10 +89,12 @@ func annReplyFromTitle(prompt string) string {
 			break
 		}
 	}
-	// The abstract names the request's size, so a part whose material changed
+	// The abstract names a hash of the request, so a part whose material changed
 	// gets a different annotation, as it would from a model.
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(prompt))
 	b, _ := json.Marshal(map[string]string{"brief": "Brief of " + title,
-		"abstract": fmt.Sprintf("Abstract of %s, from %d characters.", title, len(prompt)), "language": "en"})
+		"abstract": fmt.Sprintf("Abstract of %s, from request %08x.", title, h.Sum32()), "language": "en"})
 	return string(b)
 }
 
@@ -190,10 +193,10 @@ func TestKBAnnotator_ReportCountsWhatAnnotateThenWrites(t *testing.T) {
 	in := fmt.Sprintf(`{"mode":"document","document_id":%q}`, a.doc)
 
 	rep := runAnnotator(t, d, driver, f, in)
-	// Setup (it has parts), Notes (long) and the document; the two steps are short
-	// leaves covered by Setup.
-	if rep["status"] != "complete" || annCount(rep, "would_call") != 3 || len(f.prompts) != 0 {
-		t.Fatalf("report = %v, prompts %d; want 3 would-calls and no model call", rep, len(f.prompts))
+	// Setup (it has parts), Notes (long) and the document — the two steps are short
+	// leaves covered by Setup — then its folders /kb/widgets, /kb and /.
+	if rep["status"] != "complete" || annCount(rep, "would_call") != 6 || len(f.prompts) != 0 {
+		t.Fatalf("report = %v, prompts %d; want 6 would-calls and no model call", rep, len(f.prompts))
 	}
 	if est := rep["calls"].(map[string]any)["estimated_chars"].(float64); est <= 0 {
 		t.Fatalf("estimated_chars = %v", est)
@@ -204,15 +207,20 @@ func TestKBAnnotator_ReportCountsWhatAnnotateThenWrites(t *testing.T) {
 	}
 
 	rep = runAnnotator(t, d, driver, f, fmt.Sprintf(`{"mode":"document","document_id":%q,"write":"annotate"}`, a.doc))
-	if rep["status"] != "complete" || annCount(rep, "writes") != 3 || len(f.prompts) != 3 {
-		t.Fatalf("annotate = %v, prompts %d; want 3 calls and 3 writes", rep, len(f.prompts))
+	if rep["status"] != "complete" || annCount(rep, "writes") != 6 || len(f.prompts) != 6 {
+		t.Fatalf("annotate = %v, prompts %d; want 6 calls and 6 writes", rep, len(f.prompts))
 	}
 	if l := rep["lease"].(map[string]any); l["acquired"] != true || l["released"] != true {
 		t.Fatalf("lease = %v", l)
 	}
 	// Bottom-up: the document's request carries its sections' briefs, and the
 	// short steps' text inside Setup's.
-	last := f.prompts[len(f.prompts)-1]
+	last := ""
+	for _, p := range f.prompts {
+		if strings.Contains(p, "LEVEL: a whole document") {
+			last = p
+		}
+	}
 	if !strings.Contains(last, "LEVEL: a whole document") || !strings.Contains(last, "Brief of Setup") || !strings.Contains(last, "Brief of Notes") {
 		t.Fatalf("document request:\n%s", last)
 	}
@@ -242,17 +250,18 @@ func TestKBAnnotator_ReportCountsWhatAnnotateThenWrites(t *testing.T) {
 		t.Fatalf("a current document cost %d calls: %v", len(f.prompts)-before, rep)
 	}
 
-	// A leaf changes: Setup and the document are rewritten, Notes is not.
+	// A leaf changes: Setup, the document and its folder chain are rewritten,
+	// Notes is not.
 	got := realDoc(t, d, author, fmt.Sprintf(`{"op":"get_chunk","scope":"tenant","id":%q}`, a.step1))
 	realDoc(t, d, author, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"revision":%v,"body":"Unpack it gently."}`, a.step1, got["revision"]))
 	rep = runAnnotator(t, d, driver, f, fmt.Sprintf(`{"mode":"document","document_id":%q}`, a.doc))
-	if annCount(rep, "would_call") != 2 {
-		t.Fatalf("report after a leaf change = %v, want 2 would-calls", rep)
+	if annCount(rep, "would_call") != 5 {
+		t.Fatalf("report after a leaf change = %v, want 5 would-calls", rep)
 	}
 	before = len(f.prompts)
 	rep = runAnnotator(t, d, driver, f, fmt.Sprintf(`{"mode":"document","document_id":%q,"write":"annotate"}`, a.doc))
-	if len(f.prompts)-before != 2 || annCount(rep, "writes") != 2 {
-		t.Fatalf("after a leaf change: %d calls, %v; want 2", len(f.prompts)-before, rep)
+	if len(f.prompts)-before != 5 || annCount(rep, "writes") != 5 {
+		t.Fatalf("after a leaf change: %d calls, %v; want 5", len(f.prompts)-before, rep)
 	}
 	for _, p := range f.prompts[before:] {
 		if strings.Contains(p, "TITLE: Notes") {
@@ -365,7 +374,9 @@ func TestKBAnnotator_SweepTakesNeverAnnotatedFirst(t *testing.T) {
 	before := len(f.prompts)
 	rep := runAnnotator(t, d, driver, f, `{"mode":"sweep","write":"annotate","under_path":"/kb"}`)
 	s := rep["sweep"].(map[string]any)
-	if s["current"] != float64(1) || s["annotated"] != float64(1) || s["exhausted"] != true || len(f.prompts)-before != 3 {
+	// The gadget guide's three parts, then the folders it changed under /kb:
+	// /kb/gadgets (new) and /kb; /kb/widgets is current.
+	if s["current"] != float64(1) || s["annotated"] != float64(1) || s["exhausted"] != true || len(f.prompts)-before != 5 {
 		t.Fatalf("sweep = %v, calls %d", rep, len(f.prompts)-before)
 	}
 }
@@ -444,5 +455,38 @@ func sortStrings(s []string) {
 		for j := i; j > 0 && s[j] < s[j-1]; j-- {
 			s[j], s[j-1] = s[j-1], s[j]
 		}
+	}
+}
+
+// Folders come after their documents, the deepest first, each from its
+// children's annotations; a folder that changed nothing below costs nothing.
+func TestKBAnnotator_FoldersAfterTheirDocuments(t *testing.T) {
+	d, author, driver := annRealDocument(t)
+	a := seedAnnDoc(t, d, author, "Widget guide", "/kb/widgets/guide")
+	f := &annFake{reply: annReplyFromTitle}
+	rep := runAnnotator(t, d, driver, f, fmt.Sprintf(`{"mode":"document","document_id":%q,"write":"annotate"}`, a.doc))
+	// Setup, Notes, the document, then /kb/widgets, /kb and /.
+	if rep["status"] != "complete" || annCount(rep, "writes") != 6 || annCount(rep, "folders") != 3 {
+		t.Fatalf("report = %v", rep)
+	}
+	var folderReqs []string
+	for _, p := range f.prompts {
+		if strings.Contains(p, "LEVEL: a folder of documents") {
+			folderReqs = append(folderReqs, p)
+		}
+	}
+	if len(folderReqs) != 3 || !strings.Contains(folderReqs[0], "TITLE: widgets") || !strings.Contains(folderReqs[0], "Brief of Widget guide") ||
+		!strings.Contains(folderReqs[1], "TITLE: kb") || !strings.Contains(folderReqs[1], "widgets/ — brief: Brief of widgets") {
+		t.Fatalf("folder requests:\n%s", strings.Join(folderReqs, "\n----\n"))
+	}
+	ann := realDoc(t, d, author, `{"op":"get_document","scope":"tenant","path":"/kb/widgets/_annotation"}`)
+	if ann["type"] != "Annotation" {
+		t.Fatalf("_annotation document = %v", ann)
+	}
+	// Nothing changed: a sweep over the folders makes no call.
+	before := len(f.prompts)
+	rep = runAnnotator(t, d, driver, f, `{"mode":"path","path":"/kb","recursive":true,"write":"annotate"}`)
+	if len(f.prompts) != before || annCount(rep, "writes") != 0 {
+		t.Fatalf("a current tree cost %d calls: %v", len(f.prompts)-before, rep)
 	}
 }

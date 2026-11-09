@@ -10,7 +10,12 @@ the same way:
   child's annotation — or, for a child with none, the child's text;
 - a document (`document`): the same over the root chunk and its top-level
   sections, plus the root's identity fields and the document's asserted
-  relations to other documents, by kind and title.
+  relations to other documents, by kind and title;
+- a folder (`path`, with `path` the folder): each direct child's annotation,
+  a document's or a sub-folder's, by name (the first 60, the rest grouped by
+  class in `children_more`), the classes and topics of the documents it covers,
+  and the kinds of relation among them. It also returns `covers`, the ids of
+  every document below it.
 
 A change anywhere below changes the hash only through the children, so a
 section goes stale when one of its parts changed and its sibling sections do
@@ -25,8 +30,9 @@ reads annotation inputs.
 
 - `id` — the chunk: a section, or a document's root chunk.
 - `document_id` — a document, for its `document` annotation.
-- `path` — the document's Path-tree name, instead of `document_id`.
-- `level` — `branch` or `document`. Default: what the chunk is.
+- `path` — the document's Path-tree name, instead of `document_id`; with
+  `level: path`, the folder.
+- `level` — `branch`, `document` or `path`. Default: what the chunk is.
 - `prompt_version` — the version of the prompt the annotation will be written
   with. It is part of the hash, so a new prompt makes earlier annotations
   stale.
