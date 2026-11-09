@@ -116,6 +116,17 @@ func (a *pathACL) filter(ctx context.Context, entries []pathEntry) []pathEntry {
 	return kept
 }
 
+// anyReadable reports whether the caller may read at least one of rows — the
+// has_children question, which must not count names the caller cannot see.
+func (a *pathACL) anyReadable(ctx context.Context, rows []store.DirentRow) bool {
+	for _, r := range rows {
+		if a.readable(ctx, pathEntry{Kind: r.Kind, FullPath: r.ParentPath + r.Name, ResourceRef: r.ResourceRef}) {
+			return true
+		}
+	}
+	return false
+}
+
 // aclSubtree asks verb about the entry at from and every entry under it — a
 // move or a recursive remove reaches all of them — and, for a move (to set),
 // about the name each one would get under to.
