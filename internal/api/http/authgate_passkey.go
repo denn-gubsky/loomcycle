@@ -563,9 +563,17 @@ func (s *Server) passkeySecondFactor(ctx context.Context, gate, tenant, subject 
 // subject's passkeys, in a ceremony of kind bound to binding.
 func (s *Server) passkeyAssertion(ctx context.Context, kind, gate, tenant, subject, binding string,
 	uv protocol.UserVerificationRequirement, keys []store.UserPasskeyRow, answer *passkeyAnswer) (*passkeyOffer, bool, error) {
+	offer, answered, err := s.passkeyAssertionKey(ctx, kind, gate, tenant, subject, binding, uv, keys, answer)
+	return offer, answered != nil, err
+}
+
+// passkeyAssertionKey is passkeyAssertion reporting which passkey answered:
+// its credential id, nil when none was verified.
+func (s *Server) passkeyAssertionKey(ctx context.Context, kind, gate, tenant, subject, binding string,
+	uv protocol.UserVerificationRequirement, keys []store.UserPasskeyRow, answer *passkeyAnswer) (*passkeyOffer, []byte, error) {
 	wa, ok := s.relyingParty()
 	if !ok || len(keys) == 0 {
-		return nil, false, errPasskeysUnavailable
+		return nil, nil, errPasskeysUnavailable
 	}
 	user := &passkeyUser{handle: keys[0].UserHandle, name: subject, displayName: subject}
 	for _, k := range keys {
@@ -576,41 +584,41 @@ func (s *Server) passkeyAssertion(ctx context.Context, kind, gate, tenant, subje
 	if answer == nil {
 		opts, sd, err := wa.BeginLogin(user, webauthn.WithUserVerification(uv))
 		if err != nil {
-			return nil, false, err
+			return nil, nil, err
 		}
 		offer, err := s.beginCeremony(ctx, kind, gate, tenant, subject, binding, opts.Response, sd)
 		if err != nil {
-			return nil, false, err
+			return nil, nil, err
 		}
-		return &offer, false, nil
+		return &offer, nil, nil
 	}
 	sd, err := s.takeCeremony(ctx, *answer, kind, gate, tenant, subject, binding)
 	if err != nil {
 		if errors.Is(err, errPasskeyRefused) {
-			return nil, false, nil
+			return nil, nil, nil
 		}
-		return nil, false, err
+		return nil, nil, err
 	}
 	parsed, err := protocol.ParseCredentialRequestResponseBytes(answer.Credential)
 	if err != nil {
-		return nil, false, nil
+		return nil, nil, nil
 	}
 	cred, err := wa.ValidateLogin(user, sd, parsed)
 	if err != nil {
-		return nil, false, nil
+		return nil, nil, nil
 	}
 	for _, k := range keys {
 		if bytes.Equal(k.CredentialID, cred.ID) {
 			if err := s.acceptAssertion(ctx, k, cred); err != nil {
 				if errors.Is(err, errPasskeyRefused) {
-					return nil, false, nil
+					return nil, nil, nil
 				}
-				return nil, false, err
+				return nil, nil, err
 			}
-			return nil, true, nil
+			return nil, k.CredentialID, nil
 		}
 	}
-	return nil, false, nil
+	return nil, nil, nil
 }
 
 // --- self-service: register, list, rename, remove ---

@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/authgate/password"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -143,5 +145,121 @@ func TestPasswordReset_KeepsEveryPasskeyWhenNoPasswordWasSet(t *testing.T) {
 	}
 	if got := passkeyNames(t, body["removed_passkeys"]); len(got) != 0 {
 		t.Errorf("removed passkeys = %v, want none", got)
+	}
+}
+
+// The passkey that answered the reset's own second-factor check stays even
+// when it was added after the password: whoever completes the reset holds it
+// and the link. Another passkey added after the password still goes.
+func TestPasswordReset_KeepsThePasskeyThatAnsweredTheReset(t *testing.T) {
+	f := newPasskeyFixture(t)
+	b, sub := f.passwordUser(t, "uri@example.com")
+	ctx := context.Background()
+	old := registerPasskey(t, b) // "laptop"
+	const changed = "uri's changed passphrase, set after the laptop"
+	if code, out := stepUpWithPasskey(t, b, "POST", "/v1/_auth/password",
+		map[string]any{"current_password": goodPassword, "new_password": changed}, old); code != http.StatusNoContent {
+		t.Fatalf("change password: %d %v", code, out)
+	}
+	registerAnotherPasskey(t, b, changed, "intruder", old)
+	phone := registerAnotherPasskey(t, b, changed, "phone", old)
+
+	rst := f.resetCode(t, bAcmeOp, "local", jsonBody(t, map[string]string{"subject": sub}))
+	fresh := f.browser(t)
+	const newPass = "a reset passphrase for uri"
+	_, out := fresh.do("POST", "/v1/_auth/reset", jsonBody(t, map[string]any{"code": rst, "password": newPass}))
+	code, body := fresh.do("POST", "/v1/_auth/reset", jsonBody(t, map[string]any{"code": rst, "password": newPass,
+		"webauthn": phone.get(out["webauthn"].(map[string]any))}))
+	if code != http.StatusOK {
+		t.Fatalf("reset: %d %v", code, body)
+	}
+	rows, _ := f.st.UserPasskeyList(ctx, "acme", sub)
+	names := map[string]bool{}
+	for _, r := range rows {
+		names[r.Name] = true
+	}
+	if len(rows) != 2 || !names["laptop"] || !names["phone"] {
+		t.Fatalf("passkeys after the reset = %v, want laptop (older) and phone (answered the reset)", names)
+	}
+	if got := passkeyNames(t, body["removed_passkeys"]); len(got) != 1 || got[0] != "intruder" {
+		t.Errorf("removed = %v, want [intruder]", got)
+	}
+	kept, _ := body["passkeys"].([]any)
+	var phoneEntry map[string]any
+	for _, e := range kept {
+		if m, _ := e.(map[string]any); m["name"] == "phone" {
+			phoneEntry = m
+		}
+	}
+	if phoneEntry == nil || phoneEntry["used_for_reset"] != true {
+		t.Errorf("the kept phone entry = %v, want used_for_reset", phoneEntry)
+	}
+	f.audit.mu.Lock()
+	evs := append([]audit.Event(nil), f.audit.evs...)
+	f.audit.mu.Unlock()
+	kepts := 0
+	for _, ev := range evs {
+		if ev.Action == "auth_passkey_kept" && ev.TargetSubject == sub && ev.AuthReason == "used_for_reset" {
+			kepts++
+		}
+	}
+	if kepts != 1 {
+		t.Errorf("audit records %d kept-for-the-reset passkeys, want 1", kepts)
+	}
+}
+
+// On a gate that requires a second factor, an account whose only factor is a
+// passkey added after the password answers the reset with it, keeps it, and
+// signs in afterwards with the new password and that passkey.
+func TestPasswordReset_RequiredMFAAccountSignsInWithThePasskeyThatAnswered(t *testing.T) {
+	f := newPasskeyFixture(t)
+	inv := f.inviteCode(t, bAcmeOp, "mfa", `{}`)
+	b := f.browser(t)
+	_, info := b.do("POST", "/v1/_auth/invite/info", jsonBody(t, map[string]string{"code": inv}))
+	totp := info["totp"].(map[string]any)
+	secret, err := totpB32Decode(totp["secret"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := password.TOTPStep(time.Now())
+	const login = "tara@example.com"
+	if code, body := b.do("POST", "/v1/_auth/invite", jsonBody(t, map[string]string{"code": inv, "login": login,
+		"password": goodPassword, "totp_enrolment": totp["enrolment"].(string), "totp_code": password.TOTPCode(secret, step)})); code != http.StatusCreated {
+		t.Fatalf("redeem: %d %v", code, body)
+	}
+	_, sub := b.me()
+	code, offer := b.do("POST", "/v1/_auth/passkeys/register/begin", jsonBody(t, map[string]string{
+		"current_password": goodPassword, "otp": password.TOTPCode(secret, step+1)}))
+	if code != http.StatusOK {
+		t.Fatalf("register begin: %d %v", code, offer)
+	}
+	a := newSoftAuthenticator(t, testRPID, testOrigin)
+	reg := a.create(offer)
+	reg["name"] = "laptop"
+	if code, out := b.do("POST", "/v1/_auth/passkeys/register/finish", jsonBody(t, reg)); code != http.StatusCreated {
+		t.Fatalf("register finish: %d %v", code, out)
+	}
+	// The authenticator app goes: the passkey is now the only second factor.
+	if _, err := f.st.UserTOTPDelete(context.Background(), "acme", sub); err != nil {
+		t.Fatal(err)
+	}
+
+	rst := f.resetCode(t, bAcmeOp, "mfa", jsonBody(t, map[string]string{"subject": sub}))
+	fresh := f.browser(t)
+	const newPass = "a reset passphrase for tara"
+	_, out := fresh.do("POST", "/v1/_auth/reset", jsonBody(t, map[string]any{"code": rst, "password": newPass}))
+	if code, body := fresh.do("POST", "/v1/_auth/reset", jsonBody(t, map[string]any{"code": rst, "password": newPass,
+		"webauthn": a.get(out["webauthn"].(map[string]any))})); code != http.StatusOK {
+		t.Fatalf("reset: %d %v", code, body)
+	}
+
+	c := f.browser(t)
+	code, ch := c.do("POST", "/v1/_auth/complete/mfa", jsonBody(t, map[string]any{"login": login, "password": newPass}))
+	if code != http.StatusUnauthorized || ch["code"] != "second_factor_required" {
+		t.Fatalf("sign-in with the new password = %d %v, want second_factor_required with the kept passkey", code, ch)
+	}
+	if code, out := c.do("POST", "/v1/_auth/complete/mfa", jsonBody(t, map[string]any{"login": login, "password": newPass,
+		"webauthn": a.get(ch["webauthn"].(map[string]any))})); code != http.StatusNoContent {
+		t.Fatalf("sign-in with the new password and the passkey = %d %v", code, out)
 	}
 }
