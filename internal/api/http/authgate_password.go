@@ -923,15 +923,12 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 		red.User = &store.UserRow{TenantID: inv.TenantID, Subject: subject, AccessMode: inv.AccessMode,
 			Status: redeemedUserStatus(g, inv), CreatedAt: now, CreatedBy: "invite:" + inv.InviteID}
 	}
-	if red.User != nil {
-		// The budget goes in before the user, as an identity gate's does
-		// (provision): a failure here creates nothing, and the
-		// invite stays unspent for a retry.
-		if err := s.writeNewUserBudget(ctx, "gate:"+g.Name, inv.TenantID, subject, s.floorNewUserBudget(), now); err != nil {
-			slog.Error("authgate: writing an invited user's budget failed", "err", err)
-			writeJSONError(w, http.StatusInternalServerError, "internal", "the invitation could not be redeemed")
-			return
-		}
+	if b := s.floorNewUserBudget(); b != nil && red.User != nil {
+		// The deployment's new_user budget goes in with the user, in the
+		// redemption's transaction: the user never runs uncapped, and a
+		// redemption the store refuses leaves no budget row behind.
+		red.Budget = &store.TokenLimitRow{TenantID: inv.TenantID, Scope: "user", ScopeID: subject,
+			SoftLimit: b.SoftLimit, HardLimit: b.HardLimit, UpdatedAt: now, UpdatedBy: "gate:" + g.Name}
 	}
 	if inv.Bootstrap && red.User != nil {
 		// A tenant's first owner is its operator (owner decision, Q6): the
@@ -956,6 +953,12 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	if red.User != nil {
 		s.joinInviteGroups(ctx, g, inv, subject)
+	}
+	if red.Budget != nil {
+		// This replica enforces it at once; the others within
+		// LOOMCYCLE_LIMITS_RELOAD_INTERVAL. The subject is new, so no limit
+		// set before it is overwritten here.
+		s.limits.PutLimit(*red.Budget)
 	}
 	if red.OwnerBinding != nil {
 		s.aclChanged(ctx, inv.TenantID, "auth_owner_bound", subject)

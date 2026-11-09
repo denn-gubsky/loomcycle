@@ -689,6 +689,14 @@ func (s *Store) AuthInviteRedeem(ctx context.Context, red store.AuthInviteRedemp
 			}
 			return fmt.Errorf("auth invite redeem: create user: %w", err)
 		}
+		if b := red.Budget; b != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO token_limits
+				(tenant_id, scope, scope_id, soft_limit, hard_limit, updated_at, updated_by) VALUES (?,?,?,?,?,?,?)`,
+				u.TenantID, "user", u.Subject, nullableInt64(b.SoftLimit), nullableInt64(b.HardLimit),
+				now.UnixNano(), b.UpdatedBy); err != nil {
+				return fmt.Errorf("auth invite redeem: budget: %w", err)
+			}
+		}
 	} else {
 		var one int
 		// An erasure's tombstone takes no new login: it reads as no user.

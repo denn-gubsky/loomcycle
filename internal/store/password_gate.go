@@ -166,6 +166,12 @@ type AuthInviteRedemption struct {
 	// the same transaction as the user and its login, so no owner is ever
 	// half-made.
 	OwnerBinding *AclBindingRow
+	// Budget, set only with User, is the new user's token limit (the
+	// deployment's new_user budget). It is written in the same transaction
+	// as the user, unless a limit for the subject is already there, so a
+	// user this redemption makes never runs uncapped and a redemption that
+	// fails leaves no budget row behind.
+	Budget *TokenLimitRow
 }
 
 // AuthResetCompletion is everything one reset completion writes, in one

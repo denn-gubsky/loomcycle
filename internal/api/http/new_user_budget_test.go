@@ -79,3 +79,58 @@ func TestCreateUser_AConflictingCreateWritesNoBudget(t *testing.T) {
 		t.Fatalf("a conflicting create wrote a budget onto the existing user: %+v", rows)
 	}
 }
+
+// userBudgetCount is how many user-scope budget rows acme has.
+func userBudgetCount(t *testing.T, st store.Store) int {
+	t.Helper()
+	rows, err := st.TokenLimitsAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, r := range rows {
+		if r.TenantID == "acme" && r.Scope == "user" {
+			n++
+		}
+	}
+	return n
+}
+
+// createLosesTheRace is a store whose UserCreate answers as if another
+// create of the same subject won between the handler's check and its write.
+type createLosesTheRace struct{ store.Store }
+
+func (createLosesTheRace) UserCreate(_ context.Context, row store.UserRow) error {
+	return &store.ErrConflict{Kind: "user", ID: row.Subject}
+}
+
+// A create the store refuses (here, one that lost a race to another create
+// of the subject) leaves no budget row behind.
+func TestCreateUser_ARefusedCreateLeavesNoBudgetRow(t *testing.T) {
+	f := newGateFixture(t)
+	withFloorBudget(f)
+	f.srv.store = createLosesTheRace{f.st}
+	if code, body := f.call(t, bAcmeOp, "POST", "/v1/_users", `{"subject":"racer"}`); code != http.StatusConflict {
+		t.Fatalf("precondition: the create was not refused: %d %v", code, body)
+	}
+	if rows := userBudgetRows(t, f.st, "acme", "racer"); len(rows) != 0 {
+		t.Fatalf("a refused create left a budget row: %+v", rows)
+	}
+}
+
+// A redemption the store refuses (its login is taken) leaves no budget row.
+func TestPasswordGate_ARefusedRedemptionLeavesNoBudgetRow(t *testing.T) {
+	f := newGateFixture(t)
+	f.redeemed(t, "local", "vera@example.com", f.inviteCode(t, bAcmeOp, "local", `{}`))
+	withFloorBudget(f)
+	before := userBudgetCount(t, f.st)
+	b := f.browser(t)
+	code, body := b.do("POST", "/v1/_auth/invite", jsonBody(t, map[string]string{
+		"code": f.inviteCode(t, bAcmeOp, "local", `{}`), "login": "vera@example.com", "password": goodPassword}))
+	if code != http.StatusConflict {
+		t.Fatalf("precondition: the taken login was not refused: %d %v", code, body)
+	}
+	if after := userBudgetCount(t, f.st); after != before {
+		t.Fatalf("a refused redemption left %d budget row(s)", after-before)
+	}
+}

@@ -563,6 +563,7 @@ func Run(t *testing.T, factory Factory) {
 		{"UserRecoveryCodeConsumesExactlyOnce", testUserRecoveryCodeConsumesExactlyOnce},
 		{"AuthInviteCreateGetListAndRevokeOnce", testAuthInviteCreateGetListAndRevokeOnce},
 		{"AuthInviteRedeemWritesUserIdentityCredentialAndSecondFactor", testAuthInviteRedeemWritesUserIdentityCredentialAndSecondFactor},
+		{"AuthInviteRedeemWritesTheBudgetWithTheUser", testAuthInviteRedeemWritesTheBudgetWithTheUser},
 		{"AuthInviteRedeemOfDeadInviteIsNotFoundAndWritesNothing", testAuthInviteRedeemOfDeadInviteIsNotFoundAndWritesNothing},
 		{"AuthInviteRedeemTakenLoginConflictsAndLeavesInviteLive", testAuthInviteRedeemTakenLoginConflictsAndLeavesInviteLive},
 		{"AuthInviteRedeemBootstrapRefusedOnceTenantHasUser", testAuthInviteRedeemBootstrapRefusedOnceTenantHasUser},

@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -148,22 +149,6 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	// tenant-operator binding go in one transaction, which re-checks that the
 	// tenant never had a user (owner decision, Q6).
 	owner := caller == gateCallerManager && accessMode == "tenant"
-	// The deployment floor's new_user budget goes in before the user, as a
-	// gate's does, so a user made here never runs uncapped. Only for a
-	// subject not yet taken: a create that conflicts must not cap a user the
-	// operator already runs (the insert-if-absent keeps an existing limit,
-	// not an existing user's lack of one).
-	// A lookup fault refuses: going on would make the user uncapped.
-	switch _, gerr := s.store.UserGet(r.Context(), tenant, subject); {
-	case isNotFound(gerr):
-		if err := s.writeNewUserBudget(r.Context(), principalSubject(r.Context()), tenant, subject, s.floorNewUserBudget(), row.CreatedAt); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "user_create_failed", err.Error())
-			return
-		}
-	case gerr != nil:
-		writeJSONError(w, http.StatusInternalServerError, "user_create_failed", gerr.Error())
-		return
-	}
 	var err error
 	if owner {
 		err = s.store.UserCreateOwner(r.Context(), row, ownerBinding(row.TenantID, row.Subject, "bootstrap:"+principalSubject(r.Context())))
@@ -181,6 +166,18 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusConflict, "user_exists",
 				"a user with that subject already exists in this tenant")
 			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "user_create_failed", err.Error())
+		return
+	}
+	// The deployment floor's new_user budget, written once the create has
+	// won: the store decided which request made the user, so a create that
+	// conflicts or loses a race writes nothing, and a limit an operator set
+	// for the subject first is kept (insert-if-absent). When the write fails
+	// the user is removed again, so none is left uncapped.
+	if err := s.writeNewUserBudget(r.Context(), principalSubject(r.Context()), tenant, subject, s.floorNewUserBudget(), row.CreatedAt); err != nil {
+		if _, derr := s.store.UserDelete(r.Context(), tenant, subject); derr != nil {
+			slog.Error("users: removing a user whose budget could not be written failed", "tenant", tenant, "subject", subject, "err", derr)
 		}
 		writeJSONError(w, http.StatusInternalServerError, "user_create_failed", err.Error())
 		return
