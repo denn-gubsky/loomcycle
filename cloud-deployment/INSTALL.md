@@ -156,7 +156,7 @@ LOOMCYCLE_AUTH_TOKEN=REPLACE_ME              # openssl rand -hex 32
 LOOMCYCLE_OPERATOR_TOKEN_PEPPER=REPLACE_ME   # openssl rand -hex 32
 # LOOMCYCLE_ADMIN_TOKEN=SAME_AS_AUTH_TOKEN   # per-person mode only (LANDING_TENANT empty): the landing mints with it
 LOOMCYCLE_AUTH_MANAGE_TOKEN=REPLACE_ME       # the landing's auth:manage token — see "Enabling accounts" below
-# LOOMCYCLE_SECRET_KEY=REPLACE_ME            # optional (encrypted tenant credentials); openssl rand -base64 32
+LOOMCYCLE_SECRET_KEY=REPLACE_ME              # required (password gate, audit chain, credentials); openssl rand -base64 32
 # ── Postgres (this password MUST equal the one in the two DSNs) ──
 POSTGRES_PASSWORD=REPLACE_ME_STRONG
 LOOMCYCLE_PG_DSN=postgres://loomcycle:REPLACE_ME_STRONG@postgres:5432/loomcycle?sslmode=disable
@@ -196,7 +196,7 @@ Notes:
   `SANDBOX_EXPOSE_NETWORK=loom-dev` on the builder-sidecar. A `dev/exec` envelope
   with `expose:<alias>` then attaches its session there, reachable from the browser
   at `http://<alias>:<port>`. This needs the **runtime AND sidecar at ≥ 1.43.0** (the
-  expose seam) — the images pin to `1.108.0`; the sidecar is a separate,
+  expose seam) — the images pin to `1.147.0`; the sidecar is a separate,
   multi-arch image (`docker pull` a `linux/amd64` tag on TrueNAS, not a hand-built
   single-arch one). Add each alias to PinchTab's IDPI allowlist first
   (`pinchtab config set security.allowedDomains "127.0.0.1,localhost,::1,<alias>"`,
@@ -355,7 +355,11 @@ The `telegram-bridge` service is a Telegram bot for one loomcycle agent
 (`denngubsky/loomcycle-bridge-telegram`, the `@loomcycle/bridge-telegram`
 package). Each person who messages the bot is their own loomcycle user in one
 tenant; a group is a user of its own. Telegram posts each message to the bridge
-through the tunnel; the bridge talks to the runtime inside `loomnet`. The full
+through the tunnel; the bridge talks to the runtime inside `loomnet`. The bridge
+is loomcycle's `telegram` gate (`config/loomcycle.yaml`, `auth.gates.telegram`):
+it signs who is writing with its own key and holds no loomcycle token, and
+loomcycle provisions each person in the tenant `telegram-dev` and issues them a
+short-lived token that can only start the bridge's agent. The full
 behaviour (groups, trust, buttons, limits) is in
 [`packages/bridge-telegram/README.md`](../packages/bridge-telegram/README.md).
 
@@ -368,13 +372,24 @@ it half-configured.
 2. **Your Telegram id.** Message @userinfobot (or any id bot) for your numeric
    user id, for the allow-list. A refused chat is also logged by the bridge as
    `tg:<chat id>`.
-3. **The bridge's loomcycle token.** Sign in to `https://app.loomcycle.cloud/ui`
-   as the admin, open **Settings → Tokens** and generate a token named
-   `telegram-bridge` with scope `substrate:tenant` in the tenant the Telegram
-   users will live in (for example `telegram`). It is shown once. The bridge uses it only to register
-   each Telegram user and mint them a short-lived token limited to the one agent.
-   Make sure that tenant's user tier reaches a provider this stack runs (here the
-   local Ollama).
+3. **The gate key.** Make an Ed25519 key pair on any machine with Node:
+
+   ```bash
+   node -e 'const {privateKey,publicKey}=require("node:crypto").generateKeyPairSync("ed25519");
+   console.log("TELEGRAM_BRIDGE_GATE_KEY=\x27" + JSON.stringify(privateKey.export({format:"jwk"})) + "\x27");
+   console.log("LOOMCYCLE_TELEGRAM_GATE_PUBLIC_X=" + publicKey.export({format:"jwk"}).x)'
+   ```
+
+   The first line (the private key, in single quotes so the env file keeps the
+   JSON as it is) goes into `.env.secure` (step 5); the second (the public half,
+   not a secret) into `.env.insecure`. The config pins the public half, so the
+   runtime needs `LOOMCYCLE_TELEGRAM_GATE_PUBLIC_X` **whether or not the bridge
+   runs**: without it the compose file refuses to start. The gate's other
+   settings are in `config/loomcycle.yaml`: tenant `telegram-dev`, new people
+   held **pending** until an operator approves them in **Users** (focus the
+   `telegram-dev` tenant), each with a monthly token budget, and tokens limited
+   to `chat/medium`, interactive, 6 runs a minute. Make sure that tenant's user
+   tier reaches a provider this stack runs (here the local Ollama).
 4. **Tunnel route.** On the tunnel from Phase 4, add a Public Hostname:
 
    | Hostname | Path | Service |
@@ -390,14 +405,16 @@ it half-configured.
    ```bash
    TELEGRAM_BOT_TOKEN=REPLACE_ME                 # from @BotFather
    TELEGRAM_BRIDGE_WEBHOOK_SECRET=REPLACE_ME     # openssl rand -hex 32
-   TELEGRAM_BRIDGE_LOOMCYCLE_TOKEN=REPLACE_ME    # the token from step 3
+   TELEGRAM_BRIDGE_GATE_KEY='REPLACE_ME'         # the private JWK from step 3, in single quotes
    ```
 
 6. **Settings** — in `.env.insecure` (see the Telegram block of
    `.env.insecure.example`): `COMPOSE_PROFILES=telegram`,
+   `LOOMCYCLE_TELEGRAM_GATE_PUBLIC_X` (step 3),
    `TELEGRAM_BRIDGE_ALLOWED_USERS=<your id>`, and `TELEGRAM_BRIDGE_AGENT` if not
-   `chat/medium`. The image version is `BRIDGE_TELEGRAM_VERSION` (default in the
-   compose file); release deploys do not change it.
+   `chat/medium` (then change the gate's `issued_token.agents` to match). The
+   image version is `BRIDGE_TELEGRAM_VERSION` (default in the compose file);
+   release deploys do not change it.
 7. **Start and verify.**
 
    ```bash
@@ -418,18 +435,19 @@ With `TELEGRAM_BRIDGE_VOICE=1` a person can send the bot a voice note and hear
 the reply as one (RFC GA; `docs/SPEECH.md` → "Through a chat bridge"). In this
 order:
 
-1. **loomcycle 1.141 or later.** The bridge asks for a speech grant on each
-   user's token, and an older loomcycle refuses the request, so with voice on
-   the bridge could not mint tokens at all.
+1. **The speech surfaces on the gate.** Add `surfaces: [speech, transcription]`
+   to `auth.gates.telegram.issued_token` in `config/loomcycle.yaml`, and raise
+   its `rate` to `{ per_minute: 12, burst: 20 }`. Without the surfaces the
+   bridge stays on text.
 2. **Speech engines** in `config/loomcycle.yaml`: `speech:` and
    `transcription.stt:` (the `loomcycle-speech` speaches), with `speech.encode`
    (an ffmpeg Opus command; the `loomcycle-browser` image has ffmpeg) and
    `speech.format: ogg`, since Telegram shows only Opus or MP3 as a voice note.
    `GET /v1/_speech` should list both directions and `ogg`.
-3. **The bridge:** `BRIDGE_TELEGRAM_VERSION=0.4.0` (or later),
-   `TELEGRAM_BRIDGE_VOICE=1`, and `TELEGRAM_BRIDGE_RATE_PER_MINUTE=12` or more:
-   a voice turn takes three starts from the user's rate. Restart the bridge, so
-   it mints fresh tokens with the grant.
+3. **The bridge:** `TELEGRAM_BRIDGE_VOICE=1`, and
+   `TELEGRAM_BRIDGE_RATE_PER_MINUTE=12` or more: a voice turn takes three starts
+   from the user's rate. Restart the bridge, so it asks for fresh tokens with
+   the grant.
 
 In a private chat a voice note is transcribed and answered in text, then as a
 voice note captioned "AI voice". `/voice on|off|auto` changes when replies are
@@ -533,17 +551,16 @@ runtime's owner. Docker would otherwise create it as root, and the runtime (uid
 ssh -t "$HOST" "cd '$DEPLOY' && mkdir -p dynamic && sudo chown 65532:65532 dynamic"
 ```
 
-- **Mode.** The compose file sets `LOOMCYCLE_ACL` to `shadow`: today's scope gates
-  still decide, and every place the access rules would answer differently is
-  logged as `authz: acl_shadow_diverged …` and audited. Every token class has a
-  built-in list that reproduces its reach, so the log should stay quiet. To
-  switch, put `LOOMCYCLE_ACL=enforce` (or `compat`) in the host's `.env.insecure`
-  — it overrides the compose default — and recreate `loomcycle`.
-- **Who writes rules.** Each Google sign-in gets its own tenant and a tenant
-  operator token, so each user manages the lists for their own tenant in
-  **Settings → Access**. A binding names one tenant, so `config/loomcycle.yaml`
-  cannot bind the tenants the landing page creates; limits for every tenant stay
-  with the token scopes and env settings.
+- **Mode.** The compose file sets `LOOMCYCLE_ACL` to `enforce` (it was `shadow`
+  until 1.147.0): the rules decide, and every token class has a built-in list
+  that reproduces its scope gates' reach. To go back, put `LOOMCYCLE_ACL=shadow`
+  in the host's `.env.insecure` — it overrides the compose default — and
+  recreate `loomcycle`; `shadow` lets the scope gates decide and only logs
+  `authz: acl_shadow_diverged …`.
+- **Who writes rules.** Website sign-ups are members of one shared tenant (the
+  landing's `LANDING_TENANT`, `loomcycle-dev`); its tenant operators manage the
+  lists for it in **Settings → Access**. Telegram users are isolated users of
+  the tenant `telegram-dev`. `config/loomcycle.yaml` declares no lists.
 - Schedules and webhooks created before 1.122.0 record no author, so they fire
   unnarrowed until re-saved. Snapshots do not carry lists, groups or bindings.
 
@@ -605,6 +622,63 @@ behind them is [`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md), phase 1.
 5. **Check:** `https://app.loomcycle.cloud/ui/login` offers both the token
    box and "loomcycle.cloud account". Existing tokens keep working: the
    mode stays `token` until plan phase 6.
+
+## Upgrading to 1.147.0: Telegram gate, enforced access control, MFA
+
+The compose file and `config/loomcycle.yaml` in this directory move the stack to
+1.147.0 with three changes to its security posture. Do the host steps **before**
+the deploy that carries them: with a variable missing, `docker compose` refuses
+to start (the old containers keep running) rather than crash-loop the runtime.
+
+1. **Secrets and settings first.**
+   - `LOOMCYCLE_SECRET_KEY` must be in `.env.secure`; the compose file now
+     requires it. 1.147.0 refuses to start with more than one principal and no
+     key, and this stack has several (the `auth:manage` token, the minted
+     tokens). It is already set where the password gate runs.
+   - The Telegram gate key: make the pair as in
+     [Telegram bridge](#telegram-bridge-optional) step 3, put
+     `TELEGRAM_BRIDGE_GATE_KEY` in `.env.secure` and
+     `LOOMCYCLE_TELEGRAM_GATE_PUBLIC_X` in `.env.insecure`. The public half is
+     required even if the bridge stays off.
+   - Remove `TELEGRAM_BRIDGE_LOOMCYCLE_TOKEN` from `.env.secure` (the compose
+     file no longer reads it) and, if `.env.insecure` pins
+     `BRIDGE_TELEGRAM_VERSION`, set it to `0.5.0` or drop the line.
+2. **Before enforcing access control, read what shadow saw.** Under `shadow` an
+   explicit deny a tenant operator wrote in Settings → Access was only logged;
+   under `enforce` it holds. Count the divergences the running server logged:
+
+   ```bash
+   ssh "$HOST" "cd '$DEPLOY' && docker compose logs loomcycle 2>&1 | grep -c acl_shadow_diverged"
+   ```
+
+   0 means enforce changes nothing anyone did since the last restart. Otherwise
+   read those lines (they name the question and the list) and fix the list, or
+   keep `LOOMCYCLE_ACL=shadow` in `.env.insecure` for now.
+3. **Tell password users about the authenticator.** The `cloud` gate now has
+   `require_mfa: true`. An account with neither an authenticator app nor a
+   passkey is refused at its next password sign-in (`403
+   mfa_enrolment_required`). Ask members to add one at `/ui/account` before
+   the deploy; a Web UI session already open stays open after it, so they can
+   still do it then. Anyone locked out needs a reset link from a tenant
+   operator (`POST /v1/_authgate/cloud/resets` `{tenant, subject}`), which
+   enrols the app.
+4. **Deploy**, then check: `/healthz` reports `1.147.0`; `make logs S=loomcycle`
+   shows no config error; with the bridge on, `make logs S=telegram-bridge`
+   shows "telegram-bridge listening", and a message to the bot is answered. The
+   first message of each existing Telegram user links the user the bridge
+   made (`telegram-<id>`); a new person waits for approval in **Users**
+   (tenant `telegram-dev`).
+5. **Retire the bridge's old operator token** (`telegram-dev`, scope
+   `substrate:tenant`) in **Settings → Tokens** once the bridge answers through
+   the gate.
+
+**Rolling back:** `LOOMCYCLE_ACL=shadow` in `.env.insecure` undoes the access
+control change alone. For MFA, set `require_mfa: false` on the `cloud` gate. For
+the bridge, the previous compose file and config (the deploy keeps a copy of
+both) with `TELEGRAM_BRIDGE_LOOMCYCLE_TOKEN` back in `.env.secure` and a token
+minted again. A user the gate linked keeps the subject `telegram-<id>`, so the
+token-mode bridge finds them again; a person the gate created (`telegram:<id>`)
+starts over as a new `telegram-<id>` user.
 
 ## Routine upgrades
 

@@ -38,7 +38,7 @@ compose network `loomnet`:
 | `searxng` | `searxng/searxng` | Keyless search backend (wired via `config/loomcycle.yaml`). |
 | `landing` | Node (`./landing`, built) | Serves `cloud-web/`, proxies the public reads `/healthz` + `/v1/config` (inner links), mints `substrate:tenant` tokens behind Cloudflare Access, and — with `LOOMCYCLE_AUTH_MANAGE_TOKEN` — runs signup and team management on loomcycle's password gate. |
 | `cloudflared` | `cloudflare/cloudflared` | Outbound tunnel; routes managed in the Cloudflare dashboard (token method). |
-| `telegram-bridge` | `denngubsky/loomcycle-bridge-telegram:${BRIDGE_TELEGRAM_VERSION}` | **Optional** (compose profile `telegram`): a Telegram bot for one agent, its webhook at `telegram.loomcycle.cloud/telegram/webhook`. See INSTALL.md → "Telegram bridge". |
+| `telegram-bridge` | `denngubsky/loomcycle-bridge-telegram:${BRIDGE_TELEGRAM_VERSION}` | **Optional** (compose profile `telegram`): a Telegram bot for one agent, its webhook at `telegram.loomcycle.cloud/telegram/webhook`. It is loomcycle's `telegram` gate: it holds a signing key, no loomcycle token. See INSTALL.md → "Telegram bridge". |
 
 ### The landing server + self-serve minting
 
@@ -53,8 +53,8 @@ compose network `loomnet`:
    a `/v1/_*` denylist, which a `..`/`%5f` bypass could slip past — so the
    operator-admin plane is never reachable on the apex. The bearer-gated app API
    stays on `app.loomcycle.cloud`.
-3. **Mints `substrate:tenant` tokens** for a Cloudflare-Access-authenticated
-   visitor. `POST /api/mint` verifies the Access JWT (`Cf-Access-Jwt-Assertion`
+3. **Per-person mode only (`LANDING_TENANT` empty): mints `substrate:tenant`
+   tokens** for a Cloudflare-Access-authenticated visitor. `POST /api/mint` verifies the Access JWT (`Cf-Access-Jwt-Assertion`
    against the team JWKS + AUD), derives a stable `(tenant, subject)` from the
    verified email, and calls `POST /v1/_operatortokendef` with the **admin token
    held server-side** (`LOOMCYCLE_ADMIN_TOKEN`). The browser never sees the admin
@@ -127,18 +127,29 @@ file is kept in step with the TrueNAS deployment, which shares the Ollama host.
 
 ## Security posture (read before exposing publicly)
 
-- **The mint route is gated by Cloudflare Access** (Google). The landing verifies
-  the Access JWT (never a bare header) and forces `substrate:tenant` (never admin).
-- **The landing holds `LOOMCYCLE_ADMIN_TOKEN`** (= your `LOOMCYCLE_AUTH_TOKEN`) —
-  server-side only, no host port, reachable only via the tunnel. Treat it as the
-  most sensitive component after loomcycle itself. Once accounts are on it also
-  holds `LOOMCYCLE_AUTH_MANAGE_TOKEN`, which reaches user records in every tenant
-  (and, with `manager_may_recover_owners`, can reset any owner's password); the
-  admin token leaves the landing in phase 5. In shared-tenant mode the landing
-  needs only the `auth:manage` token, and the gate has owner recovery off.
-- **loomcycle stays bearer-authed** (`LOOMCYCLE_AUTH_TOKEN`); the marketing landing
-  is public but its `/api/*` is Access-gated. Consider Access over
-  `app.loomcycle.cloud` too for defense-in-depth.
+- **The landing's `/api/*` is gated by Cloudflare Access** (Google). The landing
+  verifies the Access JWT (never a bare header). In the default shared-tenant
+  mode a sign-up is a **pending** member of the one shared tenant until a tenant
+  operator approves it, and the landing never mints.
+- **The landing holds `LOOMCYCLE_AUTH_MANAGE_TOKEN`** — an `auth:manage` token
+  that reaches user records and the password gate's invites in every tenant,
+  and nothing else (no runs, data, minting or rules). Owner recovery is off on
+  the gate, so it cannot reset an owner's password. Server-side only, no host
+  port, reachable only via the tunnel. Only per-person mode (`LANDING_TENANT`
+  empty) also needs `LOOMCYCLE_ADMIN_TOKEN` (= your `LOOMCYCLE_AUTH_TOKEN`) to
+  mint; leave it unset otherwise.
+- **Sign-in.** The `cloud` password gate requires a second factor (an
+  authenticator app or a passkey). The paste-a-token sign-in is still offered
+  beside it until the strict switch (AUTH-INTEGRATION.md, phase 6). Consider
+  Access over `app.loomcycle.cloud` too for defense-in-depth.
+- **Access control is enforced** (`LOOMCYCLE_ACL=enforce` in the compose file):
+  each token class's built-in list reproduces its scope gates' reach, and a
+  tenant operator's explicit deny holds.
+- **The Telegram bridge is a gate**, not a token holder: a compromised bridge can
+  speak only for Telegram users, each limited to one agent at a bounded rate,
+  with a monthly budget, and a new person waits for an operator's approval. Its
+  public webhook has no Cloudflare Access (Telegram cannot sign in); a webhook
+  secret authenticates each call.
 - **`LOOMCYCLE_HTTP_HOST_ALLOWLIST=*`** lets agents fetch any host — permissive on
   a public box. Tighten for production.
 - **The builder-sidecar has effective host-root via the Docker socket** — the one

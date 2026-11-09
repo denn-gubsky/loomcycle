@@ -76,7 +76,7 @@ auth:
     cloud:
       kind: password
       label: "loomcycle.cloud account"
-      require_mfa: false       # true at the strict switch (phase 6)
+      require_mfa: true        # brought forward from phase 6 (1.147.0)
       invites: { default_ttl: 168h, max_ttl: 720h }
       resets:  { ttl: 1h }
       allowed_return_to: ["https://loomcycle.cloud/?welcome=1"]   # exact match: = the landing's SIGNUP_RETURN_TO
@@ -151,7 +151,7 @@ The vault and the `postMessage` handoff stay **read-only for one release**. Exis
 | 3 | **Built** (#2126). `cloud-web` signup + Team UI; the vault becomes read-only | Manual: a fresh Google account → workspace → password → app; an owner invites a member, the member redeems, the owner resets and disables them |
 | 4 | **Built** (#2127). Migrate the existing tenants (below) | Every existing owner can log in with a password |
 | 5 | Remove `/api/mint`, `LOOMCYCLE_ADMIN_TOKEN` from the landing and its compose env, and the vault UI. Retire the old minted tenant tokens on a published date. | `grep LOOMCYCLE_ADMIN_TOKEN cloud-deployment/` is empty, apart from the runtime's own `LOOMCYCLE_AUTH_TOKEN` |
-| 6 | `auth.mode: strict`; drop the `token` gate from the config; `require_mfa: true` | The paste box is gone, and a hand-minted user token is refused on the UI |
+| 6 | `auth.mode: strict`; drop the `token` gate from the config (`require_mfa: true` already set with 1.147.0) | The paste box is gone, and a hand-minted user token is refused on the UI |
 | 7 | Later: an OIDC `google` gate on the app (RFC FA P1); owners link their Google identity explicitly (D14); the website can drop Cloudflare Access for its own OIDC login | Google sign-in on the app works for a linked user |
 
 The release automation (`loomcycle-cloud-deploy` on Gitea) overwrites the host's `docker-compose.yaml` and `config/loomcycle.yaml` from this repo on each release tag. So phases 1, 5 and 6 ship as commits here and take effect at the next tag. `.env.secure` changes stay manual, on the host.
