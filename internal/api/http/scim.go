@@ -132,8 +132,22 @@ func (s *Server) scimCaller(w http.ResponseWriter, r *http.Request) (scimCtx, bo
 }
 
 func (s *Server) scimAudit(c scimCtx, action, subject, reason string) {
-	s.recordAuthAudit(audit.Event{Action: action, AuthGate: c.g.Name, AuthReason: reason, TargetTenant: c.tenant,
-		TargetSubject: subject, ActorTenant: c.p.TenantID, ActorSubject: c.p.Subject, ActorTokenSuffix: c.p.TokenSuffix})
+	s.recordAuthAudit(scimEvent(c, action, subject, reason))
+}
+
+func scimEvent(c scimCtx, action, subject, reason string) audit.Event {
+	return audit.Event{Action: action, AuthGate: c.g.Name, AuthReason: reason, TargetTenant: c.tenant,
+		TargetSubject: subject, ActorTenant: c.p.TenantID, ActorSubject: c.p.Subject, ActorTokenSuffix: c.p.TokenSuffix}
+}
+
+// scimIntent records a user lifecycle change the provider asked for before
+// it is made; a change whose record cannot be written is refused with 503,
+// which a provider retries.
+func (s *Server) scimIntent(ctx context.Context, c scimCtx, action, subject string) *scimRefusal {
+	if _, err := s.recordIntent(ctx, scimEvent(c, action, subject, "")); err != nil {
+		return &scimRefusal{http.StatusServiceUnavailable, "", auditUnavailableMessage}
+	}
+	return nil
 }
 
 // scimDecode reads a JSON body (application/scim+json or application/json),
@@ -360,6 +374,10 @@ func (s *Server) handleSCIMCreateUser(w http.ResponseWriter, r *http.Request) {
 	// concurrent creates cannot pass it together.
 	row := store.SCIMUserRow{Gate: c.g.Name, TenantID: c.tenant, SCIMID: id, Subject: scimSubject(c, id), UserName: st.userName,
 		UserNameKey: key, ExternalID: st.externalID, Attributes: string(attrs)}
+	if ref := s.scimIntent(ctx, c, "auth_scim_user_created", row.Subject); ref != nil {
+		scimError(w, ref.status, ref.scimType, ref.detail)
+		return
+	}
 	limit := c.g.SCIM.CreateCeiling()
 	if err := s.store.SCIMUserCreate(ctx, row, time.Now().UTC().Add(-config.SCIMRemovalWindow), limit); err != nil {
 		var conflict *store.ErrConflict
@@ -918,6 +936,9 @@ func (s *Server) scimRemove(ctx context.Context, c scimCtx, subject string) *sci
 		return &scimRefusal{http.StatusForbidden, "", "this SCIM gate is not authoritative for users (identity_map.authoritative_for_users)"}
 	}
 	internal := &scimRefusal{http.StatusInternalServerError, "", "the user could not be deactivated; repeat it"}
+	if ref := s.scimIntent(ctx, c, "auth_scim_user_deactivated", subject); ref != nil {
+		return ref
+	}
 	now := time.Now().UTC()
 	since := now.Add(-config.SCIMRemovalWindow)
 	// A percentage is of the users the gate had before the window: a
@@ -992,6 +1013,9 @@ func (s *Server) scimRemove(ctx context.Context, c scimCtx, subject string) *sci
 func (s *Server) scimReactivate(ctx context.Context, c scimCtx, subject string) (string, *scimRefusal) {
 	refused := &scimRefusal{http.StatusForbidden, "", "this user was disabled outside SCIM; an operator re-enables it"}
 	internal := &scimRefusal{http.StatusInternalServerError, "", "the request could not be completed"}
+	if ref := s.scimIntent(ctx, c, "auth_scim_user_reactivated", subject); ref != nil {
+		return "", ref
+	}
 	now := time.Now().UTC()
 	since := now.Add(-config.SCIMRemovalWindow)
 	// Re-enables are held to the removal ceiling too: a provider that

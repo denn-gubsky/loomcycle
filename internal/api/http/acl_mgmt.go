@@ -192,14 +192,33 @@ func decodeACLBody(w http.ResponseWriter, r *http.Request, into any) bool {
 	return true
 }
 
-// aclChanged is every write's epilogue: invalidate the cached sets here and
-// on every replica, and record who changed what.
-func (s *Server) aclChanged(ctx context.Context, tenant, action, targetName string) {
+// aclIntent records a management write before it is made (recordIntent):
+// a write whose record cannot be written is refused.
+func (s *Server) aclIntent(ctx context.Context, tenant, action, targetName string) (audit.Event, *aclReply) {
+	ev, err := s.recordIntent(ctx, audit.Event{Action: action, TargetTenant: tenant, TargetName: targetName})
+	if err != nil {
+		r := aclAuditUnavailable()
+		return ev, &r
+	}
+	return ev, nil
+}
+
+// aclPublished is a recorded management write's epilogue: invalidate the
+// cached sets here and on every replica (its record was written ahead).
+func (s *Server) aclPublished(ctx context.Context, tenant, action, targetName string) {
 	if s.aclResolver != nil {
 		aclres.Publish(ctx, s.backplane, s.aclResolver, tenant)
 	}
 	p, _ := auth.PrincipalFromContext(ctx)
 	slog.Info("authz: "+action, "tenant", tenant, "target", targetName, "by", p.Subject)
+}
+
+// aclChanged is the epilogue of a write made as part of another operation
+// (a sign-in's group sync, an invite, a user's removal): invalidate the
+// cached sets and record who changed what, best-effort.
+func (s *Server) aclChanged(ctx context.Context, tenant, action, targetName string) {
+	s.aclPublished(ctx, tenant, action, targetName)
+	p, _ := auth.PrincipalFromContext(ctx)
 	if s.tokenAudit == nil {
 		return
 	}
@@ -434,12 +453,17 @@ func (s *Server) aclGroupPut(ctx context.Context, focus string, req groupRequest
 	if r := s.aclGroupHandOver(ctx, tenant, strings.TrimSpace(req.Name), req.ExternalID); r != nil {
 		return *r
 	}
+	ev, refused := s.aclIntent(ctx, tenant, "group_written", strings.TrimSpace(req.Name))
+	if refused != nil {
+		return *refused
+	}
 	row, err := s.store.GroupPut(ctx, store.GroupRow{TenantID: tenant, Name: strings.TrimSpace(req.Name),
 		Description: req.Description, ExternalID: req.ExternalID, CreatedBy: principalSubject(ctx)})
 	if err != nil {
+		s.recordFailed(ctx, ev)
 		return aclStoreError(err, "group")
 	}
-	s.aclChanged(ctx, tenant, "group_written", row.Name)
+	s.aclPublished(ctx, tenant, "group_written", row.Name)
 	return aclCreated(row)
 }
 
@@ -620,14 +644,20 @@ func (s *Server) aclGroupDelete(ctx context.Context, focus, name string) aclRepl
 	if r := s.aclGroupLock(ctx, tenant, name); r != nil {
 		return *r
 	}
+	ev, refused := s.aclIntent(ctx, tenant, "group_deleted", name)
+	if refused != nil {
+		return *refused
+	}
 	ok, err := s.store.GroupDelete(ctx, tenant, name)
 	if err != nil {
+		s.recordFailed(ctx, ev)
 		return aclFail(http.StatusInternalServerError, "group_delete_failed", err.Error())
 	}
 	if !ok {
+		s.recordFailed(ctx, ev)
 		return aclFail(http.StatusNotFound, "group_not_found", "group not found")
 	}
-	s.aclChanged(ctx, tenant, "group_deleted", name)
+	s.aclPublished(ctx, tenant, "group_deleted", name)
 	return aclOK(map[string]any{"deleted": name})
 }
 
@@ -645,11 +675,16 @@ func (s *Server) aclGroupAddMember(ctx context.Context, focus, name string, req 
 	if r := s.aclGroupExternal(ctx, tenant, name); r != nil {
 		return *r
 	}
+	ev, refused := s.aclIntent(ctx, tenant, "group_member_added", name+"/"+req.Kind+":"+req.ID)
+	if refused != nil {
+		return *refused
+	}
 	err := s.store.GroupMemberAdd(ctx, store.GroupMemberRow{TenantID: tenant, GroupName: name, MemberKind: req.Kind, MemberID: strings.TrimSpace(req.ID), AddedBy: principalSubject(ctx)})
 	if err != nil {
+		s.recordFailed(ctx, ev)
 		return aclStoreError(err, "group_member")
 	}
-	s.aclChanged(ctx, tenant, "group_member_added", name+"/"+req.Kind+":"+req.ID)
+	s.aclPublished(ctx, tenant, "group_member_added", name+"/"+req.Kind+":"+req.ID)
 	return aclCreated(map[string]any{"group": name, "kind": req.Kind, "id": req.ID})
 }
 
@@ -693,14 +728,20 @@ func (s *Server) aclGroupRemoveMember(ctx context.Context, focus, name, kind, id
 	if r := s.aclGroupLock(ctx, tenant, name); r != nil {
 		return *r
 	}
+	ev, refused := s.aclIntent(ctx, tenant, "group_member_removed", name+"/"+kind+":"+id)
+	if refused != nil {
+		return *refused
+	}
 	ok, err := s.store.GroupMemberRemove(ctx, tenant, name, kind, id)
 	if err != nil {
+		s.recordFailed(ctx, ev)
 		return aclFail(http.StatusInternalServerError, "group_member_remove_failed", err.Error())
 	}
 	if !ok {
+		s.recordFailed(ctx, ev)
 		return aclFail(http.StatusNotFound, "group_member_not_found", "no such membership")
 	}
-	s.aclChanged(ctx, tenant, "group_member_removed", name+"/"+kind+":"+id)
+	s.aclPublished(ctx, tenant, "group_member_removed", name+"/"+kind+":"+id)
 	return aclOK(map[string]any{"group": name, "kind": kind, "id": id, "removed": true})
 }
 
@@ -755,11 +796,16 @@ func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) 
 		if r := s.aclNameReserved(ctx, tenant, strings.TrimSpace(req.Name)); r != nil {
 			return *r
 		}
+		ev, refused := s.aclIntent(ctx, tenant, "acl_written", strings.TrimSpace(req.Name))
+		if refused != nil {
+			return *refused
+		}
 		row, err := s.store.AclDefPut(ctx, store.AclDefRow{TenantID: tenant, Name: strings.TrimSpace(req.Name), Rules: req.Rules, Description: req.Description, CreatedBy: principalSubject(ctx)})
 		if err != nil {
+			s.recordFailed(ctx, ev)
 			return aclStoreError(err, "acl")
 		}
-		s.aclChanged(ctx, tenant, "acl_written", row.Name)
+		s.aclPublished(ctx, tenant, "acl_written", row.Name)
 		if tenant == "" {
 			return s.aclSharedWritten(ctx, row)
 		}
@@ -801,14 +847,20 @@ func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) 
 		sort.SliceStable(out, func(i, j int) bool { return aclEntryName(out[i]) < aclEntryName(out[j]) })
 		return aclOK(map[string]any{"acls": out, "builtin": builtinACLs()})
 	case "retire":
+		ev, refused := s.aclIntent(ctx, tenant, "acl_retired", req.Name)
+		if refused != nil {
+			return *refused
+		}
 		ok, err := s.store.AclDefRetire(ctx, tenant, req.Name)
 		if err != nil {
+			s.recordFailed(ctx, ev)
 			return aclFail(http.StatusInternalServerError, "acl_retire_failed", err.Error())
 		}
 		if !ok {
+			s.recordFailed(ctx, ev)
 			return aclFail(http.StatusNotFound, "acl_not_found", "no live list of that name")
 		}
-		s.aclChanged(ctx, tenant, "acl_retired", req.Name)
+		s.aclPublished(ctx, tenant, "acl_retired", req.Name)
 		return aclOK(map[string]any{"retired": req.Name})
 	case "catalog":
 		return aclOK(map[string]any{"catalog_version": authz.CatalogVersion, "types": catalogTypes(), "transports": authz.Transports})
@@ -1256,12 +1308,19 @@ func (s *Server) aclBindingCreate(ctx context.Context, focus string, req binding
 	if r := s.aclBindingTargetCheck(ctx, tenant, req); r != nil {
 		return *r
 	}
+	// The binding's id is the store's to choose: the intent names the list
+	// and whom it binds.
+	ev, refused := s.aclIntent(ctx, tenant, "binding_written", req.ACL+"@"+req.SubjectKind+":"+req.SubjectID)
+	if refused != nil {
+		return *refused
+	}
 	row, err := s.store.AclBindingPut(ctx, store.AclBindingRow{TenantID: tenant, ACLName: req.ACL, SubjectKind: req.SubjectKind,
 		SubjectID: req.SubjectID, ExpiresAt: req.ExpiresAt.Time, CreatedBy: principalSubject(ctx)})
 	if err != nil {
+		s.recordFailed(ctx, ev)
 		return aclStoreError(err, "acl_binding")
 	}
-	s.aclChanged(ctx, tenant, "binding_written", row.BindingID)
+	s.aclPublished(ctx, tenant, "binding_written", row.BindingID)
 	return aclCreated(row)
 }
 
@@ -1351,14 +1410,20 @@ func (s *Server) aclBindingRetire(ctx context.Context, focus, id string) aclRepl
 	if r := s.aclRetireLists(ctx, []string{list}); r != nil {
 		return *r
 	}
+	ev, refused := s.aclIntent(ctx, tenant, "binding_retired", id)
+	if refused != nil {
+		return *refused
+	}
 	ok, err := s.store.AclBindingRetire(ctx, tenant, id)
 	if err != nil {
+		s.recordFailed(ctx, ev)
 		return aclFail(http.StatusInternalServerError, "acl_binding_retire_failed", err.Error())
 	}
 	if !ok {
+		s.recordFailed(ctx, ev)
 		return aclFail(http.StatusNotFound, "acl_binding_not_found", "no live binding of that id")
 	}
-	s.aclChanged(ctx, tenant, "binding_retired", id)
+	s.aclPublished(ctx, tenant, "binding_retired", id)
 	return aclOK(map[string]any{"retired": id})
 }
 

@@ -249,12 +249,30 @@ type Event struct {
 	CheckpointSeq     int64  `json:"checkpoint_seq,omitempty"`
 	CheckpointHash    string `json:"checkpoint_hash,omitempty"`
 	CheckpointHeadMAC string `json:"checkpoint_head_mac,omitempty"`
+
+	// --- Write-ahead status (state changes recorded before they commit) ---
+	//
+	// ChangeStatus is "intent" on a row written BEFORE the change it records
+	// is made, and "failed" on the best-effort row that follows when the
+	// change then did not happen. An intent row with no "failed" row after
+	// it is a change that was made, or one interrupted by a crash; empty on
+	// rows written after the fact.
+	ChangeStatus string `json:"change_status,omitempty"`
+	// UserStatus is the status a user change sets (active | disabled), on
+	// the user lifecycle records.
+	UserStatus string `json:"user_status,omitempty"`
 }
 
-// Sink records audit events. Record must be safe for concurrent use and
-// must never return an error path that blocks the caller's primary
-// operation — audit is best-effort observability, not a transaction
-// participant; callers log a Record error and proceed.
+// ChangeStatus values.
+const (
+	ChangeIntent = "intent"
+	ChangeFailed = "failed"
+)
+
+// Sink records audit events. Record must be safe for concurrent use. Most
+// callers log a Record error and proceed; token, access-control and user
+// lifecycle changes record an intent before they are made and are refused
+// when it cannot be written (ChangeIntent).
 type Sink interface {
 	Record(ev Event) error
 }

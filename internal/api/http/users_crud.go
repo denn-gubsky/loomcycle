@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -148,13 +149,19 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	// tenant-operator binding go in one transaction, which re-checks that the
 	// tenant never had a user (owner decision, Q6).
 	owner := caller == gateCallerManager && accessMode == "tenant"
-	var err error
+	ev, err := s.recordIntent(r.Context(), audit.Event{Action: "user_created", TargetTenant: tenant, TargetSubject: subject,
+		AuthTargetAccessMode: accessMode, UserStatus: status})
+	if err != nil {
+		writeAuditUnavailable(w)
+		return
+	}
 	if owner {
 		err = s.store.UserCreateOwner(r.Context(), row, ownerBinding(row.TenantID, row.Subject, "bootstrap:"+principalSubject(r.Context())))
 	} else {
 		err = s.store.UserCreate(r.Context(), row)
 	}
 	if err != nil {
+		s.recordFailed(r.Context(), ev)
 		var conflict *store.ErrConflict
 		if errors.As(err, &conflict) && conflict.Kind == "tenant_not_empty" {
 			writeJSONError(w, http.StatusForbidden, "tenant_not_empty",
@@ -302,6 +309,28 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Recorded before anything below changes; a change the audit trail
+	// cannot show is refused. Any error reply after this point is recorded
+	// as failed (some of the change may have applied: a disable ends access
+	// even when the status write fails).
+	ev := audit.Event{Action: "user_updated", TargetTenant: tenant, TargetSubject: subject}
+	if req.AccessMode != nil {
+		ev.AuthTargetAccessMode = *req.AccessMode
+	}
+	if req.Status != nil {
+		ev.UserStatus = *req.Status
+	}
+	ev, err := s.recordIntent(r.Context(), ev)
+	if err != nil {
+		writeAuditUnavailable(w)
+		return
+	}
+	updateDone := false
+	defer func() {
+		if !updateDone {
+			s.recordFailed(r.Context(), ev)
+		}
+	}()
 	// RFC FA §3.7c: re-enabling a user the removal policy disabled re-enters
 	// it at the new-user defaults, never at its old groups; the rest of the
 	// patch then applies as asked.
@@ -408,6 +437,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "user_update_failed", err.Error())
 		return
 	}
+	updateDone = true
 	// Re-read so the response reflects the post-patch state.
 	updated, err := s.store.UserGet(r.Context(), tenant, subject)
 	if err != nil {
@@ -448,6 +478,17 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeACLReply(w, *refusal)
 		return
 	}
+	ev, err := s.recordIntent(r.Context(), audit.Event{Action: "user_deleted", TargetTenant: tenant, TargetSubject: subject})
+	if err != nil {
+		writeAuditUnavailable(w)
+		return
+	}
+	deleted := false
+	defer func() {
+		if !deleted {
+			s.recordFailed(r.Context(), ev)
+		}
+	}()
 	// Fail-safe ordering: retire the user's delegated tokens BEFORE removing the
 	// identity row, so a deleted user's bearer can never outlive the record (the
 	// auth path is token-only). A no-op when the user has no tokens / doesn't
@@ -479,6 +520,7 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 	// The store retired the user's bindings and dropped its memberships with
 	// the row: refresh the cached sets everywhere, and audit it.
+	deleted = true
 	s.aclChanged(r.Context(), tenant, "user_unbound", subject)
 	w.WriteHeader(http.StatusNoContent)
 }
