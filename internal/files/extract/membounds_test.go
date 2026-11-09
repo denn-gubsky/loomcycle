@@ -307,6 +307,27 @@ func TestDOCX_AttributeFloodRefused(t *testing.T) {
 	})
 }
 
+func TestParseXML_QuoteInADoctypeCommentDoesNotHideAFlood(t *testing.T) {
+	// A lone quote inside a comment of the internal subset: the decoder skips
+	// the comment before it looks at quotes, so the count must too, or it
+	// would read the rest of the part as a quoted string and miss the flood.
+	part := []byte(`<!DOCTYPE r [<!-- it's -->]><r>` + attrFlood(2_000_000) + `</r>`)
+	wantRefusedUnder(t, "flood after a doctype comment", 16<<20, func() error {
+		_, err := parseXML(context.Background(), part)
+		return err
+	})
+}
+
+func TestCountXMLAttrs_UnterminatedMarkupFailsClosed(t *testing.T) {
+	for _, part := range []string{
+		`<r a="1`, `<r a="1"`, `<!-- open`, `<![CDATA[ x`, `<?pi`, `<!DOCTYPE r [ "x" `, `<!DOCTYPE r [<!-- x ]>`, `</r`,
+	} {
+		if _, _, _, err := countXMLAttrs(context.Background(), []byte(part)); !IsRefused(err) {
+			t.Errorf("%q: err = %v, want a refusal", part, err)
+		}
+	}
+}
+
 func TestScanXMLAttrs_CountsOnlyRealAttributes(t *testing.T) {
 	// '=' in text, comments, CDATA, processing instructions, a doctype and
 	// quoted values is not an attribute; each real one is.

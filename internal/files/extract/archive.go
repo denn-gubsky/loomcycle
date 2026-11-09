@@ -427,20 +427,27 @@ func checkXMLAttrs(ctx context.Context, data []byte, maxTotal int) error {
 
 // countXMLAttrs counts the attributes of a part's start tags, those of the
 // widest one and the bytes of their quoted values, from the raw bytes and
-// without allocating: each attribute
-// is a '=' outside quotes inside a start tag, since a strict decoder takes no
-// attribute without a quoted value. Comments, CDATA sections, processing
-// instructions and a doctype are skipped the way the decoder skips them. On a
-// malformed part the count can only come out high (the decoder then refuses
-// the part anyway), never low.
+// without allocating: each attribute is a '=' outside quotes inside a start
+// tag, since a strict decoder takes no attribute without a quoted value.
+//
+// It is a second reader of the part, so it must never read less markup than
+// encoding/xml does: comments, CDATA sections and processing instructions
+// end where the decoder ends them, and a directive (<!DOCTYPE …>) is skipped
+// by the decoder's own rules (xml.go, rawToken: quotes and nested <…> counted,
+// a <!--…--> comment inside it skipped before any quote is honoured). And it
+// fails closed: a construct it cannot see the end of is refused, never
+// counted low. The decoder refuses such a part as malformed too, so nothing it
+// would accept is lost. Only a start tag can carry attributes; an end tag or a
+// malformed tag can only make the count come out high.
 func countXMLAttrs(ctx context.Context, data []byte) (total, widest, valueBytes int, err error) {
-	// skipPast moves i past the first sep at or after it; at the end of the
-	// part it returns len(data).
-	skipPast := func(i int, sep string) int {
+	unterminated := refusedf("an XML part ends inside markup")
+	// skipPast moves i past the first sep at or after it, or reports that the
+	// part ends first.
+	skipPast := func(i int, sep string) (int, bool) {
 		if k := bytes.Index(data[i:], []byte(sep)); k >= 0 {
-			return i + k + len(sep)
+			return i + k + len(sep), true
 		}
-		return len(data)
+		return 0, false
 	}
 	nextCheck := 0
 	for i := 0; i < len(data); {
@@ -456,58 +463,100 @@ func countXMLAttrs(ctx context.Context, data []byte) (total, widest, valueBytes 
 		}
 		i += k + 1
 		rest := data[i:]
+		ok := true
 		switch {
 		case bytes.HasPrefix(rest, []byte("!--")):
-			i = skipPast(i+3, "-->")
+			i, ok = skipPast(i+3, "-->")
 		case bytes.HasPrefix(rest, []byte("![CDATA[")):
-			i = skipPast(i+8, "]]>")
+			i, ok = skipPast(i+8, "]]>")
 		case bytes.HasPrefix(rest, []byte("?")):
-			i = skipPast(i+1, "?>")
+			i, ok = skipPast(i+1, "?>")
 		case bytes.HasPrefix(rest, []byte("!")):
-			// A directive (<!DOCTYPE …>): nested <…> and quoted strings, as
-			// the decoder reads it.
-			depth := 1
-			for i++; i < len(data) && depth > 0; i++ {
-				switch c := data[i]; c {
-				case '"', '\'':
-					if q := bytes.IndexByte(data[i+1:], c); q >= 0 {
-						i += q + 1
-					} else {
-						i = len(data)
-					}
-				case '<':
-					depth++
-				case '>':
-					depth--
-				}
-			}
+			i, ok = skipXMLDirective(data, i+1)
 		case bytes.HasPrefix(rest, []byte("/")):
-			i = skipPast(i, ">")
+			i, ok = skipPast(i, ">")
 		default:
 			n := 0
+			closed := false
 		tag:
 			for ; i < len(data); i++ {
 				switch c := data[i]; c {
 				case '"', '\'':
-					if q := bytes.IndexByte(data[i+1:], c); q >= 0 {
-						valueBytes += q
-						i += q + 1
-					} else {
-						valueBytes += len(data) - i
-						i = len(data)
+					q := bytes.IndexByte(data[i+1:], c)
+					if q < 0 {
+						break tag
 					}
+					valueBytes += q
+					i += q + 1
 				case '=':
 					n++
 				case '>':
 					i++
+					closed = true
 					break tag
 				}
 			}
 			total += n
 			widest = max(widest, n)
+			ok = closed
+		}
+		if !ok {
+			return 0, 0, 0, unterminated
 		}
 	}
 	return total, widest, valueBytes, nil
+}
+
+// skipXMLDirective skips a directive whose "<!" ends just before data[i], the
+// way encoding/xml's rawToken reads one: the first byte is taken as it is;
+// then quotes, nested <…> and <!--…--> comments are tracked, a comment being
+// recognised before a quote inside it could open a string. It returns where
+// the directive ends, or false when the part ends first.
+func skipXMLDirective(data []byte, i int) (int, bool) {
+	if i >= len(data) {
+		return 0, false
+	}
+	i++ // the decoder takes the byte after "<!" without looking at it
+	var inquote byte
+	depth := 0
+	for {
+		if i >= len(data) {
+			return 0, false
+		}
+		b := data[i]
+		i++
+		if inquote == 0 && b == '>' && depth == 0 {
+			return i, true
+		}
+	handle:
+		switch {
+		case b == inquote:
+			inquote = 0
+		case inquote != 0:
+		case b == '\'' || b == '"':
+			inquote = b
+		case b == '>':
+			depth--
+		case b == '<':
+			const open = "!--"
+			for j := 0; j < len(open); j++ {
+				if i >= len(data) {
+					return 0, false
+				}
+				b = data[i]
+				i++
+				if b != open[j] {
+					depth++
+					goto handle
+				}
+			}
+			k := bytes.Index(data[i:], []byte("-->"))
+			if k < 0 {
+				return 0, false
+			}
+			i += k + len("-->")
+		}
+	}
 }
 
 func (n *node) attr(local string) string {
