@@ -148,10 +148,11 @@ func Baselines() map[string]ACL {
 				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"credential:tenant:*"}},
 				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"evaluation:*"}},
 				// delete: a member token granted runs:delete deletes run trees;
-				// the scope stays the ceiling for one that was not. run:own only:
-				// a member reads and acts on the runs it started, never a
-				// colleague's or a tenant-level one (auth.OwnedRowVisible).
-				{Effect: Allow, Actions: []string{"read", "steer", "cancel", "compact", "retune", "review", "delete"}, Resources: []string{"run:own"}},
+				// the scope stays the ceiling for one that was not. run:* because
+				// the run verbs are asked only at the type level: a member
+				// reaches only the runs it started (auth.OwnedRowVisible), which
+				// no selector could narrow or widen.
+				{Effect: Allow, Actions: []string{"read", "steer", "cancel", "compact", "retune", "review", "delete"}, Resources: []string{"run:*"}},
 				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"principal:user:*"}},
 				selfTokenRule,
 				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"runtime:limits", "runtime:retention", "runtime:usage", "runtime:routing", "runtime:events"}},
@@ -193,13 +194,13 @@ func Baselines() map[string]ACL {
 				// keyspace. Writing one stays limited to its own.
 				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"credential:user:*"}},
 				{Effect: Allow, Actions: []string{"manage"}, Resources: []string{"credential:user:*"}, When: &Condition{OwnerIsSelf: &self}},
-				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"evaluation:self"}},
+				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"evaluation:*"}}, // whose: the token's evaluation scopes
 				// The Git tool's network reach, which it asks per remote now
 				// (RFC FY Part E): an isolated user's run reached it before any
 				// surface asked, and the operator's host lists and the agent's
 				// git_remote grant still bound it.
 				{Effect: Allow, Actions: []string{"fetch", "push"}, Resources: []string{"git:*"}},
-				{Effect: Allow, Actions: []string{"read", "steer", "cancel", "compact", "retune", "review", "delete"}, Resources: []string{"run:own"}},
+				{Effect: Allow, Actions: []string{"read", "steer", "cancel", "compact", "retune", "review", "delete"}, Resources: []string{"run:*"}},
 				selfTokenRule,
 				{Effect: Deny, Actions: []string{"read", "write", "recall", "browse"}, Resources: []string{"memory:tenant", "memory:global"}},
 				{Effect: Deny, Actions: []string{"read", "write"}, Resources: []string{"sqlmem:tenant"}},

@@ -135,10 +135,10 @@ func TestRuleNotEnforceable_NamesThePairOrTheField(t *testing.T) {
 		{Rule{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}}, ""},
 		{Rule{Effect: Deny, Actions: []string{"mount"}, Resources: []string{"volume:data"}}, "mount volume is not evaluated by any surface (a volume binding is asked read and write)"},
 		{Rule{Effect: Deny, Actions: []string{"use"}, Resources: []string{"search:*"}}, "use search is not evaluated by any surface (removed from the catalog)"},
-		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:own"}, When: &Condition{Time: &TimeWindow{Days: []string{"mon"}}}}, ""},
-		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:own"}, When: &Condition{Transport: []string{"mcp", "webui"}}}, ""},
-		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:own"}, When: &Condition{Transport: []string{"http", "bridge"}}}, `condition "transport" is not evaluated by any surface (no surface stamps the transport "bridge")`},
-		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:own"}, When: &Condition{Transport: []string{"bridge:slack"}}}, `condition "transport" is not evaluated by any surface (no surface stamps the transport "bridge:slack")`},
+		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:*"}, When: &Condition{Time: &TimeWindow{Days: []string{"mon"}}}}, ""},
+		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:*"}, When: &Condition{Transport: []string{"mcp", "webui"}}}, ""},
+		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:*"}, When: &Condition{Transport: []string{"http", "bridge"}}}, `condition "transport" is not evaluated by any surface (no surface stamps the transport "bridge")`},
+		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:*"}, When: &Condition{Transport: []string{"bridge:slack"}}}, `condition "transport" is not evaluated by any surface (no surface stamps the transport "bridge:slack")`},
 	}
 	for _, c := range cases {
 		if err := c.rule.Validate(); err != nil {
@@ -190,5 +190,95 @@ func TestTransports_EveryStampedValueIsAConditionValue(t *testing.T) {
 		if !IsTransportStamped(v) && v != "bridge" {
 			t.Errorf("%s is a condition value no surface stamps; refuse it or stamp it", v)
 		}
+	}
+}
+
+// A selector naming some instances on a pair no surface asks per instance
+// decides nothing: at the type-level question a deny on some instances is no
+// deny, and an allow on some instances admits every one. Every write refuses
+// it (RFC GD D2), naming the selector; the same rule on every instance, or on
+// some instances of a pair asked per instance, is accepted.
+func TestRuleNotEnforceable_RefusesAnInstanceSelectorOnATypeLevelOnlyPair(t *testing.T) {
+	refused := []Rule{
+		{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:tenant"}},
+		{Effect: Allow, Actions: []string{"read", "cancel"}, Resources: []string{"run:own"}},
+		{Effect: Deny, Actions: []string{"read"}, Resources: []string{"agent:x"}},
+		{Effect: Deny, Actions: []string{"read"}, Resources: []string{"skill:x-*"}},
+		{Effect: Deny, Actions: []string{"read"}, Resources: []string{"evaluation:self"}},
+	}
+	for _, r := range refused {
+		if err := r.Validate(); err != nil {
+			t.Fatalf("%v: %v", r, err)
+		}
+		err := RuleNotEnforceable(r)
+		var ne *NotEnforceableError
+		if !errors.As(err, &ne) {
+			t.Errorf("%v: %v, want a *NotEnforceableError", r, err)
+			continue
+		}
+		if !strings.Contains(err.Error(), r.Resources[0]) {
+			t.Errorf("%v: %q does not name the selector", r, err)
+		}
+	}
+	accepted := []Rule{
+		{Effect: Deny, Actions: []string{"read", "cancel"}, Resources: []string{"run:*"}},
+		{Effect: Deny, Actions: []string{"run"}, Resources: []string{"agent:x"}},
+		{Effect: Deny, Actions: []string{"invoke"}, Resources: []string{"skill:x-*"}},
+		{Effect: Deny, Actions: []string{"read"}, Resources: []string{"agent:**"}},
+		{Effect: Deny, Actions: []string{"publish"}, Resources: []string{"channel:ops"}},
+	}
+	for _, r := range accepted {
+		if err := RuleNotEnforceable(r); err != nil {
+			t.Errorf("%v: refused: %v", r, err)
+		}
+	}
+}
+
+// A type-level-only pair is enforced, and only at the transport gates: a code
+// site (a tool, a narrowing, a resolver) or the connector asks an instance.
+func TestTypeLevelOnlyPairs_AreAskedOnlyAtTransports(t *testing.T) {
+	for k := range typeLevelOnlyPairs {
+		sites, ok := enforcedPairs[k]
+		if !ok {
+			t.Errorf("%s %s: type-level-only but not enforced", k.verb, k.typ)
+		}
+		for _, s := range sites {
+			if s != SiteHTTPRoute && s != SiteGRPCRPC && s != SiteMCPTool {
+				t.Errorf("%s %s: type-level-only but asked at %s, which asks an instance", k.verb, k.typ, s)
+			}
+		}
+	}
+}
+
+// No built-in baseline carries a selector that decides nothing: a baseline is
+// the shape operators copy into their own lists.
+func TestBaselines_NameNoInstanceOfATypeLevelOnlyPair(t *testing.T) {
+	for name, a := range Baselines() {
+		for i, r := range a.Rules {
+			for _, sel := range r.Resources {
+				for _, v := range r.Actions {
+					if SelectorDecidesNothing(v, sel) {
+						t.Errorf("%s rule %d: %s %s names instances no surface asks", name, i, v, sel)
+					}
+				}
+			}
+		}
+	}
+}
+
+// An evaluation of a named instance of a type-level-only pair is refused, as
+// the rule naming it is; the type-level question and an instance of a pair
+// asked per instance are answered.
+func TestQuestionNotEnforceable_RefusesANamedInstanceOfATypeLevelOnlyPair(t *testing.T) {
+	if err := QuestionNotEnforceable("run", "read", "own"); err == nil {
+		t.Error("read run:own was answered")
+	}
+	for _, q := range [][3]string{{"run", "read", ""}, {"run", "read", AnyInstance}, {"agent", "run", "chat"}} {
+		if err := QuestionNotEnforceable(q[0], q[1], q[2]); err != nil {
+			t.Errorf("%v: %v", q, err)
+		}
+	}
+	if err := QuestionNotEnforceable("volume", "provision", ""); err == nil {
+		t.Error("an unenforced pair was answered")
 	}
 }

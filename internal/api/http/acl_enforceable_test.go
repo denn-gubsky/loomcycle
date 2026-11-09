@@ -130,3 +130,64 @@ func TestACLDef_ABrowseAllowIsWritten(t *testing.T) {
 		}
 	}
 }
+
+// A selector naming some instances of a verb asked only of every instance
+// (the run verbs, read agent, read skill, read evaluation) decides nothing as
+// written — a deny refuses nothing, an allow admits every instance — so every
+// write, the simulator's draft, and an evaluation or explanation of such a
+// named instance refuse it (RFC GD D2). The same rule on every instance is
+// written.
+func TestACLDef_AnInstanceSelectorOnATypeLevelOnlyVerbIsRefused(t *testing.T) {
+	srv, ts, _ := aclMgmtServer(t, authz.ModeCompat)
+	for _, rule := range []string{
+		`{"effect":"deny","actions":["read"],"resources":["run:tenant"]}`,
+		`{"effect":"allow","actions":["cancel"],"resources":["run:own"]}`,
+		`{"effect":"deny","actions":["read"],"resources":["agent:secret/*"]}`,
+	} {
+		for _, op := range []string{"create", "validate"} {
+			code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"`+op+`","name":"inert","rules":[`+rule+`]}`)
+			if code != 400 || jsonField(t, body, "code") != "rule_not_enforceable" {
+				t.Errorf("%s %s: %d %s, want 400 rule_not_enforceable", op, rule, code, body)
+			}
+		}
+	}
+	op := aclCaller(t, srv, "acme", "ops", auth.ScopeTenant)
+	if res := twinCall(t, srv, op, "acldef", `{"op":"create","name":"inert","rules":[{"effect":"deny","actions":["read"],"resources":["run:tenant"]}]}`); !res.IsError || textCode(res.Text) != "rule_not_enforceable" {
+		t.Errorf("twin create: %s, want rule_not_enforceable", res.Text)
+	}
+	code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_authz/simulate",
+		`{"acls":[{"name":"draft","rules":[{"effect":"deny","actions":["read"],"resources":["run:tenant"]}]}],"requests":[{"action":{"name":"read"},"resource":{"type":"run"}}]}`)
+	if code != 400 || jsonField(t, body, "code") != "rule_not_enforceable" {
+		t.Errorf("simulate with a draft deny on run:tenant: %d %s, want rule_not_enforceable", code, body)
+	}
+	for _, path := range []string{"/v1/_authz/evaluation", "/v1/_authz/explain"} {
+		code, body := bearerCall(t, ts, operatorBearer, "POST", path, `{"action":{"name":"read"},"resource":{"type":"run","id":"tenant"}}`)
+		if code != 400 || jsonField(t, body, "code") != "rule_not_enforceable" {
+			t.Errorf("%s of read run:tenant: %d %s, want rule_not_enforceable", path, code, body)
+		}
+	}
+	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"create","name":"live","rules":[{"effect":"deny","actions":["read"],"resources":["run:*"]}]}`); code != 201 {
+		t.Errorf("a deny on every run: %d %s, want 201", code, body)
+	}
+}
+
+// One stored before the refusal is reported at boot in its own class, and
+// explained: its trace says the selector does not do what it says.
+func TestReportUnenforceableACLs_NamesAStoredInstanceSelectorOnATypeLevelOnlyVerb(t *testing.T) {
+	srv, ts, st := aclMgmtServer(t, authz.ModeCompat)
+	rules := `[{"effect":"deny","actions":["read"],"resources":["run:tenant"]}]`
+	if _, err := st.AclDefPut(context.Background(), store.AclDefRow{TenantID: "acme", Name: "old-runs", Rules: json.RawMessage(rules)}); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(srv.ReportUnenforceableACLs(context.Background()), "\n")
+	if !strings.Contains(got, "type_level_only store acme/old-runs#0: read run:tenant") {
+		t.Errorf("report %q lacks the stored run:tenant deny", got)
+	}
+	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_aclbinding", `{"acl":"old-runs","subject_kind":"user","subject_id":"ops"}`); code != 201 {
+		t.Fatalf("bind: %d %s", code, body)
+	}
+	_, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_authz/explain", `{"action":{"name":"read"},"resource":{"type":"run"}}`)
+	if !strings.Contains(body, "this deny refuses nothing") {
+		t.Errorf("explain of read run:* does not flag the stored deny: %s", body)
+	}
+}

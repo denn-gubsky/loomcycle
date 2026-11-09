@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -35,6 +36,10 @@ const (
 	// aclReportTransportHTTP: a rule on transport http, which no longer
 	// covers a request to /v1/_mcp (now mcp) or from the Web UI (now webui).
 	aclReportTransportHTTP = "transport_http"
+	// aclReportTypeLevelOnly: a selector naming some instances of a verb asked
+	// only of every instance (RFC GD D2) — a deny refuses nothing, an allow
+	// admits every instance. Writes refuse it now.
+	aclReportTypeLevelOnly = "type_level_only"
 )
 
 var aclReportText = map[string]string{
@@ -42,6 +47,7 @@ var aclReportText = map[string]string{
 	aclReportInert:         "authz: a stored access-control rule is inert: names a fact no surface vouches for",
 	aclReportSourceCIDR:    "authz: a stored access-control source_cidr deny changed meaning: now enforced",
 	aclReportTransportHTTP: "authz: a stored access-control rule on transport http no longer covers mcp or webui requests",
+	aclReportTypeLevelOnly: "authz: a stored access-control rule names some instances of a verb asked only of every instance: a deny refuses nothing, an allow admits every instance",
 }
 
 // ReportUnenforceableACLs logs every live list — stored in any tenant, or
@@ -102,7 +108,12 @@ func classifyACLRules(source, tenant, name string, rules []authz.Rule) []string 
 		if inert {
 			add(aclReportInert, i, "tier or user_tier")
 		} else if err := authz.RuleNotEnforceable(r); err != nil {
-			add(aclReportUnenforced, i, err.Error())
+			class := aclReportUnenforced
+			var ne *authz.NotEnforceableError
+			if errors.As(err, &ne) && ne.Selector != "" {
+				class = aclReportTypeLevelOnly
+			}
+			add(class, i, err.Error())
 		}
 		if w == nil || inert {
 			continue

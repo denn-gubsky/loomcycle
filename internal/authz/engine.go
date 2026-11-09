@@ -747,6 +747,10 @@ type Trace struct {
 	Effect    Effect `json:"effect"`
 	Matched   bool   `json:"matched"`
 	Why       string `json:"why"`
+	// Note flags a rule that does not do what it says: a selector naming
+	// some instances of a pair no surface asks per instance (RFC GD D2).
+	// Writes refuse such a rule; one stored earlier is explained so.
+	Note string `json:"note,omitempty"`
 }
 
 // Explanation is Decide plus the full trace over every rule that names the
@@ -786,6 +790,9 @@ func (e *Effective) Explain(req Request) Explanation {
 		default:
 			t.Matched = true
 			t.Why = "matched"
+		}
+		if r.actions[req.Action] && namesSomeInstancesOnly(r.sels, spec, req.Action) {
+			t.Note = typeLevelOnlyNote[r.effect]
 		}
 		ex.Traces = append(ex.Traces, t)
 	}
@@ -866,4 +873,24 @@ func Diverges(d Decision, legacy bool) bool {
 		return !legacy
 	}
 	return false
+}
+
+// namesSomeInstancesOnly reports whether a selector of sels names only some
+// instances of a type-level-only pair (action of spec's type).
+func namesSomeInstancesOnly(sels []selector, spec TypeSpec, action string) bool {
+	if !IsTypeLevelOnly(spec.Name, action) {
+		return false
+	}
+	for _, s := range sels {
+		if s.typ == spec.Name && !s.matches(spec, AnyInstance) {
+			return true
+		}
+	}
+	return false
+}
+
+// typeLevelOnlyNote is what such a rule does instead of what it says.
+var typeLevelOnlyNote = map[Effect]string{
+	Deny:  "its selector names some instances of a verb asked only of every instance, so this deny refuses nothing; name the type's * to refuse it",
+	Allow: "its selector names some instances of a verb asked only of every instance, so this allow admits every instance",
 }
