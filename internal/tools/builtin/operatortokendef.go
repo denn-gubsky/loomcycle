@@ -47,6 +47,10 @@ type OperatorTokenDef struct {
 	// Audit records create/rotate/retire. Never nil at runtime (main.go
 	// wires audit.NopSink when no path is configured).
 	Audit audit.Sink
+	// Unrecorded counts a retirement made although its audit record could
+	// not be written ahead (loomcycle_audit_unrecorded_total); nil = not
+	// counted.
+	Unrecorded func(action string)
 
 	// RotationGraceSeconds is the default window during which a rotated
 	// token still authenticates. 0 → 24h.
@@ -618,17 +622,26 @@ func (s *OperatorTokenDef) execRetire(ctx context.Context, in operatorTokenDefIn
 			return errResult("retire: refusing to retire the last admin-scoped token — with no LOOMCYCLE_AUTH_TOKEN fallback and no admin config principal this would leave no admin credential (and, with no config principals, drop the server into unauthenticated open mode); create or rotate another substrate:admin token first"), nil
 		}
 	}
+	// A retirement only takes access away: it goes ahead when its record
+	// cannot be written ahead (a compromised token must stay revocable in an
+	// audit outage), and the record is retried after it.
 	ev, aErr := s.auditIntent(ctx, audit.Event{
 		Action: "retire", TargetDefID: target.DefID, TargetName: target.Name,
 		TargetTenant: target.TenantID, TargetSubject: target.Subject, ScopesBefore: target.AllowedScopes,
 	})
-	if aErr != nil {
-		return tools.AuditUnavailable("retire"), nil
+	if aErr != nil && s.Unrecorded != nil {
+		s.Unrecorded("retire")
 	}
 	now := time.Now().UTC()
 	if err := s.Store.OperatorTokenDefSetRetiredAt(ctx, target.DefID, now); err != nil {
 		s.auditFailed(ev)
 		return errResult(fmt.Sprintf("retire: %s", err)), nil
+	}
+	if aErr != nil {
+		ev.ChangeStatus, ev.TS = "", time.Time{}
+		if err := s.Audit.Record(ev); err != nil {
+			slog.ErrorContext(ctx, "audit: a token was retired and its audit record is missing", "def_id", target.DefID, "err", err)
+		}
 	}
 	return okJSON(map[string]any{"def_id": target.DefID, "name": target.Name, "retired_at": now.Format(time.RFC3339Nano)})
 }

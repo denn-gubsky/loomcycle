@@ -189,8 +189,9 @@ func tokenEvent(ctx context.Context, action string, row store.OperatorTokenDefRo
 }
 
 // tokenIntent records a token mint or retirement before it is made; a mint
-// or retirement whose record cannot be written is refused (recordIntent).
-func (s *Server) tokenIntent(ctx context.Context, action string, row store.OperatorTokenDefRow) (audit.Event, error) {
+// whose record cannot be written is refused, a retirement goes ahead
+// (recordIntent).
+func (s *Server) tokenIntent(ctx context.Context, action string, row store.OperatorTokenDefRow) (changeIntent, error) {
 	return s.recordIntent(ctx, tokenEvent(ctx, action, row))
 }
 
@@ -798,6 +799,7 @@ func (s *Server) handleRevokeUserToken(w http.ResponseWriter, r *http.Request) {
 	}
 	// Stop the revoked token authenticating within one backplane round-trip.
 	s.invalidateTokenCache(r.Context())
+	s.recordDone(r.Context(), ev)
 	slog.Info("users: revoked token", "tenant", tenant, "subject", subject, "def_id", defID, "by", principalSubject(r.Context()))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"def_id":     defID,

@@ -313,14 +313,20 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// cannot show is refused. Any error reply after this point is recorded
 	// as failed (some of the change may have applied: a disable ends access
 	// even when the status write fails).
-	ev := audit.Event{Action: "user_updated", TargetTenant: tenant, TargetSubject: subject}
+	// A disable only takes access away (whatever else the patch says, the
+	// user is disabled), so it goes ahead in an audit outage; anything else
+	// may grant and is refused unrecorded (audit.ChangeKindOf).
+	want := audit.Event{Action: "user_updated", TargetTenant: tenant, TargetSubject: subject}
+	if req.Status != nil && *req.Status == "disabled" {
+		want.Action = "user_disabled"
+	}
 	if req.AccessMode != nil {
-		ev.AuthTargetAccessMode = *req.AccessMode
+		want.AuthTargetAccessMode = *req.AccessMode
 	}
 	if req.Status != nil {
-		ev.UserStatus = *req.Status
+		want.UserStatus = *req.Status
 	}
-	ev, err := s.recordIntent(r.Context(), ev)
+	ev, err := s.recordIntent(r.Context(), want)
 	if err != nil {
 		writeAuditUnavailable(w)
 		return
@@ -438,6 +444,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updateDone = true
+	s.recordDone(r.Context(), ev)
 	// Re-read so the response reflects the post-patch state.
 	updated, err := s.store.UserGet(r.Context(), tenant, subject)
 	if err != nil {
@@ -521,6 +528,7 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	// The store retired the user's bindings and dropped its memberships with
 	// the row: refresh the cached sets everywhere, and audit it.
 	deleted = true
+	s.recordDone(r.Context(), ev)
 	s.aclChanged(r.Context(), tenant, "user_unbound", subject)
 	w.WriteHeader(http.StatusNoContent)
 }

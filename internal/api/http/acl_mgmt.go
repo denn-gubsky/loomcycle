@@ -194,7 +194,7 @@ func decodeACLBody(w http.ResponseWriter, r *http.Request, into any) bool {
 
 // aclIntent records a management write before it is made (recordIntent):
 // a write whose record cannot be written is refused.
-func (s *Server) aclIntent(ctx context.Context, tenant, action, targetName string) (audit.Event, *aclReply) {
+func (s *Server) aclIntent(ctx context.Context, tenant, action, targetName string) (changeIntent, *aclReply) {
 	ev, err := s.recordIntent(ctx, audit.Event{Action: action, TargetTenant: tenant, TargetName: targetName})
 	if err != nil {
 		r := aclAuditUnavailable()

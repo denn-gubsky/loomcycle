@@ -73,6 +73,7 @@ func (s *Server) handleSelfRevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.invalidateTokenCache(ctx)
+	s.recordDone(ctx, ev)
 	slog.Info("auth: a token retired itself", "tenant", row.TenantID, "subject", row.Subject, "def_id", row.DefID)
 	writeJSON(w, http.StatusOK, map[string]any{"def_id": row.DefID, "retired_at": now.Format(time.RFC3339Nano)})
 }

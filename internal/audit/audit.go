@@ -269,10 +269,75 @@ const (
 	ChangeFailed = "failed"
 )
 
+// ChangeKind is how a change recorded ahead (ChangeIntent) behaves when its
+// record cannot be written.
+type ChangeKind int
+
+const (
+	// ChangeGrants: the change grants or widens access, or may (an
+	// access-control write can drop a deny). It is refused when its record
+	// cannot be written.
+	ChangeGrants ChangeKind = iota
+	// ChangeReduces: the change only takes access away. It goes ahead when
+	// its record cannot be written, so an operator can still revoke a
+	// compromised token or deprovision a user while the audit store is down;
+	// the record is retried after the change and the miss is counted
+	// (loomcycle_audit_unrecorded_total) and logged at error.
+	ChangeReduces
+)
+
+// changeKinds classifies every action recorded ahead. An access-control
+// write is never classed as reducing: a list rewrite, a retired list or
+// binding, a deleted group or a removed membership can each remove a deny,
+// so none is known to take access away.
+// A function, not a package variable, so nothing can change the table.
+func changeKinds() map[string]ChangeKind {
+	return map[string]ChangeKind{
+		// Tokens.
+		"create": ChangeGrants,
+		"rotate": ChangeGrants,
+		"retire": ChangeReduces,
+		// Users.
+		"user_created":               ChangeGrants,
+		"user_updated":               ChangeGrants, // re-enable, access mode, display name
+		"user_disabled":              ChangeReduces,
+		"user_deleted":               ChangeReduces,
+		"auth_scim_user_created":     ChangeGrants,
+		"auth_scim_user_reactivated": ChangeGrants,
+		"auth_scim_user_deactivated": ChangeReduces,
+		// Access control.
+		"acl_written":          ChangeGrants,
+		"acl_retired":          ChangeGrants,
+		"binding_written":      ChangeGrants,
+		"binding_retired":      ChangeGrants,
+		"group_written":        ChangeGrants,
+		"group_deleted":        ChangeGrants,
+		"group_member_added":   ChangeGrants,
+		"group_member_removed": ChangeGrants,
+	}
+}
+
+// ChangeKindOf is action's kind, and whether it is classified at all. An
+// unclassified action is to be treated as granting (refused unrecorded).
+func ChangeKindOf(action string) (ChangeKind, bool) {
+	k, ok := changeKinds()[action]
+	return k, ok
+}
+
+// ChangeActions lists the classified actions, for the census tests.
+func ChangeActions() []string {
+	kinds := changeKinds()
+	out := make([]string, 0, len(kinds))
+	for a := range kinds {
+		out = append(out, a)
+	}
+	return out
+}
+
 // Sink records audit events. Record must be safe for concurrent use. Most
 // callers log a Record error and proceed; token, access-control and user
-// lifecycle changes record an intent before they are made and are refused
-// when it cannot be written (ChangeIntent).
+// lifecycle changes record an intent before they are made, and one that
+// grants access is refused when it cannot be written (ChangeKindOf).
 type Sink interface {
 	Record(ev Event) error
 }

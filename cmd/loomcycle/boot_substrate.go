@@ -236,6 +236,7 @@ func (b *boot) wireAuth() {
 		Store:                  storeIface,
 		Hasher:                 tokenHasher,
 		Audit:                  tokenAudit,
+		Unrecorded:             srv.CountUnrecordedAudit,
 		RotationGraceSeconds:   graceSecs,
 		LegacyTokenSet:         srv.LegacyTokenSet,
 		AdminPrincipalDeclared: srv.AdminPrincipalResolved,
