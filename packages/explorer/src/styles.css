@@ -1973,3 +1973,18 @@
   color: var(--failed);
   font-size: var(--lc-text-xs);
 }
+/* A Path row with a brief wraps it onto a second line inside the row box,
+   indented past the caret. */
+.loomcycle-explorer .path-row:has(.path-brief) {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+.loomcycle-explorer .path-brief {
+  flex-basis: 100%;
+  padding-left: 22px;
+  color: var(--fg-muted);
+  font-size: var(--lc-text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
