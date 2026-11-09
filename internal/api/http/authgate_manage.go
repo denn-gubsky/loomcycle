@@ -1033,7 +1033,17 @@ func (s *Server) handleAuthgateRenameLogin(w http.ResponseWriter, r *http.Reques
 	if _, ok := s.holdManagerToFloorTarget(w, ctx, caller, &g, tenant, subject, "rename_login", false); !ok {
 		return
 	}
+	// A rename changes which name signs in as the person: a grant, recorded
+	// ahead and refused when the record cannot be written.
+	p, _ := auth.PrincipalFromContext(ctx)
+	intent, ierr := s.recordIntent(ctx, audit.Event{Action: "auth_login_renamed", AuthGate: g.Name, TargetTenant: tenant, TargetSubject: subject,
+		ActorTenant: p.TenantID, ActorSubject: p.Subject, ActorTokenSuffix: p.TokenSuffix})
+	if ierr != nil {
+		writeAuditUnavailable(w)
+		return
+	}
 	if err := s.store.UserIdentityRename(ctx, tenant, subject, g.Name, login); err != nil {
+		s.recordFailed(ctx, intent)
 		var conflict *store.ErrConflict
 		switch {
 		case errors.As(err, &conflict):
@@ -1045,7 +1055,7 @@ func (s *Server) handleAuthgateRenameLogin(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
-	s.recordGateAudit(ctx, "auth_login_renamed", g.Name, "", tenant, subject, floorTarget{})
+	s.recordDone(ctx, intent)
 	writeJSON(w, http.StatusOK, map[string]any{"subject": subject, "login": login})
 }
 

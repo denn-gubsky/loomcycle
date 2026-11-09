@@ -431,6 +431,12 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		// operator asked for the user's access to end, and an error is
 		// reported only once it has.
 		_, endErr := s.endSubjectCredentials(ctx, tenant, subject, credAll)
+		if disableErr == nil && endErr != nil {
+			// The user is disabled; ending its credentials did not finish.
+			// Recorded "partial", not "failed": the disable happened.
+			s.recordStopped(ctx, ev, map[string]int{"disabled": 1})
+			updateDone = true
+		}
 		switch {
 		case disableErr != nil:
 			writeJSONError(w, http.StatusInternalServerError, "user_update_failed", disableErr.Error())
