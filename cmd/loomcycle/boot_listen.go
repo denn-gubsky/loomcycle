@@ -20,8 +20,9 @@ import (
 	googlegrpc "google.golang.org/grpc"
 )
 
-// startListeners is boot phase 10: serve HTTP, and gRPC when
-// LOOMCYCLE_GRPC_ADDR is set.
+// startListeners is boot phase 10: serve HTTP, gRPC when
+// LOOMCYCLE_GRPC_ADDR is set, and the unauthenticated metrics listener when
+// LOOMCYCLE_METRICS_LISTEN is set.
 func (b *boot) startListeners() {
 	cfg := b.cfg
 	storeIface := b.storeIface
@@ -112,6 +113,12 @@ func (b *boot) startListeners() {
 	}
 
 	b.grpcSrv = grpcSrv
+
+	metricsServer, _, err := startMetricsListener(cfg.Env.MetricsListenAddr, srv.MetricsListenerHandler(), slog.Default())
+	if err != nil {
+		fatal("metrics listen: opening the listener failed", "addr", cfg.Env.MetricsListenAddr, "err", err)
+	}
+	b.metricsServer = metricsServer
 }
 
 // waitAndShutdown is boot phase 11: block until SIGINT/SIGTERM, then pause the
@@ -125,6 +132,7 @@ func (b *boot) waitAndShutdown() {
 	heartbeatRunner := b.heartbeatRunner
 	webhookReceiver := b.webhookReceiver
 	httpServer := b.httpServer
+	metricsServer := b.metricsServer
 	bgCancel := b.bgCancel
 	countFlusherDone := b.countFlusherDone
 	grpcSrv := b.grpcSrv
@@ -170,6 +178,13 @@ func (b *boot) waitAndShutdown() {
 		defer drain.Done()
 		_ = httpServer.Shutdown(ctx)
 	}()
+	if metricsServer != nil {
+		drain.Add(1)
+		go func() {
+			defer drain.Done()
+			_ = metricsServer.Shutdown(ctx)
+		}()
+	}
 	drain.Wait()
 
 	bgCancel() // tear down sweeper + GC goroutines

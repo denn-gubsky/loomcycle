@@ -3449,6 +3449,7 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_METRICS_RETENTION_DAYS` | `7` | Days of samples kept; `0` keeps them all. |
 | `LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS` | `900000` | How often old samples are deleted; `0` stops it. |
 | `LOOMCYCLE_METRICS_COLLECT_SYSTEM` | off | `1` also samples system-wide CPU and memory (Linux only). |
+| `LOOMCYCLE_METRICS_LISTEN` | unset | An address (`127.0.0.1:9464`, or `0.0.0.0:9464` inside a compose network) for a second plain-HTTP listener that serves `GET /metrics` only, **with no authentication**; every other path is 404. For a scraper on the same host or a network only it reaches. Boot fails if the address cannot be bound, and warns when it is beyond loopback. The main listener's `/metrics` keeps its token. See [Scraping /metrics](#scraping-metrics). |
 | `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP endpoint; setting it turns on tracing (per run, iteration, provider and tool call). |
 | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` | — | Collector headers as `key=value,key2=value2`. A secret: never interpolated into config. |
 | `LOOMCYCLE_OTEL_SERVICE_NAME` | `loomcycle` | Service name on the spans. |

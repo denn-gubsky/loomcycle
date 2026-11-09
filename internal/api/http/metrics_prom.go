@@ -33,8 +33,20 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
 )
 
-// handleMetricsProm serves GET /metrics. Bearer-authed (middleware
-// already gates the route). Live-read; no DB query.
+// MetricsListenerHandler is the handler of the separate metrics listener
+// (LOOMCYCLE_METRICS_LISTEN): GET /metrics, the same render as the main
+// listener's, with NO authentication, and a 404 for every other path. It is
+// meant for a network only the scraper can reach; the main listener keeps
+// serving the authenticated /metrics regardless.
+func (s *Server) MetricsListenerHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", recoveryMiddleware(http.HandlerFunc(s.handleMetricsProm)))
+	return mux
+}
+
+// handleMetricsProm serves GET /metrics. Bearer-authed on the main listener
+// (middleware already gates the route); unauthenticated on the metrics
+// listener. Live-read; no DB query.
 func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)

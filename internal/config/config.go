@@ -4768,6 +4768,14 @@ type Env struct {
 	// run with one, the other, or both. Env: LOOMCYCLE_GRPC_ADDR.
 	GrpcAddr string
 
+	// MetricsListenAddr, when set (e.g. "127.0.0.1:9464", or "0.0.0.0:9464"
+	// inside a compose network), opens a second plain-HTTP listener that
+	// serves GET /metrics only, with NO authentication, for a scraper on the
+	// same host or a protected network. The main listener keeps its
+	// authenticated /metrics. Empty = no listener. Env:
+	// LOOMCYCLE_METRICS_LISTEN.
+	MetricsListenAddr string
+
 	// ResolveProbeInterval is the cadence at which the resolver
 	// re-probes each provider's /v1/models endpoint (or /api/tags
 	// for Ollama) to refresh the availability matrix. Default 15
@@ -5818,6 +5826,8 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// by setting LOOMCYCLE_GRPC_ADDR. Coexists with HTTP+SSE (which
 	// remains the default and is on a separate port).
 	cfg.Env.GrpcAddr = os.Getenv("LOOMCYCLE_GRPC_ADDR")
+	// The unauthenticated metrics listener: off unless set.
+	cfg.Env.MetricsListenAddr = os.Getenv("LOOMCYCLE_METRICS_LISTEN")
 
 	// Heartbeat sweeper + session-lock GC env. All optional; defaults
 	// are sensible for a single-replica deployment.

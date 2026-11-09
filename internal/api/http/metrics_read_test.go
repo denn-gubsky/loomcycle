@@ -133,3 +133,23 @@ func TestUILogin_RefusesAMetricsReadToken(t *testing.T) {
 		t.Errorf("%d session rows after a refused login, want 0", n)
 	}
 }
+
+// The metrics listener's handler serves the scrape with no credential, even on
+// a server whose main listener requires one, and nothing else.
+func TestMetricsListenerHandler_ServesOnlyTheScrapeWithoutAuth(t *testing.T) {
+	s, _ := tokenAuthServer(t, "legacy-secret")
+	h := s.MetricsListenerHandler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "loomcycle_process_goroutines") {
+		t.Fatalf("GET /metrics: %d %.200s", rec.Code, rec.Body.String())
+	}
+	for _, path := range []string{"/", "/v1/runs", "/v1/_me", "/metrics/x", "/v1/_metrics/summary", "/healthz"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s: %d, want 404", path, rec.Code)
+		}
+	}
+}
