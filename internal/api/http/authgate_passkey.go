@@ -1002,7 +1002,8 @@ func (s *Server) handleRenamePasskey(w http.ResponseWriter, r *http.Request) {
 // handleRemovePasskey serves DELETE /v1/_auth/passkeys/{id}, after a step-up
 // in this request (passkeyStepUpOK). It refuses to remove the account's last way in, and the last
 // second factor of a password a gate requires one for. Sessions made with
-// the passkey end on their next request (their binding is its key).
+// the passkey end on their next request (their binding is its key); app
+// sign-ins and delegated tokens end at once (endFactorSignIns).
 func (s *Server) handleRemovePasskey(w http.ResponseWriter, r *http.Request) {
 	sess, _, ok := s.passkeySelf(w, r)
 	if !ok {
@@ -1044,6 +1045,7 @@ func (s *Server) handleRemovePasskey(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "passkey_not_found", "no such passkey")
 		return
 	}
+	s.endFactorSignIns(ctx, *sess)
 	s.recordGateAudit(ctx, "auth_passkey_removed", sess.Gate, "", sess.TenantID, sess.Subject, floorTarget{})
 	w.WriteHeader(http.StatusNoContent)
 }

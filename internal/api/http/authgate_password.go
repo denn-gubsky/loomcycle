@@ -1427,6 +1427,18 @@ func (s *Server) endOtherSignIns(ctx context.Context, sess store.UISessionRow) {
 	}
 }
 
+// endFactorSignIns ends what a person's removed second factor (a passkey,
+// an authenticator app) may have been used to make: app sign-ins and
+// delegated tokens, device-login ones included. Web UI sessions are left to
+// their binding: one made with a removed passkey ends on its next request,
+// and the browser that removed the factor stays signed in. A fault is
+// logged: the factor is already gone.
+func (s *Server) endFactorSignIns(ctx context.Context, sess store.UISessionRow) {
+	if _, err := s.endSubjectCredentials(ctx, sess.TenantID, sess.Subject, credAppSignIns|credDelegatedTokens); err != nil {
+		slog.Error("authgate: ending sign-ins after a factor removal failed", "err", err)
+	}
+}
+
 // handleTOTPBegin serves POST /v1/_auth/totp/begin: a fresh secret to scan.
 func (s *Server) handleTOTPBegin(w http.ResponseWriter, r *http.Request) {
 	pw, sess, login, ok := s.selfService(w, r)
@@ -1556,6 +1568,10 @@ func (s *Server) handleTOTPRemove(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.store.UserTOTPDelete(ctx, sess.TenantID, sess.Subject); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
+	}
+	if !newPass {
+		// A new password already ended every sign-in above.
+		s.endFactorSignIns(ctx, sess)
 	}
 	s.recordGateAudit(ctx, "auth_totp_removed", pw.g.Name, "", sess.TenantID, sess.Subject, floorTarget{})
 	if newPass && !s.startPasswordSession(w, r, pw.g.Name, sess.TenantID, sess.Subject, []string{amrPassword}) {

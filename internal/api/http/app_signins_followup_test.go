@@ -46,3 +46,27 @@ func TestAppSignIns_ARetriedEndFinishesAfterAPartialFailure(t *testing.T) {
 		t.Fatalf("the ended sign-in's access token still answers /v1/_me: %d", code)
 	}
 }
+
+// Removing a passkey — a factor that may be lost — ends the app sign-ins
+// and delegated tokens made while it was on the account; the browser that
+// removed it, signed in with the password, stays signed in.
+func TestPasskey_RemovingAPasskeyEndsAppSignInsAndTokens(t *testing.T) {
+	f := newPasskeyFixture(t)
+	b, sub := f.passwordUser(t, "pia@example.com")
+	a := registerPasskey(t, b)
+	seedAppSignIn(t, f.st, "fam-passkey", sub)
+	if code, out := f.call(t, bAcmeOp, "POST", "/v1/_users/"+sub+"/tokens", `{}`); code != http.StatusCreated {
+		t.Fatalf("mint a user token: %d %v", code, out)
+	}
+	path := "/v1/_auth/passkeys/" + b64u.EncodeToString(a.credID)
+	_, out := b.do("DELETE", path, passwordStepUp)
+	body := map[string]any{"current_password": goodPassword, "webauthn": a.get(out["webauthn"].(map[string]any))}
+	if code, out := b.do("DELETE", path, jsonBody(t, body)); code != http.StatusNoContent {
+		t.Fatalf("remove: %d %v", code, out)
+	}
+	assertFamilyRevoked(t, f.st, "fam-passkey", "a passkey removal")
+	assertNoActiveDelegatedToken(t, f.st, sub, "a passkey removal")
+	if code, _ := b.me(); code != http.StatusOK {
+		t.Fatalf("the password browser that removed the passkey lost its session: %d", code)
+	}
+}

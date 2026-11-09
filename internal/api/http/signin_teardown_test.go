@@ -144,13 +144,27 @@ var credentialChanges = map[string]bool{
 	"AuthResetComplete":    true,
 	"AuthRemovalStart":     true,
 	"UserDelete":           true,
+	// Removing a second factor (an authenticator app or a passkey): it may
+	// be lost, so what was made while it was on the account ends.
+	"UserTOTPDelete":           true,
+	"UserPasskeyDelete":        true,
+	"UserPasskeyDeleteKeeping": true,
+	"UserPasskeyDeleteSubject": true,
 }
 
 // TestSignInTeardown_EveryCallerGoesThroughTheHelper is derived from this
 // package's source: no function but endSubjectCredentials ends one kind of
-// sign-in by itself, and every function that changes a credential (reset,
-// change, removal, delete, disable) reaches endSubjectCredentials. A new
-// credential path, or a new kind of sign-in ended by hand, fails here.
+// sign-in by itself — by calling a primitive or by handing it on as a
+// method value — and every function that changes a credential (reset,
+// change, removal, delete, disable, a factor removed) reaches
+// endSubjectCredentials. A new credential path, or a new kind of sign-in
+// ended by hand, fails here.
+//
+// What it does not check is ORDER: that the teardown runs before any later
+// step of the change that can fail. The fault-injection tests
+// (TestTOTPRemove_ANewPasswordEndsSignInsEvenWhenALaterStepFails,
+// TestCredentialRemoval_EndsSignInsEvenWhenALaterStepFails) hold that for
+// the paths with such a step.
 func TestSignInTeardown_EveryCallerGoesThroughTheHelper(t *testing.T) {
 	fset := token.NewFileSet()
 	entries, err := os.ReadDir(".")
@@ -177,7 +191,34 @@ func TestSignInTeardown_EveryCallerGoesThroughTheHelper(t *testing.T) {
 			if calls[owner] == nil {
 				calls[owner] = map[string]bool{}
 			}
+			// A primitive named anywhere but as the function of a call is
+			// handed on as a value (EndAppSignIns: s.endSubjectAppSignIns),
+			// and whoever calls it later ends a sign-in by hand.
+			callFuns := map[ast.Node]bool{} // the function expression of each call
+			selNames := map[ast.Node]bool{} // a selector's name, judged at the selector
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				switch v := n.(type) {
+				case *ast.CallExpr:
+					callFuns[v.Fun] = true
+				case *ast.SelectorExpr:
+					selNames[v.Sel] = true
+				}
+				return true
+			})
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				var named string
+				switch v := n.(type) {
+				case *ast.SelectorExpr:
+					named = v.Sel.Name
+				case *ast.Ident:
+					if !selNames[v] {
+						named = v.Name
+					}
+				}
+				if allowed, ok := signInPrimitives[named]; ok && !callFuns[n] && allowed != owner {
+					problems = append(problems, fmt.Sprintf("%s: %s hands %s on as a value; end sign-ins through endSubjectCredentials",
+						fset.Position(n.Pos()), owner, named))
+				}
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true
