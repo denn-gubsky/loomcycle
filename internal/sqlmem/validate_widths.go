@@ -80,10 +80,20 @@ func validateWidths(statement string, d dialect, limit int) error {
 // foldConst evaluates an argument that is a constant expression: numbers,
 // parentheses, unary and binary + - * /, a "::type" cast and CAST(x AS type).
 // ok is false for anything else (a column, a parameter, a call, a subquery).
+//
+// A result that is not a finite number (an overflowing literal, 0*1e400,
+// 1e400-1e400, a division by zero) folds to +Inf: over any limit, so it is
+// refused rather than compared as NaN, which is over nothing.
 func foldConst(toks []widthToken) (float64, bool) {
 	p := constParser{toks: toks}
 	v, ok := p.expr()
-	return v, ok && p.i == len(toks)
+	if !ok || p.i != len(toks) {
+		return 0, false
+	}
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return math.Inf(1), true
+	}
+	return v, true
 }
 
 type constParser struct {
@@ -128,8 +138,8 @@ func (p *constParser) term() (float64, bool) {
 			v *= w
 		case p.punct("/"):
 			var w float64
-			if w, ok = p.factor(); ok && w != 0 {
-				v /= w
+			if w, ok = p.factor(); ok {
+				v /= w // by zero: ±Inf or NaN, which foldConst refuses
 			}
 		default:
 			return v, true
@@ -207,7 +217,8 @@ func numberValue(text string) (float64, bool) {
 	} else if errors.Is(err, strconv.ErrRange) {
 		return math.Inf(1), true
 	}
-	if f, err := strconv.ParseFloat(text, 64); err == nil {
+	// Out of range, ParseFloat returns ±Inf with its error: keep the Inf.
+	if f, err := strconv.ParseFloat(text, 64); err == nil || errors.Is(err, strconv.ErrRange) {
 		return f, true
 	}
 	return 0, false

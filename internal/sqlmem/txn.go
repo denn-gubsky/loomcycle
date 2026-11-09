@@ -349,6 +349,9 @@ func (m *Manager) queryTxn(ctx context.Context, txnID, statement string, args []
 	defer cancel()
 	limit := valueLengthLimit(m.cfg)
 	if maxBytes > 0 && m.dialect == dialectPostgres {
+		if err := pgCheckWrappable(statement); err != nil {
+			return nil, err
+		}
 		statement = wrapValueLimit(statement, limit)
 	}
 	rows, err := t.tx.QueryContext(qctx, statement, args...)

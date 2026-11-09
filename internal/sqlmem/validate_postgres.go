@@ -139,10 +139,134 @@ func postgresStatementDenies(trimmed string, readOnly bool) error {
 // tell it from any other.
 const pgValueLimitMarker = "loomcycle-sqlmem-value-limit"
 
+// pgCheckWrappable refuses a statement that wrapValueLimit could not paste
+// into its subquery and still run as written: parentheses must balance and
+// never close more than they opened, and nothing may follow a ';'. Otherwise a
+// statement such as "SELECT 1) AS z, (SELECT …" closes the wrapper's subquery
+// and the row check applies to a different query than the one the validator
+// approved.
+//
+// It reads the raw statement with postgres's own lexical rules, not the
+// shared comment stripper: '…' strings with '' doubled, E'…' strings with
+// backslash escapes, $tag$…$tag$ bodies (a '$' inside an identifier is not
+// one), "…" identifiers, -- line comments and nested /* */ comments. Anything
+// left open at the end is refused.
+//
+// A session can turn standard_conforming_strings off (a function body may
+// EXECUTE 'SET …'), and then a plain '…' string takes backslash escapes too.
+// The statement is read both ways and must pass both.
+func pgCheckWrappable(statement string) error {
+	if err := pgCheckWrappableAs(statement, false); err != nil {
+		return err
+	}
+	return pgCheckWrappableAs(statement, true)
+}
+
+func pgCheckWrappableAs(statement string, backslashStrings bool) error {
+	s := statement
+	depth := 0
+	isIdent := func(c byte) bool {
+		return c == '_' || c == '$' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c >= 0x80
+	}
+	unterminated := refuse("the statement ends inside a string, quoted name or comment")
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '-' && i+1 < len(s) && s[i+1] == '-':
+			if k := strings.IndexByte(s[i:], '\n'); k >= 0 {
+				i += k
+			} else {
+				i = len(s)
+			}
+		case c == '/' && i+1 < len(s) && s[i+1] == '*':
+			nest := 1
+			for i += 2; nest > 0; i++ {
+				if i+1 >= len(s) {
+					return unterminated
+				}
+				switch {
+				case s[i] == '/' && s[i+1] == '*':
+					nest++
+					i++
+				case s[i] == '*' && s[i+1] == '/':
+					nest--
+					i++
+				}
+			}
+			i--
+		case c == '\'':
+			escapes := backslashStrings || i > 0 && (s[i-1] == 'e' || s[i-1] == 'E') && (i < 2 || !isIdent(s[i-2]))
+			j := i + 1
+			for ; ; j++ {
+				if j >= len(s) {
+					return unterminated
+				}
+				if escapes && s[j] == '\\' {
+					j++
+					continue
+				}
+				if s[j] == '\'' {
+					if j+1 < len(s) && s[j+1] == '\'' {
+						j++
+						continue
+					}
+					break
+				}
+			}
+			i = j
+		case c == '"':
+			j := i + 1
+			for ; ; j++ {
+				if j >= len(s) {
+					return unterminated
+				}
+				if s[j] == '"' {
+					if j+1 < len(s) && s[j+1] == '"' {
+						j++
+						continue
+					}
+					break
+				}
+			}
+			i = j
+		case isIdent(c) && c != '$':
+			for i+1 < len(s) && isIdent(s[i+1]) {
+				i++
+			}
+		case c == '$':
+			tag, ok := dollarTagAt(s, i)
+			if !ok {
+				continue
+			}
+			end := strings.Index(s[i+len(tag):], tag)
+			if end < 0 {
+				return unterminated
+			}
+			i += len(tag) + end + len(tag) - 1
+		case c == '(':
+			depth++
+		case c == ')':
+			if depth--; depth < 0 {
+				return refuse("the statement closes a parenthesis it did not open")
+			}
+		case c == ';':
+			if strings.TrimSpace(s[i+1:]) != "" {
+				return refuse("only one SQL statement per call is allowed, with nothing after its ';'")
+			}
+		}
+	}
+	if depth != 0 {
+		return refuse("the statement leaves a parenthesis open")
+	}
+	return nil
+}
+
 // wrapValueLimit runs an agent's read-only statement inside a query that makes
 // the server refuse any row whose text form is over limit bytes, before the
 // row is sent: postgres has no per-value limit, and the driver reads a whole
 // row into the runtime's heap before the result cap can measure it.
+//
+// The statement must pass pgCheckWrappable first.
 //
 // The refusal is a cast of a marker string to integer, made to depend on the
 // row so the planner cannot fold it into an error at plan time. The outer

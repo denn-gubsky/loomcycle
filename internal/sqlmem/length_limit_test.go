@@ -325,3 +325,74 @@ func TestPostgres_RowOverValueLimitRefusedBeforeTransfer(t *testing.T) {
 		t.Fatalf("columns %v rows %v, want a,a2,?column? with 2 first", res.Columns, res.Rows)
 	}
 }
+
+func TestValidateWidths_NonFiniteWidthsRefused(t *testing.T) {
+	const limit = 16 << 20
+	for _, c := range []struct {
+		stmt string
+		d    dialect
+	}{
+		{"SELECT repeat('x', 1e400 - 1e400)", dialectPostgres},
+		{"SELECT repeat('x', 0*1e400)", dialectPostgres},
+		{"SELECT repeat('x', -1e400)", dialectPostgres},
+		{"SELECT repeat('x', 1/0)", dialectPostgres},
+		{"SELECT repeat('x', 99999999999999999999999)", dialectPostgres},
+		{"SELECT zeroblob(1e400 - 1e400)", dialectSQLite},
+		{"SELECT zeroblob(0*1e400)", dialectSQLite},
+		{"SELECT randomblob(99999999999999999999999)", dialectSQLite},
+	} {
+		if err := validateWidths(c.stmt, c.d, limit); err == nil {
+			t.Errorf("%q: accepted, want refused", c.stmt)
+		}
+	}
+}
+
+func TestPgWrappable_RefusesStatementsThatEscapeTheWrapper(t *testing.T) {
+	for _, stmt := range []string{
+		`SELECT 1) AS z, (SELECT repeat('x', 10)`,
+		`SELECT 1) AS z WHERE true UNION ALL SELECT repeat('x', 10) FROM (SELECT 1`,
+		`SELECT (1`,
+		`SELECT 1; SELECT 2`,
+		// An escaped quote in an E'' string: a reader that ignored the escape
+		// would take the rest as one string and miss the ')'.
+		`SELECT E'a\'' ) AS z, (SELECT 2 --'`,
+		`SELECT 'unterminated`,
+		`SELECT $$unterminated`,
+		`SELECT /* /* nested */ 1`,
+		// With standard_conforming_strings off this is one string ending at
+		// the last quote, and the ')' after the first is code.
+		`SELECT 'a\'' ) AS z, (SELECT 2 --'`,
+		`SELECT "a""b`,
+	} {
+		if err := pgCheckWrappable(stmt); err == nil {
+			t.Errorf("%q: accepted, want refused", stmt)
+		}
+	}
+	for _, stmt := range []string{
+		`SELECT (1 + 2) * 3`,
+		`SELECT ')' AS p, E'\')' AS q, $$)$$ AS r, "a)b" AS s -- )`,
+		`SELECT /* ( /* ) */ */ 1;`,
+		`SELECT /* /* nested */ ) */ 1`,
+		`SELECT E'\') AS z, (SELECT 1'`,
+		`WITH x AS (SELECT 1 AS a) SELECT a FROM x`,
+		`SELECT a$b$ FROM t`,
+		`SELECT $1::int`,
+	} {
+		if err := pgCheckWrappable(stmt); err != nil {
+			t.Errorf("%q: refused (%v), want accepted", stmt, err)
+		}
+	}
+}
+
+func TestPostgres_WrapperEscapeRefused(t *testing.T) {
+	m, _ := pgTestManager(t, Config{MaxResultBytes: 1 << 20})
+	ctx := context.Background()
+	key := agentKey("t1", "esc")
+	// Pasted into the wrapper this closes its subquery and opens one of its
+	// own, so the row check would apply to a different query than the one run.
+	res, err := m.QueryCapped(ctx, key, `SELECT 1) AS z, (SELECT 2`, nil)
+	var es *ErrStatement
+	if !errors.As(err, &es) {
+		t.Fatalf("err = %v (%T), result %v; want a statement refusal", err, err, res)
+	}
+}
