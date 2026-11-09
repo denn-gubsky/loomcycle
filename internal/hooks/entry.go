@@ -259,9 +259,10 @@ type Source struct {
 	// precondition for any of its hooks to widen hosts.
 	OperatorAuthored bool `json:"operator_authored,omitempty"`
 	// OperatorConfig: the definition is the operator's static config (a yaml
-	// agent). Its webhooks dial without the private-address guard; see
-	// Hook.OperatorConfig. Not serialized: a stored or sent Source cannot
-	// claim it.
+	// agent or channel). Its INLINE webhooks dial without the private-address
+	// guard; a HookDef it names by ref is a stored row and is dialed through
+	// the guard like any other. See Hook.OperatorConfig. Not serialized: a
+	// stored or sent Source cannot claim it.
 	OperatorConfig bool `json:"-"`
 }
 
@@ -331,6 +332,11 @@ func resolveEntry(ctx context.Context, src Source, tool string, phase Phase, ent
 		}
 		h.Name, h.DefID, h.FailMode, h.TimeoutMs = name, defID, def.FailMode, def.TimeoutMs
 		h.Tenant = defTenant
+		// Dial trust follows where the definition lives, not who names it:
+		// a HookDef is a store row, writable on the runtime plane, so a yaml
+		// agent or channel referencing one does not make its URL the
+		// operator's config.
+		h.OperatorConfig = false
 		switch def.Body.Kind {
 		case BodyKindCode:
 			h.Code = def.Body.Code

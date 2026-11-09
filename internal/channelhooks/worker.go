@@ -55,8 +55,9 @@ type Def struct {
 	Hold  bool
 	Hooks hooks.EventHooks
 	// Static: the channel is declared in the operator's static config, so its
-	// webhooks dial without the private-address guard (hooks.Hook.OperatorConfig).
-	// A stored channel definition's do not, whoever wrote it.
+	// inline webhooks dial without the private-address guard
+	// (hooks.Hook.OperatorConfig). A stored channel definition's do not,
+	// whoever wrote it, and neither does a stored HookDef it names by ref.
 	Static bool
 }
 
