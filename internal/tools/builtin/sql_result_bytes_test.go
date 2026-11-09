@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -75,13 +76,17 @@ func sqlResultOut(t *testing.T, res tools.Result) (rows [][]any, truncated bool)
 	return out.Rows, out.Truncated
 }
 
-// giantCellSQL is a one-row SELECT computing a 1 MB value on the tier — nothing
-// stored, so a scope quota does not bound it.
+// giantCellSQL is a one-row SELECT computing a value over the budget on the
+// tier — nothing stored, so a scope quota does not bound it. It stays under
+// twice the budget, the longest value an agent's statement may build, so the
+// result cap is what refuses it (sqlmem's length_limit_test.go covers values
+// past that limit).
 func giantCellSQL(tier string) string {
+	n := sqlResultBudget * 3 / 2
 	if tier == "postgres" {
-		return "SELECT repeat('z', 1000000)"
+		return fmt.Sprintf("SELECT repeat('z', %d)", n)
 	}
-	return "SELECT printf('%.*c', 1000000, 'z')"
+	return fmt.Sprintf("SELECT printf('%%.*c', %d, 'z')", n)
 }
 
 // TestMemorySQL_ResultBytesAreCapped: sql_query over rows totalling more than
@@ -142,7 +147,7 @@ func TestMemorySQL_ResultBytesAreCapped(t *testing.T) {
 
 			res := run(`{"op":"sql_query","scope":"agent","statement":"` + giantCellSQL(tier) + `"}`)
 			if !res.IsError || !strings.Contains(res.Text, "result limit") {
-				t.Fatalf("a 1 MB first row under a 64 KiB budget: is_error=%v %.200s; want an error naming the result limit",
+				t.Fatalf("a 96 KiB first row under a 64 KiB budget: is_error=%v %.200s; want an error naming the result limit",
 					res.IsError, res.Text)
 			}
 		})
@@ -167,7 +172,7 @@ func TestDocumentQueryChunksSQL_ResultBytesAreCapped(t *testing.T) {
 
 			_, res = docExec(t, d, ctx, `{"op":"query_chunks","scope":"user","sql":"`+giantCellSQL(tier)+`"}`)
 			if !res.IsError || !strings.Contains(res.Text, "result limit") {
-				t.Fatalf("a 1 MB first row: is_error=%v %.200s; want an error naming the result limit", res.IsError, res.Text)
+				t.Fatalf("a 96 KiB first row: is_error=%v %.200s; want an error naming the result limit", res.IsError, res.Text)
 			}
 		})
 	}
