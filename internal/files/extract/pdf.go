@@ -330,7 +330,12 @@ func (e *pdfExtract) page(n int) (string, error) {
 	defer func() { e.w.page = 0 }()
 	parts := []string{heading(2, fmt.Sprintf("Page %d", n))}
 
-	d, _, inh, err := e.xr.PageDict(e.w.ctx, n, false)
+	d, inh, broken, err := e.pageDict(n)
+	if broken {
+		e.unreadPages = appendOnce(e.unreadPages, n)
+		e.rep.PageYields = append(e.rep.PageYields, PageYield{Page: n, Unread: true})
+		return parts[0], nil
+	}
 	if err != nil || d == nil {
 		if cerr := e.w.ctx.Err(); cerr != nil {
 			return "", cerr
@@ -398,6 +403,23 @@ func (e *pdfExtract) page(n int) (string, error) {
 	}
 	parts = append(parts, p.images...)
 	return strings.Join(parts, "\n\n"), nil
+}
+
+// pageDict is page n's dictionary and the attributes it inherits. broken
+// reports that pdfcpu panicked resolving it: it indexes a page's /MediaBox
+// and /CropBox arrays unchecked (model.rect in v0.16.4), so a box shorter
+// than four numbers panics. Recovering here keeps that to the one page, read
+// as unread, instead of failing the whole file at Extract's own recover.
+// PageDict runs on this goroutine and keeps its walk's state (the visited
+// set, the page counter) per call, so a later page starts a fresh walk.
+func (e *pdfExtract) pageDict(n int) (d types.Dict, inh *model.InheritedPageAttrs, broken bool, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			d, inh, broken, err = nil, nil, true, nil
+		}
+	}()
+	d, _, inh, err = e.xr.PageDict(e.w.ctx, n, false)
+	return d, inh, false, err
 }
 
 // pdfParagraphs renders page text, blank-line separated blocks, as escaped
