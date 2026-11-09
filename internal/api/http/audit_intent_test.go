@@ -21,6 +21,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/snapshot"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -419,5 +420,54 @@ func TestSnapshotRestore_IsRefusedWhenItsAuditRecordCannotBeWritten(t *testing.T
 	_, err := s.RestoreSnapshot(context.Background(), connector.RestoreSnapshotRequest{RawJSON: []byte(`{}`)})
 	if err == nil || !strings.Contains(err.Error(), "audit_unavailable") {
 		t.Fatalf("restore with the audit sink failing: %v; want audit_unavailable", err)
+	}
+}
+
+// A restore that stops part-way after applying rows is recorded "partial"
+// with what it applied, never "failed": an auditor sees the users it
+// created. One that applied nothing is "failed".
+func TestSnapshotRestore_APartWayFailureIsRecordedPartialWithCounts(t *testing.T) {
+	ctx := context.Background()
+	_, srcSt := tokenAuthServer(t, "legacy")
+	seedUser(t, srcSt, "acme", "bob", "isolated", "active")
+	_, raw, err := snapshot.Capture(ctx, srcSt, snapshot.CaptureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	var sections map[string]json.RawMessage
+	if err := json.Unmarshal(env["sections"], &sections); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sections["users"]; !ok {
+		t.Fatalf("the capture has no users section: %v", sections)
+	}
+	// The users restore, then the acl section does not decode.
+	sections["acl"] = json.RawMessage(`{"version":"1.0","lists":"not a list"}`)
+	env["sections"], _ = json.Marshal(sections)
+	delete(env, "checksum") // verify-if-present: the edit would fail it before anything applies
+	broken, _ := json.Marshal(env)
+
+	s, st, sink := sessionTestServer(t, "legacy")
+	if _, err := s.RestoreSnapshot(ctx, connector.RestoreSnapshotRequest{RawJSON: broken}); err == nil {
+		t.Fatal("the broken restore succeeded")
+	}
+	if _, err := st.UserGet(ctx, "acme", "bob"); err != nil {
+		t.Fatalf("the restore did not apply the users before it stopped: %v", err)
+	}
+	ev := sink.events[len(sink.events)-1]
+	if ev.Action != "snapshot_restored" || ev.ChangeStatus != audit.ChangePartial || ev.ChangeCounts["users"] != 1 {
+		t.Errorf("last record = %s %q %v; want snapshot_restored partial with users=1", ev.Action, ev.ChangeStatus, ev.ChangeCounts)
+	}
+
+	// Nothing applied: failed.
+	if _, err := s.RestoreSnapshot(ctx, connector.RestoreSnapshotRequest{RawJSON: []byte(`{"not":"a snapshot"}`)}); err == nil {
+		t.Fatal("a non-snapshot restored")
+	}
+	if ev := sink.events[len(sink.events)-1]; ev.ChangeStatus != audit.ChangeFailed {
+		t.Errorf("a restore that applied nothing is recorded %q, want failed", ev.ChangeStatus)
 	}
 }

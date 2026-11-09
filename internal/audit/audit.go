@@ -253,11 +253,15 @@ type Event struct {
 	// --- Write-ahead status (state changes recorded before they commit) ---
 	//
 	// ChangeStatus is "intent" on a row written BEFORE the change it records
-	// is made, and "failed" on the best-effort row that follows when the
-	// change then did not happen. An intent row with no "failed" row after
-	// it is a change that was made, or one interrupted by a crash; empty on
-	// rows written after the fact.
+	// is made, "failed" on the best-effort row that follows when the change
+	// then did not happen, and "partial" when it stopped part-way after
+	// applying some of it (ChangeCounts says what). An intent row with no
+	// later row is a change that was made, or one interrupted by a crash;
+	// empty on rows written after the fact.
 	ChangeStatus string `json:"change_status,omitempty"`
+	// ChangeCounts is, on a "partial" row, what was applied before the
+	// change stopped: kind → rows (a snapshot restore's users, lists, …).
+	ChangeCounts map[string]int `json:"change_counts,omitempty"`
 	// UserStatus is the status a user change sets (active | disabled), on
 	// the user lifecycle records.
 	UserStatus string `json:"user_status,omitempty"`
@@ -265,8 +269,9 @@ type Event struct {
 
 // ChangeStatus values.
 const (
-	ChangeIntent = "intent"
-	ChangeFailed = "failed"
+	ChangeIntent  = "intent"
+	ChangeFailed  = "failed"
+	ChangePartial = "partial"
 )
 
 // ChangeKind is how a change recorded ahead (ChangeIntent) behaves when its

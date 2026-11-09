@@ -109,6 +109,30 @@ func (s *Server) recordFailed(ctx context.Context, in changeIntent) {
 	}
 }
 
+// recordStopped settles a change that returned an error: "failed" when
+// nothing was applied, else "partial" with what was (applied: kind → rows,
+// zero kinds left out), so the trail never calls a half-made grant failed.
+func (s *Server) recordStopped(ctx context.Context, in changeIntent, applied map[string]int) {
+	done := map[string]int{}
+	for k, n := range applied {
+		if n > 0 {
+			done[k] = n
+		}
+	}
+	if len(done) == 0 {
+		s.recordFailed(ctx, in)
+		return
+	}
+	if !in.noted || s.tokenAudit == nil {
+		return
+	}
+	ev := in.ev
+	ev.ChangeStatus, ev.ChangeCounts, ev.TS = audit.ChangePartial, done, time.Time{}
+	if err := s.tokenAudit.Record(ev); err != nil {
+		slog.ErrorContext(ctx, "audit: recording a change that stopped part-way failed", "action", ev.Action, "applied", done, "err", err)
+	}
+}
+
 // CountUnrecordedAudit counts a change that took access away with no audit
 // record written ahead (loomcycle_audit_unrecorded_total). The operator-token
 // tool reports its own through it.

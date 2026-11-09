@@ -311,7 +311,7 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := snapshot.Restore(r.Context(), s.store, rawBytes, s.snapshotRestoreOptions(r.Context(), req.IncludeHistory))
 	if err != nil {
-		s.recordFailed(r.Context(), intent)
+		s.recordStopped(r.Context(), intent, result.Counts())
 		err = s.restoreFailed(r.Context(), &result, err)
 		// Migration / version errors map to 422 (semantically valid
 		// JSON, semantically invalid state). The error message

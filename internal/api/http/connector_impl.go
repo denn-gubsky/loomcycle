@@ -1593,7 +1593,7 @@ func (s *Server) RestoreSnapshot(ctx context.Context, req connector.RestoreSnaps
 	}
 	result, err := snapshot.Restore(ctx, s.store, rawBytes, s.snapshotRestoreOptions(ctx, req.IncludeHistory))
 	if err != nil {
-		s.recordFailed(ctx, intent)
+		s.recordStopped(ctx, intent, result.Counts())
 		err = s.restoreFailed(ctx, &result, err)
 		var tooNew *migrations.ErrSnapshotVersionTooNew
 		var unknown *migrations.ErrUnknownSectionVersion
