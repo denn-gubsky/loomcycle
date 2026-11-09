@@ -397,7 +397,7 @@ func TestAuditIntents_EveryStoreWriteSitsBehindAnIntent(t *testing.T) {
 			writers++
 			key := f + "/" + fd.Name.Name
 			seen[key] = true
-			if _, ok := intentExempt[key]; ok || strings.Contains(body, "Intent(") {
+			if _, ok := intentExempt[key]; ok || callsIntent(fd) {
 				continue
 			}
 			t.Errorf("%s writes users, groups, lists, bindings or tokens without recording an intent first (recordIntent), and is not exempt", key)
@@ -501,5 +501,56 @@ func TestUserLifecycle_ADisableWhoseTeardownFailsIsRecordedPartial(t *testing.T)
 	ev := sink.events[len(sink.events)-1]
 	if ev.Action != "user_disabled" || ev.ChangeStatus != audit.ChangePartial || ev.ChangeCounts["disabled"] != 1 {
 		t.Errorf("last record = %s %q %v; want user_disabled partial with disabled=1", ev.Action, ev.ChangeStatus, ev.ChangeCounts)
+	}
+}
+
+// callsIntent reports whether fn's body records an intent: a call to a
+// function or method whose name ends in "Intent". (Textual matching is
+// fooled by a comment naming one.)
+func callsIntent(fn *ast.FuncDecl) bool {
+	found := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || found {
+			return !found
+		}
+		var name string
+		switch f := call.Fun.(type) {
+		case *ast.Ident:
+			name = f.Name
+		case *ast.SelectorExpr:
+			name = f.Sel.Name
+		}
+		found = strings.HasSuffix(name, "Intent")
+		return !found
+	})
+	return found
+}
+
+// The census is not fooled by a comment or a string naming an intent call.
+func TestAuditIntents_TheCensusCountsCallsNotText(t *testing.T) {
+	src := `package p
+func commented() {
+	// s.recordIntent(ctx, ev) is not needed here
+	_ = "s.tokenIntent(ctx)"
+	s.store.UserUpdate(ctx)
+}
+func calls() {
+	in, _ := s.recordIntent(ctx, ev)
+	s.store.UserUpdate(ctx)
+	_ = in
+}
+func plain() { aclIntent(ctx) }
+`
+	f, err := parser.ParseFile(token.NewFileSet(), "p.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"commented": false, "calls": true, "plain": true}
+	for _, d := range f.Decls {
+		fd := d.(*ast.FuncDecl)
+		if got := callsIntent(fd); got != want[fd.Name.Name] {
+			t.Errorf("callsIntent(%s) = %v, want %v", fd.Name.Name, got, want[fd.Name.Name])
+		}
 	}
 }
