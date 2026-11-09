@@ -117,6 +117,9 @@ func attachStats(desc *connector.ChannelDescriptor, st store.ChannelStats) {
 // name.
 func (s *Server) CreateChannel(ctx context.Context, req connector.ChannelCreateRequest) (connector.ChannelDescriptor, error) {
 	name := strings.TrimSpace(req.Name)
+	if err := s.askChannelManage(ctx, name); err != nil {
+		return connector.ChannelDescriptor{}, err
+	}
 	// yaml-precedence first: if the operator already declared this name
 	// in yaml, the most actionable error is "edit the yaml" regardless
 	// of how exotic the name shape is (yaml allows slashes etc. that
@@ -184,6 +187,9 @@ func (s *Server) CreateChannel(ctx context.Context, req connector.ChannelCreateR
 // declared channels refuse with ErrChannelYamlImmutable.
 func (s *Server) UpdateChannel(ctx context.Context, name string, req connector.ChannelUpdateRequest) (connector.ChannelDescriptor, error) {
 	name = strings.TrimSpace(name)
+	if err := s.askChannelManage(ctx, name); err != nil {
+		return connector.ChannelDescriptor{}, err
+	}
 	if _, yaml := s.cfg().Channels[name]; yaml {
 		return connector.ChannelDescriptor{}, fmt.Errorf("%w: %q", connector.ErrChannelYamlImmutable, name)
 	}
@@ -269,6 +275,9 @@ func (s *Server) UpdateChannel(ctx context.Context, name string, req connector.C
 // ErrChannelYamlImmutable.
 func (s *Server) DeleteChannel(ctx context.Context, name string) error {
 	name = strings.TrimSpace(name)
+	if err := s.askChannelManage(ctx, name); err != nil {
+		return err
+	}
 	if _, yaml := s.cfg().Channels[name]; yaml {
 		return fmt.Errorf("%w: %q", connector.ErrChannelYamlImmutable, name)
 	}
@@ -299,6 +308,9 @@ func (s *Server) DeleteChannel(ctx context.Context, name string) error {
 // yaml-declared nor present in the runtime substrate.
 func (s *Server) PurgeChannel(ctx context.Context, name string) (connector.ChannelPurgeResult, error) {
 	name = strings.TrimSpace(name)
+	if err := s.askChannelManage(ctx, name); err != nil {
+		return connector.ChannelPurgeResult{}, err
+	}
 	// The channel's declared SCOPE determines which tenant keyspace its
 	// messages live in (global => "", every other scope => the caller's
 	// tenant; see store.ChannelScopeTenant). Purge must target that
@@ -381,6 +393,16 @@ func (s *Server) PurgeChannel(ctx context.Context, name string) (connector.Chann
 		total += n
 	}
 	return connector.ChannelPurgeResult{Name: name, Purged: total}, nil
+}
+
+// askChannelManage asks `manage channel:<name>` — what PATCH, DELETE and the
+// purge route ask of the channel they name — for every caller of the channel
+// definition operations, the MCP channeldef tool among them, and for a create
+// of the name it is about to get. It is asked before any lookup, so a refused
+// caller learns nothing of the channel. On HTTP the route has already asked it
+// for an existing channel (routeGateAnswered).
+func (s *Server) askChannelManage(ctx context.Context, name string) error {
+	return s.connectorAsk(ctx, *channelQuestion("manage", name))
 }
 
 // refuseMemberOnUserChannel refuses a member (auth.OwnRowsOnly, isolated or

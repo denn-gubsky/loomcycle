@@ -98,7 +98,7 @@ var enforcedPairs = map[pairKey][]Site{
 	{"channel", "ack"}:       {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool, SiteConnector},
 	{"channel", "await"}:     {SiteHTTPRoute, SiteGRPCRPC, SiteConnector},
 	{"channel", "broadcast"}: {SiteHTTPRoute, SiteGRPCRPC, SiteConnector},
-	{"channel", "manage"}:    {SiteHTTPRoute, SiteGRPCRPC, SiteConnector},
+	{"channel", "manage"}:    {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool, SiteConnector},
 
 	{"def", "author"}: {Proof("TestAuthorizeDefOp_AsksTheOpsVerbOfTheNamedDefinition")},
 	{"def", "retire"}: {Proof("TestAuthorizeDefOp_AsksTheOpsVerbOfTheNamedDefinition")},

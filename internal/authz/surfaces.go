@@ -204,7 +204,13 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		if len(rest) >= 3 && rest[2] == "overridable" {
 			return typeLevel("read", "agent"), true
 		}
-		if len(rest) >= 3 && rest[2] == "channels" || len(rest) >= 4 && (rest[3] == "peek" || rest[3] == "release") {
+		// Releasing a team channel's held messages asks manage, as releasing
+		// any other channel's does and as the ReleaseTeamChannel RPC does;
+		// the reads ask subscribe.
+		if len(rest) == 5 && rest[2] == "channels" && rest[4] == "release" {
+			return typeLevel("manage", "channel"), true
+		}
+		if len(rest) >= 3 && rest[2] == "channels" || len(rest) >= 4 && rest[3] == "peek" {
 			return typeLevel("subscribe", "channel"), true
 		}
 		return instance("read", "def", fam+"/*"), true

@@ -316,43 +316,95 @@ var runPlaneTools = map[string]bool{
 	"get_run":              true, "list_runs": true, "stream_user_run_states": true,
 }
 
-// mcpToolQuestions is every ACL question the per-tool gate asks of toolName:
-// `invoke mcp-tool:<name>`, and the question the meta-tool's HTTP twin route
-// asks (RFC FY Part E), read through authz.HTTPSurface so the two cannot
-// differ — before, a `deny cancel run:*` refused POST /v1/runs/{id}/cancel
-// and let cancel_run through. An op the twin route answers per call is asked
-// by the shared operation behind both (the connector). The enforcement census
+// mcpToolQuestions is every ACL question the per-tool gate asks of toolName,
+// whatever the op: `invoke mcp-tool:<name>`, and the question each op's HTTP
+// twin route asks (RFC FY Part E), read through authz.HTTPSurface so the two
+// cannot differ — before, a `deny cancel run:*` refused POST
+// /v1/runs/{id}/cancel and let cancel_run through. An op the twin route
+// answers per call is asked by the shared operation behind both (the
+// connector). The enforcement census
 // (TestACLEnforcement_MetaToolsAskWhatTheTableSays) reads this.
 func mcpToolQuestions(toolName string) []authz.Surface {
 	out := []authz.Surface{authz.MCPToolSurface(toolName)}
-	if q, ok := mcpTwinSurface(toolName); ok {
-		out = append(out, q)
+	tw, ok := mcpToolTwins[toolName]
+	if !ok {
+		return out
+	}
+	if tw.Ops == nil {
+		if q, ok := authz.HTTPSurface(tw.Method, tw.Path); ok {
+			out = append(out, q)
+		}
+		return out
+	}
+	for _, ot := range tw.Ops {
+		if q, ok := authz.HTTPSurface(ot.Method, ot.Path); ok {
+			out = append(out, q)
+		}
 	}
 	return out
 }
 
-// mcpTwinSurface is the question toolName's HTTP twin route asks, and false
-// when it has none.
-func mcpTwinSurface(toolName string) (authz.Surface, bool) {
-	tw, ok := mcpToolTwins[toolName]
-	if !ok {
-		return authz.Surface{}, false
-	}
-	return authz.HTTPSurface(tw.Method, tw.Path)
+// errUnmappedOp is a call of a per-op meta-tool naming an op its twin table
+// does not map: refused before the handler, never let through on another
+// op's question.
+type errUnmappedOp struct{ tool, op string }
+
+func (e errUnmappedOp) Error() string {
+	return fmt.Sprintf("%s: op %q is not one this server asks access-control questions for", e.tool, e.op)
 }
 
-// mcpTwinRefusal asks the principal on ctx toolName's twin question, after
-// the per-tool gate admitted the call. It returns the refusal the twin route
-// would write — acl_denied, or acl_unavailable when enforce mode has no set —
-// as the tool's error result, or nil when the call may proceed. No principal
-// (stdio, open mode): nothing to ask.
-func mcpTwinRefusal(ctx context.Context, toolName string) *loommcp.CallToolResult {
-	p, ok := auth.PrincipalFromContext(ctx)
+// mcpTwinSurface is the question toolName's HTTP twin route asks for a call
+// with args, and false when it has none. A per-op tool answers each op with
+// its own route, the instance taken from the op's name argument; an op it
+// does not map is an errUnmappedOp.
+func mcpTwinSurface(toolName string, args json.RawMessage) (authz.Surface, bool, error) {
+	tw, ok := mcpToolTwins[toolName]
 	if !ok {
-		return nil
+		return authz.Surface{}, false, nil
 	}
-	q, twinned := mcpTwinSurface(toolName)
-	if !twinned {
+	if tw.Ops == nil {
+		q, governed := authz.HTTPSurface(tw.Method, tw.Path)
+		return q, governed, nil
+	}
+	var head map[string]json.RawMessage
+	_ = json.Unmarshal(args, &head)
+	str := func(key string) string {
+		var v string
+		_ = json.Unmarshal(head[key], &v)
+		return v
+	}
+	op := str("op")
+	if op == "" {
+		op = tw.DefaultOp
+	}
+	ot, mapped := tw.Ops[op]
+	if !mapped {
+		return authz.Surface{}, false, errUnmappedOp{tool: toolName, op: op}
+	}
+	q, governed := authz.HTTPSurface(ot.Method, ot.Path)
+	if governed && ot.NameArg != "" {
+		q.Name = str(ot.NameArg)
+		if q.Name == "" {
+			q.Name = authz.AnyInstance
+		}
+	}
+	return q, governed, nil
+}
+
+// mcpTwinRefusal asks the principal on ctx the question toolName's twin route
+// asks for this call, after the per-tool gate admitted it. It returns the
+// refusal the twin route would write — acl_denied, or acl_unavailable when
+// enforce mode has no set — as the tool's error result, or nil when the call
+// may proceed. An op a per-op tool does not map is refused (unknown_op)
+// whoever calls. No principal (stdio, open mode): nothing else to ask.
+func mcpTwinRefusal(ctx context.Context, toolName string, args json.RawMessage) *loommcp.CallToolResult {
+	q, twinned, err := mcpTwinSurface(toolName, args)
+	if err != nil {
+		body, _ := json.Marshal(map[string]any{"code": "unknown_op", "error": err.Error()})
+		return toolErr(string(body))
+	}
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || !twinned {
 		return nil
 	}
 	res := authz.EvaluateSurface(ctx, p.Effective, q, true)
@@ -375,82 +427,155 @@ func mcpTwinRefusal(ctx context.Context, toolName string) *loommcp.CallToolResul
 	return toolErr(string(body))
 }
 
-// mcpToolTwin is the HTTP route a meta-tool mirrors: for a tool whose ops are
-// several routes, the one asking the weakest question (its reads), as the
-// route of an op-in-body family does. Placeholder segments are `*` so an
-// instance route asks about every instance.
-type mcpToolTwin struct{ Method, Path string }
+// mcpToolTwin is the HTTP route a meta-tool mirrors. A tool whose ops are one
+// route each (a channel's create, update, delete and purge) maps every op in
+// Ops instead, and an op not there is refused; DefaultOp is the op an omitted
+// `op` means. A tool whose ops all share one route with the op in the body
+// (a def family, document, path) names that route: the shared operation asks
+// each op its own question. Placeholder segments are `*` (or a name the op's
+// NameArg replaces) so an instance route asks about every instance.
+type mcpToolTwin struct {
+	Method, Path string
+	Ops          map[string]mcpOpTwin
+	DefaultOp    string
+}
+
+// mcpOpTwin is one op's route. NameArg names the argument holding the
+// instance the route's name segment stands for.
+type mcpOpTwin struct{ Method, Path, NameArg string }
 
 // mcpToolTwins maps each meta-tool to its HTTP twin. A meta-tool with none is
 // in mcpToolsWithoutTwin with the reason; TestMCPToolTwins_EveryToolIsListed
 // holds every tool to one of the two.
 var mcpToolTwins = map[string]mcpToolTwin{
-	"spawn_run":              {"POST", "/v1/runs"},
-	"spawn_runs":             {"POST", "/v1/runs:batch"},
-	"configured_run":         {"POST", "/v1/runs"},
-	"cancel_run":             {"POST", "/v1/runs/r/cancel"},
-	"get_run":                {"GET", "/v1/runs/r"},
-	"list_runs":              {"GET", "/v1/runs"},
-	"stream_user_run_states": {"GET", "/v1/users/u/agents/stream"},
-	"compact_run":            {"POST", "/v1/runs/r/compact"},
-	"retune_run":             {"POST", "/v1/runs/r/retune"},
-	"review_run":             {"POST", "/v1/runs/r/review"},
-	"delete_run_tree":        {"DELETE", "/v1/runs/r/tree"},
-	"interruption_resolve":   {"POST", "/v1/runs/r/interrupts/i/resolve"},
-	"file":                   {"GET", "/v1/runs/r/file"},
-	"retention_override":     {"GET", "/v1/_retention/overrides"},
-	"erasure":                {"POST", "/v1/_erasure"},
-	"ontology":               {"POST", "/v1/_ontology/subjects/merge"},
-	"review":                 {"GET", "/v1/_statements/review"},
-	"list_agents":            {"GET", "/v1/_runnable-agents"},
-	"register_agent":         {"POST", "/v1/_agentdef"},
-	"unregister_agent":       {"POST", "/v1/_agentdef"},
-	"agentdef":               {"POST", "/v1/_agentdef"},
-	"skilldef":               {"POST", "/v1/_skilldef"},
-	"teamdef":                {"POST", "/v1/_teamdef"},
-	"hookdef":                {"POST", "/v1/_hookdef"},
-	"mcpserverdef":           {"POST", "/v1/_mcpserverdef"},
-	"scheduledef":            {"POST", "/v1/_scheduledef"},
-	"a2aservercarddef":       {"POST", "/v1/_a2aservercarddef"},
-	"a2aagentdef":            {"POST", "/v1/_a2aagentdef"},
-	"webhookdef":             {"POST", "/v1/_webhookdef"},
-	"memorybackenddef":       {"POST", "/v1/_memorybackenddef"},
-	"documentsourcedef":      {"POST", "/v1/_documentsourcedef"},
-	"volumedef":              {"POST", "/v1/_volumedef"},
-	"clientdef":              {"POST", "/v1/_clientdef"},
-	"operatortokendef":       {"POST", "/v1/_operatortokendef"},
-	"credentialdef":          {"POST", "/v1/_credentialdef"},
-	"crypto":                 {"POST", "/v1/_crypto"},
-	"groupdef":               {"GET", "/v1/_groups"},
-	"acldef":                 {"POST", "/v1/_acldef"},
-	"aclbinding":             {"GET", "/v1/_aclbinding"},
-	"evaluation":             {"POST", "/v1/_evaluation"},
-	"path":                   {"POST", "/v1/_path"},
-	"document":               {"POST", "/v1/_document"},
-	"history":                {"POST", "/v1/_history"},
-	"decision":               {"POST", "/v1/_decide"},
-	"memory":                 {"GET", "/v1/_memory/scopes/user/u/keys/k"},
-	"channeldef":             {"GET", "/v1/_channels"},
-	"channel":                {"GET", "/v1/_channels"},
-	"list_channels":          {"GET", "/v1/_channels"},
-	"publish_channel":        {"POST", "/v1/_channels/*/publish"},
-	"subscribe_channel":      {"POST", "/v1/_channels/*/subscribe"},
-	"peek_channel":           {"GET", "/v1/_channels/*/peek"},
-	"ack_channel":            {"POST", "/v1/_channels/*/ack"},
-	"list_team_channels":     {"GET", "/v1/_teamdef/t/channels"},
-	"peek_team_channel":      {"GET", "/v1/_teamdef/t/channels/c/peek"},
-	"release_team_channel":   {"POST", "/v1/_teamdef/t/channels/c/release"},
-	"pause_runtime":          {"POST", "/v1/_pause"},
-	"resume_runtime":         {"POST", "/v1/_resume"},
-	"get_runtime_state":      {"GET", "/v1/_state"},
-	"resolve_probe":          {"POST", "/v1/_resolve/probe"},
-	"create_snapshot":        {"POST", "/v1/_snapshots"},
-	"list_snapshots":         {"GET", "/v1/_snapshots"},
-	"get_snapshot":           {"GET", "/v1/_snapshots/x"},
-	"export_snapshot":        {"GET", "/v1/_snapshots/x/export"},
-	"restore_snapshot":       {"POST", "/v1/_snapshots/x/restore"},
-	"delete_snapshot":        {"DELETE", "/v1/_snapshots/x"},
+	"spawn_run":              {Method: "POST", Path: "/v1/runs"},
+	"spawn_runs":             {Method: "POST", Path: "/v1/runs:batch"},
+	"configured_run":         {Method: "POST", Path: "/v1/runs"},
+	"cancel_run":             {Method: "POST", Path: "/v1/runs/r/cancel"},
+	"get_run":                {Method: "GET", Path: "/v1/runs/r"},
+	"list_runs":              {Method: "GET", Path: "/v1/runs"},
+	"stream_user_run_states": {Method: "GET", Path: "/v1/users/u/agents/stream"},
+	"compact_run":            {Method: "POST", Path: "/v1/runs/r/compact"},
+	"retune_run":             {Method: "POST", Path: "/v1/runs/r/retune"},
+	"review_run":             {Method: "POST", Path: "/v1/runs/r/review"},
+	"delete_run_tree":        {Method: "DELETE", Path: "/v1/runs/r/tree"},
+	"interruption_resolve":   {Method: "POST", Path: "/v1/runs/r/interrupts/i/resolve"},
+	"file":                   {Method: "GET", Path: "/v1/runs/r/file"},
+	"retention_override": {DefaultOp: "list", Ops: map[string]mcpOpTwin{
+		"list":  {Method: "GET", Path: "/v1/_retention/overrides"},
+		"set":   {Method: "PUT", Path: "/v1/_retention/overrides"},
+		"clear": {Method: "DELETE", Path: "/v1/_retention/overrides"},
+	}},
+	"erasure": {DefaultOp: "report", Ops: map[string]mcpOpTwin{
+		"report":  {Method: "GET", Path: "/v1/_erasure"},
+		"execute": {Method: "POST", Path: "/v1/_erasure"},
+	}},
+	"ontology": {Ops: map[string]mcpOpTwin{
+		"merge_subjects": {Method: "POST", Path: "/v1/_ontology/subjects/merge"},
+		"bind_principal": {Method: "POST", Path: "/v1/_ontology/subjects/principal"},
+	}},
+	"review": {Ops: map[string]mcpOpTwin{
+		"queue":        {Method: "GET", Path: "/v1/_statements/review"},
+		"rule":         {Method: "POST", Path: "/v1/_statements/rule"},
+		"revert":       {Method: "POST", Path: "/v1/_statements/revert"},
+		"rulings":      {Method: "GET", Path: "/v1/_statements/rulings"},
+		"apply_policy": {Method: "POST", Path: "/v1/_statements/apply_policy"},
+	}},
+	"list_agents":       {Method: "GET", Path: "/v1/_runnable-agents"},
+	"register_agent":    {Method: "POST", Path: "/v1/_agentdef"},
+	"unregister_agent":  {Method: "POST", Path: "/v1/_agentdef"},
+	"agentdef":          {Method: "POST", Path: "/v1/_agentdef"},
+	"skilldef":          {Method: "POST", Path: "/v1/_skilldef"},
+	"teamdef":           {Method: "POST", Path: "/v1/_teamdef"},
+	"hookdef":           {Method: "POST", Path: "/v1/_hookdef"},
+	"mcpserverdef":      {Method: "POST", Path: "/v1/_mcpserverdef"},
+	"scheduledef":       {Method: "POST", Path: "/v1/_scheduledef"},
+	"a2aservercarddef":  {Method: "POST", Path: "/v1/_a2aservercarddef"},
+	"a2aagentdef":       {Method: "POST", Path: "/v1/_a2aagentdef"},
+	"webhookdef":        {Method: "POST", Path: "/v1/_webhookdef"},
+	"memorybackenddef":  {Method: "POST", Path: "/v1/_memorybackenddef"},
+	"documentsourcedef": {Method: "POST", Path: "/v1/_documentsourcedef"},
+	"volumedef":         {Method: "POST", Path: "/v1/_volumedef"},
+	"clientdef":         {Method: "POST", Path: "/v1/_clientdef"},
+	"operatortokendef":  {Method: "POST", Path: "/v1/_operatortokendef"},
+	"credentialdef":     {Method: "POST", Path: "/v1/_credentialdef"},
+	"crypto":            {Method: "POST", Path: "/v1/_crypto"},
+	"groupdef":          {Method: "GET", Path: "/v1/_groups"},
+	"acldef":            {Method: "POST", Path: "/v1/_acldef"},
+	"aclbinding":        {Method: "GET", Path: "/v1/_aclbinding"},
+	"evaluation":        {Method: "POST", Path: "/v1/_evaluation"},
+	"path":              {Method: "POST", Path: "/v1/_path"},
+	"document":          {Method: "POST", Path: "/v1/_document"},
+	"history":           {Method: "POST", Path: "/v1/_history"},
+	"decision":          {Method: "POST", Path: "/v1/_decide"},
+	"memory":            {Method: "GET", Path: "/v1/_memory/scopes/user/u/keys/k"},
+	// create asks manage of the name it is about to get, as the shared
+	// operation behind POST /v1/_channels does (askChannelManage).
+	"channeldef": {Ops: map[string]mcpOpTwin{
+		"create": {Method: "POST", Path: "/v1/_channels", NameArg: "name"},
+		"update": {Method: "PATCH", Path: "/v1/_channels/c", NameArg: "name"},
+		"delete": {Method: "DELETE", Path: "/v1/_channels/c", NameArg: "name"},
+		"purge":  {Method: "POST", Path: "/v1/_channels/c/purge", NameArg: "name"},
+	}},
+	"channel":              {Method: "GET", Path: "/v1/_channels"},
+	"list_channels":        {Method: "GET", Path: "/v1/_channels"},
+	"publish_channel":      {Method: "POST", Path: "/v1/_channels/*/publish"},
+	"subscribe_channel":    {Method: "POST", Path: "/v1/_channels/*/subscribe"},
+	"peek_channel":         {Method: "GET", Path: "/v1/_channels/*/peek"},
+	"ack_channel":          {Method: "POST", Path: "/v1/_channels/*/ack"},
+	"list_team_channels":   {Method: "GET", Path: "/v1/_teamdef/t/channels"},
+	"peek_team_channel":    {Method: "GET", Path: "/v1/_teamdef/t/channels/c/peek"},
+	"release_team_channel": {Method: "POST", Path: "/v1/_teamdef/t/channels/c/release"},
+	"pause_runtime":        {Method: "POST", Path: "/v1/_pause"},
+	"resume_runtime":       {Method: "POST", Path: "/v1/_resume"},
+	"get_runtime_state":    {Method: "GET", Path: "/v1/_state"},
+	"resolve_probe":        {Method: "POST", Path: "/v1/_resolve/probe"},
+	"create_snapshot":      {Method: "POST", Path: "/v1/_snapshots"},
+	"list_snapshots":       {Method: "GET", Path: "/v1/_snapshots"},
+	"get_snapshot":         {Method: "GET", Path: "/v1/_snapshots/x"},
+	"export_snapshot":      {Method: "GET", Path: "/v1/_snapshots/x/export"},
+	"restore_snapshot":     {Method: "POST", Path: "/v1/_snapshots/x/restore"},
+	"delete_snapshot":      {Method: "DELETE", Path: "/v1/_snapshots/x"},
 }
+
+// mcpOpsInBody are the twinned meta-tools that take several ops through ONE
+// question: the ops share a route with the op in its body, or every op's route
+// asks the same question, and the operation behind them asks each op its own
+// instance question on every transport. TestMCPToolTwins_EveryOpIsClassified
+// holds every meta-tool with an `op` to this list, to a per-op twin (Ops), or
+// to mcpToolsWithoutTwin, so a new op on a per-op tool, or a new multi-op
+// tool, cannot land asking another op's question.
+var mcpOpsInBody = map[string]string{
+	"configured_run":    "create, update, start and delete each ask run agent:*, as their routes do; the run intake asks the agent",
+	"memory":            "a write op asks write memory:* (sqlmem for SQL) in the shared operation (memoryOpQuestion)",
+	"channel":           "each op asks its own route's question of the channel it names in the shared operation (channelOpQuestions)",
+	"file":              "one route, GET|POST /v1/runs/{id}/file; the File twin asks the run's owner for its writing ops",
+	"path":              "one route; the Path tool asks each op's verb of the name it touches",
+	"document":          "one route; the Document tool asks each op's verb of the document it resolves",
+	"history":           "one route; the History tool reads only the caller's own scopes",
+	"evaluation":        "one route; the Evaluation tool holds each op to the token's evaluation scopes",
+	"crypto":            "one route; the Crypto tool asks use of each key it resolves",
+	"credentialdef":     "one route; CredentialDef asks use or manage of the credential each op names",
+	"operatortokendef":  "one route, which asks mint principal:token:*",
+	"groupdef":          "the family's weakest verb; the shared operation asks manage of a write",
+	"aclbinding":        "the family's weakest verb; the shared operation asks author of a write",
+	"acldef":            "one route; the shared operation asks author, retire or read of the named list",
+	"agentdef":          defFamilyOps,
+	"skilldef":          defFamilyOps,
+	"teamdef":           defFamilyOps,
+	"hookdef":           defFamilyOps,
+	"mcpserverdef":      defFamilyOps,
+	"scheduledef":       defFamilyOps,
+	"a2aservercarddef":  defFamilyOps,
+	"a2aagentdef":       defFamilyOps,
+	"webhookdef":        defFamilyOps,
+	"memorybackenddef":  defFamilyOps,
+	"documentsourcedef": defFamilyOps,
+	"volumedef":         defFamilyOps,
+	"clientdef":         defFamilyOps,
+}
+
+const defFamilyOps = "one route; the definition operation asks author, retire or read of the definition each op names"
 
 // mcpToolsWithoutTwin are the meta-tools no HTTP route mirrors.
 var mcpToolsWithoutTwin = map[string]string{

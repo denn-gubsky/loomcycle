@@ -108,8 +108,9 @@ func channelQuestion(op, channel string) *authz.Surface {
 		verb = "subscribe"
 	case "ack":
 		verb = "ack"
-	case "release":
-		// POST /v1/_channels/{name}/release asks manage.
+	case "release", "manage":
+		// POST /v1/_channels/{name}/release asks manage, as PATCH and DELETE
+		// of the channel and its purge route do.
 		verb = "manage"
 	default:
 		return nil

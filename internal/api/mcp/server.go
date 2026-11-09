@@ -447,7 +447,7 @@ func (s *Server) handleToolsCall(ctx context.Context, stdout io.Writer, req loom
 	}
 	// The question the tool's HTTP twin route asks (RFC FY Part E), answered
 	// as that route answers it.
-	if refusal := mcpTwinRefusal(ctx, params.Name); refusal != nil {
+	if refusal := mcpTwinRefusal(ctx, params.Name, params.Arguments); refusal != nil {
 		s.writeResult(stdout, req.ID, refusal)
 		return
 	}
