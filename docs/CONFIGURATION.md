@@ -1322,7 +1322,7 @@ Routes enforce a scope from a closed catalog; an under-scoped token gets `403` w
 
 ### Scraping /metrics
 
-`GET /metrics` is the Prometheus text endpoint. It needs a token, and two kinds reach it: `substrate:admin` and the single-purpose **`metrics:read`**. Give Prometheus the second: it opens no other route, so a leaked scrape file exposes the metrics and nothing more.
+`GET /metrics` is the Prometheus text endpoint. It needs a token, and two kinds reach it: `substrate:admin` (the legacy `LOOMCYCLE_AUTH_TOKEN` counts as one) and the single-purpose **`metrics:read`**. Give Prometheus the second: it opens no other route, so a leaked scrape file exposes the metrics and nothing more.
 
 ```bash
 loomcycle operator-token create --name prometheus --tenant ops --scopes metrics:read
