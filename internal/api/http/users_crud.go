@@ -155,13 +155,20 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeAuditUnavailable(w)
 		return
 	}
+	created := false
+	defer func() {
+		if created {
+			s.recordDone(r.Context(), ev)
+		} else {
+			s.recordFailed(r.Context(), ev)
+		}
+	}()
 	if owner {
 		err = s.store.UserCreateOwner(r.Context(), row, ownerBinding(row.TenantID, row.Subject, "bootstrap:"+principalSubject(r.Context())))
 	} else {
 		err = s.store.UserCreate(r.Context(), row)
 	}
 	if err != nil {
-		s.recordFailed(r.Context(), ev)
 		var conflict *store.ErrConflict
 		if errors.As(err, &conflict) && conflict.Kind == "tenant_not_empty" {
 			writeJSONError(w, http.StatusForbidden, "tenant_not_empty",
@@ -176,6 +183,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "user_create_failed", err.Error())
 		return
 	}
+	created = true
 	if owner {
 		s.aclChanged(r.Context(), row.TenantID, "auth_owner_bound", row.Subject)
 	}

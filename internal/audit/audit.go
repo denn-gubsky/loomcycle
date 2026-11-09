@@ -307,6 +307,8 @@ func changeKinds() map[string]ChangeKind {
 		"auth_scim_user_reactivated": ChangeGrants,
 		"auth_scim_user_updated":     ChangeGrants,
 		"auth_scim_user_deactivated": ChangeReduces,
+		// A snapshot restore (users, groups, bindings and lists wholesale).
+		"snapshot_restored": ChangeGrants,
 		// Access control.
 		"acl_written":          ChangeGrants,
 		"acl_retired":          ChangeGrants,

@@ -387,11 +387,17 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 	if aErr != nil {
 		return tools.AuditUnavailable("create"), nil
 	}
+	done := false
+	defer func() {
+		if !done {
+			s.auditFailed(ev)
+		}
+	}()
 	created, err := s.Store.OperatorTokenDefCreate(ctx, row)
 	if err != nil {
-		s.auditFailed(ev)
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	done = true
 	if imported {
 		// No plaintext to show — the operator already holds the env token.
 		m := operatorTokenRowResponse(created)
@@ -527,9 +533,14 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 	if aErr != nil {
 		return tools.AuditUnavailable("rotate"), nil
 	}
+	done := false
+	defer func() {
+		if !done {
+			s.auditFailed(ev)
+		}
+	}()
 	created, err := s.Store.OperatorTokenDefCreate(ctx, row)
 	if err != nil {
-		s.auditFailed(ev)
 		return errResult(fmt.Sprintf("rotate: %s", err)), nil
 	}
 	grace := s.grace()
@@ -538,9 +549,9 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 	}
 	retireOldAt := time.Now().Add(grace).UTC()
 	if err := s.Store.OperatorTokenDefSetRetiredAt(ctx, prior.DefID, retireOldAt); err != nil {
-		s.auditFailed(ev)
 		return errResult(fmt.Sprintf("rotate: retire prior: %s", err)), nil
 	}
+	done = true
 	resp := operatorTokenCreateResponse(created, plaintext, suffix)
 	resp["rotated_from"] = prior.DefID
 	resp["prior_retires_at"] = retireOldAt.Format(time.RFC3339Nano)

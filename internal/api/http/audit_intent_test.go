@@ -20,6 +20,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -407,5 +408,16 @@ func TestAuditIntents_EveryStoreWriteSitsBehindAnIntent(t *testing.T) {
 	}
 	if writers < 20 {
 		t.Errorf("the census found %d writers; it no longer reads them", writers)
+	}
+}
+
+// A snapshot restore can create users, groups, bindings and lists
+// wholesale: in an audit outage it is refused before it reads the snapshot.
+func TestSnapshotRestore_IsRefusedWhenItsAuditRecordCannotBeWritten(t *testing.T) {
+	s, _ := tokenAuthServer(t, "legacy")
+	s.tokenAudit = failingSink{errAuditDown}
+	_, err := s.RestoreSnapshot(context.Background(), connector.RestoreSnapshotRequest{RawJSON: []byte(`{}`)})
+	if err == nil || !strings.Contains(err.Error(), "audit_unavailable") {
+		t.Fatalf("restore with the audit sink failing: %v; want audit_unavailable", err)
 	}
 }
