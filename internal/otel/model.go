@@ -19,9 +19,17 @@ import (
 const SpanModelCall = "loomcycle.model.call"
 
 const (
-	// AttrTTFTMs is the time from the call to its first streamed text,
-	// thinking or tool event. Absent when nothing streamed.
+	// AttrTTFTMs is the time to the call's first streamed text, thinking or
+	// tool event, counted from when the call got its provider call-lane slot:
+	// a call that finished has its lane wait (AttrLaneWaitMs) taken out. A
+	// call that failed or was cancelled reports no lane wait, so its TTFT
+	// counts from the call's start and includes any wait. Absent when nothing
+	// streamed.
 	AttrTTFTMs = "loomcycle.ttft_ms"
+	// AttrLaneWaitMs is how long the call waited for a slot in its
+	// provider's call lane before it was sent. Absent when it did not wait,
+	// or the call did not finish.
+	AttrLaneWaitMs = "loomcycle.lane_wait_ms"
 	// AttrCacheWriteTokens is the prompt tokens written to the provider's
 	// cache by the call.
 	AttrCacheWriteTokens = "loomcycle.cache_write_tokens"
@@ -91,8 +99,11 @@ type ModelCallResult struct {
 	Usage *ModelUsage
 	// FinishReason is the done event's stop reason.
 	FinishReason string
-	// TTFT is the time to the first streamed event; 0 = nothing streamed.
+	// TTFT is the time to the first streamed event, from lane admission when
+	// LaneWait is known; 0 = nothing streamed.
 	TTFT time.Duration
+	// LaneWait is the call's wait for its call-lane slot, when known.
+	LaneWait time.Duration
 	// Cancelled: the call was stopped (run or turn cancel), not failed.
 	Cancelled bool
 	// Err is the failure, recorded as the span's error event. ErrMessage,
@@ -124,6 +135,9 @@ func SetModelCallResult(span trace.Span, r ModelCallResult) {
 	var kvs []attribute.KeyValue
 	if r.TTFT > 0 {
 		kvs = append(kvs, attribute.Int64(AttrTTFTMs, r.TTFT.Milliseconds()))
+	}
+	if r.LaneWait > 0 {
+		kvs = append(kvs, attribute.Int64(AttrLaneWaitMs, r.LaneWait.Milliseconds()))
 	}
 	if r.FinishReason != "" {
 		kvs = append(kvs, attribute.String(AttrStopReason, r.FinishReason),

@@ -4060,6 +4060,12 @@ func (m *modelCall) observe(ev providers.Event) {
 		// Pricing is work for the span alone: skipped when nothing records it.
 		if u := ev.Usage; u != nil && m.span.IsRecording() {
 			r.Usage = m.usage(*u)
+			// The call-lane wait rides the done event only. Taken out of the
+			// TTFT so it measures the provider, not the queue in front of it.
+			if lw := time.Duration(u.LaneWaitMs) * time.Millisecond; lw > 0 {
+				r.LaneWait = lw
+				r.TTFT = max(r.TTFT-lw, 0)
+			}
 		}
 		m.finish(r)
 	case providers.EventError:

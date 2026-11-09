@@ -278,3 +278,22 @@ func TestModelCallSpan_NamesTheFallbackHop(t *testing.T) {
 		t.Errorf("the next call ran on %q", got)
 	}
 }
+
+// The time to first token counts from lane admission: a finished call's wait
+// for its provider call-lane slot is taken out of it and reported on its own.
+func TestModelCallSpan_TTFTExcludesTheCallLaneWait(t *testing.T) {
+	exp, _ := traced(t)
+	now := time.Unix(1000, 0)
+	timer := providers.StartCallTimer(func() time.Time { return now })
+	_, span := lcotel.RecordModelCall(context.Background(), lcotel.ModelCallAttrs{Provider: "anthropic"})
+	mc := &modelCall{span: span, runCtx: context.Background(), turnCtx: context.Background(), timer: timer}
+
+	now = now.Add(300 * time.Millisecond) // 120ms in the lane, 180ms to the first token
+	timer.Observe(providers.Event{Type: providers.EventText, Text: "x"})
+	mc.observe(providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{LaneWaitMs: 120}})
+
+	got := spanAttrs(spansNamed(exp, lcotel.SpanModelCall)[0])
+	if got[lcotel.AttrTTFTMs].AsInt64() != 180 || got[lcotel.AttrLaneWaitMs].AsInt64() != 120 {
+		t.Errorf("ttft_ms %v lane_wait_ms %v, want 180 / 120", got[lcotel.AttrTTFTMs].Emit(), got[lcotel.AttrLaneWaitMs].Emit())
+	}
+}
