@@ -1,7 +1,7 @@
 // The Telegram adapter on the shared core: the webhook route, update
 // handling, and start-up (getMe, and setWebhook when asked).
 
-import { consoleLogger, createBridge, type Bridge, type BridgeAdapter, type BridgeContext, type BridgeOptions, type Logger, type RawRequest, type RawResponse } from "@loomcycle/bridge-core";
+import { consoleLogger, createBridge, sentAtOf, type Bridge, type BridgeAdapter, type BridgeContext, type BridgeOptions, type Logger, type RawRequest, type RawResponse } from "@loomcycle/bridge-core";
 
 import { TelegramApi, TelegramError } from "./api.js";
 import { parseCallbackData, renderCard } from "./cards.js";
@@ -235,6 +235,9 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
     const thread = topicOf(msg);
     const id = identify(msg.chat, msg.from, thread, this.policy);
     const ref = refFor(msg.chat, thread);
+    // Telegram dates a message in whole seconds; 0 is a message the bot can
+    // no longer read, which is no date at all.
+    const seen = { sentAt: sentAtOf((msg.date ?? 0) * 1000) };
     const voiceOn = this.cfg.voice?.enabled === true;
     const text = addressedText(msg, bot, { voice: voiceOn });
     if (text === undefined) {
@@ -244,19 +247,19 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
       const voice = voiceOn ? voiceOf(msg, bot, { audio: this.cfg.voiceAudio }) : undefined;
       if (voice) {
         if (id.ok && id.scope === "group") this.rememberMessage(`${id.conversationId}|${id.speaker.subject}`, msg.message_id);
-        await ctx.router.onVoice(id, ref, voice, msg.from.language_code);
+        await ctx.router.onVoice(id, ref, voice, msg.from.language_code, seen);
         return;
       }
       // A private chat is told why a photo went unanswered. A group stays
       // silent: its media is mostly not for the bot. A stranger hears only
       // the refusal, which the router gives once.
       if (msg.chat.type !== "private" || !hasNonTextContent(msg)) return;
-      if (!id.ok) await ctx.router.onMessage(id, ref, "");
+      if (!id.ok) await ctx.router.onMessage(id, ref, "", seen);
       else await this.tgPort.send(ref, { type: "message", text: TEXT_ONLY_NOTICE });
       return;
     }
     if (id.ok && id.scope === "group") this.rememberMessage(`${id.conversationId}|${id.speaker.subject}`, msg.message_id);
-    await ctx.router.onMessage(id, ref, text);
+    await ctx.router.onMessage(id, ref, text, seen);
   }
 
   private rememberMessage(key: string, messageId: number): void {
@@ -284,6 +287,10 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
     }
     const thread = topicOf(msg);
     const ref = refFor(msg.chat, thread);
+    // A callback query carries no date of its own (the message's date is
+    // the card's, sent by the bot), so a press never drops a kept revoke on
+    // Telegram.
+    // census: no date: Telegram does not date a button press.
     const result = await ctx.router.onCardAction(identify(msg.chat, cq.from, thread, this.policy), ref, parseCallbackData(cq.data));
     // Always answered: until it is, the button shows a spinner.
     await answer(result && "message" in result ? result.message : undefined);

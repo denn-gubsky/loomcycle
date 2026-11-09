@@ -81,7 +81,7 @@ describe("audioFileOf", () => {
 });
 
 describe("routeMessage", () => {
-  type Call = { kind: "message"; text: string } | { kind: "voice"; voice: VoiceIn; locale?: string; ref: ConversationRef };
+  type Call = { kind: "message"; text: string; sentAt?: number } | { kind: "voice"; voice: VoiceIn; locale?: string; ref: ConversationRef; sentAt?: number };
   let calls: Call[];
   let router: MessageRouter<ConversationRef>;
   const TENANTS = new Set([TENANT]);
@@ -112,6 +112,21 @@ describe("routeMessage", () => {
     await route("personal", [fileAttachment("m4a")], "answer in French");
     expect(calls.map((c) => c.kind)).toEqual(["voice", "message"]);
     expect(calls[1]).toEqual({ kind: "message", text: "answer in French" });
+  });
+
+  // The activity's own date goes with both, so a returning person's voice
+  // message drops a revoke kept for them as their text does.
+  it("passes the activity's timestamp with the voice message and its caption", async () => {
+    const dated: Array<number | undefined> = [];
+    const r: MessageRouter<ConversationRef> = {
+      onMessage: async (_id, _ref, _text, opts) => void dated.push(opts?.sentAt),
+      onVoice: async (_id, _ref, _voice, _locale, opts) => void dated.push(opts?.sentAt),
+    };
+    const at = "2026-11-09T10:00:00.000Z";
+    await routeMessage(r, identify(activity("personal"), TENANTS), ref(), "caption", { attachments: [fileAttachment("m4a")], timestamp: at }, true);
+    await routeMessage(r, identify(activity("personal"), TENANTS), ref(), "text", { timestamp: new Date(at) }, true);
+    await routeMessage(r, identify(activity("personal"), TENANTS), ref(), "undated", {}, true);
+    expect(dated).toEqual([Date.parse(at), Date.parse(at), Date.parse(at), undefined]);
   });
 
   it("keeps a group chat's and a channel's files on the text path", async () => {

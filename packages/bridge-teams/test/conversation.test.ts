@@ -4,7 +4,7 @@ import net from "node:net";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { ConversationRouter, keyFromSecret, MemoryStore, TokenBroker, VERB, type Logger } from "@loomcycle/bridge-core";
+import { ConversationRouter, keyFromSecret, MemoryRevokeQueue, MemoryStore, TokenBroker, VERB, type Logger } from "@loomcycle/bridge-core";
 
 import { createTeamsBridge, type ConversationRef, type TeamsBridge } from "../src/bridge.js";
 import { parseCardAction, renderCard } from "../src/cards.js";
@@ -413,7 +413,7 @@ describe("teams bridge as a loomcycle gate", () => {
     await bf.stop();
   });
 
-  async function start(opts: { asGate?: boolean; logger?: Logger } = {}) {
+  async function start(opts: { asGate?: boolean; logger?: Logger; revokes?: MemoryRevokeQueue } = {}) {
     port = await freePort();
     const auth = opts.asGate === false
       ? { LOOMCYCLE_TOKEN: ADMIN_TOKEN }
@@ -434,6 +434,7 @@ describe("teams bridge as a loomcycle gate", () => {
       logger: opts.logger ?? silentLogger,
       store: new MemoryStore(),
       stream: { stopPollMs: 5 },
+      ...(opts.revokes ? { revokes: opts.revokes } : {}),
     });
     await bridge.start();
   }
@@ -513,6 +514,49 @@ describe("teams bridge as a loomcycle gate", () => {
     await settle();
     expect(gate.revokes).toHaveLength(1);
     expect(lc.calls).toEqual([]);
+  });
+
+  // A person whose revoke loomcycle did not take (the bridge keeps it), and
+  // who then writes to the bot 1:1 again or presses a card there, came back:
+  // the kept revoke is dropped. Teams dates each activity (timestamp).
+  describe("a kept revoke", () => {
+    async function keep() {
+      const revokes = new MemoryRevokeQueue();
+      gate.revokeStatus = 500;
+      await start({ revokes });
+      expect((await uninstall()).status).toBe(500);
+      gate.revokeStatus = 204;
+      const kept = async () => (await revokes.list()).map((p) => p.subject);
+      expect(await kept()).toEqual([`teams:${ALICE}`]);
+      return kept;
+    }
+    const later = () => new Date(Date.now() + 60_000).toISOString();
+
+    it("is dropped by a 1:1 message sent after it failed, not by one sent before", async () => {
+      const kept = await keep();
+      const before = lc.runs.length;
+      expect((await post({ type: "message", text: "old", timestamp: new Date(Date.now() - 3_600_000).toISOString() })).status).toBe(200);
+      await waitFor(() => lc.runs.length > before, "a run");
+      announce(lc.runs.at(-1)!, "run-old");
+      await settle();
+      expect(await kept()).toEqual([`teams:${ALICE}`]);
+      expect((await post({ type: "message", text: "hello again", timestamp: later() })).status).toBe(200);
+      await settle();
+      expect(await kept()).toEqual([]);
+    });
+
+    it("is dropped by a 1:1 card press after it failed", async () => {
+      const kept = await keep();
+      const res = await post({
+        type: "invoke",
+        name: "adaptiveCard/action",
+        timestamp: later(),
+        value: { action: { type: "Action.Execute", verb: VERB.approve, data: { runId: "no-such-run" } } },
+      });
+      expect(res.status).toBe(200);
+      await settle();
+      expect(await kept()).toEqual([]);
+    });
   });
 
   // Revocation must not fail open: a revoke loomcycle did not take is answered

@@ -5,6 +5,7 @@ import {
   createBridge,
   gateSharedSubject,
   keyFromSecret,
+  MemoryRevokeQueue,
   UNTRUSTED_KIND,
   type BridgeContext,
   type RawRequest,
@@ -15,7 +16,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createSlackAdapter, type SlackAdapter } from "../src/bridge.js";
 import { loadConfig } from "../src/config.js";
-import type { SlackRef } from "../src/identity.js";
+import { identify, type SlackRef } from "../src/identity.js";
+import { readEvent, type EventEnvelope } from "../src/inbound.js";
 import { slackSignature } from "../src/verify.js";
 import {
   fakeSpeech,
@@ -64,9 +66,10 @@ const GATE_SECRET = "s".repeat(40);
 
 /** rig builds the bridge with a loomcycle token, or with o.gate as the
  *  loomcycle gate "slack" (RFC FA §3.5), which holds no token. */
-async function rig(env: Record<string, string> = {}, o: { gate?: boolean; now?: () => number; revokeTimeoutMs?: number } = {}): Promise<Rig> {
+async function rig(env: Record<string, string> = {}, o: { gate?: boolean; now?: () => number; revokeTimeoutMs?: number; revokes?: MemoryRevokeQueue; revokeReplies?: number[] } = {}): Promise<Rig> {
   const slack = new FakeSlack();
   const gate = new FakeGate();
+  gate.revokeReplies.push(...(o.revokeReplies ?? []));
   const auth = o.gate
     ? { BRIDGE_GATE: "slack", BRIDGE_GATE_AUDIENCE: "https://lc.example", BRIDGE_GATE_SECRET: GATE_SECRET }
     : { LOOMCYCLE_TOKEN: "admin-token" };
@@ -90,6 +93,7 @@ async function rig(env: Record<string, string> = {}, o: { gate?: boolean; now?: 
     ...(o.gate ? { gateFetch: gate.fetch, gateKey: keyFromSecret(GATE_SECRET) } : {}),
     ...(o.now ? { now: o.now } : {}),
     ...(o.revokeTimeoutMs ? { revokeTimeoutMs: o.revokeTimeoutMs } : {}),
+    ...(o.revokes ? { revokes: o.revokes } : {}),
   };
   const adapter = createSlackAdapter(cfg, opts);
   let routes: Record<string, Route>;
@@ -166,7 +170,7 @@ function promptOf(run: StartedRun): unknown {
 function press(
   value: string,
   blockId: string,
-  opts: { user?: string; userTeam?: string | null; channel?: string; ts?: string; thread_ts?: string; responseUrl?: string } = {},
+  opts: { user?: string; userTeam?: string | null; channel?: string; ts?: string; thread_ts?: string; responseUrl?: string; actionTs?: string } = {},
 ): RawRequest {
   const payload = {
     type: "block_actions",
@@ -175,7 +179,7 @@ function press(
     channel: { id: opts.channel ?? "D1" },
     message: { ts: opts.ts ?? "200.1", ...(opts.thread_ts ? { thread_ts: opts.thread_ts } : {}) },
     response_url: opts.responseUrl ?? "https://hooks.slack.com/actions/T1/1/abc",
-    actions: [{ type: "button", action_id: `lc.${value}`, block_id: blockId, value }],
+    actions: [{ type: "button", action_id: `lc.${value}`, block_id: blockId, value, ...(opts.actionTs ? { action_ts: opts.actionTs } : {}) }],
   };
   return { ...signed(`payload=${encodeURIComponent(JSON.stringify(payload))}`), path: "/slack/actions" };
 }
@@ -701,7 +705,7 @@ describe("slack bridge as a loomcycle gate", () => {
       { json: { ok: true, members: [{ id: "UBOB", team_id: "T1", deleted: true }, { id: "USLACKBOT", team_id: "T1" }, { id: "UCID" }], response_metadata: { next_cursor: "" } } },
       { json: { ok: true, members: [{ id: "UDEE", team_id: "T2" }] } },
     );
-    expect([...(await r.adapter.members())].sort()).toEqual(["t1:uann", "t1:ucid", "t2:udee"]);
+    expect([...(await r.adapter.members())].sort()).toEqual(["uann", "ucid", "udee"]);
     expect(r.slack.to("users.list").map((c) => c.body)).toEqual([
       { team_id: "T1", limit: 200 },
       { team_id: "T1", limit: 200, cursor: "p2" },
@@ -716,6 +720,77 @@ describe("slack bridge as a loomcycle gate", () => {
       { json: { ok: false, error: "missing_scope" } },
     );
     await expect(r.adapter.members()).rejects.toThrow("missing_scope");
+  });
+});
+
+// A person whose revoke loomcycle did not take, and who then writes to the
+// bot in a DM again (text, a clip, a card press) after it first failed, came
+// back: the kept revoke is dropped. Slack dates each by its ts (seconds).
+describe("slack kept revokes", () => {
+  const tsAt = (ms: number) => `${Math.floor(ms / 1000)}.000100`;
+  async function keptRig(env: Record<string, string> = {}) {
+    const revokes = new MemoryRevokeQueue();
+    const failedAt = Date.now() - 120_000;
+    await revokes.put({ subject: "slack:t1:ualice", attempts: 1, firstFailedAt: failedAt, nextAttemptAt: Date.now() + 3_600_000 });
+    const r = await rig(env, { gate: true, revokes, revokeReplies: [503] });
+    // The retry at start fails: loomcycle is still down.
+    await settle();
+    const kept = async () => (await revokes.list()).map((p) => p.subject);
+    expect(await kept()).toEqual(["slack:t1:ualice"]);
+    return { r, failedAt, kept };
+  }
+  it("drops it for a DM sent after the revoke failed, and not for one sent before", async () => {
+    const { r, failedAt, kept } = await keptRig();
+    await send(r, eventBody(dm("old", tsAt(failedAt - 60_000))));
+    await settle();
+    expect(await kept()).toEqual(["slack:t1:ualice"]);
+    await send(r, eventBody(dm("hello again", tsAt(Date.now()))));
+    await settle();
+    expect(await kept()).toEqual([]);
+  });
+
+  it("drops it for a DM voice clip sent after the revoke failed", async () => {
+    const { r, kept } = await keptRig({ BRIDGE_VOICE: "1" });
+    r.lc.speech = fakeSpeech();
+    const url = `${FILES_ORIGIN}/files-pri/T1-F9/download/audio_message.webm`;
+    r.slack.files.set(url, () => new Response(new Uint8Array([1, 2]), { status: 200, headers: { "content-type": "audio/webm" } }));
+    const clip = { id: "F9", subtype: "slack_audio", mimetype: "audio/webm", size: 2, duration_ms: 1000, url_private_download: url };
+    await send(r, eventBody({ type: "message", subtype: "file_share", channel_type: "im", channel: "D1", user: "UALICE", text: "", ts: tsAt(Date.now()), team: "T1", files: [clip] }));
+    await waitFor(() => r.lc.runs.length === 1, "run");
+    expect(await kept()).toEqual([]);
+  });
+
+  it("drops it for a DM card press after the revoke failed", async () => {
+    const { r, kept } = await keptRig();
+    await r.actions(press("b1", "lc.card.im", { actionTs: tsAt(Date.now()) }));
+    await settle();
+    expect(await kept()).toEqual([]);
+  });
+});
+
+// Enterprise Grid: a user id is the org's, one person in many workspaces.
+// The team an event names them by (user_team, here their home workspace)
+// need not be the team_id users.list reports for them, so reconciliation
+// must compare both sides by a key they share, or a present person reads as
+// gone and is revoked every round.
+describe("slack reconciliation under Enterprise Grid", () => {
+  it("finds a person an event names under another team than users.list gives", async () => {
+    const r = await rig({ SLACK_BRIDGE_ALLOWED_TEAMS: "T1,T2" }, { gate: true });
+    const env: EventEnvelope = {
+      type: "event_callback",
+      team_id: "T1",
+      event: { type: "message", channel_type: "im", channel: "D1", user: "WALICE", user_team: "T2", team: "T1", text: "hi", ts: "1.1" },
+    };
+    const read = readEvent(env, { userId: "UBOT" });
+    if (read.kind !== "message") throw new Error(`read ${read.kind}`);
+    const id = identify(read.fields, { allowedTeams: new Set(["T1", "T2"]), sharedTrust: "untrusted", gate: "slack" }, "Alice");
+    if (!id.ok) throw new Error(id.reason);
+    const sub = id.runAs.subject.slice("slack:".length);
+    expect(sub).toBe("t2:walice");
+    const grid = { id: "WALICE", team_id: "T1", enterprise_user: { enterprise_id: "E1", teams: ["T1", "T2"] } };
+    r.slack.reply("users.list", { json: { ok: true, members: [grid] } }, { json: { ok: true, members: [grid] } });
+    const members = await r.adapter.members();
+    expect(members.has(r.adapter.memberKey?.(sub) ?? sub)).toBe(true);
   });
 });
 

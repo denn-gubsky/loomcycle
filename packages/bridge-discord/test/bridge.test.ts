@@ -8,6 +8,7 @@ import {
   DEFAULT_VOICE_CONFIG,
   gateSharedSubject,
   keyFromSecret,
+  MemoryRevokeQueue,
   UNTRUSTED_KIND,
   VOICE_PREFIX,
   VOICE_TEXT,
@@ -594,9 +595,11 @@ describe("discord bridge as a loomcycle gate", () => {
   let base: string;
   let now: number;
   let seq: number;
+  let revokes: MemoryRevokeQueue;
 
   beforeEach(async () => {
     key = appKey();
+    revokes = new MemoryRevokeQueue();
     lc = new FakeLoomcycle();
     discord = new FakeDiscord();
     gate = new FakeGate();
@@ -636,6 +639,7 @@ describe("discord bridge as a loomcycle gate", () => {
       logger: { info() {}, warn() {}, error() {} },
       now: () => now,
       message: { typingEveryMs: 60_000 },
+      revokes,
     });
     await bridge.start();
   });
@@ -739,6 +743,54 @@ describe("discord bridge as a loomcycle gate", () => {
     await postTo("/discord/interactions", command("dm", "back again"));
     await waitFor(() => gate.asserts.length === 2, "the second assert");
     expect(discord.to(/members/)).toHaveLength(2);
+  });
+
+  // A person whose revoke loomcycle did not take (kept by the bridge), and
+  // who then uses the app in a DM again, came back: the kept revoke is
+  // dropped. Discord dates an interaction by its snowflake id.
+  describe("a kept revoke", () => {
+    const DISCORD_EPOCH = 1420070400000n;
+    const idAt = (ms: number) => ((BigInt(ms) - DISCORD_EPOCH) << 22n).toString();
+    async function keep() {
+      discord.on(/members/, { status: 200, body: { roles: [] } });
+      gate.revokeStatus = 500;
+      expect((await postTo("/discord/events", deauthorized(ALICE))).status).toBe(503);
+      gate.revokeStatus = 0;
+      const kept = async () => (await revokes.list()).map((p) => p.subject);
+      expect(await kept()).toEqual([`discord:${ALICE}`]);
+      return kept;
+    }
+
+    it("is dropped by a DM command sent after it failed, not by one sent before", async () => {
+      const kept = await keep();
+      // The fixture's ids date from 2016: long before the revoke failed.
+      await postTo("/discord/interactions", command("dm", "old"));
+      await waitFor(() => lc.runs.length === 1, "the run");
+      idle(lc.runs[0]);
+      await settle();
+      expect(await kept()).toEqual([`discord:${ALICE}`]);
+      await postTo("/discord/interactions", { ...command("dm", "hello again"), id: idAt(now + 60_000) });
+      await settle();
+      expect(await kept()).toEqual([]);
+    });
+
+    it("is dropped by a DM card press after it failed", async () => {
+      const kept = await keep();
+      const id = idAt(now + 60_000);
+      await postTo("/discord/interactions", {
+        id,
+        application_id: APP,
+        type: 3,
+        token: `itok-${id}`,
+        context: 1,
+        channel: { id: DM, type: 1 },
+        user: { id: ALICE, username: "alice", global_name: "Alice" },
+        message: { id: "m1" },
+        data: { custom_id: "lc:b1", component_type: 2 },
+      });
+      await settle();
+      expect(await kept()).toEqual([]);
+    });
   });
 
   // Revocation must not fail open: a revoke loomcycle did not take is not

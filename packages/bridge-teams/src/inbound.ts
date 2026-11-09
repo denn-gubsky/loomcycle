@@ -2,7 +2,7 @@
 // audio file attached in a 1:1 chat with voice on, its voice path (RFC GA
 // §5.4). Kept apart from the SDK so it is tested without one.
 
-import type { ConversationRouter, Identified } from "@loomcycle/bridge-core";
+import { sentAtOf, type ConversationRouter, type Identified, type MessageOptions } from "@loomcycle/bridge-core";
 
 import { audioFileOf, type TeamsAttachment } from "./voice.js";
 
@@ -10,6 +10,16 @@ import { audioFileOf, type TeamsAttachment } from "./voice.js";
 export interface MessageFields {
   attachments?: readonly TeamsAttachment[];
   locale?: string;
+  /** When Teams says the activity was sent: a Date from the SDK's types, an
+   *  ISO string on the wire. */
+  timestamp?: Date | string;
+}
+
+/** seenOf is an activity's date for the router, from its timestamp: what
+ *  lets a person who writes again drop a revoke kept for them. */
+export function seenOf(activity: { timestamp?: Date | string }): MessageOptions {
+  const t = activity.timestamp;
+  return { sentAt: sentAtOf(t instanceof Date ? t.getTime() : typeof t === "string" ? Date.parse(t) : undefined) };
 }
 
 export type MessageRouter<TRef> = Pick<ConversationRouter<TRef>, "onMessage" | "onVoice">;
@@ -32,10 +42,11 @@ export async function routeMessage<TRef>(
   voiceOn: boolean,
 ): Promise<void> {
   const audio = voiceOn && id.ok && id.scope === "personal" ? audioFileOf(activity.attachments) : undefined;
+  const seen = seenOf(activity);
   if (!audio) {
-    await router.onMessage(id, ref, text);
+    await router.onMessage(id, ref, text, seen);
     return;
   }
-  await router.onVoice(id, ref, audio, activity.locale);
-  if (text.trim()) await router.onMessage(id, ref, text);
+  await router.onVoice(id, ref, audio, activity.locale, seen);
+  if (text.trim()) await router.onMessage(id, ref, text, seen);
 }

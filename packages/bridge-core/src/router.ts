@@ -19,14 +19,23 @@ export interface SeenMessage {
 
 export interface RouterOptions {
   idleMinutes: number;
-  /** Called for each message the platform authenticated. */
+  /** Called for each message, voice message and card press the platform
+   *  authenticated. */
   onSeen?(seen: SeenMessage): void;
 }
 
 export interface MessageOptions {
-  /** Epoch ms the platform dates the message (Telegram's date, Slack's ts,
-   *  a Teams activity's timestamp). */
+  /** Epoch ms the platform dates the message or press (Telegram's date,
+   *  Slack's ts, Discord's snowflake, a Teams activity's timestamp). Leave it
+   *  undefined when the platform gives no date of its own: a date the bridge
+   *  made up (its own clock) cannot tell a redelivery from a new message. */
   sentAt?: number;
+}
+
+/** sentAtOf is a platform's date for MessageOptions: epoch ms when it is a
+ *  finite positive number, else undefined. */
+export function sentAtOf(ms: number | undefined): number | undefined {
+  return typeof ms === "number" && Number.isFinite(ms) && ms > 0 ? ms : undefined;
 }
 
 type Ok = Extract<Identified, { ok: true }>;
@@ -51,7 +60,7 @@ export class ConversationRouter<TRef> {
       await this.refuse(id, ref);
       return;
     }
-    this.opts.onSeen?.({ speaker: id.speaker.subject, runAs: id.runAs.subject, scope: id.scope, sentAt: opts.sentAt });
+    this.seen(id, opts);
     const conv = await this.conversation(id, ref);
     conv.updateRef(ref);
     conv.adoptGateSubjects(id.runAs, id.speaker);
@@ -67,12 +76,13 @@ export class ConversationRouter<TRef> {
    *  the conversation downloads and transcribes it, then answers it as it
    *  would the same words typed. locale is the platform's language for the
    *  speaker, when it gives one. */
-  async onVoice(id: Identified, ref: TRef, voice: VoiceIn, locale?: string): Promise<void> {
+  async onVoice(id: Identified, ref: TRef, voice: VoiceIn, locale?: string, opts: MessageOptions = {}): Promise<void> {
     this.deps.health?.inbound();
     if (!id.ok) {
       await this.refuse(id, ref);
       return;
     }
+    this.seen(id, opts);
     const conv = await this.conversation(id, ref);
     conv.updateRef(ref);
     conv.adoptGateSubjects(id.runAs, id.speaker);
@@ -85,10 +95,11 @@ export class ConversationRouter<TRef> {
   }
 
   /** onCardAction answers a card. input undefined = not one of ours. */
-  async onCardAction(id: Identified, ref: TRef, input: CardInput | undefined): Promise<CardResult | undefined> {
+  async onCardAction(id: Identified, ref: TRef, input: CardInput | undefined, opts: MessageOptions = {}): Promise<CardResult | undefined> {
     if (!input) return undefined;
     this.deps.health?.inbound();
     if (!id.ok) return { message: id.notice ?? "This bot isn't available to you." };
+    this.seen(id, opts);
     const conv = await this.conversation(id, ref);
     conv.adoptGateSubjects(id.runAs, id.speaker);
     return conv.onCardAction(id.speaker, input);
@@ -126,6 +137,13 @@ export class ConversationRouter<TRef> {
   /** For tests and diagnostics. */
   get(conversationId: string): Conversation<TRef> | undefined {
     return this.convs.get(conversationId);
+  }
+
+  /** seen tells onSeen who is present, from every path the platform
+   *  authenticated: a person who presses a card or sends a voice message is
+   *  as present as one who types. */
+  private seen(id: Ok, opts: MessageOptions): void {
+    this.opts.onSeen?.({ speaker: id.speaker.subject, runAs: id.runAs.subject, scope: id.scope, sentAt: opts.sentAt });
   }
 
   private async refuse(id: Refused, ref: TRef): Promise<void> {

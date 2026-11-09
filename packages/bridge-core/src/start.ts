@@ -52,6 +52,12 @@ export interface BridgeAdapter<TRef> {
    *  BRIDGE_GATE_SYNC_HOURS the core revokes each person it served who is not
    *  on it. */
   members?(): Promise<ReadonlySet<string>>;
+  /** The key members() lists a person under, from their platform id (the
+   *  gate's `sub`), for a platform whose ids say more than its member list
+   *  can match: Slack names a person "<team>:<user>", and the team an event
+   *  gives can differ from the one its member list reports. Default: the id
+   *  itself. */
+  memberKey?(sub: string): string;
   /** Present on a platform that can take voice messages (RFC GA). Used only
    *  with BRIDGE_VOICE=1. */
   voice?: VoicePort<TRef>;
@@ -261,7 +267,8 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
         records.map((r) => r.runSubject).filter((s) => s.startsWith(prefix) && s.length > prefix.length && !s.startsWith(`${prefix}conv:`)),
       );
       const pending = new Set((await revokes!.list()).map((p) => p.subject));
-      const gone = [...people].filter((s) => !members.has(s.slice(prefix.length)) && !pending.has(s));
+      const keyOf = adapter.memberKey ?? ((sub: string) => sub);
+      const gone = [...people].filter((s) => !members.has(keyOf(s.slice(prefix.length))) && !pending.has(s));
       // Everyone at once is never applied by a round, cap or no cap: it is
       // what a list read from the wrong place looks like.
       if (people.size >= 2 && gone.length === people.size) {

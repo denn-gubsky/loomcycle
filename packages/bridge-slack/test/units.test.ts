@@ -5,7 +5,7 @@ import { retryAfterMs, SlackApi, SlackApiError } from "../src/api.js";
 import { renderCard, MAX_BUTTON_LABEL } from "../src/cards.js";
 import { loadConfig } from "../src/config.js";
 import { conversationIdOf, identify, NOT_ALLOWED_NOTICE, personSub, refOf, subjectFor, teamsAllowed, type InboundFields, type TrustPolicy } from "../src/identity.js";
-import { CARD_BLOCK_ID, cleanInbound, readAction, readEvent, type EventEnvelope } from "../src/inbound.js";
+import { CARD_BLOCK_ID, cleanInbound, readAction, readEvent, slackTsMs, type EventEnvelope } from "../src/inbound.js";
 import { SeenSet } from "../src/seen.js";
 import { SlackStream } from "../src/stream.js";
 import { escapeMrkdwn, neutralise } from "../src/text.js";
@@ -663,5 +663,13 @@ describe("stream", () => {
     const sent = [...slack.to("chat.startStream"), ...slack.to("chat.appendStream")].map((c) => c.body.markdown_text).join("");
     expect(sent).not.toMatch(LIVE_MENTION);
     expect(sent.replace(/\u2060/g, "")).toBe("hey @here and <@U0123ABC>");
+  });
+});
+
+describe("slackTsMs", () => {
+  it("reads a Slack ts as epoch ms and refuses anything else", () => {
+    expect(slackTsMs("1712345678.123456")).toBe(1712345678123);
+    expect(slackTsMs("1712345678")).toBe(1712345678000);
+    for (const bad of [undefined, "", "0", "abc", "1e12", "-5.1", "1712345678.1234567", " 1712345678.1"]) expect(slackTsMs(bad)).toBeUndefined();
   });
 });

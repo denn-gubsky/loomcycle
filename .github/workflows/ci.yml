@@ -688,6 +688,13 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: packages/bridge-*/package-lock.json
+      # A bridge under review may depend on the core by path, which needs it
+      # built first.
+      - name: bridge-core, when Teams depends on it by path
+        run: |
+          if grep -q '"@loomcycle/bridge-core": "file:' packages/bridge-teams/package.json; then
+            cd packages/bridge-core && npm ci && npm run build
+          fi
       - name: Integration (real loomcycle)
         working-directory: packages/bridge-teams
         env:
@@ -737,6 +744,22 @@ jobs:
             [ "$dir" = "packages/bridge-core/" ] && continue
             echo "::group::$dir"
             (cd "$dir" && npm ci && npm run typecheck && npm test && npm run build)
+            echo "::endgroup::"
+          done
+      # A platform that depends on the PUBLISHED core is also typechecked and
+      # tested against the core in this tree, so a core change and the
+      # platforms that call it are proven together before either is
+      # published. One that depends on it by path was just tested that way.
+      - name: Platform bridges against the source core
+        run: |
+          set -euo pipefail
+          for dir in packages/bridge-*/; do
+            [ "$dir" = "packages/bridge-core/" ] && continue
+            grep -q '"@loomcycle/bridge-core": "file:' "$dir/package.json" && continue
+            echo "::group::$dir (source core)"
+            rm -rf "$dir/node_modules/@loomcycle/bridge-core"
+            ln -s ../../../bridge-core "$dir/node_modules/@loomcycle/bridge-core"
+            (cd "$dir" && npm run typecheck && npm test)
             echo "::endgroup::"
           done
 

@@ -180,6 +180,14 @@ function speakerTeamOf(env: EventEnvelope, ev: SlackMessageEvent, team: string):
   return str(ev.user_team) ?? str(ev.team) ?? (extShared ? undefined : team);
 }
 
+/** slackTsMs reads a Slack ts ("<seconds>.<micros>") as epoch ms; anything
+ *  else is undefined. */
+export function slackTsMs(ts: string | undefined): number | undefined {
+  if (!ts || !/^\d{1,12}(\.\d{1,6})?$/.test(ts)) return undefined;
+  const ms = Math.floor(Number(ts) * 1000);
+  return ms > 0 ? ms : undefined;
+}
+
 /** cleanInbound turns Slack's message markup into plain text for the agent:
  *  the bot's own mention removed, links unwrapped, entities decoded. */
 export function cleanInbound(text: string, botUserId: string): string {
@@ -202,7 +210,7 @@ export interface BlockActionsPayload {
   container?: { channel_id?: string; message_ts?: string; thread_ts?: string };
   message?: { ts?: string; thread_ts?: string };
   response_url?: string;
-  actions?: Array<{ type?: string; action_id?: string; block_id?: string; value?: string }>;
+  actions?: Array<{ type?: string; action_id?: string; block_id?: string; value?: string; action_ts?: string }>;
 }
 
 /** What a pressed card button names: the conversation and the button id. */
@@ -210,6 +218,8 @@ export interface ReadAction {
   fields: InboundFields;
   buttonId: string;
   responseUrl?: string;
+  /** The press's own ts (action_ts); fields.ts is the card's message. */
+  actionTs?: string;
 }
 
 /** The actions block of every card the bridge draws carries one of these as
@@ -249,5 +259,6 @@ export function readAction(p: BlockActionsPayload): ReadAction | undefined {
     },
     buttonId: value,
     responseUrl: str(p.response_url),
+    actionTs: str(a.action_ts),
   };
 }

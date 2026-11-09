@@ -5,7 +5,7 @@
 // upload with Slack's inline player. Nothing is kept: the bytes live in
 // memory for one request.
 
-import { VoiceRefusedError, type VoiceIn, type VoiceOut, type VoicePort } from "@loomcycle/bridge-core";
+import { downloadPinned, PinnedDownloadError, VoiceRefusedError, type VoiceIn, type VoiceOut, type VoicePort } from "@loomcycle/bridge-core";
 
 import { slackErrorCode, type SlackApi } from "./api.js";
 import type { SlackRef } from "./identity.js";
@@ -40,8 +40,6 @@ const REFUSED = new Set(["not_in_channel", "channel_not_found", "missing_scope"]
 /** The largest spoken reply uploaded. Slack takes far more; a reply capped at
  *  BRIDGE_VOICE_REPLY_MAX_CHARS is a few megabytes even as wav. */
 export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
-/** Redirects followed on a download, each only to SLACK_FILES_HOST. */
-const MAX_REDIRECTS = 3;
 /** A conversation answers one turn at a time, so a stalled upload must not
  *  hold it. */
 const UPLOAD_TIMEOUT_MS = 60_000;
@@ -61,38 +59,35 @@ export function createSlackVoice(o: SlackVoiceOptions): VoicePort<SlackRef> {
 
   async function download(v: VoiceIn, maxBytes: number, signal: AbortSignal): Promise<{ bytes: Uint8Array; mime: string }> {
     const ref = v.ref as Partial<SlackFileRef> | undefined;
-    let url = typeof ref?.url === "string" ? ref.url : "";
+    const url = typeof ref?.url === "string" ? ref.url : "";
     if (!url) throw new SlackFileError("no_download_url");
-    for (let hop = 0; ; hop++) {
-      // Checked before every request, the token's included: a URL in an
-      // event is only as trustworthy as the event (unchecked in dev mode),
-      // and a redirect may point anywhere.
-      if (!onFilesHost(url)) throw new SlackFileError("not_slack_files_host");
-      const res = await doFetch(url, { method: "GET", headers: { authorization: `Bearer ${o.botToken}` }, redirect: "manual", signal });
-      if (res.status >= 300 && res.status < 400) {
-        await res.body?.cancel().catch(() => undefined);
-        const loc = res.headers.get("location");
-        if (!loc || hop >= MAX_REDIRECTS) throw new SlackFileError("redirect");
-        url = new URL(loc, url).href;
-        continue;
-      }
-      if (!res.ok) {
-        await res.body?.cancel().catch(() => undefined);
-        throw new SlackFileError(`http_${res.status}`);
-      }
-      // Without the token Slack answers 200 with its login page (text/html),
-      // so a page or any other text is refused. A file host may also serve
-      // the bytes as application/octet-stream; that is taken, typed by the
-      // event's own mimetype, and loomcycle refuses what is not audio.
-      const served = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
-      const media = served.startsWith("audio/") || served.startsWith("video/");
-      if (!media && served !== "application/octet-stream") {
-        await res.body?.cancel().catch(() => undefined);
-        throw new SlackFileError("not_audio");
-      }
-      const mime = media ? served : (v.mime ?? "application/octet-stream");
-      return { bytes: await readCapped(res, maxBytes), mime };
+    let got: { bytes: Uint8Array; contentType: string };
+    try {
+      // The host is checked before every request, the token's included: a
+      // URL in an event is only as trustworthy as the event (unchecked in dev
+      // mode), and a redirect may point anywhere.
+      got = await downloadPinned(url, {
+        allowed: onFilesHost,
+        headers: { authorization: `Bearer ${o.botToken}` },
+        // Without the token Slack answers 200 with its login page
+        // (text/html), so a page or any other text is refused. A file host
+        // may also serve the bytes as application/octet-stream; that is
+        // taken, typed by the event's own mimetype, and loomcycle refuses
+        // what is not audio.
+        accept: (ct) => {
+          const served = baseType(ct);
+          return served.startsWith("audio/") || served.startsWith("video/") || served === "application/octet-stream";
+        },
+        maxBytes,
+        signal,
+        fetch: doFetch,
+      });
+    } catch (err) {
+      throw err instanceof PinnedDownloadError ? new SlackFileError(slackCodeOf(err)) : err;
     }
+    const served = baseType(got.contentType);
+    const media = served.startsWith("audio/") || served.startsWith("video/");
+    return { bytes: got.bytes, mime: media ? served : (v.mime ?? "application/octet-stream") };
   }
 
   async function sendVoice(ref: SlackRef, audio: VoiceOut): Promise<void> {
@@ -140,44 +135,30 @@ export function createSlackVoice(o: SlackVoiceOptions): VoicePort<SlackRef> {
   };
 }
 
-function onFilesHost(raw: string): boolean {
-  try {
-    const u = new URL(raw);
-    return u.protocol === "https:" && u.hostname === SLACK_FILES_HOST && u.port === "" && !u.username && !u.password;
-  } catch {
-    return false;
-  }
+function onFilesHost(u: URL): boolean {
+  return u.protocol === "https:" && u.hostname === SLACK_FILES_HOST && u.port === "" && !u.username && !u.password;
 }
 
-/** readCapped reads a body, failing as soon as it passes maxBytes rather than
- *  after: a lying or absent Content-Length never lets more into memory. */
-async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array> {
-  const declared = Number(res.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    await res.body?.cancel().catch(() => undefined);
-    throw new SlackFileError("too_large");
+function baseType(ct: string): string {
+  return ct.split(";")[0]!.trim().toLowerCase();
+}
+
+/** slackCodeOf is the SlackFileError code a refused download had before the
+ *  download moved into bridge-core, so logs and callers read the same. */
+function slackCodeOf(err: PinnedDownloadError): string {
+  switch (err.reason) {
+    case "url":
+    case "host":
+      return "not_slack_files_host";
+    case "redirect":
+      return "redirect";
+    case "status":
+      return `http_${err.detail.status}`;
+    case "type":
+      return "not_audio";
+    case "size":
+      return "too_large";
   }
-  if (!res.body) return new Uint8Array();
-  const reader = res.body.getReader();
-  const parts: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw new SlackFileError("too_large");
-    }
-    parts.push(value);
-  }
-  const out = new Uint8Array(total);
-  let at = 0;
-  for (const p of parts) {
-    out.set(p, at);
-    at += p.byteLength;
-  }
-  return out;
 }
 
 /** fileNameOf names the upload by its format: Slack picks its player by the

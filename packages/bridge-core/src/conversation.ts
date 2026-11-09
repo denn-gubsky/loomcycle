@@ -78,6 +78,8 @@ export const UNTRUSTED_TYPED_ANSWER_TEXT =
 /** At most this many untrusted messages wait for a turn to finish. */
 export const MAX_DEFERRED = 20;
 
+const DEFERRED_FULL_TEXT = "The agent is still answering. Please wait for it to finish, then send your message again.";
+
 /** Who may act in a conversation a guest opened, until a member claims it. */
 const NO_OWNER = "a member, not a guest,";
 
@@ -354,8 +356,8 @@ export class Conversation<TRef> {
   private async deliverUntrusted(text: string): Promise<void> {
     const live = this.live;
     if (live?.runId && !live.parked) {
-      if (this.deferred.length >= MAX_DEFERRED) {
-        await this.say("The agent is still answering. Please wait for it to finish, then send your message again.");
+      if (this.deferredFull()) {
+        await this.say(DEFERRED_FULL_TEXT);
         return;
       }
       this.deferred.push(text);
@@ -363,6 +365,12 @@ export class Conversation<TRef> {
       return;
     }
     await this.restartWith(text);
+  }
+
+  /** deferredFull says an untrusted message would be refused now: a run is
+   *  mid-turn and the messages waiting for it are at their cap. */
+  private deferredFull(): boolean {
+    return !!this.live?.runId && !this.live.parked && this.deferred.length >= MAX_DEFERRED;
   }
 
   /** restartWith ends the parked run, if any, and continues the session in a
@@ -697,6 +705,12 @@ export class Conversation<TRef> {
     }
     this.rec.lastActivityAt = this.now();
     await this.claimOwner(speaker);
+    // The queue an untrusted transcript would wait in is checked before the
+    // download and the transcription are paid for, not after.
+    if (speaker.trust === "untrusted" && this.deferredFull()) {
+      await this.say(DEFERRED_FULL_TEXT);
+      return;
+    }
     const cfg = vc.config;
     if ((voice.seconds !== undefined && voice.seconds > cfg.maxSeconds) || (voice.bytes !== undefined && voice.bytes > cfg.maxBytes)) {
       await this.say(VOICE_TEXT.tooLong(cfg.maxSeconds));
