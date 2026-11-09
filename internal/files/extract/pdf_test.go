@@ -448,3 +448,40 @@ func FuzzExtractPDF(f *testing.F) {
 		}
 	})
 }
+
+// A page whose box is an array too short to be a rectangle panics inside
+// pdfcpu as it resolves the page (it indexes the array unchecked). The fuzzer
+// found it with an empty /MediaBox. That page is reported unread and the rest
+// of the file is still read, as for a page whose content cannot be decoded.
+func TestExtractPDF_ShortPageBoxLeavesOnlyThatPageUnread(t *testing.T) {
+	const box = "/MediaBox [0 0 595 842]"
+	for name, bad := range map[string]string{
+		"empty media box": "/MediaBox []",
+		"short crop box":  "/CropBox [1]",
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := pdftest.Doc{Pages: []pdftest.Page{
+				{Lines: []pdftest.Line{{Text: "first page", X: 72, Y: 700, Size: 12}}},
+				{Lines: []pdftest.Line{{Text: "second page", X: 72, Y: 700, Size: 12}}},
+			}}.Bytes()
+			// Padded to the same length, so the cross-reference offsets
+			// stay right; only the first page's box is replaced.
+			i := bytes.Index(data, []byte(box))
+			copy(data[i:i+len(box)], bad+strings.Repeat(" ", len(box)-len(bad)))
+
+			s, rep, err := extractPDF(t, data, Options{Name: "x.pdf"})
+			if err != nil {
+				t.Fatalf("err = %v, want the file read with page 1 unread", err)
+			}
+			if !hasNote(rep, "the content of page 1 could not be read") {
+				t.Errorf("notes = %q, want page 1 reported unread", rep.Notes)
+			}
+			if md := s.md.String(); !strings.Contains(md, "second page") || strings.Contains(md, "first page") {
+				t.Errorf("markdown = %q, want page 2's text and not page 1's", md)
+			}
+			if rep.Pages != 2 || len(rep.PageYields) != 2 || !rep.PageYields[0].Unread || rep.PageYields[1].Unread {
+				t.Errorf("pages = %d, yields = %+v", rep.Pages, rep.PageYields)
+			}
+		})
+	}
+}
