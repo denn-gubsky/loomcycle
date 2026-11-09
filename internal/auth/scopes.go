@@ -90,6 +90,15 @@ const (
 	// it, and every other transport lacks the scopes it would need.
 	ScopeSCIMProvision = "scim:provision"
 
+	// ScopeMetricsRead is a Prometheus scraper's credential: it reaches GET
+	// /metrics and nothing else. A scrape token sits in a file on a
+	// monitoring host, so it must open no other route, which is why it is a
+	// credential of its own rather than a scope a wider token could also
+	// carry. Like auth:manage it implies nothing and is minted alone
+	// (ValidateScopeSet); the HTTP gate admits it to /metrics only, and gRPC
+	// and every other transport refuse it.
+	ScopeMetricsRead = "metrics:read"
+
 	// NOTE: memory:read / memory:write are intentionally NOT in the
 	// catalog. They were inert — grantable but enforced by no route: the
 	// HTTP memory surface (/v1/_memory/*) is operator-admin, and
@@ -116,6 +125,7 @@ var scopeCatalog = map[string]struct{}{
 	ScopeLLMGateway:           {},
 	ScopeAuthManage:           {},
 	ScopeSCIMProvision:        {},
+	ScopeMetricsRead:          {},
 }
 
 // tenantImplied is the set ScopeTenant satisfies. A tenant operator covers
@@ -166,11 +176,11 @@ func UnknownScopes(scopes []string) []string {
 	return bad
 }
 
-// ValidateScopeSet refuses a scope set that combines auth:manage or
-// scim:provision with any other scope (RFC FA D16, P6). Callers check
-// UnknownScopes first.
+// ValidateScopeSet refuses a scope set that combines auth:manage,
+// scim:provision or metrics:read with any other scope (RFC FA D16, P6).
+// Callers check UnknownScopes first.
 func ValidateScopeSet(scopes []string) error {
-	for _, alone := range []string{ScopeAuthManage, ScopeSCIMProvision} {
+	for _, alone := range []string{ScopeAuthManage, ScopeSCIMProvision, ScopeMetricsRead} {
 		if slices.Contains(scopes, alone) && slices.ContainsFunc(scopes, func(s string) bool { return s != alone }) {
 			return fmt.Errorf("%s must be a token's only scope: it is a credential confined to its own route list, "+
 				"and combined with another scope it would carry that reach into the other's surfaces", alone)
@@ -191,6 +201,13 @@ func IsAuthManager(p Principal) bool {
 // keeps alone. Every transport admits such a principal only to /scim/v2/*.
 func IsSCIMProvisioner(p Principal) bool {
 	return !p.Legacy && len(p.Scopes) > 0 && slices.Contains(p.Scopes, ScopeSCIMProvision)
+}
+
+// IsMetricsReader reports whether p is a metrics scraper's credential: it
+// holds metrics:read, which ValidateScopeSet keeps alone. Every transport
+// admits such a principal only to GET /metrics.
+func IsMetricsReader(p Principal) bool {
+	return !p.Legacy && len(p.Scopes) > 0 && slices.Contains(p.Scopes, ScopeMetricsRead)
 }
 
 // HasScope reports whether the granted set includes want. ScopeAdmin is a

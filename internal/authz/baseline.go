@@ -23,6 +23,10 @@ const (
 	// /scim/v2 asks. The scope gate keeps it on /scim/v2, and the service
 	// confines it to its own token's tenant.
 	BaselineSCIMProvisioner = "builtin:scim-provisioner"
+	// BaselineMetricsReader is a metrics:read credential's list: the
+	// Prometheus scrape's question and nothing else. The scope gate keeps it
+	// on GET /metrics; this list is what lets it through under enforce.
+	BaselineMetricsReader = "builtin:metrics-reader"
 )
 
 // BuiltinPrefix marks a baseline name.
@@ -219,6 +223,11 @@ func Baselines() map[string]ACL {
 			Rules: []Rule{
 				{Effect: Allow, Actions: []string{"read", "manage"}, Resources: []string{"principal:scim:*"}},
 				{Effect: Deny, Actions: []string{"mint"}, Resources: []string{"principal:*"}},
+			}},
+		BaselineMetricsReader: {Name: BaselineMetricsReader,
+			Description: "metrics:read — the Prometheus scrape, nothing else",
+			Rules: []Rule{
+				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"runtime:metrics"}},
 			}},
 		BaselineRunPlane: {Name: BaselineRunPlane, Description: "a token limited to certain agents (RFC EF): the run plane only",
 			Rules: []Rule{
