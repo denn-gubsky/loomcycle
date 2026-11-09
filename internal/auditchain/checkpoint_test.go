@@ -366,3 +366,21 @@ func TestAuditPrune_CarryDropsOnlyCheckpointsBelowTheTenantAnchor(t *testing.T) 
 		t.Errorf("t1 after both prunes: %+v", rep)
 	}
 }
+
+// A shutdown whose drain runs out of time still checkpoints the chains.
+func TestAuditStoreSink_CloseCheckpointsEvenWhenTheDrainTimesOut(t *testing.T) {
+	s, db := chainFixture(t, 0)
+	sink, err := auditchain.NewStoreSink(s, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.StartAsync(8)
+	record(t, sink, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the drain's budget is already spent
+	_ = sink.Close(ctx)
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE tenant_id = '' AND action = 'audit_chain_checkpoint'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("checkpoints after a timed-out drain = %d, %v; want 1", n, err)
+	}
+}

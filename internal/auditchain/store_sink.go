@@ -382,18 +382,29 @@ func (s *StoreSink) Close(ctx context.Context) error {
 	}
 	s.closed = true
 	s.mu.Unlock()
+	var drainErr error
 	if queues[0] != nil {
+	drain:
 		for _, q := range queues {
 			select {
 			case <-q.done:
 			case <-ctx.Done():
-				return ctx.Err()
+				drainErr = ctx.Err()
+				break drain
 			}
 		}
 	}
-	s.checkpointAll(ctx, true)
-	return nil
+	// The checkpoints run even when the drain ran out of time: they are a
+	// few rows, and skipping them would leave every chain's last rows open
+	// to a rollback. A fresh, short budget, since ctx may be spent.
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownCheckpointTimeout)
+	defer cancel()
+	s.checkpointAll(cctx, true)
+	return drainErr
 }
+
+// shutdownCheckpointTimeout bounds the checkpoints Close writes.
+const shutdownCheckpointTimeout = 3 * time.Second
 
 // Record appends ev to its tenant's chain: a state change or high-signal
 // event before it returns, an observation through its queue (never waited
