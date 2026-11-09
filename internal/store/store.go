@@ -4677,6 +4677,12 @@ type OAuthStore interface {
 	// returns their ids. A revoked family stays revoked when the user is
 	// re-enabled: the person signs in to the app again.
 	OAuthFamilyRevokeSubject(ctx context.Context, tenantID, subject, reason string, at time.Time) ([]string, error)
+	// OAuthFamilyList returns the live app sign-ins of (tenantID, subject) at
+	// now — not revoked, and neither idle nor absolute expiry passed — most
+	// recently used first, at most OAuthFamilyListMax. A family row holds no
+	// token material (refresh tokens live in their own table, by hash), so the
+	// rows are safe to show the person and their operator.
+	OAuthFamilyList(ctx context.Context, tenantID, subject string, now time.Time) ([]OAuthFamilyRow, error)
 	// OAuthTokenRetireEndedSignIns retires, at `at`, every live access token
 	// of (tenantID, subject) issued through an app sign-in that is no longer
 	// live — its family revoked, whatever the reason, or gone — and returns
@@ -6997,6 +7003,10 @@ type OAuthCodeRow struct {
 	// the code is used.
 	FamilyID string
 }
+
+// OAuthFamilyListMax bounds OAuthFamilyList: a person signs in to a handful
+// of apps, and an expired family is deleted by OAuthDeleteExpired.
+const OAuthFamilyListMax = 500
 
 // OAuthFamilyRow is one app sign-in: a user signed in to a client, and every
 // refresh token that sign-in rotated through.
