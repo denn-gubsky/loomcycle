@@ -386,14 +386,14 @@ func selectPresetNames(flags []string, env string) []string {
 var processStartedAt = time.Now()
 
 func main() {
-	setupLogging()
+	logRedactor := setupLogging()
 	resolveBuildIdentity()
 
 	mcpMode, done := dispatchSubcommand()
 	if done {
 		return
 	}
-	b := &boot{mcpMode: mcpMode}
+	b := &boot{mcpMode: mcpMode, logRedactor: logRedactor}
 	// Cleanups registered by the phases run when main returns, last first —
 	// the order the defers they replace ran in.
 	defer b.runCleanups()

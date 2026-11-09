@@ -61,8 +61,11 @@ type Config struct {
 	SamplerName string
 	SamplerArg  float64
 	// HeadersFile is LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE: collector
-	// headers kept out of the process environment. Read by Init.
+	// headers kept out of the process environment. Headers holds what it
+	// says when the caller read it already (to register the values with its
+	// redactors); otherwise Init reads it.
 	HeadersFile string
+	Headers     map[string]string
 	// Inbound is LOOMCYCLE_OTEL_INBOUND_CONTEXT.
 	Inbound InboundMode
 	// Propagators is OTEL_PROPAGATORS, parsed: "tracecontext", "baggage";

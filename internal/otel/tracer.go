@@ -131,8 +131,8 @@ func newTracerProvider(ctx context.Context, cfg Config, st *pipelineStats, errs 
 	if err != nil {
 		return nil, err
 	}
-	var headers map[string]string
-	if cfg.HeadersFile != "" {
+	headers := cfg.Headers
+	if headers == nil && cfg.HeadersFile != "" {
 		if headers, err = ReadHeadersFile(cfg.HeadersFile); err != nil {
 			return nil, err
 		}

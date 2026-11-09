@@ -7333,12 +7333,66 @@ var secretEnvSuffixes = []string{
 // (ANTHROPIC_API_KEY, OPENAI_API_KEY, …) without a hard-coded name list.
 func IsSecretEnvName(name string) bool {
 	up := strings.ToUpper(name)
+	if collectorHeaderEnvNames[up] {
+		return true
+	}
 	for _, suf := range secretEnvSuffixes {
 		if strings.HasSuffix(up, suf) {
 			return true
 		}
 	}
 	return false
+}
+
+// collectorHeaderEnvNames are the OTLP collector-header variables: secrets
+// (collector auth) whose names no suffix catches. Named rather than matched as
+// *_HEADERS, which would also take ordinary settings such as a CORS header
+// list and mask their common values everywhere. The retired LOOMCYCLE_ name
+// stays, for a stale value still set.
+var collectorHeaderEnvNames = map[string]bool{
+	"OTEL_EXPORTER_OTLP_HEADERS":           true,
+	"OTEL_EXPORTER_OTLP_TRACES_HEADERS":    true,
+	"OTEL_EXPORTER_OTLP_METRICS_HEADERS":   true,
+	"OTEL_EXPORTER_OTLP_LOGS_HEADERS":      true,
+	"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS": true, // retired name, still a secret
+}
+
+// IsCollectorHeaderEnvName reports whether name is an OTLP collector-header
+// variable (see collectorHeaderEnvNames), which no child process is handed.
+func IsCollectorHeaderEnvName(name string) bool {
+	return collectorHeaderEnvNames[strings.ToUpper(name)]
+}
+
+// SecretEnvValues maps each secret env var in environ ("NAME=value" entries,
+// IsSecretEnvName) to its value, for a redactor's exact-match tier. A
+// collector-header variable also contributes each header's value on its own
+// (as NAME[header]): the whole "k=v,k2=v2" string rarely appears verbatim, a
+// single token often does. Empty values are skipped.
+func SecretEnvValues(environ []string) map[string]string {
+	out := make(map[string]string)
+	for _, kv := range environ {
+		name, val, ok := strings.Cut(kv, "=")
+		if !ok || name == "" || val == "" || !IsSecretEnvName(name) {
+			continue
+		}
+		out[name] = val
+		if !IsCollectorHeaderEnvName(name) {
+			continue
+		}
+		for _, pair := range strings.Split(val, ",") {
+			k, v, ok := strings.Cut(pair, "=")
+			if !ok {
+				continue
+			}
+			if dv, err := url.PathUnescape(v); err == nil {
+				v = dv
+			}
+			if v = strings.TrimSpace(v); v != "" {
+				out[name+"["+strings.TrimSpace(k)+"]"] = v
+			}
+		}
+	}
+	return out
 }
 
 func getenvDefault(name, dflt string) string {
