@@ -76,7 +76,7 @@ services:
       - "8889:8889"   # spanmetrics-derived Prometheus endpoint (Prometheus scrapes here)
 
   tempo:
-    image: grafana/tempo:2.4.1@sha256:5b9c08f6d8fb43b3b72dfd1252ba4f198b11a245257bf76ee2ca13e243bac565
+    image: grafana/tempo:3.1.1@sha256:64e2fbd56d9c2b3412a4b430a58ea59e91a670b1e75f920a0c702213ad145044
     command: ["-config.file=/etc/tempo/tempo.yaml"]
     volumes:
       - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
