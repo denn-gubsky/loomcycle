@@ -21,6 +21,30 @@ ontology — read the guide first: `{"op":"help","topic":"knowledge-base"}`. It
 explains how the pieces fit, who rules on what, and walks through whole call
 sequences.
 
+## Reading a knowledge base — answering questions
+
+To answer a question from imported documents, read
+`{"op":"help","topic":"knowledge-base-questions"}`: typical questions and the
+calls that answer each. The rules that matter most:
+
+- **Documents are not files.** A Path name such as `/library/proposals/...`
+  names a document, not a file on disk: never `Grep`, `Glob`, `Read` or `Bash`
+  it. Search with `search`, list a folder with `Path op=ls`, read with
+  `get_chunk` or `export_md`.
+- **Pass `scope` on every call** — `search`, `get_document`, `get_chunk`,
+  `export_md`, `backlinks`, all of them. Shared documents live in the tenant
+  scope; a call without `scope` reads the user scope and answers "no such
+  chunk" for an id that exists in the tenant.
+- **Copy ids from results; never write one.** `search` returns `chunk_id` and
+  `document_id`; `get_document` returns `root_chunk_id`. Pass a chunk id as
+  `id` (`get_chunk`, `backlinks`, `history`) and a document id as
+  `document_id` (`get_edges`, `export_md`).
+- **A question about a link is a relation, not a search:** "what did we
+  prepare for X" is `backlinks` on X's subject document with `kind`; "are
+  there copies" is `get_edges` with `kind: "duplicate_of"`. Narrow a search
+  with `types`, `under_path` or `concept` instead of rewording it, and use
+  `as_of` for a question about a past date.
+
 ## When to use it — and when not
 
 - **Use Document** for structured, multi-part content that people and agents

@@ -14,6 +14,10 @@ do and what only an operator may, and ends with call sequences you can follow.
 Each operation has its own article (`{"op":"help","topic":"Document/<op>"}`)
 with every argument and refusal.
 
+To ANSWER questions from a knowledge base rather than build one, read
+`{"op":"help","topic":"knowledge-base-questions"}` first: typical questions and
+the calls that answer them.
+
 ## The pieces
 
 | piece | what it is | made with | read with |
