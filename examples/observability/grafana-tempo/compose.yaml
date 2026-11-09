@@ -67,7 +67,7 @@ services:
   # synthesizes Prometheus histograms (calls_total, duration_seconds)
   # by promoting span attributes to labels. See otel-collector/config.yaml.
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.95.0@sha256:66029b09f9046eebcbd58c9cfd5e094865d4f474ed071a5d7f0a3c1de9909993
+    image: otel/opentelemetry-collector-contrib:0.164.0-386@sha256:40392928d2b988b77e7525dbac33e5e3d9bedb40b9ff8c1f9119d92ca3a8a1c3
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
