@@ -254,7 +254,7 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
       // silent: its media is mostly not for the bot. A stranger hears only
       // the refusal, which the router gives once.
       if (msg.chat.type !== "private" || !hasNonTextContent(msg)) return;
-      if (!id.ok) await ctx.router.onMessage(id, ref, "");
+      if (!id.ok) await ctx.router.onMessage(id, ref, "", seen);
       else await this.tgPort.send(ref, { type: "message", text: TEXT_ONLY_NOTICE });
       return;
     }
@@ -287,9 +287,10 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
     }
     const thread = topicOf(msg);
     const ref = refFor(msg.chat, thread);
-    // No sentAt: a callback query carries no date of its own (the message's
-    // date is the card's, sent by the bot), so a press never drops a kept
-    // revoke on Telegram.
+    // A callback query carries no date of its own (the message's date is
+    // the card's, sent by the bot), so a press never drops a kept revoke on
+    // Telegram.
+    // census: no date: Telegram does not date a button press.
     const result = await ctx.router.onCardAction(identify(msg.chat, cq.from, thread, this.policy), ref, parseCallbackData(cq.data));
     // Always answered: until it is, the button shows a spinner.
     await answer(result && "message" in result ? result.message : undefined);
