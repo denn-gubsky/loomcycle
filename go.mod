@@ -7,8 +7,8 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.47.8
 	github.com/aws/aws-sdk-go-v2/config v1.33.13
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.13
-	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.5
-	github.com/aws/aws-sdk-go-v2/service/sts v1.51.9
+	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.7
+	github.com/aws/aws-sdk-go-v2/service/sts v1.51.6
 	github.com/coder/websocket v1.8.15
 	github.com/denn-gubsky/loomcycle/internal/errkind v0.0.0
 	github.com/denn-gubsky/loomcycle/internal/otel v0.0.0
@@ -22,7 +22,7 @@ require (
 	github.com/ewhauser/gbash/contrib/jq v0.0.41
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.3
-	github.com/go-jose/go-jose/v4 v4.1.8
+	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/go-webauthn/webauthn v0.18.2
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/jackc/pgx/v5 v5.12.0
