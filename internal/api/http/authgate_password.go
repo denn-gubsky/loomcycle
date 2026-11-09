@@ -1284,8 +1284,12 @@ func (s *Server) handleCompleteReset(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal", "the reset could not be completed")
 		return
 	}
-	if _, err := s.retireDelegatedUserTokens(ctx, rs.TenantID, rs.Subject); err != nil {
-		slog.Error("authgate: retiring tokens after a reset failed", "err", err)
+	// A reset is what a person does when the password may be known to
+	// someone else: every way in made before it ends — app sign-ins, delegated
+	// and device-login tokens, and every Web UI session, a passkey or identity
+	// one included. This browser gets a new session below.
+	if _, err := s.endSubjectCredentials(ctx, rs.TenantID, rs.Subject, credAll); err != nil {
+		slog.Error("authgate: ending sign-ins after a reset failed", "err", err)
 	}
 	s.recordGateAudit(ctx, "auth_password_set", g.Name, rs.ResetID, rs.TenantID, rs.Subject, floorTarget{})
 	if !s.startPasswordSession(w, r, g.Name, rs.TenantID, rs.Subject, amr) {
@@ -1355,8 +1359,8 @@ type changePasswordRequest struct {
 }
 
 // handleChangePassword serves POST /v1/_auth/password. The new password ends
-// every other session (their binding is the old PHC string); this browser gets
-// a new session.
+// every other sign-in of the person — app sign-ins, delegated and device-login
+// tokens, and every Web UI session — and this browser gets a new session.
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	pw, sess, login, ok := s.selfService(w, r)
 	if !ok {
@@ -1394,10 +1398,23 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordGateAudit(ctx, "auth_password_set", pw.g.Name, "", sess.TenantID, sess.Subject, floorTarget{})
+	s.endOtherSignIns(ctx, sess)
 	if !s.startPasswordSession(w, r, pw.g.Name, sess.TenantID, sess.Subject, sess.AMR) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// endOtherSignIns ends every sign-in of a person who just set a new password
+// from a signed-in session, the session itself included: its binding is the
+// old password, so it could not go on anyway, and the caller starts a new
+// one for this browser right after. A fault is logged, not answered: the
+// password is already changed, and the person is better served by the new
+// session than by an error that reads as if the change failed.
+func (s *Server) endOtherSignIns(ctx context.Context, sess store.UISessionRow) {
+	if _, err := s.endSubjectCredentials(ctx, sess.TenantID, sess.Subject, credAll); err != nil {
+		slog.Error("authgate: ending sign-ins after a password change failed", "err", err)
+	}
 }
 
 // handleTOTPBegin serves POST /v1/_auth/totp/begin: a fresh secret to scan.
@@ -1522,6 +1539,7 @@ func (s *Server) handleTOTPRemove(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.recordGateAudit(ctx, "auth_password_set", pw.g.Name, "", sess.TenantID, sess.Subject, floorTarget{})
+		s.endOtherSignIns(ctx, sess)
 	}
 	if _, err := s.store.UserTOTPDelete(ctx, sess.TenantID, sess.Subject); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())

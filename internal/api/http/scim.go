@@ -956,16 +956,7 @@ func (s *Server) scimRemove(ctx context.Context, c scimCtx, subject string) *sci
 		return internal
 	}
 	if err == nil && rm.Gate == c.g.Name && store.SCIMRemovalReason(rm.Reason) {
-		// App sign-ins before the other tokens: endSubjectAppSignIns says why.
-		// Each step runs whatever the one before answered, so a fault in one
-		// leaves no other credential working.
-		appErr := s.endSubjectAppSignIns(ctx, c.tenant, subject)
-		retired, retireErr := s.retireDelegatedUserTokens(ctx, c.tenant, subject)
-		for _, t := range retired {
-			s.recordTokenAudit(ctx, "retire", t)
-		}
-		_, sessionErr := s.store.UISessionRevokeSubject(ctx, c.tenant, subject, now)
-		if err := errors.Join(appErr, retireErr, sessionErr); err != nil {
+		if _, err := s.endSubjectCredentials(ctx, c.tenant, subject, credAll); err != nil {
 			slog.Error("scim: ending a removed user's credentials failed", "gate", c.g.Name, "err", err)
 			return internal
 		}
@@ -1023,7 +1014,7 @@ func (s *Server) scimReactivate(ctx context.Context, c scimCtx, subject string) 
 	}
 	// The claim holds the user disabled: an app sign-in live now raced the
 	// disable, and the re-enable must not revive it (endSubjectAppSignIns).
-	if err := s.endSubjectAppSignIns(ctx, c.tenant, subject); err != nil {
+	if _, err := s.endSubjectCredentials(ctx, c.tenant, subject, credAppSignIns); err != nil {
 		slog.Error("scim: ending a re-enabled user's app sign-ins failed", "gate", c.g.Name, "err", err)
 		return "", internal
 	}
