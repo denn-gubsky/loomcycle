@@ -147,6 +147,15 @@ func (r *racingTokenStore) OperatorTokenDefGetByTokenHash(ctx context.Context, h
 	return row, err
 }
 
+// loggedTokenLookupFailure reports whether out holds the token lookup's own
+// failure lines. The capture is process-wide, so it also holds what other
+// tests' leftover goroutines log ("UpdateHeartbeat failed" from a closed
+// store failed this check on CI); matching any "failed" was a flake.
+func loggedTokenLookupFailure(out string) bool {
+	return strings.Contains(out, "token rehash onto the current pepper failed") ||
+		strings.Contains(out, "token-substrate lookup error")
+}
+
 // Two first logins of one rewrapped token at once. The other one rehashes the
 // row between this request's miss on the current hash and its wrapped-form
 // lookup, so the wrapped form no longer matches. This request must still
@@ -174,7 +183,7 @@ func TestTokenLookup_ConcurrentFirstLoginRehashedMidLookupAuthenticates(t *testi
 	if _, ok := s.resolvePrincipal(context.Background(), "lct_old"); !ok {
 		t.Error("the next login was refused (a negative was cached)")
 	}
-	if strings.Contains(logs(), "failed") {
+	if loggedTokenLookupFailure(logs()) {
 		t.Errorf("the race was logged as a failure: %s", logs())
 	}
 }
@@ -205,7 +214,7 @@ func TestTokenLookup_ConcurrentFirstLoginLosingTheRehashAuthenticates(t *testing
 	if _, ok := s.resolvePrincipal(context.Background(), "lct_old"); !ok {
 		t.Error("the next login was refused (a negative was cached)")
 	}
-	if strings.Contains(logs(), "failed") {
+	if loggedTokenLookupFailure(logs()) {
 		t.Errorf("the race was logged as a failure: %s", logs())
 	}
 }
