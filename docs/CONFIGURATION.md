@@ -3465,6 +3465,7 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `OTEL_BSP_SCHEDULE_DELAY` | `5000` | Milliseconds between exports. |
 | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` | — | A file holding the collector headers (`key=value`, comma- or newline-separated, `#` comments, values URL-decoded), read once at startup so the secret stays out of the process environment. Setting it beside `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, or an unreadable file, stops the startup. |
 | `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What an authenticated caller's `traceparent` does: `parent` joins the run to the caller's trace, `link` starts a new trace linked to it (the caller cannot steer sampling), `ignore` reads nothing. |
+| `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | — | Per-tenant sampling ratio for runs that start a trace, as `tenant=ratio,...` (e.g. `acme=1,beta=0.1`); overrides `observability.tracing.tenant_sampler_ratios` tenant by tenant. See "Sampling per tenant". A bad tenant id or a ratio outside 0–1 stops the startup. |
 | `LOOMCYCLE_OTEL_RAW_USER_ID` | off | `1` also puts the raw `loomcycle.user_id` on spans, beside `loomcycle.user_hash`. See "Users on spans". |
 | `LOOMCYCLE_ENVIRONMENT` | — | The `deployment.environment.name` resource attribute. |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | — | An http(s) URL containing `{trace_id}`, e.g. `https://grafana.example/explore?traceId={trace_id}`: the Web UI's run view links each traced run there. Shown to every signed-in user who can see the run. Anything else stops the startup. |
@@ -3497,6 +3498,34 @@ five minutes, and its end logged (`otel: span export recovered`). `/metrics`
 carries `loomcycle_otel_spans_ended_total`, `loomcycle_otel_spans_exported_total`,
 `loomcycle_otel_spans_dropped_total` and
 `loomcycle_otel_span_export_failures_total` (zeros while tracing is off).
+
+#### Sampling per tenant
+
+A run that starts a trace can be sampled at a ratio of its own tenant's,
+in place of the `OTEL_TRACES_SAMPLER` ratio — keep every trace of one
+tenant while sampling the rest:
+
+```yaml
+observability:
+  tracing:
+    tenant_sampler_ratios:
+      acme: 1      # every acme run
+      beta: 0.1    # one beta run in ten
+```
+
+or `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS=acme=1,beta=0.1`, which wins over
+the yaml for each tenant it names. The ratio applies only to a run span with
+no parent: a run that joins a caller's trace (`traceparent`), and a
+sub-agent's run, follow the decision already made for that trace, and a
+tenant not listed uses the global sampler. Keys are tenant ids, ratios 0–1;
+anything else stops the startup. Read at startup; a config reload does not
+change it.
+
+To keep failed and slow runs whatever the ratio, sample at the collector
+instead (the OpenTelemetry Collector's or Alloy's tail-sampling processor:
+keep `status=ERROR`, keep `loomcycle.run` spans longer than your threshold,
+sample the rest). A failed or cancelled run's span is an error; a tool call
+that returned an error result is not (it sets `loomcycle.tool_is_error`).
 
 #### Users on spans
 

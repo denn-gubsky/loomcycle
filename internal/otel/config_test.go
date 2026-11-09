@@ -51,6 +51,12 @@ func TestResolveConfig_EnvironmentTable(t *testing.T) {
 			}
 		}},
 		{name: "raw user id bad value", env: map[string]string{"LOOMCYCLE_OTEL_RAW_USER_ID": "yes please"}, wantErr: "LOOMCYCLE_OTEL_RAW_USER_ID"},
+		{name: "tenant sampler ratios", env: map[string]string{"LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS": "acme=1,beta=0.1"}, check: func(t *testing.T, c Config) {
+			if !reflect.DeepEqual(c.TenantSamplerRatios, map[string]float64{"acme": 1, "beta": 0.1}) {
+				t.Errorf("ratios = %v", c.TenantSamplerRatios)
+			}
+		}},
+		{name: "tenant sampler ratio out of range", env: map[string]string{"LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS": "acme=3"}, wantErr: "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS"},
 
 		{name: "grpc protocol", env: map[string]string{"OTEL_EXPORTER_OTLP_PROTOCOL": "grpc"}, check: func(t *testing.T, c Config) {
 			if c.Protocol != ProtocolGRPC {

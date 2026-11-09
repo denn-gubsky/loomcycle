@@ -73,6 +73,11 @@ type Config struct {
 	// RawUserID is LOOMCYCLE_OTEL_RAW_USER_ID: spans carry the raw
 	// loomcycle.user_id beside loomcycle.user_hash.
 	RawUserID bool
+	// TenantSamplerRatios is the per-tenant ratio for a run that starts a
+	// trace. ResolveConfig fills it from LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS;
+	// the binary lays it over the yaml's observability.tracing
+	// tenant_sampler_ratios (MergeTenantSamplerRatios) before Init.
+	TenantSamplerRatios map[string]float64
 
 	// The batch span processor's bounds (OTEL_BSP_* or the defaults above).
 	MaxQueueSize       int
@@ -163,6 +168,11 @@ func ResolveConfig(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("LOOMCYCLE_OTEL_RAW_USER_ID=%q: want 1 or 0", v)
 		}
 		cfg.RawUserID = raw
+	}
+	if v := get("LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS"); v != "" {
+		if cfg.TenantSamplerRatios, err = ParseTenantSamplerRatios(v); err != nil {
+			return Config{}, err
+		}
 	}
 
 	if cfg.MaxQueueSize, err = envInt(get, "OTEL_BSP_MAX_QUEUE_SIZE", defaultMaxQueueSize); err != nil {

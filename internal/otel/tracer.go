@@ -125,6 +125,7 @@ func newTracerProvider(ctx context.Context, cfg Config, st *pipelineStats, errs 
 	if err != nil {
 		return nil, err
 	}
+	sampler = NewTenantSampler(sampler, cfg.TenantSamplerRatios)
 	res, err := newResource(ctx, cfg)
 	if err != nil {
 		return nil, err

@@ -304,3 +304,58 @@ func TestSetRunDone_ACancelledRunIsAnErrorDescribedCancelled(t *testing.T) {
 		t.Errorf("a cancel recorded %d error events; it is not an exception", len(s.Events))
 	}
 }
+
+// sampledRunSpan reports whether a root run span of tenant is sampled under
+// sampler, starting from parent (a context.Background() for a root).
+func sampledRunSpan(t *testing.T, sampler sdktrace.Sampler, parent context.Context, tenant string) bool {
+	t.Helper()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sampler))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+	defer lcotel.SetTracerProviderForTest(tp)()
+	_, span := lcotel.RecordRunStart(parent, lcotel.RunStartAttrs{RunID: "r1", Tenant: tenant})
+	defer span.End()
+	return span.SpanContext().IsSampled()
+}
+
+func TestTenantSampler_RatioDecidesARootRunOfItsTenant(t *testing.T) {
+	ratios := map[string]float64{"acme": 1, "beta": 0}
+	keepAll := lcotel.NewTenantSampler(sdktrace.ParentBased(sdktrace.AlwaysSample()), ratios)
+	keepNone := lcotel.NewTenantSampler(sdktrace.ParentBased(sdktrace.NeverSample()), ratios)
+
+	if sampledRunSpan(t, keepAll, context.Background(), "beta") {
+		t.Error("ratio 0 kept a root run of its tenant under an always-on base")
+	}
+	if !sampledRunSpan(t, keepNone, context.Background(), "acme") {
+		t.Error("ratio 1 dropped a root run of its tenant under an always-off base")
+	}
+	if sampledRunSpan(t, keepNone, context.Background(), "gamma") || !sampledRunSpan(t, keepAll, context.Background(), "gamma") {
+		t.Error("a tenant with no ratio did not follow the base sampler")
+	}
+}
+
+func TestTenantSampler_ASampledParentWins(t *testing.T) {
+	s := lcotel.NewTenantSampler(sdktrace.ParentBased(sdktrace.NeverSample()), map[string]float64{"beta": 0})
+	sampled := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{1}, SpanID: trace.SpanID{1}, TraceFlags: trace.FlagsSampled, Remote: true,
+	})
+	parent := trace.ContextWithRemoteSpanContext(context.Background(), sampled)
+	if !sampledRunSpan(t, s, parent, "beta") {
+		t.Error("a sampled caller's trace was dropped by the tenant's ratio 0")
+	}
+}
+
+func TestParseTenantSamplerRatios_ValidatesTenantsAndRatios(t *testing.T) {
+	got, err := lcotel.ParseTenantSamplerRatios(" acme=1, beta=0.1 ")
+	if err != nil || len(got) != 2 || got["acme"] != 1 || got["beta"] != 0.1 {
+		t.Fatalf("parse = %v, %v", got, err)
+	}
+	for _, bad := range []string{"acme", "acme=x", "acme=1.5", "acme=-0.1", "ac/me=1", "acme=1,acme=0", "=1", "acme=NaN"} {
+		if _, err := lcotel.ParseTenantSamplerRatios(bad); err == nil {
+			t.Errorf("%q parsed without an error", bad)
+		}
+	}
+	merged := lcotel.MergeTenantSamplerRatios(map[string]float64{"acme": 0.5, "beta": 1}, map[string]float64{"acme": 0})
+	if merged["acme"] != 0 || merged["beta"] != 1 {
+		t.Errorf("merge = %v, want the environment's acme=0 over the yaml, beta kept", merged)
+	}
+}
