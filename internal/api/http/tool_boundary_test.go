@@ -72,3 +72,22 @@ func TestFormatToolLine_NoBoundaryIsUnchanged(t *testing.T) {
 		t.Errorf("line = %q", line)
 	}
 }
+
+// Document's inventory line is what a chat agent reads before choosing a tool for
+// a question about imported documents. It used to be a 120-byte cut of "A
+// chunked-graph document: each chunk is a first-class unit (UUID, …" — nothing
+// about searching — and had no boundary, so agents on a knowledge base reached
+// for Grep and Glob on Path names, which name documents, not files.
+func TestFormatToolLine_DocumentSaysSearchAndNotFiles(t *testing.T) {
+	d := &builtin.Document{}
+	line := formatToolLine(d.Name(), d.Description(), "")
+	summary, boundary, _ := strings.Cut(line, "\n  ")
+	if !strings.Contains(summary, "Search") || strings.HasSuffix(summary, "…") {
+		t.Errorf("Document's summary does not say it searches, or is cut short: %q", summary)
+	}
+	for _, want := range []string{"Grep", "Glob", "not files"} {
+		if !strings.Contains(boundary, want) {
+			t.Errorf("Document's boundary does not mention %q: %q", want, boundary)
+		}
+	}
+}
