@@ -648,8 +648,9 @@ func ceilSkills(ctx context.Context, def mergedDef, base *mergedDef, held string
 // defScopeCovered reports whether a def-authoring grant c, held by a new agent
 // named childName, is within the grants ceiling held by an author named
 // ceilingSelf. The vocabulary is the def families' own: "any", "self" and
-// "named:<pattern>" ("descendants" is refused at write and grants nothing). "self" is relative to who holds it, so both sides are read
-// as the name they stand for. A value outside the vocabulary is covered only by
+// "named:<pattern>" ("descendants" is refused at write and grants nothing).
+// "self" is relative to who holds it, so both sides are read as the name they
+// stand for. A value outside the vocabulary is covered only by
 // the same value: it grants nothing today, and a future one must not pass
 // because nothing here knew it.
 func defScopeCovered(c, childName string, ceiling []string, ceilingSelf string) bool {

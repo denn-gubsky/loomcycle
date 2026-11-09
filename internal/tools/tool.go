@@ -1588,11 +1588,11 @@ func HasEventEmitter(ctx context.Context) bool {
 // AgentDefPolicyValue is the per-agent AgentDef-tool access policy.
 //
 //   - Scopes is the operator-yaml agent_def_scopes list. Closed set:
-//     "self" / "descendants" / "any" / "named:<name>". Empty =
-//     default-deny.
+//     "self" / "any" / "named:<name>". Empty = default-deny. A stored
+//     "descendants" authorises nothing (refused at load and write).
 //
 // Auxiliary identity fields stamped server-side at ctx-attach so the
-// AgentDef tool can resolve self / siblings / descendants without
+// AgentDef tool can resolve "self" without
 // re-reading ctx values that may have been overwritten by sub-agent
 // chains:
 //
@@ -1607,7 +1607,7 @@ type ctxKeyScheduleDefPolicy struct{}
 
 // ScheduleDefPolicyValue is the per-agent ScheduleDef-tool access
 // policy (v1.x RFC E). Same shape as AgentDefPolicyValue + same
-// "self / descendants / named:<n> / any" closed scope set.
+// "self / named:<n> / any" closed scope set.
 // Default-deny when Scopes is empty.
 type ScheduleDefPolicyValue struct {
 	Scopes   []string
@@ -1630,7 +1630,7 @@ type ctxKeyA2AServerCardDefPolicy struct{}
 
 // A2AServerCardDefPolicyValue is the per-agent A2AServerCardDef-tool
 // access policy (v1.x RFC G). Same shape as ScheduleDefPolicyValue +
-// same "self / descendants / named:<n> / any" closed scope set.
+// same "self / named:<n> / any" closed scope set.
 // Default-deny when Scopes is empty.
 type A2AServerCardDefPolicyValue struct {
 	Scopes   []string
@@ -1653,7 +1653,7 @@ type ctxKeyA2AAgentDefPolicy struct{}
 
 // A2AAgentDefPolicyValue is the per-agent A2AAgentDef-tool access
 // policy (v1.x RFC G). Same shape as ScheduleDefPolicyValue + same
-// "self / descendants / named:<n> / any" closed scope set.
+// "self / named:<n> / any" closed scope set.
 // Default-deny when Scopes is empty.
 type A2AAgentDefPolicyValue struct {
 	Scopes   []string
@@ -1676,7 +1676,7 @@ type ctxKeyWebhookDefPolicy struct{}
 
 // WebhookDefPolicyValue is the per-agent WebhookDef-tool access policy
 // (v1.x RFC H). Same shape as A2AAgentDefPolicyValue + same
-// "self / descendants / named:<n> / any" closed scope set.
+// "self / named:<n> / any" closed scope set.
 // Default-deny when Scopes is empty.
 type WebhookDefPolicyValue struct {
 	Scopes   []string
@@ -1699,7 +1699,7 @@ type ctxKeyMemoryBackendDefPolicy struct{}
 
 // MemoryBackendDefPolicyValue is the per-agent MemoryBackendDef-tool
 // access policy (RFC I MR-3a). Same shape as WebhookDefPolicyValue +
-// same "self / descendants / named:<n> / any" closed scope set.
+// same "self / named:<n> / any" closed scope set.
 // Default-deny when Scopes is empty.
 type MemoryBackendDefPolicyValue struct {
 	Scopes   []string
@@ -1722,7 +1722,7 @@ type ctxKeyDocumentSourceDefPolicy struct{}
 
 // DocumentSourceDefPolicyValue is the per-agent DocumentSourceDef-tool
 // access policy (RFC CE). Same shape as MemoryBackendDefPolicyValue +
-// same "self / descendants / named:<n> / any" closed scope set.
+// same "self / named:<n> / any" closed scope set.
 // Default-deny when Scopes is empty.
 type DocumentSourceDefPolicyValue struct {
 	Scopes   []string
