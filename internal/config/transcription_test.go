@@ -381,3 +381,79 @@ func TestSanitizeTranscriptionVocabulary(t *testing.T) {
 		}
 	}
 }
+
+// TestStampHelperWrapper_ReachesEveryHelperCommandField is a census over the
+// Config type: every HelperCommand reachable from it, through any chain of
+// struct and pointer fields, is allocated and must come back stamped with
+// LOOMCYCLE_HELPER_WRAPPER. A helper field added anywhere without a line in
+// stampHelperWrapper would run unconfined; this fails instead.
+func TestStampHelperWrapper_ReachesEveryHelperCommandField(t *testing.T) {
+	helperT := reflect.TypeOf(HelperCommand{})
+	memo := map[reflect.Type]bool{}
+	var holds func(reflect.Type) bool
+	holds = func(rt reflect.Type) bool {
+		for rt.Kind() == reflect.Pointer {
+			rt = rt.Elem()
+		}
+		if rt == helperT {
+			return true
+		}
+		if v, ok := memo[rt]; ok {
+			return v
+		}
+		memo[rt] = false // a cycle back here adds nothing
+		found := false
+		switch rt.Kind() {
+		case reflect.Struct:
+			for i := 0; i < rt.NumField(); i++ {
+				if rt.Field(i).IsExported() && holds(rt.Field(i).Type) {
+					found = true
+				}
+			}
+		case reflect.Map, reflect.Slice, reflect.Array:
+			found = holds(rt.Elem())
+		}
+		memo[rt] = found
+		return found
+	}
+	// fill allocates every pointer on a path to a HelperCommand and returns
+	// the HelperCommands it made, by field path.
+	var fill func(v reflect.Value, path string, out map[string]*HelperCommand)
+	fill = func(v reflect.Value, path string, out map[string]*HelperCommand) {
+		rt := v.Type()
+		for i := 0; i < rt.NumField(); i++ {
+			f := rt.Field(i)
+			if !f.IsExported() || !holds(f.Type) {
+				continue
+			}
+			fv, p := v.Field(i), path+"."+f.Name
+			switch {
+			case f.Type == helperT:
+				out[p] = fv.Addr().Interface().(*HelperCommand)
+			case f.Type.Kind() == reflect.Pointer && f.Type.Elem() == helperT:
+				fv.Set(reflect.New(helperT))
+				out[p] = fv.Interface().(*HelperCommand)
+			case f.Type.Kind() == reflect.Pointer && f.Type.Elem().Kind() == reflect.Struct:
+				fv.Set(reflect.New(f.Type.Elem()))
+				fill(fv.Elem(), p, out)
+			case f.Type.Kind() == reflect.Struct:
+				fill(fv, p, out)
+			default:
+				t.Errorf("%s holds a HelperCommand inside a %s: extend this census and stampHelperWrapper to reach it", p, f.Type.Kind())
+			}
+		}
+	}
+	var c Config
+	found := map[string]*HelperCommand{}
+	fill(reflect.ValueOf(&c).Elem(), "Config", found)
+	if len(found) < 3 {
+		t.Fatalf("found %d helper commands (%v), want at least OCR rasterize, STT media and speech encode", len(found), found)
+	}
+	c.Env.HelperWrapper = "bwrap --"
+	stampHelperWrapper(&c)
+	for path, h := range found {
+		if h.Wrapper != "bwrap --" {
+			t.Errorf("%s was not stamped with the helper wrapper", path)
+		}
+	}
+}
