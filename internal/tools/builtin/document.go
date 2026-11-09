@@ -770,6 +770,41 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 // here, so it passes the same gates without a JSON round trip, which would let
 // any field it set reach every other field's use.
 func (d *Document) executeInput(ctx context.Context, in docInput, raw json.RawMessage) (tools.Result, error) {
+	res, err := d.executeGated(ctx, in, raw)
+	if err == nil {
+		res = hintOmittedScope(ctx, in, res)
+	}
+	return res, err
+}
+
+// omittedScopeHint is added to a "no such ..." refusal of a call that passed no
+// scope, from an agent that may read the tenant scope.
+const omittedScopeHint = " This call passed no scope, so it read your user scope. An id or path from a " +
+	"tenant-scope result exists only there: repeat the call with scope \"tenant\"."
+
+// hintOmittedScope says why an id was not found when the call left out scope.
+//
+// The default scope is the user's own, and a knowledge base's documents are in
+// the tenant scope. Agents copied a tenant search hit's id into get_chunk or
+// export_md without scope, got "no such chunk", decided the id was wrong and
+// began inventing ids. The refusal now says what happened. It does not look the
+// id up in the tenant scope: the hint is true whether or not the id is there,
+// costs nothing, and says nothing about what the tenant holds.
+func hintOmittedScope(ctx context.Context, in docInput, res tools.Result) tools.Result {
+	if in.Scope != "" || !res.IsError || !strings.Contains(res.Text, ": no such ") {
+		return res
+	}
+	pol := tools.PolicyOf(ctx)
+	if !contains(pol.Memory.AllowedScopes, "tenant") || !contains(pol.SqlMem.AllowedScopes, "tenant") ||
+		tools.ConfineIsolatedScope(ctx, store.MemoryScopeTenant) != nil {
+		return res
+	}
+	res.Text += omittedScopeHint
+	return res
+}
+
+// executeGated runs every gate, then the op.
+func (d *Document) executeGated(ctx context.Context, in docInput, raw json.RawMessage) (tools.Result, error) {
 	if d.Store == nil || d.SqlMem == nil {
 		return errBusiness("Document tool: not configured — requires the Store backend and SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)", "An operator must enable SQL Memory on this server; until then the Document tool cannot run."), nil
 	}
