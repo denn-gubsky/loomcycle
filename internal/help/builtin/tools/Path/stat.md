@@ -13,7 +13,9 @@ is enough for finding the resource.
 
 ## Returns
 
-`{full_path, name, kind, scope, resource_ref, created_at, updated_at}`.
+`{full_path, name, kind, scope, resource_ref, created_at, updated_at, has_children?}`.
+`has_children: true` means an entry that is not a directory also has names
+beneath it that you can list.
 `/` always exists and returns `{kind: "directory", full_path: "/", scope}`.
 
 ## Errors
