@@ -297,7 +297,7 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 	}
 	if rehash {
 		if phc, kid, err := pw.pg.hasher.Hash(ctx, norm); err == nil {
-			if _, err := s.store.UserCredentialRehash(ctx, id.TenantID, id.Subject, store.CredentialKindPassword, cred.PHC, phc, kid, now); err != nil {
+			if _, err := s.store.UserCredentialRehash(ctx, id.TenantID, id.Subject, store.CredentialKindPassword, cred.PHC, phc, kid); err != nil {
 				slog.Warn("authgate: re-hashing a password failed", "err", err)
 			}
 		}
