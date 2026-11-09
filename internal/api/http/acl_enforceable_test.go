@@ -3,12 +3,16 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -189,5 +193,31 @@ func TestReportUnenforceableACLs_NamesAStoredInstanceSelectorOnATypeLevelOnlyVer
 	_, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_authz/explain", `{"action":{"name":"read"},"resource":{"type":"run"}}`)
 	if !strings.Contains(body, "this deny refuses nothing") {
 		t.Errorf("explain of read run:* does not flag the stored deny: %s", body)
+	}
+}
+
+// The retention and erasure writes ask their manage question inside the shared
+// operation too, so a transport gate that read the op wrongly cannot skip it.
+func TestConnectorWrites_AskTheirManageQuestionThemselves(t *testing.T) {
+	srv, ts, _ := aclMgmtServer(t, authz.ModeCompat)
+	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"create","name":"no-manage","rules":[{"effect":"deny","actions":["manage"],"resources":["runtime:retention","runtime:erasure"]}]}`); code != 201 {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_aclbinding", `{"acl":"no-manage","subject_kind":"user","subject_id":"deputy"}`); code != 201 {
+		t.Fatalf("bind: %d %s", code, body)
+	}
+	ctx := aclCaller(t, srv, "acme", "deputy", auth.ScopeTenant)
+	var denied *errACLDenied
+	for _, op := range []string{"set", "clear"} {
+		_, err := srv.RetentionOverride(ctx, connector.RetentionOverrideRequest{Op: op, Agent: "a", Until: time.Now().Add(time.Hour)})
+		if !errors.As(err, &denied) {
+			t.Errorf("RetentionOverride %s: %v, want an access-control refusal", op, err)
+		}
+	}
+	if _, err := srv.RetentionOverride(ctx, connector.RetentionOverrideRequest{Op: "list"}); errors.As(err, &denied) {
+		t.Errorf("RetentionOverride list was refused by a manage deny: %v", err)
+	}
+	if _, err := srv.ErasureExecute(ctx, erasure.ExecuteRequest{Tenant: "acme", Subject: "bob", DryRun: true}); !errors.As(err, &denied) {
+		t.Errorf("ErasureExecute: %v, want an access-control refusal", err)
 	}
 }

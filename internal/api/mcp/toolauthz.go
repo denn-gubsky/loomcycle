@@ -1,10 +1,12 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
@@ -353,10 +355,58 @@ func (e errUnmappedOp) Error() string {
 	return fmt.Sprintf("%s: op %q is not one this server asks access-control questions for", e.tool, e.op)
 }
 
+// errAmbiguousArgs is a call of a per-op meta-tool whose arguments name the op
+// or the name argument more than once — a duplicate key or a case variant.
+// The handlers decode into structs, which match keys case-insensitively and
+// keep the last, so the gate would have to guess which one runs: it refuses.
+type errAmbiguousArgs struct{ tool, key string }
+
+func (e errAmbiguousArgs) Error() string {
+	return fmt.Sprintf("%s: the arguments name %q more than once (a repeated key or another spelling of it); name it once", e.tool, e.key)
+}
+
+// opTwinHead is how a per-op tool's handler reads the op and the channel name:
+// encoding/json struct decoding, so the gate reads them the same way.
+type opTwinHead struct {
+	Op   string `json:"op"`
+	Name string `json:"name"`
+}
+
+// refuseAmbiguousKeys reports the first of keys that args names more than
+// once, comparing as encoding/json matches a struct field (case folding).
+func refuseAmbiguousKeys(args json.RawMessage, keys ...string) (string, bool) {
+	dec := json.NewDecoder(bytes.NewReader(args))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return "", false // not an object: the handler refuses it
+	}
+	seen := map[string]int{}
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return "", false
+		}
+		k, _ := t.(string)
+		for _, want := range keys {
+			if strings.EqualFold(k, want) {
+				seen[want]++
+				if seen[want] > 1 {
+					return want, true
+				}
+			}
+		}
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return "", false
+		}
+	}
+	return "", false
+}
+
 // mcpTwinSurface is the question toolName's HTTP twin route asks for a call
 // with args, and false when it has none. A per-op tool answers each op with
-// its own route, the instance taken from the op's name argument; an op it
-// does not map is an errUnmappedOp.
+// its own route, the instance taken from the call's `name` when the op's route
+// names one; an op it does not map is an errUnmappedOp, and arguments naming
+// the op or the name twice an errAmbiguousArgs.
 func mcpTwinSurface(toolName string, args json.RawMessage) (authz.Surface, bool, error) {
 	tw, ok := mcpToolTwins[toolName]
 	if !ok {
@@ -366,14 +416,12 @@ func mcpTwinSurface(toolName string, args json.RawMessage) (authz.Surface, bool,
 		q, governed := authz.HTTPSurface(tw.Method, tw.Path)
 		return q, governed, nil
 	}
-	var head map[string]json.RawMessage
-	_ = json.Unmarshal(args, &head)
-	str := func(key string) string {
-		var v string
-		_ = json.Unmarshal(head[key], &v)
-		return v
+	if key, dup := refuseAmbiguousKeys(args, "op", "name"); dup {
+		return authz.Surface{}, false, errAmbiguousArgs{tool: toolName, key: key}
 	}
-	op := str("op")
+	var head opTwinHead
+	_ = json.Unmarshal(args, &head)
+	op := head.Op
 	if op == "" {
 		op = tw.DefaultOp
 	}
@@ -382,8 +430,8 @@ func mcpTwinSurface(toolName string, args json.RawMessage) (authz.Surface, bool,
 		return authz.Surface{}, false, errUnmappedOp{tool: toolName, op: op}
 	}
 	q, governed := authz.HTTPSurface(ot.Method, ot.Path)
-	if governed && ot.NameArg != "" {
-		q.Name = str(ot.NameArg)
+	if governed && ot.ByName {
+		q.Name = head.Name
 		if q.Name == "" {
 			q.Name = authz.AnyInstance
 		}
@@ -400,7 +448,11 @@ func mcpTwinSurface(toolName string, args json.RawMessage) (authz.Surface, bool,
 func mcpTwinRefusal(ctx context.Context, toolName string, args json.RawMessage) *loommcp.CallToolResult {
 	q, twinned, err := mcpTwinSurface(toolName, args)
 	if err != nil {
-		body, _ := json.Marshal(map[string]any{"code": "unknown_op", "error": err.Error()})
+		code := "unknown_op"
+		if _, ambiguous := err.(errAmbiguousArgs); ambiguous {
+			code = "ambiguous_arguments"
+		}
+		body, _ := json.Marshal(map[string]any{"code": code, "error": err.Error()})
 		return toolErr(string(body))
 	}
 	p, ok := auth.PrincipalFromContext(ctx)
@@ -433,16 +485,19 @@ func mcpTwinRefusal(ctx context.Context, toolName string, args json.RawMessage) 
 // `op` means. A tool whose ops all share one route with the op in the body
 // (a def family, document, path) names that route: the shared operation asks
 // each op its own question. Placeholder segments are `*` (or a name the op's
-// NameArg replaces) so an instance route asks about every instance.
+// ByName argument replaces) so an instance route asks about every instance.
 type mcpToolTwin struct {
 	Method, Path string
 	Ops          map[string]mcpOpTwin
 	DefaultOp    string
 }
 
-// mcpOpTwin is one op's route. NameArg names the argument holding the
-// instance the route's name segment stands for.
-type mcpOpTwin struct{ Method, Path, NameArg string }
+// mcpOpTwin is one op's route. ByName: the route's name segment stands for the
+// call's `name` argument, the instance the gate asks about.
+type mcpOpTwin struct {
+	Method, Path string
+	ByName       bool
+}
 
 // mcpToolTwins maps each meta-tool to its HTTP twin. A meta-tool with none is
 // in mcpToolsWithoutTwin with the reason; TestMCPToolTwins_EveryToolIsListed
@@ -512,10 +567,10 @@ var mcpToolTwins = map[string]mcpToolTwin{
 	// create asks manage of the name it is about to get, as the shared
 	// operation behind POST /v1/_channels does (askChannelManage).
 	"channeldef": {Ops: map[string]mcpOpTwin{
-		"create": {Method: "POST", Path: "/v1/_channels", NameArg: "name"},
-		"update": {Method: "PATCH", Path: "/v1/_channels/c", NameArg: "name"},
-		"delete": {Method: "DELETE", Path: "/v1/_channels/c", NameArg: "name"},
-		"purge":  {Method: "POST", Path: "/v1/_channels/c/purge", NameArg: "name"},
+		"create": {Method: "POST", Path: "/v1/_channels", ByName: true},
+		"update": {Method: "PATCH", Path: "/v1/_channels/c", ByName: true},
+		"delete": {Method: "DELETE", Path: "/v1/_channels/c", ByName: true},
+		"purge":  {Method: "POST", Path: "/v1/_channels/c/purge", ByName: true},
 	}},
 	"channel":              {Method: "GET", Path: "/v1/_channels"},
 	"list_channels":        {Method: "GET", Path: "/v1/_channels"},

@@ -131,7 +131,7 @@ var enforcedPairs = map[pairKey][]Site{
 	{"principal", "mint"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 
 	{"runtime", "read"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
-	{"runtime", "manage"}: {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
+	{"runtime", "manage"}: {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool, SiteConnector},
 
 	{"transport", "use"}: {SiteHTTPRoute},
 

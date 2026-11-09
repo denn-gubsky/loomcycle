@@ -2,6 +2,7 @@ package acltest
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/metadata"
@@ -120,5 +121,38 @@ func TestACLTwins_AnUnmappedOpOfAMultiRouteToolIsRefused(t *testing.T) {
 		if o := e.viaMCP(delegate, call{family: tool, input: `{"op":"no_such_op","name":"ops"}`}); o.code != "unknown_op" {
 			t.Errorf("MCP %s no_such_op: %+v", tool, o)
 		}
+	}
+}
+
+// The per-op gate reads the op and the name exactly as the handler does, and
+// refuses an argument object naming either twice — a duplicate key or a case
+// variant — so it cannot ask one op's question (or one channel's) while the
+// handler, whose struct decoding matches keys case-insensitively and keeps
+// the last, runs another.
+func TestACLTwins_AnAmbiguousOpOrNameIsRefused(t *testing.T) {
+	e := newEnv(t, authz.ModeCompat)
+	for _, name := range []string{"ops", "news"} {
+		if resp, raw := e.do("POST", "/v1/_channels", operator, `{"name":"`+name+`","scope":"tenant"}`, nil); resp.StatusCode/100 != 2 {
+			t.Fatalf("create %s: %d %s", name, resp.StatusCode, raw)
+		}
+	}
+	e.bindDeny("delegate", "no-manage", `[{"effect":"deny","actions":["manage"],"resources":["runtime:retention","runtime:erasure","channel:ops"]}]`)
+	for _, c := range []call{
+		{family: "retention_override", input: `{"op":"list","OP":"set","agent":"a","until":"2099-01-01T00:00:00Z"}`},
+		{family: "retention_override", input: `{"op":"list","Op":"clear","agent":"a"}`},
+		{family: "retention_override", input: `{"op":"list","op":"clear","agent":"a"}`},
+		{family: "erasure", input: `{"op":"report","oP":"execute","subject":"bob","tier":"rows","dry_run":true}`},
+		{family: "erasure", input: `{"OP":"execute","subject":"bob","tier":"rows","dry_run":true}`},
+		{family: "channeldef", input: `{"op":"update","name":"news","Name":"ops","description":"x"}`},
+		{family: "channeldef", input: `{"op":"delete","name":"news","NAME":"ops"}`},
+	} {
+		o := e.viaMCP(delegate, c)
+		if o.code != "ambiguous_arguments" && o.code != "acl_denied" {
+			t.Errorf("MCP %s %s: %+v, want refused", c.family, c.input, o)
+		}
+	}
+	// The denied channel still exists: no ambiguous call reached its handler.
+	if resp, raw := e.do("GET", "/v1/_channels", operator, ``, nil); resp.StatusCode != 200 || !strings.Contains(string(raw), `"ops"`) {
+		t.Errorf("the denied channel is gone: %d %s", resp.StatusCode, raw)
 	}
 }
