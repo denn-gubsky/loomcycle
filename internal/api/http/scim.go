@@ -826,6 +826,7 @@ type scimRefusal struct {
 // finds the status already applied).
 func (s *Server) applySCIMUser(w http.ResponseWriter, r *http.Request, c scimCtx, row store.SCIMUserRow, u store.UserRow, cur, next scimUserState) {
 	ctx := r.Context()
+	updated := false
 	key, err := next.validate()
 	if err != nil {
 		scimError(w, http.StatusBadRequest, "invalidValue", err.Error())
@@ -840,6 +841,24 @@ func (s *Server) applySCIMUser(w http.ResponseWriter, r *http.Request, c scimCtx
 	if disable && !c.g.Identity.AuthoritativeForUsers {
 		scimError(w, http.StatusForbidden, "", "this SCIM gate is not authoritative for users (identity_map.authoritative_for_users)")
 		return
+	}
+	// An update that neither deactivates nor re-enables (those record their
+	// own intent) can still widen access: a trusted gate's access mode and
+	// asserted groups are synced below. Recorded ahead as a grant, and
+	// settled on every path: done once the user is written back, else failed.
+	if !disable && !reactivate {
+		intent, ref := s.scimIntent(ctx, c, "auth_scim_user_updated", row.Subject)
+		if ref != nil {
+			scimError(w, ref.status, ref.scimType, ref.detail)
+			return
+		}
+		defer func() {
+			if updated {
+				s.recordDone(ctx, intent)
+			} else {
+				s.recordFailed(ctx, intent)
+			}
+		}()
 	}
 	fail := func(err error) {
 		slog.Error("scim: updating a user failed", "gate", c.g.Name, "err", err)
@@ -909,6 +928,7 @@ func (s *Server) applySCIMUser(w http.ResponseWriter, r *http.Request, c scimCtx
 			return
 		}
 	}
+	updated = true
 	s.writeSCIMUser(w, ctx, c, row.SCIMID, http.StatusOK)
 }
 

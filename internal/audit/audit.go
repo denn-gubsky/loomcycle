@@ -299,11 +299,13 @@ func changeKinds() map[string]ChangeKind {
 		"retire": ChangeReduces,
 		// Users.
 		"user_created":               ChangeGrants,
+		"auth_user_approved":         ChangeGrants,
 		"user_updated":               ChangeGrants, // re-enable, access mode, display name
 		"user_disabled":              ChangeReduces,
 		"user_deleted":               ChangeReduces,
 		"auth_scim_user_created":     ChangeGrants,
 		"auth_scim_user_reactivated": ChangeGrants,
+		"auth_scim_user_updated":     ChangeGrants,
 		"auth_scim_user_deactivated": ChangeReduces,
 		// Access control.
 		"acl_written":          ChangeGrants,

@@ -121,3 +121,19 @@ func TestApproveUser_RouteNeedsTheTenantScope(t *testing.T) {
 		t.Fatal("auth:manage route list")
 	}
 }
+
+// An approval activates a user: in an audit outage it is refused and the
+// user stays pending.
+func TestApproveUser_IsRefusedWhenItsAuditRecordCannotBeWritten(t *testing.T) {
+	s, st, _ := identitySessionServer(t, config.AuthIdentityMap{Tenant: "acme", Provision: config.ProvisionAuto,
+		NewUser: config.AuthNewUser{AccessMode: "isolated", Status: "pending"}})
+	_, out := identityLoginSession(t, s, "501", time.Now())
+	s.tokenAudit = failingSink{errAuditDown}
+	ops := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	rec := httptest.NewRecorder()
+	s.handleApproveUser(rec, approveReq(ops, out.Subject))
+	wantAuditUnavailable(t, "an approval", rec.Code, rec.Body.String())
+	if u, _ := st.UserGet(context.Background(), "acme", out.Subject); u.Status != store.UserStatusPending {
+		t.Fatalf("status after the refused approval = %q, want pending", u.Status)
+	}
+}

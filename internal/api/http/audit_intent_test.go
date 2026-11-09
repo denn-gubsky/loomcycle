@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -331,5 +334,78 @@ func TestUserPatch_EveryFieldIsClassified(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "DisplayName,AccessMode,Status" {
 		t.Errorf("updateUserRequest fields = %v: classify the new one in patchOnlyDisables (a field that can widen access makes a disable a grant)", got)
+	}
+}
+
+// intentExempt are the functions of this package that change users, groups,
+// bindings, lists or tokens without recording ahead, each for a documented
+// reason (SECURITY.md, "Best-effort, by design"). Anything else that calls
+// one of those store writes must record an intent in the same function.
+var intentExempt = map[string]string{
+	"authgate_external.go/retireGateTokensBeyond": "retirements a gate's sign-in makes (reductions inside a sign-in)",
+	"authgate_identity.go/joinFloorGroups":        "a sign-in's provisioning",
+	"authgate_identity.go/provision":              "a sign-in's provisioning",
+	"authgate_identity.go/syncGroupsWith":         "a sign-in's group sync",
+	"authgate_lifecycle.go/rejoinFloorGroups":     "a stage of a re-enable recorded by its caller",
+	"authgate_lifecycle.go/stripRemovedUser":      "a removal stage: takes access away",
+	"authgate_lifecycle.go/unbindSubject":         "a removal stage: takes access away",
+	"authgate_password.go/joinInviteGroups":       "an invite's redemption (a sign-in)",
+	"authgate_tenant_policy.go/applyTenantPolicy": "retirements enforcing a recorded tenant policy",
+	"oauth_server.go/retireAppToken":              "ending an app sign-in",
+	"users_tokens.go/retireDelegatedUserTokens":   "retirements inside a recorded disable, delete or removal",
+	"users_tokens.go/retireUserTokensBeyond":      "retirements inside a recorded mint",
+}
+
+// TestAuditIntents_EveryStoreWriteSitsBehindAnIntent: a census of this
+// package's calls to the store writes that change who may do what (users,
+// groups and memberships, lists, bindings, tokens). Each enclosing function
+// records an intent (…Intent( in its body) or is exempt above with a reason;
+// an exemption whose function no longer writes is stale.
+func TestAuditIntents_EveryStoreWriteSitsBehindAnIntent(t *testing.T) {
+	writes := regexp.MustCompile(`\.store\.(UserUpdate|UserCreate|UserCreateOwner|UserDelete|GroupMemberAdd|GroupMemberRemove|GroupPut|GroupCreate|GroupDelete|AclDefPut|AclDefRetire|AclBindingPut|AclBindingRetire|OperatorTokenDefCreate|OperatorTokenDefSetRetiredAt)\(`)
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	writers := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fset := token.NewFileSet()
+		af, err := parser.ParseFile(fset, f, src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range af.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			body := string(src[fset.Position(fd.Body.Pos()).Offset:fset.Position(fd.Body.End()).Offset])
+			if !writes.MatchString(body) {
+				continue
+			}
+			writers++
+			key := f + "/" + fd.Name.Name
+			seen[key] = true
+			if _, ok := intentExempt[key]; ok || strings.Contains(body, "Intent(") {
+				continue
+			}
+			t.Errorf("%s writes users, groups, lists, bindings or tokens without recording an intent first (recordIntent), and is not exempt", key)
+		}
+	}
+	for key := range intentExempt {
+		if !seen[key] {
+			t.Errorf("exemption %s is stale: the function no longer writes", key)
+		}
+	}
+	if writers < 20 {
+		t.Errorf("the census found %d writers; it no longer reads them", writers)
 	}
 }
