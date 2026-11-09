@@ -28,6 +28,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
@@ -69,6 +70,13 @@ type Config struct {
 	// disabled. A func-typed field keeps this package free of an
 	// internal/credential import.
 	CredSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
+	// PropagateTraceContext sends the calling span as traceparent (W3C trace
+	// context) so an operator's MCP server can join the run's trace. The
+	// caller sets it only for the operator's own servers (yaml, or saved with
+	// operator authority): a server a tenant registered names a host loomcycle
+	// does not vouch for, and trace ids stay out of hosts a model or a tenant
+	// chose.
+	PropagateTraceContext bool
 	// MaxResponseBytes caps one response body (the operator's
 	// LOOMCYCLE_MCP_MAX_FRAME_BYTES, which caps a stdio line too). Zero
 	// takes DefaultMaxResponseBytes.
@@ -106,6 +114,8 @@ type Client struct {
 
 	// credSubstitute resolves $cred:<name> header tokens per-request (RFC AR).
 	credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
+
+	propagateTrace bool
 }
 
 // New constructs a Client. URL must be absolute.
@@ -137,6 +147,7 @@ func New(cfg Config) (*Client, error) {
 		credSubstitute: cfg.CredSubstitute,
 		maxBody:        maxBody,
 		usesOAuth:      headersUseOAuth(cfg.Headers),
+		propagateTrace: cfg.PropagateTraceContext,
 	}, nil
 }
 
@@ -433,6 +444,9 @@ func (c *Client) do(ctx context.Context, body []byte, withSession bool) (*http.R
 	// per-request whether to reply JSON or SSE based on what the response
 	// shape is; we must accept both.
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if c.propagateTrace {
+		lcotel.InjectTraceContext(ctx, req.Header)
+	}
 	// v0.8.x per-run MCP bearer: substitute ${run.user_bearer} (and
 	// the ${run.user_bearer:-FALLBACK} POSIX form) at request-build
 	// time. The Client is shared across runs (see pool.go's contract),

@@ -1462,9 +1462,12 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 				// (RFC ES follow-up). HTTPPrivateHostAllowlist exempts the
 				// private hosts the operator vouched for, under netguard's
 				// rules (a vouched name never reaches link-local or metadata).
-				BlockPrivateIPs:      !cfg.Env.MCPAllowPrivateIPs || !trusted,
-				MaxResponseBytes:     cfg.Env.MCPMaxFrameBytes,
-				PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
+				BlockPrivateIPs: !cfg.Env.MCPAllowPrivateIPs || !trusted,
+				// The run's trace context reaches the operator's own servers
+				// only, never a URL a tenant registered.
+				PropagateTraceContext: trusted,
+				MaxResponseBytes:      cfg.Env.MCPMaxFrameBytes,
+				PrivateHostAllowlist:  cfg.Env.HTTPPrivateHostAllowlist,
 				// RFC AR — resolve $cred:<name> header tokens per-request from
 				// the tenant credential store (per-user tokens bind correctly on
 				// this pooled client). Read at each request, not here: a static
