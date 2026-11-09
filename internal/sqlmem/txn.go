@@ -334,6 +334,11 @@ func (m *Manager) queryTxn(ctx context.Context, txnID, statement string, args []
 	if err := validateStatementForDialect(statement, true, m.dialect); err != nil {
 		return nil, err
 	}
+	if maxBytes > 0 {
+		if err := validateWidths(statement, m.dialect, valueLengthLimit(m.cfg)); err != nil {
+			return nil, err
+		}
+	}
 	t := m.txnFor(txnID)
 	if t == nil {
 		return nil, fmt.Errorf("no open transaction for this scope")
@@ -359,6 +364,11 @@ func (m *Manager) ExecTxn(ctx context.Context, txnID, statement string, args []a
 	t := m.txnFor(txnID)
 	if t == nil {
 		return nil, fmt.Errorf("no open transaction for this scope")
+	}
+	if !t.key.isDoc() {
+		if err := validateWidths(statement, m.dialect, valueLengthLimit(m.cfg)); err != nil {
+			return nil, err
+		}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -604,6 +604,9 @@ func (m *Manager) QueryCapped(ctx context.Context, key ScopeKey, statement strin
 	if err := validateStatementForDialect(statement, true, m.dialect); err != nil {
 		return nil, err
 	}
+	if err := validateWidths(statement, m.dialect, valueLengthLimit(m.cfg)); err != nil {
+		return nil, err
+	}
 	if err := key.validate(); err != nil {
 		return nil, err
 	}
@@ -620,6 +623,12 @@ func (m *Manager) Exec(ctx context.Context, key ScopeKey, statement string, args
 	}
 	if err := key.validate(); err != nil {
 		return nil, err
+	}
+	// A write to the agent plane is an agent's statement (sql_exec).
+	if !m.onPlane(key).isDoc() {
+		if err := validateWidths(statement, m.dialect, valueLengthLimit(m.cfg)); err != nil {
+			return nil, err
+		}
 	}
 	defer m.touch(key)
 	return m.backend.exec(ctx, m.onPlane(key), statement, args, quotaOverride)
@@ -816,6 +825,25 @@ func collectRows(rows *sql.Rows, maxRows, maxBytes int) (*QueryResult, error) {
 // DefaultMaxResultBytes is the result budget of an agent's query when
 // Config.MaxResultBytes is not set.
 const DefaultMaxResultBytes = 8 << 20
+
+// maxEngineValueLength is sqlite's compiled-in ceiling on a value's length
+// (SQLITE_MAX_LENGTH); sqlite3_limit takes no more.
+const maxEngineValueLength = 1_000_000_000
+
+// valueLengthLimit is the longest value an agent's own statement may build:
+// twice the result budget, so a value the result cap would refuse anyway is
+// never built, with room for one that a statement only measures or cuts
+// (length(x), substr(x, ...)).
+func valueLengthLimit(cfg Config) int {
+	r := cfg.MaxResultBytes
+	if r <= 0 {
+		r = DefaultMaxResultBytes
+	}
+	if r > maxEngineValueLength/2 {
+		return maxEngineValueLength
+	}
+	return 2 * r
+}
 
 // resultCellOverhead is what every cell of a result costs on top of its text or
 // bytes: about the in-memory interface value it is held in, and more than the
