@@ -826,6 +826,7 @@ func (d *Document) setAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 		return errFrom(op+": "+err.Error(), err), nil
 	}
 	rec := recs[t.chunk.ID][t.level]
+	d.indexAnnotation(ctx, key, mscope, rec)
 	notStale := false
 	rec.Stale = &notStale
 	return jsonResult(map[string]any{"annotation": rec})
@@ -918,6 +919,7 @@ func (d *Document) deleteAnnotation(ctx context.Context, key sqlmem.ScopeKey, ms
 	if err := d.exec(ctx, key, `DELETE FROM chunk_annotations WHERE chunk_id = ? AND level = ?`, t.chunk.ID, t.level); err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}
+	d.unindexAnnotations(ctx, key, mscope, []string{t.chunk.ID}, t.level)
 	// A folder's _annotation document exists only to carry its record.
 	if t.level == annotationLevelPath && strings.EqualFold(t.docType, annotationDocType) {
 		raw, _ := json.Marshal(map[string]any{"op": "delete_document", "id": t.chunk.DocumentID})

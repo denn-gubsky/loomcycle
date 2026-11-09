@@ -4594,6 +4594,11 @@ export type DocumentToolInput = {
   with_summary?: boolean;
   /** with_summary: the most abstract characters a response carries (default 2000, max 8000). */
   summary_chars?: number;
+  /** search: rank the annotations too — "include" fuses them with the passages,
+   *  "only" answers from them alone (a question about the corpus as a whole). */
+  annotations?: "none" | "include" | "only";
+  /** search with annotations: which levels to rank (default all). */
+  annotation_levels?: Array<"branch" | "document" | "path">;
   /** classify: "propose" (default) applies an unambiguous rule match and files the
    *  rest for review; "report" writes nothing. judge_statements: "rule"
    *  (default) or "recommend". */

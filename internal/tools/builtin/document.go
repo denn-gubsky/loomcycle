@@ -163,6 +163,8 @@ const documentInputSchema = `{
 		"manual":      {"type": "boolean", "description": "set_annotation: an operator's own text (no inputs_sha256 needed); the scheduled walk never overwrites it. list_annotations: only these."},
 		"stale":       {"type": "boolean", "description": "list_annotations: only annotations whose target changed since they were written."},
 		"written_before": {"type": "string", "description": "list_annotations: only annotations written before this RFC 3339 time."},
+		"annotations": {"type": "string", "enum": ["none","include","only"], "description": "search: rank the corpus's annotations too — the brief and abstract of sections, documents and folders. include fuses them with the passages, one row per target; only answers from them alone, the shape of a question about the corpus as a whole (\"what do we have on X\", \"what does this folder hold\"). A row found this way carries matched_annotation {level, text} and summary; a folder's row is its _annotation document, with folder. Default none."},
+		"annotation_levels": {"type": "array", "items": {"type": "string", "enum": ["branch","document","path"]}, "description": "search with annotations: which levels to rank (default all), e.g. [\"path\", \"document\"] for a corpus question."},
 		"with_summary": {"type": "boolean", "description": "get_document / get_chunk / search / related / graph_recall / documents_summary / query_documents: add each row's annotation as summary {level, brief, abstract?, stale?} — the nearest one at or above the row's chunk. The abstract is added for the target of get_document / get_chunk, the first five documents of a search or related page and the seeds of graph_recall, within summary_chars. A row with no annotation has no summary."},
 		"summary_chars": {"type": "integer", "description": "with_summary: the most abstract characters a response carries in all (default 2000, at most 8000); rows past it keep their brief only."},
 		"body_chars": {"type": "integer", "description": "annotation_inputs: how much of the target's own text to return (default 6000, at most 20000). graph_recall: how much of each chunk's text to return. Omit it and chunks that are not facts (clauses, sections, notes) carry the first 600 characters as body, while facts stay title-only because their title is the claim. 0 = titles only, the cheapest structural walk. N (at most 4000) = up to N characters on every row, facts included. A cut body ends on a word and is marked body_truncated; budget_chars counts body characters too."},
@@ -565,6 +567,10 @@ type docInput struct {
 	// SummaryChars bounds the abstracts that adds (annotation_summary.go).
 	WithSummary    bool   `json:"with_summary"`
 	SummaryChars   int    `json:"summary_chars"`
+	// Annotations is search's annotation leg: none (default), include, only;
+	// AnnotationLevels narrows it (document_annotation_search.go).
+	Annotations      string   `json:"annotations"`
+	AnnotationLevels []string `json:"annotation_levels"`
 	AsOf           *int64 `json:"as_of"`
 	IncludeRetired bool   `json:"include_retired"`
 	// MediaType/Data/Filename carry an image asset for set_asset (RFC BO). Data
@@ -2999,6 +3005,7 @@ func (d *Document) removeDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		_, _ = d.deleteBody(ctx, docID, direntTenant(ctx), mscope, docMemScopeID(mscope, key), id)
 		d.deleteUnitsOf(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), id)
 	}
+	d.unindexAnnotations(ctx, key, mscope, ids)
 	// Drop any Path-tree dirent(s) pointing at this document — best-effort, by
 	// document_id (works whether the caller addressed by id or path, so a
 	// delete-by-id never leaves a dangling name). Scans the scope's document
@@ -3813,6 +3820,7 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		_, _ = d.deleteBody(ctx, row.DocumentID, direntTenant(ctx), mscope, docMemScopeID(mscope, key), cid)
 		d.deleteUnitsOf(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), cid)
 	}
+	d.unindexAnnotations(ctx, key, mscope, ids)
 	d.publishChange(ctx, mscope, docMemScopeID(mscope, key), row.DocumentID, "delete_chunk", in.ID)
 	return jsonResult(map[string]any{"deleted": true, "cascade_deleted_descendants": len(ids) - 1})
 }
@@ -4449,6 +4457,23 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	if topK > 50 {
 		topK = 50
 	}
+	annMode := in.Annotations
+	var annLevels map[string]bool
+	switch annMode {
+	case "", "none":
+		annMode = ""
+		if len(in.AnnotationLevels) > 0 {
+			return errValidation("search: annotation_levels is taken with annotations include or only", ""), nil
+		}
+	case "include", "only":
+		levels, refusal := annotationLevelsOf(in.AnnotationLevels)
+		if refusal != nil {
+			return *refusal, nil
+		}
+		annLevels = levels
+	default:
+		return errValidation(`search: annotations must be "none", "include" or "only"`, ""), nil
+	}
 	// A structural filter is resolved to chunk ids BEFORE the search, so every
 	// leg's LIMIT sees only the wanted corpus (document_search_filter.go). Only
 	// when one was named: a filter-free call stays on exactly the old path.
@@ -4511,9 +4536,13 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	if aclList != nil {
 		sq.IDs, sq.ExcludeIDs = aclList.ids, aclList.excludeIDs
 	}
-	res, err := d.searchBackend().Search(ctx, mscope, docMemScopeID(mscope, key), sq, memrank.DefaultRankConfig(), memrank.DedupConfig{})
-	if err != nil {
-		return errFrom("search: "+err.Error(), err), nil
+	var res memrank.SearchResult
+	if annMode != "only" {
+		r, err := d.searchBackend().Search(ctx, mscope, docMemScopeID(mscope, key), sq, memrank.DefaultRankConfig(), memrank.DedupConfig{})
+		if err != nil {
+			return errFrom("search: "+err.Error(), err), nil
+		}
+		res = r
 	}
 	ids := make([]string, 0, len(res.Entries))
 	scores := make(map[string]float64, len(res.Entries))
@@ -4560,6 +4589,17 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 			m["matched_unit"] = mu
 		}
 		out = append(out, m)
+	}
+	// The annotation leg: what the corpus's annotations say, resolved to their
+	// targets and fused with the passages (or alone, for "only").
+	if annMode != "" {
+		hits, err := d.searchAnnotations(ctx, key, mscope, q, topK, annLevels, filter, aclList)
+		if err != nil {
+			return errFrom("search: annotations: "+err.Error(), err), nil
+		}
+		if out, err = d.mergeAnnotationHits(ctx, key, annMode, out, hits, topK); err != nil {
+			return errFrom("search: annotations: "+err.Error(), err), nil
+		}
 	}
 	// In the backend's order, and the enrichment loop preserves it — a caller
 	// reading the first element must get the best match, not whatever order the

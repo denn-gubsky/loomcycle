@@ -32,6 +32,7 @@ pass to `types`, `kind` and `concept` come from there.
 
 | The question | The call |
 |---|---|
+| What does the knowledge base hold about X? What is in this folder? | `search` with `annotations: "only"` and `annotation_levels: ["path", "document"]`; read the abstracts, open a document only to quote it |
 | What did we prepare for a client? What did they issue? | `get_document` by the subject's `path`, then `backlinks` on its `root_chunk_id` with the relation `kind` |
 | How did we do X (only estimates, only proposals)? | `search` with `types` (and `under_path` for one folder) |
 | Where do we talk about a topic? | `search` with `concept`, or `graph_recall` from the topic's chunk |
@@ -85,6 +86,21 @@ or a whole document at once:
 
 If a search comes back empty, change the filter (another class, no folder),
 not just the wording.
+
+## Examples — what do we have about a subject?
+
+A question about the corpus as a whole, not about one passage. Where the
+knowledge base is annotated, rank the folders' and documents' abstracts:
+
+```json tool=Document
+{"op": "search", "scope": "tenant", "query": "test automation for mobile apps", "annotations": "only", "annotation_levels": ["path", "document"], "limit": 10}
+```
+
+Each row is a document (or a folder's `_annotation` document, with `folder`)
+and carries `summary` with its brief and abstract. Answer from the abstracts,
+cite the documents (never an `_annotation` document), and open a document with
+`export_md` only when you must quote it. With no annotations the answer is
+empty: search the passages instead, without `annotations`.
 
 ## Examples — where do we talk about a topic?
 

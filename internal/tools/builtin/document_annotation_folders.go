@@ -672,6 +672,7 @@ func (d *Document) setFolderAnnotation(ctx context.Context, key sqlmem.ScopeKey,
 	if err != nil || rec == nil {
 		return errFrom(op+": the record was not read back", err), nil
 	}
+	d.indexAnnotation(ctx, key, mscope, *rec)
 	notStale := false
 	rec.Stale = &notStale
 	return jsonResult(map[string]any{"annotation": rec})
