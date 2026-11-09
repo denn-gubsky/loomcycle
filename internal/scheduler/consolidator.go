@@ -1329,6 +1329,7 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 	// tokens, model, and per-attempt latency stay sourced from where they are
 	// already authoritative.
 	ctx, span := lcotel.RecordMemoryConsolidate(ctx, lcotel.MemoryConsolidateAttrs{
+		Tenant:    target.TenantID,
 		Scope:     string(target.Scope),
 		ScopeID:   target.UserID,
 		AgentName: def.Agent,

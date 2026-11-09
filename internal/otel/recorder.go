@@ -77,18 +77,32 @@ type RunStartAttrs struct {
 	AgentName     string
 	UserID        string
 	ParentAgentID string // sub-runs only
+	// Tenant is the run's tenant. Empty inherits the tenant already on ctx (a
+	// sub-run started under its parent's span), and stays empty for a run
+	// with none.
+	Tenant string
 }
 
 // RecordRunStart opens the top-level loomcycle.run span. The returned
 // ctx must be used for everything downstream so the iteration spans
-// nest under it. Caller defers span.End().
+// nest under it, and carries the run's tenant so every span opened under
+// it is stamped with it. Caller defers span.End().
+//
+// The tenant is a START attribute, so a sampler deciding on this span sees it.
 func RecordRunStart(ctx context.Context, attrs RunStartAttrs) (context.Context, trace.Span) {
+	if attrs.Tenant == "" {
+		attrs.Tenant = TenantFromContext(ctx)
+	}
+	ctx = WithTenant(ctx, attrs.Tenant)
 	ctx, opts := runStartContext(ctx)
 	return Tracer().Start(ctx, SpanRun, append(opts, trace.WithAttributes(runStartKVs(attrs)...))...)
 }
 
 func runStartKVs(a RunStartAttrs) []attribute.KeyValue {
-	kvs := make([]attribute.KeyValue, 0, 5)
+	kvs := make([]attribute.KeyValue, 0, 6)
+	if a.Tenant != "" {
+		kvs = append(kvs, attribute.String(AttrTenant, a.Tenant))
+	}
 	if a.RunID != "" {
 		kvs = append(kvs, attribute.String(AttrRunID, a.RunID))
 	}
@@ -111,7 +125,7 @@ func runStartKVs(a RunStartAttrs) []attribute.KeyValue {
 // Caller defers iterSpan.End() at the iteration boundary.
 func RecordIteration(ctx context.Context, iter int) (context.Context, trace.Span) {
 	return Tracer().Start(ctx, SpanIteration,
-		trace.WithAttributes(attribute.Int(AttrIteration, iter)))
+		trace.WithAttributes(withTenantAttr(ctx, []attribute.KeyValue{attribute.Int(AttrIteration, iter)})...))
 }
 
 // ProviderCallAttrs identifies a provider HTTP request.
@@ -147,7 +161,7 @@ func RecordProviderCall(ctx context.Context, attrs ProviderCallAttrs) (context.C
 	if attrs.CodeHash != "" {
 		kvs = append(kvs, attribute.String(AttrProviderCodeHash, attrs.CodeHash))
 	}
-	return Tracer().Start(ctx, SpanProviderCall, trace.WithAttributes(kvs...))
+	return Tracer().Start(ctx, SpanProviderCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
 }
 
 // RecordToolCall opens loomcycle.tool.call around Dispatcher.Execute.
@@ -156,7 +170,7 @@ func RecordProviderCall(ctx context.Context, attrs ProviderCallAttrs) (context.C
 // via RecordMCPCall.
 func RecordToolCall(ctx context.Context, toolName string) (context.Context, trace.Span) {
 	return Tracer().Start(ctx, SpanToolCall,
-		trace.WithAttributes(attribute.String(AttrTool, toolName)))
+		trace.WithAttributes(withTenantAttr(ctx, []attribute.KeyValue{attribute.String(AttrTool, toolName)})...))
 }
 
 // RecordMCPCall opens loomcycle.mcp.call inside the outer
@@ -171,7 +185,7 @@ func RecordMCPCall(ctx context.Context, server, tool string) (context.Context, t
 	if tool != "" {
 		kvs = append(kvs, attribute.String(AttrMCPTool, tool))
 	}
-	return Tracer().Start(ctx, SpanMCPCall, trace.WithAttributes(kvs...))
+	return Tracer().Start(ctx, SpanMCPCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
 }
 
 // RunDoneAttrs is the closing attribute set landed on the
@@ -405,6 +419,7 @@ const EventConsolidateWatermarkLag = "loomcycle.memory.consolidate.watermark_lag
 // pass (how much moved, how far behind it is), and the whole point of the
 // pipeline is that the facts themselves are private to the target's scope.
 type MemoryConsolidateAttrs struct {
+	Tenant    string // the target's tenant; also carried on the returned ctx
 	Scope     string // memory scope — "user" for every fan-out target today
 	ScopeID   string // the target's scope id (its user id)
 	AgentName string // the consolidator agent the pass runs
@@ -416,6 +431,7 @@ type MemoryConsolidateAttrs struct {
 // nest under this one. Caller defers span.End() and calls
 // SetMemoryConsolidateResult once the outcome is observed.
 func RecordMemoryConsolidate(ctx context.Context, a MemoryConsolidateAttrs) (context.Context, trace.Span) {
+	ctx = WithTenant(ctx, a.Tenant)
 	kvs := make([]attribute.KeyValue, 0, 4)
 	if a.Scope != "" {
 		kvs = append(kvs, attribute.String(AttrMemoryScope, a.Scope))
@@ -429,7 +445,7 @@ func RecordMemoryConsolidate(ctx context.Context, a MemoryConsolidateAttrs) (con
 	if a.Tier != "" {
 		kvs = append(kvs, attribute.String(AttrTier, a.Tier))
 	}
-	return Tracer().Start(ctx, SpanMemoryConsolidate, trace.WithAttributes(kvs...))
+	return Tracer().Start(ctx, SpanMemoryConsolidate, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
 }
 
 // ConsolidateOutcome is what the RUNTIME can observe about a finished pass, as
@@ -526,7 +542,7 @@ func RecordMemorySearch(ctx context.Context, backend string) (context.Context, t
 	if backend != "" {
 		kvs = append(kvs, attribute.String(AttrMemoryBackend, backend))
 	}
-	return Tracer().Start(ctx, SpanMemorySearch, trace.WithAttributes(kvs...))
+	return Tracer().Start(ctx, SpanMemorySearch, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
 }
 
 // SetMemorySearchResult stamps the retrieval's mode + top_k on the span, and —

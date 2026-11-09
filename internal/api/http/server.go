@@ -3829,6 +3829,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		AgentID:   agentID,
 		AgentName: effectiveAgentName,
 		UserID:    effectiveUserID,
+		Tenant:    effectiveTenantID,
 	})
 	s.recordRunTraceID(runCtx, runID)
 	defer func() {
@@ -8080,6 +8081,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		AgentName:     name,
 		UserID:        parentIdentity.UserID,
 		ParentAgentID: parentIdentity.AgentID,
+		Tenant:        parentIdentity.TenantID,
 	})
 	s.recordRunTraceID(subRunCtx, subRunID)
 	defer func() {

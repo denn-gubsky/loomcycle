@@ -1847,6 +1847,9 @@ func (d *Dispatcher) Execute(ctx context.Context, name string, input json.RawMes
 // gRPC) keeps the typed error, because each transport maps it onto its own
 // status (an HTTP code, a gRPC status) as it always has.
 func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessage) (Result, error) {
+	// The run identity names the tenant authoritatively, and also reaches a
+	// call made outside a run's span (the MCP, HTTP and gRPC tool surfaces).
+	ctx = lcotel.WithTenant(ctx, RunIdentity(ctx).TenantID)
 	ctx, span := lcotel.RecordToolCall(ctx, name)
 	defer span.End()
 	res, goErr := d.execute(ctx, name, input)
