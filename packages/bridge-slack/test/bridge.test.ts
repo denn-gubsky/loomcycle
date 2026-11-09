@@ -15,7 +15,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createSlackAdapter, type SlackAdapter } from "../src/bridge.js";
 import { loadConfig } from "../src/config.js";
-import type { SlackRef } from "../src/identity.js";
+import { identify, type SlackRef } from "../src/identity.js";
+import { readEvent, type EventEnvelope } from "../src/inbound.js";
 import { slackSignature } from "../src/verify.js";
 import {
   fakeSpeech,
@@ -701,7 +702,7 @@ describe("slack bridge as a loomcycle gate", () => {
       { json: { ok: true, members: [{ id: "UBOB", team_id: "T1", deleted: true }, { id: "USLACKBOT", team_id: "T1" }, { id: "UCID" }], response_metadata: { next_cursor: "" } } },
       { json: { ok: true, members: [{ id: "UDEE", team_id: "T2" }] } },
     );
-    expect([...(await r.adapter.members())].sort()).toEqual(["t1:uann", "t1:ucid", "t2:udee"]);
+    expect([...(await r.adapter.members())].sort()).toEqual(["uann", "ucid", "udee"]);
     expect(r.slack.to("users.list").map((c) => c.body)).toEqual([
       { team_id: "T1", limit: 200 },
       { team_id: "T1", limit: 200, cursor: "p2" },
@@ -716,6 +717,32 @@ describe("slack bridge as a loomcycle gate", () => {
       { json: { ok: false, error: "missing_scope" } },
     );
     await expect(r.adapter.members()).rejects.toThrow("missing_scope");
+  });
+});
+
+// Enterprise Grid: a user id is the org's, one person in many workspaces.
+// The team an event names them by (user_team, here their home workspace)
+// need not be the team_id users.list reports for them, so reconciliation
+// must compare both sides by a key they share, or a present person reads as
+// gone and is revoked every round.
+describe("slack reconciliation under Enterprise Grid", () => {
+  it("finds a person an event names under another team than users.list gives", async () => {
+    const r = await rig({ SLACK_BRIDGE_ALLOWED_TEAMS: "T1,T2" }, { gate: true });
+    const env: EventEnvelope = {
+      type: "event_callback",
+      team_id: "T1",
+      event: { type: "message", channel_type: "im", channel: "D1", user: "WALICE", user_team: "T2", team: "T1", text: "hi", ts: "1.1" },
+    };
+    const read = readEvent(env, { userId: "UBOT" });
+    if (read.kind !== "message") throw new Error(`read ${read.kind}`);
+    const id = identify(read.fields, { allowedTeams: new Set(["T1", "T2"]), sharedTrust: "untrusted", gate: "slack" }, "Alice");
+    if (!id.ok) throw new Error(id.reason);
+    const sub = id.runAs.subject.slice("slack:".length);
+    expect(sub).toBe("t2:walice");
+    const grid = { id: "WALICE", team_id: "T1", enterprise_user: { enterprise_id: "E1", teams: ["T1", "T2"] } };
+    r.slack.reply("users.list", { json: { ok: true, members: [grid] } }, { json: { ok: true, members: [grid] } });
+    const members = await r.adapter.members();
+    expect(members.has(r.adapter.memberKey?.(sub) ?? sub)).toBe(true);
   });
 });
 

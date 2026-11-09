@@ -48,9 +48,12 @@ export interface SlackAdapter extends BridgeAdapter<SlackRef> {
   /** The two routes, served by start(); exposed for a server of your own and for tests. */
   routes(ctx: Pick<BridgeContext<SlackRef>, "router" | "log" | "gate">): Record<string, Route>;
   groupsFor(subject: string, ref: SlackRef): Promise<string[] | undefined>;
-  /** Every person of the allowed workspaces Slack lists now, as the gate's
-   *  platform ids: what a gate bridge reconciles loomcycle with. */
+  /** Every person of the allowed workspaces Slack lists now, by user id
+   *  (lower-cased): what a gate bridge reconciles loomcycle with. */
   members(): Promise<ReadonlySet<string>>;
+  /** The user id in a person's platform id ("<team>:<user>"): the key
+   *  members() lists them under. */
+  memberKey(sub: string): string;
 }
 
 const SLACK_HOOKS_ORIGIN = "https://hooks.slack.com";
@@ -244,7 +247,22 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
    *  needs) for each allowed workspace: every account that is not deleted
    *  and not a bot. The core's reconciliation revokes each person it served
    *  who is not here, so the list must be whole: a page Slack fails, or a
-   *  list past MAX_MEMBER_PAGES, fails it all. */
+   *  list past MAX_MEMBER_PAGES, fails it all.
+   *
+   *  A person is listed by user id alone, not "<team>:<user>" as identify
+   *  names them. The team identify takes is the event's (user_team, else
+   *  team), and the one users.list gives is the member's team_id; under
+   *  Enterprise Grid these can differ for one person (a user id is the
+   *  org's, the person is in several workspaces), and a mismatch would read
+   *  a present person as gone. Within the allowed workspaces a user id names
+   *  one person: Grid ids are org-wide, and Slack does not reuse an id
+   *  across workspaces. Should two ever match, the person is kept, the
+   *  direction a reconciliation must fail in; their deactivation event still
+   *  revokes them. */
+  function memberKey(sub: string): string {
+    return sub.slice(sub.lastIndexOf(":") + 1);
+  }
+
   async function members(): Promise<ReadonlySet<string>> {
     const out = new Set<string>();
     for (const team of cfg.allowedTeams) {
@@ -255,8 +273,7 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
         const list = (Array.isArray(r.members) ? r.members : []) as { id?: unknown; team_id?: unknown; deleted?: unknown; is_bot?: unknown }[];
         for (const m of list) {
           if (typeof m.id !== "string" || !m.id || m.deleted === true || m.is_bot === true || m.id === "USLACKBOT") continue;
-          // The subject is the person's own team, as identify names them.
-          out.add(personSub(typeof m.team_id === "string" && m.team_id ? m.team_id : team, m.id));
+          out.add(m.id.toLowerCase());
         }
         const next = (r.response_metadata as { next_cursor?: unknown } | undefined)?.next_cursor;
         cursor = typeof next === "string" ? next : "";
@@ -405,6 +422,7 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
     routes,
     groupsFor,
     members,
+    memberKey,
     async start(ctx) {
       await learnSelf();
       await ctx.serve(routes(ctx));
