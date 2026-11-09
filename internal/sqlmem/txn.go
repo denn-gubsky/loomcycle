@@ -401,7 +401,7 @@ func (m *Manager) ExecTxn(ctx context.Context, txnID, statement string, args []a
 	}
 	r, err := t.tx.ExecContext(ectx, statement, args...)
 	if err != nil {
-		return nil, err
+		return nil, valueLimitErr(err, valueLengthLimit(m.cfg))
 	}
 	out := &ExecResult{}
 	if n, err := r.RowsAffected(); err == nil {

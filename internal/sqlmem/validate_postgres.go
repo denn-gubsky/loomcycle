@@ -1,9 +1,12 @@
 package sqlmem
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgproto3"
 )
 
 // validate_postgres.go — the postgres-dialect escape denies layered on the
@@ -497,10 +500,12 @@ func wrapValueLimit(statement string, limit int) string {
 		stmt, limit, pgValueLimitMarker)
 }
 
-// valueLimitErr turns wrapValueLimit's refusal into a statement error the model
+// valueLimitErr turns wrapValueLimit's refusal, or the protocol cap's
+// (agentConn), into a statement error the model
 // can act on; any other error is returned as it is.
 func valueLimitErr(err error, limit int) error {
-	if err != nil && strings.Contains(err.Error(), pgValueLimitMarker) {
+	var tooLong *pgproto3.ExceededMaxBodyLenErr
+	if err != nil && (strings.Contains(err.Error(), pgValueLimitMarker) || errors.As(err, &tooLong)) {
 		return refuse("a row of the result is over the %d-byte limit on one SQL Memory value; select less of it (substr, length) or fewer columns", limit)
 	}
 	return err

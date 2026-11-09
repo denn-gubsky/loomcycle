@@ -647,7 +647,8 @@ func (m *Manager) Exec(ctx context.Context, key ScopeKey, statement string, args
 		}
 	}
 	defer m.touch(key)
-	return m.backend.exec(ctx, m.onPlane(key), statement, args, quotaOverride)
+	res, err := m.backend.exec(ctx, m.onPlane(key), statement, args, quotaOverride)
+	return res, valueLimitErr(err, valueLengthLimit(m.cfg))
 }
 
 // ScopeExists reports whether a DURABLE scope has been provisioned (sqlite: its

@@ -596,3 +596,61 @@ func TestPostgres_ExecOfAQueryRefusedUnread(t *testing.T) {
 		t.Fatalf("refusing it allocated %d MiB", got>>20)
 	}
 }
+
+func TestPostgres_ProtocolCapRefusesAnOversizedRowUnread(t *testing.T) {
+	// The hard bound on postgres: an agent statement's connection refuses any
+	// backend message longer than the value limit (plus headroom) from its
+	// length header, before reading the body. Here a rule already on the table
+	// (created past the statement checks, as one from before them could be)
+	// makes a plain INSERT return a 100 MB row, and the wrapper is bypassed by
+	// calling the backend directly; the runtime's own reads stay unbounded.
+	m, _ := pgTestManager(t, Config{MaxResultBytes: 1 << 20})
+	ctx := context.Background()
+	key := agentKey("t1", "proto")
+	b := m.backend
+	for _, stmt := range []string{
+		"CREATE TABLE w (n int)",
+		"CREATE TABLE big (s text)",
+		"INSERT INTO big SELECT repeat('y', 100000000)",
+		"CREATE RULE r AS ON INSERT TO w DO INSTEAD SELECT s FROM big",
+	} {
+		if _, err := b.exec(ctx, m.onPlane(key), stmt, nil, 0); err != nil {
+			t.Fatalf("stage %q: %v", stmt, err)
+		}
+	}
+	for _, c := range []struct {
+		label string
+		run   func() error
+	}{
+		{"agent write through a rule", func() error {
+			_, err := m.Exec(ctx, key, "INSERT INTO w VALUES (1)", nil, 0)
+			return err
+		}},
+		{"agent read without the wrapper", func() error {
+			_, err := b.query(ctx, m.onPlane(key), "SELECT s FROM big", nil, m.cfg.MaxResultBytes)
+			return err
+		}},
+	} {
+		var err error
+		got := allocatedDuring(func() { err = c.run() })
+		if err == nil {
+			t.Fatalf("%s: no error, want the oversized row refused", c.label)
+		}
+		if c.label == "agent write through a rule" && !strings.Contains(err.Error(), "limit on one SQL Memory value") {
+			t.Fatalf("%s: err = %v, want the value limit refusal", c.label, err)
+		}
+		if got > 32<<20 {
+			t.Fatalf("%s: refusing it allocated %d MiB, want at most 32 MiB (err: %v)", c.label, got>>20, err)
+		}
+		t.Logf("%s: refused after %d MiB: %v", c.label, got>>20, err)
+	}
+	// The scope keeps working (the broken connection was discarded), and the
+	// runtime's own uncapped read of the large value still succeeds.
+	if _, err := m.QueryCapped(ctx, key, "SELECT count(*) FROM big", nil); err != nil {
+		t.Fatalf("the scope after a refused row: %v", err)
+	}
+	res, err := b.query(ctx, m.onPlane(key), "SELECT s FROM big", nil, 0)
+	if err != nil || len(res.Rows) != 1 {
+		t.Fatalf("the runtime's own read of the large value: %v", err)
+	}
+}
