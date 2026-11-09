@@ -40,6 +40,9 @@
 {% if values.token_pepper %}
 {% do c1.environment.add_env("LOOMCYCLE_OPERATOR_TOKEN_PEPPER", values.token_pepper) %}
 {% endif %}
+{% if values.secret_key %}
+{% do c1.environment.add_env("LOOMCYCLE_SECRET_KEY", values.secret_key) %}
+{% endif %}
 {% if values.anthropic_api_key %}{% do c1.environment.add_env("ANTHROPIC_API_KEY", values.anthropic_api_key) %}{% endif %}
 {% if values.openai_api_key %}{% do c1.environment.add_env("OPENAI_API_KEY", values.openai_api_key) %}{% endif %}
 {% if values.deepseek_api_key %}{% do c1.environment.add_env("DEEPSEEK_API_KEY", values.deepseek_api_key) %}{% endif %}

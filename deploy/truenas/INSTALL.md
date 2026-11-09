@@ -327,6 +327,17 @@ drains its audit queue after pausing runs: give the container a 30 s stop grace
 (`stop_grace_period: 30s`) rather than Docker's default 10 s. Check the trail with
 `docker exec <loomcycle-container> /usr/local/bin/loomcycle audit verify --all`.
 
+**Upgrading to the release with RFC GD P3 (more than one principal):** the audit
+trail is also required once more than one principal exists — the
+`LOOMCYCLE_AUTH_TOKEN` plus a tenant token minted in the Web UI's Settings hub, a
+`principals:` entry, or a second minted token. Such an install needs
+`LOOMCYCLE_SECRET_KEY` (the catalog app's *Secret key* field, or the secure env
+file of Phase 4) **before** you upgrade, or the app stops booting with an error naming
+it. Generate it with `openssl rand -base64 32` and keep it. Token mints, user
+approvals and access-control changes are then refused (`503 audit_unavailable`)
+whenever the database cannot take their audit row; token retirements and user
+disables still go ahead (watch `loomcycle_audit_unrecorded_total`).
+
 ## Access control — rule lists, groups and bindings
 
 From v1.122.0 a tenant operator can say, per user or group, which agents, tools,
