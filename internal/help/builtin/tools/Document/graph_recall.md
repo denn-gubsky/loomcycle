@@ -68,6 +68,8 @@ still ahead). `include_retired: true` brings both back; an ended one is marked
 
 For a cheap structural walk — which chunks are connected, and how — pass
 `body_chars: 0`.
+- `with_summary` — add each chunk's nearest annotation as `summary`; the seeds also carry its abstract, within `summary_chars` (default 2000).
+- `summary_chars` — with `with_summary`, the most abstract characters the answer carries (default 2000, at most 8000).
 
 ## Returns
 

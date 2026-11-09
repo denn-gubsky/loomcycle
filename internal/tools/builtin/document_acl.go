@@ -69,10 +69,11 @@ type docACLRule struct {
 }
 
 var (
-	docListDocuments  = &docACLFilter{key: "documents", fields: []string{"document_id"}}
-	docListChunks     = &docACLFilter{key: "chunks", fields: []string{"document_id"}, required: true}
-	docListEdges      = &docACLFilter{key: "edges", fields: []string{"from_document_id", "to_document_id"}}
-	docListStatements = &docACLFilter{key: "statements", fields: []string{"from_document_id", "to_document_id"}}
+	docListDocuments   = &docACLFilter{key: "documents", fields: []string{"document_id"}}
+	docListChunks      = &docACLFilter{key: "chunks", fields: []string{"document_id"}, required: true}
+	docListEdges       = &docACLFilter{key: "edges", fields: []string{"from_document_id", "to_document_id"}}
+	docListStatements  = &docACLFilter{key: "statements", fields: []string{"from_document_id", "to_document_id"}}
+	docListAnnotations = &docACLFilter{key: "annotations", fields: []string{"document_id"}, required: true}
 )
 
 // docACLOps is every op's question. TestDocumentACL_EveryOpIsMapped holds it
@@ -138,8 +139,15 @@ var docACLOps = map[string]docACLRule{
 	"accept_classification": {verb: "write", target: docACLDocument},
 	// A lease guards a pass over the whole scope and changes no content: it asks
 	// propose, the verb a statement-maintaining driver already needs there.
-	"lease":             {verb: "propose", target: docACLScope},
-	"release":           {verb: "propose", target: docACLScope},
+	"lease":   {verb: "propose", target: docACLScope},
+	"release": {verb: "propose", target: docACLScope},
+	// Annotations: writing one changes no content but what readers are shown
+	// about a document, so it asks write on that document.
+	"set_annotation":    {verb: "write", target: docACLChunkOrDocument},
+	"delete_annotation": {verb: "write", target: docACLChunkOrDocument},
+	"get_annotation":    {verb: "read", target: docACLChunkOrDocument},
+	"annotation_inputs": {verb: "read", target: docACLChunkOrDocument},
+	"list_annotations":  {verb: "read", target: docACLListing, filter: docListAnnotations},
 	"query_chunks":      {verb: "read", target: docACLScope},
 	"add_tags":          {verb: "write", target: docACLChunkOrDocument},
 	"remove_tags":       {verb: "write", target: docACLChunkOrDocument},

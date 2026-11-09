@@ -721,6 +721,7 @@ func (d *Document) copyDocumentRows(ctx context.Context, p *copyPlan, doc *copyD
 		{"chunk_tags", inChunks, "chunk_id, tag", map[string]func(any) any{"chunk_id": chunkRemap}},
 		{"chunk_revisions", inChunks, "chunk_id, revision", map[string]func(any) any{"chunk_id": chunkRemap}},
 		{"chunk_layout", inChunks, "chunk_id", map[string]func(any) any{"chunk_id": chunkRemap}},
+		{"chunk_annotations", inChunks, "chunk_id, level", map[string]func(any) any{"chunk_id": chunkRemap}},
 		{"chunk_assets", inChunks, "chunk_id", map[string]func(any) any{"chunk_id": chunkRemap, "bytes": func(v any) any { return asBytes(v) }}},
 	}
 	// Every read happens before the target transaction opens: a SQLite scope

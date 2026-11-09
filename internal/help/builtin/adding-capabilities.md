@@ -66,7 +66,7 @@ create and fork agents — but **you still can't escalate**:
   you hold less, set it explicitly within what you hold (`["-*"]`
   denies all of `history_scope`). A team's own agents may always be
   granted the team's own channels and skills (`./<name>`).
-- `statement_methods` (`rule`, `extractor` and `judge` for a
+- `statement_methods` (`rule`, `extractor`, `judge` and `annotate` for a
   `provider: code-js` agent; `link` and `remember` for any agent) is stricter:
   a new agent may list only what you may stamp, and a fork only what
   the version it forks already has — never more, even when you hold

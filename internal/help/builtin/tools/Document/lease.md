@@ -14,7 +14,8 @@ and ends it with `release`. The holder is the run that took it — outside a
 run, the person who called — and a caller cannot name another holder.
 
 Only the operator, or a driver agent granted statement methods, may hold a
-lease; outside a run, a member who is not an operator may lease only its own
+lease (a driver granted only `annotate` holds the `annotator` lease and no
+other); outside a run, a member who is not an operator may lease only its own
 user scope.
 
 ## Arguments
