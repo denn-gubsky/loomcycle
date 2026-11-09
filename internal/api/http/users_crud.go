@@ -153,11 +153,16 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	// subject not yet taken: a create that conflicts must not cap a user the
 	// operator already runs (the insert-if-absent keeps an existing limit,
 	// not an existing user's lack of one).
-	if _, gerr := s.store.UserGet(r.Context(), tenant, subject); isNotFound(gerr) {
+	// A lookup fault refuses: going on would make the user uncapped.
+	switch _, gerr := s.store.UserGet(r.Context(), tenant, subject); {
+	case isNotFound(gerr):
 		if err := s.writeNewUserBudget(r.Context(), principalSubject(r.Context()), tenant, subject, s.floorNewUserBudget(), row.CreatedAt); err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "user_create_failed", err.Error())
 			return
 		}
+	case gerr != nil:
+		writeJSONError(w, http.StatusInternalServerError, "user_create_failed", gerr.Error())
+		return
 	}
 	var err error
 	if owner {

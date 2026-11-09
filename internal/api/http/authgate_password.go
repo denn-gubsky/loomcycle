@@ -1549,15 +1549,17 @@ func (s *Server) handleTOTPRemove(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.recordGateAudit(ctx, "auth_password_set", pw.g.Name, "", sess.TenantID, sess.Subject, floorTarget{})
-		s.endOtherSignIns(ctx, sess)
 	}
 	if _, err := s.store.UserTOTPDelete(ctx, sess.TenantID, sess.Subject); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	s.recordGateAudit(ctx, "auth_totp_removed", pw.g.Name, "", sess.TenantID, sess.Subject, floorTarget{})
-	if newPass && !s.startPasswordSession(w, r, pw.g.Name, sess.TenantID, sess.Subject, []string{amrPassword}) {
-		return
+	if newPass {
+		s.endOtherSignIns(ctx, sess)
+		if !s.startPasswordSession(w, r, pw.g.Name, sess.TenantID, sess.Subject, []string{amrPassword}) {
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
