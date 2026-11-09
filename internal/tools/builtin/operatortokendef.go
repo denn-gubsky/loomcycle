@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -46,6 +47,10 @@ type OperatorTokenDef struct {
 	// Audit records create/rotate/retire. Never nil at runtime (main.go
 	// wires audit.NopSink when no path is configured).
 	Audit audit.Sink
+	// Unrecorded counts a retirement made although its audit record could
+	// not be written ahead (loomcycle_audit_unrecorded_total); nil = not
+	// counted.
+	Unrecorded func(action string)
 
 	// RotationGraceSeconds is the default window during which a rotated
 	// token still authenticates. 0 → 24h.
@@ -375,14 +380,24 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		ExpiresAt:        expiresAt,
 		RestrictionsJSON: restrictionsJSON,
 	}
+	ev, aErr := s.auditIntent(ctx, audit.Event{
+		Action: "create", TargetDefID: row.DefID, TargetName: row.Name,
+		TargetTenant: row.TenantID, TargetSubject: row.Subject, ScopesAfter: scopes,
+	})
+	if aErr != nil {
+		return tools.AuditUnavailable("create"), nil
+	}
+	done := false
+	defer func() {
+		if !done {
+			s.auditFailed(ev)
+		}
+	}()
 	created, err := s.Store.OperatorTokenDefCreate(ctx, row)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
-	s.audit(ctx, audit.Event{
-		Action: "create", TargetDefID: created.DefID, TargetName: created.Name,
-		TargetTenant: created.TenantID, TargetSubject: created.Subject, ScopesAfter: scopes,
-	})
+	done = true
 	if imported {
 		// No plaintext to show — the operator already holds the env token.
 		m := operatorTokenRowResponse(created)
@@ -510,6 +525,20 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 	row.CreatedByRunID = ""
 	row.RotatedFrom = prior.DefID
 	row.RetiredAt = time.Time{}
+	ev, aErr := s.auditIntent(ctx, audit.Event{
+		Action: "rotate", TargetDefID: row.DefID, TargetName: row.Name,
+		TargetTenant: row.TenantID, TargetSubject: row.Subject,
+		ScopesBefore: prior.AllowedScopes, ScopesAfter: row.AllowedScopes,
+	})
+	if aErr != nil {
+		return tools.AuditUnavailable("rotate"), nil
+	}
+	done := false
+	defer func() {
+		if !done {
+			s.auditFailed(ev)
+		}
+	}()
 	created, err := s.Store.OperatorTokenDefCreate(ctx, row)
 	if err != nil {
 		return errResult(fmt.Sprintf("rotate: %s", err)), nil
@@ -522,11 +551,7 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 	if err := s.Store.OperatorTokenDefSetRetiredAt(ctx, prior.DefID, retireOldAt); err != nil {
 		return errResult(fmt.Sprintf("rotate: retire prior: %s", err)), nil
 	}
-	s.audit(ctx, audit.Event{
-		Action: "rotate", TargetDefID: created.DefID, TargetName: created.Name,
-		TargetTenant: created.TenantID, TargetSubject: created.Subject,
-		ScopesBefore: prior.AllowedScopes, ScopesAfter: created.AllowedScopes,
-	})
+	done = true
 	resp := operatorTokenCreateResponse(created, plaintext, suffix)
 	resp["rotated_from"] = prior.DefID
 	resp["prior_retires_at"] = retireOldAt.Format(time.RFC3339Nano)
@@ -608,14 +633,27 @@ func (s *OperatorTokenDef) execRetire(ctx context.Context, in operatorTokenDefIn
 			return errResult("retire: refusing to retire the last admin-scoped token — with no LOOMCYCLE_AUTH_TOKEN fallback and no admin config principal this would leave no admin credential (and, with no config principals, drop the server into unauthenticated open mode); create or rotate another substrate:admin token first"), nil
 		}
 	}
-	now := time.Now().UTC()
-	if err := s.Store.OperatorTokenDefSetRetiredAt(ctx, target.DefID, now); err != nil {
-		return errResult(fmt.Sprintf("retire: %s", err)), nil
-	}
-	s.audit(ctx, audit.Event{
+	// A retirement only takes access away: it goes ahead when its record
+	// cannot be written ahead (a compromised token must stay revocable in an
+	// audit outage), and the record is retried after it.
+	ev, aErr := s.auditIntent(ctx, audit.Event{
 		Action: "retire", TargetDefID: target.DefID, TargetName: target.Name,
 		TargetTenant: target.TenantID, TargetSubject: target.Subject, ScopesBefore: target.AllowedScopes,
 	})
+	if aErr != nil && s.Unrecorded != nil {
+		s.Unrecorded("retire")
+	}
+	now := time.Now().UTC()
+	if err := s.Store.OperatorTokenDefSetRetiredAt(ctx, target.DefID, now); err != nil {
+		s.auditFailed(ev)
+		return errResult(fmt.Sprintf("retire: %s", err)), nil
+	}
+	if aErr != nil {
+		ev.ChangeStatus, ev.TS = "", time.Time{}
+		if err := s.Audit.Record(ev); err != nil {
+			slog.ErrorContext(ctx, "audit: a token was retired and its audit record is missing", "def_id", target.DefID, "err", err)
+		}
+	}
 	return okJSON(map[string]any{"def_id": target.DefID, "name": target.Name, "retired_at": now.Format(time.RFC3339Nano)})
 }
 
@@ -688,15 +726,34 @@ func (s *OperatorTokenDef) resolveTarget(ctx context.Context, op string, in oper
 	return store.OperatorTokenDefRow{}, fmt.Errorf("%s: need name or def_id", op)
 }
 
-func (s *OperatorTokenDef) audit(ctx context.Context, ev audit.Event) {
-	if s.Audit == nil {
-		return
-	}
+// auditIntent records a token change before it is made. A change whose
+// record cannot be written is refused (RFC GD D3); with no audit sink
+// (NopSink) nothing is written and nothing refused.
+func (s *OperatorTokenDef) auditIntent(ctx context.Context, ev audit.Event) (audit.Event, error) {
 	ident := tools.RunIdentity(ctx)
 	ev.ActorSubject = ident.UserID
 	// ActorTenant is wired in PR2 once RunIdentity carries an
 	// authoritative TenantID (the identity-threading deliverable).
-	_ = s.Audit.Record(ev) // best-effort; never blocks the op
+	ev.ChangeStatus = audit.ChangeIntent
+	if s.Audit == nil {
+		return ev, nil
+	}
+	if err := s.Audit.Record(ev); err != nil {
+		slog.ErrorContext(ctx, "audit: a token change was refused because its audit record could not be written",
+			"action", ev.Action, "tenant", ev.TargetTenant, "err", err)
+		return ev, err
+	}
+	return ev, nil
+}
+
+// auditFailed records, best-effort, that a change whose intent was
+// recorded did not happen.
+func (s *OperatorTokenDef) auditFailed(ev audit.Event) {
+	if s.Audit == nil {
+		return
+	}
+	ev.ChangeStatus, ev.TS = audit.ChangeFailed, time.Time{}
+	_ = s.Audit.Record(ev)
 }
 
 // operatorTokenRowResponse renders a row WITHOUT any secret material

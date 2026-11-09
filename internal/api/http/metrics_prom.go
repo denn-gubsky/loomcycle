@@ -186,6 +186,10 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "loomcycle_acl_resolution_failures_total%s %d\n", replicaLabels, s.aclResolutionFailures.Load())
 	fmt.Fprintln(w)
 
+	// Access-reducing changes made with no audit record written ahead.
+	s.writeAuditUnrecordedMetric(w, replicaLabels)
+	fmt.Fprintln(w)
+
 	// Tool calls recovered from a panic, by tool: each is a bug in that tool
 	// that cost one call instead of the process. The tool set is the
 	// configured one, so the series stay bounded.

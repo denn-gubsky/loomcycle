@@ -219,3 +219,17 @@ func recordDefOp(ctx context.Context, eff *authz.Effective, event string, s auth
 	slog.Warn("authz: "+event, "tenant", tenant, "subject", subject, "action", s.Action,
 		"resource", s.Type+":"+s.Name, "outcome", d.Outcome.String())
 }
+
+// AuditUnavailablePrefix starts the text of a tool result refusing a change
+// because its audit record could not be written (the change was not made).
+// A transport that answers in status codes (HTTP) answers it 503.
+const AuditUnavailablePrefix = "audit_unavailable:"
+
+// AuditUnavailable is the tool result refusing a change for its audit
+// record: transient, since the audit store may answer on a retry.
+func AuditUnavailable(op string) Result {
+	return Result{IsError: true,
+		Text: AuditUnavailablePrefix + " " + op + ": the audit record of this change could not be written, so the change was not made",
+		Error: &ErrorInfo{Category: CategoryTransient, Retryable: true,
+			Description: "The audit store could not record this change, so it was not made. Retry later; an operator should check the audit store."}}
+}

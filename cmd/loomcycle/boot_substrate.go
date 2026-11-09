@@ -236,6 +236,7 @@ func (b *boot) wireAuth() {
 		Store:                  storeIface,
 		Hasher:                 tokenHasher,
 		Audit:                  tokenAudit,
+		Unrecorded:             srv.CountUnrecordedAudit,
 		RotationGraceSeconds:   graceSecs,
 		LegacyTokenSet:         srv.LegacyTokenSet,
 		AdminPrincipalDeclared: srv.AdminPrincipalResolved,
@@ -276,6 +277,9 @@ func (b *boot) wireAuth() {
 	if auditSink != nil {
 		srv.SetTokenAudit(auditSink)
 	}
+	// A reload that raises the audit posture is refused unless the stream is
+	// running: it opens only here, at boot.
+	srv.SetAuditStreamRunning(b.auditStream != nil)
 	// A cap on how long a delegated user token may live. Unset = no cap; with
 	// a cap, a mint that asks for no lifetime gets the cap.
 	if v := os.Getenv("LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS"); v != "" {

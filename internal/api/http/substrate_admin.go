@@ -404,6 +404,13 @@ func (s *Server) dispatchSubstrateCtxGuarded(
 		return
 	}
 
+	// A change refused because its audit record could not be written is
+	// the store being unavailable, not the caller's mistake.
+	if result.IsError && strings.HasPrefix(result.Text, tools.AuditUnavailablePrefix) {
+		writeJSONError(w, http.StatusServiceUnavailable, "audit_unavailable", auditUnavailableMessage)
+		return
+	}
+
 	// Mirror the in-process tool's IsError convention onto HTTP.
 	// The tool's Text payload is JSON when it succeeded, plain
 	// error text when it failed. We pass through verbatim — the

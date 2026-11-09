@@ -654,3 +654,96 @@ func TestPostgres_ProtocolCapRefusesAnOversizedRowUnread(t *testing.T) {
 		t.Fatalf("the runtime's own read of the large value: %v", err)
 	}
 }
+
+func TestValidatePostgres_DeniesReadByTheSharedLexer(t *testing.T) {
+	// The function and setting denies read the statement with the same lexer
+	// as the wrapper: a string the old literal mask misread ($$E'$$) no longer
+	// hides a call after it.
+	for _, stmt := range []string{
+		`SELECT $$E'$$ || 'x', set_config('work_mem', '1GB', false)`,
+		`SELECT $$E'$$ || 'x', pg_read_file('/etc/passwd')`,
+		`SELECT $$'$$, pg_catalog.set_config('work_mem', '1GB', false)`,
+		`SELECT $$'$$, "pg_read_file"('/etc/passwd')`,
+		`SELECT $$'$$, U&"\0073et_config"('work_mem', '1GB', false)`,
+		`SELECT $$'$$ AS a INTO t2`,
+	} {
+		if err := validateStatementForDialect(stmt, true, dialectPostgres); err == nil {
+			t.Errorf("%q: accepted, want refused", stmt)
+		}
+	}
+	for _, stmt := range []string{
+		`CREATE TRUSTED PROCEDURAL LANGUAGE plx`,
+		`CREATE OR REPLACE LANGUAGE plx`,
+		`/* /* nested */ */ CREATE EXTENSION dblink`,
+		`CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$ SET work_mem = '1GB'`,
+		`ALTER FUNCTION f() SET work_mem = '1GB'`,
+	} {
+		if err := validateStatementForDialect(stmt, false, dialectPostgres); err == nil {
+			t.Errorf("%q: accepted, want refused", stmt)
+		}
+	}
+	if err := validateStatementForDialect(`CREATE TABLE server (language text)`, false, dialectPostgres); err != nil {
+		t.Errorf("a table named server: refused (%v)", err)
+	}
+	for _, stmt := range []string{
+		`SELECT 'set_config(x)', $$pg_read_file('y')$$ AS note`,
+		`SELECT "my set_config" FROM t`,
+	} {
+		if err := validateStatementForDialect(stmt, true, dialectPostgres); err != nil {
+			t.Errorf("%q: refused (%v), want accepted", stmt, err)
+		}
+	}
+}
+
+func TestPgTokens_RefusesABackslashOutsideStrings(t *testing.T) {
+	for _, stmt := range []string{`SELECT 1 \ 2`, `SELECT \x`} {
+		if _, err := pgTokens(stmt, false); err == nil {
+			t.Errorf("%q: read, want refused", stmt)
+		}
+	}
+	if _, err := pgTokens(`SELECT E'a\\b', 'c\d'`, false); err != nil {
+		t.Errorf("backslashes inside strings: %v", err)
+	}
+}
+
+func TestPostgres_OversizedNoticeIsAValueLimitRefusal(t *testing.T) {
+	// A notice over the protocol cap breaks the connection; the model is told
+	// what happened rather than shown a driver error.
+	m, _ := pgTestManager(t, Config{MaxResultBytes: 1 << 20})
+	ctx := context.Background()
+	key := agentKey("t1", "notice")
+	if _, err := m.Exec(ctx, key, `CREATE FUNCTION loud() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RAISE NOTICE '%', repeat('x', 5000000); RETURN 1; END $$`, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Exec(ctx, key, "CREATE TABLE w (n int)", nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.BeginTxn(ctx, "txn-n", "root-n", key); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		label string
+		run   func() error
+	}{
+		{"read", func() error { _, err := m.QueryCapped(ctx, key, "SELECT loud()", nil); return err }},
+		{"write", func() error { _, err := m.Exec(ctx, key, "INSERT INTO w SELECT loud()", nil, 0); return err }},
+		{"write in a transaction", func() error {
+			_, err := m.ExecTxn(ctx, "txn-n", "INSERT INTO w SELECT loud()", nil, 0)
+			return err
+		}},
+		{"read in a transaction", func() error {
+			_, err := m.QueryTxnCapped(ctx, "txn-n", "SELECT loud()", nil)
+			return err
+		}},
+	} {
+		err := c.run()
+		var es *ErrStatement
+		if !errors.As(err, &es) || !strings.Contains(err.Error(), "limit on one SQL Memory value") {
+			t.Errorf("%s: err = %v (%T), want the value limit refusal", c.label, err, err)
+		}
+	}
+	_, _ = m.RollbackTxn("txn-n")
+	if _, err := m.QueryCapped(ctx, key, "SELECT 1", nil); err != nil {
+		t.Fatalf("the scope after the refusal: %v", err)
+	}
+}

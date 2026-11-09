@@ -35,6 +35,7 @@ func RunAudit(t *testing.T, factory ReplicaFactory) {
 		{"UnsafeTextIsStoredEscapedAndHashed", testAuditUnsafeTextIsStoredEscapedAndHashed},
 		{"PruneHandsTheSealEveryRowAndAbortsOnItsError", testAuditPruneHandsTheSealEveryRowAndAbortsOnItsError},
 		{"PruneToTheHeadReSignsTheHead", testAuditPruneToTheHeadReSignsTheHead},
+		{"ReplicasCheckpointTheNewestHead", testAuditReplicasCheckpointTheNewestHead},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -326,5 +327,59 @@ func testAuditPruneToTheHeadReSignsTheHead(t *testing.T, a, b store.Store) {
 	after, err := a.AuditHeadGet(ctx, "t1")
 	if err != nil || after.MAC == before.MAC || after.Seq != before.Seq || after.Hash != before.Hash {
 		t.Errorf("head after a prune to it under a new key = %+v (before %+v), %v; want the same position re-signed", after, before, err)
+	}
+}
+
+// Two replicas writing one tenant chain each checkpoint the heads they
+// wrote into the operator chain, serialized there like any append: both
+// chains verify, and the newest checkpoint is the chain's head.
+func testAuditReplicasCheckpointTheNewestHead(t *testing.T, a, b store.Store) {
+	ctx := context.Background()
+	var sinks []*auditchain.StoreSink
+	for _, s := range []store.Store{a, b} {
+		sink, err := auditchain.NewStoreSink(s, auditTestKeys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sink.SetCheckpointPolicy(3, time.Hour)
+		sinks = append(sinks, sink)
+	}
+	var wg sync.WaitGroup
+	for i, sink := range sinks {
+		wg.Add(1)
+		go func(i int, sink *auditchain.StoreSink) {
+			defer wg.Done()
+			for n := 0; n < 10; n++ {
+				if err := sink.Record(audit.Event{Action: "acl_written", TargetTenant: "t1",
+					ActorSubject: fmt.Sprintf("r%d-%d", i, n)}); err != nil {
+					t.Errorf("append: %v", err)
+					return
+				}
+			}
+		}(i, sink)
+	}
+	wg.Wait()
+	for _, sink := range sinks {
+		if err := sink.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tenant := range []string{"", "t1"} {
+		rep, err := auditchain.Verify(ctx, b, auditTestKeys, tenant)
+		if err != nil || !rep.OK {
+			t.Fatalf("verify %q: %+v, %v", tenant, rep, err)
+		}
+	}
+	reg, op, err := auditchain.ReadRegistry(ctx, a, auditTestKeys)
+	if err != nil || !op.OK {
+		t.Fatalf("ReadRegistry: %+v, %v", op, err)
+	}
+	head, err := a.AuditHeadGet(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cps := reg.Checkpoints["t1"]
+	if len(cps) == 0 || cps[len(cps)-1].Seq != head.Seq || cps[len(cps)-1].Hash != head.Hash {
+		t.Errorf("checkpoints %+v, want the newest at the head (%d, %s)", cps, head.Seq, head.Hash)
 	}
 }

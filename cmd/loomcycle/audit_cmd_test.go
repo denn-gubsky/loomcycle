@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,5 +107,68 @@ func TestAuditVerifyCmd_ReportsTheFirstBreak(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SECRET_KEY", "")
 	if code, _, errOut := runAuditForTest("verify", "--config", cfgPath, "--tenant", "acme"); code != 2 || !strings.Contains(errOut, "LOOMCYCLE_SECRET_KEY") {
 		t.Errorf("no secret key: exit %d (%s), want 2 naming LOOMCYCLE_SECRET_KEY", code, errOut)
+	}
+}
+
+// writeExport writes acme's chain as GET /v1/_audit streams it.
+func writeExport(t *testing.T, dbPath string, edit func(lines []map[string]any)) string {
+	t.Helper()
+	st, err := storesqlite.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	head, err := st.AuditHeadGet(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.AuditEventsList(ctx, "acme", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []map[string]any
+	for _, r := range rows {
+		lines = append(lines, map[string]any{"tenant": r.TenantID, "seq": r.Seq, "ts_ns": r.TS.UnixNano(),
+			"actor": r.Actor, "action": r.Action, "subject": r.Subject, "payload": r.Payload,
+			"prev_hash": r.PrevHash, "hash": r.Hash, "mac": r.MAC})
+	}
+	lines = append(lines, map[string]any{"trailer": true, "tenant": head.TenantID, "head_seq": head.Seq,
+		"head_hash": head.Hash, "head_mac": head.MAC})
+	if edit != nil {
+		edit(lines)
+	}
+	var b bytes.Buffer
+	for _, l := range lines {
+		j, _ := json.Marshal(l)
+		b.Write(j)
+		b.WriteByte('\n')
+	}
+	path := filepath.Join(t.TempDir(), "acme.jsonl")
+	if err := os.WriteFile(path, b.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// --export checks a file offline, with the signatures when the key is set
+// and saying it did not when it is not.
+func TestAuditVerifyCmd_VerifiesAnExportOffline(t *testing.T) {
+	_, dbPath := auditCmdEnv(t)
+	good := writeExport(t, dbPath, nil)
+	code, out, errOut := runAuditForTest("verify", "--export", good)
+	if code != 0 || !strings.Contains(out, `export of tenant "acme": ok — 3 rows`) || !strings.Contains(out, "signatures checked") {
+		t.Fatalf("an intact export with the key: exit %d\n%s%s", code, out, errOut)
+	}
+	bad := writeExport(t, dbPath, func(l []map[string]any) { l[1]["actor"] = "mallory" })
+	if code, out, _ := runAuditForTest("verify", "--export", bad); code != 1 || !strings.Contains(out, "BROKEN at row 2") {
+		t.Fatalf("a tampered export: exit %d\n%s", code, out)
+	}
+	if code, _, _ := runAuditForTest("verify", "--export", good, "--tenant", "acme"); code != 2 {
+		t.Errorf("--export with --tenant: exit %d, want 2", code)
+	}
+	t.Setenv("LOOMCYCLE_SECRET_KEY", "")
+	if code, out, _ := runAuditForTest("verify", "--export", good); code != 0 || !strings.Contains(out, "hash links only") {
+		t.Errorf("an export with no key: exit %d\n%s; want ok, saying the signatures were not checked", code, out)
 	}
 }

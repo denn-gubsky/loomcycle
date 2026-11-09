@@ -41,6 +41,7 @@ func (b *boot) openAudit() {
 		fatal("audit: the audit retention cannot run", "err", err)
 	}
 	b.auditSink = sink
+	b.auditStream = stream
 	if sink == nil {
 		slog.Info("audit: no audit sink (single-operator posture; set LOOMCYCLE_AUDIT_STORE=1 or LOOMCYCLE_AUDIT_LOG_PATH to record)")
 		return
@@ -68,10 +69,18 @@ func openAuditSink(ctx context.Context, cfg *config.Config, st store.Store) (aud
 	var sinks []audit.Sink
 	var stream *auditchain.StoreSink
 	var desc []string
-	if cfg.AuditStoreEnabled() {
+	stored, err := storedPrincipals(ctx, cfg, st)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	required := cfg.AuditRequiredReason(stored)
+	if required != "" && cfg.Env.AuditStoreOff {
+		return nil, nil, nil, fmt.Errorf("LOOMCYCLE_AUDIT_STORE=0: the store-backed audit stream cannot be turned off while %s", required)
+	}
+	if cfg.Env.AuditStore || required != "" {
 		why := "LOOMCYCLE_AUDIT_STORE=1"
-		if cfg.AuditStoreRequired() {
-			why = "a sign-in gate, auth.mode: strict or a non-compat LOOMCYCLE_ACL is configured"
+		if required != "" {
+			why = required
 		}
 		if st == nil {
 			return nil, nil, nil, fmt.Errorf("the store-backed audit stream is on (%s) but there is no store", why)
@@ -118,6 +127,35 @@ func openAuditSink(ctx context.Context, cfg *config.Config, st store.Store) (aud
 		}
 	}
 	return audit.Combine(sinks...), stream, desc, nil
+}
+
+// storedPrincipals counts the live operator tokens in the store, when they
+// could decide the posture: config alone does not already require the
+// stream. Each live token name is one principal besides the configured
+// credentials (config.AuditRequiredReason); a store that cannot answer stops
+// the boot rather than guess a single-operator posture.
+//
+// The posture is decided here, at boot: a single-operator deployment that
+// mints its first token later records nothing to the store until it
+// restarts, and that restart then turns the stream on (or refuses without
+// LOOMCYCLE_SECRET_KEY).
+func storedPrincipals(ctx context.Context, cfg *config.Config, st store.Store) (int, error) {
+	if st == nil || cfg.AuditStoreRequired() {
+		return 0, nil
+	}
+	pctx, cancel := context.WithTimeout(ctx, auditOpenTimeout)
+	defer cancel()
+	names, err := st.OperatorTokenDefListNames(pctx)
+	if err != nil {
+		return 0, fmt.Errorf("audit: counting the operator tokens that decide the audit posture: %w", err)
+	}
+	n := 0
+	for _, nm := range names {
+		if nm.HasCurrent {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // auditRetentionKeys are the keys the retention sweeper's audit family

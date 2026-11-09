@@ -3,6 +3,7 @@ package auditchain_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -487,18 +488,25 @@ func TestAuditVerify_ARotationAfterAPruneKeepsTheChainVerifiable(t *testing.T) {
 }
 
 // A prune checks what it removes (and the anchor it extends) inside its
-// transaction, not the whole store: a tenant's chain is pruned on its own
-// merits even while another chain — here the operator chain — is broken,
-// and the broken one keeps reporting its break.
-func TestAuditPrune_ChecksOnlyWhatItRemoves(t *testing.T) {
+// transaction, not the whole tenant chain. A tenant prune does read the
+// operator chain, for its checkpoints of the tenant, and is refused while it
+// is broken: otherwise a writer could break an operator row, wait for a
+// prune to fold a rolled-back tenant chain under a signed anchor, and put
+// the operator row back. The operator chain itself is pruned on its own
+// merits.
+func TestAuditPrune_ATenantPruneNeedsAVerifiedOperatorChain(t *testing.T) {
 	s, db := chainFixture(t, 3)
 	ctx := context.Background()
 	exec(t, db, `UPDATE audit_events SET actor = 'mallory' WHERE tenant_id = '' AND seq = 1`)
-	if n, err := pruneForTest(ctx, s, "t1", time.Now().Add(time.Hour)); err != nil || n != 3 {
-		t.Errorf("pruning t1 while the operator chain is broken = %d, %v; want its 3 rows", n, err)
+	if n, err := pruneForTest(ctx, s, "t1", time.Now().Add(time.Hour)); !errors.Is(err, auditchain.ErrChainBroken) || n != 0 {
+		t.Errorf("pruning t1 while the operator chain is broken = %d, %v; want ErrChainBroken and nothing pruned", n, err)
 	}
 	if rep, err := auditchain.Verify(ctx, s, testKeys, ""); err != nil || rep.OK {
-		t.Errorf("the operator chain after t1's prune: %+v, %v; want its break still reported", rep, err)
+		t.Errorf("the operator chain: %+v, %v; want its break still reported", rep, err)
+	}
+	exec(t, db, `UPDATE audit_events SET actor = '' WHERE tenant_id = '' AND seq = 1`)
+	if n, err := pruneForTest(ctx, s, "t1", time.Now().Add(time.Hour)); err != nil || n != 3 {
+		t.Errorf("pruning t1 once the operator chain verifies = %d, %v; want its 3 rows", n, err)
 	}
 }
 

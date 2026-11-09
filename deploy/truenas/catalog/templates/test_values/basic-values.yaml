@@ -4,6 +4,7 @@ presets:
   - base
 auth_token: test-token-do-not-use
 token_pepper: ""
+secret_key: ""
 anthropic_api_key: ""
 openai_api_key: ""
 deepseek_api_key: ""

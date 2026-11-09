@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
 
@@ -106,6 +108,52 @@ func TestAudit_IsOnByDefaultWithAGateConfigured(t *testing.T) {
 			t.Fatal("no store opened the stream; want a refusal")
 		}
 	})
+}
+
+// A live operator token in the store is a principal besides the legacy
+// token: such a deployment is multi-principal, so the stream is required
+// (on with a key, a refused boot without one or with LOOMCYCLE_AUDIT_STORE=0).
+// A retired token does not count.
+func TestAudit_AStoredOperatorTokenMakesTheStreamRequired(t *testing.T) {
+	ctx := context.Background()
+	open := func(t *testing.T, retired bool) *sqlite.Store {
+		t.Helper()
+		s, err := sqlite.Open(filepath.Join(t.TempDir(), "store.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		row := store.OperatorTokenDefRow{DefID: "def_00000000000000a1", Name: "ops", TenantID: "acme", Subject: "ops",
+			TokenHash: auth.HashToken("", "lct_ops"), AllowedScopes: []string{"runs:create"}}
+		if retired {
+			row.RetiredAt = time.Now().Add(-time.Hour)
+		}
+		if _, err := s.OperatorTokenDefCreate(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	legacy := func(env config.Env) *config.Config {
+		env.AuthToken = "legacy"
+		return &config.Config{Env: env}
+	}
+
+	sink, stream, _, err := openAuditSink(ctx, legacy(config.Env{SecretKey: testSecretKey()}), open(t, false))
+	if err != nil || sink == nil || stream == nil {
+		t.Fatalf("legacy token + a live operator token, with a key: %v, %v, %v; want the store-backed stream", sink, stream, err)
+	}
+	_, _, _, err = openAuditSink(ctx, legacy(config.Env{}), open(t, false))
+	if err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_SECRET_KEY") || !strings.Contains(err.Error(), "more than one principal") {
+		t.Fatalf("no key: err = %v; want a refusal naming LOOMCYCLE_SECRET_KEY and the principals", err)
+	}
+	_, _, _, err = openAuditSink(ctx, legacy(config.Env{SecretKey: testSecretKey(), AuditStoreOff: true}), open(t, false))
+	if err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_AUDIT_STORE=0") {
+		t.Fatalf("LOOMCYCLE_AUDIT_STORE=0: err = %v; want a refusal", err)
+	}
+	sink, _, _, err = openAuditSink(ctx, legacy(config.Env{}), open(t, true))
+	if err != nil || sink != nil {
+		t.Fatalf("legacy token + a retired operator token: %v, %v; want no sink (single operator)", sink, err)
+	}
 }
 
 const auditGateBootYAML = openModeBootYAML + `auth:

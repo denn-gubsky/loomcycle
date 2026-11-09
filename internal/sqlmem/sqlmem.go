@@ -620,7 +620,7 @@ func (m *Manager) QueryCapped(ctx context.Context, key ScopeKey, statement strin
 		}
 		limit := valueLengthLimit(m.cfg)
 		res, err := m.backend.query(ctx, m.onPlane(key), wrapValueLimit(statement, limit), args, m.cfg.MaxResultBytes)
-		return res, valueLimitErr(err, limit)
+		return res, cappedErr(err, limit)
 	}
 	return m.backend.query(ctx, m.onPlane(key), statement, args, m.cfg.MaxResultBytes)
 }
@@ -648,6 +648,9 @@ func (m *Manager) Exec(ctx context.Context, key ScopeKey, statement string, args
 	}
 	defer m.touch(key)
 	res, err := m.backend.exec(ctx, m.onPlane(key), statement, args, quotaOverride)
+	if m.dialect == dialectPostgres && !m.onPlane(key).isDoc() {
+		return res, cappedErr(err, valueLengthLimit(m.cfg))
+	}
 	return res, valueLimitErr(err, valueLengthLimit(m.cfg))
 }
 
