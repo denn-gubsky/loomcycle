@@ -565,14 +565,14 @@ type docInput struct {
 	WrittenBefore string `json:"written_before"`
 	// WithSummary attaches each row's annotation to the read ops that take it;
 	// SummaryChars bounds the abstracts that adds (annotation_summary.go).
-	WithSummary    bool   `json:"with_summary"`
-	SummaryChars   int    `json:"summary_chars"`
+	WithSummary  bool `json:"with_summary"`
+	SummaryChars int  `json:"summary_chars"`
 	// Annotations is search's annotation leg: none (default), include, only;
 	// AnnotationLevels narrows it (document_annotation_search.go).
 	Annotations      string   `json:"annotations"`
 	AnnotationLevels []string `json:"annotation_levels"`
-	AsOf           *int64 `json:"as_of"`
-	IncludeRetired bool   `json:"include_retired"`
+	AsOf             *int64   `json:"as_of"`
+	IncludeRetired   bool     `json:"include_retired"`
 	// MediaType/Data/Filename carry an image asset for set_asset (RFC BO). Data
 	// is standard base64 (no data: prefix); it is decoded to raw bytes and stored
 	// in the chunk_assets BYTEA/BLOB table.
