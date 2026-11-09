@@ -26,7 +26,7 @@ import { App, ExpressAdapter } from "@microsoft/teams.apps";
 import { parseCardAction, renderCard } from "./cards.js";
 import type { TeamsConfig } from "./config.js";
 import { groupsOf, identify, uninstalledSub } from "./identity.js";
-import { routeMessage } from "./inbound.js";
+import { routeMessage, seenOf } from "./inbound.js";
 import { teamsVoicePort } from "./voice.js";
 
 const ADAPTIVE_CARD = "application/vnd.microsoft.card.adaptive";
@@ -177,6 +177,7 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
           identify(activity, cfg.allowedTenants, gate),
           ref as unknown as ConversationRef,
           parseCardAction(activity.value),
+          seenOf(activity),
         );
         return toInvokeBody(res ?? { message: "This card is no longer active." });
       });
