@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/netip"
 	"sort"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc/metadata"
@@ -88,5 +89,60 @@ func TestGRPCCallerIP_ReadsATrustedProxysForwardedAddress(t *testing.T) {
 	}
 	if got := s.callerIP(call("203.0.113.5")); !got.Equal(net.ParseIP("203.0.113.5")) {
 		t.Errorf("an untrusted peer: %v, want the peer itself", got)
+	}
+}
+
+// rpcAsksTheInstancePerCall are the twinned RPCs whose gate asks the type
+// level of the question their HTTP twin asks of an instance, the shared
+// operation behind both asking the instance per call.
+var rpcAsksTheInstancePerCall = map[string]string{
+	"PublishChannel":   "the shared operation asks publish of the channel named (channelQuestion)",
+	"SubscribeChannel": "the shared operation asks subscribe of the channel named (channelQuestion)",
+	"PeekChannel":      "the shared operation asks subscribe of the channel named (channelQuestion)",
+	"AckChannel":       "the shared operation asks ack of the channel named (channelQuestion)",
+	"DirectoryInspect": "the directory operation asks read of the user named",
+	"Memory":           "the RPC carries every Memory op: it asks read, and the shared operation asks write of a write op (memoryOpQuestion)",
+}
+
+// Every RPC with an HTTP twin asks the question its twin asks (RFC GD P1):
+// an RPC carrying its op asks each op its own twin's question (enforceOp)
+// and, at the RPC, no more than the weakest of them; any other RPC asks
+// exactly its twin's question, or the type level of it with the instance
+// asked per call (rpcAsksTheInstancePerCall). A new RPC, or a twin whose
+// question changes, fails here until the two agree.
+func TestACLEnforcement_EveryRPCAsksItsHTTPTwinsQuestion(t *testing.T) {
+	for _, rpc := range memberpath.TwinnedRPCs() {
+		g, gok := authz.GRPCSurface(rpc)
+		twins := memberpath.Twins(rpc)
+		if memberpath.ByOp(rpc) {
+			// The RPC asks its weakest op's question: the read op's when it
+			// has one, so a caller allowed to read is not refused a list.
+			var want *authz.Surface
+			for _, tw := range twins {
+				h, ok := authz.HTTPSurface(tw.Method, tw.Path)
+				if ok && (want == nil || h.Action == "read") {
+					want = &h
+				}
+			}
+			if gok && (want == nil || g != *want) {
+				t.Errorf("%s carries its op but asks %v at the RPC, not its weakest op's question %v", rpc, g, want)
+			}
+			continue
+		}
+		_, perCall := rpcAsksTheInstancePerCall[rpc]
+		for _, tw := range twins {
+			h, hok := authz.HTTPSurface(tw.Method, tw.Path)
+			switch {
+			case h == g && hok == gok:
+			case perCall && hok && gok && h.Type == g.Type && strings.HasSuffix(g.Name, "*"):
+			default:
+				t.Errorf("%s asks %v, its twin %s %s asks %v", rpc, g, tw.Method, tw.Path, h)
+			}
+		}
+	}
+	for rpc := range rpcAsksTheInstancePerCall {
+		if len(memberpath.Twins(rpc)) == 0 {
+			t.Errorf("rpcAsksTheInstancePerCall lists %s, which has no twin", rpc)
+		}
 	}
 }

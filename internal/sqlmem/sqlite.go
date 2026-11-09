@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 // sqlite.go — the sqlite tier of SQL Memory: one .db file per scope under a
@@ -381,9 +382,49 @@ func (b *sqliteBackend) evictPathLocked(path string) {
 	}
 }
 
+// sqliteLimitLength is SQLITE_LIMIT_LENGTH, the sqlite3_limit category that
+// bounds the length of one string or BLOB value, and of a row.
+const sqliteLimitLength = 0
+
+// opConn takes the scope file's connection for one operation. When limited
+// it runs with SQLITE_LIMIT_LENGTH lowered to valueLengthLimit, so a value an
+// agent's statement builds (zeroblob, randomblob, printf, a concatenation) is
+// refused by the engine as too big before it is allocated, instead of being
+// built, copied into the Go heap and only then refused by the result cap.
+//
+// The limit is the connection's, and the connection is shared with the
+// runtime's own statements on the same file (the Document tool's reads of an
+// image chunk's bytes, larger than an agent may build), so release puts the
+// previous limit back before the connection returns to the pool. A connection
+// whose limit cannot be put back is discarded rather than reused. A limit that
+// cannot be set fails the operation: the agent's statement never runs
+// without it.
+func (b *sqliteBackend) opConn(ctx context.Context, db *sql.DB, limited bool) (*sql.Conn, func(), error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !limited {
+		return conn, func() { _ = conn.Close() }, nil
+	}
+	prev, err := sqlite.Limit(conn, sqliteLimitLength, valueLengthLimit(b.cfg))
+	if err != nil {
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("sqlmem: set the value length limit: %w", err)
+	}
+	return conn, func() {
+		if _, err := sqlite.Limit(conn, sqliteLimitLength, prev); err != nil {
+			slog.Warn("sqlmem: restore the value length limit failed; discarding the connection", "err", err)
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+		_ = conn.Close()
+	}, nil
+}
+
 // query runs a (already-validated, read-only) statement against the scope
 // database. Rows beyond MaxRows, or past maxBytes (0 = none), are drained and
-// Truncated is set.
+// Truncated is set. A capped read is an agent's statement, and runs under the
+// value length limit (opConn).
 func (b *sqliteBackend) query(ctx context.Context, key ScopeKey, statement string, args []any, maxBytes int) (*QueryResult, error) {
 	path, err := key.keyPath(b.cfg.Root)
 	if err != nil {
@@ -399,7 +440,13 @@ func (b *sqliteBackend) query(ctx context.Context, key ScopeKey, statement strin
 	qctx, cancel := withTimeout(b.cfg, ctx)
 	defer cancel()
 
-	rows, err := db.QueryContext(qctx, statement, args...)
+	conn, done, err := b.opConn(qctx, db, maxBytes > 0)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+
+	rows, err := conn.QueryContext(qctx, statement, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -427,8 +474,16 @@ func (b *sqliteBackend) exec(ctx context.Context, key ScopeKey, statement string
 	}
 	defer b.release(path)
 
+	// Every write to the agent file is an agent's statement; the document
+	// file's writes are the Document tool's own.
+	conn, done, err := b.opConn(ctx, db, !key.isDoc())
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+
 	if quota := effectiveQuota(b.cfg, quotaOverride); quota > 0 {
-		size, err := scopeSizeBytes(ctx, db)
+		size, err := scopeSizeBytes(ctx, conn)
 		if err != nil {
 			return nil, fmt.Errorf("sqlmem: quota check: %w", err)
 		}
@@ -445,7 +500,7 @@ func (b *sqliteBackend) exec(ctx context.Context, key ScopeKey, statement string
 	ectx, cancel := withTimeout(b.cfg, ctx)
 	defer cancel()
 
-	r, err := db.ExecContext(ectx, statement, args...)
+	r, err := conn.ExecContext(ectx, statement, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -481,7 +536,9 @@ func scopeSizeBytes(ctx context.Context, q rowQueryer) (int64, error) {
 }
 
 // beginTx pins the scope handle (so it is not evicted while the txn is open)
-// and opens a transaction on it. release drops the pin.
+// and opens a transaction on it. release drops the pin. A transaction on the
+// agent file is an agent's (sql_begin), and holds the value length limit for
+// its life (opConn).
 func (b *sqliteBackend) beginTx(ctx context.Context, key ScopeKey) (*sql.Tx, func(), error) {
 	path, err := key.keyPath(b.cfg.Root)
 	if err != nil {
@@ -491,12 +548,18 @@ func (b *sqliteBackend) beginTx(ctx context.Context, key ScopeKey) (*sql.Tx, fun
 	if err != nil {
 		return nil, nil, err
 	}
-	tx, err := db.BeginTx(ctx, nil)
+	conn, done, err := b.opConn(ctx, db, !key.isDoc())
 	if err != nil {
 		b.release(path)
 		return nil, nil, err
 	}
-	return tx, func() { b.release(path) }, nil
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		done()
+		b.release(path)
+		return nil, nil, err
+	}
+	return tx, func() { done(); b.release(path) }, nil
 }
 
 // txnSizeBytes measures the scope's size on the open transaction, with the

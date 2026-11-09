@@ -103,6 +103,8 @@ type postgresBackend struct {
 	provLocks   map[string]*sync.Mutex // per-schema provisioning lock (parallelize distinct scopes)
 	scopes      map[string]*scopeConn  // per-scope connection pools, keyed by role name
 	clock       uint64
+
+	tempLimitWarn sync.Once // setTempFileLimit's refusal is logged once
 }
 
 // pgVectorExtSchema is the dedicated schema the operator installs pgvector into
@@ -436,16 +438,51 @@ func (b *postgresBackend) runProvisionDDL(ctx context.Context, schema, role stri
 	if b.cfg.StatementTimeoutMS > 0 {
 		stmts = append(stmts, fmt.Sprintf(`ALTER ROLE %s SET statement_timeout TO '%dms'`, q(role), b.cfg.StatementTimeoutMS))
 	}
+	// What one of the agent's queries may use of the database server: work_mem
+	// per sort or hash in memory (the agent cannot raise it: set_config is
+	// refused, and SET and ALTER ROLE never reach the server), temp_file_limit
+	// on disk for what spills past it.
+	stmts = append(stmts, fmt.Sprintf(`ALTER ROLE %s SET work_mem TO '%s'`, q(role), pgScopeWorkMem))
 
 	for attempt := 0; ; attempt++ {
 		err := b.execProvisionStmts(ctx, stmts)
 		if err == nil {
+			b.setTempFileLimit(ctx, role)
 			return nil
 		}
 		if isTransientRace(err) && attempt < 2 {
 			continue // another replica is concurrently provisioning; converge
 		}
 		return fmt.Errorf("sqlmem: provision scope: %w", err)
+	}
+}
+
+// pgScopeWorkMem and pgScopeTempFileLimit are the memory bounds baked onto
+// every scope role. Postgres's own default work_mem is 4MB; 16MB keeps an
+// agent's ordinary sorts in memory while a query of many sort and hash nodes
+// stays in the tens of MiB. temp_file_limit caps the disk one session's
+// spilled sorts may take.
+const (
+	pgScopeWorkMem       = "16MB"
+	pgScopeTempFileLimit = "1GB"
+)
+
+// setTempFileLimit bakes temp_file_limit onto the scope role. It is a
+// superuser setting: the documented admin (CREATEROLE, not superuser) may set
+// it only when granted SET on it (Postgres 15+: GRANT SET ON PARAMETER
+// temp_file_limit TO <admin>), so a refusal is logged once and the scope is
+// provisioned without it rather than not at all: the role cannot raise the
+// server's own temp_file_limit either way.
+func (b *postgresBackend) setTempFileLimit(ctx context.Context, role string) {
+	_, err := b.admin.ExecContext(ctx, fmt.Sprintf(`ALTER ROLE %s SET temp_file_limit TO '%s'`, q(role), pgScopeTempFileLimit))
+	switch {
+	case err == nil:
+	case pgCodeIn(err, "42501" /*insufficient_privilege*/):
+		b.tempLimitWarn.Do(func() {
+			slog.WarnContext(ctx, "sqlmem: the admin role may not set temp_file_limit on scope roles; grant it with GRANT SET ON PARAMETER temp_file_limit TO <admin role> (Postgres 15+)", "err", err)
+		})
+	default:
+		slog.WarnContext(ctx, "sqlmem: set temp_file_limit on a scope role failed", "err", err)
 	}
 }
 

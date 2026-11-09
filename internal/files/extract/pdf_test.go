@@ -9,6 +9,7 @@ import (
 	"image/jpeg"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -432,7 +433,14 @@ func FuzzExtractPDF(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
 		_, err := PDF{}.Extract(ctx, bytes.NewReader(data), int64(len(data)), &memSink{limit: 1 << 20}, Options{Name: "f.pdf", Images: true})
+		runtime.ReadMemStats(&after)
+		// The same ceiling the other extractors' fuzzers hold (fuzz_test.go).
+		if got, ceiling := after.TotalAlloc-before.TotalAlloc, fuzzAllocBase+uint64(len(data))*fuzzAllocPerByte; got > ceiling {
+			t.Fatalf("Extract allocated %d MiB for a %d-byte input, past its ceiling of %d MiB", got>>20, len(data), ceiling>>20)
+		}
 		// Extract recovers panics; under the fuzzer a recovered one is
 		// still a bug to report.
 		if err != nil && strings.Contains(err.Error(), "the PDF could not be read: ") {

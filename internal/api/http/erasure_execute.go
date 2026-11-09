@@ -21,6 +21,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 )
 
@@ -87,6 +88,12 @@ func (s *Server) handleErasureExecute(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ErasureExecute(ctx context.Context, req erasure.ExecuteRequest) (erasure.Result, error) {
 	if s.store == nil {
 		return erasure.Result{}, errors.New("no store configured")
+	}
+	// The execute's own question, asked here as well as at each transport's
+	// gate (POST /v1/_erasure asks it), so a gate that read the op wrongly
+	// cannot skip it. The removal sweeper's ctx carries no principal.
+	if err := s.connectorAsk(ctx, authz.Surface{Action: "manage", Type: "runtime", Name: "erasure"}); err != nil {
+		return erasure.Result{}, err
 	}
 	// VALIDATE FIRST, so a request that was going to be rejected never writes an audit
 	// record. A log of intents that never happened is noise in the one log an auditor

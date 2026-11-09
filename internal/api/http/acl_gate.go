@@ -179,9 +179,24 @@ func aclDeniedText(surface authz.Surface, d authz.Decision) string {
 type errACLDenied struct {
 	surface  authz.Surface
 	decision authz.Decision
+	// unavailable: the rules could not be read (enforce mode with no set),
+	// not a deny. The intakes treat both alike; a transport mapping a shared
+	// operation's refusal tells them apart (ACLRefusal).
+	unavailable bool
 }
 
-func (e *errACLDenied) Error() string { return "acl_denied: " + aclDeniedText(e.surface, e.decision) }
+func (e *errACLDenied) Error() string {
+	if e.unavailable {
+		return "acl_unavailable: access control could not be evaluated; retry"
+	}
+	return "acl_denied: " + aclDeniedText(e.surface, e.decision)
+}
+
+// ACLRefusal reports whether the refusal is an unreadable rule set rather than
+// a deny. The gRPC handlers of the shared operations that ask a question
+// themselves (retention, erasure) read it through an interface, so a refusal
+// maps to PermissionDenied or Unavailable as the gRPC gate's does.
+func (e *errACLDenied) ACLRefusal() (unavailable bool) { return e.unavailable }
 
 // Is lets the existing intake error paths that test for ErrAgentNotAllowed
 // treat an ACL refusal of a run the same way (a 403 with its own code).
@@ -210,7 +225,7 @@ func (s *Server) aclAdmit(ctx context.Context, p auth.Principal, surface authz.S
 	switch {
 	case res.Unavailable:
 		s.recordACLEvent(ctx, p, "acl_unavailable", surface, res.Decision)
-		return &errACLDenied{surface: surface, decision: res.Decision}
+		return &errACLDenied{surface: surface, decision: res.Decision, unavailable: true}
 	case res.Diverged:
 		s.recordACLEvent(ctx, p, "acl_shadow_diverged", surface, res.Decision)
 	case !res.Allowed:

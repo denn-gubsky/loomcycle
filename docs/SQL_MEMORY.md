@@ -284,7 +284,7 @@ in one transaction.
 | `LOOMCYCLE_SQLMEM_QUOTA_BYTES` | `sqlmem_quota_bytes` | per-scope size cap (0 = none); per-agent `sql_quota_bytes` overrides |
 | `LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS` | `sqlmem_statement_timeout_ms` | per-statement timeout (default 30000) |
 | `LOOMCYCLE_SQLMEM_MAX_ROWS` | `sqlmem_max_rows` | `sql_query` row cap (default 10000) |
-| `LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES` | `sqlmem_max_result_bytes` | size cap on what an agent's own SQL returns — `sql_query` (also inside `sql_begin`) and Document `query_chunks` `sql` (default 8 MiB; zero or negative takes the default, there is no "off"). Rows stop before the one that would cross it and the result says `truncated`; a first row over it on its own is an error. Each cell counts its text/bytes length plus 16 bytes, so a huge result of NULLs or numbers counts too. JSON escaping can make the encoded result larger than this count. The runtime's own reads (document internals, image chunk bytes) and snapshot/backup dumps are not subject to it |
+| `LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES` | `sqlmem_max_result_bytes` | size cap on what an agent's own SQL returns — `sql_query` (also inside `sql_begin`) and Document `query_chunks` `sql` (default 8 MiB; zero or negative takes the default, there is no "off"). Rows stop before the one that would cross it and the result says `truncated`; a first row over it on its own is an error. Each cell counts its text/bytes length plus 16 bytes, so a huge result of NULLs or numbers counts too. JSON escaping can make the encoded result larger than this count. The runtime's own reads (document internals, image chunk bytes) and snapshot/backup dumps are not subject to it. On SQLite an agent's statement also runs with the engine's value length limit at **twice** this cap (16 MiB by default): a value longer than that is refused as "string or blob too big" before it is built, in Memory SQL reads and writes (so an agent cannot store a single value over it) and in `query_chunks` `sql`; a constant `zeroblob`/`randomblob` size or `printf` width over it is refused by the statement check before the engine sees it. On Postgres, which has no such engine limit, every agent read is wrapped so the server refuses a row whose text is over twice this cap before sending it (a read whose parentheses do not balance, that carries anything after its `;`, or that holds a construct the runtime cannot read the way Postgres does — a stray `$`, a number or name run straight into a string — is refused rather than wrapped), and `repeat`/`lpad`/`rpad` take only a constant length, at most twice this cap |
 | `LOOMCYCLE_SQLMEM_AUDIT_MODE` | `sqlmem_audit_mode` | `full` (redacted statement text, default) or `metadata` (counts only) |
 | `LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS` | `sqlmem_txn_timeout_ms` | explicit-transaction TTL — the reaper rolls back a txn open longer than this (default 30000; 0 disables) |
 | `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS` | `sqlmem_max_open_txns` | cap on concurrent open transactions process-wide (default 64; each pins a connection) |
@@ -429,8 +429,15 @@ is defense-in-depth):
   hypothetical escape can't reach sessions/runs/tokens/memory.
 - Each scope lazily provisions a **schema** + a dedicated **per-scope `LOGIN`
   role** with `USAGE` only on that schema (`PUBLIC` revoked), non-superuser,
-  `NOCREATEDB`/`NOCREATEROLE`/`NOINHERIT`, with `search_path` + `statement_timeout`
-  baked onto the role.
+  `NOCREATEDB`/`NOCREATEROLE`/`NOINHERIT`, with `search_path`, `statement_timeout`,
+  `work_mem = 16MB` and (where the admin may set it, see below)
+  `temp_file_limit = 1GB` baked onto the role. `temp_file_limit` is a superuser
+  setting the role cannot change; `work_mem` is a default the role can change
+  in its own session (a function body can `EXECUTE 'SET …'`), so it is advisory:
+  `set_config()`, a function or procedure with a `SET` clause and `U&"…"`
+  identifiers are refused, as a best effort. An agent's read is wrapped so the
+  server refuses a row whose text is over twice the result cap before sending
+  it, and a `repeat`/`lpad`/`rpad` length that is not a constant is refused.
 - The runtime runs the agent's SQL on a **dedicated connection authenticated AS
   that scope role** — so the agent's `session_user` **is** the scope role. This
   is the load-bearing property: a scope role is a member of **nothing**, so every
@@ -491,6 +498,12 @@ CREATE ROLE loomcycle_sqlmem LOGIN PASSWORD '<strong-secret>' CREATEROLE;
 
 -- A dedicated database, owned by that admin (so it can CREATE SCHEMA in it).
 CREATE DATABASE loomcycle_sqlmem OWNER loomcycle_sqlmem;
+
+-- RECOMMENDED (Postgres 15+, run as a superuser): let the admin bake
+-- temp_file_limit onto each scope role, so an agent's spilled sorts are capped
+-- on disk. Without it the runtime logs one warning and provisions scopes
+-- without that bound.
+GRANT SET ON PARAMETER temp_file_limit TO loomcycle_sqlmem;
 
 -- Lock down the public schema of the aux DB (defense-in-depth; scopes never use it).
 \connect loomcycle_sqlmem

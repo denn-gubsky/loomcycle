@@ -37,6 +37,18 @@ const (
 	// how deep they may nest.
 	maxXMLNodes = 1_000_000
 	maxXMLDepth = 256
+	// maxXMLAttrs caps the attributes one XML part (or HTML page) may hold,
+	// and maxXMLAttrsPerElement those on one element. The decoder builds an
+	// element's whole attribute list before it hands the element over, at
+	// about ten times the bytes the attributes take in the file, so both are
+	// counted on the raw bytes before decoding (countXMLAttrs). Office
+	// elements carry a handful; a root with every namespace declared, a few
+	// dozen.
+	maxXMLAttrs           = 2_000_000
+	maxXMLAttrsPerElement = 1024
+	// maxXMLAttrBytes caps the bytes of attribute values a part's tree keeps,
+	// as maxXMLText caps its character data.
+	maxXMLAttrBytes = 64 << 20
 	// maxXMLText caps the character data kept from one XML part.
 	maxXMLText = 64 << 20
 )
@@ -306,6 +318,11 @@ func parseXMLMixed(ctx context.Context, data []byte) (*node, error) {
 }
 
 func parseXMLTree(ctx context.Context, data []byte, textCap int, mixed bool) (*node, error) {
+	// The tree keeps every element's attributes, so the part's total counts
+	// as well as each element's.
+	if err := checkXMLAttrs(ctx, data, maxXMLAttrs); err != nil {
+		return nil, err
+	}
 	d := xml.NewDecoder(bytes.NewReader(data))
 	d.Strict = true
 	type frame struct {
@@ -385,6 +402,161 @@ func parseXMLTree(ctx context.Context, data []byte, textCap int, mixed bool) (*n
 		return nil, errors.New("extract: malformed XML: unclosed element")
 	}
 	return root, nil
+}
+
+// checkXMLAttrs refuses a part with an element of more than
+// maxXMLAttrsPerElement attributes, or more than maxTotal in all (0: no total,
+// for a streaming parse that keeps no element after it has read it; the
+// bytes of attribute values are capped with the total).
+func checkXMLAttrs(ctx context.Context, data []byte, maxTotal int) error {
+	total, widest, valueBytes, err := countXMLAttrs(ctx, data)
+	if err != nil {
+		return err
+	}
+	if widest > maxXMLAttrsPerElement {
+		return refusedf("an XML element holds more than %d attributes", maxXMLAttrsPerElement)
+	}
+	if maxTotal > 0 && total > maxTotal {
+		return refusedf("an XML part holds more than %d attributes", maxTotal)
+	}
+	if maxTotal > 0 && valueBytes > maxXMLAttrBytes {
+		return refusedf("an XML part holds more than %d bytes of attribute values", maxXMLAttrBytes)
+	}
+	return nil
+}
+
+// countXMLAttrs counts the attributes of a part's start tags, those of the
+// widest one and the bytes of their quoted values, from the raw bytes and
+// without allocating: each attribute is a '=' outside quotes inside a start
+// tag, since a strict decoder takes no attribute without a quoted value.
+//
+// It is a second reader of the part, so it must never read less markup than
+// encoding/xml does: comments, CDATA sections and processing instructions
+// end where the decoder ends them, and a directive (<!DOCTYPE …>) is skipped
+// by the decoder's own rules (xml.go, rawToken: quotes and nested <…> counted,
+// a <!--…--> comment inside it skipped before any quote is honoured). And it
+// fails closed: a construct it cannot see the end of is refused, never
+// counted low. The decoder refuses such a part as malformed too, so nothing it
+// would accept is lost. Only a start tag can carry attributes; an end tag or a
+// malformed tag can only make the count come out high.
+func countXMLAttrs(ctx context.Context, data []byte) (total, widest, valueBytes int, err error) {
+	unterminated := refusedf("an XML part ends inside markup")
+	// skipPast moves i past the first sep at or after it, or reports that the
+	// part ends first.
+	skipPast := func(i int, sep string) (int, bool) {
+		if k := bytes.Index(data[i:], []byte(sep)); k >= 0 {
+			return i + k + len(sep), true
+		}
+		return 0, false
+	}
+	nextCheck := 0
+	for i := 0; i < len(data); {
+		if i >= nextCheck {
+			if err := ctx.Err(); err != nil {
+				return 0, 0, 0, err
+			}
+			nextCheck = i + 1<<20
+		}
+		k := bytes.IndexByte(data[i:], '<')
+		if k < 0 {
+			break
+		}
+		i += k + 1
+		rest := data[i:]
+		ok := true
+		switch {
+		case bytes.HasPrefix(rest, []byte("!--")):
+			i, ok = skipPast(i+3, "-->")
+		case bytes.HasPrefix(rest, []byte("![CDATA[")):
+			i, ok = skipPast(i+8, "]]>")
+		case bytes.HasPrefix(rest, []byte("?")):
+			i, ok = skipPast(i+1, "?>")
+		case bytes.HasPrefix(rest, []byte("!")):
+			i, ok = skipXMLDirective(data, i+1)
+		case bytes.HasPrefix(rest, []byte("/")):
+			i, ok = skipPast(i, ">")
+		default:
+			n := 0
+			closed := false
+		tag:
+			for ; i < len(data); i++ {
+				switch c := data[i]; c {
+				case '"', '\'':
+					q := bytes.IndexByte(data[i+1:], c)
+					if q < 0 {
+						break tag
+					}
+					valueBytes += q
+					i += q + 1
+				case '=':
+					n++
+				case '>':
+					i++
+					closed = true
+					break tag
+				}
+			}
+			total += n
+			widest = max(widest, n)
+			ok = closed
+		}
+		if !ok {
+			return 0, 0, 0, unterminated
+		}
+	}
+	return total, widest, valueBytes, nil
+}
+
+// skipXMLDirective skips a directive whose "<!" ends just before data[i], the
+// way encoding/xml's rawToken reads one: the first byte is taken as it is;
+// then quotes, nested <…> and <!--…--> comments are tracked, a comment being
+// recognised before a quote inside it could open a string. It returns where
+// the directive ends, or false when the part ends first.
+func skipXMLDirective(data []byte, i int) (int, bool) {
+	if i >= len(data) {
+		return 0, false
+	}
+	i++ // the decoder takes the byte after "<!" without looking at it
+	var inquote byte
+	depth := 0
+	for {
+		if i >= len(data) {
+			return 0, false
+		}
+		b := data[i]
+		i++
+		if inquote == 0 && b == '>' && depth == 0 {
+			return i, true
+		}
+	handle:
+		switch {
+		case b == inquote:
+			inquote = 0
+		case inquote != 0:
+		case b == '\'' || b == '"':
+			inquote = b
+		case b == '>':
+			depth--
+		case b == '<':
+			const open = "!--"
+			for j := 0; j < len(open); j++ {
+				if i >= len(data) {
+					return 0, false
+				}
+				b = data[i]
+				i++
+				if b != open[j] {
+					depth++
+					goto handle
+				}
+			}
+			k := bytes.Index(data[i:], []byte("-->"))
+			if k < 0 {
+				return 0, false
+			}
+			i += k + len("-->")
+		}
+	}
 }
 
 func (n *node) attr(local string) string {

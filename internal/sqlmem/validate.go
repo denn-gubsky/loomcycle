@@ -119,6 +119,12 @@ func validateStatementForDialect(raw string, readOnly bool, d dialect) error {
 	// today only because pgx's extended protocol rejects multi-statement strings —
 	// an implicit dependency this removes).
 	dollarQuotes := d == dialectPostgres
+	if dollarQuotes {
+		// Postgres ends a -- comment at \r as well as \n; the comment stripper
+		// knows only \n. Elsewhere a \r is whitespace, and inside a literal the
+		// change is to this copy only, which is checked, never run.
+		raw = strings.ReplaceAll(raw, "\r", "\n")
+	}
 	stripped := stripComments(raw, dollarQuotes)
 	trimmed := strings.TrimSpace(stripped)
 	if trimmed == "" {
@@ -315,31 +321,52 @@ func maskStringLiterals(s string) string {
 // dollarTagAt reads a postgres dollar-quote delimiter starting at s[i] (which must
 // be '$'), returning the full delimiter (e.g. "$$" or "$tag$") and true.
 //
-// The tag rule is postgres's: $ then an optional identifier that does NOT start
-// with a digit, then $. That exclusion is what keeps a POSITIONAL PARAMETER ($1,
-// $2 — which the scope tier uses for every bind) from being mistaken for the start
-// of a quoted string, which would swallow the rest of the statement.
+// The tag rule is postgres's (scan.l dolqdelim): $ then an optional tag whose
+// first byte is a letter, '_' or any byte >= 0x80 and whose rest may add
+// digits, then $. Excluding a leading digit is what keeps a POSITIONAL
+// PARAMETER ($1, $2 — which the scope tier uses for every bind) from being
+// mistaken for the start of a quoted string, which would swallow the rest of
+// the statement. A '$' inside a name (a$b$ is one identifier) starts nothing;
+// one after a number (1$a$) does, as postgres reads it.
 func dollarTagAt(s string, i int) (string, bool) {
 	if i >= len(s) || s[i] != '$' {
 		return "", false
 	}
-	j := i + 1
-	for j < len(s) {
-		c := s[j]
+	// Walk back over the run of name characters this '$' may continue: a run
+	// that starts with a digit is a number, anything else a name.
+	j := i
+	for j > 0 && pgIdentCont(s[j-1]) {
+		j--
+	}
+	if j < i && !(s[j] >= '0' && s[j] <= '9') {
+		return "", false
+	}
+	k := i + 1
+	for k < len(s) {
+		c := s[k]
 		switch {
 		case c == '$':
-			return s[i : j+1], true
-		case c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'):
-			j++
-		case c >= '0' && c <= '9' && j > i+1:
+			return s[i : k+1], true
+		case pgIdentStart(c):
+			k++
+		case c >= '0' && c <= '9' && k > i+1:
 			// A digit is legal INSIDE a tag but not as its first character.
-			j++
+			k++
 		default:
 			return "", false
 		}
 	}
 	return "", false
 }
+
+// pgIdentStart and pgIdentCont are postgres's ident_start and ident_cont
+// (scan.l): any byte >= 0x80 counts as a letter, and a name may continue with
+// digits and '$'.
+func pgIdentStart(c byte) bool {
+	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
+}
+
+func pgIdentCont(c byte) bool { return pgIdentStart(c) || c >= '0' && c <= '9' || c == '$' }
 
 func indexOfStatementSeparator(s string, dollarQuotes bool) int {
 	const (

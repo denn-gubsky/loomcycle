@@ -334,6 +334,11 @@ func (m *Manager) queryTxn(ctx context.Context, txnID, statement string, args []
 	if err := validateStatementForDialect(statement, true, m.dialect); err != nil {
 		return nil, err
 	}
+	if maxBytes > 0 {
+		if err := validateWidths(statement, m.dialect, valueLengthLimit(m.cfg)); err != nil {
+			return nil, err
+		}
+	}
 	t := m.txnFor(txnID)
 	if t == nil {
 		return nil, fmt.Errorf("no open transaction for this scope")
@@ -342,12 +347,20 @@ func (m *Manager) queryTxn(ctx context.Context, txnID, statement string, args []
 	defer t.mu.Unlock()
 	qctx, cancel := withTimeout(m.cfg, ctx)
 	defer cancel()
+	limit := valueLengthLimit(m.cfg)
+	if maxBytes > 0 && m.dialect == dialectPostgres {
+		if err := pgCheckWrappable(statement); err != nil {
+			return nil, err
+		}
+		statement = wrapValueLimit(statement, limit)
+	}
 	rows, err := t.tx.QueryContext(qctx, statement, args...)
 	if err != nil {
-		return nil, err
+		return nil, valueLimitErr(err, limit)
 	}
 	defer rows.Close()
-	return collectRows(rows, m.cfg.MaxRows, maxBytes)
+	res, err := collectRows(rows, m.cfg.MaxRows, maxBytes)
+	return res, valueLimitErr(err, limit)
 }
 
 // ExecTxn runs a validated DDL/DML statement on the open transaction for txnID,
@@ -359,6 +372,11 @@ func (m *Manager) ExecTxn(ctx context.Context, txnID, statement string, args []a
 	t := m.txnFor(txnID)
 	if t == nil {
 		return nil, fmt.Errorf("no open transaction for this scope")
+	}
+	if !t.key.isDoc() {
+		if err := validateWidths(statement, m.dialect, valueLengthLimit(m.cfg)); err != nil {
+			return nil, err
+		}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()

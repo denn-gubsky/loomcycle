@@ -43,6 +43,9 @@ func (s *Server) RetentionOverride(ctx context.Context, req *loomcyclepb.Retenti
 }
 
 func retentionOverrideErrToStatus(err error) error {
+	if st, ok := aclRefusalStatus(err); ok {
+		return st
+	}
 	switch {
 	case errors.Is(err, connector.ErrRetentionOverrideInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
@@ -55,4 +58,20 @@ func retentionOverrideErrToStatus(err error) error {
 	default:
 		return status.Errorf(codes.Internal, "retention override: %v", err)
 	}
+}
+
+// aclRefusalStatus maps an access-control refusal a shared operation returned
+// — the question it asks itself, beyond this transport's gate — to the code
+// the gRPC gate gives one: PermissionDenied for a deny, Unavailable when the
+// rules could not be read. The refusal is read through its ACLRefusal method,
+// so this package needs no type from the HTTP one.
+func aclRefusalStatus(err error) (error, bool) {
+	var r interface{ ACLRefusal() bool }
+	if !errors.As(err, &r) {
+		return nil, false
+	}
+	if r.ACLRefusal() {
+		return status.Error(codes.Unavailable, err.Error()), true
+	}
+	return status.Error(codes.PermissionDenied, err.Error()), true
 }

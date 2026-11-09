@@ -276,6 +276,11 @@ func (t sharedTable) at(i int) string {
 // runs joined, its phonetic hints (<rPh>) left out, kept to just past
 // maxCellBytes (no cell shows more).
 func sharedStrings(ctx context.Context, data []byte) (sharedTable, error) {
+	// Streamed: an element's attributes are dropped once it is read, so only
+	// each element's count is capped.
+	if err := checkXMLAttrs(ctx, data, 0); err != nil {
+		return sharedTable{}, err
+	}
 	d := xml.NewDecoder(bytes.NewReader(data))
 	d.Strict = true
 	var buf []byte
@@ -343,6 +348,11 @@ type xlsxCell struct {
 // non-empty rows and whether any cell lay past maxSheetColumns. An error
 // from fn stops the scan and is returned.
 func scanSheet(ctx context.Context, data []byte, sst sharedTable, maxRows int, fn func(row []xlsxCell) error) (int, bool, error) {
+	// Streamed, as sharedStrings is: each element's count is capped, not the
+	// sheet's total (a large sheet has three or four on every cell).
+	if err := checkXMLAttrs(ctx, data, 0); err != nil {
+		return 0, false, err
+	}
 	d := xml.NewDecoder(bytes.NewReader(data))
 	d.Strict = true
 	total := 0
