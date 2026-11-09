@@ -13,7 +13,7 @@
 #   docker build -t denngubsky/loomcycle-builder:dev --build-arg VERSION=dev .
 
 # ---- Stage 1: build the sidecar (stdlib only, static) -----------------------
-FROM golang:1.26-bookworm@sha256:e0c50aecba3a2edfab18924d493cd9210b73c4746fc5fd5b3bb46e0ec7f0465a AS build
+FROM golang:1.26-bookworm@sha256:5de7c99eb78ca5e515a4c340235d0955ec5964a5071c492c15503d7c267da473 AS build
 WORKDIR /src
 COPY go.mod ./
 COPY *.go ./
