@@ -258,3 +258,38 @@ func TestAuditVerify_ARollbackToJustAfterAnAnchorIsABreak(t *testing.T) {
 		t.Fatalf("a rollback to just after the anchor: %+v", rep)
 	}
 }
+
+// An anchor sealed before checkpoints existed (released versions) carries no
+// checkpoints key: its state must still decode, verify and be pruned past.
+// The state below is byte-for-byte what those versions sealed for an
+// operator chain holding one opening.
+func TestAuditVerify_AnAnchorSealedBeforeCheckpointsVerifiesAndPrunes(t *testing.T) {
+	s, db := chainFixture(t, 3) // no checkpoint: under the row count, never closed
+	ctx := context.Background()
+	cutoff := time.Now()
+	for _, tenant := range []string{"", "t1"} {
+		if n, err := pruneForTest(ctx, s, tenant, cutoff); err != nil || n == 0 {
+			t.Fatalf("prune %q: %d, %v", tenant, n, err)
+		}
+	}
+	var state string
+	if err := db.QueryRow(`SELECT anchor_state FROM audit_heads WHERE tenant_id = ''`).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != `{"opened":{"t1":1},"rotated":true}` {
+		t.Fatalf("operator anchor state = %s, want the released shape", state)
+	}
+	sink, err := auditchain.NewStoreSink(s, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record(t, sink, 2)
+	for _, tenant := range []string{"", "t1"} {
+		if rep, err := auditchain.Verify(ctx, s, testKeys, tenant); err != nil || !rep.OK {
+			t.Fatalf("verify %q over a released-shape anchor: %+v, %v", tenant, rep, err)
+		}
+		if _, err := pruneForTest(ctx, s, tenant, time.Now()); err != nil {
+			t.Fatalf("prune %q past a released-shape anchor: %v", tenant, err)
+		}
+	}
+}
