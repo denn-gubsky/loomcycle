@@ -72,18 +72,32 @@ func peakHeap(fn func()) uint64 {
 	return 0
 }
 
+// raceSlack scales a heap ceiling under the race detector, whose bookkeeping
+// and the CI runner's noise move the measured peak by up to about a quarter
+// (a 205 MiB local peak read 256 MiB under -race in CI). Every ceiling still
+// sits far under the unfixed cost it guards against.
+const raceSlack = 2
+
+// ceiling is n, scaled under the race detector.
+func ceiling(n uint64) uint64 {
+	if raceEnabled {
+		return n * raceSlack
+	}
+	return n
+}
+
 func extractBytes(e Extractor, name string, data []byte) (Report, error) {
 	return e.Extract(context.Background(), bytes.NewReader(data), int64(len(data)), &memSink{}, Options{Name: name, Images: true})
 }
 
-func wantRefusedUnder(t *testing.T, label string, ceiling uint64, fn func() error) {
+func wantRefusedUnder(t *testing.T, label string, limit uint64, fn func() error) {
 	t.Helper()
 	var err error
 	got := allocated(func() { err = fn() })
 	if !IsRefused(err) {
 		t.Fatalf("%s: err = %v, want a refusal", label, err)
 	}
-	if got > ceiling {
+	if ceiling := ceiling(limit); got > ceiling {
 		t.Fatalf("%s: refusing it allocated %d MiB, want at most %d MiB", label, got>>20, ceiling>>20)
 	}
 	t.Logf("%s: refused (%v) after %d MiB allocated", label, err, got>>20)
@@ -131,8 +145,8 @@ func TestHTML_AttributeFloodRefusedBeforeParse(t *testing.T) {
 	if !IsRefused(err) {
 		t.Fatalf("err = %v, want a refusal", err)
 	}
-	if peak > 256<<20 {
-		t.Fatalf("refusing it held %d MiB at its peak, want at most 256 MiB", peak>>20)
+	if c := ceiling(256 << 20); peak > c {
+		t.Fatalf("refusing it held %d MiB at its peak, want at most %d MiB", peak>>20, c>>20)
 	}
 	t.Logf("attribute flood: refused (%v) at a peak of %d MiB", err, peak>>20)
 }
@@ -300,8 +314,8 @@ func TestScanSheet_AttributeFloodRefused(t *testing.T) {
 func TestDOCX_AttributeFloodRefused(t *testing.T) {
 	doc := docxWith(t, `<w:document `+nsW+`><w:body>`+attrFlood(2_000_000)+`</w:body></w:document>`)
 	// The ceiling is the archive layer reading the 20 MiB part out of the zip
-	// (about 64 MiB, twice that under -race); the attribute count adds nothing.
-	wantRefusedUnder(t, "DOCX attribute flood", 192<<20, func() error {
+	// (about 64 MiB; ceiling doubles it under -race); the count adds nothing.
+	wantRefusedUnder(t, "DOCX attribute flood", 96<<20, func() error {
 		_, err := extractBytes(DOCX{}, "flood.docx", doc)
 		return err
 	})
@@ -339,4 +353,31 @@ func TestScanXMLAttrs_CountsOnlyRealAttributes(t *testing.T) {
 	if n != 3 || per != 2 || vb != len("1")+len("a=b>c")+len("2") {
 		t.Fatalf("counted %d attributes, %d on the widest element, %d value bytes; want 3, 2 and 7", n, per, vb)
 	}
+}
+
+func TestHTML_StrayEndTagsThatCreateElementsCounted(t *testing.T) {
+	// In <body>, a stray </p> makes the parser create an empty <p> and a </br>
+	// a <br>: end tags that build nodes count as nodes.
+	for _, tag := range []string{"</p>", "</br>", "</P>"} {
+		page := []byte("<body>" + strings.Repeat(tag, (8<<20-16)/len(tag)))
+		wantRefusedUnder(t, tag+" flood", 32<<20, func() error {
+			_, err := extractBytes(HTML{}, "stray.html", page)
+			return err
+		})
+	}
+}
+
+func TestHTML_PeakAtTheNodeCapIsBounded(t *testing.T) {
+	// The documented per-file HTML peak (SECURITY.md, limit.go: about 280
+	// MiB): a page just under the node cap, built and walked.
+	page := []byte(strings.Repeat("<i>x</i>", maxXMLNodes/2-1000))
+	var err error
+	peak := peakHeap(func() { _, err = extractBytes(HTML{}, "cap.html", page) })
+	if err != nil {
+		t.Fatalf("a page under the caps: %v", err)
+	}
+	if c := ceiling(320 << 20); peak > c {
+		t.Fatalf("a page at the node cap held %d MiB at its peak, want at most %d MiB", peak>>20, c>>20)
+	}
+	t.Logf("peak %d MiB", peak>>20)
 }

@@ -611,6 +611,54 @@ func (b *postgresBackend) invalidate(schema, role string) {
 	b.retireScopeLocked(role)
 }
 
+// pgDefaultMaxBodyLen is pgproto3's own ceiling on one backend message, put
+// back on a connection once an agent's statement is done with it.
+const pgDefaultMaxBodyLen = 0x3fffffff - 1
+
+// pgMaxBodyHeadroom is what a message may hold past the value length limit: a
+// row's column count and lengths, and the row's other, small columns.
+const pgMaxBodyHeadroom = 1 << 20
+
+// agentConn takes a scope pool connection for one agent operation. When
+// limited, the connection's protocol reader refuses any backend message whose
+// length header says it is over valueLengthLimit + pgMaxBodyHeadroom, before
+// it reads the body: a DataRow of any size, from any statement (a rule's
+// SELECT action behind a plain INSERT included), never reaches the heap. This
+// is the hard bound on postgres; the statement checks and the query wrapper
+// are earlier, clearer refusals. pgconn closes a connection whose read
+// failed, and database/sql then discards it.
+//
+// The limit is put back on release: the same pool serves the runtime's own
+// reads (snapshot dumps, the Document tool's image bytes), which are not held
+// to it.
+func (b *postgresBackend) agentConn(ctx context.Context, db *sql.DB, limited bool) (*sql.Conn, func(), error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !limited {
+		return conn, func() { _ = conn.Close() }, nil
+	}
+	set := func(n int) error {
+		return conn.Raw(func(dc any) error {
+			c, ok := dc.(*stdlib.Conn)
+			if !ok {
+				return fmt.Errorf("sqlmem: unexpected postgres driver connection %T", dc)
+			}
+			c.Conn().PgConn().Frontend().SetMaxBodyLen(n)
+			return nil
+		})
+	}
+	if err := set(valueLengthLimit(b.cfg) + pgMaxBodyHeadroom); err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+	return conn, func() {
+		_ = set(pgDefaultMaxBodyLen)
+		_ = conn.Close()
+	}, nil
+}
+
 // query runs a (already-validated, read-only) statement on the scope connection
 // in a READ-ONLY transaction (the write backstop). No SET LOCAL ROLE: the
 // connection's session_user IS the scope role.
@@ -631,7 +679,13 @@ func (b *postgresBackend) query(ctx context.Context, key ScopeKey, statement str
 	qctx, cancel := withTimeout(b.cfg, ctx)
 	defer cancel()
 
-	tx, err := sc.db.BeginTx(qctx, &sql.TxOptions{ReadOnly: true})
+	// A capped read is an agent's statement (agentConn).
+	conn, done, err := b.agentConn(qctx, sc.db, maxBytes > 0)
+	if err != nil {
+		return nil, b.healAuth(schema, role, err)
+	}
+	defer done()
+	tx, err := conn.BeginTx(qctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, b.healAuth(schema, role, err)
 	}
@@ -664,7 +718,14 @@ func (b *postgresBackend) exec(ctx context.Context, key ScopeKey, statement stri
 	ectx, cancel := withTimeout(b.cfg, ctx)
 	defer cancel()
 
-	tx, err := sc.db.BeginTx(ectx, nil)
+	// A write to the agent plane is an agent's statement (agentConn); the
+	// document plane's writes are the Document tool's own.
+	conn, done, err := b.agentConn(ectx, sc.db, !key.isDoc())
+	if err != nil {
+		return nil, b.healAuth(schema, role, err)
+	}
+	defer done()
+	tx, err := conn.BeginTx(ectx, nil)
 	if err != nil {
 		return nil, b.healAuth(schema, role, err)
 	}
@@ -721,12 +782,20 @@ func (b *postgresBackend) beginTx(ctx context.Context, key ScopeKey) (*sql.Tx, f
 	if err != nil {
 		return nil, nil, err
 	}
-	tx, err := sc.db.BeginTx(ctx, nil)
+	// A transaction on the agent plane is an agent's (sql_begin), and holds
+	// the protocol cap for its life (agentConn).
+	conn, done, err := b.agentConn(ctx, sc.db, !key.isDoc())
 	if err != nil {
 		b.releaseScope(sc)
 		return nil, nil, b.healAuth(schema, role, err)
 	}
-	return tx, func() { b.releaseScope(sc) }, nil
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		done()
+		b.releaseScope(sc)
+		return nil, nil, b.healAuth(schema, role, err)
+	}
+	return tx, func() { done(); b.releaseScope(sc) }, nil
 }
 
 // txnSizeBytes measures the scope's size on the open transaction.
