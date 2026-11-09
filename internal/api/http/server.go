@@ -4524,6 +4524,15 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("POST /v1/_users/{subject}/tokens", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMintUserToken))))
 	mux.Handle("GET /v1/_users/{subject}/tokens", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUserTokens))))
 	mux.Handle("DELETE /v1/_users/{subject}/tokens/{def_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRevokeUserToken))))
+	// A user's app sign-ins (OAuth refresh-token families): which apps the
+	// person is signed in to, and ending one (app_signins.go). ScopeTenant
+	// via the /v1/_users/ prefix, carved out of the member path; the ACL asks
+	// read or manage principal:user:<subject>. The person's own twins under
+	// /v1/_me answer any signed-in principal for its own sign-ins only.
+	mux.Handle("GET /v1/_users/{subject}/app-sign-ins", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUserAppSignIns))))
+	mux.Handle("DELETE /v1/_users/{subject}/app-sign-ins/{family_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleEndUserAppSignIn))))
+	mux.Handle("GET /v1/_me/app-sign-ins", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListMyAppSignIns))))
+	mux.Handle("DELETE /v1/_me/app-sign-ins/{family_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleEndMyAppSignIn))))
 	// RFC FA P2 — the password gate's management API: invitations, reset
 	// links, password removal, login renames and the logins of a user. None
 	// accepts a password. A tenant operator manages its own tenant, an admin

@@ -75,6 +75,12 @@ func TestHTTPSurface_RepresentativeRoutes(t *testing.T) {
 		{"POST", "/v1/_users/alice/identities", instance("manage", "principal", "user:alice"), true},
 		{"DELETE", "/v1/_users/alice/identities/google", instance("manage", "principal", "user:alice"), true},
 		{"POST", "/v1/_users/alice/approve", instance("manage", "principal", "user:alice"), true},
+		// A user's app sign-ins: listing is reading the user, ending one is
+		// managing it. The caller's own under /v1/_me ask nothing, as /v1/_me.
+		{"GET", "/v1/_users/alice/app-sign-ins", instance("read", "principal", "user:alice"), true},
+		{"DELETE", "/v1/_users/alice/app-sign-ins/fam1", instance("manage", "principal", "user:alice"), true},
+		{"GET", "/v1/_me/app-sign-ins", Surface{}, false},
+		{"DELETE", "/v1/_me/app-sign-ins/fam1", Surface{}, false},
 		{"POST", "/v1/_snapshots", instance("manage", "runtime", "snapshot"), true},
 		{"GET", "/v1/_events", instance("read", "runtime", "events"), true},
 		{"GET", "/v1/_audit", instance("read", "runtime", "audit"), true},
