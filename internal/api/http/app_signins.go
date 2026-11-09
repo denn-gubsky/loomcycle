@@ -194,12 +194,23 @@ func (s *Server) operatorAppSignInTarget(w http.ResponseWriter, r *http.Request)
 	return tenant, subject, true
 }
 
+// errAppTokenSignIns is the refusal of an app's own token on the caller's
+// app sign-in routes: an app signed in on the person's behalf, capped to
+// what it was granted, must not read or end the person's other sign-ins.
+// The person does it with its own session or token.
+var errAppTokenSignIns = errors.New("an app's token cannot list or end the person's app sign-ins; use your own session or token")
+
 // selfAppSignInTarget is the caller's own (tenant, subject). A principal
-// with no subject (open mode, the legacy token) has no sign-ins of its own.
+// with no subject (open mode, the legacy token) has no sign-ins of its own,
+// and an app's own token is refused (errAppTokenSignIns).
 func selfAppSignInTarget(w http.ResponseWriter, r *http.Request) (string, string, bool) {
 	p, ok := auth.PrincipalFromContext(r.Context())
 	if !ok || p.Subject == "" {
 		writeJSONError(w, http.StatusForbidden, "subject_required", "app sign-ins belong to a signed-in person; this credential names none")
+		return "", "", false
+	}
+	if p.OAuthClient != "" {
+		writeJSONError(w, http.StatusForbidden, "app_token_refused", errAppTokenSignIns.Error())
 		return "", "", false
 	}
 	return p.TenantID, p.Subject, true

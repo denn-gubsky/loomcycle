@@ -88,6 +88,11 @@ func (s *Server) appSignInSelf(ctx context.Context) (auth.Principal, error) {
 	if !ok || p.Subject == "" {
 		return auth.Principal{}, status.Error(codes.PermissionDenied, "app sign-ins belong to a signed-in person; this credential names none")
 	}
+	if p.OAuthClient != "" {
+		// As GET/DELETE /v1/_me/app-sign-ins: an app's own token must not
+		// read or end the person's other sign-ins.
+		return auth.Principal{}, status.Error(codes.PermissionDenied, "an app's token cannot list or end the person's app sign-ins; use your own session or token")
+	}
 	return p, nil
 }
 

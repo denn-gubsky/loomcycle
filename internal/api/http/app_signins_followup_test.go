@@ -2,8 +2,10 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -138,5 +140,47 @@ func TestDeviceLogin_ARedemptionOvertakenByATeardownYieldsNoToken(t *testing.T) 
 		if tokenActive(r) {
 			t.Fatalf("a device token made across the teardown is active: %s (poll answered %d)", r.DefID, a.Status)
 		}
+	}
+}
+
+// mintPersonalToken mints a delegated token for the user as its operator
+// would, and returns the bearer.
+func mintPersonalToken(t *testing.T, ts *httptest.Server, subject string) string {
+	t.Helper()
+	code, body := bearerCall(t, ts, appOpBearer, "POST", "/v1/_users/"+subject+"/tokens", `{}`)
+	if code != http.StatusCreated {
+		t.Fatalf("mint: %d", code)
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil || out.Token == "" {
+		t.Fatalf("mint answer unreadable: %v", err)
+	}
+	return out.Token
+}
+
+// An app's own token (issued through an app sign-in, capped to what the app
+// was granted) cannot list or end the person's sign-ins: one app must not
+// sign the person out of the others. The person's own token can.
+func TestAppSignIns_AnAppTokenCannotReachThePersonsSignIns(t *testing.T) {
+	f := newAppFixture(t, "tenant")
+	ts := appOpServer(t, f)
+	at, _ := f.signIn(t)
+	fam := liveFamilyOf(t, f.st, "google:100")
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/v1/_me/app-sign-ins"},
+		{"DELETE", "/v1/_me/app-sign-ins/" + fam},
+	} {
+		if code, _ := bearerCall(t, ts, at, c.method, c.path, ""); code != http.StatusForbidden {
+			t.Errorf("an app token: %s %s = %d, want 403", c.method, c.path, code)
+		}
+	}
+	if row, _ := f.st.OAuthFamilyGet(context.Background(), fam); !row.RevokedAt.IsZero() {
+		t.Fatal("an app token ended a sign-in")
+	}
+	own := mintPersonalToken(t, ts, "google:100")
+	if code, body := bearerCall(t, ts, own, "GET", "/v1/_me/app-sign-ins", ""); code != http.StatusOK || len(appSignInList(t, body)) != 1 {
+		t.Fatalf("the person's own token = %d %s", code, body)
 	}
 }

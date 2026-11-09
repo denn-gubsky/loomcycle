@@ -136,9 +136,12 @@ func liveFamilyOf(t *testing.T, st store.Store, subject string) string {
 func TestAppSignIns_APersonSeesAndEndsOnlyItsOwn(t *testing.T) {
 	f := newAppFixture(t, "tenant")
 	ts := appOpServer(t, f)
-	at, _ := f.signIn(t)
+	f.signIn(t)
 	_, rt2 := f.signIn(t)
 	mine := familyOfRefresh(t, f.st, rt2)
+	// The person's own token: an app's token is refused here
+	// (TestAppSignIns_AnAppTokenCannotReachThePersonsSignIns).
+	at := mintPersonalToken(t, ts, "google:100")
 	seedToken(t, f.st, "peer-bearer", "acme", "peer", []string{auth.ScopeRunsRead, auth.ScopeRunsCreate}, time.Time{})
 
 	if code, _ := bearerCall(t, ts, at, "GET", "/v1/_users/google:100/app-sign-ins", ""); code != http.StatusForbidden {
