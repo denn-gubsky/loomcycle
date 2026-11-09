@@ -828,6 +828,7 @@ func runToProto(r store.Run, live bool) *loomcyclepb.Agent {
 		StartedAt:     timestamppb.New(r.StartedAt),
 		StopReason:    r.StopReason,
 		Retention:     r.Retention,
+		TraceId:       r.TraceID,
 		Error:         r.ErrorMsg,
 		Usage: &loomcyclepb.AgentUsage{
 			InputTokens:         int64(r.InputTokens),
@@ -2286,6 +2287,7 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 		Error:      ev.Error,
 		IsError:    ev.IsError,
 		StopReason: ev.StopReason,
+		TraceId:    ev.TraceID,
 	}
 	if ev.ToolUse != nil {
 		out.ToolUse = &loomcyclepb.ToolUse{

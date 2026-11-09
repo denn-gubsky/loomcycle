@@ -420,9 +420,12 @@ type Run struct {
 	CompletedAt   *time.Time `json:"completed_at,omitempty"`
 	StopReason    string     `json:"stop_reason,omitempty"`
 	// Retention is "none" for a no-trace run, whose content was not stored.
-	Retention string           `json:"retention,omitempty"`
-	Usage     *providers.Usage `json:"usage,omitempty"`
-	Error     string           `json:"error,omitempty"`
+	Retention string `json:"retention,omitempty"`
+	// TraceID is the OpenTelemetry trace the run was recorded in; empty when
+	// tracing was off or the trace unsampled.
+	TraceID string           `json:"trace_id,omitempty"`
+	Usage   *providers.Usage `json:"usage,omitempty"`
+	Error   string           `json:"error,omitempty"`
 	// Result is the run's answer (RFC DI): {final_text, state}. Set by GetRun,
 	// and by ListWalkRuns on the walk's own row only; ListRuns leaves it empty
 	// so a listing stays small.

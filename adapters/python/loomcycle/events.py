@@ -420,6 +420,9 @@ class AgentEvent:
     error: str = ""
     is_error: bool = False
     stop_reason: str = ""
+    # On a "started" event: the OpenTelemetry trace the run is recorded in;
+    # "" when tracing is off or the trace is not sampled.
+    trace_id: str = ""
 
     @classmethod
     def _from_proto(cls, ev) -> "AgentEvent":
@@ -622,4 +625,5 @@ class AgentEvent:
             error=ev.error,
             is_error=ev.is_error,
             stop_reason=ev.stop_reason,
+            trace_id=ev.trace_id,
         )

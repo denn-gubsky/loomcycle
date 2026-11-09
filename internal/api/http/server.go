@@ -3830,6 +3830,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		AgentName: effectiveAgentName,
 		UserID:    effectiveUserID,
 	})
+	s.recordRunTraceID(runCtx, runID)
 	defer func() {
 		if !handOff {
 			runSpan.End()
@@ -7031,6 +7032,19 @@ func (s *Server) liveRunIDs() func(string) bool {
 	return func(id string) bool { return live[id] }
 }
 
+// recordRunTraceID stores the trace the run span on ctx records into, so the
+// run can be followed to it. Nothing is written when tracing is off or the
+// trace unsampled. A failed write costs the link, never the run.
+func (s *Server) recordRunTraceID(ctx context.Context, runID string) {
+	tid := lcotel.SampledTraceID(ctx)
+	if tid == "" || s.store == nil {
+		return
+	}
+	if err := s.store.SetRunTraceID(ctx, runID, tid); err != nil {
+		slog.WarnContext(ctx, "otel: recording the run's trace id failed", "run_id", runID, "err", err)
+	}
+}
+
 // secretEnvValues extracts the VALUES of secret-classified env vars (by name)
 // from an environ slice ("NAME=value" entries), for the F32 redactor's exact-
 // match tier. Empty values are skipped (nothing to mask).
@@ -8067,6 +8081,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		UserID:        parentIdentity.UserID,
 		ParentAgentID: parentIdentity.AgentID,
 	})
+	s.recordRunTraceID(subRunCtx, subRunID)
 	defer func() {
 		if !prepOK {
 			subRunSpan.End()
@@ -8382,7 +8397,10 @@ type agentResponse struct {
 	StopReason    string          `json:"stop_reason,omitempty"`
 	// Retention is "none" for a no-trace run: its transcript holds markers
 	// and its result reads "content not retained". Absent otherwise.
-	Retention       string             `json:"retention,omitempty"`
+	Retention string `json:"retention,omitempty"`
+	// TraceID is the OpenTelemetry trace the run was recorded in; absent when
+	// tracing was off or the trace unsampled.
+	TraceID         string             `json:"trace_id,omitempty"`
 	Error           string             `json:"error,omitempty"`
 	Usage           agentResponseUsage `json:"usage"`
 	LastHeartbeatAt *time.Time         `json:"last_heartbeat_at,omitempty"`
@@ -8481,6 +8499,7 @@ func runToAgentResponse(r store.Run, live bool) agentResponse {
 		StartedAt:     r.StartedAt,
 		StopReason:    r.StopReason,
 		Retention:     r.Retention,
+		TraceID:       r.TraceID,
 		Error:         r.ErrorMsg,
 		Usage: agentResponseUsage{
 			InputTokens:         r.InputTokens,

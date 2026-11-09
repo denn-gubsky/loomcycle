@@ -278,3 +278,10 @@ def test_error_info_without_call_format_has_none():
     proto = pb.Event(type="error", error="budget", error_info=pb.ErrorInfo(category="business"))
     ev = AgentEvent._from_proto(proto)
     assert ev.error_info is not None and ev.error_info.call_format is None
+
+
+def test_started_event_carries_the_trace_id():
+    ev = AgentEvent._from_proto(pb.Event(type="started", trace_id="4bf92f3577b34da6a3ce929d0e0e4736"))
+    assert ev.type == "started"
+    assert ev.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736"
+    assert AgentEvent._from_proto(pb.Event(type="text", text="x")).trace_id == ""

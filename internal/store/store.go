@@ -645,6 +645,11 @@ type Run struct {
 	CredentialSource  string   `json:"credential_source,omitempty"`
 	CredentialScopeID string   `json:"credential_scope_id,omitempty"`
 
+	// TraceID is the OpenTelemetry trace the run's span recorded, so an
+	// operator can go from a run to its trace. Empty when tracing was off or
+	// the trace was not sampled (nothing was exported to link to).
+	TraceID string `json:"trace_id,omitempty"`
+
 	// RunConfig is the run's own configuration record (RFC DD): the values this
 	// run was started with, as opposed to what its definition says today.
 	// Opaque to the store on purpose — internal/config imports internal/store,
@@ -2227,6 +2232,11 @@ type RunStore interface {
 	// a resumed run its new process counted against its user (user_slot
 	// TRUE). A missing row is a no-op.
 	MarkRunUserSlot(ctx context.Context, runID string) error
+
+	// SetRunTraceID records the trace a run's span is recorded in. Written
+	// once the span starts, which is after the row is created. A missing row
+	// is a no-op.
+	SetRunTraceID(ctx context.Context, runID, traceID string) error
 
 	// FindLiveAgentRun returns a top-level run of agent for (tenantID, userID)
 	// whose status is "running" — a row parked awaiting its resume included —

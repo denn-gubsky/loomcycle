@@ -3164,7 +3164,7 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 		}
 	}
 
-	emit(providers.Event{Type: providers.EventStarted})
+	emit(providers.Event{Type: providers.EventStarted, TraceID: lcotel.SampledTraceID(ctx)})
 
 	// A run whose hooks could not be resolved does not start: a gate its
 	// definition names must not silently be missing. Returned, not emitted,

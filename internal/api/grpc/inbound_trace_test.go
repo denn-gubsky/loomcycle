@@ -16,7 +16,9 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 const (
@@ -112,5 +114,16 @@ func TestRunRPC_OpenModeIgnoresTraceparent(t *testing.T) {
 	}
 	if spans[0].Parent.IsValid() || spans[0].SpanContext.TraceID().String() == inboundTraceID {
 		t.Errorf("open mode joined the caller's trace: parent=%s", spans[0].Parent.SpanID())
+	}
+}
+
+// TestRunToProto_CarriesTraceID: GetRun / GetAgent and the started frame map
+// the run's trace id onto the wire.
+func TestRunToProto_CarriesTraceID(t *testing.T) {
+	if got := runToProto(store.Run{ID: "r", TraceID: inboundTraceID}, false).GetTraceId(); got != inboundTraceID {
+		t.Errorf("Agent.trace_id = %q, want %q", got, inboundTraceID)
+	}
+	if got := eventToProto(providers.Event{Type: providers.EventStarted, TraceID: inboundTraceID}).GetTraceId(); got != inboundTraceID {
+		t.Errorf("Event.trace_id = %q, want %q", got, inboundTraceID)
 	}
 }

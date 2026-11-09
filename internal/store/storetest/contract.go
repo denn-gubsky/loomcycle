@@ -181,6 +181,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ClaimPausedRunSucceedsOnce", testClaimPausedRunSucceedsOnce},
 		{"UnclaimPausedRunLeavesAnEndedRunEnded", testUnclaimPausedRunLeavesAnEndedRunEnded},
 		{"TakeRunUserSlotReportsEachSlotOnce", testTakeRunUserSlotReportsEachSlotOnce},
+		{"SetRunTraceIDReadsBackOnEveryRunRead", testSetRunTraceIDReadsBackOnEveryRunRead},
 		{"FindLiveAgentRunReadsPastNewerRuns", testFindLiveAgentRunReadsPastNewerRuns},
 		{"SnapshotRestoreRunKeepsItsTenant", testSnapshotRestoreRunKeepsItsTenant},
 		{"SnapshotRestoreRunKeepsItsParentRun", testSnapshotRestoreRunKeepsItsParentRun},
@@ -5350,6 +5351,44 @@ func testTakeRunUserSlotReportsEachSlotOnce(t *testing.T, s store.Store) {
 	}
 	if err := s.MarkRunUserSlot(ctx, "run_does_not_exist"); err != nil {
 		t.Errorf("MarkRunUserSlot of a missing row: %v, want nil", err)
+	}
+}
+
+// A run's trace id, written after the row exists, comes back on the single
+// read and the listings; a run never given one reads empty, and a missing row
+// is a no-op.
+func testSetRunTraceIDReadsBackOnEveryRunRead(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, err := s.CreateSession(ctx, "t", "a", "u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	traced, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_traced", UserID: "u"})
+	plain, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_plain", UserID: "u"})
+	const tid = "4bf92f3577b34da6a3ce929d0e0e4736"
+	if err := s.SetRunTraceID(ctx, traced.ID, tid); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRunTraceID(ctx, "run_does_not_exist", tid); err != nil {
+		t.Errorf("SetRunTraceID of a missing row: %v, want nil", err)
+	}
+	got, err := s.GetRun(ctx, traced.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TraceID != tid {
+		t.Errorf("GetRun trace_id = %q, want %q", got.TraceID, tid)
+	}
+	runs, err := s.RunsForSession(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]string{}
+	for _, r := range runs {
+		seen[r.ID] = r.TraceID
+	}
+	if seen[traced.ID] != tid || seen[plain.ID] != "" {
+		t.Errorf("RunsForSession trace ids = %v, want %s on the traced run only", seen, tid)
 	}
 }
 

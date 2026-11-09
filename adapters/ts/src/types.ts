@@ -970,6 +970,9 @@ export interface AgentEvent {
    *  the flag would re-feed the model a successful-looking result. */
   is_error?: boolean;
   stop_reason?: string;
+  /** On `event: started`: the OpenTelemetry trace the run is recorded in.
+   *  Absent when tracing is off or the trace is not sampled. */
+  trace_id?: string;
   /** Retry payload on `event: retry`. Nil on all other event types. */
   retry?: RetryInfo;
   /** Host-widening payload on `event: host_widened`. Nil on all other
@@ -1715,6 +1718,9 @@ export interface Agent {
   /** `"none"` for a no-trace run: its transcript holds markers, not content,
    *  and `error` is a class. Absent on every other run. */
   retention?: string;
+  /** The OpenTelemetry trace the run was recorded in. Absent when tracing was
+   *  off or the trace was not sampled. */
+  trace_id?: string;
   error: string | null;
   usage: AgentUsage;
   last_heartbeat_at: string | null;

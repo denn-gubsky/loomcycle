@@ -793,6 +793,7 @@ func storeRunToConnector(r store.Run) connector.Run {
 		StartedAt:     r.StartedAt,
 		StopReason:    r.StopReason,
 		Retention:     r.Retention,
+		TraceID:       r.TraceID,
 		Usage:         usage,
 		Error:         r.ErrorMsg,
 		ParentContext: r.ParentContext,

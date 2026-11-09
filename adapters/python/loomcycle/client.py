@@ -3444,6 +3444,9 @@ def _agent_to_dict(a: pb.Agent) -> Mapping[str, Any]:
         "completed_at": _ts_to_iso(a.completed_at) if a.HasField("completed_at") else None,
         "stop_reason": a.stop_reason,
         "retention": a.retention,
+        # The OpenTelemetry trace the run was recorded in; "" when tracing was
+        # off or the trace was not sampled.
+        "trace_id": a.trace_id,
         "error": a.error,
         "usage": {
             "input_tokens": a.usage.input_tokens,
