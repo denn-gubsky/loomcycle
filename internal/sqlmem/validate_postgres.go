@@ -159,15 +159,48 @@ const pgValueLimitMarker = "loomcycle-sqlmem-value-limit"
 // EXECUTE 'SET …'), and then a plain '…' string takes backslash escapes too.
 // The statement is read both ways and must pass both.
 func pgCheckWrappable(statement string) error {
-	if err := pgCheckWrappableAs(statement, false); err != nil {
-		return err
+	for _, backslash := range []bool{false, true} {
+		toks, err := pgTokens(statement, backslash)
+		if err != nil {
+			return err
+		}
+		depth := 0
+		for i, t := range toks {
+			if t.kind != tokPunct {
+				continue
+			}
+			switch t.text {
+			case "(":
+				depth++
+			case ")":
+				if depth--; depth < 0 {
+					return refuse("the statement closes a parenthesis it did not open")
+				}
+			case ";":
+				if i != len(toks)-1 {
+					return refuse("only one SQL statement per call is allowed, with nothing after its ';'")
+				}
+			}
+		}
+		if depth != 0 {
+			return refuse("the statement leaves a parenthesis open")
+		}
 	}
-	return pgCheckWrappableAs(statement, true)
+	return nil
 }
 
-func pgCheckWrappableAs(statement string, backslashStrings bool) error {
+// pgTokens splits a statement into tokens by postgres's lexical rules (see
+// pgCheckWrappable), leaving out comments: names (tokIdent, quoted marked),
+// numbers, strings (every literal form, dollar-quoted included), $N
+// parameters (as names, so they never fold as constants) and single
+// punctuation bytes. backslashStrings reads plain '…' strings as taking
+// backslash escapes, as a session with standard_conforming_strings off does.
+// It fails closed on anything it cannot be sure postgres reads the same way.
+// Every postgres check on an agent statement reads these tokens, so none of
+// them can disagree with another, or with the wrapper.
+func pgTokens(statement string, backslashStrings bool) ([]widthToken, error) {
 	s := statement
-	depth := 0
+	var out []widthToken
 	unterminated := refuse("the statement ends inside a string, quoted name or comment")
 	unclear := func(what string) error {
 		return refuse("%s is not read here the way postgres may read it; write it plainly", what)
@@ -178,6 +211,7 @@ func pgCheckWrappableAs(statement string, backslashStrings bool) error {
 		prefixed := escapedString
 		escapedString = false
 		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v':
 		case c == '-' && i+1 < len(s) && s[i+1] == '-':
 			// A line comment ends at \n or \r, as postgres ends it.
 			if k := strings.IndexAny(s[i:], "\r\n"); k >= 0 {
@@ -190,7 +224,7 @@ func pgCheckWrappableAs(statement string, backslashStrings bool) error {
 			nest := 1
 			for i += 2; nest > 0; i++ {
 				if i+1 >= len(s) {
-					return unterminated
+					return nil, unterminated
 				}
 				switch {
 				case s[i] == '/' && s[i+1] == '*':
@@ -204,43 +238,55 @@ func pgCheckWrappableAs(statement string, backslashStrings bool) error {
 			i--
 		case c == '\'':
 			escapes := backslashStrings || prefixed
+			var b strings.Builder
 			j := i + 1
 			for ; ; j++ {
 				if j >= len(s) {
-					return unterminated
+					return nil, unterminated
 				}
 				if escapes && s[j] == '\\' {
+					if j+1 < len(s) {
+						b.WriteByte(s[j+1])
+					}
 					j++
 					continue
 				}
 				if s[j] == '\'' {
 					if j+1 < len(s) && s[j+1] == '\'' {
+						b.WriteByte('\'')
 						j++
 						continue
 					}
 					break
 				}
+				b.WriteByte(s[j])
 			}
+			out = append(out, widthToken{kind: tokString, text: b.String()})
 			i = j
 		case c == '"':
+			var b strings.Builder
 			j := i + 1
 			for ; ; j++ {
 				if j >= len(s) {
-					return unterminated
+					return nil, unterminated
 				}
 				if s[j] == '"' {
 					if j+1 < len(s) && s[j+1] == '"' {
+						b.WriteByte('"')
 						j++
 						continue
 					}
 					break
 				}
+				b.WriteByte(s[j])
 			}
+			out = append(out, widthToken{kind: tokIdent, text: b.String(), quoted: true})
 			i = j
 		case c >= '0' && c <= '9' || c == '.' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9':
 			// A number: digits, '_', '.', an exponent, or a 0x/0o/0b prefix.
-			// One run straight into a name or a string is read differently by
-			// postgres versions (an error, or two tokens): refused.
+			// One run straight into a name, a string or a '$' is read
+			// differently by postgres versions (an error, two tokens, or a
+			// dollar quote): refused.
 			j := i + 1
 			if c == '0' && j < len(s) && strings.IndexByte("xXoObB", s[j]) >= 0 {
 				for j++; j < len(s) && (isHexDigit(s[j]) || s[j] == '_'); j++ {
@@ -260,11 +306,10 @@ func pgCheckWrappableAs(statement string, backslashStrings bool) error {
 					}
 				}
 			}
-			// And a '$' straight after a number: postgres 15+ opens a dollar
-			// quote there, 14 reads the rest as a name.
 			if j < len(s) && (pgIdentStart(s[j]) || s[j] == '\'' || s[j] == '"' || s[j] == '$') {
-				return unclear("a number run into a name or string (" + s[i:min(len(s), j+1)] + ")")
+				return nil, unclear("a number run into a name, string or '$' (" + s[i:min(len(s), j+1)] + ")")
 			}
+			out = append(out, widthToken{kind: tokNumber, text: s[i:j]})
 			i = j - 1
 		case pgIdentStart(c):
 			j := i + 1
@@ -279,46 +324,144 @@ func pgCheckWrappableAs(statement string, backslashStrings bool) error {
 					escapedString = true
 				case "b", "B", "x", "X", "n", "N":
 				default:
-					return unclear("a string straight after the name " + w)
+					return nil, unclear("a string straight after the name " + w)
 				}
+			} else {
+				out = append(out, widthToken{kind: tokIdent, text: s[i:j]})
 			}
 			i = j - 1
 		case c == '$':
 			if i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
-				// A parameter, $N.
+				// A parameter, $N: a name to the checks, never a constant.
 				j := i + 1
 				for j < len(s) && s[j] >= '0' && s[j] <= '9' {
 					j++
 				}
 				if j < len(s) && pgIdentCont(s[j]) {
-					return unclear("a parameter run into a name (" + s[i:min(len(s), j+1)] + ")")
+					return nil, unclear("a parameter run into a name (" + s[i:min(len(s), j+1)] + ")")
 				}
+				out = append(out, widthToken{kind: tokIdent, text: s[i:j]})
 				i = j - 1
 				continue
 			}
 			tag, ok := dollarTagAt(s, i)
 			if !ok {
-				return unclear("a '$' that is neither a parameter nor a dollar quote")
+				return nil, unclear("a '$' that is neither a parameter nor a dollar quote")
 			}
 			end := strings.Index(s[i+len(tag):], tag)
 			if end < 0 {
-				return unterminated
+				return nil, unterminated
 			}
+			out = append(out, widthToken{kind: tokString, text: s[i+len(tag) : i+len(tag)+end]})
 			i += len(tag) + end + len(tag) - 1
-		case c == '(':
-			depth++
-		case c == ')':
-			if depth--; depth < 0 {
-				return refuse("the statement closes a parenthesis it did not open")
-			}
-		case c == ';':
-			if strings.TrimSpace(s[i+1:]) != "" {
-				return refuse("only one SQL statement per call is allowed, with nothing after its ';'")
-			}
+		default:
+			out = append(out, widthToken{kind: tokPunct, text: s[i : i+1]})
 		}
 	}
-	if depth != 0 {
-		return refuse("the statement leaves a parenthesis open")
+	return out, nil
+}
+
+// pgCheckExec refuses a postgres write that could make the server send rows:
+// sql_exec reports only the rows it changed, and the driver reads every row
+// it is sent whole into the runtime's heap (no result cap on that path; it
+// cannot be streamed away). So the statement, after an optional WITH list,
+// must be INSERT, UPDATE, DELETE or MERGE, or DDL that is not CREATE RULE (a
+// rule's SELECT action returns rows from a later write), and carry no
+// RETURNING anywhere outside literals and quoted names. It reads the same
+// tokens as the wrapper, in both string readings, and fails closed.
+func pgCheckExec(statement string) error {
+	for _, backslash := range []bool{false, true} {
+		toks, err := pgTokens(statement, backslash)
+		if err != nil {
+			return err
+		}
+		word := func(i int) string {
+			if i < len(toks) && toks[i].kind == tokIdent && !toks[i].quoted {
+				return strings.ToLower(toks[i].text)
+			}
+			return ""
+		}
+		for i := range toks {
+			if word(i) == "returning" {
+				return refuse("RETURNING is denied here — sql_exec reports the rows it changed; read them back with sql_query")
+			}
+		}
+		// skipParens moves i past a balanced (…) group starting at i.
+		skipParens := func(i int) (int, bool) {
+			if i >= len(toks) || toks[i].kind != tokPunct || toks[i].text != "(" {
+				return i, false
+			}
+			depth := 0
+			for ; i < len(toks); i++ {
+				if toks[i].kind == tokPunct {
+					switch toks[i].text {
+					case "(":
+						depth++
+					case ")":
+						if depth--; depth == 0 {
+							return i + 1, true
+						}
+					}
+				}
+			}
+			return i, false
+		}
+		notWrite := refuse("sql_exec runs writes and DDL only; a statement that returns rows belongs in sql_query")
+		i := 0
+		if word(0) == "with" {
+			i = 1
+			if word(i) == "recursive" {
+				i++
+			}
+			for {
+				if i >= len(toks) || toks[i].kind != tokIdent {
+					return notWrite
+				}
+				i++
+				if i < len(toks) && toks[i].text == "(" {
+					var ok bool
+					if i, ok = skipParens(i); !ok {
+						return notWrite
+					}
+				}
+				if word(i) != "as" {
+					return notWrite
+				}
+				i++
+				if word(i) == "not" {
+					i++
+				}
+				if word(i) == "materialized" {
+					i++
+				}
+				var ok bool
+				if i, ok = skipParens(i); !ok {
+					return notWrite
+				}
+				if i < len(toks) && toks[i].kind == tokPunct && toks[i].text == "," {
+					i++
+					continue
+				}
+				break
+			}
+			switch word(i) {
+			case "insert", "update", "delete", "merge":
+			default:
+				return notWrite
+			}
+			continue
+		}
+		switch word(0) {
+		case "insert", "update", "delete", "merge", "drop", "alter":
+		case "create":
+			for j := 1; j < min(len(toks), 4); j++ {
+				if word(j) == "rule" {
+					return refuse("CREATE RULE is denied — a rule's action can return rows from a later write")
+				}
+			}
+		default:
+			return notWrite
+		}
 	}
 	return nil
 }
@@ -361,17 +504,4 @@ func valueLimitErr(err error, limit int) error {
 		return refuse("a row of the result is over the %d-byte limit on one SQL Memory value; select less of it (substr, length) or fewer columns", limit)
 	}
 	return err
-}
-
-// pgHasReturning reports a RETURNING clause in a write: sql_exec reports only
-// the rows it affected, yet the driver reads every returned row whole into the
-// runtime's heap, with no result cap on that path. A quoted name or a string
-// holding the word is not the clause.
-func pgHasReturning(statement string) bool {
-	for _, t := range widthTokens(stripComments(strings.ReplaceAll(statement, "\r", "\n"), true), true) {
-		if t.kind == tokIdent && !t.quoted && strings.EqualFold(t.text, "returning") {
-			return true
-		}
-	}
-	return false
 }

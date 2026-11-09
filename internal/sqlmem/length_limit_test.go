@@ -537,3 +537,62 @@ func TestPgWrappable_NoDollarQuoteRightAfterANumber(t *testing.T) {
 		}
 	}
 }
+
+func TestPostgresExec_RefusesStatementsThatReturnRows(t *testing.T) {
+	// sql_exec on postgres reads every row the server sends whole, so a
+	// statement that can return rows is refused there, read by the same lexer
+	// as the wrapped query path.
+	const limit = 16 << 20
+	refused := []string{
+		// Rows without RETURNING: a WITH list ending in a SELECT, VALUES or TABLE.
+		"WITH x AS (SELECT 1) SELECT repeat('y', 10) FROM x",
+		"WITH x AS (SELECT 1) VALUES (1)",
+		"WITH RECURSIVE x(n) AS (SELECT 1) TABLE x",
+		// A rule whose action is a SELECT returns rows from a later INSERT.
+		"CREATE RULE r AS ON INSERT TO w DO INSTEAD SELECT repeat('y', 10)",
+		"CREATE OR REPLACE RULE r AS ON UPDATE TO w DO ALSO SELECT 1",
+		// RETURNING hidden from a weaker reader by a lexical differential.
+		"INSERT INTO w VALUES (E'\\'') RETURNING n",
+		"INSERT INTO w VALUES ('a\\'') RETURNING n --'",
+		"INSERT INTO w VALUES (1) /* /* */ RETURNING n */ RETURNING n",
+		"INSERT INTO w SELECT 0x1$a$) RETURNING (SELECT 1 --$a$",
+		"INSERT INTO w VALUES (1) RETURNING n",
+		"UPDATE w SET n = 1 RETURNING *",
+		"WITH d AS (DELETE FROM w RETURNING *) INSERT INTO w SELECT * FROM d",
+	}
+	for _, stmt := range refused {
+		if err := validateAgentWrite(stmt, dialectPostgres, limit); err == nil {
+			t.Errorf("%q: accepted, want refused", stmt)
+		}
+	}
+	accepted := []string{
+		"INSERT INTO w (n, note) VALUES (1, 'returning soon')",
+		"WITH x AS (SELECT 1 AS n) INSERT INTO w (n) SELECT n FROM x",
+		"WITH x AS MATERIALIZED (SELECT 1 AS n), y (m) AS (SELECT 2) UPDATE w SET n = y.m FROM y",
+		"CREATE TABLE t2 AS SELECT * FROM w",
+		`CREATE TABLE "returning" (n int)`,
+		"DELETE FROM w WHERE n > 3",
+		"ALTER TABLE w ADD COLUMN extra text",
+	}
+	for _, stmt := range accepted {
+		if err := validateAgentWrite(stmt, dialectPostgres, limit); err != nil {
+			t.Errorf("%q: refused (%v), want accepted", stmt, err)
+		}
+	}
+}
+
+func TestPostgres_ExecOfAQueryRefusedUnread(t *testing.T) {
+	m, _ := pgTestManager(t, Config{MaxResultBytes: 1 << 20})
+	ctx := context.Background()
+	key := agentKey("t1", "execq")
+	stmt := "WITH x AS (SELECT 1) SELECT string_agg(md5(g::text), '') FROM generate_series(1, 200000) g"
+	var err error
+	got := allocatedDuring(func() { _, err = m.Exec(ctx, key, stmt, nil, 0) })
+	var es *ErrStatement
+	if !errors.As(err, &es) {
+		t.Fatalf("err = %v (%T), want a statement refusal", err, err)
+	}
+	if got > 4<<20 {
+		t.Fatalf("refusing it allocated %d MiB", got>>20)
+	}
+}

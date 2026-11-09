@@ -28,7 +28,25 @@ func validateWidths(statement string, d dialect, limit int) error {
 	if limit <= 0 {
 		return nil
 	}
-	toks := widthTokens(stripComments(statement, d == dialectPostgres), d == dialectPostgres)
+	if d == dialectPostgres {
+		// Postgres statements are read by the lexer every postgres check shares
+		// (pgTokens), in both string readings.
+		for _, backslash := range []bool{false, true} {
+			toks, err := pgTokens(statement, backslash)
+			if err != nil {
+				return err
+			}
+			if err := widthScan(toks, d, limit); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return widthScan(widthTokens(stripComments(statement, false), false), d, limit)
+}
+
+// widthScan is validateWidths over a token stream.
+func widthScan(toks []widthToken, d dialect, limit int) error {
 	for i := 0; i+1 < len(toks); i++ {
 		if toks[i].kind != tokIdent || toks[i+1].text != "(" {
 			continue

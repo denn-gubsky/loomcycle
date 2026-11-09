@@ -331,6 +331,11 @@ func (m *Manager) QueryTxnCapped(ctx context.Context, txnID, statement string, a
 }
 
 func (m *Manager) queryTxn(ctx context.Context, txnID, statement string, args []any, maxBytes int) (*QueryResult, error) {
+	if maxBytes > 0 {
+		if err := m.lexAgentStatement(statement); err != nil {
+			return nil, err
+		}
+	}
 	if err := validateStatementForDialect(statement, true, m.dialect); err != nil {
 		return nil, err
 	}
@@ -374,6 +379,9 @@ func (m *Manager) ExecTxn(ctx context.Context, txnID, statement string, args []a
 		return nil, fmt.Errorf("no open transaction for this scope")
 	}
 	if !t.key.isDoc() {
+		if err := m.lexAgentStatement(statement); err != nil {
+			return nil, err
+		}
 		if err := validateAgentWrite(statement, m.dialect, valueLengthLimit(m.cfg)); err != nil {
 			return nil, err
 		}
