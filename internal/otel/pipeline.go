@@ -50,14 +50,19 @@ type pipelineStats struct {
 
 var stats pipelineStats
 
-// Stats reports the export pipeline's counters.
+// Stats reports the export pipeline's counters. Ended is read last: a span is
+// counted ended before it can be counted exported or dropped, so reading it
+// after them keeps Ended >= Exported + Dropped in what a scrape sees.
 func Stats() SpanStats {
+	exported := stats.exported.Load()
+	dropped := stats.dropped.Load()
+	failures := stats.exportFailures.Load()
 	return SpanStats{
 		Enabled:        stats.enabled.Load(),
 		Ended:          stats.ended.Load(),
-		Exported:       stats.exported.Load(),
-		Dropped:        stats.dropped.Load(),
-		ExportFailures: stats.exportFailures.Load(),
+		Exported:       exported,
+		Dropped:        dropped,
+		ExportFailures: failures,
 	}
 }
 
