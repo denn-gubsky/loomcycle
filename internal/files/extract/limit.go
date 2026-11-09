@@ -11,13 +11,18 @@ import (
 
 // The extraction budget (RFC FZ Part B item 3). Each extraction is bounded on
 // its own: the input caps of each format, the archive's read budget, the XML
-// element, depth and text caps, the table caps and the sink's output cap keep
-// one file's heap to a few hundred MiB at most. What none of them bounds is how
-// many run at once: every run, sub-agent and off-run call that extracts adds
-// another, so a burst of large files multiplies that per-file peak by the
-// burst. A Limiter turns the per-file bound into a process-wide one: at most N
-// extractions hold a slot, the rest wait for one, and the process's extraction
-// heap stays under N times the per-file peak.
+// element, attribute, depth and text caps (counted before a tree is built),
+// the HTML page cap and its count before parsing, the table caps and the
+// sink's output cap. Measured at every cap at once, one file's peak is about
+// 410 MiB of tree for an Office XML part plus the part itself (up to the
+// 256 MiB archive budget, so about 700 MiB in all), and about 260 MiB for an
+// HTML page (membounds_test.go holds the refusals to their ceilings). What
+// none of them bounds is how many run at once: every run, sub-agent and
+// off-run call that extracts adds another, so a burst of large files
+// multiplies that per-file peak by the burst. A Limiter turns the per-file
+// bound into a process-wide one: at most N extractions hold a slot, the rest
+// wait for one, and the process's extraction heap stays under N times the
+// per-file peak.
 
 // ErrBusy is what Acquire returns when its context ended before a slot came
 // free. It wraps the context's error too, so a caller tells a cancelled call
