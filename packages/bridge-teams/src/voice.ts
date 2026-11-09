@@ -9,7 +9,7 @@
 // once, with no credential of ours, and only from the SharePoint hosts the
 // operator allows.
 
-import type { Logger, VoiceIn, VoicePort } from "@loomcycle/bridge-core";
+import { downloadPinned, PinnedDownloadError, type Logger, type VoiceIn, type VoicePort } from "@loomcycle/bridge-core";
 
 export const FILE_DOWNLOAD_INFO = "application/vnd.microsoft.teams.file.download.info";
 
@@ -79,9 +79,6 @@ export class TeamsFileError extends Error {
   }
 }
 
-/** How many redirects a download follows, each checked against the hosts. */
-const MAX_REDIRECTS = 3;
-
 export interface TeamsVoicePortOptions<TRef> {
   /** Allowed host suffixes (TEAMS_BRIDGE_FILE_HOSTS). */
   hosts: readonly string[];
@@ -106,7 +103,7 @@ export function teamsVoicePort<TRef>(opts: TeamsVoicePortOptions<TRef>): VoicePo
       const ref = v.ref as TeamsAudioRef;
       let bytes: Uint8Array;
       try {
-        bytes = await downloadPinned(doFetch, ref.url, opts.hosts, maxBytes, signal);
+        bytes = await download(doFetch, ref.url, opts.hosts, maxBytes, signal);
       } catch (err) {
         if (err instanceof TeamsFileError) opts.log?.warn("teams file download refused", { reason: err.reason, ...err.detail });
         throw err;
@@ -116,75 +113,32 @@ export function teamsVoicePort<TRef>(opts: TeamsVoicePortOptions<TRef>): VoicePo
   };
 }
 
-/** downloadPinned fetches a pre-authorised link with no credential and no
- *  added header, following a redirect only to another allowed host, and
- *  reads at most maxBytes (more is an error, found while streaming). */
-async function downloadPinned(
-  doFetch: typeof fetch,
-  link: string,
-  hosts: readonly string[],
-  maxBytes: number,
-  signal: AbortSignal,
-): Promise<Uint8Array> {
-  let url: URL;
+/** download fetches a pre-authorised link with no credential and no added
+ *  header, following a redirect only to another allowed host, and reads at
+ *  most maxBytes (more is an error, found while streaming). */
+async function download(doFetch: typeof fetch, link: string, hosts: readonly string[], maxBytes: number, signal: AbortSignal): Promise<Uint8Array> {
   try {
-    url = new URL(link);
-  } catch {
-    throw new TeamsFileError("host");
+    const got = await downloadPinned(link, {
+      allowed: (u) => hostAllowed(u, hosts),
+      // An expired or refused link can answer 200 with a sign-in page.
+      accept: (ct) => !ct.toLowerCase().startsWith("text/html"),
+      maxBytes,
+      signal,
+      fetch: doFetch,
+    });
+    return got.bytes;
+  } catch (err) {
+    if (!(err instanceof PinnedDownloadError)) throw err;
+    const { host, status, redirected } = err.detail;
+    switch (err.reason) {
+      case "url":
+        throw new TeamsFileError("host");
+      case "host":
+        throw new TeamsFileError(redirected ? "redirect" : "host", { host });
+      case "status":
+        throw new TeamsFileError("status", { status });
+      default:
+        throw new TeamsFileError(err.reason);
+    }
   }
-  if (!hostAllowed(url, hosts)) throw new TeamsFileError("host", { host: url.hostname });
-  for (let hop = 0; ; hop++) {
-    const res = await doFetch(url, { redirect: "manual", signal });
-    if (res.status >= 300 && res.status < 400) {
-      await res.body?.cancel().catch(() => undefined);
-      const loc = res.headers.get("location");
-      if (!loc || hop >= MAX_REDIRECTS) throw new TeamsFileError("redirect");
-      try {
-        url = new URL(loc, url);
-      } catch {
-        throw new TeamsFileError("redirect");
-      }
-      if (!hostAllowed(url, hosts)) throw new TeamsFileError("redirect", { host: url.hostname });
-      continue;
-    }
-    if (!res.ok) {
-      await res.body?.cancel().catch(() => undefined);
-      throw new TeamsFileError("status", { status: res.status });
-    }
-    // An expired or refused link can answer 200 with a sign-in page.
-    if ((res.headers.get("content-type") ?? "").toLowerCase().startsWith("text/html")) {
-      await res.body?.cancel().catch(() => undefined);
-      throw new TeamsFileError("type");
-    }
-    const declared = Number(res.headers.get("content-length") ?? NaN);
-    if (Number.isFinite(declared) && declared > maxBytes) {
-      await res.body?.cancel().catch(() => undefined);
-      throw new TeamsFileError("size");
-    }
-    return readCapped(res, maxBytes);
-  }
-}
-
-async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array> {
-  if (!res.body) return new Uint8Array();
-  const reader = res.body.getReader();
-  const parts: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw new TeamsFileError("size");
-    }
-    parts.push(value);
-  }
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const p of parts) {
-    out.set(p, off);
-    off += p.byteLength;
-  }
-  return out;
 }
