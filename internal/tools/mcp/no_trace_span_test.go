@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -62,5 +63,39 @@ func TestMCPCallSpan_ANoTraceRunsErrorCarriesNoText(t *testing.T) {
 		if retention == "" && !has {
 			t.Fatalf("an ordinary run's MCP span carries %q: this test cannot see the text", got.String())
 		}
+	}
+}
+
+// A server's isError answer is the model's to read, not a failed call: the
+// MCP span records it as an attribute and keeps an unset status.
+func TestMCPCallSpan_AnIsErrorAnswerIsAnAttributeNotAnError(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	cleanup := lcotel.SetTracerProviderForTest(tp)
+	defer func() { cleanup(); _ = tp.Shutdown(context.Background()) }()
+
+	caller := &structuredCaller{structured: `{}`}
+	pool := NewPool(func(_, _ string) (Caller, error) { return caller, nil }, nil, nil)
+	if _, err := NewTool(pool, "peer", ToolDescriptor{Name: "probe"}).Execute(context.Background(), json.RawMessage(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	var mcpSpan *tracetest.SpanStub
+	for i, s := range exp.GetSpans() {
+		if s.Name == lcotel.SpanMCPCall {
+			mcpSpan = &exp.GetSpans()[i]
+		}
+	}
+	if mcpSpan == nil {
+		t.Fatal("no MCP span")
+	}
+	if mcpSpan.Status.Code == codes.Error {
+		t.Errorf("an isError answer failed the span: %q", mcpSpan.Status.Description)
+	}
+	flagged := false
+	for _, kv := range mcpSpan.Attributes {
+		flagged = flagged || (string(kv.Key) == lcotel.AttrToolIsError && kv.Value.AsBool())
+	}
+	if !flagged {
+		t.Errorf("%s missing: %+v", lcotel.AttrToolIsError, mcpSpan.Attributes)
 	}
 }

@@ -10106,6 +10106,7 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 		OutputTokens:    res.Usage.OutputTokens,
 		CacheReadTokens: res.Usage.CacheReadTokens,
 		StopReason:      "cancelled",
+		Cancelled:       true,
 	})
 	if s.store == nil || runID == "" {
 		return

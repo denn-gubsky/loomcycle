@@ -216,6 +216,11 @@ type RunDoneAttrs struct {
 	CacheReadTokens int
 	StopReason      string
 	Err             error // non-nil → SetStatus(Error, err.Error()) + RecordError
+	// Cancelled marks a run that was stopped rather than failed. Its span is
+	// an error too, described "cancelled": the run did not produce its
+	// answer, and a collector's "keep error traces" policy should see it (an
+	// operator who wants cancels dropped filters loomcycle.stop_reason).
+	Cancelled bool
 }
 
 // SetRunDone closes out the run span's attribute set. Used at the run
@@ -241,9 +246,12 @@ func SetRunDone(span trace.Span, a RunDoneAttrs) {
 	if len(kvs) > 0 {
 		span.SetAttributes(kvs...)
 	}
-	if a.Err != nil {
+	switch {
+	case a.Err != nil:
 		span.RecordError(a.Err)
 		span.SetStatus(codes.Error, a.Err.Error())
+	case a.Cancelled:
+		span.SetStatus(codes.Error, "cancelled")
 	}
 }
 
@@ -637,6 +645,16 @@ func RecordHelpReconcile(ctx context.Context, written, pruned, unchanged, failed
 	span.End()
 }
 
+// SetToolIsError marks a tool or MCP span whose call returned an error
+// result. The span's status stays unset: an error result is the model's to
+// read and act on, not a failure of the call.
+func SetToolIsError(span trace.Span) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
+	span.SetAttributes(attribute.Bool(AttrToolIsError, true))
+}
+
 // SetSpanError marks a span as failed with the given error. The message
 // is truncated to a sane length so a noisy provider error doesn't blow
 // up Jaeger storage.
@@ -649,8 +667,8 @@ func SetSpanError(span trace.Span, err error) {
 }
 
 // SetSpanErrorMessage marks a span as failed with a fixed message — no
-// `err` value. Used for non-error-typed failures (HTTP non-2xx, tool
-// IsError=true).
+// `err` value. Used for non-error-typed failures (HTTP non-2xx) and for a
+// no-trace run, whose error text must not leave the box.
 func SetSpanErrorMessage(span trace.Span, msg string) {
 	if span == nil || msg == "" || !span.IsRecording() {
 		return

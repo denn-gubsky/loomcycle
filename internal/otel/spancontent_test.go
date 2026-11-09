@@ -288,3 +288,19 @@ func TestSetProviderResponse_ClassifiesTheFailure(t *testing.T) {
 		})
 	}
 }
+
+// A cancelled run did not produce its answer: an error described
+// "cancelled", so a collector's keep-errors policy sees it.
+func TestSetRunDone_ACancelledRunIsAnErrorDescribedCancelled(t *testing.T) {
+	exp := withInMemoryExporter(t)
+	_, span := lcotel.RecordRunStart(context.Background(), lcotel.RunStartAttrs{RunID: "r1"})
+	lcotel.SetRunDone(span, lcotel.RunDoneAttrs{StopReason: "cancelled", Cancelled: true})
+	span.End()
+	s := exp.GetSpans()[0]
+	if s.Status.Code != codes.Error || s.Status.Description != "cancelled" {
+		t.Errorf("status = %v %q, want Error \"cancelled\"", s.Status.Code, s.Status.Description)
+	}
+	if len(s.Events) != 0 {
+		t.Errorf("a cancel recorded %d error events; it is not an exception", len(s.Events))
+	}
+}

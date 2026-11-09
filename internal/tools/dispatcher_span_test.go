@@ -76,7 +76,20 @@ func TestDispatcherCall_SpanCarriesRunTenantAndToolUseID(t *testing.T) {
 	}
 }
 
-func TestDispatcherExecute_IsErrorMarksSpanError(t *testing.T) {
+// isErrorAttr reports whether a span carries loomcycle.tool_is_error=true.
+func isErrorAttr(s tracetest.SpanStub) bool {
+	for _, kv := range s.Attributes {
+		if string(kv.Key) == lcotel.AttrToolIsError && kv.Value.AsBool() {
+			return true
+		}
+	}
+	return false
+}
+
+// An error result (a refusal, a denial, a tool answering "no") is the model's
+// to read: an attribute, not the span's error status, so a collector keeping
+// error traces does not keep every run that met a refusal.
+func TestDispatcherExecute_IsErrorIsAnAttributeNotASpanError(t *testing.T) {
 	exp := withInMemoryExporter(t)
 	d := tools.NewDispatcher([]tools.Tool{&fakeTool{name: "BadTool", res: tools.Result{Text: "tool refused: scope=x", IsError: true}}})
 	res := d.Execute(context.Background(), "BadTool", json.RawMessage(`{}`))
@@ -87,14 +100,15 @@ func TestDispatcherExecute_IsErrorMarksSpanError(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("got %d spans, want 1", len(spans))
 	}
-	// Span status should be Error per SetSpanErrorMessage contract.
-	if spans[0].Status.Code.String() != "Error" {
-		t.Errorf("span status = %v, want Error (IsError=true should mark span)",
-			spans[0].Status.Code)
+	if spans[0].Status.Code.String() == "Error" {
+		t.Errorf("span status = Error %q for an error result", spans[0].Status.Description)
+	}
+	if !isErrorAttr(spans[0]) {
+		t.Errorf("%s missing: %+v", lcotel.AttrToolIsError, spans[0].Attributes)
 	}
 }
 
-func TestDispatcherExecute_UnknownToolMarksSpanError(t *testing.T) {
+func TestDispatcherExecute_UnknownToolIsAnAttributeNotASpanError(t *testing.T) {
 	exp := withInMemoryExporter(t)
 	d := tools.NewDispatcher([]tools.Tool{})
 	res := d.Execute(context.Background(), "NotARegistered", json.RawMessage(`{}`))
@@ -108,8 +122,9 @@ func TestDispatcherExecute_UnknownToolMarksSpanError(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("got %d spans, want 1", len(spans))
 	}
-	if spans[0].Status.Code.String() != "Error" {
-		t.Errorf("unknown-tool span status = %v, want Error", spans[0].Status.Code)
+	if spans[0].Status.Code.String() == "Error" || !isErrorAttr(spans[0]) {
+		t.Errorf("unknown-tool span: status %v, %s %v; want an attribute, not an error",
+			spans[0].Status.Code, lcotel.AttrToolIsError, isErrorAttr(spans[0]))
 	}
 }
 
