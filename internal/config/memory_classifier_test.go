@@ -54,6 +54,11 @@ func TestClassifierConfig_RejectsAnIncompleteOrInvalidBlock(t *testing.T) {
 		{"decision: { provider: p, model: m, context_tokens: 8192 }", "memory.classifier.decision.context_tokens does not apply"},
 		{"chat: { provider: p, model: m }\n    min_probability: 1.5", "memory.classifier.min_probability"},
 		{"chat: { provider: p, model: m }\n    min_margin: -0.1", "memory.classifier.min_margin"},
+		{"decision: { provider: p, model: m }\n    concept_fallback: { min_margin: 0.1 }", "memory.classifier.concept_fallback.min_probability must be above 0"},
+		{"decision: { provider: p, model: m }\n    concept_fallback: { min_probability: 0.7, min_margin: 0.1 }", "memory.classifier.concept_fallback.min_probability must not exceed memory.classifier.min_probability"},
+		{"decision: { provider: p, model: m }\n    min_probability: 0.5\n    concept_fallback: { min_probability: 0.55 }", "memory.classifier.concept_fallback.min_probability must not exceed"},
+		{"decision: { provider: p, model: m }\n    concept_fallback: { min_probability: 0.3, min_margin: -0.1 }", "memory.classifier.concept_fallback.min_margin"},
+		{"chat: { provider: p, model: m }\n    concept_fallback: { min_probability: 0.3 }", "memory.classifier.concept_fallback applies to the decision model"},
 	} {
 		_, err := Load(writeCfg(t, `
 defaults: { provider: anthropic, model: claude-sonnet-4-6 }
@@ -64,5 +69,30 @@ memory:
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%q: error = %v, want it to contain %q", c.body, err, c.want)
 		}
+	}
+}
+
+// TestClassifierConfig_ConceptFallbackIsOffUnlessSet — the concept ranking fallback
+// loads off its block and is off without one.
+func TestClassifierConfig_ConceptFallbackIsOffUnlessSet(t *testing.T) {
+	load := func(extra string) ClassifierConfig {
+		t.Helper()
+		cfg, err := Load(writeCfg(t, `
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+memory:
+  classifier:
+    decision: { provider: ollama-local, model: nimble }
+`+extra))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return cfg.Memory.Classifier
+	}
+	if cc := load(""); cc.ConceptFallback.Enabled() {
+		t.Errorf("no block, yet the fallback is on: %+v", cc.ConceptFallback)
+	}
+	cc := load("    concept_fallback: { min_probability: 0.3, min_margin: 0.1 }\n")
+	if !cc.ConceptFallback.Enabled() || cc.ConceptFallback.MinProbability != 0.3 || cc.ConceptFallback.MinMargin != 0.1 {
+		t.Errorf("concept_fallback = %+v", cc.ConceptFallback)
 	}
 }

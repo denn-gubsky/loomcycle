@@ -76,5 +76,9 @@ func Classifier(cfg *config.Config, sched *concurrency.CallScheduler) (*classifi
 		cm.MaxOutputTokens = classifierMaxOutputTokens
 		chat = cm
 	}
-	return classifier.New(dec, decModel, decTimeout, chat, cc.EffectiveMinProbability(), cc.EffectiveMinMargin()), nil
+	c := classifier.New(dec, decModel, decTimeout, chat, cc.EffectiveMinProbability(), cc.EffectiveMinMargin())
+	if f := cc.ConceptFallback; f.Enabled() {
+		c.SetConceptFallback(f.MinProbability, f.MinMargin)
+	}
+	return c, nil
 }

@@ -108,6 +108,9 @@ type classifyConcept struct {
 	Kind    string  `json:"kind,omitempty"`
 	ChunkID string  `json:"chunk_id,omitempty"`
 	Share   float64 `json:"share"`
+	// Fallback marks a concept memory.classifier took by its ranking fallback (no
+	// concept cleared its probability floor; this one led the rest): a weaker proposal.
+	Fallback bool `json:"fallback,omitempty"`
 }
 
 type classifyIssuer struct {
@@ -310,11 +313,11 @@ func (d *Document) classify(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			if live {
 				status = edgeStatusAsserted
 			}
-			res, warn := d.classifyStatement(ctx, key, mscope, acl, rootDoc, cd.rootID, issuers[0].SubjectChunkID, "issued_by", status, issuers[0].Quote, classifiedByRules)
+			res, warn := d.classifyStatement(ctx, key, mscope, acl, rootDoc, cd.rootID, issuers[0].SubjectChunkID, "issued_by", status, issuers[0].Quote, classifiedByRules, false)
 			out.addStatement(res, warn, &rec)
 		}
 		for _, c := range concepts {
-			res, warn := d.classifyStatement(ctx, key, mscope, acl, rootDoc, cd.rootID, c.ChunkID, c.Kind, edgeStatusProposed, "", conceptsBy)
+			res, warn := d.classifyStatement(ctx, key, mscope, acl, rootDoc, cd.rootID, c.ChunkID, c.Kind, edgeStatusProposed, "", conceptsBy, c.Fallback)
 			out.addStatement(res, warn, &rec)
 		}
 	} else {
@@ -674,7 +677,7 @@ func (d *Document) classifyModel(ctx context.Context, read OntologyRead, classes
 	}
 	for _, name := range v.Concepts {
 		if c, ok := byName[strings.ToLower(name)]; ok {
-			out.concepts = append(out.concepts, classifyConcept{Concept: c.Name, Tag: c.Tag, Kind: "subject", ChunkID: c.ChunkID})
+			out.concepts = append(out.concepts, classifyConcept{Concept: c.Name, Tag: c.Tag, Kind: "subject", ChunkID: c.ChunkID, Fallback: v.ConceptFallback})
 		}
 	}
 	if walkTree {
@@ -711,7 +714,7 @@ func (d *Document) classifyConcepts(ctx context.Context, read OntologyRead, cd c
 	var out []classifyConcept
 	for _, name := range v.Concepts {
 		if c, ok := byName[strings.ToLower(name)]; ok {
-			out = append(out, classifyConcept{Concept: c.Name, Tag: c.Tag, Kind: "subject", ChunkID: c.ChunkID})
+			out = append(out, classifyConcept{Concept: c.Name, Tag: c.Tag, Kind: "subject", ChunkID: c.ChunkID, Fallback: v.ConceptFallback})
 		}
 	}
 	return out, step

@@ -70,9 +70,12 @@ func (d *Document) classifyConceptTree(ctx context.Context, read OntologyRead, c
 		// waiting holds the concepts said yes whose children are being asked: each is
 		// kept itself only if none of its children is said yes.
 		waiting []memrank.OntologyConcept
+		// fallback holds the concepts (by conceptKey) a ranking fallback took. Such a
+		// parent is still descended into: its children face the normal threshold.
+		fallback = map[string]bool{}
 	)
 	for depth := 0; len(frontier) > 0 && depth < classifyTreeMaxDepth; depth++ {
-		yes, n, reason := d.askConceptBatches(ctx, cd, frontier, classifyTreeMaxCalls-calls, &step.Method)
+		yes, n, reason := d.askConceptBatches(ctx, cd, frontier, classifyTreeMaxCalls-calls, &step.Method, fallback)
 		calls += n
 		if reason != "" {
 			reasons = append(reasons, reason)
@@ -109,16 +112,17 @@ func (d *Document) classifyConceptTree(ctx context.Context, read OntologyRead, c
 			continue
 		}
 		seen[conceptKey(c)] = true
-		out = append(out, classifyConcept{Concept: c.Name, Tag: c.Tag, Kind: "subject", ChunkID: c.ChunkID})
+		out = append(out, classifyConcept{Concept: c.Name, Tag: c.Tag, Kind: "subject", ChunkID: c.ChunkID, Fallback: fallback[conceptKey(c)]})
 	}
 	return out, step
 }
 
 // askConceptBatches asks about concepts in requests of at most ClassifyMaxConcepts and
 // returns those said yes, the number of calls, and the first reason a call gave; method
-// is set to the first answering model's method. It
+// is set to the first answering model's method, and a concept a call's ranking
+// fallback took is added to fallback (by conceptKey). It
 // makes at most budget calls, and none once ctx is done.
-func (d *Document) askConceptBatches(ctx context.Context, cd classifyDoc, concepts []memrank.OntologyConcept, budget int, method *string) ([]memrank.OntologyConcept, int, string) {
+func (d *Document) askConceptBatches(ctx context.Context, cd classifyDoc, concepts []memrank.OntologyConcept, budget int, method *string, fallback map[string]bool) ([]memrank.OntologyConcept, int, string) {
 	var yes []memrank.OntologyConcept
 	calls, reason := 0, ""
 	for start := 0; start < len(concepts); start += memrank.ClassifyMaxConcepts {
@@ -152,6 +156,9 @@ func (d *Document) askConceptBatches(ctx context.Context, cd classifyDoc, concep
 		for _, name := range v.Concepts {
 			if c, ok := byName[strings.ToLower(name)]; ok {
 				yes = append(yes, c)
+				if v.ConceptFallback {
+					fallback[conceptKey(c)] = true
+				}
 			}
 		}
 	}

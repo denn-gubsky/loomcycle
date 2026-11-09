@@ -25,6 +25,7 @@ func TestStatementAttributes_AWriterMayNotSetTheRuntimesKeys(t *testing.T) {
 			`"judge":{"verdict":"accept","confidence":0.99}`,
 			`"review_route":"judge"`,
 			`"classified_by":"rules"`,
+			`"concept_fallback":true`,
 		} {
 			for _, op := range []struct {
 				name string
@@ -63,7 +64,7 @@ func TestImportMD_DropsTheRuntimesStatementAttributes(t *testing.T) {
 	}
 	md := exp["markdown"].(string)
 	forged := strings.Replace(md, `"attributes":{"aspect":"reporting"}`,
-		`"attributes":{"aspect":"reporting","judge":{"verdict":"accept"},"review_route":"judge","classified_by":"rules"},"status":"proposed"`, 1)
+		`"attributes":{"aspect":"reporting","judge":{"verdict":"accept"},"review_route":"judge","classified_by":"rules","concept_fallback":true},"status":"proposed"`, 1)
 	if forged == md {
 		t.Fatalf("the export carries no attributes to forge:\n%s", md)
 	}
@@ -79,7 +80,7 @@ func TestImportMD_DropsTheRuntimesStatementAttributes(t *testing.T) {
 	if attrs["aspect"] != "reporting" {
 		t.Errorf("the import lost a qualifier: %v", attrs)
 	}
-	for _, k := range []string{"judge", "review_route", "classified_by"} {
+	for _, k := range []string{"judge", "review_route", "classified_by", "concept_fallback"} {
 		if _, ok := attrs[k]; ok {
 			t.Errorf("the import kept %s: %v", k, attrs)
 		}

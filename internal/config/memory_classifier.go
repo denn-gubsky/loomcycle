@@ -17,7 +17,9 @@ import (
 // yes/no per concept, answered with probabilities and no text to repair. The chat
 // model is the fallback, used when no decision model is configured or the decision
 // answer is unsure (MinProbability, MinMargin); it must quote the document verbatim
-// or its verdict is dropped.
+// or its verdict is dropped. A concept the decision model is asked about is taken when
+// its yes-probability reaches MinProbability, or — with ConceptFallback on — as the
+// clear leader of an answer in which none does.
 type ClassifierConfig struct {
 	Decision ClassifierModelConfig `yaml:"decision"`
 	Chat     ClassifierModelConfig `yaml:"chat"`
@@ -27,7 +29,32 @@ type ClassifierConfig struct {
 	// MinMargin is the least lead the top class must have over the runner-up; 0 =
 	// DefaultClassifierMinMargin.
 	MinMargin float64 `yaml:"min_margin"`
+	// ConceptFallback is the concept ranking fallback; absent = off.
+	ConceptFallback ClassifierConceptFallbackConfig `yaml:"concept_fallback"`
 }
+
+// ClassifierConceptFallbackConfig is memory.classifier.concept_fallback. A decision
+// model's yes-probabilities are uncalibrated and run low on broad topics, so a document
+// can clear MinProbability on no concept at all — and a vocabulary asked level by level
+// then never descends past the top. With the fallback on, an answer (one set of yes/no
+// answers for sibling concepts asked together) in which no concept reaches
+// MinProbability takes its single best concept when that one's probability is at least
+// this MinProbability and it leads the runner-up by at least this MinMargin; a tie is
+// never taken, and an answer with a concept above the normal floor gets nothing added.
+// Applies per answer, so at each level of a tree walk. A pick is a proposal like any
+// other, marked attributes.concept_fallback on its statement for the judge and the
+// operator. Decision model only; the chat model answers by name, not probability.
+type ClassifierConceptFallbackConfig struct {
+	// MinProbability is the fallback's floor, above 0 and at most the classifier's
+	// effective min_probability; 0 (unset) turns the fallback off.
+	MinProbability float64 `yaml:"min_probability"`
+	// MinMargin is the least lead the best concept must have over the runner-up
+	// (between 0 and 1; 0 still requires a strict lead).
+	MinMargin float64 `yaml:"min_margin"`
+}
+
+// Enabled reports whether the concept ranking fallback is on.
+func (f ClassifierConceptFallbackConfig) Enabled() bool { return f.MinProbability > 0 }
 
 // ClassifierModelConfig names one model of the classifier, as the reranker block does.
 type ClassifierModelConfig struct {
@@ -82,6 +109,20 @@ func (c ClassifierConfig) validate(cfg *Config) error {
 	}
 	if c.MinMargin < 0 || c.MinMargin > 1 {
 		return fmt.Errorf("memory.classifier.min_margin must be between 0 and 1")
+	}
+	if f := c.ConceptFallback; !reflect.ValueOf(f).IsZero() {
+		if !c.Decision.Configured() {
+			return fmt.Errorf("memory.classifier.concept_fallback applies to the decision model; name one, or remove the block")
+		}
+		if f.MinProbability <= 0 {
+			return fmt.Errorf("memory.classifier.concept_fallback.min_probability must be above 0 (the block is off without it)")
+		}
+		if f.MinProbability > c.EffectiveMinProbability() {
+			return fmt.Errorf("memory.classifier.concept_fallback.min_probability must not exceed memory.classifier.min_probability (%.2f)", c.EffectiveMinProbability())
+		}
+		if f.MinMargin < 0 || f.MinMargin > 1 {
+			return fmt.Errorf("memory.classifier.concept_fallback.min_margin must be between 0 and 1")
+		}
 	}
 	if err := c.Decision.validate(cfg, "memory.classifier.decision", ModelKindDecision); err != nil {
 		return err
