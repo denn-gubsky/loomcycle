@@ -425,6 +425,48 @@ func TestAudioRoutes_HardBudgetRefusesBeforeTheEngine(t *testing.T) {
 	}
 }
 
+// countingReader counts the bytes read through it.
+type countingReader struct {
+	r io.Reader
+	n atomic.Int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// A caller over its budget is refused before the upload is read: the route
+// admits (rate, budget, per-user cap) first, so a refused caller cannot make
+// the server spool its body to disk.
+func TestAudioTranscriptions_RefusedCallerUploadIsNotRead(t *testing.T) {
+	srv, st := audioServer(t, &speakingProvider{}, &hearingEngine{})
+	ctx := context.Background()
+	if err := st.TokenLimitPut(ctx, store.TokenLimitRow{Scope: "operator", HardLimit: i64p(0), UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.SeedLimits(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var form bytes.Buffer
+	mw := multipart.NewWriter(&form)
+	part, _ := mw.CreateFormFile("file", "memo.wav")
+	_, _ = part.Write(pcmWAV(8000, 10*time.Second))
+	_ = mw.Close()
+	body := &countingReader{r: &form}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/audio/transcriptions", body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	srv.Mux().ServeHTTP(rec, req)
+	if rec.Code != 429 || errorCode(t, rec.Body.Bytes()) != "token_limit_exceeded" {
+		t.Fatalf("got %d %s, want a 429", rec.Code, rec.Body.String())
+	}
+	if n := body.n.Load(); n != 0 {
+		t.Errorf("the refused upload was read: %d bytes", n)
+	}
+}
+
 // ---- the engine queue ----
 
 // With one slot, a second read-aloud waits for the first instead of being

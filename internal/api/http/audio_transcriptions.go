@@ -71,6 +71,15 @@ func (s *Server) handleAudioTranscriptions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	caps := transcribe.Effective(stt.Config, config.AgentTranscription{})
+	// Admitted (rate, budget, per-user cap) before the upload is read: a
+	// caller over its rate or budget must not get the body spooled to disk,
+	// nor hold a connection while it uploads.
+	ctx, release, err := s.admitOffRunCall(r.Context(), "a transcription", auth.SurfaceTranscription)
+	if err != nil {
+		writeOffRunAdmissionError(w, err)
+		return
+	}
+	defer release()
 	scratch, err := os.MkdirTemp("", "loomcycle-stt-")
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", "a scratch folder for the upload could not be made")
@@ -92,13 +101,6 @@ func (s *Server) handleAudioTranscriptions(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-
-	ctx, release, err := s.admitOffRunCall(r.Context(), "a transcription", auth.SurfaceTranscription)
-	if err != nil {
-		writeOffRunAdmissionError(w, err)
-		return
-	}
-	defer release()
 
 	src, err := os.Open(form.path)
 	if err != nil {
