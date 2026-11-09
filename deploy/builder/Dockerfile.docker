@@ -33,7 +33,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # ---- Stage 2: runtime on the Docker CLI image (client only, no daemon) ------
 # docker:cli is Alpine + the docker client. The digest pins the build; dependabot
 # moves it when the tag is republished.
-FROM docker:cli@sha256:4d742ab934c2149b628bf26369ac3ec51cb91e2e28fe6722a0e86a6d6efc4bd5
+FROM docker:cli@sha256:2357639ad1ea7d0194134bf3292622fd4e562483966ed674e5d7c945b5f3b28d
 COPY --from=build /out/loomcycle-builder /usr/local/bin/loomcycle-builder
 EXPOSE 9000
 # SANDBOX_IMAGE (the toolchain session image, resolvable by the HOST Docker) +
