@@ -7303,7 +7303,7 @@ var expandDenyNames = map[string]bool{
 	// operator's environment is still a live collector secret, and the
 	// LOOMCYCLE_ prefix would otherwise make it interpolatable. A protection,
 	// not a config read.
-	"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS": true,
+	"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS": true, // retired name, still denied
 	// Names the file holding the collector secret; nothing in yaml needs it.
 	"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE": true,
 	"LOOMCYCLE_SECRET_KEY":                      true, // RFC AR CredentialDef master KEK

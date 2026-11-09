@@ -2592,7 +2592,7 @@ func TestExpandEnv_DeniesInfraSecrets(t *testing.T) {
 	// denylist and were exfiltratable into an attacker-controlled MCP field.
 	t.Setenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER", "token-hash-pepper")
 	t.Setenv("LOOMCYCLE_MCP_UPSTREAM_TOKEN", "upstream-bearer")
-	t.Setenv("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS", "x-honeycomb-team=secret")
+	t.Setenv("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS", "x-honeycomb-team=secret") // retired name
 	t.Setenv("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE", "/run/secrets/otel")
 	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "x-honeycomb-team=secret")
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "x-honeycomb-team=secret")
@@ -2604,7 +2604,7 @@ func TestExpandEnv_DeniesInfraSecrets(t *testing.T) {
 		"PG_DSN", "LOOMCYCLE_PG_DSN", "LOOMCYCLE_AUTH_TOKEN",
 		"LOOMCYCLE_OPERATOR_TOKEN_PEPPER", "LOOMCYCLE_MCP_UPSTREAM_TOKEN",
 		// The retired name: a stale value in the environment is still a secret.
-		"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS",
+		"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS", // retired name
 		"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE",
 		"OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
 	} {
@@ -2634,7 +2634,7 @@ func TestIsInfraSecretEnv_CoversOTLPHeaderNames(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_TRACES_HEADERS",
 		"OTEL_EXPORTER_OTLP_METRICS_HEADERS",
 		"OTEL_EXPORTER_OTLP_LOGS_HEADERS",
-		"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS",
+		"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS", // retired name
 		"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE",
 	} {
 		if !IsInfraSecretEnv(name) {

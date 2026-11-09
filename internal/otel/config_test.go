@@ -39,7 +39,7 @@ func TestResolveConfig_EnvironmentTable(t *testing.T) {
 		}},
 		{name: "endpoint enables", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": ep}, check: wantEnabled(true)},
 		{name: "traces endpoint enables", env: map[string]string{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": ep + "/v1/traces"}, check: wantEnabled(true)},
-		{name: "old loomcycle endpoint is not read", env: map[string]string{"LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT": ep}, check: wantEnabled(false)},
+		{name: "retired loomcycle endpoint is not read", env: map[string]string{"LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT": ep}, check: wantEnabled(false)},
 		{name: "exporter none disables", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": ep, "OTEL_TRACES_EXPORTER": "none"}, check: wantEnabled(false)},
 		{name: "exporter otlp keeps on", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": ep, "OTEL_TRACES_EXPORTER": "otlp"}, check: wantEnabled(true)},
 		{name: "sdk disabled", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": ep, "OTEL_SDK_DISABLED": "TRUE"}, check: wantEnabled(false)},
