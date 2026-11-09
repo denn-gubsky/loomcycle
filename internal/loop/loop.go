@@ -4045,6 +4045,8 @@ type ModelCall struct {
 	// ownTimer: the timer is this span's alone, so Observe feeds it; inside
 	// the loop the caller feeds the timer it also stamps usage with.
 	ownTimer bool
+	// noTrace: a failure is recorded by class only.
+	noTrace bool
 }
 
 func (s *runState) startModelCall(runCtx, turnCtx context.Context, req providers.Request, timer *providers.CallTimer) *ModelCall {
@@ -4062,9 +4064,14 @@ func (m *ModelCall) Ctx() context.Context { return m.ctx }
 // ends unfinished was cancelled; call the provider with the result's Ctx,
 // feed every event to Observe, and End it on every exit (a no-op once the
 // stream's done or error event ended it). price may be nil.
+//
+// noTrace marks a call whose content is stored nowhere (its caller's runs are
+// no-trace): the span then carries no request parameters and records a
+// failure by class, never the provider's error text, which can quote the
+// request. A call inside a run reads it off the run identity as well.
 func StartModelCall(ctx context.Context, purpose string, provider providers.Provider, req providers.Request,
-	price func(string, string, *providers.Usage) (float64, string)) *ModelCall {
-	mc := startModelCall(ctx, ctx, purpose, provider, req, providers.StartCallTimer(nil), price, "")
+	price func(string, string, *providers.Usage) (float64, string), noTrace bool) *ModelCall {
+	mc := startModelCallNoTrace(ctx, ctx, purpose, provider, req, providers.StartCallTimer(nil), price, "", noTrace)
 	mc.ownTimer = true
 	return mc
 }
@@ -4081,7 +4088,15 @@ const (
 // with the returned ModelCall's ctx, a child of turnCtx. price may be nil.
 func startModelCall(runCtx, turnCtx context.Context, purpose string, provider providers.Provider, req providers.Request,
 	timer *providers.CallTimer, price func(string, string, *providers.Usage) (float64, string), fallbackFrom string) *ModelCall {
+	return startModelCallNoTrace(runCtx, turnCtx, purpose, provider, req, timer, price, fallbackFrom, false)
+}
+
+func startModelCallNoTrace(runCtx, turnCtx context.Context, purpose string, provider providers.Provider, req providers.Request,
+	timer *providers.CallTimer, price func(string, string, *providers.Usage) (float64, string), fallbackFrom string, noTrace bool) *ModelCall {
+	// A no-trace run's calls are no-trace whoever starts them.
+	noTrace = noTrace || tools.RunIsNoTrace(runCtx)
 	mctx, span := lcotel.RecordModelCall(turnCtx, lcotel.ModelCallAttrs{
+		NoTrace:      noTrace,
 		Purpose:      purpose,
 		Provider:     provider.ID(),
 		Model:        req.Model,
@@ -4093,7 +4108,7 @@ func startModelCall(runCtx, turnCtx context.Context, purpose string, provider pr
 		FallbackFrom: fallbackFrom,
 	})
 	return &ModelCall{ctx: mctx, span: span, runCtx: runCtx, turnCtx: turnCtx, timer: timer,
-		provider: provider.ID(), model: req.Model, price: price}
+		provider: provider.ID(), model: req.Model, price: price, noTrace: noTrace}
 }
 
 // Observe ends the span at the stream's first terminal event.
@@ -4155,7 +4170,7 @@ func (m *ModelCall) End(msg string) {
 	// alone: the loop releases the turn ctx on its failure exits too.
 	case m.runCtx.Err() != nil, errors.Is(context.Cause(m.turnCtx), ErrTurnCancelled):
 		r.Cancelled = true
-	case tools.RunIsNoTrace(m.runCtx):
+	case m.noTrace:
 		r.ErrMessage = "provider call failed"
 	default:
 		r.ErrMessage = msg

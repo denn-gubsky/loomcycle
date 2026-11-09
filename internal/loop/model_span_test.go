@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -344,5 +345,42 @@ func TestModelCallSpan_SideCallsCarryTheirPurpose(t *testing.T) {
 				t.Error("the attempt span is not the model-call span's child")
 			}
 		})
+	}
+}
+
+// A no-trace run's model calls — its turns and its summaries — name a failure
+// by class and carry no request parameters: the provider's error text can
+// quote the prompt. An ordinary run's span keeps the text, so the check can
+// fail.
+func TestModelCallSpan_ANoTraceRunsCallsCarryNoErrorTextOrParameters(t *testing.T) {
+	msgs := []providers.Message{{Role: "user", Content: []providers.ContentBlock{providers.DialogueText("hello")}}}
+	for _, retention := range []string{"none", ""} {
+		exp, _ := traced(t)
+		ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{Retention: retention, ModelTier: "high"})
+		p := &quotingProvider{inStream: true}
+		_, _ = Summarize(ctx, p, "m", msgs, 30)
+		_, _ = Run(ctx, RunOptions{Provider: p, Model: "m", Segments: userPrompt(), OnEvent: func(providers.Event) {}, MaxTokens: 64})
+		var text strings.Builder
+		models := spansNamed(exp, lcotel.SpanModelCall)
+		// The summary may retry once with a plainer request: two or three.
+		if len(models) < 2 {
+			t.Fatalf("retention=%q: got %d model-call spans, want the summary's and the turn's", retention, len(models))
+		}
+		for _, s := range models {
+			text.WriteString(s.Status.Description)
+			for k, v := range spanAttrs(s) {
+				text.WriteString(" " + v.Emit())
+				if retention == "none" && (k == lcotel.AttrTier || k == "gen_ai.request.max_tokens") {
+					t.Errorf("a no-trace run's model span carries %s", k)
+				}
+			}
+		}
+		has := strings.Contains(text.String(), iterSpanCanary)
+		if retention == "none" && has {
+			t.Errorf("a no-trace run's model spans carry the error text: %q", text.String())
+		}
+		if retention == "" && !has {
+			t.Fatalf("an ordinary run's model spans carry %q: this test cannot see the text", text.String())
+		}
 	}
 }

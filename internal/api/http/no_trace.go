@@ -516,6 +516,17 @@ func (s *Server) FailLostNoTraceRuns(ctx context.Context, bootedAt time.Time) (i
 	return s.store.FailLostNoTraceRuns(ctx, s.replicaID, bootedAt)
 }
 
+// summaryRetention is the retention a summary made outside a run's loop (a
+// manual compaction, a chat recap, a replay's compaction) carries on its run
+// identity: the stored row's, or none for a no-trace caller. The summary's
+// model-call span reads it, and names a failure by class under none.
+func summaryRetention(ctx context.Context, rowRetention string) string {
+	if rowRetention == retentionmode.None || principalIsNoTrace(ctx) {
+		return retentionmode.None
+	}
+	return rowRetention
+}
+
 // principalIsNoTrace reports whether the caller's token makes its runs
 // no-trace. Such a caller's content is not stored by any route it can reach,
 // not only by the one that starts a run: it cannot write a prompt into a

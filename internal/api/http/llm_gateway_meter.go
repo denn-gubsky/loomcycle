@@ -42,7 +42,9 @@ type gatewayMeter struct {
 // span with the stream; on a refused call the span is already ended.
 func (s *Server) callGateway(ctx context.Context, provider providers.Provider, req providers.Request) (<-chan providers.Event, *gatewayMeter, error) {
 	ctx = lcotel.WithTenant(ctx, tenantFromCtx(ctx))
-	mc := loop.StartModelCall(ctx, gatewayModelPurpose, provider, req, s.priceCall)
+	// A no-trace caller's call is traced by class: a provider's error text
+	// can quote the request, which such a caller's content may not leave in.
+	mc := loop.StartModelCall(ctx, gatewayModelPurpose, provider, req, s.priceCall, principalIsNoTrace(ctx))
 	ch, err := provider.Call(mc.Ctx(), req)
 	if err != nil {
 		mc.End(err.Error())

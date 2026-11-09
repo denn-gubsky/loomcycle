@@ -63,6 +63,11 @@ type ModelCallAttrs struct {
 	// FallbackFrom is the "provider/model" the previous call failed over
 	// from, when this call is the first after a fallback.
 	FallbackFrom string
+	// NoTrace is a call whose content is stored nowhere: the span names its
+	// purpose, provider, model and tenant only, none of the request's
+	// parameters. Its failure is recorded by class (ModelCallResult.ErrMessage),
+	// never by the provider's error text.
+	NoTrace bool
 }
 
 // RecordModelCall opens loomcycle.model.call. The returned ctx must be the
@@ -79,18 +84,21 @@ func RecordModelCall(ctx context.Context, a ModelCallAttrs) (context.Context, tr
 	if a.Model != "" {
 		kvs = append(kvs, attribute.String(AttrModel, a.Model))
 	}
-	if a.Tier != "" {
-		kvs = append(kvs, attribute.String(AttrTier, a.Tier))
-	}
-	if a.Effort != "" {
-		kvs = append(kvs, attribute.String(AttrEffort, a.Effort))
-	}
 	if a.FallbackFrom != "" {
 		kvs = append(kvs, attribute.String(AttrFallbackFrom, a.FallbackFrom))
 	}
 	kvs = append(kvs, genAIOperationChat)
 	kvs = genAIString(genai.GenAIProviderNameKey, GenAIProviderName(a.Provider), kvs)
 	kvs = genAIString(genai.GenAIRequestModelKey, a.Model, kvs)
+	if a.NoTrace {
+		return Tracer().Start(ctx, SpanModelCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
+	}
+	if a.Tier != "" {
+		kvs = append(kvs, attribute.String(AttrTier, a.Tier))
+	}
+	if a.Effort != "" {
+		kvs = append(kvs, attribute.String(AttrEffort, a.Effort))
+	}
 	if a.Temperature != nil {
 		kvs = append(kvs, genai.GenAIRequestTemperatureKey.Float64(*a.Temperature))
 	}
