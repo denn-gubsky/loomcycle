@@ -3,6 +3,7 @@ package otel
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"sync/atomic"
 
@@ -44,11 +45,20 @@ func SetUserIDPolicyForTest(key []byte, raw bool) func() {
 }
 
 // UserHash is loomcycle.user_hash for user in tenant: the first 16 hex
-// characters of HMAC-SHA256(key, tenant + "|" + user). The tenant is part of
-// the input because a user id is unique only within its tenant.
+// characters of HMAC-SHA256(key, len(tenant) || tenant || len(user) || user),
+// each length a 4-byte big-endian count of bytes. The tenant is part of the
+// input because a user id is unique only within its tenant. The fields are
+// length-prefixed, not joined by a separator: neither id's charset is
+// enforced at every intake, and with "tenant|user" the pairs ("a|b", "c")
+// and ("a", "b|c") would hash the same.
 func UserHash(key []byte, tenant, user string) string {
 	m := hmac.New(sha256.New, key)
-	m.Write([]byte(tenant + "|" + user))
+	for _, f := range []string{tenant, user} {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(f)))
+		m.Write(n[:])
+		m.Write([]byte(f))
+	}
 	return hex.EncodeToString(m.Sum(nil))[:16]
 }
 

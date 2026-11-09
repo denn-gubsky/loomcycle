@@ -105,10 +105,11 @@ model reads it and goes on, so it sets `loomcycle.tool_is_error` instead.
 ### Users on spans
 
 A span names its user by `loomcycle.user_hash`: the first 16 hex characters
-of an HMAC-SHA256 over `tenant|user`, keyed by a key derived from
-`LOOMCYCLE_SECRET_KEY`. It is stable, so one user's traces group together,
-and `loomcycle otel user-hash <tenant> <user>` prints a user's hash to
-search for. `LOOMCYCLE_OTEL_RAW_USER_ID=1` adds the raw `loomcycle.user_id`
+of an HMAC-SHA256 over the tenant id and the user id (each length-prefixed),
+keyed by a key derived from `LOOMCYCLE_SECRET_KEY`. It is stable, so one
+user's traces group together, and `loomcycle otel user-hash <tenant> <user>`,
+run with `LOOMCYCLE_SECRET_KEY` in its environment as for the server, prints a
+user's hash to search for. `LOOMCYCLE_OTEL_RAW_USER_ID=1` adds the raw `loomcycle.user_id`
 beside it; with no secret key set the raw id is all a span carries, and the
 startup warns.
 

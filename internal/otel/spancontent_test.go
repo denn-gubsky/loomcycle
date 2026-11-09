@@ -171,12 +171,34 @@ func TestRecordMemoryConsolidate_HashesTheTargetUser(t *testing.T) {
 	}
 }
 
-// Pinned outside Go (HMAC-SHA256 over "acme|alice", first 16 hex): a change
-// would make every exported hash stop matching the CLI's.
+// Pinned outside Go: a change would make every exported hash stop matching
+// the CLI's. Computed with Python's hmac/hashlib:
+//
+//	msg = b"".join(struct.pack(">I", len(f)) + f for f in (b"acme", b"alice"))
+//	hmac.new(key, msg, hashlib.sha256).hexdigest()[:16]
+//
+// key being the DeriveOTelUserKey known answer for the test master key.
 func TestUserHash_MatchesTheHMACKnownAnswer(t *testing.T) {
 	key, _ := hex.DecodeString("6888a893992739563b4d15a9e417320e7dd2ec2748da497abd27ee9cbae9b2f4")
-	if got := lcotel.UserHash(key, "acme", "alice"); got != "449b272e5974ee6a" {
-		t.Fatalf("UserHash = %s", got)
+	for _, tc := range []struct{ tenant, user, want string }{
+		{"acme", "alice", "a79e8606875426e8"},
+		{"a|b", "c", "5959230719ecf023"},
+		{"a", "b|c", "a6dd1c3cb6bfa320"},
+	} {
+		if got := lcotel.UserHash(key, tc.tenant, tc.user); got != tc.want {
+			t.Errorf("UserHash(%q, %q) = %s, want %s", tc.tenant, tc.user, got, tc.want)
+		}
+	}
+}
+
+// A separator-joined input made ("a|b", "c") and ("a", "b|c") one user;
+// neither tenant nor user id is charset-checked at every intake.
+func TestUserHash_FieldBoundaryIsUnambiguous(t *testing.T) {
+	if lcotel.UserHash(testUserKey, "a|b", "c") == lcotel.UserHash(testUserKey, "a", "b|c") {
+		t.Fatal("two different (tenant, user) pairs hash the same")
+	}
+	if lcotel.UserHash(testUserKey, "ab", "") == lcotel.UserHash(testUserKey, "a", "b") {
+		t.Fatal("moving a byte across the field boundary keeps the hash")
 	}
 }
 

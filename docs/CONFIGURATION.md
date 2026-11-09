@@ -3545,16 +3545,20 @@ that returned an error result is not (it sets `loomcycle.tool_is_error`).
 #### Users on spans
 
 A span names a run's user by `loomcycle.user_hash`: the first 16 hex
-characters of HMAC-SHA256 over `<tenant>|<user>`, keyed by a key derived from
+characters of HMAC-SHA256 over the tenant id and the user id, each preceded by
+its length in bytes as a 4-byte big-endian number, keyed by a key derived from
 `LOOMCYCLE_SECRET_KEY` (HKDF, its own label). The hash is stable, so one
 user's traces are still found together, but the trace backend never holds the
-user id. To find a user's traces, compute the hash with the same secret key:
+user id. To find a user's traces, run the command with `LOOMCYCLE_SECRET_KEY`
+set in the environment, as it is for the server (never type the key on the
+command line, where the shell history keeps it):
 
 ```sh
-LOOMCYCLE_SECRET_KEY=… loomcycle otel user-hash acme alice
+loomcycle otel user-hash acme alice
 ```
 
-and search `loomcycle.user_hash=<printed value>`. Rotating the secret key
+and search `loomcycle.user_hash=<printed value>`. The command prints the hash
+and nothing else; it never prints the key. Rotating the secret key
 changes every hash; traces recorded before the rotation keep the old ones.
 
 `LOOMCYCLE_OTEL_RAW_USER_ID=1` adds the raw `loomcycle.user_id` beside the

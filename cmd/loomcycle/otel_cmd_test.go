@@ -69,3 +69,16 @@ func TestOtelUserHash_RefusesWithoutASecretKey(t *testing.T) {
 		t.Fatalf("a missing argument exited %d, want 2", code)
 	}
 }
+
+// The key comes from the environment and never reaches the output, even
+// when it is malformed and the command fails on it.
+func TestOtelUserHash_NeverPrintsTheKey(t *testing.T) {
+	for _, key := range []string{testSecretKey(), "c2hvcnQtYnV0LXZhbGlkLWI2NA==", "not!base64!s3cr3t"} {
+		t.Setenv("LOOMCYCLE_SECRET_KEY", key)
+		var out, errOut bytes.Buffer
+		_ = runOtel([]string{"user-hash", "acme", "alice"}, &out, &errOut)
+		if strings.Contains(out.String()+errOut.String(), key) || strings.Contains(out.String()+errOut.String(), "s3cr3t") {
+			t.Errorf("output quotes the key: stdout %q stderr %q", out.String(), errOut.String())
+		}
+	}
+}
