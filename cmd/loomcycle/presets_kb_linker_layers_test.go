@@ -727,6 +727,13 @@ func TestKBLinker_ReportModeWritesNothing(t *testing.T) {
 	}
 }
 
+// kbContextCall is a Context tool call in the body; its op is not a Document op.
+var kbContextCall = regexp.MustCompile(`\bContext\(\{\s*op:\s*"([a-z_]+)"\s*\}\)`)
+
+// kbDocumentOpText is the body with its Context calls removed, so an op scan
+// reads Document ops only.
+func kbDocumentOpText(body string) string { return kbContextCall.ReplaceAllString(body, "") }
+
 // TestKBLinker_EveryOpTheBodyNamesHasAContract keeps kbOpContracts complete: an
 // op the body starts calling without a row there is an op nobody checks against
 // the runtime when it merges.
@@ -737,7 +744,10 @@ func TestKBLinker_EveryOpTheBodyNamesHasAContract(t *testing.T) {
 		known[c.Tool+"."+c.Op] = true
 	}
 	named := map[string]bool{}
-	for _, m := range regexp.MustCompile(`op:\s*"([a-z_]+)"`).FindAllStringSubmatch(body, -1) {
+	for _, m := range kbContextCall.FindAllStringSubmatch(body, -1) {
+		named["Context."+m[1]] = true
+	}
+	for _, m := range regexp.MustCompile(`op:\s*"([a-z_]+)"`).FindAllStringSubmatch(kbDocumentOpText(body), -1) {
 		named["Document."+m[1]] = true
 	}
 	for _, m := range regexp.MustCompile(`\b(Channel|Agent)\.([a-z_]+)\(`).FindAllStringSubmatch(body, -1) {

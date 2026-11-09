@@ -1,23 +1,29 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
 )
 
 // The relate layer (L4) in a propose pass (RFC FP Phase C, owner decisions
-// 2026-10-30): only elaborates is filed, on both exact quotes and no confidence
-// floor, at most one proposal per passage and target document, and nothing is drawn
-// from a paragraph the class marks as boilerplate.
+// 2026-10-30, revised by the Phase A measurement decisions of 2026-11-09):
+// elaborates, conflicts_with and stricter_than are never filed; a kind the tenant
+// declares itself is offered to the verdict and may be filed, on both exact quotes
+// and no confidence floor, at most one proposal per passage and target document,
+// and nothing is drawn from a paragraph the class marks as boilerplate.
 
-// relateOntology declares elaborates and stricter_than, so the per-kind switch, not
-// the vocabulary, is what keeps stricter_than out.
+// relateOntology declares elaborates and stricter_than (as the seed does) and one
+// kind of the tenant's own, answers, which the relate layer may file.
 func relateOntology() map[string]any {
 	o := kbOntology()
 	o["relations"] = append(o["relations"].([]any),
 		map[string]any{"name": "elaborates", "source": "base"},
-		map[string]any{"name": "stricter_than", "source": "base"})
+		map[string]any{"name": "stricter_than", "source": "base"},
+		map[string]any{"name": "conflicts_with", "source": "base"},
+		map[string]any{"name": "answers", "source": "tenant", "meaning": "responds to a question or need the other states",
+			"inverse": "answered_by"})
 	return o
 }
 
@@ -37,19 +43,32 @@ func runesOf(body, quote string) (float64, float64) {
 	return float64(s), float64(s + utf8.RuneCountInString(quote))
 }
 
-// TestKBLinker_ProposePassFilesOnlyElaborates: two findings, a stricter_than and an
-// elaborates; the propose pass files the elaborates (direction respected, both quotes
-// as evidence in their own chunks, by extractor:relate, with the verdict's
-// confidence) and counts the other as switched off. A report pass counts the same
-// one as would_propose and writes nothing.
-func TestKBLinker_ProposePassFilesOnlyElaborates(t *testing.T) {
+// withThirdCandidate adds x3, in a second corpus document, to c1's candidates, so
+// one passage can have a finding against two target documents.
+func withThirdCandidate(f *kbFixture) {
+	f.others["x3"] = kbChunk{ID: "x3", DocumentID: "doc-rule", Type: "section", Title: "TITLE-X3", Body: kbBodyDef}
+	f.docTypes["doc-rule"] = "act"
+	f.docPaths["doc-rule"] = "/laws/rule"
+	f.related["c1"] = append(f.related["c1"], map[string]any{"chunk_id": "x3", "score": 0.66, "type": "section", "document_id": "doc-rule"})
+}
+
+// TestKBLinker_ProposePassWithholdsElaboratesConflictsAndStricter: findings of the
+// three withheld kinds are reported, marked as not filed, and counted as
+// kind_withheld; a finding of a tenant-declared kind is filed (direction
+// respected, both quotes as evidence in their own chunks, by extractor:relate, with
+// the verdict's confidence). A report pass counts the same as would_propose and
+// writes nothing. Before the change the elaborates finding was filed.
+func TestKBLinker_ProposePassWithholdsElaboratesConflictsAndStricter(t *testing.T) {
 	verdict := `[
 	  {"candidate": 1, "kind": "stricter_than", "direction": "this_to_candidate",
 	   "quote_from": "within 24 hours of detecting it", "quote_to": "in any case within 72 hours", "confidence": 0.9},
 	  {"candidate": 2, "kind": "elaborates", "direction": "candidate_to_this",
-	   "quote_from": "report a material incident to the regulator", "quote_to": "names the systems affected", "confidence": 0.55}
+	   "quote_from": "report a material incident to the regulator", "quote_to": "names the systems affected", "confidence": 0.95},
+	  {"candidate": 3, "kind": "answers", "direction": "candidate_to_this",
+	   "quote_from": "report a material incident to the regulator", "quote_to": "disrupts a critical service for more than two hours", "confidence": 0.55}
 	]`
 	f := kbBaseFixture()
+	withThirdCandidate(f)
 	f.ontology = relateOntology()
 	f.defaultVerdict = verdict
 
@@ -57,12 +76,12 @@ func TestKBLinker_ProposePassFilesOnlyElaborates(t *testing.T) {
 
 	got := proposals(f)
 	if len(got) != 1 {
-		t.Fatalf("proposals = %v, want only the elaborates finding", got)
+		t.Fatalf("proposals = %v, want only the answers finding", got)
 	}
 	p := got[0]
-	if p["from_id"] != "x2" || p["to_id"] != "c1" || p["kind"] != "elaborates" || p["method"] != "extractor:relate" ||
+	if p["from_id"] != "x3" || p["to_id"] != "c1" || p["kind"] != "answers" || p["method"] != "extractor:relate" ||
 		p["confidence"] != 0.55 {
-		t.Errorf("proposal = %v, want x2 elaborates c1 (candidate_to_this) by extractor:relate at 0.55", p)
+		t.Errorf("proposal = %v, want x3 answers c1 (candidate_to_this) by extractor:relate at 0.55", p)
 	}
 	ev, _ := p["evidence"].([]any)
 	if len(ev) != 2 {
@@ -70,7 +89,7 @@ func TestKBLinker_ProposePassFilesOnlyElaborates(t *testing.T) {
 	}
 	for i, w := range []struct{ chunk, body, quote string }{
 		{"c1", kbBodyClaim, "report a material incident to the regulator"},
-		{"x2", kbBodyRule, "names the systems affected"},
+		{"x3", kbBodyDef, "disrupts a critical service for more than two hours"},
 	} {
 		e := ev[i].(map[string]any)
 		s, en := runesOf(w.body, w.quote)
@@ -81,15 +100,26 @@ func TestKBLinker_ProposePassFilesOnlyElaborates(t *testing.T) {
 	if n := relateCount(t, rep, "proposed"); n != 1 {
 		t.Errorf("proposed = %v, want 1", n)
 	}
-	if n := relateCount(t, rep, "propose_kind_off"); n != 1 {
-		t.Errorf("propose_kind_off = %v, want 1 (stricter_than)", n)
+	if n := relateCount(t, rep, "kind_withheld"); n != 2 {
+		t.Errorf("kind_withheld = %v, want 2 (stricter_than, elaborates)", n)
 	}
-	if len(reportFindings(t, rep)) != 2 {
-		t.Errorf("findings = %v, want both kept in the report", reportFindings(t, rep))
+	findings := reportFindings(t, rep)
+	if len(findings) != 3 {
+		t.Fatalf("findings = %v, want all three kept in the report", findings)
+	}
+	for _, fd := range findings {
+		withheld := fd["kind"] != "answers"
+		if fd["may_file"] != !withheld || (withheld && fd["not_filed"] != "kind_withheld") {
+			t.Errorf("finding %v: may_file/not_filed do not say whether a propose pass files it", fd)
+		}
+	}
+	if wk := relateReport(t, rep)["withheld_kinds"]; fmt.Sprint(wk) != "[elaborates conflicts_with stricter_than]" {
+		t.Errorf("withheld_kinds = %v", wk)
 	}
 	noViolations(t, f)
 
 	g := kbBaseFixture()
+	withThirdCandidate(g)
 	g.ontology = relateOntology()
 	g.defaultVerdict = verdict
 	dry, _ := runLinker(t, g, relateReportIn)
@@ -97,17 +127,20 @@ func TestKBLinker_ProposePassFilesOnlyElaborates(t *testing.T) {
 	if n := relateCount(t, dry, "would_propose"); n != 1 {
 		t.Errorf("report pass would_propose = %v, want 1", n)
 	}
+	if n := relateCount(t, dry, "kind_withheld"); n != 2 {
+		t.Errorf("report pass kind_withheld = %v, want 2", n)
+	}
 }
 
 // TestKBLinker_RelateFilesOnlyAKindTheOntologyDeclares: with no ontology, or one
-// that does not declare elaborates, the finding stays in the report and nothing is
-// filed.
+// that does not declare answers, answers is never offered to the verdict; a reply
+// naming it anyway is out of vocabulary, counted, and neither reported nor filed.
 func TestKBLinker_RelateFilesOnlyAKindTheOntologyDeclares(t *testing.T) {
-	for name, onto := range map[string]map[string]any{"no ontology": nil, "elaborates undeclared": kbOntology()} {
+	for name, onto := range map[string]map[string]any{"no ontology": nil, "answers undeclared": kbOntology()} {
 		t.Run(name, func(t *testing.T) {
 			f := kbBaseFixture()
 			f.ontology = onto
-			f.defaultVerdict = `[{"candidate": 2, "kind": "elaborates", "direction": "this_to_candidate",
+			f.defaultVerdict = `[{"candidate": 2, "kind": "answers", "direction": "this_to_candidate",
 			   "quote_from": "report a material incident to the regulator", "quote_to": "names the systems affected", "confidence": 0.7}]`
 
 			rep, _ := runLinker(t, f, relatePropose)
@@ -115,26 +148,29 @@ func TestKBLinker_RelateFilesOnlyAKindTheOntologyDeclares(t *testing.T) {
 			if got := proposals(f); len(got) != 0 {
 				t.Errorf("proposals = %v, want none", got)
 			}
-			if n := relateCount(t, rep, "propose_kind_not_declared"); n != 1 {
-				t.Errorf("propose_kind_not_declared = %v, want 1", n)
+			if n := relateCount(t, rep, "verdicts_out_of_vocabulary"); n != 1 {
+				t.Errorf("verdicts_out_of_vocabulary = %v, want 1", n)
 			}
-			if len(reportFindings(t, rep)) != 1 {
-				t.Errorf("the finding must stay in the report: %v", reportFindings(t, rep))
+			if prompts := f.spawnPrompts(); len(prompts) != 1 || strings.Contains(prompts[0], "- answers:") {
+				t.Errorf("an undeclared kind was offered to the verdict: %q", prompts)
+			}
+			if len(reportFindings(t, rep)) != 0 {
+				t.Errorf("an out-of-vocabulary reply became a finding: %v", reportFindings(t, rep))
 			}
 		})
 	}
 }
 
 // TestKBLinker_OneProposalPerPassageAndTargetDocument: two candidates of the same
-// act both elaborate the passage; only the one the verdict is surer of is filed, and
+// act both answer the passage; only the one the verdict is surer of is filed, and
 // the other is counted as capped. Both stay in the report.
 func TestKBLinker_OneProposalPerPassageAndTargetDocument(t *testing.T) {
 	f := kbBaseFixture()
 	f.ontology = relateOntology()
 	f.defaultVerdict = `[
-	  {"candidate": 1, "kind": "elaborates", "direction": "this_to_candidate",
+	  {"candidate": 1, "kind": "answers", "direction": "this_to_candidate",
 	   "quote_from": "within 24 hours of detecting it", "quote_to": "in any case within 72 hours", "confidence": 0.6},
-	  {"candidate": 2, "kind": "elaborates", "direction": "this_to_candidate",
+	  {"candidate": 2, "kind": "answers", "direction": "this_to_candidate",
 	   "quote_from": "report a material incident to the regulator", "quote_to": "names the systems affected", "confidence": 0.8}
 	]`
 
