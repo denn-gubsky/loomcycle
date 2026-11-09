@@ -378,7 +378,8 @@ func testAuditReplicasCheckpointTheNewestHead(t *testing.T, a, b store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cp := reg.Checkpoints["t1"]; cp.Seq != head.Seq || cp.Hash != head.Hash {
-		t.Errorf("newest checkpoint %+v, want the head (%d, %s)", cp, head.Seq, head.Hash)
+	cps := reg.Checkpoints["t1"]
+	if len(cps) == 0 || cps[len(cps)-1].Seq != head.Seq || cps[len(cps)-1].Hash != head.Hash {
+		t.Errorf("checkpoints %+v, want the newest at the head (%d, %s)", cps, head.Seq, head.Hash)
 	}
 }

@@ -3,6 +3,7 @@ package auditchain_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -175,5 +176,85 @@ func TestAuditVerify_ARowThatDiffersFromItsCheckpointIsABreak(t *testing.T) {
 	rep := verify(t, s, testKeys)
 	if rep.OK || rep.BreakSeq != 3 || !strings.Contains(rep.Reason, "checkpoint") {
 		t.Fatalf("a row replaced at a checkpoint's position: %+v", rep)
+	}
+}
+
+// After a rollback the running deployment goes on appending to the rolled-
+// back head, and in time checkpoints that (forged) history too. The newer
+// checkpoint must not stand in for the older, genuine one: every checkpoint
+// whose row is still in the chain is compared.
+func TestAuditVerify_ALaterCheckpointDoesNotLaunderARollback(t *testing.T) {
+	s, db := chainFixture(t, 0)
+	sink, err := auditchain.NewStoreSink(s, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.SetCheckpointPolicy(4, time.Hour)
+	record(t, sink, 2)
+	old := saveHead(t, db, "t1")
+	record(t, sink, 2) // checkpoints seq 4
+	rollBack(t, db, "t1", old)
+	// A replica that never saw the rolled-back rows goes on writing; its
+	// checkpoint at seq 6 covers the forged history.
+	other, err := auditchain.NewStoreSink(s, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.SetCheckpointPolicy(4, time.Hour)
+	record(t, other, 4)
+	rep := verify(t, s, testKeys)
+	if rep.OK || rep.BreakSeq != 4 || !strings.Contains(rep.Reason, "checkpoint") {
+		t.Fatalf("a rollback followed by a newer checkpoint: %+v", rep)
+	}
+}
+
+// A retention prune of the tenant chain past a checkpoint must not sign an
+// anchor over history that contradicts it: the prune is refused, and the
+// break stays visible to Verify.
+func TestAuditPrune_RefusesToFoldARollbackPastACheckpoint(t *testing.T) {
+	s, db := chainFixture(t, 0)
+	sink, err := auditchain.NewStoreSink(s, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.SetCheckpointPolicy(4, time.Hour)
+	record(t, sink, 2)
+	old := saveHead(t, db, "t1")
+	record(t, sink, 2) // checkpoints seq 4
+	rollBack(t, db, "t1", old)
+	other, err := auditchain.NewStoreSink(s, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record(t, other, 4)
+
+	if _, err := pruneForTest(context.Background(), s, "t1", time.Now().Add(time.Hour)); !errors.Is(err, auditchain.ErrChainBroken) {
+		t.Fatalf("prune over a rolled-back chain: err = %v, want ErrChainBroken", err)
+	}
+	if rep := verify(t, s, testKeys); rep.OK {
+		t.Fatalf("the rollback verifies after the refused prune: %+v", rep)
+	}
+}
+
+// Checkpoint, prune, then a rollback to just after the anchor: the newest
+// checkpoint lies past the restored head.
+func TestAuditVerify_ARollbackToJustAfterAnAnchorIsABreak(t *testing.T) {
+	s, db := chainFixture(t, 0)
+	sink, err := auditchain.NewStoreSink(s, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.SetCheckpointPolicy(4, time.Hour)
+	record(t, sink, 6)   // checkpoints seq 4
+	cutoff := time.Now() // the rows recorded after it stay
+	if n, err := pruneForTest(context.Background(), s, "t1", cutoff); err != nil || n != 6 {
+		t.Fatalf("prune: %d, %v", n, err)
+	}
+	record(t, sink, 1)
+	old := saveHead(t, db, "t1")
+	record(t, sink, 1) // checkpoints seq 8
+	rollBack(t, db, "t1", old)
+	if rep := verify(t, s, testKeys); rep.OK || rep.BreakSeq != 8 || !strings.Contains(rep.Reason, "checkpoint") {
+		t.Fatalf("a rollback to just after the anchor: %+v", rep)
 	}
 }
