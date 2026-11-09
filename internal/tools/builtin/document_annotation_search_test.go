@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // The annotation leg of Document op=search.
@@ -169,5 +170,28 @@ func TestSearchAnnotations_FollowTheRecords(t *testing.T) {
 		if r["document_id"] != c.gadgets {
 			t.Fatalf("filtered search returned %v", r)
 		}
+	}
+}
+
+// Index rows are kept for the tenant scope only: a copy into a user scope, whose
+// memory is erased by its own scope id, leaves none beside it.
+func TestSearchAnnotations_NoRowsOutsideTheTenantScope(t *testing.T) {
+	d, op, _, c := seedAnnSearch(t)
+	ctx := tools.WithRunPolicy(op, tools.RunPolicy{Tools: []string{"*"},
+		Memory: tools.MemoryPolicyValue{AllowedScopes: []string{"tenant", "user"}},
+		SqlMem: tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant", "user"}}})
+	if _, r := docExec(t, d, ctx, `{"op":"copy_documents","scope":"tenant","to_scope":"user","document_ids":["`+c.widgets+`"],"dry_run":false}`); r.IsError {
+		t.Fatalf("copy_documents: %s", r.Text)
+	}
+	key, mscope, err := d.resolveScope(ctx, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _, err := d.Store.MemoryList(ctx, direntTenant(ctx), mscope, annotationMemScopeID(mscope, key), annotationKeyPrefix, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("%d annotation rows written beside a user scope", len(rows))
 	}
 }

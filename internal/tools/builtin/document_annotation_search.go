@@ -69,8 +69,12 @@ func (d *Document) annotationIndexHeader(ctx context.Context, key sqlmem.ScopeKe
 // indexAnnotation writes the index row of one record. Best-effort like every
 // document embed: a row that cannot be embedded is left out of the leg, and
 // rewriting the annotation writes it again.
+//
+// Tenant scope only, as annotations are: a user's or an agent's memory is deleted
+// scope-wide (erasure, retention) by its own scope id, which a row kept beside it
+// would outlive. A record copied into such a scope keeps no row.
 func (d *Document) indexAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, rec annotationRecord) {
-	if d.Store == nil {
+	if d.Store == nil || mscope != store.MemoryScopeTenant {
 		return
 	}
 	tenant, scopeID := direntTenant(ctx), annotationMemScopeID(mscope, key)
