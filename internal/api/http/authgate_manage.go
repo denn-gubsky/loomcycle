@@ -985,18 +985,17 @@ func (s *Server) handleAuthgateDeleteCredentials(w http.ResponseWriter, r *http.
 		keys, err = s.store.UserPasskeyDeleteSubject(ctx, tenant, subject)
 	}
 	removed = removed || keys > 0
-	if err != nil {
+	// The credentials are removed because they may be lost or known to
+	// someone else: what was signed in with them ends too — whatever the
+	// removal answered, since a fault part-way may already have removed the
+	// password.
+	_, endErr := s.endSubjectCredentials(ctx, tenant, subject, credAll)
+	if err = errors.Join(err, endErr); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
 	if removed {
 		s.recordGateAudit(ctx, "auth_credential_removed", g.Name, "", tenant, subject, floorTarget{})
-	}
-	// The credentials are removed because they may be lost or known to
-	// someone else: what was signed in with them ends too.
-	if _, err := s.endSubjectCredentials(ctx, tenant, subject, credAll); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
-		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

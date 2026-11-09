@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -237,4 +238,45 @@ func TestSignInTeardown_EveryCallerGoesThroughTheHelper(t *testing.T) {
 	for _, p := range problems {
 		t.Error(p)
 	}
+}
+
+// totpDeleteFails is a store whose UserTOTPDelete faults: the step after
+// the new password is stored.
+type totpDeleteFails struct{ store.Store }
+
+func (totpDeleteFails) UserTOTPDelete(context.Context, string, string) (bool, error) {
+	return false, errors.New("injected: totp delete failed")
+}
+
+// A new password set while removing the authenticator ends the other
+// sign-ins as soon as it is stored: a later step that fails must not leave
+// them live under a password that already changed.
+func TestTOTPRemove_ANewPasswordEndsSignInsEvenWhenALaterStepFails(t *testing.T) {
+	f := newGateFixture(t)
+	a := f.redeemed(t, "local", "tess@example.com", f.inviteCode(t, bAcmeOp, "local", `{}`))
+	_, subject := a.me()
+	seedAppSignIn(t, f.st, "fam-totp", subject)
+	seedForeignSession(t, f.st, "sess-totp-sso", subject)
+	f.srv.store = totpDeleteFails{f.st}
+	code, body := a.do("DELETE", "/v1/_auth/totp", jsonBody(t, map[string]string{
+		"current_password": goodPassword, "new_password": "a long enough sole-factor passphrase"}))
+	if code != http.StatusInternalServerError {
+		t.Fatalf("precondition: the injected fault did not fail the request: %d %v", code, body)
+	}
+	assertFamilyRevoked(t, f.st, "fam-totp", "a new password whose TOTP removal then failed")
+	assertSessionRevoked(t, f.st, "sess-totp-sso", "a new password whose TOTP removal then failed")
+}
+
+// An operator's credential removal that faults after the password went
+// still ends the person's sign-ins.
+func TestCredentialRemoval_EndsSignInsEvenWhenALaterStepFails(t *testing.T) {
+	f := newGateFixture(t)
+	a := f.redeemed(t, "local", "uma@example.com", f.inviteCode(t, bAcmeOp, "local", `{}`))
+	_, subject := a.me()
+	seedAppSignIn(t, f.st, "fam-removal", subject)
+	f.srv.store = totpDeleteFails{f.st}
+	if code, body := f.call(t, bAcmeOp, "DELETE", "/v1/_authgate/local/credentials/"+subject, ""); code != http.StatusInternalServerError {
+		t.Fatalf("precondition: the injected fault did not fail the request: %d %v", code, body)
+	}
+	assertFamilyRevoked(t, f.st, "fam-removal", "a credential removal that then failed")
 }
