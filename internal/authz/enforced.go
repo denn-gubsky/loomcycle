@@ -253,6 +253,18 @@ func IsTypeLevelOnly(typ, verb string) bool {
 	return ok
 }
 
+// TypeLevelOnlyVerbs returns typ's type-level-only verbs in catalog order, for
+// the catalog listing a rule picker is built from.
+func TypeLevelOnlyVerbs(typ string) []string {
+	var out []string
+	for _, v := range EnforcedVerbs(typ) {
+		if IsTypeLevelOnly(typ, v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // TypeLevelOnlyPairs returns every type-level-only pair as "verb type",
 // sorted, for the transport censuses.
 func TypeLevelOnlyPairs() []string {
