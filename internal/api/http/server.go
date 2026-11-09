@@ -4077,6 +4077,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	runOpts := loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
+		PriceCall:           s.priceCall,
 		Tools:               allowedTools,
 		Dispatcher:          dispatcher,
 		Segments:            injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, in.Metadata, in.PayloadMetadata),
@@ -8298,6 +8299,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	opts := loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
+		PriceCall:           s.priceCall,
 		Tools:               subTools,
 		Dispatcher:          subDispatcher,
 		Segments:            segs,

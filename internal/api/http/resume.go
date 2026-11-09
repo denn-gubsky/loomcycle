@@ -1038,6 +1038,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		Resumed:             true,
 		Provider:            provider,
 		Model:               model,
+		PriceCall:           s.priceCall,
 		Tools:               allowedTools,
 		Dispatcher:          dispatcher,
 		Segments:            segments,
