@@ -16,8 +16,10 @@
 #   release, not weekly. ghcr.io/denn-gubsky/loomboard (the hosted board in
 #   cloud-deployment) is loomboard's: the deploy script moves it to each
 #   loomboard release.
-# - deploy/truenas/catalog/templates holds a Jinja template, not plain YAML,
-#   and examples/ compose files are illustrations; neither is scanned.
+# - deploy/truenas/catalog/templates holds a Jinja template, not plain YAML;
+#   it is not scanned. The examples/ compose files are scanned like the rest:
+#   their third-party images are pinned by digest (scripts/ci/composepin), and
+#   a digest nobody refreshes ages into an unpatched image.
 # - The golang base images track the Go line CI builds with (ci.yml,
 #   release.yml, go.mod); moving to a new Go minor is a toolchain decision.
 # - modernc.org/sqlite 1.61.x: v1.61.0 (with modernc.org/libc v1.79.0) makes
@@ -201,6 +203,7 @@ updates:
       - /
       - /cloud-deployment
       - /deploy/truenas
+      - /examples/observability/grafana-tempo
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

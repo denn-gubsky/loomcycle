@@ -11,12 +11,12 @@ you use local models), and fill the `CHANGE_ME` / `PASTE_…` placeholders throu
 never in the YAML you paste into the TrueNAS UI.**
 
 > **Image choice.** This walkthrough enables in-container code execution, so it uses
-> the **`denngubsky/loomcycle-toolbox:1.23.1`** image — a dev toolchain (python / go /
+> the **`denngubsky/loomcycle-toolbox:1.147.0`** image — a dev toolchain (python / go /
 > rust / c++ / node + git/gh/curl/jq/rsync/wget/unzip/sqlite3) on a shell-bearing base.
 > Code runs in loomcycle's OWN container, so this is a **single-tenant / trusted**
 > posture ([`../../docs/TOOLBOX_IMAGE.md`](../../docs/TOOLBOX_IMAGE.md)). For a
 > locked-down / multi-tenant deploy, use the secure distroless
-> **`denngubsky/loomcycle:1.23.1`** instead and DELETE the "code execution" env block
+> **`denngubsky/loomcycle:1.147.0`** instead and DELETE the "code execution" env block
 > in Phase 5 (its shell tools have no shell/toolchain in distroless); for ISOLATED
 > untrusted code, keep distroless and add the builder sidecar
 > ([`../../docs/SANDBOX.md`](../../docs/SANDBOX.md)). Either way pin **≥ v1.6.0** — the
@@ -25,7 +25,7 @@ never in the YAML you paste into the TrueNAS UI.**
 >
 > **Registry.** Every loomcycle image is published to Docker Hub *and* to
 > `ghcr.io/denn-gubsky/…` (same build, same digest). If a pull fails with
-> `toomanyrequests`, swap the prefix — `ghcr.io/denn-gubsky/loomcycle-toolbox:1.23.1`
+> `toomanyrequests`, swap the prefix — `ghcr.io/denn-gubsky/loomcycle-toolbox:1.147.0`
 > — everywhere in the YAML below. See "Docker Hub rate limits" in Troubleshooting;
 > TrueNAS is unusually exposed to this because it re-checks every installed app for
 > image updates on a timer, and each check spends from the same anonymous quota.
@@ -170,7 +170,7 @@ Notes:
 name: loomcycle
 services:
   loomcycle-migrate:
-    image: denngubsky/loomcycle-toolbox:1.23.1
+    image: denngubsky/loomcycle-toolbox:1.147.0
     user: "65532:65532"
     restart: "no"
     command: ["migrate", "up"]
@@ -179,7 +179,7 @@ services:
     environment:
       LOOMCYCLE_STORAGE_BACKEND: postgres
   loomcycle:
-    image: denngubsky/loomcycle-toolbox:1.23.1
+    image: denngubsky/loomcycle-toolbox:1.147.0
     user: "65532:65532"
     restart: unless-stopped
     depends_on:
@@ -449,7 +449,7 @@ The deltas from the base install:
 4. **Host Docker socket** — the sidecar spawns sessions as host-Docker siblings, so it
    bind-mounts `/var/run/docker.sock` (a privileged grant; keep the box trusted). The
    `loom-dev` network is created automatically when the app comes up. The session image
-   `denngubsky/loomcycle-sandbox-session:1.43.1` is pulled by the **host** Docker on
+   `denngubsky/loomcycle-sandbox-session:1.147.0` is pulled by the **host** Docker on
    first session (public — no login needed).
 5. **PinchTab allowlist** — PinchTab browses **local-only** until you widen its IDPI
    allowlist; add each expose alias, then restart the sidecar:

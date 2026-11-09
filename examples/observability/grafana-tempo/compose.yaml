@@ -13,7 +13,7 @@ services:
   # ---- loomcycle + storage ----------------------------------------
 
   loomcycle:
-    image: denngubsky/loomcycle:latest
+    image: denngubsky/loomcycle:1.147.0
     ports:
       - "8787:8787"
     environment:
@@ -48,7 +48,7 @@ services:
 
   postgres:
     # Any Postgres ≥ 14 works; 16 here is just a tested default.
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     environment:
       POSTGRES_USER: loomcycle
       POSTGRES_PASSWORD: loomcycle
@@ -67,7 +67,7 @@ services:
   # synthesizes Prometheus histograms (calls_total, duration_seconds)
   # by promoting span attributes to labels. See otel-collector/config.yaml.
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.95.0
+    image: otel/opentelemetry-collector-contrib:0.95.0@sha256:66029b09f9046eebcbd58c9cfd5e094865d4f474ed071a5d7f0a3c1de9909993
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
@@ -76,7 +76,7 @@ services:
       - "8889:8889"   # spanmetrics-derived Prometheus endpoint (Prometheus scrapes here)
 
   tempo:
-    image: grafana/tempo:2.4.1
+    image: grafana/tempo:2.4.1@sha256:5b9c08f6d8fb43b3b72dfd1252ba4f198b11a245257bf76ee2ca13e243bac565
     command: ["-config.file=/etc/tempo/tempo.yaml"]
     volumes:
       - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
@@ -85,7 +85,7 @@ services:
       - "3200:3200"   # Tempo HTTP (Grafana datasource hits this)
 
   prometheus:
-    image: prom/prometheus:v2.52.0
+    image: prom/prometheus:v2.52.0@sha256:5c435642ca4d8427ca26f4901c11114023004709037880cd7860d5b7176aa731
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=15d
@@ -96,7 +96,7 @@ services:
       - "9090:9090"
 
   loki:
-    image: grafana/loki:2.9.5
+    image: grafana/loki:2.9.5@sha256:55561cf48b19e03d982e1f959efc0d8842b7be141eb5eaaa4b8a8eeb5a2dfc58
     command: ["-config.file=/etc/loki/loki-config.yaml"]
     volumes:
       - ./loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
@@ -107,7 +107,7 @@ services:
   # ---- UI ---------------------------------------------------------
 
   grafana:
-    image: grafana/grafana:10.4.0
+    image: grafana/grafana:10.4.0@sha256:f9811e4e687ffecf1a43adb9b64096c50bc0d7a782f8608530f478b6542de7d5
     environment:
       # Demo defaults — change for production.
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
