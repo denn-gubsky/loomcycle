@@ -340,3 +340,30 @@ func TestScanXMLAttrs_CountsOnlyRealAttributes(t *testing.T) {
 		t.Fatalf("counted %d attributes, %d on the widest element, %d value bytes; want 3, 2 and 7", n, per, vb)
 	}
 }
+
+func TestHTML_StrayEndTagsThatCreateElementsCounted(t *testing.T) {
+	// In <body>, a stray </p> makes the parser create an empty <p> and a </br>
+	// a <br>: end tags that build nodes count as nodes.
+	for _, tag := range []string{"</p>", "</br>", "</P>"} {
+		page := []byte("<body>" + strings.Repeat(tag, (8<<20-16)/len(tag)))
+		wantRefusedUnder(t, tag+" flood", 32<<20, func() error {
+			_, err := extractBytes(HTML{}, "stray.html", page)
+			return err
+		})
+	}
+}
+
+func TestHTML_PeakAtTheNodeCapIsBounded(t *testing.T) {
+	// The documented per-file HTML peak (SECURITY.md, limit.go: about 280
+	// MiB): a page just under the node cap, built and walked.
+	page := []byte(strings.Repeat("<i>x</i>", maxXMLNodes/2-1000))
+	var err error
+	peak := peakHeap(func() { _, err = extractBytes(HTML{}, "cap.html", page) })
+	if err != nil {
+		t.Fatalf("a page under the caps: %v", err)
+	}
+	if peak > 320<<20 {
+		t.Fatalf("a page at the node cap held %d MiB at its peak, want at most 320 MiB", peak>>20)
+	}
+	t.Logf("peak %d MiB", peak>>20)
+}
