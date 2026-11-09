@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -469,5 +470,36 @@ func TestSnapshotRestore_APartWayFailureIsRecordedPartialWithCounts(t *testing.T
 	}
 	if ev := sink.events[len(sink.events)-1]; ev.ChangeStatus != audit.ChangeFailed {
 		t.Errorf("a restore that applied nothing is recorded %q, want failed", ev.ChangeStatus)
+	}
+}
+
+// failRetires faults every token retirement.
+type failRetires struct{ store.Store }
+
+func (failRetires) OperatorTokenDefSetRetiredAt(context.Context, string, time.Time) error {
+	return errDiskFull
+}
+
+// A disable whose status write applied but whose credential teardown then
+// failed is recorded "partial" (the user is disabled), never "failed".
+func TestUserLifecycle_ADisableWhoseTeardownFailsIsRecordedPartial(t *testing.T) {
+	s, st, sink := sessionTestServer(t, "legacy")
+	ctx := context.Background()
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+	mintFor(t, s, acme, "alice", "")
+	s.store = failRetires{st}
+
+	rec := httptest.NewRecorder()
+	s.handleUpdateUser(rec, bodyReq("PATCH", "/v1/_users/alice", `{"status":"disabled"}`, acme, "subject", "alice"))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("a disable whose teardown faults: %d %s; want 500", rec.Code, rec.Body.String())
+	}
+	if u, err := st.UserGet(ctx, "acme", "alice"); err != nil || u.Status != "disabled" {
+		t.Fatalf("precondition: alice is disabled: %+v, %v", u.Status, err)
+	}
+	ev := sink.events[len(sink.events)-1]
+	if ev.Action != "user_disabled" || ev.ChangeStatus != audit.ChangePartial || ev.ChangeCounts["disabled"] != 1 {
+		t.Errorf("last record = %s %q %v; want user_disabled partial with disabled=1", ev.Action, ev.ChangeStatus, ev.ChangeCounts)
 	}
 }
