@@ -115,8 +115,13 @@ func runStartContext(ctx context.Context) (context.Context, []trace.SpanStartOpt
 // nothing. Baggage is never forwarded: it came from a caller and is not
 // loomcycle's to pass on. For operator-configured MCP servers only; model
 // providers and model-chosen hosts never receive it.
+//
+// Only a span this process records is passed on: with tracing off the no-op
+// span still carries a caller's context, and forwarding it would hand the
+// caller's trace id on although loomcycle took no part in the trace.
 func InjectTraceContext(ctx context.Context, h http.Header) {
-	if !trace.SpanContextFromContext(ctx).IsValid() {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() || !span.SpanContext().IsValid() {
 		return
 	}
 	mc := propagation.MapCarrier{}

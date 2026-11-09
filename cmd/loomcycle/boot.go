@@ -21,6 +21,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/memory/reranker"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/search"
@@ -47,6 +48,12 @@ type boot struct {
 
 	cfg          *config.Config
 	otelShutdown func(context.Context) error
+	// logRedactor masks secrets in log lines (setupLogging);
+	// otelHeaderSecrets are the collector header values read from
+	// LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE, registered with it at
+	// initTelemetry and with the server's at-rest redactor once it exists.
+	logRedactor       *redact.Redactor
+	otelHeaderSecrets []string
 
 	// buildProviders
 	secrets *secretSink

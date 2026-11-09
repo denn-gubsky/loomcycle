@@ -473,13 +473,13 @@ itself (and their `_TRACES_` forms): `_ENDPOINT`, `_HEADERS`,
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | A URL with its scheme. Empty (and no `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) disables tracing. |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Or `grpc`. `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` wins when set. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | empty | Collector auth as `key=value,...`. A secret. |
-| `OTEL_TRACES_EXPORTER` | `otlp` | `none` turns tracing off. |
+| `OTEL_TRACES_EXPORTER` | `otlp` | A list; without `otlp` (e.g. `none`) tracing is off. |
 | `OTEL_SDK_DISABLED` | `false` | `true` turns tracing off. |
 | `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | Also `always_on`, `always_off`, `traceidratio`, `parentbased_always_off`, `parentbased_traceidratio`. |
 | `OTEL_TRACES_SAMPLER_ARG` | `1` | The ratio for the two ratio samplers, 0 to 1. |
 | `OTEL_SERVICE_NAME` | `loomcycle` | `service.name` resource attribute. |
 | `OTEL_RESOURCE_ATTRIBUTES` | empty | Extra resource attributes; override loomcycle's defaults. |
-| `OTEL_PROPAGATORS` | `tracecontext,baggage` | Or `none`. |
+| `OTEL_PROPAGATORS` | `tracecontext,baggage` | Or `none`; other names are ignored. |
 | `OTEL_BSP_MAX_QUEUE_SIZE` / `_MAX_EXPORT_BATCH_SIZE` / `_EXPORT_TIMEOUT` / `_SCHEDULE_DELAY` | 2048 / 512 / 10000 ms / 5000 ms | Export queue bounds. |
 | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` | empty | A file holding the collector headers instead of the env. |
 | `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What a caller's trace context does: `parent`, `link` or `ignore`. |
@@ -488,6 +488,9 @@ itself (and their `_TRACES_` forms): `_ENDPOINT`, `_HEADERS`,
 | `LOOMCYCLE_ENVIRONMENT` | empty | `deployment.environment.name` resource attribute. |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | empty | Web UI "Open trace" link; must contain `{trace_id}`. |
 
-A value loomcycle cannot honour (an unknown sampler or protocol, a
-ratio outside 0–1, an unreadable headers file) stops the startup with
-an error naming the variable.
+With tracing on, a value loomcycle cannot honour (an endpoint without
+an http(s) scheme, an unknown sampler or protocol, a ratio outside 0–1,
+a malformed collector header, an unreadable headers file) stops the
+startup with an error naming the variable. Unsupported propagator or
+exporter names are logged and ignored. With tracing off, `OTEL_*` values
+never stop the startup.

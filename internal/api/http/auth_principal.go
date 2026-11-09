@@ -1110,7 +1110,10 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	// RFC FA: how the caller signed in — the mode always, the gate, methods
 	// and session times when a Web UI session authenticated the request.
 	out["auth"] = s.whoamiAuth(r.Context(), false)
-	s.addTraceURLTemplate(out)
+	// A user awaiting approval may learn that it waits, nothing else.
+	if ui, ok := uiAuthFrom(r.Context()); !ok || !ui.pending {
+		s.addTraceURLTemplate(out)
+	}
 	writeJSONOK(w, out)
 }
 

@@ -7052,19 +7052,7 @@ func (s *Server) recordRunTraceID(ctx context.Context, runID string) {
 // from an environ slice ("NAME=value" entries), for the F32 redactor's exact-
 // match tier. Empty values are skipped (nothing to mask).
 func secretEnvValues(environ []string) map[string]string {
-	out := make(map[string]string)
-	for _, kv := range environ {
-		i := strings.IndexByte(kv, '=')
-		if i <= 0 {
-			continue
-		}
-		name, val := kv[:i], kv[i+1:]
-		if val == "" || !config.IsSecretEnvName(name) {
-			continue
-		}
-		out[name] = val
-	}
-	return out
+	return config.SecretEnvValues(environ)
 }
 
 // runSubAgent is the SubAgentRunner closure injected into the Agent

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -3152,5 +3153,36 @@ func TestValidateTraceURLTemplate_OnlyHTTPLinksNamingTheTraceID(t *testing.T) {
 		if err := validateTraceURLTemplate(tmpl); (err == nil) != ok {
 			t.Errorf("validateTraceURLTemplate(%q) = %v, want ok=%v", tmpl, err, ok)
 		}
+	}
+}
+
+// TestSecretEnvValues_MasksEachCollectorHeader: the collector-header variables
+// are secrets, and each header's own value is masked, not only the whole
+// "k=v,k2=v2" string, which rarely appears verbatim. An ordinary *_HEADERS
+// setting stays plain.
+func TestSecretEnvValues_MasksEachCollectorHeader(t *testing.T) {
+	got := SecretEnvValues([]string{
+		"OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer%20tok-abc123, x-scope-orgid=tenant-a",
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS=x-honeycomb-team=hc-key-987",
+		"CORS_ALLOW_HEADERS=Content-Type",
+		"LOOMCYCLE_LISTEN_ADDR=:8787",
+	})
+	want := map[string]string{
+		"OTEL_EXPORTER_OTLP_HEADERS":                          "authorization=Bearer%20tok-abc123, x-scope-orgid=tenant-a",
+		"OTEL_EXPORTER_OTLP_HEADERS[authorization]":           "Bearer tok-abc123",
+		"OTEL_EXPORTER_OTLP_HEADERS[x-scope-orgid]":           "tenant-a",
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS":                   "x-honeycomb-team=hc-key-987",
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS[x-honeycomb-team]": "hc-key-987",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SecretEnvValues = %v, want %v", got, want)
+	}
+	for _, n := range []string{"OTEL_EXPORTER_OTLP_METRICS_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "otel_exporter_otlp_headers"} {
+		if !IsSecretEnvName(n) {
+			t.Errorf("IsSecretEnvName(%q) = false", n)
+		}
+	}
+	if IsSecretEnvName("CORS_ALLOW_HEADERS") {
+		t.Error("an ordinary *_HEADERS setting is classified as a secret")
 	}
 }

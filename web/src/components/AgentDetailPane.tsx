@@ -81,10 +81,6 @@ export interface AgentDetailPaneProps {
 // memory and channel cursors are not kept for.
 const WALK_HIDDEN_TABS: readonly AgentTab[] = ["memory", "channels"];
 
-// stopRun is the header's cancel. A team walk is stopped by its run id: its
-// agent id is shared by every walk of the team and the agent cancel route
-// rejects it. Every other run keeps whole-run cancel by agent id, since the
-// run-id route only stops the current turn of an interactive run.
 // RunTraceLink opens the run's trace in the operator's tracing UI, when the
 // server names one (LOOMCYCLE_TRACE_URL_TEMPLATE) and the run was traced.
 export function RunTraceLink({ run }: { run: Pick<Agent, "trace_id"> }) {
@@ -99,6 +95,10 @@ export function RunTraceLink({ run }: { run: Pick<Agent, "trace_id"> }) {
   );
 }
 
+// stopRun is the header's cancel. A team walk is stopped by its run id: its
+// agent id is shared by every walk of the team and the agent cancel route
+// rejects it. Every other run keeps whole-run cancel by agent id, since the
+// run-id route only stops the current turn of an interactive run.
 export function stopRun(run: Pick<Agent, "agent_id" | "run_id">, reason: string): Promise<unknown> {
   if (isTeamWalkAgentId(run.agent_id)) {
     if (!run.run_id) return Promise.reject(new Error("this team walk has no run id to cancel"));
