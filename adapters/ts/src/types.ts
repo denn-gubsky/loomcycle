@@ -8935,6 +8935,10 @@ export interface AuthzTrace {
   effect: AclEffect;
   matched: boolean;
   why: string;
+  /** Set on a rule that does not do what it says: a selector naming some
+   *  instances of a pair no surface asks per instance. Such a rule is
+   *  refused at write; one stored earlier is explained with this note. */
+  note?: string;
 }
 
 /** A binding as the engine applied it. */

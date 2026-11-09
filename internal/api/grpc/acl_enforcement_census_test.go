@@ -96,12 +96,14 @@ func TestGRPCCallerIP_ReadsATrustedProxysForwardedAddress(t *testing.T) {
 // level of the question their HTTP twin asks of an instance, the shared
 // operation behind both asking the instance per call.
 var rpcAsksTheInstancePerCall = map[string]string{
-	"PublishChannel":   "the shared operation asks publish of the channel named (channelQuestion)",
-	"SubscribeChannel": "the shared operation asks subscribe of the channel named (channelQuestion)",
-	"PeekChannel":      "the shared operation asks subscribe of the channel named (channelQuestion)",
-	"AckChannel":       "the shared operation asks ack of the channel named (channelQuestion)",
-	"DirectoryInspect": "the directory operation asks read of the user named",
-	"Memory":           "the RPC carries every Memory op: it asks read, and the shared operation asks write of a write op (memoryOpQuestion)",
+	"PublishChannel":     "the shared operation asks publish of the channel named (channelQuestion)",
+	"SubscribeChannel":   "the shared operation asks subscribe of the channel named (channelQuestion)",
+	"PeekChannel":        "the shared operation asks subscribe of the channel named (channelQuestion)",
+	"AckChannel":         "the shared operation asks ack of the channel named (channelQuestion)",
+	"DirectoryInspect":   "the directory operation asks read of the user named",
+	"ListUserAppSignIns": "the shared operation asks read of the user named (appSignInAccess)",
+	"EndUserAppSignIn":   "the shared operation asks manage of the user named (appSignInAccess)",
+	"Memory":             "the RPC carries every Memory op: it asks read, and the shared operation asks write of a write op (memoryOpQuestion)",
 }
 
 // Every RPC with an HTTP twin asks the question its twin asks (RFC GD P1):
