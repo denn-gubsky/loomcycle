@@ -1,0 +1,82 @@
+# Alert rules on loomcycle's /metrics. Load with `rule_files:` in
+# prometheus.yml (see ../prometheus.yml). Every metric named here is one
+# loomcycle serves: a Go test (internal/api/http, TestObservabilityAssets_*)
+# fails when a rule or dashboard names a metric /metrics no longer emits.
+#
+# Thresholds are starting points; tune them to your traffic.
+groups:
+  - name: loomcycle
+    rules:
+      - alert: LoomcycleRunFailureRateHigh
+        # Counted in-process: right under any trace sampling ratio. The
+        # second clause keeps a tenant with a handful of runs from paging.
+        expr: |
+          (
+            sum by (tenant) (rate(loomcycle_runs_total{status="failed"}[10m]))
+              / sum by (tenant) (rate(loomcycle_runs_total[10m]))
+          ) > 0.10
+          and sum by (tenant) (rate(loomcycle_runs_total[10m])) > 0.01
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 10% of tenant {{ $labels.tenant }}'s runs fail"
+          description: "Look at the failed runs' traces (status ERROR) or the runs list in the Web UI."
+
+      - alert: LoomcycleProviderRateLimited
+        expr: |
+          (
+            sum by (provider) (rate(loomcycle_provider_requests_total{outcome="rate_limited"}[10m]))
+              / sum by (provider) (rate(loomcycle_provider_requests_total[10m]))
+          ) > 0.20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 20% of requests to {{ $labels.provider }} are rate limited"
+          description: "Runs are waiting on retries. Raise the provider's quota, cap it (providers.<id>.max_concurrent) or add a fallback."
+
+      - alert: LoomcycleQueueSaturated
+        # Runs have waited for a concurrency slot without a break for 5m.
+        expr: min_over_time(loomcycle_concurrency_queued[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Runs on {{ $labels.instance }} have queued for a slot for 5 minutes"
+          description: "Raise concurrency.max_concurrent_runs or add a replica."
+
+      - alert: LoomcycleDBPoolWaiting
+        expr: sum by (instance, db) (rate(loomcycle_db_pool_wait_total[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Requests wait for a {{ $labels.db }} connection on {{ $labels.instance }}"
+          description: "The database pool is exhausted more than once a second. Check slow queries or raise the pool size."
+
+      - alert: LoomcycleConsolidationLagging
+        # The lag grows until the next pass reports, so a consolidator that
+        # stopped completing passes trips this too.
+        expr: max by (backend) (loomcycle_memory_consolidation_lag_seconds) > 6 * 3600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory consolidation ({{ $labels.backend }}) is more than 6 hours behind"
+
+      - alert: LoomcycleSpansDropped
+        expr: increase(loomcycle_otel_spans_dropped_total[10m]) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $labels.instance }} dropped spans in the last 10 minutes"
+          description: "The collector is unreachable or slow (export queue full). Traces are incomplete; the metrics are not affected."
+
+      - alert: LoomcycleTokenBudgetNearlyUsed
+        expr: max by (tenant, period) (loomcycle_token_budget_used_ratio) >= 0.9
+        labels:
+          severity: info
+        annotations:
+          summary: "Tenant {{ $labels.tenant }} has used {{ $value | humanizePercentage }} of its token budget"
+          description: "At the hard limit new runs are refused (429). Raise it with PUT /v1/_limits."

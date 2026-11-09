@@ -1,0 +1,15 @@
+# Grafana dashboard provisioning for the loomcycle dashboards. Mount
+# ../dashboards at /var/lib/grafana/dashboards/loomcycle and this file under
+# /etc/grafana/provisioning/dashboards/.
+apiVersion: 1
+
+providers:
+  - name: loomcycle-shipped
+    orgId: 1
+    folder: Loomcycle
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards/loomcycle

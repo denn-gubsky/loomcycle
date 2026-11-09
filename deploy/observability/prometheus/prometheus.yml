@@ -1,0 +1,31 @@
+# Prometheus scraping loomcycle's /metrics, with the alert rules beside it.
+#
+# The scrape credential is a metrics:read token: it reaches GET /metrics and
+# nothing else. Prometheus reads it from a file on every scrape, so rotating
+# it needs no restart. Never put an admin token here.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: loomcycle
+    metrics_path: /metrics
+    scheme: http # https when loomcycle is behind TLS
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/loomcycle.token
+    static_configs:
+      # One target per replica. Each replica labels its series with
+      # replica_id (LOOMCYCLE_REPLICA_ID) as well.
+      - targets: ["loomcycle:8787"]
+
+  # Or, with LOOMCYCLE_METRICS_LISTEN set on loomcycle (an unauthenticated
+  # listener serving only /metrics, minus the per-user series), no token:
+  #
+  # - job_name: loomcycle
+  #   static_configs:
+  #     - targets: ["loomcycle:9464"]

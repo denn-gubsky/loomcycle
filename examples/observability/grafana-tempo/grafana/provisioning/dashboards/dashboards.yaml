@@ -14,3 +14,13 @@ providers:
     options:
       path: /etc/grafana/provisioning/dashboards
       foldersFromFilesStructure: false
+  # The dashboards shipped with loomcycle, mounted from deploy/observability.
+  - name: loomcycle-shipped
+    orgId: 1
+    folder: Loomcycle
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards/loomcycle

@@ -116,6 +116,8 @@ services:
       GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # The dashboards shipped with loomcycle (deploy/observability/).
+      - ../../../deploy/observability/grafana/dashboards:/var/lib/grafana/dashboards/loomcycle:ro
       - grafana-data:/var/lib/grafana
     ports:
       - "3001:3000"   # mapped to 3001 to avoid common-app collisions
