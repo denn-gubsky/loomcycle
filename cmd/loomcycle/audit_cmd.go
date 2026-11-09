@@ -31,7 +31,7 @@ func runAudit(args []string, stdout, stderr io.Writer) int {
 }
 
 const auditVerifyUsage = "Usage: loomcycle audit verify (--tenant <tenant> | --operator | --all) [--config <yaml>]... [--preset <name>]... [--json]\n" +
-	"       loomcycle audit verify --export <file> [--json]"
+	"       loomcycle audit verify --export <file> [--allow-partial] [--json]"
 
 func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)
@@ -54,6 +54,7 @@ func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 	operator := fs.Bool("operator", false, "verify the operator chain (events that belong to no tenant)")
 	all := fs.Bool("all", false, "verify the operator chain and every tenant chain")
 	export := fs.String("export", "", "verify an export (GET /v1/_audit) offline; with LOOMCYCLE_SECRET_KEY set, its signatures too")
+	allowPartial := fs.Bool("allow-partial", false, "with --export: accept a file that starts after the chain's start (a since/after_seq export)")
 	asJSON := fs.Bool("json", false, "print one JSON report per chain")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, auditVerifyUsage)
@@ -92,7 +93,7 @@ func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *export != "" {
-		return runAuditVerifyExport(*export, *asJSON, stdout, stderr)
+		return runAuditVerifyExport(*export, *allowPartial, *asJSON, stdout, stderr)
 	}
 
 	layers, err := assembleConfigLayers(presets, cfgPaths, false)
@@ -184,7 +185,7 @@ func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 // runAuditVerifyExport is `loomcycle audit verify --export <file>`: no config
 // and no store, only the file and, when set, the chain key from the
 // environment.
-func runAuditVerifyExport(path string, asJSON bool, stdout, stderr io.Writer) int {
+func runAuditVerifyExport(path string, allowPartial, asJSON bool, stdout, stderr io.Writer) int {
 	cur, err := credential.DeriveAuditChainKey(os.Getenv("LOOMCYCLE_SECRET_KEY"))
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle: error: LOOMCYCLE_SECRET_KEY: %v\n", err)
@@ -205,7 +206,7 @@ func runAuditVerifyExport(path string, asJSON bool, stdout, stderr io.Writer) in
 		return 2
 	}
 	defer f.Close()
-	rep, err := auditchain.VerifyExport(f, keys)
+	rep, err := auditchain.VerifyExport(f, keys, allowPartial)
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle: error: reading the export: %v\n", err)
 		return 1
@@ -220,7 +221,7 @@ func runAuditVerifyExport(path string, asJSON bool, stdout, stderr io.Writer) in
 		}
 		how := "signatures checked"
 		if !rep.Signed {
-			how = "hash links only: LOOMCYCLE_SECRET_KEY is not set, so the signatures were not checked and the file could be forged"
+			how = "hash links only: no signature was verified (LOOMCYCLE_SECRET_KEY is not set), so the file could be forged"
 		}
 		switch {
 		case !rep.OK:

@@ -59,7 +59,7 @@ func TestVerifyExport_ChecksLinksSignaturesAndTheTail(t *testing.T) {
 
 	check := func(t *testing.T, lines []map[string]any, k *auditchain.ChainKeys) auditchain.ExportReport {
 		t.Helper()
-		rep, err := auditchain.VerifyExport(strings.NewReader(jsonl(t, lines)), k)
+		rep, err := auditchain.VerifyExport(strings.NewReader(jsonl(t, lines)), k, false)
 		if err != nil {
 			t.Fatalf("VerifyExport: %v", err)
 		}
@@ -109,9 +109,42 @@ func TestVerifyExport_ChecksLinksSignaturesAndTheTail(t *testing.T) {
 		})
 	}
 
-	// Asked from a later row: the first row's link is outside the file.
+	// Asked from a later row: the first row's link is outside the file, so
+	// it is not OK unless the caller allows a partial file.
 	lines := exportOf(t, s, "t1")
-	if rep := check(t, lines[2:], &keys); !rep.OK || !rep.Partial || rep.FirstSeq != 3 {
-		t.Errorf("an export from row 3: %+v; want a partial, verified file", rep)
+	if rep := check(t, lines[2:], &keys); rep.OK || !rep.Partial || !strings.Contains(rep.Reason, "starts at row 3") {
+		t.Errorf("an export from row 3: %+v; want it refused as partial", rep)
+	}
+	rep, err := auditchain.VerifyExport(strings.NewReader(jsonl(t, lines[2:])), &keys, true)
+	if err != nil || !rep.OK || !rep.Partial || !rep.Signed || rep.FirstSeq != 3 {
+		t.Errorf("an export from row 3, partial allowed: %+v, %v", rep, err)
+	}
+}
+
+// With the key, a file that carries no signed head verifies nothing: an
+// empty chain's export, or a forged file emptied to a bare trailer, is not
+// OK and never reported as signed.
+func TestVerifyExport_NothingSignedIsNotOKWithTheKey(t *testing.T) {
+	empty := []map[string]any{trailerOf(store.AuditHead{TenantID: "t1"})}
+	rep, err := auditchain.VerifyExport(strings.NewReader(jsonl(t, empty)), &testKeys, true)
+	if err != nil || rep.OK || rep.Signed {
+		t.Errorf("an empty export with the key: %+v, %v; want not OK, not signed", rep, err)
+	}
+	rep, err = auditchain.VerifyExport(strings.NewReader(jsonl(t, empty)), nil, false)
+	if err != nil || !rep.OK || rep.Signed {
+		t.Errorf("an empty export without the key: %+v, %v; want OK (consistent), not signed", rep, err)
+	}
+	// A signed-looking trailer whose head MAC is not the key's.
+	s, _ := chainFixture(t, 2)
+	lines := exportOf(t, s, "t1")
+	lines[len(lines)-1]["head_mac"] = "00"
+	rep, err = auditchain.VerifyExport(strings.NewReader(jsonl(t, lines)), &testKeys, false)
+	if err != nil || rep.OK || rep.Signed || !strings.Contains(rep.Reason, "head's signature") {
+		t.Errorf("an export with an unsigned head: %+v, %v", rep, err)
+	}
+	// Rows cut to none, the real signed head kept: the rows are missing.
+	rep, err = auditchain.VerifyExport(strings.NewReader(jsonl(t, exportOf(t, s, "t1")[2:])), &testKeys, true)
+	if err != nil || rep.OK || rep.Signed {
+		t.Errorf("an export emptied of rows: %+v, %v", rep, err)
 	}
 }

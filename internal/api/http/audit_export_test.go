@@ -145,7 +145,7 @@ func TestAuditExport_VerifiesOfflineWithTheChainKey(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("export: %d %s", code, body)
 	}
-	rep, err := auditchain.VerifyExport(strings.NewReader(body), &keys)
+	rep, err := auditchain.VerifyExport(strings.NewReader(body), &keys, false)
 	if err != nil || !rep.OK || !rep.Signed || rep.Rows != 3 || rep.Tenant != "acme" {
 		t.Fatalf("VerifyExport of the route's export: %+v, %v", rep, err)
 	}

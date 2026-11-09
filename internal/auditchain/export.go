@@ -20,12 +20,14 @@ type ExportReport struct {
 	// trailer names.
 	FirstSeq int64 `json:"first_seq"`
 	HeadSeq  int64 `json:"head_seq"`
-	// Signed says the signatures were checked (a key was given); without
-	// one only the hash links are.
+	// Signed says a signature in the file was checked and verified (a key
+	// was given and the file holds a signed head); otherwise only the hash
+	// links were.
 	Signed bool `json:"signed"`
 	// Partial says the file starts after the chain's start and its anchor:
 	// the export was asked from a time or a row, so the link of its first row
-	// to the rows before it cannot be checked.
+	// to the rows before it cannot be checked. Such a file is not OK unless
+	// the caller allowed it.
 	Partial  bool   `json:"partial,omitempty"`
 	BreakSeq int64  `json:"break_seq,omitempty"`
 	Reason   string `json:"reason,omitempty"`
@@ -80,9 +82,16 @@ const maxExportLine = 16 << 20
 // audit verify --tenant`. A file is read as given, so a later export is
 // needed to show nothing was removed after it.
 //
+// With keys, a file that holds no signed head (an empty chain's export)
+// verifies nothing and is not OK. A file that starts after the chain's start
+// (a from-time or from-row export) is not OK unless allowPartial: its first
+// row's link to the rows before it is not in the file, so rows could be
+// missing in front of it.
+//
 // An error is a file that cannot be read or parsed, never a break.
-func VerifyExport(r io.Reader, keys *ChainKeys) (ExportReport, error) {
-	rep := ExportReport{OK: true, Signed: keys != nil && len(keys.Current) > 0}
+func VerifyExport(r io.Reader, keys *ChainKeys, allowPartial bool) (ExportReport, error) {
+	rep := ExportReport{OK: true}
+	withKey := keys != nil && len(keys.Current) > 0
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), maxExportLine)
 	var rows []store.AuditEventRow
@@ -116,8 +125,11 @@ func VerifyExport(r io.Reader, keys *ChainKeys) (ExportReport, error) {
 	rep.Tenant, rep.HeadSeq = tenant, trailer.HeadSeq
 	head := store.AuditHead{TenantID: tenant, Seq: trailer.HeadSeq, Hash: trailer.HeadHash, MAC: trailer.HeadMAC,
 		AnchorSeq: trailer.AnchorSeq, AnchorHash: trailer.AnchorHash, AnchorMAC: trailer.AnchorMAC, AnchorState: trailer.AnchorState}
+	if withKey && head.Seq == 0 {
+		return rep.broken(0, "the export holds no signed head (the chain is empty), so the key verifies nothing in it"), nil
+	}
 	rotated := false
-	if rep.Signed {
+	if withKey {
 		st, why := keys.checkAnchor(head)
 		if why != "" {
 			return rep.broken(max(head.AnchorSeq, 1), "%s", why), nil
@@ -125,7 +137,7 @@ func VerifyExport(r io.Reader, keys *ChainKeys) (ExportReport, error) {
 		rotated = st.Rotated
 	}
 	headSigned := func() bool {
-		if !rep.Signed || head.Seq == 0 {
+		if !withKey || head.Seq == 0 {
 			return true
 		}
 		w := keys.which(head.MAC, macHead, tenant, head.Seq, head.Hash)
@@ -138,6 +150,7 @@ func VerifyExport(r io.Reader, keys *ChainKeys) (ExportReport, error) {
 		if head.Seq > head.AnchorSeq {
 			return rep.broken(head.AnchorSeq+1, "the file holds no rows but the head is at %d", head.Seq), nil
 		}
+		rep.Signed = withKey
 		return rep, nil
 	}
 	first := rows[0]
@@ -158,7 +171,7 @@ func VerifyExport(r io.Reader, keys *ChainKeys) (ExportReport, error) {
 		if row.TenantID != tenant {
 			return rep.broken(row.Seq, "row %d belongs to another chain", row.Seq), nil
 		}
-		if rep.Signed {
+		if withKey {
 			if why := keys.checkLink(tenant, prev, want, row, &rotated); why != "" {
 				return rep.broken(want, "%s", why), nil
 			}
@@ -186,6 +199,9 @@ func VerifyExport(r io.Reader, keys *ChainKeys) (ExportReport, error) {
 		return rep.broken(head.Seq, "the head does not match the last row"), nil
 	case !headSigned():
 		return rep.broken(head.Seq, "the head's signature does not verify"), nil
+	case rep.Partial && !allowPartial:
+		return rep.broken(first.Seq, "the file starts at row %d, after the chain's start: its link to the rows before it is not in the file, so rows could be missing in front of it", first.Seq), nil
 	}
+	rep.Signed = withKey
 	return rep, nil
 }
