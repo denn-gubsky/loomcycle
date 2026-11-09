@@ -923,6 +923,16 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 		red.User = &store.UserRow{TenantID: inv.TenantID, Subject: subject, AccessMode: inv.AccessMode,
 			Status: redeemedUserStatus(g, inv), CreatedAt: now, CreatedBy: "invite:" + inv.InviteID}
 	}
+	if red.User != nil {
+		// The budget goes in before the user, as an identity gate's does
+		// (provision): a failure here creates nothing, and the
+		// invite stays unspent for a retry.
+		if err := s.writeNewUserBudget(ctx, "gate:"+g.Name, inv.TenantID, subject, s.floorNewUserBudget(), now); err != nil {
+			slog.Error("authgate: writing an invited user's budget failed", "err", err)
+			writeJSONError(w, http.StatusInternalServerError, "internal", "the invitation could not be redeemed")
+			return
+		}
+	}
 	if inv.Bootstrap && red.User != nil {
 		// A tenant's first owner is its operator (owner decision, Q6): the
 		// binding goes in with the user, in the same transaction.

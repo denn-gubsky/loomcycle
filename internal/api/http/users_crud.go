@@ -148,6 +148,17 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	// tenant-operator binding go in one transaction, which re-checks that the
 	// tenant never had a user (owner decision, Q6).
 	owner := caller == gateCallerManager && accessMode == "tenant"
+	// The deployment floor's new_user budget goes in before the user, as a
+	// gate's does, so a user made here never runs uncapped. Only for a
+	// subject not yet taken: a create that conflicts must not cap a user the
+	// operator already runs (the insert-if-absent keeps an existing limit,
+	// not an existing user's lack of one).
+	if _, gerr := s.store.UserGet(r.Context(), tenant, subject); isNotFound(gerr) {
+		if err := s.writeNewUserBudget(r.Context(), principalSubject(r.Context()), tenant, subject, s.floorNewUserBudget(), row.CreatedAt); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "user_create_failed", err.Error())
+			return
+		}
+	}
 	var err error
 	if owner {
 		err = s.store.UserCreateOwner(r.Context(), row, ownerBinding(row.TenantID, row.Subject, "bootstrap:"+principalSubject(r.Context())))
