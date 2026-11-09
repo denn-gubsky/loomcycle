@@ -3369,6 +3369,9 @@ export const TOKEN_SCOPES = [
   // matters on an ISOLATED user's token: grant it there to let that user call
   // a model directly.
   "llm:gateway",
+  // A Prometheus scraper's credential: GET /metrics and nothing else. The
+  // runtime refuses it beside any other scope, so tick it alone.
+  "metrics:read",
 ] as const;
 
 // ---- Routing view (GET /v1/_routing) ----
