@@ -82,7 +82,11 @@ func RecordModelCall(ctx context.Context, a ModelCallAttrs) (context.Context, tr
 	if a.MaxTokens > 0 {
 		kvs = append(kvs, genai.GenAIRequestMaxTokensKey.Int(a.MaxTokens))
 	}
-	return Tracer().Start(ctx, SpanModelCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
+	ctx, span := Tracer().Start(ctx, SpanModelCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
+	if st := meters.Load(); st != nil {
+		return ctx, &modelSpan{Span: span, st: st, provider: a.Provider, model: a.Model, start: time.Now()}
+	}
+	return ctx, span
 }
 
 // ModelCallResult is how a model call ended.
@@ -116,9 +120,14 @@ type ModelUsage struct {
 }
 
 // SetModelCallResult stamps how the call ended. A cancelled call is an error
-// with the description "cancelled": it did not produce its turn. No-op on a
+// with the description "cancelled": it did not produce its turn. It also
+// records the call's duration and time to first token in the model metrics,
+// on a span that does not record too; the span attributes are a no-op on a
 // nil / non-recording span.
 func SetModelCallResult(span trace.Span, r ModelCallResult) {
+	if ms, ok := span.(*modelSpan); ok {
+		ms.recordResult(r)
+	}
 	if span == nil || !span.IsRecording() {
 		return
 	}

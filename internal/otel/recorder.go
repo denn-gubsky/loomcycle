@@ -88,6 +88,10 @@ type RunStartAttrs struct {
 	Tenant string
 	// SessionID is the chat the run belongs to (gen_ai.conversation.id).
 	SessionID string
+	// Trigger is the surface that started the run (a Trigger* value), the
+	// trigger label of the run metrics. Empty takes the trigger on ctx
+	// (WithRunTrigger), and "http" when there is none.
+	Trigger string
 }
 
 // RecordRunStart opens the top-level loomcycle.run span. The returned
@@ -96,13 +100,24 @@ type RunStartAttrs struct {
 // it is stamped with it. Caller defers span.End().
 //
 // The tenant is a START attribute, so a sampler deciding on this span sees it.
+//
+// The run is also counted in the run metrics, whatever the span's sampling:
+// active from here, and ended — with the status SetRunDone recorded — when
+// the returned span ends.
 func RecordRunStart(ctx context.Context, attrs RunStartAttrs) (context.Context, trace.Span) {
 	if attrs.Tenant == "" {
 		attrs.Tenant = TenantFromContext(ctx)
 	}
+	if attrs.Trigger == "" {
+		attrs.Trigger = RunTriggerFromContext(ctx)
+	}
 	ctx = WithTenant(ctx, attrs.Tenant)
 	ctx, opts := runStartContext(ctx)
-	return Tracer().Start(ctx, SpanRun, append(opts, trace.WithAttributes(runStartKVs(attrs)...))...)
+	ctx, span := Tracer().Start(ctx, SpanRun, append(opts, trace.WithAttributes(runStartKVs(attrs)...))...)
+	if m := startRunMetric(ctx, attrs.Tenant, attrs.Trigger, attrs.AgentName); m != nil {
+		return ctx, &meteredRunSpan{Span: span, m: m}
+	}
+	return ctx, span
 }
 
 func runStartKVs(a RunStartAttrs) []attribute.KeyValue {
@@ -170,7 +185,13 @@ func RecordProviderCall(ctx context.Context, attrs ProviderCallAttrs) (context.C
 	if attrs.CodeHash != "" {
 		kvs = append(kvs, attribute.String(AttrProviderCodeHash, attrs.CodeHash))
 	}
-	return Tracer().Start(ctx, SpanProviderCall, trace.WithAttributes(withTenantAttr(ctx, attemptAttrs(ctx, kvs))...))
+	ctx, span := Tracer().Start(ctx, SpanProviderCall, trace.WithAttributes(withTenantAttr(ctx, attemptAttrs(ctx, kvs))...))
+	// SetProviderResponse counts the attempt from the returned span, so its
+	// metric and its error.type cannot disagree.
+	if st := meters.Load(); st != nil {
+		return ctx, &providerSpan{Span: span, st: st, provider: attrs.Provider, model: attrs.Model, start: time.Now()}
+	}
+	return ctx, span
 }
 
 // ToolCallAttrs identifies one tool call.
@@ -221,12 +242,20 @@ type RunDoneAttrs struct {
 	// answer, and a collector's "keep error traces" policy should see it (an
 	// operator who wants cancels dropped filters loomcycle.stop_reason).
 	Cancelled bool
+	// Status is the run's terminal status as stored (completed, failed,
+	// cancelled, rejected), the status label of the run metrics. Empty
+	// derives it: failed with Err, cancelled when Cancelled, else completed.
+	Status string
 }
 
 // SetRunDone closes out the run span's attribute set. Used at the run
 // boundary (publishRunState path) so totals + error status reflect the
-// final state.
+// final state. It also sets the status the run metrics count the run with
+// when the span ends, on a span that does not record too.
 func SetRunDone(span trace.Span, a RunDoneAttrs) {
+	if rs, ok := span.(*meteredRunSpan); ok {
+		rs.m.setStatus(runDoneStatus(a))
+	}
 	if span == nil || !span.IsRecording() {
 		return
 	}
@@ -253,6 +282,18 @@ func SetRunDone(span trace.Span, a RunDoneAttrs) {
 	case a.Cancelled:
 		span.SetStatus(codes.Error, "cancelled")
 	}
+}
+
+func runDoneStatus(a RunDoneAttrs) string {
+	switch {
+	case a.Status != "":
+		return a.Status
+	case a.Err != nil:
+		return "failed"
+	case a.Cancelled:
+		return "cancelled"
+	}
+	return "completed"
 }
 
 // RecordQueueWait stamps the queue-wait duration on the run span.

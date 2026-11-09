@@ -3468,6 +3468,9 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What an authenticated caller's `traceparent` does: `parent` joins the run to the caller's trace, `link` starts a new trace linked to it (the caller cannot steer sampling), `ignore` reads nothing. |
 | `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | — | Per-tenant sampling ratio for runs that start a trace, as `tenant=ratio,...` (e.g. `acme=1,beta=0.1`); overrides `observability.tracing.tenant_sampler_ratios` tenant by tenant. See "Sampling per tenant". A bad tenant id or a ratio outside 0–1 stops the startup. |
 | `LOOMCYCLE_OTEL_RAW_USER_ID` | off | `1` also puts the raw `loomcycle.user_id` on spans, beside `loomcycle.user_hash`. See "Users on spans". |
+| `LOOMCYCLE_METRICS_CARDINALITY_LIMIT` | `2000` | Series one `/metrics` instrument may hold; past it new label sets fold into one series labelled `otel_metric_overflow="true"`. A value that is not a positive integer stops the startup. See "Metrics". |
+| `LOOMCYCLE_METRICS_AGENT_LABEL` | off | `1` adds an `agent` label (the agent name) to `loomcycle_runs_total` and `loomcycle_tokens_total`. Only for a bounded agent catalogue. See "Metrics". |
+| `OTEL_METRICS_EXPORTER` | `none` | `otlp` also exports the `/metrics` instruments over OTLP (needs `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, or the startup stops). Any other value stops the startup. See "Metrics". |
 | `LOOMCYCLE_ENVIRONMENT` | — | The `deployment.environment.name` resource attribute. |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | — | An http(s) URL containing `{trace_id}`, e.g. `https://grafana.example/explore?traceId={trace_id}`: the Web UI's run view links each traced run there. Shown to every signed-in user who can see the run. Anything else stops the startup. |
 

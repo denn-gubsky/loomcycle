@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -70,5 +72,23 @@ func (b *boot) initTelemetry() {
 	} else {
 		slog.Info("otel: disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)")
 	}
-	b.otelShutdown = otelShutdown
+
+	// The metric instruments are always on: /metrics renders them. OTLP export
+	// of the same instruments is the operator's opt-in.
+	metricsCfg, err := lcotel.ResolveMetricsConfig(os.Getenv)
+	if err != nil {
+		fatal("otel: invalid metrics configuration", "err", err)
+	}
+	metricsCfg.ServiceVersion, metricsCfg.InstanceID = buildVersion, b.cfg.Env.ReplicaID
+	metricsCfg.Environment = otelCfg.Environment
+	metricsShutdown, err := lcotel.InitMetrics(metricsCfg)
+	if err != nil {
+		fatal("otel: metrics setup failed", "err", err)
+	}
+	if metricsCfg.Export {
+		slog.Info("otel: metric export enabled", "protocol", metricsCfg.Protocol, "headers_file", metricsCfg.HeadersFile != "")
+	}
+	b.otelShutdown = func(ctx context.Context) error {
+		return errors.Join(otelShutdown(ctx), metricsShutdown(ctx))
+	}
 }
