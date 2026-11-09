@@ -240,7 +240,7 @@ func (s *Server) provision(ctx context.Context, g config.AuthGate, a authgate.As
 		// runs uncapped: if this write fails nothing is created and the
 		// assertion is retried, while a failure after it leaves only a row
 		// for a subject not made yet, which the retry keeps.
-		if err := s.writeNewUserBudget(ctx, g, tgt.TenantID, tgt.Subject, m.NewUser.Budget, now); err != nil {
+		if err := s.writeNewUserBudget(ctx, "gate:"+g.Name, tgt.TenantID, tgt.Subject, m.NewUser.Budget, now); err != nil {
 			return out, err
 		}
 		row := store.UserRow{TenantID: tgt.TenantID, Subject: tgt.Subject, DisplayName: identity.DisplayName(a),
@@ -539,19 +539,21 @@ func pendingSessionPrincipal(u store.UserRow, pending *bool) (auth.Principal, bo
 	return auth.Principal{TenantID: u.TenantID, Subject: u.Subject, Scopes: []string{}, Effective: eff}, true, true
 }
 
-// writeNewUserBudget writes the identity map's new_user budget as the user's
-// token limit (RFC AW, scope user), unless a limit is already there: an
+// writeNewUserBudget writes a new_user budget (an identity map's, or the
+// deployment floor's auth.lifecycle.new_user.budget for a user the password
+// gate or an operator makes) as the user's token limit (RFC AW, scope user),
+// recorded as written by `by`, unless a limit is already there: an
 // operator may set one for a subject before its first sign-in, and that word
 // stands. The insert-if-absent is the store primitive snapshot restore uses
 // for the same reason. The row reaches this replica's limits cache at once;
 // other replicas pick it up on their next limits reload (within
 // LOOMCYCLE_LIMITS_RELOAD_INTERVAL, default 1m), as with PUT /v1/_limits.
-func (s *Server) writeNewUserBudget(ctx context.Context, g config.AuthGate, tenant, subject string, b *config.AuthBudgetConfig, now time.Time) error {
+func (s *Server) writeNewUserBudget(ctx context.Context, by, tenant, subject string, b *config.AuthBudgetConfig, now time.Time) error {
 	if b == nil {
 		return nil
 	}
 	row := store.TokenLimitRow{TenantID: tenant, Scope: "user", ScopeID: subject, SoftLimit: b.SoftLimit, HardLimit: b.HardLimit,
-		UpdatedAt: now, UpdatedBy: "gate:" + g.Name}
+		UpdatedAt: now, UpdatedBy: by}
 	inserted, err := s.store.SnapshotRestoreTokenLimit(ctx, row)
 	if err != nil {
 		return fmt.Errorf("writing the new user's budget: %w", err)
@@ -560,4 +562,10 @@ func (s *Server) writeNewUserBudget(ctx context.Context, g config.AuthGate, tena
 		s.limits.PutLimit(row)
 	}
 	return nil
+}
+
+// floorNewUserBudget is the deployment floor's new_user budget
+// (auth.lifecycle.new_user.budget), nil when none is set.
+func (s *Server) floorNewUserBudget() *config.AuthBudgetConfig {
+	return s.cfg().ResolvedAuth.NewUserFloor().Budget
 }

@@ -177,6 +177,40 @@ func OAuthFamilyGet(ctx context.Context, db DB, familyID string) (store.OAuthFam
 	return out, nil
 }
 
+// OAuthFamilyList returns the live families of (tenantID, subject) at now,
+// most recently used first, at most store.OAuthFamilyListMax.
+func OAuthFamilyList(ctx context.Context, db DB, tenantID, subject string, now time.Time) ([]store.OAuthFamilyRow, error) {
+	d := db.Dialect()
+	t := d.TimeArg(now)
+	rows, err := db.Query(ctx, `SELECT `+oauthFamilyCols+` FROM oauth_refresh_families
+		WHERE tenant_id = ? AND subject = ? AND revoked_at IS NULL AND idle_expires_at > ? AND absolute_expires_at > ?
+		ORDER BY last_used_at DESC, family_id LIMIT ?`, tenantID, subject, t, t, store.OAuthFamilyListMax)
+	if err != nil {
+		return nil, fmt.Errorf("oauth_family list: %w", err)
+	}
+	defer rows.Close()
+	var out []store.OAuthFamilyRow
+	for rows.Next() {
+		var (
+			f         store.OAuthFamilyRow
+			amr, caps string
+		)
+		if err := rows.Scan(&f.FamilyID, &f.ClientID, &f.TenantID, &f.Subject, &f.Gate, &amr, &caps, &f.RestrictionsJSON,
+			d.TimeDest(&f.CreatedAt), d.TimeDest(&f.LastUsedAt), d.TimeDest(&f.IdleExpiresAt),
+			d.TimeDest(&f.AbsoluteExpiresAt), &nullTimeDest{&f.RevokedAt}, &f.RevokeReason); err != nil {
+			return nil, err
+		}
+		if err := scanList(amr, &f.AMR); err != nil {
+			return nil, fmt.Errorf("oauth_family: amr: %w", err)
+		}
+		if err := scanList(caps, &f.ScopeCap); err != nil {
+			return nil, fmt.Errorf("oauth_family: scope_cap: %w", err)
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
 // OAuthFamilyTouch records a refresh on a live family.
 func OAuthFamilyTouch(ctx context.Context, db DB, familyID string, lastUsed, idleExpires time.Time) error {
 	d := db.Dialect()

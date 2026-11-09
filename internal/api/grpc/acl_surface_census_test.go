@@ -11,10 +11,12 @@ import (
 
 // grpcUngovernedRPCs are the RPCs no access-control question governs:
 // Health (no auth at all), Config (a report narrowed to the caller's own
-// scopes) and Authz (the questions a principal asks about itself, confined
+// scopes), Authz (the questions a principal asks about itself, confined
 // to its own subject by the shared implementation, as POST /v1/_authz/* is
-// on HTTP).
-var grpcUngovernedRPCs = map[string]bool{"Health": true, "Config": true, "Authz": true}
+// on HTTP) and the caller's own app sign-ins (as GET/DELETE
+// /v1/_me/app-sign-ins).
+var grpcUngovernedRPCs = map[string]bool{"Health": true, "Config": true, "Authz": true,
+	"ListMyAppSignIns": true, "EndMyAppSignIn": true}
 
 // serviceRPCs is every RPC the generated service registers, unary and
 // streaming, read from the descriptor rather than listed.

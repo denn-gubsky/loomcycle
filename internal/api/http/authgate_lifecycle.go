@@ -95,24 +95,7 @@ func (s *Server) startRemovalWith(ctx context.Context, policy lifecycle.Policy, 
 		}
 		return fmt.Errorf("record removal: %w", err)
 	}
-	// App sign-ins before the other tokens: endSubjectAppSignIns says why.
-	// Each step runs whatever the one before answered, so a fault in one
-	// leaves no other credential working; the errors are reported together.
-	var errs []error
-	if err := s.endSubjectAppSignIns(ctx, tenant, subject); err != nil {
-		errs = append(errs, fmt.Errorf("end app sign-ins: %w", err))
-	}
-	retired, err := s.retireDelegatedUserTokens(ctx, tenant, subject)
-	for _, row := range retired {
-		s.recordTokenAudit(ctx, "retire", row)
-	}
-	if err != nil {
-		errs = append(errs, fmt.Errorf("retire tokens: %w", err))
-	}
-	if _, err := s.store.UISessionRevokeSubject(ctx, tenant, subject, now); err != nil {
-		errs = append(errs, fmt.Errorf("end sessions: %w", err))
-	}
-	if err := errors.Join(errs...); err != nil {
+	if _, err := s.endSubjectCredentials(ctx, tenant, subject, credAll); err != nil {
 		return err
 	}
 	if started || u.Status != "disabled" {

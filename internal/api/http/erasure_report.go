@@ -41,7 +41,10 @@ func (s *Server) erasureService() *erasure.Service {
 		ListTokens: s.erasureSubjectTokens,
 		// The subject's app sign-ins and their access tokens, ended before
 		// the account's rows go (endSubjectAppSignIns says why first).
-		EndAppSignIns: s.endSubjectAppSignIns,
+		EndAppSignIns: func(ctx context.Context, tenant, subject string) error {
+			_, err := s.endSubjectCredentials(ctx, tenant, subject, credAppSignIns)
+			return err
+		},
 		// Config-declared principals of the subject, by name (never the
 		// secret): an erasure cannot edit the config, so it names them.
 		DeclaredPrincipals: func(tenant, subject string) []string {
@@ -55,12 +58,10 @@ func (s *Server) erasureService() *erasure.Service {
 			}
 			return names
 		},
+		// The erasure deletes the sessions with the account (UserErase), so
+		// only the tokens are ended here.
 		RetireTokens: func(ctx context.Context, tenant, subject string) ([]store.OperatorTokenDefRow, error) {
-			retired, err := s.retireDelegatedUserTokens(ctx, tenant, subject)
-			for _, row := range retired {
-				s.recordTokenAudit(ctx, "retire", row)
-			}
-			return retired, err
+			return s.endSubjectCredentials(ctx, tenant, subject, credDelegatedTokens)
 		},
 	}
 	s.wireErasureSubjects(svc)

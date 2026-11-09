@@ -376,6 +376,54 @@ func testOAuthFamilyRevokeSubjectRevokesOnlyItsLiveFamilies(t *testing.T, s stor
 	}
 }
 
+// OAuthFamilyList returns the subject's live families only — not another
+// subject's or tenant's, not a revoked or expired one — most recently used
+// first.
+func testOAuthFamilyListReturnsOnlyTheSubjectsLiveSignIns(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := pwgT0.Add(time.Hour)
+	mk := func(id, tenant, subject string, lastUsed time.Time, edit func(*store.OAuthFamilyRow)) {
+		t.Helper()
+		f := oauthFamily(id, "board")
+		f.TenantID, f.Subject, f.LastUsedAt = tenant, subject, lastUsed
+		if edit != nil {
+			edit(&f)
+		}
+		if err := s.OAuthFamilyCreate(ctx, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("f-old", "acme", "alice", pwgT0, nil)
+	mk("f-new", "acme", "alice", pwgT0.Add(30*time.Minute), nil)
+	mk("f-revoked", "acme", "alice", pwgT0, nil)
+	mk("f-idle", "acme", "alice", pwgT0, func(f *store.OAuthFamilyRow) { f.IdleExpiresAt = now.Add(-time.Second) })
+	mk("f-absolute", "acme", "alice", pwgT0, func(f *store.OAuthFamilyRow) { f.AbsoluteExpiresAt = now })
+	mk("f-bob", "acme", "bob", pwgT0, nil)
+	mk("f-other", "other", "alice", pwgT0, nil)
+	if _, err := s.OAuthFamilyRevoke(ctx, "f-revoked", "user_signed_out", pwgT0); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.OAuthFamilyList(ctx, "acme", "alice", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, f := range got {
+		ids = append(ids, f.FamilyID)
+	}
+	if !reflect.DeepEqual(ids, []string{"f-new", "f-old"}) {
+		t.Fatalf("listed %v, want the subject's live families, most recently used first", ids)
+	}
+	f := got[0]
+	if f.ClientID != "board" || f.Gate != "pw" || !f.CreatedAt.Equal(pwgT0) || !f.LastUsedAt.Equal(pwgT0.Add(30*time.Minute)) ||
+		!reflect.DeepEqual(f.AMR, []string{"pwd"}) || !f.AbsoluteExpiresAt.Equal(pwgT0.Add(30*24*time.Hour)) {
+		t.Fatalf("listed row = %+v", f)
+	}
+	if none, err := s.OAuthFamilyList(ctx, "acme", "nobody", now); err != nil || len(none) != 0 {
+		t.Fatalf("a subject with no sign-ins listed %v, %v", none, err)
+	}
+}
+
 // OAuthTokenRetireEndedSignIns retires the subject's live app tokens whose
 // sign-in is revoked (whatever the reason) or gone, and nothing else. It is
 // what lets a disable retried after a partial failure finish: the families

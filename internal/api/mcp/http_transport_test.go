@@ -736,6 +736,12 @@ func TestHTTPTransport_SpawnRunOperatorTimeout(t *testing.T) {
 	}
 }
 
+func (m *httpMockConnector) AppSignIns(context.Context, string, string) ([]connector.AppSignIn, error) {
+	return nil, nil
+}
+
+func (m *httpMockConnector) EndAppSignIn(context.Context, string, string, string) error { return nil }
+
 func (m *httpMockConnector) ErasureReport(context.Context, string, string) (erasure.Report, error) {
 	return erasure.Report{}, nil
 }

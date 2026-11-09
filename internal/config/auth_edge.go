@@ -135,12 +135,9 @@ func resolveHeaderGate(name string, g AuthGateConfig) (*AuthHeaderGate, error) {
 			"assertion header (a tunnel container, the load balancer's subnets); a header from any other peer is refused", where)
 	}
 	for _, cidr := range g.TrustedProxyCIDRs {
-		pfx, err := parsePrefixOrAddr(cidr)
+		pfx, err := trustedProxyPrefix(where+".trusted_proxy_cidrs", cidr)
 		if err != nil {
-			return nil, fmt.Errorf("%s.trusted_proxy_cidrs: %q is not a CIDR or an address", where, cidr)
-		}
-		if pfx.Bits() == 0 {
-			return nil, fmt.Errorf("%s.trusted_proxy_cidrs: %q trusts every address", where, cidr)
+			return nil, err
 		}
 		h.TrustedProxyCIDRs = append(h.TrustedProxyCIDRs, pfx)
 	}
@@ -251,6 +248,32 @@ func resolveAWSIAMGate(c *Config, name string, g AuthGateConfig) (*AuthAWSIAMGat
 		a.STSRegions = append(a.STSRegions, r)
 	}
 	return a, nil
+}
+
+// trustedProxyPrefix validates one entry of a list of proxies whose word
+// about the client is believed (auth.trusted_proxies,
+// auth.grpc_trusted_proxies, a header gate's trusted_proxy_cidrs). An entry
+// that trusts every address is refused: with it any peer names its own
+// source address, or its own identity header.
+func trustedProxyPrefix(key, s string) (netip.Prefix, error) {
+	pfx, err := parsePrefixOrAddr(s)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("%s: %q is not a CIDR or an address", key, s)
+	}
+	if pfx.Bits() == 0 {
+		return netip.Prefix{}, fmt.Errorf("%s: %q trusts every address — list the proxy's own addresses or subnet", key, s)
+	}
+	return pfx, nil
+}
+
+// broadProxyPrefix reports a trusted proxy range wider than a /16 (IPv4) or
+// a /48 (IPv6): legal, but usually a private range typed where the proxy's
+// own address was meant, and every address in it can name its own source.
+func broadProxyPrefix(p netip.Prefix) bool {
+	if p.Addr().Is4() {
+		return p.Bits() < 16
+	}
+	return p.Bits() < 48
 }
 
 func parsePrefixOrAddr(s string) (netip.Prefix, error) {

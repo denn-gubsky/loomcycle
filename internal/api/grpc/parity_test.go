@@ -487,6 +487,12 @@ func TestResolveInterrupt_BadIDIsInvalidArgument(t *testing.T) {
 	}
 }
 
+func (m *parityMock) AppSignIns(context.Context, string, string) ([]connector.AppSignIn, error) {
+	return nil, nil
+}
+
+func (m *parityMock) EndAppSignIn(context.Context, string, string, string) error { return nil }
+
 func (m *parityMock) ErasureReport(context.Context, string, string) (erasure.Report, error) {
 	return erasure.Report{}, nil
 }
