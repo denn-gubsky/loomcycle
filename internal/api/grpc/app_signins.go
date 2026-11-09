@@ -9,6 +9,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	nethttp "net/http"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -88,11 +89,6 @@ func (s *Server) appSignInSelf(ctx context.Context) (auth.Principal, error) {
 	if !ok || p.Subject == "" {
 		return auth.Principal{}, status.Error(codes.PermissionDenied, "app sign-ins belong to a signed-in person; this credential names none")
 	}
-	if p.OAuthClient != "" {
-		// As GET/DELETE /v1/_me/app-sign-ins: an app's own token must not
-		// read or end the person's other sign-ins.
-		return auth.Principal{}, status.Error(codes.PermissionDenied, "an app's token cannot list or end the person's app sign-ins; use your own session or token")
-	}
 	return p, nil
 }
 
@@ -130,8 +126,11 @@ func appSignInToProto(a connector.AppSignIn) *loomcyclepb.AppSignIn {
 // that is not the user's live sign-in NotFound.
 func appSignInErrToStatus(err error) error {
 	var nf *store.ErrNotFound
+	var hs interface{ HTTPStatus() int }
 	switch {
-	case errors.Is(err, runner.ErrAgentNotAllowed):
+	case errors.Is(err, runner.ErrAgentNotAllowed),
+		// An app's own token, refused by the shared operation.
+		errors.As(err, &hs) && hs.HTTPStatus() == nethttp.StatusForbidden:
 		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.As(err, &nf):
 		return status.Error(codes.NotFound, "no such app sign-in for this user")

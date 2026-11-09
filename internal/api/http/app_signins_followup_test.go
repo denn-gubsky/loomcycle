@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -182,5 +183,45 @@ func TestAppSignIns_AnAppTokenCannotReachThePersonsSignIns(t *testing.T) {
 	own := mintPersonalToken(t, ts, "google:100")
 	if code, body := bearerCall(t, ts, own, "GET", "/v1/_me/app-sign-ins", ""); code != http.StatusOK || len(appSignInList(t, body)) != 1 {
 		t.Fatalf("the person's own token = %d %s", code, body)
+	}
+}
+
+// An app token that also carries the operator scope (as one could, were an
+// app ever granted it) is refused by the operation itself, so the operator
+// route about its own person does not let it through either.
+func TestAppSignIns_AnAppTokenIsRefusedOnTheOperatorRouteToo(t *testing.T) {
+	f := newAppFixture(t, "tenant")
+	ts := appOpServer(t, f)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := f.st.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "selfop", AccessMode: "tenant", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.OAuthFamilyCreate(ctx, store.OAuthFamilyRow{FamilyID: "fam-selfop", ClientID: "board", TenantID: "acme",
+		Subject: "selfop", Gate: "google", CreatedAt: now, LastUsedAt: now, IdleExpiresAt: now.Add(time.Hour),
+		AbsoluteExpiresAt: now.Add(24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	const appOp = "lct_app_token_with_operator_scope"
+	if _, err := f.st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{DefID: "def_appop", Name: "u-app-board",
+		TenantID: "acme", Subject: "selfop", TokenHash: auth.HashToken(testTokenPepper, appOp),
+		AllowedScopes: []string{auth.ScopeTenant}, IssuedByGate: "google", OAuthClient: "board", OAuthFamily: "fam-selfop",
+		ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := bearerCall(t, ts, appOp, "GET", "/v1/_me", ""); code != http.StatusOK {
+		t.Fatalf("precondition: the app token does not authenticate: %d", code)
+	}
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/v1/_users/selfop/app-sign-ins"},
+		{"DELETE", "/v1/_users/selfop/app-sign-ins/fam-selfop"},
+		{"GET", "/v1/_me/app-sign-ins"},
+	} {
+		if code, _ := bearerCall(t, ts, appOp, c.method, c.path, ""); code != http.StatusForbidden {
+			t.Errorf("%s %s with an app token = %d, want 403", c.method, c.path, code)
+		}
+	}
+	if row, _ := f.st.OAuthFamilyGet(ctx, "fam-selfop"); !row.RevokedAt.IsZero() {
+		t.Fatal("an app token ended a sign-in through the operator route")
 	}
 }

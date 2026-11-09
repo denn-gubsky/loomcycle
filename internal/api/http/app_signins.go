@@ -47,6 +47,9 @@ func isSelf(ctx context.Context, tenant, subject string) bool {
 // does not) or the HTTP route gate already asked it.
 func (s *Server) appSignInAccess(ctx context.Context, tenant, subject, method string) error {
 	p, ok := auth.PrincipalFromContext(ctx)
+	if ok && p.OAuthClient != "" {
+		return errAppTokenSignIns
+	}
 	if !ok || isSelf(ctx, tenant, subject) {
 		return nil
 	}
@@ -157,6 +160,8 @@ func writeAppSignInError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.As(err, &denied):
 		writeACLDenied(w, denied.surface, denied.decision)
+	case errors.Is(err, errAppTokenSignIns):
+		writeJSONError(w, http.StatusForbidden, "app_token_refused", err.Error())
 	case isNotFound(err):
 		writeJSONError(w, http.StatusNotFound, "app_sign_in_not_found", "no such app sign-in for this user")
 	case errors.Is(err, errSessionsUnavailable):
@@ -194,23 +199,27 @@ func (s *Server) operatorAppSignInTarget(w http.ResponseWriter, r *http.Request)
 	return tenant, subject, true
 }
 
-// errAppTokenSignIns is the refusal of an app's own token on the caller's
-// app sign-in routes: an app signed in on the person's behalf, capped to
-// what it was granted, must not read or end the person's other sign-ins.
-// The person does it with its own session or token.
-var errAppTokenSignIns = errors.New("an app's token cannot list or end the person's app sign-ins; use your own session or token")
+// errAppTokenSignIns is the refusal of an app's own token by the app
+// sign-in operations, on every route and transport: an app signed in on the
+// person's behalf, capped to what it was granted, must not read or end the
+// person's sign-ins. The person does it with its own session or token.
+var errAppTokenSignIns error = appTokenRefusal{}
+
+type appTokenRefusal struct{}
+
+func (appTokenRefusal) Error() string {
+	return "an app's token cannot list or end app sign-ins; use your own session or token"
+}
+
+// HTTPStatus lets a transport map the refusal without knowing its type.
+func (appTokenRefusal) HTTPStatus() int { return http.StatusForbidden }
 
 // selfAppSignInTarget is the caller's own (tenant, subject). A principal
-// with no subject (open mode, the legacy token) has no sign-ins of its own,
-// and an app's own token is refused (errAppTokenSignIns).
+// with no subject (open mode, the legacy token) has no sign-ins of its own.
 func selfAppSignInTarget(w http.ResponseWriter, r *http.Request) (string, string, bool) {
 	p, ok := auth.PrincipalFromContext(r.Context())
 	if !ok || p.Subject == "" {
 		writeJSONError(w, http.StatusForbidden, "subject_required", "app sign-ins belong to a signed-in person; this credential names none")
-		return "", "", false
-	}
-	if p.OAuthClient != "" {
-		writeJSONError(w, http.StatusForbidden, "app_token_refused", errAppTokenSignIns.Error())
 		return "", "", false
 	}
 	return p.TenantID, p.Subject, true
