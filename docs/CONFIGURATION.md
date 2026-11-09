@@ -2666,9 +2666,15 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   - citations from the class grammar;
   - a concept scheme's terms, as `uses_term`, or `defines` in a definitions
     passage;
-  - semantic relations judged by the tool-less `kb/verdict`: only
-    `elaborates` is proposed, with both quotes verbatim and outside the
-    class's `@boilerplate`; the other kinds stay in the report;
+  - semantic relations judged by the tool-less `kb/verdict`, against
+    candidates of `target_types` when given and never a copy or version of
+    the document, after headings, contents lines, legends and short
+    passages are skipped. A kind the tenant ontology declares itself may be
+    proposed, with both quotes verbatim and outside the class's
+    `@boilerplate`; `elaborates`, `conflicts_with` and `stricter_than` stay
+    in the report. A pass whose verdict calls mostly failed ends `failed`,
+    and `time_budget_seconds` (25 minutes) stops it `budget_stopped` with
+    its report;
   - with `check_against`, a comparison of each passage with the norms it
     answers to, written as a report document (not a legal opinion), never
     as statements;
