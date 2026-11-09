@@ -1385,7 +1385,7 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 	// a shutdown would never return, so the pool's close — and the process —
 	// would wait for the SIGKILL, while another replica resumed the run. A
 	// shutdown cancels the pass instead; the next tick does it again.
-	runErr := s.runner.RunOnce(ctx, in, cb)
+	runErr := s.runner.RunOnce(lcotel.WithRunTrigger(ctx, lcotel.TriggerSchedule), in, cb)
 	usageMu.Lock()
 	refused := keyRefused
 	usageMu.Unlock()

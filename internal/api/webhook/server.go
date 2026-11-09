@@ -870,6 +870,7 @@ func (rec *Receiver) spawnAsync(ctx context.Context, w http.ResponseWriter, span
 // (stamped on src by withClient) for a `source_cidr` one (RFC FY Part E).
 func deliveryRunCtx(src context.Context) context.Context {
 	ctx := authz.WithSourceIP(authz.WithTransport(context.Background(), "webhook"), authz.SourceIPFrom(src))
+	ctx = lcotel.WithRunTrigger(ctx, lcotel.TriggerWebhook)
 	// The sender's trace context, when its delivery verified (handle).
 	return lcotel.CarryInbound(ctx, src)
 }

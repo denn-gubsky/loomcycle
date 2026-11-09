@@ -20,6 +20,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/directory"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -1077,10 +1078,13 @@ type fakeRunner struct {
 	// tool schema but missed in that literal is dropped for every streaming
 	// caller, with every test still green.
 	lastInput runner.RunInput
+	// lastTrigger is the run trigger on the ctx RunOnce was handed.
+	lastTrigger string
 }
 
-func (f *fakeRunner) RunOnce(_ context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
+func (f *fakeRunner) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
 	f.lastInput = in
+	f.lastTrigger = lcotel.RunTriggerFromContext(ctx)
 	if cb.OnRegistered != nil {
 		cb.OnRegistered(f.agentID, f.runID, f.sessionID, "")
 	}
@@ -1144,6 +1148,10 @@ func TestServer_SpawnRun_StreamingPath(t *testing.T) {
 	}
 	if inner.Status != "completed" {
 		t.Errorf("Status = %q, want %q", inner.Status, "completed")
+	}
+	// The run is counted as one an MCP client started.
+	if fr.lastTrigger != lcotel.TriggerMCP {
+		t.Errorf("run trigger = %q, want %q", fr.lastTrigger, lcotel.TriggerMCP)
 	}
 }
 

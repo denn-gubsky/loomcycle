@@ -923,7 +923,7 @@ func (s *Server) UnaryAuthInterceptor() googlegrpc.UnaryServerInterceptor {
 		if err := enforceOp(authedCtx, info.FullMethod, req); err != nil {
 			return nil, err
 		}
-		return handler(authedCtx, req)
+		return handler(lcotel.WithRunTrigger(authedCtx, lcotel.TriggerGRPC), req)
 	}
 }
 
@@ -945,7 +945,7 @@ func (s *Server) StreamAuthInterceptor() googlegrpc.StreamServerInterceptor {
 			return err
 		}
 		// Carry the principal-bearing ctx into the stream handler.
-		return handler(srv, &principalStream{ServerStream: ss, ctx: authedCtx})
+		return handler(srv, &principalStream{ServerStream: ss, ctx: lcotel.WithRunTrigger(authedCtx, lcotel.TriggerGRPC)})
 	}
 }
 

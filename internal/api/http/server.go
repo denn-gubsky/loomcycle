@@ -8085,6 +8085,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		ParentAgentID: parentIdentity.AgentID,
 		Tenant:        parentIdentity.TenantID,
 		SessionID:     subSessionID,
+		Trigger:       lcotel.TriggerSubagent,
 	})
 	s.recordRunTraceID(subRunCtx, subRunID)
 	defer func() {
@@ -10381,6 +10382,8 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		CacheReadTokens: res.Usage.CacheReadTokens,
 		StopReason:      res.StopReason,
 		Err:             spanErr,
+		// The stored status, so a rejected run is not counted a completion.
+		Status: string(terminalStatusOf(nil, res, runErr)),
 	})
 	if s.store == nil || runID == "" {
 		return
