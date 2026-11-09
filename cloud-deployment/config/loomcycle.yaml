@@ -1,7 +1,7 @@
 # loomcycle config overlay (mounted at /config = LOOMCYCLE_CONFIG_DIR).
 # Deep-merged OVER the embedded presets (LOOMCYCLE_PRESETS → CONFIG_DIR). Every
 # *.yaml in this directory is loaded, in name order: keep backups elsewhere.
-# Secrets live in .env.secure, never here. Checked against v1.108.0.
+# Secrets live in .env.secure, never here. Checked against v1.147.0.
 #
 # Models, providers and tiers are kept in step with the TrueNAS deployment: both
 # use the same Ollama host, so the same aliases and the same context size avoid
@@ -236,11 +236,14 @@ volumes:
     dynamic_root: true
 
 # ─── Access control ───────────────────────────────────────────────────
-# The mode is LOOMCYCLE_ACL (compose default: shadow). Every Google sign-in
-# gets its own tenant and a tenant-operator token, so each user writes the
-# rule lists for their own tenant in Settings → Access. A list declared here
-# with `acls:` is reachable from any tenant's binding, but a binding names
-# one tenant, so this file cannot bind tenants the landing page creates.
+# The mode is LOOMCYCLE_ACL (compose default: enforce). No lists are declared
+# here: every caller gets its token class's built-in list (tenant operator,
+# member, isolated, run-plane for the Telegram gate's tokens, auth:manage for
+# the landing), which reproduces the scope gates' reach. Website sign-ups are
+# members of the one shared tenant (the landing's LANDING_TENANT); its tenant
+# operators write any further lists in Settings → Access, and under enforce
+# those lists decide. Telegram users live in their own tenant (the telegram
+# gate below).
 
 # ─── Sign-in (RFC FA; plan: ../AUTH-INTEGRATION.md) ──────────────────
 # Token mode during the migration: the paste box keeps working for existing
@@ -255,7 +258,13 @@ auth:
     cloud:
       kind: password
       label: "loomcycle.cloud account"
-      require_mfa: false            # true at the strict switch (plan phase 6)
+      # A password sign-in needs an authenticator app or a passkey. An account
+      # with neither is refused at its next password sign-in (403
+      # mfa_enrolment_required) until an operator sends it a reset link, which
+      # enrols the app. A Web UI session already open is not ended, and its
+      # owner can add the app at /ui/account. New invites enrol it on the
+      # invite page. Brought forward from the strict switch (plan phase 6).
+      require_mfa: true
       invites: { default_ttl: 168h, max_ttl: 720h }
       resets: { ttl: 1h }
       # Exact match, query string included: must equal the landing's
@@ -287,6 +296,39 @@ auth:
       # a leaked auth:manage token take over any owner's account. The operator
       # attaches passwords to loomcycle-dev's existing users by hand.
       manager_may_recover_owners: false
+    # The Telegram bridge (compose service telegram-bridge) is a gate: it signs
+    # who is writing with its own Ed25519 key, and loomcycle provisions the user
+    # and issues a short-lived token held to issued_token. It holds no loomcycle
+    # credential, so a compromised bridge can speak for Telegram users only.
+    # The public half's x comes from LOOMCYCLE_TELEGRAM_GATE_PUBLIC_X
+    # (.env.insecure; the private half is the bridge's TELEGRAM_BRIDGE_GATE_KEY
+    # in .env.secure). Unset, this gate does not load and neither does the
+    # config, so the compose file refuses to start without it.
+    telegram:
+      kind: external
+      label: Telegram
+      public_key: { kty: OKP, crv: Ed25519, x: "${LOOMCYCLE_TELEGRAM_GATE_PUBLIC_X}" }
+      # The most any issued token may do: start the bridge's one agent (the
+      # compose default TELEGRAM_BRIDGE_AGENT; change both together)
+      # interactively, at the bridge's own default rate. No speech surfaces:
+      # this config has no speech engines. Add `surfaces: [speech,
+      # transcription]` and raise the rate to 12 when voice is turned on.
+      issued_token: { ttl: 12h, agents: [chat/medium], overrides: [interactive], rate: { per_minute: 6, burst: 10 } }
+      identity_map:
+        # The tenant the bridge's operator token served, so
+        # legacy_subject_prefix links each person's first message through the
+        # gate to the user the bridge made (telegram-<id>): history, memory
+        # and documents stay theirs.
+        tenant: telegram-dev
+        provision: auto
+        legacy_subject_prefix: telegram-
+        # Isolated (the deployment floor), and pending like a website sign-up:
+        # a new person gets no token until an operator approves them in the
+        # Users console (tenant telegram-dev). A linked existing user keeps its
+        # status. The budget is each new user's monthly token limit.
+        new_user:
+          status: pending
+          budget: { soft_limit: 500000, hard_limit: 1000000 }
   # The tunnel reaches loomcycle through cloudflared, so without these every
   # login would look like it came from cloudflared and one attacker's failures
   # would throttle everyone. Trust ONLY cloudflared's fixed address on the
