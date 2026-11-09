@@ -9,7 +9,7 @@ import { NO_MENTIONS, parseCustomId, renderCard, SUPPRESS_EMBEDS, textMessage } 
 import { ASK_BY_VOICE, MAX_PROMPT_CHARS, slashHelpText } from "./commands.js";
 import { isSnowflake, type DiscordConfig } from "./config.js";
 import { identify, NOT_HERE, placeOf, type Fences, type Place } from "./identity.js";
-import { CallbackType, CommandType, EPHEMERAL, InteractionType, type Interaction } from "./interaction.js";
+import { CallbackType, CommandType, EPHEMERAL, InteractionType, snowflakeMs, type Interaction } from "./interaction.js";
 import type { DeferOptions, DiscordPort, DiscordRef } from "./port.js";
 import { verifyInteraction } from "./verify.js";
 import { voiceOfMessage, VOICE_OFF, type DiscordVoice } from "./voice.js";
@@ -101,7 +101,7 @@ export function interactionRoute(deps: InteractionDeps): Route {
     const ref = refOf(place);
     port.track(ix.id, ix.token, place.channelId, FALLBACK.ask);
     setImmediate(() => {
-      deps.router.onVoice(id, ref, found.voice, typeof ix.locale === "string" ? ix.locale : undefined).catch((err: unknown) => {
+      deps.router.onVoice(id, ref, found.voice, typeof ix.locale === "string" ? ix.locale : undefined, { sentAt: snowflakeMs(ix.id) }).catch((err: unknown) => {
         log.error("voice message failed", { conversation: id.conversationId, error: (err as Error)?.name });
       });
     });
@@ -130,7 +130,7 @@ export function interactionRoute(deps: InteractionDeps): Route {
     // After this response is written: the core's first reply edits the
     // deferred message, which must exist by then.
     setImmediate(() => {
-      deps.router.onMessage(id, ref, text).catch((err: unknown) => {
+      deps.router.onMessage(id, ref, text, { sentAt: snowflakeMs(ix.id) }).catch((err: unknown) => {
         log.error("message failed", { conversation: id.conversationId, error: (err as Error)?.name });
       });
     });
@@ -155,7 +155,7 @@ export function interactionRoute(deps: InteractionDeps): Route {
     const ref = refOf(place);
     // Its token also carries the agent's next messages in this channel.
     port.track(ix.id, ix.token, place.channelId);
-    const work = deps.router.onCardAction(id, ref, input).catch((err: unknown): CardResult => {
+    const work = deps.router.onCardAction(id, ref, input, { sentAt: snowflakeMs(ix.id) }).catch((err: unknown): CardResult => {
       log.error("card action failed", { conversation: id.conversationId, error: (err as Error)?.name });
       return { message: "Something went wrong. Please try again." };
     });

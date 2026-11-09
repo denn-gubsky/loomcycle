@@ -77,3 +77,14 @@ export interface Interaction {
     resolved?: { messages?: Record<string, ResolvedMessage> };
   };
 }
+
+/** Discord's epoch: a snowflake's top 42 bits count ms from here. */
+const DISCORD_EPOCH_MS = 1420070400000n;
+
+/** snowflakeMs is when Discord made an id (an interaction's: when the person
+ *  acted), in epoch ms; undefined for anything that is not a snowflake. */
+export function snowflakeMs(id: string | undefined): number | undefined {
+  if (!id || !/^\d{17,20}$/.test(id)) return undefined;
+  const ms = Number((BigInt(id) >> 22n) + DISCORD_EPOCH_MS);
+  return Number.isSafeInteger(ms) ? ms : undefined;
+}

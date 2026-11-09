@@ -10,7 +10,7 @@ import { customIdOf, FREE_TEXT_HINT, MAX_CUSTOM_ID, neutraliseLinks, parseCustom
 import { commandSpecs, registerCommands } from "../src/commands.js";
 import { loadConfig } from "../src/config.js";
 import { identify, NOT_HERE, NOT_IN_DMS, NOT_IN_SERVER, personSub, type Fences } from "../src/identity.js";
-import type { Interaction } from "../src/interaction.js";
+import { snowflakeMs, type Interaction } from "../src/interaction.js";
 import { CONTINUED, DiscordPort, TOKEN_LIFETIME_MS } from "../src/port.js";
 import { publicKeyFromHex, verifyInteraction } from "../src/verify.js";
 import { appKey, FakeDiscord, signedHeaders } from "./discord.js";
@@ -664,5 +664,13 @@ describe("commands", () => {
     d.calls.length = 0;
     await registerCommands(api, { allowedGuilds: new Set([GUILD]), allowDms: false }, silentLogger);
     expect(d.calls.map((c) => c.path)).toEqual([`/applications/${APP}/guilds/${GUILD}/commands`]);
+  });
+});
+
+describe("snowflakeMs", () => {
+  it("reads when Discord made an id, and refuses anything that is not a snowflake", () => {
+    // Discord's documented example: 175928847299117063 was made 2016-04-30T11:18:25.796Z.
+    expect(snowflakeMs("175928847299117063")).toBe(Date.parse("2016-04-30T11:18:25.796Z"));
+    for (const bad of [undefined, "", "abc", "12", "-175928847299117063", "1759288472991170631234"]) expect(snowflakeMs(bad)).toBeUndefined();
   });
 });
