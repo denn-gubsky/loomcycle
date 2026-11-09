@@ -14,6 +14,7 @@ import {
   rulesFromText,
   rulesToText,
   selectorShape,
+  setActions,
   setResourceType,
   validateDraft,
   verbsFor,
@@ -22,16 +23,23 @@ import {
 } from "./aclRules";
 
 // A slice of the server's `op=catalog` answer, in its wire shape: one type of
-// each selector shape (glob, scoped with ':' and '/', enum).
+// each selector shape (glob, scoped with ':' and '/', enum), and the
+// type-level-only marks the server sends for agent and run.
 const catalog: AclCatalog = {
   catalog_version: 1,
   transports: ["http", "grpc", "mcp", "webui", "a2a", "webhook", "schedule", "bridge"],
   types: [
-    { type: "agent", verbs: ["run", "read", "spawn", "steer", "cancel", "review"] },
+    { type: "agent", verbs: ["run", "read", "spawn", "steer", "cancel", "review"], type_level_only: ["read"] },
     { type: "def", verbs: ["author", "retire", "read", "manage"], scopes: ["agent", "skill", "acl"], separator: "/" },
     { type: "document", verbs: ["read", "write", "delete", "link", "browse"], scopes: ["agent", "user", "tenant"], separator: ":" },
     { type: "memory", verbs: ["read", "write", "recall", "browse"], scopes: ["user", "agent", "tenant", "global"], separator: ":" },
-    { type: "run", verbs: ["read", "delete", "steer", "cancel", "compact", "retune", "review"], scopes: ["own", "tenant"] },
+    {
+      type: "run",
+      verbs: ["read", "delete", "steer", "cancel", "compact", "retune", "review"],
+      scopes: ["own", "tenant"],
+      type_level_only: ["read", "delete", "steer", "cancel", "compact", "retune", "review"],
+    },
+    { type: "history", verbs: ["read"], scopes: ["self", "tenant"] },
     { type: "tool", verbs: ["invoke"] },
     { type: "volume", verbs: ["read", "write", "provision", "mount"] },
   ],
@@ -49,11 +57,11 @@ describe("selectors", () => {
     expect(buildSelector(catalog, { type: "def", scope: "agent", name: "chat/*" })).toBe("def:agent/chat/*");
     expect(buildSelector(catalog, { type: "document", scope: "tenant", name: "/kb/**" })).toBe("document:tenant:/kb/**");
     expect(buildSelector(catalog, { type: "memory", scope: "tenant", name: "" })).toBe("memory:tenant");
-    expect(buildSelector(catalog, { type: "run", scope: "own", name: "" })).toBe("run:own");
+    expect(buildSelector(catalog, { type: "history", scope: "self", name: "" })).toBe("history:self");
   });
 
   it("parses a wire selector back into the same parts", () => {
-    for (const sel of ["agent:chat/*", "def:agent/chat/*", "document:tenant:/kb/**", "memory:tenant", "run:own", "tool:*"]) {
+    for (const sel of ["agent:chat/*", "def:agent/chat/*", "document:tenant:/kb/**", "memory:tenant", "history:self", "run:*", "tool:*"]) {
       const d = parseSelector(catalog, sel);
       expect(d).not.toBeNull();
       expect(buildSelector(catalog, d!)).toBe(sel);
@@ -247,5 +255,54 @@ describe("editor slots", () => {
     expect(listNameError("")).toBe("a list needs a name");
     expect(listNameError("-x")).toBe("names start with a letter or digit and use letters, digits and _ . : / - (64 at most)");
     expect(listNameError("builtin:member")).toBe("builtin: names are reserved for the built-in lists");
+  });
+});
+
+describe("type-level-only verbs", () => {
+  const draft = (resources: { type: string; scope: string; name: string }[], actions: string[] = []) => ({
+    ...emptyRuleDraft(catalog),
+    resources,
+    actions,
+  });
+
+  it("starts a run resource on every run, never run:own", () => {
+    const d = setResourceType(catalog, emptyRuleDraft(catalog), 0, "run");
+    expect(buildSelector(catalog, d.resources[0]!)).toBe("run:*");
+  });
+
+  it("sets an agent glob to every agent when read is picked, and leaves run alone", () => {
+    let d = draft([{ type: "agent", scope: "", name: "chat/*" }]);
+    d = setActions(catalog, d, ["run"]);
+    expect(buildSelector(catalog, d.resources[0]!)).toBe("agent:chat/*");
+    d = setActions(catalog, d, ["run", "read"]);
+    expect(buildSelector(catalog, d.resources[0]!)).toBe("agent:*");
+  });
+
+  it("refuses an instance selector on a type-level-only pair, as the server does", () => {
+    expect(validateDraft(catalog, draft([{ type: "run", scope: "own", name: "" }], ["cancel"]))).toContain(
+      "resource 1: cancel run is decided for every run, never one; use run:*",
+    );
+    expect(validateDraft(catalog, draft([{ type: "agent", scope: "", name: "secret/*" }], ["read"]))).toContain(
+      "resource 1: read agent is decided for every agent, never one; use agent:*",
+    );
+    expect(validateDraft(catalog, draft([{ type: "run", scope: "*", name: "" }], ["cancel"]))).toEqual([]);
+    expect(validateDraft(catalog, draft([{ type: "agent", scope: "", name: "**" }], ["read"]))).toEqual([]);
+    expect(validateDraft(catalog, draft([{ type: "agent", scope: "", name: "secret/*" }], ["run"]))).toEqual([]);
+  });
+
+  it("still opens a stored run:own rule, flagged rather than silently rewritten", () => {
+    const res = draftFromRule(catalog, { effect: "allow", actions: ["cancel"], resources: ["run:own"] });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(ruleFromDraft(catalog, res.draft).resources).toEqual(["run:own"]);
+      expect(validateDraft(catalog, res.draft).some((e) => e.includes("use run:*"))).toBe(true);
+    }
+  });
+
+  it("offers instance selectors as before when the server sends no marks", () => {
+    const old: AclCatalog = { ...catalog, types: catalog.types.map(({ type_level_only: _, ...t }) => t) };
+    const d = setResourceType(old, emptyRuleDraft(old), 0, "run");
+    expect(buildSelector(old, d.resources[0]!)).toBe("run:own");
+    expect(validateDraft(old, { ...d, actions: ["cancel"] })).toEqual([]);
   });
 });

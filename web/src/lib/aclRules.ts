@@ -8,8 +8,12 @@ import { dump as yamlDump, load as yamlLoad } from "js-yaml";
 // be authored: the resource-type picker lists the catalog's types, the scope
 // picker lists that type's scopes, and the action checkboxes are the verbs
 // EVERY chosen resource type has (a rule's actions must be verbs of all its
-// types — the server refuses `read tool:*`). The server re-validates on save
-// (op=validate, then op=create), so this is the UI's first line, not its last.
+// types — the server refuses `read tool:*`). A verb the catalog marks
+// type-level-only (the run verbs, `read agent`) is asked only of every
+// instance, so a resource of that type in a rule naming it offers only the
+// every-instance selector (`run:*`): the server refuses `run:own`. The server
+// re-validates on save (op=validate, then op=create), so this is the UI's first
+// line, not its last.
 
 export interface CatalogType {
   type: string;
@@ -18,6 +22,9 @@ export interface CatalogType {
   // (`:` for document/memory, `/` for def); an enum type has none.
   scopes?: string[];
   separator?: string;
+  // The verbs asked only of every instance: a rule on one must name
+  // `<type>:*`. Absent on a type with none (and from an older server).
+  type_level_only?: string[];
 }
 
 export interface AclCatalog {
@@ -70,7 +77,37 @@ export function catalogType(cat: AclCatalog, type: string): CatalogType | undefi
   return cat.types.find((t) => t.type === type);
 }
 
+// everySelector is the selector naming every instance of t: `agent:*`,
+// `run:*`, `def:*`.
+export function everySelector(t: CatalogType): SelectorDraft {
+  return selectorShape(t) === "glob" ? { type: t.type, scope: "", name: "*" } : { type: t.type, scope: "*", name: "" };
+}
+
+// coversEveryInstance mirrors the server's test (authz selector.matches of
+// AnyInstance): a glob of `*` or `**`, or the `*` scope with no name glob.
+export function coversEveryInstance(t: CatalogType, d: SelectorDraft): boolean {
+  if (selectorShape(t) === "glob") return d.name.trim() === "*" || d.name.trim() === "**";
+  return d.scope === "*" && !d.name.trim();
+}
+
+// typeLevelActions is which of actions t asks only of every instance.
+export function typeLevelActions(t: CatalogType, actions: string[]): string[] {
+  const only = t.type_level_only ?? [];
+  return actions.filter((a) => only.includes(a));
+}
+
+// everyInstanceOnly reports whether a resource of type t, in a rule naming
+// actions, may only name every instance: one of the actions is type-level-only
+// for t, or every verb of t is (no instance selector of it would be accepted
+// whichever verb is picked next).
+export function everyInstanceOnly(t: CatalogType, actions: string[]): boolean {
+  const only = t.type_level_only ?? [];
+  if (only.length === 0) return false;
+  return typeLevelActions(t, actions).length > 0 || t.verbs.every((v) => only.includes(v));
+}
+
 export function emptySelector(t: CatalogType): SelectorDraft {
+  if (everyInstanceOnly(t, [])) return everySelector(t);
   switch (selectorShape(t)) {
     case "glob":
       return { type: t.type, scope: "", name: "*" };
@@ -270,7 +307,24 @@ export function setResourceType(cat: AclCatalog, d: RuleDraft, index: number, ty
     cat,
     resources.map((r) => r.type),
   );
-  return { ...d, resources, actions: d.actions.filter((a) => verbs.includes(a)) };
+  return lockEveryInstance(cat, { ...d, resources, actions: d.actions.filter((a) => verbs.includes(a)) });
+}
+
+// setActions sets a draft's actions; a resource whose type now asks one of them
+// only of every instance is set to its every-instance selector.
+export function setActions(cat: AclCatalog, d: RuleDraft, actions: string[]): RuleDraft {
+  return lockEveryInstance(cat, { ...d, actions });
+}
+
+function lockEveryInstance(cat: AclCatalog, d: RuleDraft): RuleDraft {
+  let changed = false;
+  const resources = d.resources.map((r) => {
+    const t = catalogType(cat, r.type);
+    if (!t || !everyInstanceOnly(t, d.actions) || coversEveryInstance(t, r)) return r;
+    changed = true;
+    return everySelector(t);
+  });
+  return changed ? { ...d, resources } : d;
 }
 
 const HM = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -292,6 +346,11 @@ export function validateDraft(cat: AclCatalog, d: RuleDraft): string[] {
     if (shape !== "glob" && r.scope !== "*" && !t.scopes!.includes(r.scope)) errs.push(`resource ${n}: pick a scope`);
     if (shape === "glob" && !r.name.trim()) errs.push(`resource ${n}: ${t.type} needs a name or glob (* for every ${t.type})`);
     if (shape !== "enum" && r.name.split("/").includes("..")) errs.push(`resource ${n}: a selector may not contain ..`);
+    if (everyInstanceOnly(t, d.actions) && !coversEveryInstance(t, r)) {
+      const which = typeLevelActions(t, d.actions);
+      const what = which.length ? which.join(", ") + " " + t.type : t.type;
+      errs.push(`resource ${n}: ${what} is decided for every ${t.type}, never one; use ${t.type}:*`);
+    }
   });
   const types = [...new Set(d.resources.map((r) => r.type))];
   for (const a of d.actions) {
