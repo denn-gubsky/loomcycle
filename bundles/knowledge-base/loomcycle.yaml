@@ -180,7 +180,8 @@ agents:
       //                 definitions passage defines.
       //   L4 relate   — semantic relations judged by kb/verdict, between a passage and
       //                 the passages of other documents in the corpus (of target_types
-      //                 when given), never a copy or version of the document itself.
+      //                 when given, else of the ontology's @norm classes when it marks
+      //                 any), never a copy or version of the document itself.
       //                 Headings, contents lines, legends and passages of a few words
       //                 are skipped before the call. elaborates, conflicts_with and
       //                 stricter_than are reported, never filed.
@@ -1253,7 +1254,7 @@ agents:
       function loadOntology(st) {
         var o = { read: false, exists: false, confirmed: false, partial: false, version: null,
                   usable: false, check_kind: false, reason: "", kinds: {}, writable: {}, renamed_to: {}, schemes: {},
-                  tenant_relations: [], class_parent: {} };
+                  tenant_relations: [], class_parent: {}, norm_classes: null };
         var r;
         try {
           r = call(st, { op: "describe_ontology" });
@@ -1299,6 +1300,15 @@ agents:
           var cl = classes[ci];
           if (isPlainObject(cl) && isName(cl.name, 128) && !hasOwn(o.class_parent, cl.name)) {
             o.class_parent[cl.name] = isName(cl.parent, 128) ? cl.parent : "";
+          }
+        }
+        // The norm classes the ontology marks (@norm), when the runtime reports
+        // them. null — not [] — when it does not: an older runtime, where the
+        // relate layer keeps searching the whole corpus.
+        if (isArray(r.norm_classes)) {
+          o.norm_classes = [];
+          for (var ni = 0; ni < r.norm_classes.length && o.norm_classes.length < CONFIG.max_exclude_types; ni++) {
+            if (isName(r.norm_classes[ni], 128)) { o.norm_classes.push(r.norm_classes[ni]); }
           }
         }
         var schemes = isArray(r.schemes) ? r.schemes : [];
@@ -1813,6 +1823,9 @@ agents:
         var vocab = loadVocabulary(st);
         st.l4 = newRelateState(st.opts, vocab);
         var R = st.l4;
+        var targets = relateTargets(st);
+        R.target_types = targets.types;
+        R.target_types_from = targets.from;
         R.family = loadCopyFamily(st, doc);
         R.source_title_key = duplicateTitleKey(doc.title);
         var chunks = listChunks(st, doc.id);
@@ -2106,11 +2119,24 @@ agents:
         return s.toLowerCase();
       }
 
+      // relateTargets is the set of classes the relate layer judges candidates of,
+      // and where it came from: the input's target_types; else the norm classes a
+      // confirmed ontology marks, read whole; else none, and the whole corpus. A
+      // partial read may be missing a norm, so it does not narrow the pass.
+      function relateTargets(st) {
+        if (st.opts.target_types !== null) { return { types: st.opts.target_types, from: "input" }; }
+        var o = st.onto;
+        if (o && o.read && o.confirmed && !o.partial && o.norm_classes !== null && o.norm_classes.length > 0) {
+          return { types: o.norm_classes.slice(), from: "ontology" };
+        }
+        return { types: null, from: "none" };
+      }
+
       // targetAllowed says whether a document of class typ may be a candidate: any,
-      // without target_types; else one of them or a subclass of one, by the
+      // without target types; else one of them or a subclass of one, by the
       // ontology's class tree.
       function targetAllowed(st, typ) {
-        var want = st.opts.target_types;
+        var want = st.l4.target_types;
         if (want === null) { return true; }
         var parents = (st.onto && st.onto.class_parent) ? st.onto.class_parent : {};
         var t = typ, hops = 0;
@@ -3718,7 +3744,9 @@ agents:
           vocabulary: kindNames(R),
           tenant_kinds: R.vocab.tenant,
           tenant_kinds_over_cap: R.vocab.tenant_over_cap,
-          target_types: st.opts.target_types,
+          target_types: R.target_types,
+          // input, ontology (the classes it marks @norm) or none (the whole corpus).
+          target_types_from: R.target_types_from,
           copy_family_documents: countKeys(R.family),
           counts: R.counts,
           budget_stopped: R.budget_stopped,

@@ -2667,7 +2667,8 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   - a concept scheme's terms, as `uses_term`, or `defines` in a definitions
     passage;
   - semantic relations judged by the tool-less `kb/verdict`, against
-    candidates of `target_types` when given and never a copy or version of
+    candidates of `target_types` when given (else of the ontology's `@norm`
+    classes, when it marks any) and never a copy or version of
     the document, after headings, contents lines, legends and short
     passages are skipped. A kind the tenant ontology declares itself may be
     proposed, with both quotes verbatim and outside the class's

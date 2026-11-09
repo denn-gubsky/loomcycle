@@ -60,6 +60,72 @@ func TestKBLinker_TargetTypesKeepOnlyCandidatesOfThoseClasses(t *testing.T) {
 	}
 }
 
+// TestKBLinker_TargetTypesDefaultToTheOntologyNorms: with no target_types input, the
+// relate layer judges only candidates of the classes describe_ontology reports in
+// norm_classes (the ontology's @norm classes, subclasses included); an explicit
+// target_types still wins; a runtime that does not report norm_classes, or reports
+// none, leaves the whole corpus. The report says where the target types came from.
+func TestKBLinker_TargetTypesDefaultToTheOntologyNorms(t *testing.T) {
+	setup := func(norms any) *kbFixture {
+		f := kbBaseFixture()
+		withThirdCandidate(f)
+		f.ontology = relateOntology()
+		f.ontology["classes"] = []any{
+			map[string]any{"name": "Document", "kind": "document"},
+			map[string]any{"name": "norm", "parent": "Document", "kind": "document"},
+			map[string]any{"name": "law", "parent": "norm", "kind": "document"},
+			map[string]any{"name": "memo", "parent": "Document", "kind": "document"},
+		}
+		if norms != nil {
+			f.ontology["norm_classes"] = norms
+		}
+		f.docTypes["doc-law"] = "law"
+		f.docTypes["doc-rule"] = "memo"
+		return f
+	}
+	from := func(rep map[string]any) any { return relateReport(t, rep)["target_types_from"] }
+
+	f := setup([]any{"law", "norm"})
+	rep, _ := runLinker(t, f, relateReportIn)
+	if p := f.spawnPrompts(); len(p) != 1 || strings.Contains(p[0], "BODYDELTA") || !strings.Contains(p[0], "BODYBRAVO") {
+		t.Errorf("the ontology's norms should narrow the pass to the law; prompts=%q", p)
+	}
+	if got := from(rep); got != "ontology" {
+		t.Errorf("target_types_from = %v, want ontology", got)
+	}
+	if n := relateCount(t, rep, "candidates_not_target_type"); n != 1 {
+		t.Errorf("candidates_not_target_type = %v, want 1", n)
+	}
+
+	g := setup([]any{"norm"})
+	rep, _ = runLinker(t, g, `{"document_id":"doc-target","corpus_paths":["/laws"],"layers":["L4"],"target_types":["memo"]}`)
+	if p := g.spawnPrompts(); len(p) != 1 || !strings.Contains(p[0], "BODYDELTA") || strings.Contains(p[0], "BODYBRAVO") {
+		t.Errorf("an explicit target_types should win over the ontology's norms; prompts=%q", p)
+	}
+	if got := from(rep); got != "input" {
+		t.Errorf("target_types_from = %v, want input", got)
+	}
+
+	for name, norms := range map[string]any{"older runtime": nil, "no norms": []any{}} {
+		h := setup(norms)
+		rep, _ = runLinker(t, h, relateReportIn)
+		if p := h.spawnPrompts(); len(p) != 1 || !strings.Contains(p[0], "BODYDELTA") || !strings.Contains(p[0], "BODYBRAVO") {
+			t.Errorf("%s: the whole corpus should be judged; prompts=%q", name, p)
+		}
+		if got := from(rep); got != "none" {
+			t.Errorf("%s: target_types_from = %v, want none", name, got)
+		}
+	}
+
+	// A partial read may be missing a norm: it does not narrow the pass.
+	k := setup([]any{"norm"})
+	k.ontology["partial"] = true
+	rep, _ = runLinker(t, k, relateReportIn)
+	if got := from(rep); got != "none" {
+		t.Errorf("partial read: target_types_from = %v, want none", got)
+	}
+}
+
 // TestKBLinker_CopyFamilyIsNeverACandidate: a document that is a copy or version
 // of the passage's own document — by a duplicate_of, alternate_of or revises
 // statement either way, asserted or proposed, or by the same title once copy

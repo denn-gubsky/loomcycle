@@ -92,9 +92,13 @@ counted by name in `layers.L4.counts`:
 - **Target classes.** With `target_types` (document class names), a candidate
   is kept only when its document is of one of them or of a subclass by the
   ontology's class tree (`candidates_not_target_type`). Name the classes that
-  hold your norms, for example `["Law", "Regulation", "Policy"]`. The ontology
-  has no marker for "a norm", so without `target_types` every document under
-  `corpus_paths` is a candidate, as before.
+  hold your norms, for example `["Law", "Regulation", "Policy"]`. Without
+  `target_types`, the classes a confirmed ontology marks with `@norm` (and their
+  subclasses) are the targets, read from `describe_ontology`'s `norm_classes`.
+  With no `@norm` anywhere, a partial ontology read, or a runtime too old to
+  report `norm_classes`, every document under `corpus_paths` is a candidate, as
+  before. The report's `target_types_from` says which applied: `input`,
+  `ontology` or `none`.
 - **Not a copy of the document.** A candidate document is dropped when it is in
   the document's copy family (`candidates_copy_family`): the other end of a
   `duplicate_of`, `alternate_of`, `revises`, `revision_of` or `version_of`
@@ -409,7 +413,7 @@ curl -sX POST localhost:8080/v1/runs \
 | `max_messages` | `10` | messages a drain processes (1–100) |
 | `corpus_paths` | — | L4 only: where its candidates come from |
 | `exclude_document_types`, `candidate_floor`, `max_candidates_per_chunk`, `max_verdict_calls`, `max_chars`, `min_body_chars`, `relations`, `include_quotes` | as before | L4 only. `min_body_chars` also bounds which passages L3 reads; `max_verdict_calls` and `relations` also bound and name what L6's `rejudge` asks |
-| `target_types` | — (every document under `corpus_paths`) | L4 only: the document classes a candidate may come from, subclasses included |
+| `target_types` | the ontology's `@norm` classes, else every document under `corpus_paths` | L4 only: the document classes a candidate may come from, subclasses included |
 | `min_passage_words`, `min_quote_words` | `8`, `4` | L4 only: a passage or candidate with fewer words is not judged (0–200); a quote with fewer words is no evidence (1–50) |
 | `time_budget_seconds` | `1500` | L4 only: the wall clock after which the pass stops between verdict calls, `budget_stopped` (10–86400). Keep it below the agent's `run_timeout_seconds` (1800) |
 | `rejudge` | `false` | L6 check 6: judge a model-made statement again when its text changed |
@@ -458,7 +462,7 @@ The run's final output is one JSON object:
   - L4 keeps its findings and spans in UTF-16 units (`span_unit`). Each finding
     says whether a propose pass files it (`may_file`, and `not_filed` with the
     reason when not). L4 also reports `withheld_kinds`, `tenant_kinds`,
-    `target_types`, `copy_family_documents`, `stop_reason`, `elapsed_ms` and
+    `target_types`, `target_types_from`, `copy_family_documents`, `stop_reason`, `elapsed_ms` and
     `clock`.
 - `writes`, `would_write`: per op. `refusals`: per op and refusal code.
 - `budget`: the caps and what was spent.
