@@ -3,7 +3,7 @@
 
 import net from "node:net";
 
-import { gateSharedSubject, keyFromSecret, MemoryStore, type Bridge } from "@loomcycle/bridge-core";
+import { gateSharedSubject, keyFromSecret, MemoryRevokeQueue, MemoryStore, type Bridge, type BridgeOptions } from "@loomcycle/bridge-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createTelegramBridge } from "../src/bridge.js";
@@ -37,7 +37,7 @@ describe("telegram bridge", () => {
   let base: string;
   let nextUpdate = 1;
 
-  async function start(env: Record<string, string> = {}) {
+  async function start(env: Record<string, string> = {}, extra: Partial<BridgeOptions<TelegramRef>> = {}) {
     const port = await freePort();
     base = `http://127.0.0.1:${port}`;
     const cfg = loadConfig({
@@ -64,6 +64,7 @@ describe("telegram bridge", () => {
       timing: { minIntervalMs: 5 },
       message: { typingEveryMs: 60_000 },
       stream: { stopPollMs: 5 },
+      ...extra,
     });
     await bridge.start();
   }
@@ -454,6 +455,25 @@ describe("telegram bridge", () => {
     expect((await post(update)).status).toBe(200);
     await settle();
     expect(gate.revokes).toHaveLength(1);
+  });
+
+  // A person whose revoke loomcycle did not take, and who then writes to the
+  // bot 1:1 again, came back: the kept revoke is dropped, not delivered later.
+  // Telegram dates a message in whole seconds (message.date).
+  it("drops a kept revoke when the person writes 1:1 again after it first failed", async () => {
+    const revokes = new MemoryRevokeQueue();
+    const failedAt = Date.now() - 120_000;
+    await revokes.put({ subject: "telegram:42", attempts: 1, firstFailedAt: failedAt, nextAttemptAt: Date.now() + 3_600_000 });
+    // loomcycle is still down: the retry at start keeps it.
+    gate.failRevokes = 100;
+    await start({}, { revokes });
+    const kept = async () => (await revokes.list()).map((p) => p.subject);
+    // Dated before the revoke failed: a redelivery from before they left.
+    await sayAndStart(message("old", alice, privateChat(), { date: Math.floor((failedAt - 60_000) / 1000) }));
+    expect(await kept()).toEqual(["telegram:42"]);
+    expect((await post(message("hello again", alice, privateChat(), { date: Math.floor(Date.now() / 1000) }))).status).toBe(200);
+    await settle();
+    expect(await kept()).toEqual([]);
   });
 
   it("sets the webhook with its secret and the updates it handles", async () => {

@@ -3,7 +3,7 @@
 
 import net from "node:net";
 
-import { keyFromSecret, MemoryStore, VOICE_TEXT, VoiceRefusedError, type Bridge, type VoiceIn } from "@loomcycle/bridge-core";
+import { keyFromSecret, MemoryRevokeQueue, MemoryStore, VOICE_TEXT, VoiceRefusedError, type Bridge, type BridgeOptions, type VoiceIn } from "@loomcycle/bridge-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TelegramApi, TelegramError } from "../src/api.js";
@@ -262,7 +262,7 @@ describe("telegram bridge with voice", () => {
   let base: string;
   let nextUpdate = 1;
 
-  async function start(env: Record<string, string> = {}) {
+  async function start(env: Record<string, string> = {}, extra: Partial<BridgeOptions<TelegramRef>> = {}) {
     const port = await freePort();
     base = `http://127.0.0.1:${port}`;
     const cfg = loadConfig({
@@ -288,6 +288,7 @@ describe("telegram bridge with voice", () => {
       logger: silentLogger,
       store: new MemoryStore(),
       message: { typingEveryMs: 60_000 },
+      ...extra,
     });
     await bridge.start();
   }
@@ -337,6 +338,19 @@ describe("telegram bridge with voice", () => {
     expect(lc.runs[0]!.opts.segments).toEqual([{ role: "user", content: [{ type: "trusted-text", text: "(voice message)\nwhat is the weather" }] }]);
     // The gate is asked for the speech surfaces with the user's token.
     expect(gate.asserts[0]!.payload).toMatchObject({ token: { surfaces: ["speech", "transcription"] } });
+  });
+
+  // A voice note is the person writing to the bot as much as text is: a
+  // dated private one drops the revoke kept for them.
+  it("drops a kept revoke when the person sends a dated private voice note", async () => {
+    const revokes = new MemoryRevokeQueue();
+    const failedAt = Date.now() - 120_000;
+    await revokes.put({ subject: "telegram:42", attempts: 1, firstFailedAt: failedAt, nextAttemptAt: Date.now() + 3_600_000 });
+    gate.failRevokes = 100;
+    await start({}, { revokes });
+    await post(update({ voice: voiceNote, date: Math.floor(Date.now() / 1000) }));
+    await waitFor(() => lc.runs.length === 1, "run");
+    expect(await revokes.list()).toEqual([]);
   });
 
   it("answers in text, then a captioned voice note replying to that text", async () => {
