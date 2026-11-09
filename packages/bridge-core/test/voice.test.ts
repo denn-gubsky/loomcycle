@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { EnvReader, loadVoiceConfig } from "../src/config.js";
-import { UNTRUSTED_KIND } from "../src/conversation.js";
+import { MAX_DEFERRED, UNTRUSTED_KIND } from "../src/conversation.js";
 import { sharedSubject, type Identified, type Scope, type Trust } from "../src/identity.js";
 import { ConversationRouter } from "../src/router.js";
 import { MemoryStore } from "../src/store.js";
@@ -180,6 +180,22 @@ describe("voice messages (RFC GA)", () => {
     expect(lc.runs).toHaveLength(0);
     // A group stays quiet, as it does for a photo.
     expect(platform.messages()).toEqual([]);
+  });
+
+  // An untrusted message waits for a turn mid-run, and the queue is bounded.
+  // A voice message the full queue would refuse is refused before it is
+  // downloaded and transcribed, so a full queue costs no transcription.
+  it("refuses an untrusted voice message the full deferred queue would drop, before downloading it", async () => {
+    const owner = ident("alice", "Alice", "conv-g", "group");
+    const stranger = ident("bob", "Bob", "conv-g", "group", "untrusted");
+    await type("start", owner);
+    expect(lc.runs).toHaveLength(1);
+    for (let i = 0; i < MAX_DEFERRED; i++) await type(`note ${i}`, stranger);
+    const said = platform.messages().length;
+    await speak(note(), stranger);
+    expect(voicePort.downloads).toHaveLength(0);
+    expect(lc.callsTo("transcribe")).toHaveLength(0);
+    expect(platform.messages().slice(said)).toEqual(["The agent is still answering. Please wait for it to finish, then send your message again."]);
   });
 
   it("answers a voice message it does not take in a shared chat only on a platform that must answer every one", async () => {
