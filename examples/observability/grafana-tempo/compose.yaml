@@ -91,6 +91,9 @@ services:
       - --storage.tsdb.retention.time=15d
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # The scrape token (prometheus/secrets/loomcycle.token, git-ignored).
+      # A directory mount, so a token written after `up` is seen.
+      - ./prometheus/secrets:/etc/prometheus/secrets:ro
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"
