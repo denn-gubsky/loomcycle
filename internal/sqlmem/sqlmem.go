@@ -611,6 +611,11 @@ func (m *Manager) QueryCapped(ctx context.Context, key ScopeKey, statement strin
 		return nil, err
 	}
 	defer m.touch(key)
+	if m.dialect == dialectPostgres {
+		limit := valueLengthLimit(m.cfg)
+		res, err := m.backend.query(ctx, m.onPlane(key), wrapValueLimit(statement, limit), args, m.cfg.MaxResultBytes)
+		return res, valueLimitErr(err, limit)
+	}
 	return m.backend.query(ctx, m.onPlane(key), statement, args, m.cfg.MaxResultBytes)
 }
 

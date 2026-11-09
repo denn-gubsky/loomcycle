@@ -2,19 +2,28 @@ package sqlmem
 
 import (
 	"errors"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
 )
 
-// validateWidths refuses an agent statement that asks, in a literal it can
-// see, for a value longer than limit: zeroblob(N) / randomblob(N) and a
-// printf/format width or precision on sqlite, repeat/lpad/rpad on postgres.
-// The engine's own limit (SQLITE_LIMIT_LENGTH, set on every agent statement)
-// is what holds on sqlite whatever the statement computes; this check gives
-// the model a clear refusal for the plain case, and on postgres, which has no
-// such limit, it is the bound for a literal width (the result cap still
-// refuses the row, after the driver has read it).
+// validateWidths refuses an agent statement that asks for a value longer than
+// limit where the width is a constant it can fold (literals, parentheses,
+// casts, + - * /): zeroblob(N) / randomblob(N) and a printf/format width or
+// precision on sqlite, repeat/lpad/rpad on postgres.
+//
+// What holds the bound differs by tier, and this check is the hard part of it
+// on neither:
+//   - sqlite: the engine's own limit (SQLITE_LIMIT_LENGTH, set on every agent
+//     statement, sqlite.go opConn) refuses any value over limit however it is
+//     computed. This check only refuses the plain case early, with a message
+//     the model can act on; a width it cannot fold is left to the engine.
+//   - postgres: there is no per-value limit in the engine. A row over limit is
+//     refused by the server before it is sent (wrapValueLimit), but the server
+//     still builds the value. So a repeat/lpad/rpad width that is not a
+//     constant (a column, a parameter, a subquery) is refused here outright,
+//     and a constant over limit too.
 func validateWidths(statement string, d dialect, limit int) error {
 	if limit <= 0 {
 		return nil
@@ -26,11 +35,12 @@ func validateWidths(statement string, d dialect, limit int) error {
 		}
 		name := strings.ToLower(toks[i].text)
 		args := callArgs(toks[i+2:])
-		over := func(arg []widthToken) bool { return len(arg) == 1 && overLimit(arg[0], limit) }
 		switch {
 		case d == dialectSQLite && (name == "zeroblob" || name == "randomblob"):
-			if len(args) > 0 && over(args[0]) {
-				return refuse("%s(%s) asks for a value over the %d-byte limit on one SQL Memory value", name, args[0][0].text, limit)
+			if len(args) > 0 {
+				if v, ok := foldConst(args[0]); ok && v > float64(limit) {
+					return refuse("%s(%s) asks for a value over the %d-byte limit on one SQL Memory value", name, tokensText(args[0]), limit)
+				}
 			}
 		case d == dialectSQLite && (name == "printf" || name == "format"):
 			if len(args) == 0 || len(args[0]) != 1 || args[0][0].kind != tokString {
@@ -46,18 +56,172 @@ func validateWidths(statement string, d dialect, limit int) error {
 			}
 			if strings.Contains(spec, "*") {
 				for _, a := range args[1:] {
-					if over(a) {
-						return refuse("%s asks for a width of %s, over the %d-byte limit on one SQL Memory value", name, a[0].text, limit)
+					if v, ok := foldConst(a); ok && v > float64(limit) {
+						return refuse("%s asks for a width of %s, over the %d-byte limit on one SQL Memory value", name, tokensText(a), limit)
 					}
 				}
 			}
 		case d == dialectPostgres && (name == "repeat" || name == "lpad" || name == "rpad"):
-			if len(args) > 1 && over(args[1]) {
-				return refuse("%s(…, %s) asks for a value over the %d-byte limit on one SQL Memory value", name, args[1][0].text, limit)
+			if len(args) < 2 {
+				continue
+			}
+			v, ok := foldConst(args[1])
+			if !ok {
+				return refuse("%s's length must be a constant here (got %s): the value it builds is not bounded otherwise", name, tokensText(args[1]))
+			}
+			if v > float64(limit) {
+				return refuse("%s(…, %s) asks for a value over the %d-byte limit on one SQL Memory value", name, tokensText(args[1]), limit)
 			}
 		}
 	}
 	return nil
+}
+
+// foldConst evaluates an argument that is a constant expression: numbers,
+// parentheses, unary and binary + - * /, a "::type" cast and CAST(x AS type).
+// ok is false for anything else (a column, a parameter, a call, a subquery).
+func foldConst(toks []widthToken) (float64, bool) {
+	p := constParser{toks: toks}
+	v, ok := p.expr()
+	return v, ok && p.i == len(toks)
+}
+
+type constParser struct {
+	toks []widthToken
+	i    int
+}
+
+func (p *constParser) punct(s string) bool {
+	if p.i < len(p.toks) && p.toks[p.i].kind == tokPunct && p.toks[p.i].text == s {
+		p.i++
+		return true
+	}
+	return false
+}
+
+func (p *constParser) expr() (float64, bool) {
+	v, ok := p.term()
+	for ok {
+		switch {
+		case p.punct("+"):
+			var w float64
+			w, ok = p.term()
+			v += w
+		case p.punct("-"):
+			var w float64
+			w, ok = p.term()
+			v -= w
+		default:
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+func (p *constParser) term() (float64, bool) {
+	v, ok := p.factor()
+	for ok {
+		switch {
+		case p.punct("*"):
+			var w float64
+			w, ok = p.factor()
+			v *= w
+		case p.punct("/"):
+			var w float64
+			if w, ok = p.factor(); ok && w != 0 {
+				v /= w
+			}
+		default:
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+func (p *constParser) factor() (float64, bool) {
+	var v float64
+	var ok bool
+	switch {
+	case p.punct("+"):
+		return p.factor()
+	case p.punct("-"):
+		v, ok = p.factor()
+		return -v, ok
+	case p.punct("("):
+		if v, ok = p.expr(); !ok || !p.punct(")") {
+			return 0, false
+		}
+	case p.i < len(p.toks) && p.toks[p.i].kind == tokNumber:
+		v, ok = numberValue(p.toks[p.i].text)
+		p.i++
+		if !ok {
+			return 0, false
+		}
+	case p.i+1 < len(p.toks) && p.toks[p.i].kind == tokIdent && strings.EqualFold(p.toks[p.i].text, "cast") && p.toks[p.i+1].text == "(":
+		p.i += 2
+		if v, ok = p.expr(); !ok || p.i >= len(p.toks) || !strings.EqualFold(p.toks[p.i].text, "as") {
+			return 0, false
+		}
+		p.i++
+		if !p.typeName() || !p.punct(")") {
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+	// Postfix casts: ::int, ::numeric(12,0).
+	for p.i+1 < len(p.toks) && p.toks[p.i].text == ":" && p.toks[p.i+1].text == ":" {
+		p.i += 2
+		if !p.typeName() {
+			return 0, false
+		}
+	}
+	return v, true
+}
+
+// typeName skips a type name: words (double precision) and an optional
+// parenthesised list of numbers.
+func (p *constParser) typeName() bool {
+	n := 0
+	for p.i < len(p.toks) && p.toks[p.i].kind == tokIdent && !strings.EqualFold(p.toks[p.i].text, "as") {
+		p.i++
+		n++
+	}
+	if n == 0 {
+		return false
+	}
+	if p.punct("(") {
+		for p.i < len(p.toks) && (p.toks[p.i].kind == tokNumber || p.toks[p.i].text == ",") {
+			p.i++
+		}
+		return p.punct(")")
+	}
+	return true
+}
+
+// numberValue reads a numeric literal: an integer too large for int64 counts
+// as +Inf, so it is over any limit.
+func numberValue(text string) (float64, bool) {
+	if v, err := strconv.ParseInt(text, 0, 64); err == nil {
+		return float64(v), true
+	} else if errors.Is(err, strconv.ErrRange) {
+		return math.Inf(1), true
+	}
+	if f, err := strconv.ParseFloat(text, 64); err == nil {
+		return f, true
+	}
+	return 0, false
+}
+
+func tokensText(toks []widthToken) string {
+	parts := make([]string, len(toks))
+	for i, t := range toks {
+		parts[i] = t.text
+		if t.kind == tokString {
+			parts[i] = "'" + t.text + "'"
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // printfWidthRe finds a conversion's width and precision in a printf format.
@@ -185,22 +349,4 @@ func trimPlus(arg []widthToken) []widthToken {
 		return arg[1:]
 	}
 	return arg
-}
-
-// overLimit reports whether a number token is over limit. An integer too
-// large to parse is over it; a real (4e8) counts by its value, as the
-// functions take it.
-func overLimit(t widthToken, limit int) bool {
-	if t.kind != tokNumber {
-		return false
-	}
-	if v, err := strconv.ParseInt(t.text, 0, 64); err == nil {
-		return v > int64(limit)
-	} else if errors.Is(err, strconv.ErrRange) {
-		return true
-	}
-	if f, err := strconv.ParseFloat(t.text, 64); err == nil {
-		return f > float64(limit)
-	}
-	return false
 }

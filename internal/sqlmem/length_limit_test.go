@@ -222,3 +222,106 @@ func TestValidatePostgres_RefusesSetConfig(t *testing.T) {
 		t.Errorf("a literal naming set_config was refused: %v", err)
 	}
 }
+
+func TestValidateWidths_FoldsConstantsAndRefusesComputedPostgresWidths(t *testing.T) {
+	const limit = 16 << 20
+	for _, c := range []struct {
+		stmt    string
+		d       dialect
+		refused bool
+	}{
+		// Postgres has no engine limit on a value: a width it cannot see as a
+		// constant is refused, and a constant is folded first.
+		{"SELECT repeat('x', (400000000))", dialectPostgres, true},
+		{"SELECT repeat('x', 4e8::int)", dialectPostgres, true},
+		{"SELECT repeat('x', CAST(4e8 AS integer))", dialectPostgres, true},
+		{"SELECT lpad('', 200000*2000)", dialectPostgres, true},
+		{"SELECT rpad('', -(-400000000))", dialectPostgres, true},
+		{"SELECT repeat('x', n) FROM t", dialectPostgres, true},
+		{"SELECT repeat('x', (SELECT max(n) FROM t))", dialectPostgres, true},
+		{"SELECT repeat('x', $1)", dialectPostgres, true},
+		{"SELECT repeat('-', 2*(3+4)), lpad(id::text, 6, '0') FROM t", dialectPostgres, false},
+		// On SQLite the engine limit holds whatever the statement computes, so
+		// only a constant is refused here, folded the same way.
+		{"SELECT zeroblob((400000000))", dialectSQLite, true},
+		{"SELECT randomblob(20000*20000)", dialectSQLite, true},
+		{"SELECT zeroblob(CAST(4e8 AS INTEGER))", dialectSQLite, true},
+		{"SELECT zeroblob(n) FROM t", dialectSQLite, false},
+	} {
+		err := validateWidths(c.stmt, c.d, limit)
+		if got := err != nil; got != c.refused {
+			t.Errorf("%q: refused=%v (%v), want %v", c.stmt, got, err, c.refused)
+		}
+	}
+}
+
+func TestValidatePostgres_RefusesSettingBypasses(t *testing.T) {
+	for _, stmt := range []string{
+		`CREATE FUNCTION f() RETURNS int LANGUAGE sql SET work_mem = '64GB' AS $$ SELECT 1 $$`,
+		`CREATE OR REPLACE PROCEDURE p() LANGUAGE sql SET work_mem TO '64GB' AS 'SELECT 1'`,
+		`ALTER FUNCTION f() SET work_mem = '64GB'`,
+		`ALTER ROUTINE f() SET work_mem = '64GB'`,
+		`SELECT U&"set_config"('work_mem', '64GB', false)`,
+		`SELECT u&"\0073et_config"('work_mem', '64GB', false)`,
+	} {
+		if err := validateStatementForDialect(stmt, strings.HasPrefix(stmt, "SELECT"), dialectPostgres); err == nil {
+			t.Errorf("%q: accepted, want refused", stmt)
+		}
+	}
+	for _, stmt := range []string{
+		`CREATE FUNCTION add1(i int) RETURNS int LANGUAGE sql AS $$ SELECT i + 1 $$`,
+		`CREATE TABLE settings (name text, value text)`,
+		`UPDATE settings SET value = 'x' WHERE name = 'y'`,
+	} {
+		if err := validateStatementForDialect(stmt, false, dialectPostgres); err != nil {
+			t.Errorf("%q: refused (%v), want accepted", stmt, err)
+		}
+	}
+}
+
+func TestPostgres_RowOverValueLimitRefusedBeforeTransfer(t *testing.T) {
+	// A width the statement computes from a column: the row is refused by the
+	// server, before the driver reads it into the runtime's heap.
+	m, _ := pgTestManager(t, Config{MaxResultBytes: 1 << 20})
+	ctx := context.Background()
+	key := agentKey("t1", "wide")
+	if _, err := m.Exec(ctx, key, "CREATE TABLE w (n int)", nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Exec(ctx, key, "INSERT INTO w VALUES (100000000)", nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	got := allocatedDuring(func() {
+		_, err = m.QueryCapped(ctx, key, "SELECT string_agg(md5(g::text), '') FROM w, generate_series(1, w.n / 32) g", nil)
+	})
+	var es *ErrStatement
+	if !errors.As(err, &es) || !strings.Contains(err.Error(), "limit on one SQL Memory value") {
+		t.Fatalf("err = %v (%T), want the value limit refusal", err, err)
+	}
+	if got > 32<<20 {
+		t.Fatalf("refusing it allocated %d MiB in the runtime, want at most 32 MiB", got>>20)
+	}
+	// A later row over the limit, and inside a transaction, is refused too.
+	if _, err := m.BeginTxn(ctx, "txn-w", "root-w", key); err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.QueryTxnCapped(ctx, "txn-w", "SELECT CASE WHEN g = 1 THEN 'small' ELSE repeat('y', 4) || string_agg(md5(h::text), '') END FROM generate_series(1, 2) g, generate_series(1, 100000) h GROUP BY g ORDER BY g", nil)
+	if !errors.As(err, &es) || !strings.Contains(err.Error(), "limit on one SQL Memory value") {
+		t.Fatalf("in a transaction: err = %v (%T), want the value limit refusal", err, err)
+	}
+	if _, err := m.RollbackTxn("txn-w"); err != nil {
+		t.Fatal(err)
+	}
+	// An ordinary result keeps its rows, order and column names.
+	if _, err := m.Exec(ctx, key, "INSERT INTO w VALUES (1), (2)", nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.QueryCapped(ctx, key, "SELECT n AS a, n * 2 AS a2, 'x' FROM w WHERE n < 10 ORDER BY n DESC;", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(res.Columns, ",") != "a,a2,?column?" || len(res.Rows) != 2 || toInt(res.Rows[0][0]) != 2 {
+		t.Fatalf("columns %v rows %v, want a,a2,?column? with 2 first", res.Columns, res.Rows)
+	}
+}

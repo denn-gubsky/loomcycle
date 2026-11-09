@@ -1,6 +1,10 @@
 package sqlmem
 
-import "regexp"
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
 
 // validate_postgres.go — the postgres-dialect escape denies layered on the
 // shared SQL floor. For the postgres tier the PRIMARY isolation is
@@ -53,6 +57,47 @@ var pgServerFnRe = regexp.MustCompile(
 // get through), such as raising the work_mem baked onto the scope role.
 var pgSetConfigRe = regexp.MustCompile(`(?i)(?:\bset_config\b|"set_config")\s*\(`)
 
+// pgUnicodeIdentRe matches a U&"…" identifier, whose \XXXX escapes spell any
+// name (u&"\0073et_config" is set_config) past the name checks above.
+var pgUnicodeIdentRe = regexp.MustCompile(`(?i)\bu&"`)
+
+// routineSetsSetting reports a CREATE [OR REPLACE] FUNCTION/PROCEDURE or an
+// ALTER FUNCTION/PROCEDURE/ROUTINE that carries a SET clause: the routine then
+// runs with that setting changed. Bodies and string literals are tokens of
+// their own (widthTokens), so a SET inside a body is not this clause.
+//
+// This is best effort, not the bound: a body can still change a setting itself
+// (plpgsql EXECUTE 'SET …'), as any session of the role can. work_mem baked
+// onto the scope role is a default the role can change; the bounds the role
+// cannot change are statement_timeout's deadline (applied by the runtime, not
+// only the role setting) and temp_file_limit (a superuser setting).
+func routineSetsSetting(trimmed string) bool {
+	toks := widthTokens(trimmed, true)
+	if len(toks) < 2 || toks[0].kind != tokIdent {
+		return false
+	}
+	lead := strings.ToLower(toks[0].text)
+	if lead != "create" && lead != "alter" {
+		return false
+	}
+	routine := false
+	for _, t := range toks[1:min(len(toks), 5)] {
+		switch strings.ToLower(t.text) {
+		case "function", "procedure", "routine":
+			routine = true
+		}
+	}
+	if !routine {
+		return false
+	}
+	for _, t := range toks {
+		if t.kind == tokIdent && strings.EqualFold(t.text, "set") {
+			return true
+		}
+	}
+	return false
+}
+
 // pgSelectIntoRe matches a `SELECT … INTO <table>` (which CREATES a table — a
 // WRITE) in a read-only statement. Anchored as whitespace-INTO-whitespace so a
 // double-quoted column literally named "into" (`SELECT "into" FROM t`) is NOT a
@@ -75,6 +120,12 @@ func postgresStatementDenies(trimmed string, readOnly bool) error {
 	if pgSetConfigRe.MatchString(masked) {
 		return refuse("set_config is denied — the scope's settings (memory, timeouts, search path) are fixed by the runtime")
 	}
+	if pgUnicodeIdentRe.MatchString(masked) {
+		return refuse(`U&"…" identifiers are denied — write the name plainly`)
+	}
+	if routineSetsSetting(trimmed) {
+		return refuse("a function or procedure with a SET clause is denied — the scope's settings are fixed by the runtime")
+	}
 	// SELECT … INTO creates a table; refuse it on the read-only op (it is a
 	// write the read-only-transaction backstop would catch on auto-commit but
 	// NOT inside an explicit read-write transaction).
@@ -82,4 +133,38 @@ func postgresStatementDenies(trimmed string, readOnly bool) error {
 		return refuse("SELECT … INTO creates a table — sql_query is read-only; use sql_exec (or CREATE TABLE AS) to write")
 	}
 	return nil
+}
+
+// pgValueLimitMarker names the error wrapValueLimit raises, so the runtime can
+// tell it from any other.
+const pgValueLimitMarker = "loomcycle-sqlmem-value-limit"
+
+// wrapValueLimit runs an agent's read-only statement inside a query that makes
+// the server refuse any row whose text form is over limit bytes, before the
+// row is sent: postgres has no per-value limit, and the driver reads a whole
+// row into the runtime's heap before the result cap can measure it.
+//
+// The refusal is a cast of a marker string to integer, made to depend on the
+// row so the planner cannot fold it into an error at plan time. The outer
+// query keeps the statement's columns (q.*), names and, as postgres runs a
+// plain subquery scan, its order. A trailing ';' is dropped, and the closing
+// parenthesis goes on a line of its own so a trailing line comment cannot
+// swallow it.
+func wrapValueLimit(statement string, limit int) string {
+	stmt := strings.TrimSpace(statement)
+	for strings.HasSuffix(stmt, ";") {
+		stmt = strings.TrimSpace(strings.TrimSuffix(stmt, ";"))
+	}
+	return fmt.Sprintf("SELECT loomcycle_q.* FROM (%s\n) AS loomcycle_q WHERE CASE WHEN octet_length(loomcycle_q::text) > %d "+
+		"THEN CAST('%s:' || octet_length(loomcycle_q::text) AS integer) > 0 ELSE true END",
+		stmt, limit, pgValueLimitMarker)
+}
+
+// valueLimitErr turns wrapValueLimit's refusal into a statement error the model
+// can act on; any other error is returned as it is.
+func valueLimitErr(err error, limit int) error {
+	if err != nil && strings.Contains(err.Error(), pgValueLimitMarker) {
+		return refuse("a row of the result is over the %d-byte limit on one SQL Memory value; select less of it (substr, length) or fewer columns", limit)
+	}
+	return err
 }

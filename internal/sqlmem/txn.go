@@ -347,12 +347,17 @@ func (m *Manager) queryTxn(ctx context.Context, txnID, statement string, args []
 	defer t.mu.Unlock()
 	qctx, cancel := withTimeout(m.cfg, ctx)
 	defer cancel()
+	limit := valueLengthLimit(m.cfg)
+	if maxBytes > 0 && m.dialect == dialectPostgres {
+		statement = wrapValueLimit(statement, limit)
+	}
 	rows, err := t.tx.QueryContext(qctx, statement, args...)
 	if err != nil {
-		return nil, err
+		return nil, valueLimitErr(err, limit)
 	}
 	defer rows.Close()
-	return collectRows(rows, m.cfg.MaxRows, maxBytes)
+	res, err := collectRows(rows, m.cfg.MaxRows, maxBytes)
+	return res, valueLimitErr(err, limit)
 }
 
 // ExecTxn runs a validated DDL/DML statement on the open transaction for txnID,
