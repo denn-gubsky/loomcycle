@@ -563,7 +563,12 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	if waits == nil {
 		waits = runnerRetryWaits
 	}
+	// One attempt sequence across both retry layers: the request after a
+	// runner death is the next attempt, not a fresh attempt 1, and its span
+	// carries the runner-death wait.
+	seqCtx, seq := lcotel.WithAttemptSeq(streamCtx)
 	resp, err := retryOnRunnerDeath(streamCtx, waits, func(n int, wait time.Duration) {
+		seq.Waited(wait)
 		logRunnerRetry(d.providerID, req.Model, "/api/chat", n, wait)
 		if req.OnEvent != nil {
 			// The same event the 429 path emits, so a consumer already
@@ -581,7 +586,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 			})
 		}
 	}, func() (*http.Response, error) {
-		return ratelimit.Do(streamCtx, ratelimit.Config{
+		return ratelimit.Do(seqCtx, ratelimit.Config{
 			Provider:    d.providerID,
 			ParseHeader: ratelimit.OllamaRetryAfter,
 			OnEvent:     req.OnEvent,
