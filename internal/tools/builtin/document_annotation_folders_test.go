@@ -286,3 +286,18 @@ func TestFolderAnnotation_InputsNeedEveryCoveredDocument(t *testing.T) {
 		}
 	}
 }
+
+// An operator's edit from the explorer names a folder's record by its chunk.
+func TestFolderAnnotation_EditedByItsChunk(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	op := annOperator(base)
+	seedFolderCorpus(t, d, op)
+	rec := folderWrite(t, d, op, "/kb/products", "Product guides")
+	out, r := docExec(t, d, op, fmt.Sprintf(`{"op":"set_annotation","scope":"tenant","id":%q,"level":"path","brief":"Hand-written","abstract":"An operator's text.","manual":true}`, rec["chunk_id"]))
+	if r.IsError {
+		t.Fatalf("edit by chunk: %s", r.Text)
+	}
+	if a := out["annotation"].(map[string]any); a["folder"] != "/kb/products" || a["manual"] != true || a["brief"] != "Hand-written" {
+		t.Fatalf("edited record = %v", a)
+	}
+}

@@ -900,3 +900,32 @@ func (s *annotationScope) folderConcept(ctx context.Context, folderName string) 
 	}
 	return "", ""
 }
+
+// folderOfChunk is the folder whose annotation chunkID carries: its path
+// record's folder, else (an _annotation document's root) the root's path field.
+func (d *Document) folderOfChunk(ctx context.Context, key sqlmem.ScopeKey, chunkID string) (string, error) {
+	recs, err := d.annotationRecordsFor(ctx, key, []string{chunkID}, annotationLevelPath)
+	if err != nil {
+		return "", err
+	}
+	if rec, ok := recs[chunkID][annotationLevelPath]; ok && rec.Folder != "" {
+		return rec.Folder, nil
+	}
+	res, err := d.query(ctx, key, `SELECT 1 FROM documents WHERE root_chunk_id = ? AND type = ?`, chunkID, annotationDocType)
+	if err != nil || len(res.Rows) == 0 {
+		return "", err
+	}
+	_, mscope, err := d.resolveScope(ctx, key.Scope)
+	if err != nil {
+		return "", err
+	}
+	b, err := d.readBody(ctx, mscope, key, chunkID)
+	if err != nil {
+		return "", err
+	}
+	var f struct {
+		Path string `json:"path"`
+	}
+	_ = json.Unmarshal(b.Fields, &f)
+	return f.Path, nil
+}

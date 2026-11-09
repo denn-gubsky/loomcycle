@@ -829,6 +829,19 @@ func (d *Document) setAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 		return errPermission(op+": manual annotations are written by the operator", "Omit manual."), nil
 	}
 	if in.Level == annotationLevelPath {
+		// A folder's record may be named by the chunk it lives on, as the explorer
+		// does when an operator edits it: the folder is the record's own.
+		if in.Path == "" && in.ID != "" {
+			folder, err := d.folderOfChunk(ctx, key, in.ID)
+			if err != nil {
+				return errFrom(op+": "+err.Error(), err), nil
+			}
+			if folder == "" {
+				return errValidation(op+": chunk "+in.ID+" carries no folder's annotation; name the folder with path",
+					"Pass level path with path, the folder."), nil
+			}
+			in.Path, in.ID = folder, ""
+		}
 		return d.setFolderAnnotation(ctx, key, mscope, in, brief, abstract)
 	}
 	s := d.newAnnotationScope(key, mscope)
