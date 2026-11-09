@@ -146,11 +146,14 @@ const pgValueLimitMarker = "loomcycle-sqlmem-value-limit"
 // and the row check applies to a different query than the one the validator
 // approved.
 //
-// It reads the raw statement with postgres's own lexical rules, not the
-// shared comment stripper: '…' strings with a doubled quote, E'…' strings with
-// backslash escapes, $tag$…$tag$ bodies (a '$' inside an identifier is not
-// one), "…" identifiers, -- line comments and nested /* */ comments. Anything
-// left open at the end is refused.
+// It reads the raw statement with postgres's own lexical rules (scan.l), not
+// the shared comment stripper: '…' strings with a doubled quote, E'…' strings
+// with backslash escapes, $tag$…$tag$ bodies (tags of letters, '_' and bytes
+// >= 0x80; a '$' inside a name is not one, one after a number is), $N
+// parameters, "…" identifiers, -- line comments ending at \n or \r and nested
+// /* */ comments. It fails closed: anything left open at the end, and any
+// construct it cannot be sure postgres reads the same way (a stray '$', a
+// number or name run straight into a string), is refused.
 //
 // A session can turn standard_conforming_strings off (a function body may
 // EXECUTE 'SET …'), and then a plain '…' string takes backslash escapes too.
@@ -165,20 +168,25 @@ func pgCheckWrappable(statement string) error {
 func pgCheckWrappableAs(statement string, backslashStrings bool) error {
 	s := statement
 	depth := 0
-	isIdent := func(c byte) bool {
-		return c == '_' || c == '$' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c >= 0x80
-	}
 	unterminated := refuse("the statement ends inside a string, quoted name or comment")
+	unclear := func(what string) error {
+		return refuse("%s is not read here the way postgres may read it; write it plainly", what)
+	}
+	escapedString := false // the next '…' is an E'…' string
 	for i := 0; i < len(s); i++ {
 		c := s[i]
+		prefixed := escapedString
+		escapedString = false
 		switch {
 		case c == '-' && i+1 < len(s) && s[i+1] == '-':
-			if k := strings.IndexByte(s[i:], '\n'); k >= 0 {
+			// A line comment ends at \n or \r, as postgres ends it.
+			if k := strings.IndexAny(s[i:], "\r\n"); k >= 0 {
 				i += k
 			} else {
 				i = len(s)
 			}
 		case c == '/' && i+1 < len(s) && s[i+1] == '*':
+			// Block comments nest, as in postgres.
 			nest := 1
 			for i += 2; nest > 0; i++ {
 				if i+1 >= len(s) {
@@ -195,7 +203,7 @@ func pgCheckWrappableAs(statement string, backslashStrings bool) error {
 			}
 			i--
 		case c == '\'':
-			escapes := backslashStrings || i > 0 && (s[i-1] == 'e' || s[i-1] == 'E') && (i < 2 || !isIdent(s[i-2]))
+			escapes := backslashStrings || prefixed
 			j := i + 1
 			for ; ; j++ {
 				if j >= len(s) {
@@ -229,14 +237,66 @@ func pgCheckWrappableAs(statement string, backslashStrings bool) error {
 				}
 			}
 			i = j
-		case isIdent(c) && c != '$':
-			for i+1 < len(s) && isIdent(s[i+1]) {
-				i++
+		case c >= '0' && c <= '9' || c == '.' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9':
+			// A number: digits, '_', '.', an exponent, or a 0x/0o/0b prefix.
+			// One run straight into a name or a string is read differently by
+			// postgres versions (an error, or two tokens): refused.
+			j := i + 1
+			if c == '0' && j < len(s) && strings.IndexByte("xXoObB", s[j]) >= 0 {
+				for j++; j < len(s) && (isHexDigit(s[j]) || s[j] == '_'); j++ {
+				}
+			} else {
+				for j < len(s) && (s[j] >= '0' && s[j] <= '9' || s[j] == '_' || s[j] == '.') {
+					j++
+				}
+				if j < len(s) && (s[j] == 'e' || s[j] == 'E') {
+					k := j + 1
+					if k < len(s) && (s[k] == '+' || s[k] == '-') {
+						k++
+					}
+					if k < len(s) && s[k] >= '0' && s[k] <= '9' {
+						for j = k; j < len(s) && (s[j] >= '0' && s[j] <= '9' || s[j] == '_'); j++ {
+						}
+					}
+				}
 			}
+			if j < len(s) && (pgIdentStart(s[j]) || s[j] == '\'' || s[j] == '"') {
+				return unclear("a number run into a name or string (" + s[i:min(len(s), j+1)] + ")")
+			}
+			i = j - 1
+		case pgIdentStart(c):
+			j := i + 1
+			for j < len(s) && pgIdentCont(s[j]) {
+				j++
+			}
+			if j < len(s) && s[j] == '\'' {
+				// Only a one-letter prefix may run into a string: E'…' takes
+				// backslash escapes, B'…' X'…' N'…' do not.
+				switch w := s[i:j]; w {
+				case "e", "E":
+					escapedString = true
+				case "b", "B", "x", "X", "n", "N":
+				default:
+					return unclear("a string straight after the name " + w)
+				}
+			}
+			i = j - 1
 		case c == '$':
+			if i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
+				// A parameter, $N.
+				j := i + 1
+				for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+					j++
+				}
+				if j < len(s) && pgIdentCont(s[j]) {
+					return unclear("a parameter run into a name (" + s[i:min(len(s), j+1)] + ")")
+				}
+				i = j - 1
+				continue
+			}
 			tag, ok := dollarTagAt(s, i)
 			if !ok {
-				continue
+				return unclear("a '$' that is neither a parameter nor a dollar quote")
 			}
 			end := strings.Index(s[i+len(tag):], tag)
 			if end < 0 {
@@ -259,6 +319,10 @@ func pgCheckWrappableAs(statement string, backslashStrings bool) error {
 		return refuse("the statement leaves a parenthesis open")
 	}
 	return nil
+}
+
+func isHexDigit(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
 
 // wrapValueLimit runs an agent's read-only statement inside a query that makes

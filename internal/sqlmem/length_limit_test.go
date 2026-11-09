@@ -396,3 +396,71 @@ func TestPostgres_WrapperEscapeRefused(t *testing.T) {
 		t.Fatalf("err = %v (%T), result %v; want a statement refusal", err, err, res)
 	}
 }
+
+func TestPgWrappable_ReadsPostgresLexicalEdges(t *testing.T) {
+	refused := []string{
+		// A tag of non-ASCII letters is a dollar quote to postgres: the ')' is
+		// code after it, or hidden inside it, only if both read it alike.
+		"SELECT $é$x$é$ ) AS z, (SELECT 2",
+		// A '$' after a number starts a tag.
+		"SELECT 1$a$ ( $a$) AS z, (SELECT 2",
+		// A line comment ends at a carriage return too.
+		"SELECT 1 -- x\r) AS z, (SELECT 2",
+		// Nested block comments: still inside the outer one.
+		"SELECT /* /* */ 1",
+		// A '$' that is neither a tag nor a parameter.
+		"SELECT 1 $ 2",
+		"SELECT $1abc",
+		// A string straight after a name, or a number run into letters.
+		"SELECT ab'x'",
+		"SELECT 1e'x'",
+		"SELECT 1abc",
+	}
+	for _, stmt := range refused {
+		if err := pgCheckWrappable(stmt); err == nil {
+			t.Errorf("%q: accepted, want refused", stmt)
+		}
+	}
+	accepted := []string{
+		"SELECT $é$ ) $é$ AS a",
+		"SELECT 1$a$ ) $a$ AS a",
+		"SELECT a$b$ FROM t",
+		"SELECT 1 -- )\r\n",
+		"SELECT /* /* ) */ */ 1",
+		"SELECT $1, $2::int, E'\\'', B'01', X'ff', N'x', U&'d\\0061t'",
+		"SELECT 1e5, 1.5, .5, 0x1F, 1_000",
+	}
+	for _, stmt := range accepted {
+		if err := pgCheckWrappable(stmt); err != nil {
+			t.Errorf("%q: refused (%v), want accepted", stmt, err)
+		}
+	}
+}
+
+func TestValidatePostgres_CarriageReturnEndsALineComment(t *testing.T) {
+	// The statement check reads a line comment as ending at \r, as postgres
+	// does, so text after it is checked.
+	stmt := "SELECT 1 -- x\r, pg_read_file('/etc/passwd')"
+	if err := validateStatementForDialect(stmt, true, dialectPostgres); err == nil {
+		t.Fatalf("%q: accepted, want the denied function refused", stmt)
+	}
+}
+
+func TestDollarTagAt_FollowsPostgresRules(t *testing.T) {
+	for _, c := range []struct {
+		s    string
+		i    int
+		want string
+	}{
+		{"$é$", 0, "$é$"},
+		{"1$a$", 1, "$a$"},
+		{"a$b$", 1, ""},
+		{"$1", 0, ""},
+		{"$$", 0, "$$"},
+	} {
+		got, _ := dollarTagAt(c.s, c.i)
+		if got != c.want {
+			t.Errorf("dollarTagAt(%q, %d) = %q, want %q", c.s, c.i, got, c.want)
+		}
+	}
+}
