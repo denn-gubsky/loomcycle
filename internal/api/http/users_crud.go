@@ -313,11 +313,11 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// cannot show is refused. Any error reply after this point is recorded
 	// as failed (some of the change may have applied: a disable ends access
 	// even when the status write fails).
-	// A disable only takes access away (whatever else the patch says, the
-	// user is disabled), so it goes ahead in an audit outage; anything else
-	// may grant and is refused unrecorded (audit.ChangeKindOf).
+	// A disable that changes nothing else that could widen access only takes
+	// access away, so it goes ahead in an audit outage; anything else may
+	// grant and is refused unrecorded (audit.ChangeKindOf).
 	want := audit.Event{Action: "user_updated", TargetTenant: tenant, TargetSubject: subject}
-	if req.Status != nil && *req.Status == "disabled" {
+	if s.patchOnlyDisables(r.Context(), tenant, subject, req) {
 		want.Action = "user_disabled"
 	}
 	if req.AccessMode != nil {
@@ -452,6 +452,23 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toWireUserRecord(updated))
+}
+
+// patchOnlyDisables reports whether a user patch only takes access away: it
+// disables the user, changes no display name, and sets an access mode no
+// wider than the user's current one. A patch with any other field, or a
+// current row that cannot be read, is not (and is then recorded, or
+// refused, as a grant). TestUserPatch_EveryFieldIsClassified pins the
+// field set this decides over.
+func (s *Server) patchOnlyDisables(ctx context.Context, tenant, subject string, req updateUserRequest) bool {
+	if req.Status == nil || *req.Status != "disabled" || req.DisplayName != nil {
+		return false
+	}
+	if req.AccessMode == nil {
+		return true
+	}
+	cur, err := s.store.UserGet(ctx, tenant, subject)
+	return err == nil && accessRank(*req.AccessMode) <= accessRank(cur.AccessMode)
 }
 
 // handleDeleteUser serves DELETE /v1/_users/{subject}. Hard-deletes a user in

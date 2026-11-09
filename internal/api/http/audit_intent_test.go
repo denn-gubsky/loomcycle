@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -288,5 +289,47 @@ func TestSCIM_ARefusedChangeIsRecordedAsFailed(t *testing.T) {
 	// intent, then failed.
 	if got := strings.Join(statuses, ","); got != "intent,,intent,failed" {
 		t.Errorf("auth_scim_user_created rows = %q, want \"intent,,intent,failed\"", got)
+	}
+}
+
+// A disable that also raises the access mode is not a reduction: in an audit
+// outage it is refused like any grant, and the user keeps its mode and
+// status. A disable that lowers it (or leaves it) still goes ahead.
+func TestUserLifecycle_DisablePlusAWideningIsRefusedUnrecorded(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy")
+	ctx := context.Background()
+	acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+	seedUser(t, st, "acme", "alice", "isolated", "active")
+	seedUser(t, st, "acme", "bob", "tenant", "active")
+	s.tokenAudit = failingSink{errAuditDown}
+
+	rec := httptest.NewRecorder()
+	s.handleUpdateUser(rec, bodyReq("PATCH", "/v1/_users/alice", `{"status":"disabled","access_mode":"tenant"}`, acme, "subject", "alice"))
+	wantAuditUnavailable(t, "a disable that raises the access mode", rec.Code, rec.Body.String())
+	if u, err := st.UserGet(ctx, "acme", "alice"); err != nil || u.Status != "active" || u.AccessMode != "isolated" {
+		t.Errorf("alice after the refused patch: %+v, %v; want active and isolated", u, err)
+	}
+	rec = httptest.NewRecorder()
+	s.handleUpdateUser(rec, bodyReq("PATCH", "/v1/_users/alice", `{"status":"disabled","display_name":"Mallory"}`, acme, "subject", "alice"))
+	wantAuditUnavailable(t, "a disable that renames", rec.Code, rec.Body.String())
+
+	rec = httptest.NewRecorder()
+	s.handleUpdateUser(rec, bodyReq("PATCH", "/v1/_users/bob", `{"status":"disabled","access_mode":"isolated"}`, acme, "subject", "bob"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a disable that lowers the access mode: %d %s; want it done", rec.Code, rec.Body.String())
+	}
+	wantUnrecorded(t, s, "user_disabled", 1)
+}
+
+// patchOnlyDisables decides over every field of a user patch; a new field
+// must be classified there before this list is extended.
+func TestUserPatch_EveryFieldIsClassified(t *testing.T) {
+	var got []string
+	rt := reflect.TypeOf(updateUserRequest{})
+	for i := 0; i < rt.NumField(); i++ {
+		got = append(got, rt.Field(i).Name)
+	}
+	if strings.Join(got, ",") != "DisplayName,AccessMode,Status" {
+		t.Errorf("updateUserRequest fields = %v: classify the new one in patchOnlyDisables (a field that can widen access makes a disable a grant)", got)
 	}
 }
