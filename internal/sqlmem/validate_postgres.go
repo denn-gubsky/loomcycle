@@ -147,7 +147,7 @@ const pgValueLimitMarker = "loomcycle-sqlmem-value-limit"
 // approved.
 //
 // It reads the raw statement with postgres's own lexical rules, not the
-// shared comment stripper: '…' strings with '' doubled, E'…' strings with
+// shared comment stripper: '…' strings with a doubled quote, E'…' strings with
 // backslash escapes, $tag$…$tag$ bodies (a '$' inside an identifier is not
 // one), "…" identifiers, -- line comments and nested /* */ comments. Anything
 // left open at the end is refused.
