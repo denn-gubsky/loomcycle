@@ -22,6 +22,39 @@ import (
 // *store.ErrConflict{Kind:"user", ID:subject} on a (tenant, subject) PK
 // violation (Postgres SQLSTATE 23505 = unique_violation).
 func (s *Store) UserCreate(ctx context.Context, row store.UserRow) error {
+	return userCreate(ctx, s.pool, row)
+}
+
+// UserCreateBudgeted implements store.UsersStore.
+func (s *Store) UserCreateBudgeted(ctx context.Context, row store.UserRow, owner *store.AclBindingRow, budget store.TokenLimitRow) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if owner != nil {
+		err = userCreateOwner(ctx, tx, row, *owner)
+	} else {
+		err = userCreate(ctx, tx, row)
+	}
+	if err != nil {
+		return err
+	}
+	updatedAt := budget.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO token_limits
+		(tenant_id, scope, scope_id, soft_limit, hard_limit, updated_at, updated_by) VALUES ($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT (tenant_id, scope, scope_id) DO NOTHING`,
+		row.TenantID, "user", row.Subject, budget.SoftLimit, budget.HardLimit, updatedAt, budget.UpdatedBy); err != nil {
+		return fmt.Errorf("user create: budget: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// userCreate is UserCreate on the pool or a transaction.
+func userCreate(ctx context.Context, db gateExecer, row store.UserRow) error {
 	row = row.AsTombstone()
 	if !store.ValidUserAccessMode(row.AccessMode) {
 		return fmt.Errorf("user create: access_mode must be one of tenant|isolated, got %q", row.AccessMode)
@@ -35,11 +68,11 @@ func (s *Store) UserCreate(ctx context.Context, row store.UserRow) error {
 	}
 	// The tenant's bootstrap marker goes first: a marker with no user (the
 	// insert below failing) only refuses a later bootstrap, never allows one.
-	if _, err := s.pool.Exec(ctx, `INSERT INTO tenant_bootstraps (tenant_id, at, via) VALUES ($1, $2, 'users')
+	if _, err := db.Exec(ctx, `INSERT INTO tenant_bootstraps (tenant_id, at, via) VALUES ($1, $2, 'users')
 		ON CONFLICT (tenant_id) DO NOTHING`, row.TenantID, createdAt); err != nil {
 		return fmt.Errorf("user create: bootstrap marker: %w", err)
 	}
-	_, err := s.pool.Exec(ctx, `
+	_, err := db.Exec(ctx, `
 		INSERT INTO users (
 			tenant_id, subject, display_name, access_mode, status, created_at, created_by, erased_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)

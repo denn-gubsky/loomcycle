@@ -955,10 +955,7 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 		s.joinInviteGroups(ctx, g, inv, subject)
 	}
 	if red.Budget != nil {
-		// This replica enforces it at once; the others within
-		// LOOMCYCLE_LIMITS_RELOAD_INTERVAL. The subject is new, so no limit
-		// set before it is overwritten here.
-		s.limits.PutLimit(*red.Budget)
+		s.loadUserLimit(ctx, inv.TenantID, subject)
 	}
 	if red.OwnerBinding != nil {
 		s.aclChanged(ctx, inv.TenantID, "auth_owner_bound", subject)

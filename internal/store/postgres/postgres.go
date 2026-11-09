@@ -816,6 +816,20 @@ func (s *Store) TokenLimitsAll(ctx context.Context) ([]store.TokenLimitRow, erro
 	return out, rows.Err()
 }
 
+// TokenLimitGet returns one scope's budget.
+func (s *Store) TokenLimitGet(ctx context.Context, tenantID, scope, scopeID string) (store.TokenLimitRow, error) {
+	r := store.TokenLimitRow{TenantID: tenantID, Scope: scope, ScopeID: scopeID}
+	err := s.pool.QueryRow(ctx, `SELECT soft_limit, hard_limit, updated_at, updated_by FROM token_limits
+		WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3`, tenantID, scope, scopeID).Scan(&r.SoftLimit, &r.HardLimit, &r.UpdatedAt, &r.UpdatedBy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.TokenLimitRow{}, &store.ErrNotFound{Kind: "token_limit", ID: scope + ":" + scopeID}
+	}
+	if err != nil {
+		return store.TokenLimitRow{}, fmt.Errorf("token limit get: %w", err)
+	}
+	return r, nil
+}
+
 // SnapshotRestoreTokenLimit inserts one budget row keeping its updated_at; a
 // row already on (tenant_id, scope, scope_id) is left alone.
 func (s *Store) SnapshotRestoreTokenLimit(ctx context.Context, row store.TokenLimitRow) (bool, error) {

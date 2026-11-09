@@ -1017,6 +1017,19 @@ func insertOwnerBinding(ctx context.Context, tx pgx.Tx, b store.AclBindingRow, a
 // per-tenant advisory lock as a bootstrap invite's redemption, so an owner
 // create and an owner redemption of one tenant cannot both see it empty.
 func (s *Store) UserCreateOwner(ctx context.Context, user store.UserRow, owner store.AclBindingRow) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := userCreateOwner(ctx, tx, user, owner); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// userCreateOwner is UserCreateOwner's writes, in tx.
+func userCreateOwner(ctx context.Context, tx pgx.Tx, user store.UserRow, owner store.AclBindingRow) error {
 	if !store.ValidUserAccessMode(user.AccessMode) || !store.ValidUserStatus(user.Status) {
 		return fmt.Errorf("user create owner: invalid access_mode %q or status %q", user.AccessMode, user.Status)
 	}
@@ -1028,11 +1041,6 @@ func (s *Store) UserCreateOwner(ctx context.Context, user store.UserRow, owner s
 	if created.IsZero() {
 		created = now
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('loomcycle/auth-bootstrap/' || $1::text, 0))`, user.TenantID); err != nil {
 		return fmt.Errorf("user create owner: bootstrap lock: %w", err)
 	}
@@ -1056,10 +1064,7 @@ func (s *Store) UserCreateOwner(ctx context.Context, user store.UserRow, owner s
 		}
 		return fmt.Errorf("user create owner: %w", err)
 	}
-	if err := insertOwnerBinding(ctx, tx, owner, now); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return insertOwnerBinding(ctx, tx, owner, now)
 }
 
 // UserIdentityDelete implements store.AuthIdentityStore.

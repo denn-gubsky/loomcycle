@@ -2465,6 +2465,10 @@ type TokenLimitStore interface {
 	// happens at the HTTP layer, so this returns all rows unscoped.
 	TokenLimitsAll(ctx context.Context) ([]TokenLimitRow, error)
 
+	// TokenLimitGet returns one scope's budget; *ErrNotFound when it has
+	// none.
+	TokenLimitGet(ctx context.Context, tenantID, scope, scopeID string) (TokenLimitRow, error)
+
 	// UsageCarryRaise stores the month-to-date usage a snapshot restore carried
 	// in for (TenantID, UserID, Month), keeping the LARGER of the stored and the
 	// incoming Tokens, and returns how much the stored value grew (0 when it
@@ -2607,6 +2611,12 @@ type UserStore interface {
 	// store caller can't persist a value the wire layer would refuse).
 	// A row with ErasedAt set is written as a tombstone (UserRow.AsTombstone).
 	UserCreate(ctx context.Context, row UserRow) error
+	// UserCreateBudgeted is UserCreate — or, with owner set, UserCreateOwner —
+	// that also writes budget as the user's token limit (scope user) in the
+	// same transaction, unless a limit for the subject is already there. A
+	// create the store refuses writes no budget, and a user it makes never
+	// exists without one.
+	UserCreateBudgeted(ctx context.Context, row UserRow, owner *AclBindingRow, budget TokenLimitRow) error
 
 	// UserGet returns one identity row by (tenantID, subject). Returns
 	// *ErrNotFound{Kind:"user", ID:subject} when the row is absent — so a
