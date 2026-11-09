@@ -72,6 +72,7 @@ const (
 	oauthRevokeByApp          = "revoked_by_app"
 	oauthRevokeClientRetired  = "client_retired"
 	oauthRevokeUserDisabled   = "user_disabled"
+	oauthRevokeSessionEnded   = "session_ended"
 )
 
 // hashOAuthSecret is a code's or a refresh token's row key. They are 256-bit
@@ -585,6 +586,15 @@ func (s *Server) oauthCodeGrant(w http.ResponseWriter, r *http.Request, f map[st
 		}
 		slog.Error("oauth: creating a refresh family failed", "err", err)
 		oauthTokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "")
+		return
+	}
+	// The session is asked again now that the family exists: a credential
+	// change that ended every sign-in between the check above and the
+	// create could not see this family, but it ended the session first or
+	// will end the family in its second pass (endSubjectCredentials).
+	if !s.codeSessionLive(ctx, code, time.Now().UTC()) {
+		s.revokeAppFamily(ctx, client.ID, famID, oauthRevokeSessionEnded)
+		refused("session")
 		return
 	}
 	s.oauthIssue(w, r, client, fam, "authorization_code")

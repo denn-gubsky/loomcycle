@@ -706,6 +706,16 @@ func (s *Server) issueDeviceToken(ctx context.Context, dg config.AuthGate, row s
 		r.Rate = &auth.RateLimit{PerMinute: d.RatePerMinute, Burst: d.RateBurst}
 	}
 	tok, issued, err := s.issueGateToken(ctx, row.DecidedTenant, row.DecidedSubject, row.DecidedGate, ttl, r)
+	if err == nil {
+		// The approving session is asked again now that the token exists:
+		// a credential change that ended every sign-in in between could not
+		// retire it, but it ended the session first or retires it in its
+		// second pass (endSubjectCredentials).
+		if _, aerr := s.deviceApprovalLifetime(ctx, row, time.Now()); aerr != nil {
+			s.retireAppToken(ctx, issued.DefID)
+			return "", issued, aerr
+		}
+	}
 	switch {
 	case errors.Is(err, errGateTokenUser):
 		return "", issued, fmt.Errorf("%w: user_not_active", errDeviceRefused)

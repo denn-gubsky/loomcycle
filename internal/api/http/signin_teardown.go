@@ -64,6 +64,27 @@ func (s *Server) endSubjectCredentials(ctx context.Context, tenant, subject stri
 		if _, err := s.store.UISessionRevokeSubject(ctx, tenant, subject, time.Now().UTC()); err != nil {
 			errs = append(errs, fmt.Errorf("%w: %w", errEndSessions, err))
 		}
+		// A second pass once the sessions are gone: a code exchange or a
+		// device redemption that checked its approving session before the
+		// revoke may have written its family or token after the first
+		// pass. Anything it writes after this pass meets a dead session on
+		// its own re-check (oauthCodeGrant, issueDeviceToken) and ends
+		// itself; anything before, this pass ends.
+		if set&credAppSignIns != 0 {
+			if err := s.endSubjectAppSignIns(ctx, tenant, subject); err != nil {
+				errs = append(errs, fmt.Errorf("%w: %w", errEndAppSignIns, err))
+			}
+		}
+		if set&credDelegatedTokens != 0 {
+			again, err := s.retireDelegatedUserTokens(ctx, tenant, subject)
+			for _, row := range again {
+				s.recordTokenAudit(ctx, "retire", row)
+			}
+			retired = append(retired, again...)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%w: %w", errRetireTokens, err))
+			}
+		}
 	}
 	return retired, errors.Join(errs...)
 }

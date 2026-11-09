@@ -70,3 +70,73 @@ func TestPasskey_RemovingAPasskeyEndsAppSignInsAndTokens(t *testing.T) {
 		t.Fatalf("the password browser that removed the passkey lost its session: %d", code)
 	}
 }
+
+// teardownBeforeCreate runs a full teardown of (acme, subject) the moment a
+// sign-in is about to be written — after the exchange or redemption checked
+// the approving session, before its family or token exists: the
+// interleaving where a credential change lands mid-exchange.
+type teardownBeforeCreate struct {
+	store.Store
+	s       *Server
+	subject string
+	once    atomic.Bool
+}
+
+func (w *teardownBeforeCreate) teardown(ctx context.Context) {
+	if w.once.CompareAndSwap(false, true) {
+		if _, err := w.s.endSubjectCredentials(ctx, "acme", w.subject, credAll); err != nil {
+			panic(err)
+		}
+	}
+}
+
+func (w *teardownBeforeCreate) OAuthFamilyCreate(ctx context.Context, row store.OAuthFamilyRow) error {
+	w.teardown(ctx)
+	return w.Store.OAuthFamilyCreate(ctx, row)
+}
+
+func (w *teardownBeforeCreate) OperatorTokenDefCreate(ctx context.Context, row store.OperatorTokenDefRow) (store.OperatorTokenDefRow, error) {
+	w.teardown(ctx)
+	return w.Store.OperatorTokenDefCreate(ctx, row)
+}
+
+// A code exchange that a credential change overtakes leaves no live app
+// sign-in: the family it then creates is ended at once.
+func TestAppSignIns_AnExchangeOvertakenByATeardownLeavesNoSignIn(t *testing.T) {
+	f := newAppFixture(t, "tenant")
+	code := f.code(t)
+	f.s.store = &teardownBeforeCreate{Store: f.st, s: f.s, subject: "google:100"}
+	rec, body := f.exchange(t, code)
+	if live, err := f.st.OAuthFamilyList(context.Background(), "acme", "google:100", time.Now()); err != nil || len(live) != 0 {
+		t.Fatalf("a sign-in made across the teardown is live: %d families, err %v (exchange answered %d)", len(live), err, rec.Code)
+	}
+	if at, _ := body["access_token"].(string); at != "" {
+		if code, _ := f.bearerMe(t, at); code != http.StatusUnauthorized {
+			t.Fatalf("the exchange's access token answers /v1/_me: %d", code)
+		}
+	}
+}
+
+// A device login a credential change overtakes yields no working token.
+func TestDeviceLogin_ARedemptionOvertakenByATeardownYieldsNoToken(t *testing.T) {
+	s, st, _ := deviceServer(t)
+	ds := startDevice(t, s)
+	alice, _ := userSession(t, s, st, "acme", "alice", "isolated", "")
+	if rec := decide(s, alice, "/v1/_auth/device/approve", ds.UserCode, yes); rec.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", rec.Code, rec.Body.String())
+	}
+	if err := forcePollable(st, ds.DeviceCode); err != nil {
+		t.Fatal(err)
+	}
+	s.store = &teardownBeforeCreate{Store: st, s: s, subject: "alice"}
+	a := pollDevice(t, s, ds.DeviceCode, "loomcycle-cli", "")
+	rows, err := st.OperatorTokenDefListBySubject(context.Background(), "acme", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if tokenActive(r) {
+			t.Fatalf("a device token made across the teardown is active: %s (poll answered %d)", r.DefID, a.Status)
+		}
+	}
+}
