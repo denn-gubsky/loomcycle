@@ -17,9 +17,13 @@ including directories that exist only because something lives beneath them.
 
 ## Returns
 
-`{path, entries: [{name, kind, full_path, resource_ref?}]}`, sorted by name
-(recursive: by full path). A listing cut short by `limit` also returns
-`truncated: true` and a `next_cursor`.
+`{path, entries: [{name, kind, full_path, resource_ref?, has_children?}]}`,
+sorted by name (recursive: by full path). A listing cut short by `limit` also
+returns `truncated: true` and a `next_cursor`.
+
+A one-level listing shows each name once, so a document that also has names
+beneath it is listed as the document with `has_children: true` — list its
+path to see them.
 
 ## Errors
 
