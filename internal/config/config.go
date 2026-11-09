@@ -7254,15 +7254,22 @@ func (s *envNameSet) has(name string) bool {
 // Never written after init: declared principals' bearers live in
 // principalBearerEnvs.
 var expandDenyNames = map[string]bool{
-	"PG_DSN":                               true,
-	"LOOMCYCLE_PG_DSN":                     true,
-	"LOOMCYCLE_SQLMEM_PG_DSN":              true, // RFC AA aux-DB DSN (carries the aux credentials)
-	"LOOMCYCLE_AUTH_TOKEN":                 true,
-	"LOOMCYCLE_OPERATOR_TOKEN_PEPPER":      true, // RFC L token-hash pepper (S1: the high-value miss)
-	"LOOMCYCLE_MCP_UPSTREAM_TOKEN":         true, // thin-client upstream MCP bearer
-	"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS": true, // collector auth headers
-	"LOOMCYCLE_SECRET_KEY":                 true, // RFC AR CredentialDef master KEK
-	"LOOMCYCLE_SECRET_KEY_PREVIOUS":        true, // RFC AR KEK rotation grace key
+	"PG_DSN":                          true,
+	"LOOMCYCLE_PG_DSN":                true,
+	"LOOMCYCLE_SQLMEM_PG_DSN":         true, // RFC AA aux-DB DSN (carries the aux credentials)
+	"LOOMCYCLE_AUTH_TOKEN":            true,
+	"LOOMCYCLE_OPERATOR_TOKEN_PEPPER": true, // RFC L token-hash pepper (S1: the high-value miss)
+	"LOOMCYCLE_MCP_UPSTREAM_TOKEN":    true, // thin-client upstream MCP bearer
+	// Collector auth headers, read by the OTLP exporter itself. Not
+	// interpolatable anyway (no LOOMCYCLE_ prefix, not allowlisted); listed so
+	// a definition can never name them as a secret's source, even where an
+	// operator allowlist would admit the name.
+	"OTEL_EXPORTER_OTLP_HEADERS":         true,
+	"OTEL_EXPORTER_OTLP_TRACES_HEADERS":  true,
+	"OTEL_EXPORTER_OTLP_METRICS_HEADERS": true,
+	"OTEL_EXPORTER_OTLP_LOGS_HEADERS":    true,
+	"LOOMCYCLE_SECRET_KEY":               true, // RFC AR CredentialDef master KEK
+	"LOOMCYCLE_SECRET_KEY_PREVIOUS":      true, // RFC AR KEK rotation grace key
 }
 
 // secretEnvSuffixes are the env-var NAME patterns this project classifies as
