@@ -355,21 +355,23 @@ func (d *Document) gateAttributes(ctx context.Context, kind string, attributes m
 // checked against them.
 var statementLayerAttributes = map[string]bool{"ontology_valid": true, "revision_of": true, "origin_method": true,
 	edgePeerMethodAttr: true, edgePeerStatusAttr: true,
-	attrJudge: true, attrReviewRoute: true, attrClassifiedBy: true}
+	attrJudge: true, attrReviewRoute: true, attrClassifiedBy: true, attrConceptFallback: true}
 
 // The attribute keys only the runtime writes: a judge's verdict (judge), the
-// review policy's routing of a proposal to the judge (review_route), and how
-// classify found a statement (classified_by). A writer naming one is refused —
+// review policy's routing of a proposal to the judge (review_route), how
+// classify found a statement (classified_by), and that its concept was the
+// classifier's ranking-fallback pick (concept_fallback). A writer naming one is refused —
 // a proposer that could set judge would pass "accept what the judge accepted",
 // one that could set review_route would choose its own reviewer — and a copy
 // path that carries another document's statements (import_md) drops them.
 const (
-	attrJudge        = "judge"
-	attrReviewRoute  = "review_route"
-	attrClassifiedBy = "classified_by"
+	attrJudge           = "judge"
+	attrReviewRoute     = "review_route"
+	attrClassifiedBy    = "classified_by"
+	attrConceptFallback = "concept_fallback"
 )
 
-var runtimeStatementAttributes = []string{attrJudge, attrReviewRoute, attrClassifiedBy}
+var runtimeStatementAttributes = []string{attrJudge, attrReviewRoute, attrClassifiedBy, attrConceptFallback}
 
 // refuseRuntimeAttributes refuses a writer's attributes that name a key only
 // the runtime writes.

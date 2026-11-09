@@ -216,9 +216,10 @@ func (d *Document) classifyIssuerSubject(ctx context.Context, key sqlmem.ScopeKe
 
 // classifyStatement writes one statement from the document's root, asking the caller's
 // rules about both ends first. A refusal is a warning, not a failure: the rest of the
-// classification still stands. by is how classify found it (classifiedBy*).
+// classification still stands. by is how classify found it (classifiedBy*); fallback
+// marks a concept the model's ranking fallback took (attributes.concept_fallback).
 func (d *Document) classifyStatement(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, acl *docACL,
-	docID, from, to, kind, status, quote, by string) (*edgeWriteResult, string) {
+	docID, from, to, kind, status, quote, by string, fallback bool) (*edgeWriteResult, string) {
 	if to == "" || kind == "" {
 		return nil, ""
 	}
@@ -242,6 +243,9 @@ func (d *Document) classifyStatement(ctx context.Context, key sqlmem.ScopeKey, m
 		attributes: map[string]any{attrClassifiedBy: by}}
 	if quote != "" {
 		w.attributes["quote"] = quote
+	}
+	if fallback {
+		w.attributes[attrConceptFallback] = true
 	}
 	res, refuse, err := d.writeStatement(ctx, key, mscope, w)
 	if err != nil {
