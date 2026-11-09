@@ -3505,7 +3505,11 @@ the outage is logged once (`otel: span export failing`), summarised every
 five minutes, and its end logged (`otel: span export recovered`). `/metrics`
 carries `loomcycle_otel_spans_ended_total`, `loomcycle_otel_spans_exported_total`,
 `loomcycle_otel_spans_dropped_total` and
-`loomcycle_otel_span_export_failures_total` (zeros while tracing is off).
+`loomcycle_otel_span_export_failures_total` (zeros while tracing is off). A
+dropped span was discarded with the export queue full, sent in a batch whose
+export failed, or rejected by a collector that accepted the rest of its batch
+(an OTLP partial success: counted as an export that worked, its rejected spans
+as dropped, and logged at most every five minutes).
 
 #### Renamed tracing variables
 
