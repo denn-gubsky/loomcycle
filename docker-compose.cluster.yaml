@@ -27,7 +27,7 @@ services:
     # is not a tag bump: its image refuses a volume at /var/lib/postgresql/data
     # (it keeps data under /var/lib/postgresql/18/docker), and an existing 16
     # data directory needs pg_upgrade or a dump and restore.
-    image: postgres:16
+    image: postgres:16@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
     container_name: loomcycle-cluster-pg
     restart: unless-stopped
     environment:
@@ -51,7 +51,7 @@ services:
     # Override with LOOMCYCLE_IMAGE=denngubsky/loomcycle:<tag> for
     # smoke-testing newer/older builds (e.g., a locally `docker build`
     # ed image while iterating on cluster code).
-    image: ${LOOMCYCLE_IMAGE:-denngubsky/loomcycle:0.12.6}
+    image: ${LOOMCYCLE_IMAGE:-denngubsky/loomcycle:1.147.0}
     container_name: loomcycle-cluster-a
     restart: unless-stopped
     depends_on:
@@ -91,7 +91,7 @@ services:
       - "127.0.0.1:18788:8787"
 
   lb:
-    image: nginx:1.31-alpine
+    image: nginx:1.31-alpine@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11
     container_name: loomcycle-cluster-lb
     restart: unless-stopped
     depends_on:

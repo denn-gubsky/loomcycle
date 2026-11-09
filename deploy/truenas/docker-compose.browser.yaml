@@ -70,7 +70,7 @@ services:
   # One-shot schema migration: runs `loomcycle migrate up`, then exits; the runtime
   # waits for it. The browser image carries the loomcycle binary, so it runs migrate too.
   loomcycle-migrate:
-    image: denngubsky/loomcycle-browser:1.43.1   # keep in lockstep with the runtime
+    image: denngubsky/loomcycle-browser:1.147.0   # keep in lockstep with the runtime
     user: "65532:65532"
     restart: "no"
     command: ["migrate", "up"]
@@ -82,7 +82,7 @@ services:
       LOOMCYCLE_STORAGE_BACKEND: postgres
 
   loomcycle:
-    image: denngubsky/loomcycle-browser:1.43.1
+    image: denngubsky/loomcycle-browser:1.147.0
     user: "65532:65532"
     restart: unless-stopped
     networks: [loomnet]
@@ -158,7 +158,7 @@ services:
   # Lockstep-versioned with the runtime and published MULTI-ARCH by the
   # `publish-sandbox-images` workflow — pull it, don't hand-build a single-arch image.
   builder-sidecar:
-    image: denngubsky/loomcycle-builder-docker:1.43.1
+    image: denngubsky/loomcycle-builder-docker:1.147.0
     restart: unless-stopped
     networks: [loomnet]
     env_file:
@@ -166,7 +166,7 @@ services:
       - /mnt/tank/loomcycle/config/sandbox.secrets.env
     environment:
       SANDBOX_PODMAN_BIN: docker            # launch sessions as host-Docker siblings
-      SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:1.43.1   # the per-session toolchain (host pulls it)
+      SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:1.147.0   # the per-session toolchain (host pulls it)
       SANDBOX_WORKSPACE_ROOT: /mnt/work     # per-session /work is tmpfs; durable named
                                             # workspaces need this HOST path (see below)
       SANDBOX_MAX_CPUS: "2"
@@ -191,7 +191,7 @@ services:
   # On loom-dev so it can reach an exposed session's dev server; on loomnet so loomcycle
   # reaches its MCP. Widen its browsing allowlist (IDPI) per your aliases — see INSTALL.md.
   pinchtab:
-    image: pinchtab/pinchtab:v0.15.2
+    image: pinchtab/pinchtab:v0.15.2@sha256:a2205fc99765e42ce566dae3c8ff9fc3e3338cf44decb816ddb3d54d8d4bc05d
     restart: unless-stopped
     networks: [loomnet, loom-dev]
     env_file:

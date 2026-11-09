@@ -13,7 +13,7 @@
 # First-run flow (do this once before `up`):
 #   mkdir -p ./config
 #   docker run --rm -v $(pwd)/config:/home/nonroot/.config/loomcycle \
-#     denngubsky/loomcycle:latest init --no-interactive
+#     denngubsky/loomcycle:1.147.0 init --no-interactive
 #   # then edit ./config/loomcycle.yaml as needed
 #
 # Set required env vars in a sibling .env file (docker compose reads
@@ -23,7 +23,7 @@
 
 services:
   loomcycle:
-    image: denngubsky/loomcycle:latest
+    image: denngubsky/loomcycle:1.147.0
     container_name: loomcycle
     restart: unless-stopped
     ports:
@@ -62,7 +62,7 @@ services:
   # --- Postgres backend (uncomment for v0.10.x+ Vector Memory / HA) ---
   # Any Postgres ≥ 14 works; 16 here is just a tested default.
   # postgres:
-  #   image: postgres:16
+  #   image: postgres:16@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
   #   container_name: loomcycle-pg
   #   restart: unless-stopped
   #   environment:
@@ -94,7 +94,7 @@ services:
   #   search_providers: { searxng: { base_url: "http://searxng:8080" } }
   #   search_priority: [searxng]          # or [searxng, brave] for a fallback
   # searxng:
-  #   image: searxng/searxng:latest
+  #   image: searxng/searxng:2026.11.9-57ff753ad@sha256:287af61f1a13e86d02974fcde91a3413a9945788de38b61ffbc491d81a19bcc2
   #   container_name: searxng
   #   restart: unless-stopped
   #   volumes:
@@ -111,7 +111,7 @@ services:
   # then select the `sandbox` bundle (LOOMCYCLE_PRESETS=…,sandbox) and set
   # SANDBOX_AUTH_TOKEN on the loomcycle service to the same shared secret.
   # builder-sidecar:
-  #   image: denngubsky/loomcycle-builder:latest
+  #   image: denngubsky/loomcycle-builder:1.147.0
   #   container_name: builder-sidecar
   #   restart: unless-stopped
   #   # Nested podman needs a capable host runtime — Sysbox (secure) is preferred;

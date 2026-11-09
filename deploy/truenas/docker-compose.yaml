@@ -42,7 +42,7 @@ services:
   # One-shot schema migration: runs `loomcycle migrate up`, then exits; the runtime
   # waits for it (LOOMCYCLE_PG_AUTOMIGRATE=0 below keeps schema bumps explicit).
   loomcycle-migrate:
-    image: denngubsky/loomcycle-toolbox:1.23.1   # keep in lockstep with the runtime
+    image: denngubsky/loomcycle-toolbox:1.147.0   # keep in lockstep with the runtime
     user: "65532:65532"
     restart: "no"
     command: ["migrate", "up"]
@@ -53,7 +53,7 @@ services:
       LOOMCYCLE_STORAGE_BACKEND: postgres
 
   loomcycle:
-    image: denngubsky/loomcycle-toolbox:1.23.1
+    image: denngubsky/loomcycle-toolbox:1.147.0
     user: "65532:65532"
     restart: unless-stopped
     depends_on:
