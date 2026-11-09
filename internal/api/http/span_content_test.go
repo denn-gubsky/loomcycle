@@ -1,17 +1,21 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	lcmcp "github.com/denn-gubsky/loomcycle/internal/api/mcp"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
@@ -98,5 +102,40 @@ func TestRunSpans_CarryTheTenantAndTheModelCall(t *testing.T) {
 		if got := attrs(s)[lcotel.AttrTenant]; got != "acme" {
 			t.Errorf("%s: %s = %q, want acme", s.Name, lcotel.AttrTenant, got)
 		}
+	}
+}
+
+// A run cancelled mid-turn — here by its MCP caller's deadline, through the
+// server's real cancel path (finishRunCancelled) — ends its run span as an
+// error described "cancelled", so a collector keeping error traces keeps it.
+func TestRunSpan_ACancelledRunIsAnErrorDescribedCancelled(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+	defer lcotel.SetTracerProviderForTest(tp)()
+
+	s, _ := newGatedBatchServer(t, 8) // the gate is never fed: the turn stays open
+	mcpSrv := lcmcp.New(lcmcp.Config{Connector: s, Logger: slog.New(slog.DiscardHandler)})
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"r","user_id":"u1","timeout_ms":300,"segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}}}` + "\n"
+	var stdout bytes.Buffer
+	if err := mcpSrv.Serve(context.Background(), strings.NewReader(in), &stdout); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		for _, sp := range exp.GetSpans() {
+			if sp.Name != lcotel.SpanRun {
+				continue
+			}
+			if sp.Status.Code != codes.Error || sp.Status.Description != "cancelled" {
+				t.Fatalf("cancelled run's span status = %v %q, want Error \"cancelled\"", sp.Status.Code, sp.Status.Description)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no run span ended")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
