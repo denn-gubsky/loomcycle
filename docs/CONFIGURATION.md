@@ -3236,6 +3236,224 @@ under the configured method refits it back.
 
 The operator pass and the response: [DOCUMENTS.md, "Projection — the 3D map"](DOCUMENTS.md#projection--the-3d-map).
 
+## 9l. Environment variable reference — knobs not covered above
+
+The sections above document each feature's variables where the feature is explained. This section lists the rest: the variables the runtime reads that no other section names. A test (`TestEnvCensus_EveryReadNameIsDocumented` in `internal/config`) fails when the code reads a `LOOMCYCLE_*` name this guide does not mention, so a new knob lands with its row.
+
+Conventions unless a row says otherwise: `1` turns a flag on and anything else leaves it off; a duration ending in `_MS` is milliseconds; a value that does not parse keeps the default. For the byte caps marked *0 disables*, a value of `0` or less removes the cap.
+
+### Server, storage and cluster
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LOOMCYCLE_STORAGE_BACKEND` | `sqlite` | `sqlite` or `postgres`; overrides `storage.backend`. |
+| `LOOMCYCLE_PG_MAX_OPEN_CONNS` | `32` | Postgres pool size. |
+| `LOOMCYCLE_PG_MIN_IDLE_CONNS` | `4` | Warm idle connections kept in the Postgres pool. |
+| `LOOMCYCLE_PG_AUTOMIGRATE` | off | `1` applies pending Postgres schema migrations at boot. Off, boot refuses a database behind the binary's migrations until `loomcycle migrate up` runs. |
+| `LOOMCYCLE_REPLICA_ID` | unset | Turns on cluster mode and names this replica; also labels the Prometheus metrics. See [MULTI-REPLICA.md](MULTI-REPLICA.md). |
+| `LOOMCYCLE_REPLICAS_STALE_AFTER_MS` | `90000` | A replica whose heartbeat is older than this is presumed dead: its in-flight runs fail with `replica_died` and its quota is reclaimed. Keep it well above the 30 s heartbeat. |
+| `LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS` | `5000` | Cluster mode: how long a cancel waits for the owning replica's acknowledgement before answering `owner_replica_unreachable`. |
+| `LOOMCYCLE_PAUSE_CACHE_TTL_MS` | `1000` | Cluster mode: how long a replica caches the shared pause state. Lower sees a pause sooner; higher reads the database less. |
+| `LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS` | `30000` | How long a pause waits for in-flight runs to park when the request names no timeout. Capped at 5 minutes. |
+| `LOOMCYCLE_HEARTBEAT_SWEEPER` | on | `0` stops the sweeper that fails runs whose heartbeat went stale. |
+| `LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS` | `60000` | How often that sweeper runs. |
+| `LOOMCYCLE_HEARTBEAT_STALE_MS` | `600000` | A run with no heartbeat for this long is swept. Keep it at least twice a slow iteration (a long tool call). |
+| `LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS` | `300000` | How often unused per-session locks are collected. |
+| `LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS` | `600000` | An unheld session lock idle this long is collected. |
+| `LOOMCYCLE_SSE_KEEPALIVE_MS` | `20000` | SSE keepalive cadence; `0` or less disables it. Clamped to 1 s – 5 min. |
+| `LOOMCYCLE_MAX_REQUEST_BYTES` | 16 MiB | Body cap on run requests (large enough for an inline image). A non-positive value keeps the default; over the cap answers 413. |
+| `LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER` | `16` | How many runs one (tenant, user) may queue behind its per-user concurrency cap; `0` refuses a run over the cap at once. Per replica in cluster mode. |
+| `LOOMCYCLE_CONFIGURED_RUN_TTL_MS` | 24 h | How long a configured (created, not started) run is kept before it and its session are discarded. `0` keeps them. |
+| `LOOMCYCLE_MAX_CONFIGURED_RUNS_PER_USER` | `100` | How many configured runs one (tenant, user) may hold; `0` = no cap. |
+| `LOOMCYCLE_TOOL_PARALLELISM` | `8` | How many tool calls from one assistant turn run at once (1–64). `1` forces serial dispatch. |
+
+### Providers
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS` | `60000` | Time to a provider's response headers before the call fails. |
+| `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` | `90000` | Longest silence inside a provider's stream before the call fails. Neither timeout can be disabled. |
+| `LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS` | off | `1`: once a run has one successful turn, it stays on that provider instead of falling over to another mid-conversation (same-provider retries still apply). |
+| `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` | unset | Sends `options.num_gpu` (layers offloaded to the GPU) on every `ollama-local` request, e.g. `99` for all layers, where Ollama's detection falls back to CPU. Unset or `0` leaves it to Ollama. |
+| `LOOMCYCLE_OLLAMA_DEBUG_THINK` | off | `1` logs each Ollama request's model, effort and whether `think` was set. Diagnostic only. |
+| `LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED` | off | `1` registers the `anthropic-oauth-dev` provider and enables the `loomcycle anthropic` login commands. |
+| `LOOMCYCLE_CLAUDE_CODE_VERSION` | the pinned version | Overrides the Claude Code version that provider presents, without a rebuild. |
+| `LOOMCYCLE_ANTHROPIC_OAUTH_CALLBACK_PORT` | `53692` | Local port of that provider's OAuth login callback. |
+| `LOOMCYCLE_MOCK_ENABLED` | off | `1` enables the `mock` and `mock-stable` providers for cost-free load tests. |
+| `LOOMCYCLE_MOCK_LATENCY_MS` | `50` | Mock provider: base latency per call. |
+| `LOOMCYCLE_MOCK_LATENCY_JITTER_MS` | `25` | Mock provider: random latency added on top. |
+| `LOOMCYCLE_MOCK_429_RATE` | `0` | Mock provider: fraction (0–1) of calls answered with a 429. `mock-stable` never fails. |
+| `LOOMCYCLE_MOCK_500_RATE` | `0` | Mock provider: fraction (0–1) of calls answered with a 500. |
+| `LOOMCYCLE_EMBEDDER_STUB` | off | `1` registers the deterministic `stub` embedder used by tests. Not a real embedder; never set it in production. |
+| `LOOMCYCLE_CLASSIFIER_API_KEY` | — | Not a process variable: the credential name a tenant or user credential uses to key the memory classifier when its block sets `base_url` without `api_key_env`. |
+| `LOOMCYCLE_RERANKER_API_KEY` | — | The same, for the memory reranker. |
+| `LOOMCYCLE_UNIT_GENERATOR_API_KEY` | — | The same, for the memory unit generator. |
+
+### Tools and sandboxing
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LOOMCYCLE_BASH_ENABLED` | off | `1` enables the host `Bash` tool. It is not a sandbox; see [SANDBOX.md](SANDBOX.md). |
+| `LOOMCYCLE_BASHBOX_ENABLED` | off | `1` enables the in-process Bashbox sandbox tool. |
+| `LOOMCYCLE_WRITE_ROOT`, `LOOMCYCLE_BASH_CWD` | — | Retired with `LOOMCYCLE_READ_ROOT` (see §9d): setting any of them fails startup with a migration hint. |
+| `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE` | off | `1` makes a request's `allowed_hosts` the whole host policy for that run instead of a narrowing of `LOOMCYCLE_HTTP_HOST_ALLOWLIST` (which then applies only to runs that send no list). |
+| `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS` | — | Comma-separated hook owners added to `hooks.permit_host_widen.owners` (appended to the yaml list). |
+| `LOOMCYCLE_CODE_HOOKS_ENABLED` | off | `1` lets a hook's body be code-js instead of a webhook. Separate from `LOOMCYCLE_CODE_AGENTS_ENABLED`. |
+| `LOOMCYCLE_CODE_AGENTS_ROOT` | `./agent_code` | Where code-js agents live (`<root>/<name>/index.js`). |
+| `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC` | off | `1` seeds `Date.now()` and `Math.random()` in code agents so runs are reproducible. |
+| `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS` | `120` | A code agent's budget of active time (waits on children, channels and interruptions do not count). Floor 1 s. |
+| `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` | `86400` | How long a code-agent run may live, waits included; past it the run and its children are cancelled. Operator-only: no agent or run field can raise it. |
+| `LOOMCYCLE_CLIENT_TOOL_TIMEOUT_MS` | `60000` | Client-tool host (`/v1/client-tools`): how long one delegated tool call may take. |
+| `LOOMCYCLE_CLIENT_TOOL_MAX_BYTES` | 1 MiB | Client-tool host: largest single frame. |
+| `LOOMCYCLE_CLIENT_TOOL_MAX_CONNS` | `8` | Client-tool host: concurrent connections per principal. |
+| `LOOMCYCLE_CRYPTO_MAX_BYTES` | 1 MiB | Crypto tool: largest data argument of one call. |
+| `LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN` | `100` | Crypto tool: calls one run may make. |
+| `LOOMCYCLE_KMS_VAULT_ALLOW_HTTP` | off | `1` accepts a plain `http://` Vault address for Vault Transit keys (a dev server). Off because the Vault token travels in a header. |
+| `LOOMCYCLE_WEBSEARCH_PROVENANCE` | off | `1` appends a `(via <provider>)` footer to WebSearch results, naming the search provider that answered and any fallover. |
+| `LOOMCYCLE_HELP_ROOT` | unset | Directory of `<name>.md` files that override or add to the bundled `Context op=help` topics. |
+| `LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT` | `2` | Engine requests `/v1/audio/transcriptions` keeps in flight server-wide; more wait for a slot (sibling of `LOOMCYCLE_SPEECH_MAX_INFLIGHT`). |
+
+### MCP
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS` | off | `1` lets agents registered through MCP `register_agent` keep Bash, Write and Edit; otherwise those tools are stripped. |
+| `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO` | off | `1` lets an `MCPServerDef` created at run time use `transport: stdio`, which runs a local command. Static yaml `mcp_servers:` are unaffected. |
+| `LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS` | `86400` | Lifetime of an MCP-registered agent whose request names no `ttl_seconds`; `0` requires callers to name one. |
+| `LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS` | `900000` | How often expired registered agents are deleted; `0` stops the sweep (expired agents still stop resolving). |
+| `LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS` | `16` | `loomcycle mcp` (stdio): tool calls dispatched at once. |
+| `LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS` | `60000` | `loomcycle mcp --upstream` thin client: time to the upstream's response headers. Long-running tools (`spawn_run`, `spawn_runs`, `compact_run`, `evaluation`) are exempt. |
+| `LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS` | 5 | Thin client: retries after a transport error (immediately, then 0.5 s doubling to 4 s). `0` disables the retry. |
+| `LOOMCYCLE_MCP_RECIPES_ROOT` | unset | Directory overlay of MCP server recipes for the `loomcycle mcp-registry` and `loomcycle import --emit-recipes` commands. |
+
+### Triggers and background work
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LOOMCYCLE_SCHEDULER_ENABLED` | off | `1` starts the scheduler. Off, `ScheduleDef` still authors and lists schedules but nothing fires. |
+| `LOOMCYCLE_SCHEDULER_TICK_SECONDS` | `30` | How often the scheduler checks for due schedules. |
+| `LOOMCYCLE_WEBHOOKS_ENABLED` | off | `1` mounts the inbound webhook receiver. |
+| `LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED` | off | `1` lets a webhook with `auth.kind: none` run without a signature. Only for receivers reachable solely over an authenticated network; off, such a webhook answers 503. |
+| `LOOMCYCLE_A2A_ENABLED` | off | `1` serves the A2A server surface. Requires `LOOMCYCLE_A2A_SERVER_CARD`. |
+| `LOOMCYCLE_A2A_SERVER_CARD` | — | Name of the `A2AServerCardDef` to serve. |
+| `LOOMCYCLE_A2A_TENANCY_ROUTING` | `none` | How an A2A request picks its tenant: `none`, `host` or `path`; never from the request body. |
+| `LOOMCYCLE_A2A_PUBLIC_BASE_URL` | unset | Externally reachable base URL advertised in the agent card; unset advertises a relative path. |
+| `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS` | `32` | Memory consolidation: targets one fan-out tick dispatches; the rest wait for the next tick. |
+| `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | `4` | Memory consolidation: parallel consolidation runs when the model is not local (a local model always runs them one at a time). |
+
+### Definition size caps
+
+All *0 disables*.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES` | 128 KiB | An `AgentDef` create or fork's serialised definition. |
+| `LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES` | 8 KiB | An `AgentDef` description. |
+| `LOOMCYCLE_AGENT_DEF_MAX_CODE_BYTES` | 256 KiB | An inline code-js `code_body`. |
+| `LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES` | 1 MiB | A `TeamDef` definition (it carries its agents' definitions). |
+| `LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES` | 128 KiB | A `SkillDef` body. |
+| `LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES` | 8 KiB | A `SkillDef` description. |
+| `LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES` | 32 KiB | The structured judgement JSON on `Evaluation.submit`. |
+| `LOOMCYCLE_EVALUATION_MAX_RATIONALE_BYTES` | 8 KiB | The rationale on `Evaluation.submit`. |
+
+### Memory, documents and channels
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LOOMCYCLE_MEMORY_MAX_VALUE_BYTES` | 64 KiB | Largest Memory value per write. *0 disables*. |
+| `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` | 1 MiB | Memory bytes per scope; an agent's `memory_quota_bytes` overrides it. *0 disables*. |
+| `LOOMCYCLE_MEMORY_SWEEP_MS` | `900000` | How often expired Memory entries are deleted; `0` stops the sweep. |
+| `LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS` | 7 days | How long a consolidation-queue row is kept after a pass consumed it; `0` keeps them (and their chat payloads) forever. |
+| `LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS` | on | `0` stops creating the tenant-root and user-root documents when a principal is established (token mint, config principals at boot); they are then created on first use only. |
+| `LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE` | `100` | Texts per embedder call (provider limits still apply); `0` sends one text per call. |
+| `LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS` | `30000` | Timeout of one embedder call; `0` relies on the caller's deadline. |
+| `LOOMCYCLE_PGVECTOR_ENABLED` | off | `1` enables vector Memory on Postgres; boot fails if the `vector` extension is missing. |
+| `LOOMCYCLE_SQLITE_VEC_PATH` | unset | Path to the sqlite-vec extension library. Required by a binary built with the `sqlite_vec` tag; ignored otherwise. |
+| `LOOMCYCLE_MEMORY_TRACE_INDEX` | off | `1` (or `true`) stores and embeds each user turn so past conversations are searchable by what was said. Copies personal data into a second place, so it is opt-in. |
+| `LOOMCYCLE_MEMORY_TRACE_ASSISTANT` | off | `1` also indexes assistant turns (at run completion). |
+| `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` | 30 days | How long an indexed turn stays searchable. |
+| `LOOMCYCLE_MEMORY_CHANGES_ENABLED` | off | `1` records a memory change feed (change-data capture) that change subscriptions deliver from. Off, the store is not wrapped and pays nothing. |
+| `LOOMCYCLE_MEMORY_CHANGES_RETENTION_HOURS` | `24` | How long change-feed rows are kept. |
+| `LOOMCYCLE_CHANGE_SUB_INTERVAL_MS` | `5000` | How often the change-subscription delivery engine reads the feed. |
+| `LOOMCYCLE_DEADLINK_GC_MS` | `3600000` | How often unreachable chunk references (a body whose chunk is gone, an edge to a missing chunk) are collected; on by default, `0` disables. |
+| `LOOMCYCLE_DEADLINK_GC_DRY_RUN` | off | `1` makes that collection count and log without deleting. |
+| `LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS` | `4` | Concurrent `GET /v1/_document/feed` streams one principal may hold per replica; `0` = unlimited. |
+| `LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS` | `50000` | Largest chunk-id list a filtered Document search binds; a wider filter is refused (`filter_too_wide`). |
+| `LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE` | `32` | Supporting quotes kept on one knowledge-base relation. |
+| `LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES` | 8 MiB | Caps the `POST /v1/_document` body and a stored document image. |
+| `LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES` | 64 KiB | Largest channel message. *0 disables*. |
+| `LOOMCYCLE_CHANNELS_SWEEP_MS` | `900000` | How often expired channel messages are deleted; `0` stops the sweep (reads skip expired messages either way). |
+| `LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS` | `30000` | Longest `wait_ms` a channel subscribe may ask for; `0` disables long-polling. |
+| `LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED` | `10000` | Live timers for deferred publishes; past it a deferred message is still stored but subscribers see it on their next poll. `0` = no cap. |
+| `LOOMCYCLE_CHANNEL_HOOKS` | off | `1` runs the worker that applies channel hooks; off, a channel's hooks are skipped. |
+| `LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY` | `16` | Messages one replica's hook worker decides at once. |
+| `LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL` | `4` | Of those, how many belong to one channel. |
+| `LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT` | `15m` | A Go duration: how long a message waits on fail-closed hooks before it is dropped as "hook unavailable". |
+| `LOOMCYCLE_CHANNEL_DEBUG` | off | `1` logs channel publish and subscribe activity. Diagnostic only. |
+
+### SQL Memory
+
+Overrides of the `storage:` SQL Memory settings; see [SQL_MEMORY.md](SQL_MEMORY.md).
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LOOMCYCLE_SQLMEM_ROOT` | `<data dir>/sqlmem` | Directory of the per-scope sqlite files. |
+| `LOOMCYCLE_SQLMEM_PG_DSN` | — | Separate database DSN for the Postgres tier (required with a Postgres store). A secret: never interpolated into config. |
+| `LOOMCYCLE_SQLMEM_QUOTA_BYTES` | `0` | Size cap of one scope file; an agent's `sql_quota_bytes` overrides it. `0` = none. |
+| `LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS` | `30000` | Timeout of one statement. |
+| `LOOMCYCLE_SQLMEM_MAX_ROWS` | `10000` | Rows a query returns before it is truncated. |
+| `LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES` | 8 MiB | Bytes an agent's own SQL returns before the result is truncated; there is no unlimited. |
+| `LOOMCYCLE_SQLMEM_AUDIT_MODE` | `full` | `full` records the redacted statement in the audit; `metadata` records only op, scope and row counts. |
+| `LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS` | `30000` | How long an explicit transaction may stay open before it is rolled back; `0` disables the reaper. |
+| `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS` | `64` | Open explicit transactions server-wide; `0` = unbounded. |
+| `LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH` | `16` | Savepoint nesting in one transaction; `0` = unbounded. |
+| `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS` | `0` | Drops agent and user scopes idle this long. Off by default: it deletes data. |
+| `LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES` | `0` | When all durable scopes together exceed this, the largest idle ones are dropped. Off by default: it deletes data. |
+| `LOOMCYCLE_SQLMEM_GC_INTERVAL_MS` | 1 h | How often those two collections run. |
+| `LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES` | `0` | A scope larger than this is left out of a runtime snapshot (and recorded as left out); `0` = no cap. |
+| `LOOMCYCLE_SQLMEM_SHARED_SCHEMAS` | — | Postgres tier: comma-separated read-only schemas added to every scope's `search_path`. Visible to every tenant. |
+
+### Retention and usage
+
+The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=1`. Each `*_MODE` is `off` (default), `prune` or `export+prune`; `export+prune` needs an export directory.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LOOMCYCLE_RETENTION_INTERVAL_MS` | 1 h | How often the retention sweeper runs. |
+| `LOOMCYCLE_RETENTION_EXPORT_DIR` | — | Where `export+prune` writes what it deletes. |
+| `LOOMCYCLE_RETENTION_DEFS_MODE` | `off` | Prunes old versions of substrate definitions. |
+| `LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS` | `0` | Only versions older than this are eligible; `0` = any age. |
+| `LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N` | `5` | Versions kept per (tenant, name) regardless; `0` keeps none. |
+| `LOOMCYCLE_RETENTION_CHATS_MODE` | `off` | Deletes aged sessions with their runs and events; pinned sessions are exempt. Inherits the legacy `LOOMCYCLE_USAGE_RUN_RETENTION_*` settings when unset. |
+| `LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS` | `0` | A session whose runs all finished longer ago than this is eligible. |
+| `LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS` | 3 days | The shorter age for chats of `internal:` agents (the runtime's own maintenance runs); `0` uses the chats age. |
+| `LOOMCYCLE_RETENTION_MEM_MODE` | `off` | Reclaims the memory of fully retired agents. |
+| `LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS` | `0` | Only agents whose last definition change is older than this. |
+| `LOOMCYCLE_RETENTION_MEM_CONTENT_MODE` | `off` | Prunes superseded memory content from live scopes (evidential content is exempt). |
+| `LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS` | — | Only content retired longer ago than this. |
+| `LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE` | `off` | Deletes subject documents left with no facts and no references. Off by default: one user's erasure could otherwise delete a record others see. |
+| `LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS` | — | Only dossiers untouched longer than this. |
+| `LOOMCYCLE_USAGE_SWEEPER` | on | `0` stops rolling old per-call usage rows into the daily `usage_archive` (for when an external job owns retention). |
+| `LOOMCYCLE_USAGE_SWEEP_INTERVAL_MS` | 1 h | How often that rollup runs. |
+| `LOOMCYCLE_USAGE_DETAIL_RETENTION_MS` | 30 days | Per-call usage rows older than this are rolled up and deleted; totals are kept. |
+| `LOOMCYCLE_USAGE_RUN_RETENTION_MS` | `0` | Legacy old-run archiver: completed runs older than this are deleted (off at `0`). Prefer `LOOMCYCLE_RETENTION_CHATS_*`. |
+| `LOOMCYCLE_USAGE_RUN_RETENTION_MODE` | `off` | The legacy archiver's mode. |
+| `LOOMCYCLE_USAGE_EXPORT_DIR` | — | Where the legacy archiver writes exported runs. |
+
+### Observability
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LOOMCYCLE_METRICS_ENABLED` | off | `1` samples process metrics into the store. |
+| `LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS` | `5000` | Sampling interval; floor 1 s. |
+| `LOOMCYCLE_METRICS_RETENTION_DAYS` | `7` | Days of samples kept; `0` keeps them all. |
+| `LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS` | `900000` | How often old samples are deleted; `0` stops it. |
+| `LOOMCYCLE_METRICS_COLLECT_SYSTEM` | off | `1` also samples system-wide CPU and memory (Linux only). |
+| `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP endpoint; setting it turns on tracing (per run, iteration, provider and tool call). |
+| `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` | — | Collector headers as `key=value,key2=value2`. A secret: never interpolated into config. |
+| `LOOMCYCLE_OTEL_SERVICE_NAME` | `loomcycle` | Service name on the spans. |
+| `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO` | `1.0` | Fraction of traces sampled, clamped to 0–1. |
+
 ## 10. Cross-references
 
 - [`loomcycle.example.yaml`](../loomcycle.example.yaml) — the repo-root reference yaml. All six user_tiers wired, inline comments on every section. Copy-paste and edit.
