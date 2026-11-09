@@ -2606,6 +2606,9 @@ func (s *Server) ErasureExecute(ctx context.Context, req *loomcyclepb.ErasureExe
 // client sees the same refusal HTTP returns as a 400 rather than an opaque
 // Internal.
 func erasureErrToStatus(err error) error {
+	if st, ok := aclRefusalStatus(err); ok {
+		return st
+	}
 	switch {
 	case errors.Is(err, erasure.ErrNoSubject):
 		return status.Error(codes.InvalidArgument, err.Error())
