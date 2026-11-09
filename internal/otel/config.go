@@ -2,6 +2,7 @@ package otel
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -67,6 +68,9 @@ type Config struct {
 	// Propagators is OTEL_PROPAGATORS, parsed: "tracecontext", "baggage";
 	// empty for "none".
 	Propagators []string
+	// Warnings are values ResolveConfig ignored (an unsupported propagator
+	// or exporter name), for the caller to log.
+	Warnings []string
 	// Environment is LOOMCYCLE_ENVIRONMENT, the deployment.environment.name
 	// resource attribute; omitted when empty.
 	Environment string
@@ -85,21 +89,53 @@ type Config struct {
 }
 
 // ResolveConfig reads and validates the tracing environment through getenv
-// (os.Getenv in production). A value loomcycle cannot honour is an error, so a
-// typo stops the boot instead of silently tracing differently than the
-// operator asked.
+// (os.Getenv in production).
+//
+// With tracing on, a value that would make it silently not work (a protocol,
+// sampler, ratio, batch bound, endpoint or header loomcycle cannot honour) is
+// an error, so a typo stops the boot instead of tracing differently than the
+// operator asked. A value naming something loomcycle does not support beside
+// what it does (a b3 propagator, a console exporter) is ignored with a
+// warning in Warnings. With tracing off, no OTEL_* value fails the boot: the
+// environment may be shared with other OpenTelemetry programs, and nothing
+// here reads it. loomcycle's own LOOMCYCLE_OTEL_* settings are always checked.
 func ResolveConfig(getenv func(string) string) (Config, error) {
 	get := func(k string) string { return strings.TrimSpace(getenv(k)) }
-	cfg := Config{Protocol: ProtocolHTTPProtobuf, SamplerName: "parentbased_always_on", SamplerArg: 1, Inbound: InboundParent}
-
-	exporter := strings.ToLower(get("OTEL_TRACES_EXPORTER"))
-	switch exporter {
-	case "", "otlp", "none":
-	default:
-		return Config{}, fmt.Errorf("OTEL_TRACES_EXPORTER=%q: loomcycle supports otlp or none", exporter)
+	cfg := Config{
+		Protocol: ProtocolHTTPProtobuf, SamplerName: "parentbased_always_on", SamplerArg: 1, Inbound: InboundParent,
+		MaxQueueSize: defaultMaxQueueSize, MaxExportBatchSize: defaultMaxExportBatchSize,
+		ExportTimeout: defaultExportTimeout, ScheduleDelay: defaultScheduleDelay,
 	}
+
+	switch m := InboundMode(get("LOOMCYCLE_OTEL_INBOUND_CONTEXT")); m {
+	case "":
+	case InboundParent, InboundLink, InboundIgnore:
+		cfg.Inbound = m
+	default:
+		return Config{}, fmt.Errorf("LOOMCYCLE_OTEL_INBOUND_CONTEXT=%q: want parent, link or ignore", m)
+	}
+	cfg.HeadersFile = get("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE")
+	cfg.Environment = get("LOOMCYCLE_ENVIRONMENT")
+
+	exporterOn, warns := tracesExporter(get("OTEL_TRACES_EXPORTER"))
 	endpointSet := get("OTEL_EXPORTER_OTLP_ENDPOINT") != "" || get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != ""
-	cfg.Enabled = endpointSet && exporter != "none" && !strings.EqualFold(get("OTEL_SDK_DISABLED"), "true")
+	cfg.Enabled = endpointSet && exporterOn && !strings.EqualFold(get("OTEL_SDK_DISABLED"), "true")
+	props, pwarns := parsePropagators(get("OTEL_PROPAGATORS"))
+	cfg.Propagators = props
+	if !cfg.Enabled {
+		// Nothing exports, so nothing below is read. The propagators still
+		// carry a caller's context, so they take effect either way; their
+		// warnings are about what loomcycle ignores, not an error.
+		cfg.Warnings = append(warns, pwarns...)
+		return cfg, nil
+	}
+	cfg.Warnings = append(warns, pwarns...)
+
+	for _, k := range []string{"OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"} {
+		if err := checkEndpoint(k, get(k)); err != nil {
+			return Config{}, err
+		}
+	}
 
 	proto := get("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
 	protoVar := "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"
@@ -128,30 +164,22 @@ func ResolveConfig(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 
-	cfg.HeadersFile = get("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE")
-	if cfg.HeadersFile != "" {
-		for _, k := range []string{"OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"} {
-			if get(k) != "" {
-				return Config{}, fmt.Errorf("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE and %s are both set: keep the collector headers in one place", k)
-			}
+	for _, k := range []string{"OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"} {
+		v := get(k)
+		if v == "" {
+			continue
+		}
+		if cfg.HeadersFile != "" {
+			return Config{}, fmt.Errorf("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE and %s are both set: keep the collector headers in one place", k)
+		}
+		// Checked here because the exporter, finding a malformed entry,
+		// reports it through the SDK logger WITH the value.
+		if _, err := parseHeaderList(k, v); err != nil {
+			return Config{}, err
 		}
 	}
 
-	switch m := InboundMode(get("LOOMCYCLE_OTEL_INBOUND_CONTEXT")); m {
-	case "":
-	case InboundParent, InboundLink, InboundIgnore:
-		cfg.Inbound = m
-	default:
-		return Config{}, fmt.Errorf("LOOMCYCLE_OTEL_INBOUND_CONTEXT=%q: want parent, link or ignore", m)
-	}
-
-	props, err := parsePropagators(get("OTEL_PROPAGATORS"))
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.Propagators = props
-	cfg.Environment = get("LOOMCYCLE_ENVIRONMENT")
-
+	var err error
 	if cfg.MaxQueueSize, err = envInt(get, "OTEL_BSP_MAX_QUEUE_SIZE", defaultMaxQueueSize); err != nil {
 		return Config{}, err
 	}
@@ -167,6 +195,112 @@ func ResolveConfig(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// tracesExporter reads OTEL_TRACES_EXPORTER, a comma-separated list: unset or
+// naming otlp exports over OTLP; none, or only exporters loomcycle does not
+// ship (console, zipkin), exports nothing. Unsupported names are warned about.
+func tracesExporter(v string) (on bool, warnings []string) {
+	if v == "" {
+		return true, nil
+	}
+	none := false
+	for _, e := range strings.Split(strings.ToLower(v), ",") {
+		switch e = strings.TrimSpace(e); e {
+		case "otlp":
+			on = true
+		case "none":
+			none = true
+		case "":
+		default:
+			warnings = append(warnings, fmt.Sprintf("OTEL_TRACES_EXPORTER names %q, which loomcycle does not support; ignored", e))
+		}
+	}
+	if on && none {
+		warnings = append(warnings, "OTEL_TRACES_EXPORTER names both otlp and none; exporting over otlp")
+	}
+	return on, warnings
+}
+
+// checkEndpoint refuses an endpoint the exporter cannot reach: one without an
+// http(s) scheme and a host. The retired form, a bare host:port, turned
+// tracing on and exported nowhere. The value is quoted without its userinfo
+// or query, where credentials might sit.
+func checkEndpoint(name, v string) error {
+	if v == "" {
+		return nil
+	}
+	u, err := url.Parse(v)
+	if err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+		return nil
+	}
+	return fmt.Errorf("%s=%q: must be a URL with scheme, e.g. http://collector:4318", name, endpointForError(v))
+}
+
+// endpointForError is v with anything before an '@' (userinfo) and anything
+// from '?' (a query) removed.
+func endpointForError(v string) string {
+	if i := strings.IndexByte(v, '?'); i >= 0 {
+		v = v[:i] + "?…"
+	}
+	if i := strings.LastIndexByte(v, '@'); i >= 0 {
+		start := 0
+		if j := strings.Index(v, "://"); j >= 0 && j < i {
+			start = j + 3
+		}
+		v = v[:start] + "…@" + v[i+1:]
+	}
+	return v
+}
+
+// parseHeaderList parses an OTEL_EXPORTER_OTLP_HEADERS-format value the way
+// the exporter does: comma-separated key=value, values percent-decoded. An
+// error names the variable and the entry's position, never its content.
+func parseHeaderList(name, v string) (map[string]string, error) {
+	out := map[string]string{}
+	for i, pair := range strings.Split(v, ",") {
+		k, val, err := parseHeaderPair(pair)
+		if err != nil {
+			return nil, fmt.Errorf("%s: entry %d %s", name, i+1, err)
+		}
+		out[k] = val
+	}
+	return out, nil
+}
+
+// parseHeaderPair parses one key=value header entry. Its error says what is
+// wrong without quoting the entry.
+func parseHeaderPair(pair string) (string, string, error) {
+	k, v, ok := strings.Cut(pair, "=")
+	k = strings.TrimSpace(k)
+	switch {
+	case !ok:
+		return "", "", errors.New("is not key=value")
+	case !validHeaderKey(k):
+		return "", "", errors.New("has an invalid header name")
+	}
+	dv, err := url.PathUnescape(v)
+	if err != nil {
+		return "", "", errors.New("has a malformed %-escape in its value")
+	}
+	return k, strings.TrimSpace(dv), nil
+}
+
+// validHeaderKey: an HTTP header name is a non-empty RFC 7230 token, the rule
+// the exporter applies.
+func validHeaderKey(k string) bool {
+	if k == "" {
+		return false
+	}
+	for _, c := range []byte(k) {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Sampler builds the head sampler OTEL_TRACES_SAMPLER names. arg is the ratio
@@ -189,27 +323,28 @@ func Sampler(name string, arg float64) (sdktrace.Sampler, error) {
 	return nil, fmt.Errorf("OTEL_TRACES_SAMPLER=%q: want always_on, always_off, traceidratio, parentbased_always_on, parentbased_always_off or parentbased_traceidratio", name)
 }
 
-func parsePropagators(v string) ([]string, error) {
+// parsePropagators reads OTEL_PROPAGATORS: tracecontext and baggage are
+// supported, none alone turns propagation off, anything else is ignored with
+// a warning.
+func parsePropagators(v string) (props, warnings []string) {
 	if v == "" {
 		return []string{"tracecontext", "baggage"}, nil
 	}
-	var out []string
-	for _, p := range strings.Split(v, ",") {
+	parts := strings.Split(v, ",")
+	for _, p := range parts {
 		switch p = strings.TrimSpace(p); p {
 		case "tracecontext", "baggage":
-			out = append(out, p)
+			props = append(props, p)
 		case "none":
-			// "none" alone turns propagation off; next to another name it
-			// is meaningless, so it is refused rather than guessed at.
-			if len(strings.Split(v, ",")) > 1 {
-				return nil, fmt.Errorf("OTEL_PROPAGATORS=%q: none cannot be combined with another propagator", v)
+			if len(parts) > 1 {
+				warnings = append(warnings, "OTEL_PROPAGATORS names none beside other propagators; none ignored")
 			}
-			return nil, nil
+		case "":
 		default:
-			return nil, fmt.Errorf("OTEL_PROPAGATORS=%q: loomcycle supports tracecontext, baggage or none", v)
+			warnings = append(warnings, fmt.Sprintf("OTEL_PROPAGATORS names %q, which loomcycle does not support; ignored", p))
 		}
 	}
-	return out, nil
+	return props, warnings
 }
 
 func envInt(get func(string) string, key string, def int) (int, error) {
@@ -251,20 +386,14 @@ func ReadHeadersFile(path string) (map[string]string, error) {
 			continue
 		}
 		for _, pair := range strings.Split(text, ",") {
-			pair = strings.TrimSpace(pair)
-			if pair == "" {
+			if strings.TrimSpace(pair) == "" {
 				continue
 			}
-			k, v, ok := strings.Cut(pair, "=")
-			k = strings.TrimSpace(k)
-			if !ok || k == "" {
-				return nil, fmt.Errorf("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE line %d: want key=value", line)
-			}
-			dv, err := url.PathUnescape(strings.TrimSpace(v))
+			k, v, err := parseHeaderPair(pair)
 			if err != nil {
-				return nil, fmt.Errorf("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE line %d: header %q has a malformed escape", line, k)
+				return nil, fmt.Errorf("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE line %d %s", line, err)
 			}
-			out[k] = dv
+			out[k] = v
 		}
 	}
 	if err := sc.Err(); err != nil {

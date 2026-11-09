@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
@@ -46,6 +47,18 @@ func (b *boot) initTelemetry() {
 	// The replica id /metrics labels its series with, so a trace and a
 	// scrape from one instance carry the same name.
 	otelCfg.InstanceID = b.cfg.Env.ReplicaID
+	// Values ignored in place of an error: unsupported names beside supported
+	// ones while tracing is on; anything at all while it is off, where the
+	// OTEL_* environment may belong to other programs.
+	if len(otelCfg.Warnings) > 0 {
+		if otelCfg.Enabled {
+			for _, w := range otelCfg.Warnings {
+				slog.Warn("otel: ignoring a setting", "detail", w)
+			}
+		} else {
+			slog.Info("otel: tracing is off; unsupported OTEL_* values ignored", "detail", strings.Join(otelCfg.Warnings, "; "))
+		}
+	}
 	otelShutdown, err := lcotel.Init(otelCfg)
 	if err != nil {
 		fatal("otel: tracer setup failed", "err", err)

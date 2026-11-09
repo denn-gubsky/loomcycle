@@ -3452,13 +3452,13 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP endpoint, a URL with its scheme (`http://otel-collector:4318`); setting it (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) turns on tracing (per run, iteration, provider and tool call). |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Or `grpc`. `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` wins when set. `http/json` is refused at startup. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | — | Collector headers as `key=value,key2=value2`. A secret: never interpolated into config, never nameable as a definition's secret source. |
-| `OTEL_TRACES_EXPORTER` | `otlp` | `none` turns tracing off; any other value stops the startup. |
+| `OTEL_TRACES_EXPORTER` | `otlp` | A comma-separated list: naming `otlp` exports over OTLP; `none`, or only exporters loomcycle does not ship (`console`, `zipkin`), turns tracing off. Unsupported names are logged and ignored. |
 | `OTEL_SDK_DISABLED` | `false` | `true` turns tracing off. |
 | `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off` or `parentbased_traceidratio`. |
 | `OTEL_TRACES_SAMPLER_ARG` | `1` | The ratio for the two ratio samplers, 0–1; anything else stops the startup. |
 | `OTEL_SERVICE_NAME` | `loomcycle` | Service name on the spans. |
 | `OTEL_RESOURCE_ATTRIBUTES` | — | Resource attributes as `key=value,...`; override loomcycle's defaults below. |
-| `OTEL_PROPAGATORS` | `tracecontext,baggage` | Or `none`; other propagators stop the startup. |
+| `OTEL_PROPAGATORS` | `tracecontext,baggage` | `none` alone turns propagation off; other propagators (`b3`, `jaeger`, …) are logged and ignored. |
 | `OTEL_BSP_MAX_QUEUE_SIZE` | `2048` | Spans waiting for export; past it they are dropped (and counted), never waited on. |
 | `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` | `512` | Spans per export call. |
 | `OTEL_BSP_EXPORT_TIMEOUT` | `10000` | Milliseconds one export call may take. |
@@ -3476,6 +3476,16 @@ reads `OTEL_EXPORTER_OTLP_*` (and the `_TRACES_` forms) itself:
 `_CLIENT_CERTIFICATE`, `_CLIENT_KEY` and `_INSECURE`, so TLS and mTLS to
 the collector are configured there. loomcycle decides only whether tracing
 is on, the protocol, the sampler, the resource and the queue bounds.
+
+With tracing on, a value that would make it silently not work stops the
+startup with an error naming the variable: an endpoint that is not an
+http(s) URL with a host, an unknown protocol or sampler, a ratio outside
+0–1, a non-positive batch bound, a malformed collector header (the error
+gives the entry's position, never its content), or headers set both in the
+environment and in a file. With tracing off, no `OTEL_*` value stops the
+startup — the environment may be shared with other OpenTelemetry programs —
+and unsupported ones are mentioned in one Info line. The
+`LOOMCYCLE_OTEL_*` settings are always checked.
 
 The resource carries `service.name=loomcycle`, `service.version` (the
 binary's), `service.instance.id` (`LOOMCYCLE_REPLICA_ID`, the replica label
