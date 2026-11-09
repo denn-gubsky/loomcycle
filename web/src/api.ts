@@ -220,6 +220,9 @@ export interface Agent {
   stop_reason: string | null;
   // "none" for a no-trace run: nothing it said was stored.
   retention?: string;
+  // The OpenTelemetry trace the run was recorded in; absent when tracing was
+  // off or the trace not sampled.
+  trace_id?: string;
   error: string | null;
   usage: {
     input_tokens?: number;
@@ -645,6 +648,9 @@ export interface Principal {
   effective?: { surfaces?: Record<string, boolean> };
   /** RFC FA: how the caller signed in. status "pending" = awaiting approval. */
   auth?: { mode?: string; gate?: string; amr?: string[]; auth_time?: string; status?: string };
+  /** The operator's link from a run to its trace, with `{trace_id}` to fill
+   *  in (LOOMCYCLE_TRACE_URL_TEMPLATE). Absent when none is configured. */
+  trace_url_template?: string;
 }
 
 export interface ServerCapabilities {

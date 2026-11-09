@@ -34,6 +34,8 @@ import {
   type RunSelection,
 } from "../lib/runLineage";
 import TerminalTranscript from "./TerminalTranscript";
+import { useTraceURLTemplate } from "./Layout";
+import { traceURL } from "../lib/traceLink";
 import ViewToggle, { useViewMode } from "./ViewToggle";
 import {
   type AgentTab,
@@ -83,6 +85,20 @@ const WALK_HIDDEN_TABS: readonly AgentTab[] = ["memory", "channels"];
 // agent id is shared by every walk of the team and the agent cancel route
 // rejects it. Every other run keeps whole-run cancel by agent id, since the
 // run-id route only stops the current turn of an interactive run.
+// RunTraceLink opens the run's trace in the operator's tracing UI, when the
+// server names one (LOOMCYCLE_TRACE_URL_TEMPLATE) and the run was traced.
+export function RunTraceLink({ run }: { run: Pick<Agent, "trace_id"> }) {
+  const href = traceURL(useTraceURLTemplate(), run.trace_id);
+  if (!href) return null;
+  return (
+    <span>
+      <a href={href} target="_blank" rel="noopener noreferrer" title="Open this run's trace in the tracing UI">
+        Open trace
+      </a>
+    </span>
+  );
+}
+
 export function stopRun(run: Pick<Agent, "agent_id" | "run_id">, reason: string): Promise<unknown> {
   if (isTeamWalkAgentId(run.agent_id)) {
     if (!run.run_id) return Promise.reject(new Error("this team walk has no run id to cancel"));
@@ -352,6 +368,7 @@ function AgentDetailPaneBody({ agentId, runId, ancestors, onSelect }: AgentDetai
             {agent.completed_at && (
               <span>{durationLabel(agent.started_at, agent.completed_at)}</span>
             )}
+            <RunTraceLink run={agent} />
             <RunUsageFacts run={agent} events={events} />
             <RunContextMethod run={agent} />
             <RunClockFacts run={agent} />

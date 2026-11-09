@@ -4912,6 +4912,13 @@ type Env struct {
 	// admin. Env: LOOMCYCLE_REPLICA_ID.
 	ReplicaID string
 
+	// TraceURLTemplate links a run to its trace in the operator's tracing UI:
+	// an http(s) URL in which {trace_id} is replaced by the run's trace id
+	// (e.g. https://grafana.example/explore?traceId={trace_id}). Empty = no
+	// link. Shown to every signed-in Web UI user who can see the run.
+	// Env: LOOMCYCLE_TRACE_URL_TEMPLATE.
+	TraceURLTemplate string
+
 	// CancelAckTimeoutMs is the v0.12.2 cross-replica cancel ack wait.
 	// On a cluster-mode cancel that broadcasts to the owning replica,
 	// the originator waits this long for a "cancelled" ack on the
@@ -6501,6 +6508,10 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 			return nil, fmt.Errorf("LOOMCYCLE_REPLICA_ID: %w", err)
 		}
 	}
+	cfg.Env.TraceURLTemplate = strings.TrimSpace(os.Getenv("LOOMCYCLE_TRACE_URL_TEMPLATE"))
+	if err := validateTraceURLTemplate(cfg.Env.TraceURLTemplate); err != nil {
+		return nil, fmt.Errorf("LOOMCYCLE_TRACE_URL_TEMPLATE: %w", err)
+	}
 	cfg.Env.CancelAckTimeoutMs = 5000
 	if v := os.Getenv("LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
@@ -7120,6 +7131,26 @@ func ExpandEnv(s string) string { return expandEnv(s) }
 // references do not match (a "." or ":" is not a NAME character), and neither
 // does the POSIX-default form ${NAME:-x}, which ExpandEnv does not expand.
 func HasEnvRef(s string) bool { return envVarRe.MatchString(s) }
+
+// validateTraceURLTemplate accepts "" (no link) or an absolute http(s) URL
+// naming {trace_id}. The Web UI puts the result in a link's href, so any
+// other scheme (javascript:, data:) is refused here rather than trusted there.
+func validateTraceURLTemplate(t string) error {
+	if t == "" {
+		return nil
+	}
+	if !strings.Contains(t, "{trace_id}") {
+		return errors.New("must contain {trace_id}")
+	}
+	u, err := url.Parse(strings.ReplaceAll(t, "{trace_id}", "0"))
+	if err != nil {
+		return fmt.Errorf("not a URL: %w", err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errors.New("must be an absolute http or https URL")
+	}
+	return nil
+}
 
 // ExpandEnvAllowed reports whether the given env-var name may be expanded
 // inside YAML. Allowlist:

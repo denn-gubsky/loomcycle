@@ -3135,3 +3135,22 @@ hooks:
 		t.Fatalf("hooks on a tool the agent lacks were accepted")
 	}
 }
+
+// TestValidateTraceURLTemplate_OnlyHTTPLinksNamingTheTraceID: the Web UI puts
+// the template in an href, so only an absolute http(s) URL with {trace_id}
+// passes the boot.
+func TestValidateTraceURLTemplate_OnlyHTTPLinksNamingTheTraceID(t *testing.T) {
+	for tmpl, ok := range map[string]bool{
+		"": true,
+		"https://grafana.example/explore?traceId={trace_id}": true,
+		"http://jaeger:16686/trace/{trace_id}":               true,
+		"https://grafana.example/explore":                    false,
+		"javascript:alert('{trace_id}')":                     false,
+		"data:text/html,{trace_id}":                          false,
+		"/trace/{trace_id}":                                  false,
+	} {
+		if err := validateTraceURLTemplate(tmpl); (err == nil) != ok {
+			t.Errorf("validateTraceURLTemplate(%q) = %v, want ok=%v", tmpl, err, ok)
+		}
+	}
+}
