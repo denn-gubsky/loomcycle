@@ -439,11 +439,6 @@ func (s *MemoryBackendDef) checkScopeForName(policy tools.MemoryBackendDefPolicy
 			if name == policy.SelfName {
 				return nil
 			}
-		case "descendants":
-			// Same KNOWN GAP as WebhookDef's "descendants" — accept on
-			// presence; tighten when RunIdentity gains the parent
-			// lineage walk surface.
-			return nil
 		default:
 			if strings.HasPrefix(sc, "named:") {
 				if strings.TrimPrefix(sc, "named:") == name {
@@ -451,6 +446,9 @@ func (s *MemoryBackendDef) checkScopeForName(policy tools.MemoryBackendDefPolicy
 				}
 			}
 		}
+	}
+	if err := descendantsRefusal("MemoryBackendDef", "memory backend def scopes", policy.Scopes); err != nil {
+		return err
 	}
 	return fmt.Errorf("MemoryBackendDef tool: name %q not in the caller's granted def-scope (%v)", name, policy.Scopes)
 }

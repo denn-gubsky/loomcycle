@@ -611,11 +611,6 @@ func (s *WebhookDef) checkScopeForName(policy tools.WebhookDefPolicyValue, name 
 			if name == policy.SelfName {
 				return nil
 			}
-		case "descendants":
-			// Same KNOWN GAP as ScheduleDef's "descendants" — accept on
-			// presence; tighten when RunIdentity gains the parent
-			// lineage walk surface.
-			return nil
 		default:
 			if strings.HasPrefix(sc, "named:") {
 				if strings.TrimPrefix(sc, "named:") == name {
@@ -623,6 +618,9 @@ func (s *WebhookDef) checkScopeForName(policy tools.WebhookDefPolicyValue, name 
 				}
 			}
 		}
+	}
+	if err := descendantsRefusal("WebhookDef", "webhook def scopes", policy.Scopes); err != nil {
+		return err
 	}
 	return fmt.Errorf("WebhookDef tool: name %q not in the caller's WebhookDef scopes (%v)", name, policy.Scopes)
 }

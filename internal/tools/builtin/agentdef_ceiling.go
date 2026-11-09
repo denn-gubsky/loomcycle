@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
@@ -645,20 +647,19 @@ func ceilSkills(ctx context.Context, def mergedDef, base *mergedDef, held string
 
 // defScopeCovered reports whether a def-authoring grant c, held by a new agent
 // named childName, is within the grants ceiling held by an author named
-// ceilingSelf. The vocabulary is the def families' own: "any", "descendants"
-// (which grants as "any" does today — see checkScopeForName), "self" and
-// "named:<pattern>". "self" is relative to who holds it, so both sides are read
+// ceilingSelf. The vocabulary is the def families' own: "any", "self" and
+// "named:<pattern>" ("descendants" is refused at write and grants nothing). "self" is relative to who holds it, so both sides are read
 // as the name they stand for. A value outside the vocabulary is covered only by
 // the same value: it grants nothing today, and a future one must not pass
 // because nothing here knew it.
 func defScopeCovered(c, childName string, ceiling []string, ceilingSelf string) bool {
-	grantsAll := contains(ceiling, "any") || contains(ceiling, "descendants")
+	grantsAll := contains(ceiling, "any")
 	p, isNamed := strings.CutPrefix(c, "named:")
 	if c == "self" && childName != "" {
 		p, isNamed = childName, true
 	}
 	switch {
-	case c == "any" || c == "descendants":
+	case c == "any":
 		return grantsAll
 	case !isNamed:
 		return contains(ceiling, c)
@@ -733,4 +734,37 @@ func decodeBase(raw json.RawMessage) *mergedDef {
 		_ = json.Unmarshal(raw, &d)
 	}
 	return &d
+}
+
+// descendantsRefusal is a def-scope check's refusal when the caller's grant
+// names "descendants" and nothing else in it authorised the name. The value
+// never walked the lineage it promised and granted every name, as "any" does;
+// it is refused at load and at write, and a definition stored before that is
+// denied by it rather than widened. Logged, so an operator learns which gate
+// a stored definition lost.
+func descendantsRefusal(tool, field string, scopes []string) error {
+	if !contains(scopes, "descendants") {
+		return nil
+	}
+	slog.Warn("defscope: a stored grant names descendants, which authorises nothing", "tool", tool, "field", field)
+	return fmt.Errorf("%s tool: %s: %s", tool, field, config.DescendantsUnsupported)
+}
+
+// refuseDescendantsGrant refuses an AgentDef create or fork overlay granting
+// "descendants" in any *_def_scopes gate.
+func refuseDescendantsGrant(ov mergedDef) error {
+	for _, g := range []struct {
+		field  string
+		scopes []string
+	}{
+		{"agent_def_scopes", ov.AgentDefScopes},
+		{"schedule_def_scopes", ov.ScheduleDefScopes},
+		{"a2a_server_card_def_scopes", ov.A2AServerCardDefScopes},
+		{"a2a_agent_def_scopes", ov.A2AAgentDefScopes},
+	} {
+		if contains(g.scopes, "descendants") {
+			return fmt.Errorf("AgentDef tool: %s: %s", g.field, config.DescendantsUnsupported)
+		}
+	}
+	return nil
 }
