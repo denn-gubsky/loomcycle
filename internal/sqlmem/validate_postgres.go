@@ -48,6 +48,11 @@ var pgServerFnRe = regexp.MustCompile(
 	`(?i)(?:\b(?:` + pgServerFnNames + `)\b|"(?:` + pgServerFnNames + `)")\s*\(`,
 )
 
+// pgSetConfigRe matches a set_config(...) call: the one way a statement the
+// allow-sets admit can change a setting for the session (SET and RESET never
+// get through), such as raising the work_mem baked onto the scope role.
+var pgSetConfigRe = regexp.MustCompile(`(?i)(?:\bset_config\b|"set_config")\s*\(`)
+
 // pgSelectIntoRe matches a `SELECT … INTO <table>` (which CREATES a table — a
 // WRITE) in a read-only statement. Anchored as whitespace-INTO-whitespace so a
 // double-quoted column literally named "into" (`SELECT "into" FROM t`) is NOT a
@@ -66,6 +71,9 @@ func postgresStatementDenies(trimmed string, readOnly bool) error {
 	masked := maskStringLiterals(trimmed)
 	if pgServerFnRe.MatchString(masked) {
 		return refuse("this statement calls a denied server-side function (file / large-object I/O or dblink) — it can read host files or connect to another database")
+	}
+	if pgSetConfigRe.MatchString(masked) {
+		return refuse("set_config is denied — the scope's settings (memory, timeouts, search path) are fixed by the runtime")
 	}
 	// SELECT … INTO creates a table; refuse it on the read-only op (it is a
 	// write the read-only-transaction backstop would catch on auto-commit but
