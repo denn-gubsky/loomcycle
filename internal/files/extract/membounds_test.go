@@ -299,9 +299,9 @@ func TestScanSheet_AttributeFloodRefused(t *testing.T) {
 
 func TestDOCX_AttributeFloodRefused(t *testing.T) {
 	doc := docxWith(t, `<w:document `+nsW+`><w:body>`+attrFlood(2_000_000)+`</w:body></w:document>`)
-	// The ceiling is the archive layer reading the 20 MiB part out of the zip;
-	// the attribute count adds nothing to it.
-	wantRefusedUnder(t, "DOCX attribute flood", 96<<20, func() error {
+	// The ceiling is the archive layer reading the 20 MiB part out of the zip
+	// (about 64 MiB, twice that under -race); the attribute count adds nothing.
+	wantRefusedUnder(t, "DOCX attribute flood", 192<<20, func() error {
 		_, err := extractBytes(DOCX{}, "flood.docx", doc)
 		return err
 	})
