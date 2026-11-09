@@ -35,28 +35,27 @@ func (b *boot) loadConfig() {
 }
 
 // initTelemetry starts the OpenTelemetry tracer (a no-op unless configured).
+// The standard OTEL_* environment configures it; a value loomcycle cannot
+// honour stops the boot here rather than tracing differently than asked.
 func (b *boot) initTelemetry() {
-	cfg := b.cfg
-	// v0.10.0 OpenTelemetry tracer bootstrap. No-op when
-	// LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT is unset, so zero runtime
-	// cost on deployments that haven't opted in. When set, every
-	// otel.Tracer(...).Start(ctx, ...) call across the codebase emits
-	// to the configured OTLP/HTTP collector.
-	otelShutdown, otelErr := lcotel.Init(lcotel.Config{
-		Endpoint:       cfg.Env.OTELExporterEndpoint,
-		Headers:        cfg.Env.OTELExporterHeaders,
-		ServiceName:    cfg.Env.OTELServiceName,
-		ServiceVersion: buildVersion,
-		SamplerRatio:   cfg.Env.OTELTracesSamplerRatio,
-	})
-	if otelErr != nil {
-		fatal("otel: tracer setup failed", "err", otelErr)
+	otelCfg, err := lcotel.ResolveConfig(os.Getenv)
+	if err != nil {
+		fatal("otel: invalid tracing configuration", "err", err)
 	}
-	if cfg.Env.OTELExporterEndpoint != "" {
-		slog.Info("otel: tracer enabled", "url", cfg.Env.OTELExporterEndpoint, "service", cfg.Env.OTELServiceName,
-			"sampler", fmt.Sprintf("traceidratio@%g", cfg.Env.OTELTracesSamplerRatio))
+	otelCfg.ServiceVersion = buildVersion
+	// The replica id /metrics labels its series with, so a trace and a
+	// scrape from one instance carry the same name.
+	otelCfg.InstanceID = b.cfg.Env.ReplicaID
+	otelShutdown, err := lcotel.Init(otelCfg)
+	if err != nil {
+		fatal("otel: tracer setup failed", "err", err)
+	}
+	if otelCfg.Enabled {
+		slog.Info("otel: tracer enabled", "protocol", otelCfg.Protocol,
+			"sampler", otelCfg.SamplerName, "sampler_arg", otelCfg.SamplerArg,
+			"inbound_context", otelCfg.Inbound, "headers_file", otelCfg.HeadersFile != "")
 	} else {
-		slog.Info("otel: disabled (set LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT to enable)")
+		slog.Info("otel: disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)")
 	}
 	b.otelShutdown = otelShutdown
 }

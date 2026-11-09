@@ -13,12 +13,12 @@ import (
 )
 
 // TestInit_NoOpWhenEndpointEmpty pins the load-bearing default: with
-// no LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT, the tracer is a no-op and
+// no OTLP endpoint configured, the tracer is a no-op and
 // the call sites scattered across the codebase pay zero cost. Verified
 // by checking that the global tracer provider stays at the default
 // no-op type after Init (no OTLP exporter wired).
 func TestInit_NoOpWhenEndpointEmpty(t *testing.T) {
-	shutdown, err := otellib.Init(otellib.Config{Endpoint: ""})
+	shutdown, err := otellib.Init(otellib.Config{Enabled: false})
 	if err != nil {
 		t.Fatalf("Init with empty endpoint: %v", err)
 	}

@@ -1,11 +1,16 @@
-// Package otel is loomcycle's v0.10.0 distributed-tracing bootstrap.
-// It installs an OTLP/HTTP exporter against the global OpenTelemetry
-// tracer provider when the operator sets
-// LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT; otherwise it leaves the global
-// provider as a no-op so every `tracer.Start(ctx, name)` call across the
-// codebase costs nothing.
+// Package otel is loomcycle's distributed-tracing bootstrap. It installs an
+// OTLP exporter (HTTP/protobuf or gRPC) against the global OpenTelemetry
+// tracer provider when the operator sets OTEL_EXPORTER_OTLP_ENDPOINT (or its
+// _TRACES_ twin); otherwise it leaves the global provider as a no-op so every
+// `tracer.Start(ctx, name)` call across the codebase costs nothing.
 //
-// The single Init function is the public entry point. Recorder
+// Configuration is the standard OTEL_* environment, which the OTLP exporter
+// reads itself. loomcycle decides only whether tracing is on, the protocol,
+// the sampler, the resource and the batching bounds (ResolveConfig), and adds
+// LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE, LOOMCYCLE_OTEL_INBOUND_CONTEXT
+// and LOOMCYCLE_ENVIRONMENT.
+//
+// Init is the public entry point. Recorder
 // helpers (RecordRunStart, RecordIteration, RecordProviderCall,
 // RecordToolCall, RecordMCPCall, RecordRunDone) live in recorder.go
 // and centralize the attribute set so every call site stays consistent
@@ -31,11 +36,13 @@ package otel
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
@@ -49,27 +56,6 @@ import (
 // "service.namespace" see one stable identifier.
 const TracerName = "github.com/denn-gubsky/loomcycle"
 
-// Config drives the Init bootstrap. Mirrors the cfg.Env subset the
-// command package owns; declared here so the package doesn't take a
-// hard dependency on internal/config.
-type Config struct {
-	// Endpoint is the OTLP/HTTP endpoint (no path — otlptracehttp appends
-	// /v1/traces). Empty disables the entire subsystem.
-	Endpoint string
-	// Headers are appended to every OTLP request (collector auth).
-	Headers map[string]string
-	// ServiceName populates the `service.name` resource attribute.
-	// Defaults to "loomcycle" when empty.
-	ServiceName string
-	// ServiceVersion populates the `service.version` resource attribute.
-	// Sourced from the binary's buildVersion at boot.
-	ServiceVersion string
-	// SamplerRatio is the head-based sampling ratio. 1.0 captures every
-	// span; 0.1 captures ~10%. Always respects parent sampling decisions.
-	// Clamped to [0,1] by the caller before reaching here.
-	SamplerRatio float64
-}
-
 var (
 	initOnce sync.Once
 	// shutdownFn is the per-process shutdown closure returned by Init.
@@ -80,22 +66,18 @@ var (
 	shutdownFn func(context.Context) error
 )
 
-// Init installs the global OpenTelemetry tracer provider. When
-// cfg.Endpoint is empty, this is a no-op + returns a no-op shutdown
-// closer (safe to call on every code path). Otherwise constructs an
-// OTLP/HTTP exporter pointed at cfg.Endpoint, wires a TracerProvider
-// with the configured sampler + service attributes, and registers it
-// globally so all `otel.Tracer(...)` calls across the codebase pick it
-// up.
+// Init installs the global propagator, the inbound trace-context mode and,
+// when cfg.Enabled, an OTLP exporter behind a bounded batch processor as the
+// global tracer provider. Disabled, the provider stays the no-op default and
+// the returned shutdown does nothing (safe to defer on every path).
 //
 // Idempotent: subsequent calls after the first are no-ops. The
 // loomcycle binary boots once, so this is the right tradeoff; tests
 // using the in-memory exporter call SetTracerProviderForTest directly.
 //
-// Returns the shutdown function. The caller MUST defer it (the OTLP
-// exporter batches; in-flight spans are lost if the process exits
-// without flushing). A 5-second deadline on shutdown is the right call
-// — the exporter respects ctx.
+// Returns the shutdown function. The caller MUST defer it (the batch
+// processor holds spans; they are lost if the process exits without
+// flushing). The exporter respects ctx, so a short deadline bounds it.
 func Init(cfg Config) (func(context.Context) error, error) {
 	var (
 		fn  func(context.Context) error
@@ -117,69 +99,124 @@ func Init(cfg Config) (func(context.Context) error, error) {
 }
 
 func doInit(cfg Config) (func(context.Context) error, error) {
-	if cfg.Endpoint == "" {
-		// No-op mode: leave the global tracer provider at its zero-value
-		// no-op. Every call site's tracer.Start(ctx, name) returns a
-		// no-op span at zero cost. Set propagator anyway so any external
-		// trace context coming in via HTTP headers is preserved (cheap +
-		// makes future opt-in seamless).
-		otel.SetTextMapPropagator(propagation.TraceContext{})
+	// Set whether or not tracing exports: a caller's trace context is read
+	// (after authentication) and carried even when this process records
+	// nothing, so turning tracing on later changes nothing else.
+	otel.SetTextMapPropagator(newPropagator(cfg.Propagators))
+	setInboundMode(cfg.Inbound)
+	if !cfg.Enabled {
 		return noopShutdown, nil
 	}
-
-	serviceName := cfg.ServiceName
-	if serviceName == "" {
-		serviceName = "loomcycle"
-	}
-
-	// Build resource attrs. service.name + service.version are the two
-	// fields every backend (Jaeger / Tempo / Honeycomb) groups on.
-	resAttrs := []attribute.KeyValue{
-		semconv.ServiceName(serviceName),
-	}
-	if cfg.ServiceVersion != "" {
-		resAttrs = append(resAttrs, semconv.ServiceVersion(cfg.ServiceVersion))
-	}
-	res, err := sdkresource.New(
-		context.Background(),
-		sdkresource.WithAttributes(resAttrs...),
-	)
+	errs := newErrorHandler(slog.Default(), time.Now)
+	tp, err := newTracerProvider(context.Background(), cfg, &stats, errs)
 	if err != nil {
-		return noopShutdown, fmt.Errorf("otel: build resource: %w", err)
+		return noopShutdown, err
 	}
+	otel.SetErrorHandler(errs)
+	otel.SetTracerProvider(tp)
+	stats.enabled.Store(true)
+	return tp.Shutdown, nil
+}
 
-	exporterOpts := []otlptracehttp.Option{
-		otlptracehttp.WithEndpoint(stripScheme(cfg.Endpoint)),
-	}
-	if isInsecureEndpoint(cfg.Endpoint) {
-		exporterOpts = append(exporterOpts, otlptracehttp.WithInsecure())
-	}
-	if len(cfg.Headers) > 0 {
-		exporterOpts = append(exporterOpts, otlptracehttp.WithHeaders(cfg.Headers))
-	}
-	exporter, err := otlptrace.New(
-		context.Background(),
-		otlptracehttp.NewClient(exporterOpts...),
-	)
+// newTracerProvider builds the exporting provider without installing it.
+func newTracerProvider(ctx context.Context, cfg Config, st *pipelineStats, errs *errorHandler) (*sdktrace.TracerProvider, error) {
+	sampler, err := Sampler(cfg.SamplerName, cfg.SamplerArg)
 	if err != nil {
-		return noopShutdown, fmt.Errorf("otel: build exporter: %w", err)
+		return nil, err
 	}
-
-	// ParentBased(TraceIDRatioBased(ratio)) is the recommended sampler:
-	// respects upstream decisions when a parent span is sampled (so a
-	// trace that crosses replicas stays whole), applies the ratio to
-	// untraced roots.
-	sampler := sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.SamplerRatio))
-
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+	res, err := newResource(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	var headers map[string]string
+	if cfg.HeadersFile != "" {
+		if headers, err = ReadHeadersFile(cfg.HeadersFile); err != nil {
+			return nil, err
+		}
+	}
+	exp, err := newExporter(ctx, cfg.Protocol, headers)
+	if err != nil {
+		return nil, err
+	}
+	bsp := sdktrace.NewBatchSpanProcessor(&countingExporter{next: exp, st: st, errs: errs},
+		sdktrace.WithMaxQueueSize(cfg.MaxQueueSize),
+		sdktrace.WithMaxExportBatchSize(cfg.MaxExportBatchSize),
+		sdktrace.WithExportTimeout(cfg.ExportTimeout),
+		sdktrace.WithBatchTimeout(cfg.ScheduleDelay),
+	)
+	return sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(&gateProcessor{next: bsp, st: st, maxInFlight: int64(cfg.MaxQueueSize)}),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sampler),
-	)
-	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.TraceContext{})
+	), nil
+}
 
-	return tp.Shutdown, nil
+// newExporter builds the OTLP exporter for protocol. No endpoint, TLS or
+// timeout option is passed: each would override the OTEL_EXPORTER_OTLP_*
+// variables the exporter reads itself. headers (from the headers file) are
+// the one exception, and ResolveConfig refuses them beside the env headers.
+func newExporter(ctx context.Context, protocol Protocol, headers map[string]string) (sdktrace.SpanExporter, error) {
+	var (
+		exp sdktrace.SpanExporter
+		err error
+	)
+	switch protocol {
+	case ProtocolGRPC:
+		var opts []otlptracegrpc.Option
+		if len(headers) > 0 {
+			opts = append(opts, otlptracegrpc.WithHeaders(headers))
+		}
+		exp, err = otlptracegrpc.New(ctx, opts...)
+	default:
+		var opts []otlptracehttp.Option
+		if len(headers) > 0 {
+			opts = append(opts, otlptracehttp.WithHeaders(headers))
+		}
+		exp, err = otlptracehttp.New(ctx, opts...)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("otel: build %s exporter: %w", protocol, err)
+	}
+	return exp, nil
+}
+
+// newResource is loomcycle's defaults overridden by OTEL_SERVICE_NAME and
+// OTEL_RESOURCE_ATTRIBUTES: each later source wins over the earlier, so the
+// environment always has the last word.
+func newResource(ctx context.Context, cfg Config) (*sdkresource.Resource, error) {
+	attrs := []attribute.KeyValue{semconv.ServiceName("loomcycle")}
+	if cfg.ServiceVersion != "" {
+		attrs = append(attrs, semconv.ServiceVersion(cfg.ServiceVersion))
+	}
+	if cfg.InstanceID != "" {
+		attrs = append(attrs, semconv.ServiceInstanceID(cfg.InstanceID))
+	}
+	if cfg.Environment != "" {
+		// The current semconv name; the pinned v1.26 package predates it.
+		attrs = append(attrs, attribute.String("deployment.environment.name", cfg.Environment))
+	}
+	res, err := sdkresource.New(ctx,
+		sdkresource.WithAttributes(attrs...),
+		sdkresource.WithFromEnv(),
+		sdkresource.WithTelemetrySDK(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("otel: build resource: %w", err)
+	}
+	return res, nil
+}
+
+func newPropagator(names []string) propagation.TextMapPropagator {
+	var ps []propagation.TextMapPropagator
+	for _, n := range names {
+		switch n {
+		case "tracecontext":
+			ps = append(ps, propagation.TraceContext{})
+		case "baggage":
+			ps = append(ps, propagation.Baggage{})
+		}
+	}
+	return propagation.NewCompositeTextMapPropagator(ps...)
 }
 
 // Tracer returns the loomcycle-named tracer. Call sites use this rather
@@ -200,31 +237,3 @@ func SetTracerProviderForTest(tp trace.TracerProvider) func() {
 }
 
 func noopShutdown(context.Context) error { return nil }
-
-// isInsecureEndpoint returns true when the endpoint is plain HTTP. The
-// otlptracehttp exporter defaults to TLS; for `http://localhost:4318`
-// (the standard local-Jaeger setup) we must opt out explicitly.
-func isInsecureEndpoint(endpoint string) bool {
-	const httpPrefix = "http://"
-	if len(endpoint) < len(httpPrefix) {
-		return false
-	}
-	return endpoint[:len(httpPrefix)] == httpPrefix
-}
-
-// stripScheme strips the http:// or https:// prefix that operators
-// naturally include. The otlptracehttp exporter wants "host:port",
-// not a full URL.
-func stripScheme(endpoint string) string {
-	const (
-		httpPrefix  = "http://"
-		httpsPrefix = "https://"
-	)
-	if len(endpoint) >= len(httpsPrefix) && endpoint[:len(httpsPrefix)] == httpsPrefix {
-		return endpoint[len(httpsPrefix):]
-	}
-	if len(endpoint) >= len(httpPrefix) && endpoint[:len(httpPrefix)] == httpPrefix {
-		return endpoint[len(httpPrefix):]
-	}
-	return endpoint
-}

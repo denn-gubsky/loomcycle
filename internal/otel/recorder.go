@@ -83,7 +83,8 @@ type RunStartAttrs struct {
 // ctx must be used for everything downstream so the iteration spans
 // nest under it. Caller defers span.End().
 func RecordRunStart(ctx context.Context, attrs RunStartAttrs) (context.Context, trace.Span) {
-	return Tracer().Start(ctx, SpanRun, trace.WithAttributes(runStartKVs(attrs)...))
+	ctx, opts := runStartContext(ctx)
+	return Tracer().Start(ctx, SpanRun, append(opts, trace.WithAttributes(runStartKVs(attrs)...))...)
 }
 
 func runStartKVs(a RunStartAttrs) []attribute.KeyValue {
