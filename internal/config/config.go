@@ -2278,7 +2278,10 @@ type AgentDef struct {
 	// review policy routes to the judge, and rule on them above the floor
 	// (Document op=judge_statements). It does not, alone, make the agent a
 	// statement maintainer (maintain_statement, the document lease,
-	// Document op=mark_source).
+	// Document op=mark_source). "annotate" stamps nothing either: it lets the
+	// run write annotations (Document op=set_annotation, annotation_inputs,
+	// delete_annotation) and hold the scope's "annotator" lease, and grants no
+	// other write.
 	//
 	// Honoured only for `provider: code-js`, because only a code-js body is
 	// code: a model-driven agent declaring it is refused at load and at
@@ -8250,8 +8253,9 @@ func ValidateGitRemote(ops []string) error {
 const CodeJSProvider = "code-js"
 
 // ValidateStatementMethods refuses a statement_methods list holding a value
-// other than "rule", "extractor", "judge", "link" or "remember", a duplicate, or
-// a code-only value (rule, extractor, judge) on an agent whose provider is not
+// other than "rule", "extractor", "judge", "link", "remember" or "annotate", a
+// duplicate, or a code-only value (rule, extractor, judge, annotate) on an agent
+// whose provider is not
 // code-js. One function for every place a definition is authored — operator
 // yaml and the AgentDef create/fork overlay — so a grant refused at boot is not
 // quietly kept by a runtime write. provider is the definition's own `provider:`
@@ -8260,7 +8264,7 @@ func ValidateStatementMethods(provider string, methods []string) error {
 	seen := map[string]bool{}
 	for i, m := range methods {
 		if !StatementMethodKnown(m) {
-			return fmt.Errorf("statement_methods[%d]: unknown method %q (want rule, extractor, judge, link and/or remember)", i, m)
+			return fmt.Errorf("statement_methods[%d]: unknown method %q (want rule, extractor, judge, link, remember and/or annotate)", i, m)
 		}
 		if seen[m] {
 			return fmt.Errorf("statement_methods[%d]: %q is listed twice", i, m)
@@ -8276,7 +8280,7 @@ func ValidateStatementMethods(provider string, methods []string) error {
 // StatementMethodKnown reports a statement_methods value this build knows.
 func StatementMethodKnown(m string) bool {
 	switch m {
-	case "rule", "extractor", "judge", "link", "remember":
+	case "rule", "extractor", "judge", "link", "remember", "annotate":
 		return true
 	}
 	return false
@@ -8284,12 +8288,14 @@ func StatementMethodKnown(m string) bool {
 
 // StatementMethodCodeOnly reports a statement_methods value only a code-js
 // agent may hold: rule and extractor stamp a method that says code made the
-// statement, and judge rules above the policy's floor. link (a run's link_chunks
+// statement, judge rules above the policy's floor, and annotate writes the text
+// shown to every reader about a document, which only the driver that computes
+// its inputs hash should write. link (a run's link_chunks
 // in the tenant scope is asserted, not filed as a proposal) and remember (a run
 // may file a fact as a person's statement) stamp nothing and claim no code, so
 // any agent may be granted them.
 func StatementMethodCodeOnly(m string) bool {
-	return m == "rule" || m == "extractor" || m == "judge"
+	return m == "rule" || m == "extractor" || m == "judge" || m == "annotate"
 }
 
 // InertShellCredentials returns the names in an agent's shell_credentials
