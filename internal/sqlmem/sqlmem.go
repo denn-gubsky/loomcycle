@@ -634,7 +634,7 @@ func (m *Manager) Exec(ctx context.Context, key ScopeKey, statement string, args
 	}
 	// A write to the agent plane is an agent's statement (sql_exec).
 	if !m.onPlane(key).isDoc() {
-		if err := validateWidths(statement, m.dialect, valueLengthLimit(m.cfg)); err != nil {
+		if err := validateAgentWrite(statement, m.dialect, valueLengthLimit(m.cfg)); err != nil {
 			return nil, err
 		}
 	}
@@ -833,6 +833,18 @@ func collectRows(rows *sql.Rows, maxRows, maxBytes int) (*QueryResult, error) {
 // DefaultMaxResultBytes is the result budget of an agent's query when
 // Config.MaxResultBytes is not set.
 const DefaultMaxResultBytes = 8 << 20
+
+// validateAgentWrite is the width check for an agent's write, and on postgres
+// the refusal of a RETURNING clause (pgHasReturning).
+func validateAgentWrite(statement string, d dialect, limit int) error {
+	if err := validateWidths(statement, d, limit); err != nil {
+		return err
+	}
+	if d == dialectPostgres && pgHasReturning(statement) {
+		return refuse("RETURNING is denied here — sql_exec reports the rows it changed; read them back with sql_query")
+	}
+	return nil
+}
 
 // maxEngineValueLength is sqlite's compiled-in ceiling on a value's length
 // (SQLITE_MAX_LENGTH); sqlite3_limit takes no more.

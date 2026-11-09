@@ -260,7 +260,9 @@ func pgCheckWrappableAs(statement string, backslashStrings bool) error {
 					}
 				}
 			}
-			if j < len(s) && (pgIdentStart(s[j]) || s[j] == '\'' || s[j] == '"') {
+			// And a '$' straight after a number: postgres 15+ opens a dollar
+			// quote there, 14 reads the rest as a name.
+			if j < len(s) && (pgIdentStart(s[j]) || s[j] == '\'' || s[j] == '"' || s[j] == '$') {
 				return unclear("a number run into a name or string (" + s[i:min(len(s), j+1)] + ")")
 			}
 			i = j - 1
@@ -332,6 +334,10 @@ func isHexDigit(c byte) bool {
 //
 // The statement must pass pgCheckWrappable first.
 //
+// The row is measured as ROW(loomcycle_q.*), never the bare alias: postgres
+// resolves a bare loomcycle_q to a COLUMN of that name before the whole-row
+// alias, and the statement may name one.
+//
 // The refusal is a cast of a marker string to integer, made to depend on the
 // row so the planner cannot fold it into an error at plan time. The outer
 // query keeps the statement's columns (q.*), names and, as postgres runs a
@@ -343,8 +349,8 @@ func wrapValueLimit(statement string, limit int) string {
 	for strings.HasSuffix(stmt, ";") {
 		stmt = strings.TrimSpace(strings.TrimSuffix(stmt, ";"))
 	}
-	return fmt.Sprintf("SELECT loomcycle_q.* FROM (%s\n) AS loomcycle_q WHERE CASE WHEN octet_length(loomcycle_q::text) > %d "+
-		"THEN CAST('%s:' || octet_length(loomcycle_q::text) AS integer) > 0 ELSE true END",
+	return fmt.Sprintf("SELECT loomcycle_q.* FROM (%s\n) AS loomcycle_q WHERE CASE WHEN octet_length(ROW(loomcycle_q.*)::text) > %d "+
+		"THEN CAST('%s:' || octet_length(ROW(loomcycle_q.*)::text) AS integer) > 0 ELSE true END",
 		stmt, limit, pgValueLimitMarker)
 }
 
@@ -355,4 +361,17 @@ func valueLimitErr(err error, limit int) error {
 		return refuse("a row of the result is over the %d-byte limit on one SQL Memory value; select less of it (substr, length) or fewer columns", limit)
 	}
 	return err
+}
+
+// pgHasReturning reports a RETURNING clause in a write: sql_exec reports only
+// the rows it affected, yet the driver reads every returned row whole into the
+// runtime's heap, with no result cap on that path. A quoted name or a string
+// holding the word is not the clause.
+func pgHasReturning(statement string) bool {
+	for _, t := range widthTokens(stripComments(strings.ReplaceAll(statement, "\r", "\n"), true), true) {
+		if t.kind == tokIdent && !t.quoted && strings.EqualFold(t.text, "returning") {
+			return true
+		}
+	}
+	return false
 }

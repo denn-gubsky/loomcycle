@@ -423,7 +423,6 @@ func TestPgWrappable_ReadsPostgresLexicalEdges(t *testing.T) {
 	}
 	accepted := []string{
 		"SELECT $é$ ) $é$ AS a",
-		"SELECT 1$a$ ) $a$ AS a",
 		"SELECT a$b$ FROM t",
 		"SELECT 1 -- )\r\n",
 		"SELECT /* /* ) */ */ 1",
@@ -461,6 +460,80 @@ func TestDollarTagAt_FollowsPostgresRules(t *testing.T) {
 		got, _ := dollarTagAt(c.s, c.i)
 		if got != c.want {
 			t.Errorf("dollarTagAt(%q, %d) = %q, want %q", c.s, c.i, got, c.want)
+		}
+	}
+}
+
+func TestPostgres_WrapperAliasCollisionStillChecked(t *testing.T) {
+	// A column named like the wrapper's alias: postgres resolves the bare name
+	// to the column, so the row check must measure the whole row explicitly.
+	m, _ := pgTestManager(t, Config{MaxResultBytes: 1 << 20})
+	ctx := context.Background()
+	key := agentKey("t1", "alias")
+	for _, stmt := range []string{
+		"SELECT NULL AS loomcycle_q, string_agg(md5(g::text), '') AS big FROM generate_series(1, 100000) g",
+		"SELECT 'x' AS LOOMCYCLE_Q, string_agg(md5(g::text), '') AS big FROM generate_series(1, 100000) g",
+	} {
+		var err error
+		got := allocatedDuring(func() { _, err = m.QueryCapped(ctx, key, stmt, nil) })
+		if err == nil || !strings.Contains(err.Error(), "limit on one SQL Memory value") {
+			t.Fatalf("%q: err = %v, want the value limit refusal", stmt, err)
+		}
+		if got > 32<<20 {
+			t.Fatalf("%q: allocated %d MiB in the runtime", stmt, got>>20)
+		}
+	}
+	res, err := m.QueryCapped(ctx, key, "SELECT 1 a, 2 a", nil)
+	if err != nil || len(res.Rows) != 1 {
+		t.Fatalf("duplicate column names: %v %v", res, err)
+	}
+}
+
+func TestPostgres_ExecReturningRefused(t *testing.T) {
+	// sql_exec reports rows affected only, yet the driver reads returned rows
+	// whole: a RETURNING clause is refused on postgres.
+	m, _ := pgTestManager(t, Config{MaxResultBytes: 1 << 20})
+	ctx := context.Background()
+	key := agentKey("t1", "ret")
+	if _, err := m.Exec(ctx, key, "CREATE TABLE w (n int, note text)", nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		"INSERT INTO w (n) VALUES (1) RETURNING n",
+		"WITH x AS (SELECT string_agg(md5(g::text), '') s FROM generate_series(1, 100000) g) UPDATE w SET n = 2 FROM x RETURNING x.s",
+		"DELETE FROM w returning *",
+	} {
+		var es *ErrStatement
+		if _, err := m.Exec(ctx, key, stmt, nil, 0); !errors.As(err, &es) {
+			t.Errorf("%q: err = %v, want a statement refusal", stmt, err)
+		}
+	}
+	if _, err := m.BeginTxn(ctx, "txn-r", "root-r", key); err != nil {
+		t.Fatal(err)
+	}
+	var es *ErrStatement
+	if _, err := m.ExecTxn(ctx, "txn-r", "INSERT INTO w (n) VALUES (1) RETURNING n", nil, 0); !errors.As(err, &es) {
+		t.Errorf("in a transaction: err = %v, want a statement refusal", err)
+	}
+	if _, err := m.RollbackTxn("txn-r"); err != nil {
+		t.Fatal(err)
+	}
+	// The word in a string or a name is not the clause.
+	if _, err := m.Exec(ctx, key, "INSERT INTO w (n, note) VALUES (1, 'returning soon')", nil, 0); err != nil {
+		t.Fatalf("a string holding the word: %v", err)
+	}
+}
+
+func TestPgWrappable_NoDollarQuoteRightAfterANumber(t *testing.T) {
+	// Postgres 14 reads 0x1$a$ and 1_0$a$ as a number then a name, 15+ as a
+	// number then a dollar quote: either reading may be the server's.
+	for _, stmt := range []string{
+		"SELECT 0x1$a$) AS z, (SELECT 1 --$a$",
+		"SELECT 1_0$a$) AS z, (SELECT 1 --$a$",
+		"SELECT 1$a$ x $a$",
+	} {
+		if err := pgCheckWrappable(stmt); err == nil {
+			t.Errorf("%q: accepted, want refused", stmt)
 		}
 	}
 }

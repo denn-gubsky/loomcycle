@@ -374,7 +374,7 @@ func (m *Manager) ExecTxn(ctx context.Context, txnID, statement string, args []a
 		return nil, fmt.Errorf("no open transaction for this scope")
 	}
 	if !t.key.isDoc() {
-		if err := validateWidths(statement, m.dialect, valueLengthLimit(m.cfg)); err != nil {
+		if err := validateAgentWrite(statement, m.dialect, valueLengthLimit(m.cfg)); err != nil {
 			return nil, err
 		}
 	}

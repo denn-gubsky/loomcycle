@@ -248,8 +248,9 @@ const (
 )
 
 type widthToken struct {
-	kind widthTokenKind
-	text string // a string token's text is its unquoted content
+	kind   widthTokenKind
+	text   string // a string token's text is its unquoted content
+	quoted bool   // a "…", […] or `…` name
 }
 
 // widthTokens splits a comment-stripped statement into identifiers, numbers,
@@ -301,7 +302,7 @@ func widthTokens(s string, dollarQuotes bool) []widthToken {
 			if j < 0 {
 				j = len(s) - i - 1
 			}
-			out = append(out, widthToken{kind: tokIdent, text: s[i+1 : i+1+j]})
+			out = append(out, widthToken{kind: tokIdent, text: s[i+1 : i+1+j], quoted: true})
 			i += j + 2
 		case c >= '0' && c <= '9' || c == '.' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9':
 			j := i + 1
