@@ -74,7 +74,9 @@ func TestRunHooks_AnotherAgentsRunFiresNone(t *testing.T) {
 
 // A HookDef the agent names is resolved when the run starts and fires in it.
 func TestRunHooks_AHookDefReferenceFires(t *testing.T) {
-	h := newReviewHarness(t)
+	// A stored HookDef is dialed through the guard even when a yaml agent
+	// names it, so the loopback receiver must be vouched for.
+	h := newLoopbackHookHarness(t)
 	deny := newRecordingHook(t, `{"decision":"deny","reason":"not today"}`)
 	def, _ := json.Marshal(hooks.Def{Event: hooks.PhaseAgentStart, Body: hooks.DefBody{Kind: hooks.BodyKindHTTP, URL: deny.srv.URL}})
 	row, err := h.st.HookDefCreate(t.Context(), store.HookDefRow{DefID: "hdf_gate", Name: "gate", Definition: def})
