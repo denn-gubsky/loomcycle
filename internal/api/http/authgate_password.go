@@ -13,6 +13,7 @@ package http
 // replica sees them.
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -297,7 +298,7 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 	}
 	if rehash {
 		if phc, kid, err := pw.pg.hasher.Hash(ctx, norm); err == nil {
-			if _, err := s.store.UserCredentialRehash(ctx, id.TenantID, id.Subject, store.CredentialKindPassword, cred.PHC, phc, kid, now); err != nil {
+			if _, err := s.store.UserCredentialRehash(ctx, id.TenantID, id.Subject, store.CredentialKindPassword, cred.PHC, phc, kid); err != nil {
 				slog.Warn("authgate: re-hashing a password failed", "err", err)
 			}
 		}
@@ -865,7 +866,7 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 	existingFactor, existingRequired := "", false
 	if inv.Subject != "" {
 		var ok bool
-		existingFactor, existingRequired, ok = s.linkSecondFactor(w, ctx, pg, g, inv.TenantID, inv.Subject, "invite:"+inv.CodeHash,
+		existingFactor, _, existingRequired, ok = s.linkSecondFactor(w, ctx, pg, g, inv.TenantID, inv.Subject, "invite:"+inv.CodeHash,
 			req.OTP, req.WebAuthn, req.TOTPEnrolment)
 		if !ok {
 			return
@@ -1060,72 +1061,73 @@ func (s *Server) accountSecondFactors(ctx context.Context, tenant, subject strin
 // passes it, and a new TOTP enrolment is refused for such an account (a link
 // holder must not install a factor of their own). required is false when
 // the account has none, and the caller applies its enrolment rules; ok is
-// false when the refusal was written.
+// false when the refusal was written. answeredKey is the credential id of
+// the passkey that answered, when one did.
 func (s *Server) linkSecondFactor(w http.ResponseWriter, ctx context.Context, pg *PasswordGates, g PasswordGateSettings,
-	tenant, subject, binding, otp string, wa *passkeyAnswer, enrolment string) (method string, required, ok bool) {
+	tenant, subject, binding, otp string, wa *passkeyAnswer, enrolment string) (method string, answeredKey []byte, required, ok bool) {
 	totp, hasTOTP, hasPasskey, err := s.accountSecondFactors(ctx, tenant, subject)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
-		return "", true, false
+		return "", nil, true, false
 	}
 	if !hasTOTP && !hasPasskey {
-		return "", false, true
+		return "", nil, false, true
 	}
 	if enrolment != "" {
 		writeJSONError(w, http.StatusBadRequest, "second_factor_exists",
 			"this account already has a second factor; confirm with it instead of adding a new one")
-		return "", true, false
+		return "", nil, true, false
 	}
 	var keys []store.UserPasskeyRow
 	if hasPasskey && s.cfg().ResolvedAuth.Passkeys != nil {
 		if keys, err = s.livePasskeys(ctx, tenant, subject); err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
-			return "", true, false
+			return "", nil, true, false
 		}
 	}
-	failed := func() (string, bool, bool) {
+	failed := func() (string, []byte, bool, bool) {
 		s.codeFailure(ctx, g, strings.TrimPrefix(strings.TrimPrefix(binding, "reset:"), "invite:"))
 		writeJSONError(w, http.StatusUnauthorized, "invalid_otp", "that code was not accepted")
-		return "", true, false
+		return "", nil, true, false
 	}
 	switch {
 	case wa != nil && len(keys) > 0:
-		_, verified, err := s.passkeyAssertion(ctx, ceremonyLinkFactor, g.Name, tenant, subject, binding,
+		_, answered, err := s.passkeyAssertionKey(ctx, ceremonyLinkFactor, g.Name, tenant, subject, binding,
 			protocol.VerificationPreferred, keys, wa)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "internal", "could not check the passkey")
-			return "", true, false
+			return "", nil, true, false
 		}
-		if !verified {
+		if answered == nil {
 			return failed()
 		}
-		return amrWebAuthn, true, true
+		return amrWebAuthn, answered, true, true
 	case hasTOTP && strings.TrimSpace(otp) != "":
 		m, verified, err := s.checkSecondFactor(ctx, pg, tenant, subject, totp, otp)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "internal", "could not check the code")
-			return "", true, false
+			return "", nil, true, false
 		}
 		if !verified {
 			return failed()
 		}
-		return m, true, true
+		return m, nil, true, true
 	case len(keys) > 0:
 		offer, _, err := s.passkeyAssertion(ctx, ceremonyLinkFactor, g.Name, tenant, subject, binding,
 			protocol.VerificationPreferred, keys, nil)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "internal", "could not begin the passkey check")
-			return "", true, false
+			return "", nil, true, false
 		}
 		writeSecondFactorRequired(w, &secondFactorChallenge{offer: offer, otp: hasTOTP})
-		return "", true, false
+		return "", nil, true, false
 	case hasTOTP:
 		writeJSONError(w, http.StatusUnauthorized, "otp_required", "enter the code from your authenticator app or a recovery code")
-		return "", true, false
+		return "", nil, true, false
 	}
 	writeJSONError(w, http.StatusForbidden, "second_factor_unavailable",
 		"this account's passkey cannot be used on this server right now; ask an operator to remove its credentials, then use a new link")
-	return "", true, false
+	return "", nil, true, false
 }
 
 func (s *Server) liveReset(ctx context.Context, pg *PasswordGates, code string) (store.AuthResetRow, PasswordGateSettings, bool) {
@@ -1237,6 +1239,14 @@ func (s *Server) handleCompleteReset(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
 		return
 	}
+	// When the password being replaced was set: the passkeys added after it
+	// go with it (below). Read now, before the write moves it and before the
+	// factor is spent, so a fault refuses the reset with nothing changed.
+	setAt, err := s.passwordSetAt(ctx, rs.TenantID, rs.Subject)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
+		return
+	}
 	pass, err := password.Normalize(req.Password)
 	if err == nil {
 		err = pg.policy.Check(pass, hasTOTP || hasPasskey || req.TOTPEnrolment != "", login)
@@ -1248,7 +1258,7 @@ func (s *Server) handleCompleteReset(w http.ResponseWriter, r *http.Request) {
 	amr := []string{amrPassword}
 	var factor *store.AuthSecondFactor
 	var recovery []string
-	method, required, ok := s.linkSecondFactor(w, ctx, pg, g, rs.TenantID, rs.Subject, "reset:"+rs.CodeHash, req.OTP, req.WebAuthn, req.TOTPEnrolment)
+	method, answeredKey, required, ok := s.linkSecondFactor(w, ctx, pg, g, rs.TenantID, rs.Subject, "reset:"+rs.CodeHash, req.OTP, req.WebAuthn, req.TOTPEnrolment)
 	if !ok {
 		return
 	}
@@ -1295,8 +1305,44 @@ func (s *Server) handleCompleteReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A reset is what a person does when the password may be known to
-	// someone else: every way in made before it ends — app sign-ins, delegated
-	// and device-login tokens, and every Web UI session, a passkey or identity
+	// someone else, and whoever knew it could add a passkey (a passkey
+	// step-up asks for the current password): the passkeys added since the
+	// password was last set go. Those from before are the person's own and
+	// stay; an account that never had a password keeps all of its. So does
+	// the passkey that answered this reset's second-factor check: whoever
+	// completed the reset holds it and the link, and on a gate that requires
+	// a second factor it may be the only one left. The person keeps a way in:
+	// the new password. A removal that faults leaves that passkey listed in
+	// the answer below for the person to remove.
+	removed := []map[string]any{}
+	if !setAt.IsZero() {
+		keys, err := s.store.UserPasskeyList(ctx, rs.TenantID, rs.Subject)
+		if err != nil {
+			slog.Error("authgate: listing passkeys to remove after a reset failed", "err", err)
+		}
+		for _, k := range keys {
+			if !k.CreatedAt.After(setAt) {
+				continue
+			}
+			if answeredKey != nil && bytes.Equal(k.CredentialID, answeredKey) {
+				s.recordAuthAudit(audit.Event{Action: "auth_passkey_kept", AuthGate: g.Name, AuthRecordID: rs.ResetID,
+					AuthReason: "used_for_reset", TargetTenant: rs.TenantID, TargetSubject: rs.Subject})
+				continue
+			}
+			ok, err := s.store.UserPasskeyDelete(ctx, rs.TenantID, rs.Subject, k.CredentialID)
+			if err != nil {
+				slog.Error("authgate: removing a passkey after a reset failed", "err", err)
+				continue
+			}
+			if ok {
+				removed = append(removed, map[string]any{"name": k.Name, "created_at": k.CreatedAt.UTC()})
+				s.recordAuthAudit(audit.Event{Action: "auth_passkey_removed", AuthGate: g.Name, AuthRecordID: rs.ResetID,
+					AuthReason: "password_reset", TargetTenant: rs.TenantID, TargetSubject: rs.Subject})
+			}
+		}
+	}
+	// Every way in made before the reset ends — app sign-ins, delegated and
+	// device-login tokens, and every Web UI session, a passkey or identity
 	// one included. This browser gets a new session below.
 	if _, err := s.endSubjectCredentials(ctx, rs.TenantID, rs.Subject, credAll); err != nil {
 		slog.Error("authgate: ending sign-ins after a reset failed", "err", err)
@@ -1306,16 +1352,29 @@ func (s *Server) handleCompleteReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"redirect": "/ui/", "login": login, "recovery_codes": recovery,
-		"passkeys": s.resetPasskeyNotice(ctx, rs.TenantID, rs.Subject)})
+		"passkeys": s.resetPasskeyNotice(ctx, rs.TenantID, rs.Subject, answeredKey), "removed_passkeys": removed})
 }
 
-// resetPasskeyNotice names the account's passkeys (name, when added, when
-// last used) in the reset answer. A reset ends every sign-in but removes no
-// passkey, and one added by someone who knew the old password would
-// survive it: the person is shown them to check, and removes one that is not
-// theirs from the account page. Never a credential id or key. A read fault
-// names none rather than failing the reset that already happened.
-func (s *Server) resetPasskeyNotice(ctx context.Context, tenant, subject string) []map[string]any {
+// passwordSetAt is when the subject's password was last set (a rehash does
+// not move it), or zero when the subject has none.
+func (s *Server) passwordSetAt(ctx context.Context, tenant, subject string) (time.Time, error) {
+	cred, err := s.store.UserCredentialGet(ctx, tenant, subject, store.CredentialKindPassword)
+	if isNotFound(err) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return cred.UpdatedAt, nil
+}
+
+// resetPasskeyNotice names the passkeys a reset kept (name, when added, when
+// last used) in its answer: those added before the password was last set,
+// and the one that answered the reset (marked used_for_reset). The person is
+// shown them to check, and removes one that is not theirs from the account
+// page. Never a credential id or key. A read fault names none rather than
+// failing the reset that already happened.
+func (s *Server) resetPasskeyNotice(ctx context.Context, tenant, subject string, answeredKey []byte) []map[string]any {
 	out := []map[string]any{}
 	rows, err := s.store.UserPasskeyList(ctx, tenant, subject)
 	if err != nil {
@@ -1326,6 +1385,9 @@ func (s *Server) resetPasskeyNotice(ctx context.Context, tenant, subject string)
 		e := map[string]any{"name": k.Name, "created_at": k.CreatedAt.UTC()}
 		if !k.LastUsedAt.IsZero() {
 			e["last_used_at"] = k.LastUsedAt.UTC()
+		}
+		if answeredKey != nil && bytes.Equal(k.CredentialID, answeredKey) {
+			e["used_for_reset"] = true
 		}
 		out = append(out, e)
 	}

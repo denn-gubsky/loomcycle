@@ -265,7 +265,10 @@ type PasswordGateStore interface {
 	// UserCredentialRehash replaces PHC and PepperKID only if the stored PHC
 	// still equals oldPHC (a login re-hashing under new parameters must not
 	// overwrite a password changed meanwhile). Reports whether it did.
-	UserCredentialRehash(ctx context.Context, tenantID, subject, kind, oldPHC, newPHC, pepperKID string, at time.Time) (bool, error)
+	// UpdatedAt is left alone: it is when the password was set, and a
+	// rehash re-encodes the same password (a reset compares passkeys
+	// against that time).
+	UserCredentialRehash(ctx context.Context, tenantID, subject, kind, oldPHC, newPHC, pepperKID string) (bool, error)
 	// UserCredentialRecordFailure atomically increments failed_count and, when
 	// lockFor(new count) > 0, sets locked_until to now+lockFor (never moving an
 	// existing later lock earlier). Returns the new count and the lock.

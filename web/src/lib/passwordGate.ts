@@ -108,15 +108,20 @@ export interface Redeemed {
   redirect: string;
   login: string;
   recovery_codes: string[] | null;
-  /** A reset's answer: the account's passkeys, which a reset does not
-   *  remove, named for the person to check. */
+  /** A reset's answer: the passkeys it kept (added before the password was
+   *  last set), named for the person to check. */
   passkeys?: ResetPasskey[];
+  /** The passkeys the reset removed: those added since the password was
+   *  last set. */
+  removed_passkeys?: ResetPasskey[];
 }
 
 export interface ResetPasskey {
   name: string;
   created_at: string;
   last_used_at?: string;
+  /** The passkey that confirmed this reset, kept for that reason. */
+  used_for_reset?: boolean;
 }
 
 export interface AccountInfo {
@@ -206,6 +211,7 @@ const messages: Record<string, string> = {
   passkey_cancelled: "The passkey was not used. Try again.",
   passkey_not_accepted: "The passkey was not accepted. Try again.",
   passkey_exists: "That passkey is already registered.",
+  credentials_changed: "Your password changed while the passkey was being added. Sign in again and add it again.",
   passkeys_unavailable: "Passkeys are not available on this server.",
   passkey_needs_user_session: "Sign in with your password, a passkey or your identity provider to manage passkeys.",
   password_required: "Enter your current password above to confirm it is you.",
