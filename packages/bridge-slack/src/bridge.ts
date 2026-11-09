@@ -24,7 +24,7 @@ import { SlackApi, slackErrorCode } from "./api.js";
 import { renderCard } from "./cards.js";
 import type { SlackConfig } from "./config.js";
 import { cleanName, identify, personSub, refOf, teamsAllowed, type InboundFields, type SlackRef, type TrustPolicy } from "./identity.js";
-import { readAction, readDeletedUser, readEvent, type BlockActionsPayload, type DeletedUser, type EventEnvelope, type SelfIds } from "./inbound.js";
+import { readAction, readDeletedUser, readEvent, slackTsMs, type BlockActionsPayload, type DeletedUser, type EventEnvelope, type SelfIds } from "./inbound.js";
 import { SeenSet } from "./seen.js";
 import { SlackStream } from "./stream.js";
 import { escapeMrkdwn, MAX_MESSAGE_CHARS, neutralise } from "./text.js";
@@ -313,7 +313,7 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
         if (!id.ok && !id.notice) return;
         // Slack gives no locale on an event (users.info would, with a scope
         // the bridge does not ask for): BRIDGE_VOICE_LANGUAGE, or none.
-        await router.onVoice(id, refOf(r.fields), r.voice);
+        await router.onVoice(id, refOf(r.fields), r.voice, undefined, { sentAt: slackTsMs(r.fields.ts) });
         return;
       }
       if (r.kind !== "message" || !r.text) return;
@@ -321,14 +321,14 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
       // The bot's own and other bots' messages never reach here (readEvent);
       // a refusal without a notice is dropped quietly.
       if (!id.ok && !id.notice) return;
-      await router.onMessage(id, refOf(r.fields), r.text);
+      await router.onMessage(id, refOf(r.fields), r.text, { sentAt: slackTsMs(r.fields.ts) });
     }
 
     async function handleAction(payload: BlockActionsPayload): Promise<void> {
       const a = readAction(payload);
       if (!a) return;
       const id = identify(a.fields, policy, await displayName(a.fields));
-      const result = await router.onCardAction(id, refOf(a.fields), { buttonId: a.buttonId });
+      const result = await router.onCardAction(id, refOf(a.fields), { buttonId: a.buttonId }, { sentAt: slackTsMs(a.actionTs) });
       if (!result) return;
       const url = usableResponseUrl(a.responseUrl);
       if (!url) {
