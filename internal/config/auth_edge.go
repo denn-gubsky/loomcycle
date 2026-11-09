@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -114,7 +115,7 @@ func resolveEdgeGate(c *Config, name, kind string, g AuthGateConfig, floor AuthN
 		return nil, nil, nil, err
 	}
 	if kind == AuthGateKindHeader {
-		h, err := resolveHeaderGate(name, g)
+		h, err := resolveHeaderGate(c, name, g)
 		return idm, h, nil, err
 	}
 	a, err := resolveAWSIAMGate(c, name, g)
@@ -122,7 +123,7 @@ func resolveEdgeGate(c *Config, name, kind string, g AuthGateConfig, floor AuthN
 }
 
 // resolveHeaderGate validates one kind: header gate.
-func resolveHeaderGate(name string, g AuthGateConfig) (*AuthHeaderGate, error) {
+func resolveHeaderGate(c *Config, name string, g AuthGateConfig) (*AuthHeaderGate, error) {
 	where := "auth.gates." + name
 	h := &AuthHeaderGate{Preset: strings.TrimSpace(g.Preset)}
 	if len(g.ServerID) > 0 || len(g.AllowedARNs) > 0 || len(g.STSRegions) > 0 {
@@ -134,13 +135,11 @@ func resolveHeaderGate(name string, g AuthGateConfig) (*AuthHeaderGate, error) {
 		return nil, fmt.Errorf("%s: trusted_proxy_cidrs is required — the addresses of the proxy that adds the "+
 			"assertion header (a tunnel container, the load balancer's subnets); a header from any other peer is refused", where)
 	}
-	for _, cidr := range g.TrustedProxyCIDRs {
-		pfx, err := trustedProxyPrefix(where+".trusted_proxy_cidrs", cidr)
-		if err != nil {
-			return nil, err
-		}
-		h.TrustedProxyCIDRs = append(h.TrustedProxyCIDRs, pfx)
+	pfxs, err := proxyPrefixes(c, where+".trusted_proxy_cidrs", g.TrustedProxyCIDRs)
+	if err != nil {
+		return nil, err
 	}
+	h.TrustedProxyCIDRs = pfxs
 	only := func(preset string, keys map[string]bool) error {
 		for k, set := range keys {
 			if set {
@@ -264,6 +263,61 @@ func trustedProxyPrefix(key, s string) (netip.Prefix, error) {
 		return netip.Prefix{}, fmt.Errorf("%s: %q trusts every address — list the proxy's own addresses or subnet", key, s)
 	}
 	return pfx, nil
+}
+
+// coversWholeFamily reports whether pfxs, merged, cover every address of
+// IPv4 or of IPv6: a set of entries that does trusts every address as surely
+// as one /0. The prefixes are already unmapped, so a v4-mapped entry counts
+// as the IPv4 range it is.
+func coversWholeFamily(pfxs []netip.Prefix) bool {
+	for _, is4 := range []bool{true, false} {
+		type span struct{ lo, hi netip.Addr }
+		var spans []span
+		for _, p := range pfxs {
+			if p.Addr().Is4() == is4 {
+				spans = append(spans, span{p.Masked().Addr(), lastAddr(p)})
+			}
+		}
+		if len(spans) == 0 {
+			continue
+		}
+		sort.Slice(spans, func(i, j int) bool { return spans[i].lo.Less(spans[j].lo) })
+		first := netip.IPv4Unspecified()
+		if !is4 {
+			first = netip.IPv6Unspecified()
+		}
+		if spans[0].lo != first {
+			continue
+		}
+		hi := spans[0].hi
+		whole := true
+		for _, sp := range spans[1:] {
+			if !hi.IsValid() || !hi.Next().IsValid() {
+				break // hi is the family's last address
+			}
+			if hi.Next().Less(sp.lo) {
+				whole = false
+				break
+			}
+			if hi.Less(sp.hi) {
+				hi = sp.hi
+			}
+		}
+		if whole && !hi.Next().IsValid() {
+			return true
+		}
+	}
+	return false
+}
+
+// lastAddr is the highest address of p.
+func lastAddr(p netip.Prefix) netip.Addr {
+	b := p.Masked().Addr().AsSlice()
+	for i := p.Bits(); i < len(b)*8; i++ {
+		b[i/8] |= 0x80 >> (i % 8)
+	}
+	a, _ := netip.AddrFromSlice(b)
+	return a
 }
 
 // broadProxyPrefix reports a trusted proxy range wider than a /16 (IPv4) or

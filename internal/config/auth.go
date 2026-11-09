@@ -794,8 +794,11 @@ func resolvePasswordGate(c *Config, name string, g AuthGateConfig, strict bool) 
 }
 
 // proxyPrefixes validates a list of proxy CIDRs or bare addresses
-// (trustedProxyPrefix) and warns, on c, about a range broader than
-// broadProxyPrefix allows.
+// (trustedProxyPrefix), refuses a list whose entries together cover a whole
+// address family (coversWholeFamily), and warns, on c, about a range
+// broader than broadProxyPrefix allows. Every trusted proxy list goes
+// through it: auth.trusted_proxies, auth.grpc_trusted_proxies and a header
+// gate's trusted_proxy_cidrs.
 func proxyPrefixes(c *Config, key string, list []string) ([]netip.Prefix, error) {
 	var out []netip.Prefix
 	for _, cidr := range list {
@@ -808,6 +811,9 @@ func proxyPrefixes(c *Config, key string, list []string) ([]netip.Prefix, error)
 				"client address (throttling, audit, ACL source_cidr); list the proxy's own addresses", key, pfx))
 		}
 		out = append(out, pfx)
+	}
+	if coversWholeFamily(out) {
+		return nil, fmt.Errorf("%s: %v together trusts every address of a family — list the proxy's own addresses or subnet", key, list)
 	}
 	return out, nil
 }
