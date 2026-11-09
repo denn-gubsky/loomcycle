@@ -137,19 +137,20 @@ func newErrorHandler(log *slog.Logger, now func() time.Time) *errorHandler {
 
 // Handle implements otel.ErrorHandler. The error text comes from the exporter
 // (status, connection error); the request's headers, where collector
-// credentials live, are not part of it.
+// credentials live, are not part of it, and the endpoint URL it may quote is
+// logged without userinfo or query values (sanitizeError).
 func (h *errorHandler) Handle(err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := h.now()
 	if !h.failing {
 		h.failing, h.suppressed, h.lastSummary = true, 0, now
-		h.log.Warn("otel: span export failing; repeats are summarised every 5 minutes", "err", err)
+		h.log.Warn("otel: span export failing; repeats are summarised every 5 minutes", "err", sanitizeError(err))
 		return
 	}
 	h.suppressed++
 	if now.Sub(h.lastSummary) >= errorSummaryInterval {
-		h.log.Warn("otel: span export still failing", "suppressed_errors", h.suppressed, "err", err)
+		h.log.Warn("otel: span export still failing", "suppressed_errors", h.suppressed, "err", sanitizeError(err))
 		h.suppressed, h.lastSummary = 0, now
 	}
 }

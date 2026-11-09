@@ -104,6 +104,9 @@ func doInit(cfg Config) (func(context.Context) error, error) {
 	// nothing, so turning tracing on later changes nothing else.
 	otel.SetTextMapPropagator(newPropagator(cfg.Propagators))
 	setInboundMode(cfg.Inbound)
+	// Before any exporter is built: building one parses the header
+	// environment, and the SDK's default logger would print what it rejects.
+	otel.SetLogger(newSDKLogger(slog.Default()))
 	if !cfg.Enabled {
 		return noopShutdown, nil
 	}
