@@ -8,6 +8,83 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.146.0
+
+*A hardening release from the 2026-11-07 re-grade. Changing a password now ends every other sign-in, and people and operators can list and end app sign-ins. Access-control rules that decided nothing are refused, and each MCP operation asks the same question as its HTTP route. File extraction and agent SQL get hard memory bounds. Also: a ranking fallback for topics the decision model under-scores, Path entries that say a document has names beneath it, and knowledge-base help for chat agents.*
+
+The v1.146 line: #2480 to #2490 (not #2486).
+- `@loomcycle/client` 1.146.0: `listUserAppSignIns()`, `endUserAppSignIn()`, `listMyAppSignIns()` and `endMyAppSignIn()`, with the `AppSignIn` and `AppSignInsResponse` types, and the optional `AuthzTrace.note`. The Python adapter moves to 1.146.0 with `list_user_app_sign_ins()`, `end_user_app_sign_in()`, `list_my_app_sign_ins()` and `end_my_app_sign_in()`.
+- No migration.
+
+### Upgrade notes
+
+- **A password change ends other sign-ins (#2485).**
+  - A password reset ends every sign-in: app sign-ins (OAuth refresh tokens), delegated and device-login tokens, and Web UI sessions. The browser that did the reset gets a new session.
+  - A self-service change ends every sign-in except the browser that made it.
+  - Connected apps, such as loomboard and the CLI's device login, must sign in again.
+  - An operator's `DELETE /v1/_authgate/{gate}/credentials/{subject}` and `DELETE /v1/_users/{subject}` now end app sign-ins and Web UI sessions too, not only tokens.
+- **Trusted proxies (#2485).** A config whose `auth.trusted_proxies` or `auth.grpc_trusted_proxies` lists `0.0.0.0/0` or `::/0` no longer loads, and a header gate's `trusted_proxy_cidrs` refuses a `/0` too. List the proxy's own addresses. A range wider than /16 (IPv4) or /48 (IPv6) loads with a warning.
+- **New-user budget (#2485).** Users made by password-gate invites and by `POST /v1/_users` now get `auth.lifecycle.new_user.budget` when one is set.
+- **Access-control rules that decided nothing are refused (#2481, #2484).**
+  - An instance selector on a pair that is asked only for the whole type is refused at write with `400 rule_not_enforceable`. That covers `read`, `delete`, `steer`, `cancel`, `compact`, `retune` and `review` on `run:`, and `read` on `agent:`, `skill:` and `evaluation:`. For example `deny read run:tenant` or `allow cancel run:own`. Use `<type>:*`.
+  - A rule stored earlier keeps its effect: a deny refuses nothing, an allow admits every instance. It is reported at boot as `type_level_only`, and `GET /v1/_authz/explain` flags it with `note`.
+  - The built-in member and isolated lists now show `run:*` and `evaluation:*` where they showed `run:own` and `evaluation:self`. Reach is unchanged.
+  - The `docs/CONFIGURATION.md` example now allows `run` on `agent:chat/*` and `read` on `agent:*`. A copy of the old example is refused.
+- **MCP and gRPC ask the same question as HTTP (#2481, #2484).**
+  - Over MCP, `channeldef` writes ask `manage channel:<name>`, `retention_override` set and clear ask `manage runtime:retention`, and the `erasure` report asks `read runtime:erasure`.
+  - On these tools (and `review` and `ontology`), an unknown op is refused as `unknown_op`, and an `op` or `name` key given twice, or in two cases, is refused as `ambiguous_arguments`.
+  - An HTTP channel create asks `manage channel:<name>`. `POST /v1/_memory/search` asks `read memory`.
+  - Releasing a team channel's held messages asks `manage channel` on every transport. Under `LOOMCYCLE_ACL=enforce` the isolated baseline loses release over HTTP and MCP, as it already had over gRPC.
+  - On gRPC, a manage deny raised inside the retention or erasure operation answers `PermissionDenied` (unreadable rules: `Unavailable`), not `Internal`. The HTTP channel definition routes answer `503 acl_unavailable`, not 403, when the rules cannot be read.
+  - `deny mount volume:<name>` can now be written.
+- **`descendants` is refused in the `*_def_scopes` gates (#2483).**
+  - It never walked any lineage; it granted every name, as `any` does.
+  - A config whose `agent_def_scopes`, `schedule_def_scopes`, `a2a_server_card_def_scopes` or `a2a_agent_def_scopes` contains it no longer loads. An AgentDef create or fork overlay granting it is refused. Use `self`, `named:<name>` or `any`.
+  - A stored definition that carries it still loads, but the grant authorises nothing. Authoring it relied on is refused with the reason, and a log line names the tool and field.
+- **File extraction (#2482, #2489).** `File op=extract` refuses HTML over 8 MiB (was 32 MiB). It also refuses HTML pages and DOCX, PPTX, ODT and XLSX parts over the new element, attribute and formatting caps, XML parts that end inside markup, and pages of about a million stray `</p>` or `</br>`.
+- **SQLite SQL Memory (#2482, #2489).**
+  - An agent statement cannot build, store or read a value longer than 2 × `LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES` (16 MiB by default). It fails with "string or blob too big".
+  - This includes existing data: reading or rewriting a row that already holds a longer value fails, even an `UPDATE` of another column. Raise `LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES` to at least half that value to reach it.
+- **Postgres SQL Memory (#2482, #2489).**
+  - Refused: `set_config()`, a function or procedure with a `SET` clause, `U&"…"` identifiers, and non-constant `repeat`/`lpad`/`rpad` lengths.
+  - `sql_exec` refuses `RETURNING`, a `WITH` list not ending in INSERT, UPDATE, DELETE or MERGE, and `CREATE RULE`. Read rows with `sql_query`.
+  - A row longer than 2 × the result cap + 1 MiB fails with a value-limit error, including one returned through an existing rule.
+  - Scope roles get `work_mem` 16MB. To also set `temp_file_limit` 1GB, run once as a superuser (Postgres 15+): `GRANT SET ON PARAMETER temp_file_limit TO <sqlmem admin role>`. Without it, one warning is logged.
+
+### Sign-ins (#2485, RFC GD P2)
+
+- **One teardown.** Disable, re-enable, erasure, user delete, password reset, self-service change and credential removal all end the same set of sign-ins, and each retired token is recorded in the audit trail. Before, each path ended a different subset.
+- **List and end app sign-ins.**
+  - Operator: `GET /v1/_users/{subject}/app-sign-ins` and `DELETE …/app-sign-ins/{family_id}`, with the scope of the other `/v1/_users/{subject}` routes. Access control asks `read` or `manage principal:user:<subject>`.
+  - Self-service: `GET` and `DELETE /v1/_me/app-sign-ins[/{family_id}]`, for the caller's own sign-ins.
+  - Each entry carries the family id, the app's id and label, the gate, and when it was created, last used and expires. Never a token.
+  - gRPC twins `ListUserAppSignIns`, `EndUserAppSignIn`, `ListMyAppSignIns` and `EndMyAppSignIn`, and the adapter methods above. Not on MCP.
+
+### Access-control consistency (#2481, #2484, RFC GD P1)
+
+- Each operation of the `channeldef`, `retention_override`, `erasure`, `review` and `ontology` MCP tools asks its own HTTP route's question, and the operations ask their `manage` question themselves, so no transport skips it.
+- The argument check reads `op` and `name` the way the handlers do. Before, `{"op":"list","OP":"set"}` passed a read check and ran the set.
+- Tests now derive every connector, gRPC and MCP question from the source and hold each to its HTTP twin. They found and fixed the `RetentionOverride` RPC and `POST /v1/_memory/search`.
+
+### Memory bounds (#2482, #2489, RFC GD P0)
+
+- **HTML.** The page is counted with the parser's own tokenizer before it is parsed, including the elements the parser would re-create from open formatting tags. Both passes honour the extraction deadline.
+- **XML.** Attributes are counted on the raw bytes before decoding: at most 1,024 per element, and for tree parsers 2,000,000 per part and 64 MiB of values.
+- **Postgres.** While an agent statement runs, the connection refuses any message longer than 2 × the result cap + 1 MiB before reading it. Every check reads the statement with one lexer that follows Postgres's rules and fails closed.
+- **Sizing.** `SECURITY.md` now gives the measured per-file peak (about 700 MiB for an Office XML part, about 260 MiB for an HTML page) and a container floor of 1 GiB + about 750 MiB × `LOOMCYCLE_EXTRACT_CONCURRENCY`.
+
+### Smaller changes
+
+- **Topic fallback (#2487).** A new `memory.classifier.concept_fallback {min_probability, min_margin}`, off by default. When no concept in one answer of the decision model reaches `min_probability`, it takes the best one if it reaches the fallback floor and leads the runner-up by the margin. A tree walk descends into the pick. The pick is still a proposal: classify reports `"fallback": true`, and its statement carries `attributes.concept_fallback: true`. The decision model must be configured; the chat model is unchanged.
+- **Path (#2490, RFC GC P0).** A one-level `Path op=ls` entry, or a `stat`, of a document that also has names beneath it reports `has_children: true`. It is set only when the caller can read at least one of them.
+- **Knowledge-base help (#2480).**
+  - A new help article, `knowledge-base-questions`, maps question shapes to the Document calls that answer them.
+  - Document's description says to search the documents and not to use Grep, Glob, Read or Bash on them.
+  - An argument refusal names the argument the op takes (`pass it as "id"`).
+  - A Document read with no `scope` that finds nothing says it read the user scope, for an agent that may read the tenant scope.
+  - loomcycle.cloud's chat agents get no file or shell tools.
+- **TS adapter (#2488).** `AuthzTrace.note`, matching the explain response.
+
 ## What's in v1.145.0
 
 *A tenant member now reads and acts on only its own conversations. The new `skybits-sync` bundle keeps a tenant's Documents in step with a Skybits account. OAuth credentials get a Web UI "Connect account", a banner when one needs reconnecting, and typed client methods. Document extract reads headings styled through CSS classes. Image descriptions no longer stall on pictures the vision model cannot load.*
