@@ -4,7 +4,8 @@ import { useFocusTenant, usePrincipal, useUserId } from "../components/Layout";
 import DocumentAssistantPanel from "../components/DocumentAssistantPanel";
 import SubjectMergePanel, { canMergeSubjects } from "../components/SubjectMergePanel";
 import SubjectPrincipalPanel from "../components/SubjectPrincipalPanel";
-import type { DocScope } from "../api";
+import { startRun, type DocScope } from "../api";
+import { canRegenerateAnnotations, regenerateAnnotation } from "../lib/annotationRegen";
 
 // DocumentsView is the deep-link surface for one document
 // (/documents/:documentId?scope=user&chunk=<chunk_id>) — a shareable full-page
@@ -65,6 +66,12 @@ export default function DocumentsView() {
         connection={{ baseUrl: "", fetch: cookieFetch }}
         principal={principal ?? undefined}
         browse={{ scopeId: userId || undefined, tenant: focusTenant || undefined }}
+        // As on the Path page: the annotator runs in the caller's own tenant.
+        onRegenerateAnnotation={
+          canRegenerateAnnotations(principal) && !focusTenant
+            ? (target) => regenerateAnnotation(target, startRun)
+            : undefined
+        }
         renderAssistant={(ctx) => (
           <DocumentAssistantPanel
             documentId={ctx.documentId}
