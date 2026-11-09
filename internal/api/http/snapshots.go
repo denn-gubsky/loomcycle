@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
@@ -301,8 +302,16 @@ func (s *Server) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	// refreshed before this returns. Operators can call Resume
 	// immediately after a successful restore without waiting for
 	// the periodic probe.
+	// A restore can create users, groups, bindings and lists wholesale: a
+	// grant, recorded ahead and refused when the record cannot be written.
+	intent, aerr := s.recordIntent(r.Context(), audit.Event{Action: "snapshot_restored", TargetName: r.PathValue("id")})
+	if aerr != nil {
+		writeAuditUnavailable(w)
+		return
+	}
 	result, err := snapshot.Restore(r.Context(), s.store, rawBytes, s.snapshotRestoreOptions(r.Context(), req.IncludeHistory))
 	if err != nil {
+		s.recordStopped(r.Context(), intent, result.Counts())
 		err = s.restoreFailed(r.Context(), &result, err)
 		// Migration / version errors map to 422 (semantically valid
 		// JSON, semantically invalid state). The error message

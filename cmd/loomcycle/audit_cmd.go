@@ -30,7 +30,8 @@ func runAudit(args []string, stdout, stderr io.Writer) int {
 	return runAuditVerify(args[1:], stdout, stderr)
 }
 
-const auditVerifyUsage = "Usage: loomcycle audit verify (--tenant <tenant> | --operator | --all) [--config <yaml>]... [--preset <name>]... [--json]"
+const auditVerifyUsage = "Usage: loomcycle audit verify (--tenant <tenant> | --operator | --all) [--config <yaml>]... [--preset <name>]... [--json]\n" +
+	"       loomcycle audit verify --export <file> [--allow-partial] [--json]"
 
 func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)
@@ -52,6 +53,8 @@ func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 	})
 	operator := fs.Bool("operator", false, "verify the operator chain (events that belong to no tenant)")
 	all := fs.Bool("all", false, "verify the operator chain and every tenant chain")
+	export := fs.String("export", "", "verify an export (GET /v1/_audit) offline; with LOOMCYCLE_SECRET_KEY set, its signatures too")
+	allowPartial := fs.Bool("allow-partial", false, "with --export: accept a file that starts after the chain's start (a since/after_seq export)")
 	asJSON := fs.Bool("json", false, "print one JSON report per chain")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, auditVerifyUsage)
@@ -61,6 +64,14 @@ func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "not signed with the deployment's key. Run it with the server's own config and")
 		fmt.Fprintln(stderr, "environment (LOOMCYCLE_SECRET_KEY). It writes no audit rows; opening the store")
 		fmt.Fprintln(stderr, "applies its schema, as the server does. Safe while servers are running.")
+		fmt.Fprintln(stderr)
+		fmt.Fprintln(stderr, "--export checks a file exported with GET /v1/_audit, without the store: each")
+		fmt.Fprintln(stderr, "row links to the one before and reaches the head its trailer names. With")
+		fmt.Fprintln(stderr, "LOOMCYCLE_SECRET_KEY (and _PREVIOUS) set it also checks every signature, which")
+		fmt.Fprintln(stderr, "shows the file is the deployment's chain, unaltered and not cut short; without")
+		fmt.Fprintln(stderr, "the key it shows only that the file is consistent, which anyone can forge.")
+		fmt.Fprintln(stderr, "Neither shows that the store was not rolled back before the export: verify")
+		fmt.Fprintln(stderr, "--tenant checks that against the operator chain.")
 		fmt.Fprintln(stderr)
 		fs.PrintDefaults()
 	}
@@ -72,14 +83,17 @@ func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	picked := 0
-	for _, on := range []bool{tenantSet, *operator, *all} {
+	for _, on := range []bool{tenantSet, *operator, *all, *export != ""} {
 		if on {
 			picked++
 		}
 	}
 	if picked != 1 || (tenantSet && tenant == "") {
-		fmt.Fprintln(stderr, "loomcycle: error: name one of --tenant <tenant>, --operator or --all")
+		fmt.Fprintln(stderr, "loomcycle: error: name one of --tenant <tenant>, --operator, --all or --export <file>")
 		return 2
+	}
+	if *export != "" {
+		return runAuditVerifyExport(*export, *allowPartial, *asJSON, stdout, stderr)
 	}
 
 	layers, err := assembleConfigLayers(presets, cfgPaths, false)
@@ -166,4 +180,61 @@ func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return code
+}
+
+// runAuditVerifyExport is `loomcycle audit verify --export <file>`: no config
+// and no store, only the file and, when set, the chain key from the
+// environment.
+func runAuditVerifyExport(path string, allowPartial, asJSON bool, stdout, stderr io.Writer) int {
+	cur, err := credential.DeriveAuditChainKey(os.Getenv("LOOMCYCLE_SECRET_KEY"))
+	if err != nil {
+		fmt.Fprintf(stderr, "loomcycle: error: LOOMCYCLE_SECRET_KEY: %v\n", err)
+		return 2
+	}
+	prev, err := credential.DeriveAuditChainKey(os.Getenv("LOOMCYCLE_SECRET_KEY_PREVIOUS"))
+	if err != nil {
+		fmt.Fprintf(stderr, "loomcycle: error: LOOMCYCLE_SECRET_KEY_PREVIOUS: %v\n", err)
+		return 2
+	}
+	var keys *auditchain.ChainKeys
+	if cur != nil {
+		keys = &auditchain.ChainKeys{Current: cur, Previous: prev}
+	}
+	f, err := os.Open(path) // #nosec G304 -- the operator names the file to check
+	if err != nil {
+		fmt.Fprintf(stderr, "loomcycle: error: %v\n", err)
+		return 2
+	}
+	defer f.Close()
+	rep, err := auditchain.VerifyExport(f, keys, allowPartial)
+	if err != nil {
+		fmt.Fprintf(stderr, "loomcycle: error: reading the export: %v\n", err)
+		return 1
+	}
+	if asJSON {
+		b, _ := json.Marshal(rep)
+		fmt.Fprintln(stdout, string(b))
+	} else {
+		name := fmt.Sprintf("export of tenant %q", rep.Tenant)
+		if rep.Tenant == "" {
+			name = "export of the operator chain"
+		}
+		how := "signatures checked"
+		if !rep.Signed {
+			how = "hash links only: no signature was verified (LOOMCYCLE_SECRET_KEY is not set), so the file could be forged"
+		}
+		switch {
+		case !rep.OK:
+			fmt.Fprintf(stdout, "%s: BROKEN at row %d — %s\n", name, rep.BreakSeq, rep.Reason)
+		case rep.Partial:
+			fmt.Fprintf(stdout, "%s: ok — %d rows from row %d to the head at %d (%s; the file starts after the chain's start, so its first link was not checked)\n",
+				name, rep.Rows, rep.FirstSeq, rep.HeadSeq, how)
+		default:
+			fmt.Fprintf(stdout, "%s: ok — %d rows to the head at %d (%s)\n", name, rep.Rows, rep.HeadSeq, how)
+		}
+	}
+	if !rep.OK {
+		return 1
+	}
+	return 0
 }

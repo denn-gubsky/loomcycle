@@ -32,6 +32,15 @@ const (
 	// DefaultQueueCapacity is the observation queue's size when StartAsync
 	// is given none.
 	DefaultQueueCapacity = 4096
+	// checkpointRows and checkpointInterval bound what a rollback of a
+	// tenant chain can remove undetected: its head is checkpointed into the
+	// operator chain once this many rows were written since the last
+	// checkpoint, or this long after the first of them, and at a clean
+	// shutdown. Constants, like the queue sizes: the cost is one operator-
+	// chain row per tenant per interval at most, which no deployment needs
+	// to tune.
+	checkpointRows     = 100
+	checkpointInterval = 5 * time.Minute
 )
 
 // ActionEventsDropped is the operator-chain summary of observations the
@@ -149,6 +158,27 @@ type StoreSink struct {
 	// fallback receives a drop summary the store would not take when there
 	// is no later pass to retry it (the queue is draining at shutdown).
 	fallback audit.Sink
+
+	// unchecked is, per tenant chain, the newest row this sink wrote that no
+	// checkpoint covers yet; guarded by mu. cpRows / cpEvery are the
+	// checkpoint policy (checkpointRows / checkpointInterval).
+	unchecked map[string]*uncheckedHead
+	cpRows    int
+	cpEvery   time.Duration
+	// tick stops the periodic checkpointer StartAsync runs.
+	tick chan struct{}
+	// cpMu serializes checkpoint writes, so the newest head is never
+	// overtaken by an older one in flight; it is never held with mu.
+	cpMu sync.Mutex
+}
+
+// uncheckedHead is a tenant chain's newest row written past its last
+// checkpoint: where it is, how many rows, and since when.
+type uncheckedHead struct {
+	seq   int64
+	hash  string
+	rows  int
+	since time.Time
 }
 
 // SetFallback names the sink (the JSONL mirror) a final drop summary goes to
@@ -171,7 +201,16 @@ func NewStoreSink(s Appender, keys ChainKeys) (*StoreSink, error) {
 	if len(keys.Current) == 0 {
 		return nil, errors.New("audit: the store-backed audit stream signs its chain with a key derived from LOOMCYCLE_SECRET_KEY, which is not set")
 	}
-	return &StoreSink{store: s, keys: keys, now: time.Now}, nil
+	return &StoreSink{store: s, keys: keys, now: time.Now,
+		unchecked: map[string]*uncheckedHead{}, cpRows: checkpointRows, cpEvery: checkpointInterval}, nil
+}
+
+// SetCheckpointPolicy changes how often tenant heads are checkpointed: after
+// rows rows, or every interval. For tests; call it before recording.
+func (s *StoreSink) SetCheckpointPolicy(rows int, interval time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cpRows, s.cpEvery = max(rows, 1), interval
 }
 
 // StartAsync starts the two observation queues (capacity events each; 0
@@ -192,6 +231,110 @@ func (s *StoreSink) StartAsync(capacity int) {
 	// go to that tenant's chain. Authenticated events are shared per chain.
 	s.anonymous = s.startQueue(capacity, 0)
 	s.observed = s.startQueue(capacity, max(capacity/tenantShareDivisor, 1))
+	s.tick = make(chan struct{})
+	go s.checkpointer(s.tick, s.cpEvery)
+}
+
+// checkpointer checkpoints, every interval, each chain with rows no
+// checkpoint covers, so a quiet tenant's last rows are not left uncovered
+// until the next burst.
+func (s *StoreSink) checkpointer(stop <-chan struct{}, every time.Duration) {
+	if every <= 0 {
+		return
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			ctx, cancel := context.WithTimeout(context.Background(), writerBatchTimeout)
+			s.checkpointAll(ctx, false)
+			cancel()
+		}
+	}
+}
+
+// noteWritten records rows appended to a tenant chain and reports whether
+// its head is due a checkpoint.
+func (s *StoreSink) noteWritten(tenant string, rows []store.AuditEventRow) bool {
+	if tenant == "" || len(rows) == 0 {
+		return false
+	}
+	last := rows[len(rows)-1]
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u := s.unchecked[tenant]
+	if u == nil {
+		u = &uncheckedHead{since: s.now()}
+		s.unchecked[tenant] = u
+	}
+	if last.Seq > u.seq {
+		u.seq, u.hash = last.Seq, last.Hash
+	}
+	u.rows += len(rows)
+	return u.rows >= s.cpRows || (s.cpEvery > 0 && s.now().Sub(u.since) >= s.cpEvery)
+}
+
+// checkpointAll checkpoints every chain with uncovered rows (force), or
+// those due (!force). A failed write is logged and the chain stays uncovered
+// for the next pass.
+func (s *StoreSink) checkpointAll(ctx context.Context, force bool) {
+	s.mu.Lock()
+	var due []string
+	for t, u := range s.unchecked {
+		if force || u.rows >= s.cpRows || (s.cpEvery > 0 && s.now().Sub(u.since) >= s.cpEvery) {
+			due = append(due, t)
+		}
+	}
+	s.mu.Unlock()
+	sort.Strings(due)
+	for _, t := range due {
+		if err := s.checkpoint(ctx, t); err != nil {
+			slog.Error("audit: checkpointing a chain's head failed; retried on the next pass", "tenant", t, "err", err)
+		}
+	}
+}
+
+// checkpoint writes tenant's newest uncovered head to the operator chain.
+// It claims the head under mu and puts it back when the write fails, so a
+// concurrent checkpoint never writes the same head twice and a failure is
+// retried.
+func (s *StoreSink) checkpoint(ctx context.Context, tenant string) error {
+	s.cpMu.Lock()
+	defer s.cpMu.Unlock()
+	s.mu.Lock()
+	u := s.unchecked[tenant]
+	delete(s.unchecked, tenant)
+	s.mu.Unlock()
+	if u == nil {
+		return nil
+	}
+	ev := audit.Event{TS: s.now().UTC(), Action: ActionChainCheckpoint, TargetTenant: tenant,
+		CheckpointSeq: u.seq, CheckpointHash: u.hash,
+		CheckpointHeadMAC: s.keys.sign(macHead, tenant, u.seq, u.hash)}
+	payload, err := json.Marshal(ev)
+	if err == nil {
+		row := RowFor(ev, payload)
+		row.TenantID, row.Subject = "", SafeText(tenant)
+		_, err = s.store.AuditAppend(ctx, []store.AuditEventRow{row}, s.keys.Seal(), nil)
+	}
+	if err != nil {
+		s.mu.Lock()
+		if cur := s.unchecked[tenant]; cur == nil {
+			s.unchecked[tenant] = u
+		} else {
+			// Rows written meanwhile: keep the newer head, count both.
+			cur.rows += u.rows
+			if u.since.Before(cur.since) {
+				cur.since = u.since
+			}
+		}
+		s.mu.Unlock()
+		return fmt.Errorf("audit: checkpoint: %w", err)
+	}
+	return nil
 }
 
 func (s *StoreSink) startQueue(capacity, share int) *obsQueue {
@@ -223,9 +366,11 @@ func (s *StoreSink) Backlog() (pending int, dropped map[string]int) {
 	return pending, dropped
 }
 
-// Close stops queueing (later observations are written at once), and waits
+// Close stops queueing (later observations are written at once), waits
 // until the writers have written what was queued, and the drop summaries,
-// or ctx ends.
+// or ctx ends, and then checkpoints every chain it wrote past its last
+// checkpoint, so a clean shutdown leaves nothing a rollback could remove
+// undetected.
 func (s *StoreSink) Close(ctx context.Context) error {
 	s.mu.Lock()
 	queues := []*obsQueue{s.anonymous, s.observed}
@@ -233,21 +378,33 @@ func (s *StoreSink) Close(ctx context.Context) error {
 		for _, q := range queues {
 			close(q.ch)
 		}
+		close(s.tick)
 	}
 	s.closed = true
 	s.mu.Unlock()
-	if queues[0] == nil {
-		return nil
-	}
-	for _, q := range queues {
-		select {
-		case <-q.done:
-		case <-ctx.Done():
-			return ctx.Err()
+	var drainErr error
+	if queues[0] != nil {
+	drain:
+		for _, q := range queues {
+			select {
+			case <-q.done:
+			case <-ctx.Done():
+				drainErr = ctx.Err()
+				break drain
+			}
 		}
 	}
-	return nil
+	// The checkpoints run even when the drain ran out of time: they are a
+	// few rows, and skipping them would leave every chain's last rows open
+	// to a rollback. A fresh, short budget, since ctx may be spent.
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownCheckpointTimeout)
+	defer cancel()
+	s.checkpointAll(cctx, true)
+	return drainErr
 }
+
+// shutdownCheckpointTimeout bounds the checkpoints Close writes.
+const shutdownCheckpointTimeout = 3 * time.Second
 
 // Record appends ev to its tenant's chain: a state change or high-signal
 // event before it returns, an observation through its queue (never waited
@@ -456,8 +613,16 @@ func (s *StoreSink) appendEvents(ctx context.Context, evs []audit.Event) error {
 		}
 		opened = &o
 	}
-	if _, err := s.store.AuditAppend(ctx, rows, s.keys.Seal(), opened); err != nil {
+	written, err := s.store.AuditAppend(ctx, rows, s.keys.Seal(), opened)
+	if err != nil {
 		return fmt.Errorf("audit: append: %w", err)
+	}
+	if s.noteWritten(rows[0].TenantID, written) {
+		// The event is recorded; a checkpoint that fails is retried later
+		// and never fails the caller.
+		if err := s.checkpoint(ctx, rows[0].TenantID); err != nil {
+			slog.Error("audit: checkpointing a chain's head failed; retried later", "tenant", rows[0].TenantID, "err", err)
+		}
 	}
 	return nil
 }

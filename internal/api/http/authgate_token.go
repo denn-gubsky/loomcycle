@@ -182,17 +182,24 @@ func (s *Server) issueGateTokenFor(ctx context.Context, spec gateTokenSpec) (str
 		name = appTokenName(spec.oauthClient)
 	}
 	now := time.Now().UTC()
-	row, err := s.store.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+	want := store.OperatorTokenDefRow{
 		DefID: newTokenDefID(), Name: name, TenantID: tenant, Subject: subject,
 		TokenHash: hasher.Hash(plaintext), AllowedScopes: scopes, CreatedAt: now, ExpiresAt: now.Add(ttl),
 		RestrictionsJSON: rj, IssuedByGate: gate, Authority: authority,
 		OAuthClient: spec.oauthClient, OAuthFamily: spec.oauthFamily,
-	})
+	}
+	// A token is a credential granted: it is recorded before it exists, and
+	// not issued when the record cannot be written (the sign-in fails).
+	ev, err := s.tokenIntent(ctx, "create", want)
 	if err != nil {
 		return "", store.OperatorTokenDefRow{}, err
 	}
+	row, err := s.store.OperatorTokenDefCreate(ctx, want)
+	if err != nil {
+		s.recordFailed(ctx, ev)
+		return "", store.OperatorTokenDefRow{}, err
+	}
 	s.invalidateTokenCache(ctx)
-	s.recordTokenAudit(ctx, "create", row)
 	s.recordAuthEvent(audit.Event{Action: "auth_token_issued", AuthGate: gate, TargetTenant: tenant, TargetSubject: subject,
 		TargetDefID: row.DefID, ScopesAfter: scopes, AuthClient: spec.oauthClient})
 	slog.Info("auth gate: issued a user token", "gate", gate, "tenant", tenant, "subject", subject,

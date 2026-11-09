@@ -143,6 +143,15 @@ type Server struct {
 	// tokenAudit records delegated user-token mints and revocations
 	// (SetTokenAudit); nil = not recorded.
 	tokenAudit audit.Sink
+	// auditStream is whether boot opened the store-backed audit stream; a
+	// reload whose posture requires it is refused without it (it opens only
+	// at boot).
+	auditStream bool
+	// auditUnrecorded counts, per action, the access-reducing changes made
+	// although their audit record could not be written ahead
+	// (loomcycle_audit_unrecorded_total); guarded by auditUnrecordedMu.
+	auditUnrecordedMu sync.Mutex
+	auditUnrecorded   map[string]int64
 	// aclResolutionFailures counts the requests whose ACL set could not be
 	// read (enrichPrincipal), for loomcycle_acl_resolution_failures_total.
 	aclResolutionFailures atomic.Int64

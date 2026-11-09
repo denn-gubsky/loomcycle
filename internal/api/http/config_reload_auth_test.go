@@ -67,6 +67,7 @@ func TestReloadConfig_RemovedPrincipalStopsAuthenticatingAtOnce(t *testing.T) {
 func TestReloadConfig_RefusesLoweringTheAuthMode(t *testing.T) {
 	s, _, sink := sessionTestServer(t, "legacy-secret")
 	s.cfg().ResolvedAuth = strictPolicy()
+	s.SetAuditStreamRunning(true) // a strict server boots with the audit stream
 	lowered := &config.Config{}
 	lowered.Env = s.cfg().Env
 	s.SetConfigReloader(func() (*config.Config, error) { return lowered, nil })
@@ -93,6 +94,7 @@ func TestReloadConfig_RefusesLoweringTheAuthMode(t *testing.T) {
 	tok, _, _ := sessionTestServer(t, "legacy-secret")
 	raised := &config.Config{ResolvedAuth: strictPolicy()}
 	raised.Env = tok.cfg().Env
+	tok.SetAuditStreamRunning(true) // strict requires the stream
 	tok.SetConfigReloader(func() (*config.Config, error) { return raised, nil })
 	if _, err := tok.ReloadConfig(context.Background(), false); err != nil || !tok.cfg().ResolvedAuth.Strict() {
 		t.Fatalf("reload token→strict: err=%v strict=%v", err, tok.cfg().ResolvedAuth.Strict())
@@ -113,5 +115,29 @@ func TestReloadConfig_StrictWithoutGateDoesNotLoad(t *testing.T) {
 	}
 	if !s.cfg().ResolvedAuth.Strict() || len(s.cfg().ResolvedAuth.Gates) != 1 {
 		t.Error("the refused reload changed the running gates")
+	}
+}
+
+// A reload that raises the audit posture (here token → strict) on a server
+// that booted without the store-backed audit stream is refused: the stream
+// opens only at boot, so the new posture would run unrecorded until a
+// restart. With the stream running, the same reload applies.
+func TestReloadConfig_RaisingTheAuditRequirementNeedsTheStream(t *testing.T) {
+	s, _, _ := sessionTestServer(t, "legacy-secret")
+	raised := &config.Config{ResolvedAuth: strictPolicy()}
+	raised.Env = s.cfg().Env
+	s.SetConfigReloader(func() (*config.Config, error) { return raised, nil })
+	for _, dry := range []bool{true, false} {
+		_, err := s.ReloadConfig(context.Background(), dry)
+		if !errors.Is(err, config.ErrReloadInvalid) || !strings.Contains(err.Error(), "LOOMCYCLE_AUDIT_STORE") {
+			t.Fatalf("reload (dry=%v) token→strict without the stream: err = %v, want ErrReloadInvalid naming the audit store", dry, err)
+		}
+	}
+	if s.cfg().ResolvedAuth.Strict() {
+		t.Fatal("the refused reload raised the running mode")
+	}
+	s.SetAuditStreamRunning(true)
+	if _, err := s.ReloadConfig(context.Background(), false); err != nil || !s.cfg().ResolvedAuth.Strict() {
+		t.Fatalf("reload token→strict with the stream running: err=%v strict=%v", err, s.cfg().ResolvedAuth.Strict())
 	}
 }

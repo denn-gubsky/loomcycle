@@ -238,12 +238,115 @@ type Event struct {
 	// client address, else tenant/subject — with their counts, at most a
 	// few, so a gap in the chain can be traced to its cause.
 	DroppedSources map[string]int `json:"dropped_sources,omitempty"`
+
+	// --- Chain checkpoint (Action = "audit_chain_checkpoint") ---
+	//
+	// The operator chain's record of a tenant chain's signed head (the tenant
+	// travels in TargetTenant): its position, its hash and the head's MAC.
+	// Verification refuses a tenant chain whose head is behind its newest
+	// checkpoint, or whose row at that position has another hash, so a
+	// rollback to an earlier signed head is caught.
+	CheckpointSeq     int64  `json:"checkpoint_seq,omitempty"`
+	CheckpointHash    string `json:"checkpoint_hash,omitempty"`
+	CheckpointHeadMAC string `json:"checkpoint_head_mac,omitempty"`
+
+	// --- Write-ahead status (state changes recorded before they commit) ---
+	//
+	// ChangeStatus is "intent" on a row written BEFORE the change it records
+	// is made, "failed" on the best-effort row that follows when the change
+	// then did not happen, and "partial" when it stopped part-way after
+	// applying some of it (ChangeCounts says what). An intent row with no
+	// later row is a change that was made, or one interrupted by a crash;
+	// empty on rows written after the fact.
+	ChangeStatus string `json:"change_status,omitempty"`
+	// ChangeCounts is, on a "partial" row, what was applied before the
+	// change stopped: kind → rows (a snapshot restore's users, lists, …).
+	ChangeCounts map[string]int `json:"change_counts,omitempty"`
+	// UserStatus is the status a user change sets (active | disabled), on
+	// the user lifecycle records.
+	UserStatus string `json:"user_status,omitempty"`
 }
 
-// Sink records audit events. Record must be safe for concurrent use and
-// must never return an error path that blocks the caller's primary
-// operation — audit is best-effort observability, not a transaction
-// participant; callers log a Record error and proceed.
+// ChangeStatus values.
+const (
+	ChangeIntent  = "intent"
+	ChangeFailed  = "failed"
+	ChangePartial = "partial"
+)
+
+// ChangeKind is how a change recorded ahead (ChangeIntent) behaves when its
+// record cannot be written.
+type ChangeKind int
+
+const (
+	// ChangeGrants: the change grants or widens access, or may (an
+	// access-control write can drop a deny). It is refused when its record
+	// cannot be written.
+	ChangeGrants ChangeKind = iota
+	// ChangeReduces: the change only takes access away. It goes ahead when
+	// its record cannot be written, so an operator can still revoke a
+	// compromised token or deprovision a user while the audit store is down;
+	// the record is retried after the change and the miss is counted
+	// (loomcycle_audit_unrecorded_total) and logged at error.
+	ChangeReduces
+)
+
+// changeKinds classifies every action recorded ahead. An access-control
+// write is never classed as reducing: a list rewrite, a retired list or
+// binding, a deleted group or a removed membership can each remove a deny,
+// so none is known to take access away.
+// A function, not a package variable, so nothing can change the table.
+func changeKinds() map[string]ChangeKind {
+	return map[string]ChangeKind{
+		// Tokens.
+		"create": ChangeGrants,
+		"rotate": ChangeGrants,
+		"retire": ChangeReduces,
+		// Users.
+		"user_created":               ChangeGrants,
+		"auth_user_approved":         ChangeGrants,
+		"user_updated":               ChangeGrants, // re-enable, access mode, display name
+		"user_disabled":              ChangeReduces,
+		"user_deleted":               ChangeReduces,
+		"auth_scim_user_created":     ChangeGrants,
+		"auth_scim_user_reactivated": ChangeGrants,
+		"auth_scim_user_updated":     ChangeGrants,
+		"auth_scim_user_deactivated": ChangeReduces,
+		// A snapshot restore (users, groups, bindings and lists wholesale).
+		"snapshot_restored": ChangeGrants,
+		// Access control.
+		"acl_written":          ChangeGrants,
+		"acl_retired":          ChangeGrants,
+		"binding_written":      ChangeGrants,
+		"binding_retired":      ChangeGrants,
+		"group_written":        ChangeGrants,
+		"group_deleted":        ChangeGrants,
+		"group_member_added":   ChangeGrants,
+		"group_member_removed": ChangeGrants,
+	}
+}
+
+// ChangeKindOf is action's kind, and whether it is classified at all. An
+// unclassified action is to be treated as granting (refused unrecorded).
+func ChangeKindOf(action string) (ChangeKind, bool) {
+	k, ok := changeKinds()[action]
+	return k, ok
+}
+
+// ChangeActions lists the classified actions, for the census tests.
+func ChangeActions() []string {
+	kinds := changeKinds()
+	out := make([]string, 0, len(kinds))
+	for a := range kinds {
+		out = append(out, a)
+	}
+	return out
+}
+
+// Sink records audit events. Record must be safe for concurrent use. Most
+// callers log a Record error and proceed; token, access-control and user
+// lifecycle changes record an intent before they are made, and one that
+// grants access is refused when it cannot be written (ChangeKindOf).
 type Sink interface {
 	Record(ev Event) error
 }

@@ -56,8 +56,14 @@ func (s *Server) handleSelfRevokeToken(w http.ResponseWriter, r *http.Request) {
 			"an operator token is retired by an operator, not by itself")
 		return
 	}
+	ev, err := s.tokenIntent(ctx, "retire", row)
+	if err != nil {
+		writeAuditUnavailable(w)
+		return
+	}
 	now := time.Now().UTC()
 	if err := s.store.OperatorTokenDefSetRetiredAt(ctx, row.DefID, now); err != nil {
+		s.recordFailed(ctx, ev)
 		if isNotFound(err) {
 			writeJSONError(w, http.StatusUnauthorized, "token_not_found", "the token no longer exists")
 			return
@@ -67,7 +73,7 @@ func (s *Server) handleSelfRevokeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.invalidateTokenCache(ctx)
-	s.recordTokenAudit(ctx, "retire", row)
+	s.recordDone(ctx, ev)
 	slog.Info("auth: a token retired itself", "tenant", row.TenantID, "subject", row.Subject, "def_id", row.DefID)
 	writeJSON(w, http.StatusOK, map[string]any{"def_id": row.DefID, "retired_at": now.Format(time.RFC3339Nano)})
 }

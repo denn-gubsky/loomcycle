@@ -47,14 +47,22 @@ func (s *Server) handleApproveUser(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusConflict, "not_pending", "this user is not awaiting approval")
 		return
 	}
+	// An approval activates the user: a grant, recorded before it is made and
+	// refused when the record cannot be written.
+	p, _ := auth.PrincipalFromContext(ctx)
+	intent, err := s.recordIntent(ctx, audit.Event{Action: "auth_user_approved", TargetTenant: tenant, TargetSubject: subject,
+		ActorTenant: p.TenantID, ActorSubject: p.Subject, ActorTokenSuffix: p.TokenSuffix, SourceAddr: s.clientSource(r)})
+	if err != nil {
+		writeAuditUnavailable(w)
+		return
+	}
 	active := "active"
 	if err := s.store.UserUpdate(ctx, tenant, subject, store.UserPatch{Status: &active}); err != nil {
+		s.recordFailed(ctx, intent)
 		writeJSONError(w, http.StatusInternalServerError, "user_update_failed", err.Error())
 		return
 	}
-	p, _ := auth.PrincipalFromContext(ctx)
-	s.recordAuthAudit(audit.Event{Action: "auth_user_approved", TargetTenant: tenant, TargetSubject: subject,
-		ActorTenant: p.TenantID, ActorSubject: p.Subject, ActorTokenSuffix: p.TokenSuffix, SourceAddr: s.clientSource(r)})
+	s.recordDone(ctx, intent)
 	u.Status = active
 	writeJSON(w, http.StatusOK, toWireUserRecord(u))
 }

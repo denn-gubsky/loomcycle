@@ -57,6 +57,9 @@ func retireReloadServer(t *testing.T) (*Server, func(in string) tools.Result) {
 func retireReloadServerWith(t *testing.T, principals map[string]config.PrincipalDef) (*Server, func(in string) tools.Result) {
 	t.Helper()
 	s, st := tokenAuthServer(t, "")
+	// More than one principal: such a server boots with the audit stream,
+	// which a reload keeping several principals needs.
+	s.SetAuditStreamRunning(true)
 	cfg := raConfig(s.cfg(), principals)
 	hasher, err := cfg.Env.TokenHasher()
 	if err != nil {

@@ -65,6 +65,13 @@ questions:
     schema:
       type: string
       private: true
+  - variable: secret_key
+    label: Secret key (LOOMCYCLE_SECRET_KEY)
+    description: 'Base64 of 32 random bytes (`openssl rand -base64 32`). Required once more than one principal exists — a tenant token minted in Settings beside the auth token, a sign-in gate, or LOOMCYCLE_ACL shadow/enforce — because the audit trail is signed with it; without it the app stops booting. Also encrypts stored credentials. Keep it: changing it needs LOOMCYCLE_SECRET_KEY_PREVIOUS.'
+    group: Secrets
+    schema:
+      type: string
+      private: true
   - variable: anthropic_api_key
     label: ANTHROPIC_API_KEY
     group: Secrets

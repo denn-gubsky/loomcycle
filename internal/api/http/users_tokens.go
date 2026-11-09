@@ -171,12 +171,12 @@ func (s *Server) SetUserTokenMaxTTL(d time.Duration) { s.userTokenMaxTTL = d }
 // to. nil = not recorded.
 func (s *Server) SetTokenAudit(sink audit.Sink) { s.tokenAudit = sink }
 
-// recordTokenAudit writes one user-token audit record. Best-effort, like every
-// other token audit write: it never blocks or fails the operation.
-func (s *Server) recordTokenAudit(ctx context.Context, action string, row store.OperatorTokenDefRow) {
-	if s.tokenAudit == nil {
-		return
-	}
+// SetAuditStreamRunning records that boot opened the store-backed audit
+// stream, which a reload raising the audit posture needs.
+func (s *Server) SetAuditStreamRunning(on bool) { s.auditStream = on }
+
+// tokenEvent is the audit record of a user-token change.
+func tokenEvent(ctx context.Context, action string, row store.OperatorTokenDefRow) audit.Event {
 	ev := audit.Event{
 		Action: action, TargetDefID: row.DefID, TargetName: row.Name,
 		TargetTenant: row.TenantID, TargetSubject: row.Subject,
@@ -185,7 +185,24 @@ func (s *Server) recordTokenAudit(ctx context.Context, action string, row store.
 	if action == "create" {
 		ev.ScopesAfter = row.AllowedScopes
 	}
-	if err := s.tokenAudit.Record(ev); err != nil {
+	return ev
+}
+
+// tokenIntent records a token mint or retirement before it is made; a mint
+// whose record cannot be written is refused, a retirement goes ahead
+// (recordIntent).
+func (s *Server) tokenIntent(ctx context.Context, action string, row store.OperatorTokenDefRow) (changeIntent, error) {
+	return s.recordIntent(ctx, tokenEvent(ctx, action, row))
+}
+
+// recordTokenAudit writes one user-token audit record after the fact,
+// best-effort: the retirements a disable, an erasure or a removal makes as
+// part of ending a user's access, which an audit fault must not stop.
+func (s *Server) recordTokenAudit(ctx context.Context, action string, row store.OperatorTokenDefRow) {
+	if s.tokenAudit == nil {
+		return
+	}
+	if err := s.tokenAudit.Record(tokenEvent(ctx, action, row)); err != nil {
 		slog.Error("users: token audit write failed", "err", err)
 	}
 }
@@ -614,12 +631,17 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 	row.ExpiresAt = expiresAt
 	row.RestrictionsJSON = restrictionsJSON
 	row.Authority = authority
+	ev, err := s.tokenIntent(r.Context(), "create", row)
+	if err != nil {
+		writeAuditUnavailable(w)
+		return
+	}
 	created, err := s.store.OperatorTokenDefCreate(r.Context(), row)
 	if err != nil {
+		s.recordFailed(r.Context(), ev)
 		writeJSONError(w, http.StatusInternalServerError, "token_create_failed", err.Error())
 		return
 	}
-	s.recordTokenAudit(r.Context(), "create", created)
 	// After the create, so the new token is among the ones kept. A failure
 	// here leaves a valid new token and too many old ones, and is reported:
 	// the caller asked for a bound and did not get it.
@@ -759,8 +781,14 @@ func (s *Server) handleRevokeUserToken(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "token_not_found", "no such token for this user")
 		return
 	}
+	ev, err := s.tokenIntent(r.Context(), "retire", row)
+	if err != nil {
+		writeAuditUnavailable(w)
+		return
+	}
 	now := time.Now().UTC()
 	if err := s.store.OperatorTokenDefSetRetiredAt(r.Context(), defID, now); err != nil {
+		s.recordFailed(r.Context(), ev)
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
 			writeJSONError(w, http.StatusNotFound, "token_not_found", "no such token for this user")
@@ -771,7 +799,7 @@ func (s *Server) handleRevokeUserToken(w http.ResponseWriter, r *http.Request) {
 	}
 	// Stop the revoked token authenticating within one backplane round-trip.
 	s.invalidateTokenCache(r.Context())
-	s.recordTokenAudit(r.Context(), "retire", row)
+	s.recordDone(r.Context(), ev)
 	slog.Info("users: revoked token", "tenant", tenant, "subject", subject, "def_id", defID, "by", principalSubject(r.Context()))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"def_id":     defID,

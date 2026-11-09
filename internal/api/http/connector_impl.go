@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -1584,8 +1585,15 @@ func (s *Server) RestoreSnapshot(ctx context.Context, req connector.RestoreSnaps
 		return connector.RestoreSnapshotResult{}, fmt.Errorf("restore_snapshot: one of snapshot_id, raw_json, or file_path is required")
 	}
 
+	// A restore can create users, groups, bindings and lists wholesale: a
+	// grant, recorded ahead and refused when the record cannot be written.
+	intent, aerr := s.recordIntent(ctx, audit.Event{Action: "snapshot_restored", TargetName: req.SnapshotID})
+	if aerr != nil {
+		return connector.RestoreSnapshotResult{}, fmt.Errorf("restore_snapshot: %w", aerr)
+	}
 	result, err := snapshot.Restore(ctx, s.store, rawBytes, s.snapshotRestoreOptions(ctx, req.IncludeHistory))
 	if err != nil {
+		s.recordStopped(ctx, intent, result.Counts())
 		err = s.restoreFailed(ctx, &result, err)
 		var tooNew *migrations.ErrSnapshotVersionTooNew
 		var unknown *migrations.ErrUnknownSectionVersion
