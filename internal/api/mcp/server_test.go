@@ -160,6 +160,12 @@ func (m *mockConnector) DeleteRunTree(_ context.Context, req connector.DeleteRun
 
 // erasureFn lets a test drive the erasure ops; nil returns a zero report, which
 // is what the tools-list and authz tests need (they never call it).
+func (m *mockConnector) AppSignIns(context.Context, string, string) ([]connector.AppSignIn, error) {
+	return nil, nil
+}
+
+func (m *mockConnector) EndAppSignIn(context.Context, string, string, string) error { return nil }
+
 func (m *mockConnector) ErasureReport(_ context.Context, tenant, subject string) (erasure.Report, error) {
 	m.erasureTenant.Store(tenant)
 	m.erasureSubject.Store(subject)

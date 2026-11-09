@@ -120,6 +120,19 @@ service Loomcycle {
 
   rpc ErasureReport(ErasureReportRequest) returns (ErasureReportResponse);
 
+  // A user's app sign-ins (OAuth refresh-token families): which apps the
+  // person is signed in to, and ending one. ListUserAppSignIns and
+  // EndUserAppSignIn are the twins of GET and DELETE
+  // /v1/_users/{subject}/app-sign-ins — the tenant operator's, for a user of
+  // the caller's own tenant (no tenant field, as DirectoryInspect).
+  // ListMyAppSignIns and EndMyAppSignIn are the twins of GET and DELETE
+  // /v1/_me/app-sign-ins: any signed-in principal, for its own sign-ins only.
+  // No response carries token material.
+  rpc ListUserAppSignIns(ListUserAppSignInsRequest) returns (AppSignInsResponse);
+  rpc EndUserAppSignIn(EndUserAppSignInRequest) returns (EndAppSignInResponse);
+  rpc ListMyAppSignIns(ListMyAppSignInsRequest) returns (AppSignInsResponse);
+  rpc EndMyAppSignIn(EndMyAppSignInRequest) returns (EndAppSignInResponse);
+
   // ErasureExecute removes tiers 1 and 2 and reports what it could not reach.
   // DEFAULTS TO A DRY RUN: dry_run is `optional` so an unset field means true,
   // matching HTTP — a client that forgets it deletes nothing.
@@ -1254,6 +1267,39 @@ message DirectoryTenantsResponse {
   repeated DirectoryTenant tenants = 1;
   repeated string notes = 2;
 }
+
+// AppSignIn is one live app sign-in. It carries no token material.
+message AppSignIn {
+  string family_id = 1;
+  string client_id = 2;
+  string client_name = 3;   // the app's label, or its id when the app is gone
+  string gate = 4;          // the sign-in gate the person signed in through
+  string created_at = 5;    // RFC 3339 UTC
+  string last_used_at = 6;  // RFC 3339 UTC
+  string expires_at = 7;    // RFC 3339 UTC; the earlier of idle and absolute expiry
+}
+
+message ListUserAppSignInsRequest {
+  string subject = 1;
+}
+
+message ListMyAppSignInsRequest {}
+
+message AppSignInsResponse {
+  string subject = 1;
+  repeated AppSignIn app_sign_ins = 2;
+}
+
+message EndUserAppSignInRequest {
+  string subject = 1;
+  string family_id = 2;
+}
+
+message EndMyAppSignInRequest {
+  string family_id = 1;
+}
+
+message EndAppSignInResponse {}
 
 message ErasureReportRequest {
   string subject = 1;
