@@ -202,25 +202,32 @@ func (s *Server) beginCeremony(ctx context.Context, kind, gate, tenant, subject,
 // unknown ceremony (errPasskeyRefused); the row is gone either way, so a
 // ceremony is answered once.
 func (s *Server) takeCeremony(ctx context.Context, a passkeyAnswer, kind, gate, tenant, subject, binding string) (webauthn.SessionData, error) {
+	sd, _, err := s.takeCeremonyBegun(ctx, a, kind, gate, tenant, subject, binding)
+	return sd, err
+}
+
+// takeCeremonyBegun is takeCeremony also reporting when the ceremony was
+// begun (for a registration, when its step-up passed).
+func (s *Server) takeCeremonyBegun(ctx context.Context, a passkeyAnswer, kind, gate, tenant, subject, binding string) (webauthn.SessionData, time.Time, error) {
 	if a.Ceremony == "" || len(a.Credential) == 0 {
-		return webauthn.SessionData{}, errPasskeyRefused
+		return webauthn.SessionData{}, time.Time{}, errPasskeyRefused
 	}
 	row, err := s.store.WebAuthnCeremonyTake(ctx, ceremonyHash(a.Ceremony), time.Now())
 	if err != nil {
 		if isNotFound(err) {
-			return webauthn.SessionData{}, errPasskeyRefused
+			return webauthn.SessionData{}, time.Time{}, errPasskeyRefused
 		}
-		return webauthn.SessionData{}, err
+		return webauthn.SessionData{}, time.Time{}, err
 	}
 	if row.Kind != kind || row.Gate != gate || row.TenantID != tenant || row.Subject != subject ||
 		subtle.ConstantTimeCompare([]byte(row.Binding), []byte(binding)) != 1 {
-		return webauthn.SessionData{}, errPasskeyRefused
+		return webauthn.SessionData{}, time.Time{}, errPasskeyRefused
 	}
 	var sd webauthn.SessionData
 	if err := json.Unmarshal([]byte(row.SessionData), &sd); err != nil {
-		return webauthn.SessionData{}, fmt.Errorf("webauthn ceremony: %w", err)
+		return webauthn.SessionData{}, time.Time{}, fmt.Errorf("webauthn ceremony: %w", err)
 	}
-	return sd, nil
+	return sd, row.CreatedAt, nil
 }
 
 // acceptAssertion records a verified assertion's counter. A counter that did
@@ -928,7 +935,7 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 	refuse := func() {
 		writeJSONError(w, http.StatusBadRequest, "passkey_not_accepted", "the passkey was not accepted; try again")
 	}
-	sd, err := s.takeCeremony(ctx, passkeyAnswer{Ceremony: req.Ceremony, Credential: req.Credential}, store.CeremonyRegister, "",
+	sd, begun, err := s.takeCeremonyBegun(ctx, passkeyAnswer{Ceremony: req.Ceremony, Credential: req.Credential}, store.CeremonyRegister, "",
 		sess.TenantID, sess.Subject, registerBinding(sess.SessionHash))
 	if err != nil {
 		if errors.Is(err, errPasskeyRefused) {
@@ -970,6 +977,23 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		writeJSONError(w, http.StatusInternalServerError, "internal", "could not store the passkey")
+		return
+	}
+	// The step-up passed at begin. A password set since then (a reset or a
+	// change) may already have removed the passkeys added after the old
+	// one, before this one was stored: it goes too. Asked after the write,
+	// so a reset landing at any point is seen by one side or the other.
+	if setAt, err := s.passwordSetAt(ctx, sess.TenantID, sess.Subject); err != nil || setAt.After(begun) {
+		if _, derr := s.store.UserPasskeyDelete(ctx, sess.TenantID, sess.Subject, row.CredentialID); derr != nil {
+			slog.Error("authgate: removing a passkey registered across a password change failed", "err", derr)
+		}
+		// What this session made meanwhile ends with it, as on any removal.
+		s.endFactorSignIns(ctx, *sess)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
+			return
+		}
+		writeJSONError(w, http.StatusConflict, "credentials_changed", "the password changed while the passkey was being added; sign in again and add it again")
 		return
 	}
 	s.recordGateAudit(ctx, "auth_passkey_registered", sess.Gate, "", sess.TenantID, sess.Subject, floorTarget{})

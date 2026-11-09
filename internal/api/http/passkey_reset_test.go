@@ -263,3 +263,36 @@ func TestPasswordReset_RequiredMFAAccountSignsInWithThePasskeyThatAnswered(t *te
 		t.Fatalf("sign-in with the new password and the passkey = %d %v", code, out)
 	}
 }
+
+// A registration whose step-up passed before the password was set again
+// (a reset, or a change, landing between begin and finish) does not leave
+// its passkey: the reset's removal may already have run.
+func TestPasskeyRegistration_RefusedWhenThePasswordWasSetSinceItsStepUp(t *testing.T) {
+	f := newPasskeyFixture(t)
+	b, sub := f.passwordUser(t, "sol@example.com")
+	ctx := context.Background()
+	code, offer := b.do("POST", "/v1/_auth/passkeys/register/begin", passwordStepUp)
+	if code != http.StatusOK {
+		t.Fatalf("register begin: %d %v", code, offer)
+	}
+	// The password is set again after the step-up: same hash (so this
+	// browser's session stands), a later set time, as a reset would leave.
+	cred, err := f.st.UserCredentialGet(ctx, "acme", sub, store.CredentialKindPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := cred
+	moved.UpdatedAt = time.Now().UTC().Add(time.Second)
+	if err := f.st.UserCredentialSet(ctx, moved); err != nil {
+		t.Fatal(err)
+	}
+	a := newSoftAuthenticator(t, testRPID, testOrigin)
+	body := a.create(offer)
+	body["name"] = "late"
+	if code, out := b.do("POST", "/v1/_auth/passkeys/register/finish", jsonBody(t, body)); code != http.StatusConflict || out["code"] != "credentials_changed" {
+		t.Fatalf("register finish after the password was set again = %d %v, want 409 credentials_changed", code, out)
+	}
+	if rows, _ := f.st.UserPasskeyList(ctx, "acme", sub); len(rows) != 0 {
+		t.Fatalf("%d passkeys stored, want none", len(rows))
+	}
+}
