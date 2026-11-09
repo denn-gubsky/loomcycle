@@ -354,3 +354,15 @@ func (s *Store) UISessionRevokeSubject(ctx context.Context, tenantID, subject st
 	n, err := res.RowsAffected()
 	return int(n), err
 }
+
+// UISessionRevokeCredential implements store.UISessionStore.
+func (s *Store) UISessionRevokeCredential(ctx context.Context, tenantID, subject, credKind, credRef string, at time.Time) (int, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE ui_sessions SET revoked_at = ?
+		WHERE tenant_id = ? AND subject = ? AND cred_kind = ? AND cred_ref = ? AND revoked_at IS NULL`,
+		at.UnixNano(), tenantID, subject, credKind, credRef)
+	if err != nil {
+		return 0, fmt.Errorf("ui session revoke credential: %w", err)
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
