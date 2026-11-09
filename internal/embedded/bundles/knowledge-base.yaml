@@ -4934,10 +4934,15 @@ agents:
 
         var head = [];
         var cls = typeof in1.class === "string" && in1.class !== "" ? oneLine(in1.class, 80) : "(none)";
+        // The class's meaning and the slots its annotations fill, as the ontology says.
+        if (typeof in1.class_description === "string" && in1.class_description !== "") {
+          cls += " — " + oneLine(in1.class_description, 400);
+        }
+        var slots = typeof in1.slots === "string" && in1.slots !== "" ? oneLine(in1.slots, 400) : "";
         if (level === "document") {
           head.push("LEVEL: a whole document");
           head.push("CLASS: " + cls);
-          head.push("SLOTS: " + DEFAULT_SLOTS.document);
+          head.push("SLOTS: " + (slots !== "" ? slots : DEFAULT_SLOTS.document));
           head.push("TITLE: " + oneLine(in1.document_title || in1.title || "(untitled)", CONFIG.max_title_chars));
           var place = [];
           if (typeof in1.path === "string" && in1.path !== "") { place.push("folder " + oneLine(dirname(in1.path), CONFIG.max_title_chars)); }
@@ -4953,7 +4958,7 @@ agents:
         } else {
           head.push("LEVEL: a section of a document");
           head.push("CLASS: " + cls);
-          head.push("SLOTS: " + DEFAULT_SLOTS.branch);
+          head.push("SLOTS: " + (slots !== "" ? slots : DEFAULT_SLOTS.branch));
           head.push("TITLE: " + oneLine(in1.title || "(untitled)", CONFIG.max_title_chars));
           var trail = [];
           var pl = isArray(in1.place) ? in1.place : [];
@@ -5032,7 +5037,9 @@ agents:
         var head = [
           "LEVEL: a folder of documents",
           "CLASS: a collection — " + (classes.length > 0 ? classes.join(", ") : "(no classes)") +
-            (concepts.length > 0 ? "; topics: " + concepts.join(", ") : ""),
+            (concepts.length > 0 ? "; topics: " + concepts.join(", ") : "") +
+            (typeof in1.concept === "string" && in1.concept !== "" ? "; the folder is " + oneLine(in1.concept, 120) +
+              (typeof in1.concept_meaning === "string" && in1.concept_meaning !== "" ? " — " + oneLine(in1.concept_meaning, 400) : "") : ""),
           "SLOTS: " + FOLDER_SLOTS,
           "TITLE: " + oneLine(in1.title || "/", CONFIG.max_title_chars),
           "PLACE: " + (typeof in1.parent === "string" && in1.parent !== "" ? oneLine(in1.parent, CONFIG.max_title_chars) : "(top level)"),

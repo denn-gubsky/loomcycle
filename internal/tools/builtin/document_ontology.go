@@ -333,6 +333,8 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 				Definitions:       decl.Definitions,
 				Boilerplate:       decl.Boilerplate,
 				Exclude:           decl.Exclude,
+				Annotate:          decl.Annotate,
+				Meaning:           decl.Meaning,
 				RenamedFrom:       decl.RenamedFrom,
 				Issues:            decl.Issues,
 			})

@@ -77,6 +77,7 @@ var knownDirectives = map[string]bool{
 	"memory_scope": true, "identity": true, "identifier_pattern": true,
 	"title_pattern": true, "anchor_grammar": true, "citation_grammar": true,
 	"exclude": true, "renamed_from": true, "definitions": true, "boilerplate": true,
+	"annotate": true,
 	// relations
 	"inverse": true, "domain": true, "range": true, "symmetric": true,
 	"asymmetric": true, "irreflexive": true, "transitive": true,
@@ -356,6 +357,8 @@ type ClassDecl struct {
 	Definitions       string
 	Boilerplate       string
 	Exclude           []string
+	Annotate          string
+	Meaning           string
 	RenamedFrom       string
 	Issues            []string
 }
@@ -369,6 +372,7 @@ func ParseClassBody(body string) ClassDecl {
 	d := ClassDecl{
 		Fields:     ParseOntologyFields(body),
 		FieldSpecs: ParseOntologyFieldSpecs(body),
+		Meaning:    firstProseLine(body),
 	}
 	d.MemoryScope, d.MemoryScopeIssue = ParseOntologyScope(body)
 	for _, dir := range ParseDirectives(body) {
@@ -419,6 +423,17 @@ func ParseClassBody(body string) ClassDecl {
 			}
 		case "renamed_from":
 			d.RenamedFrom = firstWord(dir.Value)
+		case "annotate":
+			// The slots of the class's annotations, "a; b; c". Several lines are
+			// joined; an empty one says nothing and is reported.
+			if v := strings.TrimSpace(dir.Value); v != "" {
+				if d.Annotate != "" {
+					d.Annotate += "; "
+				}
+				d.Annotate += v
+			} else {
+				d.Issues = append(d.Issues, "@annotate names no slots; ignored")
+			}
 		default:
 			if !knownDirectives[dir.Name] {
 				d.Issues = append(d.Issues, "unknown directive @"+dir.Name+"; ignored")

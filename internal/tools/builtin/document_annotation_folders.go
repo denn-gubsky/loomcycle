@@ -137,14 +137,18 @@ type folderCount struct {
 
 // folderInputs is everything a folder's annotation is written from.
 type folderInputs struct {
-	Level          string            `json:"level"`
-	Path           string            `json:"path"`
-	Title          string            `json:"title"`
-	Parent         string            `json:"parent,omitempty"`
-	ChunkID        string            `json:"chunk_id,omitempty"`
-	DocumentID     string            `json:"document_id,omitempty"`
-	Classes        []folderCount     `json:"classes"`
-	Concepts       []folderCount     `json:"concepts,omitempty"`
+	Level      string        `json:"level"`
+	Path       string        `json:"path"`
+	Title      string        `json:"title"`
+	Parent     string        `json:"parent,omitempty"`
+	ChunkID    string        `json:"chunk_id,omitempty"`
+	DocumentID string        `json:"document_id,omitempty"`
+	Classes    []folderCount `json:"classes"`
+	Concepts   []folderCount `json:"concepts,omitempty"`
+	// ConceptName / ConceptMeaning are the concept of the tenant's schemes the
+	// folder is named for, when one is.
+	ConceptName    string            `json:"concept,omitempty"`
+	ConceptMeaning string            `json:"concept_meaning,omitempty"`
 	Children       []folderChild     `json:"children"`
 	ChildrenMore   []folderGroup     `json:"children_more,omitempty"`
 	Relations      []folderCount     `json:"relations,omitempty"`
@@ -447,7 +451,8 @@ func (s *annotationScope) folderInputsFor(ctx context.Context, canonical string,
 		}
 	}
 
-	// The language: the one most of its documents' annotations are written in.
+	// The language: the tenant's, when it enforces one; else the one most of its
+	// documents' annotations are written in.
 	in.Language = annotationFallbackLanguage
 	best := 0
 	for l, n := range langs {
@@ -455,6 +460,10 @@ func (s *annotationScope) folderInputsFor(ctx context.Context, canonical string,
 			in.Language, best = l, n
 		}
 	}
+	if l := s.enforcedLanguage(ctx); l != "" {
+		in.Language = l
+	}
+	in.ConceptName, in.ConceptMeaning = s.folderConcept(ctx, in.Title)
 	if !isRoot {
 		pt, err := d.folderTargetOf(ctx, key, in.Parent)
 		if err == nil {
@@ -475,8 +484,12 @@ func (s *annotationScope) folderInputsFor(ctx context.Context, canonical string,
 		Classes       []string `json:"classes"`
 		Concepts      []string `json:"concepts"`
 		Relations     []string `json:"relations"`
+		Concept       string   `json:"concept,omitempty"`
 	}{V: annotationCanonVersion, Level: annotationLevelPath, Path: canonical, Language: in.Language,
 		PromptVersion: promptVersion, Children: terms}
+	if in.ConceptName != "" {
+		canon.Concept = in.ConceptName + "\x00" + in.ConceptMeaning
+	}
 	for _, c := range in.Classes {
 		canon.Classes = append(canon.Classes, c.Name+"="+strconv.Itoa(c.Count))
 	}
@@ -861,4 +874,29 @@ func folderCoversRefusal(ctx context.Context, op string, acl *docACL, covers []s
 	}
 	r := errPermission(op+": the folder holds documents you may not read, so you may not read or write its annotation", "")
 	return &r
+}
+
+// folderConcept is the concept of the tenant's schemes a folder is named for: one
+// whose name, notation or alternative label is the folder's name, read with
+// '-' and '_' as spaces and case ignored. The first in scheme order wins.
+func (s *annotationScope) folderConcept(ctx context.Context, folderName string) (name, meaning string) {
+	onto := s.ontology(ctx)
+	if onto == nil || folderName == "" || folderName == "/" {
+		return "", ""
+	}
+	norm := func(v string) string {
+		return strings.ToLower(strings.Join(strings.Fields(strings.NewReplacer("-", " ", "_", " ").Replace(v)), " "))
+	}
+	want := norm(folderName)
+	for _, sch := range onto.Schemes {
+		for _, c := range sch.Concepts {
+			labels := append([]string{c.Name, c.Notation}, c.Alt...)
+			for _, l := range labels {
+				if l != "" && norm(l) == want {
+					return c.Name, c.Meaning
+				}
+			}
+		}
+	}
+	return "", ""
 }

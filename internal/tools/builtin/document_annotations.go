@@ -39,6 +39,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/lang"
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -221,6 +222,8 @@ type annotationInputs struct {
 	DocumentID    string               `json:"document_id"`
 	Level         string               `json:"level"`
 	Class         string               `json:"class,omitempty"`
+	ClassMeaning  string               `json:"class_description,omitempty"`
+	Slots         string               `json:"slots,omitempty"`
 	Title         string               `json:"title"`
 	DocumentTitle string               `json:"document_title"`
 	Place         []string             `json:"place"`
@@ -249,6 +252,8 @@ type annotationCanon struct {
 	Language      string   `json:"language"`
 	PromptVersion int      `json:"prompt_version"`
 	BodySHA       string   `json:"body_sha"`
+	ClassMeaning  string   `json:"class_meaning,omitempty"`
+	Slots         string   `json:"slots,omitempty"`
 	Identity      []string `json:"identity,omitempty"`
 	Children      []string `json:"children"`
 	Relations     []string `json:"relations,omitempty"`
@@ -277,6 +282,56 @@ type annotationScope struct {
 	docs   map[string]annDoc
 	langs  map[string]string
 	bodies map[string]chunkBody
+	// onto is the tenant ontology, read once (nil until then; ontoRead says it was).
+	onto     *OntologyRead
+	ontoRead bool
+}
+
+// ontology is the tenant ontology in force, or nil without one.
+func (s *annotationScope) ontology(ctx context.Context) *OntologyRead {
+	if !s.ontoRead {
+		s.ontoRead = true
+		if read, ok := s.d.tenantOntologyRead(ctx); ok && read.DocumentID != "" {
+			s.onto = &read
+		}
+	}
+	return s.onto
+}
+
+// enforcedLanguage is the language the tenant writes every annotation in: its
+// ontology root's annotation_language field, "" when it sets none.
+func (s *annotationScope) enforcedLanguage(ctx context.Context) string {
+	onto := s.ontology(ctx)
+	if onto == nil || onto.RootChunkID == "" {
+		return ""
+	}
+	tkey := sqlmem.ScopeKey{Tenant: sqlScopeTenant(ctx), Scope: "tenant", ScopeID: sqlScopeTenant(ctx)}
+	b, err := s.d.readBody(ctx, store.MemoryScopeTenant, tkey, onto.RootChunkID)
+	if err != nil || len(b.Fields) == 0 {
+		return ""
+	}
+	var f struct {
+		Language string `json:"annotation_language"`
+	}
+	if json.Unmarshal(b.Fields, &f) != nil || !annotationLanguageRE.MatchString(f.Language) {
+		return ""
+	}
+	return f.Language
+}
+
+// classOf is a document class's meaning and annotation slots in the tenant
+// ontology, by name (case ignored); empty when the class is not declared.
+func (s *annotationScope) classOf(ctx context.Context, name string) (meaning, slots string) {
+	onto := s.ontology(ctx)
+	if onto == nil || name == "" {
+		return "", ""
+	}
+	for _, t := range memrank.EffectiveClasses(onto.Terms, onto.Confirmed) {
+		if strings.EqualFold(t.Name, name) {
+			return t.Meaning, memrank.EffectiveDirective(t, "annotate")
+		}
+	}
+	return "", ""
 }
 
 type annDoc struct {
@@ -320,6 +375,10 @@ func (s *annotationScope) body(ctx context.Context, chunkID string) (chunkBody, 
 // its first top-level sections.
 func (s *annotationScope) language(ctx context.Context, docID, rootID string) (string, error) {
 	if l, ok := s.langs[docID]; ok {
+		return l, nil
+	}
+	if l := s.enforcedLanguage(ctx); l != "" {
+		s.langs[docID] = l
 		return l, nil
 	}
 	var sample strings.Builder
@@ -382,8 +441,10 @@ func (s *annotationScope) inputs(ctx context.Context, t annotationTarget, prompt
 	if in.Language, err = s.language(ctx, t.chunk.DocumentID, t.rootID); err != nil {
 		return in, err
 	}
+	in.ClassMeaning, in.Slots = s.classOf(ctx, t.docType)
 	canon := annotationCanon{V: annotationCanonVersion, Level: t.level, Title: t.chunk.Title, Class: t.docType,
-		Language: in.Language, PromptVersion: promptVersion, BodySHA: sha256Hex(own.Body), Children: []string{}}
+		Language: in.Language, PromptVersion: promptVersion, BodySHA: sha256Hex(own.Body), Children: []string{},
+		ClassMeaning: in.ClassMeaning, Slots: in.Slots}
 
 	// The children, in order: each one's own branch record, else its text.
 	cres, err := d.query(ctx, key, `SELECT c.id, c.title, c.type,

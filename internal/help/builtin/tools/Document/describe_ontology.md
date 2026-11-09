@@ -52,13 +52,16 @@ relations, grammars, schemes, instances, review?, issues?}`:
 - `sections` — the declared section kinds, in document order.
 - `partial` — part of the document could not be read. Do not treat a missing
   entry as removed; read again.
-- `classes` — each `{name, parent?, source, kind, fields?, title_identity?,
-  directives?, memory_scope?, renamed_from?, issues?}`.
+- `classes` — each `{name, parent?, source, kind, meaning?, fields?,
+  title_identity?, directives?, memory_scope?, renamed_from?, issues?}`.
+  - `meaning` is the first prose line of the class's entry: what a thing of the
+    class is.
   - `kind` is `document` for a document class, `chunk` otherwise.
   - `fields` is the complete typed field set, inherited fields first.
   - `directives` holds `identifier_pattern`, `title_pattern`, `anchor_grammar`,
-    `citation_grammar`, `definitions` and `exclude`, each as declared or else
-    inherited.
+    `citation_grammar`, `definitions`, `boilerplate`, `exclude` and `annotate`,
+    each as declared or else inherited. `annotate` is the slots an annotation of
+    a document of the class fills, as one `a; b; c` list.
   - `definitions` is a pattern (RE2 syntax) over chunk titles. In a document of
     the class, a chunk whose title matches it, and every chunk under that one, is
     where the document defines its terms rather than uses them. `get_chunk` and
