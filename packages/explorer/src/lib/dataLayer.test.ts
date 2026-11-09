@@ -15,6 +15,22 @@ function stubClient() {
 const BROWSE = { scopeId: "u1", tenant: "t1" };
 
 describe("dataLayerFromClient — @loomcycle/client → wire mapping", () => {
+  it("annotation ops: get_annotation by chunk id, set_annotation as a manual record", async () => {
+    const s = stubClient();
+    const dl = dataLayerFromClient(s.client);
+    await dl.documentGetAnnotation!("c1", "tenant", BROWSE);
+    expect(s.document).toHaveBeenLastCalledWith({ op: "get_annotation", id: "c1", scope: "tenant" }, BROWSE);
+    await dl.documentSetAnnotation!(
+      { id: "c1", level: "branch", brief: "B", abstract: "A" },
+      "tenant",
+      BROWSE,
+    );
+    expect(s.document).toHaveBeenLastCalledWith(
+      { op: "set_annotation", scope: "tenant", id: "c1", level: "branch", brief: "B", abstract: "A", manual: true },
+      BROWSE,
+    );
+  });
+
   it("routes path ops to client.path with op + browse opts", async () => {
     const s = stubClient();
     const dl = dataLayerFromClient(s.client);
