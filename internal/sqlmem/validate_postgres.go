@@ -1,6 +1,7 @@
 package sqlmem
 
 import (
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"regexp"
@@ -101,6 +102,83 @@ func routineSetsSetting(trimmed string) bool {
 	return false
 }
 
+// pgDeniedFns are the server functions an agent statement may not call:
+// file, large-object and cross-database I/O, and set_config.
+var pgDeniedFns = func() map[string]bool {
+	m := map[string]bool{"set_config": true}
+	for _, n := range strings.Split(pgServerFnNames, "|") {
+		m[n] = true
+	}
+	return m
+}()
+
+// pgTokenDenies applies postgresStatementDenies' rules to pgTokens' reading
+// of the raw statement. handled is false when the statement does not lex.
+func pgTokenDenies(raw string, readOnly bool) (handled bool, err error) {
+	var readings [2][]widthToken
+	for i, backslash := range []bool{false, true} {
+		toks, err := pgTokens(raw, backslash)
+		if err != nil {
+			return false, nil
+		}
+		readings[i] = toks
+	}
+	for _, toks := range readings {
+		word := func(i int) string {
+			if i >= 0 && i < len(toks) && toks[i].kind == tokIdent && !toks[i].quoted {
+				return strings.ToLower(toks[i].text)
+			}
+			return ""
+		}
+		punct := func(i int, p string) bool {
+			return i >= 0 && i < len(toks) && toks[i].kind == tokPunct && toks[i].text == p
+		}
+		// The leading CREATE/ALTER forms that reach outside table storage.
+		// The object type follows CREATE past OR REPLACE, TRUSTED, PROCEDURAL.
+		lead, k := word(0), 1
+		for lead == "create" && (word(k) == "or" || word(k) == "replace" || word(k) == "trusted" || word(k) == "procedural") {
+			k++
+		}
+		next := word(k)
+		switch {
+		case lead == "create" && (next == "extension" || next == "language" || next == "server" || next == "foreign" || next == "publication" || next == "subscription"),
+			lead == "alter" && (next == "system" || next == "role" || next == "database" || next == "user" || next == "group" || next == "tablespace"):
+			return true, refuse("this CREATE/ALTER form is denied on the postgres tier — extensions, languages, foreign servers, replication, and system/role/database changes can escape the scope")
+		}
+		routine := false
+		for i := 1; i < min(len(toks), 5); i++ {
+			switch word(i) {
+			case "function", "procedure", "routine":
+				routine = routine || lead == "create" || lead == "alter"
+			}
+		}
+		for i, t := range toks {
+			if t.kind != tokIdent {
+				continue
+			}
+			name := strings.ToLower(t.text)
+			// A call, by plain or quoted name, schema-qualified or not.
+			if punct(i+1, "(") && pgDeniedFns[name] {
+				if name == "set_config" {
+					return true, refuse("set_config is denied — the scope's settings (memory, timeouts, search path) are fixed by the runtime")
+				}
+				return true, refuse("this statement calls a denied server-side function (file / large-object I/O or dblink) — it can read host files or connect to another database")
+			}
+			// U&"…": a U name, then '&', then a quoted name.
+			if !t.quoted && name == "u" && punct(i+1, "&") && i+2 < len(toks) && toks[i+2].kind == tokIdent && toks[i+2].quoted {
+				return true, refuse(`U&"…" identifiers are denied — write the name plainly`)
+			}
+			if routine && !t.quoted && name == "set" {
+				return true, refuse("a function or procedure with a SET clause is denied — the scope's settings are fixed by the runtime")
+			}
+			if readOnly && !t.quoted && name == "into" {
+				return true, refuse("SELECT … INTO creates a table — sql_query is read-only; use sql_exec (or CREATE TABLE AS) to write")
+			}
+		}
+	}
+	return true, nil
+}
+
 // pgSelectIntoRe matches a `SELECT … INTO <table>` (which CREATES a table — a
 // WRITE) in a read-only statement. Anchored as whitespace-INTO-whitespace so a
 // double-quoted column literally named "into" (`SELECT "into" FROM t`) is NOT a
@@ -112,7 +190,16 @@ var pgSelectIntoRe = regexp.MustCompile(`(?i)\sinto\s`)
 
 // postgresStatementDenies applies the postgres-dialect escape denies to one
 // already-shared-validated statement (trimmed = comment-stripped + trimmed).
-func postgresStatementDenies(trimmed string, readOnly bool) error {
+func postgresStatementDenies(raw, trimmed string, readOnly bool) error {
+	// When the statement reads cleanly with the shared lexer (every agent
+	// statement does: lexAgentStatement refuses the rest first), the denies
+	// read its tokens, in both string readings, so a literal the old mask
+	// misreads ($$E'$$) cannot hide a call after it. The regexes below are the
+	// fallback for a statement the lexer does not take, which only the
+	// runtime's own statements reach.
+	if handled, err := pgTokenDenies(raw, readOnly); handled {
+		return err
+	}
 	if pgDangerousDDLRe.MatchString(trimmed) {
 		return refuse("this CREATE/ALTER form is denied on the postgres tier — extensions, languages, foreign servers, replication, and system/role/database changes can escape the scope")
 	}
@@ -357,6 +444,10 @@ func pgTokens(statement string, backslashStrings bool) ([]widthToken, error) {
 			}
 			out = append(out, widthToken{kind: tokString, text: s[i+len(tag) : i+len(tag)+end]})
 			i += len(tag) + end + len(tag) - 1
+		case c == '\\':
+			// Postgres has no token that starts with a backslash outside a
+			// string; it refuses the statement, and so does this.
+			return nil, unclear("a backslash outside a string")
 		default:
 			out = append(out, widthToken{kind: tokPunct, text: s[i : i+1]})
 		}
@@ -498,6 +589,18 @@ func wrapValueLimit(statement string, limit int) string {
 	return fmt.Sprintf("SELECT loomcycle_q.* FROM (%s\n) AS loomcycle_q WHERE CASE WHEN octet_length(ROW(loomcycle_q.*)::text) > %d "+
 		"THEN CAST('%s:' || octet_length(ROW(loomcycle_q.*)::text) AS integer) > 0 ELSE true END",
 		stmt, limit, pgValueLimitMarker)
+}
+
+// cappedErr is valueLimitErr for an agent statement that ran on a postgres
+// connection under the protocol cap (agentConn). A message over the cap can
+// also surface later as database/sql's ErrBadConn, once pgconn has closed the
+// connection (a notice too large, mid-write or mid-transaction); that is the
+// same refusal, said so the model can act on it.
+func cappedErr(err error, limit int) error {
+	if err != nil && errors.Is(err, driver.ErrBadConn) {
+		return refuse("a message from the database was over the %d-byte limit on one SQL Memory value (a row or a notice), or the connection was lost; the statement did not complete", limit)
+	}
+	return valueLimitErr(err, limit)
 }
 
 // valueLimitErr turns wrapValueLimit's refusal, or the protocol cap's

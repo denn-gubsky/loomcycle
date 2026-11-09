@@ -359,13 +359,17 @@ func (m *Manager) queryTxn(ctx context.Context, txnID, statement string, args []
 		}
 		statement = wrapValueLimit(statement, limit)
 	}
+	mapErr := valueLimitErr
+	if maxBytes > 0 && m.dialect == dialectPostgres {
+		mapErr = cappedErr
+	}
 	rows, err := t.tx.QueryContext(qctx, statement, args...)
 	if err != nil {
-		return nil, valueLimitErr(err, limit)
+		return nil, mapErr(err, limit)
 	}
 	defer rows.Close()
 	res, err := collectRows(rows, m.cfg.MaxRows, maxBytes)
-	return res, valueLimitErr(err, limit)
+	return res, mapErr(err, limit)
 }
 
 // ExecTxn runs a validated DDL/DML statement on the open transaction for txnID,
@@ -401,6 +405,9 @@ func (m *Manager) ExecTxn(ctx context.Context, txnID, statement string, args []a
 	}
 	r, err := t.tx.ExecContext(ectx, statement, args...)
 	if err != nil {
+		if m.dialect == dialectPostgres && !t.key.isDoc() {
+			return nil, cappedErr(err, valueLengthLimit(m.cfg))
+		}
 		return nil, valueLimitErr(err, valueLengthLimit(m.cfg))
 	}
 	out := &ExecResult{}
