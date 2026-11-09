@@ -6,11 +6,13 @@ import (
 	"strings"
 
 	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
 // maxHTMLBytes caps the HTML a document may hold: the parser builds the
-// whole tree in memory.
-const maxHTMLBytes = 32 << 20
+// whole tree in memory, and nothing bounds that tree while it is built, so
+// the page is also counted before it is parsed (countHTML).
+const maxHTMLBytes = 8 << 20
 
 // HTML reads a web page: its headings, paragraphs, lists, tables and
 // preformatted blocks. Scripts, styles and forms are dropped. An <img> is
@@ -32,7 +34,13 @@ func extractHTML(ctx context.Context, r io.ReaderAt, size int64, sink Sink, opts
 	if size > maxHTMLBytes {
 		return rep, refusedf("the page is over %d bytes", maxHTMLBytes)
 	}
-	doc, err := html.Parse(io.NewSectionReader(r, 0, size))
+	// Both passes read through the context, so a deadline that comes while
+	// either is reading stops it at its next read: html.Parse has no context
+	// of its own.
+	if err := countHTML(ctx, &ctxReader{ctx: ctx, r: io.NewSectionReader(r, 0, size)}); err != nil {
+		return rep, err
+	}
+	doc, err := html.Parse(&ctxReader{ctx: ctx, r: io.NewSectionReader(r, 0, size)})
 	if err != nil {
 		return rep, err
 	}
@@ -79,6 +87,186 @@ func extractHTML(ctx context.Context, r io.ReaderAt, size int64, sink Sink, opts
 	}
 	rep.finish(w)
 	return rep, nil
+}
+
+// htmlFormatting are the elements the parser keeps on its list of active
+// formatting elements, and htmlMarkers those that open a new scope of it.
+var (
+	htmlFormatting = map[atom.Atom]bool{
+		atom.A: true, atom.B: true, atom.Big: true, atom.Code: true, atom.Em: true, atom.Font: true, atom.I: true,
+		atom.Nobr: true, atom.S: true, atom.Small: true, atom.Strike: true, atom.Strong: true, atom.Tt: true, atom.U: true,
+	}
+	htmlMarkers = map[atom.Atom]bool{
+		atom.Applet: true, atom.Object: true, atom.Marquee: true, atom.Template: true, atom.Td: true, atom.Th: true, atom.Caption: true,
+	}
+)
+
+// fmtEntry is one entry of countHTML's copy of the active formatting list:
+// the element, its attributes as written (the parser keeps at most three
+// entries alike), and what one clone of it costs (itself and its
+// attributes). An entry with markers > 0 stands for that many scope markers
+// in a row, so a flood of table cells does not grow the list.
+type fmtEntry struct {
+	tag     atom.Atom
+	key     string
+	weight  int
+	markers int
+}
+
+// maxHTMLActive bounds countHTML's copy of the active formatting list. The
+// parser refuses a page that nests more than 512 elements, and re-creating
+// more formatting elements than that would nest them that deep.
+const maxHTMLActive = 512
+
+// countHTML reads the page with the tokenizer, which keeps one tag at a time,
+// and refuses it before html.Parse builds anything when the tree would be out
+// of proportion to the page: more than maxXMLNodes elements and text runs, as
+// the walk counts them (whose table walk keeps a row's first maxSheetColumns
+// cells, so the cells past them were never counted while the parser built a
+// node for each), an element of more than
+// maxXMLAttrsPerElement attributes or more than maxXMLAttrs in all, or more
+// than maxXMLNodes elements and attributes the parser would clone.
+//
+// The clones: a formatting element (<b>, <font>, ...) left open when an
+// enclosing element closes is re-created by the parser before the next
+// content, so a few hundred open <b>s and ten thousand paragraphs build
+// millions of nodes from a few hundred KB of page. countHTML keeps the
+// parser's list of active formatting elements the way the parser does
+// (pushed on a start tag, at most three alike, removed by the matching end
+// tag, scoped by markers) and charges the whole list's weight at every other
+// tag, each of which may close what holds them. That over-counts a formatting
+// element nothing closes (it is never cloned), never under-counts, and a page
+// that closes what it opens is charged nothing.
+//
+// The tokenizer alone reads <script>, <style>, <title> and the like as raw
+// text, but the parser has it read them as markup inside <svg> and <math>.
+// So once the page has opened either, countHTML reads them as markup too: it
+// may count tags the parser never sees, never miss one it builds.
+//
+// What the count itself costs: the tokenizer holds the attributes of the
+// current tag, about 100 bytes each, so a page that is one tag of a million
+// distinct attributes costs about 160 MiB before it is refused.
+func countHTML(ctx context.Context, r io.Reader) error {
+	z := html.NewTokenizer(r)
+	var active []fmtEntry
+	nodes, attrs, weight, cloned := 0, 0, 0, 0
+	foreign := false
+	for i := 0; ; i++ {
+		if i%4096 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		tt := z.Next()
+		switch tt {
+		case html.ErrorToken:
+			if err := z.Err(); err != io.EOF {
+				return err
+			}
+			return nil
+		case html.TextToken, html.CommentToken, html.DoctypeToken:
+			// Each is a node the walk counts against the same cap.
+			if nodes++; nodes > maxXMLNodes {
+				return refusedf("the page holds more than %d elements", maxXMLNodes)
+			}
+		case html.StartTagToken, html.SelfClosingTagToken:
+			name, more := z.TagName()
+			tag := atom.Lookup(name)
+			if tag == atom.Svg || tag == atom.Math {
+				foreign = true
+			}
+			if foreign {
+				z.NextIsNotRawText()
+			}
+			formatting := htmlFormatting[tag] && tt == html.StartTagToken
+			var key strings.Builder
+			n := 0
+			for more {
+				var k, v []byte
+				k, v, more = z.TagAttr()
+				n++
+				if formatting && key.Len() < 4096 {
+					key.Write(k)
+					key.WriteByte('=')
+					key.Write(v)
+					key.WriteByte(0)
+				}
+			}
+			nodes++
+			attrs += n
+			switch {
+			case n > maxXMLAttrsPerElement:
+				return refusedf("an element of the page holds more than %d attributes", maxXMLAttrsPerElement)
+			case attrs > maxXMLAttrs:
+				return refusedf("the page holds more than %d attributes", maxXMLAttrs)
+			case nodes > maxXMLNodes:
+				return refusedf("the page holds more than %d elements", maxXMLNodes)
+			}
+			switch {
+			case formatting:
+				e := fmtEntry{tag: tag, key: key.String(), weight: 1 + n}
+				// The parser's Noah's Ark clause: a fourth entry alike since the
+				// last marker drops the earliest of them.
+				alike, first := 0, -1
+				for j := len(active) - 1; j >= 0 && active[j].markers == 0; j-- {
+					if active[j].tag == e.tag && active[j].key == e.key {
+						alike++
+						first = j
+					}
+				}
+				if alike >= 3 {
+					weight -= active[first].weight
+					active = append(active[:first], active[first+1:]...)
+				}
+				if len(active) >= maxHTMLActive {
+					return refusedf("the page leaves more than %d formatting elements open", maxHTMLActive)
+				}
+				active = append(active, e)
+				weight += e.weight
+			case htmlMarkers[tag] && tt == html.StartTagToken:
+				if l := len(active); l > 0 && active[l-1].markers > 0 {
+					active[l-1].markers++
+				} else if l >= maxHTMLActive {
+					return refusedf("the page leaves more than %d formatting elements open", maxHTMLActive)
+				} else {
+					active = append(active, fmtEntry{markers: 1})
+				}
+			default:
+				cloned += weight
+			}
+		case html.EndTagToken:
+			name, _ := z.TagName()
+			tag := atom.Lookup(name)
+			switch {
+			case htmlFormatting[tag]:
+				for j := len(active) - 1; j >= 0 && active[j].markers == 0; j-- {
+					if active[j].tag == tag {
+						weight -= active[j].weight
+						active = append(active[:j], active[j+1:]...)
+						break
+					}
+				}
+			case htmlMarkers[tag]:
+				// Clear the list back to the last marker.
+				for len(active) > 0 {
+					l := len(active) - 1
+					if active[l].markers > 0 {
+						if active[l].markers--; active[l].markers == 0 {
+							active = active[:l]
+						}
+						break
+					}
+					weight -= active[l].weight
+					active = active[:l]
+				}
+			default:
+				cloned += weight
+			}
+		}
+		if cloned > maxXMLNodes {
+			return refusedf("the page's unclosed formatting elements would be re-created more than %d times", maxXMLNodes)
+		}
+	}
 }
 
 type htmlState struct {

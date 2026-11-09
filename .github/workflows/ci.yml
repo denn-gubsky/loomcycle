@@ -154,7 +154,7 @@ jobs:
 
       - name: Fuzz each extractor
         run: |
-          for target in FuzzExtractPDF FuzzExtractDOCX FuzzExtractXLSX FuzzExtractPPTX FuzzExtractODT FuzzExtractHTML FuzzExtractVTT FuzzExtractCSV; do
+          for target in FuzzExtractPDF FuzzExtractDOCX FuzzExtractXLSX FuzzExtractPPTX FuzzExtractODT FuzzExtractHTML FuzzExtractVTT FuzzExtractCSV FuzzExtractText FuzzExtractImage; do
             echo "::group::$target"
             # Each new input the fuzzer keeps is minimized first, for up to
             # 60 s by default, while every worker stops: that would use the

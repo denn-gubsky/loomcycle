@@ -131,10 +131,13 @@ func TestSqlmem_OversizedFirstRowIsRefused(t *testing.T) {
 	resultBytesTiers(t, testResultBudget, func(t *testing.T, m *Manager, tier string) {
 		ctx := context.Background()
 		key := agentKey("t1", "giant")
-		big := strings.Repeat("y", 4*testResultBudget)
-		ins, computed := "INSERT INTO cells (id, body) VALUES (?, ?)", "SELECT printf('%.*c', 1000000, 'z')"
+		// Over the budget but under the value length limit (twice the budget),
+		// so the agent may store and build it and the result cap is what
+		// refuses it (length_limit_test.go covers values past the limit).
+		big := strings.Repeat("y", testResultBudget*3/2)
+		ins, computed := "INSERT INTO cells (id, body) VALUES (?, ?)", fmt.Sprintf("SELECT printf('%%.*c', %d, 'z')", testResultBudget*3/2)
 		if tier == "postgres" {
-			ins, computed = "INSERT INTO cells (id, body) VALUES ($1, $2)", "SELECT repeat('z', 1000000)"
+			ins, computed = "INSERT INTO cells (id, body) VALUES ($1, $2)", fmt.Sprintf("SELECT repeat('z', %d)", testResultBudget*3/2)
 		}
 		if _, err := m.Exec(ctx, key, "CREATE TABLE cells (id INTEGER, body TEXT)", nil, 0); err != nil {
 			t.Fatalf("create: %v", err)
@@ -224,7 +227,10 @@ func TestSqlmem_ResultByteCapBoundaryIsInclusive(t *testing.T) {
 // carries every row however small the result budget is — it is a copy of the
 // database, not an answer to an agent.
 func TestSqlmem_DumpIsNotCutByResultByteCap(t *testing.T) {
-	resultBytesTiers(t, 1024, func(t *testing.T, m *Manager, tier string) {
+	// A budget under one row's worth of the table (20 rows of 8 KiB), and at
+	// least half of one row, so the agent may still write each row (the value
+	// length limit is twice the budget).
+	resultBytesTiers(t, 8192, func(t *testing.T, m *Manager, tier string) {
 		ctx := context.Background()
 		key := agentKey("t1", "dump")
 		fillWide(t, m, key, 20)
