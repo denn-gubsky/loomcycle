@@ -140,6 +140,14 @@ updates:
       - dependency-name: "jsdom"
         update-types: ["version-update:semver-major"]
     groups:
+      # The Teams SDK packages pin each other exactly (teams.apps depends on
+      # teams.api at its own version), and bridge-teams depends on both. Bumped
+      # one at a time (#2507, #2508) they install two teams.api copies whose
+      # types do not match, so they move in one pull request. A dependency goes
+      # to the first group it matches, so this sits above the catch-all.
+      microsoft-teams-sdk:
+        applies-to: version-updates
+        patterns: ["@microsoft/teams.*"]
       npm-by-dependency:
         applies-to: version-updates
         group-by: dependency-name
