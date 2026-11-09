@@ -33,21 +33,43 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
 )
 
+// promView is who a /metrics render is for. The authenticated route renders
+// every series; the unauthenticated listener renders the same set minus every
+// series that names a user, because anyone who reaches that port reads it.
+type promView int
+
+const (
+	promViewAuthenticated promView = iota
+	promViewOpen
+)
+
+// namesUsers reports whether the view may carry series labelled with a user
+// identity. Every user-labelled block asks it, so a new one is left out of
+// the open view by the same switch.
+func (v promView) namesUsers() bool { return v == promViewAuthenticated }
+
 // MetricsListenerHandler is the handler of the separate metrics listener
-// (LOOMCYCLE_METRICS_LISTEN): GET /metrics, the same render as the main
-// listener's, with NO authentication, and a 404 for every other path. It is
-// meant for a network only the scraper can reach; the main listener keeps
-// serving the authenticated /metrics regardless.
+// (LOOMCYCLE_METRICS_LISTEN): GET /metrics with NO authentication, and a 404
+// for every other path. It renders what the main listener's /metrics does,
+// less the series that name a user. It is meant for a network only the
+// scraper can reach; the main listener keeps serving the authenticated
+// /metrics regardless.
 func (s *Server) MetricsListenerHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /metrics", recoveryMiddleware(http.HandlerFunc(s.handleMetricsProm)))
+	mux.Handle("GET /metrics", recoveryMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		s.renderMetricsProm(w, promViewOpen)
+	})))
 	return mux
 }
 
-// handleMetricsProm serves GET /metrics. Bearer-authed on the main listener
-// (middleware already gates the route); unauthenticated on the metrics
-// listener. Live-read; no DB query.
+// handleMetricsProm serves GET /metrics on the main listener. Bearer-authed
+// (middleware already gates the route). Live-read; no DB query.
 func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
+	s.renderMetricsProm(w, promViewAuthenticated)
+}
+
+// renderMetricsProm writes the Prometheus text for view.
+func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
@@ -97,8 +119,9 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
 	// workloads. We can't directly observe the cap value from Stats(),
 	// but the PerUser map is nil/empty when the cap is disabled (see
 	// internal/concurrency/semaphore.go — only populated under the
-	// per-user-capped Acquire path).
-	if len(perUserOpt) > 0 {
+	// per-user-capped Acquire path). The user ids are identities, so the
+	// open view leaves the series out.
+	if len(perUserOpt) > 0 && view.namesUsers() {
 		fmt.Fprintln(w, "# HELP loomcycle_concurrency_per_user Runs currently held (active+queued) per user_id; only emitted when MaxConcurrentRunsPerUser > 0.")
 		fmt.Fprintln(w, "# TYPE loomcycle_concurrency_per_user gauge")
 		// Sort user IDs so successive scrapes produce deterministic
