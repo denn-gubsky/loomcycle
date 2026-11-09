@@ -314,10 +314,16 @@ func TestLoadFromURL_OversizeBodyIsRefusedWithoutReadingIt(t *testing.T) {
 }
 
 func TestLoadFromURL_TimeoutFallsBack(t *testing.T) {
+	// The handler answers only once the client has given up. It used to
+	// return when its request context ended; on a loaded CI runner that could
+	// come before the client's timeout, and its empty 200 then matched the
+	// empty-body digest and failed as archive_invalid instead of a timeout.
+	release := make(chan struct{})
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done()
+		<-release
 	}))
 	defer srv.Close()
+	defer close(release) // before Close, which waits for the handler
 	f := testFetch(certPool(srv))
 	f.timeout = 200 * time.Millisecond
 	dataDir := t.TempDir()

@@ -113,6 +113,20 @@ The blind spot is a test that builds a path to another directory at run time
 from something other than literals: write such paths as literals, or accept
 that a pull request will not catch that test failing and `main` will.
 
+## `ci/census-tests.sh` — census and drift tests on every pull request
+
+The *Census and drift* CI job runs these whatever a pull request changed,
+without `-race`: every Go test whose name contains `Census`, `Drift`, `Twin`,
+`Parity`, `Every`, `Complete` or `Listed`, and the TypeScript and Python
+adapter tests that open a file outside their adapter. Name a test that checks
+"every X has a Y" with one of those words and it runs on every pull request.
+
+```sh
+scripts/ci/census-tests.sh go       # ~2 min locally
+scripts/ci/census-tests.sh ts       # after npm ci in adapters/ts
+scripts/ci/census-tests.sh python   # after pip install -e ".[dev]" in adapters/python
+```
+
 ## `ci/split-tests.sh` — one package's tests across several runners
 
 `internal/api/http` and `internal/tools/builtin` each hold ~2,100 tests that
