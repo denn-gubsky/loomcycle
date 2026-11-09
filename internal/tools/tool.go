@@ -1850,7 +1850,7 @@ func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessag
 	// The run identity names the tenant authoritatively, and also reaches a
 	// call made outside a run's span (the MCP, HTTP and gRPC tool surfaces).
 	ctx = lcotel.WithTenant(ctx, RunIdentity(ctx).TenantID)
-	ctx, span := lcotel.RecordToolCall(ctx, name)
+	ctx, span := lcotel.RecordToolCall(ctx, lcotel.ToolCallAttrs{Name: name, CallID: ToolUseID(ctx)})
 	defer span.End()
 	res, goErr := d.execute(ctx, name, input)
 	switch {

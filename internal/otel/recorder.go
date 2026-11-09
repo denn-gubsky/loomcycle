@@ -8,13 +8,15 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	genai "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
 // Recorder helpers centralize the loomcycle span attribute set so every
 // call site stays consistent without duplicating the attribute names.
-// A future rename to OpenTelemetry's evolving semconv (`gen_ai.*` is the
-// 2026-era candidate for LLM-call attributes) happens in one place.
+// The run, model and tool spans also carry the OpenTelemetry GenAI
+// semantic-convention attributes (gen_ai.*, pinned in genai.go) beside the
+// loomcycle.* ones.
 //
 // Attribute key prefix: every loomcycle-specific attribute uses
 // `loomcycle.*` so a Jaeger / Tempo / Honeycomb search for `loomcycle.`
@@ -84,6 +86,8 @@ type RunStartAttrs struct {
 	// sub-run started under its parent's span), and stays empty for a run
 	// with none.
 	Tenant string
+	// SessionID is the chat the run belongs to (gen_ai.conversation.id).
+	SessionID string
 }
 
 // RecordRunStart opens the top-level loomcycle.run span. The returned
@@ -119,6 +123,10 @@ func runStartKVs(a RunStartAttrs) []attribute.KeyValue {
 	if a.ParentAgentID != "" {
 		kvs = append(kvs, attribute.String(AttrParentAgentID, a.ParentAgentID))
 	}
+	kvs = append(kvs, genAIOperationInvokeAgent)
+	kvs = genAIString(genai.GenAIAgentNameKey, a.AgentName, kvs)
+	kvs = genAIString(genai.GenAIAgentIDKey, a.AgentID, kvs)
+	kvs = genAIString(genai.GenAIConversationIDKey, a.SessionID, kvs)
 	return kvs
 }
 
@@ -165,13 +173,23 @@ func RecordProviderCall(ctx context.Context, attrs ProviderCallAttrs) (context.C
 	return Tracer().Start(ctx, SpanProviderCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
 }
 
+// ToolCallAttrs identifies one tool call.
+type ToolCallAttrs struct {
+	Name string
+	// CallID is the model's tool_use id (gen_ai.tool.call.id); empty for a
+	// call made outside a model turn.
+	CallID string
+}
+
 // RecordToolCall opens loomcycle.tool.call around Dispatcher.Execute.
 // The single canonical wrap-point covers every tool — built-in, MCP,
 // sub-agent. MCP calls additionally open a nested loomcycle.mcp.call
 // via RecordMCPCall.
-func RecordToolCall(ctx context.Context, toolName string) (context.Context, trace.Span) {
-	return Tracer().Start(ctx, SpanToolCall,
-		trace.WithAttributes(withTenantAttr(ctx, []attribute.KeyValue{attribute.String(AttrTool, toolName)})...))
+func RecordToolCall(ctx context.Context, a ToolCallAttrs) (context.Context, trace.Span) {
+	kvs := []attribute.KeyValue{attribute.String(AttrTool, a.Name), genAIOperationExecuteTool}
+	kvs = genAIString(genai.GenAIToolNameKey, a.Name, kvs)
+	kvs = genAIString(genai.GenAIToolCallIDKey, a.CallID, kvs)
+	return Tracer().Start(ctx, SpanToolCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
 }
 
 // RecordMCPCall opens loomcycle.mcp.call inside the outer

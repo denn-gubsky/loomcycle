@@ -55,6 +55,27 @@ func TestDispatcherExecute_EmitsToolCallSpan(t *testing.T) {
 	t.Errorf("loomcycle.tool attribute missing or wrong: %+v", spans[0].Attributes)
 }
 
+// The dispatcher names the run's tenant and the model's tool_use id on the
+// span: the tenant from the run identity (authoritative, and present on the
+// MCP / HTTP / gRPC tool surfaces where no run span set one), the call id as
+// gen_ai.tool.call.id.
+func TestDispatcherCall_SpanCarriesRunTenantAndToolUseID(t *testing.T) {
+	exp := withInMemoryExporter(t)
+	d := tools.NewDispatcher([]tools.Tool{&fakeTool{name: "TestTool", res: tools.Result{Text: "ok"}}})
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme", UserID: "alice"})
+	ctx = tools.WithToolUseID(ctx, "toolu_7")
+	d.Execute(ctx, "TestTool", json.RawMessage(`{}`))
+	want := map[string]string{lcotel.AttrTenant: "acme", "gen_ai.tool.call.id": "toolu_7", "gen_ai.tool.name": "TestTool"}
+	for _, kv := range exp.GetSpans()[0].Attributes {
+		if w, ok := want[string(kv.Key)]; ok && kv.Value.AsString() == w {
+			delete(want, string(kv.Key))
+		}
+	}
+	if len(want) > 0 {
+		t.Errorf("tool span lacks %v: %+v", want, exp.GetSpans()[0].Attributes)
+	}
+}
+
 func TestDispatcherExecute_IsErrorMarksSpanError(t *testing.T) {
 	exp := withInMemoryExporter(t)
 	d := tools.NewDispatcher([]tools.Tool{&fakeTool{name: "BadTool", res: tools.Result{Text: "tool refused: scope=x", IsError: true}}})

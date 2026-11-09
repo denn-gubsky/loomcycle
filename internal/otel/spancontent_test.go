@@ -40,7 +40,7 @@ func TestRecorders_StampTenantOnEverySpanOfARun(t *testing.T) {
 	ctx, run := lcotel.RecordRunStart(context.Background(), lcotel.RunStartAttrs{RunID: "r1", Tenant: "acme"})
 	ictx, iter := lcotel.RecordIteration(ctx, 1)
 	_, prov := lcotel.RecordProviderCall(ictx, lcotel.ProviderCallAttrs{Provider: "anthropic"})
-	tctx, tool := lcotel.RecordToolCall(ictx, "mcp__srv__x")
+	tctx, tool := lcotel.RecordToolCall(ictx, lcotel.ToolCallAttrs{Name: "mcp__srv__x"})
 	_, mcp := lcotel.RecordMCPCall(tctx, "srv", "x")
 	_, mem := lcotel.RecordMemorySearch(tctx, "inprocess")
 	// A sub-run started under the parent's span names no tenant of its own.
@@ -71,7 +71,7 @@ func TestRecorders_OmitTenantOutsideATenantsWork(t *testing.T) {
 	exp := withInMemoryExporter(t)
 	_, run := lcotel.RecordRunStart(context.Background(), lcotel.RunStartAttrs{RunID: "r1"})
 	run.End()
-	_, tool := lcotel.RecordToolCall(context.Background(), "Read")
+	_, tool := lcotel.RecordToolCall(context.Background(), lcotel.ToolCallAttrs{Name: "Read"})
 	tool.End()
 	for _, s := range exp.GetSpans() {
 		if v, ok := attrOf(s, lcotel.AttrTenant); ok {
@@ -174,5 +174,64 @@ func TestUserHash_MatchesTheHMACKnownAnswer(t *testing.T) {
 	key, _ := hex.DecodeString("6888a893992739563b4d15a9e417320e7dd2ec2748da497abd27ee9cbae9b2f4")
 	if got := lcotel.UserHash(key, "acme", "alice"); got != "449b272e5974ee6a" {
 		t.Fatalf("UserHash = %s", got)
+	}
+}
+
+// wantAttrs fails for every key in want the span lacks or carries another
+// value for; values compare in their emitted string form.
+func wantAttrs(t *testing.T, s tracetest.SpanStub, want map[string]string) {
+	t.Helper()
+	for k, w := range want {
+		v, ok := attrOf(s, k)
+		if !ok {
+			t.Errorf("%s: %s missing", s.Name, k)
+			continue
+		}
+		if got := v.Emit(); got != w {
+			t.Errorf("%s: %s = %q, want %q", s.Name, k, got, w)
+		}
+	}
+}
+
+func TestRecordRunStart_DualEmitsGenAIAgentAttributes(t *testing.T) {
+	exp := withInMemoryExporter(t)
+	_, span := lcotel.RecordRunStart(context.Background(), lcotel.RunStartAttrs{
+		RunID: "r1", AgentID: "ag_1", AgentName: "researcher", Tenant: "acme", SessionID: "sess_9",
+	})
+	span.End()
+	wantAttrs(t, exp.GetSpans()[0], map[string]string{
+		lcotel.AttrTenant:        "acme",
+		lcotel.AttrAgentName:     "researcher",
+		lcotel.AttrAgentID:       "ag_1",
+		"gen_ai.operation.name":  "invoke_agent",
+		"gen_ai.agent.name":      "researcher",
+		"gen_ai.agent.id":        "ag_1",
+		"gen_ai.conversation.id": "sess_9",
+	})
+}
+
+func TestRecordToolCall_DualEmitsGenAIToolAttributes(t *testing.T) {
+	exp := withInMemoryExporter(t)
+	ctx := lcotel.WithTenant(context.Background(), "acme")
+	_, span := lcotel.RecordToolCall(ctx, lcotel.ToolCallAttrs{Name: "Read", CallID: "toolu_1"})
+	span.End()
+	wantAttrs(t, exp.GetSpans()[0], map[string]string{
+		lcotel.AttrTenant:       "acme",
+		lcotel.AttrTool:         "Read",
+		"gen_ai.operation.name": "execute_tool",
+		"gen_ai.tool.name":      "Read",
+		"gen_ai.tool.call.id":   "toolu_1",
+	})
+}
+
+func TestGenAIProviderName_MapsToTheWellKnownValues(t *testing.T) {
+	for in, want := range map[string]string{
+		"anthropic": "anthropic", "openai": "openai", "deepseek": "deepseek",
+		"gemini": "gcp.gemini", "bedrock": "aws.bedrock", "ollama": "ollama",
+		"ollama-local": "ollama", "my-vllm": "my-vllm",
+	} {
+		if got := lcotel.GenAIProviderName(in); got != want {
+			t.Errorf("GenAIProviderName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
