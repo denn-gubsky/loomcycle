@@ -3,6 +3,7 @@ package auditchain_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -291,5 +292,77 @@ func TestAuditVerify_AnAnchorSealedBeforeCheckpointsVerifiesAndPrunes(t *testing
 		if _, err := pruneForTest(ctx, s, tenant, time.Now()); err != nil {
 			t.Fatalf("prune %q past a released-shape anchor: %v", tenant, err)
 		}
+	}
+}
+
+// The operator chain's prune carries checkpoints forward in its anchor. It
+// must not drop one a rollback contradicts: roll a tenant back, let the
+// deployment write past 64 newer checkpoints over the forged history, prune
+// the operator chain, and the genuine checkpoint must still catch it.
+func TestAuditVerify_CarryKeepsTheCheckpointARollbackContradicts(t *testing.T) {
+	s, db := chainFixture(t, 0)
+	sink, err := auditchain.NewStoreSink(s, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.SetCheckpointPolicy(1, time.Hour)
+	record(t, sink, 2)
+	old := saveHead(t, db, "t1")
+	record(t, sink, 2) // genuine checkpoints at 3 and 4
+	rollBack(t, db, "t1", old)
+	other, err := auditchain.NewStoreSink(s, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.SetCheckpointPolicy(1, time.Hour)
+	for i := 0; i < 70; i++ { // 70 checkpoints of the forged history
+		record(t, other, 1)
+	}
+	if n, err := pruneForTest(context.Background(), s, "", time.Now()); err != nil || n == 0 {
+		t.Fatalf("prune the operator chain: %d, %v", n, err)
+	}
+	if rep := verify(t, s, testKeys); rep.OK {
+		t.Fatalf("a rollback after the operator chain's prune dropped its checkpoint: %+v", rep)
+	}
+}
+
+// Carried checkpoints are dropped once the tenant chain's own signed anchor
+// has passed them (the tenant prune that moved it checked them), so the
+// operator anchor's state stays bounded by retention.
+func TestAuditPrune_CarryDropsOnlyCheckpointsBelowTheTenantAnchor(t *testing.T) {
+	s, db := chainFixture(t, 0)
+	sink, err := auditchain.NewStoreSink(s, testKeys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.SetCheckpointPolicy(2, time.Hour)
+	record(t, sink, 6) // checkpoints at 2, 4 and 6
+	cutoff := time.Now()
+	record(t, sink, 2) // checkpoint at 8, after the cutoff
+	if n, err := pruneForTest(context.Background(), s, "t1", cutoff); err != nil || n != 6 {
+		t.Fatalf("prune t1: %d, %v", n, err)
+	}
+	if n, err := pruneForTest(context.Background(), s, "", time.Now()); err != nil || n == 0 {
+		t.Fatalf("prune the operator chain: %d, %v", n, err)
+	}
+	var state string
+	if err := db.QueryRow(`SELECT anchor_state FROM audit_heads WHERE tenant_id = ''`).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	var st struct {
+		Checkpoints map[string][]auditchain.Checkpoint `json:"checkpoints"`
+	}
+	if err := json.Unmarshal([]byte(state), &st); err != nil {
+		t.Fatal(err)
+	}
+	var seqs []int64
+	for _, cp := range st.Checkpoints["t1"] {
+		seqs = append(seqs, cp.Seq)
+	}
+	if len(seqs) != 2 || seqs[0] != 6 || seqs[1] != 8 {
+		t.Errorf("carried checkpoints of t1 at %v, want [6 8] (at or above its anchor at 6)", seqs)
+	}
+	if rep := verify(t, s, testKeys); !rep.OK {
+		t.Errorf("t1 after both prunes: %+v", rep)
 	}
 }

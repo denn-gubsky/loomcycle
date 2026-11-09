@@ -228,20 +228,19 @@ type anchorState struct {
 	// key, so the previous key no longer signs a row after it: the rotation
 	// point survives the rows that established it being pruned.
 	Rotated bool `json:"rotated,omitempty"`
-	// Checkpoints is, per tenant, the newest checkpoints (at most
-	// maxCarriedCheckpoints) among the operator chain's rows before its
-	// anchor; empty for a tenant chain.
+	// Checkpoints is, per tenant, the checkpoints among the operator chain's
+	// rows before its anchor that the tenant chain can still be compared
+	// with; empty for a tenant chain.
+	//
+	// Every checkpoint counts, not just the newest: after a rollback the
+	// deployment goes on appending to the rolled-back head and in time
+	// checkpoints that history too, so a newer checkpoint can be the forged
+	// one and an older one the witness. So none is dropped while it can
+	// still be compared: only those below the tenant chain's own signed
+	// retention anchor go (the tenant prune that moved the anchor checked
+	// them). The set is bounded by the tenant chain's retention.
 	Checkpoints map[string][]Checkpoint `json:"checkpoints,omitempty"`
 }
-
-// maxCarriedCheckpoints bounds the checkpoints per tenant an operator-chain
-// anchor carries. Every checkpoint counts, not just the newest: after a
-// rollback the deployment goes on appending to the rolled-back head and in
-// time checkpoints that history too, so a newer checkpoint can be the forged
-// one and an older one the witness. Bounded so an anchor stays small; a
-// rollback is lost only when this many checkpoints were written after it
-// and the operator chain was pruned past all of them before a verify.
-const maxCarriedCheckpoints = 64
 
 // Checkpoint is a tenant chain's head as the operator chain recorded it.
 type Checkpoint struct {
@@ -373,14 +372,17 @@ var ErrChainBroken = errors.New("audit: the chain does not verify")
 // unverified is folded into a new signature. The new state is the previous
 // anchor's openings plus the pruned rows' (operator chain only).
 func (k ChainKeys) SealAnchor() store.AuditAnchorSealFunc {
-	return k.sealAnchor(nil)
+	return k.sealAnchor(nil, nil)
 }
 
-// sealAnchor is SealAnchor for a tenant chain with its checkpoints from the
-// operator chain: the prune is also refused when the locked head is behind
-// the newest checkpoint or a pruned row contradicts one, so a rollback is
-// never folded under a signed anchor.
-func (k ChainKeys) sealAnchor(cps []Checkpoint) store.AuditAnchorSealFunc {
+// sealAnchor is SealAnchor with what the chain's prune knows besides its own
+// rows. For a tenant chain, cps are its checkpoints from the operator chain:
+// the prune is also refused when the locked head is behind the newest one or
+// a pruned row contradicts one, so a rollback is never folded under a signed
+// anchor. For the operator chain, tenantAnchors are the tenant chains'
+// verified retention anchors: a carried checkpoint is dropped only below its
+// tenant's anchor, never because there are many.
+func (k ChainKeys) sealAnchor(cps []Checkpoint, tenantAnchors map[string]int64) store.AuditAnchorSealFunc {
 	return func(prev store.AuditHead, pruned []store.AuditEventRow) (string, string, string, error) {
 		tenant := prev.TenantID
 		if len(pruned) == 0 {
@@ -435,8 +437,17 @@ func (k ChainKeys) sealAnchor(cps []Checkpoint) store.AuditAnchorSealFunc {
 		}
 		st.Rotated = rotated
 		for t, l := range st.Checkpoints {
-			if len(l) > maxCarriedCheckpoints {
-				st.Checkpoints[t] = l[len(l)-maxCarriedCheckpoints:]
+			below := tenantAnchors[t]
+			kept := l[:0:0]
+			for _, cp := range l {
+				if cp.Seq >= below {
+					kept = append(kept, cp)
+				}
+			}
+			if len(kept) == 0 {
+				delete(st.Checkpoints, t)
+			} else {
+				st.Checkpoints[t] = kept
 			}
 		}
 		state := ""
@@ -462,7 +473,40 @@ func (k ChainKeys) sealAnchor(cps []Checkpoint) store.AuditAnchorSealFunc {
 // PruneStore is what Prune reads and prunes through.
 type PruneStore interface {
 	ChainReader
+	AuditTenants(ctx context.Context) ([]string, error)
 	AuditPrune(ctx context.Context, tenantID string, before time.Time, limit int, seal store.AuditAnchorSealFunc) (int, error)
+}
+
+// tenantAnchors reads each tenant chain's retention anchor position, for the
+// operator chain's prune to drop only checkpoints below it. An anchor whose
+// signature does not verify counts as none (0): a planted anchor must not
+// make the prune drop a witness. An older genuine anchor replayed is lower,
+// so it only keeps more. Anchors move only up, so one read before the prune
+// stays a floor while it runs.
+func tenantAnchors(ctx context.Context, st PruneStore, keys ChainKeys) (map[string]int64, error) {
+	tenants, err := st.AuditTenants(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]int64{}
+	for _, t := range tenants {
+		if t == "" {
+			continue
+		}
+		h, err := st.AuditHeadGet(ctx, t)
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		h.TenantID = t
+		if _, why := keys.checkAnchor(h); why == "" {
+			out[t] = h.AnchorSeq
+		}
+	}
+	return out, nil
 }
 
 // pruneBatch is how many rows one prune transaction removes at most, so a
@@ -483,7 +527,13 @@ const pruneBatch = 5000
 // chain has grown.
 func Prune(ctx context.Context, st PruneStore, keys ChainKeys, tenant string, before time.Time) (int, error) {
 	seal := keys.SealAnchor()
-	if tenant != "" {
+	if tenant == "" {
+		anchors, err := tenantAnchors(ctx, st, keys)
+		if err != nil {
+			return 0, err
+		}
+		seal = keys.sealAnchor(nil, anchors)
+	} else {
 		// A tenant prune is checked against the operator chain's checkpoints
 		// of it, read from a verified operator chain: a broken one refuses
 		// the prune rather than fold rows nothing can vouch for. This reads
@@ -495,7 +545,7 @@ func Prune(ctx context.Context, st PruneStore, keys ChainKeys, tenant string, be
 		if !op.OK {
 			return 0, fmt.Errorf("%w: the operator chain does not verify (row %d: %s)", ErrChainBroken, op.BreakSeq, op.Reason)
 		}
-		seal = keys.sealAnchor(reg.Checkpoints[tenant])
+		seal = keys.sealAnchor(reg.Checkpoints[tenant], nil)
 	}
 	total := 0
 	for {
