@@ -3576,6 +3576,9 @@ export interface OntologyTerm {
   /** Bare `@identity`: the title is the identity (declared / inherited). */
   title_identity?: boolean;
   inherited_title_identity?: boolean;
+  /** Bare `@norm`: a norm class, other documents are measured against it (declared / inherited). */
+  norm?: boolean;
+  inherited_norm?: boolean;
   identifier_pattern?: string;
   title_pattern?: string;
   anchor_grammar?: string;

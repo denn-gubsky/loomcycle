@@ -40,6 +40,10 @@ describe("classDirectiveNotes", () => {
     expect(notes).toContain("definitions: ^Article 1\\b (inherited)");
     expect(notes).toContain("title is its identity (inherited)");
   });
+  it("notes a norm class, declared or inherited", () => {
+    expect(classDirectiveNotes({ name: "Act", source: "tenant", norm: true })).toContain("norm");
+    expect(classDirectiveNotes({ name: "Law", source: "tenant", inherited_norm: true })).toContain("norm (inherited)");
+  });
   it("is empty for a plain class", () => {
     expect(classDirectiveNotes({ name: "incident", source: "tenant" })).toEqual([]);
   });

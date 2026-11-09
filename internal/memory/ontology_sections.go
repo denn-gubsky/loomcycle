@@ -77,6 +77,7 @@ var knownDirectives = map[string]bool{
 	"memory_scope": true, "identity": true, "identifier_pattern": true,
 	"title_pattern": true, "anchor_grammar": true, "citation_grammar": true,
 	"exclude": true, "renamed_from": true, "definitions": true, "boilerplate": true,
+	"norm": true,
 	// relations
 	"inverse": true, "domain": true, "range": true, "symmetric": true,
 	"asymmetric": true, "irreflexive": true, "transitive": true,
@@ -349,6 +350,7 @@ type ClassDecl struct {
 	MemoryScope       string
 	MemoryScopeIssue  string
 	TitleIdentity     bool
+	Norm              bool
 	IdentifierPattern string
 	TitlePattern      string
 	AnchorGrammar     string
@@ -378,6 +380,14 @@ func ParseClassBody(body string) ClassDecl {
 			// section is the section reader's; version is informational on the root.
 		case "identity":
 			d.TitleIdentity = true
+		case "norm":
+			// A flag: a value is refused rather than read, so `@norm false` never marks a
+			// class a norm. Prose after a dash is a comment, as in the bullet spelling.
+			if v := dir.Value; v != "" && !strings.HasPrefix(v, "—") {
+				d.Issues = append(d.Issues, "@norm takes no value; ignored")
+				continue
+			}
+			d.Norm = true
 		case "identifier_pattern", "title_pattern", "definitions":
 			if _, issue := compileOntologyPattern(dir.Value); issue != "" {
 				d.Issues = append(d.Issues, "@"+dir.Name+" "+issue+"; ignored")
