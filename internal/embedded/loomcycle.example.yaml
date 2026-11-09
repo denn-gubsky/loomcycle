@@ -464,10 +464,10 @@ channels:
 #       default: decide            # answers a call naming no model
 #       models: [decide]           # the only models this agent's calls may name
 
-# ─── v0.10.0 OpenTelemetry distributed traces ───────────────────────
-# Off by default — when LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT is unset,
-# the tracer is a no-op and there is zero runtime cost. When set,
-# loomcycle emits a span tree per agent run:
+# ─── OpenTelemetry distributed traces ───────────────────────────────
+# Off by default — when OTEL_EXPORTER_OTLP_ENDPOINT is unset, the tracer
+# is a no-op and there is zero runtime cost. When set, loomcycle emits a
+# span tree per agent run:
 #
 #   loomcycle.run
 #   ├─ loomcycle.iteration (one per loop turn)
@@ -478,7 +478,8 @@ channels:
 #
 # Sub-agent runs nest as children of the parent's iteration span via
 # context propagation. Operators see the full cv-batch-adapter →
-# cv-adapter tree in one Jaeger view.
+# cv-adapter tree in one Jaeger view. An authenticated caller's
+# traceparent parents the run (LOOMCYCLE_OTEL_INBOUND_CONTEXT).
 #
 # Spans deliberately do NOT carry transcript bodies, tool I/O, system
 # prompts, user prompts, API keys, or any secrets. Only shape, cost,
@@ -488,22 +489,24 @@ channels:
 # Run `help observability` (Context tool) for the Jaeger / Tempo /
 # Honeycomb / DataDog walkthroughs + the full attribute reference.
 #
-# Env vars:
-#   LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-#       # Empty disables. host:port OR http(s)://host:port — http://
-#       # opts into WithInsecure automatically. Use https:// for
-#       # Honeycomb / cloud collectors.
-#   LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=$KEY
-#       # Comma-separated key=value list for collector auth. Multiple
-#       # headers compose with `,`.
-#   LOOMCYCLE_OTEL_SERVICE_NAME=loomcycle
-#       # Populates service.name resource attribute. Override per
-#       # replica for multi-replica HA grouping.
-#   LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO=1.0
-#       # Head-based sampling ratio, clamped to [0,1]. parentbased so
-#       # a sampled parent always produces sampled children. Reduce
-#       # (0.1, 0.01) on high-volume deployments to fit SaaS APM
-#       # event caps (Honeycomb free tier: ~0.05 for 200 runs/hour).
+# Env vars (the standard OTEL_* set; there is no yaml block):
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+#       # A URL with its scheme; empty disables. http:// is plain text,
+#       # https:// is TLS (OTEL_EXPORTER_OTLP_CERTIFICATE etc. for mTLS).
+#   OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+#       # Or grpc (endpoint on :4317).
+#   OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=$KEY
+#       # Collector auth, a SECRET. Or keep it in a file named by
+#       # LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE.
+#   OTEL_SERVICE_NAME=loomcycle
+#   OTEL_RESOURCE_ATTRIBUTES=service.instance.id=replica-a
+#       # Override loomcycle's resource defaults (service.name,
+#       # service.instance.id = LOOMCYCLE_REPLICA_ID,
+#       # deployment.environment.name = LOOMCYCLE_ENVIRONMENT).
+#   OTEL_TRACES_SAMPLER=parentbased_traceidratio
+#   OTEL_TRACES_SAMPLER_ARG=0.1
+#       # Default parentbased_always_on. Reduce the ratio (0.1, 0.01)
+#       # on high-volume deployments to fit SaaS APM event caps.
 
 # ─── v0.8.16 Interruption tool ───────────────────────────────────────
 # Human-in-the-loop primitive. Operator picks the delivery surface;

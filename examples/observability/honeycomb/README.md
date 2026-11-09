@@ -165,8 +165,8 @@ Roughly 10 minutes against your account:
 
 | Want to | Change |
 |---|---|
-| Lower / raise sampling | `.env`: `LOOMCYCLE_OTEL_SAMPLER_RATIO=0.1` (10%; raise to 1.0 for debugging, lower for cost control) |
-| Send to a different Honeycomb environment | `LOOMCYCLE_OTEL_SERVICE_NAME=loomcycle-staging` (Honeycomb routes by service name) |
+| Lower / raise sampling | `.env`: `OTEL_TRACES_SAMPLER=parentbased_traceidratio`, `OTEL_TRACES_SAMPLER_ARG=0.1` (10%; raise to 1.0 for debugging, lower for cost control) |
+| Send to a different Honeycomb environment | `OTEL_SERVICE_NAME=loomcycle-staging` (Honeycomb routes by service name) |
 | Add trace-tail / fast-fail sampling | Configure Honeycomb's [Sampling Proxy](https://docs.honeycomb.io/manage-data-volume/sampling/) sidecar; loomcycle's OTLP endpoint env var points at the proxy instead |
 
 ## See also

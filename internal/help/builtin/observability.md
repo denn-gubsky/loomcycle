@@ -11,10 +11,12 @@ spawns nest as child spans of the parent's iteration, so a multi-level
 `cv-batch-adapter → cv-adapter → ...` tree shows the whole hierarchy
 in one trace view.
 
-This is **off by default**. When `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT`
-is unset, the entire telemetry subsystem is a no-op — no goroutines,
-no exporter buffers, no measurable overhead. Operators opt in by
-pointing at their OTLP/HTTP collector.
+This is **off by default**. When `OTEL_EXPORTER_OTLP_ENDPOINT` is
+unset, the entire telemetry subsystem is a no-op — no goroutines, no
+exporter buffers, no measurable overhead. Operators opt in by pointing
+at their OTLP collector. Configuration is the standard OpenTelemetry
+`OTEL_*` environment (see the reference at the end), over OTLP/HTTP
+(default) or OTLP/gRPC.
 
 ## What spans capture
 
@@ -71,7 +73,7 @@ docker run --rm -d --name jaeger \
   -p 16686:16686 -p 4318:4318 \
   jaegertracing/all-in-one:latest
 
-export LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ./bin/loomcycle --config loomcycle.example.yaml
 ```
 
@@ -140,9 +142,9 @@ events/month, which covers a JobEmber-class workload at default
 sampling).
 
 ```sh
-export LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT=https://api.honeycomb.io
-export LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=$HONEYCOMB_API_KEY
-export LOOMCYCLE_OTEL_SERVICE_NAME=loomcycle-prod
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://api.honeycomb.io
+export OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=$HONEYCOMB_API_KEY
+export OTEL_SERVICE_NAME=loomcycle-prod
 ./bin/loomcycle --config loomcycle.yaml
 ```
 
@@ -152,13 +154,19 @@ a webhook when a latency p99 exceeds a threshold — useful for
 "alert me when a provider degrades."
 
 The `x-honeycomb-team` header carries your API key. Treat it as a
-secret; LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS supports the same
-comma-separated `key=value,key2=value2` shape so multiple auth or
-routing headers compose:
+secret; `OTEL_EXPORTER_OTLP_HEADERS` takes a comma-separated
+`key=value,key2=value2` list so multiple auth or routing headers
+compose:
 
 ```sh
-LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=$KEY,x-honeycomb-dataset=prod
+OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=$KEY,x-honeycomb-dataset=prod
 ```
+
+To keep the key out of the process environment (visible in
+`docker inspect` and deployment UIs), write the same pairs — one per
+line or comma-separated — to a file and set
+`LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` to its path instead. The
+file is read once at startup; setting both is a startup error.
 
 ## Walkthrough 4 — DataDog APM
 
@@ -167,21 +175,19 @@ the `otlp_config` block. Loomcycle then points at the local Agent
 (default 127.0.0.1:4318) — same env var as Jaeger:
 
 ```sh
-export LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 ```
 
 DataDog's UI groups by `service.name`, `service.version`, and
-`deployment.environment`. Loomcycle's bootstrap sets `service.name`
-from `LOOMCYCLE_OTEL_SERVICE_NAME` (default `loomcycle`) and
-`service.version` from the binary's `buildVersion` automatically.
-Set `OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production` in
-the loomcycle process env to populate the env attribute (loomcycle
-respects the OTEL SDK's standard resource-attribute env var).
+`deployment.environment.name`. Loomcycle sets `service.name=loomcycle`,
+`service.version` from the binary, `service.instance.id` from
+`LOOMCYCLE_REPLICA_ID` and `deployment.environment.name` from
+`LOOMCYCLE_ENVIRONMENT`. `OTEL_SERVICE_NAME` and
+`OTEL_RESOURCE_ATTRIBUTES` override any of them.
 
 ## Sampling guidance
 
-The default `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO=1.0` captures every
-span. At a JobEmber-class workload (~200 runs/hour × 8 iterations ×
+The default sampler, `parentbased_always_on`, captures every run. At a JobEmber-class workload (~200 runs/hour × 8 iterations ×
 4 tools = 8K spans/hour) this is fine — OTLP/HTTP at ~200 bytes per
 span is ~1.5MB/hour, ~1GB/month. Most operators can leave it at 1.0.
 
@@ -192,10 +198,36 @@ Reduce when:
 - You're shipping to a SaaS APM that bills per-event (DataDog at
   $1.27/M, Honeycomb beyond free tier)
 
-The sampler is `parentbased_traceidratio`: when a parent span is
-sampled, all children are also sampled (so a trace stays whole). The
-ratio applies only to untraced roots. Setting `RATIO=0.1` keeps every
-tenth run end-to-end, drops the rest entirely — never partial traces.
+Set `OTEL_TRACES_SAMPLER=parentbased_traceidratio` and
+`OTEL_TRACES_SAMPLER_ARG=0.1`: when a parent span is sampled, all
+children are also sampled (so a trace stays whole), and the ratio
+applies only to roots. It keeps every tenth run end-to-end and drops
+the rest entirely — never partial traces.
+
+## A caller's trace
+
+When the caller that starts a run sends a W3C `traceparent` header (or
+gRPC metadata), the run joins that trace. It is read only once the
+request is authenticated (a bearer, a verified webhook signature, an
+accepted A2A peer), so an anonymous caller cannot choose a trace or
+force sampling. `LOOMCYCLE_OTEL_INBOUND_CONTEXT` picks what happens:
+`parent` (default) makes the caller's span the run's parent, `link`
+starts a new trace linked to the caller's span (the caller cannot
+influence sampling), `ignore` reads nothing. Baggage is never copied
+onto a span.
+
+The run's `traceparent` is passed on to the operator's own MCP servers
+over HTTP, so their spans join the run's trace. It is never sent to a
+model provider, to a server a tenant registered, or by the HTTP and
+WebFetch tools.
+
+## From a run to its trace
+
+A sampled run records its trace id: `trace_id` on get_run (HTTP, gRPC,
+MCP) and on the run's `started` event. Set
+`LOOMCYCLE_TRACE_URL_TEMPLATE` (for example
+`https://grafana.example/explore?traceId={trace_id}`) and the Web UI's
+run view shows an "Open trace" link.
 
 ## Filtering best practices
 
@@ -240,22 +272,29 @@ spans in Jaeger/Tempo/Honeycomb.
 - Run `curl -v http://localhost:4318/v1/traces -X POST -d '{}'` from
   the loomcycle host. Expect a 200 or 400 — anything else (connection
   refused, DNS failure, certificate error) is a connectivity problem.
-  Loomcycle's BatchSpanProcessor logs the error to stderr periodically.
-- For HTTPS collectors (Honeycomb), ensure
-  `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` includes the `https://`
-  scheme; loomcycle's bootstrap detects `http://` and opts into
-  `WithInsecure` automatically.
+  Loomcycle logs `otel: span export failing` once when exports start
+  failing, a summary every five minutes while they keep failing, and
+  `otel: span export recovered` when they succeed again.
+- `OTEL_EXPORTER_OTLP_ENDPOINT` is a URL with its scheme: `http://`
+  is plain text, `https://` is TLS. For gRPC set
+  `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` and use the collector's gRPC port
+  (usually 4317).
+- `/metrics` reports `loomcycle_otel_spans_exported_total`,
+  `loomcycle_otel_spans_dropped_total` and
+  `loomcycle_otel_span_export_failures_total`.
 
 **Symptom**: traces show up but `service.name=unknown_service`.
 
-- Check `LOOMCYCLE_OTEL_SERVICE_NAME` is set. The default
-  `"loomcycle"` should always populate.
+- Check `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ATTRIBUTES` do not set an
+  empty name. The default `"loomcycle"` should always populate.
 
 **Symptom**: high collector latency under load.
 
-- Drop the sampler: `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO=0.1` or 0.01.
-- Check the BSP isn't dropping (the SDK logs to stderr when the
-  internal queue overflows).
+- Sample less: `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with
+  `OTEL_TRACES_SAMPLER_ARG=0.1` or 0.01.
+- Watch `loomcycle_otel_spans_dropped_total` on `/metrics`: spans are
+  dropped, never waited on, when the export queue
+  (`OTEL_BSP_MAX_QUEUE_SIZE`, default 2048) is full.
 
 **Symptom**: trace tree breaks across replicas (sub-runs spawn on a
 different loomcycle instance).
@@ -327,9 +366,29 @@ and for diagnosing "the box got slow" incidents.
 
 ## Reference: env var summary
 
+The OTLP exporter reads the standard `OTEL_EXPORTER_OTLP_*` variables
+itself (and their `_TRACES_` forms): `_ENDPOINT`, `_HEADERS`,
+`_TIMEOUT`, `_COMPRESSION`, `_CERTIFICATE`, `_CLIENT_CERTIFICATE`,
+`_CLIENT_KEY`, `_INSECURE`.
+
 | Variable | Default | Purpose |
 |---|---|---|
-| `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` | empty | Empty disables tracing. Otherwise OTLP/HTTP endpoint (host:port or http(s)://host:port). |
-| `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` | empty | Comma-separated `key=value` list for collector auth. Whitespace trimmed. |
-| `LOOMCYCLE_OTEL_SERVICE_NAME` | `loomcycle` | `service.name` resource attribute. |
-| `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO` | `1.0` | Head-based sampling ratio. Clamped to `[0.0, 1.0]`. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | A URL with its scheme. Empty (and no `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) disables tracing. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Or `grpc`. `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` wins when set. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | empty | Collector auth as `key=value,...`. A secret. |
+| `OTEL_TRACES_EXPORTER` | `otlp` | `none` turns tracing off. |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns tracing off. |
+| `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | Also `always_on`, `always_off`, `traceidratio`, `parentbased_always_off`, `parentbased_traceidratio`. |
+| `OTEL_TRACES_SAMPLER_ARG` | `1` | The ratio for the two ratio samplers, 0 to 1. |
+| `OTEL_SERVICE_NAME` | `loomcycle` | `service.name` resource attribute. |
+| `OTEL_RESOURCE_ATTRIBUTES` | empty | Extra resource attributes; override loomcycle's defaults. |
+| `OTEL_PROPAGATORS` | `tracecontext,baggage` | Or `none`. |
+| `OTEL_BSP_MAX_QUEUE_SIZE` / `_MAX_EXPORT_BATCH_SIZE` / `_EXPORT_TIMEOUT` / `_SCHEDULE_DELAY` | 2048 / 512 / 10000 ms / 5000 ms | Export queue bounds. |
+| `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` | empty | A file holding the collector headers instead of the env. |
+| `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What a caller's trace context does: `parent`, `link` or `ignore`. |
+| `LOOMCYCLE_ENVIRONMENT` | empty | `deployment.environment.name` resource attribute. |
+| `LOOMCYCLE_TRACE_URL_TEMPLATE` | empty | Web UI "Open trace" link; must contain `{trace_id}`. |
+
+A value loomcycle cannot honour (an unknown sampler or protocol, a
+ratio outside 0–1, an unreadable headers file) stops the startup with
+an error naming the variable.

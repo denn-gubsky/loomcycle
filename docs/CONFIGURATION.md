@@ -3449,10 +3449,65 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_METRICS_RETENTION_DAYS` | `7` | Days of samples kept; `0` keeps them all. |
 | `LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS` | `900000` | How often old samples are deleted; `0` stops it. |
 | `LOOMCYCLE_METRICS_COLLECT_SYSTEM` | off | `1` also samples system-wide CPU and memory (Linux only). |
-| `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP endpoint; setting it turns on tracing (per run, iteration, provider and tool call). |
-| `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` | — | Collector headers as `key=value,key2=value2`. A secret: never interpolated into config. |
-| `LOOMCYCLE_OTEL_SERVICE_NAME` | `loomcycle` | Service name on the spans. |
-| `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO` | `1.0` | Fraction of traces sampled, clamped to 0–1. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP endpoint, a URL with its scheme (`http://otel-collector:4318`); setting it (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) turns on tracing (per run, iteration, provider and tool call). |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Or `grpc`. `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` wins when set. `http/json` is refused at startup. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | — | Collector headers as `key=value,key2=value2`. A secret: never interpolated into config, never nameable as a definition's secret source. |
+| `OTEL_TRACES_EXPORTER` | `otlp` | `none` turns tracing off; any other value stops the startup. |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns tracing off. |
+| `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off` or `parentbased_traceidratio`. |
+| `OTEL_TRACES_SAMPLER_ARG` | `1` | The ratio for the two ratio samplers, 0–1; anything else stops the startup. |
+| `OTEL_SERVICE_NAME` | `loomcycle` | Service name on the spans. |
+| `OTEL_RESOURCE_ATTRIBUTES` | — | Resource attributes as `key=value,...`; override loomcycle's defaults below. |
+| `OTEL_PROPAGATORS` | `tracecontext,baggage` | Or `none`; other propagators stop the startup. |
+| `OTEL_BSP_MAX_QUEUE_SIZE` | `2048` | Spans waiting for export; past it they are dropped (and counted), never waited on. |
+| `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` | `512` | Spans per export call. |
+| `OTEL_BSP_EXPORT_TIMEOUT` | `10000` | Milliseconds one export call may take. |
+| `OTEL_BSP_SCHEDULE_DELAY` | `5000` | Milliseconds between exports. |
+| `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` | — | A file holding the collector headers (`key=value`, comma- or newline-separated, `#` comments, values URL-decoded), read once at startup so the secret stays out of the process environment. Setting it beside `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, or an unreadable file, stops the startup. |
+| `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What an authenticated caller's `traceparent` does: `parent` joins the run to the caller's trace, `link` starts a new trace linked to it (the caller cannot steer sampling), `ignore` reads nothing. |
+| `LOOMCYCLE_ENVIRONMENT` | — | The `deployment.environment.name` resource attribute. |
+| `LOOMCYCLE_TRACE_URL_TEMPLATE` | — | An http(s) URL containing `{trace_id}`, e.g. `https://grafana.example/explore?traceId={trace_id}`: the Web UI's run view links each traced run there. Shown to every signed-in user who can see the run. Anything else stops the startup. |
+
+#### Tracing configuration
+
+Tracing takes the standard OpenTelemetry environment. The OTLP exporter
+reads `OTEL_EXPORTER_OTLP_*` (and the `_TRACES_` forms) itself:
+`_ENDPOINT`, `_HEADERS`, `_TIMEOUT`, `_COMPRESSION`, `_CERTIFICATE`,
+`_CLIENT_CERTIFICATE`, `_CLIENT_KEY` and `_INSECURE`, so TLS and mTLS to
+the collector are configured there. loomcycle decides only whether tracing
+is on, the protocol, the sampler, the resource and the queue bounds.
+
+The resource carries `service.name=loomcycle`, `service.version` (the
+binary's), `service.instance.id` (`LOOMCYCLE_REPLICA_ID`, the replica label
+`/metrics` uses) and `deployment.environment.name` (`LOOMCYCLE_ENVIRONMENT`);
+`OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` override any of them.
+
+A caller's trace context is read only from an authenticated request (a
+bearer over HTTP or gRPC, a webhook whose signature verified, an accepted
+A2A peer); open mode reads none. A run's `traceparent` goes on to the
+operator's own MCP servers over HTTP (yaml, or saved with operator
+authority), never to a model provider, a server a tenant registered, or the
+HTTP and WebFetch tools. A sampled run's trace id is stored on the run and
+returned as `trace_id` by get_run and the run's `started` event.
+
+When the collector is unreachable, spans are dropped rather than waited on;
+the outage is logged once (`otel: span export failing`), summarised every
+five minutes, and its end logged (`otel: span export recovered`). `/metrics`
+carries `loomcycle_otel_spans_ended_total`, `loomcycle_otel_spans_exported_total`,
+`loomcycle_otel_spans_dropped_total` and
+`loomcycle_otel_span_export_failures_total` (zeros while tracing is off).
+
+#### Renamed tracing variables
+
+The four `LOOMCYCLE_OTEL_*` tracing variables are retired, with no fallback:
+setting only one of them leaves tracing off. Rename them:
+
+| Retired | Use |
+|---|---|
+| `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` (retired) | `OTEL_EXPORTER_OTLP_ENDPOINT`. The value now keeps its scheme: `http://otel-collector:4318`, not `otel-collector:4318`. |
+| `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` (retired) | `OTEL_EXPORTER_OTLP_HEADERS`, or a file named by `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE`. The retired name stays an infrastructure secret: it is never interpolated, in case a stale value is still set. |
+| `LOOMCYCLE_OTEL_SERVICE_NAME` (retired) | `OTEL_SERVICE_NAME`. |
+| `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO` (retired) | `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with `OTEL_TRACES_SAMPLER_ARG=<ratio>`. An out-of-range ratio now stops the startup instead of being clamped. |
 
 ## 10. Cross-references
 

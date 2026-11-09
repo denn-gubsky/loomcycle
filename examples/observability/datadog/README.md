@@ -51,7 +51,7 @@ curl -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
      -d '{"agent":"demo","user_id":"alice","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hello"}]}]}'
 ```
 
-In Datadog APM (https://app.datadoghq.com/apm/services): within ~30 seconds you'll see a new service `loomcycle` (or whatever `LOOMCYCLE_OTEL_SERVICE_NAME` resolves to). Click it for the auto-generated service-overview panel.
+In Datadog APM (https://app.datadoghq.com/apm/services): within ~30 seconds you'll see a new service `loomcycle` (or whatever `OTEL_SERVICE_NAME` resolves to). Click it for the auto-generated service-overview panel.
 
 ## Canonical Datadog APM queries
 
@@ -139,9 +139,9 @@ Roughly 15 minutes against your account:
 
 | Want to | Change |
 |---|---|
-| Lower / raise sampling | `.env`: `LOOMCYCLE_OTEL_SAMPLER_RATIO=0.1` |
-| Send to a different Datadog environment | `LOOMCYCLE_OTEL_SERVICE_NAME=loomcycle-staging` (creates a separate APM service) |
-| Add APM `env:` tag | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS=dd-env=production` (Datadog agent reads this) |
+| Lower / raise sampling | `.env`: `OTEL_TRACES_SAMPLER=parentbased_traceidratio` and `OTEL_TRACES_SAMPLER_ARG=0.1` |
+| Send to a different Datadog environment | `OTEL_SERVICE_NAME=loomcycle-staging` (creates a separate APM service) |
+| Add APM `env:` tag | `LOOMCYCLE_ENVIRONMENT=production` (sets `deployment.environment.name`) |
 | Use Datadog DogStatsD instead of OTLP | Not in scope — loomcycle's OTLP path is the canonical one. DogStatsD would require a Datadog-specific exporter that violates the substrate stance |
 
 ## See also

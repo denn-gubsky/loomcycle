@@ -131,5 +131,5 @@ Tag list: https://hub.docker.com/r/denngubsky/loomcycle/tags
 
 - **Production deployment shape** — see [`docs/MULTI-REPLICA.md`](../../docs/MULTI-REPLICA.md) for the full operator runbook: connection pool sizing, rolling upgrade procedure, crashed-replica auto-recovery (90s TTL sweep), pool budget, sharp edges.
 - **Swap in your own `loomcycle.yaml`** — the demo config has one trivial agent. Replace `examples/cluster/loomcycle.yaml` with your real config (or mount a different path in the compose file). The cluster behavior doesn't change.
-- **Add observability** — wire OTEL by setting `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` in `.env`. The cluster's spans pass through the LB and aggregate cleanly across both replicas. See [`docs/MULTI-REPLICA.md`](../../docs/MULTI-REPLICA.md#operational-concerns) for sampling guidance.
+- **Add observability** — wire OTEL by setting `OTEL_EXPORTER_OTLP_ENDPOINT` (a URL, e.g. `http://otel-collector:4318`) in `.env`. The cluster's spans pass through the LB and aggregate cleanly across both replicas. See [`docs/MULTI-REPLICA.md`](../../docs/MULTI-REPLICA.md#operational-concerns) for sampling guidance.
 - **Talk to a real load balancer** — the nginx in this demo is the cheapest LB that works. Caddy / Traefik / HAProxy / your cloud LB all work the same way: round-robin between the replica hosts, no sticky sessions needed.

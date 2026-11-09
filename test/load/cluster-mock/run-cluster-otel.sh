@@ -281,9 +281,9 @@ cat <<YAML
       LOOMCYCLE_METRICS_COLLECT_SYSTEM: "1"
       LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS: "120000"
       # ── OTEL — every replica sends to the same collector. ──
-      LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
-      LOOMCYCLE_OTEL_SERVICE_NAME: loomcycle
-      LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO: "1.0"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: loomcycle
+      OTEL_TRACES_SAMPLER: parentbased_always_on
     ports: ["127.0.0.1:${HOST_PORT}:8787"]
     volumes:
       - $GEN_YAML:/etc/loomcycle/loomcycle.yaml:ro
