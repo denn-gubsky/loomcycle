@@ -40,13 +40,24 @@
 // check outlives the rows. A head missing or reset while rows remain is a
 // break too: rows past the head are reported.
 //
+// A tenant chain rolled back to an earlier, genuinely signed head — its
+// newest rows deleted and an older head (from a backup, a replica or an
+// export's trailer) restored — verifies row by row. So the store sink
+// checkpoints each tenant's head into the operator chain (ActionChainCheckpoint:
+// seq, hash and the head's MAC) every checkpointRows rows, every
+// checkpointInterval, and at a clean shutdown; verification breaks when a
+// tenant's head is behind its newest checkpoint or its row there has another
+// hash. A prune of the operator chain carries the newest checkpoint per
+// tenant in its anchor, as it does the openings.
+//
 // What it cannot show without an outside witness: a database writer who
 // deletes EVERY chain — the operator chain and all tenant chains — leaves an
-// empty audit store that verifies as empty; and one who rolls the tables back
-// to an earlier, genuinely signed state (dropping the newest rows AND
-// restoring an older head). The JSONL mirror
-// (LOOMCYCLE_AUDIT_LOG_PATH) and exports taken with GET /v1/_audit are that
-// witness.
+// empty audit store that verifies as empty; one who rolls the operator chain
+// back too (to before the checkpoints, with an older operator head, which
+// only the operator's own exports and backups hold) is not caught; and rows
+// written since a tenant's last checkpoint can still be rolled back. The
+// JSONL mirror (LOOMCYCLE_AUDIT_LOG_PATH) and exports taken with GET
+// /v1/_audit are that witness.
 package auditchain
 
 import (
@@ -212,6 +223,45 @@ type anchorState struct {
 	// key, so the previous key no longer signs a row after it: the rotation
 	// point survives the rows that established it being pruned.
 	Rotated bool `json:"rotated,omitempty"`
+	// Checkpoints is, per tenant, the newest checkpoint among the operator
+	// chain's rows before its anchor; empty for a tenant chain.
+	Checkpoints map[string]Checkpoint `json:"checkpoints,omitempty"`
+}
+
+// Checkpoint is a tenant chain's head as the operator chain recorded it.
+type Checkpoint struct {
+	Seq  int64  `json:"seq"`
+	Hash string `json:"hash"`
+}
+
+// ActionChainCheckpoint is the operator-chain record of a tenant chain's
+// head (its Subject is the tenant; the payload carries seq, hash and the
+// head's MAC).
+const ActionChainCheckpoint = "audit_chain_checkpoint"
+
+// checkpointOf reads a checkpoint row's payload. A row that verified was
+// written by the runtime, so one that does not decode is reported as an
+// error, not skipped.
+func checkpointOf(row store.AuditEventRow) (Checkpoint, error) {
+	var p struct {
+		Seq  int64  `json:"checkpoint_seq"`
+		Hash string `json:"checkpoint_hash"`
+	}
+	if err := json.Unmarshal([]byte(row.Payload), &p); err != nil || p.Seq <= 0 || p.Hash == "" {
+		return Checkpoint{}, fmt.Errorf("audit: operator row %d is a checkpoint that does not decode", row.Seq)
+	}
+	return Checkpoint{Seq: p.Seq, Hash: p.Hash}, nil
+}
+
+// keepNewest records cp for tenant unless a later one is held.
+func keepNewest(m map[string]Checkpoint, tenant string, cp Checkpoint) map[string]Checkpoint {
+	if m == nil {
+		m = map[string]Checkpoint{}
+	}
+	if cur, ok := m[tenant]; !ok || cp.Seq > cur.Seq {
+		m[tenant] = cp
+	}
+	return m
 }
 
 // checkAnchor checks a chain's retention anchor and returns the state it
@@ -300,12 +350,19 @@ func (k ChainKeys) SealAnchor() store.AuditAnchorSealFunc {
 				}
 				st.Opened[r.Subject]++
 			}
+			if tenant == "" && r.Action == ActionChainCheckpoint {
+				cp, err := checkpointOf(r)
+				if err != nil {
+					return "", "", "", fmt.Errorf("%w: %v", ErrChainBroken, err)
+				}
+				st.Checkpoints = keepNewest(st.Checkpoints, r.Subject, cp)
+			}
 			link = r.Hash
 			want++
 		}
 		st.Rotated = rotated
 		state := ""
-		if len(st.Opened) > 0 || st.Rotated {
+		if len(st.Opened) > 0 || st.Rotated || len(st.Checkpoints) > 0 {
 			b, err := json.Marshal(st) // map keys marshal sorted: one encoding
 			if err != nil {
 				return "", "", "", err
@@ -432,12 +489,14 @@ const ActionChainOpened = "audit_chain_opened"
 // steering a tenant's verification.
 type Registry struct {
 	Openings map[string]int
+	// Checkpoints is the newest checkpoint of each tenant chain.
+	Checkpoints map[string]Checkpoint
 }
 
 // ReadRegistry verifies the operator chain and, when it holds, reads the
 // registry from the rows it verified.
 func ReadRegistry(ctx context.Context, r ChainReader, keys ChainKeys) (Registry, VerifyReport, error) {
-	reg := Registry{Openings: map[string]int{}}
+	reg := Registry{Openings: map[string]int{}, Checkpoints: map[string]Checkpoint{}}
 	op, err := verifyChain(ctx, r, keys, "", Registry{})
 	if err != nil || !op.OK {
 		return reg, op, err
@@ -451,6 +510,9 @@ func ReadRegistry(ctx context.Context, r ChainReader, keys ChainKeys) (Registry,
 	for t, n := range st.Opened {
 		reg.Openings[t] += n
 	}
+	for t, cp := range st.Checkpoints {
+		reg.Checkpoints = keepNewest(reg.Checkpoints, t, cp)
+	}
 	after := op.AnchorSeq
 	for after < op.HeadSeq {
 		rows, err := r.AuditEventsList(ctx, "", after, verifyPage)
@@ -463,8 +525,15 @@ func ReadRegistry(ctx context.Context, r ChainReader, keys ChainKeys) (Registry,
 				// meanwhile): the verified range is read.
 				return reg, op, nil
 			}
-			if row.Action == ActionChainOpened {
+			switch row.Action {
+			case ActionChainOpened:
 				reg.Openings[row.Subject]++
+			case ActionChainCheckpoint:
+				cp, err := checkpointOf(row)
+				if err != nil {
+					return reg, op, err
+				}
+				reg.Checkpoints = keepNewest(reg.Checkpoints, row.Subject, cp)
 			}
 			after = row.Seq
 		}
@@ -617,6 +686,20 @@ func verifyChain(ctx context.Context, r ChainReader, keys ChainKeys, tenant stri
 			return rep.broken(low[0].Seq, "row %d lies below the retention anchor (at %d)", low[0].Seq, head.AnchorSeq), nil
 		}
 	}
+	// The operator chain's newest checkpoint of this chain: a head behind it
+	// is a rollback, and the row (or anchor) at its position must hold its
+	// hash. One taken before the anchor's position was pruned past and can
+	// no longer be compared.
+	cp, hasCP := reg.Checkpoints[tenant]
+	if hasCP && tenant != "" {
+		switch {
+		case cp.Seq > head.Seq:
+			return rep.broken(head.Seq+1, "the chain's head (at %d) is behind its checkpoint at %d in the operator chain: rows were removed",
+				head.Seq, cp.Seq), nil
+		case cp.Seq == head.AnchorSeq && cp.Hash != head.AnchorHash:
+			return rep.broken(cp.Seq, "the retention anchor does not match the operator chain's checkpoint at %d", cp.Seq), nil
+		}
+	}
 	rep.anchorState = head.AnchorState
 	prev, want := head.AnchorHash, head.AnchorSeq+1
 	rotated := st.Rotated
@@ -635,6 +718,9 @@ func verifyChain(ctx context.Context, r ChainReader, keys ChainKeys, tenant stri
 			}
 			if why := keys.checkLink(tenant, prev, want, row, &rotated); why != "" {
 				return rep.broken(want, "%s", why), nil
+			}
+			if hasCP && tenant != "" && row.Seq == cp.Seq && row.Hash != cp.Hash {
+				return rep.broken(want, "row %d does not match the operator chain's checkpoint of it", want), nil
 			}
 			prev = row.Hash
 			want++

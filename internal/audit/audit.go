@@ -238,6 +238,17 @@ type Event struct {
 	// client address, else tenant/subject — with their counts, at most a
 	// few, so a gap in the chain can be traced to its cause.
 	DroppedSources map[string]int `json:"dropped_sources,omitempty"`
+
+	// --- Chain checkpoint (Action = "audit_chain_checkpoint") ---
+	//
+	// The operator chain's record of a tenant chain's signed head (the tenant
+	// travels in TargetTenant): its position, its hash and the head's MAC.
+	// Verification refuses a tenant chain whose head is behind its newest
+	// checkpoint, or whose row at that position has another hash, so a
+	// rollback to an earlier signed head is caught.
+	CheckpointSeq     int64  `json:"checkpoint_seq,omitempty"`
+	CheckpointHash    string `json:"checkpoint_hash,omitempty"`
+	CheckpointHeadMAC string `json:"checkpoint_head_mac,omitempty"`
 }
 
 // Sink records audit events. Record must be safe for concurrent use and
