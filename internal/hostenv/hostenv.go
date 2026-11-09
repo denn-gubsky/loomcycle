@@ -19,7 +19,8 @@ import (
 // so this package stays an import leaf.
 func collectorHeaders(name string) bool {
 	up := strings.ToUpper(name)
-	return (strings.HasPrefix(up, "OTEL_EXPORTER_OTLP") || strings.HasPrefix(up, "LOOMCYCLE_OTEL_EXPORTER_OTLP")) &&
+	// Prefixes end in "_" so the env census does not read them as names.
+	return (strings.HasPrefix(up, "OTEL_EXPORTER_OTLP_") || strings.HasPrefix(up, "LOOMCYCLE_OTEL_EXPORTER_OTLP_")) &&
 		strings.HasSuffix(up, "_HEADERS")
 }
 
