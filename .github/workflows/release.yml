@@ -159,7 +159,7 @@ jobs:
       # syft (goreleaser's sboms:), at pinned versions. Installed before the release
       # page is pre-created, so a failed install leaves no empty release.
       - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
           # The installer's own default, which it checks against a digest it
           # carries; a different release would be checked by signature instead.
@@ -529,7 +529,7 @@ jobs:
       # also what `gh attestation verify` finds for the Docker Hub copy.
       - name: Install cosign
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
           cosign-release: v3.0.6
       - name: Sign loomcycle-browser
