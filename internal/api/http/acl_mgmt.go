@@ -1513,8 +1513,10 @@ func authzRequestFrom(eff *authz.Effective, in authzEvaluationRequest, ctx conte
 	}
 	// The question is answered as a gate would answer it, so one no gate
 	// asks is refused, as a rule naming it is (RFC FY Part E).
-	if !authz.IsEnforced(in.Resource.Type, in.Action.Name) {
-		return authz.Request{}, &authz.NotEnforceableError{Verb: in.Action.Name, Type: in.Resource.Type}
+	// A named instance of a pair asked only at the type level is a question
+	// no surface asks either (RFC GD D2).
+	if err := authz.QuestionNotEnforceable(in.Resource.Type, in.Action.Name, in.Resource.ID); err != nil {
+		return authz.Request{}, err
 	}
 	if in.Context != nil {
 		if f := in.Context.unenforcedField(); f != "" {

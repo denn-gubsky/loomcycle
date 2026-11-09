@@ -65,6 +65,9 @@ var enforcedPairs = map[pairKey][]Site{
 
 	{"volume", "read"}:  {SiteHTTPRoute},
 	{"volume", "write"}: {Proof("TestNarrowVolumesByACL")},
+	// A member's agent definition grants a volume only when the member may
+	// mount it (the member capability ceiling, agentdef_ceiling_member.go).
+	{"volume", "mount"}: {Proof("TestMemberCeiling_AMountDenyKeepsTheVolumeFromAMembersAgent")},
 
 	{"tool", "invoke"}:  {Proof("TestACLRun_DeniedToolIsWithheldFromTheRun")},
 	{"skill", "invoke"}: {Proof("TestNarrowSkillsByACL")},
@@ -98,7 +101,7 @@ var enforcedPairs = map[pairKey][]Site{
 	{"channel", "ack"}:       {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool, SiteConnector},
 	{"channel", "await"}:     {SiteHTTPRoute, SiteGRPCRPC, SiteConnector},
 	{"channel", "broadcast"}: {SiteHTTPRoute, SiteGRPCRPC, SiteConnector},
-	{"channel", "manage"}:    {SiteHTTPRoute, SiteGRPCRPC, SiteConnector},
+	{"channel", "manage"}:    {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool, SiteConnector},
 
 	{"def", "author"}: {Proof("TestAuthorizeDefOp_AsksTheOpsVerbOfTheNamedDefinition")},
 	{"def", "retire"}: {Proof("TestAuthorizeDefOp_AsksTheOpsVerbOfTheNamedDefinition")},
@@ -131,7 +134,7 @@ var enforcedPairs = map[pairKey][]Site{
 	{"principal", "mint"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 
 	{"runtime", "read"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
-	{"runtime", "manage"}: {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
+	{"runtime", "manage"}: {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool, SiteConnector},
 
 	{"transport", "use"}: {SiteHTTPRoute},
 
@@ -141,6 +144,36 @@ var enforcedPairs = map[pairKey][]Site{
 	{"git", "push"}:  {Proof("TestGit_ACLDenyOnTheRemoteRefusesBeforeAnyRequest")},
 }
 
+// typeLevelOnlyPairs: enforced pairs every site asks only at the type level
+// (Surface.Name == AnyInstance) — no handler, tool or resolver asks one about
+// a named instance. A rule whose selector names some instances of such a pair
+// decides nothing as written: at the type level a deny on some instances is no
+// deny, and an allow on some instances admits every instance (engine.go,
+// compiledRule.matches). So a write refuses it (RFC GD D2) and the boot reports
+// a stored one. The reason says what does confine the pair instead.
+//
+// A pair belongs here exactly when its sites are all transport sites and every
+// mapping of it asks AnyInstance; the transport censuses hold the second half
+// (no route, RPC or meta-tool asks one at an instance), and
+// TestTypeLevelOnlyPairs_AreAskedOnlyAtTransports the first.
+var typeLevelOnlyPairs = map[pairKey]string{
+	{"run", "read"}:        runByOwner,
+	{"run", "delete"}:      runByOwner,
+	{"run", "steer"}:       runByOwner,
+	{"run", "cancel"}:      runByOwner,
+	{"run", "compact"}:     runByOwner,
+	{"run", "retune"}:      runByOwner,
+	{"run", "review"}:      runByOwner,
+	{"agent", "read"}:      "the agent library is read whole; deny run agent:<name> to keep an agent from a caller",
+	{"skill", "read"}:      "the skill library is read whole; deny invoke skill:<name> to keep a skill from a caller",
+	{"evaluation", "read"}: "evaluations are read whole; the token's evaluation scopes decide whose",
+}
+
+// runByOwner is why the run verbs take no instance selector: which runs a
+// caller reaches is its tier's (a member its own runs, auth.OwnedRowVisible),
+// never a rule's.
+const runByOwner = "which runs a caller reaches is decided by who started them, not by a rule"
+
 // unenforcedPairs: catalog pairs no surface asks yet. A rule naming one is
 // refused at write; the reason says what the pair is waiting for. Moving a
 // pair to enforcedPairs is the change that wires its site.
@@ -149,7 +182,6 @@ var unenforcedPairs = map[pairKey]string{
 	{"agent", "cancel"}:     "a run is cancelled as run:, never agent:",
 	{"agent", "review"}:     "a run's answer is reviewed as run:, never agent:",
 	{"volume", "provision"}: "a volume is created as def:volume/",
-	{"volume", "mount"}:     "a volume binding is asked read and write",
 	{"skill", "author"}:     "a skill is authored as def:skill/",
 	{"mcp", "read"}:         "a server's definition is read as def:mcpserver/",
 	{"a2a", "expose"}:       "",
@@ -214,6 +246,61 @@ func IsEnforced(typ, verb string) bool {
 	return ok
 }
 
+// IsTypeLevelOnly reports whether every site asks verb of typ only at the type
+// level, so a selector naming some instances of it decides nothing.
+func IsTypeLevelOnly(typ, verb string) bool {
+	_, ok := typeLevelOnlyPairs[pairKey{typ, verb}]
+	return ok
+}
+
+// TypeLevelOnlyPairs returns every type-level-only pair as "verb type",
+// sorted, for the transport censuses.
+func TypeLevelOnlyPairs() []string {
+	out := make([]string, 0, len(typeLevelOnlyPairs))
+	for k := range typeLevelOnlyPairs {
+		out = append(out, k.verb+" "+k.typ)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// coversEveryInstance reports whether sel (`type:name`, validated) names every
+// instance of its type — the only selector the type-level question matches.
+func coversEveryInstance(sel string) bool {
+	s, err := parseSelector(sel)
+	if err != nil {
+		return false
+	}
+	return s.matches(catalogByName[s.typ], AnyInstance)
+}
+
+// SelectorDecidesNothing reports whether a rule's selector sel names some
+// instances of a type-level-only pair (verb of sel's type), where it decides
+// nothing as written.
+func SelectorDecidesNothing(verb, sel string) bool {
+	typ, _, err := SplitSelector(sel)
+	return err == nil && IsTypeLevelOnly(typ, verb) && !coversEveryInstance(sel)
+}
+
+// QuestionNotEnforceable is the refusal of a question no surface asks: a pair
+// no surface evaluates, or a named instance of a type-level-only pair. An
+// evaluation, an explanation or a `Context op=can` asked so is refused as a
+// rule naming it is. name is the resource name ("" or AnyInstance for the
+// type-level question).
+func QuestionNotEnforceable(typ, verb, name string) error {
+	if !IsEnforced(typ, verb) {
+		reason := unenforcedPairs[pairKey{typ, verb}]
+		if IsRetired(typ, verb) {
+			reason = "removed from the catalog"
+		}
+		return &NotEnforceableError{Verb: verb, Type: typ, Reason: reason}
+	}
+	if name != "" && name != AnyInstance && IsTypeLevelOnly(typ, verb) {
+		return &NotEnforceableError{Verb: verb, Type: typ, Selector: typ + ":" + name, Reason: typeLevelOnlyPairs[pairKey{typ, verb}]}
+	}
+	return nil
+}
+
 // IsRetired reports whether verb on typ was removed from the catalog.
 func IsRetired(typ, verb string) bool { return retiredPairs[pairKey{typ, verb}] }
 
@@ -258,10 +345,20 @@ func conditionJSONName(f reflect.StructField) string {
 type NotEnforceableError struct {
 	// Verb and Type name the pair; Condition is set instead for a field.
 	Verb, Type, Condition string
-	Reason                string
+	// Selector is set when the pair is enforced but only at the type level,
+	// and the rule or question names some instances of it.
+	Selector string
+	Reason   string
 }
 
 func (e *NotEnforceableError) Error() string {
+	if e.Selector != "" {
+		msg := fmt.Sprintf("%s %s: no surface asks %s of one %s, only of every one; name %s:* or leave the rule out", e.Verb, e.Selector, e.Verb, e.Type, e.Type)
+		if e.Reason != "" {
+			msg += " (" + e.Reason + ")"
+		}
+		return msg
+	}
 	if e.Condition != "" {
 		msg := fmt.Sprintf("condition %q is not evaluated by any surface", e.Condition)
 		r := e.Reason
@@ -290,14 +387,12 @@ func RuleNotEnforceable(r Rule) error {
 			continue // Validate reports it
 		}
 		for _, verb := range r.Actions {
-			if IsEnforced(typ, verb) {
-				continue
+			if !IsEnforced(typ, verb) {
+				return QuestionNotEnforceable(typ, verb, AnyInstance)
 			}
-			reason := unenforcedPairs[pairKey{typ, verb}]
-			if IsRetired(typ, verb) {
-				reason = "removed from the catalog"
+			if SelectorDecidesNothing(verb, sel) {
+				return &NotEnforceableError{Verb: verb, Type: typ, Selector: sel, Reason: typeLevelOnlyPairs[pairKey{typ, verb}]}
 			}
-			return &NotEnforceableError{Verb: verb, Type: typ, Reason: reason}
 		}
 	}
 	for _, f := range conditionFieldsSet(r.When) {

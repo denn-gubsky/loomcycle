@@ -311,14 +311,19 @@ func canQueryResource(q canQuery) (authz.Resource, error) {
 	}
 	// No surface asks it, so no rule on it decides anything: refused, as the
 	// HTTP twin refuses it, rather than answered (RFC FY Part E).
-	if !authz.IsEnforced(q.Resource.Type, q.Action) {
-		return authz.Resource{}, &authz.NotEnforceableError{Verb: q.Action, Type: q.Resource.Type}
+	if err := authz.QuestionNotEnforceable(q.Resource.Type, q.Action, ""); err != nil {
+		return authz.Resource{}, err
 	}
 	name := q.Resource.ID
 	if name == "" {
 		name = authz.AnyInstance
 	}
 	if err := authz.ValidateResourceName(q.Resource.Type, name); err != nil {
+		return authz.Resource{}, err
+	}
+	// A named instance of a verb asked only of every instance is no question
+	// a surface asks either (RFC GD D2).
+	if err := authz.QuestionNotEnforceable(q.Resource.Type, q.Action, name); err != nil {
 		return authz.Resource{}, err
 	}
 	return authz.Resource{Type: q.Resource.Type, Name: name}, nil

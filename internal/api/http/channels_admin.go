@@ -102,6 +102,18 @@ func writeChannelError(w http.ResponseWriter, err error) {
 
 // ---- v0.11.5 channel admin CRUD handlers ------------------------
 
+// writeIfACLDenied writes an access-control refusal from a channel definition
+// operation (askChannelManage) as the route gate writes one, and reports
+// whether it did.
+func writeIfACLDenied(w http.ResponseWriter, err error) bool {
+	var denied *errACLDenied
+	if !errors.As(err, &denied) {
+		return false
+	}
+	writeACLDenied(w, denied.surface, denied.decision)
+	return true
+}
+
 // handleCreateChannel serves POST /v1/_channels.
 func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	var req connector.ChannelCreateRequest
@@ -112,6 +124,9 @@ func (s *Server) handleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	desc, err := s.CreateChannel(r.Context(), req)
 	if err != nil {
+		if writeIfACLDenied(w, err) {
+			return
+		}
 		// Preserve the channel-specific code mapping; fall back to
 		// generic 400 for the create-only validation strings (which
 		// don't wrap typed sentinels).
@@ -143,6 +158,9 @@ func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	desc, err := s.UpdateChannel(r.Context(), name, req)
 	if err != nil {
+		if writeIfACLDenied(w, err) {
+			return
+		}
 		if errors.Is(err, connector.ErrChannelYamlImmutable) ||
 			errors.Is(err, connector.ErrChannelAlreadyExists) ||
 			errors.Is(err, connector.ErrChannelNotFound) ||
@@ -161,6 +179,9 @@ func (s *Server) handleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := s.DeleteChannel(r.Context(), name); err != nil {
+		if writeIfACLDenied(w, err) {
+			return
+		}
 		if errors.Is(err, connector.ErrChannelYamlImmutable) ||
 			errors.Is(err, connector.ErrChannelNotFound) {
 			writeChannelError(w, err)
@@ -180,6 +201,9 @@ func (s *Server) handleChannelPurge(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	res, err := s.PurgeChannel(r.Context(), name)
 	if err != nil {
+		if writeIfACLDenied(w, err) {
+			return
+		}
 		if errors.Is(err, connector.ErrChannelNotFound) {
 			writeChannelError(w, err)
 			return

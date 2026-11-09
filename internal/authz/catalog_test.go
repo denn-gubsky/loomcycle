@@ -100,7 +100,9 @@ func TestBaselines_ClassesDifferWhereTheyShould(t *testing.T) {
 	// decision call on runs:create): a baseline deny refused both even in
 	// compat (TestACLBaseline_HTTPRoutesMatchTheLegacyGatePerClass).
 	check(iso, "use", "gateway", "chat", Allowed)
-	check(iso, "read", "run", "tenant", NoMatch)
+	// The run verbs are asked only at the type level; which runs an isolated
+	// user reaches is the run row's owner check, not a selector.
+	check(iso, "read", "run", AnyInstance, Allowed)
 	// Member browse of a colleague's user scope: owner_is_self only (D7).
 	self := member.Decide(Request{Subject: member.Subject, Action: "browse", Resource: Resource{Type: "memory", Name: "user:alice", Owner: "alice"}})
 	other := member.Decide(Request{Subject: member.Subject, Action: "browse", Resource: Resource{Type: "memory", Name: "user:bob", Owner: "bob"}})

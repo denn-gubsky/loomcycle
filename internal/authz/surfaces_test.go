@@ -333,3 +333,24 @@ func TestEvaluate_SourceCIDRWithNoClientHoldsForNeitherEffect(t *testing.T) {
 		t.Error("an allow on an address granted a request with no client")
 	}
 }
+
+// A memory search is a read on every transport: the route asked write, while
+// the Memory tool's search op asks read over gRPC and MCP. A team-channel
+// release asks manage, as the RPC and every other channel's release do.
+func TestHTTPSurface_TwinsAskWhatTheirOperationDoes(t *testing.T) {
+	for _, c := range []struct{ method, path, want string }{
+		{"POST", "/v1/_memory/search", "read memory:*"},
+		{"PUT", "/v1/_memory/scopes/user/u/keys/k", "write memory:*"},
+		{"POST", "/v1/_teamdef/t/channels/c/release", "manage channel:*"},
+		{"GET", "/v1/_teamdef/t/channels/c/peek", "subscribe channel:*"},
+		{"GET", "/v1/_teamdef/t/channels", "subscribe channel:*"},
+	} {
+		s, ok := HTTPSurface(c.method, c.path)
+		if got := s.Action + " " + s.Type + ":" + s.Name; !ok || got != c.want {
+			t.Errorf("%s %s asks %q (%v), want %q", c.method, c.path, got, ok, c.want)
+		}
+	}
+	if s, _ := GRPCSurface("RetentionOverride"); s.Action != "read" {
+		t.Errorf("RetentionOverride asks %v at the RPC, want its list op's read", s)
+	}
+}

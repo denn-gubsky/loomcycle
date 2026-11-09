@@ -204,7 +204,13 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		if len(rest) >= 3 && rest[2] == "overridable" {
 			return typeLevel("read", "agent"), true
 		}
-		if len(rest) >= 3 && rest[2] == "channels" || len(rest) >= 4 && (rest[3] == "peek" || rest[3] == "release") {
+		// Releasing a team channel's held messages asks manage, as releasing
+		// any other channel's does and as the ReleaseTeamChannel RPC does;
+		// the reads ask subscribe.
+		if len(rest) == 5 && rest[2] == "channels" && rest[4] == "release" {
+			return typeLevel("manage", "channel"), true
+		}
+		if len(rest) >= 3 && rest[2] == "channels" || len(rest) >= 4 && rest[3] == "peek" {
 			return typeLevel("subscribe", "channel"), true
 		}
 		return instance("read", "def", fam+"/*"), true
@@ -243,7 +249,9 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		if len(rest) >= 2 && rest[1] == "repair-tenant" {
 			return instance("manage", "runtime", "tenants"), true
 		}
-		if get {
+		// A search is a read, as the Memory tool's search op is on gRPC and
+		// MCP; only its body makes it a POST.
+		if get || len(rest) == 2 && rest[1] == "search" {
 			return typeLevel("read", "memory"), true
 		}
 		return typeLevel("write", "memory"), true
@@ -475,8 +483,10 @@ func GRPCSurface(rpc string) (Surface, bool) {
 	// asks each operation its own HTTP twin's question (manage for a write).
 	case "TokenLimit":
 		return instance("read", "runtime", "limits"), true
+	// RetentionOverride carries list|set|clear: the family's weakest verb, as
+	// TokenLimit, and the gate asks each op its HTTP twin's question.
 	case "RetentionOverride":
-		return instance("manage", "runtime", "retention"), true
+		return instance("read", "runtime", "retention"), true
 	case "DirectoryUsers", "DirectoryInspect":
 		return instance("read", "principal", "user:*"), true
 	case "DirectoryTenants":

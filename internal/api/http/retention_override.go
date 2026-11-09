@@ -12,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -132,6 +133,12 @@ func (s *Server) RetentionOverride(ctx context.Context, req connector.RetentionO
 	case "set", "clear":
 	default:
 		return invalid(fmt.Sprintf("op must be one of: list, set, clear (got %q)", req.Op))
+	}
+	// The write's own question, asked here as well as at each transport's
+	// gate (PUT and DELETE /v1/_retention/overrides ask it), so a gate that
+	// read the op wrongly cannot skip it.
+	if err := s.connectorAsk(ctx, authz.Surface{Action: "manage", Type: "runtime", Name: "retention"}); err != nil {
+		return none, err
 	}
 	if s.store == nil {
 		return none, connector.WithMessage(connector.ErrRetentionOverrideStoreUnavailable, "store not configured")
