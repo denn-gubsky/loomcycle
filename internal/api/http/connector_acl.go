@@ -19,21 +19,11 @@ import (
 // names. The operation asks the same here, so a deny holds on every
 // transport. On HTTP the route has already asked it (routeGateAnswered).
 
-// connectorQuestions is every question a shared connector operation asks
-// beyond its transport gate, for the enforcement census.
-var connectorQuestions = []authz.Surface{
-	{Action: "write", Type: "memory", Name: authz.AnyInstance},
-	{Action: "write", Type: "sqlmem", Name: authz.AnyInstance},
-	{Action: "publish", Type: "channel"},
-	{Action: "subscribe", Type: "channel"},
-	{Action: "ack", Type: "channel"},
-	{Action: "manage", Type: "channel"},
-	{Action: "await", Type: "channel"},
-	{Action: "broadcast", Type: "channel"},
-}
-
 // connectorAsk asks surface for the principal on ctx and returns the refusal,
-// or nil. No principal (open mode, stdio): nothing to ask, as at the gates.
+// or nil. Every call site is classified by the enforcement census
+// (TestACLEnforcement_ConnectorOperationsAskWhatTheTableSays reads this
+// package's source), so a new one cannot ask a pair the table does not
+// credit. No principal (open mode, stdio): nothing to ask, as at the gates.
 func (s *Server) connectorAsk(ctx context.Context, surface authz.Surface) error {
 	if routeGateAnswered(ctx, surface) {
 		return nil

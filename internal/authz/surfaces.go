@@ -249,7 +249,9 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		if len(rest) >= 2 && rest[1] == "repair-tenant" {
 			return instance("manage", "runtime", "tenants"), true
 		}
-		if get {
+		// A search is a read, as the Memory tool's search op is on gRPC and
+		// MCP; only its body makes it a POST.
+		if get || len(rest) == 2 && rest[1] == "search" {
 			return typeLevel("read", "memory"), true
 		}
 		return typeLevel("write", "memory"), true
@@ -481,8 +483,10 @@ func GRPCSurface(rpc string) (Surface, bool) {
 	// asks each operation its own HTTP twin's question (manage for a write).
 	case "TokenLimit":
 		return instance("read", "runtime", "limits"), true
+	// RetentionOverride carries list|set|clear: the family's weakest verb, as
+	// TokenLimit, and the gate asks each op its HTTP twin's question.
 	case "RetentionOverride":
-		return instance("manage", "runtime", "retention"), true
+		return instance("read", "runtime", "retention"), true
 	case "DirectoryUsers", "DirectoryInspect":
 		return instance("read", "principal", "user:*"), true
 	case "DirectoryTenants":
