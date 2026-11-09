@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/metadata"
 
@@ -142,8 +143,11 @@ func TestACLTwins_AnAmbiguousOpOrNameIsRefused(t *testing.T) {
 		}
 	}
 	e.bindDeny("delegate", "no-manage", `[{"effect":"deny","actions":["manage"],"resources":["runtime:retention","runtime:erasure","channel:ops"]}]`)
+	soon := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	for _, c := range []call{
-		{family: "retention_override", input: `{"op":"list","OP":"set","agent":"a","until":"2099-01-01T00:00:00Z"}`},
+		// until within the 24-hour cap, so on the unfixed gate the set really
+		// runs rather than failing validation.
+		{family: "retention_override", input: `{"op":"list","OP":"set","agent":"a","until":"` + soon + `"}`},
 		{family: "retention_override", input: `{"op":"list","Op":"clear","agent":"a"}`},
 		{family: "retention_override", input: `{"op":"list","op":"clear","agent":"a"}`},
 		{family: "erasure", input: `{"op":"report","oP":"execute","subject":"bob","tier":"rows","dry_run":true}`},
