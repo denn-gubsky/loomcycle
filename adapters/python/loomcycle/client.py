@@ -1251,11 +1251,12 @@ class LoomcycleClient:
         prompt_version: Optional[int] = None,
         language: Optional[str] = None,
         model: Optional[str] = None,
+        manual: Optional[bool] = None,
     ) -> Mapping[str, Any]:
         """Write an annotation (``document`` op ``set_annotation``). Without
-        ``inputs_sha256`` it is an operator's manual annotation, which the
-        annotation pass never overwrites (the operator plane alone may write
-        one).
+        ``inputs_sha256`` it is sent as an operator's manual annotation
+        (``manual=True`` unless given), which the annotation pass never
+        overwrites; the operator plane alone may write one.
 
         Returns ``{annotation: {...}}``."""
         body: dict[str, Any] = {"op": "set_annotation", "scope": "tenant", "brief": brief, "abstract": abstract}
@@ -1266,7 +1267,9 @@ class LoomcycleClient:
         ):
             if v is not None:
                 body[k] = v
-        if inputs_sha256 is None:
+        if manual is not None:
+            body["manual"] = manual
+        elif inputs_sha256 is None:
             body["manual"] = True
         return await self.document(body)
 
