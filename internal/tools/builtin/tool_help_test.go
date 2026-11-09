@@ -201,9 +201,16 @@ func TestArgumentCheck_RefusesTheMeasuredCrossOperationCalls(t *testing.T) {
 		want        []string
 	}{
 		{"Document", `{"op":"create_chunk","document_id":"d1","title":"Flights","parent":"c1"}`,
-			[]string{`argument "parent" is not one create_chunk takes (it belongs to`, `Did you mean "parent_id"`}},
+			[]string{`argument "parent" is not one create_chunk takes — pass it as "parent_id"`, `Did you mean "parent_id"`}},
 		{"Document", `{"op":"query_documents","scope":"user","query":"trip"}`,
-			[]string{`argument "query" is not one query_documents takes`}},
+			[]string{`argument "query" is not one query_documents takes`, "use op=search"}},
+		// The calls agents made reading a tenant knowledge base: the id family.
+		{"Document", `{"op":"get_chunk","scope":"tenant","chunk_id":"d2ded2aa526495552519be0360327a76"}`,
+			[]string{`pass it as "id"`}},
+		{"Document", `{"op":"backlinks","scope":"tenant","seed_ids":["16830f3509fd8c9bd892dd383227eb50"],"kind":"prepared_for"}`,
+			[]string{`pass it as "id"`}},
+		{"Document", `{"op":"get_edges","scope":"tenant","id":"16830f3509fd8c9bd892dd383227eb50","kind":"prepared_for"}`,
+			[]string{`pass it as "document_id"`}},
 		{"Memory", `{"op":"get","scope":"user","key":"k","query":"editor"}`,
 			[]string{`argument "query" is not one get takes`}},
 	} {

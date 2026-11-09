@@ -140,7 +140,7 @@ func TestExecute_ASiblingOperationsArgumentIsRefused(t *testing.T) {
 		t.Fatal("the tool ran with a sibling operation's argument")
 	}
 	for _, want := range []string{
-		`argument "parent" is not one create_chunk takes (it belongs to propose_entity)`,
+		`argument "parent" is not one create_chunk takes — pass it as "parent_id" ("parent" belongs to propose_entity)`,
 		"Nothing was done.",
 	} {
 		if !res.IsError || !strings.Contains(res.Text, want) {
@@ -183,5 +183,48 @@ func TestExecute_SiblingArgumentsPassWhereUndocumented(t *testing.T) {
 	d = NewDispatcher([]Tool{plain, newHelp("Document", "Document/create_chunk")})
 	if res := d.Execute(context.Background(), "Document", json.RawMessage(`{"op":"create_chunk","parent":"c9"}`)); res.IsError || plain.ran != 1 {
 		t.Errorf("refused without an argument index: %q", res.Text)
+	}
+}
+
+const kbSchema = `{"type":"object","properties":{"op":{"type":"string","enum":["get_chunk","get_edges","query_documents","search","graph_recall","maintain_statement"]},"id":{"type":"string"},"document_id":{"type":"string"},"chunk_id":{"type":"string"},"seed_ids":{"type":"array"},"query":{"type":"string"},"type":{"type":"string"},"kind":{"type":"string"}}}`
+
+var kbArgs = map[string][]string{
+	"Document/get_chunk":          {"id"},
+	"Document/get_edges":          {"document_id", "kind"},
+	"Document/query_documents":    {"type"},
+	"Document/search":             {"query"},
+	"Document/graph_recall":       {"seed_ids", "query"},
+	"Document/maintain_statement": {"chunk_id", "id"},
+}
+
+// The wrong id argument is the most repeated mistake agents made reading a
+// knowledge base: chunk_id for get_chunk's id, seed_ids for backlinks' id, id for
+// get_edges' document_id. The refusal used to lead with "it belongs to
+// maintain_statement", and agents chased that op; it now names the argument
+// this op takes. A text query on a listing op points at op=search.
+func TestExecute_SiblingArgumentRefusalNamesTheIDThisOpTakes(t *testing.T) {
+	doc := &countingStub{pointerStub: pointerStub{name: "Document", schema: kbSchema}}
+	topics := []string{"Document"}
+	for k := range kbArgs {
+		topics = append(topics, k)
+	}
+	d := NewDispatcher([]Tool{doc, &argsHelp{newHelp(topics...), kbArgs}})
+
+	for _, tc := range []struct{ in, want string }{
+		{`{"op":"get_chunk","chunk_id":"c1"}`, `pass it as "id"`},
+		{`{"op":"get_chunk","seed_ids":["c1"]}`, `pass it as "id"`},
+		{`{"op":"get_edges","id":"d1"}`, `pass it as "document_id"`},
+	} {
+		res := d.Execute(context.Background(), "Document", json.RawMessage(tc.in))
+		if !res.IsError || !strings.Contains(res.Text, tc.want) {
+			t.Errorf("%s: error lacks %q:\n%s", tc.in, tc.want, res.Text)
+		}
+	}
+	res := d.Execute(context.Background(), "Document", json.RawMessage(`{"op":"query_documents","query":"budget"}`))
+	if desc := mustValidation(t, res).Description; !strings.Contains(desc, "use op=search") {
+		t.Errorf("query on query_documents does not point at op=search: %q", desc)
+	}
+	if doc.ran != 0 {
+		t.Errorf("the tool ran %d times on refused calls", doc.ran)
 	}
 }

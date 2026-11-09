@@ -45,6 +45,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"installation",
 		"interruption",
 		"knowledge-base",
+		"knowledge-base-questions",
 		"llm-gateway",
 		"loomcycle",
 		"memory-consolidation",

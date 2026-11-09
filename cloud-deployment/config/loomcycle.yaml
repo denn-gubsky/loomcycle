@@ -140,14 +140,23 @@ decision:
 agents:
   doc/manager:
     memory_rerank: { enabled: true }
+  # The chat agents' tool lists REPLACE the bundle's here, leaving out the file
+  # and shell tools (Grep, Glob, Write, Edit, Bash, Bashbox). No volume is bound
+  # to agents on this deployment, so those tools could only fail, and agents
+  # answering from the tenant's documents reached for Grep and Glob on Path
+  # names (which name documents, not files). Read stays: it opens a file a
+  # WebFetch or HTTP call kept in the run's inbox (volume: inbox). A tool the
+  # chat bundle adds later must be added here too.
   chat/medium:
     memory_rerank: { enabled: true }
-    tools: !append [Decision]     # adds to the bundle's list
+    tools: [Read, WebSearch, WebFetch, HTTP, Document, Memory, Path, Skill, SkillDef, Agent, Interruption, History, Decision]
     decision: { default: decide, models: [decide] }
   chat/local:
     memory_rerank: { enabled: true }
-    tools: !append [Decision]
+    tools: [Read, WebSearch, WebFetch, HTTP, Document, Memory, Path, Skill, SkillDef, Agent, Interruption, History, Decision]
     decision: { default: decide, models: [decide] }
+  chat/local-small:
+    tools: [Read, WebSearch, WebFetch, HTTP, Document, Memory, Path, Skill, SkillDef, Agent, Interruption, History]
 
   # The memory agents read tenants' chat transcripts. They run from a schedule,
   # under the `default` user tier, whose cascade would otherwise carry a
