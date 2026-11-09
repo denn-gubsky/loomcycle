@@ -48,7 +48,8 @@ end `loomcycle.input_tokens`, `loomcycle.output_tokens`,
 
 **Model-call span** (`loomcycle.model.call`): from just before the provider
 is called until its stream ends — the done event, an error, or a cancel.
-`loomcycle.provider`, `loomcycle.model`, `loomcycle.effort`,
+`loomcycle.provider`, `loomcycle.model`, `loomcycle.tier` (the tier the
+run's agent routes by), `loomcycle.effort`,
 `loomcycle.ttft_ms` (time to the first streamed token), `loomcycle.stop_reason`,
 usage (`loomcycle.input_tokens`, `loomcycle.output_tokens`,
 `loomcycle.cache_read_tokens`, `loomcycle.cache_write_tokens`),

@@ -105,7 +105,6 @@ type ModelCallResult struct {
 // ModelUsage is what the done event reported.
 type ModelUsage struct {
 	ResponseModel    string
-	ResponseID       string
 	InputTokens      int
 	OutputTokens     int
 	CacheReadTokens  int
@@ -142,7 +141,6 @@ func SetModelCallResult(span trace.Span, r ModelCallResult) {
 			genai.GenAIUsageCacheCreationInputTokensKey.Int(u.CacheWriteTokens),
 		)
 		kvs = genAIString(genai.GenAIResponseModelKey, u.ResponseModel, kvs)
-		kvs = genAIString(genai.GenAIResponseIDKey, u.ResponseID, kvs)
 		if u.CostKnown {
 			kvs = append(kvs, attribute.Float64(AttrCostUSD, u.CostUSD))
 		}

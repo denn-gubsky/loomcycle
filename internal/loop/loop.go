@@ -4037,6 +4037,7 @@ func (s *runState) startModelCall(runCtx, turnCtx context.Context, req providers
 	mctx, span := lcotel.RecordModelCall(turnCtx, lcotel.ModelCallAttrs{
 		Provider:     s.opts.Provider.ID(),
 		Model:        req.Model,
+		Tier:         tools.RunIdentity(runCtx).ModelTier,
 		Effort:       req.Effort,
 		Temperature:  req.Temperature,
 		TopP:         req.TopP,

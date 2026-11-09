@@ -14,6 +14,7 @@ import (
 
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // streamingProvider behaves like a real driver as far as spans go: Call opens
@@ -121,6 +122,7 @@ func TestModelCallSpan_CoversTheStreamWithUsageAndParentsTheAttempts(t *testing.
 			InputTokens: 11, OutputTokens: 7, CacheReadTokens: 3, CacheCreationTokens: 2, Model: "claude-x-0613"}},
 	}}
 	ctx := lcotel.WithTenant(context.Background(), "acme")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{ModelTier: "high"})
 	_, err := Run(ctx, RunOptions{
 		Provider: p, Model: "claude-x", Segments: userPrompt(), OnEvent: func(providers.Event) {},
 		MaxTokens: 512,
@@ -161,6 +163,7 @@ func TestModelCallSpan_CoversTheStreamWithUsageAndParentsTheAttempts(t *testing.
 		lcotel.AttrTenant:                          "acme",
 		lcotel.AttrProvider:                        "anthropic",
 		lcotel.AttrModel:                           "claude-x",
+		lcotel.AttrTier:                            "high",
 		"gen_ai.operation.name":                    "chat",
 		"gen_ai.provider.name":                     "anthropic",
 		"gen_ai.request.model":                     "claude-x",
