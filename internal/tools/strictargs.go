@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -154,9 +155,19 @@ func (d *Dispatcher) refuseSiblingArguments(t Tool, in map[string]json.RawMessag
 	var msg, fix strings.Builder
 	fmt.Fprintf(&msg, "%s %s:", t.Name(), op)
 	for _, k := range stray {
-		fmt.Fprintf(&msg, " argument %q is not one %s takes (it belongs to %s).", k, op, owner[k])
+		// The suggestion leads the sentence: "belongs to maintain_statement" is
+		// true of chunk_id but is not what the caller meant, and models followed
+		// the op name instead of resending with the argument this op takes.
 		if s := ownNearArgument(k, own); s != "" {
+			fmt.Fprintf(&msg, " argument %q is not one %s takes — pass it as %q (%q belongs to %s).", k, op, s, k, owner[k])
 			fmt.Fprintf(&fix, "Did you mean %q instead of %q? ", s, k)
+		} else {
+			fmt.Fprintf(&msg, " argument %q is not one %s takes (it belongs to %s).", k, op, owner[k])
+		}
+		// A text query on a listing op is a search: query_documents with a query
+		// was the most repeated wrong call on a document corpus.
+		if k == "query" && op != "search" && slices.Contains(SchemaEnum(t.InputSchema(), "op"), "search") {
+			fmt.Fprintf(&fix, "To find something by its text, use op=search. ")
 		}
 	}
 	msg.WriteString(" Nothing was done.")
@@ -178,6 +189,17 @@ func ownNearArgument(k string, own []string) string {
 	}
 	if s := nearArgument(k, set); s != "" {
 		return s
+	}
+	// The id family: an op names its main subject `id` (a chunk for get_chunk,
+	// backlinks, history) or `document_id` (get_edges, export_md), and callers
+	// send the other one, or a qualified/plural form of it (chunk_id, seed_ids).
+	if strings.HasSuffix(k, "_id") || strings.HasSuffix(k, "_ids") || k == "id" {
+		switch {
+		case k != "id" && set["id"] && !set[k]:
+			return "id"
+		case k == "id" && set["document_id"] && !set["chunk_id"]:
+			return "document_id"
+		}
 	}
 	var hit []string
 	for _, a := range own {
