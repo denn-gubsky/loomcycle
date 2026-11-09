@@ -73,7 +73,7 @@ export function RecoveryCodes({ codes, onDone }: { codes: string[]; onDone: () =
 /** After a reset: the passkeys still on the account. A reset ends every
  *  sign-in but removes no passkey, so one added by someone who knew the old
  *  password would survive it. */
-type NamedPasskey = { name: string; created_at: string };
+type NamedPasskey = { name: string; created_at: string; used_for_reset?: boolean };
 
 function PasskeyList({ passkeys }: { passkeys: NamedPasskey[] }) {
   return (
@@ -81,6 +81,7 @@ function PasskeyList({ passkeys }: { passkeys: NamedPasskey[] }) {
       {passkeys.map((k, i) => (
         <li key={`${k.name}-${i}`}>
           <strong>{k.name || "Unnamed passkey"}</strong> — added {new Date(k.created_at).toLocaleString()}
+          {k.used_for_reset && " (used for this reset)"}
         </li>
       ))}
     </ul>
@@ -112,8 +113,9 @@ export function ResetPasskeys({
       {passkeys.length > 0 && (
         <>
           <p className="login-sub">
-            These passkeys are older than your previous password and were kept. They can still sign in to your
-            account. If one is not yours, remove it on your account page now.
+            These passkeys were kept: they are older than your previous password, or you used one to confirm
+            this reset. They can still sign in to your account. If one is not yours, remove it on your account page
+            now.
           </p>
           <PasskeyList passkeys={passkeys} />
         </>
