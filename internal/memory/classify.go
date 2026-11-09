@@ -52,6 +52,10 @@ type ClassifyVerdict struct {
 	Quote string
 	// Concepts are the concepts the model says the document is about.
 	Concepts []string
+	// ConceptFallback says Concepts is the ranking fallback's single pick: no concept
+	// cleared the probability floor, and this one led the rest (memory.classifier
+	// concept_fallback). Such a pick is still a proposal, marked as weaker.
+	ConceptFallback bool
 	// Reason says why there is no class, or why the decision answer was set aside.
 	Reason string
 }

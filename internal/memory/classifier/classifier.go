@@ -9,6 +9,10 @@
 // repaired, never trusted: a class or concept off the lists is dropped, and the whole
 // verdict is dropped unless its quote occurs in the document.
 //
+// A concept is taken when its yes-probability reaches the floor. With the concept
+// ranking fallback on (SetConceptFallback), an answer in which no concept does takes its
+// single clear leader instead, and the verdict says so (ConceptFallback).
+//
 // Both are the shape of memory.reranker's two kinds, on the same drivers and lanes.
 package classifier
 
@@ -53,7 +57,11 @@ type Classifier struct {
 	chat            Completer
 	minProbability  float64
 	minMargin       float64
-	onUsage         func(ctx context.Context, u *providers.Usage)
+	// fallbackMinProbability and fallbackMinMargin are the concept ranking fallback;
+	// a zero floor turns it off.
+	fallbackMinProbability float64
+	fallbackMinMargin      float64
+	onUsage                func(ctx context.Context, u *providers.Usage)
 }
 
 // New builds a classifier from an already-built decision driver (nil for none, its
@@ -62,6 +70,15 @@ type Classifier struct {
 func New(dec decision.Driver, decisionModel string, decisionTimeout time.Duration, chat Completer, minProbability, minMargin float64) *Classifier {
 	return &Classifier{decision: dec, decisionModel: decisionModel, decisionTimeout: decisionTimeout,
 		chat: chat, minProbability: minProbability, minMargin: minMargin}
+}
+
+// SetConceptFallback turns on the concept ranking fallback: when no concept of one
+// answer reaches the probability floor, the best one is taken alone if its probability
+// is at least minProbability and it leads the runner-up by at least minMargin. A
+// decision model's yes-probabilities run low on broad topics, so without it a document
+// can get no concept at all — and a tree walk stops at the top level. Call at boot.
+func (c *Classifier) SetConceptFallback(minProbability, minMargin float64) {
+	c.fallbackMinProbability, c.fallbackMinMargin = minProbability, minMargin
 }
 
 // SetOnUsage records each call's tokens against the run whose context it is.
@@ -175,14 +192,10 @@ func (c *Classifier) decide(ctx context.Context, req memory.ClassifyRequest) (me
 		margin = top.p - ranked[1].p
 	}
 	v.Probability, v.Margin = top.p, margin
-	for i, o := range concepts {
-		if a, ok := resp.Answers[fmt.Sprintf("%s%d", conceptQ, i)]; ok && a.Noul != nil && *a.Noul >= c.minProbability {
-			v.Concepts = append(v.Concepts, o.Name)
-		}
-	}
+	v.Concepts, v.ConceptFallback = c.pickConcepts(concepts, resp.Answers)
 	if top.p < c.minProbability || margin < c.minMargin {
 		v.Reason = fmt.Sprintf("the decision model was unsure (%s at %.2f, %.2f ahead)", top.name, top.p, margin)
-		v.Concepts = nil
+		v.Concepts, v.ConceptFallback = nil, false
 		return v, true
 	}
 	if top.name == noneOption {
@@ -229,12 +242,43 @@ func (c *Classifier) decideConcepts(ctx context.Context, req memory.ClassifyRequ
 		u := resp.Usage
 		c.onUsage(ctx, &u)
 	}
-	for i, o := range req.Concepts {
-		if a, ok := resp.Answers[fmt.Sprintf("%s%d", conceptQ, i)]; ok && a.Noul != nil && *a.Noul >= c.minProbability {
-			v.Concepts = append(v.Concepts, o.Name)
+	v.Concepts, v.ConceptFallback = c.pickConcepts(req.Concepts, resp.Answers)
+	return v, false
+}
+
+// pickConcepts is what one answer to sibling concept questions takes: every concept
+// whose yes-probability reaches minProbability; failing any, with the ranking fallback
+// on, the single best one when it reaches the fallback floor and leads the runner-up by
+// the fallback margin (fallback true). A tie for the lead is never taken, and a
+// question the reply left unanswered is neither a candidate nor a runner-up.
+func (c *Classifier) pickConcepts(concepts []memory.ClassifyOption, answers map[string]decision.Answer) ([]string, bool) {
+	var taken []string
+	best, bestP, second := -1, 0.0, 0.0
+	for i, o := range concepts {
+		a, ok := answers[fmt.Sprintf("%s%d", conceptQ, i)]
+		if !ok || a.Noul == nil {
+			continue
+		}
+		p := *a.Noul
+		if p >= c.minProbability {
+			taken = append(taken, o.Name)
+		}
+		switch {
+		case best < 0:
+			best, bestP = i, p
+		case p > bestP:
+			best, bestP, second = i, p, bestP
+		case p > second:
+			second = p
 		}
 	}
-	return v, false
+	if len(taken) > 0 || c.fallbackMinProbability <= 0 || best < 0 {
+		return taken, false
+	}
+	if bestP >= c.fallbackMinProbability && bestP > second && bestP-second >= c.fallbackMinMargin {
+		return []string{concepts[best].Name}, true
+	}
+	return nil, false
 }
 
 // ask is the chat model's verdict.
