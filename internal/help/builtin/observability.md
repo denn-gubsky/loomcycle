@@ -20,25 +20,97 @@ at their OTLP collector. Configuration is the standard OpenTelemetry
 
 ## What spans capture
 
-Every span carries the same identity attribute set so traces correlate
-cleanly with the loomcycle transcript views (`/ui/agents/<id>`):
+The span tree of one run:
 
-- `loomcycle.run_id`, `loomcycle.agent_id`, `loomcycle.agent_name`
-- `loomcycle.user_hash`, `loomcycle.parent_agent_id` (sub-runs)
+```
+loomcycle.run                      one per run (sub-runs nest under the
+ └ loomcycle.iteration             parent's iteration); one per turn
+    ├ loomcycle.model.call         the whole streamed model call
+    │  └ loomcycle.provider.call   one per HTTP attempt (retries are siblings)
+    └ loomcycle.tool.call          one per tool call
+       └ loomcycle.mcp.call        when the tool is on an MCP server
+```
 
-Provider spans add: `loomcycle.provider` (`anthropic` | `openai` |
-`deepseek` | `gemini` | `ollama` | `ollama-local`), `loomcycle.model`,
-`loomcycle.tier`, `loomcycle.effort`.
+plus `loomcycle.memory.search` and `loomcycle.memory.consolidate` for
+memory work.
 
-Tool spans add: `loomcycle.tool` (the dispatched name).
+**Every span** a run opens carries `loomcycle.tenant` (omitted for work
+that belongs to no tenant). Child spans do not inherit attributes, so it is
+stamped on each one: filter any span kind by tenant.
 
-MCP spans add: `loomcycle.mcp_server`, `loomcycle.mcp_tool`.
+**Run span** (`loomcycle.run`): `loomcycle.run_id`, `loomcycle.agent_id`,
+`loomcycle.agent_name`, `loomcycle.user_hash` (see below),
+`loomcycle.parent_agent_id` (sub-runs), `loomcycle.queue_wait_ms`; at the
+end `loomcycle.input_tokens`, `loomcycle.output_tokens`,
+`loomcycle.cache_read_tokens`, `loomcycle.stop_reason`. GenAI names:
+`gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`,
+`gen_ai.agent.id`, `gen_ai.conversation.id` (the chat/session id).
 
-The run span gets closing attributes when the run finishes:
-`loomcycle.input_tokens`, `loomcycle.output_tokens`,
-`loomcycle.cache_read_tokens`, `loomcycle.stop_reason`. Errors set the
-span's status to Error with the error message — Jaeger surfaces these
-as red span markers in the trace timeline.
+**Model-call span** (`loomcycle.model.call`): from just before the provider
+is called until its stream ends — the done event, an error, or a cancel.
+`loomcycle.provider`, `loomcycle.model`, `loomcycle.effort`,
+`loomcycle.ttft_ms` (time to the first streamed token), `loomcycle.stop_reason`,
+usage (`loomcycle.input_tokens`, `loomcycle.output_tokens`,
+`loomcycle.cache_read_tokens`, `loomcycle.cache_write_tokens`),
+`loomcycle.cost_usd` (when the call is priced in US dollars), and
+`loomcycle.fallback_from` (`provider/model`) on the first call after a
+provider fallback. GenAI names: `gen_ai.operation.name=chat`,
+`gen_ai.provider.name` (`anthropic`, `openai`, `deepseek`, `gcp.gemini`,
+`aws.bedrock`, `ollama`, else the provider id), `gen_ai.request.model`,
+`gen_ai.request.temperature` / `top_p` / `max_tokens` when set,
+`gen_ai.response.model`, `gen_ai.response.finish_reasons`,
+`gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`,
+`gen_ai.usage.cache_read.input_tokens`,
+`gen_ai.usage.cache_creation.input_tokens`.
+
+**Provider attempt span** (`loomcycle.provider.call`): one HTTP request.
+It ends when the response headers arrive, so its duration is time to
+headers; the model-call span above is the whole generation.
+`loomcycle.provider`, `loomcycle.model`, `loomcycle.effort`,
+`http.response.status_code`, `loomcycle.attempt` (1, 2, … within the call),
+`loomcycle.retry_after_ms` (on a retry: how long it waited first), and on
+failure `error.type`: `rate_limited` (429), `overloaded` (529 or 503),
+`timeout`, `network`, `cancelled`, `client_error` or `server_error`. Find
+rate limiting with `error.type=rate_limited`, not by searching error text.
+
+**Tool span** (`loomcycle.tool.call`): `loomcycle.tool`,
+`gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`,
+`gen_ai.tool.call.id` (the model's tool-use id), and
+`loomcycle.tool_is_error=true` when the tool returned an error result.
+
+**MCP span** (`loomcycle.mcp.call`): `loomcycle.mcp_server`,
+`loomcycle.mcp_tool`, and `loomcycle.tool_is_error=true` for a server's
+`isError` answer.
+
+The `gen_ai.*` names follow the OpenTelemetry GenAI semantic conventions,
+release 1.41.0, and are emitted beside the `loomcycle.*` names, which stay
+stable while the GenAI conventions are still changing.
+
+### Span status
+
+A span's status is Error when something failed, so a collector's "keep
+error traces" policy keeps the runs that went wrong:
+
+- a failed run, and a cancelled run (described `cancelled`; filter
+  `loomcycle.stop_reason=cancelled` to drop cancels);
+- a model call that failed or was cancelled;
+- a provider attempt that got no response or a 4xx/5xx status;
+- a tool that broke (returned a Go error), an MCP server that could not be
+  reached.
+
+A tool call that returned an error result — a refusal, a policy or hook
+denial, an unknown tool, an MCP server's `isError` answer — is not: the
+model reads it and goes on, so it sets `loomcycle.tool_is_error` instead.
+
+### Users on spans
+
+A span names its user by `loomcycle.user_hash`: the first 16 hex characters
+of an HMAC-SHA256 over `tenant|user`, keyed by a key derived from
+`LOOMCYCLE_SECRET_KEY`. It is stable, so one user's traces group together,
+and `loomcycle otel user-hash <tenant> <user>` prints a user's hash to
+search for. `LOOMCYCLE_OTEL_RAW_USER_ID=1` adds the raw `loomcycle.user_id`
+beside it; with no secret key set the raw id is all a span carries, and the
+startup warns.
 
 ## What spans deliberately do NOT capture
 
@@ -54,14 +126,13 @@ By design:
   map (see `per-run-credentials` topic) inherits this
   posture — credential values never appear in span attributes,
   span events, or span resource attributes.
-- **No user ids.** A span names its user by `loomcycle.user_hash`, a
-  keyed hash of tenant and user id (HMAC under a key derived from
-  `LOOMCYCLE_SECRET_KEY`), never the id itself. `loomcycle otel
-  user-hash <tenant> <user>` prints a user's hash for an
-  investigation. `LOOMCYCLE_OTEL_RAW_USER_ID=1` adds the raw
-  `loomcycle.user_id`; with no secret key set the raw id is all there
-  is, and the startup warns. No user-content text crosses the span
-  boundary.
+- **No user ids.** A span names its user by `loomcycle.user_hash`
+  (above), never the id itself, unless the operator opts in. No
+  user-content text crosses the span boundary.
+- **Outside erasure's reach once exported.** A subject erasure cannot
+  delete spans already in a tracing backend; the backend's retention is
+  the control. The hash is what limits what an exported span says about
+  a person.
 
 This posture is load-bearing: telemetry endpoints (Honeycomb,
 DataDog, etc.) have different trust postures than the loomcycle
@@ -209,6 +280,27 @@ children are also sampled (so a trace stays whole), and the ratio
 applies only to roots. It keeps every tenth run end-to-end and drops
 the rest entirely — never partial traces.
 
+**Per tenant.** A run that starts a trace can be sampled at its own
+tenant's ratio instead — keep every trace of one tenant, sample the rest:
+
+```yaml
+observability:
+  tracing:
+    tenant_sampler_ratios:
+      acme: 1
+      beta: 0.1
+```
+
+or `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS=acme=1,beta=0.1` (wins per
+tenant). A run that joins a caller's trace, or a sub-agent's run, follows
+the trace's existing decision; a tenant not listed uses the global
+sampler. Read at startup.
+
+**Keeping failures at a low ratio** needs a decision made after the run
+ends: use the collector's tail-sampling processor (OpenTelemetry Collector
+or Alloy) with three policies — keep `status=ERROR`, keep `loomcycle.run`
+spans longer than your threshold, sample the rest.
+
 ## A caller's trace
 
 When the caller that starts a run sends a W3C `traceparent` header (or
@@ -245,9 +337,9 @@ incident:
    identify which user is driving the run volume.
 3. **Provider degradation**: `loomcycle.provider=anthropic status=error
    span_name=loomcycle.provider.call` — Anthropic-specific errors
-   over the last hour. Cross-reference with the resolver matrix
-   (`GET /v1/_resolve/matrix`) to verify the matrix marked anthropic
-   stalled.
+   over the last hour; add `error.type=rate_limited` for its 429s.
+   Cross-reference with the resolver matrix (`GET /v1/_resolve/matrix`)
+   to verify the matrix marked anthropic stalled.
 
 ## What spans tell you that the transcript doesn't
 
@@ -261,9 +353,9 @@ record of agent content. The spans complement, not replace, it:
 | What inputs did the tool get? | Transcript (tool_call.input) |
 | How long did this run take? | Spans (root span duration) |
 | Which iteration was slow? | Spans (per-iteration timing) |
-| Which provider call took 8s? | Spans (provider.call duration) |
+| Which model call took 8s? | Spans (model.call duration; provider.call is time to headers) |
 | Did any tool error? | Spans (Error-status leaf spans) |
-| How many cache_read_tokens? | Spans (run-span attribute) |
+| How many cache_read_tokens? | Spans (run and model-call attributes) |
 | Why is p99 latency creeping up? | Spans + your APM's stats UI |
 
 Use the transcript for "what happened," the spans for "how fast,
@@ -391,6 +483,8 @@ itself (and their `_TRACES_` forms): `_ENDPOINT`, `_HEADERS`,
 | `OTEL_BSP_MAX_QUEUE_SIZE` / `_MAX_EXPORT_BATCH_SIZE` / `_EXPORT_TIMEOUT` / `_SCHEDULE_DELAY` | 2048 / 512 / 10000 ms / 5000 ms | Export queue bounds. |
 | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` | empty | A file holding the collector headers instead of the env. |
 | `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What a caller's trace context does: `parent`, `link` or `ignore`. |
+| `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | empty | Per-tenant ratio for runs that start a trace, `tenant=ratio,...`. |
+| `LOOMCYCLE_OTEL_RAW_USER_ID` | off | `1` adds the raw `loomcycle.user_id` beside `loomcycle.user_hash`. |
 | `LOOMCYCLE_ENVIRONMENT` | empty | `deployment.environment.name` resource attribute. |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | empty | Web UI "Open trace" link; must contain `{trace_id}`. |
 

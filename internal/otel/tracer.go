@@ -11,10 +11,10 @@
 // and LOOMCYCLE_ENVIRONMENT.
 //
 // Init is the public entry point. Recorder
-// helpers (RecordRunStart, RecordIteration, RecordProviderCall,
-// RecordToolCall, RecordMCPCall, RecordRunDone) live in recorder.go
-// and centralize the attribute set so every call site stays consistent
-// without per-site duplication.
+// helpers (RecordRunStart, RecordIteration, RecordModelCall,
+// RecordProviderCall, RecordToolCall, RecordMCPCall, SetRunDone) live in
+// recorder.go, model.go and attempt.go and centralize the attribute set so
+// every call site stays consistent without per-site duplication.
 //
 // What the spans capture:
 //
@@ -22,15 +22,18 @@
 //     sub-run; sub-runs nest as children of the parent's iteration span
 //     via context propagation).
 //   - loomcycle.iteration    — one per turn within loop.Run.
-//   - loomcycle.provider.call— one per HTTP request to a model provider.
+//   - loomcycle.model.call   — one per model call, the whole stream.
+//   - loomcycle.provider.call— one per HTTP request to a model provider
+//     (a child of model.call; ends at the response headers).
 //   - loomcycle.tool.call    — one per Dispatcher.Execute call.
 //   - loomcycle.mcp.call     — one per MCP tools/call (nested under
 //     the outer tool.call).
 //
 // What spans do NOT carry: transcript bodies, tool inputs, tool
-// results, system prompts, user prompts. Only shape (run/agent/user/
-// run ID, provider name, model name, tool name), cost (input/output/
-// cache tokens), and latency. Secrets stay out of telemetry by design.
+// results, system prompts, user prompts, or (unless the operator opts in)
+// a raw user id. Only shape (tenant, run/agent IDs, a keyed user hash,
+// provider, model, tool name), cost (tokens, priced cost), and latency.
+// Secrets stay out of telemetry by design.
 package otel
 
 import (
