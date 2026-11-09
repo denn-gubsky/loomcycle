@@ -956,9 +956,8 @@ func (a *AgentDef) execVerify(ctx context.Context, policy tools.AgentDefPolicyVa
 
 // checkScopeForName enforces the agent's agent_def_scopes against a
 // proposed (name, def_id) target. Default-deny when policy.Scopes
-// is empty. The def_id arg is used for "descendants" path
-// (currently treated as "any" since lineage-walk on every check is
-// too expensive — flagged TODO; refines in v0.9.x).
+// is empty. A stored "descendants" grant authorises nothing
+// (descendantsRefusal).
 func (a *AgentDef) checkScopeForName(policy tools.AgentDefPolicyValue, name, _ string) error {
 	if len(policy.Scopes) == 0 {
 		return fmt.Errorf("AgentDef tool: agent has no agent_def_scopes (default-deny); add `agent_def_scopes: [...]` to the agent yaml")
@@ -971,19 +970,6 @@ func (a *AgentDef) checkScopeForName(policy tools.AgentDefPolicyValue, name, _ s
 			if name == policy.SelfName {
 				return nil
 			}
-		case "descendants":
-			// KNOWN GAP (TODO v0.9.x): `descendants` is intended to
-			// permit mutation of agents in the calling agent's spawn
-			// tree. Today the tool has no efficient way to verify
-			// lineage against every check (cfg.Agents is the static
-			// boundary; a DB-only descendant tree is N AgentDefGet
-			// round-trips deep). For v0.8.5 we accept on "descendants"
-			// present, which makes the scope behaviourally equivalent
-			// to "any". Operators wanting strict descendant gating
-			// must grant `named:<child>` per child instead. See
-			// TestAgentDefTool_DescendantsScopeIsCurrentlyEquivalentToAny
-			// for the pinned-but-undesired current behaviour.
-			return nil
 		default:
 			if pat, ok := strings.CutPrefix(sc, "named:"); ok {
 				if matchNamedScope(pat, name) {
@@ -991,6 +977,9 @@ func (a *AgentDef) checkScopeForName(policy tools.AgentDefPolicyValue, name, _ s
 				}
 			}
 		}
+	}
+	if err := descendantsRefusal("AgentDef", "agent_def_scopes", policy.Scopes); err != nil {
+		return err
 	}
 	return fmt.Errorf("AgentDef tool: name %q not in this agent's agent_def_scopes (%v)", name, policy.Scopes)
 }
@@ -1078,6 +1067,12 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 	if len(overlay) > 0 {
 		ov, err := decodeAgentOverlay(overlay)
 		if err != nil {
+			return mergedDef{}, err
+		}
+		// Authoring only: a stored definition carrying it still loads and is
+		// denied by it (descendantsRefusal), so forking it keeps working once
+		// the value is replaced.
+		if err := refuseDescendantsGrant(ov); err != nil {
 			return mergedDef{}, err
 		}
 		// Judged here, not in decodeAgentOverlay, because it needs the operator's

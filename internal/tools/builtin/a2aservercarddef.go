@@ -415,11 +415,6 @@ func (s *A2AServerCardDef) checkScopeForName(policy tools.A2AServerCardDefPolicy
 			if name == policy.SelfName {
 				return nil
 			}
-		case "descendants":
-			// Same KNOWN GAP as ScheduleDef's "descendants" — accept on
-			// presence; tighten when RunIdentity gains the parent
-			// lineage walk surface.
-			return nil
 		default:
 			if strings.HasPrefix(sc, "named:") {
 				if strings.TrimPrefix(sc, "named:") == name {
@@ -427,6 +422,9 @@ func (s *A2AServerCardDef) checkScopeForName(policy tools.A2AServerCardDefPolicy
 				}
 			}
 		}
+	}
+	if err := descendantsRefusal("A2AServerCardDef", "a2a_server_card_def_scopes", policy.Scopes); err != nil {
+		return err
 	}
 	return fmt.Errorf("A2AServerCardDef tool: name %q not in this agent's a2a_server_card_def_scopes (%v)", name, policy.Scopes)
 }

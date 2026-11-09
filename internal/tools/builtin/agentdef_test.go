@@ -910,33 +910,65 @@ func TestAgentDefTool_CreateRefusedWhenCallerToolsMissing(t *testing.T) {
 	}
 }
 
-// Documents the v0.8.5 gap: the `descendants` scope is behaviourally
-// equivalent to `any` because the tool does not walk the lineage
-// graph on every check. This pins the current (undesired) behaviour
-// so future tightening triggers a deliberate test update rather than
-// silently changing the runtime contract.
-func TestAgentDefTool_DescendantsScopeIsCurrentlyEquivalentToAny(t *testing.T) {
+// A `descendants` grant never walked the lineage it promised and granted
+// every name, as `any` does. It is no longer accepted (RFC GD D1); a stored
+// definition still carrying one is denied by it: the grant authorises
+// nothing, and the refusal says why.
+func TestAgentDefTool_ADescendantsGrantAuthorisesNothing(t *testing.T) {
 	tool, _, cleanup := agentDefFixture(t)
 	defer cleanup()
-	// Build a ctx with ONLY `descendants` scope (no `any`, no `named:foo`).
 	ctx := tools.WithAgentName(context.Background(), "alpha")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
-		rp.AgentDef = tools.AgentDefPolicyValue{
-			Scopes:   []string{"descendants"},
-			SelfName: "alpha",
-		}
+		rp.AgentDef = tools.AgentDefPolicyValue{Scopes: []string{"descendants"}, SelfName: "alpha"}
+		rp.Tools = []string{"Read"}
+		rp.Skill = tools.SkillPolicyValue{Granted: true}
 	})
-	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
-	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true} })
-
-	// Mutate a totally unrelated name (would-be cross-tree).
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"completely-unrelated"}`))
-	if res.IsError {
-		t.Fatalf("descendants scope currently accepts unrelated names by design (v0.8.5 gap); got %s", res.Text)
+	if !res.IsError || !strings.Contains(res.Text, "descendants is not supported") {
+		t.Fatalf("a descendants grant authorised a create: %s", res.Text)
 	}
-	// When this test starts failing, descendants has been tightened —
-	// update the test and the inline comment in checkScopeForName.
+}
+
+// Every other definition family's scope check denies a descendants grant the
+// same way.
+func TestDefScopeChecks_ADescendantsGrantAuthorisesNothing(t *testing.T) {
+	only := []string{"descendants"}
+	for family, err := range map[string]error{
+		"ScheduleDef":       (&ScheduleDef{}).checkScopeForName(tools.ScheduleDefPolicyValue{Scopes: only, SelfName: "me"}, "other"),
+		"WebhookDef":        (&WebhookDef{}).checkScopeForName(tools.WebhookDefPolicyValue{Scopes: only, SelfName: "me"}, "other"),
+		"MemoryBackendDef":  (&MemoryBackendDef{}).checkScopeForName(tools.MemoryBackendDefPolicyValue{Scopes: only, SelfName: "me"}, "other"),
+		"DocumentSourceDef": (&DocumentSourceDef{}).checkScopeForName(tools.DocumentSourceDefPolicyValue{Scopes: only, SelfName: "me"}, "other"),
+		"A2AServerCardDef":  (&A2AServerCardDef{}).checkScopeForName(tools.A2AServerCardDefPolicyValue{Scopes: only, SelfName: "me"}, "other"),
+		"A2AAgentDef":       (&A2AAgentDef{}).checkScopeForName(tools.A2AAgentDefPolicyValue{Scopes: only, SelfName: "me"}, "other"),
+	} {
+		if err == nil || !strings.Contains(err.Error(), "descendants is not supported") {
+			t.Errorf("%s: a descendants grant: %v, want a refusal saying it is not supported", family, err)
+		}
+	}
+	// The ceiling a new agent's grants are judged against: descendants no
+	// longer stands in for any.
+	if defScopeCovered("named:x", "child", only, "me") {
+		t.Error("a descendants ceiling covered a named grant")
+	}
+}
+
+// An AgentDef create or fork overlay granting descendants is refused, in each
+// *_def_scopes field, naming the replacement.
+func TestAgentDefTool_AnOverlayGrantingDescendantsIsRefused(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	for _, field := range []string{"agent_def_scopes", "schedule_def_scopes", "a2a_server_card_def_scopes", "a2a_agent_def_scopes"} {
+		for _, call := range []string{
+			`{"op":"create","name":"d-` + strings.ReplaceAll(field, "_", "-") + `","overlay":{"` + field + `":["descendants"]}}`,
+			`{"op":"fork","name":"researcher","overlay":{"` + field + `":["self","descendants"]}}`,
+		} {
+			res, _ := tool.Execute(ctx, json.RawMessage(call))
+			if !res.IsError || !strings.Contains(res.Text, "descendants is not supported") || !strings.Contains(res.Text, field) {
+				t.Errorf("%s: %s", call, res.Text)
+			}
+		}
+	}
 }
 
 // v0.9.x — per-agent max_iterations override on the dynamic AgentDef

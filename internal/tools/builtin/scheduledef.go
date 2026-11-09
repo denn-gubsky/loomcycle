@@ -939,11 +939,6 @@ func (s *ScheduleDef) checkScopeForName(policy tools.ScheduleDefPolicyValue, nam
 			if name == policy.SelfName {
 				return nil
 			}
-		case "descendants":
-			// Same KNOWN GAP as AgentDef's "descendants" — accept on
-			// presence; tighten when RunIdentity gains the parent
-			// lineage walk surface.
-			return nil
 		default:
 			if strings.HasPrefix(sc, "named:") {
 				if strings.TrimPrefix(sc, "named:") == name {
@@ -951,6 +946,9 @@ func (s *ScheduleDef) checkScopeForName(policy tools.ScheduleDefPolicyValue, nam
 				}
 			}
 		}
+	}
+	if err := descendantsRefusal("ScheduleDef", "schedule_def_scopes", policy.Scopes); err != nil {
+		return err
 	}
 	return fmt.Errorf("ScheduleDef tool: name %q not in this agent's schedule_def_scopes (%v)", name, policy.Scopes)
 }

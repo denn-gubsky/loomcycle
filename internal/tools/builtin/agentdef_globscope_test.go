@@ -99,7 +99,7 @@ func TestAgentDefTool_OverlayNamedScopeValidation(t *testing.T) {
 			t.Errorf("overlay scope %q accepted on the substrate path; yaml refuses it", sc)
 		}
 	}
-	accepted := []string{"named:coder", "named:sdlc/*", "named:sdlc/**", "self", "descendants", "any"}
+	accepted := []string{"named:coder", "named:sdlc/*", "named:sdlc/**", "self", "any"}
 	for _, sc := range accepted {
 		if err := validateOverlayNamedScopes([]string{sc}); err != nil {
 			t.Errorf("overlay scope %q refused: %v", sc, err)

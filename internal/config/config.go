@@ -2106,8 +2106,6 @@ type AgentDef struct {
 	//
 	//   - "self"         → may fork/promote/retire its OWN name
 	//                       (== tools.AgentName(ctx))
-	//   - "descendants"  → may operate on any def whose lineage chain
-	//                       traces back to a def the agent created
 	//   - "named:<name>" → may operate on the specified single name
 	//                       (multi-entry: "named:foo" + "named:bar")
 	//   - "any"          → unrestricted (operator-blessed orchestrator
@@ -2120,19 +2118,19 @@ type AgentDef struct {
 
 	// ScheduleDefScopes is the v1.x RFC E ScheduleDef tool capability
 	// gate. Default-deny when empty. Same closed set as
-	// AgentDefScopes: "self" / "descendants" / "named:<name>" / "any".
+	// AgentDefScopes: "self" / "named:<name>" / "any".
 	// Lets operator-blessed orchestrators author + fork schedules at
 	// runtime; arbitrary agents have no access.
 	ScheduleDefScopes []string `yaml:"schedule_def_scopes"`
 
 	// A2AServerCardDefScopes is the v1.x RFC G A2AServerCardDef tool
 	// capability gate. Default-deny when empty. Same closed set as
-	// ScheduleDefScopes: "self" / "descendants" / "named:<name>" / "any".
+	// ScheduleDefScopes: "self" / "named:<name>" / "any".
 	A2AServerCardDefScopes []string `yaml:"a2a_server_card_def_scopes"`
 
 	// A2AAgentDefScopes is the v1.x RFC G A2AAgentDef tool capability
 	// gate. Default-deny when empty. Same closed set as
-	// ScheduleDefScopes: "self" / "descendants" / "named:<name>" / "any".
+	// ScheduleDefScopes: "self" / "named:<name>" / "any".
 	A2AAgentDefScopes []string `yaml:"a2a_agent_def_scopes"`
 
 	// (WebhookDefScopes removed in the v0.16.0 QA pass — dead config, the
@@ -8472,23 +8470,32 @@ func ValidateNamedScopePattern(pattern string) error {
 // agent_def_scopes list. Closed set:
 //
 //   - "self"
-//   - "descendants"
 //   - "any"
 //   - "named:<name>" where <name> is non-empty
+//
+// "descendants" is refused with DescendantsUnsupported.
 //
 // The "named:" prefix is the only stringly-typed exception — keeps
 // the yaml authoring ergonomic. Empty name in "named:" is rejected
 // at config-load.
 func validateAgentDefScope(sc string) error {
 	switch sc {
-	case "self", "descendants", "any":
+	case "self", "any":
 		return nil
+	case "descendants":
+		return errors.New(DescendantsUnsupported)
 	}
 	if ref, ok := strings.CutPrefix(sc, "named:"); ok {
 		return ValidateNamedScopePattern(ref)
 	}
-	return fmt.Errorf("unknown scope %q (want one of: self, descendants, any, or \"named:<name>\")", sc)
+	return fmt.Errorf("unknown scope %q (want one of: self, any, or \"named:<name>\")", sc)
 }
+
+// DescendantsUnsupported is the refusal of a `descendants` entry in a
+// *_def_scopes gate. It never walked the lineage it promised and granted every
+// name, as `any` does, so it is refused at load and at write (RFC GD D1), and
+// a definition stored earlier that carries one is denied by it.
+const DescendantsUnsupported = "descendants is not supported; use self, named:<name> or any"
 
 // validateVolumeDefScope checks one entry in an agent's
 // volume_def_scopes list (RFC AH Phase 2a). Closed set (volumes have
@@ -9635,10 +9642,27 @@ func validate(c *Config) error {
 			}
 		}
 		// AgentDef tool (v0.8.5): validate agent_def_scopes entries.
-		// Closed set: "self" / "descendants" / "named:<name>" / "any".
+		// Closed set: "self" / "named:<name>" / "any".
 		for i, sc := range agent.AgentDefScopes {
 			if err := validateAgentDefScope(sc); err != nil {
 				return fmt.Errorf("agent %q: agent_def_scopes[%d]: %w", name, i, err)
+			}
+		}
+		// The other families' gates take the same vocabulary; only the value
+		// that granted more than it said is refused here, so a gate that loads
+		// today keeps loading.
+		for _, g := range []struct {
+			field  string
+			scopes []string
+		}{
+			{"schedule_def_scopes", agent.ScheduleDefScopes},
+			{"a2a_server_card_def_scopes", agent.A2AServerCardDefScopes},
+			{"a2a_agent_def_scopes", agent.A2AAgentDefScopes},
+		} {
+			for i, sc := range g.scopes {
+				if sc == "descendants" {
+					return fmt.Errorf("agent %q: %s[%d]: %s", name, g.field, i, DescendantsUnsupported)
+				}
 			}
 		}
 		// RFC BA: `skill_def_scopes` is REMOVED — skill authoring is now

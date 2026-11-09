@@ -444,11 +444,6 @@ func (s *DocumentSourceDef) checkScopeForName(policy tools.DocumentSourceDefPoli
 			if name == policy.SelfName {
 				return nil
 			}
-		case "descendants":
-			// Same KNOWN GAP as MemoryBackendDef's "descendants" — accept on
-			// presence; tighten when RunIdentity gains the parent lineage
-			// walk surface.
-			return nil
 		default:
 			if strings.HasPrefix(sc, "named:") {
 				if strings.TrimPrefix(sc, "named:") == name {
@@ -456,6 +451,9 @@ func (s *DocumentSourceDef) checkScopeForName(policy tools.DocumentSourceDefPoli
 				}
 			}
 		}
+	}
+	if err := descendantsRefusal("DocumentSourceDef", "document source def scopes", policy.Scopes); err != nil {
+		return err
 	}
 	return fmt.Errorf("DocumentSourceDef tool: name %q not in the caller's granted def-scope (%v)", name, policy.Scopes)
 }
