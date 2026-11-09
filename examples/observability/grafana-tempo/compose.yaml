@@ -96,7 +96,7 @@ services:
       - "9090:9090"
 
   loki:
-    image: grafana/loki:2.9.5@sha256:55561cf48b19e03d982e1f959efc0d8842b7be141eb5eaaa4b8a8eeb5a2dfc58
+    image: grafana/loki:3.7.9@sha256:0db216b630ae1f348a1584c67f3cead8b4c1fc839169a39501db664744158e28
     command: ["-config.file=/etc/loki/loki-config.yaml"]
     volumes:
       - ./loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
