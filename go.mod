@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	github.com/a2aproject/a2a-go/v2 v2.6.0
-	github.com/aws/aws-sdk-go-v2 v1.47.7
+	github.com/aws/aws-sdk-go-v2 v1.47.8
 	github.com/aws/aws-sdk-go-v2/config v1.33.13
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.13
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.7
