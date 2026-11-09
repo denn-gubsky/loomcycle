@@ -2793,6 +2793,29 @@ export interface UserIdentitiesResponse {
   identities: UserIdentity[];
 }
 
+/** One app the person is signed in to through loomcycle's OAuth
+ *  authorization server (a refresh-token family). Never a token. */
+export interface AppSignIn {
+  /** Pass to {@link LoomcycleClient.endUserAppSignIn} or
+   *  {@link LoomcycleClient.endMyAppSignIn} to end it. */
+  family_id: string;
+  client_id: string;
+  /** The app's label, or its id when the app is no longer registered. */
+  client_name: string;
+  /** The sign-in gate the person signed in through. */
+  gate: string;
+  created_at: string;
+  last_used_at: string;
+  /** When the sign-in ends unless the app refreshes it: the earlier of its
+   *  idle and absolute expiry. */
+  expires_at: string;
+}
+
+export interface AppSignInsResponse {
+  subject: string;
+  app_sign_ins: AppSignIn[];
+}
+
 // ---- RFC FA: sign-in gates and the password gate's management API ----
 
 /** A sign-in gate's kind. Fields typed with it still accept a kind a newer

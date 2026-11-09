@@ -348,3 +348,48 @@ describe("unlinkUserIdentity", () => {
     expect(init.method).toBe("DELETE");
   });
 });
+
+describe("app sign-ins", () => {
+  const listing = {
+    subject: "bob",
+    app_sign_ins: [
+      { family_id: "fam1", client_id: "board", client_name: "Board", gate: "sso",
+        created_at: "2026-11-01T00:00:00Z", last_used_at: "2026-11-02T00:00:00Z", expires_at: "2026-11-09T00:00:00Z" },
+    ],
+  };
+
+  it("listUserAppSignIns GETs /v1/_users/{subject}/app-sign-ins with the tenant focus", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse(listing)]);
+    const resp = await client.listUserAppSignIns("a/b", { tenant: "acme" });
+    expect(resp.app_sign_ins[0]!.family_id).toBe("fam1");
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("http://test-loomcycle:8787/v1/_users/a%2Fb/app-sign-ins?tenant=acme");
+    expect(init.method).toBe("GET");
+  });
+
+  it("endUserAppSignIn DELETEs one family, encoding both segments", async () => {
+    const { client, fetchMock } = makeClient([noContentResponse()]);
+    await client.endUserAppSignIn("bob", "fam/1");
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("http://test-loomcycle:8787/v1/_users/bob/app-sign-ins/fam%2F1");
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("listMyAppSignIns and endMyAppSignIn address the caller's own under /v1/_me", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse(listing), noContentResponse()]);
+    const resp = await client.listMyAppSignIns();
+    expect(resp.subject).toBe("bob");
+    await client.endMyAppSignIn("fam1");
+    expect(fetchMock.mock.calls.map(([u, i]) => `${i.method} ${u}`)).toEqual([
+      "GET http://test-loomcycle:8787/v1/_me/app-sign-ins",
+      "DELETE http://test-loomcycle:8787/v1/_me/app-sign-ins/fam1",
+    ]);
+  });
+
+  it("a 404 for another user's family surfaces as a typed error", async () => {
+    const { client } = makeClient([
+      errorResponse(404, `{"code":"app_sign_in_not_found","error":"no such app sign-in for this user"}`),
+    ]);
+    await expect(client.endMyAppSignIn("not-mine")).rejects.toBeInstanceOf(LoomcycleError);
+  });
+});

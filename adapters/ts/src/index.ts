@@ -30,6 +30,10 @@
  *     approveUser(subject, opts?): Promise<UserRecord>           // pending → active (RFC FA)
  *     listUserIdentities(subject, opts?): Promise<UserIdentitiesResponse>
  *     unlinkUserIdentity(subject, gate, opts?): Promise<void>
+ *     listUserAppSignIns(subject, opts?): Promise<AppSignInsResponse>   // the apps a user is signed in to
+ *     endUserAppSignIn(subject, familyId, opts?): Promise<void>
+ *     listMyAppSignIns(opts?): Promise<AppSignInsResponse>              // the caller's own
+ *     endMyAppSignIn(familyId, opts?): Promise<void>
  *
  *     // Sign-in gates + the password gate's management API (RFC FA)
  *     listAuthGates(opts?): Promise<AuthGateListResponse>        // admin token only
@@ -319,6 +323,8 @@ export type {
   ListUserTokensResponse,
   UserIdentity,
   UserIdentitiesResponse,
+  AppSignIn,
+  AppSignInsResponse,
   // RFC FA: sign-in gates + the password gate's management API
   AuthGateKind,
   AuthGate,

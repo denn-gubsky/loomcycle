@@ -83,6 +83,8 @@ const PAIRS: Array<[string, [string, string], string[]?]> = [
   ["CreateUserBody", [CRUD, "createUserRequest"]],
   ["UpdateUserBody", [CRUD, "updateUserRequest"]],
   ["UserIdentity", [LINK, "wireUserIdentity"]],
+  ["AppSignIn", ["internal/connector/connector.go", "AppSignIn"]],
+  ["AppSignInsResponse", ["internal/api/http/app_signins.go", "appSignInsResponse"]],
   ["AuthGate", [EXTERNAL, "authgateEntry"]],
   ["AuthGateKey", [EXTERNAL, "authgateKey"]],
   ["AuthGateRemoval", [EXTERNAL, "authgateRemove"]],
