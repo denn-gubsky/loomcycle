@@ -107,10 +107,15 @@ func (h *HeartbeatRunner) Start(parent context.Context) {
 }
 
 // Stop cancels all heartbeat goroutines + waits for them to drain.
-// Idempotent — safe to call multiple times.
+// Idempotent — safe to call multiple times. A Start after Stop is a no-op:
+// Stop marks the runner started under mu, so every wg.Add happens before
+// that unlock and therefore before this wg.Wait (an Add from a zero counter
+// racing a Wait is a data race, and the goroutines it launched were never
+// waited for).
 func (h *HeartbeatRunner) Stop() {
 	h.stopped.Do(func() {
 		h.mu.Lock()
+		h.started = true
 		cancel := h.cancel
 		h.mu.Unlock()
 		if cancel != nil {

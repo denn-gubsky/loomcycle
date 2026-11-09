@@ -97,6 +97,37 @@ func TestHeartbeatRunner_ConcurrentStartStopRaceFree(t *testing.T) {
 	h.Stop() // idempotent
 }
 
+// TestHeartbeatRunner_StartAfterStopStartsNothing: a Stop that wins the race
+// against Start must leave nothing running. Before, Start after Stop launched
+// a heartbeat goroutine no one would wait for (Stop runs once), and its
+// wg.Add raced Stop's wg.Wait — the data race the concurrent test above hit
+// on CI now and then.
+func TestHeartbeatRunner_StartAfterStopStartsNothing(t *testing.T) {
+	s, _ := sqlite.Open(":memory:")
+	defer s.Close()
+	pub := &StorePublisher{Store: s, Bus: NewBus()}
+	h := NewHeartbeatRunner(pub, "v", []HeartbeatSpec{
+		{Name: "_system/hb-after-stop", Period: time.Millisecond},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h.Stop()
+	h.Start(ctx)
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	h.wg.Wait()
+
+	msgs, _, err := s.ChannelSubscribe(context.Background(), "",
+		"_system/hb-after-stop", store.MemoryScopeGlobal, "", "cur_0", 100)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("a Start after Stop published %d heartbeats, want 0", len(msgs))
+	}
+}
+
 // TestHeartbeatRunner_DoubleStartNoOp pins the idempotent-Start guard: a second
 // Start must not spawn a second goroutine batch. On the unfixed code the second
 // Start overwrites h.cancel (orphaning the first batch's cancel), so the single
