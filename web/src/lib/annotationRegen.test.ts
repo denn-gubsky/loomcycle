@@ -35,6 +35,21 @@ describe("regenerateAnnotation", () => {
     });
   });
 
+  it("rejects when the annotator reports it did not finish", async () => {
+    const start = vi.fn(async (_req, h) => {
+      h.onFrame(frame({ type: "text", text: '{"status":"busy","mode":"document"}' }));
+      h.onFrame(frame({ type: "done", stop_reason: "end_turn" }));
+    });
+    await expect(regenerateAnnotation(target, start)).rejects.toThrow(/Another annotation pass/);
+  });
+
+  it("resolves when the annotator's report is complete", async () => {
+    const start = vi.fn(async (_req, h) => {
+      h.onFrame(frame({ type: "text", text: '{"status":"complete","writes":2}' }));
+    });
+    await expect(regenerateAnnotation(target, start)).resolves.toBeUndefined();
+  });
+
   it("rejects with the run's error when the run fails", async () => {
     const start = vi.fn(async (_req, h) => {
       h.onFrame(frame({ type: "text", text: "working" }));

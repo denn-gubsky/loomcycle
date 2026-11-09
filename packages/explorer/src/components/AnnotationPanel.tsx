@@ -60,21 +60,23 @@ export default function AnnotationPanel({
 }: AnnotationPanelProps) {
   const [open, setOpen] = useState(!!defaultOpen);
   const [editing, setEditing] = useState<AnnotationLevel | null>(null);
-  const [busy, setBusy] = useState(false);
+  // The record being regenerated: every button waits, only its own says so.
+  const [busyLevel, setBusyLevel] = useState<AnnotationLevel | null>(null);
+  const busy = busyLevel !== null;
   const [err, setErr] = useState<string | null>(null);
 
   if (records.length === 0 && !onSave && !onRegenerate) return null;
 
   const regenerate = async (level: AnnotationLevel) => {
     if (!onRegenerate) return;
-    setBusy(true);
+    setBusyLevel(level);
     setErr(null);
     try {
       await onRegenerate(level);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setBusyLevel(null);
     }
   };
 
@@ -169,14 +171,16 @@ export default function AnnotationPanel({
                     edit
                   </button>
                 )}
-                {onRegenerate && (
+                {/* The annotation pass never rewrites a person's text, so a
+                    Regenerate of one would change nothing: edit it instead. */}
+                {onRegenerate && !r.manual && (
                   <button
                     type="button"
                     disabled={busy}
                     onClick={() => void regenerate(r.level)}
                     title="Ask for it to be written again from the current text"
                   >
-                    {busy ? "regenerating…" : "regenerate"}
+                    {busyLevel === r.level ? "regenerating…" : "regenerate"}
                   </button>
                 )}
               </div>

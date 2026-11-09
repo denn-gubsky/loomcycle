@@ -35,6 +35,12 @@ describe("AnnotationPanel", () => {
     expect(html).not.toContain("manual");
   });
 
+  it("offers no Regenerate for a hand-written record, which the annotation pass keeps", () => {
+    const regen = async () => {};
+    expect(render({ records: [rec({ manual: true })], onRegenerate: regen })).not.toContain(">regenerate<");
+    expect(render({ records: [rec()], onRegenerate: regen })).toContain(">regenerate<");
+  });
+
   it("marks a stale record and a hand-written one instead of hiding them", () => {
     const html = render({ records: [rec({ stale: true, manual: true })] });
     expect(html).toContain("annotation-stale");

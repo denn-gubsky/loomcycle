@@ -48,6 +48,9 @@ export interface DocumentViewerProps extends ExplorerDataSource {
    *  how — typically by starting the annotating agent's run; the viewer reloads
    *  the annotation when the returned promise settles. Omit → no Regenerate. */
   onRegenerateAnnotation?: (target: AnnotationTarget) => void | Promise<void>;
+  /** Whether the reader may edit annotations by hand (the operator plane; the
+   *  runtime refuses anyone else). Default false: no Edit is offered. */
+  canEditAnnotations?: boolean;
 }
 
 export default function DocumentViewer(props: DocumentViewerProps) {
@@ -78,6 +81,7 @@ function DocumentViewerHost({
   renderAssistant,
   onOpenDocument,
   onRegenerateAnnotation,
+  canEditAnnotations,
 }: DocumentViewerProps) {
   const [trail, setTrail] = useState<Trail>([]);
   const current = trail[trail.length - 1];
@@ -132,6 +136,7 @@ function DocumentViewerHost({
         onOpenDocument={open}
         onTitle={onTitle}
         onRegenerateAnnotation={onRegenerateAnnotation}
+        canEditAnnotations={canEditAnnotations}
       />
     </>
   );

@@ -59,6 +59,9 @@ export default function PathTreeView() {
       browse={{ scopeId: userId || undefined, tenant: focusTenant || undefined }}
       // Regenerate starts the annotator in the caller's own tenant, so it is
       // offered only to an operator who is not focused on another tenant.
+      // Edits are written as the operator's manual annotations; anyone else is
+      // refused by the server, so only an operator is offered Edit.
+      canEditAnnotations={canRegenerateAnnotations(principal)}
       onRegenerateAnnotation={
         canRegenerateAnnotations(principal) && !focusTenant
           ? (target) => regenerateAnnotation(target, startRun)

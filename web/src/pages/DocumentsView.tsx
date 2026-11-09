@@ -67,6 +67,9 @@ export default function DocumentsView() {
         principal={principal ?? undefined}
         browse={{ scopeId: userId || undefined, tenant: focusTenant || undefined }}
         // As on the Path page: the annotator runs in the caller's own tenant.
+        // Edits are written as the operator's manual annotations; anyone else is
+        // refused by the server, so only an operator is offered Edit.
+        canEditAnnotations={canRegenerateAnnotations(principal)}
         onRegenerateAnnotation={
           canRegenerateAnnotations(principal) && !focusTenant
             ? (target) => regenerateAnnotation(target, startRun)

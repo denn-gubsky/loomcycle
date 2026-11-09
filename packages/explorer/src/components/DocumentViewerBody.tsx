@@ -104,6 +104,12 @@ export interface DocumentViewerBodyProps {
   // (it owns the run). Omitted → no Regenerate. Its promise settling reloads the
   // annotation; a rejection is shown in the panel.
   onRegenerateAnnotation?: (target: AnnotationTarget) => void | Promise<void>;
+  // canEditAnnotations — whether to offer Edit (the operator plane writes
+  // annotations by hand; the runtime refuses anyone else). Default false.
+  canEditAnnotations?: boolean;
+  // onAnnotationChanged — told after an edit or a regenerate settles, so a host
+  // showing briefs elsewhere (the Path tree) can read them again.
+  onAnnotationChanged?: () => void;
 }
 
 // View mode for the selected-chunk pane (not the whole document).
@@ -122,6 +128,8 @@ export default function DocumentViewerBody({
   onChunkSelect,
   focusChunk,
   onRegenerateAnnotation,
+  canEditAnnotations,
+  onAnnotationChanged,
 }: DocumentViewerBodyProps) {
   const data = useExplorerData();
 
@@ -374,12 +382,13 @@ export default function DocumentViewerBody({
   // Edit and Regenerate. Edit needs a data layer that can write one; Regenerate
   // needs the host's callback. Neither is offered outside the tenant scope.
   const saveAnnotation = useMemo(() => {
-    if (!data.documentSetAnnotation || !annotationsApply(scope)) return undefined;
+    if (!canEditAnnotations || !data.documentSetAnnotation || !annotationsApply(scope)) return undefined;
     return (chunkId: string) => async (level: AnnotationLevel, brief: string, abstract: string) => {
       await data.documentSetAnnotation!({ id: chunkId, level, brief, abstract }, scope, browse);
       setAnnotationReload((n) => n + 1);
+      onAnnotationChanged?.();
     };
-  }, [data, scope, browse]);
+  }, [data, scope, browse, canEditAnnotations, onAnnotationChanged]);
   const regenerateAnnotation = useMemo(() => {
     if (!onRegenerateAnnotation || !annotationsApply(scope)) return undefined;
     return (chunkId: string) => async (level: AnnotationLevel) => {
@@ -392,12 +401,15 @@ export default function DocumentViewerBody({
         await onRegenerateAnnotation({ documentId, chunkId, level, scope, ...(folder ? { folder } : {}) });
       } finally {
         setAnnotationReload((n) => n + 1);
+        onAnnotationChanged?.();
       }
     };
-  }, [onRegenerateAnnotation, documentId, scope, docAnnotations, chunkAnnotations]);
+  }, [onRegenerateAnnotation, documentId, scope, docAnnotations, chunkAnnotations, onAnnotationChanged]);
   // The brief under the title is the document record's; a path record on the
   // same root describes the folder, and shows only in the panel.
-  const documentBrief = docAnnotations.find((a) => a.level === "document");
+  // A folder's _annotation document has only the path record: that is its brief.
+  const documentBrief =
+    docAnnotations.find((a) => a.level === "document") ?? docAnnotations.find((a) => a.level === "path");
   // The selected chunk's records, matched by id: the detail can still be the
   // previous chunk's for a moment after the selection moves.
   const selectedAnnotations = useMemo(

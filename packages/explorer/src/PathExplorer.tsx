@@ -110,6 +110,9 @@ export interface PathExplorerProps extends ExplorerDataSource {
   // forwarded to the embedded DocumentViewer. The host owns how (typically by
   // starting the annotating agent's run). Omit → no Regenerate.
   onRegenerateAnnotation?: (target: AnnotationTarget) => void | Promise<void>;
+  // Whether the reader may edit annotations by hand (the operator plane; the
+  // runtime refuses anyone else). Default false: no Edit is offered.
+  canEditAnnotations?: boolean;
 
   // ---- Optional second navigator beside the Path tree (the @loomcycle/universe
   // star map). Provide it to show a `tree | stars` switch in the toolbar; the
@@ -138,6 +141,7 @@ export default function PathExplorer(props: PathExplorerProps) {
     navigator,
     onError,
     onRegenerateAnnotation,
+    canEditAnnotations,
   } = props;
   const resolved = useResolvedDataLayer(props);
   return (
@@ -153,6 +157,7 @@ export default function PathExplorer(props: PathExplorerProps) {
         navigator={navigator}
         onError={onError}
         onRegenerateAnnotation={onRegenerateAnnotation}
+        canEditAnnotations={canEditAnnotations}
       />
     </ExplorerRoot>
   );
@@ -186,6 +191,7 @@ function PathExplorerBody({
   navigator: navigatorProp,
   onError,
   onRegenerateAnnotation,
+  canEditAnnotations,
 }: PathExplorerBodyProps) {
   const data: ExplorerDataLayer = useExplorerData();
 
@@ -880,6 +886,8 @@ function PathExplorerBody({
                 onChunkSelect={(chunkId) => setLiveChunk({ documentId: view.documentId, chunkId })}
                 focusChunk={focusForView}
                 onRegenerateAnnotation={onRegenerateAnnotation}
+                canEditAnnotations={canEditAnnotations}
+                onAnnotationChanged={() => void refresh()}
               />
             </div>
           ) : selected ? (
