@@ -3001,6 +3001,48 @@ agents:
 	}
 }
 
+// TestLoad_CIDROnlyCoversEveryPrivateHostPolicy: cidr_only is one policy over
+// every private-address exemption the operator configures: the hooks
+// allowlist refuses a name entry as the HTTP one does, and the operator's MCP
+// servers stop dialing private addresses freely (by default, and refusing an
+// explicit LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=1).
+func TestLoad_CIDROnlyCoversEveryPrivateHostPolicy(t *testing.T) {
+	tmp := t.TempDir()
+	yamlPath := filepath.Join(tmp, "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  default: { model: claude-sonnet-4-6 }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE", "cidr_only")
+	t.Setenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", "10.0.0.0/8,hooks.internal")
+	if _, err := Load(yamlPath); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST") || !strings.Contains(err.Error(), "hooks.internal") {
+		t.Fatalf("cidr_only with a hooks name entry: err = %v, want a load error naming the list and the entry", err)
+	}
+	t.Setenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", "10.0.0.0/8")
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatalf("cidr_only with CIDR hooks entries refused: %v", err)
+	}
+	if cfg.Env.MCPAllowPrivateIPs {
+		t.Errorf("cidr_only: the operator's MCP servers still dial private addresses freely by default")
+	}
+	t.Setenv("LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS", "1")
+	if _, err := Load(yamlPath); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS") {
+		t.Fatalf("cidr_only with LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=1: err = %v, want a load error", err)
+	}
+	t.Setenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE", "")
+	cfg, err = Load(yamlPath)
+	if err != nil {
+		t.Fatalf("default mode: %v", err)
+	}
+	if !cfg.Env.MCPAllowPrivateIPs {
+		t.Errorf("default mode: LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=1 not honoured")
+	}
+}
+
 // TestLoad_HelperWrapperReachesEveryHelperCommand: LOOMCYCLE_HELPER_WRAPPER is
 // parsed at load (a shell character or a placeholder fails it) and copied onto
 // every configured helper command, so each caller runs its helper confined.

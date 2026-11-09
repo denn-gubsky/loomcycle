@@ -463,3 +463,25 @@ func TestNetguard_CIDROnlyModeRefusesNameEntries(t *testing.T) {
 		}
 	}
 }
+
+// TestPolicy_CIDROnlyVouchesNoHostName: under cidr_only a host the operator
+// configured by name is not vouched for (that would trust its DNS); an IP
+// literal is, as its exact address. In the default mode both are.
+func TestPolicy_CIDROnlyVouchesNoHostName(t *testing.T) {
+	strict := Policy{Mode: PrivateHostAllowlistModeCIDROnly}
+	if e, ok := strict.VouchEntryForHost("peer.internal"); ok {
+		t.Errorf("cidr_only vouched for a name: %q", e)
+	}
+	if e, ok := strict.VouchEntryForHost("10.1.2.3"); !ok || e != "10.1.2.3/32" {
+		t.Errorf("cidr_only IP literal: %q %v, want 10.1.2.3/32", e, ok)
+	}
+	if e, ok := (Policy{}).VouchEntryForHost("peer.internal"); !ok || e != "peer.internal" {
+		t.Errorf("default mode name: %q %v", e, ok)
+	}
+	if err := strict.ValidateAllowlist([]string{"10.0.0.0/8", "hooks.internal"}); err == nil {
+		t.Error("cidr_only accepted a name entry")
+	}
+	if err := (Policy{}).ValidateAllowlist([]string{"10.0.0.0/8", "hooks.internal"}); err != nil {
+		t.Errorf("default mode refused a name entry: %v", err)
+	}
+}

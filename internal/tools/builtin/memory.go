@@ -264,7 +264,17 @@ func remotePeerPrivateHosts(cfg *config.Config, baseURL string, origin lookup.Or
 		return cfg.Env.HTTPPrivateHostAllowlist
 	}
 	if u, err := url.Parse(baseURL); err == nil && u.Hostname() != "" {
-		return []string{netguard.VouchEntryForHost(u.Hostname())}
+		// Under cidr_only a peer named by host name is not vouched for by
+		// that name (it would trust the name's DNS); it gets the operator's
+		// CIDR list like any other dial.
+		var policy netguard.Policy
+		if cfg != nil {
+			policy = cfg.Env.NetPolicy()
+		}
+		if entry, ok := policy.VouchEntryForHost(u.Hostname()); ok {
+			return []string{entry}
+		}
+		return cfg.Env.HTTPPrivateHostAllowlist
 	}
 	return nil
 }
