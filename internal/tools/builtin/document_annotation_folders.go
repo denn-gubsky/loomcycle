@@ -570,9 +570,15 @@ func (d *Document) folderAnnotationInputs(ctx context.Context, key sqlmem.ScopeK
 		return errValidation(op+": "+err.Error(), "Pass the folder's path, e.g. /kb/policies."), nil
 	}
 	s := d.newAnnotationScope(key, mscope)
-	got, err := s.folderInputsFor(ctx, canonical, in.PromptVersion, d.newDocACL(ctx, key))
+	acl := d.newDocACL(ctx, key)
+	got, err := s.folderInputsFor(ctx, canonical, in.PromptVersion, acl)
 	if err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
+	}
+	// A folder's inputs name and describe every document below it: they are read
+	// only by a caller who may read all of them, as the annotation itself is.
+	if refused := folderCoversRefusal(ctx, op, acl, got.Covers); refused != nil {
+		return *refused, nil
 	}
 	got.Stale = true
 	t, err := d.folderTargetOf(ctx, key, canonical)
@@ -604,6 +610,9 @@ func (d *Document) setFolderAnnotation(ctx context.Context, key sqlmem.ScopeKey,
 	}
 	if len(cur.Covers) == 0 {
 		return errValidation(op+": "+canonical+" holds no document to annotate", "Annotate a folder that holds documents."), nil
+	}
+	if refused := folderCoversRefusal(ctx, op, d.newDocACL(ctx, key), cur.Covers); refused != nil {
+		return *refused, nil
 	}
 	if in.InputsSHA256 != "" && in.InputsSHA256 != cur.InputsSHA256 {
 		return errBusiness(op+": annotation_inputs_changed: the folder's inputs changed since they were read",
@@ -836,4 +845,19 @@ func (d *Document) PathEntrySummaries(ctx context.Context, scope string, entries
 		}
 	}
 	return out
+}
+
+// folderCoversRefusal refuses a folder's inputs or write to a caller who may not
+// read every document the folder covers.
+func folderCoversRefusal(ctx context.Context, op string, acl *docACL, covers []string) *tools.Result {
+	ok, err := coversReadable(ctx, acl, covers)
+	if err != nil {
+		r := errFrom(op+": "+err.Error(), err)
+		return &r
+	}
+	if ok {
+		return nil
+	}
+	r := errPermission(op+": the folder holds documents you may not read, so you may not read or write its annotation", "")
+	return &r
 }

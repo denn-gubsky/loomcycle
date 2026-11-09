@@ -97,17 +97,17 @@ const pathInputSchema = `{
 func (p *Path) InputSchema() json.RawMessage { return json.RawMessage(pathInputSchema) }
 
 type pathInput struct {
-	Op          string `json:"op"`
-	Path        string `json:"path"`
-	To          string `json:"to"`
-	Scope       string `json:"scope"`
-	Recursive   bool   `json:"recursive"`
-	KindFilter  string `json:"kind_filter"`
-	ResourceToo bool   `json:"resource_too"`
-	Limit       int    `json:"limit"`
-	Cursor      string `json:"cursor"`
-	WithSummary  bool `json:"with_summary"`
-	SummaryChars int  `json:"summary_chars"`
+	Op           string `json:"op"`
+	Path         string `json:"path"`
+	To           string `json:"to"`
+	Scope        string `json:"scope"`
+	Recursive    bool   `json:"recursive"`
+	KindFilter   string `json:"kind_filter"`
+	ResourceToo  bool   `json:"resource_too"`
+	Limit        int    `json:"limit"`
+	Cursor       string `json:"cursor"`
+	WithSummary  bool   `json:"with_summary"`
+	SummaryChars int    `json:"summary_chars"`
 }
 
 func (p *Path) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {

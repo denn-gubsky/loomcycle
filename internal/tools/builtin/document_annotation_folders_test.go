@@ -260,3 +260,29 @@ func TestFolderAnnotation_AFolderThatIsADocument(t *testing.T) {
 		}
 	}
 }
+
+// A driver whose access-control set hides one covered document may neither read
+// the folder's inputs (they name and describe every document below) nor write
+// its annotation.
+func TestFolderAnnotation_InputsNeedEveryCoveredDocument(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	op := annOperator(base)
+	seedFolderCorpus(t, d, op)
+	drv := tools.WithRunID(tools.WithRunPolicy(base, tools.RunPolicy{
+		Tools:            []string{"*"},
+		Memory:           tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}},
+		SqlMem:           tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}},
+		StatementMethods: []string{annotationGrant},
+		ACL: aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"},
+			Resources: []string{"document:tenant:/kb/products/pricing"}}),
+	}), "run-confined")
+	for _, q := range []string{
+		`{"op":"annotation_inputs","scope":"tenant","level":"path","path":"/kb/products"}`,
+		`{"op":"set_annotation","scope":"tenant","level":"path","path":"/kb/products","brief":"b","abstract":"a","inputs_sha256":"x"}`,
+	} {
+		_, r := docExec(t, d, drv, q)
+		if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryPermission || strings.Contains(r.Text, "Pricing") {
+			t.Errorf("%s = %+v, want a permission refusal naming nothing", q, r)
+		}
+	}
+}
