@@ -219,15 +219,14 @@ func (s *Server) serveOpenAICompatJSON(
 	w http.ResponseWriter, r *http.Request,
 	req *llmChatRequest, d gatewayDispatch,
 ) {
-	ch, err := d.provider.Call(r.Context(), d.provReq)
+	ch, meter, err := s.callGateway(r.Context(), d.provider, d.provReq)
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, "provider_call_failed", err.Error())
 		return
 	}
 	id := newLLMID()
-	meter := newGatewayMeter(d.provReq)
 	defer s.settleGatewayCall(r.Context(), req, d.providerID, d.modelID, meter)
-	resp, err := collectProviderEventsIntoResponse(meter.tap(ch), id, d.requestID, d.providerID, d.modelID)
+	resp, err := collectProviderEventsIntoResponse(ch, id, d.requestID, d.providerID, d.modelID)
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, "provider_call_failed", err.Error())
 		return
@@ -336,7 +335,7 @@ func (s *Server) serveOpenAICompatStream(
 
 	emitChunk(openaiChunkDelta{Role: "assistant"}, nil, nil)
 
-	ch, err := d.provider.Call(r.Context(), d.provReq)
+	ch, meter, err := s.callGateway(r.Context(), d.provider, d.provReq)
 	if err != nil {
 		// Emit an error chunk + terminal [DONE]. OpenAI's stream
 		// protocol doesn't have a standardised error event; some
@@ -350,9 +349,7 @@ func (s *Server) serveOpenAICompatStream(
 		logGatewayRequest(d.requestID, d.providerID, d.modelID, req.Tier, req.UserID, 0, 0, "error", time.Since(d.startedAt), err)
 		return
 	}
-	meter := newGatewayMeter(d.provReq)
 	defer s.settleGatewayCall(r.Context(), req, d.providerID, d.modelID, meter)
-	ch = meter.tap(ch)
 
 	// Tool-call index tracking — OpenAI requires per-tool index +
 	// `id`/`type`/`function.name` on the FIRST chunk for each tool,

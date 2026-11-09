@@ -164,6 +164,7 @@ func TestModelCallSpan_CoversTheStreamWithUsageAndParentsTheAttempts(t *testing.
 		lcotel.AttrProvider:                        "anthropic",
 		lcotel.AttrModel:                           "claude-x",
 		lcotel.AttrTier:                            "high",
+		lcotel.AttrModelPurpose:                    "turn",
 		"gen_ai.operation.name":                    "chat",
 		"gen_ai.provider.name":                     "anthropic",
 		"gen_ai.request.model":                     "claude-x",
@@ -286,14 +287,62 @@ func TestModelCallSpan_TTFTExcludesTheCallLaneWait(t *testing.T) {
 	now := time.Unix(1000, 0)
 	timer := providers.StartCallTimer(func() time.Time { return now })
 	_, span := lcotel.RecordModelCall(context.Background(), lcotel.ModelCallAttrs{Provider: "anthropic"})
-	mc := &modelCall{span: span, runCtx: context.Background(), turnCtx: context.Background(), timer: timer}
+	mc := &ModelCall{span: span, runCtx: context.Background(), turnCtx: context.Background(), timer: timer}
 
 	now = now.Add(300 * time.Millisecond) // 120ms in the lane, 180ms to the first token
 	timer.Observe(providers.Event{Type: providers.EventText, Text: "x"})
-	mc.observe(providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{LaneWaitMs: 120}})
+	mc.Observe(providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{LaneWaitMs: 120}})
 
 	got := spanAttrs(spansNamed(exp, lcotel.SpanModelCall)[0])
 	if got[lcotel.AttrTTFTMs].AsInt64() != 180 || got[lcotel.AttrLaneWaitMs].AsInt64() != 120 {
 		t.Errorf("ttft_ms %v lane_wait_ms %v, want 180 / 120", got[lcotel.AttrTTFTMs].Emit(), got[lcotel.AttrLaneWaitMs].Emit())
+	}
+}
+
+// The model calls the loop makes outside a turn — a compaction or recap
+// summary, a stateful run's step — have a model-call span of their own,
+// marked with their purpose, so their spend shows apart from the turns'.
+func TestModelCallSpan_SideCallsCarryTheirPurpose(t *testing.T) {
+	done := providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 40, OutputTokens: 5}}
+	msgs := []providers.Message{{Role: "user", Content: []providers.ContentBlock{providers.DialogueText("hello")}}}
+
+	for _, tc := range []struct {
+		purpose string
+		call    func(ctx context.Context, p providers.Provider) error
+		events  []providers.Event
+	}{
+		{"compaction", func(ctx context.Context, p providers.Provider) error {
+			_, err := Summarize(ctx, p, "m", msgs, 30)
+			return err
+		}, []providers.Event{{Type: providers.EventText, Text: "sum"}, done}},
+		{"recap", func(ctx context.Context, p providers.Provider) error {
+			_, err := Recap(ctx, p, "m", msgs)
+			return err
+		}, []providers.Event{{Type: providers.EventText, Text: "sum"}, done}},
+		{"emit_state", func(ctx context.Context, p providers.Provider) error {
+			_, err := callForEmitState(ctx, p, providers.Request{Model: "m"}, nil, nil)
+			return err
+		}, []providers.Event{{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "t1", Name: emitStateToolName, Input: []byte(`{}`)}}, done}},
+	} {
+		t.Run(tc.purpose, func(t *testing.T) {
+			exp, rec := traced(t)
+			ctx := lcotel.WithTenant(context.Background(), "acme")
+			if err := tc.call(ctx, &streamingProvider{events: tc.events}); err != nil {
+				t.Fatal(err)
+			}
+			noOpenSpans(t, rec)
+			models := spansNamed(exp, lcotel.SpanModelCall)
+			if len(models) != 1 {
+				t.Fatalf("got %d model-call spans, want 1", len(models))
+			}
+			got := spanAttrs(models[0])
+			if got[lcotel.AttrModelPurpose].AsString() != tc.purpose || got[lcotel.AttrTenant].AsString() != "acme" ||
+				got["gen_ai.usage.input_tokens"].AsInt64() != 40 {
+				t.Errorf("purpose %q tenant %q input_tokens %v", got[lcotel.AttrModelPurpose].Emit(), got[lcotel.AttrTenant].Emit(), got["gen_ai.usage.input_tokens"].Emit())
+			}
+			if attempts := spansNamed(exp, lcotel.SpanProviderCall); len(attempts) != 1 || attempts[0].Parent.SpanID() != models[0].SpanContext.SpanID() {
+				t.Error("the attempt span is not the model-call span's child")
+			}
+		})
 	}
 }

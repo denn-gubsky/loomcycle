@@ -48,6 +48,11 @@ end `loomcycle.input_tokens`, `loomcycle.output_tokens`,
 
 **Model-call span** (`loomcycle.model.call`): from just before the provider
 is called until its stream ends — the done event, an error, or a cancel.
+Every model call has one, marked with `loomcycle.model.purpose`: `turn` (a
+run's own turn, under its iteration), `compaction` and `recap` (summaries),
+`emit_state` (a stateful run's step), and `gateway` (a call through
+`/v1/_llm/chat` or `/v1/chat/completions`, which starts its own trace and
+names the caller's tenant).
 `loomcycle.provider`, `loomcycle.model`, `loomcycle.tier` (the tier the
 run's agent routes by), `loomcycle.effort`,
 `loomcycle.ttft_ms` (time to the first streamed token, counted from when

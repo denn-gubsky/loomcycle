@@ -8,6 +8,8 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/limits"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -29,7 +31,30 @@ type gatewayMeter struct {
 	// inputBytes is the size of what was sent; outputBytes of what came back.
 	// Used only when the provider reported nothing.
 	inputBytes, outputBytes int
+	// span is the call's model-call span, ended by tap; nil for none.
+	span *loop.ModelCall
 }
+
+// callGateway calls provider for one gateway request inside a
+// loomcycle.model.call span (purpose gateway) that names the caller's tenant,
+// so the call is traced like a run's own and the tenant sampler applies to
+// it. It returns the call's events through the meter's tap, which ends the
+// span with the stream; on a refused call the span is already ended.
+func (s *Server) callGateway(ctx context.Context, provider providers.Provider, req providers.Request) (<-chan providers.Event, *gatewayMeter, error) {
+	ctx = lcotel.WithTenant(ctx, tenantFromCtx(ctx))
+	mc := loop.StartModelCall(ctx, gatewayModelPurpose, provider, req, s.priceCall)
+	ch, err := provider.Call(mc.Ctx(), req)
+	if err != nil {
+		mc.End(err.Error())
+		return nil, nil, err
+	}
+	m := newGatewayMeter(req)
+	m.span = mc
+	return m.tap(ch), m, nil
+}
+
+// gatewayModelPurpose is loomcycle.model.purpose for a gateway call.
+const gatewayModelPurpose = "gateway"
 
 // newGatewayMeter starts a meter for a request about to be sent.
 func newGatewayMeter(req providers.Request) *gatewayMeter {
@@ -57,7 +82,13 @@ func (m *gatewayMeter) tap(ch <-chan providers.Event) <-chan providers.Event {
 		defer close(out)
 		for ev := range ch {
 			m.note(ev)
+			if m.span != nil {
+				m.span.Observe(ev)
+			}
 			out <- ev
+		}
+		if m.span != nil {
+			m.span.End("the response stream ended before the model finished")
 		}
 	}()
 	return out

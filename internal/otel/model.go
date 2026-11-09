@@ -26,6 +26,11 @@ const (
 	// counts from the call's start and includes any wait. Absent when nothing
 	// streamed.
 	AttrTTFTMs = "loomcycle.ttft_ms"
+	// AttrModelPurpose is why the call was made: turn (the run's own turn),
+	// compaction, recap, emit_state (a stateful run's step) or gateway (the
+	// LLM gateway and its OpenAI-compatible routes). The spend of each shows
+	// apart.
+	AttrModelPurpose = "loomcycle.model.purpose"
 	// AttrLaneWaitMs is how long the call waited for a slot in its
 	// provider's call lane before it was sent. Absent when it did not wait,
 	// or the call did not finish.
@@ -45,6 +50,8 @@ const (
 
 // ModelCallAttrs identifies a model call before it is made.
 type ModelCallAttrs struct {
+	// Purpose is AttrModelPurpose.
+	Purpose  string
 	Provider string
 	Model    string
 	Tier     string
@@ -62,7 +69,10 @@ type ModelCallAttrs struct {
 // one the provider is called with, so its attempt spans nest under this one.
 // The caller ends the span on every exit (SetModelCallResult, then End).
 func RecordModelCall(ctx context.Context, a ModelCallAttrs) (context.Context, trace.Span) {
-	kvs := make([]attribute.KeyValue, 0, 12)
+	kvs := make([]attribute.KeyValue, 0, 14)
+	if a.Purpose != "" {
+		kvs = append(kvs, attribute.String(AttrModelPurpose, a.Purpose))
+	}
 	if a.Provider != "" {
 		kvs = append(kvs, attribute.String(AttrProvider, a.Provider))
 	}
