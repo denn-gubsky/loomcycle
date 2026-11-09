@@ -224,8 +224,8 @@ func tracesExporter(v string) (on bool, warnings []string) {
 
 // checkEndpoint refuses an endpoint the exporter cannot reach: one without an
 // http(s) scheme and a host. The retired form, a bare host:port, turned
-// tracing on and exported nowhere. The value is quoted without its userinfo
-// or query, where credentials might sit.
+// tracing on and exported nowhere. The error never quotes the value: an
+// endpoint can carry credentials (userinfo, a query token).
 func checkEndpoint(name, v string) error {
 	if v == "" {
 		return nil
@@ -234,23 +234,7 @@ func checkEndpoint(name, v string) error {
 	if err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
 		return nil
 	}
-	return fmt.Errorf("%s=%q: must be a URL with scheme, e.g. http://collector:4318", name, endpointForError(v))
-}
-
-// endpointForError is v with anything before an '@' (userinfo) and anything
-// from '?' (a query) removed.
-func endpointForError(v string) string {
-	if i := strings.IndexByte(v, '?'); i >= 0 {
-		v = v[:i] + "?…"
-	}
-	if i := strings.LastIndexByte(v, '@'); i >= 0 {
-		start := 0
-		if j := strings.Index(v, "://"); j >= 0 && j < i {
-			start = j + 3
-		}
-		v = v[:start] + "…@" + v[i+1:]
-	}
-	return v
+	return fmt.Errorf("%s must be an absolute http(s) URL with a host, e.g. http://collector:4318", name)
 }
 
 // parseHeaderList parses an OTEL_EXPORTER_OTLP_HEADERS-format value the way
@@ -268,8 +252,13 @@ func parseHeaderList(name, v string) (map[string]string, error) {
 	return out, nil
 }
 
-// parseHeaderPair parses one key=value header entry. Its error says what is
-// wrong without quoting the entry.
+// parseHeaderPair parses one key=value header entry exactly as the OTLP
+// exporters' envconfig.stringToHeader does (v1.47): split at the first '=',
+// the key trimmed and NOT percent-decoded, then held to the RFC 7230 token
+// characters; the value percent-decoded (PathUnescape) and then trimmed. An
+// entry this accepts the exporter accepts silently, and one it refuses the
+// exporter would have logged; TestParseHeaderPair_MatchesTheExporter holds
+// the two together. Its error says what is wrong without quoting the entry.
 func parseHeaderPair(pair string) (string, string, error) {
 	k, v, ok := strings.Cut(pair, "=")
 	k = strings.TrimSpace(k)
@@ -286,8 +275,8 @@ func parseHeaderPair(pair string) (string, string, error) {
 	return k, strings.TrimSpace(dv), nil
 }
 
-// validHeaderKey: an HTTP header name is a non-empty RFC 7230 token, the rule
-// the exporter applies.
+// validHeaderKey: an HTTP header name is a non-empty RFC 7230 token, the
+// exporter's isValidHeaderKey (ASCII letters, digits and !#$%&'*+-.^_`|~).
 func validHeaderKey(k string) bool {
 	if k == "" {
 		return false

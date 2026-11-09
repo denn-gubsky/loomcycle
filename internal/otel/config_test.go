@@ -1,12 +1,16 @@
 package otel
 
 import (
+	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
 )
 
 func envOf(m map[string]string) func(string) string {
@@ -60,10 +64,12 @@ func TestResolveConfig_EnvironmentTable(t *testing.T) {
 			"OTEL_EXPORTER_OTLP_HEADERS": "s3cr3t%zz", "LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE": "/f",
 		}, check: wantEnabled(false)},
 		{name: "sdk disabled ignores bad values", env: on("OTEL_SDK_DISABLED", "true", "OTEL_TRACES_SAMPLER", "bogus"), check: wantEnabled(false)},
-		{name: "scheme-less endpoint refused", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "otel-collector:4318"}, wantErr: "must be a URL with scheme"},
+		{name: "scheme-less endpoint refused", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "otel-collector:4318"}, wantErr: "must be an absolute http(s) URL"},
 		{name: "scheme-less traces endpoint refused", env: map[string]string{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "collector/v1/traces"}, wantErr: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"},
-		{name: "endpoint userinfo never quoted", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "user:s3cr3t@collector:4318"}, wantErr: `"…@collector:4318"`},
-		{name: "ftp endpoint refused", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "ftp://collector"}, wantErr: "must be a URL with scheme"},
+		{name: "scheme-less endpoint with userinfo never quoted", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "user:s3cr3t@collector:4318"}, wantErr: "OTEL_EXPORTER_OTLP_ENDPOINT must be an absolute http(s) URL"},
+		{name: "endpoint without host never quoted", env: map[string]string{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://user:s3cr3t@/x?token=s3cr3t"}, wantErr: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT must be"},
+		{name: "ftp endpoint refused", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "ftp://collector"}, wantErr: "must be an absolute http(s) URL"},
+		{name: "endpoint with credentials accepted", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://user:pass@host:4318/x?token=abc"}, check: wantEnabled(true)},
 
 		{name: "grpc protocol", env: on("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"), check: func(t *testing.T, c Config) {
 			if c.Protocol != ProtocolGRPC {
@@ -241,4 +247,59 @@ func TestReadHeadersFile_ErrorsNeverQuoteAValue(t *testing.T) {
 			t.Errorf("%s: error quotes the value: %v", name, err)
 		}
 	}
+}
+
+// TestParseHeaderPair_MatchesTheExporter is a differential test against the
+// OTLP exporter's own header parser: for every input, loomcycle's check
+// accepts it exactly when the exporter parses it without logging a
+// complaint. A drift would let a header reach the exporter's logger (or
+// refuse one it takes).
+func TestParseHeaderPair_MatchesTheExporter(t *testing.T) {
+	inputs := []string{
+		"a=b", "a=b,c=d", " a = b ", "a=b%20c", "a=%zz", "a=%", "a", "a=b,", ",a=b",
+		"bad key=v", "k%41=v", "ké=v", "a==b", "=v", "a=b=c", "x-scope-orgid=tenant-a",
+		"a=+", "a=%2C", "Authorization=Basic%20dXNlcjpwYXNz", "a=b, c=d", "a\t=b", "a/b=c",
+		"!#$%&'*+-.^_`|~09AZaz=v", " a=b ", "a=b\t,c=d",
+	}
+	var clean, complained int
+	defer func() {
+		if clean == 0 || complained == 0 {
+			t.Errorf("inputs exercise one side only (clean %d, complained %d): the comparison proves nothing", clean, complained)
+		}
+	}()
+	for _, in := range inputs {
+		// Both read the variable trimmed and skip it when that leaves nothing
+		// (ResolveConfig's get, the exporter's GetEnvValue).
+		if strings.TrimSpace(in) == "" {
+			continue
+		}
+		_, mineErr := parseHeaderList("OTEL_EXPORTER_OTLP_HEADERS", strings.TrimSpace(in))
+		sdkComplained := exporterComplains(t, in)
+		if sdkComplained {
+			complained++
+		} else {
+			clean++
+		}
+		if (mineErr == nil) == sdkComplained {
+			t.Errorf("%q: loomcycle accepts=%v, exporter complains=%v", in, mineErr == nil, sdkComplained)
+		}
+	}
+}
+
+// exporterComplains builds an HTTP exporter with OTEL_EXPORTER_OTLP_HEADERS=in
+// and reports whether the SDK logged about the headers.
+func exporterComplains(t *testing.T, in string) bool {
+	t.Helper()
+	clearOTELEnv(t)
+	var logs lineCounter
+	otel.SetLogger(newSDKLogger(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))))
+	defer otel.SetLogger(newSDKLogger(slog.New(slog.DiscardHandler)))
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", in)
+	exp, err := newExporter(context.Background(), ProtocolHTTPProtobuf, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = exp.Shutdown(context.Background())
+	return len(logs.lines()) > 0
 }
