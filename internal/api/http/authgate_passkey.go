@@ -1002,8 +1002,9 @@ func (s *Server) handleRenamePasskey(w http.ResponseWriter, r *http.Request) {
 // handleRemovePasskey serves DELETE /v1/_auth/passkeys/{id}, after a step-up
 // in this request (passkeyStepUpOK). It refuses to remove the account's last way in, and the last
 // second factor of a password a gate requires one for. Sessions made with
-// the passkey end on their next request (their binding is its key); app
-// sign-ins and delegated tokens end at once (endFactorSignIns).
+// the passkey end at once (endPasskeySessions), then app sign-ins and
+// delegated tokens (endFactorSignIns): an app sign-in such a session
+// approved meanwhile meets the ended session on its own re-check.
 func (s *Server) handleRemovePasskey(w http.ResponseWriter, r *http.Request) {
 	sess, _, ok := s.passkeySelf(w, r)
 	if !ok {
@@ -1045,9 +1046,23 @@ func (s *Server) handleRemovePasskey(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "passkey_not_found", "no such passkey")
 		return
 	}
+	s.endPasskeySessions(ctx, sess.TenantID, sess.Subject, id)
 	s.endFactorSignIns(ctx, *sess)
 	s.recordGateAudit(ctx, "auth_passkey_removed", sess.Gate, "", sess.TenantID, sess.Subject, floorTarget{})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// endPasskeySessions ends the Web UI sessions signed in with one passkey.
+// Each would fail its next request anyway (passkeySessionPrincipal), but
+// until then its row is live, and a row is what an app sign-in code it
+// approved, or a link login it began, is checked against. Best-effort: a
+// fault is logged, and the code exchange also asks for the passkey
+// (codeSessionLive).
+func (s *Server) endPasskeySessions(ctx context.Context, tenant, subject string, credentialID []byte) {
+	ref := base64.RawURLEncoding.EncodeToString(credentialID)
+	if _, err := s.store.UISessionRevokeCredential(ctx, tenant, subject, credKindPasskey, ref, time.Now().UTC()); err != nil {
+		slog.Error("authgate: ending a removed passkey's sessions failed", "err", err)
+	}
 }
 
 // lastPasskeyRefusal says why the account's last usable passkey may not go:
