@@ -937,6 +937,7 @@ func switchProvider(opts *RunOptions, newProvider providers.Provider, newModel, 
 	info.NewProvider = newProvider.ID()
 	info.NewModel = newModel
 	emit(providers.Event{Type: providers.EventProviderFallback, Fallback: &info})
+	lcotel.RecordProviderFallback(context.Background(), failedProvider+"/"+info.FailedModel, info.NewProvider+"/"+newModel)
 
 	// Cache-loss event when switching AWAY from a native-prompt-cache provider
 	// (Anthropic today) to one without it. The cache_control breakpoints in the
