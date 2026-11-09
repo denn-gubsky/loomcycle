@@ -9352,9 +9352,9 @@ func validate(c *Config) error {
 	if err := resolveAuth(c); err != nil {
 		return err
 	}
-	if c.Env.AuditStoreOff && c.AuditStoreRequired() {
-		return fmt.Errorf("LOOMCYCLE_AUDIT_STORE=0: the store-backed audit stream cannot be turned off " +
-			"while a sign-in gate, auth.mode: strict or a LOOMCYCLE_ACL other than compat is configured")
+	if r := c.AuditRequiredReason(0); c.Env.AuditStoreOff && r != "" {
+		return fmt.Errorf("LOOMCYCLE_AUDIT_STORE=0: the store-backed audit stream cannot be turned off "+
+			"while %s", r)
 	}
 	if err := c.checkAuditKey(); err != nil {
 		return err
