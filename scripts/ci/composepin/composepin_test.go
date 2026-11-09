@@ -24,11 +24,9 @@ var repoRoot = filepath.Join("..", "..", "..")
 // reader is meant to match.
 var ownImagePrefixes = []string{"denngubsky/", "ghcr.io/denn-gubsky/"}
 
-// skipDirs are not walked. cloud-deployment holds the hosted deployment's
-// compose file, whose images move with that deployment's own change (it is
-// pinned there, not here); node_modules and .git are not the repository's
+// skipDirs are not walked: node_modules and .git are not the repository's
 // files.
-var skipDirs = map[string]bool{".git": true, "node_modules": true, "cloud-deployment": true}
+var skipDirs = map[string]bool{".git": true, "node_modules": true}
 
 var (
 	composeName = regexp.MustCompile(`^(docker-)?compose([.-][\w.-]+)?\.ya?ml$`)
