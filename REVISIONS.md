@@ -8,6 +8,82 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.147.0
+
+*The second hardening release from the 2026-11-07 re-grade, and the last of RFC GD. The audit trail now detects a rolled-back chain and records grants before they happen. A stored hook can no longer reach a private address through a yaml agent, and `cidr_only` covers every private exemption. Postgres SQL Memory's function denies read the same lexer as its other checks. Also: follow-ups to the sign-in changes, bridges that drop a kept revoke when a person returns, census tests on every PR, and a PDF that no longer fails whole on one bad page.*
+
+The v1.147 line: #2486 and #2492 to #2498.
+- `@loomcycle/client` 1.147.0 and the Python adapter 1.147.0, with no API change.
+- No migration.
+- The chat bridges need their own release (see "Bridges" below).
+
+### Upgrade notes
+
+- **More than one principal needs the audit store (#2486).** A deployment with more than one principal and no `LOOMCYCLE_SECRET_KEY` no longer starts. Examples: the legacy token beside a config principal or a minted operator token, two config principals, or several minted tokens. When config principals alone make two, the config no longer loads. Set `LOOMCYCLE_SECRET_KEY`, and the store-backed audit stream turns on by itself. `LOOMCYCLE_AUDIT_STORE=0` is refused there.
+  - **TrueNAS / compose:** an install that minted a tenant token in the Settings hub next to `LOOMCYCLE_AUTH_TOKEN` now has two principals. Set `LOOMCYCLE_SECRET_KEY` before upgrading. The catalog app has a new private *Secret key* field; `deploy/truenas/INSTALL.md` has the note.
+- **Grants fail while the audit store is down (#2486, #2495).** Where an audit sink is configured, these fail with `503 audit_unavailable` when their audit row cannot be written:
+  - token mints and rotations;
+  - user creates, re-enables, updates and approvals;
+  - SCIM creates, re-enables and attribute updates;
+  - snapshot restores;
+  - an operator's login rename;
+  - every access-control write.
+  
+  Reductions still go ahead: token retirements, user disables and deletes, SCIM deprovisioning, and ending app sign-ins. They are recorded afterwards on a best-effort basis; alert on `loomcycle_audit_unrecorded_total`. A sign-in through a device, external or AWS IAM gate issues a bearer token, so it fails while the store cannot take a row. Other sign-ins stay best-effort.
+- **Reloads and prunes (#2486).** A config reload that would require the audit stream on a server started without it is refused; restart instead. A tenant chain's retention prune is refused while the operator chain does not verify.
+- **Stored hooks are guarded (#2496).** A yaml agent or channel that names a stored HookDef on a private address (a localhost sidecar, say) now dials through the guard. List the host in `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST`, or write the webhook inline in the yaml.
+- **`cidr_only` covers every exemption (#2496).** With `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE=cidr_only`:
+  - a host name in `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST` fails startup;
+  - the operator's MCP servers dial through the guard, so list their addresses as CIDR ranges in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`; an explicit `LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=1` fails startup;
+  - a yaml remote peer whose host name resolves to a private address needs a CIDR range covering it.
+- **Sign-in follow-ups (#2493).**
+  - Removing a passkey or the authenticator app now signs the person out of connected apps and retires their API and device-login tokens. The browser that made the change stays signed in.
+  - A `trusted_proxies`, `grpc_trusted_proxies` or `trusted_proxy_cidrs` list whose entries together cover all of IPv4 or all of IPv6 no longer loads.
+  - An OAuth app's own token is refused on the app sign-in routes and RPCs.
+- **Postgres SQL Memory (#2492).** An agent statement with a backslash outside a string is refused, and so is `CREATE [TRUSTED] [PROCEDURAL] LANGUAGE`. A dollar-quoted string can no longer hide a denied call.
+
+### Audit trail integrity (#2486, #2495, RFC GD P3)
+
+- **Checkpoints.** Each tenant chain's signed head is checkpointed into the operator chain every 100 rows, every 5 minutes while rows are uncovered, and at clean shutdown. Verify compares every checkpoint, so a tenant chain rolled back to an older signed head is a break. An operator-chain prune keeps every checkpoint above each tenant's own signed anchor. A tenant prune is refused when it would fold a rollback past a checkpoint.
+- **Changes recorded first.** Token, user, SCIM, approval, restore and access-control changes record an intent row before they are made. The row is then settled as done, failed, or `partial` with counts of what was applied. Grants and reductions are classified in one table, with a test that fails when a store write that grants access has no intent.
+- **Export verifier.** `loomcycle audit verify --export <file> [--allow-partial]` checks an exported tenant chain offline. With `LOOMCYCLE_SECRET_KEY` set it checks every row, head and anchor MAC. It reports `signed` only after a signature verified. A file that starts mid-chain fails without `--allow-partial`.
+- **Known limits, documented.** Rows written since a tenant's last checkpoint, and a rollback of the operator chain itself, still need an outside witness. The operator anchor carries every unpruned tenant checkpoint, so prune tenant chains under the same retention.
+
+### Network policy and hooks (#2496, RFC GD P5)
+
+- **Hook trust.** Whether a hook dials unguarded now depends on where its definition lives, not on how it was named. Only an inline webhook in the operator's yaml dials unguarded. A test covers every resolve path.
+- **One policy.** `cidr_only` is now one policy over the HTTP allowlist, the hooks allowlist, the operator's MCP servers and yaml peers. SECURITY.md's "to trust no DNS, set cidr_only" now holds.
+- **Uploads.** `POST /v1/audio/transcriptions` checks the caller's rate, budget and per-user cap before it reads the upload.
+- **New checks.** CI now fails when a SQLite module the build ships is neither guarded nor allowed, or when a helper command is not wrapped by the operator's sandbox wrapper.
+
+### Sign-ins, continued (#2493, RFC GD P2 follow-ups)
+
+- **Retrying an end.** Ending an app sign-in that half-failed can now be retried to completion: the retry retires the family's access tokens.
+- **Sign-ins in flight.** A code exchange or device-login redemption that races a teardown no longer leaves a live sign-in. Both check the session again after they write.
+- **Budgets.** `new_user.budget` is written in the same transaction as the user, both for `POST /v1/_users` and for invite redemption. A refused create leaves no budget row, and an existing limit is kept.
+- **Passkeys.** The reset answer and page now list the account's passkeys. A reset still removes no passkey; SECURITY.md says so.
+
+### SQL Memory (#2492, RFC GD P0 follow-up)
+
+- Postgres function and setting denies (`set_config`, `pg_read_file`, `U&"…"` names, routines with `SET`) now read the shared lexer's tokens in both string modes. A string that only mentions a denied function is no longer refused.
+- An oversized `NOTICE` that drops an agent's capped connection is reported as the value-limit refusal.
+
+### Bridges (#2494, RFC GD P6)
+
+- **Kept revokes.** Telegram, Slack, Discord and Teams now pass a message's date from text, voice and card presses, so a person who returns drops a kept revoke. A test in bridge-core reads each platform's source and fails when a router call carries no date.
+- **Slack Enterprise Grid.** Reconciliation matches people by user id, so a Grid user whose home workspace differs from the event's is no longer revoked.
+- **Voice.** Untrusted voice is refused before transcription when the deferred queue is full.
+- **Downloads.** Slack, Discord and Teams download through one `downloadPinned` helper in bridge-core. It checks the host on every hop and caps the body while it streams.
+- **Release:** the platforms depend on bridge-core by path until `@loomcycle/bridge-core` 0.5.0 is published. Their 0.5.0 releases follow it.
+
+### Docs, CI and smaller changes (#2497, #2498, RFC GD P7)
+
+- SECURITY.md describes the `main` ruleset as GitHub reports it, npm and PyPI trusted publishing, and the `$oauth:` credential surface. It also covers password lockout as a denial of service, sessions bound to a removed passkey, and the JWKS fetch lock.
+- A "Census and drift" CI job runs every census, drift and twin test on every PR, and `CI ok` requires it. A nightly run covers every package with `-race`.
+- A heartbeat runner started after `Stop` no longer hangs `Stop`. Two flaky tests are fixed.
+- A test fails when CLAUDE.md, README.md or SECURITY.md names a current version older than the newest tag.
+- **PDF extraction (#2498).** A PDF whose page box (`/MediaBox`, `/CropBox`) has too few entries used to fail whole, from a pdfcpu panic. It now extracts, with that page listed as unread. The fuzz crasher is kept as a seed.
+
 ## What's in v1.146.0
 
 *A hardening release from the 2026-11-07 re-grade. Changing a password now ends every other sign-in, and people and operators can list and end app sign-ins. Access-control rules that decided nothing are refused, and each MCP operation asks the same question as its HTTP route. File extraction and agent SQL get hard memory bounds. Also: a ranking fallback for topics the decision model under-scores, Path entries that say a document has names beneath it, and knowledge-base help for chat agents.*

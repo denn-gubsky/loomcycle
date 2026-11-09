@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.146) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.147) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -201,7 +201,14 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.146.0) is a hardening release. Changing a password now
+The most recent line (v1.147.0) completes the hardening from the 2026-11-07
+re-grade. The audit trail detects a rolled-back chain and records grants before
+they happen, a stored hook can no longer reach a private address through a yaml
+agent, and `cidr_only` covers every private exemption. Read its upgrade notes
+in [`REVISIONS.md`](REVISIONS.md): a deployment with more than one principal now
+needs `LOOMCYCLE_SECRET_KEY`.
+
+Before it, v1.146.0 was a hardening release. Changing a password now
 ends every other sign-in, and people and operators can list and end app
 sign-ins. Access-control rules that decided nothing are refused, and each MCP
 operation asks the same question as its HTTP route. File extraction and agent
