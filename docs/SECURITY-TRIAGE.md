@@ -78,6 +78,8 @@ dismissal.
 | 199 | go/sql-injection | internal/sqlmem/postgres.go:636 | won't fix | As 198. |
 | 200 | go/sql-injection | internal/sqlmem/txn.go:332 | won't fix | As 196 (multi-statement transaction on the scope's connection). |
 | 201 | go/sql-injection | internal/sqlmem/txn.go:363 | won't fix | As 200. |
+| 390 | go/sql-injection | internal/sqlmem/sqlite.go:449 | won't fix | As 197: the same agent read, now on the scope connection taken with the value length limit set (opConn). |
+| 391 | go/sql-injection | internal/sqlmem/sqlite.go:503 | won't fix | As 196: the same agent write, on the length-limited scope connection. |
 | 151 | go/weak-sensitive-data-hashing | internal/credential/crypto.go:71 | false positive | SHA-256 of a 32-byte random KEK, truncated to a key id. The input is a high-entropy key, not a password; the hash is an identifier. |
 | 152 | go/weak-sensitive-data-hashing | internal/tools/builtin/document_derive_units.go:196 | false positive | Content hash of a chunk's text for change detection; no password is involved. |
 | 153 | go/weak-sensitive-data-hashing | internal/tools/repeat.go:170 | false positive | Hash of a tool result's text to detect a repeated call; no password is involved. |
