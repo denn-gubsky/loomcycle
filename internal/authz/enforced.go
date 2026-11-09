@@ -65,6 +65,9 @@ var enforcedPairs = map[pairKey][]Site{
 
 	{"volume", "read"}:  {SiteHTTPRoute},
 	{"volume", "write"}: {Proof("TestNarrowVolumesByACL")},
+	// A member's agent definition grants a volume only when the member may
+	// mount it (the member capability ceiling, agentdef_ceiling_member.go).
+	{"volume", "mount"}: {Proof("TestMemberCeiling_AMountDenyKeepsTheVolumeFromAMembersAgent")},
 
 	{"tool", "invoke"}:  {Proof("TestACLRun_DeniedToolIsWithheldFromTheRun")},
 	{"skill", "invoke"}: {Proof("TestNarrowSkillsByACL")},
@@ -179,7 +182,6 @@ var unenforcedPairs = map[pairKey]string{
 	{"agent", "cancel"}:     "a run is cancelled as run:, never agent:",
 	{"agent", "review"}:     "a run's answer is reviewed as run:, never agent:",
 	{"volume", "provision"}: "a volume is created as def:volume/",
-	{"volume", "mount"}:     "a volume binding is asked read and write",
 	{"skill", "author"}:     "a skill is authored as def:skill/",
 	{"mcp", "read"}:         "a server's definition is read as def:mcpserver/",
 	{"a2a", "expose"}:       "",

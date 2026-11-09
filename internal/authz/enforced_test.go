@@ -133,7 +133,8 @@ func TestRuleNotEnforceable_NamesThePairOrTheField(t *testing.T) {
 		want string
 	}{
 		{Rule{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}}, ""},
-		{Rule{Effect: Deny, Actions: []string{"mount"}, Resources: []string{"volume:data"}}, "mount volume is not evaluated by any surface (a volume binding is asked read and write)"},
+		{Rule{Effect: Deny, Actions: []string{"provision"}, Resources: []string{"volume:data"}}, "provision volume is not evaluated by any surface (a volume is created as def:volume/)"},
+		{Rule{Effect: Deny, Actions: []string{"mount"}, Resources: []string{"volume:data"}}, ""},
 		{Rule{Effect: Deny, Actions: []string{"use"}, Resources: []string{"search:*"}}, "use search is not evaluated by any surface (removed from the catalog)"},
 		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:*"}, When: &Condition{Time: &TimeWindow{Days: []string{"mon"}}}}, ""},
 		{Rule{Effect: Deny, Actions: []string{"read"}, Resources: []string{"run:*"}, When: &Condition{Transport: []string{"mcp", "webui"}}}, ""},

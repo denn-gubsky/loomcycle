@@ -21,10 +21,10 @@ import (
 // pair (RFC FY Part E). Before, it was stored and decided nothing.
 func TestACLDef_ARuleOnAnUnenforcedPairIsRefused(t *testing.T) {
 	srv, ts, _ := aclMgmtServer(t, authz.ModeCompat)
-	inert := `[{"effect":"deny","actions":["mount"],"resources":["volume:data"]}]`
+	inert := `[{"effect":"deny","actions":["provision"],"resources":["volume:data"]}]`
 	for _, op := range []string{"create", "update", "put", "validate"} {
 		code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"`+op+`","name":"inert","rules":`+inert+`}`)
-		if code != 400 || jsonField(t, body, "code") != "rule_not_enforceable" || !strings.Contains(body, "mount volume") {
+		if code != 400 || jsonField(t, body, "code") != "rule_not_enforceable" || !strings.Contains(body, "provision volume") {
 			t.Errorf("%s: %d %s, want 400 rule_not_enforceable naming the pair", op, code, body)
 		}
 	}
@@ -79,7 +79,7 @@ func TestACLDef_ARemovedVerbIsRefusedAndUnlisted(t *testing.T) {
 		t.Errorf("evaluation of a removed verb: %d %s, want rule_not_enforceable", code, body)
 	}
 	code, body = bearerCall(t, ts, operatorBearer, "POST", "/v1/_authz/simulate",
-		`{"acls":[{"name":"draft","rules":[{"effect":"deny","actions":["mount"],"resources":["volume:data"]}]}],"requests":[{"action":{"name":"read"},"resource":{"type":"run"}}]}`)
+		`{"acls":[{"name":"draft","rules":[{"effect":"deny","actions":["provision"],"resources":["volume:data"]}]}],"requests":[{"action":{"name":"read"},"resource":{"type":"run"}}]}`)
 	if code != 400 || jsonField(t, body, "code") != "rule_not_enforceable" {
 		t.Errorf("simulate with an unenforced draft rule: %d %s, want rule_not_enforceable", code, body)
 	}

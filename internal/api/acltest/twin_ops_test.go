@@ -8,7 +8,12 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
+	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // A meta-tool whose ops are several HTTP routes asks each op its own route's
@@ -154,5 +159,30 @@ func TestACLTwins_AnAmbiguousOpOrNameIsRefused(t *testing.T) {
 	// The denied channel still exists: no ambiguous call reached its handler.
 	if resp, raw := e.do("GET", "/v1/_channels", operator, ``, nil); resp.StatusCode != 200 || !strings.Contains(string(raw), `"ops"`) {
 		t.Errorf("the denied channel is gone: %d %s", resp.StatusCode, raw)
+	}
+}
+
+// `mount volume:<name>` is the question a member's agent definition asks of
+// each volume it grants (the member capability ceiling), so a tenant rule can
+// narrow it: writing the deny is accepted, and a member's definition granting
+// that volume is refused while another volume is still granted.
+func TestMemberCeiling_AMountDenyKeepsTheVolumeFromAMembersAgent(t *testing.T) {
+	e := newEnvWith(t, authz.ModeCompat, func(cfg *config.Config, st store.Store) ([]tools.Tool, func(*lchttp.Server)) {
+		cfg.Volumes = map[string]config.Volume{
+			"secret": {Path: t.TempDir(), Mode: "rw"},
+			"public": {Path: t.TempDir(), Mode: "rw"},
+		}
+		return []tools.Tool{&builtin.AgentDef{Store: st, Cfg: cfg}}, func(*lchttp.Server) {}
+	})
+	e.bindDeny("alice", "no-secret-mount", `[{"effect":"deny","actions":["mount"],"resources":["volume:secret"]}]`)
+	create := func(name, vol string) (int, string) {
+		resp, raw := e.do("POST", "/v1/_agentdef", member, `{"op":"create","name":"`+name+`","overlay":{"system_prompt":"x","tools":["Read"],"volumes":["`+vol+`"]}}`, nil)
+		return resp.StatusCode, string(raw)
+	}
+	if code, raw := create("with-secret", "secret"); code/100 == 2 || !strings.Contains(raw, "secret") {
+		t.Errorf("a member's agent granting the denied volume: %d %s", code, raw)
+	}
+	if code, raw := create("with-public", "public"); code/100 != 2 {
+		t.Errorf("a member's agent granting another volume: %d %s", code, raw)
 	}
 }
