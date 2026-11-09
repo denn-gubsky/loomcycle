@@ -440,7 +440,7 @@ questions:
               default: ""
           - variable: LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE
             label: LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE
-            description: 'Private-host allowlist mode. any (the default): host-name and CIDR entries. cidr_only: CIDR entries only, so no private address is admitted on the say-so of a DNS answer; a host-name entry (or an IP written as a host entry) fails startup, as does any other value. (example: cidr_only)'
+            description: 'Private-host allowlist mode. any (the default): host-name and CIDR entries. cidr_only: CIDR entries only, so no private address is admitted on the say-so of a DNS answer; a host-name entry (or an IP written as a host entry) fails startup, as does any other value. cidr_only covers LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST too, stops vouching for a yaml remote peer by its host name, and puts the opera…'
             schema:
               type: string
               default: ""

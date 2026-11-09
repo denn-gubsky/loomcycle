@@ -562,9 +562,11 @@ type HooksConfig struct {
 	// PrivateHostAllowlist names hosts (suffix-matched, or CIDR ranges, like
 	// http_private_host_allowlist) that a TENANT operator's hook callback
 	// may reach although they resolve to a private / loopback / link-local
-	// address. A tenant hook receives every matching tool input, so its
-	// callback dials through the SSRF guard by default; operator-global
-	// hooks (registered by admin / legacy / open mode) are not guarded.
+	// address. A hook receives every matching tool input, so its callback
+	// dials through the SSRF guard; only an inline webhook in the operator's
+	// static config (a yaml agent's or channel's) is not guarded. Under
+	// LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE=cidr_only every entry must
+	// be a CIDR range.
 	//
 	// Env-var equivalent: LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST
 	// (comma-separated). Env appends to yaml.
@@ -5806,6 +5808,11 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 
 	// Checked against HTTPPrivateHostAllowlist in validate.
 	cfg.Env.HTTPPrivateHostAllowlistMode = strings.TrimSpace(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE"))
+	// Under cidr_only the operator's MCP servers dial through the guard by
+	// default too; an explicit =1 is refused in validate.
+	if cfg.Env.NetPolicy().CIDROnly() {
+		cfg.Env.MCPAllowPrivateIPs = getenvBool("LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS", false)
+	}
 
 	// gRPC server (v0.5.5+). Disabled by default; operator opts in
 	// by setting LOOMCYCLE_GRPC_ADDR. Coexists with HTTP+SSE (which
@@ -9039,13 +9046,22 @@ func validate(c *Config) error {
 	if err := netguard.ValidatePrivateHostAllowlistMode(c.Env.HTTPPrivateHostAllowlistMode, c.Env.HTTPPrivateHostAllowlist); err != nil {
 		return fmt.Errorf("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE: %w", err)
 	}
+	// The mode is one policy over every private-address exemption: a name
+	// in the hooks list, or MCP servers free to reach any private address
+	// their name resolves to, would trust DNS as much as a name in the HTTP
+	// list. The operator's remote peers follow it at dial
+	// (netguard.Policy.VouchEntryForHost).
+	netPolicy := c.Env.NetPolicy()
+	if err := netPolicy.ValidateAllowlist(c.Hooks.PrivateHostAllowlist); err != nil {
+		return fmt.Errorf("hooks.private_host_allowlist (or LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST): %w", err)
+	}
+	if netPolicy.CIDROnly() && c.Env.MCPAllowPrivateIPs {
+		return fmt.Errorf("LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=1 lets the operator's MCP servers reach any private address their name resolves to, which %s refuses; unset it and list the servers' addresses as CIDR ranges in LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST", netguard.PrivateHostAllowlistModeCIDROnly)
+	}
 	if c.Env.HelperWrapper != "" {
 		if _, err := helper.ParseWrapper(c.Env.HelperWrapper); err != nil {
 			return fmt.Errorf("LOOMCYCLE_HELPER_WRAPPER: %w", err)
 		}
-	}
-	if err := netguard.ValidatePrivateHostAllowlist(c.Hooks.PrivateHostAllowlist); err != nil {
-		return fmt.Errorf("hooks.private_host_allowlist (or LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST): %w", err)
 	}
 	if err := validateWebUIBundleSource(c.Env); err != nil {
 		return err
@@ -10305,4 +10321,10 @@ func gitRemoteWarnings(name string, a AgentDef, env Env) []string {
 		out = append(out, fmt.Sprintf("agent %q: git_remote lists push but LOOMCYCLE_GIT_PUSH_HOSTS is empty, so every push will be refused", name))
 	}
 	return out
+}
+
+// NetPolicy is the operator's private-address policy (netguard.Policy), the
+// one every private-host exemption is checked against.
+func (e Env) NetPolicy() netguard.Policy {
+	return netguard.Policy{Mode: e.HTTPPrivateHostAllowlistMode}
 }

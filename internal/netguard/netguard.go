@@ -236,6 +236,37 @@ func ValidatePrivateHostAllowlistMode(mode string, entries []string) error {
 	return nil
 }
 
+// Policy is the operator's private-address policy, held by every exemption
+// the operator configures: the HTTP and hooks private-host allowlists, the
+// hosts of the operator's own remote peers, and its MCP servers. Mode is
+// LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE; under cidr_only no exemption may
+// rest on a DNS answer, wherever it is configured.
+type Policy struct {
+	Mode string
+}
+
+// CIDROnly reports whether no private address may be admitted by name.
+func (p Policy) CIDROnly() bool { return p.Mode == PrivateHostAllowlistModeCIDROnly }
+
+// ValidateAllowlist checks one private-host allowlist: its entries
+// (ValidatePrivateHostAllowlist) and, against the mode, their kind.
+func (p Policy) ValidateAllowlist(entries []string) error {
+	if err := ValidatePrivateHostAllowlist(entries); err != nil {
+		return err
+	}
+	return ValidatePrivateHostAllowlistMode(p.Mode, entries)
+}
+
+// VouchEntryForHost is VouchEntryForHost under the policy: under cidr_only a
+// host name is not vouched for (ok false), since that would trust its DNS; an
+// IP literal still is, as its exact address.
+func (p Policy) VouchEntryForHost(host string) (string, bool) {
+	if _, isIP := ipLiteral(host); !isIP && p.CIDROnly() {
+		return "", false
+	}
+	return VouchEntryForHost(host), true
+}
+
 // ipLiteral parses host as an IP address, in brackets or with a zone or not,
 // unmapped to IPv4 where it is one.
 func ipLiteral(host string) (netip.Addr, bool) {

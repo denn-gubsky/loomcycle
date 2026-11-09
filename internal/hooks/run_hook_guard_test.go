@@ -3,6 +3,7 @@ package hooks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync/atomic"
 	"testing"
 )
@@ -45,5 +46,82 @@ func TestDispatcher_RuntimeDefinitionHookCannotReachAPrivateAddress(t *testing.T
 		ToolCall{ID: "t1", Name: "WebFetch", Input: json.RawMessage(`{}`)})
 	if n := atomic.LoadInt32(&hook.calls); n != 0 {
 		t.Fatalf("a runtime definition's hook reached a loopback callback %d time(s)", n)
+	}
+}
+
+// storedDefLookup serves one stored HookDef answering phase, whose webhook is
+// url, from the shared tenant — the store row a yaml agent's ref resolves to.
+func storedDefLookup(url string, phase Phase) LookupDef {
+	return func(_ context.Context, tenant, name string, _ int) (Def, string, error) {
+		if tenant != "" || name != "stored" {
+			return Def{}, "", DefNotFound(errors.New("no HookDef " + name))
+		}
+		return Def{Event: phase, FailMode: FailClosed, Body: DefBody{Kind: BodyKindHTTP, URL: url}}, "hdf_stored", nil
+	}
+}
+
+// A static (yaml) agent that names a STORED HookDef by ref dials it through the
+// guard: the def is a store row, writable on the runtime plane, so the yaml
+// that names it does not make its URL the operator's config.
+func TestDispatcher_StaticAgentRefToStoredDefCannotReachAPrivateAddress(t *testing.T) {
+	hook := newFakeHook(t, `{"input":{"rewritten":true}}`)
+	set := NewSet()
+	src := Source{Owner: "agent:a", Tenant: "", OperatorAuthored: true, OperatorConfig: true}
+	ref := EventHooks{PhasePre: {{Ref: "stored"}}}
+	if err := Resolve(context.Background(), src, ref, nil, storedDefLookup(hook.srv.URL, PhasePre), NewPermits(nil), set); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	NewDispatcher(set, nil).RunPre(context.Background(), Identity{Agent: "a"},
+		ToolCall{ID: "t1", Name: "WebFetch", Input: json.RawMessage(`{"secret":"tool input"}`)})
+	if n := atomic.LoadInt32(&hook.calls); n != 0 {
+		t.Fatalf("a stored HookDef named by a static agent reached a loopback callback %d time(s)", n)
+	}
+}
+
+// Census: on every resolution path (an agent's or a run's hooks through
+// Resolve, a channel's through ResolveChannel), whatever the source, a hook
+// resolved from a stored HookDef never dials unguarded; only an inline webhook
+// of a static definition in the shared tenant does.
+func TestResolve_OnlyAStaticDefinitionsInlineWebhookDialsUnguarded(t *testing.T) {
+	const url = "http://127.0.0.1:1/hook"
+	type resolver func(src Source, e EventHooks, lookup LookupDef, set *Set) error
+	paths := map[string]struct {
+		phase   Phase
+		resolve resolver
+	}{
+		"Resolve": {PhasePre, func(src Source, e EventHooks, lookup LookupDef, set *Set) error {
+			return Resolve(context.Background(), src, e, nil, lookup, NewPermits(nil), set)
+		}},
+		"Resolve/tool": {PhasePre, func(src Source, e EventHooks, lookup LookupDef, set *Set) error {
+			return Resolve(context.Background(), src, nil, ToolHooks{"WebFetch": e}, lookup, NewPermits(nil), set)
+		}},
+		"ResolveChannel": {PhaseChannelPublish, func(src Source, e EventHooks, lookup LookupDef, set *Set) error {
+			return ResolveChannel(context.Background(), src, e, lookup, set)
+		}},
+	}
+	for name, p := range paths {
+		for _, tenant := range []string{"", "t1"} {
+			for _, static := range []bool{false, true} {
+				for _, kind := range []string{"inline", "ref"} {
+					src := Source{Owner: "agent:a", Tenant: tenant, OperatorAuthored: true, OperatorConfig: static}
+					entry := Entry{Ref: "stored"}
+					if kind == "inline" {
+						entry = Entry{Inline: &Inline{Name: "gate", URL: url, FailMode: FailClosed}}
+					}
+					set := NewSet()
+					if err := p.resolve(src, EventHooks{p.phase: {entry}}, storedDefLookup(url, p.phase), set); err != nil {
+						t.Fatalf("%s tenant=%q static=%v %s: resolve: %v", name, tenant, static, kind, err)
+					}
+					hs := set.List()
+					if len(hs) != 1 {
+						t.Fatalf("%s: resolved %d hooks, want 1", name, len(hs))
+					}
+					want := kind == "inline" && static && tenant == ""
+					if got := hs[0].OperatorConfig; got != want {
+						t.Errorf("%s tenant=%q static=%v %s: OperatorConfig=%v, want %v", name, tenant, static, kind, got, want)
+					}
+				}
+			}
+		}
 	}
 }

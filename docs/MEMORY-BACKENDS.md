@@ -123,7 +123,11 @@ memory_backends:
   guard. Who may reach a private network depends on who wrote the definition:
   - **declared in yaml** (`memory_backends:`) — a private-network peer (a
     sibling replica, a tailnet host) is reached because the operator declared
-    it.
+    it. Under `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE=cidr_only` a peer
+    named by host name is not vouched for by that name (it would trust its
+    DNS): it reaches a private address only inside a CIDR range of
+    `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`; an IP-literal `base_url` keeps
+    its address.
   - **authored at runtime** (`MemoryBackendDef` create/fork, by a tenant
     operator, an admin, or an agent granted the tool) — the peer's own host
     is *not* trusted. Its host must be on `LOOMCYCLE_HTTP_HOST_ALLOWLIST` or

@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -227,4 +228,48 @@ func clip(s string) string {
 		return s[:200] + "…"
 	}
 	return s
+}
+
+// moduleListAllowed are the virtual-table modules the sqlite build ships that
+// Memory SQL may use: each builds an index over tables the agent itself names
+// (full-text, R-tree, geometry) and reads nothing beneath the file's tables.
+// A module a modernc/sqlite bump adds lands in neither this list nor the
+// guard's engine tables, and fails TestMemorySQL_EveryBuiltModuleIsGuardedOrAllowed
+// until someone decides which it is.
+var moduleListAllowed = map[string]bool{
+	"fts5": true, "fts5vocab": true, "geopoly": true, "rtree": true, "rtree_i32": true,
+}
+
+// TestMemorySQL_EveryBuiltModuleIsGuardedOrAllowed: every module the sqlite
+// build registers (pragma_module_list) is either refused by the engine-table
+// guard or explicitly allowed, so a driver bump cannot silently add a way
+// around the guard (sqlite_dbpage was one).
+func TestMemorySQL_EveryBuiltModuleIsGuardedOrAllowed(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query("SELECT name FROM pragma_module_list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	seen := 0
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		seen++
+		if !isEngineTable(strings.ToLower(name)) && !moduleListAllowed[strings.ToLower(name)] {
+			t.Errorf("module %q is neither refused by the engine-table guard nor in moduleListAllowed: decide which", name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if seen == 0 {
+		t.Fatal("pragma_module_list returned no modules: the census checked nothing")
+	}
 }
