@@ -383,13 +383,18 @@ export default function DocumentViewerBody({
   const regenerateAnnotation = useMemo(() => {
     if (!onRegenerateAnnotation || !annotationsApply(scope)) return undefined;
     return (chunkId: string) => async (level: AnnotationLevel) => {
+      // A folder's record names its folder: that, not this document, is what a
+      // path-level Regenerate rewrites.
+      const folder = [...docAnnotations, ...chunkAnnotations].find(
+        (a) => a.chunk_id === chunkId && a.level === level,
+      )?.folder;
       try {
-        await onRegenerateAnnotation({ documentId, chunkId, level, scope });
+        await onRegenerateAnnotation({ documentId, chunkId, level, scope, ...(folder ? { folder } : {}) });
       } finally {
         setAnnotationReload((n) => n + 1);
       }
     };
-  }, [onRegenerateAnnotation, documentId, scope]);
+  }, [onRegenerateAnnotation, documentId, scope, docAnnotations, chunkAnnotations]);
   // The brief under the title is the document record's; a path record on the
   // same root describes the folder, and shows only in the panel.
   const documentBrief = docAnnotations.find((a) => a.level === "document");

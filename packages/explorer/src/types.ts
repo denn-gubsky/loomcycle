@@ -385,6 +385,8 @@ export interface Annotation {
   written_at?: string;
   // written_by — "run:<id>", "principal:<subject>" or "operator".
   written_by?: string;
+  // folder — the Path folder a path-level record describes.
+  folder?: string;
   stale?: boolean;
 }
 
@@ -405,4 +407,6 @@ export interface AnnotationTarget {
   chunkId: string;
   level: AnnotationLevel;
   scope: DocScope;
+  // folder — for a path-level target, the folder it describes.
+  folder?: string;
 }

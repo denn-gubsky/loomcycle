@@ -7,8 +7,12 @@ import type { Principal, RunStreamHandlers, SSEFrame, StartRunRequest } from "..
 export const ANNOTATOR_AGENT = "kb/annotator";
 
 // annotatorInput is the annotator's run input for a target. The agent works a
-// whole document at a time, so a branch target regenerates its document.
+// whole document at a time, so a branch target regenerates its document; a
+// folder's record (on its `_annotation` document) regenerates that folder.
 export function annotatorInput(target: AnnotationTarget): Record<string, unknown> {
+  if (target.level === "path" && target.folder) {
+    return { mode: "path", path: target.folder, write: "annotate", force: true };
+  }
   return { mode: "document", document_id: target.documentId, write: "annotate", force: true };
 }
 

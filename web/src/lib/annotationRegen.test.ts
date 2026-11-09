@@ -24,6 +24,17 @@ describe("regenerateAnnotation", () => {
     });
   });
 
+  it("regenerates a folder's record with the folder's path", async () => {
+    const start = vi.fn().mockResolvedValue(undefined);
+    await regenerateAnnotation({ ...target, level: "path", folder: "/kb/products" }, start);
+    expect(JSON.parse(start.mock.calls[0][0].prompt)).toEqual({
+      mode: "path",
+      path: "/kb/products",
+      write: "annotate",
+      force: true,
+    });
+  });
+
   it("rejects with the run's error when the run fails", async () => {
     const start = vi.fn(async (_req, h) => {
       h.onFrame(frame({ type: "text", text: "working" }));
