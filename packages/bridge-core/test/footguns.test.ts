@@ -205,6 +205,36 @@ describe("a kept revoke ends", () => {
     await bridge.stop();
   });
 
+  // A voice message and a card press are the person writing to the bot too:
+  // each path the platform authenticated drops the kept revoke the same way.
+  it("drops a kept revoke for a dated 1:1 voice message or card press, as for text", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    const { cfg } = load(GATE_ENV, true);
+    const revokes = new MemoryRevokeQueue();
+    const lc = fakeAuth();
+    lc.state.failRevoke = true;
+    const { a, ctx } = adapter();
+    const bridge = createBridge(cfg, a, { logger: quiet, revokes, gateKey: keyFromSecret("s".repeat(40)), gateFetch: lc.fetchFn });
+    await bridge.start();
+    const dm = (n: number) => ({ ok: true as const, speaker: { subject: `tg:${n}`, name: "Ann", trust: "trusted" as const }, scope: "personal" as const, conversationId: `dm-${n}`, runAs: { subject: `tg:${n}`, name: "Ann" } });
+    await expect(ctx().gate!.revoke("tg:42")).rejects.toMatchObject({ status: 503 });
+    await expect(ctx().gate!.revoke("tg:43")).rejects.toMatchObject({ status: 503 });
+    const failedAt = Math.max(...(await revokes.list()).map((p) => p.firstFailedAt));
+    const subjects = async () => (await revokes.list()).map((p) => p.subject).sort();
+
+    // Undated, neither path drops anything.
+    await ctx().router.onVoice(dm(42), {}, { kind: "voice", ref: "v", mime: "audio/ogg" });
+    await ctx().router.onCardAction(dm(43), {}, { buttonId: "nope" });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(await subjects()).toEqual(["tg:42", "tg:43"]);
+
+    await ctx().router.onVoice(dm(42), {}, { kind: "voice", ref: "v", mime: "audio/ogg" }, undefined, { sentAt: failedAt + 60_000 });
+    await vi.waitFor(async () => expect(await subjects()).toEqual(["tg:43"]));
+    await ctx().router.onCardAction(dm(43), {}, { buttonId: "nope" }, { sentAt: failedAt + 60_000 });
+    await vi.waitFor(async () => expect(await subjects()).toEqual([]));
+    await bridge.stop();
+  });
+
   // loomcycle answers an unknown or already-removed person 204, so a 4xx is
   // never "nothing to revoke": it is a key, a gate name or a throttle that is
   // wrong now. Dropping the revoke would fail open; it is retried, and logged
