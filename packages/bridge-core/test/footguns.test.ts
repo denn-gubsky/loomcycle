@@ -298,6 +298,24 @@ describe("reconciliation", () => {
     await bridge.stop();
   });
 
+  // A platform may name a person by more than the key its member list gives
+  // (Slack: "<team>:<user>", where the team an event names can differ from
+  // the one users.list reports). memberKey maps each to the list's key.
+  it("compares a person under the adapter's memberKey when it has one", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    const { cfg } = load(GATE_ENV, true);
+    const store = new MemoryStore();
+    await store.put(rec("dm-alice", "tg:t2:alice")); // listed under another team
+    await store.put(rec("dm-bob", "tg:t1:bob")); // gone
+    const lc = fakeAuth();
+    const { a } = adapter({ members: async () => new Set(["alice", "carol"]), memberKey: (sub: string) => sub.slice(sub.lastIndexOf(":") + 1) });
+    const bridge = createBridge(cfg, a, { logger: quiet, store, gateKey: keyFromSecret("s".repeat(40)), gateFetch: lc.fetchFn });
+    await bridge.start();
+    await vi.advanceTimersByTimeAsync(FIRST_RUN_BY);
+    expect(lc.calls.filter((c) => c.path === "/v1/_auth/revoke").map((c) => c.payload.sub)).toEqual(["t1:bob"]);
+    await bridge.stop();
+  });
+
   it("skips a round that would revoke more people than its cap", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
     const { cfg } = load(GATE_ENV, true);
