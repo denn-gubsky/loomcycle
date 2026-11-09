@@ -623,6 +623,7 @@ func Run(t *testing.T, factory Factory) {
 		{"AuthRemovalStagesNeverSkip", testAuthRemovalStagesNeverSkip},
 		{"AuthDormantCandidatesUseTheNewestLoginOfAnyGate", testAuthDormantCandidatesUseTheNewestLoginOfAnyGate},
 		{"UISessionRevokeSubjectEndsOnlyThatSubjectsSessions", testUISessionRevokeSubjectEndsOnlyThatSubjectsSessions},
+		{"UISessionRevokeCredentialEndsOnlyThatCredentialsSessions", testUISessionRevokeCredentialEndsOnlyThatCredentialsSessions},
 		// RFC AL Path primitive — the dirent (path tree) substrate.
 		{"DirentCreateAndGet", testDirentCreateAndGet},
 		{"DirentListOneLevel", testDirentListOneLevel},

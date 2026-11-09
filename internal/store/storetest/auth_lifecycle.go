@@ -226,6 +226,51 @@ func testAuthDormantCandidatesUseTheNewestLoginOfAnyGate(t *testing.T, s store.S
 	}
 }
 
+// UISessionRevokeCredential ends exactly the live sessions bound to that
+// credential of that subject: not the subject's sessions of another
+// credential or kind, and not another subject's or tenant's with the same
+// reference.
+func testUISessionRevokeCredentialEndsOnlyThatCredentialsSessions(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now()
+	mk := func(hash, tenant, subject, kind, ref string) store.UISessionRow {
+		r := mkUISession(hash, now)
+		r.TenantID, r.Subject, r.CredKind, r.CredRef = tenant, subject, kind, ref
+		return r
+	}
+	rows := []store.UISessionRow{
+		mk("k1", "acme", "alice", "passkey", "key-a"),
+		mk("k2", "acme", "alice", "passkey", "key-a"),
+		mk("k-ended", "acme", "alice", "passkey", "key-a"),
+		mk("k-other-key", "acme", "alice", "passkey", "key-b"),
+		mk("k-other-kind", "acme", "alice", "token", "key-a"),
+		mk("k-other-subject", "acme", "bob", "passkey", "key-a"),
+		mk("k-other-tenant", "other", "alice", "passkey", "key-a"),
+	}
+	for _, r := range rows {
+		if err := s.UISessionCreate(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.UISessionRevoke(ctx, "k-ended", now); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.UISessionRevokeCredential(ctx, "acme", "alice", "passkey", "key-a", now)
+	if err != nil || n != 2 {
+		t.Fatalf("revoke credential = %d, %v; want the two live sessions", n, err)
+	}
+	for _, r := range rows {
+		got, err := s.UISessionGet(ctx, r.SessionHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := r.SessionHash == "k1" || r.SessionHash == "k2" || r.SessionHash == "k-ended"
+		if ended := !got.RevokedAt.IsZero(); ended != want {
+			t.Errorf("session %s revoked = %v, want %v", r.SessionHash, ended, want)
+		}
+	}
+}
+
 // UISessionRevokeSubject ends exactly that subject's live sessions.
 func testUISessionRevokeSubjectEndsOnlyThatSubjectsSessions(t *testing.T, s store.Store) {
 	ctx := context.Background()

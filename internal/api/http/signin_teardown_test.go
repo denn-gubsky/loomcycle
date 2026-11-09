@@ -133,6 +133,8 @@ var signInPrimitives = map[string]string{
 	"UISessionRevokeSubject":       "endSubjectCredentials",
 	"OAuthFamilyRevokeSubject":     "endSubjectAppSignIns",
 	"OAuthTokenRetireEndedSignIns": "endSubjectAppSignIns",
+	// One passkey's sessions, when that passkey is removed.
+	"UISessionRevokeCredential": "endPasskeySessions",
 }
 
 // credentialChanges are the store writes that change or end how a person

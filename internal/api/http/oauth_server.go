@@ -607,8 +607,19 @@ func (s *Server) codeSessionLive(ctx context.Context, code store.OAuthCodeRow, n
 	if err != nil {
 		return false
 	}
-	return row.RevokedAt.IsZero() && now.Before(sessionExpiresAt(row, s.cfg().ResolvedAuth)) &&
-		row.TenantID == code.TenantID && row.Subject == code.Subject
+	if !row.RevokedAt.IsZero() || !now.Before(sessionExpiresAt(row, s.cfg().ResolvedAuth)) ||
+		row.TenantID != code.TenantID || row.Subject != code.Subject {
+		return false
+	}
+	// A passkey session stands only while its passkey does: a removed or
+	// flagged one fails here even when ending its sessions faulted. The
+	// session's MAC cannot be re-checked without its id, which a code does
+	// not hold; the credential id the row names is what is asked.
+	if row.CredKind == credKindPasskey {
+		_, ok, _ := s.passkeySessionPrincipal(ctx, row, func(string) bool { return true })
+		return ok
+	}
+	return true
 }
 
 // oauthRefreshGrant rotates a refresh token. A used one presented again
