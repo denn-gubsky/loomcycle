@@ -2,6 +2,7 @@ package otel_test
 
 import (
 	"context"
+	"encoding/hex"
 	"sync"
 	"testing"
 
@@ -106,4 +107,72 @@ func TestRecordRunStart_TenantIsAStartAttribute(t *testing.T) {
 		}
 	}
 	t.Fatalf("the sampler saw %v for the run span, without %s=acme", rs.attrs[lcotel.SpanRun], lcotel.AttrTenant)
+}
+
+func runSpanUserAttrs(t *testing.T, tenant, user string) (hash, raw string) {
+	t.Helper()
+	exp := withInMemoryExporter(t)
+	_, span := lcotel.RecordRunStart(context.Background(), lcotel.RunStartAttrs{RunID: "r1", Tenant: tenant, UserID: user})
+	span.End()
+	s := exp.GetSpans()[0]
+	if v, ok := attrOf(s, lcotel.AttrUserHash); ok {
+		hash = v.AsString()
+	}
+	if v, ok := attrOf(s, lcotel.AttrUserID); ok {
+		raw = v.AsString()
+	}
+	return hash, raw
+}
+
+var testUserKey = []byte("0123456789abcdef0123456789abcdef")
+
+func TestRecordRunStart_HashesTheUserWithoutTheRawID(t *testing.T) {
+	t.Cleanup(lcotel.SetUserIDPolicyForTest(testUserKey, false))
+	hash, raw := runSpanUserAttrs(t, "acme", "alice")
+	if raw != "" {
+		t.Errorf("%s = %q emitted without the opt-in", lcotel.AttrUserID, raw)
+	}
+	if want := lcotel.UserHash(testUserKey, "acme", "alice"); hash != want || len(hash) != 16 {
+		t.Errorf("%s = %q, want %q (16 hex characters)", lcotel.AttrUserHash, hash, want)
+	}
+	if again, _ := runSpanUserAttrs(t, "acme", "alice"); again != hash {
+		t.Errorf("the hash is not stable: %q then %q", hash, again)
+	}
+	if other, _ := runSpanUserAttrs(t, "beta", "alice"); other == hash {
+		t.Error("the same user id in two tenants hashed the same")
+	}
+}
+
+func TestRecordRunStart_RawUserIDOnlyWhenOptedInOrUnkeyed(t *testing.T) {
+	t.Cleanup(lcotel.SetUserIDPolicyForTest(testUserKey, true))
+	if hash, raw := runSpanUserAttrs(t, "acme", "alice"); hash == "" || raw != "alice" {
+		t.Errorf("opted in: hash %q raw %q, want both", hash, raw)
+	}
+	lcotel.SetUserIDPolicyForTest(nil, false)
+	if hash, raw := runSpanUserAttrs(t, "acme", "alice"); hash != "" || raw != "alice" {
+		t.Errorf("no key: hash %q raw %q, want the raw id alone", hash, raw)
+	}
+}
+
+func TestRecordMemoryConsolidate_HashesTheTargetUser(t *testing.T) {
+	t.Cleanup(lcotel.SetUserIDPolicyForTest(testUserKey, false))
+	exp := withInMemoryExporter(t)
+	_, span := lcotel.RecordMemoryConsolidate(context.Background(), lcotel.MemoryConsolidateAttrs{Tenant: "acme", Scope: "user", ScopeID: "alice"})
+	span.End()
+	s := exp.GetSpans()[0]
+	if v, ok := attrOf(s, lcotel.AttrUserID); ok {
+		t.Errorf("consolidate span carries the raw %s=%q", lcotel.AttrUserID, v.AsString())
+	}
+	if v, _ := attrOf(s, lcotel.AttrUserHash); v.AsString() != lcotel.UserHash(testUserKey, "acme", "alice") {
+		t.Errorf("%s = %q", lcotel.AttrUserHash, v.AsString())
+	}
+}
+
+// Pinned outside Go (HMAC-SHA256 over "acme|alice", first 16 hex): a change
+// would make every exported hash stop matching the CLI's.
+func TestUserHash_MatchesTheHMACKnownAnswer(t *testing.T) {
+	key, _ := hex.DecodeString("6888a893992739563b4d15a9e417320e7dd2ec2748da497abd27ee9cbae9b2f4")
+	if got := lcotel.UserHash(key, "acme", "alice"); got != "449b272e5974ee6a" {
+		t.Fatalf("UserHash = %s", got)
+	}
 }

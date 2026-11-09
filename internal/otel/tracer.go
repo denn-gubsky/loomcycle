@@ -104,6 +104,7 @@ func doInit(cfg Config) (func(context.Context) error, error) {
 	// nothing, so turning tracing on later changes nothing else.
 	otel.SetTextMapPropagator(newPropagator(cfg.Propagators))
 	setInboundMode(cfg.Inbound)
+	setUserIDPolicy(cfg.UserHashKey, cfg.RawUserID)
 	if !cfg.Enabled {
 		return noopShutdown, nil
 	}

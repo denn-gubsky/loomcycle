@@ -45,6 +45,12 @@ func TestResolveConfig_EnvironmentTable(t *testing.T) {
 		{name: "sdk disabled", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": ep, "OTEL_SDK_DISABLED": "TRUE"}, check: wantEnabled(false)},
 		{name: "sdk disabled false keeps on", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": ep, "OTEL_SDK_DISABLED": "false"}, check: wantEnabled(true)},
 		{name: "unknown exporter", env: map[string]string{"OTEL_TRACES_EXPORTER": "zipkin"}, wantErr: `OTEL_TRACES_EXPORTER="zipkin"`},
+		{name: "raw user id opt-in", env: map[string]string{"LOOMCYCLE_OTEL_RAW_USER_ID": "1"}, check: func(t *testing.T, c Config) {
+			if !c.RawUserID {
+				t.Error("RawUserID off with LOOMCYCLE_OTEL_RAW_USER_ID=1")
+			}
+		}},
+		{name: "raw user id bad value", env: map[string]string{"LOOMCYCLE_OTEL_RAW_USER_ID": "yes please"}, wantErr: "LOOMCYCLE_OTEL_RAW_USER_ID"},
 
 		{name: "grpc protocol", env: map[string]string{"OTEL_EXPORTER_OTLP_PROTOCOL": "grpc"}, check: func(t *testing.T, c Config) {
 			if c.Protocol != ProtocolGRPC {

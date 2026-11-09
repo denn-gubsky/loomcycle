@@ -104,6 +104,9 @@ func dispatchSubcommand() (mcpMode, done bool) {
 			// RFC FZ Part E — `audit verify`: walk the store-backed audit
 			// chains. Opens the store directly, like `tokens`.
 			os.Exit(runAudit(os.Args[2:], os.Stdout, os.Stderr))
+		case "otel":
+			// `otel user-hash <tenant> <user>`: the hash a user's spans carry.
+			os.Exit(runOtel(os.Args[2:], os.Stdout, os.Stderr))
 		// v0.8.17 runtime admin subcommands. Each is a thin HTTP
 		// client to the corresponding /v1/_pause / _resume / _state /
 		// _snapshots endpoint on the running instance addressed by

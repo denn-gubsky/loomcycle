@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 )
 
@@ -46,6 +47,10 @@ func (b *boot) initTelemetry() {
 	// The replica id /metrics labels its series with, so a trace and a
 	// scrape from one instance carry the same name.
 	otelCfg.InstanceID = b.cfg.Env.ReplicaID
+	otelCfg.UserHashKey, err = credential.DeriveOTelUserKey(b.cfg.Env.SecretKey)
+	if err != nil {
+		fatal("otel: LOOMCYCLE_SECRET_KEY cannot key the span user hash", "err", err)
+	}
 	otelShutdown, err := lcotel.Init(otelCfg)
 	if err != nil {
 		fatal("otel: tracer setup failed", "err", err)
@@ -54,6 +59,11 @@ func (b *boot) initTelemetry() {
 		slog.Info("otel: tracer enabled", "protocol", otelCfg.Protocol,
 			"sampler", otelCfg.SamplerName, "sampler_arg", otelCfg.SamplerArg,
 			"inbound_context", otelCfg.Inbound, "headers_file", otelCfg.HeadersFile != "")
+		// Only when spans leave the process: with tracing off nothing is
+		// exported, and the warning would be noise.
+		if otelCfg.UserHashKey == nil {
+			slog.Warn("otel: LOOMCYCLE_SECRET_KEY is not set, so spans carry the raw loomcycle.user_id instead of loomcycle.user_hash")
+		}
 	} else {
 		slog.Info("otel: disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)")
 	}

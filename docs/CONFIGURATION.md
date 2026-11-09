@@ -3465,6 +3465,7 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `OTEL_BSP_SCHEDULE_DELAY` | `5000` | Milliseconds between exports. |
 | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` | — | A file holding the collector headers (`key=value`, comma- or newline-separated, `#` comments, values URL-decoded), read once at startup so the secret stays out of the process environment. Setting it beside `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, or an unreadable file, stops the startup. |
 | `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What an authenticated caller's `traceparent` does: `parent` joins the run to the caller's trace, `link` starts a new trace linked to it (the caller cannot steer sampling), `ignore` reads nothing. |
+| `LOOMCYCLE_OTEL_RAW_USER_ID` | off | `1` also puts the raw `loomcycle.user_id` on spans, beside `loomcycle.user_hash`. See "Users on spans". |
 | `LOOMCYCLE_ENVIRONMENT` | — | The `deployment.environment.name` resource attribute. |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | — | An http(s) URL containing `{trace_id}`, e.g. `https://grafana.example/explore?traceId={trace_id}`: the Web UI's run view links each traced run there. Shown to every signed-in user who can see the run. Anything else stops the startup. |
 
@@ -3496,6 +3497,27 @@ five minutes, and its end logged (`otel: span export recovered`). `/metrics`
 carries `loomcycle_otel_spans_ended_total`, `loomcycle_otel_spans_exported_total`,
 `loomcycle_otel_spans_dropped_total` and
 `loomcycle_otel_span_export_failures_total` (zeros while tracing is off).
+
+#### Users on spans
+
+A span names a run's user by `loomcycle.user_hash`: the first 16 hex
+characters of HMAC-SHA256 over `<tenant>|<user>`, keyed by a key derived from
+`LOOMCYCLE_SECRET_KEY` (HKDF, its own label). The hash is stable, so one
+user's traces are still found together, but the trace backend never holds the
+user id. To find a user's traces, compute the hash with the same secret key:
+
+```sh
+LOOMCYCLE_SECRET_KEY=… loomcycle otel user-hash acme alice
+```
+
+and search `loomcycle.user_hash=<printed value>`. Rotating the secret key
+changes every hash; traces recorded before the rotation keep the old ones.
+
+`LOOMCYCLE_OTEL_RAW_USER_ID=1` adds the raw `loomcycle.user_id` beside the
+hash. Without `LOOMCYCLE_SECRET_KEY` there is nothing to key the hash with:
+spans carry the raw `loomcycle.user_id` alone, and the startup logs a warning
+saying so (only when tracing is on). A query on `loomcycle.user_id` written
+before this change matches nothing once a secret key is set.
 
 #### Renamed tracing variables
 

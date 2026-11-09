@@ -32,9 +32,12 @@ const (
 
 // Attribute keys (stable; operators write Jaeger filters against them).
 const (
-	AttrRunID         = "loomcycle.run_id"
-	AttrAgentID       = "loomcycle.agent_id"
-	AttrAgentName     = "loomcycle.agent_name"
+	AttrRunID     = "loomcycle.run_id"
+	AttrAgentID   = "loomcycle.agent_id"
+	AttrAgentName = "loomcycle.agent_name"
+	// AttrUserID is the raw user id. Emitted only when the operator opts in
+	// (LOOMCYCLE_OTEL_RAW_USER_ID) or no secret key is configured; otherwise
+	// spans carry AttrUserHash instead.
 	AttrUserID        = "loomcycle.user_id"
 	AttrParentAgentID = "loomcycle.parent_agent_id"
 	AttrIteration     = "loomcycle.iteration"
@@ -112,9 +115,7 @@ func runStartKVs(a RunStartAttrs) []attribute.KeyValue {
 	if a.AgentName != "" {
 		kvs = append(kvs, attribute.String(AttrAgentName, a.AgentName))
 	}
-	if a.UserID != "" {
-		kvs = append(kvs, attribute.String(AttrUserID, a.UserID))
-	}
+	kvs = append(kvs, userAttrs(a.Tenant, a.UserID)...)
 	if a.ParentAgentID != "" {
 		kvs = append(kvs, attribute.String(AttrParentAgentID, a.ParentAgentID))
 	}
@@ -421,7 +422,7 @@ const EventConsolidateWatermarkLag = "loomcycle.memory.consolidate.watermark_lag
 type MemoryConsolidateAttrs struct {
 	Tenant    string // the target's tenant; also carried on the returned ctx
 	Scope     string // memory scope — "user" for every fan-out target today
-	ScopeID   string // the target's scope id (its user id)
+	ScopeID   string // the target's scope id (its user id), hashed like any user
 	AgentName string // the consolidator agent the pass runs
 	Tier      string // the user tier the pass resolves its model through
 }
@@ -436,9 +437,8 @@ func RecordMemoryConsolidate(ctx context.Context, a MemoryConsolidateAttrs) (con
 	if a.Scope != "" {
 		kvs = append(kvs, attribute.String(AttrMemoryScope, a.Scope))
 	}
-	if a.ScopeID != "" {
-		kvs = append(kvs, attribute.String(AttrUserID, a.ScopeID))
-	}
+	// The target's scope id is its user id, named as every user is.
+	kvs = append(kvs, userAttrs(a.Tenant, a.ScopeID)...)
 	if a.AgentName != "" {
 		kvs = append(kvs, attribute.String(AttrAgentName, a.AgentName))
 	}

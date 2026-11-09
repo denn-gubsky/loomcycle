@@ -24,7 +24,7 @@ Every span carries the same identity attribute set so traces correlate
 cleanly with the loomcycle transcript views (`/ui/agents/<id>`):
 
 - `loomcycle.run_id`, `loomcycle.agent_id`, `loomcycle.agent_name`
-- `loomcycle.user_id`, `loomcycle.parent_agent_id` (sub-runs)
+- `loomcycle.user_hash`, `loomcycle.parent_agent_id` (sub-runs)
 
 Provider spans add: `loomcycle.provider` (`anthropic` | `openai` |
 `deepseek` | `gemini` | `ollama` | `ollama-local`), `loomcycle.model`,
@@ -54,9 +54,14 @@ By design:
   map (see `per-run-credentials` topic) inherits this
   posture — credential values never appear in span attributes,
   span events, or span resource attributes.
-- **No PII.** `loomcycle.user_id` is the operator's opaque user
-  identifier — same shape as the transcript event payload — but no
-  user-content text crosses the span boundary.
+- **No user ids.** A span names its user by `loomcycle.user_hash`, a
+  keyed hash of tenant and user id (HMAC under a key derived from
+  `LOOMCYCLE_SECRET_KEY`), never the id itself. `loomcycle otel
+  user-hash <tenant> <user>` prints a user's hash for an
+  investigation. `LOOMCYCLE_OTEL_RAW_USER_ID=1` adds the raw
+  `loomcycle.user_id`; with no secret key set the raw id is all there
+  is, and the startup warns. No user-content text crosses the span
+  boundary.
 
 This posture is load-bearing: telemetry endpoints (Honeycomb,
 DataDog, etc.) have different trust postures than the loomcycle
@@ -85,7 +90,7 @@ trace to see the run → iteration → provider/tool tree.
 Filter expressions:
 
 - `loomcycle.run_id=run_abc...` — pin to one run
-- `loomcycle.user_id=user_42` — all runs by one user
+- `loomcycle.user_hash=<hash>` — all runs by one user (`loomcycle otel user-hash <tenant> <user>`)
 - `loomcycle.provider=anthropic` — all Anthropic-routed calls
 - `loomcycle.tool=Bash` — all Bash invocations
 - Tag filter `status=error` — failed spans only
@@ -236,7 +241,7 @@ incident:
 
 1. **Slow runs**: `service:loomcycle duration>30s` — surface runs
    that took longer than the operator's SLO threshold.
-2. **Per-user noise**: group-by `loomcycle.user_id`, sort by count —
+2. **Per-user noise**: group-by `loomcycle.user_hash`, sort by count —
    identify which user is driving the run volume.
 3. **Provider degradation**: `loomcycle.provider=anthropic status=error
    span_name=loomcycle.provider.call` — Anthropic-specific errors

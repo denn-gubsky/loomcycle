@@ -55,3 +55,26 @@ func TestDeriveTokenPepper_EmptyKeyDerivesNothingAndBadKeyErrs(t *testing.T) {
 		t.Error("a malformed key must be an error, not a silent empty pepper")
 	}
 }
+
+// Pinned the same way (info "loomcycle/otel-user/v1", computed outside Go): a
+// change would make every user hash already exported to a trace backend stop
+// matching the hash an investigation computes for the same user.
+func TestDeriveOTelUserKey_MatchesTheHKDFKnownAnswer(t *testing.T) {
+	got, err := DeriveOTelUserKey(testKey(1))
+	if err != nil {
+		t.Fatalf("DeriveOTelUserKey: %v", err)
+	}
+	const want = "6888a893992739563b4d15a9e417320e7dd2ec2748da497abd27ee9cbae9b2f4"
+	if hex.EncodeToString(got) != want {
+		t.Fatalf("key = %x, want %s", got, want)
+	}
+	if audit, _ := DeriveAuditChainKey(testKey(1)); hex.EncodeToString(audit) == want {
+		t.Error("the otel user key must differ from the audit chain key of the same master key")
+	}
+	if k, err := DeriveOTelUserKey(" "); err != nil || k != nil {
+		t.Errorf("empty key = (%x, %v), want (nil, nil)", k, err)
+	}
+	if _, err := DeriveOTelUserKey("not-base64!"); err == nil {
+		t.Error("a malformed key must be an error")
+	}
+}
