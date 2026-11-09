@@ -37,6 +37,18 @@ const (
 	// how deep they may nest.
 	maxXMLNodes = 1_000_000
 	maxXMLDepth = 256
+	// maxXMLAttrs caps the attributes one XML part (or HTML page) may hold,
+	// and maxXMLAttrsPerElement those on one element. The decoder builds an
+	// element's whole attribute list before it hands the element over, at
+	// about ten times the bytes the attributes take in the file, so both are
+	// counted on the raw bytes before decoding (countXMLAttrs). Office
+	// elements carry a handful; a root with every namespace declared, a few
+	// dozen.
+	maxXMLAttrs           = 2_000_000
+	maxXMLAttrsPerElement = 1024
+	// maxXMLAttrBytes caps the bytes of attribute values a part's tree keeps,
+	// as maxXMLText caps its character data.
+	maxXMLAttrBytes = 64 << 20
 	// maxXMLText caps the character data kept from one XML part.
 	maxXMLText = 64 << 20
 )
@@ -306,6 +318,11 @@ func parseXMLMixed(ctx context.Context, data []byte) (*node, error) {
 }
 
 func parseXMLTree(ctx context.Context, data []byte, textCap int, mixed bool) (*node, error) {
+	// The tree keeps every element's attributes, so the part's total counts
+	// as well as each element's.
+	if err := checkXMLAttrs(ctx, data, maxXMLAttrs); err != nil {
+		return nil, err
+	}
 	d := xml.NewDecoder(bytes.NewReader(data))
 	d.Strict = true
 	type frame struct {
@@ -385,6 +402,112 @@ func parseXMLTree(ctx context.Context, data []byte, textCap int, mixed bool) (*n
 		return nil, errors.New("extract: malformed XML: unclosed element")
 	}
 	return root, nil
+}
+
+// checkXMLAttrs refuses a part with an element of more than
+// maxXMLAttrsPerElement attributes, or more than maxTotal in all (0: no total,
+// for a streaming parse that keeps no element after it has read it; the
+// bytes of attribute values are capped with the total).
+func checkXMLAttrs(ctx context.Context, data []byte, maxTotal int) error {
+	total, widest, valueBytes, err := countXMLAttrs(ctx, data)
+	if err != nil {
+		return err
+	}
+	if widest > maxXMLAttrsPerElement {
+		return refusedf("an XML element holds more than %d attributes", maxXMLAttrsPerElement)
+	}
+	if maxTotal > 0 && total > maxTotal {
+		return refusedf("an XML part holds more than %d attributes", maxTotal)
+	}
+	if maxTotal > 0 && valueBytes > maxXMLAttrBytes {
+		return refusedf("an XML part holds more than %d bytes of attribute values", maxXMLAttrBytes)
+	}
+	return nil
+}
+
+// countXMLAttrs counts the attributes of a part's start tags, those of the
+// widest one and the bytes of their quoted values, from the raw bytes and
+// without allocating: each attribute
+// is a '=' outside quotes inside a start tag, since a strict decoder takes no
+// attribute without a quoted value. Comments, CDATA sections, processing
+// instructions and a doctype are skipped the way the decoder skips them. On a
+// malformed part the count can only come out high (the decoder then refuses
+// the part anyway), never low.
+func countXMLAttrs(ctx context.Context, data []byte) (total, widest, valueBytes int, err error) {
+	// skipPast moves i past the first sep at or after it; at the end of the
+	// part it returns len(data).
+	skipPast := func(i int, sep string) int {
+		if k := bytes.Index(data[i:], []byte(sep)); k >= 0 {
+			return i + k + len(sep)
+		}
+		return len(data)
+	}
+	nextCheck := 0
+	for i := 0; i < len(data); {
+		if i >= nextCheck {
+			if err := ctx.Err(); err != nil {
+				return 0, 0, 0, err
+			}
+			nextCheck = i + 1<<20
+		}
+		k := bytes.IndexByte(data[i:], '<')
+		if k < 0 {
+			break
+		}
+		i += k + 1
+		rest := data[i:]
+		switch {
+		case bytes.HasPrefix(rest, []byte("!--")):
+			i = skipPast(i+3, "-->")
+		case bytes.HasPrefix(rest, []byte("![CDATA[")):
+			i = skipPast(i+8, "]]>")
+		case bytes.HasPrefix(rest, []byte("?")):
+			i = skipPast(i+1, "?>")
+		case bytes.HasPrefix(rest, []byte("!")):
+			// A directive (<!DOCTYPE …>): nested <…> and quoted strings, as
+			// the decoder reads it.
+			depth := 1
+			for i++; i < len(data) && depth > 0; i++ {
+				switch c := data[i]; c {
+				case '"', '\'':
+					if q := bytes.IndexByte(data[i+1:], c); q >= 0 {
+						i += q + 1
+					} else {
+						i = len(data)
+					}
+				case '<':
+					depth++
+				case '>':
+					depth--
+				}
+			}
+		case bytes.HasPrefix(rest, []byte("/")):
+			i = skipPast(i, ">")
+		default:
+			n := 0
+		tag:
+			for ; i < len(data); i++ {
+				switch c := data[i]; c {
+				case '"', '\'':
+					if q := bytes.IndexByte(data[i+1:], c); q >= 0 {
+						valueBytes += q
+						i += q + 1
+					} else {
+						valueBytes += len(data) - i
+						i = len(data)
+					}
+				case '=':
+					n++
+				case '>':
+					i++
+					break tag
+				}
+			}
+			total += n
+			widest = max(widest, n)
+		}
+	}
+	return total, widest, valueBytes, nil
 }
 
 func (n *node) attr(local string) string {
