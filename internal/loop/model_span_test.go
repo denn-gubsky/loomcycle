@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -94,11 +95,21 @@ func spanAttrs(s tracetest.SpanStub) map[string]attribute.Value {
 	return m
 }
 
-// noOpenSpans fails when a span started and never ended.
+// noOpenSpans fails when a span started and never ended, or a span ended
+// after its parent did.
 func noOpenSpans(t *testing.T, rec *tracetest.SpanRecorder) {
 	t.Helper()
 	if started, ended := len(rec.Started()), len(rec.Ended()); started != ended {
 		t.Errorf("%d spans started, %d ended: a span leaked open", started, ended)
+	}
+	byID := map[trace.SpanID]sdktrace.ReadOnlySpan{}
+	for _, s := range rec.Ended() {
+		byID[s.SpanContext().SpanID()] = s
+	}
+	for _, s := range rec.Ended() {
+		if p, ok := byID[s.Parent().SpanID()]; ok && s.EndTime().After(p.EndTime()) {
+			t.Errorf("%s ended after its parent %s", s.Name(), p.Name())
+		}
 	}
 }
 

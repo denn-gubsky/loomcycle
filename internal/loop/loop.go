@@ -4451,6 +4451,7 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 	if !sawDone && turnCtx.Err() == nil {
 		msg := fmt.Sprintf("%s: the response stream ended before the model finished its turn", s.opts.Provider.ID())
 		s.emit(providers.Event{Type: providers.EventError, Error: msg})
+		mc.end(msg) // the child ends before its iteration does
 		lcotel.SetSpanErrorMessage(iterSpan, msg)
 		iterSpan.End()
 		s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
@@ -4462,6 +4463,7 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 	// did finish, and goes on as one; a turn cancel leaves the run's ctx
 	// alive and is handled below.
 	if !sawDone && ctx.Err() != nil {
+		mc.end("") // a cancel; ended before runEndedMidTurn ends the iteration
 		return turnOutput{}, s.runEndedMidTurn(ctx, iterSpan, iter, iterText)
 	}
 
