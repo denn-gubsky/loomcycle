@@ -3516,7 +3516,7 @@ as dropped, and logged at most every five minutes).
 
 #### Sampling per tenant
 
-A run that starts a trace can be sampled at a ratio of its own tenant's,
+A trace a tenant's work starts can be sampled at a ratio of that tenant's,
 in place of the `OTEL_TRACES_SAMPLER` ratio — keep every trace of one
 tenant while sampling the rest:
 
@@ -3529,10 +3529,14 @@ observability:
 ```
 
 or `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS=acme=1,beta=0.1`, which wins over
-the yaml for each tenant it names. The ratio applies only to a run span with
-no parent: a run that joins a caller's trace (`traceparent`), and a
-sub-agent's run, follow the decision already made for that trace, and a
-tenant not listed uses the global sampler. Keys are tenant ids, ratios 0–1;
+the yaml for each tenant it names. The ratio applies to every span that
+starts a trace and names its tenant (`loomcycle.tenant`): a run's span, a
+memory consolidation pass, a tool call made outside a run (the MCP, HTTP and
+gRPC tool surfaces), and a model gateway call (`/v1/_llm/chat`,
+`/v1/chat/completions`). A span with a parent follows the decision already
+made for its trace — a run that joins a caller's trace (`traceparent`), a
+sub-agent's run, everything under a run — and a tenant not listed uses the
+global sampler. Keys are tenant ids, ratios 0–1;
 anything else stops the startup. Read at startup; a config reload does not
 change it.
 

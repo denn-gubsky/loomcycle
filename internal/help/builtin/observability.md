@@ -302,9 +302,11 @@ observability:
 ```
 
 or `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS=acme=1,beta=0.1` (wins per
-tenant). A run that joins a caller's trace, or a sub-agent's run, follows
-the trace's existing decision; a tenant not listed uses the global
-sampler. Read at startup.
+tenant). It decides every span that starts a trace and names its tenant —
+a run, a memory consolidation pass, a tool call made outside a run, a
+gateway call. A run that joins a caller's trace, a sub-agent's run, and
+everything under a run follow the trace's existing decision; a tenant not
+listed uses the global sampler. Read at startup.
 
 **Keeping failures at a low ratio** needs a decision made after the run
 ends: use the collector's tail-sampling processor (OpenTelemetry Collector
