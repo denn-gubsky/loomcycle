@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/aclres"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 const metricsBearer = "scrape-bearer"
@@ -151,5 +153,64 @@ func TestMetricsListenerHandler_ServesOnlyTheScrapeWithoutAuth(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("GET %s: %d, want 404", path, rec.Code)
 		}
+	}
+}
+
+// A single-purpose machine credential an operator minted under a member's
+// (tenant, subject) is not that member's token: the tenant operator's member
+// surface neither lists, revokes nor cap-retires it.
+func TestUserTokens_LeaveSinglePurposeCredentialsSharingTheSubject(t *testing.T) {
+	for _, scope := range []string{auth.ScopeMetricsRead, auth.ScopeAuthManage, auth.ScopeSCIMProvision} {
+		t.Run(scope, func(t *testing.T) {
+			s, st := tokenAuthServer(t, "legacy")
+			ctx := context.Background()
+			acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+			seedUser(t, st, "acme", "alice", "isolated", "active")
+			if _, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+				DefID: "def_machine", Name: "machine", TenantID: "acme", Subject: "alice",
+				TokenHash: "h-machine", AllowedScopes: []string{scope},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			first := mintFor(t, s, acme, "alice", "")
+
+			rec := httptest.NewRecorder()
+			s.handleListUserTokens(rec, bodyReq("GET", "/v1/_users/alice/tokens", "", acme, "subject", "alice"))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "def_machine") {
+				t.Errorf("the member list shows the %s token: %s", scope, rec.Body.String())
+			}
+
+			rec = httptest.NewRecorder()
+			s.handleRevokeUserToken(rec, revokeReq("def_machine", acme, "alice"))
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("revoke: %d, want opaque 404", rec.Code)
+			}
+
+			// max_active 1 retires every older member token; the machine
+			// credential is older still and must survive.
+			last := mintFor(t, s, acme, "alice", `{"max_active":1}`)
+			if len(last.Retired) != 1 || last.Retired[0] != first.DefID {
+				t.Errorf("cap retired %v, want only the older member token %s", last.Retired, first.DefID)
+			}
+			if row, err := st.OperatorTokenDefGet(ctx, "def_machine"); err != nil || !row.RetiredAt.IsZero() {
+				t.Errorf("the %s token was retired through the member surface (err=%v retired_at=%v)", scope, err, row.RetiredAt)
+			}
+		})
+	}
+}
+
+// The machine-credential test reads one predicate, so a scope added to the
+// single-purpose list is covered by every member surface at once.
+func TestHoldsSinglePurposeScope_NamesEachConfinedCredential(t *testing.T) {
+	for _, scope := range []string{auth.ScopeMetricsRead, auth.ScopeAuthManage, auth.ScopeSCIMProvision} {
+		if !auth.HoldsSinglePurposeScope([]string{scope}) {
+			t.Errorf("%s is not a single-purpose scope", scope)
+		}
+	}
+	if auth.HoldsSinglePurposeScope([]string{auth.ScopeRunsCreate, auth.ScopeUser}) {
+		t.Error("a member's scopes read as a single-purpose credential")
 	}
 }

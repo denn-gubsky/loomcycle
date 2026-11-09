@@ -176,11 +176,24 @@ func UnknownScopes(scopes []string) []string {
 	return bad
 }
 
+// singlePurposeScopes are the scopes that each make a token a credential
+// confined to its own route list: minted alone, implying nothing, and never
+// a person's token.
+var singlePurposeScopes = []string{ScopeAuthManage, ScopeSCIMProvision, ScopeMetricsRead}
+
+// HoldsSinglePurposeScope reports whether scopes contain any single-purpose
+// scope (auth:manage, scim:provision, metrics:read). Such a token is a
+// machine credential an operator minted: no member surface lists, revokes or
+// retires it, and it is never taken for a person's hand-minted token.
+func HoldsSinglePurposeScope(scopes []string) bool {
+	return slices.ContainsFunc(scopes, func(s string) bool { return slices.Contains(singlePurposeScopes, s) })
+}
+
 // ValidateScopeSet refuses a scope set that combines auth:manage,
 // scim:provision or metrics:read with any other scope (RFC FA D16, P6).
 // Callers check UnknownScopes first.
 func ValidateScopeSet(scopes []string) error {
-	for _, alone := range []string{ScopeAuthManage, ScopeSCIMProvision, ScopeMetricsRead} {
+	for _, alone := range singlePurposeScopes {
 		if slices.Contains(scopes, alone) && slices.ContainsFunc(scopes, func(s string) bool { return s != alone }) {
 			return fmt.Errorf("%s must be a token's only scope: it is a credential confined to its own route list, "+
 				"and combined with another scope it would carry that reach into the other's surfaces", alone)
