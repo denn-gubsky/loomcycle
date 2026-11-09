@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
@@ -74,6 +75,8 @@ func TestMetricsProm_EmitsExpectedSeries(t *testing.T) {
 // per-user fairness. Without this, anonymous workloads would explode
 // cardinality with no operator-visible knob.
 func TestMetricsProm_PerUserSeriesOnlyWhenCapEnabled(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	t.Cleanup(lcotel.SetUserIDPolicyForTest(key, false))
 	srv := newMetricsPromServer(t, true)
 	// Acquire a slot for a specific user_id so PerUser is populated.
 	rel, err := srv.sem.AcquireForUser(t.Context(), "", "alice")
@@ -86,8 +89,42 @@ func TestMetricsProm_PerUserSeriesOnlyWhenCapEnabled(t *testing.T) {
 	srv.handleMetricsProm(rec, httptest.NewRequest("GET", "/metrics", nil))
 
 	body := rec.Body.String()
-	if !strings.Contains(body, "loomcycle_concurrency_per_user{user_id=\"alice\"} 1") {
-		t.Errorf("expected per-user series for alice, body:\n%s", body)
+	want := `loomcycle_concurrency_per_user{user_hash="` + lcotel.UserHash(key, "", "alice") + `"} 1`
+	if !strings.Contains(body, want) {
+		t.Errorf("expected per-user series for alice's hash %q, body:\n%s", want, body)
+	}
+}
+
+// A user is named on /metrics by the keyed hash its spans carry, never by
+// its id; with no secret key there is no hash, and the series is left out
+// rather than fall back to the id. A tenant's user is hashed with its
+// tenant, as on spans.
+func TestMetricsProm_PerUserSeriesNamesTheUserHashNeverTheID(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	for _, keyed := range []bool{true, false} {
+		var restore func()
+		if keyed {
+			restore = lcotel.SetUserIDPolicyForTest(key, false)
+		} else {
+			restore = lcotel.SetUserIDPolicyForTest(nil, false)
+		}
+		srv := newMetricsPromServer(t, true)
+		rel, err := srv.sem.AcquireForUser(t.Context(), "acme", "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		srv.handleMetricsProm(rec, httptest.NewRequest("GET", "/metrics", nil))
+		rel()
+		restore()
+		body := rec.Body.String()
+		if strings.Contains(body, "alice") || strings.Contains(body, "user_id") {
+			t.Errorf("keyed=%v: the render names the user id:\n%s", keyed, body)
+		}
+		hashed := strings.Contains(body, `loomcycle_concurrency_per_user{user_hash="`+lcotel.UserHash(key, "acme", "alice")+`"} 1`)
+		if hashed != keyed {
+			t.Errorf("keyed=%v: hashed per-user series present = %v:\n%s", keyed, hashed, body)
+		}
 	}
 }
 

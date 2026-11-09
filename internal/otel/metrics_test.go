@@ -380,3 +380,18 @@ func TestMetrics_NoRunUserOrSessionLabel(t *testing.T) {
 		}
 	}
 }
+
+// A user on /metrics is the user_hash its spans carry; with no secret key
+// there is none to give.
+func TestMetricUserHash_IsTheSpanHashAndNeedsAKey(t *testing.T) {
+	t.Cleanup(lcotel.SetUserIDPolicyForTest(testUserKey, false))
+	got, ok := lcotel.MetricUserHash("acme", "alice")
+	hash, _ := runSpanUserAttrs(t, "acme", "alice")
+	if !ok || got != hash {
+		t.Errorf("MetricUserHash = %q, %v; the span's loomcycle.user_hash is %q", got, ok, hash)
+	}
+	lcotel.SetUserIDPolicyForTest(nil, true)
+	if got, ok := lcotel.MetricUserHash("acme", "alice"); ok || got != "" {
+		t.Errorf("with no key MetricUserHash = %q, %v; want none", got, ok)
+	}
+}

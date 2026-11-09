@@ -310,8 +310,8 @@ func RecordQueueWait(span trace.Span, wait time.Duration) {
 
 // RecordCompaction adds a "context.compaction" event to the run/iteration span
 // when the loop compacts (trigger = manual|auto|self), with before/after token
-// estimates. Per-run-shape metric → flows through OTEL (the documented path;
-// /metrics stays substrate-only). No-op on a nil/non-recording span.
+// estimates. A per-run event, so it rides the span. No-op on a
+// nil/non-recording span.
 func RecordCompaction(span trace.Span, trigger string, before, after int) {
 	if span == nil || !span.IsRecording() {
 		return
@@ -332,10 +332,8 @@ func RecordCompactionCtx(ctx context.Context, trigger string, before, after int)
 // --- RFC BL P1 retrieval telemetry ---
 //
 // Per-op memory-retrieval shape (latency, dead-link drops, boot reconcile)
-// flows through OTEL, NOT the in-process /metrics endpoint: that endpoint is
-// substrate-only by architectural lock (RFC observability-profiles Decision 1
-// — process + concurrency state only), and per-op shape is aggregated
-// downstream from spans by the OTEL Collector's spanmetrics connector. These
+// flows through OTEL spans, aggregated downstream by the OTEL Collector's
+// spanmetrics connector; /metrics does not carry it. These
 // recorders mirror the loomcycle.memory.search span so
 // the two memory backends produce one consistent series. All are no-op-safe:
 // with OTEL unconfigured Tracer() is a no-op and every call here costs nothing.
@@ -473,10 +471,10 @@ const (
 )
 
 // EventConsolidateWatermarkLag carries the post-pass watermark lag as a span
-// event so a downstream connector can derive a GAUGE from it. The lag is a
-// per-target level, not a count, and the in-process /metrics endpoint is
-// substrate-only by architectural lock — so the gauge is materialised
-// downstream from this event, exactly as the deadlink counter is.
+// event so a downstream connector can derive a per-target GAUGE from it. The
+// lag is a per-target level, not a count. /metrics carries its own,
+// target-less gauge (loomcycle_memory_consolidation_lag_seconds), counted
+// with tracing off too.
 const EventConsolidateWatermarkLag = "loomcycle.memory.consolidate.watermark_lag"
 
 // MemoryConsolidateAttrs identifies the target a pass is about to consolidate.

@@ -359,7 +359,7 @@ func TestConsolidationTelemetry_WatermarkLagReflectsAStaleWatermark(t *testing.T
 	}
 
 	// The lag is also a span EVENT, which is what a downstream connector turns
-	// into a gauge (the in-process /metrics endpoint is substrate-only).
+	// into a per-target gauge (/metrics carries a target-less one).
 	span, _, _, _ := consolidateSpan(t, exp)
 	var sawEvent bool
 	for _, ev := range span.Events {

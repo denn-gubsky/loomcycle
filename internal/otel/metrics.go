@@ -576,6 +576,18 @@ func RecordProviderFallback(ctx context.Context, from, to string) {
 		attribute.String(LabelFrom, from), attribute.String(LabelTo, to)))
 }
 
+// MetricUserHash is the user_hash label naming user in tenant: the
+// loomcycle.user_hash value its spans carry, so a series and a trace name a
+// user alike. ok is false with no secret key: a hash keyed by nothing could be
+// reversed by trying ids, and a raw id is never a label.
+func MetricUserHash(tenant, user string) (string, bool) {
+	p := userPolicy.Load()
+	if p == nil || len(p.key) == 0 || user == "" {
+		return "", false
+	}
+	return UserHash(p.key, tenant, user), true
+}
+
 // --- Tools ---
 
 // ToolMetricName is the tool label for a dispatched tool name. An MCP tool
