@@ -98,7 +98,6 @@ var pendingRawGo = map[string]int{
 	"internal/api/mcp/proxy.go":                     1,
 	"internal/api/mcp/server.go":                    1,
 	"internal/api/webhook/server.go":                2,
-	"internal/tools/mcp/stdio/client.go":            3,
 }
 
 // TestCensus_NoNewRawGoStatements fails on a raw `go` statement in non-test
