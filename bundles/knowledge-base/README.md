@@ -565,7 +565,8 @@ part is covered by its parent, whose request carries the part's text. Each
 request carries the part's own text and its parts' briefs and abstracts —
 never deeper — so it stays small whatever the size of the document. A
 document's request also carries its identity fields and its relations to other
-documents, by kind and title.
+documents, by kind and by what each reaches: the title of another document,
+or the subject or topic itself for a link into the tenant ontology.
 
 Then the **folders** of the documents it looked at, from the deepest up to `/`.
 A folder's request names each direct child's brief (documents and sub-folders,
@@ -612,7 +613,11 @@ folders, stale: {branch, document, path}, calls: {made, estimated_chars}, skippe
 uncovered_leaf, manual, operational, unreadable}, queue? | sweep?}`, plus
 `would_call` / `would_write` in report mode, or `writes`, `parse_errors`,
 `wrong_language`, `model_failures`, `refusals` and `lease` in annotate mode.
-Ids and counts only, never store text.
+Ids and counts only, never store text. `status` is `complete`, `busy` (another
+run holds the lease), `budget_stopped` (`max_calls` or `max_writes` reached),
+`provider_unavailable` (three model calls failed in a row: the pass stops
+rather than spend its budget on a provider that is down; a single failure
+leaves its part stale and the pass goes on), `lease_lost` or `failed`.
 
 **Grants and a schedule.** Annotations are kept for the tenant scope only, so
 the annotator needs both tenant grants, added in your own layer:
