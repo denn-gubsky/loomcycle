@@ -4722,6 +4722,10 @@ agents:
       //   * an operator's hand-written annotation is never rewritten.
       //   * max_calls bounds the model calls and max_writes the writes; reaching
       //     either stops the pass with budget_stopped.
+      //   * three model calls failing in a row stop the pass with
+      //     provider_unavailable: a provider that is down fails every call, and the
+      //     rest of the budget would be spent learning nothing. A single failure
+      //     leaves its part stale for the next pass and the pass goes on.
       //   * the annotator lease is held for every write and released on every path.
       //   * the report carries ids, counts and fixed reason strings, never store text.
       //
@@ -4810,7 +4814,7 @@ agents:
           }
         } catch (e) {
           if (isStop(e)) {
-            st.status = e.stop === "lease_lost" ? "lease_lost" : "budget_stopped";
+            st.status = e.stop === "lease_lost" || e.stop === "provider_unavailable" ? e.stop : "budget_stopped";
           } else {
             st.status = "failed";
             st.failure = clip(errText(e), 300);
@@ -4925,11 +4929,13 @@ agents:
           // still reads current: dirty carries the would-be rewrite up instead.
           dirty: {},
           calls: { made: 0, estimated_chars: 0 }, writes: 0, would_call: 0, would_write: 0,
-          model_failures: 0, parse_errors: 0, wrong_language: 0,
+          model_failures: 0, failures_in_a_row: 0, parse_errors: 0, wrong_language: 0,
           skipped: {}, refusals: {}, documents: [], documents_count: 0, skipped_documents: [],
           queue: null, sweep: null
         };
       }
+
+      var MAX_FAILURES_IN_A_ROW = 3;
 
       function Stop(reason) { this.stop = reason; }
       function isStop(e) { return e instanceof Stop; }
@@ -5211,8 +5217,11 @@ agents:
           out = Agent.spawn({ name: CONFIG.annotate_agent, prompt: prompt });
         } catch (e) {
           st.model_failures++;
+          st.failures_in_a_row++;
+          if (st.failures_in_a_row >= MAX_FAILURES_IN_A_ROW) { throw new Stop("provider_unavailable"); }
           return false;
         }
+        st.failures_in_a_row = 0;
         var v = readAnnotation(out);
         if (v === null) { st.parse_errors++; return false; }
         if (v.language !== "" && v.language !== cur.language) { st.wrong_language++; return false; }
