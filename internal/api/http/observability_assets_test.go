@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // observabilityDir is deploy/observability, the dashboards and alert rules
@@ -24,11 +25,12 @@ var observabilityDir = filepath.Join("..", "..", "..", "deploy", "observability"
 
 var loomcycleMetricName = regexp.MustCompile(`\bloomcycle_[a-zA-Z0-9_]*[a-zA-Z0-9]`)
 
-// emittedMetricNames renders /metrics with every instrument holding data and
-// returns the sample names it carries: each family name, and a histogram's
-// _bucket, _sum and _count series.
-func emittedMetricNames(t *testing.T) map[string]bool {
+// emittedMetrics renders /metrics with every instrument holding data and
+// returns each sample name it carries (a family name, and a histogram's
+// _bucket, _sum and _count series) with the label names its samples have.
+func emittedMetrics(t *testing.T) map[string]map[string]bool {
 	t.Helper()
+	t.Setenv("LOOMCYCLE_REPLICA_ID", "r1") // so the replica label is emitted, as in a cluster
 	installMetrics(t)
 	lcotel.ResetObservablesForTest()
 	t.Cleanup(lcotel.ResetObservablesForTest)
@@ -65,22 +67,24 @@ func emittedMetricNames(t *testing.T) map[string]bool {
 	rec := httptest.NewRecorder()
 	srv.handleMetricsProm(rec, httptest.NewRequest("GET", "/metrics", nil))
 
-	names := map[string]bool{}
+	out := map[string]map[string]bool{}
 	for _, line := range strings.Split(rec.Body.String(), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 4 || fields[0] != "#" || fields[1] != "TYPE" {
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		name := fields[2]
-		names[name] = true
-		if fields[3] == "histogram" {
-			for _, suffix := range []string{"_bucket", "_sum", "_count"} {
-				names[name+suffix] = true
-			}
+		series := line[:strings.LastIndexByte(line, ' ')]
+		name, labels, _ := strings.Cut(series, "{")
+		if out[name] == nil {
+			out[name] = map[string]bool{}
+		}
+		for _, m := range promLabelNameRe.FindAllStringSubmatch(labels, -1) {
+			out[name][m[1]] = true
 		}
 	}
-	return names
+	return out
 }
+
+var promLabelNameRe = regexp.MustCompile(`([a-zA-Z_][a-zA-Z0-9_]*)="`)
 
 // dashboardQueries is every PromQL a Grafana dashboard holds: panel target
 // exprs and templating queries, wherever they nest.
@@ -174,14 +178,14 @@ func referencedMetrics(t *testing.T) map[string][]string {
 // /metrics emits. A renamed or removed series would otherwise leave a panel
 // empty and an alert that can never fire, with nothing failing.
 func TestObservabilityAssets_EveryMetricIsEmitted(t *testing.T) {
-	emitted := emittedMetricNames(t)
+	emitted := emittedMetrics(t)
 	refs := referencedMetrics(t)
 	if len(refs) < 20 {
 		t.Fatalf("only %d metric names found in the shipped assets; the extraction is broken", len(refs))
 	}
 	var missing []string
 	for name, files := range refs {
-		if !emitted[name] {
+		if emitted[name] == nil {
 			sort.Strings(files)
 			missing = append(missing, name+" ("+strings.Join(files, ", ")+")")
 		}
@@ -189,5 +193,143 @@ func TestObservabilityAssets_EveryMetricIsEmitted(t *testing.T) {
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Errorf("shipped dashboards or rules query metrics /metrics does not emit:\n  %s", strings.Join(missing, "\n  "))
+	}
+}
+
+// targetLabels are the labels Prometheus adds to every series it scrapes.
+var targetLabels = map[string]bool{"instance": true, "job": true}
+
+// labelValues are the label values the code can emit, for the labels whose
+// set is closed, by metric family prefix.
+func labelValues() map[string]map[string]map[string]bool {
+	set := func(vs ...string) map[string]bool {
+		m := map[string]bool{}
+		for _, v := range vs {
+			m[v] = true
+		}
+		return m
+	}
+	return map[string]map[string]map[string]bool{
+		"loomcycle_runs_total": {
+			"status": set(string(store.RunCompleted), string(store.RunFailed), string(store.RunCancelled), string(store.RunRejected), lcotel.RunStatusUnknown),
+			"trigger": set(lcotel.TriggerHTTP, lcotel.TriggerGRPC, lcotel.TriggerMCP, lcotel.TriggerSchedule,
+				lcotel.TriggerWebhook, lcotel.TriggerA2A, lcotel.TriggerSubagent, lcotel.TriggerResume),
+		},
+		"loomcycle_provider_requests_total": {
+			"outcome": set(lcotel.ProviderOutcomeOK, lcotel.ErrorTypeRateLimited, lcotel.ErrorTypeOverloaded, lcotel.ErrorTypeTimeout,
+				lcotel.ErrorTypeNetwork, lcotel.ErrorTypeCancelled, lcotel.ErrorTypeClientError, lcotel.ErrorTypeServerError),
+		},
+		"loomcycle_tool_calls_total": {
+			"outcome": set(lcotel.ToolOutcomeOK, lcotel.ToolOutcomeError, lcotel.ToolOutcomeIsError),
+		},
+	}
+}
+
+var (
+	selectorRe    = regexp.MustCompile(`\b(loomcycle_[a-zA-Z0-9_]*[a-zA-Z0-9])\{([^}]*)\}`)
+	matcherRe     = regexp.MustCompile(`([a-zA-Z_][a-zA-Z0-9_]*)\s*(=~|!~|!=|=)\s*"((?:[^"\\]|\\.)*)"`)
+	groupingRe    = regexp.MustCompile(`\b(by|without|on|ignoring)\s*\(([^)]*)\)`)
+	labelValuesRe = regexp.MustCompile(`label_values\(\s*(loomcycle_[a-zA-Z0-9_]*[a-zA-Z0-9])\s*,\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)`)
+)
+
+// queryLabelProblems checks one PromQL query: every label it matches on a
+// loomcycle_* selector, groups by (by, without, on, ignoring) or asks the
+// values of, is one the metrics it applies to carry; and a literal value of
+// a closed label is one the code emits. A grouping clause is checked
+// against every loomcycle_* metric of the query, which holds for the
+// shipped queries (each groups one metric, or joins two that share it).
+func queryLabelProblems(q string, emitted map[string]map[string]bool) []string {
+	var problems []string
+	has := func(metric, label string) bool {
+		return targetLabels[label] || emitted[metric][label]
+	}
+	values := labelValues()
+	for _, sel := range selectorRe.FindAllStringSubmatch(q, -1) {
+		metric := sel[1]
+		for _, m := range matcherRe.FindAllStringSubmatch(sel[2], -1) {
+			label, op, val := m[1], m[2], m[3]
+			if !has(metric, label) {
+				problems = append(problems, metric+" has no label "+label)
+				continue
+			}
+			allowed := values[metric][label]
+			if allowed == nil || (op != "=" && op != "=~") || strings.Contains(val, "$") {
+				continue
+			}
+			for _, v := range strings.Split(val, "|") {
+				if !allowed[v] {
+					problems = append(problems, metric+"{"+label+"} is never "+v)
+				}
+			}
+		}
+	}
+	metrics := loomcycleMetricName.FindAllString(q, -1)
+	for _, g := range groupingRe.FindAllStringSubmatch(q, -1) {
+		for _, label := range strings.Split(g[2], ",") {
+			label = strings.TrimSpace(label)
+			if label == "" {
+				continue
+			}
+			for _, metric := range metrics {
+				if !has(metric, label) {
+					problems = append(problems, metric+" has no label "+label+" ("+g[1]+")")
+				}
+			}
+		}
+	}
+	for _, lv := range labelValuesRe.FindAllStringSubmatch(q, -1) {
+		if !has(lv[1], lv[2]) {
+			problems = append(problems, lv[1]+" has no label "+lv[2]+" (label_values)")
+		}
+	}
+	return problems
+}
+
+// Every label a shipped dashboard or rule matches, groups by or lists the
+// values of is one its metric carries, and a literal status, trigger or
+// outcome is a value the code emits: a renamed label or value would
+// otherwise leave a panel empty or an alert silent, as a renamed metric
+// would.
+func TestObservabilityAssets_EveryLabelIsEmitted(t *testing.T) {
+	emitted := emittedMetrics(t)
+	dashboards, _ := filepath.Glob(filepath.Join(observabilityDir, "grafana", "dashboards", "*.json"))
+	rules, _ := filepath.Glob(filepath.Join(observabilityDir, "prometheus", "rules", "*.yml"))
+	checked := 0
+	for _, f := range dashboards {
+		for _, q := range dashboardQueries(t, f) {
+			checked++
+			for _, p := range queryLabelProblems(q, emitted) {
+				t.Errorf("%s: %s\n  in %s", filepath.Base(f), p, q)
+			}
+		}
+	}
+	for _, f := range rules {
+		for _, q := range ruleQueries(t, f) {
+			checked++
+			for _, p := range queryLabelProblems(q, emitted) {
+				t.Errorf("%s: %s\n  in %s", filepath.Base(f), p, q)
+			}
+		}
+	}
+	if checked < 30 {
+		t.Fatalf("only %d queries checked; the walk is broken", checked)
+	}
+}
+
+// The checker catches what it exists for: a missing label, a grouping
+// label, an impossible value.
+func TestQueryLabelProblems_FindsAWrongLabelOrValue(t *testing.T) {
+	emitted := map[string]map[string]bool{"loomcycle_runs_total": {"tenant": true, "status": true}}
+	for q, want := range map[string]int{
+		`sum by (tenant) (rate(loomcycle_runs_total{status="failed"}[5m]))`:     0,
+		`sum by (tenant) (rate(loomcycle_runs_total{statuz="failed"}[5m]))`:     1,
+		`sum by (tenantz) (rate(loomcycle_runs_total[5m]))`:                     1,
+		`sum(rate(loomcycle_runs_total{status="finished"}[5m]))`:                1,
+		`sum by (instance) (rate(loomcycle_runs_total{tenant=~"$tenant"}[5m]))`: 0,
+		`label_values(loomcycle_runs_total, model)`:                             1,
+	} {
+		if got := queryLabelProblems(q, emitted); len(got) != want {
+			t.Errorf("%s: problems %v, want %d", q, got, want)
+		}
 	}
 }
