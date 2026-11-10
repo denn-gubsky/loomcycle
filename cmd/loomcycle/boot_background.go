@@ -476,6 +476,9 @@ func (b *boot) seedServerState() {
 	if err := srv.SeedLimits(bgCtx); err != nil {
 		slog.Error("limits: seed failed (budgets start empty until next write)", "err", err)
 	}
+	// The model label of every instrument names only models the operator
+	// configured; the rest (a gateway caller's, a tenant agent's) is "other".
+	b.addCleanup(srv.InstallMetricModelLabels())
 	// The budget gauge on /metrics reads the tracker's in-memory counters.
 	tracker := srv.LimitsTracker()
 	b.addCleanup(lcotel.SetTokenBudgetSource(func() []lcotel.TokenBudget {

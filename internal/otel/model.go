@@ -118,7 +118,7 @@ func RecordModelCall(ctx context.Context, a ModelCallAttrs) (context.Context, tr
 // meteredModelSpan wraps span with the call's metric, when metrics are on.
 func meteredModelSpan(span trace.Span, a ModelCallAttrs) trace.Span {
 	if st := meters.Load(); st != nil {
-		return &modelSpan{Span: span, st: st, provider: a.Provider, model: a.Model, purpose: a.Purpose, start: time.Now()}
+		return &modelSpan{Span: span, st: st, provider: a.Provider, model: metricModel(a.Model), purpose: a.Purpose, start: time.Now()}
 	}
 	return span
 }

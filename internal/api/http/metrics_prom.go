@@ -246,6 +246,18 @@ func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 	writeInstrumentSeries(w, replicaLabels, view)
 }
 
+// InstallMetricModelLabels bounds the instruments' model label to the models
+// this server's live config names (MetricModelNames), re-read after a config
+// reload. Returns the restore function.
+func (s *Server) InstallMetricModelLabels() func() {
+	return lcotel.SetModelLabelSource(
+		func() any { return s.cfg() },
+		func(v any) ([]string, []string) {
+			c, _ := v.(*config.Config)
+			return c.MetricModelNames()
+		})
+}
+
 // writeInstrumentSeries appends the in-process instruments for view, labelled
 // with the replica as the substrate series are. A collection failure is
 // logged and leaves the substrate series standing.

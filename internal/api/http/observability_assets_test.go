@@ -47,7 +47,7 @@ func emittedMetricNames(t *testing.T) map[string]bool {
 	lcotel.SetModelCallResult(call, lcotel.ModelCallResult{TTFT: time.Millisecond})
 	call.End()
 	lcotel.RecordProviderRetry(ctx, "p", "header")
-	lcotel.RecordProviderFallback(ctx, "p/m", "q/n")
+	lcotel.RecordProviderFallback(ctx, "p", "m", "q", "n")
 	lcotel.RecordToolCallMetric(ctx, "Read", lcotel.ToolOutcomeOK, time.Millisecond)
 	lcotel.RegisterDBPool("store", func() lcotel.DBPoolStats { return lcotel.DBPoolStats{Open: 1, WaitCount: 1, WaitDuration: time.Second} })
 	lcotel.RecordConsolidationWatermark(lcotel.ConsolidationBackendInProcess, time.Now().Add(-time.Minute))

@@ -189,7 +189,7 @@ func RecordProviderCall(ctx context.Context, attrs ProviderCallAttrs) (context.C
 	// SetProviderResponse counts the attempt from the returned span, so its
 	// metric and its error.type cannot disagree.
 	if st := meters.Load(); st != nil {
-		return ctx, &providerSpan{Span: span, st: st, provider: attrs.Provider, model: attrs.Model, start: time.Now()}
+		return ctx, &providerSpan{Span: span, st: st, provider: attrs.Provider, model: metricModel(attrs.Model), start: time.Now()}
 	}
 	return ctx, span
 }

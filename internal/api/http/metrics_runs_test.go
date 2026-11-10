@@ -226,3 +226,38 @@ func TestGatewayRoutes_TimeEachModelCallUnderTheGatewayPurpose(t *testing.T) {
 		t.Errorf("gateway model calls timed = %v (present %v), want 4:\n%s", got, ok, out)
 	}
 }
+
+// A gateway caller chooses its model, so the model label it reaches is
+// bounded to the ones the operator configured: a random model string is
+// counted as "other", never a series of its own.
+func TestGatewayRoutes_AnUnconfiguredModelIsLabelledOther(t *testing.T) {
+	render := installMetrics(t)
+	srv, _ := makeServer(t, gatewayProvider(), makeBaseConfig())
+	t.Cleanup(srv.InstallMetricModelLabels())
+	ts := httptest.NewServer(srv.Mux())
+	t.Cleanup(ts.Close)
+	for _, model := range []string{"stub-model", "random-7f3e9c"} {
+		resp, err := http.Post(ts.URL+"/v1/_llm/chat", "application/json", strings.NewReader(
+			`{"messages":[{"role":"user","content":"hi"}],"provider":"scripted","model":"`+model+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status %d", model, resp.StatusCode)
+		}
+	}
+	out := render(lcotel.PromOptions{})
+	if strings.Contains(out, "random-7f3e9c") {
+		t.Errorf("a caller's model became a label:\n%s", out)
+	}
+	for _, series := range []string{
+		`loomcycle_model_call_duration_seconds_count{model="stub-model",provider="scripted",purpose="gateway"}`,
+		`loomcycle_model_call_duration_seconds_count{model="other",provider="scripted",purpose="gateway"}`,
+	} {
+		if got, ok := sampleValue(out, series); !ok || got != 1 {
+			t.Errorf("%s = %v (present %v), want 1:\n%s", series, got, ok, out)
+		}
+	}
+}

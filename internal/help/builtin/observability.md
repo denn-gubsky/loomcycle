@@ -473,7 +473,9 @@ an error rate is right at any sampling ratio; a scrape reads memory only.
   pass reports), `loomcycle_memory_consolidation_pending{backend}`,
   `loomcycle_token_budget_used_ratio{tenant,period}`.
 
-No series names a run, a user or a session. `LOOMCYCLE_METRICS_AGENT_LABEL=1`
+No series names a run, a user or a session. A `model` label names only
+models configured in loomcycle's config; any other (a gateway caller's, a
+tenant agent's) is `other`. `LOOMCYCLE_METRICS_AGENT_LABEL=1`
 adds the agent name to the runs and tokens series. Each instrument holds at
 most `LOOMCYCLE_METRICS_CARDINALITY_LIMIT` series (2000); past it new label
 sets fold into an `otel_metric_overflow="true"` series. The per-user

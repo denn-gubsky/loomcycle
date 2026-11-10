@@ -273,7 +273,7 @@ func TestRecordToolCallMetric_CountsByOutcome(t *testing.T) {
 func TestProviderRetryAndFallbackMetrics(t *testing.T) {
 	render := withMetrics(t, false, 0)
 	lcotel.RecordProviderRetry(context.Background(), "anthropic", "header")
-	lcotel.RecordProviderFallback(context.Background(), "anthropic/claude", "openai/gpt")
+	lcotel.RecordProviderFallback(context.Background(), "anthropic", "claude", "openai", "gpt")
 	out := render(lcotel.PromOptions{})
 	mustValue(t, out, "loomcycle_provider_retries_total", map[string]string{"provider": "anthropic", "reason": "header"}, 1)
 	mustValue(t, out, "loomcycle_provider_fallbacks_total", map[string]string{"from": "anthropic/claude", "to": "openai/gpt"}, 1)
@@ -408,4 +408,46 @@ func TestModelCallMetric_CountsANoTraceCall(t *testing.T) {
 		span.End()
 	}
 	mustValue(t, render(lcotel.PromOptions{}), "loomcycle_model_call_duration_seconds_count", map[string]string{"provider": "nt-p"}, 2)
+}
+
+// A model the operator did not configure is "other" on every instrument
+// that labels a model, so a caller cannot grow the series set with
+// invented names; a configured model, or one matching a configured
+// model_pattern, keeps its name. The set is rebuilt when the config is.
+func TestMetrics_ModelLabelBoundedToConfiguredModels(t *testing.T) {
+	render := withMetrics(t, false, 0)
+	version := "v1"
+	t.Cleanup(lcotel.SetModelLabelSource(func() any { return version }, func(v any) ([]string, []string) {
+		if v == "v1" {
+			return []string{"m-configured"}, []string{"claude-haiku-*"}
+		}
+		return []string{"m-configured", "m-added"}, nil
+	}))
+	ctx := context.Background()
+	for _, m := range []string{"m-configured", "claude-haiku-4-5", "random-1", "random-2", "m-added"} {
+		lcotel.RecordUsage(ctx, lcotel.UsageRecord{Tenant: "t", Provider: "p", Model: m, Key: "operator", Input: 1})
+		_, ps := lcotel.RecordProviderCall(ctx, lcotel.ProviderCallAttrs{Provider: "p", Model: m})
+		lcotel.SetProviderResponse(ps, &http.Response{StatusCode: 200}, nil)
+		ps.End()
+		_, ms := lcotel.RecordModelCall(ctx, lcotel.ModelCallAttrs{Provider: "p", Model: m, Purpose: "gateway"})
+		lcotel.SetModelCallResult(ms, lcotel.ModelCallResult{})
+		ms.End()
+	}
+	lcotel.RecordProviderFallback(ctx, "p", "random-3", "p", "m-configured")
+	out := render(lcotel.PromOptions{})
+	for _, leak := range []string{"random-", `"m-added"`} {
+		if strings.Contains(out, leak) {
+			t.Errorf("an unconfigured model became a label (%q):\n%s", leak, out)
+		}
+	}
+	for _, name := range []string{"loomcycle_tokens_total", "loomcycle_provider_requests_total", "loomcycle_model_call_duration_seconds_count"} {
+		mustValue(t, out, name, map[string]string{"model": "m-configured"}, 1)
+		mustValue(t, out, name, map[string]string{"model": "claude-haiku-4-5"}, 1)
+		mustValue(t, out, name, map[string]string{"model": lcotel.ModelLabelOther}, 3)
+	}
+	mustValue(t, out, "loomcycle_provider_fallbacks_total", map[string]string{"from": "p/other", "to": "p/m-configured"}, 1)
+
+	version = "v2" // a config reload added m-added
+	lcotel.RecordUsage(ctx, lcotel.UsageRecord{Tenant: "t", Provider: "p", Model: "m-added", Key: "operator", Input: 1})
+	mustValue(t, render(lcotel.PromOptions{}), "loomcycle_tokens_total", map[string]string{"model": "m-added"}, 1)
 }

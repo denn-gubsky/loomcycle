@@ -3547,7 +3547,15 @@ only the sampled runs), and a scrape still runs no database query.
 | `loomcycle_memory_consolidation_pending` | `backend` | Consolidation targets with work at the latest fan-out. |
 | `loomcycle_token_budget_used_ratio` | `tenant`, `period` | A tenant's month-to-date use of its token budget (`period="month"`): of the hard limit, else the soft one. Only tenants with a tenant budget. |
 
-A run, a user, a session or (by default) an agent is never a label.
+A run, a user, a session or (by default) an agent is never a label. A
+`model` label (on the token, cost, provider-request and model-call series,
+and a fallback's `from`/`to`) names only models the operator configured:
+`defaults.model`, the `models:` aliases and the models they point at (or
+match by `model_pattern`), `tiers`, `user_tiers`, yaml agents and the
+`pricing` table; re-read after a config reload. Any other model — a gateway
+caller's pinned model, a tenant-authored agent's — is counted as
+`model="other"`, so no caller can grow the series set. A `provider` label is
+always one the registry resolved.
 `LOOMCYCLE_METRICS_AGENT_LABEL=1` adds `agent` (the agent name) to
 `loomcycle_runs_total` and `loomcycle_tokens_total`, for a deployment with a
 bounded agent catalogue. Every instrument holds at most

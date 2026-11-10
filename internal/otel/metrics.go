@@ -464,6 +464,7 @@ func RecordUsage(ctx context.Context, u UsageRecord) {
 	if u.Agent == "" {
 		u.Agent, _ = ctx.Value(agentNameKey{}).(string)
 	}
+	u.Model = metricModel(u.Model)
 	base := []attribute.KeyValue{
 		attribute.String(LabelTenant, u.Tenant),
 		attribute.String(LabelProvider, u.Provider),
@@ -571,15 +572,16 @@ func RecordProviderRetry(ctx context.Context, provider, reason string) {
 		attribute.String(LabelProvider, provider), attribute.String(LabelReason, reason)))
 }
 
-// RecordProviderFallback counts a run moving from one "provider/model" to
-// another.
-func RecordProviderFallback(ctx context.Context, from, to string) {
+// RecordProviderFallback counts a run moving from one provider and model to
+// another, labelled from="provider/model" and to="provider/model".
+func RecordProviderFallback(ctx context.Context, fromProvider, fromModel, toProvider, toModel string) {
 	st := meters.Load()
 	if st == nil {
 		return
 	}
 	st.inst.providerFallbacks.Add(ctx, 1, metric.WithAttributes(
-		attribute.String(LabelFrom, from), attribute.String(LabelTo, to)))
+		attribute.String(LabelFrom, fromProvider+"/"+metricModel(fromModel)),
+		attribute.String(LabelTo, toProvider+"/"+metricModel(toModel))))
 }
 
 // MetricUserHash is the user_hash label naming user in tenant: the
