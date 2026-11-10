@@ -124,6 +124,14 @@ type runConfigRecord struct {
 	// a boundary rather than merely changing behaviour.
 	Hosts *runHostRecord `json:"hosts,omitempty"`
 
+	// Tools is the caller's own `tools` narrowing, so a resumed run offers the
+	// model what the original did. Without it a paused, restored or recovered
+	// run came back on its agent's full set. It only ever narrows: resume
+	// intersects it with the definition's tools, as the start did. Absent when
+	// the caller sent no list, and on a run recorded before it existed, which
+	// resumes unnarrowed as every run did before.
+	Tools *runToolsRecord `json:"tools,omitempty"`
+
 	// ACLOrigin names whose access-control rules (RFC EY) bound the run: its
 	// caller's, or for a sub-run the originating caller's it inherited. A
 	// resume compiles that subject's CURRENT set and narrows the run by it as
@@ -842,6 +850,36 @@ func (rc runConfigRecord) callerHosts() []string {
 		return []string{}
 	}
 	return rc.Hosts.AllowedHosts
+}
+
+// runToolsRecord holds the caller's tool list. A struct rather than a bare
+// slice because the record's presence is the "a list was sent" bit: a non-nil
+// EMPTY list narrows to no tools, and a nil one would read back as no list at
+// all — a widening. Names has no omitempty, and callerTools reads null as empty.
+type runToolsRecord struct {
+	Names []string `json:"names"`
+}
+
+// toolsRecordOf records the caller's list as RunOnce handed it to filterTools:
+// nil (no narrowing) records nothing, anything else is kept, empty included.
+func toolsRecordOf(callerTools []string) *runToolsRecord {
+	if callerTools == nil {
+		return nil
+	}
+	return &runToolsRecord{Names: append([]string{}, callerTools...)}
+}
+
+// callerTools returns the recorded list in the nil-vs-empty shape filterTools
+// reads: nil means no narrowing; a present record never reads back as nil, so
+// a damaged one narrows to nothing rather than widening.
+func (rc runConfigRecord) callerTools() []string {
+	if rc.Tools == nil {
+		return nil
+	}
+	if rc.Tools.Names == nil {
+		return []string{}
+	}
+	return rc.Tools.Names
 }
 
 // hostPolicy rebuilds the ctx value a resumed run needs, with the caller's list

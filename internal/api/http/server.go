@@ -3756,6 +3756,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Resources:         persistedResources(runResources),
 		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
+		Tools:             toolsRecordOf(in.Tools),     // the caller's tool narrowing, for a resume
 		ACLOrigin:         aclOriginOf(ctx, callerACL), // whose rules a resume narrows it by again
 		Review:            reviewRecord(in.Review),
 		ReviewTTLSeconds:  positiveOrZero(in.ReviewTTLSeconds),
