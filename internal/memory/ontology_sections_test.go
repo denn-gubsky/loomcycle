@@ -493,3 +493,41 @@ func TestParseClassBody_BoilerplateLinesJoinAsAlternatives(t *testing.T) {
 		t.Error("boilerplate is not an inheritable directive")
 	}
 }
+
+func TestParseClassBody_NormIsABareFlag(t *testing.T) {
+	if d := ParseClassBody("@norm\n"); !d.Norm || len(d.Issues) != 0 {
+		t.Errorf("bare @norm: norm=%v issues=%v", d.Norm, d.Issues)
+	}
+	// Prose after a dash is a comment in either spelling, never a value.
+	for _, body := range []string{"- `@norm` — the tenant's rules\n", "- `@norm`\n", "@norm — the tenant's rules\n"} {
+		if d := ParseClassBody(body); !d.Norm || len(d.Issues) != 0 {
+			t.Errorf("%q: norm=%v issues=%v", body, d.Norm, d.Issues)
+		}
+	}
+	d := ParseClassBody("@norm false\n")
+	if d.Norm || !strings.Contains(strings.Join(d.Issues, " "), "@norm takes no value") {
+		t.Errorf("@norm with a value: norm=%v issues=%v", d.Norm, d.Issues)
+	}
+}
+
+func TestResolveInheritance_NormInheritsToSubclasses(t *testing.T) {
+	terms := ResolveInheritance([]OntologyTerm{
+		{Name: "Document", IsDocumentClass: true},
+		{Name: "Act", Parent: "Document", IsDocumentClass: true, Norm: true},
+		{Name: "Law", Parent: "Act", IsDocumentClass: true},
+		{Name: "Guide", Parent: "Document", IsDocumentClass: true},
+	})
+	by := map[string]OntologyTerm{}
+	for _, tm := range terms {
+		by[tm.Name] = tm
+	}
+	if by["Act"].InheritedNorm || !IsNorm(by["Act"]) {
+		t.Errorf("Act: %#v", by["Act"])
+	}
+	if !by["Law"].InheritedNorm || !IsNorm(by["Law"]) {
+		t.Errorf("Law should inherit the norm: %#v", by["Law"])
+	}
+	if IsNorm(by["Guide"]) || IsNorm(by["Document"]) {
+		t.Error("a non-norm class reads as a norm")
+	}
+}
