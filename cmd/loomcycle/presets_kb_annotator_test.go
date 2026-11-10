@@ -26,6 +26,7 @@ type annFake struct {
 	mu       sync.Mutex
 	prompts  []string
 	reply    func(prompt string) string
+	fail     func(call int) bool // a model call that errors, by its 1-based number
 	queue    []map[string]any
 	acks     int
 	awaitFor []string
@@ -45,7 +46,11 @@ func (a *annFakeAgent) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 	prompt, _ := in["prompt"].(string)
 	a.f.mu.Lock()
 	a.f.prompts = append(a.f.prompts, prompt)
+	n := len(a.f.prompts)
 	a.f.mu.Unlock()
+	if a.f.fail != nil && a.f.fail(n) {
+		return tools.Result{IsError: true, Text: "provider unavailable"}, nil
+	}
 	return tools.Result{Text: "[sub-agent agent_id=x run_id=r-" + fmt.Sprint(len(a.f.prompts)) + "]\n" + a.f.reply(prompt)}, nil
 }
 
@@ -518,5 +523,26 @@ func TestKBAnnotator_ForceRewritesTheDocumentNotItsFolders(t *testing.T) {
 	runAnnotator(t, d, driver, f, `{"mode":"path","path":"/kb","recursive":true,"write":"annotate","force":true}`)
 	if n := len(f.prompts) - before; n != 2 {
 		t.Fatalf("forced path pass made %d calls, want /kb/widgets and /kb", n)
+	}
+}
+
+// A provider that is down fails every call: three failures in a row stop the
+// pass instead of spending the rest of max_calls on it. Fewer leave their
+// parts stale and the pass goes on.
+func TestKBAnnotator_StopsWhenTheProviderIsUnavailable(t *testing.T) {
+	d, author, driver := annRealDocument(t)
+	a := seedAnnDoc(t, d, author, "Widget guide", "/kb/widgets/guide")
+	in := fmt.Sprintf(`{"mode":"document","document_id":%q,"write":"annotate"}`, a.doc)
+
+	down := &annFake{reply: annReplyFromTitle, fail: func(int) bool { return true }}
+	rep := runAnnotator(t, d, driver, down, in)
+	if rep["status"] != "provider_unavailable" || annCount(rep, "model_failures") != 3 || len(down.prompts) != 3 || annCount(rep, "writes") != 0 {
+		t.Fatalf("provider down: %d calls, report %v", len(down.prompts), rep)
+	}
+
+	flaky := &annFake{reply: annReplyFromTitle, fail: func(n int) bool { return n <= 2 }}
+	rep = runAnnotator(t, d, driver, flaky, in)
+	if rep["status"] != "complete" || annCount(rep, "model_failures") != 2 || annCount(rep, "writes") == 0 {
+		t.Fatalf("two failures then a reply: report %v", rep)
 	}
 }
