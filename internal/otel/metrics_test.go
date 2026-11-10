@@ -397,3 +397,15 @@ func TestMetricUserHash_IsTheSpanHashAndNeedsAKey(t *testing.T) {
 		t.Errorf("with no key MetricUserHash = %q, %v; want none", got, ok)
 	}
 }
+
+// A no-trace run's model call has a content-free span, but it is still a
+// call: the metrics count it, since they carry no content either.
+func TestModelCallMetric_CountsANoTraceCall(t *testing.T) {
+	render := withMetrics(t, false, 0)
+	for _, noTrace := range []bool{false, true} {
+		_, span := lcotel.RecordModelCall(context.Background(), lcotel.ModelCallAttrs{Provider: "nt-p", Model: "nt-m", Purpose: "turn", NoTrace: noTrace})
+		lcotel.SetModelCallResult(span, lcotel.ModelCallResult{TTFT: time.Millisecond})
+		span.End()
+	}
+	mustValue(t, render(lcotel.PromOptions{}), "loomcycle_model_call_duration_seconds_count", map[string]string{"provider": "nt-p"}, 2)
+}

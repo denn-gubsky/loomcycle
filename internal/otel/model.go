@@ -91,7 +91,10 @@ func RecordModelCall(ctx context.Context, a ModelCallAttrs) (context.Context, tr
 	kvs = genAIString(genai.GenAIProviderNameKey, GenAIProviderName(a.Provider), kvs)
 	kvs = genAIString(genai.GenAIRequestModelKey, a.Model, kvs)
 	if a.NoTrace {
-		return Tracer().Start(ctx, SpanModelCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
+		// The span carries nothing of the request; the call is still counted,
+		// as metrics carry no content either.
+		ctx, span := Tracer().Start(ctx, SpanModelCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
+		return ctx, meteredModelSpan(span, a)
 	}
 	if a.Tier != "" {
 		kvs = append(kvs, attribute.String(AttrTier, a.Tier))
@@ -109,10 +112,15 @@ func RecordModelCall(ctx context.Context, a ModelCallAttrs) (context.Context, tr
 		kvs = append(kvs, genai.GenAIRequestMaxTokensKey.Int(a.MaxTokens))
 	}
 	ctx, span := Tracer().Start(ctx, SpanModelCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
+	return ctx, meteredModelSpan(span, a)
+}
+
+// meteredModelSpan wraps span with the call's metric, when metrics are on.
+func meteredModelSpan(span trace.Span, a ModelCallAttrs) trace.Span {
 	if st := meters.Load(); st != nil {
-		return ctx, &modelSpan{Span: span, st: st, provider: a.Provider, model: a.Model, purpose: a.Purpose, start: time.Now()}
+		return &modelSpan{Span: span, st: st, provider: a.Provider, model: a.Model, purpose: a.Purpose, start: time.Now()}
 	}
-	return ctx, span
+	return span
 }
 
 // ModelCallResult is how a model call ended.
