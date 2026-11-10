@@ -1,59 +1,55 @@
 package sqlite
 
 import (
-	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
 )
 
-// TestMigrate_NoIndexInTheSchemaBlockNamesAnAlterAddedColumn makes an invariant that was
+// TestMigrate_NoIndexInTheTablesPassNamesAnAddedColumn makes an invariant that was
 // only a comment into something that fails.
 //
-// migrate() already says "ALTER must precede the partial indexes that reference the new
-// columns" — and three indexes on `memory` violated it anyway, which broke every sqlite
-// upgrade from before RFC CL. The reason it survived review and the whole test suite is
-// that a FRESH database gets those columns from CREATE TABLE, so nothing that starts from
-// an empty file can see the problem. TestMigrate_OpensADBWhoseMemoryTablePredates... covers
-// the `memory` table concretely; this covers every other table, including ones nobody has
+// migrate() runs the tables pass before the column adds, so an index in the tables
+// pass that names a column only an ALTER adds fails on every database old enough to
+// lack the column — three indexes on `memory` did exactly that and broke every sqlite
+// upgrade from before RFC CL. It survived review and the whole suite because a FRESH
+// database gets those columns from CREATE TABLE, so nothing that starts from an empty
+// file can see the problem. TestMigrate_OpensADBWhoseMemoryTablePredates... covers the
+// `memory` table concretely; this covers every other table, including ones nobody has
 // written a legacy fixture for.
 //
-// It reads the source, which is unusual and deliberate: the property is about the ORDER of
-// two statement lists, and the cheapest honest way to check it for all tables is to look at
-// them. The alternative — a legacy fixture per table — is a lot of code that still misses
-// the next table someone adds.
-func TestMigrate_NoIndexInTheSchemaBlockNamesAnAlterAddedColumn(t *testing.T) {
-	src, err := os.ReadFile("sqlite.go")
-	if err != nil {
-		t.Fatalf("read sqlite.go: %v", err)
-	}
-	s := string(src)
-
-	// The schema block is everything before its own execution loop; the ALTERs come after.
-	parts := strings.SplitN(s, "for _, q := range stmts", 2)
-	if len(parts) != 2 {
-		t.Fatal("could not find the `stmts` execution loop — migrate()'s shape changed, update this test")
-	}
-	schemaBlock := parts[0]
+// It reads the statement lists migrate executes (migrationPlan), not the source, so it
+// holds wherever a section's statements live.
+func TestMigrate_NoIndexInTheTablesPassNamesAnAddedColumn(t *testing.T) {
+	plan := migrationPlan()
 
 	// Columns that only an upgraded DB gets from an ALTER, per table.
 	added := map[string]map[string]bool{}
-	for _, m := range regexp.MustCompile(`ALTER TABLE (\w+) ADD COLUMN (\w+)`).FindAllStringSubmatch(s, -1) {
-		if added[m[1]] == nil {
-			added[m[1]] = map[string]bool{}
+	alterRe := regexp.MustCompile(`ALTER TABLE (\w+) ADD COLUMN (\w+)`)
+	for _, q := range plan.columns {
+		for _, m := range alterRe.FindAllStringSubmatch(q, -1) {
+			if added[m[1]] == nil {
+				added[m[1]] = map[string]bool{}
+			}
+			added[m[1]][m[2]] = true
 		}
-		added[m[1]][m[2]] = true
 	}
 	if len(added) == 0 {
 		t.Fatal("found no ALTER TABLE ... ADD COLUMN statements — this test is now vacuous")
 	}
 
-	idxRe := regexp.MustCompile(`CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+) ON (\w+)\(([^)]*)\)([^` + "`" + `]*)`)
+	idxRe := regexp.MustCompile(`(?s)CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+) ON (\w+)\(([^)]*)\)(.*)`)
 	wordRe := regexp.MustCompile(`\w+`)
 
 	var offenders []string
-	for _, m := range idxRe.FindAllStringSubmatch(schemaBlock, -1) {
+	indexes := 0
+	for _, q := range plan.tables {
+		m := idxRe.FindStringSubmatch(q)
+		if m == nil {
+			continue
+		}
+		indexes++
 		name, table, cols, tail := m[1], m[2], m[3], m[4]
 		for _, ref := range wordRe.FindAllString(cols+" "+tail, -1) {
 			if added[table][ref] {
@@ -63,11 +59,14 @@ func TestMigrate_NoIndexInTheSchemaBlockNamesAnAlterAddedColumn(t *testing.T) {
 			}
 		}
 	}
+	if indexes == 0 {
+		t.Fatal("found no CREATE INDEX in the tables pass — this test is now vacuous")
+	}
 	sort.Strings(offenders)
 	if len(offenders) > 0 {
-		t.Errorf("these indexes are in the CREATE-TABLE block but name a column an upgraded DB "+
-			"only gets from the ALTER block, so migrate() fails on any database old enough to "+
-			"lack it. Move them into addIndexes, which runs after the ALTERs:\n  %s",
+		t.Errorf("these indexes are in the tables pass but name a column an upgraded DB "+
+			"only gets from the column-add pass, so migrate() fails on any database old enough to "+
+			"lack it. Move them into the indexes pass, which runs after the ALTERs:\n  %s",
 			strings.Join(offenders, "\n  "))
 	}
 }

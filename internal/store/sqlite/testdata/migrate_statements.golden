@@ -1,0 +1,1669 @@
+=== tables 0
+CREATE TABLE IF NOT EXISTS sessions (
+			id         TEXT PRIMARY KEY,
+			tenant_id  TEXT NOT NULL,
+			agent      TEXT NOT NULL,
+			created_at INTEGER NOT NULL  -- unix nano
+		)
+=== tables 1
+CREATE TABLE IF NOT EXISTS runs (
+			id                       TEXT PRIMARY KEY,
+			session_id               TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			status                   TEXT NOT NULL,
+			started_at               INTEGER NOT NULL,
+			completed_at             INTEGER,
+			stop_reason              TEXT,
+			input_tokens             INTEGER NOT NULL DEFAULT 0,
+			output_tokens            INTEGER NOT NULL DEFAULT 0,
+			cache_creation_tokens    INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens        INTEGER NOT NULL DEFAULT 0,
+			model                    TEXT,
+			-- v0.12.7+ — actual provider that served the final
+			-- successful iteration. Distinct from model so post-run
+			-- analysis can tell primary from fallback routing.
+			provider                 TEXT,
+			error                    TEXT
+		)
+=== tables 2
+CREATE INDEX IF NOT EXISTS runs_by_session ON runs(session_id)
+=== tables 3
+CREATE TABLE IF NOT EXISTS token_usage (
+			id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+			run_id                TEXT NOT NULL,
+			session_id            TEXT,
+			tenant_id             TEXT NOT NULL DEFAULT '',
+			user_id               TEXT,
+			agent_id              TEXT,
+			parent_run_id         TEXT,
+			iteration             INTEGER NOT NULL DEFAULT 0,
+			provider              TEXT NOT NULL,
+			model                 TEXT NOT NULL,
+			credential_source     TEXT NOT NULL,
+			credential_scope_id   TEXT NOT NULL DEFAULT '',
+			-- RFC DD: the run's own configuration record (opaque JSON).
+			-- NULL on a run that overrode nothing.
+			run_config            TEXT,
+			-- RFC DI: the run's answer (opaque JSON), written with the terminal
+			-- status. NULL while running and on a finish with nothing to report.
+			result                TEXT,
+			input_tokens          INTEGER NOT NULL DEFAULT 0,
+			output_tokens         INTEGER NOT NULL DEFAULT 0,
+			cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+			cost                  REAL,
+			cost_currency         TEXT,
+			ts                    INTEGER NOT NULL,
+			-- RFC DT: how long the call took, in ms. NULL = not measured
+			-- (a row from before timing existed, or a phase the driver could
+			-- not see) — never "took no time".
+			duration_ms           INTEGER,
+			ttft_ms               INTEGER,
+			load_ms               INTEGER,
+			prefill_ms            INTEGER,
+			decode_ms             INTEGER,
+			queue_ms              INTEGER,
+			-- What the call was for (chat | ocr | stt | tts) and, for speech,
+			-- how many seconds of audio it transcribed or produced. Mirrors
+			-- postgres 0113.
+			purpose               TEXT NOT NULL DEFAULT 'chat',
+			audio_seconds         REAL NOT NULL DEFAULT 0,
+			-- The characters a text-to-speech call sent to its engine; 0 on
+			-- every other row. Mirrors postgres 0116.
+			input_chars           INTEGER NOT NULL DEFAULT 0,
+			-- The model tier the call was resolved through ('pinned' for an
+			-- agent that names its model) and the run's user tier; '' when
+			-- unknown. Mirrors postgres 0125.
+			tier                  TEXT NOT NULL DEFAULT '',
+			user_tier             TEXT NOT NULL DEFAULT ''
+		)
+=== tables 4
+CREATE INDEX IF NOT EXISTS token_usage_by_run ON token_usage(run_id)
+=== tables 5
+CREATE INDEX IF NOT EXISTS token_usage_tenant_ts ON token_usage(tenant_id, ts)
+=== tables 6
+CREATE INDEX IF NOT EXISTS token_usage_source_ts ON token_usage(credential_source, ts)
+=== tables 7
+CREATE TABLE IF NOT EXISTS usage_archive (
+			period_start          INTEGER NOT NULL,
+			tenant_id             TEXT NOT NULL DEFAULT '',
+			user_id               TEXT NOT NULL DEFAULT '',
+			provider              TEXT NOT NULL,
+			model                 TEXT NOT NULL,
+			credential_source     TEXT NOT NULL,
+			input_tokens          INTEGER NOT NULL DEFAULT 0,
+			output_tokens         INTEGER NOT NULL DEFAULT 0,
+			cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+			cost                  REAL NOT NULL DEFAULT 0,
+			cost_currency         TEXT NOT NULL DEFAULT '',
+			call_count            INTEGER NOT NULL DEFAULT 0,
+			unpriced_calls        INTEGER NOT NULL DEFAULT 0,
+			-- Purpose is part of the key, so an archived day keeps chat, OCR
+			-- and STT apart; audio_seconds is summed. On a database created
+			-- before it, rebuildWidenedKeys swaps the old six-column key for
+			-- this one. Mirrors postgres 0113.
+			purpose               TEXT NOT NULL DEFAULT 'chat',
+			audio_seconds         REAL NOT NULL DEFAULT 0,
+			-- Summed like audio_seconds; the key is unchanged. Mirrors
+			-- postgres 0116.
+			input_chars           INTEGER NOT NULL DEFAULT 0,
+			-- Tier and user tier join the key, so an archived day keeps
+			-- them apart; rebuildWidenedKeys swaps an older key for this
+			-- one. Mirrors postgres 0125.
+			tier                  TEXT NOT NULL DEFAULT '',
+			user_tier             TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (period_start, tenant_id, user_id, provider, model, credential_source, purpose, tier, user_tier)
+		)
+=== tables 8
+CREATE INDEX IF NOT EXISTS usage_archive_tenant_period ON usage_archive(tenant_id, period_start)
+=== tables 9
+CREATE TABLE IF NOT EXISTS token_limits (
+			tenant_id   TEXT NOT NULL DEFAULT '',
+			scope       TEXT NOT NULL,
+			scope_id    TEXT NOT NULL DEFAULT '',
+			soft_limit  INTEGER,
+			hard_limit  INTEGER,
+			updated_at  INTEGER NOT NULL,
+			updated_by  TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, scope, scope_id)
+		)
+=== tables 10
+CREATE TABLE IF NOT EXISTS retention_overrides (
+			tenant_id  TEXT    NOT NULL DEFAULT '',
+			agent      TEXT    NOT NULL,
+			until      INTEGER NOT NULL,
+			set_by     TEXT    NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, agent)
+		)
+=== tables 11
+CREATE TABLE IF NOT EXISTS audit_events (
+			tenant_id TEXT    NOT NULL,
+			seq       INTEGER NOT NULL,
+			ts        INTEGER NOT NULL,
+			actor     TEXT    NOT NULL DEFAULT '',
+			action    TEXT    NOT NULL,
+			subject   TEXT    NOT NULL DEFAULT '',
+			payload   TEXT    NOT NULL,
+			prev_hash TEXT    NOT NULL DEFAULT '',
+			hash      TEXT    NOT NULL,
+			mac       TEXT    NOT NULL,
+			PRIMARY KEY (tenant_id, seq)
+		)
+=== tables 12
+CREATE TABLE IF NOT EXISTS audit_heads (
+			tenant_id   TEXT    PRIMARY KEY,
+			seq         INTEGER NOT NULL DEFAULT 0,
+			hash        TEXT    NOT NULL DEFAULT '',
+			mac         TEXT    NOT NULL DEFAULT '',
+			anchor_seq  INTEGER NOT NULL DEFAULT 0,
+			anchor_hash TEXT    NOT NULL DEFAULT '',
+			anchor_mac  TEXT    NOT NULL DEFAULT '',
+			anchor_state TEXT   NOT NULL DEFAULT ''
+		)
+=== tables 13
+CREATE TABLE IF NOT EXISTS ui_sessions (
+			session_hash        TEXT    PRIMARY KEY,
+			tenant_id           TEXT    NOT NULL,
+			subject             TEXT    NOT NULL,
+			gate                TEXT    NOT NULL,
+			amr                 TEXT    NOT NULL DEFAULT '[]',
+			cred_kind           TEXT    NOT NULL,
+			cred_ref            TEXT    NOT NULL DEFAULT '',
+			cred_mac            TEXT    NOT NULL,
+			ua_hash             TEXT    NOT NULL DEFAULT '',
+			ip_hash             TEXT    NOT NULL DEFAULT '',
+			created_at          INTEGER NOT NULL,
+			last_seen_at        INTEGER NOT NULL,
+			idle_expires_at     INTEGER NOT NULL,
+			absolute_expires_at INTEGER NOT NULL,
+			revoked_at          INTEGER
+		)
+=== tables 14
+CREATE TABLE IF NOT EXISTS usage_carry (
+			tenant_id  TEXT    NOT NULL DEFAULT '',
+			user_id    TEXT    NOT NULL DEFAULT '',
+			month      INTEGER NOT NULL,
+			tokens     INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, user_id, month)
+		)
+=== tables 15
+CREATE TABLE IF NOT EXISTS events (
+			seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			run_id     TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+			ts         INTEGER NOT NULL,
+			type       TEXT NOT NULL,
+			payload    BLOB NOT NULL
+		)
+=== tables 16
+CREATE INDEX IF NOT EXISTS events_by_session ON events(session_id, seq)
+=== tables 17
+CREATE TABLE IF NOT EXISTS memory_changes (
+			seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+			tenant_id   TEXT NOT NULL,
+			change_type TEXT NOT NULL,
+			scope       TEXT NOT NULL,
+			scope_id    TEXT NOT NULL,
+			key         TEXT NOT NULL DEFAULT '',
+			chunk_id    TEXT NOT NULL DEFAULT '',
+			at          INTEGER NOT NULL  -- unix nano
+		)
+=== tables 18
+CREATE INDEX IF NOT EXISTS memory_changes_by_tenant ON memory_changes(tenant_id, seq)
+=== tables 19
+CREATE INDEX IF NOT EXISTS memory_changes_by_at ON memory_changes(at)
+=== tables 20
+CREATE TABLE IF NOT EXISTS change_subscription_cursors (
+			name       TEXT PRIMARY KEY,
+			last_seq   INTEGER NOT NULL DEFAULT 0,
+			updated_at INTEGER NOT NULL  -- unix nano
+		)
+=== tables 21
+CREATE INDEX IF NOT EXISTS events_by_ts ON events(ts DESC)
+=== tables 22
+CREATE INDEX IF NOT EXISTS events_by_type_ts ON events(type, ts DESC)
+=== tables 23
+CREATE INDEX IF NOT EXISTS events_by_run_seq ON events(run_id, seq DESC)
+=== tables 24
+CREATE TABLE IF NOT EXISTS session_embeddings (
+			session_id  TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+			tenant_id   TEXT NOT NULL DEFAULT '',
+			user_id     TEXT,
+			agent       TEXT NOT NULL DEFAULT '',
+			provider    TEXT NOT NULL,
+			model       TEXT NOT NULL,
+			dimension   INTEGER NOT NULL,
+			vector      TEXT NOT NULL,
+			updated_at  INTEGER NOT NULL
+		)
+=== tables 25
+CREATE INDEX IF NOT EXISTS session_embeddings_by_owner ON session_embeddings(tenant_id, user_id, agent)
+=== tables 26
+CREATE TABLE IF NOT EXISTS memory (
+			scope             TEXT NOT NULL,
+			scope_id          TEXT NOT NULL,
+			key               TEXT NOT NULL,
+			value             TEXT NOT NULL,
+			expires_at        INTEGER,
+			created_at        INTEGER NOT NULL,
+			updated_at        INTEGER NOT NULL,
+			tenant_id         TEXT NOT NULL DEFAULT '',
+			origin            TEXT,
+			class             TEXT,
+			source_session_id TEXT,
+			source_run_id     TEXT,
+			access_count      INTEGER NOT NULL DEFAULT 0,
+			last_accessed_at  INTEGER,
+			superseded_at     INTEGER,
+			observed_at       INTEGER,
+			valid_at          INTEGER,
+			invalid_at        INTEGER,
+			PRIMARY KEY (tenant_id, scope, scope_id, key)
+		)
+=== tables 27
+CREATE INDEX IF NOT EXISTS memory_by_expires_at ON memory(expires_at) WHERE expires_at IS NOT NULL
+=== tables 28
+CREATE TABLE IF NOT EXISTS memory_pending (
+			id                TEXT    PRIMARY KEY,
+			tenant_id         TEXT    NOT NULL DEFAULT '',
+			scope             TEXT    NOT NULL,
+			scope_id          TEXT    NOT NULL,
+			payload           TEXT    NOT NULL,
+			origin            TEXT,
+			source_session_id TEXT,
+			source_run_id     TEXT,
+			created_at        INTEGER NOT NULL,
+			drained_at        INTEGER
+		)
+=== tables 29
+CREATE INDEX IF NOT EXISTS memory_pending_by_target ON memory_pending(tenant_id, scope, scope_id, drained_at)
+=== tables 30
+CREATE INDEX IF NOT EXISTS memory_pending_undrained_by_scope ON memory_pending(scope, created_at) WHERE drained_at IS NULL
+=== tables 31
+CREATE TABLE IF NOT EXISTS memory_cursors (
+			tenant_id              TEXT    NOT NULL DEFAULT '',
+			scope                  TEXT    NOT NULL,
+			scope_id               TEXT    NOT NULL,
+			watermark_completed_at INTEGER,
+			watermark_session_id   TEXT    NOT NULL DEFAULT '',
+			leased_by              TEXT    NOT NULL DEFAULT '',
+			lease_expires_at       INTEGER,
+			updated_at             INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, scope, scope_id)
+		)
+=== tables 32
+CREATE TABLE IF NOT EXISTS channel_messages (
+			id                   TEXT    NOT NULL,
+			channel              TEXT    NOT NULL,
+			scope                TEXT    NOT NULL,
+			scope_id             TEXT    NOT NULL,
+			payload              TEXT    NOT NULL,
+			published_at         INTEGER NOT NULL,
+			expires_at           INTEGER,
+			visible_at           INTEGER NOT NULL DEFAULT 0,
+			published_by_user_id TEXT,
+			tenant_id            TEXT    NOT NULL DEFAULT '',
+			origin               TEXT    NOT NULL DEFAULT '',
+			hook_tenant          TEXT,
+			requested_visible_at INTEGER,
+			PRIMARY KEY (tenant_id, channel, scope, scope_id, id)
+		)
+=== tables 33
+CREATE INDEX IF NOT EXISTS channel_messages_by_expires_at ON channel_messages(expires_at) WHERE expires_at IS NOT NULL
+=== tables 34
+CREATE TABLE IF NOT EXISTS channel_cursors (
+			channel    TEXT    NOT NULL,
+			scope      TEXT    NOT NULL,
+			scope_id   TEXT    NOT NULL,
+			cursor     TEXT    NOT NULL,
+			updated_at INTEGER NOT NULL,
+			tenant_id  TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, channel, scope, scope_id)
+		)
+=== tables 35
+CREATE TABLE IF NOT EXISTS channel_hook_state (
+			tenant_id       TEXT    NOT NULL,
+			channel         TEXT    NOT NULL,
+			scope           TEXT    NOT NULL,
+			scope_id        TEXT    NOT NULL,
+			id              TEXT    NOT NULL,
+			run_id          TEXT    NOT NULL DEFAULT '',
+			chain_pos       INTEGER NOT NULL DEFAULT 0,
+			body            TEXT,
+			journal         TEXT,
+			attempts        INTEGER NOT NULL DEFAULT 0,
+			next_attempt_at INTEGER NOT NULL DEFAULT 0,
+			last_error      TEXT    NOT NULL DEFAULT '',
+			lease_owner     TEXT    NOT NULL DEFAULT '',
+			lease_until     INTEGER NOT NULL DEFAULT 0,
+			created_at      INTEGER NOT NULL,
+			updated_at      INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, channel, scope, scope_id, id)
+		)
+=== tables 36
+CREATE TABLE IF NOT EXISTS channels (
+			name         TEXT    NOT NULL,
+			description  TEXT    NOT NULL DEFAULT '',
+			scope        TEXT    NOT NULL,
+			semantic     TEXT    NOT NULL,
+			default_ttl  INTEGER NOT NULL DEFAULT 0,
+			max_messages INTEGER NOT NULL DEFAULT 0,
+			publisher    TEXT    NOT NULL DEFAULT '',
+			period       TEXT    NOT NULL DEFAULT '',
+			hold         INTEGER NOT NULL DEFAULT 0,
+			hooks        TEXT,
+			created_at   INTEGER NOT NULL,
+			tenant_id    TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, name)
+		)
+=== tables 37
+CREATE TABLE IF NOT EXISTS users (
+			tenant_id    TEXT    NOT NULL DEFAULT '',
+			subject      TEXT    NOT NULL,
+			display_name TEXT    NOT NULL DEFAULT '',
+			access_mode  TEXT    NOT NULL DEFAULT 'tenant',
+			status       TEXT    NOT NULL DEFAULT 'active',
+			created_at   INTEGER NOT NULL,
+			created_by   TEXT,
+			PRIMARY KEY (tenant_id, subject)
+		)
+=== tables 38
+CREATE TABLE IF NOT EXISTS acl_defs (
+			tenant_id       TEXT    NOT NULL DEFAULT '',
+			name            TEXT    NOT NULL,
+			version         INTEGER NOT NULL DEFAULT 1,
+			content_sha256  TEXT    NOT NULL,
+			catalog_version INTEGER NOT NULL,
+			rules           TEXT    NOT NULL,
+			description     TEXT    NOT NULL DEFAULT '',
+			created_at      INTEGER NOT NULL,
+			updated_at      INTEGER NOT NULL,
+			created_by      TEXT    NOT NULL DEFAULT '',
+			retired_at      INTEGER,
+			PRIMARY KEY (tenant_id, name)
+		)
+=== tables 39
+CREATE TABLE IF NOT EXISTS user_groups (
+			tenant_id   TEXT    NOT NULL DEFAULT '',
+			name        TEXT    NOT NULL,
+			description TEXT    NOT NULL DEFAULT '',
+			external_id TEXT    NOT NULL DEFAULT '',
+			created_at  INTEGER NOT NULL,
+			updated_at  INTEGER NOT NULL,
+			created_by  TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, name)
+		)
+=== tables 40
+CREATE TABLE IF NOT EXISTS user_group_members (
+			tenant_id   TEXT    NOT NULL DEFAULT '',
+			group_name  TEXT    NOT NULL,
+			member_kind TEXT    NOT NULL,
+			member_id   TEXT    NOT NULL,
+			added_at    INTEGER NOT NULL,
+			added_by    TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, group_name, member_kind, member_id)
+		)
+=== tables 41
+CREATE INDEX IF NOT EXISTS user_group_members_by_member ON user_group_members(tenant_id, member_kind, member_id)
+=== tables 42
+CREATE TABLE IF NOT EXISTS acl_bindings (
+			binding_id   TEXT    PRIMARY KEY,
+			tenant_id    TEXT    NOT NULL DEFAULT '',
+			acl_name     TEXT    NOT NULL,
+			subject_kind TEXT    NOT NULL,
+			subject_id   TEXT    NOT NULL DEFAULT '',
+			expires_at   INTEGER,
+			created_at   INTEGER NOT NULL,
+			created_by   TEXT    NOT NULL DEFAULT '',
+			retired_at   INTEGER
+		)
+=== tables 43
+CREATE INDEX IF NOT EXISTS acl_bindings_by_subject ON acl_bindings(tenant_id, subject_kind, subject_id) WHERE retired_at IS NULL
+=== tables 44
+CREATE TABLE IF NOT EXISTS acl_version (
+			tenant_id  TEXT    PRIMARY KEY,
+			version    INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)
+=== tables 45
+CREATE TABLE IF NOT EXISTS user_identities (
+			tenant_id        TEXT    NOT NULL DEFAULT '',
+			subject          TEXT    NOT NULL,
+			gate             TEXT    NOT NULL,
+			issuer           TEXT    NOT NULL DEFAULT '',
+			external_subject TEXT    NOT NULL,
+			email            TEXT    NOT NULL DEFAULT '',
+			email_verified   INTEGER NOT NULL DEFAULT 0,
+			created_at       INTEGER NOT NULL,
+			last_login_at    INTEGER,
+			PRIMARY KEY (gate, issuer, external_subject),
+			UNIQUE (tenant_id, subject, gate)
+		)
+=== tables 46
+CREATE TABLE IF NOT EXISTS user_credentials (
+			tenant_id    TEXT    NOT NULL DEFAULT '',
+			subject      TEXT    NOT NULL,
+			kind         TEXT    NOT NULL,
+			phc          TEXT    NOT NULL,
+			pepper_kid   TEXT    NOT NULL DEFAULT '',
+			updated_at   INTEGER NOT NULL,
+			failed_count INTEGER NOT NULL DEFAULT 0,
+			locked_until INTEGER,
+			PRIMARY KEY (tenant_id, subject, kind)
+		)
+=== tables 47
+CREATE TABLE IF NOT EXISTS user_totp (
+			tenant_id    TEXT    NOT NULL DEFAULT '',
+			subject      TEXT    NOT NULL,
+			sealed       TEXT    NOT NULL,
+			created_at   INTEGER NOT NULL,
+			confirmed_at INTEGER,
+			last_step    INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (tenant_id, subject)
+		)
+=== tables 48
+CREATE TABLE IF NOT EXISTS user_recovery_codes (
+			tenant_id  TEXT    NOT NULL DEFAULT '',
+			subject    TEXT    NOT NULL,
+			code_hash  TEXT    NOT NULL,
+			created_at INTEGER NOT NULL,
+			used_at    INTEGER,
+			PRIMARY KEY (tenant_id, subject, code_hash)
+		)
+=== tables 49
+CREATE TABLE IF NOT EXISTS auth_invites (
+			invite_id        TEXT    PRIMARY KEY,
+			code_hash        TEXT    NOT NULL UNIQUE,
+			gate             TEXT    NOT NULL,
+			tenant_id        TEXT    NOT NULL DEFAULT '',
+			subject          TEXT    NOT NULL DEFAULT '',
+			access_mode      TEXT    NOT NULL DEFAULT '',
+			groups           TEXT    NOT NULL DEFAULT '[]',
+			login            TEXT    NOT NULL DEFAULT '',
+			email            TEXT    NOT NULL DEFAULT '',
+			return_to        TEXT    NOT NULL DEFAULT '',
+			bootstrap        INTEGER NOT NULL DEFAULT 0,
+			issued_by_manager INTEGER NOT NULL DEFAULT 0,
+			created_by       TEXT    NOT NULL DEFAULT '',
+			created_at       INTEGER NOT NULL,
+			expires_at       INTEGER NOT NULL,
+			redeemed_at      INTEGER,
+			redeemed_subject TEXT    NOT NULL DEFAULT '',
+			revoked_at       INTEGER
+		)
+=== tables 50
+CREATE INDEX IF NOT EXISTS auth_invites_by_gate_tenant ON auth_invites(gate, tenant_id)
+=== tables 51
+CREATE TABLE IF NOT EXISTS auth_resets (
+			reset_id   TEXT    PRIMARY KEY,
+			code_hash  TEXT    NOT NULL UNIQUE,
+			gate       TEXT    NOT NULL,
+			tenant_id  TEXT    NOT NULL DEFAULT '',
+			subject    TEXT    NOT NULL,
+			issued_by_manager INTEGER NOT NULL DEFAULT 0,
+			created_by TEXT    NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			used_at    INTEGER
+		)
+=== tables 52
+CREATE INDEX IF NOT EXISTS auth_resets_by_subject ON auth_resets(tenant_id, subject)
+=== tables 53
+CREATE TABLE IF NOT EXISTS tenant_bootstraps (
+			tenant_id TEXT    PRIMARY KEY,
+			at        INTEGER NOT NULL,
+			via       TEXT    NOT NULL DEFAULT ''
+		)
+=== tables 54
+INSERT OR IGNORE INTO tenant_bootstraps (tenant_id, at, via)
+			SELECT DISTINCT tenant_id, 0, 'backfill' FROM users
+=== tables 55
+CREATE TABLE IF NOT EXISTS auth_throttle (
+			throttle_key  TEXT    PRIMARY KEY,
+			failures      INTEGER NOT NULL DEFAULT 0,
+			window_start  INTEGER NOT NULL,
+			window_end    INTEGER NOT NULL,
+			blocked_until INTEGER
+		)
+=== tables 56
+CREATE TABLE IF NOT EXISTS auth_login_states (
+			state_hash        TEXT    PRIMARY KEY,
+			gate              TEXT    NOT NULL,
+			binding_hash      TEXT    NOT NULL,
+			purpose           TEXT    NOT NULL DEFAULT 'login',
+			return_to         TEXT    NOT NULL DEFAULT '',
+			reauth            INTEGER NOT NULL DEFAULT 0,
+			link_tenant       TEXT    NOT NULL DEFAULT '',
+			link_subject      TEXT    NOT NULL DEFAULT '',
+			link_session_hash TEXT    NOT NULL DEFAULT '',
+			created_at        INTEGER NOT NULL,
+			expires_at        INTEGER NOT NULL,
+			consumed_at       INTEGER
+		)
+=== tables 57
+CREATE TABLE IF NOT EXISTS auth_assertion_jtis (
+			gate       TEXT    NOT NULL,
+			jti        TEXT    NOT NULL,
+			expires_at INTEGER NOT NULL,
+			PRIMARY KEY (gate, jti)
+		)
+=== tables 58
+CREATE INDEX IF NOT EXISTS auth_assertion_jtis_by_expiry ON auth_assertion_jtis(expires_at)
+=== tables 59
+CREATE TABLE IF NOT EXISTS auth_removals (
+			tenant_id     TEXT    NOT NULL DEFAULT '',
+			subject       TEXT    NOT NULL,
+			gate          TEXT    NOT NULL DEFAULT '',
+			reason        TEXT    NOT NULL,
+			disabled_at   INTEGER NOT NULL,
+			unbind_due_at INTEGER NOT NULL,
+			erase_due_at  INTEGER,
+			unbound_at    INTEGER,
+			erased_at     INTEGER,
+			created_by    TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, subject)
+		)
+=== tables 60
+CREATE INDEX IF NOT EXISTS auth_removals_by_unbind_due ON auth_removals(unbind_due_at) WHERE unbound_at IS NULL
+=== tables 61
+CREATE TABLE IF NOT EXISTS device_authorizations (
+			device_code_hash TEXT    PRIMARY KEY,
+			user_code_hash   TEXT    NOT NULL UNIQUE,
+			client_id        TEXT    NOT NULL,
+			source_addr      TEXT    NOT NULL DEFAULT '',
+			created_at       INTEGER NOT NULL,
+			expires_at       INTEGER NOT NULL,
+			interval_ms      INTEGER NOT NULL,
+			last_polled_at   INTEGER,
+			last_poll_early  INTEGER NOT NULL DEFAULT 0,
+			status           TEXT    NOT NULL DEFAULT 'pending',
+			decided_tenant   TEXT    NOT NULL DEFAULT '',
+			decided_subject  TEXT    NOT NULL DEFAULT '',
+			decided_gate     TEXT    NOT NULL DEFAULT '',
+			decided_at       INTEGER,
+			decided_session  TEXT    NOT NULL DEFAULT '',
+			decided_cred_mac TEXT    NOT NULL DEFAULT '',
+			decided_not_after INTEGER,
+			redeemed_at      INTEGER
+		)
+=== tables 62
+CREATE INDEX IF NOT EXISTS device_authorizations_by_expiry ON device_authorizations(expires_at)
+=== tables 63
+CREATE TABLE IF NOT EXISTS tenant_auth_policies (
+			tenant_id  TEXT    PRIMARY KEY,
+			gates      TEXT    NOT NULL,
+			updated_at INTEGER NOT NULL,
+			updated_by TEXT    NOT NULL DEFAULT ''
+		)
+=== tables 64
+CREATE TABLE IF NOT EXISTS oauth_codes (
+			code_hash      TEXT    PRIMARY KEY,
+			client_id      TEXT    NOT NULL,
+			redirect_uri   TEXT    NOT NULL,
+			code_challenge TEXT    NOT NULL,
+			tenant_id      TEXT    NOT NULL,
+			subject        TEXT    NOT NULL,
+			gate           TEXT    NOT NULL,
+			amr            TEXT    NOT NULL DEFAULT '[]',
+			session_hash   TEXT    NOT NULL DEFAULT '',
+			scope_cap      TEXT    NOT NULL DEFAULT '[]',
+			restrictions   TEXT    NOT NULL DEFAULT '',
+			created_at     INTEGER NOT NULL,
+			expires_at     INTEGER NOT NULL,
+			consumed_at    INTEGER,
+			family_id      TEXT    NOT NULL DEFAULT ''
+		)
+=== tables 65
+CREATE INDEX IF NOT EXISTS oauth_codes_by_expiry ON oauth_codes(expires_at)
+=== tables 66
+CREATE INDEX IF NOT EXISTS oauth_codes_by_client ON oauth_codes(client_id) WHERE consumed_at IS NULL
+=== tables 67
+CREATE TABLE IF NOT EXISTS oauth_refresh_families (
+			family_id           TEXT    PRIMARY KEY,
+			client_id           TEXT    NOT NULL DEFAULT '',
+			tenant_id           TEXT    NOT NULL DEFAULT '',
+			subject             TEXT    NOT NULL DEFAULT '',
+			gate                TEXT    NOT NULL DEFAULT '',
+			amr                 TEXT    NOT NULL DEFAULT '[]',
+			scope_cap           TEXT    NOT NULL DEFAULT '[]',
+			restrictions        TEXT    NOT NULL DEFAULT '',
+			created_at          INTEGER NOT NULL,
+			last_used_at        INTEGER NOT NULL,
+			idle_expires_at     INTEGER NOT NULL,
+			absolute_expires_at INTEGER NOT NULL,
+			revoked_at          INTEGER,
+			revoke_reason       TEXT    NOT NULL DEFAULT ''
+		)
+=== tables 68
+CREATE INDEX IF NOT EXISTS oauth_refresh_families_by_client ON oauth_refresh_families(client_id) WHERE revoked_at IS NULL
+=== tables 69
+CREATE INDEX IF NOT EXISTS oauth_refresh_families_by_subject ON oauth_refresh_families(tenant_id, subject)
+=== tables 70
+CREATE INDEX IF NOT EXISTS oauth_refresh_families_by_expiry ON oauth_refresh_families(absolute_expires_at)
+=== tables 71
+CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+			token_hash TEXT    PRIMARY KEY,
+			family_id  TEXT    NOT NULL,
+			created_at INTEGER NOT NULL,
+			used_at    INTEGER
+		)
+=== tables 72
+CREATE INDEX IF NOT EXISTS oauth_refresh_tokens_by_family ON oauth_refresh_tokens(family_id)
+=== tables 73
+CREATE TABLE IF NOT EXISTS client_defs (
+			def_id            TEXT    PRIMARY KEY,
+			name              TEXT    NOT NULL,
+			tenant_id         TEXT    NOT NULL DEFAULT '',
+			version           INTEGER NOT NULL,
+			definition        TEXT    NOT NULL,
+			content_sha256    TEXT    NOT NULL,
+			description       TEXT    NOT NULL DEFAULT '',
+			created_at        INTEGER NOT NULL,
+			created_by        TEXT    NOT NULL DEFAULT '',
+			created_by_tenant TEXT    NOT NULL DEFAULT '',
+			retired_at        INTEGER,
+			UNIQUE (name, version)
+		)
+=== tables 74
+CREATE INDEX IF NOT EXISTS client_defs_by_tenant ON client_defs(tenant_id)
+=== tables 75
+CREATE TABLE IF NOT EXISTS user_passkeys (
+			credential_id      TEXT    PRIMARY KEY,
+			tenant_id          TEXT    NOT NULL DEFAULT '',
+			subject            TEXT    NOT NULL,
+			user_handle        TEXT    NOT NULL,
+			public_key         TEXT    NOT NULL,
+			attestation_type   TEXT    NOT NULL DEFAULT '',
+			attestation_format TEXT    NOT NULL DEFAULT '',
+			transports         TEXT    NOT NULL DEFAULT '[]',
+			flags              INTEGER NOT NULL DEFAULT 0,
+			aaguid             TEXT    NOT NULL DEFAULT '',
+			sign_count         INTEGER NOT NULL DEFAULT 0,
+			attachment         TEXT    NOT NULL DEFAULT '',
+			discoverable       INTEGER NOT NULL DEFAULT 0,
+			name               TEXT    NOT NULL DEFAULT '',
+			created_at         INTEGER NOT NULL,
+			last_used_at       INTEGER,
+			flagged_at         INTEGER,
+			flag_reason        TEXT    NOT NULL DEFAULT ''
+		)
+=== tables 76
+CREATE INDEX IF NOT EXISTS user_passkeys_by_subject ON user_passkeys(tenant_id, subject)
+=== tables 77
+CREATE TABLE IF NOT EXISTS webauthn_ceremonies (
+			ceremony_hash TEXT    PRIMARY KEY,
+			kind          TEXT    NOT NULL,
+			gate          TEXT    NOT NULL DEFAULT '',
+			tenant_id     TEXT    NOT NULL DEFAULT '',
+			subject       TEXT    NOT NULL DEFAULT '',
+			binding       TEXT    NOT NULL DEFAULT '',
+			session_data  TEXT    NOT NULL,
+			created_at    INTEGER NOT NULL,
+			expires_at    INTEGER NOT NULL
+		)
+=== tables 78
+CREATE TABLE IF NOT EXISTS scim_users (
+			gate          TEXT    NOT NULL,
+			tenant_id     TEXT    NOT NULL,
+			scim_id       TEXT    NOT NULL,
+			subject       TEXT    NOT NULL,
+			user_name     TEXT    NOT NULL,
+			user_name_key TEXT    NOT NULL,
+			external_id   TEXT    NOT NULL DEFAULT '',
+			attributes    TEXT    NOT NULL DEFAULT '{}',
+			version       INTEGER NOT NULL DEFAULT 1,
+			created_at    INTEGER NOT NULL,
+			updated_at    INTEGER NOT NULL,
+			deleted_at    INTEGER,
+			PRIMARY KEY (gate, tenant_id, scim_id)
+		)
+=== tables 79
+CREATE UNIQUE INDEX IF NOT EXISTS scim_users_live_name ON scim_users(gate, tenant_id, user_name_key) WHERE deleted_at IS NULL
+=== tables 80
+CREATE UNIQUE INDEX IF NOT EXISTS scim_users_live_subject ON scim_users(gate, tenant_id, subject) WHERE deleted_at IS NULL
+=== tables 81
+CREATE TABLE IF NOT EXISTS scim_groups (
+			gate         TEXT    NOT NULL,
+			tenant_id    TEXT    NOT NULL,
+			scim_id      TEXT    NOT NULL,
+			display_name TEXT    NOT NULL,
+			display_key  TEXT    NOT NULL,
+			external_id  TEXT    NOT NULL DEFAULT '',
+			version      INTEGER NOT NULL DEFAULT 1,
+			created_at   INTEGER NOT NULL,
+			updated_at   INTEGER NOT NULL,
+			PRIMARY KEY (gate, tenant_id, scim_id),
+			UNIQUE (gate, tenant_id, display_key)
+		)
+=== tables 82
+CREATE TABLE IF NOT EXISTS scim_group_members (
+			gate      TEXT NOT NULL,
+			tenant_id TEXT NOT NULL,
+			group_id  TEXT NOT NULL,
+			subject   TEXT NOT NULL,
+			PRIMARY KEY (gate, tenant_id, group_id, subject)
+		)
+=== tables 83
+CREATE INDEX IF NOT EXISTS scim_group_members_by_subject ON scim_group_members(gate, tenant_id, subject)
+=== tables 84
+CREATE TABLE IF NOT EXISTS agent_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES agent_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			content_sha256            TEXT,
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			operator_authored         INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(tenant_id, name, version)
+		)
+=== tables 85
+CREATE INDEX IF NOT EXISTS agent_defs_by_name   ON agent_defs(name, version DESC)
+=== tables 86
+CREATE INDEX IF NOT EXISTS agent_defs_by_parent ON agent_defs(parent_def_id) WHERE parent_def_id IS NOT NULL
+=== tables 87
+CREATE INDEX IF NOT EXISTS agent_defs_by_run    ON agent_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL
+=== tables 88
+CREATE TABLE IF NOT EXISTS agent_def_active (
+			name                  TEXT    NOT NULL,
+			def_id                TEXT    NOT NULL REFERENCES agent_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
+		)
+=== tables 89
+CREATE TABLE IF NOT EXISTS skill_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES skill_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			content_sha256            TEXT,
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
+		)
+=== tables 90
+CREATE INDEX IF NOT EXISTS skill_defs_by_name   ON skill_defs(name, version DESC)
+=== tables 91
+CREATE INDEX IF NOT EXISTS skill_defs_by_parent ON skill_defs(parent_def_id) WHERE parent_def_id IS NOT NULL
+=== tables 92
+CREATE INDEX IF NOT EXISTS skill_defs_by_run    ON skill_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL
+=== tables 93
+CREATE TABLE IF NOT EXISTS skill_def_active (
+			name                  TEXT    NOT NULL,
+			def_id                TEXT    NOT NULL REFERENCES skill_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
+		)
+=== tables 94
+CREATE TABLE IF NOT EXISTS teamdefs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES teamdefs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			content_sha256            TEXT,
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			operator_authored         INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(tenant_id, name, version)
+		)
+=== tables 95
+CREATE INDEX IF NOT EXISTS teamdefs_by_name   ON teamdefs(name, version DESC)
+=== tables 96
+CREATE INDEX IF NOT EXISTS teamdefs_by_parent ON teamdefs(parent_def_id) WHERE parent_def_id IS NOT NULL
+=== tables 97
+CREATE INDEX IF NOT EXISTS teamdefs_by_run    ON teamdefs(created_by_run_id) WHERE created_by_run_id IS NOT NULL
+=== tables 98
+CREATE TABLE IF NOT EXISTS teamdef_active (
+			name                  TEXT    NOT NULL,
+			def_id                TEXT    NOT NULL REFERENCES teamdefs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			promoter_operator_key_restricted INTEGER,
+			promoter_isolated                INTEGER,
+			promoter_acl_owner               TEXT,
+			PRIMARY KEY(tenant_id, name)
+		)
+=== tables 99
+CREATE TABLE IF NOT EXISTS team_webhook_arms (
+			tenant_id   TEXT    NOT NULL DEFAULT '',
+			team        TEXT    NOT NULL,
+			name        TEXT    NOT NULL,
+			walk_run_id TEXT    NOT NULL,
+			def_id      TEXT    NOT NULL,
+			user_id     TEXT    NOT NULL DEFAULT '',
+			armed_at    INTEGER NOT NULL,
+			expires_at  INTEGER NOT NULL,
+			PRIMARY KEY(tenant_id, team, name, walk_run_id)
+		)
+=== tables 100
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+			delivery_key TEXT    PRIMARY KEY,
+			expires_at   INTEGER NOT NULL
+		)
+=== tables 101
+CREATE INDEX IF NOT EXISTS webhook_deliveries_by_expires_at ON webhook_deliveries(expires_at)
+=== tables 102
+CREATE TABLE IF NOT EXISTS webhook_delivery_counts (
+			tenant_id TEXT    NOT NULL,
+			name      TEXT    NOT NULL,
+			static    INTEGER NOT NULL,
+			outcome   TEXT    NOT NULL,
+			reason    TEXT    NOT NULL,
+			count     INTEGER NOT NULL,
+			last_at   INTEGER NOT NULL,
+			PRIMARY KEY(tenant_id, name, static, outcome, reason)
+		)
+=== tables 103
+CREATE TABLE IF NOT EXISTS hook_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES hook_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			content_sha256            TEXT,
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
+		)
+=== tables 104
+CREATE INDEX IF NOT EXISTS hook_defs_by_name           ON hook_defs(name, version DESC)
+=== tables 105
+CREATE INDEX IF NOT EXISTS hook_defs_by_parent         ON hook_defs(parent_def_id) WHERE parent_def_id IS NOT NULL
+=== tables 106
+CREATE INDEX IF NOT EXISTS hook_defs_by_run            ON hook_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL
+=== tables 107
+CREATE INDEX IF NOT EXISTS hook_defs_by_content_sha256 ON hook_defs(content_sha256) WHERE content_sha256 IS NOT NULL
+=== tables 108
+CREATE TABLE IF NOT EXISTS hook_def_active (
+			name                  TEXT    NOT NULL,
+			def_id                TEXT    NOT NULL REFERENCES hook_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
+		)
+=== tables 109
+CREATE TABLE IF NOT EXISTS mcp_server_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES mcp_server_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			content_sha256            TEXT,
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
+		)
+=== tables 110
+CREATE INDEX IF NOT EXISTS mcp_server_defs_by_name   ON mcp_server_defs(name, version DESC)
+=== tables 111
+CREATE INDEX IF NOT EXISTS mcp_server_defs_by_parent ON mcp_server_defs(parent_def_id) WHERE parent_def_id IS NOT NULL
+=== tables 112
+CREATE INDEX IF NOT EXISTS mcp_server_defs_by_run    ON mcp_server_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL
+=== tables 113
+CREATE TABLE IF NOT EXISTS mcp_server_def_active (
+			name                  TEXT    NOT NULL,
+			def_id                TEXT    NOT NULL REFERENCES mcp_server_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
+		)
+=== tables 114
+CREATE TABLE IF NOT EXISTS schedule_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES schedule_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
+		)
+=== tables 115
+CREATE INDEX IF NOT EXISTS schedule_defs_by_name   ON schedule_defs(name, version DESC)
+=== tables 116
+CREATE INDEX IF NOT EXISTS schedule_defs_by_parent ON schedule_defs(parent_def_id) WHERE parent_def_id IS NOT NULL
+=== tables 117
+CREATE INDEX IF NOT EXISTS schedule_defs_by_run    ON schedule_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL
+=== tables 118
+CREATE TABLE IF NOT EXISTS schedule_def_active (
+			name                  TEXT    NOT NULL,
+			def_id                TEXT    NOT NULL REFERENCES schedule_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
+		)
+=== tables 119
+CREATE TABLE IF NOT EXISTS schedule_run_state (
+			def_id          TEXT    PRIMARY KEY REFERENCES schedule_defs(def_id) ON DELETE CASCADE,
+			last_run_at     INTEGER,
+			last_run_id     TEXT,
+			last_status     TEXT,
+			last_error      TEXT,
+			next_run_at     INTEGER NOT NULL,
+			paused_until    INTEGER,
+			fire_count      INTEGER NOT NULL DEFAULT 0,
+			slot_at         INTEGER,
+			claimed_by      TEXT,
+			claimed_at      INTEGER,
+			finished_at     INTEGER,
+			catch_up_until  INTEGER,
+			missed_slots    INTEGER NOT NULL DEFAULT 0
+		)
+=== tables 120
+CREATE INDEX IF NOT EXISTS schedule_run_state_due ON schedule_run_state(next_run_at)
+=== tables 121
+CREATE TABLE IF NOT EXISTS schedule_active_runs (
+			run_id     TEXT PRIMARY KEY,
+			def_id     TEXT NOT NULL,
+			slot_at    INTEGER NOT NULL,
+			catch_up   INTEGER NOT NULL DEFAULT 0,
+			started_at INTEGER NOT NULL,
+			claimed_by TEXT
+		)
+=== tables 122
+CREATE INDEX IF NOT EXISTS schedule_active_runs_def ON schedule_active_runs(def_id, started_at)
+=== tables 123
+CREATE TABLE IF NOT EXISTS a2a_server_card_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES a2a_server_card_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
+		)
+=== tables 124
+CREATE INDEX IF NOT EXISTS a2a_server_card_defs_by_name   ON a2a_server_card_defs(name, version DESC)
+=== tables 125
+CREATE INDEX IF NOT EXISTS a2a_server_card_defs_by_parent ON a2a_server_card_defs(parent_def_id) WHERE parent_def_id IS NOT NULL
+=== tables 126
+CREATE INDEX IF NOT EXISTS a2a_server_card_defs_by_run    ON a2a_server_card_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL
+=== tables 127
+CREATE TABLE IF NOT EXISTS a2a_server_card_def_active (
+			name                  TEXT    NOT NULL,
+			def_id                TEXT    NOT NULL REFERENCES a2a_server_card_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
+		)
+=== tables 128
+CREATE TABLE IF NOT EXISTS a2a_agent_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES a2a_agent_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
+		)
+=== tables 129
+CREATE INDEX IF NOT EXISTS a2a_agent_defs_by_name   ON a2a_agent_defs(name, version DESC)
+=== tables 130
+CREATE INDEX IF NOT EXISTS a2a_agent_defs_by_parent ON a2a_agent_defs(parent_def_id) WHERE parent_def_id IS NOT NULL
+=== tables 131
+CREATE INDEX IF NOT EXISTS a2a_agent_defs_by_run    ON a2a_agent_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL
+=== tables 132
+CREATE TABLE IF NOT EXISTS a2a_agent_def_active (
+			name                  TEXT    NOT NULL,
+			def_id                TEXT    NOT NULL REFERENCES a2a_agent_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
+		)
+=== tables 133
+CREATE TABLE IF NOT EXISTS webhook_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES webhook_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
+		)
+=== tables 134
+CREATE INDEX IF NOT EXISTS webhook_defs_by_name   ON webhook_defs(name, version DESC)
+=== tables 135
+CREATE INDEX IF NOT EXISTS webhook_defs_by_parent ON webhook_defs(parent_def_id) WHERE parent_def_id IS NOT NULL
+=== tables 136
+CREATE INDEX IF NOT EXISTS webhook_defs_by_run    ON webhook_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL
+=== tables 137
+CREATE TABLE IF NOT EXISTS webhook_def_active (
+			name                  TEXT    NOT NULL,
+			def_id                TEXT    NOT NULL REFERENCES webhook_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
+		)
+=== tables 138
+CREATE TABLE IF NOT EXISTS memory_backend_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES memory_backend_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
+		)
+=== tables 139
+CREATE INDEX IF NOT EXISTS memory_backend_defs_by_name   ON memory_backend_defs(name, version DESC)
+=== tables 140
+CREATE INDEX IF NOT EXISTS memory_backend_defs_by_parent ON memory_backend_defs(parent_def_id) WHERE parent_def_id IS NOT NULL
+=== tables 141
+CREATE INDEX IF NOT EXISTS memory_backend_defs_by_run    ON memory_backend_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL
+=== tables 142
+CREATE TABLE IF NOT EXISTS memory_backend_def_active (
+			name                  TEXT    NOT NULL,
+			def_id                TEXT    NOT NULL REFERENCES memory_backend_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
+		)
+=== tables 143
+CREATE TABLE IF NOT EXISTS document_source_defs (
+			def_id                    TEXT    PRIMARY KEY,
+			name                      TEXT    NOT NULL,
+			version                   INTEGER NOT NULL,
+			parent_def_id             TEXT    REFERENCES document_source_defs(def_id),
+			definition                TEXT    NOT NULL,
+			description               TEXT,
+			created_at                INTEGER NOT NULL,
+			created_by_agent_id       TEXT,
+			created_by_run_id         TEXT,
+			retired                   INTEGER NOT NULL DEFAULT 0,
+			bootstrapped_from_static  INTEGER NOT NULL DEFAULT 0,
+			tenant_id                 TEXT    NOT NULL DEFAULT '',
+			UNIQUE(tenant_id, name, version)
+		)
+=== tables 144
+CREATE INDEX IF NOT EXISTS document_source_defs_by_name   ON document_source_defs(name, version DESC)
+=== tables 145
+CREATE INDEX IF NOT EXISTS document_source_defs_by_parent ON document_source_defs(parent_def_id) WHERE parent_def_id IS NOT NULL
+=== tables 146
+CREATE INDEX IF NOT EXISTS document_source_defs_by_run    ON document_source_defs(created_by_run_id) WHERE created_by_run_id IS NOT NULL
+=== tables 147
+CREATE TABLE IF NOT EXISTS document_source_def_active (
+			name                  TEXT    NOT NULL,
+			def_id                TEXT    NOT NULL REFERENCES document_source_defs(def_id),
+			promoted_at           INTEGER NOT NULL,
+			promoted_by_agent_id  TEXT,
+			tenant_id             TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
+		)
+=== tables 148
+CREATE TABLE IF NOT EXISTS volume_defs (
+			tenant_id   TEXT NOT NULL DEFAULT '',
+			name        TEXT NOT NULL,
+			definition  TEXT NOT NULL,
+			created_at  INTEGER NOT NULL,
+			updated_at  INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, name)
+		)
+=== tables 149
+CREATE TABLE IF NOT EXISTS credential_defs (
+			tenant_id   TEXT NOT NULL DEFAULT '',
+			scope       TEXT NOT NULL,
+			scope_id    TEXT NOT NULL DEFAULT '',
+			name        TEXT NOT NULL,
+			backend     TEXT NOT NULL,
+			definition  TEXT NOT NULL,
+			expires_at  INTEGER,
+			created_at  INTEGER NOT NULL,
+			updated_at  INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, scope, scope_id, name)
+		)
+=== tables 150
+CREATE TABLE IF NOT EXISTS dirents (
+			tenant_id    TEXT NOT NULL DEFAULT '',
+			scope        TEXT NOT NULL,
+			scope_id     TEXT NOT NULL DEFAULT '',
+			parent_path  TEXT NOT NULL,
+			name         TEXT NOT NULL,
+			kind         TEXT NOT NULL,
+			resource_ref TEXT NOT NULL,
+			created_at   INTEGER NOT NULL,
+			updated_at   INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, scope, scope_id, parent_path, name)
+		)
+=== tables 151
+CREATE INDEX IF NOT EXISTS dirents_document_id ON dirents (tenant_id, scope, scope_id, json_extract(resource_ref, '$.document_id')) WHERE kind = 'document'
+=== tables 152
+CREATE TABLE IF NOT EXISTS ephemeral_volume_defs (
+			root_run_id TEXT NOT NULL,
+			name        TEXT NOT NULL,
+			tenant_id   TEXT NOT NULL DEFAULT '',
+			definition  TEXT NOT NULL,
+			created_at  INTEGER NOT NULL,
+			PRIMARY KEY (root_run_id, name)
+		)
+=== tables 153
+CREATE TABLE IF NOT EXISTS operator_token_defs (
+			def_id               TEXT    PRIMARY KEY,
+			name                 TEXT    NOT NULL,
+			tenant_id            TEXT    NOT NULL,
+			subject              TEXT    NOT NULL,
+			token_hash           TEXT    NOT NULL,
+			allowed_scopes       TEXT    NOT NULL,
+			created_at           INTEGER NOT NULL,
+			created_by_agent_id  TEXT,
+			created_by_run_id    TEXT,
+			rotated_from         TEXT    REFERENCES operator_token_defs(def_id),
+			retired_at           INTEGER,
+			UNIQUE(token_hash)
+		)
+=== tables 154
+CREATE UNIQUE INDEX IF NOT EXISTS idx_operator_token_hash ON operator_token_defs(token_hash)
+=== tables 155
+CREATE INDEX IF NOT EXISTS operator_token_defs_by_name ON operator_token_defs(name, created_at DESC)
+=== tables 156
+CREATE TABLE IF NOT EXISTS evaluations (
+			eval_id            TEXT    PRIMARY KEY,
+			run_id             TEXT    NOT NULL,
+			def_id             TEXT,
+			score              REAL    NOT NULL,
+			dimensions         TEXT,
+			judgement          TEXT,
+			rationale          TEXT,
+			emitter_role       TEXT    NOT NULL,
+			emitter_agent_id   TEXT,
+			emitter_run_id     TEXT,
+			created_at         INTEGER NOT NULL
+		)
+=== tables 157
+CREATE INDEX IF NOT EXISTS evaluations_by_run     ON evaluations(run_id)
+=== tables 158
+CREATE INDEX IF NOT EXISTS evaluations_by_def     ON evaluations(def_id) WHERE def_id IS NOT NULL
+=== tables 159
+CREATE INDEX IF NOT EXISTS evaluations_by_emitter ON evaluations(emitter_agent_id) WHERE emitter_agent_id IS NOT NULL
+=== tables 160
+CREATE TABLE IF NOT EXISTS process_samples (
+			sample_id                  TEXT    PRIMARY KEY,
+			replica_id                 TEXT,
+			sampled_at                 INTEGER NOT NULL,
+			active_runs                INTEGER NOT NULL,
+			queued_runs                INTEGER NOT NULL,
+			loomcycle_rss_bytes        INTEGER NOT NULL DEFAULT 0,
+			loomcycle_heap_alloc_bytes INTEGER NOT NULL DEFAULT 0,
+			loomcycle_heap_inuse_bytes INTEGER NOT NULL DEFAULT 0,
+			loomcycle_num_goroutines   INTEGER NOT NULL DEFAULT 0,
+			loomcycle_cpu_pct_x100     INTEGER NOT NULL DEFAULT 0,
+			system_cpu_pct_x100        INTEGER,
+			system_mem_used_mb         INTEGER,
+			system_mem_available_mb    INTEGER
+		)
+=== tables 161
+CREATE TABLE IF NOT EXISTS dynamic_agents (
+			name        TEXT    NOT NULL,
+			definition  BLOB    NOT NULL,
+			created_at  INTEGER NOT NULL,
+			expires_at  INTEGER NOT NULL DEFAULT 0,
+			description TEXT,
+			tenant_id   TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY(tenant_id, name)
+		)
+=== tables 162
+CREATE TABLE IF NOT EXISTS interrupts (
+			interrupt_id    TEXT    PRIMARY KEY,
+			run_id          TEXT    NOT NULL,
+			kind            TEXT    NOT NULL DEFAULT 'question',
+			status          TEXT    NOT NULL DEFAULT 'pending',
+			question        TEXT,
+			options         TEXT,
+			context_data    TEXT,
+			priority        TEXT    NOT NULL DEFAULT 'normal',
+			answer          TEXT,
+			answer_meta     TEXT,
+			created_at      INTEGER NOT NULL,
+			expires_at      INTEGER,
+			resolved_at     INTEGER,
+			resolved_by     TEXT,
+			user_id         TEXT,
+			agent_id        TEXT,
+			agent_name      TEXT
+		)
+=== tables 163
+CREATE TABLE IF NOT EXISTS snapshots (
+			id             TEXT PRIMARY KEY,
+			created_at     INTEGER NOT NULL,
+			label          TEXT,
+			schema_version INTEGER NOT NULL,
+			byte_size      INTEGER NOT NULL,
+			json_content   TEXT NOT NULL
+		)
+=== tables 164
+CREATE INDEX IF NOT EXISTS snapshots_by_created_at_desc ON snapshots(created_at DESC)
+=== columns 0
+ALTER TABLE sessions ADD COLUMN user_id TEXT
+=== columns 1
+ALTER TABLE runs ADD COLUMN agent_id TEXT
+=== columns 2
+ALTER TABLE runs ADD COLUMN parent_agent_id TEXT
+=== columns 3
+ALTER TABLE runs ADD COLUMN parent_run_id TEXT
+=== columns 4
+ALTER TABLE runs ADD COLUMN user_id TEXT
+=== columns 5
+ALTER TABLE runs ADD COLUMN last_heartbeat_at INTEGER
+=== columns 6
+ALTER TABLE runs ADD COLUMN user_tier TEXT
+=== columns 7
+ALTER TABLE runs ADD COLUMN agent_def_id TEXT
+=== columns 8
+ALTER TABLE runs ADD COLUMN pause_state TEXT NOT NULL DEFAULT 'running'
+=== columns 9
+ALTER TABLE channel_messages ADD COLUMN visible_at INTEGER NOT NULL DEFAULT 0
+=== columns 10
+ALTER TABLE channel_messages ADD COLUMN published_by_user_id TEXT
+=== columns 11
+ALTER TABLE channel_messages ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 12
+ALTER TABLE channel_cursors ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 13
+ALTER TABLE channels ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 14
+ALTER TABLE channels ADD COLUMN hold INTEGER NOT NULL DEFAULT 0
+=== columns 15
+ALTER TABLE channels ADD COLUMN hooks TEXT
+=== columns 16
+ALTER TABLE channel_messages ADD COLUMN origin TEXT NOT NULL DEFAULT ''
+=== columns 17
+ALTER TABLE channel_messages ADD COLUMN hook_tenant TEXT
+=== columns 18
+ALTER TABLE channel_messages ADD COLUMN requested_visible_at INTEGER
+=== columns 19
+ALTER TABLE agent_defs ADD COLUMN content_sha256 TEXT
+=== columns 20
+ALTER TABLE skill_defs ADD COLUMN content_sha256 TEXT
+=== columns 21
+ALTER TABLE runs ADD COLUMN provider TEXT
+=== columns 22
+ALTER TABLE process_samples ADD COLUMN replica_id TEXT
+=== columns 23
+ALTER TABLE runs ADD COLUMN parent_context TEXT
+=== columns 24
+ALTER TABLE runs ADD COLUMN idempotency_key TEXT
+=== columns 25
+ALTER TABLE runs ADD COLUMN tenant_id TEXT
+=== columns 26
+ALTER TABLE agent_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 27
+ALTER TABLE agent_defs ADD COLUMN operator_authored INTEGER NOT NULL DEFAULT 0
+=== columns 28
+ALTER TABLE teamdefs ADD COLUMN operator_authored INTEGER NOT NULL DEFAULT 0
+=== columns 29
+ALTER TABLE teamdef_active ADD COLUMN promoter_operator_key_restricted INTEGER
+=== columns 30
+ALTER TABLE teamdef_active ADD COLUMN promoter_isolated INTEGER
+=== columns 31
+ALTER TABLE agent_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 32
+ALTER TABLE dynamic_agents ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 33
+ALTER TABLE skill_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 34
+ALTER TABLE skill_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 35
+ALTER TABLE mcp_server_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 36
+ALTER TABLE mcp_server_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 37
+ALTER TABLE memory_backend_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 38
+ALTER TABLE memory_backend_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 39
+ALTER TABLE a2a_agent_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 40
+ALTER TABLE a2a_agent_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 41
+ALTER TABLE schedule_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 42
+ALTER TABLE schedule_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 43
+ALTER TABLE a2a_server_card_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 44
+ALTER TABLE a2a_server_card_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 45
+ALTER TABLE webhook_defs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 46
+ALTER TABLE webhook_def_active ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 47
+ALTER TABLE schedule_run_state ADD COLUMN fire_count INTEGER NOT NULL DEFAULT 0
+=== columns 48
+ALTER TABLE schedule_run_state ADD COLUMN slot_at INTEGER
+=== columns 49
+ALTER TABLE schedule_run_state ADD COLUMN claimed_by TEXT
+=== columns 50
+ALTER TABLE schedule_run_state ADD COLUMN claimed_at INTEGER
+=== columns 51
+ALTER TABLE schedule_run_state ADD COLUMN finished_at INTEGER
+=== columns 52
+ALTER TABLE schedule_run_state ADD COLUMN catch_up_until INTEGER
+=== columns 53
+ALTER TABLE schedule_run_state ADD COLUMN missed_slots INTEGER NOT NULL DEFAULT 0
+=== columns 54
+ALTER TABLE runs ADD COLUMN interactive INTEGER NOT NULL DEFAULT 0
+=== columns 55
+ALTER TABLE runs ADD COLUMN cost REAL
+=== columns 56
+ALTER TABLE runs ADD COLUMN cost_currency TEXT
+=== columns 57
+ALTER TABLE runs ADD COLUMN credential_source TEXT
+=== columns 58
+ALTER TABLE runs ADD COLUMN credential_scope_id TEXT
+=== columns 59
+ALTER TABLE runs ADD COLUMN operator_key_restricted INTEGER NOT NULL DEFAULT 0
+=== columns 60
+ALTER TABLE runs ADD COLUMN isolated INTEGER NOT NULL DEFAULT 0
+=== columns 61
+ALTER TABLE runs ADD COLUMN run_config TEXT
+=== columns 62
+ALTER TABLE runs ADD COLUMN result TEXT
+=== columns 63
+ALTER TABLE runs ADD COLUMN draft TEXT
+=== columns 64
+ALTER TABLE runs ADD COLUMN walk_id TEXT
+=== columns 65
+ALTER TABLE runs ADD COLUMN delivery_alt_key TEXT
+=== columns 66
+ALTER TABLE sessions ADD COLUMN title TEXT
+=== columns 67
+ALTER TABLE sessions ADD COLUMN description TEXT
+=== columns 68
+ALTER TABLE sessions ADD COLUMN tags TEXT
+=== columns 69
+ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0
+=== columns 70
+ALTER TABLE sessions ADD COLUMN archived_at INTEGER
+=== columns 71
+ALTER TABLE sessions ADD COLUMN summary TEXT
+=== columns 72
+ALTER TABLE sessions ADD COLUMN summary_updated_at INTEGER
+=== columns 73
+ALTER TABLE runs ADD COLUMN retention TEXT NOT NULL DEFAULT ''
+=== columns 74
+ALTER TABLE sessions ADD COLUMN retention TEXT NOT NULL DEFAULT ''
+=== columns 75
+ALTER TABLE runs ADD COLUMN queued_input TEXT
+=== columns 76
+ALTER TABLE runs ADD COLUMN credentials_no_user_scope INTEGER NOT NULL DEFAULT 0
+=== columns 77
+ALTER TABLE runs ADD COLUMN user_slot INTEGER
+=== columns 78
+ALTER TABLE runs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''
+=== columns 79
+ALTER TABLE memory ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''
+=== columns 80
+ALTER TABLE memory ADD COLUMN origin TEXT
+=== columns 81
+ALTER TABLE memory ADD COLUMN class TEXT
+=== columns 82
+ALTER TABLE memory ADD COLUMN source_session_id TEXT
+=== columns 83
+ALTER TABLE memory ADD COLUMN source_run_id TEXT
+=== columns 84
+ALTER TABLE memory ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0
+=== columns 85
+ALTER TABLE memory ADD COLUMN last_accessed_at INTEGER
+=== columns 86
+ALTER TABLE memory ADD COLUMN superseded_at INTEGER
+=== columns 87
+ALTER TABLE memory ADD COLUMN observed_at INTEGER
+=== columns 88
+ALTER TABLE memory ADD COLUMN valid_at INTEGER
+=== columns 89
+ALTER TABLE memory ADD COLUMN invalid_at INTEGER
+=== columns 90
+ALTER TABLE memory_pending ADD COLUMN origin TEXT
+=== columns 91
+ALTER TABLE token_usage ADD COLUMN duration_ms INTEGER
+=== columns 92
+ALTER TABLE token_usage ADD COLUMN ttft_ms INTEGER
+=== columns 93
+ALTER TABLE token_usage ADD COLUMN load_ms INTEGER
+=== columns 94
+ALTER TABLE token_usage ADD COLUMN prefill_ms INTEGER
+=== columns 95
+ALTER TABLE token_usage ADD COLUMN decode_ms INTEGER
+=== columns 96
+ALTER TABLE token_usage ADD COLUMN queue_ms INTEGER
+=== columns 97
+ALTER TABLE operator_token_defs ADD COLUMN expires_at INTEGER
+=== columns 98
+ALTER TABLE operator_token_defs ADD COLUMN restrictions TEXT
+=== columns 99
+ALTER TABLE usage_carry ADD COLUMN estimated INTEGER NOT NULL DEFAULT 0
+=== columns 100
+ALTER TABLE webhook_deliveries ADD COLUMN run_id TEXT NOT NULL DEFAULT ''
+=== columns 101
+ALTER TABLE webhook_deliveries ADD COLUMN claim_id TEXT NOT NULL DEFAULT ''
+=== columns 102
+ALTER TABLE webhook_deliveries ADD COLUMN claimed_at INTEGER NOT NULL DEFAULT 0
+=== columns 103
+ALTER TABLE webhook_deliveries ADD COLUMN run_key TEXT NOT NULL DEFAULT ''
+=== columns 104
+ALTER TABLE webhook_deliveries ADD COLUMN run_alt_key TEXT NOT NULL DEFAULT ''
+=== columns 105
+ALTER TABLE ui_sessions ADD COLUMN auth_time INTEGER
+=== columns 106
+ALTER TABLE operator_token_defs ADD COLUMN issued_by_gate TEXT NOT NULL DEFAULT ''
+=== columns 107
+ALTER TABLE token_usage ADD COLUMN purpose TEXT NOT NULL DEFAULT 'chat'
+=== columns 108
+ALTER TABLE token_usage ADD COLUMN audio_seconds REAL NOT NULL DEFAULT 0
+=== columns 109
+ALTER TABLE usage_archive ADD COLUMN purpose TEXT NOT NULL DEFAULT 'chat'
+=== columns 110
+ALTER TABLE usage_archive ADD COLUMN audio_seconds REAL NOT NULL DEFAULT 0
+=== columns 111
+ALTER TABLE token_usage ADD COLUMN input_chars INTEGER NOT NULL DEFAULT 0
+=== columns 112
+ALTER TABLE usage_archive ADD COLUMN input_chars INTEGER NOT NULL DEFAULT 0
+=== columns 113
+ALTER TABLE operator_token_defs ADD COLUMN authority TEXT NOT NULL DEFAULT ''
+=== columns 114
+ALTER TABLE teamdef_active ADD COLUMN promoter_acl_owner TEXT
+=== columns 115
+ALTER TABLE token_usage ADD COLUMN tier TEXT NOT NULL DEFAULT ''
+=== columns 116
+ALTER TABLE token_usage ADD COLUMN user_tier TEXT NOT NULL DEFAULT ''
+=== columns 117
+ALTER TABLE usage_archive ADD COLUMN tier TEXT NOT NULL DEFAULT ''
+=== columns 118
+ALTER TABLE usage_archive ADD COLUMN user_tier TEXT NOT NULL DEFAULT ''
+=== columns 119
+ALTER TABLE operator_token_defs ADD COLUMN oauth_client TEXT NOT NULL DEFAULT ''
+=== columns 120
+ALTER TABLE operator_token_defs ADD COLUMN oauth_family TEXT NOT NULL DEFAULT ''
+=== columns 121
+ALTER TABLE auth_removals ADD COLUMN stage TEXT NOT NULL DEFAULT ''
+=== columns 122
+ALTER TABLE auth_removals ADD COLUMN prior_status TEXT NOT NULL DEFAULT ''
+=== columns 123
+ALTER TABLE scim_users ADD COLUMN reactivated_at INTEGER
+=== columns 124
+ALTER TABLE memory_changes ADD COLUMN document_id TEXT NOT NULL DEFAULT ''
+=== columns 125
+ALTER TABLE users ADD COLUMN erased_at INTEGER
+=== indexes 0
+CREATE INDEX IF NOT EXISTS runs_by_agent_id        ON runs(agent_id)        WHERE agent_id IS NOT NULL
+=== indexes 1
+CREATE INDEX IF NOT EXISTS runs_by_parent_agent_id ON runs(parent_agent_id) WHERE parent_agent_id IS NOT NULL
+=== indexes 2
+CREATE INDEX IF NOT EXISTS runs_by_parent_run_id   ON runs(parent_run_id)   WHERE parent_run_id IS NOT NULL
+=== indexes 3
+CREATE INDEX IF NOT EXISTS runs_by_user_active     ON runs(user_id, status) WHERE user_id IS NOT NULL
+=== indexes 4
+CREATE INDEX IF NOT EXISTS runs_by_tenant_active   ON runs(tenant_id, status) WHERE tenant_id IS NOT NULL
+=== indexes 5
+CREATE INDEX IF NOT EXISTS runs_configured_by_age  ON runs(started_at)       WHERE status = 'configured'
+=== indexes 6
+CREATE INDEX IF NOT EXISTS runs_by_walk            ON runs(walk_id, started_at, id) WHERE walk_id IS NOT NULL
+=== indexes 7
+CREATE INDEX IF NOT EXISTS token_usage_timing      ON token_usage(provider, model, ts) WHERE duration_ms IS NOT NULL
+=== indexes 8
+CREATE INDEX IF NOT EXISTS sessions_by_user        ON sessions(user_id)     WHERE user_id IS NOT NULL
+=== indexes 9
+CREATE INDEX IF NOT EXISTS runs_by_agent_def       ON runs(agent_def_id)    WHERE agent_def_id IS NOT NULL
+=== indexes 10
+CREATE INDEX IF NOT EXISTS agent_defs_by_content_sha256      ON agent_defs(content_sha256)      WHERE content_sha256 IS NOT NULL
+=== indexes 11
+CREATE INDEX IF NOT EXISTS skill_defs_by_content_sha256      ON skill_defs(content_sha256)      WHERE content_sha256 IS NOT NULL
+=== indexes 12
+CREATE INDEX IF NOT EXISTS teamdefs_by_content_sha256        ON teamdefs(content_sha256)        WHERE content_sha256 IS NOT NULL
+=== indexes 13
+CREATE INDEX IF NOT EXISTS mcp_server_defs_by_content_sha256 ON mcp_server_defs(content_sha256) WHERE content_sha256 IS NOT NULL
+=== indexes 14
+CREATE INDEX IF NOT EXISTS channel_messages_by_visible ON channel_messages(tenant_id, channel, scope, scope_id, visible_at, id)
+=== indexes 15
+CREATE INDEX IF NOT EXISTS channel_messages_awaiting_hook ON channel_messages(id) WHERE visible_at = 7258204800000000000
+=== indexes 16
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_channel_cursors_tenant ON channel_cursors(tenant_id, channel, scope, scope_id)
+=== indexes 17
+CREATE INDEX IF NOT EXISTS process_samples_by_sampled_at ON process_samples(sampled_at)
+=== indexes 18
+CREATE INDEX IF NOT EXISTS dynamic_agents_by_expires_at ON dynamic_agents(expires_at) WHERE expires_at > 0
+=== indexes 19
+CREATE INDEX IF NOT EXISTS sessions_by_pinned ON sessions(pinned) WHERE pinned = 1
+=== indexes 20
+CREATE INDEX IF NOT EXISTS sessions_by_archived_at ON sessions(archived_at) WHERE archived_at IS NOT NULL
+=== indexes 21
+CREATE INDEX IF NOT EXISTS interrupts_by_run_status  ON interrupts(run_id, status)
+=== indexes 22
+CREATE INDEX IF NOT EXISTS interrupts_by_user_status ON interrupts(user_id, status) WHERE user_id IS NOT NULL
+=== indexes 23
+CREATE INDEX IF NOT EXISTS interrupts_by_expires     ON interrupts(expires_at) WHERE expires_at IS NOT NULL AND status = 'pending'
+=== indexes 24
+CREATE UNIQUE INDEX IF NOT EXISTS runs_idempotency_key ON runs(idempotency_key) WHERE idempotency_key IS NOT NULL
+=== indexes 25
+CREATE UNIQUE INDEX IF NOT EXISTS runs_delivery_alt_key ON runs(delivery_alt_key) WHERE delivery_alt_key IS NOT NULL
+=== indexes 26
+CREATE INDEX IF NOT EXISTS webhook_deliveries_by_run_id ON webhook_deliveries(run_id) WHERE run_id <> ''
+=== indexes 27
+CREATE INDEX IF NOT EXISTS webhook_deliveries_by_claim_id ON webhook_deliveries(claim_id) WHERE claim_id <> ''
+=== indexes 28
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_agent_def_active_tenant_name    ON agent_def_active(tenant_id, name)
+=== indexes 29
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_dynamic_agents_tenant_name      ON dynamic_agents(tenant_id, name)
+=== indexes 30
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_agent_defs_tenant_name_version  ON agent_defs(tenant_id, name, version)
+=== indexes 31
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_skill_def_active_tenant_name    ON skill_def_active(tenant_id, name)
+=== indexes 32
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_skill_defs_tenant_name_version  ON skill_defs(tenant_id, name, version)
+=== indexes 33
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_teamdef_active_tenant_name     ON teamdef_active(tenant_id, name)
+=== indexes 34
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_teamdefs_tenant_name_version   ON teamdefs(tenant_id, name, version)
+=== indexes 35
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_mcp_server_def_active_tenant_name   ON mcp_server_def_active(tenant_id, name)
+=== indexes 36
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_mcp_server_defs_tenant_name_version ON mcp_server_defs(tenant_id, name, version)
+=== indexes 37
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_memory_backend_def_active_tenant_name   ON memory_backend_def_active(tenant_id, name)
+=== indexes 38
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_memory_backend_defs_tenant_name_version ON memory_backend_defs(tenant_id, name, version)
+=== indexes 39
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_document_source_def_active_tenant_name   ON document_source_def_active(tenant_id, name)
+=== indexes 40
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_document_source_defs_tenant_name_version ON document_source_defs(tenant_id, name, version)
+=== indexes 41
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_a2a_agent_def_active_tenant_name   ON a2a_agent_def_active(tenant_id, name)
+=== indexes 42
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_a2a_agent_defs_tenant_name_version ON a2a_agent_defs(tenant_id, name, version)
+=== indexes 43
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_schedule_def_active_tenant_name   ON schedule_def_active(tenant_id, name)
+=== indexes 44
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_schedule_defs_tenant_name_version ON schedule_defs(tenant_id, name, version)
+=== indexes 45
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_a2a_server_card_def_active_tenant_name   ON a2a_server_card_def_active(tenant_id, name)
+=== indexes 46
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_a2a_server_card_defs_tenant_name_version ON a2a_server_card_defs(tenant_id, name, version)
+=== indexes 47
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_webhook_def_active_tenant_name   ON webhook_def_active(tenant_id, name)
+=== indexes 48
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_webhook_defs_tenant_name_version ON webhook_defs(tenant_id, name, version)
+=== indexes 49
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_memory_tenant_scope_scope_id_key ON memory(tenant_id, scope, scope_id, key)
+=== indexes 50
+CREATE INDEX IF NOT EXISTS memory_by_source_session ON memory(tenant_id, source_session_id) WHERE source_session_id IS NOT NULL
+=== indexes 51
+CREATE INDEX IF NOT EXISTS memory_by_observed_at ON memory(tenant_id, scope, scope_id, observed_at) WHERE observed_at IS NOT NULL
+=== indexes 52
+CREATE INDEX IF NOT EXISTS memory_by_valid_at ON memory(tenant_id, scope, scope_id, valid_at) WHERE valid_at IS NOT NULL
+=== indexes 53
+CREATE INDEX IF NOT EXISTS operator_token_defs_by_oauth_family ON operator_token_defs(oauth_family) WHERE oauth_family <> ''
+=== indexes 54
+CREATE INDEX IF NOT EXISTS operator_token_defs_by_oauth_client ON operator_token_defs(oauth_client) WHERE oauth_client <> ''
+=== fixups 0
+UPDATE channel_messages SET visible_at = published_at WHERE visible_at = 0
+=== fixups 1
+DELETE FROM channel_cursors WHERE cursor NOT LIKE 'cur_%' AND cursor != 'cur_0'
