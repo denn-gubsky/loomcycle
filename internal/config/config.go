@@ -464,7 +464,8 @@ type StorageConfig struct {
 	SqlMemMaxOpenTxns int `yaml:"sqlmem_max_open_txns"`
 	// SqlMemMaxOpenTxnsPerTenant caps how many of those open transactions one
 	// tenant may hold, so one tenant cannot take every slot. 0 = a quarter of
-	// SqlMemMaxOpenTxns (at least 1), resolved by sqlmem. Env:
+	// SqlMemMaxOpenTxns (at least 1), resolved by sqlmem. The default ("")
+	// tenant is exempt and keeps the full cap. Env:
 	// LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT.
 	SqlMemMaxOpenTxnsPerTenant int `yaml:"sqlmem_max_open_txns_per_tenant"`
 	// SqlMemMaxTxnDepth caps the SAVEPOINT nesting depth of one explicit
