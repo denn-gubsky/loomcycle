@@ -16,6 +16,7 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/retention"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/usage"
 )
@@ -46,11 +47,15 @@ func (b *boot) startBackground() {
 	// below waits for it, so the two never run at once.
 	countFlusherDone := make(chan struct{})
 	if webhookReceiver != nil {
-		go webhookReceiver.RunSweeper(bgCtx, webhookapi.SweepInterval)
-		go func() {
+		goSupervised(bgCtx, "webhook.sweeper", func(ctx context.Context) {
+			webhookReceiver.RunSweeper(ctx, webhookapi.SweepInterval)
+		})
+		safego.Go(bgCtx, "webhook.count_flusher", func() {
 			defer close(countFlusherDone)
-			webhookReceiver.RunCountFlusher(bgCtx, webhookapi.CountFlushInterval)
-		}()
+			superviseLoop(bgCtx, "webhook.count_flusher", func(ctx context.Context) {
+				webhookReceiver.RunCountFlusher(ctx, webhookapi.CountFlushInterval)
+			}, supervisedRestartMin, supervisedRestartMax)
+		})
 	} else {
 		close(countFlusherDone)
 	}
@@ -123,10 +128,10 @@ func (b *boot) startCluster() {
 		// land. A row it leaves behind ages into the replicas sweeper, which
 		// reads this replica as dead (RFC ES F1).
 		hbDone := make(chan struct{})
-		go func() {
+		safego.Go(bgCtx, "coord.heartbeat", func() {
 			defer close(hbDone)
-			hb.Run(bgCtx)
-		}()
+			superviseLoop(bgCtx, "coord.heartbeat", hb.Run, supervisedRestartMin, supervisedRestartMax)
+		})
 		bgCancel := b.bgCancel
 		b.addCleanup(func() {
 			bgCancel() // a no-op after the shutdown; ends the heartbeat on any other exit
@@ -172,8 +177,11 @@ func (b *boot) startCluster() {
 		// way the server ends any run no live loop holds.
 		cancelCoord.SetOwnerGoneFinisher(srv.FinishRunOwnerGone)
 		srv.CancelRegistry().SetClusterCanceller(cancelCoord)
-		go cancelCoord.RunCancelSubscriber(bgCtx, srv.CancelRegistry())
-		go cancelCoord.RunAckSubscriber(bgCtx)
+		cancelReg := srv.CancelRegistry()
+		goSupervised(bgCtx, "coord.cancel_subscriber", func(ctx context.Context) {
+			cancelCoord.RunCancelSubscriber(ctx, cancelReg)
+		})
+		goSupervised(bgCtx, "coord.cancel_ack_subscriber", cancelCoord.RunAckSubscriber)
 
 		// Cross-replica operator steering (the twin of cancel): a
 		// POST /v1/runs/{run_id}/input that lands on a replica not running the
@@ -190,8 +198,10 @@ func (b *boot) startCluster() {
 				fatal("coord: steer coordinator init failed", "err", err)
 			}
 			steerReg.SetClusterSteerer(steerCoord)
-			go steerCoord.RunSteerSubscriber(bgCtx, steerReg)
-			go steerCoord.RunSteerAckSubscriber(bgCtx)
+			goSupervised(bgCtx, "coord.steer_subscriber", func(ctx context.Context) {
+				steerCoord.RunSteerSubscriber(ctx, steerReg)
+			})
+			goSupervised(bgCtx, "coord.steer_ack_subscriber", steerCoord.RunSteerAckSubscriber)
 		}
 
 		// Cross-replica turn-cancel (RFC BH P3a; the twin of cancel/steer): a
@@ -210,8 +220,10 @@ func (b *boot) startCluster() {
 				fatal("coord: turn-cancel coordinator init failed", "err", err)
 			}
 			tcReg.SetClusterCanceller(tcCoord)
-			go tcCoord.RunTurnCancelSubscriber(bgCtx, tcReg)
-			go tcCoord.RunTurnCancelAckSubscriber(bgCtx)
+			goSupervised(bgCtx, "coord.turncancel_subscriber", func(ctx context.Context) {
+				tcCoord.RunTurnCancelSubscriber(ctx, tcReg)
+			})
+			goSupervised(bgCtx, "coord.turncancel_ack_subscriber", tcCoord.RunTurnCancelAckSubscriber)
 		}
 
 		// v0.12.3 Phase 4: runstate + channel bus backplane fanout.
@@ -255,7 +267,7 @@ func (b *boot) startCluster() {
 			Interval:   cfg.Env.ReplicasSweepInterval,
 			StaleAfter: cfg.Env.ReplicasStaleAfter,
 		})
-		go replicasSweeper.Run(bgCtx)
+		goSupervised(bgCtx, "coord.replicas_sweeper", replicasSweeper.Run)
 
 		// v0.12.5 Phase 6a: cluster-wide session lock via
 		// pg_try_advisory_lock. Replaces SessionLockMap so two
@@ -305,7 +317,7 @@ func (b *boot) startRunSweepers() {
 			hbCfg.AdvisoryLockKey = coord.LockKeyHeartbeatSweeper
 		}
 		sweeper := heartbeat.New(storeIface, hbCfg)
-		go sweeper.Run(bgCtx)
+		goSupervised(bgCtx, "heartbeat.sweeper", sweeper.Run)
 	} else {
 		slog.Warn("heartbeat: sweeper disabled (LOOMCYCLE_HEARTBEAT_SWEEPER=0 or no Store)")
 	}
@@ -323,7 +335,7 @@ func (b *boot) startRunSweepers() {
 	if cfg.Env.ChannelHooksEnabled && srv != nil && storeIface != nil {
 		slog.Info("channel hooks: worker started", "owner", hookOwner, "concurrency", cfg.Env.ChannelHooksConcurrency,
 			"per_channel", cfg.Env.ChannelHooksPerChannel, "max_wait", cfg.Env.ChannelHooksMaxWait)
-		go srv.NewChannelHookWorker(hookOwner, channelScheduler, interruptionTool).Run(bgCtx)
+		goSupervised(bgCtx, "channelhooks.worker", srv.NewChannelHookWorker(hookOwner, channelScheduler, interruptionTool).Run)
 	} else {
 		for name, ch := range cfg.Channels {
 			if ch.HasHooks() {
@@ -331,7 +343,7 @@ func (b *boot) startRunSweepers() {
 			}
 		}
 		if srv != nil && storeIface != nil {
-			go srv.NewChannelHookWorker(hookOwner, channelScheduler, interruptionTool).RunUnhooked(bgCtx)
+			goSupervised(bgCtx, "channelhooks.unhooked", srv.NewChannelHookWorker(hookOwner, channelScheduler, interruptionTool).RunUnhooked)
 		}
 	}
 
@@ -339,7 +351,7 @@ func (b *boot) startRunSweepers() {
 	// discard is one guarded transaction, so every replica may run it without
 	// a lock; LOOMCYCLE_CONFIGURED_RUN_TTL_MS=0 turns it off.
 	if srv != nil && storeIface != nil && cfg.Env.ConfiguredRunTTL > 0 {
-		go srv.RunConfiguredRunSweeper(bgCtx)
+		goSupervised(bgCtx, "configured_runs.sweeper", srv.RunConfiguredRunSweeper)
 	}
 
 	// Usage rollup-and-prune sweeper (RFC AV Phase 2b) — same placement
@@ -378,7 +390,7 @@ func (b *boot) startRunSweepers() {
 			uCfg.AdvisoryLockKey = coord.LockKeyUsageSweeper
 		}
 		usageSweeper := usage.New(storeIface, uCfg)
-		go usageSweeper.Run(bgCtx)
+		goSupervised(bgCtx, "usage.sweeper", usageSweeper.Run)
 	} else {
 		slog.Warn("usage: sweeper disabled (LOOMCYCLE_USAGE_SWEEPER=0 or no Store)")
 	}
@@ -403,7 +415,7 @@ func (b *boot) startRunSweepers() {
 			rCfg.AdvisoryLock = advisoryLock
 			rCfg.AdvisoryLockKey = coord.LockKeyRetentionSweeper
 		}
-		go retention.New(storeIface, rCfg).Run(bgCtx)
+		goSupervised(bgCtx, "retention.sweeper", retention.New(storeIface, rCfg).Run)
 	} else if cfg.Env.RetentionEnabled && storeIface != nil {
 		rCfg := retention.Config{
 			Interval:      cfg.Env.RetentionInterval,
@@ -456,7 +468,7 @@ func (b *boot) startRunSweepers() {
 			rCfg.AdvisoryLockKey = coord.LockKeyRetentionSweeper
 		}
 		retentionSweeper := retention.New(storeIface, rCfg)
-		go retentionSweeper.Run(bgCtx)
+		goSupervised(bgCtx, "retention.sweeper", retentionSweeper.Run)
 	} else {
 		slog.Info("retention: sweeper disabled (LOOMCYCLE_RETENTION_ENABLED != 1 or no Store)")
 	}
@@ -499,7 +511,9 @@ func (b *boot) seedServerState() {
 		fatal("limits: LOOMCYCLE_LIMITS_RELOAD_INTERVAL is not a duration of at least 1s, or 0", "value", os.Getenv("LOOMCYCLE_LIMITS_RELOAD_INTERVAL"))
 	}
 	if reload > 0 {
-		go limits.RunLimitsReloader(bgCtx, srv.LimitsTracker(), reload)
+		goSupervised(bgCtx, "limits.reloader", func(ctx context.Context) {
+			limits.RunLimitsReloader(ctx, tracker, reload)
+		})
 	}
 	// RFC DT: seed the per-model throughput estimate from the ledger's latest
 	// timed calls. Non-fatal — an empty estimate learns again from live calls,
@@ -514,7 +528,7 @@ func (b *boot) seedServerState() {
 	// should be waiting rather than appearing on some later run. Backgrounded: a hand-
 	// written principal list is small, but it is one store round-trip each and boot
 	// should not wait on a convenience. Best-effort inside.
-	go srv.ProvisionDeclaredPrincipalDocs(bgCtx)
+	safego.Go(bgCtx, "principals.provision_docs", func() { srv.ProvisionDeclaredPrincipalDocs(bgCtx) })
 }
 
 // defaultLimitsReloadInterval is how often a replica re-reads the token limit
@@ -805,7 +819,7 @@ func (b *boot) startStoreSweepers() {
 			slog.Info("ontology: recorded tenant ontology identities", "tenants", n)
 			return nil
 		}
-		go func() {
+		safego.Go(bgCtx, "document.boot_pass", func() {
 			// First, on sqlite, move every scope from before the document plane had
 			// a file of its own into it (RFC FZ Part A), so the ontology pass below
 			// and the other readers that do not provision find the documents where
@@ -822,7 +836,7 @@ func (b *boot) startStoreSweepers() {
 				return
 			}
 			_ = record(bgCtx)
-		}()
+		})
 	}
 
 	// The document projection (RFC FQ P2): off unless memory.projection asks.

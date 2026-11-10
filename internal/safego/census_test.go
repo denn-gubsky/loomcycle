@@ -72,14 +72,13 @@ var exemptRawGo = map[string]rawGo{
 var pendingRawGo = map[string]int{
 	// cmd/loomcycle: the boot's background sweepers, subscribers and
 	// listeners, converted in a later change.
-	"cmd/loomcycle/boot_background.go": 20,
-	"cmd/loomcycle/boot_config.go":     1,
-	"cmd/loomcycle/boot_listen.go":     7,
-	"cmd/loomcycle/boot_metrics.go":    1,
-	"cmd/loomcycle/boot_surfaces.go":   2,
-	"cmd/loomcycle/boot_triggers.go":   7,
-	"cmd/loomcycle/main.go":            1,
-	"cmd/loomcycle/openmode.go":        1,
+	"cmd/loomcycle/boot_config.go":   1,
+	"cmd/loomcycle/boot_listen.go":   7,
+	"cmd/loomcycle/boot_metrics.go":  1,
+	"cmd/loomcycle/boot_surfaces.go": 2,
+	"cmd/loomcycle/boot_triggers.go": 7,
+	"cmd/loomcycle/main.go":          1,
+	"cmd/loomcycle/openmode.go":      1,
 
 	"internal/a2a/executor.go":                      1,
 	"internal/api/http/client_tools.go":             1,
