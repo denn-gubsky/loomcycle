@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -48,12 +49,15 @@ func TestServer_APanickingToolIsRecoveredAndCountedOnEveryDispatcher(t *testing.
 // A background goroutine recovered by safego is counted on /metrics by name.
 func TestServer_ARecoveredGoroutinePanicIsCountedOnMetrics(t *testing.T) {
 	srv := newMetricsPromServer(t, false)
+	// The counter is process-wide, so compare against its value before the
+	// panic (a repeated run, -count=2, starts above zero).
+	want := safego.Panics()["test.metrics_goroutine"] + 1
 	safego.Run(context.Background(), "test.metrics_goroutine", func() { panic("boom") })
 
 	rec := httptest.NewRecorder()
 	srv.handleMetricsProm(rec, httptest.NewRequest("GET", "/metrics", nil))
 	body := rec.Body.String()
-	if !strings.Contains(body, "# TYPE loomcycle_goroutine_panics_total counter") || !strings.Contains(body, `loomcycle_goroutine_panics_total{goroutine="test.metrics_goroutine"} 1`) {
+	if !strings.Contains(body, "# TYPE loomcycle_goroutine_panics_total counter") || !strings.Contains(body, fmt.Sprintf(`loomcycle_goroutine_panics_total{goroutine="test.metrics_goroutine"} %d`, want)) {
 		t.Errorf("metrics body lacks the goroutine panic count:\n%s", body)
 	}
 }
