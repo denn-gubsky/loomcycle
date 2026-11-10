@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
+  Annotation,
+  AnnotationLevel,
+  AnnotationTarget,
   AssistantContext,
   BrowseScope,
   ChunkDetail,
@@ -15,6 +18,7 @@ import { landingChunk, type DocLocation } from "../lib/docTrail";
 import { chunkAncestors } from "../lib/chunkAncestry";
 import { isSubjectRoot } from "../lib/subjectType";
 import { bulkReviewScope, documentProposals, reviewPanel } from "../lib/bulkReview";
+import { annotationLevelFor, annotationsApply, loadAnnotations } from "../lib/annotation";
 import {
   docColor,
   effectiveScheme,
@@ -26,6 +30,7 @@ import DocumentChunkTree, {
   findChunkNode,
   type ChunkNode,
 } from "./DocumentChunkTree";
+import AnnotationPanel, { AnnotationBrief } from "./AnnotationPanel";
 import ChunkEditorModal from "./ChunkEditorModal";
 import SubjectTypeModal from "./SubjectTypeModal";
 import Classification from "./Classification";
@@ -95,6 +100,16 @@ export interface DocumentViewerBodyProps {
   // remount: each new `seq` selects `chunkId` (absent = the root). A host
   // navigator uses it when the reader picks another chunk of the open document.
   focusChunk?: { chunkId?: string; seq: number };
+  // onRegenerateAnnotation — the host's way to have an annotation written again
+  // (it owns the run). Omitted → no Regenerate. Its promise settling reloads the
+  // annotation; a rejection is shown in the panel.
+  onRegenerateAnnotation?: (target: AnnotationTarget) => void | Promise<void>;
+  // canEditAnnotations — whether to offer Edit (the operator plane writes
+  // annotations by hand; the runtime refuses anyone else). Default false.
+  canEditAnnotations?: boolean;
+  // onAnnotationChanged — told after an edit or a regenerate settles, so a host
+  // showing briefs elsewhere (the Path tree) can read them again.
+  onAnnotationChanged?: () => void;
 }
 
 // View mode for the selected-chunk pane (not the whole document).
@@ -112,6 +127,9 @@ export default function DocumentViewerBody({
   onTitle,
   onChunkSelect,
   focusChunk,
+  onRegenerateAnnotation,
+  canEditAnnotations,
+  onAnnotationChanged,
 }: DocumentViewerBodyProps) {
   const data = useExplorerData();
 
@@ -159,6 +177,12 @@ export default function DocumentViewerBody({
   // classification waits.
   const [classifyKey, setClassifyKey] = useState(0);
   const [rootFields, setRootFields] = useState<unknown>(undefined);
+  // The annotations of the document (its root chunk's records) and of the
+  // selected chunk when that is not the root. Tenant scope only; otherwise
+  // they stay empty and nothing is fetched.
+  const [docAnnotations, setDocAnnotations] = useState<Annotation[]>([]);
+  const [chunkAnnotations, setChunkAnnotations] = useState<Annotation[]>([]);
+  const [annotationReload, setAnnotationReload] = useState(0);
 
   const refresh = useCallback(() => setReload((n) => n + 1), []);
 
@@ -322,6 +346,77 @@ export default function DocumentViewerBody({
     };
   }, [data, documentId, rootChunkId, scope, reload, browse]);
 
+  // The document's annotation, read from its root chunk. Best-effort: a failed
+  // read shows no annotation rather than an error over the document.
+  useEffect(() => {
+    if (!rootChunkId || !annotationsApply(scope)) {
+      setDocAnnotations([]);
+      return;
+    }
+    let cancelled = false;
+    loadAnnotations(data, rootChunkId, scope, browse)
+      .then((r) => !cancelled && setDocAnnotations(r))
+      .catch(() => !cancelled && setDocAnnotations([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [data, rootChunkId, scope, reload, browse, annotationReload]);
+
+  // The selected chunk's own branch annotation (the root's is the document's,
+  // above).
+  useEffect(() => {
+    if (!selectedId || selectedId === rootChunkId || !annotationsApply(scope)) {
+      setChunkAnnotations([]);
+      return;
+    }
+    let cancelled = false;
+    setChunkAnnotations([]);
+    loadAnnotations(data, selectedId, scope, browse)
+      .then((r) => !cancelled && setChunkAnnotations(r))
+      .catch(() => !cancelled && setChunkAnnotations([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [data, selectedId, rootChunkId, scope, reload, browse, annotationReload]);
+
+  // Edit and Regenerate. Edit needs a data layer that can write one; Regenerate
+  // needs the host's callback. Neither is offered outside the tenant scope.
+  const saveAnnotation = useMemo(() => {
+    if (!canEditAnnotations || !data.documentSetAnnotation || !annotationsApply(scope)) return undefined;
+    return (chunkId: string) => async (level: AnnotationLevel, brief: string, abstract: string) => {
+      await data.documentSetAnnotation!({ id: chunkId, level, brief, abstract }, scope, browse);
+      setAnnotationReload((n) => n + 1);
+      onAnnotationChanged?.();
+    };
+  }, [data, scope, browse, canEditAnnotations, onAnnotationChanged]);
+  const regenerateAnnotation = useMemo(() => {
+    if (!onRegenerateAnnotation || !annotationsApply(scope)) return undefined;
+    return (chunkId: string) => async (level: AnnotationLevel) => {
+      // A folder's record names its folder: that, not this document, is what a
+      // path-level Regenerate rewrites.
+      const folder = [...docAnnotations, ...chunkAnnotations].find(
+        (a) => a.chunk_id === chunkId && a.level === level,
+      )?.folder;
+      try {
+        await onRegenerateAnnotation({ documentId, chunkId, level, scope, ...(folder ? { folder } : {}) });
+      } finally {
+        setAnnotationReload((n) => n + 1);
+        onAnnotationChanged?.();
+      }
+    };
+  }, [onRegenerateAnnotation, documentId, scope, docAnnotations, chunkAnnotations, onAnnotationChanged]);
+  // The brief under the title is the document record's; a path record on the
+  // same root describes the folder, and shows only in the panel.
+  // A folder's _annotation document has only the path record: that is its brief.
+  const documentBrief =
+    docAnnotations.find((a) => a.level === "document") ?? docAnnotations.find((a) => a.level === "path");
+  // The selected chunk's records, matched by id: the detail can still be the
+  // previous chunk's for a moment after the selection moves.
+  const selectedAnnotations = useMemo(
+    () => chunkAnnotations.filter((a) => a.chunk_id === selectedDetail?.id),
+    [chunkAnnotations, selectedDetail?.id],
+  );
+
   // RFC FN — the operator's ruling on a proposed statement. Offered only when the
   // data layer implements both rulings (they are optional on a custom one). A
   // refusal propagates to the row, which shows it inline.
@@ -378,6 +473,8 @@ export default function DocumentViewerBody({
     setEdgesIncomplete(false);
     setClassifyKey(0);
     setRootFields(undefined);
+    setDocAnnotations([]);
+    setChunkAnnotations([]);
   }, [documentId, scope]);
 
   // Fetch the selected chunk's body.
@@ -792,6 +889,18 @@ export default function DocumentViewerBody({
           </button>
         </div>
       </div>
+      {!unavailable && rootChunkId && (docAnnotations.length > 0 || saveAnnotation || regenerateAnnotation) && (
+        <div className="doc-annotation">
+          <AnnotationBrief record={documentBrief} />
+          <AnnotationPanel
+            key={rootChunkId}
+            records={docAnnotations}
+            newLevel={annotationLevelFor(true)}
+            onSave={saveAnnotation?.(rootChunkId)}
+            onRegenerate={regenerateAnnotation?.(rootChunkId)}
+          />
+        </div>
+      )}
       {err && <div className="paths-err">{err}</div>}
       {!unavailable && (
         <Classification
@@ -873,6 +982,7 @@ export default function DocumentViewerBody({
                     </nav>
                   )}
                   <h3>{selectedDetail.title || "(untitled)"}</h3>
+                  {!selectedIsRoot && <AnnotationBrief record={selectedAnnotations[0]} />}
                   <div className="doc-content-meta">
                     {selectedDetail.type && <span className="chunk-badge">{selectedDetail.type}</span>}
                     {selectedDetail.status && (
@@ -889,6 +999,15 @@ export default function DocumentViewerBody({
                     {/* The selected chunk's id — copyable for external workflows. */}
                     <IdCopy value={selectedDetail.id} label="chunk" />
                   </div>
+                  {!selectedIsRoot && selectedDetail.document_id === documentId && (
+                    <AnnotationPanel
+                      key={selectedDetail.id}
+                      records={selectedAnnotations}
+                      newLevel={annotationLevelFor(false)}
+                      onSave={saveAnnotation?.(selectedDetail.id)}
+                      onRegenerate={regenerateAnnotation?.(selectedDetail.id)}
+                    />
+                  )}
                   <div className="doc-content-controls">
                     {/* The chunk/markdown switch is per-selected-chunk: markdown
                         assembles this chunk + its sub-chunks (the root → the whole

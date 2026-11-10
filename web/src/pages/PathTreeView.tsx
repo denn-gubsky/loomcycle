@@ -2,7 +2,8 @@ import { lazy, Suspense } from "react";
 import { PathExplorer } from "@loomcycle/explorer";
 import { useFocusTenant, usePrincipal, useUserId } from "../components/Layout";
 import DocumentAssistantPanel from "../components/DocumentAssistantPanel";
-import type { DocScope } from "../api";
+import { startRun, type DocScope } from "../api";
+import { canRegenerateAnnotations, regenerateAnnotation } from "../lib/annotationRegen";
 
 // PathTreeView is a thin wrapper around the standalone <PathExplorer> component
 // from @loomcycle/explorer (RFC AZ). The full Path VFS console — the dirent tree
@@ -56,6 +57,16 @@ export default function PathTreeView() {
       // subject's tree this console browses (?scope_id= / ?tenant=). Empty →
       // the caller's own subject. The server re-authorizes.
       browse={{ scopeId: userId || undefined, tenant: focusTenant || undefined }}
+      // Regenerate starts the annotator in the caller's own tenant, so it is
+      // offered only to an operator who is not focused on another tenant.
+      // Edits are written as the operator's manual annotations; anyone else is
+      // refused by the server, so only an operator is offered Edit.
+      canEditAnnotations={canRegenerateAnnotations(principal)}
+      onRegenerateAnnotation={
+        canRegenerateAnnotations(principal) && !focusTenant
+          ? (target) => regenerateAnnotation(target, startRun)
+          : undefined
+      }
       renderAssistant={(ctx) => (
         <DocumentAssistantPanel
           documentId={ctx.documentId}

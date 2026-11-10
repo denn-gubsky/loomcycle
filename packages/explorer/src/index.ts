@@ -42,6 +42,10 @@ export type {
   ClassifyAnswer,
   AcceptClassificationAnswer,
   ClassificationRecord,
+  Annotation,
+  AnnotationLevel,
+  AnnotationEdit,
+  AnnotationTarget,
 } from "./types";
 
 // A stop on the document trail — the argument shape of DocumentViewer's
@@ -66,6 +70,14 @@ export type {
   DocRevertAnswer,
 } from "./lib/dataLayer";
 export { loadDocumentEdges, EDGE_PAGE_CAP } from "./lib/edgePages";
+// Annotations: the wire input of an operator's edit, the length caps the editor
+// checks, and the scope rule (tenant only).
+export {
+  setAnnotationInput,
+  annotationsApply,
+  BRIEF_MAX_CHARS,
+  ABSTRACT_MAX_CHARS,
+} from "./lib/annotation";
 // Copy / move documents between scopes: the request and answer a data layer's
 // documentsTransfer takes and returns.
 export { transferInput } from "./lib/transfer";

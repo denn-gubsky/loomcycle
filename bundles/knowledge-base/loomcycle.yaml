@@ -4844,7 +4844,10 @@ agents:
         }
         var stale = cur.stale === true || (st.opts.write === "report" && (childWrote || st.dirty[folder] === true)) ||
           (isPlainObject(cur.record) && cur.record.prompt_version !== CONFIG.prompt_version);
-        if (!stale && !st.opts.force) { bump(st.skipped, "current"); return false; }
+        // force rewrites what the pass was pointed at: folders only in path mode. A
+        // forced document pass leaves its folders to their hashes, so one document's
+        // regenerate does not rewrite every folder up to the top.
+        if (!stale && !(st.opts.force && st.opts.mode === "path")) { bump(st.skipped, "current"); return false; }
         if (isPlainObject(cur.record) && cur.record.manual === true) { bump(st.skipped, "manual"); return false; }
         st.stale.path++;
         st.folders_count++;

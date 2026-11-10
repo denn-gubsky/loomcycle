@@ -539,7 +539,9 @@ is never rewritten.
 Other input: `min_body_chars`, `max_body_chars` (the part's own text a
 request carries, default 6000), `max_relations` (default 20), `max_calls`
 (model calls per run, default 200), `max_writes` (default 500), `force`
-(rewrite current annotations too, e.g. after a model change). Operational
+(rewrite current annotations too, e.g. after a model change: the document's
+parts in document mode, the folders in path mode; a forced document pass
+leaves its folders to their hashes). Operational
 documents (`SourceStub`, `SyncReport`, `Annotation`) and the `/facts` and
 `/memory` trees are skipped.
 

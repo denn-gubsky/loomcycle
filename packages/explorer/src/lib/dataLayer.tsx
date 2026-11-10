@@ -2,6 +2,8 @@ import { createContext, useContext, type ReactNode } from "react";
 import type { LoomcycleClient, DocumentToolInput } from "@loomcycle/client";
 import type {
   AcceptClassificationAnswer,
+  Annotation,
+  AnnotationEdit,
   Backlink,
   BrowseScope,
   CanvasDoc,
@@ -23,6 +25,7 @@ import type { AssetFetch, JsonPost } from "./createClient";
 import type { RulingCounts, RulingRequest } from "./ruling";
 import { entityTypeNames } from "./subjectType";
 import { transferInput, type TransferRequest, type TransferResult } from "./transfer";
+import { setAnnotationInput } from "./annotation";
 
 // ChunkPatch is the subset of chunk fields update_chunk accepts. `fields` is
 // unknown (arbitrary typed JSON the chunk carries); a blank/absent value leaves
@@ -305,6 +308,26 @@ export interface ExplorerDataLayer {
   // describe_ontology), for re-typing a subject. Optional: without it the viewer
   // offers no change-type action.
   documentEntityTypes?(scope: DocScope, browse?: BrowseScope): Promise<string[]>;
+  // Annotation ops. Optional, like the rulings: without documentGetAnnotation
+  // the viewer shows no annotations, and without documentSetAnnotation it offers
+  // no Edit. Annotations exist only in the tenant scope; the viewer never calls
+  // either for another scope.
+  //
+  // documentGetAnnotation returns every record of one chunk (a branch chunk, or a
+  // document's root, which may carry both a document and a path record). No
+  // record → an empty list.
+  documentGetAnnotation?(
+    chunkId: string,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<{ annotations: Annotation[] }>;
+  // documentSetAnnotation writes an operator's edit as a manual record. A
+  // refusal rejects with the runtime's error text.
+  documentSetAnnotation?(
+    edit: AnnotationEdit,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<{ annotation: Annotation }>;
   // documentAssetObjectUrl fetches an image chunk's bytes (RFC BO) WITH auth and
   // returns a blob object-URL for an <img src> — a bare <img src=/v1/...> can't
   // carry a bearer header. The CALLER must URL.revokeObjectURL when done. Absent
@@ -615,6 +638,17 @@ export function dataLayerFromClient(
         { op: "accept_classification", document_id: documentId, scope } as unknown as DocumentToolInput,
         browse,
       ) as Promise<AcceptClassificationAnswer>,
+    // Annotation ops — the same passthrough cast: wire ops newer than the
+    // pinned SDK type.
+    documentGetAnnotation: (chunkId, scope, browse) =>
+      client.document(
+        { op: "get_annotation", id: chunkId, scope } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<{ annotations: Annotation[] }>,
+    documentSetAnnotation: (edit, scope, browse) =>
+      client.document(setAnnotationInput(edit, scope) as unknown as DocumentToolInput, browse) as Promise<{
+        annotation: Annotation;
+      }>,
     documentUpdateChunk: (id, revision, patch, scope, browse) =>
       client.document(
         // `patch.fields` is unknown but DocumentToolInput.fields is a typed

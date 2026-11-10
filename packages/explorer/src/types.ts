@@ -357,3 +357,56 @@ export interface ClassificationRecord {
   proposed_tags?: string[];
   statements?: string[];
 }
+
+// AnnotationLevel is where an annotation sits: a branch chunk, a whole document
+// (on its root chunk), or a Path folder (on its `_annotation` document's root).
+export type AnnotationLevel = "branch" | "document" | "path";
+
+// Annotation is one stored annotation record (get_annotation / set_annotation):
+// an indicative brief and an informative abstract written about a chunk, with
+// the provenance a reader needs to judge it. One record per (chunk_id, level).
+// Annotations exist only in the tenant scope. `stale` is computed by the runtime
+// on every read: the text the record describes has changed since it was written.
+// A stale record is still shown, marked; a missing one is never made up here.
+export interface Annotation {
+  chunk_id: string;
+  document_id: string;
+  level: AnnotationLevel;
+  brief: string;
+  abstract: string;
+  language?: string;
+  class?: string;
+  ontology_version?: number;
+  inputs_sha256?: string;
+  prompt_version?: number;
+  model?: string;
+  // manual — a person wrote or edited it; the background walk never overwrites it.
+  manual?: boolean;
+  written_at?: string;
+  // written_by — "run:<id>", "principal:<subject>" or "operator".
+  written_by?: string;
+  // folder — the Path folder a path-level record describes.
+  folder?: string;
+  stale?: boolean;
+}
+
+// AnnotationEdit is an operator's hand edit of an annotation. The data layer
+// sends it as a manual record and leaves the inputs hash to the runtime.
+export interface AnnotationEdit {
+  id: string; // the target chunk (a branch chunk, or the document's root)
+  level: AnnotationLevel;
+  brief: string;
+  abstract: string;
+}
+
+// AnnotationTarget names what a Regenerate asks for: the host's
+// onRegenerateAnnotation receives it and decides how to have it rewritten (the
+// package never starts a run itself).
+export interface AnnotationTarget {
+  documentId: string;
+  chunkId: string;
+  level: AnnotationLevel;
+  scope: DocScope;
+  // folder — for a path-level target, the folder it describes.
+  folder?: string;
+}

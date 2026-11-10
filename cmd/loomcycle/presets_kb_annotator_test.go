@@ -490,3 +490,33 @@ func TestKBAnnotator_FoldersAfterTheirDocuments(t *testing.T) {
 		t.Fatalf("a current tree cost %d calls: %v", len(f.prompts)-before, rep)
 	}
 }
+
+// A forced document pass rewrites the document's parts and leaves its folders to
+// their hashes: one regenerate does not rewrite every folder to the top.
+func TestKBAnnotator_ForceRewritesTheDocumentNotItsFolders(t *testing.T) {
+	d, author, driver := annRealDocument(t)
+	a := seedAnnDoc(t, d, author, "Widget guide", "/kb/widgets/guide")
+	f := &annFake{reply: func(p string) string {
+		// The same text every time: a rewrite changes no hash above it.
+		title := ""
+		for _, line := range strings.Split(p, "\n") {
+			if v, ok := strings.CutPrefix(line, "TITLE: "); ok {
+				title = v
+				break
+			}
+		}
+		b, _ := json.Marshal(map[string]string{"brief": "Brief of " + title, "abstract": "Abstract of " + title + ".", "language": "en"})
+		return string(b)
+	}}
+	runAnnotator(t, d, driver, f, fmt.Sprintf(`{"mode":"document","document_id":%q,"write":"annotate"}`, a.doc))
+	before := len(f.prompts)
+	rep := runAnnotator(t, d, driver, f, fmt.Sprintf(`{"mode":"document","document_id":%q,"write":"annotate","force":true}`, a.doc))
+	if len(f.prompts)-before != 3 || annCount(rep, "folders") != 0 {
+		t.Fatalf("forced document pass: %d calls, %v; want the document's 3 and no folder", len(f.prompts)-before, rep)
+	}
+	before = len(f.prompts)
+	runAnnotator(t, d, driver, f, `{"mode":"path","path":"/kb","recursive":true,"write":"annotate","force":true}`)
+	if n := len(f.prompts) - before; n != 2 {
+		t.Fatalf("forced path pass made %d calls, want /kb/widgets and /kb", n)
+	}
+}
