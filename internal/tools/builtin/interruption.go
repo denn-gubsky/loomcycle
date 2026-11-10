@@ -40,6 +40,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -639,7 +640,10 @@ func (it *Interruption) blockWithHeartbeat(ctx context.Context, interruptID stri
 	//     self-healing. In the single-runtime case the resolve handler's
 	//     own Bus.Notify wakes Wait first and `done` closes before the
 	//     poll ever fires — this is purely the cross-runtime backstop.
-	go func() {
+	//
+	// Each tick runs under its own recover: one that panics must not end the
+	// pump, or the parked run is failed as heartbeat_timeout while it waits.
+	safego.Go(ctx, "interruption.wait_pump", func() {
 		hbTicker := time.NewTicker(hbInterval)
 		defer hbTicker.Stop()
 		pollTicker := time.NewTicker(pollInterval)
@@ -648,22 +652,26 @@ func (it *Interruption) blockWithHeartbeat(ctx context.Context, interruptID stri
 			select {
 			case <-hbTicker.C:
 				if runID != "" {
-					hbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-					_ = it.Store.UpdateHeartbeat(hbCtx, runID)
-					cancel()
+					safego.Run(ctx, "interruption.wait_heartbeat", func() {
+						hbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+						defer cancel()
+						_ = it.Store.UpdateHeartbeat(hbCtx, runID)
+					})
 				}
 			case <-pollTicker.C:
-				pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-				row, err := it.Store.InterruptGet(pCtx, interruptID)
-				cancel()
-				if err == nil && row.Status != store.InterruptStatusPending {
-					it.Bus.Notify("intr:" + interruptID)
-				}
+				safego.Run(ctx, "interruption.wait_poll", func() {
+					pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+					defer cancel()
+					row, err := it.Store.InterruptGet(pCtx, interruptID)
+					if err == nil && row.Status != store.InterruptStatusPending {
+						it.Bus.Notify("intr:" + interruptID)
+					}
+				})
 			case <-done:
 				return
 			}
 		}
-	}()
+	})
 
 	endWait := providers.BeginWait(ctx) // the caller's run is parked until a person answers
 	defer endWait()                     // idempotent; closes the wait on every exit

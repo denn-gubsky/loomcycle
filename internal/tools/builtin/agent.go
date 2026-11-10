@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/fence"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -1087,9 +1088,18 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 	for i, sp := range in.Spawns {
 		i, sp := i, sp
 		wg.Add(1)
-		go func() {
+		safego.Go(subCtx, "agent.parallel_spawn_child", func() {
 			defer wg.Done()
 			defer live[i]() // the child is alive until it ends, queued time included
+			// A child whose goroutine panicked is still a row, a failed one:
+			// the envelope keeps one row per spawn the model asked for.
+			finished := false
+			defer func() {
+				if !finished {
+					results[i] = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: false,
+						Error: fmt.Sprintf("sub-agent %q failed: an internal error ended it", sp.Name)}
+				}
+			}()
 			// Acquire a slot or bail on ctx cancellation. ctx
 			// cancellation propagates from the parent run, so a
 			// cancelled parent reliably terminates outstanding
@@ -1098,6 +1108,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-subCtx.Done():
+				finished = true
 				results[i] = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: false, Error: subCtx.Err().Error()}
 				return
 			}
@@ -1122,6 +1133,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			}
 			childCtx = tools.WithChildOutcome(childCtx, outcome)
 			out, childState, childRunID, timedOut, err := a.runChildBounded(childCtx, sp.TimeoutMs, sp.Name, sp.Prompt, sp.DefID)
+			finished = true
 			var r ParallelSpawnResult
 			if obj, ran := newSpawnObject(outcome, sp.Name, sp.TimeoutMs, out, timedOut, err); ran {
 				objects[i] = &obj
@@ -1158,7 +1170,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 					},
 				})
 			}
-		}()
+		})
 	}
 
 	// RFC X Phase 3: park the fan-out PARENT while it's blocked in wg.Wait. The
@@ -1174,7 +1186,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 		if gate := tools.PauseGateFromContext(ctx); gate != nil {
 			watchDone := make(chan struct{})
 			watcherExited := make(chan struct{})
-			go func() {
+			safego.Go(ctx, "agent.parallel_spawn_pause_watch", func() {
 				defer close(watcherExited)
 				for {
 					select {
@@ -1190,7 +1202,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 						// returns a fresh channel post-resume).
 					}
 				}
-			}()
+			})
 			defer func() {
 				close(watchDone)
 				<-watcherExited

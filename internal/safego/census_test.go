@@ -98,11 +98,6 @@ var pendingRawGo = map[string]int{
 	"internal/api/mcp/proxy.go":                     1,
 	"internal/api/mcp/server.go":                    1,
 	"internal/api/webhook/server.go":                2,
-	"internal/tools/builtin/agent.go":               2,
-	"internal/tools/builtin/agent_poll.go":          1,
-	"internal/tools/builtin/document_graph_body.go": 1,
-	"internal/tools/builtin/interruption.go":        1,
-	"internal/tools/builtin/teamdef.go":             2,
 	"internal/tools/mcp/stdio/client.go":            3,
 }
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"log/slog"
 	"sort"
 	"strconv"
@@ -1888,6 +1889,14 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	walkCancelled := false
 	walk := func() ([]teamrun.StepRecord, error) {
 		defer releaseBreakpoints()
+		// A walk that panicked still closes its run, failed: left open, its
+		// row stays running and its heartbeat pulses on forever.
+		closed := false
+		defer func() {
+			if !closed {
+				finishRun(WalkEnd{Err: errors.New("the walk ended on an internal error")})
+			}
+		}()
 		// The walk runs on the definition with each "./name" written out as the
 		// name that agent runs under, so every member it starts, and every
 		// step, envelope and sink message that names one, carries it.
@@ -1902,6 +1911,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			_ = bg.Interrupted(pollRunID)
 		}
 		walkCancelled = walkCtx.Err() != nil
+		closed = true
 		finishRun(end)
 		return trace, werr
 	}
@@ -2010,9 +2020,11 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 				NoNotify: !pm.notify, CancelOnParentEnd: pm.cancelOnEnd,
 			}})
 		}
-		go finishPollWalk(bg, pollRunID, releaseLive, func() walkEnding {
-			trace, werr := walk()
-			return pollWalkResult(answer, trace, werr, walkCancelled, context.Cause(walkCtx))
+		safego.Go(walkCtx, "teamdef.poll_walk", func() {
+			finishPollWalk(bg, pollRunID, releaseLive, func() walkEnding {
+				trace, werr := walk()
+				return pollWalkResult(answer, trace, werr, walkCancelled, context.Cause(walkCtx))
+			})
 		})
 		return okJSON(map[string]any{
 			"name":   row.Name,
@@ -2034,11 +2046,11 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		// A detached walk no longer holds the caller up, so whatever it waits
 		// on must not pause the caller's clock.
 		walkCtx = providers.WithRunClock(walkCtx, nil)
-		go func() {
+		safego.Go(walkCtx, "teamdef.detached_walk", func() {
 			if _, werr := walk(); werr != nil {
 				slog.Warn("teamdef: detached walk failed", "team", row.Name, "run_id", runID, "err", werr)
 			}
-		}()
+		})
 		return okJSON(map[string]any{
 			"name":   row.Name,
 			"def_id": row.DefID,
