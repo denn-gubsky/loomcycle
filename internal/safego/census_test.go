@@ -76,7 +76,6 @@ var pendingRawGo = map[string]int{
 	"cmd/loomcycle/boot_listen.go":   7,
 	"cmd/loomcycle/boot_metrics.go":  1,
 	"cmd/loomcycle/boot_surfaces.go": 2,
-	"cmd/loomcycle/boot_triggers.go": 7,
 	"cmd/loomcycle/main.go":          1,
 	"cmd/loomcycle/openmode.go":      1,
 
