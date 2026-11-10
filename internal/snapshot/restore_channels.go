@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -60,84 +59,6 @@ func restoreChannelDefsSection(ctx context.Context, rs *restoreRun) error {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("channel_def %s/%s: %v", e.TenantID, e.Name, err))
 			}
 		}
-	}
-	return nil
-}
-
-// channels (config + messages + cursors). Config is operator-
-// yaml-side; restore doesn't write it back into a table — the
-// operator on the restoring host reconciles against their own
-// yaml. Messages + cursors get raw inserts.
-func restoreChannelsSection(ctx context.Context, rs *restoreRun) error {
-	s, sections, result := rs.s, rs.sections, rs.result
-	if rawSection, ok := sections[migrations.SectionChannels]; ok {
-		var sec ChannelsSection
-		if err := decodeWithMigration(migrations.SectionChannels, rawSection, &sec); err != nil {
-			return err
-		}
-		if len(sec.Config) > 0 {
-			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("channels.config: %d declared channels in snapshot; reconcile against operator yaml on the restoring host", len(sec.Config)))
-		}
-		teamChannels := newTeamChannelGate(s)
-		for _, m := range sec.Messages {
-			if !teamChannels.admit(ctx, m.TenantID, m.Channel) {
-				continue
-			}
-			var expires, visible, requested time.Time
-			if m.ExpiresAt != nil {
-				expires = *m.ExpiresAt
-			}
-			if m.VisibleAt != nil {
-				visible = *m.VisibleAt
-			}
-			if m.RequestedVisibleAt != nil {
-				requested = *m.RequestedVisibleAt
-			}
-			inserted, err := s.SnapshotRestoreChannelMessage(ctx, store.ChannelMessage{
-				ID:                 m.ID,
-				Channel:            m.Channel,
-				Scope:              store.MemoryScope(m.Scope),
-				ScopeID:            m.ScopeID,
-				Payload:            m.Payload,
-				PublishedAt:        m.PublishedAt,
-				ExpiresAt:          expires,
-				VisibleAt:          visible,
-				PublishedByUserID:  m.PublishedByUserID,
-				TenantID:           m.TenantID,
-				Origin:             m.Origin,
-				HookTenant:         m.HookTenant,
-				RequestedVisibleAt: requested,
-			})
-			if err != nil {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("channel_message %s: %v", m.ID, err))
-				continue
-			}
-			if inserted {
-				result.ChannelMessagesRestored++
-			}
-		}
-		for _, c := range sec.Cursors {
-			if !teamChannels.admit(ctx, c.TenantID, c.Channel) {
-				continue
-			}
-			inserted, err := s.SnapshotRestoreChannelCursor(ctx, store.ChannelCursorEntry{
-				Channel:   c.Channel,
-				TenantID:  c.TenantID,
-				Scope:     store.MemoryScope(c.Scope),
-				ScopeID:   c.ScopeID,
-				Cursor:    c.Cursor,
-				UpdatedAt: c.UpdatedAt,
-			})
-			if err != nil {
-				result.Warnings = append(result.Warnings, fmt.Sprintf("channel_cursor %s/%s/%s: %v", c.Channel, c.Scope, c.ScopeID, err))
-				continue
-			}
-			if inserted {
-				result.ChannelCursorsRestored++
-			}
-		}
-		result.TeamChannelRowsSkipped = teamChannels.report(result)
 	}
 	return nil
 }
