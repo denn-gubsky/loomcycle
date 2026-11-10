@@ -911,6 +911,19 @@ func (d *Document) copyDocumentBodies(ctx context.Context, p *copyPlan, doc *cop
 			p.unitsCopied++
 		}
 	}
+	// The copied annotations' search rows, written in the target like the units:
+	// the records came over with the chunk tables.
+	newIDs := make([]string, 0, len(doc.chunks))
+	for _, c := range doc.chunks {
+		newIDs = append(newIDs, p.chunkMap[c])
+	}
+	if recs, err := d.annotationRecordsFor(ctx, p.dst, newIDs); err == nil {
+		for _, byLevel := range recs {
+			for _, rec := range byLevel {
+				d.indexAnnotation(ctx, p.dst, p.dstMem, rec)
+			}
+		}
+	}
 }
 
 // copyStatements writes the statements between copied documents, with their

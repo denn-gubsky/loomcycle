@@ -83,6 +83,15 @@ a norm. The links agent compares a document against the norms by default when th
 ontology marks any. `@norm` takes no value, and on an entity type it is ignored
 with a warning.
 
+A document class can say what its annotations should state — the brief and
+abstract the annotation pass writes for each document and section:
+`@annotate the problem; the decisions taken; the phases and their status` names
+the slots, separated by `;`. The first prose line of the class's entry is shown
+with them as what such a document is. A subclass inherits it; without one, the
+annotation states what the document is, covers and concludes. To write every
+annotation in one language whatever each document's own, set the field
+`annotation_language` (a code such as `en` or `uk`) on this document's root.
+
 **Relation kinds.** A `@section relations` heading names the kinds of link agents
 may record between two things. Declaring one — even an empty one — switches on the
 standard kinds (`cites`, `based_on`, `amends`, `implements`, `related`, …) for every

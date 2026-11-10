@@ -4217,6 +4217,12 @@ export type PathToolInput = {
   cursor?: string;
   /** rm: also delete the backing resource (NOT supported in v1). */
   resource_too?: boolean;
+  /** ls (tenant scope): add each entry's annotation as `summary` (a folder's
+   *  from its `_annotation` document; `folder_summary` on a document with names
+   *  below it). */
+  with_summary?: boolean;
+  /** ls with_summary: the most abstract characters the page carries (default 2000). */
+  summary_chars?: number;
   [extra: string]: unknown;
 };
 
@@ -4594,6 +4600,11 @@ export type DocumentToolInput = {
   with_summary?: boolean;
   /** with_summary: the most abstract characters a response carries (default 2000, max 8000). */
   summary_chars?: number;
+  /** search: rank the annotations too — "include" fuses them with the passages,
+   *  "only" answers from them alone (a question about the corpus as a whole). */
+  annotations?: "none" | "include" | "only";
+  /** search with annotations: which levels to rank (default all). */
+  annotation_levels?: Array<"branch" | "document" | "path">;
   /** classify: "propose" (default) applies an unambiguous rule match and files the
    *  rest for review; "report" writes nothing. judge_statements: "rule"
    *  (default) or "recommend". */
@@ -9310,3 +9321,66 @@ export interface DeviceLoginResult {
   expiresIn?: number;
   scope?: string[];
 }
+
+/** One stored annotation (the Document tool's annotation ops): an indicative
+ *  `brief` and an informative `abstract` written about a section (`branch`), a
+ *  document (`document`, on its root chunk) or a Path folder (`path`). Kept for
+ *  the tenant scope only. `stale` is computed on read: the text it was written
+ *  from has changed since. */
+export type DocumentAnnotation = {
+  chunk_id: string;
+  document_id: string;
+  level: "branch" | "document" | "path";
+  brief: string;
+  abstract: string;
+  language: string;
+  class?: string;
+  inputs_sha256: string;
+  prompt_version: number;
+  model?: string;
+  manual: boolean;
+  written_at: string;
+  written_by: string;
+  /** A path record's folder. */
+  folder?: string;
+  stale?: boolean;
+};
+
+/** The filters of {@link LoomcycleClient.listAnnotations}. */
+export type DocumentListAnnotationsInput = {
+  scope?: "tenant";
+  level?: "branch" | "document" | "path";
+  document_id?: string;
+  under_path?: string;
+  stale?: boolean;
+  manual?: boolean;
+  /** RFC 3339. */
+  written_before?: string;
+  limit?: number;
+  /** The previous page's `next_cursor`. */
+  after?: string;
+};
+
+export type DocumentListAnnotationsResult = {
+  annotations: DocumentAnnotation[];
+  next_cursor?: string;
+};
+
+/** What {@link LoomcycleClient.annotate} writes: a target (`id` a chunk,
+ *  `document_id`, or with `level: "path"` the folder's `path`) and the two
+ *  texts. Without `inputs_sha256` (from `annotation_inputs`) it is an
+ *  operator's manual annotation, which the annotation pass never overwrites. */
+export type DocumentAnnotateInput = {
+  scope?: "tenant";
+  id?: string;
+  document_id?: string;
+  path?: string;
+  level?: "branch" | "document" | "path";
+  brief: string;
+  abstract: string;
+  language?: string;
+  inputs_sha256?: string;
+  prompt_version?: number;
+  model?: string;
+  manual?: boolean;
+};

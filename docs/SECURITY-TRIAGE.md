@@ -61,6 +61,7 @@ dismissal.
 | 338 | go/clear-text-logging | internal/api/http/server.go:6835 | false positive | Logs run_id, iteration and the store's RecordCallUsage error; the usage row holds token counts and cost, not credentials. |
 | 339 | go/clear-text-logging | internal/api/http/server.go:6835 | false positive | As 338. |
 | 366 | go/clear-text-logging | internal/tools/builtin/document_review.go:1141 | false positive | Logs a ruling id, the tenant and a store write error. |
+| 397 | go/clear-text-logging | internal/tools/builtin/document_annotation_search.go:94 | false positive | Logs an annotation's chunk id, level and the embedder's error, as #303 does for a chunk body; the embedders send their key in a header, never the URL, and build errors from the status and a response preview, so the error does not quote it. |
 | 177 | go/incorrect-integer-conversion | cmd/loomcycle/gitsource.go:72 | won't fix | int(int64) of an operator env value; release builds are amd64/arm64 only, where int is 64 bits, so the conversion is lossless. |
 | 178 | go/incorrect-integer-conversion | cmd/loomcycle/gitsource.go:87 | won't fix | As 177. |
 | 179 | go/incorrect-integer-conversion | deploy/builder/config.go:100 | won't fix | As 177 (builder image is amd64/arm64). |

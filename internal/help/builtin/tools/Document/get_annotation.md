@@ -12,12 +12,16 @@ To get annotations with ordinary reads instead, pass `with_summary: true` to
 `get_document`, `get_chunk`, `search`, `related`, `graph_recall`,
 `documents_summary` or `query_documents`.
 
+A folder's annotation is left out when you may not read every document it
+covers.
+
 ## Arguments
 
 - `id` — the chunk: a section, or a document's root chunk.
 - `document_id` — a document, for its `document` annotation.
-- `path` — the document's Path-tree name, instead of `document_id`.
-- `level` — `branch` or `document`, to read only that one.
+- `path` — the document's Path-tree name, instead of `document_id`; with
+  `level: path`, the folder.
+- `level` — `branch`, `document` or `path`, to read only that one.
 - `scope` — `tenant`.
 
 ## Returns

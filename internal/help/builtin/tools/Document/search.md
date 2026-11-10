@@ -64,6 +64,14 @@ as the user store, search both, in two calls.
   on the scope's 3D map of chunks by meaning, the map `graph_snapshot`'s
   `projection` block draws. Absent when the server keeps no map for the scope.
 - `with_summary` — add each hit's nearest annotation as `summary` (`{level, brief, abstract?, stale?, chunk_id?}`): the brief on every hit, the abstract on the hits of the first five documents, within `summary_chars` (default 2000).
+- `annotations` — `none` (default), `include` or `only`. Rank the
+  annotations too: the brief and abstract written for sections, documents and
+  folders. `include` fuses them with the passages, one row per target; `only`
+  answers from them alone — the shape of a question about the corpus as a
+  whole. A row found this way carries `matched_annotation: {level, text}` and
+  `summary`; a folder's row is its `_annotation` document, with `folder`.
+- `annotation_levels` — with `annotations`, the levels to rank: any of
+  `branch`, `document`, `path` (default all).
 - `summary_chars` — with `with_summary`, the most abstract characters the answer carries (default 2000, at most 8000).
 
 ## Aiming the search

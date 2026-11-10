@@ -860,6 +860,18 @@ func (d *Document) checkEvidence(ctx context.Context, key sqlmem.ScopeKey, mscop
 			return nil, &r, nil
 		}
 		c := checkedEvidence{edgeEvidenceIn: ev}
+		// A folder's annotation document says what the annotation pass wrote
+		// about other documents: never evidence of anything.
+		if ev.ChunkID != "" {
+			if res, err := d.query(ctx, key, `SELECT 1 FROM chunks c JOIN documents dd ON dd.id = c.document_id
+				WHERE c.id = ? AND dd.type = ?`, ev.ChunkID, annotationDocType); err != nil {
+				return nil, nil, err
+			} else if len(res.Rows) > 0 {
+				r := errValidation(where+": evidence_source_operational — chunk "+ev.ChunkID+" is in a folder's annotation document, which is not a source",
+					"Quote the document the annotation describes.")
+				return nil, &r, nil
+			}
+		}
 		switch {
 		case ev.ChunkID != "":
 			// A chunk the caller may not read answers exactly like a missing one:
