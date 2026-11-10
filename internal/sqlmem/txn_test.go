@@ -2,6 +2,7 @@ package sqlmem
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
@@ -196,6 +197,24 @@ func TestTxn_PerTenantShareIsConfigurable(t *testing.T) {
 	m.RollbackRunTxns("runA")
 }
 
+// TestTxn_DefaultTenantIsNotHeldToTheShare: the runtime's "" tenant (stored as
+// ScopeTenant("")) is the operator's own, the one a single-tenant install runs
+// in, so it keeps the full global cap.
+func TestTxn_DefaultTenantIsNotHeldToTheShare(t *testing.T) {
+	m := newTestManager(t, Config{MaxOpenTxns: 4})
+	ctx := context.Background()
+	for i := 0; i < 4; i++ {
+		agent := fmt.Sprintf("a%d", i)
+		if _, err := m.BeginTxn(ctx, agentTxnID("run0", agent), "run0", agentKey(ScopeTenant(""), agent)); err != nil {
+			t.Fatalf("default tenant begin %d of 4: %v", i, err)
+		}
+	}
+	if _, err := m.BeginTxn(ctx, agentTxnID("run0", "a4"), "run0", agentKey(ScopeTenant(""), "a4")); err == nil {
+		t.Fatal("default tenant opened a 5th transaction past the global cap of 4")
+	}
+	m.RollbackRunTxns("run0")
+}
+
 // TestTxn_RollbackRunTxns: run-end cleanup rolls back the tree's open txns.
 func TestTxn_RollbackRunTxns(t *testing.T) {
 	m := newTestManager(t, Config{})
@@ -305,4 +324,31 @@ func TestTxn_AutoCommitUnchanged(t *testing.T) {
 	if n := rowCount(t, m, key); n != 1 {
 		t.Fatalf("auto-commit count=%d, want 1", n)
 	}
+}
+
+// panickingBeginBackend is a backend whose beginTx panics, as a driver bug would.
+type panickingBeginBackend struct{ backend }
+
+func (panickingBeginBackend) beginTx(context.Context, ScopeKey) (*sql.Tx, func(), error) {
+	panic("beginTx bug")
+}
+
+// TestTxn_APanickingBeginFreesItsReservation: a panic in the backend's begin,
+// recovered higher up, must not keep the reservation — it would hold a global
+// and a tenant slot for the process's life, and the txn id would answer "being
+// opened — retry" forever.
+func TestTxn_APanickingBeginFreesItsReservation(t *testing.T) {
+	m := newTestManager(t, Config{MaxOpenTxns: 4, MaxOpenTxnsPerTenant: 1})
+	real := m.backend
+	m.backend = panickingBeginBackend{real}
+	id := agentTxnID("runA", "a")
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = m.BeginTxn(context.Background(), id, "runA", agentKey("tenantA", "a"))
+	}()
+	m.backend = real
+	if _, err := m.BeginTxn(context.Background(), id, "runA", agentKey("tenantA", "a")); err != nil {
+		t.Fatalf("begin after a panicking begin: %v", err)
+	}
+	m.RollbackRunTxns("runA")
 }
