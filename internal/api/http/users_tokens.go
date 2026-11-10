@@ -22,7 +22,8 @@ package http
 //  3. The route is substrate:tenant (the /v1/_users/ prefix gate in
 //     requiredScopeFor), so a substrate:user member is auto-denied minting.
 //  4. list / revoke operate ONLY on member tokens — a row that belongs to this
-//     (tenant, subject) AND holds no admin/tenant scope (isDelegatedUserToken).
+//     (tenant, subject) AND holds no admin/tenant scope and no single-purpose
+//     scope (isDelegatedUserToken).
 //     This is the anti-escalation guard: an operator-admin could mint a
 //     substrate:admin/tenant token whose (tenant, subject) collides with a
 //     member, and without this a tenant operator could list/revoke that
@@ -368,19 +369,23 @@ func deriveTokenName(subject string) string {
 
 // isDelegatedUserToken reports whether row is a token this member surface may
 // manage: it must belong to the caller's tenant AND the named user, AND hold no
-// privileged (admin/tenant) scope. The last clause is the anti-escalation guard
-// (property 4 above). A member token only ever carries the bounded
-// GrantableUserScopes set, so "no admin/tenant scope" confines list/revoke to
-// exactly the tokens this surface can itself mint. auth.HasScope(scopes, X)
-// treats substrate:admin as satisfying everything, so a token holding admin is
-// caught by the ScopeAdmin check and a token holding tenant (or admin) by the
-// ScopeTenant check.
+// privileged (admin/tenant) scope, AND be no single-purpose machine credential
+// (auth:manage, scim:provision, metrics:read). The last two clauses are the
+// anti-escalation guard (property 4 above): a member token only ever carries
+// the bounded GrantableUserScopes set, so they confine list/revoke/retire to
+// exactly the tokens this surface can itself mint. Without the third a tenant
+// operator could list, revoke or cap-retire an operator-minted scrape or
+// user-management credential that happens to share the subject.
+// auth.HasScope(scopes, X) treats substrate:admin as satisfying everything, so
+// a token holding admin is caught by the ScopeAdmin check and a token holding
+// tenant (or admin) by the ScopeTenant check.
 func isDelegatedUserToken(row store.OperatorTokenDefRow, tenant, subject string) bool {
 	if row.TenantID != tenant || row.Subject != subject {
 		return false
 	}
 	return !auth.HasScope(row.AllowedScopes, auth.ScopeAdmin) &&
-		!auth.HasScope(row.AllowedScopes, auth.ScopeTenant)
+		!auth.HasScope(row.AllowedScopes, auth.ScopeTenant) &&
+		!auth.HoldsSinglePurposeScope(row.AllowedScopes)
 }
 
 // tokenActive applies the auth-layer validity rule: a row authenticates iff it

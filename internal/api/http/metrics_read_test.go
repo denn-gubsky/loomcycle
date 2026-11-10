@@ -1,0 +1,216 @@
+package http
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"sort"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/aclres"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/store"
+)
+
+const metricsBearer = "scrape-bearer"
+
+// The route census: through the real authMiddleware, a metrics:read token is
+// admitted to GET and HEAD /metrics and refused (403) on every other route
+// the mux registers — the routes any authenticated principal may call
+// (whoami, the MCP transport, the gateway), the DB-backed /v1/_metrics/*
+// dashboards and self-revocation included.
+func TestMetricsRead_ReachesOnlyTheScrape(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy-secret")
+	seedToken(t, st, metricsBearer, "acme", "prometheus", []string{auth.ScopeMetricsRead}, time.Time{})
+
+	var got []string
+	for _, r := range eqRoutes(t) {
+		key := r.method + " " + r.pattern
+		reached, code := runMW(t, s, r.method, r.path, metricsBearer)
+		if reached && key != "GET /metrics" {
+			got = append(got, key)
+		}
+		if !reached && code != http.StatusForbidden {
+			t.Errorf("%s: refused with %d, want 403", key, code)
+		}
+	}
+	sort.Strings(got)
+	if len(got) > 0 {
+		t.Errorf("metrics:read reaches routes beyond the scrape: %v", got)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		if reached, code := runMW(t, s, method, "/metrics", metricsBearer); !reached {
+			t.Errorf("%s /metrics: refused with %d, want admitted", method, code)
+		}
+	}
+	// Named explicitly so a change to the route enumeration cannot drop them.
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/v1/_metrics/summary"}, {"GET", "/v1/_me"}, {"GET", "/v1/runs"}, {"POST", "/v1/runs"},
+		{"POST", "/v1/_mcp"}, {"POST", "/v1/chat/completions"}, {"GET", "/v1/_channels"},
+		{"POST", "/v1/_auth/token/revoke"}, {"POST", "/v1/_operatortokendef"},
+	} {
+		if reached, code := runMW(t, s, c.method, c.path, metricsBearer); reached || code != http.StatusForbidden {
+			t.Errorf("%s %s: reached=%v code=%d, want refused 403", c.method, c.path, reached, code)
+		}
+	}
+}
+
+// metrics:read is an addition, not a replacement: an admin token keeps the
+// scrape, and a tenant operator's token is refused it as before.
+func TestMetricsRead_AdminKeepsTheScrapeAndATenantTokenIsRefused(t *testing.T) {
+	s, st := tokenAuthServer(t, "")
+	seedToken(t, st, "admin-bearer", "ops", "ops", []string{auth.ScopeAdmin}, time.Time{})
+	seedToken(t, st, "tenant-bearer", "acme", "acme-ops", []string{auth.ScopeTenant}, time.Time{})
+	if reached, code := runMW(t, s, "GET", "/metrics", "admin-bearer"); !reached {
+		t.Errorf("admin: refused with %d", code)
+	}
+	if reached, code := runMW(t, s, "GET", "/metrics", "tenant-bearer"); reached || code != http.StatusForbidden {
+		t.Errorf("tenant: reached=%v code=%d, want refused 403", reached, code)
+	}
+}
+
+// Under LOOMCYCLE_ACL=enforce the metrics-reader baseline answers the
+// scrape's question, so no hand-written rule is needed; an explicit deny on
+// runtime:metrics bound to the token's subject still refuses it.
+func TestMetricsRead_EnforceAdmitsByBaselineAndAnExplicitDenyRefuses(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy-secret")
+	seedToken(t, st, metricsBearer, "acme", "prometheus", []string{auth.ScopeMetricsRead}, time.Time{})
+	s.SetACLResolver(aclres.New(st, authz.ModeEnforce, 0))
+
+	if reached, code := runMW(t, s, "GET", "/metrics", metricsBearer); !reached {
+		t.Fatalf("enforce, no rules: refused with %d, want admitted by the baseline", code)
+	}
+	putACL(t, st, "no-scrape", `[{"effect":"deny","actions":["read"],"resources":["runtime:metrics"]}]`)
+	bind(t, st, "no-scrape", "user", "prometheus")
+	if reached, code := runMW(t, s, "GET", "/metrics", metricsBearer); reached || code != http.StatusForbidden {
+		t.Errorf("enforce, deny bound: reached=%v code=%d, want refused 403", reached, code)
+	}
+}
+
+// Minting a token is the operator's: a tenant operator's token cannot reach
+// the mint route at all, so it cannot hand out a scrape credential either.
+func TestMetricsRead_ATenantOperatorCannotMintIt(t *testing.T) {
+	s, st := tokenAuthServer(t, "legacy-secret")
+	seedToken(t, st, "tenant-bearer", "acme", "acme-ops", []string{auth.ScopeTenant}, time.Time{})
+	if reached, code := runMW(t, s, "POST", "/v1/_operatortokendef", "tenant-bearer"); reached || code != http.StatusForbidden {
+		t.Errorf("tenant mint: reached=%v code=%d, want refused 403", reached, code)
+	}
+	if reached, code := runMW(t, s, "POST", "/v1/_operatortokendef", "legacy-secret"); !reached {
+		t.Errorf("operator mint: refused with %d", code)
+	}
+}
+
+// The own-identity carve-out admits a principal to its OWN identity routes
+// past the scope gate; a scrape credential is no person and gets no carve-out.
+func TestOwnIdentityRequest_RefusesAMetricsReader(t *testing.T) {
+	r := httptest.NewRequest("GET", "/v1/_users/prometheus/identities", nil)
+	r.Pattern = "GET /v1/_users/{subject}/identities"
+	r.SetPathValue("subject", "prometheus")
+	member := auth.Principal{TenantID: "acme", Subject: "prometheus", Scopes: []string{auth.ScopeRunsRead}}
+	if !ownIdentityRequest(member, r) {
+		t.Fatal("the fixture is wrong: a member's own identity request is not admitted")
+	}
+	scraper := auth.Principal{TenantID: "acme", Subject: "prometheus", Scopes: []string{auth.ScopeMetricsRead}}
+	if ownIdentityRequest(scraper, r) {
+		t.Error("a metrics:read credential was admitted to an identity route")
+	}
+}
+
+// A scrape credential does not sign in to the Web UI: the login is refused
+// with a reason, audited, and leaves no session behind.
+func TestUILogin_RefusesAMetricsReadToken(t *testing.T) {
+	s, st, sink := sessionTestServer(t, "legacy-secret")
+	seedToken(t, st, metricsBearer, "acme", "prometheus", []string{auth.ScopeMetricsRead}, time.Time{})
+	rec := doLogin(t, s, loginReq(metricsBearer))
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "metrics_credential_refused") {
+		t.Fatalf("status = %d body = %s, want 403 metrics_credential_refused", rec.Code, rec.Body.String())
+	}
+	if ev := lastEvent(t, sink, "auth_login_failed"); ev.AuthReason != "metrics_credential" || ev.ActorSubject != "prometheus" {
+		t.Errorf("auth_login_failed = %+v", ev)
+	}
+	if n := sessionRows(t, st); n != 0 {
+		t.Errorf("%d session rows after a refused login, want 0", n)
+	}
+}
+
+// The metrics listener's handler serves the scrape with no credential, even on
+// a server whose main listener requires one, and nothing else.
+func TestMetricsListenerHandler_ServesOnlyTheScrapeWithoutAuth(t *testing.T) {
+	s, _ := tokenAuthServer(t, "legacy-secret")
+	h := s.MetricsListenerHandler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "loomcycle_process_goroutines") {
+		t.Fatalf("GET /metrics: %d %.200s", rec.Code, rec.Body.String())
+	}
+	for _, path := range []string{"/", "/v1/runs", "/v1/_me", "/metrics/x", "/v1/_metrics/summary", "/healthz"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s: %d, want 404", path, rec.Code)
+		}
+	}
+}
+
+// A single-purpose machine credential an operator minted under a member's
+// (tenant, subject) is not that member's token: the tenant operator's member
+// surface neither lists, revokes nor cap-retires it.
+func TestUserTokens_LeaveSinglePurposeCredentialsSharingTheSubject(t *testing.T) {
+	for _, scope := range []string{auth.ScopeMetricsRead, auth.ScopeAuthManage, auth.ScopeSCIMProvision} {
+		t.Run(scope, func(t *testing.T) {
+			s, st := tokenAuthServer(t, "legacy")
+			ctx := context.Background()
+			acme := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}}
+			seedUser(t, st, "acme", "alice", "isolated", "active")
+			if _, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+				DefID: "def_machine", Name: "machine", TenantID: "acme", Subject: "alice",
+				TokenHash: "h-machine", AllowedScopes: []string{scope},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			first := mintFor(t, s, acme, "alice", "")
+
+			rec := httptest.NewRecorder()
+			s.handleListUserTokens(rec, bodyReq("GET", "/v1/_users/alice/tokens", "", acme, "subject", "alice"))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "def_machine") {
+				t.Errorf("the member list shows the %s token: %s", scope, rec.Body.String())
+			}
+
+			rec = httptest.NewRecorder()
+			s.handleRevokeUserToken(rec, revokeReq("def_machine", acme, "alice"))
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("revoke: %d, want opaque 404", rec.Code)
+			}
+
+			// max_active 1 retires every older member token; the machine
+			// credential is older still and must survive.
+			last := mintFor(t, s, acme, "alice", `{"max_active":1}`)
+			if len(last.Retired) != 1 || last.Retired[0] != first.DefID {
+				t.Errorf("cap retired %v, want only the older member token %s", last.Retired, first.DefID)
+			}
+			if row, err := st.OperatorTokenDefGet(ctx, "def_machine"); err != nil || !row.RetiredAt.IsZero() {
+				t.Errorf("the %s token was retired through the member surface (err=%v retired_at=%v)", scope, err, row.RetiredAt)
+			}
+		})
+	}
+}
+
+// The machine-credential test reads one predicate, so a scope added to the
+// single-purpose list is covered by every member surface at once.
+func TestHoldsSinglePurposeScope_NamesEachConfinedCredential(t *testing.T) {
+	for _, scope := range []string{auth.ScopeMetricsRead, auth.ScopeAuthManage, auth.ScopeSCIMProvision} {
+		if !auth.HoldsSinglePurposeScope([]string{scope}) {
+			t.Errorf("%s is not a single-purpose scope", scope)
+		}
+	}
+	if auth.HoldsSinglePurposeScope([]string{auth.ScopeRunsCreate, auth.ScopeUser}) {
+		t.Error("a member's scopes read as a single-purpose credential")
+	}
+}

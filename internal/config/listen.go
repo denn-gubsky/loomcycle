@@ -29,7 +29,9 @@ func IsLoopbackListenAddr(addr string) bool {
 // listener when it is set. These are the only sockets that serve the
 // authenticated routes — the A2A, webhook and metrics surfaces ride the HTTP
 // listener (A2A's gRPC binding rides the gRPC one), and the OAuth-dev callback
-// binds 127.0.0.1 itself.
+// binds 127.0.0.1 itself. The LOOMCYCLE_METRICS_LISTEN listener is left out:
+// it serves no authenticated route, only an unauthenticated /metrics, and
+// boot warns on its own when it binds beyond loopback.
 func (e *Env) NonLoopbackListeners() []string {
 	var out []string
 	if !IsLoopbackListenAddr(e.ListenAddr) {
