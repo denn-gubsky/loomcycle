@@ -10,6 +10,7 @@ import (
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
 	lcmcp "github.com/denn-gubsky/loomcycle/internal/api/mcp"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -57,7 +58,7 @@ func (b *boot) startMCPSurfaces() {
 		// a signal. Operators who want MCP-disconnect = process-exit
 		// can wrap loomcycle in a supervisor that watches for the
 		// log line.
-		go func() {
+		safego.Go(bgCtx, "mcp.stdio_serve", func() {
 			// Sourced from the registry (lcmcp.MetaToolCount) so the count
 			// can't drift — the hardcoded "20" went stale once the registry
 			// grew past 40. Same rationale as the CLI help count.
@@ -73,7 +74,7 @@ func (b *boot) startMCPSurfaces() {
 			} else {
 				slog.Info("mcp: stdio closed; HTTP listener continues")
 			}
-		}()
+		})
 	}
 
 	// v0.8.15.3: HTTP MCP transport. Always wired (both server and
@@ -146,7 +147,7 @@ func (b *boot) startResolveProbe() {
 	resolver.SetForceProbeCallback(func(ctx context.Context) {
 		runResolveProbeOnce(ctx, resolver, pr, cfg)
 	})
-	go runResolveProbeLoop(bgCtx, resolver, pr, cfg, probeInterval)
+	safego.Go(bgCtx, "resolve.probe_loop", func() { runResolveProbeLoop(bgCtx, resolver, pr, cfg, probeInterval) })
 	slog.Info("resolve probe: periodic re-probe started", "interval", probeInterval)
 }
 

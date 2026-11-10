@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/metrics"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/scheduler"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -114,7 +115,7 @@ func (b *boot) startPauseAndResume() {
 		} else if n > 0 || failed > 0 {
 			slog.Info("queue: the runs queued when loomcycle last stopped are queued again; those that could not be were failed", "requeued", n, "failed", failed)
 		}
-		go func() {
+		safego.Go(bgCtx, "resume.boot_pass", func() {
 			resume := func(ctx context.Context) error {
 				n, warnings := srv.ResumePausedRuns(ctx)
 				if n > 0 || len(warnings) > 0 {
@@ -129,7 +130,7 @@ func (b *boot) startPauseAndResume() {
 			} else {
 				_ = resume(bgCtx)
 			}
-		}()
+		})
 
 		// RFC ES F1: in a cluster, a replica that stops parks its runs and
 		// leaves; nothing else would resume them until some replica boots. A
@@ -149,7 +150,7 @@ func (b *boot) startPauseAndResume() {
 				interval = time.Minute // the replicas sweeper's own default
 			}
 			mgr := pauseMgrRef
-			go runAdvisoryGatedSweeper(bgCtx, interval, advisoryLock, coord.LockKeyResumePausedRuns, "resume_paused",
+			goAdvisoryGatedSweeper(bgCtx, interval, advisoryLock, coord.LockKeyResumePausedRuns, "resume_paused",
 				func(ctx context.Context) {
 					resumeOrphanedPausedRuns(ctx, func() bool { return mgr.State() != pause.StateRunning }, srv.ResumePausedRuns)
 				})
@@ -187,7 +188,7 @@ func (b *boot) startTeamSubscriptions() {
 			srv.SetAdvisoryLock(advisoryLock)
 		}
 		tick := time.Duration(cfg.Env.TeamSubscriptionsTickSeconds) * time.Second
-		go func() {
+		safego.Go(bgCtx, "team_subscriptions.sweeper", func() {
 			t := time.NewTicker(tick)
 			defer t.Stop()
 			for {
@@ -195,17 +196,20 @@ func (b *boot) startTeamSubscriptions() {
 				case <-bgCtx.Done():
 					return
 				case <-t.C:
-					started, err := srv.SweepTeamSubscriptions(bgCtx)
-					if err != nil {
-						slog.Error("team-subscriptions: sweep failed", "err", err)
-						continue
-					}
-					if started > 0 {
-						slog.Info("team-subscriptions: started walks", "walks", started)
-					}
+					// One sweep that panics costs that sweep, not the ones after it.
+					safego.Run(bgCtx, "team_subscriptions.sweeper", func() {
+						started, err := srv.SweepTeamSubscriptions(bgCtx)
+						if err != nil {
+							slog.Error("team-subscriptions: sweep failed", "err", err)
+							return
+						}
+						if started > 0 {
+							slog.Info("team-subscriptions: started walks", "walks", started)
+						}
+					})
 				}
 			}
-		}()
+		})
 		slog.Info("team-subscriptions: enabled", "tick", tick, "cluster_gated", advisoryLock != nil)
 	}
 }
@@ -234,15 +238,15 @@ func (b *boot) startBootReconciles() {
 	// are — and how many agents each declares — is the tenants' to decide, so
 	// it must not be able to hold up boot.
 	if storeIface != nil {
-		go func() {
+		safego.Go(bgCtx, "teams.name_clash_check", func() {
 			ctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
 			defer cancel()
 			srv.LogTeamLocalNameClashes(ctx)
-		}()
+		})
 	}
 
 	if storeIface != nil && helpSet != nil {
-		go func() {
+		safego.Go(bgCtx, "help.index_reconcile", func() {
 			reconcile := func(ctx context.Context) error {
 				// Indexing the help docs is maintenance: behind live runs.
 				stats, err := help.ReconcileIndex(lanegate.WithBackground(ctx), helpSet, storeIface, embedder)
@@ -267,7 +271,7 @@ func (b *boot) startBootReconciles() {
 			} else {
 				_ = reconcile(bgCtx)
 			}
-		}()
+		})
 	}
 }
 
@@ -293,13 +297,13 @@ func (b *boot) startMetrics() {
 			CollectSystem: cfg.Env.MetricsCollectSystem,
 			ReplicaID:     cfg.Env.ReplicaID,
 		})
-		go metricsSampler.Run(bgCtx)
+		goSupervised(bgCtx, "metrics.sampler", metricsSampler.Run)
 		srv.SetMetricsSampler(metricsSampler)
 		slog.Info("metrics: sampler enabled",
 			"interval", cfg.Env.MetricsSampleInterval, "system", cfg.Env.MetricsCollectSystem)
 		if cfg.Env.MetricsSweepInterval > 0 && cfg.Env.MetricsRetentionDays > 0 {
 			retentionDays := cfg.Env.MetricsRetentionDays
-			go runAdvisoryGatedSweeper(bgCtx, cfg.Env.MetricsSweepInterval, advisoryLock, coord.LockKeyMetricsSweeper, "metrics",
+			goAdvisoryGatedSweeper(bgCtx, cfg.Env.MetricsSweepInterval, advisoryLock, coord.LockKeyMetricsSweeper, "metrics",
 				func(ctx context.Context) {
 					cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
 					swept, err := storeIface.MetricsSweep(ctx, cutoff)
@@ -477,10 +481,12 @@ func (b *boot) startSessionGC() {
 	if sessionGCMaxIdle <= 0 {
 		sessionGCMaxIdle = 10 * time.Minute
 	}
-	go srv.RunSessionLockGC(bgCtx, sessionGCInterval, sessionGCMaxIdle)
+	goSupervised(bgCtx, "session_locks.gc", func(ctx context.Context) {
+		srv.RunSessionLockGC(ctx, sessionGCInterval, sessionGCMaxIdle)
+	})
 	// RFC BK: idle-reap resident interactive sub-agents (per-replica; in-process
 	// registry, no cluster coordination needed).
-	go srv.RunResidentSweeper(bgCtx)
+	goSupervised(bgCtx, "resident.sweeper", srv.RunResidentSweeper)
 
 	b.sessionGCInterval = sessionGCInterval
 	b.sessionGCMaxIdle = sessionGCMaxIdle
@@ -506,7 +512,7 @@ func (b *boot) startVolumeAndAgentSweepers() {
 	// `register_agent` MCP tool simply have an empty table the sweeper
 	// passes over with zero rows deleted.
 	if cfg.Env.DynamicAgentSweepInterval > 0 {
-		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.DynamicAgentSweepInterval, advisoryLock, coord.LockKeyDynamicAgentSweeper, "dynamic_agents",
+		goAdvisoryGatedSweeper(bgCtx, cfg.Env.DynamicAgentSweepInterval, advisoryLock, coord.LockKeyDynamicAgentSweeper, "dynamic_agents",
 			func(ctx context.Context) {
 				n, err := storeIface.DynamicAgentSweep(ctx)
 				if err != nil {
@@ -529,7 +535,7 @@ func (b *boot) startVolumeAndAgentSweepers() {
 	// Needs a dynamic_root to have anything to clean (no root → no ephemeral
 	// volumes); skipped otherwise.
 	if dynRoot, hasDynRoot := builtin.DynamicVolumeRoot(cfg); cfg.Env.EphemeralVolumeSweepInterval > 0 && storeIface != nil && hasDynRoot {
-		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.EphemeralVolumeSweepInterval, advisoryLock, coord.LockKeyEphemeralVolumeSweeper, "ephemeral_volumes",
+		goAdvisoryGatedSweeper(bgCtx, cfg.Env.EphemeralVolumeSweepInterval, advisoryLock, coord.LockKeyEphemeralVolumeSweeper, "ephemeral_volumes",
 			func(ctx context.Context) {
 				cands, err := storeIface.EphemeralVolumeSweepCandidates(ctx)
 				if err != nil {

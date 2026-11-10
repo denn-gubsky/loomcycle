@@ -35,6 +35,8 @@ func startMetricsListener(addr string, h http.Handler, log *slog.Logger) (*http.
 		MaxHeaderBytes:    16 << 10,
 	}
 	announceMetricsListener(log, addr)
+	// Raw on purpose, like the main listener: a panic in Serve ends the
+	// process instead of leaving it up with no metrics listener.
 	go func() {
 		if err := srv.Serve(lis); err != nil && err != http.ErrServerClosed {
 			log.Error("metrics listener: serving failed", "addr", addr, "err", err)
