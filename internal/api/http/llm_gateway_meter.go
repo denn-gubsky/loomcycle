@@ -82,7 +82,13 @@ func newGatewayMeter(req providers.Request) *gatewayMeter {
 func (m *gatewayMeter) tap(ch <-chan providers.Event) <-chan providers.Event {
 	out := make(chan providers.Event)
 	safego.Go(context.Background(), "gateway.meter_tap", func() {
-		defer close(out) // the reader sees the stream end, panic or not
+		finished := false
+		defer func() {
+			if !finished {
+				failGatewayStream(m, ch, out)
+			}
+			close(out)
+		}()
 		for ev := range ch {
 			m.note(ev)
 			if m.span != nil {
@@ -90,11 +96,32 @@ func (m *gatewayMeter) tap(ch <-chan providers.Event) <-chan providers.Event {
 			}
 			out <- ev
 		}
+		finished = true
 		if m.span != nil {
 			m.span.End("the response stream ended before the model finished")
 		}
 	})
 	return out
+}
+
+// errGatewayTapPanicked is the error a gateway call reports when its tap
+// panicked mid-stream (safego logs and counts the panic).
+const errGatewayTapPanicked = "the response stream failed on an internal error"
+
+// failGatewayStream ends a call whose tap panicked: the reader gets an error
+// event, so a truncated stream is never answered as a finished completion; the
+// span is ended; and the provider's stream is read to its end, so its driver is
+// not left blocked on a send nobody receives. Each step recovers on its own:
+// the tap already failed once.
+func failGatewayStream(m *gatewayMeter, ch <-chan providers.Event, out chan<- providers.Event) {
+	out <- providers.Event{Type: providers.EventError, Error: errGatewayTapPanicked}
+	if m.span != nil {
+		safego.Run(context.Background(), "gateway.meter_tap_end", func() { m.span.End(errGatewayTapPanicked) })
+	}
+	safego.Go(context.Background(), "gateway.meter_tap_drain", func() {
+		for range ch {
+		}
+	})
 }
 
 // note records what one event says about the call's size.
