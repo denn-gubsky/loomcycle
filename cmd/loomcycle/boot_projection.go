@@ -41,7 +41,7 @@ func startProjectionSweeper(ctx context.Context, cfg *config.Config, st store.St
 		return false
 	}
 	doc := &builtin.Document{Store: st, SqlMem: mgr, Embedder: emb, Cfg: cfg}
-	go runAdvisoryGatedSweeper(ctx, s.Interval, lock, coord.LockKeyProjectionSweeper, "projection",
+	goAdvisoryGatedSweeper(ctx, s.Interval, lock, coord.LockKeyProjectionSweeper, "projection",
 		func(ctx context.Context) { projectionSweep(ctx, doc, mgr) })
 	slog.Info("document projection: sweeper enabled", "interval", s.Interval)
 	return true

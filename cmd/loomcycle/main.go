@@ -61,6 +61,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/vllm"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	// Deterministic stub embedder for runtime tests; its init() registers the
 	// "stub" provider ONLY when LOOMCYCLE_EMBEDDER_STUB=1, so it is invisible
@@ -1133,7 +1134,7 @@ func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerR
 			continue
 		}
 		wg.Add(1)
-		go func(j probeJob) {
+		safego.Go(ctx, "resolve.probe_provider", func() {
 			defer wg.Done()
 			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
@@ -1145,7 +1146,7 @@ func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerR
 			}
 			r.SetReachable(j.id, true, models, "")
 			slog.Info(fmt.Sprintf("resolve probe: %s reachable (%d models listed)", j.id, len(models)), "provider", j.id, "models", len(models))
-		}(j)
+		})
 	}
 	wg.Wait()
 }
@@ -1162,7 +1163,8 @@ func runResolveProbeLoop(ctx context.Context, r *resolve.Resolver, pr *providerR
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			runResolveProbeOnce(ctx, r, pr, cfg)
+			// One probe pass that panics costs that pass, not the ones after it.
+			safego.Run(ctx, "resolve.probe_loop", func() { runResolveProbeOnce(ctx, r, pr, cfg) })
 		}
 	}
 }
@@ -1210,6 +1212,12 @@ func runAdvisoryGatedSweeper(
 	name string,
 	tick func(ctx context.Context),
 ) {
+	// One tick that panics costs that tick: recovered inside the lock's
+	// callback, so the lock is released as on a normal return and the next
+	// tick runs.
+	recovered := func(ctx context.Context) {
+		safego.Run(ctx, "sweeper."+name, func() { tick(ctx) })
+	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -1218,11 +1226,11 @@ func runAdvisoryGatedSweeper(
 			return
 		case <-t.C:
 			if lock == nil {
-				tick(ctx)
+				recovered(ctx)
 				continue
 			}
 			acquired, err := lock.TryRun(ctx, lockKey, func(ctx context.Context) error {
-				tick(ctx)
+				recovered(ctx)
 				return nil
 			})
 			if err != nil {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // openModeWarnInterval is how often a server in open mode repeats its warning,
@@ -80,7 +81,7 @@ func startOpenModeWarning(ctx context.Context, interval time.Duration, authConfi
 	if !openModeTick(ctx, authConfigured, logger) {
 		return
 	}
-	go repeatOpenModeWarning(ctx, interval, authConfigured, logger)
+	safego.Go(ctx, "openmode.warning", func() { repeatOpenModeWarning(ctx, interval, authConfigured, logger) })
 }
 
 // repeatOpenModeWarning logs the warning every interval until ctx ends or auth
@@ -95,7 +96,10 @@ func repeatOpenModeWarning(ctx context.Context, interval time.Duration, authConf
 			return
 		case <-t.C:
 		}
-		if !openModeTick(ctx, authConfigured, logger) {
+		// A tick that panics keeps the warnings going, as a failed read does.
+		keep := true
+		safego.Run(ctx, "openmode.warning", func() { keep = openModeTick(ctx, authConfigured, logger) })
+		if !keep {
 			return
 		}
 	}

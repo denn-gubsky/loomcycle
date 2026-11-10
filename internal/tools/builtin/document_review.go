@@ -622,19 +622,30 @@ func (d *Document) RuleStatements(ctx context.Context, scope string, req connect
 	out.Matched, out.Selected = matched, len(picked)
 	acl := d.newDocACL(ctx, key)
 	var toRule []reviewCandidate
+	var refused []connector.RulingItem
 	for _, c := range picked {
 		ok, err := d.mayRule(ctx, acl, as, c.ends["from_document_id"], c.ends["to_document_id"])
 		if err != nil {
 			return out, err
 		}
-		if ok {
-			toRule = append(toRule, c)
-		} else {
+		switch {
+		case !ok:
 			out.Skipped++
+		case accept && len(req.IDs) > 0 && c.s.Status == edgeStatusRejected:
+			// Ids are re-read by the real call, so a rejection made after the
+			// dry run is read here as the selection: an accept by ids never
+			// reverses one. Reversing in bulk takes selecting the rejected
+			// statements by filter (status rejected). Refused here, not in
+			// applyBulkRuling, so the dry run reports what the real call does.
+			refused = append(refused, connector.RulingItem{ID: c.s.ID, Error: rulingNotProposal,
+				Message: "not_a_proposal: the statement is rejected, and a bulk accept by ids never reverses a rejection; select it by filter status rejected to reverse it"})
+		default:
+			toRule = append(toRule, c)
 		}
 	}
 	out.ToRule = len(toRule)
 	if out.DryRun {
+		out.Items, out.Failed = refused, len(refused)
 		out.Breakdown = rulingBreakdown(toRule)
 		sample := toRule[:min(len(toRule), reviewSampleSize)]
 		ids := make([]string, len(sample))
@@ -655,11 +666,12 @@ func (d *Document) RuleStatements(ctx context.Context, scope string, req connect
 		return out, connector.WithMessage(connector.ErrStatementReviewQueueChanged,
 			fmt.Sprintf("the selection now matches %d statements, not the %d expected; nothing was ruled — run the dry run again", matched, *req.ExpectCount))
 	}
-	return d.applyBulkRuling(ctx, key, mscope, req, accept, reason, out, toRule, missing)
+	return d.applyBulkRuling(ctx, key, mscope, req, accept, reason, out, toRule, missing, refused)
 }
 
-// applyBulkRuling rules on each statement of toRule and records the ruling.
-func (d *Document) applyBulkRuling(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, req connector.RuleStatementsRequest, accept bool, reason string, out connector.RuleStatementsResult, toRule []reviewCandidate, missing []string) (connector.RuleStatementsResult, error) {
+// applyBulkRuling rules on each statement of toRule and records the ruling;
+// missing and refused are reported as failed items.
+func (d *Document) applyBulkRuling(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, req connector.RuleStatementsRequest, accept bool, reason string, out connector.RuleStatementsResult, toRule []reviewCandidate, missing []string, refused []connector.RulingItem) (connector.RuleStatementsResult, error) {
 	op := "reject_statement"
 	if accept {
 		op = "accept_statement"
@@ -681,23 +693,15 @@ func (d *Document) applyBulkRuling(ctx context.Context, key sqlmem.ScopeKey, msc
 		return out, err
 	}
 	out.RulingID = rulingID
-	out.Items = make([]connector.RulingItem, 0, len(toRule)+len(missing))
+	out.Items = make([]connector.RulingItem, 0, len(toRule)+len(missing)+len(refused))
 	for _, id := range missing {
 		out.Items = append(out.Items, connector.RulingItem{ID: id, Error: rulingNotFound, Message: "no such statement: " + id})
 		out.Failed++
 	}
+	out.Items = append(out.Items, refused...)
+	out.Failed += len(refused)
 	var ruled []reviewCandidate
 	for _, c := range toRule {
-		if accept && len(req.IDs) > 0 && c.s.Status == edgeStatusRejected {
-			// Ids are re-read by the real call, so a rejection made after the dry
-			// run is read here as the selection: an accept by ids never reverses
-			// one. Reversing in bulk takes selecting the rejected statements by
-			// filter (status rejected).
-			out.Items = append(out.Items, connector.RulingItem{ID: c.s.ID, Error: rulingNotProposal,
-				Message: "not_a_proposal: the statement is rejected, and a bulk accept by ids never reverses a rejection; select it by filter status rejected to reverse it"})
-			out.Failed++
-			continue
-		}
 		item, ok := d.ruleOne(ctx, key, mscope, op, rulingID, ruledBy, accept, reason, c)
 		out.Items = append(out.Items, item)
 		if ok {

@@ -32,6 +32,8 @@ var exemptRawGo = map[string]rawGo{
 	"internal/tools/builtin/document_index_text.go": {1, "the reindex pass recovers"},
 
 	// Must not recover: the process ending is the safe outcome.
+	"cmd/loomcycle/boot_listen.go":      {2, "the main HTTP and gRPC listeners: recovered, the replica would run on with no listener, where a serve error ends the process"},
+	"cmd/loomcycle/boot_metrics.go":     {1, "the metrics listener: recovered, the process would run on with no metrics listener"},
 	"internal/auditchain/store_sink.go": {1, "the durable audit writer: recovered, it would stop draining and lose audit records silently"},
 	"internal/pause/manager.go":         {1, "the pause listener closes channels under m.mu with no deferred unlock; recovered, it would leave the pause manager locked"},
 	"internal/procgroup/start_linux.go": {1, "the spawner owns a locked OS thread for the process's life; recovered, every later spawn would block on it"},
@@ -65,22 +67,10 @@ var exemptRawGo = map[string]rawGo{
 	"internal/store/storetest/webhook_delivery_runs.go":  {4, "test support"},
 }
 
-// pendingRawGo is the baseline of raw `go` statements not converted yet: the
-// boot's background goroutines in cmd/. It only shrinks — convert a site to Go, or
-// add a reasoned entry to exemptRawGo, and lower its count here.
-var pendingRawGo = map[string]int{
-	// cmd/loomcycle: the boot's background sweepers, subscribers and
-	// listeners, converted in a later change.
-	"cmd/loomcycle/boot_background.go": 31,
-	"cmd/loomcycle/boot_config.go":     1,
-	"cmd/loomcycle/boot_listen.go":     7,
-	"cmd/loomcycle/boot_metrics.go":    1,
-	"cmd/loomcycle/boot_projection.go": 1,
-	"cmd/loomcycle/boot_surfaces.go":   2,
-	"cmd/loomcycle/boot_triggers.go":   11,
-	"cmd/loomcycle/main.go":            1,
-	"cmd/loomcycle/openmode.go":        1,
-}
+// pendingRawGo is the baseline of raw `go` statements not converted yet. Every
+// site is now converted or exempt, so it is empty and stays so: a new
+// goroutine starts with safego.Go, or is exempted above with its reason.
+var pendingRawGo = map[string]int{}
 
 // TestCensus_NoNewRawGoStatements fails on a raw `go` statement in non-test
 // code under cmd/ and internal/ beyond the lists above: a panic in such a goroutine

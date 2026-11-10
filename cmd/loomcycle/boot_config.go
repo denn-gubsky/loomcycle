@@ -12,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // loadConfig is boot phase 1: assemble the layered config stack and load it.
@@ -132,6 +133,9 @@ func (b *boot) initTelemetry() {
 	b.otelShutdown = concurrentShutdown(otelShutdown, metricsShutdown)
 }
 
+// errShutdownPanicked is a flush's answer when it panicked.
+var errShutdownPanicked = errors.New("otel: a shutdown flush panicked")
+
 // concurrentShutdown runs every shutdown at once under the one deadline and
 // joins their errors: a trace flush stalled on a dead collector must not
 // spend the deadline the metric flush needs, as running them in turn did.
@@ -139,7 +143,13 @@ func concurrentShutdown(fns ...func(context.Context) error) func(context.Context
 	return func(ctx context.Context) error {
 		errs := make(chan error, len(fns))
 		for _, fn := range fns {
-			go func() { errs <- fn(ctx) }()
+			safego.Go(ctx, "otel.shutdown", func() {
+				// Deferred, so a flush that panics still answers and the
+				// collector below is not left waiting for it.
+				err := errShutdownPanicked
+				defer func() { errs <- err }()
+				err = fn(ctx)
+			})
 		}
 		var all []error
 		for range fns {

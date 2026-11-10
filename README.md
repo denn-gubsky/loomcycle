@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.147) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.148) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -201,7 +201,16 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.147.0) completes the hardening from the 2026-11-07
+The most recent line (v1.148.0) adds two layers and the operator's view of
+both. Annotations give every section, document and folder of a tenant knowledge
+base a brief and an abstract, attached to retrieval with `with_summary` and
+searchable for questions about the corpus as a whole. Operator observability
+brings standard `OTEL_*` configuration, tenant-safe spans, in-process run,
+token and cost metrics, a `metrics:read` scrape credential and shipped Grafana
+dashboards. Read its upgrade notes in [`REVISIONS.md`](REVISIONS.md): the
+`LOOMCYCLE_OTEL_*` variables are no longer read.
+
+Before it, v1.147.0 completed the hardening from the 2026-11-07
 re-grade. The audit trail detects a rolled-back chain and records grants before
 they happen, a stored hook can no longer reach a private address through a yaml
 agent, and `cidr_only` covers every private exemption. Read its upgrade notes
