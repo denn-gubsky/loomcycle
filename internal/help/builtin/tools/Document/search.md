@@ -63,6 +63,8 @@ as the user store, search both, in two calls.
 - `with_projection` — `true` also returns `query_xyz`: your query placed
   on the scope's 3D map of chunks by meaning, the map `graph_snapshot`'s
   `projection` block draws. Absent when the server keeps no map for the scope.
+- `with_summary` — add each hit's nearest annotation as `summary` (`{level, brief, abstract?, stale?, chunk_id?}`): the brief on every hit, the abstract on the hits of the first five documents, within `summary_chars` (default 2000).
+- `summary_chars` — with `with_summary`, the most abstract characters the answer carries (default 2000, at most 8000).
 
 ## Aiming the search
 
