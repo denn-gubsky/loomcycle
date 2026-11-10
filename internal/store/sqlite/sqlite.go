@@ -98,6 +98,17 @@ func (s *Store) SetChannelDebug(enabled bool) {
 //     the same ADD on an existing column returns "duplicate column name".
 //     We swallow exactly that error so a second startup is a no-op without
 //     introducing a versioned migrations table for v0.4.
+//
+// The statements come from the section registry (schemaSections, schema*.go)
+// and run in this order, which every boot replays against an existing DB:
+//  1. the tables pass, every section in registry order;
+//  2. the column adds — after every table exists;
+//  3. the runs backfills, the tenant dirent and document re-homes, then the
+//     key rebuilds — after the ALTERs (every current column exists to copy)
+//     and before the indexes (which then land on the rebuilt tables);
+//  4. the indexes pass — after the column adds, since these indexes may name
+//     an added column;
+//  5. the data fixups — after the column adds and indexes.
 func (s *Store) migrate(ctx context.Context) error {
 	plan := migrationPlan()
 	stmts := plan.tables
