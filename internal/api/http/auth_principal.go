@@ -421,9 +421,10 @@ func (s *Server) AuthConfiguredErr(ctx context.Context) (bool, error) {
 }
 
 // authenticateRequest resolves the request's credential, in this order: an
-// Authorization header; the client-tools WebSocket subprotocol bearer (not in
-// strict mode); a Web UI session cookie; and, in token mode only, the legacy
-// bearer cookie of earlier releases (RFC FA decision 2). ui is set when a
+// Authorization header; the client-tools WebSocket ticket (RFC GJ, every
+// mode); the client-tools WebSocket subprotocol bearer (not in strict mode); a
+// Web UI session cookie; and, in token mode only, the legacy bearer cookie of
+// earlier releases (RFC FA decision 2). ui is set when a
 // cookie authenticated the request, so the caller applies the CSRF check. A
 // present credential that fails is a refusal — the next kind is not tried.
 //
@@ -433,6 +434,17 @@ func (s *Server) AuthConfiguredErr(ctx context.Context) (bool, error) {
 func (s *Server) authenticateRequest(r *http.Request) (auth.Principal, *uiAuth, bool) {
 	strict := s.cfg().ResolvedAuth.Strict()
 	ctx := r.Context()
+	// RFC GJ: a one-time ticket on the client-tools upgrade, in every mode.
+	// After an Authorization header (a client that can send one does not
+	// need a ticket, and the ticket is then left unspent), before the
+	// subprotocol bearer and the cookies, for the reason the bearer comes
+	// before the cookies.
+	if r.Header.Get("Authorization") == "" {
+		if t, ok := clientToolsTicketOf(r); ok {
+			p, ok := s.redeemClientToolsTicket(r, t)
+			return p, nil, ok
+		}
+	}
 	if bearer, ok := extractBearer(r, strict); ok {
 		p, ok := s.resolvePrincipal(ctx, bearer)
 		return p, nil, ok
@@ -465,6 +477,9 @@ func (s *Server) authenticateRequest(r *http.Request) (auth.Principal, *uiAuth, 
 func (s *Server) credentialPresented(r *http.Request) bool {
 	strict := s.cfg().ResolvedAuth.Strict()
 	if _, ok := extractBearer(r, strict); ok || r.Header.Get("Authorization") != "" {
+		return true
+	}
+	if _, ok := clientToolsTicketOf(r); ok {
 		return true
 	}
 	if c, err := r.Cookie(s.sessionCookieName(r)); err == nil && c.Value != "" {
@@ -1338,8 +1353,9 @@ func requiredScopeFor(method, path string) string {
 	// the user's own machine; the connection serves ONLY its own principal's runs
 	// (filed under (tenant, subject) from the bearer). Requires runs:create — you
 	// must be able to run agents to benefit, and it mirrors the steer /input gate.
-	// ScopeAdmin also satisfies it.
-	case path == "/v1/client-tools":
+	// ScopeAdmin also satisfies it. RFC GJ: the ticket that opens it is gated
+	// the same, so a credential that could not open the socket mints nothing.
+	case path == "/v1/client-tools" || path == clientToolsTicketPath:
 		return auth.ScopeRunsCreate
 	// RFC AF: the tenant-confined substrate plane — def-authoring across the 8
 	// xxxDef families, INCLUDING /v1/_mcpserverdef (the "dynamic MCP tools

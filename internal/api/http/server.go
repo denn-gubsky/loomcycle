@@ -4983,6 +4983,10 @@ func (s *Server) routes() *http.ServeMux {
 	// the upgrade (authMiddleware wraps a plain handler), so the principal is on
 	// ctx by the time handleClientTools upgrades.
 	mux.Handle("GET /v1/client-tools", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleClientTools))))
+	// RFC GJ: a one-time ticket for that socket, for a browser client that
+	// cannot send its credential on the upgrade (strict mode reads no bearer
+	// subprotocol). Gated exactly as the socket is.
+	mux.Handle("POST /v1/client-tools/ticket", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleClientToolsTicket))))
 	// v0.7.3 Web UI — embedded React SPA. The shell and its assets are
 	// public; the SPA pulls protected data from /v1/*, which goes through
 	// authMiddleware. Standard SPA-on-API split.

@@ -78,3 +78,29 @@ func TestDeriveOTelUserKey_MatchesTheHKDFKnownAnswer(t *testing.T) {
 		t.Error("a malformed key must be an error")
 	}
 }
+
+// The client-tools ticket key (RFC GJ) has its own label: it must differ from
+// every other key derived from the same master key, and no key means no
+// ticket key.
+func TestDeriveClientToolsTicketKey_DistinctFromTheOtherDerivedKeys(t *testing.T) {
+	got, err := DeriveClientToolsTicketKey(testKey(1))
+	if err != nil || len(got) != 32 {
+		t.Fatalf("DeriveClientToolsTicketKey = (%x, %v), want 32 bytes", got, err)
+	}
+	tok, _ := DeriveTokenPepper(testKey(1))
+	pw, _ := DerivePasswordPepper(testKey(1))
+	chain, _ := DeriveAuditChainKey(testKey(1))
+	otelKey, _ := DeriveOTelUserKey(testKey(1))
+	for name, other := range map[string]string{"token pepper": tok, "password pepper": hex.EncodeToString(pw),
+		"audit chain": hex.EncodeToString(chain), "otel user": hex.EncodeToString(otelKey)} {
+		if other == hex.EncodeToString(got) {
+			t.Errorf("the ticket key equals the %s", name)
+		}
+	}
+	if k, err := DeriveClientToolsTicketKey(" "); err != nil || k != nil {
+		t.Errorf("empty key = (%x, %v), want (nil, nil)", k, err)
+	}
+	if _, err := DeriveClientToolsTicketKey("not-base64!"); err == nil {
+		t.Error("a malformed key must be an error")
+	}
+}

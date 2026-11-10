@@ -333,3 +333,24 @@ func DeriveOTelUserKey(secretKeyB64 string) ([]byte, error) {
 	}
 	return hkdf.Key(sha256.New, kek, nil, otelUserKeyInfo, 32)
 }
+
+// clientToolsTicketKeyInfo is the HKDF info for the key that signs the
+// client-tools WebSocket tickets (RFC GJ). A ticket lives 30 seconds, so a
+// change here only refuses the tickets in flight; it still gets its own label
+// so the key shares nothing with the peppers or the credential keys.
+const clientToolsTicketKeyInfo = "loomcycle/client-tools-ticket/v1"
+
+// DeriveClientToolsTicketKey derives the HMAC key the client-tools tickets
+// are signed with: HKDF-SHA256(key, info="loomcycle/client-tools-ticket/v1"),
+// the master key parsed exactly as NewSealer parses it. An empty key yields
+// nil: no key, no tickets.
+func DeriveClientToolsTicketKey(secretKeyB64 string) ([]byte, error) {
+	if strings.TrimSpace(secretKeyB64) == "" {
+		return nil, nil
+	}
+	kek, err := decodeKey(secretKeyB64)
+	if err != nil {
+		return nil, err
+	}
+	return hkdf.Key(sha256.New, kek, nil, clientToolsTicketKeyInfo, 32)
+}
