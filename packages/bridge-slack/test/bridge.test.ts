@@ -835,7 +835,7 @@ describe("slack bridge voice messages (RFC GA)", () => {
     r.lc.runs[0].events.push({ type: "awaiting_input" });
     await waitFor(() => r.slack.to("files.completeUploadExternal").length === 1, "audio reply");
 
-    expect(r.lc.callsTo("speech")[0].args).toEqual(["Sunny.", { format: "mp3", language: "en" }]);
+    expect(r.lc.callsTo("speech")[0].args).toEqual(["Sunny.", { format: "mp3" }]);
     const order = r.slack.calls.map((c) => c.method).filter((m) => m.startsWith("files.") || m === "file" || m === "chat.stopStream");
     expect(order).toEqual(["file", "chat.stopStream", "files.getUploadURLExternal", "file", "files.completeUploadExternal"]);
     expect(r.slack.to("file")[1].bytes && Array.from(r.slack.to("file")[1].bytes!)).toEqual([7, 7, 7]);

@@ -318,23 +318,24 @@ describe("telegram bridge with voice", () => {
   const update = (m: object, from: object = alice, chat: object = privateChat): TgUpdate =>
     ({ update_id: nextUpdate++, message: { message_id: 50 + nextUpdate, chat, from, ...m } }) as TgUpdate;
 
-  it("routes a private voice note to the core's voice path with its VoiceIn and the sender's locale", async () => {
+  it("routes a private voice note to the core's voice path with its VoiceIn", async () => {
     await start();
     const onVoice = vi.spyOn(bridge.router, "onVoice");
     await post(update({ voice: voiceNote }));
     await waitFor(() => lc.runs.length === 1, "run");
     expect(onVoice).toHaveBeenCalledTimes(1);
-    const [id, ref, voice, locale] = onVoice.mock.calls[0]!;
+    const [id, ref, voice] = onVoice.mock.calls[0]!;
     expect(id).toMatchObject({ ok: true, scope: "personal" });
     expect(ref).toEqual({ chatId: 42 });
     expect(voice).toEqual({ kind: "voice", ref: "v-1", mime: "audio/ogg", seconds: 7, bytes: 12_000 });
-    expect(locale).toBe("uk");
-    // Downloaded through getFile, transcribed with the speaker's token and a
-    // language hint, and handed to the agent marked as spoken.
+    // Downloaded through getFile, transcribed with the speaker's token and no
+    // language hint (language_code is the app's UI language), and handed to
+    // the agent marked as spoken.
     expect(tg.callsTo("getFile")[0]!.params).toEqual({ file_id: "v-1" });
     const [tr] = lc.callsTo("transcribe");
     expect(tr!.token).toMatch(/^tok-telegram:42-/);
-    expect(tr!.args[1]).toMatchObject({ contentType: "audio/ogg", filename: "voice.ogg", language: "uk" });
+    expect(tr!.args[1]).toMatchObject({ contentType: "audio/ogg", filename: "voice.ogg" });
+    expect(tr!.args[1]).not.toHaveProperty("language");
     expect(lc.runs[0]!.opts.segments).toEqual([{ role: "user", content: [{ type: "trusted-text", text: "(voice message)\nwhat is the weather" }] }]);
     // The gate is asked for the speech surfaces with the user's token.
     expect(gate.asserts[0]!.payload).toMatchObject({ token: { surfaces: ["speech", "transcription"] } });
@@ -369,7 +370,7 @@ describe("telegram bridge with voice", () => {
     expect(p.caption).toBe("AI voice");
     expect(p.reply_parameters).toBe(JSON.stringify({ message_id: textId, allow_sending_without_reply: true }));
     expect((p.voice as FormFile).type).toBe("audio/ogg");
-    expect(lc.callsTo("speech")[0]!.args).toEqual(["It is sunny.", { format: "ogg", language: "en" }]);
+    expect(lc.callsTo("speech")[0]!.args).toEqual(["It is sunny.", { format: "ogg" }]);
     expect(tg.callsTo("sendChatAction").map((c) => c.params.action)).toContain("record_voice");
   });
 

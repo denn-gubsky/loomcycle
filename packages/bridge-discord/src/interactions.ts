@@ -101,7 +101,7 @@ export function interactionRoute(deps: InteractionDeps): Route {
     const ref = refOf(place);
     port.track(ix.id, ix.token, place.channelId, FALLBACK.ask);
     setImmediate(() => {
-      deps.router.onVoice(id, ref, found.voice, typeof ix.locale === "string" ? ix.locale : undefined, { sentAt: snowflakeMs(ix.id) }).catch((err: unknown) => {
+      deps.router.onVoice(id, ref, found.voice, { sentAt: snowflakeMs(ix.id) }).catch((err: unknown) => {
         log.error("voice message failed", { conversation: id.conversationId, error: (err as Error)?.name });
       });
     });

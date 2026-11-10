@@ -352,11 +352,10 @@ describe("slack voice: adapter", () => {
 
     expect(spy.messages).toEqual([]);
     expect(spy.voices).toHaveLength(1);
-    const [id, ref, voiceIn, locale] = spy.voices[0]!;
+    const [id, ref, voiceIn] = spy.voices[0]!;
     expect(id).toMatchObject({ ok: true, scope: "personal", speaker: { subject: "slack-t1-ualice", trust: "trusted" } });
     expect(ref).toEqual({ team: "T1", channel: "D1", channelType: "im", messageTs: "1.1" });
     expect(voiceIn).toEqual({ kind: "clip", ref: { id: "F1", url: CLIP_URL }, mime: "audio/webm", seconds: 3.5, bytes: 4000 });
-    expect(locale).toBeUndefined();
   });
 
   it("never routes a clip with voice off, and offers the core a voice port either way", async () => {

@@ -173,7 +173,7 @@ With `BRIDGE_VOICE=1` a person can send the bot a voice note instead of typing, 
 
 - **What is taken:** voice notes and round video notes. Audio files (`message.audio`, which is mostly music) only with `TELEGRAM_BRIDGE_VOICE_AUDIO=1`. Photos, stickers, documents and the rest still get "I can only read text for now."
 - **Where:** in a private chat, any voice note. In a group, only a voice note that **replies to one of the bot's messages**: a voice note cannot mention the bot, and a reply to it is what Telegram's privacy mode delivers. The allow-lists and trust rules are the same as for text; in an untrusted group the transcript reaches the agent as an untrusted block.
-- **Language:** the sender's Telegram language is passed to loomcycle as a hint.
+- **Language:** not taken from the sender's Telegram language, which is the app's UI language. loomcycle transcribes without a hint (or with `BRIDGE_VOICE_LANGUAGE`), and reads the reply in the voice of the reply's own language.
 - **Download:** `getFile`, then the file from the Bot API's own file host (`TELEGRAM_BRIDGE_API_BASE_URL`) only. A redirect is refused, and a download larger than `BRIDGE_VOICE_MAX_BYTES` is cut off while it streams in (Telegram lets a bot download at most 20 MB). The bot token is in the file URL, so the URL is never logged and never in an error.
 
 **What loomcycle needs.**

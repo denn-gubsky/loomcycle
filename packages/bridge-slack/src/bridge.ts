@@ -313,7 +313,7 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
         if (!id.ok && !id.notice) return;
         // Slack gives no locale on an event (users.info would, with a scope
         // the bridge does not ask for): BRIDGE_VOICE_LANGUAGE, or none.
-        await router.onVoice(id, refOf(r.fields), r.voice, undefined, { sentAt: slackTsMs(r.fields.ts) });
+        await router.onVoice(id, refOf(r.fields), r.voice, { sentAt: slackTsMs(r.fields.ts) });
         return;
       }
       if (r.kind !== "message" || !r.text) return;

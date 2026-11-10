@@ -81,7 +81,7 @@ describe("audioFileOf", () => {
 });
 
 describe("routeMessage", () => {
-  type Call = { kind: "message"; text: string; sentAt?: number } | { kind: "voice"; voice: VoiceIn; locale?: string; ref: ConversationRef; sentAt?: number };
+  type Call = { kind: "message"; text: string; sentAt?: number } | { kind: "voice"; voice: VoiceIn; ref: ConversationRef; sentAt?: number };
   let calls: Call[];
   let router: MessageRouter<ConversationRef>;
   const TENANTS = new Set([TENANT]);
@@ -92,19 +92,19 @@ describe("routeMessage", () => {
       onMessage: async (_id: Identified, _ref: ConversationRef, text: string) => {
         calls.push({ kind: "message", text });
       },
-      onVoice: async (_id: Identified, r: ConversationRef, voice: VoiceIn, locale?: string) => {
-        calls.push({ kind: "voice", voice, locale, ref: r });
+      onVoice: async (_id: Identified, r: ConversationRef, voice: VoiceIn) => {
+        calls.push({ kind: "voice", voice, ref: r });
       },
     };
   });
 
   const route = (type: ConvType, attachments: TeamsAttachment[], text = "", voiceOn = true, tenants = TENANTS) =>
-    routeMessage(router, identify(activity(type), tenants), ref(type), text, { attachments, locale: "en-GB" }, voiceOn);
+    routeMessage(router, identify(activity(type), tenants), ref(type), text, { attachments }, voiceOn);
 
-  it("routes an audio file in a 1:1 chat to the voice path with the person's locale", async () => {
+  it("routes an audio file in a 1:1 chat to the voice path", async () => {
     await route("personal", [fileAttachment("m4a")]);
     expect(calls).toEqual([
-      { kind: "voice", voice: { kind: "audio_file", ref: { url: LINK, name: "recording.m4a" }, mime: "audio/mp4" }, locale: "en-GB", ref: ref() },
+      { kind: "voice", voice: { kind: "audio_file", ref: { url: LINK, name: "recording.m4a" }, mime: "audio/mp4" }, ref: ref() },
     ]);
   });
 
@@ -120,7 +120,7 @@ describe("routeMessage", () => {
     const dated: Array<number | undefined> = [];
     const r: MessageRouter<ConversationRef> = {
       onMessage: async (_id, _ref, _text, opts) => void dated.push(opts?.sentAt),
-      onVoice: async (_id, _ref, _voice, _locale, opts) => void dated.push(opts?.sentAt),
+      onVoice: async (_id, _ref, _voice, opts) => void dated.push(opts?.sentAt),
     };
     const at = "2026-11-09T10:00:00.000Z";
     await routeMessage(r, identify(activity("personal"), TENANTS), ref(), "caption", { attachments: [fileAttachment("m4a")], timestamp: at }, true);
@@ -407,7 +407,9 @@ describe("teams bridge with voice on", () => {
     const [tr] = lc.callsTo("transcribe");
     expect(tr!.token).toMatch(new RegExp(`^tok-teams-${ALICE}-`));
     expect(tr!.args[0]).toEqual(new Uint8Array([1, 2, 3]));
-    expect(tr!.args[1]).toMatchObject({ contentType: "audio/mp4", filename: "recording.m4a", language: "de" });
+    // The activity's locale (de-DE) is the client's UI language, not a hint.
+    expect(tr!.args[1]).toMatchObject({ contentType: "audio/mp4", filename: "recording.m4a" });
+    expect(tr!.args[1]).not.toHaveProperty("language");
     expect(promptOf(lc.runs[0]!)).toEqual({ type: "trusted-text", text: `${VOICE_PREFIX}\nwhat is on my calendar` });
     expect(lc.callsTo("speech")).toEqual([]);
   });

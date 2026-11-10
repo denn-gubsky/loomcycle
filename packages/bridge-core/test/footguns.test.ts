@@ -228,7 +228,7 @@ describe("a kept revoke ends", () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(await subjects()).toEqual(["tg:42", "tg:43"]);
 
-    await ctx().router.onVoice(dm(42), {}, { kind: "voice", ref: "v", mime: "audio/ogg" }, undefined, { sentAt: failedAt + 60_000 });
+    await ctx().router.onVoice(dm(42), {}, { kind: "voice", ref: "v", mime: "audio/ogg" }, { sentAt: failedAt + 60_000 });
     await vi.waitFor(async () => expect(await subjects()).toEqual(["tg:43"]));
     await ctx().router.onCardAction(dm(43), {}, { buttonId: "nope" }, { sentAt: failedAt + 60_000 });
     await vi.waitFor(async () => expect(await subjects()).toEqual([]));
