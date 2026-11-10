@@ -186,11 +186,7 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 			httpReq.Header.Set("x-goog-api-key", apiKey)
 		}
 		resp, err := d.http.Do(httpReq)
-		if err != nil {
-			lcotel.SetSpanError(span, err)
-		} else if resp != nil && resp.StatusCode >= 400 {
-			lcotel.SetSpanErrorMessage(span, "http "+resp.Status)
-		}
+		lcotel.SetProviderResponse(span, resp, err)
 		return resp, err
 	}
 

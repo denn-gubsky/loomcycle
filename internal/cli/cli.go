@@ -70,6 +70,8 @@ func PrintHelp(w io.Writer, metaToolCount int) {
 	fmt.Fprintln(w, "    | [--all-listed <digest>]      or exactly the set the listing showed")
 	fmt.Fprintln(w, "  audit verify --tenant <t> | --operator | --all [--config <y>]")
 	fmt.Fprintln(w, "                                   check the store-backed audit chains")
+	fmt.Fprintln(w, "  otel user-hash <tenant> <user>   the loomcycle.user_hash this user's spans")
+	fmt.Fprintln(w, "                                   carry (needs LOOMCYCLE_SECRET_KEY)")
 	fmt.Fprintln(w, "  mcp [--config <yaml>]            run as MCP server over stdio (v0.8.15+)")
 	fmt.Fprintf(w, "                                   exposes %d meta-tools; consumed by Claude\n", metaToolCount)
 	fmt.Fprintln(w, "                                   Code, Claude Desktop, custom orchestrators")

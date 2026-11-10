@@ -2281,6 +2281,7 @@ The access-control management surface (the `LOOMCYCLE_ACL` row above lists its r
 - **A group synced from an identity provider** (`external_id` set) is read-only here: a member add or remove, and an upsert over the group, are refused with `409 group_external`; manage its members at the provider.
 - **Unset times are omitted.** A live list has no `retired_at`; a binding with no expiry has no `expires_at` (they used to read `0001-01-01T00:00:00Z`).
 - `GET /v1/_me` reports `acl_mode` in open mode too.
+- **Erasure does not reach exported trace spans.** A span already exported to a tracing backend stays there for that backend's retention; nothing loomcycle runs can delete it. A span names its user only by `loomcycle.user_hash` (unless `LOOMCYCLE_OTEL_RAW_USER_ID=1`, or no `LOOMCYCLE_SECRET_KEY` is set) and carries no content; `loomcycle otel user-hash <tenant> <user>` prints the hash to search the backend for. See [Users on spans](#users-on-spans).
 - **Subject erasure removes a user's memberships, bindings and member tokens.** `GET /v1/_erasure` (and the `erasure` MCP tool / gRPC twin) counts them in `tier2_uncovered` as `acl_memberships`, `acl_bindings`, `operator_tokens` and `acl_token_bindings` — retired bindings included, since they still name the user — and names them in the structured `access` field: `{groups, lists, tokens: [{def_id, name}]}` (never a bearer); a note says the same in prose. A live `POST /v1/_erasure` first revokes the user's member tokens — the ones user delete/disable retire — so the bearer stops authenticating at once on every replica, then deletes the memberships, the user's bindings and the bindings to its revoked tokens in one transaction, bumps the tenant's `acl_version`, drops the cached sets on every replica and records `subject_access_erased` in the audit log, as a management write does; `access` names what went. A dry run revokes and writes nothing and names what would go. A token holding `substrate:tenant` or `substrate:admin` that shares the subject is a role, not the member's credential: it is left, and named under `retained.operator_tokens_privileged` — retire it with `operatortokendef`. Revoked token rows are retired, not deleted (`retained.operator_token_rows`). The groups and lists themselves and group-kind bindings stay. Memberships and bindings declared in `groups:` / `acl_bindings:` cannot be erased from the store: they are listed in the report's notes and in the result's `retained.access_control_config` — remove them from the config file. Every live erasure, over HTTP, gRPC or MCP, writes the `erase_intent` / `erase_result` audit pair, and is refused (HTTP 503, gRPC `Unavailable`, an MCP tool error) when the intent cannot be recorded. A live erasure also **ends the account**, before the tokens: the user's app sign-ins end and their access tokens retire, then every sign-in row is deleted — login identities (e-mail, issuer, external subject), password, TOTP and recovery codes, passkeys and passkey ceremonies, Web UI sessions, approved device logins, invites and resets naming the user, identity-link logins, app sign-ins (refresh families, refresh tokens, authorization codes) and SCIM resources and memberships — counted per family as `sign_in_*` in the report's `tier2_uncovered`, in a dry run and in the result's `deleted`, and so in the `erase_result` audit record. The user record is **kept as a tombstone** (`account`: 1 when this erasure made it): display name cleared, status `disabled`, `erased_at` set; subject id, tenant, access mode and creation time stay, so the id is never registered again and audit records keep a referent. A tombstone cannot sign in through any gate (a principal declared under `principals:` with the same tenant and subject is a config bearer, not a sign-in of the account: it still authenticates, and the erasure names it under `retained.config_principal` — remove it from the config), be re-enabled, renamed or deleted (`PATCH`/`DELETE /v1/_users/{subject}` answer `409 user_erased`), take a login from an invite, or be created again (`POST /v1/_users` conflicts). The user record and the users list carry `erased_at` for a tombstone (the Web UI shows it as erased, with no edit or delete), a snapshot carries it and restores the row as a tombstone (a snapshot that has a user erased while the target has it live keeps the live row and warns: run the erasure there), and re-enabling any disabled user also ends app sign-ins left live. `retained` names the tombstone (`account_tombstone`), the removal-policy record the sweeper keeps (`auth_removal_record`), and the person's account at an external identity provider (`identity_provider_accounts`), which this deployment cannot reach.
 
 ## 9c. Environment files — secrets vs. config (`.env.local` / `.env.insecure`)
@@ -3506,6 +3507,8 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `OTEL_BSP_SCHEDULE_DELAY` | `5000` | Milliseconds between exports. |
 | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` | — | A file holding the collector headers (`key=value`, comma- or newline-separated, `#` comments, values URL-decoded), read once at startup so the secret stays out of the process environment. Setting it beside `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, or an unreadable file, stops the startup. |
 | `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What an authenticated caller's `traceparent` does: `parent` joins the run to the caller's trace, `link` starts a new trace linked to it (the caller cannot steer sampling), `ignore` reads nothing. |
+| `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | — | Per-tenant sampling ratio for runs that start a trace, as `tenant=ratio,...` (e.g. `acme=1,beta=0.1`); overrides `observability.tracing.tenant_sampler_ratios` tenant by tenant. See "Sampling per tenant". A bad tenant id or a ratio outside 0–1 stops the startup. |
+| `LOOMCYCLE_OTEL_RAW_USER_ID` | off | `1` also puts the raw `loomcycle.user_id` on spans, beside `loomcycle.user_hash`. See "Users on spans". |
 | `LOOMCYCLE_ENVIRONMENT` | — | The `deployment.environment.name` resource attribute. |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | — | An http(s) URL containing `{trace_id}`, e.g. `https://grafana.example/explore?traceId={trace_id}`: the Web UI's run view links each traced run there. Shown to every signed-in user who can see the run. Anything else stops the startup. |
 
@@ -3551,6 +3554,63 @@ dropped span was discarded with the export queue full, sent in a batch whose
 export failed, or rejected by a collector that accepted the rest of its batch
 (an OTLP partial success: counted as an export that worked, its rejected spans
 as dropped, and logged at most every five minutes).
+
+#### Sampling per tenant
+
+A trace a tenant's work starts can be sampled at a ratio of that tenant's,
+in place of the `OTEL_TRACES_SAMPLER` ratio — keep every trace of one
+tenant while sampling the rest:
+
+```yaml
+observability:
+  tracing:
+    tenant_sampler_ratios:
+      acme: 1      # every acme run
+      beta: 0.1    # one beta run in ten
+```
+
+or `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS=acme=1,beta=0.1`, which wins over
+the yaml for each tenant it names. The ratio applies to every span that
+starts a trace and names its tenant (`loomcycle.tenant`): a run's span, a
+memory consolidation pass, a tool call made outside a run (the MCP, HTTP and
+gRPC tool surfaces), and a model gateway call (`/v1/_llm/chat`,
+`/v1/chat/completions`). A span with a parent follows the decision already
+made for its trace — a run that joins a caller's trace (`traceparent`), a
+sub-agent's run, everything under a run — and a tenant not listed uses the
+global sampler. Keys are tenant ids, ratios 0–1;
+anything else stops the startup. Read at startup; a config reload does not
+change it.
+
+To keep failed and slow runs whatever the ratio, sample at the collector
+instead (the OpenTelemetry Collector's or Alloy's tail-sampling processor:
+keep `status=ERROR`, keep `loomcycle.run` spans longer than your threshold,
+sample the rest). A failed or cancelled run's span is an error; a tool call
+that returned an error result is not (it sets `loomcycle.tool_is_error`).
+
+#### Users on spans
+
+A span names a run's user by `loomcycle.user_hash`: the first 16 hex
+characters of HMAC-SHA256 over the tenant id and the user id, each preceded by
+its length in bytes as a 4-byte big-endian number, keyed by a key derived from
+`LOOMCYCLE_SECRET_KEY` (HKDF, its own label). The hash is stable, so one
+user's traces are still found together, but the trace backend never holds the
+user id. To find a user's traces, run the command with `LOOMCYCLE_SECRET_KEY`
+set in the environment, as it is for the server (never type the key on the
+command line, where the shell history keeps it):
+
+```sh
+loomcycle otel user-hash acme alice
+```
+
+and search `loomcycle.user_hash=<printed value>`. The command prints the hash
+and nothing else; it never prints the key. Rotating the secret key
+changes every hash; traces recorded before the rotation keep the old ones.
+
+`LOOMCYCLE_OTEL_RAW_USER_ID=1` adds the raw `loomcycle.user_id` beside the
+hash. Without `LOOMCYCLE_SECRET_KEY` there is nothing to key the hash with:
+spans carry the raw `loomcycle.user_id` alone, and the startup logs a warning
+saying so (only when tracing is on). A query on `loomcycle.user_id` written
+before this change matches nothing once a secret key is set.
 
 #### Renamed tracing variables
 

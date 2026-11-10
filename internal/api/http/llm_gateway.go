@@ -285,16 +285,15 @@ func (s *Server) serveLLMChatJSON(
 	provider providers.Provider, provReq providers.Request,
 	startedAt time.Time,
 ) {
-	ch, err := provider.Call(r.Context(), provReq)
+	ch, meter, err := s.callGateway(r.Context(), provider, provReq)
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, "provider_call_failed", err.Error())
 		return
 	}
-	meter := newGatewayMeter(provReq)
 	// Deferred: however this function leaves, the call is settled.
 	defer s.settleGatewayCall(r.Context(), req, providerID, modelID, meter)
 	id := newLLMID()
-	resp, err := collectProviderEventsIntoResponse(meter.tap(ch), id, requestID, providerID, modelID)
+	resp, err := collectProviderEventsIntoResponse(ch, id, requestID, providerID, modelID)
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, "provider_call_failed", err.Error())
 		return
@@ -330,7 +329,7 @@ func (s *Server) serveLLMChatStream(
 		RequestID: requestID,
 	})
 
-	ch, err := provider.Call(r.Context(), provReq)
+	ch, meter, err := s.callGateway(r.Context(), provider, provReq)
 	if err != nil {
 		stream.sendRaw("error", llmStreamError{
 			Type:    "provider_error",
@@ -340,9 +339,7 @@ func (s *Server) serveLLMChatStream(
 		logGatewayRequest(requestID, providerID, modelID, req.Tier, req.UserID, 0, 0, "error", time.Since(startedAt), err)
 		return
 	}
-	meter := newGatewayMeter(provReq)
 	defer s.settleGatewayCall(r.Context(), req, providerID, modelID, meter)
-	ch = meter.tap(ch)
 
 	// Block-index lifecycle: the gateway owns the index exclusively
 	// here (translate helpers in llm_gateway_translate.go don't

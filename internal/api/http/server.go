@@ -3829,6 +3829,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		AgentID:   agentID,
 		AgentName: effectiveAgentName,
 		UserID:    effectiveUserID,
+		Tenant:    effectiveTenantID,
+		SessionID: sessionID,
 	})
 	s.recordRunTraceID(runCtx, runID)
 	defer func() {
@@ -4075,6 +4077,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	runOpts := loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
+		PriceCall:           s.priceCall,
 		Tools:               allowedTools,
 		Dispatcher:          dispatcher,
 		Segments:            injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, in.Metadata, in.PayloadMetadata),
@@ -8068,6 +8071,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		AgentName:     name,
 		UserID:        parentIdentity.UserID,
 		ParentAgentID: parentIdentity.AgentID,
+		Tenant:        parentIdentity.TenantID,
+		SessionID:     subSessionID,
 	})
 	s.recordRunTraceID(subRunCtx, subRunID)
 	defer func() {
@@ -8282,6 +8287,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	opts := loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
+		PriceCall:           s.priceCall,
 		Tools:               subTools,
 		Dispatcher:          subDispatcher,
 		Segments:            segs,
@@ -9444,7 +9450,8 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// own calls: a trigger's run may not take its user's own, nor may a
 	// compaction someone other than its user asked for.
 	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: run.TenantID, UserID: run.UserID,
-		CredentialsNoUserScope: run.CredentialsNoUserScope || actingForAnother(ctx, run.TenantID, run.UserID)})
+		CredentialsNoUserScope: run.CredentialsNoUserScope || actingForAnother(ctx, run.TenantID, run.UserID),
+		Retention:              summaryRetention(ctx, run.Retention)})
 	summCtx = tools.WithAgentName(summCtx, run.Agent)
 	summCtx = providers.WithCallObserver(summCtx, s.callObserver(run.ID))
 	summary, serr := loop.Summarize(summCtx, provider, summaryModel, msgs[firstIdx:cut], targetPct)
@@ -9635,7 +9642,8 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 	summCtx := providers.WithCredentialResolver(ctx, s.credResolver)
 	summCtx = providers.WithOperatorKeyAllowed(summCtx, !restricted)
 	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: sess.TenantID, UserID: userID,
-		CredentialsNoUserScope: noUserScope || actingForAnother(ctx, sess.TenantID, sess.UserID)})
+		CredentialsNoUserScope: noUserScope || actingForAnother(ctx, sess.TenantID, sess.UserID),
+		Retention:              summaryRetention(ctx, sess.Retention)})
 	summCtx = tools.WithAgentName(summCtx, sess.Agent)
 	summCtx = providers.WithCallObserver(summCtx, s.callObserver(""))
 	summary, err := loop.Recap(summCtx, provider, summaryModel, msgs)
@@ -10088,6 +10096,7 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 		OutputTokens:    res.Usage.OutputTokens,
 		CacheReadTokens: res.Usage.CacheReadTokens,
 		StopReason:      "cancelled",
+		Cancelled:       true,
 	})
 	if s.store == nil || runID == "" {
 		return

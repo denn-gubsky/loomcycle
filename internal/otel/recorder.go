@@ -8,13 +8,15 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	genai "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
 // Recorder helpers centralize the loomcycle span attribute set so every
 // call site stays consistent without duplicating the attribute names.
-// A future rename to OpenTelemetry's evolving semconv (`gen_ai.*` is the
-// 2026-era candidate for LLM-call attributes) happens in one place.
+// The run, model and tool spans also carry the OpenTelemetry GenAI
+// semantic-convention attributes (gen_ai.*, pinned in genai.go) beside the
+// loomcycle.* ones.
 //
 // Attribute key prefix: every loomcycle-specific attribute uses
 // `loomcycle.*` so a Jaeger / Tempo / Honeycomb search for `loomcycle.`
@@ -32,9 +34,12 @@ const (
 
 // Attribute keys (stable; operators write Jaeger filters against them).
 const (
-	AttrRunID         = "loomcycle.run_id"
-	AttrAgentID       = "loomcycle.agent_id"
-	AttrAgentName     = "loomcycle.agent_name"
+	AttrRunID     = "loomcycle.run_id"
+	AttrAgentID   = "loomcycle.agent_id"
+	AttrAgentName = "loomcycle.agent_name"
+	// AttrUserID is the raw user id. Emitted only when the operator opts in
+	// (LOOMCYCLE_OTEL_RAW_USER_ID) or no secret key is configured; otherwise
+	// spans carry AttrUserHash instead.
 	AttrUserID        = "loomcycle.user_id"
 	AttrParentAgentID = "loomcycle.parent_agent_id"
 	AttrIteration     = "loomcycle.iteration"
@@ -61,7 +66,7 @@ const (
 	// AttrQueueWaitMs is the time (milliseconds) a run waited inside the
 	// concurrency semaphore before its slot was granted. 0 = immediate
 	// acquire (no queue contention). Operators graphing this attribute
-	// per-user_id validate that per-tenant fairness is working — when
+	// per user (loomcycle.user_hash) validate that fairness is working — when
 	// the cap is set, queue waits should distribute fairly across users
 	// instead of all landing on whoever's behind a noisy tenant.
 	AttrQueueWaitMs = "loomcycle.queue_wait_ms"
@@ -77,18 +82,34 @@ type RunStartAttrs struct {
 	AgentName     string
 	UserID        string
 	ParentAgentID string // sub-runs only
+	// Tenant is the run's tenant. Empty inherits the tenant already on ctx (a
+	// sub-run started under its parent's span), and stays empty for a run
+	// with none.
+	Tenant string
+	// SessionID is the chat the run belongs to (gen_ai.conversation.id).
+	SessionID string
 }
 
 // RecordRunStart opens the top-level loomcycle.run span. The returned
 // ctx must be used for everything downstream so the iteration spans
-// nest under it. Caller defers span.End().
+// nest under it, and carries the run's tenant so every span opened under
+// it is stamped with it. Caller defers span.End().
+//
+// The tenant is a START attribute, so a sampler deciding on this span sees it.
 func RecordRunStart(ctx context.Context, attrs RunStartAttrs) (context.Context, trace.Span) {
+	if attrs.Tenant == "" {
+		attrs.Tenant = TenantFromContext(ctx)
+	}
+	ctx = WithTenant(ctx, attrs.Tenant)
 	ctx, opts := runStartContext(ctx)
 	return Tracer().Start(ctx, SpanRun, append(opts, trace.WithAttributes(runStartKVs(attrs)...))...)
 }
 
 func runStartKVs(a RunStartAttrs) []attribute.KeyValue {
-	kvs := make([]attribute.KeyValue, 0, 5)
+	kvs := make([]attribute.KeyValue, 0, 6)
+	if a.Tenant != "" {
+		kvs = append(kvs, attribute.String(AttrTenant, a.Tenant))
+	}
 	if a.RunID != "" {
 		kvs = append(kvs, attribute.String(AttrRunID, a.RunID))
 	}
@@ -98,12 +119,14 @@ func runStartKVs(a RunStartAttrs) []attribute.KeyValue {
 	if a.AgentName != "" {
 		kvs = append(kvs, attribute.String(AttrAgentName, a.AgentName))
 	}
-	if a.UserID != "" {
-		kvs = append(kvs, attribute.String(AttrUserID, a.UserID))
-	}
+	kvs = append(kvs, userAttrs(a.Tenant, a.UserID)...)
 	if a.ParentAgentID != "" {
 		kvs = append(kvs, attribute.String(AttrParentAgentID, a.ParentAgentID))
 	}
+	kvs = append(kvs, genAIOperationInvokeAgent)
+	kvs = genAIString(genai.GenAIAgentNameKey, a.AgentName, kvs)
+	kvs = genAIString(genai.GenAIAgentIDKey, a.AgentID, kvs)
+	kvs = genAIString(genai.GenAIConversationIDKey, a.SessionID, kvs)
 	return kvs
 }
 
@@ -111,7 +134,7 @@ func runStartKVs(a RunStartAttrs) []attribute.KeyValue {
 // Caller defers iterSpan.End() at the iteration boundary.
 func RecordIteration(ctx context.Context, iter int) (context.Context, trace.Span) {
 	return Tracer().Start(ctx, SpanIteration,
-		trace.WithAttributes(attribute.Int(AttrIteration, iter)))
+		trace.WithAttributes(withTenantAttr(ctx, []attribute.KeyValue{attribute.Int(AttrIteration, iter)})...))
 }
 
 // ProviderCallAttrs identifies a provider HTTP request.
@@ -147,16 +170,26 @@ func RecordProviderCall(ctx context.Context, attrs ProviderCallAttrs) (context.C
 	if attrs.CodeHash != "" {
 		kvs = append(kvs, attribute.String(AttrProviderCodeHash, attrs.CodeHash))
 	}
-	return Tracer().Start(ctx, SpanProviderCall, trace.WithAttributes(kvs...))
+	return Tracer().Start(ctx, SpanProviderCall, trace.WithAttributes(withTenantAttr(ctx, attemptAttrs(ctx, kvs))...))
+}
+
+// ToolCallAttrs identifies one tool call.
+type ToolCallAttrs struct {
+	Name string
+	// CallID is the model's tool_use id (gen_ai.tool.call.id); empty for a
+	// call made outside a model turn.
+	CallID string
 }
 
 // RecordToolCall opens loomcycle.tool.call around Dispatcher.Execute.
 // The single canonical wrap-point covers every tool — built-in, MCP,
 // sub-agent. MCP calls additionally open a nested loomcycle.mcp.call
 // via RecordMCPCall.
-func RecordToolCall(ctx context.Context, toolName string) (context.Context, trace.Span) {
-	return Tracer().Start(ctx, SpanToolCall,
-		trace.WithAttributes(attribute.String(AttrTool, toolName)))
+func RecordToolCall(ctx context.Context, a ToolCallAttrs) (context.Context, trace.Span) {
+	kvs := []attribute.KeyValue{attribute.String(AttrTool, a.Name), genAIOperationExecuteTool}
+	kvs = genAIString(genai.GenAIToolNameKey, a.Name, kvs)
+	kvs = genAIString(genai.GenAIToolCallIDKey, a.CallID, kvs)
+	return Tracer().Start(ctx, SpanToolCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
 }
 
 // RecordMCPCall opens loomcycle.mcp.call inside the outer
@@ -171,7 +204,7 @@ func RecordMCPCall(ctx context.Context, server, tool string) (context.Context, t
 	if tool != "" {
 		kvs = append(kvs, attribute.String(AttrMCPTool, tool))
 	}
-	return Tracer().Start(ctx, SpanMCPCall, trace.WithAttributes(kvs...))
+	return Tracer().Start(ctx, SpanMCPCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
 }
 
 // RunDoneAttrs is the closing attribute set landed on the
@@ -183,6 +216,11 @@ type RunDoneAttrs struct {
 	CacheReadTokens int
 	StopReason      string
 	Err             error // non-nil → SetStatus(Error, err.Error()) + RecordError
+	// Cancelled marks a run that was stopped rather than failed. Its span is
+	// an error too, described "cancelled": the run did not produce its
+	// answer, and a collector's "keep error traces" policy should see it (an
+	// operator who wants cancels dropped filters loomcycle.stop_reason).
+	Cancelled bool
 }
 
 // SetRunDone closes out the run span's attribute set. Used at the run
@@ -208,9 +246,12 @@ func SetRunDone(span trace.Span, a RunDoneAttrs) {
 	if len(kvs) > 0 {
 		span.SetAttributes(kvs...)
 	}
-	if a.Err != nil {
+	switch {
+	case a.Err != nil:
 		span.RecordError(a.Err)
 		span.SetStatus(codes.Error, a.Err.Error())
+	case a.Cancelled:
+		span.SetStatus(codes.Error, "cancelled")
 	}
 }
 
@@ -405,8 +446,9 @@ const EventConsolidateWatermarkLag = "loomcycle.memory.consolidate.watermark_lag
 // pass (how much moved, how far behind it is), and the whole point of the
 // pipeline is that the facts themselves are private to the target's scope.
 type MemoryConsolidateAttrs struct {
+	Tenant    string // the target's tenant; also carried on the returned ctx
 	Scope     string // memory scope — "user" for every fan-out target today
-	ScopeID   string // the target's scope id (its user id)
+	ScopeID   string // the target's scope id (its user id), hashed like any user
 	AgentName string // the consolidator agent the pass runs
 	Tier      string // the user tier the pass resolves its model through
 }
@@ -416,20 +458,20 @@ type MemoryConsolidateAttrs struct {
 // nest under this one. Caller defers span.End() and calls
 // SetMemoryConsolidateResult once the outcome is observed.
 func RecordMemoryConsolidate(ctx context.Context, a MemoryConsolidateAttrs) (context.Context, trace.Span) {
+	ctx = WithTenant(ctx, a.Tenant)
 	kvs := make([]attribute.KeyValue, 0, 4)
 	if a.Scope != "" {
 		kvs = append(kvs, attribute.String(AttrMemoryScope, a.Scope))
 	}
-	if a.ScopeID != "" {
-		kvs = append(kvs, attribute.String(AttrUserID, a.ScopeID))
-	}
+	// The target's scope id is its user id, named as every user is.
+	kvs = append(kvs, userAttrs(a.Tenant, a.ScopeID)...)
 	if a.AgentName != "" {
 		kvs = append(kvs, attribute.String(AttrAgentName, a.AgentName))
 	}
 	if a.Tier != "" {
 		kvs = append(kvs, attribute.String(AttrTier, a.Tier))
 	}
-	return Tracer().Start(ctx, SpanMemoryConsolidate, trace.WithAttributes(kvs...))
+	return Tracer().Start(ctx, SpanMemoryConsolidate, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
 }
 
 // ConsolidateOutcome is what the RUNTIME can observe about a finished pass, as
@@ -526,7 +568,7 @@ func RecordMemorySearch(ctx context.Context, backend string) (context.Context, t
 	if backend != "" {
 		kvs = append(kvs, attribute.String(AttrMemoryBackend, backend))
 	}
-	return Tracer().Start(ctx, SpanMemorySearch, trace.WithAttributes(kvs...))
+	return Tracer().Start(ctx, SpanMemorySearch, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
 }
 
 // SetMemorySearchResult stamps the retrieval's mode + top_k on the span, and —
@@ -603,6 +645,16 @@ func RecordHelpReconcile(ctx context.Context, written, pruned, unchanged, failed
 	span.End()
 }
 
+// SetToolIsError marks a tool or MCP span whose call returned an error
+// result. The span's status stays unset: an error result is the model's to
+// read and act on, not a failure of the call.
+func SetToolIsError(span trace.Span) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
+	span.SetAttributes(attribute.Bool(AttrToolIsError, true))
+}
+
 // SetSpanError marks a span as failed with the given error. The message
 // is truncated to a sane length so a noisy provider error doesn't blow
 // up Jaeger storage.
@@ -615,8 +667,8 @@ func SetSpanError(span trace.Span, err error) {
 }
 
 // SetSpanErrorMessage marks a span as failed with a fixed message — no
-// `err` value. Used for non-error-typed failures (HTTP non-2xx, tool
-// IsError=true).
+// `err` value. Used for non-error-typed failures (HTTP non-2xx) and for a
+// no-trace run, whose error text must not leave the box.
 func SetSpanErrorMessage(span trace.Span, msg string) {
 	if span == nil || msg == "" || !span.IsRecording() {
 		return

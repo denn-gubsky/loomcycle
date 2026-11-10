@@ -29,6 +29,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/promptinject"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
@@ -281,6 +282,11 @@ type Config struct {
 	// (speech.go). nil (absent) is off. Defaults are applied at load
 	// (Resolved).
 	Speech *SpeechConfig `yaml:"speech,omitempty"`
+
+	// Observability is the `observability:` block: settings of the trace
+	// export that belong in config rather than the OTEL_* environment
+	// (observability.go). Read at startup.
+	Observability ObservabilityConfig `yaml:"observability,omitempty"`
 
 	// Principals declares static (tenant, subject, scopes) logins, each bound
 	// to a bearer secret held in an env var (RFC AO). The map key is an
@@ -9043,6 +9049,9 @@ func validate(c *Config) error {
 		return fmt.Errorf("concurrency.max_concurrent_runs must be >= 1")
 	}
 	if err := validateTimeoutScaling(c); err != nil {
+		return err
+	}
+	if err := lcotel.ValidateTenantSamplerRatios("observability.tracing.tenant_sampler_ratios", c.Observability.Tracing.TenantSamplerRatios); err != nil {
 		return err
 	}
 	// Runtime-wide context-transform plugin chain (RFC Z). Validate names

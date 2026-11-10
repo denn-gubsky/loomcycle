@@ -579,11 +579,15 @@ type emitStateCall struct {
 //
 // now is the clock the call's timing is taken with (nil = time.Now); the timing
 // rides the returned usage.
-func callForEmitState(ctx context.Context, provider providers.Provider, req providers.Request, now func() time.Time) (emitStateCall, error) {
+func callForEmitState(ctx context.Context, provider providers.Provider, req providers.Request, now func() time.Time,
+	price func(string, string, *providers.Usage) (float64, string)) (emitStateCall, error) {
 	var out emitStateCall
 	timer := providers.StartCallTimer(now)
-	ch, err := provider.Call(ctx, req)
+	mc := startModelCall(ctx, ctx, modelPurposeEmitState, provider, req, timer, price, "")
+	defer mc.End("the response stream ended before the model finished its step")
+	ch, err := provider.Call(mc.Ctx(), req)
 	if err != nil {
+		mc.End(err.Error())
 		return out, err
 	}
 	var text, thinking strings.Builder
@@ -591,6 +595,7 @@ func callForEmitState(ctx context.Context, provider providers.Provider, req prov
 	sawDone := false
 	for ev := range ch {
 		timer.Observe(ev)
+		mc.Observe(ev)
 		switch ev.Type {
 		case providers.EventToolCall:
 			if ev.ToolUse != nil && ev.ToolUse.Name == emitStateToolName && out.input == nil {
@@ -959,7 +964,7 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 				promptSnapshotted = true
 				emit(providers.Event{Type: providers.EventPromptSnapshot, PromptSnapshot: providers.NewPromptSnapshot(req.System, req.Messages)})
 			}
-			call, err := callForEmitState(ctx, opts.Provider, req, opts.Now)
+			call, err := callForEmitState(ctx, opts.Provider, req, opts.Now, opts.PriceCall)
 			input, usage := call.input, call.usage
 			addUsage(&total, usage)
 			if usage != nil {

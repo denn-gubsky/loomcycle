@@ -134,9 +134,13 @@ Already a span attribute (`loomcycle.queue_wait_ms`). Query directly:
 
 ```
 VISUALIZE: P95(loomcycle.queue_wait_ms)
-GROUP BY:  loomcycle.user_id
+GROUP BY:  loomcycle.user_hash
 WHERE:     name = "loomcycle.run"
 ```
+
+Spans carry a keyed hash of the user id, not the id itself (`loomcycle otel
+user-hash <tenant> <user>` prints a user's hash); the raw
+`loomcycle.user_id` appears only with `LOOMCYCLE_OTEL_RAW_USER_ID=1`.
 
 ### `parent_child_span_graph`
 

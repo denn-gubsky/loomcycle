@@ -46,8 +46,8 @@ const (
 )
 
 // Config is the tracing configuration: what ResolveConfig read from the
-// environment, plus the two facts only the binary knows (ServiceVersion,
-// InstanceID), which the caller fills before Init.
+// environment, plus the facts only the binary knows (ServiceVersion,
+// InstanceID, UserHashKey), which the caller fills before Init.
 //
 // The exporter's endpoint, headers, timeout, compression, TLS and mTLS
 // settings are deliberately absent: the OTLP exporter reads
@@ -77,6 +77,14 @@ type Config struct {
 	// Environment is LOOMCYCLE_ENVIRONMENT, the deployment.environment.name
 	// resource attribute; omitted when empty.
 	Environment string
+	// RawUserID is LOOMCYCLE_OTEL_RAW_USER_ID: spans carry the raw
+	// loomcycle.user_id beside loomcycle.user_hash.
+	RawUserID bool
+	// TenantSamplerRatios is the per-tenant ratio for a run that starts a
+	// trace. ResolveConfig fills it from LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS;
+	// the binary lays it over the yaml's observability.tracing
+	// tenant_sampler_ratios (MergeTenantSamplerRatios) before Init.
+	TenantSamplerRatios map[string]float64
 
 	// The batch span processor's bounds (OTEL_BSP_* or the defaults above).
 	MaxQueueSize       int
@@ -89,6 +97,9 @@ type Config struct {
 	// InstanceID is the replica id /metrics labels its series with
 	// (service.instance.id); omitted when empty.
 	InstanceID string
+	// UserHashKey keys loomcycle.user_hash, derived from LOOMCYCLE_SECRET_KEY
+	// by the binary. Nil (no secret key) emits the raw user id instead.
+	UserHashKey []byte
 }
 
 // ResolveConfig reads and validates the tracing environment through getenv
@@ -119,6 +130,20 @@ func ResolveConfig(getenv func(string) string) (Config, error) {
 	}
 	cfg.HeadersFile = get("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE")
 	cfg.Environment = get("LOOMCYCLE_ENVIRONMENT")
+	if v := get("LOOMCYCLE_OTEL_RAW_USER_ID"); v != "" {
+		raw, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("LOOMCYCLE_OTEL_RAW_USER_ID=%q: want 1 or 0", v)
+		}
+		cfg.RawUserID = raw
+	}
+	if v := get("LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS"); v != "" {
+		ratios, err := ParseTenantSamplerRatios(v)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.TenantSamplerRatios = ratios
+	}
 
 	exporterOn, warns := tracesExporter(get("OTEL_TRACES_EXPORTER"))
 	endpointSet := get("OTEL_EXPORTER_OTLP_ENDPOINT") != "" || get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != ""

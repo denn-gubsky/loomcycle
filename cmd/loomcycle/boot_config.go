@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
 )
@@ -53,6 +54,12 @@ func (b *boot) initTelemetry() {
 	// The replica id /metrics labels its series with, so a trace and a
 	// scrape from one instance carry the same name.
 	otelCfg.InstanceID = b.cfg.Env.ReplicaID
+	otelCfg.TenantSamplerRatios = lcotel.MergeTenantSamplerRatios(
+		b.cfg.Observability.Tracing.TenantSamplerRatios, otelCfg.TenantSamplerRatios)
+	otelCfg.UserHashKey, err = credential.DeriveOTelUserKey(b.cfg.Env.SecretKey)
+	if err != nil {
+		fatal("otel: LOOMCYCLE_SECRET_KEY cannot key the span user hash", "err", err)
+	}
 	// Values ignored in place of an error: unsupported names beside supported
 	// ones while tracing is on; anything at all while it is off, where the
 	// OTEL_* environment may belong to other programs.
@@ -72,7 +79,13 @@ func (b *boot) initTelemetry() {
 	if otelCfg.Enabled {
 		slog.Info("otel: tracer enabled", "protocol", otelCfg.Protocol,
 			"sampler", otelCfg.SamplerName, "sampler_arg", otelCfg.SamplerArg,
-			"inbound_context", otelCfg.Inbound, "headers_file", otelCfg.HeadersFile != "")
+			"inbound_context", otelCfg.Inbound, "headers_file", otelCfg.HeadersFile != "",
+			"tenant_sampler_ratios", len(otelCfg.TenantSamplerRatios))
+		// Only when spans leave the process: with tracing off nothing is
+		// exported, and the warning would be noise.
+		if otelCfg.UserHashKey == nil {
+			slog.Warn("otel: LOOMCYCLE_SECRET_KEY is not set, so spans carry the raw loomcycle.user_id instead of loomcycle.user_hash")
+		}
 	} else {
 		slog.Info("otel: disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)")
 	}

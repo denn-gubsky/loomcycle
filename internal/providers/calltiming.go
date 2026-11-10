@@ -83,6 +83,15 @@ func (t *CallTimer) Observe(ev Event) {
 	}
 }
 
+// TTFT is the time from the start to the first text, thinking or tool event
+// observed so far; 0 when none has arrived. Safe on a nil timer.
+func (t *CallTimer) TTFT() time.Duration {
+	if t == nil || t.first.IsZero() {
+		return 0
+	}
+	return t.first.Sub(t.start)
+}
+
 // Stamp writes the measured timing onto u, keeping any phase durations the
 // driver already reported. A call that failed or never finished is left
 // unstamped. Safe on a nil timer or nil usage.

@@ -175,7 +175,7 @@ func TestRecordProviderCall_StampsProviderAndModel(t *testing.T) {
 
 func TestRecordToolCall_StampsToolName(t *testing.T) {
 	exp := withInMemoryExporter(t)
-	_, span := lcotel.RecordToolCall(context.Background(), "Bash")
+	_, span := lcotel.RecordToolCall(context.Background(), lcotel.ToolCallAttrs{Name: "Bash"})
 	span.End()
 
 	spans := exp.GetSpans()
@@ -192,7 +192,7 @@ func TestRecordToolCall_StampsToolName(t *testing.T) {
 
 func TestRecordMCPCall_NestsInsideToolCall(t *testing.T) {
 	exp := withInMemoryExporter(t)
-	toolCtx, toolSpan := lcotel.RecordToolCall(context.Background(), "mcp__jobs__getAgentContext")
+	toolCtx, toolSpan := lcotel.RecordToolCall(context.Background(), lcotel.ToolCallAttrs{Name: "mcp__jobs__getAgentContext"})
 	_, mcpSpan := lcotel.RecordMCPCall(toolCtx, "jobs", "getAgentContext")
 	mcpSpan.End()
 	toolSpan.End()
