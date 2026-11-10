@@ -469,8 +469,9 @@ an error rate is right at any sampling ratio; a scrape reads memory only.
   `unknown`.
 - **Substrate gauges:** `loomcycle_db_pool_open|in_use|idle{db}`,
   `loomcycle_db_pool_wait_total`, `loomcycle_db_pool_wait_duration_seconds_total`,
-  `loomcycle_memory_consolidation_lag_seconds{backend}` (grows until the next
-  pass reports), `loomcycle_memory_consolidation_pending{backend}`,
+  `loomcycle_memory_consolidation_lag_seconds{backend}` (now minus the latest
+  pass's watermark; it also grows when nothing new arrives, so read it with)
+  `loomcycle_memory_consolidation_pending{backend}`,
   `loomcycle_token_budget_used_ratio{tenant,period}`.
 
 No series names a run, a user or a session. A `model` label names only

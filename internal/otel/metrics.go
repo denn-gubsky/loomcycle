@@ -756,7 +756,7 @@ func registerObservables(m metric.Meter) error {
 		metric.WithDescription("Total time connection acquires spent waiting for a free connection."))
 	errs = append(errs, err)
 	lag, err := m.Float64ObservableGauge("loomcycle.memory.consolidation.lag", metric.WithUnit("s"),
-		metric.WithDescription("How far behind now the watermark of the latest consolidation pass sits, growing until the next pass reports."))
+		metric.WithDescription("Now minus the watermark (the newest settled chat folded in) the latest consolidation pass left its target at. It grows while nothing new arrives too, so read it with loomcycle_memory_consolidation_pending: lag is a backlog only while targets have work waiting."))
 	errs = append(errs, err)
 	pending := gauge("loomcycle.memory.consolidation.pending", "{target}", "Consolidation targets with work waiting at the latest fan-out.")
 	budget, err := m.Float64ObservableGauge("loomcycle.token_budget.used", metric.WithUnit("1"),

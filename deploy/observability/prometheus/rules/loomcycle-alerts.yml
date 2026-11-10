@@ -56,14 +56,19 @@ groups:
           description: "The database pool is exhausted more than once a second. Check slow queries or raise the pool size."
 
       - alert: LoomcycleConsolidationLagging
-        # The lag grows until the next pass reports, so a consolidator that
-        # stopped completing passes trips this too.
-        expr: max by (backend) (loomcycle_memory_consolidation_lag_seconds) > 6 * 3600
+        # The lag is now minus the watermark of the latest pass, which also
+        # grows on an idle system (passes run only for targets with new work)
+        # and stays high just after a catch-up. It means a backlog only while
+        # targets are waiting, so the rule asks for both. A consolidator that
+        # stopped completing passes keeps targets pending and trips it.
+        expr: |
+          max by (backend) (loomcycle_memory_consolidation_lag_seconds) > 6 * 3600
+          and on (backend) max by (backend) (loomcycle_memory_consolidation_pending) > 0
         for: 30m
         labels:
           severity: warning
         annotations:
-          summary: "Memory consolidation ({{ $labels.backend }}) is more than 6 hours behind"
+          summary: "Memory consolidation ({{ $labels.backend }}) has work waiting and its latest pass is more than 6 hours behind"
 
       - alert: LoomcycleSpansDropped
         expr: increase(loomcycle_otel_spans_dropped_total[10m]) > 0

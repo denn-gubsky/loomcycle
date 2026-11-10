@@ -1168,7 +1168,7 @@
           "exemplar": true
         }
       ],
-      "description": "Lag: how far behind now the latest pass's watermark sits; it grows until the next pass reports."
+      "description": "Lag: now minus the latest pass's watermark. It also grows while nothing new arrives, so it is a backlog only while targets are waiting."
     },
     {
       "id": 25,
