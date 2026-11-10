@@ -133,15 +133,17 @@ func (t *openTxn) finish(commit bool) error {
 // done. Caller MUST hold t.mu. The done flag is what makes a racing push refuse
 // instead of SAVEPOINT-ing a finished tx.
 func (t *openTxn) finishLocked(commit bool) error {
-	var err error
+	// Deferred so a driver panic in Commit/Rollback still drops the pin and
+	// marks the txn done: the txn is already out of the registry, so nothing
+	// else would ever release its connection.
+	defer func() {
+		t.release()
+		t.done = true
+	}()
 	if commit {
-		err = t.tx.Commit()
-	} else {
-		err = t.tx.Rollback()
+		return t.tx.Commit()
 	}
-	t.release()
-	t.done = true
-	return err
+	return t.tx.Rollback()
 }
 
 // txnRegistry holds the process's open explicit transactions, keyed by txnID.
@@ -535,9 +537,14 @@ func (m *Manager) reapStale(ttl time.Duration) {
 		}
 	}
 	m.txns.mu.Unlock()
+	// Every victim is already out of the registry, so a panic in one finish
+	// must not skip the rest: recover per victim, or each later victim keeps
+	// its pinned connection and a SQLite scope (one connection) hangs.
 	for _, t := range victims {
-		if err := t.finish(false); err != nil {
-			slog.Warn("sqlmem: reap stale txn failed", "err", err)
-		}
+		safego.Run(context.Background(), "sqlmem.txn_reap_victim", func() {
+			if err := t.finish(false); err != nil {
+				slog.Warn("sqlmem: reap stale txn failed", "err", err)
+			}
+		})
 	}
 }
