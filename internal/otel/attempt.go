@@ -49,6 +49,44 @@ func WithAttempt(ctx context.Context, n int, waited time.Duration) context.Conte
 	return context.WithValue(ctx, attemptKey{}, attemptInfo{n: n, waited: waited})
 }
 
+// AttemptSeq numbers the attempts of one provider call across retry layers:
+// a driver that wraps the 429 retry loop in a retry of its own (Ollama's
+// runner-death retry) puts one on ctx, so the inner loop's attempts keep
+// counting instead of starting again at 1. Attempts are sequential, so it is
+// used from one goroutine and holds no lock.
+type AttemptSeq struct {
+	n    int
+	wait time.Duration
+}
+
+type attemptSeqKey struct{}
+
+// WithAttemptSeq returns ctx carrying a new attempt sequence, and the
+// sequence.
+func WithAttemptSeq(ctx context.Context) (context.Context, *AttemptSeq) {
+	s := &AttemptSeq{}
+	return context.WithValue(ctx, attemptSeqKey{}, s), s
+}
+
+// AttemptSeqFrom returns the sequence on ctx, or nil.
+func AttemptSeqFrom(ctx context.Context) *AttemptSeq {
+	s, _ := ctx.Value(attemptSeqKey{}).(*AttemptSeq)
+	return s
+}
+
+// Waited records a wait an outer retry layer slept before the next attempt;
+// that attempt's span reports it in loomcycle.retry_after_ms.
+func (s *AttemptSeq) Waited(d time.Duration) { s.wait += d }
+
+// Next returns ctx for the next attempt (WithAttempt): its number in the
+// sequence, and waited plus any wait an outer layer recorded since the last
+// attempt.
+func (s *AttemptSeq) Next(ctx context.Context, waited time.Duration) context.Context {
+	s.n++
+	waited, s.wait = waited+s.wait, 0
+	return WithAttempt(ctx, s.n, waited)
+}
+
 func attemptAttrs(ctx context.Context, kvs []attribute.KeyValue) []attribute.KeyValue {
 	a, ok := ctx.Value(attemptKey{}).(attemptInfo)
 	if !ok {

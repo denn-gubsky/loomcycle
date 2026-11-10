@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
+	"github.com/denn-gubsky/loomcycle/internal/redact"
 )
 
 // loadConfig is boot phase 1: assemble the layered config stack and load it.
@@ -45,6 +47,11 @@ func (b *boot) initTelemetry() {
 	if err != nil {
 		fatal("otel: invalid tracing configuration", "err", err)
 	}
+	secrets, err := loadOTELHeadersFile(&otelCfg, b.logRedactor)
+	if err != nil {
+		fatal("otel: reading the collector headers failed", "err", err)
+	}
+	b.otelHeaderSecrets = secrets
 	otelCfg.ServiceVersion = buildVersion
 	// The replica id /metrics labels its series with, so a trace and a
 	// scrape from one instance carry the same name.
@@ -54,6 +61,18 @@ func (b *boot) initTelemetry() {
 	otelCfg.UserHashKey, err = credential.DeriveOTelUserKey(b.cfg.Env.SecretKey)
 	if err != nil {
 		fatal("otel: LOOMCYCLE_SECRET_KEY cannot key the span user hash", "err", err)
+	}
+	// Values ignored in place of an error: unsupported names beside supported
+	// ones while tracing is on; anything at all while it is off, where the
+	// OTEL_* environment may belong to other programs.
+	if len(otelCfg.Warnings) > 0 {
+		if otelCfg.Enabled {
+			for _, w := range otelCfg.Warnings {
+				slog.Warn("otel: ignoring a setting", "detail", w)
+			}
+		} else {
+			slog.Info("otel: tracing is off; unsupported OTEL_* values ignored", "detail", strings.Join(otelCfg.Warnings, "; "))
+		}
 	}
 	otelShutdown, err := lcotel.Init(otelCfg)
 	if err != nil {
@@ -91,4 +110,26 @@ func (b *boot) initTelemetry() {
 	b.otelShutdown = func(ctx context.Context) error {
 		return errors.Join(otelShutdown(ctx), metricsShutdown(ctx))
 	}
+}
+
+// loadOTELHeadersFile reads the collector headers file when tracing is on and
+// one is named, puts the headers in cfg, and masks their values in log lines
+// from now on: collector auth read from a file is in no environment the
+// redactors were built from. It returns the values for the server's at-rest
+// redactor, which does not exist yet.
+func loadOTELHeadersFile(cfg *lcotel.Config, logRedactor *redact.Redactor) ([]string, error) {
+	if !cfg.Enabled || cfg.HeadersFile == "" {
+		return nil, nil
+	}
+	h, err := lcotel.ReadHeadersFile(cfg.HeadersFile)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Headers = h
+	values := make([]string, 0, len(h))
+	for _, v := range h {
+		values = append(values, v)
+		logRedactor.RegisterOperator(v)
+	}
+	return values, nil
 }

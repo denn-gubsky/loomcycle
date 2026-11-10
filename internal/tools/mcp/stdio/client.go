@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,6 +65,22 @@ type Client struct {
 	exitErr error         // set before doneCh closes; read after
 }
 
+// childEnv is the server's environment: loomcycle's own, without its OTEL_*
+// settings, then the entries the server's definition sets. An
+// OpenTelemetry-instrumented server would otherwise pick up loomcycle's
+// tracing configuration and export to loomcycle's collector, with its
+// collector credentials, as service.name=loomcycle. An OTEL_* entry the
+// definition sets itself is kept: the operator named it for that server.
+func childEnv(inherited, configured []string) []string {
+	out := make([]string, 0, len(inherited)+len(configured))
+	for _, kv := range inherited {
+		if !strings.HasPrefix(kv, "OTEL_") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, configured...)
+}
+
 // Spawn starts a child process and returns a connected Client. The caller
 // must Close the client to terminate the child.
 func Spawn(cfg Config) (*Client, error) {
@@ -72,9 +89,7 @@ func Spawn(cfg Config) (*Client, error) {
 	// LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO=1 (documented as running an arbitrary
 	// local command); run without a shell.
 	cmd := exec.Command(cfg.Command, cfg.Args...)
-	if len(cfg.Env) > 0 {
-		cmd.Env = append(cmd.Environ(), cfg.Env...)
-	}
+	cmd.Env = childEnv(cmd.Environ(), cfg.Env)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdin pipe: %w", err)

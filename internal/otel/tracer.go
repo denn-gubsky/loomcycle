@@ -108,6 +108,9 @@ func doInit(cfg Config) (func(context.Context) error, error) {
 	otel.SetTextMapPropagator(newPropagator(cfg.Propagators))
 	setInboundMode(cfg.Inbound)
 	setUserIDPolicy(cfg.UserHashKey, cfg.RawUserID)
+	// Before any exporter is built: building one parses the header
+	// environment, and the SDK's default logger would print what it rejects.
+	otel.SetLogger(newSDKLogger(slog.Default()))
 	if !cfg.Enabled {
 		return noopShutdown, nil
 	}
@@ -133,8 +136,8 @@ func newTracerProvider(ctx context.Context, cfg Config, st *pipelineStats, errs 
 	if err != nil {
 		return nil, err
 	}
-	var headers map[string]string
-	if cfg.HeadersFile != "" {
+	headers := cfg.Headers
+	if headers == nil && cfg.HeadersFile != "" {
 		if headers, err = ReadHeadersFile(cfg.HeadersFile); err != nil {
 			return nil, err
 		}

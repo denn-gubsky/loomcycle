@@ -241,7 +241,8 @@ func (s *Server) computeReplayCompaction(ctx context.Context, agentDef config.Ag
 	// carry the same credential context a run's loopCtx does (mirror compact).
 	summCtx := providers.WithCredentialResolver(ctx, s.credResolver)
 	summCtx = providers.WithOperatorKeyAllowed(summCtx, !restricted)
-	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: tenant, UserID: subject})
+	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: tenant, UserID: subject,
+		Retention: summaryRetention(ctx, "")})
 	summCtx = tools.WithAgentName(summCtx, agentName)
 	summCtx = providers.WithCallObserver(summCtx, s.callObserver(""))
 	sum, serr := loop.Summarize(summCtx, provider, summaryModel, msgs[firstIdx:cut], targetPct)

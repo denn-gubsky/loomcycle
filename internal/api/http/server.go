@@ -7075,19 +7075,7 @@ func (s *Server) recordRunTraceID(ctx context.Context, runID string) {
 // from an environ slice ("NAME=value" entries), for the F32 redactor's exact-
 // match tier. Empty values are skipped (nothing to mask).
 func secretEnvValues(environ []string) map[string]string {
-	out := make(map[string]string)
-	for _, kv := range environ {
-		i := strings.IndexByte(kv, '=')
-		if i <= 0 {
-			continue
-		}
-		name, val := kv[:i], kv[i+1:]
-		if val == "" || !config.IsSecretEnvName(name) {
-			continue
-		}
-		out[name] = val
-	}
-	return out
+	return config.SecretEnvValues(environ)
 }
 
 // runSubAgent is the SubAgentRunner closure injected into the Agent
@@ -9486,7 +9474,8 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// own calls: a trigger's run may not take its user's own, nor may a
 	// compaction someone other than its user asked for.
 	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: run.TenantID, UserID: run.UserID,
-		CredentialsNoUserScope: run.CredentialsNoUserScope || actingForAnother(ctx, run.TenantID, run.UserID)})
+		CredentialsNoUserScope: run.CredentialsNoUserScope || actingForAnother(ctx, run.TenantID, run.UserID),
+		Retention:              summaryRetention(ctx, run.Retention)})
 	summCtx = tools.WithAgentName(summCtx, run.Agent)
 	summCtx = providers.WithCallObserver(summCtx, s.callObserver(run.ID))
 	summary, serr := loop.Summarize(summCtx, provider, summaryModel, msgs[firstIdx:cut], targetPct)
@@ -9677,7 +9666,8 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 	summCtx := providers.WithCredentialResolver(ctx, s.credResolver)
 	summCtx = providers.WithOperatorKeyAllowed(summCtx, !restricted)
 	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: sess.TenantID, UserID: userID,
-		CredentialsNoUserScope: noUserScope || actingForAnother(ctx, sess.TenantID, sess.UserID)})
+		CredentialsNoUserScope: noUserScope || actingForAnother(ctx, sess.TenantID, sess.UserID),
+		Retention:              summaryRetention(ctx, sess.Retention)})
 	summCtx = tools.WithAgentName(summCtx, sess.Agent)
 	summCtx = providers.WithCallObserver(summCtx, s.callObserver(""))
 	summary, err := loop.Recap(summCtx, provider, summaryModel, msgs)

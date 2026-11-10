@@ -337,7 +337,7 @@ func writeOTELCounters(w io.Writer, replicaLabels string, st lcotel.SpanStats) {
 	}{
 		{"loomcycle_otel_spans_ended_total", "Sampled spans that ended and entered the trace export pipeline on this replica.", st.Ended},
 		{"loomcycle_otel_spans_exported_total", "Spans the trace collector accepted.", st.Exported},
-		{"loomcycle_otel_spans_dropped_total", "Spans that will never reach the trace collector: discarded with the export queue full, or in an export call that failed.", st.Dropped},
+		{"loomcycle_otel_spans_dropped_total", "Spans that will never reach the trace collector: discarded with the export queue full, in an export call that failed, or rejected by a collector that took the rest of their batch.", st.Dropped},
 		{"loomcycle_otel_span_export_failures_total", "Trace export calls (batches of spans) that failed.", st.ExportFailures},
 	} {
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s%s %d\n\n", c.name, c.help, c.name, c.name, replicaLabels, c.v)

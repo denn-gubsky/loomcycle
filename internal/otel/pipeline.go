@@ -3,6 +3,8 @@ package otel
 import (
 	"context"
 	"log/slog"
+	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,7 +25,9 @@ type SpanStats struct {
 	// Exported: spans in batches the collector accepted.
 	Exported uint64
 	// Dropped: spans that will never reach the collector — discarded because
-	// the export queue was full, or carried by an export call that failed.
+	// the export queue was full, carried by an export call that failed, or
+	// rejected by a collector that accepted the rest of their batch (an OTLP
+	// partial success, which is not counted as a failed export).
 	Dropped uint64
 	// ExportFailures: export calls (batches) that failed.
 	ExportFailures uint64
@@ -46,14 +50,19 @@ type pipelineStats struct {
 
 var stats pipelineStats
 
-// Stats reports the export pipeline's counters.
+// Stats reports the export pipeline's counters. Ended is read last: a span is
+// counted ended before it can be counted exported or dropped, so reading it
+// after them keeps Ended >= Exported + Dropped in what a scrape sees.
 func Stats() SpanStats {
+	exported := stats.exported.Load()
+	dropped := stats.dropped.Load()
+	failures := stats.exportFailures.Load()
 	return SpanStats{
 		Enabled:        stats.enabled.Load(),
 		Ended:          stats.ended.Load(),
-		Exported:       stats.exported.Load(),
-		Dropped:        stats.dropped.Load(),
-		ExportFailures: stats.exportFailures.Load(),
+		Exported:       exported,
+		Dropped:        dropped,
+		ExportFailures: failures,
 	}
 }
 
@@ -102,13 +111,73 @@ func (c *countingExporter) ExportSpans(ctx context.Context, spans []sdktrace.Rea
 	n := uint64(len(spans))
 	c.st.inFlight.Add(-int64(n))
 	if err != nil {
-		c.st.exportFailures.Add(1)
-		c.st.dropped.Add(n)
-		return err
+		rejected, partial := partialRejected(err)
+		if !partial {
+			c.st.exportFailures.Add(1)
+			c.st.dropped.Add(n)
+			return err
+		}
+		// The collector answered and took the batch but for the spans it
+		// rejected: an export that worked, with some spans dropped.
+		r := min(uint64(max(rejected, 0)), n)
+		c.st.exported.Add(n - r)
+		c.st.dropped.Add(r)
+		c.errs.succeeded()
+		c.errs.rejected(r, err)
+		// Not handed on: the batch processor would pass it to the error
+		// handler as a failed export.
+		return nil
 	}
 	c.st.exported.Add(n)
 	c.errs.succeeded()
 	return nil
+}
+
+// partialRejected reports whether err says only that the collector accepted
+// part of a batch (an OTLP partial success), and how many spans it rejected.
+//
+// The OTLP exporters turn a successful response that rejected spans into an
+// error of their internal type PartialSuccess (a generated copy in each
+// exporter's internal package, so neither errors.As nor a shared type can
+// reach it). It is recognised by its type name and its RejectedItems field;
+// an error tree holding anything else is a failure.
+func partialRejected(err error) (int64, bool) {
+	var (
+		total int64
+		found bool
+		walk  func(error) bool
+	)
+	walk = func(e error) bool {
+		switch u := e.(type) {
+		case interface{ Unwrap() []error }:
+			for _, c := range u.Unwrap() {
+				if c != nil && !walk(c) {
+					return false
+				}
+			}
+			return true
+		case interface{ Unwrap() error }:
+			if inner := u.Unwrap(); inner != nil {
+				return walk(inner)
+			}
+			return false
+		}
+		v := reflect.ValueOf(e)
+		if v.Kind() != reflect.Struct || v.Type().Name() != "PartialSuccess" || !strings.HasPrefix(v.Type().PkgPath(), "go.opentelemetry.io/otel/exporters/otlp/") {
+			return false
+		}
+		f := v.FieldByName("RejectedItems")
+		if !f.IsValid() || f.Kind() != reflect.Int64 {
+			return false
+		}
+		total += f.Int()
+		found = true
+		return true
+	}
+	if !walk(err) || !found {
+		return 0, false
+	}
+	return total, true
 }
 
 func (c *countingExporter) Shutdown(ctx context.Context) error { return c.next.Shutdown(ctx) }
@@ -129,6 +198,11 @@ type errorHandler struct {
 	failing     bool
 	suppressed  int
 	lastSummary time.Time
+
+	// Spans a collector rejected from batches it otherwise took: logged
+	// at most once per errorSummaryInterval, with the count since.
+	rejectedSince  uint64
+	lastRejectedAt time.Time
 }
 
 func newErrorHandler(log *slog.Logger, now func() time.Time) *errorHandler {
@@ -137,21 +211,36 @@ func newErrorHandler(log *slog.Logger, now func() time.Time) *errorHandler {
 
 // Handle implements otel.ErrorHandler. The error text comes from the exporter
 // (status, connection error); the request's headers, where collector
-// credentials live, are not part of it.
+// credentials live, are not part of it, and the endpoint URL it may quote is
+// logged without userinfo or query values (sanitizeError).
 func (h *errorHandler) Handle(err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	now := h.now()
 	if !h.failing {
 		h.failing, h.suppressed, h.lastSummary = true, 0, now
-		h.log.Warn("otel: span export failing; repeats are summarised every 5 minutes", "err", err)
+		h.log.Warn("otel: span export failing; repeats are summarised every 5 minutes", "err", sanitizeError(err))
 		return
 	}
 	h.suppressed++
 	if now.Sub(h.lastSummary) >= errorSummaryInterval {
-		h.log.Warn("otel: span export still failing", "suppressed_errors", h.suppressed, "err", err)
+		h.log.Warn("otel: span export still failing", "suppressed_errors", h.suppressed, "err", sanitizeError(err))
 		h.suppressed, h.lastSummary = 0, now
 	}
+}
+
+// rejected notes spans a collector refused in a partial success: not an
+// outage, but data lost, so it is logged, rate-limited like an outage.
+func (h *errorHandler) rejected(n uint64, err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.rejectedSince += n
+	now := h.now()
+	if !h.lastRejectedAt.IsZero() && now.Sub(h.lastRejectedAt) < errorSummaryInterval {
+		return
+	}
+	h.log.Warn("otel: the trace collector rejected spans", "rejected_spans", h.rejectedSince, "err", sanitizeError(err))
+	h.rejectedSince, h.lastRejectedAt = 0, now
 }
 
 func (h *errorHandler) succeeded() {

@@ -66,7 +66,7 @@ const (
 	// AttrQueueWaitMs is the time (milliseconds) a run waited inside the
 	// concurrency semaphore before its slot was granted. 0 = immediate
 	// acquire (no queue contention). Operators graphing this attribute
-	// per-user_id validate that per-tenant fairness is working — when
+	// per user (loomcycle.user_hash) validate that fairness is working — when
 	// the cap is set, queue waits should distribute fairly across users
 	// instead of all landing on whoever's behind a noisy tenant.
 	AttrQueueWaitMs = "loomcycle.queue_wait_ms"

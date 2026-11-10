@@ -137,11 +137,17 @@ func Do(ctx context.Context, cfg Config, attempt func(ctx context.Context) (*htt
 
 	var totalWait, lastWait time.Duration
 	var lastResp *http.Response
+	// The attempt's span records its number and the wait before it, so a
+	// retried 429 is visible as attempt 2 after N ms, not just a sibling. A
+	// caller retrying around this loop carries its own sequence on ctx, so
+	// the numbers continue across its retries.
+	seq := lcotel.AttemptSeqFrom(ctx)
+	if seq == nil {
+		_, seq = lcotel.WithAttemptSeq(ctx)
+	}
 
 	for i := 0; i < cfg.MaxAttempts; i++ {
-		// The attempt's span records its number and the wait before it, so a
-		// retried 429 is visible as attempt 2 after N ms, not just a sibling.
-		resp, err := attempt(lcotel.WithAttempt(ctx, i+1, lastWait))
+		resp, err := attempt(seq.Next(ctx, lastWait))
 		if err != nil {
 			return nil, err
 		}

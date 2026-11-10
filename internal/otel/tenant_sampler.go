@@ -73,8 +73,9 @@ func MergeTenantSamplerRatios(yaml, env map[string]float64) map[string]float64 {
 }
 
 // NewTenantSampler wraps base with per-tenant ratios for root spans. A span
-// with no valid parent that carries loomcycle.tenant as a start attribute
-// (the run span) is sampled at its tenant's ratio; every other span — one
+// with no valid parent that carries loomcycle.tenant as a start attribute (a
+// run span, a consolidation pass, an off-run tool call, a gateway model call)
+// is sampled at its tenant's ratio; every other span — one
 // with a parent, local or remote, or of a tenant with no ratio — is decided
 // by base, so a parent's decision still carries down a trace exactly as base
 // would carry it. No ratios returns base itself.

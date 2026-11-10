@@ -48,8 +48,17 @@ end `loomcycle.input_tokens`, `loomcycle.output_tokens`,
 
 **Model-call span** (`loomcycle.model.call`): from just before the provider
 is called until its stream ends — the done event, an error, or a cancel.
-`loomcycle.provider`, `loomcycle.model`, `loomcycle.effort`,
-`loomcycle.ttft_ms` (time to the first streamed token), `loomcycle.stop_reason`,
+Every model call has one, marked with `loomcycle.model.purpose`: `turn` (a
+run's own turn, under its iteration), `compaction` and `recap` (summaries),
+`emit_state` (a stateful run's step), and `gateway` (a call through
+`/v1/_llm/chat` or `/v1/chat/completions`, which starts its own trace and
+names the caller's tenant).
+`loomcycle.provider`, `loomcycle.model`, `loomcycle.tier` (the tier the
+run's agent routes by), `loomcycle.effort`,
+`loomcycle.ttft_ms` (time to the first streamed token, counted from when
+the call got its slot in the provider's call lane — a call that failed or
+was cancelled counts from its start, wait included),
+`loomcycle.lane_wait_ms` (that wait, on a finished call), `loomcycle.stop_reason`,
 usage (`loomcycle.input_tokens`, `loomcycle.output_tokens`,
 `loomcycle.cache_read_tokens`, `loomcycle.cache_write_tokens`),
 `loomcycle.cost_usd` (when the call is priced in US dollars), and
@@ -105,10 +114,11 @@ model reads it and goes on, so it sets `loomcycle.tool_is_error` instead.
 ### Users on spans
 
 A span names its user by `loomcycle.user_hash`: the first 16 hex characters
-of an HMAC-SHA256 over `tenant|user`, keyed by a key derived from
-`LOOMCYCLE_SECRET_KEY`. It is stable, so one user's traces group together,
-and `loomcycle otel user-hash <tenant> <user>` prints a user's hash to
-search for. `LOOMCYCLE_OTEL_RAW_USER_ID=1` adds the raw `loomcycle.user_id`
+of an HMAC-SHA256 over the tenant id and the user id (each length-prefixed),
+keyed by a key derived from `LOOMCYCLE_SECRET_KEY`. It is stable, so one
+user's traces group together, and `loomcycle otel user-hash <tenant> <user>`,
+run with `LOOMCYCLE_SECRET_KEY` in its environment as for the server, prints a
+user's hash to search for. `LOOMCYCLE_OTEL_RAW_USER_ID=1` adds the raw `loomcycle.user_id`
 beside it; with no secret key set the raw id is all a span carries, and the
 startup warns.
 
@@ -292,9 +302,11 @@ observability:
 ```
 
 or `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS=acme=1,beta=0.1` (wins per
-tenant). A run that joins a caller's trace, or a sub-agent's run, follows
-the trace's existing decision; a tenant not listed uses the global
-sampler. Read at startup.
+tenant). It decides every span that starts a trace and names its tenant —
+a run, a memory consolidation pass, a tool call made outside a run, a
+gateway call. A run that joins a caller's trace, a sub-agent's run, and
+everything under a run follow the trace's existing decision; a tenant not
+listed uses the global sampler. Read at startup.
 
 **Keeping failures at a low ratio** needs a decision made after the run
 ends: use the collector's tail-sampling processor (OpenTelemetry Collector
@@ -518,13 +530,13 @@ itself (and their `_TRACES_` forms): `_ENDPOINT`, `_HEADERS`,
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | A URL with its scheme. Empty (and no `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) disables tracing. |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Or `grpc`. `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` wins when set. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | empty | Collector auth as `key=value,...`. A secret. |
-| `OTEL_TRACES_EXPORTER` | `otlp` | `none` turns tracing off. |
+| `OTEL_TRACES_EXPORTER` | `otlp` | A list; without `otlp` (e.g. `none`) tracing is off. |
 | `OTEL_SDK_DISABLED` | `false` | `true` turns tracing off. |
 | `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | Also `always_on`, `always_off`, `traceidratio`, `parentbased_always_off`, `parentbased_traceidratio`. |
 | `OTEL_TRACES_SAMPLER_ARG` | `1` | The ratio for the two ratio samplers, 0 to 1. |
 | `OTEL_SERVICE_NAME` | `loomcycle` | `service.name` resource attribute. |
 | `OTEL_RESOURCE_ATTRIBUTES` | empty | Extra resource attributes; override loomcycle's defaults. |
-| `OTEL_PROPAGATORS` | `tracecontext,baggage` | Or `none`. |
+| `OTEL_PROPAGATORS` | `tracecontext,baggage` | Or `none`; other names are ignored. |
 | `OTEL_BSP_MAX_QUEUE_SIZE` / `_MAX_EXPORT_BATCH_SIZE` / `_EXPORT_TIMEOUT` / `_SCHEDULE_DELAY` | 2048 / 512 / 10000 ms / 5000 ms | Export queue bounds. |
 | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` | empty | A file holding the collector headers instead of the env. |
 | `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What a caller's trace context does: `parent`, `link` or `ignore`. |
@@ -538,6 +550,9 @@ itself (and their `_TRACES_` forms): `_ENDPOINT`, `_HEADERS`,
 | `LOOMCYCLE_METRICS_CARDINALITY_LIMIT` | 2000 | Series per instrument before the overflow series. |
 | `LOOMCYCLE_METRICS_AGENT_LABEL` | off | `1` adds the agent name to the runs and tokens series. |
 
-A value loomcycle cannot honour (an unknown sampler or protocol, a
-ratio outside 0–1, an unreadable headers file) stops the startup with
-an error naming the variable.
+With tracing on, a value loomcycle cannot honour (an endpoint without
+an http(s) scheme, an unknown sampler or protocol, a ratio outside 0–1,
+a malformed collector header, an unreadable headers file) stops the
+startup with an error naming the variable. Unsupported propagator or
+exporter names are logged and ignored. With tracing off, `OTEL_*` values
+never stop the startup.

@@ -351,6 +351,8 @@ func checkEnvName(name string) error {
 		return errors.New("PATH is always passed; do not list it")
 	case strings.HasPrefix(up, "LOOMCYCLE_"):
 		return fmt.Errorf("%s is a loomcycle setting and is never passed to a helper", name)
+	case strings.HasPrefix(up, "OTEL_EXPORTER_OTLP") && strings.HasSuffix(up, "_HEADERS"):
+		return fmt.Errorf("%s holds the trace collector's credentials and is never passed to a helper", name)
 	}
 	for _, s := range secretSuffixes {
 		if strings.HasSuffix(up, s) {

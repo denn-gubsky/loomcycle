@@ -72,7 +72,7 @@ func TestCallForEmitState_UsageCarriesTheCallTiming(t *testing.T) {
 	}}}
 	// Reads: call start, the tool call (+2s), done (+500ms).
 	clk := &fakeClock{now: time.Unix(1_700_000_000, 0), steps: []time.Duration{2 * time.Second, 500 * time.Millisecond}}
-	call, err := callForEmitState(context.Background(), p, providers.Request{Model: "fake-model"}, clk.Now)
+	call, err := callForEmitState(context.Background(), p, providers.Request{Model: "fake-model"}, clk.Now, nil)
 	if err != nil {
 		t.Fatalf("callForEmitState: %v", err)
 	}

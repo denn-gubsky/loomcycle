@@ -149,6 +149,21 @@ func TestInjectTraceContext_SendsTraceparentNotBaggage(t *testing.T) {
 	}
 }
 
+// TestInjectTraceContext_NothingWhenTracingIsOff: with the no-op provider the
+// run span still carries the caller's context; it is not forwarded.
+func TestInjectTraceContext_NothingWhenTracingIsOff(t *testing.T) {
+	defer SetTracerProviderForTest(noop.NewTracerProvider())()
+	defer SetInboundForTest(InboundParent, newPropagator([]string{"tracecontext"}))()
+	ctx := ExtractInbound(context.Background(), propagation.HeaderCarrier(callerHeaders()))
+	ctx, span := RecordRunStart(ctx, RunStartAttrs{})
+	defer span.End()
+	h := http.Header{}
+	InjectTraceContext(ctx, h)
+	if len(h) != 0 {
+		t.Errorf("tracing off forwarded %v", h)
+	}
+}
+
 // TestSampledTraceID_EmptyUnlessRecordedAndSampled.
 func TestSampledTraceID_EmptyUnlessRecordedAndSampled(t *testing.T) {
 	// Tracing off: the no-op span carries the caller's context, which this
