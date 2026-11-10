@@ -96,7 +96,7 @@ func TestFuncLength_CensusNoFunctionOverLimit(t *testing.T) {
 				return nil
 			}
 			name := d.Name()
-			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") || strings.HasSuffix(name, ".pb.go") {
+			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 				return nil
 			}
 			f, err := parser.ParseFile(fset, p, nil, parser.ParseComments|parser.SkipObjectResolution)
