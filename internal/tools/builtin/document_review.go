@@ -719,7 +719,7 @@ func (d *Document) ruleOne(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 		rulingID, c.s.ID, rulingPriorOf(&c.s)); err != nil {
 		return fail("failed", "the ruling could not be recorded, so the statement was not ruled: "+err.Error())
 	}
-	res, err := d.applyRuling(ctx, key, mscope, op, c.s.ID, accept, reason, ruledBy)
+	res, err := d.applyRuling(ctx, key, mscope, op, c.s.ID, accept, reason, ruledBy, c.s.Status)
 	if err != nil || res.refusal != nil {
 		if derr := d.exec(ctx, key, `DELETE FROM statement_ruling_items WHERE ruling_id = ? AND edge_id = ?`, rulingID, c.s.ID); derr != nil {
 			logStatementReviewFault(ctx, "statement ruling item not removed", rulingID, derr)
