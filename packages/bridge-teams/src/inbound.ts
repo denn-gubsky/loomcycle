@@ -9,7 +9,6 @@ import { audioFileOf, type TeamsAttachment } from "./voice.js";
 /** The subset of a message activity this module reads. */
 export interface MessageFields {
   attachments?: readonly TeamsAttachment[];
-  locale?: string;
   /** When Teams says the activity was sent: a Date from the SDK's types, an
    *  ISO string on the wire. */
   timestamp?: Date | string;
@@ -47,6 +46,6 @@ export async function routeMessage<TRef>(
     await router.onMessage(id, ref, text, seen);
     return;
   }
-  await router.onVoice(id, ref, audio, activity.locale, seen);
+  await router.onVoice(id, ref, audio, seen);
   if (text.trim()) await router.onMessage(id, ref, text, seen);
 }

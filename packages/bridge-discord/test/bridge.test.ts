@@ -502,12 +502,13 @@ describe("discord bridge over HTTP", () => {
       announce(lc.runs[0], "run-1");
 
       // Downloaded from the CDN with no credential, transcribed with the
-      // person's token and their client's language.
+      // person's token and no hint (the client's locale is its UI language).
       expect(discord.downloads).toEqual([{ url: CDN_URL, authorization: undefined, redirect: "manual" }]);
       const [transcribe] = lc.callsTo("transcribe");
       expect(transcribe.token).toMatch(new RegExp(`^tok-discord-${ALICE}-`));
       expect(transcribe.args[0]).toEqual(new Uint8Array([1, 2, 3, 4]));
-      expect(transcribe.args[1]).toMatchObject({ contentType: "audio/ogg", language: "uk" });
+      expect(transcribe.args[1]).toMatchObject({ contentType: "audio/ogg" });
+      expect(transcribe.args[1]).not.toHaveProperty("language");
       expect(lc.mints[0].opts).toMatchObject({ surfaces: ["speech", "transcription"] });
       // The agent gets the words as the person's own, marked as spoken.
       const seg = (lc.runs[0].opts.segments as Array<{ content: Array<{ type: string; text: string }> }>)[0].content[0];
@@ -523,7 +524,7 @@ describe("discord bridge over HTTP", () => {
         [original, "Sunny."],
         [original, "Sunny.\n-# AI voice"],
       ]);
-      // No language: the deployment lists only en.
+      // No language: loomcycle picks the voice from the reply's own script.
       expect(lc.callsTo("speech")[0].args).toEqual(["Sunny.", { format: "ogg" }]);
       const voice = discord.calls.find((c) => c.form)!;
       expect(voice).toMatchObject({ method: "POST", path: `/channels/${DM}/messages`, authorization: `Bot ${BOT_TOKEN}` });

@@ -247,7 +247,7 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
       const voice = voiceOn ? voiceOf(msg, bot, { audio: this.cfg.voiceAudio }) : undefined;
       if (voice) {
         if (id.ok && id.scope === "group") this.rememberMessage(`${id.conversationId}|${id.speaker.subject}`, msg.message_id);
-        await ctx.router.onVoice(id, ref, voice, msg.from.language_code, seen);
+        await ctx.router.onVoice(id, ref, voice, seen);
         return;
       }
       // A private chat is told why a photo went unanswered. A group stays

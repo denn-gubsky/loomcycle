@@ -46,7 +46,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@loomcycle/bridge-core": "^0.5.0"
+    "@loomcycle/bridge-core": "file:../bridge-core"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

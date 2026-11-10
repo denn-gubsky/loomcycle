@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
 const PACKAGES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** The arguments each router entry point takes when given its options. */
-const ARITY: Record<string, number> = { onMessage: 4, onVoice: 5, onCardAction: 4 };
+const ARITY: Record<string, number> = { onMessage: 4, onVoice: 4, onCardAction: 4 };
 
 /** The marker that excuses a call: the platform gives no date there. */
 const NO_DATE = "census: no date";
