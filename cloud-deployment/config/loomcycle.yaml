@@ -186,6 +186,11 @@ agents:
   # tenant: each tenant's operator forks the agent in its own tenant.
   kb/verdict:            { providers: [ollama-local], max_context_tokens: 65536 }
   kb/judge-verdict:      { providers: [ollama-local], max_context_tokens: 65536 }
+  # The annotation pass's one model call: a section's, a document's or a
+  # folder's text in, a brief and an abstract out. Same reasoning: local only.
+  # kb/annotator (code-js, no model) needs the tenant grants, so each tenant's
+  # operator forks it in its own tenant, as for kb/linker.
+  kb/annotate:           { providers: [ollama-local], max_context_tokens: 65536 }
 
 # The knowledge-base preset declares documents/ingested user-scoped. Tenants
 # here import their corpus into the TENANT scope, where the runtime publishes
