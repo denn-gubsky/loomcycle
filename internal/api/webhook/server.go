@@ -28,8 +28,13 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
+
+// errRunPanicked is the outcome of a delivery's run whose goroutine panicked
+// (safego logs and counts the panic): failed, like any run that errored.
+var errRunPanicked = errors.New("the run ended on an internal error")
 
 const defaultBodySizeLimitBytes = 1 << 20 // 1 MiB
 
@@ -759,13 +764,24 @@ func (rec *Receiver) spawnAsync(ctx context.Context, w http.ResponseWriter, span
 		},
 		Admit: func(string) error { return linkErr },
 	}
-	go func() {
-		err := rec.runner.RunOnce(deliveryRunCtx(ctx), in, cb)
+	safego.Go(ctx, "webhook.async_run", func() {
+		// A RunOnce that panicked is a failed run: its claim goes back and
+		// the select below is signalled, as for any other failure.
+		err := errRunPanicked
+		defer func() { setupErr <- err }()
+		tidied := false
+		defer func() {
+			if !tidied {
+				rec.afterSpawn(name, held, dk, err, linkErr, spawnedRunID)
+			}
+		}()
+		err = rec.runner.RunOnce(deliveryRunCtx(ctx), in, cb)
 		if err != nil {
 			rec.logger.Warn("webhook: async run failed", "webhook", name, "run_id", spawnedRunID, "err", err)
 		}
 		// Here, not in the response's select: a setup that outlasts the
 		// response's wait may still start the run.
+		tidied = true
 		rec.afterSpawn(name, held, dk, err, linkErr, spawnedRunID)
 		// Fire on_complete hooks AFTER the run returns. Only when the run was
 		// actually admitted (OnRegistered fired → spawnedRunID set) and the
@@ -775,12 +791,11 @@ func (rec *Receiver) spawnAsync(ctx context.Context, w http.ResponseWriter, span
 		if err == nil && spawnedRunID != "" && len(wd.OnComplete) > 0 {
 			rec.dispatchOnComplete(context.Background(), name, wd, spawnedRunID, spawnedAgentID, userID)
 		}
-		// Always signal completion so a setup-time error (which returns
-		// before OnRegistered) unblocks the select below. A nil err after
-		// OnRegistered already fired is harmless — the select will have
-		// returned the run id already.
-		setupErr <- err
-	}()
+		// Always signal completion (the deferred send above) so a setup-time
+		// error, which returns before OnRegistered, unblocks the select
+		// below. A nil err after OnRegistered already fired is harmless —
+		// the select will have returned the run id already.
+	})
 
 	select {
 	case runID := <-registered:
@@ -957,11 +972,20 @@ func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span 
 		},
 		Admit: func(string) error { return linkErr },
 	}
-	go func() {
-		err := rec.runner.RunOnce(deliveryRunCtx(ctx), in, cb)
+	safego.Go(ctx, "webhook.sync_run", func() {
+		// A RunOnce that panicked is a failed run: its claim goes back.
+		err := errRunPanicked
+		tidied := false
+		defer func() {
+			if !tidied {
+				rec.afterSpawn(name, held, dk, err, linkErr, spawnedRunID)
+			}
+		}()
+		err = rec.runner.RunOnce(deliveryRunCtx(ctx), in, cb)
 		if err != nil {
 			rec.logger.Warn("webhook: sync run failed", "webhook", name, "run_id", spawnedRunID, "err", err)
 		}
+		tidied = true
 		rec.afterSpawn(name, held, dk, err, linkErr, spawnedRunID)
 		// Fire on_complete hooks AFTER the run returns, same posture as the
 		// async path. OnRegistered runs before the loop, so spawnedRunID is
@@ -969,7 +993,7 @@ func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span 
 		if err == nil && spawnedRunID != "" && len(wd.OnComplete) > 0 {
 			rec.dispatchOnComplete(context.Background(), name, wd, spawnedRunID, spawnedAgentID, userID)
 		}
-	}()
+	})
 
 	// Learn our agent_id (the bus events are keyed by it) before matching.
 	var ourAgentID, ourRunID string

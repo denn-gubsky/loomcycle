@@ -18,6 +18,7 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -145,6 +146,10 @@ func (e *Executor) WithAgentResolver(resolve func(skillID string) (string, bool)
 
 var _ a2asrv.AgentExecutor = (*Executor)(nil)
 
+// errRunPanicked is the outcome of a run whose goroutine panicked (safego logs
+// and counts the panic): failed, like any run that errored.
+var errRunPanicked = errors.New("the run ended on an internal error")
+
 // Execute drives one agent run and yields the resulting A2A event
 // stream: SUBMITTED (only when no task exists yet), then per-provider-
 // event artifacts/status, then a terminal status from the run's final
@@ -264,12 +269,15 @@ func (e *Executor) startRun(ctx context.Context, in runner.RunInput) *runStream 
 	// `transport` condition evaluated under the peer's set (peerACLOwner).
 	runCtx, cancel := context.WithCancel(lcotel.WithRunTrigger(
 		authz.WithTransport(context.WithoutCancel(ctx), "a2a"), lcotel.TriggerA2A))
-	go func() {
+	safego.Go(runCtx, "a2a.run", func() {
 		defer close(done)
 		defer close(events)
 		// Release the detached context when the run returns so a
 		// completed run never leaks its cancel.
 		defer cancel()
+		// A RunOnce that panicked reports as a failed run; read once done
+		// is closed, which the defers above order after this write.
+		runErr = errRunPanicked
 		runErr = e.runner.RunOnce(runCtx, in, runner.RunCallbacks{
 			OnEvent: func(ev providers.Event) {
 				select {
@@ -278,7 +286,7 @@ func (e *Executor) startRun(ctx context.Context, in runner.RunInput) *runStream 
 				}
 			},
 		})
-	}()
+	})
 	return &runStream{out: events, done: done, runErr: &runErr, agentID: in.AgentID, cancel: cancel}
 }
 

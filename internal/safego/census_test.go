@@ -82,7 +82,6 @@ var pendingRawGo = map[string]int{
 	"cmd/loomcycle/main.go":            1,
 	"cmd/loomcycle/openmode.go":        1,
 
-	"internal/a2a/executor.go":                      1,
 	"internal/api/http/client_tools.go":             1,
 	"internal/api/http/connector_impl.go":           3,
 	"internal/api/http/llm_gateway_meter.go":        1,
@@ -95,7 +94,6 @@ var pendingRawGo = map[string]int{
 	"internal/api/http/teamlocalschedules.go":       1,
 	"internal/api/http/teamlocalwebhooks.go":        1,
 	"internal/api/http/teamwalk_run.go":             1,
-	"internal/api/webhook/server.go":                2,
 }
 
 // TestCensus_NoNewRawGoStatements fails on a raw `go` statement in non-test
