@@ -521,6 +521,12 @@ func (s *OperatorTokenDef) rotateRow(ctx context.Context, prior store.OperatorTo
 		return errResult(fmt.Sprintf("rotate: token %q was issued by auth gate %q for one login; sign in through the gate again instead of rotating it",
 			prior.DefID, prior.IssuedByGate)), nil
 	}
+	// A retired token stays retired. Its row would otherwise be given a new,
+	// later retired_at below, so a revoked (say, leaked) secret would work
+	// again for the grace window, beside a live successor.
+	if !prior.RetiredAt.IsZero() && !time.Now().Before(prior.RetiredAt) {
+		return errResult(fmt.Sprintf("rotate: token %q is retired — create a new one", prior.DefID)), nil
+	}
 	// The replacement inherits the lifetime, so rotating a token that has run
 	// out would mint one that is dead on arrival.
 	if !prior.ExpiresAt.IsZero() && !time.Now().Before(prior.ExpiresAt) {
@@ -578,6 +584,11 @@ func (s *OperatorTokenDef) rotateRow(ctx context.Context, prior store.OperatorTo
 		grace = time.Duration(*graceSeconds) * time.Second
 	}
 	retireOldAt := time.Now().Add(grace).UTC()
+	// A token already in a grace window keeps the earlier end: a second
+	// rotation shortens the window at most, never stretches it.
+	if !prior.RetiredAt.IsZero() && prior.RetiredAt.Before(retireOldAt) {
+		retireOldAt = prior.RetiredAt.UTC()
+	}
 	if err := s.Store.OperatorTokenDefSetRetiredAt(ctx, prior.DefID, retireOldAt); err != nil {
 		return errResult(fmt.Sprintf("rotate: retire prior: %s", err)), nil
 	}
@@ -679,7 +690,11 @@ func (s *OperatorTokenDef) retireRow(ctx context.Context, target store.OperatorT
 	if aErr != nil && s.Unrecorded != nil {
 		s.Unrecorded("retire")
 	}
+	// An earlier end stands: retiring a retired token again does not move it.
 	now := time.Now().UTC()
+	if !target.RetiredAt.IsZero() && target.RetiredAt.Before(now) {
+		now = target.RetiredAt.UTC()
+	}
 	if err := s.Store.OperatorTokenDefSetRetiredAt(ctx, target.DefID, now); err != nil {
 		s.auditFailed(ev)
 		return errResult(fmt.Sprintf("retire: %s", err)), nil

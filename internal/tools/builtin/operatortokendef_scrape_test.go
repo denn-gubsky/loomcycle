@@ -346,3 +346,50 @@ func TestOperatorTokenDef_ATenantRotationGraceIsCappedAtTheDefault(t *testing.T)
 	}
 	mustOp(t, tool, ctx, `{"op":"rotate","def_id":"`+first["def_id"].(string)+`","grace_seconds":60}`)
 }
+
+// A retired token stays retired: a rotation of it is refused, on the admin
+// path and a tenant operator's alike, and its retirement is not moved later,
+// so its secret does not come back for a grace window.
+func TestOperatorTokenDef_ARetiredTokenCannotBeRotatedBackToLife(t *testing.T) {
+	tool, admin, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	tenant := tenantOpCtx(t, admin, tntOp)
+	for name, c := range map[string]struct {
+		ctx context.Context
+		in  string
+	}{
+		"admin":           {admin, `{"op":"create","name":"svc","tenant_id":"tnt","scopes":["runs:read"]}`},
+		"tenant operator": {tenant, `{"op":"create","name":"prom","scopes":["metrics:read"]}`},
+	} {
+		id := mustOp(t, tool, c.ctx, c.in)["def_id"].(string)
+		mustOp(t, tool, c.ctx, `{"op":"retire","def_id":"`+id+`"}`)
+		retired := storedRow(t, st, map[string]any{"def_id": id})
+		for _, rot := range []string{`{"op":"rotate","def_id":"` + id + `"}`, `{"op":"rotate","def_id":"` + id + `","grace_seconds":3600}`} {
+			if res := execRaw(t, tool, c.ctx, rot); !res.IsError {
+				t.Errorf("%s: rotating a retired token: %s, want refused", name, res.Text)
+			}
+		}
+		// Retiring it again does not move its end later either.
+		execRaw(t, tool, c.ctx, `{"op":"retire","def_id":"`+id+`"}`)
+		after := storedRow(t, st, map[string]any{"def_id": id})
+		if after.RetiredAt.After(retired.RetiredAt) || after.ValidAt(time.Now()) {
+			t.Errorf("%s: retired_at %v → %v (valid now: %v), want unchanged and invalid", name, retired.RetiredAt, after.RetiredAt, after.ValidAt(time.Now()))
+		}
+	}
+	if n := countTokenRows(t, st); n != 2 {
+		t.Errorf("%d rows, want the 2 created: a refused rotation minted a descendant", n)
+	}
+}
+
+// Rotating a token still in its grace window does not stretch the window.
+func TestOperatorTokenDef_ARotationNeverMovesAnEarlierRetirementLater(t *testing.T) {
+	tool, admin, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	id := mustOp(t, tool, admin, `{"op":"create","name":"svc","tenant_id":"tnt","scopes":["runs:read"]}`)["def_id"].(string)
+	mustOp(t, tool, admin, `{"op":"rotate","def_id":"`+id+`","grace_seconds":60}`)
+	first := storedRow(t, st, map[string]any{"def_id": id}).RetiredAt
+	mustOp(t, tool, admin, `{"op":"rotate","def_id":"`+id+`","grace_seconds":86400}`)
+	if got := storedRow(t, st, map[string]any{"def_id": id}).RetiredAt; got.After(first) {
+		t.Errorf("a second rotation moved retired_at from %v to %v", first, got)
+	}
+}
