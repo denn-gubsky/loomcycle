@@ -8,6 +8,39 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.150.0
+
+*`loomcycle-media` becomes the image for a deployment that wants voice and a browser together: it carries the PinchTab MCP client beside ffmpeg and poppler, and patch releases now publish it too. The cloud example moves to it and lets its Telegram gate use speech, so a voice note can be transcribed and answered with one. A long recording transcribed by Qwen3-ASR no longer shows the engine's `language …<asr_text>` header in mid-text, and a run started with a narrowed `tools` list keeps it after a pause, a snapshot restore or a boot recovery.*
+
+The v1.150 line: #2569 to #2575.
+- `@loomcycle/client` 1.150.0: `RunSpec` declares `tools?: { names: string[] }` (#2571). The Python adapter is 1.150.0 for version lockstep only.
+- No schema migration.
+
+### Upgrade notes
+
+- **A resumed run keeps its `tools` narrowing (#2571).** A run started with a `tools` list came back from a pause, a snapshot restore or a boot recovery with its agent's full toolset. The list is now recorded with the run and applied on resume, and `GET /v1/runs/{run_id}/effective-config` reports it. A run recorded by an older binary has no list and resumes as before.
+- **`loomcycle-media` grows by the PinchTab client (#2572),** about 28 MB, with its MIT notices at `/usr/share/doc/pinchtab/`. `loomcycle-browser` is unchanged and stays distroless.
+- **Cloud example (#2573).** `cloud-deployment` runs `loomcycle-media` for the runtime and the migration, and its deploy script waits for that image. The `telegram` gate's issued token grants `surfaces: [speech, transcription]` at 12 a minute, burst 20. Voice still needs the deployment's own speech engines and ffmpeg helpers (`transcription.stt.media`, `speech.encode`, `speech.format: ogg`) and `TELEGRAM_BRIDGE_VOICE=1`; without engines the bridge stays on text.
+
+### Speech to text (#2575)
+
+- Qwen3-ASR cuts a piece into segments of its own and heads each with `language <Name><asr_text>`, so one 60-second piece could hold two headers, and only the leading one was removed. Every header is removed now, the segments between them are joined with a space, a silent `None` segment adds nothing, and the first header gives the language. Speech that says "language" is kept: a header needs the literal `<asr_text>`.
+
+### Images (#2572)
+
+- `Dockerfile.media` copies the same pinned `pinchtab` client that `Dockerfile.browser` does. A deployment that drives a browser and also transcribes or speaks no longer has to choose between the two images.
+- A patch tag now publishes `loomcycle-media` for linux/amd64 beside `loomcycle-browser`, signed with cosign and with a provenance attestation, built after the browser image so a failure there cannot hold it back. A minor still publishes both arches of every image.
+- CI checks that both Dockerfiles pin the same PinchTab tag and digest, and that `third_party/pinchtab/PROVENANCE.md` names that tag.
+
+### Cloud example (#2573)
+
+- The runtime image carries ffmpeg, which turns a Telegram voice note (OGG/Opus) into the WAV a speech-to-text engine such as Qwen3-ASR on Ollama reads, and encodes a spoken reply as Opus, the form Telegram shows as a voice note.
+- `INSTALL.md` gives the two ffmpeg helper commands as a `voice.yaml` example, a file a release does not overwrite. It no longer says `loomcycle-browser` has ffmpeg.
+
+### Internal
+
+- The SQLite migrate golden file is dropped now the schema-section move is reviewed (#2569).
+
 ## What's in v1.149.0
 
 *A tenant can scrape its own metrics: a tenant operator mints a `metrics:read` token confined to its tenant's series (RFC GF follow-up). The panic net for background goroutines is complete: a panic in a sweeper, subscriber, run or fan-out child is logged, counted and fails only its own work. Two fixes to annotations from the first production pass, and two follow-ups from review.*
