@@ -1018,21 +1018,63 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT
-            label: LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT
-            description: 'An OTLP endpoint enables tracing. Auth headers may carry a SECRET → put LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS in .env.local if so. (example: http://localhost:4318)'
+          - variable: OTEL_EXPORTER_OTLP_ENDPOINT
+            label: OTEL_EXPORTER_OTLP_ENDPOINT
+            description: 'The standard OTEL_* variables. An OTLP endpoint (a URL with its scheme) enables tracing. Collector auth headers are a SECRET → put OTEL_EXPORTER_OTLP_HEADERS in .env.local, or point LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE at a file holding them. (example: http://localhost:4318)'
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_OTEL_SERVICE_NAME
-            label: LOOMCYCLE_OTEL_SERVICE_NAME
+          - variable: OTEL_EXPORTER_OTLP_PROTOCOL
+            label: OTEL_EXPORTER_OTLP_PROTOCOL
+            description: '(example: http/protobuf)'
+            schema:
+              type: string
+              default: ""
+          - variable: OTEL_SERVICE_NAME
+            label: OTEL_SERVICE_NAME
             description: '(example: loomcycle)'
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO
-            label: LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO
-            description: '(example: 1.0)'
+          - variable: OTEL_RESOURCE_ATTRIBUTES
+            label: OTEL_RESOURCE_ATTRIBUTES
+            description: '(example: service.instance.id=replica-a)'
+            schema:
+              type: string
+              default: ""
+          - variable: OTEL_TRACES_SAMPLER
+            label: OTEL_TRACES_SAMPLER
+            description: '(example: parentbased_traceidratio)'
+            schema:
+              type: string
+              default: ""
+          - variable: OTEL_TRACES_SAMPLER_ARG
+            label: OTEL_TRACES_SAMPLER_ARG
+            description: '(example: 0.1)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE
+            label: LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE
+            description: '(example: /run/secrets/otel-headers)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_OTEL_INBOUND_CONTEXT
+            label: LOOMCYCLE_OTEL_INBOUND_CONTEXT
+            description: '(example: parent)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_ENVIRONMENT
+            label: LOOMCYCLE_ENVIRONMENT
+            description: '(example: production)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_TRACE_URL_TEMPLATE
+            label: LOOMCYCLE_TRACE_URL_TEMPLATE
+            description: '(example: https://grafana.example/explore?traceId={trace_id})'
             schema:
               type: string
               default: ""

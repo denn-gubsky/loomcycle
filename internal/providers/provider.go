@@ -964,6 +964,9 @@ type Event struct {
 	ToolUse *ToolUse  `json:"tool_use,omitempty"`
 	Usage   *Usage    `json:"usage,omitempty"`
 	Error   string    `json:"error,omitempty"`
+	// TraceID is the OpenTelemetry trace the run is recorded in, on
+	// EventStarted only; empty when tracing is off or the trace unsampled.
+	TraceID string `json:"trace_id,omitempty"`
 	// IsError flags a tool_result whose execution failed. Surviving the
 	// persist+replay round-trip matters because a continuation that lost
 	// the flag would re-feed the model a successful-looking result.

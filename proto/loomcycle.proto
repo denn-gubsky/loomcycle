@@ -1790,6 +1790,11 @@ message Event {
   // the engine, the units and tokens spent and the cost, never the text.
   // SERVER-generated. Nil on every other event type.
   TranscriptionInfo transcription = 24;
+
+  // trace_id on type=started frames: the OpenTelemetry trace the run is
+  // recorded in. Empty when tracing is off or the trace is not sampled, and
+  // on every other event type.
+  string trace_id = 25;
 }
 
 // OverrideInfo is the type=override payload (RFC DC). Mirrors
@@ -2176,6 +2181,11 @@ message Agent {
   // on every other run, in a listing, and on another replica.
   int32 queue_position = 25;
   string queue_reason = 26;
+
+  // trace_id is the OpenTelemetry trace the run's span was recorded in, for
+  // following the run into a tracing backend. Empty when tracing was off or
+  // the trace was not sampled.
+  string trace_id = 27;
 }
 
 // AgentUsage mirrors agentResponseUsage.

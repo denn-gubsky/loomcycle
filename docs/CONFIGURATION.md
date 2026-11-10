@@ -2281,6 +2281,7 @@ The access-control management surface (the `LOOMCYCLE_ACL` row above lists its r
 - **A group synced from an identity provider** (`external_id` set) is read-only here: a member add or remove, and an upsert over the group, are refused with `409 group_external`; manage its members at the provider.
 - **Unset times are omitted.** A live list has no `retired_at`; a binding with no expiry has no `expires_at` (they used to read `0001-01-01T00:00:00Z`).
 - `GET /v1/_me` reports `acl_mode` in open mode too.
+- **Erasure does not reach exported trace spans.** A span already exported to a tracing backend stays there for that backend's retention; nothing loomcycle runs can delete it. A span names its user only by `loomcycle.user_hash` (unless `LOOMCYCLE_OTEL_RAW_USER_ID=1`, or no `LOOMCYCLE_SECRET_KEY` is set) and carries no content; `loomcycle otel user-hash <tenant> <user>` prints the hash to search the backend for. See [Users on spans](#users-on-spans).
 - **Subject erasure removes a user's memberships, bindings and member tokens.** `GET /v1/_erasure` (and the `erasure` MCP tool / gRPC twin) counts them in `tier2_uncovered` as `acl_memberships`, `acl_bindings`, `operator_tokens` and `acl_token_bindings` — retired bindings included, since they still name the user — and names them in the structured `access` field: `{groups, lists, tokens: [{def_id, name}]}` (never a bearer); a note says the same in prose. A live `POST /v1/_erasure` first revokes the user's member tokens — the ones user delete/disable retire — so the bearer stops authenticating at once on every replica, then deletes the memberships, the user's bindings and the bindings to its revoked tokens in one transaction, bumps the tenant's `acl_version`, drops the cached sets on every replica and records `subject_access_erased` in the audit log, as a management write does; `access` names what went. A dry run revokes and writes nothing and names what would go. A token holding `substrate:tenant` or `substrate:admin` that shares the subject is a role, not the member's credential: it is left, and named under `retained.operator_tokens_privileged` — retire it with `operatortokendef`. Revoked token rows are retired, not deleted (`retained.operator_token_rows`). The groups and lists themselves and group-kind bindings stay. Memberships and bindings declared in `groups:` / `acl_bindings:` cannot be erased from the store: they are listed in the report's notes and in the result's `retained.access_control_config` — remove them from the config file. Every live erasure, over HTTP, gRPC or MCP, writes the `erase_intent` / `erase_result` audit pair, and is refused (HTTP 503, gRPC `Unavailable`, an MCP tool error) when the intent cannot be recorded. A live erasure also **ends the account**, before the tokens: the user's app sign-ins end and their access tokens retire, then every sign-in row is deleted — login identities (e-mail, issuer, external subject), password, TOTP and recovery codes, passkeys and passkey ceremonies, Web UI sessions, approved device logins, invites and resets naming the user, identity-link logins, app sign-ins (refresh families, refresh tokens, authorization codes) and SCIM resources and memberships — counted per family as `sign_in_*` in the report's `tier2_uncovered`, in a dry run and in the result's `deleted`, and so in the `erase_result` audit record. The user record is **kept as a tombstone** (`account`: 1 when this erasure made it): display name cleared, status `disabled`, `erased_at` set; subject id, tenant, access mode and creation time stay, so the id is never registered again and audit records keep a referent. A tombstone cannot sign in through any gate (a principal declared under `principals:` with the same tenant and subject is a config bearer, not a sign-in of the account: it still authenticates, and the erasure names it under `retained.config_principal` — remove it from the config), be re-enabled, renamed or deleted (`PATCH`/`DELETE /v1/_users/{subject}` answer `409 user_erased`), take a login from an invite, or be created again (`POST /v1/_users` conflicts). The user record and the users list carry `erased_at` for a tombstone (the Web UI shows it as erased, with no edit or delete), a snapshot carries it and restores the row as a tombstone (a snapshot that has a user erased while the target has it live keeps the live row and warns: run the erasure there), and re-enabling any disabled user also ends app sign-ins left live. `retained` names the tombstone (`account_tombstone`), the removal-policy record the sweeper keeps (`auth_removal_record`), and the person's account at an external identity provider (`identity_provider_accounts`), which this deployment cannot reach.
 
 ## 9c. Environment files — secrets vs. config (`.env.local` / `.env.insecure`)
@@ -3490,10 +3491,138 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS` | `900000` | How often old samples are deleted; `0` stops it. |
 | `LOOMCYCLE_METRICS_COLLECT_SYSTEM` | off | `1` also samples system-wide CPU and memory (Linux only). |
 | `LOOMCYCLE_METRICS_LISTEN` | unset | An address (`127.0.0.1:9464`, or `0.0.0.0:9464` inside a compose network) for a second plain-HTTP listener that serves only `GET`/`HEAD /metrics`, **with no authentication**; nothing else is served there. It omits every series that names a user (today `loomcycle_concurrency_per_user`, whose `user_id` label the authenticated `/metrics` still carries). For a scraper on the same host or a network only it reaches. Boot fails if the address cannot be bound, and warns when it is beyond loopback. The main listener's `/metrics` keeps its token. See [Scraping /metrics](#scraping-metrics). |
-| `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP endpoint; setting it turns on tracing (per run, iteration, provider and tool call). |
-| `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` | — | Collector headers as `key=value,key2=value2`. A secret: never interpolated into config. |
-| `LOOMCYCLE_OTEL_SERVICE_NAME` | `loomcycle` | Service name on the spans. |
-| `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO` | `1.0` | Fraction of traces sampled, clamped to 0–1. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP endpoint, a URL with its scheme (`http://otel-collector:4318`); setting it (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) turns on tracing (per run, iteration, provider and tool call). |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Or `grpc`. `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` wins when set. `http/json` is refused at startup. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | — | Collector headers as `key=value,key2=value2`. A secret: never interpolated into config, never nameable as a definition's secret source. |
+| `OTEL_TRACES_EXPORTER` | `otlp` | A comma-separated list: naming `otlp` exports over OTLP; `none`, or only exporters loomcycle does not ship (`console`, `zipkin`), turns tracing off. Unsupported names are logged and ignored. |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns tracing off. |
+| `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off` or `parentbased_traceidratio`. |
+| `OTEL_TRACES_SAMPLER_ARG` | `1` | The ratio for the two ratio samplers, 0–1; anything else stops the startup. |
+| `OTEL_SERVICE_NAME` | `loomcycle` | Service name on the spans. |
+| `OTEL_RESOURCE_ATTRIBUTES` | — | Resource attributes as `key=value,...`; override loomcycle's defaults below. |
+| `OTEL_PROPAGATORS` | `tracecontext,baggage` | `none` alone turns propagation off; other propagators (`b3`, `jaeger`, …) are logged and ignored. |
+| `OTEL_BSP_MAX_QUEUE_SIZE` | `2048` | Spans waiting for export; past it they are dropped (and counted), never waited on. |
+| `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` | `512` | Spans per export call. |
+| `OTEL_BSP_EXPORT_TIMEOUT` | `10000` | Milliseconds one export call may take. |
+| `OTEL_BSP_SCHEDULE_DELAY` | `5000` | Milliseconds between exports. |
+| `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` | — | A file holding the collector headers (`key=value`, comma- or newline-separated, `#` comments, values URL-decoded), read once at startup so the secret stays out of the process environment. Setting it beside `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, or an unreadable file, stops the startup. |
+| `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What an authenticated caller's `traceparent` does: `parent` joins the run to the caller's trace, `link` starts a new trace linked to it (the caller cannot steer sampling), `ignore` reads nothing. |
+| `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | — | Per-tenant sampling ratio for runs that start a trace, as `tenant=ratio,...` (e.g. `acme=1,beta=0.1`); overrides `observability.tracing.tenant_sampler_ratios` tenant by tenant. See "Sampling per tenant". A bad tenant id or a ratio outside 0–1 stops the startup. |
+| `LOOMCYCLE_OTEL_RAW_USER_ID` | off | `1` also puts the raw `loomcycle.user_id` on spans, beside `loomcycle.user_hash`. See "Users on spans". |
+| `LOOMCYCLE_ENVIRONMENT` | — | The `deployment.environment.name` resource attribute. |
+| `LOOMCYCLE_TRACE_URL_TEMPLATE` | — | An http(s) URL containing `{trace_id}`, e.g. `https://grafana.example/explore?traceId={trace_id}`: the Web UI's run view links each traced run there. Shown to every signed-in user who can see the run. Anything else stops the startup. |
+
+#### Tracing configuration
+
+Tracing takes the standard OpenTelemetry environment. The OTLP exporter
+reads `OTEL_EXPORTER_OTLP_*` (and the `_TRACES_` forms) itself:
+`_ENDPOINT`, `_HEADERS`, `_TIMEOUT`, `_COMPRESSION`, `_CERTIFICATE`,
+`_CLIENT_CERTIFICATE`, `_CLIENT_KEY` and `_INSECURE`, so TLS and mTLS to
+the collector are configured there. loomcycle decides only whether tracing
+is on, the protocol, the sampler, the resource and the queue bounds.
+
+With tracing on, a value that would make it silently not work stops the
+startup with an error naming the variable: an endpoint that is not an
+http(s) URL with a host, an unknown protocol or sampler, a ratio outside
+0–1, a non-positive batch bound, a malformed collector header (the error
+gives the entry's position, never its content), or headers set both in the
+environment and in a file. With tracing off, no `OTEL_*` value stops the
+startup — the environment may be shared with other OpenTelemetry programs —
+and unsupported ones are mentioned in one Info line. The
+`LOOMCYCLE_OTEL_*` settings are always checked.
+
+The resource carries `service.name=loomcycle`, `service.version` (the
+binary's), `service.instance.id` (`LOOMCYCLE_REPLICA_ID`, the replica label
+`/metrics` uses) and `deployment.environment.name` (`LOOMCYCLE_ENVIRONMENT`);
+`OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` override any of them.
+
+A caller's trace context is read only from an authenticated request (a
+bearer over HTTP or gRPC, a webhook whose signature verified, an accepted
+A2A peer); open mode reads none. A run's `traceparent` goes on to the
+operator's own MCP servers over HTTP (yaml, or saved with operator
+authority), never to a model provider, a server a tenant registered, or the
+HTTP and WebFetch tools. A sampled run's trace id is stored on the run and
+returned as `trace_id` by get_run and the run's `started` event.
+
+When the collector is unreachable, spans are dropped rather than waited on;
+the outage is logged once (`otel: span export failing`), summarised every
+five minutes, and its end logged (`otel: span export recovered`). `/metrics`
+carries `loomcycle_otel_spans_ended_total`, `loomcycle_otel_spans_exported_total`,
+`loomcycle_otel_spans_dropped_total` and
+`loomcycle_otel_span_export_failures_total` (zeros while tracing is off). A
+dropped span was discarded with the export queue full, sent in a batch whose
+export failed, or rejected by a collector that accepted the rest of its batch
+(an OTLP partial success: counted as an export that worked, its rejected spans
+as dropped, and logged at most every five minutes).
+
+#### Sampling per tenant
+
+A trace a tenant's work starts can be sampled at a ratio of that tenant's,
+in place of the `OTEL_TRACES_SAMPLER` ratio — keep every trace of one
+tenant while sampling the rest:
+
+```yaml
+observability:
+  tracing:
+    tenant_sampler_ratios:
+      acme: 1      # every acme run
+      beta: 0.1    # one beta run in ten
+```
+
+or `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS=acme=1,beta=0.1`, which wins over
+the yaml for each tenant it names. The ratio applies to every span that
+starts a trace and names its tenant (`loomcycle.tenant`): a run's span, a
+memory consolidation pass, a tool call made outside a run (the MCP, HTTP and
+gRPC tool surfaces), and a model gateway call (`/v1/_llm/chat`,
+`/v1/chat/completions`). A span with a parent follows the decision already
+made for its trace — a run that joins a caller's trace (`traceparent`), a
+sub-agent's run, everything under a run — and a tenant not listed uses the
+global sampler. Keys are tenant ids, ratios 0–1;
+anything else stops the startup. Read at startup; a config reload does not
+change it.
+
+To keep failed and slow runs whatever the ratio, sample at the collector
+instead (the OpenTelemetry Collector's or Alloy's tail-sampling processor:
+keep `status=ERROR`, keep `loomcycle.run` spans longer than your threshold,
+sample the rest). A failed or cancelled run's span is an error; a tool call
+that returned an error result is not (it sets `loomcycle.tool_is_error`).
+
+#### Users on spans
+
+A span names a run's user by `loomcycle.user_hash`: the first 16 hex
+characters of HMAC-SHA256 over the tenant id and the user id, each preceded by
+its length in bytes as a 4-byte big-endian number, keyed by a key derived from
+`LOOMCYCLE_SECRET_KEY` (HKDF, its own label). The hash is stable, so one
+user's traces are still found together, but the trace backend never holds the
+user id. To find a user's traces, run the command with `LOOMCYCLE_SECRET_KEY`
+set in the environment, as it is for the server (never type the key on the
+command line, where the shell history keeps it):
+
+```sh
+loomcycle otel user-hash acme alice
+```
+
+and search `loomcycle.user_hash=<printed value>`. The command prints the hash
+and nothing else; it never prints the key. Rotating the secret key
+changes every hash; traces recorded before the rotation keep the old ones.
+
+`LOOMCYCLE_OTEL_RAW_USER_ID=1` adds the raw `loomcycle.user_id` beside the
+hash. Without `LOOMCYCLE_SECRET_KEY` there is nothing to key the hash with:
+spans carry the raw `loomcycle.user_id` alone, and the startup logs a warning
+saying so (only when tracing is on). A query on `loomcycle.user_id` written
+before this change matches nothing once a secret key is set.
+
+#### Renamed tracing variables
+
+The four `LOOMCYCLE_OTEL_*` tracing variables are retired, with no fallback:
+setting only one of them leaves tracing off. Rename them:
+
+| Retired | Use |
+|---|---|
+| `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` (retired) | `OTEL_EXPORTER_OTLP_ENDPOINT`. The value now keeps its scheme: `http://otel-collector:4318`, not `otel-collector:4318`. |
+| `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` (retired) | `OTEL_EXPORTER_OTLP_HEADERS`, or a file named by `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE`. The retired name stays an infrastructure secret: it is never interpolated, in case a stale value is still set. |
+| `LOOMCYCLE_OTEL_SERVICE_NAME` (retired) | `OTEL_SERVICE_NAME`. |
+| `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO` (retired) | `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with `OTEL_TRACES_SAMPLER_ARG=<ratio>`. An out-of-range ratio now stops the startup instead of being clamped. |
 
 ## 10. Cross-references
 

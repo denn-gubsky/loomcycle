@@ -49,8 +49,8 @@ Optional but commonly set:
 
 - `LOOMCYCLE_DATA_DIR` — where the sqlite store lives (defaults to
   `~/.local/share/loomcycle`).
-- `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` — enables distributed
-  traces (see `help observability`).
+- `OTEL_EXPORTER_OTLP_ENDPOINT` — enables distributed traces, with
+  the rest of the standard `OTEL_*` set (see `help observability`).
 
 See the full table in `~/.config/loomcycle/README.md` (the per-machine quickstart). For provider routing + tier conceptual deep-dive, see the repo's `docs/CONFIGURATION.md`.
 

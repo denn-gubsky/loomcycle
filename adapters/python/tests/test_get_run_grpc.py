@@ -56,6 +56,19 @@ async def test_get_run_decodes_a_queued_runs_place():
     assert out["queue_reason"] == "user_cap"
 
 
+@pytest.mark.asyncio
+async def test_get_run_decodes_the_runs_trace_id():
+    client = _make_client()
+
+    async def fake(req, metadata=None):
+        return pb.Agent(run_id="r_t", status="completed", trace_id="4bf92f3577b34da6a3ce929d0e0e4736")
+
+    client._stub.GetRun = fake  # type: ignore[attr-defined]
+
+    out = await client.get_run("r_t")
+    assert out["trace_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
+
+
 class _NotFound(grpc.aio.AioRpcError):
     def __init__(self) -> None:
         super().__init__(

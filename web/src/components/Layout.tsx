@@ -359,6 +359,13 @@ export function usePrincipal(): Principal | null {
   return useOutletContext<LayoutContext>().principal;
 }
 
+// useTraceURLTemplate is the operator's run-to-trace link template, or "".
+// Tolerates rendering outside the Layout (a pane under test), where there is
+// no outlet context and so no link.
+export function useTraceURLTemplate(): string {
+  return useOutletContext<LayoutContext | undefined>()?.principal?.trace_url_template ?? "";
+}
+
 // useFocusTenant is the super-admin tenant-focus (?tenant=); "" = all
 // tenants / the caller's own scope. Views thread it into tenant-scoped
 // reads (e.g. listAgents) so the admin's switcher narrows the workspace.

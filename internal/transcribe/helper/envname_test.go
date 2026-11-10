@@ -21,6 +21,8 @@ func TestCheckEnvName_RefusesEveryNameConfigCallsSecret(t *testing.T) {
 	for _, s := range []string{"_KEYS", "_PASS", "_PWD", "_APIKEY", "_PRIVATE_KEY", "_ACCESS_TOKEN", "_CERT"} {
 		probes = append(probes, "SOME"+s)
 	}
+	probes = append(probes, "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+		"OTEL_EXPORTER_OTLP_METRICS_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_HEADERS")
 	for _, n := range probes {
 		if config.IsSecretEnvName(n) && helper.CheckEnvName(n) == nil {
 			t.Errorf("%s: config classifies it as a secret, the helper runner would pass it", n)

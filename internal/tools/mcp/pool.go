@@ -475,8 +475,10 @@ func (t *mcpTool) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 		}
 		return classifiedMCPFailure(err), nil
 	}
+	// The server answered; an isError answer is the model's to read, not a
+	// failed call (see Dispatcher.Call).
 	if res.IsError {
-		lcotel.SetSpanErrorMessage(span, "mcp tool returned isError=true")
+		lcotel.SetToolIsError(span)
 	}
 	return tools.Result{
 		Text:    withUpstreamStructured(renderResult(ctx, t.server, t.toolName, input, res, t.pool.policyFor(ctx, t.server)), res.StructuredContent),

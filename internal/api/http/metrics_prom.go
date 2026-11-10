@@ -30,6 +30,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
 )
 
@@ -241,6 +242,8 @@ func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 	}
 	fmt.Fprintln(w)
 
+	writeOTELCounters(w, replicaLabels, lcotel.Stats())
+
 	// Build info as a single-series gauge=1 with version metadata as
 	// labels. Standard Prometheus convention — operators alert on
 	// version churn or filter by version in a multi-replica cluster.
@@ -278,6 +281,24 @@ func writeModelGauges(w io.Writer, replicaLabels string, stats []throughput.Stat
 			fmt.Fprintf(w, "%s%s %s\n", g.name, labels, strconv.FormatFloat(v, 'g', -1, 64))
 		}
 		fmt.Fprintln(w)
+	}
+}
+
+// writeOTELCounters reports the span export pipeline. The four series are
+// written even with tracing off, as zeros, so a dashboard or an alert on
+// dropped spans keeps a series to read instead of one that appears only once
+// tracing is turned on.
+func writeOTELCounters(w io.Writer, replicaLabels string, st lcotel.SpanStats) {
+	for _, c := range []struct {
+		name, help string
+		v          uint64
+	}{
+		{"loomcycle_otel_spans_ended_total", "Sampled spans that ended and entered the trace export pipeline on this replica.", st.Ended},
+		{"loomcycle_otel_spans_exported_total", "Spans the trace collector accepted.", st.Exported},
+		{"loomcycle_otel_spans_dropped_total", "Spans that will never reach the trace collector: discarded with the export queue full, in an export call that failed, or rejected by a collector that took the rest of their batch.", st.Dropped},
+		{"loomcycle_otel_span_export_failures_total", "Trace export calls (batches of spans) that failed.", st.ExportFailures},
+	} {
+		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s%s %d\n\n", c.name, c.help, c.name, c.name, replicaLabels, c.v)
 	}
 }
 

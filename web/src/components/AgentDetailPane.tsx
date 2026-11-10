@@ -34,6 +34,8 @@ import {
   type RunSelection,
 } from "../lib/runLineage";
 import TerminalTranscript from "./TerminalTranscript";
+import { useTraceURLTemplate } from "./Layout";
+import { traceURL } from "../lib/traceLink";
 import ViewToggle, { useViewMode } from "./ViewToggle";
 import {
   type AgentTab,
@@ -78,6 +80,20 @@ export interface AgentDetailPaneProps {
 // A team walk files its run under the team's agent id, which agent-scoped
 // memory and channel cursors are not kept for.
 const WALK_HIDDEN_TABS: readonly AgentTab[] = ["memory", "channels"];
+
+// RunTraceLink opens the run's trace in the operator's tracing UI, when the
+// server names one (LOOMCYCLE_TRACE_URL_TEMPLATE) and the run was traced.
+export function RunTraceLink({ run }: { run: Pick<Agent, "trace_id"> }) {
+  const href = traceURL(useTraceURLTemplate(), run.trace_id);
+  if (!href) return null;
+  return (
+    <span>
+      <a href={href} target="_blank" rel="noopener noreferrer" title="Open this run's trace in the tracing UI">
+        Open trace
+      </a>
+    </span>
+  );
+}
 
 // stopRun is the header's cancel. A team walk is stopped by its run id: its
 // agent id is shared by every walk of the team and the agent cancel route
@@ -352,6 +368,7 @@ function AgentDetailPaneBody({ agentId, runId, ancestors, onSelect }: AgentDetai
             {agent.completed_at && (
               <span>{durationLabel(agent.started_at, agent.completed_at)}</span>
             )}
+            <RunTraceLink run={agent} />
             <RunUsageFacts run={agent} events={events} />
             <RunContextMethod run={agent} />
             <RunClockFacts run={agent} />

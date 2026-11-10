@@ -649,6 +649,10 @@ type RunOptions struct {
 	// recap, each with its purpose on the ctx it is handed. The server charges
 	// them to the run and feeds the throughput estimate. nil = not observed.
 	ObserveCall providers.CallObserver
+
+	// PriceCall prices one model call (the cost, and its currency; "" =
+	// unpriced) for the model-call span. nil = the span carries no cost.
+	PriceCall func(provider, model string, u *providers.Usage) (float64, string)
 }
 
 // PauseGate is the loop's seam into the runtime pause/quiesce protocol
@@ -2048,8 +2052,17 @@ func summarizeWith(ctx context.Context, provider providers.Provider, model strin
 // emits no usage event, but it is still a measured call on a real model.
 func runSummarizeCall(ctx context.Context, provider providers.Provider, req providers.Request) (string, error) {
 	timer := providers.StartCallTimer(nil)
-	ch, err := provider.Call(ctx, req)
+	purpose := providers.CallPurpose(ctx)
+	if purpose == "" {
+		purpose = modelPurposeSummary
+	}
+	// No price: a summary is RunOptions-free (see applyCompactSummary). Its
+	// tokens still show on the span, and its cost on the usage ledger.
+	mc := startModelCall(ctx, ctx, purpose, provider, req, timer, nil, "")
+	defer mc.End("the summary stream ended before the model finished")
+	ch, err := provider.Call(mc.Ctx(), req)
 	if err != nil {
+		mc.End(err.Error())
 		return "", err
 	}
 	var out strings.Builder
@@ -2057,6 +2070,7 @@ func runSummarizeCall(ctx context.Context, provider providers.Provider, req prov
 	sawDone := false
 	for ev := range ch {
 		timer.Observe(ev)
+		mc.Observe(ev)
 		switch ev.Type {
 		case providers.EventText:
 			out.WriteString(ev.Text)
@@ -2985,6 +2999,9 @@ type runState struct {
 	firstTurnSucceeded bool
 	// movedForQueue: the run has made its one queue-aware move (MoveForQueue).
 	movedForQueue bool
+	// fallbackFrom is the "provider/model" the last model call failed over
+	// from, for the next call's span to name; cleared once it has.
+	fallbackFrom string
 	// sameProviderRetries counts CONSECUTIVE retryable failures
 	// against the current (provider, model). Reset to 0 on any
 	// successful Call() that yields events (whether the iteration
@@ -3164,7 +3181,7 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 		}
 	}
 
-	emit(providers.Event{Type: providers.EventStarted})
+	emit(providers.Event{Type: providers.EventStarted, TraceID: lcotel.SampledTraceID(ctx)})
 
 	// A run whose hooks could not be resolved does not start: a gate its
 	// definition names must not silently be missing. Returned, not emitted,
@@ -3981,8 +3998,20 @@ func (s *runState) buildRequest(reqSystem []providers.ContentBlock, reqMessages 
 // retries the same provider or falls back to another, and anything else ends
 // the run.
 func (s *runState) callModel(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, req providers.Request, callTimer *providers.CallTimer) (turnOutput, loopExit) {
-	ch, err := s.opts.Provider.Call(turnCtx, req)
+	mc := s.startModelCall(ctx, turnCtx, req, callTimer)
+	// A fallback swaps the run's provider and model in place; the next
+	// call's span names where it came from.
+	fromProvider, fromModel := s.opts.Provider.ID(), s.opts.Model
+	defer func() {
+		if s.opts.Provider.ID() != fromProvider || s.opts.Model != fromModel {
+			s.fallbackFrom = fromProvider + "/" + fromModel
+		}
+	}()
+	ch, err := s.opts.Provider.Call(mc.Ctx(), req)
 	if err != nil {
+		// Ended before callFailed, which may sleep a retry backoff that is
+		// not this call's time.
+		mc.End(err.Error())
 		return turnOutput{}, s.callFailed(ctx, turnCtx, iterSpan, iter, err)
 	}
 	// Call() succeeded — the connection / driver was healthy
@@ -3992,7 +4021,167 @@ func (s *runState) callModel(ctx, turnCtx context.Context, iterSpan trace.Span, 
 	// retry path.
 	s.sameProviderRetries = 0
 
-	return s.readTurn(ctx, turnCtx, iterSpan, iter, ch, callTimer)
+	t, ex := s.readTurn(ctx, turnCtx, iterSpan, iter, ch, callTimer, mc)
+	// The stream is drained on every readTurn exit. A call that ended without
+	// a done or error event (a cancel, a hang-up) ends its span here.
+	mc.End("the response stream ended before the model finished its turn")
+	return t, ex
+}
+
+// ModelCall is one call's loomcycle.model.call span. It ends at the call's
+// done or error event — not when readTurn returns, which may be after a
+// retry backoff — or, for a call that never got that far, at End. Observe and
+// End are called from one goroutine: the one reading the call's stream.
+type ModelCall struct {
+	ctx      context.Context // the provider is called with it
+	span     trace.Span
+	runCtx   context.Context
+	turnCtx  context.Context
+	timer    *providers.CallTimer
+	provider string
+	model    string
+	price    func(provider, model string, u *providers.Usage) (float64, string)
+	ended    bool
+	// ownTimer: the timer is this span's alone, so Observe feeds it; inside
+	// the loop the caller feeds the timer it also stamps usage with.
+	ownTimer bool
+	// noTrace: a failure is recorded by class only.
+	noTrace bool
+}
+
+func (s *runState) startModelCall(runCtx, turnCtx context.Context, req providers.Request, timer *providers.CallTimer) *ModelCall {
+	mc := startModelCall(runCtx, turnCtx, modelPurposeTurn, s.opts.Provider, req, timer, s.opts.PriceCall, s.fallbackFrom)
+	s.fallbackFrom = ""
+	return mc
+}
+
+// Ctx is the ctx the provider is called with, so its attempt spans nest
+// under the model-call span.
+func (m *ModelCall) Ctx() context.Context { return m.ctx }
+
+// StartModelCall opens the model-call span of a call made outside a run's
+// loop — the LLM gateway — for purpose. ctx decides whether a call that
+// ends unfinished was cancelled; call the provider with the result's Ctx,
+// feed every event to Observe, and End it on every exit (a no-op once the
+// stream's done or error event ended it). price may be nil.
+//
+// noTrace marks a call whose content is stored nowhere (its caller's runs are
+// no-trace): the span then carries no request parameters and records a
+// failure by class, never the provider's error text, which can quote the
+// request. A call inside a run reads it off the run identity as well.
+func StartModelCall(ctx context.Context, purpose string, provider providers.Provider, req providers.Request,
+	price func(string, string, *providers.Usage) (float64, string), noTrace bool) *ModelCall {
+	mc := startModelCallNoTrace(ctx, ctx, purpose, provider, req, providers.StartCallTimer(nil), price, "", noTrace)
+	mc.ownTimer = true
+	return mc
+}
+
+// The purposes a loop model call is made for (loomcycle.model.purpose).
+const (
+	modelPurposeTurn      = "turn"
+	modelPurposeEmitState = "emit_state"
+	modelPurposeSummary   = "summary" // a summary made with no purpose on its ctx
+)
+
+// startModelCall opens the model-call span of one call of provider. runCtx
+// decides whether an unfinished call was cancelled; the provider is called
+// with the returned ModelCall's ctx, a child of turnCtx. price may be nil.
+func startModelCall(runCtx, turnCtx context.Context, purpose string, provider providers.Provider, req providers.Request,
+	timer *providers.CallTimer, price func(string, string, *providers.Usage) (float64, string), fallbackFrom string) *ModelCall {
+	return startModelCallNoTrace(runCtx, turnCtx, purpose, provider, req, timer, price, fallbackFrom, false)
+}
+
+func startModelCallNoTrace(runCtx, turnCtx context.Context, purpose string, provider providers.Provider, req providers.Request,
+	timer *providers.CallTimer, price func(string, string, *providers.Usage) (float64, string), fallbackFrom string, noTrace bool) *ModelCall {
+	// A no-trace run's calls are no-trace whoever starts them.
+	noTrace = noTrace || tools.RunIsNoTrace(runCtx)
+	mctx, span := lcotel.RecordModelCall(turnCtx, lcotel.ModelCallAttrs{
+		NoTrace:      noTrace,
+		Purpose:      purpose,
+		Provider:     provider.ID(),
+		Model:        req.Model,
+		Tier:         tools.RunIdentity(runCtx).ModelTier,
+		Effort:       req.Effort,
+		Temperature:  req.Temperature,
+		TopP:         req.TopP,
+		MaxTokens:    req.MaxTokens,
+		FallbackFrom: fallbackFrom,
+	})
+	return &ModelCall{ctx: mctx, span: span, runCtx: runCtx, turnCtx: turnCtx, timer: timer,
+		provider: provider.ID(), model: req.Model, price: price, noTrace: noTrace}
+}
+
+// Observe ends the span at the stream's first terminal event.
+func (m *ModelCall) Observe(ev providers.Event) {
+	if m.ownTimer {
+		m.timer.Observe(ev)
+	}
+	if m.ended {
+		return
+	}
+	switch ev.Type {
+	case providers.EventDone:
+		r := lcotel.ModelCallResult{FinishReason: ev.StopReason, TTFT: m.timer.TTFT()}
+		// Pricing is work for the span alone: skipped when nothing records it.
+		if u := ev.Usage; u != nil && m.span.IsRecording() {
+			r.Usage = m.usage(*u)
+			// The call-lane wait rides the done event only. Taken out of the
+			// TTFT so it measures the provider, not the queue in front of it.
+			if lw := time.Duration(u.LaneWaitMs) * time.Millisecond; lw > 0 {
+				r.LaneWait = lw
+				r.TTFT = max(r.TTFT-lw, 0)
+			}
+		}
+		m.finish(r)
+	case providers.EventError:
+		m.End(ev.Error)
+	}
+}
+
+func (m *ModelCall) usage(u providers.Usage) *lcotel.ModelUsage {
+	mu := &lcotel.ModelUsage{
+		ResponseModel:    u.Model,
+		InputTokens:      u.InputTokens,
+		OutputTokens:     u.OutputTokens,
+		CacheReadTokens:  u.CacheReadTokens,
+		CacheWriteTokens: u.CacheCreationTokens,
+	}
+	if m.price != nil {
+		model := u.Model
+		if model == "" {
+			model = m.model
+		}
+		if cost, cur := m.price(m.provider, model, &u); cur == "USD" {
+			mu.CostUSD, mu.CostKnown = cost, true
+		}
+	}
+	return mu
+}
+
+// End ends a call that did not finish: a cancel of the run or the turn, or a
+// failure described by msg. A no-trace run's span names the failure only.
+func (m *ModelCall) End(msg string) {
+	if m.ended {
+		return
+	}
+	r := lcotel.ModelCallResult{TTFT: m.timer.TTFT()}
+	switch {
+	// The run's own cancel, or the operator's turn cancel. Not turnCtx.Err()
+	// alone: the loop releases the turn ctx on its failure exits too.
+	case m.runCtx.Err() != nil, errors.Is(context.Cause(m.turnCtx), ErrTurnCancelled):
+		r.Cancelled = true
+	case m.noTrace:
+		r.ErrMessage = "provider call failed"
+	default:
+		r.ErrMessage = msg
+	}
+	m.finish(r)
+}
+
+func (m *ModelCall) finish(r lcotel.ModelCallResult) {
+	m.ended = true
+	lcotel.SetModelCallResult(m.span, r)
+	m.span.End()
 }
 
 // callFailed handles a provider call that returned an error instead of a
@@ -4148,7 +4337,7 @@ type turnOutput struct {
 // leaves the iteration — a same-provider retry or a fallback starts the next
 // one, anything else ends the run — and so does a stream that closed without
 // finishing.
-func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, ch <-chan providers.Event, callTimer *providers.CallTimer) (turnOutput, loopExit) {
+func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, ch <-chan providers.Event, callTimer *providers.CallTimer, mc *ModelCall) (turnOutput, loopExit) {
 	// Collect this iteration: assistant text, any tool_use blocks, usage.
 	var assistantBlocks []providers.ContentBlock
 	var pendingTools []providers.ToolUse
@@ -4175,6 +4364,7 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 
 	for ev := range ch {
 		callTimer.Observe(ev)
+		mc.Observe(ev)
 		switch ev.Type {
 		case providers.EventText:
 			iterText += ev.Text
@@ -4333,6 +4523,7 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 	if !sawDone && turnCtx.Err() == nil {
 		msg := fmt.Sprintf("%s: the response stream ended before the model finished its turn", s.opts.Provider.ID())
 		s.emit(providers.Event{Type: providers.EventError, Error: msg})
+		mc.End(msg) // the child ends before its iteration does
 		lcotel.SetSpanErrorMessage(iterSpan, msg)
 		iterSpan.End()
 		s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
@@ -4344,6 +4535,7 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 	// did finish, and goes on as one; a turn cancel leaves the run's ctx
 	// alive and is handled below.
 	if !sawDone && ctx.Err() != nil {
+		mc.End("") // a cancel; ended before runEndedMidTurn ends the iteration
 		return turnOutput{}, s.runEndedMidTurn(ctx, iterSpan, iter, iterText)
 	}
 

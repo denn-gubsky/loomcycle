@@ -1,8 +1,15 @@
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Outlet, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import AgentDetailPane, { ChildrenAwaitOrChip, RunClockFacts, RunTeamBadge, RunUsageFacts, stopRun } from "./AgentDetailPane";
+import AgentDetailPane, {
+  ChildrenAwaitOrChip,
+  RunClockFacts,
+  RunTeamBadge,
+  RunTraceLink,
+  RunUsageFacts,
+  stopRun,
+} from "./AgentDetailPane";
 import { AgentTabStrip } from "./AgentDetailTabs";
 
 // The web tests render to static markup (no DOM), so effects never run. The
@@ -231,5 +238,45 @@ describe("RunUsageFacts", () => {
     expect(
       renderToStaticMarkup(createElement(RunUsageFacts, { run: { run_id: "r_none", status: "completed" }, events })),
     ).toBe("");
+  });
+});
+
+describe("RunTraceLink", () => {
+  const tid = "4bf92f3577b34da6a3ce929d0e0e4736";
+  // Rendered under a layout route whose outlet context carries the principal,
+  // as the console's Layout provides it.
+  function render(template: string | undefined, traceId: string | undefined): string {
+    return renderToStaticMarkup(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(
+          Routes,
+          null,
+          createElement(
+            Route,
+            { element: createElement(Outlet, { context: { principal: { trace_url_template: template } } }) },
+            createElement(Route, { index: true, element: createElement(RunTraceLink, { run: { trace_id: traceId } }) }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  it("links a traced run to the operator's tracing UI", () => {
+    const html = render("https://grafana.example/explore?traceId={trace_id}", tid);
+    expect(html).toContain(`href="https://grafana.example/explore?traceId=${tid}"`);
+    expect(html).toContain("Open trace");
+    expect(html).toContain('rel="noopener noreferrer"');
+  });
+
+  it("shows nothing without a template or a trace id", () => {
+    expect(render(undefined, tid)).not.toContain("Open trace");
+    expect(render("https://grafana.example/{trace_id}", undefined)).not.toContain("Open trace");
+  });
+
+  it("shows nothing outside the console layout", () => {
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(RunTraceLink, { run: { trace_id: tid } })));
+    expect(html).not.toContain("Open trace");
   });
 });

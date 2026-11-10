@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -2592,7 +2593,10 @@ func TestExpandEnv_DeniesInfraSecrets(t *testing.T) {
 	// denylist and were exfiltratable into an attacker-controlled MCP field.
 	t.Setenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER", "token-hash-pepper")
 	t.Setenv("LOOMCYCLE_MCP_UPSTREAM_TOKEN", "upstream-bearer")
-	t.Setenv("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS", "x-honeycomb-team=secret")
+	t.Setenv("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS", "x-honeycomb-team=secret") // retired name
+	t.Setenv("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE", "/run/secrets/otel")
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "x-honeycomb-team=secret")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "x-honeycomb-team=secret")
 	t.Setenv("LOOMCYCLE_FOO", "ok-value")
 	t.Setenv("LOOMCYCLE_JIRA_TOKEN", "mcp-auth-token")
 
@@ -2600,7 +2604,10 @@ func TestExpandEnv_DeniesInfraSecrets(t *testing.T) {
 	for _, name := range []string{
 		"PG_DSN", "LOOMCYCLE_PG_DSN", "LOOMCYCLE_AUTH_TOKEN",
 		"LOOMCYCLE_OPERATOR_TOKEN_PEPPER", "LOOMCYCLE_MCP_UPSTREAM_TOKEN",
-		"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS",
+		// The retired name: a stale value in the environment is still a secret.
+		"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS", // retired name
+		"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE",
+		"OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
 	} {
 		in := "x=${" + name + "}"
 		if got := expandEnv(in); got != in {
@@ -2619,6 +2626,24 @@ func TestExpandEnv_DeniesInfraSecrets(t *testing.T) {
 	}
 }
 
+// TestIsInfraSecretEnv_CoversOTLPHeaderNames pins the collector-header
+// variables the OTLP exporter reads as infrastructure secrets: no definition
+// may name one as a secret's source, whatever an allowlist admits.
+func TestIsInfraSecretEnv_CoversOTLPHeaderNames(t *testing.T) {
+	for _, name := range []string{
+		"OTEL_EXPORTER_OTLP_HEADERS",
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+		"OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+		"OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+		"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS", // retired name
+		"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE",
+	} {
+		if !IsInfraSecretEnv(name) {
+			t.Errorf("%s is not an infrastructure secret", name)
+		}
+	}
+}
+
 // TestExpandDenyNames_CoversInfraSecretReads is the v0.34.0 S1 drift guard. The
 // expandDenyNames blocklist is only safe if it's COMPLETE — the review's HIGH
 // was that it silently missed the operator-token pepper. This test scans
@@ -2629,7 +2654,7 @@ func TestExpandEnv_DeniesInfraSecrets(t *testing.T) {
 // url/header/arg → exfiltration). It scans this package's config.go plus
 // cmd/loomcycle/main.go (the MCP-upstream-token read). Non-suffix secret names
 // (_HEADERS like the OTEL exporter headers, _BEARER) aren't caught here and need
-// a manual denylist entry + TestExpandEnv_DeniesInfraSecrets coverage above.
+// a manual denylist entry + TestIsInfraSecretEnv_CoversOTLPHeaderNames coverage.
 func TestExpandDenyNames_CoversInfraSecretReads(t *testing.T) {
 	secretSuffixes := []string{
 		"_TOKEN", "_KEY", "_SECRET", "_PASSWORD", "_AUTH",
@@ -3109,5 +3134,55 @@ hooks:
 	a.Tools = []string{"Read"}
 	if err := ValidateAgentHooks(a); err == nil {
 		t.Fatalf("hooks on a tool the agent lacks were accepted")
+	}
+}
+
+// TestValidateTraceURLTemplate_OnlyHTTPLinksNamingTheTraceID: the Web UI puts
+// the template in an href, so only an absolute http(s) URL with {trace_id}
+// passes the boot.
+func TestValidateTraceURLTemplate_OnlyHTTPLinksNamingTheTraceID(t *testing.T) {
+	for tmpl, ok := range map[string]bool{
+		"": true,
+		"https://grafana.example/explore?traceId={trace_id}": true,
+		"http://jaeger:16686/trace/{trace_id}":               true,
+		"https://grafana.example/explore":                    false,
+		"javascript:alert('{trace_id}')":                     false,
+		"data:text/html,{trace_id}":                          false,
+		"/trace/{trace_id}":                                  false,
+	} {
+		if err := validateTraceURLTemplate(tmpl); (err == nil) != ok {
+			t.Errorf("validateTraceURLTemplate(%q) = %v, want ok=%v", tmpl, err, ok)
+		}
+	}
+}
+
+// TestSecretEnvValues_MasksEachCollectorHeader: the collector-header variables
+// are secrets, and each header's own value is masked, not only the whole
+// "k=v,k2=v2" string, which rarely appears verbatim. An ordinary *_HEADERS
+// setting stays plain.
+func TestSecretEnvValues_MasksEachCollectorHeader(t *testing.T) {
+	got := SecretEnvValues([]string{
+		"OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer%20tok-abc123, x-scope-orgid=tenant-a",
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS=x-honeycomb-team=hc-key-987",
+		"CORS_ALLOW_HEADERS=Content-Type",
+		"LOOMCYCLE_LISTEN_ADDR=:8787",
+	})
+	want := map[string]string{
+		"OTEL_EXPORTER_OTLP_HEADERS":                          "authorization=Bearer%20tok-abc123, x-scope-orgid=tenant-a",
+		"OTEL_EXPORTER_OTLP_HEADERS[authorization]":           "Bearer tok-abc123",
+		"OTEL_EXPORTER_OTLP_HEADERS[x-scope-orgid]":           "tenant-a",
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS":                   "x-honeycomb-team=hc-key-987",
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS[x-honeycomb-team]": "hc-key-987",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SecretEnvValues = %v, want %v", got, want)
+	}
+	for _, n := range []string{"OTEL_EXPORTER_OTLP_METRICS_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "otel_exporter_otlp_headers"} {
+		if !IsSecretEnvName(n) {
+			t.Errorf("IsSecretEnvName(%q) = false", n)
+		}
+	}
+	if IsSecretEnvName("CORS_ALLOW_HEADERS") {
+		t.Error("an ordinary *_HEADERS setting is classified as a secret")
 	}
 }

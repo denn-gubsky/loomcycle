@@ -402,6 +402,29 @@ func TestMetricsProm_ExtractionGaugesReportTheBudget(t *testing.T) {
 	}
 }
 
+// TestMetricsProm_OTELCountersRenderedWhileTracingIsOff: the span pipeline
+// counters are always present, as zeros when nothing exports, so an alert on
+// dropped spans has a series from the first scrape.
+func TestMetricsProm_OTELCountersRenderedWhileTracingIsOff(t *testing.T) {
+	srv := newMetricsPromServer(t, false)
+	rec := httptest.NewRecorder()
+	srv.handleMetricsProm(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	for _, name := range []string{
+		"loomcycle_otel_spans_ended_total",
+		"loomcycle_otel_spans_exported_total",
+		"loomcycle_otel_spans_dropped_total",
+		"loomcycle_otel_span_export_failures_total",
+	} {
+		if !strings.Contains(body, "# TYPE "+name+" counter\n") {
+			t.Errorf("missing TYPE counter line for %s", name)
+		}
+		if !strings.Contains(body, "\n"+name+" 0\n") {
+			t.Errorf("missing zero sample for %s in:\n%s", name, body)
+		}
+	}
+}
+
 // The unauthenticated metrics listener answers anyone who reaches its port,
 // so it leaves out every series that names a user; the authenticated route
 // keeps them. The rest of the set is the same on both.

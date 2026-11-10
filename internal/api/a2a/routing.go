@@ -7,8 +7,10 @@ import (
 
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"go.opentelemetry.io/otel/propagation"
 
 	bridge "github.com/denn-gubsky/loomcycle/internal/a2a"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 )
 
 // principalInterceptor authenticates a binding request at the A2A
@@ -36,7 +38,8 @@ func (p *principalInterceptor) Before(ctx context.Context, callCtx *a2asrv.CallC
 		callCtx.User = a2asrv.NewAuthenticatedUser("anonymous", nil)
 		return ctx, nil, nil
 	}
-	peer, ok := p.auth(ctx, serviceParamsToHeader(callCtx.ServiceParams()))
+	hdr := serviceParamsToHeader(callCtx.ServiceParams())
+	peer, ok := p.auth(ctx, hdr)
 	if !ok {
 		// Auth is configured but the request carried no valid credential.
 		// REJECT at the frontier: returning a non-nil error from a
@@ -77,6 +80,10 @@ func (p *principalInterceptor) Before(ctx context.Context, callCtx *a2asrv.CallC
 	if peer.Principal != nil {
 		ctx = bridge.WithPeerPrincipal(ctx, *peer.Principal)
 	}
+	// The peer's trace context, read only now that its credential verified:
+	// it decides whether the run is sampled and which trace it joins. The
+	// executor's detached run ctx keeps this ctx's values.
+	ctx = lcotel.ExtractInbound(ctx, propagation.HeaderCarrier(hdr))
 	return ctx, nil, nil
 }
 

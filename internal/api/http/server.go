@@ -3829,7 +3829,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		AgentID:   agentID,
 		AgentName: effectiveAgentName,
 		UserID:    effectiveUserID,
+		Tenant:    effectiveTenantID,
+		SessionID: sessionID,
 	})
+	s.recordRunTraceID(runCtx, runID)
 	defer func() {
 		if !handOff {
 			runSpan.End()
@@ -4074,6 +4077,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	runOpts := loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
+		PriceCall:           s.priceCall,
 		Tools:               allowedTools,
 		Dispatcher:          dispatcher,
 		Segments:            injectMetadataSegments(segments, provider.Capabilities().MetadataViaInput, in.Metadata, in.PayloadMetadata),
@@ -7031,23 +7035,24 @@ func (s *Server) liveRunIDs() func(string) bool {
 	return func(id string) bool { return live[id] }
 }
 
+// recordRunTraceID stores the trace the run span on ctx records into, so the
+// run can be followed to it. Nothing is written when tracing is off or the
+// trace unsampled. A failed write costs the link, never the run.
+func (s *Server) recordRunTraceID(ctx context.Context, runID string) {
+	tid := lcotel.SampledTraceID(ctx)
+	if tid == "" || s.store == nil {
+		return
+	}
+	if err := s.store.SetRunTraceID(ctx, runID, tid); err != nil {
+		slog.WarnContext(ctx, "otel: recording the run's trace id failed", "run_id", runID, "err", err)
+	}
+}
+
 // secretEnvValues extracts the VALUES of secret-classified env vars (by name)
 // from an environ slice ("NAME=value" entries), for the F32 redactor's exact-
 // match tier. Empty values are skipped (nothing to mask).
 func secretEnvValues(environ []string) map[string]string {
-	out := make(map[string]string)
-	for _, kv := range environ {
-		i := strings.IndexByte(kv, '=')
-		if i <= 0 {
-			continue
-		}
-		name, val := kv[:i], kv[i+1:]
-		if val == "" || !config.IsSecretEnvName(name) {
-			continue
-		}
-		out[name] = val
-	}
-	return out
+	return config.SecretEnvValues(environ)
 }
 
 // runSubAgent is the SubAgentRunner closure injected into the Agent
@@ -8066,7 +8071,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		AgentName:     name,
 		UserID:        parentIdentity.UserID,
 		ParentAgentID: parentIdentity.AgentID,
+		Tenant:        parentIdentity.TenantID,
+		SessionID:     subSessionID,
 	})
+	s.recordRunTraceID(subRunCtx, subRunID)
 	defer func() {
 		if !prepOK {
 			subRunSpan.End()
@@ -8279,6 +8287,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	opts := loop.RunOptions{
 		Provider:            provider,
 		Model:               model,
+		PriceCall:           s.priceCall,
 		Tools:               subTools,
 		Dispatcher:          subDispatcher,
 		Segments:            segs,
@@ -8382,7 +8391,10 @@ type agentResponse struct {
 	StopReason    string          `json:"stop_reason,omitempty"`
 	// Retention is "none" for a no-trace run: its transcript holds markers
 	// and its result reads "content not retained". Absent otherwise.
-	Retention       string             `json:"retention,omitempty"`
+	Retention string `json:"retention,omitempty"`
+	// TraceID is the OpenTelemetry trace the run was recorded in; absent when
+	// tracing was off or the trace unsampled.
+	TraceID         string             `json:"trace_id,omitempty"`
 	Error           string             `json:"error,omitempty"`
 	Usage           agentResponseUsage `json:"usage"`
 	LastHeartbeatAt *time.Time         `json:"last_heartbeat_at,omitempty"`
@@ -8481,6 +8493,7 @@ func runToAgentResponse(r store.Run, live bool) agentResponse {
 		StartedAt:     r.StartedAt,
 		StopReason:    r.StopReason,
 		Retention:     r.Retention,
+		TraceID:       r.TraceID,
 		Error:         r.ErrorMsg,
 		Usage: agentResponseUsage{
 			InputTokens:         r.InputTokens,
@@ -9437,7 +9450,8 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// own calls: a trigger's run may not take its user's own, nor may a
 	// compaction someone other than its user asked for.
 	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: run.TenantID, UserID: run.UserID,
-		CredentialsNoUserScope: run.CredentialsNoUserScope || actingForAnother(ctx, run.TenantID, run.UserID)})
+		CredentialsNoUserScope: run.CredentialsNoUserScope || actingForAnother(ctx, run.TenantID, run.UserID),
+		Retention:              summaryRetention(ctx, run.Retention)})
 	summCtx = tools.WithAgentName(summCtx, run.Agent)
 	summCtx = providers.WithCallObserver(summCtx, s.callObserver(run.ID))
 	summary, serr := loop.Summarize(summCtx, provider, summaryModel, msgs[firstIdx:cut], targetPct)
@@ -9628,7 +9642,8 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 	summCtx := providers.WithCredentialResolver(ctx, s.credResolver)
 	summCtx = providers.WithOperatorKeyAllowed(summCtx, !restricted)
 	summCtx = tools.WithRunIdentity(summCtx, tools.RunIdentityValue{TenantID: sess.TenantID, UserID: userID,
-		CredentialsNoUserScope: noUserScope || actingForAnother(ctx, sess.TenantID, sess.UserID)})
+		CredentialsNoUserScope: noUserScope || actingForAnother(ctx, sess.TenantID, sess.UserID),
+		Retention:              summaryRetention(ctx, sess.Retention)})
 	summCtx = tools.WithAgentName(summCtx, sess.Agent)
 	summCtx = providers.WithCallObserver(summCtx, s.callObserver(""))
 	summary, err := loop.Recap(summCtx, provider, summaryModel, msgs)
@@ -10081,6 +10096,7 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 		OutputTokens:    res.Usage.OutputTokens,
 		CacheReadTokens: res.Usage.CacheReadTokens,
 		StopReason:      "cancelled",
+		Cancelled:       true,
 	})
 	if s.store == nil || runID == "" {
 		return

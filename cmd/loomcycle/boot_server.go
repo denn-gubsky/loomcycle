@@ -75,6 +75,10 @@ func (b *boot) buildServer() {
 	// Context tool to the COMPLETE post-append catalog, so don't set it here.
 	b.srv = lchttp.New(cfg, pr, b.allTools, sem, storeIface)
 	srv := b.srv
+	// The collector headers read from a file, masked in what is persisted too.
+	for _, v := range b.otelHeaderSecrets {
+		srv.Redactor().RegisterOperator(v)
+	}
 	// RFC ES #8: open mode on a listener beyond loopback serves every route to
 	// the network. Decided here — the store is open, so an admin token counts —
 	// with the server's own predicate, before the listeners start.

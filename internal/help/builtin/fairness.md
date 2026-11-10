@@ -136,8 +136,9 @@ reload.
 
 **OTEL `loomcycle.queue_wait_ms`** on the top-level `loomcycle.run`
 span is the time the run waited for its slot. Graphed per
-`loomcycle.user_id`, it shows whether waits spread across users or land
-on whoever is behind a noisy one.
+`loomcycle.user_hash` (the keyed hash spans carry instead of the user
+id), it shows whether waits spread across users or land on whoever is
+behind a noisy one.
 
 ## Choosing a cap value
 

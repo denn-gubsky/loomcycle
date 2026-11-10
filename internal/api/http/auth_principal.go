@@ -14,10 +14,12 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/webui"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // isNotFound reports whether err is a store ErrNotFound (a missing
@@ -103,6 +105,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		if !ok {
 			return
 		}
+		// The caller's trace context, read only now that every gate admitted
+		// the request: it decides whether a run is sampled and which trace it
+		// joins, which an unauthenticated caller must not choose. Open mode
+		// above authenticates nobody, so it reads none.
+		ctx = lcotel.ExtractInbound(ctx, propagation.HeaderCarrier(r.Header))
 		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(ctx, p)))
 	})
 }
@@ -1063,7 +1070,7 @@ func (s *Server) continuationReachesSession(ctx context.Context, sess store.Sess
 func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	p, ok := auth.PrincipalFromContext(r.Context())
 	if !ok {
-		writeJSONOK(w, map[string]any{
+		out := map[string]any{
 			"tenant_id": "default", "subject": "default",
 			"scopes": []string{auth.ScopeAdmin}, "is_admin": true,
 			"legacy": false, "open_mode": true,
@@ -1073,7 +1080,9 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 			"acl_mode":  string(s.aclMode()),
 			"effective": s.withAudioSurfaces(r.Context(), openModeEffective()),
 			"auth":      s.whoamiAuth(r.Context(), true),
-		})
+		}
+		s.addTraceURLTemplate(out)
+		writeJSONOK(w, out)
 		return
 	}
 	out := map[string]any{
@@ -1106,7 +1115,20 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	// RFC FA: how the caller signed in — the mode always, the gate, methods
 	// and session times when a Web UI session authenticated the request.
 	out["auth"] = s.whoamiAuth(r.Context(), false)
+	// A user awaiting approval may learn that it waits, nothing else.
+	if ui, ok := uiAuthFrom(r.Context()); !ok || !ui.pending {
+		s.addTraceURLTemplate(out)
+	}
 	writeJSONOK(w, out)
+}
+
+// addTraceURLTemplate adds the operator's link from a run to its trace
+// (LOOMCYCLE_TRACE_URL_TEMPLATE, checked to be http(s) at boot); the run page
+// fills in the run's trace_id. Absent when unset.
+func (s *Server) addTraceURLTemplate(out map[string]any) {
+	if t := s.cfg().Env.TraceURLTemplate; t != "" {
+		out["trace_url_template"] = t
+	}
 }
 
 // serverCapabilities is a NON-SECRET, booleans-only advertisement of runtime
