@@ -191,27 +191,32 @@ func (w *Worker) Run(ctx context.Context) {
 			}
 			lastGC = w.now()
 		}
-		// Registered before the claim, so a write between the claim and the
-		// wait still wakes it.
-		var wake chan struct{}
-		if w.cfg.Bus != nil {
-			wake = w.cfg.Bus.Register(channels.HookWakeKey)
-		}
-		full := w.claim(ctx)
-		if full {
-			// Every slot was filled: there may be more waiting.
-			w.unregister(wake)
-			continue
-		}
-		timer := time.NewTimer(w.cfg.Poll)
-		select {
-		case <-ctx.Done():
-		case <-wake:
-		case <-w.freed:
-		case <-timer.C:
-		}
-		timer.Stop()
-		w.unregister(wake)
+		w.claimOrWait(ctx)
+	}
+}
+
+// claimOrWait claims what it can and, unless every slot was filled (there may
+// be more waiting), waits for a wake, a freed slot or the poll interval.
+func (w *Worker) claimOrWait(ctx context.Context) {
+	// Registered before the claim, so a write between the claim and the
+	// wait still wakes it. Unregistered in a defer: a claim that panics is
+	// recovered and Run restarted, and each such pass would otherwise leave
+	// a waker on the bus.
+	var wake chan struct{}
+	if w.cfg.Bus != nil {
+		wake = w.cfg.Bus.Register(channels.HookWakeKey)
+		defer w.unregister(wake)
+	}
+	if w.claim(ctx) {
+		return
+	}
+	timer := time.NewTimer(w.cfg.Poll)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-wake:
+	case <-w.freed:
+	case <-timer.C:
 	}
 }
 
