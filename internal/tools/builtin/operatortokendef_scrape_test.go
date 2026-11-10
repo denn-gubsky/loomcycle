@@ -441,3 +441,30 @@ func TestOperatorTokenDef_ATenantsLiveScrapeTokensAreCapped(t *testing.T) {
 	mustOp(t, tool, ctx, `{"op":"retire","def_id":"`+first+`"}`)
 	mustOp(t, tool, ctx, `{"op":"create","name":"again","scopes":["metrics:read"]}`)
 }
+
+// A token change records which token made it, and a row records an agent as
+// its creator only when an agent's run made it: the off-run planes stamp a
+// synthetic agent identity that names no agent.
+func TestOperatorTokenDef_RecordsTheMintingTokenAndNoSyntheticAgent(t *testing.T) {
+	tool, base, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	sink := &recordingSink{}
+	tool.Audit = sink
+	p := tntOp
+	p.TokenSuffix = "abc123"
+	row := storedRow(t, st, mustOp(t, tool, tenantOpCtx(t, base, p), `{"op":"create","name":"prom","scopes":["metrics:read"]}`))
+	if len(sink.evs) == 0 || sink.evs[0].ActorTokenSuffix != "abc123" {
+		t.Errorf("audit = %+v, want the minting token's suffix", sink.evs)
+	}
+	if row.CreatedByAgentID != "" {
+		t.Errorf("off-run create: created_by_agent_id = %q, want empty", row.CreatedByAgentID)
+	}
+	rotated := storedRow(t, st, mustOp(t, tool, tenantOpCtx(t, base, p), `{"op":"rotate","def_id":"`+row.DefID+`"}`))
+	if rotated.CreatedByAgentID != "" {
+		t.Errorf("off-run rotate: created_by_agent_id = %q, want empty", rotated.CreatedByAgentID)
+	}
+	inRun := tools.WithRunID(base, "run_1")
+	if r := storedRow(t, st, mustOp(t, tool, inRun, `{"op":"create","name":"svc","tenant_id":"tnt","scopes":["runs:read"]}`)); r.CreatedByAgentID != "a_admin" {
+		t.Errorf("in-run create: created_by_agent_id = %q, want the run's agent", r.CreatedByAgentID)
+	}
+}

@@ -177,7 +177,7 @@ func (s *OperatorTokenDef) createTenantScrape(ctx context.Context, tenant string
 		Subject:          subject,
 		TokenHash:        s.Hasher.Hash(plaintext),
 		AllowedScopes:    scopes,
-		CreatedByAgentID: tools.RunIdentity(ctx).AgentID,
+		CreatedByAgentID: creatorAgentID(ctx),
 		ExpiresAt:        expiresAt,
 		RestrictionsJSON: restrictionsJSON,
 	})

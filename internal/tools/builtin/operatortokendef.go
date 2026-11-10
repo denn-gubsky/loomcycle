@@ -387,7 +387,6 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 	if imported {
 		hashInput = in.ImportToken
 	}
-	ident := tools.RunIdentity(ctx)
 	created, failed := s.insertCreated(ctx, store.OperatorTokenDefRow{
 		DefID:            mintDefID(),
 		Name:             in.Name,
@@ -395,7 +394,7 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		Subject:          subject,
 		TokenHash:        s.Hasher.Hash(hashInput),
 		AllowedScopes:    scopes,
-		CreatedByAgentID: ident.AgentID,
+		CreatedByAgentID: creatorAgentID(ctx),
 		ExpiresAt:        expiresAt,
 		RestrictionsJSON: restrictionsJSON,
 	})
@@ -409,6 +408,16 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		return okJSON(m)
 	}
 	return okJSON(operatorTokenCreateResponse(created, plaintext, suffix))
+}
+
+// creatorAgentID is the agent to record as a row's creator: the run's agent
+// when an agent's run made it, else none. The off-run planes stamp a
+// synthetic agent identity on every call, which names no agent.
+func creatorAgentID(ctx context.Context) string {
+	if tools.RunID(ctx) == "" {
+		return ""
+	}
+	return tools.RunIdentity(ctx).AgentID
 }
 
 // insertCreated stores a newly minted row with its audit record written
@@ -547,7 +556,6 @@ func (s *OperatorTokenDef) rotateRow(ctx context.Context, prior store.OperatorTo
 	if mErr != nil {
 		return errResult(fmt.Sprintf("rotate: %s", mErr)), nil
 	}
-	ident := tools.RunIdentity(ctx)
 	// The new row is the old one with only what a rotation changes: a new
 	// id and secret, who rotated it, the link back, a live state. Copying
 	// rather than listing fields means everything else — the expiry and the
@@ -557,7 +565,7 @@ func (s *OperatorTokenDef) rotateRow(ctx context.Context, prior store.OperatorTo
 	row.DefID = mintDefID()
 	row.TokenHash = s.Hasher.Hash(plaintext)
 	row.CreatedAt = time.Time{}
-	row.CreatedByAgentID = ident.AgentID
+	row.CreatedByAgentID = creatorAgentID(ctx)
 	row.CreatedByRunID = ""
 	row.RotatedFrom = prior.DefID
 	row.RetiredAt = time.Time{}
@@ -786,7 +794,7 @@ func (s *OperatorTokenDef) auditIntent(ctx context.Context, ev audit.Event) (aud
 	// synthetic run identity, and a tenant operator's change must be told
 	// from an admin's by who made it.
 	if p, ok := auth.PrincipalFromContext(ctx); ok {
-		ev.ActorTenant = p.TenantID
+		ev.ActorTenant, ev.ActorTokenSuffix = p.TenantID, p.TokenSuffix
 		if p.Subject != "" {
 			ev.ActorSubject = p.Subject
 		}
