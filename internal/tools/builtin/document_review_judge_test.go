@@ -38,7 +38,7 @@ func TestJudgeRuling_IsAVerdictNotAnOperatorRuling(t *testing.T) {
 			if c.accept {
 				op = "accept_statement"
 			}
-			r, err := d.applyRuling(f.op, key, mscope, op, c.id, c.accept, "the judge found it unsupported", "judge:run-judge")
+			r, err := d.applyRuling(f.op, key, mscope, op, c.id, c.accept, "the judge found it unsupported", "judge:run-judge", "")
 			if err != nil || r.refusal != nil {
 				t.Fatalf("%s: %v %v", op, err, r.refusal)
 			}
@@ -500,7 +500,7 @@ func TestJudgeAudit_APersonConfirmsOrOverturnsAnAcceptance(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, by := range []string{"judge:run-judge-2", "policy:1@3"} {
-			if r, err := d.applyRuling(f.op, key, mscope, "reject_statement", a, false, "machine", by); err != nil || r.code != rulingNotProposal {
+			if r, err := d.applyRuling(f.op, key, mscope, "reject_statement", a, false, "machine", by, ""); err != nil || r.code != rulingNotProposal {
 				t.Errorf("%s ruling on a judge's acceptance = %+v %v, want not_a_proposal", by, r, err)
 			}
 		}

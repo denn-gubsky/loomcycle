@@ -638,7 +638,7 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 				return out, nil, err
 			}
 			if mayRule {
-				r, err := d.applyRuling(ctx, key, mscope, "accept_statement", existing.ID, true, "", operatorRuler(ctx))
+				r, err := d.applyRuling(ctx, key, mscope, "accept_statement", existing.ID, true, "", operatorRuler(ctx), "")
 				if err != nil {
 					return out, nil, err
 				}
@@ -1606,7 +1606,7 @@ func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, msc
 				"Leave it proposed for an operator, or ask one for the review grant on its path."), nil
 		}
 	}
-	r, err := d.applyRuling(ctx, key, mscope, op, in.ID, accept, in.Reason, operatorRuler(ctx))
+	r, err := d.applyRuling(ctx, key, mscope, op, in.ID, accept, in.Reason, operatorRuler(ctx), "")
 	if err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}
@@ -1702,8 +1702,10 @@ type rulingOutcome struct {
 // applyRuling rules on one statement: the checks and the write accept_statement
 // and reject_statement make, for both them and a bulk ruling, so the two cannot
 // differ. The caller has checked who may rule and that a reject has a reason;
-// ruledBy is recorded as who did.
-func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op, id string, accept bool, reason, ruledBy string) (rulingOutcome, error) {
+// ruledBy is recorded as who did. selected is the status a bulk ruling's
+// selection read the statement in ("" for a single ruling, which reads it here):
+// a statement ruled on since is reported changed, never ruled from the new status.
+func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op, id string, accept bool, reason, ruledBy, selected string) (rulingOutcome, error) {
 	status := edgeStatusRejected
 	if accept {
 		status = edgeStatusAsserted
@@ -1715,6 +1717,12 @@ func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if s == nil {
 		r := errNotFound(op+": no such statement: "+id, "List proposals with op=list_statements.")
 		return rulingOutcome{code: rulingNotFound, refusal: &r}, nil
+	}
+	if selected != "" && s.Status != selected {
+		// Another ruling landed between the bulk's selection and this write: a
+		// bulk accept that selected a proposal must not reverse a rejection made
+		// since, nor a bulk reject overturn an acceptance.
+		return rulingChangedOutcome(op), nil
 	}
 	// A judge's acceptance is a person's to settle: accept confirms it, reject
 	// overturns it (the audit of the judge's acceptances). Only a person's
@@ -1789,12 +1797,18 @@ func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		return rulingOutcome{}, err
 	}
 	if ruled.RowsAffected == 0 {
-		r := errBusiness(op+": statement_changed: the statement was ruled on or changed while this ruling was made",
-			"Reload it (op=get_edge) and rule again if it still needs it.")
-		return rulingOutcome{code: rulingChanged, refusal: &r}, nil
+		return rulingChangedOutcome(op), nil
 	}
 	d.publishEdgeChange(ctx, key, mscope, op, id, s.FromID, s.ToID, s.Kind, status)
 	return rulingOutcome{status: status, prior: s}, nil
+}
+
+// rulingChangedOutcome refuses a ruling on a statement ruled on or changed
+// since it was read.
+func rulingChangedOutcome(op string) rulingOutcome {
+	r := errBusiness(op+": statement_changed: the statement was ruled on or changed while this ruling was made",
+		"Reload it (op=get_edge) and rule again if it still needs it.")
+	return rulingOutcome{code: rulingChanged, refusal: &r}
 }
 
 // judgeAcceptance reports a statement a judge asserted (ruled_by judge:<run>):
