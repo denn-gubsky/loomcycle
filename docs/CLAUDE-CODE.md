@@ -16,12 +16,17 @@ UX you want.
 is a Claude Code plugin that pre-wires the `loomcycle mcp` server, as a thin
 client of a loomcycle runtime you already run, and adds:
 
-- **Slash commands** — `/loomcycle:connect`, `/loomcycle:run`,
-  `/loomcycle:fanout`, `/loomcycle:runs`, `/loomcycle:cancel`,
-  `/loomcycle:retune`, `/loomcycle:steer`, `/loomcycle:review`,
-  `/loomcycle:compact`, `/loomcycle:decide`, `/loomcycle:eval`,
-  `/loomcycle:memory`, `/loomcycle:erasure`, `/loomcycle:snapshot`,
-  `/loomcycle:operator-token`. The last two need an admin token.
+- **Slash commands** — `/loomcycle:connect`, `/loomcycle:whoami`,
+  `/loomcycle:run`, `/loomcycle:fanout`, `/loomcycle:runs`,
+  `/loomcycle:cancel`, `/loomcycle:retune`, `/loomcycle:steer`,
+  `/loomcycle:review`, `/loomcycle:compact`, `/loomcycle:decide`,
+  `/loomcycle:eval`, `/loomcycle:files`, `/loomcycle:memory`,
+  `/loomcycle:documents`, `/loomcycle:kb-review`, `/loomcycle:subjects`,
+  `/loomcycle:access`, `/loomcycle:erasure`, `/loomcycle:snapshot`,
+  `/loomcycle:operator-token`. `/loomcycle:snapshot` and
+  `/loomcycle:operator-token` need an admin token; `/loomcycle:subjects`,
+  ruling with `/loomcycle:kb-review`, and managing groups and rule lists with
+  `/loomcycle:access` need an admin or a tenant operator.
 - **Skills** — `loomcycle-spawn-evaluator`, `loomcycle-replay-failed-run`,
   `loomcycle-diff-agentdefs`, `loomcycle-import-claude-code`,
   `loomcycle-memory`, `loomcycle-configure`.
