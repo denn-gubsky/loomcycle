@@ -3456,7 +3456,7 @@ Overrides of the `storage:` SQL Memory settings; see [SQL_MEMORY.md](SQL_MEMORY.
 | `LOOMCYCLE_SQLMEM_AUDIT_MODE` | `full` | `full` records the redacted statement in the audit; `metadata` records only op, scope and row counts. |
 | `LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS` | `30000` | How long an explicit transaction may stay open before it is rolled back; `0` disables the reaper. |
 | `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS` | `64` | Open explicit transactions server-wide; `0` = unbounded. |
-| `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT` | a quarter of `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS` (`16`) | Open explicit transactions one tenant may hold, so one tenant cannot take every slot; a begin past it gets the same "too many open transactions" error. Set it to the server-wide cap to turn the share off. |
+| `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT` | a quarter of `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS` (`16`) | Open explicit transactions one tenant may hold, so one tenant cannot take every slot; a begin past it gets the same "too many open transactions" error. The default tenant (the one a single-tenant install runs in) is exempt and keeps the server-wide cap. Set it to the server-wide cap to turn the share off. |
 | `LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH` | `16` | Savepoint nesting in one transaction; `0` = unbounded. |
 | `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS` | `0` | Drops agent and user scopes idle this long. Off by default: it deletes data. |
 | `LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES` | `0` | When all durable scopes together exceed this, the largest idle ones are dropped. Off by default: it deletes data. |
