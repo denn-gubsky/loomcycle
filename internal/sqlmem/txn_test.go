@@ -7,6 +7,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // txnID for an agent scope under a given run.
@@ -263,6 +266,64 @@ func TestTxn_ReapStale(t *testing.T) {
 	}
 }
 
+// TestTxn_ReapStaleReleasesEveryVictimWhenOneFinishPanics: the reaper takes all
+// stale victims out of the registry before finishing them, so a panic in one
+// victim's finish (a driver panic in Rollback) must not strand the rest — each
+// would keep its pinned connection forever, and a SQLite scope (one connection)
+// would hang on its next statement.
+func TestTxn_ReapStaleReleasesEveryVictimWhenOneFinishPanics(t *testing.T) {
+	m := newTestManager(t, Config{TxnTimeoutMS: 60000})
+	ctx := context.Background()
+	key := agentKey("t1", "reap-panic")
+	if _, err := m.Exec(ctx, key, "CREATE TABLE t (x INT)", nil, 0); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	id := agentTxnID("run1", "reap-panic")
+	if _, err := m.BeginTxn(ctx, id, "run1", key); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := m.ExecTxn(ctx, id, "INSERT INTO t VALUES (1)", nil, 0); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	// Victims whose finish panics: a nil *sql.Tx panics in Rollback. Two of
+	// them make the outcome independent of map order — whichever is reaped
+	// first, at least one panicking victim is unreleased without the fix.
+	var mu sync.Mutex
+	released := map[string]bool{}
+	started := time.Now().Add(-time.Hour)
+	for _, fid := range []string{"panic-a", "panic-b"} {
+		m.txns.mu.Lock()
+		m.txns.open[fid] = &openTxn{key: agentKey("t1", fid), started: started, release: func() {
+			mu.Lock()
+			released[fid] = true
+			mu.Unlock()
+		}}
+		m.txns.mu.Unlock()
+	}
+
+	// The production reaper calls reapStale under safego.Run; mirror it so a
+	// panic escaping reapStale fails the assertions below, not the test binary.
+	safego.Run(ctx, "test.reaper", func() { m.reapStale(0) })
+
+	mu.Lock()
+	for _, fid := range []string{"panic-a", "panic-b"} {
+		if !released[fid] {
+			mu.Unlock()
+			t.Fatalf("victim %s not released after a reap where a finish panicked", fid)
+		}
+	}
+	mu.Unlock()
+	if m.InTxn(id) {
+		t.Fatal("healthy stale txn not reaped")
+	}
+	// The healthy victim's connection is back: the scope answers, and its
+	// insert was rolled back. (Checked last: without the fix a stranded pin
+	// would hang this query on the one SQLite connection.)
+	if n := rowCount(t, m, key); n != 0 {
+		t.Fatalf("after reap count=%d, want 0 (insert rolled back)", n)
+	}
+}
+
 // TestTxn_ConcurrentStatementsSameTxn fires many ExecTxn at the SAME open
 // transaction concurrently — tool calls in one agent turn dispatch in parallel,
 // so two sql_exec for the same scope reach one *sql.Tx at once. A *sql.Tx must
@@ -349,6 +410,30 @@ func TestTxn_APanickingBeginFreesItsReservation(t *testing.T) {
 	m.backend = real
 	if _, err := m.BeginTxn(context.Background(), id, "runA", agentKey("tenantA", "a")); err != nil {
 		t.Fatalf("begin after a panicking begin: %v", err)
+	}
+	m.RollbackRunTxns("runA")
+}
+
+// TestTxn_FinishingAFinishedTxnDoesNotReleaseAgain: the reaper or run-end
+// cleanup can reach a txn that finishLevel has finished but not yet removed
+// from the registry. A second finish must not run release again — it is a
+// refcount decrement and would drop another holder's pin on the scope.
+func TestTxn_FinishingAFinishedTxnDoesNotReleaseAgain(t *testing.T) {
+	m := newTestManager(t, Config{MaxOpenTxns: 4})
+	id := agentTxnID("runA", "a")
+	if _, err := m.BeginTxn(context.Background(), id, "runA", agentKey("tenantA", "a")); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	m.txns.mu.Lock()
+	txn := m.txns.open[id]
+	m.txns.mu.Unlock()
+	releases := 0
+	orig := txn.release
+	txn.release = func() { releases++; orig() }
+	_ = txn.finish(false)
+	_ = txn.finish(false)
+	if releases != 1 {
+		t.Fatalf("release ran %d times over two finishes, want 1", releases)
 	}
 	m.RollbackRunTxns("runA")
 }

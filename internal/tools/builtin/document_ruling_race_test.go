@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -65,7 +66,7 @@ func TestRuleStatements_ABulkAcceptLeavesARejectionMadeAfterItsSelection(t *test
 		if _, r := docExec(t, d, operatorCtx(f.op), fmt.Sprintf(`{"op":"reject_statement","scope":"tenant","id":%q,"reason":"not an elaboration"}`, id)); r.IsError {
 			t.Fatalf("reject: %s", r.Text)
 		}
-		out, err := d.applyBulkRuling(f.op, key, mscope, req, true, "", connector.RuleStatementsResult{Matched: 1}, picked, nil)
+		out, err := d.applyBulkRuling(f.op, key, mscope, req, true, "", connector.RuleStatementsResult{Matched: 1}, picked, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -125,6 +126,53 @@ func TestRuleStatements_ABulkAcceptByIdsNeverReversesARejection(t *testing.T) {
 		rj := ruleReal(t, d, f.op, connector.RuleStatementsRequest{Action: "reject", Reason: "no", IDs: []string{third}}, RuleAsOperator)
 		if rj.Ruled != 1 || f.edge(third)["status"] != edgeStatusRejected {
 			t.Errorf("bulk reject by ids = %+v, want the proposal rejected", rj)
+		}
+	})
+}
+
+// The dry run of a bulk accept by ids reports what the real call will do: a
+// statement already rejected is refused not_a_proposal by the real call, so the
+// dry run leaves it out of to_rule, the breakdown and the sample and reports
+// it as the real call does. matched still counts it, so an expect_count taken
+// from the dry run matches the real call.
+func TestRuleStatements_ABulkAcceptByIdsDryRunReportsARejectionAsRefused(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		f := newPolicyFixture(t, d, base, judgeOntologyMD)
+		rejected := f.propose(f.one, f.notes, "elaborates", `,"method":"extractor:relate"`)["id"].(string)
+		proposed := f.propose(f.two, f.notes, "elaborates", `,"method":"extractor:relate"`)["id"].(string)
+		if _, r := docExec(t, d, operatorCtx(f.op), fmt.Sprintf(`{"op":"reject_statement","scope":"tenant","id":%q,"reason":"not an elaboration"}`, rejected)); r.IsError {
+			t.Fatalf("reject: %s", r.Text)
+		}
+		req := connector.RuleStatementsRequest{Action: "accept", IDs: []string{rejected, proposed}}
+		dry := ruleDry(t, d, f.op, req, RuleAsOperator)
+		inBreakdown := 0
+		for _, b := range dry.Breakdown {
+			inBreakdown += b.Count
+		}
+		var sampled []string
+		for _, raw := range dry.Sample {
+			var s struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(raw, &s); err != nil {
+				t.Fatal(err)
+			}
+			sampled = append(sampled, s.ID)
+		}
+		if dry.Matched != 2 || dry.ToRule != 1 || inBreakdown != 1 || len(sampled) != 1 || sampled[0] != proposed {
+			t.Errorf("dry run = matched %d to_rule %d breakdown %d sample %v, want matched 2 and only the proposal to rule", dry.Matched, dry.ToRule, inBreakdown, sampled)
+		}
+		if dry.Failed != 1 || len(dry.Items) != 1 || dry.Items[0].ID != rejected || dry.Items[0].Error != rulingNotProposal {
+			t.Errorf("dry run = failed %d items %+v, want the rejection reported %s", dry.Failed, dry.Items, rulingNotProposal)
+		}
+
+		req.DryRun, req.ExpectCount = boolPtr(false), intPtr(dry.Matched)
+		res, err := d.RuleStatements(f.op, "tenant", req, RuleAsOperator)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.ToRule != dry.ToRule || res.Ruled != 1 || res.Failed != dry.Failed {
+			t.Errorf("real call = to_rule %d ruled %d failed %d, want what the dry run reported (to_rule %d failed %d)", res.ToRule, res.Ruled, res.Failed, dry.ToRule, dry.Failed)
 		}
 	})
 }
