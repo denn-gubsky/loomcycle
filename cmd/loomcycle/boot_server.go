@@ -250,19 +250,20 @@ func (b *boot) openSQLMemory() {
 			sqlMemRoot = filepath.Join(cfg.Env.DataDir, "sqlmem")
 		}
 		sqlMemCfg := sqlmem.Config{
-			Root:               sqlMemRoot,
-			PgDSN:              cfg.Storage.SqlMemPgDSN,
-			QuotaBytes:         cfg.Storage.SqlMemQuotaBytes,
-			StatementTimeoutMS: cfg.Storage.SqlMemStatementTimeoutMS,
-			MaxRows:            cfg.Storage.SqlMemMaxRows,
-			MaxResultBytes:     cfg.Storage.SqlMemMaxResultBytes,
-			TxnTimeoutMS:       cfg.Storage.SqlMemTxnTimeoutMS,
-			MaxOpenTxns:        cfg.Storage.SqlMemMaxOpenTxns,
-			MaxTxnDepth:        cfg.Storage.SqlMemMaxTxnDepth,
-			ScopeTTLMS:         cfg.Storage.SqlMemScopeTTLMS,
-			GCIntervalMS:       cfg.Storage.SqlMemGCIntervalMS,
-			TotalMaxBytes:      cfg.Storage.SqlMemTotalMaxBytes,
-			SharedSchemas:      cfg.Storage.SqlMemSharedSchemas,
+			Root:                 sqlMemRoot,
+			PgDSN:                cfg.Storage.SqlMemPgDSN,
+			QuotaBytes:           cfg.Storage.SqlMemQuotaBytes,
+			StatementTimeoutMS:   cfg.Storage.SqlMemStatementTimeoutMS,
+			MaxRows:              cfg.Storage.SqlMemMaxRows,
+			MaxResultBytes:       cfg.Storage.SqlMemMaxResultBytes,
+			TxnTimeoutMS:         cfg.Storage.SqlMemTxnTimeoutMS,
+			MaxOpenTxns:          cfg.Storage.SqlMemMaxOpenTxns,
+			MaxOpenTxnsPerTenant: cfg.Storage.SqlMemMaxOpenTxnsPerTenant,
+			MaxTxnDepth:          cfg.Storage.SqlMemMaxTxnDepth,
+			ScopeTTLMS:           cfg.Storage.SqlMemScopeTTLMS,
+			GCIntervalMS:         cfg.Storage.SqlMemGCIntervalMS,
+			TotalMaxBytes:        cfg.Storage.SqlMemTotalMaxBytes,
+			SharedSchemas:        cfg.Storage.SqlMemSharedSchemas,
 		}
 		// SQL Memory FOLLOWS the main store backend (RFC AA decision 4): a
 		// postgres deploy gets schema-per-scope in the SEPARATE aux DB; a
