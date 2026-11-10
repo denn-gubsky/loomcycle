@@ -284,7 +284,21 @@ func (r *Runner) runOnce(ctx context.Context, prog *goja.Program, ev map[string]
 
 	stop := make(chan struct{})
 	defer close(stop)
-	safego.Go(ctx, "codehook.watch", func() { st.watch(ctx, stop, budget) })
+	safego.Go(ctx, "codehook.watch", func() {
+		// A watcher that panicked would leave a looping body with no time
+		// limit: stop the body instead (fail closed), as the run's own
+		// lifetime watcher does. The interrupt is retried under its own
+		// recover; it is the only thing that can stop the runtime.
+		watched := false
+		defer func() {
+			if !watched {
+				st.cause.Store(int32(causeWatcherFailed))
+				safego.Run(ctx, "codehook.watch_interrupt", func() { st.rt.Interrupt(errWatcherFailed) })
+			}
+		}()
+		st.watch(ctx, stop, budget)
+		watched = true
+	})
 
 	ret, err := func() (goja.Value, error) {
 		if _, err := rt.RunProgram(prog); err != nil {
@@ -308,6 +322,8 @@ func (r *Runner) runOnce(ctx context.Context, prog *goja.Program, ev map[string]
 		return nil, nil, ctx.Err()
 	case cause == causeTimeout:
 		return nil, nil, fmt.Errorf("the hook ran longer than its %s timeout", budget)
+	case cause == causeWatcherFailed:
+		return nil, nil, errWatcherFailed
 	case st.diverged != "":
 		return nil, nil, errors.New(st.diverged)
 	case st.next != nil:
@@ -334,7 +350,12 @@ const (
 	causeNone interruptCause = iota
 	causeCancel
 	causeTimeout
+	causeWatcherFailed
 )
+
+// errWatcherFailed stops a hook whose time-limit watcher panicked (safego
+// logs and counts the panic): run on, the body would have no limit.
+var errWatcherFailed = errors.New("the hook was stopped: its time limit could not be enforced")
 
 // replay drives one run of the body.
 type replay struct {

@@ -510,6 +510,22 @@ func newFloor() *concurrency.Lane {
 func forward(ctx context.Context, in <-chan providers.Event, out chan<- providers.Event, release func(), waitMs int64) {
 	defer close(out)
 	defer release()
+	// A forwarder that panicked (recovered by safego) still ends the call as a
+	// failure — a stream that just closes reads as a finished one — and reads
+	// the driver's stream to its end before the slot goes back, as the ctx
+	// path below does.
+	finished := false
+	defer func() {
+		if finished {
+			return
+		}
+		select {
+		case out <- providers.Event{Type: providers.EventError, Error: "the call failed on an internal error"}:
+		case <-ctx.Done():
+		}
+		for range in {
+		}
+	}()
 	for ev := range in {
 		if ev.Type == providers.EventDone || ev.Type == providers.EventError {
 			release()
@@ -526,9 +542,11 @@ func forward(ctx context.Context, in <-chan providers.Event, out chan<- provider
 		case <-ctx.Done():
 			for range in {
 			}
+			finished = true
 			return
 		}
 	}
+	finished = true
 }
 
 // SchedulerConfig turns the providers: block into the call scheduler's config:
