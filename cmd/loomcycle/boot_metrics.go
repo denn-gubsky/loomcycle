@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -9,7 +8,6 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // startMetricsListener opens the LOOMCYCLE_METRICS_LISTEN listener and serves
@@ -37,11 +35,13 @@ func startMetricsListener(addr string, h http.Handler, log *slog.Logger) (*http.
 		MaxHeaderBytes:    16 << 10,
 	}
 	announceMetricsListener(log, addr)
-	safego.Go(context.Background(), "metrics.listener", func() {
+	// Raw on purpose, like the main listener: a panic in Serve ends the
+	// process instead of leaving it up with no metrics listener.
+	go func() {
 		if err := srv.Serve(lis); err != nil && err != http.ErrServerClosed {
 			log.Error("metrics listener: serving failed", "addr", addr, "err", err)
 		}
-	})
+	}()
 	return srv, lis.Addr(), nil
 }
 

@@ -105,7 +105,9 @@ func (b *boot) startListeners() {
 			fatal("grpc listen: opening the listener failed", "addr", cfg.Env.GrpcAddr, "err", err)
 		}
 		grpcAdapter.MustLogStartupBanner(cfg.Env.GrpcAddr)
-		safego.Go(context.Background(), "grpc.serve", func() {
+		// Raw on purpose, like the main listener: a panic in Serve ends the
+		// process instead of leaving the replica up with no gRPC listener.
+		go func() {
 			// GracefulStop returns ErrServerStopped on the
 			// normal shutdown path — don't log it as a serve
 			// failure (would pollute operator logs and trip alert
@@ -113,7 +115,7 @@ func (b *boot) startListeners() {
 			if err := grpcSrv.Serve(grpcLis); err != nil && !errors.Is(err, googlegrpc.ErrServerStopped) {
 				slog.Error("grpc serve: failed", "err", err)
 			}
-		})
+		}()
 	}
 
 	b.grpcSrv = grpcSrv
