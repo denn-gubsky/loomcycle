@@ -393,3 +393,51 @@ func TestOperatorTokenDef_ARotationNeverMovesAnEarlierRetirementLater(t *testing
 		t.Errorf("a second rotation moved retired_at from %v to %v", first, got)
 	}
 }
+
+// A tenant scrape token's subject is a machine's, never a person's: it is
+// held to the metrics- namespace and refused when a user of the tenant
+// already has it.
+func TestOperatorTokenDef_ATenantScrapeTokenNeverTakesAPersonsSubject(t *testing.T) {
+	tool, base, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	ctx := tenantOpCtx(t, base, tntOp)
+	if err := st.UserCreate(context.Background(), store.UserRow{TenantID: "tnt", Subject: "metrics-taken", AccessMode: "isolated", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []string{
+		`{"op":"create","name":"a","scopes":["metrics:read"],"subject":"alice"}`,
+		`{"op":"create","name":"b","scopes":["metrics:read"],"subject":"metrics-taken"}`,
+		`{"op":"create","name":"taken","scopes":["metrics:read"]}`, // the default subject metrics-taken
+	} {
+		if res := execRaw(t, tool, ctx, in); !res.IsError {
+			t.Errorf("%s: accepted: %s", in, res.Text)
+		}
+	}
+	row := storedRow(t, st, mustOp(t, tool, ctx, `{"op":"create","name":"c","scopes":["metrics:read"],"subject":"metrics-grafana"}`))
+	if row.Subject != "metrics-grafana" {
+		t.Errorf("subject = %q", row.Subject)
+	}
+}
+
+// A tenant holds at most maxTenantScrapeTokens live scrape tokens; a retired
+// one frees its place.
+func TestOperatorTokenDef_ATenantsLiveScrapeTokensAreCapped(t *testing.T) {
+	tool, base, _, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	ctx := tenantOpCtx(t, base, tntOp)
+	var first string
+	for i := 0; i < maxTenantScrapeTokens; i++ {
+		id := mustOp(t, tool, ctx, `{"op":"create","name":"p`+strconv.Itoa(i)+`","scopes":["metrics:read"]}`)["def_id"].(string)
+		if i == 0 {
+			first = id
+		}
+	}
+	if res := execRaw(t, tool, ctx, `{"op":"create","name":"over","scopes":["metrics:read"]}`); !res.IsError || !strings.Contains(res.Text, strconv.Itoa(maxTenantScrapeTokens)) {
+		t.Errorf("past the cap: %s, want refused naming the cap", res.Text)
+	}
+	// Another tenant's operator is not held to this tenant's count.
+	other := tenantOpCtx(t, base, auth.Principal{TenantID: "other", Subject: "o", Scopes: []string{auth.ScopeTenant}})
+	mustOp(t, tool, other, `{"op":"create","name":"p0","scopes":["metrics:read"]}`)
+	mustOp(t, tool, ctx, `{"op":"retire","def_id":"`+first+`"}`)
+	mustOp(t, tool, ctx, `{"op":"create","name":"again","scopes":["metrics:read"]}`)
+}

@@ -30,6 +30,14 @@ import (
 // own tenant.
 const scrapeTokenNamePrefix = auth.UserTokenNamePrefix + "metrics-"
 
+// scrapeTokenSubjectPrefix starts every tenant scrape token's subject.
+const scrapeTokenSubjectPrefix = "metrics-"
+
+// maxTenantScrapeTokens bounds a tenant's live scrape tokens. Each is a row
+// and a credential; a scraper needs one or two, so the cap only stops a
+// tenant growing them without bound.
+const maxTenantScrapeTokens = 32
+
 // scrapeTokenLabelRe is the name a tenant operator gives; the stored name is
 // scrapeTokenNamePrefix + the label, within the 64 characters a name allows.
 var scrapeTokenLabelRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,54}$`)
@@ -98,11 +106,33 @@ func (s *OperatorTokenDef) createTenantScrape(ctx context.Context, tenant string
 		return errResult(fmt.Sprintf("create: name %q invalid (must match [a-zA-Z0-9_-]{1,54})", in.Name)), nil
 	}
 	name := scrapeTokenNamePrefix + label
+	// The subject is a machine's. A token row under a person's subject would
+	// be retired by that person's erasure, and the token create path treats
+	// a new subject as someone to provision for; so it is held to its own
+	// namespace and refused when a user of the tenant holds it.
 	subject := in.Subject
 	if subject == "" {
-		subject = "metrics-" + label
-	} else if !operatorTokenNameRe.MatchString(subject) {
-		return errResult(fmt.Sprintf("create: subject %q invalid (must match [a-zA-Z0-9_-]{1,64})", subject)), nil
+		subject = scrapeTokenSubjectPrefix + label
+	} else if !strings.HasPrefix(subject, scrapeTokenSubjectPrefix) || !operatorTokenNameRe.MatchString(subject) {
+		return errResult(fmt.Sprintf("create: subject %q invalid (must start with %q and match [a-zA-Z0-9_-]{1,64})", subject, scrapeTokenSubjectPrefix)), nil
+	}
+	if _, err := s.Store.UserGet(ctx, tenant, subject); err == nil {
+		return errResult(fmt.Sprintf("create: subject %q is a user of this tenant; a scrape token takes a subject of its own", subject)), nil
+	} else if nf := (*store.ErrNotFound)(nil); !errors.As(err, &nf) {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	rows, err := s.tenantScrapeRows(ctx, tenant, "")
+	if err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	now, live := time.Now(), 0
+	for _, r := range rows {
+		if r.RetiredAt.IsZero() && r.ValidAt(now) {
+			live++
+		}
+	}
+	if live >= maxTenantScrapeTokens {
+		return errResult(fmt.Sprintf("create: this tenant already has %d live scrape tokens, the most it may hold; retire one first", maxTenantScrapeTokens)), nil
 	}
 	if live, err := s.liveScrapeName(ctx, tenant, name); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
@@ -198,11 +228,31 @@ func (s *OperatorTokenDef) liveScrapeName(ctx context.Context, tenant, name stri
 }
 
 func (s *OperatorTokenDef) listTenantScrape(ctx context.Context, tenant, name string) (tools.Result, error) {
+	rows, err := s.tenantScrapeRows(ctx, tenant, name)
+	if err != nil {
+		return errResult(fmt.Sprintf("list: %s", err)), nil
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, operatorTokenRowResponse(r))
+	}
+	resp := map[string]any{"tenant_id": tenant, "tokens": out}
+	if name != "" {
+		resp["name"] = name
+	}
+	return okJSONCount(resp, len(out))
+}
+
+// tenantScrapeRows is every row, retired history included, that is one of
+// tenant's scrape tokens: of the one name, or of every name when name is "".
+// The store has no per-tenant listing, so the names are read whole and
+// filtered here; the per-tenant cap keeps the rows read per name small.
+func (s *OperatorTokenDef) tenantScrapeRows(ctx context.Context, tenant, name string) ([]store.OperatorTokenDefRow, error) {
 	names := []string{name}
 	if name == "" {
 		all, err := s.Store.OperatorTokenDefListNames(ctx)
 		if err != nil {
-			return errResult(fmt.Sprintf("list: %s", err)), nil
+			return nil, err
 		}
 		names = names[:0]
 		for _, n := range all {
@@ -211,23 +261,19 @@ func (s *OperatorTokenDef) listTenantScrape(ctx context.Context, tenant, name st
 			}
 		}
 	}
-	out := make([]map[string]any, 0)
+	var out []store.OperatorTokenDefRow
 	for _, n := range names {
 		rows, err := s.Store.OperatorTokenDefListByName(ctx, n)
 		if err != nil {
-			return errResult(fmt.Sprintf("list: %s", err)), nil
+			return nil, err
 		}
 		for _, r := range rows {
 			if isTenantScrapeRow(r, tenant) {
-				out = append(out, operatorTokenRowResponse(r))
+				out = append(out, r)
 			}
 		}
 	}
-	resp := map[string]any{"tenant_id": tenant, "tokens": out}
-	if name != "" {
-		resp["name"] = name
-	}
-	return okJSONCount(resp, len(out))
+	return out, nil
 }
 
 // resolveTenantScrape finds the row a rotate or retire targets: by def_id, or
