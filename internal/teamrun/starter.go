@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/jsonpath"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 )
 
@@ -281,8 +282,21 @@ func (r *agentRunner) runWave(ctx context.Context, st teamgraph.State, task *Tas
 			agent := agentFor(i)
 			slots := waveSlots(h, msgs, i)
 			wg.Add(1)
-			go func() {
+			safego.Go(runCtx, "teamrun.wave_member", func() {
 				defer wg.Done()
+				// The count is the contract here too: a goroutine that
+				// panicked outside dispatchOne's own recover still leaves a
+				// result and its sink message (emit is exactly-once).
+				decided, done := false, false
+				defer func() {
+					if done {
+						return
+					}
+					if !decided {
+						results[i] = agentResult{Index: i, Agent: agent, Ok: false, Error: fmt.Sprintf("agent %q panicked", agent)}
+					}
+					emit(i)
+				}()
 				select {
 				case sem <- struct{}{}:
 					defer func() { <-sem }()
@@ -290,25 +304,31 @@ func (r *agentRunner) runWave(ctx context.Context, st teamgraph.State, task *Tas
 					// Cancelled before it ever ran — still a result, and still
 					// a sink message, because the count is the contract.
 					results[i] = agentResult{Index: i, Agent: agent, Ok: false, Error: runCtx.Err().Error()}
+					decided = true
 					emit(i)
+					done = true
 					return
 				}
 				res := r.dispatchOne(runCtx, st, env, agent, waveID, i, slots)
-				mu.Lock()
-				results[i] = res
-				if res.Ok {
-					successes++
-					// Never while review is armed: the rest may be held, and
-					// cancelling a run a person is reviewing would throw their
-					// review away. Asked at the moment of deciding, so arming
-					// mid-wave protects the members still out.
-					if shortCircuit && !r.reviewArmed(st) && successes >= need {
-						cancel() // enough succeeded → stop the rest (no-op for wait:all)
+				func() {
+					mu.Lock()
+					defer mu.Unlock() // emit takes it again, panic or not
+					results[i] = res
+					decided = true
+					if res.Ok {
+						successes++
+						// Never while review is armed: the rest may be held, and
+						// cancelling a run a person is reviewing would throw their
+						// review away. Asked at the moment of deciding, so arming
+						// mid-wave protects the members still out.
+						if shortCircuit && !r.reviewArmed(st) && successes >= need {
+							cancel() // enough succeeded → stop the rest (no-op for wait:all)
+						}
 					}
-				}
-				mu.Unlock()
+				}()
 				emit(i)
-			}()
+				done = true
+			})
 		}
 		wg.Wait()
 		dispatched += len(idx)

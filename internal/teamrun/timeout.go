@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 )
 
@@ -173,7 +174,7 @@ func startClock(ctx context.Context, d time.Duration, cause error, sig PauseSign
 	}
 	c.mu.Unlock()
 	if sig != nil {
-		go c.watchPause(sig, changed)
+		safego.Go(cctx, "teamrun.clock_pause_watch", func() { c.watchPause(sig, changed) })
 	}
 	return context.WithValue(cctx, clockKey{}, c), c
 }
@@ -188,10 +189,12 @@ func (c *heldClock) watchPause(sig PauseSignal, changed <-chan struct{}) {
 			return
 		}
 		paused, next := sig.PauseWatch()
-		c.mu.Lock()
-		c.paused = paused
-		c.settle()
-		c.mu.Unlock()
+		func() {
+			c.mu.Lock()
+			defer c.mu.Unlock() // a panic in settle must not leave the clock locked
+			c.paused = paused
+			c.settle()
+		}()
 		changed = next
 	}
 }

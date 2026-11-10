@@ -12,6 +12,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/jsonpath"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 )
 
@@ -744,18 +745,28 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 	for i, name := range agents {
 		i, name := i, name
 		wg.Add(1)
-		go func() {
+		safego.Go(runCtx, "teamrun.parallel_member", func() {
 			defer wg.Done()
+			// A member whose goroutine panicked is still a row: a failed one,
+			// so wait:all reports it instead of counting a zero row.
+			finished := false
+			defer func() {
+				if !finished {
+					results[i] = agentResult{Index: i, Agent: name, Ok: false, Error: fmt.Sprintf("agent %q panicked", name)}
+				}
+			}()
 			// Acquire a concurrency slot or bail on cancellation (a sibling hit
 			// the success threshold, or the parent run was cancelled).
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-runCtx.Done():
+				finished = true
 				results[i] = agentResult{Index: i, Agent: name, Ok: false, Error: runCtx.Err().Error()}
 				return
 			}
 			sp, spawnErr := r.spawnWork(r.withMemberReview(runCtx, st), name, prompt)
+			finished = true
 			if spawnErr != nil {
 				results[i] = agentResult{Index: i, Agent: name, RunID: sp.RunID, Ok: false, Error: spawnErr.Error()}
 				if sp.Capped {
@@ -768,6 +779,7 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 			}
 			results[i] = agentResult{Index: i, Agent: name, RunID: sp.RunID, Ok: true, Output: sp.Output}
 			mu.Lock()
+			defer mu.Unlock() // held by no goroutine that panicked
 			successes++
 			// Never while review is armed: a sibling still out may be held, and
 			// cancelling a run a person is reviewing would throw their review
@@ -775,8 +787,7 @@ func (r *agentRunner) runParallel(ctx context.Context, st teamgraph.State, input
 			if successes >= need && !r.reviewArmed(st) {
 				cancel() // enough succeeded → stop the rest (a no-op for wait:all)
 			}
-			mu.Unlock()
-		}()
+		})
 	}
 	wg.Wait()
 
