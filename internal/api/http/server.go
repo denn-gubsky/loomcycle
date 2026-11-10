@@ -699,6 +699,18 @@ type Server struct {
 	// startedAt records process start so /healthz can report uptime
 	// in seconds. Set in New().
 	startedAt time.Time
+
+	// runPhaseHook is told the name of each RunOnce phase as it starts. A
+	// test seam only, nil in production: the order pin
+	// (TestRunOnce_PhasesRunInTheirSecurityOrder) records through it.
+	runPhaseHook func(phase string)
+}
+
+// runPhase reports that a RunOnce phase starts (runPhaseHook).
+func (s *Server) runPhase(name string) {
+	if s.runPhaseHook != nil {
+		s.runPhaseHook(name)
+	}
 }
 
 // New constructs a Server. If st is non-nil, every run is recorded as a
@@ -3142,6 +3154,7 @@ func (s *Server) grantRecallTool(allowed []tools.Tool, cx *config.Context) []too
 // each wire surface can map to its own status codes (HTTP 4xx/5xx vs gRPC
 // codes).
 func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunCallbacks) error {
+	s.runPhase("rate")
 	// The caller's rate, before anything else: every run a transport asks for
 	// through here (each child of a batch included) is one start — counted
 	// once, so not here when the caller already counted it.
@@ -3150,6 +3163,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 			return err
 		}
 	}
+	s.runPhase("validate")
 	// ---- Validation phase ----
 	if in.UserID != "" && !connector.UserIDAllowed(principalSubject(ctx), in.UserID) {
 		return fmt.Errorf("%w: %s", runner.ErrInvalidArgument, connector.UserIDRule)
@@ -3215,6 +3229,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		return fmt.Errorf("%w: %s", runner.ErrInvalidArgument, msg)
 	}
 
+	s.runPhase("identity")
 	// ---- Session resolution (continuation only) ----
 	isContinuation := in.SessionID != ""
 	effectiveAgentName := in.Agent
@@ -3253,6 +3268,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 			return dup
 		}
 	}
+	s.runPhase("session")
 	var priorMessages []providers.Message
 	// The session lock a continuation holds; nil for a run in a new session.
 	var sessHold *sessionHold
@@ -3343,6 +3359,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}()
 	}
 
+	s.runPhase("owner")
 	// RFC AX: use the live principal when one is on ctx (gRPC/MCP/connector);
 	// else fall back to the bit CAPTURED on the trigger def and supplied via
 	// RunInput (scheduler/webhook/A2A have no principal at fire time). A
@@ -3374,6 +3391,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err != nil {
 		return err
 	}
+	s.runPhase("conditions")
 	// What a condition reads about this run (RFC FY Part E), for the intake
 	// question below and every question the run asks. Each is what the run
 	// is: the request picks interactive, but an interactive run is then what
@@ -3381,6 +3399,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// request names are not stamped: they are the caller's own say
 	// (authz.RunFacts).
 	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: effectiveAgentName, Depth: builtin.AgentDepth(ctx), Interactive: in.Interactive})
+	s.runPhase("agent")
 	if err := s.admitPrincipalAgent(ctx, effectiveAgentName); err != nil {
 		return err
 	}
@@ -3429,6 +3448,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if rerr != nil {
 		return rerr
 	}
+	s.runPhase("replay")
 	// ---- Transcript replay (continuation only) ----
 	// Before the provider is chosen: an image in the history needs a provider
 	// that can take it as much as one in the new input does (runStartCtx).
@@ -3442,6 +3462,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		priorMessages = replayTranscript(transcript)
 	}
 
+	s.runPhase("provider")
 	startCtx := runStartCtx(ctx, in.Segments, priorMessages)
 	providerID, model, effort, err := s.resolveAgentDef(startCtx, agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted)
 	if err != nil {
@@ -3452,6 +3473,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		return fmt.Errorf("%w: %v", runner.ErrUnknownProvider, err)
 	}
 
+	s.runPhase("pause")
 	// Runtime-pause admission gate (RFC X / F41) — reject new runs while
 	// pausing/paused. Covers the gRPC / webhook / A2A / scheduler surfaces
 	// that drive runs through RunOnce. Checked before the concurrency slot.
@@ -3463,12 +3485,14 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 	}
 
+	s.runPhase("budget")
 	// RFC AW token-budget admission, first before the run may queue: a run
 	// whose (tenant, user) is over a hard ceiling is refused, not queued.
 	if dec := s.limits.Check(effectiveTenantID, effectiveUserID); !dec.Allowed {
 		return &tokenLimitError{info: dec.Refusal}
 	}
 
+	s.runPhase("agent_id")
 	// ---- agent_id: caller-supplied or generated ----
 	// Before admission: a run that has to wait is named in the queue by it.
 	agentID := in.AgentID
@@ -3476,6 +3500,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		agentID = newAgentID()
 	}
 
+	s.runPhase("run_context")
 	// ---- Run context ----
 	// A detached run outlives this call (RunInput.Detached): its ctx keeps the
 	// caller's values but not its cancellation, and startDetachedLoop runs the
@@ -3527,6 +3552,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		return fmt.Errorf("%w: %v", runner.ErrInternal, sessErr)
 	}
 
+	s.runPhase("slot")
 	// ---- Run slot (RFC EI P3) ----
 	// Keyed on the run's own tenant: a trigger run (scheduler, webhook, A2A)
 	// has no principal on ctx, so tenantFromCtx would count every tenant's
@@ -3650,6 +3676,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 			return startErr
 		}
 	}
+	s.runPhase("budget_at_start")
 	// RFC AW token-budget admission, again at start: a run that queued may
 	// have crossed its ceiling while it waited. Checked BEFORE `defer
 	// release()` so the manual release() here isn't double-fired. Soft
@@ -3664,12 +3691,14 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		return &tokenLimitError{info: limitDec.Refusal}
 	}
 	defer release()
+	s.runPhase("reresolve")
 	if queued != nil {
 		if pid, p, m, e, ok := s.resolveAfterQueue(startCtx, agentDef, effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted); ok {
 			providerID, provider, model, effort = pid, p, m, e
 		}
 	}
 
+	s.runPhase("tools")
 	// ---- Tool filtering + host narrowing ----
 	// RFC N FIX 2-mcp: advertise MCP tools at the run's authoritative
 	// tenant (effectiveTenantID), not the ctx tenant — WithRunIdentity
@@ -3708,6 +3737,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 	dispatcher := s.newDispatcher(allowedTools)
 
+	s.runPhase("prompt")
 	// ---- Segments: prepend agent's system prompt ----
 	segments := in.Segments
 	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies
@@ -3736,6 +3766,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}}, segments...)
 	}
 
+	s.runPhase("run_config")
 	// The run's own resolved configuration, merged ONCE here — after agentDef
 	// has taken its final form — and used both by the loop below and by the
 	// durable run_config record, so the two cannot drift. A resumed run comes
@@ -3766,6 +3797,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		IterationLimit:    s.startIterationLimit(agentDef, provider, in.Interactive),
 	}
 
+	s.runPhase("rows")
 	// ---- Session+run creation ----
 	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, CredentialsNoUserScope: in.CredentialsNoUserScope, Retention: retention, RunConfig: runCfg.marshal(),
 		// What the admission counted, for the resume of a run whose replica
@@ -3821,6 +3853,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 	}
 
+	s.runPhase("wiring")
 	// v0.10.0 OTEL: top-level loomcycle.run span covers the entire
 	// run. Loop iterations + provider calls + tool dispatch nest
 	// under it via context propagation. Span name + attribute set
@@ -3930,6 +3963,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 	}
 
+	s.runPhase("emit")
 	// ---- Build emit chain (record + forward to caller) ----
 	// Hoisted so the recording emit attributes usage under the run's true
 	// identity (makeRecordingEmit is built before WithRunIdentity below) and
@@ -3988,6 +4022,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 	}()
 
+	s.runPhase("loop_ctx")
 	// The run's own turn calls lend its global slot while they wait for a
 	// provider lane (concurrency.RunSlot).
 	loopCtx := concurrency.WithRunSlot(runCtx, runSlot)
@@ -4070,6 +4105,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// fan-out parent can park mid-tool-call (no-op unless LOOMCYCLE_RESUME_FANOUT).
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
 
+	s.runPhase("options")
 	fbPolicy, fbReResolve := s.fallbackForRun(effectiveTenantID, effectiveUserID, effectiveAgentName, in.UserTier, operatorKeyRestricted, runRouting)
 	seed, seeded := statefulContinuationSeed(sessionEvents, mergedContext, provider.Capabilities().Local, in.Interactive, segments)
 	if seeded {
@@ -4148,6 +4184,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		s.releaseSessionWhileParked(&runOpts, &parkLock{hold: sessHold, sessionID: in.SessionID}, loopCtx, stateful,
 			func(reason string) { s.cancelReg.CancelLocalRun(agentID, runID, reason) })
 	}
+	s.runPhase("launch")
 	if detached {
 		handOff = true
 		done := s.startDetachedLoop(detachedLoop{
