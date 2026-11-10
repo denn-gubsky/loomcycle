@@ -147,6 +147,11 @@ alongside every release) and add a **`pinchtab/pinchtab` server sidecar**. Pinch
 MCP is stdio-only, so loomcycle spawns `pinchtab … mcp` as a stdio bridge to the
 sidecar — Chromium lives only in the sidecar, not in loomcycle.
 
+A deployment that also wants speech or OCR helpers (ffmpeg, poppler) runs
+**`denngubsky/loomcycle-media`** instead: the same PinchTab client on a Debian slim
+base with those programs, published on every release too (amd64 only on a patch).
+The steps below are the same with either image.
+
 1. Run the sidecar **internal only** (no published port — its control plane is not
    for public exposure), with `PINCHTAB_TOKEN` set, `shm_size: 2gb`, and the usual
    hardening (`read_only`, tmpfs, `cap_drop: ALL`, `no-new-privileges`).
