@@ -1357,6 +1357,36 @@ A tenant subject can stand for a user of the tenant: `person:ada-lovelace` is th
 
 **What an erasure does with it.** `GET /v1/_erasure?subject=<user>` (and its gRPC and MCP twins) lists the tenant subjects bound to that user in `bound_subjects`, each `{document_id, natural_key, path}`, and counts them in `tier2_uncovered` as `subject_bindings`. A subject whose document the operator's access-control rules hide from reading is counted in `bound_subjects_withheld` and never named. A live `POST /v1/_erasure` clears each binding, so no row keeps the erased id, and keeps the subjects: deleting one would delete every statement and fact the tenant holds about that entity, which is the operator's call (`delete_document`, which announces `removed`). `retained.bound_subjects` says so, counting and never naming them, because the retained entries are copied into the audit record. After every other plane, `erased` goes to the tenant's `memory/subjects` channel for each subject; it names the subject and never the user. It is withheld, with the reason in `not_announced`, when the operator's rules hide part of the tenant's documents from reading.
 
+## Annotations — a brief and an abstract per section, document and folder (RFC GE)
+
+**Why.** After import, classification and linking, a knowledge base is a linked tree, and nothing above a section says what it is about: an agent learns what a document or a folder holds by reading it, and a question about the corpus as a whole ("what do we have on X") has no retrieval path, because search ranks passages and no passage stands for a set. An annotation is two short texts written *about* a part of the tree — a **brief** (one sentence, for choosing) and an **abstract** (one paragraph, standing in for reading) — at three levels: a section branch, a document (on its root chunk) and a Path folder. The design follows archival multilevel description (ISAD(G)) and the indicative/informative split of abstracting standards; the research is at `/loomcycle/docs/annotation-layer-research`.
+
+**Not content.** Annotations live in the per-scope table `chunk_annotations`, one record per (chunk, level), outside the body, the content hash, `history`, `diff`, sync and `export_md`. Writing one changes nothing the document says. Records go with their chunk on delete and travel with `copy_documents` / `move_documents`. They are kept for the **tenant scope only**.
+
+**The hash, and staleness.** The runtime owns the hash of what a record was written from (`annotation_inputs`): the part's title, class (and its meaning and `@annotate` slots), language, own body, and each child's record — or, for a child without one, its text. `set_annotation` refuses a hash that moved (`annotation_inputs_changed`). A record whose inputs changed since reads `stale: true`; it is still shown, marked, never withheld. A change deep in a document reaches its ancestors only through their children's records, so staleness climbs exactly as far as the text changed.
+
+**Ops** (all through the Document op dispatch, so HTTP / gRPC / MCP / the SDKs):
+
+| op | who | does |
+|---|---|---|
+| `annotation_inputs` | operator plane; `statement_methods: [annotate]` | what a target's annotation is written from, and the hash |
+| `set_annotation` | operator plane; the annotate grant | write a record with the current hash, or `manual: true` (operator only, no hash, never overwritten by the pass) |
+| `get_annotation` | any reader | a chunk's, document's or folder's records, `stale` computed now |
+| `list_annotations` | any reader | filtered pages, or `summarize` counts per level |
+| `delete_annotation` | operator plane; the grant (not manual records) | remove one record (a folder's removes its `_annotation` document) |
+
+SDK helpers: `getAnnotation` / `listAnnotations` / `annotate` (TS) and `get_annotation` / `list_annotations` / `annotate` (Python).
+
+**Reading them.** `with_summary: true` on `get_document`, `get_chunk`, `search`, `related`, `graph_recall`, `documents_summary`, `query_documents` and `Path op=ls` adds `summary: {level, brief, abstract?, stale?}` per row — the nearest record at or above the row's chunk; abstracts ride on the op's target, the first five documents of a search page and a walk's seeds, within `summary_chars`. `documents_summary` and `graph_snapshot` carry a document's `brief` as plain metadata whenever it has one. Without the option, and in a scope with no annotations, every answer is byte-identical.
+
+**Searching them.** `search` with `annotations: "include"` fuses the annotations with the passages (one row per target, `matched_annotation` names which annotation found it); `annotations: "only"` answers from them alone — the shape of a corpus question, usually with `annotation_levels: ["path", "document"]`. The index rows live under their own memory scope id, so no other Memory surface sees them.
+
+**Folders.** A folder's annotation is kept on a real document `<folder>/_annotation` of the operational type `Annotation` (title = the folder's name, root fields `{level, path, covers, brief}`, empty body), or on the root of a document named at the folder's own path. It is written from the folder's direct children's annotations, its classes and topics and the relation kinds among its documents. It is **withheld from a caller who may not read every document it covers** — the record, `Path ls` summaries and the `_annotation` document itself, which answers as not found. The name `_annotation` is reserved in the tenant scope; classify, the linker and the judge skip `Annotation` documents, and they are never evidence.
+
+**The ontology's say.** `@annotate the problem; the decisions taken; …` on a class names the slots its annotations fill (inherited; `describe_ontology` reports `directives.annotate` and each class's `meaning`, its first prose line). The ontology root field `annotation_language` enforces one language for every annotation; otherwise each document's own is detected.
+
+**Who writes them.** The knowledge-base bundle's `kb/annotator` (code-js) with `kb/annotate` (tier `middle`, no tools), bottom-up and only for what changed; run `write: report` first for the call and prompt-character estimate. See `/loomcycle/docs/knowledge-base-bundle` (Annotations) and the RFC at `/loomcycle/rfcs/annotations`.
+
 ## Caveats
 
 - **SQL Memory required** (`LOOMCYCLE_SQLMEM_ENABLED=1`).
