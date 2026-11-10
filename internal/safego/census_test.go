@@ -67,16 +67,9 @@ var exemptRawGo = map[string]rawGo{
 }
 
 // pendingRawGo is the baseline of raw `go` statements not converted yet: the
-// boot's background goroutines in cmd/ and the per-run and fan-out goroutines
-// in internal/. It only shrinks — convert a site to Go, or
+// per-run and fan-out goroutines in internal/. It only shrinks — convert a site to Go, or
 // add a reasoned entry to exemptRawGo, and lower its count here.
 var pendingRawGo = map[string]int{
-	// cmd/loomcycle: the boot's background sweepers, subscribers and
-	// listeners, converted in a later change.
-	"cmd/loomcycle/boot_surfaces.go": 2,
-	"cmd/loomcycle/main.go":          1,
-	"cmd/loomcycle/openmode.go":      1,
-
 	"internal/a2a/executor.go":                      1,
 	"internal/api/http/client_tools.go":             1,
 	"internal/api/http/connector_impl.go":           3,

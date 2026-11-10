@@ -1134,7 +1134,7 @@ func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerR
 			continue
 		}
 		wg.Add(1)
-		go func(j probeJob) {
+		safego.Go(ctx, "resolve.probe_provider", func() {
 			defer wg.Done()
 			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
@@ -1146,7 +1146,7 @@ func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerR
 			}
 			r.SetReachable(j.id, true, models, "")
 			slog.Info(fmt.Sprintf("resolve probe: %s reachable (%d models listed)", j.id, len(models)), "provider", j.id, "models", len(models))
-		}(j)
+		})
 	}
 	wg.Wait()
 }
@@ -1163,7 +1163,8 @@ func runResolveProbeLoop(ctx context.Context, r *resolve.Resolver, pr *providerR
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			runResolveProbeOnce(ctx, r, pr, cfg)
+			// One probe pass that panics costs that pass, not the ones after it.
+			safego.Run(ctx, "resolve.probe_loop", func() { runResolveProbeOnce(ctx, r, pr, cfg) })
 		}
 	}
 }
