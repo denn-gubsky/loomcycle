@@ -226,6 +226,7 @@ export type {
   ClientToolSchema,
   ClientToolInvocation,
   ConnectClientToolsOptions,
+  ClientToolsCredential,
   WebSocketLike,
   WebSocketCtor,
 } from "./client-tools.js";

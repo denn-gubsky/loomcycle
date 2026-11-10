@@ -7,9 +7,11 @@
 //
 // Transport note: the adapter is otherwise fetch/SSE-only and takes no WebSocket
 // dependency. connectClientTools uses the global `WebSocket` (browsers, Node
-// 22+); on older Node pass `WebSocketImpl` (e.g. the `ws` package). The bearer
-// rides the `Sec-WebSocket-Protocol` subprotocol (browsers can't set an
-// Authorization header on a WebSocket).
+// 22+); on older Node pass `WebSocketImpl` (e.g. the `ws` package). Browsers
+// can't set an Authorization header on a WebSocket, so the credential rides the
+// `Sec-WebSocket-Protocol` header: a one-time ticket (`ticket.<t>`, minted over
+// an ordinary authenticated call) where the server offers one, else the
+// bearer itself (`bearer.<token>`, older servers, never in strict sign-in).
 
 import { OAuthError } from "./errors.js";
 
@@ -45,6 +47,10 @@ export interface WebSocketLike {
 
 export type WebSocketCtor = new (url: string, protocols?: string | string[]) => WebSocketLike;
 
+/** What a client-tool socket presents on its handshake: a one-time ticket
+ *  (preferred; see LoomcycleClient.clientToolsTicket) or the bearer itself. */
+export type ClientToolsCredential = { ticket: string } | { bearer: string };
+
 export interface ConnectClientToolsOptions {
   /** The tools this client provides. */
   tools: ClientToolSchema[];
@@ -76,12 +82,17 @@ export class ClientToolHost {
   private ws?: WebSocketLike;
   private closed = false;
 
-  /** `auth` is the bearer, or a function that supplies one on each
-   *  (re)connect — a client built with a token provider passes one, so a
-   *  reconnect after the access token expired carries the refreshed one. */
+  /** `auth` is the bearer, or a function that supplies the credential on
+   *  each (re)connect — a bearer, or a fresh one-time ticket. A ticket is
+   *  spent by the handshake, so connectClientTools passes a function that
+   *  mints one per connect; a reconnect after an access token expired then
+   *  carries the refreshed one too. */
   constructor(
     private readonly url: string,
-    private readonly auth: string | undefined | (() => Promise<string | undefined>),
+    private readonly auth:
+      | string
+      | undefined
+      | (() => Promise<string | ClientToolsCredential | undefined>),
     private readonly opts: ConnectClientToolsOptions,
   ) {}
 
@@ -107,7 +118,7 @@ export class ClientToolHost {
     }
     if (typeof this.auth === "function") {
       this.auth().then(
-        (token) => this.open(WS, token),
+        (cred) => this.open(WS, cred),
         (err) => {
           this.opts.onError?.(err);
           // A sign-in that ended does not come back by retrying: stop
@@ -125,10 +136,16 @@ export class ClientToolHost {
     this.open(WS, this.auth);
   }
 
-  private open(WS: WebSocketCtor, token: string | undefined): void {
+  private open(WS: WebSocketCtor, cred: string | ClientToolsCredential | undefined): void {
     if (this.closed) return;
     const protocols = [CLIENT_TOOL_SUBPROTOCOL];
-    if (token) protocols.push("bearer." + token);
+    if (typeof cred === "string") {
+      if (cred) protocols.push("bearer." + cred);
+    } else if (cred && "ticket" in cred) {
+      protocols.push("ticket." + cred.ticket);
+    } else if (cred?.bearer) {
+      protocols.push("bearer." + cred.bearer);
+    }
 
     this.opts.onStatus?.("connecting");
     const ws = new WS(this.url, protocols);
