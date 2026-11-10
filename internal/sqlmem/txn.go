@@ -238,14 +238,23 @@ func (m *Manager) BeginTxn(ctx context.Context, txnID, rootRunID string, key Sco
 	m.txns.reserving[txnID] = key.Tenant
 	m.txns.mu.Unlock()
 
+	// Until the txn is installed, any exit — an error or a panic recovered
+	// higher up — gives the reservation back; a kept placeholder would hold a
+	// global and a tenant slot for the process's life.
+	installed := false
+	defer func() {
+		if !installed {
+			m.txns.mu.Lock()
+			delete(m.txns.open, txnID)
+			delete(m.txns.reserving, txnID)
+			m.txns.mu.Unlock()
+		}
+	}()
 	tx, release, err := m.backend.beginTx(ctx, key)
 	if err != nil {
-		m.txns.mu.Lock()
-		delete(m.txns.open, txnID)
-		delete(m.txns.reserving, txnID)
-		m.txns.mu.Unlock()
 		return 0, err
 	}
+	installed = true
 	m.txns.mu.Lock()
 	m.txns.open[txnID] = &openTxn{tx: tx, key: key, runID: rootRunID, started: time.Now(), release: release}
 	delete(m.txns.reserving, txnID)
