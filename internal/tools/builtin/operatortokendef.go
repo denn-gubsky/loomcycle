@@ -97,7 +97,8 @@ var operatorTokenNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 const operatorTokenDefDescription = `Mint, rotate, retire, and inspect operator auth tokens (see Context op=help topic=operator-tokens). ` +
 	`Each token binds a principal {tenant_id, subject, allowed_scopes}. ` +
-	`OPERATOR-ADMIN only. Operations: create, rotate, retire, get, list. ` +
+	`OPERATOR-ADMIN, except that a tenant operator may manage its own tenant's metrics scrape tokens ` +
+	`(scopes ["metrics:read"], always tenant_metrics). Operations: create, rotate, retire, get, list. ` +
 	`The token plaintext is shown ONCE on create/rotate and never again.`
 
 const operatorTokenDefInputSchema = `{
@@ -115,6 +116,7 @@ const operatorTokenDefInputSchema = `{
     "overrides": {"description": "Optional (create). Locks the per-run settings for runs this token starts, and for retunes it makes: the string \"none\" (every such setting is locked — the model, provider, tier, effort, sampling, limits, output format and the rest), or an array of the settings it may still set. A request that sets a locked one is refused, not ignored. Omit for no lock."},
     "rate": {"type": "object", "description": "Optional (create). Bounds how often this token may start runs: {\"per_minute\": N, \"burst\": M}. burst is how many it may start at once from idle (default: per_minute). A start past the rate is refused with a time to wait. Omit to use the server's default, if it has one.", "properties": {"per_minute": {"type": "integer"}, "burst": {"type": "integer"}}, "required": ["per_minute"]},
     "retention": {"type": "string", "enum": ["none", "default"], "description": "Optional (create). \"none\" makes every run this token starts a no-trace run: its content is delivered to the caller and stored nowhere, and neither a request nor an agent can change that. Omit (or \"default\") to leave the mode to the request and the agent."},
+    "tenant_metrics": {"type": "boolean", "description": "Optional (create, scopes exactly [\"metrics:read\"] only). true limits the scrape token to its own tenant's series on GET /metrics, with none of the whole runtime's. Omit for the full view. Always on for a token a tenant operator mints, which may not set it false."},
     "grace_seconds": {"type": "integer", "description": "Rotation grace window override (rotate)."},
     "import_token": {"type": "string", "description": "Migration only (create): bind an existing secret (the legacy LOOMCYCLE_AUTH_TOKEN) instead of minting. Hashed, never echoed."}
   },
@@ -131,12 +133,15 @@ type operatorTokenDefInput struct {
 	TTLSeconds *int64   `json:"ttl_seconds,omitempty"`
 	// Agents is a pointer so an absent list (no limit) and an empty one
 	// (refused) are told apart.
-	Agents       *[]string            `json:"agents,omitempty"`
-	Surfaces     []string             `json:"surfaces,omitempty"`
-	Overrides    *auth.OverridePolicy `json:"overrides,omitempty"`
-	Rate         *auth.RateLimit      `json:"rate,omitempty"`
-	Retention    string               `json:"retention,omitempty"`
-	GraceSeconds *int                 `json:"grace_seconds,omitempty"`
+	Agents    *[]string            `json:"agents,omitempty"`
+	Surfaces  []string             `json:"surfaces,omitempty"`
+	Overrides *auth.OverridePolicy `json:"overrides,omitempty"`
+	Rate      *auth.RateLimit      `json:"rate,omitempty"`
+	Retention string               `json:"retention,omitempty"`
+	// TenantMetrics is a pointer so a tenant operator's explicit false is
+	// refused rather than read as "omitted".
+	TenantMetrics *bool `json:"tenant_metrics,omitempty"`
+	GraceSeconds  *int  `json:"grace_seconds,omitempty"`
 	// ImportToken (Decision 10 migration) binds an existing secret —
 	// the legacy LOOMCYCLE_AUTH_TOKEN via `--copy-from-env` — instead of
 	// minting. Admin-only; the plaintext is hashed, never echoed.
@@ -159,8 +164,9 @@ func (s *OperatorTokenDef) Execute(ctx context.Context, raw json.RawMessage) (to
 	if s.Store == nil {
 		return errResult("OperatorTokenDef tool: not configured (no Store backend)"), nil
 	}
-	if !tools.OperatorTokenDefPolicy(ctx).Admin {
-		// Default-deny: only the admin transports grant this.
+	pol := tools.OperatorTokenDefPolicy(ctx)
+	if !pol.Admin && !pol.TenantScrape {
+		// Default-deny: only the transports grant this, from the principal.
 		return errResult("OperatorTokenDef tool: requires operator-admin (substrate:admin)"), nil
 	}
 	// ⚠️ UNKNOWN KEYS ARE REFUSED ON THIS TOOL, which is not how the rest of
@@ -181,6 +187,12 @@ func (s *OperatorTokenDef) Execute(ctx context.Context, raw json.RawMessage) (to
 	var in operatorTokenDefInput
 	if err := dec.Decode(&in); err != nil {
 		return errResult(fmt.Sprintf("invalid input JSON: %s%s", err, mintKeyHint(err))), nil
+	}
+	if !pol.Admin {
+		return s.execTenantScrape(ctx, pol.Tenant, in)
+	}
+	if r, refused := tools.AuthorizeTokenOp(ctx, in.Op, "*"); refused {
+		return r, nil
 	}
 	switch in.Op {
 	case "create":
@@ -299,12 +311,19 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		return errResult(fmt.Sprintf("create: %s", rerr)), nil
 	}
 	restrictions.Retention = retention
+	if in.TenantMetrics != nil {
+		restrictions.TenantMetrics = *in.TenantMetrics
+	}
 	if err := restrictions.Validate(in.Agents != nil); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	restrictions, rerr = heldToMinter(ctx, restrictions)
 	if rerr != nil {
 		return errResult(fmt.Sprintf("create: %s", rerr)), nil
+	}
+	// After the minter's: a marker the minter passed on must fit too.
+	if err := restrictions.CheckScopes(scopes); err != nil {
+		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	// A token confined to the run plane cannot mint, rotate or retire, so an
 	// admin token carrying an allowlist would be an admin token that cannot
@@ -747,10 +766,16 @@ func (s *OperatorTokenDef) resolveTarget(ctx context.Context, op string, in oper
 // record cannot be written is refused (RFC GD D3); with no audit sink
 // (NopSink) nothing is written and nothing refused.
 func (s *OperatorTokenDef) auditIntent(ctx context.Context, ev audit.Event) (audit.Event, error) {
-	ident := tools.RunIdentity(ctx)
-	ev.ActorSubject = ident.UserID
-	// ActorTenant is wired in PR2 once RunIdentity carries an
-	// authoritative TenantID (the identity-threading deliverable).
+	ev.ActorSubject = tools.RunIdentity(ctx).UserID
+	// The authenticated caller, where there is one: the HTTP plane stamps a
+	// synthetic run identity, and a tenant operator's change must be told
+	// from an admin's by who made it.
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		ev.ActorTenant = p.TenantID
+		if p.Subject != "" {
+			ev.ActorSubject = p.Subject
+		}
+	}
 	ev.ChangeStatus = audit.ChangeIntent
 	if s.Audit == nil {
 		return ev, nil

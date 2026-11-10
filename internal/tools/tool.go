@@ -1745,13 +1745,16 @@ func DocumentSourceDefPolicy(ctx context.Context) DocumentSourceDefPolicyValue {
 type ctxKeyOperatorTokenDefPolicy struct{}
 
 // OperatorTokenDefPolicyValue is the per-caller OperatorTokenDef-tool
-// access gate (RFC L). Unlike the other Def policies there is no
-// "self"/"named" granularity — minting auth tokens is an operator-admin
-// capability, full stop. Admin == true grants all ops; the zero value is
-// default-deny. The HTTP/gRPC/MCP admin paths set Admin=true after the
-// caller has cleared the substrate:admin scope check.
+// access gate (RFC L). Admin == true grants all ops; TenantScrape grants a
+// tenant operator its own tenant's metrics scrape tokens and nothing else;
+// the zero value is default-deny. The transports set it from the caller's
+// principal (OperatorTokenDefPolicyFor), never from the request.
 type OperatorTokenDefPolicyValue struct {
 	Admin bool
+	// TenantScrape confines every op to the metrics:read tokens of Tenant
+	// that hold tenant_metrics: mint one, rotate, retire, read them.
+	TenantScrape bool
+	Tenant       string
 }
 
 // WithOperatorTokenDefPolicy attaches the policy to ctx.

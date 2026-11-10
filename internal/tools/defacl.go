@@ -65,6 +65,39 @@ func AuthorizeTeamOp(ctx context.Context, op string, names ...string) (Result, b
 	return authorizeInstances(ctx, action, "team", "", names)
 }
 
+// TokenOpAction is the verb a token op asks of the tokens it acts on: mint
+// to issue a secret (create, rotate), manage to retire one, read to look.
+// "" for an op the tool does not have, which it refuses itself.
+func TokenOpAction(op string) string {
+	switch op {
+	case "create", "rotate":
+		return "mint"
+	case "retire":
+		return "manage"
+	case "get", "list":
+		return "read"
+	}
+	return ""
+}
+
+// TenantScrapeTokens is the principal:token instance a tenant operator's
+// scrape-token ops are asked of; an admin's token ops are asked of every
+// token (principal:token:*).
+const TenantScrapeTokens = "metrics"
+
+// AuthorizeTokenOp asks op's verb (TokenOpAction) of principal:token:<kind>,
+// judged and recorded as AuthorizeDefOp judges a definition op. The route
+// gates ask only `read principal:token:*`, the weakest verb, because every op
+// travels in one request body. It returns the refusal and true, or a zero
+// Result and false when the op may proceed.
+func AuthorizeTokenOp(ctx context.Context, op, kind string) (Result, bool) {
+	action := TokenOpAction(op)
+	if action == "" {
+		return Result{}, false
+	}
+	return authorizeInstances(ctx, action, "principal", "token:", []string{kind})
+}
+
 // ACLRecordFunc records a refusal or a shadow divergence of a question a
 // tool asked: the audit sink of the surface that stamped it.
 type ACLRecordFunc func(ctx context.Context, event string, s authz.Surface, d authz.Decision)
