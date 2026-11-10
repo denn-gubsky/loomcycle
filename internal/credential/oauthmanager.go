@@ -19,6 +19,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // Lease timings. Constants, not configuration: they bound how long a replica
@@ -272,7 +273,7 @@ func (m *OAuthManager) startPoller(r oauthRow, sec oauthSecret) {
 	ctx, cancel := context.WithCancel(m.bg)
 	p := &oauthPoller{cancel: cancel, done: make(chan struct{})}
 	m.pollers[r.key()] = p
-	go func() {
+	safego.Go(ctx, "credential.oauth_poller", func() {
 		defer close(p.done)
 		defer cancel()
 		m.poll(ctx, r, sec)
@@ -281,7 +282,7 @@ func (m *OAuthManager) startPoller(r oauthRow, sec oauthSecret) {
 			delete(m.pollers, r.key())
 		}
 		m.mu.Unlock()
-	}()
+	})
 }
 
 // stopPoller cancels and waits for the poller of key, if any.

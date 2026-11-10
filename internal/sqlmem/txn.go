@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // txn.go — RFC AA Phase 3a: runtime-managed explicit transactions that span
@@ -449,7 +451,7 @@ func (m *Manager) startReaper() {
 	// Capture stop/done as locals so the goroutine never re-reads the fields
 	// (stopReaper nils them — that would be a data race on the field).
 	stop, done := m.reaperStop, m.reaperDone
-	go func() {
+	safego.Go(context.Background(), "sqlmem.txn_reaper", func() {
 		defer close(done)
 		t := time.NewTicker(tick)
 		defer t.Stop()
@@ -461,7 +463,7 @@ func (m *Manager) startReaper() {
 				m.reapStale(ttl)
 			}
 		}
-	}()
+	})
 }
 
 // stopReaper signals the reaper and JOINS it, so no reap (a tx.Rollback +

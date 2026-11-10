@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -291,7 +292,7 @@ func New(cfg Config, st store.Store, r runner.Runner, p *pause.Manager, mcp MCPC
 // call only once per instance.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.wg.Add(1)
-	go s.run(ctx)
+	safego.Go(ctx, "scheduler.sweeper", func() { s.run(ctx) })
 }
 
 // Stop signals the sweeper to exit and blocks until the goroutine

@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/coord"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -251,16 +252,17 @@ func (b *Bus) SubscribeBackplane(ctx context.Context, bp coord.Backplane) error 
 	if err != nil {
 		return err
 	}
-	go func() {
+	safego.Go(ctx, "runstate.backplane_listener", func() {
 		for evt := range ch {
 			var rs RunStateEvent
 			if err := json.Unmarshal(evt.Payload, &rs); err != nil {
 				slog.Warn("runstate: malformed backplane event", "err", err)
 				continue
 			}
-			b.publishLocal(rs)
+			// Recovered per event, so one bad event does not stop the listener.
+			safego.Run(ctx, "runstate.backplane_listener", func() { b.publishLocal(rs) })
 		}
-	}()
+	})
 	return nil
 }
 

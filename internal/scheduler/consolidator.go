@@ -14,6 +14,7 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -400,7 +401,7 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 			continue
 		}
 		wg.Add(1)
-		go func(target consolidationTarget) {
+		safego.Go(ctx, "scheduler.consolidation_target", func() {
 			defer wg.Done()
 			defer func() { <-sem }()
 			wasEscalated := escalated[target]
@@ -442,7 +443,7 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 				s.logger.Warn("scheduler: consolidation fan-out target failed",
 					"schedule", row.Name, "tenant", target.TenantID, "user", target.UserID, "err", runErr)
 			}
-		}(target)
+		})
 	}
 	wg.Wait()
 

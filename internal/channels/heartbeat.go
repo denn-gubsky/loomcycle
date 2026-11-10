@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -102,7 +103,7 @@ func (h *HeartbeatRunner) Start(parent context.Context) {
 	h.mu.Unlock()
 
 	for _, spec := range runnable {
-		go h.run(ctx, spec)
+		safego.Go(ctx, "channels.heartbeat", func() { h.run(ctx, spec) })
 	}
 }
 

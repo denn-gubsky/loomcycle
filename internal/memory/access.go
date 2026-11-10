@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -175,7 +176,7 @@ func (f *AccessFlusher) Start() {
 	f.stop = make(chan struct{})
 	f.done = make(chan struct{})
 	stop, done := f.stop, f.done
-	go func() {
+	safego.Go(context.Background(), "memory.access_flusher", func() {
 		defer close(done)
 		t := time.NewTicker(f.interval)
 		defer t.Stop()
@@ -189,7 +190,7 @@ func (f *AccessFlusher) Start() {
 				f.flushLogErr()
 			}
 		}
-	}()
+	})
 }
 
 // Stop signals the goroutine, JOINS it, then performs a final flush so a

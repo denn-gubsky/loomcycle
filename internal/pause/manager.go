@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/coord"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -478,7 +479,7 @@ func recordRunPauses(rec RunPauseRecorder, ids []string, since, until time.Time)
 		close(done)
 		return done
 	}
-	go func() {
+	safego.Go(context.Background(), "pause.record_run_pauses", func() {
 		defer close(done)
 		for _, id := range ids {
 			ctx, cancel := context.WithTimeout(context.Background(), runPauseRecordTimeout)
@@ -487,7 +488,7 @@ func recordRunPauses(rec RunPauseRecorder, ids []string, since, until time.Time)
 			}
 			cancel()
 		}
-	}()
+	})
 	return done
 }
 

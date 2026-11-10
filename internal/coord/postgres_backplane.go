@@ -14,6 +14,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // PostgresBackplane implements Backplane via Postgres LISTEN/NOTIFY.
@@ -194,7 +196,7 @@ func (b *PostgresBackplane) Subscribe(ctx context.Context, topic string) (<-chan
 	b.subs[subID] = cancel
 	b.wg.Add(1)
 	b.mu.Unlock()
-	go func() {
+	safego.Go(subCtx, "coord.backplane_subscriber", func() {
 		defer func() {
 			// Always release the context (go vet flags WithCancel
 			// callers that don't), then remove from the tracking map
@@ -207,7 +209,7 @@ func (b *PostgresBackplane) Subscribe(ctx context.Context, topic string) (<-chan
 			b.wg.Done()
 		}()
 		b.runSubscribeLoop(subCtx, topic, out)
-	}()
+	})
 	return out, nil
 }
 
@@ -339,10 +341,10 @@ func (b *PostgresBackplane) Close() error {
 		c()
 	}
 	done := make(chan struct{})
-	go func() {
+	safego.Go(context.Background(), "coord.backplane_close_wait", func() {
 		b.wg.Wait()
 		close(done)
-	}()
+	})
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
