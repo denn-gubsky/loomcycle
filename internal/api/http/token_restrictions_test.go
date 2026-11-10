@@ -360,6 +360,8 @@ func TestRunRowCreators_AllAdmitThePrincipal(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := map[string]bool{}
+	files := map[string]string{}
+	admitted := map[string]bool{}
 	for _, e := range entries {
 		name := e.Name()
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -374,6 +376,7 @@ func TestRunRowCreators_AllAdmitThePrincipal(t *testing.T) {
 			if !ok || fn.Body == nil {
 				continue
 			}
+			fnName := censusFuncName(fn)
 			creates, admits := false, false
 			// Any reference counts, not only a call: the session helpers hand
 			// s.store.CreateRun / CreateQueuedRun on as a value.
@@ -391,17 +394,20 @@ func TestRunRowCreators_AllAdmitThePrincipal(t *testing.T) {
 				}
 				return true
 			})
-			if !creates {
-				continue
+			if creates {
+				found[fnName] = true
+				files[fnName] = name
 			}
-			found[fn.Name.Name] = true
-			how, listed := runRowCreators[fn.Name.Name]
-			switch {
-			case !listed:
-				t.Errorf("%s (%s) creates a run row and is not in runRowCreators: decide whether a credential can reach it, and gate it with admitPrincipalAgent if so", fn.Name.Name, name)
-			case how == "admit" && !admits:
-				t.Errorf("%s (%s) creates a top-level run row without calling admitPrincipalAgent: a token limited to certain agents could start any agent through it", fn.Name.Name, name)
-			}
+			admitted[fnName] = admitted[fnName] || admits
+		}
+	}
+	for fnName := range found {
+		how, listed := runRowCreators[fnName]
+		switch {
+		case !listed:
+			t.Errorf("%s (%s) creates a run row and is not in runRowCreators: decide whether a credential can reach it, and gate it with admitPrincipalAgent if so", fnName, files[fnName])
+		case how == "admit" && !admitted[fnName]:
+			t.Errorf("%s (%s) creates a top-level run row without calling admitPrincipalAgent: a token limited to certain agents could start any agent through it", fnName, files[fnName])
 		}
 	}
 	for fn := range runRowCreators {

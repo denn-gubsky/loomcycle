@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"go/ast"
 	"slices"
 	"strings"
 	"sync"
@@ -67,4 +68,21 @@ func TestRunOnce_PhasesRunInTheirSecurityOrder(t *testing.T) {
 	if !slices.Equal(got, runOncePhaseOrder) {
 		t.Errorf("RunOnce phase order\n got: %s\nwant: %s", strings.Join(got, " > "), strings.Join(runOncePhaseOrder, " > "))
 	}
+}
+
+// censusFuncName is the name a source census files a function under. RunOnce's
+// phases (methods of runAdmission) are filed as RunOnce: they are one run
+// start split for reading, and a census rule about what "RunOnce" does — counts
+// the rate once, admits the principal before it creates the row, records the
+// run's configuration with the options it runs on — holds across all of them.
+// Their order is TestRunOnce_PhasesRunInTheirSecurityOrder's to pin.
+func censusFuncName(fn *ast.FuncDecl) string {
+	if fn.Recv != nil && len(fn.Recv.List) == 1 {
+		if star, ok := fn.Recv.List[0].Type.(*ast.StarExpr); ok {
+			if id, ok := star.X.(*ast.Ident); ok && id.Name == "runAdmission" {
+				return "RunOnce"
+			}
+		}
+	}
+	return fn.Name.Name
 }
