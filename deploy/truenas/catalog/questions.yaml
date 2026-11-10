@@ -612,6 +612,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT
+            label: LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT
+            description: '(example: 16)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH
             label: LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH
             description: '(example: 8)'

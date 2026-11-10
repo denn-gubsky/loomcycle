@@ -456,6 +456,11 @@ type StorageConfig struct {
 	// (each pins a scope connection). Default 64. 0 = unbounded. Env:
 	// LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS.
 	SqlMemMaxOpenTxns int `yaml:"sqlmem_max_open_txns"`
+	// SqlMemMaxOpenTxnsPerTenant caps how many of those open transactions one
+	// tenant may hold, so one tenant cannot take every slot. 0 = a quarter of
+	// SqlMemMaxOpenTxns (at least 1), resolved by sqlmem. Env:
+	// LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT.
+	SqlMemMaxOpenTxnsPerTenant int `yaml:"sqlmem_max_open_txns_per_tenant"`
 	// SqlMemMaxTxnDepth caps the SAVEPOINT nesting depth of one explicit
 	// transaction (Phase 3b): a nested sql_begin past this errors, bounding the
 	// in-memory savepoint stack a looping agent can grow. Default 16. 0 =
@@ -5703,6 +5708,11 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.Storage.SqlMemMaxOpenTxns = n
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Storage.SqlMemMaxOpenTxnsPerTenant = n
 		}
 	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH"); v != "" {

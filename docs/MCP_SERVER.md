@@ -140,7 +140,7 @@ These tools need a scope of their own:
 | `decision` | `runs:create` (it spends tokens) |
 | `retention_override` | `substrate:tenant` (an admin or a tenant operator; a member may not) |
 | `crypto` | `substrate:tenant` (a member may not: decrypting with the tenant's keys would let it read whatever the tenant sealed) |
-| `ontology` | `substrate:tenant` (an admin or a tenant operator; which of two subjects survives, and which user a subject is, are not a member's call) |
+| `ontology` | `substrate:tenant` (an admin or a tenant operator; which of two subjects survives a merge (`op: merge_subjects`), and which user a subject is (`op: bind_principal`), are not a member's call) |
 | `teamdef` | per operation: `run` and `cancel` need `runs:create`, `poll` needs `runs:read`; the other operations need none |
 
 `review` needs no scope by name: a member reaches it, as it reaches the review routes, and each statement it rules asks the member's access-control `review` grant (an operator's `write`); a member holding `review` nowhere is refused `forbidden`. With `scope: "user"`, `scope_id` names another subject's user documents — an admin's or a tenant operator's reach, never a member's; `op: rulings` shows a member only its own rulings. `op: apply_policy` is refused `forbidden` to any member: applying the policy is an operator's act.

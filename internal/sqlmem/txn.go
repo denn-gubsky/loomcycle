@@ -146,9 +146,31 @@ func (t *openTxn) finishLocked(commit bool) error {
 type txnRegistry struct {
 	mu   sync.Mutex
 	open map[string]*openTxn
+	// reserving maps the txnID of each nil reservation placeholder in open to
+	// its tenant, so the per-tenant count includes a begin still mid-round-trip.
+	// Only BeginTxn adds or removes entries.
+	reserving map[string]string
 }
 
-func newTxnRegistry() *txnRegistry { return &txnRegistry{open: make(map[string]*openTxn)} }
+func newTxnRegistry() *txnRegistry {
+	return &txnRegistry{open: make(map[string]*openTxn), reserving: make(map[string]string)}
+}
+
+// tenantCountLocked counts the open (and reserving) transactions of tenant.
+// Caller holds r.mu. A linear scan: the registry holds at most MaxOpenTxns.
+func (r *txnRegistry) tenantCountLocked(tenant string) int {
+	n := 0
+	for id, t := range r.open {
+		if t != nil {
+			if t.key.Tenant == tenant {
+				n++
+			}
+		} else if r.reserving[id] == tenant {
+			n++
+		}
+	}
+	return n
+}
 
 // rollbackAll rolls back + releases every open transaction (Manager.Close).
 func (r *txnRegistry) rollbackAll() {
@@ -176,7 +198,8 @@ func (m *Manager) InTxn(txnID string) bool {
 // BeginTxn opens an explicit transaction for txnID — or, when one is already
 // open for txnID, opens a nested level (a SAVEPOINT) on it (Phase 3b). Returns
 // the resulting nesting depth (1 for a freshly-opened txn; 2+ for a nested one).
-// Errors if the process-wide MaxOpenTxns cap is reached (new txn) or the
+// Errors if the process-wide MaxOpenTxns cap or the tenant's
+// MaxOpenTxnsPerTenant share is reached (new txn) or the
 // per-txn MaxTxnDepth cap is reached (nested).
 func (m *Manager) BeginTxn(ctx context.Context, txnID, rootRunID string, key ScopeKey) (int, error) {
 	// beginTx PROVISIONS the scope (schema + LOGIN role on postgres), so this is a
@@ -201,20 +224,29 @@ func (m *Manager) BeginTxn(ctx context.Context, txnID, rootRunID string, key Sco
 		m.txns.mu.Unlock()
 		return 0, fmt.Errorf("too many open transactions (%d) — commit or rollback before opening more", max)
 	}
+	// The tenant's share of the cap: refused with the same error class as the
+	// global cap, so callers need not tell the two apart.
+	if share := m.cfg.MaxOpenTxnsPerTenant; m.cfg.MaxOpenTxns > 0 && share > 0 && m.txns.tenantCountLocked(key.Tenant) >= share {
+		m.txns.mu.Unlock()
+		return 0, fmt.Errorf("too many open transactions for this tenant (%d) — commit or rollback before opening more", share)
+	}
 	// Reserve the slot with a placeholder so a concurrent BeginTxn for the same
 	// id can't also pass the check, then release the lock for the DB round-trip.
 	m.txns.open[txnID] = nil
+	m.txns.reserving[txnID] = key.Tenant
 	m.txns.mu.Unlock()
 
 	tx, release, err := m.backend.beginTx(ctx, key)
 	if err != nil {
 		m.txns.mu.Lock()
 		delete(m.txns.open, txnID)
+		delete(m.txns.reserving, txnID)
 		m.txns.mu.Unlock()
 		return 0, err
 	}
 	m.txns.mu.Lock()
 	m.txns.open[txnID] = &openTxn{tx: tx, key: key, runID: rootRunID, started: time.Now(), release: release}
+	delete(m.txns.reserving, txnID)
 	m.txns.mu.Unlock()
 	m.touch(key) // a transaction is durable-scope use (GC last_used)
 	return 1, nil
