@@ -31,6 +31,7 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/recall"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -2082,10 +2083,10 @@ func runSummarizeCall(ctx context.Context, provider providers.Provider, req prov
 			// Whatever follows the error is discarded, but still read: a sender
 			// left blocked on this channel (a driver's goroutine, or the lane
 			// forwarder in front of it) would live until the run's ctx ends.
-			go func() {
+			safego.Go(ctx, "loop.summary_drain", func() {
 				for range ch {
 				}
-			}()
+			})
 			// A driver whose read failed on the cancelled request reports the
 			// cancel as an error; it is the cancel, as below.
 			if ctx.Err() != nil {
@@ -3253,7 +3254,7 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 		hbDone := make(chan struct{})
 		defer close(hbDone)
 		hbCtx := ctx
-		go func() {
+		safego.Go(hbCtx, "loop.heartbeat", func() {
 			t := time.NewTicker(parkHeartbeatInterval)
 			defer t.Stop()
 			for {
@@ -3263,10 +3264,13 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 				case <-hbCtx.Done():
 					return
 				case <-t.C:
-					opts.OnHeartbeat()
+					// One pulse at a time: a pulse that panics must not stop
+					// the rest, or the sweeper fails a working run as
+					// heartbeat_timeout.
+					safego.Run(hbCtx, "loop.heartbeat", opts.OnHeartbeat)
 				}
 			}
-		}()
+		})
 	}
 
 	// What Context op=self reports about tool_choice / output_format. Stamped
@@ -5261,8 +5265,18 @@ func executePendingTools(
 	var wg sync.WaitGroup
 	for i, tu := range pending {
 		wg.Add(1)
-		go func(i int, tu providers.ToolUse) {
+		safego.Go(ctx, "loop.tool_call", func() {
 			defer wg.Done()
+			// Every call answers, even one whose goroutine panicked outside
+			// the dispatcher's own recover: a tool_use with no tool_result is
+			// a request the provider refuses.
+			answered := false
+			defer func() {
+				if !answered {
+					resCh <- result{idx: i, tu: tu, res: tools.Result{IsError: true,
+						Text: "tool call failed: an internal error ended it before it answered"}}
+				}
+			}()
 			// Acquire the slot. ctx-aware so a parent cancellation
 			// during a saturated batch unblocks the goroutine instead
 			// of having it sit forever on a full sem channel.
@@ -5270,6 +5284,7 @@ func executePendingTools(
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
+				answered = true
 				resCh <- result{idx: i, tu: tu, res: tools.Result{
 					IsError: true,
 					Text:    "tool dispatch cancelled before slot acquired: " + ctx.Err().Error(),
@@ -5286,13 +5301,14 @@ func executePendingTools(
 				return dispatchOneTool(callCtx, dispatcher, tu, hookDispatcher, hookIdent, emit)
 			})
 			endWork()
+			answered = true
 			resCh <- result{idx: i, tu: tu, res: r, notRetained: mark.NotRetained()}
-		}(i, tu)
+		})
 	}
-	go func() {
+	safego.Go(ctx, "loop.tool_results_close", func() {
 		wg.Wait()
 		close(resCh)
-	}()
+	})
 
 	results := make([]providers.ContentBlock, len(pending))
 	for r := range resCh {
