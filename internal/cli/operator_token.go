@@ -63,6 +63,7 @@ func runOperatorTokenCreate(args []string, stdout, stderr io.Writer) int {
 	ratePerMinute := fs.Int("rate-per-minute", 0, "how many runs a minute this token may start (default: the server's default, if any)")
 	rateBurst := fs.Int("rate-burst", 0, "how many runs it may start at once from idle (default: --rate-per-minute)")
 	retention := fs.String("retention", "", "\"none\" makes every run this token starts a no-trace run: its content is stored nowhere (default: the request and the agent decide)")
+	tenantMetrics := fs.Bool("tenant-metrics", false, "with --scopes metrics:read only: the scrape token reads only its own tenant's series on /metrics (default: the full view; always on for a token a tenant operator mints)")
 	ttlSeconds := fs.Int64("ttl-seconds", 0, "lifetime in seconds; the token stops working when it runs out (default: never expires; not allowed with substrate:admin)")
 	httpTimeout := fs.Duration("http-timeout", 15*time.Second, "client-side HTTP request timeout")
 	if err := fs.Parse(args); err != nil {
@@ -91,6 +92,9 @@ func runOperatorTokenCreate(args []string, stdout, stderr io.Writer) int {
 	}
 	if *retention != "" {
 		payload["retention"] = *retention
+	}
+	if *tenantMetrics {
+		payload["tenant_metrics"] = true
 	}
 	if *overrides != "" {
 		if *overrides == "none" {
