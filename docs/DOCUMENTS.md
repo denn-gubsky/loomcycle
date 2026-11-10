@@ -1330,6 +1330,20 @@ memory:
 - Calls take the decision / chat lane of their provider and are charged to the classifying run under the usage purpose `classify`.
 - The thresholds are provisional: they are to be set from a measurement against a labelled corpus.
 
+**Concept ranking fallback — `concept_fallback`** (off by default). A decision model's yes-probabilities are uncalibrated and run low on broad topics, so a document can reach `min_probability` on no concept at all, and a scheme asked level by level then never gets past the top level. With the fallback on, an answer (one set of yes/no questions about sibling concepts asked together; with more than 20 siblings, each batch of 20) in which no concept reaches `min_probability` takes its single best concept, when that concept's probability is at least the fallback's `min_probability` and it leads the runner-up by at least `min_margin`. A tie is never taken, an answer that already has a concept above `min_probability` gets nothing added, and an answer yields at most one pick. It applies to every answer, including each level of the level-by-level walk, and the walk descends into a fallback pick (its children face the normal threshold first, then the fallback).
+
+```yaml
+memory:
+  classifier:
+    decision: { provider: ollama-local, model: nimble }
+    min_probability: 0.6
+    concept_fallback:
+      min_probability: 0.3   # the leader's floor: above 0, at most memory.classifier.min_probability
+      min_margin: 0.1        # its least lead over the runner-up, 0–1 (0 still needs a strict lead)
+```
+
+A pick is a proposal like any other concept. The classify answer marks it `fallback: true` and its statement carries `attributes.concept_fallback: true` (set by the runtime only: a writer that names it is refused), so the judge, a review policy and the operator can tell it apart; `classified_by` stays `model`, so a policy rule on `classified_by: rules` never accepts one. Decision model only: the block needs a `decision` model at load, and the chat model is unchanged. A bad block (a floor of 0 or below, a floor above `min_probability`, a margin outside 0–1) fails the load. Since #2487.
+
 **Revising the ontology.** The tenant ontology is created at `/memory/ontology`, but the runtime knows it by its document id, recorded when it is created or first found there: renaming it keeps it the ontology, and another document put at that name is an ordinary document. Every tenant ontology still known only by its name is recorded at boot. Revise the confirmed ontology document in place (edit its sections). Replacing it with a new document gives every concept a new chunk: the statements already filed still point at the old concepts, and the next classify files duplicates against the new ones.
 
 ### Merging two subjects

@@ -46,7 +46,7 @@ not source `.env.local` in a container — only real env + the mounted overlay.
    SQL Memory's per-scope roles also connect through `PUBLIC`'s `CONNECT` on
    `loomcycle_sqlmem` (the default). If your Postgres revokes it, run
    `GRANT CONNECT ON DATABASE loomcycle_sqlmem TO PUBLIC;`, or every Document op
-   fails with `permission denied for database`.
+   fails with `permission denied for database`. The runtime logs this at boot.
 2. **Datasets**, owned by the distroless uid (the image is fixed at **65532**):
    ```sh
    mkdir -p /mnt/tank/loomcycle/{data,config,work}
@@ -55,6 +55,10 @@ not source `.env.local` in a container — only real env + the mounted overlay.
    - `data` → loomcycle's own state (SQL-Memory cache, snapshots).
    - `config` → the thin overlay (`loomcycle.yaml`).
    - `work` (and any more) → agent filesystem Volumes (RFC AH).
+   - The `dynamic_root` host directory (run inboxes, `_ephemeral/r_<run>`) must
+     be owned by 65532 too. If it isn't, every File download and kept tool result
+     fails with `file not kept: mkdir … permission denied`; the runtime logs an
+     error at boot naming the path and the `chown`.
 3. The **config overlay**: copy
    [`deploy/truenas/loomcycle.overlay.example.yaml`](../deploy/truenas/loomcycle.overlay.example.yaml)
    to `/mnt/tank/loomcycle/config/loomcycle.yaml` and edit its `volumes:` block so
