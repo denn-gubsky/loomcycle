@@ -21,7 +21,9 @@ fails the build when one names a metric that is no longer emitted.
 model throughput) and the in-process instruments: runs, tokens, cost,
 provider requests, model calls, tool calls, database pools, consolidation
 and token budgets. They are counted inside loomcycle, so they are right at
-any trace sampling ratio, and a scrape reads memory only.
+any trace sampling ratio, and a scrape runs no database scan (in cluster
+mode it reads the per-user quota snapshot, one bounded query, as it always
+has).
 
 The same instruments go out over OTLP with `OTEL_METRICS_EXPORTER=otlp`
 (and an endpoint): useful when the collector is the only thing that can

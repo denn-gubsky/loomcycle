@@ -17,9 +17,12 @@
 // them and skewed the error rate. Counted in-process, they hold at any
 // sampling.
 //
-// The cost rule that remains: a scrape does no database work. Every
-// series reads memory (an observable instrument's callback included; a
-// pool reports sql.DB.Stats / pgxpool.Stat, which run no query).
+// The cost rule that remains: no database scan per scrape. Every series
+// reads memory (an observable instrument's callback included; a pool
+// reports sql.DB.Stats / pgxpool.Stat, which run no query). The one
+// exception predates the instruments: in cluster mode the semaphore's
+// Stats reads the per-user quota snapshot from the database (one SELECT,
+// bounded by a 1 s timeout) for loomcycle_concurrency_per_user.
 package http
 
 import (
@@ -68,7 +71,8 @@ func promViewForPrincipal(auth.Principal, bool) promView {
 }
 
 // handleMetricsProm serves GET /metrics. Bearer-authed (middleware
-// already gates the route). Live-read; no DB query.
+// already gates the route). Live-read; no DB scan (see the file header for
+// the cluster-mode quota snapshot).
 func (s *Server) handleMetricsProm(w http.ResponseWriter, r *http.Request) {
 	s.renderMetricsProm(w, promViewForPrincipal(auth.PrincipalFromContext(r.Context())))
 }

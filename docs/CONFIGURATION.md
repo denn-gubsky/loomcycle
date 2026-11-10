@@ -3524,7 +3524,9 @@ The substrate (process, concurrency, provider lanes, model throughput,
 the trace-export pipeline, build info) is read from live state. After it
 come in-process instruments, counted where the work happens: they are
 right at any trace sampling ratio (a rate derived from exported spans sees
-only the sampled runs), and a scrape still runs no database query.
+only the sampled runs), and a scrape still runs no database scan (the one
+query it makes is the pre-existing per-user quota snapshot in cluster mode,
+bounded by a 1 s timeout).
 
 | Series | Labels | What it counts |
 |---|---|---|

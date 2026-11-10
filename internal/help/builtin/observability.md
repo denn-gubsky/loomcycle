@@ -444,7 +444,9 @@ Grafana loads those dashboards too.
 concurrency, provider lanes, model throughput, trace-export counters —
 and in-process instruments counted where the work happens. Because they
 are counted in loomcycle, not derived from exported spans, a run rate or
-an error rate is right at any sampling ratio; a scrape reads memory only.
+an error rate is right at any sampling ratio. A scrape runs no database
+scan; the one query it makes is the per-user quota snapshot in cluster mode,
+as it always has.
 
 - **Runs:** `loomcycle_runs_total{tenant,status,trigger}`,
   `loomcycle_run_duration_seconds{tenant,status}` (histogram),
