@@ -50,7 +50,6 @@ type allowed struct {
 // "repo/relative/path.go Func" or "repo/relative/path.go Recv.Method".
 // Lengths measured on origin/main (cf550c366) on 2026-11-10.
 var allowlist = map[string]allowed{
-	"internal/store/sqlite/sqlite.go Store.migrate":                       {2133, "logic", "P1"},
 	"internal/config/config.go LoadLayers":                                {1326, "logic", "P4"},
 	"internal/api/http/server.go Server.RunOnce":                          {1048, "logic", "P2"},
 	"internal/config/config.go validate":                                  {1008, "logic", "P4"},
