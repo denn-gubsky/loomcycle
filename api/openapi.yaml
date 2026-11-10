@@ -2746,6 +2746,8 @@ components:
         recursive: { type: boolean }
         kind_filter: { type: string, description: "ls: document/volume_mount/memory_entry/directory." }
         resource_too: { type: boolean }
+        with_summary: { type: boolean, description: "ls (tenant scope): add each entry's annotation as summary." }
+        summary_chars: { type: integer, description: "ls with_summary: the most abstract characters the page carries." }
     # CryptoToolInput mirrors the Crypto tool's InputSchema() plus the operator
     # API's `tenant`; its properties and enums are drift-tested against the
     # live tool schema (internal/api/http/openapi_test.go).

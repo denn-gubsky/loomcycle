@@ -15,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -261,7 +262,8 @@ func (e *Executor) startRun(ctx context.Context, in runner.RunInput) *runStream 
 	// stream.cancel (client abandon / unresumable park).
 	// The surface the run arrived on, for an access-control rule's
 	// `transport` condition evaluated under the peer's set (peerACLOwner).
-	runCtx, cancel := context.WithCancel(authz.WithTransport(context.WithoutCancel(ctx), "a2a"))
+	runCtx, cancel := context.WithCancel(lcotel.WithRunTrigger(
+		authz.WithTransport(context.WithoutCancel(ctx), "a2a"), lcotel.TriggerA2A))
 	go func() {
 		defer close(done)
 		defer close(events)

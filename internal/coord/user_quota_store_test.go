@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 )
 
 // freshUserQuotasPool returns a pgxpool that the test owns and that
@@ -51,7 +53,7 @@ func TestUserQuotaStore_AcquireReleaseLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if got := snap[user]; got != 2 {
+	if got, _ := heldBy(snap, "", user); got != 2 {
 		t.Errorf("snapshot[%s] = %d, want 2", user, got)
 	}
 
@@ -59,7 +61,7 @@ func TestUserQuotaStore_AcquireReleaseLifecycle(t *testing.T) {
 	s.Release(ctx, "", user)
 
 	snap2, _ := s.Snapshot(ctx)
-	if _, present := snap2[user]; present {
+	if _, present := heldBy(snap2, "", user); present {
 		t.Errorf("snapshot still shows %s after full release: %v", user, snap2)
 	}
 }
@@ -102,7 +104,7 @@ func TestUserQuotaStore_FirstAcquireCreatesRow(t *testing.T) {
 
 	// Snapshot pre-acquire: user should not be present.
 	snap, _ := s.Snapshot(ctx)
-	if _, present := snap[user]; present {
+	if _, present := heldBy(snap, "", user); present {
 		t.Fatalf("user %s present in snapshot before any acquire: %v", user, snap)
 	}
 
@@ -111,7 +113,7 @@ func TestUserQuotaStore_FirstAcquireCreatesRow(t *testing.T) {
 		t.Fatalf("first acquire: ok=%v err=%v", ok, err)
 	}
 	snap, _ = s.Snapshot(ctx)
-	if got := snap[user]; got != 1 {
+	if got, _ := heldBy(snap, "", user); got != 1 {
 		t.Errorf("after first acquire: count=%d, want 1", got)
 	}
 }
@@ -136,8 +138,8 @@ func TestUserQuotaStore_ReleaseUnderflowIsNoop(t *testing.T) {
 	// Check the row went to 0 and stays there (no negative count, no
 	// CHECK constraint violation).
 	snap, _ := s.Snapshot(ctx)
-	if _, present := snap[user]; present {
-		t.Errorf("user %s should be absent from snapshot at count=0, got %v", user, snap[user])
+	if _, present := heldBy(snap, "", user); present {
+		t.Errorf("user %s should be absent from snapshot at count=0, got %v", user, snap)
 	}
 }
 
@@ -155,7 +157,7 @@ func TestUserQuotaStore_SnapshotExcludesZeroCounts(t *testing.T) {
 	s.Release(ctx, "", user)
 
 	snap, _ := s.Snapshot(ctx)
-	if _, present := snap[user]; present {
+	if _, present := heldBy(snap, "", user); present {
 		t.Errorf("user %s with active_count=0 should be excluded from Snapshot, got %v", user, snap)
 	}
 }
@@ -215,7 +217,7 @@ func TestUserQuotaStore_TwoReplicasConcurrent(t *testing.T) {
 		t.Errorf("got %d successful acquires, want exactly %d", successes.Load(), cap)
 	}
 	snap, _ := sA.Snapshot(context.Background())
-	if got := snap[user]; got != cap {
+	if got, _ := heldBy(snap, "", user); got != cap {
 		t.Errorf("snapshot[%s] = %d, want %d", user, got, cap)
 	}
 }
@@ -290,10 +292,10 @@ func TestUserQuotaStore_TenantIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if got := snap[FairnessDisplayKey("t2", user)]; got != 1 {
+	if got, _ := heldBy(snap, "t2", user); got != 1 {
 		t.Errorf("t2 count = %d, want 1 (untouched by t1 release)", got)
 	}
-	if got := snap[FairnessDisplayKey("t1", user)]; got != 1 {
+	if got, _ := heldBy(snap, "t1", user); got != 1 {
 		t.Errorf("t1 count = %d, want 1 (re-acquired)", got)
 	}
 }
@@ -333,4 +335,14 @@ func TestUserQuotaStore_CountAdmittedCountsPastTheCap(t *testing.T) {
 	if n != 0 {
 		t.Errorf("active_count after two releases = %d, want 0", n)
 	}
+}
+
+// heldBy is (tenant, user)'s count in a snapshot, and whether it is there.
+func heldBy(snap []concurrency.UserCount, tenant, user string) (int, bool) {
+	for _, u := range snap {
+		if u.Tenant == tenant && u.User == user {
+			return u.Held, true
+		}
+	}
+	return 0, false
 }

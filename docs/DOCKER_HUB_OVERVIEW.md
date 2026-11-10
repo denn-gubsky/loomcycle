@@ -80,7 +80,7 @@ No `vX` or `vX.Y` floating tags during the v0.11.x line — too early for major-
 | `LOOMCYCLE_ALLOW_OPEN_MODE` | (unset) | `1` starts in open mode (no auth, every route open) on a non-loopback address anyway. Throwaway test harnesses only |
 | `LOOMCYCLE_STORAGE_BACKEND` | `sqlite` | Set to `postgres` to use the Postgres backend |
 | `LOOMCYCLE_PG_DSN` | (unset) | Postgres DSN — required when backend is postgres |
-| `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` | (unset) | OTLP endpoint for distributed traces; unset = tracing off |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (unset) | OTLP endpoint URL for distributed traces (the standard `OTEL_*` set); unset = tracing off |
 
 ### Volume mounts
 

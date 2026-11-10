@@ -134,9 +134,13 @@ Already a span attribute (`loomcycle.queue_wait_ms`). Query directly:
 
 ```
 VISUALIZE: P95(loomcycle.queue_wait_ms)
-GROUP BY:  loomcycle.user_id
+GROUP BY:  loomcycle.user_hash
 WHERE:     name = "loomcycle.run"
 ```
+
+Spans carry a keyed hash of the user id, not the id itself (`loomcycle otel
+user-hash <tenant> <user>` prints a user's hash); the raw
+`loomcycle.user_id` appears only with `LOOMCYCLE_OTEL_RAW_USER_ID=1`.
 
 ### `parent_child_span_graph`
 
@@ -165,8 +169,8 @@ Roughly 10 minutes against your account:
 
 | Want to | Change |
 |---|---|
-| Lower / raise sampling | `.env`: `LOOMCYCLE_OTEL_SAMPLER_RATIO=0.1` (10%; raise to 1.0 for debugging, lower for cost control) |
-| Send to a different Honeycomb environment | `LOOMCYCLE_OTEL_SERVICE_NAME=loomcycle-staging` (Honeycomb routes by service name) |
+| Lower / raise sampling | `.env`: `OTEL_TRACES_SAMPLER=parentbased_traceidratio`, `OTEL_TRACES_SAMPLER_ARG=0.1` (10%; raise to 1.0 for debugging, lower for cost control) |
+| Send to a different Honeycomb environment | `OTEL_SERVICE_NAME=loomcycle-staging` (Honeycomb routes by service name) |
 | Add trace-tail / fast-fail sampling | Configure Honeycomb's [Sampling Proxy](https://docs.honeycomb.io/manage-data-volume/sampling/) sidecar; loomcycle's OTLP endpoint env var points at the proxy instead |
 
 ## See also

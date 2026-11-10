@@ -75,6 +75,10 @@ func (b *boot) buildServer() {
 	// Context tool to the COMPLETE post-append catalog, so don't set it here.
 	b.srv = lchttp.New(cfg, pr, b.allTools, sem, storeIface)
 	srv := b.srv
+	// The collector headers read from a file, masked in what is persisted too.
+	for _, v := range b.otelHeaderSecrets {
+		srv.Redactor().RegisterOperator(v)
+	}
 	// RFC ES #8: open mode on a listener beyond loopback serves every route to
 	// the network. Decided here — the store is open, so an admin token counts —
 	// with the server's own predicate, before the listeners start.
@@ -250,19 +254,20 @@ func (b *boot) openSQLMemory() {
 			sqlMemRoot = filepath.Join(cfg.Env.DataDir, "sqlmem")
 		}
 		sqlMemCfg := sqlmem.Config{
-			Root:               sqlMemRoot,
-			PgDSN:              cfg.Storage.SqlMemPgDSN,
-			QuotaBytes:         cfg.Storage.SqlMemQuotaBytes,
-			StatementTimeoutMS: cfg.Storage.SqlMemStatementTimeoutMS,
-			MaxRows:            cfg.Storage.SqlMemMaxRows,
-			MaxResultBytes:     cfg.Storage.SqlMemMaxResultBytes,
-			TxnTimeoutMS:       cfg.Storage.SqlMemTxnTimeoutMS,
-			MaxOpenTxns:        cfg.Storage.SqlMemMaxOpenTxns,
-			MaxTxnDepth:        cfg.Storage.SqlMemMaxTxnDepth,
-			ScopeTTLMS:         cfg.Storage.SqlMemScopeTTLMS,
-			GCIntervalMS:       cfg.Storage.SqlMemGCIntervalMS,
-			TotalMaxBytes:      cfg.Storage.SqlMemTotalMaxBytes,
-			SharedSchemas:      cfg.Storage.SqlMemSharedSchemas,
+			Root:                 sqlMemRoot,
+			PgDSN:                cfg.Storage.SqlMemPgDSN,
+			QuotaBytes:           cfg.Storage.SqlMemQuotaBytes,
+			StatementTimeoutMS:   cfg.Storage.SqlMemStatementTimeoutMS,
+			MaxRows:              cfg.Storage.SqlMemMaxRows,
+			MaxResultBytes:       cfg.Storage.SqlMemMaxResultBytes,
+			TxnTimeoutMS:         cfg.Storage.SqlMemTxnTimeoutMS,
+			MaxOpenTxns:          cfg.Storage.SqlMemMaxOpenTxns,
+			MaxOpenTxnsPerTenant: cfg.Storage.SqlMemMaxOpenTxnsPerTenant,
+			MaxTxnDepth:          cfg.Storage.SqlMemMaxTxnDepth,
+			ScopeTTLMS:           cfg.Storage.SqlMemScopeTTLMS,
+			GCIntervalMS:         cfg.Storage.SqlMemGCIntervalMS,
+			TotalMaxBytes:        cfg.Storage.SqlMemTotalMaxBytes,
+			SharedSchemas:        cfg.Storage.SqlMemSharedSchemas,
 		}
 		// SQL Memory FOLLOWS the main store backend (RFC AA decision 4): a
 		// postgres deploy gets schema-per-scope in the SEPARATE aux DB; a

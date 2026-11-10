@@ -5323,6 +5323,10 @@ type Event struct {
 	// the engine, the units and tokens spent and the cost, never the text.
 	// SERVER-generated. Nil on every other event type.
 	Transcription *TranscriptionInfo `protobuf:"bytes,24,opt,name=transcription,proto3" json:"transcription,omitempty"`
+	// trace_id on type=started frames: the OpenTelemetry trace the run is
+	// recorded in. Empty when tracing is off or the trace is not sampled, and
+	// on every other event type.
+	TraceId       string `protobuf:"bytes,25,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5523,6 +5527,13 @@ func (x *Event) GetTranscription() *TranscriptionInfo {
 		return x.Transcription
 	}
 	return nil
+}
+
+func (x *Event) GetTraceId() string {
+	if x != nil {
+		return x.TraceId
+	}
+	return ""
 }
 
 // OverrideInfo is the type=override payload (RFC DC). Mirrors
@@ -7566,6 +7577,10 @@ type Agent struct {
 	// on every other run, in a listing, and on another replica.
 	QueuePosition int32  `protobuf:"varint,25,opt,name=queue_position,json=queuePosition,proto3" json:"queue_position,omitempty"`
 	QueueReason   string `protobuf:"bytes,26,opt,name=queue_reason,json=queueReason,proto3" json:"queue_reason,omitempty"`
+	// trace_id is the OpenTelemetry trace the run's span was recorded in, for
+	// following the run into a tracing backend. Empty when tracing was off or
+	// the trace was not sampled.
+	TraceId       string `protobuf:"bytes,27,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7778,6 +7793,13 @@ func (x *Agent) GetQueuePosition() int32 {
 func (x *Agent) GetQueueReason() string {
 	if x != nil {
 		return x.QueueReason
+	}
+	return ""
+}
+
+func (x *Agent) GetTraceId() string {
+	if x != nil {
+		return x.TraceId
 	}
 	return ""
 }
@@ -16672,7 +16694,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\n" +
 	"media_type\x18\x04 \x01(\tR\tmediaType\x12\x12\n" +
 	"\x04data\x18\x05 \x01(\fR\x04data\x12\x12\n" +
-	"\x04kind\x18\x06 \x01(\tR\x04kind\"\x81\n" +
+	"\x04kind\x18\x06 \x01(\tR\x04kind\"\x9c\n" +
 	"\n" +
 	"\x05Event\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
@@ -16702,7 +16724,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\rteam_decision\x18\x15 \x01(\v2\x1a.loomcycle.v1.TeamDecisionR\fteamDecision\x129\n" +
 	"\tadmission\x18\x16 \x01(\v2\x1b.loomcycle.v1.AdmissionInfoR\tadmission\x122\n" +
 	"\x04file\x18\x17 \x01(\v2\x1e.loomcycle.v1.FileCapturedInfoR\x04file\x12E\n" +
-	"\rtranscription\x18\x18 \x01(\v2\x1f.loomcycle.v1.TranscriptionInfoR\rtranscription\"x\n" +
+	"\rtranscription\x18\x18 \x01(\v2\x1f.loomcycle.v1.TranscriptionInfoR\rtranscription\x12\x19\n" +
+	"\btrace_id\x18\x19 \x01(\tR\atraceId\"x\n" +
 	"\fOverrideInfo\x12\x16\n" +
 	"\x06source\x18\x01 \x01(\tR\x06source\x12\x1d\n" +
 	"\n" +
@@ -16867,7 +16890,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x0fGetAgentRequest\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\"&\n" +
 	"\rGetRunRequest\x12\x15\n" +
-	"\x06run_id\x18\x01 \x01(\tR\x05runId\"\x9b\a\n" +
+	"\x06run_id\x18\x01 \x01(\tR\x05runId\"\xb6\a\n" +
 	"\x05Agent\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x1d\n" +
@@ -16900,7 +16923,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\rparent_run_id\x18\x17 \x01(\tR\vparentRunId\x12\x1c\n" +
 	"\tretention\x18\x18 \x01(\tR\tretention\x12%\n" +
 	"\x0equeue_position\x18\x19 \x01(\x05R\rqueuePosition\x12!\n" +
-	"\fqueue_reason\x18\x1a \x01(\tR\vqueueReason\"\xe6\x01\n" +
+	"\fqueue_reason\x18\x1a \x01(\tR\vqueueReason\x12\x19\n" +
+	"\btrace_id\x18\x1b \x01(\tR\atraceId\"\xe6\x01\n" +
 	"\n" +
 	"AgentUsage\x12!\n" +
 	"\finput_tokens\x18\x01 \x01(\x03R\vinputTokens\x12#\n" +

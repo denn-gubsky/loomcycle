@@ -1192,6 +1192,87 @@ class LoomcycleClient:
         )
         return await self.document(body)
 
+    async def get_annotation(
+        self,
+        *,
+        id: Optional[str] = None,  # noqa: A002 - the wire name
+        document_id: Optional[str] = None,
+        path: Optional[str] = None,
+        level: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        """The annotations of one chunk, document or folder (``document`` op
+        ``get_annotation``): a brief and an abstract each, marked ``stale``
+        when the text they were written from changed since. A folder is named by
+        ``path`` with ``level="path"``. Tenant scope.
+
+        Returns ``{annotations: [{chunk_id, document_id, level, brief,
+        abstract, language, manual, written_at, written_by, folder?, stale}]}``."""
+        body: dict[str, Any] = {"op": "get_annotation", "scope": "tenant"}
+        for k, v in (("id", id), ("document_id", document_id), ("path", path), ("level", level)):
+            if v is not None:
+                body[k] = v
+        return await self.document(body)
+
+    async def list_annotations(
+        self,
+        *,
+        level: Optional[str] = None,
+        document_id: Optional[str] = None,
+        under_path: Optional[str] = None,
+        stale: Optional[bool] = None,
+        manual: Optional[bool] = None,
+        written_before: Optional[str] = None,
+        limit: Optional[int] = None,
+        after: Optional[str] = None,
+    ) -> Mapping[str, Any]:
+        """Page through the tenant's annotations (``document`` op
+        ``list_annotations``); pass the answer's ``next_cursor`` as ``after``.
+
+        Returns ``{annotations: [...], next_cursor?}``."""
+        body: dict[str, Any] = {"op": "list_annotations", "scope": "tenant"}
+        for k, v in (
+            ("level", level), ("document_id", document_id), ("under_path", under_path), ("stale", stale),
+            ("manual", manual), ("written_before", written_before), ("limit", limit), ("after", after),
+        ):
+            if v is not None:
+                body[k] = v
+        return await self.document(body)
+
+    async def annotate(
+        self,
+        *,
+        brief: str,
+        abstract: str,
+        id: Optional[str] = None,  # noqa: A002 - the wire name
+        document_id: Optional[str] = None,
+        path: Optional[str] = None,
+        level: Optional[str] = None,
+        inputs_sha256: Optional[str] = None,
+        prompt_version: Optional[int] = None,
+        language: Optional[str] = None,
+        model: Optional[str] = None,
+        manual: Optional[bool] = None,
+    ) -> Mapping[str, Any]:
+        """Write an annotation (``document`` op ``set_annotation``). Without
+        ``inputs_sha256`` it is sent as an operator's manual annotation
+        (``manual=True`` unless given), which the annotation pass never
+        overwrites; the operator plane alone may write one.
+
+        Returns ``{annotation: {...}}``."""
+        body: dict[str, Any] = {"op": "set_annotation", "scope": "tenant", "brief": brief, "abstract": abstract}
+        for k, v in (
+            ("id", id), ("document_id", document_id), ("path", path), ("level", level),
+            ("inputs_sha256", inputs_sha256), ("prompt_version", prompt_version),
+            ("language", language), ("model", model),
+        ):
+            if v is not None:
+                body[k] = v
+        if manual is not None:
+            body["manual"] = manual
+        elif inputs_sha256 is None:
+            body["manual"] = True
+        return await self.document(body)
+
     async def move_documents(
         self,
         *,
@@ -3444,6 +3525,9 @@ def _agent_to_dict(a: pb.Agent) -> Mapping[str, Any]:
         "completed_at": _ts_to_iso(a.completed_at) if a.HasField("completed_at") else None,
         "stop_reason": a.stop_reason,
         "retention": a.retention,
+        # The OpenTelemetry trace the run was recorded in; "" when tracing was
+        # off or the trace was not sampled.
+        "trace_id": a.trace_id,
         "error": a.error,
         "usage": {
             "input_tokens": a.usage.input_tokens,

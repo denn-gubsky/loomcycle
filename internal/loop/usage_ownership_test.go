@@ -105,7 +105,7 @@ func TestCallForEmitState_StampsACopyOfTheProvidersUsage(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			call, err := callForEmitState(context.Background(), p, providers.Request{Model: "shared-model"}, nil)
+			call, err := callForEmitState(context.Background(), p, providers.Request{Model: "shared-model"}, nil, nil)
 			if err != nil {
 				t.Errorf("call %d: %v", i, err)
 			}

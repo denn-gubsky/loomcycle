@@ -84,6 +84,8 @@ jobs:
             grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
           echo "newest tag: $tag"
           echo "LOOMCYCLE_LATEST_TAG=$tag" >> "$GITHUB_ENV"
+      - name: Retired tracing variables
+        run: scripts/ci/retired-otel-env.sh
       - name: Go census and drift tests
         run: scripts/ci/census-tests.sh go
       - name: TypeScript drift tests

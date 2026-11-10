@@ -32,7 +32,7 @@ The built-in providers in the table above ship as an **embedded default layer** 
 | `api_key_env` | The **env-var NAME** (never the value) whose credential authenticates this provider — resolved server-side, and overridable per-tenant/user (a tenant's own key shadows the operator's — see [CREDENTIALS.md](CREDENTIALS.md)). **Omit for a keyless endpoint.** |
 | `auth` | Authenticate with **AWS credentials** instead of a key: SigV4 signing or a minted short-term Bedrock key, for Amazon Bedrock. Exclusive with `api_key_env`. See [Amazon Bedrock with AWS credentials](#amazon-bedrock-with-aws-credentials-auth). |
 | `max_concurrent` | Cap the model **calls** in flight to this provider (see below) — shorthand for `lanes.chat.max_concurrent`. `0` / unset = unbounded. |
-| `lanes` | A queue per kind of model (`chat` / `decision` / `embedder`): its own `max_concurrent`, plus `affinity_hold_ms`, `quantum_calls` and `background_share` (see below). |
+| `lanes` | A queue per kind of model (`chat` / `decision` / `embedder`): its own `max_concurrent`, plus `affinity_hold_ms`, `quantum_calls`, `background_share` and `model_caps` (see below). |
 | `max_models_in_flight` | How many different models may compute on this provider at once, across all lanes. `0` / unset = unlimited. |
 | `models_in_flight_exempt_kinds` | Model kinds `max_models_in_flight` leaves out, e.g. `[embedder]`. Only with `max_models_in_flight`. |
 | `model_switch_max_wait_ms` | How long a waiting model can be held off by calls to the models in flight. Default `30000`; only with `max_models_in_flight`. |

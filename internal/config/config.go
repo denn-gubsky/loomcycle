@@ -29,6 +29,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/promptinject"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
@@ -282,6 +283,11 @@ type Config struct {
 	// (Resolved).
 	Speech *SpeechConfig `yaml:"speech,omitempty"`
 
+	// Observability is the `observability:` block: settings of the trace
+	// export that belong in config rather than the OTEL_* environment
+	// (observability.go). Read at startup.
+	Observability ObservabilityConfig `yaml:"observability,omitempty"`
+
 	// Principals declares static (tenant, subject, scopes) logins, each bound
 	// to a bearer secret held in an env var (RFC AO). The map key is an
 	// informational handle. Lets an operator declare a stable service identity
@@ -456,6 +462,11 @@ type StorageConfig struct {
 	// (each pins a scope connection). Default 64. 0 = unbounded. Env:
 	// LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS.
 	SqlMemMaxOpenTxns int `yaml:"sqlmem_max_open_txns"`
+	// SqlMemMaxOpenTxnsPerTenant caps how many of those open transactions one
+	// tenant may hold, so one tenant cannot take every slot. 0 = a quarter of
+	// SqlMemMaxOpenTxns (at least 1), resolved by sqlmem. Env:
+	// LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT.
+	SqlMemMaxOpenTxnsPerTenant int `yaml:"sqlmem_max_open_txns_per_tenant"`
 	// SqlMemMaxTxnDepth caps the SAVEPOINT nesting depth of one explicit
 	// transaction (Phase 3b): a nested sql_begin past this errors, bounding the
 	// in-memory savepoint stack a looping agent can grow. Default 16. 0 =
@@ -4923,6 +4934,13 @@ type Env struct {
 	// admin. Env: LOOMCYCLE_REPLICA_ID.
 	ReplicaID string
 
+	// TraceURLTemplate links a run to its trace in the operator's tracing UI:
+	// an http(s) URL in which {trace_id} is replaced by the run's trace id
+	// (e.g. https://grafana.example/explore?traceId={trace_id}). Empty = no
+	// link. Shown to every signed-in Web UI user who can see the run.
+	// Env: LOOMCYCLE_TRACE_URL_TEMPLATE.
+	TraceURLTemplate string
+
 	// CancelAckTimeoutMs is the v0.12.2 cross-replica cancel ack wait.
 	// On a cluster-mode cancel that broadcasts to the owning replica,
 	// the originator waits this long for a "cancelled" ack on the
@@ -5291,44 +5309,6 @@ type Env struct {
 	// LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS.
 	OllamaLocalHeaderTimeout time.Duration
 	OllamaLocalIdleTimeout   time.Duration
-
-	// v0.10.0 OpenTelemetry tracing — default OFF. Setting
-	// OTELExporterEndpoint to a non-empty value installs an OTLP/HTTP
-	// exporter; loomcycle emits run/iteration/provider.call/tool.call
-	// spans for every agent run. When the endpoint is empty, the global
-	// tracer is a no-op and there is zero runtime cost. See
-	// `internal/help/topics/observability.md` for the Jaeger / Tempo /
-	// Honeycomb walkthroughs.
-
-	// OTELExporterEndpoint is the OTLP/HTTP endpoint (no path — the
-	// otlptracehttp exporter appends `/v1/traces`). Empty = OTEL
-	// disabled. Examples: `http://localhost:4318` (local Jaeger,
-	// `docker run jaegertracing/all-in-one:latest`),
-	// `https://api.honeycomb.io` (Honeycomb cloud — pair with the
-	// `x-honeycomb-team` header). Env: LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT.
-	OTELExporterEndpoint string
-
-	// OTELExporterHeaders is the comma-separated key=value list
-	// appended to every OTLP/HTTP request. Used for collector auth
-	// (e.g. `x-honeycomb-team=$KEY` or
-	// `authorization=Bearer $TOKEN`). Empty = no headers. Whitespace
-	// around `=` and `,` is trimmed.
-	// Env: LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS.
-	OTELExporterHeaders map[string]string
-
-	// OTELServiceName populates the `service.name` resource attribute
-	// every span carries. Default `"loomcycle"`. Override per replica
-	// when running multi-replica HA so Jaeger groups traces by
-	// instance.
-	// Env: LOOMCYCLE_OTEL_SERVICE_NAME.
-	OTELServiceName string
-
-	// OTELTracesSamplerRatio is the head-based sampling ratio applied
-	// before spans are exported. 1.0 = every span; 0.1 = ~10%. Always
-	// respects parent decisions (a sampled parent's children are
-	// always sampled). Default 1.0; reduce in production when storage
-	// matters. Env: LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO.
-	OTELTracesSamplerRatio float64
 
 	// SchedulerEnabled enables the v1.x RFC E scheduler runtime
 	// (sweeper goroutine + due-row firing). Default OFF — operator
@@ -5734,6 +5714,11 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.Storage.SqlMemMaxOpenTxns = n
+		}
+	}
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.Storage.SqlMemMaxOpenTxnsPerTenant = n
 		}
 	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH"); v != "" {
@@ -6196,32 +6181,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		}
 	}
 
-	// v0.10.0 OpenTelemetry env vars. All default to OFF (empty endpoint =
-	// no-op tracer; zero runtime cost). When the operator sets an endpoint,
-	// the bootstrap in cmd/loomcycle/main.go installs the OTLP exporter and
-	// loomcycle emits per-run + per-iteration + per-provider/tool spans.
-	cfg.Env.OTELExporterEndpoint = strings.TrimSpace(os.Getenv("LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT"))
-	cfg.Env.OTELExporterHeaders = parseHeaderList(os.Getenv("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS"))
-	cfg.Env.OTELServiceName = strings.TrimSpace(os.Getenv("LOOMCYCLE_OTEL_SERVICE_NAME"))
-	if cfg.Env.OTELServiceName == "" {
-		cfg.Env.OTELServiceName = "loomcycle"
-	}
-	cfg.Env.OTELTracesSamplerRatio = 1.0
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO")); v != "" {
-		if r, err := strconv.ParseFloat(v, 64); err == nil {
-			// Clamp to [0, 1] so an operator's "100" or "-0.5" doesn't
-			// silently produce a broken sampler.
-			switch {
-			case r < 0:
-				cfg.Env.OTELTracesSamplerRatio = 0
-			case r > 1:
-				cfg.Env.OTELTracesSamplerRatio = 1
-			default:
-				cfg.Env.OTELTracesSamplerRatio = r
-			}
-		}
-	}
-
 	// v0.10.1 per-tenant fairness env var. Yaml is the canonical source
 	// (cfg.Concurrency.MaxConcurrentRunsPerUser); the env override lets
 	// containerized operators set it without editing the mounted yaml.
@@ -6577,6 +6536,10 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		if err := validateReplicaID(cfg.Env.ReplicaID); err != nil {
 			return nil, fmt.Errorf("LOOMCYCLE_REPLICA_ID: %w", err)
 		}
+	}
+	cfg.Env.TraceURLTemplate = strings.TrimSpace(os.Getenv("LOOMCYCLE_TRACE_URL_TEMPLATE"))
+	if err := validateTraceURLTemplate(cfg.Env.TraceURLTemplate); err != nil {
+		return nil, fmt.Errorf("LOOMCYCLE_TRACE_URL_TEMPLATE: %w", err)
 	}
 	cfg.Env.CancelAckTimeoutMs = 5000
 	if v := os.Getenv("LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS"); v != "" {
@@ -7198,37 +7161,24 @@ func ExpandEnv(s string) string { return expandEnv(s) }
 // does the POSIX-default form ${NAME:-x}, which ExpandEnv does not expand.
 func HasEnvRef(s string) bool { return envVarRe.MatchString(s) }
 
-// parseHeaderList parses a comma-separated `key=value,key2=value2` string
-// into a map. Whitespace around keys, values, and separators is trimmed.
-// Entries without `=` are skipped. Returns nil for an empty input so the
-// caller doesn't need to nil-check before iterating. Used by the v0.10.0
-// OTEL exporter for collector auth headers (e.g. `x-honeycomb-team=KEY`).
-func parseHeaderList(s string) map[string]string {
-	s = strings.TrimSpace(s)
-	if s == "" {
+// validateTraceURLTemplate accepts "" (no link) or an absolute http(s) URL
+// naming {trace_id}. The Web UI puts the result in a link's href, so any
+// other scheme (javascript:, data:) is refused here rather than trusted there.
+func validateTraceURLTemplate(t string) error {
+	if t == "" {
 		return nil
 	}
-	out := map[string]string{}
-	for _, pair := range strings.Split(s, ",") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		eq := strings.IndexByte(pair, '=')
-		if eq <= 0 {
-			continue
-		}
-		k := strings.TrimSpace(pair[:eq])
-		v := strings.TrimSpace(pair[eq+1:])
-		if k == "" {
-			continue
-		}
-		out[k] = v
+	if !strings.Contains(t, "{trace_id}") {
+		return errors.New("must contain {trace_id}")
 	}
-	if len(out) == 0 {
-		return nil
+	u, err := url.Parse(strings.ReplaceAll(t, "{trace_id}", "0"))
+	if err != nil {
+		return fmt.Errorf("not a URL: %w", err)
 	}
-	return out
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errors.New("must be an absolute http or https URL")
+	}
+	return nil
 }
 
 // ExpandEnvAllowed reports whether the given env-var name may be expanded
@@ -7364,15 +7314,29 @@ func (s *envNameSet) has(name string) bool {
 // Never written after init: declared principals' bearers live in
 // principalBearerEnvs.
 var expandDenyNames = map[string]bool{
-	"PG_DSN":                               true,
-	"LOOMCYCLE_PG_DSN":                     true,
-	"LOOMCYCLE_SQLMEM_PG_DSN":              true, // RFC AA aux-DB DSN (carries the aux credentials)
-	"LOOMCYCLE_AUTH_TOKEN":                 true,
-	"LOOMCYCLE_OPERATOR_TOKEN_PEPPER":      true, // RFC L token-hash pepper (S1: the high-value miss)
-	"LOOMCYCLE_MCP_UPSTREAM_TOKEN":         true, // thin-client upstream MCP bearer
-	"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS": true, // collector auth headers
-	"LOOMCYCLE_SECRET_KEY":                 true, // RFC AR CredentialDef master KEK
-	"LOOMCYCLE_SECRET_KEY_PREVIOUS":        true, // RFC AR KEK rotation grace key
+	"PG_DSN":                          true,
+	"LOOMCYCLE_PG_DSN":                true,
+	"LOOMCYCLE_SQLMEM_PG_DSN":         true, // RFC AA aux-DB DSN (carries the aux credentials)
+	"LOOMCYCLE_AUTH_TOKEN":            true,
+	"LOOMCYCLE_OPERATOR_TOKEN_PEPPER": true, // RFC L token-hash pepper (S1: the high-value miss)
+	"LOOMCYCLE_MCP_UPSTREAM_TOKEN":    true, // thin-client upstream MCP bearer
+	// Collector auth headers, read by the OTLP exporter itself. Not
+	// interpolatable anyway (no LOOMCYCLE_ prefix, not allowlisted); listed so
+	// a definition can never name them as a secret's source, even where an
+	// operator allowlist would admit the name.
+	"OTEL_EXPORTER_OTLP_HEADERS":         true,
+	"OTEL_EXPORTER_OTLP_TRACES_HEADERS":  true,
+	"OTEL_EXPORTER_OTLP_METRICS_HEADERS": true,
+	"OTEL_EXPORTER_OTLP_LOGS_HEADERS":    true,
+	// The retired LOOMCYCLE_ name stays denied: a stale value left in an
+	// operator's environment is still a live collector secret, and the
+	// LOOMCYCLE_ prefix would otherwise make it interpolatable. A protection,
+	// not a config read.
+	"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS": true, // retired name, still denied
+	// Names the file holding the collector secret; nothing in yaml needs it.
+	"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE": true,
+	"LOOMCYCLE_SECRET_KEY":                      true, // RFC AR CredentialDef master KEK
+	"LOOMCYCLE_SECRET_KEY_PREVIOUS":             true, // RFC AR KEK rotation grace key
 }
 
 // secretEnvSuffixes are the env-var NAME patterns this project classifies as
@@ -7398,12 +7362,66 @@ var secretEnvSuffixes = []string{
 // (ANTHROPIC_API_KEY, OPENAI_API_KEY, …) without a hard-coded name list.
 func IsSecretEnvName(name string) bool {
 	up := strings.ToUpper(name)
+	if collectorHeaderEnvNames[up] {
+		return true
+	}
 	for _, suf := range secretEnvSuffixes {
 		if strings.HasSuffix(up, suf) {
 			return true
 		}
 	}
 	return false
+}
+
+// collectorHeaderEnvNames are the OTLP collector-header variables: secrets
+// (collector auth) whose names no suffix catches. Named rather than matched as
+// *_HEADERS, which would also take ordinary settings such as a CORS header
+// list and mask their common values everywhere. The retired LOOMCYCLE_ name
+// stays, for a stale value still set.
+var collectorHeaderEnvNames = map[string]bool{
+	"OTEL_EXPORTER_OTLP_HEADERS":           true,
+	"OTEL_EXPORTER_OTLP_TRACES_HEADERS":    true,
+	"OTEL_EXPORTER_OTLP_METRICS_HEADERS":   true,
+	"OTEL_EXPORTER_OTLP_LOGS_HEADERS":      true,
+	"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS": true, // retired name, still a secret
+}
+
+// IsCollectorHeaderEnvName reports whether name is an OTLP collector-header
+// variable (see collectorHeaderEnvNames), which no child process is handed.
+func IsCollectorHeaderEnvName(name string) bool {
+	return collectorHeaderEnvNames[strings.ToUpper(name)]
+}
+
+// SecretEnvValues maps each secret env var in environ ("NAME=value" entries,
+// IsSecretEnvName) to its value, for a redactor's exact-match tier. A
+// collector-header variable also contributes each header's value on its own
+// (as NAME[header]): the whole "k=v,k2=v2" string rarely appears verbatim, a
+// single token often does. Empty values are skipped.
+func SecretEnvValues(environ []string) map[string]string {
+	out := make(map[string]string)
+	for _, kv := range environ {
+		name, val, ok := strings.Cut(kv, "=")
+		if !ok || name == "" || val == "" || !IsSecretEnvName(name) {
+			continue
+		}
+		out[name] = val
+		if !IsCollectorHeaderEnvName(name) {
+			continue
+		}
+		for _, pair := range strings.Split(val, ",") {
+			k, v, ok := strings.Cut(pair, "=")
+			if !ok {
+				continue
+			}
+			if dv, err := url.PathUnescape(v); err == nil {
+				v = dv
+			}
+			if v = strings.TrimSpace(v); v != "" {
+				out[name+"["+strings.TrimSpace(k)+"]"] = v
+			}
+		}
+	}
+	return out
 }
 
 func getenvDefault(name, dflt string) string {
@@ -9031,6 +9049,9 @@ func validate(c *Config) error {
 		return fmt.Errorf("concurrency.max_concurrent_runs must be >= 1")
 	}
 	if err := validateTimeoutScaling(c); err != nil {
+		return err
+	}
+	if err := lcotel.ValidateTenantSamplerRatios("observability.tracing.tenant_sampler_ratios", c.Observability.Tracing.TenantSamplerRatios); err != nil {
 		return err
 	}
 	// Runtime-wide context-transform plugin chain (RFC Z). Validate names

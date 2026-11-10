@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/lanegate"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/cdc"
 )
 
@@ -27,6 +29,11 @@ func (b *boot) openAndMigrateStore() {
 		fatal("store: open failed", "err", err)
 	}
 	b.addCleanup(storeCloser)
+	// /metrics reports the store's connection pool from the driver's own
+	// counters; a scrape runs no query.
+	if ps, ok := storeIface.(interface{ PoolStats() store.PoolStats }); ok {
+		b.addCleanup(lcotel.RegisterDBPool("store", func() lcotel.DBPoolStats { return lcotel.DBPoolStats(ps.PoolStats()) }))
+	}
 	// RFC CD Part C — when the change-data-capture feed is enabled, wrap the
 	// store so every memory/document write emits a value-free change row. Off by
 	// default → the store is unwrapped and the path is byte-identical. Cluster

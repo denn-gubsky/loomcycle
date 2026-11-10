@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -128,7 +129,7 @@ func (s *Scheduler) runOnceRecovered(ctx context.Context, row store.ScheduleDueR
 			err = fmt.Errorf("panic in run: %v", r)
 		}
 	}()
-	return s.runner.RunOnce(ctx, in, cb)
+	return s.runner.RunOnce(lcotel.WithRunTrigger(ctx, lcotel.TriggerSchedule), in, cb)
 }
 
 // trackRun writes the run's schedule_active_runs row and marks the schedule

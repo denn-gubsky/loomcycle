@@ -31,7 +31,8 @@ func (s spanTextTool) Execute(context.Context, json.RawMessage) (Result, error) 
 
 // The tool span of a no-trace run carries no error text: a tool's error
 // quotes what the run said as readily as its result does. An ordinary run's
-// span keeps it, so the check can fail.
+// span keeps it, so the check can fail. An error RESULT puts no text on any
+// run's span: it is an attribute, not the span's status.
 func TestToolSpan_ANoTraceRunsErrorCarriesNoText(t *testing.T) {
 	exp := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
@@ -57,8 +58,11 @@ func TestToolSpan_ANoTraceRunsErrorCarriesNoText(t *testing.T) {
 			if retention == "none" && has {
 				t.Errorf("goErr=%v: a no-trace run's tool span carries %q", goErr, got.String())
 			}
-			if retention == "" && !has {
-				t.Fatalf("goErr=%v: an ordinary run's tool span carries %q: this test cannot see the text", goErr, got.String())
+			if !goErr && has {
+				t.Errorf("retention=%q: an error result's text reached the span: %q", retention, got.String())
+			}
+			if goErr && retention == "" && !has {
+				t.Fatalf("an ordinary run's tool span carries %q: this test cannot see the text", got.String())
 			}
 		}
 	}

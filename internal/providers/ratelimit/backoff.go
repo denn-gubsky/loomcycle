@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"time"
 
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
@@ -134,11 +135,19 @@ func Do(ctx context.Context, cfg Config, attempt func(ctx context.Context) (*htt
 	}
 	cfg.applyDefaults()
 
-	var totalWait time.Duration
+	var totalWait, lastWait time.Duration
 	var lastResp *http.Response
+	// The attempt's span records its number and the wait before it, so a
+	// retried 429 is visible as attempt 2 after N ms, not just a sibling. A
+	// caller retrying around this loop carries its own sequence on ctx, so
+	// the numbers continue across its retries.
+	seq := lcotel.AttemptSeqFrom(ctx)
+	if seq == nil {
+		_, seq = lcotel.WithAttemptSeq(ctx)
+	}
 
 	for i := 0; i < cfg.MaxAttempts; i++ {
-		resp, err := attempt(ctx)
+		resp, err := attempt(seq.Next(ctx, lastWait))
 		if err != nil {
 			return nil, err
 		}
@@ -176,6 +185,18 @@ func Do(ctx context.Context, cfg Config, attempt func(ctx context.Context) (*htt
 		_ = resp.Body.Close()
 
 		cfg.OnRetry(cfg.Provider, i+1, wait, reason)
+		// Named as the attempt spans name it: a wrapping driver (DeepSeek)
+		// sets the override, and its retries are its own, not OpenAI's.
+		retryProvider := lcotel.ProviderOverride(ctx)
+		if retryProvider == "" {
+			retryProvider = cfg.Provider
+		}
+		// The label is a short token, not the wire reason's prose.
+		metricReason := "schedule"
+		if fromHeader {
+			metricReason = "header"
+		}
+		lcotel.RecordProviderRetry(ctx, retryProvider, metricReason)
 		if cfg.OnEvent != nil {
 			cfg.OnEvent(providers.Event{
 				Type: providers.EventRetry,
@@ -199,6 +220,7 @@ func Do(ctx context.Context, cfg Config, attempt func(ctx context.Context) (*htt
 			return nil, ctx.Err()
 		}
 		totalWait += wait
+		lastWait = wait
 	}
 	// Budget exhausted; return the last 429 untouched (body intact for
 	// caller's normal error path).

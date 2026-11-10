@@ -56,7 +56,7 @@ Local Ollama (`ollama-local` provider) needs no key — it reads `OLLAMA_BASE_UR
 | `LOOMCYCLE_PG_DSN` | (empty) | Postgres DSN — required when backend is postgres |
 | `LOOMCYCLE_PG_AUTOMIGRATE` | `false` | Auto-run schema migrations on boot |
 | `LOOMCYCLE_PGVECTOR_ENABLED` | `false` | Enable pgvector for Vector Memory (Postgres only) |
-| `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` | (empty) | OTLP endpoint for distributed traces; empty = tracing off |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty) | OTLP endpoint URL for distributed traces (standard `OTEL_*` set); empty = tracing off |
 | `LOOMCYCLE_BASH_ENABLED` | `false` | Enable the Bash tool (NOT a sandbox — see `help bashbox` for the sandboxed alternative) |
 | `LOOMCYCLE_AGENTS_ROOT` | (empty) | Directory of `.md` agent definitions; merged with yaml `agents:` block |
 | `LOOMCYCLE_SKILLS_ROOT` | (empty) | Directory of skills; merged with bundled skills |

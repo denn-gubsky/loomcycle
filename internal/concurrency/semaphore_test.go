@@ -430,22 +430,14 @@ func (g *stubQuotaGate) Release(_ context.Context, tenantID, userID string) {
 	g.releases++
 }
 
-func (g *stubQuotaGate) Snapshot(_ context.Context) (map[string]int, error) {
+func (g *stubQuotaGate) Snapshot(_ context.Context) ([]UserCount, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if len(g.counts) == 0 {
-		return nil, nil
-	}
-	out := make(map[string]int, len(g.counts))
+	var out []UserCount
 	for k, v := range g.counts {
 		if v > 0 {
-			// Render display keys exactly as production Stats/Snapshot does,
-			// so tenant="" stays a bare user in the returned map.
-			out[fairnessDisplayKey(k.tenant, k.user)] = v
+			out = append(out, UserCount{Tenant: k.tenant, User: k.user, Held: v})
 		}
-	}
-	if len(out) == 0 {
-		return nil, nil
 	}
 	return out, nil
 }
@@ -595,6 +587,9 @@ func TestSemaphore_ClusterMode_StatsFromSnapshot(t *testing.T) {
 	st := s.Stats()
 	if st.PerUser["alice"] != 1 {
 		t.Errorf("Stats.PerUser[alice] = %d, want 1 (from gate.Snapshot)", st.PerUser["alice"])
+	}
+	if len(st.Users) != 1 || st.Users[0] != (UserCount{Tenant: "", User: "alice", Held: 1}) {
+		t.Errorf("Stats.Users = %+v, want alice's pair from gate.Snapshot", st.Users)
 	}
 	if st.Active != 1 {
 		t.Errorf("Stats.Active = %d, want 1 (per-replica counter)", st.Active)

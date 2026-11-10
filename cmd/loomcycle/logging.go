@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/logging"
@@ -21,28 +20,25 @@ import (
 // Assumption: secrets resolved later at run time (a $cred: value, a tenant's
 // provider-key override) are registered on the HTTP server's own redactor,
 // not this one, so they are NOT scrubbed from log lines yet.
-func setupLogging() {
+//
+// It returns the log redactor, so the boot can add secrets it reads later
+// that are never in the environment (the collector headers file).
+func setupLogging() *redact.Redactor {
+	r := redact.New(secretEnvForLogs(os.Environ()), false)
 	logging.Setup(logging.Options{
 		Format:   os.Getenv(logging.EnvFormat),
 		Level:    os.Getenv(logging.EnvLevel),
-		Redactor: redact.New(secretEnvForLogs(os.Environ()), false),
+		Redactor: r,
 		Identity: logIdentity,
 	})
+	return r
 }
 
 // secretEnvForLogs maps each secret-named env var (config.IsSecretEnvName)
 // to its value. Tier-B pattern heuristics are deliberately left off for logs:
 // they are tuned for tool I/O and would rewrite benign log text.
 func secretEnvForLogs(environ []string) map[string]string {
-	out := make(map[string]string)
-	for _, kv := range environ {
-		name, val, ok := strings.Cut(kv, "=")
-		if !ok || name == "" || val == "" || !config.IsSecretEnvName(name) {
-			continue
-		}
-		out[name] = val
-	}
-	return out
+	return config.SecretEnvValues(environ)
 }
 
 // logIdentity reads the run identity the runtime already carries on ctx.

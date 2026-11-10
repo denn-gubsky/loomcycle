@@ -9134,3 +9134,157 @@ button.doc-ref-target.external {
   background: var(--lc-input-bg, transparent);
   color: var(--lc-text, inherit);
 }
+
+/* Annotations: a document's brief under its title and its abstract in a
+   collapsible panel (the same for a selected chunk), and a brief under a Path
+   tree row (@loomcycle/explorer). Stale and manual are small muted markers,
+   never hidden. */
+.doc-annotation {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.annotation-brief {
+  margin: 0 0 6px;
+  color: var(--fg-soft);
+  font-size: var(--lc-text-sm);
+  line-height: 1.4;
+}
+.doc-annotation .annotation-brief {
+  margin: 0;
+}
+.annotation-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: var(--lc-text-xs);
+  color: var(--fg-muted);
+  vertical-align: baseline;
+}
+.annotation-badge.annotation-stale {
+  color: var(--fg-muted);
+  border-style: dashed;
+}
+.annotation-badge.annotation-manual {
+  color: var(--fg-soft);
+}
+.annotation-panel {
+  margin: 0 0 6px;
+  font-size: var(--lc-text-sm);
+}
+.annotation-panel > summary {
+  cursor: pointer;
+  color: var(--fg-soft);
+  font-size: var(--lc-text-xs);
+  user-select: none;
+}
+.annotation-title {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-soft);
+}
+.annotation-none,
+.annotation-empty,
+.annotation-hint {
+  color: var(--fg-muted);
+  font-size: var(--lc-text-xs);
+}
+.annotation-none {
+  margin-left: 6px;
+  font-style: italic;
+}
+.annotation-record {
+  margin: 6px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+.annotation-abstract {
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+.annotation-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0 10px;
+  margin: 0 0 6px;
+  font-size: var(--lc-text-xs);
+  color: var(--fg-muted);
+}
+.annotation-meta dt {
+  color: var(--fg-soft);
+}
+.annotation-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.annotation-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.annotation-actions button {
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: var(--lc-text-xs);
+}
+.annotation-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.annotation-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.annotation-actions button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.annotation-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 0;
+}
+.annotation-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--lc-text-xs);
+  color: var(--fg-soft);
+}
+.annotation-editor textarea {
+  resize: vertical;
+  font-family: inherit;
+}
+.annotation-hint,
+.annotation-err {
+  margin: 0;
+}
+.annotation-err {
+  color: var(--failed);
+  font-size: var(--lc-text-xs);
+}
+/* A Path row with a brief wraps it onto a second line inside the row box,
+   indented past the caret. */
+.path-row:has(.path-brief) {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+.path-brief {
+  flex-basis: 100%;
+  padding-left: 22px;
+  color: var(--fg-muted);
+  font-size: var(--lc-text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

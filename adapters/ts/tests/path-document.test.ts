@@ -340,3 +340,36 @@ describe("copyDocuments / moveDocuments", () => {
     );
   });
 });
+
+describe("annotations", () => {
+  it("listAnnotations posts list_annotations in the tenant scope with its filters", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ annotations: [], next_cursor: "c/branch" })]);
+    const res = await client.listAnnotations({ level: "branch", stale: true, limit: 5 });
+    expect(res.next_cursor).toBe("c/branch");
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body).toEqual({ op: "list_annotations", scope: "tenant", level: "branch", stale: true, limit: 5 });
+  });
+
+  it("annotate without a hash is an operator's manual annotation", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ annotation: { chunk_id: "c1", level: "path", folder: "/kb" } })]);
+    const res = await client.annotate({ level: "path", path: "/kb", brief: "b", abstract: "a" });
+    expect(res.annotation.folder).toBe("/kb");
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body).toEqual({ op: "set_annotation", scope: "tenant", level: "path", path: "/kb", brief: "b", abstract: "a", manual: true });
+  });
+
+  it("annotate with a hash sends it and no manual flag", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ annotation: { chunk_id: "c1" } })]);
+    await client.annotate({ id: "c1", brief: "b", abstract: "a", inputs_sha256: "abc", prompt_version: 1 });
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.manual).toBeUndefined();
+    expect(body.inputs_sha256).toBe("abc");
+  });
+
+  it("getAnnotation posts get_annotation for a document", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ annotations: [] })]);
+    await client.getAnnotation({ document_id: "d1" });
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body).toEqual({ op: "get_annotation", scope: "tenant", document_id: "d1" });
+  });
+});

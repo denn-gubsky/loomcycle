@@ -209,7 +209,12 @@ never change what a document says.
 - `stale: true` means the text changed after the annotation was written. It
   is still the best summary there is; quote the text, never the abstract.
 - An annotation is not evidence. Cite the chunk, never the summary.
-- `get_annotation` reads one chunk's or document's annotation directly.
+- `get_annotation` reads one chunk's or document's annotation directly, or a
+  folder's with `level: path` and `path`.
+- A folder's annotation says what the folder collects. `path op=ls` with
+  `with_summary: true` shows each folder's brief and abstract, and each
+  document's brief. The `<folder>/_annotation` document that holds it is not
+  knowledge: never cite it.
 
 ## Keeping it true across editions
 

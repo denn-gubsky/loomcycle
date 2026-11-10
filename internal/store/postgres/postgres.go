@@ -1437,7 +1437,7 @@ func (s *Store) RunsForSession(ctx context.Context, sessionID string) ([]store.R
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
-		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id, r.trace_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
@@ -1954,7 +1954,7 @@ func (s *Store) GetRunByAgentID(ctx context.Context, agentID string) (store.Run,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
-		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id, r.trace_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
@@ -1985,7 +1985,7 @@ func (s *Store) RunByIdempotencyKey(ctx context.Context, key string) (store.Run,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
-		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id, r.trace_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
@@ -2020,7 +2020,7 @@ func (s *Store) RunByDeliveryKeys(ctx context.Context, keys []string) (store.Run
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
-		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id, r.trace_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
@@ -2048,7 +2048,7 @@ func (s *Store) GetRun(ctx context.Context, runID string) (store.Run, error) {
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
-		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id, r.trace_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
@@ -2148,7 +2148,7 @@ func (s *Store) ListRunsByUser(ctx context.Context, tenantID, userID string, sta
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
-		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id, r.trace_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
@@ -2207,7 +2207,7 @@ func (s *Store) ListRunsByWalk(ctx context.Context, tenantID, walkID string, lim
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
-		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id, r.trace_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
@@ -2264,7 +2264,7 @@ func (s *Store) ListChildRuns(ctx context.Context, tenantID, parentRunID string,
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
-		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id, r.trace_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
@@ -2300,7 +2300,7 @@ func (s *Store) ListRunsByParentAgentID(ctx context.Context, parentAgentID strin
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
-		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id, r.trace_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
@@ -2327,7 +2327,7 @@ func (s *Store) ListRunsByParentRunID(ctx context.Context, parentRunID string) (
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
-		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id, r.trace_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
@@ -2532,6 +2532,14 @@ func (s *Store) MarkRunUserSlot(ctx context.Context, runID string) error {
 	return nil
 }
 
+// SetRunTraceID implements store.Store.
+func (s *Store) SetRunTraceID(ctx context.Context, runID, traceID string) error {
+	if _, err := s.pool.Exec(ctx, `UPDATE runs SET trace_id = $1 WHERE id = $2`, traceID, runID); err != nil {
+		return fmt.Errorf("set run trace id: %w", err)
+	}
+	return nil
+}
+
 // FindLiveAgentRun implements store.Store.
 func (s *Store) FindLiveAgentRun(ctx context.Context, tenantID, userID, agent string) (store.LiveAgentRun, bool, error) {
 	var out store.LiveAgentRun
@@ -2580,7 +2588,7 @@ func (s *Store) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
 		        r.model, r.provider, r.error,
 		        r.agent_id, r.parent_agent_id, r.parent_run_id, r.user_id, r.last_heartbeat_at, r.user_tier,
 		        r.agent_def_id, r.pause_state, r.replica_id, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id, r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
-		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		        r.cost, r.cost_currency, r.credential_source, r.credential_scope_id, r.trace_id,
 		        r.run_config::text, r.result::text,
 		        s.agent
 		 FROM runs r LEFT JOIN sessions s ON r.session_id = s.id
@@ -10803,6 +10811,7 @@ func scanRun(r rowScanner) (store.Run, error) {
 		&agentDefID, &pauseState, &replicaID, &parentContext, &idempotencyKey, &deliveryAltKey, &tenantID,
 		&interactive, &operatorKeyRestricted, &isolated, &noUserScope, &out.Retention,
 		&cost, &costCurrency, &credentialSource, &credentialScopeID,
+		&out.TraceID,
 		&runConfig,
 		&result,
 		&sessAgent,

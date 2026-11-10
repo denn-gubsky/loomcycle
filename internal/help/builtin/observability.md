@@ -1,6 +1,6 @@
 ---
 name: observability
-description: OpenTelemetry distributed traces — Jaeger / Grafana Tempo / Honeycomb setup, attribute reference, sampling guidance.
+description: OpenTelemetry distributed traces and the /metrics instruments — Jaeger / Grafana Tempo / Honeycomb setup, attribute and metric reference, sampling guidance.
 ---
 Loomcycle v0.10.0 emits OpenTelemetry distributed traces for every
 agent run. Operators see a span tree per run — top-level `loomcycle.run`
@@ -11,32 +11,116 @@ spawns nest as child spans of the parent's iteration, so a multi-level
 `cv-batch-adapter → cv-adapter → ...` tree shows the whole hierarchy
 in one trace view.
 
-This is **off by default**. When `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT`
-is unset, the entire telemetry subsystem is a no-op — no goroutines,
-no exporter buffers, no measurable overhead. Operators opt in by
-pointing at their OTLP/HTTP collector.
+This is **off by default**. When `OTEL_EXPORTER_OTLP_ENDPOINT` is
+unset, the entire telemetry subsystem is a no-op — no goroutines, no
+exporter buffers, no measurable overhead. Operators opt in by pointing
+at their OTLP collector. Configuration is the standard OpenTelemetry
+`OTEL_*` environment (see the reference at the end), over OTLP/HTTP
+(default) or OTLP/gRPC.
 
 ## What spans capture
 
-Every span carries the same identity attribute set so traces correlate
-cleanly with the loomcycle transcript views (`/ui/agents/<id>`):
+The span tree of one run:
 
-- `loomcycle.run_id`, `loomcycle.agent_id`, `loomcycle.agent_name`
-- `loomcycle.user_id`, `loomcycle.parent_agent_id` (sub-runs)
+```
+loomcycle.run                      one per run (sub-runs nest under the
+ └ loomcycle.iteration             parent's iteration); one per turn
+    ├ loomcycle.model.call         the whole streamed model call
+    │  └ loomcycle.provider.call   one per HTTP attempt (retries are siblings)
+    └ loomcycle.tool.call          one per tool call
+       └ loomcycle.mcp.call        when the tool is on an MCP server
+```
 
-Provider spans add: `loomcycle.provider` (`anthropic` | `openai` |
-`deepseek` | `gemini` | `ollama` | `ollama-local`), `loomcycle.model`,
-`loomcycle.tier`, `loomcycle.effort`.
+plus `loomcycle.memory.search` and `loomcycle.memory.consolidate` for
+memory work.
 
-Tool spans add: `loomcycle.tool` (the dispatched name).
+**Every span** a run opens carries `loomcycle.tenant` (omitted for work
+that belongs to no tenant). Child spans do not inherit attributes, so it is
+stamped on each one: filter any span kind by tenant.
 
-MCP spans add: `loomcycle.mcp_server`, `loomcycle.mcp_tool`.
+**Run span** (`loomcycle.run`): `loomcycle.run_id`, `loomcycle.agent_id`,
+`loomcycle.agent_name`, `loomcycle.user_hash` (see below),
+`loomcycle.parent_agent_id` (sub-runs), `loomcycle.queue_wait_ms`; at the
+end `loomcycle.input_tokens`, `loomcycle.output_tokens`,
+`loomcycle.cache_read_tokens`, `loomcycle.stop_reason`. GenAI names:
+`gen_ai.operation.name=invoke_agent`, `gen_ai.agent.name`,
+`gen_ai.agent.id`, `gen_ai.conversation.id` (the chat/session id).
 
-The run span gets closing attributes when the run finishes:
-`loomcycle.input_tokens`, `loomcycle.output_tokens`,
-`loomcycle.cache_read_tokens`, `loomcycle.stop_reason`. Errors set the
-span's status to Error with the error message — Jaeger surfaces these
-as red span markers in the trace timeline.
+**Model-call span** (`loomcycle.model.call`): from just before the provider
+is called until its stream ends — the done event, an error, or a cancel.
+Every model call has one, marked with `loomcycle.model.purpose`: `turn` (a
+run's own turn, under its iteration), `compaction` and `recap` (summaries),
+`emit_state` (a stateful run's step), and `gateway` (a call through
+`/v1/_llm/chat` or `/v1/chat/completions`, which starts its own trace and
+names the caller's tenant).
+`loomcycle.provider`, `loomcycle.model`, `loomcycle.tier` (the tier the
+run's agent routes by), `loomcycle.effort`,
+`loomcycle.ttft_ms` (time to the first streamed token, counted from when
+the call got its slot in the provider's call lane — a call that failed or
+was cancelled counts from its start, wait included),
+`loomcycle.lane_wait_ms` (that wait, on a finished call), `loomcycle.stop_reason`,
+usage (`loomcycle.input_tokens`, `loomcycle.output_tokens`,
+`loomcycle.cache_read_tokens`, `loomcycle.cache_write_tokens`),
+`loomcycle.cost_usd` (when the call is priced in US dollars), and
+`loomcycle.fallback_from` (`provider/model`) on the first call after a
+provider fallback. GenAI names: `gen_ai.operation.name=chat`,
+`gen_ai.provider.name` (`anthropic`, `openai`, `deepseek`, `gcp.gemini`,
+`aws.bedrock`, `ollama`, else the provider id), `gen_ai.request.model`,
+`gen_ai.request.temperature` / `top_p` / `max_tokens` when set,
+`gen_ai.response.model`, `gen_ai.response.finish_reasons`,
+`gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`,
+`gen_ai.usage.cache_read.input_tokens`,
+`gen_ai.usage.cache_creation.input_tokens`.
+
+**Provider attempt span** (`loomcycle.provider.call`): one HTTP request.
+It ends when the response headers arrive, so its duration is time to
+headers; the model-call span above is the whole generation.
+`loomcycle.provider`, `loomcycle.model`, `loomcycle.effort`,
+`http.response.status_code`, `loomcycle.attempt` (1, 2, … within the call),
+`loomcycle.retry_after_ms` (on a retry: how long it waited first), and on
+failure `error.type`: `rate_limited` (429), `overloaded` (529 or 503),
+`timeout`, `network`, `cancelled`, `client_error` or `server_error`. Find
+rate limiting with `error.type=rate_limited`, not by searching error text.
+
+**Tool span** (`loomcycle.tool.call`): `loomcycle.tool`,
+`gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`,
+`gen_ai.tool.call.id` (the model's tool-use id), and
+`loomcycle.tool_is_error=true` when the tool returned an error result.
+
+**MCP span** (`loomcycle.mcp.call`): `loomcycle.mcp_server`,
+`loomcycle.mcp_tool`, and `loomcycle.tool_is_error=true` for a server's
+`isError` answer.
+
+The `gen_ai.*` names follow the OpenTelemetry GenAI semantic conventions,
+release 1.41.0, and are emitted beside the `loomcycle.*` names, which stay
+stable while the GenAI conventions are still changing.
+
+### Span status
+
+A span's status is Error when something failed, so a collector's "keep
+error traces" policy keeps the runs that went wrong:
+
+- a failed run, and a cancelled run (described `cancelled`; filter
+  `loomcycle.stop_reason=cancelled` to drop cancels);
+- a model call that failed or was cancelled;
+- a provider attempt that got no response or a 4xx/5xx status;
+- a tool that broke (returned a Go error), an MCP server that could not be
+  reached.
+
+A tool call that returned an error result — a refusal, a policy or hook
+denial, an unknown tool, an MCP server's `isError` answer — is not: the
+model reads it and goes on, so it sets `loomcycle.tool_is_error` instead.
+
+### Users on spans
+
+A span names its user by `loomcycle.user_hash`: the first 16 hex characters
+of an HMAC-SHA256 over the tenant id and the user id (each length-prefixed),
+keyed by a key derived from `LOOMCYCLE_SECRET_KEY`. It is stable, so one
+user's traces group together, and `loomcycle otel user-hash <tenant> <user>`,
+run with `LOOMCYCLE_SECRET_KEY` in its environment as for the server, prints a
+user's hash to search for. `LOOMCYCLE_OTEL_RAW_USER_ID=1` adds the raw `loomcycle.user_id`
+beside it; with no secret key set the raw id is all a span carries, and the
+startup warns.
 
 ## What spans deliberately do NOT capture
 
@@ -52,9 +136,13 @@ By design:
   map (see `per-run-credentials` topic) inherits this
   posture — credential values never appear in span attributes,
   span events, or span resource attributes.
-- **No PII.** `loomcycle.user_id` is the operator's opaque user
-  identifier — same shape as the transcript event payload — but no
+- **No user ids.** A span names its user by `loomcycle.user_hash`
+  (above), never the id itself, unless the operator opts in. No
   user-content text crosses the span boundary.
+- **Outside erasure's reach once exported.** A subject erasure cannot
+  delete spans already in a tracing backend; the backend's retention is
+  the control. The hash is what limits what an exported span says about
+  a person.
 
 This posture is load-bearing: telemetry endpoints (Honeycomb,
 DataDog, etc.) have different trust postures than the loomcycle
@@ -71,7 +159,7 @@ docker run --rm -d --name jaeger \
   -p 16686:16686 -p 4318:4318 \
   jaegertracing/all-in-one:latest
 
-export LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ./bin/loomcycle --config loomcycle.example.yaml
 ```
 
@@ -83,7 +171,7 @@ trace to see the run → iteration → provider/tool tree.
 Filter expressions:
 
 - `loomcycle.run_id=run_abc...` — pin to one run
-- `loomcycle.user_id=user_42` — all runs by one user
+- `loomcycle.user_hash=<hash>` — all runs by one user (`loomcycle otel user-hash <tenant> <user>`)
 - `loomcycle.provider=anthropic` — all Anthropic-routed calls
 - `loomcycle.tool=Bash` — all Bash invocations
 - Tag filter `status=error` — failed spans only
@@ -140,9 +228,9 @@ events/month, which covers a JobEmber-class workload at default
 sampling).
 
 ```sh
-export LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT=https://api.honeycomb.io
-export LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=$HONEYCOMB_API_KEY
-export LOOMCYCLE_OTEL_SERVICE_NAME=loomcycle-prod
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://api.honeycomb.io
+export OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=$HONEYCOMB_API_KEY
+export OTEL_SERVICE_NAME=loomcycle-prod
 ./bin/loomcycle --config loomcycle.yaml
 ```
 
@@ -152,13 +240,19 @@ a webhook when a latency p99 exceeds a threshold — useful for
 "alert me when a provider degrades."
 
 The `x-honeycomb-team` header carries your API key. Treat it as a
-secret; LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS supports the same
-comma-separated `key=value,key2=value2` shape so multiple auth or
-routing headers compose:
+secret; `OTEL_EXPORTER_OTLP_HEADERS` takes a comma-separated
+`key=value,key2=value2` list so multiple auth or routing headers
+compose:
 
 ```sh
-LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=$KEY,x-honeycomb-dataset=prod
+OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=$KEY,x-honeycomb-dataset=prod
 ```
+
+To keep the key out of the process environment (visible in
+`docker inspect` and deployment UIs), write the same pairs — one per
+line or comma-separated — to a file and set
+`LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` to its path instead. The
+file is read once at startup; setting both is a startup error.
 
 ## Walkthrough 4 — DataDog APM
 
@@ -167,21 +261,19 @@ the `otlp_config` block. Loomcycle then points at the local Agent
 (default 127.0.0.1:4318) — same env var as Jaeger:
 
 ```sh
-export LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 ```
 
 DataDog's UI groups by `service.name`, `service.version`, and
-`deployment.environment`. Loomcycle's bootstrap sets `service.name`
-from `LOOMCYCLE_OTEL_SERVICE_NAME` (default `loomcycle`) and
-`service.version` from the binary's `buildVersion` automatically.
-Set `OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production` in
-the loomcycle process env to populate the env attribute (loomcycle
-respects the OTEL SDK's standard resource-attribute env var).
+`deployment.environment.name`. Loomcycle sets `service.name=loomcycle`,
+`service.version` from the binary, `service.instance.id` from
+`LOOMCYCLE_REPLICA_ID` and `deployment.environment.name` from
+`LOOMCYCLE_ENVIRONMENT`. `OTEL_SERVICE_NAME` and
+`OTEL_RESOURCE_ATTRIBUTES` override any of them.
 
 ## Sampling guidance
 
-The default `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO=1.0` captures every
-span. At a JobEmber-class workload (~200 runs/hour × 8 iterations ×
+The default sampler, `parentbased_always_on`, captures every run. At a JobEmber-class workload (~200 runs/hour × 8 iterations ×
 4 tools = 8K spans/hour) this is fine — OTLP/HTTP at ~200 bytes per
 span is ~1.5MB/hour, ~1GB/month. Most operators can leave it at 1.0.
 
@@ -192,10 +284,59 @@ Reduce when:
 - You're shipping to a SaaS APM that bills per-event (DataDog at
   $1.27/M, Honeycomb beyond free tier)
 
-The sampler is `parentbased_traceidratio`: when a parent span is
-sampled, all children are also sampled (so a trace stays whole). The
-ratio applies only to untraced roots. Setting `RATIO=0.1` keeps every
-tenth run end-to-end, drops the rest entirely — never partial traces.
+Set `OTEL_TRACES_SAMPLER=parentbased_traceidratio` and
+`OTEL_TRACES_SAMPLER_ARG=0.1`: when a parent span is sampled, all
+children are also sampled (so a trace stays whole), and the ratio
+applies only to roots. It keeps every tenth run end-to-end and drops
+the rest entirely — never partial traces.
+
+**Per tenant.** A run that starts a trace can be sampled at its own
+tenant's ratio instead — keep every trace of one tenant, sample the rest:
+
+```yaml
+observability:
+  tracing:
+    tenant_sampler_ratios:
+      acme: 1
+      beta: 0.1
+```
+
+or `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS=acme=1,beta=0.1` (wins per
+tenant). It decides every span that starts a trace and names its tenant —
+a run, a memory consolidation pass, a tool call made outside a run, a
+gateway call. A run that joins a caller's trace, a sub-agent's run, and
+everything under a run follow the trace's existing decision; a tenant not
+listed uses the global sampler. Read at startup.
+
+**Keeping failures at a low ratio** needs a decision made after the run
+ends: use the collector's tail-sampling processor (OpenTelemetry Collector
+or Alloy) with three policies — keep `status=ERROR`, keep `loomcycle.run`
+spans longer than your threshold, sample the rest.
+
+## A caller's trace
+
+When the caller that starts a run sends a W3C `traceparent` header (or
+gRPC metadata), the run joins that trace. It is read only once the
+request is authenticated (a bearer, a verified webhook signature, an
+accepted A2A peer), so an anonymous caller cannot choose a trace or
+force sampling. `LOOMCYCLE_OTEL_INBOUND_CONTEXT` picks what happens:
+`parent` (default) makes the caller's span the run's parent, `link`
+starts a new trace linked to the caller's span (the caller cannot
+influence sampling), `ignore` reads nothing. Baggage is never copied
+onto a span.
+
+The run's `traceparent` is passed on to the operator's own MCP servers
+over HTTP, so their spans join the run's trace. It is never sent to a
+model provider, to a server a tenant registered, or by the HTTP and
+WebFetch tools.
+
+## From a run to its trace
+
+A sampled run records its trace id: `trace_id` on get_run (HTTP, gRPC,
+MCP) and on the run's `started` event. Set
+`LOOMCYCLE_TRACE_URL_TEMPLATE` (for example
+`https://grafana.example/explore?traceId={trace_id}`) and the Web UI's
+run view shows an "Open trace" link.
 
 ## Filtering best practices
 
@@ -204,13 +345,13 @@ incident:
 
 1. **Slow runs**: `service:loomcycle duration>30s` — surface runs
    that took longer than the operator's SLO threshold.
-2. **Per-user noise**: group-by `loomcycle.user_id`, sort by count —
+2. **Per-user noise**: group-by `loomcycle.user_hash`, sort by count —
    identify which user is driving the run volume.
 3. **Provider degradation**: `loomcycle.provider=anthropic status=error
    span_name=loomcycle.provider.call` — Anthropic-specific errors
-   over the last hour. Cross-reference with the resolver matrix
-   (`GET /v1/_resolve/matrix`) to verify the matrix marked anthropic
-   stalled.
+   over the last hour; add `error.type=rate_limited` for its 429s.
+   Cross-reference with the resolver matrix (`GET /v1/_resolve/matrix`)
+   to verify the matrix marked anthropic stalled.
 
 ## What spans tell you that the transcript doesn't
 
@@ -224,9 +365,9 @@ record of agent content. The spans complement, not replace, it:
 | What inputs did the tool get? | Transcript (tool_call.input) |
 | How long did this run take? | Spans (root span duration) |
 | Which iteration was slow? | Spans (per-iteration timing) |
-| Which provider call took 8s? | Spans (provider.call duration) |
+| Which model call took 8s? | Spans (model.call duration; provider.call is time to headers) |
 | Did any tool error? | Spans (Error-status leaf spans) |
-| How many cache_read_tokens? | Spans (run-span attribute) |
+| How many cache_read_tokens? | Spans (run and model-call attributes) |
 | Why is p99 latency creeping up? | Spans + your APM's stats UI |
 
 Use the transcript for "what happened," the spans for "how fast,
@@ -240,22 +381,29 @@ spans in Jaeger/Tempo/Honeycomb.
 - Run `curl -v http://localhost:4318/v1/traces -X POST -d '{}'` from
   the loomcycle host. Expect a 200 or 400 — anything else (connection
   refused, DNS failure, certificate error) is a connectivity problem.
-  Loomcycle's BatchSpanProcessor logs the error to stderr periodically.
-- For HTTPS collectors (Honeycomb), ensure
-  `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` includes the `https://`
-  scheme; loomcycle's bootstrap detects `http://` and opts into
-  `WithInsecure` automatically.
+  Loomcycle logs `otel: span export failing` once when exports start
+  failing, a summary every five minutes while they keep failing, and
+  `otel: span export recovered` when they succeed again.
+- `OTEL_EXPORTER_OTLP_ENDPOINT` is a URL with its scheme: `http://`
+  is plain text, `https://` is TLS. For gRPC set
+  `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` and use the collector's gRPC port
+  (usually 4317).
+- `/metrics` reports `loomcycle_otel_spans_exported_total`,
+  `loomcycle_otel_spans_dropped_total` and
+  `loomcycle_otel_span_export_failures_total`.
 
 **Symptom**: traces show up but `service.name=unknown_service`.
 
-- Check `LOOMCYCLE_OTEL_SERVICE_NAME` is set. The default
-  `"loomcycle"` should always populate.
+- Check `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ATTRIBUTES` do not set an
+  empty name. The default `"loomcycle"` should always populate.
 
 **Symptom**: high collector latency under load.
 
-- Drop the sampler: `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO=0.1` or 0.01.
-- Check the BSP isn't dropping (the SDK logs to stderr when the
-  internal queue overflows).
+- Sample less: `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with
+  `OTEL_TRACES_SAMPLER_ARG=0.1` or 0.01.
+- Watch `loomcycle_otel_spans_dropped_total` on `/metrics`: spans are
+  dropped, never waited on, when the export queue
+  (`OTEL_BSP_MAX_QUEUE_SIZE`, default 2048) is full.
 
 **Symptom**: trace tree breaks across replicas (sub-runs spawn on a
 different loomcycle instance).
@@ -284,11 +432,63 @@ each ships its own README with a five-minute quickstart.
   Datadog APM queries + per-tag-tracking setup + 15-minute
   dashboard-authoring walkthrough.
 
-Plus a `/metrics` Prometheus text-format endpoint on loomcycle
-itself (added v1.x, slice A.0) exposing substrate counters (process
-RSS, heap, goroutines, concurrency state, build_info) — scraped by
-Profile A's Prometheus and reusable by any operator-existing
-Prometheus deployment regardless of which profile they pick.
+Plus loomcycle's own `/metrics` endpoint (see "Metrics" below),
+scraped by Profile A's Prometheus and by any Prometheus you already run.
+The dashboards, alert rules and Alloy configuration shipped with
+loomcycle live in `deploy/observability/` in the repo; Profile A's
+Grafana loads those dashboards too.
+
+## Metrics
+
+`GET /metrics` (Prometheus text format) carries the substrate — process,
+concurrency, provider lanes, model throughput, trace-export counters —
+and in-process instruments counted where the work happens. Because they
+are counted in loomcycle, not derived from exported spans, a run rate or
+an error rate is right at any sampling ratio. A scrape runs no database
+scan; the one query it makes is the per-user quota snapshot in cluster mode,
+as it always has.
+
+- **Runs:** `loomcycle_runs_total{tenant,status,trigger}`,
+  `loomcycle_run_duration_seconds{tenant,status}` (histogram),
+  `loomcycle_runs_active{tenant}`. `status` is the stored one
+  (`completed`, `failed`, `cancelled`, `rejected`); `trigger` is `http`,
+  `grpc`, `mcp`, `schedule`, `webhook`, `a2a`, `subagent` or `resume`.
+- **Tokens and cost:** `loomcycle_tokens_total{tenant,provider,model,type,key}`
+  (`type` input, output, cache_read, cache_write; `key` who paid:
+  operator, tenant or user) and `loomcycle_cost_usd_total{tenant,provider,model}`,
+  counted at the usage-ledger write, so they agree with the usage report.
+- **Providers and models:** `loomcycle_provider_requests_total{provider,model,outcome}`
+  (`outcome` is the attempt span's `error.type`, or `ok`),
+  `loomcycle_provider_request_duration_seconds` (time to headers),
+  `loomcycle_provider_retries_total{provider,reason}`,
+  `loomcycle_provider_fallbacks_total{from,to}`,
+  `loomcycle_model_call_duration_seconds` and `loomcycle_model_ttft_seconds`
+  (both by `provider`, `model` and `purpose`: turn, compaction, recap,
+  summary, emit_state or gateway).
+- **Tools:** `loomcycle_tool_calls_total{tool,outcome}` and
+  `loomcycle_tool_call_duration_seconds{tool}`; an MCP tool is
+  `mcp:<server>`, a client tool `client`, a name the run was not given
+  `unknown`.
+- **Substrate gauges:** `loomcycle_db_pool_open|in_use|idle{db}`,
+  `loomcycle_db_pool_wait_total`, `loomcycle_db_pool_wait_duration_seconds_total`,
+  `loomcycle_memory_consolidation_lag_seconds{backend}` (now minus the latest
+  pass's watermark; it also grows when nothing new arrives, so read it with)
+  `loomcycle_memory_consolidation_pending{backend}`,
+  `loomcycle_token_budget_used_ratio{tenant,period}`.
+
+No series names a run, a user or a session. A `model` label names only
+models configured in loomcycle's config; any other (a gateway caller's, a
+tenant agent's) is `other`. `LOOMCYCLE_METRICS_AGENT_LABEL=1`
+adds the agent name to the runs and tokens series. Each instrument holds at
+most `LOOMCYCLE_METRICS_CARDINALITY_LIMIT` series (2000); past it new label
+sets fold into an `otel_metric_overflow="true"` series. The per-user
+concurrency series names a user by `user_hash`, the same keyed hash spans
+carry, and is left out when no `LOOMCYCLE_SECRET_KEY` is set.
+
+`OTEL_METRICS_EXPORTER=otlp` (off by default; needs an OTLP endpoint) also
+exports the instruments over OTLP, with exemplars pointing at sampled
+traces, plus the GenAI convention histograms `gen_ai.client.token.usage`
+and `gen_ai.client.operation.duration`, which `/metrics` does not carry.
 
 Scraping it needs a token: `substrate:admin`, or better a token minted
 with the single scope `metrics:read`, which reaches `GET /metrics` and
@@ -341,9 +541,39 @@ and for diagnosing "the box got slow" incidents.
 
 ## Reference: env var summary
 
+The OTLP exporter reads the standard `OTEL_EXPORTER_OTLP_*` variables
+itself (and their `_TRACES_` forms): `_ENDPOINT`, `_HEADERS`,
+`_TIMEOUT`, `_COMPRESSION`, `_CERTIFICATE`, `_CLIENT_CERTIFICATE`,
+`_CLIENT_KEY`, `_INSECURE`.
+
 | Variable | Default | Purpose |
 |---|---|---|
-| `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` | empty | Empty disables tracing. Otherwise OTLP/HTTP endpoint (host:port or http(s)://host:port). |
-| `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` | empty | Comma-separated `key=value` list for collector auth. Whitespace trimmed. |
-| `LOOMCYCLE_OTEL_SERVICE_NAME` | `loomcycle` | `service.name` resource attribute. |
-| `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO` | `1.0` | Head-based sampling ratio. Clamped to `[0.0, 1.0]`. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | A URL with its scheme. Empty (and no `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) disables tracing. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Or `grpc`. `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` wins when set. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | empty | Collector auth as `key=value,...`. A secret. |
+| `OTEL_TRACES_EXPORTER` | `otlp` | A list; without `otlp` (e.g. `none`) tracing is off. |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns tracing off. |
+| `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | Also `always_on`, `always_off`, `traceidratio`, `parentbased_always_off`, `parentbased_traceidratio`. |
+| `OTEL_TRACES_SAMPLER_ARG` | `1` | The ratio for the two ratio samplers, 0 to 1. |
+| `OTEL_SERVICE_NAME` | `loomcycle` | `service.name` resource attribute. |
+| `OTEL_RESOURCE_ATTRIBUTES` | empty | Extra resource attributes; override loomcycle's defaults. |
+| `OTEL_PROPAGATORS` | `tracecontext,baggage` | Or `none`; other names are ignored. |
+| `OTEL_BSP_MAX_QUEUE_SIZE` / `_MAX_EXPORT_BATCH_SIZE` / `_EXPORT_TIMEOUT` / `_SCHEDULE_DELAY` | 2048 / 512 / 10000 ms / 5000 ms | Export queue bounds. |
+| `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` | empty | A file holding the collector headers instead of the env. |
+| `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What a caller's trace context does: `parent`, `link` or `ignore`. |
+| `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | empty | Per-tenant ratio for runs that start a trace, `tenant=ratio,...`. |
+| `LOOMCYCLE_OTEL_RAW_USER_ID` | off | `1` adds the raw `loomcycle.user_id` beside `loomcycle.user_hash`. |
+| `LOOMCYCLE_ENVIRONMENT` | empty | `deployment.environment.name` resource attribute. |
+| `LOOMCYCLE_TRACE_URL_TEMPLATE` | empty | Web UI "Open trace" link; must contain `{trace_id}`. |
+| `OTEL_METRICS_EXPORTER` | `none` | `otlp` exports the metric instruments over OTLP; needs an endpoint. |
+| `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | the generic protocol | `http/protobuf` or `grpc` for metrics. |
+| `OTEL_METRIC_EXPORT_INTERVAL` / `_TIMEOUT` | 60000 / 30000 ms | How often metrics are exported, and how long one export may take. |
+| `LOOMCYCLE_METRICS_CARDINALITY_LIMIT` | 2000 | Series per instrument before the overflow series. |
+| `LOOMCYCLE_METRICS_AGENT_LABEL` | off | `1` adds the agent name to the runs and tokens series. |
+
+With tracing on, a value loomcycle cannot honour (an endpoint without
+an http(s) scheme, an unknown sampler or protocol, a ratio outside 0–1,
+a malformed collector header, an unreadable headers file) stops the
+startup with an error naming the variable. Unsupported propagator or
+exporter names are logged and ignored. With tracing off, `OTEL_*` values
+never stop the startup.

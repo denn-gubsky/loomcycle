@@ -14,6 +14,14 @@ including directories that exist only because something lives beneath them.
 - `limit` — entries per page (default 500, at most 5000).
 - `cursor` — continue a truncated listing. Pass back the `next_cursor` you
   were given; never build one yourself.
+- `with_summary` — tenant scope: add each entry's annotation as `summary`.
+  A document gets `{level, brief, stale?}`. A folder gets `{level, brief,
+  abstract, stale?}` from its `_annotation` document. A document that also
+  has names below it gets its folder's as `folder_summary`. An entry with
+  none has no summary, and a folder's is left out when you may not read
+  every document it covers.
+- `summary_chars` — with `with_summary`, the most abstract characters the page
+  carries (default 2000, at most 8000).
 
 ## Returns
 

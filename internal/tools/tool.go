@@ -11,6 +11,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/errkind"
@@ -1832,7 +1833,8 @@ type HistoryPolicyValue struct {
 // return a hard Go error here).
 //
 // v0.10.0 OTEL: opens loomcycle.tool.call for every dispatched call.
-// Errors (Go-level + IsError-true results) mark the span Error. MCP
+// A Go error marks the span Error; an IsError result sets
+// loomcycle.tool_is_error. MCP
 // tools open a nested loomcycle.mcp.call inside this outer span (the
 // MCP-aware nesting happens in the mcpTool wrapper at
 // internal/tools/mcp/pool.go).
@@ -1847,11 +1849,31 @@ func (d *Dispatcher) Execute(ctx context.Context, name string, input json.RawMes
 // gRPC) keeps the typed error, because each transport maps it onto its own
 // status (an HTTP code, a gRPC status) as it always has.
 func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessage) (Result, error) {
-	ctx, span := lcotel.RecordToolCall(ctx, name)
+	// The run identity names the tenant authoritatively, and also reaches a
+	// call made outside a run's span (the MCP, HTTP and gRPC tool surfaces).
+	ctx = lcotel.WithTenant(ctx, RunIdentity(ctx).TenantID)
+	ctx, span := lcotel.RecordToolCall(ctx, lcotel.ToolCallAttrs{Name: name, CallID: ToolUseID(ctx)})
 	defer span.End()
+	start := time.Now()
 	res, goErr := d.execute(ctx, name, input)
+	outcome := lcotel.ToolOutcomeOK
 	switch {
-	case (goErr != nil || res.IsError) && RunIsNoTrace(ctx):
+	case goErr != nil:
+		outcome = lcotel.ToolOutcomeError
+	case res.IsError:
+		outcome = lcotel.ToolOutcomeIsError
+	}
+	lcotel.RecordToolCallMetric(ctx, d.toolMetricName(name), outcome, time.Since(start))
+	// An error result — a refusal, a policy or hook denial, a tool answering
+	// "no" — is the model's to read and act on, the loop working as designed,
+	// so it is an attribute, not the span's error status: a backend keeping
+	// "every error trace" must not keep every run that met a refusal. Only a
+	// Go error, a tool that broke, fails the span.
+	if res.IsError {
+		lcotel.SetToolIsError(span)
+	}
+	switch {
+	case goErr != nil && RunIsNoTrace(ctx):
 		// A tool's error quotes what the run said as readily as its result
 		// does, and a span is exported off the box: a no-trace run's span
 		// says only that the call failed, and how.
@@ -1865,10 +1887,23 @@ func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessag
 		// only its status message — tracing tells a tool that broke from one
 		// that answered "no".
 		lcotel.SetSpanError(span, goErr)
-	case res.IsError:
-		lcotel.SetSpanErrorMessage(span, firstLineForSpan(res.Text))
 	}
 	return res, goErr
+}
+
+// toolMetricName is name's label on the tool metrics. A tool this run was
+// given is named (an MCP tool by its server, a client tool as "client"); an
+// MCP name the fallback may still resolve is "mcp", since until it resolves
+// the server in it is the model's text; any other name is "unknown". A label
+// is never text the model chose.
+func (d *Dispatcher) toolMetricName(name string) string {
+	if _, ok := d.tools[name]; ok {
+		return lcotel.ToolMetricName(name, true)
+	}
+	if server, _ := lcotel.ParseMCPToolName(name); server != "" && d.fallback != nil {
+		return "mcp"
+	}
+	return lcotel.ToolMetricName(name, false)
 }
 
 // RunIsNoTrace reports whether ctx belongs to a no-trace run: one whose
@@ -1941,17 +1976,4 @@ func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMes
 func toolNotFound(name string) Result {
 	return validationRefusal(fmt.Sprintf("tool not found: %s", name),
 		"Call one of the tools you were given, by its exact name.")
-}
-
-// firstLineForSpan extracts the first line of a tool's error text for
-// the span status description. Multi-line tool errors otherwise blow
-// up Jaeger's status field; the truncation in SetSpanErrorMessage
-// hard-caps at 500 chars on top of this.
-func firstLineForSpan(s string) string {
-	for i, c := range s {
-		if c == '\n' {
-			return s[:i]
-		}
-	}
-	return s
 }

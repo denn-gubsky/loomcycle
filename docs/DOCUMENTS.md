@@ -1277,7 +1277,7 @@ Search finds chunks by what they say; statements let retrieval also reach what t
 
 - **Asserted only.** A proposal is one side's review state, and a relation a judge refuted or an operator rejected stays where it is. A pull never undoes a local rejection: such a link is left out and counted in `edges_skipped_rejected`.
 - **Pull files a peer's links for review.** A pulled link is written with method `sync` and `attributes.origin_method` `peer:<source>`, and what the peer said is kept beside it: `attributes.peer_method` (the method it was made by there; for a link the peer itself pulled, the method it was first made by) and `attributes.peer_status`. It arrives `proposed`, for review here, unless the operator declares the source `trust: asserted` (yaml `document_sources.<name>.trust`, or a `DocumentSourceDef` authored from the operator plane — a run or a member may author a source only as `proposed`, and must say so when it forks a trusted one). A peer's `manual` never becomes a person's here.
-- **Only the bound document is written.** A key a chunk of another document in the scope holds is a conflict: that chunk is neither written nor moved, and the key is counted in `conflicts` and named in `conflicting_keys` (`diff_remote` lists them as `conflicts` beforehand).
+- **Only the bound document is written.** A key a chunk of another document in the scope holds is a conflict: that chunk is neither written nor moved, and the key is counted in `conflicts` and named in `conflicting_keys` (`diff_remote` lists them as `conflicts` beforehand). On a push, a new key the peer cannot say is free — it refuses or fails the scope-wide read that asks which document holds it — is a conflict too, never written and checked afterwards; the next push asks again.
 - **Evidence is re-verified.** A row is matched by the cited chunk's `natural_key`, and its quote is checked again against this side's text. A row that cannot be checked here (an unkeyed chunk, a chat turn, another scope, a key this side does not hold or may not read, a quote not in this side's text) is dropped and counted in `evidence_dropped`.
 - **Updates.** Only a source declared `trust: asserted` changes a link that holds here: from any other, its envelope is kept (`edges_envelope_kept`) and the peer's quotes are not added (`evidence_dropped`). A link pulled before from a trusted source follows the peer's `confidence`, `invalid_at` and `attributes` (`edges_updated`). A link written here, or one an operator here ruled on, keeps its own envelope and gains only the evidence it lacks (`edges_envelope_kept`). `valid_at` is part of a statement's identity, so a peer link with another `valid_at` arrives as a second statement.
 
@@ -1330,6 +1330,20 @@ memory:
 - Calls take the decision / chat lane of their provider and are charged to the classifying run under the usage purpose `classify`.
 - The thresholds are provisional: they are to be set from a measurement against a labelled corpus.
 
+**Concept ranking fallback — `concept_fallback`** (off by default). A decision model's yes-probabilities are uncalibrated and run low on broad topics, so a document can reach `min_probability` on no concept at all, and a scheme asked level by level then never gets past the top level. With the fallback on, an answer (one set of yes/no questions about sibling concepts asked together; with more than 20 siblings, each batch of 20) in which no concept reaches `min_probability` takes its single best concept, when that concept's probability is at least the fallback's `min_probability` and it leads the runner-up by at least `min_margin`. A tie is never taken, an answer that already has a concept above `min_probability` gets nothing added, and an answer yields at most one pick. It applies to every answer, including each level of the level-by-level walk, and the walk descends into a fallback pick (its children face the normal threshold first, then the fallback).
+
+```yaml
+memory:
+  classifier:
+    decision: { provider: ollama-local, model: nimble }
+    min_probability: 0.6
+    concept_fallback:
+      min_probability: 0.3   # the leader's floor: above 0, at most memory.classifier.min_probability
+      min_margin: 0.1        # its least lead over the runner-up, 0–1 (0 still needs a strict lead)
+```
+
+A pick is a proposal like any other concept. The classify answer marks it `fallback: true` and its statement carries `attributes.concept_fallback: true` (set by the runtime only: a writer that names it is refused), so the judge, a review policy and the operator can tell it apart; `classified_by` stays `model`, so a policy rule on `classified_by: rules` never accepts one. Decision model only: the block needs a `decision` model at load, and the chat model is unchanged. A bad block (a floor of 0 or below, a floor above `min_probability`, a margin outside 0–1) fails the load. Since #2487.
+
 **Revising the ontology.** The tenant ontology is created at `/memory/ontology`, but the runtime knows it by its document id, recorded when it is created or first found there: renaming it keeps it the ontology, and another document put at that name is an ordinary document. Every tenant ontology still known only by its name is recorded at boot. Revise the confirmed ontology document in place (edit its sections). Replacing it with a new document gives every concept a new chunk: the statements already filed still point at the old concepts, and the next classify files duplicates against the new ones.
 
 ### Merging two subjects
@@ -1356,6 +1370,36 @@ A tenant subject can stand for a user of the tenant: `person:ada-lovelace` is th
 - Other refusals: `subject_not_found`, `not_a_subject` (a document whose root carries no natural key), `invalid_request` (no subject), `unavailable` (no SQL Memory, or another binding in the scope is being written; retry).
 
 **What an erasure does with it.** `GET /v1/_erasure?subject=<user>` (and its gRPC and MCP twins) lists the tenant subjects bound to that user in `bound_subjects`, each `{document_id, natural_key, path}`, and counts them in `tier2_uncovered` as `subject_bindings`. A subject whose document the operator's access-control rules hide from reading is counted in `bound_subjects_withheld` and never named. A live `POST /v1/_erasure` clears each binding, so no row keeps the erased id, and keeps the subjects: deleting one would delete every statement and fact the tenant holds about that entity, which is the operator's call (`delete_document`, which announces `removed`). `retained.bound_subjects` says so, counting and never naming them, because the retained entries are copied into the audit record. After every other plane, `erased` goes to the tenant's `memory/subjects` channel for each subject; it names the subject and never the user. It is withheld, with the reason in `not_announced`, when the operator's rules hide part of the tenant's documents from reading.
+
+## Annotations — a brief and an abstract per section, document and folder (RFC GE)
+
+**Why.** After import, classification and linking, a knowledge base is a linked tree, and nothing above a section says what it is about: an agent learns what a document or a folder holds by reading it, and a question about the corpus as a whole ("what do we have on X") has no retrieval path, because search ranks passages and no passage stands for a set. An annotation is two short texts written *about* a part of the tree — a **brief** (one sentence, for choosing) and an **abstract** (one paragraph, standing in for reading) — at three levels: a section branch, a document (on its root chunk) and a Path folder. The design follows archival multilevel description (ISAD(G)) and the indicative/informative split of abstracting standards; the research is at `/loomcycle/docs/annotation-layer-research`.
+
+**Not content.** Annotations live in the per-scope table `chunk_annotations`, one record per (chunk, level), outside the body, the content hash, `history`, `diff`, sync and `export_md`. Writing one changes nothing the document says. Records go with their chunk on delete and travel with `copy_documents` / `move_documents`. They are kept for the **tenant scope only**.
+
+**The hash, and staleness.** The runtime owns the hash of what a record was written from (`annotation_inputs`): the part's title, class (and its meaning and `@annotate` slots), language, own body, and each child's record — or, for a child without one, its text. `set_annotation` refuses a hash that moved (`annotation_inputs_changed`). A record whose inputs changed since reads `stale: true`; it is still shown, marked, never withheld. A change deep in a document reaches its ancestors only through their children's records, so staleness climbs exactly as far as the text changed.
+
+**Ops** (all through the Document op dispatch, so HTTP / gRPC / MCP / the SDKs):
+
+| op | who | does |
+|---|---|---|
+| `annotation_inputs` | operator plane; `statement_methods: [annotate]` | what a target's annotation is written from, and the hash |
+| `set_annotation` | operator plane; the annotate grant | write a record with the current hash, or `manual: true` (operator only, no hash, never overwritten by the pass) |
+| `get_annotation` | any reader | a chunk's, document's or folder's records, `stale` computed now |
+| `list_annotations` | any reader | filtered pages, or `summarize` counts per level |
+| `delete_annotation` | operator plane; the grant (not manual records) | remove one record (a folder's removes its `_annotation` document) |
+
+SDK helpers: `getAnnotation` / `listAnnotations` / `annotate` (TS) and `get_annotation` / `list_annotations` / `annotate` (Python).
+
+**Reading them.** `with_summary: true` on `get_document`, `get_chunk`, `search`, `related`, `graph_recall`, `documents_summary`, `query_documents` and `Path op=ls` adds `summary: {level, brief, abstract?, stale?}` per row — the nearest record at or above the row's chunk; abstracts ride on the op's target, the first five documents of a search page and a walk's seeds, within `summary_chars`. `documents_summary` and `graph_snapshot` carry a document's `brief` as plain metadata whenever it has one. Without the option, and in a scope with no annotations, every answer is byte-identical.
+
+**Searching them.** `search` with `annotations: "include"` fuses the annotations with the passages (one row per target, `matched_annotation` names which annotation found it); `annotations: "only"` answers from them alone — the shape of a corpus question, usually with `annotation_levels: ["path", "document"]`. The index rows live under their own memory scope id, so no other Memory surface sees them.
+
+**Folders.** A folder's annotation is kept on a real document `<folder>/_annotation` of the operational type `Annotation` (title = the folder's name, root fields `{level, path, covers, brief}`, empty body), or on the root of a document named at the folder's own path. It is written from the folder's direct children's annotations, its classes and topics and the relation kinds among its documents. It is **withheld from a caller who may not read every document it covers** — the record, `Path ls` summaries and the `_annotation` document itself, which answers as not found. The name `_annotation` is reserved in the tenant scope; classify, the linker and the judge skip `Annotation` documents, and they are never evidence.
+
+**The ontology's say.** `@annotate the problem; the decisions taken; …` on a class names the slots its annotations fill (inherited; `describe_ontology` reports `directives.annotate` and each class's `meaning`, its first prose line). The ontology root field `annotation_language` enforces one language for every annotation; otherwise each document's own is detected.
+
+**Who writes them.** The knowledge-base bundle's `kb/annotator` (code-js) with `kb/annotate` (tier `middle`, no tools), bottom-up and only for what changed; run `write: report` first for the call and prompt-character estimate. See `/loomcycle/docs/knowledge-base-bundle` (Annotations) and the RFC at `/loomcycle/rfcs/annotations`.
 
 ## Caveats
 

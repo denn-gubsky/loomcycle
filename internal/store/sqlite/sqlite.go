@@ -1817,6 +1817,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		// counter; NULL on rows from before the column and on restored rows.
 		// See internal/store/postgres/migrations/0108_runs_user_slot.
 		`ALTER TABLE runs ADD COLUMN user_slot INTEGER`,
+		// The OpenTelemetry trace the run's span was recorded in ('' when
+		// tracing was off or unsampled). See
+		// internal/store/postgres/migrations/0132_runs_trace_id.
+		`ALTER TABLE runs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''`,
 		// RFC BL — tenant-scope the Memory store + provenance/access columns.
 		// On an UPGRADED DB these ALTERs add the columns to the existing
 		// memory table; its old (scope, scope_id, key) PK is then replaced by
@@ -3837,6 +3841,7 @@ func scanRun(scanner interface{ Scan(...any) error }) (store.Run, error) {
 		&agentDefID, &pauseState, &parentContext, &idempotencyKey, &deliveryAltKey, &tenantID,
 		&interactive, &operatorKeyRestricted, &isolated, &noUserScope, &r.Retention,
 		&cost, &costCurrency, &credentialSource, &credentialScopeID,
+		&r.TraceID,
 		&runConfig,
 		&result,
 		&sessAgent,
@@ -3950,6 +3955,7 @@ const runColumns = `r.id, r.session_id, r.status, r.started_at, r.completed_at,
 		r.agent_def_id, r.pause_state, r.parent_context, r.idempotency_key, r.delivery_alt_key, r.tenant_id,
 		r.interactive, r.operator_key_restricted, r.isolated, r.credentials_no_user_scope, r.retention,
 		r.cost, r.cost_currency, r.credential_source, r.credential_scope_id,
+		r.trace_id,
 		r.run_config,
 		r.result,
 		s.agent`
@@ -4543,6 +4549,14 @@ func (s *Store) TakeRunUserSlot(ctx context.Context, runID string) (store.RunUse
 func (s *Store) MarkRunUserSlot(ctx context.Context, runID string) error {
 	if _, err := s.db.ExecContext(ctx, `UPDATE runs SET user_slot = 1 WHERE id = ?`, runID); err != nil {
 		return fmt.Errorf("mark run user slot: %w", err)
+	}
+	return nil
+}
+
+// SetRunTraceID implements store.Store.
+func (s *Store) SetRunTraceID(ctx context.Context, runID, traceID string) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE runs SET trace_id = ? WHERE id = ?`, traceID, runID); err != nil {
+		return fmt.Errorf("set run trace id: %w", err)
 	}
 	return nil
 }
