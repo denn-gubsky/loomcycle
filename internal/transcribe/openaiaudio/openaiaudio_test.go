@@ -271,6 +271,11 @@ func TestOpenAIAudio_QwenHeaderStripped(t *testing.T) {
 		{"an unknown name", `{"text":"language Klingon<asr_text>Qapla'"}`, "Qapla'", ""},
 		{"the engine's own language wins", `{"text":"language English<asr_text>Hello.","language":"english"}`, "Hello.", "english"},
 		{"no header", `{"text":"language is how we talk"}`, "language is how we talk", ""},
+		// The model segments a long piece itself and heads each segment.
+		{"a header per segment", `{"text":"language Russian<asr_text>Первая часть. language Russian<asr_text>Вторая часть."}`, "Первая часть. Вторая часть.", "ru"},
+		{"the first header names the language", `{"text":"language Ukrainian<asr_text>Добрий день. language Russian<asr_text>Дальше."}`, "Добрий день. Дальше.", "uk"},
+		{"a silent segment adds nothing", `{"text":"language Russian<asr_text>Раз. language None<asr_text> language Russian<asr_text>Два."}`, "Раз. Два.", "ru"},
+		{"speech saying language mid-text", `{"text":"language English<asr_text>The language model answered."}`, "The language model answered.", "en"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var res transcribe.STTResult
