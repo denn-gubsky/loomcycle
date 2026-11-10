@@ -271,8 +271,8 @@ func newInstruments(m, genAI metric.Meter, export bool) (instruments, error) {
 // so its failures are logged by loomcycle (throttled, value-free) instead of
 // by the SDK's default handler.
 func newMetricExporter(ctx context.Context, cfg MetricsConfig) (sdkmetric.Exporter, error) {
-	var headers map[string]string
-	if cfg.HeadersFile != "" {
+	headers := cfg.Headers
+	if headers == nil && cfg.HeadersFile != "" {
 		var err error
 		if headers, err = ReadHeadersFile(cfg.HeadersFile); err != nil {
 			return nil, err

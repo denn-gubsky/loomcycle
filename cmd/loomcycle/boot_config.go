@@ -100,6 +100,28 @@ func (b *boot) initTelemetry() {
 	}
 	metricsCfg.ServiceVersion, metricsCfg.InstanceID = buildVersion, b.cfg.Env.ReplicaID
 	metricsCfg.Environment = otelCfg.Environment
+	for _, w := range metricsCfg.Warnings {
+		if metricsCfg.Export {
+			slog.Warn("otel: ignoring a setting", "detail", w)
+		} else {
+			slog.Info("otel: metric export is off; unsupported OTEL_METRICS_EXPORTER value ignored", "detail", w)
+		}
+	}
+	if metricsCfg.Export && metricsCfg.HeadersFile != "" {
+		// One file, read once: the tracer's read already registered its
+		// values with the redactors when tracing is on.
+		if otelCfg.Headers != nil {
+			metricsCfg.Headers = otelCfg.Headers
+		} else {
+			fileCfg := lcotel.Config{Enabled: true, HeadersFile: metricsCfg.HeadersFile}
+			secrets, err := loadOTELHeadersFile(&fileCfg, b.logRedactor)
+			if err != nil {
+				fatal("otel: reading the collector headers failed", "err", err)
+			}
+			metricsCfg.Headers = fileCfg.Headers
+			b.otelHeaderSecrets = append(b.otelHeaderSecrets, secrets...)
+		}
+	}
 	metricsShutdown, err := lcotel.InitMetrics(metricsCfg)
 	if err != nil {
 		fatal("otel: metrics setup failed", "err", err)

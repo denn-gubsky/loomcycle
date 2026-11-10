@@ -3470,7 +3470,7 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_OTEL_RAW_USER_ID` | off | `1` also puts the raw `loomcycle.user_id` on spans, beside `loomcycle.user_hash`. See "Users on spans". |
 | `LOOMCYCLE_METRICS_CARDINALITY_LIMIT` | `2000` | Series one `/metrics` instrument may hold; past it new label sets fold into one series labelled `otel_metric_overflow="true"`. A value that is not a positive integer stops the startup. See "Metrics". |
 | `LOOMCYCLE_METRICS_AGENT_LABEL` | off | `1` adds an `agent` label (the agent name) to `loomcycle_runs_total` and `loomcycle_tokens_total`. Only for a bounded agent catalogue. See "Metrics". |
-| `OTEL_METRICS_EXPORTER` | `none` | `otlp` also exports the `/metrics` instruments over OTLP (needs `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, or the startup stops). Any other value stops the startup. See "Metrics". |
+| `OTEL_METRICS_EXPORTER` | `none` | `otlp` also exports the `/metrics` instruments over OTLP (needs `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, or the startup stops). A comma-separated list as the specification allows; a name loomcycle does not support (`prometheus`, `console`) is ignored with a warning. See "Metrics". |
 | `LOOMCYCLE_ENVIRONMENT` | — | The `deployment.environment.name` resource attribute. |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | — | An http(s) URL containing `{trace_id}`, e.g. `https://grafana.example/explore?traceId={trace_id}`: the Web UI's run view links each traced run there. Shown to every signed-in user who can see the run. Anything else stops the startup. |
 
@@ -3576,14 +3576,17 @@ instruments over OTLP, plus the OpenTelemetry GenAI semantic-convention
 histograms `gen_ai.client.token.usage` and `gen_ai.client.operation.duration`
 (those only on this path). Off by default, also when traces are exported. It
 needs `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`,
-or the startup stops. The protocol is `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL`,
+an absolute http(s) URL, or the startup stops; an unsupported exporter name in
+`OTEL_METRICS_EXPORTER` is ignored with a warning. The protocol is `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL`,
 else `OTEL_EXPORTER_OTLP_PROTOCOL` (`http/protobuf` or `grpc`); the exporter
 reads the rest of `OTEL_EXPORTER_OTLP_*` and its `_METRICS_` forms itself
 (headers, TLS, timeout, compression), and the reader
 `OTEL_METRIC_EXPORT_INTERVAL` / `OTEL_METRIC_EXPORT_TIMEOUT` (milliseconds,
 defaults 60000 / 30000). `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` applies
-too, and is refused beside `OTEL_EXPORTER_OTLP_METRICS_HEADERS`. With export
-off, these values are not read and cannot stop the startup. Points carry
+too (read once, shared with traces), and is refused beside
+`OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_METRICS_HEADERS`; a
+malformed header entry stops the startup without quoting it. With export off,
+these values are not read and cannot stop the startup. Points carry
 exemplars with the `trace_id` of a sampled run (the SDK's trace-based filter,
 `OTEL_METRICS_EXEMPLAR_FILTER`). A failing collector is logged once
 (`otel: metric export failing`), summarised every five minutes, and its

@@ -191,7 +191,23 @@ func TestResolveMetricsConfig_EnvironmentTable(t *testing.T) {
 				t.Error("export on with the SDK disabled")
 			}
 		}},
-		{name: "unknown exporter", env: map[string]string{"OTEL_METRICS_EXPORTER": "prometheus"}, wantErr: `OTEL_METRICS_EXPORTER="prometheus"`},
+		{name: "unsupported exporter is ignored with a warning", env: map[string]string{"OTEL_METRICS_EXPORTER": "prometheus"}, check: func(t *testing.T, c MetricsConfig) {
+			if c.Export || len(c.Warnings) != 1 || !strings.Contains(c.Warnings[0], `"prometheus"`) {
+				t.Errorf("cfg = %+v", c)
+			}
+		}},
+		{name: "unsupported beside otlp still exports", env: map[string]string{"OTEL_METRICS_EXPORTER": "console,otlp", "OTEL_EXPORTER_OTLP_ENDPOINT": ep}, check: func(t *testing.T, c MetricsConfig) {
+			if !c.Export || len(c.Warnings) != 1 {
+				t.Errorf("cfg = %+v", c)
+			}
+		}},
+		{name: "malformed endpoint with export on", env: map[string]string{"OTEL_METRICS_EXPORTER": "otlp", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "collector:4318"}, wantErr: "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT must be an absolute"},
+		{name: "malformed endpoint with export off is ignored", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "collector:4318"}, check: func(t *testing.T, c MetricsConfig) {
+			if c.Export {
+				t.Error("export on")
+			}
+		}},
+		{name: "malformed metrics headers with export on", env: map[string]string{"OTEL_METRICS_EXPORTER": "otlp", "OTEL_EXPORTER_OTLP_ENDPOINT": ep, "OTEL_EXPORTER_OTLP_METRICS_HEADERS": "no-equals-sign"}, wantErr: "OTEL_EXPORTER_OTLP_METRICS_HEADERS"},
 		{name: "grpc by the generic protocol", env: map[string]string{"OTEL_METRICS_EXPORTER": "otlp", "OTEL_EXPORTER_OTLP_ENDPOINT": ep, "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc"}, check: func(t *testing.T, c MetricsConfig) {
 			if c.Protocol != ProtocolGRPC {
 				t.Errorf("protocol = %q", c.Protocol)
