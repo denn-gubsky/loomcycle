@@ -24,7 +24,7 @@ The v1.150 line: #2569 to #2575.
 
 ### Speech to text (#2575)
 
-- Qwen3-ASR cuts a piece into segments of its own and heads each with `language <Name><asr_text>`, so a piece over about 30 seconds held more than one header and only the leading one was removed. Every header is removed now, the segments between them are joined with a space, a silent `None` segment adds nothing, and the first header gives the language. Speech that says "language" is kept: a header needs the literal `<asr_text>`.
+- Qwen3-ASR cuts a piece into segments of its own and heads each with `language <Name><asr_text>`, so one 60-second piece could hold two headers, and only the leading one was removed. Every header is removed now, the segments between them are joined with a space, a silent `None` segment adds nothing, and the first header gives the language. Speech that says "language" is kept: a header needs the literal `<asr_text>`.
 
 ### Images (#2572)
 
