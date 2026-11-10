@@ -72,7 +72,9 @@ type Client struct {
 // collector credentials, as service.name=loomcycle. An OTEL_* entry the
 // definition sets itself is kept: the operator named it for that server.
 func childEnv(inherited, configured []string) []string {
-	out := make([]string, 0, len(inherited)+len(configured))
+	// Sized by the inherited set alone: append grows for the configured
+	// entries, and a summed capacity is an overflow-prone allocation size.
+	out := make([]string, 0, len(inherited))
 	for _, kv := range inherited {
 		if !strings.HasPrefix(kv, "OTEL_") {
 			out = append(out, kv)
