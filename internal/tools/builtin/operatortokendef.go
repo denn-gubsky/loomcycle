@@ -573,7 +573,8 @@ func heldToMinter(ctx context.Context, r auth.Restrictions) (auth.Restrictions, 
 
 // sameRestrictions reports whether a and b restrict the same things: the
 // same mode, the same rate (an unset burst reads as the per-minute rate), the
-// same overrides allowed, the same agents and the same surfaces, in any order.
+// same overrides allowed, the same agents and the same surfaces, in any order,
+// and the same tenant confinement of a scrape.
 func sameRestrictions(a, b auth.Restrictions) bool {
 	sameSet := func(x, y []string) bool {
 		if len(x) != len(y) {
@@ -590,7 +591,7 @@ func sameRestrictions(a, b auth.Restrictions) bool {
 		}
 		return true
 	}
-	if a.Retention != b.Retention || !sameSet(a.Agents, b.Agents) || !sameSet(a.Surfaces, b.Surfaces) {
+	if a.Retention != b.Retention || a.TenantMetrics != b.TenantMetrics || !sameSet(a.Agents, b.Agents) || !sameSet(a.Surfaces, b.Surfaces) {
 		return false
 	}
 	if (a.Rate == nil) != (b.Rate == nil) || (a.Rate != nil &&
