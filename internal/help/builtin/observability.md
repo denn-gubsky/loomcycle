@@ -460,7 +460,9 @@ an error rate is right at any sampling ratio; a scrape reads memory only.
   `loomcycle_provider_request_duration_seconds` (time to headers),
   `loomcycle_provider_retries_total{provider,reason}`,
   `loomcycle_provider_fallbacks_total{from,to}`,
-  `loomcycle_model_call_duration_seconds`, `loomcycle_model_ttft_seconds`.
+  `loomcycle_model_call_duration_seconds` and `loomcycle_model_ttft_seconds`
+  (both by `provider`, `model` and `purpose`: turn, compaction, recap,
+  summary, emit_state or gateway).
 - **Tools:** `loomcycle_tool_calls_total{tool,outcome}` and
   `loomcycle_tool_call_duration_seconds{tool}`; an MCP tool is
   `mcp:<server>`, a client tool `client`, a name the run was not given

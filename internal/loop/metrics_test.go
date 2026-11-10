@@ -52,8 +52,8 @@ func TestFallback_CountsTheMoveAndTimesEachModelCall(t *testing.T) {
 	out := renderMetrics(t)
 	for _, want := range []string{
 		`loomcycle_provider_fallbacks_total{from="metrics-a/model-a",to="metrics-b/model-b"} 1`,
-		`loomcycle_model_call_duration_seconds_count{model="model-a",provider="metrics-a"} 1`,
-		`loomcycle_model_call_duration_seconds_count{model="model-b",provider="metrics-b"} 1`,
+		`loomcycle_model_call_duration_seconds_count{model="model-a",provider="metrics-a",purpose="turn"} 1`,
+		`loomcycle_model_call_duration_seconds_count{model="model-b",provider="metrics-b",purpose="turn"} 1`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("metrics lack %q:\n%s", want, out)

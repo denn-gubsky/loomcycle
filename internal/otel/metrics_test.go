@@ -224,17 +224,19 @@ func TestProviderAttemptMetric_OutcomeAgreesWithSpanErrorType(t *testing.T) {
 
 func TestModelCallMetric_RecordsDurationAndTTFTOnce(t *testing.T) {
 	render := withMetrics(t, false, 0)
-	_, span := lcotel.RecordModelCall(context.Background(), lcotel.ModelCallAttrs{Provider: "openai", Model: "gpt"})
+	_, span := lcotel.RecordModelCall(context.Background(), lcotel.ModelCallAttrs{Provider: "openai", Model: "gpt", Purpose: "turn"})
 	lcotel.SetModelCallResult(span, lcotel.ModelCallResult{TTFT: 120 * time.Millisecond})
 	lcotel.SetModelCallResult(span, lcotel.ModelCallResult{TTFT: time.Second})
 	span.End()
-	_, span = lcotel.RecordModelCall(context.Background(), lcotel.ModelCallAttrs{Provider: "openai", Model: "gpt"})
+	_, span = lcotel.RecordModelCall(context.Background(), lcotel.ModelCallAttrs{Provider: "openai", Model: "gpt", Purpose: "gateway"})
 	lcotel.SetModelCallResult(span, lcotel.ModelCallResult{Cancelled: true}) // nothing streamed
 	span.End()
 	out := render(lcotel.PromOptions{})
 	mustValue(t, out, "loomcycle_model_call_duration_seconds_count", map[string]string{"provider": "openai", "model": "gpt"}, 2)
 	mustValue(t, out, "loomcycle_model_ttft_seconds_count", map[string]string{"provider": "openai", "model": "gpt"}, 1)
 	mustValue(t, out, "loomcycle_model_ttft_seconds_sum", nil, 0.12)
+	mustValue(t, out, "loomcycle_model_call_duration_seconds_count", map[string]string{"purpose": "turn"}, 1)
+	mustValue(t, out, "loomcycle_model_call_duration_seconds_count", map[string]string{"purpose": "gateway"}, 1)
 }
 
 func TestToolMetricName_CollapsesUnboundedNames(t *testing.T) {

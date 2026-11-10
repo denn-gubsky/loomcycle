@@ -197,3 +197,32 @@ func TestTokenMetrics_MatchTheLedgerTotals(t *testing.T) {
 		t.Errorf("tokens not attributed to the key that paid:\n%s", out)
 	}
 }
+
+// A gateway call is a model call like a run's turn: each route, streamed or
+// not, times it under the gateway purpose, with tracing off.
+func TestGatewayRoutes_TimeEachModelCallUnderTheGatewayPurpose(t *testing.T) {
+	render := installMetrics(t)
+	srv, _ := makeServer(t, gatewayProvider(), makeBaseConfig())
+	ts := httptest.NewServer(srv.Mux())
+	t.Cleanup(ts.Close)
+	for _, tc := range []struct{ path, body string }{
+		{"/v1/_llm/chat", `{"messages":[{"role":"user","content":"hi"}],"provider":"scripted","model":"scripted-model"}`},
+		{"/v1/_llm/chat", `{"messages":[{"role":"user","content":"hi"}],"provider":"scripted","model":"scripted-model","stream":true}`},
+		{"/v1/chat/completions", `{"model":"scripted-model","messages":[{"role":"user","content":"hi"}],"loomcycle_provider":"scripted"}`},
+		{"/v1/chat/completions", `{"model":"scripted-model","messages":[{"role":"user","content":"hi"}],"loomcycle_provider":"scripted","stream":true}`},
+	} {
+		resp, err := http.Post(ts.URL+tc.path, "application/json", strings.NewReader(tc.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status %d", tc.path, resp.StatusCode)
+		}
+	}
+	out := render(lcotel.PromOptions{})
+	if got, ok := sampleValue(out, `loomcycle_model_call_duration_seconds_count{model="scripted-model",provider="scripted",purpose="gateway"}`); !ok || got != 4 {
+		t.Errorf("gateway model calls timed = %v (present %v), want 4:\n%s", got, ok, out)
+	}
+}

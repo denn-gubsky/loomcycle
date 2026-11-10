@@ -110,7 +110,7 @@ func RecordModelCall(ctx context.Context, a ModelCallAttrs) (context.Context, tr
 	}
 	ctx, span := Tracer().Start(ctx, SpanModelCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
 	if st := meters.Load(); st != nil {
-		return ctx, &modelSpan{Span: span, st: st, provider: a.Provider, model: a.Model, start: time.Now()}
+		return ctx, &modelSpan{Span: span, st: st, provider: a.Provider, model: a.Model, purpose: a.Purpose, start: time.Now()}
 	}
 	return ctx, span
 }

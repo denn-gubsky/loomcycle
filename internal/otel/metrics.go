@@ -66,6 +66,7 @@ const (
 	LabelDB       = "db"
 	LabelBackend  = "backend"
 	LabelPeriod   = "period"
+	LabelPurpose  = "purpose"
 )
 
 // Run triggers: the surface a run was started from.
@@ -247,8 +248,8 @@ func newInstruments(m, genAI metric.Meter, export bool) (instruments, error) {
 	in.providerRequestDuration = hist("loomcycle.provider.request.duration", "s", "Time from sending a provider request to its response headers (or its failure).", providerRequestBuckets)
 	in.providerRetries = counter("loomcycle.provider.retries", "{retry}", "Provider requests retried after a rate limit, by where the wait came from (header or schedule).")
 	in.providerFallbacks = counter("loomcycle.provider.fallbacks", "{fallback}", "Runs moved from one provider/model to another mid-run.")
-	in.modelCallDuration = hist("loomcycle.model.call.duration", "s", "Time of a model call from the request to the end of its stream.", modelCallBuckets)
-	in.modelTTFT = hist("loomcycle.model.ttft", "s", "Time from a model call to its first streamed event.", ttftBuckets)
+	in.modelCallDuration = hist("loomcycle.model.call.duration", "s", "Time of a model call from the request to the end of its stream, by purpose (turn, compaction, recap, emit_state, summary, gateway).", modelCallBuckets)
+	in.modelTTFT = hist("loomcycle.model.ttft", "s", "Time from a model call's lane admission (else its start) to its first streamed event, by purpose.", ttftBuckets)
 	in.toolCalls = counter("loomcycle.tool.calls", "{call}", "Tool calls by tool (MCP tools by server, client tools as client) and outcome.")
 	in.toolCallDuration = hist("loomcycle.tool.call.duration", "s", "Time a tool call took.", toolCallBuckets)
 
@@ -526,8 +527,12 @@ type modelSpan struct {
 	trace.Span
 	st              *meterState
 	provider, model string
-	start           time.Time
-	recorded        atomic.Bool
+	// purpose is the call's loomcycle.model.purpose (turn, compaction,
+	// recap, emit_state, summary, gateway): a set the runtime names, so a
+	// label, and the gateway's calls show apart from the runs'.
+	purpose  string
+	start    time.Time
+	recorded atomic.Bool
 }
 
 func (m *modelSpan) recordResult(r ModelCallResult) {
@@ -535,7 +540,8 @@ func (m *modelSpan) recordResult(r ModelCallResult) {
 		return
 	}
 	ctx := trace.ContextWithSpan(context.Background(), m.Span)
-	pm := metric.WithAttributes(attribute.String(LabelProvider, m.provider), attribute.String(LabelModel, m.model))
+	pm := metric.WithAttributes(attribute.String(LabelProvider, m.provider), attribute.String(LabelModel, m.model),
+		attribute.String(LabelPurpose, m.purpose))
 	elapsed := time.Since(m.start).Seconds()
 	m.st.inst.modelCallDuration.Record(ctx, elapsed, pm)
 	if r.TTFT > 0 {

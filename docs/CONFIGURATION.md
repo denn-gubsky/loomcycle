@@ -3537,8 +3537,8 @@ only the sampled runs), and a scrape still runs no database query.
 | `loomcycle_provider_request_duration_seconds` | `provider`, `model` | Histogram of the time to the response headers. |
 | `loomcycle_provider_retries_total` | `provider`, `reason` | Requests retried after a rate limit; `reason` is `header` (the provider's Retry-After) or `schedule`. |
 | `loomcycle_provider_fallbacks_total` | `from`, `to` | Runs moved mid-run from one `provider/model` to another. |
-| `loomcycle_model_call_duration_seconds` | `provider`, `model` | Histogram of a model call from the request to the end of its stream. |
-| `loomcycle_model_ttft_seconds` | `provider`, `model` | Histogram of the time to the first streamed event. |
+| `loomcycle_model_call_duration_seconds` | `provider`, `model`, `purpose` | Histogram of a model call from the request to the end of its stream, for every model call: `purpose` is `turn` (a run's own turn), `compaction`, `recap`, `summary`, `emit_state` or `gateway` (the LLM gateway and its OpenAI-compatible routes), as `loomcycle.model.purpose` on the span. |
+| `loomcycle_model_ttft_seconds` | `provider`, `model`, `purpose` | Histogram of the time to the first streamed event, counted from the call's provider-lane admission when it finished (as `loomcycle.ttft_ms`). |
 | `loomcycle_tool_calls_total` | `tool`, `outcome` | Tool calls. An MCP tool is `mcp:<server>`, a client tool `client`, a name the run was not given `unknown`. `outcome`: `ok`, `error` (the tool failed), `is_error` (it answered with an error result). |
 | `loomcycle_tool_call_duration_seconds` | `tool` | Histogram of a tool call's time. |
 | `loomcycle_db_pool_open`, `_in_use`, `_idle` | `db` | The store's connection pool (`db="store"`; SQLite's `sql.DB`, Postgres's pgx pool). The per-scope SQL Memory databases are not reported. |

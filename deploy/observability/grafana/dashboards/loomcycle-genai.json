@@ -500,6 +500,109 @@
           "exemplar": true
         }
       ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Model calls / s by purpose",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 34,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (purpose) (rate(loomcycle_model_call_duration_seconds_count{model=~\"$model\"}[5m]))",
+          "legendFormat": "{{purpose}}",
+          "exemplar": true
+        }
+      ],
+      "description": "turn: a run's own turn; compaction, recap, summary, emit_state: work a run does on its history or state; gateway: the LLM gateway and its OpenAI-compatible routes."
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Time to first token p95 by purpose",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 34,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, purpose) (rate(loomcycle_model_ttft_seconds_bucket{model=~\"$model\"}[5m])))",
+          "legendFormat": "{{purpose}}",
+          "exemplar": true
+        }
+      ]
     }
   ]
 }
