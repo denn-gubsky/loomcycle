@@ -41,7 +41,7 @@ with `section: relations`, a concept with `section: schemes`, an instance with
 ## Returns
 
 `{exists, document_id?, status, confirmed, version, sections, partial?, classes,
-relations, grammars, schemes, instances, review?, issues?}`:
+relations, grammars, schemes, instances, norm_classes, review?, issues?}`:
 
 - `exists` — false when the tenant has no ontology document, so only the standard
   classes apply.
@@ -52,8 +52,8 @@ relations, grammars, schemes, instances, review?, issues?}`:
 - `sections` — the declared section kinds, in document order.
 - `partial` — part of the document could not be read. Do not treat a missing
   entry as removed; read again.
-- `classes` — each `{name, parent?, source, kind, fields?, title_identity?,
-  directives?, memory_scope?, renamed_from?, issues?}`.
+- `classes` — each `{name, parent?, source, kind, fields?, title_identity?, norm?,
+  inherited_norm?, directives?, memory_scope?, renamed_from?, issues?}`.
   - `kind` is `document` for a document class, `chunk` otherwise.
   - `fields` is the complete typed field set, inherited fields first.
   - `directives` holds `identifier_pattern`, `title_pattern`, `anchor_grammar`,
@@ -65,6 +65,12 @@ relations, grammars, schemes, instances, review?, issues?}`:
     `query_chunks` mark such chunks `definitional: true`, so you need not run
     the pattern yourself (the root chunk, the document's own title, is never
     marked).
+- `norm` — the class is a norm: a document class the ontology marks `@norm`, or a
+  subclass of one (then `inherited_norm` is true too). A norm's documents are the
+  rules other documents are measured against.
+- `norm_classes` — every norm class in force, sorted; `[]` when the ontology marks
+  none (a draft marks none). Compare a document against these classes' documents
+  when the caller names no target types of its own.
 - `relations` — each relation kind in force, with its `source` (`seed`,
   `reserved` or `tenant`), `parent`, `inverse`, `domain`, `range`, its
   characteristics, `qualifiers`, `discriminator`, `dated`, `walk`, `auto_assert`

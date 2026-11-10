@@ -235,7 +235,7 @@ func documentReadOp(op string) bool {
 		"get_edges", "get_edge", "list_statements", "describe_ontology", "query_chunks",
 		"list_tags", "list_types", "get_asset", "export_md", "export_canvas", "history",
 		"get_version", "diff", "backlinks", "search", "related", "unlinked_mentions",
-		"diff_remote":
+		"diff_remote", "get_annotation", "annotation_inputs", "list_annotations":
 		return true
 	}
 	return false
@@ -262,6 +262,8 @@ func ontologyGuardExemption(op string) string {
 		return "may file a placeholder for a cited work, which is a new document"
 	case "lease", "release":
 		return "writes the scope's lease table, not a document"
+	case "set_annotation", "delete_annotation":
+		return "writes the annotation table beside a document, never its chunks"
 	case "find_duplicates":
 		return "files its proposals through propose_statement, which passes every gate itself"
 	}

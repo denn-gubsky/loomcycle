@@ -158,6 +158,12 @@ type OntologyTerm struct {
 	// resolved from an ancestor.
 	TitleIdentity          bool `json:"title_identity,omitempty"`
 	InheritedTitleIdentity bool `json:"inherited_title_identity,omitempty"`
+	// Norm is the bare @norm directive on a document class: its documents are the
+	// tenant's norms — the rules other documents are measured against — so the links
+	// agent compares a document's statements with them by default. InheritedNorm is the
+	// same, from an ancestor: a subclass of a norm is a norm. Consumers read IsNorm.
+	Norm          bool `json:"norm,omitempty"`
+	InheritedNorm bool `json:"inherited_norm,omitempty"`
 	// IsDocumentClass marks `Document` and its descendants: they govern documents.type
 	// and are never rendered into the extraction prompt. Set only for terms read from a
 	// `@section classes` section (and the seed), so a flat ontology's entity type that
@@ -557,6 +563,7 @@ func ResolveInheritance(terms []OntologyTerm) []OntologyTerm {
 		t.Inherited = resolve(t.Name, map[string]bool{})
 		t.MemoryScopeInherited = resolveScope(t.Name, map[string]bool{})
 		t.InheritedSpecs, t.InheritedTitleIdentity, t.InheritedDirectives = resolveClassInheritance(t, byName)
+		t.InheritedNorm = !t.Norm && ancestorDeclaresNorm(t, byName)
 		res = append(res, t)
 	}
 	return res
@@ -630,6 +637,30 @@ func resolveClassInheritance(t OntologyTerm, byName map[string]OntologyTerm) ([]
 	}
 	return specs, titleID, dirs
 }
+
+// ancestorDeclaresNorm reports whether any ancestor of t declares @norm. Bounded like
+// resolveClassInheritance: the depth cap and a visited set, so a cyclic parent chain
+// ends.
+func ancestorDeclaresNorm(t OntologyTerm, byName map[string]OntologyTerm) bool {
+	seen := map[string]bool{t.Name: true}
+	cur := t
+	for i := 0; i < OntologyMaxDepth*2 && cur.Parent != ""; i++ {
+		p, ok := byName[cur.Parent]
+		if !ok || seen[p.Name] {
+			return false
+		}
+		if p.Norm {
+			return true
+		}
+		seen[p.Name] = true
+		cur = p
+	}
+	return false
+}
+
+// IsNorm reports whether a class is a norm as a consumer should see it: declared or
+// inherited.
+func IsNorm(t OntologyTerm) bool { return t.Norm || t.InheritedNorm }
 
 // AllFields is a term's complete field set as a consumer should see it: inherited
 // first, then declared.

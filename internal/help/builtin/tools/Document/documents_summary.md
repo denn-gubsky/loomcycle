@@ -16,6 +16,7 @@ a shorter answer than you asked for is not an error.
 - Give at least one of the two; with neither the call is refused and says so. To list the documents in a scope, use `query_documents`.
 - `scope` — `user` (default), `agent` or `tenant`.
 - `limit` — at most this many documents (default 500, at most 5000).
+- `with_summary` — add each document's annotation as `summary` (`{level, brief, stale?}`). Without it a row still carries `brief` whenever the document has an annotation.
 
 ## Returns
 

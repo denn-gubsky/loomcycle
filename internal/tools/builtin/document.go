@@ -127,7 +127,7 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","graph_snapshot","delete_document","set_path","copy_documents","move_documents","find_duplicates","mark_source","create_chunk","propose_entity","propose_subject","judge_fact","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","verbatim_answer","verification_stats","remember","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","get_edge","propose_statement","accept_statement","reject_statement","list_statements","judge_statements","maintain_statement","resolve_anchor","lease","release","describe_ontology","extract_citations","classify","accept_classification","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions","set_remote","sync","diff_remote"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","graph_snapshot","delete_document","set_path","copy_documents","move_documents","find_duplicates","mark_source","create_chunk","propose_entity","propose_subject","judge_fact","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","verbatim_answer","verification_stats","remember","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","get_edge","propose_statement","accept_statement","reject_statement","list_statements","judge_statements","maintain_statement","resolve_anchor","lease","release","set_annotation","get_annotation","annotation_inputs","list_annotations","delete_annotation","describe_ontology","extract_citations","classify","accept_classification","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions","set_remote","sync","diff_remote"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). ONE scope per call — a search, graph_recall or list_facts reads ONLY the scope you name, so a user-scope search never returns tenant chunks and vice versa; consult both by making two calls. agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk), or a statement id (get_edge, unlink_chunks, accept/reject_statement, maintain_statement, judge_fact; propose_statement: the statement a competing proposal revises)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
@@ -153,7 +153,19 @@ const documentInputSchema = `{
 		"hops":      {"type": "integer", "description": "graph_recall: how far to follow relations from each starting chunk. A hop is ONE edge, so a fact→entity→fact step costs two: a two-hop question needs 2, a three-hop needs 4. 0 = the starting chunks only, 1 = their neighbours (default), 6 = the maximum. What bounds a long walk is budget_chars, not this."},
 		"seeds":     {"type": "integer", "description": "graph_recall: how many of the best-ranked facts start the walk (default 5). Small on purpose — seeding from every hit spends the budget before the walk contributes anything."},
 		"budget_chars": {"type": "integer", "description": "graph_recall: cap the answer on CONTENT rather than on rows, and backfill. A walk fetches more rows than a search by construction, so a row limit lets it win on volume instead of on the relations; and when the graph runs dry the walk under-fills, which scores worse than not walking at all. Set this and whatever budget the walk leaves is spent on the best-ranked facts it did not reach. 0 = the row-limited behaviour."},
-		"body_chars": {"type": "integer", "description": "graph_recall: how much of each chunk's text to return. Omit it and chunks that are not facts (clauses, sections, notes) carry the first 600 characters as body, while facts stay title-only because their title is the claim. 0 = titles only, the cheapest structural walk. N (at most 4000) = up to N characters on every row, facts included. A cut body ends on a word and is marked body_truncated; budget_chars counts body characters too."},
+		"level":       {"type": "string", "enum": ["branch","document","path"], "description": "set_annotation / get_annotation / annotation_inputs / delete_annotation / list_annotations: which annotation of the target — branch (a section), document (a document, on its root chunk). Default: what the target chunk is."},
+		"brief":       {"type": "string", "description": "set_annotation: one sentence, at most 240 characters, saying what the target is so a reader can choose it."},
+		"abstract":    {"type": "string", "description": "set_annotation: one paragraph, at most 2000 characters, saying what the target states so a reader need not open it."},
+		"language":    {"type": "string", "description": "set_annotation: the language the annotation is written in, a two- or three-letter code (default: the document's)."},
+		"inputs_sha256": {"type": "string", "description": "set_annotation: the inputs_sha256 annotation_inputs returned for the target. Refused (annotation_inputs_changed) when the target's text moved since."},
+		"prompt_version": {"type": "integer", "description": "annotation_inputs / set_annotation: the version of the prompt the annotation is (or will be) written with; part of the inputs hash, so a new prompt marks earlier annotations stale."},
+		"model":       {"type": "string", "description": "set_annotation: the model that wrote the annotation."},
+		"manual":      {"type": "boolean", "description": "set_annotation: an operator's own text (no inputs_sha256 needed); the scheduled walk never overwrites it. list_annotations: only these."},
+		"stale":       {"type": "boolean", "description": "list_annotations: only annotations whose target changed since they were written."},
+		"written_before": {"type": "string", "description": "list_annotations: only annotations written before this RFC 3339 time."},
+		"with_summary": {"type": "boolean", "description": "get_document / get_chunk / search / related / graph_recall / documents_summary / query_documents: add each row's annotation as summary {level, brief, abstract?, stale?} — the nearest one at or above the row's chunk. The abstract is added for the target of get_document / get_chunk, the first five documents of a search or related page and the seeds of graph_recall, within summary_chars. A row with no annotation has no summary."},
+		"summary_chars": {"type": "integer", "description": "with_summary: the most abstract characters a response carries in all (default 2000, at most 8000); rows past it keep their brief only."},
+		"body_chars": {"type": "integer", "description": "annotation_inputs: how much of the target's own text to return (default 6000, at most 20000). graph_recall: how much of each chunk's text to return. Omit it and chunks that are not facts (clauses, sections, notes) carry the first 600 characters as body, while facts stay title-only because their title is the claim. 0 = titles only, the cheapest structural walk. N (at most 4000) = up to N characters on every row, facts included. A cut body ends on a word and is marked body_truncated; budget_chars counts body characters too."},
 		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected. A chunk with its own valid_at/invalid_at must also contain the moment. search / related / query_chunks: return only chunks whose stated validity contains this moment (the chunk's own valid_at/invalid_at and, for a fact, its fact dates too); a chunk with no stated validity always matches. get_edges / backlinks / graph_snapshot (its edges): only statements whose own valid_at/invalid_at contain the moment (undated ones always match). extract_citations: read the parts in force then, and resolve each citation as of then (default: each citing part's own edition date)."},
 		"include_retired": {"type": "boolean", "description": "graph_recall / list_facts: also return facts that have been superseded, and on graph_recall chunks whose own valid_at/invalid_at put them out of force now. Off by default, so you get only what is currently true. get_edges / backlinks / list_statements: also return retired statements (list_statements: expired ones and ones whose invalid_at has passed)."},
 		"text":        {"type": "string", "description": "remember: the statement to store, as ONE self-contained sentence. It is stored verbatim AND becomes its own source span, so what you type is both the fact and the evidence for it — write what you mean recorded, not an instruction about it."},
@@ -537,7 +549,22 @@ type docInput struct {
 	// (an excerpt on non-fact rows only), 0 = no bodies (the titles-only response),
 	// N = an excerpt of up to N characters on every row. A pointer, because 0 and
 	// unset ask for different things.
-	BodyChars      *int   `json:"body_chars"`
+	BodyChars *int `json:"body_chars"`
+	// Annotations (document_annotations.go).
+	Level         string `json:"level"`
+	Brief         string `json:"brief"`
+	Abstract      string `json:"abstract"`
+	Language      string `json:"language"`
+	InputsSHA256  string `json:"inputs_sha256"`
+	PromptVersion int    `json:"prompt_version"`
+	Model         string `json:"model"`
+	Manual        bool   `json:"manual"`
+	Stale         bool   `json:"stale"`
+	WrittenBefore string `json:"written_before"`
+	// WithSummary attaches each row's annotation to the read ops that take it;
+	// SummaryChars bounds the abstracts that adds (annotation_summary.go).
+	WithSummary    bool   `json:"with_summary"`
+	SummaryChars   int    `json:"summary_chars"`
 	AsOf           *int64 `json:"as_of"`
 	IncludeRetired bool   `json:"include_retired"`
 	// MediaType/Data/Filename carry an image asset for set_asset (RFC BO). Data
@@ -740,6 +767,9 @@ var docSchemaDDL = []string{
 	// ontology, by id rather than by name (document_ontology_identity.go).
 	documentRolesDDL,
 	documentRolesMarkerDDL,
+	// chunk_annotations: a brief and an abstract per (chunk, level), beside the
+	// content and never part of it (document_annotations.go).
+	chunkAnnotationsDDL,
 }
 
 // maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
@@ -815,6 +845,9 @@ func (d *Document) executeGated(ctx context.Context, in docInput, raw json.RawMe
 	if refused := stampStatementMethod(ctx, &in); refused != nil {
 		return *refused, nil
 	}
+	if refused := validateSummaryInput(in); refused != nil {
+		return *refused, nil
+	}
 	key, mscope, err := d.resolveScope(ctx, in.Scope)
 	if err != nil {
 		return docFail("", err), nil
@@ -866,7 +899,9 @@ func (d *Document) executeGated(ctx context.Context, in docInput, raw json.RawMe
 		return res, err
 	}
 	res = d.finishClassRules(ctx, key, in, classRules, res)
-	return acl.filterListing(ctx, in.Op, res), nil
+	// Annotations go on after the access-control filter, so only on rows the
+	// caller is shown (document_annotation_summary.go).
+	return d.attachAnnotations(ctx, key, mscope, in, acl.filterListing(ctx, in.Op, res)), nil
 }
 
 // dispatch runs one op; Execute has resolved the scope and asked the gates.
@@ -962,6 +997,16 @@ func (d *Document) dispatch(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		return d.leaseOp(ctx, key, in)
 	case "release":
 		return d.releaseOp(ctx, key, in)
+	case "set_annotation":
+		return d.setAnnotation(ctx, key, mscope, in)
+	case "get_annotation":
+		return d.getAnnotation(ctx, key, mscope, in)
+	case "annotation_inputs":
+		return d.annotationInputsOp(ctx, key, mscope, in)
+	case "list_annotations":
+		return d.listAnnotations(ctx, key, mscope, in)
+	case "delete_annotation":
+		return d.deleteAnnotation(ctx, key, mscope, in)
 	case "describe_ontology":
 		// Reads the TENANT ontology whatever `scope` says, as propose_entity files there.
 		return d.describeOntology(ctx)
@@ -2931,6 +2976,9 @@ func (d *Document) removeDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_projection WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
 			return err
 		}
+		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_annotations WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
+			return err
+		}
 		if err := d.execTxn(ctx, txnID, `DELETE FROM chunk_projection_anchor WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
 			return err
 		}
@@ -3739,9 +3787,10 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			// nothing can see. chunk_revisions is the body-change log (RFC BS Phase
 			// 3a), chunk_layout the canvas row and chunk_projection the map
 			// coordinate (RFC FQ P2), chunk_projection_anchor a UMAP map's sample
-			// point (§11) — all orphan the same way.
+			// point (§11), chunk_annotations a section's annotation — all orphan
+			// the same way.
 			for _, tbl := range []string{"chunk_assets", "chunk_tags", "chunk_memory_meta",
-				"chunk_revisions", "chunk_layout", "chunk_projection", "chunk_projection_anchor"} {
+				"chunk_revisions", "chunk_layout", "chunk_projection", "chunk_projection_anchor", "chunk_annotations"} {
 				if err := d.execTxn(ctx, txnID,
 					`DELETE FROM `+tbl+` WHERE chunk_id IN (`+marks+`)`, args...); err != nil {
 					return err

@@ -2673,6 +2673,11 @@ components:
             - resolve_anchor
             - lease
             - release
+            - set_annotation
+            - get_annotation
+            - annotation_inputs
+            - list_annotations
+            - delete_annotation
             - describe_ontology
             - extract_citations
             - classify

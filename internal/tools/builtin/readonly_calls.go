@@ -46,6 +46,9 @@ var documentReadOnlyOps = map[string]func(documentReadOnlyCall) bool{
 	"export_md":          nil,
 	"export_canvas":      nil,
 	"history":            nil,
+	"get_annotation":     nil,
+	"annotation_inputs":  nil,
+	"list_annotations":   nil,
 	"get_version":        nil,
 	"diff":               nil,
 	"backlinks":          nil,
@@ -74,6 +77,7 @@ var documentWriteOps = map[string]bool{
 	"propose_statement": true, "accept_statement": true, "reject_statement": true,
 	"judge_statements": true, "maintain_statement": true,
 	"lease": true, "release": true, "accept_classification": true,
+	"set_annotation": true, "delete_annotation": true,
 	"add_tags": true, "remove_tags": true, "define_type": true, "set_asset": true,
 	"import_md": true, "import_canvas": true, "set_remote": true, "sync": true,
 }

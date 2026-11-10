@@ -84,6 +84,7 @@ func eqClasses() []eqClass {
 		{name: "isolated+runplane", scopes: append([]string{auth.ScopeUser}, eqMemberScopes...), agents: []string{"chat"}},
 		{name: "auth-manager", scopes: []string{auth.ScopeAuthManage}, maximal: true},
 		{name: "scim-provisioner", scopes: []string{auth.ScopeSCIMProvision}, maximal: true},
+		{name: "metrics-reader", scopes: []string{auth.ScopeMetricsRead}, maximal: true},
 	}
 }
 
