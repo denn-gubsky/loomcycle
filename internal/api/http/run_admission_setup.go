@@ -128,6 +128,7 @@ func (a *runAdmission) mergeRunConfig() {
 		Resources:         persistedResources(a.runResources),
 		Tuning:            persistedTuning(a.runTuning),
 		Hosts:             hostRecordOf(a.hostPolicy),
+		Tools:             toolsRecordOf(a.in.Tools),       // the caller's tool narrowing, for a resume
 		ACLOrigin:         aclOriginOf(a.ctx, a.callerACL), // whose rules a resume narrows it by again
 		Review:            reviewRecord(a.in.Review),
 		ReviewTTLSeconds:  positiveOrZero(a.in.ReviewTTLSeconds),

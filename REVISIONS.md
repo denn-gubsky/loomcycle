@@ -8,6 +8,48 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.149.0
+
+*A tenant can scrape its own metrics: a tenant operator mints a `metrics:read` token confined to its tenant's series (RFC GF follow-up). The panic net for background goroutines is complete: a panic in a sweeper, subscriber, run or fan-out child is logged, counted and fails only its own work. Two fixes to annotations from the first production pass, and two follow-ups from review.*
+
+The v1.149 line: #2560 to #2568.
+- `@loomcycle/client` 1.149.0 and the Python adapter 1.149.0, version lockstep only: no adapter change.
+- No schema migration.
+
+### Upgrade notes
+
+- **ACL rules on operator tokens (#2563).** The `/v1/_operatortokendef` route and the `OperatorTokenDef` RPC now ask `read principal:token:*`. The token tool asks each op's own verb: `mint` for create and rotate, `manage` for retire, `read` for get and list. An existing `deny mint principal:token:*` still refuses minting and rotating, but no longer refuses `get` and `list` of token metadata. Add `deny read principal:token:*` to refuse those too.
+- **A retired token can no longer be rotated back to life (#2563).** Rotating a retired row by `def_id` used to reset its retirement into the future, so the revoked secret authenticated again for the grace window. It no longer does, and a rotation never moves an earlier retirement later.
+- **Annotations go stale once (#2567).** A document's relations now name the subject or topic a link reaches instead of the ontology document, so every document and folder annotation with an ontology link is stale after the upgrade and the next annotator sweep rewrites it. Section annotations stay current.
+- **Panics (#2560, #2562, #2564).** A panic that used to end the process is now logged with its stack and counted in `loomcycle_goroutine_panics_total{goroutine=…}`, and the work it was doing fails.
+
+### Tenant metrics scrape tokens (#2563)
+
+- New token restriction **`tenant_metrics`**, valid only on a token whose scopes are exactly `[metrics:read]`. It is fixed at mint and copied on rotation. With it, `/metrics` shows only the instrument series labelled with the token's own tenant, with no substrate series. An unmarked `metrics:read` token keeps the full view. A token whose restrictions record is corrupt is refused.
+- A `substrate:tenant` operator may create, list, get, rotate and retire such tokens in its own tenant over HTTP, gRPC and MCP. The scopes, tenant and marker are forced; the lifetime is bounded by the minter's own token; the subject is `metrics-*` and may not be an existing user's; at most 32 live scrape tokens per tenant. Any other row reads as missing. Everything else on that surface stays admin.
+- Machine credentials (`metrics:read`, `auth:manage`, `scim:provision`) no longer revoke their subject's manager-issued links and no longer get identity documents. Audit events record the minting token's suffix.
+- CLI: `--tenant-metrics`.
+
+### Annotations (#2567)
+
+- A document's relations name what a link reaches: the subject or topic for a link into the tenant ontology, the document's title otherwise. Before, every subject and topic link read as "Tenant Ontology", and the annotator wrote that title into document and folder annotations.
+- `kb/annotator` stops a pass with status `provider_unavailable` after three model calls fail in a row, instead of spending the rest of `max_calls`. A single failure still leaves its part stale and the pass goes on.
+
+### Background goroutines (#2560, #2562, #2564)
+
+- The boot's sweepers, backplane subscribers, heartbeats and workers run supervised: after a panic they restart with a doubling back-off (1 s to 1 min), each attempt on its own ctx so a subscription is released before it is taken again. The advisory-gated TTL sweepers recover per tick and release their lock.
+- Every remaining raw goroutine under `internal/` starts under the panic net, and where something waits on its result, a panic answers with a failure: a wall-limit watcher fails its run, a fan-out member or batch child becomes a failed row, an MCP tool call gets a JSON-RPC internal error, a webhook or A2A delivery returns its claim.
+- A recovered panic fails safe: the LLM gateway answers 502 instead of a truncated 200 completion and drains the provider's stream, the lane forwarder drains its driver, and a hook whose budget watcher panics fails closed.
+
+### Fixes (#2561)
+
+- The SQL Memory transaction reaper finishes every stale transaction even when one rollback panics; before, the rest leaked their pinned connections and a SQLite scope hung.
+- A bulk-accept dry run by `ids` reports an already-rejected statement as `not_a_proposal` in `items` and `failed`, as the real call does, instead of counting it to rule.
+
+### Internal
+
+- A CI ratchet on Go function length at 300 lines (#2565); snapshot `Restore` runs its sections from an ordered table (#2566); SQLite migrate's statements are split into schema sections (#2568).
+
 ## What's in v1.148.0
 
 *Two new layers and the operator's view of both. **Annotations** (RFC GE): a brief and an abstract for every section, document and folder of a tenant knowledge base, written bottom-up by a new pass and attached to retrieval with `with_summary`. A question about the corpus as a whole can be searched against them. **Operator observability** (RFC GF): standard `OTEL_*` configuration with gRPC export and inbound trace context; tenant-safe span content with GenAI names; in-process run, token, cost and provider metrics; a single-purpose `metrics:read` scrape credential; and Grafana dashboards and alert rules shipped with the binary. Also: a one-time ticket for the client-tools WebSocket (RFC GJ), a `@norm` class directive with a narrower links-agent L4, a panic net for background goroutines, and fixes from the 2026-11-07 re-grade.*

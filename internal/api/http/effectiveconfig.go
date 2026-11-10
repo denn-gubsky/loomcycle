@@ -292,11 +292,12 @@ func (s *Server) effectiveFields(ctx context.Context, run store.Run, def, eff co
 // stored block reported "enabled" for runs whose every ask was refused.
 //
 // Whether the run holds the tool is decided the way a resume decides it — from
-// the definition's tools — because a run's own `tools` narrowing is not
-// persisted. A retune not yet adopted (the run has not reached an operator turn
-// or a resume since) is reported as what it will adopt there.
+// the definition's tools narrowed by the caller's recorded `tools` list (none
+// on a run recorded before the list was kept). A retune not yet adopted (the
+// run has not reached an operator turn or a resume since) is reported as what
+// it will adopt there.
 func (s *Server) effectiveInterruption(ctx context.Context, run store.Run, eff config.AgentDef, rec runConfigRecord) effectiveValue {
-	holds := holdsInterruptionTool(filterTools(s.candidateTools(ctx, run.TenantID, eff.Tools), eff.Tools, nil))
+	holds := holdsInterruptionTool(filterTools(s.candidateTools(ctx, run.TenantID, eff.Tools), eff.Tools, rec.callerTools()))
 	p := s.interruptionPolicyForRun(eff, rec.Interruption)
 	v := config.AgentInterruptionACL{Enabled: p.Enabled, Kinds: p.Kinds, MaxPending: p.MaxPending}
 	defSet := eff.Interruption.Enabled || len(eff.Interruption.Kinds) > 0 || eff.Interruption.MaxPending != 0
