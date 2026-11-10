@@ -225,8 +225,10 @@ func (m *Manager) BeginTxn(ctx context.Context, txnID, rootRunID string, key Sco
 		return 0, fmt.Errorf("too many open transactions (%d) — commit or rollback before opening more", max)
 	}
 	// The tenant's share of the cap: refused with the same error class as the
-	// global cap, so callers need not tell the two apart.
-	if share := m.cfg.MaxOpenTxnsPerTenant; m.cfg.MaxOpenTxns > 0 && share > 0 && m.txns.tenantCountLocked(key.Tenant) >= share {
+	// global cap, so callers need not tell the two apart. The default tenant
+	// (the runtime's "", stored as ScopeTenant("")) is the operator's own and a
+	// single-tenant install's only one, so it is held to the global cap alone.
+	if share := m.cfg.MaxOpenTxnsPerTenant; m.cfg.MaxOpenTxns > 0 && share > 0 && key.Tenant != ScopeTenant("") && m.txns.tenantCountLocked(key.Tenant) >= share {
 		m.txns.mu.Unlock()
 		return 0, fmt.Errorf("too many open transactions for this tenant (%d) — commit or rollback before opening more", share)
 	}
