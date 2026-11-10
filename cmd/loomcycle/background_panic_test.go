@@ -84,3 +84,21 @@ func TestSuperviseLoop_DoesNotRestartALoopThatReturned(t *testing.T) {
 		t.Fatalf("loop started %d times, want 1", n)
 	}
 }
+
+// TestConcurrentShutdown_ReportsAPanickingFlushAsAnError: a flush that panics
+// is reported with the others' errors; the shutdown neither ends the process
+// nor waits forever for an answer that never comes.
+func TestConcurrentShutdown_ReportsAPanickingFlushAsAnError(t *testing.T) {
+	ok := func(context.Context) error { return nil }
+	boom := func(context.Context) error { panic("boom") }
+	errc := make(chan error, 1)
+	go func() { errc <- concurrentShutdown(ok, boom)(context.Background()) }()
+	select {
+	case err := <-errc:
+		if err == nil {
+			t.Fatal("a panicking flush reported no error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the shutdown waited on a flush that panicked")
+	}
+}

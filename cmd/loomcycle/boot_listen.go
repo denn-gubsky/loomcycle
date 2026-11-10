@@ -17,6 +17,7 @@ import (
 	loomgrpc "github.com/denn-gubsky/loomcycle/internal/api/grpc"
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	googlegrpc "google.golang.org/grpc"
 )
 
@@ -30,6 +31,9 @@ func (b *boot) startListeners() {
 	a2aServer := b.a2aServer
 	httpServer := b.httpServer
 
+	// Left a raw goroutine on purpose: a panic in the HTTP server itself
+	// (handlers recover their own) should end the process, as a serve error
+	// does, rather than leave a replica running with no listener.
 	go func() {
 		// The text is quoted in the deployment guides as the sign of a
 		// healthy boot; keep it.
@@ -101,7 +105,7 @@ func (b *boot) startListeners() {
 			fatal("grpc listen: opening the listener failed", "addr", cfg.Env.GrpcAddr, "err", err)
 		}
 		grpcAdapter.MustLogStartupBanner(cfg.Env.GrpcAddr)
-		go func() {
+		safego.Go(context.Background(), "grpc.serve", func() {
 			// GracefulStop returns ErrServerStopped on the
 			// normal shutdown path — don't log it as a serve
 			// failure (would pollute operator logs and trip alert
@@ -109,7 +113,7 @@ func (b *boot) startListeners() {
 			if err := grpcSrv.Serve(grpcLis); err != nil && !errors.Is(err, googlegrpc.ErrServerStopped) {
 				slog.Error("grpc serve: failed", "err", err)
 			}
-		}()
+		})
 	}
 
 	b.grpcSrv = grpcSrv
@@ -157,33 +161,33 @@ func (b *boot) waitAndShutdown() {
 	var drain sync.WaitGroup
 	if pauseTimeout > 0 {
 		drain.Add(1)
-		go func() {
+		safego.Go(context.Background(), "shutdown.pause", func() {
 			defer drain.Done()
 			logShutdownPause(pauseMgr.PauseForShutdown(pauseTimeout))
-		}()
+		})
 	}
 	if grpcSrv != nil {
 		drain.Add(1)
-		go func() {
+		safego.Go(context.Background(), "shutdown.grpc", func() {
 			defer drain.Done()
 			stopGRPC(grpcSrv, grpcStopTimeout, pauseTimeout > 0)
-		}()
+		})
 	}
 	// The ctx's cancel runs when waitAndShutdown returns, before main's
 	// cleanups — the order it ran in when it was main's last defer.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	drain.Add(1)
-	go func() {
+	safego.Go(ctx, "shutdown.http", func() {
 		defer drain.Done()
 		_ = httpServer.Shutdown(ctx)
-	}()
+	})
 	if metricsServer != nil {
 		drain.Add(1)
-		go func() {
+		safego.Go(ctx, "shutdown.metrics", func() {
 			defer drain.Done()
 			_ = metricsServer.Shutdown(ctx)
-		}()
+		})
 	}
 	drain.Wait()
 
@@ -246,10 +250,10 @@ const grpcStopTimeout = 5 * time.Second
 // is what stops their tool calls.
 func stopGRPC(srv *googlegrpc.Server, timeout time.Duration, runsPaused bool) {
 	done := make(chan struct{})
-	go func() {
+	safego.Go(context.Background(), "grpc.graceful_stop", func() {
+		defer close(done)
 		srv.GracefulStop()
-		close(done)
-	}()
+	})
 	select {
 	case <-done:
 		return

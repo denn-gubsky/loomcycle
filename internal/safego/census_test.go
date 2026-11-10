@@ -32,6 +32,7 @@ var exemptRawGo = map[string]rawGo{
 	"internal/tools/builtin/document_index_text.go": {1, "the reindex pass recovers"},
 
 	// Must not recover: the process ending is the safe outcome.
+	"cmd/loomcycle/boot_listen.go":      {1, "the main HTTP listener: recovered, the replica would run on with no listener, where a serve error ends the process"},
 	"internal/auditchain/store_sink.go": {1, "the durable audit writer: recovered, it would stop draining and lose audit records silently"},
 	"internal/pause/manager.go":         {1, "the pause listener closes channels under m.mu with no deferred unlock; recovered, it would leave the pause manager locked"},
 	"internal/procgroup/start_linux.go": {1, "the spawner owns a locked OS thread for the process's life; recovered, every later spawn would block on it"},
@@ -72,9 +73,6 @@ var exemptRawGo = map[string]rawGo{
 var pendingRawGo = map[string]int{
 	// cmd/loomcycle: the boot's background sweepers, subscribers and
 	// listeners, converted in a later change.
-	"cmd/loomcycle/boot_config.go":   1,
-	"cmd/loomcycle/boot_listen.go":   7,
-	"cmd/loomcycle/boot_metrics.go":  1,
 	"cmd/loomcycle/boot_surfaces.go": 2,
 	"cmd/loomcycle/main.go":          1,
 	"cmd/loomcycle/openmode.go":      1,
