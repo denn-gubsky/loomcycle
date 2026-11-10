@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -295,4 +296,53 @@ func deniedByACL(t *testing.T, what string, res tools.Result) {
 	if code, ok := tools.ACLRefusalCode(res.Text, res.Error); !res.IsError || !ok || code != "acl_denied" {
 		t.Errorf("%s: want acl_denied, got IsError=%v %s", what, res.IsError, res.Text)
 	}
+}
+
+// A rotation hands the caller a fresh secret, so a tenant operator's
+// rotation is held to its own token's end as its create is: the new token
+// ends no later than the rotator, whatever the prior one carried.
+func TestOperatorTokenDef_ATenantRotationIsBoundByTheRotatorsEnd(t *testing.T) {
+	tool, admin, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	ends := time.Now().Add(time.Hour).UTC()
+	if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
+		DefID: "def_op", Name: "op", TenantID: "tnt", Subject: "u1", TokenHash: "h", AllowedScopes: []string{auth.ScopeTenant}, ExpiresAt: ends,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p := tntOp
+	p.TokenDefID = "def_op"
+	ctx := tenantOpCtx(t, admin, p)
+	for name, in := range map[string]string{
+		"no expiry":          `{"op":"create","name":"forever","tenant_id":"tnt","scopes":["metrics:read"],"tenant_metrics":true}`,
+		"past the rotator":   `{"op":"create","name":"long","tenant_id":"tnt","scopes":["metrics:read"],"tenant_metrics":true,"ttl_seconds":86400}`,
+		"before the rotator": `{"op":"create","name":"short","tenant_id":"tnt","scopes":["metrics:read"],"tenant_metrics":true,"ttl_seconds":600}`,
+	} {
+		prior := storedRow(t, st, mustOp(t, tool, admin, in))
+		next := storedRow(t, st, mustOp(t, tool, ctx, `{"op":"rotate","def_id":"`+prior.DefID+`"}`))
+		if next.ExpiresAt.IsZero() || next.ExpiresAt.After(ends) {
+			t.Errorf("%s: rotated token ends %v, want no later than the rotator's %v", name, next.ExpiresAt, ends)
+		}
+		if !prior.ExpiresAt.IsZero() && next.ExpiresAt.After(prior.ExpiresAt) {
+			t.Errorf("%s: rotated token ends %v, later than the prior %v", name, next.ExpiresAt, prior.ExpiresAt)
+		}
+	}
+}
+
+// A tenant operator may shorten the window in which a rotated-out secret
+// still works, never stretch it past the server's default.
+func TestOperatorTokenDef_ATenantRotationGraceIsCappedAtTheDefault(t *testing.T) {
+	tool, base, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	ctx := tenantOpCtx(t, base, tntOp)
+	first := mustOp(t, tool, ctx, `{"op":"create","name":"prom","scopes":["metrics:read"]}`)
+	over := int(tool.grace()/time.Second) + 1
+	res := execRaw(t, tool, ctx, `{"op":"rotate","def_id":"`+first["def_id"].(string)+`","grace_seconds":`+strconv.Itoa(over)+`}`)
+	if !res.IsError || !strings.Contains(res.Text, "grace_seconds") {
+		t.Errorf("a grace past the default: %s, want refused", res.Text)
+	}
+	if row := storedRow(t, st, first); !row.RetiredAt.IsZero() {
+		t.Error("the refused rotation retired the prior token")
+	}
+	mustOp(t, tool, ctx, `{"op":"rotate","def_id":"`+first["def_id"].(string)+`","grace_seconds":60}`)
 }

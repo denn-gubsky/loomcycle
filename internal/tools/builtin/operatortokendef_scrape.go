@@ -64,7 +64,7 @@ func (s *OperatorTokenDef) execTenantScrape(ctx context.Context, tenant string, 
 		if err != nil {
 			return errResult(err.Error()), nil
 		}
-		return s.rotateRow(ctx, prior, in.GraceSeconds)
+		return s.rotateTenantScrape(ctx, prior, in.GraceSeconds)
 	default: // retire
 		target, err := s.resolveTenantScrape(ctx, "retire", tenant, in)
 		if err != nil {
@@ -155,6 +155,30 @@ func (s *OperatorTokenDef) createTenantScrape(ctx context.Context, tenant string
 		return *failed, nil
 	}
 	return okJSON(operatorTokenCreateResponse(created, plaintext, suffix))
+}
+
+// rotateTenantScrape is rotateRow held to what the rotating tenant operator
+// is itself held to. A rotation hands it a fresh secret, so, as on create,
+// the new token ends no later than the rotator's own token: the earlier of
+// the prior token's end and the rotator's (a prior with no end takes the
+// rotator's). And the window in which the rotated-out secret still works may
+// be shortened, never stretched past the server's default: a longer one is
+// refused rather than clamped, so the caller is not told a window it did not
+// get.
+func (s *OperatorTokenDef) rotateTenantScrape(ctx context.Context, prior store.OperatorTokenDefRow, graceSeconds *int) (tools.Result, error) {
+	if graceSeconds != nil && time.Duration(*graceSeconds)*time.Second > s.grace() {
+		return errResult(fmt.Sprintf("rotate: grace_seconds may be at most %d for a tenant operator", int(s.grace()/time.Second))), nil
+	}
+	ends, err := s.minterEnds(ctx)
+	if err != nil {
+		return errResult(fmt.Sprintf("rotate: reading the rotating token: %s", err)), nil
+	}
+	if !ends.IsZero() && (prior.ExpiresAt.IsZero() || prior.ExpiresAt.After(ends)) {
+		// rotateRow copies prior into the new row; prior's own row is only
+		// retired by id, so its stored lifetime is untouched.
+		prior.ExpiresAt = ends
+	}
+	return s.rotateRow(ctx, prior, graceSeconds)
 }
 
 // liveScrapeName reports whether tenant holds a live token named name. Other
