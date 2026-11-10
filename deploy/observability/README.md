@@ -72,7 +72,16 @@ OTLP path's exemplars into links from a latency point to its trace.
 with `OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4318` and the collector header
 in a file (`LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE`, holding
 `Authorization=Bearer%20<token>`). Keep loomcycle's sampler at
-`parentbased_always_on` so Alloy sees every trace it is to choose from. The
+`parentbased_always_on` so Alloy sees every trace it is to choose from.
+
+Tail sampling judges a trace `decision_wait` (5 minutes here) after its
+first span arrives, on the spans it has by then. A run that fails or runs
+past the latency threshold after that point is judged on a partial trace
+and kept only at the probabilistic rate, so set `decision_wait` above your
+longest usual run. The trade-off is memory: Alloy holds every undecided
+trace, so `num_traces` must cover `expected_new_traces_per_sec` x
+`decision_wait` (100 000 covers about 300 new traces a second); past it the
+oldest traces are judged early. The
 remote-write target must accept writes (Prometheus:
 `--web.enable-remote-write-receiver`).
 

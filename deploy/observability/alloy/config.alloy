@@ -44,9 +44,18 @@ otelcol.receiver.otlp "loomcycle" {
 //
 // Tail sampling needs every span of a trace on the same Alloy: with more
 // than one, route by trace id first (otelcol.exporter.loadbalancing).
+//
+// A trace is judged decision_wait after its first span arrives, on the spans
+// that arrived by then. A run that fails, or crosses the latency threshold,
+// later than that is judged on a partial trace and kept only at the
+// probabilistic rate. Set it above your runs' usual length. Alloy holds every
+// trace in memory until it is judged: num_traces must cover
+// expected_new_traces_per_sec x decision_wait, or the oldest are judged early.
 
 otelcol.processor.tail_sampling "loomcycle" {
-  decision_wait = "30s"
+  decision_wait               = "300s"
+  num_traces                  = 100000 // about 300 new traces/s for 300 s
+  expected_new_traces_per_sec = 300
 
   policy {
     name = "errors"
