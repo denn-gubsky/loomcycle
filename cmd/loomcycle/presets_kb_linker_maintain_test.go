@@ -763,11 +763,15 @@ func TestKBLinker_RejudgeAsksAgainOnlyWhereTheTextChanged(t *testing.T) {
 
 // TestKBLinker_RejudgeProposesTheNewKindAsARevision: a model-made statement of a kind
 // the relate layer may not file (stricter_than) is re-judged after its target changed
-// and now reads as elaborates: the new kind is proposed as a revision of it (by id,
-// with the new quotes), and it is flagged, never expired.
+// and now reads as answers, a kind the tenant declares: the new kind is proposed as a
+// revision of it (by id, with the new quotes), and it is flagged, never expired. When
+// it reads as elaborates instead, a withheld kind, nothing is proposed and it is
+// flagged.
 func TestKBLinker_RejudgeProposesTheNewKindAsARevision(t *testing.T) {
 	f := rejudgeFixture()
 	f.statements = []*kbStatement{relateStatement("st-strict", "x2", "stricter_than", "extractor:clauses", "within 24 hours")}
+	f.verdictByNeedle = []needleReply{{Needle: "BODYCHARLIE", Reply: `[{"candidate": 1, "kind": "answers", "direction": "this_to_candidate",
+	  "quote_from": "report a material incident to the regulator", "quote_to": "names the systems affected", "confidence": 0.7}]`}}
 
 	rep, _ := runLinker(t, f, `{"mode":"maintain","document_id":"doc-target","write":"propose","rejudge":true}`)
 
@@ -777,8 +781,8 @@ func TestKBLinker_RejudgeProposesTheNewKindAsARevision(t *testing.T) {
 	}
 	p := got[0]
 	ev, _ := p["evidence"].([]any)
-	if p["id"] != "st-strict" || p["kind"] != "elaborates" || p["method"] != "extractor:relate" || len(ev) != 2 {
-		t.Errorf("proposal = %v, want a revision of st-strict as elaborates with two quotes by extractor:relate", p)
+	if p["id"] != "st-strict" || p["kind"] != "answers" || p["method"] != "extractor:relate" || len(ev) != 2 {
+		t.Errorf("proposal = %v, want a revision of st-strict as answers with two quotes by extractor:relate", p)
 	}
 	if got := actionsOf(f, "st-strict"); got != "flag" {
 		t.Errorf("st-strict actions = %q, want flag", got)
@@ -787,6 +791,16 @@ func TestKBLinker_RejudgeProposesTheNewKindAsARevision(t *testing.T) {
 		t.Errorf("rejudged_different = %v, want 1", n)
 	}
 	noViolations(t, f)
+
+	g := rejudgeFixture()
+	g.statements = []*kbStatement{relateStatement("st-strict", "x2", "stricter_than", "extractor:clauses", "within 24 hours")}
+	runLinker(t, g, `{"mode":"maintain","document_id":"doc-target","write":"propose","rejudge":true}`)
+	if len(proposals(g)) != 0 {
+		t.Errorf("a re-judgement as elaborates proposed %v; elaborates is never filed", proposals(g))
+	}
+	if got := actionsOf(g, "st-strict"); got != "flag" {
+		t.Errorf("st-strict actions = %q, want flag", got)
+	}
 }
 
 // TestKBLinker_RejudgingAnUnchangedCorpusProposesNothing: the Phase C gate — over a
