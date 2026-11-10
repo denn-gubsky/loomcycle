@@ -53,7 +53,6 @@ var allowlist = map[string]allowed{
 	"internal/store/sqlite/sqlite.go Store.migrate":                       {2133, "logic", "P1"},
 	"internal/config/config.go LoadLayers":                                {1326, "logic", "P4"},
 	"internal/api/http/server.go Server.RunOnce":                          {1048, "logic", "P2"},
-	"internal/snapshot/restore.go Restore":                                {1047, "logic", "P3"},
 	"internal/config/config.go validate":                                  {1008, "logic", "P4"},
 	"internal/api/http/resume.go Server.resumePausedRun":                  {798, "logic", "P2"},
 	"internal/store/storetest/contract.go Run":                            {743, "table", "D3"},
