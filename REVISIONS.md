@@ -8,6 +8,99 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.148.0
+
+*Two new layers and the operator's view of both. **Annotations** (RFC GE): a brief and an abstract for every section, document and folder of a tenant knowledge base, written bottom-up by a new pass and attached to retrieval with `with_summary`. A question about the corpus as a whole can be searched against them. **Operator observability** (RFC GF): standard `OTEL_*` configuration with gRPC export and inbound trace context; tenant-safe span content with GenAI names; in-process run, token, cost and provider metrics; a single-purpose `metrics:read` scrape credential; and Grafana dashboards and alert rules shipped with the binary. Also: a one-time ticket for the client-tools WebSocket (RFC GJ), a `@norm` class directive with a narrower links-agent L4, a panic net for background goroutines, and fixes from the 2026-11-07 re-grade.*
+
+The v1.148 line: #2502 to #2506, #2529 to #2532, #2537, #2538, #2540, #2545 to #2558.
+- `@loomcycle/client` 1.148.0 and the Python adapter 1.148.0. New: annotation helpers, `trace_id` on run reads, and `type_level_only` on the ACL catalog type.
+- Postgres migration **0132** (`runs.trace_id`); SQLite gains the column on start.
+- The chat bridges 0.5.0 were released already (#2500, #2501), against `@loomcycle/bridge-core` 0.5.0.
+- `@loomcycle/explorer` 0.17.0 (the annotation panel) is in the tree. It publishes from its own tag.
+
+### Upgrade notes
+
+- **OTEL configuration is the standard one, with no fallback (#2545).** `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT`, `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS`, `LOOMCYCLE_OTEL_SERVICE_NAME` and `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO` are **no longer read**. A deployment that sets only those runs with tracing off.
+
+  | Removed | Use |
+  |---|---|
+  | `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT=host:4318` | `OTEL_EXPORTER_OTLP_ENDPOINT=http://host:4318` (a URL with its scheme) |
+  | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` | `OTEL_EXPORTER_OTLP_HEADERS`, or `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` |
+  | `LOOMCYCLE_OTEL_SERVICE_NAME` | `OTEL_SERVICE_NAME` |
+  | `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO=0.1` | `OTEL_TRACES_SAMPLER=parentbased_traceidratio` + `OTEL_TRACES_SAMPLER_ARG=0.1` |
+
+  With tracing on, a value that would export nowhere (an endpoint without scheme or host, a bad protocol, sampler or header) stops the boot.
+- **`loomcycle.user_id` became `loomcycle.user_hash` on spans (#2546, in #2545).** The hash is keyed from `LOOMCYCLE_SECRET_KEY`. `LOOMCYCLE_OTEL_RAW_USER_ID=1` also emits the raw id; without a secret key the raw id is emitted and the boot warns. `loomcycle otel user-hash <tenant> <user>` prints a hash for an investigation. Trace queries that filter on `loomcycle.user_id` need the new name.
+- **Scraping `/metrics` (#2540, #2547).** A `metrics:read` token reaches `/metrics` and nothing else; mint one for Prometheus instead of using `substrate:admin`. `LOOMCYCLE_METRICS_LISTEN` opens an optional unauthenticated listener for a scraper on a protected network; it omits user-labelled series. `/metrics` now carries runs, tokens, cost, provider outcomes and latency counted in-process, whatever the trace sampling.
+- **SQL Memory transactions per tenant (#2549, #2558).** A named tenant may hold at most `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT` open `sql_begin` transactions (default: a quarter of `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS`). The default tenant, which a single-tenant install runs in, keeps the full cap.
+- **A password reset removes passkeys added since the password was last set (#2506).** Passkeys from before stay; an account that never had a password keeps all of them. Removing a passkey now ends the Web UI sessions signed in with it.
+- **Bulk statement rulings (#2554, #2556).** A bulk ruling rules only on a statement whose status is the one its selection read (`statement_changed` otherwise). A bulk accept by `ids` never reverses a rejection; the item reports `not_a_proposal`. Reversing rejections in bulk stays possible with `filter.status: rejected`.
+- **Document sync push (#2552).** A push makes no write for a natural key the peer cannot check; the key is reported as a conflict and asked again next time.
+- **Compose files pin third-party images by digest (#2502, #2530).** Copy them anew rather than editing an old copy; loomcycle's own images name the release.
+
+### Annotations (#2538, #2548, RFC GE)
+
+- **What they are.** For a section with parts of its own (or a long one), for each document and for each Path folder, a **brief** (one sentence, for choosing) and an **abstract** (one paragraph, standing in for reading). They are kept beside the content, never in it: writing one changes no body, hash, history, export or sync. Tenant scope only.
+- **Kept current by a hash.** The runtime computes what an annotation is written from and its hash (`Document op=annotation_inputs`). A write over moved text is refused, and an annotation whose inputs changed reads `stale: true`, shown and marked, never withheld. A change climbs exactly as far as the text changed.
+- **Ops.** `set_annotation`, `get_annotation`, `annotation_inputs`, `list_annotations`, `delete_annotation`, through every transport. Writing needs the operator plane or the new `statement_methods: [annotate]` grant (code-js only). An operator's `manual: true` annotation is never overwritten.
+- **Reading.**
+  - `with_summary: true` on `get_document`, `get_chunk`, `search`, `related`, `graph_recall`, `documents_summary`, `query_documents` and `Path op=ls` adds each row's nearest annotation.
+  - `documents_summary` and `graph_snapshot` carry a document's `brief` whenever it has one.
+  - Without the option, every answer is unchanged.
+- **Searching.** `search` with `annotations: "include"` fuses annotations with the passages; `"only"` answers from them alone (a question about the corpus as a whole), with `annotation_levels` to choose levels.
+- **Folders.** A folder's annotation lives on a `<folder>/_annotation` document of the new operational type `Annotation` (empty body; the name is reserved). It is withheld from a caller who may not read every document it covers.
+- **The ontology's say.** `@annotate the problem; the decisions taken; …` names a class's slots. `describe_ontology` reports them and each class's `meaning` (its first prose line). `annotation_language` on the ontology root enforces one language.
+- **The pass.** The knowledge-base bundle's `kb/annotator` (code-js) with `kb/annotate` (tier `middle`, no tools). It writes bottom-up: sections, the document, then folders from the deepest. Only what changed costs a model call. Modes: `document`, `path`, `drain` (reads `documents/ingested` without acknowledging it; the queue belongs to `kb/linker`) and `sweep`. `write: report` (the default) counts calls and prompt characters first. A tenant gives it `memory_scopes`/`sql_scopes: [tenant]` by forking it.
+- **UI and SDKs.** The explorer's Annotation panel (brief, abstract, provenance, stale mark; Edit and Regenerate for operators), briefs in the Path tree, the loomboard link popover, and `getAnnotation`/`listAnnotations`/`annotate` in TS and Python.
+- **Not yet:** the `Memory op=recall` leg and the operator memory-search source wait for the P6 measurement.
+
+### Operator observability (#2540, #2545, #2546, #2547, RFC GF)
+
+- **Traces.** Standard `OTEL_*` configuration, OTLP over HTTP or the new gRPC, headers from a file, and bounded batching that never blocks. An authenticated caller's `traceparent` (HTTP, gRPC, MCP) joins the run to its trace; `LOOMCYCLE_OTEL_INBOUND_CONTEXT` (`parent`, `link` or `ignore`) decides how. `trace_id` is on every run read, and `LOOMCYCLE_TRACE_URL_TEMPLATE` links a run to its trace in the Web UI.
+- **Span content.**
+  - `loomcycle.tenant` is on every span.
+  - GenAI semantic-convention names sit beside the existing ones: `invoke_agent`, `chat`, `execute_tool`.
+  - A `loomcycle.model.call` span covers each streamed model call, with usage, finish reason, cost, TTFT and lane wait.
+  - Provider attempts carry the HTTP status, attempt number and `retry_after_ms`. `error.type` is `rate_limited`, `overloaded`, `timeout`, `network`, `cancelled`, `client_error` or `server_error`.
+  - Per-tenant root sampling: `observability.tracing.tenant_sampler_ratios` or `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS`.
+- **Metrics.**
+  - Runs, durations and active runs (`tenant`, `status`, `trigger`).
+  - Tokens and cost, equal to the usage ledger.
+  - Provider requests by outcome; request, model-call and TTFT histograms.
+  - Retries, fallbacks and tool calls.
+  - DB-pool gauges, consolidation lag and token-budget use.
+  - Labels are bounded: agent appears only with `LOOMCYCLE_METRICS_AGENT_LABEL=1`, and a model the operator did not configure is `other`.
+  - OTLP metric export through `OTEL_METRICS_EXPORTER`.
+- **Shipped assets.** `deploy/observability/` holds Grafana overview and GenAI dashboards, seven Prometheus alert rules, an Alloy config and a README. CI fails when a dashboard or rule names a series or label `/metrics` does not emit.
+
+### Client tools from a browser extension (#2555, RFC GJ)
+
+- `POST /v1/client-tools/ticket` returns a one-time ticket (30 s, HMAC-keyed from `LOOMCYCLE_SECRET_KEY`), gated as the socket is. A browser client that cannot set `Authorization` on a WebSocket opens `/v1/client-tools` with `ticket.<t>` as a subprotocol, also under strict sign-in.
+- The ticket is spent once across replicas, and the credential behind it is re-resolved at the handshake: a ticket never carries more than its credential.
+
+### The links agent and the ontology (#2529, #2537)
+
+- **`@norm`** marks a document class as a norm (inherited; on an entity type, advisory). `describe_ontology` reports `norm`, `inherited_norm` and a top-level `norm_classes`.
+- **L4, narrowed to what measured true.**
+  - The relate layer files no `elaborates`, `conflicts_with` or `stricter_than`; they are only reported.
+  - It compares against the norm classes by default (`target_types`, `target_types_from`).
+  - It skips the document's own copies and versions, and headings, contents lines, legends and short quotes, before any verdict call.
+  - It offers the tenant's own relation kinds.
+  - A pass whose verdicts all fail ends `failed`, and `time_budget_seconds` (via `Context op=time`) keeps a slow model inside the run's cap.
+  - A tenant that forked `kb/linker` keeps its old code until it forks again.
+
+### Robustness and fixes (#2503, #2505, #2549, #2552 to #2558)
+
+- **Background goroutines recover from a panic (#2553).** Sweepers, pubsub and invalidation listeners, consolidation fan-out and the other long-lived goroutines stop only their own work, logged and counted in `loomcycle_goroutine_panics_total{goroutine}`. Alert on it being non-zero. Invalidation listeners recover per event.
+- **SQL Memory (#2549, #2558).** The per-tenant transaction share, and a begin that panics no longer leaks its reservation.
+- **Access rules (#2505).** The rule builder offers only `run:*` for verbs asked only of every instance, from a new `type_level_only` field in `op=catalog`.
+- **Docs and CI (#2503, #2531, #2532, #2550, #2551).**
+  - A census test fails on a `LOOMCYCLE_*` name the runtime reads that `docs/CONFIGURATION.md` does not document; 157 were added.
+  - The Teams SDK packages are bumped together.
+  - The fuzz job retries once when the fuzzer misses its own deadline.
+  - The product guides are synced with the document store.
+- **loomcycle.cloud (#2504, #2530, #2557).** The deployment files gain a Telegram gate, the enforced ACL, MFA on password sign-ins, digest-pinned images and the local pin for `kb/annotate`.
+
 ## What's in v1.147.0
 
 *The second hardening release from the 2026-11-07 re-grade, and the last of RFC GD. The audit trail now detects a rolled-back chain and records grants before they happen. A stored hook can no longer reach a private address through a yaml agent, and `cidr_only` covers every private exemption. Postgres SQL Memory's function denies read the same lexer as its other checks. Also: follow-ups to the sign-in changes, bridges that drop a kept revoke when a person returns, census tests on every PR, and a PDF that no longer fails whole on one bad page.*
