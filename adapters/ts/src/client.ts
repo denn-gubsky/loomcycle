@@ -258,6 +258,10 @@ import type {
   DocumentMoveInput,
   DocumentFindDuplicatesInput,
   DocumentFindDuplicatesResult,
+  DocumentAnnotation,
+  DocumentListAnnotationsInput,
+  DocumentListAnnotationsResult,
+  DocumentAnnotateInput,
   DocumentTransferResult,
   HistoryToolInput,
   HistoryToolResponse,
@@ -4143,6 +4147,49 @@ export class LoomcycleClient {
       { op: "move_documents", ...input } as DocumentToolInput,
       opts,
     )) as DocumentTransferResult;
+  }
+
+  /** The annotations of one chunk, document (`document_id`) or folder
+   *  (`level: "path"` with `path`), each marked `stale` or current (the Document
+   *  tool's `get_annotation`). Tenant scope; `scope` defaults to `"tenant"`. A
+   *  folder's annotation is left out unless the caller may read every document
+   *  it covers. `opts` as on {@link LoomcycleClient.document}. */
+  async getAnnotation(
+    input: { scope?: "tenant"; id?: string; document_id?: string; path?: string; level?: "branch" | "document" | "path" },
+    opts?: { signal?: AbortSignal; scopeId?: string; tenant?: string },
+  ): Promise<{ annotations: DocumentAnnotation[] }> {
+    return (await this.document(
+      { op: "get_annotation", scope: "tenant", ...input } as DocumentToolInput,
+      opts,
+    )) as unknown as { annotations: DocumentAnnotation[] };
+  }
+
+  /** Page through the tenant's annotations with filters (the Document tool's
+   *  `list_annotations`). Pass the answer's `next_cursor` as `after` for the
+   *  next page. `opts` as on {@link LoomcycleClient.document}. */
+  async listAnnotations(
+    input: DocumentListAnnotationsInput = {},
+    opts?: { signal?: AbortSignal; scopeId?: string; tenant?: string },
+  ): Promise<DocumentListAnnotationsResult> {
+    return (await this.document(
+      { op: "list_annotations", scope: "tenant", ...input } as DocumentToolInput,
+      opts,
+    )) as unknown as DocumentListAnnotationsResult;
+  }
+
+  /** Write an annotation (the Document tool's `set_annotation`). Without
+   *  `inputs_sha256` it is sent as an operator's manual annotation
+   *  (`manual: true`), which the annotation pass never overwrites; the operator
+   *  plane alone may write one. `opts` as on {@link LoomcycleClient.document}. */
+  async annotate(
+    input: DocumentAnnotateInput,
+    opts?: { signal?: AbortSignal; scopeId?: string; tenant?: string },
+  ): Promise<{ annotation: DocumentAnnotation }> {
+    const body: Record<string, unknown> = { op: "set_annotation", scope: "tenant", ...input };
+    if (input.inputs_sha256 === undefined && input.manual === undefined) {
+      body.manual = true;
+    }
+    return (await this.document(body as DocumentToolInput, opts)) as unknown as { annotation: DocumentAnnotation };
   }
 
   /** Find the copies in a set of documents (the Document tool's

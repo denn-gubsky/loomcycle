@@ -187,7 +187,13 @@ type OntologyTerm struct {
 	Definitions       string   `json:"definitions,omitempty"`
 	Boilerplate       string   `json:"boilerplate,omitempty"`
 	Exclude           []string `json:"exclude,omitempty"`
-	RenamedFrom       string   `json:"renamed_from,omitempty"`
+	// Meaning is the first prose line of the class's entry: what a thing of this
+	// class is. Shown to the model that annotates one.
+	Meaning string `json:"meaning,omitempty"`
+	// Annotate is the slots an annotation of a document of this class fills, as
+	// one "a; b; c" list: what such a document is expected to state.
+	Annotate    string `json:"annotate,omitempty"`
+	RenamedFrom string `json:"renamed_from,omitempty"`
 	// InheritedDirectives holds the class directives this class gets from its nearest
 	// declaring ancestor, keyed by directive name (Exclude joined with ", ").
 	InheritedDirectives map[string]string `json:"inherited_directives,omitempty"`
@@ -199,7 +205,7 @@ type OntologyTerm struct {
 
 // inheritableDirectives are the class directives a subclass takes from its ancestors
 // when it declares none of its own (nearest ancestor wins, as for memory_scope).
-var inheritableDirectives = []string{"identifier_pattern", "title_pattern", "anchor_grammar", "citation_grammar", "definitions", "boilerplate", "exclude"}
+var inheritableDirectives = []string{"identifier_pattern", "title_pattern", "anchor_grammar", "citation_grammar", "definitions", "boilerplate", "exclude", "annotate"}
 
 // InheritableDirectives lists the class directives EffectiveDirective resolves, in a
 // stable order. A copy: callers may not reorder the package's list.
@@ -225,6 +231,8 @@ func declaredDirective(t OntologyTerm, name string) string {
 		return t.Boilerplate
 	case "exclude":
 		return strings.Join(t.Exclude, ", ")
+	case "annotate":
+		return t.Annotate
 	}
 	return ""
 }

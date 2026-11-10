@@ -12,6 +12,8 @@ corpora, those were almost never right, so they are reported and not filed.
 | `kb/verdict` | your `low` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one bounded relation verdict per call, for L4 only |
 | `kb/judge` | `code-js` | `Document`, `Agent`; `statement_methods: [judge]` | rules on the proposals the review policy routes to the judge (see [The judge](#the-judge)) |
 | `kb/judge-verdict` | your `middle` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one verdict per proposal: accept, reject or unsure, a confidence and one sentence |
+| `kb/annotator` | `code-js` | `Document`, `Agent`, `Channel` (subscribe `documents/ingested`, read only); `statement_methods: [annotate]` | writes the annotations of the tenant knowledge base (see [Annotations](#annotations)) |
+| `kb/annotate` | your `middle` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one part in, `{brief, abstract, language}` out |
 
 ## What it needs
 
@@ -547,6 +549,100 @@ Or as a runtime schedule, over MCP `scheduledef` (or `POST /v1/_scheduledef`):
      "text": "{\"scope\":\"tenant\",\"write\":\"rule\",\"max_judgements\":200,\"max_verdict_calls\":200}"}]}]}}
 ```
 
+## Annotations
+
+An annotation is two short texts about one part of a document: a **brief**
+(one sentence saying what it is, so a reader can choose it) and an
+**abstract** (one paragraph saying what it states, so a reader need not open
+it). Agents get them with `with_summary: true` on the Document reads, and
+people see them in the explorer and the chat link preview. `kb/annotator`
+writes them; `kb/annotate` is its one model call.
+
+**Bottom up.** For each document the annotator writes its sections from the
+deepest up, then the document. A section is annotated when it has parts of its
+own or its text is at least `min_body_chars` long (default 1500); a shorter
+part is covered by its parent, whose request carries the part's text. Each
+request carries the part's own text and its parts' briefs and abstracts —
+never deeper — so it stays small whatever the size of the document. A
+document's request also carries its identity fields and its relations to other
+documents, by kind and title.
+
+Then the **folders** of the documents it looked at, from the deepest up to `/`.
+A folder's request names each direct child's brief (documents and sub-folders,
+the first 60, the rest grouped by class), the classes and topics of the
+documents it covers and the kinds of relation among them. Its annotation is
+kept on a document `<folder>/_annotation` of the operational type
+`Annotation`, made on the first write; a folder that is itself a document
+keeps it on that document's root. A folder's annotation is withheld from a
+caller who may not read every document it covers. The `/facts` and `/memory`
+trees are never covered.
+
+**Only what changed.** The runtime computes what a part is written from and
+the hash of it (`annotation_inputs`), and refuses a write whose text moved in
+between. A part whose hash is unchanged costs no model call: a changed passage
+costs its own section, the sections above it and the document, nothing else.
+An operator's hand-written annotation (`set_annotation` with `manual: true`)
+is never rewritten.
+
+**Modes.**
+
+| `mode` | over | does |
+|---|---|---|
+| `document` | `document_id` or `path` | one document, then its folders |
+| `path` | `path`, `recursive` | one folder; with `recursive: true` the folders beneath it first |
+| `drain` | the `documents/ingested` queue | the documents it names, newest first, up to `max_messages` that need work, then their folders. It reads the queue from the oldest retained message and **never acknowledges it**: the queue's position is shared by its readers in the scope and belongs to `kb/linker`. A document that is current costs two reads |
+| `sweep` | the scope, or `under_path` | every document that needs work, never-annotated first, then the least recently written, up to 1000 documents per run; then every folder beneath, deepest first |
+
+| `write` | does |
+|---|---|
+| `report` (default) | counts what would be written per level, the model calls and the prompt characters they would send (`calls.estimated_chars`), and writes nothing. **Run this first**, and on an API-paid deployment before every schedule change |
+| `annotate` | holds the scope's `annotator` lease, writes through `set_annotation`, releases the lease on every exit path |
+
+Other input: `min_body_chars`, `max_body_chars` (the part's own text a
+request carries, default 6000), `max_relations` (default 20), `max_calls`
+(model calls per run, default 200), `max_writes` (default 500), `force`
+(rewrite current annotations too, e.g. after a model change: the document's
+parts in document mode, the folders in path mode; a forced document pass
+leaves its folders to their hashes). Operational
+documents (`SourceStub`, `SyncReport`, `Annotation`) and the `/facts` and
+`/memory` trees are skipped.
+
+**Report.** `{status, mode, write, prompt_version, documents, document_ids,
+folders, stale: {branch, document, path}, calls: {made, estimated_chars}, skipped: {current,
+uncovered_leaf, manual, operational, unreadable}, queue? | sweep?}`, plus
+`would_call` / `would_write` in report mode, or `writes`, `parse_errors`,
+`wrong_language`, `model_failures`, `refusals` and `lease` in annotate mode.
+Ids and counts only, never store text.
+
+**Grants and a schedule.** Annotations are kept for the tenant scope only, so
+the annotator needs both tenant grants, added in your own layer:
+
+```yaml
+agents:
+  kb/annotator:
+    memory_scopes: [tenant]
+    sql_scopes: [tenant]
+channels:
+  documents/ingested: {scope: tenant}   # where tenant documents announce themselves
+scheduled_runs:
+  kb-annotator-ingest:
+    agent: kb/annotator
+    schedule: "30 3 * * *"            # after the linker's ingest drain
+    concurrency_policy: forbid
+    enabled: true
+    prompt:
+      - role: user
+        content: [ { type: trusted-text, text: '{"mode":"drain","write":"annotate","max_messages":50}' } ]
+  kb-annotator-sweep:
+    agent: kb/annotator
+    schedule: "0 4 * * 0"             # weekly: anything the drain missed
+    concurrency_policy: forbid
+    enabled: true
+    prompt:
+      - role: user
+        content: [ { type: trusted-text, text: '{"mode":"sweep","write":"annotate","max_calls":1000}' } ]
+```
+
 ## Scope
 
 `scope: user` works with the bundle as shipped. A tenant pass (which L3 needs
@@ -568,5 +664,8 @@ filters, capped by `max_verdict_calls` and `time_budget_seconds`, and runs only
 when asked for; L5 spends one per passage
 that has norms, and `rejudge` one per changed statement, each under the same
 cap. `kb/judge` spends one `kb/judge-verdict` call (tier `middle`) per proposal
-it judges, capped by `max_verdict_calls`. Nothing is scheduled unless you add a
-schedule.
+it judges, capped by `max_verdict_calls`. `kb/annotator` spends one
+`kb/annotate` call (tier `middle`) per section or document whose text changed,
+capped by `max_calls`; a first pass over a corpus is about one call per
+annotated section plus one per document, and `write: report` prints the
+estimate before you spend it. Nothing is scheduled unless you add a schedule.

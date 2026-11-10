@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { DirListing, DirMap } from "../lib/lazyPathTree";
+import { ANNOTATION_ENTRY } from "../lib/annotation";
 import {
   docColor,
   effectiveScheme,
@@ -59,6 +60,28 @@ const KIND_ICON: Record<string, string> = {
   volume_mount: "💾",
   memory_entry: "🧠",
 };
+
+// A folder's annotation document gets its own icon, so it reads as the
+// folder's description rather than one more document in it.
+const ANNOTATION_ICON = "📝";
+
+// isAnnotationEntry: the reserved `_annotation` document of a folder.
+export function isAnnotationEntry(node: Pick<PathNode, "kind" | "name">): boolean {
+  return node.kind === "document" && node.name === ANNOTATION_ENTRY;
+}
+
+// nodeBrief is the brief a row shows under its name: a document's own, and for
+// a folder the brief of its `_annotation` document — known only once the
+// folder has been listed, which is when its children's summaries arrive. No
+// extra call is made for it.
+export function nodeBrief(node: PathNode, summaries?: Map<string, DocSummary>): string | undefined {
+  if (node.kind === "directory") {
+    const ann = node.children.find(isAnnotationEntry);
+    return ann ? documentSummaryOf(ann, summaries)?.brief || undefined : undefined;
+  }
+  if (isAnnotationEntry(node)) return undefined; // its brief is the folder's
+  return documentSummaryOf(node, summaries)?.brief || undefined;
+}
 
 export interface PathTreeProps {
   tree: PathNode[];
@@ -171,6 +194,7 @@ function PathTreeNode(props: { node: PathNode } & PathTreeProps) {
   const isOpen = isDir && expanded.has(node.fullPath);
   const isSelected = selectedPath === node.fullPath;
   const summary = documentSummaryOf(node, summaries);
+  const brief = nodeBrief(node, summaries);
   const rowStyle =
     summary && summary.color_enabled
       ? tintStyle(docColor(summary.type, summary.status, effectiveScheme(summary.color_scheme)))
@@ -195,15 +219,17 @@ function PathTreeNode(props: { node: PathNode } & PathTreeProps) {
           type="button"
           className="path-link"
           onClick={() => onSelect(node)}
-          title={node.fullPath}
+          title={brief ? `${node.fullPath}\n${brief}` : node.fullPath}
         >
           <span className="path-kind-icon" aria-hidden>
-            {KIND_ICON[node.kind] ?? "•"}
+            {isAnnotationEntry(node) ? ANNOTATION_ICON : (KIND_ICON[node.kind] ?? "•")}
           </span>
           <span className="path-name">{node.name}</span>
           {summary?.type && <span className="chunk-badge">{summary.type}</span>}
           {summary?.status && <span className="chunk-badge chunk-status">{summary.status}</span>}
         </button>
+        {/* The brief wraps onto its own line inside the row box. */}
+        {brief && <span className="path-brief">{brief}</span>}
       </div>
       {isOpen && (
         <ul className="children path-children">

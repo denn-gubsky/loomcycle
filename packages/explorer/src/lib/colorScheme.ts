@@ -29,6 +29,9 @@ export interface DocSummary {
   status?: string;
   color_enabled: boolean;
   color_scheme?: ColorScheme;
+  // brief — the document's annotation brief, present only when the document
+  // has an annotation (tenant scope). The Path tree shows it under the name.
+  brief?: string;
 }
 
 // DocumentMeta is the enriched get_document result (the viewer's own document).

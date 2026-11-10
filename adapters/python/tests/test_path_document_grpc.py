@@ -194,3 +194,40 @@ async def test_find_duplicates_reports_by_default():
         "propose": False,
         "document_ids": ["d1", "d2"],
     }
+
+
+@pytest.mark.asyncio
+async def test_annotate_without_a_hash_is_manual():
+    client = _make_client()
+    fake, captured = _async_returning(
+        pb.SubstrateResponse(output_json=json.dumps({"annotation": {"chunk_id": "c1"}}).encode(), is_error=False)
+    )
+    client._stub.Document = fake  # type: ignore[attr-defined]
+
+    await client.annotate(brief="b", abstract="a", level="path", path="/kb")
+    assert json.loads(captured["req"].input_json) == {
+        "op": "set_annotation",
+        "scope": "tenant",
+        "brief": "b",
+        "abstract": "a",
+        "level": "path",
+        "path": "/kb",
+        "manual": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_annotations_sends_only_the_filters_given():
+    client = _make_client()
+    fake, captured = _async_returning(
+        pb.SubstrateResponse(output_json=json.dumps({"annotations": []}).encode(), is_error=False)
+    )
+    client._stub.Document = fake  # type: ignore[attr-defined]
+
+    await client.list_annotations(level="document", stale=True)
+    assert json.loads(captured["req"].input_json) == {
+        "op": "list_annotations",
+        "scope": "tenant",
+        "level": "document",
+        "stale": True,
+    }
