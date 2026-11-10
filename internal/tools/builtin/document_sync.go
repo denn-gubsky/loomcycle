@@ -864,9 +864,10 @@ type remoteWriter struct {
 func (w remoteWriter) createKeyed(ctx context.Context, sc syncChunk) (string, error) {
 	// Asked before the write: the peer's upsert_chunk would rewrite a chunk of
 	// another peer document holding the key. A peer that cannot answer (an older
-	// version, or a credential refused the read) falls back to the check after
-	// the write below.
-	if holder, known := w.peerKeyHolder(ctx, sc.nk); known && holder != "" && holder != w.docID {
+	// version, a credential refused the read, a transient fault) gets no write for
+	// the key: the check after the write would only find the overwrite once it
+	// happened. The key is reported as a conflict and the next push asks again.
+	if holder, known := w.peerKeyHolder(ctx, sc.nk); !known || (holder != "" && holder != w.docID) {
 		return "", errSyncKeyConflict
 	}
 	raw, err := w.client.Do(ctx, map[string]any{
@@ -883,8 +884,9 @@ func (w remoteWriter) createKeyed(ctx context.Context, sc syncChunk) (string, er
 	_ = json.Unmarshal(raw, &out)
 	// The peer's upsert_chunk resolves the key across its whole scope (and asks
 	// for write on that whole scope, so this reaches no further than the
-	// credential may). A key it found outside the peer document was updated
-	// there, not created here: never move it into this document as well.
+	// credential may). A key another peer document took between the check above
+	// and this write was updated there, not created here: never move it into this
+	// document as well. Closing that window needs a peer op that creates only.
 	if out.Created != nil && !*out.Created {
 		return "", errSyncKeyConflict
 	}
