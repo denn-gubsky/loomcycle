@@ -433,6 +433,15 @@ func (w *Worker) deadlineFor(m store.ChannelMessage) time.Time {
 // again from that instant — by this very replica — and the job must stop by
 // then, before it acts on an ask the new claim cancels as stale.
 func (j *job) renew(ctx context.Context, lost func(), left time.Duration) {
+	// A panic ends renewals: stop the job as for a lost lease, before the panic
+	// goes on to the goroutine's recovery, or it would keep deciding on a lease
+	// nobody renews.
+	defer func() {
+		if p := recover(); p != nil {
+			lost()
+			panic(p)
+		}
+	}()
 	t := time.NewTicker(j.w.cfg.Lease / 3)
 	defer t.Stop()
 	expired := time.NewTimer(left)
