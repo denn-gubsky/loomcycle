@@ -129,8 +129,23 @@ func (b *boot) initTelemetry() {
 	if metricsCfg.Export {
 		slog.Info("otel: metric export enabled", "protocol", metricsCfg.Protocol, "headers_file", metricsCfg.HeadersFile != "")
 	}
-	b.otelShutdown = func(ctx context.Context) error {
-		return errors.Join(otelShutdown(ctx), metricsShutdown(ctx))
+	b.otelShutdown = concurrentShutdown(otelShutdown, metricsShutdown)
+}
+
+// concurrentShutdown runs every shutdown at once under the one deadline and
+// joins their errors: a trace flush stalled on a dead collector must not
+// spend the deadline the metric flush needs, as running them in turn did.
+func concurrentShutdown(fns ...func(context.Context) error) func(context.Context) error {
+	return func(ctx context.Context) error {
+		errs := make(chan error, len(fns))
+		for _, fn := range fns {
+			go func() { errs <- fn(ctx) }()
+		}
+		var all []error
+		for range fns {
+			all = append(all, <-errs)
+		}
+		return errors.Join(all...)
 	}
 }
 
