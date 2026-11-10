@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -232,7 +233,8 @@ func (s *StoreSink) StartAsync(capacity int) {
 	s.anonymous = s.startQueue(capacity, 0)
 	s.observed = s.startQueue(capacity, max(capacity/tenantShareDivisor, 1))
 	s.tick = make(chan struct{})
-	go s.checkpointer(s.tick, s.cpEvery)
+	tick, every := s.tick, s.cpEvery
+	safego.Go(context.Background(), "auditchain.checkpointer", func() { s.checkpointer(tick, every) })
 }
 
 // checkpointer checkpoints, every interval, each chain with rows no

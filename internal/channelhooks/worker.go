@@ -39,6 +39,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -316,7 +317,7 @@ func (w *Worker) claim(ctx context.Context) bool {
 		w.sem <- struct{}{}
 		w.inFlight.Add(1)
 		w.wg.Add(1)
-		go func(it store.ChannelHookWork) {
+		safego.Go(ctx, "channelhooks.work_item", func() {
 			defer func() {
 				w.inFlight.Add(-1)
 				<-w.sem
@@ -327,7 +328,7 @@ func (w *Worker) claim(ctx context.Context) bool {
 				w.wg.Done()
 			}()
 			w.process(ctx, it, until)
-		}(it)
+		})
 	}
 	return len(items) == free
 }
@@ -388,7 +389,8 @@ func (w *Worker) process(ctx context.Context, it store.ChannelHookWork, leaseUnt
 	jctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	j.lost = cancel
-	go j.renew(jctx, cancel, leaseUntil.Sub(w.now()))
+	renewIn := leaseUntil.Sub(w.now())
+	safego.Go(jctx, "channelhooks.lease_renew", func() { j.renew(jctx, cancel, renewIn) })
 	sem, ok := w.channelSlot(jctx, m.HookTenant, m.Channel)
 	if !ok {
 		return
@@ -431,6 +433,15 @@ func (w *Worker) deadlineFor(m store.ChannelMessage) time.Time {
 // again from that instant — by this very replica — and the job must stop by
 // then, before it acts on an ask the new claim cancels as stale.
 func (j *job) renew(ctx context.Context, lost func(), left time.Duration) {
+	// A panic ends renewals: stop the job as for a lost lease, before the panic
+	// goes on to the goroutine's recovery, or it would keep deciding on a lease
+	// nobody renews.
+	defer func() {
+		if p := recover(); p != nil {
+			lost()
+			panic(p)
+		}
+	}()
 	t := time.NewTicker(j.w.cfg.Lease / 3)
 	defer t.Stop()
 	expired := time.NewTimer(left)

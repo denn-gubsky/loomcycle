@@ -1,8 +1,11 @@
 package sqlmem
 
 import (
+	"context"
 	"log/slog"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // gc.go — RFC AA Phase 3d: durable-scope garbage collection. A background
@@ -67,7 +70,7 @@ func (m *Manager) startGC() {
 	ttl := time.Duration(m.cfg.ScopeTTLMS) * time.Millisecond
 	m.gcDone = make(chan struct{})
 	stop, done := m.gcStop, m.gcDone
-	go func() {
+	safego.Go(context.Background(), "sqlmem.gc_sweeper", func() {
 		defer close(done)
 		t := time.NewTicker(interval)
 		defer t.Stop()
@@ -76,10 +79,11 @@ func (m *Manager) startGC() {
 			case <-stop:
 				return
 			case <-t.C:
-				m.runGC(ttl)
+				// Recovered per pass, so the sweeper outlives one bad pass.
+				safego.Run(context.Background(), "sqlmem.gc_sweeper", func() { m.runGC(ttl) })
 			}
 		}
-	}()
+	})
 }
 
 // stopGC signals the sweeper and JOINS it, so no sweep runs after Close.

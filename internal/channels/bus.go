@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/coord"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // Bus is the in-process notification bus. v0.12.3 Phase 4 adds an
@@ -131,16 +132,17 @@ func (b *Bus) SubscribeBackplane(ctx context.Context, bp coord.Backplane) error 
 	if err != nil {
 		return err
 	}
-	go func() {
+	safego.Go(ctx, "channels.backplane_listener", func() {
 		for evt := range ch {
 			var p channelBackplaneEvent
 			if err := json.Unmarshal(evt.Payload, &p); err != nil {
 				slog.Warn("channels: malformed backplane event", "err", err)
 				continue
 			}
-			b.notifyLocal(p.Channel)
+			// Recovered per event, so one bad event does not stop the listener.
+			safego.Run(ctx, "channels.backplane_listener", func() { b.notifyLocal(p.Channel) })
 		}
-	}()
+	})
 	return nil
 }
 

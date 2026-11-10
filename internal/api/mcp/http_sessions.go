@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // defaultHTTPSessionTTL is the inactivity window after which an HTTP
@@ -177,7 +179,7 @@ func RunHTTPSessionSweeper(ctx context.Context, store *HTTPSessionStore, interva
 	if logger == nil {
 		logger = slog.Default()
 	}
-	go func() {
+	safego.Go(ctx, "mcp.http_session_sweeper", func() {
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
@@ -185,10 +187,13 @@ func RunHTTPSessionSweeper(ctx context.Context, store *HTTPSessionStore, interva
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if n := store.Sweep(); n > 0 {
-					logger.Info("http_mcp: swept expired sessions", "sessions", n)
-				}
+				// Recovered per tick, so the sweeper outlives one bad sweep.
+				safego.Run(ctx, "mcp.http_session_sweeper", func() {
+					if n := store.Sweep(); n > 0 {
+						logger.Info("http_mcp: swept expired sessions", "sessions", n)
+					}
+				})
 			}
 		}
-	}()
+	})
 }

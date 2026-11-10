@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // sse wraps an http.ResponseWriter for server-sent-events output. One sse
@@ -184,7 +185,7 @@ func (s *sse) startKeepalive(ctx context.Context, interval time.Duration) {
 	}
 	stop, done := make(chan struct{}), make(chan struct{})
 	s.keepaliveStop, s.keepaliveDone = stop, done
-	go func() {
+	safego.Go(ctx, "http.sse_keepalive", func() {
 		defer close(done)
 		t := time.NewTicker(interval)
 		defer t.Stop()
@@ -198,7 +199,7 @@ func (s *sse) startKeepalive(ctx context.Context, interval time.Duration) {
 				s.writeKeepalive()
 			}
 		}
-	}()
+	})
 }
 
 // end closes the stream for writing: it drops every later write and stops

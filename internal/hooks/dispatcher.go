@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -633,7 +634,7 @@ func (d *Dispatcher) Observe(ctx context.Context, ident Identity, phase Phase, i
 		close(done)
 		return done
 	}
-	go func() {
+	safego.Go(ctx, "hooks.observe", func() {
 		defer close(done)
 		octx, cancel := context.WithTimeout(WithObserve(context.WithoutCancel(ctx)), ObserveBudget)
 		defer cancel()
@@ -642,7 +643,7 @@ func (d *Dispatcher) Observe(ctx context.Context, ident Identity, phase Phase, i
 				slog.WarnContext(octx, "hooks: "+string(phase)+" hook failed (observe only, ignored)", "hook", h.Owner+"/"+h.Name, "err", err)
 			}
 		}
-	}()
+	})
 	return done
 }
 
