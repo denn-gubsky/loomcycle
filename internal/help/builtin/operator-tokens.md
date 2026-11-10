@@ -273,8 +273,10 @@ concurrency, lanes, pools, build info) or another tenant's. Without it a
   tenant, and no other token: `create` with `scopes: ["metrics:read"]`;
   `tenant_id` is its own (omit it), and `tenant_metrics` is always on (an
   explicit `false` is refused). Every other scope set or field is refused.
-- The stored name is `u-metrics-<name>` and the subject defaults to
-  `metrics-<name>`. The lifetime is held to the minting token's own.
+- The stored name is `u-metrics-<name>`. The subject defaults to
+  `metrics-<name>`; one given must start with `metrics-` and must not be a
+  user of the tenant. A tenant holds at most 32 live scrape tokens. The
+  lifetime is held to the minting token's own.
 - The same operator may `list`, `get`, `rotate` and `retire` its tenant's
   scrape tokens; any other token answers as one that does not exist. A
   rotation keeps the tenant and the restriction, ends no later than the
@@ -283,7 +285,10 @@ concurrency, lanes, pools, build info) or another tenant's. Without it a
   `operator-token create`); it is refused on any token whose scopes are not
   exactly `["metrics:read"]`.
 - Under access control each op asks `mint`, `manage` or `read` of
-  `principal:token:metrics`; the tenant-operator baseline allows them.
+  `principal:token:metrics` (an admin's ops ask it of `principal:token:*`);
+  the tenant-operator baseline allows them. The route itself asks only
+  `read principal:token:*`, so a `mint` deny leaves `get` and `list` open.
+- A retired token cannot be rotated, on any path.
 
 ## Open mode, and what turns authentication on
 
