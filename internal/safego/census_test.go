@@ -95,8 +95,6 @@ var pendingRawGo = map[string]int{
 	"internal/api/http/teamlocalschedules.go":       1,
 	"internal/api/http/teamlocalwebhooks.go":        1,
 	"internal/api/http/teamwalk_run.go":             1,
-	"internal/api/mcp/proxy.go":                     1,
-	"internal/api/mcp/server.go":                    1,
 	"internal/api/webhook/server.go":                2,
 }
 

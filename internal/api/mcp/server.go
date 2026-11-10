@@ -37,6 +37,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
@@ -198,8 +199,20 @@ func (s *Server) Serve(ctx context.Context, stdin io.Reader, stdout io.Writer) e
 		// tools/call — dispatch concurrently so it can't HOL-block the
 		// next frame.
 		s.wg.Add(1)
-		go func(fr []byte, bound bool) {
+		fr, bound := line, bounded
+		safego.Go(handlerCtx, "mcp.tools_call", func() {
 			defer s.wg.Done()
+			// A call that panicked still answers its request, so the
+			// client does not wait out its own timeout.
+			answered := false
+			defer func() {
+				if answered {
+					return
+				}
+				if id, ok := frameRequestID(fr); ok {
+					s.writeError(stdout, id, -32603, "internal error")
+				}
+			}()
 			if bound {
 				select {
 				case s.sem <- struct{}{}:
@@ -210,6 +223,7 @@ func (s *Server) Serve(ctx context.Context, stdin io.Reader, stdout io.Writer) e
 					// abandoning the call, so the client doesn't wait out
 					// its own timeout. Best-effort — stdout may already be
 					// tearing down (writeFrame logs + ignores write errors).
+					answered = true
 					if id, ok := frameRequestID(fr); ok {
 						s.writeError(stdout, id, -32603, "server shutting down")
 					}
@@ -217,7 +231,8 @@ func (s *Server) Serve(ctx context.Context, stdin io.Reader, stdout io.Writer) e
 				}
 			}
 			s.handleFrame(handlerCtx, fr, stdout)
-		}(line, bounded)
+			answered = true
+		})
 	}
 
 	scanErr := scanner.Err()
