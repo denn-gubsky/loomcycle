@@ -113,11 +113,11 @@ func operatorCtx(ctx context.Context) context.Context {
 // grantOperatorPolicies attaches the builtin-tool capability policies for an
 // MCP-direct caller (identity must already be stamped). Def-family scopes are
 // "any" for BOTH admin and tenant — tenant confinement is the TenantID stamp +
-// the lookup's tenant filter, not a def-scope narrowing (RFC AG §3.1). The
-// OPERATOR PLANE (OperatorTokenDef mint, cross-tenant history) is granted ONLY
-// when isAdmin; a non-admin (tenant) principal leaves those zero (default-deny)
-// — so even if such a tool were reached it refuses. Evaluation is not decided
-// by isAdmin: it takes tools.OffRunEvaluationPolicy, as HTTP and gRPC do.
+// the lookup's tenant filter, not a def-scope narrowing (RFC AG §3.1).
+// Cross-tenant history is granted ONLY when isAdmin. The mint plane and
+// Evaluation are not decided by isAdmin: they take the principal's own grant
+// (tools.OperatorTokenDefPolicyFor, tools.OffRunEvaluationPolicy), as HTTP and
+// gRPC do — a tenant operator gets only its own tenant's scrape tokens.
 func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) context.Context {
 	// The operator-only def families: an operator plane's own authority, which
 	// no run holds (the spawn path strips it).
@@ -145,9 +145,11 @@ func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) 
 	}
 	if isAdmin {
 		histScopes = append(histScopes, "global")
-		// Operator plane. A tenant principal's mint plane stays default-deny (zero).
-		ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
 	}
+	// The mint plane from the principal, not isAdmin: the no-subject path
+	// passes isAdmin for any principal, and a tenant operator gets only its
+	// own tenant's scrape tokens.
+	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyFor(p, hasPrincipal))
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
 		// tools-ceiling wildcard ceiling (F11): without it, agentdef/skilldef create
 		// with a non-empty tools overlay refuses ("caller's effective

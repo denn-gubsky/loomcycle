@@ -37,6 +37,8 @@ func Route(required, method, path string) bool {
 // a privilege / cost-control / destruction hazard:
 //   - user create + roster mutation + user-token minting (/v1/_users*) — escalation
 //   - per-subject erasure (/v1/_erasure) — destructive
+//   - token minting (/v1/_operatortokendef), open to a tenant operator only
+//     for its own scrape tokens — escalation
 //   - budget WRITES (PUT/DELETE /v1/_limits) — cost-control bypass (GET stays open)
 //   - the memory maintenance sweeps (IsMemoryMaintenancePath) — bulk rewrites and
 //     embedder/model spend
@@ -53,6 +55,8 @@ func CarvedOut(method, path string) bool {
 	case strings.HasPrefix(path, "/v1/_authgate/"):
 		return true
 	case path == "/v1/_erasure":
+		return true
+	case path == "/v1/_operatortokendef":
 		return true
 	// RFC FY Part B: confirming the ontology, adopting a standard type into it and
 	// ruling on a proposal (/proposals takes accept|reject, it files nothing)

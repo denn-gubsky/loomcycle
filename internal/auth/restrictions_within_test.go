@@ -51,3 +51,17 @@ func TestRestrictionsWithin_SurfacesNeverExceedTheMinters(t *testing.T) {
 		t.Errorf("within an unrestricted minter = %+v (err %v), want unchanged", got, err)
 	}
 }
+
+// A minter confined to its tenant's metrics passes the confinement on, and a
+// minter without it neither adds nor drops it.
+func TestRestrictionsWithin_TenantMetricsIsKeptAndPassedOn(t *testing.T) {
+	if got, err := (Restrictions{}).Within(Restrictions{TenantMetrics: true}); err != nil || !got.TenantMetrics {
+		t.Errorf("held to a confined minter: %+v, %v; want tenant_metrics", got, err)
+	}
+	if got, err := (Restrictions{TenantMetrics: true}).Within(Restrictions{}); err != nil || !got.TenantMetrics {
+		t.Errorf("held to an unconfined minter: %+v, %v; want tenant_metrics kept", got, err)
+	}
+	if got, err := (Restrictions{}).Within(Restrictions{}); err != nil || got.TenantMetrics {
+		t.Errorf("neither confined: %+v, %v; want no tenant_metrics", got, err)
+	}
+}

@@ -102,9 +102,10 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 		Scopes:   []string{"any"},
 		SelfName: grpcSubstrateAdminAgentName,
 	})
-	// OperatorTokenDef: gRPC substrate admin is operator-trust → grant
-	// admin (RFC L).
-	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
+	// OperatorTokenDef: decided by who is calling — everything for an admin,
+	// a tenant operator's own scrape tokens, nothing for anyone else the
+	// per-RPC gate let through.
+	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyFor(principal, ok))
 	// History tool (RFC BE): own-scope access (self/user/tenant) always; the
 	// cross-tenant `global` scope only for an admin principal — mirrors the HTTP
 	// substrateAdminUserCtx grant + the in-loop historyGlobalAllowed gate. The

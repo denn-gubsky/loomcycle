@@ -66,20 +66,21 @@ func TestPrincipalMayCallTool_Admin(t *testing.T) {
 
 // TestPrincipalMayCallTool_NonAdmin is the load-bearing assertion for RFC AG
 // Phase 2: a substrate:tenant principal may call the tenant-confinable tools
-// (document/agentdef/memory/spawn_run/…) but NOT the admin-only ones
-// (operatortokendef/restore_snapshot/pause_runtime/list_channels/register_hook).
-// This is the enforcement the route-flip relies on.
+// (document/agentdef/memory/spawn_run/…, and operatortokendef, which its grant
+// confines to the tenant's own scrape tokens) but NOT the admin-only ones
+// (restore_snapshot/pause_runtime/list_channels/register_hook). This is the
+// enforcement the route-flip relies on.
 func TestPrincipalMayCallTool_NonAdmin(t *testing.T) {
 	ctx := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{"substrate:tenant"}})
 
-	allowed := []string{"document", "agentdef", "skilldef", "memory", "channel", "path", "spawn_run", "context", "evaluation"}
+	allowed := []string{"document", "agentdef", "skilldef", "memory", "channel", "path", "spawn_run", "context", "evaluation", "operatortokendef"}
 	for _, name := range allowed {
 		if !principalMayCallTool(ctx, name) {
 			t.Errorf("tenant principal must be allowed tenant-confinable tool %q", name)
 		}
 	}
-	denied := []string{"operatortokendef", "restore_snapshot", "pause_runtime", "get_runtime_state", "list_channels"}
+	denied := []string{"restore_snapshot", "pause_runtime", "get_runtime_state", "list_channels"}
 	for _, name := range denied {
 		if principalMayCallTool(ctx, name) {
 			t.Errorf("tenant principal must NOT be allowed admin-only tool %q (RFC AG §2)", name)

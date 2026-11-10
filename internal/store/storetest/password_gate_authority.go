@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -300,6 +301,20 @@ func testNonRaisingWritesKeepManagerIssuedLinks(t *testing.T, s store.Store) {
 	}
 	if r, i := fayLive(); !r || !i {
 		t.Errorf("after re-restoring held rows and a retired binding: reset live %v, invite live %v; want both live", r, i)
+	}
+
+	// A single-purpose machine credential (a scrape, SCIM or user-management
+	// token) minted under a person's subject confers nothing on that person's
+	// account, so it leaves the person's links alone.
+	for i, scope := range []string{"metrics:read", "scim:provision", "auth:manage"} {
+		subject := fmt.Sprintf("gus%d", i)
+		gusLive := pwgSeedManagerLinks(t, s, "acme", subject)
+		if _, err := s.OperatorTokenDefCreate(ctx, mkOperatorTokenDef("def-"+subject, subject, "acme", subject, "hash-"+subject, []string{scope})); err != nil {
+			t.Fatal(err)
+		}
+		if r, i := gusLive(); !r || !i {
+			t.Errorf("after a %s token for %s: reset live %v, invite live %v; want both live", scope, subject, r, i)
+		}
 	}
 }
 

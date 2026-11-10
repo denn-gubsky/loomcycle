@@ -13,9 +13,11 @@ import {
 // for no-shell deployments — RFC AR/TrueNAS). It mirrors the `loomcycle
 // operator-token` CLI: generate a tenant/operator token (shown ONCE), list the
 // existing tokens (one row per tenant and name), rotate, and retire. Rotate and
-// retire act on the row's current def_id, never on the name. Admin-only — the backend gates
-// POST /v1/_operatortokendef at substrate:admin and the nav only offers
-// /access/tokens to an is_admin principal, so this is the redundant client-side half.
+// retire act on the row's current def_id, never on the name. Admin-only — the page
+// lists every token through GET /v1/_operatortokendef/names, which only an admin
+// reaches, and the nav anchors /access/tokens on that route. (A tenant operator
+// may mint its own tenant's scrape tokens through POST /v1/_operatortokendef, but
+// not here.)
 const DEFAULT_SCOPES = ["substrate:tenant"];
 
 export default function TokenManager() {

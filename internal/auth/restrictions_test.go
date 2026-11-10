@@ -251,3 +251,40 @@ func TestRestrictions_StoredSurfacesFailClosed(t *testing.T) {
 		t.Errorf("an unknown surface read as %+v with no error", r)
 	}
 }
+
+// tenant_metrics narrows a scrape and nothing else, so it fits only a token
+// whose scopes are exactly [metrics:read].
+func TestRestrictionsCheckScopes_TenantMetricsOnlyOnAMetricsReadToken(t *testing.T) {
+	r := Restrictions{TenantMetrics: true}
+	if err := r.CheckScopes([]string{ScopeMetricsRead}); err != nil {
+		t.Errorf("[metrics:read]: %v, want accepted", err)
+	}
+	for _, scopes := range [][]string{nil, {ScopeTenant}, {ScopeAdmin}, {ScopeRunsCreate}, {ScopeMetricsRead, ScopeRunsRead}} {
+		if err := r.CheckScopes(scopes); err == nil {
+			t.Errorf("%v: accepted, want refused", scopes)
+		}
+	}
+	if err := (Restrictions{}).CheckScopes([]string{ScopeTenant}); err != nil {
+		t.Errorf("no marker: %v", err)
+	}
+}
+
+// The marker survives the stored form, and a record holding only it is not
+// the zero record (which stores as "", an unrestricted row).
+func TestRestrictions_TenantMetricsRoundTripsThroughStorage(t *testing.T) {
+	r := Restrictions{TenantMetrics: true}
+	if r.IsZero() {
+		t.Fatal("a record holding tenant_metrics reads as zero")
+	}
+	s, err := MarshalRestrictions(r)
+	if err != nil || s != `{"tenant_metrics":true}` {
+		t.Fatalf("stored %q, %v", s, err)
+	}
+	back, err := ParseRestrictions(s)
+	if err != nil || !back.TenantMetrics {
+		t.Errorf("read back %+v, %v", back, err)
+	}
+	if !strings.Contains(r.Describe(), "tenant_metrics") {
+		t.Errorf("Describe = %q", r.Describe())
+	}
+}

@@ -63,6 +63,7 @@ func TestRoute_OpensOnlyUncarvedTenantSurfaces(t *testing.T) {
 		{auth.ScopeTenant, http.MethodPost, "/v1/_memory/reembed", false},
 		{auth.ScopeTenant, http.MethodPost, "/v1/_memory/home_facts", false},
 		{auth.ScopeAdmin, http.MethodPost, "/v1/_operatortokendef", false},
+		{auth.ScopeTenant, http.MethodPost, "/v1/_operatortokendef", false},
 		{auth.ScopeRunsCreate, http.MethodPost, "/v1/runs", false},
 	} {
 		if got := Route(c.required, c.method, c.path); got != c.want {

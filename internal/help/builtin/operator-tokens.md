@@ -49,7 +49,8 @@ provider's SCIM 2.0 credential: the `/scim/v2` service of the deployment's
 `kind: scim` gate, in the token's own tenant only, and nothing else; it must
 be a token's only scope), `metrics:read` (a Prometheus scraper's credential:
 `GET /metrics` and nothing else, no Web UI sign-in; it must be a token's only
-scope, and only an admin mints it). Every catalog scope is enforced by at least one route —
+scope; an admin mints it, and a tenant operator may mint one for its own
+tenant — see "A tenant's scrape token" below). Every catalog scope is enforced by at least one route —
 operators can't invent scope names, and the catalog intentionally excludes
 scopes no route checks (a scope that enforces nothing is a false
 limitation). The default at create is `["substrate:admin"]`, so a first
@@ -65,7 +66,7 @@ tenant — runs, channels, authoring all 8 substrate Def families (Agent /
 Skill / MCPServer / Schedule / Webhook / MemoryBackend / A2AAgent /
 A2AServerCard, where MCPServerDef is the "dynamic MCP tools ingestion"
 surface), and registering tool-use hooks — but NOT the operator plane: no
-token minting (`/v1/_operatortokendef`), no runtime admin (pause / resume /
+token minting beyond its own tenant's scrape tokens (below), no runtime admin (pause / resume /
 snapshot), no loomcycle-as-MCP-server transport (`/v1/_mcp`), and no
 cross-tenant access. It satisfies the within-tenant scopes (`runs:*`,
 `channel:*`, the def/hook gate) but never `substrate:admin`. Mint a
@@ -259,6 +260,35 @@ says is delivered to the caller and stored nowhere.
 - The setting is fixed at mint and carried over by `rotate`.
 - See `loomcycle help no-trace-runs` for what a no-trace run keeps and
   what it cannot do.
+
+## A tenant's scrape token
+
+A `metrics:read` token holding `tenant_metrics` reads only its own tenant's
+series on `GET /metrics`: the runs, tokens, cost, provider and tool-call
+series labelled with its tenant, and none of the runtime-wide ones (process,
+concurrency, lanes, pools, build info) or another tenant's. Without it a
+`metrics:read` token sees everything, whatever its tenant.
+
+- A tenant operator (`substrate:tenant`) may mint such a token for its own
+  tenant, and no other token: `create` with `scopes: ["metrics:read"]`;
+  `tenant_id` is its own (omit it), and `tenant_metrics` is always on (an
+  explicit `false` is refused). Every other scope set or field is refused.
+- The stored name is `u-metrics-<name>`. The subject defaults to
+  `metrics-<name>`; one given must start with `metrics-` and must not be a
+  user of the tenant. A tenant holds at most 32 live scrape tokens. The
+  lifetime is held to the minting token's own.
+- The same operator may `list`, `get`, `rotate` and `retire` its tenant's
+  scrape tokens; any other token answers as one that does not exist. A
+  rotation keeps the tenant and the restriction, ends no later than the
+  rotating token, and takes a `grace_seconds` no longer than the default.
+- An admin may set it with `"tenant_metrics": true` (`--tenant-metrics` on
+  `operator-token create`); it is refused on any token whose scopes are not
+  exactly `["metrics:read"]`.
+- Under access control each op asks `mint`, `manage` or `read` of
+  `principal:token:metrics` (an admin's ops ask it of `principal:token:*`);
+  the tenant-operator baseline allows them. The route itself asks only
+  `read principal:token:*`, so a `mint` deny leaves `get` and `list` open.
+- A retired token cannot be rotated, on any path.
 
 ## Open mode, and what turns authentication on
 

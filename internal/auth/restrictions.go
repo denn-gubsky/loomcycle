@@ -46,6 +46,12 @@ type Restrictions struct {
 	// an agent cannot loosen it, and neither can the operator's timed
 	// override. "" leaves the mode to the request and the agent.
 	Retention string `json:"retention,omitempty"`
+	// TenantMetrics, on a metrics:read token, confines its scrape of /metrics
+	// to its own tenant: the series labelled with its tenant and nothing that
+	// is the whole runtime's. A scrape token carries a tenant whatever it is
+	// for, so the tenant alone cannot say which view it gets; this does. Only
+	// a token whose scopes are exactly [metrics:read] may hold it (CheckScopes).
+	TenantMetrics bool `json:"tenant_metrics,omitempty"`
 }
 
 // ParseRetention reads a retention setting as written on a mint surface:
@@ -214,7 +220,17 @@ var restrictedAgentNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,1
 
 // IsZero reports whether nothing is restricted.
 func (r Restrictions) IsZero() bool {
-	return len(r.Agents) == 0 && len(r.Surfaces) == 0 && r.Overrides == nil && r.Rate == nil && r.Retention == ""
+	return len(r.Agents) == 0 && len(r.Surfaces) == 0 && r.Overrides == nil && r.Rate == nil && r.Retention == "" && !r.TenantMetrics
+}
+
+// CheckScopes refuses a record that does not fit the scopes of the token it
+// narrows. TenantMetrics confines a scrape and nothing else: on any other
+// token it would be stored, shown, and decide nothing.
+func (r Restrictions) CheckScopes(scopes []string) error {
+	if r.TenantMetrics && !(len(scopes) == 1 && scopes[0] == ScopeMetricsRead) {
+		return fmt.Errorf("tenant_metrics applies only to a token whose scopes are exactly [%s]", ScopeMetricsRead)
+	}
+	return nil
 }
 
 // RunPlaneOnly reports whether the credential is confined to the run plane:
@@ -346,6 +362,10 @@ func knownSurface(s string) bool {
 // in this record means "unrestricted", the opposite of what it would be.
 func (r Restrictions) Within(minter Restrictions) (Restrictions, error) {
 	out := r
+	// A minter confined to its tenant's metrics mints nothing that reads more.
+	if minter.TenantMetrics {
+		out.TenantMetrics = true
+	}
 	if minter.Retention == retentionmode.None {
 		out.Retention = retentionmode.None
 	}
@@ -423,6 +443,9 @@ func (r Restrictions) Describe() string {
 	}
 	if r.Rate != nil {
 		parts = append(parts, fmt.Sprintf("rate=%d/min burst=%d", r.Rate.PerMinute, r.Rate.EffectiveBurst()))
+	}
+	if r.TenantMetrics {
+		parts = append(parts, "tenant_metrics")
 	}
 	return strings.Join(parts, " ")
 }

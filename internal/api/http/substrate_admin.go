@@ -612,11 +612,10 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 		p.Evaluation = tools.OffRunEvaluationPolicy(principal, hasPrincipal)
 		p.History = tools.HistoryPolicyValue{Scopes: histScopes}
 	})
-	// OperatorTokenDef: operator-admin (RFC L). The /v1/_* endpoints are
-	// bearer-authed against the operator; minting auth tokens is the
-	// operator's prerogative. PR2's middleware additionally gates this
-	// route behind the substrate:admin scope.
-	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
+	// OperatorTokenDef: decided by who is calling (RFC L) — everything for an
+	// admin or open mode, a tenant operator's own scrape tokens, nothing for
+	// anyone else this shared substrate ctx serves.
+	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyFor(principal, hasPrincipal))
 	return ctx
 }
 

@@ -90,13 +90,22 @@ func TestMetricsRead_EnforceAdmitsByBaselineAndAnExplicitDenyRefuses(t *testing.
 	}
 }
 
-// Minting a token is the operator's: a tenant operator's token cannot reach
-// the mint route at all, so it cannot hand out a scrape credential either.
-func TestMetricsRead_ATenantOperatorCannotMintIt(t *testing.T) {
+// The mint route admits a tenant operator, whose tool grant confines it to
+// its own tenant's scrape tokens; a member, whatever its scopes, is refused
+// (the route is carved out of the member path), and the token names listing
+// stays the admin's.
+func TestMetricsRead_ATenantOperatorReachesTheMintRouteAndAMemberDoesNot(t *testing.T) {
 	s, st := tokenAuthServer(t, "legacy-secret")
 	seedToken(t, st, "tenant-bearer", "acme", "acme-ops", []string{auth.ScopeTenant}, time.Time{})
-	if reached, code := runMW(t, s, "POST", "/v1/_operatortokendef", "tenant-bearer"); reached || code != http.StatusForbidden {
-		t.Errorf("tenant mint: reached=%v code=%d, want refused 403", reached, code)
+	seedToken(t, st, "member-bearer", "acme", "bob", eqMemberScopes, time.Time{})
+	if reached, code := runMW(t, s, "POST", "/v1/_operatortokendef", "tenant-bearer"); !reached {
+		t.Errorf("tenant mint: refused with %d, want admitted", code)
+	}
+	if reached, code := runMW(t, s, "GET", "/v1/_operatortokendef/names", "tenant-bearer"); reached || code != http.StatusForbidden {
+		t.Errorf("tenant names listing: reached=%v code=%d, want refused 403", reached, code)
+	}
+	if reached, code := runMW(t, s, "POST", "/v1/_operatortokendef", "member-bearer"); reached || code != http.StatusForbidden {
+		t.Errorf("member mint: reached=%v code=%d, want refused 403", reached, code)
 	}
 	if reached, code := runMW(t, s, "POST", "/v1/_operatortokendef", "legacy-secret"); !reached {
 		t.Errorf("operator mint: refused with %d", code)

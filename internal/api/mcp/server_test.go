@@ -594,12 +594,13 @@ func TestServer_ToolsList_FiltersAdminToolsForTenant(t *testing.T) {
 	for _, td := range result.Tools {
 		names[td.Name] = true
 	}
-	for _, hidden := range []string{"operatortokendef", "pause_runtime", "restore_snapshot", "list_channels"} {
+	for _, hidden := range []string{"pause_runtime", "restore_snapshot", "list_channels"} {
 		if names[hidden] {
 			t.Errorf("admin-only tool %q must be hidden from a tenant principal's tools/list", hidden)
 		}
 	}
-	for _, shown := range []string{"document", "history", "agentdef", "memory", "spawn_run", "path", "context"} {
+	// operatortokendef: the tenant's own scrape tokens; the tool confines it.
+	for _, shown := range []string{"document", "history", "agentdef", "memory", "spawn_run", "path", "context", "operatortokendef"} {
 		if !names[shown] {
 			t.Errorf("tenant-confinable tool %q must remain in a tenant principal's tools/list", shown)
 		}

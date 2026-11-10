@@ -142,6 +142,7 @@ func TestAuthClients_RefusesWhatTheRFCRefuses(t *testing.T) {
 		"abs too long":   {"a", func(c *AuthClientConfig) { c.Refresh = AuthClientRefresh{Absolute: "400d"} }, "at most"},
 		"bad restrict":   {"a", func(c *AuthClientConfig) { c.Restrictions = map[string]any{"nope": 1} }, "restrictions"},
 		"bad retention":  {"a", func(c *AuthClientConfig) { c.Restrictions = map[string]any{"retention": "maybe"} }, "restrictions"},
+		"scrape marker":  {"a", func(c *AuthClientConfig) { c.Restrictions = map[string]any{"tenant_metrics": true} }, "tenant_metrics"},
 		"label controls": {"a", func(c *AuthClientConfig) { c.Label = "a\nb" }, "control"},
 	} {
 		cc := base()

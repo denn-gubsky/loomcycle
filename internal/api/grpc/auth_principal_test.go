@@ -67,8 +67,9 @@ func TestGrpcRequiredScopeForRPC_DefaultsToAdmin(t *testing.T) {
 }
 
 // TestGrpcRequiredScopeForRPC_RFCAFTenantPlane locks the RFC AF split on gRPC:
-// the 8 def families + hook RPCs accept substrate:tenant, while OperatorTokenDef
-// (token minting) stays admin-only via the deny-by-default.
+// the 8 def families + hook RPCs accept substrate:tenant, and so does
+// OperatorTokenDef, whose tool grant confines a tenant operator to its own
+// tenant's scrape tokens.
 func TestGrpcRequiredScopeForRPC_RFCAFTenantPlane(t *testing.T) {
 	tenantRPCs := []string{
 		"AgentDef", "SkillDef", "MCPServerDef", "ScheduleDef",
@@ -79,20 +80,24 @@ func TestGrpcRequiredScopeForRPC_RFCAFTenantPlane(t *testing.T) {
 			t.Errorf("%s scope = %q, want substrate:tenant", name, got)
 		}
 	}
-	// Minting stays operator-only.
-	if got := requiredScopeForRPC(grpcMethodPrefix + "OperatorTokenDef"); got != auth.ScopeAdmin {
-		t.Errorf("OperatorTokenDef scope = %q, want substrate:admin (minting stays operator-only)", got)
+	if got := requiredScopeForRPC(grpcMethodPrefix + "OperatorTokenDef"); got != auth.ScopeTenant {
+		t.Errorf("OperatorTokenDef scope = %q, want substrate:tenant (its own scrape tokens)", got)
 	}
 
-	// End-to-end: a substrate:tenant token passes AgentDef but is DENIED
-	// OperatorTokenDef.
+	// End-to-end: a substrate:tenant token passes AgentDef and OperatorTokenDef;
+	// a member token is denied OperatorTokenDef (its twin is carved out).
 	tenant := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "jobember", Subject: "svc", Scopes: []string{auth.ScopeTenant}})
 	if err := enforceScope(tenant, grpcMethodPrefix+"AgentDef"); err != nil {
 		t.Errorf("substrate:tenant on AgentDef: %v, want nil", err)
 	}
-	if err := enforceScope(tenant, grpcMethodPrefix+"OperatorTokenDef"); status.Code(err) != codes.PermissionDenied {
-		t.Errorf("substrate:tenant on OperatorTokenDef: code = %v, want PermissionDenied", status.Code(err))
+	if err := enforceScope(tenant, grpcMethodPrefix+"OperatorTokenDef"); err != nil {
+		t.Errorf("substrate:tenant on OperatorTokenDef: %v, want nil", err)
+	}
+	member := auth.WithPrincipal(context.Background(),
+		auth.Principal{TenantID: "jobember", Subject: "bob", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}})
+	if err := enforceScope(member, grpcMethodPrefix+"OperatorTokenDef"); status.Code(err) != codes.PermissionDenied {
+		t.Errorf("member on OperatorTokenDef: code = %v, want PermissionDenied", status.Code(err))
 	}
 }
 

@@ -53,7 +53,7 @@ func TestHTTPSurface_RepresentativeRoutes(t *testing.T) {
 		{"POST", "/v1/_credentialdef", typeLevel("use", "credential"), true},
 		{"GET", "/v1/_agentdef/chat/overridable", typeLevel("read", "agent"), true},
 		{"GET", "/v1/_teamdef/t1/channels", typeLevel("subscribe", "channel"), true},
-		{"POST", "/v1/_operatortokendef", instance("mint", "principal", "token:*"), true},
+		{"POST", "/v1/_operatortokendef", instance("read", "principal", "token:*"), true},
 		{"POST", "/v1/_channels/ops/publish", instance("publish", "channel", "ops"), true},
 		{"PATCH", "/v1/_channels/ops", instance("manage", "channel", "ops"), true},
 		{"POST", "/v1/_channels/_await", typeLevel("await", "channel"), true},

@@ -256,6 +256,11 @@ func ResolveAppClient(where, id string, cc AuthClientConfig) (AppClient, error) 
 		if err := r.Validate(r.Agents != nil); err != nil {
 			return AppClient{}, fmt.Errorf("%s.restrictions: %w", where, err)
 		}
+		// An app sign-in mints a user's token, never a metrics:read one, so
+		// a scrape's tenant confinement here would decide nothing.
+		if err := r.CheckScopes(nil); err != nil {
+			return AppClient{}, fmt.Errorf("%s.restrictions: %w", where, err)
+		}
 		c.RestrictionsJSON = string(b)
 	}
 	return c, nil

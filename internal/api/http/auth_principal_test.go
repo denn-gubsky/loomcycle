@@ -221,8 +221,11 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"POST", "/v1/users/alice/channels/work/publish", auth.ScopeChannelPublish},
 		{"POST", "/v1/users/alice/channels/work/ack", auth.ScopeChannelPublish},
 		{"GET", "/v1/users/alice/channels/work/peek", auth.ScopeChannelRead},
-		// RFC AF: token minting + runtime admin STAY operator-only (substrate:admin).
-		{"POST", "/v1/_operatortokendef", auth.ScopeAdmin},
+		// Token minting admits a tenant operator, whose tool grant confines it
+		// to its own scrape tokens; the names listing and runtime admin STAY
+		// operator-only (substrate:admin).
+		{"POST", "/v1/_operatortokendef", auth.ScopeTenant},
+		{"GET", "/v1/_operatortokendef/names", auth.ScopeAdmin},
 		{"GET", "/v1/_resolver", auth.ScopeAdmin},
 		{"POST", "/v1/_pause", auth.ScopeAdmin},
 		{"GET", "/metrics", auth.ScopeAdmin},
@@ -450,9 +453,10 @@ func TestAuthMiddleware_RFCAFTenantToken(t *testing.T) {
 	admitted := []struct{ method, path string }{
 		{"POST", "/v1/_agentdef"}, // def authoring — confined
 		{"GET", "/v1/_agentdef/names"},
-		{"POST", "/v1/_hookdef"},      // hook definitions — confined like agentdef
-		{"POST", "/v1/_mcpserverdef"}, // dynamic MCP ingestion — confined
-		{"POST", "/v1/_mcp"},          // RFC AG Phase 2: may OPEN an MCP session
+		{"POST", "/v1/_hookdef"},          // hook definitions — confined like agentdef
+		{"POST", "/v1/_mcpserverdef"},     // dynamic MCP ingestion — confined
+		{"POST", "/v1/_mcp"},              // RFC AG Phase 2: may OPEN an MCP session
+		{"POST", "/v1/_operatortokendef"}, // its own tenant's scrape tokens (the tool confines)
 	}
 	for _, c := range admitted {
 		var reached bool
@@ -467,8 +471,8 @@ func TestAuthMiddleware_RFCAFTenantToken(t *testing.T) {
 	}
 
 	refused := []struct{ method, path string }{
-		{"POST", "/v1/_operatortokendef"}, // token minting — operator-only
-		{"POST", "/v1/_pause"},            // runtime admin
+		{"GET", "/v1/_operatortokendef/names"}, // every token's name — operator-only
+		{"POST", "/v1/_pause"},                 // runtime admin
 	}
 	for _, c := range refused {
 		var reached bool

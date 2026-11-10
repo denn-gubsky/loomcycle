@@ -83,11 +83,17 @@ func (v promView) namesUsers() bool { return !v.omitUserSeries && !v.isConfined(
 // isConfined reports whether the view is one tenant's.
 func (v promView) isConfined() bool { return v.confined || v.tenant != "" }
 
-// promViewForPrincipal is the view the route's caller gets. Every caller
-// that passes the route's gate today is an operator and sees everything; a
-// metrics reader confined to its tenant gets promView{confined: true,
-// tenant: …} here once such a credential exists.
-func promViewForPrincipal(auth.Principal, bool) promView {
+// promViewForPrincipal is the view the route's caller gets. A metrics:read
+// token holding tenant_metrics reads its own tenant, the shared tenant ""
+// included (confined says so). Every other caller that passes the route's
+// gate is an operator — an admin, or a scrape token an operator minted
+// without the marker — and sees everything. The tenant id alone cannot
+// decide it: operator scrape tokens carry a tenant too. A token whose
+// restrictions could not be read never gets here: resolution refuses it.
+func promViewForPrincipal(p auth.Principal, ok bool) promView {
+	if ok && auth.IsMetricsReader(p) && p.Restrictions.TenantMetrics {
+		return promView{confined: true, tenant: p.TenantID}
+	}
 	return promView{}
 }
 

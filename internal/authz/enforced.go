@@ -130,8 +130,8 @@ var enforcedPairs = map[pairKey][]Site{
 	{"run", "review"}:  {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 
 	{"principal", "read"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
-	{"principal", "manage"}: {SiteHTTPRoute},
-	{"principal", "mint"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
+	{"principal", "manage"}: {SiteHTTPRoute, Proof("TestOperatorTokenDefACL_AsksTheOpsVerbOfTheTokenKind")},
+	{"principal", "mint"}:   {SiteHTTPRoute, Proof("TestOperatorTokenDefACL_AsksTheOpsVerbOfTheTokenKind")},
 
 	{"runtime", "read"}:   {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool},
 	{"runtime", "manage"}: {SiteHTTPRoute, SiteGRPCRPC, SiteMCPTool, SiteConnector},

@@ -58,6 +58,25 @@ monitoring host, so it is not recommended — upgrade instead.
 2. Mount `prometheus/prometheus.yml` and `prometheus/rules/` into Prometheus
    (`/etc/prometheus/prometheus.yml`, `/etc/prometheus/rules/`).
 
+### One tenant's Prometheus
+
+A tenant operator (a `substrate:tenant` token) can give its own monitoring a
+scrape token that reads only its tenant's series — runs, tokens, cost,
+provider and tool calls labelled with its tenant, and nothing of the runtime
+or of other tenants:
+
+```sh
+curl -fsS -H "Authorization: Bearer $TENANT_OPERATOR_TOKEN" -H "Content-Type: application/json" \
+  -d '{"op":"create","name":"prom","scopes":["metrics:read"]}' \
+  https://loomcycle.example/v1/_operatortokendef
+```
+
+The token is minted in the operator's tenant with `tenant_metrics` set, and
+the same operator rotates (`{"op":"rotate","def_id":"…"}`) and retires it.
+Use the same `prometheus.yml` with the token in its `credentials_file`. The
+dashboards' runtime panels (process, lanes, concurrency) stay empty for such
+a token: those series are the operator's.
+
 ## Grafana
 
 Mount `grafana/dashboards/` at `/var/lib/grafana/dashboards/loomcycle` and
