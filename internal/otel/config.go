@@ -388,6 +388,7 @@ func envMillis(get func(string) string, key string, def time.Duration) (time.Dur
 // commas or newlines, blank and `#` lines ignored, values URL-decoded as the
 // OTEL_EXPORTER_OTLP_HEADERS format specifies. Errors never quote a value.
 func ReadHeadersFile(path string) (map[string]string, error) {
+	// #nosec G304 -- the path is operator config (LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE), read once at boot; no request or model input reaches it
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE: %w", err)
