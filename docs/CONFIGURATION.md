@@ -3543,16 +3543,18 @@ only the sampled runs), and a scrape still runs no database query.
 | `loomcycle_tool_call_duration_seconds` | `tool` | Histogram of a tool call's time. |
 | `loomcycle_db_pool_open`, `_in_use`, `_idle` | `db` | The store's connection pool (`db="store"`; SQLite's `sql.DB`, Postgres's pgx pool). The per-scope SQL Memory databases are not reported. |
 | `loomcycle_db_pool_wait_total`, `loomcycle_db_pool_wait_duration_seconds_total` | `db` | Acquires that waited for a free connection, and their total wait. |
-| `loomcycle_memory_consolidation_lag_seconds` | `backend` | How far behind now the watermark of the latest consolidation pass sits. It grows until the next pass reports, so a consolidator that stops completing passes shows a growing lag. |
+| `loomcycle_memory_consolidation_lag_seconds` | `backend` | Now minus the watermark (the newest settled chat folded in) that the latest consolidation pass left its target at. Passes run only for targets with new work, so it also grows on an idle system and stays high just after a catch-up: it is a backlog only while `loomcycle_memory_consolidation_pending` is above 0 (the shipped alert asks for both). |
 | `loomcycle_memory_consolidation_pending` | `backend` | Consolidation targets with work at the latest fan-out. |
 | `loomcycle_token_budget_used_ratio` | `tenant`, `period` | A tenant's month-to-date use of its token budget (`period="month"`): of the hard limit, else the soft one. Only tenants with a tenant budget. |
 
 A run, a user, a session or (by default) an agent is never a label. A
 `model` label (on the token, cost, provider-request and model-call series,
 and a fallback's `from`/`to`) names only models the operator configured:
-`defaults.model`, the `models:` aliases and the models they point at (or
-match by `model_pattern`), `tiers`, `user_tiers`, yaml agents and the
-`pricing` table; re-read after a config reload. Any other model — a gateway
+`defaults.model`, the `models:` aliases and the models they point at,
+`tiers`, `user_tiers`, yaml agents and the `pricing` table; re-read after a
+config reload. A model only a `model_pattern` admits is labelled with the
+pattern itself (`model="claude-haiku-*"`), since anyone can name a string
+the pattern matches. Any other model — a gateway
 caller's pinned model, a tenant-authored agent's — is counted as
 `model="other"`, so no caller can grow the series set. A `provider` label is
 always one the registry resolved.

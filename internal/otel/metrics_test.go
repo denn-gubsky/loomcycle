@@ -412,8 +412,10 @@ func TestModelCallMetric_CountsANoTraceCall(t *testing.T) {
 
 // A model the operator did not configure is "other" on every instrument
 // that labels a model, so a caller cannot grow the series set with
-// invented names; a configured model, or one matching a configured
-// model_pattern, keeps its name. The set is rebuilt when the config is.
+// invented names; a configured model keeps its name, and one only a
+// configured model_pattern admits is labelled by the pattern, never by the
+// name (a caller can invent any string a glob matches). The set is rebuilt
+// when the config is.
 func TestMetrics_ModelLabelBoundedToConfiguredModels(t *testing.T) {
 	render := withMetrics(t, false, 0)
 	version := "v1"
@@ -424,7 +426,7 @@ func TestMetrics_ModelLabelBoundedToConfiguredModels(t *testing.T) {
 		return []string{"m-configured", "m-added"}, nil
 	}))
 	ctx := context.Background()
-	for _, m := range []string{"m-configured", "claude-haiku-4-5", "random-1", "random-2", "m-added"} {
+	for _, m := range []string{"m-configured", "claude-haiku-4-5", "claude-haiku-random-9f2", "random-1", "random-2", "m-added"} {
 		lcotel.RecordUsage(ctx, lcotel.UsageRecord{Tenant: "t", Provider: "p", Model: m, Key: "operator", Input: 1})
 		_, ps := lcotel.RecordProviderCall(ctx, lcotel.ProviderCallAttrs{Provider: "p", Model: m})
 		lcotel.SetProviderResponse(ps, &http.Response{StatusCode: 200}, nil)
@@ -435,14 +437,14 @@ func TestMetrics_ModelLabelBoundedToConfiguredModels(t *testing.T) {
 	}
 	lcotel.RecordProviderFallback(ctx, "p", "random-3", "p", "m-configured")
 	out := render(lcotel.PromOptions{})
-	for _, leak := range []string{"random-", `"m-added"`} {
+	for _, leak := range []string{"random-", `"m-added"`, `"claude-haiku-4-5"`} {
 		if strings.Contains(out, leak) {
 			t.Errorf("an unconfigured model became a label (%q):\n%s", leak, out)
 		}
 	}
 	for _, name := range []string{"loomcycle_tokens_total", "loomcycle_provider_requests_total", "loomcycle_model_call_duration_seconds_count"} {
 		mustValue(t, out, name, map[string]string{"model": "m-configured"}, 1)
-		mustValue(t, out, name, map[string]string{"model": "claude-haiku-4-5"}, 1)
+		mustValue(t, out, name, map[string]string{"model": "claude-haiku-*"}, 2)
 		mustValue(t, out, name, map[string]string{"model": lcotel.ModelLabelOther}, 3)
 	}
 	mustValue(t, out, "loomcycle_provider_fallbacks_total", map[string]string{"from": "p/other", "to": "p/m-configured"}, 1)

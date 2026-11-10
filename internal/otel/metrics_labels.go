@@ -41,8 +41,13 @@ func SetModelLabelSource(current func() any, build func(any) (names, patterns []
 	return func() { labelSource.Store(prev) }
 }
 
-// metricModel is model's label: itself when configured (by name, or by a
-// model_pattern glob an alias resolves against the catalog), else "other".
+// metricModel is model's label: itself when the operator configured that
+// exact name; the pattern string when only a model_pattern glob admits it;
+// else "other". A model a glob admits is labelled by the glob, never by its
+// own name: "claude-*" matches any string a caller can invent, so the name
+// would bring back the unbounded label this function exists to stop. The
+// pattern string is the operator's, so it is bounded. Patterns are matched
+// whatever the provider: the label is bounded either way.
 func metricModel(model string) string {
 	src := labelSource.Load()
 	if src == nil || model == "" {
@@ -63,7 +68,7 @@ func metricModel(model string) string {
 	}
 	for _, p := range set.patterns {
 		if ok, _ := path.Match(p, model); ok {
-			return model
+			return p
 		}
 	}
 	return ModelLabelOther
