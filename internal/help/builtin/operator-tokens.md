@@ -47,7 +47,9 @@ and delete, across tenants, and nothing else — no runs, no data, no token
 minting; it must be a token's only scope), `scim:provision` (an identity
 provider's SCIM 2.0 credential: the `/scim/v2` service of the deployment's
 `kind: scim` gate, in the token's own tenant only, and nothing else; it must
-be a token's only scope). Every catalog scope is enforced by at least one route —
+be a token's only scope), `metrics:read` (a Prometheus scraper's credential:
+`GET /metrics` and nothing else, no Web UI sign-in; it must be a token's only
+scope, and only an admin mints it). Every catalog scope is enforced by at least one route —
 operators can't invent scope names, and the catalog intentionally excludes
 scopes no route checks (a scope that enforces nothing is a false
 limitation). The default at create is `["substrate:admin"]`, so a first

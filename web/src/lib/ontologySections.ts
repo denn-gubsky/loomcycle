@@ -54,6 +54,8 @@ export function classDirectiveNotes(t: OntologyTerm): string[] {
   }
   if (t.title_identity) out.push("title is its identity");
   else if (t.inherited_title_identity) out.push("title is its identity (inherited)");
+  if (t.norm) out.push("norm");
+  else if (t.inherited_norm) out.push("norm (inherited)");
   if (t.renamed_from) out.push(`renamed from ${t.renamed_from}`);
   return out;
 }

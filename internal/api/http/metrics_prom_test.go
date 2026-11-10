@@ -424,3 +424,36 @@ func TestMetricsProm_OTELCountersRenderedWhileTracingIsOff(t *testing.T) {
 		}
 	}
 }
+
+// The unauthenticated metrics listener answers anyone who reaches its port,
+// so it leaves out every series that names a user; the authenticated route
+// keeps them. The rest of the set is the same on both.
+func TestMetricsListenerHandler_OmitsUserSeriesTheAuthenticatedRouteShows(t *testing.T) {
+	srv := newMetricsPromServer(t, true)
+	rel, err := srv.sem.AcquireForUser(t.Context(), "", "alice")
+	if err != nil {
+		t.Fatalf("AcquireForUser failed: %v", err)
+	}
+	defer rel()
+
+	authed := httptest.NewRecorder()
+	srv.handleMetricsProm(authed, httptest.NewRequest("GET", "/metrics", nil))
+	if !strings.Contains(authed.Body.String(), `loomcycle_concurrency_per_user{user_id="alice"} 1`) {
+		t.Fatalf("the fixture is wrong: the authenticated render has no per-user series:\n%s", authed.Body.String())
+	}
+
+	open := httptest.NewRecorder()
+	srv.MetricsListenerHandler().ServeHTTP(open, httptest.NewRequest("GET", "/metrics", nil))
+	body := open.Body.String()
+	if open.Code != http.StatusOK {
+		t.Fatalf("listener status = %d", open.Code)
+	}
+	for _, leak := range []string{"user_id", "alice", "loomcycle_concurrency_per_user"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("the open listener's render contains %q:\n%s", leak, body)
+		}
+	}
+	if !strings.Contains(body, "loomcycle_concurrency_active") {
+		t.Errorf("the open listener dropped a substrate series:\n%s", body)
+	}
+}

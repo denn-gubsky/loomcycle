@@ -61,7 +61,7 @@ COPY web/ web/
 RUN cd web && npm run build
 
 # ---- Stage 2: build the Go binary -------------------------------------------
-FROM golang:1.26-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS go-builder
+FROM golang:1.26-alpine@sha256:87c65a688975c0b1d4585d204874c45ca78354670e3a5f11368c5a492303d696 AS go-builder
 WORKDIR /src
 # No `COPY go.mod go.sum` + `go mod download` layer: the root go.mod replaces
 # in-tree modules with their directories (./internal/errkind, ...), and Go

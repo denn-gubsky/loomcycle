@@ -387,6 +387,15 @@ func (s *Server) handleUILogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := a.Credential.Principal
+	// A scrape credential is no person's sign-in: a session would only be a
+	// second, cookie-borne copy of a token that reaches GET /metrics alone.
+	if auth.IsMetricsReader(p) {
+		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: cfgGate.Name, AuthReason: "metrics_credential",
+			ActorTenant: p.TenantID, ActorSubject: p.Subject, SourceAddr: s.clientSource(r)})
+		writeJSONError(w, http.StatusForbidden, "metrics_credential_refused",
+			"a "+auth.ScopeMetricsRead+" token reaches only GET /metrics; it does not sign in to the Web UI")
+		return
+	}
 	// RFC FA §4: in strict mode a person signs in through a gate; a
 	// hand-minted per-user token is not a way in, only a gate-issued one.
 	if s.uiRefusesUserToken(r.Context(), p) {

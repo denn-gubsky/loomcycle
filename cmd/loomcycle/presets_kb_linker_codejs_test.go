@@ -112,6 +112,10 @@ var kbOpContracts = []kbOpContract{
 	{Tool: "Agent", Op: "spawn",
 		Request:  `{name: "kb/verdict", prompt}`,
 		Response: `the sub-agent's reply text`},
+	{Tool: "Context", Op: "time",
+		Request:  `{op: "time"}`,
+		Response: `{now_rfc3339, unix_ms, run_started_at?, elapsed_ms?}`,
+		Assumes:  `elapsed_ms is the run's own elapsed wall clock, present inside a run; a flat tool, so the body JSON-parses its text`},
 }
 
 // kbReadOps is every Document op a report-mode pass may issue. Anything else is
@@ -194,9 +198,10 @@ type kbFixture struct {
 	// others are chunks of other documents, reachable through get_chunk.
 	others map[string]kbChunk
 	// docTypes is what get_document reports as each OTHER document's type; roots
-	// their root chunk ids.
-	docTypes map[string]string
-	roots    map[string]string
+	// their root chunk ids; docTitles their titles (default "TITLE-OF-<id>").
+	docTypes  map[string]string
+	roots     map[string]string
+	docTitles map[string]string
 	// docFails makes get_document of that id fail with the given text.
 	docFails map[string]string
 	// related maps a chunk id to the hits related returns for it, VERBATIM: the
@@ -268,6 +273,16 @@ type kbFixture struct {
 	verdictByNeedle []needleReply
 	defaultVerdict  string
 	header          string
+	// verdictFails makes the Nth verdict call (1-based) fail as an unreachable
+	// model does; verdictFailAll fails every one.
+	verdictFails   map[int]bool
+	verdictFailAll bool
+
+	// clockMs is what successive Context op=time calls report as elapsed_ms; the
+	// last value repeats. withClock adds the Context tool to the run at all.
+	clockMs   []float64
+	clockAt   int
+	withClock bool
 }
 
 func newKBFixture() *kbFixture {
@@ -279,6 +294,7 @@ func newKBFixture() *kbFixture {
 		others:         map[string]kbChunk{},
 		docTypes:       map[string]string{},
 		roots:          map[string]string{},
+		docTitles:      map[string]string{},
 		docFails:       map[string]string{},
 		related:        map[string][]map[string]any{},
 		heldWorks:      map[string]string{},
@@ -404,7 +420,11 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 			}
 		}
 		if typ, ok := f.docTypes[id]; ok {
-			out := map[string]any{"document_id": id, "type": typ, "title": "TITLE-OF-" + id}
+			title := "TITLE-OF-" + id
+			if t, ok := f.docTitles[id]; ok {
+				title = t
+			}
+			out := map[string]any{"document_id": id, "type": typ, "title": title}
 			if r := f.roots[id]; r != "" {
 				out["root_chunk_id"] = r
 			}
@@ -825,9 +845,15 @@ func (f *kbFixture) answerList(in map[string]any) (tools.Result, error) {
 		}
 		start = n
 	}
+	kinds := map[string]bool{}
+	if ks, ok := in["kinds"].([]any); ok {
+		for _, k := range ks {
+			kinds[fmt.Sprint(k)] = true
+		}
+	}
 	var match []*kbStatement
 	for _, s := range f.statements {
-		if (s.Expired && !retired) || s.Status != status {
+		if (s.Expired && !retired) || s.Status != status || (len(kinds) > 0 && !kinds[s.Kind]) {
 			continue
 		}
 		hit := false
@@ -946,6 +972,9 @@ func (a *kbFakeAgent) InputSchema() json.RawMessage { return json.RawMessage(`{"
 
 func (a *kbFakeAgent) Execute(_ context.Context, raw json.RawMessage) (tools.Result, error) {
 	in := a.f.record("Agent", raw)
+	if n := len(a.f.callsOf("Agent", "")); a.f.verdictFailAll || a.f.verdictFails[n] {
+		return kbErr("sub-agent \"kb/verdict\" failed: no reachable provider with a non-stalled model")
+	}
 	prompt, _ := in["prompt"].(string)
 	reply := a.f.defaultVerdict
 	for _, nr := range a.f.verdictByNeedle {
@@ -955,6 +984,27 @@ func (a *kbFakeAgent) Execute(_ context.Context, raw json.RawMessage) (tools.Res
 		}
 	}
 	return tools.Result{Text: a.f.header + reply}, nil
+}
+
+// kbFakeContext answers op=time from the fixture's scripted clock.
+type kbFakeContext struct{ f *kbFixture }
+
+func (c *kbFakeContext) Name() string                 { return "Context" }
+func (c *kbFakeContext) Description() string          { return "context (test double)" }
+func (c *kbFakeContext) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+
+func (c *kbFakeContext) Execute(_ context.Context, raw json.RawMessage) (tools.Result, error) {
+	f := c.f
+	in := f.record("Context", raw)
+	if in["op"] != "time" {
+		return kbErr("context: the fixture answers op=time only")
+	}
+	ms := 1000.0
+	if len(f.clockMs) > 0 {
+		ms = f.clockMs[min(f.clockAt, len(f.clockMs)-1)]
+	}
+	f.clockAt++
+	return okResult(map[string]any{"now_rfc3339": "2026-11-09T00:00:00Z", "unix_ms": 1762646400000 + ms, "elapsed_ms": ms})
 }
 
 // kbFakeChannel is the ingest queue. Cursor "q-N" means "after the first N
@@ -1042,6 +1092,9 @@ func runLinker(t *testing.T, f *kbFixture, input string) (map[string]any, string
 func runLinkerBody(t *testing.T, f *kbFixture, agent config.AgentDef, input string) (map[string]any, string) {
 	t.Helper()
 	set := []tools.Tool{&kbFakeDocument{f: f}, &kbFakeAgent{f: f}, &kbFakeChannel{f: f}}
+	if f.withClock {
+		set = append(set, &kbFakeContext{f: f})
+	}
 	res, err := loop.Run(context.Background(), loop.RunOptions{
 		Provider:   codejs.New(codejs.Config{CodeRoot: t.TempDir(), RunTimeout: codejs.DefaultRunTimeout}),
 		Model:      "code-js",
@@ -1169,9 +1222,12 @@ func checkBuckets(t *testing.T, rep map[string]any) {
 		kinds += v.(float64)
 	}
 	none := reportCount(t, rep, "verdicts_none")
-	rejected := reportCount(t, rep, "quotes_rejected")
+	rejected := 0.0
+	for _, c := range []string{"quotes_rejected", "quotes_in_boilerplate", "quotes_too_short", "quotes_heading", "quotes_toc_or_legend"} {
+		rejected += reportCount(t, rep, c)
+	}
 	if sent != kinds+none+rejected {
-		t.Errorf("candidates_sent %v != kinds %v + none %v + quotes_rejected %v — a candidate was lost or double-counted",
+		t.Errorf("candidates_sent %v != kinds %v + none %v + rejected quotes %v — a candidate was lost or double-counted",
 			sent, kinds, none, rejected)
 	}
 	if got := float64(len(reportFindings(t, rep))); got != kinds {
@@ -1223,7 +1279,7 @@ func TestKBLinker_OutOfVocabularyKindBecomesNone(t *testing.T) {
 	f := kbBaseFixture()
 	f.defaultVerdict = `[
 	  {"candidate": 1, "kind": "supersedes", "direction": "this_to_candidate",
-	   "quote_from": "report a material incident", "quote_to": "reports material incidents", "confidence": 0.9},
+	   "quote_from": "report a material incident", "quote_to": "reports material incidents to the regulator", "confidence": 0.9},
 	  {"candidate": 2, "kind": "unclear"}
 	]`
 
@@ -1251,7 +1307,7 @@ func TestKBLinker_CallerRelationsReplaceTheDefaults(t *testing.T) {
 	f := kbBaseFixture()
 	f.defaultVerdict = `[
 	  {"candidate": 1, "kind": "supersedes", "direction": "this_to_candidate",
-	   "quote_from": "report a material incident", "quote_to": "reports material incidents", "confidence": 0.9},
+	   "quote_from": "report a material incident", "quote_to": "reports material incidents to the regulator", "confidence": 0.9},
 	  {"candidate": 2, "kind": "elaborates", "direction": "this_to_candidate",
 	   "quote_from": "report a material incident", "quote_to": "names the systems affected", "confidence": 0.9}
 	]`
@@ -1463,7 +1519,7 @@ func TestKBLinker_PassIssuesNoWriteOp(t *testing.T) {
 		}
 	}
 
-	body := knowledgeBaseConfig(t).Agents["kb/linker"].Code
+	body := kbDocumentOpText(knowledgeBaseConfig(t).Agents["kb/linker"].Code)
 	for _, m := range regexp.MustCompile(`op:\s*"([a-z_]+)"`).FindAllStringSubmatch(body, -1) {
 		if !kbReadOps[m[1]] && !kbWriteOps[m[1]] {
 			t.Errorf("the body names Document op=%q, which is neither a known read nor a known write", m[1])

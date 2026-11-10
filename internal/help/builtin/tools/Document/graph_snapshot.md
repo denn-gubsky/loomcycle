@@ -49,7 +49,8 @@ and a `*_code` column a position in a `codes` list (`-1` = none).
 - `codes` — `{types, statuses, kinds, fact_classes, methods}`.
 - `documents` — `ids, titles, root_chunk_ids, type_code, status_code,
   created_at, updated_at, color_enabled, color_scheme, paths` (each document's
-  every Path name, shortest first).
+  every Path name, shortest first), and `briefs` — each document's one-sentence
+  annotation, null where it has none — when any document of the scope has one.
 - `chunks` — `ids, document_idx, parent_idx, position, type_code, status_code,
   titles, valid_at, invalid_at, updated_at`; with `facts` also `is_fact,
   fact_class_code, fact_confidence, fact_retired`. Each document's chunks are

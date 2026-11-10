@@ -139,6 +139,11 @@ func scopeGate(p auth.Principal, method, path string) (required string, admitted
 	if auth.IsAuthManager(p) {
 		return auth.ScopeAuthManage, authManageRoute(method, path)
 	}
+	// A metrics scraper's credential reaches the Prometheus scrape and
+	// nothing else, by the same rule.
+	if auth.IsMetricsReader(p) {
+		return auth.ScopeMetricsRead, metricsScrapeRoute(method, path)
+	}
 	// RFC FA P6: a SCIM credential reaches /scim/v2 and nothing else, and
 	// /scim/v2 is reserved to it — an admin or tenant token is refused
 	// there too: the SCIM tenant is the credential's own, and no other
@@ -1610,6 +1615,7 @@ func requiredScopeFor(method, path string) string {
 	case strings.HasPrefix(path, "/v1/_"):
 		return auth.ScopeAdmin
 	// Prometheus scrape — operator surface, same posture as /v1/_metrics/*.
+	// A metrics:read credential is admitted by scopeGate before this switch.
 	case path == "/metrics":
 		return auth.ScopeAdmin
 	// Per-user channel surface (/v1/users/{id}/channels/...) — graduate the
@@ -1829,6 +1835,13 @@ const authGateRoutePrefix = "/v1/_authgate/"
 const scimRoutePrefix = "/scim/v2/"
 
 func scimRoute(path string) bool { return strings.HasPrefix(path, scimRoutePrefix) }
+
+// metricsScrapeRoute is the whole reach of a metrics:read credential: the
+// Prometheus scrape. HEAD rides along because the mux serves HEAD on a GET
+// pattern, and a scraper's health probe may send one.
+func metricsScrapeRoute(method, path string) bool {
+	return path == "/metrics" && (method == http.MethodGet || method == http.MethodHead)
+}
 
 // isTenantConfinedDefPath matches the substrate def-authoring families that
 // RFC AF moves from operator-admin (ScopeAdmin) to the tenant-confined

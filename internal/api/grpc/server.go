@@ -1298,6 +1298,10 @@ func enforceScope(ctx context.Context, fullMethod string) error {
 	if auth.IsSCIMProvisioner(p) {
 		return status.Error(codes.PermissionDenied, "a "+auth.ScopeSCIMProvision+" token reaches only the /scim/v2 HTTP routes")
 	}
+	// A metrics scraper's credential reaches only GET /metrics over HTTP.
+	if auth.IsMetricsReader(p) {
+		return status.Error(codes.PermissionDenied, "a "+auth.ScopeMetricsRead+" token reaches only GET /metrics over HTTP")
+	}
 	required := requiredScopeForRPC(fullMethod)
 	if required != "" && !auth.HasScope(p.Scopes, required) {
 		// RFC CB member path, as on HTTP (RFC EZ Q1): a NON-ISOLATED principal

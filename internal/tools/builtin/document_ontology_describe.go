@@ -35,6 +35,10 @@ type describedClass struct {
 	// Fields is the complete field set: inherited first, then the class's own.
 	Fields        []memrank.FieldSpec `json:"fields,omitempty"`
 	TitleIdentity bool                `json:"title_identity,omitempty"`
+	// Norm is true for a norm class, declared or inherited; InheritedNorm says it came
+	// from an ancestor.
+	Norm          bool `json:"norm,omitempty"`
+	InheritedNorm bool `json:"inherited_norm,omitempty"`
 	// Directives holds each class directive's effective value: declared, else inherited.
 	Directives  map[string]string `json:"directives,omitempty"`
 	MemoryScope string            `json:"memory_scope,omitempty"`
@@ -87,6 +91,10 @@ type ontologyDescription struct {
 	Grammars  []describedGrammar         `json:"grammars"`
 	Schemes   []memrank.OntologyScheme   `json:"schemes"`
 	Instances []describedInstance        `json:"instances"`
+	// NormClasses names every class in force that is a norm, declared or inherited,
+	// sorted. Always present ([] when none) so a consumer can tell "no norms" from a
+	// runtime that predates the field.
+	NormClasses []string `json:"norm_classes"`
 	// Review is the review policy in force: the Review section's, or — without
 	// one — the policy @auto_assert implies. Absent when neither is.
 	Review *describedReview `json:"review,omitempty"`
@@ -132,17 +140,18 @@ func (d *Document) describeOntology(ctx context.Context) (tools.Result, error) {
 // mutates the read: the read is shared through the ontology cache.
 func describeOntologyRead(read OntologyRead) ontologyDescription {
 	out := ontologyDescription{
-		Exists:     read.DocumentID != "",
-		DocumentID: read.DocumentID,
-		Confirmed:  read.Confirmed,
-		Version:    read.RootRevision,
-		Sections:   append([]string{}, read.Sections...),
-		Partial:    read.partial,
-		Issues:     append([]string(nil), read.Issues...),
-		Relations:  []memrank.OntologyRelation{},
-		Grammars:   []describedGrammar{},
-		Schemes:    []memrank.OntologyScheme{},
-		Instances:  []describedInstance{},
+		Exists:      read.DocumentID != "",
+		DocumentID:  read.DocumentID,
+		Confirmed:   read.Confirmed,
+		Version:     read.RootRevision,
+		Sections:    append([]string{}, read.Sections...),
+		Partial:     read.partial,
+		Issues:      append([]string(nil), read.Issues...),
+		Relations:   []memrank.OntologyRelation{},
+		Grammars:    []describedGrammar{},
+		Schemes:     []memrank.OntologyScheme{},
+		Instances:   []describedInstance{},
+		NormClasses: []string{},
 	}
 	if out.Exists {
 		out.Status = memrank.OntologyDraftStatus
@@ -154,7 +163,8 @@ func describeOntologyRead(read OntologyRead) ontologyDescription {
 	for _, c := range memrank.EffectiveClasses(read.Terms, read.Confirmed) {
 		dc := describedClass{Name: c.Name, Parent: c.Parent, Source: c.Source, Kind: "chunk",
 			TitleIdentity: c.TitleIdentity || c.InheritedTitleIdentity,
-			MemoryScope:   memrank.EffectiveMemoryScope(c), RenamedFrom: c.RenamedFrom,
+			Norm:          memrank.IsNorm(c), InheritedNorm: c.InheritedNorm,
+			MemoryScope: memrank.EffectiveMemoryScope(c), RenamedFrom: c.RenamedFrom,
 			Issues: append([]string(nil), c.Issues...)}
 		if c.IsDocumentClass {
 			dc.Kind = "document"
@@ -176,8 +186,12 @@ func describeOntologyRead(read OntologyRead) ontologyDescription {
 				usedAs[g][use] = true
 			}
 		}
+		if dc.Norm {
+			out.NormClasses = append(out.NormClasses, dc.Name)
+		}
 		out.Classes = append(out.Classes, dc)
 	}
+	sort.Strings(out.NormClasses)
 	if !read.Confirmed {
 		return out
 	}

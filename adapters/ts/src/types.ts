@@ -4286,6 +4286,11 @@ export type DocumentToolInput = {
     | "resolve_anchor"
     | "lease"
     | "release"
+    | "set_annotation"
+    | "get_annotation"
+    | "annotation_inputs"
+    | "list_annotations"
+    | "delete_annotation"
     | "describe_ontology"
     | "extract_citations"
     | "classify"
@@ -4560,6 +4565,35 @@ export type DocumentToolInput = {
   name?: string;
   /** lease: how long to hold it, in milliseconds (default 60000, max one hour). */
   ttl_ms?: number;
+  /** set_annotation / get_annotation / annotation_inputs / delete_annotation /
+   *  list_annotations: which annotation of the target — "branch" (a section) or
+   *  "document" (on the document's root chunk). Default: what the chunk is. */
+  level?: "branch" | "document" | "path";
+  /** set_annotation: one sentence (at most 240 characters) for choosing. */
+  brief?: string;
+  /** set_annotation: one paragraph (at most 2000 characters) standing in for reading. */
+  abstract?: string;
+  /** set_annotation: the annotation's language code (default: the document's). */
+  language?: string;
+  /** set_annotation: the hash annotation_inputs returned; refused when the text moved since. */
+  inputs_sha256?: string;
+  /** annotation_inputs / set_annotation: the prompt's version, part of the hash. */
+  prompt_version?: number;
+  /** set_annotation: the model that wrote it. */
+  model?: string;
+  /** set_annotation: an operator's own text (no hash; never overwritten by the walk).
+   *  list_annotations: only these. */
+  manual?: boolean;
+  /** list_annotations: only annotations whose target changed since they were written. */
+  stale?: boolean;
+  /** list_annotations: only annotations written before this RFC 3339 time. */
+  written_before?: string;
+  /** get_document / get_chunk / search / related / graph_recall / documents_summary /
+   *  query_documents: add each row's nearest annotation as `summary`
+   *  ({level, brief, abstract?, stale?, chunk_id?}). */
+  with_summary?: boolean;
+  /** with_summary: the most abstract characters a response carries (default 2000, max 8000). */
+  summary_chars?: number;
   /** classify: "propose" (default) applies an unambiguous rule match and files the
    *  rest for review; "report" writes nothing. judge_statements: "rule"
    *  (default) or "recommend". */
@@ -6193,9 +6227,11 @@ export interface AgentDefOverlay {
    *  `'judge'` (it records the judge's verdicts) are for `provider: 'code-js'`
    *  only. `'link'`: its `link_chunks` in the tenant scope is asserted rather
    *  than filed for review. `'remember'`: its runs may call Document
-   *  `remember`. Unset or `[]` = none. A new agent may list only what its
-   *  author holds; a fork only what the version it forks held. */
-  statement_methods?: Array<'rule' | 'extractor' | 'judge' | 'link' | 'remember'>;
+   *  `remember`. `'annotate'` (code-js only): its runs may write document
+   *  annotations (Document `set_annotation`) and hold the `annotator` lease.
+   *  Unset or `[]` = none. A new agent may list only what its author holds; a
+   *  fork only what the version it forks held. */
+  statement_methods?: Array<'rule' | 'extractor' | 'judge' | 'link' | 'remember' | 'annotate'>;
   /** Channel tool ACL (default-deny until set). */
   channels?: AgentChannelACL;
   /** Interruption tool gate — `enabled: true` REQUIRED for the tool to work. */

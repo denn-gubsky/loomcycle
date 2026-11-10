@@ -1072,6 +1072,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_METRICS_LISTEN
+            label: LOOMCYCLE_METRICS_LISTEN
+            description: 'A second plain-HTTP listener serving GET /metrics only, with NO authentication, for a scraper on this host or a protected network (a compose network). Unset = off; the main listener''s /metrics still needs a metrics:read (or admin) token. (example: 127.0.0.1:9464)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_AUTH_CACHE_TTL_SECONDS
             label: LOOMCYCLE_AUTH_CACHE_TTL_SECONDS
             description: '(example: 60)'

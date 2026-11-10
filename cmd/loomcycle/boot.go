@@ -167,7 +167,8 @@ type boot struct {
 	sessionGCMaxIdle  time.Duration
 
 	// startListeners
-	grpcSrv *googlegrpc.Server // nil unless LOOMCYCLE_GRPC_ADDR is set
+	grpcSrv       *googlegrpc.Server // nil unless LOOMCYCLE_GRPC_ADDR is set
+	metricsServer *http.Server       // nil unless LOOMCYCLE_METRICS_LISTEN is set
 
 	// cleanups replace the defers main once held; see runCleanups.
 	cleanups []func()

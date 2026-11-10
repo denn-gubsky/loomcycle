@@ -115,6 +115,10 @@ func TestValidateStatementMethods_RefusesAnUnknownOrRepeatedMethod(t *testing.T)
 		{"code-js", []string{"rule", "link", "remember"}, true},
 		{"anthropic", []string{"link", "rule"}, false},
 		{"anthropic", []string{"link", "link"}, false},
+		// annotate writes what every reader is shown about a document: code-js only.
+		{"code-js", []string{"annotate"}, true},
+		{"code-js", []string{"annotate", "rule"}, true},
+		{"anthropic", []string{"annotate"}, false},
 	} {
 		if err := ValidateStatementMethods(tc.provider, tc.in); (err == nil) != tc.ok {
 			t.Errorf("ValidateStatementMethods(%q, %v) = %v, want ok=%v", tc.provider, tc.in, err, tc.ok)

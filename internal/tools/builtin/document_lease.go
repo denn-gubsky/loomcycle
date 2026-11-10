@@ -107,12 +107,14 @@ func (d *Document) releaseOp(ctx context.Context, key sqlmem.ScopeKey, in docInp
 }
 
 func documentLeaseInput(op string, ctx context.Context, key sqlmem.ScopeKey, in docInput) (string, *tools.Result) {
-	if !documentLeaseAllowed(ctx, key) {
+	name := strings.TrimSpace(in.Name)
+	// The annotate grant holds the annotator's lease and no other: an annotating
+	// driver must not be able to hold the linker off a scope.
+	if !documentLeaseAllowed(ctx, key) && (name != annotatorLeaseName || !hasAnnotateGrant(ctx)) {
 		r := errPermission(op+": a scope lease is held only by a statement-maintaining driver or the operator",
 			"Run the pass from an agent granted statement_methods, or from the console.")
 		return "", &r
 	}
-	name := strings.TrimSpace(in.Name)
 	if name == "" {
 		r := errValidation(op+": missing required field: name", "Name the lease, e.g. \"linker\".")
 		return "", &r

@@ -3,11 +3,12 @@
 The links agent. `kb/linker` builds and maintains the relations (statements)
 between a document's passages and the rest of the store, using only rules the
 tenant's ontology declares. A model-judged relation is only ever proposed, and
-only of the kinds the bundle lets the relate layer write (`elaborates`).
+never as `elaborates`, `conflicts_with` or `stricter_than`: read by hand on real
+corpora, those were almost never right, so they are reported and not filed.
 
 | agent | provider | tools | role |
 |---|---|---|---|
-| `kb/linker` | `code-js` | `Document`, `Agent`, `Channel` (subscribe `documents/ingested` and `memory/subjects` only) | the deterministic driver: owns the pass, every check and every write |
+| `kb/linker` | `code-js` | `Document`, `Agent`, `Channel` (subscribe `documents/ingested` and `memory/subjects` only), `Context` (`op=time` only, for L4's time budget) | the deterministic driver: owns the pass, every check and every write |
 | `kb/verdict` | your `low` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one bounded relation verdict per call, for L4 only |
 | `kb/judge` | `code-js` | `Document`, `Agent`; `statement_methods: [judge]` | rules on the proposals the review policy routes to the judge (see [The judge](#the-judge)) |
 | `kb/judge-verdict` | your `middle` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one verdict per proposal: accept, reject or unsure, a confidence and one sentence |
@@ -42,13 +43,14 @@ One pass covers one document. The layers run in this order:
 | **L1 anchors** | each live part's anchor and stable id | nothing. It reports parts without an anchor, duplicate anchors (`…~2`, by id) and parts without a stable id |
 | **L2 cite** | the citations the document class's `@citation_grammar` finds | one statement per citation, from the citing passage to the cited part, `method: rule:citation`. A citation to a held work whose part is missing points at the work's root; one to an unheld work gets a placeholder. The grammar's `kind` is used only when the ontology declares it and it is not reserved; otherwise the statement is `cites` |
 | **L3 terms** | the concepts of the scheme named by `terms_scheme`: their name and alternative labels | `uses_term` from each passage to each concept it mentions, `method: rule:terms`; or `defines`, `method: rule:definitions`, for a term a definitions passage defines (see below). Matches are exact or case-folded with whitespace collapsed, on word boundaries, and the longest match wins. **Tenant scope only**, because concepts live there; at user or agent scope the matches are counted and nothing is written |
-| **L4 relate** | semantic neighbours from `related`, judged by `kb/verdict` | in `propose` mode, `elaborates` only: one proposal per passage and target document, with both quotes as evidence, by `extractor:relate`. Every other kind stays in the report. It runs only when `corpus_paths` is given or `L4` is listed |
+| **L4 relate** | semantic neighbours from `related` (of `target_types` when given, never a copy or version of the document), judged by `kb/verdict` | in `propose` mode, a kind the tenant's ontology declares itself (see below): one proposal per passage and target document, with both quotes as evidence, by `extractor:relate`. `elaborates`, `conflicts_with` and `stricter_than` are reported, never filed. It runs only when `corpus_paths` is given or `L4` is listed |
 | **L5 check-against** | each passage's norms under `check_against`: first the parts of the works it already cites, then the closest by meaning, up to `max_norms` (12); one `kb/verdict` call per passage | **a report document, no statements**: `<report_root>/<title>-<date>` (default root `/reports/check-against`), each finding (`addresses`, `complies_with`, `possible_gap`, `possible_conflict`) with both quotes, under a *not a legal opinion* banner. It runs only when `check_against` is given or `L5` is listed |
 | **L6 maintain** | every live statement with an end in the document, or with evidence citing it | see below |
 
 L2 and L3 need a confirmed ontology with relation kinds. Without one they skip
 and the report says why. L0 needs a confirmed ontology, with or without relation
-kinds. L1 and L4 never need it. L6 still runs, without its kind and redundancy
+kinds. L1 never needs it; L4 judges without one, but offers and files only kinds
+a confirmed ontology declares. L6 still runs, without its kind and redundancy
 checks.
 
 `defines` is a seed kind. `uses_term` is not: declare it in the ontology's
@@ -83,12 +85,54 @@ opening quote. So in "1) договір — угода …" the passage defines 
 - Terms are matched in the passage's body, so a term that appears only in a
   chunk title is not seen.
 
+### L4: what reaches a verdict
+
+A passage–candidate pair costs a verdict call only after these filters, each
+counted by name in `layers.L4.counts`:
+- **Target classes.** With `target_types` (document class names), a candidate
+  is kept only when its document is of one of them or of a subclass by the
+  ontology's class tree (`candidates_not_target_type`). Name the classes that
+  hold your norms, for example `["Law", "Regulation", "Policy"]`. Without
+  `target_types`, the classes a confirmed ontology marks with `@norm` (and their
+  subclasses) are the targets, read from `describe_ontology`'s `norm_classes`.
+  With no `@norm` anywhere, a partial ontology read, or a runtime too old to
+  report `norm_classes`, every document under `corpus_paths` is a candidate, as
+  before. The report's `target_types_from` says which applied: `input`,
+  `ontology` or `none`.
+- **Not a copy of the document.** A candidate document is dropped when it is in
+  the document's copy family (`candidates_copy_family`): the other end of a
+  `duplicate_of`, `alternate_of`, `revises`, `revision_of` or `version_of`
+  statement with one end in the document, either way, asserted or proposed; or
+  a document with the same title once copy markers (`Copy of `, ` (1)`,
+  ` - Copy`, …) are stripped, the rule `find_duplicates` uses. If the family
+  cannot be read, the pass fails rather than judge without it.
+- **A passage, not structure.** A passage or candidate is skipped when it is
+  only headings (`chunks_skipped_heading` / `candidates_heading`; one short line
+  with no sentence counts as a heading), mostly contents lines with dot leaders
+  and page numbers (`…_toc`), mostly two-cell label rows with no figures, the
+  shape of a rating legend (`…_legend`), or has fewer than `min_passage_words`
+  words (`…_few_words`, default 8). A price table has figures, so it is judged.
+
+What the verdict may answer:
+- The kinds offered are the five built-ins (`elaborates`, `implements`,
+  `stricter_than`, `conflicts_with`, `alternate_of`) plus every relation kind
+  the tenant ontology declares itself (`describe_ontology`, source `tenant`),
+  with its meaning, its inverse and its domain/range, up to 32 in all
+  (`tenant_kinds`, `tenant_kinds_over_cap`). A reply naming any other kind is
+  counted as `verdicts_out_of_vocabulary` and dropped. A caller's `relations`
+  list replaces the whole vocabulary, tenant kinds included.
+
 ### L4: what a relation proposal needs
 
 A verdict becomes a proposal only when all of these hold:
-- its kind is one the bundle lets L4 write (`relate_propose_kinds`, `elaborates`
-  today) and the tenant's ontology declares it. The other kinds are judged and
-  reported, never written (`propose_kind_off`, `propose_kind_not_declared`);
+- its kind may be filed: never `elaborates`, `conflicts_with` or
+  `stricter_than` (`relate_withheld_kinds`; counted as `kind_withheld`, and the
+  finding carries `may_file: false`, `not_filed: "kind_withheld"`); otherwise a
+  kind the tenant ontology declares itself, or a built-in kind the bundle lists
+  in `relate_propose_kinds` (none today, so `implements` and `alternate_of`
+  stay report-only, `propose_kind_off`); and the ontology declares it writable
+  (`propose_kind_not_declared`). Every finding stays in the report, filed or
+  not;
 - both quotes occur verbatim, the passage's in the passage and the candidate's
   in the candidate. There is no confidence floor: on a real corpus, confidence
   did not separate right verdicts from wrong ones;
@@ -96,6 +140,10 @@ A verdict becomes a proposal only when all of these hold:
   `@boilerplate` (`quotes_in_boilerplate`). Those paragraphs are also left out
   of what the verdict is shown; a passage with too little left is skipped, and
   a candidate with nothing left is not sent;
+- each quote has at least `min_quote_words` words (default 4,
+  `quotes_too_short`), is not the chunk's title or a heading line
+  (`quotes_heading`), and is not a contents line or a legend row
+  (`quotes_toc_or_legend`);
 - it is the best-supported finding for its passage and target document: the
   highest confidence, then the candidate's rank. The others are counted
   (`propose_capped`) and stay in the report's `findings`.
@@ -365,6 +413,9 @@ curl -sX POST localhost:8080/v1/runs \
 | `max_messages` | `10` | messages a drain processes (1–100) |
 | `corpus_paths` | — | L4 only: where its candidates come from |
 | `exclude_document_types`, `candidate_floor`, `max_candidates_per_chunk`, `max_verdict_calls`, `max_chars`, `min_body_chars`, `relations`, `include_quotes` | as before | L4 only. `min_body_chars` also bounds which passages L3 reads; `max_verdict_calls` and `relations` also bound and name what L6's `rejudge` asks |
+| `target_types` | the ontology's `@norm` classes, else every document under `corpus_paths` | L4 only: the document classes a candidate may come from, subclasses included |
+| `min_passage_words`, `min_quote_words` | `8`, `4` | L4 only: a passage or candidate with fewer words is not judged (0–200); a quote with fewer words is no evidence (1–50) |
+| `time_budget_seconds` | `1500` | L4 only: the wall clock after which the pass stops between verdict calls, `budget_stopped` (10–86400). Keep it below the agent's `run_timeout_seconds` (1800) |
 | `rejudge` | `false` | L6 check 6: judge a model-made statement again when its text changed |
 | `merged_into` | — | subject mode: the document of the subject this one was merged into |
 | `purge` | `false` | sweep mode, with `write: propose`: delete what the purge report lists |
@@ -382,12 +433,19 @@ The run's final output is one JSON object:
 
 - `status`:
   - `complete`;
-  - `budget_stopped`;
+  - `budget_stopped`: `max_verdict_calls` or `time_budget_seconds` was reached;
+    `budget.stopped_by` and `layers.L4.stop_reason` say which. The report keeps
+    every verdict judged before the stop. The time budget is read from the
+    `Context` tool (`op=time`) before each verdict call; without the tool the
+    pass runs under the run's own cap and `layers.L4.clock` is `unavailable`;
   - `busy`;
   - `failed` (`failure` says why). This includes a pass in which no write went
     through and at least one was refused for a reason other than "already
     accepted" or "rejected". Such a refusal usually means a configuration fault,
-    such as a missing method grant.
+    such as a missing method grant. It also includes an L4 pass whose verdict
+    calls all failed, or more than half of at least three
+    (`layers.L4.verdicts_failed`): its counts are kept, but no findings would
+    not mean the document relates to nothing.
   - `refused`.
 - `ontology_version`: the version the pass ran under. `ontology` shows whether
   it was usable and why not.
@@ -401,7 +459,11 @@ The run's final output is one JSON object:
     `already_asserted`. A re-run over the same text proposes nothing: its writes
     count as `unchanged`.
   - L6 adds `checks` (which check decided) and `actions` (per action).
-  - L4 keeps its findings and spans in UTF-16 units (`span_unit`).
+  - L4 keeps its findings and spans in UTF-16 units (`span_unit`). Each finding
+    says whether a propose pass files it (`may_file`, and `not_filed` with the
+    reason when not). L4 also reports `withheld_kinds`, `tenant_kinds`,
+    `target_types`, `target_types_from`, `copy_family_documents`, `stop_reason`, `elapsed_ms` and
+    `clock`.
 - `writes`, `would_write`: per op. `refusals`: per op and refusal code.
 - `budget`: the caps and what was spent.
 - `queue` and `messages` (drain only): the queue read, and each message's
@@ -501,8 +563,9 @@ agents:
 ## Cost
 
 The linker makes no model call except in L4, L5 and L6's `rejudge`. L4 spends one
-`kb/verdict` call per claim-bearing passage that has candidates, capped by
-`max_verdict_calls`, and runs only when asked for; L5 spends one per passage
+`kb/verdict` call per claim-bearing passage that has candidates left after its
+filters, capped by `max_verdict_calls` and `time_budget_seconds`, and runs only
+when asked for; L5 spends one per passage
 that has norms, and `rejudge` one per changed statement, each under the same
 cap. `kb/judge` spends one `kb/judge-verdict` call (tier `middle`) per proposal
 it judges, capped by `max_verdict_calls`. Nothing is scheduled unless you add a
