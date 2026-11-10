@@ -33,6 +33,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -302,8 +303,17 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := range req.Spawns {
-		go func(i int) {
+		safego.Go(ctx, "runs.batch_child", func() {
 			defer wg.Done()
+			// A child whose goroutine panicked still has its row in the
+			// index-aligned envelope: a failed one.
+			filled := false
+			defer func() {
+				if !filled {
+					results[i] = connector.SpawnRunResult{Status: string(store.RunFailed),
+						ParentContext: req.Spawns[i].ParentContext, Error: errRunGoroutinePanicked.Error()}
+				}
+			}()
 			spawn := req.Spawns[i]
 			// Batch children are always fresh runs — a per-spawn session_id
 			// would continue an existing session, which the fan-out shape never
@@ -313,16 +323,19 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 			spawn.SessionID = ""
 			if mode == "detach" {
 				results[i] = s.spawnDetached(ctx, spawn)
+				filled = true
 				return
 			}
 			if serverBound > 0 {
 				results[i] = s.joinChildUntil(ctx, waitCtx, serverBound, spawn)
+				filled = true
 				return
 			}
 			res := batchChildResult(s.SpawnRun(ctx, spawn))
 			markJoinTimedOut(ctx, timeoutMS, &res)
 			results[i] = res
-		}(i)
+			filled = true
+		})
 	}
 	wg.Wait()
 
@@ -391,9 +404,12 @@ func (s *Server) joinChildUntil(ctx, waitCtx context.Context, bound time.Duratio
 		registered, agentID, runID, sessionID = true, a, r, ses
 	}
 	ended := make(chan connector.SpawnRunResult, 1)
-	go func() {
-		ended <- batchChildResult(s.runBlockingObserved(runCtx, connector.SpawnRequestToRunInput(spawn), spawn.ParentContext, observe))
-	}()
+	safego.Go(runCtx, "runs.batch_join_child", func() {
+		// Sent on a panic too: every path below waits for it.
+		res := connector.SpawnRunResult{Status: string(store.RunFailed), ParentContext: spawn.ParentContext, Error: errRunGoroutinePanicked.Error()}
+		defer func() { ended <- res }()
+		res = batchChildResult(s.runBlockingObserved(runCtx, connector.SpawnRequestToRunInput(spawn), spawn.ParentContext, observe))
+	})
 
 	select {
 	case res := <-ended:
@@ -468,13 +484,13 @@ type followCtx struct {
 
 func newFollowCtx(parent context.Context) *followCtx {
 	c := &followCtx{Context: context.WithoutCancel(parent), done: make(chan struct{}), stop: make(chan struct{})}
-	go func() {
+	safego.Go(parent, "runs.follow_ctx", func() {
 		select {
 		case <-parent.Done():
 			c.end(parent.Err())
 		case <-c.stop:
 		}
-	}()
+	})
 	return c
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -578,20 +579,25 @@ func (s *Server) startQueuedAgain(runCtx context.Context, in runner.RunInput) {
 	placed := make(chan struct{})
 	var once sync.Once
 	mark := func() { once.Do(func() { close(placed) }) }
-	go func() {
+	safego.Go(runCtx, "queue.restart", func() {
 		defer mark()
-		err := s.RunOnce(runCtx, in, runner.RunCallbacks{
+		// A RunOnce that panicked fails the queued row as a refusal does:
+		// otherwise it stays queued with nothing to start it.
+		err := errRunGoroutinePanicked
+		defer func() {
+			if err == nil {
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if ferr := s.failQueuedRun(ctx, in.QueuedRunID, "loomcycle restarted and the run could not be queued again: "+err.Error()); ferr != nil && !errors.Is(ferr, store.ErrRunNotQueued) {
+				slog.Warn("queue: restart: could not fail run", "run_id", in.QueuedRunID, "err", ferr)
+			}
+		}()
+		err = s.RunOnce(runCtx, in, runner.RunCallbacks{
 			OnQueued:     mark,
 			OnRegistered: func(string, string, string, string) { mark() },
 		})
-		if err == nil {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if ferr := s.failQueuedRun(ctx, in.QueuedRunID, "loomcycle restarted and the run could not be queued again: "+err.Error()); ferr != nil && !errors.Is(ferr, store.ErrRunNotQueued) {
-			slog.Warn("queue: restart: could not fail run", "run_id", in.QueuedRunID, "err", ferr)
-		}
-	}()
+	})
 	<-placed
 }

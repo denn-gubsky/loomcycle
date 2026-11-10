@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -80,8 +81,8 @@ func newGatewayMeter(req providers.Request) *gatewayMeter {
 // error: a usage report is often the LAST thing a provider sends.
 func (m *gatewayMeter) tap(ch <-chan providers.Event) <-chan providers.Event {
 	out := make(chan providers.Event)
-	go func() {
-		defer close(out)
+	safego.Go(context.Background(), "gateway.meter_tap", func() {
+		defer close(out) // the reader sees the stream end, panic or not
 		for ev := range ch {
 			m.note(ev)
 			if m.span != nil {
@@ -92,7 +93,7 @@ func (m *gatewayMeter) tap(ch <-chan providers.Event) <-chan providers.Event {
 		if m.span != nil {
 			m.span.End("the response stream ended before the model finished")
 		}
-	}()
+	})
 	return out
 }
 

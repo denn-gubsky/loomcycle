@@ -15,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -250,7 +251,7 @@ func (s *Server) heartbeatWalk(ctx context.Context, runID string) (stop func()) 
 		every = loop.HeartbeatInterval()
 	}
 	done := make(chan struct{})
-	go func() {
+	safego.Go(ctx, "team.walk_heartbeat", func() {
 		t := time.NewTicker(every)
 		defer t.Stop()
 		for {
@@ -260,10 +261,12 @@ func (s *Server) heartbeatWalk(ctx context.Context, runID string) (stop func()) 
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				hb()
+				// One pulse at a time: a pulse that panicked must not stop the
+				// rest, or the sweeper fails a live walk as heartbeat_timeout.
+				safego.Run(ctx, "team.walk_heartbeat", hb)
 			}
 		}
-	}()
+	})
 	var once sync.Once
 	return func() { once.Do(func() { close(done) }) }
 }

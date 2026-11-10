@@ -11,6 +11,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -348,7 +349,7 @@ func (s *Server) leaseTeamWebhooks(ctx context.Context, sc store.TeamScope, walk
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() {
+	safego.Go(ctx, "team.webhook_lease", func() {
 		defer wg.Done()
 		for {
 			select {
@@ -357,10 +358,12 @@ func (s *Server) leaseTeamWebhooks(ctx context.Context, sc store.TeamScope, walk
 			case <-ctx.Done():
 				return
 			case <-clock.After(every):
-				put()
+				// One renewal at a time: a renewal that panicked must not
+				// stop the rest, or the lease lapses under a live walk.
+				safego.Run(ctx, "team.webhook_lease", put)
 			}
 		}
-	}()
+	})
 	var once sync.Once
 	return func() {
 		once.Do(func() {

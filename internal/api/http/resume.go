@@ -24,6 +24,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -1753,7 +1754,7 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 	// stale-run sweeper (default 10m) would otherwise reap the parent
 	// mid-reconcile if a child legitimately runs longer than the cutoff.
 	hbStop := make(chan struct{})
-	go func() {
+	safego.Go(ctx, "resume.fanout_heartbeat", func() {
 		t := time.NewTicker(fanoutHeartbeatInterval)
 		defer t.Stop()
 		for {
@@ -1763,12 +1764,16 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if err := s.store.UpdateHeartbeat(ctx, run.ID); err != nil {
-					slog.Warn("resume: fan-out parent heartbeat pump failed", "run_id", run.ID, "err", err)
-				}
+				// One pulse at a time: a pulse that panicked must not stop
+				// the rest, or the sweeper reaps the parent mid-reconcile.
+				safego.Run(ctx, "resume.fanout_heartbeat", func() {
+					if err := s.store.UpdateHeartbeat(ctx, run.ID); err != nil {
+						slog.Warn("resume: fan-out parent heartbeat pump failed", "run_id", run.ID, "err", err)
+					}
+				})
 			}
 		}
-	}()
+	})
 	defer close(hbStop)
 
 	// Gather the ledger keyed by child index.

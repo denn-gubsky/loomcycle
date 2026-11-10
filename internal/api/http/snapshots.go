@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -521,7 +522,7 @@ func (s *Server) finishRestore(ctx context.Context, result *snapshot.RestoreResu
 	s.postRestoreRefresh(ctx, result)
 	// A restore can bring back lists written before this build refused
 	// what no surface enforces; report them as the boot does (RFC FY Part E).
-	go s.ReportUnenforceableACLs(context.WithoutCancel(ctx))
+	safego.Go(ctx, "restore.report_acls", func() { s.ReportUnenforceableACLs(context.WithoutCancel(ctx)) })
 	r := s.resumePausedRunsReport(context.WithoutCancel(ctx))
 	result.PausedRunsResumed = r.Resumed
 	result.PausedRunsAlreadyLive = r.AlreadyLive
