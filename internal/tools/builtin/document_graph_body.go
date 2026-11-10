@@ -8,6 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -77,9 +78,9 @@ func (g *graphBodies) prefetch(ctx context.Context, ids []string, from, n int, r
 	for i, id := range window {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(i int, id string) {
+		safego.Go(ctx, "document.graph_body_read", func() {
 			defer wg.Done()
-			defer func() { <-sem }()
+			defer func() { <-sem }() // a read that panicked is omitted, as an unreadable one is
 			cb, err := g.d.readBody(ctx, g.mscope, g.key, id)
 			if err != nil {
 				// Omitted, never an error: a recall that loses one excerpt is still the
@@ -88,7 +89,7 @@ func (g *graphBodies) prefetch(ctx context.Context, ids []string, from, n int, r
 				return
 			}
 			read[i] = cb.Body
-		}(i, id)
+		})
 	}
 	wg.Wait()
 	for i, id := range window {

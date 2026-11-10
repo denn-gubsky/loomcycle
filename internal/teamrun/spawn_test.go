@@ -311,3 +311,22 @@ func TestAgentRunner_PushbackCycleHitsIterationCap(t *testing.T) {
 		t.Errorf("cap = %+v, want state=impl max=3", capErr)
 	}
 }
+
+// A member whose spawn panics is a failed row, not a crashed process: the
+// fan-out still collects every member and reports the failure by name.
+func TestAgentRunner_ParallelPanickingMemberIsAFailedRow(t *testing.T) {
+	d := mustParse(t, parallelJSON)
+	spawn := textSpawn(func(_ context.Context, agent string, p Prompt, defID string) (string, error) {
+		switch agent {
+		case "a":
+			return "A-out", nil
+		case "b":
+			panic("member spawn bug")
+		}
+		return "signal: success", nil
+	})
+	_, err := Walk(context.Background(), d, &Task{}, NewAgentRunner(spawn))
+	if err == nil || !contains(err.Error(), "parallel handler") || !contains(err.Error(), `b: agent "b" panicked`) {
+		t.Fatalf("a panicking member should fail its row and the wait:all fan-out, got %v", err)
+	}
+}

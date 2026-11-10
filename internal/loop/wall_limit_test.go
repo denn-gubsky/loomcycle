@@ -131,3 +131,24 @@ func TestRun_NoMaxWallSecondsGivesAModelDrivenRunNoClock(t *testing.T) {
 		t.Error("a run with no max_wall_seconds saw a clock — its parent's leaked to it")
 	}
 }
+
+// A watcher that panics fails the run instead of crashing the process or
+// leaving the run with no limit: the run here waits on a call that only its
+// ctx ends, so a watcher that died quietly would leave it running forever.
+func TestRun_WallLimitWatcherPanicFailsTheRun(t *testing.T) {
+	opts := wallOpts(&waitingProvider{}, 1)
+	opts.OnWallLimit = func() { panic("on-limit callback bug") }
+	done := make(chan error, 1)
+	go func() {
+		_, err := Run(context.Background(), opts)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errWallWatcherPanicked) {
+			t.Errorf("err = %v, want the run failed because its lifetime watcher panicked", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run outlived its limit: its watcher panicked and nothing ended it")
+	}
+}

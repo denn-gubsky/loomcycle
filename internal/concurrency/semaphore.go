@@ -21,6 +21,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // BackpressureError signals the queue is full; the caller should HTTP 429.
@@ -320,7 +322,7 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, tenantID, userID string)
 		s.mu.Unlock()
 		// Cluster mode: compensate-Release the DB slot we just took.
 		if perUserActive && qs != nil {
-			go releaseInBackground(qs, key)
+			releaseInBackground(qs, key)
 		}
 		return nil, &BackpressureError{msg: "queue full"}
 	}
@@ -389,7 +391,7 @@ func (s *Semaphore) ReserveUser(ctx context.Context, tenantID, userID string) (r
 		if !ok {
 			return nil, &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
 		}
-		return func() { once.Do(func() { go releaseInBackground(qs, key) }) }, nil
+		return func() { once.Do(func() { releaseInBackground(qs, key) }) }, nil
 	}
 	s.mu.Lock()
 	if s.perUser == nil {
@@ -545,11 +547,14 @@ func (s *Semaphore) ReleaseUserSlot(ctx context.Context, tenantID, userID string
 // every release/cancel in cluster mode. The defer release() pattern
 // in handler code expects fast return; the Release goroutine carries
 // its own bounded context so a permanently-down DB can't leak
-// goroutines indefinitely.
+// goroutines indefinitely. It returns at once; the Release runs in its own
+// goroutine.
 func releaseInBackground(qs userQuotaGate, key userKey) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	qs.Release(ctx, key.tenant, key.user)
+	safego.Go(context.Background(), "concurrency.quota_release", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		qs.Release(ctx, key.tenant, key.user)
+	})
 }
 
 // Stats returns a snapshot for /metrics or admin views. The PerUser
@@ -627,7 +632,7 @@ func (s *Semaphore) endRun(key userKey, qs userQuotaGate, holdsGlobal bool) {
 	// round-trip doesn't block other Acquire callers. Background goroutine
 	// with a 5s timeout for safety.
 	if qs != nil && key.user != "" {
-		go releaseInBackground(qs, key)
+		releaseInBackground(qs, key)
 	}
 }
 
@@ -663,7 +668,7 @@ func (s *Semaphore) cancelWaiter(target *semWaiter, key userKey, qs userQuotaGat
 		}
 		s.mu.Unlock()
 		if needRelease && key.user != "" {
-			go releaseInBackground(qs, key)
+			releaseInBackground(qs, key)
 		}
 		return
 	}
@@ -698,7 +703,7 @@ func (s *Semaphore) cancelWaiter(target *semWaiter, key userKey, qs userQuotaGat
 		}
 		s.mu.Unlock()
 		if needRelease && key.user != "" {
-			go releaseInBackground(qs, key)
+			releaseInBackground(qs, key)
 		}
 	default:
 		s.mu.Unlock()

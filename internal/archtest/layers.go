@@ -282,8 +282,12 @@ type subsystemEdge struct {
 // close a cycle.
 var allowedSideways = []subsystemEdge{
 	// L0
+	// safego (the goroutine panic net) imports nothing in this module, so
+	// any L0 package may start its goroutines through it.
+	{"internal/concurrency", "internal/safego"},
 	{"internal/kms", "internal/awsauth"},
 	{"internal/logging", "internal/redact"},
+	{"internal/projection", "internal/safego"},
 	{"internal/transcribe/helper", "internal/hostenv"},
 	{"internal/transcribe/helper", "internal/procgroup"},
 

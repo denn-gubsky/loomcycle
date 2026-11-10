@@ -67,43 +67,10 @@ var exemptRawGo = map[string]rawGo{
 	"internal/store/storetest/webhook_delivery_runs.go":  {4, "test support"},
 }
 
-// pendingRawGo is the baseline of raw `go` statements not converted yet: the
-// per-run and fan-out goroutines in internal/. It only shrinks — convert a site to Go, or
-// add a reasoned entry to exemptRawGo, and lower its count here.
-var pendingRawGo = map[string]int{
-	"internal/a2a/executor.go":                      1,
-	"internal/api/http/client_tools.go":             1,
-	"internal/api/http/connector_impl.go":           3,
-	"internal/api/http/llm_gateway_meter.go":        1,
-	"internal/api/http/queued_runs.go":              1,
-	"internal/api/http/resume.go":                   1,
-	"internal/api/http/resume_background.go":        2,
-	"internal/api/http/runs_batch.go":               1,
-	"internal/api/http/server.go":                   1,
-	"internal/api/http/snapshots.go":                1,
-	"internal/api/http/teamlocalschedules.go":       1,
-	"internal/api/http/teamlocalwebhooks.go":        1,
-	"internal/api/http/teamwalk_run.go":             1,
-	"internal/api/mcp/proxy.go":                     1,
-	"internal/api/mcp/server.go":                    1,
-	"internal/api/webhook/server.go":                2,
-	"internal/codehook/runner.go":                   1,
-	"internal/concurrency/admit.go":                 1,
-	"internal/concurrency/semaphore.go":             5,
-	"internal/lanegate/lanegate.go":                 1,
-	"internal/loop/loop.go":                         4,
-	"internal/loop/runclock.go":                     1,
-	"internal/projection/umap_knn.go":               2,
-	"internal/teamrun/spawn.go":                     1,
-	"internal/teamrun/starter.go":                   1,
-	"internal/teamrun/timeout.go":                   1,
-	"internal/tools/builtin/agent.go":               2,
-	"internal/tools/builtin/agent_poll.go":          1,
-	"internal/tools/builtin/document_graph_body.go": 1,
-	"internal/tools/builtin/interruption.go":        1,
-	"internal/tools/builtin/teamdef.go":             2,
-	"internal/tools/mcp/stdio/client.go":            3,
-}
+// pendingRawGo is the baseline of raw `go` statements not converted yet. Every
+// site is now converted or exempt, so it is empty and stays so: a new
+// goroutine starts with safego.Go, or is exempted above with its reason.
+var pendingRawGo = map[string]int{}
 
 // TestCensus_NoNewRawGoStatements fails on a raw `go` statement in non-test
 // code under cmd/ and internal/ beyond the lists above: a panic in such a goroutine

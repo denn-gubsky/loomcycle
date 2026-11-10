@@ -13,6 +13,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/clienttools"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // clientToolSubprotocol is the app-level WebSocket subprotocol the server
@@ -148,7 +149,7 @@ func (s *Server) handleClientTools(w http.ResponseWriter, r *http.Request) {
 	// cancels the read-pump via the shared ctx. Mirrors the SSE keepalive.
 	hbCtx, hbCancel := context.WithCancel(ctx)
 	defer hbCancel()
-	go s.clientToolHeartbeat(hbCtx, c)
+	safego.Go(hbCtx, "client_tools.heartbeat", func() { s.clientToolHeartbeat(hbCtx, c) })
 
 	// Read-pump: route inbound result frames to their waiting invoke; ignore
 	// pong/unknown. Returns (and fires the deferred deregister) on any read

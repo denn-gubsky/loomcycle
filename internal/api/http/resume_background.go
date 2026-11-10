@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -217,7 +218,9 @@ func (s *Server) restoreBackgroundFn(parent store.Run, ledger []*pollChildLedger
 				continue
 			}
 			bg.Restore(tools.RestoredChild{ChildSpec: spec, State: tools.ChildRunning, Read: c.read,
-				Cancel: func(cause error) { go s.cancelRestoredChild(spec, cause) }})
+				Cancel: func(cause error) {
+					safego.Go(ctx, "resume.cancel_restored_child", func() { s.cancelRestoredChild(spec, cause) })
+				}})
 			outstanding = append(outstanding, spec)
 			if c.started.TimeoutMs > 0 && spec.Kind != tools.ChildKindTeam {
 				bounds[spec.RunID] = c.started.TimeoutMs
@@ -229,7 +232,9 @@ func (s *Server) restoreBackgroundFn(parent store.Run, ledger []*pollChildLedger
 		// They were admitted when they started, and are alive still: the run's
 		// next spawn counts them, whatever the limit is now.
 		releases := s.liveChildren.Hold(parent.ID, len(outstanding))
-		go s.watchRestoredChildren(ctx, bg, parent.UserID, outstanding, bounds, releases)
+		safego.Go(ctx, "resume.watch_restored_children", func() {
+			s.watchRestoredChildren(ctx, bg, parent.UserID, outstanding, bounds, releases)
+		})
 	}
 }
 

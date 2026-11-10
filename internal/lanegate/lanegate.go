@@ -25,6 +25,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 )
 
@@ -200,7 +201,7 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 	// Unbuffered: the consumer's pace reaches the driver exactly as it did
 	// without the wrapper.
 	out := make(chan providers.Event)
-	go forward(ctx, in, out, release, waitMs)
+	safego.Go(ctx, "lanegate.forward", func() { forward(ctx, in, out, release, waitMs) })
 	return out, nil
 }
 

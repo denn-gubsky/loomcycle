@@ -11,8 +11,14 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
+
+// errRunGoroutinePanicked stands for the outcome of a run goroutine that
+// panicked: safego logs and counts the panic, and whatever waits on the
+// goroutine is told it failed instead of waiting forever.
+var errRunGoroutinePanicked = errors.New("the run ended on an internal error")
 
 // handleRunsBatch implements the RFC Y external fan-out: POST /v1/runs:batch
 // spawns every child in `spawns` concurrently and returns the combined
@@ -106,10 +112,14 @@ func (s *Server) spawnDetached(ctx context.Context, req connector.SpawnRunReques
 			}
 		},
 	}
-	go func() {
+	safego.Go(runCtx, "runs.spawn_detached", func() {
 		defer abort() // releases runCtx once the run is over
-		ended <- s.RunOnce(runCtx, connector.SpawnRequestToRunInput(req), cb)
-	}()
+		// Sent on a panic too: the select below waits for it when the run
+		// never registered.
+		err := errRunGoroutinePanicked
+		defer func() { ended <- err }()
+		err = s.RunOnce(runCtx, connector.SpawnRequestToRunInput(req), cb)
+	})
 
 	callerDone := ctx.Done()
 	withdrawn := false

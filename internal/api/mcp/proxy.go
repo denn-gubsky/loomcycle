@@ -31,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
 
@@ -256,10 +257,19 @@ func (p *ProxyClient) Serve(ctx context.Context, stdin io.Reader, stdout io.Writ
 		}
 
 		p.wg.Add(1)
-		go func(fr []byte) {
+		safego.Go(reqCtx, "mcp.proxy_forward", func() {
 			defer p.wg.Done()
-			p.forward(reqCtx, fr, stdout)
-		}(line)
+			// A forward that panicked still answers its request, so the
+			// client does not wait out its own timeout.
+			answered := false
+			defer func() {
+				if !answered {
+					p.replyError(stdout, line, "internal error")
+				}
+			}()
+			p.forward(reqCtx, line, stdout)
+			answered = true
+		})
 	}
 
 	scanErr := scanner.Err()

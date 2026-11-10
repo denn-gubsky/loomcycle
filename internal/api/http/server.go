@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/denn-gubsky/loomcycle/internal/aclres"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"log/slog"
 	"math"
 	"net/http"
@@ -1675,8 +1676,8 @@ func (s *Server) operatorKeyRefusalFn() func(p, reason string) {
 		if _, busy := s.keyProbes.LoadOrStore(p, struct{}{}); busy {
 			return
 		}
-		go func() {
-			defer s.keyProbes.Delete(p)
+		safego.Go(context.Background(), "provider.key_probe", func() {
+			defer s.keyProbes.Delete(p) // a probe that panicked frees its place too
 			prov, err := s.providers.Get(p)
 			if err != nil {
 				return
@@ -1687,7 +1688,7 @@ func (s *Server) operatorKeyRefusalFn() func(p, reason string) {
 			if perr := prov.Probe(ctx); perr != nil && providers.IsKeyRefusal(perr) {
 				s.resolver.SetReachable(p, false, nil, "operator key refused: "+perr.Error())
 			}
-		}()
+		})
 	}
 }
 

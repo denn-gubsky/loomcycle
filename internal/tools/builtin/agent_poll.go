@@ -14,6 +14,7 @@ import (
 	runcancel "github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -157,10 +158,10 @@ func (a *AgentTool) spawnInBackground(ctx context.Context, bg *tools.Background,
 		// Held from here, while the calling run is alive, until the child's
 		// goroutine has returned — its own run's end included.
 		releaseTree := a.holdRunTree(ctx)
-		go func() {
+		safego.Go(cctx, "agent.poll_child", func() {
 			defer releaseTree()
 			a.runBackgroundChild(cctx, bg, sem, state == tools.ChildRunning, live[i], runID, e)
-		}()
+		})
 		row := pollStartRow{Agent: e.name, ChildRunID: runID, State: state}
 		if e.index >= 0 {
 			idx := e.index

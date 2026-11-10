@@ -7,11 +7,17 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // errWallLimit is the cancel cause the wall-limit watcher sets on the run's ctx.
 var errWallLimit = errors.New("code_agent_wall_limit")
+
+// errWallWatcherPanicked is the cause set when the watcher itself panicked. It
+// wraps errWallLimit so the run is recorded failed, not cancelled: a run left
+// running with no watcher would have no limit at all.
+var errWallWatcherPanicked = fmt.Errorf("%w: the run's lifetime-limit watcher panicked", errWallLimit)
 
 // StopReasonWallLimit is the stop reason of a run its lifetime limit ended.
 const StopReasonWallLimit = "wall_limit"
@@ -99,7 +105,16 @@ func runClocked(ctx context.Context, opts RunOptions) (RunResult, error) {
 			}
 		}
 	}
-	go enforceWallLimit(ctx, clock, limit, onLimit)
+	safego.Go(ctx, "loop.wall_limit", func() {
+		watched := false
+		defer func() {
+			if !watched {
+				stop(errWallWatcherPanicked)
+			}
+		}()
+		enforceWallLimit(ctx, clock, limit, onLimit)
+		watched = true
+	})
 
 	res, err := runLoop(ctx, opts)
 	// Reported even when the loop returned no error: the cancel can land while
@@ -117,6 +132,9 @@ func runClocked(ctx context.Context, opts RunOptions) (RunResult, error) {
 		// the run ended on its limit, and says so in the word the registry's
 		// wall-limit cancel records.
 		res.StopReason = StopReasonWallLimit
+		if errors.Is(context.Cause(ctx), errWallWatcherPanicked) {
+			err = context.Cause(ctx)
+		}
 	}
 	return res, err
 }

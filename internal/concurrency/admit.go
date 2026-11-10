@@ -337,7 +337,7 @@ func (s *Semaphore) giveBackUserLocked(acct userKey, qs userQuotaGate) {
 		return
 	}
 	if qs != nil {
-		go releaseInBackground(qs, acct)
+		releaseInBackground(qs, acct)
 		return
 	}
 	s.decrementPerUser(acct)

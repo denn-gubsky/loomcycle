@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/scheduler"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
@@ -132,11 +133,11 @@ func (s *Server) armTeamSchedules(ctx context.Context, def teamgraph.Definition)
 	for _, a := range armed {
 		wg.Add(1)
 		s.walkTimers.Add(1)
-		go func() {
+		safego.Go(tickCtx, "team.schedule", func() {
 			defer wg.Done()
 			defer s.walkTimers.Add(-1)
 			s.runTeamSchedule(tickCtx, sc, ident.TenantID, ident.UserID, a, counts)
-		}()
+		})
 	}
 	walkID := tools.RunID(ctx)
 	slog.Info("team: walk armed its own schedules", "team", sc.Team, "def_id", sc.DefID, "walk_id", walkID, "schedules", names)
@@ -192,7 +193,13 @@ func (s *Server) runTeamSchedule(ctx context.Context, sc store.TeamScope, tenant
 			}
 			payload = p
 		}
-		if _, err := s.publishTeamLocalChannel(ctx, tenant, sc, a.channel, userID, payload); err != nil {
+		// One tick at a time: a publish that panicked is a failed tick, and
+		// the schedule keeps its next one.
+		err := errRunGoroutinePanicked
+		safego.Run(ctx, "team.schedule_tick", func() {
+			_, err = s.publishTeamLocalChannel(ctx, tenant, sc, a.channel, userID, payload)
+		})
+		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}

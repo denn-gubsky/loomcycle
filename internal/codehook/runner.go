@@ -42,6 +42,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -283,7 +284,7 @@ func (r *Runner) runOnce(ctx context.Context, prog *goja.Program, ev map[string]
 
 	stop := make(chan struct{})
 	defer close(stop)
-	go st.watch(ctx, stop, budget)
+	safego.Go(ctx, "codehook.watch", func() { st.watch(ctx, stop, budget) })
 
 	ret, err := func() (goja.Value, error) {
 		if _, err := rt.RunProgram(prog); err != nil {

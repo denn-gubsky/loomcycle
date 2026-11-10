@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/procgroup"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
 
@@ -122,8 +123,8 @@ func Spawn(cfg Config) (*Client, error) {
 		pending: make(map[int64]chan mcp.Response),
 		doneCh:  make(chan struct{}),
 	}
-	go c.readLoop()
-	go c.stderrLoop()
+	safego.Go(context.Background(), "mcp.stdio_read", c.readLoop)
+	safego.Go(context.Background(), "mcp.stdio_stderr", c.stderrLoop)
 	return c, nil
 }
 
@@ -222,7 +223,11 @@ func (c *Client) Notify(ctx context.Context, method string, params any) error {
 		return err
 	}
 	done := make(chan error, 1)
-	go func() { done <- c.write(n) }()
+	safego.Go(ctx, "mcp.stdio_notify_write", func() {
+		err := errors.New("mcp: notification write failed on an internal error")
+		defer func() { done <- err }() // sent on a panic too, so Notify is not left waiting
+		err = c.write(n)
+	})
 	return awaitWrite(ctx, done, c.doneCh, notifyExitGrace)
 }
 
@@ -363,7 +368,11 @@ func (c *Client) readLoop() {
 			c.deliver(*frame.Response)
 		case frame.Notification != nil:
 			if c.cfg.OnNotification != nil {
-				c.cfg.OnNotification(*frame.Notification)
+				// One notification whose handler panics must not end the
+				// reader, and with it every call on the connection.
+				safego.Run(context.Background(), "mcp.stdio_notification", func() {
+					c.cfg.OnNotification(*frame.Notification)
+				})
 			}
 		}
 	}
@@ -383,7 +392,9 @@ func (c *Client) stderrLoop() {
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		if c.cfg.OnStderr != nil {
-			c.cfg.OnStderr(scanner.Text())
+			// Per line: a handler that panicked once must not stop the
+			// reading, or the child blocks on a full stderr pipe.
+			safego.Run(context.Background(), "mcp.stdio_stderr_line", func() { c.cfg.OnStderr(scanner.Text()) })
 		}
 	}
 }
