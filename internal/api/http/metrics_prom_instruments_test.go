@@ -146,3 +146,25 @@ func TestMetricsProm_PerUserSeriesHashesAUserIDHoldingASlash(t *testing.T) {
 		t.Errorf("want %q, never tenant a's user b:\n%s", want, body)
 	}
 }
+
+// A reader confined to the shared "" tenant sees that tenant's series and
+// nothing else — not the operator view an empty tenant would otherwise mean.
+func TestMetricsProm_ConfinedToTheSharedTenantIsNotTheOperatorView(t *testing.T) {
+	installMetrics(t)
+	for _, tenant := range []string{"", "beta"} {
+		_, span := lcotel.RecordRunStart(context.Background(), lcotel.RunStartAttrs{Tenant: tenant, Trigger: lcotel.TriggerHTTP})
+		lcotel.SetRunDone(span, lcotel.RunDoneAttrs{})
+		span.End()
+	}
+	rec := httptest.NewRecorder()
+	newMetricsPromServer(t, false).renderMetricsProm(rec, promView{confined: true})
+	body := rec.Body.String()
+	if !strings.Contains(body, `loomcycle_runs_total{status="completed",tenant="",trigger="http"} 1`) {
+		t.Errorf("the shared tenant's own series is missing:\n%s", body)
+	}
+	for _, absent := range []string{`tenant="beta"`, "loomcycle_process_", "loomcycle_build_info", "loomcycle_concurrency_"} {
+		if strings.Contains(body, absent) {
+			t.Errorf("confined view contains %q:\n%s", absent, body)
+		}
+	}
+}

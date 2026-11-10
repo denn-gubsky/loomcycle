@@ -15,11 +15,14 @@ import (
 // PromOptions is what one /metrics reader may see of the instruments, and the
 // labels every series carries.
 type PromOptions struct {
-	// Tenant, when set, renders only the series whose tenant label is this
-	// tenant. A series with no tenant label — a database pool, a provider
-	// attempt, the overflow series that folds every tenant together — is
-	// operator-wide and is left out.
-	Tenant string
+	// Confined renders only the series whose tenant label is Tenant — the
+	// shared "" tenant included, which is a tenant like any other. A series
+	// with no tenant label — a database pool, a provider attempt, the
+	// overflow series that folds every tenant together — is operator-wide
+	// and is left out. A non-empty Tenant confines too, so a view can never
+	// name a tenant and still see every one.
+	Confined bool
+	Tenant   string
 	// OmitUserSeries leaves out every series that names a user (a label in
 	// userLabels). No instrument carries one today; the switch is here so
 	// one that ever does is left out of a view that must not show users.
@@ -151,7 +154,7 @@ func histogramFamily[N int64 | float64](m metricdata.Metrics, dps []metricdata.H
 
 // shows reports whether a series with attrs is in the view.
 func (o PromOptions) shows(attrs attribute.Set) bool {
-	if o.Tenant != "" {
+	if o.Confined || o.Tenant != "" {
 		v, ok := attrs.Value(LabelTenant)
 		if !ok || v.Emit() != o.Tenant {
 			return false

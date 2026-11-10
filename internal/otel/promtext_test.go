@@ -305,3 +305,19 @@ func TestLoggingMetricExporter_SummarisesFailures(t *testing.T) {
 		t.Errorf("failure lines = %d, want 1:\n%s", n, buf.String())
 	}
 }
+
+// Confined with the shared "" tenant keeps the series labelled tenant="" and
+// drops every other tenant's and every untenanted one.
+func TestRenderPrometheus_ConfinedToTheSharedTenant(t *testing.T) {
+	rm := &metricdata.ResourceMetrics{ScopeMetrics: []metricdata.ScopeMetrics{{Scope: instrumentation.Scope{Name: MeterName}, Metrics: []metricdata.Metrics{
+		{Name: "loomcycle.x", Data: metricdata.Gauge[int64]{DataPoints: []metricdata.DataPoint[int64]{
+			{Attributes: attrs("tenant", ""), Value: 1},
+			{Attributes: attrs("tenant", "beta"), Value: 2},
+			{Attributes: attrs("db", "store"), Value: 3},
+		}}},
+	}}}}
+	got := renderPrometheus(rm, PromOptions{Confined: true})
+	if !strings.Contains(got, `loomcycle_x{tenant=""} 1`) || strings.Contains(got, "beta") || strings.Contains(got, "store") {
+		t.Errorf("confined to \"\" =\n%s", got)
+	}
+}

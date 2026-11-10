@@ -47,11 +47,14 @@ import (
 
 // promView is what one /metrics reader may see.
 type promView struct {
-	// tenant, when set, confines the reader to its own tenant: only the
-	// instrument series labelled with this tenant, and none of the
-	// substrate (process, lanes, semaphore, pools, export pipeline,
-	// throughput), which is operator-wide.
-	tenant string
+	// confined limits the reader to tenant: only the instrument series
+	// labelled with that tenant ("" — the shared tenant — included), and
+	// none of the substrate (process, lanes, semaphore, pools, export
+	// pipeline, throughput), which is operator-wide. A non-empty tenant
+	// confines on its own; confined says so for the shared tenant, where
+	// tenant == "" would otherwise read as "no filter".
+	confined bool
+	tenant   string
 	// omitUserSeries leaves out every series that names a user, for a
 	// reader nobody authenticated.
 	omitUserSeries bool
@@ -60,12 +63,15 @@ type promView struct {
 // namesUsers reports whether the view may carry series labelled with a user.
 // Every user-labelled block asks it, so a new one is left out by the same
 // switch.
-func (v promView) namesUsers() bool { return !v.omitUserSeries && v.tenant == "" }
+func (v promView) namesUsers() bool { return !v.omitUserSeries && !v.isConfined() }
+
+// isConfined reports whether the view is one tenant's.
+func (v promView) isConfined() bool { return v.confined || v.tenant != "" }
 
 // promViewForPrincipal is the view the route's caller gets. Every caller
 // that passes the route's gate today is an operator and sees everything; a
-// metrics reader confined to its tenant gets promView{tenant: …} here once
-// such a credential exists.
+// metrics reader confined to its tenant gets promView{confined: true,
+// tenant: …} here once such a credential exists.
 func promViewForPrincipal(auth.Principal, bool) promView {
 	return promView{}
 }
@@ -81,7 +87,7 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	replicaLabels := promReplicaLabels()
-	if view.tenant != "" {
+	if view.isConfined() {
 		writeInstrumentSeries(w, replicaLabels, view)
 		return
 	}
@@ -265,7 +271,7 @@ func (s *Server) InstallMetricModelLabels() func() {
 // with the replica as the substrate series are. A collection failure is
 // logged and leaves the substrate series standing.
 func writeInstrumentSeries(w io.Writer, replicaLabels string, view promView) {
-	opts := lcotel.PromOptions{Tenant: view.tenant, OmitUserSeries: !view.namesUsers(), Labels: decomposeLabels(replicaLabels)}
+	opts := lcotel.PromOptions{Confined: view.isConfined(), Tenant: view.tenant, OmitUserSeries: !view.namesUsers(), Labels: decomposeLabels(replicaLabels)}
 	if err := lcotel.WritePrometheus(context.Background(), w, opts); err != nil {
 		slog.Warn("metrics: render the instruments failed", "err", err)
 	}
