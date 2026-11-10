@@ -870,8 +870,9 @@ func toolsRecordOf(callerTools []string) *runToolsRecord {
 }
 
 // callerTools returns the recorded list in the nil-vs-empty shape filterTools
-// reads: nil means no narrowing; a present record never reads back as nil, so
-// a damaged one narrows to nothing rather than widening.
+// reads: nil means no narrowing. A {"names": null} record narrows to nothing
+// rather than widening; a "tools": null key decodes as absent, which this
+// code never writes (the field is a pointer with omitempty).
 func (rc runConfigRecord) callerTools() []string {
 	if rc.Tools == nil {
 		return nil

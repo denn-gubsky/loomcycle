@@ -660,8 +660,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// The MODE is operator config re-read now, not run state: whether a caller's
 	// list replaces the operator floor or intersects with it is the operator's
 	// current call, exactly as it is for a fresh run with the same inputs. Only
-	// the caller's list and filter come from the run.
-	// The caller's own `tools` list narrows again too, inside the definition's.
+	// the caller's lists (hosts, tools) and filter come from the run.
 	allowedTools := filterTools(s.candidateTools(ctx, run.TenantID, agentDef.Tools), agentDef.Tools, runCfg.callerTools())
 	hostPolicy := runCfg.hostPolicy()
 	callerAuthoritative := s.cfg().Env.HTTPCallerAuthoritative

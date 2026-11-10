@@ -1834,6 +1834,9 @@ export interface RunSpec {
   interruption?: Record<string, unknown>;
   /** The caller's host narrowing. */
   hosts?: Record<string, unknown>;
+  /** The caller's `tools` narrowing, kept so a resume narrows by it again.
+   *  Absent when the run named no tools list. */
+  tools?: { names: string[] };
   /** Hooks the run added to its agent's own (its request's, and a
    *  sub-agent's inherited ones). */
   hooks?: { hooks?: EventHooks; tool_hooks?: ToolHooksByTool };
