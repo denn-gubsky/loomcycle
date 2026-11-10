@@ -296,10 +296,12 @@ func seconds(f float64) time.Duration {
 	return time.Duration(f * float64(time.Second))
 }
 
-// asrHeaderRE is the header Qwen3-ASR puts before every answer:
+// asrHeaderRE is the header Qwen3-ASR puts before every segment it makes:
 // "language English<asr_text>…", or "language None<asr_text>" when it heard
-// no speech.
-var asrHeaderRE = regexp.MustCompile(`^\s*language\s+([A-Za-z][A-Za-z ]{0,30}?)\s*<asr_text>`)
+// no speech. The model cuts a long piece into segments of its own, so one
+// answer can hold several, mid-text. The literal <asr_text> keeps speech that
+// says "language" from matching.
+var asrHeaderRE = regexp.MustCompile(`\blanguage\s+([A-Za-z][A-Za-z ]{0,30}?)\s*<asr_text>`)
 
 // asrLanguages maps the header's language names to codes on the transcription
 // language list.
@@ -315,13 +317,26 @@ var asrLanguages = map[string]string{
 	"korean": "ko", "vietnamese": "vi", "thai": "th", "indonesian": "id",
 }
 
-// asrHeader removes a leading Qwen3-ASR header from text. lang is the code
-// of the language it names, or "" for None or a name not on the list.
+// asrHeader removes every Qwen3-ASR header from text and joins the segments
+// between them with a space; an empty segment (a "None" header with nothing
+// after it) adds nothing. lang is the code of the language the first header
+// names, or "" for None or a name not on the list.
 func asrHeader(text string) (lang, rest string, ok bool) {
-	m := asrHeaderRE.FindStringSubmatchIndex(text)
-	if m == nil {
+	ms := asrHeaderRE.FindAllStringSubmatchIndex(text, -1)
+	if ms == nil {
 		return "", text, false
 	}
-	name := strings.ToLower(strings.TrimSpace(text[m[2]:m[3]]))
-	return asrLanguages[name], text[m[1]:], true
+	lang = asrLanguages[strings.ToLower(strings.TrimSpace(text[ms[0][2]:ms[0][3]]))]
+	parts := make([]string, 0, len(ms)+1)
+	from := 0
+	for _, m := range ms {
+		if p := strings.TrimSpace(text[from:m[0]]); p != "" {
+			parts = append(parts, p)
+		}
+		from = m[1]
+	}
+	if p := strings.TrimSpace(text[from:]); p != "" {
+		parts = append(parts, p)
+	}
+	return lang, strings.Join(parts, " "), true
 }
