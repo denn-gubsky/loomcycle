@@ -84,3 +84,47 @@ func TestRuleStatements_ABulkAcceptLeavesARejectionMadeAfterItsSelection(t *test
 		}
 	})
 }
+
+// A bulk accept that names its statements by id never reverses a rejection: a
+// statement rejected between the dry run and the real call (which selects
+// again, and reads it rejected) is reported and left rejected. Reversing a
+// rejection in bulk takes selecting the rejected statements by filter. A bulk
+// reject by id is unchanged.
+func TestRuleStatements_ABulkAcceptByIdsNeverReversesARejection(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		f := newPolicyFixture(t, d, base, judgeOntologyMD)
+		rejected := f.propose(f.one, f.notes, "elaborates", `,"method":"extractor:relate"`)["id"].(string)
+		proposed := f.propose(f.two, f.notes, "elaborates", `,"method":"extractor:relate"`)["id"].(string)
+		req := connector.RuleStatementsRequest{Action: "accept", IDs: []string{rejected, proposed}}
+		dry := ruleDry(t, d, f.op, req, RuleAsOperator)
+		if dry.Matched != 2 {
+			t.Fatalf("dry run = %+v, want both matched", dry)
+		}
+		if _, r := docExec(t, d, operatorCtx(f.op), fmt.Sprintf(`{"op":"reject_statement","scope":"tenant","id":%q,"reason":"not an elaboration"}`, rejected)); r.IsError {
+			t.Fatalf("reject: %s", r.Text)
+		}
+		req.DryRun, req.ExpectCount = boolPtr(false), intPtr(dry.Matched)
+		res, err := d.RuleStatements(f.op, "tenant", req, RuleAsOperator)
+		if err != nil {
+			t.Fatal(err)
+		}
+		items := map[string]connector.RulingItem{}
+		for _, it := range res.Items {
+			items[it.ID] = it
+		}
+		if res.Ruled != 1 || res.Failed != 1 || items[rejected].Error != rulingNotProposal || items[proposed].Status != edgeStatusAsserted {
+			t.Errorf("bulk accept by ids = ruled %d failed %d items %+v, want the rejected one reported %s and the proposal accepted", res.Ruled, res.Failed, res.Items, rulingNotProposal)
+		}
+		if e := f.edge(rejected); e["status"] != edgeStatusRejected || !strings.HasPrefix(asStr(e["ruled_by"]), "operator") {
+			t.Errorf("after the bulk accept by ids = %v, want the operator's rejection kept", e)
+		}
+
+		// A bulk reject by id still rules on what it names (here: a statement
+		// already asserted is not a proposal, as before; a proposal is rejected).
+		third := f.propose(f.oneB, f.notes, "elaborates", `,"method":"extractor:relate"`)["id"].(string)
+		rj := ruleReal(t, d, f.op, connector.RuleStatementsRequest{Action: "reject", Reason: "no", IDs: []string{third}}, RuleAsOperator)
+		if rj.Ruled != 1 || f.edge(third)["status"] != edgeStatusRejected {
+			t.Errorf("bulk reject by ids = %+v, want the proposal rejected", rj)
+		}
+	})
+}
