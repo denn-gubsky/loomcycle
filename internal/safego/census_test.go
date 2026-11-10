@@ -66,9 +66,22 @@ var exemptRawGo = map[string]rawGo{
 }
 
 // pendingRawGo is the baseline of raw `go` statements not converted yet: the
-// per-run and fan-out goroutines. It only shrinks — convert a site to Go, or
+// boot's background goroutines in cmd/ and the per-run and fan-out goroutines
+// in internal/. It only shrinks — convert a site to Go, or
 // add a reasoned entry to exemptRawGo, and lower its count here.
 var pendingRawGo = map[string]int{
+	// cmd/loomcycle: the boot's background sweepers, subscribers and
+	// listeners, converted in a later change.
+	"cmd/loomcycle/boot_background.go": 31,
+	"cmd/loomcycle/boot_config.go":     1,
+	"cmd/loomcycle/boot_listen.go":     7,
+	"cmd/loomcycle/boot_metrics.go":    1,
+	"cmd/loomcycle/boot_projection.go": 1,
+	"cmd/loomcycle/boot_surfaces.go":   2,
+	"cmd/loomcycle/boot_triggers.go":   11,
+	"cmd/loomcycle/main.go":            1,
+	"cmd/loomcycle/openmode.go":        1,
+
 	"internal/a2a/executor.go":                      1,
 	"internal/api/http/client_tools.go":             1,
 	"internal/api/http/connector_impl.go":           3,
@@ -104,14 +117,14 @@ var pendingRawGo = map[string]int{
 }
 
 // TestCensus_NoNewRawGoStatements fails on a raw `go` statement in non-test
-// code under internal/ beyond the lists above: a panic in such a goroutine
+// code under cmd/ and internal/ beyond the lists above: a panic in such a goroutine
 // ends the process for every tenant. Start it with safego.Go instead. A file
 // with fewer than its allowance fails too, so the baseline is lowered with the
 // conversion and never grows back.
 func TestCensus_NoNewRawGoStatements(t *testing.T) {
 	root := moduleRoot(t)
 	got := map[string]int{}
-	err := filepath.WalkDir(filepath.Join(root, "internal"), func(p string, d fs.DirEntry, err error) error {
+	walk := func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -139,9 +152,11 @@ func TestCensus_NoNewRawGoStatements(t *testing.T) {
 			return true
 		})
 		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk: %v", err)
+	}
+	for _, dir := range []string{"cmd", "internal"} {
+		if err := filepath.WalkDir(filepath.Join(root, dir), walk); err != nil {
+			t.Fatalf("walk %s: %v", dir, err)
+		}
 	}
 
 	allowed := map[string]int{}
