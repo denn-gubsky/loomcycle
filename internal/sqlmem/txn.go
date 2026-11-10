@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // txn.go — RFC AA Phase 3a: runtime-managed explicit transactions that span
@@ -225,8 +227,10 @@ func (m *Manager) BeginTxn(ctx context.Context, txnID, rootRunID string, key Sco
 		return 0, fmt.Errorf("too many open transactions (%d) — commit or rollback before opening more", max)
 	}
 	// The tenant's share of the cap: refused with the same error class as the
-	// global cap, so callers need not tell the two apart.
-	if share := m.cfg.MaxOpenTxnsPerTenant; m.cfg.MaxOpenTxns > 0 && share > 0 && m.txns.tenantCountLocked(key.Tenant) >= share {
+	// global cap, so callers need not tell the two apart. The default tenant
+	// (the runtime's "", stored as ScopeTenant("")) is the operator's own and a
+	// single-tenant install's only one, so it is held to the global cap alone.
+	if share := m.cfg.MaxOpenTxnsPerTenant; m.cfg.MaxOpenTxns > 0 && share > 0 && key.Tenant != ScopeTenant("") && m.txns.tenantCountLocked(key.Tenant) >= share {
 		m.txns.mu.Unlock()
 		return 0, fmt.Errorf("too many open transactions for this tenant (%d) — commit or rollback before opening more", share)
 	}
@@ -236,14 +240,23 @@ func (m *Manager) BeginTxn(ctx context.Context, txnID, rootRunID string, key Sco
 	m.txns.reserving[txnID] = key.Tenant
 	m.txns.mu.Unlock()
 
+	// Until the txn is installed, any exit — an error or a panic recovered
+	// higher up — gives the reservation back; a kept placeholder would hold a
+	// global and a tenant slot for the process's life.
+	installed := false
+	defer func() {
+		if !installed {
+			m.txns.mu.Lock()
+			delete(m.txns.open, txnID)
+			delete(m.txns.reserving, txnID)
+			m.txns.mu.Unlock()
+		}
+	}()
 	tx, release, err := m.backend.beginTx(ctx, key)
 	if err != nil {
-		m.txns.mu.Lock()
-		delete(m.txns.open, txnID)
-		delete(m.txns.reserving, txnID)
-		m.txns.mu.Unlock()
 		return 0, err
 	}
+	installed = true
 	m.txns.mu.Lock()
 	m.txns.open[txnID] = &openTxn{tx: tx, key: key, runID: rootRunID, started: time.Now(), release: release}
 	delete(m.txns.reserving, txnID)
@@ -481,7 +494,7 @@ func (m *Manager) startReaper() {
 	// Capture stop/done as locals so the goroutine never re-reads the fields
 	// (stopReaper nils them — that would be a data race on the field).
 	stop, done := m.reaperStop, m.reaperDone
-	go func() {
+	safego.Go(context.Background(), "sqlmem.txn_reaper", func() {
 		defer close(done)
 		t := time.NewTicker(tick)
 		defer t.Stop()
@@ -490,10 +503,11 @@ func (m *Manager) startReaper() {
 			case <-stop:
 				return
 			case <-t.C:
-				m.reapStale(ttl)
+				// Recovered per pass, so the reaper outlives one bad pass.
+				safego.Run(context.Background(), "sqlmem.txn_reaper", func() { m.reapStale(ttl) })
 			}
 		}
-	}()
+	})
 }
 
 // stopReaper signals the reaper and JOINS it, so no reap (a tx.Rollback +

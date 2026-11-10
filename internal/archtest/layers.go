@@ -118,6 +118,9 @@ var layers = []layer{
 			"internal/redact",
 			"internal/retentionmode",
 			"internal/runident",
+			// The background-goroutine panic net: stdlib only, so any layer may
+			// start its goroutines through it.
+			"internal/safego",
 			"internal/search",
 			"internal/sigv1",
 			"internal/skillmatch",

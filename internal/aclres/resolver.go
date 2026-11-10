@@ -18,6 +18,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -545,14 +546,16 @@ func (r *Resolver) Subscribe(ctx context.Context, bp coord.Backplane) error {
 	if err != nil {
 		return err
 	}
-	go func() {
+	safego.Go(ctx, "aclres.backplane_listener", func() {
 		for ev := range ch {
 			var msg struct {
 				Tenant string `json:"tenant"`
 			}
 			_ = json.Unmarshal(ev.Payload, &msg)
-			r.Invalidate(msg.Tenant)
+			// Recovered per event: a listener that stopped would leave this
+			// replica serving stale rules.
+			safego.Run(ctx, "aclres.backplane_listener", func() { r.Invalidate(msg.Tenant) })
 		}
-	}()
+	})
 	return nil
 }

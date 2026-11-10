@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/webui"
@@ -390,12 +391,16 @@ func (s *Server) SubscribeTokenInvalidations(ctx context.Context, bp coord.Backp
 	if err != nil {
 		return err
 	}
-	go func() {
+	safego.Go(ctx, "http.token_invalidation_listener", func() {
 		for range ch {
-			s.tokenCache.flush()
-			s.tenantPolicyCache.flush()
+			// Recovered per event: a listener that stopped would leave this
+			// replica serving retired tokens from its cache.
+			safego.Run(ctx, "http.token_invalidation_listener", func() {
+				s.tokenCache.flush()
+				s.tenantPolicyCache.flush()
+			})
 		}
-	}()
+	})
 	return nil
 }
 

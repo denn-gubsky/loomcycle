@@ -74,7 +74,8 @@ type Config struct {
 	// so a single tenant cannot pin every slot (each for up to TxnTimeoutMS)
 	// and lock every other tenant out of sql_begin. 0 = a quarter of
 	// MaxOpenTxns (at least 1); a value at or above MaxOpenTxns leaves only the
-	// global cap. Ignored when MaxOpenTxns is 0 (unbounded).
+	// global cap. Ignored when MaxOpenTxns is 0 (unbounded). The default tenant
+	// (ScopeTenant("")) is exempt: it is held to MaxOpenTxns alone.
 	MaxOpenTxnsPerTenant int
 	// MaxTxnDepth caps the SAVEPOINT nesting depth of one explicit transaction
 	// (Phase 3b): a nested sql_begin past this errors, bounding the in-memory

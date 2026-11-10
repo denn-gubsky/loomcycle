@@ -688,6 +688,16 @@ func (d *Document) applyBulkRuling(ctx context.Context, key sqlmem.ScopeKey, msc
 	}
 	var ruled []reviewCandidate
 	for _, c := range toRule {
+		if accept && len(req.IDs) > 0 && c.s.Status == edgeStatusRejected {
+			// Ids are re-read by the real call, so a rejection made after the dry
+			// run is read here as the selection: an accept by ids never reverses
+			// one. Reversing in bulk takes selecting the rejected statements by
+			// filter (status rejected).
+			out.Items = append(out.Items, connector.RulingItem{ID: c.s.ID, Error: rulingNotProposal,
+				Message: "not_a_proposal: the statement is rejected, and a bulk accept by ids never reverses a rejection; select it by filter status rejected to reverse it"})
+			out.Failed++
+			continue
+		}
 		item, ok := d.ruleOne(ctx, key, mscope, op, rulingID, ruledBy, accept, reason, c)
 		out.Items = append(out.Items, item)
 		if ok {
