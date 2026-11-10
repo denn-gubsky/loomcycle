@@ -126,6 +126,12 @@ func (t *openTxn) popSavepointLocked(ctx context.Context, commit bool) (depth in
 func (t *openTxn) finish(commit bool) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// The reaper and run-end cleanup can reach a txn finishLevel has finished
+	// but not yet removed from the registry; release is a refcount decrement,
+	// so a second finish must be a no-op.
+	if t.done {
+		return nil
+	}
 	return t.finishLocked(commit)
 }
 

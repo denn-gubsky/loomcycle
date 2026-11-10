@@ -413,3 +413,27 @@ func TestTxn_APanickingBeginFreesItsReservation(t *testing.T) {
 	}
 	m.RollbackRunTxns("runA")
 }
+
+// TestTxn_FinishingAFinishedTxnDoesNotReleaseAgain: the reaper or run-end
+// cleanup can reach a txn that finishLevel has finished but not yet removed
+// from the registry. A second finish must not run release again — it is a
+// refcount decrement and would drop another holder's pin on the scope.
+func TestTxn_FinishingAFinishedTxnDoesNotReleaseAgain(t *testing.T) {
+	m := newTestManager(t, Config{MaxOpenTxns: 4})
+	id := agentTxnID("runA", "a")
+	if _, err := m.BeginTxn(context.Background(), id, "runA", agentKey("tenantA", "a")); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	m.txns.mu.Lock()
+	txn := m.txns.open[id]
+	m.txns.mu.Unlock()
+	releases := 0
+	orig := txn.release
+	txn.release = func() { releases++; orig() }
+	_ = txn.finish(false)
+	_ = txn.finish(false)
+	if releases != 1 {
+		t.Fatalf("release ran %d times over two finishes, want 1", releases)
+	}
+	m.RollbackRunTxns("runA")
+}
