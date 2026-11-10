@@ -205,8 +205,9 @@ The most recent line (v1.150.0) makes `loomcycle-media` the image for a
 deployment that wants voice and a browser together: it now carries the PinchTab
 client beside ffmpeg and poppler, and patch releases publish it too. The cloud
 example runs it, so Telegram voice notes can be transcribed and answered as voice
-notes. A run started with a narrowed `tools` list keeps that list after a pause,
-a snapshot restore or a boot recovery.
+notes. Qwen3-ASR's per-segment header no longer leaks into long transcripts, and
+a run started with a narrowed `tools` list keeps that list after a pause, a
+snapshot restore or a boot recovery.
 
 Before it, v1.149.0 let a tenant scrape its own metrics and finished the panic
 net for background goroutines, and v1.148.0 added two layers and the operator's view of

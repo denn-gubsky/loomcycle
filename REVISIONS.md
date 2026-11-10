@@ -10,9 +10,9 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 ## What's in v1.150.0
 
-*`loomcycle-media` becomes the image for a deployment that wants voice and a browser together: it carries the PinchTab MCP client beside ffmpeg and poppler, and patch releases now publish it too. The cloud example moves to it and lets its Telegram gate use speech, so a voice note can be transcribed and answered with one. A run started with a narrowed `tools` list keeps it after a pause, a snapshot restore or a boot recovery.*
+*`loomcycle-media` becomes the image for a deployment that wants voice and a browser together: it carries the PinchTab MCP client beside ffmpeg and poppler, and patch releases now publish it too. The cloud example moves to it and lets its Telegram gate use speech, so a voice note can be transcribed and answered with one. A long recording transcribed by Qwen3-ASR no longer shows the engine's `language …<asr_text>` header in mid-text, and a run started with a narrowed `tools` list keeps it after a pause, a snapshot restore or a boot recovery.*
 
-The v1.150 line: #2569 to #2573.
+The v1.150 line: #2569 to #2575.
 - `@loomcycle/client` 1.150.0: `RunSpec` declares `tools?: { names: string[] }` (#2571). The Python adapter is 1.150.0 for version lockstep only.
 - No schema migration.
 
@@ -21,6 +21,10 @@ The v1.150 line: #2569 to #2573.
 - **A resumed run keeps its `tools` narrowing (#2571).** A run started with a `tools` list came back from a pause, a snapshot restore or a boot recovery with its agent's full toolset. The list is now recorded with the run and applied on resume, and `GET /v1/runs/{run_id}/effective-config` reports it. A run recorded by an older binary has no list and resumes as before.
 - **`loomcycle-media` grows by the PinchTab client (#2572),** about 28 MB, with its MIT notices at `/usr/share/doc/pinchtab/`. `loomcycle-browser` is unchanged and stays distroless.
 - **Cloud example (#2573).** `cloud-deployment` runs `loomcycle-media` for the runtime and the migration, and its deploy script waits for that image. The `telegram` gate's issued token grants `surfaces: [speech, transcription]` at 12 a minute, burst 20. Voice still needs the deployment's own speech engines and ffmpeg helpers (`transcription.stt.media`, `speech.encode`, `speech.format: ogg`) and `TELEGRAM_BRIDGE_VOICE=1`; without engines the bridge stays on text.
+
+### Speech to text (#2575)
+
+- Qwen3-ASR cuts a piece into segments of its own and heads each with `language <Name><asr_text>`, so a piece over about 30 seconds held more than one header and only the leading one was removed. Every header is removed now, the segments between them are joined with a space, a silent `None` segment adds nothing, and the first header gives the language. Speech that says "language" is kept: a header needs the literal `<asr_text>`.
 
 ### Images (#2572)
 
