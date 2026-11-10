@@ -187,8 +187,8 @@ Notes:
 - **Headless browser (dev/exec):** the `pinchtab` sidecar gives the deterministic
   `dev/exec` agent `mcp__browser__*` tools (driven via the envelope's optional
   `browser` steps). PinchTab's MCP is stdio-only, so the runtime uses the published
-  `denngubsky/loomcycle-browser` image, which carries the pinchtab MCP client
-  binary. Nothing is built locally for the runtime any more. The sidecar is internal-only (no published port), and PinchTab keeps
+  `denngubsky/loomcycle-media` image, which carries the pinchtab MCP client
+  binary (and ffmpeg and poppler for speech and OCR). Nothing is built locally for the runtime any more. The sidecar is internal-only (no published port), and PinchTab keeps
   browsing **local-only** until you widen its domain allowlist (IDPI) — to test
   external sites or your own deployment, follow the pinchtab security guide.
 - **Serve-and-test (browse a server the session runs):** the compose ships a
@@ -435,15 +435,25 @@ With `TELEGRAM_BRIDGE_VOICE=1` a person can send the bot a voice note and hear
 the reply as one (RFC GA; `docs/SPEECH.md` → "Through a chat bridge"). In this
 order:
 
-1. **The speech surfaces on the gate.** Add `surfaces: [speech, transcription]`
-   to `auth.gates.telegram.issued_token` in `config/loomcycle.yaml`, and raise
-   its `rate` to `{ per_minute: 12, burst: 20 }`. Without the surfaces the
-   bridge stays on text.
-2. **Speech engines** in `config/loomcycle.yaml`: `speech:` and
-   `transcription.stt:` (the `loomcycle-speech` speaches), with `speech.encode`
-   (an ffmpeg Opus command; the `loomcycle-browser` image has ffmpeg) and
-   `speech.format: ogg`, since Telegram shows only Opus or MP3 as a voice note.
-   `GET /v1/_speech` should list both directions and `ogg`.
+1. **The speech surfaces on the gate.** `config/loomcycle.yaml` already grants
+   `surfaces: [speech, transcription]` on `auth.gates.telegram.issued_token`, at
+   `rate: { per_minute: 12, burst: 20 }`. Without engines the speech routes
+   answer "not configured" and the bridge stays on text.
+2. **Speech engines** in a config file of their own beside `loomcycle.yaml`
+   (for example `config/voice.yaml`, which a release does not overwrite):
+   `speech:` and `transcription.stt:`, plus the two ffmpeg helpers the
+   `loomcycle-media` image runs. A Telegram voice note is OGG/Opus, and an
+   engine that reads WAV only (Qwen3-ASR on Ollama) needs it converted;
+   Telegram shows only Opus or MP3 as a voice note, so replies need encoding:
+   ```yaml
+   transcription:
+     stt:
+       media: { command: "ffmpeg -nostdin -i {in} -ac 1 -ar 16000 -f wav {out}" }
+   speech:
+     format: ogg
+     encode: { command: "ffmpeg -nostdin -i {in} -c:a libopus -b:a 32k {out}" }
+   ```
+   `GET /v1/_speech` should list both directions and `ogg` among the formats.
 3. **The bridge:** `TELEGRAM_BRIDGE_VOICE=1`, and
    `TELEGRAM_BRIDGE_RATE_PER_MINUTE=12` or more: a voice turn takes three starts
    from the user's rate. Restart the bridge, so it asks for fresh tokens with
@@ -686,7 +696,7 @@ The image versions are variables in `docker-compose.yaml`:
 
 | Variable | Sets | Default in the compose file |
 |---|---|---|
-| `LOOMCYCLE_VERSION` | the two `loomcycle-browser` tags (runtime and migration) | the release this directory was written for |
+| `LOOMCYCLE_VERSION` | the two `loomcycle-media` tags (runtime and migration) | the release this directory was written for |
 | `LOOMCYCLE_SIDECAR_VERSION` | `loomcycle-builder-docker` and the sandbox session image | the last minor release |
 | `LOOMBOARD_VERSION` | the `ghcr.io/denn-gubsky/loomboard` tag of the hosted board (`X.Y.Z`, no `v`) | the loomboard release this directory was written for |
 
@@ -726,9 +736,10 @@ script treats what the caller sends as a request:
   `status`;
 - the tag must exist in the project's GitHub repository;
 - it must not be older than what is deployed;
-- the release's image must be published (for loomcycle `loomcycle-browser`, for
-  loomboard `ghcr.io/denn-gubsky/loomboard`); until it is, the script answers "not
-  published yet" and the next run tries again.
+- the release's image must be published (for loomcycle `loomcycle-media`, the
+  image the compose file runs, which a patch pushes a few minutes after
+  `loomcycle-browser`; for loomboard `ghcr.io/denn-gubsky/loomboard`); until it
+  is, the script answers "not published yet" and the next run tries again.
 
 So the key deploys a published release and nothing else. The deploy account can run
 Docker, which is root on the host: whoever can push a release tag to either

@@ -315,10 +315,12 @@ auth:
       public_key: { kty: OKP, crv: Ed25519, x: "${LOOMCYCLE_TELEGRAM_GATE_PUBLIC_X}" }
       # The most any issued token may do: start the bridge's one agent (the
       # compose default TELEGRAM_BRIDGE_AGENT; change both together)
-      # interactively, at the bridge's own default rate. No speech surfaces:
-      # this config has no speech engines. Add `surfaces: [speech,
-      # transcription]` and raise the rate to 12 when voice is turned on.
-      issued_token: { ttl: 12h, agents: [chat/medium], overrides: [interactive], rate: { per_minute: 6, burst: 10 } }
+      # interactively, and use the speech routes for voice messages (the
+      # bridge's TELEGRAM_BRIDGE_VOICE=1). The engines are the deployment's own
+      # (a config file of its own beside this one); with none, the speech
+      # routes answer "not configured" and the bridge stays on text. A voice
+      # turn takes three starts (transcribe, run, speak), hence the rate.
+      issued_token: { ttl: 12h, agents: [chat/medium], overrides: [interactive], surfaces: [speech, transcription], rate: { per_minute: 12, burst: 20 } }
       identity_map:
         # The tenant the bridge's operator token served, so
         # legacy_subject_prefix links each person's first message through the
@@ -374,7 +376,7 @@ search_priority: [searxng, brave]
 
 # ─── Headless browser (PinchTab) for the dev/exec agent ───────────────
 # PinchTab's MCP is stdio-only, so loomcycle spawns the pinchtab client (shipped in
-# the loomcycle-browser image) as a stdio MCP bridge to the `pinchtab` sidecar. The
+# the loomcycle-media image) as a stdio MCP bridge to the `pinchtab` sidecar. The
 # child inherits PINCHTAB_TOKEN from loomcycle's env, so no ${...} interpolation is
 # needed here. The dev/exec agent already grants mcp__browser__* in its tool
 # ceiling, so this overlay only DECLARES the server.
