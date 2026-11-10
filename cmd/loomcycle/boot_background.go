@@ -559,7 +559,7 @@ func (b *boot) startStoreSweepers() {
 	// Expired-token sweeper (the retention was resolved with the auth wiring
 	// above). One replica per cluster per tick; the delete is idempotent.
 	if expiredTokenRetention > 0 && storeIface != nil {
-		go runAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyExpiredTokenSweeper, "expired-token",
+		goAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyExpiredTokenSweeper, "expired-token",
 			func(ctx context.Context) {
 				n, err := storeIface.OperatorTokenDefDeleteExpired(ctx, time.Now().Add(-expiredTokenRetention))
 				if err != nil {
@@ -576,7 +576,7 @@ func (b *boot) startStoreSweepers() {
 	// longer authenticate, so its row only takes space. Hourly, one replica
 	// per cluster per tick; the delete is idempotent.
 	if storeIface != nil {
-		go runAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyUISessionSweeper, "ui-session",
+		goAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyUISessionSweeper, "ui-session",
 			func(ctx context.Context) {
 				n, err := storeIface.UISessionDeleteExpired(ctx, time.Now())
 				if err != nil {
@@ -624,7 +624,7 @@ func (b *boot) startStoreSweepers() {
 	// counters whose window and block have both ended. The rows hold only
 	// code hashes; deleting them changes no answer.
 	if storeIface != nil {
-		go runAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyAuthGateSweeper, "auth-gate",
+		goAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyAuthGateSweeper, "auth-gate",
 			func(ctx context.Context) {
 				now := time.Now()
 				inv, err := storeIface.AuthInviteDeleteExpired(ctx, now.Add(-authGateLinkRetention))
@@ -659,7 +659,7 @@ func (b *boot) startStoreSweepers() {
 	// (unbind, then erase only when erase_after is set). Hourly, one
 	// replica per cluster per tick.
 	if storeIface != nil && b.srv != nil {
-		go runAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyAuthLifecycleSweeper, "auth-lifecycle",
+		goAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyAuthLifecycleSweeper, "auth-lifecycle",
 			func(ctx context.Context) { b.srv.AuthLifecycleSweep(ctx, time.Now()) })
 	}
 
@@ -669,7 +669,7 @@ func (b *boot) startStoreSweepers() {
 	// long haul. v0.12.4: gated behind advisoryLock so only one
 	// replica per cluster sweeps per tick.
 	if cfg.Env.MemorySweepInterval > 0 && storeIface != nil {
-		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.MemorySweepInterval, advisoryLock, coord.LockKeyMemorySweeper, "memory",
+		goAdvisoryGatedSweeper(bgCtx, cfg.Env.MemorySweepInterval, advisoryLock, coord.LockKeyMemorySweeper, "memory",
 			func(ctx context.Context) {
 				swept, err := storeIface.MemorySweep(ctx)
 				if err != nil {
@@ -689,7 +689,7 @@ func (b *boot) startStoreSweepers() {
 	// without this the queue keeps every row ever enqueued, raw chat payload
 	// included. Hourly and advisory-gated like the change-feed prune below.
 	if ttl := cfg.Env.MemoryPendingDrainedTTL; ttl > 0 && storeIface != nil {
-		go runAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyMemoryPendingSweeper, "memory_pending",
+		goAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyMemoryPendingSweeper, "memory_pending",
 			func(ctx context.Context) {
 				pruned, err := memory.PruneDrainedPending(ctx, storeIface, ttl, time.Now(), memory.PendingPruneBatch)
 				if err != nil {
@@ -709,7 +709,7 @@ func (b *boot) startStoreSweepers() {
 	// advisory-gated so one replica prunes per tick.
 	if memoryChangesEnabled() && storeIface != nil {
 		window := memoryChangesRetention()
-		go runAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyMemoryChangesSweeper, "memory_changes",
+		goAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyMemoryChangesSweeper, "memory_changes",
 			func(ctx context.Context) {
 				pruned, err := storeIface.PruneMemoryChanges(ctx, time.Now().Add(-window))
 				if err != nil {
@@ -733,7 +733,7 @@ func (b *boot) startStoreSweepers() {
 		if len(subs) > 0 {
 			deliverer := changesub.New(storeIface, resolveChangeSubSecret, slog.Default())
 			interval := changeSubDeliveryInterval()
-			go runAdvisoryGatedSweeper(bgCtx, interval, advisoryLock, coord.LockKeyChangeSubDelivery, "change_subscriptions",
+			goAdvisoryGatedSweeper(bgCtx, interval, advisoryLock, coord.LockKeyChangeSubDelivery, "change_subscriptions",
 				func(ctx context.Context) { deliverer.RunOnce(ctx, subs) })
 			slog.Info("memory: change-subscription push engine enabled", "subscriptions", len(subs), "interval", interval)
 		}
@@ -752,7 +752,7 @@ func (b *boot) startStoreSweepers() {
 	// it restores an invariant rather than enacting a policy.
 	if cfg.Env.DeadLinkGCInterval > 0 && storeIface != nil && sqlMemMgr != nil {
 		docTool := &builtin.Document{Store: storeIface, SqlMem: sqlMemMgr, Cfg: cfg}
-		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.DeadLinkGCInterval, advisoryLock, coord.LockKeyDeadLinkGC, "deadlink",
+		goAdvisoryGatedSweeper(bgCtx, cfg.Env.DeadLinkGCInterval, advisoryLock, coord.LockKeyDeadLinkGC, "deadlink",
 			func(ctx context.Context) {
 				scopes, err := sqlMemMgr.ListScopes(ctx)
 				if err != nil {
@@ -834,7 +834,7 @@ func (b *boot) startStoreSweepers() {
 		// hourly: the sweep reads every channel's stats, and a feed lives a
 		// day, so a minute's resolution buys nothing.
 		var lastFeedSweep time.Time
-		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.ChannelsSweepInterval, advisoryLock, coord.LockKeyChannelsSweeper, "channels",
+		goAdvisoryGatedSweeper(bgCtx, cfg.Env.ChannelsSweepInterval, advisoryLock, coord.LockKeyChannelsSweeper, "channels",
 			func(ctx context.Context) {
 				swept, err := storeIface.ChannelSweepExpired(ctx)
 				if err != nil {
@@ -862,7 +862,7 @@ func (b *boot) startStoreSweepers() {
 	// v0.8.16 Interruption tool TTL sweeper. Marks pending rows
 	// whose expires_at < now as timed_out.
 	if cfg.Env.ChannelsSweepInterval > 0 && storeIface != nil {
-		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.ChannelsSweepInterval, advisoryLock, coord.LockKeyInterruptsSweeper, "interrupts",
+		goAdvisoryGatedSweeper(bgCtx, cfg.Env.ChannelsSweepInterval, advisoryLock, coord.LockKeyInterruptsSweeper, "interrupts",
 			func(ctx context.Context) {
 				swept, err := storeIface.InterruptSweepExpired(ctx)
 				if err != nil {

@@ -61,6 +61,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/vllm"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	// Deterministic stub embedder for runtime tests; its init() registers the
 	// "stub" provider ONLY when LOOMCYCLE_EMBEDDER_STUB=1, so it is invisible
@@ -1210,6 +1211,12 @@ func runAdvisoryGatedSweeper(
 	name string,
 	tick func(ctx context.Context),
 ) {
+	// One tick that panics costs that tick: recovered inside the lock's
+	// callback, so the lock is released as on a normal return and the next
+	// tick runs.
+	recovered := func(ctx context.Context) {
+		safego.Run(ctx, "sweeper."+name, func() { tick(ctx) })
+	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -1218,11 +1225,11 @@ func runAdvisoryGatedSweeper(
 			return
 		case <-t.C:
 			if lock == nil {
-				tick(ctx)
+				recovered(ctx)
 				continue
 			}
 			acquired, err := lock.TryRun(ctx, lockKey, func(ctx context.Context) error {
-				tick(ctx)
+				recovered(ctx)
 				return nil
 			})
 			if err != nil {

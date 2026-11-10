@@ -149,7 +149,7 @@ func (b *boot) startPauseAndResume() {
 				interval = time.Minute // the replicas sweeper's own default
 			}
 			mgr := pauseMgrRef
-			go runAdvisoryGatedSweeper(bgCtx, interval, advisoryLock, coord.LockKeyResumePausedRuns, "resume_paused",
+			goAdvisoryGatedSweeper(bgCtx, interval, advisoryLock, coord.LockKeyResumePausedRuns, "resume_paused",
 				func(ctx context.Context) {
 					resumeOrphanedPausedRuns(ctx, func() bool { return mgr.State() != pause.StateRunning }, srv.ResumePausedRuns)
 				})
@@ -299,7 +299,7 @@ func (b *boot) startMetrics() {
 			"interval", cfg.Env.MetricsSampleInterval, "system", cfg.Env.MetricsCollectSystem)
 		if cfg.Env.MetricsSweepInterval > 0 && cfg.Env.MetricsRetentionDays > 0 {
 			retentionDays := cfg.Env.MetricsRetentionDays
-			go runAdvisoryGatedSweeper(bgCtx, cfg.Env.MetricsSweepInterval, advisoryLock, coord.LockKeyMetricsSweeper, "metrics",
+			goAdvisoryGatedSweeper(bgCtx, cfg.Env.MetricsSweepInterval, advisoryLock, coord.LockKeyMetricsSweeper, "metrics",
 				func(ctx context.Context) {
 					cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
 					swept, err := storeIface.MetricsSweep(ctx, cutoff)
@@ -506,7 +506,7 @@ func (b *boot) startVolumeAndAgentSweepers() {
 	// `register_agent` MCP tool simply have an empty table the sweeper
 	// passes over with zero rows deleted.
 	if cfg.Env.DynamicAgentSweepInterval > 0 {
-		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.DynamicAgentSweepInterval, advisoryLock, coord.LockKeyDynamicAgentSweeper, "dynamic_agents",
+		goAdvisoryGatedSweeper(bgCtx, cfg.Env.DynamicAgentSweepInterval, advisoryLock, coord.LockKeyDynamicAgentSweeper, "dynamic_agents",
 			func(ctx context.Context) {
 				n, err := storeIface.DynamicAgentSweep(ctx)
 				if err != nil {
@@ -529,7 +529,7 @@ func (b *boot) startVolumeAndAgentSweepers() {
 	// Needs a dynamic_root to have anything to clean (no root → no ephemeral
 	// volumes); skipped otherwise.
 	if dynRoot, hasDynRoot := builtin.DynamicVolumeRoot(cfg); cfg.Env.EphemeralVolumeSweepInterval > 0 && storeIface != nil && hasDynRoot {
-		go runAdvisoryGatedSweeper(bgCtx, cfg.Env.EphemeralVolumeSweepInterval, advisoryLock, coord.LockKeyEphemeralVolumeSweeper, "ephemeral_volumes",
+		goAdvisoryGatedSweeper(bgCtx, cfg.Env.EphemeralVolumeSweepInterval, advisoryLock, coord.LockKeyEphemeralVolumeSweeper, "ephemeral_volumes",
 			func(ctx context.Context) {
 				cands, err := storeIface.EphemeralVolumeSweepCandidates(ctx)
 				if err != nil {
