@@ -25,6 +25,7 @@
  */
 
 import type { _FetchContext } from "./fetch-helpers.js";
+import { LoomcycleError } from "./errors.js";
 import {
   authHeaders,
   authorizedFetch,
@@ -43,6 +44,7 @@ import { deviceLogin } from "./device-login.js";
 import {
   ClientToolHost,
   clientToolsURL,
+  type ClientToolsCredential,
   type ConnectClientToolsOptions,
 } from "./client-tools.js";
 import type {
@@ -2426,13 +2428,59 @@ export class LoomcycleClient {
    *  `.close()` to stop. Uses the global WebSocket (browsers, Node 22+); pass
    *  `WebSocketImpl` (e.g. the `ws` package) on older Node. */
   connectClientTools(opts: ConnectClientToolsOptions): ClientToolHost {
-    // A provider is asked on every (re)connect, so a host outliving one
-    // access token reconnects with the next.
-    const provider = this.tokenProvider;
-    const auth = provider ? () => provider.getToken() : this.ctx.authToken;
+    // With a credential, every (re)connect mints a fresh one-time ticket (a
+    // ticket is spent by the handshake); a host outliving one access token
+    // mints the next through the provider. Without one (an open-mode
+    // server) the socket is opened bare, as before.
+    const auth =
+      this.tokenProvider || this.ctx.authToken ? () => this.clientToolsCredential() : undefined;
     const host = new ClientToolHost(clientToolsURL(this.ctx.baseUrl), auth, opts);
     host.start();
     return host;
+  }
+
+  /** Mint a one-time ticket for the client-tool socket (RFC GJ): POST
+   *  /v1/client-tools/ticket with this client's credential. The ticket opens
+   *  one socket, within 30 s of the mint, as `ticket.<t>` in
+   *  Sec-WebSocket-Protocol — the way a browser opens the socket under
+   *  strict sign-in, where the bearer is not read from that header.
+   *  connectClientTools calls it for you on every connect. */
+  async clientToolsTicket(opts?: { signal?: AbortSignal }): Promise<{ ticket: string; expiresAt: string }> {
+    const out = await postJSON<{ ticket: string; expires_at: string }>(
+      this.ctx,
+      "/v1/client-tools/ticket",
+      undefined,
+      opts,
+    );
+    return { ticket: out.ticket, expiresAt: out.expires_at };
+  }
+
+  /** The credential a client-tool connect presents: a fresh ticket, or —
+   *  only when the server has no ticket route (an older runtime: 404/405)
+   *  or issues no tickets (503 ticket_unavailable) and does not run strict
+   *  sign-in — the bearer itself, as before. Under strict sign-in the
+   *  bearer is never put in the handshake header: the server would not
+   *  read it, and proxies and access logs do not treat that header as a
+   *  credential. */
+  private async clientToolsCredential(): Promise<ClientToolsCredential | undefined> {
+    try {
+      return { ticket: (await this.clientToolsTicket()).ticket };
+    } catch (err) {
+      const noTicket =
+        err instanceof LoomcycleError &&
+        (err.status === 404 || err.status === 405 || (err.status === 503 && err.code === "ticket_unavailable"));
+      if (!noTicket) throw err;
+      const me = await this.whoami();
+      if (me.auth?.mode === "strict") {
+        throw new LoomcycleError(
+          "connectClientTools: this loomcycle runs strict sign-in and issues no client-tool ticket " +
+            "(it needs a release with POST /v1/client-tools/ticket and LOOMCYCLE_SECRET_KEY set)",
+          { code: "ticket_unavailable" },
+        );
+      }
+      const token = this.tokenProvider ? await this.tokenProvider.getToken() : this.ctx.authToken;
+      return token ? { bearer: token } : undefined;
+    }
   }
 
   /** Restore from a same-instance snapshot id OR an inline

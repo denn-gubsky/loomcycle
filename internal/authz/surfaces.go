@@ -137,7 +137,9 @@ func HTTPSurface(method, path string) (Surface, bool) {
 				return instance(channelVerb(rest[4]), "channel", rest[3]), true
 			}
 		}
-	case path == "/v1/client-tools":
+	// The client-tools socket, and the ticket that opens it (RFC GJ): one
+	// question, so a caller denied the socket mints nothing.
+	case path == "/v1/client-tools", path == "/v1/client-tools/ticket":
 		return typeLevel("run", "agent"), true
 	case path == "/v1/config":
 		return Surface{}, false

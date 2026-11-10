@@ -449,7 +449,7 @@ describe("LoomcycleClient with a token provider", () => {
     expect(call(fetchMock, 1).headers.has("authorization")).toBe(false);
   });
 
-  it("opens a client-tool socket with the provider's token", async () => {
+  it("mints the client-tool ticket with the provider's token", async () => {
     const opened: string[][] = [];
     class FakeWS implements WebSocketLike {
       onopen = null;
@@ -462,7 +462,36 @@ describe("LoomcycleClient with a token provider", () => {
       send(): void {}
       close(): void {}
     }
-    const { client } = setup([]);
+    const { client, fetchMock } = setup([json({ ticket: "lct1.x.y", expires_at: "2026-11-10T00:00:30Z" })]);
+    const host = client.connectClientTools({
+      tools: [],
+      onInvoke: () => null,
+      WebSocketImpl: FakeWS as unknown as WebSocketCtor,
+      reconnect: false,
+    });
+    await vi.waitFor(() => expect(opened).toHaveLength(1));
+    expect(call(fetchMock, 0).headers.get("authorization")).toBe("Bearer at-1");
+    expect(opened[0]).toContain("ticket.lct1.x.y");
+    host.close();
+  });
+
+  it("opens a client-tool socket with the provider's token on a server without tickets", async () => {
+    const opened: string[][] = [];
+    class FakeWS implements WebSocketLike {
+      onopen = null;
+      onclose = null;
+      onerror = null;
+      onmessage = null;
+      constructor(_url: string, protocols?: string | string[]) {
+        opened.push([protocols ?? []].flat());
+      }
+      send(): void {}
+      close(): void {}
+    }
+    const { client } = setup([
+      json({ code: "not_found", error: "no such route" }, 404),
+      json({ tenant_id: "t", subject: "s", scopes: [], is_admin: false, auth: { mode: "token" } }),
+    ]);
     const host = client.connectClientTools({
       tools: [],
       onInvoke: () => null,

@@ -600,6 +600,7 @@ The tenant is your own. `opts.tenant` names another for an admin token, and for 
 | `listGateIdentities(gate, subject, opts?)` | `GET /v1/_authgate/{gate}/identities?subject=` | `GateIdentitiesResponse` — logins, `has_password`, `has_totp` |
 | `getGateTenantStatus(gate, opts?)` | `GET /v1/_authgate/{gate}/tenant-status` | `GateTenantStatus` — whether the tenant has, or ever had, a user, and whether an owner invite is live |
 | `deviceLogin({onPrompt, clientId?, signal?})` | `POST /v1/_auth/device`, then `POST /v1/_auth/device/token` | `DeviceLoginResult` — signs a person in through the server's device gate (RFC 8628): `onPrompt` gets the code to show, the person approves it at `/ui/device`, and the token is theirs, never outliving the session they approved from. Sends no bearer. `DeviceLoginError` (`code` `access_denied` / `expired_token`) otherwise |
+| `clientToolsTicket(opts?)` | `POST /v1/client-tools/ticket` | `{ticket, expiresAt}` — a one-time ticket that opens one client-tool socket within 30 s, presented as `ticket.<t>` in `Sec-WebSocket-Protocol`. `connectClientTools` mints one before every connect and reconnect; it falls back to the `bearer.<token>` entry only on a server without tickets (404/405, or 503 `ticket_unavailable`) that does not run strict sign-in. 503 `ticket_unavailable` without `LOOMCYCLE_SECRET_KEY` |
 
 None of these takes a password: the person sets their own through the invite or reset link. Hand the link's `url` to the person and do not log it — its fragment is the one-time code.
 
@@ -702,7 +703,7 @@ const tokens = await oauth.completeAuthorize({
 
 A Tauri app may register a private-use scheme instead (`loomboard://auth/callback`) and pass the deep link it receives to `parseAuthorizeResponse`. Token calls made from its webview send the origin `tauri://localhost`, which the client must list in `allowed_origins`; calls from the Rust or Node side send none.
 
-**The token provider.** `new LoomcycleClient({ tokenProvider })` (instead of `authToken`; passing both throws) asks the provider for the bearer on every request, `connectClientTools` included. `OAuthTokenProvider` refreshes 60 s before the access token expires (`refreshSkewMs`), and once after a 401: the request is retried a single time with the new token, never more. Concurrent requests share one refresh. Any other source of short-lived tokens can implement `TokenProvider` (`getToken`, optional `onUnauthorized`).
+**The token provider.** `new LoomcycleClient({ tokenProvider })` (instead of `authToken`; passing both throws) asks the provider for the bearer on every request, `connectClientTools`'s ticket mint included. `OAuthTokenProvider` refreshes 60 s before the access token expires (`refreshSkewMs`), and once after a 401: the request is retried a single time with the new token, never more. Concurrent requests share one refresh. Any other source of short-lived tokens can implement `TokenProvider` (`getToken`, optional `onUnauthorized`).
 
 Things to know:
 
