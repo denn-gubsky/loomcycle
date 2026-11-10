@@ -369,7 +369,7 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		hashInput = in.ImportToken
 	}
 	ident := tools.RunIdentity(ctx)
-	row := store.OperatorTokenDefRow{
+	created, failed := s.insertCreated(ctx, store.OperatorTokenDefRow{
 		DefID:            mintDefID(),
 		Name:             in.Name,
 		TenantID:         in.TenantID,
@@ -379,25 +379,10 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		CreatedByAgentID: ident.AgentID,
 		ExpiresAt:        expiresAt,
 		RestrictionsJSON: restrictionsJSON,
-	}
-	ev, aErr := s.auditIntent(ctx, audit.Event{
-		Action: "create", TargetDefID: row.DefID, TargetName: row.Name,
-		TargetTenant: row.TenantID, TargetSubject: row.Subject, ScopesAfter: scopes,
 	})
-	if aErr != nil {
-		return tools.AuditUnavailable("create"), nil
+	if failed != nil {
+		return *failed, nil
 	}
-	done := false
-	defer func() {
-		if !done {
-			s.auditFailed(ev)
-		}
-	}()
-	created, err := s.Store.OperatorTokenDefCreate(ctx, row)
-	if err != nil {
-		return errResult(fmt.Sprintf("create: %s", err)), nil
-	}
-	done = true
 	if imported {
 		// No plaintext to show — the operator already holds the env token.
 		m := operatorTokenRowResponse(created)
@@ -405,6 +390,26 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		return okJSON(m)
 	}
 	return okJSON(operatorTokenCreateResponse(created, plaintext, suffix))
+}
+
+// insertCreated stores a newly minted row with its audit record written
+// ahead, or returns the result that refuses the create.
+func (s *OperatorTokenDef) insertCreated(ctx context.Context, row store.OperatorTokenDefRow) (store.OperatorTokenDefRow, *tools.Result) {
+	ev, aErr := s.auditIntent(ctx, audit.Event{
+		Action: "create", TargetDefID: row.DefID, TargetName: row.Name,
+		TargetTenant: row.TenantID, TargetSubject: row.Subject, ScopesAfter: row.AllowedScopes,
+	})
+	if aErr != nil {
+		r := tools.AuditUnavailable("create")
+		return store.OperatorTokenDefRow{}, &r
+	}
+	created, err := s.Store.OperatorTokenDefCreate(ctx, row)
+	if err != nil {
+		s.auditFailed(ev)
+		r := errResult(fmt.Sprintf("create: %s", err))
+		return store.OperatorTokenDefRow{}, &r
+	}
+	return created, nil
 }
 
 // checkTenantCaseFold refuses a tenant id that would share an on-disk volume
@@ -484,6 +489,12 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
+	return s.rotateRow(ctx, prior, in.GraceSeconds)
+}
+
+// rotateRow replaces prior with a new token carrying everything prior
+// carried; prior stops after the grace window (graceSeconds overrides it).
+func (s *OperatorTokenDef) rotateRow(ctx context.Context, prior store.OperatorTokenDefRow, graceSeconds *int) (tools.Result, error) {
 	// A token an auth gate issued (RFC FA §7) is a short-lived login, not a
 	// standing credential: the person signs in through the gate again. A
 	// rotation would mint a token the gate never vouched for.
@@ -544,8 +555,8 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 		return errResult(fmt.Sprintf("rotate: %s", err)), nil
 	}
 	grace := s.grace()
-	if in.GraceSeconds != nil && *in.GraceSeconds >= 0 {
-		grace = time.Duration(*in.GraceSeconds) * time.Second
+	if graceSeconds != nil && *graceSeconds >= 0 {
+		grace = time.Duration(*graceSeconds) * time.Second
 	}
 	retireOldAt := time.Now().Add(grace).UTC()
 	if err := s.Store.OperatorTokenDefSetRetiredAt(ctx, prior.DefID, retireOldAt); err != nil {
@@ -611,6 +622,11 @@ func (s *OperatorTokenDef) execRetire(ctx context.Context, in operatorTokenDefIn
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
+	return s.retireRow(ctx, target)
+}
+
+// retireRow retires target now.
+func (s *OperatorTokenDef) retireRow(ctx context.Context, target store.OperatorTokenDefRow) (tools.Result, error) {
 	// No-fail-open guard (RFC L Decision 12). Retiring the last active
 	// admin-scoped token drops the active-admin count to zero; with no legacy
 	// LOOMCYCLE_AUTH_TOKEN fallback, authConfigured then flips to false and the
