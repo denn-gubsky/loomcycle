@@ -23,6 +23,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -1266,13 +1267,16 @@ func isTokenCreateOp(input json.RawMessage) bool {
 // response.
 func createdTokenPrincipal(body string) (tenant, subject string, ok bool) {
 	var r struct {
-		TenantID string `json:"tenant_id"`
-		Subject  string `json:"subject"`
+		TenantID      string   `json:"tenant_id"`
+		Subject       string   `json:"subject"`
+		AllowedScopes []string `json:"allowed_scopes"`
 	}
 	if err := json.Unmarshal([]byte(body), &r); err != nil {
 		return "", "", false
 	}
-	if r.TenantID == "" {
+	// A single-purpose machine credential (a scrape, SCIM or user-management
+	// token) establishes no person, so there is no one to give a profile.
+	if r.TenantID == "" || auth.HoldsSinglePurposeScope(r.AllowedScopes) {
 		return "", "", false
 	}
 	return r.TenantID, r.Subject, true

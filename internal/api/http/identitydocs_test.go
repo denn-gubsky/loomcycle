@@ -377,3 +377,24 @@ func identityDocsReq(method, path, body string) *http.Request {
 		Scopes:   []string{auth.ScopeAdmin},
 	}))
 }
+
+// A single-purpose machine credential (a scrape, SCIM or user-management
+// token) is no person: its mint provisions no identity documents for its
+// subject.
+func TestOperatorTokenDef_AMachineCredentialMintProvisionsNoProfile(t *testing.T) {
+	for _, scope := range []string{auth.ScopeMetricsRead, auth.ScopeSCIMProvision, auth.ScopeAuthManage} {
+		s, _ := identityDocsFixture(t, true)
+		s.SetOperatorTokenDefTool(&builtin.OperatorTokenDef{Store: s.store})
+		req, _ := json.Marshal(map[string]any{
+			"op": "create", "name": "machine", "tenant_id": "acme", "subject": "machine",
+			"scopes": []string{scope},
+		})
+		res, err := s.OperatorTokenDef(tokenAdminCtx(), req)
+		if err != nil || res.IsError {
+			t.Fatalf("%s create failed: %v %s", scope, err, res.Text)
+		}
+		if s.docExistsAt(t, memInject{Tenant: "acme", UserID: "machine"}, "user", meminject.UserRootPath) {
+			t.Errorf("a %s token's mint provisioned a profile for its subject", scope)
+		}
+	}
+}
