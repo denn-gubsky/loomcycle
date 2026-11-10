@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/exemplar"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/semconv/v1.41.0/genaiconv"
 	"go.opentelemetry.io/otel/trace"
@@ -190,6 +191,13 @@ func newMeterState(ctx context.Context, cfg MetricsConfig, extra []sdkmetric.Rea
 	reader := sdkmetric.NewManualReader()
 	opts := []sdkmetric.Option{sdkmetric.WithReader(reader), sdkmetric.WithCardinalityLimit(limit)}
 	export := cfg.Export || len(extra) > 0
+	if !export {
+		// Exemplars ride the OTLP path only; /metrics never renders them, so
+		// without export collecting them is wasted work. With export the
+		// SDK's default (trace-based, or OTEL_METRICS_EXEMPLAR_FILTER)
+		// applies.
+		opts = append(opts, sdkmetric.WithExemplarFilter(exemplar.AlwaysOffFilter))
+	}
 	if cfg.Export {
 		res, err := newResource(ctx, Config{ServiceVersion: cfg.ServiceVersion, InstanceID: cfg.InstanceID, Environment: cfg.Environment})
 		if err != nil {

@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/instrumentation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func attrs(kv ...string) attribute.Set {
@@ -319,5 +320,62 @@ func TestRenderPrometheus_ConfinedToTheSharedTenant(t *testing.T) {
 	got := renderPrometheus(rm, PromOptions{Confined: true})
 	if !strings.Contains(got, `loomcycle_x{tenant=""} 1`) || strings.Contains(got, "beta") || strings.Contains(got, "store") {
 		t.Errorf("confined to \"\" =\n%s", got)
+	}
+}
+
+// exemplarCount is the exemplars on the run-duration histogram rm holds.
+func exemplarCount(t *testing.T, rm metricdata.ResourceMetrics) int {
+	t.Helper()
+	n := 0
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if h, ok := m.Data.(metricdata.Histogram[float64]); ok && m.Name == "loomcycle.run.duration" {
+				for _, dp := range h.DataPoints {
+					n += len(dp.Exemplars)
+				}
+			}
+		}
+	}
+	return n
+}
+
+// Exemplars are collected only when something exports them: /metrics never
+// renders one, so with OTLP export off the filter is off.
+func TestMetrics_ExemplarsOnlyWithExport(t *testing.T) {
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	t.Cleanup(SetTracerProviderForTest(tp))
+	run := func() {
+		_, span := RecordRunStart(context.Background(), RunStartAttrs{Tenant: "t"})
+		SetRunDone(span, RunDoneAttrs{})
+		span.End()
+	}
+
+	restore, err := SetMetricsForTest(false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run()
+	var rm metricdata.ResourceMetrics
+	if err := meters.Load().reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	restore()
+	if n := exemplarCount(t, rm); n != 0 {
+		t.Errorf("export off: %d exemplars collected, want none", n)
+	}
+
+	otlp := sdkmetric.NewManualReader()
+	restore, err = SetMetricsForTest(false, 0, otlp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restore()
+	run()
+	rm = metricdata.ResourceMetrics{}
+	if err := otlp.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	if n := exemplarCount(t, rm); n == 0 {
+		t.Error("export on: no exemplar on a sampled run's duration")
 	}
 }
