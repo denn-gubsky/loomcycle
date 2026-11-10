@@ -1133,7 +1133,6 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			}
 			childCtx = tools.WithChildOutcome(childCtx, outcome)
 			out, childState, childRunID, timedOut, err := a.runChildBounded(childCtx, sp.TimeoutMs, sp.Name, sp.Prompt, sp.DefID)
-			finished = true
 			var r ParallelSpawnResult
 			if obj, ran := newSpawnObject(outcome, sp.Name, sp.TimeoutMs, out, timedOut, err); ran {
 				objects[i] = &obj
@@ -1151,6 +1150,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 				r = ParallelSpawnResult{Index: i, Agent: sp.Name, Ok: true, Output: out, State: childState, RunID: childRunID}
 			}
 			results[i] = r
+			finished = true
 			// Record this child's result on the parent's transcript so a
 			// child that completed BEFORE a snapshot (whose run row isn't
 			// captured) still has a recoverable result on resume.
