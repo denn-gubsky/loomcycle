@@ -45,6 +45,20 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
 )
 
+// MetricsListenerHandler is the handler of the separate metrics listener
+// (LOOMCYCLE_METRICS_LISTEN): it serves only GET/HEAD /metrics, with NO
+// authentication; nothing else is served there. It renders what the main
+// listener's /metrics does, less the series that name a user. It is meant
+// for a network only the scraper can reach; the main listener keeps serving
+// the authenticated /metrics regardless.
+func (s *Server) MetricsListenerHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", recoveryMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		s.renderMetricsProm(w, promView{omitUserSeries: true})
+	})))
+	return mux
+}
+
 // promView is what one /metrics reader may see.
 type promView struct {
 	// confined limits the reader to tenant: only the instrument series

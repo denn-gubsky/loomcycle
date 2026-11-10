@@ -107,6 +107,8 @@ func Class(p auth.Principal) string {
 		return "authmanager"
 	case auth.IsSCIMProvisioner(p):
 		return "scimprovisioner"
+	case auth.IsMetricsReader(p):
+		return "metricsreader"
 	case p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin):
 		return "admin"
 	case auth.HasScope(p.Scopes, auth.ScopeTenant):
@@ -179,7 +181,7 @@ func splitClassKey(key string) (class string, runPlane bool, surfaces []string, 
 		}
 	}
 	switch class {
-	case "admin", "tenant", "isolated", "member", "authmanager", "scimprovisioner":
+	case "admin", "tenant", "isolated", "member", "authmanager", "scimprovisioner", "metricsreader":
 		return class, runPlane, surfaces, true
 	}
 	return "", false, nil, false
@@ -197,6 +199,8 @@ func baselineName(class string) string {
 		return authz.BaselineAuthManager
 	case "scimprovisioner":
 		return authz.BaselineSCIMProvisioner
+	case "metricsreader":
+		return authz.BaselineMetricsReader
 	}
 	return authz.BaselineMember
 }

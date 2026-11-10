@@ -43,15 +43,16 @@ func TestKnowledgeBaseBundle_Validates(t *testing.T) {
 	if linker.Model != "" || linker.Tier != "" {
 		t.Errorf("kb/linker names model %q / tier %q — a code agent resolves no model, so either is dead config", linker.Model, linker.Tier)
 	}
-	// Exactly the three tools the body calls. Memory, Path, Bash and every
-	// network tool are absent by construction; listing them as denials as well
-	// makes the failure message name the capability that crept in.
+	// Exactly the four tools the body calls (Context for op=time only: the relate
+	// layer's wall clock). Memory, Path, Bash and every network tool are absent by
+	// construction; listing them as denials as well makes the failure message name
+	// the capability that crept in.
 	got := append([]string(nil), linker.Tools...)
 	sort.Strings(got)
-	if strings.Join(got, ",") != "Agent,Channel,Document" {
-		t.Errorf("kb/linker tools = %v, want exactly [Document Agent Channel]", linker.Tools)
+	if strings.Join(got, ",") != "Agent,Channel,Context,Document" {
+		t.Errorf("kb/linker tools = %v, want exactly [Document Agent Channel Context]", linker.Tools)
 	}
-	for _, denied := range []string{"Memory", "Bash", "Bashbox", "HTTP", "WebFetch", "WebSearch", "Path", "Skill", "Context"} {
+	for _, denied := range []string{"Memory", "Bash", "Bashbox", "HTTP", "WebFetch", "WebSearch", "Path", "Skill"} {
 		if hasToolPreset(linker.Tools, denied) {
 			t.Errorf("kb/linker grants %q — it reaches documents, spawns a judge and reads its queue, nothing more", denied)
 		}
@@ -79,12 +80,9 @@ func TestKnowledgeBaseBundle_Validates(t *testing.T) {
 			t.Errorf("kb/linker grants the MCP tool %q — no network reach", tool)
 		}
 	}
-	// The runtime auto-adds Skill and Context unless these deny them.
+	// The runtime auto-adds Skill unless this denies it.
 	if !containsString(linker.Skills, "-*") {
 		t.Error("kb/linker must declare skills: [-*], or the runtime auto-adds the Skill tool")
-	}
-	if !linker.DisableContext {
-		t.Error("kb/linker must set disable_context: true, or the runtime auto-adds the Context tool")
 	}
 	// No scope grants: user-scope Documents need none, and a tenant Document grant
 	// is a tenant WRITE grant an operator gives deliberately, in an overlay.

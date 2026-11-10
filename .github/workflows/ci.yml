@@ -211,7 +211,23 @@ jobs:
             # Each new input the fuzzer keeps is minimized first, for up to
             # 60 s by default, while every worker stops: that would use the
             # whole budget on one input.
-            go test -run='^$' -fuzz="^${target}\$" -fuzztime=30s -fuzzminimizetime=5s ./internal/files/extract/
+            #
+            # On a loaded runner the fuzzer itself can miss its own stop: the
+            # run ends "context deadline exceeded" with no failing input written
+            # (FuzzExtractXLSX, -ODT and -VTT each did once; none reproduced).
+            # A real finding always writes its input under testdata/fuzz, so
+            # only that exact shape is retried, once; a second one fails.
+            for attempt in 1 2; do
+              out="$(mktemp)"
+              if go test -run='^$' -fuzz="^${target}\$" -fuzztime=30s -fuzzminimizetime=5s ./internal/files/extract/ 2>&1 | tee "$out"; test "${PIPESTATUS[0]}" -eq 0; then
+                break
+              fi
+              if [ "$attempt" = 1 ] && grep -q 'context deadline exceeded' "$out" && ! grep -q -e 'Failing input written to' -e 'panic:' "$out"; then
+                echo "::warning::$target: the fuzzer missed its own deadline with no failing input; retrying once"
+                continue
+              fi
+              exit 1
+            done
             echo "::endgroup::"
           done
 

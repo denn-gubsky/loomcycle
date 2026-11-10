@@ -44,6 +44,8 @@ chunk, and `backlinks` when you want the chunks that already link to it.
   under it, e.g. `topics` for a whole scheme.
 - `as_of` — only chunks whose stated validity contains this moment (unix
   nanoseconds); a chunk with no stated validity always matches.
+- `with_summary` — add each row's nearest annotation as `summary`, as `search` does.
+- `summary_chars` — with `with_summary`, the most abstract characters the answer carries (default 2000, at most 8000).
 
 ## Aiming the neighbours
 

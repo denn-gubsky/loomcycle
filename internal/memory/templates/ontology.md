@@ -77,6 +77,12 @@ one `@boilerplate` line per kind; they are joined as alternatives. A pattern
 matches anywhere in a paragraph, so anchor it with `^` to match how one starts. A
 subclass inherits it.
 
+A document class can mark its documents as the tenant's norms — the rules other
+documents are measured against — with a bare `@norm` line. A subclass of a norm is
+a norm. The links agent compares a document against the norms by default when the
+ontology marks any. `@norm` takes no value, and on an entity type it is ignored
+with a warning.
+
 **Relation kinds.** A `@section relations` heading names the kinds of link agents
 may record between two things. Declaring one — even an empty one — switches on the
 standard kinds (`cites`, `based_on`, `amends`, `implements`, `related`, …) for every

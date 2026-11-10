@@ -2,6 +2,8 @@ package sqlmem
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -142,6 +144,56 @@ func TestTxn_MaxOpen(t *testing.T) {
 		t.Fatalf("begin 2 after freeing a slot: %v", err)
 	}
 	_, _ = m.RollbackTxn(id2)
+}
+
+// TestTxn_OneTenantFillingTheCapLeavesASlotForAnother: with only the global
+// cap set, a tenant's share defaults to a quarter of it, so one tenant opening
+// transactions until refused still leaves room for a second tenant.
+func TestTxn_OneTenantFillingTheCapLeavesASlotForAnother(t *testing.T) {
+	m := newTestManager(t, Config{MaxOpenTxns: 4})
+	ctx := context.Background()
+	opened := 0
+	for i := 0; i < 4; i++ {
+		agent := fmt.Sprintf("a%d", i)
+		if _, err := m.BeginTxn(ctx, agentTxnID("runA", agent), "runA", agentKey("tenantA", agent)); err != nil {
+			if !strings.Contains(err.Error(), "too many open transactions") {
+				t.Fatalf("tenant A begin %d: refusal is %q, want the cap error", i, err)
+			}
+			break
+		}
+		opened++
+	}
+	if opened != 1 {
+		t.Fatalf("tenant A opened %d of 4 slots, want its share of 1", opened)
+	}
+	if _, err := m.BeginTxn(ctx, agentTxnID("runB", "b"), "runB", agentKey("tenantB", "b")); err != nil {
+		t.Fatalf("tenant B begin after tenant A filled its share: %v", err)
+	}
+	m.RollbackRunTxns("runA")
+	m.RollbackRunTxns("runB")
+}
+
+// TestTxn_PerTenantShareIsConfigurable: an explicit per-tenant cap replaces the
+// default share, and finishing a transaction frees that tenant's slot.
+func TestTxn_PerTenantShareIsConfigurable(t *testing.T) {
+	m := newTestManager(t, Config{MaxOpenTxns: 8, MaxOpenTxnsPerTenant: 3})
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		agent := fmt.Sprintf("a%d", i)
+		if _, err := m.BeginTxn(ctx, agentTxnID("runA", agent), "runA", agentKey("tenantA", agent)); err != nil {
+			t.Fatalf("tenant A begin %d: %v", i, err)
+		}
+	}
+	if _, err := m.BeginTxn(ctx, agentTxnID("runA", "a3"), "runA", agentKey("tenantA", "a3")); err == nil {
+		t.Fatal("tenant A opened a 4th transaction past its share of 3")
+	}
+	if _, err := m.RollbackTxn(agentTxnID("runA", "a0")); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if _, err := m.BeginTxn(ctx, agentTxnID("runA", "a3"), "runA", agentKey("tenantA", "a3")); err != nil {
+		t.Fatalf("tenant A begin after freeing a slot: %v", err)
+	}
+	m.RollbackRunTxns("runA")
 }
 
 // TestTxn_RollbackRunTxns: run-end cleanup rolls back the tree's open txns.

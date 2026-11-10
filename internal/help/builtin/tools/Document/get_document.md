@@ -17,6 +17,8 @@ turn a path into a `document_id` and a `root_chunk_id`.
 - `across_scopes` — `true` also looks for the same subject in your other
   readable scopes (only meaningful when the root is a fact subject). Costs up
   to three extra queries; never reaches another user's store.
+- `with_summary` — add the document's annotation as `summary` (`{level, brief, abstract, stale?}`), when it has one. `summary_chars` caps the abstract (default 2000).
+- `summary_chars` — with `with_summary`, the most abstract characters the answer carries (default 2000, at most 8000).
 
 ## Returns
 

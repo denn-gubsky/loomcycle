@@ -26,6 +26,30 @@ if ! curl -fsS "$BASE/healthz" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Prometheus scrapes /metrics with a metrics:read token read from
+# prometheus/secrets/loomcycle.token. Mint it once; the admin token above
+# never goes into Prometheus's config.
+SCRAPE_TOKEN_FILE="$(dirname "$0")/prometheus/secrets/loomcycle.token"
+if [ ! -s "$SCRAPE_TOKEN_FILE" ]; then
+  echo "→ Minting a metrics:read token for Prometheus into $SCRAPE_TOKEN_FILE"
+  minted="$(curl -fsS \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -X POST "$BASE/v1/_operatortokendef" \
+    --data-binary '{"op":"create","name":"prometheus","tenant_id":"ops","scopes":["metrics:read"]}')" || {
+    echo "ERROR: minting the scrape token failed (a live token named \"prometheus\" already exists?" >&2
+    echo "       rotate it with: loomcycle operator-token rotate --name prometheus)" >&2
+    exit 1
+  }
+  # World-readable on purpose: Prometheus reads it as `nobody` inside its
+  # container. The token opens GET /metrics and nothing else.
+  (umask 022 && printf '%s' "$minted" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p' > "$SCRAPE_TOKEN_FILE")
+  if [ ! -s "$SCRAPE_TOKEN_FILE" ]; then
+    echo "ERROR: the mint answer carried no token" >&2
+    exit 1
+  fi
+fi
+
 echo "→ Firing $RUNS runs across ${#USERS[@]} users / ${#PROMPTS[@]} prompts"
 for ((i=1; i<=RUNS; i++)); do
   user="${USERS[$((RANDOM % ${#USERS[@]}))]}"

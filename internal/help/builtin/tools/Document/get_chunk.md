@@ -12,6 +12,8 @@ right before `update_chunk` so the revision you pass is current.
 - `id` (required) — the **chunk** id. For a document's top chunk, use the
   `root_chunk_id` from `get_document`; a `document_id` here is "no such chunk".
 - `scope` — `user` (default), `agent` or `tenant`.
+- `with_summary` — add the nearest annotation at or above this chunk as `summary` (`{level, brief, abstract, stale?, chunk_id?}`; `chunk_id` names the ancestor it came from), and the document's own as `document_summary`.
+- `summary_chars` — with `with_summary`, the most abstract characters the answer carries (default 2000, at most 8000).
 
 ## Returns
 

@@ -61,7 +61,9 @@
 # STATUS: RFC FP PHASE D. The writing path uses the runtime's
 # `statement_methods` grant and `method` field, `maintain_statement`, the
 # `list_statements` filters, `describe_ontology`, `extract_citations`, `classify`
-# and the named document lease. L4 files `elaborates` only; L5 writes a report
+# and the named document lease. L4 never files `elaborates`, `conflicts_with` or
+# `stricter_than` (measured almost always false; reported, not filed) and files
+# a kind the tenant ontology declares itself; L5 writes a report
 # document and no statements; the only hard deletion is a sweep's purge, on
 # request. Not built here: L3 mentions of instances and registry names.
 #
@@ -85,7 +87,8 @@
 #     unfiltered neighbourhood.
 #
 # ⚠️ L4 SPENDS TOKENS: one `kb/verdict` call per claim-bearing chunk that has
-# candidates, capped by `max_verdict_calls`. Every other layer is zero-token.
+# candidates, capped by `max_verdict_calls` and by `time_budget_seconds` (25
+# minutes by default, read from Context op=time). Every other layer is zero-token.
 # Nothing here is scheduled: an operator adds a ScheduleDef that fires kb/linker
 # with {"mode":"drain","write":"propose"} to link on import (see README).
 #
@@ -135,11 +138,12 @@ agents:
     provider: code-js
     # The tool ceiling, and the whole of it: Document reads and writes
     # statements, Agent spawns the one model call (L4), Channel reads and acks
-    # the ingest queue. No Memory, no Path, no Bash, no network tool, no
-    # credentials. "Report mode writes nothing" is held by the body (every write
+    # the ingest queue, Context answers op=time for L4's wall-clock budget (the
+    # sandbox's own Date is a replay counter, not a clock). No Memory, no Path,
+    # no Bash, no network tool, no credentials. "Report mode writes nothing" is held by the body (every write
     # goes through one function that report mode turns into a count) and by a
     # test that runs the pass and records every op it issues.
-    tools: [Document, Agent, Channel]
+    tools: [Document, Agent, Channel, Context]
     # The ingest and subject queues only, and only to read and ack them. No
     # publish grant.
     channels:
@@ -147,10 +151,9 @@ agents:
     # The methods this code agent may stamp on its statements. The same grant
     # lets it hold the linker lease.
     statement_methods: [rule, extractor]
-    # Deny-all skills (the runtime auto-adds Skill otherwise) and no Context (the
-    # runtime auto-adds it otherwise). Neither is called.
+    # Deny-all skills (the runtime auto-adds Skill otherwise; it is never called).
+    # Context is listed above, so no default-add is involved.
     skills: [-*]
-    disable_context: true
     # MAINTENANCE PLUMBING. The pass's session holds chunk bodies in its tool
     # results, and each verdict child's session holds the texts it judged; as
     # ordinary chats both would become consolidation input, i.e. the store's own
@@ -175,7 +178,13 @@ agents:
       //   L3 terms    — exact and normalised mentions of a concept scheme's terms,
       //                 proposed as uses_term statements, or as defines for the term a
       //                 definitions passage defines.
-      //   L4 relate   — semantic relations judged by kb/verdict. Report only, always.
+      //   L4 relate   — semantic relations judged by kb/verdict, between a passage and
+      //                 the passages of other documents in the corpus (of target_types
+      //                 when given, else of the ontology's @norm classes when it marks
+      //                 any), never a copy or version of the document itself.
+      //                 Headings, contents lines, legends and passages of a few words
+      //                 are skipped before the call. elaborates, conflicts_with and
+      //                 stricter_than are reported, never filed.
       //   L6 maintain — re-checks the live statements touching the document and
       //                 verifies, expires, demotes, merges, re-points or flags them.
       //
@@ -204,8 +213,8 @@ agents:
       //
       // REPLAY. This body re-executes from the top on every loop turn, fast-forwarding
       // the tool results already recorded. It must be a pure function of those
-      // results: no clock, no randomness, no ordering that depends on anything but
-      // the data.
+      // results: no clock but the one Context op=time records, no randomness, no
+      // ordering that depends on anything but the data.
 
       var CONFIG = {
         verdict_agent: "kb/verdict",
@@ -237,10 +246,27 @@ agents:
         max_term_evidence: 3,
         max_report_ids: 50,
         max_successor_hops: 8,
-        // The relate layer's per-kind switch: the kinds a propose pass may file from a
-        // verdict. On MTB only elaborates held up when read by hand (2026-10-30); the
-        // other kinds stay measured, in the report, and are never written.
-        relate_propose_kinds: ["elaborates"]
+        // The relate layer's per-kind switches. relate_propose_kinds are the
+        // built-in kinds a propose pass may file from a verdict; a kind the tenant
+        // ontology declares itself, offered to the verdict on top of the built-ins,
+        // may be filed too. relate_withheld_kinds are never filed, whatever else
+        // says so: read by hand on two corpora, nearly every elaborates finding and
+        // every conflicts_with and stricter_than finding was false. They stay
+        // measured, in the report, marked as not filed.
+        relate_propose_kinds: [],
+        relate_withheld_kinds: ["elaborates", "conflicts_with", "stricter_than"],
+        // The kinds that make two documents copies or versions of each other (the
+        // seed's alternate_of, duplicate_of, version_of and revision_of, and the
+        // revises a tenant may declare). L4 never judges a passage against its own
+        // document's copy family.
+        copy_family_kinds: ["duplicate_of", "alternate_of", "revises", "revision_of", "version_of"],
+        max_copy_family_pages: 20,
+        // A passage line of at most this many words, with no closing punctuation,
+        // is a heading when it is the passage's only line.
+        heading_max_words: 10,
+        // A verdict pass fails when every call failed, or when more than half of at
+        // least this many calls did: a pass that could not judge is not clean.
+        verdict_failure_min_calls: 3
       };
 
       var DEFAULTS = {
@@ -252,6 +278,14 @@ agents:
         max_verdict_calls: 100,
         max_chars: 1500,
         min_body_chars: 80,
+        // Passages and candidates with fewer words than this are not judged, and a
+        // finding whose quote has fewer words than min_quote_words is dropped.
+        min_passage_words: 8,
+        min_quote_words: 4,
+        // The relate layer's wall clock, checked before each verdict call: below the
+        // run's own 30-minute cap, so a slow model stops the pass with its report
+        // rather than the cap killing the run and the report with it.
+        time_budget_seconds: 1500,
         include_quotes: false,
         max_writes: 500,
         max_statements: 500,
@@ -315,7 +349,8 @@ agents:
         terms_scheme: true, as_of: true, max_writes: true, max_statements: true, max_messages: true,
         corpus_paths: true, exclude_document_types: true, candidate_floor: true,
         max_candidates_per_chunk: true, max_verdict_calls: true, max_chars: true,
-        min_body_chars: true, relations: true, include_quotes: true, rejudge: true, merged_into: true,
+        min_body_chars: true, min_passage_words: true, min_quote_words: true, time_budget_seconds: true,
+        target_types: true, relations: true, include_quotes: true, rejudge: true, merged_into: true,
         purge: true, purge_after_days: true, file: true, check_against: true, max_norms: true, report_root: true,
         queue: true
       };
@@ -330,8 +365,9 @@ agents:
         "rejudge (L6), merged_into (subject mode: the surviving subject's document id), " +
         "purge, purge_after_days (sweep mode; path names the subtree), file {root} (L0), " +
         "check_against [\"/…\"], max_norms, report_root (L5), " +
-        "and for L4: corpus_paths [\"/…\"], exclude_document_types, candidate_floor, " +
-        "max_candidates_per_chunk, max_verdict_calls, max_chars, min_body_chars, " +
+        "and for L4: corpus_paths [\"/…\"], target_types, exclude_document_types, candidate_floor, " +
+        "max_candidates_per_chunk, max_verdict_calls, max_chars, min_body_chars, min_passage_words, " +
+        "min_quote_words, time_budget_seconds, " +
         "relations [{name, meaning, domain?, range?}], include_quotes}.";
 
       function run(input) {
@@ -539,6 +575,17 @@ agents:
           }
           o.exclude_document_types = v.exclude_document_types.slice();
         }
+        o.target_types = null;
+        if (v.target_types !== undefined) {
+          if (o.layers.L4 !== true) { return { error: "target_types is read only by the L4 layer, which this run does not include" }; }
+          if (!isArray(v.target_types) || v.target_types.length === 0 || v.target_types.length > CONFIG.max_exclude_types) {
+            return { error: "target_types must be a list of 1 to " + CONFIG.max_exclude_types + " document class names" };
+          }
+          for (var tt = 0; tt < v.target_types.length; tt++) {
+            if (!isName(v.target_types[tt], 128)) { return { error: "target_types[" + tt + "] must be a class name" }; }
+          }
+          o.target_types = v.target_types.slice();
+        }
         var n;
         if ((n = numberField(v, "candidate_floor", DEFAULTS.candidate_floor, 0, 1, false)).error) { return n; }
         o.candidate_floor = n.value;
@@ -550,6 +597,12 @@ agents:
         o.max_chars = n.value;
         if ((n = numberField(v, "min_body_chars", DEFAULTS.min_body_chars, 0, 10000, true)).error) { return n; }
         o.min_body_chars = n.value;
+        if ((n = numberField(v, "min_passage_words", DEFAULTS.min_passage_words, 0, 200, true)).error) { return n; }
+        o.min_passage_words = n.value;
+        if ((n = numberField(v, "min_quote_words", DEFAULTS.min_quote_words, 1, 50, true)).error) { return n; }
+        o.min_quote_words = n.value;
+        if ((n = numberField(v, "time_budget_seconds", DEFAULTS.time_budget_seconds, 10, 86400, true)).error) { return n; }
+        o.time_budget_seconds = n.value;
         if ((n = numberField(v, "max_norms", DEFAULTS.max_norms, 1, 20, true)).error) { return n; }
         o.max_norms = n.value;
         if ((n = numberField(v, "max_writes", DEFAULTS.max_writes, 1, 5000, true)).error) { return n; }
@@ -1200,7 +1253,8 @@ agents:
       // citation and term layers and the kind check skip, with the reason.
       function loadOntology(st) {
         var o = { read: false, exists: false, confirmed: false, partial: false, version: null,
-                  usable: false, check_kind: false, reason: "", kinds: {}, writable: {}, renamed_to: {}, schemes: {} };
+                  usable: false, check_kind: false, reason: "", kinds: {}, writable: {}, renamed_to: {}, schemes: {},
+                  tenant_relations: [], class_parent: {}, norm_classes: null };
         var r;
         try {
           r = call(st, { op: "describe_ontology" });
@@ -1231,6 +1285,8 @@ agents:
           nKinds++;
           // A reserved kind is the runtime's own; the linker never writes one.
           if (o.kinds[rel.name].source !== "reserved") { o.writable[rel.name] = true; }
+          // The kinds the tenant declares itself, for the relate layer to offer.
+          if (o.kinds[rel.name].source === "tenant") { o.tenant_relations.push(rel); }
           if (isKindName(rel.renamed_from)) {
             // Two kinds claiming one former name is ambiguous: neither takes it.
             renamedBy[rel.renamed_from] = hasOwn(renamedBy, rel.renamed_from) ? "" : rel.name;
@@ -1238,6 +1294,22 @@ agents:
         }
         for (var old in renamedBy) {
           if (hasOwn(renamedBy, old) && renamedBy[old] !== "" && !hasOwn(o.kinds, old)) { o.renamed_to[old] = renamedBy[old]; }
+        }
+        var classes = isArray(r.classes) ? r.classes : [];
+        for (var ci = 0; ci < classes.length; ci++) {
+          var cl = classes[ci];
+          if (isPlainObject(cl) && isName(cl.name, 128) && !hasOwn(o.class_parent, cl.name)) {
+            o.class_parent[cl.name] = isName(cl.parent, 128) ? cl.parent : "";
+          }
+        }
+        // The norm classes the ontology marks (@norm), when the runtime reports
+        // them. null — not [] — when it does not: an older runtime, where the
+        // relate layer keeps searching the whole corpus.
+        if (isArray(r.norm_classes)) {
+          o.norm_classes = [];
+          for (var ni = 0; ni < r.norm_classes.length && o.norm_classes.length < CONFIG.max_exclude_types; ni++) {
+            if (isName(r.norm_classes[ni], 128)) { o.norm_classes.push(r.norm_classes[ni]); }
+          }
         }
         var schemes = isArray(r.schemes) ? r.schemes : [];
         for (var s = 0; s < schemes.length; s++) {
@@ -1741,10 +1813,21 @@ agents:
       // the corpus by meaning, one verdict call, a declared kind with two quotes that
       // occur, or nothing. A propose pass files the findings of the kinds the bundle
       // lets it write and the ontology declares; a report pass counts them.
+      //
+      // What reaches a verdict is narrowed first, because a verdict call is the
+      // pass's only cost and the false findings measured on real corpora came from
+      // what it was shown, not from invented quotes: a copy or version of the
+      // document itself, a heading, a table-of-contents line, a rating legend, a
+      // passage of a few words. Each is skipped before the call and counted by name.
       function layerRelate(st, doc) {
-        var vocab = loadVocabulary(st.opts);
+        var vocab = loadVocabulary(st);
         st.l4 = newRelateState(st.opts, vocab);
         var R = st.l4;
+        var targets = relateTargets(st);
+        R.target_types = targets.types;
+        R.target_types_from = targets.from;
+        R.family = loadCopyFamily(st, doc);
+        R.source_title_key = duplicateTitleKey(doc.title);
         var chunks = listChunks(st, doc.id);
         R.chunks_truncated = chunks.truncated;
         R.counts.chunks_total = chunks.rows.length;
@@ -1754,8 +1837,10 @@ agents:
           // no further reads either.
           if (R.counts.verdict_calls >= st.opts.max_verdict_calls) {
             R.budget_stopped = true;
+            R.stop_reason = "max_verdict_calls";
             setStatus(st, "budget_stopped");
             R.counts.chunks_unvisited = chunks.rows.length - i;
+            checkVerdictHealth(R);
             return;
           }
           R.counts.chunks_seen++;
@@ -1772,34 +1857,137 @@ agents:
             skipChunk(R, "chunks_skipped_boilerplate");
             continue;
           }
+          var shape = passageShape(seen, st.opts.min_passage_words);
+          if (shape !== "") { skipChunk(R, "chunks_skipped_" + shape); continue; }
           var cands = findCandidates(st, doc.id, c.id);
           if (cands.length === 0) { R.counts.chunks_without_candidates++; continue; }
+          // The clock is read between verdict calls, never inside one: the stop
+          // keeps every verdict already returned and the report that holds them.
+          if (timeSpent(st, R)) {
+            R.budget_stopped = true;
+            R.stop_reason = "time_budget_seconds";
+            R.counts.chunks_unvisited = chunks.rows.length - i;
+            checkVerdictHealth(R);
+            throw new Stop("budget");
+          }
           judge(st, c.id, b, cands);
+        }
+        checkVerdictHealth(R);
+      }
+
+      // checkVerdictHealth fails the pass when its verdict calls mostly failed. A pass
+      // whose model was unreachable otherwise ends looking clean, with no findings,
+      // which reads exactly like a document that relates to nothing.
+      function checkVerdictHealth(R) {
+        var calls = R.counts.verdict_calls, failed = R.counts.verdict_failures;
+        if (failed === 0) { return; }
+        if (failed === calls || (calls >= CONFIG.verdict_failure_min_calls && failed * 2 > calls)) {
+          R.verdicts_failed = true;
+          throw new Error("the relate layer's verdict calls failed (" + failed + " of " + calls +
+                          "); its findings are not a judgement of the document");
         }
       }
 
-      // loadVocabulary is the relate layer's vocabulary: the caller's list or the
-      // five built-in kinds.
-      function loadVocabulary(opts) {
-        if (opts.relations) { return { source: "input", relations: opts.relations }; }
-        return { source: "default", relations: DEFAULT_RELATIONS };
+      // timeSpent reads the run's elapsed time from the Context tool (a recorded
+      // tool result, so a replayed turn reads the same value; the sandbox's own Date
+      // is a replay counter, not a clock) and says whether the relate layer's wall
+      // clock is spent. Without the tool the budget cannot be read: the pass goes on
+      // under the run's own cap and the report says the clock was unavailable.
+      function timeSpent(st, R) {
+        if (st.clock === "unavailable") { return false; }
+        var t;
+        try {
+          if (typeof Context === "undefined") { throw new Error("no Context tool"); }
+          st.tool_calls++;
+          t = Context({ op: "time" });
+          if (typeof t === "string") { t = JSON.parse(t); }
+        } catch (e) {
+          st.clock = "unavailable";
+          return false;
+        }
+        var ms = NaN;
+        if (isPlainObject(t) && typeof t.elapsed_ms === "number" && isFinite(t.elapsed_ms)) {
+          ms = t.elapsed_ms;
+        } else if (isPlainObject(t) && typeof t.unix_ms === "number" && isFinite(t.unix_ms)) {
+          if (typeof st.clock_start_ms !== "number") { st.clock_start_ms = t.unix_ms; }
+          ms = t.unix_ms - st.clock_start_ms;
+        }
+        if (!isFinite(ms)) {
+          st.clock = "unavailable";
+          return false;
+        }
+        st.clock = "context";
+        R.elapsed_ms = ms;
+        return ms >= st.opts.time_budget_seconds * 1000;
+      }
+
+      // loadVocabulary is the relate layer's vocabulary: the caller's list, or the
+      // five built-in kinds plus the relation kinds the tenant ontology declares
+      // itself (with their meaning and inverse), so a verdict can name a link by the
+      // tenant's own kind instead of forcing it into a built-in one.
+      function loadVocabulary(st) {
+        var opts = st.opts;
+        if (opts.relations) { return { source: "input", relations: opts.relations, tenant: [], tenant_over_cap: 0 }; }
+        var rels = DEFAULT_RELATIONS.slice();
+        var have = {}, tenant = [], over = 0;
+        for (var i = 0; i < rels.length; i++) { have[rels[i].name] = true; }
+        var declared = (st.onto && st.onto.usable) ? st.onto.tenant_relations : [];
+        for (var j = 0; j < declared.length; j++) {
+          var d = declared[j];
+          if (!isKindName(d.name) || have[d.name] === true || d.name === "none" || d.name === "unclear") { continue; }
+          if (rels.length >= CONFIG.max_relations) { over++; continue; }
+          have[d.name] = true;
+          var rel = { name: d.name, meaning: oneLineText(d.meaning, 300) || "a relation this tenant declares" };
+          var inv = isKindName(d.inverse) && d.inverse !== d.name ? d.inverse : "";
+          if (inv !== "") { rel.inverse = inv; }
+          var dom = nameList(d.domain), rng = nameList(d.range);
+          if (dom !== "") { rel.domain = dom; }
+          if (rng !== "") { rel.range = rng; }
+          rels.push(rel);
+          tenant.push(d.name);
+        }
+        return { source: tenant.length > 0 ? "default+tenant" : "default", relations: rels, tenant: tenant, tenant_over_cap: over };
+      }
+
+      // nameList is a domain or range as one short string: a declared list joined, a
+      // single name kept, anything else empty.
+      function nameList(v) {
+        if (typeof v === "string") { return isName(v, 128) ? v : ""; }
+        if (!isArray(v)) { return ""; }
+        var out = [];
+        for (var i = 0; i < v.length && out.length < 8; i++) { if (isName(v[i], 128)) { out.push(v[i]); } }
+        return out.join("/");
+      }
+
+      // oneLineText is store or ontology text folded onto one line and clipped.
+      function oneLineText(v, max) {
+        if (typeof v !== "string") { return ""; }
+        return clip(v.replace(/[\u0000-\u001f\s]+/g, " ").trim(), max);
       }
 
       function newRelateState(opts, vocab) {
         var kinds = {};
         var byKind = {};
+        var tenantKind = {};
         for (var i = 0; i < vocab.relations.length; i++) {
           kinds[vocab.relations[i].name] = 0;
           byKind[vocab.relations[i].name] = true;
         }
+        for (var t = 0; t < vocab.tenant.length; t++) { tenantKind[vocab.tenant[t]] = true; }
         var excluded = {};
         for (var j = 0; j < opts.exclude_document_types.length; j++) { excluded[opts.exclude_document_types[j]] = true; }
         return {
           vocab: vocab,
           isKind: byKind,
+          tenantKind: tenantKind,
           excluded: excluded,
+          family: {},
+          source_title_key: "",
           chunks_truncated: false,
           budget_stopped: false,
+          stop_reason: "",
+          elapsed_ms: null,
+          verdicts_failed: false,
           related_ok: false,
           counts: {
             chunks_total: 0,
@@ -1809,12 +1997,22 @@ agents:
             chunks_skipped_short: 0,
             chunks_skipped_excluded_type: 0,
             chunks_skipped_unreadable: 0,
+            chunks_skipped_heading: 0,
+            chunks_skipped_toc: 0,
+            chunks_skipped_legend: 0,
+            chunks_skipped_few_words: 0,
             chunks_without_candidates: 0,
             chunks_unvisited: 0,
             candidates_considered: 0,
             candidates_below_floor: 0,
             candidates_self: 0,
             candidates_excluded_type: 0,
+            candidates_not_target_type: 0,
+            candidates_copy_family: 0,
+            candidates_heading: 0,
+            candidates_toc: 0,
+            candidates_legend: 0,
+            candidates_few_words: 0,
             candidates_over_cap: 0,
             candidates_unreadable: 0,
             candidates_sent: 0,
@@ -1826,13 +2024,16 @@ agents:
             verdicts_kind: kinds,
             quotes_rejected: 0,
             quotes_in_boilerplate: 0,
+            quotes_too_short: 0,
+            quotes_heading: 0,
+            quotes_toc_or_legend: 0,
             chunks_skipped_boilerplate: 0,
             candidates_boilerplate: 0,
             parse_errors: 0,
             // What a propose pass did with the findings (report mode: would_propose).
             would_propose: 0, proposed: 0, asserted: 0, evidence_added: 0, unchanged: 0,
             already_asserted: 0, refused: 0,
-            propose_kind_off: 0, propose_kind_not_declared: 0, propose_capped: 0
+            kind_withheld: 0, propose_kind_off: 0, propose_kind_not_declared: 0, propose_capped: 0
           },
           findings: []
         };
@@ -1843,15 +2044,16 @@ agents:
         R.counts[why]++;
       }
 
-      // documentType is read only when the caller excluded types, and fails CLOSED:
-      // a candidate whose document type cannot be read is not a candidate.
-      function documentType(st, docID) {
+      // documentInfo is a candidate document's type and title, read once per
+      // document. It fails CLOSED: a candidate whose document cannot be read is not
+      // a candidate, since neither its class nor its copy family can be checked.
+      function documentInfo(st, docID) {
         if (st.docTypes[docID]) { return st.docTypes[docID]; }
-        var out = { ok: false, type: "" };
+        var out = { ok: false, type: "", title: "" };
         try {
           var d = call(st, { op: "get_document", id: docID });
           if (d && typeof d.document_id === "string") {
-            out = { ok: true, type: typeof d.type === "string" ? d.type : "" };
+            out = { ok: true, type: typeof d.type === "string" ? d.type : "", title: typeof d.title === "string" ? d.title : "" };
           }
         } catch (e) {
           if (isStop(e)) { throw e; }
@@ -1861,9 +2063,87 @@ agents:
         return out;
       }
 
-      function hasExclusions(R) {
-        for (var k in R.excluded) {
-          if (hasOwn(R.excluded, k)) { return true; }
+      // loadCopyFamily is the set of documents that are copies or versions of the
+      // document: the other end of a copy_family_kinds statement with one end in
+      // it, asserted or proposed. A passage judged against
+      // its own copy reads the same words twice and calls it a relation. Failing to
+      // read the family stops the layer: judging without it would file exactly the
+      // links it exists to prevent.
+      function loadCopyFamily(st, doc) {
+        var fam = {};
+        var statuses = ["asserted", "proposed"];
+        for (var s = 0; s < statuses.length; s++) {
+          var after = "";
+          for (var page = 0; page < CONFIG.max_copy_family_pages; page++) {
+            var args = { op: "list_statements", document_id: doc.id, kinds: CONFIG.copy_family_kinds,
+                         status: statuses[s], limit: CONFIG.statements_page };
+            if (after !== "") { args.after = after; }
+            var res;
+            try {
+              res = call(st, args);
+            } catch (e) {
+              if (isStop(e)) { throw e; }
+              throw new Error("the relate layer could not read the document's copies: " + clip(errText(e), 200));
+            }
+            var rows = (res && isArray(res.statements)) ? res.statements : [];
+            for (var i = 0; i < rows.length; i++) {
+              var r = rows[i];
+              if (!isPlainObject(r) || CONFIG.copy_family_kinds.indexOf(r.kind) < 0) { continue; }
+              var other = r.from_document_id === doc.id ? r.to_document_id : (r.to_document_id === doc.id ? r.from_document_id : "");
+              if (isID(other) && other !== doc.id) { fam[other] = true; }
+            }
+            after = (res && typeof res.next_cursor === "string") ? res.next_cursor : "";
+            if (after === "") { break; }
+          }
+        }
+        return fam;
+      }
+
+      // duplicateTitleKey is a title as find_duplicates compares it: trimmed, its
+      // copy markers ("Copy of ", " (1)" to " (99)", " - Copy", and their spellings
+      // in a few languages) stripped as often as they occur, lower-cased. It mirrors
+      // the runtime's own rule; "Budget (2023)" keeps its year.
+      var COPY_PREFIXES = ["copy of ", "копия - ", "копия ", "kopie von ", "copie de "];
+      function duplicateTitleKey(title) {
+        if (typeof title !== "string") { return ""; }
+        var s = title.trim();
+        for (;;) {
+          var before = s;
+          for (var i = 0; i < COPY_PREFIXES.length; i++) {
+            if (s.slice(0, COPY_PREFIXES[i].length).toLowerCase() === COPY_PREFIXES[i]) { s = s.slice(COPY_PREFIXES[i].length).trim(); }
+          }
+          s = s.replace(/ \([1-9][0-9]?\)$/, "").trim();
+          if (s.length >= 7 && s.slice(s.length - 7).toLowerCase() === " - copy") { s = s.slice(0, s.length - 7).trim(); }
+          if (s === before) { break; }
+        }
+        return s.toLowerCase();
+      }
+
+      // relateTargets is the set of classes the relate layer judges candidates of,
+      // and where it came from: the input's target_types; else the norm classes a
+      // confirmed ontology marks, read whole; else none, and the whole corpus. A
+      // partial read may be missing a norm, so it does not narrow the pass.
+      function relateTargets(st) {
+        if (st.opts.target_types !== null) { return { types: st.opts.target_types, from: "input" }; }
+        var o = st.onto;
+        if (o && o.read && o.confirmed && !o.partial && o.norm_classes !== null && o.norm_classes.length > 0) {
+          return { types: o.norm_classes.slice(), from: "ontology" };
+        }
+        return { types: null, from: "none" };
+      }
+
+      // targetAllowed says whether a document of class typ may be a candidate: any,
+      // without target types; else one of them or a subclass of one, by the
+      // ontology's class tree.
+      function targetAllowed(st, typ) {
+        var want = st.l4.target_types;
+        if (want === null) { return true; }
+        var parents = (st.onto && st.onto.class_parent) ? st.onto.class_parent : {};
+        var t = typ, hops = 0;
+        while (typeof t === "string" && t !== "" && hops < 32) {
+          if (want.indexOf(t) >= 0) { return true; }
+          t = hasOwn(parents, t) ? parents[t] : "";
+          hops++;
         }
         return false;
       }
@@ -1901,7 +2181,6 @@ agents:
         var hits = isArray(res.related) ? res.related : [];
         R.counts.candidates_considered += hits.length;
         var kept = [];
-        var checkDocType = hasExclusions(R);
         for (var i = 0; i < hits.length; i++) {
           var h = hits[i];
           if (!h || typeof h.chunk_id !== "string" || h.chunk_id === "") { R.counts.candidates_unreadable++; continue; }
@@ -1911,6 +2190,7 @@ agents:
             continue;
           }
           if (typeof h.type === "string" && R.excluded[h.type] === true) { R.counts.candidates_excluded_type++; continue; }
+          if (hasOwn(R.family, h.document_id)) { R.counts.candidates_copy_family++; continue; }
           if (kept.length >= st.opts.max_candidates_per_chunk) { R.counts.candidates_over_cap++; continue; }
           // The chunk's own row is the authority on its document and type; the
           // related hit's copy only pre-filtered.
@@ -1918,20 +2198,123 @@ agents:
           if (!b.ok || b.document_id === "" || b.body.trim() === "") { R.counts.candidates_unreadable++; continue; }
           if (b.document_id === docID) { R.counts.candidates_self++; continue; }
           if (R.excluded[b.type] === true) { R.counts.candidates_excluded_type++; continue; }
-          if (checkDocType) {
-            var dt = documentType(st, b.document_id);
-            if (!dt.ok) { R.counts.candidates_unreadable++; continue; }
-            if (R.excluded[dt.type] === true) { R.counts.candidates_excluded_type++; continue; }
+          if (hasOwn(R.family, b.document_id)) { R.counts.candidates_copy_family++; continue; }
+          var dt = documentInfo(st, b.document_id);
+          if (!dt.ok) { R.counts.candidates_unreadable++; continue; }
+          if (R.excluded[dt.type] === true) { R.counts.candidates_excluded_type++; continue; }
+          if (!targetAllowed(st, dt.type)) { R.counts.candidates_not_target_type++; continue; }
+          if (R.source_title_key !== "" && duplicateTitleKey(dt.title) === R.source_title_key) {
+            R.counts.candidates_copy_family++;
+            continue;
           }
-          if (visibleText(b).trim() === "") { R.counts.candidates_boilerplate++; continue; }
-          kept.push({ id: h.chunk_id, document_id: b.document_id, body: b.body, boilerplate: b.boilerplate });
+          var seen = visibleText(b);
+          if (seen.trim() === "") { R.counts.candidates_boilerplate++; continue; }
+          var shape = passageShape(seen, st.opts.min_passage_words);
+          if (shape !== "") { R.counts["candidates_" + shape]++; continue; }
+          kept.push({ id: h.chunk_id, document_id: b.document_id, body: b.body, title: b.title, boilerplate: b.boilerplate });
         }
         return kept;
       }
 
+      // ------------------------------------------------------ passage shapes
+
+      // passageShape names why a text is not worth a verdict: "heading" (only
+      // heading lines, or one short line with no sentence in it), "toc" (mostly
+      // table-of-contents lines), "legend" (mostly two-cell label rows with no
+      // figure in them, the shape of a rating or level legend), "few_words" (fewer
+      // than min words); "" when it is a passage. Thresholds are deliberately
+      // narrow: a price row has figures and a clause has a sentence, so neither is
+      // caught.
+      function passageShape(text, minWords) {
+        var lines = contentLines(text);
+        if (lines.length === 0) { return "few_words"; }
+        var headings = 0, toc = 0, legend = 0;
+        for (var i = 0; i < lines.length; i++) {
+          if (isHeadingLine(lines[i])) { headings++; }
+          if (isTocLine(lines[i])) { toc++; }
+          if (isLegendRow(lines[i])) { legend++; }
+        }
+        if (headings === lines.length) { return "heading"; }
+        if (lines.length === 1 && wordCount(lines[0]) <= CONFIG.heading_max_words && !/[.!?;]["»”)]?$/.test(lines[0]) &&
+            !/[0-9]/.test(lines[0])) {
+          return "heading";
+        }
+        if (toc >= 2 && toc * 2 >= lines.length) { return "toc"; }
+        if (legend >= 2 && legend * 2 >= lines.length) { return "legend"; }
+        if (wordCount(text) < minWords) { return "few_words"; }
+        return "";
+      }
+
+      // contentLines are the text's non-empty lines, trimmed, without table
+      // separator rows (|---|---|).
+      function contentLines(text) {
+        var raw = String(text).split(/\r?\n/), out = [];
+        for (var i = 0; i < raw.length; i++) {
+          var t = raw[i].trim();
+          if (t === "" || (/^\|?[\s:|-]+\|?$/.test(t) && t.indexOf("-") >= 0)) { continue; }
+          out.push(t);
+        }
+        return out;
+      }
+
+      // wordCount counts the tokens that carry a letter or a digit; punctuation,
+      // table bars and markdown marks are not words.
+      function wordCount(s) {
+        var toks = String(s).split(/\s+/), n = 0;
+        for (var i = 0; i < toks.length; i++) {
+          if (/[A-Za-z0-9\u00C0-\u1FFF\u2070-\uFFFF]/.test(toks[i])) { n++; }
+        }
+        return n;
+      }
+
+      function isHeadingLine(t) {
+        return /^#{1,6}\s/.test(t) || /^\*\*[^*]+\*\*:?$/.test(t) || /^__[^_]+__:?$/.test(t);
+      }
+
+      // isTocLine is a contents entry: text, a dot (or ellipsis) leader, a page
+      // number.
+      function isTocLine(t) {
+        return /(\.{3,}|…{2,}|·{3,}|(\. ){3,})\s*[0-9ivxlcIVXLC]{1,6}\s*\|?$/.test(t);
+      }
+
+      // isLegendRow is a table row of exactly two cells: a label of at most three
+      // words, then its description, no figures anywhere ("Achieved | All
+      // requirements are met").
+      function isLegendRow(t) {
+        if (t.charAt(0) !== "|" || /[0-9]/.test(t)) { return false; }
+        var cells = t.replace(/^\|/, "").replace(/\|$/, "").split("|");
+        if (cells.length !== 2) { return false; }
+        var a = wordCount(cells[0]), b = wordCount(cells[1]);
+        return a >= 1 && a <= 3 && b >= 1;
+      }
+
+      // quoteShape names why a quote that occurs is still no evidence:
+      // "too_short" (fewer than min_quote_words words), "heading" (the chunk's title,
+      // or text from a heading line), "toc_or_legend" (text from a contents line or a
+      // legend row); "" when it may stand.
+      function quoteShape(chunk, quote, span, minWords) {
+        if (wordCount(quote) < minWords) { return "too_short"; }
+        var bare = quote.replace(/[#*_|]/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+        if (typeof chunk.title === "string" && bare !== "" &&
+            chunk.title.replace(/\s+/g, " ").trim().toLowerCase() === bare) {
+          return "heading";
+        }
+        // The line the quote starts on, when the quote lies within it.
+        var body = chunk.body;
+        var start = span[0] > 0 ? body.lastIndexOf("\n", span[0] - 1) + 1 : 0;
+        var end = body.indexOf("\n", span[0]);
+        if (end < 0) { end = body.length; }
+        if (span[1] > end) { return ""; }
+        var line = body.slice(start, end).trim();
+        if (isHeadingLine(line)) { return "heading"; }
+        if (isTocLine(line) || isLegendRow(line)) { return "toc_or_legend"; }
+        return "";
+      }
+
       // judge spends ONE verdict call on one chunk and its candidates. Every
       // candidate sent ends in exactly one bucket: a finding of some kind, none, or
-      // a rejected quote — so the three always sum to candidates_sent. In a propose
+      // a rejected quote (not found, in boilerplate, too short, a heading, a
+      // contents line or a legend row) — so they always sum to candidates_sent. In a propose
       // pass the findings it may file are filed after the reply is read, at most one
       // per target document.
       function judge(st, chunkID, passage, cands) {
@@ -1981,15 +2364,24 @@ agents:
         for (var k = 0; k < order.length; k++) { fileFinding(st, passage, cands[best[order[k]].rank - 1], best[order[k]].f); }
       }
 
-      // mayFile is the relate layer's per-kind switch, then the ontology: a kind is
-      // filed only when the bundle lets L4 write it AND the tenant declares it.
+      // fileRule says whether the relate layer may file a kind, and if not, why:
+      // a withheld kind never; then a built-in kind the bundle switches on, or a kind
+      // the tenant declares itself; then only when the ontology declares it
+      // writable. "" means it may be filed.
+      function fileRule(st, kind, tenantKind) {
+        if (CONFIG.relate_withheld_kinds.indexOf(kind) >= 0) { return "kind_withheld"; }
+        if (CONFIG.relate_propose_kinds.indexOf(kind) < 0 && tenantKind[kind] !== true) { return "kind_off"; }
+        if (!st.onto || !st.onto.usable || st.onto.writable[kind] !== true) { return "kind_not_declared"; }
+        return "";
+      }
+
+      // mayFile applies fileRule to one finding and counts a refusal by its reason.
       function mayFile(st, kind) {
         var R = st.l4;
-        if (CONFIG.relate_propose_kinds.indexOf(kind) < 0) { R.counts.propose_kind_off++; return false; }
-        if (!st.onto || !st.onto.usable || st.onto.writable[kind] !== true) {
-          R.counts.propose_kind_not_declared++;
-          return false;
-        }
+        var why = fileRule(st, kind, R.tenantKind);
+        if (why === "kind_withheld") { R.counts.kind_withheld++; return false; }
+        if (why === "kind_off") { R.counts.propose_kind_off++; return false; }
+        if (why === "kind_not_declared") { R.counts.propose_kind_not_declared++; return false; }
         return true;
       }
 
@@ -2038,6 +2430,11 @@ agents:
         from = outsideBoilerplate(passage, e.quote_from, from);
         to = outsideBoilerplate(cand, e.quote_to, to);
         if (from === null || to === null) { R.counts.quotes_in_boilerplate++; return null; }
+        // A quote that occurs can still be no evidence: one or two words, a heading,
+        // a contents line or a legend row match across unrelated documents.
+        var qs = quoteShape(passage, e.quote_from, from, st.opts.min_quote_words);
+        if (qs === "") { qs = quoteShape(cand, e.quote_to, to, st.opts.min_quote_words); }
+        if (qs !== "") { R.counts["quotes_" + qs]++; return null; }
         R.counts.verdicts_kind[kind]++;
         var f = {
           from_chunk_id: chunkID,
@@ -2055,6 +2452,10 @@ agents:
           shown.quote_from = e.quote_from;
           shown.quote_to = e.quote_to;
         }
+        // Whether a propose pass may file this kind; a report shows every finding.
+        var why = fileRule(st, kind, R.tenantKind);
+        shown.may_file = why === "";
+        if (why !== "") { shown.not_filed = why; }
         R.findings.push(shown);
         return f;
       }
@@ -2139,6 +2540,7 @@ agents:
           if (r.domain || r.range) {
             line += " (from " + (r.domain || "any") + " to " + (r.range || "any") + ")";
           }
+          if (r.inverse) { line += " (read from the other end: " + r.inverse + ")"; }
           kinds.push(line);
         }
         var parts = [];
@@ -2764,9 +3166,10 @@ agents:
         var C = L.counts;
         if (!st.opts.rejudge || !mayRetire(s) || !/^extractor:/.test(s.method)) { return false; }
         if (!st.rejudgeVocab) {
-          var vocab = loadVocabulary(st.opts), isKind = {};
+          var vocab = loadVocabulary(st), isKind = {}, tenantKind = {};
           for (var i = 0; i < vocab.relations.length; i++) { isKind[vocab.relations[i].name] = true; }
-          st.rejudgeVocab = { vocab: vocab, isKind: isKind };
+          for (var ti = 0; ti < vocab.tenant.length; ti++) { tenantKind[vocab.tenant[ti]] = true; }
+          st.rejudgeVocab = { vocab: vocab, isKind: isKind, tenantKind: tenantKind };
         }
         var V = st.rejudgeVocab;
         if (V.isKind[s.kind] !== true) { C.rejudge_kind_unknown++; return false; }
@@ -2809,8 +3212,7 @@ agents:
           act(st, L, s, "verify", {});
           return true;
         }
-        if (quoted && forward && V.isKind[kind] === true && CONFIG.relate_propose_kinds.indexOf(kind) >= 0 &&
-            st.onto && st.onto.usable && st.onto.writable[kind] === true) {
+        if (quoted && forward && V.isKind[kind] === true && fileRule(st, kind, V.tenantKind) === "") {
           C.rejudged_different++;
           var fs = runeSpan(from.body, qf[0], qf[1]), ts = runeSpan(to.body, qt[0], qt[1]);
           propose(st, L, { op: "propose_statement", id: s.id, kind: kind, confidence: conf, method: METHOD.relate,
@@ -3286,7 +3688,9 @@ agents:
             max_statements: st.opts.max_statements,
             max_verdict_calls: st.opts.max_verdict_calls,
             verdict_calls: st.l4 ? st.l4.counts.verdict_calls : 0,
-            stopped: st.status === "budget_stopped"
+            time_budget_seconds: st.opts.time_budget_seconds,
+            stopped: st.status === "budget_stopped",
+            stopped_by: st.l4 ? st.l4.stop_reason : ""
           },
           failure: st.failure,
           evidence_span_unit: "rune"
@@ -3334,14 +3738,33 @@ agents:
           // finding, filed or not, stays in the report.
           write: st.opts.write,
           propose_kinds: CONFIG.relate_propose_kinds,
+          // Never filed, in either mode; their findings carry may_file false.
+          withheld_kinds: CONFIG.relate_withheld_kinds,
           vocabulary_source: R.vocab.source,
           vocabulary: kindNames(R),
+          tenant_kinds: R.vocab.tenant,
+          tenant_kinds_over_cap: R.vocab.tenant_over_cap,
+          target_types: R.target_types,
+          // input, ontology (the classes it marks @norm) or none (the whole corpus).
+          target_types_from: R.target_types_from,
+          copy_family_documents: countKeys(R.family),
           counts: R.counts,
           budget_stopped: R.budget_stopped,
+          stop_reason: R.stop_reason,
+          time_budget_seconds: st.opts.time_budget_seconds,
+          elapsed_ms: R.elapsed_ms,
+          clock: st.clock || "not_read",
+          verdicts_failed: R.verdicts_failed,
           chunks_truncated: R.chunks_truncated,
           span_unit: "utf16",
           findings: R.findings
         };
+      }
+
+      function countKeys(m) {
+        var n = 0;
+        for (var k in m) { if (hasOwn(m, k)) { n++; } }
+        return n;
       }
 
       function kindNames(R) {
@@ -3537,7 +3960,8 @@ agents:
       - Every kind needs evidence. quote_from is copied EXACTLY, character for
         character, from the passage; quote_to EXACTLY from the candidate. Copy one
         short sentence or clause. A quote that is not in the text discards the
-        answer.
+        answer, and so does a quote of a heading, a contents line, a legend
+        row or a phrase of a few words: those are not evidence.
       - direction: this_to_candidate when the passage <kind> the candidate,
         candidate_to_this when the candidate <kind> the passage.
       - confidence is a number from 0 to 1.

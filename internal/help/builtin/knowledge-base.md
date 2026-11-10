@@ -192,6 +192,25 @@ in force (`graph_recall` takes `include_proposed` to follow proposals too);
 before ranking — filter whenever the scope holds more than one kind of
 document.
 
+## Knowing what a part is about
+
+A tenant knowledge base can carry **annotations**: for a section and for a
+whole document, a **brief** (one sentence saying what it is, for choosing)
+and an **abstract** (one paragraph saying what it states, for not having to
+open it). They are written by a scheduled pass, kept beside the text, and
+never change what a document says.
+
+- Pass `with_summary: true` to `search`, `related`, `graph_recall`,
+  `get_document`, `get_chunk`, `documents_summary` or `query_documents`, and
+  each row carries `summary: {level, brief, abstract?, stale?}` — the nearest
+  annotation at or above the row's chunk. Read the briefs to choose what to
+  open; read an abstract instead of opening a whole document when the
+  question is about what it covers rather than its exact words.
+- `stale: true` means the text changed after the annotation was written. It
+  is still the best summary there is; quote the text, never the abstract.
+- An annotation is not evidence. Cite the chunk, never the summary.
+- `get_annotation` reads one chunk's or document's annotation directly.
+
 ## Keeping it true across editions
 
 When a work changes — an amended law, a revised policy — import the new

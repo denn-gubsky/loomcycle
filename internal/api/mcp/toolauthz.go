@@ -649,6 +649,11 @@ func principalMayCallTool(ctx context.Context, toolName string) bool {
 	if p.Restrictions.RunPlaneOnly() && !runPlaneTools[toolName] {
 		return false
 	}
+	// A metrics scraper's credential calls no tool. The route gate keeps it
+	// off /v1/_mcp already; this holds should a session reach here another way.
+	if auth.IsMetricsReader(p) {
+		return false
+	}
 	// RFC EY: an explicit ACL deny on the meta-tool holds for every class,
 	// admin included (deny overrides); in enforce mode an unmatched tool is
 	// refused and an unavailable set refuses everything.

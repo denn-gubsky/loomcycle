@@ -20,6 +20,7 @@ id. It returns documents, not chunks: to search inside them, use `search` or
 
 Filters combine with AND. With no filter you get every document in the scope,
 up to `limit`.
+- `with_summary` — add each document's annotation as `summary` (`{level, brief, stale?}`).
 
 ## Returns
 

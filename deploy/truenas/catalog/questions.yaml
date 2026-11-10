@@ -612,6 +612,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT
+            label: LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT
+            description: '(example: 16)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH
             label: LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH
             description: '(example: 8)'
@@ -1069,6 +1075,12 @@ questions:
           - variable: LOOMCYCLE_TRACE_URL_TEMPLATE
             label: LOOMCYCLE_TRACE_URL_TEMPLATE
             description: '(example: https://grafana.example/explore?traceId={trace_id})'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_METRICS_LISTEN
+            label: LOOMCYCLE_METRICS_LISTEN
+            description: 'A second plain-HTTP listener serving GET /metrics only, with NO authentication, for a scraper on this host or a protected network (a compose network). Unset = off; the main listener''s /metrics still needs a metrics:read (or admin) token. (example: 127.0.0.1:9464)'
             schema:
               type: string
               default: ""

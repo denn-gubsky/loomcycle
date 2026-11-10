@@ -298,6 +298,22 @@ func TestOperatorTokenDef_AuthManageIsMintedOnlyAlone(t *testing.T) {
 	mustOp(t, tool, ctx, `{"op":"create","name":"site","tenant_id":"t","scopes":["auth:manage"]}`)
 }
 
+// metrics:read is a scraper's credential that reaches GET /metrics alone;
+// mixed into a wider token the scrape file would carry that token's reach, so
+// it is minted alone.
+func TestOperatorTokenDef_MetricsReadIsMintedOnlyAlone(t *testing.T) {
+	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"scrape-mixed","tenant_id":"t","scopes":["metrics:read","runs:read"]}`))
+	if !res.IsError || !strings.Contains(res.Text, "only scope") {
+		t.Fatalf("metrics:read + runs:read should be refused; got %s", res.Text)
+	}
+	out := mustOp(t, tool, ctx, `{"op":"create","name":"scrape","tenant_id":"t","scopes":["metrics:read"]}`)
+	if tok, _ := out["token"].(string); tok == "" {
+		t.Fatalf("no token minted: %v", out)
+	}
+}
+
 // "Acme" and "acme" are two tenants to loomcycle but ONE volume directory on
 // a case-insensitive filesystem. A mint that would create the second spelling
 // is refused; the existing spelling keeps minting.

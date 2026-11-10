@@ -490,6 +490,20 @@ exports the instruments over OTLP, with exemplars pointing at sampled
 traces, plus the GenAI convention histograms `gen_ai.client.token.usage`
 and `gen_ai.client.operation.duration`, which `/metrics` does not carry.
 
+Scraping it needs a token: `substrate:admin`, or better a token minted
+with the single scope `metrics:read`, which reaches `GET /metrics` and
+nothing else. Give Prometheus the token through
+`authorization.credentials_file` (re-read on every scrape), so rotating
+it is: mint a new one, write it into the file, retire the old one. The
+access-control rules cannot open `/metrics` to any other token: the
+scope is checked first, and a rule can only deny on top of it.
+
+Alternatively `LOOMCYCLE_METRICS_LISTEN=<host:port>` opens a second,
+unauthenticated listener that serves only `GET /metrics`, for a scraper
+on the same host or a network only it reaches. It leaves out the series
+that name a user (`loomcycle_concurrency_per_user`), and boot warns when
+it binds beyond loopback.
+
 ## Process-resource metrics (diagnosing host pressure)
 
 Distinct from the OTEL traces above: loomcycle has a built-in **process-resource

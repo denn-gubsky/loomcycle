@@ -3375,6 +3375,9 @@ export const TOKEN_SCOPES = [
   // matters on an ISOLATED user's token: grant it there to let that user call
   // a model directly.
   "llm:gateway",
+  // A Prometheus scraper's credential: GET /metrics and nothing else. The
+  // runtime refuses it beside any other scope, so tick it alone.
+  "metrics:read",
 ] as const;
 
 // ---- Routing view (GET /v1/_routing) ----
@@ -3582,6 +3585,9 @@ export interface OntologyTerm {
   /** Bare `@identity`: the title is the identity (declared / inherited). */
   title_identity?: boolean;
   inherited_title_identity?: boolean;
+  /** Bare `@norm`: a norm class, other documents are measured against it (declared / inherited). */
+  norm?: boolean;
+  inherited_norm?: boolean;
   identifier_pattern?: string;
   title_pattern?: string;
   anchor_grammar?: string;

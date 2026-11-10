@@ -14,9 +14,11 @@ scrape_configs:
     scheme: http
     authorization:
       type: Bearer
-      # Same value as the loomcycle service's LOOMCYCLE_AUTH_TOKEN
-      # in compose.yaml. ROTATE before production.
-      credentials: demo-token-change-me
+      # A metrics:read token (it reaches GET /metrics and nothing else),
+      # read from a file on every scrape, so rotating it needs no restart.
+      # seed.sh mints it into prometheus/secrets/ on first run; see the
+      # README for doing it by hand.
+      credentials_file: /etc/prometheus/secrets/loomcycle.token
 
   # OTEL Collector's spanmetrics-derived endpoint — per-run
   # histograms aggregated from loomcycle's OTEL spans. See

@@ -316,6 +316,12 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			decl := memrank.ParseClassBody(bodyOf(c.id))
 			isDoc := docClass || (parentName == "" && sectionOf[parentChunkID] == memrank.SectionClasses &&
 				strings.EqualFold(name, memrank.DocumentClassRoot))
+			if decl.Norm && !isDoc {
+				// A norm is a kind of document; on an entity type the mark would select
+				// nothing, so it is reported and dropped rather than carried.
+				decl.Norm = false
+				decl.Issues = append(decl.Issues, "@norm marks a document class; ignored on an entity type")
+			}
 			out = append(out, memrank.OntologyTerm{
 				Name:              name,
 				Fields:            decl.Fields,
@@ -325,6 +331,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 				MemoryScopeIssue:  decl.MemoryScopeIssue,
 				FieldSpecs:        decl.FieldSpecs,
 				TitleIdentity:     decl.TitleIdentity,
+				Norm:              decl.Norm,
 				IsDocumentClass:   isDoc,
 				IdentifierPattern: decl.IdentifierPattern,
 				TitlePattern:      decl.TitlePattern,

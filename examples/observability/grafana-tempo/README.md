@@ -20,6 +20,15 @@ Then drive synthetic traffic so the dashboards populate:
 ./seed.sh
 ```
 
+On its first run `seed.sh` also mints the token Prometheus scrapes `/metrics` with: a `metrics:read` token, which reaches that one route and nothing else, written to `prometheus/secrets/loomcycle.token` (git-ignored). To do it by hand:
+
+```sh
+curl -fsS -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" -H "Content-Type: application/json" \
+  -d '{"op":"create","name":"prometheus","tenant_id":"ops","scopes":["metrics:read"]}' \
+  http://localhost:8787/v1/_operatortokendef
+# copy the "token" value into prometheus/secrets/loomcycle.token
+```
+
 Open the UIs:
 
 | Service | URL | Login |
@@ -81,7 +90,8 @@ The **`spanmetrics` connector** is the architectural keystone — it aggregates 
 
 This stack is sized for the **demo / local-dev** use case. For production:
 
-- **Replace the demo bearer token.** Rotate `LOOMCYCLE_AUTH_TOKEN` to a real secret and update `prometheus/prometheus.yml`'s `authorization.credentials` accordingly. Better: load the token via Prometheus's secret-file pattern (`credentials_file: /run/secrets/loomcycle_token`).
+- **Replace the demo bearer token.** Rotate `LOOMCYCLE_AUTH_TOKEN` to a real secret. Prometheus never holds it: it scrapes with the `metrics:read` token in `prometheus/secrets/loomcycle.token`.
+- **Rotate the scrape token** with no restart: mint a new `metrics:read` token (or `loomcycle operator-token rotate --name prometheus`), write it into `prometheus/secrets/loomcycle.token` (Prometheus re-reads `credentials_file` on every scrape), then retire the old one. Or drop the token entirely: set `LOOMCYCLE_METRICS_LISTEN=0.0.0.0:9464` on loomcycle, publish no port for it, and scrape `loomcycle:9464` with no `authorization` block — that listener is unauthenticated, so keep it on the compose network only.
 - **Replace Tempo single-binary with sharded deployment.** Tempo's `compactor` + `ingester` + `distributor` + `querier` should be separate Deployments in K8s; see [Tempo's operator docs](https://grafana.com/docs/tempo/latest/operations/deployment/).
 - **Replace Prometheus local TSDB with remote-write.** Send to Mimir / Thanos / Cortex / Grafana Cloud for long-term retention + cross-replica aggregation.
 - **Replace anonymous-Viewer Grafana auth with SSO.** Grafana supports OAuth (GitHub/Google/Okta), LDAP, and SAML.
@@ -96,7 +106,7 @@ This stack is sized for the **demo / local-dev** use case. For production:
 | `loomcycle_calls_total` series absent in Prometheus | Check the OTEL Collector pod is healthy (`docker compose logs otel-collector`) — `spanmetrics` won't emit until it receives at least one batch. |
 | `loomcycle` service won't start | Provider API key missing or invalid. Check `docker compose logs loomcycle` — the boot validator names the missing key. |
 | Traces appear in Tempo but not in Grafana | Hit Grafana → Configuration → Datasources → Tempo → "Save & test". Should return "Data source is working." If not, network the Grafana ↔ Tempo path. |
-| Prometheus shows `403 Forbidden` from `loomcycle` job | `LOOMCYCLE_AUTH_TOKEN` doesn't match `prometheus/prometheus.yml`'s `credentials`. Rotate consistently. |
+| Prometheus shows the `loomcycle` job down (`401`, or "unable to read authorization credentials file") | The scrape token is missing or retired. Run `./seed.sh` (it mints one into `prometheus/secrets/loomcycle.token` when the file is empty), or write a live `metrics:read` token there by hand. |
 | `docker compose up` hangs on Postgres | Postgres healthcheck takes ~10s on first start. Wait or run `docker compose up -d` so output stays clean. |
 | Dashboards don't appear after `compose up` | Grafana provisioner runs on startup; restart Grafana (`docker compose restart grafana`) if you edited the JSON files. |
 

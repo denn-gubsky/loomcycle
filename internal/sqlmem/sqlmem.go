@@ -70,6 +70,12 @@ type Config struct {
 	// MaxOpenTxns caps concurrent open explicit transactions process-wide (each
 	// pins a scope connection). 0 = unbounded.
 	MaxOpenTxns int
+	// MaxOpenTxnsPerTenant caps how many of those one tenant may hold at once,
+	// so a single tenant cannot pin every slot (each for up to TxnTimeoutMS)
+	// and lock every other tenant out of sql_begin. 0 = a quarter of
+	// MaxOpenTxns (at least 1); a value at or above MaxOpenTxns leaves only the
+	// global cap. Ignored when MaxOpenTxns is 0 (unbounded).
+	MaxOpenTxnsPerTenant int
 	// MaxTxnDepth caps the SAVEPOINT nesting depth of one explicit transaction
 	// (Phase 3b): a nested sql_begin past this errors, bounding the in-memory
 	// savepoint stack. 0 = unbounded.
@@ -321,6 +327,9 @@ func New(cfg Config) (*Manager, error) {
 func newManager(d dialect, cfg Config, b backend) *Manager {
 	if cfg.MaxResultBytes <= 0 {
 		cfg.MaxResultBytes = DefaultMaxResultBytes
+	}
+	if cfg.MaxOpenTxnsPerTenant <= 0 && cfg.MaxOpenTxns > 0 {
+		cfg.MaxOpenTxnsPerTenant = max(1, cfg.MaxOpenTxns/4)
 	}
 	core := &managerCore{dialect: d, cfg: cfg, backend: b, txns: newTxnRegistry(),
 		lastTouch: make(map[string]time.Time), ensured: make(map[string]struct{})}
