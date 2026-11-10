@@ -69,7 +69,10 @@ var navSurfaces = []navSurface{
 	// about itself), and the page cannot build a question without the rule
 	// catalog, which it reads from the policies route.
 	{ID: "simulator", Method: "POST", Path: "/v1/_acldef"},
-	{ID: "tokens", Method: "POST", Path: "/v1/_operatortokendef"},
+	// Anchored on the names listing the page loads first, which stays the
+	// admin's: a tenant operator may mint its own scrape tokens through POST
+	// /v1/_operatortokendef, but the page lists and acts on every token.
+	{ID: "tokens", Method: "GET", Path: "/v1/_operatortokendef/names"},
 	// The pages that were the Settings hub's tabs, now in the left nav's
 	// groups. Credentials is the tenant's credential authoring; a member's
 	// own credentials are the account menu's my-credentials page below.

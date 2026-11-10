@@ -72,6 +72,7 @@ var mcpHTTPTwin = map[string]struct{ method, path, noTwin string }{
 	"peek_channel":           {method: http.MethodGet, path: "/v1/users/u/channels/c/peek"},
 	"ack_channel":            {method: http.MethodPost, path: "/v1/users/u/channels/c/ack"},
 	"stream_user_run_states": {method: http.MethodGet, path: "/v1/users/u/agents/stream"},
+	"operatortokendef":       {method: http.MethodPost, path: "/v1/_operatortokendef"},
 }
 
 // Every meta-tool a member's session may call has an HTTP twin a member also

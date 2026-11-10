@@ -88,10 +88,10 @@ var memberMCPTools = []string{
 }
 
 // tenantMCPTools is what it admits a tenant operator to: every
-// tenant-confinable tool. The runtime-global ones (snapshots, pause and
-// resume, the resolver probe, token minting, the all-channel list) stay the
-// admin's.
-var tenantMCPTools = append([]string{"retention_override", "crypto", "groupdef", "acldef", "aclbinding", "clientdef", "ontology", "erasure"}, memberMCPTools...)
+// tenant-confinable tool, the token tool among them (its own tenant's scrape
+// tokens only). The runtime-global ones (snapshots, pause and resume, the
+// resolver probe, the all-channel list) stay the admin's.
+var tenantMCPTools = append([]string{"retention_override", "crypto", "groupdef", "acldef", "aclbinding", "clientdef", "ontology", "erasure", "operatortokendef"}, memberMCPTools...)
 
 // selfTokenRule is every user's say over its own credentials (RFC FA P5):
 // approving a device login, which mints a token for the approver themselves
@@ -120,6 +120,10 @@ func Baselines() map[string]ACL {
 				Rule{Effect: Allow, Actions: []string{"manage"}, Resources: []string{"def:schedule/*"}},
 				Rule{Effect: Allow, Actions: []string{"read", "manage", "mint"}, Resources: []string{"principal:user:*", "principal:group:*"}},
 				Rule{Effect: Allow, Actions: []string{"read"}, Resources: []string{"principal:token:*"}},
+				// Its own tenant's metrics scrape tokens, which the token tool
+				// asks as principal:token:metrics; every other token is the
+				// admin's to mint.
+				Rule{Effect: Allow, Actions: []string{"mint", "manage"}, Resources: []string{"principal:token:metrics"}},
 				selfTokenRule,
 				Rule{Effect: Allow, Actions: []string{"read", "manage"}, Resources: []string{"runtime:limits", "runtime:retention", "runtime:erasure", "runtime:usage", "runtime:routing", "runtime:events"}},
 				// The audit chain export: the operator's record, read-only,

@@ -1179,9 +1179,7 @@ var grpcConsumerScopes = map[string]string{
 	// management. ScopeTenant (substrate:admin still satisfies). substrateGRPCCtx
 	// stamps the principal's authoritative tenant on the def-tools, and the hook
 	// connector stamps + tenant-scopes register/list/delete, so a tenant operator
-	// authors ONLY its own surface. OperatorTokenDef is DELIBERATELY absent — it
-	// defaults to ScopeAdmin (token minting stays operator-only), mirroring the
-	// HTTP /v1/_operatortokendef exclusion.
+	// authors ONLY its own surface.
 	"AgentDef":          auth.ScopeTenant,
 	"SkillDef":          auth.ScopeTenant,
 	"MCPServerDef":      auth.ScopeTenant,
@@ -1203,6 +1201,11 @@ var grpcConsumerScopes = map[string]string{
 	"ReleaseTeamChannel": auth.ScopeTenant,
 	// HookDef — reusable hook definitions, authored like an AgentDef.
 	"HookDef": auth.ScopeTenant,
+	// Token minting, as POST /v1/_operatortokendef: a tenant operator reaches
+	// it only for its own tenant's metrics scrape tokens (the tool's grant,
+	// tools.OperatorTokenDefPolicyFor), and the twin route is carved out of
+	// the member path, so a member is refused here too.
+	"OperatorTokenDef": auth.ScopeTenant,
 	// RFC AL Path VFS + RFC AK Document — scope-aware, tenant-isolated tools
 	// lifted to the wire. Same ScopeTenant posture as VolumeDef.
 	"Path":     auth.ScopeTenant,

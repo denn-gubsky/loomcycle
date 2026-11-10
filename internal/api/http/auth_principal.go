@@ -1364,8 +1364,8 @@ func requiredScopeFor(method, path string) string {
 	// also satisfies it). The handlers stamp the principal's authoritative tenant
 	// (dispatchSubstrate → RunIdentity) and 404 cross-tenant reads, so a tenant
 	// operator authors ONLY its own surface. DELIBERATELY EXCLUDES
-	// /v1/_operatortokendef (token minting — no tenant dimension, stays ScopeAdmin
-	// via the catch-all below). /v1/_mcp (the loomcycle-as-MCP-server transport)
+	// /v1/_operatortokendef (token minting has its own case below).
+	// /v1/_mcp (the loomcycle-as-MCP-server transport)
 	// now has its OWN ScopeTenant case below: RFC AG made it per-principal
 	// (mcpPrincipalCtx stamps the tenant + a per-tool gate withholds the admin
 	// meta-tools), so it no longer needs to be operator-only.
@@ -1625,8 +1625,15 @@ func requiredScopeFor(method, path string) string {
 	// certain agents is refused.
 	case path == audioSpeechPath || path == audioTranscriptionsPath || path == speechInfoPath:
 		return auth.ScopeRunsCreate
-	// Everything else under /v1/_* is OPERATOR-admin: token minting
-	// (_operatortokendef), runtime admin (pause/resume/state/snapshots/metrics),
+	// Token minting. A tenant operator reaches it only for its own tenant's
+	// metrics scrape tokens: the tool's grant (tools.OperatorTokenDefPolicyFor)
+	// confines it to those, and every other op and token stays the admin's.
+	// Carved out of the member path (memberpath.CarvedOut): handing out
+	// credentials is the operator's. The names listing stays admin, below.
+	case path == "/v1/_operatortokendef" && method == http.MethodPost:
+		return auth.ScopeTenant
+	// Everything else under /v1/_* is OPERATOR-admin: the token names
+	// listing, runtime admin (pause/resume/state/snapshots/metrics),
 	// resolver, cross-tenant user focus.
 	case strings.HasPrefix(path, "/v1/_"):
 		return auth.ScopeAdmin
@@ -1867,7 +1874,7 @@ func metricsScrapeRoute(method, path string) bool {
 // /{name} sub-paths). The RFC AH Phase 2a VolumeDef family (added below) has
 // only the POST route (its `list` op dispatches via the body, not a GET
 // /names route). It DELIBERATELY EXCLUDES:
-//   - /v1/_operatortokendef — token minting stays operator-only.
+//   - /v1/_operatortokendef — token minting has its own case in requiredScopeFor.
 //   - /v1/_mcp — handled by its OWN ScopeTenant case in requiredScopeFor (RFC AG
 //     Phase 2 made the MCP transport per-principal: mcpPrincipalCtx stamps the
 //     tenant, a per-tool gate withholds the admin meta-tools). It is NOT in this

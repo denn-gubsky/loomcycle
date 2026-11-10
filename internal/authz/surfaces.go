@@ -217,7 +217,11 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		}
 		return instance("read", "def", fam+"/*"), true
 	case name == "operatortokendef":
-		return instance("mint", "principal", "token:*"), true
+		// Every op of POST /v1/_operatortokendef travels in the body, so the
+		// route asks the weakest verb and the token tool asks each op's own
+		// (mint, manage or read) of the tokens it acts on
+		// (tools.AuthorizeTokenOp). GET /v1/_operatortokendef/names is a read.
+		return instance("read", "principal", "token:*"), true
 	case name == "history":
 		return typeLevel("read", "history"), true
 	case name == "evaluation":
@@ -552,7 +556,8 @@ func GRPCSurface(rpc string) (Surface, bool) {
 	case "Evaluation":
 		return typeLevel("read", "evaluation"), true
 	case "OperatorTokenDef":
-		return instance("mint", "principal", "token:*"), true
+		// As its route: the weakest verb, the tool asks each op's own.
+		return instance("read", "principal", "token:*"), true
 	// The access-control management RPCs (RFC EZ §3) carry the op in their
 	// input, like a def family: the RPC asks the family's weakest verb and the
 	// shared implementation asks each op's own question (the one its HTTP

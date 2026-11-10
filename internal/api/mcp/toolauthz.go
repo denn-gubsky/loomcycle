@@ -175,6 +175,12 @@ var tenantConfinableTools = map[string]bool{
 	"peek_channel":           true,
 	"ack_channel":            true,
 	"stream_user_run_states": true,
+	// operatortokendef: a tenant operator's own tenant's metrics scrape
+	// tokens and nothing else — the tool's grant comes from the principal
+	// (tools.OperatorTokenDefPolicyFor), which confines it to those. It also
+	// needs substrate:tenant by name (toolRequiredScope), as the route's
+	// member carve-out keeps a member from minting.
+	"operatortokendef": true,
 }
 
 // adminOnlyTools enumerates the runtime-global / operator-plane meta-tools that
@@ -185,8 +191,6 @@ var tenantConfinableTools = map[string]bool{
 // other, and that the two sets are disjoint. Adding a meta-tool without
 // classifying it here turns the drift test red.
 var adminOnlyTools = map[string]bool{
-	"operatortokendef": true, // token minting — no tenant dimension.
-
 	// Runtime-global control + introspection.
 	"pause_runtime":     true,
 	"resume_runtime":    true,
@@ -291,6 +295,9 @@ var toolRequiredScope = map[string]string{
 	// An app client decides where people's sign-in codes go: the operator's
 	// to register, as POST /v1/_clientdef requires.
 	"clientdef": auth.ScopeTenant,
+	// Handing out a credential, even a tenant's own scrape token, is the
+	// operator's: POST /v1/_operatortokendef is carved out of the member path.
+	"operatortokendef": auth.ScopeTenant,
 }
 
 // principalMayCallTool reports whether the principal on ctx may list/invoke
@@ -611,7 +618,7 @@ var mcpOpsInBody = map[string]string{
 	"evaluation":        "one route; the Evaluation tool holds each op to the token's evaluation scopes",
 	"crypto":            "one route; the Crypto tool asks use of each key it resolves",
 	"credentialdef":     "one route; CredentialDef asks use or manage of the credential each op names",
-	"operatortokendef":  "one route, which asks mint principal:token:*",
+	"operatortokendef":  "one route; the token tool asks mint, manage or read of the tokens each op acts on",
 	"groupdef":          "the family's weakest verb; the shared operation asks manage of a write",
 	"aclbinding":        "the family's weakest verb; the shared operation asks author of a write",
 	"acldef":            "one route; the shared operation asks author, retire or read of the named list",
