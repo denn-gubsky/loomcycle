@@ -276,12 +276,16 @@ func (m *OAuthManager) startPoller(r oauthRow, sec oauthSecret) {
 	safego.Go(ctx, "credential.oauth_poller", func() {
 		defer close(p.done)
 		defer cancel()
+		// Deferred so a poll that panics is still removed: a dead entry
+		// would keep hasPoller reporting the authorization as being polled.
+		defer func() {
+			m.mu.Lock()
+			if m.pollers[r.key()] == p {
+				delete(m.pollers, r.key())
+			}
+			m.mu.Unlock()
+		}()
 		m.poll(ctx, r, sec)
-		m.mu.Lock()
-		if m.pollers[r.key()] == p {
-			delete(m.pollers, r.key())
-		}
-		m.mu.Unlock()
 	})
 }
 
