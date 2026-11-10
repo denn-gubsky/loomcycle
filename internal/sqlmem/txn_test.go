@@ -2,6 +2,7 @@ package sqlmem
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
@@ -323,4 +324,31 @@ func TestTxn_AutoCommitUnchanged(t *testing.T) {
 	if n := rowCount(t, m, key); n != 1 {
 		t.Fatalf("auto-commit count=%d, want 1", n)
 	}
+}
+
+// panickingBeginBackend is a backend whose beginTx panics, as a driver bug would.
+type panickingBeginBackend struct{ backend }
+
+func (panickingBeginBackend) beginTx(context.Context, ScopeKey) (*sql.Tx, func(), error) {
+	panic("beginTx bug")
+}
+
+// TestTxn_APanickingBeginFreesItsReservation: a panic in the backend's begin,
+// recovered higher up, must not keep the reservation — it would hold a global
+// and a tenant slot for the process's life, and the txn id would answer "being
+// opened — retry" forever.
+func TestTxn_APanickingBeginFreesItsReservation(t *testing.T) {
+	m := newTestManager(t, Config{MaxOpenTxns: 4, MaxOpenTxnsPerTenant: 1})
+	real := m.backend
+	m.backend = panickingBeginBackend{real}
+	id := agentTxnID("runA", "a")
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = m.BeginTxn(context.Background(), id, "runA", agentKey("tenantA", "a"))
+	}()
+	m.backend = real
+	if _, err := m.BeginTxn(context.Background(), id, "runA", agentKey("tenantA", "a")); err != nil {
+		t.Fatalf("begin after a panicking begin: %v", err)
+	}
+	m.RollbackRunTxns("runA")
 }
