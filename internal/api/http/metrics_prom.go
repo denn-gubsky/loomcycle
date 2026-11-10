@@ -30,6 +30,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
 )
 
@@ -238,6 +239,22 @@ func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 	sort.Strings(names)
 	for _, n := range names {
 		fmt.Fprintf(w, "loomcycle_tool_panics_total%s %d\n", mergeLabels(replicaLabels, map[string]string{"tool": n}), panics[n])
+	}
+	fmt.Fprintln(w)
+
+	// Background goroutines recovered from a panic, by goroutine name: each is
+	// a bug that stopped that goroutine's work instead of the process. Names are
+	// static strings at the call sites, so the series stay bounded.
+	fmt.Fprintln(w, "# HELP loomcycle_goroutine_panics_total Background goroutines on this replica that panicked and were recovered, by goroutine.")
+	fmt.Fprintln(w, "# TYPE loomcycle_goroutine_panics_total counter")
+	gpanics := safego.Panics()
+	gnames := make([]string, 0, len(gpanics))
+	for n := range gpanics {
+		gnames = append(gnames, n)
+	}
+	sort.Strings(gnames)
+	for _, n := range gnames {
+		fmt.Fprintf(w, "loomcycle_goroutine_panics_total%s %d\n", mergeLabels(replicaLabels, map[string]string{"goroutine": n}), gpanics[n])
 	}
 	fmt.Fprintln(w)
 
