@@ -66,7 +66,8 @@ jobs:
   #   vX.Y.0 (patch component 0) or a major, or a force_full dispatch → FULL
   #   build (binaries + Homebrew + every image variant, as before).
   #   vX.Y.Z with Z>0 (a patch / subversion) → LEAN build: only the
-  #   loomcycle-browser linux/amd64 image (see the browser-patch job). A
+  #   loomcycle-browser and loomcycle-media linux/amd64 images (see the
+  #   browser-patch job). A
   #   non-semver ref defaults to FULL (safe).
   classify:
     name: classify release
@@ -101,7 +102,7 @@ jobs:
                 echo "::notice::$REF_NAME is a minor/major — FULL build (all variants)"
               else
                 echo "full=false" >> "$GITHUB_OUTPUT"
-                echo "::notice::$REF_NAME is a patch — LEAN build (loomcycle-browser linux/amd64 only)"
+                echo "::notice::$REF_NAME is a patch — LEAN build (loomcycle-browser + loomcycle-media linux/amd64 only)"
               fi
               ;;
             *)
@@ -403,7 +404,7 @@ jobs:
   # minutes for a bugfix release. Force the full build on a patch with a
   # workflow_dispatch (force_full=true).
   browser-patch:
-    name: patch — loomcycle-browser (linux/amd64)
+    name: patch — loomcycle-browser + loomcycle-media (linux/amd64)
     needs: classify
     if: needs.classify.outputs.full == 'false'
     runs-on: ubuntu-latest
@@ -411,7 +412,7 @@ jobs:
       # A job-level block REPLACES the workflow-level one, so packages:write
       # has to be restated here — otherwise the GHCR push 403s on a patch tag.
       contents: write      # pre-create the GitHub release from the annotated tag
-      packages: write      # push the GHCR mirror of loomcycle-browser
+      packages: write      # push the GHCR mirrors of loomcycle-browser and loomcycle-media
       id-token: write      # keyless cosign signature and the attestation
       attestations: write  # store the build-provenance attestation with GitHub
     steps:
@@ -547,5 +548,45 @@ jobs:
         with:
           subject-name: ghcr.io/denn-gubsky/loomcycle-browser
           subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      # loomcycle-media on a patch too: a deployment that runs it for speech
+      # (ffmpeg) and a browser (the PinchTab client) follows patch releases
+      # like a loomcycle-browser one. Built after loomcycle-browser is pushed,
+      # signed and attested, so a failure here (its apt layer reaches Debian's
+      # mirrors) fails the job without holding back the browser image. The
+      # same pre-built binary at the context root.
+      - name: Build + push loomcycle-media (linux/amd64)
+        id: push-media
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.media
+          platforms: linux/amd64
+          push: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle
+          tags: |
+            denngubsky/loomcycle-media:${{ needs.classify.outputs.version }}
+            denngubsky/loomcycle-media:latest
+            ghcr.io/denn-gubsky/loomcycle-media:${{ needs.classify.outputs.version }}
+            ghcr.io/denn-gubsky/loomcycle-media:latest
+      - name: Sign loomcycle-media
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        env:
+          DIGEST: ${{ steps.push-media.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes \
+            "docker.io/denngubsky/loomcycle-media@${DIGEST}" \
+            "ghcr.io/denn-gubsky/loomcycle-media@${DIGEST}"
+      - name: Attest build provenance (loomcycle-media)
+        if: vars.DOCKER_PUBLISH_ENABLED == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/denn-gubsky/loomcycle-media
+          subject-digest: ${{ steps.push-media.outputs.digest }}
           push-to-registry: true
           create-storage-record: false

@@ -1,23 +1,35 @@
 # Dockerfile.media — goreleaser variant: the loomcycle binary plus the helper
-# programs transcription runs, opt-in per deployment.
+# programs transcription and speech run, and the PinchTab MCP client: the
+# image for a deployment that wants voice, OCR and a browser together.
 #
-# Why: the File tool's transcription calls operator-configured host commands
-# — ffmpeg to turn a recording (or a video's sound) into a WAV it can cut into
-# pieces (transcription.stt.media.command), and poppler's pdftoppm to render a
-# PDF's pages for an OCR model that reads images only
-# (transcription.ocr.rasterize.command). The default image is distroless and
-# has neither; this one does, so a containerised deployment sets
+# Why: the File tool's transcription and the speech routes call
+# operator-configured host commands — ffmpeg to turn a recording (a Telegram
+# voice note, a video's sound) into a WAV it can cut into pieces
+# (transcription.stt.media.command) and to encode read-aloud as Opus or MP3
+# (speech.encode), and poppler's pdftoppm to render a PDF's pages for an OCR
+# model that reads images only (transcription.ocr.rasterize.command). The
+# default image is distroless and has neither; this one does, so a
+# containerised deployment sets
 #
 #   transcription.stt.media.command:     ffmpeg -nostdin -i {in} -ac 1 -ar 16000 -f wav {out}
 #   transcription.ocr.rasterize.command: pdftoppm -r 150 -png {in} {out_prefix}
+#   speech.encode.command:               ffmpeg -nostdin -i {in} -c:a libopus -b:a 32k {out}
 #
 # and nothing else changes. The helpers run without a shell, with a scrubbed
 # environment, in a scratch folder of the run's inbox.
 #
+# The PinchTab client is the same one Dockerfile.browser carries (see there;
+# Chromium stays in a pinchtab server sidecar), so a deployment that drives a
+# browser AND speaks need not choose between the two images. Its tag and
+# digest must match Dockerfile.browser's: scripts/ci/pinchtabpin checks it.
+#
 # Debian slim rather than distroless: ffmpeg and poppler bring shared
 # libraries. The same pre-built binary as Dockerfile.release (goreleaser
 # builds every arch; this only COPYs it), the same nonroot uid 65532 and the
-# same entrypoint. Published to docker.io/denngubsky/loomcycle-media.
+# same entrypoint. Published to docker.io/denngubsky/loomcycle-media, on minor
+# releases for amd64 and arm64 and on patch releases for amd64 (release.yml).
+FROM pinchtab/pinchtab:v0.15.2@sha256:a2205fc99765e42ce566dae3c8ff9fc3e3338cf44decb816ddb3d54d8d4bc05d AS pinchtab
+
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 RUN set -eux; \
@@ -32,6 +44,10 @@ RUN set -eux; \
 
 COPY loomcycle /usr/local/bin/loomcycle
 COPY LICENSE NOTICE /usr/share/doc/loomcycle/
+COPY --from=pinchtab /usr/local/bin/pinchtab /usr/local/bin/pinchtab
+# pinchtab is MIT: its notices must travel with the binary (see
+# third_party/pinchtab/PROVENANCE.md).
+COPY third_party/pinchtab/LICENSE third_party/pinchtab/THIRD_PARTY_LICENSES.md /usr/share/doc/pinchtab/
 
 USER 65532:65532
 WORKDIR /

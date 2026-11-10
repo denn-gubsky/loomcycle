@@ -100,7 +100,7 @@ workflow and the git ref it ran at:
 | Image | Workflow | Ref in the certificate |
 |---|---|---|
 | `loomcycle`, `loomcycle-toolbox`, `loomcycle-media`, `loomcycle-browser` (minor and major releases) | `release.yml` | `refs/tags/vX.Y.Z` |
-| `loomcycle-browser` (patch releases) | `release.yml` | `refs/tags/vX.Y.Z` |
+| `loomcycle-browser`, `loomcycle-media` (patch releases, amd64) | `release.yml` | `refs/tags/vX.Y.Z` |
 | `loomcycle-builder`, `loomcycle-builder-docker`, `loomcycle-sandbox-session` | `publish-sandbox-images.yml` | `refs/tags/vX.Y.0`, or the branch a manual run used |
 | `loomcycle-bridge-<name>` | `publish-bridge-images.yml` | `refs/tags/bridge-<name>-vX.Y.Z`, or the branch a manual run used |
 

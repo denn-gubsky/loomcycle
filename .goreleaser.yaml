@@ -382,9 +382,10 @@ dockers:
     goarch: arm64
 
   # loomcycle-media — the SAME binary on a Debian slim base with ffmpeg and
-  # poppler-utils, the helper programs transcription runs (the media
-  # converter, the PDF page renderer). Opt-in per deployment; the default
-  # image stays distroless. The arm64 apt layer runs under QEMU on the amd64
+  # poppler-utils, the helper programs transcription and speech run (the media
+  # converter and encoder, the PDF page renderer), plus the PinchTab MCP client
+  # loomcycle-browser carries. Opt-in per deployment; the default image stays
+  # distroless. A patch tag publishes its amd64 image too (release.yml). The arm64 apt layer runs under QEMU on the amd64
   # runner (slower than a COPY, far lighter than the toolbox's toolchains).
   - id: loomcycle-media-amd64
     ids:
@@ -398,11 +399,13 @@ dockers:
     extra_files:
       - LICENSE
       - NOTICE
+      - third_party/pinchtab/LICENSE
+      - third_party/pinchtab/THIRD_PARTY_LICENSES.md
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--label=org.opencontainers.image.title=loomcycle-media"
-      - "--label=org.opencontainers.image.description=loomcycle + ffmpeg and poppler-utils for speech-to-text conversion and PDF page rendering"
+      - "--label=org.opencontainers.image.description=loomcycle + ffmpeg, poppler-utils and the PinchTab MCP client: speech conversion and encoding, PDF page rendering, headless-browser agents"
       - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
       - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
       - "--label=org.opencontainers.image.version={{ .Version }}"
@@ -421,11 +424,13 @@ dockers:
     extra_files:
       - LICENSE
       - NOTICE
+      - third_party/pinchtab/LICENSE
+      - third_party/pinchtab/THIRD_PARTY_LICENSES.md
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--label=org.opencontainers.image.title=loomcycle-media"
-      - "--label=org.opencontainers.image.description=loomcycle + ffmpeg and poppler-utils for speech-to-text conversion and PDF page rendering"
+      - "--label=org.opencontainers.image.description=loomcycle + ffmpeg, poppler-utils and the PinchTab MCP client: speech conversion and encoding, PDF page rendering, headless-browser agents"
       - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
       - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
       - "--label=org.opencontainers.image.version={{ .Version }}"
