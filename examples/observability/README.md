@@ -24,7 +24,7 @@ loomcycle ──/metrics──▶ Prometheus (Profile A) or scraped from each pr
 The substrate exposes:
 
 - **5 span types** — `loomcycle.run`, `loomcycle.iteration`, `loomcycle.provider.call`, `loomcycle.tool.call`, `loomcycle.mcp.call`
-- **19 span attributes** — identity (`run_id`, `agent_id`, `user_id`, `agent_name`, `parent_agent_id`, `iteration`), provider (`provider`, `model`, `tier`, `effort`), tools (`tool`, `mcp_server`, `mcp_tool`), cost (`input_tokens`, `output_tokens`, `cache_read_tokens`), latency (`stop_reason`, `tool_is_error`, `queue_wait_ms`)
+- **19 span attributes** — identity (`run_id`, `agent_id`, `user_hash`, `agent_name`, `parent_agent_id`, `iteration`), provider (`provider`, `model`, `tier`, `effort`), tools (`tool`, `mcp_server`, `mcp_tool`), cost (`input_tokens`, `output_tokens`, `cache_read_tokens`), latency (`stop_reason`, `tool_is_error`, `queue_wait_ms`)
 - **7 Prometheus metrics** — process resources (RSS, heap, goroutines), concurrency state (active, queued, per-user), build_info
 - **OTEL Collector `spanmetrics` connector** (Profile A only) — aggregates spans into Prometheus histograms downstream; same metrics queryable in any Prometheus-compatible backend
 

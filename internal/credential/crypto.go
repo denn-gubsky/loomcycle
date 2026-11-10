@@ -311,3 +311,25 @@ func DeriveAuditChainKey(secretKeyB64 string) ([]byte, error) {
 	}
 	return hkdf.Key(sha256.New, kek, nil, auditChainKeyInfo, 32)
 }
+
+// otelUserKeyInfo is the HKDF info for the key that hashes user ids on
+// exported trace spans. Changing it changes every hash, so traces recorded
+// before the change no longer match a hash computed after it.
+const otelUserKeyInfo = "loomcycle/otel-user/v1"
+
+// DeriveOTelUserKey derives the key loomcycle.user_hash is computed under:
+// HKDF-SHA256(key, info="loomcycle/otel-user/v1"), the master key parsed
+// exactly as NewSealer parses it. Its own info string keeps it apart from the
+// peppers, the audit chain key and the per-tenant credential keys: the hash
+// is exported to a trace backend, and learning this key must say nothing
+// about any other. An empty key yields nil (spans then carry the raw id).
+func DeriveOTelUserKey(secretKeyB64 string) ([]byte, error) {
+	if strings.TrimSpace(secretKeyB64) == "" {
+		return nil, nil
+	}
+	kek, err := decodeKey(secretKeyB64)
+	if err != nil {
+		return nil, err
+	}
+	return hkdf.Key(sha256.New, kek, nil, otelUserKeyInfo, 32)
+}

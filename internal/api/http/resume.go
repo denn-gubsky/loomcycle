@@ -865,6 +865,8 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		AgentName:     run.Agent,
 		UserID:        run.UserID,
 		ParentAgentID: run.ParentAgentID,
+		Tenant:        run.TenantID,
+		SessionID:     run.SessionID,
 	})
 	// A resumed run records into a new trace; the run now points at it.
 	s.recordRunTraceID(runCtx, run.ID)
@@ -1036,6 +1038,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		Resumed:             true,
 		Provider:            provider,
 		Model:               model,
+		PriceCall:           s.priceCall,
 		Tools:               allowedTools,
 		Dispatcher:          dispatcher,
 		Segments:            segments,

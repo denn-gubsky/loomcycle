@@ -1,0 +1,386 @@
+package loop
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
+
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
+)
+
+// streamingProvider behaves like a real driver as far as spans go: Call opens
+// and ends one loomcycle.provider.call attempt span (at the "headers"), then
+// streams its events from a goroutine. block, when set, holds the stream open
+// after the first event until the call's ctx ends.
+type streamingProvider struct {
+	events []providers.Event
+	gap    time.Duration
+	block  bool
+	err    error // returned by Call instead of a stream
+	doneAt time.Time
+}
+
+func (p *streamingProvider) ID() string                                   { return "anthropic" }
+func (p *streamingProvider) Probe(context.Context) error                  { return nil }
+func (p *streamingProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *streamingProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+
+func (p *streamingProvider) Call(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	_, attempt := lcotel.RecordProviderCall(lcotel.WithAttempt(ctx, 1, 0), lcotel.ProviderCallAttrs{Provider: "anthropic"})
+	attempt.End()
+	if p.err != nil {
+		return nil, p.err
+	}
+	ch := make(chan providers.Event)
+	go func() {
+		defer close(ch)
+		for i, ev := range p.events {
+			time.Sleep(p.gap)
+			if ev.Type == providers.EventDone {
+				p.doneAt = time.Now()
+			}
+			select {
+			case ch <- ev:
+			case <-ctx.Done():
+				return
+			}
+			if p.block && i == 0 {
+				<-ctx.Done()
+				return
+			}
+		}
+	}()
+	return ch, nil
+}
+
+func traced(t *testing.T) (*tracetest.InMemoryExporter, *tracetest.SpanRecorder) {
+	t.Helper()
+	exp := tracetest.NewInMemoryExporter()
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp), sdktrace.WithSpanProcessor(rec))
+	cleanup := lcotel.SetTracerProviderForTest(tp)
+	t.Cleanup(func() { cleanup(); _ = tp.Shutdown(context.Background()) })
+	return exp, rec
+}
+
+func userPrompt() []PromptSegment {
+	return []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "q"}}}}
+}
+
+func spansNamed(exp *tracetest.InMemoryExporter, name string) tracetest.SpanStubs {
+	var out tracetest.SpanStubs
+	for _, s := range exp.GetSpans() {
+		if s.Name == name {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func spanAttrs(s tracetest.SpanStub) map[string]attribute.Value {
+	m := map[string]attribute.Value{}
+	for _, kv := range s.Attributes {
+		m[string(kv.Key)] = kv.Value
+	}
+	return m
+}
+
+// noOpenSpans fails when a span started and never ended, or a span ended
+// after its parent did.
+func noOpenSpans(t *testing.T, rec *tracetest.SpanRecorder) {
+	t.Helper()
+	if started, ended := len(rec.Started()), len(rec.Ended()); started != ended {
+		t.Errorf("%d spans started, %d ended: a span leaked open", started, ended)
+	}
+	byID := map[trace.SpanID]sdktrace.ReadOnlySpan{}
+	for _, s := range rec.Ended() {
+		byID[s.SpanContext().SpanID()] = s
+	}
+	for _, s := range rec.Ended() {
+		if p, ok := byID[s.Parent().SpanID()]; ok && s.EndTime().After(p.EndTime()) {
+			t.Errorf("%s ended after its parent %s", s.Name(), p.Name())
+		}
+	}
+}
+
+func TestModelCallSpan_CoversTheStreamWithUsageAndParentsTheAttempts(t *testing.T) {
+	exp, rec := traced(t)
+	p := &streamingProvider{gap: 15 * time.Millisecond, events: []providers.Event{
+		{Type: providers.EventText, Text: "hi"},
+		{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{
+			InputTokens: 11, OutputTokens: 7, CacheReadTokens: 3, CacheCreationTokens: 2, Model: "claude-x-0613"}},
+	}}
+	ctx := lcotel.WithTenant(context.Background(), "acme")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{ModelTier: "high"})
+	_, err := Run(ctx, RunOptions{
+		Provider: p, Model: "claude-x", Segments: userPrompt(), OnEvent: func(providers.Event) {},
+		MaxTokens: 512,
+		PriceCall: func(provider, model string, u *providers.Usage) (float64, string) {
+			if provider != "anthropic" || model != "claude-x-0613" || u.OutputTokens != 7 {
+				t.Errorf("PriceCall(%q, %q, %+v)", provider, model, u)
+			}
+			return 0.0125, "USD"
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noOpenSpans(t, rec)
+
+	models := spansNamed(exp, lcotel.SpanModelCall)
+	attempts := spansNamed(exp, lcotel.SpanProviderCall)
+	iters := spansNamed(exp, lcotel.SpanIteration)
+	if len(models) != 1 || len(attempts) != 1 || len(iters) != 1 {
+		t.Fatalf("spans: %d model, %d attempt, %d iteration; want 1 each", len(models), len(attempts), len(iters))
+	}
+	m, a := models[0], attempts[0]
+	if a.Parent.SpanID() != m.SpanContext.SpanID() {
+		t.Error("the provider attempt span is not a child of the model-call span")
+	}
+	if m.Parent.SpanID() != iters[0].SpanContext.SpanID() {
+		t.Error("the model-call span is not a child of the iteration span")
+	}
+	// It ends after the stream, not at the attempt's headers.
+	if !m.EndTime.After(a.EndTime) || m.EndTime.Before(p.doneAt) {
+		t.Errorf("model span ended %v; attempt ended %v, done sent %v", m.EndTime, a.EndTime, p.doneAt)
+	}
+	if m.Status.Code == codes.Error {
+		t.Errorf("a completed call's span is an error: %q", m.Status.Description)
+	}
+	got := spanAttrs(m)
+	for k, want := range map[string]string{
+		lcotel.AttrTenant:                          "acme",
+		lcotel.AttrProvider:                        "anthropic",
+		lcotel.AttrModel:                           "claude-x",
+		lcotel.AttrTier:                            "high",
+		lcotel.AttrModelPurpose:                    "turn",
+		"gen_ai.operation.name":                    "chat",
+		"gen_ai.provider.name":                     "anthropic",
+		"gen_ai.request.model":                     "claude-x",
+		"gen_ai.request.max_tokens":                "512",
+		"gen_ai.response.model":                    "claude-x-0613",
+		"gen_ai.response.finish_reasons":           `["end_turn"]`,
+		"gen_ai.usage.input_tokens":                "11",
+		"gen_ai.usage.output_tokens":               "7",
+		lcotel.AttrCacheReadTokens:                 "3",
+		lcotel.AttrCacheWriteTokens:                "2",
+		lcotel.AttrCostUSD:                         "0.0125",
+		"gen_ai.usage.cache_creation.input_tokens": "2",
+		"gen_ai.usage.cache_read.input_tokens":     "3",
+		lcotel.AttrStopReason:                      "end_turn",
+	} {
+		if v, ok := got[k]; !ok || v.Emit() != want {
+			t.Errorf("%s = %q (present %v), want %q", k, v.Emit(), ok, want)
+		}
+	}
+	if ttft, ok := got[lcotel.AttrTTFTMs]; !ok || ttft.AsInt64() <= 0 {
+		t.Errorf("%s = %v (present %v), want > 0", lcotel.AttrTTFTMs, ttft.Emit(), ok)
+	}
+}
+
+func TestModelCallSpan_EndsAsAnErrorWhenTheCallFails(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		p    *streamingProvider
+	}{
+		{"call refused", &streamingProvider{err: errors.New("anthropic 400: bad request")}},
+		{"in-stream error", &streamingProvider{events: []providers.Event{
+			{Type: providers.EventText, Text: "par"},
+			{Type: providers.EventError, Error: "anthropic 400: bad request"},
+		}}},
+		{"stream closed unfinished", &streamingProvider{events: []providers.Event{{Type: providers.EventText, Text: "par"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exp, rec := traced(t)
+			if _, err := Run(context.Background(), RunOptions{Provider: tc.p, Model: "claude-x", Segments: userPrompt(), OnEvent: func(providers.Event) {}}); err == nil {
+				t.Fatal("the run succeeded")
+			}
+			noOpenSpans(t, rec)
+			models := spansNamed(exp, lcotel.SpanModelCall)
+			if len(models) != 1 {
+				t.Fatalf("got %d model-call spans, want 1", len(models))
+			}
+			if models[0].Status.Code != codes.Error || models[0].Status.Description == "" || models[0].Status.Description == "cancelled" {
+				t.Errorf("status = %v %q, want an error naming the failure", models[0].Status.Code, models[0].Status.Description)
+			}
+		})
+	}
+}
+
+func TestModelCallSpan_EndsCancelledWhenTheRunIsCancelledMidStream(t *testing.T) {
+	exp, rec := traced(t)
+	p := &streamingProvider{block: true, events: []providers.Event{
+		{Type: providers.EventText, Text: "partial"},
+		{Type: providers.EventDone, StopReason: "end_turn"},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	_, _ = Run(ctx, RunOptions{Provider: p, Model: "claude-x", Segments: userPrompt(), OnEvent: func(ev providers.Event) {
+		if ev.Type == providers.EventText {
+			cancel()
+		}
+	}})
+	cancel()
+	noOpenSpans(t, rec)
+	models := spansNamed(exp, lcotel.SpanModelCall)
+	if len(models) != 1 {
+		t.Fatalf("got %d model-call spans, want 1", len(models))
+	}
+	if models[0].Status.Code != codes.Error || models[0].Status.Description != "cancelled" {
+		t.Errorf("status = %v %q, want Error \"cancelled\"", models[0].Status.Code, models[0].Status.Description)
+	}
+	if et := spanAttrs(models[0])["error.type"]; et.AsString() != lcotel.ErrorTypeCancelled {
+		t.Errorf("error.type = %q", et.Emit())
+	}
+}
+
+// A fallback is one hop between two model-call spans: the failed call is an
+// error, and the call that follows names where the run came from.
+func TestModelCallSpan_NamesTheFallbackHop(t *testing.T) {
+	exp, rec := traced(t)
+	failing := &tieredProvider{id: "anthropic", errors: []error{errors.New("anthropic 429: rate limit exceeded")}}
+	healthy := &tieredProvider{id: "deepseek", responses: [][]providers.Event{successResponse()}}
+	_, err := Run(context.Background(), RunOptions{
+		Provider: failing, Model: "claude-x", MaxIterations: 5, Segments: userPrompt(), OnEvent: func(providers.Event) {},
+		FallbackPolicy: FallbackPolicy{Enabled: true, MaxAttempts: 3},
+		ReResolve: func(context.Context, string, string, error) (providers.Provider, string, string, error) {
+			return healthy, "deepseek-v4", "", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noOpenSpans(t, rec)
+	models := spansNamed(exp, lcotel.SpanModelCall)
+	if len(models) != 2 {
+		t.Fatalf("got %d model-call spans, want 2", len(models))
+	}
+	failed, next := spanAttrs(models[0]), spanAttrs(models[1])
+	if models[0].Status.Code != codes.Error {
+		t.Errorf("the failed call's status = %v", models[0].Status.Code)
+	}
+	if _, ok := failed[lcotel.AttrFallbackFrom]; ok {
+		t.Error("the first call names a fallback it did not come from")
+	}
+	if got := next[lcotel.AttrFallbackFrom].AsString(); got != "anthropic/claude-x" {
+		t.Errorf("%s = %q, want anthropic/claude-x", lcotel.AttrFallbackFrom, got)
+	}
+	if got := next[lcotel.AttrProvider].AsString() + "/" + next[lcotel.AttrModel].AsString(); got != "deepseek/deepseek-v4" {
+		t.Errorf("the next call ran on %q", got)
+	}
+}
+
+// The time to first token counts from lane admission: a finished call's wait
+// for its provider call-lane slot is taken out of it and reported on its own.
+func TestModelCallSpan_TTFTExcludesTheCallLaneWait(t *testing.T) {
+	exp, _ := traced(t)
+	now := time.Unix(1000, 0)
+	timer := providers.StartCallTimer(func() time.Time { return now })
+	_, span := lcotel.RecordModelCall(context.Background(), lcotel.ModelCallAttrs{Provider: "anthropic"})
+	mc := &ModelCall{span: span, runCtx: context.Background(), turnCtx: context.Background(), timer: timer}
+
+	now = now.Add(300 * time.Millisecond) // 120ms in the lane, 180ms to the first token
+	timer.Observe(providers.Event{Type: providers.EventText, Text: "x"})
+	mc.Observe(providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{LaneWaitMs: 120}})
+
+	got := spanAttrs(spansNamed(exp, lcotel.SpanModelCall)[0])
+	if got[lcotel.AttrTTFTMs].AsInt64() != 180 || got[lcotel.AttrLaneWaitMs].AsInt64() != 120 {
+		t.Errorf("ttft_ms %v lane_wait_ms %v, want 180 / 120", got[lcotel.AttrTTFTMs].Emit(), got[lcotel.AttrLaneWaitMs].Emit())
+	}
+}
+
+// The model calls the loop makes outside a turn — a compaction or recap
+// summary, a stateful run's step — have a model-call span of their own,
+// marked with their purpose, so their spend shows apart from the turns'.
+func TestModelCallSpan_SideCallsCarryTheirPurpose(t *testing.T) {
+	done := providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{InputTokens: 40, OutputTokens: 5}}
+	msgs := []providers.Message{{Role: "user", Content: []providers.ContentBlock{providers.DialogueText("hello")}}}
+
+	for _, tc := range []struct {
+		purpose string
+		call    func(ctx context.Context, p providers.Provider) error
+		events  []providers.Event
+	}{
+		{"compaction", func(ctx context.Context, p providers.Provider) error {
+			_, err := Summarize(ctx, p, "m", msgs, 30)
+			return err
+		}, []providers.Event{{Type: providers.EventText, Text: "sum"}, done}},
+		{"recap", func(ctx context.Context, p providers.Provider) error {
+			_, err := Recap(ctx, p, "m", msgs)
+			return err
+		}, []providers.Event{{Type: providers.EventText, Text: "sum"}, done}},
+		{"emit_state", func(ctx context.Context, p providers.Provider) error {
+			_, err := callForEmitState(ctx, p, providers.Request{Model: "m"}, nil, nil)
+			return err
+		}, []providers.Event{{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "t1", Name: emitStateToolName, Input: []byte(`{}`)}}, done}},
+	} {
+		t.Run(tc.purpose, func(t *testing.T) {
+			exp, rec := traced(t)
+			ctx := lcotel.WithTenant(context.Background(), "acme")
+			if err := tc.call(ctx, &streamingProvider{events: tc.events}); err != nil {
+				t.Fatal(err)
+			}
+			noOpenSpans(t, rec)
+			models := spansNamed(exp, lcotel.SpanModelCall)
+			if len(models) != 1 {
+				t.Fatalf("got %d model-call spans, want 1", len(models))
+			}
+			got := spanAttrs(models[0])
+			if got[lcotel.AttrModelPurpose].AsString() != tc.purpose || got[lcotel.AttrTenant].AsString() != "acme" ||
+				got["gen_ai.usage.input_tokens"].AsInt64() != 40 {
+				t.Errorf("purpose %q tenant %q input_tokens %v", got[lcotel.AttrModelPurpose].Emit(), got[lcotel.AttrTenant].Emit(), got["gen_ai.usage.input_tokens"].Emit())
+			}
+			if attempts := spansNamed(exp, lcotel.SpanProviderCall); len(attempts) != 1 || attempts[0].Parent.SpanID() != models[0].SpanContext.SpanID() {
+				t.Error("the attempt span is not the model-call span's child")
+			}
+		})
+	}
+}
+
+// A no-trace run's model calls — its turns and its summaries — name a failure
+// by class and carry no request parameters: the provider's error text can
+// quote the prompt. An ordinary run's span keeps the text, so the check can
+// fail.
+func TestModelCallSpan_ANoTraceRunsCallsCarryNoErrorTextOrParameters(t *testing.T) {
+	msgs := []providers.Message{{Role: "user", Content: []providers.ContentBlock{providers.DialogueText("hello")}}}
+	for _, retention := range []string{"none", ""} {
+		exp, _ := traced(t)
+		ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{Retention: retention, ModelTier: "high"})
+		p := &quotingProvider{inStream: true}
+		_, _ = Summarize(ctx, p, "m", msgs, 30)
+		_, _ = Run(ctx, RunOptions{Provider: p, Model: "m", Segments: userPrompt(), OnEvent: func(providers.Event) {}, MaxTokens: 64})
+		var text strings.Builder
+		models := spansNamed(exp, lcotel.SpanModelCall)
+		// The summary may retry once with a plainer request: two or three.
+		if len(models) < 2 {
+			t.Fatalf("retention=%q: got %d model-call spans, want the summary's and the turn's", retention, len(models))
+		}
+		for _, s := range models {
+			text.WriteString(s.Status.Description)
+			for k, v := range spanAttrs(s) {
+				text.WriteString(" " + v.Emit())
+				if retention == "none" && (k == lcotel.AttrTier || k == "gen_ai.request.max_tokens") {
+					t.Errorf("a no-trace run's model span carries %s", k)
+				}
+			}
+		}
+		has := strings.Contains(text.String(), iterSpanCanary)
+		if retention == "none" && has {
+			t.Errorf("a no-trace run's model spans carry the error text: %q", text.String())
+		}
+		if retention == "" && !has {
+			t.Fatalf("an ordinary run's model spans carry %q: this test cannot see the text", text.String())
+		}
+	}
+}

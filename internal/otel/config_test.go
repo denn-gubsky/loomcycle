@@ -70,6 +70,18 @@ func TestResolveConfig_EnvironmentTable(t *testing.T) {
 		{name: "endpoint without host never quoted", env: map[string]string{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://user:s3cr3t@/x?token=s3cr3t"}, wantErr: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT must be"},
 		{name: "ftp endpoint refused", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "ftp://collector"}, wantErr: "must be an absolute http(s) URL"},
 		{name: "endpoint with credentials accepted", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://user:pass@host:4318/x?token=abc"}, check: wantEnabled(true)},
+		{name: "raw user id opt-in", env: map[string]string{"LOOMCYCLE_OTEL_RAW_USER_ID": "1"}, check: func(t *testing.T, c Config) {
+			if !c.RawUserID {
+				t.Error("RawUserID off with LOOMCYCLE_OTEL_RAW_USER_ID=1")
+			}
+		}},
+		{name: "raw user id bad value", env: map[string]string{"LOOMCYCLE_OTEL_RAW_USER_ID": "yes please"}, wantErr: "LOOMCYCLE_OTEL_RAW_USER_ID"},
+		{name: "tenant sampler ratios", env: map[string]string{"LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS": "acme=1,beta=0.1"}, check: func(t *testing.T, c Config) {
+			if !reflect.DeepEqual(c.TenantSamplerRatios, map[string]float64{"acme": 1, "beta": 0.1}) {
+				t.Errorf("ratios = %v", c.TenantSamplerRatios)
+			}
+		}},
+		{name: "tenant sampler ratio out of range", env: map[string]string{"LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS": "acme=3"}, wantErr: "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS"},
 
 		{name: "grpc protocol", env: on("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"), check: func(t *testing.T, c Config) {
 			if c.Protocol != ProtocolGRPC {
