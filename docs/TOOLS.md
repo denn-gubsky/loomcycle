@@ -1150,7 +1150,7 @@ Cursor monotonicity is enforced: `ack` with a cursor older than the currently co
 
 - `channel subscribe-race-recovered channel=X attempt=N msgs=K recovery_lag_ms=Y first_read_lag_us=Z from_cursor="..." pool_total=A pool_acquired=B pool_idle=C` — fires when the bounded retry rescued a subscribe after Bus.Wait returned via the waker but the immediate re-read found no rows. `first_read_lag_us` is the diagnostic field that distinguishes the race window (waker → empty read), separate from `recovery_lag_ms` (waker → eventually-non-empty read).
 
-A complementary `WARN channel subscribe-race-exhausted — silent miss; investigate channel=X attempts=3 …` line, with the same fields, fires when all 3 retry attempts return empty. SQLite's parity logging (commit_us only — single-writer, no pool) lets operators A/B the same workload against both backends. See `~/work/loomcycle-internal/doc-internal/channel-race-investigation.md` for the hypothesis table.
+A complementary `WARN channel subscribe-race-exhausted — silent miss; investigate channel=X attempts=3 …` line, with the same fields, fires when all 3 retry attempts return empty. SQLite's parity logging (commit_us only — single-writer, no pool) lets operators A/B the same workload against both backends.
 
 ### Quotas and overflow
 
@@ -1183,7 +1183,7 @@ The payload preview is capped at 200 UTF-8 characters with a trailing `…` when
 - Schema enforcement on payloads — operator declares JSON schema per channel.
 - Admin API for inspecting / purging channels. Manual SQL for v0.8.4.
 
-References: `internal/store/store.go` (interface), `internal/tools/builtin/channel.go` (tool), `internal/channels/bus.go` (notification bus), `doc-internal/rfcs/channels-tool.md` (full design RFC, gitignored).
+References: `internal/store/store.go` (interface), `internal/tools/builtin/channel.go` (tool), `internal/channels/bus.go` (notification bus).
 
 ## LocalAPI tools — OpenAPI gateway (scaffolded; not the v0.4 integration vehicle)
 
@@ -1488,7 +1488,6 @@ New `interrupts` table (migration 0011). Columns: `interrupt_id`, `run_id`, `kin
 
 ### Architecture references
 
-- `doc-internal/rfcs/interruption-tool.md` — RFC bundling concept + 5-PR implementation plan
 - `internal/tools/builtin/interruption.go` — tool implementation (Bus.Wait blocking + heartbeat ticker + ACL gate)
 - `internal/api/http/server.go::handleResolveInterrupt` — resolve endpoint
 - `internal/api/mcp/handlers.go::handleInterruptionResolve` — 21st MCP meta-tool
