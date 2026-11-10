@@ -60,9 +60,9 @@ With `BRIDGE_VOICE=1`, on a platform package that supports it, a person can send
 
 1. Check the recording's length and size from the platform's metadata, **before** downloading it.
 2. Download it with the platform's credential, from the platform's own file host only. It stays in memory for one request.
-3. Transcribe it (`POST /v1/audio/transcriptions`), with the platform's language for the speaker as a hint.
+3. Transcribe it (`POST /v1/audio/transcriptions`). Only `BRIDGE_VOICE_LANGUAGE` is sent as a hint: a platform's language for the speaker is the app's UI language, not the language they speak.
 4. Give the agent the text with the line `(voice message)` before it. The text goes the way typed text goes: a trusted speaker's into the prompt, an untrusted speaker's as an untrusted block. It is never read as a command.
-5. When the turn ends, speak the reply (`POST /v1/audio/speech`) and post it as the platform's voice message, labelled "AI voice". The text reply is always sent as well.
+5. When the turn ends, speak the reply (`POST /v1/audio/speech`) and post it as the platform's voice message, labelled "AI voice". The text reply is always sent as well. No language is sent: loomcycle picks the voice from the reply's own script (Ukrainian letters, other Cyrillic, Latin) among the languages it has, so a reply in another language than the question, or a transcript the engine mislabelled, still gets the right voice.
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -74,7 +74,7 @@ With `BRIDGE_VOICE=1`, on a platform package that supports it, a person can send
 | `BRIDGE_VOICE_REPLY_MAX_CHARS` | Longest stretch of a reply that is spoken. A longer reply is spoken up to here, cut at a sentence, and labelled "first part" | `1500` |
 | `BRIDGE_VOICE_ECHO` | `1` quotes what was heard (`🎙 "…"`) before the agent answers | unset (off) |
 | `BRIDGE_VOICE_LABEL` | Says a spoken reply is generated; never empty | `AI voice` |
-| `BRIDGE_VOICE_LANGUAGE` | A language hint when the platform gives none (`en`, `uk`) | unset |
+| `BRIDGE_VOICE_LANGUAGE` | A transcription hint (`en`, `uk`) for a deployment whose speakers use one language. A language the deployment does not list is dropped. | unset |
 
 **What loomcycle needs.**
 
@@ -162,7 +162,7 @@ const adapter: BridgeAdapter<MyRef> = {
   platform: { name: "myplatform", label: "MyPlatform", helpText: HELP_TEXT + "\n- **/link**: connect your account" },
   ```
   The core handles only `/new`, `/stop` and `/help`. Your route handles your own commands before calling the router. Unset, `/help` answers with `HELP_TEXT`.
-- **Voice.** Give the adapter a `voice` port (`VoicePort`): `download` (from the platform's file host only, at most the bytes asked), `sendVoice` where the platform can post a voice message, an optional `indicate`, and `capabilities` (the formats it shows as voice, best first). Route a voice message with `ctx.router.onVoice(identified, ref, { kind, ref, mime, seconds, bytes }, locale, { sentAt })`. Download with `downloadPinned(url, { allowed, headers?, accept?, maxBytes, signal })`: it checks `allowed` before every request, redirects included, so a credential in `headers` reaches no other host, and reads under the cap while streaming. A `sendVoice` that the platform refused for a conversation should throw `VoiceRefusedError`.
+- **Voice.** Give the adapter a `voice` port (`VoicePort`): `download` (from the platform's file host only, at most the bytes asked), `sendVoice` where the platform can post a voice message, an optional `indicate`, and `capabilities` (the formats it shows as voice, best first). Route a voice message with `ctx.router.onVoice(identified, ref, { kind, ref, mime, seconds, bytes }, { sentAt })`. Download with `downloadPinned(url, { allowed, headers?, accept?, maxBytes, signal })`: it checks `allowed` before every request, redirects included, so a credential in `headers` reaches no other host, and reads under the cap while streaming. A `sendVoice` that the platform refused for a conversation should throw `VoiceRefusedError`.
 - **Names.** A personal subject is `<platform>-<stable id>`. A shared conversation runs as `sharedSubject(platform, ...parts)`. Its parts name the memory: a channel's threads pass the channel alone.
 
 Design: RFC EQ (Bridges), generalising RFC EN (the Teams bridge). Voice messages: RFC GA.

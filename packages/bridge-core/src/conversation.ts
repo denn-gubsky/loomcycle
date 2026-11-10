@@ -24,7 +24,6 @@ import { HELP_TEXT, parseCommand, VOICE_HELP_TEXT, type Command } from "./text.j
 import { statusOf, type TokenSource } from "./tokens.js";
 import {
   echoLine,
-  languageHint,
   pickFormat,
   spokenPart,
   VOICE_PREFIX,
@@ -60,8 +59,6 @@ const VOICE_DOWNLOAD_MS = 60_000;
 /** What came in with the message that began the current turn. */
 interface TurnInput {
   voice: boolean;
-  /** The language the transcript was in, for the spoken reply. */
-  language?: string;
 }
 
 /** What a card action is answered with: a replacement card, or a short
@@ -181,10 +178,9 @@ export class Conversation<TRef> {
     return this.serial(() => this.handleMessage(speaker, text));
   }
 
-  /** onVoice takes a voice message (RFC GA). locale is the platform's
-   *  language for the speaker, when it gives one: a hint for transcription. */
-  onVoice(speaker: Speaker, voice: VoiceIn, locale?: string): Promise<void> {
-    return this.serial(() => this.handleVoice(speaker, voice, locale));
+  /** onVoice takes a voice message (RFC GA). */
+  onVoice(speaker: Speaker, voice: VoiceIn): Promise<void> {
+    return this.serial(() => this.handleVoice(speaker, voice));
   }
 
   onCardAction(speaker: Speaker, input: CardInput): Promise<CardResult> {
@@ -692,7 +688,7 @@ export class Conversation<TRef> {
 
   // ---- voice (RFC GA) ----
 
-  private async handleVoice(speaker: Speaker, voice: VoiceIn, locale: string | undefined): Promise<void> {
+  private async handleVoice(speaker: Speaker, voice: VoiceIn): Promise<void> {
     const vc = this.deps.voice;
     // Not taken: a private chat hears why, a shared one stays quiet, as it
     // does for a photo or a sticker, unless the platform must answer.
@@ -748,7 +744,10 @@ export class Conversation<TRef> {
       return;
     }
 
-    const hint = languageHint(locale) ?? cfg.language;
+    // Only the operator's BRIDGE_VOICE_LANGUAGE is a hint. A platform's
+    // locale is the app's UI language, which says nothing about the language
+    // a person speaks: an English UI sending Russian speech is common.
+    const hint = cfg.language;
     let heard: { text: string; language?: string };
     try {
       heard = await this.transcribe(client, audio, hint);
@@ -767,7 +766,7 @@ export class Conversation<TRef> {
       return;
     }
     if (cfg.echo) await this.say(echoLine(text));
-    await this.deliver(speaker, text, { voice: true, language: heard.language ?? hint });
+    await this.deliver(speaker, text, { voice: true });
   }
 
   /** transcribe asks loomcycle for the text, with the language hint when
@@ -793,7 +792,7 @@ export class Conversation<TRef> {
     if (!vc || !text.trim()) return;
     const mode = this.rec.voice ?? vc.config.reply;
     if (mode === "never" || (mode === "mirror" && !input.voice)) return;
-    void this.speak(vc, text, input.language).catch((err: unknown) => {
+    void this.speak(vc, text).catch((err: unknown) => {
       if (err instanceof VoiceRefusedError) {
         // The platform refused a voice message here (a person's privacy
         // setting, a permission): stop trying until someone asks again.
@@ -808,7 +807,7 @@ export class Conversation<TRef> {
     });
   }
 
-  private async speak(vc: NonNullable<ConversationDeps<TRef>["voice"]>, text: string, language: string | undefined): Promise<void> {
+  private async speak(vc: NonNullable<ConversationDeps<TRef>["voice"]>, text: string): Promise<void> {
     const port = vc.port;
     if (!port.sendVoice || port.capabilities.out === "none") return;
     const client = await this.runClient();
@@ -825,9 +824,12 @@ export class Conversation<TRef> {
     }
     const part = spokenPart(text, vc.config.replyMaxChars);
     if (!part.text) return;
-    const lang = language && info.speech?.languages?.[language] ? language : undefined;
+    // No language: loomcycle picks the voice from the reply's own script
+    // (Ukrainian letters, other Cyrillic, Latin) among the languages it has.
+    // The agent may answer in another language than it was asked in, and the
+    // transcript's language is not reliable (an engine can mislabel a clip).
     void port.indicate?.(this.rec.ref, "speaking").catch(() => undefined);
-    const audio = await client.speech(part.text, { format, ...(lang ? { language: lang } : {}) });
+    const audio = await client.speech(part.text, { format });
     if (audio.bytes.length > port.capabilities.maxUploadBytes) {
       this.deps.log.info("voice: the spoken reply is larger than the platform takes", { conversation: this.rec.conversationId, bytes: audio.bytes.length });
       return;

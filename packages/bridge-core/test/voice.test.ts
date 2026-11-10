@@ -107,9 +107,9 @@ describe("voice messages (RFC GA)", () => {
     await settle();
   }
 
-  async function speak(v: VoiceIn = note(), id: Identified = ident("alice", "Alice"), locale?: string) {
+  async function speak(v: VoiceIn = note(), id: Identified = ident("alice", "Alice")) {
     const before = lc.runs.length;
-    await router.onVoice(id, refFor(id.ok ? id.conversationId : "x"), v, locale);
+    await router.onVoice(id, refFor(id.ok ? id.conversationId : "x"), v);
     await settled(before);
   }
 
@@ -130,12 +130,13 @@ describe("voice messages (RFC GA)", () => {
   const promptOf = (run: StartedRun) => (run.opts.segments?.[0]?.content?.[0] ?? {}) as { type: string; text?: string; kind?: string };
 
   it("transcribes a voice note with the speaker's token, gives the agent the marked text, and answers in text and voice", async () => {
-    await speak(note(), ident("alice", "Alice"), "en-GB");
+    await speak(note(), ident("alice", "Alice"));
 
     expect(voicePort.downloads).toHaveLength(1);
     const [tr] = lc.callsTo("transcribe");
     expect(tr!.token).toMatch(/^tok-test-alice-/);
-    expect(tr!.args[1]).toMatchObject({ contentType: "audio/ogg", language: "en" });
+    expect(tr!.args[1]).toMatchObject({ contentType: "audio/ogg" });
+    expect(tr!.args[1]).not.toHaveProperty("language");
     expect(promptOf(lc.runs[0]!)).toEqual({ type: "trusted-text", text: `${VOICE_PREFIX}\nwhat is the weather` });
     expect(lc.mints[0]!.opts.surfaces).toEqual(["speech", "transcription"]);
 
@@ -143,7 +144,7 @@ describe("voice messages (RFC GA)", () => {
     await waitFor(() => voicePort.voices.length === 1, "voice reply");
     expect(platform.messages()).toContain("Sunny and warm.");
     const [sp] = lc.callsTo("speech");
-    expect(sp!.args).toEqual(["Sunny and warm.", { format: "ogg", language: "en" }]);
+    expect(sp!.args).toEqual(["Sunny and warm.", { format: "ogg" }]);
     expect(voicePort.voices[0]!.audio).toMatchObject({ mime: "audio/ogg", seconds: 2.5, label: "AI voice" });
     expect(voicePort.indications).toEqual(["listening", "speaking"]);
   });
@@ -273,13 +274,31 @@ describe("voice messages (RFC GA)", () => {
   });
 
   it("drops a language hint the deployment refuses and transcribes anyway", async () => {
+    router = makeRouter({ language: "xx" });
     lc.speech!.transcribeErrors.push(Object.assign(httpError(400), { code: "unsupported_language" }));
-    await speak(note(), ident("alice", "Alice"), "xx");
+    await speak(note(), ident("alice", "Alice"));
     const calls = lc.callsTo("transcribe");
     expect(calls).toHaveLength(2);
     expect(calls[0]!.args[1]).toMatchObject({ language: "xx" });
     expect(calls[1]!.args[1]).not.toHaveProperty("language");
     expect(lc.runs).toHaveLength(1);
+  });
+
+  // A Russian voice note from someone whose app is in English, transcribed
+  // with a wrong language label: the reply is still spoken without a
+  // language, so loomcycle picks the voice from the reply's own script.
+  it("speaks the reply without a language, whatever the transcript was labelled", async () => {
+    lc.speech = fakeSpeech({ transcript: "какая погода", language: "en" });
+    await speak();
+    await reply("Солнечно и тепло.");
+    await waitFor(() => voicePort.voices.length === 1, "voice reply");
+    expect(lc.callsTo("speech")[0]!.args).toEqual(["Солнечно и тепло.", { format: "ogg" }]);
+  });
+
+  it("hints transcription with BRIDGE_VOICE_LANGUAGE only", async () => {
+    router = makeRouter({ language: "uk" });
+    await speak();
+    expect(lc.callsTo("transcribe")[0]!.args[1]).toMatchObject({ language: "uk" });
   });
 
   it("tells the speaker when nothing was heard or the engine failed, and sends the agent nothing", async () => {
