@@ -20,14 +20,14 @@ The v1.148 line: #2502 to #2506, #2529 to #2532, #2537, #2538, #2540, #2545 to #
 
 ### Upgrade notes
 
-- **OTEL configuration is the standard one, with no fallback (#2545).** `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT`, `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS`, `LOOMCYCLE_OTEL_SERVICE_NAME` and `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO` are **no longer read**. A deployment that sets only those runs with tracing off.
+- **OTEL configuration is the standard one, with no fallback (#2545).** `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT`, `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS`, `LOOMCYCLE_OTEL_SERVICE_NAME` and `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO` are retired: **no longer read**. A deployment that sets only those runs with tracing off.
 
-  | Removed | Use |
+  | Retired | Use |
   |---|---|
-  | `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT=host:4318` | `OTEL_EXPORTER_OTLP_ENDPOINT=http://host:4318` (a URL with its scheme) |
-  | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` | `OTEL_EXPORTER_OTLP_HEADERS`, or `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` |
-  | `LOOMCYCLE_OTEL_SERVICE_NAME` | `OTEL_SERVICE_NAME` |
-  | `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO=0.1` | `OTEL_TRACES_SAMPLER=parentbased_traceidratio` + `OTEL_TRACES_SAMPLER_ARG=0.1` |
+  | `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT=host:4318` (retired) | `OTEL_EXPORTER_OTLP_ENDPOINT=http://host:4318` (a URL with its scheme) |
+  | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` (retired) | `OTEL_EXPORTER_OTLP_HEADERS`, or `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` |
+  | `LOOMCYCLE_OTEL_SERVICE_NAME` (retired) | `OTEL_SERVICE_NAME` |
+  | `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO=0.1` (retired) | `OTEL_TRACES_SAMPLER=parentbased_traceidratio` + `OTEL_TRACES_SAMPLER_ARG=0.1` |
 
   With tracing on, a value that would export nowhere (an endpoint without scheme or host, a bad protocol, sampler or header) stops the boot.
 - **`loomcycle.user_id` became `loomcycle.user_hash` on spans (#2546, in #2545).** The hash is keyed from `LOOMCYCLE_SECRET_KEY`. `LOOMCYCLE_OTEL_RAW_USER_ID=1` also emits the raw id; without a secret key the raw id is emitted and the boot warns. `loomcycle otel user-hash <tenant> <user>` prints a hash for an investigation. Trace queries that filter on `loomcycle.user_id` need the new name.
