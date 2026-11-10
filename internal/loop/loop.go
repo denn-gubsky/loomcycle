@@ -4123,14 +4123,17 @@ func (m *ModelCall) Observe(ev providers.Event) {
 	switch ev.Type {
 	case providers.EventDone:
 		r := lcotel.ModelCallResult{FinishReason: ev.StopReason, TTFT: m.timer.TTFT()}
-		// Pricing is work for the span alone: skipped when nothing records it.
-		if u := ev.Usage; u != nil && m.span.IsRecording() {
-			r.Usage = m.usage(*u)
+		if u := ev.Usage; u != nil {
 			// The call-lane wait rides the done event only. Taken out of the
-			// TTFT so it measures the provider, not the queue in front of it.
+			// TTFT so it measures the provider, not the queue in front of it —
+			// whether or not the span records: the TTFT metric reads it too.
 			if lw := time.Duration(u.LaneWaitMs) * time.Millisecond; lw > 0 {
 				r.LaneWait = lw
 				r.TTFT = max(r.TTFT-lw, 0)
+			}
+			// Pricing is work for the span alone: skipped when nothing records it.
+			if m.span.IsRecording() {
+				r.Usage = m.usage(*u)
 			}
 		}
 		m.finish(r)
