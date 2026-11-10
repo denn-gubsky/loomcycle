@@ -118,6 +118,6 @@ prometheus.remote_write "default" {
 //   forward_to      = [prometheus.remote_write.default.receiver]
 //   authorization {
 //     type             = "Bearer"
-//     credentials_file = "/run/secrets/loomcycle-metrics.token" // a metrics:read token
+//     credentials_file = "/run/secrets/loomcycle-metrics.token" // a metrics:read token (see ../README.md)
 //   }
 // }

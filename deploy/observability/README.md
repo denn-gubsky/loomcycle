@@ -31,6 +31,13 @@ cardinality limit.
 
 ## Prometheus
 
+The scrape set-up below requires the `metrics:read` scope and the optional
+`LOOMCYCLE_METRICS_LISTEN` listener, which ship in the same release as these
+files. On a loomcycle without them, `/metrics` answers only a
+`substrate:admin` token (or `LOOMCYCLE_AUTH_TOKEN`): that works, but it puts
+a credential that can mint tokens and pause the runtime in a file on the
+monitoring host, so it is not recommended — upgrade instead.
+
 1. Mint a scrape token that reaches `/metrics` and nothing else:
 
    ```sh
@@ -40,7 +47,11 @@ cardinality limit.
    ```
 
    Write the returned `token` into `/etc/prometheus/secrets/loomcycle.token`.
-   Prometheus reads it on every scrape, so a rotation needs no restart.
+   Prometheus reads it on every scrape, so a rotation needs no restart. With
+   `metrics:read` available, never scrape with an admin token. Or set
+   `LOOMCYCLE_METRICS_LISTEN` and scrape that listener with no token (it is
+   unauthenticated and leaves out the per-user series: keep it on a network
+   only the scraper reaches).
 
 2. Mount `prometheus/prometheus.yml` and `prometheus/rules/` into Prometheus
    (`/etc/prometheus/prometheus.yml`, `/etc/prometheus/rules/`).

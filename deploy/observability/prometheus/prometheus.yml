@@ -2,7 +2,10 @@
 #
 # The scrape credential is a metrics:read token: it reaches GET /metrics and
 # nothing else. Prometheus reads it from a file on every scrape, so rotating
-# it needs no restart. Never put an admin token here.
+# it needs no restart. The metrics:read scope and LOOMCYCLE_METRICS_LISTEN
+# ship in the same release as this file; with them available, never put an
+# admin token here. (Before them, only an admin token reaches /metrics; see
+# README.md.)
 
 global:
   scrape_interval: 15s
