@@ -492,7 +492,8 @@ func (m *Manager) startReaper() {
 			case <-stop:
 				return
 			case <-t.C:
-				m.reapStale(ttl)
+				// Recovered per pass, so the reaper outlives one bad pass.
+				safego.Run(context.Background(), "sqlmem.txn_reaper", func() { m.reapStale(ttl) })
 			}
 		}
 	})

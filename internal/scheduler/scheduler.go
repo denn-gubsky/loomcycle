@@ -321,7 +321,9 @@ func (s *Scheduler) run(ctx context.Context) {
 		case <-s.stopCh:
 			return
 		case <-ticker.C:
-			s.tick(ctx)
+			// Recovered per tick, so one panicking sweep leaves the sweeper
+			// running.
+			safego.Run(ctx, "scheduler.sweeper", func() { s.tick(ctx) })
 		}
 	}
 }

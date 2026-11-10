@@ -184,10 +184,12 @@ func (f *AccessFlusher) Start() {
 			select {
 			case <-stop:
 				return
+			// Recovered per flush, so one panicking flush leaves the flusher
+			// running.
 			case <-t.C:
-				f.flushLogErr()
+				safego.Run(context.Background(), "memory.access_flusher", f.flushLogErr)
 			case <-f.flushSignal:
-				f.flushLogErr()
+				safego.Run(context.Background(), "memory.access_flusher", f.flushLogErr)
 			}
 		}
 	})

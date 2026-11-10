@@ -79,7 +79,8 @@ func (m *Manager) startGC() {
 			case <-stop:
 				return
 			case <-t.C:
-				m.runGC(ttl)
+				// Recovered per pass, so the sweeper outlives one bad pass.
+				safego.Run(context.Background(), "sqlmem.gc_sweeper", func() { m.runGC(ttl) })
 			}
 		}
 	})

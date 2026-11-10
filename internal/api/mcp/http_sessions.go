@@ -187,9 +187,12 @@ func RunHTTPSessionSweeper(ctx context.Context, store *HTTPSessionStore, interva
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if n := store.Sweep(); n > 0 {
-					logger.Info("http_mcp: swept expired sessions", "sessions", n)
-				}
+				// Recovered per tick, so the sweeper outlives one bad sweep.
+				safego.Run(ctx, "mcp.http_session_sweeper", func() {
+					if n := store.Sweep(); n > 0 {
+						logger.Info("http_mcp: swept expired sessions", "sessions", n)
+					}
+				})
 			}
 		}
 	})
