@@ -101,3 +101,47 @@ func TestFolderInputs_NameTheConceptAFolderIsNamedFor(t *testing.T) {
 		t.Fatalf("folder concept = %v / %v", in["concept"], in["concept_meaning"])
 	}
 }
+
+// A document's statements into the ontology name the subject or topic they
+// reach, not the ontology document: shown as "Tenant Ontology", the model
+// wrote that title into whole-document annotations as if it were a link.
+// A statement into an ordinary document still names that document.
+func TestAnnotationInputs_RelationsIntoTheOntologyNameTheTermReached(t *testing.T) {
+	d, ctx := annOntologyFixture(t, annOntologyMD)
+	guide, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Widget guide","path":"/kb/widgets","type":"Guide"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	other, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Safety notes","path":"/kb/safety","type":"Guide"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	res, err := d.query(ctx, mustKey(t, d, ctx), `SELECT id FROM chunks WHERE title = 'Products'`)
+	if err != nil || len(res.Rows) != 1 {
+		t.Fatalf("Products concept chunk: %v %v", res, err)
+	}
+	products := asStr(res.Rows[0][0])
+	from := guide["root_chunk_id"].(string)
+	for _, l := range []struct{ to, kind string }{
+		{products, "uses_term"},
+		{other["root_chunk_id"].(string), "related_to"},
+	} {
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"tenant","from_id":%q,"to_id":%q,"kind":%q}`, from, l.to, l.kind)); r.IsError {
+			t.Fatalf("link_chunks %s: %s", l.kind, r.Text)
+		}
+	}
+	in := annInputs(t, d, ctx, `"document_id":"`+guide["document_id"].(string)+`"`)
+	got := map[string]string{}
+	rels, _ := in["relations"].([]any)
+	for _, x := range rels {
+		m := x.(map[string]any)
+		var titles []string
+		for _, t := range m["titles"].([]any) {
+			titles = append(titles, t.(string))
+		}
+		got[m["kind"].(string)] = strings.Join(titles, ",")
+	}
+	if got["uses_term"] != "Products" || got["related_to"] != "Safety notes" {
+		t.Fatalf("relations = %v, want uses_term→Products and related_to→Safety notes", got)
+	}
+}

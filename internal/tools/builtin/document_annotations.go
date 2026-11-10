@@ -199,7 +199,7 @@ type annotationChild struct {
 }
 
 // annotationRelation is one kind of asserted statement from the document to
-// other documents, by the titles of those documents.
+// other documents, by the titles of what they reach (see relations).
 type annotationRelation struct {
 	Kind   string   `json:"kind"`
 	Count  int      `json:"count"`
@@ -535,18 +535,31 @@ func (d *Document) annotationIdentity(ctx context.Context, key sqlmem.ScopeKey, 
 }
 
 // relations is the document's asserted, live statements to OTHER documents,
-// grouped by kind, each kind with the titles of the documents it reaches.
+// grouped by kind, each kind with the titles of what it reaches.
+//
+// A statement into the tenant ontology (a subject, a topic, a class) is named
+// by the chunk it reaches: the ontology document's own title would tell the
+// model every such link points at "Tenant Ontology", and it wrote that into
+// the annotations. A statement into any other document is named by that
+// document's title.
 //
 // It returns two views. canon covers every statement whoever asks, because the
 // hash must not depend on the caller; shown leaves out each document the caller
 // may not read.
 func (s *annotationScope) relations(ctx context.Context, docID string, acl *docACL) (shown []annotationRelation, canon []string, err error) {
-	res, err := s.d.query(ctx, s.key, `SELECT e.kind, dt.id, dt.title FROM chunk_edges e
+	ontoDoc := ""
+	if onto := s.ontology(ctx); onto != nil {
+		ontoDoc = onto.DocumentID
+	}
+	res, err := s.d.query(ctx, s.key, `SELECT e.kind, dt.id,
+			CASE WHEN dt.id = ? THEN ct.id ELSE dt.id END AS target,
+			CASE WHEN dt.id = ? THEN ct.title ELSE dt.title END AS label
+		FROM chunk_edges e
 		JOIN chunks cf ON cf.id = e.from_id
 		JOIN chunks ct ON ct.id = e.to_id
 		JOIN documents dt ON dt.id = ct.document_id
 		WHERE cf.document_id = ? AND ct.document_id <> ? AND e.status = 'asserted' AND e.expired_at IS NULL
-		ORDER BY e.kind, dt.title, dt.id`, docID, docID)
+		ORDER BY e.kind, label, target`, ontoDoc, ontoDoc, docID, docID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -556,13 +569,15 @@ func (s *annotationScope) relations(ctx context.Context, docID string, acl *docA
 			return nil, nil, err
 		}
 	}
-	type rel struct{ kind, id, title string }
+	// id is the document the caller must be able to read; target is what one
+	// entry stands for (the chunk inside the ontology, else the document).
+	type rel struct{ kind, id, target, title string }
 	var all []rel
 	seen := map[string]bool{}
 	for _, r := range res.Rows {
-		x := rel{asStr(r[0]), asStr(r[1]), asStr(r[2])}
-		if !seen[x.kind+"\x00"+x.id] {
-			seen[x.kind+"\x00"+x.id] = true
+		x := rel{asStr(r[0]), asStr(r[1]), asStr(r[2]), asStr(r[3])}
+		if !seen[x.kind+"\x00"+x.target] {
+			seen[x.kind+"\x00"+x.target] = true
 			all = append(all, x)
 		}
 	}
