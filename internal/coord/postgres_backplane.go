@@ -65,6 +65,9 @@ type PostgresBackplane struct {
 	subs   map[uint64]context.CancelFunc
 	nextID uint64
 	wg     sync.WaitGroup
+
+	// listenOnce replaces subscribeOnce in tests; nil = subscribeOnce.
+	listenOnce func(ctx context.Context, topic string, out chan<- Event) error
 }
 
 // PostgresBackplaneConfig is the constructor input.
@@ -219,8 +222,12 @@ func (b *PostgresBackplane) Subscribe(ctx context.Context, topic string) (<-chan
 func (b *PostgresBackplane) runSubscribeLoop(ctx context.Context, topic string, out chan<- Event) {
 	backoff := 500 * time.Millisecond
 	const maxBackoff = 30 * time.Second
+	once := b.subscribeOnce
+	if b.listenOnce != nil {
+		once = b.listenOnce
+	}
 	for {
-		err := b.subscribeOnce(ctx, topic, out)
+		err := listenRecovered(ctx, topic, out, once)
 		if err == nil {
 			return // ctx cancelled cleanly
 		}
@@ -239,6 +246,22 @@ func (b *PostgresBackplane) runSubscribeLoop(ctx context.Context, topic string, 
 			backoff = maxBackoff
 		}
 	}
+}
+
+// listenRecovered runs one LISTEN session and turns a panic in it into an
+// error, so the loop reconnects with the usual backoff. Letting the panic end
+// the loop would close out and silently stop every listener on it (ACL and
+// token invalidation among them), leaving this replica stale.
+func listenRecovered(ctx context.Context, topic string, out chan<- Event, once func(context.Context, string, chan<- Event) error) (err error) {
+	panicked := true
+	safego.Run(ctx, "coord.backplane_listen", func() {
+		err = once(ctx, topic, out)
+		panicked = false
+	})
+	if panicked {
+		return errors.New("LISTEN session panicked")
+	}
+	return err
 }
 
 // subscribeOnce holds one connection and pumps notifications until
