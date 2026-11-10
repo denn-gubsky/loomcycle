@@ -36,6 +36,14 @@ One tool, `Path`, gated by per-agent `tools: [Path]`. Six ops:
 | `mv`      | re-parent / rename a dirent (a move into the path's own subtree is refused — it would orphan the tree). |
 | `rm`      | remove a dirent (`recursive:true` is **required** to remove a path that has descendants). |
 
+**A name can be a document and have names beneath it** (`/a/b` a document,
+`/a/b/c` another). A one-level `ls` shows each name once, so such a name is
+listed as the document with `has_children: true`; `stat` carries the same
+field. It is set on an entry that is not a directory when at least one name
+beneath it survives the caller's access-control read filter, so it never
+reveals names the caller may not read. Omitted when false; list the path to
+see the names. Recursive `ls` is unchanged.
+
 `scope` selects the tree: `agent` (this agent, the default), `user` (this
 end-user — needs a `user_id` on the run), or `tenant` (shared across the
 tenant). Trees are keyed by the authoritative tenant; in open mode the tenant
