@@ -102,7 +102,6 @@ var pendingRawGo = map[string]int{
 	"internal/concurrency/admit.go":                 1,
 	"internal/concurrency/semaphore.go":             5,
 	"internal/lanegate/lanegate.go":                 1,
-	"internal/projection/umap_knn.go":               2,
 	"internal/teamrun/spawn.go":                     1,
 	"internal/teamrun/starter.go":                   1,
 	"internal/teamrun/timeout.go":                   1,

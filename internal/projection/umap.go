@@ -136,7 +136,10 @@ func FitUMAP(vectors [][]float32, init [][3]float64, opts UMAPOptions) ([][3]flo
 	}
 	k := min(opts.NNeighbors, n) // the point itself counts, as in umap-learn
 	unit := normalized(vectors)
-	graph := cosineKNN(unit, unit, k-1, true, opts.Workers)
+	graph, err := cosineKNN(unit, unit, k-1, true, opts.Workers)
+	if err != nil {
+		return nil, err
+	}
 	heads, tails, weights := fuzzySimplicialSet(graph, k)
 	epochs := opts.Epochs
 	if epochs <= 0 {

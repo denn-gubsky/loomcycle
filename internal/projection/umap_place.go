@@ -42,7 +42,8 @@ func (a *Anchors) Len() int { return len(a.pos) }
 // neighbours. This is umap-learn's transform without its few epochs of
 // refinement (the RFC's measurement put the difference at about 0.03 of k-NN
 // agreement): exact, cheap, and it moves no anchor, so the map does not shift
-// when a chunk is added. ok[i] is false for a vector of another dimension.
+// when a chunk is added. ok[i] is false for a vector of another dimension, and for every
+// vector when the neighbour search failed.
 func (a *Anchors) Place(vectors [][]float32, nNeighbors, workers int) (xyz [][3]float64, ok []bool) {
 	if nNeighbors <= 0 {
 		nNeighbors = DefaultNeighbors
@@ -61,7 +62,10 @@ func (a *Anchors) Place(vectors [][]float32, nNeighbors, workers int) (xyz [][3]
 		return xyz, ok
 	}
 	k := min(nNeighbors, len(a.pos))
-	graph := cosineKNN(normalized(q), a.unit, k, false, workers)
+	graph, err := cosineKNN(normalized(q), a.unit, k, false, workers)
+	if err != nil {
+		return xyz, ok // none placed: every ok is still false
+	}
 	pos := make([][3]float64, k)
 	for r, row := range graph {
 		pos = pos[:len(row.idx)]

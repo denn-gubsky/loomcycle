@@ -354,8 +354,14 @@ func TestFitAB_MatchesUMAPLearn(t *testing.T) {
 func TestCosineKNN_MatchesBruteForceForAnyWorkerCount(t *testing.T) {
 	vecs, _ := clusteredCorpus(5, 9, 16, 0.8, 6)
 	unit := normalized(vecs)
-	one := cosineKNN(unit, unit, 6, true, 1)
-	many := cosineKNN(unit, unit, 6, true, 7)
+	one, err := cosineKNN(unit, unit, 6, true, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	many, err := cosineKNN(unit, unit, 6, true, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !reflect.DeepEqual(one, many) {
 		t.Fatal("the graph depends on the worker count")
 	}

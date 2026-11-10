@@ -1,9 +1,14 @@
 package projection
 
 import (
+	"context"
+	"errors"
 	"math"
 	"runtime"
 	"sync"
+	"sync/atomic"
+
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // normalized returns unit-length copies of vs, so a dot product is the cosine. A
@@ -68,6 +73,10 @@ type neighbours struct {
 // query: at 10,000 rows the reference set is 40 MB, far past any cache.
 const knnBlock = 32
 
+// errKNNWorkerPanicked reports a nearest-neighbour graph a worker failed to
+// finish; the panic itself is logged and counted by safego.
+var errKNNWorkerPanicked = errors.New("projection: a nearest-neighbour worker panicked; the graph is incomplete")
+
 // cosineKNN finds, for every row of q, its k nearest rows of ref by cosine
 // distance (1 − cos), nearest first; both are unit vectors. With self set, q is
 // ref and a row is never its own neighbour. Exact brute force: every pair is
@@ -76,10 +85,10 @@ const knnBlock = 32
 // Blocks of rows are split across workers goroutines (≤ 0 = GOMAXPROCS). Each
 // row is computed by one goroutine scanning ref in order, and ties keep the
 // lower index, so the graph is the same for any worker count.
-func cosineKNN(q, ref [][]float32, k int, self bool, workers int) []neighbours {
+func cosineKNN(q, ref [][]float32, k int, self bool, workers int) ([]neighbours, error) {
 	out := make([]neighbours, len(q))
 	if k <= 0 || len(ref) == 0 {
-		return out
+		return out, nil
 	}
 	k = min(k, len(ref))
 	if workers <= 0 {
@@ -87,17 +96,31 @@ func cosineKNN(q, ref [][]float32, k int, self bool, workers int) []neighbours {
 	}
 	workers = max(1, min(workers, (len(q)+knnBlock-1)/knnBlock))
 	next := make(chan int)
-	go func() {
+	// stopped ends the feeder once the workers are gone, so a worker that
+	// panicked cannot leave it blocked on a send nobody receives.
+	stopped := make(chan struct{})
+	safego.Go(context.Background(), "projection.knn_feed", func() {
+		defer close(next)
 		for i := 0; i < len(q); i += knnBlock {
-			next <- i
+			select {
+			case next <- i:
+			case <-stopped:
+				return
+			}
 		}
-		close(next)
-	}()
+	})
 	var wg sync.WaitGroup
+	var died atomic.Int32
 	for range workers {
 		wg.Add(1)
-		go func() {
+		safego.Go(context.Background(), "projection.knn_worker", func() {
 			defer wg.Done()
+			finished := false
+			defer func() {
+				if !finished {
+					died.Add(1)
+				}
+			}()
 			var top [knnBlock]neighbours
 			for start := range next {
 				end := min(start+knnBlock, len(q))
@@ -121,10 +144,17 @@ func cosineKNN(q, ref [][]float32, k int, self bool, workers int) []neighbours {
 					out[start+b] = top[b]
 				}
 			}
-		}()
+			finished = true
+		})
 	}
 	wg.Wait()
-	return out
+	close(stopped)
+	// A worker that panicked left its block with no neighbours; a graph with
+	// holes would lay those rows out wrong without a word.
+	if died.Load() > 0 {
+		return nil, errKNNWorkerPanicked
+	}
+	return out, nil
 }
 
 // insert adds neighbour j at distance d to a nearest-first list of at most k,
