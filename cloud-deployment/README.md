@@ -31,10 +31,10 @@ compose network `loomnet`:
 | Service | Image | Role |
 |---|---|---|
 | `postgres` | `pgvector/pgvector:pg18` | Main store (`loomcycle`) + SQL-Memory aux (`loomcycle_sqlmem`). |
-| `loomcycle-migrate` | `denngubsky/loomcycle-browser:${LOOMCYCLE_VERSION}` | One-shot `migrate up` on the main db, then exits. Same image and tag as the runtime. |
+| `loomcycle-migrate` | `denngubsky/loomcycle-media:${LOOMCYCLE_VERSION}` | One-shot `migrate up` on the main db, then exits. Same image and tag as the runtime. |
 | `tailscale` | `tailscale/tailscale` | Kernel-mode egress to the tailnet; **owns the netns loomcycle shares**. |
 | `builder-sidecar` | `denngubsky/loomcycle-builder-docker:${LOOMCYCLE_SIDECAR_VERSION}` | Sandboxed code exec (`mcp__sandbox__*`) via the host Docker socket. |
-| `loomcycle` | `denngubsky/loomcycle-browser:${LOOMCYCLE_VERSION}` | The runtime, with the PinchTab MCP client binary. `network_mode: service:tailscale`. |
+| `loomcycle` | `denngubsky/loomcycle-media:${LOOMCYCLE_VERSION}` | The runtime, with ffmpeg and poppler (speech, OCR) and the PinchTab MCP client binary. `network_mode: service:tailscale`. |
 | `searxng` | `searxng/searxng` | Keyless search backend (wired via `config/loomcycle.yaml`). |
 | `landing` | Node (`./landing`, built) | Serves `cloud-web/`, proxies the public reads `/healthz` + `/v1/config` (inner links), mints `substrate:tenant` tokens behind Cloudflare Access, and — with `LOOMCYCLE_AUTH_MANAGE_TOKEN` — runs signup and team management on loomcycle's password gate. |
 | `cloudflared` | `cloudflare/cloudflared` | Outbound tunnel; routes managed in the Cloudflare dashboard (token method). |

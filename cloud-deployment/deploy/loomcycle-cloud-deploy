@@ -273,8 +273,10 @@ loomcycle)
   newer "$want" "$have" || refuse "loomcycle $want is older than the deployed $have"
   git ls-remote --exit-code --tags "$lc_repo" "refs/tags/v$want" >/dev/null 2>&1 \
     || refuse "loomcycle has no release tag v$want"
-  if ! published "$hub/loomcycle-browser:$want"; then
-    echo "skipped: $hub/loomcycle-browser:$want is not published yet"
+  # The image the compose file runs. A patch pushes it after loomcycle-browser,
+  # so checking that one would deploy a tag that cannot be pulled yet.
+  if ! published "$hub/loomcycle-media:$want"; then
+    echo "skipped: $hub/loomcycle-media:$want is not published yet"
     exit 0
   fi
   # A patch release publishes only the runtime image. The sidecar and the session
