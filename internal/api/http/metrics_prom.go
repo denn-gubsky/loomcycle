@@ -105,7 +105,6 @@ func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 	// tests with a partial Server), emit zeros — keeps the metric series
 	// monotonic from the operator's POV rather than appearing/disappearing.
 	semStats := semaphoreSnapshot(s)
-	perUserOpt := semStats.PerUser
 	writeGauge(w, "loomcycle_concurrency_active",
 		"Runs currently holding a concurrency slot (semaphore active count).",
 		replicaLabels, float64(semStats.Active))
@@ -132,8 +131,8 @@ func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 	// but the PerUser map is nil/empty when the cap is disabled (see
 	// internal/concurrency/semaphore.go — only populated under the
 	// per-user-capped Acquire path).
-	if len(perUserOpt) > 0 && view.namesUsers() {
-		writePerUserSeries(w, replicaLabels, perUserOpt)
+	if len(semStats.Users) > 0 && view.namesUsers() {
+		writePerUserSeries(w, replicaLabels, semStats.Users)
 	}
 
 	// Per-provider call caps (each capped provider's chat lane) — only emitted
@@ -277,7 +276,7 @@ func writeInstrumentSeries(w io.Writer, replicaLabels string, view promView) {
 // lands in a monitoring system, outside erasure's reach, as a span does.
 // With no secret key there is no hash to give (one keyed by nothing could be
 // reversed by trying ids), so the series is left out.
-func writePerUserSeries(w io.Writer, replicaLabels string, perUser map[string]int) {
+func writePerUserSeries(w io.Writer, replicaLabels string, users []concurrency.UserCount) {
 	if _, keyed := lcotel.MetricUserHash("", "probe"); !keyed {
 		return
 	}
@@ -287,15 +286,11 @@ func writePerUserSeries(w io.Writer, replicaLabels string, perUser map[string]in
 	}
 	var rows []row
 	byHash := map[string]int{}
-	for key, n := range perUser {
-		// The semaphore's display key is "tenant/user", or the bare user
-		// with no tenant; a tenant id holds no "/".
-		tenant, user, ok := strings.Cut(key, "/")
-		if !ok {
-			tenant, user = "", key
-		}
-		if h, ok := lcotel.MetricUserHash(tenant, user); ok {
-			byHash[h] += n
+	// The (tenant, user) pairs themselves: the stats route's display key
+	// cannot be parsed back, as a user id may hold a "/".
+	for _, u := range users {
+		if h, ok := lcotel.MetricUserHash(u.Tenant, u.User); ok {
+			byHash[h] += u.Held
 		}
 	}
 	for h, n := range byHash {

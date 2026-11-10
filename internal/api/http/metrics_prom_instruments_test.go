@@ -125,3 +125,24 @@ func TestMetricsProm_NoRunUserOrSessionLabelAfterARun(t *testing.T) {
 		}
 	}
 }
+
+// A user id may hold a "/": the per-user series hashes the (tenant, user)
+// pair the semaphore holds, not a display key parsed back, which would read
+// user "a/b" as tenant "a", user "b".
+func TestMetricsProm_PerUserSeriesHashesAUserIDHoldingASlash(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	t.Cleanup(lcotel.SetUserIDPolicyForTest(key, false))
+	srv := newMetricsPromServer(t, true)
+	rel, err := srv.sem.AcquireForUser(t.Context(), "", "a/b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	rec := httptest.NewRecorder()
+	srv.handleMetricsProm(rec, httptest.NewRequest("GET", "/metrics", nil))
+	body := rec.Body.String()
+	want := `loomcycle_concurrency_per_user{user_hash="` + lcotel.UserHash(key, "", "a/b") + `"} 1`
+	if !strings.Contains(body, want) || strings.Contains(body, lcotel.UserHash(key, "a", "b")) {
+		t.Errorf("want %q, never tenant a's user b:\n%s", want, body)
+	}
+}

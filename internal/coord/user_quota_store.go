@@ -7,6 +7,8 @@ import (
 	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 )
 
 // UserQuotaStore is the v0.12.1 cluster-wide per-user concurrency
@@ -145,12 +147,10 @@ func (s *UserQuotaStore) Release(ctx context.Context, tenantID, userID string) {
 	}
 }
 
-// Snapshot returns the per-user active count map for users with
-// at least one active run. Backs GET /v1/_concurrency/stats's
-// per_user field. Returns nil map when no users have active runs
-// (matches the v0.10.1 in-process Stats() behavior so the
-// omitempty JSON marshal stays consistent across modes).
-func (s *UserQuotaStore) Snapshot(ctx context.Context) (map[string]int, error) {
+// Snapshot returns every (tenant, user) with at least one active run and
+// its count. Backs GET /v1/_concurrency/stats's per_user field and the
+// per-user /metrics series; nil when no user has an active run.
+func (s *UserQuotaStore) Snapshot(ctx context.Context) ([]concurrency.UserCount, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT tenant_id, user_id, active_count
 		  FROM user_quotas
@@ -160,7 +160,7 @@ func (s *UserQuotaStore) Snapshot(ctx context.Context) (map[string]int, error) {
 		return nil, fmt.Errorf("user_quotas snapshot: %w", err)
 	}
 	defer rows.Close()
-	var out map[string]int
+	var out []concurrency.UserCount
 	for rows.Next() {
 		var (
 			tenantID string
@@ -170,30 +170,10 @@ func (s *UserQuotaStore) Snapshot(ctx context.Context) (map[string]int, error) {
 		if err := rows.Scan(&tenantID, &userID, &count); err != nil {
 			return nil, fmt.Errorf("scan user_quotas row: %w", err)
 		}
-		if out == nil {
-			out = make(map[string]int)
-		}
-		out[FairnessDisplayKey(tenantID, userID)] = count
+		out = append(out, concurrency.UserCount{Tenant: tenantID, User: userID, Held: count})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate user_quotas: %w", err)
 	}
 	return out, nil
-}
-
-// FairnessDisplayKey renders a (tenant, user) pair as the single string
-// used as the map key in the per-user concurrency stats surface
-// (/v1/_concurrency/stats + the Prometheus per_user gauge). tenant=""
-// (the shared/legacy tenant, i.e. a single-tenant deployment) renders as
-// the bare user so the stats wire is byte-identical to the pre-tenant
-// shape; a real tenant renders as "tenant/user". This is DISPLAY ONLY —
-// enforcement keys on the (tenant_id, user_id) columns, so a "/" that
-// happens to appear in an id can at worst merge two rows in the display,
-// never merge two caps. The in-process Semaphore.Stats path uses an
-// identical format; keep the two in sync.
-func FairnessDisplayKey(tenantID, userID string) string {
-	if tenantID == "" {
-		return userID
-	}
-	return tenantID + "/" + userID
 }

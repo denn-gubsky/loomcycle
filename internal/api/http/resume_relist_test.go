@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -164,7 +165,9 @@ func (g *quotaGateCounts) Release(context.Context, string, string) {
 	g.released++
 	g.mu.Unlock()
 }
-func (g *quotaGateCounts) Snapshot(context.Context) (map[string]int, error) { return nil, nil }
+func (g *quotaGateCounts) Snapshot(context.Context) ([]concurrency.UserCount, error) {
+	return nil, nil
+}
 func (g *quotaGateCounts) counts() (int, int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

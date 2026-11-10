@@ -68,7 +68,16 @@ type userQuotaGate interface {
 	// a resumed run (WaitForUser).
 	CountAdmitted(ctx context.Context, tenantID, userID string) error
 	Release(ctx context.Context, tenantID, userID string)
-	Snapshot(ctx context.Context) (map[string]int, error)
+	// Snapshot is every user with a run held, as (tenant, user) pairs.
+	Snapshot(ctx context.Context) ([]UserCount, error)
+}
+
+// UserCount is one user's runs held (active and queued) against the
+// per-user cap.
+type UserCount struct {
+	Tenant string
+	User   string
+	Held   int
 }
 
 // userKey is the per-user fairness identity: a (tenant, user) pair, so
@@ -146,8 +155,14 @@ type Stats struct {
 	// Lent is the admitted runs holding no global slot while a call of theirs
 	// waits for a provider lane (RunSlot). They count against the queue bound
 	// with Queued.
-	Lent    int
+	Lent int
+	// PerUser is Users keyed by the display key ("tenant/user", or the bare
+	// user with no tenant) for the stats route. The key is for reading, not
+	// parsing back: a user id may hold a "/".
 	PerUser map[string]int
+	// Users is the same counts as (tenant, user) pairs, for a reader that
+	// needs the pair itself.
+	Users []UserCount
 }
 
 // New constructs a Semaphore. timeout is the max wait per acquire; a timeout
@@ -550,9 +565,8 @@ func (s *Semaphore) Stats() Stats {
 	// Cluster mode reads from the DB below (after releasing s.mu so
 	// the round-trip doesn't block Acquire callers).
 	if qs == nil && len(s.perUser) > 0 {
-		out.PerUser = make(map[string]int, len(s.perUser))
 		for k, v := range s.perUser {
-			out.PerUser[fairnessDisplayKey(k.tenant, k.user)] = v
+			out.Users = append(out.Users, UserCount{Tenant: k.tenant, User: k.user, Held: v})
 		}
 	}
 	s.mu.Unlock()
@@ -564,11 +578,17 @@ func (s *Semaphore) Stats() Stats {
 		// (active+queued remain accurate; the DB hiccup is observable).
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		perUser, err := qs.Snapshot(ctx)
+		users, err := qs.Snapshot(ctx)
 		if err != nil {
 			slog.Warn("concurrency: quota snapshot failed", "err", err)
 		} else {
-			out.PerUser = perUser
+			out.Users = users
+		}
+	}
+	if len(out.Users) > 0 {
+		out.PerUser = make(map[string]int, len(out.Users))
+		for _, u := range out.Users {
+			out.PerUser[fairnessDisplayKey(u.Tenant, u.User)] = u.Held
 		}
 	}
 	return out
@@ -714,9 +734,9 @@ func wrapQuotaErr(err error) error {
 // the single-tenant stats wire is byte-identical to the pre-tenant shape;
 // a real tenant renders as "tenant/user". DISPLAY ONLY — enforcement keys
 // on the userKey struct, so a "/" in an id can at worst merge two rows in
-// the display, never merge two caps. Kept identical to
-// coord.FairnessDisplayKey (the cluster-mode Snapshot path) so the stats
-// wire is the same across single-replica and cluster modes.
+// the display, never merge two caps. Both modes build it here from
+// Stats.Users, so the stats wire is the same in single-replica and cluster
+// mode.
 func fairnessDisplayKey(tenantID, userID string) string {
 	if tenantID == "" {
 		return userID
