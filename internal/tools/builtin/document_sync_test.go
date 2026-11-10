@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -192,6 +193,7 @@ func (p *statefulPeer) handler() http.Handler {
 			ID         string `json:"id"`
 			DocumentID string `json:"document_id"`
 			NaturalKey string `json:"natural_key"`
+			SQL        string `json:"sql"`
 			Title      string `json:"title"`
 			Type       string `json:"type"`
 			Status     string `json:"status"`
@@ -244,6 +246,19 @@ func (p *statefulPeer) handler() http.Handler {
 			c.revision++
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": c.id, "revision": c.revision})
 		case "query_chunks":
+			if in.SQL != "" {
+				// The push asks which document holds a key before creating it, as
+				// the real peer answers: one row per holder, none when unheld.
+				// Every keyed chunk here is the peer document's.
+				rows := [][]any{}
+				for nk := range p.byNK {
+					if strings.Contains(in.SQL, "'"+nk+"'") {
+						rows = append(rows, []any{p.docID})
+					}
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"columns": []string{"document_id"}, "rows": rows})
+				return
+			}
 			chunks := []map[string]any{{"id": p.rootID}}
 			for id := range p.byID {
 				chunks = append(chunks, map[string]any{"id": id})

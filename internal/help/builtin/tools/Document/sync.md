@@ -16,7 +16,9 @@ skipped (counted in `excluded_unkeyed`).
 peer chunk whose key a chunk of ANOTHER document here holds is a conflict: that
 chunk is neither changed nor moved, the key is counted in `conflicts` and named
 in `conflicting_keys`, and the rest of the sync goes ahead. `diff_remote`
-lists the same keys beforehand.
+lists the same keys beforehand. On a push, a new key the peer cannot say is
+free (it refuses or fails the read that asks) is a conflict too, and the next
+push asks again.
 
 For each keyed chunk, the side being written to receives the other side's
 title, type, status, body, tags and validity period (`valid_at` /

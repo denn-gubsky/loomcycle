@@ -4,7 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
 // A run's copy into the tenant carries a relation as a proposal whatever its
@@ -88,4 +93,56 @@ func TestSyncPush_NeverWritesOutsideThePeerDocument(t *testing.T) {
 			t.Errorf("the push changed another peer document's chunk: %v", got)
 		}
 	})
+}
+
+// A peer that cannot say which of its documents holds a key (it refuses the
+// read the push asks first) gets no write for that key: the push reports it as
+// a conflict instead of writing and checking afterwards, when another peer
+// document's chunk would already be overwritten.
+func TestSyncPush_APeerThatCannotAnswerThePreCheckGetsNoWrite(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	pd, pctx, _ := documentFixture(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var in struct {
+			Op  string `json:"op"`
+			SQL string `json:"sql"`
+		}
+		_ = json.Unmarshal(raw, &in)
+		w.Header().Set("Content-Type", "application/json")
+		if in.Op == "query_chunks" && in.SQL != "" {
+			// The credential is refused the scope-wide read.
+			w.WriteHeader(403)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "forbidden", "error": "read refused"})
+			return
+		}
+		res, err := pd.Execute(pctx, raw)
+		if err != nil || res.IsError {
+			w.WriteHeader(422)
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": "tool_refused", "error": res.Text})
+			return
+		}
+		_, _ = io.WriteString(w, res.Text)
+	}))
+	t.Cleanup(srv.Close)
+	newValidityDoc(t, pd, pctx, "/docs/remote")
+	victimDoc := newValidityDoc(t, pd, pctx, "/docs/victim")
+	victim := resultField(toolResult(vExec(t, pd, pctx, fmt.Sprintf(
+		`{"op":"upsert_chunk","document_id":%q,"natural_key":"nkV","title":"Alpha","body":"body-1"}`, victimDoc))), "id")
+	d.Cfg = &config.Config{DocumentSources: map[string]config.DocumentSource{
+		"peerA": {Config: config.DocumentSourceConfig{BaseURL: srv.URL}},
+	}}
+	localDoc := newValidityDoc(t, d, ctx, "/docs/local")
+	vExec(t, d, ctx, fmt.Sprintf(`{"op":"set_remote","id":%q,"source":"peerA","remote_ref":"/docs/remote"}`, localDoc))
+	upsertKeyed(t, d, ctx, localDoc, "nkV", "the local text")
+
+	rep := syncReport(t, d, ctx, localDoc, "push")
+	if rep["conflicts"] != float64(1) || rep["created"] != float64(0) {
+		t.Errorf("push report = %v, want the key reported as a conflict and nothing created", rep)
+	}
+	got := map[string]any{}
+	_ = json.Unmarshal([]byte(vExec(t, pd, pctx, fmt.Sprintf(`{"op":"get_chunk","id":%q}`, victim))), &got)
+	if got["title"] != "Alpha" || got["body"] != "body-1" || got["document_id"] != victimDoc {
+		t.Errorf("the push overwrote another peer document's chunk: %v", got)
+	}
 }
