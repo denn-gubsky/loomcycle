@@ -366,7 +366,10 @@ type PasswordGateStore interface {
 	//   - AclBindingPut with SubjectKind user (SubjectID), or token (the
 	//     token def's TenantID/Subject; a missing token def revokes nothing);
 	//   - UserUpdate setting AccessMode to "tenant";
-	//   - OperatorTokenDefCreate, always, for (row.TenantID, row.Subject).
+	//   - OperatorTokenDefCreate for (row.TenantID, row.Subject), unless the
+	//     row holds a single-purpose scope (auth.HoldsSinglePurposeScope): a
+	//     scrape, SCIM or user-management credential gives the subject's
+	//     account nothing a password link could carry onto it.
 	AuthRevokeManagerIssued(ctx context.Context, tenantID, subject string, at time.Time) (int, error)
 
 	// AuthThrottleGet returns a throttle key's failures inside its current

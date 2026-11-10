@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -69,9 +70,13 @@ func (s *Store) OperatorTokenDefCreate(ctx context.Context, row store.OperatorTo
 		return store.OperatorTokenDefRow{}, fmt.Errorf("operator_token_def: encode allowed_scopes: %w", err)
 	}
 	// A token is authority for its subject: close the subject's manager-issued
-	// links first (store.PasswordGateStore.AuthRevokeManagerIssued).
-	if _, err := s.AuthRevokeManagerIssued(ctx, row.TenantID, row.Subject, time.Now().UTC()); err != nil {
-		return store.OperatorTokenDefRow{}, fmt.Errorf("operator_token_def: %w", err)
+	// links first (store.PasswordGateStore.AuthRevokeManagerIssued). Not for a
+	// single-purpose machine credential, which confers nothing on the
+	// subject's account: a person's password link carries no way to it.
+	if !auth.HoldsSinglePurposeScope(row.AllowedScopes) {
+		if _, err := s.AuthRevokeManagerIssued(ctx, row.TenantID, row.Subject, time.Now().UTC()); err != nil {
+			return store.OperatorTokenDefRow{}, fmt.Errorf("operator_token_def: %w", err)
+		}
 	}
 	if row.CreatedAt.IsZero() {
 		row.CreatedAt = time.Now()
