@@ -77,7 +77,8 @@ var knownDirectives = map[string]bool{
 	"memory_scope": true, "identity": true, "identifier_pattern": true,
 	"title_pattern": true, "anchor_grammar": true, "citation_grammar": true,
 	"exclude": true, "renamed_from": true, "definitions": true, "boilerplate": true,
-	"norm": true,
+	"norm":     true,
+	"annotate": true,
 	// relations
 	"inverse": true, "domain": true, "range": true, "symmetric": true,
 	"asymmetric": true, "irreflexive": true, "transitive": true,
@@ -358,6 +359,8 @@ type ClassDecl struct {
 	Definitions       string
 	Boilerplate       string
 	Exclude           []string
+	Annotate          string
+	Meaning           string
 	RenamedFrom       string
 	Issues            []string
 }
@@ -371,6 +374,7 @@ func ParseClassBody(body string) ClassDecl {
 	d := ClassDecl{
 		Fields:     ParseOntologyFields(body),
 		FieldSpecs: ParseOntologyFieldSpecs(body),
+		Meaning:    firstProseLine(body),
 	}
 	d.MemoryScope, d.MemoryScopeIssue = ParseOntologyScope(body)
 	for _, dir := range ParseDirectives(body) {
@@ -429,6 +433,17 @@ func ParseClassBody(body string) ClassDecl {
 			}
 		case "renamed_from":
 			d.RenamedFrom = firstWord(dir.Value)
+		case "annotate":
+			// The slots of the class's annotations, "a; b; c". Several lines are
+			// joined; an empty one says nothing and is reported.
+			if v := strings.TrimSpace(dir.Value); v != "" {
+				if d.Annotate != "" {
+					d.Annotate += "; "
+				}
+				d.Annotate += v
+			} else {
+				d.Issues = append(d.Issues, "@annotate names no slots; ignored")
+			}
 		default:
 			if !knownDirectives[dir.Name] {
 				d.Issues = append(d.Issues, "unknown directive @"+dir.Name+"; ignored")
@@ -673,10 +688,13 @@ func EffectiveClasses(tenantTerms []OntologyTerm, tenantConfirmed bool) []Ontolo
 //     search show the item. Classifying or linking it would retype the stub or file
 //     proposals about a document nobody can read.
 //   - SyncReport: a sync's run report — operational, not knowledge.
+//   - Annotation: a Path folder's annotation document (<folder>/_annotation). It
+//     carries what the annotation pass wrote about the folder; classifying,
+//     linking or annotating it would describe a description.
 //
 // The set is fixed here rather than declared in the ontology: a type an operator
 // forgets to declare must still be skipped.
-func OperationalDocumentTypes() []string { return []string{"SourceStub", "SyncReport"} }
+func OperationalDocumentTypes() []string { return []string{"SourceStub", "SyncReport", "Annotation"} }
 
 // IsOperationalDocumentType reports whether t is one of OperationalDocumentTypes. Case
 // and surrounding space are ignored, as classify ignores case when it compares a type

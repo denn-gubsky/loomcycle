@@ -7,7 +7,9 @@ one sentence saying what the part is so a reader can choose it, and an
 **abstract**, one paragraph saying what it states so a reader need not open
 it. A section (a chunk with parts of its own, or a long one) carries a
 `branch` annotation; a whole document carries a `document` annotation on its
-root chunk.
+root chunk; a Path folder carries a `path` annotation, kept on a document named
+`<folder>/_annotation` (type `Annotation`, made on the first write) or, when the
+folder is itself a document, on that document's root.
 
 An annotation is not content. It is kept beside the document, so writing one
 changes nothing the document says: not its text, its history, its export or
@@ -28,8 +30,9 @@ overwritten by a driver.
 
 - `id` — the chunk: a section, or a document's root chunk.
 - `document_id` — a document, for its `document` annotation.
-- `path` — the document's Path-tree name, instead of `document_id`.
-- `level` — `branch` or `document`. Default: what the chunk is.
+- `path` — the document's Path-tree name, instead of `document_id`; with
+  `level: path`, the folder, e.g. `/kb/policies` (`/` for the top).
+- `level` — `branch`, `document` or `path`. Default: what the chunk is.
 - `brief` (required) — at most 240 characters.
 - `abstract` (required) — at most 2000 characters.
 - `inputs_sha256` — the hash from `annotation_inputs`. Required unless

@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it, expect } from "vitest";
 import type { DirListing } from "../lib/lazyPathTree";
 import type { PathEntry } from "../types";
+import type { DocSummary } from "../lib/colorScheme";
 import PathTree, { buildLazyTree, type PathTreeProps } from "./PathTree";
 
 const dir = (full_path: string): PathEntry => ({
@@ -18,7 +19,11 @@ const listing = (entries: PathEntry[], extra: Partial<DirListing> = {}): DirList
   ...extra,
 });
 
-function render(dirs: Map<string, DirListing>, expanded: string[]): string {
+function render(
+  dirs: Map<string, DirListing>,
+  expanded: string[],
+  summaries?: Map<string, DocSummary>,
+): string {
   const noop = () => {};
   const props: PathTreeProps = {
     tree: buildLazyTree(dirs),
@@ -28,6 +33,7 @@ function render(dirs: Map<string, DirListing>, expanded: string[]): string {
     onLoadMore: noop,
     onRetry: noop,
     onSelect: noop,
+    summaries,
   };
   return renderToStaticMarkup(createElement(PathTree, props));
 }
@@ -65,5 +71,37 @@ describe("PathTree", () => {
     expect(html).toContain("empty");
     expect(html).toContain("failed to load: boom");
     expect(html).toContain(">retry<");
+  });
+
+  it("shows a document's brief from documents_summary, and a folder's from its _annotation", () => {
+    const docRef = (full_path: string, id: string): PathEntry => ({
+      ...doc(full_path),
+      resource_ref: { document_id: id },
+    });
+    const dirs = new Map([
+      ["", listing([dir("/rfcs"), dir("/notes")])],
+      ["/rfcs", listing([docRef("/rfcs/_annotation", "ann"), docRef("/rfcs/ge", "ge"), docRef("/rfcs/gf", "gf")])],
+    ]);
+    const sum = (document_id: string, brief?: string): DocSummary => ({
+      document_id,
+      title: document_id,
+      color_enabled: false,
+      ...(brief ? { brief } : {}),
+      ...(document_id === "ann" ? { type: "Annotation" } : {}),
+    });
+    const summaries = new Map([
+      ["ann", sum("ann", "Design records for the runtime.")],
+      ["ge", sum("ge", "Annotations at every level.")],
+      ["gf", sum("gf")],
+    ]);
+    const html = render(dirs, ["/rfcs"], summaries);
+    // The folder row carries its _annotation's brief; the _annotation row does
+    // not repeat it.
+    expect(html.match(/Design records for the runtime\./g)?.length).toBe(2); // the line + the tooltip
+    expect(html).toContain('<span class="path-brief">Design records for the runtime.</span>');
+    expect(html).toContain('<span class="path-brief">Annotations at every level.</span>');
+    // A document without a record gets no line, and an unlisted folder no brief.
+    expect(html.match(/class="path-brief"/g)?.length).toBe(2);
+    expect(html).toContain("📝");
   });
 });

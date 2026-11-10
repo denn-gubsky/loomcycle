@@ -13,8 +13,9 @@ document needs no call here.
 
 - `id` — the chunk: a section, or a document's root chunk.
 - `document_id` — a document, for its `document` annotation.
-- `path` — the document's Path-tree name, instead of `document_id`.
-- `level` (required) — `branch` or `document`.
+- `path` — the document's Path-tree name, instead of `document_id`; with
+  `level: path`, the folder (its `_annotation` document is removed too).
+- `level` (required) — `branch`, `document` or `path`.
 - `scope` — `tenant`.
 
 ## Returns

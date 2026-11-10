@@ -145,7 +145,10 @@ var docACLOps = map[string]docACLRule{
 	// about a document, so it asks write on that document.
 	"set_annotation":    {verb: "write", target: docACLChunkOrDocument},
 	"delete_annotation": {verb: "write", target: docACLChunkOrDocument},
-	"get_annotation":    {verb: "read", target: docACLChunkOrDocument},
+	// get_annotation answers what the caller may read and leaves the rest out: a
+	// folder's annotation is asked about through its _annotation document,
+	// which is readable only with every document it covers.
+	"get_annotation":    {verb: "read", target: docACLListing, filter: docListAnnotations},
 	"annotation_inputs": {verb: "read", target: docACLChunkOrDocument},
 	"list_annotations":  {verb: "read", target: docACLListing, filter: docListAnnotations},
 	"query_chunks":      {verb: "read", target: docACLScope},
@@ -373,6 +376,12 @@ func (a *docACL) everyName(ctx context.Context, docID string, allows func(authz.
 
 // document asks verb about a document at every name it is filed under.
 func (a *docACL) document(ctx context.Context, op, verb, docID string) (*tools.Result, error) {
+	if withheld, err := a.annotationDocumentWithheld(ctx, docID); err != nil {
+		return nil, err
+	} else if withheld {
+		r := errNotFound(op+": no such document: "+docID, "")
+		return &r, nil
+	}
 	if !a.pathSensitive {
 		return a.path(ctx, op, verb, ""), nil
 	}
@@ -393,6 +402,10 @@ func (a *docACL) document(ctx context.Context, op, verb, docID string) (*tools.R
 
 // readable is document's read question for a listing: no log line per row.
 func (a *docACL) readable(ctx context.Context, docID string) (bool, error) {
+	// A folder's annotation document speaks for every document it covers.
+	if withheld, err := a.annotationDocumentWithheld(ctx, docID); err != nil || withheld {
+		return false, err
+	}
 	if !a.pathSensitive {
 		return tools.ACLFilterAllows(ctx, a.eff, "read", a.resource("")), nil
 	}

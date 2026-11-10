@@ -288,6 +288,7 @@ func (b *boot) bindStoreToTools() {
 	// An operator's rename of a reserved tenant name records the tenant ontology's
 	// document id first, so the rename cannot lose track of it (RFC FY Part C).
 	pathTool.Identities = documentTool
+	pathTool.Annotations = documentTool
 	documentTool.Store = storeIface
 	// Document op=search runs the SAME backend instance as the Memory tool, so a
 	// document search and a memory search over the same chunks rank them alike.
