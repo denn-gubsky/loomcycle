@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/limits"
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/retention"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -475,6 +476,19 @@ func (b *boot) seedServerState() {
 	if err := srv.SeedLimits(bgCtx); err != nil {
 		slog.Error("limits: seed failed (budgets start empty until next write)", "err", err)
 	}
+	// The model label of every instrument names only models the operator
+	// configured; the rest (a gateway caller's, a tenant agent's) is "other".
+	b.addCleanup(srv.InstallMetricModelLabels())
+	// The budget gauge on /metrics reads the tracker's in-memory counters.
+	tracker := srv.LimitsTracker()
+	b.addCleanup(lcotel.SetTokenBudgetSource(func() []lcotel.TokenBudget {
+		budgets := tracker.TenantBudgets()
+		out := make([]lcotel.TokenBudget, len(budgets))
+		for i, tb := range budgets {
+			out[i] = lcotel.TokenBudget{Tenant: tb.TenantID, Period: "month", Used: tb.Used, Limit: tb.Limit}
+		}
+		return out
+	}))
 	// Each replica caches the limit rows it read at boot and those it wrote
 	// itself, so a limit written on another replica (PUT /v1/_limits, or the
 	// budget a gate writes for a user it provisions) is enforced here only

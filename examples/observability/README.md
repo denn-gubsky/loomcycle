@@ -2,6 +2,8 @@
 
 Three drop-in profiles for wiring loomcycle into your existing observability stack. Pick the one matching where you already send telemetry:
 
+> The Grafana dashboards, Prometheus alert rules and Alloy collector config shipped with loomcycle live in [`deploy/observability/`](../../deploy/observability/), versioned with the binary and checked against what `/metrics` emits. The `grafana-tempo/` demo stack loads those dashboards beside its own.
+
 | Profile | What it is | When to use it |
 |---|---|---|
 | **[`grafana-tempo/`](grafana-tempo/)** | Self-hosted Grafana + Tempo + Prometheus + Loki + OTEL Collector stack via docker-compose. Pre-built 10-panel dashboard. | You don't yet have an observability stack, or you prefer self-hosted open-source tooling. |
@@ -25,7 +27,7 @@ The substrate exposes:
 
 - **5 span types** — `loomcycle.run`, `loomcycle.iteration`, `loomcycle.provider.call`, `loomcycle.tool.call`, `loomcycle.mcp.call`
 - **19 span attributes** — identity (`run_id`, `agent_id`, `user_hash`, `agent_name`, `parent_agent_id`, `iteration`), provider (`provider`, `model`, `tier`, `effort`), tools (`tool`, `mcp_server`, `mcp_tool`), cost (`input_tokens`, `output_tokens`, `cache_read_tokens`), latency (`stop_reason`, `tool_is_error`, `queue_wait_ms`)
-- **7 Prometheus metrics** — process resources (RSS, heap, goroutines), concurrency state (active, queued, per-user), build_info
+- **`/metrics`** — the substrate (process resources, concurrency state, provider lanes, build_info) and the in-process run, token, cost, provider, model, tool, database-pool, consolidation and budget instruments (see `docs/CONFIGURATION.md`, "Metrics")
 - **OTEL Collector `spanmetrics` connector** (Profile A only) — aggregates spans into Prometheus histograms downstream; same metrics queryable in any Prometheus-compatible backend
 
 ## Choosing a profile

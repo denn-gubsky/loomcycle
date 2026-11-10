@@ -135,7 +135,22 @@ func errorTypeForErr(err error) string {
 // SetProviderResponse records how one provider attempt ended: its HTTP status
 // and, on failure, error.type and the span's error status. resp and err are
 // what the HTTP client returned; either may be nil.
+//
+// It also counts the attempt in the provider metrics (outcome "ok" or the
+// error.type below), on a span that does not record too.
 func SetProviderResponse(span trace.Span, resp *http.Response, err error) {
+	if ps, ok := span.(*providerSpan); ok {
+		switch {
+		case err != nil:
+			ps.recordAttempt(errorTypeForErr(err))
+		case resp != nil:
+			outcome := ErrorTypeForStatus(resp.StatusCode)
+			if outcome == "" {
+				outcome = ProviderOutcomeOK
+			}
+			ps.recordAttempt(outcome)
+		}
+	}
 	if span == nil || !span.IsRecording() {
 		return
 	}

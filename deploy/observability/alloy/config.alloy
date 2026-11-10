@@ -1,0 +1,132 @@
+// Grafana Alloy in front of Tempo and Prometheus for loomcycle.
+//
+// Traces:  loomcycle --OTLP--> Alloy (bearer check, tail sampling) --> Tempo
+// Metrics: loomcycle --OTLP--> Alloy --> Prometheus remote write
+//          (only with OTEL_METRICS_EXPORTER=otlp on loomcycle; the usual path
+//          is Prometheus scraping /metrics, see ../prometheus/prometheus.yml)
+//
+// loomcycle side:
+//   OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4318
+//   LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE=/run/secrets/otlp-headers
+//     (the file holds: Authorization=Bearer%20<the token below>)
+//   OTEL_TRACES_SAMPLER=parentbased_always_on   (sample here, not there)
+//
+// Environment of this Alloy: LOOMCYCLE_OTLP_TOKEN (the bearer loomcycle
+// sends), TEMPO_ENDPOINT, PROMETHEUS_REMOTE_WRITE_URL.
+
+// --- Receive, refusing anything without the bearer ------------------------
+
+otelcol.auth.bearer "loomcycle" {
+  token = sys.env("LOOMCYCLE_OTLP_TOKEN")
+}
+
+otelcol.receiver.otlp "loomcycle" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+    auth     = otelcol.auth.bearer.loomcycle.handler
+  }
+  http {
+    endpoint = "0.0.0.0:4318"
+    auth     = otelcol.auth.bearer.loomcycle.handler
+  }
+  output {
+    traces  = [otelcol.processor.tail_sampling.loomcycle.input]
+    metrics = [otelcol.processor.batch.metrics.input]
+  }
+}
+
+// --- Traces: keep every failed or slow run, sample the rest ---------------
+//
+// A failed or cancelled run's loomcycle.run span has status ERROR (a tool
+// that answered with an error result does not: it sets
+// loomcycle.tool_is_error). The latency policy measures the whole trace,
+// which for a run's own trace is the run.
+//
+// Tail sampling needs every span of a trace on the same Alloy: with more
+// than one, route by trace id first (otelcol.exporter.loadbalancing).
+//
+// A trace is judged decision_wait after its first span arrives, on the spans
+// that arrived by then. A run that fails, or crosses the latency threshold,
+// later than that is judged on a partial trace and kept only at the
+// probabilistic rate. Set it above your runs' usual length. Alloy holds every
+// trace in memory until it is judged: num_traces must cover
+// expected_new_traces_per_sec x decision_wait, or the oldest are judged early.
+
+otelcol.processor.tail_sampling "loomcycle" {
+  decision_wait               = "300s"
+  num_traces                  = 100000 // about 300 new traces/s for 300 s
+  expected_new_traces_per_sec = 300
+
+  policy {
+    name = "errors"
+    type = "status_code"
+    status_code {
+      status_codes = ["ERROR"]
+    }
+  }
+
+  policy {
+    name = "slow-runs"
+    type = "latency"
+    latency {
+      threshold_ms = 30000
+    }
+  }
+
+  policy {
+    name = "the-rest"
+    type = "probabilistic"
+    probabilistic {
+      sampling_percentage = 10
+    }
+  }
+
+  output {
+    traces = [otelcol.processor.batch.traces.input]
+  }
+}
+
+otelcol.processor.batch "traces" {
+  output {
+    traces = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = sys.env("TEMPO_ENDPOINT") // e.g. tempo:4317
+    tls {
+      insecure = true // drop when Tempo serves TLS
+    }
+  }
+}
+
+// --- Metrics over OTLP (OTEL_METRICS_EXPORTER=otlp) -----------------------
+
+otelcol.processor.batch "metrics" {
+  output {
+    metrics = [otelcol.exporter.prometheus.loomcycle.input]
+  }
+}
+
+otelcol.exporter.prometheus "loomcycle" {
+  forward_to = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.remote_write "default" {
+  endpoint {
+    url = sys.env("PROMETHEUS_REMOTE_WRITE_URL") // e.g. http://prometheus:9090/api/v1/write
+  }
+}
+
+// --- Or scrape /metrics from Alloy instead of Prometheus ------------------
+//
+// prometheus.scrape "loomcycle" {
+//   targets         = [{"__address__" = "loomcycle:8787"}]
+//   metrics_path    = "/metrics"
+//   forward_to      = [prometheus.remote_write.default.receiver]
+//   authorization {
+//     type             = "Bearer"
+//     credentials_file = "/run/secrets/loomcycle-metrics.token" // a metrics:read token (see ../README.md)
+//   }
+// }

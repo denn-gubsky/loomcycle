@@ -3,23 +3,33 @@
 // interval, bearer-auth via the same middleware as /v1/_metrics/*).
 //
 // Unlike /v1/_metrics/* (which reads pre-aggregated DB samples), this
-// endpoint is a LIVE read against the runtime — runtime.MemStats +
-// Semaphore.Stats — so each scrape returns the current process shape
-// without a DB hop. Works even when the DB-backed sampler is disabled
-// (LOOMCYCLE_METRICS_ENABLED=0) since the live counters are always
-// trivially available.
+// endpoint is a LIVE read against the runtime, so each scrape returns
+// the current shape without a DB hop. Works even when the DB-backed
+// sampler is disabled (LOOMCYCLE_METRICS_ENABLED=0).
 //
-// Architectural lock (RFC observability-profiles.md Decision 1): this
-// endpoint exposes ONLY substrate metrics — process resources +
-// concurrency state. Per-run shape (latency, token spend, error rate)
-// is handled separately: spans flow through OTEL to Tempo, and the
-// OTEL Collector's spanmetrics connector aggregates them into
-// Prometheus histograms downstream (no in-process span processor).
+// Two parts. The substrate series below are hand-rendered from live state
+// (runtime.MemStats, the semaphore, provider lanes, model throughput).
+// After them come the in-process instruments (internal/otel): runs,
+// tokens, cost, provider requests, model and tool calls, database pools,
+// consolidation and token budgets, counted where the work happens. They
+// used to be left to the collector's spanmetrics connector, which sees
+// only the sampled runs: at a 0.1 sampler ratio it counted a tenth of
+// them and skewed the error rate. Counted in-process, they hold at any
+// sampling.
+//
+// The cost rule that remains: no database scan per scrape. Every series
+// reads memory (an observable instrument's callback included; a pool
+// reports sql.DB.Stats / pgxpool.Stat, which run no query). The one
+// exception predates the instruments: in cluster mode the semaphore's
+// Stats reads the per-user quota snapshot from the database (one SELECT,
+// bounded by a 1 s timeout) for loomcycle_concurrency_per_user.
 package http
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
@@ -28,26 +38,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
 )
-
-// promView is who a /metrics render is for. The authenticated route renders
-// every series; the unauthenticated listener renders the same set minus every
-// series that names a user, because anyone who reaches that port reads it.
-type promView int
-
-const (
-	promViewAuthenticated promView = iota
-	promViewOpen
-)
-
-// namesUsers reports whether the view may carry series labelled with a user
-// identity. Every user-labelled block asks it, so a new one is left out of
-// the open view by the same switch.
-func (v promView) namesUsers() bool { return v == promViewAuthenticated }
 
 // MetricsListenerHandler is the handler of the separate metrics listener
 // (LOOMCYCLE_METRICS_LISTEN): it serves only GET/HEAD /metrics, with NO
@@ -58,25 +54,60 @@ func (v promView) namesUsers() bool { return v == promViewAuthenticated }
 func (s *Server) MetricsListenerHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", recoveryMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		s.renderMetricsProm(w, promViewOpen)
+		s.renderMetricsProm(w, promView{omitUserSeries: true})
 	})))
 	return mux
 }
 
-// handleMetricsProm serves GET /metrics on the main listener. Bearer-authed
-// (middleware already gates the route). Live-read; no DB query.
-func (s *Server) handleMetricsProm(w http.ResponseWriter, _ *http.Request) {
-	s.renderMetricsProm(w, promViewAuthenticated)
+// promView is what one /metrics reader may see.
+type promView struct {
+	// confined limits the reader to tenant: only the instrument series
+	// labelled with that tenant ("" — the shared tenant — included), and
+	// none of the substrate (process, lanes, semaphore, pools, export
+	// pipeline, throughput), which is operator-wide. A non-empty tenant
+	// confines on its own; confined says so for the shared tenant, where
+	// tenant == "" would otherwise read as "no filter".
+	confined bool
+	tenant   string
+	// omitUserSeries leaves out every series that names a user, for a
+	// reader nobody authenticated.
+	omitUserSeries bool
+}
+
+// namesUsers reports whether the view may carry series labelled with a user.
+// Every user-labelled block asks it, so a new one is left out by the same
+// switch.
+func (v promView) namesUsers() bool { return !v.omitUserSeries && !v.isConfined() }
+
+// isConfined reports whether the view is one tenant's.
+func (v promView) isConfined() bool { return v.confined || v.tenant != "" }
+
+// promViewForPrincipal is the view the route's caller gets. Every caller
+// that passes the route's gate today is an operator and sees everything; a
+// metrics reader confined to its tenant gets promView{confined: true,
+// tenant: …} here once such a credential exists.
+func promViewForPrincipal(auth.Principal, bool) promView {
+	return promView{}
+}
+
+// handleMetricsProm serves GET /metrics. Bearer-authed (middleware
+// already gates the route). Live-read; no DB scan (see the file header for
+// the cluster-mode quota snapshot).
+func (s *Server) handleMetricsProm(w http.ResponseWriter, r *http.Request) {
+	s.renderMetricsProm(w, promViewForPrincipal(auth.PrincipalFromContext(r.Context())))
 }
 
 // renderMetricsProm writes the Prometheus text for view.
 func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	replicaLabels := promReplicaLabels()
+	if view.isConfined() {
+		writeInstrumentSeries(w, replicaLabels, view)
+		return
+	}
+
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
-
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-
-	replicaLabels := promReplicaLabels()
 	buildLabels := promBuildLabels()
 
 	// Process-resource gauges.
@@ -94,7 +125,6 @@ func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 	// tests with a partial Server), emit zeros — keeps the metric series
 	// monotonic from the operator's POV rather than appearing/disappearing.
 	semStats := semaphoreSnapshot(s)
-	perUserOpt := semStats.PerUser
 	writeGauge(w, "loomcycle_concurrency_active",
 		"Runs currently holding a concurrency slot (semaphore active count).",
 		replicaLabels, float64(semStats.Active))
@@ -111,33 +141,18 @@ func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 	// TODO(RFC BL): per-scope memory footprint gauge (row count / bytes per
 	// scope). Deferred from PR6 — there is no cheap all-scopes footprint source:
 	// store.MemoryEmbedStats is per-(tenant,scope) and would require enumerating
-	// every scope_id at scrape time, i.e. the hot per-scrape scan this
-	// substrate-only, live-read endpoint must avoid (see the file-header lock).
+	// every scope_id at scrape time, i.e. the per-scrape database work this
+	// live-read endpoint must avoid (see the file header).
 	// Wire it once a cached per-scope sampler exists (RFC BL P2).
 
 	// Per-user series — only emitted when per-user cap is engaged,
-	// otherwise the cardinality of `user_id` could explode on anonymous
+	// otherwise the cardinality of users could explode on anonymous
 	// workloads. We can't directly observe the cap value from Stats(),
 	// but the PerUser map is nil/empty when the cap is disabled (see
 	// internal/concurrency/semaphore.go — only populated under the
-	// per-user-capped Acquire path). The user ids are identities, so the
-	// open view leaves the series out.
-	if len(perUserOpt) > 0 && view.namesUsers() {
-		fmt.Fprintln(w, "# HELP loomcycle_concurrency_per_user Runs currently held (active+queued) per user_id; only emitted when MaxConcurrentRunsPerUser > 0.")
-		fmt.Fprintln(w, "# TYPE loomcycle_concurrency_per_user gauge")
-		// Sort user IDs so successive scrapes produce deterministic
-		// output — easier to diff in regression tests + nicer for
-		// operators eyeballing the endpoint manually.
-		users := make([]string, 0, len(perUserOpt))
-		for u := range perUserOpt {
-			users = append(users, u)
-		}
-		sort.Strings(users)
-		for _, u := range users {
-			labels := mergeLabels(replicaLabels, map[string]string{"user_id": u})
-			fmt.Fprintf(w, "loomcycle_concurrency_per_user%s %d\n", labels, perUserOpt[u])
-		}
-		fmt.Fprintln(w)
+	// per-user-capped Acquire path).
+	if len(semStats.Users) > 0 && view.namesUsers() {
+		writePerUserSeries(w, replicaLabels, semStats.Users)
 	}
 
 	// Per-provider call caps (each capped provider's chat lane) — only emitted
@@ -249,7 +264,65 @@ func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 	// version churn or filter by version in a multi-replica cluster.
 	fmt.Fprintln(w, "# HELP loomcycle_build_info Loomcycle build identification (version, commit, go version) as labels; value is always 1.")
 	fmt.Fprintln(w, "# TYPE loomcycle_build_info gauge")
-	fmt.Fprintf(w, "loomcycle_build_info%s 1\n", buildLabels)
+	fmt.Fprintf(w, "loomcycle_build_info%s 1\n\n", buildLabels)
+
+	writeInstrumentSeries(w, replicaLabels, view)
+}
+
+// InstallMetricModelLabels bounds the instruments' model label to the models
+// this server's live config names (MetricModelNames), re-read after a config
+// reload. Returns the restore function.
+func (s *Server) InstallMetricModelLabels() func() {
+	return lcotel.SetModelLabelSource(
+		func() any { return s.cfg() },
+		func(v any) ([]string, []string) {
+			c, _ := v.(*config.Config)
+			return c.MetricModelNames()
+		})
+}
+
+// writeInstrumentSeries appends the in-process instruments for view, labelled
+// with the replica as the substrate series are. A collection failure is
+// logged and leaves the substrate series standing.
+func writeInstrumentSeries(w io.Writer, replicaLabels string, view promView) {
+	opts := lcotel.PromOptions{Confined: view.isConfined(), Tenant: view.tenant, OmitUserSeries: !view.namesUsers(), Labels: decomposeLabels(replicaLabels)}
+	if err := lcotel.WritePrometheus(context.Background(), w, opts); err != nil {
+		slog.Warn("metrics: render the instruments failed", "err", err)
+	}
+}
+
+// writePerUserSeries reports each user's held runs under its keyed hash —
+// loomcycle.user_hash, the value its spans carry — never its id: a scrape
+// lands in a monitoring system, outside erasure's reach, as a span does.
+// With no secret key there is no hash to give (one keyed by nothing could be
+// reversed by trying ids), so the series is left out.
+func writePerUserSeries(w io.Writer, replicaLabels string, users []concurrency.UserCount) {
+	if _, keyed := lcotel.MetricUserHash("", "probe"); !keyed {
+		return
+	}
+	type row struct {
+		hash string
+		n    int
+	}
+	var rows []row
+	byHash := map[string]int{}
+	// The (tenant, user) pairs themselves: the stats route's display key
+	// cannot be parsed back, as a user id may hold a "/".
+	for _, u := range users {
+		if h, ok := lcotel.MetricUserHash(u.Tenant, u.User); ok {
+			byHash[h] += u.Held
+		}
+	}
+	for h, n := range byHash {
+		rows = append(rows, row{h, n})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].hash < rows[j].hash })
+	fmt.Fprintln(w, "# HELP loomcycle_concurrency_per_user Runs currently held (active+queued) per user, named by its keyed hash (user_hash, as on spans); only emitted when MaxConcurrentRunsPerUser > 0 and a secret key is set.")
+	fmt.Fprintln(w, "# TYPE loomcycle_concurrency_per_user gauge")
+	for _, r := range rows {
+		fmt.Fprintf(w, "loomcycle_concurrency_per_user%s %d\n", mergeLabels(replicaLabels, map[string]string{"user_hash": r.hash}), r.n)
+	}
+	fmt.Fprintln(w)
 }
 
 // writeModelGauges emits the throughput estimate as one series per measured

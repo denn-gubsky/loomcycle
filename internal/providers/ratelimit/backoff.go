@@ -185,6 +185,18 @@ func Do(ctx context.Context, cfg Config, attempt func(ctx context.Context) (*htt
 		_ = resp.Body.Close()
 
 		cfg.OnRetry(cfg.Provider, i+1, wait, reason)
+		// Named as the attempt spans name it: a wrapping driver (DeepSeek)
+		// sets the override, and its retries are its own, not OpenAI's.
+		retryProvider := lcotel.ProviderOverride(ctx)
+		if retryProvider == "" {
+			retryProvider = cfg.Provider
+		}
+		// The label is a short token, not the wire reason's prose.
+		metricReason := "schedule"
+		if fromHeader {
+			metricReason = "header"
+		}
+		lcotel.RecordProviderRetry(ctx, retryProvider, metricReason)
 		if cfg.OnEvent != nil {
 			cfg.OnEvent(providers.Event{
 				Type: providers.EventRetry,

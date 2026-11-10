@@ -3490,7 +3490,7 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_METRICS_RETENTION_DAYS` | `7` | Days of samples kept; `0` keeps them all. |
 | `LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS` | `900000` | How often old samples are deleted; `0` stops it. |
 | `LOOMCYCLE_METRICS_COLLECT_SYSTEM` | off | `1` also samples system-wide CPU and memory (Linux only). |
-| `LOOMCYCLE_METRICS_LISTEN` | unset | An address (`127.0.0.1:9464`, or `0.0.0.0:9464` inside a compose network) for a second plain-HTTP listener that serves only `GET`/`HEAD /metrics`, **with no authentication**; nothing else is served there. It omits every series that names a user (today `loomcycle_concurrency_per_user`, whose `user_id` label the authenticated `/metrics` still carries). For a scraper on the same host or a network only it reaches. Boot fails if the address cannot be bound, and warns when it is beyond loopback. The main listener's `/metrics` keeps its token. See [Scraping /metrics](#scraping-metrics). |
+| `LOOMCYCLE_METRICS_LISTEN` | unset | An address (`127.0.0.1:9464`, or `0.0.0.0:9464` inside a compose network) for a second plain-HTTP listener that serves only `GET`/`HEAD /metrics`, **with no authentication**; nothing else is served there. It omits every series that names a user (today `loomcycle_concurrency_per_user`, whose `user_hash` label the authenticated `/metrics` carries). For a scraper on the same host or a network only it reaches. Boot fails if the address cannot be bound, and warns when it is beyond loopback. The main listener's `/metrics` keeps its token. See [Scraping /metrics](#scraping-metrics). |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP endpoint, a URL with its scheme (`http://otel-collector:4318`); setting it (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) turns on tracing (per run, iteration, provider and tool call). |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Or `grpc`. `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` wins when set. `http/json` is refused at startup. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | — | Collector headers as `key=value,key2=value2`. A secret: never interpolated into config, never nameable as a definition's secret source. |
@@ -3509,6 +3509,9 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What an authenticated caller's `traceparent` does: `parent` joins the run to the caller's trace, `link` starts a new trace linked to it (the caller cannot steer sampling), `ignore` reads nothing. |
 | `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | — | Per-tenant sampling ratio for runs that start a trace, as `tenant=ratio,...` (e.g. `acme=1,beta=0.1`); overrides `observability.tracing.tenant_sampler_ratios` tenant by tenant. See "Sampling per tenant". A bad tenant id or a ratio outside 0–1 stops the startup. |
 | `LOOMCYCLE_OTEL_RAW_USER_ID` | off | `1` also puts the raw `loomcycle.user_id` on spans, beside `loomcycle.user_hash`. See "Users on spans". |
+| `LOOMCYCLE_METRICS_CARDINALITY_LIMIT` | `2000` | Series one `/metrics` instrument may hold; past it new label sets fold into one series labelled `otel_metric_overflow="true"`. A value that is not a positive integer stops the startup. See "Metrics". |
+| `LOOMCYCLE_METRICS_AGENT_LABEL` | off | `1` adds an `agent` label (the agent name) to `loomcycle_runs_total` and `loomcycle_tokens_total`. Only for a bounded agent catalogue. See "Metrics". |
+| `OTEL_METRICS_EXPORTER` | `none` | `otlp` also exports the `/metrics` instruments over OTLP (needs `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, or the startup stops). A comma-separated list as the specification allows; a name loomcycle does not support (`prometheus`, `console`) is ignored with a warning. See "Metrics". |
 | `LOOMCYCLE_ENVIRONMENT` | — | The `deployment.environment.name` resource attribute. |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | — | An http(s) URL containing `{trace_id}`, e.g. `https://grafana.example/explore?traceId={trace_id}`: the Web UI's run view links each traced run there. Shown to every signed-in user who can see the run. Anything else stops the startup. |
 
@@ -3554,6 +3557,96 @@ dropped span was discarded with the export queue full, sent in a batch whose
 export failed, or rejected by a collector that accepted the rest of its batch
 (an OTLP partial success: counted as an export that worked, its rejected spans
 as dropped, and logged at most every five minutes).
+
+#### Metrics
+
+`GET /metrics` serves two kinds of series in the Prometheus text format.
+The substrate (process, concurrency, provider lanes, model throughput,
+the trace-export pipeline, build info) is read from live state. After it
+come in-process instruments, counted where the work happens: they are
+right at any trace sampling ratio (a rate derived from exported spans sees
+only the sampled runs), and a scrape still runs no database scan (the one
+query it makes is the pre-existing per-user quota snapshot in cluster mode,
+bounded by a 1 s timeout).
+
+| Series | Labels | What it counts |
+|---|---|---|
+| `loomcycle_runs_total` | `tenant`, `status`, `trigger` | Runs that ended. `status` is the stored one: `completed`, `failed`, `cancelled`, `rejected` (`unknown` for a run whose end an internal error path never recorded). `trigger`: `http`, `grpc`, `mcp`, `schedule`, `webhook`, `a2a`, `subagent`, `resume` (a paused run resumed, or a queued run restarted after a reboot). |
+| `loomcycle_run_duration_seconds` | `tenant`, `status` | Histogram of a run's wall time. |
+| `loomcycle_runs_active` | `tenant` | Runs started and not yet ended on this replica. |
+| `loomcycle_tokens_total` | `tenant`, `provider`, `model`, `type`, `key` | Tokens written to the usage ledger, counted at the ledger write (a row the store refused is in neither). `type`: `input`, `output`, `cache_read`, `cache_write`; `key` is who paid, as the ledger records it: `operator`, `tenant` or `user`. |
+| `loomcycle_cost_usd_total` | `tenant`, `provider`, `model` | The ledger's cost, for calls priced in US dollars. |
+| `loomcycle_provider_requests_total` | `provider`, `model`, `outcome` | HTTP requests (attempts) to model providers. `outcome`: `ok`, `rate_limited`, `overloaded`, `client_error`, `server_error`, `timeout`, `network`, `cancelled` — the attempt span's `error.type`. |
+| `loomcycle_provider_request_duration_seconds` | `provider`, `model` | Histogram of the time to the response headers. |
+| `loomcycle_provider_retries_total` | `provider`, `reason` | Requests retried after a rate limit; `reason` is `header` (the provider's Retry-After) or `schedule`. |
+| `loomcycle_provider_fallbacks_total` | `from`, `to` | Runs moved mid-run from one `provider/model` to another. |
+| `loomcycle_model_call_duration_seconds` | `provider`, `model`, `purpose` | Histogram of a model call from the request to the end of its stream, for every model call: `purpose` is `turn` (a run's own turn), `compaction`, `recap`, `summary`, `emit_state` or `gateway` (the LLM gateway and its OpenAI-compatible routes), as `loomcycle.model.purpose` on the span. |
+| `loomcycle_model_ttft_seconds` | `provider`, `model`, `purpose` | Histogram of the time to the first streamed event, counted from the call's provider-lane admission when it finished (as `loomcycle.ttft_ms`). |
+| `loomcycle_tool_calls_total` | `tool`, `outcome` | Tool calls. An MCP tool is `mcp:<server>`, a client tool `client`, a name the run was not given `unknown`. `outcome`: `ok`, `error` (the tool failed), `is_error` (it answered with an error result). |
+| `loomcycle_tool_call_duration_seconds` | `tool` | Histogram of a tool call's time. |
+| `loomcycle_db_pool_open`, `_in_use`, `_idle` | `db` | The store's connection pool (`db="store"`; SQLite's `sql.DB`, Postgres's pgx pool). The per-scope SQL Memory databases are not reported. |
+| `loomcycle_db_pool_wait_total`, `loomcycle_db_pool_wait_duration_seconds_total` | `db` | Acquires that waited for a free connection, and their total wait. |
+| `loomcycle_memory_consolidation_lag_seconds` | `backend` | Now minus the watermark (the newest settled chat folded in) that the latest consolidation pass left its target at. Passes run only for targets with new work, so it also grows on an idle system and stays high just after a catch-up: it is a backlog only while `loomcycle_memory_consolidation_pending` is above 0 (the shipped alert asks for both). |
+| `loomcycle_memory_consolidation_pending` | `backend` | Consolidation targets with work at the latest fan-out. |
+| `loomcycle_token_budget_used_ratio` | `tenant`, `period` | A tenant's month-to-date use of its token budget (`period="month"`): of the hard limit, else the soft one. Only tenants with a tenant budget. |
+
+A run, a user, a session or (by default) an agent is never a label. A
+`model` label (on the token, cost, provider-request and model-call series,
+and a fallback's `from`/`to`) names only models the operator configured:
+`defaults.model`, the `models:` aliases and the models they point at,
+`tiers`, `user_tiers`, yaml agents and the `pricing` table; re-read after a
+config reload. A model only a `model_pattern` admits is labelled with the
+pattern itself (`model="claude-haiku-*"`), since anyone can name a string
+the pattern matches. Any other model — a gateway
+caller's pinned model, a tenant-authored agent's — is counted as
+`model="other"`, so no caller can grow the series set. A `provider` label is
+always one the registry resolved.
+`LOOMCYCLE_METRICS_AGENT_LABEL=1` adds `agent` (the agent name) to
+`loomcycle_runs_total` and `loomcycle_tokens_total`, for a deployment with a
+bounded agent catalogue. Every instrument holds at most
+`LOOMCYCLE_METRICS_CARDINALITY_LIMIT` series (default 2000); past it, new
+label sets are counted in one series labelled `otel_metric_overflow="true"`,
+so totals stay right while the breakdown stops growing. Each series also
+carries `replica_id` when `LOOMCYCLE_REPLICA_ID` is set, like the substrate
+series.
+
+`loomcycle_concurrency_per_user` (emitted only when the per-user cap is on)
+names each user by `user_hash`, the keyed hash its spans carry as
+`loomcycle.user_hash`, not by `user_id`: a scrape lands in a monitoring
+system, outside the reach of erasure. With no `LOOMCYCLE_SECRET_KEY` there
+is nothing to key the hash with and the series is left out. A query on
+`loomcycle_concurrency_per_user{user_id=...}` must move to `user_hash`
+(`loomcycle otel user-hash <tenant> <user>` prints it).
+
+A reader confined to a tenant sees only the series labelled with its own
+tenant: none of another tenant's, none of the operator-wide substrate (process,
+lanes, semaphore, pools, export pipeline) and none without a tenant label (the
+provider, tool and overflow series). Every token that reaches `/metrics` today
+is an operator's and sees everything.
+
+**OTLP export.** `OTEL_METRICS_EXPORTER=otlp` also exports the same
+instruments over OTLP, plus the OpenTelemetry GenAI semantic-convention
+histograms `gen_ai.client.token.usage` and `gen_ai.client.operation.duration`
+(those only on this path). Off by default, also when traces are exported. It
+needs `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`,
+an absolute http(s) URL, or the startup stops; an unsupported exporter name in
+`OTEL_METRICS_EXPORTER` is ignored with a warning. The protocol is `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL`,
+else `OTEL_EXPORTER_OTLP_PROTOCOL` (`http/protobuf` or `grpc`); the exporter
+reads the rest of `OTEL_EXPORTER_OTLP_*` and its `_METRICS_` forms itself
+(headers, TLS, timeout, compression), and the reader
+`OTEL_METRIC_EXPORT_INTERVAL` / `OTEL_METRIC_EXPORT_TIMEOUT` (milliseconds,
+defaults 60000 / 30000). `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` applies
+too (read once, shared with traces), and is refused beside
+`OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_METRICS_HEADERS`; a
+malformed header entry stops the startup without quoting it. With export off,
+these values are not read and cannot stop the startup. Points carry
+exemplars with the `trace_id` of a sampled run (the SDK's trace-based filter,
+`OTEL_METRICS_EXEMPLAR_FILTER`). A failing collector is logged once
+(`otel: metric export failing`), summarised every five minutes, and its
+recovery logged; the next export carries the cumulative totals again.
+
+Dashboards, alert rules and a collector configuration for these series ship
+in [`deploy/observability/`](../deploy/observability/).
 
 #### Sampling per tenant
 
@@ -3638,6 +3731,7 @@ setting only one of them leaves tracing off. Rename them:
 - [`docs/POSTGRES.md`](POSTGRES.md) — storage backend configuration.
 - [`docs/PLAN.md`](PLAN.md) — historical design rationale, including the v0.8.2 `user_tiers` RFC and the precedence design decisions.
 - [`examples/observability/`](../examples/observability/) — three drop-in observability profiles (Grafana+Tempo self-hosted / Honeycomb / Datadog) for sending loomcycle's OTEL traces + Prometheus metrics to your existing stack. Five-minute quickstart per profile.
+- [`deploy/observability/`](../deploy/observability/) — the Grafana dashboards, Prometheus alert rules and Alloy configuration shipped with loomcycle, checked against what `/metrics` emits.
 - MCP spec: https://modelcontextprotocol.io (only relevant if you're also wiring MCP servers — see `MCP_INTEGRATION.md` first).
 
 ## 11. Code path index

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -89,7 +91,62 @@ func (b *boot) initTelemetry() {
 	} else {
 		slog.Info("otel: disabled (set OTEL_EXPORTER_OTLP_ENDPOINT to enable)")
 	}
-	b.otelShutdown = otelShutdown
+
+	// The metric instruments are always on: /metrics renders them. OTLP export
+	// of the same instruments is the operator's opt-in.
+	metricsCfg, err := lcotel.ResolveMetricsConfig(os.Getenv)
+	if err != nil {
+		fatal("otel: invalid metrics configuration", "err", err)
+	}
+	metricsCfg.ServiceVersion, metricsCfg.InstanceID = buildVersion, b.cfg.Env.ReplicaID
+	metricsCfg.Environment = otelCfg.Environment
+	for _, w := range metricsCfg.Warnings {
+		if metricsCfg.Export {
+			slog.Warn("otel: ignoring a setting", "detail", w)
+		} else {
+			slog.Info("otel: metric export is off; unsupported OTEL_METRICS_EXPORTER value ignored", "detail", w)
+		}
+	}
+	if metricsCfg.Export && metricsCfg.HeadersFile != "" {
+		// One file, read once: the tracer's read already registered its
+		// values with the redactors when tracing is on.
+		if otelCfg.Headers != nil {
+			metricsCfg.Headers = otelCfg.Headers
+		} else {
+			fileCfg := lcotel.Config{Enabled: true, HeadersFile: metricsCfg.HeadersFile}
+			secrets, err := loadOTELHeadersFile(&fileCfg, b.logRedactor)
+			if err != nil {
+				fatal("otel: reading the collector headers failed", "err", err)
+			}
+			metricsCfg.Headers = fileCfg.Headers
+			b.otelHeaderSecrets = append(b.otelHeaderSecrets, secrets...)
+		}
+	}
+	metricsShutdown, err := lcotel.InitMetrics(metricsCfg)
+	if err != nil {
+		fatal("otel: metrics setup failed", "err", err)
+	}
+	if metricsCfg.Export {
+		slog.Info("otel: metric export enabled", "protocol", metricsCfg.Protocol, "headers_file", metricsCfg.HeadersFile != "")
+	}
+	b.otelShutdown = concurrentShutdown(otelShutdown, metricsShutdown)
+}
+
+// concurrentShutdown runs every shutdown at once under the one deadline and
+// joins their errors: a trace flush stalled on a dead collector must not
+// spend the deadline the metric flush needs, as running them in turn did.
+func concurrentShutdown(fns ...func(context.Context) error) func(context.Context) error {
+	return func(ctx context.Context) error {
+		errs := make(chan error, len(fns))
+		for _, fn := range fns {
+			go func() { errs <- fn(ctx) }()
+		}
+		var all []error
+		for range fns {
+			all = append(all, <-errs)
+		}
+		return errors.Join(all...)
+	}
 }
 
 // loadOTELHeadersFile reads the collector headers file when tracing is on and

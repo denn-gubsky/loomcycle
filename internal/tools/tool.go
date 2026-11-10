@@ -11,6 +11,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/errkind"
@@ -1853,7 +1854,16 @@ func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessag
 	ctx = lcotel.WithTenant(ctx, RunIdentity(ctx).TenantID)
 	ctx, span := lcotel.RecordToolCall(ctx, lcotel.ToolCallAttrs{Name: name, CallID: ToolUseID(ctx)})
 	defer span.End()
+	start := time.Now()
 	res, goErr := d.execute(ctx, name, input)
+	outcome := lcotel.ToolOutcomeOK
+	switch {
+	case goErr != nil:
+		outcome = lcotel.ToolOutcomeError
+	case res.IsError:
+		outcome = lcotel.ToolOutcomeIsError
+	}
+	lcotel.RecordToolCallMetric(ctx, d.toolMetricName(name), outcome, time.Since(start))
 	// An error result — a refusal, a policy or hook denial, a tool answering
 	// "no" — is the model's to read and act on, the loop working as designed,
 	// so it is an attribute, not the span's error status: a backend keeping
@@ -1879,6 +1889,21 @@ func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessag
 		lcotel.SetSpanError(span, goErr)
 	}
 	return res, goErr
+}
+
+// toolMetricName is name's label on the tool metrics. A tool this run was
+// given is named (an MCP tool by its server, a client tool as "client"); an
+// MCP name the fallback may still resolve is "mcp", since until it resolves
+// the server in it is the model's text; any other name is "unknown". A label
+// is never text the model chose.
+func (d *Dispatcher) toolMetricName(name string) string {
+	if _, ok := d.tools[name]; ok {
+		return lcotel.ToolMetricName(name, true)
+	}
+	if server, _ := lcotel.ParseMCPToolName(name); server != "" && d.fallback != nil {
+		return "mcp"
+	}
+	return lcotel.ToolMetricName(name, false)
 }
 
 // RunIsNoTrace reports whether ctx belongs to a no-trace run: one whose

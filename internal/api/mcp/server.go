@@ -35,6 +35,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -452,7 +453,9 @@ func (s *Server) handleToolsCall(ctx context.Context, stdout io.Writer, req loom
 		return
 	}
 
-	res, err := handler(ctx, &handlerEnv{
+	// A run a tool starts here came over MCP, whichever listener (stdio or
+	// the HTTP /v1/_mcp route) carried the call.
+	res, err := handler(lcotel.WithRunTrigger(ctx, lcotel.TriggerMCP), &handlerEnv{
 		connector:         s.cfg.Connector,
 		runner:            s.cfg.Runner,
 		session:           s.session,

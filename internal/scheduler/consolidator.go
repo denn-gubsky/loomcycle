@@ -310,6 +310,9 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 		s.recordFireFailure(ctx, row.DefID, "", "failed", fmt.Errorf("consolidation fan-out: enumerate targets: %w", err), now)
 		return
 	}
+	// The targets that have work: those dispatched now and those the cap
+	// deferred. Known here for free; the enumeration already read it.
+	lcotel.SetConsolidationPending(lcotel.ConsolidationBackendInProcess, len(targets)+dropped)
 	if dropped > 0 {
 		// A silent truncation reads as "everything was covered". The watermark
 		// makes the remainder resumable, so this is deferral, not loss — but the
@@ -1385,7 +1388,7 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 	// a shutdown would never return, so the pool's close — and the process —
 	// would wait for the SIGKILL, while another replica resumed the run. A
 	// shutdown cancels the pass instead; the next tick does it again.
-	runErr := s.runner.RunOnce(ctx, in, cb)
+	runErr := s.runner.RunOnce(lcotel.WithRunTrigger(ctx, lcotel.TriggerSchedule), in, cb)
 	usageMu.Lock()
 	refused := keyRefused
 	usageMu.Unlock()
@@ -1399,6 +1402,13 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 		provider, model := usage.provider, usage.model
 		usageMu.Unlock()
 		lcotel.SetMemoryConsolidateResult(span, before.diff(after, provider, model, runErr))
+		if after.watermarkKnown {
+			lcotel.RecordConsolidationWatermark(lcotel.ConsolidationBackendInProcess, after.watermark)
+		}
+	} else if cursor, err := s.store.MemoryCursorGet(ctx, target.TenantID, target.Scope, target.UserID); err == nil {
+		// The lag gauge does not wait for tracing: one point read of the
+		// cursor per pass, which is a whole agent run.
+		lcotel.RecordConsolidationWatermark(lcotel.ConsolidationBackendInProcess, cursor.WatermarkCompletedAt)
 	}
 	return runID, runErr
 }

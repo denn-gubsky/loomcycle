@@ -91,7 +91,10 @@ func RecordModelCall(ctx context.Context, a ModelCallAttrs) (context.Context, tr
 	kvs = genAIString(genai.GenAIProviderNameKey, GenAIProviderName(a.Provider), kvs)
 	kvs = genAIString(genai.GenAIRequestModelKey, a.Model, kvs)
 	if a.NoTrace {
-		return Tracer().Start(ctx, SpanModelCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
+		// The span carries nothing of the request; the call is still counted,
+		// as metrics carry no content either.
+		ctx, span := Tracer().Start(ctx, SpanModelCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
+		return ctx, meteredModelSpan(span, a)
 	}
 	if a.Tier != "" {
 		kvs = append(kvs, attribute.String(AttrTier, a.Tier))
@@ -108,7 +111,16 @@ func RecordModelCall(ctx context.Context, a ModelCallAttrs) (context.Context, tr
 	if a.MaxTokens > 0 {
 		kvs = append(kvs, genai.GenAIRequestMaxTokensKey.Int(a.MaxTokens))
 	}
-	return Tracer().Start(ctx, SpanModelCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
+	ctx, span := Tracer().Start(ctx, SpanModelCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
+	return ctx, meteredModelSpan(span, a)
+}
+
+// meteredModelSpan wraps span with the call's metric, when metrics are on.
+func meteredModelSpan(span trace.Span, a ModelCallAttrs) trace.Span {
+	if st := meters.Load(); st != nil {
+		return &modelSpan{Span: span, st: st, provider: a.Provider, model: metricModel(a.Model), purpose: a.Purpose, start: time.Now()}
+	}
+	return span
 }
 
 // ModelCallResult is how a model call ended.
@@ -144,9 +156,14 @@ type ModelUsage struct {
 }
 
 // SetModelCallResult stamps how the call ended. A cancelled call is an error
-// with the description "cancelled": it did not produce its turn. No-op on a
+// with the description "cancelled": it did not produce its turn. It also
+// records the call's duration and time to first token in the model metrics,
+// on a span that does not record too; the span attributes are a no-op on a
 // nil / non-recording span.
 func SetModelCallResult(span trace.Span, r ModelCallResult) {
+	if ms, ok := span.(*modelSpan); ok {
+		ms.recordResult(r)
+	}
 	if span == nil || !span.IsRecording() {
 		return
 	}

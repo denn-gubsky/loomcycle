@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -555,7 +556,8 @@ func (s *Server) queueAgain(ctx context.Context, rows []store.QueuedRun) (starte
 // compiled again now, for RunOnce to narrow the run by and to ask
 // `run agent:<agent>` against (runCallerACL, admitPrincipalAgent).
 func (s *Server) queuedRunCtx(q store.QueuedRun, agent string) (context.Context, error) {
-	ctx := context.Background()
+	// Started again by the runtime after a restart, not by a caller now.
+	ctx := lcotel.WithRunTrigger(context.Background(), lcotel.TriggerResume)
 	var rec queuedRecord
 	if json.Unmarshal(q.Input, &rec) != nil || rec.ACLOrigin == nil {
 		return ctx, nil

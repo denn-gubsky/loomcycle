@@ -17,6 +17,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -364,6 +366,51 @@ func (t *Tracker) UsedFor(scope, tenantID, scopeID string) int64 {
 		return t.user[userKey(tenantID, scopeID)]
 	}
 	return 0
+}
+
+// TenantBudget is one tenant's month-to-date use against its token budget.
+type TenantBudget struct {
+	TenantID string
+	Used     int64
+	// Limit is the tenant's hard ceiling, else its soft one: the line a run
+	// is refused at when there is one, else the line it is warned at.
+	Limit int64
+}
+
+// TenantBudgets reports every tenant with a tenant-scope ceiling and its
+// month-to-date use, from the in-memory counters and cache only: it is read on
+// every /metrics scrape. Nil-safe; empty for a store-less tracker.
+func (t *Tracker) TenantBudgets() []TenantBudget {
+	if t == nil || t.store == nil {
+		return nil
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	rolled := !MonthStart(t.now()).Equal(t.month)
+	var out []TenantBudget
+	for k, tp := range t.limits {
+		scope, rest, _ := strings.Cut(k, "|")
+		if scope != "tenant" {
+			continue
+		}
+		tenant, _, _ := strings.Cut(rest, "|")
+		var limit int64
+		switch {
+		case tp.hard != nil:
+			limit = *tp.hard
+		case tp.soft != nil:
+			limit = *tp.soft
+		default:
+			continue
+		}
+		used := t.tenant[tenant]
+		if rolled {
+			used = 0 // a new month with no writes yet reads as zero spend
+		}
+		out = append(out, TenantBudget{TenantID: tenant, Used: used, Limit: limit})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TenantID < out[j].TenantID })
+	return out
 }
 
 // AddCarried adds usage a snapshot restore just carried in for (tenant, user)

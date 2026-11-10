@@ -1,6 +1,6 @@
 ---
 name: observability
-description: OpenTelemetry distributed traces — Jaeger / Grafana Tempo / Honeycomb setup, attribute reference, sampling guidance.
+description: OpenTelemetry distributed traces and the /metrics instruments — Jaeger / Grafana Tempo / Honeycomb setup, attribute and metric reference, sampling guidance.
 ---
 Loomcycle v0.10.0 emits OpenTelemetry distributed traces for every
 agent run. Operators see a span tree per run — top-level `loomcycle.run`
@@ -432,11 +432,63 @@ each ships its own README with a five-minute quickstart.
   Datadog APM queries + per-tag-tracking setup + 15-minute
   dashboard-authoring walkthrough.
 
-Plus a `/metrics` Prometheus text-format endpoint on loomcycle
-itself (added v1.x, slice A.0) exposing substrate counters (process
-RSS, heap, goroutines, concurrency state, build_info) — scraped by
-Profile A's Prometheus and reusable by any operator-existing
-Prometheus deployment regardless of which profile they pick.
+Plus loomcycle's own `/metrics` endpoint (see "Metrics" below),
+scraped by Profile A's Prometheus and by any Prometheus you already run.
+The dashboards, alert rules and Alloy configuration shipped with
+loomcycle live in `deploy/observability/` in the repo; Profile A's
+Grafana loads those dashboards too.
+
+## Metrics
+
+`GET /metrics` (Prometheus text format) carries the substrate — process,
+concurrency, provider lanes, model throughput, trace-export counters —
+and in-process instruments counted where the work happens. Because they
+are counted in loomcycle, not derived from exported spans, a run rate or
+an error rate is right at any sampling ratio. A scrape runs no database
+scan; the one query it makes is the per-user quota snapshot in cluster mode,
+as it always has.
+
+- **Runs:** `loomcycle_runs_total{tenant,status,trigger}`,
+  `loomcycle_run_duration_seconds{tenant,status}` (histogram),
+  `loomcycle_runs_active{tenant}`. `status` is the stored one
+  (`completed`, `failed`, `cancelled`, `rejected`); `trigger` is `http`,
+  `grpc`, `mcp`, `schedule`, `webhook`, `a2a`, `subagent` or `resume`.
+- **Tokens and cost:** `loomcycle_tokens_total{tenant,provider,model,type,key}`
+  (`type` input, output, cache_read, cache_write; `key` who paid:
+  operator, tenant or user) and `loomcycle_cost_usd_total{tenant,provider,model}`,
+  counted at the usage-ledger write, so they agree with the usage report.
+- **Providers and models:** `loomcycle_provider_requests_total{provider,model,outcome}`
+  (`outcome` is the attempt span's `error.type`, or `ok`),
+  `loomcycle_provider_request_duration_seconds` (time to headers),
+  `loomcycle_provider_retries_total{provider,reason}`,
+  `loomcycle_provider_fallbacks_total{from,to}`,
+  `loomcycle_model_call_duration_seconds` and `loomcycle_model_ttft_seconds`
+  (both by `provider`, `model` and `purpose`: turn, compaction, recap,
+  summary, emit_state or gateway).
+- **Tools:** `loomcycle_tool_calls_total{tool,outcome}` and
+  `loomcycle_tool_call_duration_seconds{tool}`; an MCP tool is
+  `mcp:<server>`, a client tool `client`, a name the run was not given
+  `unknown`.
+- **Substrate gauges:** `loomcycle_db_pool_open|in_use|idle{db}`,
+  `loomcycle_db_pool_wait_total`, `loomcycle_db_pool_wait_duration_seconds_total`,
+  `loomcycle_memory_consolidation_lag_seconds{backend}` (now minus the latest
+  pass's watermark; it also grows when nothing new arrives, so read it with)
+  `loomcycle_memory_consolidation_pending{backend}`,
+  `loomcycle_token_budget_used_ratio{tenant,period}`.
+
+No series names a run, a user or a session. A `model` label names only
+models configured in loomcycle's config; any other (a gateway caller's, a
+tenant agent's) is `other`. `LOOMCYCLE_METRICS_AGENT_LABEL=1`
+adds the agent name to the runs and tokens series. Each instrument holds at
+most `LOOMCYCLE_METRICS_CARDINALITY_LIMIT` series (2000); past it new label
+sets fold into an `otel_metric_overflow="true"` series. The per-user
+concurrency series names a user by `user_hash`, the same keyed hash spans
+carry, and is left out when no `LOOMCYCLE_SECRET_KEY` is set.
+
+`OTEL_METRICS_EXPORTER=otlp` (off by default; needs an OTLP endpoint) also
+exports the instruments over OTLP, with exemplars pointing at sampled
+traces, plus the GenAI convention histograms `gen_ai.client.token.usage`
+and `gen_ai.client.operation.duration`, which `/metrics` does not carry.
 
 Scraping it needs a token: `substrate:admin`, or better a token minted
 with the single scope `metrics:read`, which reaches `GET /metrics` and
@@ -513,6 +565,11 @@ itself (and their `_TRACES_` forms): `_ENDPOINT`, `_HEADERS`,
 | `LOOMCYCLE_OTEL_RAW_USER_ID` | off | `1` adds the raw `loomcycle.user_id` beside `loomcycle.user_hash`. |
 | `LOOMCYCLE_ENVIRONMENT` | empty | `deployment.environment.name` resource attribute. |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | empty | Web UI "Open trace" link; must contain `{trace_id}`. |
+| `OTEL_METRICS_EXPORTER` | `none` | `otlp` exports the metric instruments over OTLP; needs an endpoint. |
+| `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | the generic protocol | `http/protobuf` or `grpc` for metrics. |
+| `OTEL_METRIC_EXPORT_INTERVAL` / `_TIMEOUT` | 60000 / 30000 ms | How often metrics are exported, and how long one export may take. |
+| `LOOMCYCLE_METRICS_CARDINALITY_LIMIT` | 2000 | Series per instrument before the overflow series. |
+| `LOOMCYCLE_METRICS_AGENT_LABEL` | off | `1` adds the agent name to the runs and tokens series. |
 
 With tracing on, a value loomcycle cannot honour (an endpoint without
 an http(s) scheme, an unknown sampler or protocol, a ratio outside 0–1,

@@ -6612,6 +6612,9 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 	var mu sync.Mutex
 	var usageCallIdx int // RFC AV: per-call ledger row index within this run
 	var hold runHold     // the wait the run-state stream was last told of; guarded by mu
+	// The agent the run's ledger rows are counted under, for the opt-in agent
+	// label of the token metrics: the ledger row names only the agent id.
+	usageCtx := lcotel.WithAgentName(ctx, meta.Agent)
 	// RFC AW: emit a budget `limit` event at most ONCE per (scope, severity)
 	// this run, so neither the soft-at-admission events nor repeated in-flight
 	// crossings spam the transcript. emitLimitLocked persists (a "limit" row)
@@ -6723,7 +6726,7 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 		// usage event itself is persisted+forwarded, below.
 		var crossings []providers.LimitInfo
 		if ev.Type == providers.EventUsage && ev.Usage != nil {
-			crossings = s.recordCallUsage(ctx, runID, rid, sessionID, usageCallIdx, ev.Usage, runCallPurpose(rid))
+			crossings = s.recordCallUsage(usageCtx, runID, rid, sessionID, usageCallIdx, ev.Usage, runCallPurpose(rid))
 			usageCallIdx++
 		}
 		// F32: redact secrets out of the PERSISTED copy only — the tool_call
@@ -6891,11 +6894,31 @@ func (s *Server) appendUsageRow(ctx context.Context, row store.TokenUsageRow) ([
 	err := s.store.RecordCallUsage(ctx, row)
 	if err != nil {
 		slog.Error("store: RecordCallUsage failed", "run_id", row.RunID, "iteration", row.Iteration, "err", err)
+	} else {
+		// The token metrics count what the ledger holds and nothing else, so
+		// a dashboard and a usage report agree; a row the store refused is in
+		// neither.
+		recordUsageMetric(ctx, row)
 	}
 	// RFC AW: increment the month-to-date budget counters + report any tier this
 	// call newly crossed (in-flight crossing). Nil-safe (no-op tracker → nil).
 	total := int64(row.InputTokens + row.OutputTokens + row.CacheCreationTokens + row.CacheReadTokens)
 	return s.limits.Add(row.TenantID, row.UserID, total), err
+}
+
+// recordUsageMetric counts one ledger row in the token and cost metrics.
+func recordUsageMetric(ctx context.Context, row store.TokenUsageRow) {
+	u := lcotel.UsageRecord{
+		Tenant: row.TenantID, Provider: row.Provider, Model: row.Model, Key: row.CredentialSource,
+		Input: int64(row.InputTokens), Output: int64(row.OutputTokens),
+		CacheRead: int64(row.CacheReadTokens), CacheWrite: int64(row.CacheCreationTokens),
+		CostUSD: row.Cost, CostKnown: row.CostCurrency == "USD",
+	}
+	switch row.Purpose {
+	case store.UsagePurposeChat, store.UsagePurposeConsolidation, store.UsagePurposeGateway:
+		u.Chat = true
+	}
+	lcotel.RecordUsage(ctx, u)
 }
 
 // SeedLimits loads the RFC AW token-budget counters + ceilings from the store at
@@ -8073,6 +8096,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		ParentAgentID: parentIdentity.AgentID,
 		Tenant:        parentIdentity.TenantID,
 		SessionID:     subSessionID,
+		Trigger:       lcotel.TriggerSubagent,
 	})
 	s.recordRunTraceID(subRunCtx, subRunID)
 	defer func() {
@@ -10371,6 +10395,8 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 		CacheReadTokens: res.Usage.CacheReadTokens,
 		StopReason:      res.StopReason,
 		Err:             spanErr,
+		// The stored status, so a rejected run is not counted a completion.
+		Status: string(terminalStatusOf(nil, res, runErr)),
 	})
 	if s.store == nil || runID == "" {
 		return
