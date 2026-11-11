@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"hash/fnv"
 	"math"
 	"net/url"
@@ -253,6 +254,11 @@ func (r *TenantRouter) pushMetrics(now time.Time) {
 	var parts map[string]*metricdata.ResourceMetrics
 	if len(targets) > 0 {
 		rm, err := m.collect(context.Background())
+		if errors.Is(err, sdkmetric.ErrReaderShutdown) {
+			// The meter provider stops beside the tracer at shutdown: the
+			// last push has nothing left to read.
+			return
+		}
 		if err != nil {
 			r.cfg.Log.Warn("otel: tenant metric push could not collect the instruments", "err", err)
 			return
