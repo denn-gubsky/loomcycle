@@ -353,6 +353,11 @@ export type {
   // Pause / Resume / State
   PauseResult,
   RetentionOverride,
+  TenantTelemetryPolicy,
+  TenantTelemetryPolicyInput,
+  TenantTelemetryResult,
+  TenantTelemetryStatus,
+  TenantTelemetryTest,
   ResumeResult,
   RuntimeStateResponse,
   RuntimeStateStatus,
