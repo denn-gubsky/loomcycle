@@ -165,6 +165,14 @@ func TestTenantExport(ctx context.Context, tenant string, d TenantDestination, s
 	return nil
 }
 
+// ParseTenantHeaders parses a tenant's header block (key=value pairs, comma
+// separated, values percent-decoded) exactly as the exporter reads
+// OTEL_EXPORTER_OTLP_HEADERS. An error says which entry is wrong, never what
+// it holds.
+func ParseTenantHeaders(v string) (map[string]string, error) {
+	return parseHeaderList("header block", v)
+}
+
 // SpanTelemetryTest is the span a tenant's telemetry test sends.
 const SpanTelemetryTest = "loomcycle.telemetry.test"
 

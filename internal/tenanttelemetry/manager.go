@@ -1,0 +1,418 @@
+package tenanttelemetry
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/coord"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialdef"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
+	"github.com/denn-gubsky/loomcycle/internal/store"
+)
+
+// InvalidateTopic is the backplane channel a policy write is announced on, so
+// every replica re-reads that tenant's row.
+const InvalidateTopic = "loomcycle.tenant_telemetry_changed"
+
+// RefreshInterval is how often each replica re-reads every policy and the
+// header credentials they name. The credential store announces no change, so
+// this is how a rotated, expired or deleted credential reaches a running
+// pipeline, and how a missed invalidation is made up.
+const RefreshInterval = time.Minute
+
+// Store is what the manager reads and writes: the policies, and the
+// credential rows a policy names (their change stamps, never their values).
+type Store interface {
+	store.TenantTelemetryPolicyStore
+	CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (credentialdef.Row, error)
+}
+
+// Credentials resolves a header credential for the URL it will be sent to.
+// *credential.Engine implements it.
+type Credentials interface {
+	ResolveFor(ctx context.Context, tenantID, agentName, userID, name, targetURL string) (credential.Resolved, bool, error)
+}
+
+// Deps are what a Manager is built from.
+type Deps struct {
+	Config Config
+	Store  Store
+	// Credentials may be nil (no secret key configured): a policy then may
+	// name no header credential.
+	Credentials Credentials
+	Router      *lcotel.TenantRouter
+	// Dial reaches a tenant's collector; the operator's address guard lives
+	// in it (netguard.GuardedDialContext).
+	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
+	// RegisterSecret is told every header value resolved, so a log line that
+	// ever quotes one is masked. May be nil.
+	RegisterSecret func(tenant, value string)
+	ServiceVersion string
+	Now            func() time.Time
+	// TLSConfig is the client TLS configuration for https collectors; nil for
+	// the system roots (production). Tests trust their own collector here.
+	TLSConfig *tls.Config
+}
+
+// Manager keeps one replica's tenant pipelines in step with the stored
+// policies, and checks, stores and tests a policy.
+type Manager struct {
+	cfg            Config
+	st             Store
+	creds          Credentials
+	router         *lcotel.TenantRouter
+	dial           func(ctx context.Context, network, addr string) (net.Conn, error)
+	registerSecret func(tenant, value string)
+	version        string
+	now            func() time.Time
+	tlsConfig      *tls.Config
+
+	bpMu sync.Mutex
+	bp   coord.Backplane
+
+	mu      sync.Mutex
+	applied map[string]applied
+}
+
+// applied is what this replica last made of one tenant's policy.
+type applied struct {
+	// stamp identifies the row and its credential row as they were read:
+	// when neither changed, re-reading them changes nothing.
+	stamp string
+	// expiresAt is when the header credential stops resolving (zero: never).
+	expiresAt time.Time
+	// err is why the policy is not being exported, when it is not; reported
+	// in the status, scrubbed of any value.
+	err string
+}
+
+// New builds a Manager. It sets no destination until Refresh (or Reload).
+func New(d Deps) (*Manager, error) {
+	if d.Store == nil || d.Router == nil || d.Dial == nil {
+		return nil, errors.New("tenant telemetry: a store, a router and a dialer are required")
+	}
+	now := d.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &Manager{
+		cfg: d.Config, st: d.Store, creds: d.Credentials, router: d.Router, dial: d.Dial,
+		registerSecret: d.RegisterSecret, version: d.ServiceVersion, now: now, tlsConfig: d.TLSConfig,
+		applied: map[string]applied{},
+	}, nil
+}
+
+// SetBackplane makes policy writes announced to the other replicas.
+func (m *Manager) SetBackplane(bp coord.Backplane) {
+	m.bpMu.Lock()
+	m.bp = bp
+	m.bpMu.Unlock()
+}
+
+// Get returns tenant's stored policy (nil when none).
+func (m *Manager) Get(ctx context.Context, tenant string) (*store.TenantTelemetryPolicyRow, error) {
+	row, err := m.st.TenantTelemetryPolicyGet(ctx, tenant)
+	var nf *store.ErrNotFound
+	if errors.As(err, &nf) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// Status is tenant's export on this replica.
+type Status struct {
+	lcotel.TenantExportStatus
+	// ApplyError is why this replica is not exporting the stored policy (a
+	// header credential that expired or was removed), "" when it is or when
+	// there is no policy.
+	ApplyError string
+}
+
+// Status reports tenant's export on this replica.
+func (m *Manager) Status(tenant string) Status {
+	m.mu.Lock()
+	a := m.applied[tenant]
+	m.mu.Unlock()
+	return Status{TenantExportStatus: m.router.Status(tenant), ApplyError: a.err}
+}
+
+// Put checks in for tenant and stores it, then applies it here and announces
+// it to the other replicas. The header credential is resolved for the
+// endpoint before anything is stored, so a policy that could not export is
+// refused rather than kept.
+func (m *Manager) Put(ctx context.Context, tenant string, in PolicyInput, by string) (store.TenantTelemetryPolicyRow, error) {
+	row, err := m.normalize(tenant, in)
+	if err != nil {
+		return store.TenantTelemetryPolicyRow{}, err
+	}
+	if _, err := m.headersFor(ctx, row); err != nil {
+		return store.TenantTelemetryPolicyRow{}, err
+	}
+	row.UpdatedAt, row.UpdatedBy = m.now().UTC(), by
+	if err := m.st.TenantTelemetryPolicyPut(ctx, row); err != nil {
+		return store.TenantTelemetryPolicyRow{}, err
+	}
+	m.Reload(ctx, tenant)
+	m.publish(ctx, tenant)
+	return row, nil
+}
+
+// Delete removes tenant's policy, stops its export here and announces it.
+func (m *Manager) Delete(ctx context.Context, tenant string) (bool, error) {
+	had, err := m.st.TenantTelemetryPolicyDelete(ctx, tenant)
+	if err != nil {
+		return false, err
+	}
+	m.Reload(ctx, tenant)
+	m.publish(ctx, tenant)
+	return had, nil
+}
+
+// Test sends one synthetic span to tenant's stored destination, through the
+// same credential resolution, address guard and exporter its spans take, and
+// returns nil or why it failed (scrubbed of any header value).
+func (m *Manager) Test(ctx context.Context, tenant string) error {
+	row, err := m.Get(ctx, tenant)
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return invalid("this tenant has no telemetry policy to test")
+	}
+	d, err := m.destination(ctx, *row)
+	if err != nil {
+		return err
+	}
+	return lcotel.TestTenantExport(ctx, tenant, d, m.version, lcotel.DefaultTenantExportTimeout)
+}
+
+// destination resolves row into what the router exports with.
+func (m *Manager) destination(ctx context.Context, row store.TenantTelemetryPolicyRow) (lcotel.TenantDestination, error) {
+	headers, err := m.headersFor(ctx, row)
+	if err != nil {
+		return lcotel.TenantDestination{}, err
+	}
+	if m.registerSecret != nil {
+		for _, v := range headers {
+			m.registerSecret(row.TenantID, v)
+		}
+	}
+	return lcotel.TenantDestination{
+		Endpoint: row.Endpoint, Protocol: lcotel.Protocol(row.Protocol), Headers: headers, Dial: m.dial,
+		TLSConfig: m.tlsConfig,
+	}, nil
+}
+
+// Reload re-reads tenant's policy and makes this replica's pipeline match it:
+// set, replaced, or removed.
+func (m *Manager) Reload(ctx context.Context, tenant string) {
+	row, err := m.Get(ctx, tenant)
+	if err != nil {
+		// Keep what is running: a store that cannot be read is no reason to
+		// stop, and the next refresh tries again.
+		slog.Warn("tenant telemetry: could not read the policy; keeping the current export", "tenant", tenant, "err", err)
+		return
+	}
+	if row == nil {
+		m.remove(tenant)
+		return
+	}
+	m.apply(ctx, *row, true)
+}
+
+// Refresh re-reads every policy, applies those that changed (or whose header
+// credential changed or expired), and removes the pipelines of policies that
+// are gone. It runs at boot and every RefreshInterval.
+func (m *Manager) Refresh(ctx context.Context) error {
+	rows, err := m.st.TenantTelemetryPolicyList(ctx)
+	if err != nil {
+		return fmt.Errorf("tenant telemetry: list policies: %w", err)
+	}
+	seen := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		seen[row.TenantID] = true
+		m.apply(ctx, row, false)
+	}
+	m.mu.Lock()
+	var gone []string
+	for t := range m.applied {
+		if !seen[t] {
+			gone = append(gone, t)
+		}
+	}
+	m.mu.Unlock()
+	for _, t := range append(gone, missing(m.router.Tenants(), seen)...) {
+		m.remove(t)
+	}
+	return nil
+}
+
+func missing(tenants []string, seen map[string]bool) []string {
+	var out []string
+	for _, t := range tenants {
+		if !seen[t] {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (m *Manager) remove(tenant string) {
+	m.router.RemoveDestination(tenant)
+	m.mu.Lock()
+	delete(m.applied, tenant)
+	m.mu.Unlock()
+}
+
+// apply makes the router's destination for row's tenant match row. Unless
+// force, a row and credential unchanged since the last apply are left alone:
+// a refresh decrypts only what changed.
+func (m *Manager) apply(ctx context.Context, row store.TenantTelemetryPolicyRow, force bool) {
+	stamp, expires, err := m.stampOf(ctx, row)
+	if err != nil {
+		slog.Warn("tenant telemetry: could not read the header credential; keeping the current export", "tenant", row.TenantID, "err", err)
+		return
+	}
+	m.mu.Lock()
+	prev, had := m.applied[row.TenantID]
+	m.mu.Unlock()
+	now := m.now()
+	expired := !expires.IsZero() && !now.Before(expires)
+	if !force && had && prev.stamp == stamp && (expires.IsZero() || !expired || prev.err != "") {
+		return
+	}
+	next := applied{stamp: stamp, expiresAt: expires}
+	switch {
+	case !containsString(row.Signals, SignalTraces):
+		m.router.RemoveDestination(row.TenantID)
+	default:
+		d, err := m.destination(ctx, row)
+		if err != nil {
+			m.router.RemoveDestination(row.TenantID)
+			next.err = errorText(err)
+			slog.Warn("tenant telemetry: the policy cannot be exported", "tenant", row.TenantID, "err", next.err)
+			break
+		}
+		m.router.SetDestination(row.TenantID, d)
+	}
+	m.mu.Lock()
+	m.applied[row.TenantID] = next
+	m.mu.Unlock()
+}
+
+// stampOf identifies row, and the credential row it names, as they are now.
+// Only change stamps are read, never a credential's value.
+func (m *Manager) stampOf(ctx context.Context, row store.TenantTelemetryPolicyRow) (string, time.Time, error) {
+	h := sha256.New()
+	b, _ := json.Marshal(row)
+	_, _ = h.Write(b)
+	var expires time.Time
+	if row.HeadersCredential != "" {
+		cr, err := m.st.CredentialDefGet(ctx, row.TenantID, "tenant", "", row.HeadersCredential)
+		var nf *store.ErrNotFound
+		switch {
+		case errors.As(err, &nf):
+			_, _ = h.Write([]byte("missing"))
+		case err != nil:
+			return "", time.Time{}, err
+		default:
+			_, _ = fmt.Fprintf(h, "%d", cr.UpdatedAt.UnixNano())
+			if cr.ExpiresAt != nil {
+				expires = *cr.ExpiresAt
+				_, _ = fmt.Fprintf(h, "/%d", expires.UnixNano())
+			}
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil)), expires, nil
+}
+
+// errorText is err as the status may show it: the policy checks' own words,
+// or a generic line for anything else (a store fault's text is the
+// operator's).
+func errorText(err error) string {
+	if errors.Is(err, ErrInvalid) {
+		return strings.TrimPrefix(err.Error(), ErrInvalid.Error()+": ")
+	}
+	return "the header credential could not be read"
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// publish tells the other replicas tenant's policy changed. Best-effort: a
+// missed message is made up by the next refresh.
+func (m *Manager) publish(ctx context.Context, tenant string) {
+	m.bpMu.Lock()
+	bp := m.bp
+	m.bpMu.Unlock()
+	if bp == nil {
+		return
+	}
+	payload, _ := json.Marshal(map[string]string{"tenant": tenant})
+	if err := bp.Publish(ctx, InvalidateTopic, payload); err != nil {
+		slog.Warn("tenant telemetry: invalidation publish failed", "tenant", tenant, "err", err)
+	}
+}
+
+// Subscribe reloads a tenant's policy when a peer replica reports a write.
+// Returns once subscribed; the listener stops with ctx.
+func (m *Manager) Subscribe(ctx context.Context, bp coord.Backplane) error {
+	ch, err := bp.Subscribe(ctx, InvalidateTopic)
+	if err != nil {
+		return err
+	}
+	safego.Go(ctx, "tenanttelemetry.backplane_listener", func() {
+		for ev := range ch {
+			var msg struct {
+				Tenant string `json:"tenant"`
+			}
+			if json.Unmarshal(ev.Payload, &msg) != nil || msg.Tenant == "" {
+				continue
+			}
+			// Recovered per event: a listener that stopped would leave this
+			// replica exporting to a destination a tenant changed or removed
+			// until the next refresh.
+			safego.Run(ctx, "tenanttelemetry.backplane_listener", func() { m.Reload(ctx, msg.Tenant) })
+		}
+	})
+	return nil
+}
+
+// Run refreshes every RefreshInterval until ctx ends.
+func (m *Manager) Run(ctx context.Context) {
+	t := time.NewTicker(RefreshInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			safego.Run(ctx, "tenanttelemetry.refresh", func() {
+				if err := m.Refresh(ctx); err != nil {
+					slog.Warn("tenant telemetry: refresh failed", "err", err)
+				}
+			})
+		}
+	}
+}
