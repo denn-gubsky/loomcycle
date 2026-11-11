@@ -51,6 +51,7 @@ func (b *boot) startMCPSurfaces() {
 			ServerVersion:      buildVersion,
 			MaxConcurrentCalls: mcpMaxConcurrentCalls,
 			SpawnRunTimeoutMS:  mcpSpawnRunTimeoutMS,
+			TenantTelemetry:    b.tenantTelemetry != nil,
 		})
 		// Run the MCP stdio loop in a goroutine. When stdin closes
 		// (Claude Code disconnects), Serve returns; we log and let
@@ -85,12 +86,13 @@ func (b *boot) startMCPSurfaces() {
 	// the server's Mux(). This /v1/_mcp endpoint is what the RFC R
 	// thin client (`loomcycle mcp --upstream`) proxies to.
 	mcpHTTPHandler := lcmcp.NewHTTPHandler(lcmcp.Config{
-		Connector:     srv, // same *http.Server instance used by stdio MCP
-		Runner:        srv,
-		Store:         storeIface,
-		Logger:        slog.Default(),
-		ServerName:    "loomcycle",
-		ServerVersion: buildVersion,
+		Connector:       srv, // same *http.Server instance used by stdio MCP
+		Runner:          srv,
+		Store:           storeIface,
+		Logger:          slog.Default(),
+		ServerName:      "loomcycle",
+		ServerVersion:   buildVersion,
+		TenantTelemetry: b.tenantTelemetry != nil,
 		// RFC P spawn_run timeout must apply to the HTTP transport too —
 		// the RFC R thin client (`mcp --upstream`) proxies to /v1/_mcp, so
 		// without this the now-recommended topology would have no spawn_run

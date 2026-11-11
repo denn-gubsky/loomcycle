@@ -534,8 +534,28 @@ func TestServer_Handshake(t *testing.T) {
 	}
 }
 
+// With the operator's tenant telemetry gate off, the telemetry tool is not
+// listed: the feature is hidden, and a call would only be refused.
+func TestServer_ToolsList_HidesTelemetryWhileTheGateIsOff(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		srv := New(Config{Connector: &mockConnector{}, Logger: discardLogger(), TenantTelemetry: on})
+		resps, _ := driveServer(t, srv, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`+"\n")
+		var result loommcp.ToolsListResult
+		if err := json.Unmarshal(resps[0].Result, &result); err != nil {
+			t.Fatal(err)
+		}
+		listed := false
+		for _, td := range result.Tools {
+			listed = listed || td.Name == "telemetry"
+		}
+		if listed != on {
+			t.Errorf("gate on=%v: telemetry listed=%v", on, listed)
+		}
+	}
+}
+
 func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
-	srv := New(Config{Connector: &mockConnector{}, Logger: discardLogger()})
+	srv := New(Config{Connector: &mockConnector{}, Logger: discardLogger(), TenantTelemetry: true})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"
 	resps, _ := driveServer(t, srv, in)
 	if len(resps) != 1 {

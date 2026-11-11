@@ -416,3 +416,33 @@ func TestTenantTelemetry_RestoreValidatorAppliesThisHostsRules(t *testing.T) {
 		t.Errorf("a host the operator does not allow: %v", err)
 	}
 }
+
+// With the operator's gate off the feature is hidden, not only refused: the
+// Web UI's nav reads /v1/_me's surfaces, and the telemetry page is not among
+// those a tenant operator may use.
+func TestTenantTelemetry_TheNavSurfaceFollowsTheGate(t *testing.T) {
+	s, ts, st := overrideFixture(t)
+	surface := func() bool {
+		t.Helper()
+		code, body := bearerCall(t, ts, opsBearer, "GET", "/v1/_me", "")
+		if code != 200 {
+			t.Fatalf("/v1/_me: %d %s", code, body)
+		}
+		var me struct {
+			Effective struct {
+				Surfaces map[string]bool `json:"surfaces"`
+			} `json:"effective"`
+		}
+		if err := json.Unmarshal([]byte(body), &me); err != nil {
+			t.Fatal(err)
+		}
+		return me.Effective.Surfaces["telemetry"]
+	}
+	if surface() {
+		t.Error("gate off: the telemetry page is offered")
+	}
+	withTenantTelemetry(t, s, st)
+	if !surface() {
+		t.Error("gate on: the telemetry page is not offered to a tenant operator")
+	}
+}

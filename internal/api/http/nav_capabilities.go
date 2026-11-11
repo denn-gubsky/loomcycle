@@ -169,3 +169,12 @@ func (s *Server) withAudioSurfaces(ctx context.Context, eff whoamiEffective) who
 	eff.Surfaces[surfaceTranscription] = s.transcriptionEnabled() && s.callerMayUse(ctx, audioTranscriptionsPath)
 	return eff
 }
+
+// withGatedSurfaces hides the pages of a feature the operator has not turned
+// on: the route would only answer feature_disabled.
+func (s *Server) withGatedSurfaces(eff whoamiEffective) whoamiEffective {
+	if s.tenantTelemetry == nil {
+		eff.Surfaces["telemetry"] = false
+	}
+	return eff
+}

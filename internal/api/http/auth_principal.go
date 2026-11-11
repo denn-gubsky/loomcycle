@@ -1098,7 +1098,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 			// The rollout mode is the deployment's, not the principal's: an
 			// open-mode console shows it like any other.
 			"acl_mode":  string(s.aclMode()),
-			"effective": s.withAudioSurfaces(r.Context(), openModeEffective()),
+			"effective": s.withGatedSurfaces(s.withAudioSurfaces(r.Context(), openModeEffective())),
 			"auth":      s.whoamiAuth(r.Context(), true),
 		}
 		s.addTraceURLTemplate(out)
@@ -1131,7 +1131,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	}
 	// RFC EZ §4: which Web UI pages the principal may reach, asked of the
 	// gates a request to each page's primary route would face.
-	out["effective"] = s.withAudioSurfaces(r.Context(), navEffective(r.Context(), p))
+	out["effective"] = s.withGatedSurfaces(s.withAudioSurfaces(r.Context(), navEffective(r.Context(), p)))
 	// RFC FA: how the caller signed in — the mode always, the gate, methods
 	// and session times when a Web UI session authenticated the request.
 	out["auth"] = s.whoamiAuth(r.Context(), false)

@@ -3793,7 +3793,7 @@ curl -X POST "$LOOMCYCLE/v1/_credentialdef" -H "Authorization: Bearer $TOKEN" \
 # 2. The policy.
 curl -X PUT "$LOOMCYCLE/v1/_telemetry" -H "Authorization: Bearer $TOKEN" \
   -d '{"endpoint":"https://otlp.example.net/otlp","headers_credential":"otel-headers"}'
-# 3. One test span, answered at once: {"test":{"ok":true,...}} or the collector's error.
+# 3. One test span, answered at once: {"test":{"ok":true,...}} or a category of failure.
 curl -X POST "$LOOMCYCLE/v1/_telemetry:test" -H "Authorization: Bearer $TOKEN"
 # What is set, and this replica's status (exported, dropped, the last error).
 curl "$LOOMCYCLE/v1/_telemetry" -H "Authorization: Bearer $TOKEN"
@@ -3811,6 +3811,22 @@ recorded with the policy but does not yet thin what is sent: a tenant receives
 the spans the deployment's own sampler keeps. A set is written to the audit log
 (`tenant_telemetry_set`) before it takes effect and is refused when the record
 cannot be written; a delete is recorded as `tenant_telemetry_delete`.
+
+A failed export, in the test's answer and in the status's `last_error`
+alike, is reported as a category only — `blocked` (the address guard refused
+every address), `dns`, `connect`, `timeout`, `tls`, `redirect` (never
+followed), `http_<status>`, `grpc_<code>`, `rejected` (the collector took the
+request and refused the span), `busy` (every export slot was held) or
+`export_failed` — never the addresses, the network error's text or the
+collector's answer; the operator's log keeps the error itself, scrubbed of
+header values. A tenant may run one test every 10 seconds on each replica (a
+second is refused, `429 rate_limited`), and a test takes one of the 16 export
+slots every tenant shares.
+
+With `LOOMCYCLE_TENANT_TELEMETRY_ALLOW_HTTP` an `http://` endpoint is accepted,
+but it can carry no header credential: a credential's `allowed_urls` are
+https-only, so none can be bound to it. With the gate off, the Web UI hides the
+Telemetry page and the MCP server does not list the `telemetry` tool.
 
 A stored policy is held to the operator's rules every time it is used, not
 only when it was set: after the operator removes a host from
