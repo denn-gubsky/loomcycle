@@ -50,6 +50,12 @@ func WritePrometheus(ctx context.Context, w io.Writer, opts PromOptions) error {
 	return err
 }
 
+// rendersScope reports whether a view of the instruments (a /metrics scrape, a
+// tenant's metric push) shows the instrumentation scope named. The GenAI
+// convention histograms (their own scope) go out over the operator's OTLP
+// export only; they repeat loomcycle_* series under other names.
+func rendersScope(name string) bool { return name == MeterName }
+
 type promFamily struct {
 	name, help, typ string
 	series          []promSeries
@@ -64,9 +70,7 @@ type promSeries struct {
 func renderPrometheus(rm *metricdata.ResourceMetrics, opts PromOptions) string {
 	var fams []promFamily
 	for _, sm := range rm.ScopeMetrics {
-		// The GenAI convention histograms (their own scope) go out over OTLP
-		// only; they repeat loomcycle_* series under other names.
-		if sm.Scope.Name != MeterName {
+		if !rendersScope(sm.Scope.Name) {
 			continue
 		}
 		for _, m := range sm.Metrics {
