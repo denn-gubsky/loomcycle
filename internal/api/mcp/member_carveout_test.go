@@ -19,6 +19,7 @@ var mcpHTTPTwin = map[string]struct{ method, path, noTwin string }{
 	"identity":               {method: http.MethodGet, path: "/v1/_users"},
 	"erasure":                {method: http.MethodPost, path: "/v1/_erasure"},
 	"retention_override":     {method: http.MethodPut, path: "/v1/_retention/overrides"},
+	"telemetry":              {method: http.MethodPut, path: "/v1/_telemetry"},
 	"ontology":               {method: http.MethodPost, path: "/v1/_ontology/subjects/merge"},
 	"review":                 {method: http.MethodPost, path: "/v1/_statements/rule"},
 	"spawn_run":              {method: http.MethodPost, path: "/v1/runs"},

@@ -545,8 +545,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 68 {
-		t.Errorf("got %d tools, want 68 (+review; +ontology; +clientdef; +file; +groupdef, +acldef, +aclbinding, +authz; +crypto, +retention_override, +delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the identity (was directory)/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
+	if len(result.Tools) != 69 {
+		t.Errorf("got %d tools, want 69 (+telemetry; +review; +ontology; +clientdef; +file; +groupdef, +acldef, +aclbinding, +authz; +crypto, +retention_override, +delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the identity (was directory)/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -1909,6 +1909,40 @@ func (m *mockConnector) TenantTelemetry(_ context.Context, req connector.TenantT
 func (m *mockConnector) RetentionOverride(_ context.Context, req connector.RetentionOverrideRequest) (connector.RetentionOverrideResult, error) {
 	m.retentionReq = req
 	return m.retentionRes, m.retentionErr
+}
+
+// telemetry hands its arguments to the connector as they are: the rules, the
+// tenant and the audit all live there. get is the default op, and only set
+// carries a policy.
+func TestTelemetryTool_HandsItsArgumentsToTheConnector(t *testing.T) {
+	mc := &mockConnector{telemetryRes: connector.TenantTelemetryResult{Tenant: "acme"}}
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
+	call := func(args string) *loommcp.CallToolResult {
+		t.Helper()
+		in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"telemetry","arguments":` + args + `}}` + "\n"
+		resps, _ := driveServer(t, srv, in)
+		var res loommcp.CallToolResult
+		if err := json.Unmarshal(resps[0].Result, &res); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return &res
+	}
+	if res := call(`{}`); res.IsError || mc.telemetryReq.Op != "get" || mc.telemetryReq.Policy != nil {
+		t.Errorf("default op: is_error=%v, connector got %+v", res.IsError, mc.telemetryReq)
+	}
+	call(`{"op":"set","tenant":"globex","endpoint":"https://otel.example","protocol":"grpc","headers_credential":"otel","signals":["traces"],"sampler_ratio":0,"content_capture":"off"}`)
+	got := mc.telemetryReq
+	if got.Op != "set" || got.Tenant != "globex" || got.Policy == nil || got.Policy.Endpoint != "https://otel.example" || got.Policy.Protocol != "grpc" ||
+		got.Policy.HeadersCredential != "otel" || got.Policy.SamplerRatio == nil || *got.Policy.SamplerRatio != 0 || got.Policy.ContentCapture != "off" {
+		t.Errorf("set: connector got %+v (policy %+v)", got, got.Policy)
+	}
+	if call(`{"op":"test"}`); mc.telemetryReq.Op != "test" || mc.telemetryReq.Policy != nil {
+		t.Errorf("test: connector got %+v", mc.telemetryReq)
+	}
+	mc.telemetryErr = connector.WithMessage(connector.ErrTenantTelemetryDisabled, "tenant telemetry export is not enabled on this deployment")
+	if res := call(`{"op":"get"}`); !res.IsError {
+		t.Error("a connector refusal came back as a result")
+	}
 }
 
 // retention_override hands its arguments to the connector as they are: the

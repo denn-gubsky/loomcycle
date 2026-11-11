@@ -331,6 +331,11 @@ func baseToolDescriptors() []loommcp.ToolDescriptor {
 			InputSchema: rawJSON(reviewToolSchema),
 		},
 		{
+			Name:        "telemetry",
+			Description: telemetryToolDescription,
+			InputSchema: rawJSON(telemetryToolSchema),
+		},
+		{
 			Name: "retention_override",
 			Description: "Store the runs of ONE no-trace agent for a limited time, so it can be debugged. " +
 				"An agent whose retention is \"none\" stores nothing it says, so there is no transcript to read when it misbehaves. " +
