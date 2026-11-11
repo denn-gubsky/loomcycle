@@ -99,6 +99,9 @@ type applied struct {
 	// err is why the policy is not being exported, when it is not; reported
 	// in the status, scrubbed of any value.
 	err string
+	// transient: err is a fault (a store or decryption failure), not a
+	// refusal, so the next refresh tries again though nothing changed.
+	transient bool
 }
 
 // New builds a Manager. It sets no destination until Refresh (or Reload).
@@ -356,7 +359,7 @@ func (m *Manager) apply(ctx context.Context, row store.TenantTelemetryPolicyRow,
 	m.mu.Unlock()
 	now := m.now()
 	expired := !expires.IsZero() && !now.Before(expires)
-	if !force && had && prev.stamp == stamp && (expires.IsZero() || !expired || prev.err != "") {
+	if !force && had && !prev.transient && prev.stamp == stamp && (expires.IsZero() || !expired || prev.err != "") {
 		return
 	}
 	next := applied{stamp: stamp, expiresAt: expires}
@@ -377,6 +380,7 @@ func (m *Manager) apply(ctx context.Context, row store.TenantTelemetryPolicyRow,
 		if err != nil {
 			m.router.RemoveDestination(row.TenantID)
 			next.err = publicError(row.TenantID, err, genericApplyError)
+			next.transient = !errors.Is(err, ErrInvalid)
 			slog.Warn("tenant telemetry: the policy cannot be exported", "tenant", row.TenantID, "err", next.err)
 			break
 		}

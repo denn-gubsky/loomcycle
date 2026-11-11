@@ -671,3 +671,45 @@ func TestManagerRefresh_ARowReadBeforeADeleteIsNotAppliedAfterIt(t *testing.T) {
 		t.Errorf("a refresh re-applied a policy deleted while it ran: destinations %v", got)
 	}
 }
+
+// flakyCredentials fails its first resolution with a fault (not a refusal),
+// then resolves.
+type flakyCredentials struct {
+	inner Credentials
+	fails int
+}
+
+func (c *flakyCredentials) ResolveFor(ctx context.Context, tenant, agent, user, name, target string) (credential.Resolved, bool, error) {
+	if c.fails > 0 {
+		c.fails--
+		return credential.Resolved{}, false, errors.New("store: connection reset")
+	}
+	return c.inner.ResolveFor(ctx, tenant, agent, user, name, target)
+}
+
+// A transient fault while applying a policy is retried at the next refresh;
+// nothing about the row changed, but the export must not stay off for good.
+func TestManagerRefresh_RetriesAPolicyATransientFaultLeftOff(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{}, c)
+	ctx := context.Background()
+	f.cred(t, "acme", "tenant", "", "otel", "authorization=Bearer abcdefgh", []string{c.srv.URL}, nil)
+	if err := f.st.TenantTelemetryPolicyPut(ctx, store.TenantTelemetryPolicyRow{
+		TenantID: "acme", Endpoint: c.srv.URL, Protocol: "http/protobuf", HeadersCredential: "otel", Signals: []string{"traces"}, SamplerRatio: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.m.creds = &flakyCredentials{inner: f.engine, fails: 1}
+	if err := f.m.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.router.Tenants(); len(got) != 0 {
+		t.Fatalf("exporting despite the fault: %v", got)
+	}
+	if err := f.m.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.router.Tenants(); len(got) != 1 {
+		t.Errorf("the next refresh left the export off after a transient fault: %v (status %+v)", got, f.m.Status("acme"))
+	}
+}
