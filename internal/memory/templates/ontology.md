@@ -148,7 +148,12 @@ Confirming gives every concept a tag such as `topics/risk-management/outsourcing
 a document anywhere is classified under a concept by carrying its tag, and a
 search for `topics/risk-management` also finds everything narrower. `@render`
 lists a scheme to the agents. A file plan's `@retention` and `@acl` are recorded
-and shown on the Ontology page but not enforced yet.
+and shown on the Ontology page but not enforced yet. A concept without its own
+`@retention` takes its nearest broader concept's, and its groups are every `@acl`
+above it plus its own. A document under several concepts keeps the longest
+retention and needs every group. `Document op=effective_policy` shows what that
+comes to for one document; a group the tenant does not have is ignored and
+reported.
 
 **Instances.** A `@section instances` heading lists the real organisations, units
 and posts the agents should know by name. Each heading under it is one thing; `@a`

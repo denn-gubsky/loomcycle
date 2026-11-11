@@ -119,9 +119,24 @@ func TestDescribeOntology_MatchesTheGates(t *testing.T) {
 	}
 
 	// Schemes: exactly those in force.
-	if schemes := d.EffectiveSchemesFor(ctx); len(schemes) == 0 || !reflect.DeepEqual(desc.Schemes, schemes) {
-		t.Errorf("schemes = %#v, in force %#v", desc.Schemes, schemes)
+	if schemes := d.EffectiveSchemesFor(ctx); len(schemes) == 0 || !reflect.DeepEqual(declaredSchemes(desc), schemes) {
+		t.Errorf("schemes = %#v, in force %#v", declaredSchemes(desc), schemes)
 	}
+}
+
+// declaredSchemes is the described schemes as declared, without each concept's
+// effective policy: what the reader parsed.
+func declaredSchemes(desc ontologyDescription) []memrank.OntologyScheme {
+	out := []memrank.OntologyScheme{}
+	for _, ds := range desc.Schemes {
+		s := ds.OntologyScheme
+		s.Concepts = nil
+		for _, c := range ds.Concepts {
+			s.Concepts = append(s.Concepts, c.OntologyConcept)
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
 // TestDescribeOntology_ADraftDescribesOnlyTheSeed: a draft governs nothing, so neither
