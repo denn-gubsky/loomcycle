@@ -4395,23 +4395,23 @@ func (s *Server) Mux() http.Handler {
 	// The header gates' filter runs before every route (RFC FA P3): it
 	// strips smuggled aliases of a gate's identity header before any
 	// handler can read one.
-	mux := s.routes()
-	s.tenantTelemetryRoutes(mux)
-	return s.securityHeaders(s.edgeHeaderFilter(mux))
+	return s.securityHeaders(s.edgeHeaderFilter(s.routes()))
 }
 
 // routes is the route table Mux serves.
 // tenantTelemetryRoutes registers a tenant's own trace export
 // (tenant_telemetry.go): an admin for any tenant, a tenant operator for its
 // own, never a member; 404 feature_disabled unless the operator turned it on.
-// Here, beside routes, so the route censuses that read this file see them.
+// Here, beside routes (whose last act is to call it), so the route censuses
+// that read this file see them.
 // The test route asks manage: it sends a span with the tenant's header
 // credential, a use of the policy as a write is.
-func (s *Server) tenantTelemetryRoutes(mux *http.ServeMux) {
+func (s *Server) tenantTelemetryRoutes(mux *http.ServeMux) *http.ServeMux {
 	mux.Handle("GET /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryGet))))
 	mux.Handle("PUT /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryPut))))
 	mux.Handle("DELETE /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryDelete))))
 	mux.Handle("POST /v1/_telemetry:test", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryTest))))
+	return mux
 }
 
 func (s *Server) routes() *http.ServeMux {
@@ -5120,7 +5120,7 @@ func (s *Server) routes() *http.ServeMux {
 			return recoveryMiddleware(s.authMiddleware(next))
 		})
 	}
-	return mux
+	return s.tenantTelemetryRoutes(mux)
 }
 
 // MuxRegistrar is the minimal mux surface the webhook receiver's Mount
