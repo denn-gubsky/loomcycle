@@ -40,6 +40,8 @@ func TestRunConfigCensus_EveryLoopRunningPathPersistsIt(t *testing.T) {
 		hasField bool
 	}
 	var runStarters []site
+	identities := map[string][]*ast.CompositeLit{}
+	buildsRunOptions := map[string]bool{}
 
 	for _, pkg := range pkgs {
 		for _, file := range pkg.Files {
@@ -48,8 +50,7 @@ func TestRunConfigCensus_EveryLoopRunningPathPersistsIt(t *testing.T) {
 				if !ok || fn.Body == nil {
 					return true
 				}
-				var identities []*ast.CompositeLit
-				buildsRunOptions := false
+				fnName := censusFuncName(fn)
 				ast.Inspect(fn.Body, func(m ast.Node) bool {
 					lit, ok := m.(*ast.CompositeLit)
 					if !ok {
@@ -57,23 +58,25 @@ func TestRunConfigCensus_EveryLoopRunningPathPersistsIt(t *testing.T) {
 					}
 					switch selectorName(lit.Type) {
 					case "store.RunIdentity":
-						identities = append(identities, lit)
+						identities[fnName] = append(identities[fnName], lit)
 					case "loop.RunOptions":
-						buildsRunOptions = true
+						buildsRunOptions[fnName] = true
 					}
 					return true
 				})
-				if !buildsRunOptions {
-					return true
-				}
-				for _, lit := range identities {
-					runStarters = append(runStarters, site{
-						fn:       fn.Name.Name,
-						pos:      fset.Position(lit.Pos()).String(),
-						hasField: hasKey(lit, "RunConfig"),
-					})
-				}
 				return true
+			})
+		}
+	}
+	for fnName, lits := range identities {
+		if !buildsRunOptions[fnName] {
+			continue
+		}
+		for _, lit := range lits {
+			runStarters = append(runStarters, site{
+				fn:       fnName,
+				pos:      fset.Position(lit.Pos()).String(),
+				hasField: hasKey(lit, "RunConfig"),
 			})
 		}
 	}

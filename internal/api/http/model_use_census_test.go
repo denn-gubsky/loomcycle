@@ -74,7 +74,7 @@ func TestModelUse_EveryResolutionIsClassified(t *testing.T) {
 					return true
 				}
 				if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "withReportOnlyResolution" {
-					marksReport[fn.Name.Name] = true
+					marksReport[censusFuncName(fn)] = true
 				}
 				sel, ok := call.Fun.(*ast.SelectorExpr)
 				if !ok {
@@ -82,7 +82,7 @@ func TestModelUse_EveryResolutionIsClassified(t *testing.T) {
 				}
 				switch sel.Sel.Name {
 				case "resolveAgentDef", "resolveAgent", "resolveInference":
-					asking[fn.Name.Name] = true
+					asking[censusFuncName(fn)] = true
 				case "Resolve", "Cascade":
 					// s.resolver.Resolve / .Cascade only (not the search resolver).
 					inner, ok := sel.X.(*ast.SelectorExpr)
@@ -90,12 +90,12 @@ func TestModelUse_EveryResolutionIsClassified(t *testing.T) {
 						return true
 					}
 					if sel.Sel.Name == "Resolve" {
-						directResolve[fn.Name.Name] = true
+						directResolve[censusFuncName(fn)] = true
 					}
 				default:
 					return true
 				}
-				found[fn.Name.Name] = true
+				found[censusFuncName(fn)] = true
 				return true
 			})
 		}
