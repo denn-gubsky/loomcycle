@@ -348,26 +348,75 @@ func (s *Server) heartbeatStaleAfter() time.Duration {
 	return heartbeat.DefaultStaleAfter
 }
 
+// sessionLiveFunc reports whether a run of the session other than except is
+// live (sessionHasLiveRun, sessionLiveForResume).
+type sessionLiveFunc func(ctx context.Context, sessionID, except string) (bool, error)
+
 // retakeSession takes back a session's cluster lock, let go while its run
-// waited for a slot, and with checkLive (a session held across replicas)
-// checks no other run of the session went live meanwhile: another replica may
-// have started one and parked it. except is the waiting run's own row.
-func (s *Server) retakeSession(ctx context.Context, hold *sessionHold, sessionID string, checkLive bool, except string) error {
+// waited for a slot, and with live (a session held across replicas) checks no
+// other run of the session went live meanwhile: another replica may have
+// started one and parked it. except is the waiting run's own row; nil live
+// checks nothing.
+func (s *Server) retakeSession(ctx context.Context, hold *sessionHold, sessionID string, live sessionLiveFunc, except string) error {
 	busy := fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, sessionID)
 	if !hold.reacquire() {
 		return busy
 	}
-	if !checkLive {
+	if live == nil {
 		return nil
 	}
-	live, err := s.sessionHasLiveRun(ctx, sessionID, except)
+	isLive, err := live(ctx, sessionID, except)
 	if err != nil {
+		hold.releaseCluster()
 		return fmt.Errorf("%w: %v", runner.ErrInternal, err)
 	}
-	if live {
+	if isLive {
+		hold.releaseCluster()
 		return busy
 	}
 	return nil
+}
+
+// sessionLiveForResume is sessionHasLiveRun for a paused run being resumed. A
+// sibling that is itself paused (or pausing) is not a live turn but another
+// row waiting to be resumed, which takes the session through the same lock
+// and this same check: counted live, as sessionHasLiveRun counts it for a
+// continuation, two paused rows of one session refuse each other on every
+// pass, forever. Every other run is judged by sessionHasLiveRun's rule, so a
+// resumed sibling — which beats a heartbeat for as long as it has let the
+// cluster lock go — still refuses it, and one session never runs two turns.
+func (s *Server) sessionLiveForResume(ctx context.Context, sessionID, except string) (bool, error) {
+	if s.sessionLockPG == nil {
+		return false, nil
+	}
+	runs, err := s.store.RunsForSession(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	cutoff := time.Now().Add(-s.heartbeatStaleAfter())
+	for _, r := range runs {
+		if r.ID == except {
+			continue
+		}
+		switch {
+		case r.Status == store.RunQueued:
+			if !r.StartedAt.Before(cutoff) {
+				return true, nil
+			}
+		case r.Status == store.RunRunning:
+			if r.PauseState == store.PauseStatePaused || r.PauseState == store.PauseStatePausing {
+				continue
+			}
+			beat := r.LastHeartbeatAt
+			if beat.IsZero() {
+				beat = r.StartedAt
+			}
+			if !beat.Before(cutoff) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // releaseSessionWhileParked wires p into the loop's hooks.
@@ -535,19 +584,24 @@ const cancelledRunGrace = 5 * time.Second
 // cancelledRunGrace; any other busy session is refused at once. except is a run of the session not to count (a restarted queued
 // run's own).
 func (s *Server) takeSession(ctx context.Context, sessionID string, acrossReplicas bool, except string) (*sessionHold, error) {
+	return s.takeSessionWith(ctx, sessionID, acrossReplicas, except, s.sessionHasLiveRun)
+}
+
+// takeSessionWith is takeSession judging the session's other runs with live.
+func (s *Server) takeSessionWith(ctx context.Context, sessionID string, acrossReplicas bool, except string, live sessionLiveFunc) (*sessionHold, error) {
 	busy := fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, sessionID)
 	deadline := time.Now().Add(cancelledRunGrace)
 	for {
 		if hold, ok := s.holdSession(sessionID, acrossReplicas); ok {
-			live := false
+			isLive := false
 			if acrossReplicas {
 				var err error
-				if live, err = s.sessionHasLiveRun(ctx, sessionID, except); err != nil {
+				if isLive, err = live(ctx, sessionID, except); err != nil {
 					hold.release()
 					return nil, fmt.Errorf("%w: %v", runner.ErrInternal, err)
 				}
 			}
-			if !live {
+			if !isLive {
 				return hold, nil
 			}
 			hold.release()

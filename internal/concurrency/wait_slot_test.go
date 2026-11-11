@@ -17,9 +17,9 @@ func TestSemaphore_WaitBindsTheRunSlotSoTheRunCanLendIt(t *testing.T) {
 			var release func()
 			var err error
 			if name == "Wait" {
-				release, _, err = s.Wait(context.Background(), rs)
+				release, _, err = s.Wait(context.Background(), rs, nil)
 			} else {
-				release, _, _, err = s.WaitForUser(context.Background(), "", "alice", rs)
+				release, _, _, err = s.WaitForUser(context.Background(), "", "alice", rs, nil)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -41,13 +41,13 @@ func TestSemaphore_WaitBindsTheRunSlotSoTheRunCanLendIt(t *testing.T) {
 // waited says whether the caller found no free slot and queued for one.
 func TestSemaphore_WaitReportsWhetherItQueued(t *testing.T) {
 	s := New(1, 4, time.Second)
-	first, waited, err := s.Wait(context.Background(), nil)
+	first, waited, err := s.Wait(context.Background(), nil, nil)
 	if err != nil || waited {
 		t.Fatalf("Wait on a free slot: waited=%v err=%v, want false, nil", waited, err)
 	}
 	done := make(chan bool, 1)
 	go func() {
-		release, _, waited, err := s.WaitForUser(context.Background(), "", "alice", nil)
+		release, _, waited, err := s.WaitForUser(context.Background(), "", "alice", nil, nil)
 		if err == nil {
 			release()
 		}
@@ -58,4 +58,31 @@ func TestSemaphore_WaitReportsWhetherItQueued(t *testing.T) {
 	if !<-done {
 		t.Error("WaitForUser behind a held slot reported it did not wait")
 	}
+}
+
+// onQueue runs only when the caller is about to block for a slot: a free slot
+// never calls it, so a caller that lets something go there does not let it go
+// for nothing.
+func TestSemaphore_WaitCallsOnQueueOnlyWhenItBlocks(t *testing.T) {
+	s := New(1, 4, time.Second)
+	calls := 0
+	first, _, err := s.Wait(context.Background(), nil, func() { calls++ })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("onQueue ran %d time(s) for a free slot, want 0", calls)
+	}
+	queued := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		release, _, _, err := s.WaitForUser(context.Background(), "", "alice", nil, func() { close(queued) })
+		if err == nil {
+			release()
+		}
+	}()
+	<-queued
+	first()
+	<-done
 }

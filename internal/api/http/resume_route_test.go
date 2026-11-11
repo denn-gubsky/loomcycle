@@ -1,6 +1,8 @@
 package http
 
 import (
+	"context"
+	"sync"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -41,4 +43,33 @@ func TestResume_QueueAwareRunThatWaitedIsResolvedAgainWhenItStarts(t *testing.T)
 	f.fillBusy(t)
 	free()
 	f.assertResolvedAfterTheWait(t, run.ID)
+}
+
+// The re-pick after a slot wait is recorded on the row before the run calls
+// its new model, as RunOnce's start rewrites a queued row's model: a run
+// paused again resumes on the model the row names. (A finished row names the
+// model the provider reported, so the row is read during the call.)
+func TestResume_RepickAfterTheWaitIsRecordedOnTheRow(t *testing.T) {
+	f := newQueueRouteFixture(t, true)
+	free := f.queueBehindHeldSlot(t)
+	run := pausedRunRow(t, f.s, "worker", "a_queue_row_resume", false, oneUserSeg("go"))
+	var mu sync.Mutex
+	var rowModel string
+	f.other.onCall = func() {
+		if r, err := f.s.store.GetRun(context.Background(), run.ID); err == nil {
+			mu.Lock()
+			rowModel = r.Model
+			mu.Unlock()
+		}
+	}
+	resumeOne(t, f.s)
+	waitFor(t, "the resumed run to wait for a slot", func() bool { return f.s.sem.Stats().Queued == 1 })
+	f.fillBusy(t)
+	free()
+	f.assertResolvedAfterTheWait(t, run.ID)
+	mu.Lock()
+	defer mu.Unlock()
+	if rowModel != "m2" {
+		t.Errorf("the row's model during the re-picked call = %q, want m2", rowModel)
+	}
 }

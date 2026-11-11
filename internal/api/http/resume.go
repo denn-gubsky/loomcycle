@@ -25,6 +25,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -774,13 +775,18 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// A top-level run takes its session as a continuation does (takeSession):
 	// no other turn on the session while it runs, and a continuation that
 	// finds it busy is answered as for any live run. Busy, the resume is not
-	// settled — the row goes back to paused for a later pass, as a continuation
-	// would be refused and try again. A sub-run takes none, as live.
+	// settled — the row goes back to paused and is tried again in this process
+	// (retryBusyResume), as a continuation would be refused and try again. A
+	// paused sibling does not count as busy (sessionLiveForResume). A sub-run
+	// takes none, as live.
 	s.runPhase("resume.session")
 	var hold *sessionHold
 	if run.ParentRunID == "" {
-		h, herr := s.takeSession(ctx, run.SessionID, true, run.ID)
+		h, herr := s.takeSessionWith(ctx, run.SessionID, true, run.ID, s.sessionLiveForResume)
 		if herr != nil {
+			if errors.Is(herr, runner.ErrSessionBusy) {
+				s.retryBusyResume(run.ID) // nothing else would try it again on one replica
+			}
 			return herr
 		}
 		hold = h
@@ -1199,11 +1205,17 @@ func (s *Server) runResumed(l resumedLaunch) {
 	// recoveryMiddleware wraps this detached goroutine) nor leak the run in
 	// the cancel / steer / pause-barrier registries (a leaked pause entry
 	// never parks, so every future Pause times out on a ghost).
+	// While it waits — for a parked fan-out's children, for a run slot — a
+	// top-level run lets its session's cluster lock go, as a queued
+	// continuation does, and beats meanwhile so other replicas still count it
+	// live (sessionAway).
+	away := &sessionAway{s: s, hold: l.hold, runID: run.ID}
 	defer func() {
 		if rec := recover(); rec != nil {
 			slog.Error("resumed run panicked", "run_id", run.ID, "panic", rec)
 			s.finishRunFailedReason(run.ID, fmt.Sprintf("panic: %v", rec), meta)
 		}
+		away.stopBeating()
 		l.teardown()
 	}()
 	// RFC X Phase 3: reconcile a parked fan-out parent BEFORE acquiring a run
@@ -1216,6 +1228,10 @@ func (s *Server) runResumed(l resumedLaunch) {
 	// finishes during the reconcile goes through the parent's
 	// subagent_stop hooks there.
 	if l.fanout != nil {
+		// Its children may take long: the cluster lock is not held through
+		// them. The local lock is, so no request on this replica takes the
+		// session meanwhile; on another, the row's heartbeat refuses it.
+		away.leave()
 		toolResult, rerr := s.reconcileFanoutParent(l.loopCtx, run, l.runEvents, *l.fanout, emit)
 		if rerr != nil {
 			s.finishRunFailedReason(run.ID, "resume: reconcile fan-out parent: "+rerr.Error(), meta)
@@ -1247,32 +1263,35 @@ func (s *Server) runResumed(l resumedLaunch) {
 	// continuation's is (a queue of them would each pin a pool connection),
 	// and taken back once it has its slot.
 	s.runPhase("resume.slot")
-	l.hold.releaseCluster()
 	var release func()
 	var aerr error
 	sharedCount, waited := false, false
 	if run.ParentRunID == "" {
-		release, sharedCount, waited, aerr = s.sem.WaitForUser(runCtx, run.TenantID, run.UserID, l.slot)
+		release, sharedCount, waited, aerr = s.sem.WaitForUser(runCtx, run.TenantID, run.UserID, l.slot, away.leave)
 	} else {
-		release, waited, aerr = s.sem.Wait(runCtx, l.slot)
+		release, waited, aerr = s.sem.Wait(runCtx, l.slot, away.leave)
 	}
 	if aerr != nil {
 		s.finishRunFailedReason(run.ID, "resume: acquire run slot: "+aerr.Error(), meta)
 		return
 	}
 	defer release()
+	// Its session back before anything records the run as holding a slot:
+	// still busy, the run goes back to paused, its slot is given back by the
+	// release above, and a later pass resumes it — as a continuation that
+	// finds the session busy is refused and tries again.
+	if err := away.back(runCtx, run.SessionID); err != nil {
+		slog.Warn("resume: the session is busy after the run waited; it goes back to paused", "run_id", run.ID, "err", err)
+		s.unclaimPausedRun(run.ID)
+		s.retryBusyResume(run.ID)
+		return
+	}
 	if sharedCount {
 		// The row says the run holds a slot again, so a resume after this
 		// process stops gives this one back (RFC ES C4). Unwritten, the
 		// slot leaks rather than a later resume taking back another's.
 		if err := s.store.MarkRunUserSlot(context.WithoutCancel(runCtx), run.ID); err != nil {
 			slog.Warn("resume: record the run's per-user slot failed", "run_id", run.ID, "err", err)
-		}
-	}
-	if l.hold != nil {
-		if err := s.retakeSession(runCtx, l.hold, run.SessionID, true, run.ID); err != nil {
-			s.finishRunFailedReason(run.ID, "resume: "+err.Error(), meta)
-			return
 		}
 	}
 	if waited {
@@ -1323,6 +1342,123 @@ func (s *Server) repickAfterWait(opts *loop.RunOptions, r resumedRoute, run stor
 	}
 	opts.Provider, opts.Model, opts.Effort = p, m, e
 	opts.MarkStalled, opts.ClearStall = s.markStalledFn(pid, m), s.clearStallFn(pid, m)
+	// The row names the model the run runs on, as RunOnce's start rewrites a
+	// queued row's: a later resume restores the model the row names.
+	if err := s.store.SetRunModel(context.Background(), run.ID, pid, m); err != nil {
+		slog.Warn("resume: the run moved to another model but its row still names the old one", "run_id", run.ID, "model", m, "err", err)
+	}
+}
+
+// sessionAway lets a resumed run's cluster session lock go while the run
+// waits, and takes it back after. While it is let go the run's row beats a
+// heartbeat: a row that waits without one goes stale, and the next request
+// on the session from another replica would then find no live run and take
+// a second turn. A nil hold (a sub-run, which holds no session) does nothing.
+type sessionAway struct {
+	s     *Server
+	hold  *sessionHold
+	runID string
+	stop  func() // the heartbeat; nil while the lock is held
+}
+
+// leave lets the cluster lock go and starts beating. Idempotent.
+func (a *sessionAway) leave() {
+	if a.hold == nil || a.stop != nil {
+		return
+	}
+	a.hold.releaseCluster()
+	ctx, cancel := context.WithCancel(context.Background())
+	a.stop = cancel
+	beat := a.s.makeHeartbeat(a.runID)
+	every := a.s.heartbeatStaleAfter() / 3
+	safego.Go(ctx, "resume.session_away_heartbeat", func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if beat != nil {
+					beat()
+				}
+			}
+		}
+	})
+}
+
+func (a *sessionAway) stopBeating() {
+	if a.stop != nil {
+		a.stop()
+		a.stop = nil
+	}
+}
+
+// back takes the cluster lock back, if it was let go, trying again through
+// resumeBackoff as a parked run's next turn does (parkLock.resume): a
+// contender holding it is usually a request about to be refused. The
+// session's other runs are judged as a resume judges them.
+func (a *sessionAway) back(ctx context.Context, sessionID string) error {
+	if a.stop == nil {
+		return nil
+	}
+	a.stopBeating()
+	for i := 0; ; i++ {
+		err := a.s.retakeSession(ctx, a.hold, sessionID, a.s.sessionLiveForResume, a.runID)
+		if err == nil || !errors.Is(err, runner.ErrSessionBusy) || i == len(resumeBackoff) {
+			return err
+		}
+		t := time.NewTimer(resumeBackoff[i])
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return err
+		}
+	}
+}
+
+// busyResumeBackoff is how long a paused run refused because its session was
+// busy waits before each new try, about 14 minutes in all. A busy session is
+// a turn in progress, which ends; the last wait repeats until the cap.
+var busyResumeBackoff = []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second, 5 * time.Second,
+	15 * time.Second, 30 * time.Second, 60 * time.Second, 120 * time.Second, 120 * time.Second,
+	120 * time.Second, 120 * time.Second, 120 * time.Second, 120 * time.Second, 120 * time.Second}
+
+// retryBusyResume tries again, in this process, to resume a run refused
+// because its session was busy. Nothing else would on a single replica: the
+// boot pass has run, the periodic pass needs a cluster, and /v1/_resume
+// resumes the runtime, not paused rows. One retry per run at a time. It
+// stops when the run resumes, when it is no longer paused (another pass
+// took it, or it ended), on a store fault, or at the cap — the last two said
+// loudly, since the row then stays paused until the next restart.
+func (s *Server) retryBusyResume(runID string) {
+	if _, pending := s.busyResumes.LoadOrStore(runID, true); pending {
+		return
+	}
+	safego.Go(context.Background(), "resume.busy_retry", func() {
+		defer s.busyResumes.Delete(runID)
+		for _, wait := range busyResumeBackoff {
+			time.Sleep(wait)
+			run, err := s.store.GetRun(context.Background(), runID)
+			if err != nil {
+				slog.Error("resume: reading a run refused for a busy session failed; it stays paused until the next restart", "run_id", runID, "err", err)
+				return
+			}
+			if run.Status != store.RunRunning || run.PauseState != store.PauseStatePaused {
+				return
+			}
+			err = s.resumePausedRun(run)
+			if err == nil || errors.Is(err, errRunAlreadyLive) {
+				return
+			}
+			if !errors.Is(err, runner.ErrSessionBusy) {
+				slog.Warn("resume: a run refused for a busy session was not resumed on retry", "run_id", runID, "err", err)
+				return
+			}
+		}
+		slog.Error("resume: a paused run's session stayed busy; it stays paused until the next restart or resume pass", "run_id", runID)
+	})
 }
 
 // resumedRoute is where a resumed run's model calls go, and the context and

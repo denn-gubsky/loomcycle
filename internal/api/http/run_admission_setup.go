@@ -80,9 +80,13 @@ func (a *runAdmission) narrowTools() {
 // credentials); the ACL is asked on ctx.
 func (s *Server) runToolset(ctx, discoverCtx context.Context, tenantID string, def config.AgentDef, callerTools []string,
 	recallCtx *config.Context, acl *authz.Effective, narrowHosts func([]tools.Tool) []tools.Tool) ([]tools.Tool, []string) {
+	s.runPhase("tools.filter")
 	allowed := filterTools(s.candidateTools(discoverCtx, tenantID, def.Tools), def.Tools, callerTools)
+	s.runPhase("tools.recall")
 	allowed = s.grantRecallTool(allowed, recallCtx)
+	s.runPhase("tools.acl")
 	allowed, removed := tools.NarrowToolsByACL(ctx, acl, allowed)
+	s.runPhase("tools.hosts")
 	return narrowHosts(allowed), removed
 }
 

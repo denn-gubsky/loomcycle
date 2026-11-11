@@ -430,6 +430,9 @@ type Server struct {
 	// continuation can tell a session busy with a run being cancelled from
 	// one busy with a live turn (takeSession).
 	sessionRuns sessionRunSet
+	// busyResumes holds the runs a busy-session resume retry is pending for
+	// (retryBusyResume), so each has one retry at a time.
+	busyResumes sync.Map
 
 	// mcpFallback is the optional Dispatcher fallback for lazy MCP
 	// server registration. When set, an agent's call to a tool name

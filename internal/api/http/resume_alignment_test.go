@@ -74,7 +74,8 @@ func resumeAlignServer(t *testing.T, prov providers.Provider) *Server {
 // resumePhaseOrder is the order a resume runs its phases in. The rules that
 // make it so are asserted one by one in the test below.
 var resumePhaseOrder = []string{
-	"resume.conditions", "resume.agent", "resume.acl", "resume.provider", "resume.tools", "resume.prompt",
+	"resume.conditions", "resume.agent", "resume.acl", "resume.provider",
+	"resume.tools", "tools.filter", "tools.recall", "tools.acl", "tools.hosts", "resume.prompt",
 	"resume.session", "resume.slot", "resume.budget", "resume.loop",
 }
 
@@ -97,6 +98,10 @@ func TestResume_PhasesRunInTheirSecurityOrder(t *testing.T) {
 		{"resume.conditions", "resume.provider", "the condition facts are stamped before the model is asked of the caller's rules"},
 		{"resume.acl", "resume.provider", "the caller's rules are compiled before the model is resolved"},
 		{"resume.tools", "resume.prompt", "the ACL removes tools before the system prompt is built from them"},
+		{"tools.filter", "tools.recall", "the caller's tools list narrows before Recall is granted"},
+		{"tools.recall", "tools.acl", "the ACL can withhold the Recall the context grants"},
+		{"tools.acl", "tools.hosts", "the caller's host list narrows only what the ACL left"},
+		{"tools.acl", "resume.prompt", "the prompt is built from what the ACL left"},
 		{"resume.session", "resume.slot", "the session is taken before the run goes live and waits"},
 		{"resume.slot", "resume.budget", "the budget is asked when the run starts, after its wait"},
 		{"resume.budget", "resume.loop", "a run over its budget makes no model call"},
@@ -302,7 +307,8 @@ func TestResume_HoldsItsSessionAgainstAContinuation(t *testing.T) {
 }
 
 // A session another request holds is busy for a resume as for a continuation:
-// the run stays paused, and a later pass resumes it once the session is free.
+// the run stays paused, and is resumed in this process once the session is
+// free — on a single replica no later pass would.
 func TestResume_ABusySessionLeavesTheRunPaused(t *testing.T) {
 	srv := resumeAlignServer(t, &recordingScriptedProvider{defaultS: endTurn()})
 	run := pausedRunRow(t, srv, "worker", "a_busy_resume", false, oneUserSeg("go"))
@@ -322,8 +328,12 @@ func TestResume_ABusySessionLeavesTheRunPaused(t *testing.T) {
 	if got.PauseState != store.PauseStatePaused {
 		t.Errorf("the refused run's pause_state = %q, want %q", got.PauseState, store.PauseStatePaused)
 	}
-	resumeOne(t, srv)
-	waitRunStatus(t, srv.store, run.ID, store.RunCompleted)
+	// Nothing else resumes it on one replica: the retry does, once the
+	// session is free.
+	waitFor(t, "the refused run to be resumed once its session is free", func() bool {
+		r, err := srv.store.GetRun(context.Background(), run.ID)
+		return err == nil && r.Status == store.RunCompleted
+	})
 }
 
 // A soft budget crossing is said once at a resumed run's start, as at a fresh

@@ -712,7 +712,11 @@ func (a *runAdmission) takeSlot() error {
 		if a.queued != nil {
 			rowID = a.queued.runID
 		}
-		startErr := s.retakeSession(a.ctx, a.sessHold, a.in.SessionID, a.isContinuation && a.in.SessionLockAcrossReplicas, rowID)
+		var live sessionLiveFunc
+		if a.isContinuation && a.in.SessionLockAcrossReplicas {
+			live = s.sessionHasLiveRun
+		}
+		startErr := s.retakeSession(a.ctx, a.sessHold, a.in.SessionID, live, rowID)
 		if startErr == nil && a.isContinuation && a.in.SessionLockAcrossReplicas {
 			if transcript, terr := s.store.GetTranscript(a.ctx, a.in.SessionID); terr != nil {
 				startErr = fmt.Errorf("%w: %v", runner.ErrInternal, terr)

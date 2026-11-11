@@ -445,11 +445,13 @@ func (s *Semaphore) TryAcquire() (release func(), err error) {
 // taken by already-admitted work also turns NEW requests away sooner.
 //
 // rs, when not nil, binds the slot to a run that may lend it while its calls
-// wait for a provider lane (RunSlot): the release ends rs. waited reports that
-// no slot was free and the caller queued for one.
+// wait for a provider lane (RunSlot): the release ends rs. onQueue, when not
+// nil, is called once, outside the lock, when no slot is free and the caller
+// is about to block for one — so it can let go of what it should not hold
+// while it waits. waited reports that it queued.
 //
 // Call the returned release exactly once when done (it is idempotent).
-func (s *Semaphore) Wait(ctx context.Context, rs *RunSlot) (release func(), waited bool, err error) {
+func (s *Semaphore) Wait(ctx context.Context, rs *RunSlot, onQueue func()) (release func(), waited bool, err error) {
 	// The zero key and a nil quota store: the release and cancelWaiter then
 	// touch only the global active/queued counters.
 	var key userKey
@@ -463,6 +465,9 @@ func (s *Semaphore) Wait(ctx context.Context, rs *RunSlot) (release func(), wait
 	s.admitted = append(s.admitted, w)
 	s.queued++
 	s.mu.Unlock()
+	if onQueue != nil {
+		onQueue()
+	}
 
 	select {
 	case <-w.ch:
@@ -486,8 +491,8 @@ func (s *Semaphore) Wait(ctx context.Context, rs *RunSlot) (release func(), wait
 // sharedCount reports that the run is counted in the cluster's shared counter,
 // which outlives this process: the caller records it on the run's row, so a
 // resume after this process stops gives back exactly that slot. rs and waited
-// are Wait's.
-func (s *Semaphore) WaitForUser(ctx context.Context, tenantID, userID string, rs *RunSlot) (release func(), sharedCount, waited bool, err error) {
+// and onQueue are Wait's.
+func (s *Semaphore) WaitForUser(ctx context.Context, tenantID, userID string, rs *RunSlot, onQueue func()) (release func(), sharedCount, waited bool, err error) {
 	key := userKey{tenant: tenantID, user: userID}
 	s.mu.Lock()
 	qs := s.quotaStore
@@ -522,6 +527,9 @@ func (s *Semaphore) WaitForUser(ctx context.Context, tenantID, userID string, rs
 	s.admitted = append(s.admitted, w)
 	s.queued++
 	s.mu.Unlock()
+	if onQueue != nil {
+		onQueue()
+	}
 
 	select {
 	case <-w.ch:
