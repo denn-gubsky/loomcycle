@@ -3776,6 +3776,47 @@ on an export. `/metrics` counts the exports per tenant:
 `loomcycle_tenant_telemetry_exported_total`, `…_dropped_total`,
 `…_export_failures_total`, and `loomcycle_tenant_telemetry_pipelines`.
 
+Setting it up, as the tenant operator (an admin adds `"tenant": "<id>"`, or
+`?tenant=` on the other routes):
+
+```sh
+# 1. The collector headers, as a tenant credential bound to the endpoint.
+curl -X POST "$LOOMCYCLE/v1/_credentialdef" -H "Authorization: Bearer $TOKEN" \
+  -d '{"op":"create","scope":"tenant","name":"otel-headers","value":"authorization=Basic …,x-scope-orgid=acme","allowed_urls":["https://otlp.example.net/otlp"]}'
+# 2. The policy.
+curl -X PUT "$LOOMCYCLE/v1/_telemetry" -H "Authorization: Bearer $TOKEN" \
+  -d '{"endpoint":"https://otlp.example.net/otlp","headers_credential":"otel-headers"}'
+# 3. One test span, answered at once: {"test":{"ok":true,...}} or the collector's error.
+curl -X POST "$LOOMCYCLE/v1/_telemetry:test" -H "Authorization: Bearer $TOKEN"
+# What is set, and this replica's status (exported, dropped, the last error).
+curl "$LOOMCYCLE/v1/_telemetry" -H "Authorization: Bearer $TOKEN"
+# Stop.
+curl -X DELETE "$LOOMCYCLE/v1/_telemetry" -H "Authorization: Bearer $TOKEN"
+```
+
+The same operations are the `TenantTelemetry` gRPC call, the `telemetry` MCP
+tool, `getTelemetry` / `setTelemetry` / `deleteTelemetry` / `testTelemetry`
+in the TypeScript client, their Python twins, and Settings → Telemetry in the
+Web UI. `protocol` is `http/protobuf` (spans posted to `<endpoint>/v1/traces`)
+or `grpc`; `signals` is `traces` (metrics export is not available yet);
+`sampler_ratio` (0–1, at most `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO`) is
+recorded with the policy but does not yet thin what is sent: a tenant receives
+the spans the deployment's own sampler keeps. A set is written to the audit log
+(`tenant_telemetry_set`) before it takes effect and is refused when the record
+cannot be written; a delete is recorded as `tenant_telemetry_delete`.
+
+A stored policy is held to the operator's rules every time it is used, not
+only when it was set: after the operator removes a host from
+`LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS`, takes the http override away or
+lowers the ratio cap, a policy that no longer passes stops exporting and its
+status says `policy no longer valid: <reason>`. A snapshot carries the policies
+(never the header credential, which stays behind like every sealed
+credential); a restore keeps only those the target's rules allow, and a
+restored policy that names a header credential exports once the tenant stores
+that credential again on the target. The status is per replica; each replica
+re-reads the policies and their credentials every minute, so a rotated or
+expired header credential is picked up within a minute.
+
 ## 10. Cross-references
 
 - [`loomcycle.example.yaml`](../loomcycle.example.yaml) — the repo-root reference yaml. All six user_tiers wired, inline comments on every section. Copy-paste and edit.
