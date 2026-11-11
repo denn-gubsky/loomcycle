@@ -186,6 +186,12 @@ type TenantRouter struct {
 	entries map[string]*tenantEntry
 	pipes   map[string]*tenantPipeline
 	closed  bool
+	// flushing names the tenants with a replaced pipeline still flushing.
+	// One flush per tenant at a time: a flush waits on the tenant's
+	// collector inside a shared export slot, and a tenant flapping its
+	// destination between collectors that never answer would otherwise hold
+	// one slot per flap.
+	flushing map[string]bool
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -198,11 +204,12 @@ type TenantRouter struct {
 func NewTenantRouter(cfg TenantRouterConfig) *TenantRouter {
 	cfg = cfg.withDefaults()
 	r := &TenantRouter{
-		cfg:     cfg,
-		slots:   make(chan struct{}, cfg.MaxConcurrentExports),
-		entries: map[string]*tenantEntry{},
-		pipes:   map[string]*tenantPipeline{},
-		stop:    make(chan struct{}),
+		cfg:      cfg,
+		slots:    make(chan struct{}, cfg.MaxConcurrentExports),
+		entries:  map[string]*tenantEntry{},
+		pipes:    map[string]*tenantPipeline{},
+		flushing: map[string]bool{},
+		stop:     make(chan struct{}),
 	}
 	r.closing.Add(1)
 	go r.reapLoop()
@@ -381,9 +388,26 @@ func (r *TenantRouter) evictLRULocked() {
 func (r *TenantRouter) dropPipelineLocked(tenant string, p *tenantPipeline) {
 	delete(r.pipes, tenant)
 	tenantPipelinesChanged(-1)
+	// A second replaced pipeline while one still flushes is discarded: its
+	// spans are counted dropped and its exporter takes no slot.
+	flushes := !r.flushing[tenant] || r.closed
+	if flushes {
+		r.flushing[tenant] = true
+	} else {
+		p.discard.Store(true)
+		// An export it already has in flight ends now, freeing its slot.
+		p.cancel()
+	}
 	r.closing.Add(1)
 	go func() {
 		defer r.closing.Done()
+		if flushes {
+			defer func() {
+				r.mu.Lock()
+				delete(r.flushing, tenant)
+				r.mu.Unlock()
+			}()
+		}
 		defer func() {
 			// A panic in one tenant's exporter must not end the process.
 			if v := recover(); v != nil {
@@ -480,6 +504,12 @@ type tenantPipeline struct {
 	// processor shut down would be dropped by it uncounted.
 	mu     sync.RWMutex
 	closed bool
+	// discard: the pipeline was replaced while an earlier one of its tenant
+	// still flushed; what it holds is dropped, not exported.
+	discard atomic.Bool
+	// ctx is cancelled when the pipeline is discarded, ending its exports.
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func newTenantPipeline(tenant string, e *tenantEntry, cfg TenantRouterConfig, slots chan struct{}) (*tenantPipeline, error) {
@@ -488,6 +518,7 @@ func newTenantPipeline(tenant string, e *tenantEntry, cfg TenantRouterConfig, sl
 		return nil, err
 	}
 	p := &tenantPipeline{fp: e.fp, stats: e.stats, queue: int64(cfg.QueueSize), tenant: tenant, release: release}
+	p.ctx, p.cancel = context.WithCancel(context.Background())
 	p.lastUsed.Store(time.Now().UnixNano())
 	te := &tenantSpanExporter{
 		tenant: tenant, next: exp, res: tenantResource(tenant, cfg.ServiceVersion),
@@ -524,6 +555,7 @@ func (p *tenantPipeline) close(ctx context.Context) {
 	p.mu.Lock()
 	p.closed = true
 	p.mu.Unlock()
+	defer p.cancel()
 	_ = p.bsp.Shutdown(ctx)
 	if p.release != nil {
 		p.release()
@@ -547,9 +579,20 @@ type tenantSpanExporter struct {
 func (e *tenantSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
 	n := len(spans)
 	defer e.p.inFlight.Add(-int64(n))
+	if e.p.discard.Load() {
+		e.discarded(n)
+		return nil
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(e.p.ctx, cancel)()
 	select {
 	case e.slots <- struct{}{}:
 	case <-ctx.Done():
+		if e.p.discard.Load() {
+			e.discarded(n)
+			return nil
+		}
 		e.fail(uint64(n), "no export slot free before the export timeout: too many tenant exports in flight")
 		return nil
 	}
@@ -574,8 +617,19 @@ func (e *tenantSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.R
 		e.p.stats.succeeded(time.Now())
 		return nil
 	}
+	if e.p.discard.Load() {
+		e.discarded(n)
+		return nil
+	}
 	e.fail(uint64(n), scrubError(err, e.headers))
 	return nil
+}
+
+// discarded counts n spans of a discarded pipeline as dropped. Not a failure:
+// the collector was not at fault, the tenant replaced it.
+func (e *tenantSpanExporter) discarded(n int) {
+	e.p.stats.dropped.Add(uint64(n))
+	tenantSpansDropped(e.tenant, int64(n))
 }
 
 func (e *tenantSpanExporter) fail(n uint64, msg string) {

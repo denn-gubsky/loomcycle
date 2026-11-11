@@ -2,6 +2,8 @@ package otel
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -86,4 +88,38 @@ func TestTenantRouter_ChangingADestinationWhileSpansEndIsRaceFree(t *testing.T) 
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// A tenant flapping its destination between collectors that never answer
+// leaves a replaced pipeline flushing for each flap. Those flushes must not
+// take the export slots every tenant shares: a healthy tenant's export goes
+// out while they hang.
+func TestTenantRouter_AFlappingTenantDoesNotStarveOthersOfExportSlots(t *testing.T) {
+	clearOTELEnv(t)
+	release := make(chan struct{})
+	holes := []*fakeCollector{newFakeCollector(t), newFakeCollector(t)}
+	for _, h := range holes {
+		h.handler = func(http.ResponseWriter, *http.Request) bool { <-release; return true }
+	}
+	ok := newFakeCollector(t)
+	r := fastRouter(TenantRouterConfig{MaxConcurrentExports: 3, ExportTimeout: 10 * time.Second})
+	r.SetDestination("ok", dest(ok, nil))
+	tp := routedProvider(t, r)
+	t.Cleanup(func() { close(release) })
+	tr := tp.Tracer("t")
+	end := func(tenant string) {
+		_, s := tr.Start(context.Background(), "work", trace.WithAttributes(attribute.String(AttrTenant, tenant)))
+		s.End()
+	}
+	for i := 0; i < 6; i++ {
+		r.SetDestination("flap", dest(holes[i%2], map[string]string{"x-n": fmt.Sprint(i)}))
+		end("flap")
+		time.Sleep(60 * time.Millisecond) // the batch leaves for the hole
+	}
+	start := time.Now()
+	end("ok")
+	waitFor(t, "the healthy tenant's span", func() bool { return len(ok.got()) == 1 })
+	if el := time.Since(start); el > 3*time.Second {
+		t.Errorf("the healthy tenant waited %v for an export slot", el)
+	}
 }
