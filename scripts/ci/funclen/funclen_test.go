@@ -51,7 +51,6 @@ type allowed struct {
 // Lengths measured on origin/main (cf550c366) on 2026-11-10.
 var allowlist = map[string]allowed{
 	"internal/config/config.go LoadLayers":                                {1326, "logic", "P4"},
-	"internal/config/config.go validate":                                  {1008, "logic", "P4"},
 	"internal/api/http/resume.go Server.resumePausedRun":                  {798, "logic", "P2"},
 	"internal/store/storetest/contract.go Run":                            {743, "table", "D3"},
 	"internal/tools/builtin/teamdef.go TeamDef.execRun":                   {722, "logic", "P5"},
