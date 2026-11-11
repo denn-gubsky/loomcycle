@@ -47,6 +47,8 @@ call and nothing is created. If a well-formed name could not be stored (a
 storage fault), the document still exists and you get `path_warning` instead
 of `path`; fix it with `set_path`. `not_announced` says why the new document
 was not published to the scope's `documents/ingested` channel, when it was not.
+`warnings` carries `parent_is_document: ...` when the path's parent is a
+document name: the document is created there all the same.
 
 ## Errors
 

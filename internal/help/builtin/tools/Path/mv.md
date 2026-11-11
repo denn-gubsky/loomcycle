@@ -15,7 +15,11 @@ content. Moving a directory moves every entry under it in one step.
 
 ## Returns
 
-`{ok: true, from, to}`.
+`{ok: true, from, to}`. When `to` lands under a name that is a document
+(e.g. `/a/b/c` where `/a/b` is a document), the move still succeeds and the
+result adds `warnings: ["parent_is_document: /a/b names a document; this name is listed under it"]`:
+`/a/b` is now a document with names beneath it (`ls` marks it
+`has_children: true`). Move the name elsewhere if you meant a plain folder.
 
 ## Errors
 

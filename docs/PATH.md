@@ -44,6 +44,14 @@ beneath it survives the caller's access-control read filter, so it never
 reveals names the caller may not read. Omitted when false; list the path to
 see the names. Recursive `ls` is unchanged.
 
+Creating such a name is allowed, and says so: when `Path mv`, Document
+`set_path`, `create_document` or `import_md` with a `path`, or File `import`
+with a `doc_path` gives a name whose parent is a document name, the call
+succeeds and its result carries
+`warnings: ["parent_is_document: /a/b names a document; this name is listed under it"]`.
+Only the immediate parent is checked, and the warning is given only when the
+caller may read that parent name.
+
 `scope` selects the tree: `agent` (this agent, the default), `user` (this
 end-user — needs a `user_id` on the run), or `tenant` (shared across the
 tenant). Trees are keyed by the authoritative tenant; in open mode the tenant

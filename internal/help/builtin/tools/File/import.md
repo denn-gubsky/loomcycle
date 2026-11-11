@@ -140,7 +140,9 @@ source, provenance, provenance_note, tags}` — `skipped` counts the pictures
 that stayed links, and `skipped_images` says why for the first of them.
 `provenance` is what the document records of where it came from;
 `get_document` shows it too. `provenance_note` is there only when the file was
-changed after it was captured.
+changed after it was captured. `warnings` carries `parent_is_document: ...`
+when `doc_path` lands under a name that is a document; the import still
+happens.
 
 A reimport returns `{document_id, root_chunk_id, reimport, edition_date,
 work_key, changed_chunk_ids, source, provenance_note, tags}` instead of the
