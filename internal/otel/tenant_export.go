@@ -489,10 +489,11 @@ func (r *TenantRouter) reapIdle(now time.Time) {
 	}
 }
 
-// Test sends one test span to d, as TestTenantExport does, inside the cap on
-// exports in flight every tenant shares: with every slot held until timeout it
-// answers busy rather than add an export beyond the cap. It touches no
-// tenant's status.
+// Test sends one test span to d when it exports traces (TestTenantExport) and
+// one test metric when it exports metrics (TestTenantMetricExport), inside the
+// cap on exports in flight every tenant shares: with every slot held until
+// timeout it answers busy rather than add an export beyond the cap. The first
+// failure is the answer. It touches no tenant's status.
 func (r *TenantRouter) Test(ctx context.Context, tenant string, d TenantDestination, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = r.cfg.ExportTimeout
@@ -506,11 +507,22 @@ func (r *TenantRouter) Test(ctx context.Context, tenant string, d TenantDestinat
 		return &TenantExportError{msg: CategoryBusy}
 	}
 	defer func() { <-r.slots }()
-	left := timeout - time.Since(start)
-	if left <= 0 {
+	left := func() time.Duration { return timeout - time.Since(start) }
+	if left() <= 0 {
 		return &TenantExportError{msg: CategoryBusy}
 	}
-	return TestTenantExport(ctx, tenant, d, r.cfg.ServiceVersion, left)
+	if d.exports(SignalTraces) {
+		if err := TestTenantExport(ctx, tenant, d, r.cfg.ServiceVersion, left()); err != nil {
+			return err
+		}
+	}
+	if d.exports(SignalMetrics) {
+		if left() <= 0 {
+			return &TenantExportError{msg: "metrics: " + CategoryTimeout}
+		}
+		return TestTenantMetricExport(ctx, tenant, d, r.cfg.ServiceVersion, left())
+	}
+	return nil
 }
 
 // ForceFlush flushes every open pipeline.

@@ -620,3 +620,29 @@ func TestTenantRouter_GRPCMetricPushGoesThroughTheGivenDialerWithTheTenantsHeade
 		t.Errorf("dialed %v, want the destination through the given dialer", dialed)
 	}
 }
+
+func TestTenantRouterTest_SendsATestMetricOnlyToAMetricsDestination(t *testing.T) {
+	clearOTELEnv(t)
+	c := newMetricCollector(t)
+	r := metricRouter(t, TenantRouterConfig{})
+	if err := r.Test(context.Background(), "acme", metricDest(c, nil, SignalMetrics), time.Second); err != nil {
+		t.Fatalf("test of a metrics-only destination: %v", err)
+	}
+	reqs := c.got()
+	if len(reqs) != 1 || len(reqs[0].points) != 1 || reqs[0].points[0].metric != SpanTelemetryTest || reqs[0].resource[AttrTenant] != "acme" {
+		t.Fatalf("pushed %+v, want one test metric", reqs)
+	}
+	if n := c.spanExports(); n != 0 {
+		t.Errorf("a metrics-only test sent %d span exports", n)
+	}
+	if err := r.Test(context.Background(), "acme", metricDest(c, nil, SignalTraces, SignalMetrics), time.Second); err != nil {
+		t.Fatalf("test of both signals: %v", err)
+	}
+	if n, m := c.spanExports(), len(c.got()); n != 1 || m != 2 {
+		t.Errorf("a test of both signals sent %d span exports and %d metric pushes in all, want 1 and 2", n, m)
+	}
+	c.handler = func(w http.ResponseWriter, _ *http.Request) bool { w.WriteHeader(http.StatusNotFound); return true }
+	if err := r.Test(context.Background(), "acme", metricDest(c, nil, SignalMetrics), time.Second); err == nil || err.Error() != "metrics: http_404" {
+		t.Errorf("a refused test metric: %v, want metrics: http_404", err)
+	}
+}

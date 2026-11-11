@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+	"go.opentelemetry.io/otel/sdk/instrumentation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -165,6 +166,45 @@ func newTenantGRPCMetricExporter(ctx context.Context, u *url.URL, d TenantDestin
 		return nil, nil, err
 	}
 	return exp, func() { _ = conn.Close() }, nil
+}
+
+// TestTenantMetricExport pushes one synthetic gauge (loomcycle.telemetry.test
+// = 1) to d under the tenant's resource, built exactly as a tenant's metric
+// push builds its exporter, and returns nil or a *TenantExportError reading
+// "metrics: <category>". It answers within timeout.
+func TestTenantMetricExport(ctx context.Context, tenant string, d TenantDestination, serviceVersion string, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = DefaultTenantExportTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ctx, code := withStatusHolder(ctx)
+	exp, release, err := newTenantMetricExporter(ctx, d, timeout)
+	if err != nil {
+		return &TenantExportError{msg: "metrics: " + CategoryFailed}
+	}
+	defer func() {
+		_ = exp.Shutdown(context.Background())
+		if release != nil {
+			release()
+		}
+	}()
+	rm := &metricdata.ResourceMetrics{
+		Resource: tenantResource(tenant, serviceVersion),
+		ScopeMetrics: []metricdata.ScopeMetrics{{
+			Scope: instrumentation.Scope{Name: MeterName},
+			Metrics: []metricdata.Metrics{{
+				Name: SpanTelemetryTest, Unit: "1", Description: "A tenant telemetry test: one value, sent on request.",
+				Data: metricdata.Gauge[int64]{DataPoints: []metricdata.DataPoint[int64]{{
+					Attributes: attribute.NewSet(attribute.String(LabelTenant, tenant)), Time: time.Now(), Value: 1,
+				}}},
+			}},
+		}},
+	}
+	if err := exp.Export(ctx, rm); err != nil {
+		return &TenantExportError{msg: "metrics: " + exportCategory(err, code.code.Load())}
+	}
+	return nil
 }
 
 // startMetrics runs the interval's push until Shutdown.
