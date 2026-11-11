@@ -337,6 +337,11 @@ func columnsSection2() schemaPlan {
 		// tombstone (RFC FY Part F); NULL for every live user. Mirrors
 		// postgres 0130.
 		`ALTER TABLE users ADD COLUMN erased_at INTEGER`,
+		// A tenant's opt-in content capture (RFC GG P3); off and the
+		// runtime's default length for every row before. Mirrors postgres
+		// 0134.
+		`ALTER TABLE tenant_telemetry_policies ADD COLUMN content_capture TEXT NOT NULL DEFAULT 'off'`,
+		`ALTER TABLE tenant_telemetry_policies ADD COLUMN content_max_chars INTEGER NOT NULL DEFAULT 0`,
 	}}
 }
 
