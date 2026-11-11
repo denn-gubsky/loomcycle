@@ -364,3 +364,79 @@ func TestManager_ResumeInSingleReplicaModeLeavesUnheldRowsPaused(t *testing.T) {
 		}
 	}
 }
+
+// holdFirstResumeFlip blocks Resume's first per-row flip until every woken
+// gate has ended (deregistered), so a held/unheld decision made after the wake
+// would find the remaining rows unheld.
+type holdFirstResumeFlip struct {
+	store.Store
+	once  sync.Once
+	ended []chan struct{}
+}
+
+func (h *holdFirstResumeFlip) SetRunPauseState(ctx context.Context, runID, state string) error {
+	h.once.Do(func() {
+		for _, c := range h.ended {
+			select {
+			case <-c:
+			case <-time.After(5 * time.Second):
+			}
+		}
+	})
+	return h.Store.SetRunPauseState(ctx, runID, state)
+}
+
+// Resume counts every run it woke, even one whose loop finishes and leaves
+// before Resume reaches its row: which rows are held is decided before any
+// gate is woken, alongside the paused-list snapshot.
+func TestManager_ResumeCountsAWokenRunThatEndsBeforeItsRowIsReached(t *testing.T) {
+	base, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer base.Close()
+	ctx := context.Background()
+	sess, _ := base.CreateSession(ctx, "t", "a", "u")
+	h := &holdFirstResumeFlip{Store: base}
+	m := NewManager(h, 100*time.Millisecond)
+	var parked []<-chan struct{}
+	for _, id := range []string{"a", "b"} {
+		run, _ := base.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: id})
+		m.RegisterRun(run.ID)
+		ended := make(chan struct{})
+		h.ended = append(h.ended, ended)
+		p := make(chan struct{})
+		parked = append(parked, p)
+		go func(runID string) {
+			for m.State() == StateRunning {
+				time.Sleep(2 * time.Millisecond)
+			}
+			resume, should := m.BeginPark(runID)
+			if !should {
+				close(ended)
+				return
+			}
+			_ = base.SetRunPauseState(ctx, runID, store.PauseStatePaused)
+			m.MarkParked(runID)
+			close(p)
+			<-resume
+			// The loop wakes, flips its own row and ends at once.
+			_ = base.SetRunPauseState(ctx, runID, store.PauseStateRunning)
+			m.DeregisterRun(runID)
+			close(ended)
+		}(run.ID)
+	}
+	if _, err := m.Pause(ctx, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range parked {
+		<-p
+	}
+	res, err := m.Resume(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ResumedRunsCount != 2 {
+		t.Errorf("ResumedRunsCount = %d, want 2 (both runs were parked here when the resume began)", res.ResumedRunsCount)
+	}
+}

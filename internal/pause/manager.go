@@ -876,6 +876,13 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 		m.mu.Unlock()
 		return ResumeResult{State: st}, ErrNotPaused
 	}
+	// Decide which listed rows a loop here holds while every gate is still
+	// parked: once woken, a run can finish and deregister before the loop
+	// below reaches its row, and deciding then would under-count it.
+	held := make(map[string]bool, len(paused))
+	for _, r := range paused {
+		held[r.ID] = m.HoldsRun(r.ID)
+	}
 	// New broadcast channel for the next pause cycle. Old callers
 	// holding the closed channel from the prior pause naturally fall
 	// through their select-default branch on the next iteration.
@@ -934,7 +941,7 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 		// live with nothing running it, and the resume pass, which lists only
 		// paused rows, would never take it. It stays paused for that pass.
 		// This holds on a single replica too.
-		if !m.HoldsRun(r.ID) {
+		if !held[r.ID] {
 			continue
 		}
 		if err := m.store.SetRunPauseState(ctx, r.ID, store.PauseStateRunning); err != nil {
