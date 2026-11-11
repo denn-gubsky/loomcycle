@@ -80,5 +80,10 @@ func (a *AgentTelemetry) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	type plain AgentTelemetry
-	return n.Decode((*plain)(a))
+	if err := n.Decode((*plain)(a)); err != nil {
+		return err
+	}
+	// Checked as it is read: a block from yaml is refused at load with the
+	// same words an AgentDef overlay gets at create/fork.
+	return a.Validate()
 }

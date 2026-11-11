@@ -8620,9 +8620,6 @@ func validate(c *Config) error {
 		if err := c.CheckAgentSpeech(agent.Speech); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
-		if err := agent.Telemetry.Validate(); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
 		if err := agent.Context.Validate(); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
