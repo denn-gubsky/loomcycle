@@ -6691,6 +6691,28 @@ a.login-btn {
   align-items: center;
   flex-wrap: wrap;
 }
+.telemetry-content {
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  padding: var(--lc-space-1) var(--lc-space-2);
+  margin: 0;
+  font-size: var(--lc-text-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--lc-space-1);
+}
+.telemetry-form input[name="content_max_chars"] {
+  max-width: 12rem;
+}
+/* A consequence the operator should read before saving, not an error. */
+.settings-warning {
+  color: var(--lc-running);
+  background: rgba(240, 160, 64, 0.08);
+  border: 1px solid rgba(240, 160, 64, 0.3);
+  border-radius: var(--lc-radius-sm);
+  padding: var(--lc-space-1) var(--lc-space-2);
+  font-size: var(--lc-text-sm);
+}
 .telemetry-time {
   font-size: var(--lc-text-sm);
   word-break: break-all;

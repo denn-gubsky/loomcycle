@@ -4351,6 +4351,10 @@ export interface TelemetryPolicy {
   sampler_ratio: number;
   updated_at?: string;
   updated_by?: string;
+  // content_capture "on" records the tenant's runs' content on its spans;
+  // content_max_chars is the cut of each captured field.
+  content_capture?: "off" | "on";
+  content_max_chars?: number;
 }
 
 // TelemetryStatus is the export as the replica that answered sees it — each
@@ -4388,6 +4392,8 @@ export interface TelemetryPolicyInput {
   headers_credential?: string;
   signals?: string[];
   sampler_ratio?: number;
+  content_capture?: "off" | "on";
+  content_max_chars?: number;
 }
 
 // telemetryCall throws with the server's own sentence as the message: a refused
