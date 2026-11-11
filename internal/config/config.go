@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -5449,7 +5448,98 @@ func splitCommaTrim(s string) []string {
 	return out
 }
 
+// LoadLayers runs these steps in this order. Each applyEnv block writes its own
+// fields, but the order still matters three ways:
+//   - applyEnvCore replaces cfg.Env whole, so every block that sets an Env
+//     field runs after it;
+//   - a block that reads another's result runs after it (applyEnvNetPolicy
+//     reads the allowlist applyEnvCore set; applyEnvRetention's back-compat
+//     step reads the usage archiver values applyEnvSweepers set);
+//   - the blocks that refuse a bad value report the first one in this order,
+//     which is what an operator fixing them one boot at a time sees
+//     (TestLoadLayers_EnvRefusalsReportInLoadOrder).
+//
+// The retired-jail check runs before any env block; the tool defaults and the
+// helper wrapper run after them, and validate last.
 func LoadLayers(layers ...Layer) (*Config, error) {
+	cfg, primaryPath, err := loadLayerTree(layers)
+	if err != nil {
+		return nil, err
+	}
+	if err := loadAgentFiles(cfg, primaryPath); err != nil {
+		return nil, err
+	}
+
+	applyEnvCore(cfg)
+
+	// RFC AH Phase 3 — the legacy filesystem jail is retired. The three env
+	// vars (LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD) no longer exist.
+	// Fail fast with a migration hint when a stale deploy still sets one,
+	// rather than silently denying every file op (sandbox-by-default).
+	if err := checkRetiredJailEnv(); err != nil {
+		return nil, err
+	}
+
+	applyEnvStorage(cfg)
+	applyEnvSQLMem(cfg)
+	applyEnvHooks(cfg)
+	applyEnvNetPolicy(cfg)
+	applyEnvListeners(cfg)
+	applyEnvSweepers(cfg)
+	if err := applyEnvRetention(cfg); err != nil {
+		return nil, err
+	}
+	applyEnvClusterSweeps(cfg)
+	applyEnvLoopTuning(cfg)
+	applyEnvMemory(cfg)
+	applyEnvConcurrency(cfg)
+	if err := applyEnvToolLimits(cfg); err != nil {
+		return nil, err
+	}
+	applyEnvChannels(cfg)
+	if err := applyEnvCodeAgents(cfg); err != nil {
+		return nil, err
+	}
+	applyEnvMetrics(cfg)
+	applyEnvScheduler(cfg)
+	applyEnvWebhooks(cfg)
+	if err := applyEnvA2A(cfg); err != nil {
+		return nil, err
+	}
+	if err := applyEnvCluster(cfg); err != nil {
+		return nil, err
+	}
+	applyEnvMCP(cfg)
+	applyEnvDefCaps(cfg)
+	applyEnvProviderTimeouts(cfg)
+
+	// RFC DT: the throughput-measurement block's env overrides + defaults.
+	applyTimeoutScaling(cfg)
+
+	// RFC BA: skills are on-demand (loaded via the Skill tool), not bundled
+	// into the prompt. Auto-add the Skill tool to every agent that may use a
+	// skill so on-demand access is the default. No skills-root/prompt work
+	// here anymore — the SkillsRoot registry is loaded once at boot in
+	// cmd/loomcycle (shared with the Skill/SkillDef tools + the Library).
+	addSkillToolDefaults(cfg)
+
+	// v0.8.7 default-add: every agent gets Context auto-appended to its tools
+	// unless `disable_context: true` is set.
+	addContextToolDefaults(cfg)
+
+	// RFC FZ D8: one operator wrapper confines every helper command.
+	cfg.Env.HelperWrapper = strings.TrimSpace(os.Getenv("LOOMCYCLE_HELPER_WRAPPER"))
+	stampHelperWrapper(cfg)
+
+	if err := validate(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// loadLayerTree builds the defaulted Config and merges the layers into it.
+// It returns the last disk layer's path, which prompt files resolve against.
+func loadLayerTree(layers []Layer) (*Config, string, error) {
 	cfg := &Config{
 		Concurrency: Concurrency{
 			MaxConcurrentRuns:    8,
@@ -5492,11 +5582,11 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		// Single disk file — the historical path, byte-identical (no merge round-trip).
 		raw, err := os.ReadFile(src[0].Name)
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", src[0].Name, err)
+			return nil, "", fmt.Errorf("read %s: %w", src[0].Name, err)
 		}
 		expanded := expandEnv(string(raw))
 		if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", src[0].Name, err)
+			return nil, "", fmt.Errorf("parse %s: %w", src[0].Name, err)
 		}
 		if abs, err := filepath.Abs(filepath.Dir(src[0].Name)); err == nil {
 			cfg.configDir = abs
@@ -5506,11 +5596,11 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		// preset/bundle), then unmarshal the merged whole.
 		merged, overrides, err := mergeLayers(src)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if len(overrides) > 0 {
 			if os.Getenv("LOOMCYCLE_CONFIG_STRICT") == "1" {
-				return nil, fmt.Errorf("config: %d cross-layer override(s) with LOOMCYCLE_CONFIG_STRICT=1: %s", len(overrides), strings.Join(overrides, "; "))
+				return nil, "", fmt.Errorf("config: %d cross-layer override(s) with LOOMCYCLE_CONFIG_STRICT=1: %s", len(overrides), strings.Join(overrides, "; "))
 			}
 			for _, o := range overrides {
 				cfg.Warnings = append(cfg.Warnings, "config layer override: "+o)
@@ -5518,10 +5608,10 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		}
 		out, err := yaml.Marshal(merged)
 		if err != nil {
-			return nil, fmt.Errorf("re-marshal merged config: %w", err)
+			return nil, "", fmt.Errorf("re-marshal merged config: %w", err)
 		}
 		if err := yaml.Unmarshal(out, cfg); err != nil {
-			return nil, fmt.Errorf("parse merged config: %w", err)
+			return nil, "", fmt.Errorf("parse merged config: %w", err)
 		}
 		if primaryPath != "" {
 			if abs, err := filepath.Abs(filepath.Dir(primaryPath)); err == nil {
@@ -5529,6 +5619,12 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 			}
 		}
 	}
+	return cfg, primaryPath, nil
+}
+
+// loadAgentFiles discovers the MD-defined agents and resolves every
+// system_prompt_file. Part of LoadLayers.
+func loadAgentFiles(cfg *Config, primaryPath string) error {
 	// Discover MD-defined agents BEFORE resolveSystemPromptFiles so
 	// the file-resolution pass sees a merged map. We read the env var
 	// inline here because the full Env struct is populated later in
@@ -5542,7 +5638,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// is populated purely from MDs).
 	if root := os.Getenv("LOOMCYCLE_AGENTS_ROOT"); root != "" {
 		if err := discoverAgents(cfg, root); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	// Resolve any agent's system_prompt_file → system_prompt (for both
@@ -5553,9 +5649,15 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// paths resolve against the YAML config file's directory" reduces
 	// to "the process's cwd" when there is no YAML).
 	if err := resolveSystemPromptFiles(cfg, primaryPath); err != nil {
-		return nil, err
+		return err
 	}
+	return nil
+}
 
+// applyEnvCore builds cfg.Env from the provider keys, listener, auth and
+// tool switches, with the sweeper and retention defaults the later blocks
+// read. It replaces cfg.Env whole, so it runs before every applyEnv block.
+func applyEnvCore(cfg *Config) {
 	cfg.Env = Env{
 		AnthropicAPIKey:             os.Getenv("ANTHROPIC_API_KEY"),
 		OpenAIAPIKey:                os.Getenv("OPENAI_API_KEY"),
@@ -5636,15 +5738,11 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		RetentionDefsKeepLastN:       5,
 		RetentionChatsInternalMaxAge: 3 * 24 * time.Hour,
 	}
+}
 
-	// RFC AH Phase 3 — the legacy filesystem jail is retired. The three env
-	// vars (LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD) no longer exist.
-	// Fail fast with a migration hint when a stale deploy still sets one,
-	// rather than silently denying every file op (sandbox-by-default).
-	if err := checkRetiredJailEnv(); err != nil {
-		return nil, err
-	}
-
+// applyEnvStorage reads the storage block's env overrides and defaults the
+// backend. Part of LoadLayers.
+func applyEnvStorage(cfg *Config) {
 	// Env-overrides for the storage block. Env wins over YAML so prod
 	// deploys can keep PG_DSN out of version-controlled config files.
 	// Empty env values fall through to whatever YAML provided.
@@ -5673,7 +5771,11 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if cfg.Storage.Backend == "" {
 		cfg.Storage.Backend = "sqlite"
 	}
+}
 
+// applyEnvSQLMem reads the SQL Memory env overrides, then defaults every
+// bound the operator left unset. Part of LoadLayers.
+func applyEnvSQLMem(cfg *Config) {
 	// RFC AA SQL Memory (Phase 1). Off by default; env overrides yaml.
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_ENABLED"); v == "1" {
 		cfg.Storage.SqlMemEnabled = true
@@ -5788,992 +5890,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if cfg.Storage.SqlMemMaxTxnDepth == 0 {
 		cfg.Storage.SqlMemMaxTxnDepth = 16
 	}
-
-	// Hooks block (v0.8.17). The env-var override APPENDS to whatever
-	// yaml already declared rather than replacing, so an operator can
-	// keep their static list in yaml and add an ops-only entry via env
-	// without rewriting the config file. Duplicates are tolerated — the
-	// registry's IsHostWidenPermitted() does set membership.
-	if v := os.Getenv("LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS"); v != "" {
-		for _, owner := range splitCSV(v) {
-			cfg.Hooks.PermitHostWiden.Owners = append(cfg.Hooks.PermitHostWiden.Owners, owner)
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST"); v != "" {
-		cfg.Hooks.PrivateHostAllowlist = append(cfg.Hooks.PrivateHostAllowlist, splitCSV(v)...)
-	}
-
-	// Checked against HTTPPrivateHostAllowlist in validate.
-	cfg.Env.HTTPPrivateHostAllowlistMode = strings.TrimSpace(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE"))
-	// Under cidr_only the operator's MCP servers dial through the guard by
-	// default too; an explicit =1 is refused in validate.
-	if cfg.Env.NetPolicy().CIDROnly() {
-		cfg.Env.MCPAllowPrivateIPs = getenvBool("LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS", false)
-	}
-
-	// gRPC server (v0.5.5+). Disabled by default; operator opts in
-	// by setting LOOMCYCLE_GRPC_ADDR. Coexists with HTTP+SSE (which
-	// remains the default and is on a separate port).
-	cfg.Env.GrpcAddr = os.Getenv("LOOMCYCLE_GRPC_ADDR")
-	// The unauthenticated metrics listener: off unless set.
-	cfg.Env.MetricsListenAddr = os.Getenv("LOOMCYCLE_METRICS_LISTEN")
-
-	// Heartbeat sweeper + session-lock GC env. All optional; defaults
-	// are sensible for a single-replica deployment.
-	cfg.Env.HeartbeatSweeperEnabled = os.Getenv("LOOMCYCLE_HEARTBEAT_SWEEPER") != "0"
-	if v := os.Getenv("LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.HeartbeatSweepInterval = time.Duration(n) * time.Millisecond
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_HEARTBEAT_STALE_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.HeartbeatStaleAfter = time.Duration(n) * time.Millisecond
-		}
-	}
-	// RFC DI D5 configured runs: draft TTL and per-user cap. A value that does
-	// not parse keeps the default; an explicit 0 turns the bound off.
-	if v := os.Getenv("LOOMCYCLE_CONFIGURED_RUN_TTL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Env.ConfiguredRunTTL = time.Duration(n) * time.Millisecond
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_MAX_CONFIGURED_RUNS_PER_USER"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Env.MaxConfiguredRunsPerUser = n
-		}
-	}
-	// Usage rollup-and-prune sweeper (RFC AV Phase 2b). Optional; the
-	// New() constructor applies the 1h/720h fallbacks when these stay 0.
-	cfg.Env.UsageSweeperEnabled = os.Getenv("LOOMCYCLE_USAGE_SWEEPER") != "0"
-	if v := os.Getenv("LOOMCYCLE_USAGE_SWEEP_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.UsageSweepInterval = time.Duration(n) * time.Millisecond
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_USAGE_DETAIL_RETENTION_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.UsageDetailRetention = time.Duration(n) * time.Millisecond
-		}
-	}
-	// RFC AV Phase 2b2 old-run archiver (opt-in; default OFF).
-	if v := os.Getenv("LOOMCYCLE_USAGE_RUN_RETENTION_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.UsageRunRetention = time.Duration(n) * time.Millisecond
-		}
-	}
-	cfg.Env.UsageRunRetentionMode = os.Getenv("LOOMCYCLE_USAGE_RUN_RETENTION_MODE")
-	cfg.Env.UsageExportDir = os.Getenv("LOOMCYCLE_USAGE_EXPORT_DIR")
-	// RFC BM data-retention sweeper (opt-in; default OFF). The New() constructor
-	// applies the 1h interval fallback when RetentionInterval stays 0.
-	cfg.Env.RetentionEnabled = os.Getenv("LOOMCYCLE_RETENTION_ENABLED") == "1"
-	// RFC FZ Part E: the store-backed audit stream and its retention. A typo
-	// fails the load rather than leaving an audit posture other than the one
-	// asked for.
-	switch v := strings.TrimSpace(os.Getenv("LOOMCYCLE_AUDIT_STORE")); v {
-	case "":
-	case "1":
-		cfg.Env.AuditStore = true
-	case "0":
-		cfg.Env.AuditStoreOff = true
-	default:
-		return nil, fmt.Errorf("LOOMCYCLE_AUDIT_STORE: %q is not 1 or 0", v)
-	}
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_AUDIT_RETENTION_DAYS")); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			return nil, fmt.Errorf("LOOMCYCLE_AUDIT_RETENTION_DAYS: %q is not a number of days (0 keeps every row)", v)
-		}
-		cfg.Env.AuditRetention = time.Duration(n) * 24 * time.Hour
-	}
-	if v := os.Getenv("LOOMCYCLE_RETENTION_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.RetentionInterval = time.Duration(n) * time.Millisecond
-		}
-	}
-	cfg.Env.RetentionExportDir = os.Getenv("LOOMCYCLE_RETENTION_EXPORT_DIR")
-	if v := os.Getenv("LOOMCYCLE_RETENTION_DEFS_MODE"); v != "" {
-		cfg.Env.RetentionDefsMode = v
-	}
-	if v := os.Getenv("LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.RetentionDefsMaxAge = time.Duration(n) * time.Millisecond
-		}
-	}
-	// keep-last-N accepts 0 (purge all); only a non-empty, non-negative value
-	// overrides the default-5 set above.
-	if v := os.Getenv("LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Env.RetentionDefsKeepLastN = n
-		}
-	}
-	// RFC BM Phase 2 aged-chat archiver (opt-in; default OFF).
-	if v := os.Getenv("LOOMCYCLE_RETENTION_CHATS_MODE"); v != "" {
-		cfg.Env.RetentionChatsMode = v
-	}
-	if v := os.Getenv("LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.RetentionChatsMaxAge = time.Duration(n) * time.Millisecond
-		}
-	}
-	// Internal-chat age. Accepts 0 — unlike the knobs above, 0 is a MEANINGFUL
-	// value here ("inherit the global chat age"), not an unset one, so the guard
-	// is n >= 0 and an explicit 0 overrides the 3-day default.
-	if v := os.Getenv("LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Env.RetentionChatsInternalMaxAge = time.Duration(n) * time.Millisecond
-		}
-	}
-	// Back-compat: the RFC AV Phase 2b2 aged-session archiver
-	// (LOOMCYCLE_USAGE_RUN_RETENTION_*) is subsumed by the RFC BM chats sweeper.
-	// When the operator hasn't set an explicit chats mode but HAS configured the
-	// legacy archiver, inherit its knobs so their config keeps pruning aged chats
-	// — now via the retention sweeper (which main.go then makes exclusive so the
-	// two never double-run). A positive RunRetention is the intent-to-prune
-	// signal; an empty legacy mode maps to "prune" (the archiver's only enabled
-	// non-export mode) so the inherited config actually takes effect.
-	// Back-compat alias: an operator's legacy usage aged-session archiver config
-	// (LOOMCYCLE_USAGE_RUN_RETENTION_*) drives the new retention chats family when
-	// its own knobs are unset. Inherit ONLY when the legacy archiver was GENUINELY
-	// enabled — RunRetention>0 AND a delete-bearing mode (prune|export+prune) —
-	// exactly matching the legacy runArchivalEnabled() gate. A legacy config with
-	// no/off mode was dormant (never deleted), so it must stay dormant here: never
-	// activate deletion the legacy config didn't do.
-	if cfg.Env.RetentionChatsMode == "" && cfg.Env.UsageRunRetention > 0 &&
-		(cfg.Env.UsageRunRetentionMode == "prune" || cfg.Env.UsageRunRetentionMode == "export+prune") {
-		cfg.Env.RetentionChatsMode = cfg.Env.UsageRunRetentionMode
-		cfg.Env.RetentionChatsMaxAge = cfg.Env.UsageRunRetention
-		if cfg.Env.RetentionExportDir == "" {
-			cfg.Env.RetentionExportDir = cfg.Env.UsageExportDir
-		}
-	}
-	// RFC BM Phase 3 retired-agent memory reclamation (opt-in; default OFF).
-	if v := os.Getenv("LOOMCYCLE_RETENTION_MEM_MODE"); v != "" {
-		cfg.Env.RetentionMemMode = v
-	}
-	if v := os.Getenv("LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.RetentionMemMaxAge = time.Duration(n) * time.Millisecond
-		}
-	}
-	// RFC BL P4d class-aware memory-content prune (opt-in; default OFF).
-	if v := os.Getenv("LOOMCYCLE_RETENTION_MEM_CONTENT_MODE"); v != "" {
-		cfg.Env.RetentionMemContentMode = v
-	}
-	if v := os.Getenv("LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.RetentionMemContentMaxAge = time.Duration(n) * time.Millisecond
-		}
-	}
-	// RFC CI trace index (opt-in; default OFF).
-	if v := os.Getenv("LOOMCYCLE_MEMORY_TRACE_INDEX"); v != "" {
-		cfg.Env.MemoryTraceIndexEnabled = v == "1" || strings.EqualFold(v, "true")
-	}
-	if v := os.Getenv("LOOMCYCLE_MEMORY_TRACE_ASSISTANT"); v != "" {
-		cfg.Env.MemoryTraceAssistantTurns = v == "1" || strings.EqualFold(v, "true")
-	}
-	if v := os.Getenv("LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.MemoryTraceMaxAge = time.Duration(n) * time.Millisecond
-		}
-	}
-	// RFC CX-5 empty-dossier sweep (opt-in; default OFF).
-	if v := os.Getenv("LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE"); v != "" {
-		cfg.Env.RetentionEmptyDossierMode = v
-	}
-	if v := os.Getenv("LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.RetentionEmptyDossierMaxAge = time.Duration(n) * time.Millisecond
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_REPLICAS_SWEEP_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.ReplicasSweepInterval = time.Duration(n) * time.Millisecond
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_REPLICAS_STALE_AFTER_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.ReplicasStaleAfter = time.Duration(n) * time.Millisecond
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.SessionLockGCInterval = time.Duration(n) * time.Millisecond
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.SessionLockMaxIdle = time.Duration(n) * time.Millisecond
-		}
-	}
-	// LOOMCYCLE_TOOL_PARALLELISM overrides the per-iteration
-	// tool_call concurrency cap (default 8). Floor 1, ceiling 64
-	// — anything beyond 64 would spawn a goroutine storm that
-	// outweighs realistic fan-out. Zero / negative values fall
-	// through to the default.
-	if v := os.Getenv("LOOMCYCLE_TOOL_PARALLELISM"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			if n > 64 {
-				n = 64
-			}
-			cfg.Env.ToolParallelism = n
-		}
-	}
-	// LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX overrides the ollama-local
-	// driver's options.num_ctx. Required when running prompts above
-	// ~4k tokens against a local Ollama whose Modelfile doesn't pin
-	// num_ctx — see the field doc on Env.OllamaLocalNumCtx.
-	if v := os.Getenv("LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.OllamaLocalNumCtx = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_OLLAMA_NUM_CTX"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.OllamaNumCtx = n
-		}
-	}
-	// LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU forces the number of model layers
-	// Ollama offloads to the GPU on every ollama-local request — see the
-	// field doc on Env.OllamaLocalNumGpu. 0/unset = omit (Ollama
-	// auto-detects); a literal 0 must NOT be sent (it would force CPU).
-	if v := os.Getenv("LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.OllamaLocalNumGpu = n
-		}
-	}
-	// LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS overrides the default 15-min
-	// probe cadence. Clamped to a 1-hour ceiling so a typo or
-	// misunderstanding can't stretch the recovery window beyond what
-	// the design assumed. Sub-minute intervals are also clamped up to
-	// 60s — anything tighter risks hammering provider /v1/models
-	// endpoints for negligible recovery-time benefit.
-	if v := os.Getenv("LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			d := time.Duration(n) * time.Millisecond
-			const minProbe = 60 * time.Second
-			const maxProbe = 60 * time.Minute
-			if d < minProbe {
-				d = minProbe
-			}
-			if d > maxProbe {
-				d = maxProbe
-			}
-			cfg.Env.ResolveProbeInterval = d
-		}
-	}
-	// LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS: when set to "1",
-	// suppress provider fallback after the first successful turn.
-	// Opt-in for v0.8.x; default-on planned for v0.9.x.
-	cfg.Env.FallbackPinAfterSuccess = os.Getenv("LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS") == "1"
-	// LOOMCYCLE_SSE_KEEPALIVE_MS sets the SSE keepalive cadence.
-	// Default 20 s; 0 (or any value ≤ 0) disables. Floor 1 s for
-	// positive values so a misconfigured tiny value can't busy-loop
-	// the writer; ceiling 5 min so a misread (e.g. seconds vs ms)
-	// can't effectively disable keepalive in practice.
-	//
-	// Treating negative values as "disable" (same as 0) matches
-	// operator intent for the typical typo case and is consistent
-	// with the disable contract on `sse.startKeepalive` itself
-	// (interval <= 0 → no goroutine).
-	cfg.Env.SSEKeepaliveInterval = 20 * time.Second
-	if v := os.Getenv("LOOMCYCLE_SSE_KEEPALIVE_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.SSEKeepaliveInterval = 0
-			} else {
-				d := time.Duration(n) * time.Millisecond
-				const minSSE = 1 * time.Second
-				const maxSSE = 5 * time.Minute
-				if d < minSSE {
-					d = minSSE
-				}
-				if d > maxSSE {
-					d = maxSSE
-				}
-				cfg.Env.SSEKeepaliveInterval = d
-			}
-		}
-	}
-
-	// Memory tool defaults. Per-write 64 KB, per-scope 1 MB,
-	// 15-minute TTL sweep cadence. Negative values are treated as
-	// "disable" (matches the SSE keepalive convention above).
-	cfg.Env.MemoryMaxValueBytes = 64 * 1024
-	if v := os.Getenv("LOOMCYCLE_MEMORY_MAX_VALUE_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.MemoryMaxValueBytes = 0
-			} else {
-				cfg.Env.MemoryMaxValueBytes = n
-			}
-		}
-	}
-	cfg.Env.DocumentFeedMaxStreams = 4
-	if v := os.Getenv("LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Env.DocumentFeedMaxStreams = max(n, 0)
-		}
-	}
-	cfg.Env.MemoryMaxScopeBytes = 1024 * 1024
-	if v := os.Getenv("LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.MemoryMaxScopeBytes = 0
-			} else {
-				cfg.Env.MemoryMaxScopeBytes = n
-			}
-		}
-	}
-	cfg.Env.DeadLinkGCInterval = time.Hour
-	if v := os.Getenv("LOOMCYCLE_DEADLINK_GC_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.DeadLinkGCInterval = 0
-			} else {
-				cfg.Env.DeadLinkGCInterval = time.Duration(n) * time.Millisecond
-			}
-		}
-	}
-	cfg.Env.DeadLinkGCDryRun = os.Getenv("LOOMCYCLE_DEADLINK_GC_DRY_RUN") == "1"
-	cfg.Env.DocumentProjectionInterval = os.Getenv("LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL")
-	cfg.Env.MemorySweepInterval = 15 * time.Minute
-	if v := os.Getenv("LOOMCYCLE_MEMORY_SWEEP_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.MemorySweepInterval = 0
-			} else {
-				cfg.Env.MemorySweepInterval = time.Duration(n) * time.Millisecond
-			}
-		}
-	}
-	cfg.Env.MemoryPendingDrainedTTL = 7 * 24 * time.Hour
-	if v := os.Getenv("LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			if n <= 0 {
-				cfg.Env.MemoryPendingDrainedTTL = 0
-			} else {
-				cfg.Env.MemoryPendingDrainedTTL = time.Duration(n) * time.Millisecond
-			}
-		}
-	}
-
-	// v0.9.0 Vector Memory env vars.
-	cfg.Env.PgvectorEnabled = os.Getenv("LOOMCYCLE_PGVECTOR_ENABLED") == "1"
-	cfg.Env.SqliteVecPath = os.Getenv("LOOMCYCLE_SQLITE_VEC_PATH")
-	cfg.Env.MemoryEmbedBatchSize = 100
-	if v := os.Getenv("LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.MemoryEmbedBatchSize = 0
-			} else {
-				cfg.Env.MemoryEmbedBatchSize = n
-			}
-		}
-	}
-	cfg.Env.MemoryEmbedTimeoutMs = 30000
-	if v := os.Getenv("LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.MemoryEmbedTimeoutMs = 0
-			} else {
-				cfg.Env.MemoryEmbedTimeoutMs = n
-			}
-		}
-	}
-
-	// v0.10.1 per-tenant fairness env var. Yaml is the canonical source
-	// (cfg.Concurrency.MaxConcurrentRunsPerUser); the env override lets
-	// containerized operators set it without editing the mounted yaml.
-	// Negative values clamp to 0 (= disabled, back-compat).
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n < 0 {
-				cfg.Concurrency.MaxConcurrentRunsPerUser = 0
-			} else {
-				cfg.Concurrency.MaxConcurrentRunsPerUser = n
-			}
-		}
-	}
-
-	// How many runs one (tenant, user) may have queued on its per-user cap.
-	// Negative values are ignored (keep the default).
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Concurrency.MaxQueuedRunsPerUser = n
-		}
-	}
-
-	// How many requests that hold no run slot may wait for a capped provider.
-	// Defaults to the global max_queue_depth (see ProviderQueueDepthOrDefault);
-	// this env override lets a containerized operator tune it without editing
-	// mounted yaml.
-	// Negative values are ignored (keep the inherit-0).
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_PROVIDER_QUEUE_DEPTH")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Concurrency.ProviderQueueDepth = n
-		}
-	}
-
-	// Channel tool defaults (v0.8.4). Per-write 64 KB, 15-minute
-	// TTL sweep cadence, 30 s long-poll cap — same shape as Memory's
-	// negative-as-disable convention.
-	cfg.Env.ChannelsMaxValueBytes = 64 * 1024
-	if v := os.Getenv("LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.ChannelsMaxValueBytes = 0
-			} else {
-				cfg.Env.ChannelsMaxValueBytes = n
-			}
-		}
-	}
-	// Run-ingest body cap (RFC AT). Default 16 MiB so a request can carry an
-	// inline base64 image; a positive override tunes it, a non-positive value
-	// is ignored (keep the default — the cap is a security floor).
-	cfg.Env.MaxRequestBytes = 16 << 20
-	if v := os.Getenv("LOOMCYCLE_MAX_REQUEST_BYTES"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			cfg.Env.MaxRequestBytes = n
-		}
-	}
-	// The audio routes' engine queues. A non-positive value is ignored: zero
-	// slots would park every request for good.
-	cfg.Env.SpeechMaxInflight = AudioMaxInflightDefault
-	cfg.Env.TranscriptionMaxInflight = AudioMaxInflightDefault
-	for name, dst := range map[string]*int{
-		"LOOMCYCLE_SPEECH_MAX_INFLIGHT":        &cfg.Env.SpeechMaxInflight,
-		"LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT": &cfg.Env.TranscriptionMaxInflight,
-	} {
-		if n, err := strconv.Atoi(os.Getenv(name)); err == nil && n > 0 {
-			*dst = n
-		}
-	}
-	// Bashbox in-memory write cap (RFC ES follow-up): a positive override
-	// tunes it; a non-positive or malformed value keeps the default, since
-	// the cap is what keeps one call from exhausting the shared heap. gbash
-	// writes a few KiB of command stubs into the overlay as each call starts,
-	// so a value under 1 MiB is raised to 1 MiB rather than failing every
-	// call on a read-only volume.
-	cfg.Env.BashboxOverlayMaxBytes = BashboxOverlayMaxBytesDefault
-	if v := os.Getenv("LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			cfg.Env.BashboxOverlayMaxBytes = max(n, 1<<20)
-		}
-	}
-	// Git push upload cap (RFC FB). Refused rather than defaulted when it
-	// does not parse: a cap the operator meant to lower, read as the default,
-	// would let a push send more than they allowed.
-	cfg.Env.GitPushMaxBytes = GitPushMaxBytesDefault
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_PUSH_MAX_BYTES")); v != "" {
-		n, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || n <= 0 {
-			return nil, fmt.Errorf("LOOMCYCLE_GIT_PUSH_MAX_BYTES: %q is not a positive number of bytes", v)
-		}
-		cfg.Env.GitPushMaxBytes = n
-	}
-	// Inbox and MCP frame caps (RFC FF). Refused rather than defaulted when
-	// they do not parse, as the push cap is: a cap meant to be lowered and
-	// read as the default would keep more than the operator allowed.
-	for _, c := range []struct {
-		env string
-		dst *int64
-		def int64
-	}{
-		{"LOOMCYCLE_FILE_MAX_BYTES", &cfg.Env.FileMaxBytes, FileMaxBytesDefault},
-		{"LOOMCYCLE_FILE_INBOX_MAX_BYTES", &cfg.Env.FileInboxMaxBytes, FileInboxMaxBytesDefault},
-		{"LOOMCYCLE_FILE_BASE64_MIN_BYTES", &cfg.Env.FileBase64MinBytes, FileBase64MinBytesDefault},
-		{"LOOMCYCLE_MCP_MAX_FRAME_BYTES", &cfg.Env.MCPMaxFrameBytes, MCPMaxFrameBytesDefault},
-	} {
-		*c.dst = c.def
-		if v := strings.TrimSpace(os.Getenv(c.env)); v != "" {
-			n, err := strconv.ParseInt(v, 10, 64)
-			if err != nil || n <= 0 {
-				return nil, fmt.Errorf("%s: %q is not a positive number of bytes", c.env, v)
-			}
-			*c.dst = n
-		}
-	}
-	// Extraction concurrency (RFC FZ Part B). Unset or non-positive takes
-	// GOMAXPROCS; a value that does not parse is refused rather than
-	// defaulted, so a bound the operator meant to lower is never read as a
-	// higher one.
-	cfg.Env.ExtractConcurrency = runtime.GOMAXPROCS(0)
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_EXTRACT_CONCURRENCY")); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return nil, fmt.Errorf("LOOMCYCLE_EXTRACT_CONCURRENCY: %q is not a whole number", v)
-		}
-		if n > 0 {
-			cfg.Env.ExtractConcurrency = n
-		}
-	}
-	// Crypto tool limits (RFC EP): a positive override tunes each; a
-	// non-positive or malformed value keeps the default.
-	cfg.Env.CryptoMaxBytes = 1 << 20
-	if v := os.Getenv("LOOMCYCLE_CRYPTO_MAX_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.CryptoMaxBytes = n
-		}
-	}
-	cfg.Env.CryptoMaxOpsPerRun = 100
-	if v := os.Getenv("LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.CryptoMaxOpsPerRun = n
-		}
-	}
-	cfg.Env.KMSVaultAllowHTTP = os.Getenv("LOOMCYCLE_KMS_VAULT_ALLOW_HTTP") == "1"
-	cfg.Env.MaxDocumentAssetBytes = 8 << 20 // RFC BO
-	if v := os.Getenv("LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			cfg.Env.MaxDocumentAssetBytes = n
-		}
-	}
-	cfg.Env.DocumentSearchFilterMaxIDs = 50000
-	if v := os.Getenv("LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.DocumentSearchFilterMaxIDs = n
-		}
-	}
-	cfg.Env.ChannelsSweepInterval = 15 * time.Minute
-	if v := os.Getenv("LOOMCYCLE_CHANNELS_SWEEP_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.ChannelsSweepInterval = 0
-			} else {
-				cfg.Env.ChannelsSweepInterval = time.Duration(n) * time.Millisecond
-			}
-		}
-	}
-	cfg.Env.ChannelsLongPollCapMS = 30000
-	if v := os.Getenv("LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.ChannelsLongPollCapMS = 0
-			} else {
-				cfg.Env.ChannelsLongPollCapMS = n
-			}
-		}
-	}
-	cfg.Env.ChannelsMaxPendingDeferred = 10000
-	if v := os.Getenv("LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.ChannelsMaxPendingDeferred = 0
-			} else {
-				cfg.Env.ChannelsMaxPendingDeferred = n
-			}
-		}
-	}
-
-	// v0.8.x process-resource metrics sampler. Default OFF; operator
-	// RFC J code-js provider. Default OFF; the provider is registered in
-	// main.go only when enabled. Root defaults to ./agent_code (mirrors
-	// the skills bundling convention). Timeout floored at 1s.
-	cfg.Env.CodeAgentsEnabled = os.Getenv("LOOMCYCLE_CODE_AGENTS_ENABLED") == "1"
-	cfg.Env.CodeHooksEnabled = os.Getenv("LOOMCYCLE_CODE_HOOKS_ENABLED") == "1"
-	cfg.Env.ChannelHooksEnabled = os.Getenv("LOOMCYCLE_CHANNEL_HOOKS") == "1"
-	cfg.Env.ChannelHooksConcurrency, cfg.Env.ChannelHooksPerChannel = 16, 4
-	for name, dst := range map[string]*int{
-		"LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY": &cfg.Env.ChannelHooksConcurrency,
-		"LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL": &cfg.Env.ChannelHooksPerChannel,
-	} {
-		if n, err := strconv.Atoi(os.Getenv(name)); err == nil && n > 0 {
-			*dst = n
-		}
-	}
-	cfg.Env.ChannelHooksMaxWait = 15 * time.Minute
-	if d, err := time.ParseDuration(os.Getenv("LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT")); err == nil && d > 0 {
-		cfg.Env.ChannelHooksMaxWait = d
-	}
-	// Refused rather than defaulted when it does not parse: "60" meant as
-	// minutes, read as the hour default, would end chats nobody expected to.
-	cfg.Env.InteractiveIdleTimeout = time.Hour
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT")); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d < 0 {
-			return nil, fmt.Errorf("LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT: %q is not a duration such as 1h or 30m (0 waits forever)", v)
-		}
-		cfg.Env.InteractiveIdleTimeout = d
-	}
-	// An hour, as for a parked interactive run: a join that has waited that
-	// long is waiting on a run nobody is driving to an end. Refused rather
-	// than defaulted when it does not parse, for the same reason as above.
-	cfg.Env.BatchJoinTimeout = time.Hour
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_BATCH_JOIN_TIMEOUT")); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d < 0 {
-			return nil, fmt.Errorf("LOOMCYCLE_BATCH_JOIN_TIMEOUT: %q is not a duration such as 1h or 30m (0 = no server bound)", v)
-		}
-		cfg.Env.BatchJoinTimeout = d
-	}
-	cfg.Env.CodeAgentsRoot = "./agent_code"
-	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_ROOT"); v != "" {
-		cfg.Env.CodeAgentsRoot = v
-	}
-	cfg.Env.CodeAgentsDeterministic = os.Getenv("LOOMCYCLE_CODE_AGENTS_DETERMINISTIC") == "1"
-	cfg.Env.CodeAgentsRunTimeout = 120 * time.Second
-	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			d := time.Duration(n) * time.Second
-			if d < time.Second {
-				d = time.Second
-			}
-			cfg.Env.CodeAgentsRunTimeout = d
-		}
-	}
-	cfg.Env.CodeAgentsMaxWall = 24 * time.Hour
-	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.CodeAgentsMaxWall = time.Duration(n) * time.Second
-		}
-	}
-
-	// opts in via LOOMCYCLE_METRICS_ENABLED=1.
-	cfg.Env.MetricsEnabled = os.Getenv("LOOMCYCLE_METRICS_ENABLED") == "1"
-	cfg.Env.MetricsSampleInterval = 5 * time.Second
-	if v := os.Getenv("LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			d := time.Duration(n) * time.Millisecond
-			// Floor 1s to prevent accidental write-storms from a
-			// typo'd value like 50 (interpreted as 50ms not 5s).
-			const minInterval = 1 * time.Second
-			if d < minInterval {
-				d = minInterval
-			}
-			cfg.Env.MetricsSampleInterval = d
-		}
-	}
-	cfg.Env.MetricsRetentionDays = 7
-	if v := os.Getenv("LOOMCYCLE_METRICS_RETENTION_DAYS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Env.MetricsRetentionDays = n
-		}
-	}
-	cfg.Env.MetricsCollectSystem = os.Getenv("LOOMCYCLE_METRICS_COLLECT_SYSTEM") == "1"
-
-	// v1.x RFC E scheduler runtime. Default OFF; operator opts in via
-	// LOOMCYCLE_SCHEDULER_ENABLED=1. When false the sweeper goroutine
-	// is not started — ScheduleDef tool still works for authoring +
-	// listing, but nothing fires.
-	cfg.Env.SchedulerEnabled = os.Getenv("LOOMCYCLE_SCHEDULER_ENABLED") == "1"
-	cfg.Env.SchedulerTickSeconds = 30
-	if v := os.Getenv("LOOMCYCLE_SCHEDULER_TICK_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.SchedulerTickSeconds = n
-		}
-	}
-	// RFC CY L5: the armed-subscription sweep. Default 15s — the worst-case
-	// latency between a message landing on a subscribed source and its wave
-	// starting. Only read when TeamSubscriptions is on.
-	cfg.Env.TeamSubscriptionsTickSeconds = 15
-	if v := os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS_TICK_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.TeamSubscriptionsTickSeconds = n
-		}
-	}
-	// RFC BL P2 consolidation fan-out caps. Left at 0 the scheduler applies its
-	// own documented defaults (32 targets, 4 concurrent), so an unset env is not
-	// "unbounded".
-	if v := os.Getenv("LOOMCYCLE_MAX_CONSOLIDATION_TARGETS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.MaxConsolidationTargets = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.MaxConsolidationConcurrency = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST"); v != "" {
-		for _, name := range strings.Split(v, ",") {
-			name = strings.TrimSpace(name)
-			if name != "" {
-				cfg.Env.SchedulerEnvAllowlist = append(cfg.Env.SchedulerEnvAllowlist, name)
-			}
-		}
-	}
-
-	// v1.x RFC H inbound-webhook receiver. Default OFF; operator opts in
-	// via LOOMCYCLE_WEBHOOKS_ENABLED=1. Mirrors SchedulerEnabled — when
-	// false the receiver route is not mounted; the WebhookDef tool still
-	// works for authoring + listing.
-	cfg.Env.WebhooksEnabled = os.Getenv("LOOMCYCLE_WEBHOOKS_ENABLED") == "1"
-	if v := os.Getenv("LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST"); v != "" {
-		for _, name := range strings.Split(v, ",") {
-			name = strings.TrimSpace(name)
-			if name != "" {
-				cfg.Env.WebhooksEnvAllowlist = append(cfg.Env.WebhooksEnvAllowlist, name)
-			}
-		}
-	}
-	cfg.Env.WebhooksAllowUnauthenticated = os.Getenv("LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED") == "1"
-
-	// v1.x RFC G A2A server surface. Default OFF; operator opts in via
-	// LOOMCYCLE_A2A_ENABLED=1 + names the active card to serve. Tenancy
-	// routing is host/path-authoritative (trust boundary), never from a
-	// request body.
-	cfg.Env.A2AServerEnabled = os.Getenv("LOOMCYCLE_A2A_ENABLED") == "1"
-	cfg.Env.A2AServerCardName = strings.TrimSpace(os.Getenv("LOOMCYCLE_A2A_SERVER_CARD"))
-	cfg.Env.A2ATenancyRouting = strings.TrimSpace(os.Getenv("LOOMCYCLE_A2A_TENANCY_ROUTING"))
-	cfg.Env.A2APublicBaseURL = strings.TrimRight(strings.TrimSpace(os.Getenv("LOOMCYCLE_A2A_PUBLIC_BASE_URL")), "/")
-	if cfg.Env.A2AServerEnabled {
-		switch cfg.Env.A2ATenancyRouting {
-		case "", "none", "host", "path":
-		default:
-			return nil, fmt.Errorf("LOOMCYCLE_A2A_TENANCY_ROUTING: must be one of none|host|path, got %q", cfg.Env.A2ATenancyRouting)
-		}
-		if cfg.Env.A2AServerCardName == "" {
-			return nil, fmt.Errorf("LOOMCYCLE_A2A_ENABLED=1 requires LOOMCYCLE_A2A_SERVER_CARD to name the active server card")
-		}
-	}
-
-	// v0.12.0 multi-replica HA: cluster mode activates when REPLICA_ID
-	// is set. Validation is by coord.ValidateReplicaID; we re-implement
-	// the regex here to avoid an import cycle (coord depends on config
-	// via Env propagation in main.go, not the other way around).
-	cfg.Env.ReplicaID = os.Getenv("LOOMCYCLE_REPLICA_ID")
-	if cfg.Env.ReplicaID != "" {
-		if err := validateReplicaID(cfg.Env.ReplicaID); err != nil {
-			return nil, fmt.Errorf("LOOMCYCLE_REPLICA_ID: %w", err)
-		}
-	}
-	cfg.Env.TraceURLTemplate = strings.TrimSpace(os.Getenv("LOOMCYCLE_TRACE_URL_TEMPLATE"))
-	if err := validateTraceURLTemplate(cfg.Env.TraceURLTemplate); err != nil {
-		return nil, fmt.Errorf("LOOMCYCLE_TRACE_URL_TEMPLATE: %w", err)
-	}
-	cfg.Env.CancelAckTimeoutMs = 5000
-	if v := os.Getenv("LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			cfg.Env.CancelAckTimeoutMs = n
-		}
-	}
-
-	cfg.Env.MetricsSweepInterval = 15 * time.Minute
-	if v := os.Getenv("LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.MetricsSweepInterval = 0
-			} else {
-				cfg.Env.MetricsSweepInterval = time.Duration(n) * time.Millisecond
-			}
-		}
-	}
-
-	// v0.12.3 Phase 4 pause-state cache TTL. Effective only when
-	// LOOMCYCLE_REPLICA_ID is set (cluster mode); single-replica
-	// pause.Manager skips the DB cache entirely.
-	cfg.Env.PauseCacheTTLMs = 1000 // default 1s
-	if v := os.Getenv("LOOMCYCLE_PAUSE_CACHE_TTL_MS"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			cfg.Env.PauseCacheTTLMs = n
-		}
-	}
-
-	// RFC ES F1: the shutdown pause's bound. Unset ⇒ the default; an explicit
-	// 0 turns the pause off, so it is told apart from unset.
-	cfg.Env.ShutdownPauseTimeoutMs = DefaultShutdownPauseTimeoutMs
-	if v := os.Getenv("LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
-			cfg.Env.ShutdownPauseTimeoutMs = n
-		}
-	}
-
-	// v0.8.17 pause manager default timeout. 0 ⇒ pause package
-	// default (30s). The manager itself clamps at pause.MaxPauseTimeout
-	// regardless of what we set here.
-	if v := os.Getenv("LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			cfg.Env.PauseDefaultTimeoutMs = n
-		}
-	}
-
-	// v0.8.15 LoomCycle MCP: dynamic agent registration policy.
-	cfg.Env.MCPAllowPrivilegedTools = os.Getenv("LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS") == "1"
-	cfg.Env.MCPAllowDynamicStdio = os.Getenv("LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO") == "1"
-	cfg.Env.MCPDialUnattributedEnv = !getenvBool("LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV", true)
-	// F32: default-ON. Only an explicit "0" disables redaction; an unset var
-	// keeps the secure posture (secrets masked before persistence).
-	cfg.Env.RedactSecrets = os.Getenv("LOOMCYCLE_REDACT_SECRETS") != "0"
-	cfg.Env.DynamicAgentDefaultTTLSeconds = 86400 // 24h
-	if v := os.Getenv("LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Env.DynamicAgentDefaultTTLSeconds = n
-		}
-	}
-	cfg.Env.DynamicAgentSweepInterval = 15 * time.Minute
-	if v := os.Getenv("LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.DynamicAgentSweepInterval = 0
-			} else {
-				cfg.Env.DynamicAgentSweepInterval = time.Duration(n) * time.Millisecond
-			}
-		}
-	}
-
-	// RFC AH Phase 2b ephemeral-volume crash-recovery sweeper. Default 60s;
-	// 0 disables (the inline run-completion purge still runs).
-	cfg.Env.EphemeralVolumeSweepInterval = 60 * time.Second
-	if v := os.Getenv("LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.EphemeralVolumeSweepInterval = 0
-			} else {
-				cfg.Env.EphemeralVolumeSweepInterval = time.Duration(n) * time.Millisecond
-			}
-		}
-	}
-
-	// v0.8.5 substrate caps. Same negative-as-disable convention as
-	// Memory + Channel sibling caps.
-	cfg.Env.AgentDefMaxDefinitionBytes = 131072
-	if v := os.Getenv("LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.AgentDefMaxDefinitionBytes = 0
-			} else {
-				cfg.Env.AgentDefMaxDefinitionBytes = n
-			}
-		}
-	}
-	cfg.Env.TeamDefMaxDefinitionBytes = 1048576
-	if v := os.Getenv("LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.TeamDefMaxDefinitionBytes = 0
-			} else {
-				cfg.Env.TeamDefMaxDefinitionBytes = n
-			}
-		}
-	}
-	cfg.Env.AgentDefMaxDescriptionBytes = 8192
-	if v := os.Getenv("LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.AgentDefMaxDescriptionBytes = 0
-			} else {
-				cfg.Env.AgentDefMaxDescriptionBytes = n
-			}
-		}
-	}
-	cfg.Env.AgentDefMaxCodeBytes = 262144
-	if v := os.Getenv("LOOMCYCLE_AGENT_DEF_MAX_CODE_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.AgentDefMaxCodeBytes = 0
-			} else {
-				cfg.Env.AgentDefMaxCodeBytes = n
-			}
-		}
-	}
-	// v0.8.22 SkillDef caps. Mirror of AgentDef caps.
-	cfg.Env.SkillDefMaxBodyBytes = 131072
-	if v := os.Getenv("LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.SkillDefMaxBodyBytes = 0
-			} else {
-				cfg.Env.SkillDefMaxBodyBytes = n
-			}
-		}
-	}
-	cfg.Env.SkillDefMaxDescriptionBytes = 8192
-	if v := os.Getenv("LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.SkillDefMaxDescriptionBytes = 0
-			} else {
-				cfg.Env.SkillDefMaxDescriptionBytes = n
-			}
-		}
-	}
-	cfg.Env.EvaluationMaxJudgementBytes = 32768
-	if v := os.Getenv("LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.EvaluationMaxJudgementBytes = 0
-			} else {
-				cfg.Env.EvaluationMaxJudgementBytes = n
-			}
-		}
-	}
-	cfg.Env.EvaluationMaxRationaleBytes = 8192
-	if v := os.Getenv("LOOMCYCLE_EVALUATION_MAX_RATIONALE_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.EvaluationMaxRationaleBytes = 0
-			} else {
-				cfg.Env.EvaluationMaxRationaleBytes = n
-			}
-		}
-	}
-
-	// Provider streaming timeouts. Defaults match streamhttp.Default*.
-	// Negative or zero values are NOT treated as "disable" — there's no
-	// safe interpretation of "stream forever" given the agent loop's
-	// liveness assumptions. Operators bumping these should pick a real
-	// number; bad input falls through to the default.
-	cfg.Env.ProviderHeaderTimeout = 60 * time.Second
-	if v := os.Getenv("LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.ProviderHeaderTimeout = time.Duration(n) * time.Millisecond
-		}
-	}
-	cfg.Env.ProviderIdleTimeout = 90 * time.Second
-	if v := os.Getenv("LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.ProviderIdleTimeout = time.Duration(n) * time.Millisecond
-		}
-	}
-
-	// Local Ollama gets a MUCH more generous default than the cloud providers:
-	// a cold model load + large-context prompt eval genuinely takes minutes to
-	// first token — a 27B-class model at a 128K num_ctx on non-datacenter
-	// hardware routinely exceeds 5 min just to LOAD (Ollama sends no response
-	// headers until the model is resident + generation starts, so the header
-	// timeout covers LOAD time). The old 300s default surfaced as "net/http:
-	// timeout awaiting response headers" on exactly that setup — loomcycle
-	// giving up before a healthy local model had answered. 600s (10 min) is a
-	// realistic patient default; still bounded so a genuinely dead server fails
-	// over. A very large model / slow box raises
-	// LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS further. Scoped to the
-	// ollama-local registration; see the field docs on Env.OllamaLocalHeaderTimeout.
-	cfg.Env.OllamaLocalHeaderTimeout = 600 * time.Second
-	if v := os.Getenv("LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.OllamaLocalHeaderTimeout = time.Duration(n) * time.Millisecond
-		}
-	}
-	cfg.Env.OllamaLocalIdleTimeout = 600 * time.Second
-	if v := os.Getenv("LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.OllamaLocalIdleTimeout = time.Duration(n) * time.Millisecond
-		}
-	}
-
-	// RFC DT: the throughput-measurement block's env overrides + defaults.
-	applyTimeoutScaling(cfg)
-
-	// RFC BA: skills are on-demand (loaded via the Skill tool), not bundled
-	// into the prompt. Auto-add the Skill tool to every agent that may use a
-	// skill so on-demand access is the default. No skills-root/prompt work
-	// here anymore — the SkillsRoot registry is loaded once at boot in
-	// cmd/loomcycle (shared with the Skill/SkillDef tools + the Library).
-	addSkillToolDefaults(cfg)
-
-	// v0.8.7 default-add: every agent gets Context auto-appended to its tools
-	// unless `disable_context: true` is set.
-	addContextToolDefaults(cfg)
-
-	// RFC FZ D8: one operator wrapper confines every helper command.
-	cfg.Env.HelperWrapper = strings.TrimSpace(os.Getenv("LOOMCYCLE_HELPER_WRAPPER"))
-	stampHelperWrapper(cfg)
-
-	if err := validate(cfg); err != nil {
-		return nil, err
-	}
-	return cfg, nil
 }
 
 // addContextToolDefaults appends "Context" to every agent's
