@@ -249,9 +249,39 @@ func TestManagerTest_SendsThroughTheRealPipelineAndScrubsFailures(t *testing.T) 
 	c.mu.Lock()
 	c.refuse = true
 	c.mu.Unlock()
+	f.now = f.now.Add(TestInterval)
 	err := f.m.Test(ctx, "acme")
-	if err == nil || !strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "tok-0123456789") {
-		t.Fatalf("test against a refusing collector: %v", err)
+	if err == nil || err.Error() != "http_401" {
+		t.Fatalf("test against a refusing collector: %v, want the category http_401 alone", err)
+	}
+}
+
+// A test is an outbound request a tenant triggers at will: one per tenant per
+// TestInterval on each replica.
+func TestManagerTest_IsLimitedToOnePerTenantPerInterval(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{}, c)
+	ctx := context.Background()
+	for _, tenant := range []string{"acme", "beta"} {
+		if _, err := f.put(ctx, tenant, PolicyInput{Endpoint: c.srv.URL}, "ops"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.m.Test(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.Test(ctx, "acme"); !errors.Is(err, ErrRateLimited) {
+		t.Errorf("a second test at once: %v, want ErrRateLimited", err)
+	}
+	if err := f.m.Test(ctx, "beta"); err != nil {
+		t.Errorf("another tenant's test was held by acme's: %v", err)
+	}
+	f.now = f.now.Add(TestInterval)
+	if err := f.m.Test(ctx, "acme"); err != nil {
+		t.Errorf("a test after the interval: %v", err)
+	}
+	if n := c.count(); n != 3 {
+		t.Errorf("the collector got %d test spans, want 3", n)
 	}
 }
 

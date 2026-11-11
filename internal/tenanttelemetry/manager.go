@@ -87,6 +87,8 @@ type Manager struct {
 	// locks serialise each tenant's read-then-apply (reload). One per tenant
 	// ever seen here: bounded by the tenants with a policy.
 	locks map[string]*sync.Mutex
+	// lastTest is when each tenant last ran the test here.
+	lastTest map[string]time.Time
 }
 
 // applied is what this replica last made of one tenant's policy.
@@ -116,7 +118,7 @@ func New(d Deps) (*Manager, error) {
 	return &Manager{
 		cfg: d.Config, st: d.Store, creds: d.Credentials, router: d.Router, dial: d.Dial,
 		registerSecret: d.RegisterSecret, version: d.ServiceVersion, now: now, tlsConfig: d.TLSConfig,
-		applied: map[string]applied{}, locks: map[string]*sync.Mutex{},
+		applied: map[string]applied{}, locks: map[string]*sync.Mutex{}, lastTest: map[string]time.Time{},
 	}, nil
 }
 
@@ -211,6 +213,9 @@ func (m *Manager) Test(ctx context.Context, tenant string) error {
 	if row == nil {
 		return invalid("this tenant has no telemetry policy to test")
 	}
+	if !m.mayTest(tenant) {
+		return fmt.Errorf("%w: one test per %s", ErrRateLimited, TestInterval)
+	}
 	valid, err := m.ValidStored(*row)
 	if err != nil {
 		return err
@@ -219,7 +224,26 @@ func (m *Manager) Test(ctx context.Context, tenant string) error {
 	if err != nil {
 		return err
 	}
-	return lcotel.TestTenantExport(ctx, tenant, d, m.version, lcotel.DefaultTenantExportTimeout)
+	return m.router.Test(ctx, tenant, d, lcotel.DefaultTenantExportTimeout)
+}
+
+// TestInterval is how often each tenant may run the test on one replica: a
+// test is an outbound request a tenant triggers at will.
+const TestInterval = 10 * time.Second
+
+// ErrRateLimited is a test asked for within TestInterval of the last one.
+var ErrRateLimited = errors.New("tenant telemetry: a test was run moments ago")
+
+// mayTest reports whether tenant may run a test now, and if so records it.
+func (m *Manager) mayTest(tenant string) bool {
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if last, ok := m.lastTest[tenant]; ok && now.Sub(last) < TestInterval {
+		return false
+	}
+	m.lastTest[tenant] = now
+	return true
 }
 
 // ValidStored holds a stored row to the operator's rules as they are NOW —

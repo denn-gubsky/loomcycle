@@ -119,6 +119,9 @@ func TestTenantTelemetry_OperatorSetsReadsTestsAndDeletesItsOwnPolicy(t *testing
 	if code != 200 || res.Test == nil || !res.Test.OK || spans.Load() != 1 {
 		t.Fatalf("test: %d %s (collector got %d spans)", code, body, spans.Load())
 	}
+	if code, body := bearerCall(t, ts, opsBearer, "POST", "/v1/_telemetry:test", ""); code != 429 || !strings.Contains(body, `"rate_limited"`) {
+		t.Errorf("a second test at once: %d %s, want 429 rate_limited", code, body)
+	}
 	code, body = bearerCall(t, ts, opsBearer, "DELETE", "/v1/_telemetry", "")
 	if res := decodeTelemetry(t, body); code != 200 || !res.Deleted || res.Status.Exporting {
 		t.Fatalf("delete: %d %s", code, body)

@@ -162,6 +162,10 @@ func (s *Server) tenantTelemetryTest(ctx context.Context, m *tenanttelemetry.Man
 	}
 	start := time.Now()
 	terr := m.Test(ctx, tenant)
+	if errors.Is(terr, tenanttelemetry.ErrRateLimited) {
+		return connector.TenantTelemetryResult{}, connector.WithMessage(connector.ErrTenantTelemetryRateLimited,
+			"a test was run moments ago: wait "+tenanttelemetry.TestInterval.String()+" between tests")
+	}
 	res.Test = &connector.TenantTelemetryTest{OK: terr == nil, DurationMS: time.Since(start).Milliseconds()}
 	if terr != nil {
 		res.Test.Error = tenanttelemetry.PublicError(tenant, terr)
@@ -277,6 +281,8 @@ func writeTenantTelemetryError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusForbidden, "forbidden", err.Error())
 	case errors.Is(err, connector.ErrTenantTelemetryAuditUnavailable):
 		writeJSONError(w, http.StatusServiceUnavailable, "audit_unavailable", err.Error())
+	case errors.Is(err, connector.ErrTenantTelemetryRateLimited):
+		writeJSONError(w, http.StatusTooManyRequests, "rate_limited", err.Error())
 	default:
 		slog.Error("telemetry: tenant export request failed", "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal", "the tenant telemetry request failed")

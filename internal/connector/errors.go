@@ -272,6 +272,9 @@ var (
 	// ErrTenantTelemetryAuditUnavailable — the policy was NOT set because its
 	// audit record could not be written.
 	ErrTenantTelemetryAuditUnavailable = errors.New("connector: tenant telemetry audit record could not be written")
+	// ErrTenantTelemetryRateLimited — a test asked for too soon after the
+	// tenant's last one. HTTP 429 rate_limited / gRPC ResourceExhausted.
+	ErrTenantTelemetryRateLimited = errors.New("connector: tenant telemetry test rate limited")
 )
 
 // codedError pairs a classification sentinel (matched via errors.Is) with the

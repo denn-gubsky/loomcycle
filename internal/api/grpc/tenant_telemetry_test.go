@@ -58,6 +58,7 @@ func TestTenantTelemetry_DelegatesToTheConnector(t *testing.T) {
 		connector.ErrTenantTelemetryInvalid:          codes.InvalidArgument,
 		connector.ErrTenantTelemetryForbidden:        codes.PermissionDenied,
 		connector.ErrTenantTelemetryAuditUnavailable: codes.Unavailable,
+		connector.ErrTenantTelemetryRateLimited:      codes.ResourceExhausted,
 	} {
 		mc.telemetryErr = connector.WithMessage(sentinel, "why")
 		_, err := client.TenantTelemetry(context.Background(), &loomcyclepb.TenantTelemetryRequest{Op: "get"})

@@ -451,6 +451,30 @@ func (r *TenantRouter) reapIdle(now time.Time) {
 	}
 }
 
+// Test sends one test span to d, as TestTenantExport does, inside the cap on
+// exports in flight every tenant shares: with every slot held until timeout it
+// answers busy rather than add an export beyond the cap. It touches no
+// tenant's status.
+func (r *TenantRouter) Test(ctx context.Context, tenant string, d TenantDestination, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = r.cfg.ExportTimeout
+	}
+	start := time.Now()
+	wait, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	select {
+	case r.slots <- struct{}{}:
+	case <-wait.Done():
+		return &TenantExportError{msg: CategoryBusy}
+	}
+	defer func() { <-r.slots }()
+	left := timeout - time.Since(start)
+	if left <= 0 {
+		return &TenantExportError{msg: CategoryBusy}
+	}
+	return TestTenantExport(ctx, tenant, d, r.cfg.ServiceVersion, left)
+}
+
 // ForceFlush flushes every open pipeline.
 func (r *TenantRouter) ForceFlush(ctx context.Context) error {
 	r.mu.RLock()
@@ -593,7 +617,7 @@ func (e *tenantSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.R
 			e.discarded(n)
 			return nil
 		}
-		e.fail(uint64(n), "no export slot free before the export timeout: too many tenant exports in flight")
+		e.fail(uint64(n), CategoryBusy)
 		return nil
 	}
 	defer func() { <-e.slots }()
@@ -601,6 +625,7 @@ func (e *tenantSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.R
 	for i, s := range spans {
 		copies[i] = newTenantSpan(s, e.res)
 	}
+	ctx, code := withStatusHolder(ctx)
 	err := e.next.ExportSpans(ctx, copies)
 	if err == nil {
 		e.p.stats.exported.Add(uint64(n))
@@ -621,7 +646,10 @@ func (e *tenantSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.R
 		e.discarded(n)
 		return nil
 	}
-	e.fail(uint64(n), scrubError(err, e.headers))
+	e.fail(uint64(n), exportCategory(err, code.code.Load()))
+	// The operator's log has the error itself, scrubbed of header values,
+	// URL credentials and query values.
+	e.log.Debug("otel: tenant span export failed", "tenant", e.tenant, "spans", n, "err", scrubError(err, e.headers))
 	return nil
 }
 
@@ -637,7 +665,6 @@ func (e *tenantSpanExporter) fail(n uint64, msg string) {
 	e.p.stats.dropped.Add(n)
 	tenantExportFailed(e.tenant, int64(n))
 	e.p.stats.failed(time.Now(), msg)
-	e.log.Debug("otel: tenant span export failed", "tenant", e.tenant, "spans", n, "err", msg)
 }
 
 func (e *tenantSpanExporter) Shutdown(ctx context.Context) error { return e.next.Shutdown(ctx) }

@@ -71,7 +71,7 @@ func newTenantExporter(ctx context.Context, d TenantDestination, timeout time.Du
 		// place of the collector, outside the destination the guard judges.
 	}
 	client := &http.Client{
-		Transport:     tr,
+		Transport:     statusRecorder{next: tr},
 		Timeout:       timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return errTenantRedirect },
 	}
@@ -128,16 +128,19 @@ func newTenantGRPCExporter(ctx context.Context, u *url.URL, d TenantDestination,
 
 // TestTenantExport sends one synthetic span (loomcycle.telemetry.test) to d,
 // built exactly as a tenant pipeline builds its exporter, and returns nil or
-// the scrubbed reason it failed. It answers within timeout.
+// a *TenantExportError naming the failure's category (exportCategory), never
+// its text. It answers within timeout. TenantRouter.Test is the same inside
+// the router's cap on exports in flight.
 func TestTenantExport(ctx context.Context, tenant string, d TenantDestination, serviceVersion string, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = DefaultTenantExportTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	ctx, code := withStatusHolder(ctx)
 	exp, release, err := newTenantExporter(ctx, d, timeout)
 	if err != nil {
-		return &TenantExportError{msg: scrubError(err, d.Headers)}
+		return &TenantExportError{msg: CategoryFailed}
 	}
 	defer func() {
 		_ = exp.Shutdown(context.Background())
@@ -158,9 +161,9 @@ func TestTenantExport(ctx context.Context, tenant string, d TenantDestination, s
 	}
 	if err := exp.ExportSpans(ctx, copies); err != nil {
 		if _, partial := partialRejected(err); partial {
-			return nil
+			return &TenantExportError{msg: CategoryRejected}
 		}
-		return &TenantExportError{msg: scrubError(err, d.Headers)}
+		return &TenantExportError{msg: exportCategory(err, code.code.Load())}
 	}
 	return nil
 }
@@ -173,9 +176,9 @@ func ParseTenantHeaders(v string) (map[string]string, error) {
 	return parseHeaderList("header block", v)
 }
 
-// TenantExportError is a test export's failure as the exporter reported it,
-// already scrubbed (scrubError): text a tenant may be shown. Anything else a
-// caller holds is not known to be.
+// TenantExportError is a test export's failure as a category
+// (exportCategory): text a tenant may be shown. Anything else a caller holds
+// is not known to be.
 type TenantExportError struct{ msg string }
 
 func (e *TenantExportError) Error() string { return e.msg }

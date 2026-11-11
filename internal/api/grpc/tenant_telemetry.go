@@ -63,6 +63,8 @@ func tenantTelemetryErrToStatus(err error) error {
 		return status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, connector.ErrTenantTelemetryAuditUnavailable):
 		return status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, connector.ErrTenantTelemetryRateLimited):
+		return status.Error(codes.ResourceExhausted, err.Error())
 	default:
 		return status.Error(codes.Internal, "tenant telemetry: the request failed")
 	}
