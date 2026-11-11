@@ -283,6 +283,12 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		return instance(readOrManage(method), "runtime", "limits"), true
 	case name == "retention":
 		return instance(readOrManage(method), "runtime", "retention"), true
+	case name == "telemetry":
+		return instance(readOrManage(method), "runtime", "telemetry"), true
+	// The test sends a span with the tenant's header credential: a use of
+	// the policy, as a write is.
+	case name == "telemetry:test":
+		return instance("manage", "runtime", "telemetry"), true
 	case name == "erasure":
 		return instance(readOrManage(method), "runtime", "erasure"), true
 	case name == "routing", name == "models":
@@ -493,6 +499,10 @@ func GRPCSurface(rpc string) (Surface, bool) {
 	// TokenLimit, and the gate asks each op its HTTP twin's question.
 	case "RetentionOverride":
 		return instance("read", "runtime", "retention"), true
+	// TenantTelemetry carries get|set|delete|test: the weakest verb here, and
+	// the gate asks each op its HTTP twin's question.
+	case "TenantTelemetry":
+		return instance("read", "runtime", "telemetry"), true
 	case "DirectoryUsers", "DirectoryInspect":
 		return instance("read", "principal", "user:*"), true
 	case "DirectoryTenants":

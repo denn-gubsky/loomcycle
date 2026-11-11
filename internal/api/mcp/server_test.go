@@ -36,6 +36,10 @@ type mockConnector struct {
 	retentionRes connector.RetentionOverrideResult
 	retentionErr error
 
+	telemetryReq connector.TenantTelemetryRequest
+	telemetryRes connector.TenantTelemetryResult
+	telemetryErr error
+
 	mergeReq connector.MergeSubjectsRequest
 	mergeRes connector.MergeSubjectsResult
 	mergeErr error
@@ -1891,6 +1895,13 @@ func TestServer_AReadOnlyMemberCannotStartARun(t *testing.T) {
 	if !strings.Contains(resps[0].Error.Message, auth.ScopeRunsCreate) {
 		t.Errorf("refusal %q must name the scope the token lacks", resps[0].Error.Message)
 	}
+}
+
+// TenantTelemetry records the request and answers with the configured
+// result (connector.Connector).
+func (m *mockConnector) TenantTelemetry(_ context.Context, req connector.TenantTelemetryRequest) (connector.TenantTelemetryResult, error) {
+	m.telemetryReq = req
+	return m.telemetryRes, m.telemetryErr
 }
 
 // RetentionOverride records the request and answers with the configured

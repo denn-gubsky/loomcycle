@@ -64,6 +64,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/teamspec"
+	"github.com/denn-gubsky/loomcycle/internal/tenanttelemetry"
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -639,6 +640,11 @@ type Server struct {
 	backplane    coord.Backplane
 	replicaStore replicaLister
 	replicaID    string
+
+	// tenantTelemetry is a tenant's own trace export (tenant_telemetry.go);
+	// nil while the operator's gate is off, which leaves /v1/_telemetry
+	// answering feature_disabled.
+	tenantTelemetry *tenanttelemetry.Manager
 
 	// aclResolver is the RFC EY groups + compiled-set resolver; nil leaves
 	// every gate on the scope answer alone.
@@ -4663,6 +4669,13 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("GET /v1/_retention/overrides", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetentionOverridesList))))
 	mux.Handle("PUT /v1/_retention/overrides", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetentionOverridePut))))
 	mux.Handle("DELETE /v1/_retention/overrides", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetentionOverrideDelete))))
+	// A tenant's own trace export (tenant_telemetry.go): an admin for any
+	// tenant, a tenant operator for its own; never a member. 404
+	// feature_disabled unless the operator turned it on.
+	mux.Handle("GET /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryGet))))
+	mux.Handle("PUT /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryPut))))
+	mux.Handle("DELETE /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryDelete))))
+	mux.Handle("POST /v1/_telemetry:test", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryTest))))
 	// Instance configuration + the live provider/model/search cascade — the
 	// out-of-band twin of `Context op=capabilities`, sharing one probe
 	// (internal/capabilities) so the two cannot disagree. Any authenticated

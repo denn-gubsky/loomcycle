@@ -258,6 +258,22 @@ var (
 	ErrRetentionOverrideStoreUnavailable = errors.New("connector: retention overrides require persistence")
 )
 
+// A tenant's own telemetry export (Connector.TenantTelemetry). Each is
+// returned wrapped WithMessage, as the retention override's are.
+var (
+	// ErrTenantTelemetryDisabled — the operator has not turned tenant export
+	// on. HTTP 404 feature_disabled / gRPC Unimplemented.
+	ErrTenantTelemetryDisabled = errors.New("connector: tenant telemetry export is not enabled on this deployment")
+	// ErrTenantTelemetryInvalid — an unknown op or a policy the rules refuse.
+	ErrTenantTelemetryInvalid = errors.New("connector: invalid tenant telemetry request")
+	// ErrTenantTelemetryForbidden — the caller is not an operator, or names a
+	// tenant other than its own.
+	ErrTenantTelemetryForbidden = errors.New("connector: tenant telemetry is operator-only")
+	// ErrTenantTelemetryAuditUnavailable — the policy was NOT set because its
+	// audit record could not be written.
+	ErrTenantTelemetryAuditUnavailable = errors.New("connector: tenant telemetry audit record could not be written")
+)
+
 // codedError pairs a classification sentinel (matched via errors.Is) with the
 // exact caller-facing message a transport renders verbatim. It lets the shared
 // connector core preserve each transport's byte-identical wording (the HTTP

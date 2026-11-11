@@ -125,7 +125,7 @@ func Baselines() map[string]ACL {
 				// admin's to mint.
 				Rule{Effect: Allow, Actions: []string{"mint", "manage"}, Resources: []string{"principal:token:metrics"}},
 				selfTokenRule,
-				Rule{Effect: Allow, Actions: []string{"read", "manage"}, Resources: []string{"runtime:limits", "runtime:retention", "runtime:erasure", "runtime:usage", "runtime:routing", "runtime:events"}},
+				Rule{Effect: Allow, Actions: []string{"read", "manage"}, Resources: []string{"runtime:limits", "runtime:retention", "runtime:erasure", "runtime:usage", "runtime:routing", "runtime:events", "runtime:telemetry"}},
 				// The audit chain export: the operator's record, read-only,
 				// and not on the member baseline (the member path refuses it).
 				Rule{Effect: Allow, Actions: []string{"read"}, Resources: []string{"runtime:audit"}},

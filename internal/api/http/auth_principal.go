@@ -1538,6 +1538,11 @@ func requiredScopeFor(method, path string) string {
 	// (admin gets the full view). ScopeAdmin also satisfies. Read-only GET.
 	case path == "/v1/_retention", path == "/v1/_retention/overrides":
 		return auth.ScopeTenant
+	// A tenant's own trace export: the tenant operator's for its own tenant,
+	// an admin's for any (the connector confines the tenant). Carved out of
+	// the member path.
+	case path == "/v1/_telemetry", path == "/v1/_telemetry:test":
+		return auth.ScopeTenant
 	// RFC AW: the token-budget management surface (GET list + PUT upsert + DELETE).
 	// Tenant-readable/writable so a tenant operator manages its own tenant + user
 	// budgets; the handler enforces the operator-global + cross-tenant admin

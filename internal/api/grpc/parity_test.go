@@ -568,6 +568,10 @@ func (m *parityMock) ConfiguredRunInput(context.Context, string, connector.RunSe
 }
 func (m *parityMock) DeleteConfiguredRun(context.Context, string) error { return nil }
 
+func (m *parityMock) TenantTelemetry(context.Context, connector.TenantTelemetryRequest) (connector.TenantTelemetryResult, error) {
+	return connector.TenantTelemetryResult{}, nil
+}
+
 func (m *parityMock) RetentionOverride(context.Context, connector.RetentionOverrideRequest) (connector.RetentionOverrideResult, error) {
 	return connector.RetentionOverrideResult{}, nil
 }

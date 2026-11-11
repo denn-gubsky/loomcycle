@@ -129,6 +129,15 @@ func newFixture(t *testing.T, cfg Config, tlsFrom *collector) *fixture {
 	return f
 }
 
+// put checks and stores a policy, as the connector does.
+func (f *fixture) put(ctx context.Context, tenant string, in PolicyInput, by string) (store.TenantTelemetryPolicyRow, error) {
+	row, err := f.m.Check(ctx, tenant, in)
+	if err != nil {
+		return row, err
+	}
+	return f.m.Store(ctx, row, by)
+}
+
 // cred stores a tenant-scope credential; urls nil leaves it unrestricted.
 func (f *fixture) cred(t *testing.T, tenant, scope, scopeID, name, value string, urls []string, expires *time.Time) {
 	t.Helper()
@@ -184,13 +193,13 @@ func TestManagerPut_RefusesWhatTheOperatorOrTheCredentialDoesNotAllow(t *testing
 		"credential name with a slash":       {Endpoint: ep, HeadersCredential: "a/b"},
 	}
 	for name, in := range cases {
-		if _, err := f.m.Put(ctx, "acme", in, "ops"); !errors.Is(err, ErrInvalid) {
+		if _, err := f.put(ctx, "acme", in, "ops"); !errors.Is(err, ErrInvalid) {
 			t.Errorf("%s: err = %v, want ErrInvalid", name, err)
 		} else if strings.Contains(err.Error(), "abcdefgh") {
 			t.Errorf("%s: the refusal quotes the credential value: %v", name, err)
 		}
 	}
-	if _, err := f.m.Put(ctx, "", PolicyInput{Endpoint: ep}, "ops"); !errors.Is(err, ErrInvalid) {
+	if _, err := f.put(ctx, "", PolicyInput{Endpoint: ep}, "ops"); !errors.Is(err, ErrInvalid) {
 		t.Errorf("a policy for no tenant: err = %v", err)
 	}
 	if rows, _ := f.st.TenantTelemetryPolicyList(ctx); len(rows) != 0 {
@@ -200,7 +209,7 @@ func TestManagerPut_RefusesWhatTheOperatorOrTheCredentialDoesNotAllow(t *testing
 		t.Errorf("refused writes set destinations %v", got)
 	}
 
-	row, err := f.m.Put(ctx, "acme", PolicyInput{Endpoint: ep + "/", HeadersCredential: "bound", SamplerRatio: ratio(0.5)}, "ops")
+	row, err := f.put(ctx, "acme", PolicyInput{Endpoint: ep + "/", HeadersCredential: "bound", SamplerRatio: ratio(0.5)}, "ops")
 	if err != nil {
 		t.Fatalf("a good policy: %v", err)
 	}
@@ -214,7 +223,7 @@ func TestManagerPut_RefusesWhatTheOperatorOrTheCredentialDoesNotAllow(t *testing
 
 func TestManagerPut_HTTPEndpointNeedsTheLabOverrideAndNoCredential(t *testing.T) {
 	f := newFixture(t, Config{AllowHTTP: true}, nil)
-	if _, err := f.m.Put(context.Background(), "acme", PolicyInput{Endpoint: "http://collector.lab:4318"}, "ops"); err != nil {
+	if _, err := f.put(context.Background(), "acme", PolicyInput{Endpoint: "http://collector.lab:4318"}, "ops"); err != nil {
 		t.Fatalf("lab http endpoint: %v", err)
 	}
 }
@@ -228,7 +237,7 @@ func TestManagerTest_SendsThroughTheRealPipelineAndScrubsFailures(t *testing.T) 
 	if err := f.m.Test(ctx, "acme"); !errors.Is(err, ErrInvalid) {
 		t.Errorf("test with no policy: %v", err)
 	}
-	if _, err := f.m.Put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, HeadersCredential: "otel"}, "ops"); err != nil {
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, HeadersCredential: "otel"}, "ops"); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.m.Test(ctx, "acme"); err != nil {
@@ -258,7 +267,7 @@ func TestManager_DialGuardRefusesPrivateAndMetadataAddresses(t *testing.T) {
 	} {
 		f := newFixture(t, Config{AllowHTTP: true}, nil)
 		f.m.dial = guard
-		if _, err := f.m.Put(context.Background(), "acme", PolicyInput{Endpoint: ep}, "ops"); err != nil {
+		if _, err := f.put(context.Background(), "acme", PolicyInput{Endpoint: ep}, "ops"); err != nil {
 			t.Fatalf("%s: the PUT checks no address, the dial does: %v", ep, err)
 		}
 		err := f.m.Test(context.Background(), "acme")
@@ -277,7 +286,7 @@ func TestManagerRefresh_PicksUpARotatedOrRemovedCredential(t *testing.T) {
 	f := newFixture(t, Config{}, c)
 	ctx := context.Background()
 	f.cred(t, "acme", "tenant", "", "otel", "authorization=Bearer first-value", []string{c.srv.URL}, nil)
-	if _, err := f.m.Put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, HeadersCredential: "otel"}, "ops"); err != nil {
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, HeadersCredential: "otel"}, "ops"); err != nil {
 		t.Fatal(err)
 	}
 	export := func() {
@@ -340,7 +349,7 @@ func TestManagerRefresh_StopsWhenTheCredentialExpires(t *testing.T) {
 	// moment shortly ahead, and nothing about the row changes when it passes.
 	exp := time.Now().Add(300 * time.Millisecond)
 	f.cred(t, "acme", "tenant", "", "otel", "authorization=Bearer abcdefgh", []string{c.srv.URL}, &exp)
-	if _, err := f.m.Put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, HeadersCredential: "otel"}, "ops"); err != nil {
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, HeadersCredential: "otel"}, "ops"); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.m.Refresh(ctx); err != nil || len(f.router.Tenants()) != 1 {
@@ -362,7 +371,7 @@ func TestManagerRefresh_StopsWhenTheCredentialExpires(t *testing.T) {
 func TestManagerPut_EmptySignalsMeanTraces(t *testing.T) {
 	c := newCollector(t)
 	f := newFixture(t, Config{}, c)
-	row, err := f.m.Put(context.Background(), "acme", PolicyInput{Endpoint: c.srv.URL, Signals: []string{}}, "ops")
+	row, err := f.put(context.Background(), "acme", PolicyInput{Endpoint: c.srv.URL, Signals: []string{}}, "ops")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +446,7 @@ func TestManager_AWriteOnOneReplicaReachesAnotherOverTheBackplane(t *testing.T) 
 		t.Fatal(err)
 	}
 	a.m.SetBackplane(bp)
-	if _, err := a.m.Put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL}, "ops"); err != nil {
+	if _, err := a.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL}, "ops"); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return len(b.router.Tenants()) == 1 })

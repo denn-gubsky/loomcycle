@@ -777,6 +777,10 @@ func (m *httpMockConnector) ConfiguredRunInput(context.Context, string, connecto
 }
 func (m *httpMockConnector) DeleteConfiguredRun(context.Context, string) error { return nil }
 
+func (m *httpMockConnector) TenantTelemetry(context.Context, connector.TenantTelemetryRequest) (connector.TenantTelemetryResult, error) {
+	return connector.TenantTelemetryResult{}, nil
+}
+
 func (m *httpMockConnector) RetentionOverride(context.Context, connector.RetentionOverrideRequest) (connector.RetentionOverrideResult, error) {
 	return connector.RetentionOverrideResult{}, nil
 }

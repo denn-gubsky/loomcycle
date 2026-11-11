@@ -151,11 +151,10 @@ func (m *Manager) Status(tenant string) Status {
 	return Status{TenantExportStatus: m.router.Status(tenant), ApplyError: a.err}
 }
 
-// Put checks in for tenant and stores it, then applies it here and announces
-// it to the other replicas. The header credential is resolved for the
-// endpoint before anything is stored, so a policy that could not export is
-// refused rather than kept.
-func (m *Manager) Put(ctx context.Context, tenant string, in PolicyInput, by string) (store.TenantTelemetryPolicyRow, error) {
+// Check checks in for tenant against the operator's rules and resolves its
+// header credential for the endpoint, and returns the row Store would write.
+// A policy that could not export is refused here, before anything is stored.
+func (m *Manager) Check(ctx context.Context, tenant string, in PolicyInput) (store.TenantTelemetryPolicyRow, error) {
 	row, err := m.normalize(tenant, in)
 	if err != nil {
 		return store.TenantTelemetryPolicyRow{}, err
@@ -163,12 +162,18 @@ func (m *Manager) Put(ctx context.Context, tenant string, in PolicyInput, by str
 	if _, err := m.headersFor(ctx, row); err != nil {
 		return store.TenantTelemetryPolicyRow{}, err
 	}
+	return row, nil
+}
+
+// Store writes a row Check returned, applies it here and announces it to the
+// other replicas.
+func (m *Manager) Store(ctx context.Context, row store.TenantTelemetryPolicyRow, by string) (store.TenantTelemetryPolicyRow, error) {
 	row.UpdatedAt, row.UpdatedBy = m.now().UTC(), by
 	if err := m.st.TenantTelemetryPolicyPut(ctx, row); err != nil {
 		return store.TenantTelemetryPolicyRow{}, err
 	}
-	m.Reload(ctx, tenant)
-	m.publish(ctx, tenant)
+	m.Reload(ctx, row.TenantID)
+	m.publish(ctx, row.TenantID)
 	return row, nil
 }
 
@@ -304,7 +309,7 @@ func (m *Manager) apply(ctx context.Context, row store.TenantTelemetryPolicyRow,
 		d, err := m.destination(ctx, row)
 		if err != nil {
 			m.router.RemoveDestination(row.TenantID)
-			next.err = errorText(err)
+			next.err = applyErrorText(err)
 			slog.Warn("tenant telemetry: the policy cannot be exported", "tenant", row.TenantID, "err", next.err)
 			break
 		}
@@ -341,12 +346,21 @@ func (m *Manager) stampOf(ctx context.Context, row store.TenantTelemetryPolicyRo
 	return hex.EncodeToString(h.Sum(nil)), expires, nil
 }
 
-// errorText is err as the status may show it: the policy checks' own words,
-// or a generic line for anything else (a store fault's text is the
-// operator's).
-func errorText(err error) string {
+// ErrorText is err as a tenant may read it: a policy refusal in its own
+// words, an export failure as the exporter (scrubbed) put it.
+func ErrorText(err error) string {
 	if errors.Is(err, ErrInvalid) {
 		return strings.TrimPrefix(err.Error(), ErrInvalid.Error()+": ")
+	}
+	return err.Error()
+}
+
+// applyErrorText is why a stored policy is not being exported, as its status
+// shows it: a policy refusal in its own words; anything else (a store or
+// decryption fault, whose text is the operator's) as one generic line.
+func applyErrorText(err error) string {
+	if errors.Is(err, ErrInvalid) {
+		return ErrorText(err)
 	}
 	return "the header credential could not be read"
 }

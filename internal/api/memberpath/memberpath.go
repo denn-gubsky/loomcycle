@@ -91,6 +91,10 @@ func CarvedOut(method, path string) bool {
 	// debugged.
 	case path == "/v1/_retention/overrides":
 		return true
+	// Where a tenant's traces are sent, and with which of its credentials, is
+	// the operator's decision; reading it names the tenant's collector.
+	case path == "/v1/_telemetry" || path == "/v1/_telemetry:test":
+		return true
 	// RFC CD Part C — the memory/document CHANGE FEED is substrate:tenant-only,
 	// NOT member-accessible (locked decision): the feed exposes the tenant's
 	// write pattern (a metadata side-channel) and is operator observability, not
