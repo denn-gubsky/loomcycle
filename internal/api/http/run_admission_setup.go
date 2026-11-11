@@ -5,10 +5,12 @@ package http
 // earlier phases are in run_admission.go.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -43,30 +45,54 @@ func (a *runAdmission) narrowTools() {
 	// the run with none of its tools (a sub-agent, discovering on its parent's
 	// stamped ctx, never had this gap).
 	discoverCtx := tools.WithMCPDiscoveryCredentials(a.ctx, a.in.UserBearer, a.in.UserCredentials)
-	a.allowedTools = filterTools(s.candidateTools(discoverCtx, a.effectiveTenantID, a.agentDef.Tools), a.agentDef.Tools, a.in.Tools)
-	// RFC CT: context.recall auto-grants the Recall tool so enabling recall works
-	// without also listing Recall in tools:.
-	a.allowedTools = s.grantRecallTool(a.allowedTools, config.MergeContext(a.agentDef.Context, a.in.Context))
 	// RFC EY §3.7: the caller's ACL removes what it may not invoke, from
 	// the schema the model sees and not only on call (owner decision D6).
 	a.callerACL = runCallerACL(a.ctx)
-	a.allowedTools, a.aclRemovedTools = tools.NarrowToolsByACL(a.ctx, a.callerACL, a.allowedTools)
-	if a.in.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
-		var caller []string
-		if a.in.AllowedHosts != nil {
-			caller = *a.in.AllowedHosts
-		}
-		// A locked caller's list only narrows, in every mode.
-		narrowOnly := a.in.AllowedHosts != nil && callerHostsNarrowOnly(a.ctx, a.agentDef)
-		a.allowedTools = builtin.NarrowHosts(a.allowedTools, caller, a.in.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
-		a.hostPolicy = tools.HostPolicyValue{
-			AllowedHosts:    caller,
-			HasList:         a.in.AllowedHosts != nil,
-			WebSearchFilter: a.in.WebSearchFilter,
-			NarrowOnly:      narrowOnly,
-		}
-	}
+	// RFC CT: context.recall auto-grants the Recall tool so enabling recall works
+	// without also listing Recall in tools:.
+	a.allowedTools, a.aclRemovedTools = s.runToolset(a.ctx, discoverCtx, a.effectiveTenantID, a.agentDef, a.in.Tools,
+		config.MergeContext(a.agentDef.Context, a.in.Context), a.callerACL, func(in []tools.Tool) []tools.Tool {
+			if a.in.AllowedHosts == nil && !s.cfg().Env.HTTPCallerAuthoritative {
+				return in
+			}
+			var caller []string
+			if a.in.AllowedHosts != nil {
+				caller = *a.in.AllowedHosts
+			}
+			// A locked caller's list only narrows, in every mode.
+			narrowOnly := a.in.AllowedHosts != nil && callerHostsNarrowOnly(a.ctx, a.agentDef)
+			a.hostPolicy = tools.HostPolicyValue{
+				AllowedHosts:    caller,
+				HasList:         a.in.AllowedHosts != nil,
+				WebSearchFilter: a.in.WebSearchFilter,
+				NarrowOnly:      narrowOnly,
+			}
+			return builtin.NarrowHosts(in, caller, a.in.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
+		})
 	a.dispatcher = s.newDispatcher(a.allowedTools)
+}
+
+// runToolset builds a run's toolset in the one order a fresh run and a
+// resumed one share: the agent's tools narrowed by the caller's tools list,
+// the Recall grant, the caller's ACL removing what it may not invoke, then
+// narrowHosts — the caller's host list narrowing, never widening, the
+// operator's. discoverCtx is the MCP discovery's (a fresh run's carries its
+// credentials); the ACL is asked on ctx.
+func (s *Server) runToolset(ctx, discoverCtx context.Context, tenantID string, def config.AgentDef, callerTools []string,
+	recallCtx *config.Context, acl *authz.Effective, narrowHosts func([]tools.Tool) []tools.Tool) ([]tools.Tool, []string) {
+	allowed := filterTools(s.candidateTools(discoverCtx, tenantID, def.Tools), def.Tools, callerTools)
+	allowed = s.grantRecallTool(allowed, recallCtx)
+	allowed, removed := tools.NarrowToolsByACL(ctx, acl, allowed)
+	return narrowHosts(allowed), removed
+}
+
+// emitRunStartWarnings says once, at a run's start, what the run holds and
+// cannot use: a tool its definition grants inertly, a tool the caller's ACL
+// withheld, an interruption setting on an agent without the tool.
+func emitRunStartWarnings(def config.AgentDef, aclRemoved []string, allowed []tools.Tool, interruption *config.AgentInterruptionACL, emit func(providers.Event)) {
+	emitInertCapabilityWarnings(def, emit)
+	emitACLRemovedTools(aclRemoved, emit)
+	emitInertInterruption(holdsInterruptionTool(allowed), interruption, emit)
 }
 
 // buildPrompt resolves the system prompt (skill bodies, memory injection)
@@ -367,9 +393,7 @@ func (a *runAdmission) buildEmit() {
 
 	// A tool the agent holds and cannot use, said once here rather than
 	// discovered by the model being refused mid-task.
-	emitInertCapabilityWarnings(a.agentDef, a.emit)
-	emitACLRemovedTools(a.aclRemovedTools, a.emit)
-	emitInertInterruption(holdsInterruptionTool(a.allowedTools), a.in.Interruption, a.emit)
+	emitRunStartWarnings(a.agentDef, a.aclRemovedTools, a.allowedTools, a.in.Interruption, a.emit)
 
 	// PR 2: operator steering queue for this run (in-flight input injection).
 	a.steerQ, a.onSteer, a.closeSteer, a.deregSteer = s.makeSteer(a.runParent, a.runID, a.agentID, a.sessionID, a.effectiveUserID, a.emit)

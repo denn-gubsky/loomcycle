@@ -348,14 +348,26 @@ func (s *Server) heartbeatStaleAfter() time.Duration {
 	return heartbeat.DefaultStaleAfter
 }
 
-// sessionLiveAfterWait is sessionHasLiveRun for a continuation that waited for
-// its slot with its cluster lock let go: another replica may have started a
-// run on the session meanwhile, and parked it. row is the waiting run's own.
-func (s *Server) sessionLiveAfterWait(ctx context.Context, in runner.RunInput, isContinuation bool, row string) (bool, error) {
-	if !isContinuation || !in.SessionLockAcrossReplicas {
-		return false, nil
+// retakeSession takes back a session's cluster lock, let go while its run
+// waited for a slot, and with checkLive (a session held across replicas)
+// checks no other run of the session went live meanwhile: another replica may
+// have started one and parked it. except is the waiting run's own row.
+func (s *Server) retakeSession(ctx context.Context, hold *sessionHold, sessionID string, checkLive bool, except string) error {
+	busy := fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, sessionID)
+	if !hold.reacquire() {
+		return busy
 	}
-	return s.sessionHasLiveRun(ctx, in.SessionID, row)
+	if !checkLive {
+		return nil
+	}
+	live, err := s.sessionHasLiveRun(ctx, sessionID, except)
+	if err != nil {
+		return fmt.Errorf("%w: %v", runner.ErrInternal, err)
+	}
+	if live {
+		return busy
+	}
+	return nil
 }
 
 // releaseSessionWhileParked wires p into the loop's hooks.
