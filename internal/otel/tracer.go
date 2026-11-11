@@ -41,6 +41,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -133,13 +134,20 @@ func doInit(cfg Config) (func(context.Context) error, error) {
 	otel.SetErrorHandler(errs)
 	otel.SetTracerProvider(tp)
 	stats.enabled.Store(cfg.Enabled)
+	routingOnly.Store(!cfg.Enabled)
 	return tp.Shutdown, nil
 }
+
+// routingOnly is set while the global provider is the routing-only one: spans
+// are recorded for tenants' own collectors, and the operator exports none.
+var routingOnly atomic.Bool
 
 // newRoutingOnlyProvider is the tracer provider when the operator exports
 // nothing but tenants do: the operator's sampler, no exporter of its own. The
 // resource is the operator's, as with export on; a tenant's copy never
-// carries it.
+// carries it. Its cost: every span the sampler keeps is now recorded (built,
+// attributed, ended) for every run, a tenant with a destination or not, where
+// the no-op provider recorded none.
 func newRoutingOnlyProvider(cfg Config) (*sdktrace.TracerProvider, error) {
 	sampler, err := Sampler(cfg.SamplerName, cfg.SamplerArg)
 	if err != nil {

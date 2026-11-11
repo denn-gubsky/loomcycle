@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -102,5 +103,37 @@ func TestTenantRouter_ATestExportTakesASharedSlot(t *testing.T) {
 	}
 	if strings.Contains(r.Status("ok").LastError, "busy") {
 		t.Error("a test touched the status of a tenant")
+	}
+}
+
+// With tenant export on and the operator's own export off, the spans this
+// process records reach tenants only: the operator has no trace to link a run
+// to, nor one an operator MCP server should join.
+func TestInit_RoutingOnlyProviderNeitherLinksRunsNorPropagates(t *testing.T) {
+	clearOTELEnv(t)
+	prevTP, prevRouting, prevOnly := otel.GetTracerProvider(), tenantRouting.Load(), routingOnly.Load()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevTP)
+		tenantRouting.Store(prevRouting)
+		routingOnly.Store(prevOnly)
+	})
+	r := fastRouter(TenantRouterConfig{})
+	shutdown, err := doInit(Config{Propagators: []string{"tracecontext"}, SamplerName: "parentbased_always_on", SamplerArg: 1, TenantRouter: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+	ctx, span := Tracer().Start(context.Background(), "run")
+	defer span.End()
+	if !span.IsRecording() {
+		t.Fatal("the routing-only provider records nothing")
+	}
+	if id := SampledTraceID(ctx); id != "" {
+		t.Errorf("a run would link to trace %s, which no operator backend holds", id)
+	}
+	h := http.Header{}
+	InjectTraceContext(ctx, h)
+	if h.Get("traceparent") != "" {
+		t.Errorf("traceparent %q sent although the operator exports nothing", h.Get("traceparent"))
 	}
 }

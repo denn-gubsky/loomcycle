@@ -542,10 +542,11 @@ func TestScrubError_CutsTheBodyAndMasksHeaderValues(t *testing.T) {
 
 func TestInit_TenantRouterIsInstalledOnlyWhenGiven(t *testing.T) {
 	clearOTELEnv(t)
-	prevTP, prevRouting := otel.GetTracerProvider(), tenantRouting.Load()
+	prevTP, prevRouting, prevOnly := otel.GetTracerProvider(), tenantRouting.Load(), routingOnly.Load()
 	t.Cleanup(func() {
 		otel.SetTracerProvider(prevTP)
 		tenantRouting.Store(prevRouting)
+		routingOnly.Store(prevOnly)
 		stats.enabled.Store(false)
 	})
 	tenantRouting.Store(false)

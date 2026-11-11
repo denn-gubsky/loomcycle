@@ -3770,6 +3770,13 @@ exempts), redirects are never followed, and the operator's
 `OTEL_EXPORTER_OTLP_*` headers and certificates are never sent to a tenant's
 collector.
 
+With the operator's own tracing off (no `OTEL_EXPORTER_OTLP_ENDPOINT`), turning
+tenant export on installs a recording tracer where there was none: every span
+the sampler keeps is built and ended for every run, whether or not its tenant
+has a destination, a small CPU and allocation cost per span. Those spans go to
+tenants only: runs record no trace id (there is no operator trace to link
+to) and no `traceparent` is sent to MCP servers.
+
 Each tenant has its own bounded queue; a slow or unreachable collector drops
 that tenant's spans (counted) and holds up nobody else's, and no run ever waits
 on an export. `/metrics` counts the exports per tenant:
