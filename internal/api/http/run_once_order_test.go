@@ -19,7 +19,8 @@ import (
 var runOncePhaseOrder = []string{
 	"rate", "validate", "identity", "session", "owner", "conditions", "agent",
 	"replay", "provider", "pause", "budget", "agent_id", "run_context", "slot",
-	"budget_at_start", "reresolve", "tools", "prompt", "run_config", "rows",
+	"budget_at_start", "reresolve", "tools", "tools.filter", "tools.recall", "tools.acl", "tools.hosts",
+	"prompt", "run_config", "rows",
 	"wiring", "emit", "loop_ctx", "options", "launch",
 }
 

@@ -708,18 +708,16 @@ func (a *runAdmission) takeSlot() error {
 		// It let the cluster session lock go while it waited, and another
 		// replica may have taken the session meanwhile: it starts only if it
 		// can take the lock back, and then reads the session's history again.
-		var startErr error
 		rowID := a.in.QueuedRunID
 		if a.queued != nil {
 			rowID = a.queued.runID
 		}
-		if !a.sessHold.reacquire() {
-			startErr = fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, a.in.SessionID)
-		} else if live, lerr := s.sessionLiveAfterWait(a.ctx, a.in, a.isContinuation, rowID); lerr != nil {
-			startErr = fmt.Errorf("%w: %v", runner.ErrInternal, lerr)
-		} else if live {
-			startErr = fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, a.in.SessionID)
-		} else if a.isContinuation && a.in.SessionLockAcrossReplicas {
+		var live sessionLiveFunc
+		if a.isContinuation && a.in.SessionLockAcrossReplicas {
+			live = s.sessionHasLiveRun
+		}
+		startErr := s.retakeSession(a.ctx, a.sessHold, a.in.SessionID, live, rowID)
+		if startErr == nil && a.isContinuation && a.in.SessionLockAcrossReplicas {
 			if transcript, terr := s.store.GetTranscript(a.ctx, a.in.SessionID); terr != nil {
 				startErr = fmt.Errorf("%w: %v", runner.ErrInternal, terr)
 			} else {
