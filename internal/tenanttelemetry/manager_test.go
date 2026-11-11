@@ -502,11 +502,13 @@ func TestManager_AMetricsPolicyPushesWithItsHeadersUntilDeleted(t *testing.T) {
 	if strings.Join(row.Signals, ",") != "metrics,traces" {
 		t.Errorf("stored signals %v", row.Signals)
 	}
-	waitFor(t, func() bool { return c.requests("/v1/metrics") >= 1 })
+	// The collector holds the push before the exporter has its answer: wait
+	// for the status too.
+	waitFor(t, func() bool { return c.requests("/v1/metrics") >= 1 && !f.m.Status("acme").LastSuccessAt.IsZero() })
 	if got := c.lastAuth(); got != "Bearer both-value" {
 		t.Errorf("the push carried authorization %q, want the tenant's", got)
 	}
-	if st := f.m.Status("acme"); st.LastError != "" || st.LastSuccessAt.IsZero() {
+	if st := f.m.Status("acme"); st.LastError != "" {
 		t.Errorf("status = %+v", st)
 	}
 	if _, err := f.m.Delete(ctx, "acme"); err != nil {
