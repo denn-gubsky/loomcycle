@@ -232,7 +232,7 @@ func documentReadOp(op string) bool {
 	switch op {
 	case "get_document", "documents_summary", "query_documents", "graph_snapshot",
 		"get_chunk", "graph_recall", "verbatim_answer", "verification_stats", "list_facts",
-		"get_edges", "get_edge", "list_statements", "describe_ontology", "query_chunks",
+		"get_edges", "get_edge", "list_statements", "describe_ontology", "effective_policy", "query_chunks",
 		"list_tags", "list_types", "get_asset", "export_md", "export_canvas", "history",
 		"get_version", "diff", "backlinks", "search", "related", "unlinked_mentions",
 		"diff_remote", "get_annotation", "annotation_inputs", "list_annotations":
