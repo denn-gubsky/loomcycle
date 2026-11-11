@@ -104,13 +104,22 @@ func (s *Server) resumeRuntime(ctx context.Context) (pause.ResumeResult, error) 
 		return res, err
 	}
 	life := s.lifetime()
-	safego.Go(life, "resume.after_runtime_resume", func() {
-		n, warnings := s.ResumePausedRuns(life)
-		if n > 0 || len(warnings) > 0 {
-			slog.Info("resume(runtime): re-dispatched paused runs no loop held", "resumed", n, "flagged", len(warnings))
-		}
-	})
+	safego.Go(life, "resume.after_runtime_resume", func() { s.resumeUnheldPausedRuns(life) })
 	return res, nil
+}
+
+// resumeUnheldPausedRuns is the pass a runtime resume starts. It does nothing
+// when the runtime is paused again by the time it runs — another operator
+// pause, or this process's shutdown — as the periodic cluster pass does: a
+// run started then would only park again, or be cut off.
+func (s *Server) resumeUnheldPausedRuns(ctx context.Context) {
+	if s.pauseMgr.State() != pause.StateRunning {
+		return
+	}
+	n, warnings := s.ResumePausedRuns(ctx)
+	if n > 0 || len(warnings) > 0 {
+		slog.Info("resume(runtime): re-dispatched paused runs no loop held", "resumed", n, "flagged", len(warnings))
+	}
 }
 
 func (s *Server) handleRuntimeState(w http.ResponseWriter, r *http.Request) {

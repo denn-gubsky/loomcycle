@@ -95,3 +95,20 @@ func TestRuntimeResume_ConnectorRedispatchesAnUnheldPausedRun(t *testing.T) {
 	}
 	waitWalkRunStatus(t, srv.store, run.ID, store.RunCompleted)
 }
+
+// The pass a runtime resume starts dispatches nothing when the runtime is
+// paused again by the time it runs: the unheld row stays paused, unclaimed.
+func TestRuntimeResume_PassSkipsWhenTheRuntimeIsPausedAgain(t *testing.T) {
+	srv, run := unheldPausedRun(t) // leaves the runtime paused
+	srv.resumeUnheldPausedRuns(context.Background())
+	got, err := srv.store.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PauseState != store.PauseStatePaused || got.Status != store.RunRunning {
+		t.Errorf("run = %s/%s, want running/paused (not dispatched while paused)", got.Status, got.PauseState)
+	}
+	if _, live := srv.cancelReg.Get(run.AgentID); live {
+		t.Error("the run was dispatched while the runtime is paused")
+	}
+}
