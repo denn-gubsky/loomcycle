@@ -30,7 +30,7 @@ const (
 	SignalMetrics = "metrics"
 )
 
-// Content capture modes. Only "off" exists in this build.
+// Content capture modes.
 const (
 	ContentCaptureOff = "off"
 	ContentCaptureOn  = "on"
@@ -45,8 +45,12 @@ type PolicyInput struct {
 	Signals []string
 	// SamplerRatio nil means the default: 1, or the operator's cap below it.
 	SamplerRatio *float64
-	// ContentCapture is "" or "off"; "on" is refused until it ships.
+	// ContentCapture is "" (off), "off" or "on"; "on" only while the
+	// operator allows it (LOOMCYCLE_TENANT_CONTENT_CAPTURE).
 	ContentCapture string
+	// ContentMaxChars is the length each captured field is cut to; nil or 0
+	// is lcotel.DefaultContentMaxChars.
+	ContentMaxChars *int
 }
 
 const maxEndpointLen = 2048
@@ -106,8 +110,11 @@ func (m *Manager) endpointCheck(raw, protocol string) (string, error) {
 }
 
 // normalize checks in against the operator's rules (not yet the credential)
-// and returns the row it would store for tenant.
-func (m *Manager) normalize(tenant string, in PolicyInput) (store.TenantTelemetryPolicyRow, error) {
+// and returns the row it would store for tenant. stored is a row already
+// stored, held to the rules as they are now: content capture the operator no
+// longer allows is then turned off rather than refused, so the tenant's traces
+// keep flowing without it.
+func (m *Manager) normalize(tenant string, in PolicyInput, stored bool) (store.TenantTelemetryPolicyRow, error) {
 	if tenant == "" {
 		return store.TenantTelemetryPolicyRow{}, invalid("a telemetry policy belongs to a tenant: name one")
 	}
@@ -152,12 +159,26 @@ func (m *Manager) normalize(tenant string, in PolicyInput) (store.TenantTelemetr
 			return store.TenantTelemetryPolicyRow{}, invalid("sampler_ratio may be at most %g on this deployment", m.cfg.MaxRatio)
 		}
 	}
+	capture := ContentCaptureOff
 	switch strings.TrimSpace(in.ContentCapture) {
 	case "", ContentCaptureOff:
 	case ContentCaptureOn:
-		return store.TenantTelemetryPolicyRow{}, invalid("content capture is not available yet")
+		switch {
+		case m.cfg.ContentCapture:
+			capture = ContentCaptureOn
+		case !stored:
+			return store.TenantTelemetryPolicyRow{}, invalid("content capture is not allowed on this deployment: the operator has not turned it on")
+		}
 	default:
-		return store.TenantTelemetryPolicyRow{}, invalid("content_capture must be off")
+		return store.TenantTelemetryPolicyRow{}, invalid("content_capture must be off or on")
+	}
+	maxChars := lcotel.DefaultContentMaxChars
+	if in.ContentMaxChars != nil && *in.ContentMaxChars != 0 {
+		maxChars = *in.ContentMaxChars
+		if maxChars < lcotel.MinContentMaxChars || maxChars > lcotel.MaxContentMaxChars {
+			return store.TenantTelemetryPolicyRow{}, invalid("content_max_chars must be between %d and %d",
+				lcotel.MinContentMaxChars, lcotel.MaxContentMaxChars)
+		}
 	}
 	cred := strings.TrimSpace(in.HeadersCredential)
 	if cred != "" && !credentialNameRe.MatchString(cred) {
@@ -165,7 +186,7 @@ func (m *Manager) normalize(tenant string, in PolicyInput) (store.TenantTelemetr
 	}
 	return store.TenantTelemetryPolicyRow{
 		TenantID: tenant, Endpoint: endpoint, Protocol: protocol, HeadersCredential: cred,
-		Signals: signals, SamplerRatio: ratio,
+		Signals: signals, SamplerRatio: ratio, ContentCapture: capture, ContentMaxChars: maxChars,
 	}, nil
 }
 
