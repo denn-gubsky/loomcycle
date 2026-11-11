@@ -63,6 +63,12 @@ var twins = map[string][]Twin{
 		{Op: "set", Method: http.MethodPut, Path: "/v1/_retention/overrides"},
 		{Op: "clear", Method: http.MethodDelete, Path: "/v1/_retention/overrides"},
 	},
+	"TenantTelemetry": {
+		{Op: "get", Method: http.MethodGet, Path: "/v1/_telemetry"},
+		{Op: "set", Method: http.MethodPut, Path: "/v1/_telemetry"},
+		{Op: "delete", Method: http.MethodDelete, Path: "/v1/_telemetry"},
+		{Op: "test", Method: http.MethodPost, Path: "/v1/_telemetry:test"},
+	},
 	"DirectoryUsers":     {{Method: http.MethodGet, Path: "/v1/_users"}},
 	"DirectoryInspect":   {{Method: http.MethodGet, Path: "/v1/_users/u"}},
 	"DirectoryTenants":   {{Method: http.MethodGet, Path: "/v1/_tenants"}},

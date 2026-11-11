@@ -213,6 +213,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.RetentionOverrideRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.RetentionOverrideResponse.FromString,
                 _registered_method=True)
+        self.TenantTelemetry = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/TenantTelemetry',
+                request_serializer=loomcycle__pb2.TenantTelemetryRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.TenantTelemetryResponse.FromString,
+                _registered_method=True)
         self.MergeSubjects = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/MergeSubjects',
                 request_serializer=loomcycle__pb2.MergeSubjectsRequest.SerializeToString,
@@ -905,6 +910,28 @@ class LoomcycleServicer:
         audit record cannot be written is not set (UNAVAILABLE).
 
         Mirrors GET/PUT/DELETE /v1/_retention/overrides.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def TenantTelemetry(self, request, context):
+        """TenantTelemetry reads, sets, deletes or tests a tenant's own trace export:
+        one op-based RPC (op ∈ get|set|delete|test). A policy points the tenant's
+        own spans at an OTLP collector of the tenant's, beside (never instead of)
+        the operator's export; test sends one synthetic span there through the
+        same credential resolution, address guard and exporter and answers with
+        the outcome.
+
+        Operator-only: an admin for any tenant, a tenant operator for its own
+        (PERMISSION_DENIED otherwise, also for naming another tenant). A policy
+        the rules refuse (not https, a host the operator does not allow, a header
+        credential not bound to the endpoint, a signal or mode not available) is
+        INVALID_ARGUMENT. UNIMPLEMENTED while the operator has not turned tenant
+        export on (LOOMCYCLE_TENANT_TELEMETRY). A set whose audit record cannot be
+        written is not made (UNAVAILABLE).
+
+        Mirrors GET/PUT/DELETE /v1/_telemetry and POST /v1/_telemetry:test.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1819,6 +1846,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.RetentionOverride,
                     request_deserializer=loomcycle__pb2.RetentionOverrideRequest.FromString,
                     response_serializer=loomcycle__pb2.RetentionOverrideResponse.SerializeToString,
+            ),
+            'TenantTelemetry': grpc.unary_unary_rpc_method_handler(
+                    servicer.TenantTelemetry,
+                    request_deserializer=loomcycle__pb2.TenantTelemetryRequest.FromString,
+                    response_serializer=loomcycle__pb2.TenantTelemetryResponse.SerializeToString,
             ),
             'MergeSubjects': grpc.unary_unary_rpc_method_handler(
                     servicer.MergeSubjects,
@@ -3055,6 +3087,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/RetentionOverride',
             loomcycle__pb2.RetentionOverrideRequest.SerializeToString,
             loomcycle__pb2.RetentionOverrideResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def TenantTelemetry(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/TenantTelemetry',
+            loomcycle__pb2.TenantTelemetryRequest.SerializeToString,
+            loomcycle__pb2.TenantTelemetryResponse.FromString,
             options,
             channel_credentials,
             insecure,

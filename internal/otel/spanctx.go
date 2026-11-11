@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"sync/atomic"
 
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -40,10 +41,42 @@ func TenantFromContext(ctx context.Context) string {
 }
 
 // withTenantAttr prepends ctx's tenant to kvs, so it is a START attribute of
-// the span about to open (a sampler sees start attributes only).
+// the span about to open (a sampler sees start attributes only). While tenant
+// export is on, a span of a no-trace run is also marked (AttrNoTrace): the
+// marker is stamped wherever the tenant is, so no span can carry a tenant the
+// router would route and lack the marker that stops it.
 func withTenantAttr(ctx context.Context, kvs []attribute.KeyValue) []attribute.KeyValue {
-	if t := TenantFromContext(ctx); t != "" {
-		return append([]attribute.KeyValue{attribute.String(AttrTenant, t)}, kvs...)
+	t := TenantFromContext(ctx)
+	if t == "" {
+		return kvs
 	}
-	return kvs
+	// Tenant and marker first: an attribute count limit keeps a span's first
+	// attributes, and the marker must not be the one it drops.
+	out := make([]attribute.KeyValue, 0, len(kvs)+2)
+	out = append(out, attribute.String(AttrTenant, t))
+	if tenantRouting.Load() && NoTraceFromContext(ctx) {
+		out = append(out, attribute.Bool(AttrNoTrace, true))
+	}
+	return append(out, kvs...)
+}
+
+// tenantRouting is set while a TenantRouter is a processor of the global
+// tracer provider. Off, no span is marked AttrNoTrace, so the operator's spans
+// are exactly what they were without tenant export.
+var tenantRouting atomic.Bool
+
+// noTraceKey marks ctx as the work of a no-trace run.
+type noTraceKey struct{}
+
+// WithNoTrace returns ctx marking the spans opened under it as a no-trace
+// run's. The mark is never cleared below: a sub-run of a no-trace run is
+// no-trace too.
+func WithNoTrace(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noTraceKey{}, true)
+}
+
+// NoTraceFromContext reports whether WithNoTrace marked ctx.
+func NoTraceFromContext(ctx context.Context) bool {
+	v, _ := ctx.Value(noTraceKey{}).(bool)
+	return v
 }

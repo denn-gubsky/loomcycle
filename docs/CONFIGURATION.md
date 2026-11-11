@@ -3533,6 +3533,12 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_METRICS_AGENT_LABEL` | off | `1` adds an `agent` label (the agent name) to `loomcycle_runs_total` and `loomcycle_tokens_total`. Only for a bounded agent catalogue. See "Metrics". |
 | `OTEL_METRICS_EXPORTER` | `none` | `otlp` also exports the `/metrics` instruments over OTLP (needs `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, or the startup stops). A comma-separated list as the specification allows; a name loomcycle does not support (`prometheus`, `console`) is ignored with a warning. See "Metrics". |
 | `LOOMCYCLE_ENVIRONMENT` | — | The `deployment.environment.name` resource attribute. |
+| `LOOMCYCLE_TENANT_TELEMETRY` | off | `1` lets each tenant export its own traces to an OTLP collector of its own, beside the operator's export. Off, the `/v1/_telemetry` routes answer 404 `feature_disabled` and tracing is exactly as without it. See "Tenant telemetry export". |
+| `LOOMCYCLE_TENANT_TELEMETRY_ALLOW_HTTP` | off | `1` accepts an `http://` collector endpoint (a lab without TLS). Off, only `https://`. A header credential can be bound only to an https endpoint, so an http one takes no headers. |
+| `LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS` | — | Comma-separated hosts a tenant's endpoint may name, each exact (`otel.example.com`) or `*.suffix` (`*.grafana.net`, which does not match `grafana.net` itself). Empty allows any host the address guard lets through. |
+| `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO` | `1` | The highest `sampler_ratio` a tenant may set, 0–1. |
+| `LOOMCYCLE_TENANT_TELEMETRY_QUEUE` | `512` | Spans each tenant's pipeline holds waiting for export; past it they are dropped and counted, never waited on. |
+| `LOOMCYCLE_TENANT_TELEMETRY_MAX_PIPELINES` | `256` | Tenant pipelines open at once on a replica; past it the least recently used is flushed and closed. |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | — | An http(s) URL containing `{trace_id}`, e.g. `https://grafana.example/explore?traceId={trace_id}`: the Web UI's run view links each traced run there. Shown to every signed-in user who can see the run. Anything else stops the startup. |
 
 #### Tracing configuration
@@ -3736,6 +3742,103 @@ setting only one of them leaves tracing off. Rename them:
 | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` (retired) | `OTEL_EXPORTER_OTLP_HEADERS`, or a file named by `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE`. The retired name stays an infrastructure secret: it is never interpolated, in case a stale value is still set. |
 | `LOOMCYCLE_OTEL_SERVICE_NAME` (retired) | `OTEL_SERVICE_NAME`. |
 | `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO` (retired) | `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with `OTEL_TRACES_SAMPLER_ARG=<ratio>`. An out-of-range ratio now stops the startup instead of being clamped. |
+
+#### Tenant telemetry export
+
+With `LOOMCYCLE_TENANT_TELEMETRY=1`, a tenant operator (or an admin, for any
+tenant) can point loomcycle at the tenant's own OTLP collector, and that tenant's
+spans are exported there as well as to the operator's collector. Nothing else
+changes: the operator keeps its own export, its sampling and its resource.
+
+A tenant's destination receives only spans stamped with its own
+`loomcycle.tenant`; a span with no tenant (substrate work) is never sent to a
+tenant, and neither is any span of a no-trace run. Each span is sent as the
+tenant's copy: the resource is only `service.name`, `service.version` and
+`loomcycle.tenant` (never the operator's host, replica or
+`OTEL_RESOURCE_ATTRIBUTES`), the attributes are only those classified as the
+tenant's (run, agent, model, token and tool attributes and the `gen_ai.*` ones,
+not the operator's lane waits or code hashes), and error text is left out.
+
+The endpoint must be `https://` (unless `LOOMCYCLE_TENANT_TELEMETRY_ALLOW_HTTP`)
+and, when `LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS` is set, one of those hosts.
+The collector's headers live in a tenant credential (`headers_credential`)
+whose value is the header block (`authorization=Basic …,x-scope-orgid=…`),
+restricted by its `allowed_urls` to the endpoint; a credential that may be
+sent anywhere is refused. Every connection goes through the same address guard
+as the HTTP tool (`LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` exempts what it
+exempts), redirects are never followed, and the operator's
+`OTEL_EXPORTER_OTLP_*` headers and certificates are never sent to a tenant's
+collector.
+
+With the operator's own tracing off (no `OTEL_EXPORTER_OTLP_ENDPOINT`), turning
+tenant export on installs a recording tracer where there was none: every span
+the sampler keeps is built and ended for every run, whether or not its tenant
+has a destination, a small CPU and allocation cost per span. Those spans go to
+tenants only: runs record no trace id (there is no operator trace to link
+to) and no `traceparent` is sent to MCP servers.
+
+Each tenant has its own bounded queue; a slow or unreachable collector drops
+that tenant's spans (counted) and holds up nobody else's, and no run ever waits
+on an export. `/metrics` counts the exports per tenant:
+`loomcycle_tenant_telemetry_exported_total`, `…_dropped_total`,
+`…_export_failures_total`, and `loomcycle_tenant_telemetry_pipelines`.
+
+Setting it up, as the tenant operator (an admin adds `"tenant": "<id>"`, or
+`?tenant=` on the other routes):
+
+```sh
+# 1. The collector headers, as a tenant credential bound to the endpoint.
+curl -X POST "$LOOMCYCLE/v1/_credentialdef" -H "Authorization: Bearer $TOKEN" \
+  -d '{"op":"create","scope":"tenant","name":"otel-headers","value":"authorization=Basic …,x-scope-orgid=acme","allowed_urls":["https://otlp.example.net/otlp"]}'
+# 2. The policy.
+curl -X PUT "$LOOMCYCLE/v1/_telemetry" -H "Authorization: Bearer $TOKEN" \
+  -d '{"endpoint":"https://otlp.example.net/otlp","headers_credential":"otel-headers"}'
+# 3. One test span, answered at once: {"test":{"ok":true,...}} or a category of failure.
+curl -X POST "$LOOMCYCLE/v1/_telemetry:test" -H "Authorization: Bearer $TOKEN"
+# What is set, and this replica's status (exported, dropped, the last error).
+curl "$LOOMCYCLE/v1/_telemetry" -H "Authorization: Bearer $TOKEN"
+# Stop.
+curl -X DELETE "$LOOMCYCLE/v1/_telemetry" -H "Authorization: Bearer $TOKEN"
+```
+
+The same operations are the `TenantTelemetry` gRPC call, the `telemetry` MCP
+tool, `getTelemetry` / `setTelemetry` / `deleteTelemetry` / `testTelemetry`
+in the TypeScript client, their Python twins, and Settings → Telemetry in the
+Web UI. `protocol` is `http/protobuf` (spans posted to `<endpoint>/v1/traces`)
+or `grpc`; `signals` is `traces` (metrics export is not available yet);
+`sampler_ratio` (0–1, at most `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO`) is
+recorded with the policy but does not yet thin what is sent: a tenant receives
+the spans the deployment's own sampler keeps. A set is written to the audit log
+(`tenant_telemetry_set`) before it takes effect and is refused when the record
+cannot be written; a delete is recorded as `tenant_telemetry_delete`.
+
+A failed export, in the test's answer and in the status's `last_error`
+alike, is reported as a category only — `blocked` (the address guard refused
+every address), `dns`, `connect`, `timeout`, `tls`, `redirect` (never
+followed), `http_<status>`, `grpc_<code>`, `rejected` (the collector took the
+request and refused the span), `busy` (every export slot was held) or
+`export_failed` — never the addresses, the network error's text or the
+collector's answer; the operator's log keeps the error itself, scrubbed of
+header values. A tenant may run one test every 10 seconds on each replica (a
+second is refused, `429 rate_limited`), and a test takes one of the 16 export
+slots every tenant shares.
+
+With `LOOMCYCLE_TENANT_TELEMETRY_ALLOW_HTTP` an `http://` endpoint is accepted,
+but it can carry no header credential: a credential's `allowed_urls` are
+https-only, so none can be bound to it. With the gate off, the Web UI hides the
+Telemetry page and the MCP server does not list the `telemetry` tool.
+
+A stored policy is held to the operator's rules every time it is used, not
+only when it was set: after the operator removes a host from
+`LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS`, takes the http override away or
+lowers the ratio cap, a policy that no longer passes stops exporting and its
+status says `policy no longer valid: <reason>`. A snapshot carries the policies
+(never the header credential, which stays behind like every sealed
+credential); a restore keeps only those the target's rules allow, and a
+restored policy that names a header credential exports once the tenant stores
+that credential again on the target. The status is per replica; each replica
+re-reads the policies and their credentials every minute, so a rotated or
+expired header credential is picked up within a minute.
 
 ## 10. Cross-references
 

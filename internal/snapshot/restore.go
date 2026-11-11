@@ -147,6 +147,7 @@ type RestoreResult struct {
 	UsersRestored                  int      `json:"users_restored"`
 	TokenLimitsRestored            int      `json:"token_limits_restored"`
 	OAuthCredentialsRestored       int      `json:"oauth_credentials_restored,omitempty"`
+	TenantTelemetryRestored        int      `json:"tenant_telemetry_restored,omitempty"`
 	ACLListsRestored               int      `json:"acl_lists_restored"`
 	ACLGroupsRestored              int      `json:"acl_groups_restored"`
 	ACLMembersRestored             int      `json:"acl_members_restored"`

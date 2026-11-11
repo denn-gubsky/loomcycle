@@ -181,6 +181,20 @@ type Connector interface {
 	// retention_override tool.
 	RetentionOverride(ctx context.Context, req RetentionOverrideRequest) (RetentionOverrideResult, error)
 
+	// TenantTelemetry reads, sets, deletes or tests a tenant's own telemetry
+	// export (req.Op "get" | "set" | "delete" | "test"): an OTLP endpoint of
+	// the tenant's that receives the tenant's own traces, beside the
+	// operator's export.
+	//
+	// Operator-only on every transport: an admin for any tenant (req.Tenant),
+	// a tenant operator for its own. The check, the policy rules and the audit
+	// of a write are made here as well as at each transport's gate. With the
+	// operator's gate (LOOMCYCLE_TENANT_TELEMETRY) off every op is refused with
+	// ErrTenantTelemetryDisabled. Errors wrap the ErrTenantTelemetry*
+	// sentinels. Reachable via /v1/_telemetry, the gRPC TenantTelemetry RPC
+	// and the MCP telemetry tool.
+	TenantTelemetry(ctx context.Context, req TenantTelemetryRequest) (TenantTelemetryResult, error)
+
 	// MergeSubjects folds one tenant ontology subject (the duplicate) into
 	// another (the survivor) in one transaction: the duplicate's facts move
 	// under the survivor, its statements are re-pointed (each copied with the

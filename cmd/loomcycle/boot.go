@@ -19,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/memory/reranker"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
@@ -28,6 +29,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tenanttelemetry"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -54,6 +56,12 @@ type boot struct {
 	// initTelemetry and with the server's at-rest redactor once it exists.
 	logRedactor       *redact.Redactor
 	otelHeaderSecrets []string
+
+	// initTelemetry / wireTenantTelemetry: a tenant's own trace export. All
+	// nil while LOOMCYCLE_TENANT_TELEMETRY is off.
+	tenantTelemetryCfg tenanttelemetry.Config
+	tenantRouter       *lcotel.TenantRouter
+	tenantTelemetry    *tenanttelemetry.Manager
 
 	// buildProviders
 	secrets *secretSink

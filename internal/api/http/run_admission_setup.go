@@ -217,6 +217,7 @@ func (a *runAdmission) wireRun() error {
 		UserID:    a.effectiveUserID,
 		Tenant:    a.effectiveTenantID,
 		SessionID: a.sessionID,
+		NoTrace:   a.retention == retentionmode.None,
 	})
 	s.recordRunTraceID(a.runCtx, a.runID)
 	a.deferToEnd(func() {

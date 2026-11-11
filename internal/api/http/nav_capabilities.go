@@ -83,6 +83,8 @@ var navSurfaces = []navSurface{
 	// The statement review queue. Its route admits a member too, but only an
 	// operator or a member granted review somewhere sees the page.
 	{ID: "review", Method: "GET", Path: "/v1/_statements/review", Reviewer: true},
+	// A tenant's own trace export: carved out of the member path.
+	{ID: "telemetry", Method: "GET", Path: "/v1/_telemetry"},
 	{ID: "retention", Method: "GET", Path: "/v1/_retention"},
 	{ID: "erasure", Method: "GET", Path: "/v1/_erasure"},
 	{ID: "presets", Method: "GET", Path: "/v1/_presets"},
@@ -165,5 +167,14 @@ const (
 func (s *Server) withAudioSurfaces(ctx context.Context, eff whoamiEffective) whoamiEffective {
 	eff.Surfaces[surfaceSpeech] = s.speechEnabled() && s.callerMayUse(ctx, audioSpeechPath)
 	eff.Surfaces[surfaceTranscription] = s.transcriptionEnabled() && s.callerMayUse(ctx, audioTranscriptionsPath)
+	return eff
+}
+
+// withGatedSurfaces hides the pages of a feature the operator has not turned
+// on: the route would only answer feature_disabled.
+func (s *Server) withGatedSurfaces(eff whoamiEffective) whoamiEffective {
+	if s.tenantTelemetry == nil {
+		eff.Surfaces["telemetry"] = false
+	}
 	return eff
 }

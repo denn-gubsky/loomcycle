@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -39,6 +41,9 @@ type navClass struct {
 func navFixture(t *testing.T, mode authz.Mode) (*Server, string, store.Store, []navClass) {
 	t.Helper()
 	srv, url, st := aclFixture(t, mode)
+	// Every gated feature on, so each page's answer is its routes' alone
+	// (withGatedSurfaces hides a feature that is off).
+	withTenantTelemetry(t, srv, st)
 	for _, tok := range []struct {
 		id, bearer, subject string
 		scopes              []string
@@ -231,6 +236,12 @@ func addRootToken(t *testing.T, st store.Store) {
 func TestWhoamiEffective_OpenModeReachesEverything(t *testing.T) {
 	srv := New(makeBaseConfig(), &stubResolver{}, nil, concurrency.New(8, 8, 5*time.Second), nil)
 	withAudioEngines(srv)
+	telemetryStore, err := storesqlite.Open(filepath.Join(t.TempDir(), "telemetry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = telemetryStore.Close() })
+	withTenantTelemetry(t, srv, telemetryStore)
 	rec := httptest.NewRecorder()
 	srv.Mux().ServeHTTP(rec, httptest.NewRequest("GET", "/v1/_me", nil))
 	var me struct {

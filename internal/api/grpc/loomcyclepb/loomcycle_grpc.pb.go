@@ -73,6 +73,7 @@ const (
 	Loomcycle_UsageReport_FullMethodName          = "/loomcycle.v1.Loomcycle/UsageReport"
 	Loomcycle_TokenLimit_FullMethodName           = "/loomcycle.v1.Loomcycle/TokenLimit"
 	Loomcycle_RetentionOverride_FullMethodName    = "/loomcycle.v1.Loomcycle/RetentionOverride"
+	Loomcycle_TenantTelemetry_FullMethodName      = "/loomcycle.v1.Loomcycle/TenantTelemetry"
 	Loomcycle_MergeSubjects_FullMethodName        = "/loomcycle.v1.Loomcycle/MergeSubjects"
 	Loomcycle_BindSubjectPrincipal_FullMethodName = "/loomcycle.v1.Loomcycle/BindSubjectPrincipal"
 	Loomcycle_ListReviewQueue_FullMethodName      = "/loomcycle.v1.Loomcycle/ListReviewQueue"
@@ -364,6 +365,23 @@ type LoomcycleClient interface {
 	//
 	// Mirrors GET/PUT/DELETE /v1/_retention/overrides.
 	RetentionOverride(ctx context.Context, in *RetentionOverrideRequest, opts ...grpc.CallOption) (*RetentionOverrideResponse, error)
+	// TenantTelemetry reads, sets, deletes or tests a tenant's own trace export:
+	// one op-based RPC (op ∈ get|set|delete|test). A policy points the tenant's
+	// own spans at an OTLP collector of the tenant's, beside (never instead of)
+	// the operator's export; test sends one synthetic span there through the
+	// same credential resolution, address guard and exporter and answers with
+	// the outcome.
+	//
+	// Operator-only: an admin for any tenant, a tenant operator for its own
+	// (PERMISSION_DENIED otherwise, also for naming another tenant). A policy
+	// the rules refuse (not https, a host the operator does not allow, a header
+	// credential not bound to the endpoint, a signal or mode not available) is
+	// INVALID_ARGUMENT. UNIMPLEMENTED while the operator has not turned tenant
+	// export on (LOOMCYCLE_TENANT_TELEMETRY). A set whose audit record cannot be
+	// written is not made (UNAVAILABLE).
+	//
+	// Mirrors GET/PUT/DELETE /v1/_telemetry and POST /v1/_telemetry:test.
+	TenantTelemetry(ctx context.Context, in *TenantTelemetryRequest, opts ...grpc.CallOption) (*TenantTelemetryResponse, error)
 	// MergeSubjects folds one tenant ontology subject (duplicate) into another
 	// (survivor), each named by document id or natural key, in one transaction:
 	// the duplicate's facts move under the survivor, its statements are copied
@@ -1181,6 +1199,16 @@ func (c *loomcycleClient) RetentionOverride(ctx context.Context, in *RetentionOv
 	return out, nil
 }
 
+func (c *loomcycleClient) TenantTelemetry(ctx context.Context, in *TenantTelemetryRequest, opts ...grpc.CallOption) (*TenantTelemetryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TenantTelemetryResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_TenantTelemetry_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) MergeSubjects(ctx context.Context, in *MergeSubjectsRequest, opts ...grpc.CallOption) (*MergeSubjectsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MergeSubjectsResponse)
@@ -1992,6 +2020,23 @@ type LoomcycleServer interface {
 	//
 	// Mirrors GET/PUT/DELETE /v1/_retention/overrides.
 	RetentionOverride(context.Context, *RetentionOverrideRequest) (*RetentionOverrideResponse, error)
+	// TenantTelemetry reads, sets, deletes or tests a tenant's own trace export:
+	// one op-based RPC (op ∈ get|set|delete|test). A policy points the tenant's
+	// own spans at an OTLP collector of the tenant's, beside (never instead of)
+	// the operator's export; test sends one synthetic span there through the
+	// same credential resolution, address guard and exporter and answers with
+	// the outcome.
+	//
+	// Operator-only: an admin for any tenant, a tenant operator for its own
+	// (PERMISSION_DENIED otherwise, also for naming another tenant). A policy
+	// the rules refuse (not https, a host the operator does not allow, a header
+	// credential not bound to the endpoint, a signal or mode not available) is
+	// INVALID_ARGUMENT. UNIMPLEMENTED while the operator has not turned tenant
+	// export on (LOOMCYCLE_TENANT_TELEMETRY). A set whose audit record cannot be
+	// written is not made (UNAVAILABLE).
+	//
+	// Mirrors GET/PUT/DELETE /v1/_telemetry and POST /v1/_telemetry:test.
+	TenantTelemetry(context.Context, *TenantTelemetryRequest) (*TenantTelemetryResponse, error)
 	// MergeSubjects folds one tenant ontology subject (duplicate) into another
 	// (survivor), each named by document id or natural key, in one transaction:
 	// the duplicate's facts move under the survivor, its statements are copied
@@ -2527,6 +2572,9 @@ func (UnimplementedLoomcycleServer) TokenLimit(context.Context, *TokenLimitReque
 }
 func (UnimplementedLoomcycleServer) RetentionOverride(context.Context, *RetentionOverrideRequest) (*RetentionOverrideResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RetentionOverride not implemented")
+}
+func (UnimplementedLoomcycleServer) TenantTelemetry(context.Context, *TenantTelemetryRequest) (*TenantTelemetryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TenantTelemetry not implemented")
 }
 func (UnimplementedLoomcycleServer) MergeSubjects(context.Context, *MergeSubjectsRequest) (*MergeSubjectsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MergeSubjects not implemented")
@@ -3318,6 +3366,24 @@ func _Loomcycle_RetentionOverride_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).RetentionOverride(ctx, req.(*RetentionOverrideRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_TenantTelemetry_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TenantTelemetryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).TenantTelemetry(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_TenantTelemetry_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).TenantTelemetry(ctx, req.(*TenantTelemetryRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -4471,6 +4537,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RetentionOverride",
 			Handler:    _Loomcycle_RetentionOverride_Handler,
+		},
+		{
+			MethodName: "TenantTelemetry",
+			Handler:    _Loomcycle_TenantTelemetry_Handler,
 		},
 		{
 			MethodName: "MergeSubjects",

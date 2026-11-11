@@ -1098,7 +1098,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 			// The rollout mode is the deployment's, not the principal's: an
 			// open-mode console shows it like any other.
 			"acl_mode":  string(s.aclMode()),
-			"effective": s.withAudioSurfaces(r.Context(), openModeEffective()),
+			"effective": s.withGatedSurfaces(s.withAudioSurfaces(r.Context(), openModeEffective())),
 			"auth":      s.whoamiAuth(r.Context(), true),
 		}
 		s.addTraceURLTemplate(out)
@@ -1131,7 +1131,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	}
 	// RFC EZ §4: which Web UI pages the principal may reach, asked of the
 	// gates a request to each page's primary route would face.
-	out["effective"] = s.withAudioSurfaces(r.Context(), navEffective(r.Context(), p))
+	out["effective"] = s.withGatedSurfaces(s.withAudioSurfaces(r.Context(), navEffective(r.Context(), p)))
 	// RFC FA: how the caller signed in — the mode always, the gate, methods
 	// and session times when a Web UI session authenticated the request.
 	out["auth"] = s.whoamiAuth(r.Context(), false)
@@ -1536,7 +1536,7 @@ func requiredScopeFor(method, path string) string {
 	// can see whether retention is enabled + how it's tuned; the HANDLER strips
 	// the cross-tenant purgeable counts + the export dir for a non-admin caller
 	// (admin gets the full view). ScopeAdmin also satisfies. Read-only GET.
-	case path == "/v1/_retention", path == "/v1/_retention/overrides":
+	case path == "/v1/_retention", path == "/v1/_retention/overrides", isTenantTelemetryPath(path):
 		return auth.ScopeTenant
 	// RFC AW: the token-budget management surface (GET list + PUT upsert + DELETE).
 	// Tenant-readable/writable so a tenant operator manages its own tenant + user

@@ -6637,6 +6637,65 @@ a.login-btn {
   align-items: center;
 }
 
+/* Tenant telemetry: one labelled field per row, each with its rule beneath it,
+   because the rules (https, a credential restricted to the endpoint) are what a
+   tenant gets wrong and the server refuses. */
+.telemetry-tenant {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--lc-space-2);
+  align-items: flex-end;
+  margin: var(--lc-space-2) 0;
+}
+.telemetry-tenant label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--lc-text-sm);
+}
+.telemetry-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lc-space-2);
+  max-width: 44rem;
+  margin: var(--lc-space-2) 0;
+}
+.telemetry-form > label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--lc-text-sm);
+}
+.telemetry-form input:not([type="checkbox"]),
+.telemetry-form select {
+  padding: 6px 10px;
+  font-size: var(--lc-text-sm);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  background: var(--lc-surface-2);
+  color: inherit;
+  min-width: 0;
+}
+.telemetry-form input[name="sampler_ratio"],
+.telemetry-form select {
+  max-width: 12rem;
+}
+.telemetry-signals {
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  padding: var(--lc-space-1) var(--lc-space-2);
+  margin: 0;
+  font-size: var(--lc-text-sm);
+  display: flex;
+  gap: var(--lc-space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+.telemetry-time {
+  font-size: var(--lc-text-sm);
+  word-break: break-all;
+}
+
 /* Credentials create form (RFC AR) — a single responsive row of name / value /
    scope / submit that wraps on narrow viewports. */
 .cred-create {

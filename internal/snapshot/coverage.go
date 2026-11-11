@@ -179,6 +179,11 @@ var tableCoverageMap = map[string]tableCoverage{
 	// config, which a target may not have; it is authority without a section
 	// yet. auth.tenant_policies in config is the durable floor that survives
 	// any restore.
+	// A tenant's own trace export. It names its header credential, which is
+	// never carried; the target re-applies its own operator rules before it
+	// exports.
+	"tenant_telemetry_policies": {Kind: coverSection, Section: "tenant_telemetry", Secrets: "none", Backends: onBoth,
+		Cache: "tenanttelemetry.Manager (reloaded after a restore and every minute)"},
 	"tenant_auth_policies": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "RFC FA P5: per-tenant gate policies name the source config's gates; not yet carried, re-declare in auth.tenant_policies or re-apply after a restore"},
 	// A volume's stored path is a filesystem grant lookup trusts, so it never

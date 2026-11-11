@@ -31,6 +31,7 @@ import {
   Server,
   ShieldCheck,
   Split,
+  Telescope,
   Ticket,
   Users,
   UsersRound,
@@ -127,6 +128,11 @@ export const NAV_ITEMS: NavItem[] = [
   // audit is tenant-visible (RFC AS): handleListEvents tenant-scopes the result
   // via the event's owning session, so a tenant sees only its own events.
   { id: "audit", to: "/audit", label: "audit", Icon: ScrollText, vis: "tenant" },
+  // telemetry: the tenant's own trace export. GET /v1/_telemetry is
+  // ScopeTenant-gated and refuses a member; a tenant operator manages its own
+  // tenant, an admin any (?tenant=). With the operator's gate off the page
+  // still shows and says so (the route answers 404 feature_disabled).
+  { id: "telemetry", to: "/telemetry", label: "telemetry", Icon: Telescope, vis: "tenant" },
   { id: "retention", to: "/retention", label: "retention", Icon: Archive, vis: "tenant" },
   { id: "erasure", to: "/erasure", label: "erasure", Icon: Eraser, vis: "tenant" },
   // ScopeAdmin: the operator plane. Activity, presets, runtime, lanes and health
@@ -190,7 +196,13 @@ export const NAV_GROUPS: NavGroup[] = [
     items: ["users", "groups", "policies", "bindings", "simulator", "tokens"],
   },
   { key: "g-cost", label: "cost & models", Icon: Coins, zone: "admin", items: ["usage", "limits", "routing"] },
-  { key: "g-compliance", label: "compliance", Icon: ScrollText, zone: "admin", items: ["audit", "retention", "erasure"] },
+  {
+    key: "g-compliance",
+    label: "compliance",
+    Icon: ScrollText,
+    zone: "admin",
+    items: ["audit", "telemetry", "retention", "erasure"],
+  },
   {
     key: "g-system",
     label: "system",

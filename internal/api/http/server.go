@@ -64,6 +64,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/teamspec"
+	"github.com/denn-gubsky/loomcycle/internal/tenanttelemetry"
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -639,6 +640,11 @@ type Server struct {
 	backplane    coord.Backplane
 	replicaStore replicaLister
 	replicaID    string
+
+	// tenantTelemetry is a tenant's own trace export (tenant_telemetry.go);
+	// nil while the operator's gate is off, which leaves /v1/_telemetry
+	// answering feature_disabled.
+	tenantTelemetry *tenanttelemetry.Manager
 
 	// aclResolver is the RFC EY groups + compiled-set resolver; nil leaves
 	// every gate on the scope answer alone.
@@ -3440,6 +3446,21 @@ func (s *Server) Mux() http.Handler {
 }
 
 // routes is the route table Mux serves.
+// tenantTelemetryRoutes registers a tenant's own trace export
+// (tenant_telemetry.go): an admin for any tenant, a tenant operator for its
+// own, never a member; 404 feature_disabled unless the operator turned it on.
+// Here, beside routes (whose last act is to call it), so the route censuses
+// that read this file see them.
+// The test route asks manage: it sends a span with the tenant's header
+// credential, a use of the policy as a write is.
+func (s *Server) tenantTelemetryRoutes(mux *http.ServeMux) *http.ServeMux {
+	mux.Handle("GET /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryGet))))
+	mux.Handle("PUT /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryPut))))
+	mux.Handle("DELETE /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryDelete))))
+	mux.Handle("POST /v1/_telemetry:test", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryTest))))
+	return mux
+}
+
 func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
@@ -4146,7 +4167,7 @@ func (s *Server) routes() *http.ServeMux {
 			return recoveryMiddleware(s.authMiddleware(next))
 		})
 	}
-	return mux
+	return s.tenantTelemetryRoutes(mux)
 }
 
 // MuxRegistrar is the minimal mux surface the webhook receiver's Mount
@@ -7149,7 +7170,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		ParentAgentID: parentIdentity.AgentID,
 		Tenant:        parentIdentity.TenantID,
 		SessionID:     subSessionID,
-		Trigger:       lcotel.TriggerSubagent,
+		Trigger:       lcotel.TriggerSubagent, NoTrace: subIdentity.Retention == retentionmode.None,
 	})
 	s.recordRunTraceID(subRunCtx, subRunID)
 	defer func() {

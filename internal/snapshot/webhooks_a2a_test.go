@@ -31,6 +31,7 @@ func passValidators() map[string]func(json.RawMessage) error {
 		migrations.SectionA2AServerCardDefs: ok,
 		migrations.SectionMemoryBackendDefs: ok,
 		migrations.SectionDocSourceDefs:     ok,
+		migrations.SectionTenantTelemetry:   ok,
 	}
 }
 

@@ -82,6 +82,11 @@ type Config struct {
 	// a code-js run has a run_timeout_seconds budget). This is a transport bound,
 	// distinct from the run's wall-clock budget.
 	SpawnRunTimeoutMS int
+
+	// TenantTelemetry is whether the operator turned tenant trace export on
+	// (LOOMCYCLE_TENANT_TELEMETRY). Off, the telemetry tool is not listed:
+	// a call would only answer feature_disabled.
+	TenantTelemetry bool
 }
 
 // Server reads MCP JSON-RPC frames from stdin and writes responses +
@@ -425,6 +430,9 @@ func (s *Server) handleToolsList(ctx context.Context, stdout io.Writer, req loom
 	all := toolDescriptors()
 	descs := make([]loommcp.ToolDescriptor, 0, len(all))
 	for _, d := range all {
+		if d.Name == "telemetry" && !s.cfg.TenantTelemetry {
+			continue
+		}
 		if principalMayCallTool(ctx, d.Name) {
 			descs = append(descs, d)
 		}

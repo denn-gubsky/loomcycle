@@ -121,7 +121,9 @@ func runStartContext(ctx context.Context) (context.Context, []trace.SpanStartOpt
 // caller's trace id on although loomcycle took no part in the trace.
 func InjectTraceContext(ctx context.Context, h http.Header) {
 	span := trace.SpanFromContext(ctx)
-	if !span.IsRecording() || !span.SpanContext().IsValid() {
+	// Spans recorded only for tenants' own collectors are no trace of the
+	// operator's for a server it calls to join.
+	if routingOnly.Load() || !span.IsRecording() || !span.SpanContext().IsValid() {
 		return
 	}
 	mc := propagation.MapCarrier{}
@@ -141,7 +143,9 @@ func InjectTraceContext(ctx context.Context, h http.Header) {
 func SampledTraceID(ctx context.Context) string {
 	span := trace.SpanFromContext(ctx)
 	sc := span.SpanContext()
-	if !span.IsRecording() || !sc.IsValid() || !sc.IsSampled() {
+	// Recorded only for tenants' own collectors: the operator's backend holds
+	// nothing to link a run to.
+	if routingOnly.Load() || !span.IsRecording() || !sc.IsValid() || !sc.IsSampled() {
 		return ""
 	}
 	return sc.TraceID().String()

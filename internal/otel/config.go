@@ -100,6 +100,12 @@ type Config struct {
 	// UserHashKey keys loomcycle.user_hash, derived from LOOMCYCLE_SECRET_KEY
 	// by the binary. Nil (no secret key) emits the raw user id instead.
 	UserHashKey []byte
+
+	// TenantRouter, when set, sends each tenant's own spans to that tenant's
+	// destination beside the operator's export. The binary sets it only when
+	// the operator turned tenant export on; nil leaves the tracer provider
+	// exactly as it is without the feature.
+	TenantRouter *TenantRouter
 }
 
 // ResolveConfig reads and validates the tracing environment through getenv
