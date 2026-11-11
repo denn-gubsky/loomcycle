@@ -111,19 +111,53 @@ func doInit(cfg Config) (func(context.Context) error, error) {
 	// Before any exporter is built: building one parses the header
 	// environment, and the SDK's default logger would print what it rejects.
 	otel.SetLogger(newSDKLogger(slog.Default()))
-	if !cfg.Enabled {
+	if !cfg.Enabled && cfg.TenantRouter == nil {
 		return noopShutdown, nil
 	}
 	errs := newErrorHandler(slog.Default(), time.Now)
-	tp, err := newTracerProvider(context.Background(), cfg, &stats, errs)
+	var (
+		tp  *sdktrace.TracerProvider
+		err error
+	)
+	if cfg.Enabled {
+		tp, err = newTracerProvider(context.Background(), cfg, &stats, errs)
+	} else {
+		tp, err = newRoutingOnlyProvider(cfg)
+	}
 	if err != nil {
 		return noopShutdown, err
 	}
+	if cfg.TenantRouter != nil {
+		installTenantRouter(tp, cfg.TenantRouter)
+	}
 	otel.SetErrorHandler(errs)
 	otel.SetTracerProvider(tp)
-	stats.enabled.Store(true)
+	stats.enabled.Store(cfg.Enabled)
 	return tp.Shutdown, nil
 }
+
+// newRoutingOnlyProvider is the tracer provider when the operator exports
+// nothing but tenants do: the operator's sampler, no exporter of its own. The
+// resource is the operator's, as with export on; a tenant's copy never
+// carries it.
+func newRoutingOnlyProvider(cfg Config) (*sdktrace.TracerProvider, error) {
+	sampler, err := Sampler(cfg.SamplerName, cfg.SamplerArg)
+	if err != nil {
+		return nil, err
+	}
+	return sdktrace.NewTracerProvider(sdktrace.WithSampler(NewTenantSampler(sampler, cfg.TenantSamplerRatios))), nil
+}
+
+// installTenantRouter makes r a processor of tp, beside the operator's batch
+// processor, and turns on the no-trace marking the router relies on.
+func installTenantRouter(tp *sdktrace.TracerProvider, r *TenantRouter) {
+	tenantRouting.Store(true)
+	tp.RegisterSpanProcessor(r)
+}
+
+// TenantRoutingInstalled reports whether a TenantRouter is a processor of the
+// global tracer provider.
+func TenantRoutingInstalled() bool { return tenantRouting.Load() }
 
 // newTracerProvider builds the exporting provider without installing it.
 func newTracerProvider(ctx context.Context, cfg Config, st *pipelineStats, errs *errorHandler) (*sdktrace.TracerProvider, error) {

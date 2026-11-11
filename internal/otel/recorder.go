@@ -92,6 +92,11 @@ type RunStartAttrs struct {
 	// trigger label of the run metrics. Empty takes the trigger on ctx
 	// (WithRunTrigger), and "http" when there is none.
 	Trigger string
+	// NoTrace is a run whose content is stored nowhere. Its spans, and those
+	// of every run started under it, are never sent to a tenant's own
+	// destination. A run started under a no-trace run's ctx is one whatever
+	// this says.
+	NoTrace bool
 }
 
 // RecordRunStart opens the top-level loomcycle.run span. The returned
@@ -112,6 +117,10 @@ func RecordRunStart(ctx context.Context, attrs RunStartAttrs) (context.Context, 
 		attrs.Trigger = RunTriggerFromContext(ctx)
 	}
 	ctx = WithTenant(ctx, attrs.Tenant)
+	if attrs.NoTrace {
+		ctx = WithNoTrace(ctx)
+	}
+	attrs.NoTrace = NoTraceFromContext(ctx)
 	ctx, opts := runStartContext(ctx)
 	ctx, span := Tracer().Start(ctx, SpanRun, append(opts, trace.WithAttributes(runStartKVs(attrs)...))...)
 	if m := startRunMetric(ctx, attrs.Tenant, attrs.Trigger, attrs.AgentName); m != nil {
@@ -142,6 +151,9 @@ func runStartKVs(a RunStartAttrs) []attribute.KeyValue {
 	kvs = genAIString(genai.GenAIAgentNameKey, a.AgentName, kvs)
 	kvs = genAIString(genai.GenAIAgentIDKey, a.AgentID, kvs)
 	kvs = genAIString(genai.GenAIConversationIDKey, a.SessionID, kvs)
+	if a.Tenant != "" && a.NoTrace && tenantRouting.Load() {
+		kvs = append(kvs, attribute.Bool(AttrNoTrace, true))
+	}
 	return kvs
 }
 
