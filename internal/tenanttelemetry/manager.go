@@ -205,11 +205,33 @@ func (m *Manager) Test(ctx context.Context, tenant string) error {
 	if row == nil {
 		return invalid("this tenant has no telemetry policy to test")
 	}
-	d, err := m.destination(ctx, *row)
+	valid, err := m.ValidStored(*row)
+	if err != nil {
+		return err
+	}
+	d, err := m.destination(ctx, valid)
 	if err != nil {
 		return err
 	}
 	return lcotel.TestTenantExport(ctx, tenant, d, m.version, lcotel.DefaultTenantExportTimeout)
+}
+
+// ValidStored holds a stored row to the operator's rules as they are NOW —
+// the ones a set is held to — and returns it as a set would store it. A row
+// restored from another deployment, or written before the operator narrowed
+// its rules, can fail them: it is then refused (ErrInvalid, "policy no longer
+// valid: <reason>") wherever it would be used — a pipeline build, a test, a
+// snapshot restore. The header credential's binding to the endpoint is
+// checked where the credential is resolved, each time.
+func (m *Manager) ValidStored(row store.TenantTelemetryPolicyRow) (store.TenantTelemetryPolicyRow, error) {
+	ratio := row.SamplerRatio
+	valid, err := m.normalize(row.TenantID, PolicyInput{Endpoint: row.Endpoint, Protocol: row.Protocol,
+		HeadersCredential: row.HeadersCredential, Signals: row.Signals, SamplerRatio: &ratio})
+	if err != nil {
+		return store.TenantTelemetryPolicyRow{}, fmt.Errorf("%w: policy no longer valid: %s", ErrInvalid, PublicError(row.TenantID, err))
+	}
+	valid.UpdatedAt, valid.UpdatedBy = row.UpdatedAt, row.UpdatedBy
+	return valid, nil
 }
 
 // destination resolves row into what the router exports with.
@@ -312,7 +334,7 @@ func (m *Manager) apply(ctx context.Context, row store.TenantTelemetryPolicyRow,
 	// write: a row restored from another deployment, or one written before
 	// the operator narrowed its host list or ratio cap, exports only if the
 	// rules allow it now.
-	_, ruleErr := m.normalize(row.TenantID, storedInput(row))
+	valid, ruleErr := m.ValidStored(row)
 	switch {
 	case !containsString(row.Signals, SignalTraces):
 		m.router.RemoveDestination(row.TenantID)
@@ -321,7 +343,7 @@ func (m *Manager) apply(ctx context.Context, row store.TenantTelemetryPolicyRow,
 		next.err = publicError(row.TenantID, ruleErr, genericApplyError)
 		slog.Warn("tenant telemetry: the stored policy breaks the operator's rules; not exporting it", "tenant", row.TenantID, "err", next.err)
 	default:
-		d, err := m.destination(ctx, row)
+		d, err := m.destination(ctx, valid)
 		if err != nil {
 			m.router.RemoveDestination(row.TenantID)
 			next.err = publicError(row.TenantID, err, genericApplyError)
@@ -333,13 +355,6 @@ func (m *Manager) apply(ctx context.Context, row store.TenantTelemetryPolicyRow,
 	m.mu.Lock()
 	m.applied[row.TenantID] = next
 	m.mu.Unlock()
-}
-
-// storedInput is a stored row as a write would have given it.
-func storedInput(row store.TenantTelemetryPolicyRow) PolicyInput {
-	ratio := row.SamplerRatio
-	return PolicyInput{Endpoint: row.Endpoint, Protocol: row.Protocol, HeadersCredential: row.HeadersCredential,
-		Signals: row.Signals, SamplerRatio: &ratio}
 }
 
 // stampOf identifies row, and the credential row it names, as they are now.

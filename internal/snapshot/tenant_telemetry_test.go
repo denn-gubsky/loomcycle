@@ -3,11 +3,13 @@ package snapshot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -67,5 +69,55 @@ func TestSnapshotTenantTelemetry_RoundTripsAndTheLiveRowStands(t *testing.T) {
 	// A re-restore writes nothing.
 	if res := mustRestore(t, dst, raw, RestoreOptions{Validators: passValidators()}); res.TenantTelemetryRestored != 0 || len(res.Refresh.TelemetryTenants) != 0 {
 		t.Errorf("re-restore: restored %d, refresh %v", res.TenantTelemetryRestored, res.Refresh.TelemetryTenants)
+	}
+}
+
+// A policy restores only when this host's rules admit it: one the validator
+// refuses is skipped with its reason, and with no validator nothing restores.
+func TestSnapshotTenantTelemetry_RestoreHoldsEachPolicyToTheTargetsRules(t *testing.T) {
+	src, srcClose := newTestStore(t)
+	defer srcClose()
+	ctx := context.Background()
+	for _, r := range []store.TenantTelemetryPolicyRow{
+		{TenantID: "acme", Endpoint: "https://otel.acme.example", Protocol: "http/protobuf", Signals: []string{"traces"}, SamplerRatio: 1},
+		{TenantID: "evil", Endpoint: "https://exfil.example", Protocol: "http/protobuf", Signals: []string{"traces"}, SamplerRatio: 1},
+	} {
+		if err := src.TenantTelemetryPolicyPut(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw := mustCapture(t, src)
+
+	dst, dstClose := newTestStore(t)
+	defer dstClose()
+	v := passValidators()
+	v[migrations.SectionTenantTelemetry] = func(body json.RawMessage) error {
+		var e TenantTelemetryEntry
+		if err := json.Unmarshal(body, &e); err != nil {
+			return err
+		}
+		if e.Endpoint == "https://exfil.example" {
+			return errors.New("endpoint host \"exfil.example\" is not one the operator allows telemetry to be sent to")
+		}
+		return nil
+	}
+	res := mustRestore(t, dst, raw, RestoreOptions{Validators: v})
+	if res.TenantTelemetryRestored != 1 || !hasWarning(res, "tenant telemetry policy evil", "not one the operator allows") {
+		t.Errorf("restored %d; warnings:\n%s", res.TenantTelemetryRestored, strings.Join(res.Warnings, "\n"))
+	}
+	if _, err := dst.TenantTelemetryPolicyGet(ctx, "evil"); err == nil {
+		t.Error("a policy the target's rules refuse was restored")
+	}
+
+	bare, bareClose := newTestStore(t)
+	defer bareClose()
+	v = passValidators()
+	delete(v, migrations.SectionTenantTelemetry)
+	res = mustRestore(t, bare, raw, RestoreOptions{Validators: v})
+	if res.TenantTelemetryRestored != 0 || !hasWarning(res, "tenant_telemetry", "skipped") {
+		t.Errorf("no validator: restored %d; warnings:\n%s", res.TenantTelemetryRestored, strings.Join(res.Warnings, "\n"))
+	}
+	if rows, _ := bare.TenantTelemetryPolicyList(ctx); len(rows) != 0 {
+		t.Errorf("restored without a validator: %+v", rows)
 	}
 }

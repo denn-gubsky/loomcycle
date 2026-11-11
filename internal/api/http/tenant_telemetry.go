@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/snapshot"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tenanttelemetry"
 )
@@ -235,6 +236,29 @@ func (s *Server) recordTenantTelemetryAudit(ctx context.Context, action, tenant,
 		return false
 	}
 	return true
+}
+
+// restoredTenantTelemetryValidator checks a restored policy (a
+// snapshot.TenantTelemetryEntry as JSON) against this host's operator rules.
+// With the feature off here there are no rules to hold it to, and it is not
+// restored.
+func (s *Server) restoredTenantTelemetryValidator(body json.RawMessage) error {
+	m := s.tenantTelemetry
+	if m == nil {
+		return errors.New("tenant telemetry export is not enabled on this host")
+	}
+	var e snapshot.TenantTelemetryEntry
+	if err := json.Unmarshal(body, &e); err != nil {
+		return err
+	}
+	_, err := m.ValidStored(store.TenantTelemetryPolicyRow{
+		TenantID: e.TenantID, Endpoint: e.Endpoint, Protocol: e.Protocol, HeadersCredential: e.HeadersCredential,
+		Signals: e.Signals, SamplerRatio: e.SamplerRatio,
+	})
+	if err != nil {
+		return errors.New(tenanttelemetry.PublicError(e.TenantID, err))
+	}
+	return nil
 }
 
 // writeTenantTelemetryError is the HTTP form of a TenantTelemetry error.

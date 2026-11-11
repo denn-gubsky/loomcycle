@@ -575,7 +575,55 @@ func TestManagerRefresh_AStoredRowTheRulesNowRefuseIsNotExported(t *testing.T) {
 	if got := f.router.Tenants(); len(got) != 0 {
 		t.Errorf("a row the host list refuses exports: %v", got)
 	}
-	if st := f.m.Status("acme"); !strings.Contains(st.ApplyError, "not one the operator allows") {
+	if st := f.m.Status("acme"); !strings.Contains(st.ApplyError, "policy no longer valid: endpoint host") || !strings.Contains(st.ApplyError, "not one the operator allows") {
 		t.Errorf("status = %+v", st)
+	}
+	if err := f.m.Test(ctx, "acme"); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "policy no longer valid") {
+		t.Errorf("test of a row the rules now refuse: %v", err)
+	}
+	if c.count() != 0 {
+		t.Errorf("the collector got %d spans", c.count())
+	}
+}
+
+// The operator tightens its rules after a policy was set: the http lab
+// override taken away, and the ratio cap lowered. Neither row exports any
+// more, the test refuses, and the status says why.
+func TestManager_ATighterRuleStopsAPolicySetUnderALooserOne(t *testing.T) {
+	c := newCollector(t)
+	loose := newFixture(t, Config{AllowHTTP: true}, c)
+	ctx := context.Background()
+	if _, err := loose.put(ctx, "lab", PolicyInput{Endpoint: "http://collector.lab.example:4318"}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loose.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, SamplerRatio: ratio(0.9)}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	// The same store, read by a replica booted under the tighter rules.
+	strict := &fixture{st: loose.st, engine: loose.engine, now: loose.now, tls: loose.tls}
+	strict.router = lcotel.NewTenantRouter(lcotel.TenantRouterConfig{})
+	t.Cleanup(func() { _ = strict.router.Shutdown(context.Background()) })
+	var err error
+	strict.m, err = New(Deps{Config: Config{Enabled: true, MaxRatio: 0.5}, Store: loose.st, Credentials: loose.engine,
+		Router: strict.router, Dial: loopbackDial, TLSConfig: loose.tls})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := strict.m.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := strict.router.Tenants(); len(got) != 0 {
+		t.Errorf("pipelines under the tighter rules: %v", got)
+	}
+	for tenant, why := range map[string]string{"lab": "endpoint must use https", "acme": "sampler_ratio may be at most 0.5"} {
+		if st := strict.m.Status(tenant); !strings.Contains(st.ApplyError, "policy no longer valid: "+why) {
+			t.Errorf("%s status = %q", tenant, st.ApplyError)
+		}
+		if err := strict.m.Test(ctx, tenant); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), why) {
+			t.Errorf("%s test: %v", tenant, err)
+		}
+	}
+	if c.count() != 0 {
+		t.Errorf("the collector got %d spans", c.count())
 	}
 }

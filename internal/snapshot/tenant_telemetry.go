@@ -10,8 +10,10 @@ package snapshot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -61,13 +63,32 @@ func captureTenantTelemetry(ctx context.Context, s store.Store, out **TenantTele
 	return nil
 }
 
-// restoreTenantTelemetry writes each policy the target does not hold. A policy
-// already there is the target's newer word and stands; a re-restore writes
-// nothing. The restored tenants are named in the refresh, so the runtime
-// applies their policies at once rather than at its next re-read.
-func restoreTenantTelemetry(ctx context.Context, s store.Store, sec *TenantTelemetrySection, result *RestoreResult) {
+// restoreTenantTelemetry writes each policy the target does not hold and its
+// operator's rules allow (validate: the rules a set is held to on this host).
+// A policy already there is the target's newer word and stands; a re-restore
+// writes nothing. Without a validator nothing is restored: a policy sends a
+// tenant's traces to a host, which only the target's rules may admit. The
+// restored tenants are named in the refresh, so the runtime applies their
+// policies at once rather than at its next re-read.
+func restoreTenantTelemetry(ctx context.Context, s store.Store, sec *TenantTelemetrySection, validate func(json.RawMessage) error, result *RestoreResult) {
+	if validate == nil {
+		if len(sec.Entries) > 0 {
+			result.Warnings = append(result.Warnings, fmt.Sprintf(
+				"tenant_telemetry: %d polic(ies) skipped: nothing on this host can check them against its rules", len(sec.Entries)))
+		}
+		return
+	}
 	for _, e := range sec.Entries {
 		where := "tenant telemetry policy " + e.TenantID
+		body, err := json.Marshal(e)
+		if err == nil {
+			err = validate(body)
+		}
+		if err != nil {
+			slog.Warn("snapshot: tenant telemetry policy skipped: this host's rules refuse it", "tenant", e.TenantID, "err", err)
+			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: skipped: %v", where, err))
+			continue
+		}
 		if _, err := s.TenantTelemetryPolicyGet(ctx, e.TenantID); err == nil {
 			continue
 		} else if nf := (*store.ErrNotFound)(nil); !errors.As(err, &nf) {
@@ -101,6 +122,6 @@ func restoreTenantTelemetrySection(ctx context.Context, rs *restoreRun) error {
 	if err := decodeWithMigration(migrations.SectionTenantTelemetry, raw, &sec); err != nil {
 		return err
 	}
-	restoreTenantTelemetry(ctx, rs.s, &sec, rs.result)
+	restoreTenantTelemetry(ctx, rs.s, &sec, rs.opts.Validators[migrations.SectionTenantTelemetry], rs.result)
 	return nil
 }

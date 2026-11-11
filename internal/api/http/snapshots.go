@@ -412,6 +412,9 @@ func (s *Server) snapshotRestoreOptions(ctx context.Context, includeHistory bool
 			// A Path name is re-checked as the tools write one: canonical
 			// path, known scope and kind, a ref of that kind's shape.
 			migrations.SectionDirents: builtin.ValidateDirentEntry,
+			// A tenant telemetry policy sends a tenant's traces to a host:
+			// held to this host's operator rules, as a set is.
+			migrations.SectionTenantTelemetry: s.restoredTenantTelemetryValidator,
 		},
 		CredentialExists:     s.credKeyable,
 		CredentialToCompare:  s.credToCompare,

@@ -383,3 +383,33 @@ func countPrefix(list []string, p string) int {
 	}
 	return n
 }
+
+// A snapshot restore holds each tenant telemetry policy to THIS host's rules:
+// refused with the feature off here, refused for a host the operator does not
+// allow, admitted otherwise.
+func TestTenantTelemetry_RestoreValidatorAppliesThisHostsRules(t *testing.T) {
+	s, _, st := overrideFixture(t)
+	entry := func(endpoint string) json.RawMessage {
+		b, _ := json.Marshal(map[string]any{"tenant_id": "acme", "endpoint": endpoint, "protocol": "http/protobuf", "signals": []string{"traces"}, "sampler_ratio": 1})
+		return b
+	}
+	if err := s.restoredTenantTelemetryValidator(entry("https://otel.allowed.example")); err == nil {
+		t.Error("feature off here: a policy was admitted")
+	}
+	router := lcotel.NewTenantRouter(lcotel.TenantRouterConfig{})
+	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
+	m, err := tenanttelemetry.New(tenanttelemetry.Deps{
+		Config: tenanttelemetry.Config{Enabled: true, MaxRatio: 1, AllowedHosts: []string{"otel.allowed.example"}}, Store: st, Router: router,
+		Dial: func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("no dial") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetTenantTelemetry(m)
+	if err := s.restoredTenantTelemetryValidator(entry("https://otel.allowed.example")); err != nil {
+		t.Errorf("an allowed host: %v", err)
+	}
+	if err := s.restoredTenantTelemetryValidator(entry("https://exfil.example")); err == nil || !strings.Contains(err.Error(), "policy no longer valid") {
+		t.Errorf("a host the operator does not allow: %v", err)
+	}
+}
