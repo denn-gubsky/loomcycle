@@ -19,6 +19,7 @@ func TestValidate_ReportsTheFirstBrokenBlockInCheckOrder(t *testing.T) {
 	}{
 		{"concurrency:\n  max_concurrent_runs: -1\n", "concurrency.max_concurrent_runs must be >= 1"},
 		{"context_plugins:\n  - name: nope\n", "context_plugins[0]: unknown plugin"},
+		{"hooks:\n  private_host_allowlist: [\"10.0.0.0/99\"]\n", "hooks.private_host_allowlist"},
 		{"skills:\n  \"bad..name\":\n    body: x\n", "skills: inline skill"},
 		{"provider_priority: [nope]\n", "provider_priority[0]: unknown provider"},
 		{"search_providers:\n  nope: {}\n", "search_providers: unknown provider"},
