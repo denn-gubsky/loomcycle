@@ -60,6 +60,8 @@ var handlersByName = map[string]toolHandler{
 	"erasure":        handleErasure,
 	// The timed override of an agent's no-trace mode (retention_override.go).
 	"retention_override": handleRetentionOverride,
+	// A tenant's own trace export (telemetry.go).
+	"telemetry": handleTelemetry,
 	// Operator actions on the tenant ontology: merge_subjects, bind_principal
 	// (ontology.go).
 	"ontology": handleOntology,

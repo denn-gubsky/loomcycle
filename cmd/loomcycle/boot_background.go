@@ -36,6 +36,9 @@ func (b *boot) startBackground() {
 	// to do so in their packages.
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	b.addCleanup(bgCancel)
+	// Work the server starts on its own (a busy-session resume retry) stops
+	// with the background goroutines.
+	b.srv.SetLifetime(bgCtx)
 	if !b.bootAuthConfigured {
 		startOpenModeWarning(bgCtx, openModeWarnInterval, b.srv.AuthConfiguredErr, slog.Default())
 	}
@@ -249,6 +252,14 @@ func (b *boot) startCluster() {
 		// replica creates/rotates/retires a token.
 		if err := srv.SubscribeTokenInvalidations(bgCtx, bp); err != nil {
 			fatal("coord: token-cache invalidation subscribe failed", "err", err)
+		}
+		// A tenant telemetry policy written on a peer replica: reload that
+		// tenant's export here at once (the minute refresh is the backstop).
+		if m := b.tenantTelemetry; m != nil {
+			m.SetBackplane(bp)
+			if err := m.Subscribe(bgCtx, bp); err != nil {
+				fatal("coord: tenant telemetry invalidation subscribe failed", "err", err)
+			}
 		}
 		// RFC EY: drop a tenant's compiled ACL sets when a peer replica
 		// changed its rules, groups or bindings.

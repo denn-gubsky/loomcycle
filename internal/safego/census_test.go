@@ -47,6 +47,7 @@ var exemptRawGo = map[string]rawGo{
 	"internal/providers/gemini/driver.go":               {1, "nested module internal/providers"},
 	"internal/providers/ollama/driver.go":               {1, "nested module internal/providers"},
 	"internal/providers/openai/driver.go":               {1, "nested module internal/providers"},
+	"internal/otel/tenant_export.go":                    {3, "nested module internal/otel; the pipeline closer and the idle reaper recover in their own frame, the shutdown waiter only waits"},
 
 	// Test support compiled only into tests.
 	"internal/auditchain/chaintest/audit.go":             {2, "test support"},

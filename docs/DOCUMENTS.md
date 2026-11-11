@@ -1346,6 +1346,17 @@ A pick is a proposal like any other concept. The classify answer marks it `fallb
 
 **Revising the ontology.** The tenant ontology is created at `/memory/ontology`, but the runtime knows it by its document id, recorded when it is created or first found there: renaming it keeps it the ontology, and another document put at that name is an ordinary document. Every tenant ontology still known only by its name is recorded at boot. Revise the confirmed ontology document in place (edit its sections). Replacing it with a new document gives every concept a new chunk: the statements already filed still point at the old concepts, and the next classify files duplicates against the new ones.
 
+### File-plan policy — `effective_policy` (reported, not enforced)
+
+A concept of the ontology's Schemes section may declare `@retention <period>` (`90d`, `6w`, `18mo`, `10y`) and `@acl <group>`. Nothing enforces them yet: the runtime works out what they come to and reports it, so an operator can see the policy before any later phase acts on it. Every answer says `enforced: false`.
+
+- **One concept.** Its retention is its own `@retention`, else the nearest broader concept's. Its groups are every `@acl` from the top of the scheme down to it, so a narrower concept only adds groups.
+- **A document's concepts.** In the tenant scope, the concepts its root has an accepted `subject` (or narrower, such as `primary_topic`) or `classified_as` statement to; a proposed statement changes nothing. In a `user` or `agent` scope, the concepts whose tag the root or the document carries.
+- **Several concepts.** The longest retention, and every group: a reader would have to be in all of them.
+- **What contributes nothing.** A draft ontology sets no policy. A concept still proposed, a period that does not parse and a group the tenant does not have (stored or config-declared) are left out and listed as issues — an unknown group is never read as "deny everyone".
+
+`describe_ontology` adds `effective_retention` (with `inherited_retention` and `retention_from`) and `effective_groups` to each concept, and a `policy` block `{enforced, note, open_mode?, issues?}`. `Document op=effective_policy {document_id}` answers for one document: its concepts, the governing retention and the concept it comes from, the required groups and the issues. It asks read on the document, as `get_document` does, and shows concepts only to a caller who may read the ontology. Where no member of the tenant is in every required group it warns — checked only for a caller who may see those groups' members, otherwise it says the check was not made. With no access-control rules on the caller (open mode) it says groups would not limit access there.
+
 ### Merging two subjects
 
 Two tenant subjects that name one entity — `person:ada-king` and `person:ada-lovelace`, adopted from two proposals — split what the tenant knows about it. An operator merges the one that goes (the duplicate) into the one that stays (the survivor): `POST /v1/_ontology/subjects/merge` with `{"duplicate": …, "survivor": …}`, each a subject's document id or natural key. The same merge is the gRPC `MergeSubjects` RPC, the MCP `ontology` tool (`op: merge_subjects`), `mergeSubjects()` in `@loomcycle/client`, `merge_subjects()` in the Python client, and "Merge this subject into another…" on a tenant document's page in the Web UI. It is not a Document tool op: which subject survives is an operator's decision.

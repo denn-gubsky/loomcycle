@@ -41,7 +41,7 @@ with `section: relations`, a concept with `section: schemes`, an instance with
 ## Returns
 
 `{exists, document_id?, status, confirmed, version, sections, partial?, classes,
-relations, grammars, schemes, instances, norm_classes, review?, issues?}`:
+relations, grammars, schemes, instances, norm_classes, policy, review?, issues?}`:
 
 - `exists` — false when the tenant has no ontology document, so only the standard
   classes apply.
@@ -88,7 +88,22 @@ relations, grammars, schemes, instances, norm_classes, review?, issues?}`:
     with no `pattern:` line finds no citations; named as a citation grammar it is
     reported as an issue.
 - `schemes` — each concept scheme with its concepts: `name`, `path`, `parent`,
-  `tag`, `notation`, `alt`, `rank`, `exact_match`, `retention`, `acl`.
+  `tag`, `notation`, `alt`, `rank`, `exact_match`, `retention`, `acl`, and the
+  concept's effective policy:
+  - `effective_retention` — its own `@retention`, else the nearest ancestor's
+    (then `inherited_retention` is true and `retention_from` is that ancestor's
+    tag).
+  - `effective_groups` — every `@acl` group from the top of the scheme down to
+    the concept: a narrower concept only adds groups. A group the tenant does
+    not have is left out and reported.
+- `policy` — `{enforced, note, open_mode?, issues?}`. `enforced` is false: the
+  policy is reported, nothing removes access or deletes by age because of it
+  yet. `open_mode` is true when no access-control rules apply to the caller.
+  `issues` lists what contributes nothing (an unknown group, a period that does
+  not parse, a `@retention` or `@acl` on a concept still proposed) and a warning
+  where no member of the tenant is in every group a concept requires (checked
+  only for a caller who may see those groups' members). A draft sets no policy.
+  Use `effective_policy` for one document's policy.
 - `instances` — each real organisation, unit or post the Instances section
   declares, in document order: `{name, class?, alt?, chunk_id, registry_key?,
   subject_chunk_id?, issues?}`.

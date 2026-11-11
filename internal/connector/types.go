@@ -1290,6 +1290,79 @@ type RetentionOverrideResult struct {
 	Cleared   bool                `json:"cleared,omitempty"`
 }
 
+// TenantTelemetryRequest is one call of Connector.TenantTelemetry. Tenant is
+// whose export it is: only an admin may name one; for anyone else it is the
+// caller's own tenant, and naming another is refused.
+type TenantTelemetryRequest struct {
+	Op     string `json:"op"`
+	Tenant string `json:"tenant,omitempty"`
+	// Policy is the policy to store (set).
+	Policy *TenantTelemetryPolicyInput `json:"policy,omitempty"`
+}
+
+// TenantTelemetryPolicyInput is a policy as written.
+type TenantTelemetryPolicyInput struct {
+	// Endpoint is the OTLP base URL of the tenant's collector (https).
+	Endpoint string `json:"endpoint"`
+	// Protocol is http/protobuf (default) or grpc.
+	Protocol string `json:"protocol,omitempty"`
+	// HeadersCredential names a tenant credential, restricted to the
+	// endpoint, whose value is the header block (name=value,name=value).
+	HeadersCredential string `json:"headers_credential,omitempty"`
+	// Signals is what is exported; empty is traces.
+	Signals []string `json:"signals,omitempty"`
+	// SamplerRatio is the share of the tenant's traces sent (0..1, at most
+	// the operator's cap); nil is 1, or the cap below it.
+	SamplerRatio *float64 `json:"sampler_ratio,omitempty"`
+	// ContentCapture may only be "off" (or empty).
+	ContentCapture string `json:"content_capture,omitempty"`
+}
+
+// TenantTelemetryPolicy is a stored policy.
+type TenantTelemetryPolicy struct {
+	Endpoint          string   `json:"endpoint"`
+	Protocol          string   `json:"protocol"`
+	HeadersCredential string   `json:"headers_credential,omitempty"`
+	Signals           []string `json:"signals"`
+	SamplerRatio      float64  `json:"sampler_ratio"`
+	UpdatedAt         string   `json:"updated_at,omitempty"` // RFC 3339
+	UpdatedBy         string   `json:"updated_by,omitempty"`
+}
+
+// TenantTelemetryStatus is the tenant's export on the replica that answered,
+// since it started. Never a header value: LastError is scrubbed of them.
+type TenantTelemetryStatus struct {
+	Replica string `json:"replica,omitempty"`
+	// Exporting: this replica is sending the tenant's spans.
+	Exporting      bool   `json:"exporting"`
+	ExportedSpans  uint64 `json:"exported_spans"`
+	DroppedSpans   uint64 `json:"dropped_spans"`
+	ExportFailures uint64 `json:"export_failures"`
+	LastSuccessAt  string `json:"last_success_at,omitempty"`
+	// LastError is the last export failure, or why the stored policy is not
+	// being exported (an expired header credential).
+	LastError   string `json:"last_error,omitempty"`
+	LastErrorAt string `json:"last_error_at,omitempty"`
+}
+
+// TenantTelemetryTest is the answer of one test export.
+type TenantTelemetryTest struct {
+	OK         bool   `json:"ok"`
+	Error      string `json:"error,omitempty"`
+	DurationMS int64  `json:"duration_ms"`
+}
+
+// TenantTelemetryResult answers a TenantTelemetryRequest: the tenant's policy
+// (nil when it has none) and its status, plus whether a delete found one and
+// what a test found.
+type TenantTelemetryResult struct {
+	Tenant  string                 `json:"tenant"`
+	Policy  *TenantTelemetryPolicy `json:"policy"`
+	Status  *TenantTelemetryStatus `json:"status,omitempty"`
+	Deleted bool                   `json:"deleted,omitempty"`
+	Test    *TenantTelemetryTest   `json:"test,omitempty"`
+}
+
 // MergeSubjectsRequest names two subjects of the tenant ontology, each by its
 // document id or its natural key (person:ada-lovelace). Both must be subjects
 // of the same scope: the tenant's, where subjects are adopted.

@@ -65,7 +65,10 @@ instead of making things up:
   the ones retrieval follows by default.
 - **`schemes`** — the concepts (topics, classifications), each with a `tag`
   such as `topics/risk-management`. Filter `search` and `related` by them with
-  `concept` / `concept_prefix`.
+  `concept` / `concept_prefix`. A file-plan concept's `effective_retention`
+  and `effective_groups` are the policy it sets (inherited down the scheme);
+  `effective_policy` says what that comes to for one document. Both are
+  reported only: nothing removes access or deletes by age yet.
 - **`instances`** — the real organisations, units and posts the tenant knows.
   An adopted instance has a `subject_chunk_id`: relate things to that chunk;
   never create a second subject for it.

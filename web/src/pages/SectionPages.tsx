@@ -30,6 +30,7 @@ import LanesView from "./LanesView";
 import OntologySection from "./OntologyPage";
 import LimitsView from "./LimitsView";
 import RoutingView from "./RoutingView";
+import TelemetryView from "./TelemetryView";
 
 // The tenant's and the runtime's configuration pages — what the Settings hub
 // (the top bar's gear) used to hold as tabs. Each is now a page of its own in the
@@ -46,6 +47,7 @@ export const SECTION_IDS = [
   "limits",
   "routing",
   "ontology",
+  "telemetry",
   "retention",
   "erasure",
   "presets",
@@ -104,6 +106,7 @@ export default function SectionPage({ id }: { id: SectionId }) {
         {id === "limits" && <LimitsView />}
         {id === "routing" && <RoutingView />}
         {id === "ontology" && <OntologySection />}
+        {id === "telemetry" && <TelemetryView />}
         {id === "retention" && <RetentionSection />}
         {id === "erasure" && <ErasureSection />}
         {id === "presets" && <PresetsSection />}

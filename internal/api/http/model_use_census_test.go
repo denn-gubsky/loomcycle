@@ -24,7 +24,7 @@ var modelResolutionCallers = map[string]string{
 	"resolveInference":          "resolver",
 	"RunOnce":                   "inference",
 	"prepareSubRunValues":       "inference",
-	"resumePausedRun":           "inference",
+	"resumeRoute":               "inference",
 	"resolveAfterQueue":         "inference",
 	"queueMoveFn":               "inference",
 	"reResolveOnOperatorTurnFn": "inference",

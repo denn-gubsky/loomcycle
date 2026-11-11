@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/errkind"
@@ -21,9 +22,11 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
+	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -126,6 +129,15 @@ import (
 func (s *Server) ResumePausedRuns(ctx context.Context) (int, []string) {
 	r := s.resumePausedRunsReport(ctx)
 	return r.Resumed, r.Warnings
+}
+
+// goDetached runs fn on a goroutine counted in s.detached (WaitDetached).
+func (s *Server) goDetached(fn func()) {
+	s.detached.Add(1)
+	go func() {
+		defer s.detached.Done()
+		fn()
+	}()
 }
 
 // WaitDetached waits until every goroutine counted in s.detached has
@@ -552,9 +564,19 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// under, whatever the team has been forked or promoted to since.
 	ctx = runCfg.withTeamScope(ctx)
 
+	// What a condition reads about the run, as at its start (RFC FY Part E).
+	// Before the first question that reads it — the model the run resolves to
+	// is asked of the caller's `use` rules — as RunOnce stamps it before its
+	// agent admission. Asked without it, a deny conditioned on the run's agent
+	// read no agent, did not hold, and was skipped: the run resumed on a model
+	// its caller's rules deny it.
+	s.runPhase("resume.conditions")
+	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: run.Agent, Depth: s.recordedSpawnDepth(ctx, run), Interactive: run.Interactive})
+
 	// The definition the run started on, at its authoritative tenant. One that
 	// no longer exists fails the run so it isn't a permanent "running" zombie;
 	// it never falls back to the version active now.
+	s.runPhase("resume.agent")
 	agentDef, gone, derr := s.resumedAgentDef(ctx, run, runCfg.AgentVersion)
 	if derr != nil {
 		if gone {
@@ -562,77 +584,30 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		}
 		return derr
 	}
-	// ONE effective definition, restored from the run's own record. A record the
-	// definition no longer permits — a model withdrawn, a fan-out ceiling
-	// lowered since the run started — falls back to the definition and says so
-	// rather than failing the resume: refusing is a heavier answer than
-	// resolving normally, and the run is otherwise fine.
-	//
-	// Note the direction on the fan-out ceiling: a stale record can only ever
-	// have asked for LESS width than the definition allows, so the fallback is
-	// the WIDER of the two, which is why it is reported.
-	// RFC EY: the access-control rules that bound the run at its start — its
-	// caller's, or the originating caller's a sub-run inherited — compiled
-	// again now and applied below as its start applied them. A set the record
-	// names but that cannot be compiled leaves the run paused: resuming it on
-	// its agent's full grants is the widening this exists to prevent. Compiled
-	// before the run's model is resolved, so a `use model:` or `use tier:`
-	// deny bound during the pause refuses the resume (RFC FY Part E).
-	ctx, acl, aerr := s.resumedACL(ctx, run, runCfg)
-	if aerr != nil {
-		return aerr // not settled: the row goes back to paused for a later pass
+
+	// Rebuild the conversation from THIS run's transcript events. Before the
+	// provider is chosen: an image in it needs a provider that can take it.
+	events, terr := s.store.GetTranscript(ctx, run.SessionID)
+	if terr != nil {
+		return fmt.Errorf("read transcript: %w", terr)
 	}
-	resolveCtx := ctx
-	if acl != nil {
-		resolveCtx = tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.ACL = acl })
-	}
-	if ed, oerr := s.effectiveDef(ctx, agentDef, runOverrides{
-		Routing: runCfg.Routing, Resources: runCfg.Resources, Tuning: runCfg.Tuning,
-	}); oerr == nil {
-		agentDef = ed
-	} else {
-		slog.Warn("resume: the run had an override the definition no longer permits; resolving from the definition", "run_id", run.ID, "err", oerr)
-	}
-	providerID, model, effort, rerr := s.resolveAgentDef(resolveCtx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
-	if rerr != nil {
-		flag(fmt.Sprintf("resolve provider/model: %v", rerr))
-		return fmt.Errorf("resolve agent: %w", rerr)
-	}
-	// RFC DD Gap 5: prefer the model the RUN was started with over whatever the
-	// definition resolves to now. The row records it at CreateRun, and a
-	// definition can be promoted, a pin can change, or tier availability can
-	// move between pause and restore — so re-deriving silently routes a resumed
-	// run somewhere the original never went, with nothing in the transcript
-	// saying it moved.
-	//
-	// Re-validated, never merely trusted: the restored model must still be one
-	// the CURRENT definition resolves to, so a promotion that dropped a model
-	// cannot carry it back in through a snapshot. Falling back to the re-derived
-	// value keeps legacy rows (no model recorded) working unchanged.
-	//
-	// SCOPE: run.Model is written once, at CreateRun. A mid-run provider
-	// fallback emits EventProviderFallback but does not update the row, so this
-	// restores the run's own STARTING model, not a fallback target. Recording
-	// fallbacks on the row is a hot-path write and a separate decision.
-	if run.Model != "" && run.Model != model {
-		if pid, ok := s.providerForModel(ctx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, run.Model); ok {
-			// The restored model is the one the run calls: asked of the
-			// caller's current rules like any other (RFC FY Part E).
-			if err := s.askPinnedModelUse(resolveCtx, run.Model); err != nil {
-				flag(fmt.Sprintf("resolve provider/model: %v", err))
-				return fmt.Errorf("resolve agent: %w", err)
-			}
-			slog.Info("resume: restoring the run's started model", "run_id", run.ID, "model", run.Model, "definition_model", model)
-			providerID, model = pid, run.Model
-		} else {
-			slog.Warn("resume: the run started on a model the definition no longer permits; using the definition's", "run_id", run.ID, "started_model", run.Model, "model", model)
+	runEvents := make([]store.Event, 0, len(events))
+	for _, e := range events {
+		if e.RunID == run.ID {
+			runEvents = append(runEvents, e)
 		}
 	}
-	provider, perr := s.providers.Get(providerID)
-	if perr != nil {
-		flag(fmt.Sprintf("provider %q unavailable: %v", providerID, perr))
-		return fmt.Errorf("provider %q: %w", providerID, perr)
+	priorMessages := replayTranscript(runEvents)
+
+	route, refusal, rerr := s.resumeRoute(ctx, run, runCfg, agentDef, priorMessages)
+	if rerr != nil {
+		if refusal != "" {
+			flag(refusal)
+		}
+		return rerr // with no refusal, not settled: the row goes back to paused for a later pass
 	}
+	ctx, acl, agentDef := route.ctx, route.acl, route.def
+	providerID, provider, model, effort := route.providerID, route.provider, route.model, route.effort
 
 	// RFC DD Gap 1: the run's OWN configuration, persisted at run start. Resume
 	// used to rebuild each of these from the definition, so a long chat that
@@ -666,37 +641,37 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		runCfg.Hosts = &runHostRecord{HasList: true}
 	}
 
-	// What a condition reads about the run, as at its start (RFC FY Part E).
-	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: run.Agent, Depth: s.recordedSpawnDepth(ctx, run), Interactive: run.Interactive})
-
-	// Tools + dispatcher, narrowed by the caller's own allowed_hosts when the
-	// run recorded one (RFC DD Gap 2). Restoring a narrowing can only SUBTRACT:
-	// the operator's static floor still applies inside the tools, so this makes
-	// a resumed run a subset of the original instead of handing it the bare
-	// floor back.
+	// Tools + dispatcher, in RunOnce's order (runToolset), narrowed by the
+	// caller's own allowed_hosts when the run recorded one (RFC DD Gap 2).
+	// Restoring a narrowing can only SUBTRACT: the operator's static floor
+	// still applies inside the tools, so this makes a resumed run a subset of
+	// the original instead of handing it the bare floor back. The Recall grant
+	// (RFC CT) comes from the recorded context; what the caller may not invoke
+	// is withheld from the schema again, as at the run's start.
 	//
 	// The MODE is operator config re-read now, not run state: whether a caller's
 	// list replaces the operator floor or intersects with it is the operator's
 	// current call, exactly as it is for a fresh run with the same inputs. Only
 	// the caller's lists (hosts, tools) and filter come from the run.
-	allowedTools := filterTools(s.candidateTools(ctx, run.TenantID, agentDef.Tools), agentDef.Tools, runCfg.callerTools())
+	s.runPhase("resume.tools")
 	hostPolicy := runCfg.hostPolicy()
 	callerAuthoritative := s.cfg().Env.HTTPCallerAuthoritative
-	if hostPolicy.HasList || callerAuthoritative {
+	allowedTools, aclRemovedTools := s.runToolset(ctx, ctx, run.TenantID, agentDef, runCfg.callerTools(), runCfg.Context, acl, func(in []tools.Tool) []tools.Tool {
+		if !hostPolicy.HasList && !callerAuthoritative {
+			return in
+		}
 		// A list the run recorded as narrow-only stays a narrowing whatever
 		// the mode is now: it was a locked caller's.
-		allowedTools = builtin.NarrowHosts(allowedTools, runCfg.callerHosts(), hostPolicy.WebSearchFilter, callerAuthoritative && !hostPolicy.NarrowOnly)
-	}
-	allowedTools = s.grantRecallTool(allowedTools, runCfg.Context) // RFC CT: keep Recall on a resumed recall run
-	// What the caller may not invoke is withheld from the schema again, as
-	// at the run's start.
-	allowedTools, aclRemovedTools := tools.NarrowToolsByACL(ctx, acl, allowedTools)
+		return builtin.NarrowHosts(in, runCfg.callerHosts(), hostPolicy.WebSearchFilter, callerAuthoritative && !hostPolicy.NarrowOnly)
+	})
 	dispatcher := s.newDispatcher(allowedTools)
 
 	// Re-derive the system prompt (skill bodies baked in) from the current
 	// agent def — exactly as the continuation path does; the prompt is NOT
-	// replayed from the transcript (it may have changed across instances).
-	agentDef, _ = s.resolveSkillBodiesForRun(ctx, run.TenantID, agentDef)
+	// replayed from the transcript (it may have changed across instances), so
+	// the one it runs on is recorded again below, with its provenance.
+	s.runPhase("resume.prompt")
+	agentDef, promptProv := s.resolveSkillBodiesForRun(ctx, run.TenantID, agentDef)
 	// RFC BL P1: re-derive the memory injection + core-block set from the agent
 	// def, exactly as the fresh/continue paths do (the injected prompt is not
 	// replayed from the transcript). No initial input on a resume.
@@ -706,18 +681,6 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		Tools: allowedTools, ACL: acl, ACLRemovedTools: aclRemovedTools,
 	})
 
-	// Rebuild the conversation from THIS run's transcript events.
-	events, terr := s.store.GetTranscript(ctx, run.SessionID)
-	if terr != nil {
-		return fmt.Errorf("read transcript: %w", terr)
-	}
-	runEvents := make([]store.Event, 0, len(events))
-	for _, e := range events {
-		if e.RunID == run.ID {
-			runEvents = append(runEvents, e)
-		}
-	}
-	priorMessages := replayTranscript(runEvents)
 	// RFC DH P2: a stateful run's history is Σ, not its messages — and neither
 	// its first observation nor whether it can continue at all may be read off
 	// a replayed conversation it never had. Both come from its stateful events.
@@ -837,6 +800,26 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		}}
 	}
 
+	// A top-level run takes its session as a continuation does: no other turn
+	// on it while it runs. Busy (a paused sibling is not, sessionLiveForResume),
+	// the resume is not settled: the row goes back to paused and is tried again
+	// in this process (retryBusyResume). A sub-run takes none, as live.
+	s.runPhase("resume.session")
+	var hold *sessionHold
+	if run.ParentRunID == "" {
+		h, herr := s.takeSessionWith(ctx, run.SessionID, true, run.ID, s.sessionLiveForResume)
+		if herr != nil {
+			return s.retryIfBusy(run.ID, herr)
+		}
+		hold = h
+	}
+	handedOff := false // the run's goroutine releases the hold from here on
+	defer func() {
+		if !handedOff {
+			hold.release()
+		}
+	}()
+
 	// The row reads running already: the claim above moved it.
 	// The run was paused until now — through the restart, or from the snapshot
 	// on the instance it parked on — so its pause ends here, and a parent's
@@ -886,7 +869,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		ParentAgentID: run.ParentAgentID,
 		Tenant:        run.TenantID,
 		SessionID:     run.SessionID,
-		Trigger:       lcotel.TriggerResume,
+		Trigger:       lcotel.TriggerResume, NoTrace: run.Retention == retentionmode.None,
 	})
 	// A resumed run records into a new trace; the run now points at it.
 	s.recordRunTraceID(runCtx, run.ID)
@@ -931,7 +914,17 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		return fmt.Errorf("cancel registry: %w", regErr)
 	}
 	settled = true // from here the run is live: its loop ends it
+	// Known to this replica as one of its session's runs until it has ended
+	// and let the session go, as RunOnce tracks its runs (takeSession waits
+	// out a run of the session that is being cancelled or is finishing).
+	if hold != nil {
+		hold.onRelease = s.sessionRuns.track(run.SessionID, run.AgentID, run.ID)
+	}
 	s.publishRunState(meta, "running", "", "")
+	// The system prompt it runs on now, re-derived above, recorded with its
+	// provenance as at a run's start: it may differ from the one its start
+	// recorded.
+	s.emitSystemPromptEvent(ctx, run.ID, agentDef.SystemPrompt, "", promptProv)
 
 	// Hoisted above the recording emit so resumed-turn usage is attributed under
 	// the run's true identity (see makeRecordingEmit) and WithRunIdentity reuses it.
@@ -989,9 +982,18 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		RunID: run.ID, AgentID: run.AgentID, SessionID: run.SessionID, UserID: run.UserID,
 		VerdictsOnly: takesOnlyVerdicts(run) && !resident, // a resident child takes its parent's sends
 	}, emit)
+	closeSteer = s.sessionRuns.finishingWhenClosed(run.SessionID, run.ID, closeSteer)
+	// What its start said once about a tool it holds and cannot use, said
+	// again: the ACL is compiled anew and may withhold other tools now.
+	emitRunStartWarnings(agentDef, aclRemovedTools, allowedTools, runCfg.Interruption, emit)
 
 	// RFC AR: honor a tenant/user provider-key override on the resumed run too.
-	loopCtx := providers.WithCredentialResolver(runCtx, s.credResolver)
+	// Its turn calls lend its global slot while they wait for a provider
+	// lane, as a fresh run's do (concurrency.RunSlot); the slot is bound when
+	// the run takes it, below.
+	slot := &concurrency.RunSlot{}
+	loopCtx := concurrency.WithRunSlot(runCtx, slot)
+	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
 	// RFC AX: mirror the restored negative permission bit onto ctx for the
 	// stage-2 driver backstop (drivers import providers, not auth/tools).
 	loopCtx = providers.WithOperatorKeyAllowed(loopCtx, !run.OperatorKeyRestricted)
@@ -1035,6 +1037,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		loopCtx = hooks.WithAdditions(loopCtx, added)
 	}
 	loopCtx = s.withResumedRunHooks(loopCtx, run, agentDef, runCfg.PinnedHooks)
+	// RFC EZ §1.2: a refused definition op of its tools is recorded, as a
+	// fresh run's is.
+	loopCtx = tools.WithACLRecorder(loopCtx, s.recordToolACLEvent)
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 
 	heartbeat := s.makeHeartbeat(run.ID)
@@ -1129,6 +1134,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	}
 	// A refusal of the operator's own key: the provider leaves routing if its probe agrees.
 	runOpts.ReportOperatorKeyRefusal = s.operatorKeyRefusalFn()
+	// An interactive run's turn can be stopped, and it parks (RFC BH), as a
+	// fresh one's.
+	runOpts.ArmTurnCancel = s.armTurnCancelIf(run.Interactive, run.ID)
 	residentDone := func(string, *builtin.ChildCappedError) {}
 	if rc != nil {
 		// Its parent's op=cancel stops its current turn, as it did live.
@@ -1151,6 +1159,12 @@ func (s *Server) resumePausedRun(run store.Run) error {
 			})
 		}
 	}
+	if hold != nil {
+		// Its session's cluster lock is let go while it is parked, as a
+		// continuation's is.
+		s.releaseSessionWhileParked(&runOpts, &parkLock{hold: hold, sessionID: run.SessionID}, loopCtx, stateful,
+			func(reason string) { s.cancelReg.CancelLocalRun(run.AgentID, run.ID, reason) })
+	}
 
 	// A resumed sub-run runs detached from its parent, whose cancel reaches it
 	// through the registry and is not waited for: it holds its tree until its
@@ -1160,101 +1174,440 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		releaseTree = s.holdRunTree(rootRunID)
 	}
 	moveOwnerSlot()
-	s.detached.Add(1)
-	go func() {
-		defer s.detached.Done()
-		// Panic-safe teardown: a panic must not crash the process (no
-		// recoveryMiddleware wraps this detached goroutine) nor leak the run in
-		// the cancel / steer / pause-barrier registries (a leaked pause entry
-		// never parks, so every future Pause times out on a ghost).
-		defer func() {
-			if rec := recover(); rec != nil {
-				slog.Error("resumed run panicked", "run_id", run.ID, "panic", rec)
-				s.finishRunFailedReason(run.ID, fmt.Sprintf("panic: %v", rec), meta)
-			}
+	l := resumedLaunch{
+		run: run, meta: meta, runCtx: runCtx, loopCtx: loopCtx, opts: runOpts, emit: emit,
+		done: residentDone, runEvents: runEvents, stateful: stateful, slot: slot, hold: hold,
+		route: route,
+		teardown: func() {
 			residentDone("failed", nil) // a no-op once the loop's end has filed it
 			deregSteer()
 			deregGate()
 			s.cancelReg.Deregister(run.AgentID)
 			runSpan.End()
 			cancelFn(nil)
+			hold.release() // and untracks the run (onRelease)
 			releaseTree()
 			releaseEphSet()
-		}()
-		// RFC X Phase 3: reconcile a parked fan-out parent BEFORE acquiring a run
-		// slot. The reconcile awaits this parent's children (which acquire their
-		// OWN per-user slots when ResumePausedRuns re-dispatches them) — holding a
-		// slot here while awaiting could deadlock the per-user semaphore. The
-		// synthesized parallel_spawn tool_result is appended to PriorMessages so
-		// loop.Run continues past the dangling tool_use. It runs on the loop's
-		// context, which carries the parent's hooks and identity: a child that
-		// finishes during the reconcile goes through the parent's
-		// subagent_stop hooks there.
-		if isFanout {
-			toolResult, rerr := s.reconcileFanoutParent(loopCtx, run, runEvents, fanout, emit)
-			if rerr != nil {
-				s.finishRunFailedReason(run.ID, "resume: reconcile fan-out parent: "+rerr.Error(), meta)
-				return
-			}
-			if stateful {
-				// The envelope IS the parked action's result, so it is the
-				// observation — the stateful loop reads nothing else.
-				runOpts.InitialObservation = toolResultText(toolResult)
-			} else {
-				runOpts.PriorMessages = append(runOpts.PriorMessages, toolResult)
-			}
-		}
+		},
+	}
+	if isFanout {
+		l.fanout = &fanout
+	}
+	handedOff = true
+	s.goDetached(func() { s.runResumed(l) })
+	return nil
+}
 
-		// A capped provider is not waited for here: each model call the resumed
-		// loop makes takes its own slot in the provider's call lane, and waits
-		// there for as long as the lane is full.
+// resumedLaunch is what a resumed run's goroutine needs (runResumed).
+type resumedLaunch struct {
+	run       store.Run
+	meta      runStateMeta
+	runCtx    context.Context
+	loopCtx   context.Context
+	opts      loop.RunOptions
+	emit      func(providers.Event)
+	done      func(state string, capped *builtin.ChildCappedError) // a resident child's end; a no-op otherwise
+	teardown  func()
+	fanout    *fanoutParkInfo // a parked fan-out parent's; nil otherwise
+	runEvents []store.Event
+	stateful  bool
+	slot      *concurrency.RunSlot
+	hold      *sessionHold // a top-level run's session; nil for a sub-run
+	route     resumedRoute
+}
 
-		// Respect the global run cap so a boot that resumes many runs doesn't
-		// blow past MAX_CONCURRENT_RUNS. Acquired inside the goroutine so the
-		// caller's resume loop never blocks. Wait, not AcquireForUser: the run
-		// was admitted before its pause, so a full queue, the queue timeout or
-		// the per-user cap must not turn it into a failed run — it queues
-		// until a slot frees or it is cancelled. A top-level run is counted
-		// against its user while it runs (WaitForUser), as it was before the
-		// pause, without being refused at the cap; a sub-run never is.
-		var release func()
-		var aerr error
-		sharedCount := false
-		if run.ParentRunID == "" {
-			release, sharedCount, aerr = s.sem.WaitForUser(runCtx, run.TenantID, run.UserID)
-		} else {
-			release, aerr = s.sem.Wait(runCtx)
+// runResumed runs a resumed run's loop, on its own goroutine: it reconciles a
+// parked fan-out parent, takes a run slot, re-picks a queue-aware run's
+// provider after waiting for it, asks the token budget, and runs the loop to
+// its end.
+func (s *Server) runResumed(l resumedLaunch) {
+	run, meta, runCtx, emit := l.run, l.meta, l.runCtx, l.emit
+	runOpts := l.opts
+	// Panic-safe teardown: a panic must not crash the process (no
+	// recoveryMiddleware wraps this detached goroutine) nor leak the run in
+	// the cancel / steer / pause-barrier registries (a leaked pause entry
+	// never parks, so every future Pause times out on a ghost).
+	// While it waits — for a parked fan-out's children, for a run slot — a
+	// top-level run lets its session's cluster lock go, as a queued
+	// continuation does, and beats meanwhile so other replicas still count it
+	// live (sessionAway).
+	away := &sessionAway{s: s, hold: l.hold, runID: run.ID}
+	requeue := false // its session stayed busy: back to paused, once torn down
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("resumed run panicked", "run_id", run.ID, "panic", rec)
+			s.finishRunFailedReason(run.ID, fmt.Sprintf("panic: %v", rec), meta)
 		}
-		if aerr != nil {
-			s.finishRunFailedReason(run.ID, "resume: acquire run slot: "+aerr.Error(), meta)
-			return
-		}
-		defer release()
-		if sharedCount {
-			// The row says the run holds a slot again, so a resume after this
-			// process stops gives this one back (RFC ES C4). Unwritten, the
-			// slot leaks rather than a later resume taking back another's.
-			if err := s.store.MarkRunUserSlot(context.WithoutCancel(runCtx), run.ID); err != nil {
-				slog.Warn("resume: record the run's per-user slot failed", "run_id", run.ID, "err", err)
-			}
-		}
-
-		loopRes, runErr := loop.Run(loopCtx, runOpts)
-		if runErr != nil {
-			emit(runErrorEvent(runErr))
-		}
-		s.finishRunWithCancel(context.WithoutCancel(runCtx), runCtx, run.ID, loopRes, runErr, meta)
-		if runErr == nil {
-			// A resident child that ended at its iteration limit hands its
-			// last turn back as that error, as it does when it never paused.
-			var capped *builtin.ChildCappedError
-			if loopRes.StopReason == loop.StopReasonMaxIterations {
-				capped = &builtin.ChildCappedError{Name: run.Agent, Limit: iterationLimitOf(runOpts), RunID: run.ID}
-			}
-			residentDone("completed", capped)
+		away.stopBeating()
+		l.teardown()
+		// After the teardown: a retry that ran before it would find the run
+		// still registered (errRunAlreadyLive) and give up.
+		if requeue {
+			s.unclaimPausedRun(run.ID)
+			s.runPhase("resume.requeue")
+			s.retryBusyResume(run.ID)
 		}
 	}()
-	return nil
+	// RFC X Phase 3: reconcile a parked fan-out parent BEFORE acquiring a run
+	// slot. The reconcile awaits this parent's children (which acquire their
+	// OWN per-user slots when ResumePausedRuns re-dispatches them) — holding a
+	// slot here while awaiting could deadlock the per-user semaphore. The
+	// synthesized parallel_spawn tool_result is appended to PriorMessages so
+	// loop.Run continues past the dangling tool_use. It runs on the loop's
+	// context, which carries the parent's hooks and identity: a child that
+	// finishes during the reconcile goes through the parent's
+	// subagent_stop hooks there.
+	if l.fanout != nil {
+		// Its children may take long: the cluster lock is not held through
+		// them. The local lock is, so no request on this replica takes the
+		// session meanwhile; on another, the row's heartbeat refuses it.
+		away.leave()
+		toolResult, rerr := s.reconcileFanoutParent(l.loopCtx, run, l.runEvents, *l.fanout, emit)
+		if rerr != nil {
+			s.finishRunFailedReason(run.ID, "resume: reconcile fan-out parent: "+rerr.Error(), meta)
+			return
+		}
+		if l.stateful {
+			// The envelope IS the parked action's result, so it is the
+			// observation — the stateful loop reads nothing else.
+			runOpts.InitialObservation = toolResultText(toolResult)
+		} else {
+			runOpts.PriorMessages = append(runOpts.PriorMessages, toolResult)
+		}
+	}
+
+	// A capped provider is not waited for here: each model call the resumed
+	// loop makes takes its own slot in the provider's call lane, and waits
+	// there for as long as the lane is full.
+
+	// Respect the global run cap so a boot that resumes many runs doesn't
+	// blow past MAX_CONCURRENT_RUNS. Acquired inside the goroutine so the
+	// caller's resume loop never blocks. Wait, not AcquireForUser: the run
+	// was admitted before its pause, so a full queue, the queue timeout or
+	// the per-user cap must not turn it into a failed run — it queues
+	// until a slot frees or it is cancelled. A top-level run is counted
+	// against its user while it runs (WaitForUser), as it was before the
+	// pause, without being refused at the cap; a sub-run never is.
+	//
+	// Its session's cluster lock is let go while it waits, as a queued
+	// continuation's is (a queue of them would each pin a pool connection),
+	// and taken back once it has its slot.
+	s.runPhase("resume.slot")
+	var release func()
+	var aerr error
+	sharedCount, waited := false, false
+	if run.ParentRunID == "" {
+		release, sharedCount, waited, aerr = s.sem.WaitForUser(runCtx, run.TenantID, run.UserID, l.slot, away.leave)
+	} else {
+		release, waited, aerr = s.sem.Wait(runCtx, l.slot, away.leave)
+	}
+	if aerr != nil {
+		s.finishRunFailedReason(run.ID, "resume: acquire run slot: "+aerr.Error(), meta)
+		return
+	}
+	defer release()
+	// Its session back before anything records the run as holding a slot:
+	// still busy, the run goes back to paused, its slot is given back by the
+	// release above, and a later pass resumes it — as a continuation that
+	// finds the session busy is refused and tries again.
+	if err := away.back(runCtx, run.SessionID); err != nil {
+		slog.Warn("resume: the session is busy after the run waited; it goes back to paused", "run_id", run.ID, "err", err)
+		requeue = true
+		return
+	}
+	if sharedCount {
+		// The row says the run holds a slot again, so a resume after this
+		// process stops gives this one back (RFC ES C4). Unwritten, the
+		// slot leaks rather than a later resume taking back another's.
+		if err := s.store.MarkRunUserSlot(context.WithoutCancel(runCtx), run.ID); err != nil {
+			slog.Warn("resume: record the run's per-user slot failed", "run_id", run.ID, "err", err)
+		}
+	}
+	if waited {
+		s.runPhase("resume.reresolve")
+		s.repickAfterWait(&runOpts, l.route, run, l.stateful)
+	}
+
+	// The token budget, asked as a fresh run's start asks it: a run whose
+	// (tenant, user) crossed a hard ceiling while it was paused, or while it
+	// waited here, ends at the budget as the loop's own check ends one — and
+	// a soft crossing is said once at its start.
+	s.runPhase("resume.budget")
+	var loopRes loop.RunResult
+	var runErr error
+	if dec := s.limits.Check(run.TenantID, run.UserID); !dec.Allowed {
+		loopRes, runErr = loop.RunResult{StopReason: loop.StopReasonTokenLimit}, &tokenLimitError{info: dec.Refusal}
+	} else {
+		for _, info := range dec.Soft {
+			emit(providers.Event{Type: providers.EventLimit, Limit: &info})
+		}
+		s.runPhase("resume.loop")
+		loopRes, runErr = loop.Run(l.loopCtx, runOpts)
+	}
+	if runErr != nil {
+		emit(runErrorEvent(runErr))
+	}
+	s.finishRunWithCancel(context.WithoutCancel(runCtx), runCtx, run.ID, loopRes, runErr, meta)
+	if runErr == nil {
+		// A resident child that ended at its iteration limit hands its
+		// last turn back as that error, as it does when it never paused.
+		var capped *builtin.ChildCappedError
+		if loopRes.StopReason == loop.StopReasonMaxIterations {
+			capped = &builtin.ChildCappedError{Name: run.Agent, Limit: iterationLimitOf(runOpts), RunID: run.ID}
+		}
+		l.done("completed", capped)
+	}
+}
+
+// repickAfterWait re-picks a queue-aware run's provider once it has waited for
+// its run slot, as RunOnce re-picks a run that queued (resolveAfterQueue): the
+// lane estimates it was routed on are stale by then. A new pick that would
+// change whether the run is stateful is not taken: its history was rebuilt
+// for the mode it had.
+func (s *Server) repickAfterWait(opts *loop.RunOptions, r resumedRoute, run store.Run, stateful bool) {
+	pid, p, m, e, ok := s.resolveAfterQueue(r.startCtx, r.def, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
+	if !ok || loop.StatefulMode(opts.Context, p.Capabilities().Local, run.Interactive) != stateful {
+		return
+	}
+	opts.Provider, opts.Model, opts.Effort = p, m, e
+	opts.MarkStalled, opts.ClearStall = s.markStalledFn(pid, m), s.clearStallFn(pid, m)
+	// The row names the model the run runs on, as RunOnce's start rewrites a
+	// queued row's: a later resume restores the model the row names.
+	if err := s.store.SetRunModel(context.Background(), run.ID, pid, m); err != nil {
+		slog.Warn("resume: the run moved to another model but its row still names the old one", "run_id", run.ID, "model", m, "err", err)
+	}
+}
+
+// sessionAway lets a resumed run's cluster session lock go while the run
+// waits, and takes it back after. While it is let go the run's row beats a
+// heartbeat: a row that waits without one goes stale, and the next request
+// on the session from another replica would then find no live run and take
+// a second turn. A nil hold (a sub-run, which holds no session) does nothing.
+type sessionAway struct {
+	s     *Server
+	hold  *sessionHold
+	runID string
+	stop  func() // the heartbeat; nil while the lock is held
+}
+
+// leave lets the cluster lock go and starts beating. Idempotent.
+func (a *sessionAway) leave() {
+	if a.hold == nil || a.stop != nil {
+		return
+	}
+	a.hold.releaseCluster()
+	ctx, cancel := context.WithCancel(context.Background())
+	a.stop = cancel
+	beat := a.s.makeHeartbeat(a.runID)
+	every := a.s.heartbeatStaleAfter() / 3
+	safego.Go(ctx, "resume.session_away_heartbeat", func() {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if beat != nil {
+					beat()
+				}
+			}
+		}
+	})
+}
+
+func (a *sessionAway) stopBeating() {
+	if a.stop != nil {
+		a.stop()
+		a.stop = nil
+	}
+}
+
+// back takes the cluster lock back, if it was let go, trying again through
+// resumeBackoff as a parked run's next turn does (parkLock.resume): a
+// contender holding it is usually a request about to be refused. The
+// session's other runs are judged as a resume judges them.
+func (a *sessionAway) back(ctx context.Context, sessionID string) error {
+	if a.stop == nil {
+		return nil
+	}
+	a.stopBeating()
+	for i := 0; ; i++ {
+		err := a.s.retakeSession(ctx, a.hold, sessionID, a.s.sessionLiveForResume, a.runID)
+		if err == nil || !errors.Is(err, runner.ErrSessionBusy) || i == len(resumeBackoff) {
+			return err
+		}
+		t := time.NewTimer(resumeBackoff[i])
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return err
+		}
+	}
+}
+
+// busyResumeBackoff is how long a paused run refused because its session was
+// busy waits before each new try, about 14 minutes in all. A busy session is
+// a turn in progress, which ends; the last wait repeats until the cap.
+var busyResumeBackoff = []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second, 5 * time.Second,
+	15 * time.Second, 30 * time.Second, 60 * time.Second, 120 * time.Second, 120 * time.Second,
+	120 * time.Second, 120 * time.Second, 120 * time.Second, 120 * time.Second, 120 * time.Second}
+
+// retryIfBusy schedules retryBusyResume when err is a busy session, and
+// returns err.
+func (s *Server) retryIfBusy(runID string, err error) error {
+	if errors.Is(err, runner.ErrSessionBusy) {
+		s.retryBusyResume(runID)
+	}
+	return err
+}
+
+// retryBusyResume tries again, in this process, to resume a run refused
+// because its session was busy. Nothing else would on a single replica: the
+// boot pass has run, the periodic pass needs a cluster, and /v1/_resume
+// resumes the runtime, not paused rows. One retry per run at a time. It
+// stops with the server (lifetime), when the run resumes, when it is no
+// longer paused (another pass took it, or it ended), on a store fault, or at
+// the cap — the last two said loudly, since the row then stays paused until
+// the next restart. While the runtime is paused (an operator's pause, or this
+// process's shutdown) it claims nothing and waits, as the periodic pass
+// does: a run started then would only park again, or be cut off.
+func (s *Server) retryBusyResume(runID string) {
+	if _, pending := s.busyResumes.LoadOrStore(runID, true); pending {
+		return
+	}
+	life := s.lifetime()
+	safego.Go(life, "resume.busy_retry", func() {
+		defer s.busyResumes.Delete(runID)
+		for i := 0; i < len(busyResumeBackoff); {
+			t := time.NewTimer(busyResumeBackoff[i])
+			select {
+			case <-life.Done():
+				t.Stop()
+				return
+			case <-t.C:
+			}
+			if s.pauseMgr.State() != pause.StateRunning {
+				continue // the same wait again, not counted against the cap
+			}
+			i++
+			run, err := s.store.GetRun(life, runID)
+			if err != nil {
+				slog.Error("resume: reading a run refused for a busy session failed; it stays paused until the next restart", "run_id", runID, "err", err)
+				return
+			}
+			if run.Status != store.RunRunning || run.PauseState != store.PauseStatePaused {
+				return
+			}
+			err = s.resumePausedRun(run)
+			if err == nil || errors.Is(err, errRunAlreadyLive) {
+				return
+			}
+			if !errors.Is(err, runner.ErrSessionBusy) {
+				// Not the error's text: a resolve failure can name provider
+				// configuration. Why it was refused is on the run's row.
+				slog.Warn("resume: a run refused for a busy session was not resumed on retry", "run_id", runID)
+				return
+			}
+		}
+		slog.Error("resume: a paused run's session stayed busy; it stays paused until the next restart or resume pass", "run_id", runID)
+	})
+}
+
+// resumedRoute is where a resumed run's model calls go, and the context and
+// definition it was resolved with (resumeRoute).
+type resumedRoute struct {
+	ctx      context.Context // ctx with the recorded caller's client stamped
+	startCtx context.Context // the resolve's: the ACL, the run-start and image marks
+	acl      *authz.Effective
+	def      config.AgentDef // the effective definition
+	provider providers.Provider
+
+	providerID, model, effort string
+}
+
+// resumeRoute compiles the caller's access-control rules the run started
+// under and resolves the provider and model it resumes on. refusal, when not
+// empty, is why the run is failed; an error without one leaves it paused.
+func (s *Server) resumeRoute(ctx context.Context, run store.Run, runCfg runConfigRecord, agentDef config.AgentDef, prior []providers.Message) (r resumedRoute, refusal string, err error) {
+	// RFC EY: the access-control rules that bound the run at its start — its
+	// caller's, or the originating caller's a sub-run inherited — compiled
+	// again now and applied as its start applied them. A set the record
+	// names but that cannot be compiled leaves the run paused: resuming it on
+	// its agent's full grants is the widening this exists to prevent. Compiled
+	// before the run's model is resolved, so a `use model:` or `use tier:`
+	// deny bound during the pause refuses the resume (RFC FY Part E).
+	s.runPhase("resume.acl")
+	ctx, acl, aerr := s.resumedACL(ctx, run, runCfg)
+	if aerr != nil {
+		return r, "", aerr
+	}
+	resolveCtx := ctx
+	if acl != nil {
+		resolveCtx = tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.ACL = acl })
+	}
+	// Resolved as a run start, with the replayed history's images marked, as
+	// RunOnce resolves a continuation (runStartCtx): queue-aware routing reads
+	// the lanes as they are now, and does not pass a run with an image to a
+	// provider that cannot take it.
+	resolveCtx = runStartCtx(resolveCtx, nil, prior)
+	s.runPhase("resume.provider")
+	// ONE effective definition, restored from the run's own record. A record the
+	// definition no longer permits — a model withdrawn, a fan-out ceiling
+	// lowered since the run started — falls back to the definition and says so
+	// rather than failing the resume: refusing is a heavier answer than
+	// resolving normally, and the run is otherwise fine.
+	//
+	// Note the direction on the fan-out ceiling: a stale record can only ever
+	// have asked for LESS width than the definition allows, so the fallback is
+	// the WIDER of the two, which is why it is reported.
+	if ed, oerr := s.effectiveDef(ctx, agentDef, runOverrides{
+		Routing: runCfg.Routing, Resources: runCfg.Resources, Tuning: runCfg.Tuning,
+	}); oerr == nil {
+		agentDef = ed
+	} else {
+		slog.Warn("resume: the run had an override the definition no longer permits; resolving from the definition", "run_id", run.ID, "err", oerr)
+	}
+	providerID, model, effort, rerr := s.resolveAgentDef(resolveCtx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
+	if rerr != nil {
+		return r, fmt.Sprintf("resolve provider/model: %v", rerr), fmt.Errorf("resolve agent: %w", rerr)
+	}
+	// RFC DD Gap 5: prefer the model the RUN was started with over whatever the
+	// definition resolves to now. The row records it at CreateRun, and a
+	// definition can be promoted, a pin can change, or tier availability can
+	// move between pause and restore — so re-deriving silently routes a resumed
+	// run somewhere the original never went, with nothing in the transcript
+	// saying it moved.
+	//
+	// Re-validated, never merely trusted: the restored model must still be one
+	// the CURRENT definition resolves to, so a promotion that dropped a model
+	// cannot carry it back in through a snapshot. Falling back to the re-derived
+	// value keeps legacy rows (no model recorded) working unchanged.
+	//
+	// SCOPE: run.Model is written once, at CreateRun. A mid-run provider
+	// fallback emits EventProviderFallback but does not update the row, so this
+	// restores the run's own STARTING model, not a fallback target. Recording
+	// fallbacks on the row is a hot-path write and a separate decision.
+	if run.Model != "" && run.Model != model {
+		if pid, ok := s.providerForModel(ctx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, run.Model); ok {
+			// The restored model is the one the run calls: asked of the
+			// caller's current rules like any other (RFC FY Part E).
+			if err := s.askPinnedModelUse(resolveCtx, run.Model); err != nil {
+				return r, fmt.Sprintf("resolve provider/model: %v", err), fmt.Errorf("resolve agent: %w", err)
+			}
+			slog.Info("resume: restoring the run's started model", "run_id", run.ID, "model", run.Model, "definition_model", model)
+			providerID, model = pid, run.Model
+		} else {
+			slog.Warn("resume: the run started on a model the definition no longer permits; using the definition's", "run_id", run.ID, "started_model", run.Model, "model", model)
+		}
+	}
+	provider, perr := s.providers.Get(providerID)
+	if perr != nil {
+		return r, fmt.Sprintf("provider %q unavailable: %v", providerID, perr), fmt.Errorf("provider %q: %w", providerID, perr)
+	}
+	return resumedRoute{ctx: ctx, startCtx: resolveCtx, acl: acl, def: agentDef, provider: provider,
+		providerID: providerID, model: model, effort: effort}, "", nil
 }
 
 // resumedAgentDef is the definition a paused run continues on: the one it

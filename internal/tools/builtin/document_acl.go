@@ -128,6 +128,10 @@ var docACLOps = map[string]docACLRule{
 	// describe_ontology reads the tenant's ontology document whatever the call's
 	// scope: it asks read on that document itself.
 	"describe_ontology": {verb: "read", target: docACLListing},
+	// effective_policy reports the policy the ontology's concepts set on the document
+	// it names: asked read on that document, as get_document is. It asks read on the
+	// ontology document itself before it shows any concept.
+	"effective_policy": {verb: "read", target: docACLDocument},
 	// extract_citations reads the document or chunk it names; resolving a citation
 	// asks read on the cited work through resolve_anchor.
 	"extract_citations": {verb: "read", target: docACLChunkOrDocument},

@@ -3084,6 +3084,74 @@ export interface RetentionOverride {
   created_at?: string;
 }
 
+/** A tenant's own trace export as written: where the tenant's run spans go.
+ *  The operator's export is untouched by it. */
+export interface TenantTelemetryPolicyInput {
+  /** OTLP base URL of the tenant's collector (https). */
+  endpoint: string;
+  /** Default `http/protobuf`. */
+  protocol?: "http/protobuf" | "grpc";
+  /** The NAME of a tenant credential, restricted to the endpoint, whose
+   *  value is the header block (`name=value,name=value`). Never the value. */
+  headers_credential?: string;
+  /** What is exported; empty or absent is `["traces"]`, the only signal. */
+  signals?: string[];
+  /** Share of the tenant's traces sent, 0..1, at most the operator's cap.
+   *  Absent is 1 (or the cap below it); `0` is sent as 0, not as absent. */
+  sampler_ratio?: number;
+  /** Only `off` is accepted: span content is never exported. */
+  content_capture?: "off";
+}
+
+/** A stored tenant trace-export policy. */
+export interface TenantTelemetryPolicy {
+  endpoint: string;
+  protocol: string;
+  headers_credential?: string;
+  signals: string[];
+  sampler_ratio: number;
+  /** RFC 3339. */
+  updated_at?: string;
+  /** Principal subject that last wrote it. */
+  updated_by?: string;
+}
+
+/** The tenant's export on the replica that answered, since it started.
+ *  `last_error` never holds a header value. */
+export interface TenantTelemetryStatus {
+  replica?: string;
+  /** This replica is sending the tenant's spans. */
+  exporting: boolean;
+  exported_spans: number;
+  dropped_spans: number;
+  export_failures: number;
+  /** RFC 3339. */
+  last_success_at?: string;
+  /** The last export failure, or why the stored policy is not being exported
+   *  (an expired header credential). */
+  last_error?: string;
+  /** RFC 3339. */
+  last_error_at?: string;
+}
+
+/** The outcome of one test export. */
+export interface TenantTelemetryTest {
+  ok: boolean;
+  error?: string;
+  duration_ms: number;
+}
+
+/** Every tenant-telemetry call answers with this: the tenant's policy (null
+ *  when it has none) and its status, plus whether a delete found one and what
+ *  a test found. */
+export interface TenantTelemetryResult {
+  tenant: string;
+  policy: TenantTelemetryPolicy | null;
+  status?: TenantTelemetryStatus;
+  deleted?: boolean;
+  test?: TenantTelemetryTest;
+}
+
 export interface PauseResult {
   state: string; // "paused"
   duration_ms: number;
@@ -4301,6 +4369,7 @@ export type DocumentToolInput = {
     | "list_annotations"
     | "delete_annotation"
     | "describe_ontology"
+    | "effective_policy"
     | "extract_citations"
     | "classify"
     | "accept_classification"

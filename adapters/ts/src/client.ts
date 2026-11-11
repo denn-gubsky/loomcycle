@@ -199,6 +199,8 @@ import type {
   MemorySearchResponse,
   PauseResult,
   RetentionOverride,
+  TenantTelemetryPolicyInput,
+  TenantTelemetryResult,
   PersistentVolumesResponse,
   EphemeralVolumesResponse,
   ResolveInterruptOptions,
@@ -1646,6 +1648,69 @@ export class LoomcycleClient {
     const params = new URLSearchParams({ agent });
     if (opts?.tenant) params.set("tenant", opts.tenant);
     return deleteRequest(this.ctx, `/v1/_retention/overrides?${params.toString()}`, opts);
+  }
+
+  /** A tenant's own trace export: its policy (null when it has none) and how
+   *  the export is going on the replica that answered. An admin names the
+   *  tenant with `tenant`; a tenant operator always gets its own. Throws a
+   *  404 `feature_disabled` while the operator has not enabled tenant trace
+   *  export. Mirrors `GET /v1/_telemetry`. */
+  async getTelemetry(opts?: {
+    /** Admin-only target tenant; ignored for a tenant operator. */
+    tenant?: string;
+    signal?: AbortSignal;
+  }): Promise<TenantTelemetryResult> {
+    const q = opts?.tenant ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
+    return jsonFetch<TenantTelemetryResult>(this.ctx, `/v1/_telemetry${q}`, opts);
+  }
+
+  /** Store the tenant's trace-export policy, replacing the last. Headers are
+   *  named by a tenant credential, never sent here. Audited. Mirrors
+   *  `PUT /v1/_telemetry`. */
+  async setTelemetry(
+    policy: TenantTelemetryPolicyInput,
+    opts?: {
+      /** Admin-only target tenant; ignored for a tenant operator. */
+      tenant?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<TenantTelemetryResult> {
+    // Built field by field: the server refuses unknown body fields, so a key
+    // smuggled in through a cast must not reach it. `sampler_ratio: 0` is
+    // kept, because 0 is a ratio the server checks and absent takes its default.
+    const wire: Record<string, unknown> = { endpoint: policy.endpoint };
+    if (policy.protocol !== undefined) wire.protocol = policy.protocol;
+    if (policy.headers_credential !== undefined) wire.headers_credential = policy.headers_credential;
+    if (policy.signals !== undefined) wire.signals = policy.signals;
+    if (policy.sampler_ratio !== undefined) wire.sampler_ratio = policy.sampler_ratio;
+    if (policy.content_capture !== undefined) wire.content_capture = policy.content_capture;
+    if (opts?.tenant) wire.tenant = opts.tenant;
+    return putJSON<TenantTelemetryResult>(this.ctx, "/v1/_telemetry", wire, signalOpts(opts));
+  }
+
+  /** Stop the tenant's trace export and drop its policy. Deleting one that is
+   *  not there is not an error: `deleted` says whether there was one. Unlike
+   *  most deletes it answers 200 with the result. Mirrors
+   *  `DELETE /v1/_telemetry`. */
+  async deleteTelemetry(opts?: {
+    /** Admin-only target tenant; ignored for a tenant operator. */
+    tenant?: string;
+    signal?: AbortSignal;
+  }): Promise<TenantTelemetryResult> {
+    const q = opts?.tenant ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
+    return deleteJSON<TenantTelemetryResult>(this.ctx, `/v1/_telemetry${q}`, opts);
+  }
+
+  /** Send one synthetic span to the stored destination and answer, once it
+   *  is done, with what happened (`test`). Mirrors
+   *  `POST /v1/_telemetry:test`. */
+  async testTelemetry(opts?: {
+    /** Admin-only target tenant; ignored for a tenant operator. */
+    tenant?: string;
+    signal?: AbortSignal;
+  }): Promise<TenantTelemetryResult> {
+    const q = opts?.tenant ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
+    return postJSON<TenantTelemetryResult>(this.ctx, `/v1/_telemetry:test${q}`, undefined, signalOpts(opts));
   }
 
   /** Ask a decision model typed questions (`choice` / `noul` / `score`) about

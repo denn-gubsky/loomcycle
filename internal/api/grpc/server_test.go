@@ -751,6 +751,10 @@ type mockConnector struct {
 	retentionRes connector.RetentionOverrideResult
 	retentionErr error
 
+	telemetryReq connector.TenantTelemetryRequest
+	telemetryRes connector.TenantTelemetryResult
+	telemetryErr error
+
 	mergeReq connector.MergeSubjectsRequest
 	mergeRes connector.MergeSubjectsResult
 	mergeErr error
@@ -1301,6 +1305,13 @@ func (m *mockConnector) ConfiguredRunInput(context.Context, string, connector.Ru
 	return runner.RunInput{}, nil
 }
 func (m *mockConnector) DeleteConfiguredRun(context.Context, string) error { return nil }
+
+// TenantTelemetry records the request and answers with the configured
+// result (connector.Connector).
+func (m *mockConnector) TenantTelemetry(_ context.Context, req connector.TenantTelemetryRequest) (connector.TenantTelemetryResult, error) {
+	m.telemetryReq = req
+	return m.telemetryRes, m.telemetryErr
+}
 
 // RetentionOverride records the request and answers with the configured
 // result (connector.Connector).

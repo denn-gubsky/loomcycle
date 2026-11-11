@@ -101,7 +101,18 @@ func ParseConceptBody(scheme, name string, path []string, body string) OntologyC
 			}
 			c.Retention = v
 		case "acl":
-			c.ACL = firstWord(d.Value)
+			// One group per concept. What cannot be used is reported rather than dropped
+			// silently: a group the author meant to require that is never counted is a
+			// policy nobody can see is missing.
+			v := firstWord(d.Value)
+			if v == "" {
+				c.Issues = append(c.Issues, "@acl needs a group name; ignored")
+				continue
+			}
+			if c.ACL != "" && c.ACL != v {
+				c.Issues = append(c.Issues, "@acl given more than once; only the last ("+strconv.Quote(v)+") applies")
+			}
+			c.ACL = v
 		default:
 			c.Issues = append(c.Issues, directiveIssue(d.Name, "concept"))
 		}

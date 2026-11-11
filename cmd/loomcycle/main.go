@@ -445,6 +445,7 @@ func main() {
 	b.openSQLMemory()
 	b.wireSubstrateTools()
 	b.wireAuth()
+	b.wireTenantTelemetry()
 	b.wireServerCatalog()
 	b.wireBuses()
 	b.buildModelResolver()
@@ -454,6 +455,7 @@ func main() {
 
 	b.startBackground() // 8. background work and triggers
 	b.startCluster()
+	b.startTenantTelemetry()
 	b.startRunSweepers()
 	b.seedServerState()
 	b.startStoreSweepers()
