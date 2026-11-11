@@ -59,7 +59,7 @@ func TestSemaphore_WaitAdmitsWhenQueueFull(t *testing.T) {
 	got := make(chan error, 1)
 	var rel func()
 	go func() {
-		r, _, err := s.Wait(context.Background(), nil)
+		r, _, err := s.Wait(context.Background(), nil, nil)
 		rel = r
 		got <- err
 	}()
@@ -105,7 +105,7 @@ func TestSemaphore_WaitCancelLeavesCountsBalanced(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	got := make(chan error, 1)
 	go func() {
-		_, _, err := s.Wait(ctx, nil)
+		_, _, err := s.Wait(ctx, nil, nil)
 		got <- err
 	}()
 	waitQueued(t, s, 1)
@@ -129,7 +129,7 @@ func TestSemaphore_WaitCancelLeavesCountsBalanced(t *testing.T) {
 			d := time.Duration(rand.Intn(4000)) * time.Microsecond
 			ctx, cancel := context.WithTimeout(context.Background(), d)
 			defer cancel()
-			r, _, err := s.Wait(ctx, nil)
+			r, _, err := s.Wait(ctx, nil, nil)
 			if err != nil {
 				return
 			}
