@@ -38,6 +38,9 @@ type RestoreRefresh struct {
 	// caller also drops every replica's cached sets for them at once rather
 	// than at each cache's next version check.
 	ACLTenants []string
+	// TelemetryTenants are the tenants whose telemetry policy this restore
+	// wrote, for the runtime to apply at once.
+	TelemetryTenants []string
 }
 
 // CarriedUsage is growth in one (tenant, user) usage carry for Month.

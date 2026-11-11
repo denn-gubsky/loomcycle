@@ -172,8 +172,7 @@ func (m *Manager) Store(ctx context.Context, row store.TenantTelemetryPolicyRow,
 	if err := m.st.TenantTelemetryPolicyPut(ctx, row); err != nil {
 		return store.TenantTelemetryPolicyRow{}, err
 	}
-	m.Reload(ctx, row.TenantID)
-	m.publish(ctx, row.TenantID)
+	m.Applied(ctx, row.TenantID)
 	return row, nil
 }
 
@@ -183,9 +182,16 @@ func (m *Manager) Delete(ctx context.Context, tenant string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	m.Applied(ctx, tenant)
+	return had, nil
+}
+
+// Applied makes this replica's export of tenant match its stored policy and
+// tells the other replicas to do the same: after a write here, or after a
+// snapshot restore wrote the row.
+func (m *Manager) Applied(ctx context.Context, tenant string) {
 	m.Reload(ctx, tenant)
 	m.publish(ctx, tenant)
-	return had, nil
 }
 
 // Test sends one synthetic span to tenant's stored destination, through the
@@ -302,9 +308,18 @@ func (m *Manager) apply(ctx context.Context, row store.TenantTelemetryPolicyRow,
 		return
 	}
 	next := applied{stamp: stamp, expiresAt: expires}
+	// The operator's rules are asked of every stored row, not only of a
+	// write: a row restored from another deployment, or one written before
+	// the operator narrowed its host list or ratio cap, exports only if the
+	// rules allow it now.
+	_, ruleErr := m.normalize(row.TenantID, storedInput(row))
 	switch {
 	case !containsString(row.Signals, SignalTraces):
 		m.router.RemoveDestination(row.TenantID)
+	case ruleErr != nil:
+		m.router.RemoveDestination(row.TenantID)
+		next.err = publicError(row.TenantID, ruleErr, genericApplyError)
+		slog.Warn("tenant telemetry: the stored policy breaks the operator's rules; not exporting it", "tenant", row.TenantID, "err", next.err)
 	default:
 		d, err := m.destination(ctx, row)
 		if err != nil {
@@ -318,6 +333,13 @@ func (m *Manager) apply(ctx context.Context, row store.TenantTelemetryPolicyRow,
 	m.mu.Lock()
 	m.applied[row.TenantID] = next
 	m.mu.Unlock()
+}
+
+// storedInput is a stored row as a write would have given it.
+func storedInput(row store.TenantTelemetryPolicyRow) PolicyInput {
+	ratio := row.SamplerRatio
+	return PolicyInput{Endpoint: row.Endpoint, Protocol: row.Protocol, HeadersCredential: row.HeadersCredential,
+		Signals: row.Signals, SamplerRatio: &ratio}
 }
 
 // stampOf identifies row, and the credential row it names, as they are now.

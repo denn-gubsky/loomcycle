@@ -566,6 +566,13 @@ func (s *Server) postRestoreRefresh(ctx context.Context, result *snapshot.Restor
 	for _, tenant := range result.Refresh.ACLTenants {
 		s.aclChanged(ctx, tenant, "acl_restored", "snapshot")
 	}
+	// Restored tenant telemetry policies are applied now, here and on every
+	// replica, under the target operator's rules.
+	if m := s.tenantTelemetry; m != nil {
+		for _, tenant := range result.Refresh.TelemetryTenants {
+			m.Applied(ctx, tenant)
+		}
+	}
 }
 
 // refreshRestoredLimits pushes each budget the restore wrote as the store

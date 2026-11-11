@@ -556,3 +556,26 @@ func TestManager_ACredentialFaultReachesTheTenantOnlyAsAGenericLine(t *testing.T
 		t.Errorf("a refusal: %q", got)
 	}
 }
+
+// A stored row is held to the operator's rules as they are now, not as they
+// were when it was written: one restored from another deployment, or written
+// before the operator narrowed its host list, is not exported.
+func TestManagerRefresh_AStoredRowTheRulesNowRefuseIsNotExported(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{AllowedHosts: []string{"otel.allowed.example"}}, c)
+	ctx := context.Background()
+	if err := f.st.TenantTelemetryPolicyPut(ctx, store.TenantTelemetryPolicyRow{
+		TenantID: "acme", Endpoint: c.srv.URL, Protocol: "http/protobuf", Signals: []string{"traces"}, SamplerRatio: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.router.Tenants(); len(got) != 0 {
+		t.Errorf("a row the host list refuses exports: %v", got)
+	}
+	if st := f.m.Status("acme"); !strings.Contains(st.ApplyError, "not one the operator allows") {
+		t.Errorf("status = %+v", st)
+	}
+}
