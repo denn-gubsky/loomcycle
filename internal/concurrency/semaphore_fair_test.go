@@ -38,7 +38,7 @@ func (o *semOrder) queueWait(t *testing.T, s *Semaphore, name string) chan struc
 	before := s.Stats().Queued
 	done := make(chan struct{})
 	go func() {
-		rel, err := s.Wait(context.Background())
+		rel, _, err := s.Wait(context.Background(), nil)
 		if err != nil {
 			o.got <- name + ":" + err.Error()
 			return

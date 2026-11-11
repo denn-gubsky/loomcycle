@@ -700,13 +700,14 @@ type Server struct {
 	// in seconds. Set in New().
 	startedAt time.Time
 
-	// runPhaseHook is told the name of each RunOnce phase as it starts. A
-	// test seam only, nil in production: the order pin
-	// (TestRunOnce_PhasesRunInTheirSecurityOrder) records through it.
+	// runPhaseHook is told the name of each RunOnce phase, and of each
+	// resume phase ("resume." names), as it starts. A test seam only, nil in
+	// production: the order pins (TestRunOnce_PhasesRunInTheirSecurityOrder,
+	// TestResume_PhasesRunInTheirSecurityOrder) record through it.
 	runPhaseHook func(phase string)
 }
 
-// runPhase reports that a RunOnce phase starts (runPhaseHook).
+// runPhase reports that a RunOnce or resume phase starts (runPhaseHook).
 func (s *Server) runPhase(name string) {
 	if s.runPhaseHook != nil {
 		s.runPhaseHook(name)

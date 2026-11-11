@@ -678,7 +678,7 @@ func TestSemaphore_WaitForUser_CountsTheUserWithoutRefusingAtTheCap(t *testing.T
 		t.Fatal(err)
 	}
 	defer first()
-	release, shared, err := s.WaitForUser(context.Background(), "", "alice")
+	release, shared, _, err := s.WaitForUser(context.Background(), "", "alice", nil)
 	if err != nil {
 		t.Fatalf("WaitForUser at the cap = %v, want admitted", err)
 	}
@@ -703,7 +703,7 @@ func TestSemaphore_WaitForUser_ClusterCountsAndReleases(t *testing.T) {
 	gate := newStubQuotaGate()
 	gate.atCapFor["alice"] = true
 	s := New(4, 4, time.Second).WithPerUserCap(1).WithUserQuotaStore(gate)
-	release, shared, err := s.WaitForUser(context.Background(), "", "alice")
+	release, shared, _, err := s.WaitForUser(context.Background(), "", "alice", nil)
 	if err != nil {
 		t.Fatalf("WaitForUser at the cluster cap = %v, want admitted", err)
 	}
@@ -722,7 +722,7 @@ func TestSemaphore_WaitForUser_ClusterCountsAndReleases(t *testing.T) {
 func TestSemaphore_WaitForUser_ReportsAFailedClusterCountAsNotShared(t *testing.T) {
 	gate := &failingCountGate{stubQuotaGate: newStubQuotaGate()}
 	s := New(4, 4, time.Second).WithPerUserCap(1).WithUserQuotaStore(gate)
-	release, shared, err := s.WaitForUser(context.Background(), "", "alice")
+	release, shared, _, err := s.WaitForUser(context.Background(), "", "alice", nil)
 	if err != nil {
 		t.Fatalf("WaitForUser = %v, want admitted", err)
 	}
