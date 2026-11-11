@@ -4395,10 +4395,25 @@ func (s *Server) Mux() http.Handler {
 	// The header gates' filter runs before every route (RFC FA P3): it
 	// strips smuggled aliases of a gate's identity header before any
 	// handler can read one.
-	return s.securityHeaders(s.edgeHeaderFilter(s.routes()))
+	mux := s.routes()
+	s.tenantTelemetryRoutes(mux)
+	return s.securityHeaders(s.edgeHeaderFilter(mux))
 }
 
 // routes is the route table Mux serves.
+// tenantTelemetryRoutes registers a tenant's own trace export
+// (tenant_telemetry.go): an admin for any tenant, a tenant operator for its
+// own, never a member; 404 feature_disabled unless the operator turned it on.
+// Here, beside routes, so the route censuses that read this file see them.
+// The test route asks manage: it sends a span with the tenant's header
+// credential, a use of the policy as a write is.
+func (s *Server) tenantTelemetryRoutes(mux *http.ServeMux) {
+	mux.Handle("GET /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryGet))))
+	mux.Handle("PUT /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryPut))))
+	mux.Handle("DELETE /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryDelete))))
+	mux.Handle("POST /v1/_telemetry:test", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryTest))))
+}
+
 func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
@@ -4669,13 +4684,6 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("GET /v1/_retention/overrides", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetentionOverridesList))))
 	mux.Handle("PUT /v1/_retention/overrides", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetentionOverridePut))))
 	mux.Handle("DELETE /v1/_retention/overrides", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetentionOverrideDelete))))
-	// A tenant's own trace export (tenant_telemetry.go): an admin for any
-	// tenant, a tenant operator for its own; never a member. 404
-	// feature_disabled unless the operator turned it on.
-	mux.Handle("GET /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryGet))))
-	mux.Handle("PUT /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryPut))))
-	mux.Handle("DELETE /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryDelete))))
-	mux.Handle("POST /v1/_telemetry:test", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryTest))))
 	// Instance configuration + the live provider/model/search cascade — the
 	// out-of-band twin of `Context op=capabilities`, sharing one probe
 	// (internal/capabilities) so the two cannot disagree. Any authenticated

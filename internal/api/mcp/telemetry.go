@@ -45,6 +45,15 @@ func handleTelemetry(ctx context.Context, env *handlerEnv, args json.RawMessage)
 	return toolResultJSON(res), nil
 }
 
+// telemetryToolDescriptor is the `telemetry` tool.
+func telemetryToolDescriptor() loommcp.ToolDescriptor {
+	return loommcp.ToolDescriptor{
+		Name:        "telemetry",
+		Description: telemetryToolDescription,
+		InputSchema: rawJSON(telemetryToolSchema),
+	}
+}
+
 // telemetryToolDescription is the `telemetry` tool's description.
 const telemetryToolDescription = "Send this tenant's own traces to an OpenTelemetry (OTLP) collector of the tenant's, beside the deployment's own tracing. " +
 	"op=get (default) returns the tenant's export policy and this server's export status (spans exported and dropped, the last success, the last error). " +

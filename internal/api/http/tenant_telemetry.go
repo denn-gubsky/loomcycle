@@ -28,6 +28,14 @@ import (
 // token held to the run plane. Sending a tenant's traces somewhere is the
 // operator's decision, as is where its credentials go.
 
+// isTenantTelemetryPath reports whether path is a tenant telemetry route. Its
+// scope is substrate:tenant (requiredScopeFor): the tenant operator's for its
+// own tenant, an admin's for any, the connector confining the tenant; the
+// routes are carved out of the member path.
+func isTenantTelemetryPath(path string) bool {
+	return path == "/v1/_telemetry" || path == "/v1/_telemetry:test"
+}
+
 // SetTenantTelemetry turns on the tenant telemetry surfaces, backed by m. Nil
 // (the default) leaves every route answering 404 feature_disabled.
 func (s *Server) SetTenantTelemetry(m *tenanttelemetry.Manager) { s.tenantTelemetry = m }

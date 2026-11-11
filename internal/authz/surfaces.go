@@ -281,14 +281,8 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		return instance("read", "runtime", "usage"), true
 	case name == "limits":
 		return instance(readOrManage(method), "runtime", "limits"), true
-	case name == "retention":
-		return instance(readOrManage(method), "runtime", "retention"), true
-	case name == "telemetry":
-		return instance(readOrManage(method), "runtime", "telemetry"), true
-	// The test sends a span with the tenant's header credential: a use of
-	// the policy, as a write is.
-	case name == "telemetry:test":
-		return instance("manage", "runtime", "telemetry"), true
+	case name == "retention", name == "telemetry", name == "telemetry:test":
+		return instance(readOrManage(method), "runtime", strings.TrimSuffix(name, ":test")), true
 	case name == "erasure":
 		return instance(readOrManage(method), "runtime", "erasure"), true
 	case name == "routing", name == "models":
