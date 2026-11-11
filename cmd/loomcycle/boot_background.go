@@ -250,6 +250,14 @@ func (b *boot) startCluster() {
 		if err := srv.SubscribeTokenInvalidations(bgCtx, bp); err != nil {
 			fatal("coord: token-cache invalidation subscribe failed", "err", err)
 		}
+		// A tenant telemetry policy written on a peer replica: reload that
+		// tenant's export here at once (the minute refresh is the backstop).
+		if m := b.tenantTelemetry; m != nil {
+			m.SetBackplane(bp)
+			if err := m.Subscribe(bgCtx, bp); err != nil {
+				fatal("coord: tenant telemetry invalidation subscribe failed", "err", err)
+			}
+		}
 		// RFC EY: drop a tenant's compiled ACL sets when a peer replica
 		// changed its rules, groups or bindings.
 		if r := srv.ACLResolver(); r != nil {

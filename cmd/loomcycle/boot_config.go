@@ -75,6 +75,7 @@ func (b *boot) initTelemetry() {
 			slog.Info("otel: tracing is off; unsupported OTEL_* values ignored", "detail", strings.Join(otelCfg.Warnings, "; "))
 		}
 	}
+	otelCfg.TenantRouter = b.tenantTelemetryRouter()
 	otelShutdown, err := lcotel.Init(otelCfg)
 	if err != nil {
 		fatal("otel: tracer setup failed", "err", err)

@@ -9,6 +9,7 @@ import (
 	nethttp "net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -278,4 +279,107 @@ func TestTenantTelemetry_TestHidesAFaultsTextFromTheTenant(t *testing.T) {
 	if code != 200 || strings.Contains(body, "MARKER") {
 		t.Errorf("get: %d %s", code, body)
 	}
+}
+
+// agentCollector is an OTLP/HTTP collector recording each span's agent name.
+func agentCollector(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var agents []string
+	srv := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req coltracepb.ExportTraceServiceRequest
+		_ = proto.Unmarshal(body, &req)
+		mu.Lock()
+		for _, rs := range req.GetResourceSpans() {
+			for _, ss := range rs.GetScopeSpans() {
+				for _, sp := range ss.GetSpans() {
+					name := sp.GetName()
+					for _, kv := range sp.GetAttributes() {
+						if kv.GetKey() == lcotel.AttrAgentName {
+							name += ":" + kv.GetValue().GetStringValue()
+						}
+					}
+					agents = append(agents, name)
+				}
+			}
+		}
+		mu.Unlock()
+		out, _ := proto.Marshal(&coltracepb.ExportTraceServiceResponse{})
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		_, _ = w.Write(out)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() []string { mu.Lock(); defer mu.Unlock(); return append([]string(nil), agents...) }
+}
+
+// A no-trace run stores its content nowhere, and that includes the tenant's
+// own collector: none of its spans is sent there, while an ordinary run's of
+// the same tenant are.
+func TestTenantTelemetry_ANoTraceRunSendsNothingToTheTenantsCollector(t *testing.T) {
+	s, ts, st := overrideFixture(t) // agent "other" is no-trace
+	router := lcotel.NewTenantRouter(lcotel.TenantRouterConfig{ScheduleDelay: 20 * time.Millisecond, ExportTimeout: 2 * time.Second})
+	t.Cleanup(lcotel.SetTenantRouterForTest(router))
+	m2, err := tenanttelemetry.New(tenanttelemetry.Deps{
+		Config: tenanttelemetry.Config{Enabled: true, AllowHTTP: true, MaxRatio: 1}, Store: st, Router: router,
+		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetTenantTelemetry(m2)
+	col, got := agentCollector(t)
+	if code, body := bearerCall(t, ts, opsBearer, "PUT", "/v1/_telemetry", telemetryBody(col.URL, "")); code != 200 {
+		t.Fatalf("set: %d %s", code, body)
+	}
+	if code, body := bearerCall(t, ts, freeBearer, "POST", "/v1/runs", runWithID("other", "a_quiet", "")); code != 200 {
+		t.Fatalf("no-trace run: %d %s", code, body)
+	}
+	if code, body := bearerCall(t, ts, freeBearer, "POST", "/v1/runs", runWithID("allowed", "a_loud", "")); code != 200 {
+		t.Fatalf("ordinary run: %d %s", code, body)
+	}
+	if err := router.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !slicesContain(got(), lcotel.SpanRun+":allowed") && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		_ = router.ForceFlush(context.Background())
+	}
+	spans := got()
+	if !slicesContain(spans, lcotel.SpanRun+":allowed") {
+		t.Fatalf("the ordinary run's span never arrived: %v", spans)
+	}
+	for _, sp := range spans {
+		if strings.HasSuffix(sp, ":other") {
+			t.Errorf("a span of the no-trace run reached the tenant's collector: %v", spans)
+		}
+	}
+	// Every span of the no-trace run is gone, not only the ones naming its
+	// agent: the ordinary run alone accounts for what arrived.
+	if n := countPrefix(spans, lcotel.SpanRun); n != 1 {
+		t.Errorf("%d run spans arrived, want only the ordinary run's: %v", n, spans)
+	}
+}
+
+func slicesContain(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func countPrefix(list []string, p string) int {
+	n := 0
+	for _, v := range list {
+		if strings.HasPrefix(v, p) {
+			n++
+		}
+	}
+	return n
 }

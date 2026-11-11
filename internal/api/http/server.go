@@ -3838,7 +3838,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		AgentName: effectiveAgentName,
 		UserID:    effectiveUserID,
 		Tenant:    effectiveTenantID,
-		SessionID: sessionID,
+		SessionID: sessionID, NoTrace: identity.Retention == retentionmode.None,
 	})
 	s.recordRunTraceID(runCtx, runID)
 	defer func() {
@@ -8123,7 +8123,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		ParentAgentID: parentIdentity.AgentID,
 		Tenant:        parentIdentity.TenantID,
 		SessionID:     subSessionID,
-		Trigger:       lcotel.TriggerSubagent,
+		Trigger:       lcotel.TriggerSubagent, NoTrace: subIdentity.Retention == retentionmode.None,
 	})
 	s.recordRunTraceID(subRunCtx, subRunID)
 	defer func() {

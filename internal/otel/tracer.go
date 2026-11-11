@@ -278,4 +278,19 @@ func SetTracerProviderForTest(tp trace.TracerProvider) func() {
 	return func() { otel.SetTracerProvider(prev) }
 }
 
+// SetTenantRouterForTest installs, for the duration of a test, a tracer
+// provider whose only processor is r, with tenant routing on as Init turns
+// it on. Returns the restore function, which also shuts the provider down.
+func SetTenantRouterForTest(r *TenantRouter) func() {
+	prev, prevRouting := otel.GetTracerProvider(), tenantRouting.Load()
+	tp := sdktrace.NewTracerProvider()
+	installTenantRouter(tp, r)
+	otel.SetTracerProvider(tp)
+	return func() {
+		otel.SetTracerProvider(prev)
+		tenantRouting.Store(prevRouting)
+		_ = tp.Shutdown(context.Background())
+	}
+}
+
 func noopShutdown(context.Context) error { return nil }

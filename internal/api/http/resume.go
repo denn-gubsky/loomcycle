@@ -868,7 +868,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		ParentAgentID: run.ParentAgentID,
 		Tenant:        run.TenantID,
 		SessionID:     run.SessionID,
-		Trigger:       lcotel.TriggerResume,
+		Trigger:       lcotel.TriggerResume, NoTrace: run.Retention == retentionmode.None,
 	})
 	// A resumed run records into a new trace; the run now points at it.
 	s.recordRunTraceID(runCtx, run.ID)
