@@ -627,3 +627,47 @@ func TestManager_ATighterRuleStopsAPolicySetUnderALooserOne(t *testing.T) {
 		t.Errorf("the collector got %d spans", c.count())
 	}
 }
+
+// listHookStore runs hook after reading the policy list and before handing it
+// back: a write that lands while a refresh is between its read and its apply.
+type listHookStore struct {
+	*sqlite.Store
+	hook func()
+}
+
+func (s *listHookStore) TenantTelemetryPolicyList(ctx context.Context) ([]store.TenantTelemetryPolicyRow, error) {
+	rows, err := s.Store.TenantTelemetryPolicyList(ctx)
+	if h := s.hook; h != nil {
+		s.hook = nil
+		h()
+	}
+	return rows, err
+}
+
+// A refresh that read the policies before a delete must not apply the deleted
+// row after the delete took effect: spans would go to a collector the tenant
+// removed until the next refresh.
+func TestManagerRefresh_ARowReadBeforeADeleteIsNotAppliedAfterIt(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{}, c)
+	ctx := context.Background()
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	hs := &listHookStore{Store: f.st}
+	m, err := New(Deps{Config: Config{Enabled: true, MaxRatio: 1}, Store: hs, Router: f.router, Dial: loopbackDial, TLSConfig: f.tls})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs.hook = func() {
+		if _, err := m.Delete(ctx, "acme"); err != nil {
+			t.Error(err)
+		}
+	}
+	if err := m.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.router.Tenants(); len(got) != 0 {
+		t.Errorf("a refresh re-applied a policy deleted while it ran: destinations %v", got)
+	}
+}

@@ -84,6 +84,9 @@ type Manager struct {
 
 	mu      sync.Mutex
 	applied map[string]applied
+	// locks serialise each tenant's read-then-apply (reload). One per tenant
+	// ever seen here: bounded by the tenants with a policy.
+	locks map[string]*sync.Mutex
 }
 
 // applied is what this replica last made of one tenant's policy.
@@ -110,7 +113,7 @@ func New(d Deps) (*Manager, error) {
 	return &Manager{
 		cfg: d.Config, st: d.Store, creds: d.Credentials, router: d.Router, dial: d.Dial,
 		registerSecret: d.RegisterSecret, version: d.ServiceVersion, now: now, tlsConfig: d.TLSConfig,
-		applied: map[string]applied{},
+		applied: map[string]applied{}, locks: map[string]*sync.Mutex{},
 	}, nil
 }
 
@@ -254,6 +257,18 @@ func (m *Manager) destination(ctx context.Context, row store.TenantTelemetryPoli
 // Reload re-reads tenant's policy and makes this replica's pipeline match it:
 // set, replaced, or removed.
 func (m *Manager) Reload(ctx context.Context, tenant string) {
+	m.reload(ctx, tenant, true)
+}
+
+// reload is Reload, holding tenant's lock from the read of its row to the
+// router change: a refresh that read the policies before a write or a delete
+// landed would otherwise apply the row it read after the write's own reload,
+// pointing spans back at a collector the tenant replaced or removed. Unless
+// force, a row and credential unchanged since the last apply are left alone.
+func (m *Manager) reload(ctx context.Context, tenant string, force bool) {
+	l := m.tenantLock(tenant)
+	l.Lock()
+	defer l.Unlock()
 	row, err := m.Get(ctx, tenant)
 	if err != nil {
 		// Keep what is running: a store that cannot be read is no reason to
@@ -265,32 +280,47 @@ func (m *Manager) Reload(ctx context.Context, tenant string) {
 		m.remove(tenant)
 		return
 	}
-	m.apply(ctx, *row, true)
+	m.apply(ctx, *row, force)
+}
+
+func (m *Manager) tenantLock(tenant string) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l := m.locks[tenant]
+	if l == nil {
+		l = &sync.Mutex{}
+		m.locks[tenant] = l
+	}
+	return l
 }
 
 // Refresh re-reads every policy, applies those that changed (or whose header
-// credential changed or expired), and removes the pipelines of policies that
-// are gone. It runs at boot and every RefreshInterval.
+// credential changed or expired, or which a fault left off), and removes the
+// pipelines of policies that are gone. It runs at boot and every
+// RefreshInterval. The list only names the tenants: each is re-read under its
+// own lock (reload), so a write that lands meanwhile is never undone.
 func (m *Manager) Refresh(ctx context.Context) error {
 	rows, err := m.st.TenantTelemetryPolicyList(ctx)
 	if err != nil {
 		return fmt.Errorf("tenant telemetry: list policies: %w", err)
 	}
 	seen := make(map[string]bool, len(rows))
+	tenants := make([]string, 0, len(rows))
 	for _, row := range rows {
 		seen[row.TenantID] = true
-		m.apply(ctx, row, false)
+		tenants = append(tenants, row.TenantID)
 	}
 	m.mu.Lock()
-	var gone []string
 	for t := range m.applied {
 		if !seen[t] {
-			gone = append(gone, t)
+			tenants = append(tenants, t)
+			seen[t] = true
 		}
 	}
 	m.mu.Unlock()
-	for _, t := range append(gone, missing(m.router.Tenants(), seen)...) {
-		m.remove(t)
+	tenants = append(tenants, missing(m.router.Tenants(), seen)...)
+	for _, t := range tenants {
+		m.reload(ctx, t, false)
 	}
 	return nil
 }
