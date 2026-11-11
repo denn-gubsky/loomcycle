@@ -137,7 +137,7 @@ func TestTenantExport(ctx context.Context, tenant string, d TenantDestination, s
 	defer cancel()
 	exp, release, err := newTenantExporter(ctx, d, timeout)
 	if err != nil {
-		return errors.New(scrubError(err, d.Headers))
+		return &TenantExportError{msg: scrubError(err, d.Headers)}
 	}
 	defer func() {
 		_ = exp.Shutdown(context.Background())
@@ -160,7 +160,7 @@ func TestTenantExport(ctx context.Context, tenant string, d TenantDestination, s
 		if _, partial := partialRejected(err); partial {
 			return nil
 		}
-		return errors.New(scrubError(err, d.Headers))
+		return &TenantExportError{msg: scrubError(err, d.Headers)}
 	}
 	return nil
 }
@@ -172,6 +172,13 @@ func TestTenantExport(ctx context.Context, tenant string, d TenantDestination, s
 func ParseTenantHeaders(v string) (map[string]string, error) {
 	return parseHeaderList("header block", v)
 }
+
+// TenantExportError is a test export's failure as the exporter reported it,
+// already scrubbed (scrubError): text a tenant may be shown. Anything else a
+// caller holds is not known to be.
+type TenantExportError struct{ msg string }
+
+func (e *TenantExportError) Error() string { return e.msg }
 
 // SpanTelemetryTest is the span a tenant's telemetry test sends.
 const SpanTelemetryTest = "loomcycle.telemetry.test"

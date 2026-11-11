@@ -516,3 +516,43 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// faultyCredentials fails every resolution with an error naming internals.
+type faultyCredentials struct{}
+
+const faultMarker = "MARKER-pg-10.0.3.4:5432-relation-credential_defs"
+
+func (faultyCredentials) ResolveFor(context.Context, string, string, string, string, string) (credential.Resolved, bool, error) {
+	return credential.Resolved{}, false, errors.New(faultMarker)
+}
+
+func TestManager_ACredentialFaultReachesTheTenantOnlyAsAGenericLine(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{}, c)
+	ctx := context.Background()
+	// Stored directly: the write path would have refused it.
+	if err := f.st.TenantTelemetryPolicyPut(ctx, store.TenantTelemetryPolicyRow{
+		TenantID: "acme", Endpoint: c.srv.URL, Protocol: "http/protobuf", HeadersCredential: "otel", Signals: []string{"traces"}, SamplerRatio: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.m.creds = faultyCredentials{}
+	err := f.m.Test(ctx, "acme")
+	if err == nil {
+		t.Fatal("a credential fault passed the test")
+	}
+	if got := PublicError("acme", err); strings.Contains(got, "MARKER") || got != genericTestError {
+		t.Errorf("test error shown to the tenant: %q", got)
+	}
+	if err := f.m.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if st := f.m.Status("acme"); strings.Contains(st.ApplyError, "MARKER") || st.ApplyError != genericApplyError {
+		t.Errorf("status shown to the tenant: %q", st.ApplyError)
+	}
+	// What the tenant may read still reads: a refusal in its own words, an
+	// exporter failure as the exporter (scrubbed) put it.
+	if got := PublicError("acme", invalid("endpoint must use https")); got != "endpoint must use https" {
+		t.Errorf("a refusal: %q", got)
+	}
+}

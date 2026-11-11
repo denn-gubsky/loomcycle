@@ -163,7 +163,7 @@ func (s *Server) tenantTelemetryTest(ctx context.Context, m *tenanttelemetry.Man
 	terr := m.Test(ctx, tenant)
 	res.Test = &connector.TenantTelemetryTest{OK: terr == nil, DurationMS: time.Since(start).Milliseconds()}
 	if terr != nil {
-		res.Test.Error = tenanttelemetry.ErrorText(terr)
+		res.Test.Error = tenanttelemetry.PublicError(tenant, terr)
 	}
 	return res, nil
 }
@@ -214,7 +214,7 @@ func (s *Server) tenantTelemetryStatus(m *tenanttelemetry.Manager, tenant string
 // other error (a store fault) passes through.
 func tenantTelemetryErr(err error) error {
 	if errors.Is(err, tenanttelemetry.ErrInvalid) {
-		return connector.WithMessage(connector.ErrTenantTelemetryInvalid, tenanttelemetry.ErrorText(err))
+		return connector.WithMessage(connector.ErrTenantTelemetryInvalid, tenanttelemetry.PublicError("", err))
 	}
 	return err
 }

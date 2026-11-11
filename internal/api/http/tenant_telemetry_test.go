@@ -19,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/aclres"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/credential"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tenanttelemetry"
@@ -234,5 +235,47 @@ func TestTenantTelemetry_EnforceModeBaselineAdmitsTheOperatorAndADenyRefuses(t *
 	}
 	if code, body := bearerCall(t, ts, opsBearer, "GET", "/v1/_telemetry", ""); code != 200 {
 		t.Errorf("a deny on manage leaves read: %d %s", code, body)
+	}
+}
+
+// faultyTelemetryCredentials fails every resolution with an error naming
+// internals.
+type faultyTelemetryCredentials struct{}
+
+const telemetryFaultMarker = "MARKER-pg-10.0.3.4:5432"
+
+func (faultyTelemetryCredentials) ResolveFor(context.Context, string, string, string, string, string) (credential.Resolved, bool, error) {
+	return credential.Resolved{}, false, errors.New(telemetryFaultMarker)
+}
+
+func TestTenantTelemetry_TestHidesAFaultsTextFromTheTenant(t *testing.T) {
+	s, ts, st := overrideFixture(t)
+	router := lcotel.NewTenantRouter(lcotel.TenantRouterConfig{})
+	t.Cleanup(func() { _ = router.Shutdown(context.Background()) })
+	m, err := tenanttelemetry.New(tenanttelemetry.Deps{
+		Config: tenanttelemetry.Config{Enabled: true, MaxRatio: 1}, Store: st, Router: router,
+		Credentials: faultyTelemetryCredentials{},
+		Dial: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("no dial in this test")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetTenantTelemetry(m)
+	if err := st.TenantTelemetryPolicyPut(context.Background(), store.TenantTelemetryPolicyRow{
+		TenantID: "acme", Endpoint: "https://otel.acme.example", Protocol: "http/protobuf", HeadersCredential: "otel",
+		Signals: []string{"traces"}, SamplerRatio: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = m.Refresh(context.Background())
+	code, body := bearerCall(t, ts, opsBearer, "POST", "/v1/_telemetry:test", "")
+	if code != 200 || strings.Contains(body, "MARKER") || !strings.Contains(body, `"ok":false`) || !strings.Contains(body, "operator's logs") {
+		t.Errorf("test: %d %s", code, body)
+	}
+	code, body = bearerCall(t, ts, opsBearer, "GET", "/v1/_telemetry", "")
+	if code != 200 || strings.Contains(body, "MARKER") {
+		t.Errorf("get: %d %s", code, body)
 	}
 }

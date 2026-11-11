@@ -309,7 +309,7 @@ func (m *Manager) apply(ctx context.Context, row store.TenantTelemetryPolicyRow,
 		d, err := m.destination(ctx, row)
 		if err != nil {
 			m.router.RemoveDestination(row.TenantID)
-			next.err = applyErrorText(err)
+			next.err = publicError(row.TenantID, err, genericApplyError)
 			slog.Warn("tenant telemetry: the policy cannot be exported", "tenant", row.TenantID, "err", next.err)
 			break
 		}
@@ -346,23 +346,35 @@ func (m *Manager) stampOf(ctx context.Context, row store.TenantTelemetryPolicyRo
 	return hex.EncodeToString(h.Sum(nil)), expires, nil
 }
 
-// ErrorText is err as a tenant may read it: a policy refusal in its own
-// words, an export failure as the exporter (scrubbed) put it.
-func ErrorText(err error) string {
-	if errors.Is(err, ErrInvalid) {
-		return strings.TrimPrefix(err.Error(), ErrInvalid.Error()+": ")
-	}
-	return err.Error()
+// genericTestError is what a tenant is shown for a failure whose text is not
+// known to be its to read (a store fault, a credential that would not open).
+const genericTestError = "the telemetry export could not be tested; the operator's logs have details"
+
+// genericApplyError is the same for a stored policy that is not being
+// exported.
+const genericApplyError = "the telemetry export could not be set up; the operator's logs have details"
+
+// PublicError is err as tenant may read it: a policy refusal in its own
+// words, an exporter's failure as the exporter (scrubbed of header values,
+// URL credentials and query values) put it, and anything else as one generic
+// line, the full error logged for the operator.
+func PublicError(tenant string, err error) string {
+	return publicError(tenant, err, genericTestError)
 }
 
-// applyErrorText is why a stored policy is not being exported, as its status
-// shows it: a policy refusal in its own words; anything else (a store or
-// decryption fault, whose text is the operator's) as one generic line.
-func applyErrorText(err error) string {
-	if errors.Is(err, ErrInvalid) {
-		return ErrorText(err)
+func publicError(tenant string, err error, generic string) string {
+	var exp *lcotel.TenantExportError
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, ErrInvalid):
+		return strings.TrimPrefix(err.Error(), ErrInvalid.Error()+": ")
+	case errors.As(err, &exp):
+		return exp.Error()
 	}
-	return "the header credential could not be read"
+	// Never a header value here: a resolved value is never put in an error.
+	slog.Warn("tenant telemetry: failure hidden from the tenant", "tenant", tenant, "err", err)
+	return generic
 }
 
 func containsString(list []string, s string) bool {
