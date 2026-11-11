@@ -107,7 +107,7 @@ func (s *Server) resumeRuntime(ctx context.Context) (pause.ResumeResult, error) 
 	safego.Go(life, "resume.after_runtime_resume", func() {
 		n, warnings := s.ResumePausedRuns(life)
 		if n > 0 || len(warnings) > 0 {
-			slog.Info("resume(runtime): re-dispatched paused runs no loop held", "resumed", n, "flagged", len(warnings), "warnings", warnings)
+			slog.Info("resume(runtime): re-dispatched paused runs no loop held", "resumed", n, "flagged", len(warnings))
 		}
 	})
 	return res, nil
