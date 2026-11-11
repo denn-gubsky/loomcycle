@@ -7191,6 +7191,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		SessionID:     subSessionID,
 		Trigger:       lcotel.TriggerSubagent, NoTrace: subIdentity.Retention == retentionmode.None,
 	})
+	// The child's own agent decides, not its parent's.
+	subRunCtx = s.withContentCapture(subRunCtx, parentIdentity.TenantID, def, subIdentity.Retention == retentionmode.None)
 	s.recordRunTraceID(subRunCtx, subRunID)
 	defer func() {
 		if !prepOK {

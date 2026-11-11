@@ -1274,6 +1274,13 @@ func WithContentMark(ctx context.Context) (context.Context, *ContentMark) {
 	return context.WithValue(ctx, ctxKeyContentMark{}, m), m
 }
 
+// contentNotRetained reports whether the tool call ctx belongs to was marked:
+// its result carries a no-trace run's content.
+func contentNotRetained(ctx context.Context) bool {
+	m, _ := ctx.Value(ctxKeyContentMark{}).(*ContentMark)
+	return m.NotRetained()
+}
+
 // MarkContentNotRetained flags the tool call ctx belongs to: what it hands
 // back carries a no-trace run's content. A no-op off a tool call.
 func MarkContentNotRetained(ctx context.Context) {
@@ -1867,6 +1874,15 @@ func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessag
 		outcome = lcotel.ToolOutcomeIsError
 	}
 	lcotel.RecordToolCallMetric(ctx, d.toolMetricName(name), outcome, time.Since(start))
+	// Only when the run captures content for its tenant (RFC GG P3). A
+	// result carrying a no-trace run's content is recorded as a marker.
+	if lcotel.ContentCaptureFrom(ctx) != nil {
+		result := res.Text
+		if contentNotRetained(ctx) {
+			result = "[content not retained]"
+		}
+		lcotel.SetToolCallContent(ctx, span, name, input, result)
+	}
 	// An error result — a refusal, a policy or hook denial, a tool answering
 	// "no" — is the model's to read and act on, the loop working as designed,
 	// so it is an attribute, not the span's error status: a backend keeping

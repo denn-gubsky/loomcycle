@@ -249,6 +249,7 @@ func (a *runAdmission) wireRun() error {
 		SessionID: a.sessionID,
 		NoTrace:   a.retention == retentionmode.None,
 	})
+	a.runCtx = s.withContentCapture(a.runCtx, a.effectiveTenantID, a.agentDef, a.retention == retentionmode.None)
 	s.recordRunTraceID(a.runCtx, a.runID)
 	a.deferToEnd(func() {
 		if !a.handOff {

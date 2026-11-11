@@ -844,6 +844,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		SessionID:     run.SessionID,
 		Trigger:       lcotel.TriggerResume, NoTrace: run.Retention == retentionmode.None,
 	})
+	runCtx = s.withContentCapture(runCtx, run.TenantID, agentDef, run.Retention == retentionmode.None)
 	// A resumed run records into a new trace; the run now points at it.
 	s.recordRunTraceID(runCtx, run.ID)
 	meta := runStateMeta{
