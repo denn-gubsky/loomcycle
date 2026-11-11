@@ -38,6 +38,11 @@ export interface PathEntry {
   kind: string; // directory | document | volume_mount | memory_entry
   full_path: string;
   resource_ref?: unknown;
+  // has_children: an entry that is not a directory (a document) also has
+  // names beneath it. A one-level ls lists such a name once, as the document,
+  // so this is the only sign of its subtree. Absent from runtimes before
+  // v1.146.0.
+  has_children?: boolean;
 }
 
 // ChunkRow is the structural record returned by query_chunks (no body — kept

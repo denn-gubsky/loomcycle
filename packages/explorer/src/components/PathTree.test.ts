@@ -73,6 +73,59 @@ describe("PathTree", () => {
     expect(html).toContain(">retry<");
   });
 
+  // RFC GC: a name that is a document AND has names beneath it opens like a
+  // directory, and still draws as the document.
+  it("gives a document with children a live caret, and keeps a leaf document's caret inert", () => {
+    const parent: PathEntry = { ...doc("/a/b"), has_children: true };
+    const dirs = new Map([
+      ["", listing([dir("/a")])],
+      ["/a", listing([parent, doc("/a/leaf")])],
+    ]);
+    const html = render(dirs, ["/a"]);
+    const rowOf = (name: string) => {
+      const i = html.indexOf(`>${name}<`);
+      return html.slice(html.lastIndexOf('<li class="node path-node', i), i);
+    };
+    expect(rowOf("b")).toContain("kind-document");
+    expect(rowOf("b")).toContain("📄");
+    expect(rowOf("b")).toContain('aria-expanded="false"');
+    expect(rowOf("b")).not.toContain("disabled");
+    expect(rowOf("leaf")).toContain("disabled");
+    expect(rowOf("leaf")).not.toContain("aria-expanded");
+  });
+
+  it("lists an opened document's children, with paging, under the document row", () => {
+    const parent: PathEntry = { ...doc("/a/b"), has_children: true };
+    const dirs = new Map([
+      ["", listing([dir("/a")])],
+      ["/a", listing([parent])],
+      ["/a/b", listing([doc("/a/b/c")], { nextCursor: "next" })],
+    ]);
+    const tree = buildLazyTree(dirs);
+    const b = tree[0].children[0];
+    expect(b.kind).toBe("document");
+    expect(b.hasChildren).toBe(true);
+    expect(b.children.map((n) => n.fullPath)).toEqual(["/a/b/c"]);
+
+    const html = render(dirs, ["/a", "/a/b"]);
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain(">c<");
+    expect(html).toContain("Load more (1 shown)");
+    // Collapsed, the children are not drawn.
+    expect(render(dirs, ["/a"])).not.toContain(">c<");
+  });
+
+  it("never opens a document the runtime did not mark, even if a listing exists at its path", () => {
+    const dirs = new Map([
+      ["", listing([doc("/b")])],
+      ["/b", listing([doc("/b/c")])],
+    ]);
+    const tree = buildLazyTree(dirs);
+    expect(tree[0].hasChildren).toBeUndefined();
+    expect(tree[0].children).toEqual([]);
+    expect(render(dirs, ["/b"])).not.toContain(">c<");
+  });
+
   it("shows a document's brief from documents_summary, and a folder's from its _annotation", () => {
     const docRef = (full_path: string, id: string): PathEntry => ({
       ...doc(full_path),
