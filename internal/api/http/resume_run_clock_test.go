@@ -105,8 +105,9 @@ func assertResumeCarriesRunClock(t *testing.T, park func(gate *pauseGate, ctx co
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	t.Cleanup(func() { _ = st.Close() }) // before the drain below registers, so it closes after it
 	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
+	stopDetachedOnCleanup(t, srv)
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
 

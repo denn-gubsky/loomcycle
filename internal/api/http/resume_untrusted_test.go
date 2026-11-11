@@ -64,6 +64,7 @@ function run(input) {
 	t.Cleanup(func() { _ = st.Close() })
 	prov := codejs.New(codejs.Config{CodeRoot: root, RunTimeout: 5 * time.Second})
 	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{&untrustedProbeTool{}}, concurrency.New(8, 8, 5*time.Second), st)
+	stopDetachedOnCleanup(t, srv)
 
 	ctx := context.Background()
 	sess, err := st.CreateSession(ctx, "", "orch", "alice")

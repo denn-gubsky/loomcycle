@@ -94,6 +94,7 @@ func spawnCeilingServer(t *testing.T, cfg *config.Config, prov providers.Provide
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	srv := New(cfg, &stubResolver{p: prov}, toolset, concurrency.New(8, 8, 5*time.Second), st)
+	stopDetachedOnCleanup(t, srv)
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
 	return srv, st, ts

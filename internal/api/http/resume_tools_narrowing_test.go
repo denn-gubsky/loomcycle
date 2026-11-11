@@ -48,6 +48,7 @@ func startAndResumeWithTools(t *testing.T, toolsJSON string) (orig, resumed []st
 	srv := New(cfg, &stubResolver{p: prov},
 		[]tools.Tool{namedStubTool{name: "Alpha"}, namedStubTool{name: "Beta"}},
 		concurrency.New(4, 4, time.Second), st)
+	stopDetachedOnCleanup(t, srv)
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
 
