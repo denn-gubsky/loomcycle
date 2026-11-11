@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -139,4 +141,82 @@ func TestResumeCluster_TwoPausedRunsOfOneSessionBothResumeOneAtATime(t *testing.
 	if prov.mx != 1 {
 		t.Errorf("model calls of the session at once = %d, want 1", prov.mx)
 	}
+}
+
+// A sibling that is pausing is still running its turn: a resume of another
+// paused row of the session is refused until it has parked, or the session
+// would run two turns at once.
+func TestResumeCluster_APausingSiblingKeepsTheSessionBusy(t *testing.T) {
+	srv, _ := clusterResumeServer(t, &recordingScriptedProvider{defaultS: endTurn()}, 0)
+	ctx := context.Background()
+	sess, err := srv.store.CreateSession(ctx, "", "worker", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pausing, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_pausing_sibling", UserID: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.SetRunPauseState(ctx, pausing.ID, store.PauseStatePausing); err != nil {
+		t.Fatal(err)
+	}
+	paused, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_paused_sibling", UserID: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendResumeEvent(t, srv, paused.ID, "user_input", oneUserSeg("go"))
+	if err := srv.store.SetRunPauseState(ctx, paused.ID, store.PauseStatePaused); err != nil {
+		t.Fatal(err)
+	}
+	if paused, err = srv.store.GetRun(ctx, paused.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.resumePausedRun(paused); !errors.Is(err, runner.ErrSessionBusy) {
+		t.Fatalf("resuming beside a pausing sibling = %v, want %v", err, runner.ErrSessionBusy)
+	}
+}
+
+// The busy-session retry is scheduled once the run's loop has let go of
+// everything: scheduled before, its first try finds the run still registered
+// (errRunAlreadyLive) and gives up, leaving the row paused on one replica.
+func TestResumeCluster_TheBusyRetryIsScheduledAfterTheTeardown(t *testing.T) {
+	srv, locker := clusterResumeServer(t, &recordingScriptedProvider{defaultS: endTurn()}, 0)
+	srv.sem = concurrency.New(1, 8, 0)
+	held, err := srv.sem.Acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := pausedRunRow(t, srv, "worker", "a_requeue_order", false, oneUserSeg("go"))
+	var mu sync.Mutex
+	requeued, registeredThen := false, false
+	srv.runPhaseHook = func(phase string) {
+		if phase != "resume.requeue" {
+			return
+		}
+		_, live := srv.cancelReg.Get(run.AgentID)
+		mu.Lock()
+		requeued, registeredThen = true, live
+		mu.Unlock()
+	}
+	resumeOne(t, srv)
+	waitFor(t, "the run to queue with its lock let go", func() bool {
+		return srv.sem.Stats().Queued == 1 && locker.holding() == 0
+	})
+	other, ok := locker.TryLock(context.Background(), run.SessionID)
+	if !ok {
+		t.Fatal("fixture: the session lock is held while the run waits")
+	}
+	held()
+	waitFor(t, "the busy retry to be scheduled", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return requeued
+	})
+	mu.Lock()
+	if registeredThen {
+		t.Error("the busy retry was scheduled while the run was still registered: its first try finds it live and gives up")
+	}
+	mu.Unlock()
+	other()
+	waitFor(t, "the run to be resumed once the session is free", func() bool { return runStatusIs(srv, run.ID, store.RunCompleted) })
 }

@@ -378,13 +378,16 @@ func (s *Server) retakeSession(ctx context.Context, hold *sessionHold, sessionID
 }
 
 // sessionLiveForResume is sessionHasLiveRun for a paused run being resumed. A
-// sibling that is itself paused (or pausing) is not a live turn but another
-// row waiting to be resumed, which takes the session through the same lock
-// and this same check: counted live, as sessionHasLiveRun counts it for a
-// continuation, two paused rows of one session refuse each other on every
-// pass, forever. Every other run is judged by sessionHasLiveRun's rule, so a
-// resumed sibling — which beats a heartbeat for as long as it has let the
-// cluster lock go — still refuses it, and one session never runs two turns.
+// paused sibling that no live loop holds — not here, and not on a replica
+// that is alive (pausedRunIsLive) — is not a live turn but another row
+// waiting to be resumed, which takes the session through the same lock and
+// this same check: counted live, as sessionHasLiveRun counts it for a
+// continuation, two such rows refuse each other on every pass, forever. A
+// pausing sibling is still running its turn, and a paused one held by a live
+// loop resumes in place: both count. Every other run is judged by
+// sessionHasLiveRun's rule, so a resumed sibling — which beats a heartbeat for
+// as long as it has let the cluster lock go — still refuses it, and one
+// session never runs two turns.
 func (s *Server) sessionLiveForResume(ctx context.Context, sessionID, except string) (bool, error) {
 	if s.sessionLockPG == nil {
 		return false, nil
@@ -403,10 +406,14 @@ func (s *Server) sessionLiveForResume(ctx context.Context, sessionID, except str
 			if !r.StartedAt.Before(cutoff) {
 				return true, nil
 			}
-		case r.Status == store.RunRunning:
-			if r.PauseState == store.PauseStatePaused || r.PauseState == store.PauseStatePausing {
-				continue
+		case r.Status == store.RunRunning && r.PauseState == store.PauseStatePausing:
+			return true, nil
+		case r.Status == store.RunRunning && r.PauseState == store.PauseStatePaused:
+			held, err := s.pausedRunIsLive(ctx, r)
+			if err != nil || held {
+				return true, err
 			}
+		case r.Status == store.RunRunning:
 			beat := r.LastHeartbeatAt
 			if beat.IsZero() {
 				beat = r.StartedAt

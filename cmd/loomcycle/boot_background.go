@@ -36,6 +36,9 @@ func (b *boot) startBackground() {
 	// to do so in their packages.
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	b.addCleanup(bgCancel)
+	// Work the server starts on its own (a busy-session resume retry) stops
+	// with the background goroutines.
+	b.srv.SetLifetime(bgCtx)
 	if !b.bootAuthConfigured {
 		startOpenModeWarning(bgCtx, openModeWarnInterval, b.srv.AuthConfiguredErr, slog.Default())
 	}

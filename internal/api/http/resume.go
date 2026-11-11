@@ -22,6 +22,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
+	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
@@ -1204,6 +1205,7 @@ func (s *Server) runResumed(l resumedLaunch) {
 	// continuation does, and beats meanwhile so other replicas still count it
 	// live (sessionAway).
 	away := &sessionAway{s: s, hold: l.hold, runID: run.ID}
+	requeue := false // its session stayed busy: back to paused, once torn down
 	defer func() {
 		if rec := recover(); rec != nil {
 			slog.Error("resumed run panicked", "run_id", run.ID, "panic", rec)
@@ -1211,6 +1213,13 @@ func (s *Server) runResumed(l resumedLaunch) {
 		}
 		away.stopBeating()
 		l.teardown()
+		// After the teardown: a retry that ran before it would find the run
+		// still registered (errRunAlreadyLive) and give up.
+		if requeue {
+			s.unclaimPausedRun(run.ID)
+			s.runPhase("resume.requeue")
+			s.retryBusyResume(run.ID)
+		}
 	}()
 	// RFC X Phase 3: reconcile a parked fan-out parent BEFORE acquiring a run
 	// slot. The reconcile awaits this parent's children (which acquire their
@@ -1276,8 +1285,7 @@ func (s *Server) runResumed(l resumedLaunch) {
 	// finds the session busy is refused and tries again.
 	if err := away.back(runCtx, run.SessionID); err != nil {
 		slog.Warn("resume: the session is busy after the run waited; it goes back to paused", "run_id", run.ID, "err", err)
-		s.unclaimPausedRun(run.ID)
-		s.retryBusyResume(run.ID)
+		requeue = true
 		return
 	}
 	if sharedCount {
@@ -1432,18 +1440,32 @@ func (s *Server) retryIfBusy(runID string, err error) error {
 // because its session was busy. Nothing else would on a single replica: the
 // boot pass has run, the periodic pass needs a cluster, and /v1/_resume
 // resumes the runtime, not paused rows. One retry per run at a time. It
-// stops when the run resumes, when it is no longer paused (another pass
-// took it, or it ended), on a store fault, or at the cap — the last two said
-// loudly, since the row then stays paused until the next restart.
+// stops with the server (lifetime), when the run resumes, when it is no
+// longer paused (another pass took it, or it ended), on a store fault, or at
+// the cap — the last two said loudly, since the row then stays paused until
+// the next restart. While the runtime is paused (an operator's pause, or this
+// process's shutdown) it claims nothing and waits, as the periodic pass
+// does: a run started then would only park again, or be cut off.
 func (s *Server) retryBusyResume(runID string) {
 	if _, pending := s.busyResumes.LoadOrStore(runID, true); pending {
 		return
 	}
-	safego.Go(context.Background(), "resume.busy_retry", func() {
+	life := s.lifetime()
+	safego.Go(life, "resume.busy_retry", func() {
 		defer s.busyResumes.Delete(runID)
-		for _, wait := range busyResumeBackoff {
-			time.Sleep(wait)
-			run, err := s.store.GetRun(context.Background(), runID)
+		for i := 0; i < len(busyResumeBackoff); {
+			t := time.NewTimer(busyResumeBackoff[i])
+			select {
+			case <-life.Done():
+				t.Stop()
+				return
+			case <-t.C:
+			}
+			if s.pauseMgr.State() != pause.StateRunning {
+				continue // the same wait again, not counted against the cap
+			}
+			i++
+			run, err := s.store.GetRun(life, runID)
 			if err != nil {
 				slog.Error("resume: reading a run refused for a busy session failed; it stays paused until the next restart", "run_id", runID, "err", err)
 				return

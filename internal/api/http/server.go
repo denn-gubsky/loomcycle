@@ -433,6 +433,9 @@ type Server struct {
 	// busyResumes holds the runs a busy-session resume retry is pending for
 	// (retryBusyResume), so each has one retry at a time.
 	busyResumes sync.Map
+	// lifeCtx ends when the process stops serving (SetLifetime); work the
+	// server starts on its own, with no request behind it, stops with it.
+	lifeCtx context.Context
 
 	// mcpFallback is the optional Dispatcher fallback for lazy MCP
 	// server registration. When set, an agent's call to a tool name
@@ -1058,6 +1061,18 @@ func (s *Server) SetMetricsSampler(m *metrics.Sampler) {
 // resolver tolerates nil (no override).
 func (s *Server) SetSkillSet(set *skills.Set) {
 	s.skillSet = set
+}
+
+// SetLifetime gives the server the context that ends when the process stops
+// serving. Until it is called that is context.Background().
+func (s *Server) SetLifetime(ctx context.Context) { s.lifeCtx = ctx }
+
+// lifetime is the server's lifetime context (SetLifetime).
+func (s *Server) lifetime() context.Context {
+	if s.lifeCtx == nil {
+		return context.Background()
+	}
+	return s.lifeCtx
 }
 
 // SetPauseManager installs the v0.8.17 pause/resume coordinator so the
