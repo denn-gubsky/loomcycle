@@ -19,7 +19,8 @@ func TestTenantTelemetry_DelegatesToTheConnector(t *testing.T) {
 	mc := &mockConnector{telemetryRes: connector.TenantTelemetryResult{
 		Tenant: "acme",
 		Policy: &connector.TenantTelemetryPolicy{Endpoint: "https://otel.acme.example", Protocol: "grpc", HeadersCredential: "otel",
-			Signals: []string{"traces"}, SamplerRatio: 0.5, UpdatedAt: "2026-11-11T10:00:00Z", UpdatedBy: "ops"},
+			Signals: []string{"traces"}, SamplerRatio: 0.5, UpdatedAt: "2026-11-11T10:00:00Z", UpdatedBy: "ops",
+			ContentCapture: "on", ContentMaxChars: 2048},
 		Status: &connector.TenantTelemetryStatus{Replica: "r1", Exporting: true, ExportedSpans: 7, DroppedSpans: 2, ExportFailures: 1,
 			LastSuccessAt: "2026-11-11T10:01:00Z", LastError: "401", LastErrorAt: "2026-11-11T10:00:30Z"},
 		Test: &connector.TenantTelemetryTest{OK: true, DurationMS: 12},
@@ -30,18 +31,21 @@ func TestTenantTelemetry_DelegatesToTheConnector(t *testing.T) {
 	resp, err := client.TenantTelemetry(context.Background(), &loomcyclepb.TenantTelemetryRequest{
 		Op: "set", Tenant: "globex",
 		Policy: &loomcyclepb.TenantTelemetryPolicyInput{Endpoint: "https://otel.acme.example", Protocol: "grpc",
-			HeadersCredential: "otel", Signals: []string{"traces"}, SamplerRatio: proto.Float64(0), ContentCapture: "off"},
+			HeadersCredential: "otel", Signals: []string{"traces"}, SamplerRatio: proto.Float64(0), ContentCapture: "on",
+			ContentMaxChars: proto.Int32(1024)},
 	})
 	if err != nil {
 		t.Fatalf("TenantTelemetry: %v", err)
 	}
 	got := mc.telemetryReq
 	if got.Op != "set" || got.Tenant != "globex" || got.Policy == nil || got.Policy.Endpoint != "https://otel.acme.example" ||
-		got.Policy.SamplerRatio == nil || *got.Policy.SamplerRatio != 0 || got.Policy.ContentCapture != "off" || got.Policy.HeadersCredential != "otel" {
+		got.Policy.SamplerRatio == nil || *got.Policy.SamplerRatio != 0 || got.Policy.ContentCapture != "on" || got.Policy.HeadersCredential != "otel" ||
+		got.Policy.ContentMaxChars == nil || *got.Policy.ContentMaxChars != 1024 {
 		t.Errorf("connector got %+v (policy %+v)", got, got.Policy)
 	}
 	if resp.GetTenant() != "acme" || resp.GetPolicy().GetSamplerRatio() != 0.5 || resp.GetStatus().GetExportedSpans() != 7 ||
-		resp.GetStatus().GetReplica() != "r1" || !resp.GetTest().GetOk() || resp.GetTest().GetDurationMs() != 12 {
+		resp.GetStatus().GetReplica() != "r1" || !resp.GetTest().GetOk() || resp.GetTest().GetDurationMs() != 12 ||
+		resp.GetPolicy().GetContentCapture() != "on" || resp.GetPolicy().GetContentMaxChars() != 2048 {
 		t.Errorf("response = %+v", resp)
 	}
 	// An unset ratio stays unset: it is not a request for 0.
@@ -51,6 +55,9 @@ func TestTenantTelemetry_DelegatesToTheConnector(t *testing.T) {
 	}
 	if mc.telemetryReq.Policy.SamplerRatio != nil {
 		t.Errorf("an unset ratio reached the connector as %v", *mc.telemetryReq.Policy.SamplerRatio)
+	}
+	if mc.telemetryReq.Policy.ContentMaxChars != nil {
+		t.Errorf("an unset content_max_chars reached the connector as %v", *mc.telemetryReq.Policy.ContentMaxChars)
 	}
 
 	for sentinel, want := range map[error]codes.Code{

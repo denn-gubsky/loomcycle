@@ -101,6 +101,9 @@ type Event struct {
 	// An operator pointing a tenant's traces at a collector, or stopping it.
 	// The tenant travels in TargetTenant, the collector endpoint (no
 	// credentials, no query: the policy refuses both) in TargetName on a set.
+	// TelemetryContentCapture is the set's content capture, "on" or "off":
+	// who turned on sending the tenant's prompts and answers out, and when.
+	TelemetryContentCapture string `json:"telemetry_content_capture,omitempty"`
 
 	// --- Crypto (Action = "crypto_op" | "crypto_key_generate" |
 	// "crypto_key_create" | "crypto_key_rotate" | "crypto_key_min_version" |

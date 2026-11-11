@@ -3099,8 +3099,15 @@ export interface TenantTelemetryPolicyInput {
   /** Share of the tenant's traces sent, 0..1, at most the operator's cap.
    *  Absent is 1 (or the cap below it); `0` is sent as 0, not as absent. */
   sampler_ratio?: number;
-  /** Only `off` is accepted: span content is never exported. */
-  content_capture?: "off";
+  /** `on` records the tenant's runs' prompts, answers and tool calls —
+   *  redacted, and each field cut to `content_max_chars` — on the spans its
+   *  collector receives, and never on the operator's. Accepted only where the
+   *  operator allows it (`LOOMCYCLE_TENANT_CONTENT_CAPTURE`). Content sent to
+   *  the collector is outside loomcycle's erasure. Default `off`. */
+  content_capture?: "off" | "on";
+  /** The length each captured field is cut to, 256..65536. Absent or `0` is
+   *  4096. */
+  content_max_chars?: number;
 }
 
 /** A stored tenant trace-export policy. */
@@ -3114,6 +3121,11 @@ export interface TenantTelemetryPolicy {
   updated_at?: string;
   /** Principal subject that last wrote it. */
   updated_by?: string;
+  /** Whether content is captured. A stored `on` captures nothing while the
+   *  operator does not allow it. */
+  content_capture: "off" | "on";
+  /** The length each captured field is cut to. */
+  content_max_chars: number;
 }
 
 /** The tenant's export on the replica that answered, since it started.

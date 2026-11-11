@@ -1314,8 +1314,13 @@ type TenantTelemetryPolicyInput struct {
 	// SamplerRatio is the share of the tenant's traces sent (0..1, at most
 	// the operator's cap); nil is 1, or the cap below it.
 	SamplerRatio *float64 `json:"sampler_ratio,omitempty"`
-	// ContentCapture may only be "off" (or empty).
+	// ContentCapture is "off" (or empty) or "on": the tenant's runs' prompts,
+	// answers and tool calls recorded, redacted and cut, on the spans its
+	// collector receives. "on" only where the operator allows it.
 	ContentCapture string `json:"content_capture,omitempty"`
+	// ContentMaxChars is the length each captured field is cut to (256..65536);
+	// nil or 0 is 4096.
+	ContentMaxChars *int `json:"content_max_chars,omitempty"`
 }
 
 // TenantTelemetryPolicy is a stored policy.
@@ -1327,6 +1332,10 @@ type TenantTelemetryPolicy struct {
 	SamplerRatio      float64  `json:"sampler_ratio"`
 	UpdatedAt         string   `json:"updated_at,omitempty"` // RFC 3339
 	UpdatedBy         string   `json:"updated_by,omitempty"`
+
+	// ContentCapture is "off" or "on"; ContentMaxChars the cut of each field.
+	ContentCapture  string `json:"content_capture"`
+	ContentMaxChars int    `json:"content_max_chars"`
 }
 
 // TenantTelemetryStatus is the tenant's export on the replica that answered,

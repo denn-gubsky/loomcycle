@@ -540,6 +540,7 @@ class LoomcycleClient:
         signals: Optional[Sequence[str]] = None,
         sampler_ratio: Optional[float] = None,
         content_capture: str = "",
+        content_max_chars: Optional[int] = None,
         tenant: str = "",
     ) -> Mapping[str, Any]:
         """Store the tenant's trace-export policy, replacing the last.
@@ -547,8 +548,12 @@ class LoomcycleClient:
         ``protocol`` is ``http/protobuf`` (default) or ``grpc``;
         ``headers_credential`` names a tenant credential (never its value)
         whose value is the header block; ``signals`` defaults to traces, the
-        only one; ``content_capture`` may only be ``off``. Audited; a policy
-        whose audit record cannot be written is not stored (Unavailable)."""
+        only one; ``content_capture`` is ``off`` (default) or ``on``, which
+        also sends the prompts, answers and tool calls of the tenant's runs,
+        secrets masked and each field cut to ``content_max_chars`` (256..65536,
+        default 4096) — refused unless the operator allows it, and outside
+        loomcycle's erasure once sent. Audited; a policy whose audit record
+        cannot be written is not stored (Unavailable)."""
         policy = pb.TenantTelemetryPolicyInput(
             endpoint=endpoint,
             protocol=protocol,
@@ -560,6 +565,8 @@ class LoomcycleClient:
         # while an explicit 0.0 must reach the server as 0.
         if sampler_ratio is not None:
             policy.sampler_ratio = sampler_ratio
+        if content_max_chars is not None:
+            policy.content_max_chars = content_max_chars
         return await self._tenant_telemetry(pb.TenantTelemetryRequest(op="set", tenant=tenant, policy=policy))
 
     async def delete_telemetry(self, *, tenant: str = "") -> Mapping[str, Any]:

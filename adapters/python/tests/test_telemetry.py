@@ -110,6 +110,14 @@ async def test_set_leaves_sampler_ratio_unset_unless_given_and_sends_zero():
     )
     # 0.0 is a real ratio (send nothing), not "unset".
     assert p.HasField("sampler_ratio") and p.sampler_ratio == 0.0
+    assert not p.HasField("content_max_chars")
+
+    await client.set_telemetry(
+        "https://otel.acme.example", content_capture="on", content_max_chars=2048
+    )
+    p = stub.last.policy
+    assert (p.content_capture, p.content_max_chars) == ("on", 2048)
+    assert p.HasField("content_max_chars")
 
 
 @pytest.mark.asyncio
