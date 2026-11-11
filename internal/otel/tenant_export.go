@@ -300,6 +300,10 @@ func (r *TenantRouter) OnEnd(s sdktrace.ReadOnlySpan) {
 	r.mu.RLock()
 	e := r.entries[tenant]
 	p := r.pipes[tenant]
+	var fp string
+	if e != nil {
+		fp = e.fp
+	}
 	r.mu.RUnlock()
 	if e == nil {
 		return
@@ -312,7 +316,7 @@ func (r *TenantRouter) OnEnd(s sdktrace.ReadOnlySpan) {
 		tenantSpansDropped(tenant, 1)
 		return
 	}
-	if p == nil || p.fp != e.fp {
+	if p == nil || p.fp != fp {
 		if p = r.pipeline(tenant); p == nil {
 			return
 		}

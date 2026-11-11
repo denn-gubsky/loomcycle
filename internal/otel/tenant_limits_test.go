@@ -2,11 +2,13 @@ package otel
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // With the SDK's attribute count limit lowered (OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT
@@ -49,4 +51,39 @@ func TestTenantRouter_AnAttributeLimitNeverLetsANoTraceSpanThrough(t *testing.T)
 			t.Errorf("limit %d: the unroutable span was not counted as dropped: %+v", limit, st)
 		}
 	}
+}
+
+// A destination changed while spans end: the race detector must find no
+// unsynchronised access to what the router keeps per tenant.
+func TestTenantRouter_ChangingADestinationWhileSpansEndIsRaceFree(t *testing.T) {
+	clearOTELEnv(t)
+	c1, c2 := newFakeCollector(t), newFakeCollector(t)
+	r := fastRouter(TenantRouterConfig{})
+	r.SetDestination("acme", dest(c1, nil))
+	tp := routedProvider(t, r)
+	tr := tp.Tracer("t")
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if i%2 == 0 {
+				r.SetDestination("acme", dest(c2, nil))
+			} else {
+				r.SetDestination("acme", dest(c1, nil))
+			}
+		}
+	}()
+	for i := 0; i < 500; i++ {
+		_, s := tr.Start(context.Background(), "work", trace.WithAttributes(attribute.String(AttrTenant, "acme")))
+		s.End()
+	}
+	close(stop)
+	wg.Wait()
 }
