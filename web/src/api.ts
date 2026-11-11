@@ -4334,6 +4334,101 @@ export async function deleteLimit(
   }
 }
 
+// --- Tenant trace export (GET/PUT/DELETE /v1/_telemetry, POST /v1/_telemetry:test) ---
+//
+// Where a tenant's own spans go beside the operator's export. Admin (any tenant,
+// via `tenant`) or tenant operator (its own); a member is refused. While the
+// operator has the feature off, every route answers 404 `feature_disabled`.
+
+// TelemetryPolicy is a tenant's stored export policy. headers_credential is the
+// NAME of a tenant credential, never its value.
+export interface TelemetryPolicy {
+  endpoint: string;
+  protocol: string; // http/protobuf | grpc
+  headers_credential?: string;
+  signals: string[];
+  sampler_ratio: number;
+  updated_at?: string;
+  updated_by?: string;
+}
+
+// TelemetryStatus is the export as the replica that answered sees it — each
+// replica exports on its own, so the counters are that replica's alone.
+export interface TelemetryStatus {
+  replica?: string;
+  exporting: boolean;
+  exported_spans: number;
+  dropped_spans: number;
+  export_failures: number;
+  last_success_at?: string;
+  last_error?: string;
+  last_error_at?: string;
+}
+
+export interface TelemetryTest {
+  ok: boolean;
+  error?: string;
+  duration_ms: number;
+}
+
+export interface TelemetryResult {
+  tenant: string;
+  policy: TelemetryPolicy | null;
+  status?: TelemetryStatus;
+  deleted?: boolean;
+  test?: TelemetryTest;
+}
+
+// TelemetryPolicyInput is the PUT body. Omitted fields take the server's
+// defaults (protocol http/protobuf, signals traces, ratio 1 or the operator's cap).
+export interface TelemetryPolicyInput {
+  endpoint: string;
+  protocol?: string;
+  headers_credential?: string;
+  signals?: string[];
+  sampler_ratio?: number;
+}
+
+// telemetryCall throws with the server's own sentence as the message: a refused
+// policy's 400 says what to change ("endpoint must use https", "restrict its
+// allowed_urls to the endpoint"), and a status line plus raw JSON would bury it.
+async function telemetryCall(method: string, path: string, tenant?: string, body?: unknown): Promise<TelemetryResult> {
+  const resp = await fetch(baseURL + withTenant(path, tenant), {
+    method,
+    credentials: "same-origin",
+    headers:
+      body === undefined
+        ? { Accept: "application/json" }
+        : { Accept: "application/json", "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    if (redirectToLoginOn401(resp.status)) return new Promise<TelemetryResult>(() => {});
+    throw apiError(resp.status, resp.statusText, await resp.text(), { serverMessage: true });
+  }
+  return resp.json() as Promise<TelemetryResult>;
+}
+
+// tenant is the admin's focus; a tenant operator leaves it empty (naming another
+// tenant is refused, not silently answered for its own).
+export function getTelemetry(tenant?: string): Promise<TelemetryResult> {
+  return telemetryCall("GET", "/v1/_telemetry", tenant);
+}
+
+export function putTelemetry(policy: TelemetryPolicyInput, tenant?: string): Promise<TelemetryResult> {
+  return telemetryCall("PUT", "/v1/_telemetry", tenant, policy);
+}
+
+export function deleteTelemetry(tenant?: string): Promise<TelemetryResult> {
+  return telemetryCall("DELETE", "/v1/_telemetry", tenant);
+}
+
+// testTelemetry sends one synthetic span to the stored destination; the outcome
+// is `test` — a failed delivery is a 200 with test.ok false, not a thrown error.
+export function testTelemetry(tenant?: string): Promise<TelemetryResult> {
+  return telemetryCall("POST", "/v1/_telemetry:test", tenant);
+}
+
 // ─── RFC EY / EZ — access control: groups, rule lists, bindings, decisions ───
 //
 // Every call is confined to the caller's tenant server-side; `tenant` is the

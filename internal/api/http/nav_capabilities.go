@@ -83,6 +83,8 @@ var navSurfaces = []navSurface{
 	// The statement review queue. Its route admits a member too, but only an
 	// operator or a member granted review somewhere sees the page.
 	{ID: "review", Method: "GET", Path: "/v1/_statements/review", Reviewer: true},
+	// A tenant's own trace export: carved out of the member path.
+	{ID: "telemetry", Method: "GET", Path: "/v1/_telemetry"},
 	{ID: "retention", Method: "GET", Path: "/v1/_retention"},
 	{ID: "erasure", Method: "GET", Path: "/v1/_erasure"},
 	{ID: "presets", Method: "GET", Path: "/v1/_presets"},
