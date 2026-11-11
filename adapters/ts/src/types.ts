@@ -4369,6 +4369,7 @@ export type DocumentToolInput = {
     | "list_annotations"
     | "delete_annotation"
     | "describe_ontology"
+    | "effective_policy"
     | "extract_citations"
     | "classify"
     | "accept_classification"

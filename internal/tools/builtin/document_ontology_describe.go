@@ -91,12 +91,16 @@ type ontologyDescription struct {
 	Classes   []describedClass           `json:"classes"`
 	Relations []memrank.OntologyRelation `json:"relations"`
 	Grammars  []describedGrammar         `json:"grammars"`
-	Schemes   []memrank.OntologyScheme   `json:"schemes"`
+	Schemes   []describedScheme          `json:"schemes"`
 	Instances []describedInstance        `json:"instances"`
 	// NormClasses names every class in force that is a norm, declared or inherited,
 	// sorted. Always present ([] when none) so a consumer can tell "no norms" from a
 	// runtime that predates the field.
 	NormClasses []string `json:"norm_classes"`
+	// Policy is the file-plan policy the concepts set — reported, not enforced
+	// (document_policy.go). Each concept's effective retention and groups are on its
+	// schemes entry.
+	Policy *describedPolicy `json:"policy,omitempty"`
 	// Review is the review policy in force: the Review section's, or — without
 	// one — the policy @auto_assert implies. Absent when neither is.
 	Review *describedReview `json:"review,omitempty"`
@@ -135,6 +139,7 @@ func (d *Document) describeOntology(ctx context.Context) (tools.Result, error) {
 	}
 	out := describeOntologyRead(read)
 	d.describeInstanceSubjects(ctx, key, mscope, acl, read, &out)
+	d.describePolicy(ctx, read, &out)
 	return jsonResult(out)
 }
 
@@ -151,7 +156,7 @@ func describeOntologyRead(read OntologyRead) ontologyDescription {
 		Issues:      append([]string(nil), read.Issues...),
 		Relations:   []memrank.OntologyRelation{},
 		Grammars:    []describedGrammar{},
-		Schemes:     []memrank.OntologyScheme{},
+		Schemes:     []describedScheme{},
 		Instances:   []describedInstance{},
 		NormClasses: []string{},
 	}
@@ -209,7 +214,13 @@ func describeOntologyRead(read OntologyRead) ontologyDescription {
 		sort.Strings(dg.UsedAs)
 		out.Grammars = append(out.Grammars, dg)
 	}
-	out.Schemes = append(out.Schemes, read.Schemes...)
+	for _, s := range read.Schemes {
+		ds := describedScheme{OntologyScheme: s}
+		for _, c := range s.Concepts {
+			ds.Concepts = append(ds.Concepts, describedConcept{OntologyConcept: c})
+		}
+		out.Schemes = append(out.Schemes, ds)
+	}
 	describeReview(read, &out)
 	if hasSection(read.Sections, memrank.SectionInstances) {
 		// Matched as adoption matches them: case-insensitively, against the classes in
