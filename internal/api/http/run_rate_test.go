@@ -316,6 +316,8 @@ func TestRateLimit_EveryIntakeTakesFromTheCallersRate(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := map[string]bool{}
+	calls := map[string]int{}
+	files := map[string]string{}
 	for _, e := range entries {
 		name := e.Name()
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -330,22 +332,25 @@ func TestRateLimit_EveryIntakeTakesFromTheCallersRate(t *testing.T) {
 			if !ok || fn.Body == nil {
 				continue
 			}
-			if _, listed := rateCountedIntakes[fn.Name.Name]; !listed {
+			fnName := censusFuncName(fn)
+			if _, listed := rateCountedIntakes[fnName]; !listed {
 				continue
 			}
-			calls := 0
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				if c, ok := n.(*ast.CallExpr); ok {
 					if sel, ok := c.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "admitPrincipalRate" {
-						calls++
+						calls[fnName]++
 					}
 				}
 				return true
 			})
-			found[fn.Name.Name] = true
-			if calls != 1 {
-				t.Errorf("%s (%s) calls admitPrincipalRate %d time(s), want exactly once: zero leaves the intake unbounded, twice charges one request two starts", fn.Name.Name, name, calls)
-			}
+			found[fnName] = true
+			files[fnName] = name
+		}
+	}
+	for fnName := range found {
+		if calls[fnName] != 1 {
+			t.Errorf("%s (%s) calls admitPrincipalRate %d time(s), want exactly once: zero leaves the intake unbounded, twice charges one request two starts", fnName, files[fnName], calls[fnName])
 		}
 	}
 	for fn := range rateCountedIntakes {

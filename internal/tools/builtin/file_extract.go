@@ -537,6 +537,9 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	if p, ok := imported["provenance"]; ok {
 		result["provenance"] = p
 	}
+	if w, ok := imported["warnings"]; ok {
+		result["warnings"] = w
+	}
 	if unrecordedInbox {
 		result["provenance_note"] = importNoRecordNote
 	}

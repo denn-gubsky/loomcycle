@@ -164,6 +164,8 @@ zero.
 `{document_id, root_chunk_id, chunks_created, image_chunks, skipped,
 skipped_images, edges_skipped?}`, plus `provenance` for an import that names a
 source. `edges_skipped` counts `loom-edges` lines that could not be recreated.
+A new document whose `path` lands under a document name also gets
+`warnings: ["parent_is_document: ..."]`, as `create_document` does.
 
 Every import is announced on the scope's `documents/ingested` channel as
 `{document_id, reason, scope, timestamp, changed_chunk_ids?}` — `reason` is

@@ -1352,6 +1352,7 @@ export interface PathEntry {
   kind: string; // directory | document | volume_mount | memory_entry
   full_path: string;
   resource_ref?: unknown;
+  has_children?: boolean; // a non-directory with names beneath it
 }
 
 // substratePost POSTs a tool op to an off-run substrate endpoint. A 200 returns
