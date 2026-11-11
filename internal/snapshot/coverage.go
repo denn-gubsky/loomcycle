@@ -179,6 +179,8 @@ var tableCoverageMap = map[string]tableCoverage{
 	// config, which a target may not have; it is authority without a section
 	// yet. auth.tenant_policies in config is the durable floor that survives
 	// any restore.
+	"tenant_telemetry_policies": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "per-tenant telemetry destinations; not yet carried, re-apply after a restore"},
 	"tenant_auth_policies": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "RFC FA P5: per-tenant gate policies name the source config's gates; not yet carried, re-declare in auth.tenant_policies or re-apply after a restore"},
 	// A volume's stored path is a filesystem grant lookup trusts, so it never
