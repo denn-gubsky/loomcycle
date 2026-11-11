@@ -39,19 +39,26 @@ type collector struct {
 	spans   int
 	headers []http.Header
 	refuse  bool
+	// paths counts the requests by URL path (/v1/traces, /v1/metrics).
+	paths map[string]int
 }
 
 func newCollector(t *testing.T) *collector {
 	t.Helper()
-	c := &collector{}
+	c := &collector{paths: map[string]int{}}
 	c.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		c.headers = append(c.headers, r.Header.Clone())
+		c.paths[r.URL.Path]++
 		if c.refuse {
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = io.WriteString(w, "denied "+r.Header.Get("Authorization"))
+			return
+		}
+		if r.URL.Path != "/v1/traces" {
+			w.Header().Set("Content-Type", "application/x-protobuf")
 			return
 		}
 		var req coltracepb.ExportTraceServiceRequest
@@ -84,6 +91,13 @@ func (c *collector) count() int {
 	return c.spans
 }
 
+// requests counts the requests to path.
+func (c *collector) requests(path string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.paths[path]
+}
+
 type fixture struct {
 	st     *sqlite.Store
 	engine *credential.Engine
@@ -110,7 +124,8 @@ func newFixture(t *testing.T, cfg Config, tlsFrom *collector) *fixture {
 		t.Fatal(err)
 	}
 	f := &fixture{st: st, engine: credential.NewEngine(st, sealer), now: time.Now().UTC()}
-	f.router = lcotel.NewTenantRouter(lcotel.TenantRouterConfig{ScheduleDelay: 20 * time.Millisecond, ExportTimeout: 2 * time.Second})
+	f.router = lcotel.NewTenantRouter(lcotel.TenantRouterConfig{ScheduleDelay: 20 * time.Millisecond, ExportTimeout: 2 * time.Second,
+		MetricInterval: 20 * time.Millisecond})
 	t.Cleanup(func() { _ = f.router.Shutdown(context.Background()) })
 	if tlsFrom != nil {
 		f.tls = tlsFrom.srv.Client().Transport.(*http.Transport).TLSClientConfig
@@ -166,6 +181,7 @@ func TestManagerPut_RefusesWhatTheOperatorOrTheCredentialDoesNotAllow(t *testing
 	credentialtest.Expire(t, f.st, credential.Identity{TenantID: "acme", Scope: "tenant", Name: "old"}, time.Now().Add(-time.Hour))
 	f.cred(t, "acme", "tenant", "", "framing", "host=evil.example", []string{ep}, nil)
 	f.cred(t, "acme", "tenant", "", "notheaders", "just a token", []string{ep}, nil)
+	f.cred(t, "acme", "tenant", "", "tracesonly", "authorization=Bearer abcdefgh", []string{ep + "/v1/traces"}, nil)
 
 	cases := map[string]PolicyInput{
 		"http without the lab override":      {Endpoint: strings.Replace(ep, "https://", "http://", 1)},
@@ -176,7 +192,7 @@ func TestManagerPut_RefusesWhatTheOperatorOrTheCredentialDoesNotAllow(t *testing
 		"no endpoint":                        {},
 		"unknown protocol":                   {Endpoint: ep, Protocol: "zipkin"},
 		"grpc with a path":                   {Endpoint: ep + "/v1", Protocol: "grpc"},
-		"metrics signal":                     {Endpoint: ep, Signals: []string{"traces", "metrics"}},
+		"credential bound to traces only":    {Endpoint: ep, HeadersCredential: "tracesonly", Signals: []string{"traces", "metrics"}},
 		"unknown signal":                     {Endpoint: ep, Signals: []string{"logs"}},
 		"content capture on":                 {Endpoint: ep, ContentCapture: "on"},
 		"ratio over one":                     {Endpoint: ep, SamplerRatio: ratio(1.5)},
@@ -413,10 +429,9 @@ func TestManagerPut_EmptySignalsMeanTraces(t *testing.T) {
 	}
 }
 
-func TestManagerRefresh_ARowWithoutTracesExportsNothing(t *testing.T) {
+func TestManagerRefresh_AMetricsOnlyRowRoutesNoSpans(t *testing.T) {
 	c := newCollector(t)
 	f := newFixture(t, Config{}, c)
-	// A row a later build may store (metrics only): this one exports no traces.
 	if err := f.st.TenantTelemetryPolicyPut(context.Background(), store.TenantTelemetryPolicyRow{
 		TenantID: "acme", Endpoint: c.srv.URL, Protocol: "http/protobuf", Signals: []string{"metrics"}, SamplerRatio: 1,
 	}); err != nil {
@@ -425,8 +440,98 @@ func TestManagerRefresh_ARowWithoutTracesExportsNothing(t *testing.T) {
 	if err := f.m.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if got := f.router.Tenants(); len(got) != 1 {
+		t.Fatalf("destinations = %v, want acme's", got)
+	}
+	if err := endOneSpan(f.router, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if n := c.requests("/v1/traces"); n != 0 {
+		t.Errorf("a metrics-only row exported %d span batches", n)
+	}
+}
+
+func TestManagerRefresh_ARowWithNoSignalExportsNothing(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{}, c)
+	if err := f.st.TenantTelemetryPolicyPut(context.Background(), store.TenantTelemetryPolicyRow{
+		TenantID: "acme", Endpoint: c.srv.URL, Protocol: "http/protobuf", Signals: []string{}, SamplerRatio: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if got := f.router.Tenants(); len(got) != 0 {
-		t.Errorf("a row without traces exports: %v", got)
+		t.Errorf("a row with no signal exports: %v", got)
+	}
+}
+
+// withTenantSeries installs in-process metrics holding a series of tenant.
+func withTenantSeries(t *testing.T, tenants ...string) {
+	t.Helper()
+	restore, err := lcotel.SetMetricsForTest(false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restore)
+	for _, tenant := range tenants {
+		lcotel.RecordUsage(context.Background(), lcotel.UsageRecord{Tenant: tenant, Provider: "p", Model: "m", Key: "tenant", Input: 1})
+	}
+}
+
+func TestManager_AMetricsPolicyPushesWithItsHeadersUntilDeleted(t *testing.T) {
+	withTenantSeries(t, "acme")
+	c := newCollector(t)
+	f := newFixture(t, Config{}, c)
+	ctx := context.Background()
+	ep := c.srv.URL
+	f.cred(t, "acme", "tenant", "", "tracesonly", "authorization=Bearer t-only-value", []string{ep + "/v1/traces"}, nil)
+	f.cred(t, "acme", "tenant", "", "both", "authorization=Bearer both-value", []string{ep}, nil)
+	// Bound to the traces path, the credential serves traces only.
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: ep, HeadersCredential: "tracesonly"}, "ops"); err != nil {
+		t.Fatalf("traces with a traces-bound credential: %v", err)
+	}
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: ep, HeadersCredential: "tracesonly", Signals: []string{SignalMetrics}}, "ops"); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "/v1/metrics") {
+		t.Fatalf("metrics with a traces-bound credential: err = %v, want refused naming the metrics URL", err)
+	}
+	row, err := f.put(ctx, "acme", PolicyInput{Endpoint: ep, HeadersCredential: "both", Signals: []string{SignalMetrics, SignalTraces}}, "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(row.Signals, ",") != "metrics,traces" {
+		t.Errorf("stored signals %v", row.Signals)
+	}
+	waitFor(t, func() bool { return c.requests("/v1/metrics") >= 1 })
+	if got := c.lastAuth(); got != "Bearer both-value" {
+		t.Errorf("the push carried authorization %q, want the tenant's", got)
+	}
+	if st := f.m.Status("acme"); st.LastError != "" || st.LastSuccessAt.IsZero() {
+		t.Errorf("status = %+v", st)
+	}
+	if _, err := f.m.Delete(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(60 * time.Millisecond) // an interval that read the policy ends
+	n := c.requests("/v1/metrics")
+	time.Sleep(150 * time.Millisecond)
+	if got := c.requests("/v1/metrics"); got != n {
+		t.Errorf("%d pushes after the policy was deleted", got-n)
+	}
+}
+
+func TestManager_DialGuardRefusesAPrivateAddressForAMetricPush(t *testing.T) {
+	withTenantSeries(t, "acme")
+	f := newFixture(t, Config{AllowHTTP: true}, nil)
+	f.m.dial = netguard.GuardedDialContext(false, nil)
+	if _, err := f.put(context.Background(), "acme", PolicyInput{Endpoint: "http://127.0.0.1:4318", Signals: []string{SignalMetrics}}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	// The interval's push is refused at the dial ...
+	waitFor(t, func() bool { return f.m.Status("acme").LastError == "metrics: blocked" })
+	// ... and so is the test.
+	if err := f.m.Test(context.Background(), "acme"); err == nil || err.Error() != "metrics: blocked" {
+		t.Errorf("test = %v, want metrics: blocked", err)
 	}
 }
 
