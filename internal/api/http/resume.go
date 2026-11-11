@@ -1456,7 +1456,9 @@ func (s *Server) retryBusyResume(runID string) {
 				return
 			}
 			if !errors.Is(err, runner.ErrSessionBusy) {
-				slog.Warn("resume: a run refused for a busy session was not resumed on retry", "run_id", runID, "err", err)
+				// Not the error's text: a resolve failure can name provider
+				// configuration. Why it was refused is on the run's row.
+				slog.Warn("resume: a run refused for a busy session was not resumed on retry", "run_id", runID)
 				return
 			}
 		}
