@@ -1,14 +1,17 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/pause"
+	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
 // v0.8.17 Pause/Resume/State admin endpoints (PR 4). The pause Manager
@@ -73,7 +76,7 @@ func (s *Server) handleResumeRuntime(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "pause_not_configured", "no pause manager wired on this server")
 		return
 	}
-	res, err := s.pauseMgr.Resume(r.Context())
+	res, err := s.resumeRuntime(r.Context())
 	if err != nil {
 		if errors.Is(err, pause.ErrNotPaused) {
 			writeJSONError(w, http.StatusConflict, "not_paused", err.Error())
@@ -83,6 +86,31 @@ func (s *Server) handleResumeRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// resumeRuntime ends a runtime pause for every transport (HTTP and the
+// connector). The manager wakes only the runs whose loops this process holds;
+// a paused row nothing here holds — restored, or left paused by a resume that
+// failed or was refused — has no gate to wake. On a single replica nothing
+// else would pick such a row up before the next restart (in a cluster the
+// periodic resume pass does), so a successful resume starts the resume pass
+// for it here, in the background on the server's lifetime, as a restore does.
+// The pass leaves a row a live loop holds alone and claims each row it takes
+// with a compare-and-set, so it cannot start a second copy of a woken run.
+// Its re-dispatched runs are not in ResumedRunsCount.
+func (s *Server) resumeRuntime(ctx context.Context) (pause.ResumeResult, error) {
+	res, err := s.pauseMgr.Resume(ctx)
+	if err != nil || s.replicaID != "" {
+		return res, err
+	}
+	life := s.lifetime()
+	safego.Go(life, "resume.after_runtime_resume", func() {
+		n, warnings := s.ResumePausedRuns(life)
+		if n > 0 || len(warnings) > 0 {
+			slog.Info("resume(runtime): re-dispatched paused runs no loop held", "resumed", n, "flagged", len(warnings), "warnings", warnings)
+		}
+	})
+	return res, nil
 }
 
 func (s *Server) handleRuntimeState(w http.ResponseWriter, r *http.Request) {
