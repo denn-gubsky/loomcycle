@@ -304,12 +304,17 @@ func TestTenantRouter_BlackHoleCollectorBlocksNeitherSpanEndNorOtherTenants(t *t
 	release := make(chan struct{})
 	hole := newFakeCollector(t)
 	hole.handler = func(http.ResponseWriter, *http.Request) bool { <-release; return true }
-	t.Cleanup(func() { close(release) })
 	ok := newFakeCollector(t)
-	r := fastRouter(TenantRouterConfig{QueueSize: 64, ExportTimeout: 3 * time.Second})
+	// An export into the hole hangs for the whole timeout: a span end that
+	// waited on it would take that long, far over the bound asserted below,
+	// which leaves room for a loaded machine.
+	r := fastRouter(TenantRouterConfig{QueueSize: 64, ExportTimeout: 10 * time.Second})
 	r.SetDestination("hole", dest(hole, nil))
 	r.SetDestination("ok", dest(ok, nil))
 	tp := routedProvider(t, r)
+	// Registered after the provider, so it runs before its shutdown: the
+	// hole answers and the shutdown does not wait out the timeout.
+	t.Cleanup(func() { close(release) })
 	tr := tp.Tracer("t")
 
 	// Fill the hole tenant's queue and keep going: every span end returns at
@@ -320,7 +325,7 @@ func TestTenantRouter_BlackHoleCollectorBlocksNeitherSpanEndNorOtherTenants(t *t
 		_, s := tr.Start(context.Background(), "work", trace.WithAttributes(attribute.String(AttrTenant, "hole")))
 		s.End()
 	}
-	if el := time.Since(start); el > time.Second {
+	if el := time.Since(start); el > 3*time.Second {
 		t.Errorf("%d span ends took %v with the tenant's collector hung", n, el)
 	}
 	// The other tenant's span is exported while the hole still hangs.
