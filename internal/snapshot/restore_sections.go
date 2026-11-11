@@ -49,6 +49,8 @@ func restoreSectionOrder() []sectionRestorer {
 		// After the users its memberships and bindings name; before the paused
 		// and queued runs, re-narrowed by their caller's set.
 		{migrations.SectionACL, restoreACLSection},
+		// No foreign key; the header credential a policy names never travels.
+		{migrations.SectionTenantTelemetry, restoreTenantTelemetrySection},
 		// Before every definition that names a credential.
 		{migrations.SectionOAuthCredentials, restoreOAuthCredentialsSection},
 		// After oauth_credentials.

@@ -235,6 +235,9 @@ var layers = []layer{
 			"internal/scheduler",
 			"internal/teamgraph",
 			"internal/teamrun",
+			// A tenant's own trace export: the policy checks and the replica's
+			// pipelines kept in step with the stored rows.
+			"internal/tenanttelemetry",
 			"internal/throughput",
 			"internal/tools",
 			"internal/tools/builtin",

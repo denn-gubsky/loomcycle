@@ -59,6 +59,11 @@ var tenantConfinableTools = map[string]bool{
 	// its own tenant's agents. It also needs substrate:tenant by name
 	// (toolRequiredScope): a member must not switch storage back on.
 	"retention_override": true,
+	// telemetry: a tenant's own trace export. The connector takes the tenant
+	// from the PRINCIPAL for anyone but an admin and refuses another one. It
+	// also needs substrate:tenant by name (toolRequiredScope): where the
+	// tenant's traces go, with which of its credentials, is the operator's.
+	"telemetry": true,
 	// ontology: merge_subjects folds one subject into another in the
 	// connector, which takes the tenant from the PRINCIPAL for anyone but an
 	// admin and checks write on both documents. It also needs substrate:tenant
@@ -244,6 +249,9 @@ var toolRequiredScope = map[string]string{
 	// An operator's control, not member data: a member who could set one could
 	// read what its colleagues' no-trace runs said.
 	"retention_override": auth.ScopeTenant,
+	// Where the tenant's traces are sent, which /v1/_telemetry keeps from a
+	// tenant's members.
+	"telemetry": auth.ScopeTenant,
 	// The tenant's keys, which POST /v1/_crypto keeps from a tenant's
 	// members: a member who could decrypt with them could read whatever the
 	// tenant sealed.
@@ -527,6 +535,12 @@ var mcpToolTwins = map[string]mcpToolTwin{
 		"list":  {Method: "GET", Path: "/v1/_retention/overrides"},
 		"set":   {Method: "PUT", Path: "/v1/_retention/overrides"},
 		"clear": {Method: "DELETE", Path: "/v1/_retention/overrides"},
+	}},
+	"telemetry": {DefaultOp: "get", Ops: map[string]mcpOpTwin{
+		"get":    {Method: "GET", Path: "/v1/_telemetry"},
+		"set":    {Method: "PUT", Path: "/v1/_telemetry"},
+		"delete": {Method: "DELETE", Path: "/v1/_telemetry"},
+		"test":   {Method: "POST", Path: "/v1/_telemetry:test"},
 	}},
 	"erasure": {DefaultOp: "report", Ops: map[string]mcpOpTwin{
 		"report":  {Method: "GET", Path: "/v1/_erasure"},

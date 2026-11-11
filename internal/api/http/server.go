@@ -64,6 +64,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
 	"github.com/denn-gubsky/loomcycle/internal/teamspec"
+	"github.com/denn-gubsky/loomcycle/internal/tenanttelemetry"
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -430,6 +431,12 @@ type Server struct {
 	// continuation can tell a session busy with a run being cancelled from
 	// one busy with a live turn (takeSession).
 	sessionRuns sessionRunSet
+	// busyResumes holds the runs a busy-session resume retry is pending for
+	// (retryBusyResume), so each has one retry at a time.
+	busyResumes sync.Map
+	// lifeCtx ends when the process stops serving (SetLifetime); work the
+	// server starts on its own, with no request behind it, stops with it.
+	lifeCtx context.Context
 
 	// mcpFallback is the optional Dispatcher fallback for lazy MCP
 	// server registration. When set, an agent's call to a tool name
@@ -640,6 +647,11 @@ type Server struct {
 	replicaStore replicaLister
 	replicaID    string
 
+	// tenantTelemetry is a tenant's own trace export (tenant_telemetry.go);
+	// nil while the operator's gate is off, which leaves /v1/_telemetry
+	// answering feature_disabled.
+	tenantTelemetry *tenanttelemetry.Manager
+
 	// aclResolver is the RFC EY groups + compiled-set resolver; nil leaves
 	// every gate on the scope answer alone.
 	aclResolver *aclres.Resolver
@@ -700,13 +712,14 @@ type Server struct {
 	// in seconds. Set in New().
 	startedAt time.Time
 
-	// runPhaseHook is told the name of each RunOnce phase as it starts. A
-	// test seam only, nil in production: the order pin
-	// (TestRunOnce_PhasesRunInTheirSecurityOrder) records through it.
+	// runPhaseHook is told the name of each RunOnce phase, and of each
+	// resume phase ("resume." names), as it starts. A test seam only, nil in
+	// production: the order pins (TestRunOnce_PhasesRunInTheirSecurityOrder,
+	// TestResume_PhasesRunInTheirSecurityOrder) record through it.
 	runPhaseHook func(phase string)
 }
 
-// runPhase reports that a RunOnce phase starts (runPhaseHook).
+// runPhase reports that a RunOnce or resume phase starts (runPhaseHook).
 func (s *Server) runPhase(name string) {
 	if s.runPhaseHook != nil {
 		s.runPhaseHook(name)
@@ -1054,6 +1067,18 @@ func (s *Server) SetMetricsSampler(m *metrics.Sampler) {
 // resolver tolerates nil (no override).
 func (s *Server) SetSkillSet(set *skills.Set) {
 	s.skillSet = set
+}
+
+// SetLifetime gives the server the context that ends when the process stops
+// serving. Until it is called that is context.Background().
+func (s *Server) SetLifetime(ctx context.Context) { s.lifeCtx = ctx }
+
+// lifetime is the server's lifetime context (SetLifetime).
+func (s *Server) lifetime() context.Context {
+	if s.lifeCtx == nil {
+		return context.Background()
+	}
+	return s.lifeCtx
 }
 
 // SetPauseManager installs the v0.8.17 pause/resume coordinator so the
@@ -3440,6 +3465,21 @@ func (s *Server) Mux() http.Handler {
 }
 
 // routes is the route table Mux serves.
+// tenantTelemetryRoutes registers a tenant's own trace export
+// (tenant_telemetry.go): an admin for any tenant, a tenant operator for its
+// own, never a member; 404 feature_disabled unless the operator turned it on.
+// Here, beside routes (whose last act is to call it), so the route censuses
+// that read this file see them.
+// The test route asks manage: it sends a span with the tenant's header
+// credential, a use of the policy as a write is.
+func (s *Server) tenantTelemetryRoutes(mux *http.ServeMux) *http.ServeMux {
+	mux.Handle("GET /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryGet))))
+	mux.Handle("PUT /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryPut))))
+	mux.Handle("DELETE /v1/_telemetry", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryDelete))))
+	mux.Handle("POST /v1/_telemetry:test", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTenantTelemetryTest))))
+	return mux
+}
+
 func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
@@ -4146,7 +4186,7 @@ func (s *Server) routes() *http.ServeMux {
 			return recoveryMiddleware(s.authMiddleware(next))
 		})
 	}
-	return mux
+	return s.tenantTelemetryRoutes(mux)
 }
 
 // MuxRegistrar is the minimal mux surface the webhook receiver's Mount
@@ -7149,7 +7189,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		ParentAgentID: parentIdentity.AgentID,
 		Tenant:        parentIdentity.TenantID,
 		SessionID:     subSessionID,
-		Trigger:       lcotel.TriggerSubagent,
+		Trigger:       lcotel.TriggerSubagent, NoTrace: subIdentity.Retention == retentionmode.None,
 	})
 	s.recordRunTraceID(subRunCtx, subRunID)
 	defer func() {

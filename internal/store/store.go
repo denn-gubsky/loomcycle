@@ -1854,6 +1854,7 @@ type Store interface {
 	UISessionStore
 	DeviceAuthStore
 	TenantAuthPolicyStore
+	TenantTelemetryPolicyStore
 	OAuthStore
 	ClientDefStore
 	EvaluationStore

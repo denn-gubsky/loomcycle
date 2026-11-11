@@ -82,12 +82,16 @@ type Sections struct {
 	// name them. Present only when there is one (omitempty), so a capture
 	// without any is byte-identical to one taken before the section existed.
 	OAuthCredentials *OAuthCredentialsSection `json:"oauth_credentials,omitempty"`
-	AgentDefs        AgentDefsSection         `json:"agent_defs"`
-	AgentDefActive   AgentDefActiveSection    `json:"agent_def_active"`
-	SkillDefs        SkillDefsSection         `json:"skill_defs"`
-	SkillDefActive   SkillDefActiveSection    `json:"skill_def_active"`
-	TeamDefs         TeamDefsSection          `json:"team_defs"`
-	TeamDefActive    TeamDefActiveSection     `json:"team_def_active"`
+	// TenantTelemetry is every tenant's own trace export policy, naming its
+	// header credential but never carrying it. Present only when there is
+	// one (omitempty), like OAuthCredentials.
+	TenantTelemetry *TenantTelemetrySection `json:"tenant_telemetry,omitempty"`
+	AgentDefs       AgentDefsSection        `json:"agent_defs"`
+	AgentDefActive  AgentDefActiveSection   `json:"agent_def_active"`
+	SkillDefs       SkillDefsSection        `json:"skill_defs"`
+	SkillDefActive  SkillDefActiveSection   `json:"skill_def_active"`
+	TeamDefs        TeamDefsSection         `json:"team_defs"`
+	TeamDefActive   TeamDefActiveSection    `json:"team_def_active"`
 	// HookDefs travel with the definitions that name them, so a restored
 	// agent or team is gated the way it was.
 	HookDefs           HookDefsSection           `json:"hook_defs"`

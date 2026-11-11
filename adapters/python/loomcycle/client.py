@@ -516,6 +516,71 @@ class LoomcycleClient:
             _raise_from_grpc(e)
         return bool(resp.cleared)
 
+    # ---- Tenant trace export (TenantTelemetry RPC) ----
+    #
+    # Each method returns the same dict: ``tenant``, ``policy`` (a dict, or
+    # ``None`` when the tenant has none), ``status`` (the export on the replica
+    # that answered, or ``None``), ``deleted`` and ``test`` (``None`` unless
+    # the call was a test). Operator-only: an admin for any tenant (named with
+    # ``tenant``), a tenant operator for its own (PermissionDenied for naming
+    # another). Unimplemented while the operator has not turned tenant export
+    # on.
+
+    async def get_telemetry(self, *, tenant: str = "") -> Mapping[str, Any]:
+        """A tenant's own trace export: its policy and how the export is
+        going."""
+        return await self._tenant_telemetry(pb.TenantTelemetryRequest(op="get", tenant=tenant))
+
+    async def set_telemetry(
+        self,
+        endpoint: str,
+        *,
+        protocol: str = "",
+        headers_credential: str = "",
+        signals: Optional[Sequence[str]] = None,
+        sampler_ratio: Optional[float] = None,
+        content_capture: str = "",
+        tenant: str = "",
+    ) -> Mapping[str, Any]:
+        """Store the tenant's trace-export policy, replacing the last.
+        ``endpoint`` is the https OTLP base URL of the tenant's collector;
+        ``protocol`` is ``http/protobuf`` (default) or ``grpc``;
+        ``headers_credential`` names a tenant credential (never its value)
+        whose value is the header block; ``signals`` defaults to traces, the
+        only one; ``content_capture`` may only be ``off``. Audited; a policy
+        whose audit record cannot be written is not stored (Unavailable)."""
+        policy = pb.TenantTelemetryPolicyInput(
+            endpoint=endpoint,
+            protocol=protocol,
+            headers_credential=headers_credential,
+            signals=list(signals or []),
+            content_capture=content_capture,
+        )
+        # Set only when given: an unset ratio means 1 (or the operator's cap),
+        # while an explicit 0.0 must reach the server as 0.
+        if sampler_ratio is not None:
+            policy.sampler_ratio = sampler_ratio
+        return await self._tenant_telemetry(pb.TenantTelemetryRequest(op="set", tenant=tenant, policy=policy))
+
+    async def delete_telemetry(self, *, tenant: str = "") -> Mapping[str, Any]:
+        """Stop the tenant's trace export and drop its policy. Deleting one
+        that is not there is not an error: ``deleted`` says whether there was
+        one."""
+        return await self._tenant_telemetry(pb.TenantTelemetryRequest(op="delete", tenant=tenant))
+
+    async def test_telemetry(self, *, tenant: str = "") -> Mapping[str, Any]:
+        """Send one synthetic span to the stored destination and answer, once
+        it is done, with what happened in ``test`` (``ok``/``error``/
+        ``duration_ms``)."""
+        return await self._tenant_telemetry(pb.TenantTelemetryRequest(op="test", tenant=tenant))
+
+    async def _tenant_telemetry(self, req: "pb.TenantTelemetryRequest") -> Mapping[str, Any]:
+        try:
+            resp = await self._stub.TenantTelemetry(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return _tenant_telemetry_result(resp)
+
     # ---- Decision models (Decide / ListDecisionModels RPCs) ----
 
     async def decide(
@@ -3489,6 +3554,40 @@ def _retention_override_entry(o: "pb.RetentionOverrideEntry") -> Mapping[str, An
         "set_by": o.set_by,
         "created_at": o.created_at,
     }
+
+
+def _tenant_telemetry_result(r: "pb.TenantTelemetryResponse") -> Mapping[str, Any]:
+    """Convert a TenantTelemetryResponse → the dict the HTTP surface answers
+    with, so a caller reads one shape whichever transport it uses."""
+    policy: Optional[Mapping[str, Any]] = None
+    if r.HasField("policy"):
+        p = r.policy
+        policy = {
+            "endpoint": p.endpoint,
+            "protocol": p.protocol,
+            "headers_credential": p.headers_credential,
+            "signals": list(p.signals),
+            "sampler_ratio": p.sampler_ratio,
+            "updated_at": p.updated_at,
+            "updated_by": p.updated_by,
+        }
+    status: Optional[Mapping[str, Any]] = None
+    if r.HasField("status"):
+        s = r.status
+        status = {
+            "replica": s.replica,
+            "exporting": s.exporting,
+            "exported_spans": s.exported_spans,
+            "dropped_spans": s.dropped_spans,
+            "export_failures": s.export_failures,
+            "last_success_at": s.last_success_at,
+            "last_error": s.last_error,
+            "last_error_at": s.last_error_at,
+        }
+    test: Optional[Mapping[str, Any]] = None
+    if r.HasField("test"):
+        test = {"ok": r.test.ok, "error": r.test.error, "duration_ms": r.test.duration_ms}
+    return {"tenant": r.tenant, "policy": policy, "status": status, "deleted": r.deleted, "test": test}
 
 
 def _token_limit_entry(e: "pb.TokenLimitEntry") -> Mapping[str, Any]:

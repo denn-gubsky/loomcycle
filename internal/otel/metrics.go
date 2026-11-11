@@ -134,6 +134,13 @@ type instruments struct {
 
 	genAITokenUsage        genaiconv.ClientTokenUsage
 	genAIOperationDuration genaiconv.ClientOperationDuration
+
+	// Tenant export (tenant_export.go): per tenant, so a tenant's confined
+	// scrape sees its own counters.
+	tenantExported       metric.Int64Counter
+	tenantDropped        metric.Int64Counter
+	tenantExportFailures metric.Int64Counter
+	tenantPipelines      metric.Int64UpDownCounter
 }
 
 // meterState is the process's meter provider and the reader /metrics renders.
@@ -260,6 +267,11 @@ func newInstruments(m, genAI metric.Meter, export bool) (instruments, error) {
 	in.modelTTFT = hist("loomcycle.model.ttft", "s", "Time from a model call's lane admission (else its start) to its first streamed event, by purpose.", ttftBuckets)
 	in.toolCalls = counter("loomcycle.tool.calls", "{call}", "Tool calls by tool (MCP tools by server, client tools as client) and outcome.")
 	in.toolCallDuration = hist("loomcycle.tool.call.duration", "s", "Time a tool call took.", toolCallBuckets)
+	in.tenantExported = counter("loomcycle.tenant_telemetry.exported", "{span}", "Spans a tenant's own collector accepted, by tenant.")
+	in.tenantDropped = counter("loomcycle.tenant_telemetry.dropped", "{span}", "Spans meant for a tenant's own collector that will never reach it (queue full, failed export, rejected), by tenant.")
+	in.tenantExportFailures = counter("loomcycle.tenant_telemetry.export_failures", "{batch}", "Export calls to a tenant's own collector that failed, by tenant.")
+	in.tenantPipelines, err = m.Int64UpDownCounter("loomcycle.tenant_telemetry.pipelines", metric.WithUnit("{pipeline}"), metric.WithDescription("Tenant export pipelines open on this replica."))
+	add(err)
 
 	// The GenAI convention histograms go out over OTLP only; with export off
 	// they are no-ops, so nothing aggregates what no reader exports.
@@ -638,6 +650,36 @@ func RecordToolCallMetric(ctx context.Context, tool, outcome string, took time.D
 	t := attribute.String(LabelTool, tool)
 	st.inst.toolCalls.Add(ctx, 1, metric.WithAttributes(t, attribute.String(LabelOutcome, outcome)))
 	st.inst.toolCallDuration.Record(ctx, took.Seconds(), metric.WithAttributes(t))
+}
+
+// --- Tenant export ---
+
+func tenantSpansExported(tenant string, n int64) {
+	if st := meters.Load(); st != nil && n > 0 {
+		st.inst.tenantExported.Add(context.Background(), n, metric.WithAttributes(attribute.String(LabelTenant, tenant)))
+	}
+}
+
+func tenantSpansDropped(tenant string, n int64) {
+	if st := meters.Load(); st != nil && n > 0 {
+		st.inst.tenantDropped.Add(context.Background(), n, metric.WithAttributes(attribute.String(LabelTenant, tenant)))
+	}
+}
+
+// tenantExportFailed counts one failed export call and the n spans it carried.
+func tenantExportFailed(tenant string, n int64) {
+	st := meters.Load()
+	if st == nil {
+		return
+	}
+	st.inst.tenantExportFailures.Add(context.Background(), 1, metric.WithAttributes(attribute.String(LabelTenant, tenant)))
+	tenantSpansDropped(tenant, n)
+}
+
+func tenantPipelinesChanged(delta int64) {
+	if st := meters.Load(); st != nil {
+		st.inst.tenantPipelines.Add(context.Background(), delta)
+	}
 }
 
 // --- Observable gauges: database pools, consolidation, token budgets ---

@@ -92,7 +92,9 @@ func RecordModelCall(ctx context.Context, a ModelCallAttrs) (context.Context, tr
 	kvs = genAIString(genai.GenAIRequestModelKey, a.Model, kvs)
 	if a.NoTrace {
 		// The span carries nothing of the request; the call is still counted,
-		// as metrics carry no content either.
+		// as metrics carry no content either. Nor is it, or its attempts,
+		// sent to a tenant's own destination.
+		ctx = WithNoTrace(ctx)
 		ctx, span := Tracer().Start(ctx, SpanModelCall, trace.WithAttributes(withTenantAttr(ctx, kvs)...))
 		return ctx, meteredModelSpan(span, a)
 	}

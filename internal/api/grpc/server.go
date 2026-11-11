@@ -1131,6 +1131,10 @@ var grpcConsumerScopes = map[string]string{
 	// member path, so a member is refused here too; the connector checks the
 	// caller again.
 	"RetentionOverride": auth.ScopeTenant,
+	// A tenant's own trace export: an admin for any tenant, a tenant operator
+	// for its own. Its HTTP routes are carved out of the member path, so a
+	// member is refused here too; the connector checks the caller again.
+	"TenantTelemetry": auth.ScopeTenant,
 	// RFC FR P2: folding one ontology subject into another, as POST
 	// /v1/_ontology/subjects/merge gates it. Its route is carved out of the
 	// member path, so a member is refused here too; the connector checks the

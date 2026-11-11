@@ -246,6 +246,18 @@ func authSection() schemaPlan {
 			updated_at INTEGER NOT NULL,
 			updated_by TEXT    NOT NULL DEFAULT ''
 		)`,
+		// Per-tenant telemetry destinations (tenant_telemetry.go). Mirrors
+		// postgres migration 0133; signals is a JSON array, times unix nanos.
+		`CREATE TABLE IF NOT EXISTS tenant_telemetry_policies (
+			tenant_id          TEXT    PRIMARY KEY,
+			endpoint           TEXT    NOT NULL,
+			protocol           TEXT    NOT NULL,
+			headers_credential TEXT    NOT NULL DEFAULT '',
+			signals            TEXT    NOT NULL,
+			sampler_ratio      REAL    NOT NULL,
+			updated_at         INTEGER NOT NULL,
+			updated_by         TEXT    NOT NULL DEFAULT ''
+		)`,
 	}}
 }
 

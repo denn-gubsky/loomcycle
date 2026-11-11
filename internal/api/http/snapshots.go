@@ -412,6 +412,9 @@ func (s *Server) snapshotRestoreOptions(ctx context.Context, includeHistory bool
 			// A Path name is re-checked as the tools write one: canonical
 			// path, known scope and kind, a ref of that kind's shape.
 			migrations.SectionDirents: builtin.ValidateDirentEntry,
+			// A tenant telemetry policy sends a tenant's traces to a host:
+			// held to this host's operator rules, as a set is.
+			migrations.SectionTenantTelemetry: s.restoredTenantTelemetryValidator,
 		},
 		CredentialExists:     s.credKeyable,
 		CredentialToCompare:  s.credToCompare,
@@ -565,6 +568,13 @@ func (s *Server) postRestoreRefresh(ctx context.Context, result *snapshot.Restor
 	// re-narrowed by its caller's set — and audit it like any ACL write.
 	for _, tenant := range result.Refresh.ACLTenants {
 		s.aclChanged(ctx, tenant, "acl_restored", "snapshot")
+	}
+	// Restored tenant telemetry policies are applied now, here and on every
+	// replica, under the target operator's rules.
+	if m := s.tenantTelemetry; m != nil {
+		for _, tenant := range result.Refresh.TelemetryTenants {
+			m.Applied(ctx, tenant)
+		}
 	}
 }
 

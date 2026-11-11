@@ -95,6 +95,13 @@ type Event struct {
 	// RetentionUntil is when the override stops applying (set only).
 	RetentionUntil string `json:"retention_until,omitempty"`
 
+	// --- Tenant telemetry export (Action = "tenant_telemetry_set" |
+	// "tenant_telemetry_delete") ---
+	//
+	// An operator pointing a tenant's traces at a collector, or stopping it.
+	// The tenant travels in TargetTenant, the collector endpoint (no
+	// credentials, no query: the policy refuses both) in TargetName on a set.
+
 	// --- Crypto (Action = "crypto_op" | "crypto_key_generate" |
 	// "crypto_key_create" | "crypto_key_rotate" | "crypto_key_min_version" |
 	// "crypto_key_delete_version" | "crypto_key_delete" | "crypto_key_export" |

@@ -284,6 +284,24 @@ service Loomcycle {
   // Mirrors GET/PUT/DELETE /v1/_retention/overrides.
   rpc RetentionOverride(RetentionOverrideRequest) returns (RetentionOverrideResponse);
 
+  // TenantTelemetry reads, sets, deletes or tests a tenant's own trace export:
+  // one op-based RPC (op ∈ get|set|delete|test). A policy points the tenant's
+  // own spans at an OTLP collector of the tenant's, beside (never instead of)
+  // the operator's export; test sends one synthetic span there through the
+  // same credential resolution, address guard and exporter and answers with
+  // the outcome.
+  //
+  // Operator-only: an admin for any tenant, a tenant operator for its own
+  // (PERMISSION_DENIED otherwise, also for naming another tenant). A policy
+  // the rules refuse (not https, a host the operator does not allow, a header
+  // credential not bound to the endpoint, a signal or mode not available) is
+  // INVALID_ARGUMENT. UNIMPLEMENTED while the operator has not turned tenant
+  // export on (LOOMCYCLE_TENANT_TELEMETRY). A set whose audit record cannot be
+  // written is not made (UNAVAILABLE).
+  //
+  // Mirrors GET/PUT/DELETE /v1/_telemetry and POST /v1/_telemetry:test.
+  rpc TenantTelemetry(TenantTelemetryRequest) returns (TenantTelemetryResponse);
+
   // MergeSubjects folds one tenant ontology subject (duplicate) into another
   // (survivor), each named by document id or natural key, in one transaction:
   // the duplicate's facts move under the survivor, its statements are copied
@@ -2412,6 +2430,67 @@ message RetentionOverrideResponse {
   repeated RetentionOverrideEntry overrides = 1;
   // op=clear: whether there was one to end.
   bool cleared = 2;
+}
+
+message TenantTelemetryRequest {
+  string op = 1;      // "get" | "set" | "delete" | "test"
+  // Whose export it is. Only an admin may name a tenant; for anyone else it is
+  // the caller's own, and naming another is PERMISSION_DENIED.
+  string tenant = 2;
+  TenantTelemetryPolicyInput policy = 3;  // set
+}
+
+// TenantTelemetryPolicyInput is a policy as written (op=set).
+message TenantTelemetryPolicyInput {
+  string endpoint = 1;            // OTLP base URL of the tenant's collector (https)
+  string protocol = 2;            // "http/protobuf" (default) | "grpc"
+  // A tenant credential, restricted by its allowed_urls to the endpoint, whose
+  // value is the header block (name=value,name=value). Empty for none.
+  string headers_credential = 3;
+  repeated string signals = 4;    // empty = ["traces"]
+  // Share of the tenant's traces sent, 0..1, at most the operator's cap.
+  // Unset is 1 (or the cap below it).
+  optional double sampler_ratio = 5;
+  string content_capture = 6;     // "off" or empty
+}
+
+// TenantTelemetryPolicy is a stored policy.
+message TenantTelemetryPolicy {
+  string endpoint = 1;
+  string protocol = 2;
+  string headers_credential = 3;
+  repeated string signals = 4;
+  double sampler_ratio = 5;
+  string updated_at = 6;  // RFC 3339
+  string updated_by = 7;  // principal subject that last wrote it
+}
+
+// TenantTelemetryStatus is the tenant's export on the replica that answered,
+// since it started. last_error never holds a header value.
+message TenantTelemetryStatus {
+  string replica = 1;
+  bool exporting = 2;
+  uint64 exported_spans = 3;
+  uint64 dropped_spans = 4;
+  uint64 export_failures = 5;
+  string last_success_at = 6;  // RFC 3339
+  string last_error = 7;
+  string last_error_at = 8;    // RFC 3339
+}
+
+// TenantTelemetryTest is the outcome of op=test.
+message TenantTelemetryTest {
+  bool ok = 1;
+  string error = 2;
+  int64 duration_ms = 3;
+}
+
+message TenantTelemetryResponse {
+  string tenant = 1;
+  TenantTelemetryPolicy policy = 2;  // unset when the tenant has none
+  TenantTelemetryStatus status = 3;
+  bool deleted = 4;                  // op=delete: whether there was one
+  TenantTelemetryTest test = 5;      // op=test
 }
 
 message MergeSubjectsRequest {

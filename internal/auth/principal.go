@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 )
 
 // RFC L OSS multi-tenant authorization — the authoritative principal.
@@ -99,8 +101,15 @@ type Login struct {
 
 type ctxKeyPrincipal struct{}
 
-// WithPrincipal stamps the resolved principal into ctx.
+// WithPrincipal stamps the resolved principal into ctx. A principal whose
+// token makes everything it starts no-trace also marks ctx no-trace for the
+// spans opened under it, outside a run as inside one: a direct tool or memory
+// call by such a token is never sent to a tenant's own collector, as its runs
+// are not.
 func WithPrincipal(ctx context.Context, p Principal) context.Context {
+	if p.Restrictions.Retention == retentionmode.None {
+		ctx = lcotel.WithNoTrace(ctx)
+	}
 	return context.WithValue(ctx, ctxKeyPrincipal{}, p)
 }
 

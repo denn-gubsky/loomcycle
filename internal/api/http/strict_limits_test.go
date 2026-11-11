@@ -265,7 +265,9 @@ func TestStrictLimits_ARunStartedOffHTTPOverItsBudgetStops(t *testing.T) {
 }
 
 // A paused run restored onto a server whose budget is spent is not handed to
-// a provider: it ends at the budget like any other run in flight.
+// a provider: it ends at the budget, as a fresh run over it is refused — in
+// strict mode or not, since the resume asks the budget as a start does (owner
+// ruling, 2026-11-11).
 func TestStrictLimits_AResumedRunOverItsBudgetMakesNoModelCall(t *testing.T) {
 	for _, strict := range []bool{true, false} {
 		srv, prov, runID, envelope := restoreResumeServer(t)
@@ -296,15 +298,9 @@ func TestStrictLimits_AResumedRunOverItsBudgetMakesNoModelCall(t *testing.T) {
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
-		if !strict {
-			if run.Status != store.RunCompleted || prov.calls.Load() != 1 {
-				t.Errorf("without strict mode a resumed run finishes: status=%q calls=%d", run.Status, prov.calls.Load())
-			}
-			continue
-		}
 		assertStoppedAtBudget(t, run)
 		if n := prov.calls.Load(); n != 0 {
-			t.Errorf("model calls = %d, want 0", n)
+			t.Errorf("strict=%v: model calls = %d, want 0", strict, n)
 		}
 	}
 }

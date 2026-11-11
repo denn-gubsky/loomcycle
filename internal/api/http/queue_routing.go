@@ -13,7 +13,9 @@ import (
 // enough that the first call would wait longer than `switch_after_ms`.
 //
 // It acts only where a run STARTS — a new run, a session continuation, a
-// sub-agent — and nowhere else resolveAgentDef is called: a resume, a retune, a
+// sub-agent, and a paused run resumed (resolved as a continuation is, owner
+// ruling 2026-11-11; its started model is still preferred where the definition
+// permits it) — and nowhere else resolveAgentDef is called: a retune, a
 // compaction summary or a report of the effective config re-resolve a run that
 // already has its place, and moving it there, or reporting a choice that
 // depends on the moment's load, is not what the field asks for. The run then

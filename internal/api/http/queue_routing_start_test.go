@@ -32,6 +32,7 @@ type routeProvider struct {
 
 	mu     sync.Mutex
 	models []string
+	onCall func() // runs before the call is answered; may be nil
 }
 
 func (p *routeProvider) ID() string                                   { return p.id }
@@ -41,6 +42,9 @@ func (p *routeProvider) Capabilities() providers.Capabilities {
 	return providers.Capabilities{Streaming: true, SupportsVision: p.vision}
 }
 func (p *routeProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
+	if p.onCall != nil {
+		p.onCall()
+	}
 	p.mu.Lock()
 	p.models = append(p.models, req.Model)
 	p.mu.Unlock()
