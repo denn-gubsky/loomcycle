@@ -6,6 +6,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	genai "go.opentelemetry.io/otel/semconv/v1.41.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // The tenant's copy of a span. A tenant's destination receives the spans of
@@ -162,7 +163,13 @@ func tenantResource(tenant, version string) *sdkresource.Resource {
 // spanRoute reads what routing needs from an ended span: its tenant and
 // whether it was opened for a no-trace run.
 func spanRoute(s sdktrace.ReadOnlySpan) (tenant string, noTrace bool) {
-	for _, kv := range s.Attributes() {
+	return startRoute(s.Attributes())
+}
+
+// startRoute is spanRoute over a span's attributes, which a sampler sees as
+// the start attributes of a span not yet opened.
+func startRoute(kvs []attribute.KeyValue) (tenant string, noTrace bool) {
+	for _, kv := range kvs {
 		switch string(kv.Key) {
 		case AttrTenant:
 			tenant = kv.Value.AsString()
@@ -208,3 +215,10 @@ func (t tenantSpan) Attributes() []attribute.KeyValue { return t.attrs }
 func (t tenantSpan) Events() []sdktrace.Event         { return t.events }
 func (t tenantSpan) Links() []sdktrace.Link           { return t.links }
 func (t tenantSpan) Status() sdktrace.Status          { return t.status }
+
+// SpanContext is the span's, without the marker of a trace kept only for the
+// tenant: it describes the operator's sampling, not the tenant's trace.
+func (t tenantSpan) SpanContext() trace.SpanContext {
+	sc := t.ReadOnlySpan.SpanContext()
+	return sc.WithTraceState(sc.TraceState().Delete(tenantOnlyKey))
+}

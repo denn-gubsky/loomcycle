@@ -47,6 +47,11 @@ type TenantDestination struct {
 	// TLSConfig is the client TLS configuration for an https endpoint; nil
 	// for the system roots. Tests set it to trust their own collector.
 	TLSConfig *tls.Config
+	// Ratio is the share of the tenant's traces, by trace id, it receives:
+	// 0 none, 1 all. A root span of the tenant is sampled for it at this
+	// ratio even where the operator's sampler would drop it (the operator
+	// still exports none of those). Changing it never rebuilds the pipeline.
+	Ratio float64
 }
 
 // fingerprint identifies the destination's settings: a pipeline built for an
@@ -186,6 +191,10 @@ type TenantRouter struct {
 	entries map[string]*tenantEntry
 	pipes   map[string]*tenantPipeline
 	closed  bool
+	// ratios is each destination's Ratio, replaced whole under mu whenever a
+	// destination changes: the root sampler reads it on every span start,
+	// without a lock.
+	ratios atomic.Pointer[map[string]float64]
 	// flushing names the tenants with a replaced pipeline still flushing.
 	// One flush per tenant at a time: a flush waits on the tenant's
 	// collector inside a shared export slot, and a tenant flapping its
@@ -234,6 +243,7 @@ func (r *TenantRouter) SetDestination(tenant string, d TenantDestination) {
 		r.entries[tenant] = e
 	}
 	e.dest, e.fp = d, fp
+	r.publishRatiosLocked()
 	if p := r.pipes[tenant]; p != nil && p.fp != fp {
 		r.dropPipelineLocked(tenant, p)
 	}
@@ -245,9 +255,31 @@ func (r *TenantRouter) RemoveDestination(tenant string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.entries, tenant)
+	r.publishRatiosLocked()
 	if p := r.pipes[tenant]; p != nil {
 		r.dropPipelineLocked(tenant, p)
 	}
+}
+
+// publishRatiosLocked replaces the ratios the sampler reads with the
+// destinations' as they are now. A copy per destination change, which is rare
+// (a policy write or a refresh that found one changed); never per span.
+func (r *TenantRouter) publishRatiosLocked() {
+	m := make(map[string]float64, len(r.entries))
+	for t, e := range r.entries {
+		m[t] = e.dest.Ratio
+	}
+	r.ratios.Store(&m)
+}
+
+// exportRatio is tenant's Ratio when it has a destination.
+func (r *TenantRouter) exportRatio(tenant string) (float64, bool) {
+	m := r.ratios.Load()
+	if m == nil {
+		return 0, false
+	}
+	v, ok := (*m)[tenant]
+	return v, ok
 }
 
 // Tenants returns the tenants with a destination, sorted.
@@ -307,12 +339,20 @@ func (r *TenantRouter) OnEnd(s sdktrace.ReadOnlySpan) {
 	r.mu.RLock()
 	e := r.entries[tenant]
 	p := r.pipes[tenant]
-	var fp string
+	var (
+		fp    string
+		ratio float64
+	)
 	if e != nil {
-		fp = e.fp
+		fp, ratio = e.fp, e.dest.Ratio
 	}
 	r.mu.RUnlock()
 	if e == nil {
+		return
+	}
+	// Thinned to the tenant's ratio by trace id, so it receives whole traces:
+	// sampling, not a loss, so not counted.
+	if !traceIDKeeps(s.SpanContext().TraceID(), ratio) {
 		return
 	}
 	// A span that lost attributes to the SDK's count limit and carries no
