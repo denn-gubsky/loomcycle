@@ -56,6 +56,13 @@ func IsRunnerDeath(status int, body []byte) bool {
 	// same prefix also fronts faults a retry cannot fix, so the EOF is required.
 	case strings.Contains(msg, "an error was encountered while running the model") && strings.Contains(msg, "EOF"):
 		return true
+	// "... running the model: CUDA error: an illegal memory access was
+	// encountered\nCUDA error", "... CUDA error\nCUDA error: an internal
+	// operation failed". The GPU fault takes the runner down with it; on a
+	// live host the same request passed seconds later, on a reloaded runner.
+	// Unretried, one such fault marked the model stalled for the whole run.
+	case strings.Contains(msg, "an error was encountered while running the model") && strings.Contains(msg, "CUDA error"):
+		return true
 	// Ollama's own request to the runner's loopback port failed:
 	// `Post "http://127.0.0.1:41233/completion": EOF`,
 	// `do embedding request: Post "http://127.0.0.1:41233/embedding": EOF`.
