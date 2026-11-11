@@ -772,22 +772,16 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		}}
 	}
 
-	// A top-level run takes its session as a continuation does (takeSession):
-	// no other turn on the session while it runs, and a continuation that
-	// finds it busy is answered as for any live run. Busy, the resume is not
-	// settled — the row goes back to paused and is tried again in this process
-	// (retryBusyResume), as a continuation would be refused and try again. A
-	// paused sibling does not count as busy (sessionLiveForResume). A sub-run
-	// takes none, as live.
+	// A top-level run takes its session as a continuation does: no other turn
+	// on it while it runs. Busy (a paused sibling is not, sessionLiveForResume),
+	// the resume is not settled: the row goes back to paused and is tried again
+	// in this process (retryBusyResume). A sub-run takes none, as live.
 	s.runPhase("resume.session")
 	var hold *sessionHold
 	if run.ParentRunID == "" {
 		h, herr := s.takeSessionWith(ctx, run.SessionID, true, run.ID, s.sessionLiveForResume)
 		if herr != nil {
-			if errors.Is(herr, runner.ErrSessionBusy) {
-				s.retryBusyResume(run.ID) // nothing else would try it again on one replica
-			}
-			return herr
+			return s.retryIfBusy(run.ID, herr)
 		}
 		hold = h
 	}
@@ -1424,6 +1418,15 @@ func (a *sessionAway) back(ctx context.Context, sessionID string) error {
 var busyResumeBackoff = []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second, 5 * time.Second,
 	15 * time.Second, 30 * time.Second, 60 * time.Second, 120 * time.Second, 120 * time.Second,
 	120 * time.Second, 120 * time.Second, 120 * time.Second, 120 * time.Second, 120 * time.Second}
+
+// retryIfBusy schedules retryBusyResume when err is a busy session, and
+// returns err.
+func (s *Server) retryIfBusy(runID string, err error) error {
+	if errors.Is(err, runner.ErrSessionBusy) {
+		s.retryBusyResume(runID)
+	}
+	return err
+}
 
 // retryBusyResume tries again, in this process, to resume a run refused
 // because its session was busy. Nothing else would on a single replica: the
