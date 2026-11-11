@@ -1371,6 +1371,210 @@ A tenant subject can stand for a user of the tenant: `person:ada-lovelace` is th
 
 **What an erasure does with it.** `GET /v1/_erasure?subject=<user>` (and its gRPC and MCP twins) lists the tenant subjects bound to that user in `bound_subjects`, each `{document_id, natural_key, path}`, and counts them in `tier2_uncovered` as `subject_bindings`. A subject whose document the operator's access-control rules hide from reading is counted in `bound_subjects_withheld` and never named. A live `POST /v1/_erasure` clears each binding, so no row keeps the erased id, and keeps the subjects: deleting one would delete every statement and fact the tenant holds about that entity, which is the operator's call (`delete_document`, which announces `removed`). `retained.bound_subjects` says so, counting and never naming them, because the retained entries are copied into the audit record. After every other plane, `erased` goes to the tenant's `memory/subjects` channel for each subject; it names the subject and never the user. It is withheld, with the reason in `not_announced`, when the operator's rules hide part of the tenant's documents from reading.
 
+## Writing the tenant ontology
+
+The tenant ontology is one Document in the tenant scope that says what the tenant's documents and memory are made of: its document classes and entity types, the relation kinds statements may use, the concept schemes documents are classified by, the real organisations and posts it knows, and its review policy. Every reader in the runtime parses the same document, so this section is the reference for writing it. `Context op=help topic=Document/describe_ontology` has the grammar-line format and the review-rule format in full.
+
+**Where it lives and who writes it.** It is created at `/memory/ontology` from a template the first time it is needed, and is known by its document id after that (see *Revising the ontology* above). An operator (an admin, or a tenant operator in its own tenant) edits it like any document. A member or an agent only proposes: `propose_entity` adds a chunk with status `proposed`, and a `proposed` or `rejected` chunk is not in force and is never read as a section.
+
+**Draft and confirmed.** The document's status is the gate. Only `confirmed` puts it in force; any other status is a draft, and a draft governs nothing: agents get the standard entity types alone (`person`, `object`, `location`, `event`, `organization`, `preference`, `fact`) and the standard `Document` class, `classify` classifies nothing, no relation vocabulary or review policy applies, and `describe_ontology` describes the standard classes only. Flip it with `POST /v1/_ontology` `{"status": "confirmed"}` (or `"draft"`), or on the Web UI's Ontology page. A confirm also gives every scheme concept its tag and adopts the Instances section's entries as subjects. The ontology's version (stamped on the facts and statements written under it) is the root chunk's revision.
+
+**Revise in place.** Edit the confirmed document's chunks. Do not import a new ontology document to replace it: a new document re-ids every concept and instance, the statements already filed keep pointing at the old chunks, and the next `classify` files duplicates against the new ones.
+
+### Sections and their shape
+
+The document's title is the root chunk. Each heading under it (a `##` in Markdown) is a **section** when its **first** directive is `@section <kind>`, with kind `classes`, `relations`, `schemes`, `instances` or `review` (case-insensitive). Everything nested under a section means what the section says. A heading with no `@section` line is a class, which is how an ontology written before sections reads: a flat list of entity types still works unchanged. A second section of one kind, or an unknown kind, is read as a class and reported as an issue.
+
+**Directive syntax.** A directive is a line `@name value`, or a bullet ``- `@name` value — note``. The name is case-insensitive; the value keeps its case and spacing. On a bare line the value is the whole rest of the line, so never put a note after a pattern. A bare line inside a ```` ``` ```` fence or indented four spaces is an example and is not read; a bullet directive is read even inside a fence. The first prose line of an entry (not a directive, bullet or heading) is its `meaning`.
+
+**Classes** (`@section classes`). Each heading is a class; a nested heading is a subclass, which inherits its parent's fields and directives. Nest at most four levels: deeper headings are flattened to the cap, with a note.
+- A class named `Document` directly under the section, and everything beneath it, are **document classes**: they say what a document is (its root chunk's `type`) and never reach the extraction prompt. Every other class is an **entity type**, listed to the memory extractor. A class named like a standard type replaces it; `preference` and `fact` always stay top-level.
+- A field is a bullet: ``- `name` <type> [@required] [@unique] [@identity] — note``. Types: `text`, `number`, `date`, `enum(a, b)`, `concept(<scheme>)`, `ref(<Class>)`, `anchor`; a bullet whose first word is not a type is a `text` field. `@required` and a value of the wrong type are warnings on the write, never a refusal. `@unique` is parsed and shown, not enforced. `@identity` makes the field part of the natural key (see the table).
+- A heading `grammar:<name>` inside the section is an anchor or citation **grammar** (`pattern:`, `resolve:`, `scope:`, `anchor:` lines), not a class; see [Editions](#editions). A broken grammar is disabled and reported; the class naming it stays in force.
+
+**Relations** (`@section relations`). Each heading is a relation kind; a nested heading is a sub-kind, so a filter or walk for the parent includes it. Names read best as `lower_snake_case` (advisory; a kind is stored exactly as written). Declaring the section, even empty, switches the vocabulary on: the runtime's reserved kinds (`about`, `supersedes`, `references`, `mentions`, `derived_from`, `supported_by`), the standard seed kinds (`cites`, `based_on`, `amends`, `implements`, `related`, …) and the tenant's own. A tenant entry named like a seed kind replaces it (a top-level one keeps the seed's parent); one named like a reserved kind only groups the sub-kinds under it, its directives ignored. Only the tenant's own kinds (declared, or adopted on the Ontology page) are listed in the extraction prompt. Once the section is in force, a person's `link_chunks` that breaks it is refused (`kind_not_declared`, `domain_range_violation`, `characteristic_violation`, `qualifier_violation`); every other writer's statement is filed with `ontology_valid: false` and `warnings`.
+
+**Schemes** (`@section schemes`). Each heading is a concept scheme (topics, a priority ranking, a file plan); each heading under a scheme is a concept, and a nested concept is narrower than its parent. Concepts inherit nothing and carry no fields (a field bullet is reported). Confirming gives each concept the tag `<scheme>/<path>`: each segment lowercased with its words joined by `-`, and a `/` in a title read as a space, e.g. `topics/security/access-control`. A document is classified under a concept by carrying its tag (or, in the tenant scope, by a `subject` statement), and `concept` / `concept_prefix` on `search` and `related` find it.
+
+**Instances** (`@section instances`). Each heading is one real thing: an organisation, a unit, a post. `@a <class>` says what it is, and the class must be in force, or the instance is reported and never adopted. A nested heading is another instance, related to its parent by the parent's `@nesting` kind. Any directive that is not an instance directive or another section's is read as a relation kind: `@reports_to Head of Security` declares a `reports_to` statement to the instance titled `Head of Security`, and whether the kind is in force is checked when the statement is written. So a misspelt directive here becomes a relation of a kind nobody declared. Confirming adopts each instance as a tenant subject; renaming one keeps its identity, removing one never deletes the subject. Field bullets are reported and ignored.
+
+**Review** (`@section review`). Each list item is one rule (`accept`, `reject`, `judge`, `human`), plus optional `judge_floor: <0..1>` and `judge_audit: <0..1>` lines; see [review policies](#review-policies). Fail closed: one unreadable rule, or a chunk nested under the section, leaves the whole policy unapplied.
+
+### Directive reference
+
+Every directive this build reads. *Inherited* means a subclass takes its nearest ancestor's value when it declares none. An unknown directive, or one used in the wrong section, is reported in that entry's `issues` and ignored; the entry itself stays in force.
+
+| Directive | Goes on | Value | Inherited | What reads it | Misuse |
+|---|---|---|---|---|---|
+| `@section` | a top-level heading, as its first directive | `classes` · `relations` · `schemes` · `instances` · `review` | — | the ontology reader | unknown kind or a second section of one kind: read as a class, issue |
+| `@version` | the root | any | — | nothing (informational; the version in force is the root chunk's revision) | — |
+| `@memory_scope` | an entity type | `user` · `tenant` | yes | the memory writer: where facts about things of this type are stored | another value: the type stays in force but places nothing, issue |
+| `@identity` (bare) | a class | none | yes | the title is the natural key, when no field is marked `@identity`; a second chunk with the same key is refused (`identity_collision`) | — |
+| `@identifier_pattern` | a document class | RE2 pattern (≤ 512 chars), named groups | yes | `classify`: a class with no `@title_pattern` of its own is matched on the title by it; its groups fill the identity fields | does not compile: ignored, issue |
+| `@title_pattern` | a document class | RE2 pattern, named groups | reported as inherited, but `classify` matches a class only on its own | `classify`: matched against the title, the import's source title, then the first section titles; groups fill fields | does not compile: ignored, issue |
+| `@anchor_grammar` | a document class | one grammar name | yes | imports and re-imports (`import_md reimport`, `resolve_anchor`): how parts are keyed | names an undeclared or disabled grammar: the operation that needs it reports the grammar as not declared or disabled |
+| `@citation_grammar` | a document class | grammar names, comma- or space-separated | yes | `extract_citations` and the links agent | same; a grammar with no `pattern:` line finds no citations, reported |
+| `@definitions` | a document class | RE2 pattern over chunk titles | yes | `get_chunk` / `query_chunks` mark the matching chunk and everything under it `definitional: true`; the links agent reads a link from there as "defines" | does not compile: ignored, issue |
+| `@boilerplate` | a document class | RE2 pattern over paragraphs; one per line, joined as alternatives | yes | `get_chunk` reports the matching paragraphs (`boilerplate` spans); the links agent draws no relation from them | a line that does not compile is dropped, issue; the rest stand |
+| `@exclude` | a class | comma-separated names | yes | nothing yet: parsed and reported (`directives.exclude`) | — |
+| `@renamed_from` | a class or a relation kind | the old name | no | on a kind: a hand-written link of the old kind is refused with a hint to the new name, and the links agent maps the old name; on a class: reported only | — |
+| `@norm` | a document class | none (a note after `—` is allowed) | yes: a subclass of a norm is a norm | `describe_ontology` `norm_classes`; the links agent compares documents against the norms' documents by default | a value: ignored, issue; on an entity type: ignored, issue |
+| `@annotate` | a document class | slots separated by `;`; several lines are joined | yes | the annotation pass: what each brief and abstract states (the root field `annotation_language` sets one language for all) | empty: ignored, issue |
+| `@inverse` | a relation kind | a kind name | — | `describe_ontology` and the extraction prompt: how the link reads from the other end; a person's link written with the inverse name is refused (`kind_not_declared`) with a hint to link the other way | with `@symmetric`: ignored, issue |
+| `@domain` · `@range` | a relation kind | class names separated by `\|` or `,`; also `entity`, `concept` | — | the relation gate: each end's type must be a listed class or a subclass of one | violated: a person's link refused, others `ontology_valid: false` |
+| `@symmetric` · `@asymmetric` | a relation kind | none | — | `@asymmetric`: the gate refuses the reverse of a live statement; `@symmetric`: the kind is its own inverse | both: neither applies, issue |
+| `@irreflexive` | a relation kind | none | — | the gate: a chunk cannot relate to itself | violated: as `@domain` |
+| `@functional` | a relation kind | none | — | the gate: one live target per source | violated: as `@domain` |
+| `@transitive` · `@transitive_within <qualifier>` | a relation kind | none · a declared qualifier | — | reported; nothing infers along them yet | `@transitive_within` naming no declared qualifier: ignored, issue |
+| `@qualifiers` | a relation kind | `name(v1\|v2), other` | — | the gate checks a statement's `attributes` against them; listed in the prompt | an undeclared attribute or value: as `@domain` |
+| `@discriminator` | a relation kind | one declared qualifier | — | two statements of one pair differing in it are two statements | naming no declared qualifier: ignored, issue |
+| `@dated` | a relation kind | none | — | reported (give its statements `valid_at`); the Ontology page counts undated ones | — |
+| `@walk` | a relation kind | none | — | the kinds `graph_recall` (`walk: declared`) and `search` `expand` follow by default | — |
+| `@auto_assert` | a relation kind | none | — | without a Review section: `accept kind:<kind> method:rule:* when quotes:resolved` | with a Review section: does not apply, issue |
+| `@render` | a scheme | none | — | lists the scheme's concepts in the extraction prompt | — |
+| `@ordered` | a scheme | none | — | a concept's position is its `rank` | — |
+| `@notation` | a concept | one word | no | shown with the concept in the prompt and `describe_ontology` | — |
+| `@alt` | a concept or an instance | a label (one per line) | no | concepts: shown in the prompt; instances: `classify` names an issuer by its name or any `@alt` | — |
+| `@exact_match` | a concept | a concept in another scheme | no | reported | — |
+| `@retention` | a concept (a file plan) | `90d`, `6w`, `18mo`, `10y` or a Go duration | no | reported on the Ontology page and in `describe_ontology`; **not enforced** | not a duration: ignored, issue |
+| `@acl` | a concept (a file plan) | one word | no | reported; **not enforced** | — |
+| `@a` | an instance | a class in force | — | adoption: the subject's type | missing or undeclared: not adopted, issue |
+| `@nesting` | an instance | a relation kind | — | the statement each child instance has to this one | — |
+| `@<kind> <instance>` | an instance | another instance's title | — | adoption writes that statement | empty value: ignored, issue |
+
+No resolver applies `@retention` or `@acl` today: they are carried as data on the concept and shown, and nothing deletes, keeps or restricts a document because of them.
+
+### A worked example
+
+A software company's policies and proposals. Each section, and most directives:
+
+```markdown
+# Tenant Ontology
+
+## Classes
+@section classes
+
+### Document
+- `title` text @required
+
+#### Policy
+A rule staff must follow.
+@norm
+@identifier_pattern (?P<code>[A-Z]{2,4}-\d+)
+@title_pattern (?i)\bpolicy\b
+@definitions (?i)^(definitions|terms)\b
+@boilerplate (?i)^(owner:|this policy is reviewed)
+@annotate what it requires; who it applies to; the exceptions it allows
+- `code` text @identity — e.g. SEC-12
+- `owner` ref(Team) @required
+- `state` enum(draft, in_force, retired)
+- `area` concept(topics)
+
+##### Security Policy
+@title_pattern (?i)^security policy\b
+
+#### Proposal
+A suggested change, argued and decided.
+@identity
+@title_pattern (?i)^proposal\s*[:-]
+@annotate the problem; the options considered; the decision and its status
+- `decided` date
+
+### Team
+@memory_scope tenant
+- `name` text
+
+### Post
+A role someone holds.
+
+## Relations
+@section relations
+
+### implements
+A proposal carries out a policy.
+@domain Proposal
+@range Policy
+@inverse implemented_by
+@qualifiers coverage(full|partial)
+@walk
+
+### stricter_than
+Sets a stricter version of the same requirement.
+@domain Policy
+@range Policy
+@inverse looser_than
+@asymmetric
+@qualifiers aspect(security|privacy|operational)
+@discriminator aspect
+@dated
+
+### depends_on
+One proposal needs another decided first.
+@renamed_from needs
+@domain Proposal
+@range Proposal
+@inverse needed_by
+@irreflexive
+
+#### blocked_by
+Cannot proceed until the other is decided.
+
+## Schemes
+@section schemes
+
+### topics
+@render
+#### security
+@notation SEC
+##### access-control
+@alt permissions
+#### privacy
+
+### priority
+@ordered
+#### critical
+#### normal
+
+### file-plan
+#### contracts
+@retention 7y
+@acl legal
+
+## Instances
+@section instances
+
+### Example Corp
+@a organization
+@alt ExCorp
+@nesting sub_organization_of
+#### Platform Team
+@a Team
+#### Security Team
+@a Team
+
+### Head of Security
+@a Post
+
+### Security Engineer
+@a Post
+@reports_to Head of Security
+
+## Review
+@section review
+judge_floor: 0.85
+- accept kind:implements method:rule:* when quotes:resolved
+- judge  kind:depends_on floor:0.9
+- human  *
+```
+
+Here a document titled "Policy SEC-12 Password rotation" is classified `Policy` by rule, with `code` `SEC-12` filled by the identifier pattern and the work key `policy:sec-12`; "Security Policy SEC-14" matches both classes and is classified as the more specific `Security Policy`, which inherits the norm mark, the fields and the identifier pattern. A second Proposal with an existing Proposal's title cannot take its key: a write is refused (`identity_collision`), and `classify` proposes the class instead of applying it. A hand-written `stricter_than` from a Proposal is refused. `topics/security/access-control` is the access-control concept's tag, and `file-plan/contracts` carries a retention of 7 years that nothing enforces yet.
+
+### Checking it
+
+- **A draft:** `GET /v1/_ontology` (the Ontology page) parses the document whether or not it is confirmed: `terms` (with each class's `issues`), `relations`, `schemes`, `instances` (a dry run of adoption), `grammars` and `notes`, beside `effective`, what runs get now. `describe_ontology` shows only what is in force, so it cannot check a draft.
+- **After confirming:** `Document op=describe_ontology` returns the ontology as the runtime applies it. Read `sections` (every section you declared should be listed), `classes[]` (`kind` `document` or `chunk`, `fields` with inherited fields first, `directives` as declared or inherited, `norm` / `inherited_norm`, `memory_scope`, `meaning`, `issues`), `norm_classes`, `relations[]` (`source`, `issues`, `name_issue`), `grammars[]` (an `issue` means disabled), `schemes[].concepts[]` (`tag`, `rank`, `retention`, `acl`, `issues`), `instances[]` (`subject_chunk_id` once adopted, `issues`), `review` (`applied: false` means every proposal waits for a person) and the top-level `issues`. Every issue is advisory except a Review section's, which switches the policy off.
+- **On a real document:** `Document op=classify` with `write: "report"` shows which class's pattern matched (`steps[0].candidates`, each with the `quote` and where it matched), the fields and work key it would set, and the issuer, and writes nothing.
+
 ## Annotations — a brief and an abstract per section, document and folder (RFC GE)
 
 **Why.** After import, classification and linking, a knowledge base is a linked tree, and nothing above a section says what it is about: an agent learns what a document or a folder holds by reading it, and a question about the corpus as a whole ("what do we have on X") has no retrieval path, because search ranks passages and no passage stands for a set. An annotation is two short texts written *about* a part of the tree — a **brief** (one sentence, for choosing) and an **abstract** (one paragraph, standing in for reading) — at three levels: a section branch, a document (on its root chunk) and a Path folder. The design follows archival multilevel description (ISAD(G)) and the indicative/informative split of abstracting standards; the research is at `/loomcycle/docs/annotation-layer-research`.
