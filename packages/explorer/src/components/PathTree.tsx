@@ -20,8 +20,11 @@ export interface PathNode {
   fullPath: string;
   kind: string; // directory | document | volume_mount | memory_entry
   resourceRef?: unknown;
-  // listing is this directory's load state; undefined = never listed (and
-  // always undefined for a non-directory).
+  // hasChildren: a non-directory (a document) that also has names beneath it,
+  // so it opens like a directory while its name still opens the document.
+  hasChildren?: boolean;
+  // listing is this node's children's load state; undefined = never listed
+  // (and always undefined for a node that cannot be opened).
   listing?: DirListing;
   children: PathNode[];
 }
@@ -35,14 +38,16 @@ export function buildLazyTree(dirs: DirMap, dir = ""): PathNode[] {
   const nodes = listing.entries.map((e): PathNode => {
     // The prefix check keeps a malformed entry (a child spelled like its own
     // directory) from recursing forever.
-    const isDir = e.kind === "directory" && e.full_path.startsWith(`${dir}/`);
+    const hasChildren = e.kind !== "directory" && e.has_children === true;
+    const opens = (e.kind === "directory" || hasChildren) && e.full_path.startsWith(`${dir}/`);
     return {
       name: e.name,
       fullPath: e.full_path,
       kind: e.kind,
       resourceRef: e.resource_ref,
-      listing: isDir ? dirs.get(e.full_path) : undefined,
-      children: isDir ? buildLazyTree(dirs, e.full_path) : [],
+      ...(hasChildren ? { hasChildren } : {}),
+      listing: opens ? dirs.get(e.full_path) : undefined,
+      children: opens ? buildLazyTree(dirs, e.full_path) : [],
     };
   });
   nodes.sort((a, b) => {
@@ -188,9 +193,10 @@ function documentSummaryOf(node: PathNode, summaries?: Map<string, DocSummary>):
 
 function PathTreeNode(props: { node: PathNode } & PathTreeProps) {
   const { node, expanded, onToggle, selectedPath, onSelect, summaries } = props;
-  // Only a directory can be opened: its children are unknown until it is
-  // listed, so its caret is live even before then.
-  const isDir = node.kind === "directory";
+  // A directory opens, and so does a document with names beneath it (RFC GC):
+  // its caret lists them while its name still opens the document. Children are
+  // unknown until listed, so the caret is live even before then.
+  const isDir = node.kind === "directory" || node.hasChildren === true;
   const isOpen = isDir && expanded.has(node.fullPath);
   const isSelected = selectedPath === node.fullPath;
   const summary = documentSummaryOf(node, summaries);

@@ -488,6 +488,33 @@ func (p *Path) stat(ctx context.Context, tenantID, scope, scopeID string, in pat
 	return jsonResult(out)
 }
 
+// parentIsDocumentWarnings is the advisory a name-creating call returns when
+// the new name's parent is a DOCUMENT name (RFC GC P2): the call still
+// succeeds — a document that heads a section is a fair shape — but the caller
+// learns that the document now has children, which a reader of the tree can
+// miss. Only the immediate parent is asked (one lookup), as the RFC words it.
+//
+// The warning names the parent, so it is given only when the caller may read
+// that name; otherwise it would say a hidden document exists. A failed lookup
+// gives no warning: the advice must never fail or block the call.
+func parentIsDocumentWarnings(ctx context.Context, st store.Store, tenantID, scope, scopeID, canonical string) []string {
+	parent, _, isRoot := splitPath(canonical)
+	if isRoot || parent == "/" {
+		return nil
+	}
+	dir := strings.TrimSuffix(parent, "/")
+	gp, name, _ := splitPath(dir)
+	row, err := st.DirentGet(ctx, tenantID, scope, scopeID, gp, name)
+	if err != nil || row.Kind != "document" {
+		return nil
+	}
+	if acl := newPathACL(ctx, scope, scopeID); acl != nil &&
+		!acl.readable(ctx, pathEntry{Kind: row.Kind, FullPath: dir, ResourceRef: row.ResourceRef}) {
+		return nil
+	}
+	return []string{"parent_is_document: " + dir + " names a document; this name is listed under it"}
+}
+
 // mkdir materializes an explicit `directory` dirent so an empty branch
 // persists and is listable. RFC AL shipped mkdir as a no-op (directories are
 // implicit, S3-style) and parked explicit directories as a v2 item (RFC AL
@@ -592,7 +619,11 @@ func (p *Path) mv(ctx context.Context, tenantID, scope, scopeID string, in pathI
 	if !moved {
 		return errNotFound("no such path: "+fromC, "List the parent directory with op=ls to find the source path."), nil
 	}
-	return jsonResult(map[string]any{"ok": true, "from": fromC, "to": toC})
+	out := map[string]any{"ok": true, "from": fromC, "to": toC}
+	if w := parentIsDocumentWarnings(ctx, p.Store, tenantID, scope, scopeID, toC); len(w) > 0 {
+		out["warnings"] = w
+	}
+	return jsonResult(out)
 }
 
 func (p *Path) rm(ctx context.Context, tenantID, scope, scopeID string, in pathInput) (tools.Result, error) {

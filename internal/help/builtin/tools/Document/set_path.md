@@ -19,7 +19,10 @@ path is harmless.
 
 ## Returns
 
-`{document_id, path}` with the path in canonical form.
+`{document_id, path}` with the path in canonical form. When the new name's
+parent is a document name (`/a/b/d` where `/a/b` is a document), the call
+still succeeds and adds `warnings: ["parent_is_document: /a/b names a document; this name is listed under it"]`: `/a/b` now also has names
+beneath it.
 
 ## Errors
 

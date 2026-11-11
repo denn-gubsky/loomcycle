@@ -2387,6 +2387,9 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		resp["path_warning"] = "document created but path registration failed: " + perr.Error()
 	} else {
 		resp["path"] = p
+		if w := d.parentIsDocument(ctx, key, p); len(w) > 0 {
+			resp["warnings"] = w
+		}
 	}
 	// Announced only for a document a caller created directly: import_md and the
 	// placeholder path create through here too, and announce their own.
@@ -2477,7 +2480,17 @@ func (d *Document) setPath(ctx context.Context, key sqlmem.ScopeKey, in docInput
 	if perr != nil {
 		return docFail("set_path: ", perr), nil
 	}
-	return jsonResult(map[string]any{"document_id": docID, "path": p})
+	out := map[string]any{"document_id": docID, "path": p}
+	if w := d.parentIsDocument(ctx, key, p); len(w) > 0 {
+		out["warnings"] = w
+	}
+	return jsonResult(out)
+}
+
+// parentIsDocument is parentIsDocumentWarnings at this scope's dirent
+// coordinate (direntScopeID, not the SQL Memory id).
+func (d *Document) parentIsDocument(ctx context.Context, key sqlmem.ScopeKey, canonical string) []string {
+	return parentIsDocumentWarnings(ctx, d.Store, direntTenant(ctx), key.Scope, direntScopeID(key), canonical)
 }
 
 // direntScopeID maps a SQL-Memory scope key onto the DIRENT plane's scope id.
@@ -5829,6 +5842,7 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	}
 	var stack []frame
 	var docID, rootID string
+	var pathWarnings []string // create_document's parent_is_document advice (RFC GC P2)
 	created := 0
 	start := 0
 	// RFC FF: image chunks attached, and images that stayed links (a volume
@@ -5887,6 +5901,11 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		}
 		docID = resultField(cd, "document_id")
 		rootID = resultField(cd, "root_chunk_id")
+		var cdOut struct {
+			Warnings []string `json:"warnings"`
+		}
+		_ = json.Unmarshal([]byte(cd.Text), &cdOut)
+		pathWarnings = cdOut.Warnings
 		if err := d.putBody(store.WithChangeDocument(ctx, docID), mscope, key, rootID, first.typ, first.body, first.fields, bodyOrigin, stamp); err != nil {
 			return errFrom("import_md: root body: "+err.Error(), err), nil
 		}
@@ -5976,6 +5995,9 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	}
 	if len(skippedWhy) > 0 {
 		out["skipped_images"] = skippedWhy
+	}
+	if len(pathWarnings) > 0 {
+		out["warnings"] = pathWarnings
 	}
 	if why := d.publishIngested(ctx, key, mscope, docID, "imported", nil); why != "" {
 		out["not_announced"] = why
