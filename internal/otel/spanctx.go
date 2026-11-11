@@ -50,11 +50,14 @@ func withTenantAttr(ctx context.Context, kvs []attribute.KeyValue) []attribute.K
 	if t == "" {
 		return kvs
 	}
-	out := append([]attribute.KeyValue{attribute.String(AttrTenant, t)}, kvs...)
+	// Tenant and marker first: an attribute count limit keeps a span's first
+	// attributes, and the marker must not be the one it drops.
+	out := make([]attribute.KeyValue, 0, len(kvs)+2)
+	out = append(out, attribute.String(AttrTenant, t))
 	if tenantRouting.Load() && NoTraceFromContext(ctx) {
 		out = append(out, attribute.Bool(AttrNoTrace, true))
 	}
-	return out
+	return append(out, kvs...)
 }
 
 // tenantRouting is set while a TenantRouter is a processor of the global

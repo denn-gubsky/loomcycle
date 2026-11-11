@@ -133,6 +133,10 @@ func runStartKVs(a RunStartAttrs) []attribute.KeyValue {
 	kvs := make([]attribute.KeyValue, 0, 6)
 	if a.Tenant != "" {
 		kvs = append(kvs, attribute.String(AttrTenant, a.Tenant))
+		// Right after the tenant: an attribute count limit keeps the first.
+		if a.NoTrace && tenantRouting.Load() {
+			kvs = append(kvs, attribute.Bool(AttrNoTrace, true))
+		}
 	}
 	if a.RunID != "" {
 		kvs = append(kvs, attribute.String(AttrRunID, a.RunID))
@@ -151,9 +155,6 @@ func runStartKVs(a RunStartAttrs) []attribute.KeyValue {
 	kvs = genAIString(genai.GenAIAgentNameKey, a.AgentName, kvs)
 	kvs = genAIString(genai.GenAIAgentIDKey, a.AgentID, kvs)
 	kvs = genAIString(genai.GenAIConversationIDKey, a.SessionID, kvs)
-	if a.Tenant != "" && a.NoTrace && tenantRouting.Load() {
-		kvs = append(kvs, attribute.Bool(AttrNoTrace, true))
-	}
 	return kvs
 }
 

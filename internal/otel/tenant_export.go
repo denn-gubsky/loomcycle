@@ -304,6 +304,14 @@ func (r *TenantRouter) OnEnd(s sdktrace.ReadOnlySpan) {
 	if e == nil {
 		return
 	}
+	// A span that lost attributes to the SDK's count limit and carries no
+	// marker may be a no-trace run's whose marker was the one lost: fail
+	// closed, and count it.
+	if s.DroppedAttributes() > 0 {
+		e.stats.dropped.Add(1)
+		tenantSpansDropped(tenant, 1)
+		return
+	}
 	if p == nil || p.fp != e.fp {
 		if p = r.pipeline(tenant); p == nil {
 			return
