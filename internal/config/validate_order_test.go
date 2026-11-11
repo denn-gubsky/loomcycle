@@ -10,7 +10,9 @@ import (
 // validate checks them. Callers show only that one error, so the order is what
 // an operator fixing a config sees, and a reshuffle of the checks would change
 // it silently. Each step drops the block just reported and expects the next.
-// One bad entry per block keeps the answer independent of map order.
+// One bad entry per block keeps the answer independent of map order. The
+// memory sub-blocks share one memory: key, so they are written indented and
+// gathered under it.
 func TestValidate_ReportsTheFirstBrokenBlockInCheckOrder(t *testing.T) {
 	bad := []struct {
 		yaml, want string
@@ -27,14 +29,35 @@ func TestValidate_ReportsTheFirstBrokenBlockInCheckOrder(t *testing.T) {
 		{"memory_backends:\n  mb:\n    kind: remote\n", "memory_backends.mb: kind=remote requires config.base_url"},
 		{"change_subscriptions:\n  s:\n    callback_url: \"\"\n", "change_subscriptions.s: callback_url is required"},
 		{"document_sources:\n  d:\n    config:\n      base_url: \"\"\n", "document_sources.d: config.base_url is required"},
+		{"webhooks:\n  w:\n    delivery: spawn\n", "webhooks.w: delivery=spawn requires `agent`"},
+		{"volumes:\n  v:\n    path: /nonexistent-validate-order-pin\n", "volumes.v: path"},
+		{"speech:\n  engine: bogus\n", "speech.engine:"},
 		{"agents:\n  \"bad..name\":\n    model: m\n", "agents: "},
 		{"channels:\n  c1:\n    scope: bogus\n", "channels.c1: unknown scope"},
 		{"mcp_servers:\n  s:\n    transport: carrier-pigeon\n", "mcp_servers.s: unknown transport"},
 		{"scheduled_runs:\n  nightly:\n    agent: ghost\n", "scheduled_runs.nightly: agent \"ghost\" not declared"},
-		{"memory:\n  consolidation:\n    merge_threshold: 2\n", "memory.consolidation.merge_threshold must be > 0 and <= 1"},
+		{"  embedder:\n    model: pin-embedder\n", "memory.embedder: provider is required"},
+		{"  reranker:\n    model: pin-reranker\n", "memory.reranker: provider is required"},
+		{"  unit_generator:\n    base_url: http://unit.example\n", "memory.unit_generator: model is required"},
+		{"  classifier:\n    min_probability: 2\n", "memory.classifier: name a decision model"},
+		{"  fulltext:\n    config: \"not a name!\"\n", "memory.fulltext.config"},
+		{"  projection:\n    interval: soon\n", "memory.projection.interval"},
+		{"decision:\n  timeout_ms: -1\n", "decision.default is required"},
+		{"  consolidation:\n    merge_threshold: 2\n", "memory.consolidation.merge_threshold must be > 0 and <= 1"},
 	}
 	load := func(blocks []string) error {
-		_, err := LoadLayers(Layer{Name: "pin", Data: []byte(strings.Join(blocks, ""))})
+		var top, memory string
+		for _, b := range blocks {
+			if strings.HasPrefix(b, "  ") {
+				memory += b
+			} else {
+				top += b
+			}
+		}
+		if memory != "" {
+			top += "memory:\n" + memory
+		}
+		_, err := LoadLayers(Layer{Name: "pin", Data: []byte(top)})
 		return err
 	}
 	for i, b := range bad {
