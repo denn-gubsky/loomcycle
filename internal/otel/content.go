@@ -58,6 +58,10 @@ func isContentKey(k attribute.Key) bool {
 // redaction every value passes first. Both redactors are required; a capture
 // missing one records nothing.
 type ContentCapture struct {
+	// Tenant is whose content this capture is for: content is recorded only
+	// on spans of this tenant (AttrTenant on ctx), so a span opened below for
+	// another tenant's work never carries it.
+	Tenant string
 	// MaxChars cuts each captured field (one attribute) to this many
 	// characters, after redaction.
 	MaxChars int
@@ -70,7 +74,7 @@ type ContentCapture struct {
 }
 
 func (c *ContentCapture) usable() bool {
-	return c != nil && c.MaxChars > 0 && c.Redact != nil && c.RedactArgs != nil
+	return c != nil && c.Tenant != "" && c.MaxChars > 0 && c.Redact != nil && c.RedactArgs != nil
 }
 
 type contentCaptureKey struct{}
@@ -89,11 +93,12 @@ func WithContentCapture(ctx context.Context, c *ContentCapture) context.Context 
 }
 
 // ContentCaptureFrom returns ctx's capture, nil when none. Never for the work
-// of a no-trace run, and never while no tenant router is installed: there is
-// then no destination the content could be meant for.
+// of a no-trace run, never for spans of another tenant than the capture's,
+// and never while no tenant router is installed: there is then no
+// destination the content could be meant for.
 func ContentCaptureFrom(ctx context.Context) *ContentCapture {
 	c, _ := ctx.Value(contentCaptureKey{}).(*ContentCapture)
-	if !c.usable() || NoTraceFromContext(ctx) || !tenantRouting.Load() {
+	if !c.usable() || NoTraceFromContext(ctx) || !tenantRouting.Load() || TenantFromContext(ctx) != c.Tenant {
 		return nil
 	}
 	return c

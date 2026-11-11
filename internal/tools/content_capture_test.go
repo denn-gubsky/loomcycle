@@ -42,7 +42,7 @@ func capturedToolSpan(t *testing.T, tool echoTool, capture bool) (args, result s
 	ctx := WithRunIdentity(context.Background(), RunIdentityValue{TenantID: "acme"})
 	if capture {
 		mask := func(s string) string { return strings.ReplaceAll(s, "hunter22", "[redacted]") }
-		ctx = lcotel.WithContentCapture(ctx, &lcotel.ContentCapture{MaxChars: 4096, Redact: mask,
+		ctx = lcotel.WithContentCapture(ctx, &lcotel.ContentCapture{Tenant: "acme", MaxChars: 4096, Redact: mask,
 			RedactArgs: func(_ string, b []byte) []byte { return []byte(mask(string(b))) }})
 	}
 	ctx, _ = WithContentMark(ctx)

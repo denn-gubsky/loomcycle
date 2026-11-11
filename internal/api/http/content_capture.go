@@ -43,6 +43,7 @@ func (s *Server) withContentCapture(ctx context.Context, tenant string, def conf
 		return lcotel.WithContentCapture(ctx, nil)
 	}
 	return lcotel.WithContentCapture(ctx, &lcotel.ContentCapture{
+		Tenant:     tenant,
 		MaxChars:   n,
 		Redact:     r.String,
 		RedactArgs: func(tool string, args []byte) []byte { return redactToolArgs(r, tool, args) },

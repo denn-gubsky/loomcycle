@@ -18,6 +18,7 @@ import (
 func testCapture(maxChars int) *ContentCapture {
 	mask := func(s string) string { return strings.ReplaceAll(s, "s3cr3t-value", "[redacted:credential]") }
 	return &ContentCapture{
+		Tenant:     "acme",
 		MaxChars:   maxChars,
 		Redact:     mask,
 		RedactArgs: func(_ string, b []byte) []byte { return []byte(mask(string(b))) },
@@ -160,6 +161,8 @@ func TestContentCapture_NothingWithoutACaptureOrATenantRouter(t *testing.T) {
 	recordCapturedRun(context.Background(), "acme", nil)
 	// A sub-run clears its parent's capture with nil.
 	recordCapturedRun(WithContentCapture(context.Background(), testCapture(100)), "acme", nil)
+	// acme's capture on a run of another tenant.
+	recordCapturedRun(context.Background(), "beta", testCapture(100))
 	tenantRouting.Store(false)
 	recordCapturedRun(context.Background(), "acme", testCapture(100))
 	for _, s := range exp.GetSpans() {
@@ -196,7 +199,7 @@ func TestContentCapture_FieldIsRedactedThenTruncated(t *testing.T) {
 	t.Cleanup(func() { tenantRouting.Store(prev) })
 
 	c := testCapture(300)
-	ctx := WithContentCapture(context.Background(), c)
+	ctx := WithContentCapture(WithTenant(context.Background(), "acme"), c)
 	tctx, tool := RecordToolCall(ctx, ToolCallAttrs{Name: "Read"})
 	// The secret straddles the limit: cut first, its head would survive.
 	result := strings.Repeat("a", 290) + "s3cr3t-value" + strings.Repeat("b", 500)
@@ -234,7 +237,7 @@ func TestContentCapture_ImageIsADescriptorNeverItsData(t *testing.T) {
 	tenantRouting.Store(true)
 	t.Cleanup(func() { tenantRouting.Store(prev) })
 
-	ctx := WithContentCapture(context.Background(), testCapture(DefaultContentMaxChars))
+	ctx := WithContentCapture(WithTenant(context.Background(), "acme"), testCapture(DefaultContentMaxChars))
 	mctx, mc := RecordModelCall(ctx, ModelCallAttrs{Provider: "anthropic", Model: "m"})
 	SetModelInputContent(mctx, mc, nil, []ContentMessage{{Role: "user", Parts: []ContentPart{
 		{Type: ContentPartText, Text: "what is this?"},
