@@ -1308,6 +1308,12 @@ func (s *Server) runResumed(l resumedLaunch) {
 	s.runPhase("resume.budget")
 	var loopRes loop.RunResult
 	var runErr error
+	// The loop emits its own error event for most failures; the failure is
+	// recorded again only when it adds something, as a detached run's is
+	// (startDetachedLoop). Recorded unconditionally, a failed resume showed
+	// the same failure twice where a fresh run shows it once.
+	var loopErr lastErrorEvent
+	runOpts.OnEvent = loopErr.watch(runOpts.OnEvent)
 	if dec := s.limits.Check(run.TenantID, run.UserID); !dec.Allowed {
 		loopRes, runErr = loop.RunResult{StopReason: loop.StopReasonTokenLimit}, &tokenLimitError{info: dec.Refusal}
 	} else {
@@ -1318,7 +1324,9 @@ func (s *Server) runResumed(l resumedLaunch) {
 		loopRes, runErr = loop.Run(l.loopCtx, runOpts)
 	}
 	if runErr != nil {
-		emit(runErrorEvent(runErr))
+		if ev := runErrorEvent(runErr); ev.ErrorInfo != nil || !loopErr.is(ev.Error) {
+			emit(ev)
+		}
 	}
 	s.finishRunWithCancel(context.WithoutCancel(runCtx), runCtx, run.ID, loopRes, runErr, meta)
 	if runErr == nil {
