@@ -240,7 +240,7 @@ func (a *runAdmission) wireRun() error {
 	// run. Loop iterations + provider calls + tool dispatch nest
 	// under it via context propagation. Span name + attribute set
 	// stable across the run-creation sites (RunOnce, runSubAgent).
-	a.runCtx, a.runSpan = lcotel.RecordRunStart(a.runCtx, lcotel.RunStartAttrs{
+	a.runCtx, a.runSpan = s.startRunSpan(a.runCtx, a.agentDef, lcotel.RunStartAttrs{
 		RunID:     a.runID,
 		AgentID:   a.agentID,
 		AgentName: a.effectiveAgentName,
@@ -249,7 +249,6 @@ func (a *runAdmission) wireRun() error {
 		SessionID: a.sessionID,
 		NoTrace:   a.retention == retentionmode.None,
 	})
-	a.runCtx = s.withContentCapture(a.runCtx, a.effectiveTenantID, a.agentDef, a.retention == retentionmode.None)
 	s.recordRunTraceID(a.runCtx, a.runID)
 	a.deferToEnd(func() {
 		if !a.handOff {

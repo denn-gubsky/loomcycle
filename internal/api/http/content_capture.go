@@ -7,7 +7,18 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// startRunSpan opens a run's loomcycle.run span (lcotel.RecordRunStart) and
+// decides, for the run of def, whether its spans carry its content
+// (withContentCapture), on the tenant and no-trace mode the span resolved —
+// a sub-run's inherited from its parent's ctx included. Every run start goes
+// through it, so none can open a run span and skip the decision.
+func (s *Server) startRunSpan(ctx context.Context, def config.AgentDef, a lcotel.RunStartAttrs) (context.Context, trace.Span) {
+	ctx, span := lcotel.RecordRunStart(ctx, a)
+	return s.withContentCapture(ctx, lcotel.TenantFromContext(ctx), def, lcotel.NoTraceFromContext(ctx)), span
+}
 
 // withContentCapture decides, at a run's start, whether its spans carry its
 // content for its tenant's own telemetry destination (RFC GG P3), and sets

@@ -7181,7 +7181,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// tool's Execute runs inside an iteration span; spawning a sub-run
 	// passes that ctx through to runSubAgent → here). Operators see
 	// the full multi-level run tree in Jaeger.
-	subRunCtx, subRunSpan := lcotel.RecordRunStart(subRunCtx, lcotel.RunStartAttrs{
+	subRunCtx, subRunSpan := s.startRunSpan(subRunCtx, def, lcotel.RunStartAttrs{
 		RunID:         subRunID,
 		AgentID:       subAgentID,
 		AgentName:     name,
@@ -7191,8 +7191,6 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		SessionID:     subSessionID,
 		Trigger:       lcotel.TriggerSubagent, NoTrace: subIdentity.Retention == retentionmode.None,
 	})
-	// The child's own agent decides, not its parent's.
-	subRunCtx = s.withContentCapture(subRunCtx, parentIdentity.TenantID, def, subIdentity.Retention == retentionmode.None)
 	s.recordRunTraceID(subRunCtx, subRunID)
 	defer func() {
 		if !prepOK {
