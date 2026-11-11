@@ -6142,6 +6142,13 @@ export interface AgentSpeech {
   max_chars_per_run?: number;
 }
 
+/** An agent's telemetry settings. `content_capture: "never"` keeps the
+ *  agent's runs' content off every span, whatever its tenant's capture
+ *  policy; it only ever takes capture away, and a fork cannot remove it. */
+export interface AgentTelemetry {
+  content_capture?: "never";
+}
+
 /** The `context` block of an {@link AgentDefOverlay}: {@link ContextOptions}
  *  in its wire spelling — see there for what each field does. A fork merges it
  *  per field, and the spawn tree inherits it. */
@@ -6354,6 +6361,8 @@ export interface AgentDefOverlay {
   transcription?: AgentTranscription;
   /** Text-to-speech settings, merged per field. */
   speech?: AgentSpeech;
+  /** Telemetry settings: opt the agent out of content capture. */
+  telemetry?: AgentTelemetry;
   /** How history is distilled, merged per field. */
   context?: AgentContext;
   /** Volumes the file and exec tools may resolve paths against. None declared

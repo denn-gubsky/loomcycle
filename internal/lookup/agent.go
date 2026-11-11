@@ -346,6 +346,9 @@ type SubstrateAgentDef struct {
 	// Speech: the per-agent text-to-speech block (mirrors config.AgentSpeech /
 	// mergedDef).
 	Speech *config.AgentSpeech `json:"speech,omitempty"`
+	// Telemetry: the per-agent `telemetry:` block (mirrors config.AgentTelemetry
+	// / mergedDef; RFC GG P3).
+	Telemetry *config.AgentTelemetry `json:"telemetry,omitempty"`
 	// Context: per-agent layered-context / retention block (mirrors config.Context
 	// / mergedDef; RFC CR).
 	Context          *config.Context `json:"context,omitempty"`
@@ -501,6 +504,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		Compaction:             def.Compaction,
 		Transcription:          def.Transcription.Clone(),
 		Speech:                 def.Speech.Clone(),
+		Telemetry:              def.Telemetry.Clone(),
 		Context:                def.Context,
 		MaxTokens:              def.MaxTokens,
 		MaxContextTokens:       def.MaxContextTokens,
@@ -571,6 +575,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		Compaction:            s.Compaction,
 		Transcription:         s.Transcription.Clone(),
 		Speech:                s.Speech.Clone(),
+		Telemetry:             s.Telemetry.Clone(),
 		Context:               s.Context,
 		MaxTokens:             s.MaxTokens,
 		MaxContextTokens:      s.MaxContextTokens,
