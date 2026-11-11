@@ -42,6 +42,9 @@ func TestIsRunnerDeath_MatchesOnlyARunnerThatDied(t *testing.T) {
 		{"the runner's older name", 500, `{"error":"llama runner process has terminated: signal: killed"}`, true},
 		{"a body cut short mid-JSON", 500, `{"error":"llama-server process has terminated: sig`, true},
 		{"plain text, not JSON", 500, `llama-server process no longer running`, true},
+		{"CUDA fault, reason first", 500, `{"error":"an error was encountered while running the model: CUDA error: an illegal memory access was encountered\nCUDA error"}`, true},
+		{"CUDA fault, reason second", 500, `{"error":"an error was encountered while running the model: CUDA error\nCUDA error: an internal operation failed"}`, true},
+		{"CUDA fault, body cut short", 500, `{"error":"an error was encountered while running the model: CUDA error\nCUDA error: an illegal memory access was encounter`, true},
 
 		{"model not found, 404", 404, `{"error":"model \"nomic-embed-text\" not found, try pulling it first"}`, false},
 		{"model not found, 500", 500, `{"error":"model 'qwen3.6' not found"}`, false},
@@ -52,6 +55,7 @@ func TestIsRunnerDeath_MatchesOnlyARunnerThatDied(t *testing.T) {
 		{"a crash text under a status that is not an error from the runner", 404, crashAborted, false},
 		{"a crash text in a 200", 200, crashAborted, false},
 		{"rate limited", 429, `{"error":"too many requests"}`, false},
+		{"CUDA named outside a running-model fault", 500, `{"error":"model requires CUDA error reporting to be enabled"}`, false},
 		{"empty body", 500, ``, false},
 	}
 	for _, tc := range cases {
