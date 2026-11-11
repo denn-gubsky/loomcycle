@@ -86,11 +86,8 @@ func (s *Server) TenantTelemetry(ctx context.Context, req connector.TenantTeleme
 		return none, connector.WithMessage(connector.ErrTenantTelemetryForbidden,
 			"tenant telemetry is for an admin or a tenant operator")
 	}
-	action := "manage"
 	switch req.Op {
-	case "get":
-		action = "read"
-	case "set", "delete", "test":
+	case "get", "set", "delete", "test":
 	default:
 		return none, connector.WithMessage(connector.ErrTenantTelemetryInvalid, "op must be one of: get, set, delete, test")
 	}
@@ -98,10 +95,13 @@ func (s *Server) TenantTelemetry(ctx context.Context, req connector.TenantTeleme
 	if err != nil {
 		return none, err
 	}
-	// The op's own question, asked here as well as at each transport's gate,
-	// so a gate that read the op wrongly cannot skip it.
-	if err := s.connectorAsk(ctx, authz.Surface{Action: action, Type: "runtime", Name: "telemetry"}); err != nil {
-		return none, err
+	// A write's own question, asked here as well as at each transport's gate
+	// (PUT, DELETE and POST :test ask it), so a gate that read the op wrongly
+	// cannot skip it. A get is a read, which every gate asks.
+	if req.Op != "get" {
+		if err := s.connectorAsk(ctx, authz.Surface{Action: "manage", Type: "runtime", Name: "telemetry"}); err != nil {
+			return none, err
+		}
 	}
 	switch req.Op {
 	case "set":
