@@ -29,9 +29,11 @@
 //   - loomcycle.mcp.call     — one per MCP tools/call (nested under
 //     the outer tool.call).
 //
-// What spans do NOT carry: transcript bodies, tool inputs, tool
-// results, system prompts, user prompts, or (unless the operator opts in)
-// a raw user id. Only shape (tenant, run/agent IDs, a keyed user hash,
+// What the operator's spans do NOT carry: transcript bodies, tool inputs,
+// tool results, system prompts, user prompts, or (unless the operator opts
+// in) a raw user id. A tenant that turned content capture on receives its own
+// runs' content on its own destination (content.go); the operator's exporter
+// strips it. Only shape (tenant, run/agent IDs, a keyed user hash,
 // provider, model, tool name), cost (tokens, priced cost), and latency.
 // Secrets stay out of telemetry by design.
 package otel
@@ -188,7 +190,9 @@ func newTracerProvider(ctx context.Context, cfg Config, st *pipelineStats, errs 
 	if err != nil {
 		return nil, err
 	}
-	bsp := sdktrace.NewBatchSpanProcessor(&countingExporter{next: exp, st: st, errs: errs},
+	// Content a tenant captured for its own destination (content.go) is on the
+	// shared span; the operator's export never carries it.
+	bsp := sdktrace.NewBatchSpanProcessor(&countingExporter{next: &contentStripExporter{next: exp}, st: st, errs: errs},
 		sdktrace.WithMaxQueueSize(cfg.MaxQueueSize),
 		sdktrace.WithMaxExportBatchSize(cfg.MaxExportBatchSize),
 		sdktrace.WithExportTimeout(cfg.ExportTimeout),
