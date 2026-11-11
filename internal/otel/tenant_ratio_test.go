@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -309,22 +311,53 @@ func TestTenantExport_NoTraceRunIsNotRaised(t *testing.T) {
 }
 
 // A trace kept only for a tenant is none of the operator's: a run records no
-// trace id for it, and no traceparent is sent to an MCP server.
+// trace id for it, and no traceparent is sent to an MCP server. A trace the
+// operator's own sampler keeps (beta's) is linked and propagated as before.
 func TestTenantExport_ATenantOnlyTraceIsNeitherLinkedNorPropagated(t *testing.T) {
-	d := newTwoDestinations(t, "always_off", 0, nil, 1)
+	d := newTwoDestinations(t, "always_off", 0, map[string]float64{"beta": 1}, 1)
 	t.Cleanup(SetTracerProviderForTest(d.tp))
-	ctx, run := RecordRunStart(context.Background(), RunStartAttrs{RunID: "r", Tenant: "acme"})
-	defer run.End()
-	if !run.SpanContext().IsSampled() {
-		t.Fatal("the tenant's ratio 1 did not raise the run")
+	prevProp := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() { otel.SetTextMapPropagator(prevProp) })
+	for _, c := range []struct {
+		tenant string
+		linked bool
+	}{{"beta", true}, {"acme", false}} {
+		ctx, run := RecordRunStart(context.Background(), RunStartAttrs{RunID: "r", Tenant: c.tenant})
+		if !run.SpanContext().IsSampled() {
+			t.Fatalf("%s: the run was not sampled", c.tenant)
+		}
+		h := http.Header{}
+		InjectTraceContext(ctx, h)
+		if got := SampledTraceID(ctx) != ""; got != c.linked {
+			t.Errorf("%s: SampledTraceID set = %v, want %v", c.tenant, got, c.linked)
+		}
+		if got := h.Get("traceparent") != ""; got != c.linked {
+			t.Errorf("%s: traceparent sent = %v, want %v (%v)", c.tenant, got, c.linked, h)
+		}
+		run.End()
 	}
-	if id := SampledTraceID(ctx); id != "" {
-		t.Errorf("SampledTraceID = %q for a trace the operator never exports", id)
+}
+
+// A span with no tenant inside a trace kept for its tenant (work opened
+// without the run's context) is kept too, so the tenant's spans beneath it
+// still reach the tenant.
+func TestTenantExport_AnUntenantedSpanInsideATenantOnlyTraceKeepsItsSubtree(t *testing.T) {
+	d := newTwoDestinations(t, "always_off", 0, nil, 1)
+	tr := d.tp.Tracer("t")
+	acme := trace.WithAttributes(attribute.String(AttrTenant, "acme"))
+	ctx, root := tr.Start(context.Background(), "root", acme)
+	mctx, mid := tr.Start(ctx, "untenanted")
+	_, leaf := tr.Start(mctx, "leaf", acme)
+	if !mid.SpanContext().IsSampled() || !leaf.SpanContext().IsSampled() {
+		t.Error("a span below an untenanted one in a tenant-only trace was dropped")
 	}
-	h := http.Header{}
-	InjectTraceContext(ctx, h)
-	if len(h) != 0 {
-		t.Errorf("headers sent for a tenant-only trace: %v", h)
+	leaf.End()
+	mid.End()
+	root.End()
+	d.waitSpans(t, 0, 2)
+	if got := spanNames(d.acme.got()); len(got) != 2 {
+		t.Errorf("the tenant's collector got %v, want root and leaf", got)
 	}
 }
 
