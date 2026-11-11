@@ -464,8 +464,21 @@ jobs:
       # `vector` type in migration 0017 resolves.
       # Every leg: the store contract enables pgvector with it, and the tiers
       # leg provisions its coordination and SQL Memory databases with it.
-      - name: Install psql client
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      # psql comes from the service container, not apt: the runner's Ubuntu
+      # mirrors can be unreachable for hours (2026-11-11: every Postgres job
+      # red on "Temporary failure resolving archive.ubuntu.com"), and the
+      # pgvector image already ships psql. The wrapper runs it inside the
+      # container, where 127.0.0.1:5432 is the same server the tests reach.
+      - name: psql from the service container
+        run: |
+          mkdir -p "$RUNNER_TEMP/pgbin"
+          cat > "$RUNNER_TEMP/pgbin/psql" <<'EOF'
+          #!/usr/bin/env bash
+          exec docker exec -i -e PGPASSWORD="${PGPASSWORD:-}" "$LC_PG_CONTAINER" psql "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/pgbin/psql"
+          echo "$RUNNER_TEMP/pgbin" >> "$GITHUB_PATH"
+          echo "LC_PG_CONTAINER=${{ job.services.postgres.id }}" >> "$GITHUB_ENV"
       - name: Enable pgvector for the store contract
         env:
           PGPASSWORD: loomcycle
@@ -705,7 +718,9 @@ jobs:
       - name: Ensure sqlite3 + python3
         run: |
           command -v python3 >/dev/null || { echo "python3 missing"; exit 1; }
-          command -v sqlite3  >/dev/null || sudo apt-get update && sudo apt-get install -y sqlite3
+          # Braced: `a || b && c` ran the apt install even when sqlite3 was
+          # present, so an apt mirror outage broke this step needlessly.
+          command -v sqlite3  >/dev/null || { sudo apt-get update && sudo apt-get install -y sqlite3; }
 
       - name: Runtime code-js suite (functional only)
         run: make runtime-codejs
@@ -1003,9 +1018,21 @@ jobs:
       # 1.81.1 is what the committed stubs were generated with — verified
       # byte-identical. Bumping it is a DELIBERATE act: change the pin, run
       # `make python-proto`, and commit the regenerated stubs in the same PR.
+      # protoc is the upstream release zip, pinned by version and SHA-256, not
+      # apt's protobuf-compiler: the runner's Ubuntu mirrors can be unreachable
+      # for hours (2026-11-11). v21.12 is the same protoc apt installed
+      # (Ubuntu's 3.21.12), so the generated stubs do not change; the zip's
+      # include/ carries google/protobuf/timestamp.proto, which protoc finds
+      # beside its binary.
       - name: Install protoc + plugins
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/protoc.zip" \
+            https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-linux-x86_64.zip
+          echo "3a4c1e5f2516c639d3079b1586e703fc7bcfa2136d58bda24d1d54f949c315e8  $RUNNER_TEMP/protoc.zip" | sha256sum -c -
+          unzip -q -o "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
+          echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/protoc/bin:$PATH"
+          protoc --version
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
           python3 -m venv adapters/python/.venv
