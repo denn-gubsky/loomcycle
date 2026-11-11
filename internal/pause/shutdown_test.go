@@ -255,7 +255,6 @@ func TestManager_ResumeFlipsOnlyThisReplicasPausedRows(t *testing.T) {
 	}}
 	// own carries this replica's id but no loop here holds it.
 	m := NewManager(s, 100*time.Millisecond)
-	m.SetReplicaID("replica-a")
 	// held's loop lives here: a run resumed onto this replica, its row not
 	// yet re-stamped.
 	m.RegisterRun(held.ID)
@@ -307,18 +306,61 @@ func TestManager_ShutdownPauseCancelsTheTurnOfUnparkedRunsOnly(t *testing.T) {
 	}
 }
 
-// In single-replica mode every paused row is this process's to flip, held or
-// not — as before the cluster scoping.
-func TestManager_ResumeInSingleReplicaModeFlipsEveryPausedRow(t *testing.T) {
+// In single-replica mode, as in a cluster, Resume flips only the paused rows
+// this process holds; an unheld row stays paused.
+func TestManager_ResumeInSingleReplicaModeFlipsOnlyHeldRows(t *testing.T) {
 	m, s, cleanup := newTestManager(t)
 	defer cleanup()
 	ctx := context.Background()
 	sess, _ := s.CreateSession(ctx, "t", "a", "u")
 	r1, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "r1"})
+	r2, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "r2"})
 	_ = s.SetRunPauseState(ctx, r1.ID, store.PauseStatePaused)
+	_ = s.SetRunPauseState(ctx, r2.ID, store.PauseStatePaused)
+	m.RegisterRun(r1.ID)
+	defer m.DeregisterRun(r1.ID)
 	_, _ = m.Pause(ctx, 50*time.Millisecond)
 	res, err := m.Resume(ctx)
 	if err != nil || res.ResumedRunsCount != 1 {
 		t.Fatalf("Resume = %+v, %v; want 1 resumed", res, err)
+	}
+	for id, want := range map[string]string{"r1": store.PauseStateRunning, "r2": store.PauseStatePaused} {
+		got, _ := s.GetRunByAgentID(ctx, id)
+		if got.PauseState != want {
+			t.Errorf("%s.PauseState = %q, want %q", id, got.PauseState, want)
+		}
+	}
+}
+
+// On a single replica a runtime resume leaves a paused row no loop here holds
+// paused, as a cluster replica does: flipped to running it would look live with
+// nothing running it, and the resume pass (which lists only paused rows) would
+// never pick it up. The held row's loop is woken and its row flipped.
+func TestManager_ResumeInSingleReplicaModeLeavesUnheldRowsPaused(t *testing.T) {
+	m, s, cleanup := newTestManager(t)
+	defer cleanup()
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	orphan, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "orphan"})
+	held, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "held"})
+	for _, r := range []store.Run{orphan, held} {
+		_ = s.SetRunPauseState(ctx, r.ID, store.PauseStatePaused)
+	}
+	m.RegisterRun(held.ID)
+	defer m.DeregisterRun(held.ID)
+	_, _ = m.Pause(ctx, 50*time.Millisecond)
+
+	res, err := m.Resume(ctx)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.ResumedRunsCount != 1 {
+		t.Errorf("ResumedRunsCount = %d, want 1 (only the held run)", res.ResumedRunsCount)
+	}
+	for id, want := range map[string]string{"orphan": store.PauseStatePaused, "held": store.PauseStateRunning} {
+		got, _ := s.GetRunByAgentID(ctx, id)
+		if got.PauseState != want {
+			t.Errorf("%s.PauseState = %q, want %q", id, got.PauseState, want)
+		}
 	}
 }
