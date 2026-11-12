@@ -44,7 +44,11 @@ type statefulLoop struct {
 	lastWindow         int
 	footprintMeasured  bool
 	seenExhaustedState map[int]bool
-	holder             *tools.ExecStateHolder
+	// lastDistill is the run's last eviction decline, for Context op=self:
+	// Σ eviction is this mode's distillation, so its decline is what an
+	// append run's lastDistill holds for a recap or compaction.
+	lastDistill tools.LastDistillValue
+	holder      *tools.ExecStateHolder
 	// dispatchCtx is the run ctx carrying the live Σ holder, made once at the
 	// start as the local was; the action's ctx derives from it.
 	dispatchCtx context.Context
@@ -686,14 +690,19 @@ func (r *statefulLoop) evict(ctx context.Context, sigmaBefore int) []string {
 			// Nothing evictable and still over: every key is core, or the
 			// preamble alone is the problem. Either way the run is heading
 			// for the provider's limit and must say so.
+			verdict := providers.ContextTierVerdict{
+				Mode:   "stateful",
+				Reason: providers.DistillDeclineSplitDeclined,
+				Message: "stateful state cannot be reduced: every key is retention " +
+					"core (the default) — declare x-retention: scratch or derived on " +
+					"the state_schema properties that are safe to drop",
+			}
+			// Kept for op=self before the report dedups, as the append
+			// loop keeps every decline: the condition persists after the
+			// one report.
+			r.lastDistill = tools.LastDistillValue{Mode: verdict.Mode, Reason: verdict.Reason, Message: verdict.Message}
 			reportExhausted(r.emit, r.seenExhaustedState, r.opts.Compaction, r.lastIn, r.lastWindow,
-				[]providers.ContextTierVerdict{{
-					Mode:   "stateful",
-					Reason: providers.DistillDeclineSplitDeclined,
-					Message: "stateful state cannot be reduced: every key is retention " +
-						"core (the default) — declare x-retention: scratch or derived on " +
-						"the state_schema properties that are safe to drop",
-				}})
+				[]providers.ContextTierVerdict{verdict})
 		}
 	}
 	return evicted
@@ -854,22 +863,23 @@ func (r *statefulLoop) dispatchAction(ctx context.Context, iter int, tid string,
 	// tool-use id the parallel_spawn ledger keys on, and the RFC DA
 	// classification of a failure. It also emits the tool_result.
 	hookIdent := HookIdentity(ctx, r.opts.AgentName, iter)
-	// What the append loop stamps per iteration, so Context op=self in a
-	// stateful action reports the provider/model it is actually running
-	// on (after any fallback), its sampling, and how full the window is.
-	// Stamped here rather than at the top of the step because a fallback
-	// during this step's call can change the first two.
+	// What the append loop stamps per iteration (stampIteration), so
+	// Context op=self in a stateful action reports the provider/model it is
+	// actually running on (after any fallback), its sampling, its iteration,
+	// how full the window is, and the last eviction decline. Stamped here
+	// rather than at the top of the step because a fallback during this
+	// step's call can change the first two.
 	//
 	// dispatchCtx carries the live Σ holder; the step's iteration span is
 	// put on it so the action's tool span nests under the step, as an append
 	// tool call nests under its iteration.
-	actCtx := stampResolvedRoute(trace.ContextWithSpan(r.dispatchCtx, trace.SpanFromContext(ctx)), &r.opts)
-	actCtx = tools.WithMaxContextTokens(actCtx, r.opts.MaxContextTokens)
-	actCtx = tools.WithContextUsage(actCtx, r.lastIn, r.lastWindow)
-	actCtx = tools.WithEffectiveContextWindow(actCtx, r.lastWindow)
+	//
 	// Run lifted the cap to the hard ceiling exactly when the run is
 	// iteration-unbounded, so the ceiling identifies that case here.
-	actCtx = tools.WithIterationBudget(actCtx, iter+1, r.maxIter, r.maxIter >= maxIterationsHardCeiling)
+	actCtx := stampIteration(trace.ContextWithSpan(r.dispatchCtx, trace.SpanFromContext(ctx)), &r.opts, iter, r.maxIter, r.maxIter >= maxIterationsHardCeiling)
+	actCtx = tools.WithContextUsage(actCtx, r.lastIn, r.lastWindow)
+	actCtx = tools.WithEffectiveContextWindow(actCtx, r.lastWindow)
+	actCtx = tools.WithLastDistill(actCtx, r.lastDistill)
 	// A shutdown interrupts the action as it does the append loop's
 	// tools, so the run parks at its next step (RFC ES F1). One action, at
 	// parallelism 1: one action per step is this mode's contract.

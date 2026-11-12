@@ -63,6 +63,17 @@ func stampResolvedRoute(ctx context.Context, opts *RunOptions) context.Context {
 	return tools.WithResolvedSampling(ctx, opts.Sampling)
 }
 
+// stampIteration is what a tool dispatched in this iteration reads about it:
+// the resolved route (stampResolvedRoute), the iteration number (for a hook
+// fired without the counter at hand), the iterations used and left, and the
+// configured context cap (RFC CJ), all for op=self.
+func stampIteration(ctx context.Context, opts *RunOptions, iter, iterCap int, unbounded bool) context.Context {
+	ctx = stampResolvedRoute(ctx, opts)
+	ctx = withIteration(ctx, iter)
+	ctx = tools.WithIterationBudget(ctx, iter+1, iterCap, unbounded) // op=self: iterations used / left
+	return tools.WithMaxContextTokens(ctx, opts.MaxContextTokens)    // RFC CJ — configured cap for op=self
+}
+
 // transformOutbound runs the context-transform plugins (RFC Z / F43) on a COPY
 // of the outbound context — the loop's canonical system/messages (and so the
 // persisted transcript + code-js replay input) stay untouched. Skipped for the

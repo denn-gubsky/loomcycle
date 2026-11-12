@@ -3896,10 +3896,7 @@ func (s *runState) beginIteration(ctx, iterCtx context.Context, iterSpan trace.S
 	// — this keeps op=self truthful about what the agent is actually
 	// running on after a fallback. Tools dispatched this iteration receive
 	// iterCtx, so the value reaches them without per-tool wiring.
-	iterCtx = stampResolvedRoute(iterCtx, s.opts)
-	iterCtx = withIteration(iterCtx, iter)
-	iterCtx = tools.WithIterationBudget(iterCtx, iter+1, s.iterCap, s.unboundedIters) // op=self: iterations used / left
-	iterCtx = tools.WithMaxContextTokens(iterCtx, s.opts.MaxContextTokens)            // RFC CJ — configured cap for op=self
+	iterCtx = stampIteration(iterCtx, s.opts, iter, s.iterCap, s.unboundedIters)
 	// NB: the context-footprint stamp (tools.WithContextUsage) is applied
 	// LOWER — after drainSteer + auto/self compaction — so a same-turn
 	// op=self never reports a stale pre-compaction footprint.

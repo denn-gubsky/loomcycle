@@ -2,13 +2,16 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 
 	"go.opentelemetry.io/otel/trace"
 
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -133,4 +136,51 @@ func TestRunStateful_ParksInsideTheIterationSpan(t *testing.T) {
 		}
 	}
 	t.Errorf("the park ran under span %s, which is not an iteration span", gate.parked.SpanID())
+}
+
+// stampProbeTool records, per call, what the loop stamped on the ctx a tool reads.
+type stampProbeTool struct {
+	mu      sync.Mutex
+	iters   []int
+	distill []tools.LastDistillValue
+}
+
+func (p *stampProbeTool) Name() string                 { return "Noop" }
+func (p *stampProbeTool) Description() string          { return "records its ctx" }
+func (p *stampProbeTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (p *stampProbeTool) Execute(ctx context.Context, _ json.RawMessage) (tools.Result, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.iters = append(p.iters, IterationOf(ctx))
+	p.distill = append(p.distill, tools.LastDistill(ctx))
+	return tools.Result{Text: "ok"}, nil
+}
+
+// A stateful action's ctx carries the step's iteration and the run's last
+// distillation decline, as an append tool's does. Σ eviction is this mode's
+// distillation, so its decline — every key is core and the window is over the
+// backstop — is what Context op=self reports.
+func TestRunStateful_ActionCtxCarriesIterationAndLastDistill(t *testing.T) {
+	prov := &growingStateProvider{inTok: 9000, maxCtx: 10000}
+	probe := &stampProbeTool{}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x", Tools: []tools.Tool{probe},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{probe}),
+		Segments:   statefulTaskSegs(), Context: statefulCtx(nil),
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	probe.mu.Lock()
+	defer probe.mu.Unlock()
+	if len(probe.iters) < 2 {
+		t.Fatalf("actions run = %d, want at least 2", len(probe.iters))
+	}
+	for i, it := range probe.iters {
+		if it != i {
+			t.Errorf("action of step %d read iteration %d", i, it)
+		}
+	}
+	if d := probe.distill[0]; d.Mode != "stateful" || d.Reason != providers.DistillDeclineSplitDeclined {
+		t.Errorf("action of step 0 read last distill %+v, want the stateful eviction decline", d)
+	}
 }
