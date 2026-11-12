@@ -139,9 +139,6 @@ Add this service alongside `loomcycle` / `loomcycle-migrate`:
       # resource ceilings (per session; agents can ask for less, never more)
       SANDBOX_MAX_MEM_MB: "2048"
       SANDBOX_MAX_CPUS: "2"
-      SANDBOX_MAX_TMPFS_MB: "2048"
-      SANDBOX_SESSION_IDLE_TTL: "15m"
-      SANDBOX_SESSION_MAX_TTL: "1h"
       # SANDBOX_ALLOW_EGRESS: "1"        # allow network:"egress" sessions (default: no network)
       # SANDBOX_RUNTIME: runsc           # only if gVisor is installed on the HOST Docker
     volumes:

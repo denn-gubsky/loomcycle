@@ -4,7 +4,7 @@
 #
 # Requirements the sidecar depends on:
 #   - a shell (bash) + coreutils (`sleep`, used as the container's idle command)
-#   - a non-root user at uid:gid 1000:1000 (matches SANDBOX_CONTAINER_USER)
+#   - a non-root user at uid:gid 1000:1000 (the user the sidecar runs sessions as)
 #   - toolchain caches must work under a --read-only rootfs: the sidecar sets
 #     HOME/GOCACHE/CARGO_HOME/etc. into the writable /work tmpfs, so nothing here
 #     needs to write outside /work or /tmp at runtime.

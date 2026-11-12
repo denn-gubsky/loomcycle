@@ -12,7 +12,7 @@ import (
 // per-call value an agent supplies is clamped to the ceilings here — the model
 // can ask for less isolation headroom but never more than the operator allows.
 type Config struct {
-	ListenAddr string // SANDBOX_LISTEN_ADDR (default :9000)
+	ListenAddr string // :9000; the container port mapping is the knob
 
 	// AuthToken is the shared bearer every MCP request must present
 	// (Authorization: Bearer <token>). Required unless AllowAnon — a sandbox
@@ -24,7 +24,7 @@ type Config struct {
 	PodmanBin string // SANDBOX_PODMAN_BIN (default "podman")
 	Image     string // SANDBOX_IMAGE — the toolchain image sessions run
 	Runtime   string // SANDBOX_RUNTIME → --runtime (runc|runsc|kata; "" = engine default)
-	CtrUser   string // SANDBOX_CONTAINER_USER → --user (default "1000:1000"; never root)
+	CtrUser   string // → --user: 1000:1000, the reference image's user; never root
 
 	// WorkspaceRoot enables DURABLE workspaces (RFC BI P2a): when set (an absolute
 	// host dir), a session opened with `workspace:<name>` bind-mounts a persistent
@@ -55,19 +55,19 @@ type Config struct {
 	// container (e.g. a GitHub token for authenticated git/gh). Off by default: a
 	// generic header->env seam is a capability the operator opts into.
 	AllowEnvInjection bool // SANDBOX_ALLOW_ENV_INJECTION=1
-	MaxEnvVars        int  // SANDBOX_MAX_ENV_VARS (default 32)
-	MaxEnvValueBytes  int  // SANDBOX_MAX_ENV_VALUE_BYTES (default 65536)
+	MaxEnvVars        int  // 32
+	MaxEnvValueBytes  int  // 65536
 
 	// Resource ceilings (per session container) + defaults when the caller
 	// omits a value.
-	DefTmpfsMB int64 // SANDBOX_DEFAULT_TMPFS_MB (default 512)
-	MaxTmpfsMB int64 // SANDBOX_MAX_TMPFS_MB (default 2048)
+	DefTmpfsMB int64 // 512
+	MaxTmpfsMB int64 // 2048
 	DefCPUs    float64
 	MaxCPUs    float64 // SANDBOX_MAX_CPUS (default 2)
 	DefMemMB   int64
 	MaxMemMB   int64 // SANDBOX_MAX_MEM_MB (default 2048)
 	DefPids    int64
-	MaxPids    int64 // SANDBOX_MAX_PIDS (default 512)
+	MaxPids    int64 // 512
 
 	// Exec bounds — mirror the Bash/Bashbox tool guards so behaviour is
 	// consistent across loomcycle's shell surfaces.
@@ -76,40 +76,43 @@ type Config struct {
 	MaxOutBytes int64         // 1 MiB
 
 	// Session lifecycle.
-	SessionIdleTTL time.Duration // SANDBOX_SESSION_IDLE_TTL (default 15m)
-	SessionMaxTTL  time.Duration // SANDBOX_SESSION_MAX_TTL (default 1h)
-	GCInterval     time.Duration // SANDBOX_GC_INTERVAL (default 1m)
+	SessionIdleTTL time.Duration // 15m
+	SessionMaxTTL  time.Duration // 1h
+	GCInterval     time.Duration // 1m
 	MaxSessions    int           // SANDBOX_MAX_SESSIONS (default 32; global in P1)
 }
 
 // LoadConfig reads the environment into a Config, applying defaults and
-// validating the security-critical invariants.
+// validating the security-critical invariants. What a deployment sizes to its
+// host (image, runtime, CPU, memory, session count) comes from the
+// environment; the rest is fixed, tied to the reference image or to bounds no
+// deployment has needed to move.
 func LoadConfig() (*Config, error) {
 	c := &Config{
-		ListenAddr:        envStr("SANDBOX_LISTEN_ADDR", ":9000"),
+		ListenAddr:        ":9000",
 		AuthToken:         os.Getenv("SANDBOX_AUTH_TOKEN"),
 		AllowAnon:         os.Getenv("SANDBOX_ALLOW_ANON") == "1",
 		PodmanBin:         envStr("SANDBOX_PODMAN_BIN", "podman"),
 		Image:             os.Getenv("SANDBOX_IMAGE"),
 		Runtime:           os.Getenv("SANDBOX_RUNTIME"),
-		CtrUser:           envStr("SANDBOX_CONTAINER_USER", "1000:1000"),
+		CtrUser:           "1000:1000",
 		WorkspaceRoot:     os.Getenv("SANDBOX_WORKSPACE_ROOT"),
 		AllowEgress:       os.Getenv("SANDBOX_ALLOW_EGRESS") == "1",
 		ExposeNetwork:     os.Getenv("SANDBOX_EXPOSE_NETWORK"),
 		AllowEnvInjection: os.Getenv("SANDBOX_ALLOW_ENV_INJECTION") == "1",
-		MaxEnvVars:        int(envInt("SANDBOX_MAX_ENV_VARS", 32)),
-		MaxEnvValueBytes:  int(envInt("SANDBOX_MAX_ENV_VALUE_BYTES", 64<<10)),
-		DefTmpfsMB:        envInt("SANDBOX_DEFAULT_TMPFS_MB", 512),
-		MaxTmpfsMB:        envInt("SANDBOX_MAX_TMPFS_MB", 2048),
+		MaxEnvVars:        32,
+		MaxEnvValueBytes:  64 << 10,
+		DefTmpfsMB:        512,
+		MaxTmpfsMB:        2048,
 		MaxCPUs:           envFloat("SANDBOX_MAX_CPUS", 2),
 		MaxMemMB:          envInt("SANDBOX_MAX_MEM_MB", 2048),
-		MaxPids:           envInt("SANDBOX_MAX_PIDS", 512),
+		MaxPids:           512,
 		DefTimeout:        30 * time.Second,
 		MaxTimeout:        5 * time.Minute,
-		MaxOutBytes:       envInt("SANDBOX_MAX_OUTPUT_BYTES", 1<<20),
-		SessionIdleTTL:    envDur("SANDBOX_SESSION_IDLE_TTL", 15*time.Minute),
-		SessionMaxTTL:     envDur("SANDBOX_SESSION_MAX_TTL", time.Hour),
-		GCInterval:        envDur("SANDBOX_GC_INTERVAL", time.Minute),
+		MaxOutBytes:       1 << 20,
+		SessionIdleTTL:    15 * time.Minute,
+		SessionMaxTTL:     time.Hour,
+		GCInterval:        time.Minute,
 		MaxSessions:       int(envInt("SANDBOX_MAX_SESSIONS", 32)),
 	}
 	// Per-session defaults are the ceilings unless separately narrowed — a
@@ -153,15 +156,6 @@ func envFloat(name string, def float64) float64 {
 	if v := os.Getenv(name); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
-		}
-	}
-	return def
-}
-
-func envDur(name string, def time.Duration) time.Duration {
-	if v := os.Getenv(name); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
 		}
 	}
 	return def
