@@ -131,6 +131,33 @@ func (s *Server) ResumePausedRuns(ctx context.Context) (int, []string) {
 	return r.Resumed, r.Warnings
 }
 
+// goDetached runs fn on a goroutine counted in s.detached (WaitDetached).
+func (s *Server) goDetached(fn func()) {
+	s.detached.Add(1)
+	go func() {
+		defer s.detached.Done()
+		fn()
+	}()
+}
+
+// WaitDetached waits until every goroutine counted in s.detached has
+// returned, or ctx ends (its error is returned then). It does not stop them:
+// a run that waits for input or a slot is ended through the cancel registry
+// first.
+func (s *Server) WaitDetached(ctx context.Context) error {
+	done := make(chan struct{})
+	safego.Go(ctx, "resume.wait_detached", func() {
+		s.detached.Wait()
+		close(done)
+	})
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // resumeReport is what one resume pass did with the paused rows it found.
 type resumeReport struct {
 	Resumed int
@@ -1167,7 +1194,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		l.fanout = &fanout
 	}
 	handedOff = true
-	go s.runResumed(l)
+	s.goDetached(func() { s.runResumed(l) })
 	return nil
 }
 

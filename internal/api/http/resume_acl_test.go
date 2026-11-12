@@ -164,6 +164,7 @@ func aclResumeFixtureIn(t *testing.T, mode authz.Mode, bind bool, scripts map[st
 	}
 	probe := &policyProbe{}
 	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{namedStubTool{"Bash"}, probe}, concurrency.New(8, 8, 5*time.Second), st)
+	stopDetachedOnCleanup(t, srv)
 	srv.SetACLResolver(aclres.New(st, mode, 0))
 	sink := &recordingSink{}
 	srv.SetTokenAudit(sink)

@@ -312,6 +312,14 @@ type Server struct {
 	// admits spawn children; resident children are admitted at open.
 	liveChildren *tools.LiveChildren
 
+	// detached counts the goroutines that outlive the call that started
+	// them: each detached run (interactive, held for review, or re-dispatched
+	// by a resume) and a restore's stored-rule report.
+	// Nothing in the process waits on them — a shutdown pauses runs, it does
+	// not end them — so WaitDetached is how a caller that owns the store (a
+	// test about to close its database) knows they no longer touch it.
+	detached sync.WaitGroup
+
 	// sessionLocks tracks per-session mutexes used by continuation
 	// requests (handleMessages, or handleRuns with a non-empty
 	// SessionID). A concurrent request to the same session fast-fails

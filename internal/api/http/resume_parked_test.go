@@ -40,6 +40,7 @@ func parkedRunFixture(t *testing.T, interactive bool) (*Server, *httptest.Server
 	srv.SetSteerRegistry(steer.NewRegistry(0)) // parking IS blocking on this queue
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
+	stopDetachedOnCleanup(t, srv) // the resumed chat parks for input until cancelled
 
 	ctx := context.Background()
 	sess, err := st.CreateSession(ctx, "", "chatty", "alice")
@@ -335,3 +336,34 @@ func messagesText(msgs []providers.Message) string {
 }
 
 var _ = json.Marshal
+
+// A resumed run outlives the call that re-dispatched it. WaitDetached is what
+// lets the store's owner know it has stopped: it must not return while the run
+// is parked for input, and must return once the run is cancelled and its
+// goroutine has torn down. Before the run was counted, a test's cleanup closed
+// the store under a still-running resumed chat, and the write it made into the
+// closed database's directory failed TempDir's RemoveAll.
+func TestWaitDetached_HoldsUntilResumedRunGoroutineReturns(t *testing.T) {
+	srv, _, _, run := parkedRunFixture(t, true)
+	if n, warnings := srv.ResumePausedRuns(context.Background()); n != 1 {
+		t.Fatalf("resumed = %d (%v), want 1", n, warnings)
+	}
+
+	short, cancelShort := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancelShort()
+	if err := srv.WaitDetached(short); err == nil {
+		t.Fatal("WaitDetached returned while the resumed chat was still parked for input")
+	}
+
+	if _, ok := srv.cancelReg.CancelLocal(run.AgentID, "test"); !ok {
+		t.Fatal("the resumed run is not in the cancel registry")
+	}
+	long, cancelLong := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelLong()
+	if err := srv.WaitDetached(long); err != nil {
+		t.Fatalf("WaitDetached after cancel: %v", err)
+	}
+	if _, live := srv.cancelReg.Get(run.AgentID); live {
+		t.Error("WaitDetached returned before the run's teardown deregistered it")
+	}
+}

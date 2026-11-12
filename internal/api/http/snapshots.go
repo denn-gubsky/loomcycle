@@ -525,7 +525,11 @@ func (s *Server) finishRestore(ctx context.Context, result *snapshot.RestoreResu
 	s.postRestoreRefresh(ctx, result)
 	// A restore can bring back lists written before this build refused
 	// what no surface enforces; report them as the boot does (RFC FY Part E).
-	safego.Go(ctx, "restore.report_acls", func() { s.ReportUnenforceableACLs(context.WithoutCancel(ctx)) })
+	s.detached.Add(1)
+	safego.Go(ctx, "restore.report_acls", func() {
+		defer s.detached.Done()
+		s.ReportUnenforceableACLs(context.WithoutCancel(ctx))
+	})
 	r := s.resumePausedRunsReport(context.WithoutCancel(ctx))
 	result.PausedRunsResumed = r.Resumed
 	result.PausedRunsAlreadyLive = r.AlreadyLive

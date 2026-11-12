@@ -51,6 +51,7 @@ func TestResumeFanout_WaitModeStartedRowRecordsTheChildsTimeout(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(8, 8, 5*time.Second), st)
+	stopDetachedOnCleanup(t, srv)
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
 	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(

@@ -101,6 +101,7 @@ func resumedTenantRunTools(t *testing.T, trigger func(t *testing.T, srv *Server,
 	rec := &principalRecorder{}
 	toolset := []tools.Tool{&builtin.AgentDef{Cfg: cfg, Store: st}, &builtin.Context{Cfg: cfg}, rec}
 	srv := New(cfg, &stubResolver{p: prov}, toolset, concurrency.New(8, 8, time.Second), st)
+	stopDetachedOnCleanup(t, srv)
 
 	runID, envelope := capturePausedRun(t, store.RunIdentity{AgentID: "a_acme", UserID: "alice", TenantID: "acme", Model: "stub-model"}, "resumer", func(src store.Store, runID string) {
 		b, _ := json.Marshal([]loop.PromptSegment{

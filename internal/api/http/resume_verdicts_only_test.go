@@ -44,6 +44,7 @@ func heldKindFixture(t *testing.T, kind heldResumeKind) (*Server, *httptest.Serv
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
+	stopDetachedOnCleanup(t, srv)
 	srv.SetSteerRegistry(steer.NewRegistry(0))
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
