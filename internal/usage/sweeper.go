@@ -16,13 +16,8 @@ package usage
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"time"
-
-	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -42,38 +37,6 @@ type Config struct {
 	// stays possible within the window; older activity survives only as
 	// day-bucketed archive aggregates.
 	DetailRetention time.Duration
-
-	// --- RFC AV Phase 2b2: old-session archiver (OFF by default). ---
-	// Unlike the usage rollup above (lossless compaction to the archive), this
-	// DELETES aged sessions + their runs + events — the audit trail — so it is
-	// opt-in: zero RunRetention or an "off"/"" RunRetentionMode disables it.
-	// Pruning is by SESSION (not by run): the continuation path replays the whole
-	// session transcript, so a session is only prunable once ALL its runs are
-	// terminal + old — pruning one aged run would corrupt a continued session.
-
-	// RunRetention is the cutoff for archiving aged sessions: a session whose
-	// runs are all terminal and whose latest completed_at is older than this is
-	// exported (if the mode says so) and cascade-deleted. Zero disables archival
-	// entirely. token_usage is NOT touched — usage retention is DetailRetention.
-	RunRetention time.Duration
-
-	// RunRetentionMode is one of "off" (default / ""), "prune" (cascade-delete
-	// aged sessions + runs + events), or "export+prune" (write each session + its
-	// runs + events to ExportDir as JSON, then delete). Unknown → treated as off.
-	RunRetentionMode string
-
-	// ExportDir is the directory export+prune writes session JSON into (one file
-	// per session under a per-day subdir). Required for export+prune; if empty,
-	// archival is disabled (never delete a session we were asked to export).
-	ExportDir string
-
-	// DisableRunArchiver, when true, suppresses the opt-in aged-SESSION archiver
-	// (archiveSessionsOnce) even if RunRetention/RunRetentionMode/ExportDir would
-	// otherwise enable it. The usage-detail RollupAndPruneUsage still runs — only
-	// session archival is disabled. Set by cmd/loomcycle when the RFC BM retention
-	// sweeper owns aged-chat pruning, so a session is never cascade-deleted by
-	// both sweepers at once (RFC BM Phase 2 reconciliation).
-	DisableRunArchiver bool
 
 	// Logger is the structured logger used for sweep results. Defaults
 	// to slog.Default() when nil. Errors are logged at every tick;
@@ -114,24 +77,19 @@ type AdvisoryLocker interface {
 const (
 	defaultInterval        = 1 * time.Hour
 	defaultDetailRetention = 720 * time.Hour // 30 days
-	runPruneBatch          = 500             // aged sessions archived per tick
 )
 
 // Sweeper periodically folds old token_usage rows into usage_archive and
-// deletes them, and (opt-in) archives aged sessions. Construct via New,
+// deletes them. Construct via New,
 // then call Run(ctx) on a goroutine that owns the lifecycle.
 type Sweeper struct {
-	store              store.Store
-	interval           time.Duration
-	detailRetention    time.Duration
-	runRetention       time.Duration
-	runMode            string
-	exportDir          string
-	disableRunArchiver bool
-	logger             *slog.Logger
-	lock               AdvisoryLocker
-	lockKey            int64
-	now                func() time.Time
+	store           store.Store
+	interval        time.Duration
+	detailRetention time.Duration
+	logger          *slog.Logger
+	lock            AdvisoryLocker
+	lockKey         int64
+	now             func() time.Time
 }
 
 // New constructs a Sweeper with the supplied tuning. A nil store means
@@ -150,43 +108,15 @@ func New(st store.Store, cfg Config) *Sweeper {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	mode := cfg.RunRetentionMode
-	if mode == "" {
-		mode = "off"
-	}
 	return &Sweeper{
-		store:              st,
-		interval:           cfg.Interval,
-		detailRetention:    cfg.DetailRetention,
-		runRetention:       cfg.RunRetention,
-		runMode:            mode,
-		exportDir:          cfg.ExportDir,
-		disableRunArchiver: cfg.DisableRunArchiver,
-		logger:             cfg.Logger,
-		lock:               cfg.AdvisoryLock,
-		lockKey:            cfg.AdvisoryLockKey,
-		now:                cfg.Now,
+		store:           st,
+		interval:        cfg.Interval,
+		detailRetention: cfg.DetailRetention,
+		logger:          cfg.Logger,
+		lock:            cfg.AdvisoryLock,
+		lockKey:         cfg.AdvisoryLockKey,
+		now:             cfg.Now,
 	}
-}
-
-// runArchivalEnabled reports whether the opt-in old-run archiver should run:
-// not explicitly disabled (the RFC BM retention sweeper owns chats), a positive
-// RunRetention, a delete-bearing mode, and — for export+prune — a configured
-// ExportDir (never delete a run we were asked to export but can't).
-func (s *Sweeper) runArchivalEnabled() bool {
-	if s.disableRunArchiver {
-		return false
-	}
-	if s.runRetention <= 0 {
-		return false
-	}
-	switch s.runMode {
-	case "prune":
-		return true
-	case "export+prune":
-		return s.exportDir != ""
-	}
-	return false
 }
 
 // Run drives the sweep loop until ctx is done. Each tick calls
@@ -200,11 +130,6 @@ func (s *Sweeper) Run(ctx context.Context) {
 		return
 	}
 	s.logger.Info("usage: sweeper starting", "interval", s.interval, "detail_retention", s.detailRetention)
-	if s.runArchivalEnabled() {
-		s.logger.Info("usage: old-run archiver ON", "mode", s.runMode, "run_retention", s.runRetention, "export_dir", s.exportDir)
-	} else if s.runRetention > 0 && s.runMode == "export+prune" && s.exportDir == "" {
-		s.logger.Warn("usage: old-run archiver DISABLED — mode=export+prune requires LOOMCYCLE_USAGE_EXPORT_DIR")
-	}
 	t := time.NewTicker(s.interval)
 	defer t.Stop()
 
@@ -223,19 +148,13 @@ func (s *Sweeper) Run(ctx context.Context) {
 		case <-t.C:
 			// When an AdvisoryLock is wired (cluster mode), gate the whole
 			// tick behind the lock so only one replica per tick runs the
-			// prune + run archival. Single-replica path (lock == nil) sweeps
-			// unconditionally. Both steps run under the SAME acquisition.
+			// prune. Single-replica path (lock == nil) sweeps unconditionally.
 			var (
-				n, archived  int
-				err, archErr error
-				ranArchival  bool
+				n   int
+				err error
 			)
 			doWork := func(ctx context.Context) {
 				n, err = s.sweepOnce(ctx)
-				if s.runArchivalEnabled() {
-					ranArchival = true
-					archived, archErr = s.archiveSessionsOnce(ctx)
-				}
 			}
 			if s.lock != nil {
 				acquired, lockErr := s.lock.TryRun(ctx, s.lockKey, func(ctx context.Context) error {
@@ -268,14 +187,6 @@ func (s *Sweeper) Run(ctx context.Context) {
 				}
 				noOpStreak++
 			}
-			// Old-session archival result (only when enabled).
-			if ranArchival {
-				if archErr != nil {
-					s.logger.Warn("usage: session archival failed", "err", archErr)
-				} else if archived > 0 {
-					s.logger.Info("usage: archived + pruned completed sessions", "archived", archived, "mode", s.runMode)
-				}
-			}
 		}
 	}
 }
@@ -290,109 +201,4 @@ func (s *Sweeper) sweepOnce(parent context.Context) (int, error) {
 	defer cancel()
 	cutoff := s.now().Add(-s.detailRetention)
 	return s.store.RollupAndPruneUsage(ctx, cutoff)
-}
-
-// archiveSessionsOnce archives one batch of aged sessions (RFC AV Phase 2b2):
-// list sessions whose runs are ALL terminal + old, export each (export+prune
-// mode) then cascade-delete it (session + runs + events). Prunes by SESSION, not
-// by run: the continuation path replays the whole-session transcript, so pruning
-// one aged run inside a still-continued session would corrupt it. Per-session
-// failures are logged and skipped — a bad export never deletes the session.
-// Returns the number deleted. Given a longer timeout than the usage prune
-// because export writes files.
-func (s *Sweeper) archiveSessionsOnce(parent context.Context) (int, error) {
-	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
-	defer cancel()
-	cutoff := s.now().Add(-s.runRetention)
-	// No agent dimension here: the legacy archiver has one age for every chat.
-	// The per-agent split lives in the RFC BM retention sweeper, which supersedes
-	// this archiver whenever it owns chats (main.go makes them exclusive).
-	sessions, err := s.store.PrunableAgedSessions(ctx, cutoff, store.SessionAgentsAny, nil, runPruneBatch)
-	if err != nil {
-		return 0, err
-	}
-	deleted := 0
-	for _, sid := range sessions {
-		// The whole batch shares one 2-minute deadline. Once it expires, every
-		// remaining export/DeleteSessionCascade would fail with the same ctx error —
-		// stop cleanly and return what we finished, instead of logging a burst of
-		// "context deadline exceeded" once per remaining session. The next tick
-		// resumes from where this one stopped (PrunableAgedSessions is re-queried).
-		if ctx.Err() != nil {
-			break
-		}
-		doExport := s.runMode == "export+prune"
-		if doExport {
-			// A no-trace chat is deleted at its age and never exported, as in
-			// the retention sweeper that supersedes this archiver. A session
-			// that cannot be read is left for the next tick.
-			sess, err := s.store.GetSession(ctx, sid)
-			if err != nil {
-				s.logger.Warn("usage: read session failed, skipping", "session_id", sid, "err", err)
-				continue
-			}
-			doExport = sess.Retention != retentionmode.None
-		}
-		if doExport {
-			if err := s.exportSession(ctx, sid); err != nil {
-				// Never delete a session we failed to export — retry next tick.
-				s.logger.Warn("usage: export session failed, skipping delete", "session_id", sid, "err", err)
-				continue
-			}
-		}
-		if err := s.store.DeleteSessionCascade(ctx, sid); err != nil {
-			s.logger.Warn("usage: delete session failed", "session_id", sid, "err", err)
-			continue
-		}
-		deleted++
-	}
-	return deleted, nil
-}
-
-// exportSession writes a session (its runs + all events) to ExportDir as JSON,
-// under a per-day subdir (bucketing by the session's latest completed date keeps
-// any single directory bounded). The export dir is operator config, never model
-// input.
-func (s *Sweeper) exportSession(ctx context.Context, sessionID string) error {
-	runs, err := s.store.RunsForSession(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	events, err := s.store.GetTranscript(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	// Bucket by the session's latest completed_at (fall back to latest start,
-	// then to now if a session somehow has no timestamps).
-	var day time.Time
-	for _, r := range runs {
-		if !r.CompletedAt.IsZero() && r.CompletedAt.After(day) {
-			day = r.CompletedAt
-		}
-	}
-	if day.IsZero() {
-		for _, r := range runs {
-			if r.StartedAt.After(day) {
-				day = r.StartedAt
-			}
-		}
-	}
-	if day.IsZero() {
-		day = s.now()
-	}
-	dir := filepath.Join(s.exportDir, day.UTC().Format("2006-01-02"))
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return err
-	}
-	payload := struct {
-		SessionID string        `json:"session_id"`
-		Runs      []store.Run   `json:"runs"`
-		Events    []store.Event `json:"events"`
-	}{SessionID: sessionID, Runs: runs, Events: events}
-	blob, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return err
-	}
-	// 0o600: run transcripts may hold sensitive tool I/O; operator-only.
-	return os.WriteFile(filepath.Join(dir, sessionID+".json"), blob, 0o600)
 }

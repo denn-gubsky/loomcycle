@@ -4487,17 +4487,6 @@ type Env struct {
 	// this are rolled up into usage_archive and pruned. Default 720h
 	// (30 days). Env: LOOMCYCLE_USAGE_DETAIL_RETENTION_MS.
 	UsageDetailRetention time.Duration
-	// UsageRunRetention is the RFC AV Phase 2b2 old-run archiver cutoff:
-	// completed runs older than this are exported (per the mode) and
-	// deleted. Default 0 = OFF (run deletion is destructive — opt-in,
-	// unlike the lossless usage rollup). Env: LOOMCYCLE_USAGE_RUN_RETENTION_MS.
-	UsageRunRetention time.Duration
-	// UsageRunRetentionMode is "off" (default) | "prune" | "export+prune".
-	// Env: LOOMCYCLE_USAGE_RUN_RETENTION_MODE.
-	UsageRunRetentionMode string
-	// UsageExportDir is where export+prune writes run JSON (per-day subdir,
-	// one file per run). Required for export+prune. Env: LOOMCYCLE_USAGE_EXPORT_DIR.
-	UsageExportDir string
 
 	// --- RFC BM data-retention sweeper (OPT-IN; default OFF). ---
 	// Purges retired-and-old substrate def versions (agent/skill/team/mcp_server/
@@ -4529,10 +4518,6 @@ type Env struct {
 	// "off" (default / "") | "prune" | "export+prune" — deletes aged sessions +
 	// their runs + events (pinned sessions always exempt). Independent of
 	// RetentionDefsMode. Env: LOOMCYCLE_RETENTION_CHATS_MODE.
-	// Back-compat: when unset AND the legacy LOOMCYCLE_USAGE_RUN_RETENTION_*
-	// archiver is configured, it is inherited (see Load) so an existing operator's
-	// config keeps pruning aged chats — now via the retention sweeper, which then
-	// makes the usage archiver exclusive so the two never double-run.
 	RetentionChatsMode string
 	// RetentionChatsMaxAge is the age cutoff for the chats archiver: a session
 	// whose runs are ALL terminal and whose latest completed_at is older than this
@@ -5035,8 +5020,7 @@ func splitCommaTrim(s string) []string {
 //   - applyEnvCore replaces cfg.Env whole, so every block that sets an Env
 //     field runs after it;
 //   - a block that reads another's result runs after it (applyEnvNetPolicy
-//     reads the allowlist applyEnvCore set; applyEnvRetention's back-compat
-//     step reads the usage archiver values applyEnvSweepers set);
+//     reads the allowlist applyEnvCore set);
 //   - the blocks that refuse a bad value report the first one in this order,
 //     which is what an operator fixing them one boot at a time sees
 //     (TestLoadLayers_EnvRefusalsReportInLoadOrder).
@@ -5054,13 +5038,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 
 	applyEnvCore(cfg)
 
-	// RFC AH Phase 3 — the legacy filesystem jail is retired. The three env
-	// vars (LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD) no longer exist.
-	// Fail fast with a migration hint when a stale deploy still sets one,
-	// rather than silently denying every file op (sandbox-by-default).
-	if err := checkRetiredJailEnv(); err != nil {
-		return nil, err
-	}
 	// A removed variable is deleted with no compatibility read; say so once
 	// at load, where boot, `validate` and `doctor` all print advisories.
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
@@ -5441,23 +5418,6 @@ func AddContextToolDefault(def *AgentDef) {
 	// A fresh slice: def.Tools may share its backing array with a stored or
 	// cached definition, which an in-place append would write through.
 	def.Tools = append(append([]string(nil), def.Tools...), "Context")
-}
-
-// checkRetiredJailEnv fails config load when a deploy still sets one of the
-// retired legacy-jail env vars (RFC AH Phase 3). Volumes are now the sole
-// filesystem mechanism; honoring these silently would no-op (an unbound agent
-// is denied all disk access), so we surface a clear migration hint instead.
-func checkRetiredJailEnv() error {
-	var set []string
-	for _, name := range []string{"LOOMCYCLE_READ_ROOT", "LOOMCYCLE_WRITE_ROOT", "LOOMCYCLE_BASH_CWD"} {
-		if os.Getenv(name) != "" {
-			set = append(set, name)
-		}
-	}
-	if len(set) == 0 {
-		return nil
-	}
-	return fmt.Errorf("%s retired in RFC AH Phase 3 — declare a `volumes:` block instead, e.g. `default: {path: …, mode: rw, default: true}` (see docs/CONFIGURATION.md)", strings.Join(set, ", "))
 }
 
 // validateVolumes checks the top-level `volumes:` map (RFC AH Phase 1)

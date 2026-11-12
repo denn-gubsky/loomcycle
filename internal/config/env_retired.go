@@ -113,6 +113,12 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_MEMORY_MAX_VALUE_BYTES":              "a Memory value is capped at 64 KiB",
 	"LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS":           "a principal holds at most 4 document feed streams",
 	"LOOMCYCLE_TOOL_PARALLELISM":                    "8 tool calls of one turn run at once",
+	"LOOMCYCLE_USAGE_RUN_RETENTION_MS":              "the usage archiver is gone: set LOOMCYCLE_RETENTION_ENABLED=1 with LOOMCYCLE_RETENTION_CHATS_MODE and LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS",
+	"LOOMCYCLE_USAGE_RUN_RETENTION_MODE":            "the usage archiver is gone: set LOOMCYCLE_RETENTION_ENABLED=1 with LOOMCYCLE_RETENTION_CHATS_MODE",
+	"LOOMCYCLE_USAGE_EXPORT_DIR":                    "the usage archiver is gone: set LOOMCYCLE_RETENTION_EXPORT_DIR",
+	"LOOMCYCLE_READ_ROOT":                           "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
+	"LOOMCYCLE_WRITE_ROOT":                          "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
+	"LOOMCYCLE_BASH_CWD":                            "the filesystem jail is gone: declare a `volumes:` block; Bash runs in the root of the agent's rw volume",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in

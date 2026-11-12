@@ -115,12 +115,11 @@ agents:
 	}
 }
 
-// RFC AH Phase 3: the legacy jail env vars are retired. Setting any of
-// LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD must fail Load with a migration
-// hint naming the var(s) + pointing at `volumes:`, rather than silently
-// denying every file op. Fail-before: remove the checkRetiredJailEnv call in
-// Load and Load returns nil error (a stale deploy then silently no-ops).
-func TestLoad_LegacyJailEnvErrors(t *testing.T) {
+// The legacy jail env vars are retired: setting one no longer stops the load,
+// and the operator is told the line does nothing and what replaces it. (An
+// agent with no volume binding has no filesystem access, so an ignored jail
+// variable never widens anything.)
+func TestLoad_LegacyJailEnvIsReportedAsRetired(t *testing.T) {
 	yamlPath := writeVolConfig(t, `
 agents:
   a: { model: claude-sonnet-4-6 }
@@ -128,16 +127,16 @@ agents:
 	for _, name := range []string{"LOOMCYCLE_READ_ROOT", "LOOMCYCLE_WRITE_ROOT", "LOOMCYCLE_BASH_CWD"} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(name, "/work/sandbox")
-			_, err := Load(yamlPath)
-			if err == nil {
-				t.Fatalf("Load must error when %s is set", name)
+			cfg, err := Load(yamlPath)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
 			}
-			if !strings.Contains(err.Error(), name) {
-				t.Errorf("error should name the retired var %s; got %q", name, err)
+			for _, w := range cfg.Warnings {
+				if strings.HasPrefix(w, name+" is set but no longer read") && strings.Contains(w, "volumes:") {
+					return
+				}
 			}
-			if !strings.Contains(err.Error(), "volumes:") {
-				t.Errorf("error should point at `volumes:`; got %q", err)
-			}
+			t.Errorf("no advisory naming %s and pointing at `volumes:`; warnings = %q", name, cfg.Warnings)
 		})
 	}
 }

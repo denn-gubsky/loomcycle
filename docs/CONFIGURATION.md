@@ -3345,7 +3345,6 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | Variable | Default | Effect |
 |---|---|---|
 | `LOOMCYCLE_BASH_ENABLED` | off | `1` enables the host `Bash` tool. It is not a sandbox; see [SANDBOX.md](SANDBOX.md). |
-| `LOOMCYCLE_WRITE_ROOT`, `LOOMCYCLE_BASH_CWD` | — | Retired with `LOOMCYCLE_READ_ROOT` (see §9d): setting any of them fails startup with a migration hint. |
 | `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE` | off | `1` makes a request's `allowed_hosts` the whole host policy for that run instead of a narrowing of `LOOMCYCLE_HTTP_HOST_ALLOWLIST` (which then applies only to runs that send no list). |
 | `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS` | — | Comma-separated hook owners added to `hooks.permit_host_widen.owners` (appended to the yaml list). |
 | `LOOMCYCLE_CODE_AGENTS_ROOT` | `./agent_code` | Where code-js agents live (`<root>/<name>/index.js`). |
@@ -3489,9 +3488,6 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE` | `off` | Deletes subject documents left with no facts and no references. Off by default: one user's erasure could otherwise delete a record others see. |
 | `LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS` | — | Only dossiers untouched longer than this. |
 | `LOOMCYCLE_USAGE_DETAIL_RETENTION_MS` | 30 days | Per-call usage rows older than this are rolled up and deleted; totals are kept. |
-| `LOOMCYCLE_USAGE_RUN_RETENTION_MS` | `0` | Legacy old-run archiver: completed runs older than this are deleted (off at `0`). Prefer `LOOMCYCLE_RETENTION_CHATS_*`. |
-| `LOOMCYCLE_USAGE_RUN_RETENTION_MODE` | `off` | The legacy archiver's mode. |
-| `LOOMCYCLE_USAGE_EXPORT_DIR` | — | Where the legacy archiver writes exported runs. |
 
 ### Observability
 

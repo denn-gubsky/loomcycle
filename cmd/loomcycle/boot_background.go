@@ -370,27 +370,10 @@ func (b *boot) startRunSweepers() {
 	// advisoryLock stays nil and the sweeper's lock-gating branch is
 	// bypassed. Pruning is a compaction to daily usage_archive buckets,
 	// not data loss — billing totals are preserved.
-	// RFC BM Phase 2 reconciliation: when the retention sweeper is enabled AND its
-	// effective (post-alias) chats mode is a delete-bearing one, the retention
-	// sweeper owns aged-chat pruning — suppress the usage sweeper's legacy
-	// aged-session archiver so a session is never cascade-deleted by both. The
-	// usage-detail rollup is unaffected.
-	// Only suppress the legacy usage archiver when the retention chats sweep will
-	// ACTUALLY run — mirror retention's chatsPruneEnabled gate (export+prune needs
-	// an ExportDir). Otherwise a misconfigured export+prune-without-dir would
-	// disable BOTH paths, silently leaving aged chats unpruned.
-	retentionChatsActive := cfg.Env.RetentionChatsMode == "prune" ||
-		(cfg.Env.RetentionChatsMode == "export+prune" && cfg.Env.RetentionExportDir != "")
-	retentionOwnsChats := cfg.Env.RetentionEnabled && retentionChatsActive
 	if storeIface != nil {
 		// Interval is left to the sweeper's own hourly default.
 		uCfg := usage.Config{
 			DetailRetention: cfg.Env.UsageDetailRetention,
-			// RFC AV Phase 2b2 old-run archiver (opt-in; default OFF).
-			RunRetention:       cfg.Env.UsageRunRetention,
-			RunRetentionMode:   cfg.Env.UsageRunRetentionMode,
-			ExportDir:          cfg.Env.UsageExportDir,
-			DisableRunArchiver: retentionOwnsChats,
 		}
 		// Same typed-nil guard as the heartbeat block: only assign the
 		// interface field from a non-nil pointer, or the sweeper's
@@ -432,8 +415,7 @@ func (b *boot) startRunSweepers() {
 			DefsMode:      cfg.Env.RetentionDefsMode,
 			DefsMaxAge:    cfg.Env.RetentionDefsMaxAge,
 			DefsKeepLastN: cfg.Env.RetentionDefsKeepLastN,
-			// RFC BM Phase 2 aged-chat archiver (opt-in; default OFF, or inherited
-			// from the legacy LOOMCYCLE_USAGE_RUN_RETENTION_* config in cfg.Load).
+			// RFC BM Phase 2 aged-chat archiver (opt-in; default OFF).
 			ChatsMode:   cfg.Env.RetentionChatsMode,
 			ChatsMaxAge: cfg.Env.RetentionChatsMaxAge,
 			// The runtime's own maintenance chats age out faster, and are deleted
