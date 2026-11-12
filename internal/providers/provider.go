@@ -1135,6 +1135,11 @@ type Event struct {
 	// gets the event as it is; the run's transcript stores a marker in its
 	// place. Never on the wire: it is an instruction to the recorder.
 	ContentNotRetained bool `json:"-"`
+	// ContentNotCaptured is set on an EventToolResult whose text no span may
+	// capture (ContentBlock.NotCaptured). The recorder keeps it beside the
+	// stored event, so a run rebuilt from its transcript still records a
+	// marker for it. Never on the wire.
+	ContentNotCaptured bool `json:"-"`
 }
 
 // RetryInfo accompanies an EventRetry. Each field is set every time.

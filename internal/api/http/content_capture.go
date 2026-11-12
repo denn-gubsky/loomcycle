@@ -71,6 +71,36 @@ func neverCapturesContent(ctx context.Context) bool {
 	return v
 }
 
+// notCapturedMarkKey is the key a stored tool_result carries when no span may
+// capture its text (providers.Event.ContentNotCaptured, which is never
+// serialised): the stored event is otherwise as it was emitted.
+const notCapturedMarkKey = "content_not_captured"
+
+// withNotCapturedMark is payload, a stored event's JSON object, with the
+// not-captured mark set. A payload that is not an object is returned as it
+// is (an event always marshals to one).
+func withNotCapturedMark(payload []byte) []byte {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(payload, &obj) != nil || obj == nil {
+		return payload
+	}
+	obj[notCapturedMarkKey] = json.RawMessage("true")
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+// storedNotCaptured reports whether a stored event carries the not-captured
+// mark.
+func storedNotCaptured(payload []byte) bool {
+	var m struct {
+		NotCaptured bool `json:"content_not_captured"`
+	}
+	return json.Unmarshal(payload, &m) == nil && m.NotCaptured
+}
+
 // redactToolArgs masks a tool call's arguments as the stored transcript masks
 // them: the credential and crypto tools' secret fields by name, then every
 // string leaf through the redactor. Arguments that are not JSON are masked as

@@ -2,11 +2,14 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -51,14 +54,93 @@ func TestPrepareSubRun_ANeverChildMarksItsAnswerNotCaptured(t *testing.T) {
 		srv, _ := makeServer(t, &childRouter{}, cfg)
 		ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_parent", UserID: "alice"})
 		ctx, mark := tools.WithContentMark(ctx)
-		if _, err := srv.prepareSubRun(ctx, "child", "", "hi", "", false, func(providers.Event) {}); err != nil {
+		prep, err := srv.prepareSubRun(ctx, "child", "", "hi", "", false, func(providers.Event) {})
+		if err != nil {
 			t.Fatalf("never=%v: %v", never, err)
 		}
+		prep.cleanup()
 		if mark.NotCaptured() != never {
 			t.Errorf("never=%v: the spawning call is marked not captured = %v", never, mark.NotCaptured())
+		}
+		if prep.NotCaptured != never {
+			t.Errorf("never=%v: the prepared child says not captured = %v (a resident child marks its turns by it)", never, prep.NotCaptured)
 		}
 		if mark.NotRetained() {
 			t.Errorf("never=%v: the child's answer is marked not retained: its parent would store nothing of it", never)
 		}
+	}
+}
+
+// What a resident child hands back at each turn — open, send, poll, cancel,
+// its kept ending — goes through residentHandBack: a never child's turn marks
+// the calling tool call, and a child read from the store (whose agent is not
+// known here) is held to the stricter rule.
+func TestResidentHandBack_ANeverChildsTurnIsMarkedNotCaptured(t *testing.T) {
+	srv, _ := makeServer(t, &childRouter{}, noTraceConfig())
+	call := func(hand func(ctx context.Context)) *tools.ContentMark {
+		ctx, mark := tools.WithContentMark(context.Background())
+		hand(ctx)
+		return mark
+	}
+	if m := call(func(ctx context.Context) {
+		_, _ = srv.residentHandBack(ctx, "r_1", "child", residentEnding{}, "turn", "awaiting_input", nil)
+	}); m.NotCaptured() {
+		t.Error("an ordinary resident child's turn is marked not captured")
+	}
+	if m := call(func(ctx context.Context) {
+		_, _ = srv.residentHandBack(ctx, "r_1", "child", residentEnding{notCaptured: true}, "turn", "awaiting_input", nil)
+	}); !m.NotCaptured() {
+		t.Error("a never resident child's turn is not marked")
+	}
+	rc := &residentChild{agentName: "child", notCaptured: true, state: "completed"}
+	if m := call(func(ctx context.Context) {
+		_, _, _ = srv.handBackEnding(ctx, "r_1", rc.tombstone(time.Now()))
+	}); !m.NotCaptured() {
+		t.Error("a never resident child's kept ending is not marked")
+	}
+	stored := storedResident{run: store.Run{ID: "r_2", Agent: "child", Status: store.RunRunning}, state: "awaiting_input", output: "turn"}
+	if m := call(func(ctx context.Context) { _, _, _ = srv.handBackStored(ctx, stored) }); !m.NotCaptured() {
+		t.Error("a resident child read from the store is not held to the stricter rule")
+	}
+}
+
+// A never child's answer is stored as it is, with the mark beside it: a run
+// rebuilt from its transcript (a resume, a continuation) records a marker for
+// it as the live run did.
+func TestReplayTranscript_KeepsTheNotCapturedMarkOfAStoredResult(t *testing.T) {
+	srv, _ := makeServer(t, &childRouter{}, noTraceConfig())
+	ctx := context.Background()
+	sess, err := srv.store.CreateSession(ctx, "", "parent", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_p", UserID: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emit := srv.makeRecordingEmit(ctx, run.ID, tools.RunIdentityValue{AgentID: "a_p", UserID: "alice"}, sess.ID, runStateMeta{}, func(providers.Event) {})
+	for i, notCaptured := range []bool{true, false} {
+		id := []string{"tu_never", "tu_plain"}[i]
+		emit(providers.Event{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: id, Name: "Agent", Input: json.RawMessage(`{}`)}})
+		emit(providers.Event{Type: providers.EventToolResult, ToolUse: &providers.ToolUse{ID: id, Name: "Agent"},
+			Text: "child answer " + id, ContentNotCaptured: notCaptured})
+	}
+	events, err := srv.store.GetTranscript(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]providers.ContentBlock{}
+	for _, m := range replayTranscript(events) {
+		for _, b := range m.Content {
+			if b.Type == "tool_result" {
+				got[b.ToolUseID] = b
+			}
+		}
+	}
+	if b, ok := got["tu_never"]; !ok || !b.NotCaptured || b.Text != "child answer tu_never" {
+		t.Errorf("replayed never result = %+v (found %v), want its text kept and marked not captured", b, ok)
+	}
+	if b, ok := got["tu_plain"]; !ok || b.NotCaptured {
+		t.Errorf("replayed ordinary result = %+v (found %v), want it unmarked", b, ok)
 	}
 }

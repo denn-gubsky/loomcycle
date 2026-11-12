@@ -108,11 +108,11 @@ func TestRun_ANeverChildsAnswerIsAMarkerInTheParentsCapturedInput(t *testing.T) 
 	}
 	kept := false
 	for _, ev := range stored {
-		if ev.Type == providers.EventToolResult && strings.Contains(ev.Text, secret) && !ev.ContentNotRetained {
+		if ev.Type == providers.EventToolResult && strings.Contains(ev.Text, secret) && !ev.ContentNotRetained && ev.ContentNotCaptured {
 			kept = true
 		}
 	}
 	if !kept {
-		t.Error("the never child's answer is not kept in the parent's transcript")
+		t.Error("the never child's answer is not kept in the parent's transcript with its not-captured mark")
 	}
 }

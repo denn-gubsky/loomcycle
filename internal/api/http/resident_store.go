@@ -67,7 +67,11 @@ func (v storedResident) ended() bool { return store.IsTerminalRunStatus(v.run.St
 // ended for it from the reason its run was cancelled with, and an iteration
 // limit from its stop reason, with the number its record keeps.
 func (v storedResident) ending() residentTombstone {
-	t := residentTombstone{tenantID: v.run.TenantID, userID: v.run.UserID, agentName: v.run.Agent, state: string(v.run.Status), output: v.output}
+	// notCaptured: whether the child's agent never captures content is known
+	// on its own replica only, so a child read from the store is held to the
+	// stricter rule.
+	t := residentTombstone{tenantID: v.run.TenantID, userID: v.run.UserID, agentName: v.run.Agent, state: string(v.run.Status), output: v.output,
+		notCaptured: true}
 	switch {
 	case v.run.Status == store.RunCancelled:
 		t.reason, t.closedBy = residentEndedFor(v.run.StopReason)
@@ -266,7 +270,7 @@ func (s *Server) handBackStored(ctx context.Context, v storedResident) (string, 
 	if v.ended() {
 		return s.handBackEnding(ctx, v.run.ID, v.ending())
 	}
-	out, err := s.residentHandBack(ctx, v.run.ID, v.run.Agent, residentEnding{}, v.output, v.state, nil)
+	out, err := s.residentHandBack(ctx, v.run.ID, v.run.Agent, residentEnding{notCaptured: true}, v.output, v.state, nil)
 	return out, v.state, err
 }
 

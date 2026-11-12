@@ -5283,10 +5283,11 @@ func replayTranscript(events []store.Event) []providers.Message {
 			var pe providers.Event
 			if err := json.Unmarshal(ev.Payload, &pe); err == nil && pe.ToolUse != nil {
 				pendingToolResults = append(pendingToolResults, providers.ContentBlock{
-					Type:      "tool_result",
-					ToolUseID: pe.ToolUse.ID,
-					Text:      pe.Text,
-					IsError:   pe.IsError,
+					Type:        "tool_result",
+					ToolUseID:   pe.ToolUse.ID,
+					Text:        pe.Text,
+					IsError:     pe.IsError,
+					NotCaptured: storedNotCaptured(ev.Payload),
 				})
 			}
 			// Don't flush pendingToolResults yet — multiple tools at the
@@ -5866,6 +5867,10 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 		// already, and the live stream gets it below.
 		if err == nil && ev.ContentNotRetained {
 			payload = eventMarker(string(ev.Type), payload)
+		} else if err == nil && ev.ContentNotCaptured {
+			// Stored as it is, with the mark beside it: a run rebuilt from
+			// its transcript (replayTranscript) must not capture it either.
+			payload = withNotCapturedMark(payload)
 		}
 		if err == nil {
 			if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
@@ -6582,7 +6587,10 @@ type subRunPrep struct {
 	Meta      runStateMeta
 	Emit      func(providers.Event) // the recording emit (also set as Opts.OnEvent)
 	Opts      loop.RunOptions       // fully built; interactive fields (SteerQueue/OnSteer/Interactive/ArmTurnCancel) left ZERO for the caller to set
-	cleanup   func()
+	// NotCaptured: the child's agent never captures content, so whatever it
+	// hands its parent later (a resident child's turns) is marked so too.
+	NotCaptured bool
+	cleanup     func()
 }
 
 // composeCallerText resolves a caller's segments and THEN fills their data
@@ -7481,6 +7489,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		Emit:      subEmit,
 		Opts:      opts,
 		cleanup:   cleanup,
+
+		NotCaptured: def.Telemetry.NeverCapturesContent(),
 	}, nil
 }
 

@@ -5346,6 +5346,7 @@ func executePendingTools(
 			IsError: r.res.IsError,
 
 			ContentNotRetained: r.notRetained,
+			ContentNotCaptured: r.notCaptured,
 		}
 		// The failure's structure as a field too, so an SSE or gRPC consumer
 		// reads the category and the correct call format without parsing the
