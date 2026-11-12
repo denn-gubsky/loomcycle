@@ -258,6 +258,10 @@ type TeamDef struct {
 	// block — the Agent poll cap (LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS). 0 =
 	// DefaultPollWaitCapMs.
 	PollWaitCapMs int
+
+	// runStepHook is told the name of each op=run step as it starts. nil in
+	// production; a test sets it to pin the order execRun runs its steps in.
+	runStepHook func(step string)
 }
 
 // teamWalkLabel prefixes the label a walk's run is filed under (team:<name>),
@@ -1375,6 +1379,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// is answered with the walk it started even if the team has since been
 	// retired or re-promoted.
 	if in.IdempotencyKey != "" {
+		t.runStep("idempotency_key")
 		if dup, refusal := t.walkHoldingKey(ctx, in, false); refusal != nil || dup != nil {
 			if refusal != nil {
 				return *refusal, nil
@@ -1398,6 +1403,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		return r, err
 	}
 
+	t.runStep("walk")
 	if w.pm.poll {
 		return runStartPoll(ctx, in, w)
 	}
@@ -1416,6 +1422,13 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		return errResult(fmt.Sprintf("run: %s", failed)), nil
 	}
 	return okJSON(out)
+}
+
+// runStep reports that an op=run step starts (runStepHook).
+func (t *TeamDef) runStep(name string) {
+	if t.runStepHook != nil {
+		t.runStepHook(name)
+	}
 }
 
 // teamWalk carries op=run's state from one step of execRun to the next: these
@@ -1457,6 +1470,7 @@ type teamWalk struct {
 // runResolveTeam reads the team op=run walks and checks it: the board wiring,
 // the def row, its body, and what the body may ask of this server and caller.
 func (t *TeamDef) runResolveTeam(ctx context.Context, in teamDefInput, w *teamWalk) (bool, tools.Result, error) {
+	t.runStep("resolve_team")
 	// Board binding is opt-in; if requested it MUST be wired (a SQL-Memory-backed
 	// Document tool), else fail loud rather than silently dropping durability.
 	boardBound := in.BoardChunkID != ""
@@ -1552,6 +1566,7 @@ func (t *TeamDef) runResolveTeam(ctx context.Context, in teamDefInput, w *teamWa
 // runAdmit settles what may be refused before the walk's run row exists:
 // poll mode, admission, the mode, the board's resume point and the input.
 func (t *TeamDef) runAdmit(ctx context.Context, in teamDefInput, w *teamWalk) (bool, tools.Result, error) {
+	t.runStep("admit")
 	row, def := w.row, w.def
 	boardBound, boardScope := w.boardBound, w.boardScope
 	// mode "poll" makes the walk a background child of the calling run, so it
@@ -1633,6 +1648,7 @@ func (t *TeamDef) runAdmit(ctx context.Context, in teamDefInput, w *teamWalk) (b
 // runOpenWalk files a poll-mode walk in the calling run's table and opens the
 // walk's own run row.
 func (t *TeamDef) runOpenWalk(ctx context.Context, in teamDefInput, w *teamWalk) (bool, tools.Result, error) {
+	t.runStep("open_walk")
 	row, def := w.row, w.def
 	boardBound, boardScope := w.boardBound, w.boardScope
 	pm, bg, detach, resumedFrom := w.pm, w.bg, w.detach, w.resumedFrom
@@ -1767,6 +1783,7 @@ func (t *TeamDef) runOpenWalk(ctx context.Context, in teamDefInput, w *teamWalk)
 // runWalkOptions builds the walk's task and its options: the board, the
 // decision record and the iteration-cap question.
 func (t *TeamDef) runWalkOptions(in teamDefInput, w *teamWalk) {
+	t.runStep("walk_options")
 	row, def := w.row, w.def
 	boardBound, boardScope, resumedFrom := w.boardBound, w.boardScope, w.resumedFrom
 	runID, held := w.runID, w.held
@@ -1866,6 +1883,7 @@ func (w *teamWalk) refuse(msg string) (bool, tools.Result, error) {
 // its members, then arms the walk's own triggers. The walk's run is already
 // open, so every refusal here goes through refuse.
 func (t *TeamDef) runBuildRunner(in teamDefInput, w *teamWalk) (bool, tools.Result, error) {
+	t.runStep("build_runner")
 	row, def, pm := w.row, w.def, w.pm
 	held := w.held
 	walkCtx := w.walkCtx
