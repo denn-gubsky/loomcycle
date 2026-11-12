@@ -27,7 +27,6 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -124,16 +123,9 @@ func memoryChangesEnabled() bool {
 }
 
 // memoryChangesRetention is how long change-feed rows are kept before the
-// retention sweeper prunes them. Default 24h; override with
-// LOOMCYCLE_MEMORY_CHANGES_RETENTION_HOURS.
-func memoryChangesRetention() time.Duration {
-	if h := os.Getenv("LOOMCYCLE_MEMORY_CHANGES_RETENTION_HOURS"); h != "" {
-		if n, err := strconv.Atoi(h); err == nil && n > 0 {
-			return time.Duration(n) * time.Hour
-		}
-	}
-	return 24 * time.Hour
-}
+// retention sweeper prunes them: a day covers a subscriber's outage without
+// the feed growing with the corpus.
+const memoryChangesRetention = 24 * time.Hour
 
 // changeSubDeliveryTimeout bounds each outbound change-subscription POST.
 const changeSubDeliveryTimeout = 30 * time.Second
@@ -154,15 +146,8 @@ func resolveChangeSubSecret(name string) (string, error) {
 }
 
 // changeSubDeliveryInterval is how often the RFC CD Part C push engine tails the
-// feed. Default 5s; override with LOOMCYCLE_CHANGE_SUB_INTERVAL_MS.
-func changeSubDeliveryInterval() time.Duration {
-	if s := os.Getenv("LOOMCYCLE_CHANGE_SUB_INTERVAL_MS"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil && n > 0 {
-			return time.Duration(n) * time.Millisecond
-		}
-	}
-	return 5 * time.Second
-}
+// feed: the delay a subscriber sees between a write and its callback.
+const changeSubDeliveryInterval = 5 * time.Second
 
 // resolveChangeSubscriptions turns the static change_subscriptions config into
 // deliverable subscriptions, each with its OWN SSRF-guarded client — the
@@ -322,47 +307,6 @@ func stripPseudoVersionSuffix(v string) string {
 func printVersion() {
 	fmt.Printf("loomcycle version=%s commit=%s built=%s go=%s\n",
 		buildVersion, buildCommit, buildTime, runtime.Version())
-}
-
-// mcpProxyHeaderTimeout reads LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS (the
-// thin-client's time-to-response-headers bound; a stalled upstream must not
-// hang a frame forever, and Claude Code's tool-idle timeout doesn't cover stdio
-// servers). Unset / invalid → 0, letting NewProxyClient apply its default.
-func mcpProxyHeaderTimeout() time.Duration {
-	v := os.Getenv("LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS")
-	if v == "" {
-		return 0
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 0 {
-		return 0
-	}
-	return time.Duration(n) * time.Millisecond
-}
-
-// mcpProxyReconnectDelays reads LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS and
-// builds the thin-client's transport-error backoff schedule: an immediate first
-// retry, then geometric waits (500ms doubling) capped at 4s. Unset → nil, so
-// NewProxyClient applies its default schedule; 0 → an empty schedule (retry
-// disabled — one attempt only).
-func mcpProxyReconnectDelays() []time.Duration {
-	v := os.Getenv("LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS")
-	if v == "" {
-		return nil
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 0 {
-		return nil
-	}
-	delays := make([]time.Duration, n)
-	for i := 1; i < n; i++ {
-		d := 500 * time.Millisecond * (1 << (i - 1))
-		if d > 4*time.Second {
-			d = 4 * time.Second
-		}
-		delays[i] = d
-	}
-	return delays
 }
 
 // selectPresetNames resolves the RFC AQ embedded-preset selection: --preset

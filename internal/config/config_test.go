@@ -848,9 +848,6 @@ agents:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Env.MemoryMaxValueBytes != 64*1024 {
-		t.Errorf("MemoryMaxValueBytes default = %d, want 65536", cfg.Env.MemoryMaxValueBytes)
-	}
 	if cfg.Env.MemoryMaxScopeBytes != 1024*1024 {
 		t.Errorf("MemoryMaxScopeBytes default = %d, want 1048576", cfg.Env.MemoryMaxScopeBytes)
 	}
@@ -867,14 +864,10 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   default: { model: claude-sonnet-4-6 }
 `), 0o600)
-	t.Setenv("LOOMCYCLE_MEMORY_MAX_VALUE_BYTES", "0")
 	t.Setenv("LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS", "0")
 	cfg, err := Load(yamlPath)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if cfg.Env.MemoryMaxValueBytes != 0 {
-		t.Errorf("0 should disable; got %d", cfg.Env.MemoryMaxValueBytes)
 	}
 	if cfg.Env.MemoryPendingDrainedTTL != 0 {
 		t.Errorf("0 should disable the drained-queue prune; got %v", cfg.Env.MemoryPendingDrainedTTL)

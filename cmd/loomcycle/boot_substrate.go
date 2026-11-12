@@ -321,18 +321,4 @@ func (b *boot) wireAuth() {
 	default:
 		fatal("limits: LOOMCYCLE_LIMITS_ENFORCE is not a known value (strict, or unset)", "value", v)
 	}
-	// Expired token rows are removed once they have been dead for a while. A
-	// deployment minting short-lived tokens daily would otherwise keep every
-	// one of them. Only rows that carry an expiry are ever removed; a token
-	// minted without one stays until an operator retires it, and stays after.
-	expiredTokenRetention := 7 * 24 * time.Hour
-	if v := os.Getenv("LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS"); v != "" {
-		if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n >= 0 {
-			expiredTokenRetention = time.Duration(n) * time.Second
-		} else {
-			fatal("auth: LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS is not a number of seconds (0 keeps expired rows)", "value", v)
-		}
-	}
-
-	b.expiredTokenRetention = expiredTokenRetention
 }

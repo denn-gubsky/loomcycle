@@ -31,11 +31,11 @@ type Config struct {
 	// MaxRatio is LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO, the highest sampler
 	// ratio a tenant may ask for (0..1, default 1).
 	MaxRatio float64
-	// QueueSize is LOOMCYCLE_TENANT_TELEMETRY_QUEUE, each tenant pipeline's
-	// queue (default 512).
+	// QueueSize is each tenant pipeline's queue (512): past it spans are
+	// dropped and counted, never waited on.
 	QueueSize int
-	// MaxPipelines is LOOMCYCLE_TENANT_TELEMETRY_MAX_PIPELINES, the tenant
-	// pipelines open at once (default 256).
+	// MaxPipelines is the tenant pipelines open at once (256): past it the
+	// least recently used is flushed and closed.
 	MaxPipelines int
 	// ContentCapture is LOOMCYCLE_TENANT_CONTENT_CAPTURE: a tenant may turn
 	// content capture on (its runs' prompts, answers and tool calls on the
@@ -43,13 +43,6 @@ type Config struct {
 	// stored with it on captures nothing.
 	ContentCapture bool
 }
-
-// maxQueueSize and maxPipelinesCap bound the operator's own settings: each
-// pipeline's queue is memory per tenant, and each pipeline a goroutine.
-const (
-	maxQueueSize    = 65536
-	maxPipelinesCap = 4096
-)
 
 // ConfigFromEnv reads the operator's settings through getenv. With the gate
 // off nothing else is read, so a stray value cannot stop a boot that does not
@@ -85,12 +78,6 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		}
 		cfg.MaxRatio = r
 	}
-	if cfg.QueueSize, err = envInt(get, "LOOMCYCLE_TENANT_TELEMETRY_QUEUE", cfg.QueueSize, maxQueueSize); err != nil {
-		return Config{}, err
-	}
-	if cfg.MaxPipelines, err = envInt(get, "LOOMCYCLE_TENANT_TELEMETRY_MAX_PIPELINES", cfg.MaxPipelines, maxPipelinesCap); err != nil {
-		return Config{}, err
-	}
 	return cfg, nil
 }
 
@@ -104,18 +91,6 @@ func envBool(get func(string) string, k string) (bool, error) {
 		return false, fmt.Errorf("%s=%q: want 1 or 0", k, v)
 	}
 	return b, nil
-}
-
-func envInt(get func(string) string, k string, def, maxV int) (int, error) {
-	v := get(k)
-	if v == "" {
-		return def, nil
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 1 || n > maxV {
-		return 0, fmt.Errorf("%s=%q: want a whole number from 1 to %d", k, v, maxV)
-	}
-	return n, nil
 }
 
 // hostAllowed reports whether host is admitted by the operator's list: empty

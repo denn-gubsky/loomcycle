@@ -5331,8 +5331,7 @@ export class LoomcycleClient {
    *  - The server re-authenticates the stream every 30 s: a revoked grant
    *    stops that document's changes, and a revoked token ends the stream,
    *    within that window; a token's expiry ends it on time.
-   *  - At most a few streams per principal (`LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS`,
-   *    default 4); one more is refused with a 429 — a `BackpressureError` with
+   *  - At most 4 streams per principal; one more is refused with a 429 — a `BackpressureError` with
    *    code `too_many_streams`, not retryable until you close a stream.
    *  - Iteration ends when the server closes the stream, or throws an
    *    `AbortError` when `signal` aborts. */

@@ -1290,7 +1290,6 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 | `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` | The longest lifetime a per-user token may be minted with. Unset = no cap. When set, a mint asking for more is refused, and a mint asking for no lifetime gets this one. See [Token lifetime](#token-lifetime). |
 | `LOOMCYCLE_TOKEN_AUTHORITY_INHERIT` | `1` mints per-user tokens (`POST /v1/_users/{subject}/tokens` and every gate-issued token) with authority `inherit`: their scopes follow the user's **current** `access_mode` on every request, so a promotion or demotion needs no re-mint. Unset (default) = minted `frozen`, exactly as before; a mint may ask for either with `"authority"`. Operator tokens and config principals are always frozen; existing tokens keep their mode. See [Token authority](#token-authority-frozen-or-inherit). |
 | `LOOMCYCLE_RUN_RATE_PER_MINUTE` / `LOOMCYCLE_RUN_RATE_BURST` | A default rate for run starts, for a caller whose token carries none. Unset = no default. Operators are not bound by it. See [Limiting how often a token starts runs](#limiting-how-often-a-token-starts-runs). |
-| `LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS` | How long an expired token's row is kept before it is deleted (default 7 days; `0` keeps expired rows). Only rows that carry an expiry are ever deleted. |
 | `LOOMCYCLE_LIMITS_ENFORCE` | `strict` makes a hard token budget also stop runs in flight and refuse sub-agents. Unset = checked only when a run starts. See [Strict token budgets](#strict-token-budgets). |
 | `LOOMCYCLE_AUDIT_LOG_PATH` | A JSONL file of every audit record (token mints, sign-ins, ACL denials and edits, erasures, …; never a token or hash). Per replica, unsigned; beside the store-backed stream it is a mirror. See [Audit trail](#audit-trail). |
 | `LOOMCYCLE_AUDIT_STORE` | `1` turns on the store-backed, hash-chained audit stream where the posture does not already require it; `0` is refused where it does. See [Audit trail](#audit-trail). |
@@ -1547,7 +1546,7 @@ Rules worth knowing:
 - **A token holding `substrate:admin` cannot have a lifetime.** One admin token turns the legacy `LOOMCYCLE_AUTH_TOKEN` login off, so an admin token that expires would lock the deployment out on a date.
 - **An unknown field in the mint body is refused** (`400`). A misspelled `ttl_seconds` that was silently dropped would hand back a token that never expires. Before v1.112.0 the body was ignored entirely.
 - **Expiry holds through the resolution cache.** A token stops at its own end, not up to `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` later. The same now applies to a rotated-out token at the end of its grace window.
-- **Expired rows are cleaned up.** A token's row is deleted `LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS` after it expired (default 7 days). A token minted without a lifetime is never deleted this way.
+- **Expired rows are cleaned up.** A token's row is deleted 7 days after it expired. A token minted without a lifetime is never deleted this way.
 - **Mints and revocations of per-user tokens are written to the audit log** when `LOOMCYCLE_AUDIT_LOG_PATH` is set, as operator-token changes already are.
 
 Token listings (`GET /v1/_users/{subject}/tokens`, `operator-token show` / `list`) show `expires_at`, and `active` is false once a token has expired.
@@ -1763,7 +1762,7 @@ Rules worth knowing:
 - **A refused sub-agent is the parent's tool error**, in the `business` category and not retryable. No row is written for the child. The parent is then stopped at its own next model call.
 - **The overshoot is bounded by one model call per run in flight.** The check runs between calls; a call that has started is not cut off.
 - **Runs that take no model call are stopped too.** A code agent over its budget stops at its next step.
-- **It is the same counter as the default mode**, so the same limits hold: exact on one replica, best effort across several, and a counter that could not be loaded at boot refuses nothing. The budgets themselves reach every replica within `LOOMCYCLE_LIMITS_RELOAD_INTERVAL` (default a minute) of being written; the usage counted against them stays per replica.
+- **It is the same counter as the default mode**, so the same limits hold: exact on one replica, best effort across several, and a counter that could not be loaded at boot refuses nothing. The budgets themselves reach every replica within a minute of being written; the usage counted against them stays per replica.
 - **Not covered:** a compaction summary and the model calls a tool makes on a run's behalf (an evaluation, a decision, memory consolidation) are not checked one by one. The run's own next call is.
 - **A gateway call that ends without a usage report is counted by an estimate**, in either mode: the caller hung up, the provider failed first, or it reported zero. The estimate comes from the size of what was sent and returned and errs high. It counts against the budget and survives a restart, but it is not written to the usage ledger, so `/v1/_usage` and cost reports show only what a provider measured.
 - **Any value other than `strict` stops the server at boot**, so a misspelled setting cannot leave a deployment unenforced.
@@ -1917,7 +1916,7 @@ auth:
 - **Checks.** Code flow with PKCE S256 only; `state` bound to a ten-minute `__Host-lc_login` cookie (`lc_login` over plain HTTP) and a single-use server row; `nonce`; `iss`/`aud`/`azp`; `exp` and `iat` within 5 minutes; asymmetric signature algorithms only; the key by `kid`, refetched on rotation at most once a minute. Starting a login is throttled to 30 per client source per 10 minutes.
 - **Identity map.** The subject is `<gate>:<value of the subject claim>`, and the subject claim is `sub` unless `identity_map.subject` names another. That claim must be one the provider never gives to another person: `sub` on every gate, also `oid` on the `entra` preset and `arn` on an `awsiam` gate. Any other claim (`email`, `preferred_username`, an employee id) fails to load unless the identity map also says `subject_claim_immutable: true`, the operator's word that their provider never reassigns it; check that at your identity provider first, because whoever the provider puts in that claim signs in as the user an operator made for that value. A subject that is an address — the claim is `email` or `upn`, or the value holds `@` (a `preferred_username`, `mail` or custom claim set to an address) — keys a sign-in only when the provider says that address is verified (`email_verified: true` on the assertion's own e-mail, the same address); otherwise the sign-in is refused, audited `auth_login_failed` with the reason `subject_unverified`, and nothing is linked. A declared claim holding a plain username (`alice`) signs in on the declaration alone. On Entra, key on `oid`, since Entra tokens do not say an address is verified. On a Cloudflare Access header gate the address is treated as verified because Access vouches for it, so key on `email` only when every identity provider configured in Access verifies addresses; otherwise key on `sub`. The OAuth gate's subject is always `sub` and the SCIM gate's is the SCIM id: neither takes the declaration. An identity lands in the configured tenant or, with `tenant_claim`, in the tenant `allowed_tenants` maps its claim to; anything else is refused, never the shared tenant. `provision: known` admits only users an operator created (subject `<gate>:<value>`); `auto` creates them at `auth.lifecycle.new_user` (the floor, which may not be tenant reach). A gate's `identity_map.new_user` may go beyond the floor (tenant reach, more groups, `active` over a `pending` floor) and its `groups` block may sync groups only with `trusted: true`.
 - **Group sync.** `identity_map.groups: {claim: groups, provision: true, map: {hr-admins: admins}}` adds and removes the user's memberships, at every login, in the groups whose `external_id` is `<gate>:<provider name>` only; local groups and other gates' groups are never touched. Audited `auth_groups_synced`.
-- **A budget for each new user.** `new_user.budget: { soft_limit: 500000, hard_limit: 1000000 }` (tokens per calendar month, UTC; set either tier or both) is written as the user-scope token limit (the `PUT /v1/_limits` row with `scope: user`; see [Strict token budgets](#strict-token-budgets)) of every user the gate creates, so a gate that admits strangers (an open chat bot, `allow_any_account`) does not make uncapped users. It is written only when the user is made: a limit an operator set for that subject first is kept, an existing user gets none, and `PUT /v1/_limits` changes it afterwards. Set in `auth.lifecycle.new_user` it is every new user's default — written for the users an identity gate (OIDC, external, SCIM, AWS IAM) creates, a password gate creates at invite redemption, and an operator creates with `POST /v1/_users` (a create that conflicts with an existing user writes none); a gate's `identity_map.new_user.budget` replaces it for that gate's users, and on a gate that is not `trusted` it may only be tighter: a tier the deployment sets cannot be left off or raised, so a gate that tightens only `hard_limit` under a deployment budget that also sets `soft_limit` is refused until it states `soft_limit` too. The limit reaches the replica that made the user at once and the others within `LOOMCYCLE_LIMITS_RELOAD_INTERVAL` (default 1 minute), as a `PUT /v1/_limits` does.
+- **A budget for each new user.** `new_user.budget: { soft_limit: 500000, hard_limit: 1000000 }` (tokens per calendar month, UTC; set either tier or both) is written as the user-scope token limit (the `PUT /v1/_limits` row with `scope: user`; see [Strict token budgets](#strict-token-budgets)) of every user the gate creates, so a gate that admits strangers (an open chat bot, `allow_any_account`) does not make uncapped users. It is written only when the user is made: a limit an operator set for that subject first is kept, an existing user gets none, and `PUT /v1/_limits` changes it afterwards. Set in `auth.lifecycle.new_user` it is every new user's default — written for the users an identity gate (OIDC, external, SCIM, AWS IAM) creates, a password gate creates at invite redemption, and an operator creates with `POST /v1/_users` (a create that conflicts with an existing user writes none); a gate's `identity_map.new_user.budget` replaces it for that gate's users, and on a gate that is not `trusted` it may only be tighter: a tier the deployment sets cannot be left off or raised, so a gate that tightens only `hard_limit` under a deployment budget that also sets `soft_limit` is refused until it states `soft_limit` too. The limit reaches the replica that made the user at once and the others within a minute, as a `PUT /v1/_limits` does.
 - **Approval queue.** `new_user.status: pending` (recommended for strict deployments) lets a new person sign in to an "awaiting approval" page and nothing else, until an operator approves them in the Users console (`POST /v1/_users/{subject}/approve`).
 - **Linking.** A user links another gate's account from the account page, within `auth.session.reauth_window` of signing in, through a fresh provider sign-in; never inferred from an e-mail. Only a password or identity-gate session may link (not a pasted-token session). `DELETE /v1/_users/{subject}/identities/{gate}` unlinks.
 - **Issued tokens.** Tokens a gate issues for non-browser clients are tagged `issued_by_gate`, live at most `new_user.token_ttl` (and `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS`), and cannot be rotated.
@@ -3318,7 +3317,6 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER` | `16` | How many runs one (tenant, user) may queue behind its per-user concurrency cap; `0` refuses a run over the cap at once. Per replica in cluster mode. |
 | `LOOMCYCLE_CONFIGURED_RUN_TTL_MS` | 24 h | How long a configured (created, not started) run is kept before it and its session are discarded. `0` keeps them. |
 | `LOOMCYCLE_MAX_CONFIGURED_RUNS_PER_USER` | `100` | How many configured runs one (tenant, user) may hold; `0` = no cap. |
-| `LOOMCYCLE_TOOL_PARALLELISM` | `8` | How many tool calls from one assistant turn run at once (1–64). `1` forces serial dispatch. |
 
 ### Providers
 
@@ -3365,9 +3363,6 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 |---|---|---|
 | `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS` | off | `1` lets agents registered through MCP `register_agent` keep Bash, Write and Edit; otherwise those tools are stripped. |
 | `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO` | off | `1` lets an `MCPServerDef` created at run time use `transport: stdio`, which runs a local command. Static yaml `mcp_servers:` are unaffected. |
-| `LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS` | `16` | `loomcycle mcp` (stdio): tool calls dispatched at once. |
-| `LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS` | `60000` | `loomcycle mcp --upstream` thin client: time to the upstream's response headers. Long-running tools (`spawn_run`, `spawn_runs`, `compact_run`, `evaluation`) are exempt. |
-| `LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS` | 5 | Thin client: retries after a transport error (immediately, then 0.5 s doubling to 4 s). `0` disables the retry. |
 | `LOOMCYCLE_MCP_RECIPES_ROOT` | unset | Directory overlay of MCP server recipes for the `loomcycle mcp-registry` and `loomcycle import --emit-recipes` commands. |
 
 ### Triggers and background work
@@ -3414,6 +3409,16 @@ These are constants of the runtime; no setting changes them.
 | Pause wait | 30 s | How long a pause waits for in-flight runs to park when the request names no `timeout_ms` (a request may ask for up to 5 min). |
 | Cancel acknowledgement | 5 s | Cluster mode: how long a cancel waits for the owning replica before answering `owner_replica_unreachable`. |
 | Pause-state cache | 1 s | Cluster mode: how long a replica caches the shared pause state. |
+| Limit reload | 1 min | Cluster mode: how often a replica re-reads the token limit rows, so a budget written on one replica is enforced on all. |
+| Expired token rows | 7 days | How long an expired token's row is kept before it is deleted. Only rows that carry an expiry are ever deleted. |
+| stdio MCP dispatch | 16 calls | `loomcycle mcp` (stdio): tool calls dispatched at once. |
+| Thin-client recovery | 60 s, 5 tries | `loomcycle mcp --upstream`: time to the upstream's response headers (long-running tools are exempt), and retries after a transport error (immediately, then 0.5 s doubling to 4 s). |
+| Change feed | 24 h, 5 s | How long change-feed rows are kept, and how often the change-subscription delivery engine reads the feed. |
+| Relation evidence | 32 quotes | Supporting quotes kept on one knowledge-base relation. |
+| Memory value | 64 KiB | One Memory value per write. |
+| Document feed streams | 4 | Concurrent `GET /v1/_document/feed` streams one principal may hold per replica. |
+| Tool parallelism | 8 | Tool calls from one assistant turn that run at once. |
+| Tenant telemetry | 512 spans, 256 pipelines | Spans each tenant's pipeline holds waiting for export (past it they are dropped and counted), and tenant pipelines open at once on a replica (past it the least recently used is flushed and closed). |
 
 Background work runs on fixed cadences, and none of it can be switched off:
 
@@ -3436,10 +3441,8 @@ Background work runs on fixed cadences, and none of it can be switched off:
 
 | Variable | Default | Effect |
 |---|---|---|
-| `LOOMCYCLE_MEMORY_MAX_VALUE_BYTES` | 64 KiB | Largest Memory value per write. *0 disables*. |
 | `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` | 1 MiB | Memory bytes per scope; an agent's `memory_quota_bytes` overrides it. *0 disables*. |
 | `LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS` | 7 days | How long a consolidation-queue row is kept after a pass consumed it; `0` keeps them (and their chat payloads) forever. |
-| `LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS` | on | `0` stops creating the tenant-root and user-root documents when a principal is established (token mint, config principals at boot); they are then created on first use only. |
 | `LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE` | `100` | Texts per embedder call (provider limits still apply); `0` sends one text per call. |
 | `LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS` | `30000` | Timeout of one embedder call; `0` relies on the caller's deadline. |
 | `LOOMCYCLE_PGVECTOR_ENABLED` | off | `1` enables vector Memory on Postgres; boot fails if the `vector` extension is missing. |
@@ -3448,12 +3451,8 @@ Background work runs on fixed cadences, and none of it can be switched off:
 | `LOOMCYCLE_MEMORY_TRACE_ASSISTANT` | off | `1` also indexes assistant turns (at run completion). |
 | `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` | 30 days | How long an indexed turn stays searchable. |
 | `LOOMCYCLE_MEMORY_CHANGES_ENABLED` | off | `1` records a memory change feed (change-data capture) that change subscriptions deliver from. Off, the store is not wrapped and pays nothing. |
-| `LOOMCYCLE_MEMORY_CHANGES_RETENTION_HOURS` | `24` | How long change-feed rows are kept. |
-| `LOOMCYCLE_CHANGE_SUB_INTERVAL_MS` | `5000` | How often the change-subscription delivery engine reads the feed. |
 | `LOOMCYCLE_DEADLINK_GC_MS` | `3600000` | How often unreachable chunk references (a body whose chunk is gone, an edge to a missing chunk) are collected; on by default, `0` disables. |
 | `LOOMCYCLE_DEADLINK_GC_DRY_RUN` | off | `1` makes that collection count and log without deleting. |
-| `LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS` | `4` | Concurrent `GET /v1/_document/feed` streams one principal may hold per replica; `0` = unlimited. |
-| `LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE` | `32` | Supporting quotes kept on one knowledge-base relation. |
 | `LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS` | `30000` | Longest `wait_ms` a channel subscribe may ask for; `0` disables long-polling. |
 | `LOOMCYCLE_CHANNEL_DEBUG` | off | `1` logs channel publish and subscribe activity. Diagnostic only. |
 
@@ -3529,8 +3528,6 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_TENANT_TELEMETRY_ALLOW_HTTP` | off | `1` accepts an `http://` collector endpoint (a lab without TLS). Off, only `https://`. A header credential can be bound only to an https endpoint, so an http one takes no headers. |
 | `LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS` | — | Comma-separated hosts a tenant's endpoint may name, each exact (`otel.example.com`) or `*.suffix` (`*.grafana.net`, which does not match `grafana.net` itself). Empty allows any host the address guard lets through. |
 | `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO` | `1` | The highest `sampler_ratio` a tenant may set, 0–1. |
-| `LOOMCYCLE_TENANT_TELEMETRY_QUEUE` | `512` | Spans each tenant's pipeline holds waiting for export; past it they are dropped and counted, never waited on. |
-| `LOOMCYCLE_TENANT_TELEMETRY_MAX_PIPELINES` | `256` | Tenant pipelines open at once on a replica; past it the least recently used is flushed and closed. |
 | `LOOMCYCLE_TENANT_CONTENT_CAPTURE` | off | `1` lets a tenant turn on content capture: its runs' prompts, answers and tool calls, redacted and cut, on the spans its own collector receives (never the operator's). Read only with `LOOMCYCLE_TENANT_TELEMETRY` on. Off, a policy asking for `content_capture: on` is refused, and one stored with it on exports its traces without content. See "Tenant content capture". |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | — | An http(s) URL containing `{trace_id}`, e.g. `https://grafana.example/explore?traceId={trace_id}`: the Web UI's run view links each traced run there. Shown to every signed-in user who can see the run. Anything else stops the startup. |
 
@@ -3808,7 +3805,7 @@ through the same address guard, header credential, export slots and timeout
 as a span export, one in flight per tenant, so a hung collector delays no
 other tenant. A tenant whose series have not changed for 10 minutes stops
 being pushed (the values it last received stand) until they change again; at
-most `LOOMCYCLE_TENANT_TELEMETRY_MAX_PIPELINES` tenants are pushed at once on
+most 256 tenants are pushed at once on
 a replica, and the last values are pushed when the process stops. A failed
 push counts in `export_failures` and reads `metrics: <category>` in
 `last_error`, which only a later successful push clears;

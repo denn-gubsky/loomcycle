@@ -5752,7 +5752,7 @@ var ErrMemoryWrongType = &MemoryError{Code: "wrong_type", Msg: "memory: existing
 var ErrMemoryQuotaExceeded = &MemoryError{Code: "quota_exceeded", Msg: "memory: scope quota exceeded"}
 
 // ErrMemoryValueTooLarge is returned when a single value exceeds the
-// per-write byte cap (LOOMCYCLE_MEMORY_MAX_VALUE_BYTES).
+// per-write byte cap (64 KB).
 var ErrMemoryValueTooLarge = &MemoryError{Code: "value_too_large", Msg: "memory: value exceeds max bytes"}
 
 // ErrVectorUnsupported is returned by every MemoryEmbed* method when

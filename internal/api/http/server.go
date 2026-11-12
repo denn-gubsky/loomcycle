@@ -664,7 +664,7 @@ type Server struct {
 	// every gate on the scope answer alone.
 	aclResolver *aclres.Resolver
 	// documentFeeds counts each principal's open GET /v1/_document/feed
-	// streams (RFC FV, LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS).
+	// streams (RFC FV, capped at documentFeedMaxStreams).
 	documentFeeds documentFeedStreams
 	// tokenCache is the RFC L per-replica auth-token resolution cache.
 	// Nil = disabled (direct lookup per request). Wired via
@@ -7059,7 +7059,6 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		ObserveCall:         s.callObserver(subRunID),
 		MarkRateLimited:     s.markRateLimitedFn(parentTier),
 		ClearStall:          s.clearStallFn(providerID, model),
-		ToolParallelism:     s.cfg().Env.ToolParallelism,
 		AgentName:           name,
 		CodeBody:            def.Code, // inline code-js body (RFC J); "" → FS fallback
 		// A code-js sub-agent's wall-clock budget is its OWN per-agent

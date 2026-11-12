@@ -11,24 +11,8 @@ import (
 // applyEnvMemory reads the memory, document feed, dead-link GC and vector
 // memory knobs, each with its default.
 func applyEnvMemory(cfg *Config) {
-	// Memory tool defaults. Per-write 64 KB, per-scope 1 MB. Negative
-	// values are treated as "disable".
-	cfg.Env.MemoryMaxValueBytes = 64 * 1024
-	if v := os.Getenv("LOOMCYCLE_MEMORY_MAX_VALUE_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.MemoryMaxValueBytes = 0
-			} else {
-				cfg.Env.MemoryMaxValueBytes = n
-			}
-		}
-	}
-	cfg.Env.DocumentFeedMaxStreams = 4
-	if v := os.Getenv("LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Env.DocumentFeedMaxStreams = max(n, 0)
-		}
-	}
+	// Memory tool defaults: per-scope 1 MB. Negative values are treated as
+	// "disable".
 	cfg.Env.MemoryMaxScopeBytes = 1024 * 1024
 	if v := os.Getenv("LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {

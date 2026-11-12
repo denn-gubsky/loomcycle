@@ -546,8 +546,8 @@ func pendingSessionPrincipal(u store.UserRow, pending *bool) (auth.Principal, bo
 // operator may set one for a subject before its first sign-in, and that word
 // stands. The insert-if-absent is the store primitive snapshot restore uses
 // for the same reason. The row reaches this replica's limits cache at once;
-// other replicas pick it up on their next limits reload (within
-// LOOMCYCLE_LIMITS_RELOAD_INTERVAL, default 1m), as with PUT /v1/_limits.
+// other replicas pick it up on their next limits reload (within a
+// minute), as with PUT /v1/_limits.
 func (s *Server) writeNewUserBudget(ctx context.Context, by, tenant, subject string, b *config.AuthBudgetConfig, now time.Time) error {
 	if b == nil {
 		return nil
@@ -566,7 +566,7 @@ func (s *Server) writeNewUserBudget(ctx context.Context, by, tenant, subject str
 
 // loadUserLimit puts the budget stored for (tenant, subject) into this
 // replica's limits cache, so a new user's limit is enforced here at once;
-// the others pick it up within LOOMCYCLE_LIMITS_RELOAD_INTERVAL. It reads
+// the others pick it up on their next limits reload. It reads
 // the row back rather than caching what was asked for: an insert-if-absent
 // that met a limit already there kept that one. A read fault is logged; the
 // next reload fills the cache.

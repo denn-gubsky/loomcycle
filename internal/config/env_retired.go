@@ -99,6 +99,20 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS":               "a cross-replica cancel waits 5s for its acknowledgement",
 	"LOOMCYCLE_PAUSE_CACHE_TTL_MS":                  "the shared pause state is cached for 1s",
 	"LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS":            "a pause waits 30s unless the request names timeout_ms",
+	"LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS":            "the stdio MCP server dispatches 16 tool calls at once",
+	"LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS":      "the thin client waits 60s for the upstream's response headers",
+	"LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS":     "the thin client retries a transport error 5 times",
+	"LOOMCYCLE_LIMITS_RELOAD_INTERVAL":              "token limit rows are re-read every minute",
+	"LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS":     "an expired token's row is deleted 7 days after it expired",
+	"LOOMCYCLE_MEMORY_CHANGES_RETENTION_HOURS":      "change-feed rows are kept 24h",
+	"LOOMCYCLE_CHANGE_SUB_INTERVAL_MS":              "change subscriptions are delivered every 5s",
+	"LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE":      "a knowledge-base relation keeps at most 32 supporting quotes",
+	"LOOMCYCLE_TENANT_TELEMETRY_QUEUE":              "a tenant telemetry pipeline queues 512 spans",
+	"LOOMCYCLE_TENANT_TELEMETRY_MAX_PIPELINES":      "256 tenant telemetry pipelines are open at once",
+	"LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS":      "the tenant-root and user-root documents are always created when a principal is established",
+	"LOOMCYCLE_MEMORY_MAX_VALUE_BYTES":              "a Memory value is capped at 64 KiB",
+	"LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS":           "a principal holds at most 4 document feed streams",
+	"LOOMCYCLE_TOOL_PARALLELISM":                    "8 tool calls of one turn run at once",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in

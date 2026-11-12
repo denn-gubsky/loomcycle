@@ -28,6 +28,11 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
+// MemoryMaxValueBytes is the cap the server puts on one Memory value. 64 KiB
+// is generous for a JSON document an agent would persist and refuses the
+// obvious abuse of stashing a whole transcript in one row.
+const MemoryMaxValueBytes = 64 << 10
+
 // Memory is the v0.8.0 built-in tool that exposes persistent
 // agent-scoped key/value storage to the model.
 //
@@ -60,8 +65,7 @@ type Memory struct {
 	Store store.Store
 
 	// MaxValueBytes caps a single write's value size (the Set / Incr
-	// payload). 0 = no per-write cap. Sourced from
-	// LOOMCYCLE_MEMORY_MAX_VALUE_BYTES.
+	// payload; the server sets MemoryMaxValueBytes). 0 = no per-write cap.
 	MaxValueBytes int
 
 	// DefaultQuotaBytes is the per-(scope, scope_id) byte cap when

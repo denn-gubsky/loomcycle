@@ -22,7 +22,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -191,12 +190,12 @@ const (
 	edgeProposalConfidenceCap = 0.3
 )
 
-// edgeEvidenceMax is LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE. An edge with many
+// edgeEvidenceMax is the supporting quotes one edge keeps. An edge with many
 // supporting quotes is evidence the relation is real; past a few dozen it is a
 // table growing without telling a reader anything new.
-func edgeEvidenceMax() int {
-	if v, err := strconv.Atoi(os.Getenv("LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE")); err == nil && v > 0 {
-		return v
+func (d *Document) edgeEvidenceMax() int {
+	if d.EdgeEvidenceMax > 0 {
+		return d.EdgeEvidenceMax
 	}
 	return edgeEvidenceDefaultMax
 }
@@ -1031,7 +1030,7 @@ func (d *Document) addEvidence(ctx context.Context, key sqlmem.ScopeKey, edgeID 
 	for _, r := range res.Rows {
 		have[strings.Join([]string{asStr(r[0]), asStr(r[1]), strconv.Itoa(asInt(r[2])), asStr(r[3]), asStr(r[4]), asStr(r[5]), asStr(r[6])}, "\x00")] = true
 	}
-	n, max := len(res.Rows), edgeEvidenceMax()
+	n, max := len(res.Rows), d.edgeEvidenceMax()
 	written, capped := 0, false
 	now := time.Now().UnixNano()
 	for _, ev := range rows {

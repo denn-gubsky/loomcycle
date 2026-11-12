@@ -287,7 +287,7 @@ func (b *boot) buildToolsMemory() {
 	}
 
 	memoryTool := &builtin.Memory{
-		MaxValueBytes:     cfg.Env.MemoryMaxValueBytes,
+		MaxValueBytes:     builtin.MemoryMaxValueBytes,
 		DefaultQuotaBytes: cfg.Env.MemoryMaxScopeBytes,
 		Embedder:          embedder,
 		// RFC I MR-3b: resolves a per-agent memory_backend NAME to its

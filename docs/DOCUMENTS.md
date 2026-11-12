@@ -507,8 +507,7 @@ GET /v1/_document/feed?scope=user|tenant[&scope_id=…][&tenant=…]
   document that no longer exists is sent only when nothing the caller holds
   restricts reading the scope; otherwise it is dropped and the client
   reconciles on its next reload.
-- **Limits.** At most `LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS` (default 4; `0` =
-  unlimited) concurrent streams per principal on a replica; the next is
+- **Limits.** At most 4 concurrent streams per principal on a replica; the next is
   refused with `429 too_many_streams`.
 - **Transports.** HTTP SSE only. TS: `client.documentFeed({scope, scopeId?,
   tenant?, signal})`, an async iterator of `{kind: "feed" | "change" |
@@ -947,7 +946,7 @@ A later pass treats a `manual` statement as a person's and never undoes it (see 
 The quote must be verbatim. For a chunk or a chat turn the server finds it in the source at write time, records `char_start` / `char_end`, and refuses a quote that does not occur there (`evidence_quote_not_found`). A reference into another scope is kept as written: this scope cannot read that one to check it, so such a row is not ground for a verdict either.
 
 - **A title.** A `{chunk_id, quote}` row may take `part: "title"` to quote the chunk's title rather than its body (`"body"`, the default); the span is then counted in characters of the title. `part` is refused on a chat-turn or cross-scope row. A body quote that is really the title is refused with a hint to pass `part: "title"`. `get_edge`, `get_edges` and `list_statements` return `"part": "title"` on title rows and omit it on body rows. `find_duplicates` quotes both documents' root titles this way, so each `duplicate_of` pair it proposes carries evidence.
-- **Bounds.** A quote is at most 4,000 characters. A statement keeps at most 32 rows (`LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE`); past that, a write reports `evidence_capped: true` and adds no more.
+- **Bounds.** A quote is at most 4,000 characters. A statement keeps at most 32 rows; past that, a write reports `evidence_capped: true` and adds no more.
 - **Readers.** `get_edges`, `backlinks` and `list_statements` carry the first three rows and `evidence_count`; `get_edge` carries every row.
 - **Withheld when unreadable.** A row whose source is a document the caller may not read is left out of every answer, and `evidence_count` counts only what is shown. At write time, citing a chunk the caller may not read answers exactly as a chunk that does not exist, so a quote check cannot reveal text in a document the caller cannot open.
 - **Stale.** `stale: true` marks a quote that no longer occurs in its source. A maintainer can mark a row stale or re-point it (`maintain_statement`); re-pointing keeps a row's `part`.

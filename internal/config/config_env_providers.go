@@ -11,19 +11,6 @@ import (
 // applyEnvLoopTuning reads the tool parallelism, Ollama, probe, fallback-pin
 // and SSE keepalive knobs.
 func applyEnvLoopTuning(cfg *Config) {
-	// LOOMCYCLE_TOOL_PARALLELISM overrides the per-iteration
-	// tool_call concurrency cap (default 8). Floor 1, ceiling 64
-	// — anything beyond 64 would spawn a goroutine storm that
-	// outweighs realistic fan-out. Zero / negative values fall
-	// through to the default.
-	if v := os.Getenv("LOOMCYCLE_TOOL_PARALLELISM"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			if n > 64 {
-				n = 64
-			}
-			cfg.Env.ToolParallelism = n
-		}
-	}
 	// LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX overrides the ollama-local
 	// driver's options.num_ctx. Required when running prompts above
 	// ~4k tokens against a local Ollama whose Modelfile doesn't pin

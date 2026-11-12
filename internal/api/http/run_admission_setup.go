@@ -535,7 +535,6 @@ func (a *runAdmission) buildOptions() {
 		ObserveCall:         s.callObserver(a.runID),
 		MarkRateLimited:     s.markRateLimitedFn(a.in.UserTier),
 		ClearStall:          s.clearStallFn(a.providerID, a.model),
-		ToolParallelism:     s.cfg().Env.ToolParallelism,
 		AgentName:           a.effectiveAgentName,
 		CodeBody:            a.agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:            a.in.Metadata,

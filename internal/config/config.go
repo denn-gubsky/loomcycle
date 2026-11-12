@@ -4797,36 +4797,6 @@ type Env struct {
 	// secret). Opt out with LOOMCYCLE_REDACT_SECRETS=0. See internal/redact.
 	RedactSecrets bool
 
-	// ToolParallelism caps how many tool_calls from a single
-	// assistant turn run concurrently. Default 8. Set to 1 to
-	// force serial dispatch (debug / determinism). Field 0
-	// (unset) is treated as the default — the loop fills in 8.
-	//
-	// Bumping this matters most for agents that fan out via the
-	// `Agent` built-in tool: each Agent call spawns a sub-agent
-	// run, so a parent that emitted 3 Agent tool_calls would
-	// pre-2026-05-09 see them serialised back-to-back instead of
-	// running concurrently. The HTTP server's MAX_CONCURRENT_RUNS
-	// slot still bounds the run tree, so per-tool parallelism is
-	// an inner-loop knob that doesn't change the global ceiling.
-	//
-	// Env: LOOMCYCLE_TOOL_PARALLELISM.
-	ToolParallelism int
-
-	// MemoryMaxValueBytes caps a single Memory.set / Memory.incr
-	// payload. Default 65536 (64 KB) — generous for a JSON document
-	// agents would actually persist; refuses obvious abuse like
-	// "stash an entire transcript here." Set to 0 to disable.
-	// Env: LOOMCYCLE_MEMORY_MAX_VALUE_BYTES.
-	MemoryMaxValueBytes int
-
-	// DocumentFeedMaxStreams caps the concurrent GET /v1/_document/feed streams
-	// one principal may hold on a replica (RFC FV): each stream polls the change
-	// table, so the cap bounds what one principal can make the database do.
-	// Default 4; 0 (or any value ≤ 0) = unlimited.
-	// Env: LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS.
-	DocumentFeedMaxStreams int
-
 	// MemoryMaxScopeBytes is the default per-(scope, scope_id) byte
 	// cap. Per-agent yaml `memory_quota_bytes` overrides this.
 	// Default 1048576 (1 MB). Set to 0 to disable.
@@ -4857,23 +4827,6 @@ type Env struct {
 	// sweeper; a positive value also enables the projection). Resolved and
 	// validated by Config.DocumentProjection / validate.
 	DocumentProjectionInterval string
-
-	// ProvisionIdentityDocs creates the tenant-root and user-root Documents when a
-	// principal is ESTABLISHED — at token mint, and at boot for config-declared
-	// principals — instead of only on the first run that references them.
-	//
-	// Default TRUE. Both documents are templates a person fills in, and the user-root
-	// one's Identity section is what lets memory placement tell a fact about the user
-	// from a fact about a colleague. Arriving on first reference is too late to be
-	// filled in beforehand, and a person with no runs yet cannot discover there is
-	// anything to fill.
-	//
-	// Set LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS=0 to keep the older lazy-only
-	// behaviour — an operator who does not want a document per principal appearing
-	// without being asked for.
-	//
-	// Env: LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS (default 1).
-	ProvisionIdentityDocs bool
 
 	// MemoryPendingDrainedTTL is how long a consolidation-queue row is kept
 	// after a pass acks it. An hourly prune deletes older drained rows; an
@@ -5319,7 +5272,6 @@ func applyEnvCore(cfg *Config) {
 		HTTPHostAllowlist:           splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
 		HTTPPrivateHostAllowlist:    splitCSV(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST")),
 		MCPAllowPrivateIPs:          getenvBool("LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS", true),
-		ProvisionIdentityDocs:       getenvBool("LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", true),
 		HTTPCallerAuthoritative:     os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
 		TeamSubscriptions:           os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS") == "1",
 		MaxInteractiveChildren:      getenvInt("LOOMCYCLE_MAX_INTERACTIVE_CHILDREN", 0),

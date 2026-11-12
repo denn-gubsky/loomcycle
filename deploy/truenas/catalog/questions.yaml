@@ -522,12 +522,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_MEMORY_MAX_VALUE_BYTES
-            label: LOOMCYCLE_MEMORY_MAX_VALUE_BYTES
-            description: 'Per-write cap on the value payload (set / incr). Default 64 KB (65536). 0 disables. Refuses obvious abuse like "stash an entire transcript in one row". (example: 65536)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES
             label: LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES
             description: 'Default per-(scope, scope_id) byte cap. Default 1 MB (1048576). 0 disables. Per-agent yaml memory_quota_bytes overrides this. (example: 1048576)'
@@ -922,12 +916,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS
-            label: LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS
-            description: '(example: 604800)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_LIMITS_ENFORCE
             label: LOOMCYCLE_LIMITS_ENFORCE
             description: '(example: strict)'
@@ -946,33 +934,15 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS
-            label: LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS
-            description: '(MCP_ALLOW_PRIVILEGED_TOOLS / MCP_ALLOW_DYNAMIC_STDIO are documented above; the upstream bearer LOOMCYCLE_MCP_UPSTREAM_TOKEN is a SECRET → .env.local.) (example: 16)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS
             label: LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS
-            description: '(example: 0)'
+            description: '(MCP_ALLOW_PRIVILEGED_TOOLS / MCP_ALLOW_DYNAMIC_STDIO are documented above; the upstream bearer LOOMCYCLE_MCP_UPSTREAM_TOKEN is a SECRET → .env.local.) (example: 0)'
             schema:
               type: string
               default: ""
           - variable: LOOMCYCLE_MCP_RECIPES_ROOT
             label: LOOMCYCLE_MCP_RECIPES_ROOT
             description: '(example: /srv/loomcycle/recipes)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS
-            label: LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS
-            description: 'Thin-client (`loomcycle mcp --upstream`) connection self-recovery. Defaults heal an idle-dropped connection + a server restart transparently; tune only for a slow-to-restart upstream or a flaky link. (example: 60000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS
-            label: LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS
-            description: '(example: 5)'
             schema:
               type: string
               default: ""
@@ -991,12 +961,6 @@ questions:
           - variable: LOOMCYCLE_PROVIDER_QUEUE_DEPTH
             label: LOOMCYCLE_PROVIDER_QUEUE_DEPTH
             description: '(example: 0)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_TOOL_PARALLELISM
-            label: LOOMCYCLE_TOOL_PARALLELISM
-            description: '(example: 8)'
             schema:
               type: string
               default: ""

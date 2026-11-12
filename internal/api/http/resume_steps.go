@@ -849,7 +849,6 @@ func (r *resumeAttempt) buildRunOptions() {
 		ObserveCall:         s.callObserver(run.ID),
 		MarkRateLimited:     s.markRateLimitedFn(run.UserTier),
 		ClearStall:          s.clearStallFn(providerID, model),
-		ToolParallelism:     s.cfg().Env.ToolParallelism,
 		AgentName:           run.Agent,
 		CodeBody:            agentDef.Code,
 		RunTimeoutSeconds:   runCfg.RunTimeoutSeconds,

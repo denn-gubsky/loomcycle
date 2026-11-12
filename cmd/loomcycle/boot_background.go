@@ -514,17 +514,10 @@ func (b *boot) seedServerState() {
 	// Each replica caches the limit rows it read at boot and those it wrote
 	// itself, so a limit written on another replica (PUT /v1/_limits, or the
 	// budget a gate writes for a user it provisions) is enforced here only
-	// once the cache is re-read. A misspelt interval stops boot: a deployment
-	// that set one expects its limits to travel.
-	reload, err := limitsReloadInterval(os.Getenv("LOOMCYCLE_LIMITS_RELOAD_INTERVAL"))
-	if err != nil {
-		fatal("limits: LOOMCYCLE_LIMITS_RELOAD_INTERVAL is not a duration of at least 1s, or 0", "value", os.Getenv("LOOMCYCLE_LIMITS_RELOAD_INTERVAL"))
-	}
-	if reload > 0 {
-		goSupervised(bgCtx, "limits.reloader", func(ctx context.Context) {
-			limits.RunLimitsReloader(ctx, tracker, reload)
-		})
-	}
+	// once the cache is re-read.
+	goSupervised(bgCtx, "limits.reloader", func(ctx context.Context) {
+		limits.RunLimitsReloader(ctx, tracker, limitsReloadInterval)
+	})
 	// RFC DT: seed the per-model throughput estimate from the ledger's latest
 	// timed calls. Non-fatal — an empty estimate learns again from live calls,
 	// and nothing depends on it yet (measure-only).
@@ -541,29 +534,10 @@ func (b *boot) seedServerState() {
 	safego.Go(bgCtx, "principals.provision_docs", func() { srv.ProvisionDeclaredPrincipalDocs(bgCtx) })
 }
 
-// defaultLimitsReloadInterval is how often a replica re-reads the token limit
-// rows when LOOMCYCLE_LIMITS_RELOAD_INTERVAL is unset.
-const defaultLimitsReloadInterval = time.Minute
-
-// limitsReloadInterval reads LOOMCYCLE_LIMITS_RELOAD_INTERVAL: unset is the
-// default, "0" turns the reload off, and anything else must be a Go duration
-// of at least a second (a tighter loop would re-read every row for nothing).
-func limitsReloadInterval(v string) (time.Duration, error) {
-	switch v {
-	case "":
-		return defaultLimitsReloadInterval, nil
-	case "0":
-		return 0, nil
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		return 0, err
-	}
-	if d < time.Second {
-		return 0, fmt.Errorf("limits reload interval %s is under 1s", d)
-	}
-	return d, nil
-}
+// limitsReloadInterval is how often a replica re-reads the token limit rows:
+// the longest a budget written on another replica goes unenforced here. A
+// minute is a handful of rows read, harmless on one node.
+const limitsReloadInterval = time.Minute
 
 // authGateLinkRetention is how long a used, revoked or expired invite or
 // reset row is kept before the sweeper deletes it.
@@ -626,13 +600,17 @@ func (b *boot) runStoreSweeperSteps(sweeperStepHook func(step string)) {
 // startExpiredTokenSweeper starts the expired operator-token sweeper.
 func (b *boot) startExpiredTokenSweeper() {
 	storeIface := b.storeIface
-	expiredTokenRetention := b.expiredTokenRetention
 	bgCtx := b.bgCtx
 	advisoryLock := b.advisoryLock
 
-	// Expired-token sweeper (the retention was resolved with the auth wiring
-	// above). One replica per cluster per tick; the delete is idempotent.
-	if expiredTokenRetention > 0 && storeIface != nil {
+	// Expired token rows are removed once they have been dead a week, as a
+	// used invite or reset row is. A deployment minting short-lived tokens
+	// daily would otherwise keep every one of them. Only rows that carry an
+	// expiry are ever removed; a token minted without one stays until an
+	// operator retires it, and stays after. One replica per cluster per
+	// tick; the delete is idempotent.
+	const expiredTokenRetention = authGateLinkRetention
+	if storeIface != nil {
 		goAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyExpiredTokenSweeper, "expired-token",
 			func(ctx context.Context) {
 				n, err := storeIface.OperatorTokenDefDeleteExpired(ctx, time.Now().Add(-expiredTokenRetention))
@@ -827,7 +805,7 @@ func (b *boot) startMemoryChangesSweeper() {
 	// bounded. Only when the feed is enabled; the DELETE is idempotent and
 	// advisory-gated so one replica prunes per tick.
 	if memoryChangesEnabled() && storeIface != nil {
-		window := memoryChangesRetention()
+		const window = memoryChangesRetention
 		goAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyMemoryChangesSweeper, "memory_changes",
 			func(ctx context.Context) {
 				pruned, err := storeIface.PruneMemoryChanges(ctx, time.Now().Add(-window))
@@ -859,7 +837,7 @@ func (b *boot) startChangeSubscriptionPush() {
 		subs := resolveChangeSubscriptions(cfg)
 		if len(subs) > 0 {
 			deliverer := changesub.New(storeIface, resolveChangeSubSecret, slog.Default())
-			interval := changeSubDeliveryInterval()
+			const interval = changeSubDeliveryInterval
 			goAdvisoryGatedSweeper(bgCtx, interval, advisoryLock, coord.LockKeyChangeSubDelivery, "change_subscriptions",
 				func(ctx context.Context) { deliverer.RunOnce(ctx, subs) })
 			slog.Info("memory: change-subscription push engine enabled", "subscriptions", len(subs), "interval", interval)

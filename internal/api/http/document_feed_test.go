@@ -426,14 +426,11 @@ func TestDocumentFeed_RevokedGrantStopsFramesWithinTTL(t *testing.T) {
 	}
 }
 
-// A principal holds at most LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS streams; the
+// A principal holds at most documentFeedMaxStreams (4) streams; the
 // next is refused with 429 while another principal is unaffected, and closing
 // one frees its slot.
 func TestDocumentFeed_StreamCap(t *testing.T) {
 	f := newFeedFixture(t)
-	cfg := &config.Config{}
-	cfg.Env.DocumentFeedMaxStreams = 4
-	f.srv.cfgHolder = config.NewHolder(cfg)
 	bob := member("tnt", "bob", nil)
 	poll := testFeedPolling(&feedClock{now: time.Now()}, nil)
 	var open []*feedStream

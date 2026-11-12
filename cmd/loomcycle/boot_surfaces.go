@@ -34,24 +34,15 @@ func (b *boot) startMCPSurfaces() {
 		}
 	}
 	if mcpMode {
-		// Optional operator override for the stdio dispatch concurrency
-		// cap (RFC O). 0/unset → the package default (16).
-		mcpMaxConcurrentCalls := 0
-		if v := os.Getenv("LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS"); v != "" {
-			if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
-				mcpMaxConcurrentCalls = n
-			}
-		}
 		mcpSrv := lcmcp.New(lcmcp.Config{
-			Connector:          srv, // *http.Server satisfies connector.Connector
-			Runner:             srv, // *http.Server satisfies runner.Runner (streaming)
-			Store:              storeIface,
-			Logger:             slog.Default(), // log goes to stderr; never stdout (stdout is the JSON-RPC wire)
-			ServerName:         "loomcycle",
-			ServerVersion:      buildVersion,
-			MaxConcurrentCalls: mcpMaxConcurrentCalls,
-			SpawnRunTimeoutMS:  mcpSpawnRunTimeoutMS,
-			TenantTelemetry:    b.tenantTelemetry != nil,
+			Connector:         srv, // *http.Server satisfies connector.Connector
+			Runner:            srv, // *http.Server satisfies runner.Runner (streaming)
+			Store:             storeIface,
+			Logger:            slog.Default(), // log goes to stderr; never stdout (stdout is the JSON-RPC wire)
+			ServerName:        "loomcycle",
+			ServerVersion:     buildVersion,
+			SpawnRunTimeoutMS: mcpSpawnRunTimeoutMS,
+			TenantTelemetry:   b.tenantTelemetry != nil,
 		})
 		// Run the MCP stdio loop in a goroutine. When stdin closes
 		// (Claude Code disconnects), Serve returns; we log and let

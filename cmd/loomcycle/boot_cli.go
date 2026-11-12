@@ -271,11 +271,6 @@ func runThinClient(upstream string) {
 		Upstream: upstream,
 		Token:    thinClientToken(proxyCtx, upstream),
 		Logger:   slog.Default(), // stderr; never stdout (stdout is the JSON-RPC wire)
-		// Self-recovery knobs (defaults applied by NewProxyClient when unset).
-		// The thin client boots with NO config load, so these are read straight
-		// from the environment.
-		ResponseHeaderTimeout: mcpProxyHeaderTimeout(),
-		ReconnectDelays:       mcpProxyReconnectDelays(),
 	})
 	slog.Info("mcp: thin-client mode → upstream (no local runtime)", "url", upstream)
 	err := pc.Serve(proxyCtx, os.Stdin, os.Stdout)

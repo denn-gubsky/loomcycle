@@ -48,8 +48,7 @@ func (s *Server) ProvisionIdentityDocs(ctx context.Context, tenant, subject stri
 	// Provisioning is a side effect on the operator's data, and doing it without knowing
 	// whether the operator wants it is worse than skipping it: the lazy path still
 	// creates the document on first reference either way.
-	cfg := s.cfg()
-	if cfg == nil || !cfg.Env.ProvisionIdentityDocs {
+	if s.cfg() == nil {
 		return
 	}
 	mi := memInject{Tenant: tenant, UserID: subject}
@@ -73,7 +72,7 @@ func (s *Server) ProvisionDeclaredPrincipalDocs(ctx context.Context) {
 		return
 	}
 	cfg := s.cfg()
-	if cfg == nil || !cfg.Env.ProvisionIdentityDocs {
+	if cfg == nil {
 		return
 	}
 	seen := map[string]bool{}

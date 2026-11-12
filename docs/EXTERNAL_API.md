@@ -132,9 +132,8 @@ Each POST carries `X-Loomcycle-Signature: hex(hmac-sha256(secret, body))` — ve
 **Environment flags:**
 
 - `LOOMCYCLE_MEMORY_CHANGES_ENABLED=1` — turn the feed on.
-- `LOOMCYCLE_MEMORY_CHANGES_RETENTION_HOURS` — how long change rows are kept (default 24).
-- `LOOMCYCLE_CHANGE_SUB_INTERVAL_MS` — push delivery poll interval (default 5000).
-- `LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS` — concurrent `GET /v1/_document/feed` streams per principal on a replica (default 4; `0` = unlimited).
+- Change rows are kept 24 hours; push delivery reads the feed every 5 seconds.
+- A principal holds at most 4 concurrent `GET /v1/_document/feed` streams on a replica.
 
 ## loomcycle → loomcycle, and the gRPC/Python twin
 
