@@ -69,7 +69,7 @@ func applyEnvLoopTuning(cfg *Config) {
 	}
 	// LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS: when set to "1",
 	// suppress provider fallback after the first successful turn.
-	// Opt-in for v0.8.x; default-on planned for v0.9.x.
+	// Opt-in.
 	cfg.Env.FallbackPinAfterSuccess = os.Getenv("LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS") == "1"
 	// LOOMCYCLE_SSE_KEEPALIVE_MS sets the SSE keepalive cadence.
 	// Default 20 s; 0 (or any value ≤ 0) disables. Floor 1 s for
