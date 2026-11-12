@@ -194,6 +194,10 @@ type RunOptions struct {
 	// idledOut is set by the park that IdleTimeout ended, and read when the
 	// run names its stop reason. Both on the run's goroutine.
 	idledOut bool
+	// statefulStepHook is told the name of each step of a stateful run as it
+	// starts (statefulLoop.step). nil in production; a test sets it to pin the
+	// step order.
+	statefulStepHook func(step string)
 
 	// ReResolveOnOperatorTurn, when non-nil, is consulted each time a PARKED run
 	// receives its operator's next message — and only then.
