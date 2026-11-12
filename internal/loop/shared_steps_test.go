@@ -273,3 +273,49 @@ func TestRun_FailureEndsInTheErrorShape(t *testing.T) {
 		}
 	})
 }
+
+// thinkingStatefulProvider streams a reasoning trace and some prose before
+// its one emit_state call.
+type thinkingStatefulProvider struct{ statefulScriptProvider }
+
+func (p *thinkingStatefulProvider) Call(ctx context.Context, req providers.Request) (<-chan providers.Event, error) {
+	inner, err := p.statefulScriptProvider.Call(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan providers.Event, 8)
+	ch <- providers.Event{Type: providers.EventThinking, Text: "weighing the count"}
+	ch <- providers.Event{Type: providers.EventText, Text: "prose the step discards"}
+	for ev := range inner {
+		ch <- ev
+	}
+	close(ch)
+	return ch, nil
+}
+
+// A stateful step forwards the model's reasoning trace live, as the append
+// loop does; its prose still is not (a step's prose is not an answer).
+func TestRunStateful_ForwardsThinkingLive(t *testing.T) {
+	prov := &thinkingStatefulProvider{statefulScriptProvider{scripts: []string{`{"patch":{"count":1},"done":true,"final":"count is 1"}`}}}
+	var thinking, texts []string
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x", Dispatcher: tools.NewDispatcher(nil),
+		Segments: statefulTaskSegs(), Context: statefulCtx(nil),
+		OnEvent: func(ev providers.Event) {
+			switch ev.Type {
+			case providers.EventThinking:
+				thinking = append(thinking, ev.Text)
+			case providers.EventText:
+				texts = append(texts, ev.Text)
+			}
+		},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(thinking) != 1 || thinking[0] != "weighing the count" {
+		t.Errorf("thinking events = %q, want the step's trace forwarded once", thinking)
+	}
+	if len(texts) != 1 || texts[0] != "count is 1" {
+		t.Errorf("text events = %q, want only the turn's answer", texts)
+	}
+}
