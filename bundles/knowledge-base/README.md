@@ -563,10 +563,21 @@ deepest up, then the document. A section is annotated when it has parts of its
 own or its text is at least `min_body_chars` long (default 1500); a shorter
 part is covered by its parent, whose request carries the part's text. Each
 request carries the part's own text and its parts' briefs and abstracts —
-never deeper — so it stays small whatever the size of the document. A
-document's request also carries its identity fields and its relations to other
-documents, by kind and by what each reaches: the title of another document,
-or the subject or topic itself for a link into the tenant ontology.
+never deeper — so it stays small whatever the size of the document. Every
+request carries the document's identity (its code or key, as its class
+declares it), and a section's names its document, so a section that names no
+code of its own is never summarised under another; the prompt allows a code
+only where the request carries it, and `set_annotation` rewrites a code of the
+class's shape that is not the document's own. A document's request also
+carries its relations to other documents, by kind and by what each reaches:
+the title of another document, or the subject or topic itself for a link into
+the tenant ontology.
+
+**Prompt version 2.** Raising the prompt version makes every annotation stale
+once: the next scheduled pass rewrites them all (about one model call per
+annotated part). Estimate it with `write: "report"` first. A tenant that forked
+`kb/annotator` or `kb/annotate` keeps the old code and prompt until it
+re-forks them from this bundle.
 
 Then the **folders** of the documents it looked at, from the deepest up to `/`.
 A folder's request names each direct child's brief (documents and sub-folders,
@@ -574,7 +585,9 @@ the first 60, the rest grouped by class), the classes and topics of the
 documents it covers and the kinds of relation among them. Its annotation is
 kept on a document `<folder>/_annotation` of the operational type
 `Annotation`, made on the first write; a folder that is itself a document
-keeps it on that document's root. A folder's annotation is withheld from a
+keeps it on that document's root. A folder brief that only repeats the
+folder's name, or is under 20 characters, is replaced on write by the first
+sentence of its abstract. A folder's annotation is withheld from a
 caller who may not read every document it covers. The `/facts` and `/memory`
 trees are never covered.
 
