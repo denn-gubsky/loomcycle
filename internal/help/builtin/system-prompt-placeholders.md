@@ -3,11 +3,11 @@ name: system-prompt-placeholders
 description: The system-prompt expansion families — {{memory:<variant>}} and {{memory:key|search:<arg>}} for stored memory, {{tool:<Tool>.<op>}} and {{tool:WebFetch|WebSearch:<arg>}} for the framed result of a tool call, {{identity}} for the person the run acts for, and {{help:<topic>}} for a help article's call examples, expanded at run start. Closed sets validated at config load; the argument forms need an operator-written definition; a leading backslash escapes.
 ---
 An agent's `system_prompt` may contain **placeholders** that the server expands
-at run start, before the first model call. There are two families, both CLOSED
-sets — a stray `{{...}}` cannot turn a prompt into an arbitrary code path, and a
-name outside the set fails config load rather than silently rendering nothing.
+at run start, before the first model call. Every family is a CLOSED set — a
+stray `{{...}}` cannot turn a prompt into an arbitrary code path, and a name
+outside the set fails config load rather than silently rendering nothing.
 
-Each family has a no-argument form, which any definition may use, and an
+The `{{memory:…}}` and `{{tool:…}}` families each have a no-argument form, which any definition may use, and an
 ARGUMENT form (a second colon), which only a definition an **operator** wrote
 may use. See "Who may use the argument forms" below.
 
