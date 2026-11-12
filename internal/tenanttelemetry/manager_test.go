@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -901,17 +902,18 @@ func TestManagerContentCaptureFor_OnlyWhileExportedWithCaptureOnAndOnRecord(t *t
 	if err != nil || !rec.FirstAt.Equal(start) || !rec.LastAt.Equal(start) {
 		t.Fatalf("record = %+v err = %v, want first = last = %v", rec, err, start)
 	}
-	// Within the interval nothing is written; past it the record moves.
+	// Within the interval nothing is written; past it the record moves, in
+	// the background once a first write is on record.
 	f.now = start.Add(ContentMarkInterval / 2)
 	f.m.ContentCaptureFor(ctx, "acme")
 	if rec, _ := f.st.TenantTelemetryContentExportGet(ctx, "acme"); !rec.LastAt.Equal(start) {
 		t.Errorf("a capture within the interval moved the record to %v", rec.LastAt)
 	}
 	f.now = start.Add(2 * ContentMarkInterval)
-	f.m.ContentCaptureFor(ctx, "acme")
-	if rec, _ := f.st.TenantTelemetryContentExportGet(ctx, "acme"); !rec.LastAt.Equal(f.now) || !rec.FirstAt.Equal(start) {
-		t.Errorf("record = %+v, want first %v last %v", rec, start, f.now)
+	if _, ok := f.m.ContentCaptureFor(ctx, "acme"); !ok {
+		t.Fatal("past the interval: the run does not capture")
 	}
+	waitRecord(t, f, "acme", start, f.now)
 
 	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL}, "ops"); err != nil {
 		t.Fatal(err)
@@ -955,17 +957,7 @@ func TestManagerContentCaptureActive_FollowsThePolicyAndKeepsTheRecordCurrent(t 
 	if !f.m.ContentCaptureActive("acme") {
 		t.Fatal("capture on: not active later in the run")
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		rec, err := f.st.TenantTelemetryContentExportGet(ctx, "acme")
-		if err == nil && rec.LastAt.Equal(f.now) && rec.FirstAt.Equal(start) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("record = %+v err = %v, want first %v last %v", rec, err, start, f.now)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitRecord(t, f, "acme", start, f.now)
 
 	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL}, "ops"); err != nil {
 		t.Fatal(err)
@@ -1033,6 +1025,132 @@ func TestManagerPut_ContentCaptureNeedsTheTracesSignal(t *testing.T) {
 	}
 	if _, err := f.st.TenantTelemetryContentExportGet(ctx, "beta"); err == nil {
 		t.Error("a capture was recorded for a policy that exports no spans")
+	}
+}
+
+// waitRecord waits for tenant's capture record to read first .. last.
+func waitRecord(t *testing.T, f *fixture, tenant string, first, last time.Time) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec, err := f.st.TenantTelemetryContentExportGet(context.Background(), tenant)
+		if err == nil && rec.LastAt.Equal(last) && rec.FirstAt.Equal(first) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("record = %+v err = %v, want first %v last %v", rec, err, first, last)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// markCountingStore counts the writes of the capture record; each waits for
+// release (when set) and fails while fail is set.
+type markCountingStore struct {
+	*sqlite.Store
+	calls   atomic.Int32
+	release chan struct{}
+	fail    atomic.Bool
+}
+
+func (s *markCountingStore) TenantTelemetryContentExportMark(ctx context.Context, tenant string, at time.Time) error {
+	s.calls.Add(1)
+	if s.release != nil {
+		<-s.release
+	}
+	if s.fail.Load() {
+		return errors.New("store down")
+	}
+	return s.Store.TenantTelemetryContentExportMark(ctx, tenant, at)
+}
+
+// countingManager is a Manager over st whose acme policy captures content.
+func countingManager(t *testing.T, st *markCountingStore, c *collector, f *fixture, now func() time.Time) *Manager {
+	t.Helper()
+	m, err := New(Deps{Config: Config{Enabled: true, MaxRatio: 1, ContentCapture: true}, Store: st,
+		Router: f.router, Dial: loopbackDial, TLSConfig: f.tls, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	row, err := m.Check(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Store(ctx, row, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// Run starts that need the record at once share one write of it: a slow store
+// is waited on once, not by every run start in a queue of its own.
+func TestManagerContentCaptureFor_ConcurrentRunStartsShareOneRecordWrite(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{ContentCapture: true}, c)
+	st := &markCountingStore{Store: f.st, release: make(chan struct{})}
+	m := countingManager(t, st, c, f, nil)
+	const runs = 20
+	var wg sync.WaitGroup
+	var captured atomic.Int32
+	for i := 0; i < runs; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, ok := m.ContentCaptureFor(context.Background(), "acme"); ok {
+				captured.Add(1)
+			}
+		}()
+	}
+	waitUntil(t, func() bool { return st.calls.Load() >= 1 })
+	time.Sleep(50 * time.Millisecond) // a write of each run start's own would be under way by now
+	close(st.release)
+	wg.Wait()
+	if n := st.calls.Load(); n != 1 {
+		t.Errorf("%d record writes for %d concurrent run starts, want 1", n, runs)
+	}
+	if n := captured.Load(); n != runs {
+		t.Errorf("%d of %d run starts capture, want every one once the record is written", n, runs)
+	}
+}
+
+// A record that cannot be written is not retried by every run start: for a
+// while after the failure the tenant's runs start without capture, and the
+// write is tried again after it.
+func TestManagerContentCaptureFor_BacksOffAfterARecordWriteFails(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{ContentCapture: true}, c)
+	st := &markCountingStore{Store: f.st}
+	st.fail.Store(true)
+	now := time.Now().UTC()
+	m := countingManager(t, st, c, f, func() time.Time { return now })
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		if _, ok := m.ContentCaptureFor(ctx, "acme"); ok {
+			t.Fatal("content captured though its export could not be put on record")
+		}
+	}
+	if n := st.calls.Load(); n != 1 {
+		t.Errorf("%d record writes in the back-off, want 1", n)
+	}
+	now = now.Add(ContentMarkRetryAfter)
+	st.fail.Store(false)
+	if _, ok := m.ContentCaptureFor(ctx, "acme"); !ok {
+		t.Error("past the back-off with the store back: the run does not capture")
+	}
+	if n := st.calls.Load(); n != 2 {
+		t.Errorf("%d record writes, want a second once the back-off ran out", n)
+	}
+}
+
+func waitUntil(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

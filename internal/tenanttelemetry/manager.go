@@ -92,9 +92,19 @@ type Manager struct {
 	// contentMarked is when this replica last recorded, in the store, that a
 	// tenant's content is being captured (ContentCaptureFor).
 	contentMarked map[string]time.Time
-	// contentMarking names the tenants whose record a recording is moving in
-	// the background (ContentCaptureActive): one write per tenant at a time.
-	contentMarking map[string]bool
+	// contentMarking is each tenant's record write under way: one per tenant
+	// at a time, which every run start that needs it waits on.
+	contentMarking map[string]*contentMarkCall
+	// contentRetryAt is when a tenant's record may be written again after a
+	// write failed; until then its runs start without capture.
+	contentRetryAt map[string]time.Time
+}
+
+// contentMarkCall is one write of a tenant's capture record; err is set
+// before done is closed.
+type contentMarkCall struct {
+	done chan struct{}
+	err  error
 }
 
 // applied is what this replica last made of one tenant's policy.
@@ -128,7 +138,8 @@ func New(d Deps) (*Manager, error) {
 		cfg: d.Config, st: d.Store, creds: d.Credentials, router: d.Router, dial: d.Dial,
 		registerSecret: d.RegisterSecret, version: d.ServiceVersion, now: now, tlsConfig: d.TLSConfig,
 		applied: map[string]applied{}, locks: map[string]*sync.Mutex{}, lastTest: map[string]time.Time{},
-		contentMarked: map[string]time.Time{}, contentMarking: map[string]bool{},
+		contentMarked: map[string]time.Time{}, contentMarking: map[string]*contentMarkCall{},
+		contentRetryAt: map[string]time.Time{},
 	}, nil
 }
 
@@ -243,8 +254,14 @@ func (m *Manager) Test(ctx context.Context, tenant string) error {
 // window is that record, so its last time lags by up to this much.
 const ContentMarkInterval = time.Minute
 
-// contentMarkTimeout bounds the record's write on the run's start.
+// contentMarkTimeout bounds one write of the record.
 const contentMarkTimeout = 5 * time.Second
+
+// ContentMarkRetryAfter is how long a tenant's runs start without capture
+// after its record could not be written, before the write is tried again.
+// Without it, a store that fails or hangs would make every run start of every
+// capturing tenant wait on a write of its own.
+const ContentMarkRetryAfter = 30 * time.Second
 
 // ContentCaptureFor reports whether a run of tenant starting now captures
 // content, and the length each captured field is cut to. It does while the
@@ -252,35 +269,54 @@ const contentMarkTimeout = 5 * time.Second
 // allows it: ValidStored). The run's own checks — its agent's opt-out, a
 // no-trace run — are the caller's.
 //
-// A yes is first recorded in the store (at most every ContentMarkInterval),
-// so the erasure report can say when content left for the tenant's backend.
-// A record that cannot be written is a no: content is never exported unless
-// the export is on record.
+// A yes is first recorded in the store, so the erasure report can say when
+// content left for the tenant's backend: content is never exported unless the
+// export is on record. The first run start on this replica waits for that
+// write, shared by every run start meanwhile; once a write has succeeded, the
+// record's last time is moved (at most every ContentMarkInterval) in the
+// background. A write that fails is a no, and so is every run start for
+// ContentMarkRetryAfter after it.
 func (m *Manager) ContentCaptureFor(ctx context.Context, tenant string) (int, bool) {
 	if tenant == "" {
 		return 0, false
 	}
+	now := m.now()
 	m.mu.Lock()
 	a := m.applied[tenant]
-	last := m.contentMarked[tenant]
-	m.mu.Unlock()
-	if a.contentMaxChars <= 0 || a.err != "" {
+	if a.contentMaxChars <= 0 || a.err != "" || now.Before(m.contentRetryAt[tenant]) {
+		m.mu.Unlock()
 		return 0, false
 	}
-	now := m.now()
-	if !last.IsZero() && now.Sub(last) < ContentMarkInterval {
+	if last := m.contentMarked[tenant]; !last.IsZero() {
+		if now.Sub(last) >= ContentMarkInterval {
+			m.startContentMarkLocked(tenant, now)
+		}
+		m.mu.Unlock()
 		return a.contentMaxChars, true
 	}
-	mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), contentMarkTimeout)
-	defer cancel()
-	if err := m.st.TenantTelemetryContentExportMark(mctx, tenant, now.UTC()); err != nil {
-		slog.Warn("tenant telemetry: could not record a content capture; this run captures no content", "tenant", tenant, "err", err)
+	c := m.startContentMarkLocked(tenant, now)
+	m.mu.Unlock()
+	select {
+	case <-c.done:
+	case <-ctx.Done():
 		return 0, false
 	}
-	m.mu.Lock()
-	m.contentMarked[tenant] = now
-	m.mu.Unlock()
+	if c.err != nil {
+		return 0, false
+	}
 	return a.contentMaxChars, true
+}
+
+// startContentMarkLocked starts writing tenant's record at now, unless a
+// write is under way, and returns the write. Called with m.mu held.
+func (m *Manager) startContentMarkLocked(tenant string, now time.Time) *contentMarkCall {
+	if c := m.contentMarking[tenant]; c != nil {
+		return c
+	}
+	c := &contentMarkCall{done: make(chan struct{})}
+	m.contentMarking[tenant] = c
+	go m.markContent(tenant, now, c)
+	return c
 }
 
 // ContentCaptureActive reports whether tenant's destination captures content
@@ -297,30 +333,35 @@ func (m *Manager) ContentCaptureActive(tenant string) bool {
 	}
 	now := m.now()
 	m.mu.Lock()
-	due := !m.contentMarking[tenant] && now.Sub(m.contentMarked[tenant]) >= ContentMarkInterval
-	if due {
-		m.contentMarking[tenant] = true
+	if now.Sub(m.contentMarked[tenant]) >= ContentMarkInterval && !now.Before(m.contentRetryAt[tenant]) {
+		m.startContentMarkLocked(tenant, now)
 	}
 	m.mu.Unlock()
-	if due {
-		go m.markContent(tenant, now)
-	}
 	return true
 }
 
-// markContent moves tenant's capture record to now, in the background.
-func (m *Manager) markContent(tenant string, now time.Time) {
+// markContent writes tenant's capture record at now, detached from any run:
+// a run that stops waiting does not cut the write short for the others.
+func (m *Manager) markContent(tenant string, now time.Time, c *contentMarkCall) {
 	ctx, cancel := context.WithTimeout(context.Background(), contentMarkTimeout)
 	defer cancel()
 	err := m.st.TenantTelemetryContentExportMark(ctx, tenant, now.UTC())
 	m.mu.Lock()
 	delete(m.contentMarking, tenant)
-	if err == nil && now.After(m.contentMarked[tenant]) {
-		m.contentMarked[tenant] = now
+	if err == nil {
+		if now.After(m.contentMarked[tenant]) {
+			m.contentMarked[tenant] = now
+		}
+		delete(m.contentRetryAt, tenant)
+	} else {
+		m.contentRetryAt[tenant] = now.Add(ContentMarkRetryAfter)
 	}
+	c.err = err
 	m.mu.Unlock()
+	close(c.done)
 	if err != nil {
-		slog.Warn("tenant telemetry: could not move the content capture record", "tenant", tenant, "err", err)
+		slog.Warn("tenant telemetry: could not record a content capture; runs start without capture for a while", "tenant", tenant,
+			"retry_after", ContentMarkRetryAfter, "err", err)
 	}
 }
 

@@ -3943,8 +3943,9 @@ were called with and returned, as the GenAI semantic conventions (release
 - **Outside erasure.** Content in the tenant's backend is beyond loomcycle's
   reach, as content in the operator's is. Each replica records, at most once a
   minute per tenant, that capture was used (a run that cannot be recorded
-  captures nothing; a long run moves the record's last time while it records,
-  in the background), and a subject erasure's report and result name the window:
+  captures nothing, and after a failed write the tenant's runs start without
+  capture for 30 seconds before it is tried again; a long run moves the
+  record's last time while it records, in the background), and a subject erasure's report and result name the window:
   "content exported to the tenant telemetry destination between <first> and
   <last>". The Web UI says so where capture is turned on.
 - **Audited.** A set's audit record carries its `telemetry_content_capture`.
