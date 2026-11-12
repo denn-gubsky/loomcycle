@@ -324,13 +324,12 @@ func (b *boot) buildToolsChannels() {
 	// block.
 	channelBus := channels.NewBus()
 	// v0.8.6 scheduler — arms time.AfterFunc timers for deferred
-	// publishes so long-poll subscribers wake at visible_at. Bounded
-	// by LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED (default 10000).
-	channelScheduler := channels.NewScheduler(channelBus, cfg.Env.ChannelsMaxPendingDeferred)
+	// publishes so long-poll subscribers wake at visible_at.
+	channelScheduler := channels.NewScheduler(channelBus, channels.MaxPendingDeferred)
 	channelTool := &builtin.Channel{
 		Bus:           channelBus,
 		Scheduler:     channelScheduler,
-		MaxValueBytes: cfg.Env.ChannelsMaxValueBytes,
+		MaxValueBytes: builtin.ChannelMaxValueBytes,
 		LongPollCapMS: cfg.Env.ChannelsLongPollCapMS,
 	}
 	b.allTools = append(b.allTools, channelTool)

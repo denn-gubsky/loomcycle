@@ -82,6 +82,13 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN":              "a run may make 100 Crypto calls",
 	"LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES":            "a document image and the /v1/_document body are capped at 8 MiB",
 	"LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS":      "a filtered document search binds at most 50000 chunk ids",
+	"LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES":            "a channel message is capped at 64 KiB",
+	"LOOMCYCLE_CHANNELS_SWEEP_MS":                   "expired channel messages are deleted every 15 minutes",
+	"LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED":       "at most 10000 deferred publishes hold a timer",
+	"LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY":           "a replica's hook worker decides 16 messages at once",
+	"LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL":           "a replica's hook worker decides 4 messages of one channel at once",
+	"LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT":              "a message waits 15 minutes on fail-closed hooks before it is dropped",
+	"LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS":   "a registered agent lives 24h unless its request names ttl_seconds",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in

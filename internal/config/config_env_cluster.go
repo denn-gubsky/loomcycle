@@ -73,10 +73,4 @@ func applyEnvMCP(cfg *Config) {
 	// F32: default-ON. Only an explicit "0" disables redaction; an unset var
 	// keeps the secure posture (secrets masked before persistence).
 	cfg.Env.RedactSecrets = os.Getenv("LOOMCYCLE_REDACT_SECRETS") != "0"
-	cfg.Env.DynamicAgentDefaultTTLSeconds = 86400 // 24h
-	if v := os.Getenv("LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Env.DynamicAgentDefaultTTLSeconds = n
-		}
-	}
 }

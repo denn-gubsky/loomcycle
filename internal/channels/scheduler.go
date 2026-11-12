@@ -24,8 +24,8 @@ import (
 //
 // Concurrency: Schedule is safe to call from any goroutine. Internal
 // state is a sync.Map keyed by msg_id; an atomic counter caps total
-// pending timers per process to MaxPending (default 10000, override
-// via LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED). Over-cap schedules
+// pending timers per process to MaxPending (the server passes
+// MaxPendingDeferred). Over-cap schedules
 // silently degrade to "subscribers wake on their periodic poll
 // instead" — same behaviour as if the scheduler weren't wired at all.
 type Scheduler struct {
@@ -41,6 +41,12 @@ type Scheduler struct {
 	timers  sync.Map // msg_id (string) → *time.Timer
 	pendCnt atomic.Int64
 }
+
+// MaxPendingDeferred is the cap the server puts on live deferred-publish
+// timers. Past it a deferred message is still stored; subscribers see it on
+// their next poll instead of being woken, so the cap costs latency, never a
+// message.
+const MaxPendingDeferred = 10000
 
 // NewScheduler constructs a scheduler bound to the given Bus.
 // maxPending: hard cap on live timers; <=0 disables the cap.

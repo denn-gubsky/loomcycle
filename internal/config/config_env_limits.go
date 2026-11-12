@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // applyEnvConcurrency reads the per-user and provider queue overrides of the
@@ -51,19 +50,6 @@ func applyEnvConcurrency(cfg *Config) {
 // applyEnvToolLimits reads the payload caps of the tools and the run
 // ingest, refusing a cap that does not parse where a default would widen it.
 func applyEnvToolLimits(cfg *Config) error {
-	// Channel tool defaults (v0.8.4). Per-write 64 KB, 15-minute
-	// TTL sweep cadence, 30 s long-poll cap — same shape as Memory's
-	// negative-as-disable convention.
-	cfg.Env.ChannelsMaxValueBytes = 64 * 1024
-	if v := os.Getenv("LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.ChannelsMaxValueBytes = 0
-			} else {
-				cfg.Env.ChannelsMaxValueBytes = n
-			}
-		}
-	}
 	// Run-ingest body cap (RFC AT). Default 16 MiB so a request can carry an
 	// inline base64 image; a positive override tunes it, a non-positive value
 	// is ignored (keep the default — the cap is a security floor).
@@ -136,18 +122,8 @@ func applyEnvToolLimits(cfg *Config) error {
 	return nil
 }
 
-// applyEnvChannels reads the channel sweep, long-poll and deferred caps.
+// applyEnvChannels reads the channel long-poll cap.
 func applyEnvChannels(cfg *Config) {
-	cfg.Env.ChannelsSweepInterval = 15 * time.Minute
-	if v := os.Getenv("LOOMCYCLE_CHANNELS_SWEEP_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.ChannelsSweepInterval = 0
-			} else {
-				cfg.Env.ChannelsSweepInterval = time.Duration(n) * time.Millisecond
-			}
-		}
-	}
 	cfg.Env.ChannelsLongPollCapMS = 30000
 	if v := os.Getenv("LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -155,16 +131,6 @@ func applyEnvChannels(cfg *Config) {
 				cfg.Env.ChannelsLongPollCapMS = 0
 			} else {
 				cfg.Env.ChannelsLongPollCapMS = n
-			}
-		}
-	}
-	cfg.Env.ChannelsMaxPendingDeferred = 10000
-	if v := os.Getenv("LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.ChannelsMaxPendingDeferred = 0
-			} else {
-				cfg.Env.ChannelsMaxPendingDeferred = n
 			}
 		}
 	}

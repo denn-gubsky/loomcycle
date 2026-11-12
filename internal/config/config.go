@@ -4730,18 +4730,6 @@ type Env struct {
 	// not this). Env: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS.
 	CodeAgentsMaxWall time.Duration
 
-	// ChannelHooksConcurrency bounds the messages one replica decides at
-	// once (default 16); ChannelHooksPerChannel, those of one channel
-	// (default 4). Env: LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY,
-	// LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL.
-	ChannelHooksConcurrency int
-	ChannelHooksPerChannel  int
-	// ChannelHooksMaxWait bounds how long a message waits for hooks that
-	// fail closed before it is dropped as "hook unavailable" (default 15m;
-	// a message's own TTL, less a margin, bounds it too). Env:
-	// LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT (a Go duration).
-	ChannelHooksMaxWait time.Duration
-
 	// ---- v0.8.x process-resource metrics sampler (opt-in) ----
 
 	// MetricsEnabled enables the periodic process_samples
@@ -4866,14 +4854,6 @@ type Env struct {
 	// secret). Opt out with LOOMCYCLE_REDACT_SECRETS=0. See internal/redact.
 	RedactSecrets bool
 
-	// DynamicAgentDefaultTTLSeconds — v0.8.15. TTL applied to
-	// dynamic agents registered via mcp__loomcycle__register_agent
-	// when the caller omits ttl_seconds. Default 86400 (24h).
-	// Set to 0 to deny all default-TTL registrations (callers
-	// MUST supply an explicit ttl_seconds). Env:
-	// LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS.
-	DynamicAgentDefaultTTLSeconds int
-
 	// ToolParallelism caps how many tool_calls from a single
 	// assistant turn run concurrently. Default 8. Set to 1 to
 	// force serial dispatch (debug / determinism). Field 0
@@ -4982,19 +4962,6 @@ type Env struct {
 	// Env: LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS.
 	MemoryEmbedTimeoutMs int
 
-	// ChannelsMaxValueBytes caps a single Channel.publish payload
-	// (v0.8.4). Default 65536 (64 KB) — mirrors MemoryMaxValueBytes.
-	// 0 disables. Env: LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES.
-	ChannelsMaxValueBytes int
-
-	// ChannelsSweepInterval is the TTL reaper cadence for the
-	// channel_messages table (v0.8.4). Default 15 minutes — same as
-	// MemorySweepInterval. 0 disables. Read paths filter expired
-	// rows regardless of whether the sweeper has run, so this is
-	// purely about keeping the table bounded.
-	// Env: LOOMCYCLE_CHANNELS_SWEEP_MS.
-	ChannelsSweepInterval time.Duration
-
 	// ChannelsLongPollCapMS caps the wait_ms an agent may request
 	// on a Channel.subscribe call (v0.8.4). Default 30000 (30 s) —
 	// long enough for "wake me when there's new work" semantics,
@@ -5002,15 +4969,6 @@ type Env struct {
 	// on agent crash. 0 disables long-poll entirely.
 	// Env: LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS.
 	ChannelsLongPollCapMS int
-
-	// ChannelsMaxPendingDeferred caps the v0.8.6 deferred-publish
-	// scheduler's live timer count. Excess publishes still land in
-	// storage; the scheduler silently skips the in-process Bus
-	// notification (subscribers see deferred messages on their next
-	// long-poll wake instead). Default 10000. 0 disables the cap
-	// (unbounded timers).
-	// Env: LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED.
-	ChannelsMaxPendingDeferred int
 
 	// ProviderHeaderTimeout is the per-attempt cap on time-to-first-
 	// byte for streaming provider HTTP calls (set on each driver's

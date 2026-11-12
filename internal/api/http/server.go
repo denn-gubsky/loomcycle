@@ -4429,7 +4429,7 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusBadRequest, "invalid_payload", "payload is not valid JSON")
 		return
 	}
-	if cap := s.cfg().Env.ChannelsMaxValueBytes; cap > 0 && len(body.Payload) > cap {
+	if cap := builtin.ChannelMaxValueBytes; len(body.Payload) > cap {
 		writeJSONError(w, http.StatusRequestEntityTooLarge, "payload_too_large", fmt.Sprintf("payload (%d bytes) exceeds max %d", len(body.Payload), cap))
 		return
 	}

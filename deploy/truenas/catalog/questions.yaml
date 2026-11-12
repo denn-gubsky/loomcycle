@@ -718,12 +718,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS
-            label: LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS
-            description: Default TTL for agents registered via mcp__loomcycle__register_agent when the caller omits ttl_seconds. Default 86400 (24 h). Set 0 to require callers to ALWAYS supply an explicit ttl_seconds (no default-TTL registrations accepted). Set -1 from the caller side (NOT here) for "no expiry" — operator must explicitly unregister. Lower this on shared-operator setups where forgotten dynamic agents wo…
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS
             label: LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS
             description: 'Default wait for in-flight runs to park when POST /v1/_pause omits timeout_ms. Default 0 ⇒ pause.DefaultPauseTimeout (30 s). Clamped at pause.MaxPauseTimeout (5 min) regardless of value — operator typo (300000 vs 30000) won''t leave the runtime in StatePausing for an extended period during which new runs 503. (example: 30000)'
@@ -802,27 +796,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_CHANNELS_SWEEP_MS
-            label: LOOMCYCLE_CHANNELS_SWEEP_MS
-            description: 'Fan-in/out bus for ensemble coordination. The `channels:` yaml block declares targets; these tune the runtime. (example: 900000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES
-            label: LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES
-            description: '(example: 65536)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS
             label: LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS
-            description: '(example: 30000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED
-            label: LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED
-            description: '(example: 10000)'
+            description: 'Fan-in/out bus for ensemble coordination. The `channels:` yaml block declares targets. A message is capped at 64 KiB. (example: 30000)'
             schema:
               type: string
               default: ""
@@ -1177,24 +1153,6 @@ questions:
           - variable: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS
             label: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS
             description: '(example: 86400)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY
-            label: LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY
-            description: 'Decide each message published to a channel that carries `hooks:` before any reader sees it. The worker always runs; these size it. (example: 16)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL
-            label: LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL
-            description: '(example: 4)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT
-            label: LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT
-            description: '(example: 15m)'
             schema:
               type: string
               default: ""

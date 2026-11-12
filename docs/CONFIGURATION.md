@@ -3373,7 +3373,6 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 |---|---|---|
 | `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS` | off | `1` lets agents registered through MCP `register_agent` keep Bash, Write and Edit; otherwise those tools are stripped. |
 | `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO` | off | `1` lets an `MCPServerDef` created at run time use `transport: stdio`, which runs a local command. Static yaml `mcp_servers:` are unaffected. |
-| `LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS` | `86400` | Lifetime of an MCP-registered agent whose request names no `ttl_seconds`; `0` requires callers to name one. |
 | `LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS` | `16` | `loomcycle mcp` (stdio): tool calls dispatched at once. |
 | `LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS` | `60000` | `loomcycle mcp --upstream` thin client: time to the upstream's response headers. Long-running tools (`spawn_run`, `spawn_runs`, `compact_run`, `evaluation`) are exempt. |
 | `LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS` | 5 | Thin client: retries after a transport error (immediately, then 0.5 s doubling to 4 s). `0` disables the retry. |
@@ -3412,6 +3411,11 @@ These are constants of the runtime; no setting changes them.
 | Document image | 8 MiB | A stored document image, and the `POST /v1/_document` body. |
 | Search filter | 50,000 ids | The chunk-id list a filtered Document search binds; a wider filter is refused (`filter_too_wide`). |
 | Captured base64 | 4 KiB | The shortest base64 string a `binary_results: capture` server's text is searched for. |
+| Channel message | 64 KiB | One channel message, on every surface that publishes. |
+| Deferred publishes | 10,000 timers | Live timers for deferred publishes; past it a deferred message is still stored but subscribers see it on their next poll. |
+| Channel-hook worker | 16 messages, 4 per channel | Messages one replica's hook worker decides at once. |
+| Channel-hook wait | 15 min | How long a message waits on fail-closed hooks before it is dropped as "hook unavailable". |
+| Registered agent lifetime | 24 h | An MCP-registered agent whose request names no `ttl_seconds`. |
 
 Background work runs on fixed cadences, and none of it can be switched off:
 
@@ -3421,6 +3425,7 @@ Background work runs on fixed cadences, and none of it can be switched off:
 | Usage rollup (old per-call rows into the daily `usage_archive`) | every hour |
 | Session-lock collection | every 5 min, for locks idle 10 min |
 | Expired Memory entries | every 15 min |
+| Expired channel messages and interruptions | every 15 min |
 | Expired registered (dynamic) agents | every 15 min |
 | Old process-metrics samples | every 15 min |
 | Ephemeral volumes of ended runs | every 60 s |
@@ -3451,13 +3456,7 @@ Background work runs on fixed cadences, and none of it can be switched off:
 | `LOOMCYCLE_DEADLINK_GC_DRY_RUN` | off | `1` makes that collection count and log without deleting. |
 | `LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS` | `4` | Concurrent `GET /v1/_document/feed` streams one principal may hold per replica; `0` = unlimited. |
 | `LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE` | `32` | Supporting quotes kept on one knowledge-base relation. |
-| `LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES` | 64 KiB | Largest channel message. *0 disables*. |
-| `LOOMCYCLE_CHANNELS_SWEEP_MS` | `900000` | How often expired channel messages are deleted; `0` stops the sweep (reads skip expired messages either way). |
 | `LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS` | `30000` | Longest `wait_ms` a channel subscribe may ask for; `0` disables long-polling. |
-| `LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED` | `10000` | Live timers for deferred publishes; past it a deferred message is still stored but subscribers see it on their next poll. `0` = no cap. |
-| `LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY` | `16` | Messages one replica's hook worker decides at once. |
-| `LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL` | `4` | Of those, how many belong to one channel. |
-| `LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT` | `15m` | A Go duration: how long a message waits on fail-closed hooks before it is dropped as "hook unavailable". |
 | `LOOMCYCLE_CHANNEL_DEBUG` | off | `1` logs channel publish and subscribe activity. Diagnostic only. |
 
 ### SQL Memory

@@ -23,7 +23,6 @@ import (
 // hold asks a person through (the same instance agents use); nil leaves holds
 // unanswerable.
 func (s *Server) NewChannelHookWorker(owner string, sched *channels.Scheduler, interruption tools.Tool) *channelhooks.Worker {
-	env := s.cfg().Env
 	var writer channels.Writer
 	if w, ok := s.systemPublisher.(channels.Writer); ok {
 		writer = w
@@ -37,10 +36,7 @@ func (s *Server) NewChannelHookWorker(owner string, sched *channels.Scheduler, i
 		Bus:          s.channelBus,
 		Scheduler:    sched,
 		Owner:        owner,
-		Concurrency:  env.ChannelHooksConcurrency,
-		PerChannel:   env.ChannelHooksPerChannel,
-		MaxWait:      env.ChannelHooksMaxWait,
-		MaxBodyBytes: env.ChannelsMaxValueBytes,
+		MaxBodyBytes: builtin.ChannelMaxValueBytes,
 		Interruption: interruption,
 		Runs:         channelHookRuns{s},
 	})

@@ -1153,9 +1153,9 @@ A complementary `WARN channel subscribe-race-exhausted — silent miss; investig
 
 ### Quotas and overflow
 
-- Per-write payload cap: `LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES` (default 64 KB). 0 disables.
+- Per-write payload cap: 64 KiB.
 - Per-channel storage cap: `max_messages` in the operator yaml. When a publish would push the count past this, the OLDEST rows are trimmed inside the same txn. Publisher never blocks. The publish result includes `dropped_oldest: N`.
-- TTL reaper: periodic background goroutine deletes expired rows. Cadence `LOOMCYCLE_CHANNELS_SWEEP_MS` (default 15 min). Read paths filter expired rows at WHERE regardless of sweeper cadence.
+- TTL reaper: periodic background goroutine deletes expired rows. It runs every 15 minutes. Read paths filter expired rows at WHERE regardless of sweeper cadence.
 
 ### Sub-agent inheritance
 

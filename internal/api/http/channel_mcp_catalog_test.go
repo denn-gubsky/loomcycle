@@ -33,7 +33,7 @@ func channelCatalogFixture(t *testing.T) (*Server, store.Store) {
 			"news":    {Scope: "global", Semantic: "queue", MaxMessages: 100},
 			"sysfeed": {Scope: "global", Semantic: "queue", MaxMessages: 100, Publisher: "system"},
 		},
-		Env: config.Env{ChannelsMaxValueBytes: 64 * 1024},
+		Env: config.Env{},
 	}
 	srv := New(cfg, &stubResolver{}, []tools.Tool{&builtin.Channel{Store: st}}, concurrency.New(4, 4, time.Second), st)
 	return srv, st

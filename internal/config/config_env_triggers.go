@@ -10,22 +10,9 @@ import (
 	"time"
 )
 
-// applyEnvCodeAgents reads the code-js provider, channel-hook worker,
-// interactive idle and batch join knobs.
+// applyEnvCodeAgents reads the code-js provider, interactive idle and batch
+// join knobs.
 func applyEnvCodeAgents(cfg *Config) error {
-	cfg.Env.ChannelHooksConcurrency, cfg.Env.ChannelHooksPerChannel = 16, 4
-	for name, dst := range map[string]*int{
-		"LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY": &cfg.Env.ChannelHooksConcurrency,
-		"LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL": &cfg.Env.ChannelHooksPerChannel,
-	} {
-		if n, err := strconv.Atoi(os.Getenv(name)); err == nil && n > 0 {
-			*dst = n
-		}
-	}
-	cfg.Env.ChannelHooksMaxWait = 15 * time.Minute
-	if d, err := time.ParseDuration(os.Getenv("LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT")); err == nil && d > 0 {
-		cfg.Env.ChannelHooksMaxWait = d
-	}
 	// Refused rather than defaulted when it does not parse: "60" meant as
 	// minutes, read as the hour default, would end chats nobody expected to.
 	cfg.Env.InteractiveIdleTimeout = time.Hour

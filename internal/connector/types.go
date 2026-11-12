@@ -531,8 +531,7 @@ type RegisterAgentRequest struct {
 	StatementMethods []string `json:"statement_methods,omitempty"`
 
 	// TTLSeconds is how long this dynamic agent should live. When
-	// 0, falls back to LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS
-	// (default 24h). A value of -1 means "no expiry" (operator
+	// 0, the agent lives 24h. A value of -1 means "no expiry" (operator
 	// must explicitly UnregisterAgent).
 	TTLSeconds int `json:"ttl_seconds,omitempty"`
 }

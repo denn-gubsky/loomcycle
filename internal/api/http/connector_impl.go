@@ -907,7 +907,7 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	}
 
 	createdAt := time.Now().UTC()
-	expiresAt := computeExpiresAt(createdAt, req.TTLSeconds, s.cfg().Env.DynamicAgentDefaultTTLSeconds)
+	expiresAt := computeExpiresAt(createdAt, req.TTLSeconds, dynamicAgentDefaultTTLSeconds)
 
 	row := store.DynamicAgent{
 		Name:        req.Name,
@@ -1797,10 +1797,15 @@ func stripPrivilegedTools(requested []string, allowPrivileged bool) []string {
 	return out
 }
 
+// dynamicAgentDefaultTTLSeconds is how long an MCP-registered agent lives
+// when its request names no ttl_seconds. A day: long enough for a working
+// session, short enough that a forgotten registration does not accumulate.
+const dynamicAgentDefaultTTLSeconds = 86400
+
 // computeExpiresAt resolves the effective TTL for a register_agent
 // request. TTLSeconds < 0 means "no expiry" (return zero-value
 // time.Time, which the store treats as 'epoch' = no expiry). 0 falls
-// back to the env default. Positive values are used directly.
+// back to the default. Positive values are used directly.
 func computeExpiresAt(now time.Time, ttlSeconds, defaultTTLSeconds int) time.Time {
 	if ttlSeconds < 0 {
 		return time.Time{}

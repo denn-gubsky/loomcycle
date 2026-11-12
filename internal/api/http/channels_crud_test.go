@@ -40,7 +40,6 @@ func channelCRUDFixture(t *testing.T) (*Server, store.Store, func()) {
 			// the wire publish path stamps that tenant, so direct-store
 			// readbacks in these tests read under tenant "default".
 			AuthToken:             "test-token",
-			ChannelsMaxValueBytes: 64 * 1024,
 			ChannelsLongPollCapMS: 1000,
 		},
 	}

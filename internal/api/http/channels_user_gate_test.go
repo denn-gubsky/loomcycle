@@ -32,7 +32,6 @@ func userChannelFixture(t *testing.T) *Server {
 			"inbox": {Scope: "user", Semantic: "broadcast", MaxMessages: 100},
 		},
 	}
-	cfg.Env.ChannelsMaxValueBytes = 64 * 1024
 	hookReg := hooks.NewSet()
 	bus := channels.NewBus()
 	srv := &Server{

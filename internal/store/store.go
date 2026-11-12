@@ -5938,8 +5938,7 @@ type ChannelStats struct {
 var ErrChannelCursorRegression = &ChannelError{Code: "cursor_regression", Msg: "channel: ack cursor older than committed"}
 
 // ErrChannelValueTooLarge is returned by ChannelPublish when a
-// payload exceeds the per-write byte cap
-// (LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES, default 64 KB). Mirrors
+// payload exceeds the per-write byte cap (64 KB). Mirrors
 // ErrMemoryValueTooLarge — same shape, separate type so tool-layer
 // error mapping is unambiguous.
 var ErrChannelValueTooLarge = &ChannelError{Code: "value_too_large", Msg: "channel: payload exceeds max bytes"}

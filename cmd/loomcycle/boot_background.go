@@ -299,6 +299,10 @@ func (b *boot) startCluster() {
 // skip expired entries, so the sweep only keeps the table small.
 const memorySweepInterval = 15 * time.Minute
 
+// channelsSweepInterval is how often expired channel messages are deleted and
+// expired interruptions timed out. Reads skip both, as for Memory.
+const channelsSweepInterval = 15 * time.Minute
+
 // startRunSweepers starts the sweepers that must see advisoryLock: the
 // heartbeat sweeper, the channel-hook worker, the configured-run sweeper,
 // and the usage and retention sweepers.
@@ -346,8 +350,7 @@ func (b *boot) startRunSweepers() {
 		hookOwner = fmt.Sprintf("%s-%d", host, os.Getpid())
 	}
 	if srv != nil && storeIface != nil {
-		slog.Info("channel hooks: worker started", "owner", hookOwner, "concurrency", cfg.Env.ChannelHooksConcurrency,
-			"per_channel", cfg.Env.ChannelHooksPerChannel, "max_wait", cfg.Env.ChannelHooksMaxWait)
+		slog.Info("channel hooks: worker started", "owner", hookOwner)
 		goSupervised(bgCtx, "channelhooks.worker", srv.NewChannelHookWorker(hookOwner, channelScheduler, interruptionTool).Run)
 	}
 
@@ -981,18 +984,17 @@ func (b *boot) startDocumentProjectionSweeper() {
 // startChannelsSweeper starts the Channel tool TTL sweeper (and the idle
 // document-feed purge).
 func (b *boot) startChannelsSweeper() {
-	cfg := b.cfg
 	storeIface := b.storeIface
 	bgCtx := b.bgCtx
 	advisoryLock := b.advisoryLock
 
 	// Channel tool TTL sweeper (v0.8.4). Same shape as MemorySweeper.
-	if cfg.Env.ChannelsSweepInterval > 0 && storeIface != nil {
+	if storeIface != nil {
 		// Idle document change feeds are swept on the same singleton, at most
 		// hourly: the sweep reads every channel's stats, and a feed lives a
 		// day, so a minute's resolution buys nothing.
 		var lastFeedSweep time.Time
-		goAdvisoryGatedSweeper(bgCtx, cfg.Env.ChannelsSweepInterval, advisoryLock, coord.LockKeyChannelsSweeper, "channels",
+		goAdvisoryGatedSweeper(bgCtx, channelsSweepInterval, advisoryLock, coord.LockKeyChannelsSweeper, "channels",
 			func(ctx context.Context) {
 				swept, err := storeIface.ChannelSweepExpired(ctx)
 				if err != nil {
@@ -1012,23 +1014,20 @@ func (b *boot) startChannelsSweeper() {
 					}
 				}
 			})
-		slog.Info("channels: sweeper enabled", "interval", cfg.Env.ChannelsSweepInterval)
-	} else if storeIface != nil {
-		slog.Warn("channels: sweeper disabled (LOOMCYCLE_CHANNELS_SWEEP_MS=0)")
+		slog.Info("channels: sweeper enabled", "interval", channelsSweepInterval)
 	}
 }
 
 // startInterruptsSweeper starts the Interruption tool TTL sweeper.
 func (b *boot) startInterruptsSweeper() {
-	cfg := b.cfg
 	storeIface := b.storeIface
 	bgCtx := b.bgCtx
 	advisoryLock := b.advisoryLock
 
 	// v0.8.16 Interruption tool TTL sweeper. Marks pending rows
 	// whose expires_at < now as timed_out.
-	if cfg.Env.ChannelsSweepInterval > 0 && storeIface != nil {
-		goAdvisoryGatedSweeper(bgCtx, cfg.Env.ChannelsSweepInterval, advisoryLock, coord.LockKeyInterruptsSweeper, "interrupts",
+	if storeIface != nil {
+		goAdvisoryGatedSweeper(bgCtx, channelsSweepInterval, advisoryLock, coord.LockKeyInterruptsSweeper, "interrupts",
 			func(ctx context.Context) {
 				swept, err := storeIface.InterruptSweepExpired(ctx)
 				if err != nil {
@@ -1039,7 +1038,7 @@ func (b *boot) startInterruptsSweeper() {
 					slog.Info("interrupts sweep: timed out expired rows", "rows", swept)
 				}
 			})
-		slog.Info("interrupts: sweeper enabled", "interval", cfg.Env.ChannelsSweepInterval)
+		slog.Info("interrupts: sweeper enabled", "interval", channelsSweepInterval)
 	}
 }
 

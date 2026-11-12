@@ -482,7 +482,7 @@ a lost lease); `message_id` is the same each time.
 
 **Failure.** A hook that fails open lets the message through. One that fails
 closed keeps it waiting and retries with backoff, until its deadline —
-`LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT` (default 15m) after publishing, and before
+15 minutes after publishing, and before
 its TTL runs out — and then drops it with reason "hook unavailable". A
 HookDef the channel names that no longer exists fails closed whatever its
 `fail_mode` says: a gate must not vanish.
