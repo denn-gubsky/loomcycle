@@ -376,49 +376,8 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 		topK = 51
 	}
 
-	// Dimension pre-check. Read one row's dimension under (scope,
-	// scope_id). If none exists, return empty results (the "empty
-	// scope" non-error path). If exists, compare against the query.
-	// A scope may hold rows at MORE THAN ONE dimension — migration 0017 calls that
-	// the typical steady state ("migrating from text-embedding-3-small to large;
-	// not everything re-embedded yet") — so this asks two questions: does the scope
-	// have rows at all, and does it have any at the QUERY's dimension.
-	//
-	// Reading one arbitrary row's dimension (LIMIT 1, no ORDER BY) was wrong in both
-	// directions. If that row matched the query, the pre-check passed and the <=>
-	// operator then met a row of another dimension, so postgres aborted the whole
-	// statement with a raw `different vector dimensions 8 and 4` (SQLSTATE 22000) —
-	// recall entirely broken for the scope, surfaced as a driver error instead of
-	// the typed, actionable refusal. If it did not match, the search was refused
-	// even though searchable rows existed. Which happened depended on row order.
-	var total, atDim int
-	var otherDim *int
-	err := s.pool.QueryRow(ctx,
-		`SELECT count(*),
-		        count(*) FILTER (WHERE dimension = $4),
-		        min(dimension) FILTER (WHERE dimension <> $4)
-		   FROM memory_embeddings
-		  WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3`,
-		tenantID, string(scope), scopeID, len(query),
-	).Scan(&total, &atDim, &otherDim)
-	if err != nil {
-		return nil, fmt.Errorf("MemoryEmbedSearch dim probe: %w", err)
-	}
-	if total == 0 {
-		return nil, nil
-	}
-	if atDim == 0 {
-		// Rows exist but NONE are searchable at this dimension. Returning empty
-		// would read as "this scope knows nothing" rather than "this scope needs
-		// re-embedding", so this stays the typed refusal.
-		other := 0
-		if otherDim != nil {
-			other = *otherDim
-		}
-		return nil, &store.MemoryError{
-			Code: store.ErrDimensionMismatch.Code,
-			Msg:  fmt.Sprintf("memory: query embedding dimension %d does not match stored rows' dimension %d — run /v1/_memory/reembed to migrate", len(query), other),
-		}
+	if ok, err := s.embedSearchDimensionCheck(ctx, tenantID, scope, scopeID, query); err != nil || !ok {
+		return nil, err
 	}
 	queryText := encodePgvector(query)
 
@@ -426,50 +385,12 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 	// memory row's expires_at column is the source of truth; the
 	// CASCADE handles deletes but not TTL-expired-not-yet-swept.
 	// We JOIN + filter so stale rows don't leak into search results.
-	prefixCondition := ""
 	// Restricting to the query's dimension is what makes a mid-migration scope
 	// DEGRADE instead of failing: rows that can be compared are compared, and the
 	// rest are skipped rather than aborting the statement. Without it, ONE row at
 	// another dimension breaks recall for the whole scope.
 	args := []any{tenantID, string(scope), scopeID, queryText, topK, len(query)}
-	if filter.KeyPrefix != "" {
-		args = append(args, likePrefixPattern(filter.KeyPrefix))
-		prefixCondition += " AND me.key LIKE $" + strconv.Itoa(len(args))
-	}
-	// RFC BW: the exclusion is what keeps document bodies out of fact recall. It is
-	// applied HERE rather than by the caller because the LIMIT below must see the
-	// filtered set — the pool is capped at 51, and on a scope that is mostly
-	// documents a post-filter would leave a caller asking for ten facts with two.
-	if filter.ExcludeKeyPrefix != "" {
-		args = append(args, likePrefixPattern(filter.ExcludeKeyPrefix))
-		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
-	}
-	// The document CLASS, not the namespace: a chunk body with no provenance. A
-	// fact homed in a chunk shares the prefix, so excluding the prefix outright
-	// would exclude the facts this query is for.
-	if filter.ExcludeDocumentPrefix != "" {
-		args = append(args, likePrefixPattern(filter.ExcludeDocumentPrefix))
-		prefixCondition += " AND NOT (me.key LIKE $" + strconv.Itoa(len(args)) + " AND " + pgNoFactOrigin + ")"
-	}
-	// Raw turns, dropped unless the caller ASKED for them. The namespace alone is the
-	// whole predicate: a trace is never anything else, so unlike the document class
-	// above there is no provenance to disambiguate.
-	if filter.ExcludeTracePrefix != "" {
-		args = append(args, likePrefixPattern(filter.ExcludeTracePrefix))
-		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
-	}
-	// Derived search units, dropped where the caller is not searching documents (or
-	// opted out of units). Namespace-only, like traces.
-	if filter.ExcludeUnitPrefix != "" {
-		args = append(args, likePrefixPattern(filter.ExcludeUnitPrefix))
-		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
-	}
-	prefixCondition += provenanceCondition(filter.Provenance)
-	var observedCond, idCond string
-	observedCond, args = observedCondition(filter, args)
-	prefixCondition += observedCond
-	idCond, args = idSegmentCondition(filter, args)
-	prefixCondition += idCond
+	prefixCondition, idCond, args := embedSearchConditions(filter, args)
 	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at, m.observed_at, m.valid_at, m.invalid_at,
 	               1.0 - (me.embedding <=> $4::vector) AS score,
 	               me.provider, me.model, me.embedding::text AS embedding_text,
@@ -488,7 +409,7 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 			   AND me.dimension = $6` + prefixCondition + `
 	         ORDER BY me.embedding <=> $4::vector
 	         LIMIT $5`
-	if idCond != "" {
+	if idCond {
 		args = planPerExecution(args)
 	}
 	rows, err := s.pool.Query(ctx, sql, args...)
@@ -556,6 +477,103 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 		return nil, fmt.Errorf("MemoryEmbedSearch iter: %w", err)
 	}
 	return out, nil
+}
+
+// embedSearchDimensionCheck is the nearest-neighbour searches' pre-check: false
+// with no error when the scope holds no vectors at all (an empty result, not a
+// failure), the typed dimension refusal when none is at the query's dimension.
+func (s *Store) embedSearchDimensionCheck(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, query []float32) (bool, error) {
+	// Dimension pre-check. Read one row's dimension under (scope,
+	// scope_id). If none exists, return empty results (the "empty
+	// scope" non-error path). If exists, compare against the query.
+	// A scope may hold rows at MORE THAN ONE dimension — migration 0017 calls that
+	// the typical steady state ("migrating from text-embedding-3-small to large;
+	// not everything re-embedded yet") — so this asks two questions: does the scope
+	// have rows at all, and does it have any at the QUERY's dimension.
+	//
+	// Reading one arbitrary row's dimension (LIMIT 1, no ORDER BY) was wrong in both
+	// directions. If that row matched the query, the pre-check passed and the <=>
+	// operator then met a row of another dimension, so postgres aborted the whole
+	// statement with a raw `different vector dimensions 8 and 4` (SQLSTATE 22000) —
+	// recall entirely broken for the scope, surfaced as a driver error instead of
+	// the typed, actionable refusal. If it did not match, the search was refused
+	// even though searchable rows existed. Which happened depended on row order.
+	var total, atDim int
+	var otherDim *int
+	err := s.pool.QueryRow(ctx,
+		`SELECT count(*),
+		        count(*) FILTER (WHERE dimension = $4),
+		        min(dimension) FILTER (WHERE dimension <> $4)
+		   FROM memory_embeddings
+		  WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3`,
+		tenantID, string(scope), scopeID, len(query),
+	).Scan(&total, &atDim, &otherDim)
+	if err != nil {
+		return false, fmt.Errorf("MemoryEmbedSearch dim probe: %w", err)
+	}
+	if total == 0 {
+		return false, nil
+	}
+	if atDim == 0 {
+		// Rows exist but NONE are searchable at this dimension. Returning empty
+		// would read as "this scope knows nothing" rather than "this scope needs
+		// re-embedding", so this stays the typed refusal.
+		other := 0
+		if otherDim != nil {
+			other = *otherDim
+		}
+		return false, &store.MemoryError{
+			Code: store.ErrDimensionMismatch.Code,
+			Msg:  fmt.Sprintf("memory: query embedding dimension %d does not match stored rows' dimension %d — run /v1/_memory/reembed to migrate", len(query), other),
+		}
+	}
+	return true, nil
+}
+
+// embedSearchConditions renders the filter's conditions over `memory_embeddings me`
+// JOIN `memory m`, appending their arguments after args; hasIDs reports an id
+// list, whose statement must then be planned per execution.
+func embedSearchConditions(filter store.MemorySearchFilter, args []any) (cond string, hasIDs bool, out []any) {
+	prefixCondition := ""
+	if filter.KeyPrefix != "" {
+		args = append(args, likePrefixPattern(filter.KeyPrefix))
+		prefixCondition += " AND me.key LIKE $" + strconv.Itoa(len(args))
+	}
+	// RFC BW: the exclusion is what keeps document bodies out of fact recall. It is
+	// applied HERE rather than by the caller because the LIMIT below must see the
+	// filtered set — the pool is capped at 51, and on a scope that is mostly
+	// documents a post-filter would leave a caller asking for ten facts with two.
+	if filter.ExcludeKeyPrefix != "" {
+		args = append(args, likePrefixPattern(filter.ExcludeKeyPrefix))
+		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
+	}
+	// The document CLASS, not the namespace: a chunk body with no provenance. A
+	// fact homed in a chunk shares the prefix, so excluding the prefix outright
+	// would exclude the facts this query is for.
+	if filter.ExcludeDocumentPrefix != "" {
+		args = append(args, likePrefixPattern(filter.ExcludeDocumentPrefix))
+		prefixCondition += " AND NOT (me.key LIKE $" + strconv.Itoa(len(args)) + " AND " + pgNoFactOrigin + ")"
+	}
+	// Raw turns, dropped unless the caller ASKED for them. The namespace alone is the
+	// whole predicate: a trace is never anything else, so unlike the document class
+	// above there is no provenance to disambiguate.
+	if filter.ExcludeTracePrefix != "" {
+		args = append(args, likePrefixPattern(filter.ExcludeTracePrefix))
+		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
+	}
+	// Derived search units, dropped where the caller is not searching documents (or
+	// opted out of units). Namespace-only, like traces.
+	if filter.ExcludeUnitPrefix != "" {
+		args = append(args, likePrefixPattern(filter.ExcludeUnitPrefix))
+		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
+	}
+	prefixCondition += provenanceCondition(filter.Provenance)
+	var observedCond, idCond string
+	observedCond, args = observedCondition(filter, args)
+	prefixCondition += observedCond
+	idCond, args = idSegmentCondition(filter, args)
+	prefixCondition += idCond
+	return prefixCondition, idCond != "", args
 }
 
 // MemoryFullTextSearch runs the keyword (lexical) retrieval leg over the
