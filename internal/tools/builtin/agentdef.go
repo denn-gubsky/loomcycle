@@ -1153,6 +1153,15 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 	if err := validateOverlayNamedScopes(ov.AgentDefScopes); err != nil {
 		return mergedDef{}, err
 	}
+	// The closed set of {{help:<topic>}} placeholders static agents are held
+	// to: a model-authored prompt names only a topic this binary embeds, so an
+	// unknown or malformed one is refused here rather than stored to render
+	// nothing. Both prompt fields, since a run renders whichever it is served.
+	for _, p := range []string{ov.SystemPrompt, ov.SystemPromptBase} {
+		if err := config.ValidateHelpPlaceholders(p); err != nil {
+			return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+		}
+	}
 	// The closed set operator yaml is held to: an unknown key scope is refused
 	// here rather than stored to grant nothing at run time.
 	if err := config.ValidateCryptoScopes(ov.CryptoScopes); err != nil {

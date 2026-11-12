@@ -90,6 +90,12 @@ func ParseHelpTopic(raw string) (string, bool) {
 	return t, helpTopicRe.MatchString(t)
 }
 
+// ReferencesHelp reports whether s contains any {{help:…}} placeholder,
+// escaped, malformed or not: the cheap gate a caller's no-placeholder fast path
+// checks, so an escaped one is unescaped and a malformed one removed rather
+// than left in the prompt as written.
+func ReferencesHelp(s string) bool { return helpPlaceholderRe.MatchString(s) }
+
 // HelpTopics returns the topic of every UNESCAPED, well-formed {{help:…}}
 // placeholder in s, in order and with repeats — each occurrence renders, so
 // each counts against HelpMaxBytes. ReferencesHelpTopics is the distinct set.
