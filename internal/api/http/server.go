@@ -720,14 +720,17 @@ type Server struct {
 	// in seconds. Set in New().
 	startedAt time.Time
 
-	// runPhaseHook is told the name of each RunOnce phase, and of each
-	// resume phase ("resume." names), as it starts. A test seam only, nil in
-	// production: the order pins (TestRunOnce_PhasesRunInTheirSecurityOrder,
-	// TestResume_PhasesRunInTheirSecurityOrder) record through it.
+	// runPhaseHook is told the name of each RunOnce phase, of each resume
+	// phase ("resume." names) and of each sub-run start step ("subrun."
+	// names), as it starts. A test seam only, nil in production: the order
+	// pins (TestRunOnce_PhasesRunInTheirSecurityOrder,
+	// TestResume_PhasesRunInTheirSecurityOrder,
+	// TestPrepareSubRun_StepsRunInTheirSecurityOrder) record through it.
 	runPhaseHook func(phase string)
 }
 
-// runPhase reports that a RunOnce or resume phase starts (runPhaseHook).
+// runPhase reports that a RunOnce or resume phase, or a sub-run start step,
+// starts (runPhaseHook).
 func (s *Server) runPhase(name string) {
 	if s.runPhaseHook != nil {
 		s.runPhaseHook(name)
@@ -6764,63 +6767,54 @@ func stripOperatorPlane(ctx context.Context) context.Context {
 // prepareSubRunValues is prepareSubRun with a team state's prompt values. src
 // is who wrote `name` — a state of a team definition, or a model through the
 // Agent tool — which decides how it may resolve inside a team.
+//
+// prepareSubRunValues drives the steps of a sub-run start (subrun_values.go)
+// in this order:
+//
+//	strip > resolve > budget > admit > overrides > policy > model >
+//	identity > rows > run ctx > prompt > hosts > persist > child ctx > options
+//
+// Several positions are rules, not taste, and
+// TestPrepareSubRun_StepsRunInTheirSecurityOrder pins them:
+//   - the operator plane's own authority is stripped first (strip), so nothing
+//     after it, the child's prompt assembly included, runs with the authority
+//     of an operator plane that started the tree;
+//   - a tree over its hard budget (budget), a no-trace or override refusal
+//     (admit) and a spawn the originating caller's ACL refuses (policy) all
+//     come before the run row is written (rows), so a refused spawn leaves
+//     nothing behind;
+//   - the parent's overrides settle the child's definition (overrides) before
+//     its policy is decided from it (policy) and before its model is resolved
+//     (model), so a model the child inherits is the one it runs on;
+//   - the child's policy comes from Inherit over the parent's (policy): its
+//     host list is the parent's and only narrows, never widens, the operator's
+//     floor, and the run record keeps that list (filled in at policy,
+//     written at rows);
+//   - the spawning run's walk, wave, board, outcome and hook-granted host
+//     stamps are cleared from the child's execution ctx (run ctx) before the
+//     child's own ctx is built on it (child ctx);
+//   - the parent's ACL removes tools from the child's set (prompt) before the
+//     memory injection and the system prompt read it, and the host narrowing
+//     (hosts) runs on that narrowed set before its dispatcher is built;
+//   - the child's identity carries the parent's tenant, user, user tier,
+//     operator-key restriction, isolation and credential scope unchanged
+//     (identity, and the run identity on its ctx at child ctx): a child never
+//     resolves a credential more widely than its parent;
+//   - the child's policy, decided again with its own tools and core blocks,
+//     REPLACES the parent's on its ctx (child ctx): whatever the parent held
+//     reaches the child only where Inherit says it does.
+//
+// The guarded defers (prepOK) stay here: a step's cleanup must outlive the
+// step, and the caller owns the teardown once prepOK flips (prep.cleanup).
 func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameSource, systemExtra, prompt, defID string, interactive bool, fwd func(providers.Event), values, dataSlots map[string]string, systemAuthored, inputAuthored bool) (*subRunPrep, error) {
+	s.runPhase("subrun.strip")
 	// First, so nothing below — the child's prompt assembly included — runs
 	// with the authority of an operator plane that started this tree.
 	ctx = stripOperatorPlane(ctx)
-	// RFC N: a parent in tenant T resolves the sub-agent name within T's
-	// view (parent tenant flows via ctx RunIdentity, inherited by every
-	// sub-agent). Confirms RFC N's open-question on cross-boundary spawn:
-	// the lookup is tenant-scoped, so a parent cannot spawn another
-	// tenant's private agent by name.
-	//
-	// Inside a team the name may be one of the team's OWN agents, and from
-	// here on `name` is the name the child RUNS under ("<team>/<name>" for
-	// one of those, however the caller spelled it): its run row, session,
-	// events and agent-scoped state all key on it.
 	tenant := tenantFromCtx(ctx)
-	def, runName, err := s.resolveAgentName(ctx, tenant, name, src)
-	if errors.Is(err, errAgentNotFound) {
-		return nil, fmt.Errorf("unknown sub-agent %q (not in cfg.Agents, dynamic_agents, or agent_def_active)", name)
-	}
+	def, name, err := s.resolveSubRunAgent(ctx, tenant, name, src, defID)
 	if err != nil {
-		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
-	}
-	name = runName
-	// A team's own agent has no versions of its own to pin: it is whatever
-	// the team version this run belongs to says it is.
-	if def.TeamDefID != "" && defID != "" {
-		return nil, fmt.Errorf("Agent tool: def_id does not apply to %q — it is a team's own agent and runs as its team's version defines it", name)
-	}
-
-	// v0.8.5 substrate: when defID is set, overlay the named def's
-	// mutable fields (system_prompt, tools, model, tier,
-	// effort, max_tokens, memory_scopes, etc.) over the static
-	// cfg.Agents entry for this single sub-run. Name mismatch is a
-	// hard refuse — pinning across names would let a parent bypass
-	// the operator's static agent boundary.
-	if defID != "" {
-		if s.store == nil {
-			return nil, fmt.Errorf("Agent tool: def_id pinning requires a configured store backend")
-		}
-		row, err := s.store.AgentDefGet(ctx, defID)
-		// A def_id is a global handle, so the version must be one the name
-		// could resolve to: the run's tenant's or the shared one's. Another
-		// tenant's is refused as if it did not exist, and before the name
-		// check, whose message would name that tenant's agent.
-		if err == nil && row.TenantID != tenant && row.TenantID != "" {
-			err = &store.ErrNotFound{Kind: "agent_def", ID: defID}
-		}
-		if err != nil {
-			return nil, fmt.Errorf("Agent tool: def_id %q lookup failed: %w", defID, err)
-		}
-		if row.Name != name {
-			return nil, fmt.Errorf("Agent tool: def_id %q is for agent %q, not %q (cross-name pinning refused)", defID, row.Name, name)
-		}
-		if row.Retired {
-			return nil, fmt.Errorf("Agent tool: def_id %q is retired", defID)
-		}
-		def = pinnedSubAgentDef(def, row.Definition)
+		return nil, err
 	}
 
 	// Read parent's identity from ctx to inherit user_id, tenant, user_tier, and
@@ -6831,6 +6825,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// policy + fallback posture applied to the whole sub-run tree.
 	parentIdentity := tools.RunIdentity(ctx)
 	parentTier := parentIdentity.UserTier
+	s.runPhase("subrun.budget")
 	// Strict budgets: a tree whose (tenant, user) is over a hard budget starts
 	// no more sub-agents. The parent gets it as the spawn's error and decides
 	// what to do; before anything is resolved or written for the child.
@@ -6860,58 +6855,12 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// compaction override, its ledger index): the child's policy is decided
 	// from it by Inherit, below.
 	parentPolicy := tools.PolicyOf(ctx)
-	subRetention := s.resolveRetention(ctx, tenant, name, def, "")
-	if err := admitNoTraceStart(subRetention, interactive, false, ""); err != nil {
-		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
+	subRetention, err := s.admitSubRun(ctx, tenant, name, src, def, interactive, parentPolicy)
+	if err != nil {
+		return nil, err
 	}
-	if subRetention == retentionmode.None {
-		// A walk records each member's answer for the states after it, so a
-		// no-trace member would be stored through the walk (as a no-trace run
-		// cannot start one, admitTeamRun).
-		if src == nameFromDefinition {
-			return nil, fmt.Errorf("sub-agent %q: %w", name, errNoTraceTeamMember)
-		}
-		// The child's answer comes back as the result of the calling tool
-		// call: that call's stored copy is a marker (makeRecordingEmit).
-		tools.MarkContentNotRetained(ctx)
-	}
-	// A parent's per-spawn override is an override like a caller's: a child
-	// that runs on its definition only refuses it. Checked on the definition
-	// the child will run — after a def_id pin, so the pinned version's own
-	// lock is the one that decides.
-	var spawnSet []string
-	if parentPolicy.CompactionOverride != nil {
-		spawnSet = append(spawnSet, "compaction")
-	}
-	if interactive {
-		spawnSet = append(spawnSet, "interactive")
-	}
-	if err := admitAgentOverrides(name, def, spawnSet); err != nil {
-		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
-	}
-	// The sub-run's own configuration record, written with the run row a few
-	// lines below. Sampling and the timeout are the child's own — a breeder
-	// varies temperature by FORKING a def. What it inherits (hosts,
-	// compaction, context, fan-out) is filled in from its policy once
-	// inheritOverridesForChild has settled its definition.
-	subRunCfg := runConfigRecord{
-		Hooks:             additionsRecord(hooks.AdditionsFrom(ctx)), // inherited from the parent run
-		SourcedHooks:      hooks.AdditionsFrom(ctx).Sourced,          // and a team state's, with their source
-		Sampling:          def.Sampling,
-		ToolChoice:        def.ToolChoice, // the child's own, like sampling
-		OutputFormat:      def.OutputFormat,
-		MaxContextTokens:  def.MaxContextTokens,
-		RunTimeoutSeconds: def.RunTimeoutSeconds,
-		// The version the child's NAME resolved to — under a def_id pin, the
-		// base the pinned version was laid over — so a resume rebuilds the same
-		// definition; the pin itself is AgentDefID on the row.
-		AgentVersion: agentVersionOf(def),
-		// The team this run belongs to, inherited from the spawning run's ctx
-		// and passed on below (it is not cleared for sub-agents, unlike the
-		// walk and wave stamps): a resume reads the team's own agents from it.
-		TeamScope: teamScopeRecordOf(ctx),
-	}
-
+	subRunCfg := subRunConfigOf(ctx, def)
+	s.runPhase("subrun.overrides")
 	// RFC DC P5 / D9: a child inherits the parent's overrides only when it is
 	// the SAME DEFINITION. Across definitions the parent's model may not even be
 	// one this agent is allowed — and a cheap summariser child silently
@@ -6920,64 +6869,12 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// Identity is the substrate def_id, falling back to the agent NAME for
 	// static (yaml) agents, which have no def row.
 	def, subRunCfg = s.inheritOverridesForChild(ctx, def, subRunCfg, defID, name)
-
-	// The child's policy, decided by Inherit from its parent's and its own
-	// definition's. Built here, before the record is written, because the
-	// record keeps what the child inherited (a resume cannot re-derive it
-	// once the parent's ctx is gone) and must agree with what it runs with.
-	// Its tool set and core blocks are only known once its prompt is
-	// assembled below; they are its own (ruleOwn), so the decision is
-	// repeated there with them filled in and every other field unchanged.
-	//
-	// ctx still carries the PARENT's identity, which matches the child's in
-	// every field the definition's defaults read (user, tenant, isolation).
-	// Safe to read def before the prompt rewrites below
-	// (resolveSkillBodiesForRun / applyMemoryInjection): both return a copy
-	// with only SystemPrompt changed, which
-	// TestSubRunConfig_DefRewritesLeaveTuningUntouched pins.
-	// RFC EY §3.7: the originating principal's set binds every hop. May it
-	// spawn this agent at all, and what of the child's own definition may
-	// it reach. The set is the parent policy's (inherited), never re-read.
-	if err := s.aclAdmitSpawn(ctx, parentPolicy.ACL, name); err != nil {
+	ctx, childGrant, childPolicy, err := s.decideSubRunPolicy(ctx, name, def, interactive, parentPolicy, subRunCfg)
+	if err != nil {
 		return nil, err
 	}
-	// From here ctx prepares the child: a condition reads the child's agent,
-	// depth and interactivity (RFC FY Part E) — a resident child runs
-	// interactive, every other child does not.
-	ctx = authz.WithRunFacts(ctx, authz.RunFacts{Agent: name, Depth: builtin.AgentDepth(ctx), Interactive: interactive})
-	childOwn, _ := s.agentRunPolicy(ctx, def, name, runPolicySource{
-		Volumes:      s.volumePolicyForAgent(ctx, def),
-		Crypto:       cryptoPolicyForAgent(def),
-		Compaction:   def.Compaction,
-		Context:      def.Context,
-		FanoutCap:    def.MaxConcurrentChildren,
-		Interruption: subRunCfg.Interruption,
-		ACL:          parentPolicy.ACL,
-	})
-	childGrant := tools.ChildGrant{
-		Own:             childOwn,
-		DeclaresVolumes: len(def.Volumes) > 0,
-		LocksOverrides:  agentLocksOverrides(def),
-		HostsNarrowOnly: callerHostsNarrowOnly(ctx, def),
-	}
-	childPolicy := parentPolicy.Inherit(childGrant)
-	subRunCfg.Hosts = hostRecordOf(childPolicy.Hosts)
-	// The originating caller's set binds the child as it binds the parent;
-	// a resume compiles that caller's set again.
-	subRunCfg.ACLOrigin = aclOriginOf(ctx, parentPolicy.ACL)
-	subRunCfg.Compaction = childPolicy.Compaction
-	subRunCfg.Context = childPolicy.Context
-	subRunCfg.EphemeralReadOnly = !childPolicy.EphemeralWritable
-	// The parent's volume confinement and key scopes are the ceilings the
-	// child was narrowed against, and its fan-out width the one it runs with:
-	// a resume narrows against the first two again and restores the third.
-	subRunCfg.Spawn = spawnRecordOf(parentPolicy.Volumes, childPolicy.FanoutCap)
-	subRunCfg.Spawn.CryptoScopes = parentPolicy.Crypto.Scopes
-	subRunCfg.Spawn.ShellCredentials = shellCredsRecordOf(parentPolicy.ShellCreds)
-	subRunCfg.Spawn.GitRemote = parentPolicy.GitRemote.Ops()
-	// The offer the child passes on to its own children is its parent's
-	// (Inherit), which a resume cannot read off a parent ctx.
-	subRunCfg.Spawn.OfferedOverrides = offeredOverridesRecordOf(childPolicy.Overrides)
+	recordInheritedPolicy(ctx, &subRunCfg, parentPolicy, childPolicy)
+	s.runPhase("subrun.model")
 	// Route through resolveAgentDef so an overlay's Model/Tier/Provider/
 	// Effort actually take effect — resolved AFTER the inheritance above, so a
 	// model, tier or routing block the child inherits is the one it runs on. resolveAgent re-reads cfg.Agents and
@@ -6988,17 +6885,11 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	if err != nil {
 		return nil, fmt.Errorf("resolve sub-agent %q model: %w", name, err)
 	}
-	provider, err := s.providers.Get(providerID)
+	provider, err := s.subRunProvider(providerID, name, def, interactive, &subRunCfg)
 	if err != nil {
-		return nil, fmt.Errorf("provider for sub-agent %q: %w", name, err)
+		return nil, err
 	}
-
-	// Read off the definition as the parent's overrides left it.
-	subRunCfg.IterationLimit = s.startIterationLimit(def, provider, interactive)
-	// Only a resident child runs interactive; its resume must know it is one.
-	if subRunCfg.Spawn != nil {
-		subRunCfg.Spawn.Resident = interactive
-	}
+	s.runPhase("subrun.identity")
 
 	// Sub-run gets its OWN session, under the PARENT's tenant (RFC L). The
 	// session row's tenant_id must match the run's (subIdentity.TenantID below) —
@@ -7040,144 +6931,27 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// its run existed; "" (every other sub-run) lets the store mint one.
 		ID: tools.ChildRunID(ctx),
 	}
-	// RFC BT P4: a board-bound `TeamDef op=run` puts the task key on ctx; stamp it
-	// onto this handler run's ParentContext so a client folding the run-state
-	// stream can pin the live agent to its kanban card. Cleared from subRunCtx
-	// below, so only the DIRECT handler is tagged (not its own sub-agents).
-	if bt, ok := store.BoardTaskFromContext(ctx); ok {
-		if subIdentity.ParentContext == nil {
-			subIdentity.ParentContext = &store.ParentContext{}
-		}
-		subIdentity.ParentContext.BoardScope = bt.Scope
-		subIdentity.ParentContext.BoardChunkID = bt.ChunkID
-		subIdentity.ParentContext.BoardDocumentID = bt.DocumentID
-	}
-	// Every member a walk state spawns carries the walk, the state and the
-	// visit, so a walk-filtered stream shows a walk with no starter too. The
-	// wave stamp below then adds a Starter member's wave fields on top; both
-	// carry the same walk id. Cleared from subRunCtx below like the rest.
-	//
-	// A run a member starts, at any depth, is not a member and still belongs
-	// to the walk: it carries the walk, the state and the visit of the member
-	// it descends from, and its parent run says it is not one. Without them it
-	// was in neither the walk's listing nor its stream, so a member waiting on
-	// its children named runs nothing could follow.
-	if wk, ok := store.WalkTaskFromContext(ctx); ok {
-		if subIdentity.ParentContext == nil {
-			subIdentity.ParentContext = &store.ParentContext{}
-		}
-		subIdentity.ParentContext.WalkID = wk.WalkID
-		subIdentity.ParentContext.State = wk.State
-		subIdentity.ParentContext.StateVisit = wk.Visit
-	} else {
-		subIdentity.ParentContext = store.StampWalkLineage(ctx, subIdentity.ParentContext)
-	}
-	// RFC CY L4: a Starter puts its wave on ctx per spawned run; stamp it the
-	// same way, so a wave's runs can be recovered by a join instead of being
-	// copied anywhere. Cleared from subRunCtx below with the board task, so
-	// only the DIRECT handler run carries it and not its own sub-agents.
-	if wt, ok := store.WaveTaskFromContext(ctx); ok {
-		if subIdentity.ParentContext == nil {
-			subIdentity.ParentContext = &store.ParentContext{}
-		}
-		subIdentity.ParentContext.WalkID = wt.WalkID
-		subIdentity.ParentContext.WaveID = wt.WaveID
-		subIdentity.ParentContext.WaveIndex = wt.Index
-	}
+	stampSubRunLineage(ctx, &subIdentity)
+	s.runPhase("subrun.rows")
 	subSessionID, subRunID, err := s.openOrCreateSessionAndRun(ctx, "", name, parentIdentity.TenantID, parentIdentity.UserID, subIdentity)
 	if err != nil {
 		return nil, fmt.Errorf("create sub-session for %q: %w", name, err)
 	}
-
-	// RFC X Phase 3 spawn ledger: when this sub-run is a parallel_spawn child
-	// (the parent threaded a spawn index + the parent's tool_use id is on ctx)
-	// and the feature is on, record a spawn_child_started row on the PARENT's
-	// transcript NOW — while the child run id is known but the child may park
-	// before it completes. The emitter on ctx is still the parent's (the
-	// sub-run's own emitter is swapped in below). Gives a restored fan-out
-	// parent the (index → run_id) mapping to await + re-collect this child.
-	if s.cfg().Env.ResumeFanout {
-		if idx, ok := parentPolicy.SpawnChildIndex(); ok {
-			if tuID := tools.ToolUseID(ctx); tuID != "" {
-				if emit := tools.EventEmitter(ctx); emit != nil {
-					emit(providers.Event{
-						Type: providers.EventSpawnChildStarted,
-						SpawnChild: &providers.SpawnChildEventInfo{
-							ToolUseID: tuID,
-							Index:     idx,
-							RunID:     subRunID,
-							Agent:     name,
-							TimeoutMs: parentPolicy.SpawnTimeoutMs,
-						},
-					})
-				}
-			}
-		}
-	}
-
+	s.recordSpawnChildStarted(ctx, parentPolicy, subRunID, name)
+	s.runPhase("subrun.run_ctx")
 	// Register the sub-run in the cancel registry so a parent-cancel
 	// can cascade through. Sub uses parent's runCtx (passed in via
 	// ctx) — a parent ctx-cancel already tears down the sub-loop, but
 	// the registry entry lets the cascade walk in Cancel() find this
 	// sub explicitly (belt-and-braces against grandchild races).
 	subRunCtx, subCancelFn := context.WithCancelCause(ctx)
-	// Board task tags only the DIRECT handler run; clear it on the handler's own
-	// execution ctx so its sub-agents aren't also pinned onto the card (RFC BT P4).
-	subRunCtx = store.WithBoardTask(subRunCtx, store.BoardTask{})
-	// Same for the wave: a wave is the runs the Starter dispatched, not
-	// everything they went on to spawn. Leaving it set would make a wave's
-	// apparent width depend on how chatty its agents were.
-	subRunCtx = store.WithWaveTask(subRunCtx, store.WaveTask{})
-	// And the walk state: a member's own sub-agents are not the walk's members,
-	// and a walk nested inside a member stamps its own.
-	subRunCtx = store.WithWalkTask(subRunCtx, store.WalkTask{})
-	// What this run's own spawns inherit instead: the walk state this run
-	// carries, as a member or as a member's descendant. Set from the stamped
-	// row, so a run with none clears it.
-	var lineage store.WalkTask
-	if pc := subIdentity.ParentContext; pc != nil {
-		lineage = store.WalkTask{WalkID: pc.WalkID, State: pc.State, Visit: pc.StateVisit}
-	}
-	subRunCtx = store.WithWalkLineage(subRunCtx, lineage)
-	// And the walk's review arming and deadline. runTeamMember has read this
-	// member's own from ctx already; left on its execution ctx, a walk nested
-	// inside the member would hold its runs on the OUTER state's arming.
-	subRunCtx = teamrun.WithReviewTTL(teamrun.WithReviewArming(subRunCtx, nil), nil)
-	// And the id this run was created under: its own children mint theirs.
-	subRunCtx = tools.WithChildRunID(subRunCtx, "")
-	// A spawn's untrusted inputs are this run's alone: without the clear, a
-	// child this run spawns with none of its own would be handed them again.
-	subRunCtx = tools.WithSpawnUntrusted(subRunCtx, nil)
-	// Likewise where this run reports its outcome (a spawn with result
-	// "object"): a run it spawns must not write over it.
-	subRunCtx = tools.WithChildOutcome(subRunCtx, nil)
-	// And a pre hook's host grant: the loop attaches it to the one tool call it
-	// judged, and when that call is this spawn it is on ctx here. Left on, it
-	// widened the child's every HTTP call for its whole run; the child's calls
-	// are judged by its own hooks.
-	subRunCtx = tools.WithoutExtraAllowedHosts(subRunCtx)
+	subRunCtx = clearSpawnerStamps(subRunCtx, subIdentity)
 	defer func() {
 		if !prepOK {
 			subCancelFn(nil)
 		}
 	}()
-	regErr := s.cancelReg.Register(cancel.Entry{
-		AgentID:       subAgentID,
-		RunID:         subRunID,
-		SessionID:     subSessionID,
-		UserID:        parentIdentity.UserID,
-		ParentAgentID: parentIdentity.AgentID,
-		StartedAt:     time.Now(),
-	}, subCancelFn)
-	registered := false
-	if regErr != nil {
-		// A duplicate-active collision is essentially impossible here
-		// (subAgentID is freshly generated); log and continue without
-		// registering rather than fail the run for a registry hiccup.
-		slog.Warn("cancel registry: sub-agent register failed", "agent_id", subAgentID, "err", regErr)
-	} else {
-		registered = true
-	}
+	registered := s.registerSubRunCancel(subAgentID, subRunID, subSessionID, parentIdentity, subCancelFn)
 	defer func() {
 		if !prepOK && registered {
 			s.cancelReg.Deregister(subAgentID)
@@ -7206,104 +6980,13 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		}
 	}()
 
-	// v0.9.x: sub-agent meta for runstate.Bus. ParentAgentID lets
-	// SSE subscribers see the lineage edge.
-	subMeta := runStateMeta{
-		RunID:         subRunID,
-		AgentID:       subAgentID,
-		Agent:         name,
-		UserID:        parentIdentity.UserID,
-		TenantID:      parentIdentity.TenantID, // sub-agent inherits the parent run's tenant
-		ParentAgentID: parentIdentity.AgentID,
-		ParentRunID:   tools.RunID(ctx),
-		otelSpan:      subRunSpan,
-		// v0.12.x root lineage + RFC BT P4 board task (subIdentity's is the clone
-		// of the parent's plus any board stamp above), echoed on this sub-run's
-		// run-state events so a board client can pin it to its card.
-		ParentContext: subIdentity.ParentContext,
-	}
-	s.publishRunState(subMeta, "running", "", "")
-
-	// v0.8.22: rebuild SystemPrompt from per-run SkillDef bodies
-	// when any of the sub-agent's skills has a DB-active row. Same
-	// call as the three top-level run-creation sites — without it,
-	// sub-agents would silently keep the static baked body and
-	// SkillDef promotions never take effect for agents only spawned
-	// as sub-agents.
-	// RFC N: a sub-agent runs with the parent's RunIdentity already on
-	// ctx, so tenantFromCtx(ctx) returns the parent's (== the run's)
-	// authoritative tenant — resolve the sub-agent's skills there.
-	def, promptProv := s.resolveSkillBodiesForRun(ctx, tenantFromCtx(ctx), def)
-	// RFC N FIX 2-mcp: sub-agents run with the parent's RunIdentity already
-	// on ctx, so tenantFromCtx returns the run's authoritative tenant —
-	// the sub-agent advertises the same tenant's MCP tools as its parent.
-	//
-	// Resolved BEFORE applyMemoryInjection because a {{tool:...}} placeholder
-	// renders this list. Safe to hoist: applyMemoryInjection rewrites only
-	// SystemPrompt, so def.Tools is the same value it was below.
-	subTools := filterTools(s.candidateTools(ctx, tenantFromCtx(ctx), def.Tools), def.Tools, nil)
-	subTools = s.grantRecallTool(subTools, def.Context) // RFC CT: recall-enabled sub-agent gets Recall
-	// After the Recall grant, as a top-level run and a resume narrow: an
-	// auto-granted tool is still one the caller's rules must allow.
-	subTools, subACLRemoved := tools.NarrowToolsByACL(ctx, parentPolicy.ACL, subTools)
-	// RFC BL P1: memory injection for the sub-agent. ctx still carries the
-	// PARENT run's core-block policy, so an inherit_core_blocks sub-agent picks
-	// up the parent's user/tenant blocks here (agent-scope never crosses).
-	def, coreBlocks := s.applyMemoryInjection(ctx, def, memInject{
-		Tenant: parentIdentity.TenantID, UserID: parentIdentity.UserID, AgentName: name,
-		InitialInput: prompt, Tools: subTools,
-		ACL: parentPolicy.ACL, ACLRemovedTools: subACLRemoved,
-	})
-	// The CALLER's segments are expanded too, with the same families and the
-	// same single pass. Until this, a {{document:...}} in a team node's prompt
-	// was inert — it reached the model as literal text — so the workflow
-	// bindings the team design is built on did not resolve at all.
-	systemExtra, prompt = s.composeCallerText(ctx, memInject{
-		Tenant: parentIdentity.TenantID, UserID: parentIdentity.UserID, AgentName: name,
-	}, values, dataSlots, systemExtra, prompt, systemAuthored, inputAuthored)
-	// The spawn's untrusted inputs join the segments HERE, after the caller's
-	// text is composed: they are data, so no placeholder in them is expanded,
-	// and they sit after the prompt and whatever a start hook added to it.
-	segs := withUntrustedBlocks(composeSubRunSegments(def.SystemPrompt, systemExtra, prompt), tools.SpawnUntrusted(ctx))
-
-	// Inherit the parent's caller-authoritative host policy. Without
-	// this, sub-agents fall back to the operator's static
-	// HTTPHostAllowlist — which typically doesn't include localhost
-	// callbacks — and a parent that worked against ["localhost"]
-	// silently spawns children that can't reach the caller's API.
-	// Production case: cv-batch-adapter (parent has localhost via
-	// caller-authoritative) → cv-adapter children that need to PATCH
-	// /api/applications/<id> back to jobs-search-web, hit
-	// "host \"localhost\" not in allowlist", waste iterations
-	// guessing hostnames, get capped by max_iterations, never write
-	// the documents (2026-05-06).
-	// The child's hosts are the parent's, made narrow-only for a locked child.
-	if hp := childPolicy.Hosts; hp.HasList || s.cfg().Env.HTTPCallerAuthoritative {
-		subTools = builtin.NarrowHosts(subTools, hp.AllowedHosts, hp.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !hp.NarrowOnly)
-	}
+	subMeta := s.publishSubRunStart(ctx, subRunID, subAgentID, name, parentIdentity, subRunSpan, subIdentity)
+	sp := s.buildSubRunPrompt(ctx, def, name, parentIdentity, parentPolicy, values, dataSlots, systemExtra, prompt, systemAuthored, inputAuthored)
+	def, promptProv, subTools, subACLRemoved, coreBlocks, segs := sp.def, sp.promptProv, sp.tools, sp.aclRemoved, sp.coreBlocks, sp.segs
+	subTools = s.narrowSubRunHosts(subTools, childPolicy)
 	subDispatcher := s.newDispatcher(subTools)
 
-	// Persist the input segments as the first event so transcript
-	// replay reconstructs the user prompt the same way fresh runs do.
-	//
-	// ⚠️ DELIBERATELY NOT ROUTED THROUGH persistUserInput, which is the writer every
-	// other `user_input` append uses. This one is not a person's words: it is the
-	// prompt a PARENT AGENT composed for its sub-agent, stored under `user_input`
-	// because that is the role the sub-agent's loop reads it in. Indexing it would
-	// fill a user's trace index with machine-generated text they never typed and
-	// cannot recognise — and a search for "what did I say" would answer with what an
-	// agent said on their behalf.
-	if s.store != nil && subRunID != "" {
-		if inputJSON, err := json.Marshal(segs); err == nil {
-			if err := s.store.AppendEvent(ctx, subRunID, "user_input", inputJSON); err != nil {
-				slog.Error("store: AppendEvent(user_input) failed for sub-run", "run_id", subRunID, "err", err)
-			}
-		}
-	}
-	// v0.9.x: also persist the resolved system prompt + provenance.
-	// On sub-runs we have the explicit def_id (parameter), so the
-	// event payload includes agent_def_id — unique to this path.
-	s.emitSystemPromptEvent(ctx, subRunID, def.SystemPrompt, defID, promptProv)
+	s.persistSubRunInput(ctx, subRunID, segs, def, defID, promptProv)
 
 	// The sub-run's own identity — hoisted so its recording emit attributes
 	// usage to the SUB (tenant/user/agent/session), not the parent, and
@@ -7314,31 +6997,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 			s.releaseUserScopeLatch(subRunID)
 		}
 	}()
-	subRID := tools.RunIdentityValue{
-		UserID:          parentIdentity.UserID,
-		TenantID:        parentIdentity.TenantID, // RFC L: sub-agents inherit the parent's authoritative tenant (same isolation boundary)
-		AgentID:         subAgentID,
-		RootRunID:       parentIdentity.RootRunID, // RFC AH Phase 2b: INHERIT the tree's root id (do NOT overwrite)
-		SessionID:       subSessionID,             // its OWN chat, not the parent's — a sub-agent gets a session of its own
-		UserTier:        parentIdentity.UserTier,  // v0.8.2: sub-agents inherit parent's user_tier
-		ModelTier:       usageModelTier(def),      // its own agent's tier, not the parent's
-		InternalAgent:   def.Internal,
-		AgentDefID:      defID,                                // v0.8.7: surface pinned def_id via Context.self
-		UserBearer:      parentIdentity.UserBearer,            // v0.8.x: bearer inherited identically (same end-user)
-		UserCredentials: parentIdentity.UserCredentials,       // v1.x RFC F: credentials map inherited identically
-		ParentContext:   parentIdentity.ParentContext.Clone(), // v0.12.x: tracking lineage flows to grandchildren too
-		// RFC AX: inherit the parent's operator-key restriction (a child cannot
-		// escape). The providers ctx value inherits automatically via
-		// subRunCtx←ctx (same as WithCredentialResolver), so no re-stamp needed.
-		OperatorKeyRestricted: parentIdentity.OperatorKeyRestricted,
-		// A child resolves $cred: no more widely than its parent.
-		CredentialsNoUserScope: parentIdentity.NoUserScope(),
-		UserScopeWithheld:      subLatch,
-		// RFC BX P2b: inherit the parent's isolation confinement (a child cannot
-		// escape by spawning). Read from ctx RunIdentity by the data tools.
-		Isolated:  parentIdentity.Isolated,
-		Retention: subRetention,
-	}
+	subRID := subRunIdentityValue(parentIdentity, def, subAgentID, subSessionID, defID, subLatch, subRetention)
 	// Sub-emit records to the sub's transcript only — the parent's SSE
 	// stream is fwd=no-op so sub events don't bleed into the parent's
 	// event stream. The parent observes only the wrapping
@@ -7358,37 +7017,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// admission slot, and its calls wait while the parent holds its own.
 	subCtx = concurrency.WithRunSlot(subCtx, nil)
 	subCtx = tools.WithAgentName(subCtx, name)
-	// The child's policy, decided again now that its own tool set and core
-	// blocks are known — both are its own, so every other field is what the
-	// record above was written from. It REPLACES the parent's: whatever the
-	// parent held reaches the child only where Inherit says it does.
-	childGrant.Own.Tools = toolNames(subTools)
-	childGrant.Own.ACLRemovedTools = subACLRemoved
-	// RFC BL P1: the child's effective core blocks (its own + any inherited
-	// user/tenant blocks), so the Memory tool enforces THIS agent's blocks and
-	// a grandchild inherits from here.
-	childGrant.Own.CoreBlocks = tools.CoreBlocksPolicyValue{Blocks: coreBlocks}
-	childPolicy = parentPolicy.Inherit(childGrant)
-	subCtx = tools.WithRunPolicy(subCtx, childPolicy)
-	subCtx = s.recordShadowNarrowing(subCtx, subRunID, childPolicy)
-	// RFC AH Phase 2b: the run-tree's ephemeral volume SET is deliberately NOT
-	// re-attached here — subCtx derives from the parent's ctx (via subRunCtx ←
-	// WithCancelCause(ctx)), so the SAME *EphemeralVolumeSet pointer flows down
-	// unchanged. A sub-agent creating an ephemeral volume thus registers it in
-	// the shared set the whole tree resolves through, and it is purged with the
-	// tree at the top-level run's completion (sub-agents never purge).
-	//
-	// Sub-agent event emitter writes to the SUB's transcript (per
-	// subEmit above). Channel-tool publishes from inside the sub
-	// surface on the sub's SSE stream, not the parent's.
-	subCtx = tools.WithEventEmitter(subCtx, subEmit)
-	subCtx = tools.WithSearchProviders(subCtx, def.SearchProviders)
-	// subCtx still carries the PARENT's run id here, which is exactly the
-	// parent id; it is replaced by the child's on the next line.
-	subCtx = tools.WithParentRunID(subCtx, tools.RunID(subCtx))
-	subCtx = tools.WithRunID(subCtx, subRunID)
-	subCtx = s.withRunHooks(subCtx, subRunID, name, def, hooks.Additions{})
-	subCtx = tools.WithDispatcher(subCtx, subDispatcher)
+	subCtx, childPolicy = s.stampChildRunCtx(subCtx, childGrant, parentPolicy, subTools, subACLRemoved, coreBlocks, subRunID, subEmit, def, name, subDispatcher)
 
 	subHeartbeat := s.makeHeartbeat(subRunID)
 
@@ -7405,6 +7034,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// that itself parallel_spawns) can park mid-tool-call too.
 	subCtx = tools.WithPauseGate(subCtx, subGate)
 
+	s.runPhase("subrun.options")
 	// nil routing: inheritance is RFC DC P5. A child resolves from its own
 	// definition today, which is what it did before this phase.
 	fbPolicy, fbReResolve := s.fallbackForRun(tenantFromCtx(ctx), parentIdentity.UserID, name, parentTier, parentIdentity.OperatorKeyRestricted, nil)
@@ -7457,18 +7087,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// A refusal of the operator's own key: the provider leaves routing if its probe agrees.
 	opts.ReportOperatorKeyRefusal = s.operatorKeyRefusalFn()
 
-	// cleanup fires the SAME releases as the guarded error-defers above, in the
-	// SAME order runSubAgent's original defers ran LIFO (deregSubGate →
-	// subRunSpan.End → cancelReg.Deregister when registered → subCancelFn).
-	cleanup := func() {
-		s.releaseUserScopeLatch(subRunID)
-		deregSubGate()
-		subRunSpan.End()
-		if registered {
-			s.cancelReg.Deregister(subAgentID)
-		}
-		subCancelFn(nil)
-	}
+	cleanup := s.subRunCleanup(subRunID, subAgentID, registered, deregSubGate, subRunSpan, subCancelFn)
 
 	prepOK = true
 	return &subRunPrep{

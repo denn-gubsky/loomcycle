@@ -52,7 +52,6 @@ type allowed struct {
 var allowlist = map[string]allowed{
 	"internal/api/http/resume.go Server.resumePausedRun":                  {729, "logic", "P2"},
 	"internal/store/storetest/contract.go Run":                            {743, "table", "D3"},
-	"internal/api/http/server.go Server.prepareSubRunValues":              {722, "logic", "P5"},
 	"internal/api/http/server.go Server.routes":                           {708, "table", "D3"},
 	"internal/api/mcp/tools.go baseToolDescriptors":                       {705, "table", "D3"},
 	"internal/loop/stateful.go runStateful":                               {631, "logic", "P5"},
