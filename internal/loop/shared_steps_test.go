@@ -99,3 +99,38 @@ func TestRunStateful_RecordsAnIterationSpanPerStep(t *testing.T) {
 		}
 	}
 }
+
+// spanAtParkGate requests one pause and records the span its Park ran under.
+type spanAtParkGate struct {
+	asked  atomic.Int32
+	parked trace.SpanContext
+}
+
+func (g *spanAtParkGate) PauseRequested() bool { return g.asked.Add(1) == 1 }
+func (g *spanAtParkGate) Park(ctx context.Context) error {
+	g.parked = trace.SpanFromContext(ctx).SpanContext()
+	return nil
+}
+
+// A stateful run parks for a runtime pause on its step's own ctx, inside the
+// step's iteration span, as an append run parks on its iteration's ctx.
+func TestRunStateful_ParksInsideTheIterationSpan(t *testing.T) {
+	exp, _ := traced(t)
+	prov := &statefulScriptProvider{scripts: []string{`{"patch":{"count":1},"done":true,"final":"count is 1"}`}}
+	gate := &spanAtParkGate{}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x", Dispatcher: tools.NewDispatcher(nil),
+		Segments: statefulTaskSegs(), Context: statefulCtx(nil), PauseGate: gate,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !gate.parked.IsValid() {
+		t.Fatalf("the park ran under no span; want the step's iteration span")
+	}
+	for _, sp := range exp.GetSpans() {
+		if sp.Name == lcotel.SpanIteration && sp.SpanContext.SpanID() == gate.parked.SpanID() {
+			return
+		}
+	}
+	t.Errorf("the park ran under span %s, which is not an iteration span", gate.parked.SpanID())
+}

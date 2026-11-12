@@ -120,7 +120,9 @@ func (r *statefulLoop) step(runCtx context.Context, iter int) loopExit {
 	ctx, iterSpan := lcotel.RecordIteration(runCtx, iter)
 	defer iterSpan.End()
 	r.stepStarts("gates")
-	if ex := r.gates(runCtx, iter); ex.ctl != loopProceed {
+	// The gates run on the step's ctx, so a pause park sits inside the
+	// iteration span, as the append loop's does.
+	if ex := r.gates(ctx, iter); ex.ctl != loopProceed {
 		return ex
 	}
 	r.stepStarts("steer")
