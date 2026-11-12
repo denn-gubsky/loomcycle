@@ -52,7 +52,6 @@ type Config struct {
 	Skills      map[string]SkillSpec `yaml:"skills,omitempty"`
 	MCPServers  map[string]MCPServer `yaml:"mcp_servers"`
 	Concurrency Concurrency          `yaml:"concurrency"`
-	Cache       CacheConfig          `yaml:"cache"`
 
 	// ContextPlugins is the runtime-wide chain of context-transform plugins
 	// (RFC Z / F43) — fast, built-in transforms applied to a COPY of the
@@ -4055,30 +4054,14 @@ func (c Concurrency) ProviderQueueDepthOrDefault() int {
 	return c.MaxQueueDepth
 }
 
-// CacheConfig is the cache layer config; v0.1 only honours .Native.Enabled.
-type CacheConfig struct {
-	ResponseKV ResponseKVConfig  `yaml:"response_kv"`
-	Native     NativeCacheConfig `yaml:"native"`
-}
-
-type ResponseKVConfig struct {
-	Backend string `yaml:"backend"` // "memory" | "redis"
-	TTL     string `yaml:"ttl"`     // duration string, e.g. "5m"
-}
-
-type NativeCacheConfig struct {
-	Enabled bool `yaml:"enabled"`
-}
-
 // Env is the secrets layer, loaded from process environment.
 type Env struct {
-	AnthropicAPIKey string
-	OpenAIAPIKey    string
+	OpenAIAPIKey string
 	// VoyageAPIKey enables the v0.10.2 Voyage AI embedder, registered
 	// under the `anthropic` provider slot (Anthropic has no native
 	// embeddings API and explicitly recommends Voyage AI). When
 	// `memory.embedder.provider: anthropic` is set in yaml, main.go's
-	// buildEmbedder uses this key rather than AnthropicAPIKey for the
+	// buildEmbedder uses this key, not the Anthropic one, for the
 	// Voyage HTTP calls. Empty = the anthropic embedder driver
 	// constructs but every Embed() call surfaces 401. Voyage's
 	// canonical env-var name is reused verbatim.
@@ -4127,10 +4110,6 @@ type Env struct {
 	// like num_ctx: num_gpu is a model-LOAD parameter, not a per-request
 	// knob. Env: LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU.
 	OllamaLocalNumGpu int
-	// DeepSeekAPIKey enables the `provider: deepseek` driver. Empty
-	// = provider not registered (agents that ask for it fail at
-	// resolve time, mirroring OpenAI / Anthropic behaviour).
-	DeepSeekAPIKey string
 	// DeepSeekBaseURL overrides the public DeepSeek endpoint
 	// (https://api.deepseek.com/v1) for self-hosted OpenAI-
 	// compatible mirrors (e.g. an internal vLLM serving a DeepSeek
@@ -5166,14 +5145,6 @@ type Env struct {
 	// Env: LOOMCYCLE_PGVECTOR_ENABLED.
 	PgvectorEnabled bool
 
-	// SqliteVecPath is the path to the sqlite-vec shared library.
-	// Reserved for v0.9.1 (the build-tag swap to cgosqlite); parsed
-	// in v0.9.0 so operator yaml/env doesn't need a v0.9.0→v0.9.1
-	// migration. Currently unused — SQLite vector ops always refuse
-	// in v0.9.0.
-	// Env: LOOMCYCLE_SQLITE_VEC_PATH.
-	SqliteVecPath string
-
 	// MemoryEmbedBatchSize is the default batch size embedder
 	// drivers use when grouping texts into one provider call.
 	// Provider-specific caps (OpenAI's 2048-item limit etc.) still
@@ -5547,10 +5518,6 @@ func loadLayerTree(layers []Layer) (*Config, string, error) {
 			MaxQueueDepth:        32,
 			MaxQueuedRunsPerUser: 16,
 		},
-		Cache: CacheConfig{
-			ResponseKV: ResponseKVConfig{Backend: "memory", TTL: "5m"},
-			Native:     NativeCacheConfig{Enabled: true},
-		},
 	}
 
 	// Drop the no-yaml sentinel (a "" path / empty in-memory layer = the
@@ -5660,13 +5627,11 @@ func loadAgentFiles(cfg *Config, primaryPath string) error {
 // read. It replaces cfg.Env whole, so it runs before every applyEnv block.
 func applyEnvCore(cfg *Config) {
 	cfg.Env = Env{
-		AnthropicAPIKey:             os.Getenv("ANTHROPIC_API_KEY"),
 		OpenAIAPIKey:                os.Getenv("OPENAI_API_KEY"),
 		VoyageAPIKey:                os.Getenv("VOYAGE_API_KEY"),
 		OllamaBaseURL:               getenvDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
 		OllamaAPIKey:                os.Getenv("OLLAMA_API_KEY"),
 		OllamaCloudBaseURL:          getenvDefault("OLLAMA_CLOUD_BASE_URL", "https://ollama.com"),
-		DeepSeekAPIKey:              os.Getenv("DEEPSEEK_API_KEY"),
 		DeepSeekBaseURL:             os.Getenv("DEEPSEEK_BASE_URL"),
 		GeminiAPIKey:                os.Getenv("GEMINI_API_KEY"),
 		GeminiBaseURL:               os.Getenv("GEMINI_BASE_URL"),

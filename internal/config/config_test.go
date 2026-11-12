@@ -31,7 +31,7 @@ func TestLoadExample(t *testing.T) {
 		t.Skip("example yaml not found")
 	}
 
-	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	t.Setenv("OPENAI_API_KEY", "sk-test")
 	cfg, err := Load(examplePath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -42,8 +42,8 @@ func TestLoadExample(t *testing.T) {
 	if cfg.Concurrency.MaxConcurrentRuns != 8 {
 		t.Errorf("concurrency.max_concurrent_runs = %d", cfg.Concurrency.MaxConcurrentRuns)
 	}
-	if cfg.Env.AnthropicAPIKey != "sk-test" {
-		t.Errorf("env not loaded: %q", cfg.Env.AnthropicAPIKey)
+	if cfg.Env.OpenAIAPIKey != "sk-test" {
+		t.Errorf("env not loaded: %q", cfg.Env.OpenAIAPIKey)
 	}
 
 	provider, model, _, err := cfg.ResolveAgentModel("default")
