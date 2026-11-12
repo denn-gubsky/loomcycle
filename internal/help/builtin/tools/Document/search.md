@@ -123,9 +123,12 @@ in that part of the tree is relevant. A call with no filter has no `filter` key.
 
 ## Returns
 
-`{chunks: [{chunk_id, score, rank_score, title, type, document_id, valid_at?,
-invalid_at?}]}`, best match first. `valid_at` / `invalid_at` are the chunk's own
-stated validity, when it has one. `rank_score` is what the search's order used — the meaning and
+`{chunks: [{chunk_id, score, rank_score, title, type, document_id, path?,
+has_body?, valid_at?, invalid_at?}]}`, best match first. `path` is where the
+hit's document is filed: its first Path name in sort order, absent when it is
+filed nowhere. `has_body: false` marks a section whose own body is empty and
+whose text is in its children: `get_chunk` on it lists them. `valid_at` /
+`invalid_at` are the chunk's own stated validity, when it has one. `rank_score` is what the search's order used — the meaning and
 word matches combined. `score` is the raw strength of the match that first found
 the chunk: the meaning similarity, or, for a chunk found by its words alone, a
 word-match weight on a different scale. So a chunk found by its words can have a
@@ -193,8 +196,8 @@ Find where the rollback procedure is written down:
 
 ```json result
 {"chunks": [
-  {"chunk_id": "c7d2e4f6a8b04c1d9e3f5a7b9c1d3e5f", "score": 0.82, "rank_score": 0.032, "title": "Rollback plan", "document_id": "b4407b522dc11495d3de371311db17f0"},
-  {"chunk_id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "score": 0.61, "rank_score": 0.016, "title": "Migrate the database", "type": "task", "document_id": "b4407b522dc11495d3de371311db17f0"}]}
+  {"chunk_id": "c7d2e4f6a8b04c1d9e3f5a7b9c1d3e5f", "score": 0.82, "rank_score": 0.032, "title": "Rollback plan", "document_id": "b4407b522dc11495d3de371311db17f0", "path": "/ops/runbooks/database"},
+  {"chunk_id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "score": 0.61, "rank_score": 0.016, "title": "Migrate the database", "type": "task", "document_id": "b4407b522dc11495d3de371311db17f0", "path": "/ops/runbooks/database"}]}
 ```
 
 Look only among the regulator's norms in force, and never at earlier gate reports:

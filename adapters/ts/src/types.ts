@@ -4945,6 +4945,12 @@ export type DocumentSearchHit = {
   title?: string;
   type?: string;
   document_id?: string;
+  /** Where the hit's document is filed: its first Path name in sort order.
+   *  Absent when the document is filed under no Path name. */
+  path?: string;
+  /** `false` on a section whose own body is empty and whose text is in its
+   *  children (`get_chunk` on it lists them); absent otherwise. */
+  has_body?: false;
   /** The chunk's own validity period, present only when set. */
   valid_at?: number;
   invalid_at?: number;
@@ -4972,6 +4978,9 @@ export type DocumentRelatedResult = {
     title?: string;
     type?: string;
     document_id?: string;
+    /** As on {@link DocumentSearchHit}. */
+    path?: string;
+    has_body?: false;
     valid_at?: number;
     invalid_at?: number;
   }>;

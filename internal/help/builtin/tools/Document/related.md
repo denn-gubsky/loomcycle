@@ -96,10 +96,14 @@ in that part of the tree is relevant. A call with no filter has no `filter` key.
 
 ## Returns
 
-`{related: [{chunk_id, score, title, type, document_id, valid_at?,
-invalid_at?}]}`, closest first, plus `filter` when you passed one. With `related_to`, `linked: [{chunk_id,
-via_kind, via_quote?, title, type, document_id}]` — the relation's kind and its
+`{related: [{chunk_id, score, title, type, document_id, path?, has_body?,
+valid_at?, invalid_at?}]}`, closest first, plus `filter` when you passed one. With `related_to`, `linked: [{chunk_id,
+via_kind, via_quote?, title, type, document_id, path?, has_body?}]` — the relation's kind and its
 first evidence quote. `related_to` alone returns `{linked}` (and `filter`).
+`path` is where the hit's document is filed: its first Path name in sort
+order, absent when it is filed nowhere. `has_body: false` marks a section
+whose own body is empty and whose text is in its children: `get_chunk` on it
+lists them.
 A chunk whose body is empty — a section heading with only children — or is a
 mermaid or image form has nothing to compare, and returns `{related: []}`.
 
@@ -125,7 +129,7 @@ Chunks similar to one task:
 
 ```json result
 {"related": [
-  {"chunk_id": "c7d2e4f6a8b04c1d9e3f5a7b9c1d3e5f", "score": 0.78, "title": "Rollback plan", "document_id": "b4407b522dc11495d3de371311db17f0"}]}
+  {"chunk_id": "c7d2e4f6a8b04c1d9e3f5a7b9c1d3e5f", "score": 0.78, "title": "Rollback plan", "document_id": "b4407b522dc11495d3de371311db17f0", "path": "/ops/runbooks/database"}]}
 ```
 
 Earlier decisions like the passage under review, never from the passport itself:

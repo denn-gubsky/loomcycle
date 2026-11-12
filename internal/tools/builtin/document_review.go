@@ -329,6 +329,21 @@ func (d *Document) summarizeStatements(ctx context.Context, key sqlmem.ScopeKey,
 // sort order, so a document filed twice always lands in one group), or "" for
 // a document filed nowhere.
 func pathPrefix(names []string) string {
+	first := firstPathName(names)
+	if first == "" {
+		return ""
+	}
+	segs := strings.Split(strings.Trim(first, "/"), "/")
+	if len(segs) > 2 {
+		segs = segs[:2]
+	}
+	return "/" + strings.Join(segs, "/")
+}
+
+// firstPathName is a document's first Path name in sort order, or "" for a
+// document filed nowhere: the one name a document filed twice is known by
+// wherever a single name is reported (a summary group, a search hit's path).
+func firstPathName(names []string) string {
 	if len(names) == 0 {
 		return ""
 	}
@@ -338,11 +353,7 @@ func pathPrefix(names []string) string {
 			first = n
 		}
 	}
-	segs := strings.Split(strings.Trim(first, "/"), "/")
-	if len(segs) > 2 {
-		segs = segs[:2]
-	}
-	return "/" + strings.Join(segs, "/")
+	return first
 }
 
 // reviewFilterInput is a queue filter as list_statements' input, built field by
