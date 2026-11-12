@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/protoadapt"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
@@ -116,6 +117,15 @@ func withErrorDetails(st *status.Status, err error) error {
 			"category":     string(info.Category),
 			"is_retryable": strconv.FormatBool(info.Retryable),
 		}
+	}
+	// RFC GK D6: a full admission queue names its bound, as the HTTP 429 body
+	// and the batch envelope do.
+	if capacity, queuedNow, ok := concurrency.QueueBound(err); ok {
+		if ei.Metadata == nil {
+			ei.Metadata = map[string]string{}
+		}
+		ei.Metadata["queue_capacity"] = strconv.Itoa(capacity)
+		ei.Metadata["queued_now"] = strconv.Itoa(queuedNow)
 	}
 
 	details := []protoadapt.MessageV1{ei}

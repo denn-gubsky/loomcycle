@@ -468,7 +468,7 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 	var (
 		regAgentID, regRunID, regSessionID string
 		finalText                          loop.AnswerText
-		finalUsage                         *providers.Usage
+		runUsage                           connector.RunUsage
 		finalStopReason                    string
 		limitCrossings                     []providers.LimitInfo
 	)
@@ -485,12 +485,8 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 				Event:   ev,
 			})
 			finalText.Observe(ev)
+			runUsage.Observe(ev)
 			switch ev.Type {
-			case providers.EventUsage:
-				if ev.Usage != nil {
-					u := *ev.Usage
-					finalUsage = &u
-				}
 			case providers.EventLimit:
 				// RFC AW — surface the token-budget crossing in the spawn_run
 				// tool result (not only on the streamed run_event notification
@@ -500,10 +496,6 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 				}
 			case providers.EventDone:
 				finalStopReason = ev.StopReason
-				if ev.Usage != nil && finalUsage == nil {
-					u := *ev.Usage
-					finalUsage = &u
-				}
 			}
 		},
 	}
@@ -522,7 +514,7 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		Status:        string(store.RunCompleted),
 		StopReason:    finalStopReason,
 		FinalText:     finalText.String(),
-		Usage:         finalUsage,
+		Usage:         runUsage.Usage(),
 		Limits:        limitCrossings,    // RFC AW: budget crossings observed during the run
 		ParentContext: req.ParentContext, // v0.12.x: echo the lineage back to the caller
 	}
@@ -543,6 +535,7 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		if info, ok := errclassify.CategoryOf(runErr); ok {
 			result.ErrorInfo = &info
 		}
+		result.NoteQueueBound(runErr)
 	}
 	// The run's own record has the last word on how it ended, as on the
 	// connector's blocking path: a run ended from outside — cancel_run, or

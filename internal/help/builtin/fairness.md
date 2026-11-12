@@ -43,6 +43,13 @@ name no user share their tenant's places. Past it the run is refused with
 429 `backpressure`, so one caller cannot fill the queue and turn every
 other tenant away.
 
+So `admission: "wait"` can still refuse a run: when a queue it would join
+is at its bound. That refusal carries `queue_capacity` (the bound) and
+`queued_now` (the runs holding it): in the 429 body, in a batch child's
+own slot (`spawn_runs`, `POST /v1/runs:batch`), in the gRPC ErrorInfo
+metadata, and in the error text. Size the next batch from them and
+re-send only the refused runs.
+
 ## admission: "wait" or "reject"
 
 Every way of starting a run (POST /v1/runs, the gRPC Run RPC, the MCP

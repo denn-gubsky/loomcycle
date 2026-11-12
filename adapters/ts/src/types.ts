@@ -2087,6 +2087,11 @@ export interface SpawnRunResult {
   final_text?: string;
   usage?: AgentUsage;
   error?: string;
+  /** On a child refused because an admission queue was at its bound (even
+   *  under `admission: "wait"`): the bound, and how many runs held it. Size
+   *  the next batch from them and re-send only the refused children. */
+  queue_capacity?: number;
+  queued_now?: number;
   /** The child's `idempotencyKey` was already held by a run: the ids, status
    *  and result are that run's, and this request started nothing. */
   deduplicated?: boolean;

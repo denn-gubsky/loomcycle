@@ -153,6 +153,7 @@ func (s *Server) spawnDetached(ctx context.Context, req connector.SpawnRunReques
 				if info, ok := errclassify.CategoryOf(err); ok {
 					res.ErrorInfo = &info
 				}
+				res.NoteQueueBound(err)
 			}
 			return res
 		case <-callerDone:
