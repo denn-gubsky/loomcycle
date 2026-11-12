@@ -94,6 +94,13 @@ type TenantRouterConfig struct {
 	IdleTimeout time.Duration
 	// MaxConcurrentExports caps export calls in flight across all tenants.
 	MaxConcurrentExports int
+	// MaxExportsPerTenant caps the export calls one tenant may have in flight
+	// (span batches, metric pushes and tests together), so a few tenants
+	// whose collectors never answer cannot hold every shared slot.
+	MaxExportsPerTenant int
+	// ExportSlotWait bounds how long an export waits for a slot before it
+	// fails as busy.
+	ExportSlotWait time.Duration
 	// ExportTimeout bounds one export call.
 	ExportTimeout time.Duration
 	// ScheduleDelay is how long a pipeline waits to fill a batch.
@@ -112,6 +119,8 @@ const (
 	DefaultTenantMaxPipelines         = 256
 	DefaultTenantIdleTimeout          = 10 * time.Minute
 	DefaultTenantMaxConcurrentExports = 16
+	DefaultTenantMaxExportsPerTenant  = 2
+	DefaultTenantExportSlotWait       = time.Second
 	DefaultTenantExportTimeout        = 10 * time.Second
 	defaultTenantScheduleDelay        = 5 * time.Second
 	tenantReapInterval                = time.Minute
@@ -129,6 +138,12 @@ func (c TenantRouterConfig) withDefaults() TenantRouterConfig {
 	}
 	if c.MaxConcurrentExports <= 0 {
 		c.MaxConcurrentExports = DefaultTenantMaxConcurrentExports
+	}
+	if c.MaxExportsPerTenant <= 0 {
+		c.MaxExportsPerTenant = DefaultTenantMaxExportsPerTenant
+	}
+	if c.ExportSlotWait <= 0 {
+		c.ExportSlotWait = DefaultTenantExportSlotWait
 	}
 	if c.ExportTimeout <= 0 {
 		c.ExportTimeout = DefaultTenantExportTimeout
@@ -207,8 +222,8 @@ type tenantEntry struct {
 // processor of the global tracer provider until that shuts down.
 type TenantRouter struct {
 	cfg TenantRouterConfig
-	// slots caps exports in flight across every tenant.
-	slots chan struct{}
+	// slots caps exports in flight, across every tenant and per tenant.
+	slots *exportSlots
 
 	mu      sync.RWMutex
 	entries map[string]*tenantEntry
@@ -240,7 +255,7 @@ func NewTenantRouter(cfg TenantRouterConfig) *TenantRouter {
 	cfg = cfg.withDefaults()
 	r := &TenantRouter{
 		cfg:      cfg,
-		slots:    make(chan struct{}, cfg.MaxConcurrentExports),
+		slots:    newExportSlots(cfg.MaxConcurrentExports, cfg.MaxExportsPerTenant, cfg.ExportSlotWait),
 		entries:  map[string]*tenantEntry{},
 		pipes:    map[string]*tenantPipeline{},
 		flushing: map[string]bool{},
@@ -534,9 +549,9 @@ func (r *TenantRouter) reapIdle(now time.Time) {
 
 // Test sends one test span to d when it exports traces (TestTenantExport) and
 // one test metric when it exports metrics (TestTenantMetricExport), inside the
-// cap on exports in flight every tenant shares: with every slot held until
-// timeout it answers busy rather than add an export beyond the cap. The first
-// failure is the answer. It touches no tenant's status.
+// caps on exports in flight (exportSlots): with no slot free in time it
+// answers busy rather than add an export beyond them. The first failure is
+// the answer. It touches no tenant's status.
 func (r *TenantRouter) Test(ctx context.Context, tenant string, d TenantDestination, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = r.cfg.ExportTimeout
@@ -544,12 +559,11 @@ func (r *TenantRouter) Test(ctx context.Context, tenant string, d TenantDestinat
 	start := time.Now()
 	wait, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	select {
-	case r.slots <- struct{}{}:
-	case <-wait.Done():
+	release, ok := r.slots.acquire(wait, tenant)
+	if !ok {
 		return &TenantExportError{msg: CategoryBusy}
 	}
-	defer func() { <-r.slots }()
+	defer release()
 	left := func() time.Duration { return timeout - time.Since(start) }
 	if left() <= 0 {
 		return &TenantExportError{msg: CategoryBusy}
@@ -630,7 +644,7 @@ type tenantPipeline struct {
 	cancel context.CancelFunc
 }
 
-func newTenantPipeline(tenant string, e *tenantEntry, cfg TenantRouterConfig, slots chan struct{}) (*tenantPipeline, error) {
+func newTenantPipeline(tenant string, e *tenantEntry, cfg TenantRouterConfig, slots *exportSlots) (*tenantPipeline, error) {
 	exp, release, err := newTenantExporter(context.Background(), e.dest, cfg.ExportTimeout)
 	if err != nil {
 		return nil, err
@@ -688,7 +702,7 @@ type tenantSpanExporter struct {
 	tenant  string
 	next    sdktrace.SpanExporter
 	res     *sdkresource.Resource
-	slots   chan struct{}
+	slots   *exportSlots
 	p       *tenantPipeline
 	headers map[string]string
 	log     *slog.Logger
@@ -704,9 +718,8 @@ func (e *tenantSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.R
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(e.p.ctx, cancel)()
-	select {
-	case e.slots <- struct{}{}:
-	case <-ctx.Done():
+	release, ok := e.slots.acquire(ctx, e.tenant)
+	if !ok {
 		if e.p.discard.Load() {
 			e.discarded(n)
 			return nil
@@ -714,7 +727,7 @@ func (e *tenantSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.R
 		e.fail(uint64(n), CategoryBusy)
 		return nil
 	}
-	defer func() { <-e.slots }()
+	defer release()
 	copies := make([]sdktrace.ReadOnlySpan, n)
 	for i, s := range spans {
 		copies[i] = newTenantSpan(s, e.res)

@@ -3785,7 +3785,10 @@ recorded for anyone, and the startup logs a warning saying so.
 
 Each tenant has its own bounded queue; a slow or unreachable collector drops
 that tenant's spans (counted) and holds up nobody else's, and no run ever waits
-on an export. `/metrics` counts the exports per tenant:
+on an export. Exports share 16 slots on a replica, and one tenant holds at most
+two of them at once (span batches, metric pushes and tests together), so a few
+tenants whose collectors never answer cannot take every slot; an export that
+finds no slot within a second is dropped as busy and counted. `/metrics` counts the exports per tenant:
 `loomcycle_tenant_telemetry_exported_total`, `…_dropped_total`,
 `…_export_failures_total`, and `loomcycle_tenant_telemetry_pipelines`.
 

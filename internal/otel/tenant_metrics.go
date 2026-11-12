@@ -409,17 +409,14 @@ func (r *TenantRouter) pushTenantMetrics(tenant string, p *tenantMetricPipe, par
 			r.cfg.Log.Error("otel: tenant metric push panicked", "tenant", tenant, "panic", v)
 		}
 	}()
-	wait, cancel := context.WithTimeout(p.ctx, r.cfg.ExportTimeout)
-	defer cancel()
-	select {
-	case r.slots <- struct{}{}:
-	case <-wait.Done():
+	release, ok := r.slots.acquire(p.ctx, tenant)
+	if !ok {
 		if p.ctx.Err() == nil {
 			r.metricPushFailed(tenant, p, CategoryBusy)
 		}
 		return
 	}
-	defer func() { <-r.slots }()
+	defer release()
 	ctx, cancelExport := context.WithTimeout(p.ctx, r.cfg.ExportTimeout)
 	defer cancelExport()
 	ctx, code := withStatusHolder(ctx)
