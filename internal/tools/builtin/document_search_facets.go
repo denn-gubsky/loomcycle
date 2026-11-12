@@ -135,53 +135,56 @@ func (d *Document) searchFacets(ctx context.Context, key sqlmem.ScopeKey, mscope
 	if err != nil {
 		return nil, err
 	}
-	keys, err := d.Store.MemoryEmbedSearchKeys(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), sf, queryVec, fr.window)
-	if err != nil {
-		return nil, err
-	}
-	var chunkIDs []string
-	seen := map[string]bool{}
-	add := func(id string) {
-		if id != "" && !seen[id] {
-			seen[id] = true
-			chunkIDs = append(chunkIDs, id)
-		}
-	}
-	for _, k := range keys {
-		add(ChunkIDFromBodyKey(k))
-	}
-	for _, id := range hitIDs {
-		add(id)
-	}
-	out := map[string]any{"facet_window": fr.window, "chunks_counted": len(chunkIDs)}
-
-	// The documents of the window, then only those the caller may read. The id
-	// lists already keep a confined reader's hidden chunks out when they fit under
-	// the operator's cap; when they do not, the search runs unnarrowed, so every
-	// document is asked here as well. A count over a hidden document would tell the
-	// caller it exists and what it is about.
-	docOf, err := d.documentsOfChunks(ctx, key, chunkIDs)
-	if err != nil {
-		return nil, err
-	}
+	// ACCESS CONTROL. Every number in the answer — each count, chunks_counted,
+	// documents_counted, a truncated flag — is taken over chunks of documents the
+	// caller may read, and nothing else: a count that moved with a hidden document
+	// would tell the caller it exists, how big it is and what it is about.
+	//
+	// The id lists in sq already keep a confined reader's hidden chunks out of the
+	// window when they fit under the operator's cap. When they do not, the search
+	// ran unnarrowed and hidden chunks would take window places, so the window is
+	// fetched at the maximum and filled with the first facet_window READABLE
+	// chunks. Hidden chunks crowding out more than the maximum still leave the
+	// window short: the bound the search's own page has in that case
+	// (resolveSearchACL), accepted for the same reason.
 	acl := d.newDocACL(ctx, key)
 	limited, err := acl.limitsReading(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var docs []string
+	fetch := fr.window
+	if limited && len(sq.IDs) == 0 && len(sq.ExcludeIDs) == 0 {
+		fetch = store.MemoryEmbedKeysMax
+	}
+	keys, err := d.Store.MemoryEmbedSearchKeys(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), sf, queryVec, fetch)
+	if err != nil {
+		return nil, err
+	}
+	var candidates []string
+	for _, k := range keys {
+		candidates = append(candidates, ChunkIDFromBodyKey(k))
+	}
+	docOf, err := d.documentsOfChunks(ctx, key, append(append([]string{}, candidates...), hitIDs...))
+	if err != nil {
+		return nil, err
+	}
+	// take counts a chunk when its document exists and the caller may read it;
+	// docs collects each such document once.
 	readable := map[string]bool{}
-	for _, cid := range chunkIDs {
+	counted := map[string]bool{}
+	var docs []string
+	take := func(cid string) error {
 		doc := docOf[cid]
-		if doc == "" {
-			continue // a body whose structure row is gone: not a document
+		if doc == "" || counted[cid] {
+			return nil // a body whose structure row is gone is not a document
 		}
 		ok, asked := readable[doc]
 		if !asked {
 			ok = true
 			if limited {
+				var err error
 				if ok, err = acl.readable(ctx, doc); err != nil {
-					return nil, err
+					return err
 				}
 			}
 			readable[doc] = ok
@@ -189,9 +192,26 @@ func (d *Document) searchFacets(ctx context.Context, key sqlmem.ScopeKey, mscope
 				docs = append(docs, doc)
 			}
 		}
+		if ok {
+			counted[cid] = true
+		}
+		return nil
+	}
+	for _, cid := range candidates {
+		if len(counted) == fr.window {
+			break
+		}
+		if err := take(cid); err != nil {
+			return nil, err
+		}
+	}
+	for _, id := range hitIDs {
+		if err := take(id); err != nil {
+			return nil, err
+		}
 	}
 	sort.Strings(docs)
-	out["documents_counted"] = len(docs)
+	out := map[string]any{"facet_window": fr.window, "chunks_counted": len(counted), "documents_counted": len(docs)}
 
 	var truncated []string
 	for _, kind := range fr.kinds {

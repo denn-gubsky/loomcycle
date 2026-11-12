@@ -291,8 +291,22 @@ func TestDocumentSearchFacets_CountOnlyReadableDocuments(t *testing.T) {
 				if n := facetNumber(t, out, "documents_counted"); n != 2 {
 					t.Errorf("%s: documents_counted = %d, want 2: %s", what, n, text)
 				}
+				// Chunks are counted as documents are: a count that included the
+				// hidden chunks would tell the reader how many there are.
+				if n := facetNumber(t, out, "chunks_counted"); n != 2 {
+					t.Errorf("%s: chunks_counted = %d, want the 2 readable chunks: %s", what, n, text)
+				}
 				if strings.Contains(text, "secret") || strings.Contains(text, "/hidden") {
 					t.Errorf("%s: the answer names a hidden document: %s", what, text)
+				}
+
+				// The hidden chunks rank first. A window of 2 must still be two
+				// chunks the reader may read, not two hidden places that leave the
+				// counts empty (and so measure what is hidden).
+				out, text = c.search(reader, map[string]any{"limit": 1, "facets": []string{"folder"}, "facet_window": 2})
+				wantFacet(t, what+": folder over a window of 2", facetOf(t, out, "folder"), map[string]int{"/visible": 2})
+				if n := facetNumber(t, out, "chunks_counted"); n != 2 {
+					t.Errorf("%s: window of 2, chunks_counted = %d, want 2: %s", what, n, text)
 				}
 			}
 		}
