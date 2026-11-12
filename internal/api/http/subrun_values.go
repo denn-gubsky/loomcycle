@@ -464,8 +464,11 @@ func (s *Server) buildSubRunPrompt(ctx context.Context, def config.AgentDef, nam
 	return subRunPrompt{def: def, promptProv: promptProv, tools: subTools, aclRemoved: subACLRemoved, coreBlocks: coreBlocks, segs: segs}
 }
 
-// narrowSubRunHosts narrows the child's tools to the host list it inherited.
-func (s *Server) narrowSubRunHosts(subTools []tools.Tool, childPolicy tools.RunPolicy) []tools.Tool {
+// narrowSubRunHosts narrows the child's tools to the host list it inherited and
+// builds the child's dispatcher over the narrowed set. The two are one step so
+// the dispatcher cannot be built ahead of the narrowing: it is what executes
+// the child's calls.
+func (s *Server) narrowSubRunHosts(subTools []tools.Tool, childPolicy tools.RunPolicy) ([]tools.Tool, *tools.Dispatcher) {
 	s.runPhase("subrun.hosts")
 	// Inherit the parent's caller-authoritative host policy. Without
 	// this, sub-agents fall back to the operator's static
@@ -482,7 +485,8 @@ func (s *Server) narrowSubRunHosts(subTools []tools.Tool, childPolicy tools.RunP
 	if hp := childPolicy.Hosts; hp.HasList || s.cfg().Env.HTTPCallerAuthoritative {
 		subTools = builtin.NarrowHosts(subTools, hp.AllowedHosts, hp.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !hp.NarrowOnly)
 	}
-	return subTools
+	subDispatcher := s.newDispatcher(subTools)
+	return subTools, subDispatcher
 }
 
 // persistSubRunInput records the child's input segments and its system prompt

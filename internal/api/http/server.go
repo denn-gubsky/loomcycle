@@ -6795,7 +6795,8 @@ func stripOperatorPlane(ctx context.Context) context.Context {
 //     child's own ctx is built on it (child ctx);
 //   - the parent's ACL removes tools from the child's set (prompt) before the
 //     memory injection and the system prompt read it, and the host narrowing
-//     (hosts) runs on that narrowed set before its dispatcher is built;
+//     (hosts) runs on that narrowed set and builds the child's dispatcher
+//     from its result, so the dispatcher never holds an un-narrowed tool;
 //   - the child's identity carries the parent's tenant, user, user tier,
 //     operator-key restriction, isolation and credential scope unchanged
 //     (identity, and the run identity on its ctx at child ctx): a child never
@@ -6983,8 +6984,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	subMeta := s.publishSubRunStart(ctx, subRunID, subAgentID, name, parentIdentity, subRunSpan, subIdentity)
 	sp := s.buildSubRunPrompt(ctx, def, name, parentIdentity, parentPolicy, values, dataSlots, systemExtra, prompt, systemAuthored, inputAuthored)
 	def, promptProv, subTools, subACLRemoved, coreBlocks, segs := sp.def, sp.promptProv, sp.tools, sp.aclRemoved, sp.coreBlocks, sp.segs
-	subTools = s.narrowSubRunHosts(subTools, childPolicy)
-	subDispatcher := s.newDispatcher(subTools)
+	subTools, subDispatcher := s.narrowSubRunHosts(subTools, childPolicy)
 
 	s.persistSubRunInput(ctx, subRunID, segs, def, defID, promptProv)
 
