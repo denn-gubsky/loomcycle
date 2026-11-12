@@ -585,19 +585,16 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		return derr
 	}
 
-	// Rebuild the conversation from THIS run's transcript events. Before the
-	// provider is chosen: an image in it needs a provider that can take it.
+	// Rebuild the conversation as RunOnce built it for this run — the
+	// session's history up to the run's start — with the run's own turns on
+	// top. Before the provider is chosen: an image in it needs a provider
+	// that can take it.
 	events, terr := s.store.GetTranscript(ctx, run.SessionID)
 	if terr != nil {
 		return fmt.Errorf("read transcript: %w", terr)
 	}
-	runEvents := make([]store.Event, 0, len(events))
-	for _, e := range events {
-		if e.RunID == run.ID {
-			runEvents = append(runEvents, e)
-		}
-	}
-	priorMessages := replayTranscript(runEvents)
+	history, runEvents := sessionThroughRun(events, run.ID)
+	priorMessages := replayTranscript(history)
 
 	route, refusal, rerr := s.resumeRoute(ctx, run, runCfg, agentDef, priorMessages)
 	if rerr != nil {
@@ -688,7 +685,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	stateful := loop.StatefulMode(runCfg.Context, provider.Capabilities().Local, run.Interactive)
 	var seed statefulSeed
 	if stateful {
-		seed = statefulSeedFromEvents(runEvents, nil, run.Interactive)
+		seed = resumedStatefulSeed(history, runEvents, runCfg.Context, provider.Capabilities().Local, run.Interactive)
 	}
 	// The poll-mode children the run started, as its ledger records them. A
 	// stateful run has no background table, so it has none.
@@ -1214,6 +1211,63 @@ type resumedLaunch struct {
 	slot      *concurrency.RunSlot
 	hold      *sessionHold // a top-level run's session; nil for a sub-run
 	route     resumedRoute
+}
+
+// sessionThroughRun is a session's transcript as a continuation of runID read
+// it, with the run's own events: history is every event before the run's
+// first, then the run's own — what RunOnce replayed at its start plus what the
+// run did since — and stops there, so a later run of the session is not part
+// of it. A run with no events of its own has no start to cut at: its history
+// is empty, as it was before.
+func sessionThroughRun(events []store.Event, runID string) (history, own []store.Event) {
+	started := false
+	for _, e := range events {
+		switch {
+		case e.RunID == runID:
+			started = true
+			own = append(own, e)
+			history = append(history, e)
+		case !started:
+			history = append(history, e)
+		}
+	}
+	if !started {
+		return nil, nil
+	}
+	return history, own
+}
+
+// resumedStatefulSeed is a resumed stateful run's seed. A run that recorded a
+// Σ of its own resumes from it. One that paused before its first Σ is seeded
+// as RunOnce seeded it at its start (statefulContinuationSeed): from the
+// session before the run, with the run's own messages as the fresh input —
+// read as one history instead, a Σ an earlier run left mid-action took that
+// action's result as the observation and lost the run's message. A session
+// with no Σ either seeds from the run's own events, as before.
+func resumedStatefulSeed(history, own []store.Event, cx *config.Context, local, interactive bool) statefulSeed {
+	if seed := statefulSeedFromEvents(own, nil, interactive); seed.HasState {
+		return seed
+	}
+	before := history[:len(history)-len(own)]
+	if seed, ok := statefulContinuationSeed(before, cx, local, interactive, userInputSegments(own)); ok {
+		return seed
+	}
+	return statefulSeedFromEvents(own, nil, interactive)
+}
+
+// userInputSegments is the prompt segments of a run's user_input events.
+func userInputSegments(events []store.Event) []loop.PromptSegment {
+	var segs []loop.PromptSegment
+	for _, ev := range events {
+		if ev.Type != "user_input" {
+			continue
+		}
+		var s []loop.PromptSegment
+		if err := json.Unmarshal(ev.Payload, &s); err == nil {
+			segs = append(segs, s...)
+		}
+	}
+	return segs
 }
 
 // runResumed runs a resumed run's loop, on its own goroutine: it reconciles a

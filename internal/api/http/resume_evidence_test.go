@@ -22,7 +22,8 @@ import (
 
 // Two differences between a session continuation (RunOnce) and a resume were
 // left to evidence before any change (owner ruling, 2026-11-11). These tests
-// record what each path does today; neither path is changed.
+// recorded what each path did; each now pins the resume doing what the
+// continuation does.
 
 // runUntrustedProbe records the untrusted input its run says it started with
 // (tools.RunUntrusted), which a code-js agent reads as input.untrusted.
@@ -67,10 +68,10 @@ func requestText(req providers.Request) string {
 // resume rebuilds it from the run's stored user_input. Neither treats the
 // earlier run's page as this run's input.
 //
-// What the model is sent differs, and that is the finding: the continuation
-// replays the whole session, so "alpha" reaches the model, fenced as untrusted
-// as it was when it was read; the resume replays only the run's own events, so
-// the session's earlier turns are not in its conversation at all.
+// What the model is sent is the same too: both replay the session up to the
+// run's start, so "alpha" reaches the model, fenced as untrusted as it was when
+// it was read. The resume replayed only the run's own events before, so the
+// session's earlier turns were not in its conversation at all.
 func TestEvidence_UntrustedInputOfAContinuationAndOfAResume(t *testing.T) {
 	cfg := makeBaseConfig()
 	cfg.Agents = map[string]config.AgentDef{"worker": {Model: "stub-model", Tools: []string{"UProbe"}, SystemPrompt: "role:worker."}}
@@ -126,11 +127,32 @@ func TestEvidence_UntrustedInputOfAContinuationAndOfAResume(t *testing.T) {
 	if !strings.Contains(contReq, "alpha") || !strings.Contains(contReq, "<web_content>") {
 		t.Errorf("continuation: the earlier page is not in the replayed conversation, fenced:\n%s", contReq)
 	}
-	if strings.Contains(resReq, "alpha") || strings.Contains(resReq, "first") {
-		t.Errorf("resume: the session's earlier turns are in the resumed conversation (today they are not):\n%s", resReq)
+	if !fencedIn(resReq, "web_content", "alpha") || !strings.Contains(resReq, "first") {
+		t.Errorf("resume: the session's earlier turns are not in the resumed conversation, the earlier page fenced:\n%s", resReq)
 	}
 	if !strings.Contains(resReq, "<web_content>") {
 		t.Errorf("resume: the run's own page is not fenced as untrusted:\n%s", resReq)
+	}
+}
+
+// fencedIn reports whether want appears inside a <kind>…</kind> fence of text,
+// not merely somewhere beside one.
+func fencedIn(text, kind, want string) bool {
+	open, closing := "<"+kind+">", "</"+kind+">"
+	for rest := text; ; {
+		i := strings.Index(rest, open)
+		if i < 0 {
+			return false
+		}
+		rest = rest[i+len(open):]
+		j := strings.Index(rest, closing)
+		if j < 0 {
+			return false
+		}
+		if strings.Contains(rest[:j], want) {
+			return true
+		}
+		rest = rest[j+len(closing):]
 	}
 }
 
