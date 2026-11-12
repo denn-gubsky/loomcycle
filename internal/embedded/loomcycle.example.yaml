@@ -1129,8 +1129,8 @@ concurrency:
 
 # ─── Inbound webhooks (RFC H) ────────────────────────────────────────
 # External systems (GitHub / Gitea / Stripe / CI / n8n) trigger agent runs
-# via a signed POST /v1/_webhooks/{name}. Off by default — turn the receiver
-# on with LOOMCYCLE_WEBHOOKS_ENABLED=1. A static webhook needs `enabled: true`
+# via a signed POST /v1/_webhooks/{name}. The receiver is always mounted.
+# A static webhook needs `enabled: true`
 # AND a valid delivery target (delivery=spawn → `agent`; delivery=channel →
 # `channel`) or loomcycle refuses to boot. The HMAC signing secret resolves
 # from the env-var named here — a LOOMCYCLE_*-prefixed name auto-resolves with

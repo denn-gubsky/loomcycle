@@ -943,7 +943,7 @@ agents:
     statement_methods: [rule, extractor]
 ```
 
-- **code-js only.** A `rule:` method claims that code made the relation, and only a code-js body is code. The field is refused at config load, and at AgentDef create or fork when the merged definition's provider is not `code-js`, so a fork that moves a code agent onto a model cannot keep it. A definition that reaches a run some other way holds no grant unless it runs code. The code agent itself needs `LOOMCYCLE_CODE_AGENTS_ENABLED=1` and its `agent_code/<name>/index.js`; see `Context op=help topic=code-agents`.
+- **code-js only.** A `rule:` method claims that code made the relation, and only a code-js body is code. The field is refused at config load, and at AgentDef create or fork when the merged definition's provider is not `code-js`, so a fork that moves a code agent onto a model cannot keep it. A definition that reaches a run some other way holds no grant unless it runs code. The code agent itself needs its `agent_code/<name>/index.js` (or an inline `code:` body); see `Context op=help topic=code-agents`.
 - **What it unlocks.**
   - **Stamping a method:** a run names `method: rule:<name>` or `extractor:<name>` (the name is 1–64 of `a-z 0-9 _ . / -`) on `propose_statement`, `maintain_statement` and an `upsert_chunk` `relation`. A method outside the grant, or a malformed one, is refused with `method_not_granted`.
   - **Upkeep:** the `maintain_statement` op (verify, expire, demote, merge, mark or re-point evidence, flag), which no other agent may call.
@@ -2380,7 +2380,7 @@ The drains run alongside the pause, so the default leaves about 3 s of Docker's 
 
 What an interrupt does to a run that is waiting rather than working:
 
-- **A fan-out parent** (an `Agent` `parallel_spawn` still collecting its children) keeps its children only with `LOOMCYCLE_RESUME_FANOUT=1`: the parent is then parked where it waits, the interrupt leaves it alone, and the resume reconciles the children's results. Without it the parent never parks mid-spawn, so the interrupt cancels its spawn and, with it, the children, which end cancelled; the resumed parent reads the failed spawn and decides whether to start them again.
+- **A fan-out parent** (an `Agent` `parallel_spawn` still collecting its children) keeps its children: the parent is parked where it waits, the interrupt leaves it alone, and the resume reconciles the children's results.
 - **A blocking tool call** — an `Interruption` waiting for a person's answer, a `Channel` await, an `Agent` wait or poll — is interrupted like any other call and fails. The resumed run may ask again, so a person can see the same interruption twice: the first one, from before the shutdown, is no longer waited on.
 - **A run a background sweep started** — a memory-consolidation fan-out pass, a team subscription's walk — is cancelled once the pause is over, even if it parked (the shutdown log counts it among the paused): the sweep holds a cluster lock, a pinned database connection, until the run returns, and a run left parked would hold the shutdown until the container is killed. The next tick or sweep does the work again. A consolidation pass can still come back through a resume — the process was killed before that cancel was stored, or a snapshot taken during an operator pause was restored — and then runs outside the sweep that started it; the next tick leaves its target alone while that pass's run has not ended — for at most 4 hours while it sits parked waiting for a resume, after which a warning names the stuck run and the target is consolidated again. The hold is by consolidator agent and user: two schedules running the same consolidator agent for one user hold each other off. In a cluster, a parked run keeps the `LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER` slot its admission took until its resume gives it back; a run admitted with that cap off took none, and its resume gives nothing back ([MULTI-REPLICA.md](MULTI-REPLICA.md) item 10). On slow models, raise the bound **together with** the platform's grace period, leaving a few seconds over it: `stop_grace_period: 40s` in Docker Compose, `terminationGracePeriodSeconds: 40` in Kubernetes, `TimeoutStopSec=40` in systemd, with `LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS=30000`.
 
@@ -2746,7 +2746,7 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   them only with `purge: true`; a rejected statement is never purged. `write:
   report` (the default) only counts, while `write: propose` takes a scope
   lease and writes. The bundle installs no schedule. It needs
-  `LOOMCYCLE_CODE_AGENTS_ENABLED=1`, SQL Memory and a confirmed ontology; the
+  SQL Memory and a confirmed ontology; the
   semantic layers also need an embedder on the Postgres vector tier and a
   `low` tier. Input, report and limits:
   [`bundles/knowledge-base/README.md`](../bundles/knowledge-base/README.md).
@@ -2762,7 +2762,7 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   are `SourceStub` documents; removed and trashed items are marked with
   `mark_source`, never deleted; copies are proposed as `duplicate_of`. No
   Skybits write tool is on any agent. It needs
-  `LOOMCYCLE_CODE_AGENTS_ENABLED=1`, SQL Memory and tenant `memory_scopes`/
+  SQL Memory and tenant `memory_scopes`/
   `sql_scopes` on the two code agents in an overlay, and installs no
   schedule. See [`bundles/skybits-sync/README.md`](../bundles/skybits-sync/README.md).
 
@@ -3354,11 +3354,9 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | Variable | Default | Effect |
 |---|---|---|
 | `LOOMCYCLE_BASH_ENABLED` | off | `1` enables the host `Bash` tool. It is not a sandbox; see [SANDBOX.md](SANDBOX.md). |
-| `LOOMCYCLE_BASHBOX_ENABLED` | off | `1` enables the in-process Bashbox sandbox tool. |
 | `LOOMCYCLE_WRITE_ROOT`, `LOOMCYCLE_BASH_CWD` | — | Retired with `LOOMCYCLE_READ_ROOT` (see §9d): setting any of them fails startup with a migration hint. |
 | `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE` | off | `1` makes a request's `allowed_hosts` the whole host policy for that run instead of a narrowing of `LOOMCYCLE_HTTP_HOST_ALLOWLIST` (which then applies only to runs that send no list). |
 | `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS` | — | Comma-separated hook owners added to `hooks.permit_host_widen.owners` (appended to the yaml list). |
-| `LOOMCYCLE_CODE_HOOKS_ENABLED` | off | `1` lets a hook's body be code-js instead of a webhook. Separate from `LOOMCYCLE_CODE_AGENTS_ENABLED`. |
 | `LOOMCYCLE_CODE_AGENTS_ROOT` | `./agent_code` | Where code-js agents live (`<root>/<name>/index.js`). |
 | `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC` | off | `1` seeds `Date.now()` and `Math.random()` in code agents so runs are reproducible. |
 | `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS` | `120` | A code agent's budget of active time (waits on children, channels and interruptions do not count). Floor 1 s. |
@@ -3390,9 +3388,7 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 
 | Variable | Default | Effect |
 |---|---|---|
-| `LOOMCYCLE_SCHEDULER_ENABLED` | off | `1` starts the scheduler. Off, `ScheduleDef` still authors and lists schedules but nothing fires. |
 | `LOOMCYCLE_SCHEDULER_TICK_SECONDS` | `30` | How often the scheduler checks for due schedules. |
-| `LOOMCYCLE_WEBHOOKS_ENABLED` | off | `1` mounts the inbound webhook receiver. |
 | `LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED` | off | `1` lets a webhook with `auth.kind: none` run without a signature. Only for receivers reachable solely over an authenticated network; off, such a webhook answers 503. |
 | `LOOMCYCLE_A2A_ENABLED` | off | `1` serves the A2A server surface. Requires `LOOMCYCLE_A2A_SERVER_CARD`. |
 | `LOOMCYCLE_A2A_SERVER_CARD` | — | Name of the `A2AServerCardDef` to serve. |
@@ -3401,20 +3397,20 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS` | `32` | Memory consolidation: targets one fan-out tick dispatches; the rest wait for the next tick. |
 | `LOOMCYCLE_MAX_CONSOLIDATION_CONCURRENCY` | `4` | Memory consolidation: parallel consolidation runs when the model is not local (a local model always runs them one at a time). |
 
-### Definition size caps
+### Fixed limits
 
-All *0 disables*.
+These are constants of the runtime; no setting changes them.
 
-| Variable | Default | Effect |
+| Limit | Value | Applies to |
 |---|---|---|
-| `LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES` | 128 KiB | An `AgentDef` create or fork's serialised definition. |
-| `LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES` | 8 KiB | An `AgentDef` description. |
-| `LOOMCYCLE_AGENT_DEF_MAX_CODE_BYTES` | 256 KiB | An inline code-js `code_body`. |
-| `LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES` | 1 MiB | A `TeamDef` definition (it carries its agents' definitions). |
-| `LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES` | 128 KiB | A `SkillDef` body. |
-| `LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES` | 8 KiB | A `SkillDef` description. |
-| `LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES` | 32 KiB | The structured judgement JSON on `Evaluation.submit`. |
-| `LOOMCYCLE_EVALUATION_MAX_RATIONALE_BYTES` | 8 KiB | The rationale on `Evaluation.submit`. |
+| Agent definition | 128 KiB | An `AgentDef` create or fork's serialised definition (the inline code body is counted separately). |
+| Agent description | 8 KiB | An `AgentDef` description; also a team's and a hook definition's. |
+| Inline code body | 256 KiB | An inline code-js `code_body`. |
+| Team definition | 1 MiB | A `TeamDef` definition (it carries its agents' definitions). |
+| Skill body | 128 KiB | A `SkillDef` body. |
+| Skill description | 8 KiB | A `SkillDef` description. |
+| Evaluation judgement | 32 KiB | The structured judgement JSON on `Evaluation.submit`. |
+| Evaluation rationale | 8 KiB | The rationale on `Evaluation.submit`. |
 
 ### Memory, documents and channels
 
@@ -3445,7 +3441,6 @@ All *0 disables*.
 | `LOOMCYCLE_CHANNELS_SWEEP_MS` | `900000` | How often expired channel messages are deleted; `0` stops the sweep (reads skip expired messages either way). |
 | `LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS` | `30000` | Longest `wait_ms` a channel subscribe may ask for; `0` disables long-polling. |
 | `LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED` | `10000` | Live timers for deferred publishes; past it a deferred message is still stored but subscribers see it on their next poll. `0` = no cap. |
-| `LOOMCYCLE_CHANNEL_HOOKS` | off | `1` runs the worker that applies channel hooks; off, a channel's hooks are skipped. |
 | `LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY` | `16` | Messages one replica's hook worker decides at once. |
 | `LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL` | `4` | Of those, how many belong to one channel. |
 | `LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT` | `15m` | A Go duration: how long a message waits on fail-closed hooks before it is dropped as "hook unavailable". |

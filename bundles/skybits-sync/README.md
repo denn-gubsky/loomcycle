@@ -22,7 +22,7 @@ The one model call answers one bounded question, and its reply is data.
 
 ## What it needs
 
-- `LOOMCYCLE_CODE_AGENTS_ENABLED=1` and SQL Memory (`LOOMCYCLE_SQLMEM_ENABLED=1`).
+- SQL Memory (`LOOMCYCLE_SQLMEM_ENABLED=1`).
 - An MCP server named **`skybits`** in the tenant, connected to the account
   (an `oauth` credential and `Authorization: Bearer $oauth:<name>`). The bundle
   does not declare it: the URL and the credential are the deployment's.

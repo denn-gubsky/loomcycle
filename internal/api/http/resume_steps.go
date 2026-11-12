@@ -391,14 +391,14 @@ func (r *resumeAttempt) restoreChildren() {
 // detectFanout finds a parked fan-out parent and refuses one it cannot
 // reconcile.
 func (r *resumeAttempt) detectFanout() error {
-	s, runEvents, priorMessages, flag := r.s, r.runEvents, r.priorMessages, r.flag
+	runEvents, priorMessages, flag := r.runEvents, r.priorMessages, r.flag
 	// RFC X Phase 3: detect a parked fan-out PARENT — a parallel_spawn that the
 	// Phase-3 watcher parked mid-wg.Wait, so its transcript ends on a dangling
 	// tool_use (no envelope tool_result) backed by a spawn ledger. Such a run
 	// can't take the endsWithPendingTurn path (it ends on an assistant turn) but
 	// IS resumable: the goroutine below reconciles the children into the
-	// envelope. Flag-gated — off ⇒ (_, false) ⇒ the byte-identical normal path.
-	fanout, isFanout := detectFanoutParent(s.cfg().Env.ResumeFanout, runEvents)
+	// envelope.
+	fanout, isFanout := detectFanoutParent(runEvents)
 	if isFanout && !lastTurnIsSoleToolUse(priorMessages, fanout.toolUseID) {
 		// A parked fan-out that shared its turn with other in-flight tools (a
 		// mixed tool iteration) isn't auto-reconcilable: synthesizing only the

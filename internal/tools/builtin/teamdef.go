@@ -25,6 +25,11 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
+// TeamDefMaxDefinitionBytes is the cap the server puts on a team definition.
+// A team carries its own agents' definitions, so it is eight agent
+// definitions' worth rather than one.
+const TeamDefMaxDefinitionBytes = 1 << 20
+
 // TeamDef is the RFC AP Phase 2 built-in tool that lets operators + tenant
 // agents author, fork, promote, retire, and inspect TEAM workflow definitions
 // at runtime. Structural mirror of the SkillDef tool — same six+verify
@@ -57,7 +62,7 @@ type TeamDef struct {
 	Store store.Store
 
 	// MaxDefinitionBytes caps the serialised definition JSON, the team's own
-	// agents included (LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES). 0 = no cap.
+	// agents included (the server sets TeamDefMaxDefinitionBytes). 0 = no cap.
 	MaxDefinitionBytes int
 
 	// MaxDescriptionBytes caps the free-text description field. 0 = no cap.

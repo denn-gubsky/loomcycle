@@ -115,18 +115,6 @@ func runBashbox(t *testing.T, b *Bashbox, ctx context.Context, command string) t
 	return res
 }
 
-// The Enabled gate refuses every call when false — the single security flag.
-func TestBashbox_RefusesWhenNotEnabled(t *testing.T) {
-	b := &Bashbox{}
-	res, err := b.Execute(context.Background(), json.RawMessage(`{"command":"echo hi"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.IsError || !strings.Contains(res.Text, "not enabled") {
-		t.Errorf("expected not-enabled refusal, got %q", res.Text)
-	}
-}
-
 // THE headline property — fail-before vs Bash's refusal. Bash REFUSES a
 // read-only volume because it cannot enforce ro (bash.go:92, needWrite=true).
 // Bashbox instead HONORS ro: a write inside the sandbox SUCCEEDS (visible to
@@ -137,7 +125,7 @@ func TestBashbox_RoVolume_DiscardsWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := &Bashbox{Enabled: true}
+	b := &Bashbox{}
 
 	res := runBashbox(t, b, roCtx(root), "echo hacked > pwned.txt; cat pwned.txt")
 	if res.IsError {
@@ -161,7 +149,7 @@ func TestBashbox_RwVolume_PersistsWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := &Bashbox{Enabled: true}
+	b := &Bashbox{}
 
 	res := runBashbox(t, b, bashCtx(root), "echo persisted > kept.txt")
 	if res.IsError {
@@ -194,7 +182,7 @@ func TestBashbox_NoHostFilesystemEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	b := &Bashbox{Enabled: true}
+	b := &Bashbox{}
 	res := runBashbox(t, b, bashCtx(volRoot), "cat "+secretPath)
 	if strings.Contains(res.Text, "TOPSECRET") {
 		t.Fatalf("sandbox escaped to a host file outside the volume: %q", res.Text)
@@ -219,7 +207,7 @@ func TestBashbox_DotDotTraversalRefused(t *testing.T) {
 		if ro {
 			ctx = roCtx(volRoot)
 		}
-		b := &Bashbox{Enabled: true}
+		b := &Bashbox{}
 		rel := filepath.Join("..", filepath.Base(secretDir), "secret.txt")
 		res := runBashbox(t, b, ctx, "cat "+rel)
 		if strings.Contains(res.Text, "TOPSECRET") {
@@ -248,7 +236,7 @@ func TestBashbox_SymlinkOutRefused(t *testing.T) {
 		if ro {
 			ctx = roCtx(volRoot)
 		}
-		b := &Bashbox{Enabled: true}
+		b := &Bashbox{}
 		res := runBashbox(t, b, ctx, "cat escape")
 		if strings.Contains(res.Text, "TOPSECRET") {
 			t.Fatalf("ro=%v: symlink-out escaped the sandbox: %q", ro, res.Text)
@@ -272,7 +260,7 @@ func TestBashbox_EphemeralRoVolume_DiscardsWrites(t *testing.T) {
 	set.Add("scratch", tools.EphemeralVolumeRef{Root: root, ReadOnly: true})
 	ctx := tools.WithEphemeralVolumes(context.Background(), set)
 
-	b := &Bashbox{Enabled: true}
+	b := &Bashbox{}
 	body, _ := json.Marshal(map[string]any{"command": "echo x > w.txt; cat w.txt", "volume": "scratch"})
 	res, execErr := b.Execute(ctx, body)
 	if execErr != nil {
@@ -291,7 +279,7 @@ func TestBashbox_EphemeralRoVolume_DiscardsWrites(t *testing.T) {
 // deadline — NOT a Go error — so this exercises the exit-code path.)
 func TestBashbox_TimeoutSurfacesAsError(t *testing.T) {
 	root, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bashbox{Enabled: true}
+	b := &Bashbox{}
 	body, _ := json.Marshal(map[string]any{"command": "sleep 5", "timeout_seconds": 1})
 	res, err := b.Execute(bashCtx(root), body)
 	if err != nil {
@@ -309,7 +297,7 @@ func TestBashbox_TimeoutSurfacesAsError(t *testing.T) {
 // refused with a non-zero exit rather than falling through to a host binary.
 func TestBashbox_UnknownCommandRefused(t *testing.T) {
 	root, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bashbox{Enabled: true}
+	b := &Bashbox{}
 	res := runBashbox(t, b, bashCtx(root), "git status")
 	if !res.IsError {
 		t.Errorf("unknown command should be refused (no host shell-out); got %q", res.Text)
@@ -320,7 +308,7 @@ func TestBashbox_UnknownCommandRefused(t *testing.T) {
 // network at all.
 func TestBashbox_NetworkBlockedByDefault(t *testing.T) {
 	root, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bashbox{Enabled: true}
+	b := &Bashbox{}
 	res := runBashbox(t, b, bashCtx(root), "curl https://example.com")
 	if !res.IsError {
 		t.Errorf("network egress should be blocked by default; got %q", res.Text)
@@ -338,7 +326,7 @@ func TestBashbox_ExecutionBudget_Truncates(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "big.txt"), []byte(big), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	b := &Bashbox{Enabled: true, MaxOutputBytes: 100}
+	b := &Bashbox{MaxOutputBytes: 100}
 	res := runBashbox(t, b, bashCtx(root), "cat big.txt")
 	if !strings.Contains(res.Text, "[output truncated at 100 bytes per stream]") {
 		t.Errorf("missing truncation marker; len=%d text=%q", len(res.Text), res.Text)
@@ -353,7 +341,7 @@ func TestBashbox_ContribCommandsRegistered(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "cols.txt"), []byte("a 1\nb 2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	b := &Bashbox{Enabled: true}
+	b := &Bashbox{}
 
 	awkRes := runBashbox(t, b, bashCtx(root), "awk '{s+=$2} END{print s}' cols.txt")
 	if awkRes.IsError || strings.TrimSpace(awkRes.Text) != "3" {
@@ -373,7 +361,7 @@ func TestBashbox_ContribCommandsRegistered(t *testing.T) {
 // failed command. On v0.0.38 this test kills the test binary.
 func TestBashbox_HostileScriptDoesNotCrashTheProcess(t *testing.T) {
 	root, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bashbox{Enabled: true}
+	b := &Bashbox{}
 	for _, script := range []string{
 		`jq -c -n 'reduce range(3000000) as $i (0;[.])' >/dev/null`,
 		`echo a | dd bs=200000000000000 of=/dev/null`,
@@ -389,7 +377,7 @@ func TestBashbox_HostileScriptDoesNotCrashTheProcess(t *testing.T) {
 // with the Bash tool) so the model can self-correct.
 func TestBashbox_NonZeroExitSurfacesAsError(t *testing.T) {
 	root, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bashbox{Enabled: true}
+	b := &Bashbox{}
 	res := runBashbox(t, b, bashCtx(root), "echo something; exit 7")
 	if !res.IsError {
 		t.Errorf("expected IsError on non-zero exit; got %q", res.Text)
@@ -416,7 +404,7 @@ func skipIfNoHostCmd(t *testing.T, name string) {
 func TestBashbox_FallbackCommandRunsOnHost(t *testing.T) {
 	skipIfNoHostCmd(t, "git")
 	root, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bashbox{Enabled: true, FallbackCommands: []string{"git"}}
+	b := &Bashbox{FallbackCommands: []string{"git"}}
 	res := runBashbox(t, b, bashCtx(root), "git --version")
 	if res.IsError {
 		t.Fatalf("allowlisted git should run on host: %q", res.Text)
@@ -435,7 +423,7 @@ func TestBashbox_FallbackCommandRunsOnHost(t *testing.T) {
 func TestBashbox_NonAllowlistedCommandStaysSandboxed(t *testing.T) {
 	skipIfNoHostCmd(t, "curl")
 	root, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bashbox{Enabled: true, FallbackCommands: []string{"git"}}
+	b := &Bashbox{FallbackCommands: []string{"git"}}
 	res := runBashbox(t, b, bashCtx(root), "curl --version")
 	if !res.IsError {
 		t.Fatalf("non-allowlisted curl must not escape the sandbox; got %q", res.Text)
@@ -451,7 +439,7 @@ func TestBashbox_SmugglingBlocked(t *testing.T) {
 	skipIfNoHostCmd(t, "git")
 	skipIfNoHostCmd(t, "curl")
 	root, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bashbox{Enabled: true, FallbackCommands: []string{"git"}}
+	b := &Bashbox{FallbackCommands: []string{"git"}}
 	res := runBashbox(t, b, bashCtx(root), "git --version; curl --version")
 	if !strings.Contains(res.Text, "git version") {
 		t.Errorf("git (allowlisted) should have run on host: %q", res.Text)
@@ -471,7 +459,7 @@ func TestBashbox_FallbackProxyExactNameOnly(t *testing.T) {
 	skipIfNoHostCmd(t, "git")
 	skipIfNoHostCmd(t, "curl")
 	root, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bashbox{Enabled: true, FallbackCommands: []string{"git"}}
+	b := &Bashbox{FallbackCommands: []string{"git"}}
 	for _, cmd := range []string{
 		"git-notathing --version", // sibling basename of an allowlisted name
 		"curl --version",          // bare non-allowlisted command
@@ -491,7 +479,7 @@ func TestBashbox_FallbackProxyExactNameOnly(t *testing.T) {
 // the in-RAM overlay) rather than writing to the real host behind a false ro.
 func TestBashbox_FallbackRefusedOnRoVolume(t *testing.T) {
 	root, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bashbox{Enabled: true, FallbackCommands: []string{"git"}}
+	b := &Bashbox{FallbackCommands: []string{"git"}}
 	res := runBashbox(t, b, roCtx(root), "git status")
 	if !res.IsError {
 		t.Fatalf("fallback on a ro volume must refuse; got %q", res.Text)
@@ -513,7 +501,7 @@ func TestBashbox_FallbackEnvAllowlist(t *testing.T) {
 	t.Setenv("AMBIENT_API_KEY", "sk-ambient-must-not-leak")
 	root, _ := filepath.EvalSymlinks(t.TempDir())
 
-	b := &Bashbox{Enabled: true, FallbackCommands: []string{"env"}, FallbackAllowedEnv: []string{"LOOMCYCLE_FB_PUBLIC"}}
+	b := &Bashbox{FallbackCommands: []string{"env"}, FallbackAllowedEnv: []string{"LOOMCYCLE_FB_PUBLIC"}}
 	res := runBashbox(t, b, bashCtx(root), "env")
 	if res.IsError {
 		t.Fatalf("host env should run: %q", res.Text)
@@ -530,7 +518,7 @@ func TestBashbox_FallbackEnvAllowlist(t *testing.T) {
 
 	// Without fallback, `env` is gbash's sandbox builtin — neither var is in the
 	// sandbox env, so the model can't read host credentials via env.
-	b2 := &Bashbox{Enabled: true}
+	b2 := &Bashbox{}
 	res2 := runBashbox(t, b2, bashCtx(root), "env")
 	if strings.Contains(res2.Text, "public-ok") || strings.Contains(res2.Text, "secret-leak") {
 		t.Errorf("host env leaked into the sandbox env: %q", res2.Text)
@@ -540,7 +528,7 @@ func TestBashbox_FallbackEnvAllowlist(t *testing.T) {
 // With no fallback configured, a gbash-unknown command (git) 127s as before.
 func TestBashbox_FallbackDisabledByDefault(t *testing.T) {
 	root, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bashbox{Enabled: true} // no FallbackCommands
+	b := &Bashbox{} // no FallbackCommands
 	res := runBashbox(t, b, bashCtx(root), "git --version")
 	if !res.IsError {
 		t.Errorf("without fallback, git should 127; got %q", res.Text)
@@ -555,7 +543,7 @@ func TestBashbox_FallbackDisabledByDefault(t *testing.T) {
 func TestBashbox_FallbackHostCwdTranslated(t *testing.T) {
 	skipIfNoHostCmd(t, "git")
 	root, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bashbox{Enabled: true, FallbackCommands: []string{"git"}}
+	b := &Bashbox{FallbackCommands: []string{"git"}}
 	res := runBashbox(t, b, bashCtx(root), "mkdir -p sub && cd sub && git init -q && git rev-parse --show-toplevel")
 	if res.IsError {
 		t.Fatalf("host git should run: %q", res.Text)
@@ -576,7 +564,6 @@ func TestBashboxFallback_PerCommandCredReachesOnlyItsCommand(t *testing.T) {
 	skipIfNoHostCmd(t, "printenv")
 	root, _ := filepath.EvalSymlinks(t.TempDir())
 	b := &Bashbox{
-		Enabled:              true,
 		FallbackCommands:     []string{"env", "printenv"},
 		FallbackAllowedCreds: []string{"env:LOOMCYCLE_TEST_FOR_ENV", "printenv:LOOMCYCLE_TEST_FOR_PRINTENV", "LOOMCYCLE_TEST_FOR_ALL"},
 		CredResolve: func(_ context.Context, name string) (string, bool, error) {

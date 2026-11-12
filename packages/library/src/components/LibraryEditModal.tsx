@@ -1075,8 +1075,7 @@ function AgentFields(props: AgentFieldsProps) {
           <label htmlFor="lib-code-body">
             code body
             <span className="library-modal-field-hint">
-              {" "}— inline JavaScript orchestrator (RFC J); requires
-              LOOMCYCLE_CODE_AGENTS_ENABLED on the sidecar
+              {" "}— inline JavaScript orchestrator (RFC J)
             </span>
           </label>
           <textarea

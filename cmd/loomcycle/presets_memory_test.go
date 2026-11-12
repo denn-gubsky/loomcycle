@@ -150,7 +150,7 @@ func TestConsolidatorBundle_Validates(t *testing.T) {
 	}
 	// STAGED OFF. A pass is a real LLM run and the schedule fans out one per user
 	// with unconsolidated chats, so shipping it enabled means selecting the bundle
-	// (plus LOOMCYCLE_SCHEDULER_ENABLED=1) starts hourly spend across up to 32
+	// starts hourly spend across up to 32
 	// targets immediately — with no operator decision in between. The bundle's own
 	// header says to stage it off; this is what keeps the artifact honest.
 	if sr.Enabled {

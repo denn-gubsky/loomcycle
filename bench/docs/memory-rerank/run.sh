@@ -44,7 +44,7 @@ start() { # $1 = trace index (1/0), $2 = extra --config (or "")
     OLLAMA_BASE_URL="$OLLAMA" LOOMCYCLE_PRESETS=base,memory LOOMCYCLE_CONFIG_FILES="$LAYERS" \
     LOOMCYCLE_STORAGE_BACKEND=postgres LOOMCYCLE_PG_AUTOMIGRATE=1 LOOMCYCLE_PGVECTOR_ENABLED=1 \
     LOOMCYCLE_PG_DSN="$PG_DSN" LOOMCYCLE_SQLMEM_PG_DSN="$SQLMEM_DSN" LOOMCYCLE_SQLMEM_ENABLED=1 \
-    LOOMCYCLE_CODE_AGENTS_ENABLED=1 LOOMCYCLE_MEMORY_TRACE_INDEX="$1" \
+    LOOMCYCLE_MEMORY_TRACE_INDEX="$1" \
     "$ROOT/bin/loomcycle" ${extra[@]+"${extra[@]}"} >> "$OUT/server.log" 2>&1 &
   SRV=$!
   for _ in $(seq 1 90); do curl -s -m 2 "$BASE/healthz" >/dev/null && return 0; sleep 1; done

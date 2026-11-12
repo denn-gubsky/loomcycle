@@ -8,8 +8,8 @@ import (
 
 // init registers the code-js driver with the RFC BF driver registry.
 // Registration records only the factory — it neither reads the
-// LOOMCYCLE_CODE_AGENTS_* env nor enables the provider (that stays behind the
-// resolver's LOOMCYCLE_CODE_AGENTS_ENABLED gate in cmd/loomcycle). The canonical
+// LOOMCYCLE_CODE_AGENTS_* env nor builds the provider (cmd/loomcycle does, for
+// a config that declares it). The canonical
 // dialect is "code-js" (the synthetic goja-replay "wire").
 func init() {
 	providers.RegisterDriver("code-js", []string{"code-js"}, newFromOptions)

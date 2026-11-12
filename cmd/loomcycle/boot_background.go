@@ -335,27 +335,16 @@ func (b *boot) startRunSweepers() {
 
 	// Channel hooks: the worker that decides the messages of channels that
 	// carry hooks. Every replica runs one; per-message leases share the work.
-	// With hooks off it still runs, to deliver unhooked the messages written
-	// while they were on (by this replica before a restart, or by another):
-	// nothing else would ever deliver them.
+	// A channel with no hooks gives it nothing to do.
 	hookOwner := cfg.Env.ReplicaID
 	if hookOwner == "" {
 		host, _ := os.Hostname()
 		hookOwner = fmt.Sprintf("%s-%d", host, os.Getpid())
 	}
-	if cfg.Env.ChannelHooksEnabled && srv != nil && storeIface != nil {
+	if srv != nil && storeIface != nil {
 		slog.Info("channel hooks: worker started", "owner", hookOwner, "concurrency", cfg.Env.ChannelHooksConcurrency,
 			"per_channel", cfg.Env.ChannelHooksPerChannel, "max_wait", cfg.Env.ChannelHooksMaxWait)
 		goSupervised(bgCtx, "channelhooks.worker", srv.NewChannelHookWorker(hookOwner, channelScheduler, interruptionTool).Run)
-	} else {
-		for name, ch := range cfg.Channels {
-			if ch.HasHooks() {
-				slog.Warn("channel hooks: a channel declares hooks, but channel hooks are off (LOOMCYCLE_CHANNEL_HOOKS=1 turns them on); they are skipped and its messages are delivered unhooked", "channel", name)
-			}
-		}
-		if srv != nil && storeIface != nil {
-			goSupervised(bgCtx, "channelhooks.unhooked", srv.NewChannelHookWorker(hookOwner, channelScheduler, interruptionTool).RunUnhooked)
-		}
 	}
 
 	// RFC DI D5: discard configured runs (drafts) older than their TTL. Each

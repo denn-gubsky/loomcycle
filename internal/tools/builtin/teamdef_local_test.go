@@ -29,7 +29,6 @@ func localTeamFixture(t *testing.T) (*TeamDef, context.Context) {
 		"static-one":  {Tier: "middle"},
 		"sdlc/static": {Tier: "middle"},
 	}}
-	cfg.Env.CodeAgentsEnabled = true
 	agents := &AgentDef{Store: s, Cfg: cfg, MaxDefinitionBytes: 131072, MaxDescriptionBytes: 8192, MaxCodeBytes: 262144}
 	tool := &TeamDef{Store: s, MaxDefinitionBytes: 1 << 20, MaxDescriptionBytes: 8192, Agents: agents}
 	return tool, localAuthorCtx("", []string{"any"}, []string{"Read", "Grep", "Agent"})

@@ -10,9 +10,6 @@ export LOOMCYCLE_DATA_DIR="${LOOMCYCLE_DATA_DIR:-$HERE/data}"
 export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8787}"
 export LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED="${LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED:-1}"
 
-# The scheduler must be ON — this experiment is entirely scheduler-driven.
-export LOOMCYCLE_SCHEDULER_ENABLED="${LOOMCYCLE_SCHEDULER_ENABLED:-1}"
-
 # HTTP host allowlist: scheduler-fired runs get NO per-run allowlist, so this env var is
 # the SOLE HTTP egress policy (empty = refuse all). It MUST list every feed host the
 # collectors GET, or every fetch is refused. (Both bare + www forms, to be safe.)

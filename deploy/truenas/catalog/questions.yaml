@@ -474,12 +474,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_BASHBOX_ENABLED
-            label: LOOMCYCLE_BASHBOX_ENABLED
-            description: 'An alternative to Bash: a real sandbox (the pure-Go `gbash` engine) that spawns NO OS process, roots every path at the agent''s mounted volume, and has NO network. Unlike Bash it HONORS read-only volumes (writes hit an in-RAM overlay, never the host). Opt-in, then grant per agent via `tools: [Bashbox]`. gbash is alpha — the per-agent gate is the escape hatch. Defaults OFF. (example: 1)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS
             label: LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS
             description: 'Host-command fallback (RFC AJ §13): an operator allowlist of commands gbash does NOT implement (e.g. git, gh) that may ESCAPE the sandbox to the real host shell. Empty (default) = no fallback; every command stays sandboxed. Only these names reach the host; requires a rw volume. Comma-separated. (example: git,gh)'
@@ -838,12 +832,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_WEBHOOKS_ENABLED
-            label: LOOMCYCLE_WEBHOOKS_ENABLED
-            description: '---- RFC H inbound webhooks -------------------------------------------- External systems (GitHub/Gitea/Stripe/Linear/CI/n8n) trigger agent runs or wake parked agents via signed POST /v1/_webhooks/{name}. Off by default; the WebhookDef tool still authors/lists defs while disabled. (example: 1)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST
             label: LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST
             description: 'Secret resolution: a webhook''s signing_secret_env / bearer_token_env / user_credentials_from_env env-var NAMES must be authorized, or every delivery 503s `unavailable` (the log names the env var). (The NAMES are config and live here; the secret VALUES live in .env.local.) A name is authorized when ANY of: 1. it is LOOMCYCLE_*-prefixed (or a known third-party name) — auto- allowed for the VERIFY…'
@@ -880,15 +868,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_SCHEDULER_ENABLED
-            label: LOOMCYCLE_SCHEDULER_ENABLED
-            description: 'Fires ScheduleDef cron/at runs. Off by default; the ScheduleDef tool still authors/lists schedules while disabled. (Trigger-credential allowlist is LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST, above.) (example: 1)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_SCHEDULER_TICK_SECONDS
             label: LOOMCYCLE_SCHEDULER_TICK_SECONDS
-            description: '(example: 30)'
+            description: 'Fires ScheduleDef cron/at runs. Always on; with no ScheduleDef nothing fires. (Trigger-credential allowlist is LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST, above.) (example: 30)'
             schema:
               type: string
               default: ""
@@ -943,12 +925,6 @@ questions:
           - variable: LOOMCYCLE_PAUSE_CACHE_TTL_MS
             label: LOOMCYCLE_PAUSE_CACHE_TTL_MS
             description: '(LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS is documented above.) (example: 1000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_RESUME_FANOUT
-            label: LOOMCYCLE_RESUME_FANOUT
-            description: 'A snapshot''s size cap is per capture (`max_bytes` on the request), default 512 MB. No env var sets it. RFC X Phase 3 — resume a fan-out PARENT mid-parallel_spawn on restore. Default OFF (pause/snapshot/resume stays byte-identical until opt-in). (example: 1)'
             schema:
               type: string
               default: ""
@@ -1180,54 +1156,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES
-            label: LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES
-            description: '(example: 131072)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES
-            label: LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES
-            description: '(example: 8192)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_AGENT_DEF_MAX_CODE_BYTES
-            label: LOOMCYCLE_AGENT_DEF_MAX_CODE_BYTES
-            description: '(example: 262144)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES
-            label: LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES
-            description: '(example: 1048576)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES
-            label: LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES
-            description: '(example: 131072)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES
-            label: LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES
-            description: '(example: 8192)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES
-            label: LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES
-            description: '(example: 32768)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_EVALUATION_MAX_RATIONALE_BYTES
-            label: LOOMCYCLE_EVALUATION_MAX_RATIONALE_BYTES
-            description: '(example: 8192)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER
             label: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER
             description: '(Cluster-wide limits also live in the yaml `concurrency:` block.) (example: 0)'
@@ -1414,15 +1342,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_CODE_AGENTS_ENABLED
-            label: LOOMCYCLE_CODE_AGENTS_ENABLED
-            description: 'A goja-backed provider for stateless replay agents (load tests, deterministic pipelines). Off by default. (example: 1)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_CODE_AGENTS_ROOT
             label: LOOMCYCLE_CODE_AGENTS_ROOT
-            description: '(example: /srv/loomcycle/code-agents)'
+            description: 'A goja-backed provider for stateless replay agents (load tests, deterministic pipelines). Always registered; an agent uses it with `provider: code-js`. (example: /srv/loomcycle/code-agents)'
             schema:
               type: string
               default: ""
@@ -1444,21 +1366,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_CODE_HOOKS_ENABLED
-            label: LOOMCYCLE_CODE_HOOKS_ENABLED
-            description: 'A hook''s body may be JavaScript (a code hook) instead of a webhook. Separate from the code-agent gate: a code hook runs on every matching tool call. (example: 1)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CHANNEL_HOOKS
-            label: LOOMCYCLE_CHANNEL_HOOKS
-            description: 'Decide each message published to a channel that carries `hooks:` before any reader sees it. Off by default; off, a publish to such a channel is refused. (example: 1)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY
             label: LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY
-            description: '(example: 16)'
+            description: 'Decide each message published to a channel that carries `hooks:` before any reader sees it. The worker always runs; these size it. (example: 16)'
             schema:
               type: string
               default: ""

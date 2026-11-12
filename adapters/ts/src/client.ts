@@ -2920,9 +2920,8 @@ export class LoomcycleClient {
    *  the JS no longer has to exist at `agent_code/<name>/index.js` on the
    *  sidecar's disk.
    *
-   *  Requires `LOOMCYCLE_CODE_AGENTS_ENABLED=1` on the sidecar — the same
-   *  switch that registers the code-js provider. Without it the create is
-   *  refused (raises {@link SubstrateToolRefusedError}). Keep `${run.*}` /
+   *  A body that does not compile, or is over the size cap, is refused
+   *  (raises {@link SubstrateToolRefusedError}). Keep `${run.*}` /
    *  `${LOOMCYCLE_*}` placeholders in the body LITERAL so the content stays
    *  stable and dedup engages on re-register. */
   async ensureCodeAgent(

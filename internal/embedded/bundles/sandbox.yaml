@@ -3,9 +3,9 @@
 # the builder sidecar — plus a caller-facing skill for delegating code execution to
 # the deterministic `dev/exec` agent.
 #
-# This bundle carries NO agent, so it is flag-independent: layer it to grant your own
+# This bundle carries NO agent: layer it to grant your own
 # agents the mcp__sandbox__* tools. For the bundled deterministic executor, also
-# layer the `dev-exec` bundle (which needs LOOMCYCLE_CODE_AGENTS_ENABLED):
+# layer the `dev-exec` bundle:
 #   LOOMCYCLE_PRESETS=…,sandbox,dev-exec
 #
 # Selected via `LOOMCYCLE_PRESETS=…,sandbox`. Requires:
@@ -38,7 +38,7 @@ skills:
       DETERMINISTIC executor (no LLM): you send it a JSON command envelope, it runs the
       steps in an isolated, ephemeral container and returns STRUCTURED results. You own
       the judgment — read the results, and if a step failed, decide the fix and send a
-      corrected envelope. (Requires the `dev-exec` bundle + LOOMCYCLE_CODE_AGENTS_ENABLED.)
+      corrected envelope. (Requires the `dev-exec` bundle.)
 
       ## The command envelope (JSON, passed as the spawn prompt)
         {

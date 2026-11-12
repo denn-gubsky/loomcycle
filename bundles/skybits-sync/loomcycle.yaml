@@ -28,9 +28,7 @@
 # last one is 7 days old) also lists the trash and marks removed and trashed
 # items on their documents; documents are never deleted. Run `plan` first.
 #
-# ⚠️ REQUIREMENTS — this bundle FAILS BOOT if the first one is missing:
-#   - LOOMCYCLE_CODE_AGENTS_ENABLED=1. A `provider: code-js` agent selected
-#     without the flag is a fatal boot error by design.
+# REQUIREMENTS:
 #   - SQL Memory (LOOMCYCLE_SQLMEM_ENABLED=1): the manifest and the Documents.
 #   - An MCP server named `skybits` (the deployment's: its URL and credential
 #     are not in this bundle).

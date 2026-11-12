@@ -45,9 +45,7 @@ const shutdownPollInterval = 20 * time.Millisecond
 //     resident) has that turn stopped too (SetShutdownTurnCanceller), so it
 //     parks waiting for its next message even from inside a model call. A
 //     parked run is left alone: a fan-out parent the parallel_spawn watcher
-//     parked mid-spawn (LOOMCYCLE_RESUME_FANOUT=1) keeps its children. Without
-//     that flag the parent never parks mid-spawn, so the interrupt cancels the
-//     spawn and the children end cancelled. A blocking call — an Interruption
+//     parked mid-spawn keeps its children. A blocking call — an Interruption
 //     waiting for a person, a Channel await, an Agent wait — is interrupted
 //     like any other, so a resumed run may raise its interruption again.
 //   - It never fails: it returns what it found when the bound runs out.

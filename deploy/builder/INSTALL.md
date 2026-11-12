@@ -188,11 +188,9 @@ On the **loomcycle** service, two changes:
 
 1. Add the **`sandbox`** bundle (the `mcp_servers.sandbox` wiring + the
    `dev/sandbox-usage` delegation skill) and the **`dev-exec`** bundle (the
-   deterministic code-js `dev/exec` executor agent — needs
-   `LOOMCYCLE_CODE_AGENTS_ENABLED=1`):
+   deterministic code-js `dev/exec` executor agent):
    ```yaml
    LOOMCYCLE_PRESETS: "base,document-agent,chat,agent-teams,team-examples,sandbox,dev-exec"
-   LOOMCYCLE_CODE_AGENTS_ENABLED: "1"
    ```
 2. Ensure `SANDBOX_AUTH_TOKEN` is set (Phase 2 added it to
    `loomcycle.secrets.env`, which the loomcycle service already reads via `env_file`).

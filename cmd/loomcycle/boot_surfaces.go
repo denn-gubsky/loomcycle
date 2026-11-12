@@ -156,7 +156,6 @@ func (b *boot) startResolveProbe() {
 // wireConfigReload registers the runtime config-reload sections and the
 // loader that re-assembles the config stack for POST /v1/_config/reload.
 func (b *boot) wireConfigReload() {
-	cfg := b.cfg
 	pr := b.pr
 	storeIface := b.storeIface
 	srv := b.srv
@@ -185,7 +184,7 @@ func (b *boot) wireConfigReload() {
 			},
 		},
 	}
-	if cfg.Env.SchedulerEnabled {
+	if storeIface != nil {
 		// Static scheduled_runs: re-materialize into the substrate (idempotent
 		// add/change; a yaml-REMOVED schedule keeps its row by design — see
 		// BootstrapStaticSchedules). The sweeper polls the store, so re-bootstrap

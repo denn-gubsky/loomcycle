@@ -115,14 +115,21 @@ func Deployment(in Inputs) map[string]any {
 		env = in.Cfg.Env
 	}
 	out["bash"] = map[string]any{"available": env.BashEnabled}
-	out["bashbox"] = map[string]any{"available": env.BashboxEnabled}
-	// The scheduler and webhook loops both additionally require a store; mirror
-	// the boot condition rather than the flag alone, or a caller authoring a
-	// ScheduleDef is told it will fire when it never will.
-	out["scheduler"] = map[string]any{"available": env.SchedulerEnabled && in.Store != nil}
-	out["webhooks"] = map[string]any{"available": env.WebhooksEnabled && in.Store != nil}
+	// Bashbox is always registered; with no config, report it unconfirmed.
+	out["bashbox"] = map[string]any{"available": in.Cfg != nil}
+	// The scheduler and webhook loops run whenever there is a store; mirror
+	// that boot condition, or a caller authoring a ScheduleDef is told it will
+	// fire when it never will.
+	out["scheduler"] = map[string]any{"available": in.Store != nil}
+	out["webhooks"] = map[string]any{"available": in.Store != nil}
 	out["retention"] = map[string]any{"available": env.RetentionEnabled}
-	out["code_js"] = map[string]any{"available": env.CodeAgentsEnabled}
+	// The code-js provider is registered whenever the config declares it (the
+	// default providers layer does).
+	codeJS := false
+	if in.Cfg != nil {
+		_, codeJS = in.Cfg.Providers[config.CodeJSProvider]
+	}
+	out["code_js"] = map[string]any{"available": codeJS}
 	out["search"] = Search(in.Cfg)
 	out["consolidation"] = Consolidation(in.Cfg)
 	if in.Admin && in.Cfg != nil {

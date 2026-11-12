@@ -203,9 +203,6 @@ services:
       LOOMCYCLE_METRICS_ENABLED: "1"
       LOOMCYCLE_METRICS_COLLECT_SYSTEM: "1"
       LOOMCYCLE_METRICS_RETENTION_DAYS: "7"
-      LOOMCYCLE_CODE_AGENTS_ENABLED: "1"
-      LOOMCYCLE_WEBHOOKS_ENABLED: "1"
-      LOOMCYCLE_SCHEDULER_ENABLED: "1"
       LOOMCYCLE_AUDIT_LOG_PATH: /data/audit.log   # a FILE, not the /data dir
       LOOMCYCLE_PG_MAX_OPEN_CONNS: "48"
       LOOMCYCLE_PG_MIN_IDLE_CONNS: "8"
@@ -218,7 +215,6 @@ services:
       # agent via its tools:.
       # Bashbox: in-process gbash sandbox (rooted at the agent's rw volume, no
       # network); host commands you allowlist ESCAPE to the real toolchain.
-      LOOMCYCLE_BASHBOX_ENABLED: "1"
       # Bash: NOT a sandbox — reaches arbitrary files + the network; only grant it
       # to trusted agents (needs the toolbox image's real /bin/sh + toolchain).
       LOOMCYCLE_BASH_ENABLED: "1"

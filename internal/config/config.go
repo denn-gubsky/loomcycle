@@ -1697,7 +1697,6 @@ type AgentDef struct {
 	// of reading agent_code/<name>/index.js — the symmetry that lets a
 	// code agent be ingested via AgentDef / yaml with no host filesystem
 	// bind (containers, pure-cloud). Empty = fall back to the filesystem.
-	// Gated by LOOMCYCLE_CODE_AGENTS_ENABLED at create/fork + execution.
 	Code string `yaml:"code"`
 	// SystemPrompt is the agent's system prompt as an inline YAML
 	// string. Mutually exclusive with SystemPromptFile.
@@ -3407,9 +3406,7 @@ type Channel struct {
 	// before any reader sees it: release it (as it is, or rewritten), drop
 	// it, or hold it for a person. `channel_publish` is the only event; its
 	// entries are HookDef names or inline webhooks, run in order. A hold on
-	// the same channel applies to what the hooks release. Needs
-	// LOOMCYCLE_CHANNEL_HOOKS=1: without it the hooks are skipped and the
-	// channel's messages are delivered as if it declared none.
+	// the same channel applies to what the hooks release.
 	Hooks hooks.EventHooks `yaml:"hooks"`
 }
 
@@ -4334,16 +4331,6 @@ type Env struct {
 	// only narrow operator's list, never widen. Operator opts in once
 	// via LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1.
 	HTTPCallerAuthoritative bool
-	// ResumeFanout enables RFC X Phase 3: a fan-out PARENT blocked in
-	// Agent.parallel_spawn cooperatively PARKS on pause (so paused_runs_count
-	// includes it + the warning clears), and a snapshotted mid-fan-out parent
-	// is RESUMABLE on a fresh instance (a spawn ledger is persisted; resume
-	// reconciles the children + synthesizes the parallel_spawn tool_result).
-	// Default OFF: when unset, pause/snapshot/resume behave exactly as before
-	// (no ledger events, no park watcher, no reconcile). Operator opts in via
-	// LOOMCYCLE_RESUME_FANOUT=1; should be on at BOTH the capturing and
-	// restoring instances for a cross-instance hand-off.
-	ResumeFanout bool
 	// TeamSubscriptions enables the armed-subscription sweep: a PROMOTED team
 	// whose entry state is a Starter is driven automatically when its source
 	// channel has work, with no human asking for each run.
@@ -4448,13 +4435,6 @@ type Env struct {
 	// Sourced from LOOMCYCLE_BASH_ALLOWED_CREDS (comma-separated). Requires a KEK
 	// (LOOMCYCLE_SECRET_KEY) for the engine to resolve; empty (default) = none.
 	BashAllowedCreds []string
-	// BashboxEnabled gates the Bashbox tool — a TRUE in-process sandbox
-	// (gbash) that spawns no OS process, roots all paths at the mounted
-	// volume, and has no network. Unlike Bash it HONORS read-only volumes
-	// (writes hit an in-RAM overlay, never the host). Defaults to false;
-	// enable with LOOMCYCLE_BASHBOX_ENABLED=1. gbash is alpha — the per-agent
-	// tools gate is the escape hatch.
-	BashboxEnabled bool
 	// BashboxFallbackCommands is the operator allowlist of host commands that
 	// gbash does NOT implement (e.g. git, gh) and that may ESCAPE the Bashbox
 	// sandbox to run on the real host shell (RFC AJ §13). Empty (default) = no
@@ -4800,14 +4780,6 @@ type Env struct {
 
 	// ---- RFC J synthetic code-js provider (opt-in) ----
 
-	// CodeAgentsEnabled gates registration of the synthetic code-js
-	// provider (RFC J). Default OFF (operator opts in via
-	// LOOMCYCLE_CODE_AGENTS_ENABLED=1). When false the provider is not
-	// registered at all, so an AgentDef with `provider: code-js` fails
-	// loud at startup with a clear "code agents are disabled" error
-	// rather than silently. Operator-provided JS runs in the operator's
-	// own trust posture (same as the Bash tool) — hence opt-in.
-	CodeAgentsEnabled bool
 	// CodeAgentsRoot is the filesystem root holding
 	// agent_code/<name>/index.js. Default ./agent_code. Env:
 	// LOOMCYCLE_CODE_AGENTS_ROOT.
@@ -4847,18 +4819,7 @@ type Env struct {
 	// an agent author cannot lift it (run_timeout_seconds sets the budget,
 	// not this). Env: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS.
 	CodeAgentsMaxWall time.Duration
-	// CodeHooksEnabled lets a hook's body be code-js (RFC DK) instead of a
-	// webhook. Default OFF, separate from CodeAgentsEnabled: a code hook runs
-	// on every matching tool call of every agent in its scope, which is a
-	// different decision from letting one agent be JavaScript. Env:
-	// LOOMCYCLE_CODE_HOOKS_ENABLED=1.
-	CodeHooksEnabled bool
 
-	// ChannelHooksEnabled runs the channel-hook worker, which decides the
-	// messages of channels that carry hooks. Default OFF; off, a channel's
-	// hooks are skipped (an opt-in feature a deployment has not turned on).
-	// Env: LOOMCYCLE_CHANNEL_HOOKS=1.
-	ChannelHooksEnabled bool
 	// ChannelHooksConcurrency bounds the messages one replica decides at
 	// once (default 16); ChannelHooksPerChannel, those of one channel
 	// (default 4). Env: LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY,
@@ -5189,57 +5150,6 @@ type Env struct {
 	// Env: LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED.
 	ChannelsMaxPendingDeferred int
 
-	// AgentDefMaxDefinitionBytes caps a single AgentDef.create or
-	// AgentDef.fork's serialised definition JSON (v0.8.5). Default
-	// 131072 (128 KB). 0 disables. Mirrors MemoryMaxValueBytes's
-	// negative-as-disable convention.
-	// Env: LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES.
-	AgentDefMaxDefinitionBytes int
-
-	// TeamDefMaxDefinitionBytes caps a TeamDef create or fork's serialised
-	// definition JSON. Default 1048576 (1 MiB): a team carries its own agents'
-	// definitions, each still held to the AgentDef caps, so the whole is larger
-	// than any one agent. 0 disables.
-	// Env: LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES.
-	TeamDefMaxDefinitionBytes int
-
-	// AgentDefMaxDescriptionBytes caps the free-text description
-	// field on AgentDef.create / fork (v0.8.5). Default 8192 (8 KB).
-	// 0 disables.
-	// Env: LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES.
-	AgentDefMaxDescriptionBytes int
-
-	// AgentDefMaxCodeBytes caps an inline code-js `code_body` overlay on
-	// AgentDef.create / fork (RFC J). A dedicated cap (vs the whole-
-	// definition AgentDefMaxDefinitionBytes) gives a clearer error and a
-	// tighter default for executable source. Default 262144 (256 KB).
-	// 0 disables.
-	// Env: LOOMCYCLE_AGENT_DEF_MAX_CODE_BYTES.
-	AgentDefMaxCodeBytes int
-
-	// SkillDefMaxBodyBytes caps the overlay.body field on
-	// SkillDef.create / fork (v0.8.22). Default 131072 (128 KB).
-	// 0 disables.
-	// Env: LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES.
-	SkillDefMaxBodyBytes int
-
-	// SkillDefMaxDescriptionBytes caps the free-text description
-	// field on SkillDef.create / fork (v0.8.22). Default 8192 (8 KB).
-	// 0 disables.
-	// Env: LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES.
-	SkillDefMaxDescriptionBytes int
-
-	// EvaluationMaxJudgementBytes caps the structured-judgement JSON
-	// on Evaluation.submit (v0.8.5). Default 32768 (32 KB). 0 disables.
-	// Env: LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES.
-	EvaluationMaxJudgementBytes int
-
-	// EvaluationMaxRationaleBytes caps the natural-language rationale
-	// text on Evaluation.submit (v0.8.5). Default 8192 (8 KB).
-	// 0 disables.
-	// Env: LOOMCYCLE_EVALUATION_MAX_RATIONALE_BYTES.
-	EvaluationMaxRationaleBytes int
-
 	// ProviderHeaderTimeout is the per-attempt cap on time-to-first-
 	// byte for streaming provider HTTP calls (set on each driver's
 	// http.Transport.ResponseHeaderTimeout). Default 60s — generous
@@ -5282,14 +5192,6 @@ type Env struct {
 	OllamaLocalHeaderTimeout time.Duration
 	OllamaLocalIdleTimeout   time.Duration
 
-	// SchedulerEnabled enables the v1.x RFC E scheduler runtime
-	// (sweeper goroutine + due-row firing). Default OFF — operator
-	// opts in via LOOMCYCLE_SCHEDULER_ENABLED=1. When false, the
-	// sweeper goroutine is not started and substrate-stored
-	// schedules sit idle (the ScheduleDef tool still works for
-	// authoring + listing, just nothing fires).
-	SchedulerEnabled bool
-
 	// SchedulerTickSeconds is the sweeper poll cadence. Default 30.
 	// Lower values trade DB load for tighter punctuality. Env:
 	// LOOMCYCLE_SCHEDULER_TICK_SECONDS.
@@ -5327,14 +5229,6 @@ type Env struct {
 	// statically-declared secret + a LOOMCYCLE_*-named verify secret resolve
 	// without any allowlist entry. See internal/api/webhook.BuildEnvAllowlist.
 	SchedulerEnvAllowlist []string
-
-	// WebhooksEnabled enables the v1.x RFC H inbound-webhook receiver
-	// (the POST /v1/_webhooks/{name} mount). Default OFF — operator
-	// opts in via LOOMCYCLE_WEBHOOKS_ENABLED=1. When false, no route
-	// is mounted and webhook_defs sit idle (the WebhookDef tool still
-	// works for authoring + listing, just nothing receives). Mirrors
-	// SchedulerEnabled exactly.
-	WebhooksEnabled bool
 
 	// WebhooksEnvAllowlist is the webhook-specific, correctly-named twin of
 	// SchedulerEnvAllowlist (LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST="VAR1,VAR2").
@@ -5485,7 +5379,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		return nil, err
 	}
 	applyEnvMCP(cfg)
-	applyEnvDefCaps(cfg)
 	applyEnvProviderTimeouts(cfg)
 
 	// RFC DT: the throughput-measurement block's env overrides + defaults.
@@ -5665,7 +5558,6 @@ func applyEnvCore(cfg *Config) {
 		MCPAllowPrivateIPs:          getenvBool("LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS", true),
 		ProvisionIdentityDocs:       getenvBool("LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", true),
 		HTTPCallerAuthoritative:     os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
-		ResumeFanout:                os.Getenv("LOOMCYCLE_RESUME_FANOUT") == "1",
 		TeamSubscriptions:           os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS") == "1",
 		MaxInteractiveChildren:      getenvInt("LOOMCYCLE_MAX_INTERACTIVE_CHILDREN", 0),
 		MaxLiveChildrenPerRun:       getenvInt("LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN", 0),
@@ -5683,7 +5575,6 @@ func applyEnvCore(cfg *Config) {
 		ClientToolMaxConns:          getenvInt("LOOMCYCLE_CLIENT_TOOL_MAX_CONNS", 8),
 		BashEnabled:                 os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
 		BashAllowedCreds:            splitCSV(os.Getenv("LOOMCYCLE_BASH_ALLOWED_CREDS")),
-		BashboxEnabled:              os.Getenv("LOOMCYCLE_BASHBOX_ENABLED") == "1",
 		BashboxFallbackCommands:     splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS")),
 		BashboxFallbackAllowedEnv:   splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV")),
 		BashboxFallbackAllowedCreds: splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS")),

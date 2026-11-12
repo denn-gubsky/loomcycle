@@ -467,8 +467,6 @@ func (b *boot) wireBuses() {
 		// One wiring point makes every channel write honour the channel's
 		// definition — see StorePublisher.Defs.
 		Defs: srv.ChannelWriteDef,
-		// Off, a write to a channel that carries hooks is refused.
-		HooksEnabled: cfg.Env.ChannelHooksEnabled && storeIface != nil,
 	}
 	srv.SetSystemPublisher(sysPublisher)
 	// Wire the SystemPublisher onto the Interruption tool too — same

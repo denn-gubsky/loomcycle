@@ -40,7 +40,6 @@ func TestNewProviderResolver_NoProvidersBlock_BackCompat(t *testing.T) {
 	// pre-P2a "only ANTHROPIC_API_KEY set" resolver shape.
 	t.Setenv("OLLAMA_BASE_URL", "disabled")
 	t.Setenv("LOOMCYCLE_MOCK_ENABLED", "")
-	t.Setenv("LOOMCYCLE_CODE_AGENTS_ENABLED", "")
 
 	cfg := loadDefaultProvidersOnly(t)
 	pr, err := newProviderResolver(cfg)
@@ -87,7 +86,6 @@ func TestResolveProbe_NoProvidersBlock_ExclusionReasons(t *testing.T) {
 	}
 	t.Setenv("OLLAMA_BASE_URL", "disabled")
 	t.Setenv("LOOMCYCLE_MOCK_ENABLED", "")
-	t.Setenv("LOOMCYCLE_CODE_AGENTS_ENABLED", "")
 
 	cfg := loadDefaultProvidersOnly(t)
 	pr, err := newProviderResolver(cfg)

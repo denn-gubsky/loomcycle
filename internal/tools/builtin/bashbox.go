@@ -56,18 +56,15 @@ import (
 //     the sandbox — no smuggling escape). Fallback requires a rw volume (a host
 //     process can't honor the ro overlay) and is off by default.
 //
-// Opt-in like Bash: Enabled=false refuses every call; enable per deployment
-// with LOOMCYCLE_BASHBOX_ENABLED=1 and per agent via tools:[Bashbox].
+// Always registered; an agent gets it only through tools:[Bashbox].
 //
-// gbash is alpha (pinned in go.mod). The opt-in posture is the escape hatch:
+// gbash is alpha (pinned in go.mod). The per-agent grant is the escape hatch:
 // if a gbash bug surfaces, drop Bashbox from the agent's tools.
 //
 // Stateless per call (matches Bash's per-call os/exec): each Execute builds a
 // fresh runtime and runs one script in a fresh session — no cross-call state,
 // so there is nothing to snapshot across pause/resume.
 type Bashbox struct {
-	// Enabled gates the entire tool. False (default) refuses every call.
-	Enabled bool
 	// MaxOutputBytes caps stdout and stderr (each) inside gbash. Default 1 MiB.
 	MaxOutputBytes int64
 	// Timeout caps wall-clock per call. Default 30s. Hard ceiling 5min.
@@ -320,9 +317,6 @@ func (b *Bashbox) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 	}
 	if err := json.Unmarshal(input, &args); err != nil {
 		return tools.Result{Text: "invalid input: " + err.Error(), IsError: true}, nil
-	}
-	if !b.Enabled {
-		return tools.Result{Text: "Bashbox tool is not enabled (set LOOMCYCLE_BASHBOX_ENABLED=1); refusing", IsError: true}, nil
 	}
 	if args.Command == "" {
 		return tools.Result{Text: "command is required", IsError: true}, nil

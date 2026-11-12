@@ -29,7 +29,6 @@ import (
 func TestResumeFanout_WaitModeStartedRowRecordsTheChildsTimeout(t *testing.T) {
 	cfg := makeBaseConfig()
 	cfg.Defaults.Provider = "scripted"
-	cfg.Env.ResumeFanout = true
 	cfg.Agents = map[string]config.AgentDef{
 		"parent": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "parent", MaxConcurrentChildren: 4},
 		"child":  {Model: "stub-model", Tools: []string{}, SystemPrompt: "child"},
@@ -99,7 +98,6 @@ func TestResumeFanout_AWaitModeChildPastItsTimeoutIsCutAndAnsweredTimedOut(t *te
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
-	cfg.Env.ResumeFanout = true
 	srv, _ := makeServer(t, &scriptedProvider{}, cfg)
 	// Bounded: a reconcile that does not re-arm the bound would wait here
 	// until this ctx ends, not for its 30-minute backstop.
@@ -160,7 +158,6 @@ func TestResumeFanout_AWaitModeChildIsNotCutWhileItIsPaused(t *testing.T) {
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
-	cfg.Env.ResumeFanout = true
 	srv, _ := makeServer(t, &scriptedProvider{}, cfg)
 	ctx, stop := context.WithTimeout(context.Background(), 10*time.Second)
 	defer stop()

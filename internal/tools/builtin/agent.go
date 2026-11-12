@@ -197,12 +197,6 @@ type AgentTool struct {
 	// Wired by the HTTP server at boot to the same runner as Run.
 	RunDetailed SubAgentRunnerDetailed
 
-	// SpawnLedger gates the RFC X Phase 3 spawn-ledger emits (and the
-	// per-child index threading) in parallel_spawn. Set from
-	// LOOMCYCLE_RESUME_FANOUT at boot; default false → no ledger events, no
-	// behavior change. Requires RunDetailed + an EventEmitter in ctx.
-	SpawnLedger bool
-
 	// CapLookup resolves the calling agent's per-agent
 	// `max_concurrent_children` override. nil = always use
 	// DefaultMaxConcurrentChildren. Wired by the HTTP server at boot.
@@ -1075,7 +1069,7 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 	// no-op when unset, so the old check could not detect a missing sink and the
 	// ledger would silently drain to the no-op).
 	toolUseID := tools.ToolUseID(ctx)
-	ledger := a.SpawnLedger && a.RunDetailed != nil && toolUseID != "" && tools.HasEventEmitter(ctx)
+	ledger := a.RunDetailed != nil && toolUseID != "" && tools.HasEventEmitter(ctx)
 	var ledgerEmit tools.EventEmitterFunc
 	if ledger {
 		ledgerEmit = tools.EventEmitter(ctx)

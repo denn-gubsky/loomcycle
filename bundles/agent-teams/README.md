@@ -27,7 +27,7 @@ select `base` (or your own config) alongside it to supply a `middle` tier. Run
 ### Software teams only (repo/PR)
 
 For a team whose deliverable is a code change (the `team/repo` skill), also set:
-`LOOMCYCLE_BASHBOX_ENABLED=1`, `git`+`gh` on the host image,
+`git`+`gh` on the host image,
 `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh`,
 `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GITHUB_TOKEN` (+ `GITHUB_TOKEN` in the host
 env), and a volume marked `dynamic_root: true`. Marketing/accounting/research

@@ -51,7 +51,7 @@ Each built-in is registered into the dispatcher at process startup but **refuses
 | `WebFetch`  | (same allowlist as HTTP — shared backend)             |
 | `WebSearch` | `BRAVE_API_KEY=...`                                   |
 | `Bash`      | `LOOMCYCLE_BASH_ENABLED=1` + a bound **rw** volume    |
-| `Bashbox`   | `LOOMCYCLE_BASHBOX_ENABLED=1` + a bound volume (**ro or rw** — a true in-process sandbox) |
+| `Bashbox`   | Always registered; needs a bound volume (**ro or rw** — a true in-process sandbox) |
 | `Agent`     | Always registered (server-internal); per-agent `tools` controls who can spawn. |
 | `Skill`     | `LOOMCYCLE_SKILLS_ROOT=/path/to/skills` (or skills inlined per-agent via YAML `skills:` map, or the `skill_defs` substrate). Auto-added to every agent that may use a skill (RFC BA); loads bodies on demand. Gated by the agent's `skills:` pattern allowlist. |
 | `SkillDef`  | Always registered (v0.8.22). Authoring gated by the agent's `skills:` pattern allowlist (RFC BA — empty = allow all, `-*` = deny all); no extra env var. Storage shared with the rest of the substrate. |

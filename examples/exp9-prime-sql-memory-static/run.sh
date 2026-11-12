@@ -15,10 +15,6 @@ export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8787}"
 export LOOMCYCLE_SQLMEM_ENABLED="${LOOMCYCLE_SQLMEM_ENABLED:-1}"
 # Bash tool — needed by coder to run primes.py
 export LOOMCYCLE_BASH_ENABLED="${LOOMCYCLE_BASH_ENABLED:-1}"
-# code-js provider — required for static agents; inline `code:` in YAML also uses this path
-# Note: code-js agents in YAML config work without this flag; it only gates the
-# AgentDef tool's ability to register NEW dynamic code agents at runtime.
-export LOOMCYCLE_CODE_AGENTS_ENABLED="${LOOMCYCLE_CODE_AGENTS_ENABLED:-1}"
 
 mkdir -p "$HERE/data" "$HERE/work"
 LOOMCYCLE_BIN="${LOOMCYCLE_BIN:-loomcycle}"

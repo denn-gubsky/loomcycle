@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -141,14 +139,6 @@ type StorePublisher struct {
 	// the runtime substrate, tenant-scoped) lives in the server. nil = no
 	// channel is held.
 	Defs DefResolver
-
-	// HooksEnabled: the channel-hook worker runs, so a write to a hooked
-	// channel waits for it. Off, a channel's hooks are skipped: channel hooks
-	// are an opt-in feature, and a deployment that has not turned it on
-	// delivers its channels' messages as if no hooks were declared.
-	HooksEnabled bool
-
-	skipped sync.Map // channel name → struct{}: hooks already reported skipped
 }
 
 // SystemPublisherUserID is the audit-trail sentinel for internal Go
@@ -173,12 +163,6 @@ func (p *StorePublisher) Write(ctx context.Context, req WriteRequest) (WriteResu
 			return WriteResult{}, fmt.Errorf("channel writer: resolve %q: %w", req.Channel, err)
 		}
 		def = d
-	}
-	if def.Hooked && !p.HooksEnabled {
-		def.Hooked = false
-		if _, seen := p.skipped.LoadOrStore(req.Channel, struct{}{}); !seen {
-			slog.Warn("channels: a channel declares hooks, but channel hooks are off (LOOMCYCLE_CHANNEL_HOOKS); its messages are delivered unhooked", "channel", req.Channel)
-		}
 	}
 
 	now := time.Now()

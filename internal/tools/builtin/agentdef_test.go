@@ -365,29 +365,10 @@ func TestAgentDefTool_ForkNoParentStillRefuses(t *testing.T) {
 // fixtures below (double quotes would need escaping).
 const validInlineBody = `function run(input){ return { final_text: 'ok' }; }`
 
-// TestAgentDefTool_InlineCodeRefusedWhenCodeJSDisabled pins the gate: with
-// LOOMCYCLE_CODE_AGENTS_ENABLED off (the fixture default), create/fork must
-// refuse a non-empty code_body loudly — persisting a body the runtime can't
-// execute would be a silent footgun. Fails on the pre-feature code, which had
-// no code_body field and would create "codebot" successfully.
-func TestAgentDefTool_InlineCodeRefusedWhenCodeJSDisabled(t *testing.T) {
-	tool, ctx, cleanup := agentDefFixture(t)
-	defer cleanup()
-
-	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"codebot","overlay":{"provider":"code-js","code_body":"`+validInlineBody+`"}}`))
-	if !res.IsError {
-		t.Fatalf("inline code_body with code-js disabled should refuse; got %s", res.Text)
-	}
-	if !strings.Contains(res.Text, "code agents are disabled") {
-		t.Errorf("refusal should mention the disabled gate; got %s", res.Text)
-	}
-}
-
 // TestAgentDefTool_InlineCodeRejectsSyntaxError pins authorship-time compile.
 func TestAgentDefTool_InlineCodeRejectsSyntaxError(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
-	tool.Cfg.Env.CodeAgentsEnabled = true
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"codebot","overlay":{"provider":"code-js","code_body":"function run(input){ return {final_text: }"}}`))
 	if !res.IsError {
@@ -402,7 +383,6 @@ func TestAgentDefTool_InlineCodeRejectsSyntaxError(t *testing.T) {
 func TestAgentDefTool_InlineCodeRejectsOversize(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
-	tool.Cfg.Env.CodeAgentsEnabled = true
 	tool.MaxCodeBytes = 10 // smaller than validInlineBody
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"codebot","overlay":{"provider":"code-js","code_body":"`+validInlineBody+`"}}`))
@@ -420,7 +400,6 @@ func TestAgentDefTool_InlineCodeRejectsOversize(t *testing.T) {
 func TestAgentDefTool_InlineCodeCreateAndForkInherits(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
-	tool.Cfg.Env.CodeAgentsEnabled = true
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"codebot","overlay":{"provider":"code-js","code_body":"`+validInlineBody+`"}}`))
 	if res.IsError {

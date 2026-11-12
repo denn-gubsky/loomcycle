@@ -6227,8 +6227,8 @@ export interface CoreBlock {
  *  `code_body` is the inline code-js orchestrator source (RFC J): set it (with
  *  `provider: "code-js"`) to ingest a code agent through the substrate with NO
  *  host filesystem bind — the symmetry that makes code agents work in
- *  containers / pure-cloud. Requires `LOOMCYCLE_CODE_AGENTS_ENABLED=1` on the
- *  sidecar; create/fork refuses a non-empty `code_body` otherwise. */
+ *  containers / pure-cloud. create/fork refuses a `code_body` that does not
+ *  compile or is over the size cap. */
 /** An agent's `routing:` block (RFC EI P4). */
 export interface AgentRouting {
   /** Pass over a cascade candidate whose provider is busy enough that the

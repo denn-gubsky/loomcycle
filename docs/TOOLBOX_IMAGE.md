@@ -70,9 +70,8 @@ image just makes the underlying binaries exist:
 1. **The `Bash` tool** — set `LOOMCYCLE_BASH_ENABLED=1` and bind the agent a
    `volumes:` working directory. `Bash` now has a real `/bin/sh` + the toolchain.
 2. **Bashbox host-command fallback** — Bashbox stays sandboxed except for the host
-   commands you allowlist. Enable it and list the toolchain drivers:
+   commands you allowlist. List the toolchain drivers:
    ```yaml
-   LOOMCYCLE_BASHBOX_ENABLED: "1"
    LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS: "git,gh,curl,python3,pip3,go,gofmt,cargo,rustc,node,npm,npx,gcc,g++,cc,c++,clang,clang++,make,cmake,pkg-config"
    LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV: "HOME"     # REQUIRED for go/cargo/npm/pip
    ```

@@ -24,7 +24,7 @@ import (
 // the test cannot exhaust the machine's memory even where the cap is missing.
 func TestBashboxEscape_RoOverlayWriteStopsAtTheDefaultCap(t *testing.T) {
 	root := realDir(t)
-	b := &Bashbox{Enabled: true}
+	b := &Bashbox{}
 	res := runBashbox(t, b, roCtx(root), "for i in 1 2 3 4 5 6 7 8 9; do head -c 8000000 /dev/zero > f$i || break; done")
 	if !strings.Contains(res.Text, "no space left on device") {
 		t.Errorf("72 MB written to a read-only volume was not stopped at the 64 MiB cap: %.300q", res.Text)
@@ -40,7 +40,7 @@ const gbashFileLimit = 8 << 20
 // what fits. On a read-only volume that bounds what one redirect can put on
 // the shared heap; the 100 MB write here leaves at most 8 MiB behind.
 func TestBashboxEscape_OneRoFileStopsAtTheGbashFileLimit(t *testing.T) {
-	res := runBashbox(t, &Bashbox{Enabled: true}, roCtx(realDir(t)), "head -c 100000000 /dev/zero > big; echo size=$(wc -c < big)")
+	res := runBashbox(t, &Bashbox{}, roCtx(realDir(t)), "head -c 100000000 /dev/zero > big; echo size=$(wc -c < big)")
 	m := sizeMarker.FindStringSubmatch(res.Text)
 	if m == nil {
 		t.Fatalf("no size=<bytes> marker: the file grew past what gbash can read back, or the script failed: %.300q", res.Text)
@@ -55,7 +55,7 @@ func TestBashboxEscape_OneRoFileStopsAtTheGbashFileLimit(t *testing.T) {
 // Reads through the read-write mount were already capped, at 10 MiB.
 func TestBashbox_OneRwFileStopsAtTheGbashFileLimit(t *testing.T) {
 	root := realDir(t)
-	res := runBashbox(t, &Bashbox{Enabled: true}, bashCtx(root), "head -c 100000000 /dev/zero > big")
+	res := runBashbox(t, &Bashbox{}, bashCtx(root), "head -c 100000000 /dev/zero > big")
 	fi, err := os.Stat(filepath.Join(root, "big"))
 	if err != nil {
 		t.Fatalf("stat: %v (result %.300q)", err, res.Text)
@@ -71,7 +71,7 @@ var sizeMarker = regexp.MustCompile(`size=(\d+)`)
 
 // overlayCapped is a Bashbox with a small cap, so a test that writes past it
 // costs megabytes, never the gigabytes an uncapped overlay would take.
-func overlayCapped() *Bashbox { return &Bashbox{Enabled: true, OverlayMaxBytes: 4 << 20} }
+func overlayCapped() *Bashbox { return &Bashbox{OverlayMaxBytes: 4 << 20} }
 
 // The headline case: a write that never stops. Without the cap `yes > f`
 // passed 3 GiB of heap in about a second; with it, the call fails fast,
@@ -212,7 +212,7 @@ func TestBashboxEscape_RoCopyUpOfALargeFileIsCharged(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "big"), make([]byte, 4<<20), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			b := &Bashbox{Enabled: true, OverlayMaxBytes: 1 << 20}
+			b := &Bashbox{OverlayMaxBytes: 1 << 20}
 			res := runBashbox(t, b, roCtx(root), script)
 			if !res.IsError || !strings.Contains(res.Text, "write limit reached") {
 				t.Errorf("copying a 4 MiB file into a 1 MiB overlay was not refused: %.300q", res.Text)
@@ -232,7 +232,7 @@ func TestBashboxEscape_RoCopyUpThenReadKeepsTheHeapBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	b := &Bashbox{Enabled: true, OverlayMaxBytes: 1 << 20}
+	b := &Bashbox{OverlayMaxBytes: 1 << 20}
 	var res tools.Result
 	grew := peakHeapDuring(func() {
 		res = runBashbox(t, b, roCtx(root), "for f in f*; do chmod 600 $f; cat $f > /dev/null; done")
@@ -266,7 +266,7 @@ func TestBashboxEscape_RoCopyUpChargesTheBytesActuallyRead(t *testing.T) {
 		}
 		grown <- os.WriteFile(filepath.Join(root, "grown"), nil, 0o644)
 	}()
-	b := &Bashbox{Enabled: true, OverlayMaxBytes: 1 << 20}
+	b := &Bashbox{OverlayMaxBytes: 1 << 20}
 	res := runBashbox(t, b, roCtx(root), "chmod 600 grows; until [ -e grown ]; do sleep 0.05; done; cat grows > /dev/null")
 	if err := <-grown; err != nil {
 		t.Fatal(err)
@@ -294,7 +294,7 @@ func TestBashboxEscape_RoCopyUpThroughAliasesIsChargedPerCopy(t *testing.T) {
 			if err := os.Link(a, filepath.Join(root, "b")); err != nil {
 				t.Fatal(err)
 			}
-			b := &Bashbox{Enabled: true, OverlayMaxBytes: 5 << 20}
+			b := &Bashbox{OverlayMaxBytes: 5 << 20}
 			res := runBashbox(t, b, roCtx(root), script)
 			if !res.IsError || !strings.Contains(res.Text, "write limit reached") {
 				t.Errorf("6 MiB of copies into a 5 MiB overlay was not refused: %.300q", res.Text)
@@ -312,7 +312,7 @@ func TestBashbox_RoReadsOfTheVolumeAreNotCharged(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	b := &Bashbox{Enabled: true, OverlayMaxBytes: 1 << 20}
+	b := &Bashbox{OverlayMaxBytes: 1 << 20}
 	res := runBashbox(t, b, roCtx(root), "for f in f*; do cat $f > /dev/null; done; echo read")
 	if res.IsError || !strings.Contains(res.Text, "read") {
 		t.Errorf("reading the volume was charged: %.300q", res.Text)

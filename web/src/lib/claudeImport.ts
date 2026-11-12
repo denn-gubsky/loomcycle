@@ -151,7 +151,7 @@ export function parseSkillMarkdown(
     return { error: `skill "${name}" has an empty body — the substrate refuses empty skills.` };
   }
   if (body.length > 100 * 1024) {
-    warnings.push("body is large (>100KB) — may exceed the operator's LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES cap.");
+    warnings.push("body is large (>100KB) — may exceed the 128 KiB skill body cap.");
   }
 
   const tools = coerceStringList(fm["allowed-tools"] ?? fm.tools);

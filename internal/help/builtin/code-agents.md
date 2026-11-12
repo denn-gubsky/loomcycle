@@ -22,13 +22,11 @@ coordinate steps that don't need coordinating. A code-agent IS the unit
 the scheduler / webhook / A2A primitives already understand. No LLM in
 the loop, no tokens, no hallucination class of bug.
 
-## Enabling
+## Settings
 
-Off by default — operator-provided code runs in the operator's own trust
-posture (same as the Bash tool), so you opt in:
+The code-js provider is always registered. Its settings:
 
 ```
-LOOMCYCLE_CODE_AGENTS_ENABLED=1
 LOOMCYCLE_CODE_AGENTS_ROOT=./agent_code              # default; where index.js lives
 LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS=120        # whole-run budget of active time (waits don't count)
 LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS=86400         # lifetime limit, waits included (default 24h)

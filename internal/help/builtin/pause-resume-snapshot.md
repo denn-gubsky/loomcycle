@@ -35,17 +35,13 @@ state machine transitions `running → pausing → paused`:
   captures `pause_state='paused'` runs, so wait for a clean Pause result
   (no "did not reach a boundary" warning) before snapshotting mid-run.
 - **A fan-out parent.** A run blocked in `Agent` `parallel_spawn`
-  cannot reach its own boundary until every child returns, so by
-  default it is the run named in that warning while its children park.
-  With `LOOMCYCLE_RESUME_FANOUT=1` (default off) the parent parks too:
-  `parallel_spawn` records each child on the parent's transcript as it
-  starts and finishes, the parent counts as paused while it waits, and a
-  snapshot taken then can be restored on another instance, where the
-  parent re-collects its children's results — from that record for a
-  child that had finished, by waiting for a resumed child that had not —
-  and continues. Set it on both the capturing and the restoring
-  instance. Off, pause, snapshot and resume behave exactly as without
-  it: don't snapshot mid-fan-out.
+  cannot reach its own boundary until every child returns, so it parks
+  where it waits: `parallel_spawn` records each child on the parent's
+  transcript as it starts and finishes, the parent counts as paused
+  while it waits, and a snapshot taken then can be restored on another
+  instance, where the parent re-collects its children's results — from
+  that record for a child that had finished, by waiting for a resumed
+  child that had not — and continues.
 
 **Resume** flips back to `running`. Each previously-paused run's
 state row is updated; the runner goroutine watching the broadcast

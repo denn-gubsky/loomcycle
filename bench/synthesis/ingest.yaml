@@ -60,9 +60,6 @@ agents:
   # premise (RFC DB section 7) is that extraction is the only stochastic part.
   # Measured before the swap: 40 of 40 replies were exactly "Noted.", so the
   # transcript is byte-identical and nothing being measured moves.
-  #
-  # Needs LOOMCYCLE_CODE_AGENTS_ENABLED=1; a code-js agent without it is a fatal
-  # boot error.
   locomo/scribe:
     provider: code-js
     tools: []

@@ -132,7 +132,7 @@ func TestBashbox_EphemeralVolume_RecordDecidesTheMount(t *testing.T) {
 		"record unreadable":     {err: errors.New("store is down")},
 	} {
 		ctx, _, dir := ephemeralWithCheck(t, m)
-		res := fileCall(t, ctx, &Bashbox{Enabled: true}, map[string]any{"command": "echo leaked > out.txt && cat out.txt", "volume": "scratch"})
+		res := fileCall(t, ctx, &Bashbox{}, map[string]any{"command": "echo leaked > out.txt && cat out.txt", "volume": "scratch"})
 		if res.IsError {
 			t.Errorf("%s: the command should still run: %s", name, res.Text)
 		}
@@ -142,7 +142,7 @@ func TestBashbox_EphemeralVolume_RecordDecidesTheMount(t *testing.T) {
 	}
 	// Control: when the record says writable, the write does reach it.
 	ctx, _, dir := ephemeralWithCheck(t, &modeCheck{})
-	if res := fileCall(t, ctx, &Bashbox{Enabled: true}, map[string]any{"command": "echo kept > out.txt", "volume": "scratch"}); res.IsError {
+	if res := fileCall(t, ctx, &Bashbox{}, map[string]any{"command": "echo kept > out.txt", "volume": "scratch"}); res.IsError {
 		t.Fatalf("a writable volume: %s", res.Text)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "out.txt")); err != nil {

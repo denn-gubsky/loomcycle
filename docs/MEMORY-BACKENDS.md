@@ -330,10 +330,7 @@ or to advance the watermark only after the writes land, is not, so it is code.
 Both parts stay operator-editable config: one is a prompt, the other is a
 `code:` body in the same bundle.
 
-> ⚠️ The bundle therefore requires `LOOMCYCLE_CODE_AGENTS_ENABLED=1` — a
-> `provider: code-js` agent selected without it fails boot by design.
->
-> It also dispatches **serially** by default. The scheduler decides
+> ⚠️ The bundle dispatches **serially** by default. The scheduler decides
 > parallel-vs-serial by resolving the *scheduled* agent's provider, and an
 > in-process provider like `code-js` makes no model call at all — so its id
 > says nothing about where this batch's load actually lands, which is entirely

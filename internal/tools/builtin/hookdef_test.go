@@ -115,13 +115,13 @@ func TestHookDef_NameRefusesTheCharactersReferencesAndPermitsUse(t *testing.T) {
 	}
 }
 
-func TestHookDef_CodeBodyIsRefusedWhenCodeHooksAreOff(t *testing.T) {
+func TestHookDef_CodeBodyIsRefusedWithoutACompiler(t *testing.T) {
 	tool, _ := hookDefFixture(t)
 	ctx := hookTenantCtx("acme")
 	overlay := `{"event":"pre","body":{"kind":"code-js","code":"function hook(ev){return {}}"}}`
 	_, text, isErr := runHookDef(t, tool, ctx, `{"op":"create","name":"c","overlay":`+overlay+`}`)
-	if !isErr || !strings.Contains(text, "LOOMCYCLE_CODE_HOOKS_ENABLED") {
-		t.Fatalf("got %q (err=%v); want refused naming the gate", text, isErr)
+	if !isErr || !strings.Contains(text, "no code-hook runner") {
+		t.Fatalf("got %q (err=%v); want refused: a body nothing compiled must not be stored", text, isErr)
 	}
 }
 

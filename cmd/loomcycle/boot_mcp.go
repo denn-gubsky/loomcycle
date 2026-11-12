@@ -73,8 +73,8 @@ func (b *boot) buildMCP() {
 		Cfg:                 cfg,
 		Registry:            dynamicMCPRegistry,
 		Pool:                mcpPool,
-		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
-		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		MaxDefinitionBytes:  builtin.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: builtin.DefMaxDescriptionBytes,
 	}
 
 	// Initialise each server, apply per-server tools filter, and

@@ -291,27 +291,25 @@ func stampSubRunLineage(ctx context.Context, subIdentity *store.RunIdentity) {
 // parent's transcript.
 func (s *Server) recordSpawnChildStarted(ctx context.Context, parentPolicy tools.RunPolicy, subRunID, name string) {
 	// RFC X Phase 3 spawn ledger: when this sub-run is a parallel_spawn child
-	// (the parent threaded a spawn index + the parent's tool_use id is on ctx)
-	// and the feature is on, record a spawn_child_started row on the PARENT's
+	// (the parent threaded a spawn index + the parent's tool_use id is on ctx),
+	// record a spawn_child_started row on the PARENT's
 	// transcript NOW — while the child run id is known but the child may park
 	// before it completes. The emitter on ctx is still the parent's (the
 	// sub-run's own emitter is swapped in below). Gives a restored fan-out
 	// parent the (index → run_id) mapping to await + re-collect this child.
-	if s.cfg().Env.ResumeFanout {
-		if idx, ok := parentPolicy.SpawnChildIndex(); ok {
-			if tuID := tools.ToolUseID(ctx); tuID != "" {
-				if emit := tools.EventEmitter(ctx); emit != nil {
-					emit(providers.Event{
-						Type: providers.EventSpawnChildStarted,
-						SpawnChild: &providers.SpawnChildEventInfo{
-							ToolUseID: tuID,
-							Index:     idx,
-							RunID:     subRunID,
-							Agent:     name,
-							TimeoutMs: parentPolicy.SpawnTimeoutMs,
-						},
-					})
-				}
+	if idx, ok := parentPolicy.SpawnChildIndex(); ok {
+		if tuID := tools.ToolUseID(ctx); tuID != "" {
+			if emit := tools.EventEmitter(ctx); emit != nil {
+				emit(providers.Event{
+					Type: providers.EventSpawnChildStarted,
+					SpawnChild: &providers.SpawnChildEventInfo{
+						ToolUseID: tuID,
+						Index:     idx,
+						RunID:     subRunID,
+						Agent:     name,
+						TimeoutMs: parentPolicy.SpawnTimeoutMs,
+					},
+				})
 			}
 		}
 	}

@@ -260,7 +260,7 @@ func (s *Server) armTeamWebhooks(ctx context.Context, def teamgraph.Definition) 
 		return nil, fmt.Errorf("a team's own webhooks are open only inside a walk of that team")
 	}
 	if !s.teamHooks.received.Load() {
-		return nil, fmt.Errorf("team %q declares webhooks of its own, and this server does not receive webhooks (LOOMCYCLE_WEBHOOKS_ENABLED is off)", sc.Team)
+		return nil, fmt.Errorf("team %q declares webhooks of its own, and this server does not receive webhooks (it has no store)", sc.Team)
 	}
 	ident := tools.RunIdentity(ctx)
 	// Its channels are the team's tenant's, and so is the route a delivery

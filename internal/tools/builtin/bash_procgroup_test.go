@@ -110,7 +110,7 @@ func TestBash_NormalExitWithBackgroundChildReturns(t *testing.T) {
 func TestBashbox_FallbackHangBounded(t *testing.T) {
 	skipIfNoHostCmd(t, "sh")
 	root, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bashbox{Enabled: true, FallbackCommands: []string{"sh"}}
+	b := &Bashbox{FallbackCommands: []string{"sh"}}
 	body, _ := json.Marshal(map[string]any{
 		"command":         `sh -c 'sleep 60 & echo bg=$!; sleep 60'`,
 		"timeout_seconds": 1,
@@ -164,7 +164,7 @@ func TestBash_ExitZeroThenTimeoutDuringOutputDrainIsSuccess(t *testing.T) {
 func TestBashbox_FallbackNormalExitWithBackgroundChildNotesClosedOutput(t *testing.T) {
 	skipIfNoHostCmd(t, "sh")
 	root, _ := filepath.EvalSymlinks(t.TempDir())
-	b := &Bashbox{Enabled: true, FallbackCommands: []string{"sh"}}
+	b := &Bashbox{FallbackCommands: []string{"sh"}}
 	res := runBashbox(t, b, bashCtx(root), `sh -c 'sleep 60 & echo bg=$!'`)
 	bgPID(t, res.Text)
 	if res.IsError {

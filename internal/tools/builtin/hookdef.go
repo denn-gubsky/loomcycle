@@ -50,8 +50,8 @@ type HookDef struct {
 	// Store is the persistence backend. Required.
 	Store store.Store
 
-	// CompileCode parses a code-js body. nil means code hooks are not enabled
-	// on this server, and a code body is refused.
+	// CompileCode parses a code-js body. nil (no runner wired) refuses a
+	// code body: one nothing compiled must not be stored.
 	CompileCode func(src string) error
 
 	// MaxDescriptionBytes caps the free-text rationale on create/fork. 0 = no
@@ -236,7 +236,7 @@ func (h *HookDef) write(ctx context.Context, op string, in hookDefInput, parentD
 	}
 	if def.Body.Kind == hooks.BodyKindCode {
 		if h.CompileCode == nil {
-			return errResult(fmt.Sprintf("%s: code hooks are not enabled on this server (set LOOMCYCLE_CODE_HOOKS_ENABLED=1)", op)), nil
+			return errResult(fmt.Sprintf("%s: a code-js body cannot be compiled here (no code-hook runner is wired)", op)), nil
 		}
 		if err := h.CompileCode(def.Body.Code); err != nil {
 			return errResult(fmt.Sprintf("%s: body.code: %s", op, err)), nil
@@ -726,7 +726,7 @@ func HookDefBodyValidator(compile func(src string) error) func(json.RawMessage) 
 			return nil
 		}
 		if compile == nil {
-			return fmt.Errorf("a code-js body, and code hooks are not enabled on this host (LOOMCYCLE_CODE_HOOKS_ENABLED)")
+			return fmt.Errorf("a code-js body, and no code-hook runner is wired to compile it")
 		}
 		if err := compile(def.Body.Code); err != nil {
 			return fmt.Errorf("body.code: %w", err)

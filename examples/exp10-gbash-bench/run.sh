@@ -11,14 +11,11 @@ export LOOMCYCLE_DATA_DIR="${LOOMCYCLE_DATA_DIR:-$HERE/data}"
 export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8787}"
 # System Bash tool — needed by exp10-bash-agent
 export LOOMCYCLE_BASH_ENABLED="${LOOMCYCLE_BASH_ENABLED:-1}"
-# Bashbox (RFC AJ) — needed by exp10-bashbox-agent
-export LOOMCYCLE_BASHBOX_ENABLED="${LOOMCYCLE_BASHBOX_ENABLED:-1}"
+# Bashbox (RFC AJ), used by exp10-bashbox-agent, is always registered.
 # Allow git to escape the Bashbox sandbox (RFC AJ §13 fallback)
 # git — for cloning the repo in the Bashbox agent
 # python3 — for ms-level wall-clock timing (Date.now() measures JS overhead only)
 export LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS="${LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS:-git,python3}"
-# code-js provider — required for provider: code-js agents
-export LOOMCYCLE_CODE_AGENTS_ENABLED="${LOOMCYCLE_CODE_AGENTS_ENABLED:-1}"
 
 mkdir -p "$HERE/data" "$HERE/dynamic" "$HERE/work" "$HERE/work/reports"
 LOOMCYCLE_BIN="${LOOMCYCLE_BIN:-loomcycle}"

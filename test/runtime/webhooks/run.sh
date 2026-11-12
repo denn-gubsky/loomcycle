@@ -48,7 +48,6 @@ go build -o bin/loomcycle ./cmd/loomcycle
 
 echo "[2/8] boot (webhooks enabled, secret allowlisted)"
 LOOMCYCLE_MOCK_ENABLED=1 \
-LOOMCYCLE_WEBHOOKS_ENABLED=1 \
 LOOMCYCLE_WH_SECRET="$SECRET" \
 LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST="LOOMCYCLE_WH_SECRET" \
 LOOMCYCLE_DATA_DIR="$TEST_DIR/data" \

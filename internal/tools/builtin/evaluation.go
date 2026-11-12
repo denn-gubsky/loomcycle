@@ -14,6 +14,14 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
+// The size caps the server puts on one Evaluation submit. Fixed: a judgement
+// is a small structured verdict and a rationale a few paragraphs; both are
+// stored per submit and read back in listings.
+const (
+	EvaluationMaxJudgementBytes = 32 << 10
+	EvaluationMaxRationaleBytes = 8 << 10
+)
+
 // Evaluation is the v0.8.5 built-in tool that lets agents emit and
 // query scores attached to (run, def) pairs. Forms the "selection"
 // half of the self-evolution substrate (paired with the AgentDef
@@ -65,12 +73,12 @@ type Evaluation struct {
 	// Store is the persistence backend. Required.
 	Store store.Store
 
-	// MaxJudgementBytes caps a single submit's judgement JSON
-	// (LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES). 0 = no cap.
+	// MaxJudgementBytes caps a single submit's judgement JSON (the server
+	// sets EvaluationMaxJudgementBytes). 0 = no cap.
 	MaxJudgementBytes int
 
-	// MaxRationaleBytes caps a single submit's rationale text
-	// (LOOMCYCLE_EVALUATION_MAX_RATIONALE_BYTES). 0 = no cap.
+	// MaxRationaleBytes caps a single submit's rationale text (the server
+	// sets EvaluationMaxRationaleBytes). 0 = no cap.
 	MaxRationaleBytes int
 }
 

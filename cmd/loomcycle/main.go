@@ -785,8 +785,8 @@ func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 
 // providerEnabled reproduces the exact pre-P2a env gates: a keyed provider needs
 // its api_key_env set; ollama-local needs a base URL that isn't the "disabled"
-// opt-out; mock/mock-stable need LOOMCYCLE_MOCK_ENABLED=1; code-js needs
-// CodeAgentsEnabled. anthropic-oauth-dev is intentionally NOT handled here — it is
+// opt-out; mock/mock-stable need LOOMCYCLE_MOCK_ENABLED=1; code-js is always
+// registered. anthropic-oauth-dev is intentionally NOT handled here — it is
 // the residual hardcoded path in newProviderResolver.
 func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bool {
 	switch id {
@@ -805,7 +805,7 @@ func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bo
 	case "mock", "mock-stable":
 		return os.Getenv("LOOMCYCLE_MOCK_ENABLED") == "1"
 	case "code-js":
-		return cfg.Env.CodeAgentsEnabled
+		return true
 	default:
 		// Keyed provider (anthropic/openai/deepseek/gemini/ollama + any declared
 		// 3rd-party naming an api_key_env): enabled iff that env var is set — the
@@ -889,7 +889,7 @@ func notConfiguredError(id string, cfg *config.Config) error {
 	case "mock-stable":
 		return fmt.Errorf("mock-stable provider not configured (set LOOMCYCLE_MOCK_ENABLED=1)")
 	case "code-js":
-		return fmt.Errorf("code-js provider not configured: code agents are disabled (set LOOMCYCLE_CODE_AGENTS_ENABLED=1)")
+		return fmt.Errorf("code-js provider not configured (the config declares no `providers: code-js` entry)")
 	case "anthropic-oauth-dev":
 		return fmt.Errorf("anthropic-oauth-dev not registered (set LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 + run `loomcycle anthropic login`)")
 	default:
@@ -936,8 +936,8 @@ func logProviderSummary(pr *providerResolver, cfg *config.Config) {
 // Dynamic AgentDefs (created at runtime via the AgentDef tool) are not seen
 // here; their JS validates on first Call and surfaces as an EventError.
 func validateCodeAgents(cfg *config.Config, pr *providerResolver) {
-	// nil interface → (nil,false): cp stays nil when code-js is disabled, matching
-	// the pre-P2a pr.codeJS==nil path.
+	// nil interface → (nil,false): cp stays nil when the config declares no
+	// code-js provider (a yaml that drops the default providers layer).
 	cp, _ := providers.As[*codejs.Provider](pr.byID["code-js"])
 	var broken []string
 	for name, def := range cfg.Agents {
@@ -945,7 +945,7 @@ func validateCodeAgents(cfg *config.Config, pr *providerResolver) {
 			continue
 		}
 		if cp == nil {
-			fatal("agent uses `provider: code-js` but code agents are disabled — set LOOMCYCLE_CODE_AGENTS_ENABLED=1", "agent", name)
+			fatal("agent uses `provider: code-js` but the config declares no `providers: code-js` entry", "agent", name)
 		}
 		// An inline `code:` body has no filesystem file — validate the body
 		// itself (mirrors the run-time provider, which prefers the inline body

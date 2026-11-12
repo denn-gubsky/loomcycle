@@ -28,6 +28,23 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS":         "retired: use OTEL_EXPORTER_OTLP_HEADERS or LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE",
 	"LOOMCYCLE_OTEL_SERVICE_NAME":                  "retired: use OTEL_SERVICE_NAME",
 	"LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO":          "retired: use OTEL_TRACES_SAMPLER=parentbased_traceidratio with OTEL_TRACES_SAMPLER_ARG",
+
+	// Feature gates removed: the feature is always on.
+	"LOOMCYCLE_SCHEDULER_ENABLED":               "the scheduler is always on; a schedule fires unless its definition is disabled",
+	"LOOMCYCLE_WEBHOOKS_ENABLED":                "the inbound webhook receiver is always mounted",
+	"LOOMCYCLE_CODE_AGENTS_ENABLED":             "the code-js provider is always registered",
+	"LOOMCYCLE_CODE_HOOKS_ENABLED":              "a hook body may always be code-js",
+	"LOOMCYCLE_CHANNEL_HOOKS":                   "the channel-hook worker always runs; a channel's hooks are always applied",
+	"LOOMCYCLE_BASHBOX_ENABLED":                 "Bashbox is always registered; an agent gets it through its tools list",
+	"LOOMCYCLE_RESUME_FANOUT":                   "a fan-out parent always parks on pause and is resumed with its children",
+	"LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES":  "the cap is fixed at 128 KiB",
+	"LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES": "the cap is fixed at 8 KiB",
+	"LOOMCYCLE_AGENT_DEF_MAX_CODE_BYTES":        "the cap is fixed at 256 KiB",
+	"LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES":   "the cap is fixed at 1 MiB",
+	"LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES":        "the cap is fixed at 128 KiB",
+	"LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES": "the cap is fixed at 8 KiB",
+	"LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES":  "the cap is fixed at 32 KiB",
+	"LOOMCYCLE_EVALUATION_MAX_RATIONALE_BYTES":  "the cap is fixed at 8 KiB",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in

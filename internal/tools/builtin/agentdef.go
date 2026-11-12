@@ -22,6 +22,21 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
+// The size caps the server puts on runtime-authored agent definitions. Fixed
+// rather than configurable: they bound what one write may store, and a
+// deployment has no reason to differ.
+const (
+	// AgentDefMaxDefinitionBytes: far above any hand-written definition
+	// (prompt included), small enough that a list of versions stays cheap.
+	AgentDefMaxDefinitionBytes = 128 << 10
+	// DefMaxDescriptionBytes: a description is a line or a paragraph shown in
+	// listings. Shared by agent, team and hook definitions.
+	DefMaxDescriptionBytes = 8 << 10
+	// AgentDefMaxCodeBytes: an inline code-js body. Larger than the definition
+	// cap on purpose: the bundled orchestrators run to about 140 KB.
+	AgentDefMaxCodeBytes = 256 << 10
+)
+
 // AgentDef is the v0.8.5 built-in tool that lets agents author, fork,
 // promote, retire, and inspect agent definitions at runtime. Static
 // `<name>.md` files remain the operator-blessed root; this tool
@@ -60,12 +75,12 @@ type AgentDef struct {
 	// ceiling enforcement and to refuse `create` over a static name.
 	Cfg *config.Config
 
-	// MaxDefinitionBytes caps the serialised definition JSON
-	// (LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES). 0 = no cap.
+	// MaxDefinitionBytes caps the serialised definition JSON (the server
+	// sets AgentDefMaxDefinitionBytes). 0 = no cap.
 	MaxDefinitionBytes int
 
-	// MaxDescriptionBytes caps the description field
-	// (LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES). 0 = no cap.
+	// MaxDescriptionBytes caps the description field (the server sets
+	// DefMaxDescriptionBytes). 0 = no cap.
 	MaxDescriptionBytes int
 
 	// MaxCodeBytes caps an inline code-js `code_body` overlay (RFC J).
@@ -1376,8 +1391,7 @@ type mergedDef struct {
 	// Code is the inline code-js orchestrator source (RFC J). Mirrors
 	// config.AgentDef.Code; persisted in agent_defs.definition so a code
 	// agent ingests through the substrate with no host filesystem bind.
-	// "" = the provider falls back to agent_code/<name>/index.js. Gated
-	// by LOOMCYCLE_CODE_AGENTS_ENABLED at create/fork (see execCreate).
+	// "" = the provider falls back to agent_code/<name>/index.js.
 	Code      string `json:"code_body,omitempty"`
 	Tier      string `json:"tier,omitempty"`
 	Effort    string `json:"effort,omitempty"`
@@ -2222,9 +2236,6 @@ func signFromMergedDef(name string, def mergedDef) string {
 // validateInlineCode gates + validates an inline code-js body (RFC J)
 // on create/fork. No-op when the def carries no Code. When it does:
 //
-//   - GATE: refuse unless LOOMCYCLE_CODE_AGENTS_ENABLED — the single
-//     switch that also registers the provider. Persisting a body the
-//     runtime can't execute would be a silent footgun; refuse loudly.
 //   - SIZE: enforce MaxCodeBytes (a tighter, clearer cap than the
 //     whole-definition MaxDefinitionBytes).
 //   - PARSE: compile via the shared codejs.Validate so a syntax error
@@ -2257,9 +2268,6 @@ func definitionSizeForCap(def mergedDef, defJSON []byte) (int, error) {
 func (a *AgentDef) validateInlineCode(op string, def mergedDef) error {
 	if def.Code == "" {
 		return nil
-	}
-	if a.Cfg == nil || !a.Cfg.Env.CodeAgentsEnabled {
-		return fmt.Errorf("%s: inline code_body refused — code agents are disabled (set LOOMCYCLE_CODE_AGENTS_ENABLED=1)", op)
 	}
 	if a.MaxCodeBytes > 0 && len(def.Code) > a.MaxCodeBytes {
 		return fmt.Errorf("%s: code_body (%d bytes) exceeds max %d", op, len(def.Code), a.MaxCodeBytes)

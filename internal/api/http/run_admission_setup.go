@@ -495,7 +495,7 @@ func (a *runAdmission) buildLoopCtx() {
 		}
 	})
 	// RFC X Phase 3: expose the gate to the Agent tool so a parallel_spawn
-	// fan-out parent can park mid-tool-call (no-op unless LOOMCYCLE_RESUME_FANOUT).
+	// fan-out parent can park mid-tool-call.
 	a.loopCtx = tools.WithPauseGate(a.loopCtx, a.gate)
 }
 

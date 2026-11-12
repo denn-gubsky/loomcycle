@@ -90,7 +90,6 @@ func TestPrepareSubRun_SpawnCompactionOverrideIsConsumedByTheChild(t *testing.T)
 // a spawn_child_started row naming the child's own index.
 func TestPrepareSubRun_ParallelSpawnIndexStopsAtTheChild(t *testing.T) {
 	h := newReviewHarness(t)
-	h.srv.cfg().Env.ResumeFanout = true
 	h.srv.cfg().Agents["child"] = config.AgentDef{Model: "stub-model", SystemPrompt: "c", Tools: []string{"Agent"}}
 	parent := tools.UpdateRunPolicy(tools.UpdateRunPolicy(tools.WithRunID(context.Background(), "r_parent"), func(rp *tools.RunPolicy) { rp.SpawnIndex = 3 + 1 }), func(rp *tools.RunPolicy) { rp.SpawnTimeoutMs = 500 })
 	prep, err := h.srv.prepareSubRunValues(parent, "child", nameFromAgentTool, "", "go", "", false, func(providers.Event) {}, nil, nil, false, false)

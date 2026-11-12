@@ -41,9 +41,9 @@ channels:
 	}
 }
 
-// Channel hooks are off unless asked for; their tuning has sane defaults.
+// The channel-hook worker's tuning has sane defaults.
 func TestChannelHooks_EnvDefaults(t *testing.T) {
-	for _, k := range []string{"LOOMCYCLE_CHANNEL_HOOKS", "LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY", "LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL", "LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT"} {
+	for _, k := range []string{"LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY", "LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL", "LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT"} {
 		t.Setenv(k, "")
 	}
 	cfg, err := loadYAMLString(t, "channels: {}\n")
@@ -51,13 +51,12 @@ func TestChannelHooks_EnvDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := cfg.Env
-	if e.ChannelHooksEnabled || e.ChannelHooksConcurrency != 16 || e.ChannelHooksPerChannel != 4 || e.ChannelHooksMaxWait != 15*time.Minute {
-		t.Fatalf("defaults = %v %d %d %s", e.ChannelHooksEnabled, e.ChannelHooksConcurrency, e.ChannelHooksPerChannel, e.ChannelHooksMaxWait)
+	if e.ChannelHooksConcurrency != 16 || e.ChannelHooksPerChannel != 4 || e.ChannelHooksMaxWait != 15*time.Minute {
+		t.Fatalf("defaults = %d %d %s", e.ChannelHooksConcurrency, e.ChannelHooksPerChannel, e.ChannelHooksMaxWait)
 	}
-	t.Setenv("LOOMCYCLE_CHANNEL_HOOKS", "1")
 	t.Setenv("LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT", "90s")
 	cfg, _ = loadYAMLString(t, "channels: {}\n")
-	if !cfg.Env.ChannelHooksEnabled || cfg.Env.ChannelHooksMaxWait != 90*time.Second {
-		t.Fatalf("set = %v %s", cfg.Env.ChannelHooksEnabled, cfg.Env.ChannelHooksMaxWait)
+	if cfg.Env.ChannelHooksMaxWait != 90*time.Second {
+		t.Fatalf("set = %s", cfg.Env.ChannelHooksMaxWait)
 	}
 }

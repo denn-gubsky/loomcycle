@@ -30,7 +30,6 @@ func TestResumeFanout_AChildBusyThroughAPauseIsNotChargedIt(t *testing.T) {
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
-	cfg.Env.ResumeFanout = true
 	srv, _ := makeServer(t, &scriptedProvider{}, cfg)
 	mgr := pause.NewManager(srv.store, time.Second)
 	srv.SetPauseManager(mgr)

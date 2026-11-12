@@ -336,12 +336,11 @@ func (b *boot) startScheduler() {
 	advisoryLock := b.advisoryLock
 	pauseMgrRef := b.pauseMgrRef
 
-	// v1.x RFC E scheduler runtime. Default OFF; operator opts in via
-	// LOOMCYCLE_SCHEDULER_ENABLED=1. Sweeper goroutine fires due
-	// schedules from the substrate (schedule_run_state table). NIL
-	// MCPCaller is passed because mcp.call hook dispatch is wired in
-	// a follow-up PR — channel.publish + memory.set hooks work today.
-	if cfg.Env.SchedulerEnabled && storeIface != nil && srv != nil {
+	// Scheduler runtime. The sweeper goroutine fires due schedules from
+	// the substrate (schedule_run_state table); with no ScheduleDef it has
+	// nothing to fire. NIL MCPCaller is passed because mcp.call hook
+	// dispatch is not wired — channel.publish + memory.set hooks work.
+	if storeIface != nil && srv != nil {
 		envAllowlist := cfg.SchedulerCredentialEnvAllowlist()
 		schedCfg := scheduler.Config{
 			TickInterval: time.Duration(cfg.Env.SchedulerTickSeconds) * time.Second,
@@ -436,10 +435,8 @@ func (b *boot) startScheduler() {
 		sched.Start(bgCtx)
 		slog.Info("scheduler: enabled",
 			"tick_seconds", cfg.Env.SchedulerTickSeconds, "env_allowlist_names", len(cfg.Env.SchedulerEnvAllowlist))
-	} else if cfg.Env.SchedulerEnabled {
-		slog.Warn("scheduler: disabled (no Store backend or no HTTP server)")
 	} else {
-		slog.Info("scheduler: disabled (LOOMCYCLE_SCHEDULER_ENABLED=0)")
+		slog.Warn("scheduler: disabled (no Store backend or no HTTP server)")
 	}
 }
 

@@ -29,7 +29,7 @@
 # driving many agents; compaction manages it but can't invent window. For
 # ollama-local set LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX >= 32768.
 # team/orchestrator additionally needs, for SOFTWARE teams only:
-# `LOOMCYCLE_BASHBOX_ENABLED=1`, `git`/`gh` on the host image, a volume marked
+# `git`/`gh` on the host image, a volume marked
 # `dynamic_root: true`, and the token wired through Bashbox's host-command
 # fallback — `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh` +
 # `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GITHUB_TOKEN` (+ GITHUB_TOKEN in the host
@@ -391,7 +391,7 @@ skills:
       the token today (its env allowlist isn't config-wired), so use Bashbox here.
 
       ## Prerequisites (operator-provided; if missing, tell the human and stop)
-      - `LOOMCYCLE_BASHBOX_ENABLED=1`; `git` + `gh` installed on the host image.
+      - `git` + `gh` installed on the host image.
       - `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=git,gh` (run these as host processes).
       - `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=GITHUB_TOKEN` (+ `GITHUB_TOKEN` in the
         host env) so the token reaches `git`/`gh` — one operator-global token. For a

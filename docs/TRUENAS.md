@@ -162,7 +162,7 @@ and enable a shell tool, then grant it to an agent via its `tools:`:
 
 - **`LOOMCYCLE_BASH_ENABLED=1`** — the raw `Bash` tool (unsandboxed: the whole
   toolchain, and it can run a compiled `./binary`). Simplest for a trusted box.
-- **`LOOMCYCLE_BASHBOX_ENABLED=1`** + `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=<drivers>`
+- **`LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=<drivers>`**
   + **`LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=HOME`** — the mostly-sandboxed Bashbox,
   where only allowlisted host commands escape. `HOME` is **required** or `go`/`cargo`/
   `npm`/`pip` fail (they need it for their caches); don't allowlist `jq`/`awk` (native

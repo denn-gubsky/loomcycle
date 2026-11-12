@@ -1439,15 +1439,10 @@ type fanoutParkInfo struct {
 // spawn_child_started ledger event (so it IS a fan-out, not some other tool)
 // and (b) has no matching tool_result (so the Phase-3 watcher parked it
 // mid-wg.Wait before the envelope was emitted). Returns the dangling
-// tool_use_id + its tool_call input. Flag-gated: returns (_, false) when
-// ResumeFanout is off, so the run takes the normal endsWithPendingTurn path —
-// byte-identical to pre-Phase-3. At most one tool_use can be unanswered at a
+// tool_use_id + its tool_call input. At most one tool_use can be unanswered at a
 // pause boundary (the loop answers every tool_use within an iteration before
 // the next), so the first unanswered ledger-backed id is the parked parent.
-func detectFanoutParent(enabled bool, runEvents []store.Event) (fanoutParkInfo, bool) {
-	if !enabled {
-		return fanoutParkInfo{}, false
-	}
+func detectFanoutParent(runEvents []store.Event) (fanoutParkInfo, bool) {
 	answered := map[string]bool{}         // tool_use_id → has a tool_result
 	hasLedger := map[string]bool{}        // tool_use_id → has ≥1 spawn_child_started
 	input := map[string]json.RawMessage{} // tool_use_id → tool_call input

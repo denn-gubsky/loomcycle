@@ -38,7 +38,6 @@ func codeAgentFixture(t *testing.T) (*AgentDef, context.Context, func()) {
 			},
 		},
 	}
-	cfg.Env.CodeAgentsEnabled = true
 	tool := &AgentDef{
 		Store:               s,
 		Cfg:                 cfg,

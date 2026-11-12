@@ -511,7 +511,7 @@ type Server struct {
 
 	// webhookMux is the optional v1.x RFC H hook for registering the
 	// inbound-webhook receiver route. Set via SetWebhookMux; nil when
-	// LOOMCYCLE_WEBHOOKS_ENABLED is unset. Unlike extraMux it is NOT
+	// the server has no store. Unlike extraMux it is NOT
 	// handed the admin-auth wrapper: the receiver authenticates each
 	// request against the resolved WebhookDef's own secret (HMAC /
 	// bearer), so wrapping it in the global LOOMCYCLE_AUTH_TOKEN bearer
@@ -859,7 +859,6 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		PollChild:   s.pollResidentChild,
 		CancelChild: s.cancelResidentChildTurn,
 		CloseChild:  s.closeResidentChild,
-		SpawnLedger: cfg.Env.ResumeFanout, // RFC X Phase 3: record the spawn ledger (default off)
 		// The ceiling on a spawn's timeout_ms (0 = none).
 		MaxChildTimeoutMs: cfg.Env.AgentChildMaxTimeoutMs,
 		LiveChildren:      s.liveChildren,

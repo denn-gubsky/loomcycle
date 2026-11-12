@@ -33,10 +33,10 @@ This is the **inbound** direction. For loomcycle calling *out* to your
 service during a run, see the `hooks` topic (tool-use webhooks). For
 loomcycle as an A2A peer, see `a2a-integration`.
 
-## Enabling
+## Where it listens
 
-Off by default. Set `LOOMCYCLE_WEBHOOKS_ENABLED=1`; the receiver mounts at
-`POST /v1/_webhooks/{name}`.
+The receiver is always mounted, at `POST /v1/_webhooks/{name}`; with no
+WebhookDef the route matches nothing.
 
 **Secret resolution (read this first — it is the #1 setup snag).** A signing
 secret / bearer token / `user_credentials_from_env` value resolves only if its

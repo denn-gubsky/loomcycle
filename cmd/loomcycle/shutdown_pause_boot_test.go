@@ -124,7 +124,6 @@ func (b *shutdownPauseBoot) startOn(t *testing.T, port int, extra ...string) *ru
 		"LOOMCYCLE_DATA_DIR=" + b.dataDir,
 		"LOOMCYCLE_LISTEN_ADDR=" + net.JoinHostPort("127.0.0.1", fmt.Sprint(port)),
 		"LOOMCYCLE_MOCK_ENABLED=1",
-		"LOOMCYCLE_CODE_AGENTS_ENABLED=1",
 		"LOOMCYCLE_BASH_ENABLED=1",
 		"LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS=6000",
 	}, extra...)
