@@ -202,9 +202,10 @@ func (m *Manager) Applied(ctx context.Context, tenant string) {
 	m.publish(ctx, tenant)
 }
 
-// Test sends one synthetic span to tenant's stored destination, through the
-// same credential resolution, address guard and exporter its spans take, and
-// returns nil or why it failed (scrubbed of any header value).
+// Test sends one synthetic span (with traces) and one synthetic metric (with
+// metrics) to tenant's stored destination, through the same credential
+// resolution, address guard and exporters its exports take, and returns nil
+// or why it failed (scrubbed of any header value).
 func (m *Manager) Test(ctx context.Context, tenant string) error {
 	row, err := m.Get(ctx, tenant)
 	if err != nil {
@@ -277,7 +278,8 @@ func (m *Manager) destination(ctx context.Context, row store.TenantTelemetryPoli
 	}
 	return lcotel.TenantDestination{
 		Endpoint: row.Endpoint, Protocol: lcotel.Protocol(row.Protocol), Headers: headers, Dial: m.dial,
-		TLSConfig: m.tlsConfig, Ratio: row.SamplerRatio,
+		TLSConfig: m.tlsConfig, Signals: append([]string(nil), row.Signals...),
+		Ratio: row.SamplerRatio,
 	}, nil
 }
 
@@ -393,7 +395,7 @@ func (m *Manager) apply(ctx context.Context, row store.TenantTelemetryPolicyRow,
 	// rules allow it now.
 	valid, ruleErr := m.ValidStored(row)
 	switch {
-	case !containsString(row.Signals, SignalTraces):
+	case !containsString(row.Signals, SignalTraces) && !containsString(row.Signals, SignalMetrics):
 		m.router.RemoveDestination(row.TenantID)
 	case ruleErr != nil:
 		m.router.RemoveDestination(row.TenantID)

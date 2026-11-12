@@ -542,13 +542,15 @@ class LoomcycleClient:
         content_capture: str = "",
         tenant: str = "",
     ) -> Mapping[str, Any]:
-        """Store the tenant's trace-export policy, replacing the last.
+        """Store the tenant's telemetry export policy, replacing the last.
         ``endpoint`` is the https OTLP base URL of the tenant's collector;
         ``protocol`` is ``http/protobuf`` (default) or ``grpc``;
         ``headers_credential`` names a tenant credential (never its value)
-        whose value is the header block; ``signals`` defaults to traces, the
-        only one; ``content_capture`` may only be ``off``. Audited; a policy
-        whose audit record cannot be written is not stored (Unavailable)."""
+        whose value is the header block; ``signals`` is ``traces``,
+        ``metrics`` (the tenant's own series, pushed every minute) or both,
+        traces by default; ``content_capture`` may only be ``off``. Audited;
+        a policy whose audit record cannot be written is not stored
+        (Unavailable)."""
         policy = pb.TenantTelemetryPolicyInput(
             endpoint=endpoint,
             protocol=protocol,

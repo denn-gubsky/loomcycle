@@ -47,10 +47,14 @@ type TenantDestination struct {
 	// TLSConfig is the client TLS configuration for an https endpoint; nil
 	// for the system roots. Tests set it to trust their own collector.
 	TLSConfig *tls.Config
+	// Signals are what is exported: SignalTraces, SignalMetrics. Empty is
+	// traces only.
+	Signals []string
 	// Ratio is the share of the tenant's traces, by trace id, it receives:
 	// 0 none, 1 all. A root span of the tenant is sampled for it at this
 	// ratio even where the operator's sampler would drop it (the operator
 	// still exports none of those). Changing it never rebuilds the pipeline.
+	// Unused when Signals has no traces.
 	Ratio float64
 }
 
@@ -70,6 +74,12 @@ func (d TenantDestination) fingerprint() string {
 		write(k)
 		write(d.Headers[k])
 	}
+	write("signals")
+	signals := append([]string(nil), d.Signals...)
+	sort.Strings(signals)
+	for _, s := range signals {
+		write(s)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -88,6 +98,8 @@ type TenantRouterConfig struct {
 	ExportTimeout time.Duration
 	// ScheduleDelay is how long a pipeline waits to fill a batch.
 	ScheduleDelay time.Duration
+	// MetricInterval is how often a tenant's metric series are pushed.
+	MetricInterval time.Duration
 	// ServiceVersion is service.version on every tenant resource.
 	ServiceVersion string
 	// Log receives the router's own warnings (never a header value).
@@ -124,6 +136,9 @@ func (c TenantRouterConfig) withDefaults() TenantRouterConfig {
 	if c.ScheduleDelay <= 0 {
 		c.ScheduleDelay = defaultTenantScheduleDelay
 	}
+	if c.MetricInterval <= 0 {
+		c.MetricInterval = DefaultTenantMetricInterval
+	}
 	if c.Log == nil {
 		c.Log = slog.Default()
 	}
@@ -140,12 +155,15 @@ type TenantExportStatus struct {
 	// Dropped: spans that will never reach it (queue full, carried by a failed
 	// export, or rejected by the collector).
 	Dropped uint64
-	// ExportFailures: export calls that failed.
+	// ExportFailures: export calls that failed, span batches and metric
+	// pushes alike.
 	ExportFailures uint64
 	LastSuccessAt  time.Time
 	// LastError is the last failure, scrubbed of header values, URL
 	// credentials and query values, and cut short; "" when none since the
-	// last success.
+	// last success. A metric push's failure reads "metrics: <category>" and
+	// is cleared by a metric push's success only, a span export's by a span
+	// export's.
 	LastError   string
 	LastErrorAt time.Time
 }
@@ -159,6 +177,9 @@ type tenantStats struct {
 	lastSuccess time.Time
 	lastErr     string
 	lastErrAt   time.Time
+	// metricErr is the last metric push failure (tenant_metrics.go).
+	metricErr   string
+	metricErrAt time.Time
 }
 
 func (st *tenantStats) succeeded(at time.Time) {
@@ -177,6 +198,8 @@ type tenantEntry struct {
 	dest  TenantDestination
 	fp    string
 	stats *tenantStats
+	// traces: dest exports spans (a destination may export metrics only).
+	traces bool
 }
 
 // TenantRouter routes ended spans to their tenant's pipeline. Create it with
@@ -202,6 +225,9 @@ type TenantRouter struct {
 	// one slot per flap.
 	flushing map[string]bool
 
+	// metrics pushes each tenant's own metric series (tenant_metrics.go).
+	metrics *tenantMetrics
+
 	stop     chan struct{}
 	stopOnce sync.Once
 	// closing tracks pipelines being flushed and closed in the background.
@@ -218,10 +244,12 @@ func NewTenantRouter(cfg TenantRouterConfig) *TenantRouter {
 		entries:  map[string]*tenantEntry{},
 		pipes:    map[string]*tenantPipeline{},
 		flushing: map[string]bool{},
+		metrics:  newTenantMetrics(),
 		stop:     make(chan struct{}),
 	}
 	r.closing.Add(1)
 	go r.reapLoop()
+	r.startMetrics()
 	return r
 }
 
@@ -242,7 +270,10 @@ func (r *TenantRouter) SetDestination(tenant string, d TenantDestination) {
 		e = &tenantEntry{stats: &tenantStats{}}
 		r.entries[tenant] = e
 	}
-	e.dest, e.fp = d, fp
+	if e.fp != fp {
+		r.forgetMetrics(tenant)
+	}
+	e.dest, e.fp, e.traces = d, fp, d.exports(SignalTraces)
 	r.publishRatiosLocked()
 	if p := r.pipes[tenant]; p != nil && p.fp != fp {
 		r.dropPipelineLocked(tenant, p)
@@ -255,6 +286,7 @@ func (r *TenantRouter) RemoveDestination(tenant string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.entries, tenant)
+	r.forgetMetrics(tenant)
 	r.publishRatiosLocked()
 	if p := r.pipes[tenant]; p != nil {
 		r.dropPipelineLocked(tenant, p)
@@ -263,11 +295,15 @@ func (r *TenantRouter) RemoveDestination(tenant string) {
 
 // publishRatiosLocked replaces the ratios the sampler reads with the
 // destinations' as they are now. A copy per destination change, which is rare
-// (a policy write or a refresh that found one changed); never per span.
+// (a policy write or a refresh that found one changed); never per span. Only
+// a destination that exports traces has a ratio: a metrics-only destination
+// receives no spans, so raising spans for it would only cost.
 func (r *TenantRouter) publishRatiosLocked() {
 	m := make(map[string]float64, len(r.entries))
 	for t, e := range r.entries {
-		m[t] = e.dest.Ratio
+		if e.traces {
+			m[t] = e.dest.Ratio
+		}
 	}
 	r.ratios.Store(&m)
 }
@@ -305,14 +341,18 @@ func (r *TenantRouter) Status(tenant string) TenantExportStatus {
 	st := e.stats
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	lastErr, lastErrAt := st.lastErr, st.lastErrAt
+	if st.metricErr != "" && (lastErr == "" || st.metricErrAt.After(lastErrAt)) {
+		lastErr, lastErrAt = st.metricErr, st.metricErrAt
+	}
 	return TenantExportStatus{
 		Configured:     true,
 		Exported:       st.exported.Load(),
 		Dropped:        st.dropped.Load(),
 		ExportFailures: st.failures.Load(),
 		LastSuccessAt:  st.lastSuccess,
-		LastError:      st.lastErr,
-		LastErrorAt:    st.lastErrAt,
+		LastError:      lastErr,
+		LastErrorAt:    lastErrAt,
 	}
 }
 
@@ -340,14 +380,15 @@ func (r *TenantRouter) OnEnd(s sdktrace.ReadOnlySpan) {
 	e := r.entries[tenant]
 	p := r.pipes[tenant]
 	var (
-		fp    string
-		ratio float64
+		fp     string
+		traces bool
+		ratio  float64
 	)
 	if e != nil {
-		fp, ratio = e.fp, e.dest.Ratio
+		fp, traces, ratio = e.fp, e.traces, e.dest.Ratio
 	}
 	r.mu.RUnlock()
-	if e == nil {
+	if e == nil || !traces {
 		return
 	}
 	// Thinned to the tenant's ratio by trace id, so it receives whole traces:
@@ -491,10 +532,11 @@ func (r *TenantRouter) reapIdle(now time.Time) {
 	}
 }
 
-// Test sends one test span to d, as TestTenantExport does, inside the cap on
-// exports in flight every tenant shares: with every slot held until timeout it
-// answers busy rather than add an export beyond the cap. It touches no
-// tenant's status.
+// Test sends one test span to d when it exports traces (TestTenantExport) and
+// one test metric when it exports metrics (TestTenantMetricExport), inside the
+// cap on exports in flight every tenant shares: with every slot held until
+// timeout it answers busy rather than add an export beyond the cap. The first
+// failure is the answer. It touches no tenant's status.
 func (r *TenantRouter) Test(ctx context.Context, tenant string, d TenantDestination, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = r.cfg.ExportTimeout
@@ -508,11 +550,22 @@ func (r *TenantRouter) Test(ctx context.Context, tenant string, d TenantDestinat
 		return &TenantExportError{msg: CategoryBusy}
 	}
 	defer func() { <-r.slots }()
-	left := timeout - time.Since(start)
-	if left <= 0 {
+	left := func() time.Duration { return timeout - time.Since(start) }
+	if left() <= 0 {
 		return &TenantExportError{msg: CategoryBusy}
 	}
-	return TestTenantExport(ctx, tenant, d, r.cfg.ServiceVersion, left)
+	if d.exports(SignalTraces) {
+		if err := TestTenantExport(ctx, tenant, d, r.cfg.ServiceVersion, left()); err != nil {
+			return err
+		}
+	}
+	if d.exports(SignalMetrics) {
+		if left() <= 0 {
+			return &TenantExportError{msg: "metrics: " + CategoryTimeout}
+		}
+		return TestTenantMetricExport(ctx, tenant, d, r.cfg.ServiceVersion, left())
+	}
+	return nil
 }
 
 // ForceFlush flushes every open pipeline.
@@ -530,10 +583,11 @@ func (r *TenantRouter) ForceFlush(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// Shutdown flushes and closes every pipeline and stops the reaper. The router
-// routes nothing afterwards.
+// Shutdown makes each tenant's last metric push, flushes and closes every
+// pipeline and stops the reaper. The router routes nothing afterwards.
 func (r *TenantRouter) Shutdown(ctx context.Context) error {
 	r.stopOnce.Do(func() { close(r.stop) })
+	r.shutdownMetrics(ctx)
 	r.mu.Lock()
 	r.closed = true
 	for t, p := range r.pipes {

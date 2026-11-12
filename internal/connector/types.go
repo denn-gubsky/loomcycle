@@ -1309,7 +1309,8 @@ type TenantTelemetryPolicyInput struct {
 	// HeadersCredential names a tenant credential, restricted to the
 	// endpoint, whose value is the header block (name=value,name=value).
 	HeadersCredential string `json:"headers_credential,omitempty"`
-	// Signals is what is exported; empty is traces.
+	// Signals is what is exported: traces, metrics (the tenant's own series,
+	// pushed every minute) or both; empty is traces.
 	Signals []string `json:"signals,omitempty"`
 	// SamplerRatio is the share of the tenant's traces sent (0..1, at most
 	// the operator's cap); nil is 1, or the cap below it.
