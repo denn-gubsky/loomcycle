@@ -131,7 +131,7 @@ func (b *boot) buildMCP() {
 			}
 			filtered := applyToolsFilter(descs, srv.Tools)
 			for _, d := range filtered {
-				b.allTools = append(b.allTools, mcp.NewTool(mcpPool, name, d))
+				b.allTools = append(b.allTools, mcp.NewStaticTool(mcpPool, name, d))
 			}
 			slog.Info("mcp: server ready", "server", name, "tools_registered", len(filtered),
 				"tools_offered", len(descs), "transport", srv.Transport)

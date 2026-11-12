@@ -212,7 +212,7 @@ func StaticToolsForRun(
 		// pool's cache without a wire round-trip.
 		if cached := pool.PeekTools(tenant, name); len(cached) > 0 {
 			for _, d := range ApplyToolsFilter(cached, srv.Tools) {
-				out = append(out, NewTool(pool, name, d))
+				out = append(out, NewStaticTool(pool, name, d))
 			}
 			continue
 		}
@@ -227,7 +227,7 @@ func StaticToolsForRun(
 			continue
 		}
 		for _, d := range ApplyToolsFilter(descs, srv.Tools) {
-			out = append(out, NewTool(pool, name, d))
+			out = append(out, NewStaticTool(pool, name, d))
 		}
 		logger.Info("mcp: run-start re-probe advertised tools (recovered a server skipped at boot)",
 			"server", name, "tenant", tenant, "tools", len(descs))

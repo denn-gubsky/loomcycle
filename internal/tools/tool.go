@@ -32,6 +32,13 @@ type Tool interface {
 	Execute(ctx context.Context, input json.RawMessage) (Result, error)
 }
 
+// MetricLabeler is a tool that names its own label on the tool metrics in
+// place of the one its name would get: an MCP tool knows whether the
+// operator configured its server, which its name does not say.
+type MetricLabeler interface {
+	MetricLabel() string
+}
+
 // ErrorCategory and ErrorInfo are ALIASES for the errkind vocabulary, not
 // copies. They live there because internal/providers has to carry a category
 // on a run event and cannot import this package (tools imports providers), and
@@ -1911,16 +1918,20 @@ func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessag
 }
 
 // toolMetricName is name's label on the tool metrics. A tool this run was
-// given is named (an MCP tool by its server, a client tool as "client"); an
+// given is named (an MCP tool by its server when the operator configured it,
+// else "mcp"; a client tool as "client"); an
 // MCP name the fallback may still resolve is "mcp", since until it resolves
 // the server in it is the model's text; any other name is "unknown". A label
 // is never text the model chose.
 func (d *Dispatcher) toolMetricName(name string) string {
-	if _, ok := d.tools[name]; ok {
+	if t, ok := d.tools[name]; ok {
+		if l, ok := t.(MetricLabeler); ok {
+			return l.MetricLabel()
+		}
 		return lcotel.ToolMetricName(name, true)
 	}
 	if server, _ := lcotel.ParseMCPToolName(name); server != "" && d.fallback != nil {
-		return "mcp"
+		return lcotel.ToolLabelMCP
 	}
 	return lcotel.ToolMetricName(name, false)
 }

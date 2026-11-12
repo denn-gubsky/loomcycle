@@ -621,21 +621,40 @@ func MetricUserHash(tenant, user string) (string, bool) {
 // --- Tools ---
 
 // ToolMetricName is the tool label for a dispatched tool name. An MCP tool
-// collapses to its server (mcp:<server>) and a client-hosted tool to
-// "client": their tool sets are chosen by the server's or the client's owner,
-// not bounded by the runtime. known is whether the name is one the run was
-// given; a name the model made up is "unknown", never a label of its own.
+// is "mcp" and a client-hosted tool "client": their tool sets are chosen by
+// the server's or the client's owner, not bounded by the runtime. Only the
+// operator's own MCP servers get a label of their own, through
+// MCPToolMetricName. known is whether the name is one the run was given; a
+// name the model made up is "unknown", never a label of its own.
 func ToolMetricName(name string, known bool) string {
 	if !known {
 		return "unknown"
 	}
 	if server, _ := ParseMCPToolName(name); server != "" {
-		return "mcp:" + server
+		return ToolLabelMCP
 	}
 	if len(name) > len(clientToolPrefix) && name[:len(clientToolPrefix)] == clientToolPrefix {
 		return "client"
 	}
 	return name
+}
+
+// ToolLabelMCP is the tool label of an MCP tool whose server the operator
+// did not configure.
+const ToolLabelMCP = "mcp"
+
+// MCPToolMetricName is the tool label of a tool on MCP server server.
+// operatorStatic is whether the operator's config declares the server: only
+// then is it mcp:<server>. A runtime-defined server is named by whoever
+// authored its definition — a tenant among them — and a series, once made,
+// lasts until restart: labelled by name, any tenant could spend the
+// cardinality limit with invented servers and push the operator's own series
+// into overflow, and two tenants' servers of one name would share a series.
+func MCPToolMetricName(server string, operatorStatic bool) string {
+	if !operatorStatic || server == "" {
+		return ToolLabelMCP
+	}
+	return "mcp:" + server
 }
 
 // clientToolPrefix mirrors internal/clienttools.ToolPrefix, which this leaf
