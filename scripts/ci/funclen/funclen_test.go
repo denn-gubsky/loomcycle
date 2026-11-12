@@ -55,7 +55,6 @@ var allowlist = map[string]allowed{
 	"internal/api/http/server.go Server.prepareSubRunValues":              {722, "logic", "P5"},
 	"internal/api/http/server.go Server.routes":                           {708, "table", "D3"},
 	"internal/api/mcp/tools.go baseToolDescriptors":                       {705, "table", "D3"},
-	"internal/loop/stateful.go runStateful":                               {631, "logic", "P5"},
 	"internal/api/http/auth_principal.go requiredScopeFor":                {465, "table", "D3"},
 	"internal/tools/builtin/document_editions.go Document.reimportMD":     {463, "logic", "P5"},
 	"internal/tools/builtin/document_ontology.go Document.ontologyForKey": {419, "logic", "P5"},
