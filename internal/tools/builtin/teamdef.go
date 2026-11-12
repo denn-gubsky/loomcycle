@@ -2214,7 +2214,9 @@ func runStartDetached(w *teamWalk) (tools.Result, error) {
 	w.walkCtx = providers.WithRunClock(w.walkCtx, nil)
 	safego.Go(w.walkCtx, "teamdef.detached_walk", func() {
 		if _, werr := w.walk(); werr != nil {
-			slog.Warn("teamdef: detached walk failed", "team", row.Name, "run_id", runID, "err", werr)
+			// No error text: it can carry provider configuration, and
+			// walk() has already recorded it on the run.
+			slog.Warn("teamdef: detached walk failed", "team", row.Name, "run_id", runID)
 		}
 	})
 	return okJSON(map[string]any{
