@@ -1413,7 +1413,7 @@ func (s *Server) ResumeRuntime(ctx context.Context) (connector.ResumeResult, err
 	if s.pauseMgr == nil {
 		return connector.ResumeResult{}, connector.ErrPauseNotConfigured
 	}
-	res, err := s.pauseMgr.Resume(ctx)
+	res, err := s.resumeRuntime(ctx)
 	if err != nil {
 		if errors.Is(err, pause.ErrNotPaused) {
 			return connector.ResumeResult{Status: res.State}, connector.ErrNotPaused

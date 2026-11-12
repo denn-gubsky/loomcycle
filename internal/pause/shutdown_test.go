@@ -255,7 +255,6 @@ func TestManager_ResumeFlipsOnlyThisReplicasPausedRows(t *testing.T) {
 	}}
 	// own carries this replica's id but no loop here holds it.
 	m := NewManager(s, 100*time.Millisecond)
-	m.SetReplicaID("replica-a")
 	// held's loop lives here: a run resumed onto this replica, its row not
 	// yet re-stamped.
 	m.RegisterRun(held.ID)
@@ -307,18 +306,137 @@ func TestManager_ShutdownPauseCancelsTheTurnOfUnparkedRunsOnly(t *testing.T) {
 	}
 }
 
-// In single-replica mode every paused row is this process's to flip, held or
-// not — as before the cluster scoping.
-func TestManager_ResumeInSingleReplicaModeFlipsEveryPausedRow(t *testing.T) {
+// In single-replica mode, as in a cluster, Resume flips only the paused rows
+// this process holds; an unheld row stays paused.
+func TestManager_ResumeInSingleReplicaModeFlipsOnlyHeldRows(t *testing.T) {
 	m, s, cleanup := newTestManager(t)
 	defer cleanup()
 	ctx := context.Background()
 	sess, _ := s.CreateSession(ctx, "t", "a", "u")
 	r1, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "r1"})
+	r2, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "r2"})
 	_ = s.SetRunPauseState(ctx, r1.ID, store.PauseStatePaused)
+	_ = s.SetRunPauseState(ctx, r2.ID, store.PauseStatePaused)
+	m.RegisterRun(r1.ID)
+	defer m.DeregisterRun(r1.ID)
 	_, _ = m.Pause(ctx, 50*time.Millisecond)
 	res, err := m.Resume(ctx)
 	if err != nil || res.ResumedRunsCount != 1 {
 		t.Fatalf("Resume = %+v, %v; want 1 resumed", res, err)
+	}
+	for id, want := range map[string]string{"r1": store.PauseStateRunning, "r2": store.PauseStatePaused} {
+		got, _ := s.GetRunByAgentID(ctx, id)
+		if got.PauseState != want {
+			t.Errorf("%s.PauseState = %q, want %q", id, got.PauseState, want)
+		}
+	}
+}
+
+// On a single replica a runtime resume leaves a paused row no loop here holds
+// paused, as a cluster replica does: flipped to running it would look live with
+// nothing running it, and the resume pass (which lists only paused rows) would
+// never pick it up. The held row's loop is woken and its row flipped.
+func TestManager_ResumeInSingleReplicaModeLeavesUnheldRowsPaused(t *testing.T) {
+	m, s, cleanup := newTestManager(t)
+	defer cleanup()
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	orphan, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "orphan"})
+	held, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "held"})
+	for _, r := range []store.Run{orphan, held} {
+		_ = s.SetRunPauseState(ctx, r.ID, store.PauseStatePaused)
+	}
+	m.RegisterRun(held.ID)
+	defer m.DeregisterRun(held.ID)
+	_, _ = m.Pause(ctx, 50*time.Millisecond)
+
+	res, err := m.Resume(ctx)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.ResumedRunsCount != 1 {
+		t.Errorf("ResumedRunsCount = %d, want 1 (only the held run)", res.ResumedRunsCount)
+	}
+	for id, want := range map[string]string{"orphan": store.PauseStatePaused, "held": store.PauseStateRunning} {
+		got, _ := s.GetRunByAgentID(ctx, id)
+		if got.PauseState != want {
+			t.Errorf("%s.PauseState = %q, want %q", id, got.PauseState, want)
+		}
+	}
+}
+
+// holdFirstResumeFlip blocks Resume's first per-row flip until every woken
+// gate has ended (deregistered), so a held/unheld decision made after the wake
+// would find the remaining rows unheld.
+type holdFirstResumeFlip struct {
+	store.Store
+	once  sync.Once
+	ended []chan struct{}
+}
+
+func (h *holdFirstResumeFlip) SetRunPauseState(ctx context.Context, runID, state string) error {
+	h.once.Do(func() {
+		for _, c := range h.ended {
+			select {
+			case <-c:
+			case <-time.After(5 * time.Second):
+			}
+		}
+	})
+	return h.Store.SetRunPauseState(ctx, runID, state)
+}
+
+// Resume counts every run it woke, even one whose loop finishes and leaves
+// before Resume reaches its row: which rows are held is decided before any
+// gate is woken, alongside the paused-list snapshot.
+func TestManager_ResumeCountsAWokenRunThatEndsBeforeItsRowIsReached(t *testing.T) {
+	base, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer base.Close()
+	ctx := context.Background()
+	sess, _ := base.CreateSession(ctx, "t", "a", "u")
+	h := &holdFirstResumeFlip{Store: base}
+	m := NewManager(h, 100*time.Millisecond)
+	var parked []<-chan struct{}
+	for _, id := range []string{"a", "b"} {
+		run, _ := base.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: id})
+		m.RegisterRun(run.ID)
+		ended := make(chan struct{})
+		h.ended = append(h.ended, ended)
+		p := make(chan struct{})
+		parked = append(parked, p)
+		go func(runID string) {
+			for m.State() == StateRunning {
+				time.Sleep(2 * time.Millisecond)
+			}
+			resume, should := m.BeginPark(runID)
+			if !should {
+				close(ended)
+				return
+			}
+			_ = base.SetRunPauseState(ctx, runID, store.PauseStatePaused)
+			m.MarkParked(runID)
+			close(p)
+			<-resume
+			// The loop wakes, flips its own row and ends at once.
+			_ = base.SetRunPauseState(ctx, runID, store.PauseStateRunning)
+			m.DeregisterRun(runID)
+			close(ended)
+		}(run.ID)
+	}
+	if _, err := m.Pause(ctx, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range parked {
+		<-p
+	}
+	res, err := m.Resume(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ResumedRunsCount != 2 {
+		t.Errorf("ResumedRunsCount = %d, want 2 (both runs were parked here when the resume began)", res.ResumedRunsCount)
 	}
 }

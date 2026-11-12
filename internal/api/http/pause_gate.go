@@ -100,8 +100,9 @@ func (g *pauseGate) Park(ctx context.Context) error {
 	defer func() {
 		g.mgr.EndPark(g.runID)
 		g.endPause(ctx, since)
-		// Resume() also bulk-flips paused→running (covers restored/orphaned
-		// runs with no live loop); this per-run flip is idempotent with it.
+		// Resume() also flips the rows of the runs this process holds back to
+		// running; this per-run flip is idempotent with it. A row no loop
+		// holds stays paused for the resume pass.
 		_ = g.setPauseState(context.Background(), store.PauseStateRunning)
 	}()
 	select {

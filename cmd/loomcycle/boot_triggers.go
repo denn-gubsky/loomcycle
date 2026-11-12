@@ -40,8 +40,6 @@ func (b *boot) startPauseAndResume() {
 		pauseDefault := time.Duration(cfg.Env.PauseDefaultTimeoutMs) * time.Millisecond
 		pauseMgr := pause.NewManager(storeIface, pauseDefault)
 		pauseMgrRef = pauseMgr
-		// Its resume flips only this replica's paused rows (RFC ES F1).
-		pauseMgr.SetReplicaID(cfg.Env.ReplicaID)
 		srv.SetPauseManager(pauseMgr)
 		if pauseDefault > 0 {
 			slog.Info("pause: manager wired", "default_timeout", pauseDefault)
