@@ -100,6 +100,10 @@ type boot struct {
 	interruptionTool  *builtin.Interruption
 	contextTool       *builtin.Context
 	identityTool      *builtin.Identity
+	// toolStepHook is told the name of each buildTools step as it starts. A
+	// test seam only, nil in production: the order pin
+	// (TestBuildTools_StepsRunInCatalogOrder) records through it.
+	toolStepHook func(step string)
 
 	// buildMCP
 	dynamicMCPRegistry *mcp.DynamicRegistry
