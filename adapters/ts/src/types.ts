@@ -4548,6 +4548,14 @@ export type DocumentToolInput = {
   /** search: also return `query_xyz`, the query placed on the scope's 3D map
    *  (the axes of graph_snapshot's `projection` block). Absent without a map. */
   with_projection?: boolean;
+  /** search: also count, beside the hits, how many DOCUMENTS among the best
+   *  matches have each value — the documents of the `facet_window` chunks
+   *  nearest the query plus the returned hits, after every filter, only those
+   *  the caller may read. See {@link DocumentSearchFacets}. */
+  facets?: Array<"type" | "folder" | "concept">;
+  /** search with `facets`: how many of the nearest chunks the counts cover
+   *  (default 100, at most 500). */
+  facet_window?: number;
   /** related: a chunk whose neighbours BY RELATION to return as `linked`. */
   related_to?: string;
   /** import_md: the markdown is a new edition of document_id / work_key. */
@@ -4962,11 +4970,40 @@ export type DocumentSearchHit = {
   matched_unit?: { kind: string; text: string };
 };
 
+/** One value of a search facet and how many documents in the window have it. */
+export type DocumentSearchFacetValue = { value: string; count: number };
+
+/** The `facets` block of `document({op:"search", facets})` — present ONLY when
+ *  `facets` was passed, with a list for each facet asked. Counts are distinct
+ *  documents the caller may read, over the documents of the `facet_window`
+ *  chunks nearest the query plus the returned hits, after every filter. Each
+ *  list is most documents first, then by value, at most 50 values. */
+export type DocumentSearchFacets = {
+  /** The document's type (its root chunk's class); an untyped one has none. */
+  type?: DocumentSearchFacetValue[];
+  /** The folder of each Path name the document is filed under; a document
+   *  with two names counts in both, one filed nowhere in none. */
+  folder?: DocumentSearchFacetValue[];
+  /** The concepts the document is about, by tag: tenant scope by `subject`
+   *  relation (or a narrower kind), user / agent scope by a chunk's tag. Empty
+   *  when the caller may not read the tenant ontology. */
+  concept?: DocumentSearchFacetValue[];
+  /** The facets whose list was cut (at 50 values, or by the server's row cap). */
+  truncated?: Array<"type" | "folder" | "concept">;
+  facet_window: number;
+  /** Chunks the counts cover, all readable by the caller; below
+   *  `facet_window`, every matching chunk. */
+  chunks_counted: number;
+  documents_counted: number;
+};
+
 /** Response of `document({op:"search"})` — narrow a {@link DocumentToolResponse}
  *  to it. */
 export type DocumentSearchResult = {
   chunks: DocumentSearchHit[];
   filter?: DocumentSearchFilter;
+  /** With `facets`: the counts. */
+  facets?: DocumentSearchFacets;
   reranked?: boolean;
   rerank_reason?: string;
   /** With `with_projection` and a map for the scope: the query's place on it

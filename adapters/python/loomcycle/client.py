@@ -1208,6 +1208,17 @@ class LoomcycleClient:
         than the server's limit is refused (``filter_too_wide``) and raises
         :class:`SubstrateToolRefusedError`.
 
+        ``op="search"`` with ``facets`` (any of ``"type"``, ``"folder"``,
+        ``"concept"``) also returns ``facets``: for each facet asked, a list of
+        ``{"value", "count"}`` — how many DOCUMENTS among the matches have each
+        document type, Path folder or ontology concept — most first, at most
+        50, with ``truncated`` naming any list that was cut, plus
+        ``facet_window``, ``chunks_counted`` and ``documents_counted``. The
+        matches are the documents of the ``facet_window`` chunks nearest the
+        query (default 100, at most 500) and the returned hits, after every
+        filter, and only documents the caller may read. Without ``facets`` the
+        response has no ``facets`` key.
+
         Any chunk can carry its own validity period: ``valid_at`` /
         ``invalid_at`` (unix nanoseconds, ``invalid_at`` exclusive) on
         ``op="create_chunk"`` and ``op="update_chunk"`` (``None`` clears an end
