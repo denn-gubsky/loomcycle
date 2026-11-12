@@ -198,6 +198,9 @@ type RunOptions struct {
 	// starts (statefulLoop.step). nil in production; a test sets it to pin the
 	// step order.
 	statefulStepHook func(step string)
+	// runStepHook is told the name of each step of runLoop as it starts. nil
+	// in production; a test sets it to pin the step order.
+	runStepHook func(step string)
 
 	// ReResolveOnOperatorTurn, when non-nil, is consulted each time a PARKED run
 	// receives its operator's next message — and only then.
@@ -3030,7 +3033,133 @@ type runState struct {
 }
 
 // runLoop is the loop itself; Run (runclock.go) wraps it with the run's clock.
+//
+// The driver, in this order (each step's own comment says why it sits where
+// it does):
+//
+//  1. defaults — the iteration cap, tool parallelism, and no run without a
+//     provider.
+//  2. observe — the call observer and the operator-turn hook on OnSteer.
+//  3. iteration_cap — the cap the run's loop counts against (the hard ceiling
+//     for an unbounded run).
+//  4. run_meta — the run's identity, untrusted input and metadata on ctx.
+//  5. effort — the once-per-run note that an effort hint is dropped.
+//  6. conversation — the system prompt, the conversation and the tool specs.
+//  7. images — the segment-type backstop and the vision gate, before the run
+//     is reported started.
+//  8. the started event.
+//  9. start_hooks — unresolved hooks refuse the run; agent_start runs once.
+//  10. modes — context.mode auto, the recall index, the retry clamp; above the
+//     stateful branch, which reads all three.
+//  11. heartbeat — the run-lifetime pulse, above the stateful branch.
+//  12. holders — the answer-shape holder, and no inherited background table.
+//  13. the stateful branch: a stateful run leaves here for runStateful.
+//  14. background — the run's own background-children table.
+//  15. run_state — the append loop's state, its distillation seed and its
+//     turn-cancel no-ops.
+//  16. resume_parked, then one iteration per turn up to the cap, then finish.
 func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
+	opts.runStepStarts("defaults")
+	interactiveUnbounded, err := applyRunDefaults(&opts)
+	if err != nil {
+		return RunResult{}, err
+	}
+	opts.runStepStarts("observe")
+	ctx = observeRun(ctx, &opts)
+	opts.runStepStarts("iteration_cap")
+	unboundedIters, iterCap := iterationCap(&opts, interactiveUnbounded)
+	opts.runStepStarts("run_meta")
+	ctx = stampRunMeta(ctx, &opts)
+	opts.runStepStarts("effort")
+	warnDroppedEffort(ctx, &opts)
+	opts.runStepStarts("conversation")
+	system, messages, toolSpecs := composeConversation(ctx, &opts)
+
+	emit := func(ev providers.Event) {
+		if opts.OnEvent != nil {
+			opts.OnEvent(ev)
+		}
+	}
+
+	opts.runStepStarts("images")
+	if err := gateImages(&opts, messages, emit); err != nil {
+		return RunResult{}, err
+	}
+
+	emit(providers.Event{Type: providers.EventStarted, TraceID: lcotel.SampledTraceID(ctx)})
+
+	opts.runStepStarts("start_hooks")
+	messages, res, err := startHooks(ctx, &opts, messages, emit)
+	if err != nil {
+		return res, err
+	}
+	opts.runStepStarts("modes")
+	ctx = resolveRunModes(ctx, &opts)
+	opts.runStepStarts("heartbeat")
+	stopHeartbeat := startRunHeartbeat(ctx, &opts)
+	defer stopHeartbeat()
+	opts.runStepStarts("holders")
+	ctx, answerShape := shadowRunHolders(ctx)
+
+	// RFC CR L2: a stateful run is a different loop — it feeds only (P, Σ, O) and
+	// the model emits a patch + action each step. Branch here, after the preamble
+	// P (`system`) and the action-tool catalog are resolved, into the self-
+	// contained stateful loop. The append/recap machinery below does not apply.
+	if contextStatefulMode(opts.Context) {
+		reportStatefulInert(ctx, &opts, emit)
+		return runStateful(ctx, opts, system, messages, toolSpecs, iterCap, emit)
+	}
+	opts.runStepStarts("background")
+	ctx, bg := startBackground(ctx, &opts, emit)
+
+	defer bg.Close(runcancel.CauseWithReason("its parent run ended while it was still running"))
+
+	opts.runStepStarts("run_state")
+	ctx, s, err := newRunState(ctx, &opts, emit, iterCap, unboundedIters, system, toolSpecs, bg, messages, answerShape)
+	if err != nil {
+		return RunResult{}, err
+	}
+
+	defer func() {
+		s.disarmTurn()
+		s.turnCancelFn(nil)
+	}()
+
+	opts.runStepStarts("resume_parked")
+
+	parkAbandoned, ex := s.resumeParked(ctx)
+	if ex.ctl == loopReturn {
+		return ex.res, ex.err
+	}
+
+	opts.runStepStarts("iterations")
+
+	for iter := 0; !parkAbandoned && (iter < iterCap || s.closingTurn); iter++ {
+		ex := s.iteration(ctx, iter)
+		if ex.ctl == loopReturn {
+			return ex.res, ex.err
+		}
+		if ex.ctl == loopEnd {
+			break
+		}
+	}
+	opts.runStepStarts("finish")
+
+	return s.finish()
+}
+
+// runStepStarts reports that a step of runLoop starts (runStepHook), for the
+// order pin.
+func (o *RunOptions) runStepStarts(name string) {
+	if o.runStepHook != nil {
+		o.runStepHook(name)
+	}
+}
+
+// applyRunDefaults fills the run's unset iteration cap and tool parallelism and
+// refuses a run with no provider. It reports whether an interactive run is
+// unbounded because no cap was set.
+func applyRunDefaults(opts *RunOptions) (bool, error) {
 	// An interactive run is operator-driven and Cancel-bounded: each operator
 	// turn (and each end_turn park awaiting input) consumes a loop iteration,
 	// so the default 16-iteration runaway guard silently ends a live terminal
@@ -3050,8 +3179,14 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 		opts.ToolParallelism = 8
 	}
 	if opts.Provider == nil {
-		return RunResult{}, fmt.Errorf("loop: provider is nil")
+		return false, fmt.Errorf("loop: provider is nil")
 	}
+	return interactiveUnbounded, nil
+}
+
+// observeRun puts the call observer on ctx and has every operator turn reset
+// the dispatcher's repeat guard.
+func observeRun(ctx context.Context, opts *RunOptions) context.Context {
 	// The summarizer is deliberately RunOptions-free (see applyCompactSummary),
 	// so the observer for its calls rides the ctx instead.
 	ctx = providers.WithCallObserver(ctx, opts.ObserveCall)
@@ -3068,7 +3203,12 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 			}
 		}
 	}
+	return ctx
+}
 
+// iterationCap is the cap the run's loop counts against, and whether the run is
+// iteration-unbounded.
+func iterationCap(opts *RunOptions, interactiveUnbounded bool) (bool, int) {
 	// A synthetic provider whose loop turns are internal tool-dispatch steps of
 	// one run (code-js — Capabilities().UnboundedIterations) is exempt from the
 	// MaxIterations soft-cap: capping a code-agent's sequential tool calls at 16
@@ -3084,7 +3224,11 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	if unboundedIters {
 		iterCap = maxIterationsHardCeiling
 	}
+	return unboundedIters, iterCap
+}
 
+// stampRunMeta puts the run's identity, untrusted input and metadata on ctx.
+func stampRunMeta(ctx context.Context, opts *RunOptions) context.Context {
 	// Stamp the run's agent identity onto ctx for providers that need it
 	// outside the LLM-shaped Request. Only the synthetic code-js provider
 	// (RFC J) reads it — to resolve agent_code/<name>/index.js (Request
@@ -3123,7 +3267,11 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 		Untrusted:         untrustedMeta,
 		RunTimeoutSeconds: opts.RunTimeoutSeconds,
 	})
+	return ctx
+}
 
+// warnDroppedEffort logs once per run an effort hint the provider drops.
+func warnDroppedEffort(ctx context.Context, opts *RunOptions) {
 	// Log once per Run if the agent declared an effort hint but the
 	// resolved provider is SupportsEffort=false. Operators see a
 	// clear "effort dropped on ollama/qwen3:14b" line rather than
@@ -3135,7 +3283,11 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 		slog.WarnContext(ctx, "loop: effort dropped — the provider does not translate effort to a wire param",
 			"effort", opts.Effort, "provider", opts.Provider.ID(), "model", opts.Model)
 	}
+}
 
+// composeConversation splits the run's segments into its system prompt and
+// conversation (prior turns first) and resolves its tool specs.
+func composeConversation(ctx context.Context, opts *RunOptions) ([]providers.ContentBlock, []providers.Message, []providers.ToolSpec) {
 	system, freshMessages := splitSegments(opts.Segments)
 	// Prepend any prior conversation history (continuation endpoint).
 	// PriorMessages is empty for fresh runs.
@@ -3150,13 +3302,12 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 		// this run's grants allow.
 		toolSpecs = opts.Dispatcher.SpecsFor(ctx, opts.Tools)
 	}
+	return system, messages, toolSpecs
+}
 
-	emit := func(ev providers.Event) {
-		if opts.OnEvent != nil {
-			opts.OnEvent(ev)
-		}
-	}
-
+// gateImages refuses a run whose segments carry an unknown block type, or an
+// image the resolved provider cannot read.
+func gateImages(opts *RunOptions, messages []providers.Message, emit func(providers.Event)) error {
 	// Vision gate (RFC AT). If this run carries an image content block — fresh
 	// or replayed from a prior turn — validate it and refuse before the first
 	// call when the resolved provider can't accept image input (e.g. an agent
@@ -3173,27 +3324,30 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// check fails closed instead of reading a misspelled type as trusted.
 	if err := ValidateSegmentTypes(opts.Segments); err != nil {
 		emit(providers.Event{Type: providers.EventError, Error: err.Error()})
-		return RunResult{}, err
+		return err
 	}
 	if messagesHaveImage(messages) {
 		if err := validateImageSegments(opts.Segments); err != nil {
 			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
-			return RunResult{}, err
+			return err
 		}
 		if !opts.Provider.Capabilities().SupportsVision {
 			msg := fmt.Sprintf("model %q on provider %q does not support image input", opts.Model, opts.Provider.ID())
 			emit(providers.Event{Type: providers.EventError, Error: msg})
-			return RunResult{}, errors.New(msg)
+			return errors.New(msg)
 		}
 	}
+	return nil
+}
 
-	emit(providers.Event{Type: providers.EventStarted, TraceID: lcotel.SampledTraceID(ctx)})
-
+// startHooks refuses a run whose hooks could not be resolved and runs its
+// agent_start hooks once, adding their context to the conversation.
+func startHooks(ctx context.Context, opts *RunOptions, messages []providers.Message, emit func(providers.Event)) ([]providers.Message, RunResult, error) {
 	// A run whose hooks could not be resolved does not start: a gate its
 	// definition names must not silently be missing. Returned, not emitted,
 	// like the agent_start denial below.
 	if err := hooks.SetFrom(ctx).Err(); err != nil {
-		return RunResult{}, fmt.Errorf("the run was not started: its hooks could not be resolved: %w", err)
+		return messages, RunResult{}, fmt.Errorf("the run was not started: its hooks could not be resolved: %w", err)
 	}
 
 	// agent_start hooks: once per run, now that the prompt is composed and
@@ -3203,11 +3357,16 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 		EmitHookDecisions(emit, providers.ToolUse{}, out.Decisions)
 		if out.Denied {
 			// Returned, not emitted: the server reports a failed run's error.
-			return RunResult{StopReason: StopReasonDeniedByHook}, fmt.Errorf("the run was stopped before it began: %s", out.Reason)
+			return messages, RunResult{StopReason: StopReasonDeniedByHook}, fmt.Errorf("the run was stopped before it began: %s", out.Reason)
 		}
 		messages = appendStartContext(messages, out.AdditionalContext)
 	}
+	return messages, RunResult{}, nil
+}
 
+// resolveRunModes settles context.mode auto, stamps the recall index and clamps
+// the same-provider retry count.
+func resolveRunModes(ctx context.Context, opts *RunOptions) context.Context {
 	// RFC CR tier-routing: `context.mode: auto` resolves to a concrete mode from
 	// the RESOLVED provider — a local backend → recap (schema-free, safe for a
 	// weaker model), a frontier API → stateful. An interactive run takes recap
@@ -3229,7 +3388,12 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	if opts.MaxSameProviderRetries > maxSameProviderRetriesCap {
 		opts.MaxSameProviderRetries = maxSameProviderRetriesCap
 	}
+	return ctx
+}
 
+// startRunHeartbeat starts the run-lifetime heartbeat and returns what stops
+// it; runLoop defers that.
+func startRunHeartbeat(ctx context.Context, opts *RunOptions) func() {
 	// Run-lifetime heartbeat: pulse OnHeartbeat every parkHeartbeatInterval for
 	// as long as this run's goroutine is alive, IN ADDITION to the per-iteration
 	// pulse below. The stale-run sweeper reaps a run whose heartbeat hasn't
@@ -3256,7 +3420,6 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// did not exist while this block sat below the last reassignment.
 	if opts.OnHeartbeat != nil {
 		hbDone := make(chan struct{})
-		defer close(hbDone)
 		hbCtx := ctx
 		safego.Go(hbCtx, "loop.heartbeat", func() {
 			t := time.NewTicker(parkHeartbeatInterval)
@@ -3275,8 +3438,14 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 				}
 			}
 		})
+		return func() { close(hbDone) }
 	}
+	return func() {}
+}
 
+// shadowRunHolders stamps the run's own answer-shape holder and shadows any
+// inherited background-children table.
+func shadowRunHolders(ctx context.Context) (context.Context, *atomic.Pointer[tools.AnswerShape]) {
 	// What Context op=self reports about tool_choice / output_format. Stamped
 	// before the stateful branch so a stateful run — which ignores both —
 	// shadows its parent's holder with an empty one instead of inheriting it.
@@ -3288,15 +3457,12 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// shadows any table inherited from a parent with nil, so its children are
 	// never filed in another run's.
 	ctx = tools.WithBackground(ctx, nil)
+	return ctx, &answerShape
+}
 
-	// RFC CR L2: a stateful run is a different loop — it feeds only (P, Σ, O) and
-	// the model emits a patch + action each step. Branch here, after the preamble
-	// P (`system`) and the action-tool catalog are resolved, into the self-
-	// contained stateful loop. The append/recap machinery below does not apply.
-	if contextStatefulMode(opts.Context) {
-		reportStatefulInert(ctx, &opts, emit)
-		return runStateful(ctx, opts, system, messages, toolSpecs, iterCap, emit)
-	}
+// startBackground files the append run's background children in a table of
+// its own.
+func startBackground(ctx context.Context, opts *RunOptions, emit func(providers.Event)) (context.Context, *tools.Background) {
 	// The children run on after the calls that started them; they end with
 	// the run at the latest, however the run ends. A run waits for them at the
 	// end of its turn (parkForChildren), so this cancels only what a run that
@@ -3307,10 +3473,17 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	if opts.RestoreBackground != nil {
 		opts.RestoreBackground(ctx, bg)
 	}
-	defer bg.Close(runcancel.CauseWithReason("its parent run ended while it was still running"))
+	return ctx, bg
+}
 
+// newRunState builds the append loop's state: its tool_choice check, the
+// answer shape, the compaction request, the distillation seed, and the
+// turn-cancel no-ops.
+func newRunState(ctx context.Context, opts *RunOptions, emit func(providers.Event), iterCap int, unboundedIters bool,
+	system []providers.ContentBlock, toolSpecs []providers.ToolSpec, bg *tools.Background, messages []providers.Message,
+	answerShape *atomic.Pointer[tools.AnswerShape]) (context.Context, *runState, error) {
 	s := &runState{
-		opts:           &opts,
+		opts:           opts,
 		emit:           emit,
 		iterCap:        iterCap,
 		unboundedIters: unboundedIters,
@@ -3320,11 +3493,11 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 		messages:       messages,
 		toolChoice:     newToolChoicePolicy(opts.ToolChoice),
 		outputFormat:   newOutputFormatPolicy(opts.OutputFormat),
-		answerShape:    &answerShape,
+		answerShape:    answerShape,
 	}
 	if err := s.toolChoice.checkTool(toolSpecs); err != nil {
 		emit(providers.Event{Type: providers.EventError, Error: err.Error()})
-		return RunResult{}, err
+		return ctx, nil, err
 	}
 	s.publishAnswerShape()
 
@@ -3344,26 +3517,7 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// clean.
 	s.turnCancelFn = context.CancelCauseFunc(func(error) {})
 	s.disarmTurn = func() {}
-	defer func() {
-		s.disarmTurn()
-		s.turnCancelFn(nil)
-	}()
-
-	parkAbandoned, ex := s.resumeParked(ctx)
-	if ex.ctl == loopReturn {
-		return ex.res, ex.err
-	}
-
-	for iter := 0; !parkAbandoned && (iter < iterCap || s.closingTurn); iter++ {
-		ex := s.iteration(ctx, iter)
-		if ex.ctl == loopReturn {
-			return ex.res, ex.err
-		}
-		if ex.ctl == loopEnd {
-			break
-		}
-	}
-	return s.finish()
+	return ctx, s, nil
 }
 
 // seedDistillation sets up the run's distillation state before its first
